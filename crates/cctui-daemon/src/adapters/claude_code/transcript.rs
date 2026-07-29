@@ -636,8 +636,8 @@ mod tests {
         // slash (`/home/you/proj/`). Claude normalizes it away before deriving
         // the projects-dir segment, so we must too — otherwise the encoded dir
         // gets a spurious trailing dash and the transcript is never found.
-        assert_eq!(encode_cwd("/home/gtax/dev/gtax/"), "-home-gtax-dev-gtax");
-        assert_eq!(encode_cwd("/home/gtax/dev/gtax"), "-home-gtax-dev-gtax");
+        assert_eq!(encode_cwd("/home/you/proj/"), "-home-you-proj");
+        assert_eq!(encode_cwd("/home/you/proj"), "-home-you-proj");
         // Multiple trailing slashes collapse the same way.
         assert_eq!(encode_cwd("/tmp/test//"), "-tmp-test");
     }
@@ -1018,7 +1018,7 @@ mod tests {
                 // but it is genuine human input with no machine marker → not meta.
                 r#"{"type":"user","isMeta":true,"message":{"content":[{"type":"text","text":"resume coverart e2e verification"}]}}"#,
                 // skill preamble injection, no tag → meta via prose marker
-                r#"{"type":"user","isMeta":true,"message":{"content":"Base directory for this skill: /home/dorsk/.claude/skills/x"}}"#,
+                r#"{"type":"user","isMeta":true,"message":{"content":"Base directory for this skill: /home/you/.claude/skills/x"}}"#,
             ],
         );
         let (events, _) = tail_once(&path, "s", 0).unwrap();

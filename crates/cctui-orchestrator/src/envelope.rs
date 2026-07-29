@@ -107,19 +107,35 @@ pub fn is_injected(pod: &Pod) -> bool {
     marked || has_sidecar
 }
 
-/// Compute the `JSONPatch` that injects the envelope, or `None` for a no-op
-/// (pod not eligible, already injected, or nothing to change).
-#[must_use]
-pub fn mutate_pod(pod: &Pod, sidecar_image: &str) -> Option<json_patch::Patch> {
-    if !is_eligible(pod) || is_injected(pod) {
-        return None;
+#[derive(Debug)]
+pub enum MutationOutcome {
+    NotEligible,
+    AlreadyInjected,
+    Patch(json_patch::Patch),
+}
+
+/// Evaluate `pod` for envelope injection. A serialization failure is an `Err` so
+/// the admission webhook fails closed (deny) instead of admitting an unpatched,
+/// unsandboxed worker.
+pub fn mutate_pod(pod: &Pod, sidecar_image: &str) -> anyhow::Result<MutationOutcome> {
+    if !is_eligible(pod) {
+        return Ok(MutationOutcome::NotEligible);
+    }
+    if is_injected(pod) {
+        return Ok(MutationOutcome::AlreadyInjected);
     }
     let cfg = EnvelopeConfig::from_pod(pod, sidecar_image);
     let injected = inject(pod, &cfg);
-    let before = serde_json::to_value(pod).ok()?;
-    let after = serde_json::to_value(&injected).ok()?;
+    let before =
+        serde_json::to_value(pod).map_err(|e| anyhow::anyhow!("serializing admitted pod: {e}"))?;
+    let after = serde_json::to_value(&injected)
+        .map_err(|e| anyhow::anyhow!("serializing injected pod: {e}"))?;
     let patch = json_patch::diff(&before, &after);
-    if patch.0.is_empty() { None } else { Some(patch) }
+    if patch.0.is_empty() {
+        Ok(MutationOutcome::NotEligible)
+    } else {
+        Ok(MutationOutcome::Patch(patch))
+    }
 }
 
 /// Return a clone of `pod` with the envelope injected. Pure: only the worker
@@ -390,7 +406,10 @@ mod tests {
     }
 
     fn apply(pod: &Pod) -> Pod {
-        let patch = mutate_pod(pod, IMG).expect("eligible pod yields a patch");
+        let patch = match mutate_pod(pod, IMG).expect("mutate_pod must not error") {
+            MutationOutcome::Patch(p) => p,
+            other => panic!("eligible pod must yield a patch, got {other:?}"),
+        };
         let mut doc = serde_json::to_value(pod).unwrap();
         json_patch::patch(&mut doc, &patch.0).expect("patch applies");
         serde_json::from_value(doc).unwrap()
@@ -516,7 +535,10 @@ mod tests {
     fn reinjection_is_a_noop() {
         let once = apply(&lean_pod());
         assert!(is_injected(&once));
-        assert!(mutate_pod(&once, IMG).is_none(), "second pass must not double-inject");
+        assert!(
+            matches!(mutate_pod(&once, IMG).unwrap(), MutationOutcome::AlreadyInjected),
+            "second pass must not double-inject"
+        );
     }
 
     #[test]
@@ -524,7 +546,7 @@ mod tests {
         let mut pod = lean_pod();
         pod.metadata.labels = None;
         assert!(!is_eligible(&pod));
-        assert!(mutate_pod(&pod, IMG).is_none());
+        assert!(matches!(mutate_pod(&pod, IMG).unwrap(), MutationOutcome::NotEligible));
     }
 
     #[test]

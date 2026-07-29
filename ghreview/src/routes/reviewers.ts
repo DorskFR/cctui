@@ -1,6 +1,5 @@
 import { createRoute, type OpenAPIHono, z } from "@hono/zod-openapi";
-import { getUserId } from "../auth/middleware.ts";
-import { accountOwnedBy } from "../db/notificationState.ts";
+import { requireOwnedAccount } from "../auth/ownership.ts";
 import type { AppDeps } from "../deps.ts";
 import type { Account } from "../github/account.ts";
 import {
@@ -220,48 +219,20 @@ async function buildResult(
   return { reviewers, requested_teams: requested.teams };
 }
 
-async function authAccount(
-  deps: AppDeps,
-  uid: string | undefined,
-  account: string,
-): Promise<
-  | { ok: true; acct: Account }
-  | { ok: false; code: "forbidden" | "not_found"; message: string; status: 403 | 404 }
-> {
-  if (deps.db && uid !== undefined && !(await accountOwnedBy(deps.db, account, uid))) {
-    return {
-      ok: false,
-      code: "forbidden",
-      message: `Account ${account} is not accessible`,
-      status: 403,
-    };
-  }
-  const acct = deps.accountFor?.(account);
-  if (!acct) {
-    return {
-      ok: false,
-      code: "not_found",
-      message: `Account ${account} is not managed`,
-      status: 404,
-    };
-  }
-  return { ok: true, acct };
-}
-
 export function registerReviewers(app: OpenAPIHono, deps: AppDeps = {}) {
   app.openapi(getReviewersRoute, async (c) => {
     const p = c.req.valid("param");
     const { account } = c.req.valid("query");
-    const auth = await authAccount(deps, getUserId(c), account);
-    if (!auth.ok) return c.json({ error: { code: auth.code, message: auth.message } }, auth.status);
+    const auth = await requireOwnedAccount(deps, c, account);
+    if (!auth.ok) return c.json(auth.body, auth.status);
     return c.json(await buildResult(auth.acct.octokit, p), 200);
   });
 
   app.openapi(reRequestRoute, async (c) => {
     const p = c.req.valid("param");
     const body = c.req.valid("json");
-    const auth = await authAccount(deps, getUserId(c), body.account);
-    if (!auth.ok) return c.json({ error: { code: auth.code, message: auth.message } }, auth.status);
+    const auth = await requireOwnedAccount(deps, c, body.account);
+    if (!auth.ok) return c.json(auth.body, auth.status);
     await auth.acct.octokit.request(
       "POST /repos/{owner}/{repo}/pulls/{pull_number}/requested_reviewers",
       { owner: p.owner, repo: p.repo, pull_number: p.number, reviewers: body.reviewers },
@@ -272,8 +243,8 @@ export function registerReviewers(app: OpenAPIHono, deps: AppDeps = {}) {
   app.openapi(requestRoute, async (c) => {
     const p = c.req.valid("param");
     const body = c.req.valid("json");
-    const auth = await authAccount(deps, getUserId(c), body.account);
-    if (!auth.ok) return c.json({ error: { code: auth.code, message: auth.message } }, auth.status);
+    const auth = await requireOwnedAccount(deps, c, body.account);
+    if (!auth.ok) return c.json(auth.body, auth.status);
     await auth.acct.octokit.request(
       "POST /repos/{owner}/{repo}/pulls/{pull_number}/requested_reviewers",
       {

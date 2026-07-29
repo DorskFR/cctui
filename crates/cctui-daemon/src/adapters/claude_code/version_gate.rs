@@ -227,22 +227,22 @@ mod tests {
     use super::*;
 
     const BUSY_STATUS: &str = "\
-pid:     1222813
+pid:     100001
 version: 2.1.218
 uptime:  161528s
 origin:  foreground
-config:  /home/dorsk/.claude/daemon.json
-log:     /home/dorsk/.claude/daemon.log
+config:  /home/you/.claude/daemon.json
+log:     /home/you/.claude/daemon.log
 
 bg sessions:
-  sock dir:     /tmp/cc-daemon-1000/9a6631b1
+  sock dir:     /tmp/cc-daemon-9999/9a6631b1
   control.sock: reachable
   bg workers:   2 running (control.sock), 2 in roster.json
   roster.json:  updated 187s ago
 ";
 
     const IDLE_STATUS: &str = "\
-pid:     1498814
+pid:     100002
 version: 2.1.220
 uptime:  11s
 origin:  foreground
@@ -256,7 +256,7 @@ bg sessions:
 not running
 
 bg sessions:
-  sock dir:     /tmp/cc-daemon-1000/f47e2fbc
+  sock dir:     /tmp/cc-daemon-9999/f47e2fbc
   control.sock: unreachable (connect ENOENT)
   bg workers:   0 in roster.json (control unreachable)
 ";

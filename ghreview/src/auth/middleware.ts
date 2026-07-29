@@ -3,13 +3,17 @@ import type { AuthResolver } from "./resolver.ts";
 
 export const USER_ID_KEY = "userId";
 
+export const LOCAL_PRINCIPAL = "__local__";
+
+const QUERY_TOKEN_PATH = "/v1/events";
+
 export function getUserId(c: Context): string | undefined {
   const get = c.get as unknown as (k: string) => unknown;
   const v = get(USER_ID_KEY);
   return typeof v === "string" ? v : undefined;
 }
 
-function setUserId(c: Context, id: string): void {
+export function setUserId(c: Context, id: string): void {
   const set = c.set as unknown as (k: string, v: unknown) => void;
   set(USER_ID_KEY, id);
 }
@@ -22,7 +26,8 @@ function bearer(header: string | undefined): string | null {
 
 export function authMiddleware(resolver: AuthResolver) {
   return async (c: Context, next: Next) => {
-    const token = bearer(c.req.header("authorization")) ?? c.req.query("access_token") ?? null;
+    const queryToken = c.req.path === QUERY_TOKEN_PATH ? c.req.query("access_token") : undefined;
+    const token = bearer(c.req.header("authorization")) ?? queryToken ?? null;
     if (!token) {
       return c.json({ error: { code: "unauthorized", message: "Missing bearer token" } }, 401);
     }

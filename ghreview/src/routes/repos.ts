@@ -1,7 +1,7 @@
 import { createRoute, type OpenAPIHono, z } from "@hono/zod-openapi";
 import { getUserId } from "../auth/middleware.ts";
+import { requireOwnedAccount } from "../auth/ownership.ts";
 import { findDocument, listDocuments } from "../db/documents.ts";
-import { accountOwnedBy } from "../db/notificationState.ts";
 import type { AppDeps } from "../deps.ts";
 import type { Account } from "../github/account.ts";
 import {
@@ -156,21 +156,9 @@ export function registerRepos(app: OpenAPIHono, deps: AppDeps = {}) {
   });
   app.openapi(listGithubRepos, async (c) => {
     const { account } = c.req.valid("query");
-    const userId = getUserId(c);
-    if (deps.db && userId !== undefined && !(await accountOwnedBy(deps.db, account, userId))) {
-      return c.json(
-        { error: { code: "forbidden", message: `Account ${account} is not accessible` } },
-        403,
-      );
-    }
-    const acct = deps.accountFor?.(account);
-    if (!acct) {
-      return c.json(
-        { error: { code: "not_found", message: `Account ${account} is not managed` } },
-        404,
-      );
-    }
-    const items = await fetchUserRepos(acct.octokit);
+    const auth = await requireOwnedAccount(deps, c, account);
+    if (!auth.ok) return c.json(auth.body, auth.status);
+    const items = await fetchUserRepos(auth.acct.octokit);
     return c.json({ items }, 200);
   });
 }

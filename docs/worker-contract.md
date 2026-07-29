@@ -434,8 +434,7 @@ the worker signs over a forwarded gpg-agent socket:
 2. **Restricted socket.** gpg-agent's `--extra-socket` can USE the key for
    signing but **cannot export the secret key** (`gpg --export-secret-keys` over
    it fails). Only that socket is forwarded — the full socket and the private
-   keyring never leave the sidecar. Proven end-to-end in
-   `tmp/gpg-forward-test.sh`.
+   keyring never leave the sidecar.
 3. **Worker side** — under `transparent-external` the entrypoint bounded-waits
    for the extra socket, imports the public key into `~worker/.gnupg`, symlinks
    gpg's expected agent-socket (`gpgconf --list-dirs agent-socket`, plus a

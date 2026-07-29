@@ -13,6 +13,7 @@ export interface Config {
   sealKey: string | undefined;
   authMode: AuthMode;
   authTokens: string | undefined;
+  unsafeAllowAnonymous: boolean;
   cctuiSchema: string;
   syncViewedFromGithub: boolean;
 }
@@ -43,6 +44,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     sealKey: env.GHREVIEW_SEAL_KEY,
     authMode: parseAuthMode(env.GHREVIEW_AUTH_MODE),
     authTokens: env.GHREVIEW_AUTH_TOKENS,
+    unsafeAllowAnonymous: env.GHREVIEW_UNSAFE_ALLOW_ANONYMOUS === "true",
     cctuiSchema: env.GHREVIEW_CCTUI_SCHEMA ?? "public",
     syncViewedFromGithub: env.GHREVIEW_SYNC_VIEWED_GITHUB === "true",
   };

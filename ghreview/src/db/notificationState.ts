@@ -42,6 +42,8 @@ export interface InboxPage {
   next_cursor: string | null;
 }
 
+const INBOX_ALL_HARD_CAP = 5000;
+
 export interface StatePatch {
   read?: boolean;
   done?: boolean;
@@ -157,7 +159,7 @@ export async function listNotificationInbox(
           : sql``
       }
     ORDER BY d.updated_at DESC, d.key DESC
-    ${all ? sql`` : sql`LIMIT ${filters.limit + 1}`}
+    ${all ? sql`LIMIT ${INBOX_ALL_HARD_CAP}` : sql`LIMIT ${filters.limit + 1}`}
   `;
 
   const hasMore = !all && rows.length > filters.limit;
@@ -210,7 +212,7 @@ export async function applyNotificationState(
   userId?: string,
 ): Promise<NotificationStateItem[]> {
   const { sql } = db;
-  if (userId !== undefined && !(await accountOwnedBy(db, account, userId))) {
+  if (!userId || !(await accountOwnedBy(db, account, userId))) {
     return [];
   }
   const setRead = patch.read !== undefined;

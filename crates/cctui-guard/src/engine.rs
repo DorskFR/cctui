@@ -4,6 +4,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
@@ -16,6 +17,17 @@ const ALWAYS_ALLOWED: &[&str] = &["ToolSearch", "TodoWrite"];
 
 /// State for the exited (terminal) session.
 const STEP_EXITED: i64 = -1;
+
+/// Default ceiling for a `[gate]` command (a deterministic proof), overridable
+/// via `--gate-timeout`.
+pub const DEFAULT_GATE_TIMEOUT_SECS: u64 = 300;
+
+/// Default ceiling for the `[llmjudge]` command (one LLM call), overridable via
+/// `--judge-timeout`.
+pub const DEFAULT_JUDGE_TIMEOUT_SECS: u64 = 180;
+
+/// Poll cadence while waiting for a bounded subprocess to exit.
+const CMD_POLL_INTERVAL: Duration = Duration::from_millis(20);
 
 /// A `PreToolUse` hook decision payload.
 pub type HookResponse = Value;
@@ -54,6 +66,12 @@ pub struct WorkflowEngine {
     /// Where the aggregated end-of-run report is written on Exit. `None` skips
     /// the report; the JSONL log is still the source of truth.
     report_out: Option<PathBuf>,
+    /// Wall-clock ceiling for a step's deterministic `[gate]` command; expiry is
+    /// a fail-closed denial.
+    gate_timeout: Duration,
+    /// Wall-clock ceiling for the `[llmjudge]` command; expiry is a fail-closed
+    /// denial.
+    judge_timeout: Duration,
 }
 
 impl WorkflowEngine {
@@ -91,7 +109,7 @@ impl WorkflowEngine {
     ///
     /// The state directory is created if missing.
     #[must_use]
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::cognitive_complexity)]
     pub fn new_with_log(
         steps: BTreeMap<u32, Step>,
         tool_sets: HashMap<String, Vec<String>>,
@@ -118,27 +136,49 @@ impl WorkflowEngine {
             guarded_default_allow,
             decision_log,
             report_out,
+            gate_timeout: Duration::from_secs(DEFAULT_GATE_TIMEOUT_SECS),
+            judge_timeout: Duration::from_secs(DEFAULT_JUDGE_TIMEOUT_SECS),
         };
 
-        if let Some(parent) = engine.state_file.parent() {
-            let _ = std::fs::create_dir_all(parent);
+        if let Some(parent) = engine.state_file.parent()
+            && let Err(e) = std::fs::create_dir_all(parent)
+        {
+            tracing::error!("failed to create guard state dir {}: {e}", parent.display());
         }
         let first = engine.step_numbers.first().copied().unwrap_or(0);
         let mut visits = BTreeMap::new();
         if first != 0 {
             visits.insert(first, 1);
         }
-        engine.write_state(i64::from(first), &visits);
-        engine.write_proxy_policy(first);
+        if let Err(e) = engine.write_state(i64::from(first), &visits) {
+            tracing::error!(
+                "failed to write initial guard state {}: {e}",
+                engine.state_file.display()
+            );
+        }
+        if let Err(e) = engine.write_proxy_policy(first) {
+            tracing::error!(
+                "failed to write initial proxy policy {}: {e}",
+                engine.proxy_policy_file.display()
+            );
+        }
         engine.decision_log.enter(i64::from(first));
         engine
     }
 
-    fn write_state(&self, step: i64, visits: &BTreeMap<u32, u32>) {
+    /// Override the gate/judge subprocess timeouts; the daemon entrypoint wires
+    /// these from `--gate-timeout` / `--judge-timeout`.
+    #[must_use]
+    pub const fn with_timeouts(mut self, gate: Duration, judge: Duration) -> Self {
+        self.gate_timeout = gate;
+        self.judge_timeout = judge;
+        self
+    }
+
+    fn write_state(&self, step: i64, visits: &BTreeMap<u32, u32>) -> std::io::Result<()> {
         let visits: serde_json::Map<String, Value> =
             visits.iter().map(|(k, v)| (k.to_string(), json!(v))).collect();
-        let _ =
-            std::fs::write(&self.state_file, json!({ "step": step, "visits": visits }).to_string());
+        std::fs::write(&self.state_file, json!({ "step": step, "visits": visits }).to_string())
     }
 
     fn read_state(&self) -> i64 {
@@ -199,13 +239,13 @@ impl WorkflowEngine {
     /// grants its `[network]` hosts (default deny), opens fully with
     /// `[network]: *`, and — when it omits `[network]` — falls back to deny
     /// unless the document set `[network-default]: allow`.
-    fn write_proxy_policy(&self, step_num: u32) {
+    fn write_proxy_policy(&self, step_num: u32) -> std::io::Result<()> {
         if !self.proxy_dir_present() {
             tracing::debug!(
                 "proxy policy dir not present: {}, skipping",
                 self.proxy_policy_file.display()
             );
-            return;
+            return Ok(());
         }
 
         let policy = match self.steps.get(&step_num) {
@@ -228,10 +268,10 @@ impl WorkflowEngine {
             }
         };
 
-        let _ = std::fs::write(
+        std::fs::write(
             &self.proxy_policy_file,
             serde_json::to_string_pretty(&policy).unwrap_or_default(),
-        );
+        )
     }
 
     /// Current state, for `GET /state`.
@@ -306,14 +346,9 @@ impl WorkflowEngine {
             return Ok(());
         }
         tracing::info!("Running transition gate: {gate}");
-        let output = std::process::Command::new("sh")
-            .arg("-c")
-            .arg(gate)
-            .current_dir(&self.gate_cwd)
-            .output();
-        match output {
-            Ok(out) if out.status.success() => Ok(()),
-            Ok(out) => {
+        match run_sh_bounded(gate, None, &self.gate_cwd, self.gate_timeout) {
+            Ok(BoundedOutput::Exited(out)) if out.status.success() => Ok(()),
+            Ok(BoundedOutput::Exited(out)) => {
                 let mut detail = String::from_utf8_lossy(&out.stdout).into_owned();
                 detail.push_str(&String::from_utf8_lossy(&out.stderr));
                 let detail = detail.trim();
@@ -321,6 +356,17 @@ impl WorkflowEngine {
                     "transition gate failed (`{gate}` exited {}): {}",
                     out.status.code().map_or_else(|| "signal".to_string(), |c| c.to_string()),
                     if detail.is_empty() { "(no output)" } else { detail }
+                ))
+            }
+            Ok(BoundedOutput::TimedOut) => {
+                tracing::error!(
+                    "transition gate `{gate}` exceeded {}s; killed and failing closed",
+                    self.gate_timeout.as_secs()
+                );
+                Err(format!(
+                    "transition gate `{gate}` timed out after {}s; refusing the transition (fail \
+                     closed)",
+                    self.gate_timeout.as_secs()
                 ))
             }
             Err(e) => Err(format!("transition gate `{gate}` could not run: {e}")),
@@ -356,7 +402,7 @@ impl WorkflowEngine {
 
         tracing::info!("Running llm judge for Step {step_num}: {} question(s)", questions.len());
         let prompt = judge_prompt(questions);
-        let output = run_with_stdin(cmd, &prompt, &self.gate_cwd)
+        let output = run_with_stdin(cmd, &prompt, &self.gate_cwd, self.judge_timeout)
             .map_err(|e| (format!("llm judge command `{cmd}` failed: {e}"), None))?;
 
         let verdicts = parse_verdicts(&output, questions.len())
@@ -449,14 +495,22 @@ impl WorkflowEngine {
     fn transition_exit(&self, current_u: u32) -> TransitionResponse {
         tracing::info!("Transition: Step {current_u} → Exit");
         let (_, visits) = self.read_full_state();
-        self.write_state(STEP_EXITED, &visits);
         if self.proxy_dir_present() {
             let mut hosts = self.expand_network_rules("net-claude");
             hosts.extend(self.always_allowed_hosts.iter().cloned());
-            let _ = std::fs::write(
-                &self.proxy_policy_file,
-                json!({ "allowed_hosts": hosts, "default": "deny" }).to_string(),
-            );
+            let policy = json!({ "allowed_hosts": hosts, "default": "deny" }).to_string();
+            if let Err(e) = std::fs::write(&self.proxy_policy_file, policy) {
+                let reason = format!("failed to write exit egress policy: {e}");
+                tracing::error!("DENY transition Step {current_u} → Exit: {reason}");
+                self.decision_log.transition(i64::from(current_u), "exit", "deny", &reason);
+                return json!({ "ok": false, "step": current_u, "error": reason });
+            }
+        }
+        if let Err(e) = self.write_state(STEP_EXITED, &visits) {
+            let reason = format!("failed to persist exit state: {e}");
+            tracing::error!("DENY transition Step {current_u} → Exit: {reason}");
+            self.decision_log.transition(i64::from(current_u), "exit", "deny", &reason);
+            return json!({ "ok": false, "step": current_u, "error": reason });
         }
         self.decision_log.transition(i64::from(current_u), "exit", "allow", "");
         self.decision_log.enter(STEP_EXITED);
@@ -475,8 +529,13 @@ impl WorkflowEngine {
             return;
         };
         let report = build_report(log_path);
-        if let Ok(text) = serde_json::to_string_pretty(&report) {
-            let _ = std::fs::write(out, text);
+        match serde_json::to_string_pretty(&report) {
+            Ok(text) => {
+                if let Err(e) = std::fs::write(out, text) {
+                    tracing::error!("failed to write end-of-run report {}: {e}", out.display());
+                }
+            }
+            Err(e) => tracing::error!("failed to serialize end-of-run report: {e}"),
         }
     }
 
@@ -519,6 +578,7 @@ impl WorkflowEngine {
         Some(json!({ "ok": false, "step": current_u, "error": reason }))
     }
 
+    #[allow(clippy::cognitive_complexity)]
     fn transition_advance(&self, current_u: u32, tn: u32) -> TransitionResponse {
         let target = tn.to_string();
         let (_, mut visits) = self.read_full_state();
@@ -541,14 +601,25 @@ impl WorkflowEngine {
                 return resp;
             }
         };
+        // Egress policy must land before the step state advances: a failed
+        // write fails closed rather than reporting success on a stale policy.
+        if let Err(e) = self.write_proxy_policy(tn) {
+            let reason = format!("failed to write proxy policy for Step {tn}: {e}");
+            tracing::error!("DENY transition Step {current_u} → Step {tn}: {reason}");
+            self.decision_log.transition(i64::from(current_u), &target, "deny", &reason);
+            return json!({ "ok": false, "step": current_u, "error": reason });
+        }
+        *visits.entry(tn).or_insert(0) += 1;
+        if let Err(e) = self.write_state(i64::from(tn), &visits) {
+            let reason = format!("failed to persist state for Step {tn}: {e}");
+            tracing::error!("DENY transition Step {current_u} → Step {tn}: {reason}");
+            self.decision_log.transition(i64::from(current_u), &target, "deny", &reason);
+            return json!({ "ok": false, "step": current_u, "error": reason });
+        }
         tracing::info!("Transition: Step {current_u} → Step {tn}");
         self.decision_log.transition(i64::from(current_u), &target, "allow", "");
-        *visits.entry(tn).or_insert(0) += 1;
-        self.write_state(i64::from(tn), &visits);
-        self.write_proxy_policy(tn);
         self.decision_log.enter(i64::from(tn));
         let title = self.steps.get(&tn).map_or("", |s| s.title.as_str());
-        // Re-inject the authoritative next-step prompt + compact directive.
         let mut resp = json!({
             "ok": true,
             "step": tn,
@@ -641,9 +712,61 @@ fn judge_prompt(questions: &[JudgeQuestion]) -> String {
     out
 }
 
-/// Run `cmd` via `sh -c` in `dir`, piping `input` to stdin. Returns stdout on
-/// exit 0, an error string otherwise.
-fn run_with_stdin(cmd: &str, input: &str, dir: &std::path::Path) -> Result<String, String> {
+/// Run `cmd` via `sh -c` in `dir`, piping `input` to stdin, bounded by `timeout`.
+/// Returns stdout on exit 0, an error string otherwise — a timeout is an error
+/// so the caller fails closed.
+fn run_with_stdin(
+    cmd: &str,
+    input: &str,
+    dir: &std::path::Path,
+    timeout: Duration,
+) -> Result<String, String> {
+    match run_sh_bounded(cmd, Some(input), dir, timeout) {
+        Ok(BoundedOutput::Exited(out)) if out.status.success() => {
+            Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+        }
+        Ok(BoundedOutput::Exited(out)) => {
+            let mut detail = String::from_utf8_lossy(&out.stdout).into_owned();
+            detail.push_str(&String::from_utf8_lossy(&out.stderr));
+            let detail = detail.trim();
+            Err(format!(
+                "exited {}: {}",
+                out.status.code().map_or_else(|| "signal".to_string(), |c| c.to_string()),
+                if detail.is_empty() { "(no output)" } else { detail }
+            ))
+        }
+        Ok(BoundedOutput::TimedOut) => {
+            Err(format!("timed out after {}s (fail closed)", timeout.as_secs()))
+        }
+        Err(e) => Err(format!("could not run: {e}")),
+    }
+}
+
+/// Outcome of a time-bounded `sh -c` subprocess.
+enum BoundedOutput {
+    Exited(std::process::Output),
+    TimedOut,
+}
+
+fn drain_pipe<R: std::io::Read + Send + 'static>(mut pipe: R) -> std::thread::JoinHandle<Vec<u8>> {
+    std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = pipe.read_to_end(&mut buf);
+        buf
+    })
+}
+
+/// Run `sh -c cmd` in `dir` with optional stdin, killing it once it exceeds
+/// `timeout`. stdout/stderr drain on background threads so a chatty child can
+/// never deadlock on a full pipe; on a timeout the drain threads are abandoned
+/// rather than joined (a surviving grandchild could hold a pipe open forever)
+/// since the fail-closed caller does not need the partial output.
+fn run_sh_bounded(
+    cmd: &str,
+    input: Option<&str>,
+    dir: &std::path::Path,
+    timeout: Duration,
+) -> std::io::Result<BoundedOutput> {
     use std::io::Write;
     use std::process::{Command, Stdio};
 
@@ -651,26 +774,34 @@ fn run_with_stdin(cmd: &str, input: &str, dir: &std::path::Path) -> Result<Strin
         .arg("-c")
         .arg(cmd)
         .current_dir(dir)
-        .stdin(Stdio::piped())
+        .stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("could not spawn: {e}"))?;
-    if let Some(mut stdin) = child.stdin.take() {
-        let _ = stdin.write_all(input.as_bytes());
+        .spawn()?;
+
+    if let (Some(input), Some(mut stdin)) = (input, child.stdin.take()) {
+        let payload = input.as_bytes().to_vec();
+        std::thread::spawn(move || {
+            let _ = stdin.write_all(&payload);
+        });
     }
-    let out = child.wait_with_output().map_err(|e| format!("could not run: {e}"))?;
-    if out.status.success() {
-        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
-    } else {
-        let mut detail = String::from_utf8_lossy(&out.stdout).into_owned();
-        detail.push_str(&String::from_utf8_lossy(&out.stderr));
-        let detail = detail.trim();
-        Err(format!(
-            "exited {}: {}",
-            out.status.code().map_or_else(|| "signal".to_string(), |c| c.to_string()),
-            if detail.is_empty() { "(no output)" } else { detail }
-        ))
+
+    let stdout_thread = child.stdout.take().map(drain_pipe);
+    let stderr_thread = child.stderr.take().map(drain_pipe);
+
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Some(status) = child.try_wait()? {
+            let stdout = stdout_thread.map(|h| h.join().unwrap_or_default()).unwrap_or_default();
+            let stderr = stderr_thread.map(|h| h.join().unwrap_or_default()).unwrap_or_default();
+            return Ok(BoundedOutput::Exited(std::process::Output { status, stdout, stderr }));
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Ok(BoundedOutput::TimedOut);
+        }
+        std::thread::sleep(CMD_POLL_INTERVAL);
     }
 }
 
@@ -795,4 +926,44 @@ fn deny(reason: &str) -> HookResponse {
             "permissionDecisionReason": reason,
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn bounded_command_captures_output_and_status() {
+        let out =
+            run_sh_bounded("printf hello; exit 3", None, Path::new("."), Duration::from_secs(5))
+                .unwrap();
+        match out {
+            BoundedOutput::Exited(o) => {
+                assert_eq!(o.status.code(), Some(3));
+                assert_eq!(o.stdout, b"hello");
+            }
+            BoundedOutput::TimedOut => panic!("command should not have timed out"),
+        }
+    }
+
+    #[test]
+    fn bounded_command_pipes_stdin() {
+        let out =
+            run_sh_bounded("cat", Some("piped-input"), Path::new("."), Duration::from_secs(5))
+                .unwrap();
+        match out {
+            BoundedOutput::Exited(o) => assert_eq!(o.stdout, b"piped-input"),
+            BoundedOutput::TimedOut => panic!("command should not have timed out"),
+        }
+    }
+
+    #[test]
+    fn bounded_command_times_out_and_is_killed() {
+        let start = Instant::now();
+        let out =
+            run_sh_bounded("sleep 30", None, Path::new("."), Duration::from_millis(150)).unwrap();
+        assert!(matches!(out, BoundedOutput::TimedOut));
+        assert!(start.elapsed() < Duration::from_secs(5), "must return promptly after the timeout");
+    }
 }

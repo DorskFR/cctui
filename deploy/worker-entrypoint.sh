@@ -433,7 +433,8 @@ phase_workspace() {
         if [ -n "${TASK_REPO_REF:-}" ]; then
             _wtok="${GITHUB_TOKEN:-}"
             if [ -z "$_wtok" ] && [ -n "${TASK_IDENTITY:-}" ]; then
-                _wid=$(printf '%s' "$TASK_IDENTITY" | tr '[:lower:]-' '[:upper:]_')
+                _wid=$(printf '%s' "$TASK_IDENTITY" | tr '[:lower:]' '[:upper:]' | tr -c 'A-Z0-9' '_')
+                _wid=${_wid%_}
                 eval "_wtok=\${GITHUB_TOKEN_${_wid}:-}"
             fi
             _wurl=$(git -C "/workspace/${TASK_REPO}" remote get-url origin 2>/dev/null || echo "")
@@ -473,7 +474,8 @@ phase_workspace() {
         mkdir -p "$_dest"
         _wtok="${GITHUB_TOKEN:-}"
         if [ -z "$_wtok" ] && [ -n "${TASK_IDENTITY:-}" ]; then
-            _wid=$(printf '%s' "$TASK_IDENTITY" | tr '[:lower:]-' '[:upper:]_')
+            _wid=$(printf '%s' "$TASK_IDENTITY" | tr '[:lower:]' '[:upper:]' | tr -c 'A-Z0-9' '_')
+            _wid=${_wid%_}
             eval "_wtok=\${GITHUB_TOKEN_${_wid}:-}"
         fi
         _curl="$TASK_REPO_URL"
@@ -1226,7 +1228,7 @@ run_supervised_daemon() {
         --ro "$CONTEXT_DIR" \
         $(extra_ro_flags) \
         --rw /dev --rw /tmp --rw /workspace --rw "/home/${WORKER_USER}" \
-        --rw /var/run/workflow-guard --rw /var/run/guard-proxy --rw /var/run/gpg-agent \
+        --rw /var/run/workflow-guard --ro /var/run/guard-proxy --rw /var/run/gpg-agent \
         $(extra_rw_flags) \
         --user "$WORKER_UID" \
         --report /tmp/hardening.json \
@@ -1532,7 +1534,7 @@ exec cctui-supervisor \
     --ro "$CONTEXT_DIR" \
     $(extra_ro_flags) \
     --rw /dev --rw /tmp --rw /workspace --rw "/home/${WORKER_USER}" \
-    --rw /var/run/workflow-guard --rw /var/run/guard-proxy --rw /var/run/gpg-agent \
+    --rw /var/run/workflow-guard --ro /var/run/guard-proxy --rw /var/run/gpg-agent \
     $(extra_rw_flags) \
     --user "$WORKER_UID" \
     --report /tmp/hardening.json \

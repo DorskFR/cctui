@@ -5,7 +5,7 @@
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use cctui_orchestrator::envelope::{default_sidecar_image, mutate_pod};
+use cctui_orchestrator::envelope::{MutationOutcome, default_sidecar_image, mutate_pod};
 use cctui_orchestrator::validate::{Decision, ProfileSource, validate};
 use cctui_orchestrator::{WorkerProfile, WorkerProfileSpec};
 use k8s_openapi::api::core::v1::Pod;
@@ -40,6 +40,7 @@ async fn healthz() -> StatusCode {
     StatusCode::OK
 }
 
+#[allow(clippy::cognitive_complexity)]
 async fn mutate(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
     Json(review): Json<AdmissionReview<Pod>>,
@@ -52,13 +53,27 @@ async fn mutate(
     };
 
     let mut resp = AdmissionResponse::from(&req);
-    if let Some(pod) = &req.object
-        && let Some(patch) = mutate_pod(pod, &state.sidecar_image)
-    {
-        resp = match resp.with_patch(patch) {
-            Ok(patched) => patched,
-            Err(err) => AdmissionResponse::from(&req).deny(err.to_string()),
-        };
+    if let Some(pod) = &req.object {
+        match mutate_pod(pod, &state.sidecar_image) {
+            Ok(MutationOutcome::Patch(patch)) => {
+                tracing::info!(
+                    pod = pod.metadata.name.as_deref().unwrap_or("<unnamed>"),
+                    "injecting worker sandbox envelope"
+                );
+                resp = match resp.with_patch(patch) {
+                    Ok(patched) => patched,
+                    Err(err) => {
+                        tracing::error!(%err, "encoding JSONPatch failed; denying pod (fail closed)");
+                        AdmissionResponse::from(&req).deny(err.to_string())
+                    }
+                };
+            }
+            Ok(MutationOutcome::NotEligible | MutationOutcome::AlreadyInjected) => {}
+            Err(err) => {
+                tracing::error!(%err, "envelope construction failed; denying pod (fail closed)");
+                resp = AdmissionResponse::from(&req).deny(err.to_string());
+            }
+        }
     }
     Json(resp.into_review_for_pod())
 }

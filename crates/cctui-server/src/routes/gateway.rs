@@ -797,13 +797,20 @@ fn deep_merge_json(base: &mut serde_json::Value, overlay: serde_json::Value) {
 /// Revoke every session token bound to a session — called when a
 /// session ends so the gateway can no longer be used under that token.
 pub async fn revoke_session_tokens(state: &AppState, session_id: &str) {
-    let _ = sqlx::query(
+    if let Err(e) = sqlx::query(
         "UPDATE session_tokens SET revoked_at = now() \
          WHERE session_id = $1 AND revoked_at IS NULL",
     )
     .bind(session_id)
     .execute(&state.pool)
-    .await;
+    .await
+    {
+        tracing::error!(
+            %session_id,
+            error = %e,
+            "failed to revoke session tokens — a live gateway credential may remain usable"
+        );
+    }
 }
 
 fn needs_rebind(spawn_key: &str, session_id: &str) -> bool {

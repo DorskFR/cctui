@@ -1,5 +1,6 @@
 import type { OpenAPIHono } from "@hono/zod-openapi";
 import { getDocument, upsertDocument } from "../db/documents.ts";
+import { listAccountsSubscribedToPull } from "../db/subscriptions.ts";
 import type { AppDeps } from "../deps.ts";
 import { verifySignature } from "../github/webhook.ts";
 
@@ -41,8 +42,13 @@ export function registerWebhook(app: OpenAPIHono, deps: AppDeps = {}) {
     if (!verifySignature(secret, raw, signature)) {
       return c.json({ error: { code: "unauthorized", message: "Bad signature" } }, 401);
     }
+    let body: PullPayload;
+    try {
+      body = JSON.parse(raw) as PullPayload;
+    } catch {
+      return c.json({ error: { code: "invalid_request", message: "Malformed JSON body" } }, 400);
+    }
     const event = c.req.header("x-github-event");
-    const body = JSON.parse(raw) as PullPayload;
 
     if (deps.db && event === "pull_request" && body.pull_request) {
       const owner = body.repository?.owner?.login;
@@ -50,14 +56,17 @@ export function registerWebhook(app: OpenAPIHono, deps: AppDeps = {}) {
       const number = body.number;
       if (owner && repo && number) {
         const key = `${owner}/${repo}#${number}`;
-        const existing = await getDocument(deps.db, owner, "pull_request", key);
-        await upsertDocument(deps.db, {
-          account: owner,
-          kind: "pull_request",
-          key,
-          etag: existing?.etag ?? null,
-          payload: mergePullWebhookPayload(existing?.payload, body.pull_request),
-        });
+        const accounts = await listAccountsSubscribedToPull(deps.db, key);
+        for (const account of accounts) {
+          const existing = await getDocument(deps.db, account, "pull_request", key);
+          await upsertDocument(deps.db, {
+            account,
+            kind: "pull_request",
+            key,
+            etag: existing?.etag ?? null,
+            payload: mergePullWebhookPayload(existing?.payload, body.pull_request),
+          });
+        }
       }
     }
     return c.json({ ok: true }, 202);

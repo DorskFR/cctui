@@ -4,7 +4,7 @@
 //! policy on the recovered SNI / Host name, then tunnel. Ported from the Go
 //! reference `transparent.go`.
 
-use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::net::{IpAddr, Ipv4Addr, SocketAddrV4};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -13,7 +13,7 @@ use nix::sys::socket::sockopt::OriginalDst;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
-use crate::denylist::{host_is_denied, ip_is_denied};
+use crate::denylist::{host_is_denied, ip_is_denied, resolve_allowed};
 use crate::inject::Injector;
 use crate::peek::{extract_http_host, extract_sni};
 use crate::policy::PolicyManager;
@@ -33,6 +33,7 @@ pub struct TransparentListener {
     listener: TcpListener,
     policy: Arc<PolicyManager>,
     injection: Option<Arc<Injector>>,
+    allow_private: bool,
 }
 
 impl TransparentListener {
@@ -42,7 +43,8 @@ impl TransparentListener {
         injection: Option<Arc<Injector>>,
     ) -> anyhow::Result<Self> {
         let listener = TcpListener::bind(addr).await?;
-        Ok(Self { listener, policy, injection })
+        let allow_private = crate::denylist::allow_private_ips_from_env();
+        Ok(Self { listener, policy, injection, allow_private })
     }
 
     pub async fn serve(self) -> anyhow::Result<()> {
@@ -50,8 +52,9 @@ impl TransparentListener {
             let (stream, _peer) = self.listener.accept().await?;
             let policy = self.policy.clone();
             let injection = self.injection.clone();
+            let allow_private = self.allow_private;
             tokio::spawn(async move {
-                if let Err(e) = handle_connection(stream, policy, injection).await {
+                if let Err(e) = handle_connection(stream, policy, injection, allow_private).await {
                     tracing::debug!("transparent connection ended: {e}");
                 }
             });
@@ -67,6 +70,7 @@ async fn handle_connection(
     mut conn: TcpStream,
     policy: Arc<PolicyManager>,
     injection: Option<Arc<Injector>>,
+    allow_private: bool,
 ) -> anyhow::Result<()> {
     let dst = original_dst(&conn)?;
     let host_port = dst.to_string();
@@ -97,10 +101,12 @@ async fn handle_connection(
     let name = sni.as_deref().or(http_host.as_deref());
     let policy_target = name.map_or_else(|| host_port.clone(), |n| format!("{n}:{port}"));
 
-    // Built-in deny overrides the allow-list (CCT-720): match on the recovered
-    // name AND the resolved original-destination IP, so an IP-literal metadata
-    // request with no SNI is still caught.
-    if ip_is_denied(*dst.ip()) || name.is_some_and(host_is_denied) {
+    // Built-in deny overrides the allow-list: match on the recovered name AND the
+    // original-destination IP, so an IP-literal metadata request with no SNI is
+    // still caught early.
+    if ip_is_denied(IpAddr::V4(*dst.ip()), allow_private)
+        || name.is_some_and(|n| host_is_denied(n, allow_private))
+    {
         tracing::warn!(
             "DENY (builtin) transparent {policy_target} (orig={host_port} sni={sni:?} host={http_host:?})"
         );
@@ -131,24 +137,32 @@ async fn handle_connection(
         return Box::pin(injector.handle(conn, buf[..n].to_vec(), name, port)).await;
     }
 
-    // Dial the real destination IP:port (not the name — DNS already resolved it).
-    let upstream_addr = SocketAddr::V4(dst);
-    let mut upstream = match tokio::time::timeout(
-        Duration::from_secs(10),
-        TcpStream::connect(upstream_addr),
-    )
-    .await
-    {
-        Ok(Ok(s)) => s,
-        Ok(Err(e)) => {
-            tracing::warn!("dial upstream {host_port} failed: {e}");
-            return Ok(());
-        }
-        Err(_) => {
-            tracing::warn!("dial upstream {host_port} timed out");
+    // Resolve the allow-listed target IN THE PROXY and dial an address we just
+    // validated against the denylist — NOT the worker-supplied SO_ORIGINAL_DST.
+    // A forged name can then only reach the host it actually names, and a name
+    // resolving into a denied range is refused.
+    let addrs = match resolve_allowed(&policy_target, allow_private).await {
+        Ok(addrs) => addrs,
+        Err(e) => {
+            tracing::warn!("resolve {policy_target} failed (orig={host_port}): {e}");
+            policy.record(&policy_target, false, "resolve/denylist");
             return Ok(());
         }
     };
+    let mut upstream =
+        match tokio::time::timeout(Duration::from_secs(10), TcpStream::connect(addrs.as_slice()))
+            .await
+        {
+            Ok(Ok(s)) => s,
+            Ok(Err(e)) => {
+                tracing::warn!("dial upstream {policy_target} failed: {e}");
+                return Ok(());
+            }
+            Err(_) => {
+                tracing::warn!("dial upstream {policy_target} timed out");
+                return Ok(());
+            }
+        };
 
     // Replay the peeked bytes, then splice bidirectionally.
     if n > 0 {

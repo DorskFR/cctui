@@ -43,6 +43,14 @@ export function setToken(token: string | null): void {
   else localStorage.removeItem(TOKEN_KEY);
 }
 
+// No-op when embedded: the host owns auth, so only standalone mode may clear the
+// stored token. The reload drops <App> back to <AuthGate> (it reads the token once).
+export function handleAuthFailure(): void {
+  if (isEmbedded()) return;
+  setToken(null);
+  if (typeof window !== "undefined") window.location.reload();
+}
+
 export function getAccount(): string | null {
   if (runtime && "account" in runtime) return runtime.account ?? null;
   const stored = localStorage.getItem(ACCOUNT_KEY);

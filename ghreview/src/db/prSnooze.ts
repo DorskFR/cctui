@@ -26,7 +26,7 @@ export async function snoozePull(
   ref: PullRef,
   userId?: string,
 ): Promise<boolean> {
-  if (userId !== undefined && !(await accountOwnedBy(db, account, userId))) return false;
+  if (!userId || !(await accountOwnedBy(db, account, userId))) return false;
   await db.sql`
     INSERT INTO pr_snooze (account, owner, repo, pull_number, snoozed_at)
     VALUES (${account}, ${ref.owner}, ${ref.repo}, ${ref.number}, now())
@@ -42,7 +42,7 @@ export async function unsnoozePull(
   ref: PullRef,
   userId?: string,
 ): Promise<boolean> {
-  if (userId !== undefined && !(await accountOwnedBy(db, account, userId))) return false;
+  if (!userId || !(await accountOwnedBy(db, account, userId))) return false;
   const rows = await db.sql<{ account: string }[]>`
     DELETE FROM pr_snooze
     WHERE account = ${account} AND owner = ${ref.owner}

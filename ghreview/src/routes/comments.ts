@@ -1,8 +1,6 @@
 import { createRoute, type OpenAPIHono, z } from "@hono/zod-openapi";
-import { getUserId } from "../auth/middleware.ts";
-import { accountOwnedBy } from "../db/notificationState.ts";
+import { requireOwnedAccount } from "../auth/ownership.ts";
 import type { AppDeps } from "../deps.ts";
-import type { Account } from "../github/account.ts";
 import { deleteIssueComment, deletePullReviewComment } from "../github/comments.ts";
 import { AccountSchema, CommentDeleteResultSchema, ErrorSchema } from "../schemas.ts";
 
@@ -53,35 +51,6 @@ const deleteIssueCommentRoute = createRoute({
   responses,
 });
 
-type AuthResult =
-  | { ok: true; acct: Account }
-  | { ok: false; code: "forbidden" | "not_found"; message: string; status: 403 | 404 };
-
-async function authAccount(
-  deps: AppDeps,
-  uid: string | undefined,
-  account: string,
-): Promise<AuthResult> {
-  if (deps.db && uid !== undefined && !(await accountOwnedBy(deps.db, account, uid))) {
-    return {
-      ok: false,
-      code: "forbidden",
-      message: `Account ${account} is not accessible`,
-      status: 403,
-    };
-  }
-  const acct = deps.accountFor?.(account);
-  if (!acct) {
-    return {
-      ok: false,
-      code: "not_found",
-      message: `Account ${account} is not managed`,
-      status: 404,
-    };
-  }
-  return { ok: true, acct };
-}
-
 interface GithubErrorShape {
   status?: number;
   message?: string;
@@ -103,8 +72,8 @@ export function registerComments(app: OpenAPIHono, deps: AppDeps = {}) {
   app.openapi(deleteReviewCommentRoute, async (c) => {
     const p = c.req.valid("param");
     const { account } = c.req.valid("query");
-    const auth = await authAccount(deps, getUserId(c), account);
-    if (!auth.ok) return c.json({ error: { code: auth.code, message: auth.message } }, auth.status);
+    const auth = await requireOwnedAccount(deps, c, account);
+    if (!auth.ok) return c.json(auth.body, auth.status);
     try {
       const number = await deletePullReviewComment(auth.acct.octokit, p.owner, p.repo, p.commentId);
       if (number !== null) notifyPull(deps, account, p.owner, p.repo, number);
@@ -119,8 +88,8 @@ export function registerComments(app: OpenAPIHono, deps: AppDeps = {}) {
   app.openapi(deleteIssueCommentRoute, async (c) => {
     const p = c.req.valid("param");
     const { account } = c.req.valid("query");
-    const auth = await authAccount(deps, getUserId(c), account);
-    if (!auth.ok) return c.json({ error: { code: auth.code, message: auth.message } }, auth.status);
+    const auth = await requireOwnedAccount(deps, c, account);
+    if (!auth.ok) return c.json(auth.body, auth.status);
     try {
       const number = await deleteIssueComment(auth.acct.octokit, p.owner, p.repo, p.commentId);
       if (number !== null) notifyPull(deps, account, p.owner, p.repo, number);

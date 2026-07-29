@@ -27,22 +27,38 @@ describe("auth middleware", () => {
     expect(await res.json()).toEqual({ items: [], next_cursor: null });
   });
 
-  test("accepts a known token via access_token query param (SSE)", async () => {
+  test("accepts a known token via access_token query param on the SSE route only", async () => {
+    const app = createApp({ auth: resolver });
+    const ctrl = new AbortController();
+    const res = await app.request("/v1/events?access_token=tok-a", { signal: ctrl.signal });
+    expect(res.status).not.toBe(401);
+    ctrl.abort();
+  });
+
+  test("ignores the access_token query param on non-SSE routes", async () => {
     const app = createApp({ auth: resolver });
     const res = await app.request("/v1/repos?account=x&access_token=tok-a");
-    expect(res.status).not.toBe(401);
+    expect(res.status).toBe(401);
   });
 
   test("rejects a bad access_token query param", async () => {
     const app = createApp({ auth: resolver });
-    const res = await app.request("/v1/repos?access_token=nope");
+    const res = await app.request("/v1/events?access_token=nope");
     expect(res.status).toBe(401);
   });
 
-  test("leaves health, status and webhook exempt", async () => {
+  test("requires auth for /v1/status and scopes it (CCT-775)", async () => {
+    const app = createApp({ auth: resolver });
+    expect((await app.request("/v1/status")).status).toBe(401);
+    const ok = await app.request("/v1/status", { headers: { authorization: "Bearer tok-a" } });
+    expect(ok.status).toBe(200);
+    const body = (await ok.json()) as { sync: { accounts: string[] } };
+    expect(body.sync.accounts).toEqual([]);
+  });
+
+  test("leaves health, webhook and openapi exempt", async () => {
     const app = createApp({ auth: resolver });
     expect((await app.request("/v1/health")).status).toBe(200);
-    expect((await app.request("/v1/status")).status).toBe(200);
     expect((await app.request("/v1/openapi.json")).status).toBe(200);
   });
 
@@ -66,8 +82,8 @@ describe("fail-closed default", () => {
   test("keeps the exempt set servable without a resolver", async () => {
     const app = createApp();
     expect((await app.request("/v1/health")).status).toBe(200);
-    expect((await app.request("/v1/status")).status).toBe(200);
     expect((await app.request("/v1/openapi.json")).status).toBe(200);
+    expect((await app.request("/v1/status")).status).toBe(401);
   });
 
   test("authDisabled opt-out serves non-exempt routes unauthenticated", async () => {

@@ -143,6 +143,9 @@ guarded("poller keeps tracked PRs warm", () => {
 
 guarded("read routes serve the store", () => {
   test("GET a synced pull returns the full envelope without network", async () => {
+    await db.sql.unsafe(
+      "INSERT INTO gh_accounts (user_id, login, encrypted_pat) VALUES ('__local__', 'warm', 'x') ON CONFLICT (login) DO NOTHING",
+    );
     const app = createApp({ db, authDisabled: true });
     const res = await app.request("/v1/repos/warm/repo/pulls/1");
     expect(res.status).toBe(200);

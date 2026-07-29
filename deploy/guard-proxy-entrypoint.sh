@@ -10,9 +10,9 @@
 #
 # Why here and not in the worker: the private key must never enter the worker
 # container. The worker only ever sees the restricted extra socket — which can
-# USE the key for signing but cannot export it (proven in
-# tmp/gpg-forward-test.sh). GPG never touches the network, so the proxy's
-# header-injection cannot help; forwarding the agent socket is the mechanism.
+# USE the key for signing but cannot export it. GPG never touches the network,
+# so the proxy's header-injection cannot help; forwarding the agent socket is
+# the mechanism.
 #
 # The signing key SHOULD be a per-identity signing SUBKEY with a short expiry,
 # passphrase-less (a headless sidecar has no pinentry). The mechanism works with

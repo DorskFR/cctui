@@ -105,12 +105,20 @@ export async function getDocument<K extends string>(
   account: string,
   kind: K,
   key: string,
+  opts: { userId?: string } = {},
 ): Promise<Envelope<K> | null> {
-  const rows = await db.sql<Envelope<K>[]>`
+  const { sql } = db;
+  const rows = await sql<Envelope<K>[]>`
     SELECT account, kind, to_char(synced_at, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS synced_at,
            etag, payload
     FROM documents
     WHERE account = ${account} AND kind = ${kind} AND key = ${key}
+      ${
+        opts.userId
+          ? sql`AND EXISTS (SELECT 1 FROM gh_accounts ga
+                 WHERE ga.login = documents.account AND ga.user_id = ${opts.userId})`
+          : sql``
+      }
     LIMIT 1
   `;
   return rows[0] ?? null;

@@ -434,62 +434,36 @@ pub(super) struct LaunchEnv {
     pub spawn_capability: Option<cctui_proto::api::SpawnCapability>,
 }
 
-/// Decide the launch env from a server `GatewayEnvResponse`, split out
-/// as a pure function so the fail-closed contract is unit-testable without a
-/// live server. See [`Driver::resolve_launch_env`] for the surrounding flow.
-pub(super) fn launch_env_decision(
+/// Resolve a launch env into a full [`LaunchEnv`] from the server pull, shared
+/// by the control/headless/oneshot drivers. Fail-closed refusal (account-bound
+/// but missing/partial gateway env) surfaces as `Err`; a pull failure or absent
+/// server degrades to `hint`.
+pub(super) async fn resolve_launch_env_for(
+    server: Option<&crate::client::ServerClient>,
+    machine_key: Option<&String>,
     local_id: &str,
-    resp: &cctui_proto::api::GatewayEnvResponse,
     hint: &std::collections::BTreeMap<String, String>,
-) -> anyhow::Result<std::collections::BTreeMap<String, String>> {
-    match resp {
-        // Account-bound but unmintable: refuse rather than launch a worker that
-        // will silently route to the default upstream and 401. Scream it into the
-        // logs first (greppable marker) so the failure is never silent.
-        r if r.account_bound && r.env.is_empty() => {
-            tracing::error!(
-                %local_id,
-                "🔴 GATEWAY-ENV MISSING for {local_id}: account-bound session but the server \
-                 returned NO gateway env — both ANTHROPIC_BASE_URL and ANTHROPIC_AUTH_TOKEN are \
-                 absent (account missing/unmintable server-side). Refusing to launch; check the \
-                 session's account binding and the server's token mint (CCT-460)."
-            );
-            anyhow::bail!(
-                "refusing to launch {local_id}: session is account-bound but the server \
-                 returned no gateway env (account missing/unmintable) — launching would \
-                 route to the default upstream and 401 (CCT-460)"
-            )
+) -> anyhow::Result<LaunchEnv> {
+    let (Some(server), Some(mk)) = (server, machine_key) else {
+        return Ok(LaunchEnv { env: hint.clone(), ..Default::default() });
+    };
+    match server.gateway_env(mk, local_id).await {
+        Ok(resp) => Ok(LaunchEnv {
+            env: crate::adapters::gateway_env::launch_env_decision(
+                "claude",
+                local_id,
+                &resp,
+                hint,
+                crate::adapters::gateway_env::CLAUDE_GATEWAY_KEYS,
+            )?,
+            settings: resp.settings,
+            whip_phrases: resp.whip_phrases,
+            spawn_capability: resp.spawn_capability,
+        }),
+        Err(e) => {
+            tracing::warn!(%local_id, "gateway-env pull failed; falling back to pushed env: {e}");
+            Ok(LaunchEnv { env: hint.clone(), ..Default::default() })
         }
-        // Account-bound: the authoritative gateway env must win for routing, but
-        // merge it OVER the pushed hint rather than replacing it, so user-supplied
-        // non-gateway env (spec.env keys the gateway mint doesn't emit) survives a
-        // resume / cold-resume / clear / compact / fork relaunch instead of being
-        // dropped. Gateway keys still override any hint of the same name, so
-        // routing credentials remain authoritative.
-        r if r.account_bound => {
-            let mut merged = hint.clone();
-            merged.extend(r.env.iter().map(|(k, v)| (k.clone(), v.clone())));
-            // A partial gateway env (one of the two routing vars missing) would
-            // still 401 — surface it loudly rather than launching a half-routed
-            // worker that fails silently.
-            let missing: Vec<&str> = ["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN"]
-                .into_iter()
-                .filter(|k| !merged.contains_key(*k))
-                .collect();
-            if !missing.is_empty() {
-                tracing::error!(
-                    %local_id,
-                    "🔴 GATEWAY-ENV MISSING for {local_id}: account-bound session resolved a \
-                     gateway env but it lacks {} — the worker will route unauthenticated and \
-                     401. Check the server's gateway mint (CCT-460).",
-                    missing.join(" + "),
-                );
-            }
-            Ok(merged)
-        }
-        // Not account-bound: no gateway routing required. Keep any hint (e.g.
-        // user-supplied non-gateway env) but don't fail closed.
-        _ => Ok(hint.clone()),
     }
 }
 
@@ -1361,45 +1335,32 @@ impl Driver {
         local_id: &str,
         hint: &std::collections::BTreeMap<String, String>,
     ) -> anyhow::Result<LaunchEnv> {
-        let (Some(server), Some(mk)) = (self.server.as_ref(), self.machine_key.as_ref()) else {
-            // No server configured (tests / legacy): best-effort hint.
-            return Ok(LaunchEnv { env: hint.clone(), ..Default::default() });
-        };
-        match server.gateway_env(mk, local_id).await {
-            // The env decision can fail closed (account-bound but unmintable);
-            // the per-account settings ride the same response.
-            Ok(resp) => match launch_env_decision(local_id, &resp, hint) {
-                Ok(env) => Ok(LaunchEnv {
-                    env,
-                    settings: resp.settings,
-                    whip_phrases: resp.whip_phrases,
-                    spawn_capability: resp.spawn_capability,
-                }),
-                // Fail-closed refusal: an account-bound session with no mintable
-                // gateway credential must NOT run on ambient creds. Surface it as
-                // a visible failure state before aborting, so the UI shows the
-                // account problem instead of the launch silently dying.
-                Err(e) => {
-                    self.emit(AdapterEvent::SessionEnded {
-                        local_id: local_id.to_owned(),
-                        reason: EndReason::Crashed {
-                            detail: format!(
-                                "account-bound session refused: the server returned no gateway \
-                                 credential (account missing/unmintable). The worker was NOT \
-                                 launched on ambient credentials — reconnect the account in cctui. \
-                                 ({e})"
-                            ),
-                        },
-                    })
-                    .await;
-                    Err(e)
-                }
-            },
+        match resolve_launch_env_for(
+            self.server.as_ref(),
+            self.machine_key.as_ref(),
+            local_id,
+            hint,
+        )
+        .await
+        {
+            Ok(launch) => Ok(launch),
+            // Surface the fail-closed refusal as a visible failure state before
+            // aborting, so the UI shows the account problem rather than the launch
+            // silently dying.
             Err(e) => {
-                // Pull unavailable (older server / transient). Degrade to the
-                // pushed hint rather than blocking the launch.
-                tracing::warn!(%local_id, "gateway-env pull failed; falling back to pushed env: {e}");
-                Ok(LaunchEnv { env: hint.clone(), ..Default::default() })
+                self.emit(AdapterEvent::SessionEnded {
+                    local_id: local_id.to_owned(),
+                    reason: EndReason::Crashed {
+                        detail: format!(
+                            "account-bound session refused: the server returned no gateway \
+                             credential (account missing/unmintable). The worker was NOT \
+                             launched on ambient credentials — reconnect the account in cctui. \
+                             ({e})"
+                        ),
+                    },
+                })
+                .await;
+                Err(e)
             }
         }
     }
@@ -3606,7 +3567,6 @@ fn ask_keystrokes(questions: &serde_json::Value, picks: &[Vec<usize>]) -> Option
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cctui_proto::api::GatewayEnvResponse;
 
     fn env_of(pairs: &[(&str, &str)]) -> std::collections::BTreeMap<String, String> {
         pairs.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect()
@@ -3821,51 +3781,6 @@ mod tests {
         assert_eq!(merge_account_under_managed(managed.clone(), None), managed);
         // A non-object account blob is treated as absent (never merged).
         assert_eq!(merge_account_under_managed(managed.clone(), Some(&json!("garbage"))), managed);
-    }
-
-    #[test]
-    fn launch_env_merges_server_env_over_hint_when_account_bound() {
-        // follow-up: a bound session launches with the server-resolved
-        // gateway env merged OVER the pushed hint. Gateway keys win for routing,
-        // but user-supplied non-gateway env (e.g. FOO) survives the relaunch
-        // instead of being dropped.
-        let resp = GatewayEnvResponse {
-            account_bound: true,
-            env: env_of(&[("ANTHROPIC_BASE_URL", "https://x/gateway/anthropic")]),
-            ..Default::default()
-        };
-        let hint = env_of(&[("FOO", "bar"), ("ANTHROPIC_BASE_URL", "https://stale")]);
-        let got = launch_env_decision("s1", &resp, &hint).unwrap();
-        assert_eq!(
-            got,
-            env_of(&[("FOO", "bar"), ("ANTHROPIC_BASE_URL", "https://x/gateway/anthropic")])
-        );
-    }
-
-    #[test]
-    fn launch_env_fails_closed_when_bound_but_empty() {
-        // account-bound + empty env must REFUSE the launch rather than
-        // start a worker that silently routes to the default upstream and 401s.
-        let resp = GatewayEnvResponse {
-            account_bound: true,
-            env: std::collections::BTreeMap::default(),
-            ..Default::default()
-        };
-        let err = launch_env_decision("s1", &resp, &env_of(&[("HINT", "1")])).unwrap_err();
-        assert!(err.to_string().contains("account-bound"), "got: {err}");
-    }
-
-    #[test]
-    fn launch_env_uses_hint_when_not_bound() {
-        // No account binding: gateway env isn't required; preserve any hint
-        // (e.g. user-supplied non-gateway env) and never fail closed.
-        let resp = GatewayEnvResponse {
-            account_bound: false,
-            env: std::collections::BTreeMap::default(),
-            ..Default::default()
-        };
-        let hint = env_of(&[("FOO", "bar")]);
-        assert_eq!(launch_env_decision("s1", &resp, &hint).unwrap(), hint);
     }
 
     #[test]

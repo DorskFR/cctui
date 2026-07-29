@@ -1,9 +1,7 @@
 import { createRoute, type OpenAPIHono, z } from "@hono/zod-openapi";
-import { getUserId } from "../auth/middleware.ts";
+import { requireOwnedAccount } from "../auth/ownership.ts";
 import { getDocument, upsertDocument } from "../db/documents.ts";
-import { accountOwnedBy } from "../db/notificationState.ts";
 import type { AppDeps } from "../deps.ts";
-import type { Account } from "../github/account.ts";
 import { type ReactionSummary, toggleReaction } from "../github/reactions.ts";
 import { ErrorSchema, ReactionSummarySchema, ReactionToggleSchema } from "../schemas.ts";
 
@@ -114,41 +112,12 @@ async function patchPullReactions(
   });
 }
 
-type AuthResult =
-  | { ok: true; acct: Account }
-  | { ok: false; code: "forbidden" | "not_found"; message: string; status: 403 | 404 };
-
-async function authAccount(
-  deps: AppDeps,
-  uid: string | undefined,
-  account: string,
-): Promise<AuthResult> {
-  if (deps.db && uid !== undefined && !(await accountOwnedBy(deps.db, account, uid))) {
-    return {
-      ok: false,
-      code: "forbidden",
-      message: `Account ${account} is not accessible`,
-      status: 403,
-    };
-  }
-  const acct = deps.accountFor?.(account);
-  if (!acct) {
-    return {
-      ok: false,
-      code: "not_found",
-      message: `Account ${account} is not managed`,
-      status: 404,
-    };
-  }
-  return { ok: true, acct };
-}
-
 export function registerReactions(app: OpenAPIHono, deps: AppDeps = {}) {
   app.openapi(togglePullRoute, async (c) => {
     const p = c.req.valid("param");
     const { account, content } = c.req.valid("json");
-    const auth = await authAccount(deps, getUserId(c), account);
-    if (!auth.ok) return c.json({ error: { code: auth.code, message: auth.message } }, auth.status);
+    const auth = await requireOwnedAccount(deps, c, account);
+    if (!auth.ok) return c.json(auth.body, auth.status);
     const base = `/repos/${p.owner}/${p.repo}/issues/${p.number}`;
     const summary = await toggleReaction(auth.acct.octokit, base, auth.acct.login, content);
     await patchPullReactions(deps, account, p.owner, p.repo, p.number, summary);
@@ -158,8 +127,8 @@ export function registerReactions(app: OpenAPIHono, deps: AppDeps = {}) {
   app.openapi(toggleIssueCommentRoute, async (c) => {
     const p = c.req.valid("param");
     const { account, content } = c.req.valid("json");
-    const auth = await authAccount(deps, getUserId(c), account);
-    if (!auth.ok) return c.json({ error: { code: auth.code, message: auth.message } }, auth.status);
+    const auth = await requireOwnedAccount(deps, c, account);
+    if (!auth.ok) return c.json(auth.body, auth.status);
     const base = `/repos/${p.owner}/${p.repo}/issues/comments/${p.commentId}`;
     const summary = await toggleReaction(auth.acct.octokit, base, auth.acct.login, content);
     return c.json(summary, 200);
@@ -168,8 +137,8 @@ export function registerReactions(app: OpenAPIHono, deps: AppDeps = {}) {
   app.openapi(toggleReviewCommentRoute, async (c) => {
     const p = c.req.valid("param");
     const { account, content } = c.req.valid("json");
-    const auth = await authAccount(deps, getUserId(c), account);
-    if (!auth.ok) return c.json({ error: { code: auth.code, message: auth.message } }, auth.status);
+    const auth = await requireOwnedAccount(deps, c, account);
+    if (!auth.ok) return c.json(auth.body, auth.status);
     const base = `/repos/${p.owner}/${p.repo}/pulls/comments/${p.commentId}`;
     const summary = await toggleReaction(auth.acct.octokit, base, auth.acct.login, content);
     return c.json(summary, 200);

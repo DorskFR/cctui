@@ -15,6 +15,7 @@ import {
 
 beforeEach(() => {
 	localStorage.clear();
+	sessionStorage.clear();
 	get.mockReset();
 	post.mockReset();
 	ghreviewUrl.mockReset();
@@ -35,7 +36,17 @@ describe('ensureGhreviewToken', () => {
 		expect(get).toHaveBeenCalledWith('/me');
 		const [path, body] = post.mock.calls[0];
 		expect(path).toBe('/users/u1/keys');
-		expect(body.scopes).toEqual(['sessions:read', 'github:read']);
+		expect(body.scopes).toEqual(['read']);
+	});
+
+	it('caches in sessionStorage only, so the token dies with the tab', async () => {
+		get.mockResolvedValue({ user_id: 'u1', scopes: [] });
+		post.mockResolvedValue({ id: 'k1', key: 'cctui_u_minted', scopes: [] });
+
+		await ensureGhreviewToken();
+
+		expect(sessionStorage.getItem('cctui:ghreview-token')).toContain('cctui_u_minted');
+		expect(localStorage.getItem('cctui:ghreview-token')).toBeNull();
 	});
 
 	it('reuses the cached token for the same user without re-minting', async () => {

@@ -1,5 +1,5 @@
 import type { components } from "../../generated/api";
-import { baseUrl, getToken } from "./config";
+import { baseUrl, getToken, handleAuthFailure } from "./config";
 import type {
   ActivityList,
   MergeMethod,
@@ -57,6 +57,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     } | null;
     if (body?.error?.code) code = body.error.code;
     if (body?.error?.message) message = body.error.message;
+    if (res.status === 401) handleAuthFailure();
     throw new ApiError(res.status, code, message);
   }
   if (res.status === 204) return undefined as T;

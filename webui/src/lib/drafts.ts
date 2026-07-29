@@ -56,6 +56,22 @@ export function clearSessionStorage(sessionId: string) {
 	localStorage.removeItem(historyKey(sessionId));
 }
 
+/** Wipe every `cctui`-namespaced key from both web storages (drafts, sent
+ * history, view options, settings mirror, theme/font/notify, gh-review token).
+ * Called on logout so a shared browser never hands the next user the previous
+ * user's prompts or a cached bearer. */
+export function clearCctuiStorage() {
+	if (!browser) return;
+	for (const store of [localStorage, sessionStorage]) {
+		const doomed: string[] = [];
+		for (let i = 0; i < store.length; i++) {
+			const k = store.key(i);
+			if (k?.startsWith('cctui')) doomed.push(k);
+		}
+		for (const k of doomed) store.removeItem(k);
+	}
+}
+
 /** Canonicalize a working-directory path for storage/dedup: strip
  * trailing slashes so `folder` and `folder/` collapse to one `folder`, but
  * keep the filesystem root `/` (a bare run of slashes) intact. Leaves the

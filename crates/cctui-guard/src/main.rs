@@ -6,6 +6,7 @@
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 
@@ -88,6 +89,16 @@ struct Cli {
     /// on Exit. Requires `--decision-log`.
     #[arg(long = "report-out", env = "GUARD_REPORT_OUT")]
     report_out: Option<PathBuf>,
+
+    /// Wall-clock ceiling (seconds) for a step's deterministic `[gate]` command;
+    /// a gate that exceeds it is killed and the transition refused (fail closed).
+    #[arg(long = "gate-timeout", default_value_t = cctui_guard::engine::DEFAULT_GATE_TIMEOUT_SECS)]
+    gate_timeout_secs: u64,
+
+    /// Wall-clock ceiling (seconds) for the `[llmjudge]` command; expiry is a
+    /// fail-closed denial.
+    #[arg(long = "judge-timeout", default_value_t = cctui_guard::engine::DEFAULT_JUDGE_TIMEOUT_SECS)]
+    judge_timeout_secs: u64,
 }
 
 #[derive(Subcommand, Debug)]
@@ -289,18 +300,24 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!("Loaded {} steps, {} tool sets", steps.len(), tool_sets.len());
 
-    let engine = Arc::new(WorkflowEngine::new_with_log(
-        steps,
-        tool_sets,
-        cli.state,
-        cli.policy_out,
-        cli.always_allow,
-        cli.gate_cwd,
-        cli.judge_cmd,
-        guarded_default_allow,
-        cctui_guard::decision_log::DecisionLog::new(cli.decision_log),
-        cli.report_out,
-    ));
+    let engine = Arc::new(
+        WorkflowEngine::new_with_log(
+            steps,
+            tool_sets,
+            cli.state,
+            cli.policy_out,
+            cli.always_allow,
+            cli.gate_cwd,
+            cli.judge_cmd,
+            guarded_default_allow,
+            cctui_guard::decision_log::DecisionLog::new(cli.decision_log),
+            cli.report_out,
+        )
+        .with_timeouts(
+            Duration::from_secs(cli.gate_timeout_secs),
+            Duration::from_secs(cli.judge_timeout_secs),
+        ),
+    );
 
     let app = router(engine);
     let listener = tokio::net::TcpListener::bind(cli.listen).await?;

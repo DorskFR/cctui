@@ -50,6 +50,19 @@ export async function listActiveSubscriptions(db: DbHandle): Promise<Subscriptio
   `;
 }
 
+export async function listAccountsSubscribedToPull(
+  db: DbHandle,
+  target: string,
+): Promise<string[]> {
+  const rows = await db.sql<{ account: string }[]>`
+    SELECT DISTINCT s.account
+    FROM subscriptions s
+    WHERE s.kind = 'pull_request' AND s.active = true AND s.target = ${target}
+      AND EXISTS (SELECT 1 FROM gh_accounts ga WHERE ga.login = s.account)
+  `;
+  return rows.map((r) => r.account);
+}
+
 export interface SubscriptionRow extends Subscription {
   created_at: string | null;
 }

@@ -10,7 +10,10 @@ import { EventBus } from "./events/bus.ts";
 import { AccountManager } from "./sync/manager.ts";
 
 const config = loadConfig();
-const deps: AppDeps = { webhookSecret: config.webhookSecret };
+const deps: AppDeps = {
+  webhookSecret: config.webhookSecret,
+  limits: { rateLimitPerHour: config.rateLimitPerHour, pollIntervalMs: config.pollIntervalMs },
+};
 let manager: AccountManager | null = null;
 
 const sealer = config.sealKey ? createSealer(config.sealKey) : undefined;
@@ -57,10 +60,21 @@ if (config.databaseUrl) {
 }
 
 let authLabel: string;
+let hostname: string | undefined;
 if (config.authMode === "none") {
+  if (!config.unsafeAllowAnonymous) {
+    console.error(
+      "ghreview: GHREVIEW_AUTH_MODE=none refuses to boot without GHREVIEW_UNSAFE_ALLOW_ANONYMOUS=true; " +
+        "use GHREVIEW_AUTH_MODE=static for local development instead",
+    );
+    process.exit(1);
+  }
   deps.authDisabled = true;
-  authLabel = "none — ALL /v1 ROUTES SERVED UNAUTHENTICATED";
-  console.warn(`ghreview: GHREVIEW_AUTH_MODE=none — authentication disabled for every /v1 route`);
+  hostname = "127.0.0.1";
+  authLabel = "none — ANONYMOUS ACCESS, LOOPBACK ONLY";
+  console.warn(
+    "ghreview: GHREVIEW_AUTH_MODE=none — authentication disabled for every /v1 route; binding to 127.0.0.1 only",
+  );
 } else if (config.authMode === "static") {
   deps.auth = createStaticResolver(parseStaticTokens(config.authTokens));
   authLabel = "static";
@@ -77,5 +91,6 @@ const app = createApp(deps);
 
 export default {
   port: config.port,
+  hostname,
   fetch: app.fetch,
 };

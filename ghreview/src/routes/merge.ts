@@ -1,7 +1,6 @@
 import { createRoute, type OpenAPIHono, z } from "@hono/zod-openapi";
-import { getUserId } from "../auth/middleware.ts";
+import { requireOwnedAccount } from "../auth/ownership.ts";
 import { deleteDocument } from "../db/documents.ts";
-import { accountOwnedBy } from "../db/notificationState.ts";
 import { deleteReviewDraftsForPull } from "../db/reviewDrafts.ts";
 import { deactivateSubscription } from "../db/subscriptions.ts";
 import { deleteViewedStateForPull } from "../db/viewedState.ts";
@@ -106,20 +105,9 @@ export function registerMerge(app: OpenAPIHono, deps: AppDeps = {}) {
   app.openapi(mergeRoute, async (c) => {
     const p = c.req.valid("param");
     const body = c.req.valid("json");
-    const uid = getUserId(c);
-    if (deps.db && uid !== undefined && !(await accountOwnedBy(deps.db, body.account, uid))) {
-      return c.json(
-        { error: { code: "forbidden", message: `Account ${body.account} is not accessible` } },
-        403,
-      );
-    }
-    const acct = deps.accountFor?.(body.account);
-    if (!acct) {
-      return c.json(
-        { error: { code: "not_found", message: `Account ${body.account} is not managed` } },
-        404,
-      );
-    }
+    const auth = await requireOwnedAccount(deps, c, body.account);
+    if (!auth.ok) return c.json(auth.body, auth.status);
+    const acct = auth.acct;
 
     if (body.expected_head_sha) {
       const liveHead = await fetchLiveHeadSha(acct.octokit, p);

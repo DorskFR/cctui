@@ -575,9 +575,9 @@ mod tests {
             {
                 "id": "019ea66a-cf6e-73b1",
                 "sessionId": "019ea66a-cf6e-73b1",
-                "preview": "Implement PRA-3 end to end please.",
-                "name": "PRA-3",
-                "cwd": "/home/u/praison",
+                "preview": "Implement EX-3 end to end please.",
+                "name": "EX-3",
+                "cwd": "/home/u/proj",
                 "source": "vscode",
                 "status": {"type": "notLoaded"},
             },
@@ -598,9 +598,9 @@ mod tests {
         assert_eq!(entries.len(), 2);
         let first = &entries[0];
         assert_eq!(first.id, "019ea66a-cf6e-73b1");
-        assert_eq!(first.preview.as_deref(), Some("Implement PRA-3 end to end please."));
-        assert_eq!(first.name.as_deref(), Some("PRA-3"));
-        assert_eq!(first.cwd.as_deref(), Some("/home/u/praison"));
+        assert_eq!(first.preview.as_deref(), Some("Implement EX-3 end to end please."));
+        assert_eq!(first.name.as_deref(), Some("EX-3"));
+        assert_eq!(first.cwd.as_deref(), Some("/home/u/proj"));
         assert_eq!(first.source.as_deref(), Some("vscode"));
         assert_eq!(first.status.as_deref(), Some("notLoaded"));
         // Empty preview is dropped; id falls back from `id` when no sessionId.

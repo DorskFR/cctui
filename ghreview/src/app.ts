@@ -1,5 +1,5 @@
 import { OpenAPIHono } from "@hono/zod-openapi";
-import { authMiddleware } from "./auth/middleware.ts";
+import { authMiddleware, LOCAL_PRINCIPAL, setUserId } from "./auth/middleware.ts";
 import type { AppDeps } from "./deps.ts";
 import { registerAccounts } from "./routes/accounts.ts";
 import { registerActivity } from "./routes/activity.ts";
@@ -22,7 +22,7 @@ import { registerViewed } from "./routes/viewed.ts";
 import { registerWebhook } from "./routes/webhook.ts";
 import { version } from "./version.ts";
 
-const AUTH_EXEMPT = new Set(["/v1/health", "/v1/status", "/v1/webhook", "/v1/openapi.json"]);
+const AUTH_EXEMPT = new Set(["/v1/health", "/v1/webhook", "/v1/openapi.json"]);
 
 export function createApp(deps: AppDeps = {}) {
   const app = new OpenAPIHono({
@@ -48,7 +48,12 @@ export function createApp(deps: AppDeps = {}) {
       if (AUTH_EXEMPT.has(c.req.path)) return next();
       return guard(c, next);
     });
-  } else if (!deps.authDisabled) {
+  } else if (deps.authDisabled) {
+    app.use("/v1/*", async (c, next) => {
+      if (!AUTH_EXEMPT.has(c.req.path)) setUserId(c, LOCAL_PRINCIPAL);
+      return next();
+    });
+  } else {
     app.use("/v1/*", async (c, next) => {
       if (AUTH_EXEMPT.has(c.req.path)) return next();
       return c.json(
@@ -79,7 +84,16 @@ export function createApp(deps: AppDeps = {}) {
   registerWebhook(app, deps);
 
   app.notFound((c) => c.json({ error: { code: "not_found", message: "No such route" } }, 404));
-  app.onError((err, c) => c.json({ error: { code: "internal", message: err.message } }, 500));
+  app.onError((err, c) => {
+    const requestId = crypto.randomUUID();
+    console.error(`ghreview: unhandled error [${requestId}]`, err);
+    return c.json(
+      {
+        error: { code: "internal", message: "Internal error", details: { request_id: requestId } },
+      },
+      500,
+    );
+  });
 
   app.doc("/v1/openapi.json", {
     openapi: "3.0.3",

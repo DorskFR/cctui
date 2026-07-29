@@ -14,7 +14,7 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
-use crate::denylist::host_is_denied;
+use crate::denylist::{host_is_denied, resolve_allowed};
 use crate::inject::Injector;
 use crate::policy::PolicyManager;
 
@@ -22,6 +22,7 @@ pub struct ForwardListener {
     listener: TcpListener,
     policy: Arc<PolicyManager>,
     injection: Option<Arc<Injector>>,
+    allow_private: bool,
 }
 
 impl ForwardListener {
@@ -31,7 +32,8 @@ impl ForwardListener {
         injection: Option<Arc<Injector>>,
     ) -> anyhow::Result<Self> {
         let listener = TcpListener::bind(addr).await?;
-        Ok(Self { listener, policy, injection })
+        let allow_private = crate::denylist::allow_private_ips_from_env();
+        Ok(Self { listener, policy, injection, allow_private })
     }
 
     pub async fn serve(self) -> anyhow::Result<()> {
@@ -39,8 +41,9 @@ impl ForwardListener {
             let (stream, _peer) = self.listener.accept().await?;
             let policy = self.policy.clone();
             let injection = self.injection.clone();
+            let allow_private = self.allow_private;
             tokio::spawn(async move {
-                if let Err(e) = handle_connection(stream, policy, injection).await {
+                if let Err(e) = handle_connection(stream, policy, injection, allow_private).await {
                     tracing::debug!("forward connection ended: {e}");
                 }
             });
@@ -97,15 +100,16 @@ async fn handle_connection(
     mut conn: TcpStream,
     policy: Arc<PolicyManager>,
     injection: Option<Arc<Injector>>,
+    allow_private: bool,
 ) -> anyhow::Result<()> {
     let Some(req) = read_request(&mut conn).await? else {
         return Ok(());
     };
 
     if req.method.eq_ignore_ascii_case("CONNECT") {
-        handle_connect(conn, &req.target, &policy, injection.as_deref()).await
+        handle_connect(conn, &req.target, &policy, injection.as_deref(), allow_private).await
     } else {
-        handle_http(conn, &req, &policy).await
+        handle_http(conn, &req, &policy, allow_private).await
     }
 }
 
@@ -119,10 +123,11 @@ async fn handle_connect(
     target: &str,
     policy: &PolicyManager,
     injection: Option<&Injector>,
+    allow_private: bool,
 ) -> anyhow::Result<()> {
     let host_port = normalize_authority(target, 443);
 
-    if host_is_denied(&split_host_port(&host_port, 443).0) {
+    if host_is_denied(&split_host_port(&host_port, 443).0, allow_private) {
         tracing::warn!("DENY (builtin) CONNECT {host_port}");
         policy.record(&host_port, false, "builtin denylist");
         conn.write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
@@ -150,8 +155,20 @@ async fn handle_connect(
         return Box::pin(injector.handle(conn, Vec::new(), &host, port)).await;
     }
 
+    // Resolve in-proxy and dial only addresses already checked against the
+    // denylist; never re-resolve `host_port` (that would let a name resolving
+    // into a denied range slip through between the check and the connect).
+    let Ok(addrs) = resolve_allowed(&host_port, allow_private).await else {
+        tracing::warn!("CONNECT resolve {host_port} denied/failed");
+        policy.record(&host_port, false, "resolve/denylist");
+        conn.write_all(
+            b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        )
+        .await?;
+        return Ok(());
+    };
     let Ok(Ok(mut upstream)) =
-        tokio::time::timeout(Duration::from_secs(10), TcpStream::connect(&host_port)).await
+        tokio::time::timeout(Duration::from_secs(10), TcpStream::connect(addrs.as_slice())).await
     else {
         tracing::warn!("CONNECT dial {host_port} failed");
         conn.write_all(
@@ -190,6 +207,7 @@ async fn handle_http(
     mut conn: TcpStream,
     req: &Request,
     policy: &PolicyManager,
+    allow_private: bool,
 ) -> anyhow::Result<()> {
     let Some((host_port, _path)) = split_absolute_uri(&req.target) else {
         tracing::info!("DENY HTTP (non-absolute target {})", req.target);
@@ -200,7 +218,7 @@ async fn handle_http(
         return Ok(());
     };
 
-    if host_is_denied(&split_host_port(&host_port, 80).0) {
+    if host_is_denied(&split_host_port(&host_port, 80).0, allow_private) {
         tracing::warn!("DENY (builtin) HTTP {} {}", req.method, req.target);
         policy.record(&host_port, false, "builtin denylist");
         conn.write_all(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
@@ -218,8 +236,17 @@ async fn handle_http(
     tracing::info!("ALLOW HTTP {} {}", req.method, req.target);
     policy.record(&host_port, true, "");
 
+    let Ok(addrs) = resolve_allowed(&host_port, allow_private).await else {
+        tracing::warn!("HTTP resolve {host_port} denied/failed");
+        policy.record(&host_port, false, "resolve/denylist");
+        conn.write_all(
+            b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        )
+        .await?;
+        return Ok(());
+    };
     let Ok(Ok(mut upstream)) =
-        tokio::time::timeout(Duration::from_secs(10), TcpStream::connect(&host_port)).await
+        tokio::time::timeout(Duration::from_secs(10), TcpStream::connect(addrs.as_slice())).await
     else {
         tracing::warn!("HTTP dial {host_port} failed");
         conn.write_all(
@@ -276,12 +303,17 @@ mod tests {
     }
 
     async fn start_forward(policy_json: &str) -> std::net::SocketAddr {
+        start_forward_inner(policy_json, true).await
+    }
+
+    async fn start_forward_inner(policy_json: &str, allow_private: bool) -> std::net::SocketAddr {
         let (dir, path) = write_policy(policy_json);
         // Keep the tempdir alive for the process lifetime of the test.
         std::mem::forget(dir);
         let policy = Arc::new(PolicyManager::new(&path));
         policy.load().unwrap();
-        let listener = ForwardListener::bind("127.0.0.1:0", policy, None).await.unwrap();
+        let mut listener = ForwardListener::bind("127.0.0.1:0", policy, None).await.unwrap();
+        listener.allow_private = allow_private;
         let addr = listener.listener.local_addr().unwrap();
         tokio::spawn(async move { listener.serve().await });
         addr
@@ -384,6 +416,23 @@ mod tests {
 
         let mut conn = TcpStream::connect(proxy).await.unwrap();
         conn.write_all(b"CONNECT 169.254.169.254:443 HTTP/1.1\r\nHost: 169.254.169.254\r\n\r\n")
+            .await
+            .unwrap();
+
+        let mut buf = [0u8; 64];
+        let n = conn.read(&mut buf).await.unwrap();
+        let resp = String::from_utf8_lossy(&buf[..n]);
+        assert!(resp.starts_with("HTTP/1.1 403"), "got: {resp}");
+    }
+
+    #[tokio::test]
+    async fn private_dest_denied_without_optout() {
+        let echo = start_echo().await;
+        let policy_json = format!(r#"{{"allowed_hosts": ["{echo}"], "default": "allow"}}"#);
+        let proxy = start_forward_inner(&policy_json, false).await;
+
+        let mut conn = TcpStream::connect(proxy).await.unwrap();
+        conn.write_all(format!("CONNECT {echo} HTTP/1.1\r\nHost: {echo}\r\n\r\n").as_bytes())
             .await
             .unwrap();
 
