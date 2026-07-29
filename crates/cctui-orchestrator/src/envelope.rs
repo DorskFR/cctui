@@ -171,7 +171,9 @@ fn sandbox_worker(worker: &mut Container, cfg: &EnvelopeConfig) {
         ..SecurityContext::default()
     });
 
-    upsert_env(worker.env.get_or_insert_with(Vec::new), "WORKER_NET_MODE", "transparent-external");
+    let env = worker.env.get_or_insert_with(Vec::new);
+    upsert_env(env, "WORKER_NET_MODE", "transparent-external");
+    upsert_env(env, "NODE_EXTRA_CA_CERTS", "/var/run/guard-proxy-ca/ca.pem");
 
     let mounts = worker.volume_mounts.get_or_insert_with(Vec::new);
     let mut wanted = vec![
@@ -436,6 +438,9 @@ mod tests {
         let net_mode =
             w.env.as_ref().unwrap().iter().find(|e| e.name == "WORKER_NET_MODE").unwrap();
         assert_eq!(net_mode.value.as_deref(), Some("transparent-external"));
+
+        let ca = w.env.as_ref().unwrap().iter().find(|e| e.name == "NODE_EXTRA_CA_CERTS").unwrap();
+        assert_eq!(ca.value.as_deref(), Some("/var/run/guard-proxy-ca/ca.pem"));
 
         let gp = &init[1];
         assert_eq!(
