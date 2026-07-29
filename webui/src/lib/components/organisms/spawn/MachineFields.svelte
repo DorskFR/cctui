@@ -78,8 +78,12 @@
 	let lastDir = form.working_dir;
 	function onCwdChange(q: Query) {
 		const dir = dirFromQuery(q);
+		// The input re-emits its unchanged query on mount and on rerenders; only
+		// a real move away from what the field already held is a user edit, so
+		// those echoes can't stomp a dir the modal prefilled meanwhile.
+		if (dir === lastDir) return;
 		lastDir = dir;
-		if (form.working_dir !== dir) form.working_dir = dir;
+		form.working_dir = dir;
 	}
 	$effect(() => {
 		const dir = form.working_dir;
