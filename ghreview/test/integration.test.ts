@@ -8,9 +8,10 @@ import { EventBus } from "../src/events/bus.ts";
 import { createAccount } from "../src/github/account.ts";
 import type { OctokitRequest, OctokitResponse } from "../src/github/client.ts";
 import { Poller } from "../src/sync/poller.ts";
+import { dbGate } from "./dbGate.ts";
 
 const DATABASE_URL = process.env.DATABASE_URL;
-const guarded = DATABASE_URL ? describe : describe.skip;
+const guarded = dbGate(describe, DATABASE_URL);
 
 let db: DbHandle;
 

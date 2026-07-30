@@ -12,6 +12,7 @@ import { createAccount } from "../src/github/account.ts";
 import type { OctokitRequest, OctokitResponse } from "../src/github/client.ts";
 import { markThreadRead } from "../src/github/notifications.ts";
 import { drainPendingReads, pushThreadRead } from "../src/sync/notificationPush.ts";
+import { dbGate } from "./dbGate.ts";
 
 describe("markThreadRead (transport)", () => {
   function mock(handler: (route: string) => OctokitResponse | never): {
@@ -55,7 +56,7 @@ describe("markThreadRead (transport)", () => {
 });
 
 const DATABASE_URL = process.env.DATABASE_URL;
-const guarded = DATABASE_URL ? describe : describe.skip;
+const guarded = dbGate(describe, DATABASE_URL);
 
 let db: DbHandle;
 

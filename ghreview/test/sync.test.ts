@@ -8,9 +8,10 @@ import type { AppDeps } from "../src/deps.ts";
 import { EventBus } from "../src/events/bus.ts";
 import { AccountManager } from "../src/sync/manager.ts";
 import { deriveReviewDecision } from "../src/sync/pullEnrich.ts";
+import { dbGate } from "./dbGate.ts";
 
 const DATABASE_URL = process.env.DATABASE_URL;
-const guarded = DATABASE_URL ? describe : describe.skip;
+const guarded = dbGate(describe, DATABASE_URL);
 
 let db: DbHandle;
 const auth = createStaticResolver(parseStaticTokens("tokA:userA"));

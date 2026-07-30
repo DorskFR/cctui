@@ -27,8 +27,6 @@ pub struct ConversationLine {
     pub timestamp: i64,
     pub kind: LineKind,
     pub text: String,
-    /// Tool name for ToolCall/ToolResult lines (for context-aware rendering).
-    pub tool: Option<String>,
     /// Raw tool input JSON (kept for Edit/Write to generate diffs).
     pub tool_input: Option<serde_json::Value>,
 }
@@ -172,26 +170,12 @@ impl App {
         }
     }
 
-    pub fn scroll_to_bottom(&mut self) {
-        if let Some(session) = self.selected_session() {
-            let line_count = self.stream_buffer.get(&session.id).map_or(0, Vec::len);
-            self.scroll_offset = line_count.saturating_sub(1);
-        }
-    }
-
     pub fn update_aggregates(&mut self) {
         self.active_count = self
             .sessions
             .iter()
             .filter(|s| s.status == cctui_proto::models::SessionStatus::Active)
             .count();
-    }
-
-    pub fn active_sessions(&self) -> Vec<&SessionListItem> {
-        self.sessions
-            .iter()
-            .filter(|s| s.status == cctui_proto::models::SessionStatus::Active)
-            .collect()
     }
 }
 

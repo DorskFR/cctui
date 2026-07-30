@@ -8,9 +8,10 @@ import { runMigrations } from "../src/db/migrate.ts";
 import type { AppDeps } from "../src/deps.ts";
 import { createAccount } from "../src/github/account.ts";
 import type { OctokitRequest, OctokitResponse } from "../src/github/client.ts";
+import { dbGate } from "./dbGate.ts";
 
 const DATABASE_URL = process.env.DATABASE_URL;
-const guarded = DATABASE_URL ? describe : describe.skip;
+const guarded = dbGate(describe, DATABASE_URL);
 
 let db: DbHandle;
 const auth = createStaticResolver(parseStaticTokens("tokA:userA,tokB:userB"));
@@ -238,6 +239,14 @@ guarded("review drafts + publish", () => {
     expect(items.length).toBe(1);
     expect(items[0]?.path).toBe("src/app.ts");
     expect(items[0]?.user).toBe("bob");
+  });
+
+  test("rejects listing review threads under an account the caller does not own", async () => {
+    const app = createApp(deps(reviewOctokit()));
+    const res = await app.request("/v1/repos/alpha/repo/pulls/42/comments?account=alpha", {
+      headers: B,
+    });
+    expect(res.status).toBe(403);
   });
 
   test("cannot publish a draft under an account the caller does not own", async () => {

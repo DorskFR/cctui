@@ -8,9 +8,10 @@ import type { OctokitRequest } from "../src/github/client.ts";
 import { syncNotifications } from "../src/sync/notificationSync.ts";
 import { syncPull } from "../src/sync/pullSync.ts";
 import { syncRepo } from "../src/sync/repoSync.ts";
+import { dbGate } from "./dbGate.ts";
 
 const DATABASE_URL = process.env.DATABASE_URL;
-const guarded = DATABASE_URL ? describe : describe.skip;
+const guarded = dbGate(describe, DATABASE_URL);
 
 let db: DbHandle;
 

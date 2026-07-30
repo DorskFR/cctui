@@ -3,9 +3,8 @@ use std::path::{Path, PathBuf};
 use clap::{Parser, Subcommand};
 use tokio_util::sync::CancellationToken;
 
-use cctui_dispatcher_kube::client::ServerClient;
+use cctui_dispatcher_core::{Runner, ServerClient};
 use cctui_dispatcher_kube::config::Config;
-use cctui_dispatcher_kube::run::Runner;
 use cctui_dispatcher_kube::spawn::Spawner;
 
 #[derive(Parser)]
@@ -107,7 +106,7 @@ async fn main() -> anyhow::Result<()> {
             account,
             provider,
         } => {
-            let client = ServerClient::new(&server_url);
+            let client = ServerClient::new(&server_url, "kubernetes");
             let resp =
                 client.enroll(&token, &name, account.as_deref(), provider.as_deref()).await?;
             let cfg = Config {
@@ -124,7 +123,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Cmd::Run => {
             let cfg = Config::load_from(&path)?;
-            let client = ServerClient::new(&cfg.server_url);
+            let client = ServerClient::new(&cfg.server_url, "kubernetes");
             // Confirm identity up-front so misconfigurations fail loudly.
             let auth = client.dispatcher_auth(&cfg.dispatcher_key).await?;
             tracing::info!(user_id = %auth.user_id, "authenticated");

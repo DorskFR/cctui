@@ -11,11 +11,11 @@
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use cctui_proto::api::ApiError;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::bus;
+use crate::error::AppError;
 use crate::state::AppState;
 
 #[derive(Debug, Deserialize)]
@@ -38,24 +38,19 @@ pub async fn list_dirs(
     State(state): State<AppState>,
     Path(machine_id): Path<String>,
     Query(params): Query<ListDirsParams>,
-) -> Result<Json<ListDirsResponse>, (StatusCode, Json<ApiError>)> {
-    let machine_uuid = Uuid::parse_str(&machine_id).map_err(|_| {
-        (StatusCode::BAD_REQUEST, Json(ApiError { error: "machine_id must be a uuid".into() }))
-    })?;
+) -> Result<Json<ListDirsResponse>, AppError> {
+    let machine_uuid = Uuid::parse_str(&machine_id)
+        .map_err(|_| AppError::new(StatusCode::BAD_REQUEST, "machine_id must be a uuid"))?;
 
     match bus::list_dirs(&state, machine_uuid, params.path).await {
         Ok(dirs) => Ok(Json(ListDirsResponse { dirs })),
-        Err(bus::BusError::NoDaemon(_)) => Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(ApiError { error: "daemon offline".into() }),
-        )),
-        Err(bus::BusError::Timeout) => Err((
-            StatusCode::GATEWAY_TIMEOUT,
-            Json(ApiError { error: "timed out waiting for the daemon".into() }),
-        )),
-        Err(bus::BusError::ListDirs(msg)) => {
-            Err((StatusCode::BAD_REQUEST, Json(ApiError { error: msg })))
+        Err(bus::BusError::NoDaemon(_)) => {
+            Err(AppError::new(StatusCode::SERVICE_UNAVAILABLE, "daemon offline"))
         }
-        Err(e) => Err((StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: e.to_string() }))),
+        Err(bus::BusError::Timeout) => {
+            Err(AppError::new(StatusCode::GATEWAY_TIMEOUT, "timed out waiting for the daemon"))
+        }
+        Err(bus::BusError::ListDirs(msg)) => Err(AppError::new(StatusCode::BAD_REQUEST, msg)),
+        Err(e) => Err(AppError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
     }
 }

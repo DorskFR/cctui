@@ -832,7 +832,12 @@ async fn handle_event(
             let extra = (!meta.extra.is_null()).then(|| meta.extra.clone());
             if let Some(spawn_key) = meta.extra.get("spawn_key").and_then(serde_json::Value::as_str)
             {
-                crate::routes::gateway::rebind_spawn_key(state, spawn_key, &local_id).await;
+                crate::routes::gateway::rebind_spawn_key(
+                    state,
+                    cctui_proto::ids::SpawnKey::from(spawn_key),
+                    cctui_proto::ids::SessionId::from(local_id.as_str()),
+                )
+                .await;
             }
             upsert_session(
                 state,

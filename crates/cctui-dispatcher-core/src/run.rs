@@ -1,10 +1,9 @@
 //! Dial-out WS run loop.
 //!
-//! Mirrors the daemon supervisor (transport spec): connect out to
-//! `/api/v1/dispatcher/ws`, send `Hello` + periodic `Heartbeat`, and handle
-//! `Dispatch`/`Status`/`Cancel` frames by driving the local kube `Spawner`.
-//! Reconnect backoff + half-open detection follow the daemon's pattern verbatim
-//! so a NAT'd in-cluster dispatcher recovers the same way (and needs no ingress).
+//! Connect out to `/api/v1/dispatcher/ws`, send `Hello` + periodic `Heartbeat`,
+//! and handle `Dispatch`/`Status`/`Cancel` frames by driving a [`Dispatcher`].
+//! Reconnect backoff + half-open detection follow the daemon's pattern so a
+//! NAT'd dispatcher recovers the same way.
 
 use std::time::Duration;
 
@@ -14,22 +13,22 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_util::sync::CancellationToken;
 
 use crate::client::ServerClient;
-use crate::spawn::Spawner;
+use crate::dispatcher::Dispatcher;
 
 /// Backoff schedule, capped at the last entry (daemon parity).
 const BACKOFF_SECS: &[u64] = &[5, 10, 20, 60];
 const PING_INTERVAL: Duration = Duration::from_secs(20);
 const LIVENESS_TIMEOUT: Duration = Duration::from_mins(1);
 
-pub struct Runner {
+pub struct Runner<D: Dispatcher> {
     client: ServerClient,
     key: String,
-    spawner: Spawner,
+    spawner: D,
 }
 
-impl Runner {
+impl<D: Dispatcher> Runner<D> {
     #[must_use]
-    pub const fn new(client: ServerClient, key: String, spawner: Spawner) -> Self {
+    pub const fn new(client: ServerClient, key: String, spawner: D) -> Self {
         Self { client, key, spawner }
     }
 
@@ -64,9 +63,8 @@ impl Runner {
         let (ws, _) = tokio_tungstenite::connect_async(&url).await?;
         let (mut sink, mut stream) = ws.split();
 
-        // Announce ourselves so the server can record kind + version.
         let hello = DispatcherFrameUp::Hello {
-            kind: "kubernetes".to_owned(),
+            kind: self.spawner.kind().to_owned(),
             version: env!("CARGO_PKG_VERSION").to_owned(),
         };
         sink.send(Message::Text(serde_json::to_string(&hello)?.into())).await?;
@@ -107,9 +105,9 @@ impl Runner {
         }
     }
 
-    /// Drive a server-sent frame against the cluster, producing the reply frame.
-    /// Errors are reported back in-band (never panic the loop) so the server can
-    /// surface a dispatch failure instead of hanging.
+    /// Drive a server-sent frame against the dispatcher, producing the reply
+    /// frame. Errors are reported back in-band (never panic the loop) so the
+    /// server can surface a dispatch failure instead of hanging.
     #[allow(clippy::cognitive_complexity)]
     async fn handle_frame(&self, frame: DispatcherFrameDown) -> DispatcherFrameUp {
         match frame {
@@ -122,7 +120,7 @@ impl Runner {
                             request_id,
                             session_id,
                             handle: out.handle,
-                            namespace: Some(out.namespace),
+                            namespace: out.namespace,
                             status: Some(out.status),
                             error: None,
                         }
@@ -146,9 +144,6 @@ impl Runner {
                         request_id,
                         handle,
                         state: Some(state.as_str().to_owned()),
-                        // For a Failed state this carries the human reason
-                        // (CrashLoopBackOff / OOMKilled / …); the
-                        // server lifts it into the completion webhook's `error`.
                         error: reason,
                     },
                     Err(err) => DispatcherFrameUp::StatusResult {
@@ -175,8 +170,6 @@ impl Runner {
                     },
                 }
             }
-            // A future server speaking a frame this dispatcher predates: ack
-            // with a heartbeat rather than tearing down the connection.
             _ => {
                 tracing::warn!("unknown dispatcher frame; ignoring");
                 DispatcherFrameUp::Heartbeat { sent_at: chrono::Utc::now() }

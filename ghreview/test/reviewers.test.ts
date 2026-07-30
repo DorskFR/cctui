@@ -8,13 +8,15 @@ import type { AppDeps } from "../src/deps.ts";
 import { createAccount } from "../src/github/account.ts";
 import type { OctokitRequest, OctokitResponse } from "../src/github/client.ts";
 import { reduceReviewStates } from "../src/github/reviews.ts";
+import { dbGate } from "./dbGate.ts";
 
 const DATABASE_URL = process.env.DATABASE_URL;
-const guarded = DATABASE_URL ? describe : describe.skip;
+const guarded = dbGate(describe, DATABASE_URL);
 
 let db: DbHandle;
-const auth = createStaticResolver(parseStaticTokens("tokA:userA"));
+const auth = createStaticResolver(parseStaticTokens("tokA:userA,tokB:userB"));
 const A = { authorization: "Bearer tokA", "content-type": "application/json" };
+const B = { authorization: "Bearer tokB", "content-type": "application/json" };
 
 interface OctoOpts {
   reviews?: Record<string, unknown>[];
@@ -171,5 +173,11 @@ guarded("reviewers endpoints", () => {
       body: JSON.stringify({ account: "alpha" }),
     });
     expect(res.status).toBe(400);
+  });
+
+  test("rejects a reviewers read under an account the caller does not own", async () => {
+    const app = createApp(deps(reviewersOctokit()));
+    const res = await app.request(`${URL}?account=alpha`, { headers: B });
+    expect(res.status).toBe(403);
   });
 });

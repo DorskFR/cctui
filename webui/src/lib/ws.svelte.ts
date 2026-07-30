@@ -167,7 +167,7 @@ export function decodeBase64(b64: string): Uint8Array {
 
 const BACKOFF_BASE_MS = 1000;
 const BACKOFF_CAP_MS = 30000;
-function backoffDelay(attempt: number): number {
+export function backoffDelay(attempt: number): number {
 	// attempt is 1-based (1 = first attempt just failed). Full jitter on top of
 	// an exponential base, capped.
 	const base = Math.min(BACKOFF_CAP_MS, BACKOFF_BASE_MS * 2 ** (attempt - 1));
@@ -273,7 +273,7 @@ export class BoundedEventBuffer {
  * still keeps a small per-session buffer so a freshly-opened drawer can seed
  * from events that arrived before it registered.
  */
-class WsClient {
+export class WsClient {
 	status = $state<Status>('closed');
 	/** bumped whenever the session set/status changes, so lists can refetch */
 	changeTick = $state(0);

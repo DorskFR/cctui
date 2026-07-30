@@ -154,7 +154,7 @@ const DEFAULTS: SettingsState = {
 // than becoming undefined. One level of nesting covers the catalogue shape.
 // Stale keys in an older blob (e.g. a retired setting) are simply not copied
 // over, and get pruned on the next save.
-function mergeDefaults(partial: Partial<SettingsState> | null | undefined): SettingsState {
+export function mergeDefaults(partial: Partial<SettingsState> | null | undefined): SettingsState {
 	const p = partial ?? {};
 	return {
 		sessionList: { ...DEFAULTS.sessionList, ...(p.sessionList ?? {}) },

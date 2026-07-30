@@ -1250,18 +1250,15 @@ pub async fn update_provider(
     require_human(&ctx)?;
     // Resolve the target (scoped to the caller; admin sees all) so we can tell a
     // compatible endpoint from a native one and reject editing managed rows.
-    let provider: Option<(String,)> = sqlx::query_as(
-        "SELECT provider FROM account_providers \
-         WHERE id = $1 AND account_id = $2 \
-           AND ($3::uuid IS NULL OR user_id = $3) AND NOT managed",
+    let provider = crate::store::account_providers::provider_owner_scoped(
+        &state.pool,
+        provider_id,
+        id,
+        ctx.owner_filter(),
     )
-    .bind(provider_id)
-    .bind(id)
-    .bind(ctx.owner_filter())
-    .fetch_optional(&state.pool)
     .await
     .map_err(|e| db_err(&e))?;
-    let Some((provider,)) = provider else {
+    let Some(provider) = provider else {
         return Err(err(StatusCode::NOT_FOUND, "no such provider"));
     };
     let compatible =
@@ -1421,11 +1418,10 @@ async fn reevaluate_soft_limit_block(
     if state.soft_limit_blocked.is_empty() {
         return;
     }
-    let candidates: Vec<String> = match sqlx::query_scalar(
-        "SELECT session_id FROM session_tokens WHERE account_id = $1 AND revoked_at IS NULL",
+    let candidates: Vec<String> = match crate::store::tokens::session_ids_by_account(
+        &state.pool,
+        provider_id,
     )
-    .bind(provider_id)
-    .fetch_all(&state.pool)
     .await
     {
         Ok(rows) => rows,
@@ -1458,18 +1454,15 @@ pub async fn delete_provider(
     Path((id, provider_id)): Path<(Uuid, Uuid)>,
 ) -> Result<StatusCode, (StatusCode, Json<serde_json::Value>)> {
     require_human(&ctx)?;
-    let res = sqlx::query(
-        "DELETE FROM account_providers \
-         WHERE id = $1 AND account_id = $2 \
-           AND ($3::uuid IS NULL OR user_id = $3) AND NOT managed",
+    let removed = crate::store::account_providers::delete_owner_scoped(
+        &state.pool,
+        provider_id,
+        id,
+        ctx.owner_filter(),
     )
-    .bind(provider_id)
-    .bind(id)
-    .bind(ctx.owner_filter())
-    .execute(&state.pool)
     .await
     .map_err(|e| db_err(&e))?;
-    if res.rows_affected() == 0 {
+    if removed == 0 {
         return Err(err(StatusCode::NOT_FOUND, "no such provider"));
     }
     Ok(StatusCode::NO_CONTENT)

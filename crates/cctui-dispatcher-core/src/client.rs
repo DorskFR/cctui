@@ -1,10 +1,10 @@
 //! HTTP + WS client to a cctui-server, dispatcher flavour.
 //!
-//! Mirrors the daemon's `ServerClient` (transport spec): a thin enroll
-//! wrapper, an auth handshake, and a dial-out WS URL builder. The dispatcher
-//! enroll/auth/ws routes (`/api/v1/dispatcher/{enroll,auth,ws}`) are the
-//! server-side surface specced on and land with the server-side rework
-//! (parts 2-4); see the deferral note in `lib.rs`.
+//! A thin enroll wrapper, an auth handshake, and a dial-out WS URL builder,
+//! mirroring the daemon's `ServerClient`. The `kind` (`docker`/`kubernetes`/
+//! `apple`) is fixed at construction. `enroll` optionally binds a default OAuth
+//! account: a dispatch carrying no explicit account routes model traffic through
+//! it.
 
 use cctui_proto::api::{DaemonAuthRequest, DaemonAuthResponse};
 use serde::{Deserialize, Serialize};
@@ -13,6 +13,7 @@ use uuid::Uuid;
 #[derive(Debug, Clone)]
 pub struct ServerClient {
     base_url: String,
+    kind: &'static str,
     http: reqwest::Client,
 }
 
@@ -20,6 +21,10 @@ pub struct ServerClient {
 struct EnrollBody<'a> {
     name: &'a str,
     kind: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    account: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider: Option<&'a str>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -30,20 +35,27 @@ pub struct EnrollResponse {
 
 impl ServerClient {
     #[must_use]
-    pub fn new(base_url: impl Into<String>) -> Self {
-        Self { base_url: base_url.into(), http: reqwest::Client::new() }
+    pub fn new(base_url: impl Into<String>, kind: &'static str) -> Self {
+        Self { base_url: base_url.into(), kind, http: reqwest::Client::new() }
     }
 
-    /// Enroll this dispatcher to the caller's account (peer of a machine,
-    /// `kind='dispatcher'`). The server mints an id + key the same way as the
-    /// machine enroll; the key is persisted to `dispatcher.toml`.
-    pub async fn enroll(&self, user_token: &str, name: &str) -> anyhow::Result<EnrollResponse> {
+    /// Enroll this dispatcher to the caller's account (peer of a machine). The
+    /// server mints an id + key the same way as the machine enroll; the key is
+    /// persisted to `dispatcher.toml`. `account`/`provider` optionally bind a
+    /// default OAuth account for dispatches that name none.
+    pub async fn enroll(
+        &self,
+        user_token: &str,
+        name: &str,
+        account: Option<&str>,
+        provider: Option<&str>,
+    ) -> anyhow::Result<EnrollResponse> {
         let url = format!("{}/api/v1/dispatcher/enroll", self.base_url.trim_end_matches('/'));
         let resp = self
             .http
             .post(&url)
             .bearer_auth(user_token)
-            .json(&EnrollBody { name, kind: "docker" })
+            .json(&EnrollBody { name, kind: self.kind, account, provider })
             .send()
             .await?;
         let status = resp.status();
@@ -79,5 +91,21 @@ impl ServerClient {
         let base = self.base_url.trim_end_matches('/');
         let ws_base = base.replacen("http://", "ws://", 1).replacen("https://", "wss://", 1);
         format!("{ws_base}/api/v1/dispatcher/ws?token={key}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ws_url_upgrades_scheme_and_carries_token() {
+        let c = ServerClient::new("https://cctui.example.test/", "docker");
+        assert_eq!(
+            c.dispatcher_ws_url("k-123"),
+            "wss://cctui.example.test/api/v1/dispatcher/ws?token=k-123"
+        );
+        let c = ServerClient::new("http://localhost:8700", "kubernetes");
+        assert_eq!(c.dispatcher_ws_url("k"), "ws://localhost:8700/api/v1/dispatcher/ws?token=k");
     }
 }

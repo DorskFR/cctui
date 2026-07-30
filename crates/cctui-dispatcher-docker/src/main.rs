@@ -3,9 +3,8 @@ use std::path::{Path, PathBuf};
 use clap::{Parser, Subcommand};
 use tokio_util::sync::CancellationToken;
 
-use cctui_dispatcher_docker::client::ServerClient;
+use cctui_dispatcher_core::{Runner, ServerClient};
 use cctui_dispatcher_docker::config::Config;
-use cctui_dispatcher_docker::run::Runner;
 use cctui_dispatcher_docker::spawn::Spawner;
 
 #[derive(Parser)]
@@ -22,6 +21,7 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+#[allow(clippy::large_enum_variant)]
 enum Cmd {
     /// Enroll this dispatcher with a cctui-server and write the resulting key
     /// to the config file.
@@ -47,6 +47,15 @@ enum Cmd {
         /// Bind mount(s) for spawned containers (`/host:/container[:ro]`).
         #[arg(long)]
         mount: Vec<String>,
+        /// OAuth account name to bind as this dispatcher's default. A dispatch
+        /// with no explicit account routes its model traffic through the cctui
+        /// gateway under this account.
+        #[arg(long)]
+        account: Option<String>,
+        /// Provider hint disambiguating an account name shared across providers
+        /// (e.g. `anthropic` vs `openai`). Only meaningful with `--account`.
+        #[arg(long)]
+        provider: Option<String>,
     },
     /// Connect to the configured server and serve dispatch commands.
     Run,
@@ -99,9 +108,12 @@ async fn main() -> anyhow::Result<()> {
             network,
             docker_host,
             mount,
+            account,
+            provider,
         } => {
-            let client = ServerClient::new(&server_url);
-            let resp = client.enroll(&token, &name).await?;
+            let client = ServerClient::new(&server_url, "docker");
+            let resp =
+                client.enroll(&token, &name, account.as_deref(), provider.as_deref()).await?;
             let cfg = Config {
                 server_url,
                 dispatcher_key: resp.dispatcher_key,
@@ -118,7 +130,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Cmd::Run => {
             let cfg = Config::load_from(&path)?;
-            let client = ServerClient::new(&cfg.server_url);
+            let client = ServerClient::new(&cfg.server_url, "docker");
             // Confirm identity up-front so misconfigurations fail loudly.
             let auth = client.dispatcher_auth(&cfg.dispatcher_key).await?;
             tracing::info!(user_id = %auth.user_id, "authenticated");

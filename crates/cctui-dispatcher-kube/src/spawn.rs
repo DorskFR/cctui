@@ -34,7 +34,13 @@
 
 use std::time::Duration;
 
-use cctui_orchestrator::{WorkerProfile, WorkerProfileSpec};
+use cctui_dispatcher_core::{
+    Dispatcher, HandleState, SpawnOutcome, dedup_source, label_safe, worker_name,
+};
+use cctui_orchestrator::{
+    ANNOTATION_GPG_SIGNING, ANNOTATION_GUARD_IDENTITY, ANNOTATION_WORKER_CONTAINER,
+    LABEL_WORKER_PROFILE, WorkerProfile, WorkerProfileSpec,
+};
 use cctui_proto::ws::WireDispatchSpec;
 use k8s_openapi::api::batch::v1::Job;
 use k8s_openapi::api::core::v1::Pod;
@@ -57,52 +63,15 @@ const JOB_TTL_SECONDS: i64 = 3600;
 /// per-dispatch `timeout_minutes` always wins.
 const DEFAULT_TIMEOUT_MINUTES: u32 = 60;
 use serde_json::{Value, json};
-use sha1::{Digest, Sha1};
 
 const LABEL_ORIGIN: &str = "cctui.dev/origin";
 const LABEL_SESSION_ID: &str = "cctui.dev/session-id";
 const ANNOTATION_SESSION_ID: &str = "cctui.dev/session-id";
-/// Contract with the injection webhook — these exact strings are what it keys
-/// off to find the profile, the worker container, and the sandbox toggles.
-const LABEL_WORKER_PROFILE: &str = "cctui.dev/worker-profile";
-const ANNOTATION_WORKER_CONTAINER: &str = "cctui.dev/worker-container";
-const ANNOTATION_GUARD_IDENTITY: &str = "cctui.dev/guard-identity";
-const ANNOTATION_GPG_SIGNING: &str = "cctui.dev/gpg-signing";
 
 /// Env-value prefixes reserved for secret references. A dispatch carrying one in
 /// `payload.env` is rejected: secrets flow through the guard-proxy sidecar, and
 /// a ref reaching pod env could be resolved by cluster machinery into the worker.
 const SECRET_REF_PREFIXES: [&str; 3] = ["vault:", "bao:", "k8s:"];
-
-/// Lifecycle state of a spawned Job handle.
-#[derive(Debug, Clone, Copy)]
-pub enum HandleState {
-    Running,
-    Complete,
-    Failed,
-    Gone,
-}
-
-impl HandleState {
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Running => "running",
-            Self::Complete => "complete",
-            Self::Failed => "failed",
-            Self::Gone => "gone",
-        }
-    }
-}
-
-/// Outcome of a dispatch: an opaque handle, the namespace, plus the idempotency
-/// status reported back to the server verbatim.
-#[derive(Debug, Clone)]
-pub struct SpawnOutcome {
-    pub handle: String,
-    pub namespace: String,
-    pub status: String,
-}
 
 pub struct Spawner {
     namespace: String,
@@ -158,31 +127,6 @@ impl Spawner {
 
     fn jobs(&self) -> Api<Job> {
         Api::namespaced(self.client.clone(), &self.namespace)
-    }
-
-    /// `cctui-worker-<sha1(session_id)[:12]>` — deterministic so a repeat
-    /// dispatch maps to the same Job (idempotency key, 207). The prefix
-    /// is `cctui-worker-` (the legacy `claude-worker-` name was renamed under the
-    /// cctui unification); derived solely here, so dedup/status/delete
-    /// all stay consistent.
-    fn job_name(session_id: &str) -> String {
-        let digest = Sha1::digest(session_id.as_bytes());
-        let hex = hex::encode(digest);
-        format!("cctui-worker-{}", &hex[..12])
-    }
-
-    /// Coerce an arbitrary string into a valid k8s label value (≤63 chars,
-    /// `[A-Za-z0-9_.-]`, trimmed, stable fallback when empty).
-    fn label_safe(value: &str) -> String {
-        let mapped: String = value
-            .chars()
-            .map(
-                |c| if c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-') { c } else { '-' },
-            )
-            .collect();
-        let truncated: String = mapped.chars().take(63).collect();
-        let trimmed = truncated.trim_matches(|c| matches!(c, '-' | '_' | '.'));
-        if trimmed.is_empty() { "session".to_owned() } else { trimmed.to_owned() }
     }
 
     /// Resolve the profile name a dispatch selects: the wire `profile` field,
@@ -276,8 +220,8 @@ impl Spawner {
 
         let mut labels = serde_json::Map::new();
         labels.insert(LABEL_ORIGIN.into(), json!("cctui-kube-dispatcher"));
-        labels.insert(LABEL_SESSION_ID.into(), json!(Self::label_safe(&spec.session_id)));
-        labels.insert(LABEL_WORKER_PROFILE.into(), json!(Self::label_safe(profile_name)));
+        labels.insert(LABEL_SESSION_ID.into(), json!(label_safe(&spec.session_id)));
+        labels.insert(LABEL_WORKER_PROFILE.into(), json!(label_safe(profile_name)));
 
         let mut annotations = serde_json::Map::new();
         for (k, v) in profile.pod_annotations.iter().flatten() {
@@ -301,7 +245,7 @@ impl Spawner {
                 "name": name,
                 "labels": {
                     LABEL_ORIGIN: "cctui-kube-dispatcher",
-                    LABEL_SESSION_ID: Self::label_safe(&spec.session_id),
+                    LABEL_SESSION_ID: label_safe(&spec.session_id),
                 },
                 "annotations": { ANNOTATION_SESSION_ID: spec.session_id },
             },
@@ -435,25 +379,16 @@ impl Spawner {
         self.jobs().create(&PostParams::default(), job).await?;
         Ok(SpawnOutcome {
             handle: format!("jobs/{name}"),
-            namespace: self.namespace.clone(),
+            namespace: Some(self.namespace.clone()),
             status: status.to_owned(),
         })
-    }
-
-    /// The string the Job name derives from: the caller's `dedup_key` (the
-    /// logical request id) when present, else the `session_id`. Keeping
-    /// idempotency on the dedup key lets `session_id` be fresh per dispatch (no
-    /// conversation chaining) while a repeat of the same logical key still
-    /// coalesces onto one Job.
-    fn dedup_source(spec: &WireDispatchSpec) -> &str {
-        spec.dedup_key.as_deref().filter(|k| !k.is_empty()).unwrap_or(&spec.session_id)
     }
 
     /// Spawn a worker Job for the session. Idempotent: a repeat dispatch of the
     /// same dedup key reuses the deterministic name; a 409 (name in use) is
     /// resolved by reading the existing Job — in-flight ⇒ `deduplicated`,
     /// terminal ⇒ delete + recreate ⇒ `redispatched`.
-    pub async fn dispatch(&self, spec: &WireDispatchSpec) -> anyhow::Result<SpawnOutcome> {
+    async fn dispatch_worker(&self, spec: &WireDispatchSpec) -> anyhow::Result<SpawnOutcome> {
         if spec.session_id.is_empty() {
             anyhow::bail!("session_id is required");
         }
@@ -468,7 +403,7 @@ impl Spawner {
             .await
             .map_err(|e| anyhow::anyhow!("reading WorkerProfile `{profile_name}`: {e}"))?;
 
-        let name = Self::job_name(Self::dedup_source(spec));
+        let name = worker_name(dedup_source(spec));
         self.enforce_inflight_cap(&name).await?;
         let job = Self::build_job(
             &self.cctui_url,
@@ -503,7 +438,7 @@ impl Spawner {
             // In flight: keep idempotent dedup; the original run fires the callback.
             return Ok(SpawnOutcome {
                 handle: format!("jobs/{name}"),
-                namespace: self.namespace.clone(),
+                namespace: Some(self.namespace.clone()),
                 status: "deduplicated".to_owned(),
             });
         }
@@ -515,7 +450,7 @@ impl Spawner {
             // A concurrent re-dispatch beat us — its run owns the callback now.
             Err(KubeError::Api(e)) if e.code == 409 => Ok(SpawnOutcome {
                 handle: format!("jobs/{name}"),
-                namespace: self.namespace.clone(),
+                namespace: Some(self.namespace.clone()),
                 status: "deduplicated".to_owned(),
             }),
             Err(e) => anyhow::bail!("recreating Job: {e}"),
@@ -562,7 +497,7 @@ impl Spawner {
     /// (CrashLoopBackOff / OOMKilled / image-pull failure / stuck-`Pending`) as
     /// `Failed` with a reason, so the server's death-detector fires promptly
     /// instead of reading the workload as alive until the backoff budget runs.
-    pub async fn status(&self, handle: &str) -> anyhow::Result<(HandleState, Option<String>)> {
+    async fn worker_status(&self, handle: &str) -> anyhow::Result<(HandleState, Option<String>)> {
         let name = handle.strip_prefix("jobs/").unwrap_or(handle);
         let job = match self.jobs().get(name).await {
             Ok(j) => j,
@@ -662,9 +597,27 @@ impl Spawner {
         None
     }
 
-    pub async fn cancel(&self, handle: &str) -> anyhow::Result<()> {
+    async fn cancel_worker(&self, handle: &str) -> anyhow::Result<()> {
         let name = handle.strip_prefix("jobs/").unwrap_or(handle);
         self.delete_and_wait(name).await
+    }
+}
+
+impl Dispatcher for Spawner {
+    fn kind(&self) -> &'static str {
+        "kubernetes"
+    }
+
+    async fn dispatch(&self, spec: &WireDispatchSpec) -> anyhow::Result<SpawnOutcome> {
+        self.dispatch_worker(spec).await
+    }
+
+    async fn status(&self, handle: &str) -> anyhow::Result<(HandleState, Option<String>)> {
+        self.worker_status(handle).await
+    }
+
+    async fn cancel(&self, handle: &str) -> anyhow::Result<()> {
+        self.cancel_worker(handle).await
     }
 }
 
@@ -734,7 +687,7 @@ mod tests {
     }
 
     fn build(profile_name: &str, profile: &WorkerProfileSpec, spec: &WireDispatchSpec) -> Value {
-        let name = Spawner::job_name(&spec.session_id);
+        let name = worker_name(&spec.session_id);
         let job = Spawner::build_job(
             "http://cctui.example.svc.cluster.local:8700",
             profile_name,
@@ -762,13 +715,13 @@ mod tests {
 
     #[test]
     fn job_name_is_deterministic_and_dns_safe() {
-        let a = Spawner::job_name("triage:PROJ:2026060116");
-        let b = Spawner::job_name("triage:PROJ:2026060116");
+        let a = worker_name("triage:PROJ:2026060116");
+        let b = worker_name("triage:PROJ:2026060116");
         assert_eq!(a, b);
         assert!(a.starts_with("cctui-worker-"));
         assert!(a.len() <= 63);
         assert!(a.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'));
-        assert_ne!(a, Spawner::job_name("triage:PROJ:2026060117"));
+        assert_ne!(a, worker_name("triage:PROJ:2026060117"));
     }
 
     #[test]
@@ -778,23 +731,20 @@ mod tests {
         let mut s2 = spec("22222222-2222-4222-8222-222222222222", json!({}));
         s2.dedup_key = Some("triage-PROJ-202606231511".to_owned());
         assert_eq!(
-            Spawner::job_name(Spawner::dedup_source(&s1)),
-            Spawner::job_name(Spawner::dedup_source(&s2)),
+            worker_name(dedup_source(&s1)),
+            worker_name(dedup_source(&s2)),
             "same dedup key => same Job despite distinct session ids",
         );
         let s3 = spec("33333333-3333-4333-8333-333333333333", json!({}));
-        assert_eq!(Spawner::dedup_source(&s3), "33333333-3333-4333-8333-333333333333");
-        assert_ne!(
-            Spawner::job_name(Spawner::dedup_source(&s1)),
-            Spawner::job_name(Spawner::dedup_source(&s3)),
-        );
+        assert_eq!(dedup_source(&s3), "33333333-3333-4333-8333-333333333333");
+        assert_ne!(worker_name(dedup_source(&s1)), worker_name(dedup_source(&s3)),);
     }
 
     #[test]
     fn label_safe_sanitizes_separators() {
-        assert_eq!(Spawner::label_safe("triage:PROJ:2026"), "triage-PROJ-2026");
-        assert_eq!(Spawner::label_safe(":::"), "session");
-        assert_eq!(Spawner::label_safe(&"x".repeat(100)).len(), 63);
+        assert_eq!(label_safe("triage:PROJ:2026"), "triage-PROJ-2026");
+        assert_eq!(label_safe(":::"), "session");
+        assert_eq!(label_safe(&"x".repeat(100)).len(), 63);
     }
 
     #[test]
@@ -985,7 +935,7 @@ mod tests {
         for reference in ["vault:secret/data/ci#gh", "bao:secret/data/ci#gh", "k8s:s#k"] {
             let payload = json!({ "env": { "TOKEN": reference } });
             let s = spec("sess-x", payload);
-            let name = Spawner::job_name("sess-x");
+            let name = worker_name("sess-x");
             let err =
                 Spawner::build_job("http://cctui:8700", "lean", &lean_profile(), &s, &name, 3600)
                     .expect_err("secret-ref env must be rejected");
@@ -1005,7 +955,7 @@ mod tests {
     #[test]
     fn per_dispatch_timeout_overrides_default_deadline() {
         let s = spec("sess-30", json!({}));
-        let name = Spawner::job_name("sess-30");
+        let name = worker_name("sess-30");
         let job = Spawner::build_job("http://cctui:8700", "lean", &lean_profile(), &s, &name, 7200)
             .unwrap();
         let v = serde_json::to_value(&job).unwrap();

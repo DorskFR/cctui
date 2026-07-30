@@ -5,6 +5,7 @@ members = [
     "crates/cctui-crypto",
     "crates/cctui-daemon",
     "crates/cctui-dispatcher-apple",
+    "crates/cctui-dispatcher-core",
     "crates/cctui-dispatcher-docker",
     "crates/cctui-dispatcher-kube",
     "crates/cctui-guard",
@@ -18,7 +19,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.7.235"
+version = "0.7.236"
 edition = "2024"
 license = "MIT"
 authors = ["DorskFR"]

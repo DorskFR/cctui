@@ -9,6 +9,7 @@ pub mod compress;
 pub mod diagnose;
 pub mod github;
 pub mod identity;
+pub mod ids;
 pub mod models;
 pub mod util;
 pub mod ws;

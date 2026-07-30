@@ -104,14 +104,10 @@ pub async fn deregister(
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
     // Deregister just drops the live handle; the session stays in DB as
     // `inactive` and can be revived by a future turn/message.
-    sqlx::query("UPDATE sessions SET status = 'inactive' WHERE id = $1")
-        .bind(&session_id)
-        .execute(&state.pool)
-        .await
-        .map_err(|e| {
-            tracing::error!("db error: {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-        })?;
+    crate::store::sessions::set_inactive(&state.pool, &session_id, false).await.map_err(|e| {
+        tracing::error!("db error: {e}");
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
+    })?;
     {
         let mut registry = state.registry.write().await;
         registry.deregister(&session_id);
@@ -1467,22 +1463,11 @@ pub async fn get_session(
     // (read-only). A true 404 now means the session was actually deleted, not
     // just archived (item 6 — kills the spurious "not found or
     // archived" toast on refresh).
-    let row: Option<DbSession> = sqlx::query_as(
-        "SELECT s.id, s.parent_id, s.machine_id, s.working_dir, s.status, \
-                s.registered_at, s.last_heartbeat, s.metadata, s.adapter_id, \
-                COALESCE(m.display_name, m.name) AS resolved_machine_name, \
-                m.hue AS resolved_machine_hue, m.kind AS resolved_machine_kind \
-         FROM sessions s \
-         LEFT JOIN machines m ON m.id = s.machine_uuid \
-         WHERE s.id = $1",
-    )
-    .bind(&session_id)
-    .fetch_optional(&state.pool)
-    .await
-    .map_err(|e| {
-        tracing::error!("db error: {e}");
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-    })?;
+    let row: Option<DbSession> =
+        crate::store::sessions::fetch_by_id(&state.pool, &session_id).await.map_err(|e| {
+            tracing::error!("db error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
+        })?;
 
     let row = row.ok_or_else(|| {
         (StatusCode::NOT_FOUND, Json(ApiError { error: "session not found".into() }))
@@ -1540,17 +1525,10 @@ pub async fn get_conversation(
     Path(session_id): Path<String>,
 ) -> Result<Json<Vec<serde_json::Value>>, (StatusCode, Json<ApiError>)> {
     let adapter: Option<String> =
-        sqlx::query_scalar("SELECT adapter_id FROM sessions WHERE id = $1")
-            .bind(&session_id)
-            .fetch_optional(&state.pool)
-            .await
-            .map_err(|e| {
-                tracing::error!("db error: {e}");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ApiError { error: "database error".into() }),
-                )
-            })?;
+        crate::store::sessions::adapter_id(&state.pool, &session_id).await.map_err(|e| {
+            tracing::error!("db error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
+        })?;
 
     // Order by `id` (the BIGSERIAL insert sequence), not `created_at`: `id` is
     // the causal `seq` and is a strict total order, so a late-flushed
@@ -1740,14 +1718,10 @@ pub async fn kill_session(
     .await;
     // Kill drops the in-memory handle and marks the DB row inactive. The
     // session isn't archived — later activity can revive it.
-    sqlx::query("UPDATE sessions SET status = 'inactive' WHERE id = $1")
-        .bind(&session_id)
-        .execute(&state.pool)
-        .await
-        .map_err(|e| {
-            tracing::error!("db error: {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-        })?;
+    crate::store::sessions::set_inactive(&state.pool, &session_id, false).await.map_err(|e| {
+        tracing::error!("db error: {e}");
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
+    })?;
     {
         let mut registry = state.registry.write().await;
         registry.deregister(&session_id);
@@ -2016,12 +1990,7 @@ pub async fn resume_session(
     // `claude rm` (which deletes the on-disk job state.json but keeps the
     // conversation transcript) — the daemon falls back to local_id + this cwd.
     let working_dir: Option<String> =
-        sqlx::query_scalar("SELECT working_dir FROM sessions WHERE id = $1")
-            .bind(&session_id)
-            .fetch_optional(&state.pool)
-            .await
-            .ok()
-            .flatten();
+        crate::store::sessions::working_dir(&state.pool, &session_id).await.ok().flatten();
 
     // Re-mint the gateway env for the session's bound OAuth account so the
     // revived worker keeps routing through the gateway instead of hitting the
@@ -2042,14 +2011,10 @@ pub async fn resume_session(
         tracing::warn!(%session_id, error = %e, "resume dispatch failed");
         (StatusCode::SERVICE_UNAVAILABLE, Json(ApiError { error: format!("resume failed: {e}") }))
     })?;
-    sqlx::query("UPDATE sessions SET status = 'inactive' WHERE id = $1 AND status = 'archived'")
-        .bind(&session_id)
-        .execute(&state.pool)
-        .await
-        .map_err(|e| {
-            tracing::error!("db error: {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-        })?;
+    crate::store::sessions::set_inactive(&state.pool, &session_id, true).await.map_err(|e| {
+        tracing::error!("db error: {e}");
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
+    })?;
     tracing::info!(session_id = %session_id, "resume dispatched");
     Ok(StatusCode::ACCEPTED)
 }
@@ -2262,11 +2227,8 @@ async fn archive_one(state: &AppState, session_id: &str) -> Result<(), sqlx::Err
     // Subagents are observe-only (no worker), so they need no `claude rm` —
     // only the parent does, handled by the dispatch above. Archiving a
     // *child* does not touch the parent (no `parent_id` cascade upward).
-    let children: Vec<String> = sqlx::query_scalar("SELECT id FROM sessions WHERE parent_id = $1")
-        .bind(session_id)
-        .fetch_all(&state.pool)
-        .await
-        .unwrap_or_default();
+    let children: Vec<String> =
+        crate::store::sessions::child_ids(&state.pool, session_id).await.unwrap_or_default();
     // Clear the classifier signals on archive so a session that was waiting on
     // input doesn't keep its ✋ "needs input" glyph in the archived view — an
     // archived session is, by definition, no longer waiting on anyone.
@@ -2308,10 +2270,7 @@ pub async fn unarchive_session(
 }
 
 async fn unarchive_one(state: &AppState, session_id: &str) -> Result<(), sqlx::Error> {
-    sqlx::query("UPDATE sessions SET status = 'inactive' WHERE id = $1 AND status = 'archived'")
-        .bind(session_id)
-        .execute(&state.pool)
-        .await?;
+    crate::store::sessions::set_inactive(&state.pool, session_id, true).await?;
     tracing::info!(session_id = %session_id, "session unarchived");
     Ok(())
 }

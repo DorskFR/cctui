@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 mod app;
 mod client;
 mod install;
@@ -603,7 +601,6 @@ async fn load_conversation(
 
 // --- Server events ---
 
-#[allow(clippy::too_many_lines)]
 fn handle_server_event(app: &mut App, event: ServerEvent) {
     match event {
         ServerEvent::PermissionRequest {
@@ -612,96 +609,21 @@ fn handle_server_event(app: &mut App, event: ServerEvent) {
             tool_name,
             description,
             input_preview,
-        } => {
-            let req =
-                PendingPermission { session_id, request_id, tool_name, description, input_preview };
-            let was_empty = app.permission_queue.is_empty();
-            app.permission_queue.push_back(req);
-            if was_empty {
-                app.pre_permission_view = app.view.clone();
-                app.view = View::PermissionDialog;
-            }
-        }
-        ServerEvent::Stream { session_id, data } => {
-            if let AgentEvent::Heartbeat { tokens_in, tokens_out, cost_usd, .. } = &data
-                && let Some(session) = app.sessions.iter_mut().find(|s| s.id == session_id)
-            {
-                session.token_usage.tokens_in = *tokens_in;
-                session.token_usage.tokens_out = *tokens_out;
-                session.token_usage.cost_usd = *cost_usd;
-            }
-            let line = agent_event_to_line(&data);
-            // Dedup: skip if the last line has identical text and kind
-            let buf = app.stream_buffer.entry(session_id).or_default();
-            let is_dup =
-                buf.last().is_some_and(|last| last.kind == line.kind && last.text == line.text);
-            if !is_dup {
-                buf.push(line);
-            }
-        }
+        } => enqueue_permission_request(
+            app,
+            PendingPermission { session_id, request_id, tool_name, description, input_preview },
+        ),
+        ServerEvent::Stream { session_id, data } => handle_stream_event(app, session_id, &data),
         ServerEvent::Status { session_id, status } => {
             if let Some(session) = app.sessions.iter_mut().find(|s| s.id == session_id) {
                 session.status = status;
                 app.update_aggregates();
             }
         }
-        ServerEvent::SessionRegistered { session } => {
-            if !app.sessions.iter().any(|s| s.id == session.id) {
-                app.sessions.push(cctui_proto::api::SessionListItem {
-                    id: session.id,
-                    parent_id: session.parent_id,
-                    machine_id: session.machine_id,
-                    working_dir: session.working_dir,
-                    status: session.status,
-                    liveness: cctui_proto::models::Liveness::Active,
-                    attention: None,
-                    // Newly-registered: classifier signals arrive on the next
-                    // REST refresh; until then it's plain Working.
-                    bucket: cctui_proto::classifier::Bucket::Working,
-                    uptime_secs: 0,
-                    token_usage: cctui_proto::models::TokenUsage::default(),
-                    metadata: session.metadata,
-                    adapter_id: session.adapter_id,
-                    machine_name: None,
-                    machine_hue: None,
-                    machine_kind: None,
-                    account_name: None,
-                    unread_count: 0,
-                    activity_detail: None,
-                    last_tool_at: None,
-                    last_tool_name: None,
-                    tool_use_count: 0,
-                    has_token_credentials: false,
-                    account_traffic_observed: false,
-                    last_message_text: None,
-                    last_message_at: None,
-                    registered_at: Some(session.registered_at),
-                    name: None,
-                    model: None,
-                    effort: None,
-                    auto_approve: false,
-                    match_snippet: None,
-                    last_activity_at: None,
-                    cache_cold: false,
-                    estimated_burst_tokens: None,
-                    hibernated: false,
-                    pinned: false,
-                    labels: Vec::new(),
-                    last_heartbeat: None,
-                    intent: None,
-                    pr_links: Vec::new(),
-                });
-                app.update_aggregates();
-            }
-        }
-        ServerEvent::SessionDeregistered { session_id } => {
-            app.sessions.retain(|s| s.id != session_id);
-            app.stream_buffer.remove(&session_id);
-            let len = app.flattened_sessions().len();
-            if len > 0 && app.selected_index >= len {
-                app.selected_index = len - 1;
-            }
-            app.update_aggregates();
+        ServerEvent::SessionRegistered { session } => register_session(app, session),
+        ServerEvent::SessionDeregistered { session_id } => deregister_session(app, &session_id),
+        ServerEvent::PermissionResolved { session_id, request_id } => {
+            resolve_permission(app, &session_id, &request_id);
         }
         ServerEvent::ArchiveManifest { .. }
         | ServerEvent::ArchiveUploaded { .. }
@@ -716,35 +638,108 @@ fn handle_server_event(app: &mut App, event: ServerEvent) {
         | ServerEvent::AskResolved { .. }
         | ServerEvent::SoftLimitReached { .. }
         | ServerEvent::PtyChunk { .. }
-        | ServerEvent::SoftLimitCleared { .. } => {
-            // Archive coverage is web-only; spawn feedback
-            // (CommandResult) is surfaced in the web client and the
-            // TUI doesn't drive the spawn flow. Live AskUserQuestion prompts
-            // render in the web client; the TUI shows the question
-            // from the transcript, so nothing to render here. MessageAck
-            // is opt-in via `client_msg_id`, which the TUI never
-            // sends, so the server won't emit one to it. MachineLiveness
-            // drives a web-only per-machine badge; the TUI doesn't
-            // render machine liveness, so nothing to do here. SoftLimit
-            // Reached/Cleared drive the web-only per-chat
-            // account-switch banner; the TUI doesn't render it.
-        }
-        ServerEvent::PermissionResolved { session_id, request_id } => {
-            // Drop any queued entry that matches; if it's the head and the
-            // dialog is currently showing, restore the pre-dialog view.
-            let was_head_matching = app
-                .permission_queue
-                .front()
-                .is_some_and(|p| p.session_id == session_id && p.request_id == request_id);
-            app.permission_queue
-                .retain(|p| !(p.session_id == session_id && p.request_id == request_id));
-            if was_head_matching
-                && app.permission_queue.is_empty()
-                && matches!(app.view, View::PermissionDialog)
-            {
-                app.view = app.pre_permission_view.clone();
-            }
-        }
+        | ServerEvent::SoftLimitCleared { .. } => {}
+    }
+}
+
+fn enqueue_permission_request(app: &mut App, req: PendingPermission) {
+    let was_empty = app.permission_queue.is_empty();
+    app.permission_queue.push_back(req);
+    if was_empty {
+        app.pre_permission_view = app.view.clone();
+        app.view = View::PermissionDialog;
+    }
+}
+
+fn handle_stream_event(app: &mut App, session_id: String, data: &AgentEvent) {
+    if let AgentEvent::Heartbeat { tokens_in, tokens_out, cost_usd, .. } = data
+        && let Some(session) = app.sessions.iter_mut().find(|s| s.id == session_id)
+    {
+        session.token_usage.tokens_in = *tokens_in;
+        session.token_usage.tokens_out = *tokens_out;
+        session.token_usage.cost_usd = *cost_usd;
+    }
+    let line = agent_event_to_line(data);
+    let buf = app.stream_buffer.entry(session_id).or_default();
+    let is_dup = buf.last().is_some_and(|last| last.kind == line.kind && last.text == line.text);
+    if !is_dup {
+        buf.push(line);
+    }
+}
+
+fn register_session(app: &mut App, session: cctui_proto::models::Session) {
+    if app.sessions.iter().any(|s| s.id == session.id) {
+        return;
+    }
+    app.sessions.push(cctui_proto::api::SessionListItem {
+        id: session.id,
+        parent_id: session.parent_id,
+        machine_id: session.machine_id,
+        working_dir: session.working_dir,
+        status: session.status,
+        liveness: cctui_proto::models::Liveness::Active,
+        attention: None,
+        // Classifier signals arrive on the next REST refresh; Working until then.
+        bucket: cctui_proto::classifier::Bucket::Working,
+        uptime_secs: 0,
+        token_usage: cctui_proto::models::TokenUsage::default(),
+        metadata: session.metadata,
+        adapter_id: session.adapter_id,
+        machine_name: None,
+        machine_hue: None,
+        machine_kind: None,
+        account_name: None,
+        unread_count: 0,
+        activity_detail: None,
+        last_tool_at: None,
+        last_tool_name: None,
+        tool_use_count: 0,
+        has_token_credentials: false,
+        account_traffic_observed: false,
+        last_message_text: None,
+        last_message_at: None,
+        registered_at: Some(session.registered_at),
+        name: None,
+        model: None,
+        effort: None,
+        auto_approve: false,
+        match_snippet: None,
+        last_activity_at: None,
+        cache_cold: false,
+        estimated_burst_tokens: None,
+        hibernated: false,
+        pinned: false,
+        labels: Vec::new(),
+        last_heartbeat: None,
+        intent: None,
+        pr_links: Vec::new(),
+    });
+    app.update_aggregates();
+}
+
+fn deregister_session(app: &mut App, session_id: &str) {
+    app.sessions.retain(|s| s.id != session_id);
+    app.stream_buffer.remove(session_id);
+    let len = app.flattened_sessions().len();
+    if len > 0 && app.selected_index >= len {
+        app.selected_index = len - 1;
+    }
+    app.update_aggregates();
+}
+
+/// Drop any queued entry that matches; if it's the head and the dialog is
+/// currently showing, restore the pre-dialog view.
+fn resolve_permission(app: &mut App, session_id: &str, request_id: &str) {
+    let was_head_matching = app
+        .permission_queue
+        .front()
+        .is_some_and(|p| p.session_id == session_id && p.request_id == request_id);
+    app.permission_queue.retain(|p| !(p.session_id == session_id && p.request_id == request_id));
+    if was_head_matching
+        && app.permission_queue.is_empty()
+        && matches!(app.view, View::PermissionDialog)
+    {
+        app.view = app.pre_permission_view.clone();
     }
 }
 
@@ -875,7 +870,7 @@ fn agent_event_to_line(event: &AgentEvent) -> ConversationLine {
             } else {
                 (LineKind::Assistant, content.clone())
             };
-            ConversationLine { timestamp: *ts, kind, text, tool: None, tool_input: None }
+            ConversationLine { timestamp: *ts, kind, text, tool_input: None }
         }
         AgentEvent::ToolCall { tool, input, ts, .. } => {
             let detail = views::sessions::format_tool_input(tool, input);
@@ -885,22 +880,19 @@ fn agent_event_to_line(event: &AgentEvent) -> ConversationLine {
                 timestamp: *ts,
                 kind: LineKind::ToolCall,
                 text: format!("[{tool}] {detail}"),
-                tool: Some(tool.clone()),
                 tool_input: if keep_input { Some(input.clone()) } else { None },
             }
         }
-        AgentEvent::ToolResult { tool, output_summary, ts, .. } => ConversationLine {
+        AgentEvent::ToolResult { output_summary, ts, .. } => ConversationLine {
             timestamp: *ts,
             kind: LineKind::ToolResult,
             text: format!("  → {output_summary}"),
-            tool: Some(tool.clone()),
             tool_input: None,
         },
         AgentEvent::Heartbeat { ts, .. } | AgentEvent::TurnEnd { ts, .. } => ConversationLine {
             timestamp: *ts,
             kind: LineKind::System,
             text: String::new(),
-            tool: None,
             tool_input: None,
         },
         // /clear boundary within one session.
@@ -908,7 +900,6 @@ fn agent_event_to_line(event: &AgentEvent) -> ConversationLine {
             timestamp: *ts,
             kind: LineKind::System,
             text: "⟳ context reset (/clear · /compact)".to_owned(),
-            tool: None,
             tool_input: None,
         },
         // /compact summary (no rotation; carries the summary text).
@@ -916,14 +907,12 @@ fn agent_event_to_line(event: &AgentEvent) -> ConversationLine {
             timestamp: *ts,
             kind: LineKind::System,
             text: format!("⟳ context compacted\n{content}"),
-            tool: None,
             tool_input: None,
         },
         AgentEvent::Reply { content, ts, .. } => ConversationLine {
             timestamp: *ts,
             kind: LineKind::Reply,
             text: content.clone(),
-            tool: None,
             tool_input: None,
         },
     }

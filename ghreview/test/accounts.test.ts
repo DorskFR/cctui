@@ -9,9 +9,10 @@ import { upsertDocument } from "../src/db/documents.ts";
 import { runMigrations } from "../src/db/migrate.ts";
 import type { AppDeps } from "../src/deps.ts";
 import type { PatValidator } from "../src/github/validate.ts";
+import { dbGate } from "./dbGate.ts";
 
 const DATABASE_URL = process.env.DATABASE_URL;
-const guarded = DATABASE_URL ? describe : describe.skip;
+const guarded = dbGate(describe, DATABASE_URL);
 
 let db: DbHandle;
 const sealer = createSealer(randomBytes(32).toString("base64"));
