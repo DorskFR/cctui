@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { errMessage } from '$lib/api';
 	import type { SpawnRequest } from '@bindings/SpawnRequest';
 	import type { DispatchRequest } from '@bindings/DispatchRequest';
 	import {
@@ -647,7 +648,7 @@
 			if (target === 'machine') await spawnOnMachine();
 			else await dispatchToK8s();
 		} catch (e) {
-			const msg = (e as Error).message;
+			const msg = errMessage(e);
 			toasts.err(
 				target === 'machine'
 					? m.spawn_toast_spawn_failed({ error: msg })
@@ -668,7 +669,7 @@
 		try {
 			await saveDraft();
 		} catch (e) {
-			toasts.err(m.spawn_toast_save_draft_failed({ error: (e as Error).message }));
+			toasts.err(m.spawn_toast_save_draft_failed({ error: errMessage(e) }));
 		} finally {
 			busy = false;
 		}

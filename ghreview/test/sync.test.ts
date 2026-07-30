@@ -6,8 +6,8 @@ import { createDb, type DbHandle } from "../src/db/client.ts";
 import { runMigrations } from "../src/db/migrate.ts";
 import type { AppDeps } from "../src/deps.ts";
 import { EventBus } from "../src/events/bus.ts";
-import { deriveReviewDecision } from "../src/sync/handlers.ts";
 import { AccountManager } from "../src/sync/manager.ts";
+import { deriveReviewDecision } from "../src/sync/pullEnrich.ts";
 
 const DATABASE_URL = process.env.DATABASE_URL;
 const guarded = DATABASE_URL ? describe : describe.skip;
@@ -114,7 +114,7 @@ describe("AccountManager force sync", () => {
 
 guarded("force sync route", () => {
   beforeAll(async () => {
-    db = createDb(DATABASE_URL as string, "ghreview");
+    db = createDb(DATABASE_URL as string);
     await db.sql.unsafe("DROP SCHEMA IF EXISTS ghreview CASCADE");
     await runMigrations(db);
   });

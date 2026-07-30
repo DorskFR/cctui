@@ -292,9 +292,13 @@ mod macos {
     /// `$PATH` resolves the tools the daemon will need to spawn.
     pub fn rendered_plist() -> Result<String> {
         let exe = current_exe_string()?;
+        let home = std::env::var("HOME").context("HOME not set")?;
+        let log_dir = format!("{home}/Library/Logs");
+        std::fs::create_dir_all(&log_dir).with_context(|| format!("create {log_dir}"))?;
         Ok(PLIST_TEMPLATE
             .replace("/usr/local/bin/cctui-daemon", &exe)
-            .replace("__CCTUI_DAEMON_PATH__", &crate::childenv::child_path()))
+            .replace("__CCTUI_DAEMON_PATH__", &crate::childenv::child_path())
+            .replace("__CCTUI_LOG_DIR__", &log_dir))
     }
 
     pub fn install() -> Result<()> {

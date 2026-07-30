@@ -26,3 +26,16 @@ export function resolveTerminalFont(doc: Document = document): string {
 	}
 	return normalizeFontStack(raw);
 }
+
+export const FALLBACK_TERMINAL_BG = '#0b0e14';
+
+export function resolveTerminalBg(doc: Document = document): string {
+	let raw = '';
+	try {
+		raw = getComputedStyle(doc.documentElement).getPropertyValue('--term-bg');
+	} catch {
+		raw = '';
+	}
+	const bg = raw.trim();
+	return !bg || bg.includes('var(') ? FALLBACK_TERMINAL_BG : bg;
+}

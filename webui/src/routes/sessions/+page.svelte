@@ -6,7 +6,7 @@
 	import { page } from '$app/state';
 	import { pushState, replaceState } from '$app/navigation';
 	import { toasts } from '$lib/toast.svelte';
-	import { ApiError } from '$lib/api';
+	import { ApiError, errMessage } from '$lib/api';
 	import { ws } from '$lib/ws.svelte';
 	import SessionCard from '$lib/components/organisms/SessionCard.svelte';
 	import ConversationDrawer from '$lib/components/organisms/ConversationDrawer.svelte';
@@ -208,7 +208,7 @@
 				openSession = null;
 				setUrlSession(null, true);
 			} else {
-				toasts.err(m.sessions_toast_open_failed({ error: (e as Error).message }));
+				toasts.err(m.sessions_toast_open_failed({ error: errMessage(e) }));
 			}
 		} finally {
 			urlResolving = false;
@@ -368,7 +368,7 @@
 			pageOffset = offset + rows.length;
 			pageDone = rows.length < PAGE;
 		} catch (e) {
-			if (req === pageReqId) pageError = (e as Error).message;
+			if (req === pageReqId) pageError = errMessage(e);
 		} finally {
 			if (req === pageReqId) pageLoading = false;
 		}
@@ -438,7 +438,7 @@
 			exitSelect();
 			refreshTick++;
 		} catch (e) {
-			toasts.err((e as Error).message);
+			toasts.err(errMessage(e));
 		} finally {
 			archiving = false;
 		}
@@ -459,7 +459,7 @@
 			refreshTick++;
 			qc.invalidateQueries({ queryKey: ['sessions'] });
 		} catch (e) {
-			toasts.err((e as Error).message);
+			toasts.err(errMessage(e));
 		} finally {
 			archiving = false;
 		}
@@ -475,7 +475,7 @@
 			toasts.ok(isArchived ? m.sessions_toast_unarchived() : m.sessions_toast_archived_one());
 			refreshTick++;
 		} catch (e) {
-			toasts.err((e as Error).message);
+			toasts.err(errMessage(e));
 		}
 	}
 
@@ -488,7 +488,7 @@
 			toasts.ok(s.pinned ? m.sessions_toast_unpinned() : m.sessions_toast_pinned());
 			refreshTick++;
 		} catch (e) {
-			toasts.err((e as Error).message);
+			toasts.err(errMessage(e));
 		}
 	}
 
@@ -564,7 +564,7 @@
 			await actions.launchDraft(s.id);
 			toasts.ok(m.sessions_toast_draft_launched());
 		} catch (e) {
-			toasts.err(m.sessions_toast_launch_failed({ error: (e as Error).message }));
+			toasts.err(m.sessions_toast_launch_failed({ error: errMessage(e) }));
 		} finally {
 			launchingDraft = null;
 		}
@@ -576,7 +576,7 @@
 			await actions.discardDraft(s.id);
 			toasts.ok(m.sessions_toast_draft_discarded());
 		} catch (e) {
-			toasts.err((e as Error).message);
+			toasts.err(errMessage(e));
 		}
 	}
 
@@ -602,7 +602,7 @@
 		try {
 			await actions.discardDraft(s.id);
 		} catch (e) {
-			toasts.err(m.sessions_toast_edit_draft_failed({ error: (e as Error).message }));
+			toasts.err(m.sessions_toast_edit_draft_failed({ error: errMessage(e) }));
 			return;
 		}
 		spawnPrefill = prefill;
@@ -1264,9 +1264,9 @@
 	}
 	/* Dispatched group collapse toggle. */
 	.group-header[data-bucket='blocked'] {
-		color: var(--warn, #d08770);
+		color: var(--warn);
 	}
 	.group-header[data-bucket='review'] {
-		color: var(--accent, #88c0d0);
+		color: var(--accent);
 	}
 </style>

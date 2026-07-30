@@ -5,7 +5,10 @@ import { getUserId } from "../auth/middleware.ts";
 import { listUserLogins } from "../db/accounts.ts";
 import type { AppDeps } from "../deps.ts";
 import type { SseMessage } from "../events/bus.ts";
+import { EventQueue, MAX_QUEUED_EVENTS } from "../events/queue.ts";
 import { AccountSchema } from "../schemas.ts";
+
+const KEEPALIVE_MS = 15_000;
 
 export const PrUpdatedEventSchema = z
   .object({
@@ -100,24 +103,32 @@ export function registerEvents(app: OpenAPIHono, deps: AppDeps = {}) {
       const account = (msg.data as { account?: string } | undefined)?.account;
       return account === undefined || allowed.has(account);
     };
+    const aborted = c.req.raw.signal;
     return streamSSE(c, async (stream) => {
-      const queue: SseMessage[] = [];
+      const queue = new EventQueue<SseMessage>(MAX_QUEUED_EVENTS);
       const unsubscribe = deps.bus?.subscribe((msg) => queue.push(msg));
+      const stopQueue = () => queue.stop();
+      aborted.addEventListener("abort", stopQueue, { once: true });
       await stream.writeSSE({ event: "sync.status", data: JSON.stringify({ ready: true }) });
       try {
-        while (!stream.closed) {
-          let msg = queue.shift();
-          while (msg) {
+        while (!stream.closed && !aborted.aborted) {
+          for (const msg of queue.drain()) {
             if (visible(msg)) {
               await stream.writeSSE({ event: msg.event, data: JSON.stringify(msg.data) });
             }
-            msg = queue.shift();
           }
-          await stream.writeSSE({ event: "ping", data: "" });
-          await stream.sleep(1_000);
+          const dropped = queue.takeDropped();
+          if (dropped > 0) {
+            await stream.writeSSE({ event: "stream.overflow", data: JSON.stringify({ dropped }) });
+          }
+          const woke = await queue.wait(KEEPALIVE_MS);
+          if (stream.closed || aborted.aborted) break;
+          if (!woke) await stream.writeSSE({ event: "ping", data: "" });
         }
       } finally {
+        aborted.removeEventListener("abort", stopQueue);
         unsubscribe?.();
+        queue.stop();
       }
     });
   });

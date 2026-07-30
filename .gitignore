@@ -7,8 +7,8 @@
 .superpowers/
 docs/superpowers/
 .sqlx/
-/.cargo/*
-!/.cargo/audit.toml
+/.cargo/registry/
+/.cargo/git/
 /.cargo-home/
 
 # Machine-local guidance and private notes (see CLAUDE.md) — never committed.

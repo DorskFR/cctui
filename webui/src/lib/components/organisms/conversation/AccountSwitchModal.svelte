@@ -212,7 +212,7 @@
 		border-radius: var(--r-md);
 	}
 	.binding.limited {
-		border-color: var(--danger, #c0392b);
+		border-color: var(--danger);
 	}
 	.binding-head {
 		display: flex;

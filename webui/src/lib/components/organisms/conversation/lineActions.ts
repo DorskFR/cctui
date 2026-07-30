@@ -1,5 +1,6 @@
 // Per-message line actions (copy-as-Markdown, save-as-PNG) for the conversation
 // drawer, extracted from ConversationDrawer with no behavior change.
+import { errMessage } from '$lib/api';
 import { toasts } from '$lib/toast.svelte';
 import { copyText } from '$lib/clipboard';
 import { lineMarkdown } from './format';
@@ -67,6 +68,6 @@ export async function saveLineImage(e: MouseEvent, ln: Line) {
 		a.click();
 		toasts.ok(m.conversation_saved_image());
 	} catch (err) {
-		toasts.err(m.conversation_image_export_failed({ message: (err as Error).message }));
+		toasts.err(m.conversation_image_export_failed({ message: errMessage(err) }));
 	}
 }

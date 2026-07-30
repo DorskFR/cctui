@@ -42,6 +42,60 @@ describe("api client with injected runtime auth", () => {
   });
 });
 
+describe("path segment encoding", () => {
+  function jsonFetch() {
+    const fetchMock = vi.fn(
+      async (_input: string | URL | Request, _init?: RequestInit) =>
+        new Response(JSON.stringify({}), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  it("encodes owner, repo and number segments", async () => {
+    configureRuntime({ baseUrl: "https://ghreview.example", token: null });
+    const fetchMock = jsonFetch();
+
+    await api.pull("Org Name", "repo#weird/name", 7);
+
+    expect(String(fetchMock.mock.calls[0][0])).toBe(
+      "https://ghreview.example/v1/repos/Org%20Name/repo%23weird%2Fname/pulls/7",
+    );
+  });
+
+  it("encodes label and comment id segments", async () => {
+    configureRuntime({ baseUrl: "https://ghreview.example", token: null });
+    const fetchMock = jsonFetch();
+
+    await api.removePullLabel("o", "r", 1, "acct", "needs review/triage");
+    await api.deleteIssueComment("o", "r", 99, "acct");
+    await api.unsubscribe("o/r#7");
+
+    const urls = fetchMock.mock.calls.map(([url]) => String(url));
+    expect(urls[0]).toBe(
+      "https://ghreview.example/v1/repos/o/r/pulls/1/labels/needs%20review%2Ftriage?account=acct",
+    );
+    expect(urls[1]).toBe(
+      "https://ghreview.example/v1/repos/o/r/issues/comments/99?account=acct",
+    );
+    expect(urls[2]).toBe("https://ghreview.example/v1/subscriptions/o%2Fr%237");
+  });
+
+  it("keeps the pulls listing path stable for ordinary names", async () => {
+    configureRuntime({ baseUrl: "https://ghreview.example", token: null });
+    const fetchMock = jsonFetch();
+
+    await api.pulls("octo", "one", "octocat");
+
+    expect(String(fetchMock.mock.calls[0][0])).toBe(
+      "https://ghreview.example/v1/repos/octo/one/pulls?account=octocat",
+    );
+  });
+});
+
 describe("cursor pagination", () => {
   it("collects every page in cursor order", async () => {
     const fetchPage = vi

@@ -4,6 +4,7 @@
   connects to something external) as well as its own route.
 -->
 <script lang="ts">
+	import { errMessage } from '$lib/api';
 	import {
 		useUserDispatchers,
 		useDispatcherActions,
@@ -87,7 +88,7 @@
 				newKey = r.dispatcher_key;
 			}
 		} catch (e) {
-			toasts.err((e as Error).message);
+			toasts.err(errMessage(e));
 		}
 	}
 

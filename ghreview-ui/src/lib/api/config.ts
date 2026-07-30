@@ -11,9 +11,16 @@ export interface GhreviewRuntimeConfig {
 }
 
 let runtime: GhreviewRuntimeConfig | null = null;
+const listeners = new Set<() => void>();
+
+export function onConfigChange(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
 
 export function configureRuntime(config: GhreviewRuntimeConfig | null): void {
   runtime = config;
+  for (const listener of [...listeners]) listener();
 }
 
 export function isEmbedded(): boolean {

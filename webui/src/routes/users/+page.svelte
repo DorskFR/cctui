@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { errMessage } from '$lib/api';
 	import { useUsers, useUserActions, useMe } from '$lib/queries';
 	import type { UserRow } from '@bindings/UserRow';
 	import { toasts } from '$lib/toast.svelte';
@@ -46,7 +47,7 @@
 			selectedId = r.id;
 			showSecret(m.users_key_secret_title({ label: r.name }), r.key);
 		} catch (e) {
-			toasts.err((e as Error).message);
+			toasts.err(errMessage(e));
 		}
 	}
 	function rename(id: string, name: string | null) {

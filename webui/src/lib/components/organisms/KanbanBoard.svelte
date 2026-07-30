@@ -64,7 +64,7 @@
 		opacity: 0.7;
 	}
 	.column[data-col='blocked'] .col-header {
-		color: var(--warn, #d08770);
+		color: var(--warn);
 	}
 	.col-body {
 		display: flex;

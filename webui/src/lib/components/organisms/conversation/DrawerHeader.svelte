@@ -493,9 +493,9 @@
 	}
 	.dhead :global(.tapbtn.interrupt) {
 		order: 11;
-		color: var(--danger, #bf616a);
-		border-color: color-mix(in srgb, var(--danger, #bf616a) 40%, var(--border-strong));
-		background: color-mix(in srgb, var(--danger, #bf616a) 10%, var(--bg-elevated-2));
+		color: var(--danger);
+		border-color: color-mix(in srgb, var(--danger) 40%, var(--border-strong));
+		background: color-mix(in srgb, var(--danger) 10%, var(--bg-elevated-2));
 	}
 	.hmeta {
 		gap: var(--sp-2);
@@ -524,7 +524,7 @@
 	}
 	.star.on,
 	.star:hover {
-		color: var(--warn, #e0a800);
+		color: var(--warn);
 	}
 	.model-edit {
 		display: contents;

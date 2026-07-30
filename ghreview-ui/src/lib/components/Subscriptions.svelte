@@ -3,6 +3,7 @@
   import { Button, Card, Cluster, Field, Heading, Input, Stack, Text } from "@dorsk/tsumikit";
   import { api, type Subscription } from "../api/client";
   import { getAccount } from "../api/config";
+  import { keys } from "../api/queries";
   import { pullPath } from "../router/route";
   import { router } from "../router/router.svelte";
   import RepoPicker from "./RepoPicker.svelte";
@@ -15,8 +16,8 @@
   const subscribePr = createMutation({
     mutationFn: (target: string) => api.subscribe(target, "pull_request", account),
     onSuccess: (sub: Subscription) => {
-      client.invalidateQueries({ queryKey: ["subscriptions"] });
-      client.invalidateQueries({ queryKey: ["pulls"] });
+      client.invalidateQueries({ queryKey: keys.subscriptionsAll() });
+      client.invalidateQueries({ queryKey: keys.pullsAll() });
       prUrl = "";
       const parsed = /^([^/]+)\/([^/#]+)#(\d+)$/.exec(sub.target ?? "");
       if (parsed) router.navigate(pullPath(parsed[1], parsed[2], Number(parsed[3])));

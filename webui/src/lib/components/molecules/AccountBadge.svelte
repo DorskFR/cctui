@@ -89,7 +89,7 @@
 		outline: none;
 	}
 	.acct.warn {
-		color: var(--c-warn, #d89614);
+		color: var(--warn);
 	}
 	.acct svg {
 		/* em-relative so the glyph scales with the font-scale picker. */

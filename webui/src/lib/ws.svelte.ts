@@ -175,6 +175,91 @@ function backoffDelay(attempt: number): number {
 }
 
 /**
+ * A registry of per-key callback sets. `add` returns an unsubscribe fn and drops
+ * the key's set once empty, so a long-lived client doesn't accumulate one entry
+ * per session ever visited.
+ */
+export class KeyedListeners<T> {
+	private cbs = new Map<string, Set<(v: T) => void>>();
+
+	add(key: string, cb: (v: T) => void): () => void {
+		let set = this.cbs.get(key);
+		if (!set) {
+			set = new Set();
+			this.cbs.set(key, set);
+		}
+		set.add(cb);
+		return () => {
+			const cur = this.cbs.get(key);
+			if (!cur) return;
+			cur.delete(cb);
+			if (cur.size === 0) this.cbs.delete(key);
+		};
+	}
+
+	emit(key: string, value: T) {
+		const set = this.cbs.get(key);
+		if (set) for (const cb of set) cb(value);
+	}
+
+	has(key: string): boolean {
+		return (this.cbs.get(key)?.size ?? 0) > 0;
+	}
+}
+
+/** Per-session seed buffer caps. A subscribed-but-unopened session streams
+ * events forever, so the buffer is bounded on both counts — it only ever needs
+ * to seed a freshly-opened drawer, which then fetches real history. */
+const MAX_BUFFER_CHARS = 1_000_000;
+const MAX_BUFFER_EVENTS = 1500;
+
+/**
+ * Bounded, de-duplicating event buffer. Dedup is by serialized identity via a
+ * hash set (one serialization per arriving event), and the total serialized size
+ * is tracked incrementally — so appending is O(1), not O(N) stringifies.
+ */
+export class BoundedEventBuffer {
+	private entries: { ev: AgentEvent; sig: string }[] = [];
+	private sigs = new Set<string>();
+	private chars = 0;
+
+	constructor(
+		private maxChars = MAX_BUFFER_CHARS,
+		private maxEvents = MAX_BUFFER_EVENTS
+	) {}
+
+	push(ev: AgentEvent): boolean {
+		const sig = JSON.stringify(ev);
+		if (this.sigs.has(sig)) return false;
+		this.entries.push({ ev, sig });
+		this.sigs.add(sig);
+		this.chars += sig.length;
+		// Evict oldest-first, but never the event just appended.
+		while (this.entries.length > 1 && (this.entries.length > this.maxEvents || this.chars > this.maxChars)) {
+			const dropped = this.entries.shift();
+			if (!dropped) break;
+			this.sigs.delete(dropped.sig);
+			this.chars -= dropped.sig.length;
+		}
+		return true;
+	}
+
+	list(): AgentEvent[] {
+		return this.entries.map((e) => e.ev);
+	}
+
+	clear() {
+		this.entries = [];
+		this.sigs.clear();
+		this.chars = 0;
+	}
+
+	get size(): number {
+		return this.entries.length;
+	}
+}
+
+/**
  * Single shared TUI websocket. Streams live AgentEvents for subscribed
  * sessions, tracks pending permission requests, and resolves spawn command
  * results. Auto-reconnects with backoff.
@@ -194,7 +279,7 @@ class WsClient {
 	changeTick = $state(0);
 
 	/** per-session event buffer (seed for late subscribers); not reactive */
-	private buffer = new Map<string, AgentEvent[]>();
+	private buffer = new Map<string, BoundedEventBuffer>();
 	/**
 	 * Optimistic `reply` echoes the user just sent, kept here (NOT only in the
 	 * component) so they survive a resubscribe/reconnect that rebuilds the
@@ -211,18 +296,18 @@ class WsClient {
 	private asks = new Map<string, LiveAsk>();
 	private plans = new Map<string, LivePlan>();
 	private softLimits = new Map<string, SoftLimit>();
-	private streamCbs = new Map<string, Set<StreamCb>>();
+	private streamCbs = new KeyedListeners<AgentEvent>();
 	/** Live PTY-view listeners keyed by session id; not reactive. The
 	 * bytes are never buffered — a terminal that mounts late relies on the fresh
 	 * attach's full-screen repaint, not replay. */
-	private ptyCbs = new Map<string, Set<PtyCb>>();
+	private ptyCbs = new KeyedListeners<Uint8Array>();
 	/** Sessions this client is watching the live terminal of, re-sent on
 	 * reconnect so the daemon stream resumes after a drop. */
 	private ptyWatched = new Set<string>();
-	private permCbs = new Map<string, Set<PermCb>>();
-	private askCbs = new Map<string, Set<AskCb>>();
-	private planCbs = new Map<string, Set<PlanCb>>();
-	private softLimitCbs = new Map<string, Set<SoftLimitCb>>();
+	private permCbs = new KeyedListeners<PermReq[]>();
+	private askCbs = new KeyedListeners<LiveAsk | null>();
+	private planCbs = new KeyedListeners<LivePlan | null>();
+	private softLimitCbs = new KeyedListeners<SoftLimit | null>();
 	/** GitHub inbox listeners (GH-CONN-5 / GH-UI-1); not session-keyed — one
 	 * broadcast channel the mounted inbox subscribes to. Not reactive. */
 	private githubCbs = new Set<GithubCb>();
@@ -235,7 +320,7 @@ class WsClient {
 	private sends = new Map<string, Map<number, TrackedSend>>();
 	/** clientMsgId → the send it belongs to, for ack correlation. */
 	private ackIndex = new Map<string, { sid: string; ts: number }>();
-	private deliveryCbs = new Map<string, Set<DeliveryCb>>();
+	private deliveryCbs = new KeyedListeners<DeliverySnapshot>();
 
 	private socket: WebSocket | null = null;
 	private subscribed = new Set<string>();
@@ -336,11 +421,7 @@ class WsClient {
 			}
 			case 'pty_chunk': {
 				const sid = msg.session_id as string;
-				const set = this.ptyCbs.get(sid);
-				if (set && set.size > 0) {
-					const bytes = decodeBase64(msg.data as string);
-					for (const cb of set) cb(bytes);
-				}
+				if (this.ptyCbs.has(sid)) this.ptyCbs.emit(sid, decodeBase64(msg.data as string));
 				break;
 			}
 			case 'permission_request': {
@@ -463,12 +544,17 @@ class WsClient {
 		// in the buffer. A leaked/replayed duplicate carries the SAME daemon ts,
 		// whereas a legitimately-repeated identical tool call within a turn gets
 		// a DIFFERENT ts, so within-turn repeats are preserved.
-		const buf = this.buffer.get(id) ?? [];
-		const sig = JSON.stringify(ev);
-		if (buf.some((e) => JSON.stringify(e) === sig)) return;
-		this.buffer.set(id, [...buf, ev]);
-		const set = this.streamCbs.get(id);
-		if (set) for (const cb of set) cb(ev);
+		if (!this.bufFor(id).push(ev)) return;
+		this.streamCbs.emit(id, ev);
+	}
+
+	private bufFor(id: string): BoundedEventBuffer {
+		let buf = this.buffer.get(id);
+		if (!buf) {
+			buf = new BoundedEventBuffer();
+			this.buffer.set(id, buf);
+		}
+		return buf;
 	}
 
 	/** Record an optimistic reply the user just sent. Survives resubscribe and
@@ -488,38 +574,34 @@ class WsClient {
 	private setPerms(id: string, list: PermReq[]) {
 		this.perms.set(id, list);
 		this.changeTick++; // list badge re-derives on changeTick-driven refetch
-		const set = this.permCbs.get(id);
-		if (set) for (const cb of set) cb(list);
+		this.permCbs.emit(id, list);
 	}
 
 	private setAsk(id: string, ask: LiveAsk | null) {
 		if (ask === null) this.asks.delete(id);
 		else this.asks.set(id, ask);
 		this.changeTick++;
-		const set = this.askCbs.get(id);
-		if (set) for (const cb of set) cb(ask);
+		this.askCbs.emit(id, ask);
 	}
 
 	private setPlan(id: string, plan: LivePlan | null) {
 		if (plan === null) this.plans.delete(id);
 		else this.plans.set(id, plan);
 		this.changeTick++;
-		const set = this.planCbs.get(id);
-		if (set) for (const cb of set) cb(plan);
+		this.planCbs.emit(id, plan);
 	}
 
 	private setSoftLimit(id: string, sl: SoftLimit | null) {
 		if (sl === null) this.softLimits.delete(id);
 		else this.softLimits.set(id, sl);
 		this.changeTick++;
-		const set = this.softLimitCbs.get(id);
-		if (set) for (const cb of set) cb(sl);
+		this.softLimitCbs.emit(id, sl);
 	}
 
 	subscribe(id: string) {
 		if (!this.subscribed.has(id)) {
 			this.subscribed.add(id);
-			if (!this.buffer.has(id)) this.buffer.set(id, []);
+			this.bufFor(id);
 			this.send({ type: 'subscribe', session_id: id });
 		}
 	}
@@ -531,14 +613,14 @@ class WsClient {
 	}
 
 	clearStream(id: string) {
-		this.buffer.set(id, []);
+		this.bufFor(id).clear();
 	}
 
 	/** Snapshot of buffered events for a session (seed for a freshly-opened
 	 * view), with any still-pending optimistic replies appended so a sent
 	 * message survives a resubscribe until the server echoes it. */
 	bufferedEvents(id: string): AgentEvent[] {
-		return [...(this.buffer.get(id) ?? []), ...(this.optimistic.get(id) ?? [])];
+		return [...(this.buffer.get(id)?.list() ?? []), ...(this.optimistic.get(id) ?? [])];
 	}
 
 	/** Current pending permission count for a session (read in list templates;
@@ -567,24 +649,12 @@ class WsClient {
 	/** Register a live PTY-byte listener for a session. Returns an
 	 * unsubscribe fn. Bytes are raw terminal output to feed straight into xterm. */
 	onPty(id: string, cb: PtyCb): () => void {
-		let set = this.ptyCbs.get(id);
-		if (!set) {
-			set = new Set();
-			this.ptyCbs.set(id, set);
-		}
-		set.add(cb);
-		return () => set!.delete(cb);
+		return this.ptyCbs.add(id, cb);
 	}
 
 	/** Register a live-event listener for a session. Returns an unsubscribe fn. */
 	onStream(id: string, cb: StreamCb): () => void {
-		let set = this.streamCbs.get(id);
-		if (!set) {
-			set = new Set();
-			this.streamCbs.set(id, set);
-		}
-		set.add(cb);
-		return () => set!.delete(cb);
+		return this.streamCbs.add(id, cb);
 	}
 
 	/** Register a live GitHub inbox listener (GH-UI-1). Fires on every
@@ -600,28 +670,18 @@ class WsClient {
 	/** Register a pending-permissions listener for a session. Fires with the
 	 * current list immediately and on every change. Returns an unsubscribe fn. */
 	onPerms(id: string, cb: PermCb): () => void {
-		let set = this.permCbs.get(id);
-		if (!set) {
-			set = new Set();
-			this.permCbs.set(id, set);
-		}
-		set.add(cb);
+		const off = this.permCbs.add(id, cb);
 		cb(this.perms.get(id) ?? []);
-		return () => set!.delete(cb);
+		return off;
 	}
 
 	/** Register a live AskUserQuestion listener for a session. Fires with the
 	 * current pending question (or null) immediately and on every change.
 	 * Returns an unsubscribe fn. */
 	onAsk(id: string, cb: AskCb): () => void {
-		let set = this.askCbs.get(id);
-		if (!set) {
-			set = new Set();
-			this.askCbs.set(id, set);
-		}
-		set.add(cb);
+		const off = this.askCbs.add(id, cb);
 		cb(this.asks.get(id) ?? null);
-		return () => set!.delete(cb);
+		return off;
 	}
 
 	/** Clear any live pending question for a session (e.g. after the user
@@ -634,14 +694,9 @@ class WsClient {
 	 * the current pending plan (or null) immediately and on every change.
 	 * Returns an unsubscribe fn. */
 	onPlan(id: string, cb: PlanCb): () => void {
-		let set = this.planCbs.get(id);
-		if (!set) {
-			set = new Set();
-			this.planCbs.set(id, set);
-		}
-		set.add(cb);
+		const off = this.planCbs.add(id, cb);
 		cb(this.plans.get(id) ?? null);
-		return () => set!.delete(cb);
+		return off;
 	}
 
 	/** Clear any live pending plan for a session (e.g. after the user answers,
@@ -656,14 +711,9 @@ class WsClient {
 	 * component-local `$state`, never reading a keyed `$state` off this singleton
 	 * via `$derived`. */
 	onSoftLimit(id: string, cb: SoftLimitCb): () => void {
-		let set = this.softLimitCbs.get(id);
-		if (!set) {
-			set = new Set();
-			this.softLimitCbs.set(id, set);
-		}
-		set.add(cb);
+		const off = this.softLimitCbs.add(id, cb);
 		cb(this.softLimits.get(id) ?? null);
-		return () => set!.delete(cb);
+		return off;
 	}
 
 	/** Clear any live soft-limit block for a session (e.g. immediately after the
@@ -753,14 +803,9 @@ class WsClient {
 	/** Subscribe to a session's delivery state. Fires immediately with the
 	 * current snapshot and on every change. Returns an unsubscribe fn. */
 	onDelivery(sid: string, cb: DeliveryCb): () => void {
-		let set = this.deliveryCbs.get(sid);
-		if (!set) {
-			set = new Set();
-			this.deliveryCbs.set(sid, set);
-		}
-		set.add(cb);
+		const off = this.deliveryCbs.add(sid, cb);
 		cb(this.deliverySnapshot(sid));
-		return () => set!.delete(cb);
+		return off;
 	}
 
 	private clearTimer(send: TrackedSend) {
@@ -831,16 +876,14 @@ class WsClient {
 		if (send) {
 			this.clearTimer(send);
 			if (send.clientMsgId) this.ackIndex.delete(send.clientMsgId);
-			m!.delete(ts);
+			m?.delete(ts);
 		}
 		this.notifyDelivery(sid);
 	}
 
 	private notifyDelivery(sid: string) {
-		const set = this.deliveryCbs.get(sid);
-		if (!set) return;
-		const snap = this.deliverySnapshot(sid);
-		for (const cb of set) cb(snap);
+		if (!this.deliveryCbs.has(sid)) return;
+		this.deliveryCbs.emit(sid, this.deliverySnapshot(sid));
 	}
 
 	respondPermission(sessionId: string, requestId: string, allow: boolean) {
@@ -869,12 +912,15 @@ class WsClient {
 		timeoutMs = 60_000
 	): Promise<{ ok: boolean; error?: string; timedOut?: boolean }> {
 		return new Promise((resolve) => {
-			this.waiters.set(commandId, resolve);
-			setTimeout(() => {
+			const timer = setTimeout(() => {
 				if (this.waiters.delete(commandId)) {
 					resolve({ ok: false, timedOut: true, error: 'no spawn confirmation from the daemon' });
 				}
 			}, timeoutMs);
+			this.waiters.set(commandId, (r) => {
+				clearTimeout(timer);
+				resolve(r);
+			});
 		});
 	}
 }

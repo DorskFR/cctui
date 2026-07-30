@@ -20,7 +20,7 @@ const sealer = config.sealKey ? createSealer(config.sealKey) : undefined;
 if (sealer) deps.sealer = sealer;
 
 if (config.databaseUrl) {
-  const db = createDb(config.databaseUrl, config.schema);
+  const db = createDb(config.databaseUrl);
   const ran = await runMigrations(db);
   if (ran.length > 0) console.log(`ghreview: applied migrations ${ran.join(", ")}`);
   const bus = new EventBus();

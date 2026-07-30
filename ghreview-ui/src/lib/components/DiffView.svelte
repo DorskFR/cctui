@@ -2,7 +2,7 @@
   import type { NavIndex } from "../diff/navindex";
   import type { DiffModel } from "../diff/parse";
   import { buildSplitModel } from "../diff/split";
-  import { highlightLine, langForPath } from "../diff/highlight";
+  import { highlightLineCached, langForPath } from "../diff/highlight";
   import { computeWindow } from "../diff/virtual";
   import { fontPxFor, readFsScale, rowHeightFor } from "../diff/fs-scale";
   import { Checkbox } from "@dorsk/tsumikit";
@@ -89,7 +89,13 @@
 
   const langByFile = $derived(model.files.map((f) => langForPath(f.filename)));
   function hl(content: string, fileIndex: number): string {
-    return highlightLine(content, langByFile[fileIndex] ?? null);
+    return highlightLineCached(content, langByFile[fileIndex] ?? null);
+  }
+
+  function activateRow(e: KeyboardEvent, rowIndex: number): void {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    e.preventDefault();
+    onFocusRow(rowIndex);
   }
 
   const split = $derived(mode === "split" ? buildSplitModel(model) : null);
@@ -162,52 +168,50 @@
             {:else}
               {@const l = srow.left}
               {@const r = srow.right}
-              <button
-                type="button"
+              <div
                 class="side side-{l ? l.row.kind : "empty"}"
+                role="gridcell"
                 tabindex="-1"
                 onclick={() => l && onFocusRow(l.rowIndex)}
+                onkeydown={(e) => l && activateRow(e, l.rowIndex)}
               >
                 <span class="gutter">{l?.row.oldLine ?? ""}</span>
                 <span class="marker">{l?.row.kind === "del" ? "−" : ""}</span>
                 <span class="code code-hl">{@html l ? hl(l.row.content, l.row.fileIndex) : ""}</span>
                 {#if review && l && l.row.kind !== "context"}
-                  <span
+                  <button
+                    type="button"
                     class="add-comment"
-                    role="button"
-                    tabindex="-1"
                     aria-label="Comment on this line"
                     onclick={(e) => {
                       e.stopPropagation();
                       openComposer(l.rowIndex);
                     }}
-                    onkeydown={() => {}}
-                  >+</span>
+                  >+</button>
                 {/if}
-              </button>
-              <button
-                type="button"
+              </div>
+              <div
                 class="side side-{r ? r.row.kind : "empty"}"
+                role="gridcell"
                 tabindex="-1"
                 onclick={() => r && onFocusRow(r.rowIndex)}
+                onkeydown={(e) => r && activateRow(e, r.rowIndex)}
               >
                 <span class="gutter">{r?.row.newLine ?? ""}</span>
                 <span class="marker">{r?.row.kind === "add" ? "+" : ""}</span>
                 <span class="code code-hl">{@html r ? hl(r.row.content, r.row.fileIndex) : ""}</span>
                 {#if review && r && r.row.kind !== "context"}
-                  <span
+                  <button
+                    type="button"
                     class="add-comment"
-                    role="button"
-                    tabindex="-1"
                     aria-label="Comment on this line"
                     onclick={(e) => {
                       e.stopPropagation();
                       openComposer(r.rowIndex);
                     }}
-                    onkeydown={() => {}}
-                  >+</span>
+                  >+</button>
                 {/if}
-              </button>
+              </div>
             {/if}
           </div>
         {/each}
@@ -222,7 +226,7 @@
             role="row"
             tabindex="-1"
             onclick={() => onFocusRow(idx)}
-            onkeydown={() => {}}
+            onkeydown={(e) => activateRow(e, idx)}
           >
             {#if row.kind === "file"}
               {@const fname = model.files[row.fileIndex]?.filename ?? null}

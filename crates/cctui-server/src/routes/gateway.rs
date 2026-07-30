@@ -2421,6 +2421,28 @@ async fn record_fireworks_usage(
     }
 }
 
+/// Resolve the database a DB-gated test should run against.
+///
+/// Locally a missing URL skips the test. Under CI it panics instead: a silent
+/// skip there means the gate never ran and the suite passes green having
+/// exercised none of the SQL.
+#[cfg(test)]
+pub fn test_db_url(test_name: &str) -> Option<String> {
+    let url = ["DATABASE_URL", "TEST_DATABASE_URL"]
+        .iter()
+        .filter_map(|k| std::env::var(k).ok())
+        .find(|v| !v.trim().is_empty());
+
+    if url.is_none() {
+        assert!(
+            std::env::var_os("CI").is_none(),
+            "{test_name}: DATABASE_URL/TEST_DATABASE_URL must point at a migrated database in CI"
+        );
+        eprintln!("skipping {test_name}: no DATABASE_URL/TEST_DATABASE_URL");
+    }
+    url
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -2774,10 +2796,7 @@ mod tests {
     /// passthrough / `token-valid` queries share. Skips without a database.
     #[tokio::test]
     async fn expired_session_token_is_not_resolved() {
-        let Some(url) =
-            std::env::var("DATABASE_URL").ok().or_else(|| std::env::var("TEST_DATABASE_URL").ok())
-        else {
-            eprintln!("skipping expired_session_token_is_not_resolved: no DATABASE_URL");
+        let Some(url) = super::test_db_url("expired_session_token_is_not_resolved") else {
             return;
         };
         let pool = sqlx::postgres::PgPoolOptions::new()
@@ -2865,10 +2884,7 @@ mod tests {
     /// token stays out of it (the warning state). Skips without a database.
     #[tokio::test]
     async fn last_used_stamp_drives_observed_traffic() {
-        let Some(url) =
-            std::env::var("DATABASE_URL").ok().or_else(|| std::env::var("TEST_DATABASE_URL").ok())
-        else {
-            eprintln!("skipping last_used_stamp_drives_observed_traffic: no DATABASE_URL");
+        let Some(url) = super::test_db_url("last_used_stamp_drives_observed_traffic") else {
             return;
         };
         let pool = sqlx::postgres::PgPoolOptions::new()

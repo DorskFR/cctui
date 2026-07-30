@@ -10,6 +10,12 @@ ExecStart=%h/.local/bin/cctui-daemon run
 Restart=on-failure
 RestartSec=5s
 
+# The default (control-group) SIGTERMs every process in the unit's cgroup on
+# stop/restart — which includes the `claude daemon` and every worker session the
+# daemon spawned, so a routine restart killed all live sessions. `mixed` signals
+# only the main process; the sessions survive and the daemon re-adopts them.
+KillMode=mixed
+
 # The daemon talks to the user's claude daemon control socket and reads
 # ~/.claude — must run as the user, not root.
 NoNewPrivileges=true

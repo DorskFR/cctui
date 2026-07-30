@@ -212,7 +212,7 @@ it could spoof completion with.
 
 ### Metadata/credential deny-list (CCT-720)
 
-The whole secret-source model depends on the **worker** container being unable to
+The whole credential model depends on the **worker** container being unable to
 reach the credential backend directly — credential-backend reachability is a
 property of the **sidecar** only. Two independent layers enforce this, so neither
 a buggy/malicious `policy.json` nor a compromised proxy can open the hole:
@@ -287,42 +287,41 @@ denies `mount(2)` (previously masked by `privileged: true`).
 
 ### Sidecar secret source (CCT-717)
 
-The guard-proxy sidecar can resolve per-`(task identity, service)` credentials
-for the TLS-terminating injection landing in CCT-718. **Default is no secret
-source** — without `--secret-source` the proxy behaves exactly as before.
+Every secret the sidecar can inject is named by an **explicit, engine-qualified
+secret ref** — the proxy knows engines, never a service taxonomy of its own, so
+what a ref points at is a deployment decision (see the inject config below).
 Resolved secrets live only in an in-memory TTL cache (default 120s, never
 persisted, never logged); a fetch past TTL re-reads the backend, so store-side
 rotation lands within one TTL. Lookups fail closed: "no credential configured"
 and "backend failure" are distinct errors, and a backend failure never
 degrades to a blank secret.
 
+| Ref form | Engine | Notes |
+|---|---|---|
+| `env:VAR` | the sidecar's OWN environment | Empty values count as not configured. The sanctioned dev path: the dev cluster's vault-env webhook materializes `vault:` refs into the **sidecar** container env, so the worker container never sees the values. |
+| `vault:<mount>/data/<path>#<field>` | Vault/OpenBao KV v2 (dev) | Needs `--vault-addr` + `--vault-role`; Kubernetes auth with the pod SA token. `bao:` is an accepted alias for refs carried in pod **env values** — the bank-vaults webhook would otherwise hijack a literal `vault:` prefix before the proxy sees it. |
+| `aws-sm:<name>` / `aws-sm:<name>#<json-field>` | AWS Secrets Manager (prod) | SDK default credential chain (EKS Pod Identity / IRSA — the sidecar's ambient identity). Which secrets a pod may read is enforced in IAM by secret-name prefix, not in code. |
+| `k8s:[<namespace>/]<secret>#<key>` | Kubernetes Secret | Read via the pod's own `ServiceAccount`; RBAC decides what it may read. |
+
+Refs may carry `${IDENTITY}` (the task identity, ASCII alphanumerics uppercased
+and every other character mapped to `_` — `acme-corp` → `ACME_CORP`) or
+`${identity}` (verbatim). A ref that uses a placeholder while `--identity` is
+unset is a **startup error**, never a silently wrong path.
+
 | Flag | Env | Default | Meaning |
 |---|---|---|---|
-| `--secret-source` | `GUARD_PROXY_SECRET_SOURCE` | `none` | `none`, `env`, `vault`, or `aws-sm`. |
 | `--secret-ttl-secs` | `GUARD_PROXY_SECRET_TTL_SECS` | `120` | In-memory cache TTL. |
-| `--vault-addr` | `GUARD_PROXY_VAULT_ADDR` | — | Vault/OpenBao base URL (required for `vault`). |
-| `--vault-role` | `GUARD_PROXY_VAULT_ROLE` | — | Kubernetes auth role (required for `vault`). |
-| `--vault-mount` | `GUARD_PROXY_VAULT_MOUNT` | `secret` | KV v2 mount. |
-| `--vault-path-prefix` | `GUARD_PROXY_VAULT_PATH_PREFIX` | `cctui/workers` | Secret read at `<mount>/data/<prefix>/<identity>/<service>`. |
-| `--vault-field` | `GUARD_PROXY_VAULT_FIELD` | `value` | Field read from the KV v2 data map. |
+| `--identity` | `GUARD_PROXY_IDENTITY` | *(empty)* | Task identity substituted into ref placeholders. |
+| `--vault-addr` | `GUARD_PROXY_VAULT_ADDR` | — | Vault/OpenBao base URL (enables the `vault:` engine). |
+| `--vault-role` | `GUARD_PROXY_VAULT_ROLE` | — | Kubernetes auth role (required with `--vault-addr`). |
 | `--vault-token-path` | `GUARD_PROXY_VAULT_TOKEN_PATH` | `/var/run/secrets/kubernetes.io/serviceaccount/token` | SA token for `POST /v1/auth/kubernetes/login`. |
-| `--aws-sm-prefix` | `GUARD_PROXY_AWS_SM_PREFIX` | `cctui/worker/` | Secret named `<prefix><identity>/<service>`. |
 
-Backends:
+An engine that is not configured fails its refs as a *backend* error (closed),
+never as "not found".
 
-- **`aws-sm`** (prod): AWS Secrets Manager through the SDK default credential
-  chain (EKS Pod Identity / IRSA — the sidecar's ambient identity). Which
-  identities a pod may read is enforced in IAM by secret-name prefix, not in
-  code.
-- **`vault`** (dev): KV v2 read over HTTP with Kubernetes auth using the pod
-  SA token.
-- **`env`** (dev fallback): the sidecar's OWN environment,
-  `CRED_<IDENTITY>_<SERVICE>` — ASCII alphanumerics uppercased, every other
-  character mapped to `_` (`acme-corp`/`github` →
-  `CRED_ACME_CORP_GITHUB`). Empty values count as not configured. This is the
-  sanctioned dev path: the dev cluster's vault-env webhook materializes
-  `vault:` refs into the sidecar container env, so the worker container never
-  sees the values.
+The `fetch-secret <ref>` subcommand resolves one ref (identity templating
+applied) and prints it to stdout — how the sidecar entrypoint obtains the GPG
+signing key.
 
 ### TLS-terminating credential injection (CCT-718)
 
@@ -333,14 +332,44 @@ one from the secret source, and re-encrypts to the upstream over real TLS
 phantom-token pattern: the task carries only a credential *selector* (its
 identity), never the secret. Hosts NOT on the allow-list keep the SNI-peek
 passthrough splice, so the MITM surface is only the allow-list. Injection is
-**inert** unless BOTH a `--secret-source` and `--inject-hosts` are set — default
-behaviour is unchanged pure passthrough.
+**inert** unless the inject config file exists — default behaviour is unchanged
+pure passthrough.
 
 | Flag | Env | Default | Meaning |
 |---|---|---|---|
-| `--inject-hosts` | `GUARD_PROXY_INJECT_HOSTS` | *(empty)* | Comma list of hosts to terminate + inject. Each token is `host`, `host=service`, or `host=service:<shape>` (`bearer`\|`basic`/`git`\|`slack`). Unlisted hosts stay passthrough. |
-| `--identity` | `GUARD_PROXY_IDENTITY` | *(empty)* | Task identity — the first half of every `(identity, service)` secret key. Required when `--inject-hosts` is set. |
+| `--inject-config` | `GUARD_PROXY_INJECT_CONFIG` | `/etc/guard-proxy/inject.json` | The injection config (below). Absent ⇒ zero rules ⇒ passthrough. MUST NOT live in a worker-writable location. |
 | `--ca-cert-out` | `GUARD_PROXY_CA_CERT_OUT` | `/var/run/guard-proxy-ca/ca.pem` | Where the sidecar writes the PUBLIC per-pod CA cert. |
+
+**Inject config.** A JSON array; each entry names one host, the auth shape, and
+the explicit secret ref(s) to inject. It is the single source of truth for
+injection — the proxy ships no built-in `host → service` table, so every
+injected host is a deliberate deployment entry. A **malformed config fails
+startup**: a partially applied credential config is worse than none.
+
+| Field | Required | Meaning |
+|---|---|---|
+| `host` | yes | Host to TLS-terminate (lowercased). Repeat the host for several path-scoped rules. |
+| `secret` | yes | Secret ref of the credential to inject. |
+| `shape` | no (`bearer`) | `bearer`, `basic`/`git`, `bearer+cookie`/`cookie`, or `sigv4`. |
+| `service` | no (`host`) | Label for logs and GitHub-App provider matching — never a lookup key. |
+| `path_prefix` | no | Scopes the rule to a request path; must start with `/`. The **longest** matching prefix wins, ties keep config order, and a request matching no rule forwards the agent's head unchanged. |
+| `username` | no (`x-access-token`) | Basic-auth username. |
+| `cookie_name` / `cookie_secret` | `cookie_secret` required for `bearer+cookie` | Companion session cookie (default name `d`). |
+| `region` / `aws_service` / `key_id_secret` | `key_id_secret` required for `sigv4` | `SigV4` signing params; `region`/`aws_service` default from a `<service>.<region>.amazonaws.com` host. `secret` is the secret access key, `key_id_secret` the access key id. |
+
+```jsonc
+[
+  { "host": "api.github.com", "service": "github",
+    "secret": "vault:kvmount/data/cctui/workers#GITHUB_TOKEN_${IDENTITY}" },
+  { "host": "github.com", "service": "github", "shape": "git",
+    "secret": "vault:kvmount/data/cctui/workers#GITHUB_TOKEN_${IDENTITY}" },
+  { "host": "registry.npmjs.org", "service": "npm", "secret": "env:CRED_NPM" }
+]
+```
+
+`sigv4` requests are buffered (≤1 MiB) so the signature can cover the body hash;
+a chunked or oversized body cannot be hashed and forwards unchanged, exactly
+like a credential miss.
 
 **Per-pod CA.** At boot the sidecar mints a CA (via `rcgen`), keeps the private
 key **in memory only** (never on disk), and writes only the public cert (PEM,
@@ -354,35 +383,31 @@ bundle that trusts the public roots **and** the guard CA (never replacing the
 public roots — passthrough hosts keep their real certs). Single-container modes
 never MITM, so they skip this.
 
-**Built-in `host → service` table** (overridable per token): `api.github.com` →
-`github` (bearer), `github.com` → `github` (git Basic, rewritten to
-`x-access-token:<token>`), `registry.npmjs.org` → `npm` (bearer; npm's
-`_authToken` rides as a Bearer header), `slack.com`/`api.slack.com` → `slack`
-(bearer token + `d` cookie companion `<service>-cookie`), `api.figma.com` →
-`figma` (bearer). Sentry/YouTrack and other deployment-specific hosts are added
-via `host=service` tokens.
+**Shapes.** `bearer` covers most REST APIs and the npm registry (npm's on-disk
+`_authToken` rides as a Bearer header). `basic`/`git` covers git-over-HTTPS,
+rewritten to the GitHub-blessed `x-access-token:<token>` Basic form.
+`bearer+cookie` covers browser-session tokens that need a companion cookie (e.g.
+Slack's `xoxc` + `d`). `sigv4` covers AWS APIs.
 
 **Fail-closed on lookup problems.** The agent never holds a real secret, so on
 `NotFound` **or** backend error the injector forwards the agent's ORIGINAL
 `Authorization` UNCHANGED (the upstream rejects the placeholder) — never a blank
-or wrong secret. Only a successful fetch triggers the strip-and-substitute. In
-dev the `CRED_*` vars are absent, so every fetch is `NotFound` → the agent's own
-header passes through and github/npm keep working: that is the expected safe
-intermediate state until the per-identity `CRED_*` wiring lands (CCT-719).
+or wrong secret. Only a successful fetch triggers the strip-and-substitute. A
+host whose ref resolves to nothing therefore keeps working off the agent's own
+header: the safe intermediate state while a deployment's refs are being wired.
 
 **Cert-pinning hosts are passthrough-only.** A CLI that pins its server cert
-would break under this MITM, so such hosts must never be listed as inject hosts;
-they get their credential another way. None of the built-in hosts pin certs on
-their HTTPS REST/registry endpoints.
+would break under this MITM, so such hosts must never appear in the inject
+config; they get their credential another way.
 
 ### GitHub App installation tokens (CCT-722)
 
 For the `github` service the sidecar can inject a short-lived, repo-scoped
 GitHub **App installation token** instead of a stored long-lived PAT, so even
 in-session misuse (which the boundary can't prevent) is time- and
-scope-bounded. The App **private key (PEM)** lives in the secret store — fetched
-by the sidecar as `(identity, "github-app-key")`, i.e. `CRED_<IDENTITY>_GITHUB_APP_KEY`
-in env/`vault:` form — never on the worker. At use-time the sidecar signs a
+scope-bounded. The App **private key (PEM)** lives in the secret store, named by
+the `--github-app-key-secret` ref (identity placeholders apply) — never on the
+worker. At use-time the sidecar signs a
 short RS256 JWT (`iss`=App id, ~9 min lifetime), exchanges it at
 `POST /app/installations/<id>/access_tokens` (scoping to `--github-app-repos`
 when set), and injects the returned ~1h installation token. The token is cached
@@ -393,14 +418,15 @@ request; neither the token nor the key ever touches disk.
 |---|---|---|---|
 | `--github-app-id` | `GUARD_PROXY_GITHUB_APP_ID` | *(unset)* | GitHub App id (JWT `iss`). |
 | `--github-app-installation-id` | `GUARD_PROXY_GITHUB_APP_INSTALLATION_ID` | *(unset)* | Installation id the token is minted for. |
+| `--github-app-key-secret` | `GUARD_PROXY_GITHUB_APP_KEY_SECRET` | *(unset)* | Secret ref of the App private-key PEM. **Required** once the two ids above are set — startup fails without it. |
 | `--github-app-repos` | `GUARD_PROXY_GITHUB_APP_REPOS` | *(empty)* | Comma list of bare repo names to scope the token to (empty = installation default). |
 | `--github-app-api-base` | `GUARD_PROXY_GITHUB_APP_API_BASE` | `https://api.github.com` | REST base for the exchange; override only for testing. |
 
 **Inert until configured.** The App path activates only when BOTH
 `--github-app-id` and `--github-app-installation-id` are set. Even then, the key
-fetch being `NotFound` (no `github-app-key` provisioned) falls back to the
-normal stored `github` credential, which itself fail-closes to passthrough — so
-with no App configured behaviour is exactly today's. A token-exchange failure
+fetch being `NotFound` falls back to the rule's own `github` credential ref,
+which itself fail-closes to passthrough — so with no App configured behaviour is
+exactly today's. A token-exchange failure
 (e.g. 401) is a backend error → the injector forwards the agent's original
 header unchanged (fail-closed).
 

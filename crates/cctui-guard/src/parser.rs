@@ -175,69 +175,10 @@ fn parse_judge_question(item: &str, step: u32) -> Result<JudgeQuestion, ParseErr
     Ok(JudgeQuestion { question: question.to_string(), violation: violation.to_string() })
 }
 
-/// A bare `[llmjudge]` block with no `- <question>` line is malformed.
-fn close_judge(cur: u32, steps: &BTreeMap<u32, Step>) -> Result<(), ParseError> {
-    if steps.get(&cur).is_some_and(|s| s.llmjudge.is_empty()) {
-        return Err(ParseError {
-            step: cur,
-            message: "[llmjudge] must be immediately followed by at least one `- <question>` line"
-                .to_string(),
-        });
-    }
-    Ok(())
-}
-
 /// Is `info` a `guard`-language fence (opting the block into policy parsing,
 /// not prose)? Matches `guard` optionally followed by more words (`guard yaml`).
 fn is_guard_fence(info: &str) -> bool {
     info.split_whitespace().next() == Some("guard")
-}
-
-/// Advance code-fence state for one line. Ordinary fenced content is prose body;
-/// a `guard`-language fence buffers its raw lines into `guard_raw` (keyed by the
-/// current step) for later [`parse_guard_block`], and is kept out of the body.
-/// Returns `true` if the line was consumed (the caller skips policy parsing).
-fn absorb_fence(
-    raw: &str,
-    fence: &mut Option<Fence>,
-    current: Option<u32>,
-    bodies: &mut BTreeMap<u32, Vec<String>>,
-    guard_raw: &mut BTreeMap<u32, Vec<String>>,
-    judge_open: &mut bool,
-    steps: &BTreeMap<u32, Step>,
-) -> Result<bool, ParseError> {
-    let stripped = raw.trim();
-    if let Some(open) = fence {
-        let closes = fence_marker(stripped)
-            .is_some_and(|f| f.ch == open.ch && f.len >= open.len && f.info.is_empty());
-        if closes {
-            *fence = None;
-        } else if is_guard_fence(&open.info) {
-            if let Some(cur) = current {
-                guard_raw.entry(cur).or_default().push(raw.to_string());
-            }
-        } else if let Some(cur) = current
-            && let Some(body) = bodies.get_mut(&cur)
-        {
-            body.push(stripped.to_string());
-        }
-        return Ok(true);
-    }
-    if let Some(f) = fence_marker(stripped) {
-        if *judge_open && let Some(cur) = current {
-            close_judge(cur, steps)?;
-            *judge_open = false;
-        }
-        if !is_guard_fence(&f.info)
-            && let Some(cur) = current
-            && let Some(body) = bodies.get_mut(&cur)
-        {
-            body.push(stripped.to_string());
-        }
-        *fence = Some(f);
-        return Ok(true);
-    }
-    Ok(false)
 }
 
 /// One `{to: N, gate: <cmd>}` entry of a `guard` block's `transitions:` list.
@@ -501,6 +442,240 @@ fn apply_guard_block(step: &mut Step, block: GuardBlock) {
     step.transition = parts.join(", ");
 }
 
+/// A step's `[…]` policy annotation. `[llmjudge]` opens a block instead of
+/// setting a field, and so takes no inline value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Annotation {
+    Field(Field),
+    LlmJudge,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Field {
+    Allowed,
+    Disallowed,
+    Transition,
+    Network,
+    Gate,
+    Compact,
+}
+
+impl Annotation {
+    fn of(lower: &str) -> Option<Self> {
+        const TAGS: &[(&str, Annotation)] = &[
+            ("[llmjudge]", Annotation::LlmJudge),
+            ("[allowed]", Annotation::Field(Field::Allowed)),
+            ("[disallowed]", Annotation::Field(Field::Disallowed)),
+            ("[transition]", Annotation::Field(Field::Transition)),
+            ("[network]", Annotation::Field(Field::Network)),
+            ("[gate]", Annotation::Field(Field::Gate)),
+            ("[compact]", Annotation::Field(Field::Compact)),
+        ];
+        TAGS.iter().find(|(tag, _)| lower.starts_with(tag)).map(|&(_, ann)| ann)
+    }
+}
+
+fn annotation_value(stripped: &str) -> String {
+    stripped.split_once(':').map_or(String::new(), |(_, v)| v.trim().to_string())
+}
+
+/// Bare `[compact]` opts in; an explicit value lets a prompt template toggle it
+/// off without deleting the line.
+fn compact_flag(value: &str) -> bool {
+    value.is_empty() || matches!(value.to_ascii_lowercase().as_str(), "true" | "yes" | "on" | "1")
+}
+
+/// The [`parse_steps`] line-by-line state: the steps built so far plus the
+/// per-step prose/`guard`-block buffers and the code-fence / `[llmjudge]` block
+/// cursors.
+#[derive(Default)]
+struct ParseState {
+    steps: BTreeMap<u32, Step>,
+    /// Each step's prose body lines; joined + trimmed once parsing ends.
+    bodies: BTreeMap<u32, Vec<String>>,
+    /// Raw lines of each step's `guard` fenced block, parsed at the end.
+    guard_raw: BTreeMap<u32, Vec<String>>,
+    current: Option<u32>,
+    /// Steps whose `[llmjudge]` block has been seen (duplicate detection).
+    judged: HashSet<u32>,
+    /// A `[llmjudge]` block is open and collecting `- question` lines.
+    judge_open: bool,
+    fence: Option<Fence>,
+}
+
+impl ParseState {
+    fn feed(&mut self, raw: &str) -> Result<(), ParseError> {
+        if self.absorb_fence(raw)? {
+            return Ok(());
+        }
+        let stripped = raw.trim();
+
+        if let Some((num, title)) = parse_step_heading(stripped) {
+            return self.open_step(num, title);
+        }
+
+        let Some(cur) = self.current else { return Ok(()) };
+
+        if self.judge_open {
+            if let Some(item) = stripped.strip_prefix('-') {
+                return self.push_judge_question(cur, item);
+            }
+            // Any non-list line closes the block; an empty block is malformed.
+            self.close_judge(cur)?;
+            self.judge_open = false;
+        }
+
+        let lower = stripped.to_ascii_lowercase();
+        let Some(ann) = Annotation::of(&lower) else {
+            self.push_body(cur, stripped);
+            return Ok(());
+        };
+        self.apply_annotation(cur, ann, stripped)
+    }
+
+    /// Advance code-fence state for one line. Ordinary fenced content is prose
+    /// body; a `guard`-language fence buffers its raw lines for later
+    /// [`parse_guard_block`] and is kept out of the body. `true` ⇒ the line was
+    /// consumed and skips policy parsing.
+    fn absorb_fence(&mut self, raw: &str) -> Result<bool, ParseError> {
+        let stripped = raw.trim();
+        if let Some(open) = &self.fence {
+            let closes = fence_marker(stripped)
+                .is_some_and(|f| f.ch == open.ch && f.len >= open.len && f.info.is_empty());
+            let guard = is_guard_fence(&open.info);
+            if closes {
+                self.fence = None;
+            } else if let Some(cur) = self.current {
+                if guard {
+                    self.guard_raw.entry(cur).or_default().push(raw.to_string());
+                } else {
+                    self.push_body(cur, stripped);
+                }
+            }
+            return Ok(true);
+        }
+        if let Some(f) = fence_marker(stripped) {
+            if self.judge_open
+                && let Some(cur) = self.current
+            {
+                self.close_judge(cur)?;
+                self.judge_open = false;
+            }
+            if !is_guard_fence(&f.info)
+                && let Some(cur) = self.current
+            {
+                self.push_body(cur, stripped);
+            }
+            self.fence = Some(f);
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    fn open_step(&mut self, num: u32, title: String) -> Result<(), ParseError> {
+        if self.judge_open
+            && let Some(cur) = self.current
+        {
+            self.close_judge(cur)?;
+        }
+        self.judge_open = false;
+        self.current = Some(num);
+        self.steps.insert(num, Step { title, ..Step::default() });
+        self.bodies.insert(num, Vec::new());
+        Ok(())
+    }
+
+    /// Any non-annotation line is part of the prose body.
+    fn push_body(&mut self, cur: u32, text: &str) {
+        if let Some(body) = self.bodies.get_mut(&cur) {
+            body.push(text.to_string());
+        }
+    }
+
+    fn apply_annotation(
+        &mut self,
+        cur: u32,
+        ann: Annotation,
+        stripped: &str,
+    ) -> Result<(), ParseError> {
+        let value = annotation_value(stripped);
+        let field = match ann {
+            Annotation::LlmJudge => return self.open_judge(cur, &value),
+            Annotation::Field(field) => field,
+        };
+        let Some(step) = self.steps.get_mut(&cur) else { return Ok(()) };
+        match field {
+            Field::Allowed => step.allowed = value,
+            Field::Disallowed => step.disallowed = value,
+            Field::Transition => step.transition = value,
+            Field::Network => step.network = value,
+            Field::Gate => step.gate = value,
+            Field::Compact => step.compact = compact_flag(&value),
+        }
+        Ok(())
+    }
+
+    fn open_judge(&mut self, cur: u32, value: &str) -> Result<(), ParseError> {
+        if !self.judged.insert(cur) {
+            return Err(ParseError {
+                step: cur,
+                message: "duplicate [llmjudge] block".to_string(),
+            });
+        }
+        if !value.is_empty() {
+            return Err(ParseError {
+                step: cur,
+                message: "[llmjudge] takes no inline value — list one `- <question>` (optionally \
+                          `- <question> :: <violation example>`) per line below it"
+                    .to_string(),
+            });
+        }
+        self.judge_open = true;
+        Ok(())
+    }
+
+    fn push_judge_question(&mut self, cur: u32, item: &str) -> Result<(), ParseError> {
+        let question = parse_judge_question(item, cur)?;
+        if let Some(step) = self.steps.get_mut(&cur) {
+            if step.llmjudge.len() >= MAX_JUDGE_QUESTIONS {
+                return Err(ParseError {
+                    step: cur,
+                    message: format!(
+                        "[llmjudge] has more than {MAX_JUDGE_QUESTIONS} questions — decompose \
+                         into fewer, more atomic conditions"
+                    ),
+                });
+            }
+            step.llmjudge.push(question);
+        }
+        Ok(())
+    }
+
+    /// A bare `[llmjudge]` block with no `- <question>` line is malformed.
+    fn close_judge(&self, cur: u32) -> Result<(), ParseError> {
+        if self.steps.get(&cur).is_some_and(|s| s.llmjudge.is_empty()) {
+            return Err(ParseError {
+                step: cur,
+                message:
+                    "[llmjudge] must be immediately followed by at least one `- <question>` line"
+                        .to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    fn finish(mut self) -> Result<BTreeMap<u32, Step>, ParseError> {
+        if self.judge_open
+            && let Some(cur) = self.current
+        {
+            self.close_judge(cur)?;
+        }
+        finalize_bodies(&mut self.steps, self.bodies);
+        apply_guard_blocks(&mut self.steps, self.guard_raw)?;
+        Ok(self.steps)
+    }
+}
+
 /// Parse step definitions from prompt markdown.
 ///
 /// Looks for headings matching `# Step N` (1–6 `#`, case-insensitive) and
@@ -511,123 +686,13 @@ fn apply_guard_block(step: &mut Step, block: GuardBlock) {
 /// `- question` line per binary acceptance question (optionally
 /// `- question :: violation example`). A malformed block — inline value, no
 /// questions, an empty question, a duplicate block, or more than
-/// [`MAX_JUDGE_QUESTIONS`] questions — is a parse error (CCT-516).
+/// [`MAX_JUDGE_QUESTIONS`] questions — is a parse error.
 pub fn parse_steps(markdown: &str) -> Result<BTreeMap<u32, Step>, ParseError> {
-    let mut steps: BTreeMap<u32, Step> = BTreeMap::new();
-    // Accumulate each step's prose body lines separately; joined + trimmed once
-    // the step is closed (next heading or end of input).
-    let mut bodies: BTreeMap<u32, Vec<String>> = BTreeMap::new();
-    let mut current: Option<u32> = None;
-    // Steps whose `[llmjudge]` block has been seen (duplicate detection).
-    let mut judged: HashSet<u32> = HashSet::new();
-    // A `[llmjudge]` block is open and collecting `- question` lines.
-    let mut judge_open = false;
-    let mut fence: Option<Fence> = None;
-    let mut guard_raw: BTreeMap<u32, Vec<String>> = BTreeMap::new();
-
+    let mut state = ParseState::default();
     for line in markdown.split('\n') {
-        let stripped = line.trim();
-
-        if absorb_fence(
-            line,
-            &mut fence,
-            current,
-            &mut bodies,
-            &mut guard_raw,
-            &mut judge_open,
-            &steps,
-        )? {
-            continue;
-        }
-
-        if let Some((num, title)) = parse_step_heading(stripped) {
-            if judge_open && let Some(cur) = current {
-                close_judge(cur, &steps)?;
-            }
-            judge_open = false;
-            current = Some(num);
-            steps.insert(num, Step { title, ..Step::default() });
-            bodies.insert(num, Vec::new());
-            continue;
-        }
-
-        let Some(cur) = current else { continue };
-
-        let lower = stripped.to_ascii_lowercase();
-        let value =
-            || stripped.split_once(':').map_or(String::new(), |(_, v)| v.trim().to_string());
-
-        if judge_open {
-            if let Some(item) = stripped.strip_prefix('-') {
-                let question = parse_judge_question(item, cur)?;
-                if let Some(step) = steps.get_mut(&cur) {
-                    if step.llmjudge.len() >= MAX_JUDGE_QUESTIONS {
-                        return Err(ParseError {
-                            step: cur,
-                            message: format!(
-                                "[llmjudge] has more than {MAX_JUDGE_QUESTIONS} questions — \
-                                 decompose into fewer, more atomic conditions"
-                            ),
-                        });
-                    }
-                    step.llmjudge.push(question);
-                }
-                continue;
-            }
-            // Any non-list line closes the block; an empty block is malformed.
-            close_judge(cur, &steps)?;
-            judge_open = false;
-        }
-
-        if let Some(step) = steps.get_mut(&cur) {
-            if lower.starts_with("[llmjudge]") {
-                if !judged.insert(cur) {
-                    return Err(ParseError {
-                        step: cur,
-                        message: "duplicate [llmjudge] block".to_string(),
-                    });
-                }
-                if !value().is_empty() {
-                    return Err(ParseError {
-                        step: cur,
-                        message: "[llmjudge] takes no inline value — list one `- <question>` \
-                                  (optionally `- <question> :: <violation example>`) per line \
-                                  below it"
-                            .to_string(),
-                    });
-                }
-                judge_open = true;
-            } else if lower.starts_with("[allowed]") {
-                step.allowed = value();
-            } else if lower.starts_with("[disallowed]") {
-                step.disallowed = value();
-            } else if lower.starts_with("[transition]") {
-                step.transition = value();
-            } else if lower.starts_with("[network]") {
-                step.network = value();
-            } else if lower.starts_with("[gate]") {
-                step.gate = value();
-            } else if lower.starts_with("[compact]") {
-                // Bare `[compact]` (no value) opts in; an explicit value lets a
-                // prompt template toggle it off without deleting the line.
-                let v = value();
-                step.compact = v.is_empty()
-                    || matches!(v.to_ascii_lowercase().as_str(), "true" | "yes" | "on" | "1");
-            } else if let Some(body) = bodies.get_mut(&cur) {
-                // Any non-annotation line is part of the prose body.
-                body.push(stripped.to_string());
-            }
-        }
+        state.feed(line)?;
     }
-
-    if judge_open && let Some(cur) = current {
-        close_judge(cur, &steps)?;
-    }
-
-    finalize_bodies(&mut steps, bodies);
-    apply_guard_blocks(&mut steps, guard_raw)?;
-
-    Ok(steps)
+    state.finish()
 }
 
 /// Join each step's accumulated prose lines into its trimmed `body`.

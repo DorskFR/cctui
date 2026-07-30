@@ -5,7 +5,8 @@
 use std::sync::Arc;
 
 use cctui_guard::engine::WorkflowEngine;
-use cctui_guard::parser::{parse_guard_rules_str, parse_steps};
+use cctui_guard::ir::Workflow;
+use cctui_guard::parser::parse_guard_rules_str;
 use cctui_guard::server::router;
 use serde_json::{Value, json};
 
@@ -55,7 +56,7 @@ async fn spawn() -> (String, tempfile::TempDir) {
     let state_file = dir.path().join("state");
 
     let engine = Arc::new(WorkflowEngine::new(
-        parse_steps(PROMPT).unwrap(),
+        Workflow::compile(PROMPT).unwrap().into_steps(),
         parse_guard_rules_str(RULES),
         state_file,
         policy_file,
@@ -215,7 +216,7 @@ async fn gated_transition_requires_proof_and_reinjects() {
     );
 
     let engine = Arc::new(WorkflowEngine::new(
-        parse_steps(&prompt).unwrap(),
+        Workflow::compile(&prompt).unwrap().into_steps(),
         parse_guard_rules_str(RULES),
         state_file,
         dir.path().join("nopolicy").join("policy.json"),
@@ -248,7 +249,7 @@ async fn gated_transition_requires_proof_and_reinjects() {
 
     // Exit ignores the gate — bail-out must always work (back on a gated step).
     let engine2 = Arc::new(WorkflowEngine::new(
-        parse_steps(&prompt).unwrap(),
+        Workflow::compile(&prompt).unwrap().into_steps(),
         parse_guard_rules_str(RULES),
         dir.path().join("state2"),
         dir.path().join("nopolicy2").join("policy.json"),
@@ -285,7 +286,7 @@ async fn compact_directive_is_opt_in_per_step() {
 
     let make = |state_name: &str| {
         Arc::new(WorkflowEngine::new(
-            parse_steps(prompt).unwrap(),
+            Workflow::compile(prompt).unwrap().into_steps(),
             parse_guard_rules_str(RULES),
             dir.path().join(state_name),
             dir.path().join("nopolicy").join("policy.json"),
@@ -337,7 +338,7 @@ async fn llmjudge_full_score_required_to_transition() {
 
     let make = |name: &str, judge_cmd: Option<&str>| {
         Arc::new(WorkflowEngine::new(
-            parse_steps(prompt).unwrap(),
+            Workflow::compile(prompt).unwrap().into_steps(),
             parse_guard_rules_str(RULES),
             dir.path().join(name),
             dir.path().join("nopolicy").join("policy.json"),
@@ -431,7 +432,7 @@ async fn llmjudge_runs_after_gate_with_clean_context() {
     );
 
     let engine = Arc::new(WorkflowEngine::new(
-        parse_steps(&prompt).unwrap(),
+        Workflow::compile(&prompt).unwrap().into_steps(),
         parse_guard_rules_str(RULES),
         dir.path().join("state"),
         dir.path().join("nopolicy").join("policy.json"),

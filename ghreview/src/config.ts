@@ -2,7 +2,6 @@ export type AuthMode = "cctui" | "static" | "none";
 
 export interface Config {
   databaseUrl: string | undefined;
-  schema: string;
   githubToken: string | undefined;
   githubAccount: string | undefined;
   pollIntervalMs: number;
@@ -33,7 +32,6 @@ function num(value: string | undefined, fallback: number): number {
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   return {
     databaseUrl: env.DATABASE_URL,
-    schema: env.GHREVIEW_SCHEMA ?? "ghreview",
     githubToken: env.GITHUB_TOKEN,
     githubAccount: env.GITHUB_ACCOUNT,
     pollIntervalMs: num(env.GHREVIEW_POLL_INTERVAL_MS, 30_000),

@@ -6,7 +6,8 @@ use std::path::PathBuf;
 
 use cctui_guard::decision_log::{DecisionLog, Kind, build_report, parse_log};
 use cctui_guard::engine::WorkflowEngine;
-use cctui_guard::parser::{parse_guard_rules_str, parse_steps};
+use cctui_guard::ir::Workflow;
+use cctui_guard::parser::parse_guard_rules_str;
 use serde_json::{Value, json};
 
 const RULES: &str = "\
@@ -38,7 +39,7 @@ fn engine() -> (WorkflowEngine, Fixtures) {
     let log = dir.path().join("decisions.jsonl");
     let report = dir.path().join("report.json");
     let engine = WorkflowEngine::new_with_log(
-        parse_steps(PROMPT).unwrap(),
+        Workflow::compile(PROMPT).unwrap().into_steps(),
         parse_guard_rules_str(RULES),
         dir.path().join("state"),
         dir.path().join("policy.json"),
@@ -111,7 +112,7 @@ fn failed_gate_transition_records_deny_with_detail() {
 [transition]: Exit
 ";
     let engine = WorkflowEngine::new_with_log(
-        parse_steps(prompt).unwrap(),
+        Workflow::compile(prompt).unwrap().into_steps(),
         parse_guard_rules_str(RULES),
         dir.path().join("state"),
         dir.path().join("policy.json"),
@@ -138,7 +139,7 @@ fn disabled_log_writes_nothing() {
     let dir = tempfile::tempdir().unwrap();
     let log = dir.path().join("absent.jsonl");
     let engine = WorkflowEngine::new(
-        parse_steps(PROMPT).unwrap(),
+        Workflow::compile(PROMPT).unwrap().into_steps(),
         parse_guard_rules_str(RULES),
         dir.path().join("state"),
         dir.path().join("policy.json"),

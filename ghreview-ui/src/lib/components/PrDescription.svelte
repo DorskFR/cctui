@@ -1,7 +1,7 @@
 <script lang="ts">
   import { api } from "../api/client";
   import type { ReactionContent, ReactionRollup } from "../api/types";
-  import { renderMarkdown } from "../markdown";
+  import { renderMarkdown, repoBaseUrl } from "../markdown";
   import ReactionBar from "./ReactionBar.svelte";
 
   interface Props {
@@ -14,11 +14,7 @@
   }
   let { body, owner, repo, number, account, reactions = null }: Props = $props();
   const text = $derived((body ?? "").trim());
-  const markdownBaseUrl = $derived(
-    owner && repo
-      ? `https://github.com/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/`
-      : undefined,
-  );
+  const markdownBaseUrl = $derived(repoBaseUrl(owner, repo));
 
   const canReact = $derived(
     owner !== undefined && repo !== undefined && number !== undefined && account !== undefined,

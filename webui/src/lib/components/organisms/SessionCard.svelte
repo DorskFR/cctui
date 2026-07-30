@@ -793,10 +793,10 @@
 		flex: none;
 	}
 	.star.on {
-		color: var(--warn, #e0a800);
+		color: var(--warn);
 	}
 	.star:hover {
-		color: var(--warn, #e0a800);
+		color: var(--warn);
 	}
 	/* Live tool-cadence chip. Dense, muted, single line; the cadence
 	   count/age stays whole while the optional detail headline ellipsises. Amber
@@ -833,13 +833,13 @@
 	   sizing above so the snippet sits in the same slot as the message preview. */
 	.match {
 		color: var(--text);
-		border-left: 2px solid var(--accent, #88c0d0);
+		border-left: 2px solid var(--accent);
 		padding-left: var(--sp-2);
 	}
 	.pr-link {
 		flex: none;
 		font-size: var(--fs-xs);
-		color: var(--accent, #88c0d0);
+		color: var(--accent);
 		text-decoration: none;
 		white-space: nowrap;
 	}

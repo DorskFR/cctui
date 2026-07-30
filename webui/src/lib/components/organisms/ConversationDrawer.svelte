@@ -618,23 +618,14 @@
 	{/if}
 
 	<Conversation
+		{stream}
 		{scroll}
 		sessionId={id}
 		{lines}
 		isLoading={$history.isLoading}
 		{archived}
-		perms={stream.perms}
-		ask={stream.ask}
-		liveAskQuestions={stream.liveAskQuestions}
 		{askPreambleHtml}
-		working={stream.working}
-		answering={stream.answering}
-		isDupeOfLiveAsk={stream.isDupeOfLiveAsk}
-		plan={stream.plan}
 		{planPreambleHtml}
-		onanswer={(t, p, qs) => stream.answerQuestion(t, p, qs)}
-		onanswerplan={(t, p) => stream.answerPlan(t, p)}
-		onretry={(ts) => stream.retryFailed(ts)}
 		onedit={editPending}
 		onrespondperm={(rid, allow) => ws.respondPermission(id, rid, allow)}
 		{forkable}
@@ -699,8 +690,8 @@
 		align-items: center;
 		flex-wrap: nowrap;
 		padding: var(--sp-2) var(--sp-3);
-		background: var(--bg-elevated-2, #1a1a1a);
-		border: 1px solid var(--border-strong, #333);
+		background: var(--bg-elevated-2);
+		border: 1px solid var(--border-strong);
 		border-radius: var(--r-md);
 		box-shadow: var(--shadow-lg, 0 8px 24px rgba(0, 0, 0, 0.5));
 		white-space: nowrap;

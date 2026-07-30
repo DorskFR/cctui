@@ -92,3 +92,25 @@ export function highlightLine(line: string, lang: string | null): string {
     return escapeHtml(line);
   }
 }
+
+export const MAX_HIGHLIGHT_CACHE = 20_000;
+
+export type LineHighlighter = (line: string, lang: string | null) => string;
+
+export function createHighlightCache(
+  highlight: LineHighlighter = highlightLine,
+  max: number = MAX_HIGHLIGHT_CACHE,
+): LineHighlighter {
+  const cache = new Map<string, string>();
+  return (line, lang) => {
+    const key = `${lang ?? ""}\u0000${line}`;
+    const hit = cache.get(key);
+    if (hit !== undefined) return hit;
+    const html = highlight(line, lang);
+    if (cache.size >= max) cache.clear();
+    cache.set(key, html);
+    return html;
+  };
+}
+
+export const highlightLineCached: LineHighlighter = createHighlightCache();

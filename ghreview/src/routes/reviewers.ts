@@ -2,6 +2,7 @@ import { createRoute, type OpenAPIHono, z } from "@hono/zod-openapi";
 import { requireOwnedAccount } from "../auth/ownership.ts";
 import type { AppDeps } from "../deps.ts";
 import type { Account } from "../github/account.ts";
+import { fetchPullReviews, type ReviewState, reduceReviewStates } from "../github/reviews.ts";
 import {
   ErrorSchema,
   RequestReviewersSchema,
@@ -25,69 +26,6 @@ const AccountQuery = z.object({
     .min(1)
     .openapi({ param: { name: "account", in: "query" }, example: "DorskFR" }),
 });
-
-export type ReviewState = "APPROVED" | "CHANGES_REQUESTED" | "COMMENTED" | "DISMISSED" | "PENDING";
-
-interface RawReview {
-  user: string | null;
-  avatar_url: string | null;
-  state: string;
-}
-
-const VERDICTS = new Set(["APPROVED", "CHANGES_REQUESTED", "DISMISSED"]);
-
-export function reduceReviewStates(
-  reviews: RawReview[],
-): Map<string, { avatar_url: string | null; state: ReviewState }> {
-  const out = new Map<string, { avatar_url: string | null; state: ReviewState }>();
-  for (const r of reviews) {
-    if (!r.user) continue;
-    const state = r.state.toUpperCase();
-    const prev = out.get(r.user);
-    const avatar_url = r.avatar_url ?? prev?.avatar_url ?? null;
-    if (VERDICTS.has(state)) {
-      out.set(r.user, { avatar_url, state: state as ReviewState });
-    } else if (state === "COMMENTED") {
-      if (!prev || prev.state === "COMMENTED") {
-        out.set(r.user, { avatar_url, state: "COMMENTED" });
-      } else {
-        out.set(r.user, { avatar_url, state: prev.state });
-      }
-    }
-  }
-  return out;
-}
-
-async function fetchReviews(
-  octokit: Account["octokit"],
-  p: {
-    owner: string;
-    repo: string;
-    number: number;
-  },
-): Promise<RawReview[]> {
-  const reviews: RawReview[] = [];
-  for (let page = 1; page <= 20; page++) {
-    const res = await octokit.request("GET /repos/{owner}/{repo}/pulls/{pull_number}/reviews", {
-      owner: p.owner,
-      repo: p.repo,
-      pull_number: p.number,
-      per_page: 100,
-      page,
-    });
-    const batch = Array.isArray(res.data) ? (res.data as Record<string, unknown>[]) : [];
-    for (const rv of batch) {
-      const user = (rv.user as { login?: string; avatar_url?: string } | undefined) ?? undefined;
-      reviews.push({
-        user: user?.login ?? null,
-        avatar_url: user?.avatar_url ?? null,
-        state: String(rv.state ?? ""),
-      });
-    }
-    if (batch.length < 100) break;
-  }
-  return reviews;
-}
 
 interface RequestedInfo {
   reviewers: { login: string; avatar_url: string | null }[];
@@ -199,7 +137,7 @@ async function buildResult(
 ): Promise<z.infer<typeof ReviewersResultSchema>> {
   const [requested, reviews] = await Promise.all([
     fetchRequested(octokit, p),
-    fetchReviews(octokit, p),
+    fetchPullReviews(octokit, p),
   ]);
   const states = reduceReviewStates(reviews);
   const requestedLogins = new Set(requested.reviewers.map((r) => r.login));

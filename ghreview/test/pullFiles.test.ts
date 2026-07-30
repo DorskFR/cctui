@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { OctokitRequest, OctokitResponse } from "../src/github/client.ts";
-import { enrichPullStats, fetchPullFiles, pullStatsFromFiles } from "../src/sync/handlers.ts";
+import { enrichPullStats, fetchPullFiles, pullStatsFromFiles } from "../src/sync/pullEnrich.ts";
 
 function fileEntry(i: number): Record<string, unknown> {
   return {

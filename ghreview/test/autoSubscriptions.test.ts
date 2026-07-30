@@ -5,7 +5,9 @@ import { runMigrations } from "../src/db/migrate.ts";
 import { listActiveSubscriptions, upsertSubscription } from "../src/db/subscriptions.ts";
 import { createAccount } from "../src/github/account.ts";
 import type { OctokitRequest } from "../src/github/client.ts";
-import { syncNotifications, syncPull, syncRepo } from "../src/sync/handlers.ts";
+import { syncNotifications } from "../src/sync/notificationSync.ts";
+import { syncPull } from "../src/sync/pullSync.ts";
+import { syncRepo } from "../src/sync/repoSync.ts";
 
 const DATABASE_URL = process.env.DATABASE_URL;
 const guarded = DATABASE_URL ? describe : describe.skip;
@@ -27,7 +29,7 @@ async function sourceOf(target: string): Promise<string | null> {
 
 guarded("auto-subscription handlers", () => {
   beforeAll(async () => {
-    db = createDb(DATABASE_URL as string, "ghreview");
+    db = createDb(DATABASE_URL as string);
     await db.sql.unsafe("DROP SCHEMA IF EXISTS ghreview CASCADE");
     await runMigrations(db);
   });

@@ -1,5 +1,6 @@
 import type { QueryClient } from "@tanstack/svelte-query";
 import { baseUrl, getToken } from "./config";
+import { keys } from "./queries";
 import type { SseEvent } from "./types";
 
 export type QueryKeyAction =
@@ -11,21 +12,24 @@ export function sseActions(event: SseEvent): QueryKeyAction[] {
     case "pr.updated": {
       const { owner, repo, number } = event.data;
       return [
-        { type: "invalidate", key: ["pull", owner, repo, number] },
-        { type: "invalidate", key: ["pull-viewed", owner, repo, number] },
-        { type: "invalidate", key: ["review-threads", owner, repo, number] },
-        { type: "invalidate", key: ["pulls"] },
+        { type: "invalidate", key: keys.pull(owner, repo, number) },
+        { type: "invalidate", key: keys.pullViewed(owner, repo, number) },
+        { type: "invalidate", key: keys.reviewThreads(owner, repo, number) },
+        { type: "invalidate", key: keys.reviewers(owner, repo, number) },
+        { type: "invalidate", key: keys.activityAll(owner, repo, number) },
+        { type: "invalidate", key: keys.repoLabelsAll(owner, repo) },
+        { type: "invalidate", key: keys.pullsAll() },
       ];
     }
     case "pr.viewed_state.updated": {
       const { owner, repo, number } = event.data;
-      return [{ type: "invalidate", key: ["pull-viewed", owner, repo, number] }];
+      return [{ type: "invalidate", key: keys.pullViewed(owner, repo, number) }];
     }
     case "notification.new":
     case "notification.updated":
-      return [{ type: "invalidate", key: ["notifications"] }];
+      return [{ type: "invalidate", key: keys.notificationsAll() }];
     case "sync.status":
-      return [{ type: "invalidate", key: ["status"] }];
+      return [{ type: "invalidate", key: keys.status() }];
     default:
       return [];
   }

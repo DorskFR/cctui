@@ -7,7 +7,7 @@
 	import { onMount } from 'svelte';
 	import { ws } from '$lib/ws.svelte';
 	import { m } from '$lib/paraglide/messages';
-	import { resolveTerminalFont, BUNDLED_TERMINAL_FONT } from './terminalFont';
+	import { resolveTerminalFont, resolveTerminalBg, BUNDLED_TERMINAL_FONT } from './terminalFont';
 
 	// The daemon's held/viewer attach is fixed at 120x40 (ATTACH_COLS/ROWS); size
 	// the viewport to match so the geometry never fights the PTY.
@@ -51,7 +51,7 @@
 				scrollback: 1000,
 				fontSize: 12,
 				fontFamily: resolveTerminalFont(),
-				theme: { background: '#0b0e14' }
+				theme: { background: resolveTerminalBg() }
 			});
 			term.open(host);
 			offPty = ws.onPty(sessionId, (bytes) => term?.write(bytes));
@@ -88,7 +88,7 @@
 		border-radius: var(--r-md);
 		margin: var(--sp-2) var(--sp-3);
 		overflow: hidden;
-		background: #0b0e14;
+		background: var(--term-bg);
 	}
 	.term-head {
 		display: flex;
@@ -112,8 +112,8 @@
 		background: var(--border-strong);
 	}
 	.term-dot.on {
-		background: var(--ok, #3fb950);
-		box-shadow: 0 0 6px var(--ok, #3fb950);
+		background: var(--ok);
+		box-shadow: 0 0 6px var(--ok);
 	}
 	.term-close {
 		border: none;

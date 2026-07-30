@@ -4,7 +4,7 @@ import { createStaticResolver, parseStaticTokens } from "../src/auth/resolver.ts
 import { createGhAccount } from "../src/db/accounts.ts";
 import { createDb, type DbHandle } from "../src/db/client.ts";
 import { runMigrations } from "../src/db/migrate.ts";
-import { upsertSubscription } from "../src/db/subscriptions.ts";
+import { listActiveSubscriptionsForAccount, upsertSubscription } from "../src/db/subscriptions.ts";
 import type { AppDeps } from "../src/deps.ts";
 import { createAccount } from "../src/github/account.ts";
 import type { OctokitRequest, OctokitResponse } from "../src/github/client.ts";
@@ -43,7 +43,7 @@ function deps(extra: Partial<AppDeps> = {}): AppDeps {
 
 guarded("subscription management", () => {
   beforeAll(async () => {
-    db = createDb(DATABASE_URL as string, "ghreview");
+    db = createDb(DATABASE_URL as string);
     await db.sql.unsafe("DROP SCHEMA IF EXISTS ghreview CASCADE");
     await runMigrations(db);
   });
@@ -56,6 +56,21 @@ guarded("subscription management", () => {
     await db.sql.unsafe("DELETE FROM gh_accounts");
     await createGhAccount(db, { userId: "userA", login: "alpha", encryptedPat: "x" });
     await createGhAccount(db, { userId: "userB", login: "beta", encryptedPat: "y" });
+  });
+
+  test("listActiveSubscriptionsForAccount returns only that account's active rows", async () => {
+    await upsertSubscription(db, "alpha", "repo", "alpha/one");
+    await upsertSubscription(db, "alpha", "repo", "alpha/two");
+    await upsertSubscription(db, "beta", "repo", "beta/one");
+    await db.sql.unsafe("UPDATE subscriptions SET active = false WHERE target = 'alpha/two'");
+
+    const alpha = await listActiveSubscriptionsForAccount(db, "alpha");
+    expect(alpha.map((s) => s.target)).toEqual(["alpha/one"]);
+
+    const beta = await listActiveSubscriptionsForAccount(db, "beta");
+    expect(beta.map((s) => s.target)).toEqual(["beta/one"]);
+
+    expect(await listActiveSubscriptionsForAccount(db, "nobody")).toEqual([]);
   });
 
   test("subscribe by PR URL parses target, sets account_id, and triggers an immediate sync", async () => {

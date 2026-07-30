@@ -35,6 +35,11 @@ export interface MarkdownOptions {
   baseUrl?: string;
 }
 
+export function repoBaseUrl(owner?: string, repo?: string): string | undefined {
+  if (!owner || !repo) return undefined;
+  return `https://github.com/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/`;
+}
+
 export function escapeHtml(value: string): string {
   return value
     .replace(/&/g, "&amp;")

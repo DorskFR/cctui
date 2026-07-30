@@ -15,7 +15,7 @@ import {
   SubscriptionListSchema,
   SubscriptionSchema,
 } from "../schemas.ts";
-import { syncPull } from "../sync/handlers.ts";
+import { syncPull } from "../sync/pullSync.ts";
 
 const PULL_URL = /^https?:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/i;
 const PULL_SHORT = /^([^/\s]+)\/([^/#\s]+)#(\d+)$/;

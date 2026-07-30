@@ -141,16 +141,66 @@ export interface GithubNotification {
   repository?: { full_name: string; name?: string };
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+export function isGithubPull(value: unknown): value is GithubPull {
+  const v = asRecord(value);
+  if (!v) return false;
+  return (
+    typeof v.number === "number" &&
+    Number.isFinite(v.number) &&
+    typeof v.title === "string" &&
+    (v.state === "open" || v.state === "closed")
+  );
+}
+
+export function isGithubRepo(value: unknown): value is GithubRepo {
+  const v = asRecord(value);
+  return v !== null && typeof v.full_name === "string" && typeof v.name === "string";
+}
+
+export function isGithubNotification(value: unknown): value is GithubNotification {
+  const v = asRecord(value);
+  if (!v) return false;
+  const subject = asRecord(v.subject);
+  return (
+    typeof v.id === "string" &&
+    typeof v.reason === "string" &&
+    subject !== null &&
+    typeof subject.title === "string" &&
+    typeof subject.type === "string" &&
+    (typeof subject.url === "string" || subject.url === null)
+  );
+}
+
+const UNKNOWN_PULL: GithubPull = { number: 0, title: "", state: "open" };
+const UNKNOWN_REPO: GithubRepo = { name: "", full_name: "" };
+const UNKNOWN_NOTIFICATION: GithubNotification = {
+  id: "",
+  reason: "",
+  unread: false,
+  updated_at: "",
+  subject: { title: "", url: null, type: "" },
+};
+
+export function asGithubPull(payload: unknown): GithubPull {
+  return isGithubPull(payload) ? payload : UNKNOWN_PULL;
+}
+
 export function pullOf(env: PullRequestEnvelope): GithubPull {
-  return (env.payload ?? {}) as unknown as GithubPull;
+  return asGithubPull(env.payload);
 }
 
 export function repoOf(env: RepoEnvelope): GithubRepo {
-  return (env.payload ?? {}) as unknown as GithubRepo;
+  return isGithubRepo(env.payload) ? env.payload : UNKNOWN_REPO;
 }
 
 export function notificationOf(item: NotificationInboxItem): GithubNotification {
-  return (item.payload ?? {}) as unknown as GithubNotification;
+  return isGithubNotification(item.payload) ? item.payload : UNKNOWN_NOTIFICATION;
 }
 
 export function prStateOf(pull: GithubPull): PrState {

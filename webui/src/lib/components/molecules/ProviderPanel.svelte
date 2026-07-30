@@ -107,10 +107,10 @@
 	/* Credential-rejected banner, same treatment as the old card. */
 	.reauth-banner {
 		padding: var(--sp-1) var(--sp-2);
-		border: 1px solid var(--danger, #d9534f);
+		border: 1px solid var(--danger);
 		border-radius: var(--r-sm);
-		background: color-mix(in srgb, var(--danger, #d9534f) 12%, transparent);
-		color: var(--danger, #d9534f);
+		background: color-mix(in srgb, var(--danger) 12%, transparent);
+		color: var(--danger);
 	}
 	/* Lightweight stat list — label over value, no input-like chrome. */
 	.stats {

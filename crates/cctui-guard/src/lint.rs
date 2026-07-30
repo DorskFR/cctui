@@ -12,7 +12,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt;
 
 use crate::ir::{NetworkDefault, Rule, Workflow};
-use crate::parser::{expand_set, parse_keywords};
+use crate::parser::expand_set;
 
 /// Severity of a lint [`Diagnostic`]. Any [`Severity::Error`] fails the lint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -219,8 +219,8 @@ pub fn lint(
         resolved.push(ResolvedStep {
             id: sid,
             title: step.title.clone(),
-            allowed: parse_keywords(&step.allowed.to_raw(), tool_sets),
-            disallowed: parse_keywords(&step.disallowed.to_raw(), tool_sets),
+            allowed: step.allowed.expand(tool_sets),
+            disallowed: step.disallowed.expand(tool_sets),
             network: resolve_network(&step.network, tool_sets),
             network_open,
             transitions: step.transition.to.clone(),
@@ -260,8 +260,8 @@ fn report_contradictions(
     tool_sets: &HashMap<String, Vec<String>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
-    let allowed = parse_keywords(&step.allowed.to_raw(), tool_sets);
-    let disallowed = parse_keywords(&step.disallowed.to_raw(), tool_sets);
+    let allowed = step.allowed.expand(tool_sets);
+    let disallowed = step.disallowed.expand(tool_sets);
     let allow_wild = matches!(step.allowed, Rule::Wildcard);
     let disallow_wild = matches!(step.disallowed, Rule::Wildcard);
 

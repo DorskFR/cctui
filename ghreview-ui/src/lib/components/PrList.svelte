@@ -11,7 +11,8 @@
   import { toStore } from "svelte/store";
   import { api } from "../api/client";
   import { getAccount } from "../api/config";
-  import { ciStateOf, type GithubPull, prStateOf, pullOf, repoOf } from "../api/types";
+  import { keys } from "../api/queries";
+  import { asGithubPull, ciStateOf, type GithubPull, prStateOf, pullOf, repoOf } from "../api/types";
   import {
     buildPrSchema,
     collectAuthors,
@@ -36,7 +37,7 @@
   const client = useQueryClient();
 
   const q = createQuery({
-    queryKey: ["pulls", "root", account],
+    queryKey: keys.pullsRoot(account),
     queryFn: async (): Promise<PrEntry[]> => {
       const repos = await api.allRepos(account || undefined);
       const results = await Promise.all(
@@ -53,13 +54,13 @@
 
   const snoozedQ = createQuery(
     toStore(() => ({
-      queryKey: ["pulls", "snoozed", account],
+      queryKey: keys.pullsSnoozed(account),
       queryFn: async (): Promise<PrEntry[]> => {
         const res = await api.snoozedPulls(account || undefined);
         return res.items.map((s) => ({
           owner: s.owner,
           repo: s.repo,
-          pull: (s.payload ?? {}) as unknown as GithubPull,
+          pull: asGithubPull(s.payload),
         }));
       },
     })),
@@ -86,13 +87,13 @@
   async function snooze(e: PrEntry): Promise<void> {
     if (!account) return;
     await api.snoozePull(e.owner, e.repo, e.pull.number, account);
-    client.invalidateQueries({ queryKey: ["pulls"] });
+    client.invalidateQueries({ queryKey: keys.pullsAll() });
   }
 
   async function unsnooze(e: PrEntry): Promise<void> {
     if (!account) return;
     await api.unsnoozePull(e.owner, e.repo, e.pull.number, account);
-    client.invalidateQueries({ queryKey: ["pulls"] });
+    client.invalidateQueries({ queryKey: keys.pullsAll() });
   }
 
   function isApproved(pull: GithubPull): boolean {

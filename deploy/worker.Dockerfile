@@ -31,7 +31,7 @@
 # ── Builder: compile the worker binaries ────────────────────────────────────
 # Match the runtime's glibc (bookworm-slim ships glibc 2.36) by building on the
 # bookworm-based rust image, same as deploy/Dockerfile.
-FROM rust:1.97.1-slim-bookworm AS builder
+FROM rust:1.97.1-slim-bookworm@sha256:b001fed8c602fe3126bfee18c7afa14fe58dc855ce1d0cdfb4ac3ee7d6361a1c AS builder
 
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
@@ -52,7 +52,7 @@ RUN cargo build --release \
 # Every bundled CLI is a native binary; node is here only so context packs can
 # run npx-based MCP servers. Heavier JS tooling (pnpm stores, a managed
 # toolchain) still belongs in derived org images, e.g. under /opt/mise.
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim@sha256:63a496b5d3b99214b39f5ed70eb71a61e590a77979c79cbee4faf991f8c0783e
 
 # Base tooling kept deliberately lean:
 #   ca-certificates, libssl3 — TLS for the daemon's rustls/native deps.
@@ -125,8 +125,11 @@ RUN arch="$(dpkg --print-architecture)" \
 # native binary never invokes node, so it stays independent of whatever node a
 # derived image puts on PATH. Checksum-verified against the release manifest,
 # mirroring codex below.
-# CLAUDE_CODE_VERSION takes `latest`, `stable`, or an exact x.y.z.
-ARG CLAUDE_CODE_VERSION=latest
+# Must stay an exact x.y.z so a rebuild of a given commit ships the same harness;
+# CI enforces it via scripts/check-claude-version-drift.sh, which also reports
+# when this pin falls behind upstream. `latest`/`stable` still resolve if passed
+# explicitly as a build arg.
+ARG CLAUDE_CODE_VERSION=2.1.220
 RUN base="https://downloads.claude.ai/claude-code-releases" \
     && case "$(dpkg --print-architecture)" in \
          amd64) platform=linux-x64 ;; \

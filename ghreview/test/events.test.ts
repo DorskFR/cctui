@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { EventBus, mapNotice, type SseMessage } from "../src/events/bus.ts";
+import { EventQueue } from "../src/events/queue.ts";
 
 describe("mapNotice", () => {
   test("maps a pull_request notice to pr.updated with parsed coordinates", () => {
@@ -50,5 +51,57 @@ describe("EventBus", () => {
         data: { account: "DorskFR", state: "idle", last_run: "2026-07-12T00:00:00Z" },
       },
     ]);
+  });
+});
+
+describe("EventQueue", () => {
+  test("drains everything queued and empties itself", () => {
+    const q = new EventQueue<number>(10);
+    q.push(1);
+    q.push(2);
+    expect(q.size).toBe(2);
+    expect(q.drain()).toEqual([1, 2]);
+    expect(q.size).toBe(0);
+    expect(q.drain()).toEqual([]);
+  });
+
+  test("drops the oldest entries past the cap and counts them", () => {
+    const q = new EventQueue<number>(3);
+    for (const n of [1, 2, 3, 4, 5]) q.push(n);
+    expect(q.size).toBe(3);
+    expect(q.drain()).toEqual([3, 4, 5]);
+    expect(q.takeDropped()).toBe(2);
+    expect(q.takeDropped()).toBe(0);
+  });
+
+  test("wait resolves immediately when items are already queued", async () => {
+    const q = new EventQueue<number>(10);
+    q.push(1);
+    expect(await q.wait(60_000)).toBe(true);
+  });
+
+  test("wait wakes on push rather than polling", async () => {
+    const q = new EventQueue<number>(10);
+    const started = Date.now();
+    const pending = q.wait(60_000);
+    setTimeout(() => q.push(7), 5);
+    expect(await pending).toBe(true);
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(q.drain()).toEqual([7]);
+  });
+
+  test("wait resolves false on keepalive timeout with nothing queued", async () => {
+    const q = new EventQueue<number>(10);
+    expect(await q.wait(5)).toBe(false);
+  });
+
+  test("stop wakes a waiter, resolves false, and ignores later pushes", async () => {
+    const q = new EventQueue<number>(10);
+    const pending = q.wait(60_000);
+    q.stop();
+    expect(await pending).toBe(false);
+    q.push(1);
+    expect(q.size).toBe(0);
+    expect(await q.wait(60_000)).toBe(false);
   });
 });

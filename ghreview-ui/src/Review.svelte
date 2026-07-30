@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { setContext } from "svelte";
+  import { onDestroy, setContext } from "svelte";
   import "./embed.css";
   import { configureRuntime } from "./lib/api/config";
   import Shell from "./lib/components/Shell.svelte";
@@ -20,6 +20,8 @@
     configureRuntime({ baseUrl, token, account, basePath });
     router.refresh();
   });
+
+  onDestroy(() => configureRuntime(null));
 
   setContext<EmbedContext>(EMBED_KEY, { embedded: true });
 </script>

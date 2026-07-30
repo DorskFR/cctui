@@ -12,7 +12,7 @@ export CCTUI_ADMIN_TOKENS
 export CCTUI_URL
 export CCTUI_TOKEN
 
-.PHONY: setup build check test fmt lint clean
+.PHONY: setup build check test test/unit fmt lint clean
 .PHONY: db/up db/down db/reset db/migrate/up db/migrate/down db/migrate/add db/psql db/prepare
 .PHONY: db/test/up db/test/down db/test/migrate/up
 .PHONY: run/server run/tui run/admin
@@ -29,6 +29,12 @@ IMAGE_REGISTRY ?= ghcr.io/dorskfr
 IMAGE_REPO     ?= cctui
 IMAGE_VERSION  ?= $(shell awk -F'"' '/^\[workspace.package\]/{f=1} f && /^version/{print $$2; exit}' Cargo.toml)
 IMAGE          ?= $(IMAGE_REGISTRY)/$(IMAGE_REPO)
+
+# A local build off an unclean tree does not match the released $(IMAGE_VERSION),
+# so it gets its own tag and never masquerades as the release. CI tags :latest;
+# local builds deliberately do not.
+IMAGE_DIRTY ?= $(shell test -z "$$(git status --porcelain 2>/dev/null)" || echo -dirty)
+IMAGE_TAG   ?= $(IMAGE_VERSION)$(IMAGE_DIRTY)
 
 # ── Setup ──────────────────────────────────────────────────
 
@@ -59,7 +65,7 @@ test: db/test/up db/test/migrate/up  ## Run all tests
 	@echo "Tests complete."
 
 test/unit:  ## Run unit tests only (no DB required)
-	cargo test --workspace --lib
+	env -u DATABASE_URL -u TEST_DATABASE_URL cargo test --workspace
 
 # ── Run ────────────────────────────────────────────────────
 
@@ -143,19 +149,17 @@ local/ps:  ## Show local stack status
 # ── Deploy ──────────────────────────────────────────────────
 
 build/server:  ## Build server docker image
-	docker build -f deploy/Dockerfile -t ghcr.io/dorskfr/cctui-server:latest .
+	docker build -f deploy/Dockerfile -t ghcr.io/dorskfr/cctui-server:$(IMAGE_TAG) .
 
 IMAGE_GIT_HASH ?= $(shell git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
 
-image/build:  ## Build container image ($(IMAGE):$(IMAGE_VERSION) + :latest)
+image/build:  ## Build container image ($(IMAGE):$(IMAGE_TAG))
 	docker build -f deploy/Dockerfile \
 	  --build-arg CCTUI_GIT_HASH=$(IMAGE_GIT_HASH) \
-	  -t $(IMAGE):$(IMAGE_VERSION) \
-	  -t $(IMAGE):latest .
+	  -t $(IMAGE):$(IMAGE_TAG) .
 
-image/push:  ## Push container image tags
-	docker push $(IMAGE):$(IMAGE_VERSION)
-	docker push $(IMAGE):latest
+image/push:  ## Push container image tag
+	docker push $(IMAGE):$(IMAGE_TAG)
 
 image/release: image/build image/push  ## Build + push container image
 
@@ -165,14 +169,12 @@ image/release: image/build image/push  ## Build + push container image
 # same local fallback as image/*.
 WORKER_IMAGE ?= $(IMAGE_REGISTRY)/cctui-worker
 
-worker/image/build:  ## Build the worker image ($(WORKER_IMAGE):$(IMAGE_VERSION) + :latest)
+worker/image/build:  ## Build the worker image ($(WORKER_IMAGE):$(IMAGE_TAG))
 	docker build -f deploy/worker.Dockerfile \
-	  -t $(WORKER_IMAGE):$(IMAGE_VERSION) \
-	  -t $(WORKER_IMAGE):latest .
+	  -t $(WORKER_IMAGE):$(IMAGE_TAG) .
 
-worker/image/push:  ## Push the worker image tags
-	docker push $(WORKER_IMAGE):$(IMAGE_VERSION)
-	docker push $(WORKER_IMAGE):latest
+worker/image/push:  ## Push the worker image tag
+	docker push $(WORKER_IMAGE):$(IMAGE_TAG)
 
 worker/image/release: worker/image/build worker/image/push  ## Build + push the worker image
 
@@ -182,14 +184,12 @@ worker/image/release: worker/image/build worker/image/push  ## Build + push the 
 # same local fallback as image/*.
 DISPATCHER_KUBE_IMAGE ?= $(IMAGE_REGISTRY)/cctui-dispatcher-kube
 
-dispatcher-kube/image/build:  ## Build the kube dispatcher image ($(DISPATCHER_KUBE_IMAGE):$(IMAGE_VERSION) + :latest)
+dispatcher-kube/image/build:  ## Build the kube dispatcher image ($(DISPATCHER_KUBE_IMAGE):$(IMAGE_TAG))
 	docker build -f deploy/dispatcher.Dockerfile \
-	  -t $(DISPATCHER_KUBE_IMAGE):$(IMAGE_VERSION) \
-	  -t $(DISPATCHER_KUBE_IMAGE):latest .
+	  -t $(DISPATCHER_KUBE_IMAGE):$(IMAGE_TAG) .
 
-dispatcher-kube/image/push:  ## Push the kube dispatcher image tags
-	docker push $(DISPATCHER_KUBE_IMAGE):$(IMAGE_VERSION)
-	docker push $(DISPATCHER_KUBE_IMAGE):latest
+dispatcher-kube/image/push:  ## Push the kube dispatcher image tag
+	docker push $(DISPATCHER_KUBE_IMAGE):$(IMAGE_TAG)
 
 dispatcher-kube/image/release: dispatcher-kube/image/build dispatcher-kube/image/push  ## Build + push the kube dispatcher image
 
@@ -199,24 +199,22 @@ UI_IMAGE ?= $(IMAGE_REGISTRY)/cctui-ui
 bindings:  ## Regenerate webui TypeScript bindings from Rust structs
 	bash webui/scripts/gen-bindings.sh
 
-webui/install:  ## Install web UI dependencies (bun)
-	cd webui && bun install
+webui/install:  ## Install web UI dependencies (npm)
+	cd webui && npm ci
 
 webui/dev:  ## Run the web UI dev server (Vite)
-	cd webui && bun run dev
+	cd webui && npm run dev
 
 webui/build:  ## Production build of the web UI
-	cd webui && bun run build
+	cd webui && npm run build
 
-ui/image/build:  ## Build the web UI image ($(UI_IMAGE):$(IMAGE_VERSION) + :latest)
+ui/image/build:  ## Build the web UI image ($(UI_IMAGE):$(IMAGE_TAG))
 	docker build -f webui/Dockerfile \
-	  --build-arg CLIENT_VERSION=$(IMAGE_VERSION) \
-	  -t $(UI_IMAGE):$(IMAGE_VERSION) \
-	  -t $(UI_IMAGE):latest .
+	  --build-arg CLIENT_VERSION=$(IMAGE_TAG) \
+	  -t $(UI_IMAGE):$(IMAGE_TAG) .
 
-ui/image/push:  ## Push the web UI image tags
-	docker push $(UI_IMAGE):$(IMAGE_VERSION)
-	docker push $(UI_IMAGE):latest
+ui/image/push:  ## Push the web UI image tag
+	docker push $(UI_IMAGE):$(IMAGE_TAG)
 
 ui/image/release: ui/image/build ui/image/push  ## Build + push the web UI image
 

@@ -13,7 +13,9 @@
 
 services:
   postgres:
-    image: postgres:17
+    # pgautoupgrade migrates an existing PGDATA in place, so a volume created by
+    # an older major keeps working across a bump instead of refusing to start.
+    image: pgautoupgrade/pgautoupgrade:18-debian@sha256:5994de3d344b9c9676b571d10ff8259e155013f4e5477c58ceee74a42f6d2d20
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres

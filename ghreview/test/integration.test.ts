@@ -16,7 +16,7 @@ let db: DbHandle;
 
 beforeAll(async () => {
   if (!DATABASE_URL) return;
-  db = createDb(DATABASE_URL, "ghreview");
+  db = createDb(DATABASE_URL);
   await db.sql.unsafe("DROP SCHEMA IF EXISTS ghreview CASCADE");
   await runMigrations(db);
 });

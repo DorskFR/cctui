@@ -6,28 +6,19 @@
 	import ConversationLine from './ConversationLine.svelte';
 	import { copyLineMarkdown, saveLineImage } from './lineActions';
 	import type { ScrollController } from './scroll.svelte';
-	import type { AskQuestion, Line } from './types';
-	import type { PermReq, LiveAsk, LivePlan } from '$lib/ws.svelte';
+	import type { ConversationStream } from './stream.svelte';
+	import type { Line } from './types';
 	import { m } from '$lib/paraglide/messages';
 
 	let {
+		stream,
 		scroll,
 		sessionId,
 		lines,
 		isLoading,
 		archived,
-		perms,
-		ask,
-		liveAskQuestions,
 		askPreambleHtml,
-		plan,
 		planPreambleHtml,
-		working,
-		answering,
-		isDupeOfLiveAsk,
-		onanswer,
-		onanswerplan,
-		onretry,
 		onedit,
 		onrespondperm,
 		forkable = false,
@@ -37,23 +28,16 @@
 		onforkafter,
 		ontoggleselect
 	}: {
+		/** Live-stream controller. Passed whole rather than as a dozen
+		 * pass-through props; its `$state` fields stay reactive when read through it. */
+		stream: ConversationStream;
 		scroll: ScrollController;
 		sessionId: string;
 		lines: Line[];
 		isLoading: boolean;
 		archived: boolean;
-		perms: PermReq[];
-		ask: LiveAsk | null;
-		liveAskQuestions: AskQuestion[] | null;
 		askPreambleHtml: string | null;
-		plan: LivePlan | null;
 		planPreambleHtml: string | null;
-		working: boolean;
-		answering: boolean;
-		isDupeOfLiveAsk: (a: AskQuestion[]) => boolean;
-		onanswer: (text: string, picks: number[][] | null, qs?: AskQuestion[] | null) => void;
-		onanswerplan: (text: string, picks: number[][] | null) => void;
-		onretry: (ts: number) => void;
 		onedit: (text: string, ts: number) => void;
 		onrespondperm: (requestId: string, allow: boolean) => void;
 		// Subset-fork affordances; off for codex/archived sessions.
@@ -86,15 +70,15 @@
 
 	// Suppress the live preamble block when the same assistant prose has already
 	// streamed into the transcript.
-	const preambleInLines = $derived(
-		!!ask?.preamble &&
-			lines.some((l) => l.role === 'assistant' && (l.text ?? '').trim() === ask!.preamble!.trim())
-	);
+	const preambleInLines = $derived.by(() => {
+		const pre = stream.ask?.preamble?.trim();
+		return !!pre && lines.some((l) => l.role === 'assistant' && (l.text ?? '').trim() === pre);
+	});
 	// Same suppression for the live plan's preamble.
-	const planPreambleInLines = $derived(
-		!!plan?.preamble &&
-			lines.some((l) => l.role === 'assistant' && (l.text ?? '').trim() === plan!.preamble!.trim())
-	);
+	const planPreambleInLines = $derived.by(() => {
+		const pre = stream.plan?.preamble?.trim();
+		return !!pre && lines.some((l) => l.role === 'assistant' && (l.text ?? '').trim() === pre);
+	});
 </script>
 
 <div class="conv-wrap">
@@ -110,7 +94,7 @@
 	>
 		{#if isLoading}
 			<div class="empty"><span class="spin"></span></div>
-		{:else if lines.length === 0 && perms.length === 0 && !ask && !plan}
+		{:else if lines.length === 0 && stream.perms.length === 0 && !stream.ask && !stream.plan}
 			<div class="empty"><Text>{m.conversation_no_events()}</Text></div>
 		{/if}
 
@@ -123,21 +107,21 @@
 			</Button>
 		{/if}
 		{#each visibleLines as ln, i (ln.key)}
-			{#if ln.ask && isDupeOfLiveAsk(ln.ask)}
+			{#if ln.ask && stream.isDupeOfLiveAsk(ln.ask)}
 				<!-- Suppressed: same question is rendered live below. -->
 			{:else if ln.ask}
 				<AskQuestionCard
 					questions={ln.ask}
-					interactive={i === visibleLines.length - 1 && !archived && !answering && !ask}
-					onsubmit={(t, p) => onanswer(t, p, ln.ask)}
+					interactive={i === visibleLines.length - 1 && !archived && !stream.answering && !stream.ask}
+					onsubmit={(t, p) => stream.answerQuestion(t, p, ln.ask)}
 				/>
-			{:else if ln.plan && plan}
+			{:else if ln.plan && stream.plan}
 				<!-- Suppressed: a live plan prompt is rendered below. -->
 			{:else if ln.plan}
 				<PlanCard
 					plan={ln.plan}
-					interactive={i === visibleLines.length - 1 && !archived && !answering && !plan}
-					onsubmit={(t, p) => onanswerplan(t, p)}
+					interactive={i === visibleLines.length - 1 && !archived && !stream.answering && !stream.plan}
+					onsubmit={(t, p) => stream.answerPlan(t, p)}
 				/>
 			{:else if ln.role === 'reset'}
 				<div class="reset-divider" role="separator">
@@ -152,7 +136,7 @@
 				<ConversationLine
 					{ln}
 					{archived}
-					{onretry}
+					onretry={(ts) => stream.retryFailed(ts)}
 					onedit={onedit}
 					onsaveimage={saveLineImage}
 					oncopymarkdown={copyLineMarkdown}
@@ -166,7 +150,7 @@
 			{/if}
 		{/each}
 
-		{#if ask}
+		{#if stream.ask}
 			<!-- Live AskUserQuestion: the daemon's hook forwards the
 			     structured options, so render the interactive option-card form live.
 			     Older deliveries (no structured payload) fall back to the question
@@ -183,16 +167,16 @@
 			     (chosen/other/focused) was seeded from the PREVIOUS ask's prop and
 			     never re-seeded — which left the new answer un-submittable / stuck
 			    . -->
-			{#key ask.question}
+			{#key stream.ask.question}
 				<AskQuestionCard
-					questions={liveAskQuestions ?? [{ question: ask.question, options: [] }]}
-					interactive={!archived && !answering}
-					onsubmit={(t, p) => onanswer(t, p, liveAskQuestions)}
+					questions={stream.liveAskQuestions ?? [{ question: stream.ask.question, options: [] }]}
+					interactive={!archived && !stream.answering}
+					onsubmit={(t, p) => stream.answerQuestion(t, p, stream.liveAskQuestions)}
 				/>
 			{/key}
 		{/if}
 
-		{#if plan}
+		{#if stream.plan}
 			<!-- Live ExitPlanMode plan-approval prompt: the daemon's hook
 			     forwards the plan markdown the instant the prompt renders, so render
 			     the interactive Plan card live. Answering sends a reply (digit pick
@@ -202,16 +186,20 @@
 					<div class="bubble">{@html planPreambleHtml}</div>
 				</div>
 			{/if}
-			{#key plan.plan}
-				<PlanCard plan={plan.plan} interactive={!archived && !answering} onsubmit={(t, p) => onanswerplan(t, p)} />
+			{#key stream.plan.plan}
+				<PlanCard
+					plan={stream.plan.plan}
+					interactive={!archived && !stream.answering}
+					onsubmit={(t, p) => stream.answerPlan(t, p)}
+				/>
 			{/key}
 		{/if}
 
-		{#each perms as p (p.request_id)}
+		{#each stream.perms as p (p.request_id)}
 			<PermissionCard req={p} onrespond={(rid, allow) => onrespondperm(rid, allow)} />
 		{/each}
 
-		{#if working && !archived && !ask && !plan && perms.length === 0}
+		{#if stream.working && !archived && !stream.ask && !stream.plan && stream.perms.length === 0}
 			<!-- Activity indicator: proves the request is being processed,
 			     the equivalent of the TUI's "Running…" spinner. -->
 			<div class="working" role="status" aria-live="polite">

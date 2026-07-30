@@ -15,26 +15,40 @@ pre-commit:
       glob: "*.{json,yaml,yml,md}"
       run: biome check --write --no-errors-on-unmatched {staged_files}
       stage_fixed: true
+    # The root biome.json covers data/docs files only and has the linter off.
+    # Source linting is per-project, using each project's own biome.json and its
+    # locally installed biome.
+    biome-webui:
+      root: "webui/"
+      glob: "webui/src/**/*.ts"
+      run: npx --no-install biome check --write --no-errors-on-unmatched {staged_files}
+      stage_fixed: true
+    biome-ghreview:
+      root: "ghreview/"
+      glob: "ghreview/**/*.{ts,js}"
+      run: bunx biome check --write --no-errors-on-unmatched {staged_files}
+      stage_fixed: true
+    biome-ghreview-ui:
+      root: "ghreview-ui/"
+      glob: "ghreview-ui/**/*.{ts,js,svelte}"
+      run: bunx biome check --write --no-errors-on-unmatched {staged_files}
+      stage_fixed: true
     # Ratchet against new :global(...) CSS overrides in the webui. Reaching into a
     # tsumikit atom's scoped class from a parent is banned (webui/DESIGN.md rule 4) —
     # style atoms via props/variants, or wrap in a LOCAL element so scoped CSS
-    # reaches it. We only flag ADDED lines, so the existing backlog doesn't block
-    # edits; clear it opportunistically. Matches ":global(" so prose/comments that
-    # merely mention :global don't trip it.
+    # reaches it. Only ADDED lines are flagged, so the existing backlog doesn't
+    # block edits; clear it opportunistically. Shares its implementation with the
+    # no-css-global CI job.
     no-css-global:
       glob: "webui/**/*.svelte"
-      run: |
-        added=$(git diff --cached -U0 -- {staged_files} | awk '/^\+/ && !/^\+\+\+/ && /:global\(/')
-        if [ -n "$added" ]; then
-          echo "✖ New :global(...) CSS override in a Svelte file — forbidden (webui/DESIGN.md rule 4)."
-          echo "  Style tsumikit atoms via props/variants, or wrap the styled bit in a LOCAL"
-          echo "  element so its scoped CSS reaches it. Offending added lines:"
-          echo "$added"
-          exit 1
-        fi
+      run: bash scripts/no-css-global.sh --staged
 
 pre-push:
   commands:
+    # DB-gated tests skip themselves without DATABASE_URL, so this needs no
+    # database; run `make test` for the full suite against one.
+    test:
+      run: env -u DATABASE_URL -u TEST_DATABASE_URL cargo test --workspace
     # Mirror of the schema-drift CI job (.github/workflows/schema-drift.yml) so
     # drift is caught locally before it reaches CI. Re-fetches the upstream
     # Claude Code settings schema and diffs (jq -S, so formatting/key-order is

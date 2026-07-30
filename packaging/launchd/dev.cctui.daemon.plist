@@ -14,9 +14,9 @@
   <key>KeepAlive</key>
   <true/>
   <key>StandardOutPath</key>
-  <string>/tmp/cctui-daemon.out.log</string>
+  <string>__CCTUI_LOG_DIR__/cctui-daemon.out.log</string>
   <key>StandardErrorPath</key>
-  <string>/tmp/cctui-daemon.err.log</string>
+  <string>__CCTUI_LOG_DIR__/cctui-daemon.err.log</string>
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>
