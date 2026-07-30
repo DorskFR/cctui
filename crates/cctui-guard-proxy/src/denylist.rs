@@ -32,6 +32,35 @@ pub fn allow_private_ips_from_env() -> bool {
     })
 }
 
+/// Scoped alternative to the blanket opt-out: `GUARD_PROXY_PRIVATE_ALLOWED_HOSTS`
+/// (comma-separated, case-insensitive) names hosts that may resolve into the
+/// private / loopback / CGNAT ranges — the k8s worker's control plane is a
+/// `ClusterIP`. The allow-list still applies, dialing stays proxy-resolved, and
+/// link-local / metadata stays denied.
+#[must_use]
+pub fn private_allowed_hosts_from_env() -> Vec<String> {
+    std::env::var("GUARD_PROXY_PRIVATE_ALLOWED_HOSTS").map_or_else(
+        |_| Vec::new(),
+        |v| {
+            v.split(',')
+                .map(|s| s.trim().trim_end_matches('.').to_ascii_lowercase())
+                .filter(|s| !s.is_empty())
+                .collect()
+        },
+    )
+}
+
+/// True if `host` is one of the scoped private-range exemptions.
+#[must_use]
+pub fn host_private_allowed(host: &str, exempt: &[String]) -> bool {
+    if exempt.is_empty() {
+        return false;
+    }
+    let host =
+        host.trim_matches(|c| c == '[' || c == ']').trim_end_matches('.').to_ascii_lowercase();
+    exempt.contains(&host)
+}
+
 /// True if `ip` must never be dialed. Link-local (`169.254/16` / `fe80::/10`) —
 /// the cloud metadata + EKS Pod Identity surface — is always denied. Loopback,
 /// RFC1918/ULA, CGNAT, unspecified and broadcast are also denied unless
@@ -259,6 +288,16 @@ mod tests {
     async fn resolve_allowed_accepts_public_literal() {
         let addrs = resolve_allowed("140.82.121.4:443", false).await.unwrap();
         assert_eq!(addrs, vec!["140.82.121.4:443".parse().unwrap()]);
+    }
+
+    #[test]
+    fn scoped_private_exemption() {
+        let exempt = vec!["cctui.dev.svc.cluster.local".to_string()];
+        assert!(host_private_allowed("cctui.dev.svc.cluster.local", &exempt));
+        assert!(host_private_allowed("CCTUI.dev.SVC.cluster.LOCAL", &exempt));
+        assert!(host_private_allowed("cctui.dev.svc.cluster.local.", &exempt));
+        assert!(!host_private_allowed("evil.example.com", &exempt));
+        assert!(!host_private_allowed("cctui.dev.svc.cluster.local", &[]));
     }
 
     #[tokio::test]

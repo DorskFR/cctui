@@ -13,7 +13,7 @@ use nix::sys::socket::sockopt::OriginalDst;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
-use crate::denylist::{host_is_denied, ip_is_denied, resolve_allowed};
+use crate::denylist::{host_is_denied, host_private_allowed, ip_is_denied, resolve_allowed};
 use crate::inject::Injector;
 use crate::peek::{extract_http_host, extract_sni};
 use crate::policy::PolicyManager;
@@ -34,6 +34,7 @@ pub struct TransparentListener {
     policy: Arc<PolicyManager>,
     injection: Option<Arc<Injector>>,
     allow_private: bool,
+    private_allowed: Arc<Vec<String>>,
 }
 
 impl TransparentListener {
@@ -44,7 +45,8 @@ impl TransparentListener {
     ) -> anyhow::Result<Self> {
         let listener = TcpListener::bind(addr).await?;
         let allow_private = crate::denylist::allow_private_ips_from_env();
-        Ok(Self { listener, policy, injection, allow_private })
+        let private_allowed = Arc::new(crate::denylist::private_allowed_hosts_from_env());
+        Ok(Self { listener, policy, injection, allow_private, private_allowed })
     }
 
     pub async fn serve(self) -> anyhow::Result<()> {
@@ -53,8 +55,12 @@ impl TransparentListener {
             let policy = self.policy.clone();
             let injection = self.injection.clone();
             let allow_private = self.allow_private;
+            let private_allowed = self.private_allowed.clone();
             tokio::spawn(async move {
-                if let Err(e) = handle_connection(stream, policy, injection, allow_private).await {
+                if let Err(e) =
+                    handle_connection(stream, policy, injection, allow_private, private_allowed)
+                        .await
+                {
                     tracing::debug!("transparent connection ended: {e}");
                 }
             });
@@ -71,6 +77,7 @@ async fn handle_connection(
     policy: Arc<PolicyManager>,
     injection: Option<Arc<Injector>>,
     allow_private: bool,
+    private_allowed: Arc<Vec<String>>,
 ) -> anyhow::Result<()> {
     let dst = original_dst(&conn)?;
     let host_port = dst.to_string();
@@ -100,6 +107,11 @@ async fn handle_connection(
     // a hostname allow-list — fail closed).
     let name = sni.as_deref().or(http_host.as_deref());
     let policy_target = name.map_or_else(|| host_port.clone(), |n| format!("{n}:{port}"));
+
+    // Scoped exemptions require a recovered name — never the bare original-dst
+    // IP — and the dial goes to the proxy's own resolution of that name.
+    let allow_private =
+        allow_private || name.is_some_and(|n| host_private_allowed(n, &private_allowed));
 
     // Built-in deny overrides the allow-list: match on the recovered name AND the
     // original-destination IP, so an IP-literal metadata request with no SNI is
