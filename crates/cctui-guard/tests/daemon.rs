@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 
 use cctui_guard::engine::WorkflowEngine;
+use cctui_guard::ir::Workflow;
 use cctui_guard::parser::{parse_guard_rules_str, parse_keywords, parse_steps, parse_transitions};
 use cctui_guard::rules::{check_rules, split_bash_segments};
 use serde_json::json;
@@ -413,7 +414,7 @@ fn make_engine(rules_text: &str, prompt_text: &str) -> TestEngine {
     let state_file = dir.path().join("state");
     // No proxy dir → policy writes are skipped (matches Python guard on missing dir).
     let policy_file = dir.path().join("guard-proxy").join("policy.json");
-    let steps = parse_steps(prompt_text).unwrap();
+    let steps = Workflow::compile(prompt_text).unwrap().into_steps();
     let tool_sets = parse_guard_rules_str(rules_text);
     let gate_cwd = dir.path().to_path_buf();
     let engine = WorkflowEngine::new(
@@ -572,7 +573,7 @@ fn test_proxy_policy_expansion() {
     let state_file = dir.path().join("state");
 
     let engine = WorkflowEngine::new(
-        parse_steps(md).unwrap(),
+        Workflow::compile(md).unwrap().into_steps(),
         parse_guard_rules_str(rules),
         state_file,
         policy_file.clone(),
@@ -605,7 +606,7 @@ fn initial_policy(md: &str, rules: &str, guarded_default_allow: bool) -> serde_j
     std::fs::create_dir_all(&proxy_dir).unwrap();
     let policy_file = proxy_dir.join("policy.json");
     let engine = WorkflowEngine::new(
-        parse_steps(md).unwrap(),
+        Workflow::compile(md).unwrap().into_steps(),
         parse_guard_rules_str(rules),
         dir.path().join("state"),
         policy_file.clone(),
@@ -749,7 +750,6 @@ fn test_example_context_pack_prompt_parses_with_llmjudge() {
 
 #[test]
 fn inline_prompt_set_drives_step_egress_policy() {
-    use cctui_guard::ir::Workflow;
     use cctui_guard::resolve::resolve_sets;
 
     let dir = tempfile::tempdir().unwrap();
@@ -884,7 +884,7 @@ fn legacy_state_file_without_visits_is_read() {
     let dir = tempfile::tempdir().unwrap();
     let state_file = dir.path().join("state");
     let engine = WorkflowEngine::new(
-        parse_steps(prompt).unwrap(),
+        Workflow::compile(prompt).unwrap().into_steps(),
         no_sets(),
         state_file.clone(),
         dir.path().join("guard-proxy").join("policy.json"),

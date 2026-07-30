@@ -1,16 +1,13 @@
 import type { DbHandle } from "../db/client.ts";
 import type { Subscription } from "../db/subscriptions.ts";
-import { listActiveSubscriptions } from "../db/subscriptions.ts";
+import { listActiveSubscriptionsForAccount } from "../db/subscriptions.ts";
 import type { EventBus } from "../events/bus.ts";
 import type { Account } from "../github/account.ts";
-import {
-  type SyncContext,
-  type SyncOutcome,
-  syncNotifications,
-  syncPull,
-  syncRepo,
-} from "./handlers.ts";
+import type { SyncContext, SyncOutcome } from "./context.ts";
 import { drainPendingReads } from "./notificationPush.ts";
+import { syncNotifications } from "./notificationSync.ts";
+import { syncPull } from "./pullSync.ts";
+import { syncRepo } from "./repoSync.ts";
 import { drainPendingViewed } from "./viewedPush.ts";
 
 export interface PollerOptions {
@@ -39,8 +36,7 @@ export class Poller {
 
   async runOnce(): Promise<void> {
     const { db, account, bus } = this.opts;
-    const subs = await listActiveSubscriptions(db);
-    const mine = subs.filter((s) => s.account === account.login);
+    const mine = await listActiveSubscriptionsForAccount(db, account.login);
     if (mine.length === 0) {
       this.lastRun = new Date().toISOString();
       return;

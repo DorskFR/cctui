@@ -36,7 +36,7 @@ const B = { authorization: "Bearer tokB", "content-type": "application/json" };
 
 guarded("github capability derivation", () => {
   beforeAll(async () => {
-    db = createDb(DATABASE_URL as string, "ghreview");
+    db = createDb(DATABASE_URL as string);
     await db.sql.unsafe("DROP SCHEMA IF EXISTS ghreview CASCADE");
     await runMigrations(db);
   });
@@ -93,7 +93,7 @@ guarded("github capability derivation", () => {
 
 guarded("connector patch (update poll knobs + rotate PAT)", () => {
   beforeAll(async () => {
-    db = createDb(DATABASE_URL as string, "ghreview");
+    db = createDb(DATABASE_URL as string);
     await db.sql.unsafe("DROP SCHEMA IF EXISTS ghreview CASCADE");
     await runMigrations(db);
   });

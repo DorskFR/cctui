@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { errMessage } from '$lib/api';
 	import { useResourceShares, useResourceShareActions } from '$lib/queries';
 	import { toasts } from '$lib/toast.svelte';
 	import { Button, Input, Text, Timestamp } from '@dorsk/tsumikit';
@@ -42,7 +43,7 @@
 			grantee = '';
 			toasts.ok(m.providers_share_shared());
 		} catch (e) {
-			toasts.err((e as Error).message);
+			toasts.err(errMessage(e));
 		} finally {
 			busy = false;
 		}
@@ -54,7 +55,7 @@
 			await actions.revoke(resourceType, id, userId);
 			toasts.ok(m.providers_share_revoked());
 		} catch (e) {
-			toasts.err((e as Error).message);
+			toasts.err(errMessage(e));
 		}
 	}
 

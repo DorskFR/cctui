@@ -32,7 +32,7 @@
       <Input type="text" bind:value={account} placeholder="DorskFR" spellcheck="false" />
     </label>
     <Button type="submit" variant="primary" block>Connect</Button>
-    <small>Stored in localStorage. CCT-610 wires real cctui auth.</small>
+    <small>Stored in localStorage. Embedded in cctui, the token is injected for you.</small>
   </form>
 </div>
 

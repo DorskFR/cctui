@@ -1,5 +1,22 @@
 import { Octokit } from "@octokit/rest";
+import { version } from "../version.ts";
 import { parseRateHeaders, type RateHeaders } from "./ratelimit.ts";
+
+export const REQUEST_TIMEOUT_MS = 15_000;
+export const REQUEST_RETRIES = 2;
+export const RETRY_BACKOFF_MS = 250;
+export const USER_AGENT = `cctui-ghreview/${version}`;
+
+const RETRYABLE_STATUS = new Set([500, 502, 503, 504]);
+
+export type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
+
+export interface RetryingFetchOptions {
+  timeoutMs?: number;
+  retries?: number;
+  backoffMs?: number;
+  sleep?: (ms: number) => Promise<void>;
+}
 
 export interface ConditionalResult<T> {
   status: number;
@@ -96,6 +113,36 @@ export async function conditionalRequest<T>(
   }
 }
 
+export function retryingFetch(baseFetch: FetchLike, options: RetryingFetchOptions = {}): FetchLike {
+  const timeoutMs = options.timeoutMs ?? REQUEST_TIMEOUT_MS;
+  const retries = options.retries ?? REQUEST_RETRIES;
+  const backoffMs = options.backoffMs ?? RETRY_BACKOFF_MS;
+  const sleep = options.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
+
+  return async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+    const caller = init?.signal ?? null;
+    let lastError: unknown;
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      if (attempt > 0) await sleep(backoffMs * 2 ** (attempt - 1));
+      const timeout = AbortSignal.timeout(timeoutMs);
+      const signal = caller ? AbortSignal.any([caller, timeout]) : timeout;
+      try {
+        const res = await baseFetch(input, { ...init, signal });
+        if (attempt === retries || !RETRYABLE_STATUS.has(res.status)) return res;
+      } catch (err) {
+        if (caller?.aborted) throw err;
+        lastError = err;
+        if (attempt === retries) throw err;
+      }
+    }
+    throw lastError;
+  };
+}
+
 export function createOctokit(token: string | undefined): OctokitRequest {
-  return new Octokit({ auth: token }) as unknown as OctokitRequest;
+  return new Octokit({
+    auth: token,
+    userAgent: USER_AGENT,
+    request: { fetch: retryingFetch(fetch) },
+  }) as unknown as OctokitRequest;
 }

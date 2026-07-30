@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { errMessage } from '$lib/api';
 	import type { SessionListItem } from '@bindings/SessionListItem';
 	import AttachmentList from '$lib/components/molecules/AttachmentList.svelte';
 	import { Button, FileButton, Text, Textarea } from '@dorsk/tsumikit';
@@ -218,7 +219,7 @@
 				body = text ? `${text}\n\n${header}\n${list}` : `${header}\n${list}`;
 				attachments = [];
 			} catch (e) {
-				toasts.err(m.composer_attachment_upload_failed({ message: (e as Error).message }));
+				toasts.err(m.composer_attachment_upload_failed({ message: errMessage(e) }));
 				return;
 			} finally {
 				uploading = false;

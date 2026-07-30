@@ -387,8 +387,8 @@
 		padding: 0 0.35em;
 		border-radius: var(--r-sm);
 		font-size: var(--fs-xs);
-		background: color-mix(in srgb, var(--warn, #e0a800) 18%, transparent);
-		color: var(--warn, #e0a800);
+		background: color-mix(in srgb, var(--warn) 18%, transparent);
+		color: var(--warn);
 	}
 	.adv-list {
 		display: flex;

@@ -20,7 +20,7 @@
 	{#snippet body()}
 		<div class="stack">
 			<Text as="p" tone="muted">{m.users_secret_warning()}</Text>
-			<Text variant="code" size="sm" tone="accent" class="secret">{secret}</Text>
+			<Text variant="code" size="sm" tone="accent" class="secret-val">{secret}</Text>
 		</div>
 	{/snippet}
 	{#snippet footer()}
@@ -32,7 +32,7 @@
 <style>
 	/* .secret is rendered by the Text atom (which owns its size/tone/mono), so
 	   the residual box chrome must be :global to reach that element. */
-	:global(.secret) {
+	.stack :global(.secret-val) {
 		display: block;
 		padding: var(--sp-3);
 		background: var(--bg);

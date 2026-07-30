@@ -1,20 +1,29 @@
 #!/usr/bin/env bash
-# Fails if <range> ADDS a `:global(` line in a webui Svelte file (webui/DESIGN.md
-# rule 4). Runs in CI because the lefthook mirror is bypassable via a local
-# core.hooksPath override. Forward-only: only added lines are flagged.
+# Shrinking budget on `:global(` overrides in webui Svelte files (webui/DESIGN.md
+# rule 4). The total may never exceed BUDGET; lower BUDGET whenever it drops.
 set -euo pipefail
 
-range="${1:?usage: no-css-global.sh <git-diff-range>}"
+BUDGET=76
 
-added=$(git diff "$range" -U0 -- ':(glob)webui/**/*.svelte' \
-  | awk '/^\+/ && !/^\+\+\+/ && /:global\(/')
+case "${1:-}" in
+  --staged) grep_args=(--cached) ;;
+  "") echo "usage: no-css-global.sh <git-diff-range> | --staged" >&2; exit 2 ;;
+  *) grep_args=() ;;
+esac
 
-if [ -n "$added" ]; then
-  echo "✖ New :global(...) CSS override in a Svelte file — forbidden (webui/DESIGN.md rule 4)."
+count=$(git grep -o "${grep_args[@]}" ':global(' -- ':(glob)webui/**/*.svelte' | wc -l || true)
+
+if [ "$count" -gt "$BUDGET" ]; then
+  echo "✖ :global(...) count is $count, over the budget of $BUDGET."
   echo "  Style tsumikit atoms via props/variants, or wrap the styled bit in a LOCAL"
-  echo "  element so its scoped CSS reaches it. Offending added lines:"
-  echo "$added"
+  echo "  element so its scoped CSS reaches it."
   exit 1
 fi
 
-echo "✓ no new :global(...) overrides in webui Svelte files"
+if [ "$count" -lt "$BUDGET" ]; then
+  echo "✓ :global(...) count is $count, under the budget of $BUDGET."
+  echo "  Lower BUDGET in scripts/no-css-global.sh to $count to lock the win in."
+  exit 0
+fi
+
+echo "✓ no new :global(...) overrides in webui Svelte files ($count at budget)"

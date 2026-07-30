@@ -78,6 +78,10 @@
   --danger: var(--c-red);
   --info: var(--c-blue);
 
+  /* xterm canvas backdrop. Deliberately theme-independent: the terminal renders
+	   the agent's own ANSI colors, which assume a dark ground. */
+  --term-bg: #0b0e14;
+
   /* status dots */
   --dot-active: var(--c-green);
   --dot-stale: var(--c-amber);

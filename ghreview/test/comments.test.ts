@@ -66,7 +66,7 @@ function deps(octokit: OctokitRequest, bus?: EventBus): AppDeps {
 
 guarded("delete published comments", () => {
   beforeAll(async () => {
-    db = createDb(DATABASE_URL as string, "ghreview");
+    db = createDb(DATABASE_URL as string);
     await db.sql.unsafe("DROP SCHEMA IF EXISTS ghreview CASCADE");
     await runMigrations(db);
   });

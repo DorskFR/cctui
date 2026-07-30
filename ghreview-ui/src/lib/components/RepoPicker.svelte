@@ -3,19 +3,20 @@
   import { Badge, Input, Switch, Text } from "@dorsk/tsumikit";
   import { api, type GithubRepo, type Subscription } from "../api/client";
   import { getAccount } from "../api/config";
+  import { keys } from "../api/queries";
 
   const client = useQueryClient();
   const account = getAccount() ?? "";
   let filter = $state("");
 
   const repos = createQuery({
-    queryKey: ["github-repos", account],
+    queryKey: keys.githubRepos(account),
     queryFn: () => api.githubRepos(account),
     enabled: !!account,
   });
 
   const subs = createQuery({
-    queryKey: ["subscriptions", account || null],
+    queryKey: keys.subscriptions(account),
     queryFn: () => api.listSubscriptions(account || undefined),
     enabled: !!account,
   });
@@ -31,16 +32,16 @@
   const subscribe = createMutation({
     mutationFn: (fullName: string) => api.subscribe(fullName, "repo", account),
     onSuccess: () => {
-      client.invalidateQueries({ queryKey: ["subscriptions"] });
-      client.invalidateQueries({ queryKey: ["pulls"] });
+      client.invalidateQueries({ queryKey: keys.subscriptionsAll() });
+      client.invalidateQueries({ queryKey: keys.pullsAll() });
     },
   });
 
   const unsubscribe = createMutation({
     mutationFn: (id: string) => api.unsubscribe(id),
     onSuccess: () => {
-      client.invalidateQueries({ queryKey: ["subscriptions"] });
-      client.invalidateQueries({ queryKey: ["pulls"] });
+      client.invalidateQueries({ queryKey: keys.subscriptionsAll() });
+      client.invalidateQueries({ queryKey: keys.pullsAll() });
     },
   });
 

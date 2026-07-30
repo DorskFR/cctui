@@ -385,7 +385,7 @@ svg[aria-hidden="true"] {
 /* Search-term highlight. Used inside {@html} content (chat window +
    snippets), so it must be global — Svelte scoped styles don't reach {@html}. */
 .search-hit {
-  background: var(--warn, #d08770);
+  background: var(--warn);
   color: #1a1a1a;
   border-radius: 2px;
   padding: 0 1px;
@@ -407,9 +407,9 @@ svg[aria-hidden="true"] {
   line-height: 1;
   padding: 3px 7px;
   border-radius: var(--r-sm, 4px);
-  border: 1px solid var(--border, #444);
-  background: color-mix(in srgb, var(--bg-elevated, #222) 88%, transparent);
-  color: var(--text-faint, #aaa);
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg-elevated) 88%, transparent);
+  color: var(--text-faint);
   cursor: pointer;
   opacity: 0;
   transition: opacity 0.12s ease;
@@ -419,12 +419,12 @@ svg[aria-hidden="true"] {
   opacity: 1;
 }
 .md-pre-wrap .md-copy:hover {
-  color: var(--text, #eee);
-  border-color: var(--accent, #88c0d0);
+  color: var(--text);
+  border-color: var(--accent);
 }
 .md-pre-wrap .md-copy.done {
-  color: var(--ok, #a3be8c);
-  border-color: var(--ok, #a3be8c);
+  color: var(--ok);
+  border-color: var(--ok);
   opacity: 1;
 }
 @media (hover: none) {
@@ -443,7 +443,7 @@ svg[aria-hidden="true"] {
   height: auto;
   margin: 6px 0;
   border-radius: var(--r-sm, 4px);
-  border: 1px solid var(--border, #444);
+  border: 1px solid var(--border);
   cursor: zoom-in;
   object-fit: contain;
 }

@@ -30,6 +30,32 @@ function buildUrl(path: string, query?: RequestOpts['query']): string {
 	return url.toString();
 }
 
+async function handle<T>(res: Response): Promise<T> {
+	if (res.status === 401) {
+		auth.markLoggedOut();
+		throw new ApiError(401, 'Unauthorized');
+	}
+	if (!res.ok) {
+		let msg = `${res.status} ${res.statusText}`;
+		try {
+			const j = await res.json();
+			if (j?.error) msg = j.error;
+		} catch {
+			/* non-JSON error body */
+		}
+		throw new ApiError(res.status, msg);
+	}
+	if (res.status === 204) return undefined as T;
+	const text = await res.text();
+	if (!text) return undefined as T;
+	return JSON.parse(text) as T;
+}
+
+export function errMessage(e: unknown): string {
+	if (e instanceof Error) return e.message;
+	return typeof e === 'string' ? e : String(e);
+}
+
 async function request<T>({ method = 'GET', path, body, query }: RequestOpts): Promise<T> {
 	const headers = new Headers();
 	if (body !== undefined) headers.set('Content-Type', 'application/json');
@@ -43,58 +69,20 @@ async function request<T>({ method = 'GET', path, body, query }: RequestOpts): P
 		body: body !== undefined ? JSON.stringify(body) : undefined
 	});
 
-	if (res.status === 401) {
-		auth.markLoggedOut();
-		throw new ApiError(401, 'Unauthorized');
-	}
-	if (!res.ok) {
-		let msg = `${res.status} ${res.statusText}`;
-		try {
-			const j = await res.json();
-			if (j?.error) msg = j.error;
-		} catch {
-			/* non-JSON error body */
-		}
-		throw new ApiError(res.status, msg);
-	}
-
-	if (res.status === 204) return undefined as T;
-	const text = await res.text();
-	if (!text) return undefined as T;
-	return JSON.parse(text) as T;
+	return handle<T>(res);
 }
 
 /** POST a `multipart/form-data` body (file uploads). The browser sets
  *  the `Content-Type` boundary itself, so we must NOT set it here. Shares the
  *  auth + error handling of {@link request}. */
 async function postForm<T>(path: string, form: FormData): Promise<T> {
-	const headers = new Headers();
-
 	const res = await fetch(buildUrl(path), {
 		method: 'POST',
-		headers,
 		credentials: 'include',
 		body: form
 	});
 
-	if (res.status === 401) {
-		auth.markLoggedOut();
-		throw new ApiError(401, 'Unauthorized');
-	}
-	if (!res.ok) {
-		let msg = `${res.status} ${res.statusText}`;
-		try {
-			const j = await res.json();
-			if (j?.error) msg = j.error;
-		} catch {
-			/* non-JSON error body */
-		}
-		throw new ApiError(res.status, msg);
-	}
-	if (res.status === 204) return undefined as T;
-	const text = await res.text();
-	if (!text) return undefined as T;
-	return JSON.parse(text) as T;
+	return handle<T>(res);
 }
 
 export const api = {

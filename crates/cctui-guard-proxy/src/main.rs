@@ -74,16 +74,10 @@ struct Args {
 
     /// Path to the JSON injection config (an array of `{host, shape, secret,
     /// …}` entries, each naming an explicit `env:`/`vault:`/`aws-sm:`/`k8s:`
-    /// secret ref). When the file exists it fully defines injection and the
-    /// legacy `--secret-source`/`--inject-hosts` pair is ignored. MUST NOT live
-    /// in a worker-writable location.
+    /// secret ref). The file fully defines injection; absent ⇒ pure passthrough.
+    /// MUST NOT live in a worker-writable location.
     #[arg(long, default_value = "/etc/guard-proxy/inject.json", env = "GUARD_PROXY_INJECT_CONFIG")]
     inject_config: PathBuf,
-
-    /// Legacy credential backend for `--inject-hosts` (CCT-718). `none` keeps
-    /// the feature inert. Ignored when the inject config file exists.
-    #[arg(long, value_enum, default_value = "none", env = "GUARD_PROXY_SECRET_SOURCE")]
-    secret_source: SecretSourceKind,
 
     /// TTL of the in-memory secret cache; rotation lands within one TTL.
     #[arg(long, default_value_t = 120, env = "GUARD_PROXY_SECRET_TTL_SECS")]
@@ -98,19 +92,6 @@ struct Args {
     #[arg(long, env = "GUARD_PROXY_VAULT_ROLE")]
     vault_role: Option<String>,
 
-    /// Vault KV v2 mount (legacy `--inject-hosts` ref derivation only).
-    #[arg(long, default_value = "secret", env = "GUARD_PROXY_VAULT_MOUNT")]
-    vault_mount: String,
-
-    /// Vault path prefix (legacy derivation:
-    /// `<mount>/data/<prefix>/<identity>/<service>`).
-    #[arg(long, default_value = "cctui/workers", env = "GUARD_PROXY_VAULT_PATH_PREFIX")]
-    vault_path_prefix: String,
-
-    /// Field read from the KV v2 secret data (legacy derivation).
-    #[arg(long, default_value = "value", env = "GUARD_PROXY_VAULT_FIELD")]
-    vault_field: String,
-
     /// Service account token used for the Vault Kubernetes login.
     #[arg(
         long,
@@ -119,23 +100,10 @@ struct Args {
     )]
     vault_token_path: PathBuf,
 
-    /// AWS Secrets Manager name prefix (legacy derivation:
-    /// `<prefix><identity>/<service>`).
-    #[arg(long, default_value = "cctui/worker/", env = "GUARD_PROXY_AWS_SM_PREFIX")]
-    aws_sm_prefix: String,
-
     /// Task identity, substituted into `${IDENTITY}`/`${identity}` secret-ref
-    /// placeholders. Required by refs that use a placeholder and by the legacy
-    /// `--inject-hosts` derivation.
+    /// placeholders. Required by refs that use a placeholder.
     #[arg(long, default_value = "", env = "GUARD_PROXY_IDENTITY")]
     identity: String,
-
-    /// Legacy host list to TLS-terminate + credential-inject (CCT-718). Each
-    /// token is `host`, `host=service`, or `host=service:<shape>`
-    /// (bearer|basic|cookie). Ignored when the inject config file exists;
-    /// otherwise also needs a real `--secret-source`.
-    #[arg(long, value_delimiter = ',', env = "GUARD_PROXY_INJECT_HOSTS")]
-    inject_hosts: Vec<String>,
 
     /// Where to write the per-pod CA cert (PEM) for the worker to install. Only
     /// written when injection is active.
@@ -155,8 +123,7 @@ struct Args {
     github_app_installation_id: Option<String>,
 
     /// Secret ref of the App private-key PEM (identity placeholders apply).
-    /// Falls back to the legacy `(identity, "github-app-key")` derivation when
-    /// a legacy `--secret-source` is configured.
+    /// Required whenever the App ids are set.
     #[arg(long, env = "GUARD_PROXY_GITHUB_APP_KEY_SECRET")]
     github_app_key_secret: Option<String>,
 
@@ -184,18 +151,6 @@ enum Cmd {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-enum SecretSourceKind {
-    /// No legacy secret source (default).
-    None,
-    /// `CRED_<IDENTITY>_<SERVICE>` from the sidecar's own env.
-    Env,
-    /// `HashiCorp` Vault / `OpenBao` KV v2 with Kubernetes auth.
-    Vault,
-    /// AWS Secrets Manager via the SDK default credential chain.
-    AwsSm,
-}
-
 /// Builds the engine set every ref resolution goes through. The `vault:` engine
 /// needs `--vault-addr` + `--vault-role`; the `k8s:` engine needs the
 /// in-cluster environment; `env:`/`aws-sm:` are always available.
@@ -210,70 +165,22 @@ fn build_engines(args: &Args) -> anyhow::Result<Engines> {
     Ok(Engines::new(vault, K8sClient::in_cluster().ok()))
 }
 
-/// The injection rule set: the JSON inject config when present (authoritative),
-/// else the legacy `--secret-source` + `--inject-hosts` pair with refs derived
-/// from the backend's naming convention. Empty ⇒ injection inert.
+/// The injection rule set, fully defined by the JSON inject config. Absent file
+/// ⇒ passthrough; malformed ⇒ startup failure, never a partial credential set.
 fn build_rules(args: &Args) -> anyhow::Result<Vec<InjectionRule>> {
-    if args.inject_config.is_file() {
-        let json = std::fs::read_to_string(&args.inject_config)
-            .with_context(|| format!("reading {}", args.inject_config.display()))?;
-        let rules = inject::load_inject_config(&json, &args.identity)
-            .with_context(|| format!("loading {}", args.inject_config.display()))?;
-        tracing::info!(
-            "loaded {} injection rule(s) from {}",
-            rules.len(),
-            args.inject_config.display()
-        );
-        return Ok(rules);
-    }
-
-    if args.secret_source == SecretSourceKind::None {
+    if !args.inject_config.is_file() {
         return Ok(Vec::new());
     }
-    let specs: Vec<_> =
-        args.inject_hosts.iter().filter_map(|h| inject::parse_inject_host(h)).collect();
-    if specs.is_empty() {
-        return Ok(Vec::new());
-    }
-    anyhow::ensure!(!args.identity.is_empty(), "--identity is required with --inject-hosts");
-    if args.secret_source == SecretSourceKind::Vault {
-        anyhow::ensure!(
-            args.vault_addr.is_some() && args.vault_role.is_some(),
-            "--vault-addr and --vault-role are required for --secret-source vault"
-        );
-    }
-
-    let legacy_ref = |service: &str| match args.secret_source {
-        SecretSourceKind::Env => SecretRef::legacy_env(&args.identity, service),
-        SecretSourceKind::Vault => SecretRef::legacy_vault(
-            &args.vault_mount,
-            &args.vault_path_prefix,
-            &args.vault_field,
-            &args.identity,
-            service,
-        ),
-        SecretSourceKind::AwsSm => {
-            SecretRef::legacy_aws_sm(&args.aws_sm_prefix, &args.identity, service)
-        }
-        SecretSourceKind::None => unreachable!("gated above"),
-    };
-    Ok(specs
-        .into_iter()
-        .map(|spec| {
-            let secret = legacy_ref(&spec.service);
-            let cookie_secret = matches!(spec.shape, inject::AuthShape::BearerCookie { .. })
-                .then(|| legacy_ref(&format!("{}-cookie", spec.service)));
-            InjectionRule {
-                host: spec.host,
-                path_prefix: None,
-                service: spec.service,
-                shape: spec.shape,
-                secret,
-                cookie_secret,
-                key_id_secret: None,
-            }
-        })
-        .collect())
+    let json = std::fs::read_to_string(&args.inject_config)
+        .with_context(|| format!("reading {}", args.inject_config.display()))?;
+    let rules = inject::load_inject_config(&json, &args.identity)
+        .with_context(|| format!("loading {}", args.inject_config.display()))?;
+    tracing::info!(
+        "loaded {} injection rule(s) from {}",
+        rules.len(),
+        args.inject_config.display()
+    );
+    Ok(rules)
 }
 
 /// Wires the injection layer: mints the per-pod CA, writes its public cert for
@@ -319,18 +226,10 @@ fn build_ghapp(
     else {
         return Ok(None);
     };
-    let key_ref = match &args.github_app_key_secret {
-        Some(template) => SecretRef::parse(&render_identity(template, &args.identity)?)?,
-        None if args.secret_source != SecretSourceKind::None => {
-            let legacy = build_rules_legacy_key(args);
-            tracing::info!("github-app key ref derived from legacy secret source: {legacy}");
-            legacy
-        }
-        None => anyhow::bail!(
-            "--github-app-key-secret is required with --github-app-id when no legacy \
-             --secret-source is configured"
-        ),
+    let Some(template) = &args.github_app_key_secret else {
+        anyhow::bail!("--github-app-key-secret is required with --github-app-id");
     };
+    let key_ref = SecretRef::parse(&render_identity(template, &args.identity)?)?;
     let mut config = GhAppConfig::new(app_id, installation_id, args.github_app_repos.clone());
     config.api_base.clone_from(&args.github_app_api_base);
     tracing::info!(
@@ -340,24 +239,6 @@ fn build_ghapp(
         config.repositories
     );
     Ok(Some(Arc::new(GhAppMinter::new(secrets.clone(), config, key_ref)?)))
-}
-
-fn build_rules_legacy_key(args: &Args) -> SecretRef {
-    match args.secret_source {
-        SecretSourceKind::Vault => SecretRef::legacy_vault(
-            &args.vault_mount,
-            &args.vault_path_prefix,
-            &args.vault_field,
-            &args.identity,
-            "github-app-key",
-        ),
-        SecretSourceKind::AwsSm => {
-            SecretRef::legacy_aws_sm(&args.aws_sm_prefix, &args.identity, "github-app-key")
-        }
-        SecretSourceKind::Env | SecretSourceKind::None => {
-            SecretRef::legacy_env(&args.identity, "github-app-key")
-        }
-    }
 }
 
 /// Writes the public CA cert (PEM) world-readable so the worker (a different
@@ -464,83 +345,17 @@ mod tests {
     }
 
     #[test]
-    fn secret_source_defaults_to_none() {
+    fn injection_defaults() {
         let args = parse(&[]);
-        assert_eq!(args.secret_source, SecretSourceKind::None);
         assert_eq!(args.secret_ttl_secs, 120);
         assert_eq!(args.inject_config, PathBuf::from("/etc/guard-proxy/inject.json"));
     }
 
     #[test]
-    fn no_source_and_no_config_yields_no_rules() {
-        let mut args = parse(&["--inject-hosts", "api.github.com"]);
+    fn absent_inject_config_yields_no_rules() {
+        let mut args = parse(&["--identity", "acme"]);
         args.inject_config = PathBuf::from("/nonexistent/inject.json");
         assert!(build_rules(&args).unwrap().is_empty());
-    }
-
-    #[test]
-    fn legacy_env_rules_derive_cred_refs() {
-        let mut args = parse(&[
-            "--secret-source",
-            "env",
-            "--identity",
-            "acme",
-            "--inject-hosts",
-            "api.github.com,github.com,slack.com",
-        ]);
-        args.inject_config = PathBuf::from("/nonexistent/inject.json");
-        let rules = build_rules(&args).unwrap();
-        assert_eq!(rules.len(), 3);
-        assert_eq!(rules[0].secret, SecretRef::parse("env:CRED_ACME_GITHUB").unwrap());
-        assert!(rules[0].cookie_secret.is_none());
-        assert_eq!(
-            rules[2].cookie_secret,
-            Some(SecretRef::parse("env:CRED_ACME_SLACK_COOKIE").unwrap())
-        );
-    }
-
-    #[test]
-    fn legacy_vault_rules_derive_path_refs() {
-        let mut args = parse(&[
-            "--secret-source",
-            "vault",
-            "--vault-addr",
-            "http://vault:8200",
-            "--vault-role",
-            "cctui-worker",
-            "--vault-mount",
-            "kvmount",
-            "--vault-path-prefix",
-            "cctui/workers",
-            "--identity",
-            "acme",
-            "--inject-hosts",
-            "api.github.com",
-        ]);
-        args.inject_config = PathBuf::from("/nonexistent/inject.json");
-        let rules = build_rules(&args).unwrap();
-        assert_eq!(
-            rules[0].secret,
-            SecretRef::parse("vault:kvmount/data/cctui/workers/acme/github#value").unwrap()
-        );
-    }
-
-    #[test]
-    fn legacy_rules_require_identity_and_vault_config() {
-        let mut args = parse(&["--secret-source", "env", "--inject-hosts", "api.github.com"]);
-        args.inject_config = PathBuf::from("/nonexistent/inject.json");
-        assert!(build_rules(&args).unwrap_err().to_string().contains("--identity"));
-
-        let mut args = parse(&[
-            "--secret-source",
-            "vault",
-            "--identity",
-            "acme",
-            "--inject-hosts",
-            "api.github.com",
-        ]);
-        args.inject_config = PathBuf::from("/nonexistent/inject.json");
-        assert!(build_rules(&args).unwrap_err().to_string().contains("--vault-addr"));
     }
 
     #[test]
@@ -553,7 +368,6 @@ mod tests {
                  "secret": "vault:kvmount/data/cctui/workers#GITHUB_TOKEN_${IDENTITY}"}]"#,
         )
         .unwrap();
-        // secret-source stays none — the file alone activates injection.
         let mut args = parse(&["--identity", "acme"]);
         args.inject_config = path;
         let rules = build_rules(&args).unwrap();
@@ -581,11 +395,6 @@ mod tests {
         let args = parse(&["--vault-addr", "http://vault:8200", "--vault-role", "r"]);
         assert!(build_engines(&args).is_ok());
         assert!(build_engines(&parse(&[])).is_ok());
-    }
-
-    #[test]
-    fn secret_source_rejects_unknown_backend() {
-        assert!(Args::try_parse_from(["cctui-guard-proxy", "--secret-source", "bogus"]).is_err());
     }
 
     #[test]
@@ -635,7 +444,7 @@ mod tests {
     }
 
     #[test]
-    fn ghapp_key_ref_explicit_legacy_or_error() {
+    fn ghapp_key_ref_required_when_ids_set() {
         let secrets = test_secrets();
         let with_ref = parse(&[
             "--github-app-id",
@@ -649,19 +458,8 @@ mod tests {
         ]);
         assert!(build_ghapp(&with_ref, &secrets).unwrap().is_some());
 
-        let legacy = parse(&[
-            "--github-app-id",
-            "1",
-            "--github-app-installation-id",
-            "2",
-            "--secret-source",
-            "env",
-            "--identity",
-            "acme",
-        ]);
-        assert!(build_ghapp(&legacy, &secrets).unwrap().is_some());
-
         let missing = parse(&["--github-app-id", "1", "--github-app-installation-id", "2"]);
-        assert!(build_ghapp(&missing, &secrets).is_err());
+        let err = build_ghapp(&missing, &secrets).unwrap_err().to_string();
+        assert!(err.contains("--github-app-key-secret"), "{err}");
     }
 }

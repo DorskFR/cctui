@@ -1,7 +1,7 @@
-import { mount, unmount } from "svelte";
+import { flushSync, mount, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import Review from "./Review.svelte";
-import { configureRuntime } from "./lib/api/config";
+import { baseUrl, configureRuntime, getToken, isEmbedded } from "./lib/api/config";
 
 class MockEventSource {
   addEventListener(): void {}
@@ -42,5 +42,30 @@ describe("Review (embedded mount)", () => {
     expect(container).not.toBeNull();
     expect(container?.hasAttribute("data-theme")).toBe(false);
     expect(document.body.textContent).toContain("Pull requests");
+  });
+
+  it("releases the injected runtime config when the embed unmounts", async () => {
+    vi.stubGlobal("EventSource", MockEventSource);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } }),
+      ),
+    );
+
+    const mounted = mount(Review, {
+      target: document.body,
+      props: { baseUrl: "https://ghreview.example", token: "session-token" },
+    });
+    flushSync();
+    expect(isEmbedded()).toBe(true);
+    expect(baseUrl()).toBe("https://ghreview.example");
+
+    await unmount(mounted);
+
+    expect(isEmbedded()).toBe(false);
+    expect(baseUrl()).toBe("");
+    expect(getToken()).toBeNull();
   });
 });

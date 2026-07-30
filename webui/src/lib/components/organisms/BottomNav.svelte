@@ -66,7 +66,7 @@
 		display: flex;
 	}
 	/* nav-btn is the class on the NavLink atom, so reach it via :global. */
-	:global(.nav-btn) {
+	.nav-inner :global(.nav-btn) {
 		flex: 1;
 		display: flex;
 		flex-direction: column;
@@ -80,7 +80,7 @@
 		font-size: 0.6875rem;
 		font-weight: var(--fw-medium);
 	}
-	:global(.nav-btn) .ico {
+	.nav-inner .ico {
 		font-size: 1.25rem;
 		line-height: 1;
 		position: relative;
@@ -94,17 +94,17 @@
 		padding: 0 0.22rem;
 		border-radius: 999px;
 		background: var(--danger);
-		color: var(--text-on-accent, #fff);
+		color: var(--text-on-accent);
 		font-size: 0.62rem;
 		font-weight: var(--fw-semibold);
 		line-height: 1rem;
 		text-align: center;
 		pointer-events: none;
 	}
-	:global(.nav-btn.active) {
+	.nav-inner :global(.nav-btn.active) {
 		color: var(--accent);
 	}
-	:global(.nav-btn:active) {
+	.nav-inner :global(.nav-btn:active) {
 		background: var(--bg-elevated-2);
 	}
 </style>

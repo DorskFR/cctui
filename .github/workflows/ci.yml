@@ -13,38 +13,193 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # Keep in lockstep with rust-toolchain.toml and deploy/*.Dockerfile.
+  RUST_VERSION: "1.97.1"
+
 jobs:
+  fmt:
+    name: cargo fmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      # rustfmt.toml enables unstable options, so formatting is nightly-only.
+      - name: Install nightly rustfmt
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
+        with:
+          toolchain: nightly
+          components: rustfmt
+
+      - name: cargo +nightly fmt --check
+        run: cargo +nightly fmt --all --check
+
+  biome:
+    name: biome
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+
+      # Root config: formats the data/docs files, linter off. Source linting runs
+      # per project (see the webui / ghreview / ghreview-ui jobs).
+      - name: biome check
+        run: npx --yes @biomejs/biome@2.5.6 check .
+
+  clippy:
+    name: cargo clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: clippy
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
   test:
     name: cargo test
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgautoupgrade/pgautoupgrade:18-debian@sha256:5994de3d344b9c9676b571d10ff8259e155013f4e5477c58ceee74a42f6d2d20
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: cctui_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/cctui_test
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      - name: Install sqlx-cli
+        uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e # v2
+        with:
+          tool: sqlx-cli
+
+      - name: Apply migrations
+        run: sqlx migrate run --source migrations
 
       - name: cargo test (workspace)
         run: cargo test --workspace --locked
+
+  integration:
+    name: cargo test (ignored integration)
+    runs-on: ubuntu-latest
+    # Advisory: 3 of the 5 pass against a fresh server. register_and_list_session
+    # and machine_rotate_invalidates_old_key need a real ENROLLED machine key —
+    # an agent token does not authenticate the register endpoint — so they 401
+    # until this job enrolls a machine first. Flip to blocking once it does.
+    continue-on-error: true
+    services:
+      postgres:
+        image: pgautoupgrade/pgautoupgrade:18-debian@sha256:5994de3d344b9c9676b571d10ff8259e155013f4e5477c58ceee74a42f6d2d20
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: cctui_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/cctui_test
+      CCTUI_ADMIN_TOKENS: test-admin
+      CCTUI_AGENT_TOKENS: test-machine-key
+      TEST_CCTUI_URL: http://localhost:8700
+      TEST_ADMIN_TOKEN: test-admin
+      TEST_MACHINE_KEY: test-machine-key
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      - name: Build the server
+        run: cargo build --locked -p cctui-server
+
+      - name: Start the server
+        run: |
+          ./target/debug/cctui-server > /tmp/cctui-server.log 2>&1 &
+          for _ in $(seq 1 60); do
+            if curl -fsS http://localhost:8700/health >/dev/null 2>&1; then
+              echo "server up"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "server did not become healthy" >&2
+          cat /tmp/cctui-server.log >&2
+          exit 1
+
+      - name: cargo test --ignored
+        run: cargo test --locked -p cctui-server -- --ignored
+
+      - name: Server log
+        if: always()
+        run: cat /tmp/cctui-server.log
 
   webui:
     name: webui
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "22"
 
-      - name: Install ghreview-ui dependencies (webui's source dependency)
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: "1.3"
+
+      # webui compiles ghreview-ui from source through a path dependency, so its
+      # deps must be installed first — with bun, which owns that project.
+      - name: Install ghreview-ui dependencies
         working-directory: ghreview-ui
-        run: npm install --no-audit --no-fund
+        run: bun install --frozen-lockfile
 
       - name: Install dependencies
         working-directory: webui
         run: npm ci
+
+      - name: Lint
+        working-directory: webui
+        run: npm run lint
+
+      - name: Check
+        working-directory: webui
+        run: npm run check
 
       - name: Test
         working-directory: webui
@@ -59,7 +214,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:18
+        image: pgautoupgrade/pgautoupgrade:18-debian@sha256:5994de3d344b9c9676b571d10ff8259e155013f4e5477c58ceee74a42f6d2d20
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -74,9 +229,9 @@ jobs:
     env:
       DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version: "1.3"
 
@@ -88,6 +243,10 @@ jobs:
         working-directory: ghreview
         run: bun run typecheck
 
+      - name: Lint
+        working-directory: ghreview
+        run: bun run lint
+
       - name: Test
         working-directory: ghreview
         run: bun test
@@ -96,15 +255,23 @@ jobs:
     name: ghreview-ui
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version: "1.3"
 
       - name: Install dependencies
         working-directory: ghreview-ui
         run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        working-directory: ghreview-ui
+        run: bun run typecheck
+
+      - name: Lint
+        working-directory: ghreview-ui
+        run: bun run lint
 
       - name: Test
         working-directory: ghreview-ui
@@ -114,19 +281,46 @@ jobs:
         working-directory: ghreview-ui
         run: bun run build
 
+  generated-artifacts:
+    name: generated artifacts up to date
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: "1.3"
+
+      - name: Install dependencies
+        working-directory: ghreview
+        run: bun install --frozen-lockfile
+
+      - name: Regenerate the OpenAPI document + typed client
+        working-directory: ghreview
+        run: bun run gen
+
+      - name: Committed artifacts match the generators
+        run: |
+          if ! git diff --exit-code; then
+            echo "::error::Generated artifacts are stale. Run 'cd ghreview && bun run gen' and commit the result."
+            exit 1
+          fi
+
   audit:
     name: audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
       - name: Install cargo-audit
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e # v2
         with:
           tool: cargo-audit
 
@@ -140,7 +334,11 @@ jobs:
       - name: cargo audit
         run: cargo audit
 
-      - uses: oven-sh/setup-bun@v2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
           bun-version: "1.3"
 
@@ -152,11 +350,31 @@ jobs:
         working-directory: ghreview
         run: bun audit
 
+      - name: Install ghreview-ui dependencies
+        working-directory: ghreview-ui
+        run: bun install --frozen-lockfile
+
+      # Advisory: frontend advisories routinely have no upgrade path, and a
+      # dev-only finding must not block a merge.
+      - name: bun audit (ghreview-ui)
+        working-directory: ghreview-ui
+        continue-on-error: true
+        run: bun audit
+
+      - name: Install webui dependencies
+        working-directory: webui
+        run: npm ci --ignore-scripts
+
+      - name: npm audit (webui)
+        working-directory: webui
+        continue-on-error: true
+        run: npm audit --audit-level=high
+
   no-css-global:
     name: no-css-global
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
 
@@ -172,3 +390,16 @@ jobs:
             base="$head^"
           fi
           bash scripts/no-css-global.sh "$base...$head"
+
+  actionlint:
+    name: actionlint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install actionlint
+        run: |
+          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.7/scripts/download-actionlint.bash) 1.7.7
+
+      - name: actionlint
+        run: ./actionlint -color

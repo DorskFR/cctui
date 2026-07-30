@@ -1,0 +1,26 @@
+name: claude-version-drift
+
+on:
+  pull_request:
+    paths:
+      - "deploy/worker.Dockerfile"
+      - "scripts/check-claude-version-drift.sh"
+      - ".github/workflows/claude-version-drift.yml"
+  push:
+    branches: [main]
+  schedule:
+    # Weekly, Mondays 07:31 UTC (off the top-of-hour to avoid the fleet stampede).
+    - cron: "31 7 * * 1"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  drift:
+    name: claude code version pin drift
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Check Claude Code version pin
+        run: bash scripts/check-claude-version-drift.sh

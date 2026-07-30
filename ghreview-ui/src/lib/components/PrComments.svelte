@@ -108,7 +108,7 @@
   import { api } from "../api/client";
   import { keys } from "../api/queries";
   import type { ReactionContent, ReactionSummary } from "../api/types";
-  import { renderMarkdown } from "../markdown";
+  import { renderMarkdown, repoBaseUrl } from "../markdown";
   import Avatar from "./Avatar.svelte";
   import ReactionBar from "./ReactionBar.svelte";
 
@@ -138,6 +138,7 @@
       enabled: account != null,
     })),
   );
+  const markdownBaseUrl = $derived(repoBaseUrl(owner, repo));
   const groups = $derived(buildCommentGroups($activityQuery.data?.items ?? [], inline));
   const loading = $derived($activityQuery.isLoading || inlineLoading);
   const error = $derived(($activityQuery.error as Error | null) ?? inlineError);
@@ -195,7 +196,7 @@
                 {/if}
               </header>
               {#if entry.body}
-                <div class="body markdown">{@html renderMarkdown(entry.body)}</div>
+                <div class="body markdown">{@html renderMarkdown(entry.body, { baseUrl: markdownBaseUrl })}</div>
               {/if}
               {#if entry.kind !== "review" && numericId(entry) !== null}
                 <ReactionBar

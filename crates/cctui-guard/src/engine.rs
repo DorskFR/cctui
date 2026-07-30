@@ -9,7 +9,8 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 use crate::decision_log::{DecisionLog, build_report};
-use crate::parser::{JudgeQuestion, Step, expand_set, parse_keywords, parse_transitions};
+use crate::ir::WorkflowStep;
+use crate::parser::{JudgeQuestion, expand_set};
 use crate::rules::check_rules;
 
 /// Tools always allowed regardless of step rules.
@@ -40,7 +41,7 @@ pub type TransitionResponse = Value;
 /// internally, matching the threaded Python daemon.
 pub struct WorkflowEngine {
     lock: Mutex<()>,
-    steps: BTreeMap<u32, Step>,
+    steps: BTreeMap<u32, WorkflowStep>,
     step_numbers: Vec<u32>,
     tool_sets: HashMap<String, Vec<String>>,
     state_file: PathBuf,
@@ -80,7 +81,7 @@ impl WorkflowEngine {
     #[must_use]
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        steps: BTreeMap<u32, Step>,
+        steps: BTreeMap<u32, WorkflowStep>,
         tool_sets: HashMap<String, Vec<String>>,
         state_file: PathBuf,
         proxy_policy_file: PathBuf,
@@ -111,7 +112,7 @@ impl WorkflowEngine {
     #[must_use]
     #[allow(clippy::too_many_arguments, clippy::cognitive_complexity)]
     pub fn new_with_log(
-        steps: BTreeMap<u32, Step>,
+        steps: BTreeMap<u32, WorkflowStep>,
         tool_sets: HashMap<String, Vec<String>>,
         state_file: PathBuf,
         proxy_policy_file: PathBuf,
@@ -208,10 +209,10 @@ impl WorkflowEngine {
         (step, visits)
     }
 
-    /// Expand a `[network]` rule string into a list of `host:port` entries.
-    fn expand_network_rules(&self, network: &str) -> Vec<String> {
+    /// Expand a step's `[network]` set names into concrete `host:port` entries.
+    fn expand_network_rules(&self, network: &[String]) -> Vec<String> {
         let mut result = Vec::new();
-        for item in network.split(',') {
+        for item in network {
             let item = item.trim();
             if item.is_empty() {
                 continue;
@@ -250,10 +251,10 @@ impl WorkflowEngine {
 
         let policy = match self.steps.get(&step_num) {
             None => json!({ "allowed_hosts": [], "default": "allow" }),
-            Some(step) if step.network.trim() == "*" => {
+            Some(step) if step.network.len() == 1 && step.network[0].trim() == "*" => {
                 json!({ "allowed_hosts": [], "default": "allow" })
             }
-            Some(step) if step.network.trim().is_empty() => {
+            Some(step) if step.network.is_empty() => {
                 if self.guarded_default_allow {
                     json!({ "allowed_hosts": [], "default": "allow" })
                 } else {
@@ -283,8 +284,8 @@ impl WorkflowEngine {
         json!({
             "step": step_num,
             "title": step.map_or("unknown", |s| s.title.as_str()),
-            "allowed": step.map_or("", |s| s.allowed.as_str()),
-            "disallowed": step.map_or("", |s| s.disallowed.as_str()),
+            "allowed": step.map_or_else(String::new, |s| s.allowed.to_raw()),
+            "disallowed": step.map_or_else(String::new, |s| s.disallowed.to_raw()),
         })
     }
 
@@ -325,7 +326,7 @@ impl WorkflowEngine {
     /// the transition was refused. CCT-440: finalize-type transitions require
     /// machine-checkable proof, not the agent's assertion.
     fn run_gate(&self, step_num: u32) -> Result<(), String> {
-        let gate = self.steps.get(&step_num).map_or("", |s| s.gate.as_str()).trim();
+        let gate = self.steps.get(&step_num).and_then(|s| s.gate.as_deref()).unwrap_or("").trim();
         self.run_gate_cmd(gate)
     }
 
@@ -333,8 +334,11 @@ impl WorkflowEngine {
     /// `current_u`'s `guard` block. Runs after the step-level `[gate]`; only when
     /// advancing to that specific target.
     fn run_transition_gate(&self, current_u: u32, tn: u32) -> Result<(), String> {
-        let gate =
-            self.steps.get(&current_u).and_then(|s| s.transition_gates.get(&tn)).map_or("", |g| g);
+        let gate = self
+            .steps
+            .get(&current_u)
+            .and_then(|s| s.transition.gates.get(&tn))
+            .map_or("", String::as_str);
         self.run_gate_cmd(gate.trim())
     }
 
@@ -386,7 +390,7 @@ impl WorkflowEngine {
     /// entry))` otherwise (the entry carries per-question verdicts when the
     /// judge produced any).
     fn run_judge(&self, step_num: u32) -> Result<Option<Value>, (String, Option<Value>)> {
-        let questions = self.steps.get(&step_num).map_or(&[][..], |s| s.llmjudge.as_slice());
+        let questions = self.steps.get(&step_num).map_or(&[][..], |s| s.judge.as_slice());
         if questions.is_empty() {
             return Ok(None);
         }
@@ -476,8 +480,8 @@ impl WorkflowEngine {
         }
 
         let step = &self.steps[&step_u];
-        let allowed = parse_keywords(&step.allowed, &self.tool_sets);
-        let disallowed = parse_keywords(&step.disallowed, &self.tool_sets);
+        let allowed = step.allowed.expand(&self.tool_sets);
+        let disallowed = step.disallowed.expand(&self.tool_sets);
 
         let (ok, reason) = check_rules(tool, tool_input, &allowed, &disallowed);
         self.decision_log.check(step_num, tool, &check_target(tool, tool_input), ok, &reason);
@@ -496,7 +500,7 @@ impl WorkflowEngine {
         tracing::info!("Transition: Step {current_u} → Exit");
         let (_, visits) = self.read_full_state();
         if self.proxy_dir_present() {
-            let mut hosts = self.expand_network_rules("net-claude");
+            let mut hosts = self.expand_network_rules(&["net-claude".to_string()]);
             hosts.extend(self.always_allowed_hosts.iter().cloned());
             let policy = json!({ "allowed_hosts": hosts, "default": "deny" }).to_string();
             if let Err(e) = std::fs::write(&self.proxy_policy_file, policy) {
@@ -647,7 +651,7 @@ impl WorkflowEngine {
         };
 
         let step = &self.steps[&current_u];
-        let (valid_steps, allows_exit) = parse_transitions(&step.transition);
+        let (valid_steps, allows_exit) = (&step.transition.to, step.transition.exit);
 
         // Exit — the only transition that ignores the gate: a bail-out must
         // always work (the agent reports the blocked outcome via the callback,

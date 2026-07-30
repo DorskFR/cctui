@@ -120,7 +120,7 @@
 {/snippet}
 
 <div class="bar row">
-	<Heading level={1} class="page-title">{m.sessions_title()}</Heading>
+	<Heading level={1} class="sess-title">{m.sessions_title()}</Heading>
 	<div class="search-box">
 		<FilterSearchBar
 			schema={searchSchema}
@@ -256,7 +256,7 @@
 	/* The title is the Heading atom; target it via :global. Pinned to a fixed px
 	   size (it's toolbar chrome, not content) so the UI font scale doesn't push
 	   the action buttons out of frame. */
-	:global(.page-title) {
+	.bar > :global(.sess-title) {
 		font-size: 28px;
 		align-self: center;
 		flex: none;
@@ -295,7 +295,7 @@
 			order: 2;
 		}
 		/* Row 1: title (grows to push New flush right) then the New button. */
-		.bar > :global(.page-title) {
+		.bar > :global(.sess-title) {
 			order: 0;
 			flex: 1 1 auto;
 			min-width: 0;

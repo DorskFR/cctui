@@ -1,11 +1,12 @@
 import { readdir, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import type { DbHandle } from "./client.ts";
+import { type DbHandle, GHREVIEW_SCHEMA } from "./client.ts";
 
 const MIGRATIONS_DIR = fileURLToPath(new URL("../../migrations/", import.meta.url));
 
 export async function runMigrations(db: DbHandle): Promise<string[]> {
-  const { sql, schema } = db;
+  const { sql } = db;
+  const schema = GHREVIEW_SCHEMA;
   await sql.unsafe(`CREATE SCHEMA IF NOT EXISTS ${schema}`);
   await sql.unsafe(
     `CREATE TABLE IF NOT EXISTS ${schema}.schema_migrations (

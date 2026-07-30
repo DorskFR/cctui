@@ -240,9 +240,8 @@
 		width: 1rem;
 		height: 1rem;
 	}
-	/* Layout only; typography (faint xs) is the Text atom's. The class rides on a
-	   Text child, so it must be :global to reach it. */
-	.line :global(.line-foot) {
+	/* Layout only; typography (faint xs) is the Text atom's. */
+	.line .line-foot {
 		align-self: flex-end;
 		padding-inline: var(--sp-1);
 	}

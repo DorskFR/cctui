@@ -10,7 +10,8 @@
   } from "@dorsk/tsumikit";
   import { toStore } from "svelte/store";
   import { api, type NotificationFilter } from "../api/client";
-  import { getAccount } from "../api/config";
+  import { getAccount, onConfigChange } from "../api/config";
+  import { keys } from "../api/queries";
   import {
     type GithubNotification,
     type NotificationInboxItem,
@@ -25,8 +26,10 @@
   import PrStateIcon, { type IconState } from "./PrStateIcon.svelte";
   import RepoBadge from "./RepoBadge.svelte";
 
-  const account = getAccount() ?? "";
   const client = useQueryClient();
+
+  let account = $state(getAccount() ?? "");
+  $effect(() => onConfigChange(() => (account = getAccount() ?? "")));
 
   let reason = $state<string>("");
   let repoFilter = $state<string>("");
@@ -50,7 +53,7 @@
 
   const query = createQuery(
     toStore(() => ({
-      queryKey: ["notifications", JSON.stringify(filter)],
+      queryKey: keys.notifications(filter),
       queryFn: () => api.notifications(filter),
     })),
   );
@@ -130,19 +133,36 @@
     return n.subject.type === "PullRequest" && parsePullApiUrl(n.subject.url) !== null;
   }
 
+  let pullStates = $state(new Map<string, IconState>());
+
+  function readPullStates(list: NotificationInboxItem[]): Map<string, IconState> {
+    const map = new Map<string, IconState>();
+    for (const item of list) {
+      const n = notificationOf(item);
+      if (n.subject.type !== "PullRequest") continue;
+      const ref = parsePullApiUrl(n.subject.url);
+      if (!ref) continue;
+      const env = client.getQueryData<PullRequestEnvelope>(
+        keys.pull(ref.owner, ref.repo, ref.number),
+      );
+      if (env) map.set(n.id, prStateOf(pullOf(env)));
+    }
+    return map;
+  }
+
+  $effect(() => {
+    const list = visible;
+    const refresh = () => {
+      pullStates = readPullStates(list);
+    };
+    refresh();
+    return client.getQueryCache().subscribe(refresh);
+  });
+
   function iconState(n: GithubNotification): { state: IconState; muted: boolean } | null {
     if (n.subject.type === "PullRequest") {
-      const ref = parsePullApiUrl(n.subject.url);
-      if (ref) {
-        const env = client.getQueryData<PullRequestEnvelope>([
-          "pull",
-          ref.owner,
-          ref.repo,
-          ref.number,
-        ]);
-        if (env) return { state: prStateOf(pullOf(env)), muted: false };
-      }
-      return { state: "open", muted: true };
+      const state = pullStates.get(n.id);
+      return state ? { state, muted: false } : { state: "open", muted: true };
     }
     if (n.subject.type === "Issue") {
       return { state: "issue-open", muted: true };
@@ -163,9 +183,19 @@
     if (ids.length === 0 || !account) return;
     await api.setNotificationState(account, ids, markDonePatch);
     selected = new Set([...selected].filter((id) => !ids.includes(id)));
-    client.invalidateQueries({ queryKey: ["notifications"] });
+    client.invalidateQueries({ queryKey: keys.notificationsAll() });
   }
 </script>
+
+{#snippet rowBody(n: GithubNotification)}
+  <span class="subject">{n.subject.title}</span>
+  <div class="sub">
+    {#if n.repository?.full_name}
+      <RepoBadge repo={n.repository.full_name} />
+    {/if}
+    <span class="reason">{n.reason}</span>
+  </div>
+{/snippet}
 
 <div class="wrap">
   <div class="toolbar">
@@ -256,24 +286,10 @@
           {/if}
           {#if isPull(n) && !selectMode}
             <button type="button" class="body open" onclick={() => openPull(n)}>
-              <span class="subject">{n.subject.title}</span>
-              <div class="sub">
-                {#if n.repository?.full_name}
-                  <RepoBadge repo={n.repository.full_name} />
-                {/if}
-                <span class="reason">{n.reason}</span>
-              </div>
+              {@render rowBody(n)}
             </button>
           {:else}
-            <div class="body">
-              <span class="subject">{n.subject.title}</span>
-              <div class="sub">
-                {#if n.repository?.full_name}
-                  <RepoBadge repo={n.repository.full_name} />
-                {/if}
-                <span class="reason">{n.reason}</span>
-              </div>
-            </div>
+            <div class="body">{@render rowBody(n)}</div>
           {/if}
           <div class="actions" onclick={(e) => e.stopPropagation()} role="none">
             <Button variant="ghost" size="sm" onclick={() => markDone([n.id])}>Mark done</Button>

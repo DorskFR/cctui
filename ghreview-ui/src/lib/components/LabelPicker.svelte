@@ -3,7 +3,7 @@
   import { createQuery } from "@tanstack/svelte-query";
   import { toStore } from "svelte/store";
   import { api } from "../api/client";
-  import { queryClient } from "../api/queries";
+  import { keys, queryClient } from "../api/queries";
   import type { GithubLabel, Label, PullRequestEnvelope } from "../api/types";
 
   interface Props {
@@ -23,7 +23,7 @@
 
   const repoLabels = createQuery(
     toStore(() => ({
-      queryKey: ["repo-labels", owner, repo, account ?? "*"],
+      queryKey: keys.repoLabels(owner, repo, account),
       queryFn: () => api.repoLabels(owner, repo, account as string),
       enabled: open && account != null,
     })),
@@ -47,7 +47,7 @@
   }
 
   function patchLabels(next: Label[]): void {
-    const key = ["pull", owner, repo, number];
+    const key = keys.pull(owner, repo, number);
     const prev = queryClient.getQueryData<PullRequestEnvelope>(key);
     if (!prev) return;
     const payload = { ...((prev.payload as Record<string, unknown>) ?? {}) };

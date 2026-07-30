@@ -28,6 +28,17 @@ export async function upsertSubscription(
   `;
 }
 
+export async function ensurePullSubscription(
+  db: DbHandle,
+  account: string,
+  owner: string,
+  repo: string,
+  number: number,
+  source: SubscriptionSource | null = null,
+): Promise<void> {
+  await upsertSubscription(db, account, "pull_request", `${owner}/${repo}#${number}`, source);
+}
+
 export async function deactivateSubscription(
   db: DbHandle,
   account: string,
@@ -46,6 +57,18 @@ export async function listActiveSubscriptions(db: DbHandle): Promise<Subscriptio
     SELECT id::text, account, kind, target, active
     FROM subscriptions
     WHERE active = true
+    ORDER BY id
+  `;
+}
+
+export async function listActiveSubscriptionsForAccount(
+  db: DbHandle,
+  account: string,
+): Promise<Subscription[]> {
+  return db.sql<Subscription[]>`
+    SELECT id::text, account, kind, target, active
+    FROM subscriptions
+    WHERE active = true AND account = ${account}
     ORDER BY id
   `;
 }

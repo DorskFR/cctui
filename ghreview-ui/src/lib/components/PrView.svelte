@@ -48,10 +48,10 @@
 
   const query = createQuery(
     toStore(() => ({
-      queryKey: ["pull", owner, repo, number],
+      queryKey: keys.pull(owner, repo, number),
       queryFn: () => api.pull(owner, repo, number),
       initialData: () =>
-        queryClient.getQueryData<PullRequestEnvelope>(["pull", owner, repo, number]),
+        queryClient.getQueryData<PullRequestEnvelope>(keys.pull(owner, repo, number)),
     })),
   );
 

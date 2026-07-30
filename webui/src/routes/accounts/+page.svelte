@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { errMessage } from '$lib/api';
 	import {
 		useAccounts,
 		useAccountActions,
@@ -301,7 +302,7 @@
 				toasts.ok(m.accounts_oauth_opened_claude());
 			}
 		} catch (e) {
-			toasts.err((e as Error).message);
+			toasts.err(errMessage(e));
 		} finally {
 			oauthBusy = false;
 		}
@@ -336,7 +337,7 @@
 			toasts.ok(oauthAttachAccountId ? m.accounts_provider_added() : m.accounts_account_added());
 			close();
 		} catch (e) {
-			toasts.err((e as Error).message);
+			toasts.err(errMessage(e));
 		} finally {
 			oauthBusy = false;
 		}
@@ -552,7 +553,7 @@
 			}
 			close();
 		} catch (e) {
-			toasts.err((e as Error).message);
+			toasts.err(errMessage(e));
 		}
 	}
 
@@ -578,7 +579,7 @@
 			toasts.ok(m.accounts_provider_moved());
 			close();
 		} catch (e) {
-			toasts.err((e as Error).message);
+			toasts.err(errMessage(e));
 		}
 	}
 
@@ -620,12 +621,13 @@
 	);
 </script>
 
-<Heading level={1} class="page-title">{m.accounts_title()}</Heading>
+<div class="page-head"><Heading level={1}>{m.accounts_title()}</Heading></div>
 
 <Tabs {tabs} bind:value={tab} label={m.accounts_sections_label()}>
 	{#snippet panel(id)}
 		{#if id === 'ai'}
-			<Cluster class="bar" justify="space-between" align="center" gap="var(--sp-3)">
+			<div class="ai-pane">
+			<Cluster class="acct-bar" justify="space-between" align="center" gap="var(--sp-3)">
 				<Text as="p" tone="muted" size="sm" class="intro">
 					{m.accounts_ai_intro()}
 				</Text>
@@ -693,6 +695,7 @@
 					{/each}
 				</AutoGrid>
 			{/if}
+			</div>
 		{:else if id === 'connectors'}
 			<GithubConnectors />
 		{:else if id === 'dispatchers'}
@@ -967,34 +970,34 @@
 {/if}
 
 <style>
-	:global(.page-title) {
+	.page-head {
 		margin-bottom: var(--sp-3);
 	}
-	:global(.bar) {
+	.ai-pane :global(.acct-bar) {
 		margin-bottom: var(--sp-3);
 	}
 	/* Intro copy shares the header row with the New-account button; it's passed
-	   to a Text atom (renders inside it), so cap its width globally. */
-	:global(.bar .intro) {
+	   to a Text atom, so reach it through the atom's rendered element. */
+	.ai-pane :global(.acct-bar .intro) {
 		max-width: 60ch;
 	}
 	/* Cards stretch to the tallest in their row (AutoGrid), then the body grows
 	   so the footer's action buttons pin to the bottom edge — consistent across
 	   cards regardless of how many provider panels are present. */
-	:global(.account-card) {
+	.ai-pane :global(.account-card) {
 		display: flex;
 		flex-direction: column;
 		height: 100%;
 	}
-	:global(.account-card .card-body) {
+	.ai-pane :global(.account-card .card-body) {
 		flex: 1 1 auto;
 		min-width: 0;
 	}
-	:global(.account-card .account-name) {
+	.ai-pane :global(.account-card .account-name) {
 		min-width: 0;
 		word-break: break-word;
 	}
-	:global(.account-card .card-foot) {
+	.ai-pane :global(.account-card .card-foot) {
 		margin-top: var(--sp-3);
 		padding-top: var(--sp-3);
 		border-top: 1px solid var(--border);

@@ -16,10 +16,9 @@
 //! UNCHANGED (the upstream rejects the placeholder) — never a blank/wrong
 //! secret. Only a successful fetch triggers the strip-and-substitute.
 //!
-//! Cert-PINNING services are deliberately absent from [`builtin_rule`]: a CLI
-//! that pins its server cert would break under this MITM. Such hosts must stay
-//! passthrough (never listed as an inject host). None of the built-in hosts pin
-//! certs on their HTTPS REST/registry endpoints.
+//! Cert-PINNING services must never be listed in the inject config: a CLI that
+//! pins its server cert would break under this MITM, so such hosts have to stay
+//! passthrough and get their credential another way.
 
 #![allow(clippy::large_futures)]
 
@@ -85,76 +84,6 @@ pub struct InjectionRule {
     pub cookie_secret: Option<SecretRef>,
     /// Companion access key id; required by [`AuthShape::SigV4`].
     pub key_id_secret: Option<SecretRef>,
-}
-
-/// A `host → service/shape` mapping before a secret ref is attached (the legacy
-/// `--inject-hosts` path derives refs from the configured backend).
-#[derive(Debug, Clone)]
-pub struct HostSpec {
-    pub host: String,
-    pub service: String,
-    pub shape: AuthShape,
-}
-
-/// Convenience `host → (service, shape)` table for the legacy `--inject-hosts`
-/// form. `host=service:<shape>` overrides; the JSON inject config bypasses this
-/// entirely.
-#[must_use]
-pub fn builtin_rule(host: &str) -> Option<HostSpec> {
-    let (service, shape) = match host {
-        "api.github.com" => ("github", AuthShape::Bearer),
-        // git smart-HTTP clone/fetch/push send Basic auth; rewrite to the
-        // GitHub-blessed `x-access-token:<token>` Basic form.
-        "github.com" => ("github", AuthShape::Basic { username: "x-access-token".to_owned() }),
-        // npm sends the registry `_authToken` as `Authorization: Bearer`.
-        "registry.npmjs.org" => ("npm", AuthShape::Bearer),
-        "slack.com" | "api.slack.com" => {
-            ("slack", AuthShape::BearerCookie { cookie_name: "d".to_owned() })
-        }
-        "api.figma.com" => ("figma", AuthShape::Bearer),
-        _ => return None,
-    };
-    Some(HostSpec { host: host.to_owned(), service: service.to_owned(), shape })
-}
-
-/// Parses one `--inject-hosts` token into a [`HostSpec`].
-///
-/// Accepted forms:
-/// - `host` — use the built-in mapping; unknown hosts fall back to Bearer with
-///   the host as the service label.
-/// - `host=service` — Bearer with an explicit service name.
-/// - `host=service:git` / `:basic` / `:bearer` / `:cookie` — explicit shape.
-///
-/// The host is lowercased; an empty token yields `None`.
-#[must_use]
-pub fn parse_inject_host(token: &str) -> Option<HostSpec> {
-    let token = token.trim();
-    if token.is_empty() {
-        return None;
-    }
-    let (host, spec) = token.split_once('=').map_or((token, None), |(h, s)| (h, Some(s)));
-    let host = host.trim().to_ascii_lowercase();
-    if host.is_empty() {
-        return None;
-    }
-    let Some(spec) = spec else {
-        return Some(builtin_rule(&host).unwrap_or_else(|| HostSpec {
-            host: host.clone(),
-            service: host,
-            shape: AuthShape::Bearer,
-        }));
-    };
-    let (service, shape_str) = spec.split_once(':').map_or((spec, "bearer"), |(s, st)| (s, st));
-    let shape = match shape_str.trim().to_ascii_lowercase().as_str() {
-        "git" | "gitbasic" | "git-basic" | "basic" => {
-            AuthShape::Basic { username: "x-access-token".to_owned() }
-        }
-        "slack" | "cookie" | "bearer+cookie" => {
-            AuthShape::BearerCookie { cookie_name: "d".to_owned() }
-        }
-        _ => AuthShape::Bearer,
-    };
-    Some(HostSpec { host, service: service.trim().to_owned(), shape })
 }
 
 /// One entry of the JSON inject config: which host, what auth shape, and the
@@ -1153,58 +1082,13 @@ mod tests {
         SecretRef::Env { var: var.to_owned() }
     }
 
-    fn rule_from(spec: HostSpec) -> InjectionRule {
-        let cookie_secret =
-            matches!(spec.shape, AuthShape::BearerCookie { .. }).then(|| test_ref("TEST_COOKIE"));
-        InjectionRule {
-            host: spec.host,
-            path_prefix: None,
-            service: spec.service,
-            shape: spec.shape,
-            secret: test_ref("TEST_SECRET"),
-            cookie_secret,
-            key_id_secret: None,
-        }
-    }
-
-    #[test]
-    fn parse_inject_host_forms() {
-        assert_eq!(parse_inject_host("api.github.com").unwrap().service, "github");
-        assert!(matches!(parse_inject_host("api.github.com").unwrap().shape, AuthShape::Bearer));
-        assert!(matches!(parse_inject_host("github.com").unwrap().shape, AuthShape::Basic { .. }));
-        let npm = parse_inject_host("Registry.NPMJS.org").unwrap();
-        assert_eq!(npm.host, "registry.npmjs.org");
-        assert_eq!(npm.service, "npm");
-        assert!(matches!(
-            parse_inject_host("slack.com").unwrap().shape,
-            AuthShape::BearerCookie { .. }
-        ));
-
-        let unknown = parse_inject_host("example.com").unwrap();
-        assert_eq!(unknown.service, "example.com");
-        assert!(matches!(unknown.shape, AuthShape::Bearer));
-
-        let ghe = parse_inject_host("git.internal=ghe:git").unwrap();
-        assert_eq!(ghe.service, "ghe");
-        assert!(matches!(ghe.shape, AuthShape::Basic { .. }));
-        let yt = parse_inject_host("yt.example=youtrack").unwrap();
-        assert_eq!(yt.service, "youtrack");
-        assert!(matches!(yt.shape, AuthShape::Bearer));
-        assert!(matches!(
-            parse_inject_host("chat.example=chat:cookie").unwrap().shape,
-            AuthShape::BearerCookie { .. }
-        ));
-
-        assert!(parse_inject_host("").is_none());
-        assert!(parse_inject_host("   ").is_none());
-    }
-
     #[test]
     fn policy_matches_case_insensitively() {
-        let policy = InjectionPolicy::new(vec![
-            rule_from(parse_inject_host("api.github.com").unwrap()),
-            rule_from(parse_inject_host("github.com").unwrap()),
-        ]);
+        let json = r#"[
+            {"host": "api.github.com", "service": "github", "secret": "env:GH"},
+            {"host": "github.com", "service": "github", "shape": "git", "secret": "env:GH"}
+        ]"#;
+        let policy = InjectionPolicy::new(load_inject_config(json, "acme").unwrap());
         assert_eq!(policy.rules_for("API.GitHub.com")[0].service, "github");
         assert!(matches!(policy.rules_for("github.com")[0].shape, AuthShape::Basic { .. }));
         assert!(policy.rules_for("example.com").is_empty());

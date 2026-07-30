@@ -64,6 +64,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (await res.json()) as T;
 }
 
+function seg(value: string | number): string {
+  return encodeURIComponent(String(value));
+}
+
 function qs(params: Record<string, string | number | undefined>): string {
   const usp = new URLSearchParams();
   for (const [k, v] of Object.entries(params)) {
@@ -116,12 +120,14 @@ export const api = {
     ),
 
   pulls: (owner: string, repo: string, account?: string, limit?: number, cursor?: string) =>
-    request<PullRequestPage>(`/v1/repos/${owner}/${repo}/pulls${qs({ account, limit, cursor })}`),
+    request<PullRequestPage>(
+      `/v1/repos/${seg(owner)}/${seg(repo)}/pulls${qs({ account, limit, cursor })}`,
+    ),
 
   allPulls: (owner: string, repo: string, account?: string) =>
     collectCursorPages((cursor) =>
       request<PullRequestPage>(
-        `/v1/repos/${owner}/${repo}/pulls${qs({ account, limit: 100, cursor })}`,
+        `/v1/repos/${seg(owner)}/${seg(repo)}/pulls${qs({ account, limit: 100, cursor })}`,
       ),
     ),
 
@@ -129,22 +135,25 @@ export const api = {
     request<SnoozedPullList>(`/v1/pulls/snoozed${qs({ account })}`),
 
   snoozePull: (owner: string, repo: string, number: number, account: string) =>
-    request<SnoozeResult>(`/v1/repos/${owner}/${repo}/pulls/${number}/snooze`, {
+    request<SnoozeResult>(`/v1/repos/${seg(owner)}/${seg(repo)}/pulls/${seg(number)}/snooze`, {
       method: "POST",
       body: JSON.stringify({ account }),
     }),
 
   unsnoozePull: (owner: string, repo: string, number: number, account: string) =>
-    request<SnoozeResult>(`/v1/repos/${owner}/${repo}/pulls/${number}/snooze${qs({ account })}`, {
-      method: "DELETE",
-    }),
+    request<SnoozeResult>(
+      `/v1/repos/${seg(owner)}/${seg(repo)}/pulls/${seg(number)}/snooze${qs({ account })}`,
+      {
+        method: "DELETE",
+      },
+    ),
 
   pull: (owner: string, repo: string, number: number) =>
-    request<PullRequestEnvelope>(`/v1/repos/${owner}/${repo}/pulls/${number}`),
+    request<PullRequestEnvelope>(`/v1/repos/${seg(owner)}/${seg(repo)}/pulls/${seg(number)}`),
 
   pullViewed: (owner: string, repo: string, number: number, account: string) =>
     request<ViewedStateResult>(
-      `/v1/repos/${owner}/${repo}/pulls/${number}/viewed${qs({ account })}`,
+      `/v1/repos/${seg(owner)}/${seg(repo)}/pulls/${seg(number)}/viewed${qs({ account })}`,
     ),
 
   setPullViewed: (
@@ -155,7 +164,7 @@ export const api = {
     paths: string[],
     viewed: boolean,
   ) =>
-    request<ViewedStateResult>(`/v1/repos/${owner}/${repo}/pulls/${number}/viewed`, {
+    request<ViewedStateResult>(`/v1/repos/${seg(owner)}/${seg(repo)}/pulls/${seg(number)}/viewed`, {
       method: "PUT",
       body: JSON.stringify({ account, paths, viewed }),
     }),
@@ -182,8 +191,7 @@ export const api = {
       body: JSON.stringify({ kind, target, account }),
     }),
 
-  unsubscribe: (id: string) =>
-    request<void>(`/v1/subscriptions/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  unsubscribe: (id: string) => request<void>(`/v1/subscriptions/${seg(id)}`, { method: "DELETE" }),
 
   githubRepos: (account: string) =>
     request<{ items: GithubRepo[] }>(`/v1/github/repos${qs({ account })}`),
@@ -196,7 +204,7 @@ export const api = {
 
   reviewDraft: (owner: string, repo: string, number: number, account: string) =>
     request<ReviewDraftResult>(
-      `/v1/repos/${owner}/${repo}/pulls/${number}/review-draft${qs({ account })}`,
+      `/v1/repos/${seg(owner)}/${seg(repo)}/pulls/${seg(number)}/review-draft${qs({ account })}`,
     ),
 
   addReviewComment: (
@@ -214,10 +222,13 @@ export const api = {
       head_sha?: string;
     },
   ) =>
-    request<ReviewDraftResult>(`/v1/repos/${owner}/${repo}/pulls/${number}/review-draft/comments`, {
-      method: "POST",
-      body: JSON.stringify(input),
-    }),
+    request<ReviewDraftResult>(
+      `/v1/repos/${seg(owner)}/${seg(repo)}/pulls/${seg(number)}/review-draft/comments`,
+      {
+        method: "POST",
+        body: JSON.stringify(input),
+      },
+    ),
 
   editReviewComment: (
     owner: string,
@@ -227,7 +238,7 @@ export const api = {
     input: { account: string; body?: string; line?: number; side?: ReviewSide },
   ) =>
     request<ReviewDraftResult>(
-      `/v1/repos/${owner}/${repo}/pulls/${number}/review-draft/comments/${encodeURIComponent(commentId)}`,
+      `/v1/repos/${seg(owner)}/${seg(repo)}/pulls/${seg(number)}/review-draft/comments/${seg(commentId)}`,
       { method: "PATCH", body: JSON.stringify(input) },
     ),
 
@@ -239,7 +250,7 @@ export const api = {
     account: string,
   ) =>
     request<ReviewDraftResult>(
-      `/v1/repos/${owner}/${repo}/pulls/${number}/review-draft/comments/${encodeURIComponent(commentId)}${qs({ account })}`,
+      `/v1/repos/${seg(owner)}/${seg(repo)}/pulls/${seg(number)}/review-draft/comments/${seg(commentId)}${qs({ account })}`,
       { method: "DELETE" },
     ),
 
@@ -250,24 +261,24 @@ export const api = {
     input: { account: string; verdict: ReviewVerdict; body: string },
   ) =>
     request<ReviewPublishResult>(
-      `/v1/repos/${owner}/${repo}/pulls/${number}/review-draft/publish`,
+      `/v1/repos/${seg(owner)}/${seg(repo)}/pulls/${seg(number)}/review-draft/publish`,
       { method: "POST", body: JSON.stringify(input) },
     ),
 
   reviewThreads: (owner: string, repo: string, number: number, account: string) =>
     request<ReviewThreadList>(
-      `/v1/repos/${owner}/${repo}/pulls/${number}/comments${qs({ account })}`,
+      `/v1/repos/${seg(owner)}/${seg(repo)}/pulls/${seg(number)}/comments${qs({ account })}`,
     ),
 
   deletePublishedReviewComment: (owner: string, repo: string, commentId: number, account: string) =>
     request<{ deleted: boolean }>(
-      `/v1/repos/${owner}/${repo}/pulls/comments/${commentId}${qs({ account })}`,
+      `/v1/repos/${seg(owner)}/${seg(repo)}/pulls/comments/${seg(commentId)}${qs({ account })}`,
       { method: "DELETE" },
     ),
 
   deleteIssueComment: (owner: string, repo: string, commentId: number, account: string) =>
     request<{ deleted: boolean }>(
-      `/v1/repos/${owner}/${repo}/issues/comments/${commentId}${qs({ account })}`,
+      `/v1/repos/${seg(owner)}/${seg(repo)}/issues/comments/${seg(commentId)}${qs({ account })}`,
       { method: "DELETE" },
     ),
 
@@ -278,10 +289,13 @@ export const api = {
     account: string,
     content: ReactionContent,
   ) =>
-    request<ReactionSummary>(`/v1/repos/${owner}/${repo}/pulls/${number}/reactions`, {
-      method: "POST",
-      body: JSON.stringify({ account, content }),
-    }),
+    request<ReactionSummary>(
+      `/v1/repos/${seg(owner)}/${seg(repo)}/pulls/${seg(number)}/reactions`,
+      {
+        method: "POST",
+        body: JSON.stringify({ account, content }),
+      },
+    ),
 
   toggleIssueCommentReaction: (
     owner: string,
@@ -290,10 +304,13 @@ export const api = {
     account: string,
     content: ReactionContent,
   ) =>
-    request<ReactionSummary>(`/v1/repos/${owner}/${repo}/issues/comments/${commentId}/reactions`, {
-      method: "POST",
-      body: JSON.stringify({ account, content }),
-    }),
+    request<ReactionSummary>(
+      `/v1/repos/${seg(owner)}/${seg(repo)}/issues/comments/${seg(commentId)}/reactions`,
+      {
+        method: "POST",
+        body: JSON.stringify({ account, content }),
+      },
+    ),
 
   toggleReviewCommentReaction: (
     owner: string,
@@ -302,10 +319,13 @@ export const api = {
     account: string,
     content: ReactionContent,
   ) =>
-    request<ReactionSummary>(`/v1/repos/${owner}/${repo}/pulls/comments/${commentId}/reactions`, {
-      method: "POST",
-      body: JSON.stringify({ account, content }),
-    }),
+    request<ReactionSummary>(
+      `/v1/repos/${seg(owner)}/${seg(repo)}/pulls/comments/${seg(commentId)}/reactions`,
+      {
+        method: "POST",
+        body: JSON.stringify({ account, content }),
+      },
+    ),
 
   mergePull: (
     owner: string,
@@ -313,14 +333,14 @@ export const api = {
     number: number,
     input: { account: string; merge_method: MergeMethod; expected_head_sha?: string },
   ) =>
-    request<MergeResult>(`/v1/repos/${owner}/${repo}/pulls/${number}/merge`, {
+    request<MergeResult>(`/v1/repos/${seg(owner)}/${seg(repo)}/pulls/${seg(number)}/merge`, {
       method: "POST",
       body: JSON.stringify(input),
     }),
 
   reviewers: (owner: string, repo: string, number: number, account: string) =>
     request<ReviewersResult>(
-      `/v1/repos/${owner}/${repo}/pulls/${number}/reviewers${qs({ account })}`,
+      `/v1/repos/${seg(owner)}/${seg(repo)}/pulls/${seg(number)}/reviewers${qs({ account })}`,
     ),
 
   reRequestReviewers: (
@@ -330,10 +350,13 @@ export const api = {
     account: string,
     reviewers: string[],
   ) =>
-    request<ReviewersResult>(`/v1/repos/${owner}/${repo}/pulls/${number}/reviewers/re-request`, {
-      method: "POST",
-      body: JSON.stringify({ account, reviewers }),
-    }),
+    request<ReviewersResult>(
+      `/v1/repos/${seg(owner)}/${seg(repo)}/pulls/${seg(number)}/reviewers/re-request`,
+      {
+        method: "POST",
+        body: JSON.stringify({ account, reviewers }),
+      },
+    ),
 
   requestReviewers: (
     owner: string,
@@ -343,26 +366,34 @@ export const api = {
     reviewers: string[],
     teamReviewers: string[] = [],
   ) =>
-    request<ReviewersResult>(`/v1/repos/${owner}/${repo}/pulls/${number}/reviewers/request`, {
-      method: "POST",
-      body: JSON.stringify({ account, reviewers, team_reviewers: teamReviewers }),
-    }),
+    request<ReviewersResult>(
+      `/v1/repos/${seg(owner)}/${seg(repo)}/pulls/${seg(number)}/reviewers/request`,
+      {
+        method: "POST",
+        body: JSON.stringify({ account, reviewers, team_reviewers: teamReviewers }),
+      },
+    ),
 
   activity: (owner: string, repo: string, number: number, account: string) =>
-    request<ActivityList>(`/v1/repos/${owner}/${repo}/pulls/${number}/activity${qs({ account })}`),
+    request<ActivityList>(
+      `/v1/repos/${seg(owner)}/${seg(repo)}/pulls/${seg(number)}/activity${qs({ account })}`,
+    ),
 
   repoLabels: (owner: string, repo: string, account: string) =>
-    request<{ items: Label[] }>(`/v1/repos/${owner}/${repo}/labels${qs({ account })}`),
+    request<{ items: Label[] }>(`/v1/repos/${seg(owner)}/${seg(repo)}/labels${qs({ account })}`),
 
   addPullLabel: (owner: string, repo: string, number: number, account: string, name: string) =>
-    request<{ labels: Label[] }>(`/v1/repos/${owner}/${repo}/pulls/${number}/labels`, {
-      method: "POST",
-      body: JSON.stringify({ account, name }),
-    }),
+    request<{ labels: Label[] }>(
+      `/v1/repos/${seg(owner)}/${seg(repo)}/pulls/${seg(number)}/labels`,
+      {
+        method: "POST",
+        body: JSON.stringify({ account, name }),
+      },
+    ),
 
   removePullLabel: (owner: string, repo: string, number: number, account: string, name: string) =>
     request<{ labels: Label[] }>(
-      `/v1/repos/${owner}/${repo}/pulls/${number}/labels/${encodeURIComponent(name)}${qs({ account })}`,
+      `/v1/repos/${seg(owner)}/${seg(repo)}/pulls/${seg(number)}/labels/${seg(name)}${qs({ account })}`,
       { method: "DELETE" },
     ),
 };

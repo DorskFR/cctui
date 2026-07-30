@@ -75,7 +75,7 @@ async function seedPull(): Promise<void> {
 
 guarded("reactions toggle", () => {
   beforeAll(async () => {
-    db = createDb(DATABASE_URL as string, "ghreview");
+    db = createDb(DATABASE_URL as string);
     await db.sql.unsafe("DROP SCHEMA IF EXISTS ghreview CASCADE");
     await runMigrations(db);
   });

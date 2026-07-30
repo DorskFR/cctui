@@ -1,9 +1,9 @@
 <script lang="ts">
   import { Button, IconButton } from "@dorsk/tsumikit";
   import { api, ApiError } from "../api/client";
-  import { queryClient } from "../api/queries";
+  import { keys, queryClient } from "../api/queries";
   import type { ReactionContent } from "../api/types";
-  import { renderMarkdown } from "../markdown";
+  import { renderMarkdown, repoBaseUrl } from "../markdown";
   import type { CommentAnchor } from "../review/anchors";
   import InlineCommentComposer from "./InlineCommentComposer.svelte";
   import ReactionBar from "./ReactionBar.svelte";
@@ -31,6 +31,7 @@
     account,
   }: Props = $props();
 
+  const markdownBaseUrl = $derived(repoBaseUrl(owner, repo));
   const canReact = $derived(owner !== undefined && repo !== undefined && account !== undefined);
 
   let editing = $state<string | null>(null);
@@ -56,7 +57,7 @@
       await api.deletePublishedReviewComment(owner, repo, id, account);
       deletedIds = new Set(deletedIds).add(id);
       confirmingDelete = null;
-      queryClient.invalidateQueries({ queryKey: ["review-threads", owner, repo] });
+      queryClient.invalidateQueries({ queryKey: keys.reviewThreadsAll(owner, repo) });
     } catch (e) {
       deleteError = e instanceof ApiError ? e.message : "Failed to delete comment";
     } finally {
@@ -104,7 +105,7 @@
           </span>
         {/if}
       </div>
-      <div class="body markdown">{@html renderMarkdown(c.body ?? "")}</div>
+      <div class="body markdown">{@html renderMarkdown(c.body ?? "", { baseUrl: markdownBaseUrl })}</div>
       {#if deleteError && confirmingDelete === c.id}
         <div class="err">{deleteError}</div>
       {/if}

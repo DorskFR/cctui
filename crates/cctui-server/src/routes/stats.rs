@@ -477,10 +477,7 @@ mod tests {
         use super::{USAGE_BUCKETS_SQL, USAGE_HEATMAP_SQL, USAGE_MODELS_SQL};
         use sqlx::Row as _;
 
-        let Some(url) =
-            std::env::var("DATABASE_URL").ok().or_else(|| std::env::var("TEST_DATABASE_URL").ok())
-        else {
-            eprintln!("skipping usage_aggregation_over_db: no DATABASE_URL/TEST_DATABASE_URL");
+        let Some(url) = crate::routes::gateway::test_db_url("usage_aggregation_over_db") else {
             return;
         };
         let pool = sqlx::postgres::PgPoolOptions::new()

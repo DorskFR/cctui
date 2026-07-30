@@ -78,7 +78,8 @@ export function buildDiffModel(files: GithubFile[]): DiffModel {
 
     const hunks: DiffHunk[] = [];
     const patch = file.patch ?? "";
-    const binary = patch.length === 0;
+    // GitHub omits `patch` for binary blobs; `""` means an unchanged text file.
+    const binary = file.patch === undefined && file.status !== "unchanged";
     let oldLine = 0;
     let newLine = 0;
     let hunkIndex = -1;

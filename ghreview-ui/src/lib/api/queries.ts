@@ -16,19 +16,32 @@ export const queryClient = new QueryClient({
 export const keys = {
   status: () => ["status"] as const,
   repos: (account?: string) => ["repos", account ?? "*"] as const,
+  githubRepos: (account: string) => ["github-repos", account] as const,
+  subscriptionsAll: () => ["subscriptions"] as const,
+  subscriptions: (account?: string) => ["subscriptions", account || null] as const,
+  pullsAll: () => ["pulls"] as const,
   pulls: (owner: string, repo: string, account?: string) =>
     ["pulls", owner, repo, account ?? "*"] as const,
+  pullsRoot: (account: string) => ["pulls", "root", account] as const,
+  pullsSnoozed: (account: string) => ["pulls", "snoozed", account] as const,
   pull: (owner: string, repo: string, number: number) => ["pull", owner, repo, number] as const,
   pullViewed: (owner: string, repo: string, number: number) =>
     ["pull-viewed", owner, repo, number] as const,
   reviewDraft: (owner: string, repo: string, number: number) =>
     ["review-draft", owner, repo, number] as const,
+  reviewThreadsAll: (owner: string, repo: string) => ["review-threads", owner, repo] as const,
   reviewThreads: (owner: string, repo: string, number: number) =>
     ["review-threads", owner, repo, number] as const,
   reviewers: (owner: string, repo: string, number: number) =>
     ["reviewers", owner, repo, number] as const,
+  activityAll: (owner: string, repo: string, number: number) =>
+    ["activity", owner, repo, number] as const,
   activity: (owner: string, repo: string, number: number, account?: string) =>
     ["activity", owner, repo, number, account ?? "*"] as const,
+  repoLabelsAll: (owner: string, repo: string) => ["repo-labels", owner, repo] as const,
+  repoLabels: (owner: string, repo: string, account?: string) =>
+    ["repo-labels", owner, repo, account ?? "*"] as const,
+  notificationsAll: () => ["notifications"] as const,
   notifications: (filter: NotificationFilter) => ["notifications", JSON.stringify(filter)] as const,
 };
 

@@ -79,7 +79,6 @@ The daemon keeps a warm, GitHub-shaped cache so reads never touch GitHub.
 | Var | Default | Purpose |
 | --- | ------- | ------- |
 | `DATABASE_URL` | — | Postgres DSN. Unset ⇒ contract-only mode (no sync, empty store). |
-| `GHREVIEW_SCHEMA` | `ghreview` | Dedicated schema inside the shared cctui database. |
 | `GITHUB_TOKEN` | — | PAT used for octokit REST + GraphQL. |
 | `GITHUB_ACCOUNT` | — | Account login the poller runs for. Unset ⇒ store + SSE only, no polling. |
 | `GHREVIEW_POLL_INTERVAL_MS` | `30000` | Delay between poll sweeps. |

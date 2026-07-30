@@ -35,7 +35,7 @@ const B = { authorization: "Bearer tokB", "content-type": "application/json" };
 
 guarded("account CRUD", () => {
   beforeAll(async () => {
-    db = createDb(DATABASE_URL as string, "ghreview");
+    db = createDb(DATABASE_URL as string);
     await db.sql.unsafe("DROP SCHEMA IF EXISTS ghreview CASCADE");
     await runMigrations(db);
   });
@@ -118,7 +118,7 @@ guarded("account CRUD", () => {
 
 guarded("account deletion cascades all related resources", () => {
   beforeAll(async () => {
-    db = createDb(DATABASE_URL as string, "ghreview");
+    db = createDb(DATABASE_URL as string);
     await db.sql.unsafe("DROP SCHEMA IF EXISTS ghreview CASCADE");
     await runMigrations(db);
   });
@@ -239,7 +239,7 @@ guarded("account deletion cascades all related resources", () => {
 
 guarded("ownership isolation across users", () => {
   beforeAll(async () => {
-    db = createDb(DATABASE_URL as string, "ghreview");
+    db = createDb(DATABASE_URL as string);
     await db.sql.unsafe("DROP SCHEMA IF EXISTS ghreview CASCADE");
     await runMigrations(db);
     await db.sql.unsafe(

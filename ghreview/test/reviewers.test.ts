@@ -7,7 +7,7 @@ import { runMigrations } from "../src/db/migrate.ts";
 import type { AppDeps } from "../src/deps.ts";
 import { createAccount } from "../src/github/account.ts";
 import type { OctokitRequest, OctokitResponse } from "../src/github/client.ts";
-import { reduceReviewStates } from "../src/routes/reviewers.ts";
+import { reduceReviewStates } from "../src/github/reviews.ts";
 
 const DATABASE_URL = process.env.DATABASE_URL;
 const guarded = DATABASE_URL ? describe : describe.skip;
@@ -75,7 +75,7 @@ describe("reduceReviewStates", () => {
 
 guarded("reviewers endpoints", () => {
   beforeAll(async () => {
-    db = createDb(DATABASE_URL as string, "ghreview");
+    db = createDb(DATABASE_URL as string);
     await db.sql.unsafe("DROP SCHEMA IF EXISTS ghreview CASCADE");
     await runMigrations(db);
   });

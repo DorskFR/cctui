@@ -6,6 +6,7 @@ import {
   getAccount,
   getToken,
   isEmbedded,
+  onConfigChange,
   setAccount,
   setToken,
 } from "./config";
@@ -49,6 +50,20 @@ describe("runtime config (embedded)", () => {
     setAccount("stored");
     configureRuntime({ account: "DorskFR" });
     expect(getAccount()).toBe("DorskFR");
+  });
+});
+
+describe("config change notification", () => {
+  it("notifies subscribers on every reconfiguration until they unsubscribe", () => {
+    const seen: (string | null)[] = [];
+    const unsubscribe = onConfigChange(() => seen.push(getAccount()));
+
+    configureRuntime({ account: "first" });
+    configureRuntime({ account: "second" });
+    unsubscribe();
+    configureRuntime({ account: "third" });
+
+    expect(seen).toEqual(["first", "second"]);
   });
 });
 

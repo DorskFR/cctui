@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { useUsers, useSessionStats, useTokenStats } from '$lib/queries';
 	import { apiOrigin } from '$lib/config';
-	import { toasts } from '$lib/toast.svelte';
+	import { copyText } from '$lib/clipboard';
 	import TokenUsage from '$lib/components/molecules/TokenUsage.svelte';
 	import UsageAnalyticsSection from '$lib/components/organisms/overview/UsageAnalyticsSection.svelte';
 	import { AutoGrid, Button, Card, Cluster, Heading, Stack, Text } from '@dorsk/tsumikit';
@@ -45,12 +45,7 @@
 	);
 
 	async function copyEnroll() {
-		try {
-			await navigator.clipboard.writeText(enrollCmd);
-			toasts.ok(m.common_copied());
-		} catch {
-			toasts.err(m.home_clipboard_unavailable());
-		}
+		await copyText(enrollCmd);
 	}
 </script>
 

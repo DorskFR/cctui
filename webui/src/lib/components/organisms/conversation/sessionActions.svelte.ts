@@ -4,6 +4,7 @@
 // here; the header/composer stay presentational and call these via callbacks.
 // Follows the ForkController / ScrollController pattern used elsewhere in this
 // drawer.
+import { errMessage } from '$lib/api';
 import type { SessionListItem } from '@bindings/SessionListItem';
 import type { AgentEvent } from '@bindings/AgentEvent';
 import type { ViewOpts } from './types';
@@ -48,7 +49,7 @@ export class SessionActions {
 			await this.#opts.actions.rename(this.#opts.id(), name);
 			toasts.ok(m.conversation_renamed());
 		} catch (e) {
-			toasts.err((e as Error).message);
+			toasts.err(errMessage(e));
 		}
 	};
 
@@ -63,7 +64,7 @@ export class SessionActions {
 			toasts.ok(m.conversation_archived_toast());
 			this.#opts.onclose();
 		} catch (e) {
-			toasts.err((e as Error).message);
+			toasts.err(errMessage(e));
 		}
 	};
 
@@ -84,7 +85,7 @@ export class SessionActions {
 				toasts.err(ack.error ?? m.conversation_interrupt_failed());
 			}
 		} catch (e) {
-			toasts.err((e as Error).message);
+			toasts.err(errMessage(e));
 		}
 	};
 
@@ -112,7 +113,7 @@ export class SessionActions {
 			toasts.ok(m.conversation_resume_dispatched());
 			this.#opts.onclose();
 		} catch (e) {
-			toasts.err((e as Error).message);
+			toasts.err(errMessage(e));
 		}
 	};
 
@@ -132,7 +133,7 @@ export class SessionActions {
 				toasts.err(ack.error ?? m.conversation_model_failed());
 			}
 		} catch (e) {
-			toasts.err((e as Error).message);
+			toasts.err(errMessage(e));
 		}
 	};
 
@@ -141,7 +142,7 @@ export class SessionActions {
 		try {
 			await this.#opts.actions.setAutoApprove(this.#opts.id(), want);
 		} catch (e) {
-			toasts.err((e as Error).message);
+			toasts.err(errMessage(e));
 		}
 	};
 
@@ -152,7 +153,7 @@ export class SessionActions {
 			downloadConversationHtml(this.#opts.session(), this.#opts.events(), this.#opts.view());
 			toasts.ok(m.conversation_transcript_downloaded());
 		} catch (e) {
-			toasts.err((e as Error).message);
+			toasts.err(errMessage(e));
 		}
 	};
 
@@ -164,7 +165,7 @@ export class SessionActions {
 			await navigator.clipboard.writeText(md);
 			toasts.ok(m.conversation_copied_markdown());
 		} catch (e) {
-			toasts.err(m.conversation_copy_failed({ message: (e as Error).message }));
+			toasts.err(m.conversation_copy_failed({ message: errMessage(e) }));
 		}
 	};
 

@@ -102,8 +102,8 @@
 		transform: translate(-50%, -50%);
 		z-index: 201;
 		width: min(420px, calc(100vw - 2rem));
-		background: var(--bg, #1a1a1a);
-		border: 1px solid var(--border, #333);
+		background: var(--bg);
+		border: 1px solid var(--border);
 		border-radius: 10px;
 		padding: 1.1rem 1.2rem;
 		box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);

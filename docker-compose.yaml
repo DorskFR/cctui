@@ -1,6 +1,6 @@
 services:
   cctui-postgres:
-    image: postgres:17
+    image: pgautoupgrade/pgautoupgrade:18-debian
     container_name: cctui-postgres
     environment:
       POSTGRES_USER: postgres
@@ -17,7 +17,7 @@ services:
       retries: 5
 
   cctui-postgres-test:
-    image: postgres:17
+    image: pgautoupgrade/pgautoupgrade:18-debian
     container_name: cctui-postgres-test
     environment:
       POSTGRES_USER: postgres

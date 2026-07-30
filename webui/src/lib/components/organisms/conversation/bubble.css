@@ -122,7 +122,7 @@
 	color: var(--syn-string);
 }
 .hljs-deletion {
-	color: var(--danger, #f0716b);
+	color: var(--danger);
 }
 .syn-function,
 .hljs-title,

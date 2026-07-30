@@ -54,7 +54,7 @@
       if (!result.merged) throw new Error(result.message ?? "Pull request was not merged.");
       confirming = false;
       queryClient.invalidateQueries({ queryKey: keys.pull(owner, repo, number) });
-      queryClient.invalidateQueries({ queryKey: ["pulls"] });
+      queryClient.invalidateQueries({ queryKey: keys.pullsAll() });
       onmerged?.();
     } catch (e) {
       error = (e as Error).message;

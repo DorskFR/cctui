@@ -3,6 +3,7 @@
 	// Admin can edit any user's ceiling and manage any user's keys; a user can
 	// view their own ceiling (read-only) and manage their own keys. Key scopes
 	// are editable in place — the secret is never re-minted to re-scope.
+	import { errMessage } from '$lib/api';
 	import { useUserAcls, useUserKeys, useUserActions } from '$lib/queries';
 	import type { ApiKeyRow } from '@bindings/ApiKeyRow';
 	import { toasts } from '$lib/toast.svelte';
@@ -63,7 +64,7 @@
 			newLabel = '';
 			newScopes = new Set(['read']);
 		} catch (e) {
-			toasts.err((e as Error).message);
+			toasts.err(errMessage(e));
 		}
 	}
 

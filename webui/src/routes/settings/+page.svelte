@@ -400,33 +400,26 @@
 	<!-- ── Secret redaction ───────────────────────────────────── -->
 	<Card>
 		<Stack gap="md">
-			<Heading level={2}>Secret redaction</Heading>
-			<Text size="sm" tone="faint">
-				Redact secrets (API keys, tokens, private keys, DB passwords) out of session
-				events on the daemon before they are stored or broadcast. Matched spans become
-				typed placeholders like [REDACTED:github_token]. Applies to running sessions
-				within ~1s of saving.
-			</Text>
+			<Heading level={2}>{m.settings_redaction_title()}</Heading>
+			<Text size="sm" tone="faint">{m.settings_redaction_help()}</Text>
 			<dl class="props">
 				<div class="prop">
 					<dt>
-						<Text weight="semibold">Enable live redaction</Text>
-						<Text size="sm" tone="faint">
-							Scrub tool I/O and messages as events are produced.
-						</Text>
+						<Text weight="semibold">{m.settings_redaction_enable_label()}</Text>
+						<Text size="sm" tone="faint">{m.settings_redaction_enable_help()}</Text>
 					</dt>
 					<dd>
 						<Switch
 							checked={scrubEnabled}
-							label="Enable live redaction"
+							label={m.settings_redaction_enable_label()}
 							onclick={() => settings.setSecretScrubEnabled(!scrubEnabled)}
 						/>
 					</dd>
 				</div>
 			</dl>
 			<Field
-				label="Extra patterns"
-				hint="One regex per line, layered on the built-in detectors. Invalid patterns are rejected on save."
+				label={m.settings_redaction_patterns_label()}
+				hint={m.settings_redaction_patterns_hint()}
 			>
 				<Textarea
 					mono
@@ -438,7 +431,7 @@
 				/>
 			</Field>
 			<details class="defaults">
-				<summary><Text size="sm" tone="faint">Built-in detectors</Text></summary>
+				<summary><Text size="sm" tone="faint">{m.settings_redaction_builtins_summary()}</Text></summary>
 				<ul>
 					{#each BUILTIN_SCRUB_CATEGORIES as c (c)}
 						<li><Text size="sm" tone="faint">{c}</Text></li>

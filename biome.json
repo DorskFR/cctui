@@ -6,11 +6,15 @@
       "**/*.yaml",
       "**/*.yml",
       "**/*.md",
-      "!**/target/",
-      "!**/.sqlx/",
-      "!**/.superpowers/",
+      "!**/node_modules/**",
+      "!**/build/**",
+      "!**/.svelte-kit/**",
+      "!**/target/**",
+      "!**/.sqlx/**",
+      "!**/.superpowers/**",
       "!**/adapters/codex/schema/**",
-      "!webui/messages/**"
+      "!webui/messages/**",
+      "!webui/src/lib/paraglide/**"
     ]
   },
   "formatter": {

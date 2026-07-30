@@ -139,17 +139,20 @@ mod tests {
         assert!(!is_sha256_hex(&"g".repeat(64)), "non-hex rejected");
     }
 
-    async fn test_pool() -> Option<sqlx::PgPool> {
-        let url = std::env::var("DATABASE_URL")
-            .ok()
-            .or_else(|| std::env::var("TEST_DATABASE_URL").ok())?;
-        sqlx::postgres::PgPoolOptions::new().max_connections(2).connect(&url).await.ok()
+    async fn test_pool(test_name: &str) -> Option<sqlx::PgPool> {
+        let url = crate::routes::gateway::test_db_url(test_name)?;
+        Some(
+            sqlx::postgres::PgPoolOptions::new()
+                .max_connections(2)
+                .connect(&url)
+                .await
+                .expect("connect test db"),
+        )
     }
 
     #[tokio::test]
     async fn put_stores_idempotently_and_get_serves() {
-        let Some(pool) = test_pool().await else {
-            eprintln!("skipping blob db test: no DATABASE_URL/TEST_DATABASE_URL");
+        let Some(pool) = test_pool("put_stores_idempotently_and_get_serves").await else {
             return;
         };
         let bytes = b"cct739-blob-payload".to_vec();

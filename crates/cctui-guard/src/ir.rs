@@ -5,18 +5,18 @@
 //! raw strings. The IR *is* the schema — its JSON Schema (see [`json_schema`])
 //! is the published, versioned artifact, and a second frontend can hand-author
 //! a `workflow.json` that deserializes straight into [`Workflow`]. Both
-//! frontends compile to the same [`Workflow`], and [`Workflow::into_steps`]
-//! lowers it back into the [`Step`] map the engine already enforces, so the
-//! allow/deny behavior is byte-for-byte the markdown path.
+//! frontends compile to the same [`Workflow`], which the engine enforces
+//! directly: nothing is lowered back to a string and re-parsed at decision time,
+//! so a token containing a `,` reaches enforcement intact.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::parser::{
-    JudgeQuestion, ParseError, Step, parse_prompt_sets, parse_rules_imports, parse_steps,
-    parse_transitions,
+    JudgeQuestion, ParseError, Step, expand_set, parse_prompt_sets, parse_rules_imports,
+    parse_steps, parse_transitions,
 };
 
 /// The IR schema version. Authored as a `[guard]: v1` header line (or the
@@ -79,14 +79,38 @@ impl Rule {
         )
     }
 
-    /// Lower the [`Rule`] back into the raw string the engine's keyword parser
-    /// consumes (`parse_keywords`). Semantically identical to the authored value.
+    /// Render the [`Rule`] as the authored `[allowed]`/`[disallowed]` value, for
+    /// display only — enforcement uses [`Rule::expand`].
     #[must_use]
     pub fn to_raw(&self) -> String {
         match self {
             Self::Unrestricted => String::new(),
             Self::Wildcard => "*".to_string(),
             Self::List(items) => items.join(", "),
+        }
+    }
+
+    /// The concrete keyword list this rule grants/denies, with tool-set names
+    /// expanded recursively. Each listed token is expanded whole: a keyword
+    /// containing a `,` is never re-split.
+    #[must_use]
+    #[allow(clippy::implicit_hasher)]
+    pub fn expand(&self, tool_sets: &HashMap<String, Vec<String>>) -> Vec<String> {
+        match self {
+            Self::Unrestricted => Vec::new(),
+            Self::Wildcard => vec!["*".to_string()],
+            Self::List(items) => {
+                let mut out = Vec::new();
+                for item in items {
+                    let item = item.trim();
+                    if item.is_empty() {
+                        continue;
+                    }
+                    let mut seen = HashSet::new();
+                    expand_set(item, tool_sets, &mut seen, &mut out);
+                }
+                out
+            }
         }
     }
 }
@@ -113,17 +137,6 @@ impl Transition {
     pub fn from_raw(raw: &str) -> Self {
         let (to, exit) = parse_transitions(raw);
         Self { to, exit, gates: BTreeMap::new() }
-    }
-
-    /// Lower back into the raw `[transition]` string (`parse_transitions` reads
-    /// only the digit runs and the presence of `exit`, so this is equivalent).
-    #[must_use]
-    pub fn to_raw(&self) -> String {
-        let mut parts: Vec<String> = self.to.iter().map(u32::to_string).collect();
-        if self.exit {
-            parts.push("Exit".to_string());
-        }
-        parts.join(", ")
     }
 }
 
@@ -194,22 +207,6 @@ impl WorkflowStep {
             max_visits: step.max_visits,
         }
     }
-
-    fn into_step(self) -> Step {
-        Step {
-            title: self.title,
-            allowed: self.allowed.to_raw(),
-            disallowed: self.disallowed.to_raw(),
-            transition: self.transition.to_raw(),
-            network: self.network.join(", "),
-            body: self.body,
-            gate: self.gate.unwrap_or_default(),
-            compact: self.compact,
-            llmjudge: self.judge,
-            max_visits: self.max_visits,
-            transition_gates: self.transition.gates,
-        }
-    }
 }
 
 /// A tool-set / network-set definition authored inline in the prompt.
@@ -268,12 +265,11 @@ impl Workflow {
         serde_json::from_str(json)
     }
 
-    /// Lower the IR back into the `Step` map the engine enforces. The lowering
-    /// is semantically lossless — the engine's allow/deny decisions are
-    /// identical to the ones it makes from the markdown parser directly.
+    /// The steps keyed by step number — the map the engine enforces. A repeated
+    /// step id collapses, exactly as the markdown parser's map does.
     #[must_use]
-    pub fn into_steps(self) -> BTreeMap<u32, Step> {
-        self.steps.into_iter().map(|s| (s.id, s.into_step())).collect()
+    pub fn into_steps(self) -> BTreeMap<u32, WorkflowStep> {
+        self.steps.into_iter().map(|s| (s.id, s)).collect()
     }
 }
 

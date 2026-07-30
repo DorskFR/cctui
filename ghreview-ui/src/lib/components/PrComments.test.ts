@@ -1,6 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { QueryClient } from "@tanstack/svelte-query";
+import { mount, unmount } from "svelte";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ActivityEvent, ReviewThreadComment } from "../api/types";
-import { buildCommentGroups, commentViewState, reviewLabel } from "./PrComments.svelte";
+import PrComments, { buildCommentGroups, commentViewState, reviewLabel } from "./PrComments.svelte";
 
 function event(input: Partial<ActivityEvent> & Pick<ActivityEvent, "event">): ActivityEvent {
   return {
@@ -93,5 +95,57 @@ describe("comment view state", () => {
   it("formats review verdicts", () => {
     expect(reviewLabel("APPROVED")).toBe("Approved");
     expect(reviewLabel("CHANGES_REQUESTED")).toBe("Requested changes");
+  });
+});
+
+describe("PrComments rendering", () => {
+  let component: ReturnType<typeof mount> | undefined;
+  let client: QueryClient;
+
+  beforeEach(() => {
+    client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify({ items: [] }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          }),
+      ),
+    );
+  });
+
+  afterEach(async () => {
+    if (component) await unmount(component);
+    component = undefined;
+    document.body.replaceChildren();
+    client.clear();
+    vi.restoreAllMocks();
+  });
+
+  function mountComments(body: string, owner = "example", repo = "project"): void {
+    const comment = { ...inline(21, "2026-07-30T10:00:00Z"), body };
+    component = mount(PrComments, {
+      target: document.body,
+      context: new Map<unknown, unknown>([["$$_queryClient", client]]),
+      props: { owner, repo, number: 1, account: "reviewer", inline: [comment] },
+    });
+  }
+
+  it("resolves relative comment links against the pull request's repository", () => {
+    mountComments("See [the guide](docs/guide.md)");
+
+    expect(document.querySelector<HTMLAnchorElement>(".comments .body a")?.href).toBe(
+      "https://github.com/example/project/docs/guide.md",
+    );
+  });
+
+  it("keeps absolute links untouched", () => {
+    mountComments("See [upstream](https://example.com/page)");
+
+    expect(document.querySelector<HTMLAnchorElement>(".comments .body a")?.href).toBe(
+      "https://example.com/page",
+    );
   });
 });

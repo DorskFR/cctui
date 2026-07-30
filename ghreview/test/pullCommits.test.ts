@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { OctokitRequest, OctokitResponse } from "../src/github/client.ts";
-import { fetchPullCommits } from "../src/sync/handlers.ts";
+import { fetchPullCommits } from "../src/sync/pullEnrich.ts";
 
 function commitEntry(i: number): Record<string, unknown> {
   return {

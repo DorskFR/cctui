@@ -3,6 +3,7 @@
 // the supported "switch model" substitute (no in-place switch); for archived
 // sessions it is the "reopen as a new conversation" path. Defaults inherit
 // the parent's model/effort so a plain fork preserves them.
+import { errMessage } from '$lib/api';
 import type { SessionListItem } from '@bindings/SessionListItem';
 import type { ForkExtract } from '@bindings/ForkExtract';
 import type { ForkRequest } from '@bindings/ForkRequest';
@@ -118,7 +119,7 @@ export class ForkController {
 			);
 			this.#opts.onForked(res?.session_id);
 		} catch (e) {
-			toasts.err((e as Error).message);
+			toasts.err(errMessage(e));
 		} finally {
 			this.forking = false;
 		}

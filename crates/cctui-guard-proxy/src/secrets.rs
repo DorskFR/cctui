@@ -150,41 +150,6 @@ impl SecretRef {
         }
         anyhow::bail!("unknown secret ref scheme in {s:?} (expected env:/vault:/aws-sm:/k8s:)")
     }
-
-    /// Legacy `(identity, service)` → `env:CRED_<IDENTITY>_<SERVICE>`.
-    #[must_use]
-    pub fn legacy_env(identity: &str, service: &str) -> Self {
-        Self::Env { var: format!("CRED_{}_{}", sanitize_upper(identity), sanitize_upper(service)) }
-    }
-
-    /// Legacy `(identity, service)` → `vault:<mount>/data/<prefix>/<identity>/<service>#<field>`.
-    #[must_use]
-    pub fn legacy_vault(
-        mount: &str,
-        prefix: &str,
-        field: &str,
-        identity: &str,
-        service: &str,
-    ) -> Self {
-        let prefix = prefix.trim_matches('/');
-        let path = if prefix.is_empty() {
-            format!("{identity}/{service}")
-        } else {
-            format!("{prefix}/{identity}/{service}")
-        };
-        Self::Vault { mount: mount.trim_matches('/').to_owned(), path, field: field.to_owned() }
-    }
-
-    /// Legacy `(identity, service)` → `aws-sm:<prefix><identity>/<service>`.
-    #[must_use]
-    pub fn legacy_aws_sm(prefix: &str, identity: &str, service: &str) -> Self {
-        let prefix = if prefix.is_empty() || prefix.ends_with('/') {
-            prefix.to_owned()
-        } else {
-            format!("{prefix}/")
-        };
-        Self::AwsSm { name: format!("{prefix}{identity}/{service}"), field: None }
-    }
 }
 
 impl fmt::Display for SecretRef {
@@ -703,26 +668,6 @@ mod tests {
         assert!(render_identity("env:CRED_${IDENTITY}_GH", "").is_err());
         // Unknown placeholder must error rather than pass through.
         assert!(render_identity("env:CRED_${TYPO}", "acme").is_err());
-    }
-
-    #[test]
-    fn legacy_derivations_match_old_conventions() {
-        assert_eq!(
-            SecretRef::legacy_env("acme-corp", "github"),
-            SecretRef::parse("env:CRED_ACME_CORP_GITHUB").unwrap()
-        );
-        assert_eq!(
-            SecretRef::legacy_vault("kvmount", "cctui/workers", "value", "acme", "github"),
-            SecretRef::parse("vault:kvmount/data/cctui/workers/acme/github#value").unwrap()
-        );
-        assert_eq!(
-            SecretRef::legacy_vault("kvmount", "", "value", "acme", "github"),
-            SecretRef::parse("vault:kvmount/data/acme/github#value").unwrap()
-        );
-        assert_eq!(
-            SecretRef::legacy_aws_sm("cctui/worker", "acme", "github"),
-            SecretRef::parse("aws-sm:cctui/worker/acme/github").unwrap()
-        );
     }
 
     #[tokio::test]

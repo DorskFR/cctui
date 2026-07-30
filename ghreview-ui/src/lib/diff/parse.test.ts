@@ -70,11 +70,33 @@ describe("buildDiffModel", () => {
       " keep",
       "+new",
     ].join("\n");
-    const model = buildDiffModel([file(twoHunks), file("", { filename: "img.png" })]);
+    const model = buildDiffModel([
+      file(twoHunks),
+      file("", { filename: "img.png", patch: undefined }),
+    ]);
     expect(model.files[0].hunks).toHaveLength(2);
     expect(model.files[0].hunks[1].header.newStart).toBe(10);
     expect(model.files[1].binary).toBe(true);
     expect(model.files[1].hunks).toHaveLength(0);
+  });
+
+  describe("binary detection", () => {
+    it("marks a file as binary only when GitHub omitted the patch", () => {
+      const model = buildDiffModel([
+        file("", { filename: "img.png", patch: undefined, status: "added" }),
+        file("", { filename: "empty.ts" }),
+      ]);
+      expect(model.files[0].binary).toBe(true);
+      expect(model.files[1].binary).toBe(false);
+    });
+
+    it("does not call an unchanged file binary", () => {
+      const model = buildDiffModel([
+        file("", { filename: "kept.ts", patch: undefined, status: "unchanged" }),
+      ]);
+      expect(model.files[0].binary).toBe(false);
+      expect(model.files[0].hunks).toHaveLength(0);
+    });
   });
 
   it("ignores no-newline markers", () => {
