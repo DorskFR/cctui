@@ -72,6 +72,16 @@ class Notifier {
     if (browser) localStorage.setItem(KEY_SOUND, on ? "1" : "0");
   }
 
+  /** Reflect the server-persisted display settings on load. Never requests
+   *  permission: `enabled` only sticks while the browser still grants it. */
+  applyPersisted(enabled: boolean, sound: boolean) {
+    if (!browser) return;
+    this.setSound(sound);
+    const on = enabled && this.permission === "granted";
+    this.enabled = on;
+    localStorage.setItem(KEY_ENABLED, on ? "1" : "0");
+  }
+
   /**
    * Diff the set of sessions needing input against what we've already
    * notified, fire for newly-blocked sessions, and keep the title badge in

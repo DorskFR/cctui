@@ -110,3 +110,51 @@ pub async fn parse_upload_multipart(mut multipart: Multipart) -> Result<ParsedUp
 
     Ok(ParsedUploads { files, request_json })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn err_status(raw: &str) -> StatusCode {
+        sanitize_upload_name(raw).unwrap_err().0
+    }
+
+    #[test]
+    fn plain_names_pass_through() {
+        assert_eq!(sanitize_upload_name("evil.txt").unwrap(), "evil.txt");
+        assert_eq!(sanitize_upload_name("a-b_c.1.png").unwrap(), "a-b_c.1.png");
+    }
+
+    #[test]
+    fn directory_components_are_stripped_to_the_bare_name() {
+        assert_eq!(sanitize_upload_name("../../../etc/passwd").unwrap(), "passwd");
+        assert_eq!(sanitize_upload_name("/etc/shadow").unwrap(), "shadow");
+        assert_eq!(sanitize_upload_name("a/b/c.png").unwrap(), "c.png");
+        assert_eq!(sanitize_upload_name("./sub/./x").unwrap(), "x");
+    }
+
+    #[test]
+    fn traversal_dot_and_empty_are_rejected() {
+        assert_eq!(err_status(".."), StatusCode::BAD_REQUEST);
+        assert_eq!(err_status("."), StatusCode::BAD_REQUEST);
+        assert_eq!(err_status(""), StatusCode::BAD_REQUEST);
+        assert_eq!(err_status("foo/.."), StatusCode::BAD_REQUEST);
+        assert_eq!(err_status("a/b/../.."), StatusCode::BAD_REQUEST);
+        assert_eq!(err_status("/"), StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn result_never_contains_a_path_separator() {
+        for raw in ["../../secret", "/abs/path/file", "nested/dir/name.bin", "plain.txt"] {
+            if let Ok(name) = sanitize_upload_name(raw) {
+                assert!(
+                    !name.contains('/'),
+                    "{raw:?} sanitized to a name with a separator: {name:?}"
+                );
+                assert_ne!(name, "..");
+                assert_ne!(name, ".");
+                assert!(!name.is_empty());
+            }
+        }
+    }
+}

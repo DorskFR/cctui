@@ -53,12 +53,32 @@ impl Spawner {
     }
 
     fn worker_env(&self, spec: &WireDispatchSpec) -> anyhow::Result<Vec<String>> {
-        let base = build_env(spec, &self.cctui_url)?;
+        Self::build_worker_env(spec, &self.cctui_url)
+    }
+
+    fn build_worker_env(spec: &WireDispatchSpec, cctui_url: &str) -> anyhow::Result<Vec<String>> {
+        let base = build_env(spec, cctui_url)?;
         let mut env = base.env;
         if let Some(k) = base.machine_key {
             env.push(format!("CCTUI_MACHINE_KEY={k}"));
         }
         Ok(env)
+    }
+
+    fn discovery_labels(session_id: &str) -> HashMap<String, String> {
+        let mut labels = HashMap::new();
+        labels.insert(LABEL_ORIGIN.to_owned(), "cctui-docker-dispatcher".to_owned());
+        labels.insert(LABEL_SESSION_ID.to_owned(), label_safe(session_id));
+        labels
+    }
+
+    fn host_config(mounts: &[String], network: Option<&str>) -> HostConfig {
+        HostConfig {
+            auto_remove: Some(true),
+            binds: if mounts.is_empty() { None } else { Some(mounts.to_vec()) },
+            network_mode: network.map(ToOwned::to_owned),
+            ..Default::default()
+        }
     }
 }
 
@@ -77,16 +97,8 @@ impl Dispatcher for Spawner {
         let name = worker_name(dedup_source(spec));
         let env = self.worker_env(spec)?;
 
-        let mut labels = HashMap::new();
-        labels.insert(LABEL_ORIGIN.to_owned(), "cctui-docker-dispatcher".to_owned());
-        labels.insert(LABEL_SESSION_ID.to_owned(), label_safe(&spec.session_id));
-
-        let host_config = HostConfig {
-            auto_remove: Some(true),
-            binds: if self.mounts.is_empty() { None } else { Some(self.mounts.clone()) },
-            network_mode: self.network.clone(),
-            ..Default::default()
-        };
+        let labels = Self::discovery_labels(&spec.session_id);
+        let host_config = Self::host_config(&self.mounts, self.network.as_deref());
 
         let config = ContainerConfig {
             image: Some(self.image.clone()),
@@ -168,5 +180,85 @@ impl Dispatcher for Spawner {
             }
             Err(e) => anyhow::bail!("removing container {name}: {e}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    fn spec(session_id: &str, payload: serde_json::Value) -> WireDispatchSpec {
+        WireDispatchSpec {
+            session_id: session_id.to_owned(),
+            timeout_minutes: Some(30),
+            reply_url: Some("https://cb.example.test".to_owned()),
+            dedup_key: None,
+            profile: None,
+            payload,
+        }
+    }
+
+    #[test]
+    fn host_config_is_unprivileged_and_auto_removes() {
+        let hc = Spawner::host_config(&[], None);
+        assert_eq!(hc.privileged, None, "must never request a privileged container");
+        assert_eq!(hc.auto_remove, Some(true));
+        assert_eq!(hc.binds, None, "no mounts => no binds");
+        assert_eq!(hc.network_mode, None, "no host network / no explicit network");
+        assert_eq!(hc.cap_add, None, "no added capabilities");
+        assert_eq!(hc.pid_mode, None, "no host PID namespace");
+        assert_eq!(hc.ipc_mode, None, "no host IPC namespace");
+        assert_eq!(hc.userns_mode, None, "no host user namespace");
+    }
+
+    #[test]
+    fn host_config_preserves_read_only_binds() {
+        let mounts =
+            vec!["/host/cache:/cache:ro".to_owned(), "/host/certs:/etc/ssl/certs:ro".to_owned()];
+        let hc = Spawner::host_config(&mounts, Some("cctui-net"));
+        assert_eq!(hc.privileged, None);
+        let binds = hc.binds.expect("binds present");
+        assert_eq!(binds, mounts, "configured RO binds pass through verbatim");
+        assert!(binds.iter().all(|b| b.ends_with(":ro")), "the configured binds are read-only");
+        assert_eq!(
+            hc.network_mode.as_deref(),
+            Some("cctui-net"),
+            "explicit named network, not host"
+        );
+        assert_ne!(hc.network_mode.as_deref(), Some("host"));
+    }
+
+    #[test]
+    fn discovery_labels_stamp_origin_and_sanitized_session() {
+        let labels = Spawner::discovery_labels("triage:PROJ:2026");
+        assert_eq!(labels.get(LABEL_ORIGIN).map(String::as_str), Some("cctui-docker-dispatcher"));
+        assert_eq!(labels.get(LABEL_SESSION_ID).map(String::as_str), Some("triage-PROJ-2026"));
+    }
+
+    #[test]
+    fn worker_env_injects_contract_and_lifts_machine_key_out_of_payload() {
+        let s = spec(
+            "sess-123",
+            json!({ "name": "Review #7", "cctui_machine_key": "SECRET", "flow": "review" }),
+        );
+        let env = Spawner::build_worker_env(&s, "https://cctui.example.test").unwrap();
+        assert!(env.contains(&"SESSION_ID=sess-123".to_owned()));
+        assert!(env.contains(&"TASK_ID=sess-123".to_owned()));
+        assert!(env.contains(&"TASK_NAME=Review #7".to_owned()));
+        assert!(env.contains(&"CCTUI_URL=https://cctui.example.test".to_owned()));
+        assert!(env.contains(&"REPLY_URL=https://cb.example.test".to_owned()));
+        assert!(env.contains(&"CCTUI_MACHINE_KEY=SECRET".to_owned()));
+        let tp = env.iter().find(|e| e.starts_with("TASK_PAYLOAD_JSON=")).unwrap();
+        assert!(!tp.contains("SECRET"), "machine key leaked into payload: {tp}");
+        assert!(tp.contains("review"));
+    }
+
+    #[test]
+    fn worker_env_omits_machine_key_when_payload_has_none() {
+        let s = spec("sess-9", json!({ "flow": "review" }));
+        let env = Spawner::build_worker_env(&s, "https://cctui.example.test").unwrap();
+        assert!(env.iter().all(|e| !e.starts_with("CCTUI_MACHINE_KEY=")));
     }
 }

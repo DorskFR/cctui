@@ -970,4 +970,82 @@ mod tests {
         assert_eq!(Spawner::default_deadline_secs(Some("nope")), 3600);
         assert_eq!(Spawner::default_deadline_secs(Some("0")), 3600);
     }
+
+    #[test]
+    fn dispatcher_never_injects_privilege_escalation() {
+        let v = build("full-stack", &full_profile(), &spec("sess-priv", json!({})));
+        let raw = serde_json::to_string(&v).unwrap();
+        assert!(!raw.contains("\"privileged\":true"), "no privileged container: {raw}");
+        assert!(!raw.contains("\"hostNetwork\":true"), "no host network: {raw}");
+        assert!(!raw.contains("\"hostPID\":true"), "no host PID namespace: {raw}");
+        assert!(!raw.contains("\"hostIPC\":true"), "no host IPC namespace: {raw}");
+        assert!(
+            v.pointer("/spec/template/spec/hostNetwork").is_none(),
+            "dispatcher stamps no hostNetwork field; the admission webhook owns the sandbox",
+        );
+        assert!(
+            v.pointer("/spec/template/spec/securityContext").is_none()
+                && v.pointer("/spec/template/spec/containers/0/securityContext").is_none(),
+            "dispatcher adds no securityContext; the admission webhook injects it",
+        );
+    }
+
+    #[test]
+    fn secret_valuefrom_env_is_referenced_not_materialized() {
+        let profile: WorkerProfileSpec = serde_json::from_value(json!({
+            "image": "example.com/worker:latest",
+            "serviceAccountName": "worker-lean",
+            "env": [
+                { "name": "GH_TOKEN", "valueFrom": {
+                    "secretKeyRef": { "name": "gh", "key": "token" } } }
+            ]
+        }))
+        .unwrap();
+        let v = build("lean", &profile, &spec("sess-ref", json!({})));
+        let gh = worker_env(&v).into_iter().find(|e| e["name"] == "GH_TOKEN").unwrap();
+        assert_eq!(
+            gh.pointer("/valueFrom/secretKeyRef/name"),
+            Some(&json!("gh")),
+            "secret stays a reference, never a literal value",
+        );
+        assert!(gh.get("value").is_none(), "a referenced secret must not gain a literal value");
+    }
+
+    #[test]
+    fn profile_readonly_mounts_and_ca_env_pass_through_to_worker() {
+        let profile: WorkerProfileSpec = serde_json::from_value(json!({
+            "image": "example.com/worker:latest",
+            "serviceAccountName": "worker-lean",
+            "env": [
+                { "name": "NODE_EXTRA_CA_CERTS", "value": "/etc/cctui/ca/ca.crt" }
+            ],
+            "volumeMounts": [
+                { "name": "ca", "mountPath": "/etc/cctui/ca", "readOnly": true }
+            ]
+        }))
+        .unwrap();
+        let v = build("lean", &profile, &spec("sess-ca", json!({})));
+        assert_eq!(env_value(&v, "NODE_EXTRA_CA_CERTS").as_deref(), Some("/etc/cctui/ca/ca.crt"),);
+        let mounts =
+            v.pointer("/spec/template/spec/containers/0/volumeMounts").unwrap().as_array().unwrap();
+        let ca = mounts.iter().find(|m| m["name"] == "ca").unwrap();
+        assert_eq!(ca["readOnly"], json!(true), "the CA mount is read-only");
+        assert_eq!(ca["mountPath"], json!("/etc/cctui/ca"));
+    }
+
+    #[test]
+    fn override_env_replaces_a_profile_valuefrom_with_a_literal() {
+        let profile: WorkerProfileSpec = serde_json::from_value(json!({
+            "image": "example.com/worker:latest",
+            "env": [
+                { "name": "SESSION_ID", "valueFrom": {
+                    "fieldRef": { "fieldPath": "metadata.name" } } }
+            ]
+        }))
+        .unwrap();
+        let v = build("lean", &profile, &spec("sess-override", json!({})));
+        let sid = worker_env(&v).into_iter().find(|e| e["name"] == "SESSION_ID").unwrap();
+        assert_eq!(sid["value"], json!("sess-override"), "per-run override wins");
+        assert!(sid.get("valueFrom").is_none(), "override clears a stale valueFrom");
+    }
 }
