@@ -27,6 +27,8 @@ use chrono::Utc;
 use futures_util::StreamExt;
 use uuid::Uuid;
 
+use cctui_proto::ids::{SessionId, SpawnKey};
+
 use crate::state::AppState;
 
 /// Refresh proactively once the access token is within this window of expiry.
@@ -155,7 +157,7 @@ impl FireworksSettings {
     pub fn resolve(stored: Option<&serde_json::Value>) -> Self {
         let mut merged = fireworks_default_settings();
         if let Some(overlay) = stored.filter(|v| v.is_object()) {
-            deep_merge_json(&mut merged, overlay.clone());
+            cctui_proto::util::deep_merge(&mut merged, overlay.clone());
         }
         Self {
             context_length_exceeded_behavior: merged
@@ -394,10 +396,7 @@ pub async fn mint_session_env_for_account(
     session_id: &str,
 ) -> Result<Option<std::collections::BTreeMap<String, String>>, sqlx::Error> {
     let provider: Option<String> =
-        sqlx::query_scalar("SELECT provider FROM account_providers WHERE id = $1")
-            .bind(provider_id)
-            .fetch_optional(&state.pool)
-            .await?;
+        crate::store::account_providers::provider_by_id(&state.pool, provider_id).await?;
     let Some(provider) = provider else { return Ok(None) };
     Ok(Some(mint_env_for_account(state, provider_id, &provider, session_id).await?))
 }
@@ -768,7 +767,7 @@ pub async fn resolve_session_settings(
                 .flatten();
         if let Some(s) = settings.filter(|v| !v.is_null()) {
             match merged.as_mut() {
-                Some(base) => deep_merge_json(base, s),
+                Some(base) => cctui_proto::util::deep_merge(base, s),
                 None => merged = Some(s),
             }
         }
@@ -776,35 +775,10 @@ pub async fn resolve_session_settings(
     merged
 }
 
-/// Recursively merge `overlay` into `base`. Objects merge key-by-key;
-/// any non-object value in `overlay` replaces the value in `base`.
-fn deep_merge_json(base: &mut serde_json::Value, overlay: serde_json::Value) {
-    match (base, overlay) {
-        (serde_json::Value::Object(base_map), serde_json::Value::Object(overlay_map)) => {
-            for (k, v) in overlay_map {
-                match base_map.get_mut(&k) {
-                    Some(existing) => deep_merge_json(existing, v),
-                    None => {
-                        base_map.insert(k, v);
-                    }
-                }
-            }
-        }
-        (base_slot, overlay) => *base_slot = overlay,
-    }
-}
-
 /// Revoke every session token bound to a session — called when a
 /// session ends so the gateway can no longer be used under that token.
 pub async fn revoke_session_tokens(state: &AppState, session_id: &str) {
-    if let Err(e) = sqlx::query(
-        "UPDATE session_tokens SET revoked_at = now() \
-         WHERE session_id = $1 AND revoked_at IS NULL",
-    )
-    .bind(session_id)
-    .execute(&state.pool)
-    .await
-    {
+    if let Err(e) = crate::store::tokens::revoke_by_session(&state.pool, session_id).await {
         tracing::error!(
             %session_id,
             error = %e,
@@ -822,7 +796,8 @@ fn needs_rebind(spawn_key: &str, session_id: &str) -> bool {
 /// harness names its own session (opencode returns `ses_…`) pulls gateway env
 /// under the spawn key, binding the token to an id no later lookup uses. Adapters
 /// whose local id IS the spawn key pass equal ids and no-op.
-pub async fn rebind_spawn_key(state: &AppState, spawn_key: &str, session_id: &str) {
+pub async fn rebind_spawn_key(state: &AppState, spawn_key: SpawnKey, session_id: SessionId) {
+    let (spawn_key, session_id) = (spawn_key.as_str(), session_id.as_str());
     if !needs_rebind(spawn_key, session_id) {
         return;
     }
@@ -842,14 +817,7 @@ pub async fn rebind_spawn_key(state: &AppState, spawn_key: &str, session_id: &st
 /// to tag Langfuse traces. `None` for unknown/revoked tokens.
 async fn session_id_for_token(state: &AppState, session_token: &str) -> Option<String> {
     let hash = crate::auth::sha256_hex(session_token);
-    sqlx::query_scalar::<_, String>(
-        "SELECT session_id FROM session_tokens WHERE token_hash = $1 AND revoked_at IS NULL",
-    )
-    .bind(&hash)
-    .fetch_optional(&state.pool)
-    .await
-    .ok()
-    .flatten()
+    crate::store::tokens::session_id_by_token_hash(&state.pool, &hash).await.ok().flatten()
 }
 
 /// Merge a `CctuiAgent` child's per-session dollar budget into `cap` as a
@@ -990,14 +958,7 @@ fn note_token_used(state: &AppState, token_fp: &str) {
     let pool = state.pool.clone();
     let hash = token_fp.to_owned();
     tokio::spawn(async move {
-        let _ = sqlx::query(
-            "UPDATE session_tokens SET last_used_at = now() \
-             WHERE token_hash = $1 \
-               AND (last_used_at IS NULL OR last_used_at < now() - interval '60 seconds')",
-        )
-        .bind(&hash)
-        .execute(&pool)
-        .await;
+        let _ = crate::store::tokens::stamp_last_used(&pool, &hash).await;
     });
 }
 
@@ -1164,13 +1125,10 @@ fn clear_orphan_fingerprint(map: &OrphanSpamMap, token_fp: &str) {
 /// token material. Best-effort: a failed lookup just leaves the block to
 /// expire on its own.
 pub async fn clear_orphan_block_for_session(state: &AppState, session_id: &str) {
-    let hashes: Vec<String> = sqlx::query_scalar(
-        "SELECT token_hash FROM session_tokens WHERE session_id = $1 AND revoked_at IS NULL",
-    )
-    .bind(session_id)
-    .fetch_all(&state.pool)
-    .await
-    .unwrap_or_default();
+    let hashes: Vec<String> =
+        crate::store::tokens::token_hashes_by_session(&state.pool, session_id)
+            .await
+            .unwrap_or_default();
     for hash in &hashes {
         clear_orphan_fingerprint(&state.gateway_orphan_spam, hash);
     }

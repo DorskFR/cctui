@@ -52,19 +52,6 @@ impl ServerClient {
         Ok(resp)
     }
 
-    pub async fn kill_session(&self, session_id: &str) -> Result<()> {
-        let url = format!("{}/api/v1/sessions/{}/kill", self.base_url, session_id);
-        self.http
-            .post(&url)
-            .bearer_auth(&self.token)
-            .send()
-            .await
-            .context("POST kill")?
-            .error_for_status()
-            .context("kill response status")?;
-        Ok(())
-    }
-
     /// Interrupt the in-flight turn without tearing the session down.
     pub async fn interrupt_session(&self, session_id: &str) -> Result<()> {
         let url = format!("{}/api/v1/sessions/{}/interrupt", self.base_url, session_id);

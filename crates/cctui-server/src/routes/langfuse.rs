@@ -6,26 +6,23 @@
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use cctui_proto::api::ApiError;
 
+use crate::error::AppError;
 use crate::langfuse::LangfuseSessionUsage;
 use crate::state::AppState;
 
 pub async fn session_langfuse(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
-) -> Result<Json<LangfuseSessionUsage>, (StatusCode, Json<ApiError>)> {
+) -> Result<Json<LangfuseSessionUsage>, AppError> {
     let Some(client) = state.langfuse.as_ref() else {
-        return Err((
-            StatusCode::NOT_FOUND,
-            Json(ApiError { error: "langfuse not configured".into() }),
-        ));
+        return Err(AppError::new(StatusCode::NOT_FOUND, "langfuse not configured"));
     };
     match client.session_usage(&session_id).await {
         Ok(usage) => Ok(Json(usage)),
         Err(e) => {
             tracing::debug!("langfuse session usage failed: {e}");
-            Err((StatusCode::BAD_GATEWAY, Json(ApiError { error: "langfuse read failed".into() })))
+            Err(AppError::new(StatusCode::BAD_GATEWAY, "langfuse read failed"))
         }
     }
 }

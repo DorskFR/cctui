@@ -16,39 +16,12 @@
 
 use std::path::PathBuf;
 
+use cctui_dispatcher_core::{
+    Dispatcher, HandleState, SpawnOutcome, build_env, dedup_source, worker_name,
+};
 use cctui_proto::ws::WireDispatchSpec;
-use sha1::{Digest, Sha1};
 
 use crate::cli::ContainerCli;
-
-/// Lifecycle state of a spawned container handle.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HandleState {
-    Running,
-    Complete,
-    Failed,
-    Gone,
-}
-
-impl HandleState {
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Running => "running",
-            Self::Complete => "complete",
-            Self::Failed => "failed",
-            Self::Gone => "gone",
-        }
-    }
-}
-
-/// Outcome of a dispatch: an opaque handle plus the idempotency status reported
-/// back to the server verbatim.
-#[derive(Debug, Clone)]
-pub struct SpawnOutcome {
-    pub handle: String,
-    pub status: String,
-}
 
 /// A machine-key secret staged on the host, ready to mount into the guest.
 #[derive(Debug, Clone)]
@@ -96,21 +69,6 @@ impl<C: ContainerCli> Spawner<C> {
         }
     }
 
-    /// `cctui-worker-<sha1(dedup)[:12]>` — deterministic so a repeat dispatch of
-    /// the same key maps to the same container (idempotency key).
-    fn container_name(dedup_source: &str) -> String {
-        let digest = Sha1::digest(dedup_source.as_bytes());
-        format!("cctui-worker-{}", &hex::encode(digest)[..12])
-    }
-
-    /// The string the container name derives from: the caller's `dedup_key` when
-    /// present, else the `session_id`. Mirrors the docker/kube
-    /// dispatchers so `session_id` can be fresh per dispatch while a repeat of
-    /// the same logical key still coalesces onto one container.
-    fn dedup_source(spec: &WireDispatchSpec) -> &str {
-        spec.dedup_key.as_deref().filter(|k| !k.is_empty()).unwrap_or(&spec.session_id)
-    }
-
     /// The guest path a `host:guest[:ro]` mount exposes.
     fn mount_guest_path(mount: &str) -> Option<&str> {
         mount.split(':').nth(1).filter(|s| !s.is_empty())
@@ -119,32 +77,14 @@ impl<C: ContainerCli> Spawner<C> {
     /// Build the env passed to the worker, minus the machine key (which becomes
     /// a mounted file unless `secret_via_env`). Returns `(env, machine_key)`; the
     /// key is `None` when the payload carried none.
-    fn build_env(&self, spec: &WireDispatchSpec) -> anyhow::Result<(Vec<String>, Option<String>)> {
-        let mut payload = spec.payload.clone();
-        let machine_key = payload
-            .as_object_mut()
-            .and_then(|o| o.remove("cctui_machine_key"))
-            .and_then(|v| v.as_str().map(ToOwned::to_owned));
-        let task_name = payload.get("name").and_then(|v| v.as_str()).map(ToOwned::to_owned);
-        let payload_json = serde_json::to_string(&payload)?;
-
-        let mut env = vec![
-            format!("SESSION_ID={}", spec.session_id),
-            format!("TASK_ID={}", spec.session_id),
-            format!("TASK_PAYLOAD_JSON={payload_json}"),
-            format!("CCTUI_URL={}", self.cctui_url),
-        ];
-        if let Some(n) = task_name {
-            env.push(format!("TASK_NAME={n}"));
-        }
-        if let Some(u) = &spec.reply_url {
-            env.push(format!("REPLY_URL={u}"));
-        }
+    fn worker_env(&self, spec: &WireDispatchSpec) -> anyhow::Result<(Vec<String>, Option<String>)> {
+        let base = build_env(spec, &self.cctui_url)?;
+        let mut env = base.env;
         if let Some(guest) = self.repo_mount.as_deref().and_then(Self::mount_guest_path) {
             env.push(format!("CCTUI_REPO_PATH={guest}"));
             env.push("CCTUI_GIT_SHALLOW=1".to_owned());
         }
-        Ok((env, machine_key))
+        Ok((env, base.machine_key))
     }
 
     /// Assemble the full `container run` argv. Pure — no host/runtime side
@@ -155,7 +95,7 @@ impl<C: ContainerCli> Spawner<C> {
         name: &str,
         secret: Option<&SecretMount>,
     ) -> anyhow::Result<Vec<String>> {
-        let (mut env, machine_key) = self.build_env(spec)?;
+        let (mut env, machine_key) = self.worker_env(spec)?;
 
         let mut args =
             vec!["run".to_owned(), "-d".to_owned(), "--name".to_owned(), name.to_owned()];
@@ -214,38 +154,6 @@ impl<C: ContainerCli> Spawner<C> {
         spec.payload.get("cctui_machine_key").and_then(|v| v.as_str()).map(ToOwned::to_owned)
     }
 
-    /// Spawn a worker container for the session. Idempotent: a repeat dispatch of
-    /// the same key reuses the deterministic name; `container run` failing
-    /// because that name is already in use is reported as `deduplicated` rather
-    /// than clobbering the running worker.
-    pub async fn dispatch(&self, spec: &WireDispatchSpec) -> anyhow::Result<SpawnOutcome> {
-        if spec.session_id.is_empty() {
-            anyhow::bail!("session_id is required");
-        }
-        let name = Self::container_name(Self::dedup_source(spec));
-
-        let secret = match (self.secret_via_env, Self::payload_machine_key(spec)) {
-            (false, Some(k)) => Some(self.stage_secret(&name, &k)?),
-            _ => None,
-        };
-
-        let args = self.build_run_args(spec, &name, secret.as_ref())?;
-        let out = self.cli.exec(args).await?;
-        if out.ok() {
-            return Ok(SpawnOutcome {
-                handle: format!("container/{name}"),
-                status: "dispatched".to_owned(),
-            });
-        }
-        if Self::is_name_in_use(&out.stderr) {
-            return Ok(SpawnOutcome {
-                handle: format!("container/{name}"),
-                status: "deduplicated".to_owned(),
-            });
-        }
-        anyhow::bail!("`container run` failed ({:?}): {}", out.code, out.stderr.trim());
-    }
-
     /// Apple `container` reports a name collision on the stderr; match a couple
     /// of plausible phrasings so a repeat dispatch dedups instead of erroring.
     fn is_name_in_use(stderr: &str) -> bool {
@@ -255,22 +163,6 @@ impl<C: ContainerCli> Spawner<C> {
 
     fn name_of(handle: &str) -> &str {
         handle.strip_prefix("container/").unwrap_or(handle)
-    }
-
-    /// Lifecycle of a container handle, plus a human reason when it FAILED — a
-    /// non-zero exit. The server lifts the reason into the completion webhook's
-    /// `error`.
-    pub async fn status(&self, handle: &str) -> anyhow::Result<(HandleState, Option<String>)> {
-        let name = Self::name_of(handle);
-        let out = self.cli.exec(vec!["inspect".to_owned(), name.to_owned()]).await?;
-        if !out.ok() {
-            // A missing container inspects with a non-zero exit; treat as gone.
-            if Self::is_not_found(&out.stderr) {
-                return Ok((HandleState::Gone, None));
-            }
-            anyhow::bail!("`container inspect` failed ({:?}): {}", out.code, out.stderr.trim());
-        }
-        Self::parse_inspect_state(&out.stdout)
     }
 
     fn is_not_found(stderr: &str) -> bool {
@@ -313,10 +205,66 @@ impl<C: ContainerCli> Spawner<C> {
             other => Ok((HandleState::Running, Some(format!("unknown status: {other}")))),
         }
     }
+}
+
+impl<C: ContainerCli> Dispatcher for Spawner<C> {
+    fn kind(&self) -> &'static str {
+        "apple"
+    }
+
+    /// Spawn a worker container for the session. Idempotent: a repeat dispatch of
+    /// the same key reuses the deterministic name; `container run` failing
+    /// because that name is already in use is reported as `deduplicated` rather
+    /// than clobbering the running worker.
+    async fn dispatch(&self, spec: &WireDispatchSpec) -> anyhow::Result<SpawnOutcome> {
+        if spec.session_id.is_empty() {
+            anyhow::bail!("session_id is required");
+        }
+        let name = worker_name(dedup_source(spec));
+
+        let secret = match (self.secret_via_env, Self::payload_machine_key(spec)) {
+            (false, Some(k)) => Some(self.stage_secret(&name, &k)?),
+            _ => None,
+        };
+
+        let args = self.build_run_args(spec, &name, secret.as_ref())?;
+        let out = self.cli.exec(args).await?;
+        if out.ok() {
+            return Ok(SpawnOutcome {
+                handle: format!("container/{name}"),
+                status: "dispatched".to_owned(),
+                namespace: None,
+            });
+        }
+        if Self::is_name_in_use(&out.stderr) {
+            return Ok(SpawnOutcome {
+                handle: format!("container/{name}"),
+                status: "deduplicated".to_owned(),
+                namespace: None,
+            });
+        }
+        anyhow::bail!("`container run` failed ({:?}): {}", out.code, out.stderr.trim());
+    }
+
+    /// Lifecycle of a container handle, plus a human reason when it FAILED — a
+    /// non-zero exit. The server lifts the reason into the completion webhook's
+    /// `error`.
+    async fn status(&self, handle: &str) -> anyhow::Result<(HandleState, Option<String>)> {
+        let name = Self::name_of(handle);
+        let out = self.cli.exec(vec!["inspect".to_owned(), name.to_owned()]).await?;
+        if !out.ok() {
+            // A missing container inspects with a non-zero exit; treat as gone.
+            if Self::is_not_found(&out.stderr) {
+                return Ok((HandleState::Gone, None));
+            }
+            anyhow::bail!("`container inspect` failed ({:?}): {}", out.code, out.stderr.trim());
+        }
+        Self::parse_inspect_state(&out.stdout)
+    }
 
     /// Stop then delete the container (Apple `container` has no auto-remove). A
     /// missing container at either step is a successful cancel.
-    pub async fn cancel(&self, handle: &str) -> anyhow::Result<()> {
+    async fn cancel(&self, handle: &str) -> anyhow::Result<()> {
         let name = Self::name_of(handle);
         let stop = self.cli.exec(vec!["stop".to_owned(), name.to_owned()]).await?;
         if !stop.ok() && !Self::is_not_found(&stop.stderr) {
@@ -401,25 +349,12 @@ mod tests {
     }
 
     #[test]
-    fn container_name_is_deterministic_and_prefixed() {
-        let a = Spawner::<MockCli>::container_name("session-xyz");
-        let b = Spawner::<MockCli>::container_name("session-xyz");
-        assert_eq!(a, b);
-        assert!(a.starts_with("cctui-worker-"));
-        assert_eq!(a.len(), "cctui-worker-".len() + 12);
-        assert_ne!(a, Spawner::<MockCli>::container_name("session-abc"));
-    }
-
-    #[test]
     fn container_name_derives_from_dedup_key_so_session_id_can_be_fresh() {
         let mut s1 = spec("11111111-1111-4111-8111-111111111111", json!({}));
         s1.dedup_key = Some("triage-PROJ-202606231511".to_owned());
         let mut s2 = spec("22222222-2222-4222-8222-222222222222", json!({}));
         s2.dedup_key = Some("triage-PROJ-202606231511".to_owned());
-        assert_eq!(
-            Spawner::<MockCli>::container_name(Spawner::<MockCli>::dedup_source(&s1)),
-            Spawner::<MockCli>::container_name(Spawner::<MockCli>::dedup_source(&s2)),
-        );
+        assert_eq!(worker_name(dedup_source(&s1)), worker_name(dedup_source(&s2)));
     }
 
     #[test]

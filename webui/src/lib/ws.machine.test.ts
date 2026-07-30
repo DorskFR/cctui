@@ -1,0 +1,192 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { WsClient, backoffDelay } from './ws.svelte';
+import { auth } from './auth.svelte';
+
+class FakeSocket {
+	static CONNECTING = 0;
+	static OPEN = 1;
+	static CLOSING = 2;
+	static CLOSED = 3;
+	readyState = 0;
+	sent: string[] = [];
+	onopen: (() => void) | null = null;
+	onmessage: ((ev: { data: string }) => void) | null = null;
+	onclose: (() => void) | null = null;
+	onerror: (() => void) | null = null;
+	constructor(public url: string) {
+		sockets.push(this);
+	}
+	send(data: string) {
+		this.sent.push(data);
+	}
+	close() {
+		this.readyState = 3;
+		this.onclose?.();
+	}
+	accept() {
+		this.readyState = 1;
+		this.onopen?.();
+	}
+	deliver(obj: unknown) {
+		this.onmessage?.({ data: JSON.stringify(obj) });
+	}
+}
+
+let sockets: FakeSocket[] = [];
+let realWs: unknown;
+
+const last = () => sockets.at(-1)!;
+const frames = (s: FakeSocket) => s.sent.map((f) => JSON.parse(f) as Record<string, unknown>);
+const messages = (s: FakeSocket) => frames(s).filter((f) => f.type === 'message');
+
+beforeEach(() => {
+	sockets = [];
+	realWs = (globalThis as Record<string, unknown>).WebSocket;
+	(globalThis as Record<string, unknown>).WebSocket = FakeSocket;
+	auth.isAuthed = true;
+	vi.useFakeTimers();
+	vi.spyOn(Math, 'random').mockReturnValue(0.5);
+});
+
+afterEach(() => {
+	vi.useRealTimers();
+	vi.restoreAllMocks();
+	(globalThis as Record<string, unknown>).WebSocket = realWs;
+});
+
+function openClient(): WsClient {
+	const c = new WsClient();
+	c.connect();
+	last().accept();
+	return c;
+}
+
+const ACK_TIMEOUT_MS = 8000;
+const MAX_ATTEMPTS = 5;
+
+describe('backoffDelay (send auto-retry)', () => {
+	it('grows exponentially then caps at 30s (jitter pinned to 1x)', () => {
+		expect(backoffDelay(1)).toBe(1000);
+		expect(backoffDelay(2)).toBe(2000);
+		expect(backoffDelay(3)).toBe(4000);
+		expect(backoffDelay(4)).toBe(8000);
+		expect(backoffDelay(5)).toBe(16000);
+		expect(backoffDelay(6)).toBe(30000);
+		expect(backoffDelay(20)).toBe(30000);
+	});
+
+	it('applies full jitter within [0.75x, 1.25x] of the base', () => {
+		vi.spyOn(Math, 'random').mockReturnValue(0);
+		expect(backoffDelay(2)).toBe(1500);
+		vi.spyOn(Math, 'random').mockReturnValue(0.999999);
+		expect(backoffDelay(2)).toBe(2500);
+	});
+});
+
+describe('TrackedSend ack / retry / reconnect state machine', () => {
+	it('sends one frame and, on ack ok, clears the pending send + its timer', () => {
+		const c = openClient();
+		c.trackedSend('s1', 'hello', 100);
+
+		const s = last();
+		expect(messages(s).length).toBe(1);
+		expect(c.deliverySnapshot('s1').pending.has(100)).toBe(true);
+
+		const cid = messages(s)[0].client_msg_id as string;
+		s.deliver({ type: 'message_ack', client_msg_id: cid, ok: true });
+
+		const snap = c.deliverySnapshot('s1');
+		expect(snap.pending.size).toBe(0);
+		expect(snap.failed.size).toBe(0);
+
+		vi.advanceTimersByTime(60_000);
+		expect(messages(last()).length).toBe(1);
+	});
+
+	it('retries the send after the ack timeout elapses (new correlation id)', () => {
+		const c = openClient();
+		c.trackedSend('s1', 'hello', 100);
+		const s = last();
+		const cid1 = messages(s)[0].client_msg_id as string;
+
+		vi.advanceTimersByTime(ACK_TIMEOUT_MS);
+		expect(c.deliverySnapshot('s1').retrying.has(100)).toBe(true);
+
+		vi.advanceTimersByTime(backoffDelay(1));
+		const msgs = messages(s);
+		expect(msgs.length).toBe(2);
+		const cid2 = msgs[1].client_msg_id as string;
+		expect(cid2).not.toBe(cid1);
+		expect(c.deliverySnapshot('s1').pending.has(100)).toBe(true);
+	});
+
+	it('exhausts MAX_ATTEMPTS into a hard failure, then retryNow resets the loop', () => {
+		const c = openClient();
+		c.trackedSend('s1', 'hello', 100);
+		const s = last();
+
+		for (let i = 0; i < 6; i++) {
+			vi.advanceTimersByTime(ACK_TIMEOUT_MS);
+			vi.advanceTimersByTime(30000);
+		}
+		const failed = c.deliverySnapshot('s1');
+		expect(failed.failed.has(100)).toBe(true);
+		expect(failed.pending.has(100)).toBe(false);
+		expect(messages(s).length).toBe(MAX_ATTEMPTS);
+
+		c.retryNow('s1', 100);
+		const retried = c.deliverySnapshot('s1');
+		expect(retried.failed.size).toBe(0);
+		expect(retried.pending.has(100)).toBe(true);
+		expect(messages(s).length).toBe(MAX_ATTEMPTS + 1);
+	});
+
+	it('parks a send when the socket is down and delivers it on reconnect', () => {
+		const c = new WsClient();
+		const ok = c.trackedSend('s1', 'survive me', 100);
+		expect(ok).toBe(false);
+
+		const snap = c.deliverySnapshot('s1');
+		expect(snap.pending.has(100)).toBe(true);
+		expect(snap.failed.size).toBe(0);
+
+		const s = last();
+		expect(messages(s).length).toBe(0);
+		s.accept();
+
+		const msgs = messages(s);
+		expect(msgs.length).toBe(1);
+		expect(msgs[0].content).toBe('survive me');
+	});
+
+	it('ignores a stale ack for a superseded attempt', () => {
+		const c = openClient();
+		c.trackedSend('s1', 'hello', 100);
+		const s = last();
+		const cid1 = messages(s)[0].client_msg_id as string;
+
+		vi.advanceTimersByTime(ACK_TIMEOUT_MS);
+		vi.advanceTimersByTime(backoffDelay(1));
+		expect(messages(s).length).toBe(2);
+
+		s.deliver({ type: 'message_ack', client_msg_id: cid1, ok: true });
+		expect(c.deliverySnapshot('s1').pending.has(100)).toBe(true);
+
+		const cid2 = messages(s)[1].client_msg_id as string;
+		s.deliver({ type: 'message_ack', client_msg_id: cid2, ok: true });
+		expect(c.deliverySnapshot('s1').pending.size).toBe(0);
+	});
+
+	it('drives the send into auto-retry on a server ok=false ack', () => {
+		const c = openClient();
+		c.trackedSend('s1', 'hello', 100);
+		const s = last();
+		const cid = messages(s)[0].client_msg_id as string;
+
+		s.deliver({ type: 'message_ack', client_msg_id: cid, ok: false, error: 'no daemon' });
+		expect(c.deliverySnapshot('s1').retrying.has(100)).toBe(true);
+
+		vi.advanceTimersByTime(backoffDelay(1));
+		expect(messages(s).length).toBe(2);
+	});
+});

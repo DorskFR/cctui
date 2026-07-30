@@ -43,7 +43,5 @@
 //! environment-specific comes from `dispatcher.toml` / enroll flags.
 
 pub mod cli;
-pub mod client;
 pub mod config;
-pub mod run;
 pub mod spawn;

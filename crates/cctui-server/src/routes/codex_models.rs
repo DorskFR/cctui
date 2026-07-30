@@ -9,19 +9,18 @@
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use cctui_proto::api::ApiError;
 use cctui_proto::codex_catalog::CodexModelCatalog;
 use uuid::Uuid;
 
+use crate::error::AppError;
 use crate::state::AppState;
 
 pub async fn get_codex_models(
     State(state): State<AppState>,
     Path(machine_id): Path<String>,
-) -> Result<Json<CodexModelCatalog>, (StatusCode, Json<ApiError>)> {
-    let machine_uuid = Uuid::parse_str(&machine_id).map_err(|_| {
-        (StatusCode::BAD_REQUEST, Json(ApiError { error: "machine_id must be a uuid".into() }))
-    })?;
+) -> Result<Json<CodexModelCatalog>, AppError> {
+    let machine_uuid = Uuid::parse_str(&machine_id)
+        .map_err(|_| AppError::new(StatusCode::BAD_REQUEST, "machine_id must be a uuid"))?;
     let catalog = state.codex_catalogs.get(&machine_uuid).map(|c| c.clone()).unwrap_or_default();
     Ok(Json(catalog))
 }

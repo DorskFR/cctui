@@ -4,10 +4,9 @@ use clap::{Parser, Subcommand};
 use tokio_util::sync::CancellationToken;
 
 use cctui_dispatcher_apple::cli::RealCli;
-use cctui_dispatcher_apple::client::ServerClient;
 use cctui_dispatcher_apple::config::Config;
-use cctui_dispatcher_apple::run::Runner;
 use cctui_dispatcher_apple::spawn::Spawner;
+use cctui_dispatcher_core::{Runner, ServerClient};
 
 #[derive(Parser)]
 #[command(
@@ -52,6 +51,15 @@ enum Cmd {
         /// Optional repo mount (`host:guest`) — shallow-pulled at boot.
         #[arg(long)]
         repo_mount: Option<String>,
+        /// OAuth account name to bind as this dispatcher's default. A dispatch
+        /// with no explicit account routes its model traffic through the cctui
+        /// gateway under this account.
+        #[arg(long)]
+        account: Option<String>,
+        /// Provider hint disambiguating an account name shared across providers
+        /// (e.g. `anthropic` vs `openai`). Only meaningful with `--account`.
+        #[arg(long)]
+        provider: Option<String>,
     },
     /// Connect to the configured server and serve dispatch commands.
     Run,
@@ -106,9 +114,12 @@ async fn main() -> anyhow::Result<()> {
             container_bin,
             mount,
             repo_mount,
+            account,
+            provider,
         } => {
-            let client = ServerClient::new(&server_url);
-            let resp = client.enroll(&token, &name).await?;
+            let client = ServerClient::new(&server_url, "apple");
+            let resp =
+                client.enroll(&token, &name, account.as_deref(), provider.as_deref()).await?;
             let cfg = Config {
                 server_url,
                 dispatcher_key: resp.dispatcher_key,
@@ -129,7 +140,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Cmd::Run => {
             let cfg = Config::load_from(&path)?;
-            let client = ServerClient::new(&cfg.server_url);
+            let client = ServerClient::new(&cfg.server_url, "apple");
             let auth = client.dispatcher_auth(&cfg.dispatcher_key).await?;
             tracing::info!(user_id = %auth.user_id, "authenticated");
             let spawner = Spawner::new(

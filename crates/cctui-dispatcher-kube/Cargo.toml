@@ -10,6 +10,7 @@ workspace = true
 
 [dependencies]
 cctui-proto.workspace = true
+cctui-dispatcher-core = { path = "../cctui-dispatcher-core" }
 cctui-orchestrator = { path = "../cctui-orchestrator" }
 anyhow.workspace = true
 clap.workspace = true
@@ -29,5 +30,3 @@ uuid.workspace = true
 toml = "0.8"
 kube.workspace = true
 k8s-openapi.workspace = true
-sha1 = "0.10"
-hex.workspace = true

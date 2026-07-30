@@ -1,6 +1,5 @@
 use cctui_proto::api::SessionListItem;
 use cctui_proto::classifier::Bucket;
-use cctui_proto::ws::AgentEvent;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout};
 use ratatui::text::{Line, Span};
@@ -200,23 +199,4 @@ pub fn format_tool_input(tool: &str, input: &serde_json::Value) -> String {
 
     let s = serde_json::to_string(input).unwrap_or_default();
     if s.len() > 100 { format!("{}...", &s[..100]) } else { s }
-}
-
-pub fn agent_event_to_string(event: &AgentEvent) -> String {
-    match event {
-        AgentEvent::Text { content, .. } | AgentEvent::Reply { content, .. } => content.clone(),
-        AgentEvent::ToolCall { tool, input, .. } => {
-            let detail = format_tool_input(tool, input);
-            format!("[{tool}] {detail}")
-        }
-        AgentEvent::ToolResult { output_summary, .. } => {
-            format!("  → {output_summary}")
-        }
-        AgentEvent::Heartbeat { tokens_in, tokens_out, .. } => {
-            format!("[heartbeat] in:{tokens_in} out:{tokens_out}")
-        }
-        AgentEvent::TurnEnd { .. } => String::new(),
-        AgentEvent::ContextReset { .. } => "⟳ context reset (/clear · /compact)".to_owned(),
-        AgentEvent::CompactSummary { content, .. } => format!("⟳ context compacted\n{content}"),
-    }
 }
