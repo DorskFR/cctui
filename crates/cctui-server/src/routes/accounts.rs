@@ -399,19 +399,20 @@ async fn fetch_account_info(
     id: Uuid,
     owner: Option<Uuid>,
 ) -> Result<Option<AccountInfo>, sqlx::Error> {
-    let row: Option<AccountRow> = sqlx::query_as(&format!(
+    let row: Option<AccountRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "{ACCOUNT_SELECT} WHERE a.id = $1 AND ($2::uuid IS NULL OR a.user_id = $2)"
-    ))
+    )))
     .bind(id)
     .bind(owner)
     .fetch_optional(pool)
     .await?;
     let Some(row) = row else { return Ok(None) };
-    let providers: Vec<ProviderInfo> =
-        sqlx::query_as(&format!("{PROVIDER_SELECT} WHERE p.account_id = $1 ORDER BY p.family"))
-            .bind(id)
-            .fetch_all(pool)
-            .await?;
+    let providers: Vec<ProviderInfo> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "{PROVIDER_SELECT} WHERE p.account_id = $1 ORDER BY p.family"
+    )))
+    .bind(id)
+    .fetch_all(pool)
+    .await?;
     let key = crate::crypto::vault_key();
     Ok(Some(row.into_info(providers, &key)))
 }
@@ -421,7 +422,7 @@ async fn fetch_provider_info(
     pool: &sqlx::PgPool,
     id: Uuid,
 ) -> Result<Option<ProviderInfo>, sqlx::Error> {
-    sqlx::query_as(&format!("{PROVIDER_SELECT} WHERE p.id = $1"))
+    sqlx::query_as(sqlx::AssertSqlSafe(format!("{PROVIDER_SELECT} WHERE p.id = $1")))
         .bind(id)
         .fetch_optional(pool)
         .await
@@ -977,24 +978,24 @@ pub async fn list_accounts(
     Extension(ctx): Extension<AuthContext>,
 ) -> Result<Json<Vec<AccountInfo>>, (StatusCode, Json<serde_json::Value>)> {
     require_human(&ctx)?;
-    let accounts: Vec<AccountRow> = sqlx::query_as(&format!(
+    let accounts: Vec<AccountRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "{ACCOUNT_SELECT} WHERE $1::uuid IS NULL OR a.user_id = $1 \
            OR EXISTS (SELECT 1 FROM resource_shares s \
                       WHERE s.resource_type = 'account' AND s.resource_id = a.id \
                         AND s.grantee_id = $1 AND s.revoked_at IS NULL) \
          ORDER BY a.name"
-    ))
+    )))
     .bind(ctx.owner_filter())
     .fetch_all(&state.pool)
     .await
     .map_err(|e| db_err(&e))?;
-    let providers: Vec<ProviderInfo> = sqlx::query_as(&format!(
+    let providers: Vec<ProviderInfo> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "{PROVIDER_SELECT} WHERE $1::uuid IS NULL OR p.user_id = $1 \
            OR EXISTS (SELECT 1 FROM resource_shares s \
                       WHERE s.resource_type = 'account' AND s.resource_id = p.account_id \
                         AND s.grantee_id = $1 AND s.revoked_at IS NULL) \
          ORDER BY p.family"
-    ))
+    )))
     .bind(ctx.owner_filter())
     .fetch_all(&state.pool)
     .await

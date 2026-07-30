@@ -2373,7 +2373,7 @@ fn terminate_child(child: &mut tokio::process::Child, signal: Option<i32>) {
             child.id().and_then(|p| i32::try_from(p).ok()).and_then(rustix::process::Pid::from_raw)
     {
         // A reaped pid just yields ESRCH, which we ignore.
-        let _ = rustix::process::kill_process(pid, rustix::process::Signal::Term);
+        let _ = rustix::process::kill_process(pid, rustix::process::Signal::TERM);
         return;
     }
     let _ = child.start_kill();
@@ -3524,5 +3524,16 @@ mod tests {
                 "{ty} should be a ToolUse",
             );
         }
+    }
+
+    #[tokio::test]
+    async fn terminate_child_sigterm_stops_the_process() {
+        let mut child = tokio::process::Command::new("sleep").arg("300").spawn().unwrap();
+        terminate_child(&mut child, Some(SIGTERM));
+        let status = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait())
+            .await
+            .expect("child survived SIGTERM")
+            .unwrap();
+        assert!(!status.success());
     }
 }

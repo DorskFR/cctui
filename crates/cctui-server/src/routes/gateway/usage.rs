@@ -307,7 +307,7 @@ pub async fn model_tallies(
          WHERE st.account_id = $1 AND {filter} \
          GROUP BY stu.model"
     );
-    let rows: Vec<TallyRow> = sqlx::query_as(&sql)
+    let rows: Vec<TallyRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
         .bind(account_id)
         .bind(bind)
         .fetch_all(&state.pool)
