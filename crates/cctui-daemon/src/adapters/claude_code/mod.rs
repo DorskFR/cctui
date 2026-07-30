@@ -103,7 +103,8 @@ impl Adapter for ClaudeCodeAdapter {
             // hook socket bg uses, so headless `-p` runs deliver hooks through
             // the same path.
             Mode::Oneshot => oneshot::OneshotDriver::new(ctx).run().await,
-            // SDK stub — real run loop lands in.
+            // SDK driver: stream-json over the Claude Agent SDK, mapped onto the
+            // AdapterCommand/AdapterEvent surface.
             Mode::Sdk => headless::SdkDriver::new(ctx).run().await,
             Mode::Legacy => run_legacy_uds(ctx).await,
         }

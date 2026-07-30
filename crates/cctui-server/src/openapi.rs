@@ -120,7 +120,7 @@ pub fn build_openapi() -> Value {
         "info": {
             "title": "cctui API",
             "version": env!("CARGO_PKG_VERSION"),
-            "description": "Self-describing surface for cctui (CCT-464). Generated at \
+            "description": "Self-describing surface for cctui. Generated at \
                 runtime from the route descriptor table. Auth: `Authorization: Bearer \
                 <token>` (or HttpOnly cookie). Scopes: Read < Dispatch / Enroll < Admin; \
                 effective scope = key ACL ∩ user ACL. See /llms.txt for the agent index."

@@ -1,6 +1,6 @@
 //! Parsing the first bytes of a transparently-redirected connection to recover
 //! the intended hostname: the SNI from a TLS `ClientHello`, or the `Host` header
-//! from a plaintext HTTP request. Ported from the Go reference `transparent.go`.
+//! from a plaintext HTTP request.
 
 /// Parses a TLS `ClientHello` record and returns the SNI server name, or `None`
 /// if the data isn't a `ClientHello` or carries no SNI extension.

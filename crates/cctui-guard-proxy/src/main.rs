@@ -110,15 +110,15 @@ struct Args {
     #[arg(long, default_value = "/var/run/guard-proxy-ca/ca.pem", env = "GUARD_PROXY_CA_CERT_OUT")]
     ca_cert_out: PathBuf,
 
-    /// GitHub App id (CCT-722). Set together with `--github-app-installation-id`
+    /// GitHub App id. Set together with `--github-app-installation-id`
     /// to mint short-lived installation tokens for the `github` service instead
     /// of injecting a stored PAT. The App private key is NOT on the CLI: it is
     /// fetched via `--github-app-key-secret`. Unset ⇒ inert (the `github`
-    /// service uses the stored credential as before).
+    /// service uses the stored credential).
     #[arg(long, env = "GUARD_PROXY_GITHUB_APP_ID")]
     github_app_id: Option<String>,
 
-    /// GitHub App installation id the token is minted for (CCT-722).
+    /// GitHub App installation id the token is minted for.
     #[arg(long, env = "GUARD_PROXY_GITHUB_APP_INSTALLATION_ID")]
     github_app_installation_id: Option<String>,
 
@@ -214,7 +214,7 @@ fn build_injection(
     Ok(Some(Arc::new(injector)))
 }
 
-/// Builds the GitHub-App installation-token minter (CCT-722) when both an App id
+/// Builds the GitHub-App installation-token minter when both an App id
 /// and installation id are configured. Returns `None` (stored-PAT/passthrough
 /// behavior) otherwise, so the App path is inert until an operator wires it up.
 fn build_ghapp(

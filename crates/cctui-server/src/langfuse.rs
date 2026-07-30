@@ -724,10 +724,9 @@ mod tests {
         assert!(!z.should_sample());
     }
 
-    // regression: generalizing the soft-limit evaluator to a per-window
-    // collection must stay OUT of the Langfuse tracing path. The gateway
-    // evaluates the soft limit BEFORE it ever constructs a tracer, and a blocked
-    // request returns its 429 before any tracing/upstream work. Evaluating the
+    // Soft-limit evaluation must stay OUT of the Langfuse tracing path. The
+    // gateway evaluates the soft limit BEFORE it ever constructs a tracer, and a
+    // blocked request returns its 429 before any tracing/upstream work. Evaluating the
     // limit therefore must neither read nor mutate the tracer's usage cache —
     // assert that a full evaluate (both Block and Allow) leaves it untouched.
     #[test]

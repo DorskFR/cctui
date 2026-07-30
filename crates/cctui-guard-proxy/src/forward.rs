@@ -440,7 +440,7 @@ mod tests {
     #[tokio::test]
     async fn builtin_deny_overrides_allowlist_connect() {
         // Even with default=allow AND the metadata IP explicitly allowlisted,
-        // the built-in deny refuses the credential endpoint (CCT-720).
+        // the built-in deny refuses the credential endpoint.
         let proxy =
             start_forward(r#"{"allowed_hosts": ["169.254.169.254:443"], "default": "allow"}"#)
                 .await;

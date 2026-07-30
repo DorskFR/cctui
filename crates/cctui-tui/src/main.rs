@@ -39,7 +39,7 @@ pub(crate) const fn bucket_rank(bucket: cctui_proto::classifier::Bucket) -> u8 {
     }
 }
 
-///// Input event from the terminal: either a key press or mouse scroll.
+/// Input event from the terminal: either a key press or mouse scroll.
 #[derive(Debug, Clone)]
 enum InputEvent {
     Key(KeyEvent),
@@ -406,7 +406,7 @@ async fn handle_session_list_keys(
     }
 }
 
-///// When `follow_tail` is active, resolve `scroll_offset` to the actual bottom
+/// When `follow_tail` is active, resolve `scroll_offset` to the actual bottom
 /// position so that relative scroll operations work immediately without a dead zone.
 const fn snap_scroll_if_following(app: &mut App) {
     if app.follow_tail {

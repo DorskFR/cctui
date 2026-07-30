@@ -192,7 +192,7 @@ async fn allow_transition_deny_flow() {
     );
 }
 
-/// CCT-440: a `[gate]` on a step is a deterministic completion check. The
+/// A `[gate]` on a step is a deterministic completion check. The
 /// transition *out* of the step is refused until the gate command exits 0, and
 /// a successful advance re-injects the next step's authoritative prompt body.
 #[tokio::test]
@@ -244,7 +244,7 @@ async fn gated_transition_requires_proof_and_reinjects() {
     assert!(reinject.contains("Open the PR"), "re-injects the next-step prompt body");
     assert!(
         !reinject.contains("Compact your working context"),
-        "CCT-450: no compact directive unless the step opts in via [compact]: {reinject}"
+        "no compact directive unless the step opts in via [compact]: {reinject}"
     );
 
     // Exit ignores the gate — bail-out must always work (back on a gated step).
@@ -262,7 +262,7 @@ async fn gated_transition_requires_proof_and_reinjects() {
     assert_eq!(exit["ok"], true, "Exit always allowed regardless of gate");
 }
 
-/// CCT-450: the step is always re-injected, but the compact-context directive is
+/// The step is always re-injected, but the compact-context directive is
 /// opt-in per step via `[compact]` — so large-context models keep their context
 /// unless a prompt explicitly asks to trim it.
 #[tokio::test]
@@ -316,7 +316,7 @@ async fn compact_directive_is_opt_in_per_step() {
     );
 }
 
-/// CCT-516: an `[llmjudge]` block is a semantic acceptance gate. It runs after
+/// An `[llmjudge]` block is a semantic acceptance gate. It runs after
 /// the deterministic `[gate]`, in a clean context (the judge command gets only
 /// the question prompt on stdin), and requires a perfect score: any 0, any
 /// malformed verdict, or a missing judge command refuses the transition.
@@ -404,7 +404,7 @@ async fn llmjudge_full_score_required_to_transition() {
     assert_eq!(refused["ok"], false, "judge command exit 1 ⇒ refused: {refused}");
 }
 
-/// CCT-516: the judge runs **after** the deterministic gate (which stays
+/// The judge runs **after** the deterministic gate (which stays
 /// independently enforced), and its stdin prompt is the clean-context question
 /// block — questions + violation examples, no implementer reasoning.
 #[tokio::test]

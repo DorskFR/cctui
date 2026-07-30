@@ -1,31 +1,27 @@
 //! Operating mode for the claude-code adapter.
 //!
-//! Generalizes the old binary `use_claude_daemon_path` switch into a real
-//! enum so the adapter can dispatch to one of several drivers:
+//! Selects one of several drivers for the claude-code adapter:
 //!
 //! - [`Mode::Bg`] — the default `claude daemon` control-socket client
 //!   (`control::Driver`); spawns/observes long-lived background workers.
-//! - [`Mode::Sdk`] — a stream-json driver over the Claude Agent SDK (stub
-//!   until a later ticket).
+//! - [`Mode::Sdk`] — a stream-json driver over the Claude Agent SDK.
 //! - [`Mode::Oneshot`] — a stream-json driver over a single `claude
-//!   --print --output-format stream-json` invocation (stub until a later
-//!   ticket).
+//!   --print --output-format stream-json` invocation.
 //! - [`Mode::Legacy`] — the line-delimited [`AdapterEvent`](cctui_proto::adapter::AdapterEvent)
-//!   UDS listener kept until it is retired.
+//!   UDS listener.
 //!
-//! Back-compat with the pre-enum config: the historical `mode` values
-//! `"claude-daemon"` and `"legacy"` still resolve, and the
-//! `CCTUI_ADAPTER_CLAUDE_DAEMON=0`/`false` env still forces [`Mode::Legacy`]
-//! when `mode` is unset.
+//! The `mode` values `"claude-daemon"` and `"legacy"` both resolve, and
+//! `CCTUI_ADAPTER_CLAUDE_DAEMON=0`/`false` forces [`Mode::Legacy`] when `mode`
+//! is unset.
 
 /// How the claude-code adapter runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Mode {
-    /// `claude daemon` control-socket client (default). Unchanged behavior.
+    /// `claude daemon` control-socket client (default).
     Bg,
-    /// Stream-json driver over the Claude Agent SDK (stub).
+    /// Stream-json driver over the Claude Agent SDK.
     Sdk,
-    /// Stream-json driver over a single `claude --print` invocation (stub).
+    /// Stream-json driver over a single `claude --print` invocation.
     Oneshot,
     /// Legacy line-delimited UDS listener.
     Legacy,

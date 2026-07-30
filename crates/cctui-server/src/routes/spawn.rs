@@ -372,7 +372,7 @@ fn resolve_default_account(
     match names {
         [] => Ok(None),
         [one] => {
-            tracing::info!(%user_id, account = %one, %adapter_id, "spawn named no account — binding the user's only matching account (CCT-574)");
+            tracing::info!(%user_id, account = %one, %adapter_id, "spawn named no account — binding the user's only matching account");
             Ok(Some(one.clone()))
         }
         many => Err(bad_request(format!(
