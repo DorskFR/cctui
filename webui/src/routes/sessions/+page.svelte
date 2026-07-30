@@ -34,25 +34,22 @@
 		archivedDescendantsOf,
 		costRollup,
 		groupId,
-		BUCKETS,
 		isDispatched,
-		groupOf,
 		inEnabledSections,
 		matchesUnreadFilter,
-		KANBAN_COLS,
-		kanbanColOf,
-		groupRows,
+		parseLabelFilter,
 		colorHueOf,
-		rangeIds,
+		pickFreshSession,
+		sessionIdFromLocation,
+		sessionHrefFor,
+		scriptPrefill,
+		draftEditPrefill,
+		draftPromptPreview,
 		type Section,
 		type SubGroup,
 		type Dimension
 	} from './sessions.logic';
-
-	// Parse the persisted comma-joined label-filter ids back into a list.
-	function parseLabelFilter(raw: string | null | undefined): string[] {
-		return (raw ?? '').split(',').filter(Boolean);
-	}
+	import { SessionsListController } from './SessionsListController.svelte';
 
 	let dense = $state(drafts.get(LIST_DENSITY) === 'compact');
 	$effect(() => {
@@ -119,17 +116,7 @@
 	// archived session's config, then handed to the SpawnModal.
 	let spawnPrefill = $state<Record<string, string> | null>(null);
 	function newFromScript(s: SessionListItem) {
-		const adapter = s.adapter_id ?? 'claude-code';
-		// Model is per-adapter in the spawn form; seed the field that
-		// matches this session's adapter.
-		const modelField = adapter === 'codex' ? 'model_codex' : 'model_claude';
-		spawnPrefill = {
-			machine_id: s.machine_id,
-			working_dir: s.working_dir,
-			adapter_id: adapter,
-			name: '',
-			[modelField]: s.model ?? ''
-		};
+		spawnPrefill = scriptPrefill(s);
 		openSession = null;
 		showSpawn = true;
 	}
@@ -162,31 +149,18 @@
 	// stale param would still read `<uuid>`, reopen the session, and re-push
 	// the URL (the back chevron never clearing /sessions/<uuid>). Parsing the
 	// live pathname keeps the URL→drawer effect honest under shallow routing.
-	function sessionIdFromUrl(): string | null {
-		const m = page.url.pathname.match(/^\/sessions\/([^/]+)/);
-		if (m) return decodeURIComponent(m[1]);
-		return page.url.searchParams.get('session');
-	}
+	const sessionIdFromUrl = (): string | null =>
+		sessionIdFromLocation(page.url.pathname, page.url.searchParams);
 	onMount(() => {
 		lastUrlId = sessionIdFromUrl();
 		mounted = true;
 	});
 
 	function setUrlSession(id: string | null, replace = false) {
-		// Build + idempotence-check against the LIVE document URL, not `page.url`.
-		// `page.url` (from `$app/state`) goes stale after a shallow pushState — it
-		// keeps reading whatever the last full navigation resolved (`/sessions`),
-		// even though the address bar already shows `/sessions/<uuid>`. Guarding on
-		// the stale `page.url` made the close path's target (`/sessions`) compare
-		// equal to it and short-circuit, so neither the back chevron nor the
-		// backdrop scrim ever cleared `/sessions/<uuid>`. `location.href` is
-		// always the real current URL.
-		const url = new URL(location.href);
-		url.searchParams.delete('session');
-		url.pathname = id ? `/sessions/${encodeURIComponent(id)}` : '/sessions';
-		if (url.href === location.href) return;
-		if (replace) replaceState(url, {});
-		else pushState(url, {});
+		const href = sessionHrefFor(location.href, id);
+		if (href === null) return;
+		if (replace) replaceState(href, {});
+		else pushState(href, {});
 	}
 
 	async function openById(id: string) {
@@ -387,13 +361,10 @@
 		if (pagerActive) loadPage(true);
 	});
 
-	// ── Multi-select / batch archive ─────────────────────────────
-	// Applies to the live buckets only (always non-archived → always archives).
-	let selecting = $state(false);
-	let selected = $state(new Set<string>());
+	// Multi-select (selecting / selected / anchor) + subagent-group expand state
+	// and their transitions live on the controller; the batch archive that calls
+	// the server stays here.
 	let archiving = $state(false);
-
-	let anchorId = $state<string | null>(null);
 
 	// Visual order of the list, read from the DOM: rows are rendered by a
 	// recursive snippet across several buckets, so document order is the only
@@ -404,38 +375,15 @@
 			.filter((id) => id);
 	}
 
-	function toggleSelect(s: SessionListItem, range = false) {
-		const next = new Set(selected);
-		if (range && anchorId && anchorId !== s.id) {
-			const ids = rangeIds(renderedIds(), anchorId, s.id, new Set(items.map((x) => x.id)));
-			if (ids.length) {
-				for (const id of ids) next.add(id);
-				selected = next;
-				return;
-			}
-		}
-		if (next.has(s.id)) next.delete(s.id);
-		else next.add(s.id);
-		anchorId = s.id;
-		selected = next;
-	}
-	function exitSelect() {
-		selecting = false;
-		selected = new Set();
-		anchorId = null;
-	}
-	function selectAll() {
-		selected = new Set(items.map((s) => s.id));
-	}
 	async function archiveSelected() {
-		const ids = [...selected];
+		const ids = [...list.selected];
 		if (ids.length === 0) return;
 		if (ids.length > 1 && !confirm(m.sessions_confirm_archive_many({ count: ids.length }))) return;
 		archiving = true;
 		try {
 			await actions.archiveMany(ids);
 			toasts.ok(m.sessions_toast_archived({ count: ids.length }));
-			exitSelect();
+			list.exitSelect();
 			refreshTick++;
 		} catch (e) {
 			toasts.err(errMessage(e));
@@ -537,24 +485,9 @@
 
 	const items = $derived($sessions.data?.sessions ?? []);
 
-	// Draft/staged sessions: buffered spawns not yet launched. They
-	// live in the same list payload (status='draft') but are pulled OUT of the
-	// classifier buckets below and rendered in their own Drafts section with
-	// Launch/Edit/Discard. Excluded from the live nest so they never show as
-	// "Working".
-	const draftRows = $derived(items.filter((s) => s.status === 'draft'));
+	// Draft/staged sessions (status='draft') are pulled out of the classifier
+	// buckets into their own section by the controller (list.draftRows).
 	let launchingDraft = $state<string | null>(null);
-
-	// Read the stored spawn payload off a draft row's metadata.
-	function draftPayload(s: SessionListItem): Record<string, unknown> {
-		const m = s.metadata as Record<string, unknown> | null;
-		const d = m?.draft;
-		return d && typeof d === 'object' ? (d as Record<string, unknown>) : {};
-	}
-	function draftPromptPreview(s: SessionListItem): string {
-		const p = draftPayload(s).prompt;
-		return typeof p === 'string' ? p : '';
-	}
 
 	// Launch a draft: the server mints account env fresh at dispatch and removes
 	// the draft row; the live session appears via the daemon's registration.
@@ -583,22 +516,7 @@
 	// Edit a draft: discard it and reopen the spawn modal prefilled from its
 	// stored config, so saving/launching from there replaces it (no duplicate).
 	async function editDraft(s: SessionListItem) {
-		const d = draftPayload(s);
-		const adapter = (typeof d.adapter_id === 'string' && d.adapter_id) || s.adapter_id || 'claude-code';
-		const modelField = adapter === 'codex' ? 'model_codex' : 'model_claude';
-		const effortField = adapter === 'codex' ? 'effort_codex' : 'effort_claude';
-		const str = (v: unknown) => (typeof v === 'string' ? v : '');
-		const prefill: Record<string, string> = {
-			machine_id: str(d.machine_id) || s.machine_id,
-			working_dir: str(d.working_dir) || s.working_dir,
-			adapter_id: adapter,
-			name: str(d.name),
-			prompt: str(d.prompt),
-			account: str(d.account),
-			account_provider: str(d.provider),
-			[modelField]: str(d.model),
-			[effortField]: str(d.effort)
-		};
+		const prefill = draftEditPrefill(s);
 		try {
 			await actions.discardDraft(s.id);
 		} catch (e) {
@@ -628,110 +546,21 @@
 	// top-level rows — they already show nested under their pinned parent.
 	const pinnedArchivedKidIds = $derived(new Set(pinnedArchivedKids.map((s) => s.id)));
 
-	// Subagent grouping, nesting, and the
-	// cost rollup are all pure data transforms — see
-	// sessions.logic.ts. The component keeps only the reactive derivations + the
-	// expand/collapse state below.
-	const liveNest = $derived(
-		nest([...items.filter((s) => s.status !== 'draft'), ...pinnedArchivedKids])
-	);
-	const topLevel = $derived(liveNest.topLevel);
-	const childGroupsOf = $derived(liveNest.childGroups);
-
-	// Expand/collapse state for collapsible (>=3) subagent groups, keyed by
-	// `${parentId}/${group.key}`. Default collapsed.
-	let expanded = $state(new Set<string>());
-	function toggleGroup(parentId: string, key: string) {
-		const id = groupId(parentId, key);
-		const next = new Set(expanded);
-		if (next.has(id)) next.delete(id);
-		else next.add(id);
-		expanded = next;
-	}
-
-	// Classifier buckets + the dispatch/pinned mapping are pure — see
-	// BUCKETS / isDispatched / groupOf in sessions.logic.ts.
-	type GroupKey = ReturnType<typeof groupOf>;
-	// Each live bucket maps to exactly ONE section toggle, so the four toggles
-	// select disjoint slices that compose cleanly:
-	//   • Pinned bucket      ← starred
-	//   • Dispatched bucket  ← dispatched
-	//   • every other bucket ← live
-	// (Archived isn't a bucket — it appends the paginated archive browse below.)
-	const bucketInSection = (key: GroupKey): boolean => {
-		if (key === 'pinned') return sections.has('starred');
-		if (key === 'dispatched') return sections.has('dispatched');
-		return sections.has('live');
-	};
-	// Client-side sort of each bucket's top-level rows by the user's
-	// preference. 'activity' keeps the server order (last_message_at desc);
-	// the pinned bucket stays its own group above the rest, so pinned-first
-	// is intact.
-	const sortRows = (rows: SessionListItem[]): SessionListItem[] => {
-		const sort = settings.state.sessionList.sort;
-		if (sort === 'activity') return rows;
-		const ts = (v: string | null | undefined) => (v ? new Date(v).getTime() : 0);
-		const sorted = [...rows];
-		if (sort === 'created') {
-			sorted.sort((a, b) => ts(b.registered_at) - ts(a.registered_at));
-		} else if (sort === 'name') {
-			const label = (s: SessionListItem) =>
-				(s.name || s.working_dir?.split('/').filter(Boolean).pop() || s.id).toLowerCase();
-			sorted.sort((a, b) => label(a).localeCompare(label(b)));
-		}
-		return sorted;
-	};
-	const groups = $derived(
-		BUCKETS.filter((b) => bucketInSection(b.key)).map((b) => ({
-			...b,
-			sessions: sortRows(
-				topLevel.filter(
-					(s) =>
-						groupOf(s) === b.key &&
-						matchesLabelFilter(s) &&
-						matchesClient(s) &&
-						matchesUnreadFilter(s, sections)
-				)
-			)
-		})).filter((g) => g.sessions.length > 0)
-	);
-
-	// Group-by: when active, the attention buckets collapse and the
-	// section-enabled top-level rows are re-partitioned by the chosen dimension —
-	// the dimension becomes the outer shell. Within-group sort + subagent nesting
-	// (childGroupsOf) are preserved. Grouping covers the live region only; the
-	// Drafts and Archived sections below keep their own layout.
-	const liveTopFiltered = $derived(
-		topLevel.filter(
-			(s) =>
-				bucketInSection(groupOf(s)) &&
-				matchesLabelFilter(s) &&
-				matchesClient(s) &&
-				matchesUnreadFilter(s, sections)
-		)
-	);
-	const groupedSections = $derived(
-		groupBy === 'none' ? [] : groupRows(sortRows(liveTopFiltered), groupBy)
-	);
-	const hasLiveRows = $derived(groupBy === 'none' ? groups.length > 0 : groupedSections.length > 0);
-
-	// Kanban board columns: nest over every non-archived row (drafts
-	// included — the board has its own Drafts column) and map top-level rows to
-	// their stage column. Ignores the section toggles by design; still honors the
-	// label/search/unread filters so the toolbar stays meaningful.
-	const kanbanNest = $derived(nest(items.filter((s) => s.status !== 'archived')));
-	const kanbanChildGroups = $derived(kanbanNest.childGroups);
-	const kanbanRows = $derived(
-		kanbanNest.topLevel.filter(
-			(s) => matchesLabelFilter(s) && matchesClient(s) && matchesUnreadFilter(s, sections)
-		)
-	);
-	const kanbanColumns = $derived(
-		KANBAN_COLS.map((c) => ({
-			...c,
-			sessions: sortRows(kanbanRows.filter((s) => kanbanColOf(s) === c.key))
-		}))
-	);
+	// The list derivations (nest/buckets/group-by/kanban) + multi-select and
+	// subagent-group expand state live on the controller; the component supplies
+	// the reactive inputs and delegates. Subagent nesting and the cost rollup are
+	// pure data transforms — see sessions.logic.ts.
+	const list = new SessionsListController({
+		items: () => items,
+		pinnedArchivedKids: () => pinnedArchivedKids,
+		sections: () => sections,
+		groupBy: () => groupBy,
+		sort: () => settings.state.sessionList.sort,
+		matchesLabel: matchesLabelFilter,
+		matchesClient,
+		renderedOrder: renderedIds
+	});
+	const childGroupsOf = $derived(list.childGroupsOf);
 
 	const pending = (id: string) => {
 		void ws.changeTick; // re-derive when perms change (setPerms bumps changeTick)
@@ -739,11 +568,7 @@
 	};
 
 	// keep the open drawer's session object fresh as the list refetches
-	const liveOpen = $derived(
-		openSession
-			? ([...items, ...pageRows].find((s) => s.id === openSession!.id) ?? openSession)
-			: null
-	);
+	const liveOpen = $derived(pickFreshSession(openSession, [...items, ...pageRows]));
 </script>
 
 <SessionControls
@@ -759,28 +584,28 @@
 	{groupBy}
 	onColorBy={(v) => settings.setSessionList({ colorBy: v })}
 	onGroupBy={(v) => settings.setSessionList({ groupBy: v })}
-	{selecting}
+	selecting={list.selecting}
 	{searching}
-	onStartSelect={() => (selecting = true)}
-	onCancelSelect={exitSelect}
+	onStartSelect={() => (list.selecting = true)}
+	onCancelSelect={list.exitSelect}
 	onNew={() => (showSpawn = true)}
 	onUpdateLabel={updateLabel}
 	onDeleteLabel={deleteLabel}
 />
 
-{#if selecting && !searching}
+{#if list.selecting && !searching}
 		<div class="bulkbar row">
-			<Text class="count" size="sm" weight="semibold" tone="muted">{m.sessions_selected_count({ count: selected.size })}</Text>
-			<Button onclick={selectAll}>{m.sessions_select_all()}</Button>
+			<Text class="count" size="sm" weight="semibold" tone="muted">{m.sessions_selected_count({ count: list.selected.size })}</Text>
+			<Button onclick={list.selectAll}>{m.sessions_select_all()}</Button>
 			<Text size="xs" tone="muted">{m.sessions_select_range_hint()}</Text>
 			<div class="spacer"></div>
 			<Button
 				variant="danger"
-				disabled={selected.size === 0 || archiving}
+				disabled={list.selected.size === 0 || archiving}
 				onclick={archiveSelected}
 			>
 				{#if archiving}<span class="spin"></span>{/if}
-				{m.sessions_archive_count({ count: selected.size || '' })}
+				{m.sessions_archive_count({ count: list.selected.size || '' })}
 			</Button>
 		</div>
 {/if}
@@ -809,9 +634,9 @@
 			pendingCount={pending(s.id)}
 			unreadCount={openSession?.id === s.id ? 0 : (s.unread_count ?? 0)}
 			onopen={(x) => (openSession = x)}
-			selectable={selecting}
-			selected={selected.has(s.id)}
-			onToggleSelect={toggleSelect}
+			selectable={list.selecting}
+			selected={list.selected.has(s.id)}
+			onToggleSelect={list.toggleSelect}
 			swipeable
 			swipeLabel={m.sessions_archive()}
 			onSwipe={swipeArchive}
@@ -821,9 +646,9 @@
 				key: g.key,
 				count: g.agents.length,
 				running: g.running,
-				open: expanded.has(groupId(s.id, g.key)),
+				open: list.expanded.has(groupId(s.id, g.key)),
 				label: g.label,
-				ontoggle: () => toggleGroup(s.id, g.key)
+				ontoggle: () => list.toggleGroup(s.id, g.key)
 			}))}
 			{allLabels}
 			onCreateLabel={createLabel}
@@ -836,7 +661,7 @@
 		     right after the parent card in the grid flow. -->
 		{#if depth < 5}
 			{#each subGroups as g (g.key)}
-				{#if expanded.has(groupId(s.id, g.key))}
+				{#if list.expanded.has(groupId(s.id, g.key))}
 					{@render cardItems(g.agents, childGroups, depth + 1)}
 				{/if}
 			{/each}
@@ -878,9 +703,9 @@
 				pendingCount={pending(s.id)}
 				unreadCount={openSession?.id === s.id ? 0 : (s.unread_count ?? 0)}
 				onopen={(x) => (openSession = x)}
-				selectable={allowSelect && selecting}
-				selected={selected.has(s.id)}
-				onToggleSelect={toggleSelect}
+				selectable={allowSelect && list.selecting}
+				selected={list.selected.has(s.id)}
+				onToggleSelect={list.toggleSelect}
 				swipeable
 				swipeLabel={s.status === 'archived' ? m.sessions_unarchive() : m.sessions_archive()}
 				onSwipe={swipeArchive}
@@ -891,9 +716,9 @@
 					key: g.key,
 					count: g.agents.length,
 					running: g.running,
-					open: expanded.has(groupId(s.id, g.key)),
+					open: list.expanded.has(groupId(s.id, g.key)),
 					label: g.label,
-					ontoggle: () => toggleGroup(s.id, g.key)
+					ontoggle: () => list.toggleGroup(s.id, g.key)
 				}))}
 				{allLabels}
 				onCreateLabel={createLabel}
@@ -905,7 +730,7 @@
 		</div>
 		{#if depth < 5}
 			{#each subGroups as g (g.key)}
-				{#if g.agents.length < INLINE_THRESHOLD || expanded.has(groupId(s.id, g.key))}
+				{#if g.agents.length < INLINE_THRESHOLD || list.expanded.has(groupId(s.id, g.key))}
 					<div class="agent-children" style="--agent-depth: {Math.min(depth + 1, 5)}">
 						{@render nestedRows(g.agents, childGroups, allowSelect, hl, depth + 1)}
 					</div>
@@ -950,7 +775,7 @@
 			onopen={() => {}}
 		/>
 	{:else}
-		{@const subGroups = kanbanChildGroups.get(s.id) ?? []}
+		{@const subGroups = list.kanbanChildGroups.get(s.id) ?? []}
 		<SessionCard
 			session={s}
 			grid
@@ -1039,7 +864,7 @@
 		<div class="empty"><span class="spin"></span></div>
 	{:else}
 		<Container fullWidth as="div">
-			<KanbanBoard columns={kanbanColumns} card={kanbanCard} />
+			<KanbanBoard columns={list.kanbanColumns} card={kanbanCard} />
 		</Container>
 	{/if}
 {:else}
@@ -1064,12 +889,12 @@
 {#snippet liveSections()}
 		{#if $sessions.isLoading}
 			<div class="empty"><span class="spin"></span></div>
-		{:else if !hasLiveRows && !showArchived && !(sections.has('drafts') && draftRows.length > 0)}
+		{:else if !list.hasLiveRows && !showArchived && !(sections.has('drafts') && list.draftRows.length > 0)}
 			<div class="empty">
 				<Text tone="muted">{m.sessions_empty_sections()}</Text>
 			</div>
 		{:else if groupBy !== 'none'}
-			{#each groupedSections as g (g.key)}
+			{#each list.groupedSections as g (g.key)}
 				<div class="section">
 					{@render dimHeader(g.label, g.sessions.length, g.hue)}
 					{#if cardView}
@@ -1080,7 +905,7 @@
 				</div>
 			{/each}
 		{:else}
-			{#each groups as g (g.key)}
+			{#each list.groups as g (g.key)}
 				{@const vis = g.sessions}
 				<div class="section">
 					{#if g.key === 'dispatched'}
@@ -1115,21 +940,21 @@
 			{/each}
 		{/if}
 
-		{#if sections.has('drafts') && draftRows.length > 0}
+		{#if sections.has('drafts') && list.draftRows.length > 0}
 			<!-- Drafts render through the SAME SessionCard path as every other
 			     section, so they honor the card-view / compact toggles
 			     identically; the card surfaces Launch/Edit/Discard in place of the
 			     live-session affordances. -->
 			<div class="section">
-				<div class="group-header">{m.sessions_section_drafts()} <Text class="count">{draftRows.length}</Text></div>
+				<div class="group-header">{m.sessions_section_drafts()} <Text class="count">{list.draftRows.length}</Text></div>
 				{#if cardView}
 					{#if dense}
-						<AutoGrid min="calc(18rem * var(--fs-scale))" max="calc(26.75rem * var(--fs-scale))" maxCols={2} gap="var(--sp-2)">{@render draftItems(draftRows, true)}</AutoGrid>
+						<AutoGrid min="calc(18rem * var(--fs-scale))" max="calc(26.75rem * var(--fs-scale))" maxCols={2} gap="var(--sp-2)">{@render draftItems(list.draftRows, true)}</AutoGrid>
 					{:else}
-						<AutoGrid min="calc(20rem * var(--fs-scale))" max="calc(26.75rem * var(--fs-scale))" gap="var(--sp-3)">{@render draftItems(draftRows, true)}</AutoGrid>
+						<AutoGrid min="calc(20rem * var(--fs-scale))" max="calc(26.75rem * var(--fs-scale))" gap="var(--sp-3)">{@render draftItems(list.draftRows, true)}</AutoGrid>
 					{/if}
 				{:else}
-					{@render draftItems(draftRows, false)}
+					{@render draftItems(list.draftRows, false)}
 				{/if}
 			</div>
 		{/if}

@@ -2,19 +2,30 @@ import { describe, expect, it } from 'vitest';
 import type { SessionListItem } from '@bindings/SessionListItem';
 import {
 	accountTrafficWarning,
+	bucketInSection,
 	colorHueOf,
 	dimGroupsOf,
 	DIM_NONE_KEY,
+	draftEditPrefill,
+	draftPayload,
+	draftPromptPreview,
 	fmtWhen,
 	formatAgo,
 	groupRows,
 	isDimension,
 	isSection,
 	kanbanColOf,
+	matchesLabelFilter,
 	matchesUnreadFilter,
+	parseLabelFilter,
 	parseSections,
+	pickFreshSession,
 	rangeIds,
+	scriptPrefill,
 	sessionDebugRows,
+	sessionHrefFor,
+	sessionIdFromLocation,
+	sortSessions,
 	toolActivity,
 	TOOL_ASLEEP_AFTER_MS,
 	type Section
@@ -368,6 +379,194 @@ describe('formatAgo', () => {
 		expect(formatAgo(90_000)).toBe('1m');
 		expect(formatAgo(3 * 3600_000)).toBe('3h');
 		expect(formatAgo(-100)).toBe('0s');
+	});
+});
+
+describe('sessionIdFromLocation', () => {
+	const search = (qs = '') => new URL(`http://x${qs}`).searchParams;
+
+	it('reads the id from the shallow-routed /sessions/<id> path', () => {
+		expect(sessionIdFromLocation('/sessions/abc-123', search())).toBe('abc-123');
+	});
+
+	it('decodes a percent-encoded path id', () => {
+		expect(sessionIdFromLocation('/sessions/a%2Fb', search())).toBe('a/b');
+	});
+
+	it('falls back to the ?session= query param when the path is bare', () => {
+		expect(sessionIdFromLocation('/sessions', search('?session=q-9'))).toBe('q-9');
+	});
+
+	it('prefers the path id over the query param', () => {
+		expect(sessionIdFromLocation('/sessions/path-id', search('?session=query-id'))).toBe('path-id');
+	});
+
+	it('is null with neither a path id nor a query param', () => {
+		expect(sessionIdFromLocation('/sessions', search())).toBeNull();
+	});
+});
+
+describe('sessionHrefFor', () => {
+	it('builds the /sessions/<id> path and drops a stale ?session=', () => {
+		expect(sessionHrefFor('http://h/sessions?session=old', 'new-1')).toBe(
+			'http://h/sessions/new-1'
+		);
+	});
+
+	it('encodes the id in the path', () => {
+		expect(sessionHrefFor('http://h/sessions', 'a/b')).toBe('http://h/sessions/a%2Fb');
+	});
+
+	it('closes to /sessions when id is null', () => {
+		expect(sessionHrefFor('http://h/sessions/abc', null)).toBe('http://h/sessions');
+	});
+
+	it('is null (no navigation) when the target already matches the current href', () => {
+		expect(sessionHrefFor('http://h/sessions/abc', 'abc')).toBeNull();
+		expect(sessionHrefFor('http://h/sessions', null)).toBeNull();
+	});
+});
+
+describe('pickFreshSession', () => {
+	it('is null when nothing is open', () => {
+		expect(pickFreshSession(null, [session({ id: 'a' })])).toBeNull();
+	});
+
+	it('returns the live copy from the pools, not the stale fallback', () => {
+		const stale = session({ id: 'a', name: 'old' });
+		const fresh = session({ id: 'a', name: 'new' });
+		expect(pickFreshSession(stale, [session({ id: 'b' }), fresh])?.name).toBe('new');
+	});
+
+	it('falls back to the held object when the id is not in any pool', () => {
+		const held = session({ id: 'a', name: 'held' });
+		expect(pickFreshSession(held, [session({ id: 'b' })])).toBe(held);
+	});
+});
+
+describe('label filter', () => {
+	it('parseLabelFilter splits a comma list and drops empties', () => {
+		expect(parseLabelFilter('l1,l2')).toEqual(['l1', 'l2']);
+		expect(parseLabelFilter('')).toEqual([]);
+		expect(parseLabelFilter(null)).toEqual([]);
+		expect(parseLabelFilter('l1,,l2,')).toEqual(['l1', 'l2']);
+	});
+
+	it('matchesLabelFilter passes every row when the filter is empty', () => {
+		expect(matchesLabelFilter(session({ labels: [label('l1', 'a')] }), new Set())).toBe(true);
+	});
+
+	it('matchesLabelFilter keeps rows carrying at least one selected label (OR)', () => {
+		const s = session({ labels: [label('l1', 'a'), label('l2', 'b')] });
+		expect(matchesLabelFilter(s, new Set(['l2']))).toBe(true);
+		expect(matchesLabelFilter(s, new Set(['l9']))).toBe(false);
+	});
+});
+
+describe('sortSessions', () => {
+	it('keeps the server order for the activity sort (same reference)', () => {
+		const rows = [session({ id: 'a' }), session({ id: 'b' })];
+		expect(sortSessions(rows, 'activity')).toBe(rows);
+	});
+
+	it('sorts by registered_at descending for created', () => {
+		const rows = [
+			session({ id: 'old', registered_at: '2020-01-01T00:00:00Z' }),
+			session({ id: 'new', registered_at: '2024-01-01T00:00:00Z' })
+		];
+		expect(sortSessions(rows, 'created').map((s) => s.id)).toEqual(['new', 'old']);
+	});
+
+	it('sorts by name, falling back to working-dir basename then id', () => {
+		const rows = [
+			session({ id: 'z', name: 'zebra' }),
+			session({ id: 'a', name: 'apple' }),
+			session({ id: 'm', name: '', working_dir: '/x/mango' })
+		];
+		expect(sortSessions(rows, 'name').map((s) => s.id)).toEqual(['a', 'm', 'z']);
+	});
+
+	it('does not mutate the input array', () => {
+		const rows = [session({ id: 'b', name: 'b' }), session({ id: 'a', name: 'a' })];
+		sortSessions(rows, 'name');
+		expect(rows.map((s) => s.id)).toEqual(['b', 'a']);
+	});
+});
+
+describe('bucketInSection', () => {
+	it('maps the pinned bucket to the starred section toggle', () => {
+		expect(bucketInSection('pinned', new Set<Section>(['starred']))).toBe(true);
+		expect(bucketInSection('pinned', new Set<Section>(['live']))).toBe(false);
+	});
+
+	it('maps the dispatched bucket to the dispatched toggle', () => {
+		expect(bucketInSection('dispatched', new Set<Section>(['dispatched']))).toBe(true);
+		expect(bucketInSection('dispatched', new Set<Section>(['live']))).toBe(false);
+	});
+
+	it('maps every other bucket to the live toggle', () => {
+		expect(bucketInSection('working', new Set<Section>(['live']))).toBe(true);
+		expect(bucketInSection('blocked', new Set<Section>(['live']))).toBe(true);
+		expect(bucketInSection('done', new Set<Section>(['starred']))).toBe(false);
+	});
+});
+
+describe('draft payload + prefills', () => {
+	it('draftPayload reads the draft object off metadata, else empty', () => {
+		expect(draftPayload(session({ metadata: { draft: { prompt: 'hi' } } }))).toEqual({
+			prompt: 'hi'
+		});
+		expect(draftPayload(session({ metadata: null }))).toEqual({});
+		expect(draftPayload(session({ metadata: { draft: 'nope' } }))).toEqual({});
+	});
+
+	it('draftPromptPreview returns the stored prompt string, else empty', () => {
+		expect(draftPromptPreview(session({ metadata: { draft: { prompt: 'go' } } }))).toBe('go');
+		expect(draftPromptPreview(session({ metadata: { draft: {} } }))).toBe('');
+	});
+
+	it('scriptPrefill seeds the claude model field by default', () => {
+		const p = scriptPrefill(
+			session({ machine_id: 'm1', working_dir: '/w', model: 'opus', adapter_id: 'claude-code' })
+		);
+		expect(p).toEqual({
+			machine_id: 'm1',
+			working_dir: '/w',
+			adapter_id: 'claude-code',
+			name: '',
+			model_claude: 'opus'
+		});
+	});
+
+	it('scriptPrefill seeds the codex model field for a codex session', () => {
+		const p = scriptPrefill(session({ machine_id: 'm', working_dir: '/w', adapter_id: 'codex', model: 'gpt' }));
+		expect(p.model_codex).toBe('gpt');
+		expect(p.adapter_id).toBe('codex');
+	});
+
+	it('draftEditPrefill prefers stored payload, falling back to the row', () => {
+		const p = draftEditPrefill(
+			session({
+				machine_id: 'row-m',
+				working_dir: '/row',
+				adapter_id: 'claude-code',
+				metadata: { draft: { name: 'd', prompt: 'p', model: 'sonnet', effort: 'high', working_dir: '/draft' } }
+			})
+		);
+		expect(p.name).toBe('d');
+		expect(p.prompt).toBe('p');
+		expect(p.model_claude).toBe('sonnet');
+		expect(p.effort_claude).toBe('high');
+		expect(p.working_dir).toBe('/draft');
+		expect(p.machine_id).toBe('row-m');
+	});
+
+	it('draftEditPrefill routes model/effort to codex fields when the draft is codex', () => {
+		const p = draftEditPrefill(
+			session({ machine_id: 'm', working_dir: '/w', metadata: { draft: { adapter_id: 'codex', model: 'gpt', effort: 'low' } } })
+		);
+		expect(p.model_codex).toBe('gpt');
+		expect(p.effort_codex).toBe('low');
 	});
 });
 

@@ -444,6 +444,109 @@ export function groupRows(rows: SessionListItem[], dim: Dimension): RowGroup[] {
 	});
 }
 
+// The open drawer's session id, parsed from the live pathname (shallow routing
+// leaves the matched route param stale) or the ?session= query fallback.
+export function sessionIdFromLocation(pathname: string, search: URLSearchParams): string | null {
+	const m = pathname.match(/^\/sessions\/([^/]+)/);
+	if (m) return decodeURIComponent(m[1]);
+	return search.get('session');
+}
+
+// Target href for an open-session id, or null when it already matches
+// `currentHref` (which must be the live document URL, not the stale $app url).
+export function sessionHrefFor(currentHref: string, id: string | null): string | null {
+	const url = new URL(currentHref);
+	url.searchParams.delete('session');
+	url.pathname = id ? `/sessions/${encodeURIComponent(id)}` : '/sessions';
+	return url.href === currentHref ? null : url.href;
+}
+
+// Freshest object for the open drawer: refetches churn the object, so prefer a
+// live copy from the loaded pools, else the fallback already held.
+export function pickFreshSession(
+	fallback: SessionListItem | null,
+	pools: SessionListItem[]
+): SessionListItem | null {
+	if (!fallback) return null;
+	return pools.find((s) => s.id === fallback.id) ?? fallback;
+}
+
+export const parseLabelFilter = (raw: string | null | undefined): string[] =>
+	(raw ?? '').split(',').filter(Boolean);
+
+export const matchesLabelFilter = (s: SessionListItem, filter: Set<string>): boolean =>
+	filter.size === 0 || s.labels.some((l) => filter.has(l.id));
+
+export type SessionSort = 'activity' | 'created' | 'name';
+
+// 'activity' keeps the server order (last_message_at desc); the rest reorder a copy.
+export function sortSessions(rows: SessionListItem[], sort: SessionSort): SessionListItem[] {
+	if (sort === 'activity') return rows;
+	const ts = (v: string | null | undefined) => (v ? new Date(v).getTime() : 0);
+	const sorted = [...rows];
+	if (sort === 'created') {
+		sorted.sort((a, b) => ts(b.registered_at) - ts(a.registered_at));
+	} else if (sort === 'name') {
+		const label = (s: SessionListItem) =>
+			(s.name || s.working_dir?.split('/').filter(Boolean).pop() || s.id).toLowerCase();
+		sorted.sort((a, b) => label(a).localeCompare(label(b)));
+	}
+	return sorted;
+}
+
+// Which enabled section owns a live bucket: pinned←starred, dispatched←dispatched,
+// every other bucket←live.
+export function bucketInSection(key: GroupKey, sections: Set<Section>): boolean {
+	if (key === 'pinned') return sections.has('starred');
+	if (key === 'dispatched') return sections.has('dispatched');
+	return sections.has('live');
+}
+
+// ── Draft payload + spawn prefills ─────────────────────────────────
+export function draftPayload(s: SessionListItem): Record<string, unknown> {
+	const m = s.metadata as Record<string, unknown> | null;
+	const d = m?.draft;
+	return d && typeof d === 'object' ? (d as Record<string, unknown>) : {};
+}
+export function draftPromptPreview(s: SessionListItem): string {
+	const p = draftPayload(s).prompt;
+	return typeof p === 'string' ? p : '';
+}
+
+// Prefill for "new session from this session's script": seed the model field
+// that matches the session's adapter.
+export function scriptPrefill(s: SessionListItem): Record<string, string> {
+	const adapter = s.adapter_id ?? 'claude-code';
+	const modelField = adapter === 'codex' ? 'model_codex' : 'model_claude';
+	return {
+		machine_id: s.machine_id,
+		working_dir: s.working_dir,
+		adapter_id: adapter,
+		name: '',
+		[modelField]: s.model ?? ''
+	};
+}
+
+// Prefill for editing a draft: its stored payload, falling back to the row.
+export function draftEditPrefill(s: SessionListItem): Record<string, string> {
+	const d = draftPayload(s);
+	const adapter = (typeof d.adapter_id === 'string' && d.adapter_id) || s.adapter_id || 'claude-code';
+	const modelField = adapter === 'codex' ? 'model_codex' : 'model_claude';
+	const effortField = adapter === 'codex' ? 'effort_codex' : 'effort_claude';
+	const str = (v: unknown) => (typeof v === 'string' ? v : '');
+	return {
+		machine_id: str(d.machine_id) || s.machine_id,
+		working_dir: str(d.working_dir) || s.working_dir,
+		adapter_id: adapter,
+		name: str(d.name),
+		prompt: str(d.prompt),
+		account: str(d.account),
+		account_provider: str(d.provider),
+		[modelField]: str(d.model),
+		[effortField]: str(d.effort)
+	};
+}
+
 // Shift-click range selection: the ids between the anchor and the clicked row in
 // visual order, restricted to the rows that are actually selectable. Returns an
 // empty array when either end isn't on screen, which the caller reads as "fall
