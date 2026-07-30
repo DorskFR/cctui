@@ -41,9 +41,9 @@ pub async fn tui_ws(
     }
 
     // Browser WS upgrades are same-origin GETs that carry the `HttpOnly` auth
-    // cookie automatically, so the token no longer rides the query string where
-    // it would leak into access logs. `bearer_or_cookie` also accepts
-    // an `Authorization` header for non-browser clients.
+    // cookie automatically, so the token stays out of the query string (where it
+    // would leak into access logs). `bearer_or_cookie` also accepts an
+    // `Authorization` header for non-browser clients.
     let token = crate::auth::bearer_or_cookie(&headers).ok_or(StatusCode::UNAUTHORIZED)?;
     let auth_ctx = state.auth_config.validate(&token).await.ok_or(StatusCode::UNAUTHORIZED)?;
 

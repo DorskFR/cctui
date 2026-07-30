@@ -433,8 +433,8 @@ pub async fn resume_env_for_session(
 /// Resolve a session's bound OAuth accounts — **one per provider family**.
 /// A session can carry a claude (Anthropic) account *and* a codex
 /// (`OpenAI`) account at once; both must be re-minted on wake or the worker
-/// launches missing one family's creds and 401s (the multi-account dispatch
-/// regression). The durable binding lives on the session's live `session_tokens`
+/// launches missing one family's creds and 401s. The durable binding lives on
+/// the session's live `session_tokens`
 /// rows (one stable token per family, see `mint_env_for_account`); we take the
 /// newest live token per family. Falls back to the legacy single
 /// `sessions.account_id` column for sessions bound before per-family tokens
@@ -1209,10 +1209,9 @@ fn bump_orphan_401(
 /// Three-valued on purpose: `Ok(Some)` = bound and live;
 /// `Ok(None)` = the token is genuinely unknown/revoked/unbound (a real orphan);
 /// `Err` = the DB lookup itself failed (cold/starved pool on a server restart,
-/// transient network). The caller MUST NOT treat `Err` as an orphan — doing so
-/// fed the spam guard during restarts and blocked perfectly valid tokens for
-/// 300s (the "401 on every server restart" regression). On `Err` we return a
-/// retryable 503 and never touch the orphan block.
+/// transient network). The caller MUST NOT treat `Err` as an orphan: feeding the
+/// spam guard on a transient error would block valid tokens for 300s. On `Err`
+/// we return a retryable 503 and never touch the orphan block.
 async fn resolve_account(
     state: &AppState,
     session_token: &str,
@@ -1536,11 +1535,9 @@ async fn passthrough(
         return Ok(auth_error(AuthStage::SessionToken, is_anthropic));
     };
 
-    // Orphan-spam guard (slow-pool fix): a worker whose session→account binding
-    // was lost retries forever, and every retry used to run DB lookups —
-    // starving the pool and slowing the whole server. Fingerprint the token and,
-    // if it is already flagged as a spamming orphan, drop the request *before*
-    // touching the DB.
+    // Orphan-spam guard: an unbound worker retries `/gateway` forever; each retry
+    // that reaches the DB starves the pool. Fingerprint the token and, if it is
+    // already flagged as a spamming orphan, drop the request *before* the DB.
     let token_fp = crate::auth::sha256_hex(&session_token);
     if orphan_is_blocked(&state, &token_fp) {
         return Ok(auth_error(AuthStage::SessionToken, is_anthropic));
@@ -1576,13 +1573,10 @@ async fn passthrough(
     // so it leaves headroom for the human sharing the subscription. Only the
     // configured windows gate; bypass near reset.
     //
-    // The original code read ONLY the usage cache, which is warmed solely by the
-    // accounts-page route. Headless dispatch never opens that page, so the cache
-    // was perpetually cold → `evaluate_soft_limit(None, …)` → Allow on every
-    // request, and a capped account would run all the way to 100% (the regression
-    // we hit). So on the dispatch path we refresh the cache from upstream when it
-    // is cold/stale (throttled by the same TTL so we never spam Anthropic's
-    // rate-limited endpoint), and only then evaluate. Fetch errors fail open.
+    // The usage cache is warmed only by the accounts-page route, which headless
+    // dispatch never opens, so on the dispatch path we refresh it from upstream
+    // when cold/stale (throttled by the same TTL to avoid spamming Anthropic's
+    // rate-limited endpoint) before evaluating. Fetch errors fail open.
     // A `CctuiAgent` child carries its own `session_usd` cap, which the account's
     // stored limits know nothing about. Overlay it here; the map is empty on the
     // ordinary path, so this costs a lock-free length check per request.

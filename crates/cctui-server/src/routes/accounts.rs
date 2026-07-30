@@ -82,14 +82,14 @@ fn require_human(ctx: &AuthContext) -> Result<(), (StatusCode, Json<serde_json::
     Ok(())
 }
 
-/// One-release back-compat shim: if `CCTUI_CLAUDE_LITELLM_*` is set,
+/// Back-compat shim: if `CCTUI_CLAUDE_LITELLM_*` is set,
 /// synthesize a server-owned **managed** anthropic-compatible provider per user
 /// (under a dedicated `litellm (legacy)` account identity) so existing
 /// deployments keep working after the env-var path is retired. Managed
 /// providers are read-only over the API (edit/delete excluded). Idempotent:
 /// re-upserted on every restart against the partial unique index
 /// `(user_id, provider) WHERE managed`. A no-op unless both the endpoint and the
-/// model list are configured. To be removed in a follow-up release.
+/// model list are configured. Retained for env-var deployments.
 // Linear per-user upsert loop; the parent+child pair pushes it over the limit.
 #[allow(clippy::cognitive_complexity)]
 pub async fn sync_litellm_shim(pool: &sqlx::PgPool, config: &crate::config::Config) {
@@ -183,7 +183,7 @@ pub async fn sync_litellm_shim(pool: &sqlx::PgPool, config: &crate::config::Conf
             tracing::warn!(%uid, "litellm shim upsert failed: {e}");
         }
     }
-    tracing::info!("CCTUI_CLAUDE_LITELLM_* shim: synced managed compatible providers (CCT-399)");
+    tracing::info!("CCTUI_CLAUDE_LITELLM_* shim: synced managed compatible providers");
 }
 
 /// One selectable model on a compatible-endpoint or `fireworks` provider:
@@ -1105,7 +1105,7 @@ pub async fn update_account(
     {
         return Err(err(
             StatusCode::BAD_REQUEST,
-            "provider fields moved (CCT-558): use PATCH /api/v1/accounts/:id/providers/:provider_id",
+            "provider fields moved: use PATCH /api/v1/accounts/:id/providers/:provider_id",
         ));
     }
     if let Some(name) = req.name.as_deref()

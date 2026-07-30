@@ -77,7 +77,7 @@ fn test_parse_steps() {
 
 #[test]
 fn test_parse_steps_body_and_gate() {
-    // CCT-440: the prose body (non-annotation lines) is captured for re-injection,
+    // The prose body (non-annotation lines) is captured for re-injection,
     // and a `[gate]` annotation carries the deterministic completion check.
     let md = "# Step 1: Implement\n\
               Make the change.\n\
@@ -650,7 +650,7 @@ fn unguarded_prompt_defaults_allow() {
     assert_eq!(p["default"], "allow");
 }
 
-// --- [llmjudge] parsing (CCT-516) ---
+// --- [llmjudge] parsing ---
 
 #[test]
 fn test_parse_llmjudge_questions_and_violations() {

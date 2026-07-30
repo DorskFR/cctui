@@ -516,7 +516,7 @@ async fn handle(socket: WebSocket, state: AppState, machine_id: Uuid, user_id: U
                             evictions = count,
                             window_mins = crate::bandwidth_watch::EVICTION_WINDOW.as_secs() / 60,
                             "daemon WS eviction loop — machine evicted repeatedly; \
-                             suspected re-upload/re-connect loop (CCT-744)",
+                             suspected re-upload/re-connect loop",
                         );
                     }
                     break;
@@ -771,7 +771,7 @@ fn detect_divergence(state: &AppState, machine_id: Uuid, upload_bytes: u64) {
             prev_upload_bytes = d.prev_upload_bytes,
             insert_count = d.insert_count,
             "upload/insert divergence — daemon uploading bytes with no new persisted \
-             stream_events (CCT-744)",
+             stream_events",
         );
     }
 }

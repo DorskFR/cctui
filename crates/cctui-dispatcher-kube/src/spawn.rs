@@ -53,8 +53,7 @@ const PENDING_FAILURE_SECS: i64 = 300;
 
 /// Auto-reap a finished worker Job (`Complete`/`Failed`) this many seconds after
 /// it stops, via `spec.ttlSecondsAfterFinished`. Long enough to inspect a
-/// just-finished run, short enough to keep the namespace free of corpses
-/// (; was 86400 = 24h).
+/// just-finished run, short enough to keep the namespace free of corpses.
 const JOB_TTL_SECONDS: i64 = 3600;
 
 /// Default worker lifetime when the dispatch carries no `timeout_minutes`: 1h.

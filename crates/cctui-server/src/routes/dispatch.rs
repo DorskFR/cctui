@@ -263,15 +263,12 @@ fn colliding_family(
 /// Resolve the `(session_id, display_name, dedup_key)` for a dispatch.
 ///
 /// `session_id` is the per-dispatch correlation id the worker registers under
-/// and the gateway token binds to. It is now ALWAYS a fresh UUID so isolated
-/// short-lived pods never get their logs chained into one growing conversation:
-/// previously a human-readable logical key was hashed into a DETERMINISTIC id,
-/// so every round of the same key (e.g. a PR's review rounds) collapsed onto one
-/// session and the server concatenated their logs. The idempotency that used to
-/// ride `session_id` now lives in `dedup_key`, which the dispatcher hashes into
-/// the Job name. Claude's daemon derives `short = session_id[..8]` and rejects a
-/// dispatch whose `short` isn't `/^[a-f0-9]{8}$/`, so a v4 UUID still satisfies
-/// the shape constraint.
+/// and the gateway token binds to. It is ALWAYS a fresh UUID so isolated
+/// short-lived pods never chain their logs into one growing conversation.
+/// Idempotency rides `dedup_key`, which the dispatcher hashes into the Job name.
+/// Claude's daemon derives `short = session_id[..8]` and rejects a dispatch whose
+/// `short` isn't `/^[a-f0-9]{8}$/`, so a v4 UUID still satisfies the shape
+/// constraint.
 ///
 /// - `None` → fresh UUID, no display name, no dedup (each dispatch is unique).
 /// - an already-valid UUID → used as-is (a deliberate retry/resume target) and

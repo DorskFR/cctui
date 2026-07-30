@@ -214,7 +214,7 @@ struct PendingRow {
     payload: Option<serde_json::Value>,
 }
 
-/// Build the lifecycle-only death payload. The server webhook is now a
+/// Build the lifecycle-only death payload. The server webhook is a
 /// *death-detector*: it only ever fires for a run that did NOT complete, so the
 /// status is always `failed`. The real verdict of a clean run is delivered by
 /// the worker's own `REPLY_URL` callback and never touches the server.

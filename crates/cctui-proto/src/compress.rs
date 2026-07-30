@@ -201,7 +201,7 @@ mod tests {
         assert_eq!(codec, Some(CODEC_ZSTD));
         let ratio = per_frame_bytes as f64 / wire.len() as f64;
         eprintln!(
-            "CCT-740 replay: 500 events, per-frame={per_frame_bytes} B, \
+            "batch replay: 500 events, per-frame={per_frame_bytes} B, \
              batched+zstd={} B, ratio={ratio:.1}x",
             wire.len()
         );

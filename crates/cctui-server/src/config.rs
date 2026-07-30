@@ -30,7 +30,7 @@ fn parse_dispatchers(raw: &str) -> Vec<HttpDispatcherConfig> {
             let kind = v.get("kind").and_then(|k| k.as_str()).unwrap_or("http");
             if kind != "http" {
                 let id = v.get("id").and_then(|i| i.as_str()).unwrap_or("?");
-                tracing::warn!(id, kind, "CCTUI_DISPATCHERS entry skipped: in-process kube/docker dispatchers were removed (CCT-292); use an enrolled dispatcher");
+                tracing::warn!(id, kind, "CCTUI_DISPATCHERS entry skipped: in-process kube/docker dispatchers are unsupported; use an enrolled dispatcher");
                 return None;
             }
             match serde_json::from_value::<HttpDispatcherConfig>(v) {
@@ -307,8 +307,8 @@ mod tests {
 
     /// the in-process `kube`/`docker` dispatchers are gone, but prod
     /// still ships a stale `kind:"kube"` entry in `CCTUI_DISPATCHERS`. The parse
-    /// must skip non-http kinds (not panic — that was the crash-loop)
-    /// and keep the `http` escape-hatch entries.
+    /// must skip non-http kinds without panicking and keep the `http`
+    /// escape-hatch entries.
     #[test]
     fn cctui_dispatchers_skips_kube_docker_keeps_http() {
         let raw = r#"[

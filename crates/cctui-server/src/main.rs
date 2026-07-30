@@ -154,8 +154,6 @@ async fn main() -> anyhow::Result<()> {
         // per-route inside each route's `route_layer` (attached by
         // `Routes::add`), which runs INSIDE this `auth_middleware` so the
         // `AuthContext` it inserts is already present when the policy evaluates.
-        // (A global authz layer would run OUTSIDE the matched route and could
-        // not see its policy — the 0.7.0 default-deny regression.)
         .layer(middleware::from_fn(auth::auth_middleware))
         .layer(Extension(auth_config.clone()));
 
@@ -487,7 +485,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[GET],
             "/sessions/{id}/images/{image_id}",
-            "Fetch an agent-posted image blob (CCT-566).",
+            "Fetch an agent-posted image blob.",
             get(routes::images::get_session_image),
             Authn::Bearer,
             sess_read(),
@@ -495,7 +493,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[GET],
             "/sessions/{id}/blobs/{hash}",
-            "Resolve a content-addressed embedded-attachment blob (CCT-739).",
+            "Resolve a content-addressed embedded-attachment blob.",
             get(routes::blobs::get_blob),
             Authn::Bearer,
             sess_read(),
@@ -503,7 +501,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[GET],
             "/sessions/{id}/diagnose",
-            "Snapshot everything the daemon knows about a session, dated (CCT-547).",
+            "Snapshot everything the daemon knows about a session, dated.",
             get(routes::diagnose::diagnose_session),
             Authn::Bearer,
             sess_read(),
@@ -511,7 +509,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[GET],
             "/sessions/{id}/langfuse",
-            "Langfuse cost/usage rollup for a session (CCT-564).",
+            "Langfuse cost/usage rollup for a session.",
             get(routes::langfuse::session_langfuse),
             Authn::Bearer,
             sess_read(),
@@ -535,7 +533,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[Method::POST],
             "/sessions/{id}/seen",
-            "Mark this session's messages seen for the caller (CCT-580).",
+            "Mark this session's messages seen for the caller.",
             post(routes::sessions::mark_seen),
             Authn::Bearer,
             sess_write(),
@@ -889,7 +887,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[GET],
             "/machines/{machine_id}/codex-models",
-            "Machine/account-scoped codex model catalog (CCT-641).",
+            "Machine/account-scoped codex model catalog.",
             get(routes::codex_models::get_codex_models),
             Authn::Bearer,
             Authz::Resource(ResourceKind::Machine, Action::Read, IdFrom::Path("machine_id")),
@@ -921,7 +919,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[Method::POST],
             "/settings/rescrub",
-            "Re-apply the secret-scrub list to your stored events (CCT-731).",
+            "Re-apply the secret-scrub list to your stored events.",
             post(routes::settings::rescrub_settings),
             Authn::Bearer,
             Authenticated,

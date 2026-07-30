@@ -1,4 +1,4 @@
-//! TLS-terminating credential injection (CCT-718): the strip-then-substitute
+//! TLS-terminating credential injection: the strip-then-substitute
 //! (phantom-token) pattern.
 //!
 //! For a host on the *injection* allow-list the proxy terminates TLS (presenting
@@ -346,7 +346,7 @@ pub struct Injector {
     secrets: Arc<SecretSource>,
     policy: InjectionPolicy,
     /// When present, the `github` service is served a freshly-minted GitHub App
-    /// installation token (CCT-722) instead of the stored `github` credential.
+    /// installation token instead of the stored `github` credential.
     ghapp: Option<Arc<GhAppMinter>>,
 }
 

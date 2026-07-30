@@ -1,8 +1,7 @@
 //! Transparent proxy mode: the iptables REDIRECT target. Connections arrive as
 //! raw bytes (a TLS `ClientHello` or a plaintext HTTP request), not as an HTTP
 //! CONNECT. We recover the original destination via `SO_ORIGINAL_DST`, enforce
-//! policy on the recovered SNI / Host name, then tunnel. Ported from the Go
-//! reference `transparent.go`.
+//! policy on the recovered SNI / Host name, then tunnel.
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddrV4};
 use std::sync::Arc;
@@ -139,7 +138,7 @@ async fn handle_connection(
     );
     policy.record(&policy_target, true, "");
 
-    // TLS-terminating credential injection for allowlisted hosts (CCT-718). Only
+    // TLS-terminating credential injection for allowlisted hosts. Only
     // a real TLS ClientHello (SNI recovered) is intercepted; everything else
     // keeps the passthrough splice below.
     if let (Some(injector), Some(name)) = (injection.as_ref(), sni.as_deref())

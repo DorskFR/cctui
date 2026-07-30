@@ -1,7 +1,7 @@
 //! Server-side machine liveness.
 //!
 //! A machine's liveness tier is derived purely from the age of
-//! `machines.last_seen_at`, which the daemon-WS handler now advances on every
+//! `machines.last_seen_at`, which the daemon-WS handler advances on every
 //! [`cctui_proto::ws::DaemonFrameUp::Heartbeat`] (the daemon emits one per ping
 //! cadence). This mirrors the session-liveness thresholds in `routes::admin`
 //! so machines and sessions read consistently.

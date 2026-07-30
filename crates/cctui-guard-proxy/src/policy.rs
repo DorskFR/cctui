@@ -116,8 +116,8 @@ impl PolicyManager {
 }
 
 /// Matches `host_port` against an allow-list pattern. An exact match wins; a
-/// `host:*` pattern matches the host on any port. (Port-only wildcard, mirroring
-/// the Go reference — no host globbing.)
+/// `host:*` pattern matches the host on any port — port-only wildcard, no host
+/// globbing.
 fn matches_pattern(host_port: &str, pattern: &str) -> bool {
     if pattern == host_port {
         return true;

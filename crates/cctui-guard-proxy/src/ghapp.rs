@@ -1,4 +1,4 @@
-//! GitHub App installation-token provider (CCT-722). Instead of injecting a
+//! GitHub App installation-token provider. Instead of injecting a
 //! long-lived PAT for the `github` service, the sidecar mints a short-lived,
 //! repo-scoped GitHub App *installation token* at use-time and injects THAT, so
 //! even in-session misuse (which the boundary can't prevent) is time- and

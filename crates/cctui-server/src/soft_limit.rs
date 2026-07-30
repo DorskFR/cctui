@@ -7,9 +7,8 @@
 //! the whole budget — while bypassing the cap for a window that is about to reset
 //! anyway (no point hoarding it).
 //!
-//! Anthropic used to report a fixed set of windows (`five_hour`, `seven_day`, …).
-//! It now reports a self-describing `limits` array (session / weekly-all-models /
-//! per-model weekly caps, and whatever it adds next). therefore treats
+//! Anthropic reports a self-describing `limits` array (session / weekly-all-models
+//! / per-model weekly caps, and whatever it adds next), so this module treats
 //! usage as a *collection* of normalized windows keyed by a stable canonical
 //! identity, and lets each window carry its own independently editable cap +
 //! bypass. This module is the pure decision helper: it normalizes the raw usage

@@ -30,10 +30,9 @@ pub struct ListDirsResponse {
 
 // Machine ownership is enforced by the `Resource(Machine, Read, IdFrom::Path
 // ("machine_id"))` guard in `authz.rs`: the `authz_layer` middleware
-// resolves `machines.user_id` and applies `admin || owner == caller` BEFORE this
-// handler runs (404 unknown machine / 403 not-your-machine / admin bypass — the
-// exact semantics of the old in-handler check). The handler now only needs the
-// machine id to talk to the daemon.
+// resolves `machines.user_id` and applies `admin || owner == caller` before this
+// handler runs (404 unknown machine / 403 not-your-machine / admin bypass). The
+// handler only needs the machine id to talk to the daemon.
 pub async fn list_dirs(
     State(state): State<AppState>,
     Path(machine_id): Path<String>,

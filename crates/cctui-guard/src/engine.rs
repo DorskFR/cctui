@@ -50,9 +50,9 @@ pub struct WorkflowEngine {
     /// entrypoint via `--always-allow`). Mirrors `ALWAYS_ALLOWED_HOSTS`.
     always_allowed_hosts: Vec<String>,
     /// Working directory the deterministic transition gate command runs in
-    /// (the worker's `/workspace`). CCT-440.
+    /// (the worker's `/workspace`).
     gate_cwd: PathBuf,
-    /// Command the `[llmjudge]` block pipes its question prompt to (CCT-516).
+    /// Command the `[llmjudge]` block pipes its question prompt to.
     /// Runs via `sh -c` in `gate_cwd`, receives the prompt on stdin, and must
     /// print a JSON verdict array on stdout. `None` while a step declares
     /// `[llmjudge]` refuses the transition — fail closed.
@@ -290,11 +290,11 @@ impl WorkflowEngine {
     }
 
     /// Build the authoritative re-injection text for a step: the trusted
-    /// next-step prompt body, always re-anchored verbatim (rather than the
-    /// session's own drifting summary) — the "re-inject" half of CCT-440. The
-    /// "compact your context" directive is appended only when the step opts in
-    /// via `[compact]` (CCT-450): compaction is lossy and counter-productive on
-    /// large-context models, so re-injection no longer forces it by default.
+    /// next-step prompt body, always re-anchored verbatim rather than the
+    /// session's own drifting summary. The "compact your context" directive is
+    /// appended only when the step opts in via `[compact]`: compaction is lossy
+    /// and counter-productive on large-context models, so re-injection does not
+    /// force it by default.
     #[must_use]
     pub fn reinjection(&self, step_num: u32) -> String {
         let Some(step) = self.steps.get(&step_num) else {
@@ -323,7 +323,7 @@ impl WorkflowEngine {
     /// Run a step's deterministic `[gate]` command in `gate_cwd`. Returns
     /// `Ok(())` when there is no gate or it exits 0, `Err(detail)` otherwise —
     /// the detail carries the command's combined output so the agent sees why
-    /// the transition was refused. CCT-440: finalize-type transitions require
+    /// the transition was refused. Finalize-type transitions require
     /// machine-checkable proof, not the agent's assertion.
     fn run_gate(&self, step_num: u32) -> Result<(), String> {
         let gate = self.steps.get(&step_num).and_then(|s| s.gate.as_deref()).unwrap_or("").trim();
@@ -377,7 +377,7 @@ impl WorkflowEngine {
         }
     }
 
-    /// Run a step's `[llmjudge]` acceptance judge (CCT-516). Runs **after** the
+    /// Run a step's `[llmjudge]` acceptance judge. Runs **after** the
     /// deterministic `[gate]`, in a clean context: the configured judge command
     /// gets only the question prompt on stdin (plus its own working tree in
     /// `gate_cwd` — Intent+Acceptance artifact, evidence[], diff), never the
@@ -543,11 +543,6 @@ impl WorkflowEngine {
         }
     }
 
-    /// Apply a validated numeric advance `current_u` → `tn`: the deterministic
-    /// `[gate]` must pass, then the `[llmjudge]` acceptance judge must score
-    /// perfect — the agent's claim of completion is not trusted (CCT-440 /
-    /// CCT-516). The judge's per-question verdicts are surfaced as a
-    /// `kind: "judge"` evidence entry on both outcomes.
     /// Deny a re-entry into `tn` that would exceed its `max-visits` bound. Some
     /// with the deny response when the bound is hit, None when entry is allowed.
     fn visit_bound_denial(
@@ -582,6 +577,11 @@ impl WorkflowEngine {
         Some(json!({ "ok": false, "step": current_u, "error": reason }))
     }
 
+    /// Apply a validated numeric advance `current_u` → `tn`: the deterministic
+    /// `[gate]` must pass, then the `[llmjudge]` acceptance judge must score
+    /// perfect — the agent's claim of completion is not trusted. The judge's
+    /// per-question verdicts are surfaced as a `kind: "judge"` evidence entry on
+    /// both outcomes.
     #[allow(clippy::cognitive_complexity)]
     fn transition_advance(&self, current_u: u32, tn: u32) -> TransitionResponse {
         let target = tn.to_string();
