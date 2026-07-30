@@ -37,7 +37,7 @@ dirs = "5"
 diffy = "0.4.2"
 similar = "2.7.0"
 semver = "1"
-tempfile.workspace = true
 
 [dev-dependencies]
 pretty_assertions = "1.4.1"
+tempfile.workspace = true

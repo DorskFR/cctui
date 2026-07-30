@@ -55,7 +55,7 @@ RUN cargo build --release \
 FROM debian:bookworm-slim@sha256:63a496b5d3b99214b39f5ed70eb71a61e590a77979c79cbee4faf991f8c0783e
 
 # Base tooling kept deliberately lean:
-#   ca-certificates, libssl3 — TLS for the daemon's rustls/native deps.
+#   ca-certificates          — TLS trust roots for the daemon's rustls stack.
 #   git, git-lfs            — repo work and large-file fetches.
 #   ripgrep                 — what claude code shells out to for search.
 #   gnupg                   — sidecar gpg-agent (holds the signing key) + the
