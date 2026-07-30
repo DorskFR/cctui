@@ -58,10 +58,12 @@ jobs:
           set -euo pipefail
           jq -r '.properties | keys[]' "$VENDORED" | sort > /tmp/vendored.keys
           jq -r '.properties | keys[]' /tmp/upstream-schema.json | sort > /tmp/upstream.keys
-          echo "### Property drift" >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          echo "added upstream (not vendored):" >> "$GITHUB_STEP_SUMMARY"
-          comm -13 /tmp/vendored.keys /tmp/upstream.keys >> "$GITHUB_STEP_SUMMARY" || true
-          echo "removed upstream (still vendored):" >> "$GITHUB_STEP_SUMMARY"
-          comm -23 /tmp/vendored.keys /tmp/upstream.keys >> "$GITHUB_STEP_SUMMARY" || true
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "### Property drift"
+            echo '```'
+            echo "added upstream (not vendored):"
+            comm -13 /tmp/vendored.keys /tmp/upstream.keys || true
+            echo "removed upstream (still vendored):"
+            comm -23 /tmp/vendored.keys /tmp/upstream.keys || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
