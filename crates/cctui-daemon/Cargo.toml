@@ -28,7 +28,7 @@ tokio-util.workspace = true
 reqwest.workspace = true
 clap.workspace = true
 toml = "0.8"
-dirs = "5"
+dirs = "6"
 rustix = { version = "1", features = ["process", "fs"] }
 sha2.workspace = true
 hex.workspace = true

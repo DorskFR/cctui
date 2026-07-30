@@ -14,7 +14,7 @@ cctui-dispatcher-core = { path = "../cctui-dispatcher-core" }
 cctui-orchestrator = { path = "../cctui-orchestrator" }
 anyhow.workspace = true
 clap.workspace = true
-dirs = "5"
+dirs = "6"
 futures-util.workspace = true
 reqwest.workspace = true
 serde.workspace = true
