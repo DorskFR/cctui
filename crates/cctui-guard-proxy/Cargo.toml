@@ -29,7 +29,7 @@ aws-config.workspace = true
 aws-sdk-secretsmanager.workspace = true
 aws-sigv4.workspace = true
 aws-credential-types.workspace = true
-clap = { version = "4", features = ["derive", "env"] }
+clap.workspace = true
 nix = { version = "0.31", default-features = false, features = ["net"] }
 rcgen = { version = "0.14.8", default-features = false, features = ["pem", "aws_lc_rs"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["aws-lc-rs", "tls12"] }

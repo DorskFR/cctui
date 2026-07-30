@@ -14,7 +14,7 @@ COPY migrations/ migrations/
 RUN cargo build --release -p cctui-server
 
 FROM debian:bookworm-slim@sha256:63a496b5d3b99214b39f5ed70eb71a61e590a77979c79cbee4faf991f8c0783e
-RUN apt-get update && apt-get install -y ca-certificates libssl3 && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /app/target/release/cctui-server /usr/local/bin/cctui-server
 EXPOSE 8700
 CMD ["cctui-server"]

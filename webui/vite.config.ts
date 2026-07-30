@@ -35,7 +35,7 @@ export default defineConfig({
 		},
 		// A single svelte (and query) runtime is mandatory: gh-review's context /
 		// runes must share the host's instance or setContext/getContext break.
-		dedupe: ['svelte', '@tanstack/svelte-query']
+		dedupe: ['svelte', '@tanstack/svelte-query', 'highlight.js', '@dorsk/tsumikit']
 	},
 	server: {
 		host: true,
