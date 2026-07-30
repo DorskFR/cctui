@@ -680,11 +680,11 @@ const SERVE_TERM_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
 /// Terminate the serve process *tree*: signal the group (see `process_group`
 /// at spawn), then escalate. Returns once the direct child is reaped.
 async fn shutdown_serve(child: &mut tokio::process::Child) {
-    signal_group(child, rustix::process::Signal::Term);
+    signal_group(child, rustix::process::Signal::TERM);
     if tokio::time::timeout(SERVE_TERM_GRACE, child.wait()).await.is_ok() {
         return;
     }
-    signal_group(child, rustix::process::Signal::Kill);
+    signal_group(child, rustix::process::Signal::KILL);
     let _ = child.start_kill();
     let _ = child.wait().await;
 }

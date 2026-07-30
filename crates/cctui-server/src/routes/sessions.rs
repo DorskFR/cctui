@@ -391,7 +391,7 @@ pub async fn list_sessions(
          AND ($1::uuid IS NULL OR m.user_id = $1) \
          ORDER BY s.registered_at DESC",
     );
-    let mut rows: Vec<DbSession> = sqlx::query_as(&non_archived_query)
+    let mut rows: Vec<DbSession> = sqlx::query_as(sqlx::AssertSqlSafe(non_archived_query))
         .bind(uid)
         .fetch_all(&state.pool)
         .await
@@ -405,7 +405,7 @@ pub async fn list_sessions(
              AND ($1::uuid IS NULL OR m.user_id = $1) \
              ORDER BY s.registered_at DESC LIMIT 25",
         );
-        let archived: Vec<DbSession> = sqlx::query_as(&archived_query)
+        let archived: Vec<DbSession> = sqlx::query_as(sqlx::AssertSqlSafe(archived_query))
             .bind(uid)
             .fetch_all(&state.pool)
             .await
@@ -1145,7 +1145,12 @@ pub async fn search_sessions(
              AND ($3::uuid IS NULL OR m.user_id = $3) \
              ORDER BY s.registered_at DESC LIMIT $1 OFFSET $2"
         );
-        sqlx::query_as(&sql).bind(limit).bind(offset).bind(uid).fetch_all(&state.pool).await
+        sqlx::query_as(sqlx::AssertSqlSafe(sql))
+            .bind(limit)
+            .bind(offset)
+            .bind(uid)
+            .fetch_all(&state.pool)
+            .await
     } else {
         // Compile the AST to a WHERE tree; `ast_params` are the leading `$1…$N`
         // binds. Ownership/scope stay outer constraints appended after them.
@@ -1181,7 +1186,7 @@ pub async fn search_sessions(
              AND (${ui}::uuid IS NULL OR m.user_id = ${ui}) \
              ORDER BY s.registered_at DESC LIMIT ${li} OFFSET ${oi}"
         );
-        let mut query = sqlx::query_as::<_, DbSession>(&sql);
+        let mut query = sqlx::query_as::<_, DbSession>(sqlx::AssertSqlSafe(sql));
         for p in &ast_params {
             query = match p {
                 SqlParam::Text(s) => query.bind(s.clone()),
@@ -1272,7 +1277,7 @@ pub async fn search_sessions(
              WHERE session_id = ANY($1) AND ({or}) \
              ORDER BY session_id, created_at DESC"
         );
-        let mut query = sqlx::query_as::<_, (String, String)>(&sql).bind(&ids);
+        let mut query = sqlx::query_as::<_, (String, String)>(sqlx::AssertSqlSafe(sql)).bind(&ids);
         for p in &patterns {
             query = query.bind(p);
         }
@@ -1384,7 +1389,7 @@ pub async fn search_field_values(
         return Ok(Json(vec![]));
     };
 
-    let mut query = sqlx::query_as::<_, (String,)>(&sql);
+    let mut query = sqlx::query_as::<_, (String,)>(sqlx::AssertSqlSafe(sql));
     for p in &ctx_params {
         query = match p {
             SqlParam::Text(s) => query.bind(s.clone()),

@@ -1255,4 +1255,18 @@ mod tests {
             "a closed channel must end the drain before the hard cap"
         );
     }
+
+    #[test]
+    fn parse_frame_decodes_text_and_binary_and_skips_control() {
+        use tokio_tungstenite::tungstenite::Message;
+        let json = r#"{"type":"ack","seq":7}"#;
+        for msg in [Message::Text(json.into()), Message::Binary(json.as_bytes().to_vec().into())] {
+            match super::parse_frame(msg).unwrap() {
+                Some(cctui_proto::ws::DaemonFrameDown::Ack { seq }) => assert_eq!(seq, 7),
+                other => panic!("expected Ack, got {other:?}"),
+            }
+        }
+        assert!(super::parse_frame(Message::Ping(Vec::new().into())).unwrap().is_none());
+        assert!(super::parse_frame(Message::Close(None)).unwrap().is_none());
+    }
 }
