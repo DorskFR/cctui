@@ -203,4 +203,21 @@ mod tests {
         assert!(tp.contains("review"));
         assert!(tp.contains("Review #7"), "name stays in the payload");
     }
+
+    #[test]
+    fn build_env_omits_optional_vars_when_absent() {
+        let mut s = spec("sess-min", json!({ "flow": "review" }));
+        s.reply_url = None;
+        let base = build_env(&s, "https://cctui.example.test").unwrap();
+        assert!(base.machine_key.is_none(), "no machine key in payload => none lifted");
+        assert!(base.env.iter().all(|e| !e.starts_with("REPLY_URL=")), "no reply_url => no var");
+        assert!(base.env.iter().all(|e| !e.starts_with("TASK_NAME=")), "no name => no TASK_NAME");
+        assert!(base.env.iter().all(|e| !e.contains("cctui_machine_key")));
+    }
+
+    #[test]
+    fn label_safe_preserves_case_and_trims_edges() {
+        assert_eq!(label_safe("-_.MixedCase._-"), "MixedCase");
+        assert_eq!(label_safe("UPPER"), "UPPER");
+    }
 }
