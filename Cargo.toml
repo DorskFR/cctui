@@ -71,7 +71,7 @@ aws-sigv4 = { version = "1", default-features = false, features = ["sign-http"] 
 aws-credential-types = "1"
 kube = { version = "4.2", default-features = false, features = ["client", "rustls-tls", "derive", "admission"] }
 json-patch = "4"
-axum-server = { version = "0.7", features = ["tls-rustls-no-provider"] }
+axum-server = { version = "0.8", features = ["tls-rustls-no-provider"] }
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 k8s-openapi = { version = "0.28", features = ["latest", "schemars"] }
 schemars = { version = "1.2", features = ["derive"] }
