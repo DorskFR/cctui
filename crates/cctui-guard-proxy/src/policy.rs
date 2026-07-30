@@ -87,6 +87,17 @@ impl PolicyManager {
         })
     }
 
+    /// True only for an EXPLICIT `allowed_hosts` match, ignoring a permissive
+    /// `default: "allow"`. The private-range exemption keys off this so an
+    /// allow-all policy can never blanket-open the internal network.
+    #[must_use]
+    pub fn is_explicitly_listed(&self, host_port: &str) -> bool {
+        let guard = self.config.read().expect("policy lock poisoned");
+        guard.as_ref().is_some_and(|config| {
+            config.allowed_hosts.iter().any(|allowed| matches_pattern(host_port, allowed))
+        })
+    }
+
     /// True if a policy is currently loaded (used by the health endpoint).
     #[must_use]
     pub fn is_loaded(&self) -> bool {
@@ -183,6 +194,25 @@ mod tests {
 
         assert!(pm.is_allowed("example.com:443"));
         assert!(pm.is_allowed("random.example.com:80"));
+    }
+
+    #[test]
+    fn explicit_listing_ignores_permissive_default() {
+        let (_dir, path) =
+            write_policy(r#"{"allowed_hosts": ["listed.example.com:443"], "default": "allow"}"#);
+        let pm = PolicyManager::new(&path);
+        pm.load().unwrap();
+
+        assert!(pm.is_explicitly_listed("listed.example.com:443"));
+        assert!(!pm.is_explicitly_listed("unlisted.example.com:443"));
+        assert!(pm.is_allowed("unlisted.example.com:443"), "default=allow permits it");
+    }
+
+    #[test]
+    fn nothing_explicitly_listed_without_a_policy() {
+        let dir = tempfile::tempdir().unwrap();
+        let pm = PolicyManager::new(dir.path().join("policy.json"));
+        assert!(!pm.is_explicitly_listed("anything:443"));
     }
 
     #[test]
