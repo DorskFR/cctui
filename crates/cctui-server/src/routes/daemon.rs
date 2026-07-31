@@ -5,8 +5,8 @@
 //!     `machine_id` + `user_id` so it doesn't have to know them out of band.
 //!   * `GET  /api/v1/daemon/ws`   — long-lived bidirectional WS. Daemon
 //!     sends [`DaemonFrameUp`]; server sends [`DaemonFrameDown`]. On
-//!     connect the server emits a [`DaemonFrameDown::Reconcile`] built
-//!     from `adapters_enabled`.
+//!     connect the server emits a [`DaemonFrameDown::Reconcile`] with every
+//!     known adapter, overridden by `adapters_enabled` rows.
 //!   * `POST /api/v1/daemon/users/{id}/tokens` — mint a `user_tokens` row.
 //!
 //! Authentication: `machine_key` (Bearer) on every call; the regular
@@ -1532,6 +1532,20 @@ pub async fn load_resume_marks(
     Ok(rows.into_iter().map(|(id, off)| (id, u64::try_from(off).unwrap_or(0))).collect())
 }
 
+/// Union the machine's `adapters_enabled` rows with [`KNOWN_ADAPTERS`]: every
+/// known adapter runs by default, a row only overrides its config or disables
+/// it.
+fn merge_known_adapters(
+    mut rows: Vec<(String, serde_json::Value, bool)>,
+) -> Vec<(String, serde_json::Value, bool)> {
+    for id in cctui_proto::adapter::KNOWN_ADAPTERS {
+        if !rows.iter().any(|(rid, _, _)| rid == id) {
+            rows.push(((*id).to_owned(), serde_json::json!({}), true));
+        }
+    }
+    rows
+}
+
 pub async fn load_reconcile(
     state: &AppState,
     machine_id: Uuid,
@@ -1542,6 +1556,7 @@ pub async fn load_reconcile(
     .bind(machine_id)
     .fetch_all(&state.pool)
     .await?;
+    let rows = merge_known_adapters(rows);
 
     // Bridge the owning user's `user_settings.data.harnessMode` into each
     // claude-code adapter's `config["mode"]`. The settings blob is
@@ -1694,8 +1709,34 @@ mod tests {
 
     use super::{
         Inbound, MAX_TRANSFER_BYTES, bearer_token, decode_compressed_frame, event_kind,
-        event_local_id, expand_batch, handle_chunk, next_inbound, should_auto_approve, strip_nul,
+        event_local_id, expand_batch, handle_chunk, merge_known_adapters, next_inbound,
+        should_auto_approve, strip_nul,
     };
+
+    #[test]
+    fn merge_known_adapters_defaults_every_known_adapter_on() {
+        let got = merge_known_adapters(Vec::new());
+        let mut ids: Vec<&str> = got.iter().map(|(id, _, _)| id.as_str()).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, ["claude-code", "codex", "opencode"]);
+        assert!(got.iter().all(|(_, config, enabled)| *enabled && config == &json!({})));
+    }
+
+    #[test]
+    fn merge_known_adapters_keeps_row_overrides() {
+        let rows = vec![
+            ("opencode".to_owned(), json!({"bin": "/opt/opencode"}), false),
+            ("legacy-harness".to_owned(), json!({}), true),
+        ];
+        let got = merge_known_adapters(rows);
+        assert_eq!(got.len(), 4);
+        let opencode = got.iter().find(|(id, _, _)| id == "opencode").unwrap();
+        assert_eq!(opencode.1, json!({"bin": "/opt/opencode"}));
+        assert!(!opencode.2);
+        assert!(got.iter().any(|(id, _, _)| id == "legacy-harness"));
+        assert!(got.iter().any(|(id, _, enabled)| id == "claude-code" && *enabled));
+        assert!(got.iter().any(|(id, _, enabled)| id == "codex" && *enabled));
+    }
 
     async fn drive<S>(mut stream: S, timeout: Duration, check: Duration) -> Inbound
     where

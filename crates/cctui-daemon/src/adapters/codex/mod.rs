@@ -17,12 +17,8 @@
 //! domain socket and forwards line-delimited [`AdapterEvent`] JSON to the
 //! daemon. Proves the `Adapter` trait holds for a second harness.
 //!
-//! Full Codex CLI integration (log-tail of `~/.codex/sessions/` via the
-//! `notify` crate, end-of-session quiescence detection, payload parsing)
-//! is intentionally deferred to a follow-up PR.
-//!
-//! Defaults to **disabled** in `adapters_enabled` — users opt in by
-//! flipping the row or via a future web toggle.
+//! Runs on every machine by default ([`cctui_proto::adapter::KNOWN_ADAPTERS`]);
+//! an `adapters_enabled` row can disable it per machine.
 //!
 //! Socket path: `$CCTUI_CODEX_SOCK`, defaulting to
 //! `$XDG_RUNTIME_DIR/cctui-codex.sock`.
