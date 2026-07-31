@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { ws } from '$lib/ws.svelte';
-	import { useVersion, useSessions } from '$lib/queries';
+	import { useVersion, useSessions, qk } from '$lib/queries';
+	import type { SessionListResponse } from '@bindings/SessionListResponse';
 	import { useQueryClient } from '@tanstack/svelte-query';
 	import { theme, THEMES } from '$lib/theme.svelte';
 	import { fontScale, SCALE_LEVELS } from '$lib/fontscale.svelte';
@@ -24,6 +25,26 @@
 		void ws.changeTick;
 		qc.invalidateQueries({ queryKey: ['sessions'] });
 	});
+
+	// Cheap per-session ws patches applied to both list caches in place —
+	// no refetch. The 15s poll reconciles anything the patch can't know.
+	$effect(() =>
+		ws.onListPatch((p) => {
+			const { session_id, ...fields } = p;
+			for (const archived of [false, true]) {
+				qc.setQueryData<SessionListResponse>(qk.sessions(archived), (old) =>
+					old
+						? {
+								...old,
+								sessions: old.sessions.map((s) =>
+									s.id === session_id ? { ...s, ...fields } : s
+								)
+							}
+						: old
+				);
+			}
+		})
+	);
 
 	// Drive notifications + title badge off the list's attention flags.
 	$effect(() => {

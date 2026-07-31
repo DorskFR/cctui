@@ -131,12 +131,12 @@ impl App {
             .collect();
         // Group by classifier bucket (Needs input → Ready for review →
         // Working → Completed); within a bucket, oldest first.
-        tops.sort_by_key(|s| (crate::bucket_rank(s.bucket), s.uptime_secs));
+        tops.sort_by_key(|s| (crate::bucket_rank(s.bucket), crate::uptime_secs(s)));
         let mut out: Vec<&SessionListItem> = Vec::new();
         for t in tops {
             out.push(t);
             if let Some(cs) = kids.get_mut(t.id.as_str()) {
-                cs.sort_by_key(|s| s.uptime_secs);
+                cs.sort_by_key(|s| crate::uptime_secs(s));
                 out.extend(cs.iter().copied());
             }
         }

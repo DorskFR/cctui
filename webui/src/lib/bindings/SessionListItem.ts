@@ -24,7 +24,7 @@ attention: Attention | null,
  * Ready for review / Completed). Drives the grouped session list in
  * both clients. Defaults to `Working` for back-compat.
  */
-bucket: Bucket, uptime_secs: number, token_usage: TokenUsage, metadata: JsonValue, 
+bucket: Bucket, token_usage: TokenUsage, metadata: JsonValue, 
 /**
  * Adapter that produced this session. Defaults to `"claude-code"` for
  * legacy rows that pre-date the `sessions.adapter_id` column.

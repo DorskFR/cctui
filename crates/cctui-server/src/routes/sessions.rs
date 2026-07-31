@@ -277,7 +277,8 @@ pub async fn list_sessions(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Query(params): Query<ListParams>,
-) -> Result<Json<SessionListResponse>, (StatusCode, Json<ApiError>)> {
+    req_headers: axum::http::HeaderMap,
+) -> Result<axum::response::Response, (StatusCode, Json<ApiError>)> {
     let uid = ctx.owner_filter();
     let db_err = |e: sqlx::Error| {
         tracing::error!("db error: {e}");
@@ -333,7 +334,6 @@ pub async fn list_sessions(
                         liveness: derive_liveness(handle.session.last_heartbeat),
                         attention: None,
                         bucket: Bucket::Working,
-                        uptime_secs: (Utc::now() - handle.session.registered_at).num_seconds(),
                         token_usage: handle.token_usage.clone(),
                         metadata: handle.session.metadata.clone(),
                         adapter_id: handle.session.adapter_id.clone(),
@@ -431,7 +431,6 @@ pub async fn list_sessions(
                 liveness,
                 attention: None,
                 bucket: Bucket::Working,
-                uptime_secs: (Utc::now() - row.registered_at).num_seconds(),
                 token_usage: cctui_proto::models::TokenUsage::default(),
                 metadata: row.metadata,
                 adapter_id: row.adapter_id.map(cctui_proto::adapter::AdapterId::new),
@@ -467,7 +466,7 @@ pub async fn list_sessions(
     }
 
     let sessions = enrich_and_sort(&state, Some(ctx.user_id), with_ts).await?;
-    Ok(Json(SessionListResponse { sessions }))
+    Ok(crate::http_cache::json_with_etag(&req_headers, &SessionListResponse { sessions }))
 }
 
 /// Cap a raw unread `COUNT(*)` to the badge's display ceiling (99). Negative or
@@ -1214,7 +1213,6 @@ pub async fn search_sessions(
                     liveness,
                     attention: None,
                     bucket: Bucket::Working,
-                    uptime_secs: (Utc::now() - row.registered_at).num_seconds(),
                     token_usage: cctui_proto::models::TokenUsage::default(),
                     metadata: row.metadata,
                     adapter_id: row.adapter_id.map(cctui_proto::adapter::AdapterId::new),
@@ -1416,7 +1414,6 @@ pub async fn get_session(
                 liveness: derive_liveness(handle.session.last_heartbeat),
                 attention: None,
                 bucket: Bucket::Working,
-                uptime_secs: (Utc::now() - handle.session.registered_at).num_seconds(),
                 token_usage: handle.token_usage.clone(),
                 metadata: handle.session.metadata.clone(),
                 adapter_id: handle.session.adapter_id.clone(),
@@ -1481,7 +1478,6 @@ pub async fn get_session(
         liveness,
         attention: None,
         bucket: Bucket::Working,
-        uptime_secs: (Utc::now() - row.registered_at).num_seconds(),
         token_usage: cctui_proto::models::TokenUsage::default(),
         metadata: row.metadata,
         adapter_id: row.adapter_id.map(cctui_proto::adapter::AdapterId::new),
@@ -1522,13 +1518,16 @@ pub struct ConversationQuery {
     pub limit: Option<i64>,
     /// Exclusive upper `seq` bound for paging back.
     pub before: Option<i64>,
+    /// Exclusive lower `seq` bound for delta catch-up.
+    pub after: Option<i64>,
 }
 
 pub async fn get_conversation(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
     Query(params): Query<ConversationQuery>,
-) -> Result<Json<Vec<serde_json::Value>>, (StatusCode, Json<ApiError>)> {
+    req_headers: axum::http::HeaderMap,
+) -> Result<axum::response::Response, (StatusCode, Json<ApiError>)> {
     let adapter: Option<String> =
         crate::store::sessions::adapter_id(&state.pool, &session_id).await.map_err(|e| {
             tracing::error!("db error: {e}");
@@ -1542,11 +1541,13 @@ pub async fn get_conversation(
     let mut rows: Vec<(i64, String, serde_json::Value, DateTime<Utc>)> = sqlx::query_as(
         "SELECT id, event_type, payload, created_at FROM stream_events \
          WHERE session_id = $1 AND ($2::bigint IS NULL OR id < $2) \
+           AND ($4::bigint IS NULL OR id > $4) \
          ORDER BY id DESC LIMIT $3",
     )
     .bind(&session_id)
     .bind(params.before)
     .bind(params.limit.map(|l| l.clamp(1, 10_000)))
+    .bind(params.after)
     .fetch_all(&state.pool)
     .await
     .map_err(|e| {
@@ -1615,7 +1616,7 @@ pub async fn get_conversation(
             })
         })
         .collect();
-    Ok(Json(normalized))
+    Ok(crate::http_cache::json_with_etag(&req_headers, &normalized))
 }
 
 pub async fn send_message(

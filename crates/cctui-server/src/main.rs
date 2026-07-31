@@ -9,6 +9,7 @@ mod db;
 mod dispatchers;
 mod error;
 mod fireworks_billing;
+mod http_cache;
 mod langfuse;
 mod machine_liveness;
 mod normalize;

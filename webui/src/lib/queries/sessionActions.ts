@@ -29,7 +29,6 @@ function optimisticDispatchCard(
     liveness: "stale",
     attention: null,
     bucket: "working",
-    uptime_secs: 0,
     token_usage: {
       tokens_in: 0,
       tokens_out: 0,
