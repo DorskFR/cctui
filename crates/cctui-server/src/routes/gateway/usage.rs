@@ -511,14 +511,16 @@ pub async fn fireworks_usd_windows(
             w.insert("amount_usd".into(), serde_json::json!(amount));
         }
     }
-    if let Some(top) =
-        max_session_spend_usd(&state.pool, account_id, catalog.as_ref(), "5 hours").await
-    {
-        out.insert(
-            crate::soft_limit::KEY_SESSION_USD.to_owned(),
-            serde_json::json!({ "amount_usd": top, "resets_at": serde_json::Value::Null }),
-        );
-    }
+    // Emitted unconditionally, like the 5h/7d windows: an account that metered
+    // nothing has spent $0, which is a report. Omitting it renders a configured
+    // cap as "not currently reported" forever.
+    let top = max_session_spend_usd(&state.pool, account_id, catalog.as_ref(), "5 hours")
+        .await
+        .unwrap_or(0.0);
+    out.insert(
+        crate::soft_limit::KEY_SESSION_USD.to_owned(),
+        serde_json::json!({ "amount_usd": top, "resets_at": serde_json::Value::Null }),
+    );
     Ok(Some(serde_json::Value::Object(out)))
 }
 

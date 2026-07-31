@@ -878,6 +878,24 @@ mod tests {
             "expected the 3 Mtok session ($9), got {top} (account total would be $18)"
         );
 
+        let unmetered = uuid::Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO account_providers \
+                 (id, user_id, provider, encrypted_refresh_token, account_id) \
+             VALUES ($1, $2, 'openai', 'x', $3)",
+        )
+        .bind(unmetered)
+        .bind(uid)
+        .bind(acct)
+        .execute(&pool)
+        .await
+        .expect("seed second provider");
+        assert_eq!(
+            super::max_session_spend_usd(&pool, unmetered, Some(&catalog), "5 hours").await,
+            None,
+            "an account that metered nothing reports None, which the window renders as $0"
+        );
+
         sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
     }
 
