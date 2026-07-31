@@ -328,6 +328,53 @@ pub fn priced(catalog: Option<&serde_json::Value>, rows: &[ModelTally]) -> f64 {
     crate::cost::tallies_cost_usd(catalog, &tallies)
 }
 
+/// The dearest single session under this account within `interval`, priced from
+/// the catalog.
+///
+/// `session_usd` caps a session, not the account, so the account-level figure
+/// that means anything is the session closest to that cap. Windowed so the scan
+/// stays bounded; `None` when nothing was metered.
+pub async fn max_session_spend_usd(
+    pool: &sqlx::PgPool,
+    account_id: Uuid,
+    catalog: Option<&serde_json::Value>,
+    interval: &str,
+) -> Option<f64> {
+    let rows: Vec<(String, Option<String>, i64, i64, i64)> = sqlx::query_as(
+        "SELECT st.session_id, stu.model, \
+                COALESCE(SUM(stu.input_tokens + stu.cache_creation_tokens), 0)::bigint, \
+                COALESCE(SUM(stu.cache_read_tokens), 0)::bigint, \
+                COALESCE(SUM(stu.output_tokens), 0)::bigint \
+         FROM session_tokens st \
+         JOIN session_token_usage stu ON stu.session_id = st.session_id \
+         WHERE st.account_id = $1 AND stu.created_at >= now() - $2::interval \
+         GROUP BY st.session_id, stu.model",
+    )
+    .bind(account_id)
+    .bind(interval)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_else(|e| {
+        tracing::warn!(account = %account_id, "session usd usage query error: {e}");
+        Vec::new()
+    });
+    if rows.is_empty() {
+        return None;
+    }
+    let mut per_session: std::collections::HashMap<String, Vec<(Option<String>, _)>> =
+        std::collections::HashMap::new();
+    for (session_id, model, input, cached, output) in rows {
+        per_session
+            .entry(session_id)
+            .or_default()
+            .push((model, crate::cost::TokenUsage { input, cached_input: cached, output }));
+    }
+    per_session
+        .into_values()
+        .map(|tallies| crate::cost::tallies_cost_usd(catalog, &tallies))
+        .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+}
+
 /// USD spent by one session under this account, priced from the catalog.
 pub async fn session_spend_usd(
     state: &AppState,
@@ -464,6 +511,14 @@ pub async fn fireworks_usd_windows(
             w.insert("amount_usd".into(), serde_json::json!(amount));
         }
     }
+    if let Some(top) =
+        max_session_spend_usd(&state.pool, account_id, catalog.as_ref(), "5 hours").await
+    {
+        out.insert(
+            crate::soft_limit::KEY_SESSION_USD.to_owned(),
+            serde_json::json!({ "amount_usd": top, "resets_at": serde_json::Value::Null }),
+        );
+    }
     Ok(Some(serde_json::Value::Object(out)))
 }
 
@@ -495,6 +550,20 @@ pub async fn record_fireworks_usage(
     .execute(&pool)
     .await
     {
-        tracing::warn!(session = %session_id, "fireworks usage record failed: {e}");
+        // A foreign-key violation here is not transient: the session id the
+        // gateway meters under has no `sessions` row, so every request for this
+        // session records nothing and its spend silently reads $0.
+        let unmetered = e
+            .as_database_error()
+            .is_some_and(|db| db.is_foreign_key_violation() || db.is_check_violation());
+        if unmetered {
+            tracing::error!(
+                session = %session_id,
+                "fireworks usage record rejected — session is unknown to the sessions table, \
+                 so its spend will never be metered: {e}"
+            );
+        } else {
+            tracing::warn!(session = %session_id, "fireworks usage record failed: {e}");
+        }
     }
 }

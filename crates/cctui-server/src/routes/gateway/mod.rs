@@ -672,4 +672,263 @@ mod tests {
         assert!(!needs_rebind("", "ses_058283e9"), "no spawn key ⇒ nothing to re-key");
         assert!(!needs_rebind("6e0e-4d7d", ""));
     }
+
+    /// DB-gated: the whole reason the rebind exists. An opencode child pulls its
+    /// gateway env under the spawn UUID, then registers under a `ses_…` id the
+    /// harness picked. Until the token is moved onto that id, every usage insert
+    /// violates `session_token_usage.session_id → sessions(id)` and the child's
+    /// spend silently reads $0. Skips without a database.
+    #[tokio::test]
+    async fn rebind_makes_a_renamed_session_meterable() {
+        let Some(url) = super::test_db_url("rebind_makes_a_renamed_session_meterable") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+
+        let uid = uuid::Uuid::new_v4();
+        let acct = uuid::Uuid::new_v4();
+        let prov = uuid::Uuid::new_v4();
+        let spawn_key = uuid::Uuid::new_v4().to_string();
+        let native_id = format!("ses_{}", uuid::Uuid::new_v4().simple());
+
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+            .bind(uid)
+            .bind(format!("rebind-{uid}"))
+            .bind(format!("kh-{uid}"))
+            .execute(&pool)
+            .await
+            .expect("seed user");
+        sqlx::query("INSERT INTO accounts (id, user_id, name) VALUES ($1, $2, $3)")
+            .bind(acct)
+            .bind(uid)
+            .bind("rebind-acct")
+            .execute(&pool)
+            .await
+            .expect("seed account");
+        sqlx::query(
+            "INSERT INTO account_providers \
+                 (id, user_id, provider, encrypted_refresh_token, account_id) \
+             VALUES ($1, $2, 'fireworks', 'x', $3)",
+        )
+        .bind(prov)
+        .bind(uid)
+        .bind(acct)
+        .execute(&pool)
+        .await
+        .expect("seed provider");
+        sqlx::query(
+            "INSERT INTO sessions (id, machine_id, working_dir, user_id, adapter_id) \
+             VALUES ($1, 'm1', '/w', $2, 'opencode')",
+        )
+        .bind(&native_id)
+        .bind(uid)
+        .execute(&pool)
+        .await
+        .expect("seed session under the harness id");
+        sqlx::query(
+            "INSERT INTO session_tokens (token_hash, session_id, account_id) VALUES ($1, $2, $3)",
+        )
+        .bind(format!("th-{spawn_key}"))
+        .bind(&spawn_key)
+        .bind(prov)
+        .execute(&pool)
+        .await
+        .expect("seed token under the spawn key");
+
+        let record = |sid: String| {
+            let pool = pool.clone();
+            async move {
+                sqlx::query(
+                    "INSERT INTO session_token_usage \
+                         (session_id, message_id, input_tokens, output_tokens, model) \
+                     VALUES ($1, $2, 1, 1, 'accounts/fireworks/models/kimi-k3')",
+                )
+                .bind(sid)
+                .bind(format!("m-{}", uuid::Uuid::new_v4().simple()))
+                .execute(&pool)
+                .await
+            }
+        };
+
+        assert!(
+            record(spawn_key.clone()).await.is_err(),
+            "usage under the un-rebound spawn key must violate the sessions FK"
+        );
+
+        crate::store::tokens::rebind_session_id(&pool, &spawn_key, &native_id)
+            .await
+            .expect("rebind");
+
+        let bound: String =
+            sqlx::query_scalar("SELECT session_id FROM session_tokens WHERE token_hash = $1")
+                .bind(format!("th-{spawn_key}"))
+                .fetch_one(&pool)
+                .await
+                .expect("read back token");
+        assert_eq!(bound, native_id, "the token must follow the harness id");
+
+        record(native_id.clone()).await.expect("usage under the rebound id must record");
+
+        let metered: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM session_token_usage stu \
+               JOIN session_tokens st ON st.session_id = stu.session_id \
+              WHERE st.account_id = $1",
+        )
+        .bind(prov)
+        .fetch_one(&pool)
+        .await
+        .expect("count metered rows");
+        assert_eq!(metered, 1, "the account's usage window must see the child's spend");
+
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
+    }
+
+    /// DB-gated: `session_usd` caps one session, so the account-level figure must
+    /// be the dearest single session, never the account total — reporting the sum
+    /// would show a cap breached while every session was under it.
+    #[tokio::test]
+    async fn session_usd_reports_the_dearest_session_not_the_account_total() {
+        let Some(url) =
+            super::test_db_url("session_usd_reports_the_dearest_session_not_the_account_total")
+        else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+
+        let uid = uuid::Uuid::new_v4();
+        let acct = uuid::Uuid::new_v4();
+        let prov = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+            .bind(uid)
+            .bind(format!("maxsess-{uid}"))
+            .bind(format!("kh-{uid}"))
+            .execute(&pool)
+            .await
+            .expect("seed user");
+        sqlx::query("INSERT INTO accounts (id, user_id, name) VALUES ($1, $2, $3)")
+            .bind(acct)
+            .bind(uid)
+            .bind("maxsess-acct")
+            .execute(&pool)
+            .await
+            .expect("seed account");
+        sqlx::query(
+            "INSERT INTO account_providers \
+                 (id, user_id, provider, encrypted_refresh_token, account_id) \
+             VALUES ($1, $2, 'fireworks', 'x', $3)",
+        )
+        .bind(prov)
+        .bind(uid)
+        .bind(acct)
+        .execute(&pool)
+        .await
+        .expect("seed provider");
+
+        // 1 Mtok of input at $3/Mtok, so each session's spend is its multiplier.
+        for (n, mtok) in [(1u32, 1_000_000_i64), (2, 3_000_000), (3, 2_000_000)] {
+            let sid = format!("ses_maxsess_{uid}_{n}");
+            sqlx::query(
+                "INSERT INTO sessions (id, machine_id, working_dir, user_id, adapter_id) \
+                 VALUES ($1, 'm1', '/w', $2, 'opencode')",
+            )
+            .bind(&sid)
+            .bind(uid)
+            .execute(&pool)
+            .await
+            .expect("seed session");
+            sqlx::query(
+                "INSERT INTO session_tokens (token_hash, session_id, account_id) \
+                 VALUES ($1, $2, $3)",
+            )
+            .bind(format!("th-maxsess-{uid}-{n}"))
+            .bind(&sid)
+            .bind(prov)
+            .execute(&pool)
+            .await
+            .expect("seed token");
+            sqlx::query(
+                "INSERT INTO session_token_usage \
+                     (session_id, message_id, input_tokens, output_tokens, model) \
+                 VALUES ($1, $2, $3, 0, 'accounts/fireworks/models/kimi-k3')",
+            )
+            .bind(&sid)
+            .bind(format!("m-maxsess-{uid}-{n}"))
+            .bind(mtok)
+            .execute(&pool)
+            .await
+            .expect("seed usage");
+        }
+
+        let catalog = serde_json::json!([
+            { "model": "accounts/fireworks/models/kimi-k3", "price_input_per_mtok": 3.0 }
+        ]);
+        let top = super::max_session_spend_usd(&pool, prov, Some(&catalog), "5 hours")
+            .await
+            .expect("a metered account reports a dearest session");
+        assert!(
+            (top - 9.0).abs() < 1e-6,
+            "expected the 3 Mtok session ($9), got {top} (account total would be $18)"
+        );
+
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
+    }
+
+    /// DB-gated: a capability must outlive the server process that recorded it,
+    /// and must follow a renamed session, or the daemon stops offering
+    /// `CctuiAgent` and the reviewer goes missing with no error anywhere.
+    #[tokio::test]
+    async fn spawn_capability_survives_restart_and_rebind() {
+        let Some(url) = super::test_db_url("spawn_capability_survives_restart_and_rebind") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+
+        let spawn_key = uuid::Uuid::new_v4().to_string();
+        let native_id = format!("ses_{}", uuid::Uuid::new_v4().simple());
+        let cap = cctui_proto::api::SpawnCapability {
+            adapters: vec!["opencode".to_owned()],
+            max_budget_usd: None,
+            max_children: Some(3),
+        };
+
+        crate::store::spawn_capabilities::upsert(&pool, &spawn_key, &cap).await.expect("upsert");
+        assert_eq!(
+            crate::store::spawn_capabilities::get(&pool, &spawn_key).await.expect("get"),
+            Some(cap.clone()),
+            "a fresh process must read the capability back from the table"
+        );
+
+        crate::store::spawn_capabilities::rebind(&pool, &spawn_key, &native_id)
+            .await
+            .expect("rebind");
+        assert_eq!(
+            crate::store::spawn_capabilities::get(&pool, &native_id).await.expect("get"),
+            Some(cap),
+            "the capability must follow the harness id"
+        );
+        assert_eq!(
+            crate::store::spawn_capabilities::get(&pool, &spawn_key).await.expect("get"),
+            None,
+            "nothing may be left under the spawn key"
+        );
+
+        crate::store::spawn_capabilities::delete(&pool, &native_id).await.expect("delete");
+        assert_eq!(
+            crate::store::spawn_capabilities::get(&pool, &native_id).await.expect("get"),
+            None,
+            "session end must drop the capability"
+        );
+    }
 }

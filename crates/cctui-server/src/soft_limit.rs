@@ -669,6 +669,20 @@ mod tests {
     }
 
     #[test]
+    fn session_usd_normalizes_so_a_configured_cap_is_not_reported_as_unobserved() {
+        let mut usage = usd_usage(1.5, "2026-06-19T16:00:00Z", 12.0);
+        usage["session_usd"] = json!({ "amount_usd": 0.75, "resets_at": null });
+        let w = normalize_usage_windows(&usage);
+        let keys: Vec<_> = w.iter().map(|x| x.key.as_str()).collect();
+        assert_eq!(keys, ["session_usd", "usd_5h", "usd_7d"]);
+        let s = &w[0];
+        assert_eq!(s.kind, "usd");
+        assert_eq!(s.label, "Session spend");
+        assert!((s.amount_usd.unwrap() - 0.75).abs() < 1e-9);
+        assert!(s.resets_at.is_none(), "a session window has no rolling reset");
+    }
+
+    #[test]
     fn usd_cap_blocks_and_names_dollars() {
         let c = usd_caps(&[(KEY_USD_5H, 1.0, None)]);
         match eval(&usd_usage(1.25, "2026-06-19T12:41:00Z", 0.0), &c) {

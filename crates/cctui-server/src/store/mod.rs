@@ -5,4 +5,5 @@
 
 pub mod account_providers;
 pub mod sessions;
+pub mod spawn_capabilities;
 pub mod tokens;

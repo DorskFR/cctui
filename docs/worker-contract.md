@@ -1211,8 +1211,9 @@ Enforcement lives server-side in
 daemon relays to. It denies when: no capability is recorded, the adapter is not
 listed, `budget_usd` exceeds `max_budget_usd` (or one is requested with no
 ceiling set), or the session already has `max_children`. The daemon grants
-nothing on its own. Capabilities live in server memory, so a server restart
-denies spawning until the session is relaunched — the fail-closed direction.
+nothing on its own. Capabilities are persisted in `session_spawn_capabilities`
+and cached in server memory, so a restart no longer silently disarms a live
+session's spawn tool; a lookup that errors still denies.
 
 Children are **not** granted a capability, so a child cannot spawn further
 children.
@@ -1225,3 +1226,13 @@ enforced with the existing 429 path. A child's budget always wins over a looser
 account-level `session_usd`. The child mints its own gateway credential under
 the **parent's account identity** for its own harness family, so a claude parent
 can spawn an opencode/Fireworks child on the same account.
+
+`budget_usd` is optional and usually unnecessary: the account's own `session_usd`
+cap already bounds a child, gateway-side. Naming a ceiling in the launcher only
+adds a second limit that can deny the spawn. Prefer the account cap.
+
+A harness that names its own session (opencode returns `ses_…`) is metered under
+the spawn key until it registers; `rebind_spawn_key` moves the token, the recorded
+usage, the child's budget and its capability onto the registered id in one step.
+Miss that and the usage FK to `sessions(id)` rejects every insert and the child's
+spend reads $0.

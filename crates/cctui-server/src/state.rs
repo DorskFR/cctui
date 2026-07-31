@@ -107,10 +107,8 @@ pub struct AppState {
     /// Persisted `stream_events` inserts observed per machine since server start,
     /// the cheap in-memory signal the divergence detector reads.
     pub machine_event_inserts: Arc<DashMap<Uuid, u64>>,
-    /// `CctuiAgent` spawn capabilities keyed by session id, written by the
-    /// spawn/dispatch route that launched the session. A server restart empties
-    /// this, which denies spawning until the session is relaunched — the
-    /// fail-closed direction.
+    /// `CctuiAgent` spawn capabilities keyed by session id. Read-through cache
+    /// over `session_spawn_capabilities`, which holds the durable copy.
     pub spawn_capabilities: Arc<DashMap<String, cctui_proto::api::SpawnCapability>>,
     /// Per-session dollar budgets applied to `CctuiAgent` children, keyed by the
     /// child's session id. Read on the gateway hot path only while non-empty.
