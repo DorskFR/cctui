@@ -103,7 +103,7 @@ fn session_line(s: &SessionListItem) -> ListItem<'static> {
     let branch = s.metadata.get("git_branch").and_then(serde_json::Value::as_str).unwrap_or("");
     let model = s.metadata.get("model").and_then(serde_json::Value::as_str).unwrap_or("");
 
-    let uptime = format_uptime(s.uptime_secs);
+    let uptime = format_uptime(crate::uptime_secs(s));
     let cost = format!("${:.2}", s.token_usage.cost_usd);
 
     let adapter = s.adapter_id.as_ref().map_or("claude-code", |a| a.as_str());

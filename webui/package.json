@@ -31,10 +31,13 @@
   },
   "dependencies": {
     "@dorsk/tsumikit": "^0.17.0",
+    "@tanstack/query-async-storage-persister": "^5.101.4",
     "@tanstack/svelte-query": "^5.87.0",
+    "@tanstack/svelte-query-persist-client": "^5.90.2",
     "@xterm/xterm": "^5.5.0",
     "cctui-ghreview-ui": "file:../ghreview-ui",
     "highlight.js": "^11.11.1",
-    "html-to-image": "^1.11.13"
+    "html-to-image": "^1.11.13",
+    "idb-keyval": "^6.3.0"
   }
 }

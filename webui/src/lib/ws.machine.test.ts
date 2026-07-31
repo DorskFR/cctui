@@ -190,3 +190,53 @@ describe('TrackedSend ack / retry / reconnect state machine', () => {
 		expect(messages(s).length).toBe(2);
 	});
 });
+
+describe('list patches vs refetch triggers', () => {
+	it('user-message stream frame emits a list patch and no changeTick bump', () => {
+		const c = openClient();
+		const patches: unknown[] = [];
+		c.onListPatch((p) => patches.push(p));
+		const before = c.changeTick;
+		last().deliver({
+			type: 'stream',
+			session_id: 's1',
+			data: { type: 'text', content: '▷ User: hello   world', meta: false, ts: 1000 }
+		});
+		expect(patches).toEqual([
+			{
+				session_id: 's1',
+				last_message_text: 'hello world',
+				last_message_at: new Date(1000).toISOString()
+			}
+		]);
+		expect(c.changeTick).toBe(before);
+	});
+
+	it('assistant text emits no patch and no bump', () => {
+		const c = openClient();
+		const patches: unknown[] = [];
+		c.onListPatch((p) => patches.push(p));
+		const before = c.changeTick;
+		last().deliver({
+			type: 'stream',
+			session_id: 's1',
+			data: { type: 'text', content: 'assistant prose', meta: false, ts: 1000 }
+		});
+		expect(patches).toEqual([]);
+		expect(c.changeTick).toBe(before);
+	});
+
+	it('permission request patches attention; resolution refetches debounced', () => {
+		const c = openClient();
+		const patches: { attention?: string }[] = [];
+		c.onListPatch((p) => patches.push(p));
+		const before = c.changeTick;
+		last().deliver({ type: 'permission_request', session_id: 's1', request_id: 'r1' });
+		expect(patches).toEqual([{ session_id: 's1', attention: 'needs_input', bucket: 'blocked' }]);
+		expect(c.changeTick).toBe(before);
+		last().deliver({ type: 'permission_resolved', session_id: 's1', request_id: 'r1' });
+		expect(c.changeTick).toBe(before);
+		vi.advanceTimersByTime(2100);
+		expect(c.changeTick).toBe(before + 1);
+	});
+});

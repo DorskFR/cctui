@@ -39,6 +39,11 @@ pub(crate) const fn bucket_rank(bucket: cctui_proto::classifier::Bucket) -> u8 {
     }
 }
 
+/// Uptime derived from `registered_at`; 0 when unset.
+pub(crate) fn uptime_secs(s: &cctui_proto::api::SessionListItem) -> i64 {
+    s.registered_at.map_or(0, |r| (chrono::Utc::now() - r).num_seconds())
+}
+
 /// Input event from the terminal: either a key press or mouse scroll.
 #[derive(Debug, Clone)]
 enum InputEvent {
@@ -681,7 +686,6 @@ fn register_session(app: &mut App, session: cctui_proto::models::Session) {
         attention: None,
         // Classifier signals arrive on the next REST refresh; Working until then.
         bucket: cctui_proto::classifier::Bucket::Working,
-        uptime_secs: 0,
         token_usage: cctui_proto::models::TokenUsage::default(),
         metadata: session.metadata,
         adapter_id: session.adapter_id,

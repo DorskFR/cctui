@@ -221,7 +221,6 @@ pub struct SessionListItem {
     /// both clients. Defaults to `Working` for back-compat.
     #[serde(default = "default_bucket")]
     pub bucket: Bucket,
-    pub uptime_secs: i64,
     pub token_usage: TokenUsage,
     pub metadata: serde_json::Value,
     /// Adapter that produced this session. Defaults to `"claude-code"` for

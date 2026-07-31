@@ -103,10 +103,14 @@ export const endpoints = {
   /** Mark this session's messages seen for the caller — clears its
    *  unread badge on the next `/sessions` refetch. */
   markSeen: (id: string) => api.post<void>(`/sessions/${id}/seen`),
-  conversation: (id: string, opts?: { limit?: number; before?: number }) =>
+  conversation: (
+    id: string,
+    opts?: { limit?: number; before?: number; after?: number },
+  ) =>
     api.get<AgentEvent[]>(`/sessions/${id}/conversation`, {
       limit: opts?.limit,
       before: opts?.before,
+      after: opts?.after,
     }),
   /** One-call session diagnose: everything the daemon knows about
    *  the session — each fact dated + sourced, plus the arbitration verdict —

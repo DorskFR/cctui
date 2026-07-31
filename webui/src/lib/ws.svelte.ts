@@ -19,6 +19,15 @@ export interface PermReq {
  * events. Shared so both shapes reconcile to one identity. */
 export const USER_PREFIX = '▷ User:';
 
+/** Mirrors the server's `normalize_last_message` (collapse whitespace,
+ *  cap at 200 chars) so patched excerpts match the next poll's. */
+export function lastMessageExcerpt(content: string): string {
+	const collapsed = content.startsWith(USER_PREFIX)
+		? content.slice(USER_PREFIX.length).split(/\s+/).filter(Boolean).join(' ')
+		: content.split(/\s+/).filter(Boolean).join(' ');
+	return collapsed.length > 200 ? `${[...collapsed].slice(0, 200).join('')}…` : collapsed;
+}
+
 /** Canonicalize a user-turn body so its optimistic-echo and persisted/server
  * shapes reduce to the same string. The composer appends staged
  * *absolute* upload paths under an `Attached file(s):` header, and the
@@ -110,6 +119,14 @@ type SoftLimitCb = (sl: SoftLimit | null) => void;
 /** Server ack for a client-sent message. `ok=false` means the server
  * could not dispatch the reply to the session's daemon, so the client should
  * mark the message failed and offer a retry. */
+export interface SessionListPatch {
+	session_id: string;
+	last_message_text?: string;
+	last_message_at?: string;
+	attention?: 'needs_input';
+	bucket?: 'blocked';
+}
+
 export interface MessageAck {
 	client_msg_id: string;
 	ok: boolean;
@@ -417,10 +434,15 @@ export class WsClient {
 				const sid = msg.session_id as string;
 				const data = msg.data as AgentEvent;
 				this.appendEvent(sid, data);
-				// Live events change a session's last-message/ordering in the list,
-				// otherwise only refreshed on the 15s poll. Coalesce into one list
-				// refresh so the list stays roughly live without refetching per event.
-				this.markListDirty();
+				// The list's last-message column tracks USER messages only
+				// (server: event_type='message'); assistant text must not patch it.
+				if (userMsgKey(data) !== null && (data.type === 'text' || data.type === 'reply')) {
+					this.emitListPatch({
+						session_id: sid,
+						last_message_text: lastMessageExcerpt(data.content),
+						last_message_at: new Date(data.ts).toISOString()
+					});
+				}
 				break;
 			}
 			case 'pty_chunk': {
@@ -517,7 +539,7 @@ export class WsClient {
 			case 'status':
 			case 'session_registered':
 			case 'session_deregistered':
-				this.changeTick++;
+				this.markListDirty();
 				break;
 		}
 	}
@@ -529,6 +551,17 @@ export class WsClient {
 			this.listDirtyTimer = null;
 			this.changeTick++;
 		}, 2000);
+	}
+
+	// Per-session in-place patches; full refetches are reserved for structural
+	// changes and the 15s poll reconciles the rest.
+	private listPatchCbs = new Set<(p: SessionListPatch) => void>();
+	onListPatch(cb: (p: SessionListPatch) => void): () => void {
+		this.listPatchCbs.add(cb);
+		return () => this.listPatchCbs.delete(cb);
+	}
+	private emitListPatch(p: SessionListPatch) {
+		for (const cb of this.listPatchCbs) cb(p);
 	}
 
 	private appendEvent(id: string, ev: AgentEvent) {
@@ -575,30 +608,39 @@ export class WsClient {
 		if (opt) this.optimistic.set(id, opt.filter((o) => o.ts !== ts));
 	}
 
+	// Gaining attention patches the list item in place (the client knows the
+	// session just became blocked); losing it needs the server-derived bucket,
+	// so that path falls back to the debounced refetch.
 	private setPerms(id: string, list: PermReq[]) {
 		this.perms.set(id, list);
-		this.changeTick++; // list badge re-derives on changeTick-driven refetch
+		if (list.length > 0) {
+			this.emitListPatch({ session_id: id, attention: 'needs_input', bucket: 'blocked' });
+		} else {
+			this.markListDirty();
+		}
 		this.permCbs.emit(id, list);
 	}
 
 	private setAsk(id: string, ask: LiveAsk | null) {
 		if (ask === null) this.asks.delete(id);
 		else this.asks.set(id, ask);
-		this.changeTick++;
+		if (ask) this.emitListPatch({ session_id: id, attention: 'needs_input', bucket: 'blocked' });
+		else this.markListDirty();
 		this.askCbs.emit(id, ask);
 	}
 
 	private setPlan(id: string, plan: LivePlan | null) {
 		if (plan === null) this.plans.delete(id);
 		else this.plans.set(id, plan);
-		this.changeTick++;
+		if (plan) this.emitListPatch({ session_id: id, attention: 'needs_input', bucket: 'blocked' });
+		else this.markListDirty();
 		this.planCbs.emit(id, plan);
 	}
 
 	private setSoftLimit(id: string, sl: SoftLimit | null) {
 		if (sl === null) this.softLimits.delete(id);
 		else this.softLimits.set(id, sl);
-		this.changeTick++;
+		this.markListDirty();
 		this.softLimitCbs.emit(id, sl);
 	}
 
