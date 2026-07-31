@@ -3,6 +3,6 @@
 /**
  * The four session buckets clients group on. Serialized `snake_case`
  * (`working` / `blocked` / `review` / `done`) and shared verbatim by the
- * TUI and web UI as the on-wire grouping signal (CCT-90).
+ * TUI and web UI as the on-wire grouping signal.
  */
 export type Bucket = "working" | "blocked" | "review" | "done";

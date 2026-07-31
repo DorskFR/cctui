@@ -6,7 +6,7 @@ export type DispatchResponse = { session_id: string, dispatcher: string,
  */
 handle: string, namespace: string | null, 
 /**
- * Dispatch outcome (CCT-207): `dispatched` (a fresh run was launched),
+ * Dispatch outcome: `dispatched` (a fresh run was launched),
  * `deduplicated` (an in-flight Job already owns the one callback the caller
  * is waiting on), or `redispatched` (a *terminal* Job was deleted and a
  * fresh run launched — so the caller's wait resolves on the new callback

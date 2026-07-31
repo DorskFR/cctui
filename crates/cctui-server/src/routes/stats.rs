@@ -535,9 +535,14 @@ mod tests {
         };
 
         let now = Utc::now();
-        let day_a = now - Duration::days(3);
+        // Anchor at midday UTC so the +2h sibling row can't cross a UTC date
+        // boundary (near-midnight runs split the bucket otherwise).
+        let midday = |d: DateTime<Utc>| {
+            d.date_naive().and_hms_opt(12, 0, 0).expect("valid midday").and_utc()
+        };
+        let day_a = midday(now - Duration::days(3));
         let day_a2 = day_a + Duration::hours(2);
-        let day_b = now - Duration::days(5);
+        let day_b = midday(now - Duration::days(5));
         // Two rows on day_a (one claude, one NULL model → 'unknown'), one on day_b.
         seed(1, Some("claude-x"), day_a, 100, 10, 5, 1).await;
         seed(2, None, day_a2, 200, 20, 0, 0).await;

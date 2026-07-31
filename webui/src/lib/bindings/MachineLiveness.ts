@@ -5,7 +5,7 @@
  *
  * Derived from the age
  * of `machines.last_seen_at`, which the server now advances on every daemon
- * `Heartbeat` frame (CCT-255). Mirrors the session [`Liveness`] tiers but
+ * `Heartbeat` frame. Mirrors the session [`Liveness`] tiers but
  * names them in machine terms:
  *
  * - `Online`: a heartbeat arrived within the active window.

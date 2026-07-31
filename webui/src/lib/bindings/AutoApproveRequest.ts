@@ -2,6 +2,6 @@
 
 /**
  * Body for `POST /api/v1/sessions/{id}/auto-approve` — toggle the cctui-side
- * auto-approve convenience (CCT-151).
+ * auto-approve convenience.
  */
 export type AutoApproveRequest = { enabled: boolean, };

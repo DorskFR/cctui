@@ -3,11 +3,11 @@
 export type MeResponse = { 
 /**
  * Coarse role hint for the UI: `admin` | `user` | `machine`. Derived from
- * scopes + machine id (CCT-410); authority itself lives in `scopes`.
+ * scopes + machine id; authority itself lives in `scopes`.
  */
 role: string, 
 /**
- * Always present now — everyone is a real user (CCT-410). Kept `Option`
+ * Always present now — everyone is a real user. Kept `Option`
  * for webui wire-compat; never `null` in practice.
  */
 user_id: string | null, 

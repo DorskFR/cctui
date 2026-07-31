@@ -6,7 +6,7 @@ export type RenameMachineRequest = {
  */
 display_name: string | null, 
 /**
- * Badge hue override (0-359, CCT-222). `None` clears it (hash fallback).
+ * Badge hue override (0-359). `None` clears it (hash fallback).
  * The PATCH replaces both fields, so callers send the full pair.
  */
 hue: number | null, };

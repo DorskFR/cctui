@@ -363,7 +363,6 @@ pub async fn list_sessions(
                         tool_use_count: 0,
                         has_token_credentials: false,
                         account_traffic_observed: false,
-                        intent: None,
                         pr_links: Vec::new(),
                     },
                 )
@@ -462,7 +461,6 @@ pub async fn list_sessions(
                 tool_use_count: 0,
                 has_token_credentials: false,
                 account_traffic_observed: false,
-                intent: None,
                 pr_links: Vec::new(),
             },
         ));
@@ -684,12 +682,11 @@ async fn enrich_and_sort(
             Option<DateTime<Utc>>,
             Option<String>,
             i32,
-            Option<String>,
             serde_json::Value,
         );
         let rows: Vec<SignalRow> = sqlx::query_as(
             "SELECT id, tempo, agent_state, activity, session_name, model, effort, pinned, \
-                    soft_limit_reason, last_tool_at, last_tool_name, tool_use_count, intent, \
+                    soft_limit_reason, last_tool_at, last_tool_name, tool_use_count, \
                     children \
              FROM sessions WHERE id = ANY($1)",
         )
@@ -721,7 +718,6 @@ async fn enrich_and_sort(
                 last_tool_at,
                 last_tool_name,
                 tool_use_count,
-                intent,
                 children,
             )) = by_session.remove(&s.id)
             {
@@ -751,7 +747,6 @@ async fn enrich_and_sort(
                 s.last_tool_at = last_tool_at;
                 s.last_tool_name = last_tool_name;
                 s.tool_use_count = tool_use_count.clamp(0, i32::MAX) as u32;
-                s.intent = intent;
             }
         }
     }
@@ -1249,7 +1244,6 @@ pub async fn search_sessions(
                     tool_use_count: 0,
                     has_token_credentials: false,
                     account_traffic_observed: false,
-                    intent: None,
                     pr_links: Vec::new(),
                 },
             )
@@ -1456,7 +1450,6 @@ pub async fn get_session(
                 tool_use_count: 0,
                 has_token_credentials: false,
                 account_traffic_observed: false,
-                intent: None,
                 pr_links: Vec::new(),
             };
             return Ok(Json(item));
@@ -1518,15 +1511,23 @@ pub async fn get_session(
         tool_use_count: 0,
         has_token_credentials: false,
         account_traffic_observed: false,
-        intent: None,
         pr_links: Vec::new(),
     };
     Ok(Json(item))
 }
 
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct ConversationQuery {
+    /// Newest `limit` events only; absent = full transcript.
+    pub limit: Option<i64>,
+    /// Exclusive upper `seq` bound for paging back.
+    pub before: Option<i64>,
+}
+
 pub async fn get_conversation(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
+    Query(params): Query<ConversationQuery>,
 ) -> Result<Json<Vec<serde_json::Value>>, (StatusCode, Json<ApiError>)> {
     let adapter: Option<String> =
         crate::store::sessions::adapter_id(&state.pool, &session_id).await.map_err(|e| {
@@ -1538,17 +1539,21 @@ pub async fn get_conversation(
     // the causal `seq` and is a strict total order, so a late-flushed
     // AskUserQuestion card+preamble keep their insert position even when their
     // `created_at` ties or lands after the user's answer.
-    let rows: Vec<(i64, String, serde_json::Value, DateTime<Utc>)> = sqlx::query_as(
+    let mut rows: Vec<(i64, String, serde_json::Value, DateTime<Utc>)> = sqlx::query_as(
         "SELECT id, event_type, payload, created_at FROM stream_events \
-         WHERE session_id = $1 ORDER BY id ASC",
+         WHERE session_id = $1 AND ($2::bigint IS NULL OR id < $2) \
+         ORDER BY id DESC LIMIT $3",
     )
     .bind(&session_id)
+    .bind(params.before)
+    .bind(params.limit.map(|l| l.clamp(1, 10_000)))
     .fetch_all(&state.pool)
     .await
     .map_err(|e| {
         tracing::error!("db error: {e}");
         (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
     })?;
+    rows.reverse();
 
     let usage_rows: Vec<(String, Option<String>, i64, i64, i64, i64)> = sqlx::query_as(
         "SELECT message_id, model, \

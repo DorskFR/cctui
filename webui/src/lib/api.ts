@@ -1,5 +1,6 @@
 import { apiBase } from './config';
 import { auth } from './auth.svelte';
+import { net } from './netstats.svelte';
 
 export class ApiError extends Error {
 	status: number;
@@ -47,6 +48,7 @@ async function handle<T>(res: Response): Promise<T> {
 	}
 	if (res.status === 204) return undefined as T;
 	const text = await res.text();
+	net.recordApi(res.url, text.length);
 	if (!text) return undefined as T;
 	return JSON.parse(text) as T;
 }

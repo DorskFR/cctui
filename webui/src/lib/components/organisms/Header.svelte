@@ -9,6 +9,7 @@
 	import { toasts } from '$lib/toast.svelte';
 	import { IconButton, SelectButton, Text } from '@dorsk/tsumikit';
 	import NavLink from '$lib/components/atoms/NavLink.svelte';
+	import NetStatsChip from '$lib/components/molecules/NetStatsChip.svelte';
 	import { m } from '$lib/paraglide/messages';
 
 	const version = useVersion();
@@ -61,6 +62,7 @@
 			title={m.nav_ws_status({ status: ws.status })}
 		></span>
 		<div class="spacer"></div>
+		<NetStatsChip />
 		{#if $version.data}
 			<NavLink href={$version.data.commit_url} target="_blank" rel="noopener">
 				<Text size="xs" tone="faint" variant="code">

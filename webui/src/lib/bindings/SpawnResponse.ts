@@ -2,7 +2,7 @@
 
 export type SpawnResponse = { command_id: string, status: string, 
 /**
- * Account the spawn bound (CCT-582), surfaced so the client can show which
+ * Account the spawn bound, surfaced so the client can show which
  * credential is in play — chiefly for an auto-bound default the user never
  * named. `None` for an unbound spawn.
  */

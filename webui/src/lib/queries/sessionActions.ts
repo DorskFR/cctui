@@ -62,7 +62,6 @@ function optimisticDispatchCard(
     pinned: false,
     labels: [],
     last_heartbeat: null,
-    intent: null,
     pr_links: [],
     account_name: body.account ?? null,
     unread_count: 0,

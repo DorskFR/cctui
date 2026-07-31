@@ -11,7 +11,7 @@ export type ServerEvent = { "type": "stream", session_id: string, data: AgentEve
 /**
  * Assistant prose preceding the question in the same turn, so clients
  * render the reasoning above the live prompt instead of leaving the
- * user to answer blind (CCT-213). `None` when there was none.
+ * user to answer blind. `None` when there was none.
  */
 preamble: string | null, } | { "type": "ask_resolved", session_id: string, } | { "type": "plan_request", session_id: string, plan: string, 
 /**

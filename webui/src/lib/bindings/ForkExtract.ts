@@ -2,7 +2,7 @@
 import type { ForkMode } from "./ForkMode";
 
 /**
- * Conversation-extract selector for a subset fork (CCT-553).
+ * Conversation-extract selector for a subset fork.
  */
 export type ForkExtract = { mode: ForkMode, 
 /**

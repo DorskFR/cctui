@@ -4,7 +4,7 @@ import type { LangfuseCapability } from "./LangfuseCapability";
 /**
  * The capability envelope. One field per optional integration.
  *
- * CCT-399: `claude_litellm_models` was dropped — self-hosted models are now a
- * per-account property surfaced by `GET /accounts`, not a server-global list.
+ * Self-hosted models are a per-account property surfaced by `GET /accounts`,
+ * not a server-global list.
  */
 export type CapabilitiesResponse = { langfuse: LangfuseCapability, };
