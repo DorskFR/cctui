@@ -1,6 +1,7 @@
 import { browser } from '$app/environment';
 import { wsBase } from './config';
 import { auth } from './auth.svelte';
+import { net } from './netstats.svelte';
 import type { AgentEvent } from '@bindings/AgentEvent';
 import type { GithubEventKind } from '@bindings/GithubEventKind';
 import type { GithubEventPayload } from '@bindings/GithubEventPayload';
@@ -366,7 +367,10 @@ export class WsClient {
 				}
 			}
 		};
-		sock.onmessage = (ev) => this.onFrame(ev.data);
+		sock.onmessage = (ev) => {
+			if (typeof ev.data === 'string') net.recordWs(ev.data.length);
+			this.onFrame(ev.data);
+		};
 		sock.onclose = () => {
 			this.status = 'closed';
 			this.socket = null;

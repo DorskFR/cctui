@@ -8,6 +8,6 @@
 export type GatewayStatus = { 
 /**
  * Whether the daemon has an authenticated server client + machine key
- * for the launch-time gateway-env pull (CCT-460).
+ * for the launch-time gateway-env pull.
  */
 server_configured: boolean, };

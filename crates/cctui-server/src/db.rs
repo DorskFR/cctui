@@ -1,7 +1,8 @@
+use std::str::FromStr;
 use std::time::Duration;
 
-use sqlx::PgPool;
-use sqlx::postgres::PgPoolOptions;
+use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+use sqlx::{ConnectOptions, PgPool};
 
 /// Read a `u32` env var, falling back to `default` when unset or unparseable.
 fn env_u32(name: &str, default: u32) -> u32 {
@@ -16,12 +17,18 @@ pub async fn connect(database_url: &str) -> Result<PgPool, sqlx::Error> {
     let max_connections = env_u32("CCTUI_DB_MAX_CONNECTIONS", 40);
     let min_connections = env_u32("CCTUI_DB_MIN_CONNECTIONS", 5);
     let acquire_timeout = env_u32("CCTUI_DB_ACQUIRE_TIMEOUT_SECS", 5);
+    let slow_query_ms = env_u32("CCTUI_DB_SLOW_QUERY_MS", 500);
+
+    let connect_options = PgConnectOptions::from_str(database_url)?.log_slow_statements(
+        log::LevelFilter::Warn,
+        Duration::from_millis(u64::from(slow_query_ms)),
+    );
 
     let pool = PgPoolOptions::new()
         .max_connections(max_connections)
         .min_connections(min_connections)
         .acquire_timeout(Duration::from_secs(u64::from(acquire_timeout)))
-        .connect(database_url)
+        .connect_with(connect_options)
         .await?;
 
     reconcile_migration_checksums(&pool).await?;
@@ -32,6 +39,7 @@ pub async fn connect(database_url: &str) -> Result<PgPool, sqlx::Error> {
         max_connections,
         min_connections,
         acquire_timeout_secs = acquire_timeout,
+        slow_query_ms,
         "database connected and migrations applied"
     );
     Ok(pool)

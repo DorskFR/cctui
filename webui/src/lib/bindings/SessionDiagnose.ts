@@ -12,13 +12,13 @@ import type { SocketStatus } from "./SocketStatus";
 import type { TranscriptStatus } from "./TranscriptStatus";
 
 /**
- * Everything the daemon knows about one session, dated (CCT-547). Assembled
+ * Everything the daemon knows about one session, dated. Assembled
  * by the adapter from state it already tracks — aggregation, not new sensing.
  *
  * The named facts below are the adapter-neutral / claude-code set. Adapters
  * with their own diagnostics attach an optional tagged section (currently
  * [`SessionDiagnose::codex`]); this keeps the claude wire shape stable while
- * letting each adapter carry its own payload (CCT-640).
+ * letting each adapter carry its own payload.
  */
 export type SessionDiagnose = { 
 /**
@@ -40,7 +40,7 @@ generated_at_ms: number, adapter: string,
  */
 effective_state: DiagnoseFact<EffectiveState>, last_hook_event: DiagnoseFact<HookEvent>, attach: DiagnoseFact<AttachStatus>, 
 /**
- * Held-attach PTY output age/throughput (CCT-546); the second activity
+ * Held-attach PTY output age/throughput; the second activity
  * signal, hook-independent.
  */
 pty_output: DiagnoseFact<PtyOutputStats>, claude_socket: DiagnoseFact<SocketStatus>, transcript: DiagnoseFact<TranscriptStatus>, prompts: DiagnoseFact<PendingPrompts>, 
@@ -50,6 +50,6 @@ pty_output: DiagnoseFact<PtyOutputStats>, claude_socket: DiagnoseFact<SocketStat
  */
 permission_mode: DiagnoseFact<string>, dispatch: DiagnoseFact<DispatchStatus>, gateway: DiagnoseFact<GatewayStatus>, 
 /**
- * Codex-adapter-specific section (CCT-640); `None` for claude-code.
+ * Codex-adapter-specific section; `None` for claude-code.
  */
 codex: CodexDiagnose | null, };

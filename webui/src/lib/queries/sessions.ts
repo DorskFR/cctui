@@ -54,6 +54,9 @@ export const useUsageAnalytics = (days: () => number) =>
     })),
   );
 
+/** Older pages (`before` cursor) deliberately bypass the query cache. */
+export const CONVERSATION_FETCH_LIMIT = 60;
+
 export const useConversation = (
   id: () => string,
   enabled: () => boolean = () => true,
@@ -61,7 +64,8 @@ export const useConversation = (
   createQuery(
     toStore(() => ({
       queryKey: qk.conversation(id()),
-      queryFn: () => endpoints.conversation(id()),
+      queryFn: () =>
+        endpoints.conversation(id(), { limit: CONVERSATION_FETCH_LIMIT }),
       enabled: enabled() && !!id(),
     })),
   );

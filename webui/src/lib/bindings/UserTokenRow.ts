@@ -2,7 +2,7 @@
 
 export type UserTokenRow = { id: string, label: string | null, created_at: string, expires_at: string | null, revoked_at: string | null, 
 /**
- * Non-secret fragment for display (CCT-185), e.g. `cctui_u_ab12…ef34`.
+ * Non-secret fragment for display, e.g. `cctui_u_ab12…ef34`.
  * `None` for tokens minted before the preview column existed.
  */
 token_preview: string | null, };

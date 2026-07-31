@@ -3,7 +3,7 @@
 /**
  * One time bucket of aggregate token usage for the Overview usage chart.
  *
- * (CCT-707.) `bucket` is the `date_trunc`'d instant (RFC3339, in the fixed
+ * (.) `bucket` is the `date_trunc`'d instant (RFC3339, in the fixed
  * reporting timezone anchored by the caller's `tz_offset`, mapped back to a
  * UTC instant like `today` in [`TokenUsageWindows`]). Missing buckets are
  * zero-filled client-side, not in SQL.

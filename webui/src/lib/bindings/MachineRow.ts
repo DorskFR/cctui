@@ -4,20 +4,20 @@ import type { MachineLiveness } from "./MachineLiveness";
 export type MachineRow = { id: string, user_id: string, name: string, display_name: string | null, first_seen_at: string, last_seen_at: string, revoked_at: string | null, 
 /**
  * `persistent` (a real daemon) or `ephemeral` (a dispatch/worker pod).
- * The New-session picker hides `ephemeral` machines (CCT-183).
+ * The New-session picker hides `ephemeral` machines.
  */
 kind: string, 
 /**
- * Operator-set badge hue (0-359, CCT-222). `None` = hash of the name.
+ * Operator-set badge hue (0-359). `None` = hash of the name.
  */
 hue: number | null, 
 /**
- * Non-secret machine-key fragment, e.g. `cctui_m_ab1234…ef34` (CCT-251).
+ * Non-secret machine-key fragment, e.g. `cctui_m_ab1234…ef34`.
  * `None` for machines enrolled before the preview column existed.
  */
 key_preview: string | null, 
 /**
- * Derived online/stale/offline tier from `last_seen_at` age (CCT-255).
+ * Derived online/stale/offline tier from `last_seen_at` age.
  * Not a DB column — `#[sqlx(skip)]` makes `query_as` ignore it (filled via
  * `Default`); the handler fills it in from `last_seen_at` after the fetch.
  */

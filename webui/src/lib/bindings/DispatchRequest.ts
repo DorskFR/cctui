@@ -3,7 +3,7 @@ import type { DispatchAccount } from "./DispatchAccount";
 import type { JsonValue } from "./serde_json/JsonValue";
 
 /**
- * CCT-107: dispatcher-routed session start.
+ * dispatcher-routed session start.
  *
  * `dispatcher` selects which [`Dispatcher`] impl on the server materializes
  * the request (e.g. `"k8s_job"`). Everything else is deliberately
@@ -30,11 +30,11 @@ timeout: number | null,
 /**
  * Caller resume URL (e.g. an automation `$execution.resumeUrl`). A **bearer
  * capability** — carried to the runtime, never logged or persisted.
- * The worker POSTs its deterministic result here (CCT-119).
+ * The worker POSTs its deterministic result here.
  */
 reply_url: string | null, 
 /**
- * Server-side completion-webhook target (CCT-294): the eventual
+ * Server-side completion-webhook target: the eventual
  * replacement for `reply_url`. When set, the SERVER (not the worker) POSTs
  * the completion payload here once the dispatched session reaches a
  * terminal state — INCLUDING crash cases the worker's exit trap can miss
@@ -45,7 +45,7 @@ reply_url: string | null,
  */
 notify_url: string | null, 
 /**
- * Optional per-target HMAC secret (CCT-294). When set, the server signs the
+ * Optional per-target HMAC secret. When set, the server signs the
  * completion-webhook body with HMAC-SHA256 and sends the hex digest in an
  * `X-CCTUI-Signature: sha256=<hex>` header so the receiver can verify the
  * POST originated from cctui. Never logged.
@@ -56,7 +56,7 @@ notify_secret: string | null,
  */
 payload: JsonValue, 
 /**
- * Named account to run the dispatched session under (CCT-399). When set the
+ * Named account to run the dispatched session under. When set the
  * server mints a session-scoped gateway token bound to `(session_id,
  * account)` and merges the gateway base-url + token into `payload.env`, so a
  * dispatched worker routes through the passthrough gateway exactly like a
@@ -64,13 +64,13 @@ payload: JsonValue,
  */
 account: string | null, 
 /**
- * Provider of the selected `account` (CCT-399), disambiguating a shared
+ * Provider of the selected `account`, disambiguating a shared
  * name across providers. `None` → assume the claude-code (anthropic) family,
  * matching the k8s claude-worker the dispatch path runs.
  */
 provider: string | null, 
 /**
- * Multiple accounts to route the dispatched session through (CCT-508).
+ * Multiple accounts to route the dispatched session through.
  * When non-empty the server mints a session-scoped gateway token for EACH
  * account and merges every family's env into `payload.env`, so one worker
  * can carry `ANTHROPIC_*` and `OPENAI_*` at once (e.g. claude + codex both

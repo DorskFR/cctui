@@ -35,7 +35,7 @@ default: string | null,
  */
 notes: string | null, 
 /**
- * Editor grouping for the account-settings toggle list (CCT-571). Set in
+ * Editor grouping for the account-settings toggle list. Set in
  * catalog.toml on the curated boolean keys only; a key with a group gets a
  * tri-state toggle in the webui, everything else is raw-JSON-only.
  */

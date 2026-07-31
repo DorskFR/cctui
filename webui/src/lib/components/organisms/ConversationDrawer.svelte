@@ -2,7 +2,15 @@
 	import type { SessionListItem } from '@bindings/SessionListItem';
 	import type { AgentEvent } from '@bindings/AgentEvent';
 	import { ws, USER_PREFIX } from '$lib/ws.svelte';
-	import { useConversation, useSessionActions, useLabels, useAccounts, qk } from '$lib/queries';
+	import {
+		useConversation,
+		useSessionActions,
+		useLabels,
+		useAccounts,
+		qk,
+		endpoints,
+		CONVERSATION_FETCH_LIMIT
+	} from '$lib/queries';
 	import { useQueryClient } from '@tanstack/svelte-query';
 	import { renderMarkdown, highlightBlock } from '$lib/markdown';
 	import { highlightTerms } from '$lib/search';
@@ -196,12 +204,47 @@
 	// insert `seq` keeps a reloaded AskUserQuestion above its answer (which a
 	// `ts`-only sort inverted) while an optimistic reply that survives a
 	// refetch still lands in its correct place.
+	// Older pages fetched via the `before` cursor; the query cache only ever
+	// holds the newest CONVERSATION_FETCH_LIMIT events, so refetches stay small.
+	let earlier = $state<AgentEvent[]>([]);
+	let earlierExhausted = $state(false);
+	let fetchingEarlier = $state(false);
+	$effect(() => {
+		void id;
+		earlier = [];
+		earlierExhausted = false;
+	});
+	const canFetchEarlier = $derived(
+		!earlierExhausted && ($history.data?.length ?? 0) >= CONVERSATION_FETCH_LIMIT
+	);
+
 	const events = $derived.by(() => {
 		const hist = $history.data ?? [];
 		const seen = new Set(hist.map(eventSig));
+		const front = earlier.filter((e) => !seen.has(eventSig(e)));
+		for (const e of front) seen.add(eventSig(e));
 		const tail = stream.live.filter((e) => !seen.has(eventSig(e)));
-		return orderEvents([...hist, ...tail]);
+		return orderEvents([...front, ...hist, ...tail]);
 	});
+
+	async function fetchEarlier() {
+		if (fetchingEarlier || earlierExhausted) return;
+		const oldest = events.find((e) => typeof e.seq === 'number')?.seq;
+		if (oldest == null) return;
+		const sid = id;
+		fetchingEarlier = true;
+		try {
+			const page = await endpoints.conversation(sid, {
+				limit: CONVERSATION_FETCH_LIMIT,
+				before: oldest
+			});
+			if (sid !== id) return;
+			if (page.length < CONVERSATION_FETCH_LIMIT) earlierExhausted = true;
+			earlier = [...page, ...earlier];
+		} finally {
+			fetchingEarlier = false;
+		}
+	}
 
 	// ── Line building (parse + filter + dedup + delivery tinting) ───────────
 	// Render markdown honoring the table formatting toggle.
@@ -623,6 +666,9 @@
 		sessionId={id}
 		{lines}
 		isLoading={$history.isLoading}
+		canFetchOlder={canFetchEarlier}
+		fetchingOlder={fetchingEarlier}
+		onfetcholder={fetchEarlier}
 		{archived}
 		{askPreambleHtml}
 		{planPreambleHtml}

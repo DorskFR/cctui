@@ -16,6 +16,9 @@
 		sessionId,
 		lines,
 		isLoading,
+		canFetchOlder = false,
+		fetchingOlder = false,
+		onfetcholder,
 		archived,
 		askPreambleHtml,
 		planPreambleHtml,
@@ -35,6 +38,10 @@
 		sessionId: string;
 		lines: Line[];
 		isLoading: boolean;
+		// Server-side paging: more history exists beyond the fetched window.
+		canFetchOlder?: boolean;
+		fetchingOlder?: boolean;
+		onfetcholder?: () => Promise<void>;
 		archived: boolean;
 		askPreambleHtml: string | null;
 		planPreambleHtml: string | null;
@@ -64,7 +71,8 @@
 	});
 	const hiddenOlder = $derived(Math.max(0, lines.length - renderLimit));
 	const visibleLines = $derived(hiddenOlder > 0 ? lines.slice(hiddenOlder) : lines);
-	function loadOlder() {
+	async function loadOlder() {
+		if (hiddenOlder === 0 && canFetchOlder && onfetcholder) await onfetcholder();
 		scroll.holdForPrepend(() => (renderLimit += RENDER_CHUNK));
 	}
 
@@ -98,12 +106,16 @@
 			<div class="empty"><Text>{m.conversation_no_events()}</Text></div>
 		{/if}
 
-		{#if hiddenOlder > 0}
+		{#if hiddenOlder > 0 || canFetchOlder}
 			<!-- Lazy render: older lines are mounted on demand so a
 			     long transcript opens fast. -->
-			<Button class="load-older" onclick={loadOlder}>
-				{m.conversation_load_older({ count: Math.min(RENDER_CHUNK, hiddenOlder) })}
-				<Text tone="faint">{m.conversation_hidden_count({ count: hiddenOlder })}</Text>
+			<Button class="load-older" disabled={fetchingOlder} onclick={loadOlder}>
+				{m.conversation_load_older({
+					count: hiddenOlder > 0 ? Math.min(RENDER_CHUNK, hiddenOlder) : RENDER_CHUNK
+				})}
+				{#if hiddenOlder > 0}
+					<Text tone="faint">{m.conversation_hidden_count({ count: hiddenOlder })}</Text>
+				{/if}
 			</Button>
 		{/if}
 		{#each visibleLines as ln, i (ln.key)}

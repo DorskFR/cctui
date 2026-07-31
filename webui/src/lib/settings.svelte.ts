@@ -205,8 +205,8 @@ function mergeSecretScrubPatterns(v: unknown): SecretScrubPattern[] {
 // older `data` blob up to CURRENT_VERSION. v1 is a passthrough — add a `case`
 // per version bump. Pure; never throws.
 function migrate(data: unknown, version: number): Partial<SettingsState> {
-	let d = (data ?? {}) as Partial<SettingsState>;
-	let v = version;
+	const d = (data ?? {}) as Partial<SettingsState>;
+	const v = version;
 	// while (v < CURRENT_VERSION) { switch (v) { case 1: d = …; v = 2; break; } }
 	void v;
 	return d;

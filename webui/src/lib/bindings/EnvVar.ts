@@ -20,7 +20,7 @@ group: string,
  */
 tag: Policy, 
 /**
- * Control shape rendered by the editor (CCT-591).
+ * Control shape rendered by the editor.
  */
 kind: EnvKind, 
 /**
@@ -28,7 +28,7 @@ kind: EnvKind,
  */
 values: Array<string> | null, 
 /**
- * settings.json key this env var aliases (CCT-591), when one exists — the
+ * settings.json key this env var aliases, when one exists — the
  * editor merges the two into ONE row that reads/writes the settings key.
  */
 settings_equiv: string | null, 

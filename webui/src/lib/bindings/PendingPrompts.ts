@@ -5,17 +5,16 @@
  */
 export type PendingPrompts = { 
 /**
- * An `AskUserQuestion`/plan form is up in the worker PTY (CCT-219).
+ * An `AskUserQuestion`/plan form is up in the worker PTY.
  */
 pending_ask: boolean, 
 /**
- * A blocking `PreToolUse` permission hook is parked awaiting a decision
- * (CCT-342).
+ * A blocking `PreToolUse` permission hook is parked awaiting a decision.
  */
 parked_perm_hook: boolean, 
 /**
  * The control socket's `needs` string for a pending tool-permission
- * prompt (CCT-211), when one is up.
+ * prompt, when one is up.
  */
 control_needs: string | null, 
 /**

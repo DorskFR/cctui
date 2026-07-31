@@ -4,7 +4,7 @@ import type { ModelUsage } from "./ModelUsage";
 import type { UsageBucket } from "./UsageBucket";
 
 /**
- * Overview usage analytics (CCT-707): tokens-over-time buckets, per-model
+ * Overview usage analytics: tokens-over-time buckets, per-model
  * breakdown, and an activity heatmap — one endpoint, one round-trip set for
  * the whole Overview usage section.
  */
