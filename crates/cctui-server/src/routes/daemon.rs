@@ -143,7 +143,7 @@ pub async fn session_gateway_env(
             env: std::collections::BTreeMap::default(),
             settings: None,
             whip_phrases,
-            spawn_capability: spawn_capability_for(&state, &session_id),
+            spawn_capability: spawn_capability_for(&state, &session_id).await,
         }));
     }
     let mut env = std::collections::BTreeMap::new();
@@ -183,18 +183,36 @@ pub async fn session_gateway_env(
         env,
         settings,
         whip_phrases,
-        spawn_capability: spawn_capability_for(&state, &session_id),
+        spawn_capability: spawn_capability_for(&state, &session_id).await,
     }))
 }
 
 /// The session's `CctuiAgent` capability, as recorded by the spawn/dispatch that
-/// launched it. `None` (including after a server restart) means the daemon
-/// exposes no spawn tool to that session.
-fn spawn_capability_for(
+/// launched it. `None` means the daemon exposes no spawn tool to that session.
+/// Falls back to the durable table so a server restart does not disarm a live
+/// session's spawn tool.
+async fn spawn_capability_for(
     state: &AppState,
     session_id: &str,
 ) -> Option<cctui_proto::api::SpawnCapability> {
-    state.spawn_capabilities.get(session_id).map(|c| c.clone())
+    if let Some(cap) = state.spawn_capabilities.get(session_id) {
+        return Some(cap.clone());
+    }
+    match crate::store::spawn_capabilities::get(&state.pool, session_id).await {
+        Ok(Some(cap)) => {
+            state.spawn_capabilities.insert(session_id.to_owned(), cap.clone());
+            Some(cap)
+        }
+        Ok(None) => None,
+        Err(e) => {
+            tracing::error!(
+                %session_id,
+                error = %e,
+                "spawn-capability lookup failed — CctuiAgent will be withheld from this session"
+            );
+            None
+        }
+    }
 }
 
 /// The machine user's clamped `whipStopPhrases` block from

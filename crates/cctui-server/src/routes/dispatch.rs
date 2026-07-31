@@ -750,6 +750,15 @@ pub async fn dispatch(
         && let Ok(cap) = serde_json::from_value::<cctui_proto::api::SpawnCapability>(raw)
         && !cap.is_empty()
     {
+        if let Err(e) =
+            crate::store::spawn_capabilities::upsert(&state.pool, &session_id, &cap).await
+        {
+            tracing::error!(
+                session = %session_id,
+                error = %e,
+                "spawn-capability persist failed — CctuiAgent will be lost on server restart"
+            );
+        }
         state.spawn_capabilities.insert(session_id.clone(), cap);
     }
 

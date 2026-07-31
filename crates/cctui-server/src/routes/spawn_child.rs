@@ -257,6 +257,25 @@ async fn child_account_env(
     }
 }
 
+/// The caller's capability, from the in-memory cache or the durable table it
+/// fronts. A DB error denies rather than grants — the check stays fail-closed.
+async fn capability_for(state: &AppState, session_id: &str) -> Option<SpawnCapability> {
+    if let Some(cap) = state.spawn_capabilities.get(session_id) {
+        return Some(cap.clone());
+    }
+    match crate::store::spawn_capabilities::get(&state.pool, session_id).await {
+        Ok(Some(cap)) => {
+            state.spawn_capabilities.insert(session_id.to_owned(), cap.clone());
+            Some(cap)
+        }
+        Ok(None) => None,
+        Err(e) => {
+            tracing::error!(%session_id, error = %e, "spawn-capability lookup failed — denying");
+            None
+        }
+    }
+}
+
 /// `POST /api/v1/daemon/sessions/{id}/spawn-child`.
 pub async fn spawn_child(
     State(state): State<AppState>,
@@ -267,7 +286,7 @@ pub async fn spawn_child(
     let caller = machine_user(&state, &headers).await?;
     let parent = load_parent(&state, &session_id, caller).await?;
 
-    let cap = state.spawn_capabilities.get(&session_id).map(|c| c.clone());
+    let cap = capability_for(&state, &session_id).await;
     let authorized = authorize(cap.as_ref(), &req, child_count(&state, &session_id).await)
         .map_err(|d| match d {
             Denied::BadRequest(_) => deny(StatusCode::BAD_REQUEST, d.to_string()),

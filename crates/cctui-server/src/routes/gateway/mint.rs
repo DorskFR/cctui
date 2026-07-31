@@ -532,6 +532,11 @@ pub async fn revoke_session_tokens(state: &AppState, session_id: &str) {
             "failed to revoke session tokens — a live gateway credential may remain usable"
         );
     }
+    state.spawn_capabilities.remove(session_id);
+    state.session_usd_budgets.remove(session_id);
+    if let Err(e) = crate::store::spawn_capabilities::delete(&state.pool, session_id).await {
+        tracing::warn!(%session_id, error = %e, "spawn-capability cleanup failed");
+    }
 }
 
 pub fn needs_rebind(spawn_key: &str, session_id: &str) -> bool {
@@ -548,15 +553,30 @@ pub async fn rebind_spawn_key(state: &AppState, spawn_key: SpawnKey, session_id:
     if !needs_rebind(spawn_key, session_id) {
         return;
     }
-    for sql in [
-        "UPDATE session_tokens SET session_id = $2 WHERE session_id = $1",
-        "UPDATE session_token_usage SET session_id = $2 WHERE session_id = $1",
-    ] {
-        if let Err(e) = sqlx::query(sql).bind(spawn_key).bind(session_id).execute(&state.pool).await
-        {
-            tracing::warn!(%spawn_key, %session_id, "spawn-key rebind failed: {e}");
-            return;
-        }
+    if let Err(e) =
+        crate::store::tokens::rebind_session_id(&state.pool, spawn_key, session_id).await
+    {
+        tracing::error!(
+            %spawn_key,
+            %session_id,
+            error = %e,
+            "spawn-key rebind failed — this session's usage will not be metered"
+        );
+        return;
+    }
+    // The in-memory maps are keyed the same way the token was, so they have to
+    // move too: a budget or capability left under the spawn key is invisible to
+    // every later lookup, which goes through the rebound id.
+    if let Some((_, budget)) = state.session_usd_budgets.remove(spawn_key) {
+        state.session_usd_budgets.insert(session_id.to_owned(), budget);
+    }
+    if let Some((_, cap)) = state.spawn_capabilities.remove(spawn_key) {
+        state.spawn_capabilities.insert(session_id.to_owned(), cap);
+    }
+    if let Err(e) =
+        crate::store::spawn_capabilities::rebind(&state.pool, spawn_key, session_id).await
+    {
+        tracing::error!(%spawn_key, %session_id, error = %e, "spawn-capability rebind failed");
     }
 }
 
