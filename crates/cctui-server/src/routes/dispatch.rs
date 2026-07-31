@@ -141,17 +141,6 @@ async fn ensure_dispatch_machine(
     .bind(&token)
     .execute(&state.pool)
     .await?;
-    // Same default adapters as a normal enroll so the daemon gets a meaningful
-    // Reconcile and the claude-code/codex adapters surface sessions.
-    let _ = sqlx::query(
-        "INSERT INTO adapters_enabled (machine_id, adapter_id, config, enabled) \
-         VALUES ($1, 'claude-code', '{}'::jsonb, TRUE), \
-                ($1, 'codex', '{}'::jsonb, TRUE) \
-         ON CONFLICT (machine_id, adapter_id) DO NOTHING",
-    )
-    .bind(machine_id)
-    .execute(&state.pool)
-    .await;
     tracing::info!(%user_id, %machine_id, "created dispatch machine");
     Ok((machine_id, token))
 }

@@ -21,6 +21,13 @@ use uuid::Uuid;
 #[serde(transparent)]
 pub struct AdapterId(pub String);
 
+/// Every adapter compiled into the daemon.
+///
+/// The server's Reconcile runs all of them on every machine; `adapters_enabled`
+/// rows only override (per-machine config, explicit disable). A missing binary
+/// surfaces as a failed spawn, never as a silently absent adapter.
+pub const KNOWN_ADAPTERS: &[&str] = &["claude-code", "codex", "opencode"];
+
 impl AdapterId {
     #[must_use]
     pub fn new(id: impl Into<String>) -> Self {

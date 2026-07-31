@@ -95,24 +95,6 @@ pub async fn enroll(
         tracing::warn!("failed to register machine key in api_keys: {e}");
     }
 
-    // Default the new machine to the claude-code adapter so the daemon
-    // gets a meaningful Reconcile out of the box and either harness can be
-    // spawned/observed without a manual table edit. The codex
-    // adapter only launches a `codex app-server` on an explicit Spawn and its
-    // log-tail no-ops when `~/.codex/sessions` is absent, so enabling it is
-    // safe even on machines without codex installed. Users can disable
-    // adapters via direct table edits.
-    let _ = sqlx::query(
-        "INSERT INTO adapters_enabled (machine_id, adapter_id, config, enabled) \
-         VALUES ($1, 'claude-code', '{}'::jsonb, TRUE), \
-                ($1, 'codex', '{}'::jsonb, TRUE) \
-         ON CONFLICT (machine_id, adapter_id) DO NOTHING",
-    )
-    .bind(machine_id)
-    .execute(&state.pool)
-    .await
-    .map_err(|e| tracing::warn!("failed to insert default adapters_enabled rows: {e}"));
-
     tracing::info!(
         user_id = %user_id,
         machine_id = %machine_id,
