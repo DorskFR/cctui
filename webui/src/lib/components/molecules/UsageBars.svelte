@@ -31,15 +31,15 @@
 		() => active
 	);
 
-	const rows = $derived(mergeUsageWindows($q.data?.windows ?? [], softLimits));
+	const rows = $derived(mergeUsageWindows(q.data?.windows ?? [], softLimits));
 	const hasRows = $derived(rows.observed.length > 0 || rows.unobserved.length > 0);
 </script>
 
 {#if !active}
 	<!-- provider without a usage API: nothing to show -->
-{:else if $q.isLoading}
+{:else if q.isLoading}
 	<span class="spin"></span>
-{:else if $q.isError}
+{:else if q.isError}
 	<Text tone="danger" size="xs">{m.sessions_usage_error()}</Text>
 {:else if hasRows}
 	<div class="bars">

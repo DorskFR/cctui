@@ -145,7 +145,6 @@
 
 <script lang="ts">
   import { createQuery } from "@tanstack/svelte-query";
-  import { toStore } from "svelte/store";
   import { api } from "../api/client";
   import { keys } from "../api/queries";
   import Avatar from "./Avatar.svelte";
@@ -158,24 +157,22 @@
   }
   let { owner, repo, number, account }: Props = $props();
 
-  const query = createQuery(
-    toStore(() => ({
-      queryKey: keys.activity(owner, repo, number, account),
-      queryFn: () => api.activity(owner, repo, number, account as string),
-      enabled: account != null,
-    })),
-  );
+  const query = createQuery(() => ({
+    queryKey: keys.activity(owner, repo, number, account),
+    queryFn: () => api.activity(owner, repo, number, account as string),
+    enabled: account != null,
+  }));
 
-  const items = $derived($query.data?.items ?? []);
+  const items = $derived(query.data?.items ?? []);
 </script>
 
 <div class="activity">
   {#if !account}
     <p class="muted">No account.</p>
-  {:else if $query.isLoading}
+  {:else if query.isLoading}
     <p class="muted">Loading activity…</p>
-  {:else if $query.isError}
-    <p class="err">{($query.error as Error).message}</p>
+  {:else if query.isError}
+    <p class="err">{(query.error as Error).message}</p>
   {:else if items.length === 0}
     <p class="muted">No activity recorded yet.</p>
   {:else}

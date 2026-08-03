@@ -1,5 +1,4 @@
 import { createQuery, useQueryClient } from "@tanstack/svelte-query";
-import { toStore } from "svelte/store";
 import { api } from "../api";
 import { endpoints } from "./endpoints";
 import { qk } from "./keys";
@@ -8,60 +7,48 @@ import type { MintTokenResponse } from "@bindings/MintTokenResponse";
 import type { MintKeyResponse } from "@bindings/MintKeyResponse";
 
 export const useUsers = (enabled: () => boolean = () => true) =>
-  createQuery(
-    toStore(() => ({
-      queryKey: qk.users,
-      queryFn: endpoints.users,
-      enabled: enabled(),
-    })),
-  );
+  createQuery(() => ({
+    queryKey: qk.users,
+    queryFn: endpoints.users,
+    enabled: enabled(),
+  }));
 
 /** A user's scope ceiling. Self or admin. */
 export const useUserAcls = (userId: () => string) =>
-  createQuery(
-    toStore(() => ({
-      queryKey: qk.userAcls(userId()),
-      queryFn: () => endpoints.userAcls(userId()),
-      enabled: !!userId(),
-    })),
-  );
+  createQuery(() => ({
+    queryKey: qk.userAcls(userId()),
+    queryFn: () => endpoints.userAcls(userId()),
+    enabled: !!userId(),
+  }));
 
 /** A user's api_keys with granted scopes. Self or admin. */
 export const useUserKeys = (userId: () => string) =>
-  createQuery(
-    toStore(() => ({
-      queryKey: qk.userKeys(userId()),
-      queryFn: () => endpoints.userKeys(userId()),
-      enabled: !!userId(),
-    })),
-  );
+  createQuery(() => ({
+    queryKey: qk.userKeys(userId()),
+    queryFn: () => endpoints.userKeys(userId()),
+    enabled: !!userId(),
+  }));
 
 export const useAllMachines = (enabled: () => boolean) =>
-  createQuery(
-    toStore(() => ({
-      queryKey: ["machines", "all"],
-      queryFn: endpoints.allMachines,
-      enabled: enabled(),
-    })),
-  );
+  createQuery(() => ({
+    queryKey: ["machines", "all"],
+    queryFn: endpoints.allMachines,
+    enabled: enabled(),
+  }));
 
 export const useMachines = (userId: () => string, enabled: () => boolean) =>
-  createQuery(
-    toStore(() => ({
-      queryKey: qk.machines(userId()),
-      queryFn: () => endpoints.machines(userId()),
-      enabled: enabled(),
-    })),
-  );
+  createQuery(() => ({
+    queryKey: qk.machines(userId()),
+    queryFn: () => endpoints.machines(userId()),
+    enabled: enabled(),
+  }));
 
 export const useTokens = (userId: () => string, enabled: () => boolean) =>
-  createQuery(
-    toStore(() => ({
-      queryKey: qk.tokens(userId()),
-      queryFn: () => endpoints.tokens(userId()),
-      enabled: enabled(),
-    })),
-  );
+  createQuery(() => ({
+    queryKey: qk.tokens(userId()),
+    queryFn: () => endpoints.tokens(userId()),
+    enabled: enabled(),
+  }));
 
 export function useUserActions() {
   const qc = useQueryClient();

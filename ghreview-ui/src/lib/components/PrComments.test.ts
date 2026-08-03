@@ -2,6 +2,7 @@ import { QueryClient } from "@tanstack/svelte-query";
 import { mount, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ActivityEvent, ReviewThreadComment } from "../api/types";
+import QueryHost from "../testing/QueryHost.svelte";
 import PrComments, { buildCommentGroups, commentViewState, reviewLabel } from "./PrComments.svelte";
 
 function event(input: Partial<ActivityEvent> & Pick<ActivityEvent, "event">): ActivityEvent {
@@ -126,10 +127,13 @@ describe("PrComments rendering", () => {
 
   function mountComments(body: string, owner = "example", repo = "project"): void {
     const comment = { ...inline(21, "2026-07-30T10:00:00Z"), body };
-    component = mount(PrComments, {
+    component = mount(QueryHost, {
       target: document.body,
-      context: new Map<unknown, unknown>([["$$_queryClient", client]]),
-      props: { owner, repo, number: 1, account: "reviewer", inline: [comment] },
+      props: {
+        client,
+        component: PrComments,
+        props: { owner, repo, number: 1, account: "reviewer", inline: [comment] },
+      },
     });
   }
 

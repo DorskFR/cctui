@@ -8,7 +8,6 @@
     SegmentedControl,
     Select,
   } from "@dorsk/tsumikit";
-  import { toStore } from "svelte/store";
   import { api, type NotificationFilter } from "../api/client";
   import { getAccount, onConfigChange } from "../api/config";
   import { keys } from "../api/queries";
@@ -51,14 +50,12 @@
     all: "true",
   });
 
-  const query = createQuery(
-    toStore(() => ({
-      queryKey: keys.notifications(filter),
-      queryFn: () => api.notifications(filter),
-    })),
-  );
+  const query = createQuery(() => ({
+    queryKey: keys.notifications(filter),
+    queryFn: () => api.notifications(filter),
+  }));
 
-  const items = $derived<NotificationInboxItem[]>($query.data?.items ?? []);
+  const items = $derived<NotificationInboxItem[]>(query.data?.items ?? []);
 
   function repoName(item: NotificationInboxItem): string {
     return notificationOf(item).repository?.full_name ?? "";
@@ -238,10 +235,10 @@
     </div>
   {/if}
 
-  {#if $query.isLoading}
+  {#if query.isLoading}
     <div class="msg">Loading…</div>
-  {:else if $query.isError}
-    <div class="msg err">{($query.error as Error).message}</div>
+  {:else if query.isError}
+    <div class="msg err">{(query.error as Error).message}</div>
   {:else if visible.length === 0}
     <div class="msg">Inbox zero.</div>
   {:else}

@@ -55,8 +55,8 @@
 	];
 
 	const catalog = useSettingsCatalog();
-	const catalogKeys = $derived($catalog.data?.keys ?? []);
-	const catalogEnv = $derived<EnvVar[]>($catalog.data?.env ?? []);
+	const catalogKeys = $derived(catalog.data?.keys ?? []);
+	const catalogEnv = $derived<EnvVar[]>(catalog.data?.env ?? []);
 	const boolKeys = $derived(catalogKeys.filter((k) => k.group !== null));
 	const keyNames = $derived(new Set(catalogKeys.map((k) => k.name)));
 
@@ -113,7 +113,7 @@
 	// are exact aliases (DO_NOT_TRACK) or that merged into a boolean row are
 	// dropped so each knob renders exactly once.
 	const groups = $derived.by<Group[]>(() => {
-		if (!$catalog.data) return [];
+		if (!catalog.data) return [];
 		const out: Group[] = [];
 		const settingGroups = [...new Set(boolKeys.map((k) => k.group as string))];
 		for (const g of settingGroups) {
@@ -208,7 +208,7 @@
 			return;
 		}
 		const obj = parsed as Record<string, unknown>;
-		if (!$catalog.data) {
+		if (!catalog.data) {
 			rawError = m.providers_raw_catalog_loading();
 			return;
 		}
@@ -240,7 +240,7 @@
 	}
 
 	function applyQuietDefaults() {
-		const preset = $catalog.data?.preset;
+		const preset = catalog.data?.preset;
 		if (!preset) return;
 		const env = { ...envObj(), ...preset.env };
 		settings = { ...settings, ...preset.settings, env };
@@ -250,15 +250,15 @@
 <div class="settings-editor">
 	<div class="head">
 		<Text as="div" weight="semibold" size="sm">{m.providers_settings_title()}</Text>
-		<Button onclick={applyQuietDefaults} disabled={!$catalog.data}>{m.providers_quiet_defaults()}</Button>
+		<Button onclick={applyQuietDefaults} disabled={!catalog.data}>{m.providers_quiet_defaults()}</Button>
 	</div>
 	<Text as="p" tone="faint" size="xs">
 		{m.providers_settings_help()}
 	</Text>
 
-	{#if !$catalog.data}
+	{#if !catalog.data}
 		<Text as="div" tone="faint" size="xs">
-			{$catalog.error ? m.providers_catalog_load_failed() : m.providers_catalog_loading()}
+			{catalog.error ? m.providers_catalog_load_failed() : m.providers_catalog_loading()}
 		</Text>
 	{:else}
 		{#each groups as group (group.title)}

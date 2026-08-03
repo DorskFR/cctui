@@ -1,7 +1,6 @@
 <script lang="ts">
   import { untrack } from "svelte";
   import { createMutation, createQuery } from "@tanstack/svelte-query";
-  import { toStore } from "svelte/store";
   import { api } from "../api/client";
   import { keys, queryClient } from "../api/queries";
   import { applyOptimisticViewed, changedSinceViewed, viewedSet } from "../api/viewed";
@@ -46,34 +45,30 @@
   }
   let { owner, repo, number }: Props = $props();
 
-  const query = createQuery(
-    toStore(() => ({
-      queryKey: keys.pull(owner, repo, number),
-      queryFn: () => api.pull(owner, repo, number),
-      initialData: () =>
-        queryClient.getQueryData<PullRequestEnvelope>(keys.pull(owner, repo, number)),
-    })),
-  );
+  const query = createQuery(() => ({
+    queryKey: keys.pull(owner, repo, number),
+    queryFn: () => api.pull(owner, repo, number),
+    initialData: () =>
+      queryClient.getQueryData<PullRequestEnvelope>(keys.pull(owner, repo, number)),
+  }));
 
-  const pull = $derived<GithubPull | null>($query.data ? pullOf($query.data) : null);
-  const account = $derived<string | null>($query.data?.account ?? null);
+  const pull = $derived<GithubPull | null>(query.data ? pullOf(query.data) : null);
+  const account = $derived<string | null>(query.data?.account ?? null);
   const files = $derived<GithubFile[]>(pull?.files ?? []);
   const model = $derived(buildDiffModel(files));
 
-  const viewedQuery = createQuery(
-    toStore(() => ({
-      queryKey: keys.pullViewed(owner, repo, number),
-      queryFn: () => api.pullViewed(owner, repo, number, account as string),
-      enabled: account !== null,
-    })),
-  );
-  const viewed = $derived(viewedSet($viewedQuery.data));
+  const viewedQuery = createQuery(() => ({
+    queryKey: keys.pullViewed(owner, repo, number),
+    queryFn: () => api.pullViewed(owner, repo, number, account as string),
+    enabled: account !== null,
+  }));
+  const viewed = $derived(viewedSet(viewedQuery.data));
 
   let expandedPaths = $state(new Set<string>());
   let expandInitKey = $state<string | null>(null);
 
   $effect(() => {
-    const data = $viewedQuery.data;
+    const data = viewedQuery.data;
     if (!data || files.length === 0) return;
     const key = `${owner}/${repo}/${number}`;
     if (expandInitKey === key) return;
@@ -87,51 +82,50 @@
   const nav = $derived(buildNavIndex(displayModel));
   const viewedCount = $derived(model.files.filter((f) => viewed.has(f.filename)).length);
 
-  const viewedMutation = createMutation(
-    toStore(() => ({
-      mutationFn: (vars: { paths: string[]; viewed: boolean }) =>
-        api.setPullViewed(owner, repo, number, account as string, vars.paths, vars.viewed),
-      onMutate: async (vars: { paths: string[]; viewed: boolean }) => {
-        const key = keys.pullViewed(owner, repo, number);
-        await queryClient.cancelQueries({ queryKey: key });
-        const previous = queryClient.getQueryData<ViewedStateResult>(key);
-        queryClient.setQueryData(key, applyOptimisticViewed(previous, vars.paths, vars.viewed));
-        return { previous };
-      },
-      onError: (_e: unknown, _vars: unknown, ctx: { previous?: ViewedStateResult } | undefined) => {
-        queryClient.setQueryData(keys.pullViewed(owner, repo, number), ctx?.previous);
-      },
-      onSettled: () => {
-        queryClient.invalidateQueries({ queryKey: keys.pullViewed(owner, repo, number) });
-      },
-    })),
-  );
+  const viewedMutation = createMutation<
+    ViewedStateResult,
+    Error,
+    { paths: string[]; viewed: boolean },
+    { previous?: ViewedStateResult }
+  >(() => ({
+    mutationFn: (vars) =>
+      api.setPullViewed(owner, repo, number, account as string, vars.paths, vars.viewed),
+    onMutate: async (vars) => {
+      const key = keys.pullViewed(owner, repo, number);
+      await queryClient.cancelQueries({ queryKey: key });
+      const previous = queryClient.getQueryData<ViewedStateResult>(key);
+      queryClient.setQueryData(key, applyOptimisticViewed(previous, vars.paths, vars.viewed));
+      return { previous };
+    },
+    onError: (_e, _vars, ctx) => {
+      queryClient.setQueryData(keys.pullViewed(owner, repo, number), ctx?.previous);
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: keys.pullViewed(owner, repo, number) });
+    },
+  }));
 
   function toggleViewed(paths: string[], next: boolean): void {
     if (!account) return;
     const still = new Set(expandedPaths);
     for (const p of paths) still.delete(p);
     expandedPaths = still;
-    $viewedMutation.mutate({ paths, viewed: next });
+    viewedMutation.mutate({ paths, viewed: next });
   }
 
-  const draftQuery = createQuery(
-    toStore(() => ({
-      queryKey: keys.reviewDraft(owner, repo, number),
-      queryFn: () => api.reviewDraft(owner, repo, number, account as string),
-      enabled: account !== null,
-    })),
-  );
-  const threadsQuery = createQuery(
-    toStore(() => ({
-      queryKey: keys.reviewThreads(owner, repo, number),
-      queryFn: () => api.reviewThreads(owner, repo, number, account as string),
-      enabled: account !== null,
-    })),
-  );
+  const draftQuery = createQuery(() => ({
+    queryKey: keys.reviewDraft(owner, repo, number),
+    queryFn: () => api.reviewDraft(owner, repo, number, account as string),
+    enabled: account !== null,
+  }));
+  const threadsQuery = createQuery(() => ({
+    queryKey: keys.reviewThreads(owner, repo, number),
+    queryFn: () => api.reviewThreads(owner, repo, number, account as string),
+    enabled: account !== null,
+  }));
 
-  const drafts = $derived($draftQuery.data?.draft?.comments ?? []);
-  const threads = $derived($threadsQuery.data?.items ?? []);
+  const drafts = $derived(draftQuery.data?.draft?.comments ?? []);
+  const threads = $derived(threadsQuery.data?.items ?? []);
   const anchors = $derived(buildAnchors(displayModel, drafts, threads));
 
   let reviewPending = $state(false);
@@ -287,10 +281,10 @@
 
 <div class="prview">
   {#if !pull}
-    {#if $query.isLoading}
+    {#if query.isLoading}
       <div class="msg">Loading pull request…</div>
-    {:else if $query.isError}
-      <div class="msg err">{($query.error as Error).message}</div>
+    {:else if query.isError}
+      <div class="msg err">{(query.error as Error).message}</div>
     {:else}
       <div class="msg">Not synced yet.</div>
     {/if}
@@ -334,8 +328,8 @@
           {number}
           account={account ?? undefined}
           inline={threads}
-          inlineLoading={$threadsQuery.isLoading}
-          inlineError={$threadsQuery.error as Error | null}
+          inlineLoading={threadsQuery.isLoading}
+          inlineError={threadsQuery.error as Error | null}
         />
       {:else}
         <PrDiffLayout

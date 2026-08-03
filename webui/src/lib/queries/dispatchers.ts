@@ -1,5 +1,4 @@
 import { createQuery, useQueryClient } from "@tanstack/svelte-query";
-import { toStore } from "svelte/store";
 import { endpoints } from "./endpoints";
 
 /** An enrolled dispatcher: a standalone executor service enrolled per
@@ -34,20 +33,18 @@ export interface EnrollDispatcherResponse {
 }
 
 export const useDispatchers = (enabled: () => boolean) =>
-  createQuery(
-    toStore(() => ({
-      queryKey: ["dispatchers"],
-      queryFn: endpoints.dispatchers,
-      enabled: enabled(),
-      staleTime: 60_000,
-    })),
-  );
+  createQuery(() => ({
+    queryKey: ["dispatchers"],
+    queryFn: endpoints.dispatchers,
+    enabled: enabled(),
+    staleTime: 60_000,
+  }));
 
 export const useUserDispatchers = () =>
-  createQuery({
+  createQuery(() => ({
     queryKey: ["user-dispatchers"],
     queryFn: endpoints.userDispatchers,
-  });
+  }));
 
 /** Enroll / rename / remove the caller's enrolled dispatchers.
  *  Invalidates both the management list and the merged dispatch picker. */

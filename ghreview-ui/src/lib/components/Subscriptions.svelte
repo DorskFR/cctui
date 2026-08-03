@@ -13,7 +13,7 @@
 
   let prUrl = $state("");
 
-  const subscribePr = createMutation({
+  const subscribePr = createMutation(() => ({
     mutationFn: (target: string) => api.subscribe(target, "pull_request", account),
     onSuccess: (sub: Subscription) => {
       client.invalidateQueries({ queryKey: keys.subscriptionsAll() });
@@ -22,12 +22,12 @@
       const parsed = /^([^/]+)\/([^/#]+)#(\d+)$/.exec(sub.target ?? "");
       if (parsed) router.navigate(pullPath(parsed[1], parsed[2], Number(parsed[3])));
     },
-  });
+  }));
 
   function submitUrl(e: SubmitEvent): void {
     e.preventDefault();
     const target = prUrl.trim();
-    if (target) $subscribePr.mutate(target);
+    if (target) subscribePr.mutate(target);
   }
 </script>
 
@@ -49,14 +49,14 @@
             <Button
               type="submit"
               variant="primary"
-              disabled={$subscribePr.isPending || !prUrl.trim()}
+              disabled={subscribePr.isPending || !prUrl.trim()}
             >
-              {$subscribePr.isPending ? "Subscribing…" : "Subscribe"}
+              {subscribePr.isPending ? "Subscribing…" : "Subscribe"}
             </Button>
           </Cluster>
         </Field>
-        {#if $subscribePr.isError}
-          <Text size="xs" tone="danger">{$subscribePr.error.message}</Text>
+        {#if subscribePr.isError}
+          <Text size="xs" tone="danger">{subscribePr.error.message}</Text>
         {/if}
       </Stack>
     </Card>

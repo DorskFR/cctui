@@ -1,7 +1,6 @@
 <script lang="ts">
   import { Badge, Icon, Input, OptionButton, Popover } from "@dorsk/tsumikit";
   import { createQuery } from "@tanstack/svelte-query";
-  import { toStore } from "svelte/store";
   import { api } from "../api/client";
   import { keys, queryClient } from "../api/queries";
   import type { GithubLabel, Label, PullRequestEnvelope } from "../api/types";
@@ -21,15 +20,13 @@
 
   const applied = $derived(new Set(labels.map((l) => l.name)));
 
-  const repoLabels = createQuery(
-    toStore(() => ({
-      queryKey: keys.repoLabels(owner, repo, account),
-      queryFn: () => api.repoLabels(owner, repo, account as string),
-      enabled: open && account != null,
-    })),
-  );
+  const repoLabels = createQuery(() => ({
+    queryKey: keys.repoLabels(owner, repo, account),
+    queryFn: () => api.repoLabels(owner, repo, account as string),
+    enabled: open && account != null,
+  }));
 
-  const options = $derived(($repoLabels.data?.items ?? []) as Label[]);
+  const options = $derived((repoLabels.data?.items ?? []) as Label[]);
   const filtered = $derived(
     filter.trim()
       ? options.filter((l) => l.name.toLowerCase().includes(filter.trim().toLowerCase()))
@@ -100,10 +97,10 @@
           bind:value={filter}
           spellcheck="false"
         />
-        {#if $repoLabels.isLoading}
+        {#if repoLabels.isLoading}
           <p class="muted">Loading labels…</p>
-        {:else if $repoLabels.isError}
-          <p class="err">{($repoLabels.error as Error).message}</p>
+        {:else if repoLabels.isError}
+          <p class="err">{(repoLabels.error as Error).message}</p>
         {:else if filtered.length === 0}
           <p class="muted">No labels.</p>
         {:else}

@@ -142,7 +142,7 @@
 	// label set and mutations the session list uses, so editing a session's
 	// labels/star from the open conversation stays in sync with the list.
 	const labelsQuery = useLabels();
-	const allLabels = $derived($labelsQuery.data?.labels ?? []);
+	const allLabels = $derived(labelsQuery.data?.labels ?? []);
 	const createLabel = (name: string, color: string) => actions.createLabel(name, color);
 	const attachLabel = (sid: string, labelId: string) => actions.attachLabel(sid, labelId);
 	const detachLabel = (sid: string, labelId: string) => actions.detachLabel(sid, labelId);
@@ -162,7 +162,7 @@
 	const stream = new ConversationStream({
 		id: () => id,
 		archived: () => archived,
-		historyData: () => $history.data,
+		historyData: () => history.data,
 		pin: scroll.stickToBottom,
 		invalidateConversation: () => qc.invalidateQueries({ queryKey: qk.conversation(id) }),
 		invalidateSessions: () => qc.invalidateQueries({ queryKey: ['sessions'] })
@@ -215,11 +215,11 @@
 		earlierExhausted = false;
 	});
 	const canFetchEarlier = $derived(
-		!earlierExhausted && ($history.data?.length ?? 0) >= CONVERSATION_FETCH_LIMIT
+		!earlierExhausted && (history.data?.length ?? 0) >= CONVERSATION_FETCH_LIMIT
 	);
 
 	const events = $derived.by(() => {
-		const hist = $history.data ?? [];
+		const hist = history.data ?? [];
 		const seen = new Set(hist.map(eventSig));
 		const front = earlier.filter((e) => !seen.has(eventSig(e)));
 		for (const e of front) seen.add(eventSig(e));
@@ -653,7 +653,7 @@
 	{#if acctModalOpen}
 		<AccountSwitchModal
 			sessionId={id}
-			accounts={$accounts.data ?? []}
+			accounts={accounts.data ?? []}
 			softLimit={stream.softLimit}
 			onswitch={(acct) => stream.switchAccount(acct)}
 			onclose={() => (acctModalOpen = false)}
@@ -665,7 +665,7 @@
 		{scroll}
 		sessionId={id}
 		{lines}
-		isLoading={$history.isLoading}
+		isLoading={history.isLoading}
 		canFetchOlder={canFetchEarlier}
 		fetchingOlder={fetchingEarlier}
 		onfetcholder={fetchEarlier}
