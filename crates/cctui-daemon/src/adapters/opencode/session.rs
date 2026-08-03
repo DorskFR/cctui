@@ -132,6 +132,10 @@ pub struct OpenCodeSession {
     roles: HashMap<String, String>,
     emitted_parts: HashSet<String>,
     emitted_usage: HashSet<String>,
+    /// `CctuiAgent` child: `opencode serve` never exits on its own, so idle
+    /// after assistant output — and any terminal error — must end the session.
+    oneshot: bool,
+    saw_assistant: bool,
 }
 
 impl OpenCodeSession {
@@ -143,6 +147,7 @@ impl OpenCodeSession {
         shutdown: CancellationToken,
     ) -> Self {
         let (commands_tx, commands) = mpsc::channel(64);
+        let oneshot = params.parent_local_id.is_some();
         Self {
             params,
             events,
@@ -154,6 +159,8 @@ impl OpenCodeSession {
             roles: HashMap::new(),
             emitted_parts: HashSet::new(),
             emitted_usage: HashSet::new(),
+            oneshot,
+            saw_assistant: false,
         }
     }
 
@@ -291,7 +298,9 @@ impl OpenCodeSession {
                 }
                 evt = evt_rx.recv() => {
                     let Some(evt) = evt else { break };
-                    self.on_event(&client, evt).await;
+                    if !self.on_event(&client, evt).await {
+                        break;
+                    }
                 }
                 cmd = self.commands.recv() => {
                     let Some(cmd) = cmd else { break };
@@ -490,14 +499,18 @@ impl OpenCodeSession {
         }
     }
 
-    async fn on_event(&mut self, client: &OpenCodeClient, evt: OcEvent) {
-        let Some(session_id) = evt.session_id().map(str::to_owned) else { return };
+    /// Returns `false` when the driver should stop.
+    async fn on_event(&mut self, client: &OpenCodeClient, evt: OcEvent) -> bool {
+        let Some(session_id) = evt.session_id().map(str::to_owned) else { return true };
         if !self.owned.contains(&session_id) {
-            return;
+            return true;
         }
         match evt {
             OcEvent::MessageUpdated { properties } => {
                 let info = properties.info;
+                if info.role == "assistant" {
+                    self.saw_assistant = true;
+                }
                 self.roles.insert(info.id.clone(), info.role.clone());
                 if let Some(usage) = normalize::token_usage(&session_id, &info)
                     && self.emitted_usage.insert(info.id.clone())
@@ -505,13 +518,20 @@ impl OpenCodeSession {
                     let _ = self.events.send(usage).await;
                 }
                 if let Some(error) = info.error.as_ref() {
-                    self.emit_error(&session_id, &normalize::error_text(error)).await;
+                    let text = normalize::error_text(error);
+                    self.emit_error(&session_id, &text).await;
+                    if self.oneshot {
+                        return self.end_crashed(session_id, text).await;
+                    }
                 }
             }
             OcEvent::PartUpdated { properties } => {
                 self.emit_part(&session_id, &properties.part).await;
             }
             OcEvent::SessionIdle { .. } => {
+                if self.oneshot && self.saw_assistant {
+                    return false;
+                }
                 let _ = self
                     .events
                     .send(status(&session_id, Some("idle".to_owned()), None, None))
@@ -536,6 +556,9 @@ impl OpenCodeSession {
                     .as_ref()
                     .map_or_else(|| "session error".to_owned(), normalize::error_text);
                 self.emit_error(&session_id, &text).await;
+                if self.oneshot {
+                    return self.end_crashed(session_id, text).await;
+                }
             }
             OcEvent::SessionDeleted { .. } => {
                 self.owned.remove(&session_id);
@@ -571,6 +594,20 @@ impl OpenCodeSession {
             }
             OcEvent::Other => {}
         }
+        true
+    }
+
+    async fn end_crashed(&mut self, session_id: String, detail: String) -> bool {
+        self.owned.remove(&session_id);
+        self.live.lock().await.remove(&session_id);
+        let _ = self
+            .events
+            .send(AdapterEvent::SessionEnded {
+                local_id: session_id,
+                reason: EndReason::Crashed { detail },
+            })
+            .await;
+        false
     }
 
     async fn emit_part(&mut self, session_id: &str, part: &Part) {
@@ -852,6 +889,110 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
         panic!("grandchild {grandchild} survived shutdown_serve");
+    }
+
+    fn test_session(
+        parent_local_id: Option<String>,
+    ) -> (OpenCodeSession, mpsc::Receiver<AdapterEvent>, Arc<OpenCodeClient>) {
+        let (tx, rx) = mpsc::channel(64);
+        let params = SpawnParams {
+            cfg: OpenCodeConfig::default(),
+            key: "key-1".to_owned(),
+            cwd: ".".to_owned(),
+            env: std::collections::BTreeMap::new(),
+            prompt: Some("review the diff".to_owned()),
+            name: None,
+            model: None,
+            agent: None,
+            attachments: Vec::new(),
+            command_id: None,
+            parent_local_id,
+        };
+        let mut session =
+            OpenCodeSession::new(params, tx, LiveRegistry::default(), CancellationToken::new());
+        session.owned.insert("ses_1".to_owned());
+        let client =
+            Arc::new(OpenCodeClient::new("http://127.0.0.1:1".to_owned(), "pw".to_owned()));
+        (session, rx, client)
+    }
+
+    fn idle() -> OcEvent {
+        OcEvent::SessionIdle {
+            properties: super::super::events::SessionRef { session_id: "ses_1".to_owned() },
+        }
+    }
+
+    fn assistant_message() -> OcEvent {
+        OcEvent::MessageUpdated {
+            properties: super::super::events::MessageUpdated {
+                session_id: "ses_1".to_owned(),
+                info: super::super::client::MessageInfo {
+                    id: "msg_1".to_owned(),
+                    role: "assistant".to_owned(),
+                    ..Default::default()
+                },
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn oneshot_child_ends_on_idle_after_assistant_output() {
+        let (mut session, _rx, client) = test_session(Some("parent-1".to_owned()));
+        assert!(session.on_event(&client, idle()).await, "idle before output must not end");
+        assert!(session.on_event(&client, assistant_message()).await);
+        assert!(!session.on_event(&client, idle()).await, "idle after output must end");
+    }
+
+    #[tokio::test]
+    async fn interactive_session_stays_up_across_idles() {
+        let (mut session, mut rx, client) = test_session(None);
+        assert!(session.on_event(&client, assistant_message()).await);
+        assert!(session.on_event(&client, idle()).await);
+        match rx.recv().await.unwrap() {
+            AdapterEvent::Status { tempo, .. } => assert_eq!(tempo.as_deref(), Some("idle")),
+            other => panic!("expected Status, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn oneshot_child_crashes_on_session_error() {
+        let (mut session, mut rx, client) = test_session(Some("parent-1".to_owned()));
+        let evt = OcEvent::SessionError {
+            properties: super::super::events::SessionErrorProps {
+                session_id: Some("ses_1".to_owned()),
+                error: Some(serde_json::json!({
+                    "name": "ProviderAuthError",
+                    "data": { "message": "401 unauthorized" },
+                })),
+            },
+        };
+        assert!(!session.on_event(&client, evt).await);
+        assert!(!session.owned.contains("ses_1"));
+        let mut ended = None;
+        while let Ok(evt) = rx.try_recv() {
+            if let AdapterEvent::SessionEnded { local_id, reason } = evt {
+                ended = Some((local_id, reason));
+            }
+        }
+        let (local_id, reason) = ended.expect("no SessionEnded");
+        assert_eq!(local_id, "ses_1");
+        match reason {
+            EndReason::Crashed { detail } => assert!(detail.contains("401")),
+            other => panic!("expected Crashed, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn interactive_session_survives_a_session_error() {
+        let (mut session, _rx, client) = test_session(None);
+        let evt = OcEvent::SessionError {
+            properties: super::super::events::SessionErrorProps {
+                session_id: Some("ses_1".to_owned()),
+                error: None,
+            },
+        };
+        assert!(session.on_event(&client, evt).await);
+        assert!(session.owned.contains("ses_1"));
     }
 
     #[test]
