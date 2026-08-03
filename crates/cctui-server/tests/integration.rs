@@ -9,10 +9,6 @@ fn server_url() -> String {
     std::env::var("TEST_CCTUI_URL").unwrap_or_else(|_| "http://localhost:8700".into())
 }
 
-fn machine_key() -> String {
-    std::env::var("TEST_MACHINE_KEY").unwrap_or_else(|_| "test-machine-key".into())
-}
-
 fn admin_token() -> String {
     std::env::var("TEST_ADMIN_TOKEN").unwrap_or_else(|_| "test-admin".into())
 }
@@ -32,12 +28,36 @@ async fn register_and_list_session() {
     let client = Client::new();
     let base = server_url();
 
+    let u: serde_json::Value = client
+        .post(format!("{base}/api/v1/admin/users"))
+        .bearer_auth(admin_token())
+        .json(&json!({"name": format!("reg-{}", uuid_like())}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let user_key = u["key"].as_str().unwrap().to_string();
+
+    let m: serde_json::Value = client
+        .post(format!("{base}/api/v1/enroll"))
+        .bearer_auth(&user_key)
+        .json(&json!({"hostname": "reg-host"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let machine_key = m["machine_key"].as_str().unwrap().to_string();
+
     // Register
     let resp = client
         .post(format!("{base}/api/v1/sessions/register"))
-        .bearer_auth(machine_key())
+        .bearer_auth(&machine_key)
         .json(&json!({
-            "machine_id": "test-machine",
+            "machine_id": "reg-host",
             "working_dir": "/tmp/test",
             "metadata": {"project_name": "test-project"}
         }))
@@ -63,7 +83,7 @@ async fn register_and_list_session() {
     // Deregister
     let resp = client
         .post(format!("{base}/api/v1/sessions/{session_id}/deregister"))
-        .bearer_auth(machine_key())
+        .bearer_auth(&machine_key)
         .send()
         .await
         .unwrap();
