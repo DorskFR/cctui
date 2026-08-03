@@ -104,7 +104,6 @@
 
 <script lang="ts">
   import { createQuery } from "@tanstack/svelte-query";
-  import { toStore } from "svelte/store";
   import { api } from "../api/client";
   import { keys } from "../api/queries";
   import type { ReactionContent, ReactionSummary } from "../api/types";
@@ -131,17 +130,15 @@
     inlineError = null,
   }: Props = $props();
 
-  const activityQuery = createQuery(
-    toStore(() => ({
-      queryKey: keys.activity(owner, repo, number, account),
-      queryFn: () => api.activity(owner, repo, number, account as string),
-      enabled: account != null,
-    })),
-  );
+  const activityQuery = createQuery(() => ({
+    queryKey: keys.activity(owner, repo, number, account),
+    queryFn: () => api.activity(owner, repo, number, account as string),
+    enabled: account != null,
+  }));
   const markdownBaseUrl = $derived(repoBaseUrl(owner, repo));
-  const groups = $derived(buildCommentGroups($activityQuery.data?.items ?? [], inline));
-  const loading = $derived($activityQuery.isLoading || inlineLoading);
-  const error = $derived(($activityQuery.error as Error | null) ?? inlineError);
+  const groups = $derived(buildCommentGroups(activityQuery.data?.items ?? [], inline));
+  const loading = $derived(activityQuery.isLoading || inlineLoading);
+  const error = $derived((activityQuery.error as Error | null) ?? inlineError);
   const viewState = $derived(commentViewState({ account, loading, error, groups }));
 
   function numericId(entry: CommentEntry): number | null {

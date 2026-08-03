@@ -10,7 +10,7 @@
 	// so this shares the query cache — no extra request.
 	const sessions = useSessions(() => false);
 	const totalUnread = $derived(
-		($sessions.data?.sessions ?? []).reduce((n, s) => n + (s.unread_count ?? 0), 0)
+		(sessions.data?.sessions ?? []).reduce((n, s) => n + (s.unread_count ?? 0), 0)
 	);
 
 	// The GitHub review center is gated on the ghreview backend origin

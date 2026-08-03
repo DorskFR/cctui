@@ -9,63 +9,63 @@
   const account = getAccount() ?? "";
   let filter = $state("");
 
-  const repos = createQuery({
+  const repos = createQuery(() => ({
     queryKey: keys.githubRepos(account),
     queryFn: () => api.githubRepos(account),
     enabled: !!account,
-  });
+  }));
 
-  const subs = createQuery({
+  const subs = createQuery(() => ({
     queryKey: keys.subscriptions(account),
     queryFn: () => api.listSubscriptions(account || undefined),
     enabled: !!account,
-  });
+  }));
 
   const subById = $derived.by(() => {
     const map = new Map<string, string>();
-    for (const s of ($subs.data?.items ?? []) as Subscription[]) {
+    for (const s of (subs.data?.items ?? []) as Subscription[]) {
       if (s.kind === "repo" && s.target) map.set(s.target, s.id);
     }
     return map;
   });
 
-  const subscribe = createMutation({
+  const subscribe = createMutation(() => ({
     mutationFn: (fullName: string) => api.subscribe(fullName, "repo", account),
     onSuccess: () => {
       client.invalidateQueries({ queryKey: keys.subscriptionsAll() });
       client.invalidateQueries({ queryKey: keys.pullsAll() });
     },
-  });
+  }));
 
-  const unsubscribe = createMutation({
+  const unsubscribe = createMutation(() => ({
     mutationFn: (id: string) => api.unsubscribe(id),
     onSuccess: () => {
       client.invalidateQueries({ queryKey: keys.subscriptionsAll() });
       client.invalidateQueries({ queryKey: keys.pullsAll() });
     },
-  });
+  }));
 
-  const items = $derived(($repos.data?.items ?? []) as GithubRepo[]);
+  const items = $derived((repos.data?.items ?? []) as GithubRepo[]);
   const filtered = $derived(
     filter.trim()
       ? items.filter((r) => r.full_name.toLowerCase().includes(filter.trim().toLowerCase()))
       : items,
   );
-  const busy = $derived($subscribe.isPending || $unsubscribe.isPending);
+  const busy = $derived(subscribe.isPending || unsubscribe.isPending);
 
   function toggle(fullName: string): void {
     const id = subById.get(fullName);
-    if (id) $unsubscribe.mutate(id);
-    else $subscribe.mutate(fullName);
+    if (id) unsubscribe.mutate(id);
+    else subscribe.mutate(fullName);
   }
 </script>
 
 <div class="repo-picker">
   <Input type="text" placeholder="Filter repos…" bind:value={filter} spellcheck="false" />
-  {#if $repos.isPending}
+  {#if repos.isPending}
     <Text size="sm" tone="muted">Loading repos…</Text>
-  {:else if $repos.isError}
-    <Text size="sm" tone="danger">{$repos.error.message}</Text>
+  {:else if repos.isError}
+    <Text size="sm" tone="danger">{repos.error.message}</Text>
   {:else if filtered.length === 0}
     <Text size="sm" tone="muted">No repos.</Text>
   {:else}

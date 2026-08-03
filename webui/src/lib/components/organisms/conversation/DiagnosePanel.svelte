@@ -43,7 +43,7 @@
 
 	type Row = { name: string; fact: DiagnoseFact<unknown> };
 	const rows = $derived.by((): Row[] => {
-		const d = $query.data?.daemon;
+		const d = query.data?.daemon;
 		if (!d) return [];
 		return [
 			{ name: m.diagnose_fact_effective_state(), fact: d.effective_state },
@@ -110,7 +110,7 @@
 	<div class="diag-head">
 		<Heading level={3}>{m.diagnose_title()}</Heading>
 		<div class="diag-actions">
-			<Button size="sm" variant="ghost" onclick={() => $query.refetch()} loading={$query.isFetching}>
+			<Button size="sm" variant="ghost" onclick={() => query.refetch()} loading={query.isFetching}>
 				{m.diagnose_refresh()}
 			</Button>
 			<Button size="sm" variant="ghost" onclick={onclose}>{m.common_close()}</Button>
@@ -118,14 +118,14 @@
 	</div>
 	<Text size="xs" tone="muted">{sessionId}</Text>
 
-	{#if $query.isLoading}
+	{#if query.isLoading}
 		<Text size="sm" tone="muted">{m.diagnose_asking()}</Text>
-	{:else if $query.error}
+	{:else if query.error}
 		<Text size="sm" tone="danger">
-			{$query.error instanceof Error ? $query.error.message : m.diagnose_failed()}
+			{query.error instanceof Error ? query.error.message : m.diagnose_failed()}
 		</Text>
-	{:else if $query.data}
-		{@const resp = $query.data}
+	{:else if query.data}
+		{@const resp = query.data}
 		<div class="server-facts">
 			<span class="src">{m.diagnose_src_server()}</span>
 			<span>

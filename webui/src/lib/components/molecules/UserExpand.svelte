@@ -46,9 +46,9 @@
 	// Real enrolled daemons plus the server-managed per-user `dispatch` machine
 	// (shown read-only so its badge color stays editable). One-shot
 	// `ephemeral` worker pods stay hidden.
-	const shownMachines = $derived(($machines.data ?? []).filter((m) => m.kind !== 'ephemeral'));
-	const hiddenCount = $derived(($machines.data ?? []).length - shownMachines.length);
-	const tokenRows = $derived($tokens.data ?? []);
+	const shownMachines = $derived((machines.data ?? []).filter((m) => m.kind !== 'ephemeral'));
+	const hiddenCount = $derived((machines.data ?? []).length - shownMachines.length);
+	const tokenRows = $derived(tokens.data ?? []);
 
 	// Preset hue swatches for the per-machine color override. Shown
 	// in a popover anchored to the machine badge, not inline.
@@ -175,7 +175,7 @@
 					>{m.users_machines_help()}</Text
 				>
 			</div>
-			{#if $machines.isLoading}
+			{#if machines.isLoading}
 				<span class="spin"></span>
 			{:else}
 				<DataTable
@@ -209,7 +209,7 @@
 					<Button onclick={() => (mintOpen = true)}>{m.users_new_token()}</Button>
 				{/if}
 			</div>
-			{#if $tokens.isLoading}
+			{#if tokens.isLoading}
 				<span class="spin"></span>
 			{:else}
 				<DataTable

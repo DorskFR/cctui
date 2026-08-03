@@ -1,5 +1,4 @@
 import { createQuery, useQueryClient } from "@tanstack/svelte-query";
-import { toStore } from "svelte/store";
 import { endpoints } from "./endpoints";
 import { qk } from "./keys";
 import type {
@@ -12,13 +11,11 @@ import type {
 } from "./types";
 
 export const useAccounts = (enabled: () => boolean = () => true) =>
-  createQuery(
-    toStore(() => ({
-      queryKey: ["accounts"],
-      queryFn: endpoints.accounts,
-      enabled: enabled(),
-    })),
-  );
+  createQuery(() => ({
+    queryKey: ["accounts"],
+    queryFn: endpoints.accounts,
+    enabled: enabled(),
+  }));
 
 /** Per-account subscription usage. Lazy + slow-refresh: only fetched
  *  while the accounts view is mounted (caller gates `enabled`), and re-polled on
@@ -28,17 +25,15 @@ export const useAccountUsage = (
   accountId: () => string,
   enabled: () => boolean = () => true,
 ) =>
-  createQuery(
-    toStore(() => ({
-      queryKey: ["account-usage", accountId()],
-      queryFn: () => endpoints.accountUsage(accountId()),
-      enabled: enabled(),
-      staleTime: 180_000,
-      refetchInterval: 180_000,
-      refetchOnWindowFocus: false,
-      retry: false,
-    })),
-  );
+  createQuery(() => ({
+    queryKey: ["account-usage", accountId()],
+    queryFn: () => endpoints.accountUsage(accountId()),
+    enabled: enabled(),
+    staleTime: 180_000,
+    refetchInterval: 180_000,
+    refetchOnWindowFocus: false,
+    retry: false,
+  }));
 
 /** Who an account is shared with. Owner-scoped: the server 404s the
  *  list for a non-owner, so callers gate `enabled` to the account owner/admin. */
@@ -46,14 +41,12 @@ export const useAccountShares = (
   accountId: () => string,
   enabled: () => boolean = () => true,
 ) =>
-  createQuery(
-    toStore(() => ({
-      queryKey: qk.accountShares(accountId()),
-      queryFn: () => endpoints.accountShares(accountId()),
-      enabled: enabled(),
-      retry: false,
-    })),
-  );
+  createQuery(() => ({
+    queryKey: qk.accountShares(accountId()),
+    queryFn: () => endpoints.accountShares(accountId()),
+    enabled: enabled(),
+    retry: false,
+  }));
 
 /** Who a resource is shared with, for any shareable kind. Owner-scoped
  *  server-side (404s for a non-owner), so callers gate `enabled` accordingly. */
@@ -62,14 +55,12 @@ export const useResourceShares = (
   id: () => string,
   enabled: () => boolean = () => true,
 ) =>
-  createQuery(
-    toStore(() => ({
-      queryKey: qk.resourceShares(resourceType(), id()),
-      queryFn: () => endpoints.resourceShares(resourceType(), id()),
-      enabled: enabled(),
-      retry: false,
-    })),
-  );
+  createQuery(() => ({
+    queryKey: qk.resourceShares(resourceType(), id()),
+    queryFn: () => endpoints.resourceShares(resourceType(), id()),
+    enabled: enabled(),
+    retry: false,
+  }));
 
 /** Grant/revoke actions for generic resource sharing; each invalidates
  *  that resource's shares query. */

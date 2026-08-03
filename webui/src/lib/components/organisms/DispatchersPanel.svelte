@@ -107,7 +107,7 @@
 		}
 	}
 
-	const rows = $derived([...($dispatchers.data ?? [])]);
+	const rows = $derived([...(dispatchers.data ?? [])]);
 </script>
 
 <div class="bar row">
@@ -122,7 +122,7 @@
 	</Text>
 </div>
 
-{#if $dispatchers.isLoading}
+{#if dispatchers.isLoading}
 	<div class="empty"><span class="spin"></span></div>
 {:else if rows.length === 0}
 	<div class="empty"><Text tone="muted">{m.dispatch_empty()}</Text></div>
@@ -178,7 +178,7 @@
 					<Field label={m.dispatch_field_default_account()}>
 						<Select bind:value={accountKey}>
 							<option value="">{m.dispatch_account_none_option()}</option>
-							{#each $accounts.data ?? [] as a (a.id)}
+							{#each accounts.data ?? [] as a (a.id)}
 								<option value={`${a.name}\0${primaryProvider(a)?.provider ?? ''}`}>{a.name} ({primaryProvider(a)?.provider ?? m.spawn_no_provider()})</option>
 							{/each}
 						</Select>

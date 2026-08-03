@@ -80,7 +80,7 @@
 
 	const machines = useAllMachines(() => true);
 	const dispatchers = useDispatchers(() => true);
-	const dispatcherIds = $derived($dispatchers.data ?? []);
+	const dispatcherIds = $derived(dispatchers.data ?? []);
 	const canDispatch = $derived(dispatcherIds.length > 0);
 
 	// Spawn target + form shape live in ./spawn/types. Machine / Dispatch render
@@ -162,7 +162,7 @@
 
 	// default the machine to the last used one (else the first) once loaded
 	$effect(() => {
-		const list = $machines.data ?? [];
+		const list = machines.data ?? [];
 		if (form.machine_id || !list.length) return;
 		const last = drafts.get(LAST_MACHINE);
 		form.machine_id = last && list.some((m) => m.id === last) ? last : list[0].id;
@@ -264,7 +264,7 @@
 	// recent working dirs on the selected machine, from the server (last 5).
 	const dirsQuery = useRecentDirs(() => form.machine_id);
 	// Collapse `folder` and `folder/` into one canonical `folder` entry.
-	const recentDirs = $derived([...new Set(($dirsQuery.data ?? []).map(normalizeDir))]);
+	const recentDirs = $derived([...new Set((dirsQuery.data ?? []).map(normalizeDir))]);
 
 	// Working-directory autocomplete lives in the MachineFields FilterInput
 	// (spawn/cwdSchema.ts), fed the recent dirs below.
@@ -280,7 +280,7 @@
 	// track real ids. Display resolves ids against the live label set, dropping
 	// any that were deleted.
 	const labelsQuery = useLabels();
-	const allLabels = $derived($labelsQuery.data?.labels ?? []);
+	const allLabels = $derived(labelsQuery.data?.labels ?? []);
 	const selectedLabels = $derived(allLabels.filter((l) => form.labels.includes(l.id)));
 	async function createSpawnLabel(name: string, color: string): Promise<Label> {
 		return actions.createLabel(name, color);
@@ -392,7 +392,7 @@
 	// Stale-selection cleanup lives in MachineFields. Accounts are identities
 	//: matched by name; the credential in play is the provider whose
 	// family backs the effective harness.
-	const allAccounts = $derived($accounts.data ?? []);
+	const allAccounts = $derived(accounts.data ?? []);
 	const selectedAccount = $derived(
 		form.account && form.account !== NO_ACCOUNT
 			? allAccounts.find((a) => a.name === form.account)
@@ -700,7 +700,7 @@
 			{#snippet machineFields()}
 				<MachineFields
 					bind:form
-					machines={$machines.data ?? []}
+					machines={machines.data ?? []}
 					{recentDirs}
 					accounts={allAccounts}
 					onsubmit={submit}

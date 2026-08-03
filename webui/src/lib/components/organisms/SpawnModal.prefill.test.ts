@@ -1,6 +1,5 @@
 import { mount, unmount } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { readable } from 'svelte/store';
 import SpawnModal from './SpawnModal.svelte';
 
 const machineList = [
@@ -10,7 +9,7 @@ let recentDirsData: string[] = [];
 let memoryDir: string | null = null;
 
 vi.mock('$lib/queries', () => {
-	const q = <T>(data: T) => readable({ data, isLoading: false, isError: false });
+	const q = <T>(data: T) => ({ data, isLoading: false, isError: false });
 	return {
 		useAllMachines: () => q(machineList),
 		useDispatchers: () => q([]),

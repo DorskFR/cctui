@@ -107,8 +107,8 @@
 	const codexCatalog = useCodexModels(() =>
 		isCodexSession && modelEditing ? session.machine_id : ''
 	);
-	const codexModelOptions = $derived(codexModelsFor($codexCatalog.data));
-	const codexEffortOptions = $derived(codexEffortsFor($codexCatalog.data, pendingModel));
+	const codexModelOptions = $derived(codexModelsFor(codexCatalog.data));
+	const codexEffortOptions = $derived(codexEffortsFor(codexCatalog.data, pendingModel));
 
 	function doRename() {
 		const n = newName.trim();

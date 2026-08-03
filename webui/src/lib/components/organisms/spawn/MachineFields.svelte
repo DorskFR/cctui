@@ -136,8 +136,8 @@
 	// Machine-scoped codex catalog: the picker offers the account's
 	// real models + supported efforts, falling back to the static offline list.
 	const codexCatalog = useCodexModels(() => (effectiveAdapter === 'codex' ? form.machine_id : ''));
-	const codexModelOptions = $derived(codexModelsFor($codexCatalog.data));
-	const codexEffortOptions = $derived(codexEffortsFor($codexCatalog.data, form.model_codex));
+	const codexModelOptions = $derived(codexModelsFor(codexCatalog.data));
+	const codexEffortOptions = $derived(codexEffortsFor(codexCatalog.data, form.model_codex));
 
 	// Clear a stale account selection if it no longer exists (e.g. accounts
 	// reloaded); keep account_provider tracking the credential actually in use so

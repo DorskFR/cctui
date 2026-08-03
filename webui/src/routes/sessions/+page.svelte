@@ -253,7 +253,7 @@
 	// non-empty the live list and archive browse are narrowed to sessions
 	// carrying at least one of them (OR semantics). Persisted across reloads.
 	const labelsQuery = useLabels();
-	const allLabels = $derived($labelsQuery.data?.labels ?? []);
+	const allLabels = $derived(labelsQuery.data?.labels ?? []);
 	// The LabelFilter molecule owns the popover + toggle UI; the page keeps the
 	// selected-id set (and persists it / prunes deleted ids below).
 	let labelFilter = $state(new Set<string>(parseLabelFilter(drafts.get(LIST_LABELS))));
@@ -267,7 +267,7 @@
 		// still in flight (allLabels === []), so pruning here would treat every
 		// restored id as "deleted", wipe the filter, and the drafts.set effect
 		// above would then persist that empty set — losing the filter for good.
-		if (!$labelsQuery.data) return;
+		if (!labelsQuery.data) return;
 		const known = new Set(allLabels.map((l) => l.id));
 		if ([...labelFilter].some((id) => !known.has(id))) {
 			labelFilter = new Set([...labelFilter].filter((id) => known.has(id)));
@@ -483,7 +483,7 @@
 		}
 	});
 
-	const items = $derived($sessions.data?.sessions ?? []);
+	const items = $derived(sessions.data?.sessions ?? []);
 
 	// Draft/staged sessions (status='draft') are pulled out of the classifier
 	// buckets into their own section by the controller (list.draftRows).
@@ -539,7 +539,7 @@
 		() => pinnedIds.size > 0
 	);
 	const archivedPool = $derived(
-		($allSessions.data?.sessions ?? []).filter((s) => s.status === 'archived')
+		(allSessions.data?.sessions ?? []).filter((s) => s.status === 'archived')
 	);
 	const pinnedArchivedKids = $derived(archivedDescendantsOf(pinnedIds, archivedPool));
 	// Their ids, so the Archived browse below doesn't also list them as their own
@@ -860,7 +860,7 @@
 		</div>
 	{/if}
 {:else if kanban}
-	{#if $sessions.isLoading}
+	{#if sessions.isLoading}
 		<div class="empty"><span class="spin"></span></div>
 	{:else}
 		<Container fullWidth as="div">
@@ -887,7 +887,7 @@
 {/snippet}
 
 {#snippet liveSections()}
-		{#if $sessions.isLoading}
+		{#if sessions.isLoading}
 			<div class="empty"><span class="spin"></span></div>
 		{:else if !list.hasLiveRows && !showArchived && !(sections.has('drafts') && list.draftRows.length > 0)}
 			<div class="empty">

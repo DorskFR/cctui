@@ -48,7 +48,7 @@
 
 	// Drive notifications + title badge off the list's attention flags.
 	$effect(() => {
-		const items = $sessions.data?.sessions ?? [];
+		const items = sessions.data?.sessions ?? [];
 		notify.reconcile(items.filter((s) => s.attention === 'needs_input'));
 	});
 
@@ -84,11 +84,11 @@
 		></span>
 		<div class="spacer"></div>
 		<NetStatsChip />
-		{#if $version.data}
-			<NavLink href={$version.data.commit_url} target="_blank" rel="noopener">
+		{#if version.data}
+			<NavLink href={version.data.commit_url} target="_blank" rel="noopener">
 				<Text size="xs" tone="faint" variant="code">
 					<span class="ver-cluster">
-						<span class="ver-part">srv v{$version.data.version}</span>
+						<span class="ver-part">srv v{version.data.version}</span>
 						<span class="ver-part">ui v{__CLIENT_VERSION__}</span>
 					</span>
 				</Text>

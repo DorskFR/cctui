@@ -19,7 +19,7 @@
 	} = $props();
 
 	const caps = useCapabilities();
-	const lf = $derived($caps.data?.langfuse);
+	const lf = $derived(caps.data?.langfuse);
 	const available = $derived(!!lf?.available);
 
 	const q = useSessionLangfuse(
@@ -27,7 +27,7 @@
 		() => enabled && available
 	);
 
-	const usage = $derived($q.data ?? null);
+	const usage = $derived(q.data ?? null);
 	// A session with zero traces yet is not worth a chip.
 	const hasData = $derived(!!usage && usage.trace_count > 0);
 

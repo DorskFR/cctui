@@ -24,7 +24,7 @@
 
 	const me = useMe();
 	// Only an admin may list all users; a non-admin uses the self-service view.
-	const users = useUsers(() => $me.data?.role === 'admin');
+	const users = useUsers(() => me.data?.role === 'admin');
 	const actions = useUserActions();
 	const guard = (p: Promise<unknown>) => p.catch((e: Error) => toasts.err(e.message));
 
@@ -79,7 +79,7 @@
 		);
 	}
 
-	const all = $derived($users.data ?? []);
+	const all = $derived(users.data ?? []);
 	const active = $derived(all.filter((u) => !u.revoked_at));
 	const revoked = $derived(all.filter((u) => !!u.revoked_at));
 	const selected = $derived(all.find((u) => u.id === selectedId) ?? null);
@@ -88,15 +88,15 @@
 <div class="bar row">
 	<Heading level={1}>{m.users_title()}</Heading>
 	<div class="spacer"></div>
-	{#if $me.data?.role === 'admin'}
+	{#if me.data?.role === 'admin'}
 		<Button control variant="primary" onclick={() => (createOpen = true)}>{m.users_new_user()}</Button>
 	{/if}
 </div>
 
 <!-- Who am I: role + identity + a non-secret preview of the stored
      bearer, so "user token required" errors stop being a mystery. -->
-{#if $me.data}
-	{@const meData = $me.data}
+{#if me.data}
+	{@const meData = me.data}
 	<div class="card whoami row">
 		<Text tone="faint">{m.users_signed_in_as()}</Text>
 		<Badge tone={meData.role === 'admin' ? 'warn' : meData.role === 'user' ? 'ok' : 'neutral'}>{meData.role}</Badge>
@@ -112,16 +112,16 @@
 	</div>
 {/if}
 
-{#if $me.data && $me.data.role !== 'admin'}
+{#if me.data && me.data.role !== 'admin'}
 	<!-- Self-service: a non-admin user manages its own keys here (mint
 	     a dispatch-only key for automation, etc.) without an admin token. The ceiling is
 	     read-only for them; only an admin can grant new capabilities. -->
-	{#if $me.data.user_id}
+	{#if me.data.user_id}
 		<div class="detail-card">
-			<UserScopes userId={$me.data.user_id} isAdmin={false} isSelf={true} onsecret={showSecret} />
+			<UserScopes userId={me.data.user_id} isAdmin={false} isSelf={true} onsecret={showSecret} />
 		</div>
 	{/if}
-{:else if $users.isLoading}
+{:else if users.isLoading}
 	<div class="empty"><span class="spin"></span></div>
 {:else}
 	<div class="picker">
@@ -202,8 +202,8 @@
 		<div class="detail-card">
 			<UserScopes
 				userId={u.id}
-				isAdmin={$me.data?.role === 'admin'}
-				isSelf={$me.data?.user_id === u.id}
+				isAdmin={me.data?.role === 'admin'}
+				isSelf={me.data?.user_id === u.id}
 				onsecret={showSecret}
 			/>
 		</div>
