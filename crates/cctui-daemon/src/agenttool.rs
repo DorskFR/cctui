@@ -106,7 +106,7 @@ async fn run_call(server: &ServerClient, machine_key: &str, call: Call) -> Value
         Err(err) => return json!({ "ok": false, "error": err.to_string() }),
     };
     let watch = crate::childwatch::global();
-    let done = watch.register(&child.session_id, &call.session_id);
+    let done = watch.register(&child.session_id);
     tracing::info!(
         parent = %call.session_id,
         child = %child.session_id,

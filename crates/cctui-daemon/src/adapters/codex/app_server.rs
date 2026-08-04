@@ -1337,6 +1337,9 @@ pub struct CodexSession {
     /// Spawn/fork correlation id: resolved as an
     /// [`AdapterEvent::CommandResult`] only once the launch outcome is known.
     command_id: Option<Uuid>,
+    /// Server-pre-minted session id, echoed on `SessionStarted` so childwatch
+    /// can bind the thread codex mints to the `CctuiAgent` waiter.
+    spawn_key: Option<String>,
     events: mpsc::Sender<AdapterEvent>,
     live: LiveSessionRegistry,
     registry: SessionRegistry,
@@ -1353,6 +1356,7 @@ impl CodexSession {
         name: Option<String>,
         attachments: Vec<String>,
         command_id: Option<Uuid>,
+        spawn_key: Option<String>,
         events: mpsc::Sender<AdapterEvent>,
         live: LiveSessionRegistry,
         registry: SessionRegistry,
@@ -1364,6 +1368,7 @@ impl CodexSession {
             env,
             launch: SessionLaunch::Fresh { prompt, name, attachments },
             command_id,
+            spawn_key,
             events,
             live,
             registry,
@@ -1392,6 +1397,7 @@ impl CodexSession {
             env,
             launch: SessionLaunch::Fork { parent_thread_id, prompt, name, attachments },
             command_id,
+            spawn_key: None,
             events,
             live,
             registry,
@@ -1417,6 +1423,7 @@ impl CodexSession {
             env,
             launch: SessionLaunch::Resume { thread_id, initial_commands },
             command_id: None,
+            spawn_key: None,
             events,
             live,
             registry,
@@ -1779,6 +1786,7 @@ impl CodexSession {
                                             "source": "codex-app-server",
                                             "rollout_path": info.rollout_path,
                                             "codex_version": codex_version,
+                                            "spawn_key": self.spawn_key,
                                         }),
                                     },
                                 })
@@ -2911,6 +2919,7 @@ mod tests {
             None, // no prompt → no turn/start, so no model auth needed
             None,
             Vec::new(),
+            None,
             None,
             tx,
             live,
