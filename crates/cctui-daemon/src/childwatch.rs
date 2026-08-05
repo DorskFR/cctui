@@ -6,9 +6,11 @@
 //! event through [`ChildWatch::observe`], which keeps the last assistant text
 //! per watched child and resolves the waiter when the child ends.
 //!
-//! A child is matched either by its pre-minted session id (claude launches with
-//! it as `--session-id`) or, for adapters that mint their own local id, by the
-//! `parent_local_id` on its `SessionStarted`.
+//! A child is matched only by its pre-minted session id (claude launches with
+//! it as `--session-id`) or by the `spawn_key` an adapter that mints its own
+//! local id echoes into `SessionMeta::extra`. Never bind by `parent_local_id`:
+//! observed sessions (codex log-tail rollouts, claude Task subagents) also name
+//! the caller as parent and would steal the watch.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -26,8 +28,6 @@ pub struct ChildOutcome {
 }
 
 struct Watch {
-    parent: String,
-    /// The adapter-side id once observed; until then only `key` is known.
     local_id: Option<String>,
     final_text: Option<String>,
     done: Option<oneshot::Sender<ChildOutcome>>,
@@ -53,12 +53,11 @@ pub fn global() -> Arc<ChildWatch> {
 }
 
 impl ChildWatch {
-    /// Start watching the child `key` (its pre-minted session id) spawned by
-    /// `parent`. The receiver resolves once the child ends.
-    pub fn register(&self, key: &str, parent: &str) -> oneshot::Receiver<ChildOutcome> {
+    /// Start watching the child `key` (its pre-minted session id); the
+    /// receiver resolves once the child ends.
+    pub fn register(&self, key: &str) -> oneshot::Receiver<ChildOutcome> {
         let (tx, rx) = oneshot::channel();
-        let watch =
-            Watch { parent: parent.to_owned(), local_id: None, final_text: None, done: Some(tx) };
+        let watch = Watch { local_id: None, final_text: None, done: Some(tx) };
         self.watches.lock().unwrap().insert(key.to_owned(), watch);
         rx
     }
@@ -78,7 +77,7 @@ impl ChildWatch {
         let watches = &mut *guard;
         match event {
             AdapterEvent::SessionStarted { local_id, meta } => {
-                bind(watches, local_id, meta.parent_local_id.as_deref());
+                bind(watches, local_id, &meta.extra);
             }
             AdapterEvent::Message { local_id, payload } => {
                 if let Some(text) = assistant_text(payload)
@@ -107,15 +106,19 @@ impl ChildWatch {
     }
 }
 
-/// Attach an adapter-minted `local_id` to the watch it belongs to: by exact key
-/// first, else by the parent it reported.
-fn bind(watches: &mut HashMap<String, Watch>, local_id: &str, parent: Option<&str>) {
+/// Bind `local_id` to its watch by exact key, else by the echoed `spawn_key` —
+/// both pre-minted, so a bind can never land on a session the tool did not spawn.
+fn bind(watches: &mut HashMap<String, Watch>, local_id: &str, extra: &serde_json::Value) {
     if let Some(w) = watches.get_mut(local_id) {
         w.local_id = Some(local_id.to_owned());
         return;
     }
-    let Some(parent) = parent else { return };
-    if let Some(w) = watches.values_mut().find(|w| w.local_id.is_none() && w.parent == parent) {
+    let Some(spawn_key) =
+        extra.get("spawn_key").and_then(serde_json::Value::as_str).filter(|k| !k.is_empty())
+    else {
+        return;
+    };
+    if let Some(w) = watches.get_mut(spawn_key).filter(|w| w.local_id.is_none()) {
         w.local_id = Some(local_id.to_owned());
     }
 }
@@ -138,7 +141,16 @@ fn resolve(watches: &mut HashMap<String, Watch>, key: &str, error: Option<String
 
 /// The text of an assistant message, ignoring thinking blocks and user turns.
 fn assistant_text(payload: &serde_json::Value) -> Option<String> {
-    if payload.get("role").and_then(serde_json::Value::as_str) != Some("assistant") {
+    let assistant = payload.get("role").and_then(serde_json::Value::as_str).map_or_else(
+        || {
+            matches!(
+                payload.get("type").and_then(serde_json::Value::as_str),
+                Some("agentMessage" | "agent_message")
+            )
+        },
+        |role| role == "assistant",
+    );
+    if !assistant {
         return None;
     }
     let text = payload.get("text").and_then(serde_json::Value::as_str)?.trim();
@@ -161,6 +173,21 @@ mod tests {
         }
     }
 
+    fn started_with_spawn_key(
+        local_id: &str,
+        parent: Option<&str>,
+        spawn_key: &str,
+    ) -> AdapterEvent {
+        AdapterEvent::SessionStarted {
+            local_id: local_id.to_owned(),
+            meta: SessionMeta {
+                parent_local_id: parent.map(str::to_owned),
+                extra: json!({ "spawn_key": spawn_key }),
+                ..SessionMeta::default()
+            },
+        }
+    }
+
     fn msg(local_id: &str, role: &str, text: &str) -> AdapterEvent {
         AdapterEvent::Message {
             local_id: local_id.to_owned(),
@@ -171,7 +198,7 @@ mod tests {
     #[tokio::test]
     async fn child_matched_by_pre_minted_id_returns_its_last_assistant_text() {
         let watch = ChildWatch::default();
-        let rx = watch.register("child-1", "parent-1");
+        let rx = watch.register("child-1");
         watch.observe(&started("child-1", Some("parent-1")));
         watch.observe(&msg("child-1", "assistant", "first pass"));
         watch.observe(&msg("child-1", "assistant", "VERDICT: approve"));
@@ -185,22 +212,56 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn child_with_its_own_local_id_is_matched_by_parent() {
+    async fn child_with_its_own_local_id_is_matched_by_spawn_key() {
         let watch = ChildWatch::default();
-        let rx = watch.register("child-key", "parent-1");
-        watch.observe(&started("opencode-abc", Some("parent-1")));
-        watch.observe(&msg("opencode-abc", "assistant", "done"));
+        let rx = watch.register("child-key");
+        watch.observe(&started_with_spawn_key("ses_abc", Some("parent-1"), "child-key"));
+        watch.observe(&msg("ses_abc", "assistant", "done"));
         watch.observe(&AdapterEvent::SessionEnded {
-            local_id: "opencode-abc".into(),
+            local_id: "ses_abc".into(),
             reason: EndReason::Completed,
         });
         assert_eq!(rx.await.unwrap().final_text.as_deref(), Some("done"));
     }
 
     #[tokio::test]
+    async fn observed_session_naming_the_same_parent_cannot_steal_the_watch() {
+        let watch = ChildWatch::default();
+        let mut rx = watch.register("child-key");
+        watch.observe(&started("019fca47-rollout", Some("parent-1")));
+        watch.observe(&AdapterEvent::SessionEnded {
+            local_id: "019fca47-rollout".into(),
+            reason: EndReason::Completed,
+        });
+        assert!(rx.try_recv().is_err(), "watch must survive the observed session's end");
+
+        watch.observe(&started_with_spawn_key("ses_real", Some("parent-1"), "child-key"));
+        watch.observe(&msg("ses_real", "assistant", "VERDICT: approve"));
+        watch.observe(&AdapterEvent::SessionEnded {
+            local_id: "ses_real".into(),
+            reason: EndReason::Completed,
+        });
+        assert_eq!(rx.await.unwrap().final_text.as_deref(), Some("VERDICT: approve"));
+    }
+
+    #[tokio::test]
+    async fn a_bound_watch_ignores_later_spawn_key_rebinds() {
+        let watch = ChildWatch::default();
+        let rx = watch.register("child-key");
+        watch.observe(&started_with_spawn_key("ses_first", None, "child-key"));
+        watch.observe(&started_with_spawn_key("ses_second", None, "child-key"));
+        watch.observe(&msg("ses_first", "assistant", "from first"));
+        watch.observe(&AdapterEvent::SessionEnded {
+            local_id: "ses_first".into(),
+            reason: EndReason::Completed,
+        });
+        assert_eq!(rx.await.unwrap().final_text.as_deref(), Some("from first"));
+    }
+
+    #[tokio::test]
     async fn unrelated_sessions_never_resolve_a_watch() {
         let watch = ChildWatch::default();
-        let mut rx = watch.register("child-1", "parent-1");
+        let mut rx = watch.register("child-1");
         watch.observe(&started("someone-else", Some("other-parent")));
         watch.observe(&msg("someone-else", "assistant", "not mine"));
         watch.observe(&AdapterEvent::SessionEnded {
@@ -213,7 +274,7 @@ mod tests {
     #[tokio::test]
     async fn crashed_child_reports_the_failure_detail() {
         let watch = ChildWatch::default();
-        let rx = watch.register("child-1", "parent-1");
+        let rx = watch.register("child-1");
         watch.observe(&started("child-1", Some("parent-1")));
         watch.observe(&AdapterEvent::SessionEnded {
             local_id: "child-1".into(),
@@ -227,7 +288,7 @@ mod tests {
     async fn failed_spawn_command_resolves_immediately() {
         let watch = ChildWatch::default();
         let id = uuid::Uuid::new_v4();
-        let rx = watch.register(&id.to_string(), "parent-1");
+        let rx = watch.register(&id.to_string());
         watch.observe(&AdapterEvent::CommandResult {
             command_id: id,
             ok: false,
@@ -245,5 +306,19 @@ mod tests {
             assistant_text(&json!({ "role": "assistant", "text": " ok " })).as_deref(),
             Some("ok")
         );
+    }
+
+    #[test]
+    fn codex_native_agent_messages_are_final_text() {
+        assert_eq!(
+            assistant_text(&json!({ "type": "agentMessage", "text": "done" })).as_deref(),
+            Some("done")
+        );
+        assert_eq!(
+            assistant_text(&json!({ "type": "agent_message", "text": "done" })).as_deref(),
+            Some("done")
+        );
+        assert!(assistant_text(&json!({ "type": "userMessage", "text": "go" })).is_none());
+        assert!(assistant_text(&json!({ "type": "reasoning", "text": "hmm" })).is_none());
     }
 }

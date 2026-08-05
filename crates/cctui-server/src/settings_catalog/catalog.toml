@@ -827,14 +827,6 @@ type = "bool"
 notes = "session-only, not read from settings.json; via /effort ultracode/--settings/SDK"
 
 [[keys]]
-name = "leftArrowOpensAgents"
-group = "UI & transcript"
-label = "Left arrow opens agents"
-tag = "safe"
-source = "schema"
-notes = "Left arrow on an empty prompt opens the agents view"
-
-[[keys]]
 name = "managedMcpServers"
 tag = "managed"
 source = "schema"

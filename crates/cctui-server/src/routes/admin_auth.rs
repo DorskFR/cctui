@@ -324,6 +324,15 @@ pub async fn revoke_machine(
         .execute(&state.pool)
         .await
         .map_err(|e| db_err(&e))?;
+    // Auth resolves against auth_keys first; revoke the mirror row too or the
+    // key keeps authenticating.
+    sqlx::query(
+        "UPDATE auth_keys SET revoked_at = now() WHERE machine_id = $1 AND revoked_at IS NULL",
+    )
+    .bind(id)
+    .execute(&state.pool)
+    .await
+    .map_err(|e| db_err(&e))?;
     state.auth_config.purge(&old_hash);
     tracing::info!(machine_id = %id, "machine revoked");
     Ok(StatusCode::NO_CONTENT)
@@ -586,13 +595,54 @@ pub async fn rotate_machine(
     let secret = mint_secret();
     let token = machine_token(&secret);
     let hash = sha256_hex(&token);
+    let preview = crate::auth::token_preview(&token);
     sqlx::query("UPDATE machines SET key_hash = $1, key_preview = $2 WHERE id = $3")
         .bind(&hash)
-        .bind(crate::auth::token_preview(&token))
+        .bind(&preview)
         .bind(id)
         .execute(&state.pool)
         .await
         .map_err(|e| db_err(&e))?;
+    // Auth resolves against auth_keys first; without this the old key keeps
+    // authenticating and the new one only works via the legacy dual-read.
+    let mirrored = sqlx::query(
+        "UPDATE auth_keys SET key_hash = $1, key_preview = $2 \
+         WHERE machine_id = $3 AND revoked_at IS NULL",
+    )
+    .bind(&hash)
+    .bind(&preview)
+    .bind(id)
+    .execute(&state.pool)
+    .await
+    .map_err(|e| db_err(&e))?;
+    if mirrored.rows_affected() == 0 {
+        let owner: Option<(Uuid, String)> =
+            sqlx::query_as("SELECT user_id, name FROM machines WHERE id = $1")
+                .bind(id)
+                .fetch_optional(&state.pool)
+                .await
+                .map_err(|e| db_err(&e))?;
+        if let Some((user_id, name)) = owner {
+            let grant = crate::auth::ceiling_of(&state.pool, user_id).await;
+            if let Err(e) = crate::auth::register_key(
+                &state.pool,
+                crate::auth::NewKey {
+                    user_id,
+                    key_hash: &hash,
+                    key_preview: Some(&preview),
+                    label: Some(&name),
+                    kind: "machine",
+                    machine_id: Some(id),
+                    dispatcher_id: None,
+                },
+                grant,
+            )
+            .await
+            {
+                tracing::warn!(machine_id = %id, "failed to register rotated machine key in auth_keys: {e}");
+            }
+        }
+    }
     state.auth_config.purge(&old_hash);
     tracing::info!(machine_id = %id, "machine key rotated");
     Ok(Json(RotateResponse { id, key: token }))
