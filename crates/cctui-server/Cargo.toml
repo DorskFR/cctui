@@ -33,7 +33,7 @@ dashmap = "6"
 async-trait.workspace = true
 reqwest.workspace = true
 ts-rs.workspace = true
-toml = "0.8"
+toml = "1.1"
 log = "0.4.33"
 
 [dev-dependencies]
