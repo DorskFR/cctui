@@ -27,6 +27,6 @@
     "@dorsk/tsumikit": "^0.18.3",
     "@tanstack/svelte-query": "^6.1.38",
     "highlight.js": "^11.11.1",
-    "marked": "^16.4.2"
+    "marked": "^18.0.7"
   }
 }

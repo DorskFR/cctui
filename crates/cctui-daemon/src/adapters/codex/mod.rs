@@ -319,6 +319,7 @@ async fn command_pump(
                                    spec.name.clone(),
                                    attachments,
                                    command_id,
+                                   session_id.map(|id| id.to_string()),
                                    events.clone(),
                                    live.clone(),
                                    registry.clone(),

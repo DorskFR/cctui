@@ -20,7 +20,7 @@ tracing-subscriber.workspace = true
 futures-util.workspace = true
 anyhow.workspace = true
 axum.workspace = true
-tower-http = { version = "0.6", features = ["cors", "trace"] }
+tower-http = { version = "0.7", features = ["cors", "trace"] }
 sha2.workspace = true
 hmac = "0.12"
 hex.workspace = true
