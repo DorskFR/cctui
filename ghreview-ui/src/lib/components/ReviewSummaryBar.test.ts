@@ -1,4 +1,4 @@
-import { mount, unmount } from "svelte";
+import { mount, tick, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import ReviewSummaryBar from "./ReviewSummaryBar.svelte";
 
@@ -11,13 +11,18 @@ afterEach(async () => {
 });
 
 describe("ReviewSummaryBar", () => {
-  it("exposes its full-width layout through the public prop", () => {
+  it("exposes its full-width layout through the public prop", async () => {
     component = mount(ReviewSummaryBar, {
       target: document.body,
       props: { draftCount: 3, fullWidth: true, onpublish: vi.fn() },
     });
 
     const bar = document.querySelector(".bar.full-width");
+    const panel = bar?.querySelector(".pop-panel") as HTMLElement;
+    const ev = new Event("toggle");
+    Object.assign(ev, { newState: "open" });
+    panel.dispatchEvent(ev);
+    await tick();
     const trigger = bar?.querySelector('[data-tsu="Popover"]');
     expect(bar).not.toBeNull();
     expect(trigger?.textContent).toContain("Review 3");
