@@ -109,11 +109,6 @@ jobs:
   integration:
     name: cargo test (ignored integration)
     runs-on: ubuntu-latest
-    # Advisory: 3 of the 5 pass against a fresh server. register_and_list_session
-    # and machine_rotate_invalidates_old_key need a real ENROLLED machine key —
-    # an agent token does not authenticate the register endpoint — so they 401
-    # until this job enrolls a machine first. Flip to blocking once it does.
-    continue-on-error: true
     services:
       postgres:
         image: pgautoupgrade/pgautoupgrade:18-debian@sha256:5994de3d344b9c9676b571d10ff8259e155013f4e5477c58ceee74a42f6d2d20
@@ -131,10 +126,8 @@ jobs:
     env:
       DATABASE_URL: postgres://postgres:postgres@localhost:5432/cctui_test
       CCTUI_ADMIN_TOKENS: test-admin
-      CCTUI_AGENT_TOKENS: test-machine-key
       TEST_CCTUI_URL: http://localhost:8700
       TEST_ADMIN_TOKEN: test-admin
-      TEST_MACHINE_KEY: test-machine-key
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 

@@ -131,7 +131,6 @@ pub fn reviewer_agent() -> Value {
         "mode": "primary",
         "prompt": REVIEWER_PROMPT,
         "steps": 120,
-        "retryCount": 1,
         "permission": {
             "edit": "deny",
             "webfetch": "deny",
@@ -305,7 +304,8 @@ mod tests {
         assert_eq!(a["permission"]["bash"]["echo*"], "allow");
         assert!(a["permission"]["bash"].get("git push*").is_none());
         assert!(a["steps"].as_u64().unwrap() > 0);
-        assert_eq!(a["retryCount"], 1);
+        // unknown agent keys leak into the provider request body via `options`
+        assert!(a.get("retryCount").is_none());
     }
 
     #[test]

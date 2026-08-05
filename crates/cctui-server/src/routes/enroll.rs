@@ -124,6 +124,11 @@ pub async fn deenroll(
         .machine_id
         .ok_or_else(|| AppError::new(StatusCode::FORBIDDEN, "machine token required"))?;
 
+    let old_hash: Option<(String,)> = sqlx::query_as("SELECT key_hash FROM machines WHERE id = $1")
+        .bind(machine_id)
+        .fetch_optional(&state.pool)
+        .await?;
+
     sqlx::query(
         "UPDATE machines SET revoked_at = COALESCE(revoked_at, now()), deleted_at = now() \
          WHERE id = $1 AND deleted_at IS NULL",
@@ -131,6 +136,19 @@ pub async fn deenroll(
     .bind(machine_id)
     .execute(&state.pool)
     .await?;
+
+    // Auth resolves against auth_keys first; revoke the mirror row too or the
+    // key keeps authenticating.
+    sqlx::query(
+        "UPDATE auth_keys SET revoked_at = now() WHERE machine_id = $1 AND revoked_at IS NULL",
+    )
+    .bind(machine_id)
+    .execute(&state.pool)
+    .await?;
+
+    if let Some((hash,)) = old_hash {
+        state.auth_config.purge(&hash);
+    }
 
     tracing::info!(machine_id = %machine_id, "machine deenrolled (self)");
     Ok(StatusCode::NO_CONTENT)
