@@ -52,7 +52,6 @@ fn find_syntax(lang: &str) -> Option<&'static SyntaxReference> {
     None
 }
 
-#[allow(clippy::disallowed_methods)]
 fn ansi_palette_color(index: u8) -> RtColor {
     match index {
         0x00 => RtColor::Black,
@@ -67,7 +66,6 @@ fn ansi_palette_color(index: u8) -> RtColor {
     }
 }
 
-#[allow(clippy::disallowed_methods)]
 fn convert_syntect_color(color: SyntectColor) -> Option<RtColor> {
     match color.a {
         ANSI_ALPHA_INDEX => Some(ansi_palette_color(color.r)),

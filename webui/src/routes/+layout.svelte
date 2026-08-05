@@ -1,6 +1,11 @@
 <script lang="ts">
 	import '$lib/styles/app.css';
-	import { QueryClient, QueryClientProvider } from '@tanstack/svelte-query';
+	import { QueryClient } from '@tanstack/svelte-query';
+	import { PersistQueryClientProvider } from '@tanstack/svelte-query-persist-client';
+	import { createAsyncStoragePersister } from '@tanstack/query-async-storage-persister';
+	import { get as idbGet, set as idbSet, del as idbDel } from 'idb-keyval';
+	import { qk } from '$lib/queries';
+	import type { SessionListResponse } from '@bindings/SessionListResponse';
 	import { page } from '$app/state';
 	import { auth } from '$lib/auth.svelte';
 	import { settings } from '$lib/settings.svelte';
@@ -36,6 +41,38 @@
 		}
 	});
 
+	// Persist the heavyweight caches to IndexedDB so a reload paints from disk
+	// and revalidates as a delta/304 instead of re-downloading everything.
+	const PERSISTED = new Set(['sessions', 'conversation', 'labels']);
+	const persister = createAsyncStoragePersister({
+		storage: {
+			getItem: (k: string) => idbGet<string>(k).then((v) => v ?? null),
+			setItem: (k: string, v: string) => idbSet(k, v),
+			removeItem: (k: string) => idbDel(k)
+		},
+		key: 'cctui-query-cache'
+	});
+	const persistOptions = {
+		persister,
+		maxAge: 24 * 60 * 60 * 1000,
+		dehydrateOptions: {
+			shouldDehydrateQuery: (q: { queryKey: readonly unknown[]; state: { status: string } }) =>
+				q.state.status === 'success' && PERSISTED.has(q.queryKey[0] as string)
+		}
+	};
+
+	// Restore-time reconciliation: drop persisted conversations whose session
+	// is archived or no longer in the restored list.
+	function purgeStaleConversations() {
+		const live = queryClient.getQueryData<SessionListResponse>(qk.sessions(false));
+		if (!live) return;
+		const keep = new Set(live.sessions.filter((s) => s.status !== 'archived').map((s) => s.id));
+		for (const q of queryClient.getQueryCache().findAll({ queryKey: ['conversation'] })) {
+			const sid = q.queryKey[1] as string;
+			if (!keep.has(sid)) queryClient.removeQueries({ queryKey: q.queryKey, exact: true });
+		}
+	}
+
 	// Probe the `HttpOnly` auth cookie once on load to learn whether we're already
 	// signed in — the token isn't readable from JS.
 	$effect(() => {
@@ -56,7 +93,11 @@
 	});
 </script>
 
-<QueryClientProvider client={queryClient}>
+<PersistQueryClientProvider
+	client={queryClient}
+	{persistOptions}
+	onSuccess={purgeStaleConversations}
+>
 	<!-- Remount the tree on a language flip so labels captured in component-init
 	     `const`s (not just reactive template reads) re-localize live. -->
 	{#key locale.current}
@@ -79,7 +120,7 @@
 		{/if}
 	{/key}
 	<Toaster />
-</QueryClientProvider>
+</PersistQueryClientProvider>
 
 <style>
 	.app {

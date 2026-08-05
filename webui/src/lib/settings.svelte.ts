@@ -2,6 +2,9 @@ import { browser } from '$app/environment';
 import { api } from './api';
 import { auth } from './auth.svelte';
 import { clampLocale, locale as localeStore, type Locale } from './locale.svelte';
+import { theme, type Mode } from './theme.svelte';
+import { fontScale } from './fontscale.svelte';
+import { notify } from './notify.svelte';
 import type { SettingsPayload } from '@bindings/SettingsPayload';
 import {
 	latestDirFor,
@@ -154,7 +157,7 @@ const DEFAULTS: SettingsState = {
 // than becoming undefined. One level of nesting covers the catalogue shape.
 // Stale keys in an older blob (e.g. a retired setting) are simply not copied
 // over, and get pruned on the next save.
-function mergeDefaults(partial: Partial<SettingsState> | null | undefined): SettingsState {
+export function mergeDefaults(partial: Partial<SettingsState> | null | undefined): SettingsState {
 	const p = partial ?? {};
 	return {
 		sessionList: { ...DEFAULTS.sessionList, ...(p.sessionList ?? {}) },
@@ -202,8 +205,8 @@ function mergeSecretScrubPatterns(v: unknown): SecretScrubPattern[] {
 // older `data` blob up to CURRENT_VERSION. v1 is a passthrough — add a `case`
 // per version bump. Pure; never throws.
 function migrate(data: unknown, version: number): Partial<SettingsState> {
-	let d = (data ?? {}) as Partial<SettingsState>;
-	let v = version;
+	const d = (data ?? {}) as Partial<SettingsState>;
+	const v = version;
 	// while (v < CURRENT_VERSION) { switch (v) { case 1: d = …; v = 2; break; } }
 	void v;
 	return d;
@@ -240,6 +243,7 @@ class Settings {
 			const migrated = migrate(payload.data, payload.version ?? CURRENT_VERSION);
 			this.state = mergeDefaults(migrated);
 			this.writeCache();
+			this.applyDisplay();
 			if (this.state.locale) localeStore.set(this.state.locale);
 		} catch {
 			// 401 / offline / decode error — keep the cached or default state.
@@ -286,6 +290,38 @@ class Settings {
 	setDisplay(patch: Partial<DisplaySettings>) {
 		this.state.display = { ...this.state.display, ...patch };
 		this.persist();
+	}
+
+	// Display drivers routed through the blob so theme/font/notify round-trip
+	// across devices: every surface (header + settings panel) mutates the runtime
+	// singleton AND records the value here, and `load()` replays the blob back
+	// into the singletons via `applyDisplay`.
+	setTheme(id: string) {
+		theme.set(id as Mode);
+		this.setDisplay({ theme: id });
+	}
+
+	setFontScaleLevel(levelId: string) {
+		fontScale.set(levelId);
+		this.setDisplay({ fontScale: fontScale.current });
+	}
+
+	setNotifySound(on: boolean) {
+		notify.setSound(on);
+		this.setDisplay({ notifySound: notify.sound });
+	}
+
+	/** Record the notifier's current enabled state after a header/panel toggle
+	 *  (whose async permission prompt the caller owns). */
+	recordNotifyEnabled() {
+		this.setDisplay({ notifyEnabled: notify.enabled });
+	}
+
+	private applyDisplay() {
+		const d = this.state.display;
+		theme.set(d.theme as Mode);
+		fontScale.setScale(d.fontScale);
+		notify.applyPersisted(d.notifyEnabled, d.notifySound);
 	}
 
 	// Claude harness mode. Persisted top-level so it serializes as

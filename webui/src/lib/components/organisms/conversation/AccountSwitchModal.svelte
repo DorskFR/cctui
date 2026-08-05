@@ -44,7 +44,7 @@
 		options: { name: string; credId: string; provider: string }[];
 	}
 	const rows: Row[] = $derived(
-		($bindings.data ?? []).map((b) => {
+		(bindings.data ?? []).map((b) => {
 			const owner = accounts.find((a) => a.id === b.account_id);
 			const current = owner?.providers.find((p) => p.id === b.credential_id) ?? null;
 			const options = accounts.flatMap((a) => {
@@ -128,7 +128,7 @@
 		<Text as="p" tone="muted" size="sm">{m.conversation_acct_bindings_desc()}</Text>
 	{/if}
 
-	{#if $bindings.isLoading}
+	{#if bindings.isLoading}
 		<span class="spin"></span>
 	{:else if rows.length === 0}
 		<Text size="sm" tone="muted">{m.conversation_acct_no_bindings()}</Text>

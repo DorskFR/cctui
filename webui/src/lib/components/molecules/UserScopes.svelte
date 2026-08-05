@@ -30,7 +30,7 @@
 	const actions = useUserActions();
 	const guard = (p: Promise<unknown>) => p.catch((e: Error) => toasts.err(e.message));
 
-	const ceiling = $derived(new Set(($acls.data?.scopes ?? []) as ScopeName[]));
+	const ceiling = $derived(new Set((acls.data?.scopes ?? []) as ScopeName[]));
 	// Only an admin may grant a user new capabilities; a user sees its own
 	// ceiling read-only.
 	const canEditCeiling = $derived(isAdmin);
@@ -81,8 +81,8 @@
 	}
 
 	// A scope can be granted to a key only if it's within the owner's ceiling.
-	const liveKeys = $derived(($keys.data ?? []).filter((k) => !k.revoked_at));
-	const revokedKeys = $derived(($keys.data ?? []).filter((k) => !!k.revoked_at));
+	const liveKeys = $derived((keys.data ?? []).filter((k) => !k.revoked_at));
+	const revokedKeys = $derived((keys.data ?? []).filter((k) => !!k.revoked_at));
 </script>
 
 <Card>

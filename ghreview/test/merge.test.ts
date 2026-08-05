@@ -9,9 +9,10 @@ import { upsertSubscription } from "../src/db/subscriptions.ts";
 import type { AppDeps } from "../src/deps.ts";
 import { createAccount } from "../src/github/account.ts";
 import type { OctokitRequest, OctokitResponse } from "../src/github/client.ts";
+import { dbGate } from "./dbGate.ts";
 
 const DATABASE_URL = process.env.DATABASE_URL;
-const guarded = DATABASE_URL ? describe : describe.skip;
+const guarded = dbGate(describe, DATABASE_URL);
 
 let db: DbHandle;
 const auth = createStaticResolver(parseStaticTokens("tokA:userA,tokB:userB"));

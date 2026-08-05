@@ -1,13 +1,16 @@
 <script lang="ts">
 	import { ws } from '$lib/ws.svelte';
-	import { useVersion, useSessions } from '$lib/queries';
+	import { useVersion, useSessions, qk } from '$lib/queries';
+	import type { SessionListResponse } from '@bindings/SessionListResponse';
 	import { useQueryClient } from '@tanstack/svelte-query';
 	import { theme, THEMES } from '$lib/theme.svelte';
 	import { fontScale, SCALE_LEVELS } from '$lib/fontscale.svelte';
 	import { notify } from '$lib/notify.svelte';
+	import { settings } from '$lib/settings.svelte';
 	import { toasts } from '$lib/toast.svelte';
 	import { IconButton, SelectButton, Text } from '@dorsk/tsumikit';
 	import NavLink from '$lib/components/atoms/NavLink.svelte';
+	import NetStatsChip from '$lib/components/molecules/NetStatsChip.svelte';
 	import { m } from '$lib/paraglide/messages';
 
 	const version = useVersion();
@@ -23,15 +26,36 @@
 		qc.invalidateQueries({ queryKey: ['sessions'] });
 	});
 
+	// Cheap per-session ws patches applied to both list caches in place —
+	// no refetch. The 15s poll reconciles anything the patch can't know.
+	$effect(() =>
+		ws.onListPatch((p) => {
+			const { session_id, ...fields } = p;
+			for (const archived of [false, true]) {
+				qc.setQueryData<SessionListResponse>(qk.sessions(archived), (old) =>
+					old
+						? {
+								...old,
+								sessions: old.sessions.map((s) =>
+									s.id === session_id ? { ...s, ...fields } : s
+								)
+							}
+						: old
+				);
+			}
+		})
+	);
+
 	// Drive notifications + title badge off the list's attention flags.
 	$effect(() => {
-		const items = $sessions.data?.sessions ?? [];
+		const items = sessions.data?.sessions ?? [];
 		notify.reconcile(items.filter((s) => s.attention === 'needs_input'));
 	});
 
 	async function toggleNotify() {
 		if (notify.enabled) {
 			notify.disable();
+			settings.recordNotifyEnabled();
 			toasts.push(m.nav_notify_off(), 'info');
 			return;
 		}
@@ -40,6 +64,7 @@
 			return;
 		}
 		const ok = await notify.enable();
+		settings.recordNotifyEnabled();
 		if (ok) toasts.ok(m.nav_notify_on());
 		else toasts.err(m.nav_notify_blocked());
 	}
@@ -58,11 +83,12 @@
 			title={m.nav_ws_status({ status: ws.status })}
 		></span>
 		<div class="spacer"></div>
-		{#if $version.data}
-			<NavLink href={$version.data.commit_url} target="_blank" rel="noopener">
+		<NetStatsChip />
+		{#if version.data}
+			<NavLink href={version.data.commit_url} target="_blank" rel="noopener">
 				<Text size="xs" tone="faint" variant="code">
 					<span class="ver-cluster">
-						<span class="ver-part">srv v{$version.data.version}</span>
+						<span class="ver-part">srv v{version.data.version}</span>
 						<span class="ver-part">ui v{__CLIENT_VERSION__}</span>
 					</span>
 				</Text>
@@ -79,7 +105,7 @@
 			onclick={toggleNotify}
 			oncontextmenu={(e: MouseEvent) => {
 				e.preventDefault();
-				notify.setSound(!notify.sound);
+					settings.setNotifySound(!notify.sound);
 				toasts.push(notify.sound ? m.nav_sound_on() : m.nav_sound_off(), 'info');
 			}}
 		/>
@@ -92,7 +118,7 @@
 			title={m.nav_font_size()}
 			value={fontScale.levelId}
 			options={SCALE_LEVELS.map((l) => ({ value: l.id, label: l.label }))}
-			onchange={(v) => fontScale.set(v)}
+			onchange={(v) => settings.setFontScaleLevel(v)}
 		/>
 		<!-- Theme picker: pick any palette directly. Grouped into
 		     light/dark sections so the long list stays scannable. -->
@@ -117,7 +143,7 @@
 					}))
 				}
 			]}
-			onchange={(v) => theme.set(v as typeof theme.current)}
+			onchange={(v) => settings.setTheme(v)}
 		/>
 	</div>
 </header>

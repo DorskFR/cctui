@@ -74,10 +74,10 @@ pub async fn list_prompts(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
 ) -> Result<Json<Vec<Prompt>>, StatusCode> {
-    let rows: Vec<Prompt> = sqlx::query_as(&format!(
+    let rows: Vec<Prompt> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT {SELECT_COLS} FROM prompts \
          WHERE $1::uuid IS NULL OR user_id = $1 ORDER BY name"
-    ))
+    )))
     .bind(ctx.owner_filter())
     .fetch_all(&state.pool)
     .await
@@ -96,10 +96,10 @@ pub async fn create_prompt(
         return Err(StatusCode::BAD_REQUEST);
     }
     let kind = req.kind.as_deref().unwrap_or("general");
-    let row: Prompt = sqlx::query_as(&format!(
+    let row: Prompt = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "INSERT INTO prompts (name, content, description, kind, scope_owner, scope_repo, user_id) \
          VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING {SELECT_COLS}"
-    ))
+    )))
     .bind(&req.name)
     .bind(&req.content)
     .bind(&req.description)
@@ -118,9 +118,9 @@ pub async fn get_prompt(
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Prompt>, StatusCode> {
-    let row: Option<Prompt> = sqlx::query_as(&format!(
+    let row: Option<Prompt> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT {SELECT_COLS} FROM prompts WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2)"
-    ))
+    )))
     .bind(id)
     .bind(ctx.owner_filter())
     .fetch_optional(&state.pool)
@@ -143,13 +143,13 @@ pub async fn resolve_prompt(
     // testable and the rule lives in one place. Owner-scoped: a
     // non-admin only resolves their own prompts; an admin (or env token, NULL
     // god-view) resolves across all owners.
-    let candidates: Vec<Prompt> = sqlx::query_as(&format!(
+    let candidates: Vec<Prompt> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT {SELECT_COLS} FROM prompts \
          WHERE kind = $1 AND ($4::uuid IS NULL OR user_id = $4) AND ( \
              (scope_owner IS NULL AND scope_repo IS NULL) OR \
              (scope_owner = $2 AND scope_repo IS NULL) OR \
              (scope_owner = $2 AND scope_repo = $3) )"
-    ))
+    )))
     .bind(kind)
     .bind(&q.owner)
     .bind(&q.repo)

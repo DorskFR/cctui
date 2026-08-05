@@ -82,14 +82,14 @@ fn require_human(ctx: &AuthContext) -> Result<(), (StatusCode, Json<serde_json::
     Ok(())
 }
 
-/// One-release back-compat shim: if `CCTUI_CLAUDE_LITELLM_*` is set,
+/// Back-compat shim: if `CCTUI_CLAUDE_LITELLM_*` is set,
 /// synthesize a server-owned **managed** anthropic-compatible provider per user
 /// (under a dedicated `litellm (legacy)` account identity) so existing
 /// deployments keep working after the env-var path is retired. Managed
 /// providers are read-only over the API (edit/delete excluded). Idempotent:
 /// re-upserted on every restart against the partial unique index
 /// `(user_id, provider) WHERE managed`. A no-op unless both the endpoint and the
-/// model list are configured. To be removed in a follow-up release.
+/// model list are configured. Retained for env-var deployments.
 // Linear per-user upsert loop; the parent+child pair pushes it over the limit.
 #[allow(clippy::cognitive_complexity)]
 pub async fn sync_litellm_shim(pool: &sqlx::PgPool, config: &crate::config::Config) {
@@ -183,7 +183,7 @@ pub async fn sync_litellm_shim(pool: &sqlx::PgPool, config: &crate::config::Conf
             tracing::warn!(%uid, "litellm shim upsert failed: {e}");
         }
     }
-    tracing::info!("CCTUI_CLAUDE_LITELLM_* shim: synced managed compatible providers (CCT-399)");
+    tracing::info!("CCTUI_CLAUDE_LITELLM_* shim: synced managed compatible providers");
 }
 
 /// One selectable model on a compatible-endpoint or `fireworks` provider:
@@ -399,19 +399,20 @@ async fn fetch_account_info(
     id: Uuid,
     owner: Option<Uuid>,
 ) -> Result<Option<AccountInfo>, sqlx::Error> {
-    let row: Option<AccountRow> = sqlx::query_as(&format!(
+    let row: Option<AccountRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "{ACCOUNT_SELECT} WHERE a.id = $1 AND ($2::uuid IS NULL OR a.user_id = $2)"
-    ))
+    )))
     .bind(id)
     .bind(owner)
     .fetch_optional(pool)
     .await?;
     let Some(row) = row else { return Ok(None) };
-    let providers: Vec<ProviderInfo> =
-        sqlx::query_as(&format!("{PROVIDER_SELECT} WHERE p.account_id = $1 ORDER BY p.family"))
-            .bind(id)
-            .fetch_all(pool)
-            .await?;
+    let providers: Vec<ProviderInfo> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "{PROVIDER_SELECT} WHERE p.account_id = $1 ORDER BY p.family"
+    )))
+    .bind(id)
+    .fetch_all(pool)
+    .await?;
     let key = crate::crypto::vault_key();
     Ok(Some(row.into_info(providers, &key)))
 }
@@ -421,7 +422,7 @@ async fn fetch_provider_info(
     pool: &sqlx::PgPool,
     id: Uuid,
 ) -> Result<Option<ProviderInfo>, sqlx::Error> {
-    sqlx::query_as(&format!("{PROVIDER_SELECT} WHERE p.id = $1"))
+    sqlx::query_as(sqlx::AssertSqlSafe(format!("{PROVIDER_SELECT} WHERE p.id = $1")))
         .bind(id)
         .fetch_optional(pool)
         .await
@@ -977,24 +978,24 @@ pub async fn list_accounts(
     Extension(ctx): Extension<AuthContext>,
 ) -> Result<Json<Vec<AccountInfo>>, (StatusCode, Json<serde_json::Value>)> {
     require_human(&ctx)?;
-    let accounts: Vec<AccountRow> = sqlx::query_as(&format!(
+    let accounts: Vec<AccountRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "{ACCOUNT_SELECT} WHERE $1::uuid IS NULL OR a.user_id = $1 \
            OR EXISTS (SELECT 1 FROM resource_shares s \
                       WHERE s.resource_type = 'account' AND s.resource_id = a.id \
                         AND s.grantee_id = $1 AND s.revoked_at IS NULL) \
          ORDER BY a.name"
-    ))
+    )))
     .bind(ctx.owner_filter())
     .fetch_all(&state.pool)
     .await
     .map_err(|e| db_err(&e))?;
-    let providers: Vec<ProviderInfo> = sqlx::query_as(&format!(
+    let providers: Vec<ProviderInfo> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "{PROVIDER_SELECT} WHERE $1::uuid IS NULL OR p.user_id = $1 \
            OR EXISTS (SELECT 1 FROM resource_shares s \
                       WHERE s.resource_type = 'account' AND s.resource_id = p.account_id \
                         AND s.grantee_id = $1 AND s.revoked_at IS NULL) \
          ORDER BY p.family"
-    ))
+    )))
     .bind(ctx.owner_filter())
     .fetch_all(&state.pool)
     .await
@@ -1105,7 +1106,7 @@ pub async fn update_account(
     {
         return Err(err(
             StatusCode::BAD_REQUEST,
-            "provider fields moved (CCT-558): use PATCH /api/v1/accounts/:id/providers/:provider_id",
+            "provider fields moved: use PATCH /api/v1/accounts/:id/providers/:provider_id",
         ));
     }
     if let Some(name) = req.name.as_deref()
@@ -1250,18 +1251,15 @@ pub async fn update_provider(
     require_human(&ctx)?;
     // Resolve the target (scoped to the caller; admin sees all) so we can tell a
     // compatible endpoint from a native one and reject editing managed rows.
-    let provider: Option<(String,)> = sqlx::query_as(
-        "SELECT provider FROM account_providers \
-         WHERE id = $1 AND account_id = $2 \
-           AND ($3::uuid IS NULL OR user_id = $3) AND NOT managed",
+    let provider = crate::store::account_providers::provider_owner_scoped(
+        &state.pool,
+        provider_id,
+        id,
+        ctx.owner_filter(),
     )
-    .bind(provider_id)
-    .bind(id)
-    .bind(ctx.owner_filter())
-    .fetch_optional(&state.pool)
     .await
     .map_err(|e| db_err(&e))?;
-    let Some((provider,)) = provider else {
+    let Some(provider) = provider else {
         return Err(err(StatusCode::NOT_FOUND, "no such provider"));
     };
     let compatible =
@@ -1421,11 +1419,10 @@ async fn reevaluate_soft_limit_block(
     if state.soft_limit_blocked.is_empty() {
         return;
     }
-    let candidates: Vec<String> = match sqlx::query_scalar(
-        "SELECT session_id FROM session_tokens WHERE account_id = $1 AND revoked_at IS NULL",
+    let candidates: Vec<String> = match crate::store::tokens::session_ids_by_account(
+        &state.pool,
+        provider_id,
     )
-    .bind(provider_id)
-    .fetch_all(&state.pool)
     .await
     {
         Ok(rows) => rows,
@@ -1458,18 +1455,15 @@ pub async fn delete_provider(
     Path((id, provider_id)): Path<(Uuid, Uuid)>,
 ) -> Result<StatusCode, (StatusCode, Json<serde_json::Value>)> {
     require_human(&ctx)?;
-    let res = sqlx::query(
-        "DELETE FROM account_providers \
-         WHERE id = $1 AND account_id = $2 \
-           AND ($3::uuid IS NULL OR user_id = $3) AND NOT managed",
+    let removed = crate::store::account_providers::delete_owner_scoped(
+        &state.pool,
+        provider_id,
+        id,
+        ctx.owner_filter(),
     )
-    .bind(provider_id)
-    .bind(id)
-    .bind(ctx.owner_filter())
-    .execute(&state.pool)
     .await
     .map_err(|e| db_err(&e))?;
-    if res.rows_affected() == 0 {
+    if removed == 0 {
         return Err(err(StatusCode::NOT_FOUND, "no such provider"));
     }
     Ok(StatusCode::NO_CONTENT)

@@ -1,5 +1,8 @@
 //! Small helpers shared by the server, daemon, admin, and TUI crates.
 
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 #[must_use]
@@ -37,9 +40,40 @@ pub fn is_valid_skill_name(s: &str) -> bool {
     s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
 }
 
+/// Milliseconds since the Unix epoch, saturating to 0 before 1970.
+#[must_use]
+pub fn now_unix_ms() -> u128 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or_default()
+}
+
+/// Recursively merge `overlay` into `base`: objects merge key-by-key, any
+/// non-object value in `overlay` replaces the value in `base`.
+pub fn deep_merge(base: &mut Value, overlay: Value) {
+    match (base, overlay) {
+        (Value::Object(base_map), Value::Object(overlay_map)) => {
+            for (k, v) in overlay_map {
+                match base_map.get_mut(&k) {
+                    Some(existing) => deep_merge(existing, v),
+                    None => {
+                        base_map.insert(k, v);
+                    }
+                }
+            }
+        }
+        (base_slot, overlay) => *base_slot = overlay,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deep_merge_recurses_and_overlay_wins() {
+        let mut base = serde_json::json!({"a": {"x": 1, "y": 2}, "b": 3});
+        deep_merge(&mut base, serde_json::json!({"a": {"y": 9, "z": 10}, "c": 4}));
+        assert_eq!(base, serde_json::json!({"a": {"x": 1, "y": 9, "z": 10}, "b": 3, "c": 4}));
+    }
 
     #[test]
     fn sha256_known_vector() {

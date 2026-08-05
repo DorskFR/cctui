@@ -867,9 +867,7 @@ impl Driver {
                     // Claude's control-socket `kill` op validates `signal`
                     // against the string enum ["SIGTERM","SIGKILL"] (zod). A
                     // numeric signal (e.g. the interrupt route's `15`) fails
-                    // that validation and the whole op is rejected, so the
-                    // request silently no-op'd — this was why "interrupt" never
-                    // actually interrupted a claude session. The
+                    // that validation and the whole op is rejected silently. The
                     // control socket exposes no in-place turn-interrupt op, so
                     // the best we can do for a headless worker is terminate it;
                     // map to the enum name the daemon accepts.
@@ -2070,8 +2068,7 @@ impl Driver {
         }
         let whip = spec.permission_mode.is_some_and(cctui_proto::adapter::PermissionMode::is_whip);
         // Gateway env + per-account settings for the fork child: the
-        // fork dispatch used to hardcode empty env, so a fork of an account-bound
-        // conversation 401ed. Resolve for the child id first; if the server
+        // Resolve for the child id first; if the server
         // hasn't bound it yet, inherit the parent's account env (and settings) so
         // the child routes through the gateway from its first turn. Empty when
         // neither is account-bound. Resolved BEFORE the hook-settings file is
@@ -2537,12 +2534,10 @@ impl Driver {
             let children = on_disk.as_ref().map(StateJson::proto_children).unwrap_or_default();
 
             // NB: live `AskUserQuestion` surfacing is NOT derived from status
-            // here. The earlier `blocked`+`detail` heuristic was wrong
-            // in both directions — it missed real questions (which report
-            // `state:"done"`, not `blocked`) and fired on any other `blocked`
-            // state (e.g. a background "needs input" status, whose `detail` is a
-            // headline, not a question). The `AskUserQuestion` PreToolUse hook
-            // delivers the real prompt over the daemon socket instead.
+            // here. Real questions report `state:"done"`, not `blocked`, and a
+            // `blocked` state is a background status (e.g. "needs input"), not a
+            // question. The `AskUserQuestion` PreToolUse hook delivers the real
+            // prompt over the daemon socket.
 
             let snap = StatusSnapshot {
                 tempo: job.tempo.clone(),
@@ -2724,7 +2719,7 @@ impl Driver {
                     tracing::info!(
                         short = %tracker.short(),
                         path = %path.display(),
-                        "dispatched session settled idle after work; wrote dispatch_done marker (CCT-513)"
+                        "dispatched session settled idle after work; wrote dispatch_done marker"
                     );
                 }
                 Err(err) => {
@@ -3856,8 +3851,8 @@ mod tests {
     fn kill_signal_name_maps_to_claude_enum() {
         // The interrupt route sends 15; kill_session sends None (handled at the
         // call site). Anything that is not SIGKILL must map to SIGTERM so it
-        // satisfies claude's `["SIGTERM","SIGKILL"]` enum (regression:
-        // a numeric signal was rejected, making interrupt a silent no-op).
+        // satisfies claude's `["SIGTERM","SIGKILL"]` enum; a numeric signal is
+        // rejected outright.
         assert_eq!(kill_signal_name(15), "SIGTERM");
         assert_eq!(kill_signal_name(9), "SIGKILL");
         assert_eq!(kill_signal_name(2), "SIGTERM");
@@ -4424,12 +4419,9 @@ mod tests {
 
     #[tokio::test]
     async fn blocked_state_does_not_emit_phantom_ask_question() {
-        // the old `blocked`+`detail` heuristic broadcast any
-        // blocked session's status `detail` as an AskQuestion — firing phantom
-        // prompts for non-question states (e.g. a background "needs input"
-        // status). Status no longer drives AskQuestion at all; the real prompt
-        // arrives via the PreToolUse hook. A blocked snapshot must emit Status,
-        // never AskQuestion.
+        // Status never drives AskQuestion; the real prompt arrives via the
+        // PreToolUse hook. A blocked snapshot must emit Status, never
+        // AskQuestion.
         let (mut d, mut rx) = driver();
         let mut blocked = snap("abcd1234", "blocked", None);
         blocked.detail = Some("needs go-ahead to build & ship".into());

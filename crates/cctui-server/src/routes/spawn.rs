@@ -261,6 +261,15 @@ async fn dispatch_spawn(
     // Keyed by the id the worker will register as, and stored before dispatch so
     // the capability resolves the moment the worker asks.
     if let Some(cap) = req.spawn_capability.clone().filter(|c| !c.is_empty()) {
+        if let Err(e) =
+            crate::store::spawn_capabilities::upsert(&state.pool, &token_session_id, &cap).await
+        {
+            tracing::error!(
+                session = %token_session_id,
+                error = %e,
+                "spawn-capability persist failed — CctuiAgent will be lost on server restart"
+            );
+        }
         state.spawn_capabilities.insert(token_session_id.clone(), cap);
     }
     // `command_id` (minted above) travels with the command and comes back in an
@@ -372,7 +381,7 @@ fn resolve_default_account(
     match names {
         [] => Ok(None),
         [one] => {
-            tracing::info!(%user_id, account = %one, %adapter_id, "spawn named no account — binding the user's only matching account (CCT-574)");
+            tracing::info!(%user_id, account = %one, %adapter_id, "spawn named no account — binding the user's only matching account");
             Ok(Some(one.clone()))
         }
         many => Err(bad_request(format!(

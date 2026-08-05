@@ -8,7 +8,6 @@
     SegmentedControl,
     Text,
   } from "@dorsk/tsumikit";
-  import { toStore } from "svelte/store";
   import { api } from "../api/client";
   import { getAccount } from "../api/config";
   import { keys } from "../api/queries";
@@ -36,7 +35,7 @@
   const account = getAccount() ?? "";
   const client = useQueryClient();
 
-  const q = createQuery({
+  const q = createQuery(() => ({
     queryKey: keys.pullsRoot(account),
     queryFn: async (): Promise<PrEntry[]> => {
       const repos = await api.allRepos(account || undefined);
@@ -50,24 +49,22 @@
       );
       return results.flat();
     },
-  });
+  }));
 
-  const snoozedQ = createQuery(
-    toStore(() => ({
-      queryKey: keys.pullsSnoozed(account),
-      queryFn: async (): Promise<PrEntry[]> => {
-        const res = await api.snoozedPulls(account || undefined);
-        return res.items.map((s) => ({
-          owner: s.owner,
-          repo: s.repo,
-          pull: asGithubPull(s.payload),
-        }));
-      },
-    })),
-  );
+  const snoozedQ = createQuery(() => ({
+    queryKey: keys.pullsSnoozed(account),
+    queryFn: async (): Promise<PrEntry[]> => {
+      const res = await api.snoozedPulls(account || undefined);
+      return res.items.map((s) => ({
+        owner: s.owner,
+        repo: s.repo,
+        pull: asGithubPull(s.payload),
+      }));
+    },
+  }));
 
   const isSnoozedView = $derived(relation === "snoozed");
-  const active = $derived(isSnoozedView ? $snoozedQ : $q);
+  const active = $derived(isSnoozedView ? snoozedQ : q);
   const entries = $derived((active.data ?? []) as PrEntry[]);
   const schema = $derived(
     buildPrSchema(collectRepos(entries), collectAuthors(entries), collectLabels(entries)),

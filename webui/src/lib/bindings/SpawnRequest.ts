@@ -11,7 +11,7 @@ name: string | null,
  */
 adapter_id: string | null, 
 /**
- * Per-spawn permission posture (CCT-149): `yolo` skips all prompts +
+ * Per-spawn permission posture: `yolo` skips all prompts +
  * sandbox, `auto` auto-applies without prompts but keeps the sandbox,
  * `ask` prompts on every action. `None` → the daemon's per-host
  * default. See [`cctui_proto::adapter::PermissionMode`].
@@ -25,21 +25,21 @@ permission_mode: PermissionMode | null,
  */
 effort: string | null, 
 /**
- * Model family to launch under (CCT-274). Passed to claude as `--model`
+ * Model family to launch under. Passed to claude as `--model`
  * and to codex as `-c model="…"`. Free-form (the adapter resolves family
  * aliases like `opus`/`sonnet`/`haiku`/`fable`); `None` → the adapter's
  * own default model.
  */
 model: string | null, 
 /**
- * Environment secrets to inject into the worker process env at spawn time
- * (CCT-202). Keys must match `^[A-Z_][A-Z0-9_]*$`. Carried to the runtime
+ * Environment secrets to inject into the worker process env at spawn time.
+ * Keys must match `^[A-Z_][A-Z0-9_]*$`. Carried to the runtime
  * like a bearer capability: NEVER persisted, NEVER logged, NEVER written to
  * the transcript/timeline. `Debug` redacts the values.
  */
 env: { [key in string]?: string }, 
 /**
- * Named OAuth account to run the session under (CCT-232). Resolved against
+ * Named OAuth account to run the session under. Resolved against
  * the caller's own vault; the server mints a session-scoped gateway token
  * and injects `ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN` (or the codex
  * equivalents) into `env` so the worker's traffic flows through the
@@ -47,7 +47,7 @@ env: { [key in string]?: string },
  */
 account: string | null, 
 /**
- * Provider of the selected `account` (CCT-399): `anthropic` |
+ * Provider of the selected `account`: `anthropic` |
  * `anthropic-compatible` | `openai` | `openai-compatible`. Disambiguates a
  * name shared across providers so the account drives the base URL + family
  * unambiguously (instead of inferring the family from `adapter_id`). `None`
@@ -55,16 +55,16 @@ account: string | null,
  */
 provider: string | null, 
 /**
- * Explicit unbound spawn (CCT-582): when true the server does NOT resolve a
+ * Explicit unbound spawn: when true the server does NOT resolve a
  * default account for an empty `account` — the worker runs on the machine's
  * own ambient login (no gateway env, no session token). This is distinct
  * from an unset `account`, which auto-binds the caller's single
- * matching-family account (CCT-574). Ignored when `account` names an
+ * matching-family account. Ignored when `account` names an
  * account (a named account always binds).
  */
 no_account: boolean, 
 /**
- * Stage this spawn as a draft instead of dispatching it (CCT-394). When
+ * Stage this spawn as a draft instead of dispatching it. When
  * true the server validates + persists a `draft` session row carrying the
  * spawn payload in `metadata.draft` and does NOT mint account env or
  * dispatch to the daemon. A later `POST /sessions/{id}/launch` mints env

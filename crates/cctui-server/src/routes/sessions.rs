@@ -104,14 +104,10 @@ pub async fn deregister(
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
     // Deregister just drops the live handle; the session stays in DB as
     // `inactive` and can be revived by a future turn/message.
-    sqlx::query("UPDATE sessions SET status = 'inactive' WHERE id = $1")
-        .bind(&session_id)
-        .execute(&state.pool)
-        .await
-        .map_err(|e| {
-            tracing::error!("db error: {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-        })?;
+    crate::store::sessions::set_inactive(&state.pool, &session_id, false).await.map_err(|e| {
+        tracing::error!("db error: {e}");
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
+    })?;
     {
         let mut registry = state.registry.write().await;
         registry.deregister(&session_id);
@@ -121,13 +117,12 @@ pub async fn deregister(
     Ok(StatusCode::NO_CONTENT)
 }
 
-// Per-session ownership is now enforced by the `Resource(Session, …)` guard in
-// `authz.rs`: the single-object session routes declare that policy and
-// the `authz_layer` middleware resolves owner via `machine_uuid ->
-// machines.user_id` BEFORE the handler runs (404 unknown / 403 cross-user /
-// admin bypass — the exact semantics the old in-handler `authorize_session`
-// had). The batch routes below still filter inline (`filter_owned_ids`) because
-// a yes/no guard can't express "act only on the ids you own".
+// Per-session ownership is enforced by the `Resource(Session, …)` guard in
+// `authz.rs`: the single-object session routes declare that policy and the
+// `authz_layer` middleware resolves owner via `machine_uuid -> machines.user_id`
+// before the handler runs (404 unknown / 403 cross-user / admin bypass). The
+// batch routes below still filter inline (`filter_owned_ids`) because a yes/no
+// guard can't express "act only on the ids you own".
 
 /// Resolve the owning user for a batch of session ids in one query, then keep
 /// only the ids the caller may act on (admins keep every requested id). Used by
@@ -282,7 +277,8 @@ pub async fn list_sessions(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Query(params): Query<ListParams>,
-) -> Result<Json<SessionListResponse>, (StatusCode, Json<ApiError>)> {
+    req_headers: axum::http::HeaderMap,
+) -> Result<axum::response::Response, (StatusCode, Json<ApiError>)> {
     let uid = ctx.owner_filter();
     let db_err = |e: sqlx::Error| {
         tracing::error!("db error: {e}");
@@ -338,7 +334,6 @@ pub async fn list_sessions(
                         liveness: derive_liveness(handle.session.last_heartbeat),
                         attention: None,
                         bucket: Bucket::Working,
-                        uptime_secs: (Utc::now() - handle.session.registered_at).num_seconds(),
                         token_usage: handle.token_usage.clone(),
                         metadata: handle.session.metadata.clone(),
                         adapter_id: handle.session.adapter_id.clone(),
@@ -368,7 +363,6 @@ pub async fn list_sessions(
                         tool_use_count: 0,
                         has_token_credentials: false,
                         account_traffic_observed: false,
-                        intent: None,
                         pr_links: Vec::new(),
                     },
                 )
@@ -396,7 +390,7 @@ pub async fn list_sessions(
          AND ($1::uuid IS NULL OR m.user_id = $1) \
          ORDER BY s.registered_at DESC",
     );
-    let mut rows: Vec<DbSession> = sqlx::query_as(&non_archived_query)
+    let mut rows: Vec<DbSession> = sqlx::query_as(sqlx::AssertSqlSafe(non_archived_query))
         .bind(uid)
         .fetch_all(&state.pool)
         .await
@@ -410,7 +404,7 @@ pub async fn list_sessions(
              AND ($1::uuid IS NULL OR m.user_id = $1) \
              ORDER BY s.registered_at DESC LIMIT 25",
         );
-        let archived: Vec<DbSession> = sqlx::query_as(&archived_query)
+        let archived: Vec<DbSession> = sqlx::query_as(sqlx::AssertSqlSafe(archived_query))
             .bind(uid)
             .fetch_all(&state.pool)
             .await
@@ -437,7 +431,6 @@ pub async fn list_sessions(
                 liveness,
                 attention: None,
                 bucket: Bucket::Working,
-                uptime_secs: (Utc::now() - row.registered_at).num_seconds(),
                 token_usage: cctui_proto::models::TokenUsage::default(),
                 metadata: row.metadata,
                 adapter_id: row.adapter_id.map(cctui_proto::adapter::AdapterId::new),
@@ -467,14 +460,13 @@ pub async fn list_sessions(
                 tool_use_count: 0,
                 has_token_credentials: false,
                 account_traffic_observed: false,
-                intent: None,
                 pr_links: Vec::new(),
             },
         ));
     }
 
     let sessions = enrich_and_sort(&state, Some(ctx.user_id), with_ts).await?;
-    Ok(Json(SessionListResponse { sessions }))
+    Ok(crate::http_cache::json_with_etag(&req_headers, &SessionListResponse { sessions }))
 }
 
 /// Cap a raw unread `COUNT(*)` to the badge's display ceiling (99). Negative or
@@ -689,12 +681,11 @@ async fn enrich_and_sort(
             Option<DateTime<Utc>>,
             Option<String>,
             i32,
-            Option<String>,
             serde_json::Value,
         );
         let rows: Vec<SignalRow> = sqlx::query_as(
             "SELECT id, tempo, agent_state, activity, session_name, model, effort, pinned, \
-                    soft_limit_reason, last_tool_at, last_tool_name, tool_use_count, intent, \
+                    soft_limit_reason, last_tool_at, last_tool_name, tool_use_count, \
                     children \
              FROM sessions WHERE id = ANY($1)",
         )
@@ -726,7 +717,6 @@ async fn enrich_and_sort(
                 last_tool_at,
                 last_tool_name,
                 tool_use_count,
-                intent,
                 children,
             )) = by_session.remove(&s.id)
             {
@@ -756,7 +746,6 @@ async fn enrich_and_sort(
                 s.last_tool_at = last_tool_at;
                 s.last_tool_name = last_tool_name;
                 s.tool_use_count = tool_use_count.clamp(0, i32::MAX) as u32;
-                s.intent = intent;
             }
         }
     }
@@ -1150,7 +1139,12 @@ pub async fn search_sessions(
              AND ($3::uuid IS NULL OR m.user_id = $3) \
              ORDER BY s.registered_at DESC LIMIT $1 OFFSET $2"
         );
-        sqlx::query_as(&sql).bind(limit).bind(offset).bind(uid).fetch_all(&state.pool).await
+        sqlx::query_as(sqlx::AssertSqlSafe(sql))
+            .bind(limit)
+            .bind(offset)
+            .bind(uid)
+            .fetch_all(&state.pool)
+            .await
     } else {
         // Compile the AST to a WHERE tree; `ast_params` are the leading `$1…$N`
         // binds. Ownership/scope stay outer constraints appended after them.
@@ -1186,7 +1180,7 @@ pub async fn search_sessions(
              AND (${ui}::uuid IS NULL OR m.user_id = ${ui}) \
              ORDER BY s.registered_at DESC LIMIT ${li} OFFSET ${oi}"
         );
-        let mut query = sqlx::query_as::<_, DbSession>(&sql);
+        let mut query = sqlx::query_as::<_, DbSession>(sqlx::AssertSqlSafe(sql));
         for p in &ast_params {
             query = match p {
                 SqlParam::Text(s) => query.bind(s.clone()),
@@ -1219,7 +1213,6 @@ pub async fn search_sessions(
                     liveness,
                     attention: None,
                     bucket: Bucket::Working,
-                    uptime_secs: (Utc::now() - row.registered_at).num_seconds(),
                     token_usage: cctui_proto::models::TokenUsage::default(),
                     metadata: row.metadata,
                     adapter_id: row.adapter_id.map(cctui_proto::adapter::AdapterId::new),
@@ -1249,7 +1242,6 @@ pub async fn search_sessions(
                     tool_use_count: 0,
                     has_token_credentials: false,
                     account_traffic_observed: false,
-                    intent: None,
                     pr_links: Vec::new(),
                 },
             )
@@ -1277,7 +1269,7 @@ pub async fn search_sessions(
              WHERE session_id = ANY($1) AND ({or}) \
              ORDER BY session_id, created_at DESC"
         );
-        let mut query = sqlx::query_as::<_, (String, String)>(&sql).bind(&ids);
+        let mut query = sqlx::query_as::<_, (String, String)>(sqlx::AssertSqlSafe(sql)).bind(&ids);
         for p in &patterns {
             query = query.bind(p);
         }
@@ -1389,7 +1381,7 @@ pub async fn search_field_values(
         return Ok(Json(vec![]));
     };
 
-    let mut query = sqlx::query_as::<_, (String,)>(&sql);
+    let mut query = sqlx::query_as::<_, (String,)>(sqlx::AssertSqlSafe(sql));
     for p in &ctx_params {
         query = match p {
             SqlParam::Text(s) => query.bind(s.clone()),
@@ -1422,7 +1414,6 @@ pub async fn get_session(
                 liveness: derive_liveness(handle.session.last_heartbeat),
                 attention: None,
                 bucket: Bucket::Working,
-                uptime_secs: (Utc::now() - handle.session.registered_at).num_seconds(),
                 token_usage: handle.token_usage.clone(),
                 metadata: handle.session.metadata.clone(),
                 adapter_id: handle.session.adapter_id.clone(),
@@ -1456,7 +1447,6 @@ pub async fn get_session(
                 tool_use_count: 0,
                 has_token_credentials: false,
                 account_traffic_observed: false,
-                intent: None,
                 pr_links: Vec::new(),
             };
             return Ok(Json(item));
@@ -1467,22 +1457,11 @@ pub async fn get_session(
     // (read-only). A true 404 now means the session was actually deleted, not
     // just archived (item 6 — kills the spurious "not found or
     // archived" toast on refresh).
-    let row: Option<DbSession> = sqlx::query_as(
-        "SELECT s.id, s.parent_id, s.machine_id, s.working_dir, s.status, \
-                s.registered_at, s.last_heartbeat, s.metadata, s.adapter_id, \
-                COALESCE(m.display_name, m.name) AS resolved_machine_name, \
-                m.hue AS resolved_machine_hue, m.kind AS resolved_machine_kind \
-         FROM sessions s \
-         LEFT JOIN machines m ON m.id = s.machine_uuid \
-         WHERE s.id = $1",
-    )
-    .bind(&session_id)
-    .fetch_optional(&state.pool)
-    .await
-    .map_err(|e| {
-        tracing::error!("db error: {e}");
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-    })?;
+    let row: Option<DbSession> =
+        crate::store::sessions::fetch_by_id(&state.pool, &session_id).await.map_err(|e| {
+            tracing::error!("db error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
+        })?;
 
     let row = row.ok_or_else(|| {
         (StatusCode::NOT_FOUND, Json(ApiError { error: "session not found".into() }))
@@ -1499,7 +1478,6 @@ pub async fn get_session(
         liveness,
         attention: None,
         bucket: Bucket::Working,
-        uptime_secs: (Utc::now() - row.registered_at).num_seconds(),
         token_usage: cctui_proto::models::TokenUsage::default(),
         metadata: row.metadata,
         adapter_id: row.adapter_id.map(cctui_proto::adapter::AdapterId::new),
@@ -1529,44 +1507,54 @@ pub async fn get_session(
         tool_use_count: 0,
         has_token_credentials: false,
         account_traffic_observed: false,
-        intent: None,
         pr_links: Vec::new(),
     };
     Ok(Json(item))
 }
 
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct ConversationQuery {
+    /// Newest `limit` events only; absent = full transcript.
+    pub limit: Option<i64>,
+    /// Exclusive upper `seq` bound for paging back.
+    pub before: Option<i64>,
+    /// Exclusive lower `seq` bound for delta catch-up.
+    pub after: Option<i64>,
+}
+
 pub async fn get_conversation(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
-) -> Result<Json<Vec<serde_json::Value>>, (StatusCode, Json<ApiError>)> {
+    Query(params): Query<ConversationQuery>,
+    req_headers: axum::http::HeaderMap,
+) -> Result<axum::response::Response, (StatusCode, Json<ApiError>)> {
     let adapter: Option<String> =
-        sqlx::query_scalar("SELECT adapter_id FROM sessions WHERE id = $1")
-            .bind(&session_id)
-            .fetch_optional(&state.pool)
-            .await
-            .map_err(|e| {
-                tracing::error!("db error: {e}");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ApiError { error: "database error".into() }),
-                )
-            })?;
+        crate::store::sessions::adapter_id(&state.pool, &session_id).await.map_err(|e| {
+            tracing::error!("db error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
+        })?;
 
     // Order by `id` (the BIGSERIAL insert sequence), not `created_at`: `id` is
     // the causal `seq` and is a strict total order, so a late-flushed
     // AskUserQuestion card+preamble keep their insert position even when their
     // `created_at` ties or lands after the user's answer.
-    let rows: Vec<(i64, String, serde_json::Value, DateTime<Utc>)> = sqlx::query_as(
+    let mut rows: Vec<(i64, String, serde_json::Value, DateTime<Utc>)> = sqlx::query_as(
         "SELECT id, event_type, payload, created_at FROM stream_events \
-         WHERE session_id = $1 ORDER BY id ASC",
+         WHERE session_id = $1 AND ($2::bigint IS NULL OR id < $2) \
+           AND ($4::bigint IS NULL OR id > $4) \
+         ORDER BY id DESC LIMIT $3",
     )
     .bind(&session_id)
+    .bind(params.before)
+    .bind(params.limit.map(|l| l.clamp(1, 10_000)))
+    .bind(params.after)
     .fetch_all(&state.pool)
     .await
     .map_err(|e| {
         tracing::error!("db error: {e}");
         (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
     })?;
+    rows.reverse();
 
     let usage_rows: Vec<(String, Option<String>, i64, i64, i64, i64)> = sqlx::query_as(
         "SELECT message_id, model, \
@@ -1628,7 +1616,7 @@ pub async fn get_conversation(
             })
         })
         .collect();
-    Ok(Json(normalized))
+    Ok(crate::http_cache::json_with_etag(&req_headers, &normalized))
 }
 
 pub async fn send_message(
@@ -1740,14 +1728,10 @@ pub async fn kill_session(
     .await;
     // Kill drops the in-memory handle and marks the DB row inactive. The
     // session isn't archived — later activity can revive it.
-    sqlx::query("UPDATE sessions SET status = 'inactive' WHERE id = $1")
-        .bind(&session_id)
-        .execute(&state.pool)
-        .await
-        .map_err(|e| {
-            tracing::error!("db error: {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-        })?;
+    crate::store::sessions::set_inactive(&state.pool, &session_id, false).await.map_err(|e| {
+        tracing::error!("db error: {e}");
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
+    })?;
     {
         let mut registry = state.registry.write().await;
         registry.deregister(&session_id);
@@ -2016,12 +2000,7 @@ pub async fn resume_session(
     // `claude rm` (which deletes the on-disk job state.json but keeps the
     // conversation transcript) — the daemon falls back to local_id + this cwd.
     let working_dir: Option<String> =
-        sqlx::query_scalar("SELECT working_dir FROM sessions WHERE id = $1")
-            .bind(&session_id)
-            .fetch_optional(&state.pool)
-            .await
-            .ok()
-            .flatten();
+        crate::store::sessions::working_dir(&state.pool, &session_id).await.ok().flatten();
 
     // Re-mint the gateway env for the session's bound OAuth account so the
     // revived worker keeps routing through the gateway instead of hitting the
@@ -2042,14 +2021,10 @@ pub async fn resume_session(
         tracing::warn!(%session_id, error = %e, "resume dispatch failed");
         (StatusCode::SERVICE_UNAVAILABLE, Json(ApiError { error: format!("resume failed: {e}") }))
     })?;
-    sqlx::query("UPDATE sessions SET status = 'inactive' WHERE id = $1 AND status = 'archived'")
-        .bind(&session_id)
-        .execute(&state.pool)
-        .await
-        .map_err(|e| {
-            tracing::error!("db error: {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-        })?;
+    crate::store::sessions::set_inactive(&state.pool, &session_id, true).await.map_err(|e| {
+        tracing::error!("db error: {e}");
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
+    })?;
     tracing::info!(session_id = %session_id, "resume dispatched");
     Ok(StatusCode::ACCEPTED)
 }
@@ -2262,11 +2237,8 @@ async fn archive_one(state: &AppState, session_id: &str) -> Result<(), sqlx::Err
     // Subagents are observe-only (no worker), so they need no `claude rm` —
     // only the parent does, handled by the dispatch above. Archiving a
     // *child* does not touch the parent (no `parent_id` cascade upward).
-    let children: Vec<String> = sqlx::query_scalar("SELECT id FROM sessions WHERE parent_id = $1")
-        .bind(session_id)
-        .fetch_all(&state.pool)
-        .await
-        .unwrap_or_default();
+    let children: Vec<String> =
+        crate::store::sessions::child_ids(&state.pool, session_id).await.unwrap_or_default();
     // Clear the classifier signals on archive so a session that was waiting on
     // input doesn't keep its ✋ "needs input" glyph in the archived view — an
     // archived session is, by definition, no longer waiting on anyone.
@@ -2308,10 +2280,7 @@ pub async fn unarchive_session(
 }
 
 async fn unarchive_one(state: &AppState, session_id: &str) -> Result<(), sqlx::Error> {
-    sqlx::query("UPDATE sessions SET status = 'inactive' WHERE id = $1 AND status = 'archived'")
-        .bind(session_id)
-        .execute(&state.pool)
-        .await?;
+    crate::store::sessions::set_inactive(&state.pool, session_id, true).await?;
     tracing::info!(session_id = %session_id, "session unarchived");
     Ok(())
 }

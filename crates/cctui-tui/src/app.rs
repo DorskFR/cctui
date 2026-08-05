@@ -27,8 +27,6 @@ pub struct ConversationLine {
     pub timestamp: i64,
     pub kind: LineKind,
     pub text: String,
-    /// Tool name for ToolCall/ToolResult lines (for context-aware rendering).
-    pub tool: Option<String>,
     /// Raw tool input JSON (kept for Edit/Write to generate diffs).
     pub tool_input: Option<serde_json::Value>,
 }
@@ -133,12 +131,12 @@ impl App {
             .collect();
         // Group by classifier bucket (Needs input → Ready for review →
         // Working → Completed); within a bucket, oldest first.
-        tops.sort_by_key(|s| (crate::bucket_rank(s.bucket), s.uptime_secs));
+        tops.sort_by_key(|s| (crate::bucket_rank(s.bucket), crate::uptime_secs(s)));
         let mut out: Vec<&SessionListItem> = Vec::new();
         for t in tops {
             out.push(t);
             if let Some(cs) = kids.get_mut(t.id.as_str()) {
-                cs.sort_by_key(|s| s.uptime_secs);
+                cs.sort_by_key(|s| crate::uptime_secs(s));
                 out.extend(cs.iter().copied());
             }
         }
@@ -172,26 +170,12 @@ impl App {
         }
     }
 
-    pub fn scroll_to_bottom(&mut self) {
-        if let Some(session) = self.selected_session() {
-            let line_count = self.stream_buffer.get(&session.id).map_or(0, Vec::len);
-            self.scroll_offset = line_count.saturating_sub(1);
-        }
-    }
-
     pub fn update_aggregates(&mut self) {
         self.active_count = self
             .sessions
             .iter()
             .filter(|s| s.status == cctui_proto::models::SessionStatus::Active)
             .count();
-    }
-
-    pub fn active_sessions(&self) -> Vec<&SessionListItem> {
-        self.sessions
-            .iter()
-            .filter(|s| s.status == cctui_proto::models::SessionStatus::Active)
-            .collect()
     }
 }
 

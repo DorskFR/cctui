@@ -22,7 +22,7 @@
 //! clone-a-live-VM — with **no APFS `CoW`** equivalent. Every session gets its own
 //! IP and network namespace, the isolation a git worktree cannot offer.
 //!
-//! # Boot contract (shared with 247)
+//! # Boot contract
 //!
 //! OCI image + secret + optional repo mount. The machine key is delivered as a
 //! **mounted file** by default rather than an env var — a token in `container
@@ -43,7 +43,5 @@
 //! environment-specific comes from `dispatcher.toml` / enroll flags.
 
 pub mod cli;
-pub mod client;
 pub mod config;
-pub mod run;
 pub mod spawn;

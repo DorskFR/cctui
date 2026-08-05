@@ -324,6 +324,15 @@ pub async fn revoke_machine(
         .execute(&state.pool)
         .await
         .map_err(|e| db_err(&e))?;
+    // Auth resolves against auth_keys first; revoke the mirror row too or the
+    // key keeps authenticating.
+    sqlx::query(
+        "UPDATE auth_keys SET revoked_at = now() WHERE machine_id = $1 AND revoked_at IS NULL",
+    )
+    .bind(id)
+    .execute(&state.pool)
+    .await
+    .map_err(|e| db_err(&e))?;
     state.auth_config.purge(&old_hash);
     tracing::info!(machine_id = %id, "machine revoked");
     Ok(StatusCode::NO_CONTENT)
@@ -586,13 +595,54 @@ pub async fn rotate_machine(
     let secret = mint_secret();
     let token = machine_token(&secret);
     let hash = sha256_hex(&token);
+    let preview = crate::auth::token_preview(&token);
     sqlx::query("UPDATE machines SET key_hash = $1, key_preview = $2 WHERE id = $3")
         .bind(&hash)
-        .bind(crate::auth::token_preview(&token))
+        .bind(&preview)
         .bind(id)
         .execute(&state.pool)
         .await
         .map_err(|e| db_err(&e))?;
+    // Auth resolves against auth_keys first; without this the old key keeps
+    // authenticating and the new one only works via the legacy dual-read.
+    let mirrored = sqlx::query(
+        "UPDATE auth_keys SET key_hash = $1, key_preview = $2 \
+         WHERE machine_id = $3 AND revoked_at IS NULL",
+    )
+    .bind(&hash)
+    .bind(&preview)
+    .bind(id)
+    .execute(&state.pool)
+    .await
+    .map_err(|e| db_err(&e))?;
+    if mirrored.rows_affected() == 0 {
+        let owner: Option<(Uuid, String)> =
+            sqlx::query_as("SELECT user_id, name FROM machines WHERE id = $1")
+                .bind(id)
+                .fetch_optional(&state.pool)
+                .await
+                .map_err(|e| db_err(&e))?;
+        if let Some((user_id, name)) = owner {
+            let grant = crate::auth::ceiling_of(&state.pool, user_id).await;
+            if let Err(e) = crate::auth::register_key(
+                &state.pool,
+                crate::auth::NewKey {
+                    user_id,
+                    key_hash: &hash,
+                    key_preview: Some(&preview),
+                    label: Some(&name),
+                    kind: "machine",
+                    machine_id: Some(id),
+                    dispatcher_id: None,
+                },
+                grant,
+            )
+            .await
+            {
+                tracing::warn!(machine_id = %id, "failed to register rotated machine key in auth_keys: {e}");
+            }
+        }
+    }
     state.auth_config.purge(&old_hash);
     tracing::info!(machine_id = %id, "machine key rotated");
     Ok(Json(RotateResponse { id, key: token }))
@@ -943,4 +993,52 @@ pub async fn revoke_user_key(
     state.auth_config.purge(&hash);
     tracing::info!(%user_id, %key_id, "key revoked");
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use super::*;
+
+    fn ctx(user_id: Uuid, scopes: &[Scope]) -> AuthContext {
+        AuthContext {
+            user_id,
+            key_id: Uuid::new_v4(),
+            machine_id: None,
+            scopes: scopes.iter().copied().collect::<BTreeSet<_>>(),
+        }
+    }
+
+    #[test]
+    fn forbid_or_gates_on_admin_scope() {
+        assert!(forbid_or(&ctx(Uuid::new_v4(), &[Scope::Admin])).is_ok());
+        let (status, _) = forbid_or(&ctx(Uuid::new_v4(), &[Scope::Read])).unwrap_err();
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, _) = forbid_or(&ctx(Uuid::new_v4(), &[])).unwrap_err();
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn self_or_admin_allows_owner_and_admin_but_denies_other() {
+        let me = Uuid::new_v4();
+        let other = Uuid::new_v4();
+
+        assert!(self_or_admin(&ctx(me, &[Scope::Read]), me).is_ok(), "acting on own account");
+        assert!(self_or_admin(&ctx(me, &[Scope::Admin]), other).is_ok(), "admin acts on anyone");
+
+        let (status, _) = self_or_admin(&ctx(me, &[Scope::Read]), other).unwrap_err();
+        assert_eq!(status, StatusCode::FORBIDDEN, "non-admin cannot touch another account");
+    }
+
+    #[test]
+    fn parse_scopes_accepts_known_and_rejects_unknown() {
+        let ok = parse_scopes(&["read".into(), "admin".into(), "dispatch".into()]).unwrap();
+        assert_eq!(ok, vec![Scope::Read, Scope::Admin, Scope::Dispatch]);
+
+        assert!(parse_scopes(&[]).unwrap().is_empty());
+
+        let (status, _) = parse_scopes(&["read".into(), "root".into()]).unwrap_err();
+        assert_eq!(status, StatusCode::BAD_REQUEST, "an unknown scope is rejected");
+    }
 }

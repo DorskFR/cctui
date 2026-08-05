@@ -14,25 +14,22 @@
 
 	const sl = $derived(settings.state.sessionList);
 
-	// Display section mirrors the live theme/fontScale/notify singletons (the
-	// runtime drivers) AND records the value into the settings blob, so the panel
-	// is the single surface while behaviour stays driven by those singletons.
+	// Display section: the blob-backed wrappers on `settings` drive the runtime
+	// theme/fontScale/notify singletons AND persist, so this panel and the header
+	// share one round-tripping surface.
 	function setTheme(id: string) {
-		theme.set(id as typeof theme.current);
-		settings.setDisplay({ theme: id });
+		settings.setTheme(id);
 	}
 	function setFontScale(levelId: string) {
-		fontScale.set(levelId);
-		settings.setDisplay({ fontScale: fontScale.current });
+		settings.setFontScaleLevel(levelId);
 	}
 	async function toggleNotify() {
 		if (notify.enabled) notify.disable();
 		else await notify.enable();
-		settings.setDisplay({ notifyEnabled: notify.enabled });
+		settings.recordNotifyEnabled();
 	}
 	function toggleNotifySound() {
-		notify.setSound(!notify.sound);
-		settings.setDisplay({ notifySound: notify.sound });
+		settings.setNotifySound(!notify.sound);
 	}
 
 	// Multi-value (csv) helpers for the label-id sets.

@@ -576,8 +576,8 @@ mod tests {
 
     #[test]
     fn codex_native_preview_survives_normalize() {
-        // fix: the inventory now emits the preview as a codex-native
-        // `userMessage`, which normalizes to a renderable user line.
+        // The inventory emits the preview as a codex-native `userMessage`, which
+        // normalizes to a renderable user line.
         let p = json!({ "type": "userMessage", "content": [
             { "type": "text", "text": "Implement CCT-276 please." }
         ]});

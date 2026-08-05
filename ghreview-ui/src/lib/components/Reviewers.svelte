@@ -16,7 +16,6 @@
 <script lang="ts">
   import { Badge, Button, Icon, IconButton, Input, Popover } from "@dorsk/tsumikit";
   import { createQuery } from "@tanstack/svelte-query";
-  import { toStore } from "svelte/store";
   import { api } from "../api/client";
   import { keys, queryClient } from "../api/queries";
   import Avatar from "./Avatar.svelte";
@@ -32,16 +31,14 @@
   let pending = $state<string | null>(null);
   let addLogin = $state("");
 
-  const query = createQuery(
-    toStore(() => ({
-      queryKey: keys.reviewers(owner, repo, number),
-      queryFn: () => api.reviewers(owner, repo, number, account as string),
-      enabled: account != null,
-    })),
-  );
+  const query = createQuery(() => ({
+    queryKey: keys.reviewers(owner, repo, number),
+    queryFn: () => api.reviewers(owner, repo, number, account as string),
+    enabled: account != null,
+  }));
 
-  const reviewers = $derived($query.data?.reviewers ?? []);
-  const teams = $derived($query.data?.requested_teams ?? []);
+  const reviewers = $derived(query.data?.reviewers ?? []);
+  const teams = $derived(query.data?.requested_teams ?? []);
 
   async function reRequest(login: string): Promise<void> {
     if (!account || pending) return;
@@ -72,10 +69,10 @@
   <h2>Reviewers</h2>
   {#if !account}
     <p class="muted">No account.</p>
-  {:else if $query.isLoading}
+  {:else if query.isLoading}
     <p class="muted">Loading reviewers…</p>
-  {:else if $query.isError}
-    <p class="err">{($query.error as Error).message}</p>
+  {:else if query.isError}
+    <p class="err">{(query.error as Error).message}</p>
   {:else}
     {#if reviewers.length === 0 && teams.length === 0}
       <p class="muted">No reviewers requested.</p>

@@ -1,5 +1,6 @@
 import { apiBase } from './config';
 import { auth } from './auth.svelte';
+import { net } from './netstats.svelte';
 
 export class ApiError extends Error {
 	status: number;
@@ -30,10 +31,31 @@ function buildUrl(path: string, query?: RequestOpts['query']): string {
 	return url.toString();
 }
 
-async function handle<T>(res: Response): Promise<T> {
+// Fetch-layer revalidation: the gateway's compressor strips `ETag`, so the
+// server mirrors it as `x-etag` and we do the If-None-Match round-trip
+// ourselves, replaying the cached body on 304 — transparent to callers.
+const revalidation = new Map<string, { etag: string; text: string }>();
+const REVALIDATION_MAX = 24;
+
+function rememberEtag(url: string, etag: string, text: string) {
+	revalidation.delete(url);
+	revalidation.set(url, { etag, text });
+	if (revalidation.size > REVALIDATION_MAX) {
+		const oldest = revalidation.keys().next().value;
+		if (oldest !== undefined) revalidation.delete(oldest);
+	}
+}
+
+async function handle<T>(res: Response, url: string = res.url): Promise<T> {
 	if (res.status === 401) {
 		auth.markLoggedOut();
 		throw new ApiError(401, 'Unauthorized');
+	}
+	if (res.status === 304) {
+		net.recordApi(url, 0);
+		const cached = revalidation.get(url);
+		if (cached) return JSON.parse(cached.text) as T;
+		throw new ApiError(304, 'Not modified');
 	}
 	if (!res.ok) {
 		let msg = `${res.status} ${res.statusText}`;
@@ -47,6 +69,9 @@ async function handle<T>(res: Response): Promise<T> {
 	}
 	if (res.status === 204) return undefined as T;
 	const text = await res.text();
+	net.recordApi(url, text.length);
+	const etag = res.headers.get('x-etag') ?? res.headers.get('etag');
+	if (etag && text) rememberEtag(url, etag, text);
 	if (!text) return undefined as T;
 	return JSON.parse(text) as T;
 }
@@ -59,17 +84,20 @@ export function errMessage(e: unknown): string {
 async function request<T>({ method = 'GET', path, body, query }: RequestOpts): Promise<T> {
 	const headers = new Headers();
 	if (body !== undefined) headers.set('Content-Type', 'application/json');
+	const url = buildUrl(path, query);
+	const cached = method === 'GET' ? revalidation.get(url) : undefined;
+	if (cached) headers.set('If-None-Match', cached.etag);
 
 	// Auth rides the `HttpOnly` cookie; `credentials: 'include'` makes
 	// the browser attach it (works same-origin without CORS credential config).
-	const res = await fetch(buildUrl(path, query), {
+	const res = await fetch(url, {
 		method,
 		headers,
 		credentials: 'include',
 		body: body !== undefined ? JSON.stringify(body) : undefined
 	});
 
-	return handle<T>(res);
+	return handle<T>(res, url);
 }
 
 /** POST a `multipart/form-data` body (file uploads). The browser sets

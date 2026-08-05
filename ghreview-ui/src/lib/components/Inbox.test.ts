@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { configureRuntime } from "../api/config";
 import { keys } from "../api/queries";
 import type { NotificationInboxItem, PullRequestEnvelope } from "../api/types";
+import QueryHost from "../testing/QueryHost.svelte";
 import Inbox from "./Inbox.svelte";
 
 let component: ReturnType<typeof mount> | undefined;
@@ -38,9 +39,9 @@ function envelope(state: "open" | "closed", merged: boolean): PullRequestEnvelop
 }
 
 function mountInbox(): void {
-  component = mount(Inbox, {
+  component = mount(QueryHost, {
     target: document.body,
-    context: new Map<unknown, unknown>([["$$_queryClient", client]]),
+    props: { client, component: Inbox },
   });
 }
 

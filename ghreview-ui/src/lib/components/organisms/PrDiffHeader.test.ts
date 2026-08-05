@@ -3,6 +3,7 @@ import { mount, tick, unmount } from "svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { api } from "../../api/client";
 import type { GithubFile, GithubPull } from "../../api/types";
+import QueryHost from "../../testing/QueryHost.svelte";
 import PrDiffHeader from "./PrDiffHeader.svelte";
 
 let component: ReturnType<typeof mount> | undefined;
@@ -41,19 +42,22 @@ const files = [
 
 function render(overrides: Partial<GithubPull> = {}): void {
   vi.spyOn(api, "reviewers").mockResolvedValue({ reviewers: [], requested_teams: [] });
-  component = mount(PrDiffHeader, {
+  component = mount(QueryHost, {
     target: document.body,
-    context: new Map([["$$_queryClient", new QueryClient()]]),
     props: {
-      owner: "example",
-      repo: "project",
-      number: 17,
-      account: "contributor",
-      pull: { ...pull, ...overrides },
-      files,
-      viewedCount: 1,
-      draftCount: 2,
-      onpublish: vi.fn(),
+      client: new QueryClient(),
+      component: PrDiffHeader,
+      props: {
+        owner: "example",
+        repo: "project",
+        number: 17,
+        account: "contributor",
+        pull: { ...pull, ...overrides },
+        files,
+        viewedCount: 1,
+        draftCount: 2,
+        onpublish: vi.fn(),
+      },
     },
   });
 }

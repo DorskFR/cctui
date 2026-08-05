@@ -15,6 +15,7 @@ import { pushFileViewed } from "../src/github/viewedFiles.ts";
 import type { GraphqlClient } from "../src/graphql/client.ts";
 import { drainPendingViewed } from "../src/sync/viewedPush.ts";
 import { digestPullFiles } from "../src/sync/viewedSync.ts";
+import { dbGate } from "./dbGate.ts";
 
 function mockGraphql(overrides: Partial<GraphqlClient> = {}): GraphqlClient {
   const ok = async () => ({}) as never;
@@ -91,7 +92,7 @@ describe("digestPullFiles", () => {
 });
 
 const DATABASE_URL = process.env.DATABASE_URL;
-const guarded = DATABASE_URL ? describe : describe.skip;
+const guarded = dbGate(describe, DATABASE_URL);
 
 let db: DbHandle;
 const REF = { owner: "DorskFR", repo: "cctui", number: 7 };

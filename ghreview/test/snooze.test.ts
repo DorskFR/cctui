@@ -10,9 +10,10 @@ import {
   unsnoozePull,
 } from "../src/db/prSnooze.ts";
 import { upsertSubscription } from "../src/db/subscriptions.ts";
+import { dbGate } from "./dbGate.ts";
 
 const DATABASE_URL = process.env.DATABASE_URL;
-const guarded = DATABASE_URL ? describe : describe.skip;
+const guarded = dbGate(describe, DATABASE_URL);
 
 let db: DbHandle;
 const ACCOUNT = "snz";

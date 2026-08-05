@@ -70,6 +70,11 @@ class FontScale {
 		if (browser) localStorage.setItem(KEY, this.levelId);
 		this.apply();
 	}
+
+	/** Snap a raw multiplier (the settings blob's shape) to the nearest level. */
+	setScale(value: number) {
+		this.set(nearestLevel(value));
+	}
 }
 
 export const fontScale = new FontScale();

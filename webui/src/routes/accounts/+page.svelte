@@ -69,9 +69,9 @@
 	// Accounts are user-owned; the admin token has no user identity, so an
 	// admin operator picks the owning user explicitly.
 	const me = useMe();
-	const isAdmin = $derived($me.data?.role === 'admin');
+	const isAdmin = $derived(me.data?.role === 'admin');
 	const users = useUsers(() => isAdmin);
-	const activeUsers = $derived(($users.data ?? []).filter((u) => !u.revoked_at));
+	const activeUsers = $derived((users.data ?? []).filter((u) => !u.revoked_at));
 	let ownerId = $state('');
 	// Default the owner select to the first active user once loaded.
 	$effect(() => {
@@ -89,7 +89,7 @@
 	type EditorMode = 'create' | 'add-provider' | 'edit-account' | 'edit-provider';
 	let editor = $state<{ mode: EditorMode; accountId?: string; providerId?: string } | null>(null);
 
-	const rows = $derived([...($accounts.data ?? [])]);
+	const rows = $derived([...(accounts.data ?? [])]);
 	const editingAccount = $derived(
 		editor?.accountId ? rows.find((a) => a.id === editor?.accountId) : undefined
 	);
@@ -139,7 +139,7 @@
 				editingProvider.provider === 'openai' ||
 				editingProvider.provider === 'fireworks')
 	);
-	const editorWindows = $derived($editorUsage.data?.windows ?? []);
+	const editorWindows = $derived(editorUsage.data?.windows ?? []);
 	// Window keys to offer: baseline + observed + already-configured.
 	const editorRows = $derived(
 		editor?.mode === 'create' || editor?.mode === 'add-provider' || editor?.mode === 'edit-provider'
@@ -634,7 +634,7 @@
 				<Button control variant="primary" onclick={openCreate}>{m.accounts_new_account()}</Button>
 			</Cluster>
 
-			{#if $accounts.isLoading}
+			{#if accounts.isLoading}
 				<div class="empty"><span class="spin"></span></div>
 			{:else if rows.length === 0}
 				<div class="empty"><Text tone="muted">{m.accounts_empty()}</Text></div>
@@ -671,7 +671,7 @@
 									{/if}
 									<div><dt>{m.accounts_stat_created()}</dt><dd><Timestamp value={a.created_at} mode="date" tone="inherit" /></dd></div>
 								</dl>
-								{#if !isManaged(a) && (isAdmin || a.user_id === $me.data?.user_id)}
+								{#if !isManaged(a) && (isAdmin || a.user_id === me.data?.user_id)}
 									<!-- Sharing management: owner-only surface to view/grant/
 									     revoke who may USE this account. The list endpoint is
 									     owner-scoped, so only render (and fetch) it for the owner/admin. -->

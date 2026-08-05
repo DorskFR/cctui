@@ -1,6 +1,7 @@
 import { browser } from '$app/environment';
 import { wsBase } from './config';
 import { auth } from './auth.svelte';
+import { net } from './netstats.svelte';
 import type { AgentEvent } from '@bindings/AgentEvent';
 import type { GithubEventKind } from '@bindings/GithubEventKind';
 import type { GithubEventPayload } from '@bindings/GithubEventPayload';
@@ -17,6 +18,15 @@ export interface PermReq {
  * marker (there is no `reply` row on read); live optimistic echoes are `reply`
  * events. Shared so both shapes reconcile to one identity. */
 export const USER_PREFIX = '▷ User:';
+
+/** Mirrors the server's `normalize_last_message` (collapse whitespace,
+ *  cap at 200 chars) so patched excerpts match the next poll's. */
+export function lastMessageExcerpt(content: string): string {
+	const collapsed = content.startsWith(USER_PREFIX)
+		? content.slice(USER_PREFIX.length).split(/\s+/).filter(Boolean).join(' ')
+		: content.split(/\s+/).filter(Boolean).join(' ');
+	return collapsed.length > 200 ? `${[...collapsed].slice(0, 200).join('')}…` : collapsed;
+}
 
 /** Canonicalize a user-turn body so its optimistic-echo and persisted/server
  * shapes reduce to the same string. The composer appends staged
@@ -109,6 +119,14 @@ type SoftLimitCb = (sl: SoftLimit | null) => void;
 /** Server ack for a client-sent message. `ok=false` means the server
  * could not dispatch the reply to the session's daemon, so the client should
  * mark the message failed and offer a retry. */
+export interface SessionListPatch {
+	session_id: string;
+	last_message_text?: string;
+	last_message_at?: string;
+	attention?: 'needs_input';
+	bucket?: 'blocked';
+}
+
 export interface MessageAck {
 	client_msg_id: string;
 	ok: boolean;
@@ -167,7 +185,7 @@ export function decodeBase64(b64: string): Uint8Array {
 
 const BACKOFF_BASE_MS = 1000;
 const BACKOFF_CAP_MS = 30000;
-function backoffDelay(attempt: number): number {
+export function backoffDelay(attempt: number): number {
 	// attempt is 1-based (1 = first attempt just failed). Full jitter on top of
 	// an exponential base, capped.
 	const base = Math.min(BACKOFF_CAP_MS, BACKOFF_BASE_MS * 2 ** (attempt - 1));
@@ -273,7 +291,7 @@ export class BoundedEventBuffer {
  * still keeps a small per-session buffer so a freshly-opened drawer can seed
  * from events that arrived before it registered.
  */
-class WsClient {
+export class WsClient {
 	status = $state<Status>('closed');
 	/** bumped whenever the session set/status changes, so lists can refetch */
 	changeTick = $state(0);
@@ -366,7 +384,10 @@ class WsClient {
 				}
 			}
 		};
-		sock.onmessage = (ev) => this.onFrame(ev.data);
+		sock.onmessage = (ev) => {
+			if (typeof ev.data === 'string') net.recordWs(ev.data.length);
+			this.onFrame(ev.data);
+		};
 		sock.onclose = () => {
 			this.status = 'closed';
 			this.socket = null;
@@ -413,10 +434,15 @@ class WsClient {
 				const sid = msg.session_id as string;
 				const data = msg.data as AgentEvent;
 				this.appendEvent(sid, data);
-				// Live events change a session's last-message/ordering in the list,
-				// otherwise only refreshed on the 15s poll. Coalesce into one list
-				// refresh so the list stays roughly live without refetching per event.
-				this.markListDirty();
+				// The list's last-message column tracks USER messages only
+				// (server: event_type='message'); assistant text must not patch it.
+				if (userMsgKey(data) !== null && (data.type === 'text' || data.type === 'reply')) {
+					this.emitListPatch({
+						session_id: sid,
+						last_message_text: lastMessageExcerpt(data.content),
+						last_message_at: new Date(data.ts).toISOString()
+					});
+				}
 				break;
 			}
 			case 'pty_chunk': {
@@ -513,7 +539,7 @@ class WsClient {
 			case 'status':
 			case 'session_registered':
 			case 'session_deregistered':
-				this.changeTick++;
+				this.markListDirty();
 				break;
 		}
 	}
@@ -525,6 +551,17 @@ class WsClient {
 			this.listDirtyTimer = null;
 			this.changeTick++;
 		}, 2000);
+	}
+
+	// Per-session in-place patches; full refetches are reserved for structural
+	// changes and the 15s poll reconciles the rest.
+	private listPatchCbs = new Set<(p: SessionListPatch) => void>();
+	onListPatch(cb: (p: SessionListPatch) => void): () => void {
+		this.listPatchCbs.add(cb);
+		return () => this.listPatchCbs.delete(cb);
+	}
+	private emitListPatch(p: SessionListPatch) {
+		for (const cb of this.listPatchCbs) cb(p);
 	}
 
 	private appendEvent(id: string, ev: AgentEvent) {
@@ -571,30 +608,39 @@ class WsClient {
 		if (opt) this.optimistic.set(id, opt.filter((o) => o.ts !== ts));
 	}
 
+	// Gaining attention patches the list item in place (the client knows the
+	// session just became blocked); losing it needs the server-derived bucket,
+	// so that path falls back to the debounced refetch.
 	private setPerms(id: string, list: PermReq[]) {
 		this.perms.set(id, list);
-		this.changeTick++; // list badge re-derives on changeTick-driven refetch
+		if (list.length > 0) {
+			this.emitListPatch({ session_id: id, attention: 'needs_input', bucket: 'blocked' });
+		} else {
+			this.markListDirty();
+		}
 		this.permCbs.emit(id, list);
 	}
 
 	private setAsk(id: string, ask: LiveAsk | null) {
 		if (ask === null) this.asks.delete(id);
 		else this.asks.set(id, ask);
-		this.changeTick++;
+		if (ask) this.emitListPatch({ session_id: id, attention: 'needs_input', bucket: 'blocked' });
+		else this.markListDirty();
 		this.askCbs.emit(id, ask);
 	}
 
 	private setPlan(id: string, plan: LivePlan | null) {
 		if (plan === null) this.plans.delete(id);
 		else this.plans.set(id, plan);
-		this.changeTick++;
+		if (plan) this.emitListPatch({ session_id: id, attention: 'needs_input', bucket: 'blocked' });
+		else this.markListDirty();
 		this.planCbs.emit(id, plan);
 	}
 
 	private setSoftLimit(id: string, sl: SoftLimit | null) {
 		if (sl === null) this.softLimits.delete(id);
 		else this.softLimits.set(id, sl);
-		this.changeTick++;
+		this.markListDirty();
 		this.softLimitCbs.emit(id, sl);
 	}
 

@@ -17,19 +17,19 @@
 	const tokens = useTokenStats();
 
 	const tokenCards = $derived([
-		{ lbl: m.home_window_hour(), usage: asUsage($tokens.data?.hour) },
-		{ lbl: m.home_window_today(), usage: asUsage($tokens.data?.today) },
-		{ lbl: m.home_window_day(), usage: asUsage($tokens.data?.day) },
-		{ lbl: m.home_window_week(), usage: asUsage($tokens.data?.week) },
-		{ lbl: m.home_window_month(), usage: asUsage($tokens.data?.month) }
+		{ lbl: m.home_window_hour(), usage: asUsage(tokens.data?.hour) },
+		{ lbl: m.home_window_today(), usage: asUsage(tokens.data?.today) },
+		{ lbl: m.home_window_day(), usage: asUsage(tokens.data?.day) },
+		{ lbl: m.home_window_week(), usage: asUsage(tokens.data?.week) },
+		{ lbl: m.home_window_month(), usage: asUsage(tokens.data?.month) }
 	]);
 
-	const activeUsers = $derived(($users.data ?? []).filter((u) => !u.revoked_at).length);
-	const revokedUsers = $derived(($users.data ?? []).filter((u) => u.revoked_at).length);
-	const live = $derived($stats.data?.live ?? 0);
-	const archived = $derived($stats.data?.archived ?? 0);
-	const needs = $derived($stats.data?.needs_input ?? 0);
-	const total = $derived($stats.data?.total ?? 0);
+	const activeUsers = $derived((users.data ?? []).filter((u) => !u.revoked_at).length);
+	const revokedUsers = $derived((users.data ?? []).filter((u) => u.revoked_at).length);
+	const live = $derived(stats.data?.live ?? 0);
+	const archived = $derived(stats.data?.archived ?? 0);
+	const needs = $derived(stats.data?.needs_input ?? 0);
+	const total = $derived(stats.data?.total ?? 0);
 
 	const statCards = $derived([
 		{ lbl: m.home_stat_live(), num: live },

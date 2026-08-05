@@ -597,7 +597,7 @@ impl Routes {
         // `auth_middleware` (so `AuthContext` is already populated) yet with the
         // policy captured directly as layer state. A global `.layer` would run
         // OUTSIDE the router before the matched route is entered, so it could
-        // never see a per-route extension — the 0.7.0 default-deny regression.
+        // never see a per-route extension.
         let handler = handler.route_layer(middleware::from_fn_with_state(policy, enforce_route));
         self.router = self.router.route(path, handler);
         for method in methods {
@@ -630,11 +630,8 @@ impl Default for Routes {
 /// INSIDE the matched route, after the outer `auth_middleware` has populated
 /// [`AuthContext`], so both the policy and the principal are available.
 ///
-/// A 0.7.0 regression layered this as a single GLOBAL `authz_layer` reading the
-/// policy from a per-route extension; the global layer ran OUTSIDE the router,
-/// before the matched route's extension was inserted, so it default-denied every
-/// authenticated request (403). Capturing the policy as `route_layer` state
-/// removes the ordering hazard entirely: there is no cross-layer handoff.
+/// Capturing the policy as `route_layer` state keeps policy and principal on the
+/// same layer, so there is no cross-layer ordering hazard.
 async fn enforce_route(
     State(policy): State<Arc<Authz>>,
     mut request: Request,
@@ -1041,7 +1038,7 @@ mod tests {
         }
     }
 
-    // ---- request-level layer-ordering regression -------------------
+    // ---- request-level layer ordering -------------------
 
     /// Build a one-route `Router<()>` wired EXACTLY as [`Routes::add`] does — the
     /// route's policy enforced via `route_layer(from_fn_with_state(.., enforce_route))`
@@ -1075,12 +1072,9 @@ mod tests {
             .status()
     }
 
-    /// THE regression test. With a principal established (auth ran), an
-    /// `Authenticated` route returns 200 through the assembled stack. Under the
-    /// 0.7.0 wiring this was a blanket 403 because the global authz layer ran
-    /// outside the matched route and never saw the per-route policy. Nothing in
-    /// the old suite drove a real request through the combined layers, so CI
-    /// stayed green; this asserts at the request level.
+    /// With a principal established (auth ran), an `Authenticated` route returns
+    /// 200 through the assembled stack. Drives a real request through the combined
+    /// layers, asserting authz at the request level.
     #[tokio::test]
     async fn authenticated_route_allows_real_request() {
         let app = one_route_app(Authz::Authenticated, Some(user(Uuid::new_v4())));

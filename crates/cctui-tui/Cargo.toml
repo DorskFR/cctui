@@ -23,7 +23,7 @@ futures-util.workspace = true
 anyhow.workspace = true
 ratatui = "0.30"
 crossterm = "0.29"
-reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+reqwest = { version = "0.13", features = ["json", "rustls"], default-features = false }
 ratatui-textarea = "0.8.0"
 unicode-width = "0.2"
 supports-color = "3"
@@ -33,11 +33,11 @@ two-face = { version = "0.5", default-features = false, features = ["syntect-fan
 regex-lite = "0.1"
 textwrap = "0.16"
 url = "2"
-dirs = "5"
+dirs = "6"
 diffy = "0.4.2"
 similar = "2.7.0"
 semver = "1"
-tempfile.workspace = true
 
 [dev-dependencies]
 pretty_assertions = "1.4.1"
+tempfile.workspace = true

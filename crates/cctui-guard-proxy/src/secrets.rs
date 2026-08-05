@@ -1,5 +1,5 @@
-//! Pluggable secret resolution (CCT-717; consumed by credential injection in
-//! CCT-718). Every secret the proxy can inject is named by an explicit
+//! Pluggable secret resolution, consumed by credential injection. Every secret
+//! the proxy can inject is named by an explicit
 //! [`SecretRef`] — the proxy knows engines (env / Vault / AWS SM / Kubernetes
 //! secrets), never a site-specific taxonomy. Invariants the types cannot
 //! express: secrets stay in memory only (TTL cache, never persisted),

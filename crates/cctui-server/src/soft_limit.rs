@@ -7,9 +7,8 @@
 //! the whole budget — while bypassing the cap for a window that is about to reset
 //! anyway (no point hoarding it).
 //!
-//! Anthropic used to report a fixed set of windows (`five_hour`, `seven_day`, …).
-//! It now reports a self-describing `limits` array (session / weekly-all-models /
-//! per-model weekly caps, and whatever it adds next). therefore treats
+//! Anthropic reports a self-describing `limits` array (session / weekly-all-models
+//! / per-model weekly caps, and whatever it adds next), so this module treats
 //! usage as a *collection* of normalized windows keyed by a stable canonical
 //! identity, and lets each window carry its own independently editable cap +
 //! bypass. This module is the pure decision helper: it normalizes the raw usage
@@ -667,6 +666,20 @@ mod tests {
         assert_eq!(w[0].label, "5h spend");
         assert!((w[0].amount_usd.unwrap() - 1.5).abs() < 1e-9);
         assert!((w[0].utilization - 0.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn session_usd_normalizes_so_a_configured_cap_is_not_reported_as_unobserved() {
+        let mut usage = usd_usage(1.5, "2026-06-19T16:00:00Z", 12.0);
+        usage["session_usd"] = json!({ "amount_usd": 0.75, "resets_at": null });
+        let w = normalize_usage_windows(&usage);
+        let keys: Vec<_> = w.iter().map(|x| x.key.as_str()).collect();
+        assert_eq!(keys, ["session_usd", "usd_5h", "usd_7d"]);
+        let s = &w[0];
+        assert_eq!(s.kind, "usd");
+        assert_eq!(s.label, "Session spend");
+        assert!((s.amount_usd.unwrap() - 0.75).abs() < 1e-9);
+        assert!(s.resets_at.is_none(), "a session window has no rolling reset");
     }
 
     #[test]

@@ -1337,6 +1337,9 @@ pub struct CodexSession {
     /// Spawn/fork correlation id: resolved as an
     /// [`AdapterEvent::CommandResult`] only once the launch outcome is known.
     command_id: Option<Uuid>,
+    /// Server-pre-minted session id, echoed on `SessionStarted` so childwatch
+    /// can bind the thread codex mints to the `CctuiAgent` waiter.
+    spawn_key: Option<String>,
     events: mpsc::Sender<AdapterEvent>,
     live: LiveSessionRegistry,
     registry: SessionRegistry,
@@ -1353,6 +1356,7 @@ impl CodexSession {
         name: Option<String>,
         attachments: Vec<String>,
         command_id: Option<Uuid>,
+        spawn_key: Option<String>,
         events: mpsc::Sender<AdapterEvent>,
         live: LiveSessionRegistry,
         registry: SessionRegistry,
@@ -1364,6 +1368,7 @@ impl CodexSession {
             env,
             launch: SessionLaunch::Fresh { prompt, name, attachments },
             command_id,
+            spawn_key,
             events,
             live,
             registry,
@@ -1392,6 +1397,7 @@ impl CodexSession {
             env,
             launch: SessionLaunch::Fork { parent_thread_id, prompt, name, attachments },
             command_id,
+            spawn_key: None,
             events,
             live,
             registry,
@@ -1417,6 +1423,7 @@ impl CodexSession {
             env,
             launch: SessionLaunch::Resume { thread_id, initial_commands },
             command_id: None,
+            spawn_key: None,
             events,
             live,
             registry,
@@ -1779,6 +1786,7 @@ impl CodexSession {
                                             "source": "codex-app-server",
                                             "rollout_path": info.rollout_path,
                                             "codex_version": codex_version,
+                                            "spawn_key": self.spawn_key,
                                         }),
                                     },
                                 })
@@ -2373,7 +2381,7 @@ fn terminate_child(child: &mut tokio::process::Child, signal: Option<i32>) {
             child.id().and_then(|p| i32::try_from(p).ok()).and_then(rustix::process::Pid::from_raw)
     {
         // A reaped pid just yields ESRCH, which we ignore.
-        let _ = rustix::process::kill_process(pid, rustix::process::Signal::Term);
+        let _ = rustix::process::kill_process(pid, rustix::process::Signal::TERM);
         return;
     }
     let _ = child.start_kill();
@@ -2911,6 +2919,7 @@ mod tests {
             None, // no prompt → no turn/start, so no model auth needed
             None,
             Vec::new(),
+            None,
             None,
             tx,
             live,
@@ -3524,5 +3533,16 @@ mod tests {
                 "{ty} should be a ToolUse",
             );
         }
+    }
+
+    #[tokio::test]
+    async fn terminate_child_sigterm_stops_the_process() {
+        let mut child = tokio::process::Command::new("sleep").arg("300").spawn().unwrap();
+        terminate_child(&mut child, Some(SIGTERM));
+        let status = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait())
+            .await
+            .expect("child survived SIGTERM")
+            .unwrap();
+        assert!(!status.success());
     }
 }

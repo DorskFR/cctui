@@ -53,23 +53,23 @@ pub struct Step {
     /// heading that is not a `[...]` annotation), trimmed. Re-injected verbatim
     /// on transition and on the `SessionStart`/compact hook so a long or diluted
     /// session re-anchors on the trusted next-step prompt rather than its own
-    /// drifting summary (CCT-440).
+    /// drifting summary.
     pub body: String,
     /// Optional `[gate]: <shell command>` — a deterministic completion check the
     /// guard runs (in its `--gate-cwd`) before allowing the transition *out* of
     /// this step. Non-zero exit refuses the transition. Empty ⇒ no gate (the
-    /// transition is trusted, as before). This is how finalize-type transitions
-    /// require machine-checkable proof instead of the agent's assertion (CCT-440).
+    /// transition is trusted). This is how finalize-type transitions require
+    /// machine-checkable proof instead of the agent's assertion.
     pub gate: String,
     /// Opt-in `[compact]` marker. When set, the step's re-injection text also
     /// carries a "compact your working context" directive; when unset (the
     /// default) re-injection only re-anchors on the authoritative step body and
     /// leaves the session's accumulated context alone. Compaction is lossy and
     /// counter-productive on large-context models, so it is off unless a step
-    /// explicitly asks for it (CCT-450). Bare `[compact]` ⇒ on; `[compact]: false`
+    /// explicitly asks for it. Bare `[compact]` ⇒ on; `[compact]: false`
     /// (or `no`/`off`/`0`) ⇒ off; `[compact]: true` ⇒ on.
     pub compact: bool,
-    /// Optional `[llmjudge]` block (CCT-516): binary acceptance questions the
+    /// Optional `[llmjudge]` block: binary acceptance questions the
     /// judge must all answer 1 before the transition *out* of this step is
     /// allowed. Runs after the deterministic `[gate]`, judges the semantic
     /// acceptance conditions in a clean context, and fails closed — a partial
@@ -139,7 +139,7 @@ struct Fence {
     ch: char,
     len: usize,
     /// Info string (fence language) — surfaced so a future opt-in can special-case
-    /// a specific language (CCT-619) while every other fence stays inert prose.
+    /// a specific language while every other fence stays inert prose.
     info: String,
 }
 

@@ -59,7 +59,7 @@
 		}
 	}
 
-	const rows = $derived($shares.data ?? []);
+	const rows = $derived(shares.data ?? []);
 </script>
 
 <div class="shares">

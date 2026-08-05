@@ -32,7 +32,7 @@ user_id: string,
 created_at: string, 
 /**
  * ISO-8601 time of the last reconcile-poll attempt, or `None` if the
- * connector has not been polled yet (CCT-396).
+ * connector has not been polled yet.
  */
 last_polled_at: string | null, 
 /**

@@ -621,6 +621,73 @@ mod tests {
         assert!(!token.contains(&preview));
     }
 
+    fn headers(pairs: &[(&str, &str)]) -> http::HeaderMap {
+        let mut h = http::HeaderMap::new();
+        for (k, v) in pairs {
+            h.insert(
+                http::HeaderName::from_bytes(k.as_bytes()).unwrap(),
+                http::HeaderValue::from_str(v).unwrap(),
+            );
+        }
+        h
+    }
+
+    #[test]
+    fn token_from_cookies_picks_the_auth_pair() {
+        let h = headers(&[("cookie", "foo=1; cctui_auth=tok123 ; bar=2")]);
+        assert_eq!(token_from_cookies(&h).as_deref(), Some("tok123"));
+
+        assert_eq!(token_from_cookies(&headers(&[("cookie", "foo=1; bar=2")])), None);
+        assert_eq!(token_from_cookies(&headers(&[])), None);
+    }
+
+    #[test]
+    fn bearer_or_cookie_prefers_bearer_then_cookie_and_rejects_other_schemes() {
+        assert_eq!(
+            bearer_or_cookie(&headers(&[("authorization", "Bearer abc")])).as_deref(),
+            Some("abc")
+        );
+        let h = headers(&[("authorization", "Basic Zm9v"), ("cookie", "cctui_auth=ck")]);
+        assert_eq!(bearer_or_cookie(&h).as_deref(), Some("ck"));
+        assert_eq!(bearer_or_cookie(&headers(&[("authorization", "Basic Zm9v")])), None);
+        assert_eq!(bearer_or_cookie(&headers(&[])), None);
+    }
+
+    #[test]
+    fn request_is_https_trusts_forwarded_proto_case_insensitively() {
+        assert!(request_is_https(&headers(&[("x-forwarded-proto", "https")])));
+        assert!(request_is_https(&headers(&[("x-forwarded-proto", "HTTPS")])));
+        assert!(!request_is_https(&headers(&[("x-forwarded-proto", "http")])));
+        assert!(!request_is_https(&headers(&[])));
+    }
+
+    #[test]
+    fn auth_cookies_set_hardening_attrs_and_secure_only_over_https() {
+        let secure = set_auth_cookie("tok", true);
+        assert!(secure.starts_with("cctui_auth=tok;"));
+        assert!(secure.contains("HttpOnly"));
+        assert!(secure.contains("SameSite=Lax"));
+        assert!(secure.contains("Max-Age=31536000"));
+        assert!(secure.ends_with("; Secure"));
+
+        let plain = set_auth_cookie("tok", false);
+        assert!(!plain.contains("Secure"), "no Secure attr over plain http");
+
+        let cleared = clear_auth_cookie(true);
+        assert!(cleared.contains("cctui_auth=;"));
+        assert!(cleared.contains("Max-Age=0"));
+        assert!(cleared.ends_with("; Secure"));
+        assert!(!clear_auth_cookie(false).contains("Secure"));
+    }
+
+    #[test]
+    fn token_preview_masks_short_tokens_without_leaking_the_secret() {
+        let p = token_preview("secret_1234");
+        assert!(p.ends_with("1234"));
+        assert!(p.contains('•'));
+        assert!(!p.contains("secret"));
+    }
+
     #[tokio::test]
     async fn cache_roundtrip() {
         let pool = PgPool::connect_lazy("postgres://invalid").unwrap();

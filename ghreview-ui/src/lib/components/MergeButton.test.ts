@@ -26,8 +26,11 @@ function pull(overrides: Partial<GithubPull> = {}): GithubPull {
 }
 
 async function openPanel(): Promise<void> {
-  const trigger = document.querySelector('[data-tsu="Popover"]') as HTMLElement;
-  trigger.click();
+  // happy-dom has no popover API: dispatch toggle directly to mount the lazy panel
+  const panel = document.querySelector(".pop-panel") as HTMLElement;
+  const ev = new Event("toggle");
+  Object.assign(ev, { newState: "open" });
+  panel.dispatchEvent(ev);
   await tick();
   await tick();
 }
@@ -93,6 +96,7 @@ describe("MergeButton", () => {
     });
     const trigger = document.querySelector('[data-tsu="Popover"]') as HTMLButtonElement;
     expect(trigger.disabled).toBe(true);
+    await openPanel();
     expect(document.body.textContent).toContain("draft");
     expect(document.querySelector('[data-action="begin-merge"]')).toBeNull();
     expect(spy).not.toHaveBeenCalled();

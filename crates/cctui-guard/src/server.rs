@@ -37,8 +37,8 @@ async fn get_state(State(engine): State<Engine>) -> impl IntoResponse {
 /// `SessionStart`/compact hook — returns context text for re-injection. Always
 /// carries the authoritative step prompt body so a long or compacted session
 /// re-anchors on trusted instructions rather than its own drifting summary
-/// (CCT-440); the compact-context directive is included only for steps that
-/// opt in via `[compact]` (CCT-450).
+/// summary; the compact-context directive is included only for steps that
+/// opt in via `[compact]`.
 async fn post_state(State(engine): State<Engine>) -> impl IntoResponse {
     let body = tokio::task::spawn_blocking(move || {
         let state = engine.get_state();

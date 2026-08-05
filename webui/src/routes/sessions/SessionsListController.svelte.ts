@@ -1,0 +1,138 @@
+import type { SessionListItem } from '@bindings/SessionListItem';
+import {
+	BUCKETS,
+	KANBAN_COLS,
+	bucketInSection,
+	groupId,
+	groupOf,
+	groupRows,
+	kanbanColOf,
+	matchesUnreadFilter,
+	nest,
+	rangeIds,
+	sortSessions,
+	type Dimension,
+	type GroupKey,
+	type Section,
+	type SessionSort,
+	type SubGroup
+} from './sessions.logic';
+
+export interface SessionsListInputs {
+	items: () => SessionListItem[];
+	// Archived descendants of pinned parents, spliced back under their parent.
+	pinnedArchivedKids: () => SessionListItem[];
+	sections: () => Set<Section>;
+	groupBy: () => Dimension;
+	sort: () => SessionSort;
+	matchesLabel: (s: SessionListItem) => boolean;
+	matchesClient: (s: SessionListItem) => boolean;
+	// Visual document order of the rendered rows, for shift-range selection.
+	renderedOrder: () => string[];
+}
+
+export class SessionsListController {
+	#in: SessionsListInputs;
+
+	selecting = $state(false);
+	selected = $state(new Set<string>());
+	anchorId = $state<string | null>(null);
+	// Expand/collapse of collapsible (>=3) subagent groups, keyed by
+	// `${parentId}/${group.key}`. Default collapsed.
+	expanded = $state(new Set<string>());
+
+	constructor(inputs: SessionsListInputs) {
+		this.#in = inputs;
+	}
+
+	#sort = (rows: SessionListItem[]) => sortSessions(rows, this.#in.sort());
+	#keep = (s: SessionListItem): boolean =>
+		this.#in.matchesLabel(s) &&
+		this.#in.matchesClient(s) &&
+		matchesUnreadFilter(s, this.#in.sections());
+
+	draftRows = $derived.by(() => this.#in.items().filter((s) => s.status === 'draft'));
+
+	#liveNest = $derived.by(() =>
+		nest([...this.#in.items().filter((s) => s.status !== 'draft'), ...this.#in.pinnedArchivedKids()])
+	);
+	get topLevel(): SessionListItem[] {
+		return this.#liveNest.topLevel;
+	}
+	get childGroupsOf(): Map<string, SubGroup[]> {
+		return this.#liveNest.childGroups;
+	}
+
+	groups = $derived.by(() =>
+		BUCKETS.filter((b) => bucketInSection(b.key, this.#in.sections()))
+			.map((b) => ({
+				...b,
+				sessions: this.#sort(
+					this.#liveNest.topLevel.filter((s) => groupOf(s) === b.key && this.#keep(s))
+				)
+			}))
+			.filter((g) => g.sessions.length > 0)
+	);
+
+	#liveTopFiltered = $derived.by(() =>
+		this.#liveNest.topLevel.filter(
+			(s) => bucketInSection(groupOf(s), this.#in.sections()) && this.#keep(s)
+		)
+	);
+	groupedSections = $derived.by(() =>
+		this.#in.groupBy() === 'none'
+			? []
+			: groupRows(this.#sort(this.#liveTopFiltered), this.#in.groupBy())
+	);
+	get hasLiveRows(): boolean {
+		return this.#in.groupBy() === 'none' ? this.groups.length > 0 : this.groupedSections.length > 0;
+	}
+
+	#kanbanNest = $derived.by(() => nest(this.#in.items().filter((s) => s.status !== 'archived')));
+	get kanbanChildGroups(): Map<string, SubGroup[]> {
+		return this.#kanbanNest.childGroups;
+	}
+	kanbanColumns = $derived.by(() => {
+		const rows = this.#kanbanNest.topLevel.filter((s) => this.#keep(s));
+		return KANBAN_COLS.map((c) => ({
+			...c,
+			sessions: this.#sort(rows.filter((s) => kanbanColOf(s) === c.key))
+		}));
+	});
+
+	toggleGroup = (parentId: string, key: string) => {
+		const id = groupId(parentId, key);
+		const next = new Set(this.expanded);
+		if (next.has(id)) next.delete(id);
+		else next.add(id);
+		this.expanded = next;
+	};
+	isExpanded = (parentId: string, key: string): boolean => this.expanded.has(groupId(parentId, key));
+
+	toggleSelect = (s: SessionListItem, range = false) => {
+		const next = new Set(this.selected);
+		if (range && this.anchorId && this.anchorId !== s.id) {
+			const selectable = new Set(this.#in.items().map((x) => x.id));
+			const ids = rangeIds(this.#in.renderedOrder(), this.anchorId, s.id, selectable);
+			if (ids.length) {
+				for (const id of ids) next.add(id);
+				this.selected = next;
+				return;
+			}
+		}
+		if (next.has(s.id)) next.delete(s.id);
+		else next.add(s.id);
+		this.anchorId = s.id;
+		this.selected = next;
+	};
+	exitSelect = () => {
+		this.selecting = false;
+		this.selected = new Set();
+		this.anchorId = null;
+	};
+	selectAll = () => {
+		this.selected = new Set(this.#in.items().map((s) => s.id));
+	};
+
+	bucketInSection = (key: GroupKey): boolean => bucketInSection(key, this.#in.sections());
+}

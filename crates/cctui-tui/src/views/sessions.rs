@@ -1,6 +1,5 @@
 use cctui_proto::api::SessionListItem;
 use cctui_proto::classifier::Bucket;
-use cctui_proto::ws::AgentEvent;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout};
 use ratatui::text::{Line, Span};
@@ -104,7 +103,7 @@ fn session_line(s: &SessionListItem) -> ListItem<'static> {
     let branch = s.metadata.get("git_branch").and_then(serde_json::Value::as_str).unwrap_or("");
     let model = s.metadata.get("model").and_then(serde_json::Value::as_str).unwrap_or("");
 
-    let uptime = format_uptime(s.uptime_secs);
+    let uptime = format_uptime(crate::uptime_secs(s));
     let cost = format!("${:.2}", s.token_usage.cost_usd);
 
     let adapter = s.adapter_id.as_ref().map_or("claude-code", |a| a.as_str());
@@ -200,23 +199,4 @@ pub fn format_tool_input(tool: &str, input: &serde_json::Value) -> String {
 
     let s = serde_json::to_string(input).unwrap_or_default();
     if s.len() > 100 { format!("{}...", &s[..100]) } else { s }
-}
-
-pub fn agent_event_to_string(event: &AgentEvent) -> String {
-    match event {
-        AgentEvent::Text { content, .. } | AgentEvent::Reply { content, .. } => content.clone(),
-        AgentEvent::ToolCall { tool, input, .. } => {
-            let detail = format_tool_input(tool, input);
-            format!("[{tool}] {detail}")
-        }
-        AgentEvent::ToolResult { output_summary, .. } => {
-            format!("  → {output_summary}")
-        }
-        AgentEvent::Heartbeat { tokens_in, tokens_out, .. } => {
-            format!("[heartbeat] in:{tokens_in} out:{tokens_out}")
-        }
-        AgentEvent::TurnEnd { .. } => String::new(),
-        AgentEvent::ContextReset { .. } => "⟳ context reset (/clear · /compact)".to_owned(),
-        AgentEvent::CompactSummary { content, .. } => format!("⟳ context compacted\n{content}"),
-    }
 }

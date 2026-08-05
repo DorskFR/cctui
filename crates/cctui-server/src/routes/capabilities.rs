@@ -11,8 +11,8 @@ use crate::state::AppState;
 
 /// The capability envelope. One field per optional integration.
 ///
-/// `claude_litellm_models` was dropped — self-hosted models are now a
-/// per-account property surfaced by `GET /accounts`, not a server-global list.
+/// Self-hosted models are a per-account property surfaced by `GET /accounts`,
+/// not a server-global list.
 #[derive(Serialize, TS)]
 #[ts(export)]
 pub struct CapabilitiesResponse {

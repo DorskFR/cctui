@@ -12,7 +12,7 @@
 	const range = $derived(RANGES.find((r) => r.key === rangeKey) ?? RANGES[2]);
 
 	const q = useUsageAnalytics(() => range.days);
-	const data = $derived($q.data);
+	const data = $derived(q.data);
 	const show = $derived(hasUsage(data));
 
 	const rangeOptions = RANGES.map((r) => ({ value: r.key, label: r.key }));
@@ -29,7 +29,7 @@
 		/>
 	</div>
 
-	{#if $q.isLoading}
+	{#if q.isLoading}
 		<Card><Text tone="faint">{m.common_loading()}</Text></Card>
 	{:else if !show}
 		<Card><Text tone="faint">{m.home_usage_no_data()}</Text></Card>

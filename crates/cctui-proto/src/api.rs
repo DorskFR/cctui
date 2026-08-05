@@ -221,7 +221,6 @@ pub struct SessionListItem {
     /// both clients. Defaults to `Working` for back-compat.
     #[serde(default = "default_bucket")]
     pub bucket: Bucket,
-    pub uptime_secs: i64,
     pub token_usage: TokenUsage,
     pub metadata: serde_json::Value,
     /// Adapter that produced this session. Defaults to `"claude-code"` for
@@ -364,11 +363,6 @@ pub struct SessionListItem {
     /// creds. `true` for any session whose token the gateway has seen.
     #[serde(default)]
     pub account_traffic_observed: bool,
-    /// What the session was launched to do: the adapter's `Status`
-    /// intent (`sessions.intent`), surfaced as a secondary line / tooltip on the
-    /// card. `None` when the session carries no intent.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub intent: Option<String>,
     /// Linked-PR hrefs from `sessions.children`. Drives the PR link
     /// shown on the session card / TUI line and the `Ready for review` bucket.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

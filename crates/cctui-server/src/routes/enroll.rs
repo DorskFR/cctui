@@ -5,9 +5,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use cctui_proto::api::ApiError;
-
 use crate::auth::{AuthContext, Scope, machine_token, mint_secret, sha256_hex};
+use crate::error::AppError;
 use crate::state::AppState;
 
 #[derive(Deserialize)]
@@ -37,19 +36,14 @@ pub async fn enroll(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Json(req): Json<EnrollRequest>,
-) -> Result<Json<EnrollResponse>, (StatusCode, Json<ApiError>)> {
-    // Enrolling a machine requires the `enroll` scope. Admin holds it
-    // by ceiling, so admin can now enroll (previously a `require_user` 403 —
-    // bug #3 in the ticket). The machine is owned by the caller's user.
-    ctx.requires(Scope::Enroll)
-        .map_err(|s| (s, Json(ApiError { error: "the enroll scope is required".into() })))?;
+) -> Result<Json<EnrollResponse>, AppError> {
+    // Enrolling a machine requires the `enroll` scope. Admin holds it by
+    // ceiling, so admin can enroll too. The machine is owned by the caller.
+    ctx.requires(Scope::Enroll).map_err(|s| AppError::new(s, "the enroll scope is required"))?;
     let user_id = ctx.user_id;
 
     if req.hostname.trim().is_empty() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(ApiError { error: "hostname required".into() }),
-        ));
+        return Err(AppError::new(StatusCode::BAD_REQUEST, "hostname required"));
     }
 
     let machine_id = Uuid::new_v4();
@@ -75,11 +69,7 @@ pub async fn enroll(
     .bind(kind)
     .bind(crate::auth::token_preview(&token))
     .execute(&state.pool)
-    .await
-    .map_err(|e| {
-        tracing::error!("db error: {e}");
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-    })?;
+    .await?;
 
     // Register the machine key in the unified api_keys table with a
     // grant = the owner's full ceiling, so it behaves exactly like the owner
@@ -105,24 +95,6 @@ pub async fn enroll(
         tracing::warn!("failed to register machine key in api_keys: {e}");
     }
 
-    // Default the new machine to the claude-code adapter so the daemon
-    // gets a meaningful Reconcile out of the box and either harness can be
-    // spawned/observed without a manual table edit. The codex
-    // adapter only launches a `codex app-server` on an explicit Spawn and its
-    // log-tail no-ops when `~/.codex/sessions` is absent, so enabling it is
-    // safe even on machines without codex installed. Users can disable
-    // adapters via direct table edits.
-    let _ = sqlx::query(
-        "INSERT INTO adapters_enabled (machine_id, adapter_id, config, enabled) \
-         VALUES ($1, 'claude-code', '{}'::jsonb, TRUE), \
-                ($1, 'codex', '{}'::jsonb, TRUE) \
-         ON CONFLICT (machine_id, adapter_id) DO NOTHING",
-    )
-    .bind(machine_id)
-    .execute(&state.pool)
-    .await
-    .map_err(|e| tracing::warn!("failed to insert default adapters_enabled rows: {e}"));
-
     tracing::info!(
         user_id = %user_id,
         machine_id = %machine_id,
@@ -147,10 +119,15 @@ pub async fn enroll(
 pub async fn deenroll(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
-) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
-    let machine_id = ctx.machine_id.ok_or_else(|| {
-        (StatusCode::FORBIDDEN, Json(ApiError { error: "machine token required".into() }))
-    })?;
+) -> Result<StatusCode, AppError> {
+    let machine_id = ctx
+        .machine_id
+        .ok_or_else(|| AppError::new(StatusCode::FORBIDDEN, "machine token required"))?;
+
+    let old_hash: Option<(String,)> = sqlx::query_as("SELECT key_hash FROM machines WHERE id = $1")
+        .bind(machine_id)
+        .fetch_optional(&state.pool)
+        .await?;
 
     sqlx::query(
         "UPDATE machines SET revoked_at = COALESCE(revoked_at, now()), deleted_at = now() \
@@ -158,11 +135,20 @@ pub async fn deenroll(
     )
     .bind(machine_id)
     .execute(&state.pool)
-    .await
-    .map_err(|e| {
-        tracing::error!("db error: {e}");
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-    })?;
+    .await?;
+
+    // Auth resolves against auth_keys first; revoke the mirror row too or the
+    // key keeps authenticating.
+    sqlx::query(
+        "UPDATE auth_keys SET revoked_at = now() WHERE machine_id = $1 AND revoked_at IS NULL",
+    )
+    .bind(machine_id)
+    .execute(&state.pool)
+    .await?;
+
+    if let Some((hash,)) = old_hash {
+        state.auth_config.purge(&hash);
+    }
 
     tracing::info!(machine_id = %machine_id, "machine deenrolled (self)");
     Ok(StatusCode::NO_CONTENT)
@@ -205,20 +191,16 @@ pub struct MachineBandwidth {
 pub async fn machine_status(
     State(state): State<AppState>,
     Path(machine_id): Path<Uuid>,
-) -> Result<Json<MachineStatusResponse>, (StatusCode, Json<ApiError>)> {
+) -> Result<Json<MachineStatusResponse>, AppError> {
     let row: Option<(String, DateTime<Utc>, Option<DateTime<Utc>>)> = sqlx::query_as(
         "SELECT name, last_seen_at, revoked_at FROM machines \
          WHERE id = $1 AND deleted_at IS NULL",
     )
     .bind(machine_id)
     .fetch_optional(&state.pool)
-    .await
-    .map_err(|e| {
-        tracing::error!("db error: {e}");
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-    })?;
+    .await?;
     let Some((name, last_seen_at, revoked_at)) = row else {
-        return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "machine not found".into() })));
+        return Err(AppError::new(StatusCode::NOT_FOUND, "machine not found"));
     };
     // Local pod first; fall back to `ws_presence` so a WS terminated by a
     // peer replica still reads as connected. The 45s freshness window

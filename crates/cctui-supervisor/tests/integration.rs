@@ -16,10 +16,28 @@ const fn bin() -> &'static str {
     env!("CARGO_BIN_EXE_cctui-supervisor")
 }
 
+fn lsm_list() -> String {
+    fs::read_to_string("/sys/kernel/security/lsm").map_or_else(
+        |_| "<unreadable /sys/kernel/security/lsm>".to_owned(),
+        |s| s.trim().to_owned(),
+    )
+}
+
 /// Best-effort runtime detection of Landlock support via the kernel LSM list.
 fn landlock_available() -> bool {
     fs::read_to_string("/sys/kernel/security/lsm")
         .is_ok_and(|s| s.split(',').any(|l| l.trim() == "landlock"))
+}
+
+/// Skip a kernel-dependent sandbox assertion locally, but FAIL it under
+/// `CI=true` so the jail is never silently untested-green.
+fn skip_or_fail_in_ci(test_name: &str, reason: &str) {
+    let lsm = lsm_list();
+    assert!(
+        std::env::var("CI").as_deref() != Ok("true"),
+        "{test_name}: {reason} — CI=true requires the sandbox to be exercised; detected LSM list: [{lsm}]"
+    );
+    eprintln!("SKIP {test_name}: {reason}; detected LSM list: [{lsm}]");
 }
 
 #[test]
@@ -89,7 +107,10 @@ fn seccomp_denies_syscall_with_eperm() {
 #[test]
 fn landlock_ro_blocks_write_rw_allows_write() {
     if !landlock_available() {
-        eprintln!("SKIP landlock test: kernel reports no landlock LSM");
+        skip_or_fail_in_ci(
+            "landlock_ro_blocks_write_rw_allows_write",
+            "kernel reports no landlock LSM",
+        );
         return;
     }
     let tmp = std::env::temp_dir().join(format!("cctui-sup-test-{}", std::process::id()));
@@ -124,8 +145,11 @@ fn landlock_ro_blocks_write_rw_allows_write() {
         // Kernel advertises landlock but the ABI we target is not enforced
         // (e.g. older kernel): runtime-skip rather than fail.
         if !ro_blocked && !rw_ok {
-            eprintln!("SKIP landlock test: neither write behaved as expected (ABI unenforced)");
             let _ = fs::remove_dir_all(&tmp);
+            skip_or_fail_in_ci(
+                "landlock_ro_blocks_write_rw_allows_write",
+                "neither write behaved as expected (landlock ABI unenforced)",
+            );
             return;
         }
     }
@@ -148,7 +172,10 @@ fn make_runs_a_recipe_under_full_sandbox() {
         return;
     }
     if !landlock_available() {
-        eprintln!("SKIP make test: kernel reports no landlock LSM");
+        skip_or_fail_in_ci(
+            "make_runs_a_recipe_under_full_sandbox",
+            "kernel reports no landlock LSM",
+        );
         return;
     }
 

@@ -1,10 +1,8 @@
 //! The single routing seam for all WS-bound traffic (phase 1 of the
 //! message-bus architecture).
 //!
-//! Before this module, "which pod holds the WS / who is subscribed" was smeared
-//! across three places: `daemon_dispatch.rs` (pod-local daemon commands),
-//! `registry.rs` (per-session stream broadcast) and `state.tui_tx` (server
-//! event fan-out). The bus owns ALL delivery state now:
+//! The bus owns ALL WS delivery state in one place — pod-local daemon commands,
+//! per-session stream broadcast, and server event fan-out:
 //!
 //!   * point-to-point commands toward the pod terminating a WS
 //!     ([`Bus::command_daemon`], [`Bus::command_dispatcher`]) and correlated

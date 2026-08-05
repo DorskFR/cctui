@@ -373,7 +373,27 @@ impl Supervisor {
                 if let Some(running) = running.get(&adapter_id) {
                     let _ = running.commands_tx.send(*command).await;
                 } else {
-                    tracing::warn!(%adapter_id, "command for unknown adapter; dropping");
+                    tracing::warn!(%adapter_id, "command for unknown adapter; rejecting");
+                    // Silent drop would leave the server-side waiter hanging.
+                    let command_id = match *command {
+                        AdapterCommand::Spawn { command_id, .. }
+                        | AdapterCommand::Fork { command_id, .. } => command_id,
+                        _ => None,
+                    };
+                    if let Some(command_id) = command_id {
+                        let _ = event_tx
+                            .send((
+                                adapter_id.clone(),
+                                AdapterEvent::CommandResult {
+                                    command_id,
+                                    ok: false,
+                                    error: Some(format!(
+                                        "adapter {adapter_id} is not running on this machine"
+                                    )),
+                                },
+                            ))
+                            .await;
+                    }
                 }
             }
             DaemonFrameDown::ResumeMarks { session_marks } => {
@@ -953,6 +973,57 @@ mod tests {
         assert!(!new_token.is_cancelled(), "rebuilt adapter must be live");
     }
 
+    #[tokio::test]
+    async fn command_for_unknown_adapter_fails_the_command_result() {
+        let supervisor = Supervisor::new(
+            ServerClient::new("http://localhost"),
+            "machine-key".to_string(),
+            vec![],
+        );
+        let shutdown = CancellationToken::new();
+        let (event_tx, mut event_rx) = mpsc::channel(8);
+        let (frame_up_tx, _frame_up_rx) = mpsc::channel(8);
+        let mut running: std::collections::HashMap<String, AdapterRunning> =
+            std::collections::HashMap::new();
+        let mut scrub = cctui_crypto::redact::CompiledPatterns::disabled();
+        let command_id = uuid::Uuid::new_v4();
+        let spec = cctui_proto::adapter::SessionSpec {
+            adapter_id: "opencode".into(),
+            working_dir: None,
+            prompt: None,
+            name: None,
+            permission_mode: None,
+            effort: None,
+            model: None,
+            env: std::collections::BTreeMap::new(),
+            bootstrap: serde_json::Value::Null,
+            parent_local_id: None,
+        };
+        let frame = cctui_proto::ws::DaemonFrameDown::Command {
+            adapter_id: "opencode".to_owned(),
+            command: Box::new(cctui_proto::adapter::AdapterCommand::Spawn {
+                spec,
+                command_id: Some(command_id),
+                session_id: Some(command_id),
+            }),
+        };
+        supervisor
+            .handle_frame(frame, &mut running, &event_tx, &frame_up_tx, &mut scrub, &shutdown)
+            .await;
+        match event_rx.recv().await {
+            Some((
+                adapter_id,
+                cctui_proto::adapter::AdapterEvent::CommandResult { command_id: got, ok, error },
+            )) => {
+                assert_eq!(adapter_id, "opencode");
+                assert_eq!(got, command_id);
+                assert!(!ok);
+                assert!(error.unwrap().contains("not running"));
+            }
+            other => panic!("expected a failed CommandResult, got {other:?}"),
+        }
+    }
+
     fn chunk_parts(frame: DaemonFrameUp) -> (String, u32, u32, String) {
         match frame {
             DaemonFrameUp::Chunk { transfer_id, chunk_index, total_chunks, data, .. } => {
@@ -1254,5 +1325,19 @@ mod tests {
             started.elapsed() < super::SHUTDOWN_DRAIN_MAX,
             "a closed channel must end the drain before the hard cap"
         );
+    }
+
+    #[test]
+    fn parse_frame_decodes_text_and_binary_and_skips_control() {
+        use tokio_tungstenite::tungstenite::Message;
+        let json = r#"{"type":"ack","seq":7}"#;
+        for msg in [Message::Text(json.into()), Message::Binary(json.as_bytes().to_vec().into())] {
+            match super::parse_frame(msg).unwrap() {
+                Some(cctui_proto::ws::DaemonFrameDown::Ack { seq }) => assert_eq!(seq, 7),
+                other => panic!("expected Ack, got {other:?}"),
+            }
+        }
+        assert!(super::parse_frame(Message::Ping(Vec::new().into())).unwrap().is_none());
+        assert!(super::parse_frame(Message::Close(None)).unwrap().is_none());
     }
 }

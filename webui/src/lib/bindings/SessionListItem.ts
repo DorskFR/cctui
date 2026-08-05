@@ -24,7 +24,7 @@ attention: Attention | null,
  * Ready for review / Completed). Drives the grouped session list in
  * both clients. Defaults to `Working` for back-compat.
  */
-bucket: Bucket, uptime_secs: number, token_usage: TokenUsage, metadata: JsonValue, 
+bucket: Bucket, token_usage: TokenUsage, metadata: JsonValue, 
 /**
  * Adapter that produced this session. Defaults to `"claude-code"` for
  * legacy rows that pre-date the `sessions.adapter_id` column.
@@ -192,12 +192,6 @@ has_token_credentials: boolean,
  * creds. `true` for any session whose token the gateway has seen.
  */
 account_traffic_observed: boolean, 
-/**
- * What the session was launched to do: the adapter's `Status`
- * intent (`sessions.intent`), surfaced as a secondary line / tooltip on the
- * card. `None` when the session carries no intent.
- */
-intent: string | null, 
 /**
  * Linked-PR hrefs from `sessions.children`. Drives the PR link
  * shown on the session card / TUI line and the `Ready for review` bucket.

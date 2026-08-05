@@ -71,7 +71,7 @@ struct Cli {
     #[arg(long = "gate-cwd", default_value = "/workspace")]
     gate_cwd: PathBuf,
 
-    /// Command the `[llmjudge]` acceptance judge runs through (CCT-516). Runs
+    /// Command the `[llmjudge]` acceptance judge runs through. Runs
     /// via `sh -c` in `--gate-cwd`, receives the question prompt on stdin, and
     /// must print a JSON verdict array on stdout (e.g. a wrapper around
     /// `claude -p` with a clean context). Unset while a step declares
