@@ -1189,14 +1189,27 @@ a call on another session's behalf. The config is written **only when the server
 returns a spawn capability** for that session, so an unprivileged session does
 not even see the tool.
 
+When the tool is written, the spawn's `<session-context>` block also names it:
+the permitted adapters, the budget ceiling and one example call. A tool listed
+only in the MCP inventory goes unused.
+
+An account-bound spawn mints gateway env for **every provider family the account
+carries**, not just the adapter's own — so a claude session holds the
+`OPENAI_*` keys too and can spawn (or shell out to) codex under the same
+account. The launch still fails when the adapter's own family has no provider.
+
 ### Capability (fail-closed)
 
 What a session may spawn is declared by whoever launches it and is never
 writable by the session:
 
-- interactive spawns: `spawn_capability` on the `SpawnRequest`;
+- interactive spawns: `spawn_capability` on the `SpawnRequest`. Omitted → the
+  session gets the **machine default**: every known adapter, a $20 per-child
+  ceiling, no child cap. A session launched on the user's own machine is trusted
+  to spawn there; send an explicit capability to narrow it.
 - dispatched workers: `payload.spawn_capability`, which the server **strips from
-  the forwarded payload** so the worker cannot read or restate it.
+  the forwarded payload** so the worker cannot read or restate it. Absent here
+  still means no tool — dispatched workers get no default.
 
 ```jsonc
 "spawn_capability": {

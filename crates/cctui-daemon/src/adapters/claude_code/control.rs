@@ -1804,9 +1804,9 @@ impl Driver {
             respawn_flags.push("--settings".to_owned());
             respawn_flags.push(settings);
         }
-        if let Some(mcp) =
-            ensure_agent_mcp_config(short, &session_id, launch.spawn_capability.as_ref())
-        {
+        let agent_tool =
+            ensure_agent_mcp_config(short, &session_id, launch.spawn_capability.as_ref());
+        if let Some(mcp) = &agent_tool {
             let mcp = mcp.to_string_lossy().into_owned();
             args.push("--mcp-config".to_owned());
             args.push(mcp.clone());
@@ -1824,7 +1824,12 @@ impl Driver {
         // values — those live only in `env_json` below), cwd, and the staged
         // file list (folded in here from the old client-side `Attached files:`
         // append). Subsequent messages are untouched.
-        let session_context = build_session_context(spec, cwd, &staged);
+        let session_context = build_session_context(
+            spec,
+            cwd,
+            &staged,
+            launch.spawn_capability.as_ref().filter(|_| agent_tool.is_some()),
+        );
         let launch_prompt = match spec.prompt.as_deref().map(str::trim) {
             Some(b) if !b.is_empty() => Some(format!("{session_context}\n\n{b}")),
             _ => Some(session_context),
@@ -3138,6 +3143,7 @@ fn build_session_context(
     spec: &cctui_proto::adapter::SessionSpec,
     cwd: &str,
     staged: &[String],
+    capability: Option<&cctui_proto::api::SpawnCapability>,
 ) -> String {
     let mut b = String::from("<session-context>\n");
     if let Some(name) = spec.name.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
@@ -3167,7 +3173,35 @@ fn build_session_context(
             let _ = writeln!(b, "  - {p}");
         }
     }
+    if let Some(cap) = capability.filter(|c| !c.is_empty()) {
+        b.push_str(&agent_tool_context(cap));
+    }
     b.push_str("</session-context>");
+    b
+}
+
+/// The `CctuiAgent` paragraph of the session context: the tool exists, which
+/// adapters this session may spawn, and one worked call.
+fn agent_tool_context(cap: &cctui_proto::api::SpawnCapability) -> String {
+    let mut b = String::from(
+        "CctuiAgent: you can delegate work to a cctui subagent session on this \
+         machine with the MCP tool `mcp__cctui__CctuiAgent`. The child is a real \
+         cctui session — nested under this one in the UI, metered, killable — and \
+         the call blocks until it finishes, returning its final message.\n",
+    );
+    let _ = writeln!(b, "  adapters you may spawn: {}", cap.adapters.join(", "));
+    if let Some(max) = cap.max_budget_usd {
+        let _ = writeln!(b, "  per-child budget ceiling: ${max} (inherited when you name none)");
+    }
+    if let Some(max) = cap.max_children {
+        let _ = writeln!(b, "  max children for this session: {max}");
+    }
+    let adapter = cap.adapters.first().map_or("claude-code", String::as_str);
+    let _ = writeln!(
+        b,
+        "  example: mcp__cctui__CctuiAgent({{\"adapter\": \"{adapter}\", \"prompt\": \
+         \"Review the diff on branch X and list real defects\", \"cwd\": \"/path/to/repo\"}})"
+    );
     b
 }
 
@@ -3936,7 +3970,7 @@ mod tests {
             bootstrap: serde_json::Value::Null,
             parent_local_id: None,
         };
-        let block = build_session_context(&spec, "/work/cctui", &["a.rs".to_owned()]);
+        let block = build_session_context(&spec, "/work/cctui", &["a.rs".to_owned()], None);
         assert!(block.starts_with("<session-context>\n"));
         assert!(block.ends_with("</session-context>"));
         assert!(block.contains("session: refactor the dispatcher"));
@@ -3949,6 +3983,35 @@ mod tests {
         // VALUES must never leak.
         assert!(!block.contains("super-secret"));
         assert!(!block.contains("admin"));
+        assert!(!block.contains("CctuiAgent"));
+    }
+
+    #[test]
+    fn session_context_advertises_the_agent_tool_when_capable() {
+        use cctui_proto::adapter::{AdapterId, SessionSpec};
+        let spec = SessionSpec {
+            adapter_id: AdapterId::new("claude-code"),
+            working_dir: Some("/work/cctui".to_owned()),
+            prompt: None,
+            name: None,
+            permission_mode: None,
+            effort: None,
+            model: None,
+            env: std::collections::BTreeMap::new(),
+            bootstrap: serde_json::Value::Null,
+            parent_local_id: None,
+        };
+        let cap = cctui_proto::api::SpawnCapability::machine_default();
+        let block = build_session_context(&spec, "/work/cctui", &[], Some(&cap));
+        assert!(block.contains("mcp__cctui__CctuiAgent"));
+        assert!(block.contains("adapters you may spawn: claude-code, codex, opencode"));
+        assert!(block.contains("per-child budget ceiling: $20"));
+        assert!(block.contains("example: mcp__cctui__CctuiAgent({\"adapter\": \"claude-code\""));
+        assert!(block.ends_with("</session-context>"));
+
+        let empty = cctui_proto::api::SpawnCapability::default();
+        let block = build_session_context(&spec, "/work/cctui", &[], Some(&empty));
+        assert!(!block.contains("CctuiAgent"), "an empty capability advertises nothing");
     }
 
     #[test]

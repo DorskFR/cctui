@@ -11,6 +11,7 @@ use crate::state::AppState;
 /// a message naming the actual gap: "no such account" and "account
 /// exists but carries no provider for this harness family" need different
 /// remedies (fix the name vs. connect a provider).
+#[derive(Debug)]
 pub enum MintSessionEnvError {
     /// The account name resolved to nothing for this user (neither owned nor
     /// shared).
@@ -128,6 +129,77 @@ pub async fn mint_session_env(
     mint_env_for_account(state, row.id, &row.provider, session_id)
         .await
         .map_err(MintSessionEnvError::Db)
+}
+
+/// Mint gateway env for EVERY provider family the account carries, not just the
+/// adapter's own. `primary` is the family the launch actually needs: a missing
+/// provider there is an error exactly as in [`mint_session_env`], while a
+/// secondary family that fails to mint is logged and skipped.
+///
+/// The families emit disjoint routing keys, so the worker ends up holding its
+/// harness credential *and* the others — a claude session can then drive `codex`
+/// (or spawn a codex child through `CctuiAgent`) under the same account.
+/// `primary` mints last so its per-account custom env wins any key collision.
+pub async fn mint_session_env_all_families(
+    state: &AppState,
+    user_id: Uuid,
+    account_name: &str,
+    primary: Family,
+    session_id: &str,
+) -> Result<std::collections::BTreeMap<String, String>, MintSessionEnvError> {
+    let rows = account_provider_rows(state, user_id, account_name)
+        .await
+        .map_err(MintSessionEnvError::Db)?;
+    let Some(rows) = rows else {
+        tracing::warn!(
+            %user_id,
+            account = %account_name,
+            "mint_session_env_all_families: no account resolved (not owned by, nor shared to, this user)"
+        );
+        return Err(MintSessionEnvError::NoAccount);
+    };
+    let order = mint_order(&rows, primary).inspect_err(|_| {
+        tracing::warn!(
+            %user_id,
+            account = %account_name,
+            family = primary.label(),
+            "mint_session_env_all_families: account has no provider for this family"
+        );
+    })?;
+    let (primary_row, secondaries) = order.split_last().expect("mint_order yields the primary");
+    let mut env = std::collections::BTreeMap::new();
+    for row in secondaries {
+        match mint_env_for_account(state, row.id, &row.provider, session_id).await {
+            Ok(e) => env.extend(e),
+            Err(err) => tracing::warn!(
+                %session_id,
+                account = %account_name,
+                family = row.family().label(),
+                "secondary-family mint failed, launching without it: {err}"
+            ),
+        }
+    }
+    env.extend(
+        mint_env_for_account(state, primary_row.id, &primary_row.provider, session_id)
+            .await
+            .map_err(MintSessionEnvError::Db)?,
+    );
+    Ok(env)
+}
+
+/// The account's provider rows to mint, secondaries first and `primary` LAST so
+/// its per-account custom env wins a key collision. Errors when the account
+/// carries no row for `primary` — the family the launch actually needs.
+fn mint_order(
+    rows: &[ProviderRow],
+    primary: Family,
+) -> Result<Vec<&ProviderRow>, MintSessionEnvError> {
+    if !rows.iter().any(|r| r.family() == primary) {
+        return Err(MintSessionEnvError::NoProviderForFamily(primary));
+    }
+    let mut order: Vec<&ProviderRow> = rows.iter().filter(|r| r.family() != primary).collect();
+    order.extend(rows.iter().filter(|r| r.family() == primary));
+    Ok(order)
 }
 
 /// Re-mint a gateway session token + env for an **already-resolved** provider
@@ -585,4 +657,46 @@ pub async fn rebind_spawn_key(state: &AppState, spawn_key: SpawnKey, session_id:
 pub async fn session_id_for_token(state: &AppState, session_token: &str) -> Option<String> {
     let hash = crate::auth::sha256_hex(session_token);
     crate::store::tokens::session_id_by_token_hash(&state.pool, &hash).await.ok().flatten()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Family, MintSessionEnvError, ProviderRow, mint_order};
+
+    fn row(provider: &str) -> ProviderRow {
+        ProviderRow {
+            id: uuid::Uuid::new_v4(),
+            provider: provider.to_owned(),
+            model_aliases: None,
+            models: None,
+        }
+    }
+
+    #[test]
+    fn every_family_is_minted_with_the_primary_last() {
+        let rows = vec![row("anthropic"), row("openai"), row("fireworks")];
+        let order = mint_order(&rows, Family::Openai).expect("openai provider present");
+        let families: Vec<&str> = order.iter().map(|r| r.family().label()).collect();
+        assert_eq!(families, vec!["anthropic", "fireworks", "openai"]);
+    }
+
+    #[test]
+    fn a_lone_provider_still_mints() {
+        let rows = vec![row("anthropic")];
+        let order = mint_order(&rows, Family::Anthropic).expect("anthropic provider present");
+        assert_eq!(order.len(), 1);
+    }
+
+    #[test]
+    fn a_missing_primary_family_is_an_error_even_with_other_families() {
+        let rows = vec![row("anthropic")];
+        assert!(matches!(
+            mint_order(&rows, Family::Openai),
+            Err(MintSessionEnvError::NoProviderForFamily(Family::Openai))
+        ));
+        assert!(matches!(
+            mint_order(&[], Family::Anthropic),
+            Err(MintSessionEnvError::NoProviderForFamily(Family::Anthropic))
+        ));
+    }
 }

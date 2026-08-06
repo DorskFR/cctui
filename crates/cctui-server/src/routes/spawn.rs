@@ -193,7 +193,7 @@ async fn dispatch_spawn(
             .await;
             model = (!resolved.is_empty()).then_some(resolved);
         }
-        match crate::routes::gateway::mint_session_env(
+        match crate::routes::gateway::mint_session_env_all_families(
             state,
             uid,
             account_name,
@@ -260,7 +260,12 @@ async fn dispatch_spawn(
     };
     // Keyed by the id the worker will register as, and stored before dispatch so
     // the capability resolves the moment the worker asks.
-    if let Some(cap) = req.spawn_capability.clone().filter(|c| !c.is_empty()) {
+    {
+        let cap = req
+            .spawn_capability
+            .clone()
+            .filter(|c| !c.is_empty())
+            .unwrap_or_else(cctui_proto::api::SpawnCapability::machine_default);
         if let Err(e) =
             crate::store::spawn_capabilities::upsert(&state.pool, &token_session_id, &cap).await
         {
