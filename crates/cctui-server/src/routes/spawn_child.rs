@@ -456,6 +456,29 @@ mod tests {
     }
 
     #[test]
+    fn machine_default_authorizes_every_known_adapter() {
+        let cap = SpawnCapability::machine_default();
+        for adapter in cctui_proto::adapter::KNOWN_ADAPTERS {
+            let ok = authorize(Some(&cap), &req(adapter, None), 99).unwrap();
+            assert_eq!(
+                ok,
+                Authorized {
+                    adapter: (*adapter).to_owned(),
+                    budget_usd: Some(cctui_proto::api::DEFAULT_CHILD_BUDGET_USD),
+                }
+            );
+        }
+        assert_eq!(
+            authorize(Some(&cap), &req("claude-code", Some(1.5)), 0).unwrap().budget_usd,
+            Some(1.5)
+        );
+        assert!(matches!(
+            authorize(Some(&cap), &req("claude-code", Some(1_000.0)), 0),
+            Err(Denied::Budget { .. })
+        ));
+    }
+
+    #[test]
     fn empty_prompt_or_adapter_is_a_bad_request() {
         let cap = cap(&["opencode"], Some(1.0), None);
         let mut blank_prompt = req("opencode", None);

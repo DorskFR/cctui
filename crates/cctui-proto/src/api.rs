@@ -56,7 +56,22 @@ impl SpawnCapability {
     pub const fn is_empty(&self) -> bool {
         self.adapters.is_empty()
     }
+
+    /// The capability an interactive machine spawn gets when the request names
+    /// none: every known adapter, a per-child dollar ceiling, no child cap.
+    #[must_use]
+    pub fn machine_default() -> Self {
+        Self {
+            adapters: crate::adapter::KNOWN_ADAPTERS.iter().map(|a| (*a).to_owned()).collect(),
+            max_budget_usd: Some(DEFAULT_CHILD_BUDGET_USD),
+            max_children: None,
+        }
+    }
 }
+
+/// Per-child spend ceiling applied by [`SpawnCapability::machine_default`], and
+/// the budget a child inherits when its call names none.
+pub const DEFAULT_CHILD_BUDGET_USD: f64 = 20.0;
 
 /// Body for `POST /api/v1/daemon/sessions/{id}/spawn-child` — the server side of
 /// the `CctuiAgent` tool. `{id}` is the calling (parent) session.
