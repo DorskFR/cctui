@@ -11,7 +11,7 @@
 
 pub mod redact;
 
-use chacha20poly1305::aead::{Aead, AeadCore, KeyInit, OsRng};
+use chacha20poly1305::aead::{Aead, Generate, KeyInit};
 use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
 use sha2::{Digest, Sha256};
 use std::fmt::Write;
@@ -21,9 +21,9 @@ const NONCE_LEN: usize = 12;
 
 fn aead_key(key: &[u8]) -> Key {
     if key.len() == 32 {
-        Key::clone_from_slice(key)
+        Key::try_from(key).expect("length checked")
     } else {
-        Key::clone_from_slice(&Sha256::digest(key))
+        Key::from(<[u8; 32]>::from(Sha256::digest(key)))
     }
 }
 
@@ -35,7 +35,7 @@ pub fn encrypt(plaintext: &str, key: &[u8]) -> String {
         return plaintext.to_string();
     }
     let cipher = ChaCha20Poly1305::new(&aead_key(key));
-    let nonce = ChaCha20Poly1305::generate_nonce(&mut OsRng);
+    let nonce = Nonce::generate();
     let ciphertext = cipher
         .encrypt(&nonce, plaintext.as_bytes())
         .expect("ChaCha20-Poly1305 encryption of an in-memory buffer cannot fail");
@@ -77,7 +77,7 @@ fn try_decrypt_v1(body: &str, key: &[u8]) -> Result<String, String> {
     }
     let (nonce, ciphertext) = blob.split_at(NONCE_LEN);
     let plaintext = ChaCha20Poly1305::new(&aead_key(key))
-        .decrypt(Nonce::from_slice(nonce), ciphertext)
+        .decrypt(&Nonce::try_from(nonce).expect("length checked"), ciphertext)
         .map_err(|_| {
             "authentication failed (tampered value or wrong CCTUI_VAULT_KEY)".to_string()
         })?;
