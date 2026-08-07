@@ -87,6 +87,22 @@ pub struct SpawnChildRequest {
     pub budget_usd: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
+    /// Child permission posture. `None` → the server default for children
+    /// ([`crate::adapter::PermissionMode::Yolo`], the Task-subagent posture —
+    /// a child that prompts for approval can only stall, nobody is attached).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_mode: Option<crate::adapter::PermissionMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+/// Body for `POST /api/v1/daemon/sessions/{id}/message-child`: a follow-up
+/// prompt from the parent `{id}` into a child it spawned earlier.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct MessageChildRequest {
+    /// The child's registered session id (returned by the spawn reply).
+    pub session_id: String,
+    pub prompt: String,
 }
 
 /// Reply to [`SpawnChildRequest`]: the child's pre-minted session id, which is

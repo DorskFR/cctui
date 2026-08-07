@@ -1340,6 +1340,9 @@ pub struct CodexSession {
     /// Server-pre-minted session id, echoed on `SessionStarted` so childwatch
     /// can bind the thread codex mints to the `CctuiAgent` waiter.
     spawn_key: Option<String>,
+    /// The spawning parent session for a `CctuiAgent` child, carried onto
+    /// `SessionStarted` so the server nests it under its caller.
+    parent_local_id: Option<String>,
     events: mpsc::Sender<AdapterEvent>,
     live: LiveSessionRegistry,
     registry: SessionRegistry,
@@ -1357,6 +1360,7 @@ impl CodexSession {
         attachments: Vec<String>,
         command_id: Option<Uuid>,
         spawn_key: Option<String>,
+        parent_local_id: Option<String>,
         events: mpsc::Sender<AdapterEvent>,
         live: LiveSessionRegistry,
         registry: SessionRegistry,
@@ -1369,6 +1373,7 @@ impl CodexSession {
             launch: SessionLaunch::Fresh { prompt, name, attachments },
             command_id,
             spawn_key,
+            parent_local_id,
             events,
             live,
             registry,
@@ -1398,6 +1403,7 @@ impl CodexSession {
             launch: SessionLaunch::Fork { parent_thread_id, prompt, name, attachments },
             command_id,
             spawn_key: None,
+            parent_local_id: None,
             events,
             live,
             registry,
@@ -1424,6 +1430,7 @@ impl CodexSession {
             launch: SessionLaunch::Resume { thread_id, initial_commands },
             command_id: None,
             spawn_key: None,
+            parent_local_id: None,
             events,
             live,
             registry,
@@ -1724,6 +1731,31 @@ impl CodexSession {
                     };
                     if let Some(ev) = turn_lifecycle(&value) {
                         active_turn.apply(&ev);
+                        // A spawned child's caller is parked on turn
+                        // completion; codex has no state.json to flip, so emit
+                        // the done status childwatch classifies on. Scoped to
+                        // spawn_key sessions — observed threads keep the
+                        // successful-turn-is-ignored behavior.
+                        if matches!(ev, TurnLifecycle::Completed { .. })
+                            && self.spawn_key.is_some()
+                            && !local_id.is_empty()
+                        {
+                            self.events
+                                .send(AdapterEvent::Status {
+                                    local_id: local_id.clone(),
+                                    tempo: None,
+                                    state: Some("done".to_owned()),
+                                    detail: None,
+                                    activity: Some("success".to_owned()),
+                                    name: None,
+                                    intent: None,
+                                    model: None,
+                                    effort: None,
+                                    children: Vec::new(),
+                                })
+                                .await
+                                .ok();
+                        }
                     }
                     items.note(&value);
                     let value = items.enrich_completed(value);
@@ -1768,13 +1800,18 @@ impl CodexSession {
                             };
                             local_id.clone_from(&info.thread_id);
                             rollout_path.clone_from(&info.rollout_path);
-                            // Link a forked thread back to its parent
-                            // so the server resolves `parent_id`.
-                            let parent_local_id = match &self.launch {
+                            // Link a forked thread to its parent thread, and a
+                            // `CctuiAgent` child to its spawning session, so
+                            // the server resolves `parent_id`. Relation
+                            // "subagent" (not "fork") is what the webui nests.
+                            let (parent_local_id, relation) = match &self.launch {
                                 SessionLaunch::Fork { parent_thread_id, .. } => {
-                                    Some(parent_thread_id.clone())
+                                    (Some(parent_thread_id.clone()), Some("fork"))
                                 }
-                                _ => None,
+                                _ => (
+                                    self.parent_local_id.clone(),
+                                    self.parent_local_id.as_ref().map(|_| "subagent"),
+                                ),
                             };
                             self.events
                                 .send(AdapterEvent::SessionStarted {
@@ -1787,6 +1824,7 @@ impl CodexSession {
                                             "rollout_path": info.rollout_path,
                                             "codex_version": codex_version,
                                             "spawn_key": self.spawn_key,
+                                            "relation": relation,
                                         }),
                                     },
                                 })
@@ -2919,6 +2957,7 @@ mod tests {
             None, // no prompt → no turn/start, so no model auth needed
             None,
             Vec::new(),
+            None,
             None,
             None,
             tx,

@@ -320,6 +320,7 @@ async fn command_pump(
                                    attachments,
                                    command_id,
                                    session_id.map(|id| id.to_string()),
+                                   spec.parent_local_id.clone(),
                                    events.clone(),
                                    live.clone(),
                                    registry.clone(),
