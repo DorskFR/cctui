@@ -9,8 +9,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
+use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 
 /// Control-socket ops that the claude daemon gates behind the control key.
 /// Read ops (`ping`/`list`/`has`/`kill`) are ungated; only the
@@ -134,14 +135,54 @@ pub async fn attach_permission_response(socket: &Path, short: &str, allow: bool)
 /// leave it as an unsent draft, which is most visible for attachment messages
 /// because the web UI appends staged file paths on separate lines.
 ///
-/// The submit `\r` is sent as the SECOND chunk of an attach sequence so it
-/// inherits the 350ms inter-chunk pacing in `attach_send_chunks`: a bare `\r`
-/// fired immediately after the attach ack races the `reply` op's draft paste
-/// (the composer is still ingesting/rendering the multiline text) and is
-/// dropped, leaving the message stuck as an unsent draft. The leading empty
-/// chunk is a no-op write that just buys the draft time to settle before Enter.
+/// The composer silently drops an Enter that arrives while it is still
+/// ingesting the paste — image paths take seconds (claude reads the file and
+/// swaps it for an `[Image #N]` placeholder), so no fixed delay is safe.
+/// The attach stream carries raw PTY bytes, and a submitted draft always
+/// repaints while a swallowed Enter never does: wait for the screen to go
+/// quiet, press Enter, re-press until a repaint confirms it landed.
 pub async fn attach_submit(socket: &Path, short: &str) -> Result<()> {
-    attach_send_chunks(socket, short, &[Vec::new(), b"\r".to_vec()]).await
+    /// PTY quiet period treated as "composer settled".
+    const QUIET: std::time::Duration = std::time::Duration::from_millis(600);
+    /// Cap on the settle wait, so a worker with periodically ticking output
+    /// (spinner, status line) still gets its Enter.
+    const SETTLE_MAX: std::time::Duration = std::time::Duration::from_secs(10);
+    /// Window in which a submitted Enter must produce output.
+    const CONFIRM: std::time::Duration = std::time::Duration::from_millis(1500);
+    const ATTEMPTS: usize = 3;
+
+    let (mut reader, mut write_half) = attach_handshake(socket, short).await?;
+    let mut buf = [0_u8; 8192];
+
+    let settle_start = tokio::time::Instant::now();
+    loop {
+        match tokio::time::timeout(QUIET, reader.read(&mut buf)).await {
+            Ok(Ok(0)) => bail!("worker detached before draft submit"),
+            Ok(Ok(_)) if settle_start.elapsed() < SETTLE_MAX => {}
+            Ok(Ok(_)) | Err(_) => break,
+            Ok(Err(err)) => return Err(err.into()),
+        }
+    }
+
+    for attempt in 1..=ATTEMPTS {
+        write_half.write_all(b"\r").await?;
+        write_half.flush().await?;
+        match tokio::time::timeout(CONFIRM, reader.read(&mut buf)).await {
+            Ok(Ok(0)) => bail!("worker detached during draft submit"),
+            Ok(Ok(_)) => {
+                if attempt > 1 {
+                    tracing::info!(%short, attempt, "draft submit needed a retry Enter");
+                }
+                // Hold the connection so the keystroke is fully parsed before
+                // detach fires the worker's attacher-close cleanup.
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                return Ok(());
+            }
+            Ok(Err(err)) => return Err(err.into()),
+            Err(_) => {}
+        }
+    }
+    bail!("draft submit Enter produced no screen reaction after {ATTEMPTS} attempts")
 }
 
 /// Answer a pending `AskUserQuestion` form natively: inject the
@@ -168,12 +209,12 @@ async fn attach_send_keys(socket: &Path, short: &str, keys: &[u8]) -> Result<()>
     attach_send_chunks(socket, short, std::slice::from_ref(&keys.to_vec())).await
 }
 
-/// Shared attach-and-type core: one PTY attach, then each chunk of `chunks`
-/// written 350ms apart so the TUI processes every step (a digit that selects,
-/// a Tab that switches question, the submit confirm) before the next arrives.
-/// The trailing hold doubles as the ESC-disambiguation delay `attach_send_keys`
-/// has always needed.
-async fn attach_send_chunks(socket: &Path, short: &str, chunks: &[Vec<u8>]) -> Result<()> {
+/// Open an `attach` connection and read the ack. Post-ack the read half
+/// streams raw PTY bytes and anything written is injected as keystrokes.
+async fn attach_handshake(
+    socket: &Path,
+    short: &str,
+) -> Result<(BufReader<OwnedReadHalf>, OwnedWriteHalf)> {
     let stream = UnixStream::connect(socket)
         .await
         .with_context(|| format!("connecting to {}", socket.display()))?;
@@ -199,6 +240,16 @@ async fn attach_send_chunks(socket: &Path, short: &str, chunks: &[Vec<u8>]) -> R
         let err = ack.get("error").and_then(Value::as_str).unwrap_or("?");
         bail!("attach failed: {code}: {err}");
     }
+    Ok((reader, write_half))
+}
+
+/// Shared attach-and-type core: one PTY attach, then each chunk of `chunks`
+/// written 350ms apart so the TUI processes every step (a digit that selects,
+/// a Tab that switches question, the submit confirm) before the next arrives.
+/// The trailing hold doubles as the ESC-disambiguation delay `attach_send_keys`
+/// has always needed.
+async fn attach_send_chunks(socket: &Path, short: &str, chunks: &[Vec<u8>]) -> Result<()> {
+    let (_reader, mut write_half) = attach_handshake(socket, short).await?;
 
     for (i, keys) in chunks.iter().enumerate() {
         if i > 0 {
@@ -328,5 +379,69 @@ mod tests {
         .await;
 
         assert_eq!(got.as_deref(), Some(want_name), "seeded name should land in state.json");
+    }
+
+    /// Fake worker whose composer is still ingesting a pasted image when the
+    /// first Enter arrives (it streams bytes past the quiet window, then
+    /// swallows that Enter without repainting): `attach_submit` must wait out
+    /// the ingest, detect the missing repaint, and land a retry Enter.
+    #[tokio::test]
+    async fn attach_submit_retries_swallowed_enter() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("control.sock");
+        let listener = tokio::net::UnixListener::bind(&sock).unwrap();
+
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (read_half, mut write_half) = stream.into_split();
+            let mut reader = BufReader::new(read_half);
+
+            let mut req = String::new();
+            reader.read_line(&mut req).await.unwrap();
+            let req: Value = serde_json::from_str(req.trim()).unwrap();
+            assert_eq!(req.get("op").and_then(Value::as_str), Some("attach"));
+            write_half.write_all(b"{\"ok\":true,\"op\":\"attach\"}\n").await.unwrap();
+
+            for _ in 0..3 {
+                write_half.write_all(b"ingesting image...").await.unwrap();
+                write_half.flush().await.unwrap();
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            }
+
+            let mut key = [0_u8; 1];
+            reader.read_exact(&mut key).await.unwrap();
+            assert_eq!(key[0], b'\r', "first submit keystroke");
+
+            reader.read_exact(&mut key).await.unwrap();
+            assert_eq!(key[0], b'\r', "retry keystroke after no repaint");
+            write_half.write_all(b"composer cleared, turn started").await.unwrap();
+            write_half.flush().await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        });
+
+        attach_submit(&sock, "aaaaaaaa").await.expect("submit should succeed via retry");
+        server.await.unwrap();
+    }
+
+    /// A dead worker (server FIN right after the ack) must surface as an error,
+    /// not a silent success.
+    #[tokio::test]
+    async fn attach_submit_errors_on_detach() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("control.sock");
+        let listener = tokio::net::UnixListener::bind(&sock).unwrap();
+
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (read_half, mut write_half) = stream.into_split();
+            let mut reader = BufReader::new(read_half);
+            let mut req = String::new();
+            reader.read_line(&mut req).await.unwrap();
+            write_half.write_all(b"{\"ok\":true,\"op\":\"attach\"}\n").await.unwrap();
+        });
+
+        let err = attach_submit(&sock, "aaaaaaaa").await.expect_err("FIN must be an error");
+        assert!(err.to_string().contains("detached"), "unexpected error: {err}");
+        server.await.unwrap();
     }
 }
