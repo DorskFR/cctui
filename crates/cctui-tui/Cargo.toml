@@ -34,7 +34,7 @@ regex-lite = "0.1"
 textwrap = "0.16"
 url = "2"
 dirs = "6"
-diffy = "0.4.2"
+diffy = "0.5.1"
 similar = "2.7.0"
 semver = "1"
 
