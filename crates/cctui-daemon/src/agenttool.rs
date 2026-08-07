@@ -1,21 +1,28 @@
 //! Daemon side of the `CctuiAgent` tool.
 //!
-//! Listens on a local Unix socket for the `cctui-daemon mcp-agent` relay, asks
-//! the server to spawn the requested child (the server owns the capability
-//! decision — the daemon never grants anything itself), then blocks on the
-//! child's completion via [`crate::childwatch`] and writes the child's final
-//! message back as the tool result.
+//! Listens on a local Unix socket for the `cctui-daemon mcp-agent` relay.
+//! A call spawns a child through the server (the server owns the capability
+//! decision — the daemon never grants anything itself), or, when it names a
+//! `session_id`, sends a follow-up prompt into a child spawned earlier.
+//! Both then follow the child via [`crate::childwatch`], streaming progress
+//! frames to a proto≥2 relay while waiting and finishing with the child's
+//! final message. Proto 1 relays (older, still attached to live sessions)
+//! get the single final line only.
 
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use cctui_proto::api::SpawnChildRequest;
+use cctui_proto::api::{MessageChildRequest, SpawnChildRequest};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio_util::sync::CancellationToken;
 
+use crate::childwatch::{Assessment, WatchHandle, snippet};
 use crate::client::ServerClient;
+
+/// Cadence of progress frames to the relay while a child runs.
+const PROGRESS_EVERY: Duration = Duration::from_secs(15);
 
 /// Socket the session's MCP relay connects to. Kept beside the daemon's other
 /// runtime state so a worker container with an unwritable `~/.config` still
@@ -28,20 +35,21 @@ pub fn socket_path() -> PathBuf {
         .unwrap_or_else(|| std::env::temp_dir().join("cctui-agent.sock"))
 }
 
-/// A validated tool call: the parsed request line off the socket.
-struct Call {
-    session_id: String,
-    request: SpawnChildRequest,
-    timeout: Duration,
+enum CallKind {
+    Spawn(SpawnChildRequest),
+    Message(MessageChildRequest),
 }
 
-/// Parse one socket line into a spawn request. Returns the error text to hand
-/// back to the model when the line is unusable.
+struct Call {
+    session_id: String,
+    kind: CallKind,
+    timeout: Duration,
+    /// Relay protocol: ≥2 understands interim `progress` frames.
+    proto: u64,
+}
+
 fn parse_call(line: &str) -> Result<Call, String> {
     let v: Value = serde_json::from_str(line).map_err(|e| format!("malformed request: {e}"))?;
-    if v.get("kind").and_then(Value::as_str) != Some("spawn_agent") {
-        return Err("unsupported request kind".to_owned());
-    }
     let session_id = v
         .get("session_id")
         .and_then(Value::as_str)
@@ -49,21 +57,35 @@ fn parse_call(line: &str) -> Result<Call, String> {
         .ok_or("request carries no session id")?
         .to_owned();
     let args = v.get("args").cloned().unwrap_or_else(|| json!({}));
-    let adapter = normalize_adapter(args.get("adapter").and_then(Value::as_str).unwrap_or(""));
     let prompt = args.get("prompt").and_then(Value::as_str).unwrap_or("").to_owned();
     if prompt.trim().is_empty() {
         return Err("prompt is required".to_owned());
     }
-    let request = SpawnChildRequest {
-        adapter,
-        prompt,
-        model: string_arg(&args, "model"),
-        agent_profile: string_arg(&args, "agent_profile"),
-        budget_usd: args.get("budget_usd").and_then(Value::as_f64),
-        cwd: string_arg(&args, "cwd"),
-    };
     let timeout = crate::mcp::resolve_timeout(v.get("timeout_secs").and_then(Value::as_u64));
-    Ok(Call { session_id, request, timeout })
+    let proto = v.get("proto").and_then(Value::as_u64).unwrap_or(1);
+    let kind = match v.get("kind").and_then(Value::as_str) {
+        Some("spawn_agent") => {
+            if let Some(child) = string_arg(&args, "session_id") {
+                CallKind::Message(MessageChildRequest { session_id: child, prompt })
+            } else {
+                CallKind::Spawn(SpawnChildRequest {
+                    adapter: normalize_adapter(
+                        args.get("adapter").and_then(Value::as_str).unwrap_or(""),
+                    ),
+                    prompt,
+                    model: string_arg(&args, "model"),
+                    agent_profile: string_arg(&args, "agent_profile"),
+                    budget_usd: args.get("budget_usd").and_then(Value::as_f64),
+                    cwd: string_arg(&args, "cwd"),
+                    permission_mode: string_arg(&args, "permission_mode")
+                        .and_then(|m| serde_json::from_value(Value::String(m)).ok()),
+                    name: string_arg(&args, "name"),
+                })
+            }
+        }
+        _ => return Err("unsupported request kind".to_owned()),
+    };
+    Ok(Call { session_id, kind, timeout, proto })
 }
 
 fn string_arg(args: &Value, key: &str) -> Option<String> {
@@ -85,50 +107,123 @@ pub fn normalize_adapter(raw: &str) -> String {
     }
 }
 
-/// Render a finished child into the tool's reply frame.
 fn reply_frame(outcome: &crate::childwatch::ChildOutcome) -> Value {
+    let id_line = outcome
+        .local_id
+        .as_deref()
+        .map(|id| format!("\n\n[child session id: {id} — pass it as session_id to follow up]"))
+        .unwrap_or_default();
     match (&outcome.error, &outcome.final_text) {
-        (Some(err), Some(text)) => {
-            json!({ "ok": false, "error": format!("child agent failed: {err}\n\nlast output:\n{text}") })
+        (Some(err), Some(text)) => json!({
+            "ok": false,
+            "error": format!("child agent failed: {err}\n\nlast output:\n{text}{id_line}"),
+        }),
+        (Some(err), None) => {
+            json!({ "ok": false, "error": format!("child agent failed: {err}{id_line}") })
         }
-        (Some(err), None) => json!({ "ok": false, "error": format!("child agent failed: {err}") }),
-        (None, Some(text)) => json!({ "ok": true, "result": text }),
-        (None, None) => {
-            json!({ "ok": true, "result": "child agent finished without producing any output" })
+        (None, Some(text)) => json!({ "ok": true, "result": format!("{text}{id_line}") }),
+        (None, None) => json!({
+            "ok": true,
+            "result": format!("child agent finished without producing any output{id_line}"),
+        }),
+    }
+}
+
+/// Follow the child until it finishes or `timeout` elapses, streaming progress
+/// frames to a proto≥2 relay via `out`.
+async fn follow_child(
+    handle: &WatchHandle,
+    child_id: &str,
+    timeout: Duration,
+    proto: u64,
+    out: &mut (impl AsyncWriteExt + Unpin),
+) -> Value {
+    let started = Instant::now();
+    let mut last_progress = Instant::now();
+    loop {
+        handle.changed(Duration::from_secs(2)).await;
+        let now = Instant::now();
+        let Some(snap) = handle.snapshot() else {
+            return json!({ "ok": false, "error": "child agent tracking was dropped" });
+        };
+        match snap.assess(now) {
+            Assessment::Finished(outcome) => return reply_frame(&outcome),
+            Assessment::Running(line) => {
+                if now.duration_since(started) >= timeout {
+                    return json!({
+                        "ok": false,
+                        "error": format!(
+                            "child agent {child_id} did not finish within {}s — it is still \
+                             running; check it in cctui, or follow up by calling CctuiAgent \
+                             with session_id {:?}",
+                            timeout.as_secs(),
+                            snap.local_id.as_deref().unwrap_or(child_id),
+                        ),
+                    });
+                }
+                if proto >= 2 && now.duration_since(last_progress) >= PROGRESS_EVERY {
+                    last_progress = now;
+                    let frame = json!({
+                        "progress": format!(
+                            "[{}s] {} · child session {}",
+                            now.duration_since(started).as_secs(),
+                            snippet(&line, 300),
+                            snap.local_id.as_deref().unwrap_or(child_id),
+                        ),
+                    });
+                    if write_line(out, &frame).await.is_err() {
+                        return json!({ "ok": false, "error": "relay went away" });
+                    }
+                }
+            }
         }
     }
 }
 
-/// Run one call end to end: spawn through the server, then wait for the child.
-async fn run_call(server: &ServerClient, machine_key: &str, call: Call) -> Value {
-    let child = match server.spawn_child(machine_key, &call.session_id, &call.request).await {
-        Ok(child) => child,
-        Err(err) => return json!({ "ok": false, "error": err.to_string() }),
-    };
+async fn write_line(out: &mut (impl AsyncWriteExt + Unpin), frame: &Value) -> std::io::Result<()> {
+    out.write_all(format!("{frame}\n").as_bytes()).await?;
+    out.flush().await
+}
+
+async fn run_call(
+    server: &ServerClient,
+    machine_key: &str,
+    call: Call,
+    out: &mut (impl AsyncWriteExt + Unpin),
+) -> Value {
     let watch = crate::childwatch::global();
-    let done = watch.register(&child.session_id);
-    tracing::info!(
-        parent = %call.session_id,
-        child = %child.session_id,
-        adapter = %call.request.adapter,
-        "CctuiAgent waiting on child",
-    );
-    match tokio::time::timeout(call.timeout, done).await {
-        Ok(Ok(outcome)) => reply_frame(&outcome),
-        Ok(Err(_)) => json!({ "ok": false, "error": "child agent tracking was dropped" }),
-        Err(_) => {
-            watch.cancel(&child.session_id);
-            json!({
-                "ok": false,
-                "error": format!(
-                    "child agent {} did not finish within {}s — it may still be running; \
-                     check the session in cctui",
-                    child.session_id,
-                    call.timeout.as_secs(),
-                ),
-            })
+    let (handle, child_id) = match &call.kind {
+        CallKind::Spawn(req) => {
+            let child = match server.spawn_child(machine_key, &call.session_id, req).await {
+                Ok(child) => child,
+                Err(err) => return json!({ "ok": false, "error": err.to_string() }),
+            };
+            // Register BEFORE the spawn frame can produce events; the server
+            // has already dispatched the spawn at this point, but the child
+            // takes seconds to boot, so this stays ahead of its first event.
+            let handle = watch.register(&child.session_id);
+            tracing::info!(
+                parent = %call.session_id,
+                child = %child.session_id,
+                adapter = %req.adapter,
+                "CctuiAgent following spawned child",
+            );
+            (handle, child.session_id)
         }
-    }
+        CallKind::Message(req) => {
+            let handle = watch.register_bound(&req.session_id);
+            if let Err(err) = server.message_child(machine_key, &call.session_id, req).await {
+                return json!({ "ok": false, "error": err.to_string() });
+            }
+            tracing::info!(
+                parent = %call.session_id,
+                child = %req.session_id,
+                "CctuiAgent following child after follow-up",
+            );
+            (handle, req.session_id.clone())
+        }
+    };
+    follow_child(&handle, &child_id, call.timeout, call.proto, out).await
 }
 
 async fn handle_connection(stream: UnixStream, server: ServerClient, machine_key: String) {
@@ -136,11 +231,10 @@ async fn handle_connection(stream: UnixStream, server: ServerClient, machine_key
     let mut lines = BufReader::new(read_half).lines();
     let Ok(Some(line)) = lines.next_line().await else { return };
     let frame = match parse_call(&line) {
-        Ok(call) => run_call(&server, &machine_key, call).await,
+        Ok(call) => run_call(&server, &machine_key, call, &mut write_half).await,
         Err(err) => json!({ "ok": false, "error": err }),
     };
-    let _ = write_half.write_all(format!("{frame}\n").as_bytes()).await;
-    let _ = write_half.flush().await;
+    let _ = write_line(&mut write_half, &frame).await;
 }
 
 /// Serve the agent-tool socket until `shutdown`.
@@ -197,11 +291,12 @@ mod tests {
     use crate::childwatch::ChildOutcome;
 
     #[test]
-    fn parses_a_full_call() {
+    fn parses_a_full_spawn_call() {
         let line = json!({
             "kind": "spawn_agent",
             "session_id": "parent-1",
             "timeout_secs": 120,
+            "proto": 2,
             "args": {
                 "adapter": "opencode",
                 "prompt": "review the diff",
@@ -209,16 +304,47 @@ mod tests {
                 "agent_profile": "cctui-reviewer",
                 "budget_usd": 0.5,
                 "cwd": "/workspace",
+                "permission_mode": "auto",
+                "name": "reviewer",
             },
         })
         .to_string();
         let call = parse_call(&line).unwrap();
         assert_eq!(call.session_id, "parent-1");
         assert_eq!(call.timeout, Duration::from_mins(2));
-        assert_eq!(call.request.adapter, "opencode");
-        assert_eq!(call.request.agent_profile.as_deref(), Some("cctui-reviewer"));
-        assert_eq!(call.request.budget_usd, Some(0.5));
-        assert_eq!(call.request.cwd.as_deref(), Some("/workspace"));
+        assert_eq!(call.proto, 2);
+        let CallKind::Spawn(req) = call.kind else { panic!("expected spawn") };
+        assert_eq!(req.adapter, "opencode");
+        assert_eq!(req.agent_profile.as_deref(), Some("cctui-reviewer"));
+        assert_eq!(req.budget_usd, Some(0.5));
+        assert_eq!(req.cwd.as_deref(), Some("/workspace"));
+        assert_eq!(req.permission_mode, Some(cctui_proto::adapter::PermissionMode::Auto));
+        assert_eq!(req.name.as_deref(), Some("reviewer"));
+    }
+
+    #[test]
+    fn a_session_id_arg_turns_the_call_into_a_follow_up() {
+        let line = json!({
+            "kind": "spawn_agent",
+            "session_id": "parent-1",
+            "args": { "session_id": "child-9", "prompt": "and check the tests" },
+        })
+        .to_string();
+        let call = parse_call(&line).unwrap();
+        let CallKind::Message(req) = call.kind else { panic!("expected message") };
+        assert_eq!(req.session_id, "child-9");
+        assert_eq!(req.prompt, "and check the tests");
+    }
+
+    #[test]
+    fn proto_defaults_to_1_for_old_relays() {
+        let line = json!({
+            "kind": "spawn_agent",
+            "session_id": "p",
+            "args": { "adapter": "codex", "prompt": "go" },
+        })
+        .to_string();
+        assert_eq!(parse_call(&line).unwrap().proto, 1);
     }
 
     #[test]
@@ -226,12 +352,15 @@ mod tests {
         let line = json!({
             "kind": "spawn_agent",
             "session_id": "p",
-            "args": { "adapter": "codex", "prompt": "go", "model": "  ", "cwd": "" },
+            "args": { "adapter": "codex", "prompt": "go", "model": "  ", "cwd": "",
+                      "permission_mode": "notamode" },
         })
         .to_string();
         let call = parse_call(&line).unwrap();
-        assert!(call.request.model.is_none());
-        assert!(call.request.cwd.is_none());
+        let CallKind::Spawn(req) = call.kind else { panic!("expected spawn") };
+        assert!(req.model.is_none());
+        assert!(req.cwd.is_none());
+        assert!(req.permission_mode.is_none());
     }
 
     #[test]
@@ -255,26 +384,69 @@ mod tests {
 
     #[test]
     fn reply_frames_distinguish_success_failure_and_silence() {
-        let ok =
-            reply_frame(&ChildOutcome { final_text: Some("verdict: ship".into()), error: None });
+        let out = |text: Option<&str>, err: Option<&str>| ChildOutcome {
+            final_text: text.map(str::to_owned),
+            error: err.map(str::to_owned),
+            local_id: Some("child-7".into()),
+        };
+        let ok = reply_frame(&out(Some("verdict: ship"), None));
         assert_eq!(ok["ok"], json!(true));
-        assert_eq!(ok["result"], "verdict: ship");
+        let text = ok["result"].as_str().unwrap();
+        assert!(text.starts_with("verdict: ship"));
+        assert!(text.contains("child-7"), "reply must carry the child id: {text}");
 
-        let failed = reply_frame(&ChildOutcome { final_text: None, error: Some("crashed".into()) });
+        let failed = reply_frame(&out(None, Some("crashed")));
         assert_eq!(failed["ok"], json!(false));
         assert!(failed["error"].as_str().unwrap().contains("crashed"));
 
-        let partial = reply_frame(&ChildOutcome {
-            final_text: Some("got halfway".into()),
-            error: Some("killed".into()),
-        });
+        let partial = reply_frame(&out(Some("got halfway"), Some("killed")));
         assert_eq!(partial["ok"], json!(false));
         let text = partial["error"].as_str().unwrap();
         assert!(text.contains("killed") && text.contains("got halfway"));
 
-        let silent = reply_frame(&ChildOutcome { final_text: None, error: None });
+        let silent = reply_frame(&out(None, None));
         assert_eq!(silent["ok"], json!(true));
         assert!(silent["result"].as_str().unwrap().contains("without producing any output"));
+    }
+
+    #[tokio::test]
+    async fn follow_child_streams_progress_then_final_result() {
+        let watch = std::sync::Arc::new(crate::childwatch::ChildWatch::default());
+        let handle = watch.register("child-1");
+        let observer = watch.clone();
+        let feeder = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            observer.observe(&cctui_proto::adapter::AdapterEvent::Message {
+                local_id: "child-1".into(),
+                payload: json!({ "role": "assistant", "text": "all done" }),
+            });
+            observer.observe(&cctui_proto::adapter::AdapterEvent::SessionEnded {
+                local_id: "child-1".into(),
+                reason: cctui_proto::adapter::EndReason::Completed,
+            });
+        });
+        let mut out: Vec<u8> = Vec::new();
+        let frame = follow_child(&handle, "child-1", Duration::from_secs(10), 2, &mut out).await;
+        feeder.await.unwrap();
+        assert_eq!(frame["ok"], json!(true));
+        assert!(frame["result"].as_str().unwrap().starts_with("all done"));
+    }
+
+    #[tokio::test]
+    async fn follow_child_times_out_with_a_follow_up_hint() {
+        let watch = std::sync::Arc::new(crate::childwatch::ChildWatch::default());
+        let handle = watch.register("child-1");
+        watch.observe(&cctui_proto::adapter::AdapterEvent::SessionStarted {
+            local_id: "child-1".into(),
+            meta: cctui_proto::adapter::SessionMeta::default(),
+        });
+        let mut out: Vec<u8> = Vec::new();
+        let frame = follow_child(&handle, "child-1", Duration::from_millis(10), 1, &mut out).await;
+        assert_eq!(frame["ok"], json!(false));
+        let text = frame["error"].as_str().unwrap();
+        assert!(text.contains("still running"), "{text}");
+        assert!(text.contains("session_id"), "{text}");
+        assert!(out.is_empty(), "proto 1 must never receive progress frames");
     }
 
     #[test]

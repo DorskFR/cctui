@@ -310,8 +310,10 @@ pub async fn spawn_child(
             .filter(|c| !c.trim().is_empty())
             .or_else(|| parent.working_dir.clone()),
         prompt: Some(req.prompt.clone()),
-        name: None,
-        permission_mode: None,
+        name: req.name.clone().filter(|n| !n.trim().is_empty()),
+        // A child with nobody attached can only stall on a permission prompt,
+        // so the default posture is promptless, like a Task subagent.
+        permission_mode: req.permission_mode.or(Some(cctui_proto::adapter::PermissionMode::Yolo)),
         effort: None,
         model,
         env,
@@ -343,6 +345,73 @@ pub async fn spawn_child(
         "CctuiAgent child spawned",
     );
     Ok(Json(SpawnChildResponse { session_id: child_key, budget_usd: authorized.budget_usd }))
+}
+
+/// `POST /api/v1/daemon/sessions/{id}/message-child` — a follow-up prompt from
+/// parent `{id}` into a child it spawned. Fail-closed: the target must be a
+/// direct child of the caller on the caller's machine; a session can never
+/// message an arbitrary session this way.
+pub async fn message_child(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    Path(session_id): Path<String>,
+    Json(req): Json<cctui_proto::api::MessageChildRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ApiError>)> {
+    let caller = machine_user(&state, &headers).await?;
+    let parent = load_parent(&state, &session_id, caller).await?;
+    if req.prompt.trim().is_empty() {
+        return Err(deny(StatusCode::BAD_REQUEST, "prompt is required"));
+    }
+    let child = req.session_id.trim();
+    if child.is_empty() {
+        return Err(deny(StatusCode::BAD_REQUEST, "session_id is required"));
+    }
+    let adapter_id = resolve_child_adapter(&state.pool, caller, &parent, child).await?;
+    let frame = DaemonFrameDown::Command {
+        adapter_id,
+        command: Box::new(AdapterCommand::SendMessage {
+            local_id: child.to_owned(),
+            text: req.prompt.clone(),
+        }),
+    };
+    state.bus.command_daemon(parent.machine_uuid, frame).await.map_err(|err| {
+        deny(StatusCode::SERVICE_UNAVAILABLE, format!("could not reach the daemon: {err}"))
+    })?;
+    tracing::info!(parent = %session_id, %child, "CctuiAgent follow-up relayed");
+    Ok(Json(serde_json::json!({})))
+}
+
+/// The follow-up target's adapter, only if `child` really is `parent`'s child
+/// on `parent`'s machine and owned by `caller`. Everything else refuses.
+async fn resolve_child_adapter(
+    pool: &sqlx::PgPool,
+    caller: Uuid,
+    parent: &Parent,
+    child: &str,
+) -> Result<String, (StatusCode, Json<ApiError>)> {
+    let row: Option<(Option<String>, Option<Uuid>, Option<String>)> = sqlx::query_as(
+        "SELECT parent_id, machine_uuid, adapter_id FROM sessions WHERE id = $1 AND user_id = $2",
+    )
+    .bind(child)
+    .bind(caller)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| {
+        tracing::error!(%child, "db error (message-child): {e}");
+        deny(StatusCode::INTERNAL_SERVER_ERROR, "database error")
+    })?;
+    let Some((child_parent, child_machine, adapter_id)) = row else {
+        return Err(deny(StatusCode::NOT_FOUND, "child session not found"));
+    };
+    if child_parent.as_deref() != Some(parent.session_id.as_str()) {
+        return Err(deny(StatusCode::FORBIDDEN, "session is not a child of this session"));
+    }
+    if child_machine != Some(parent.machine_uuid) {
+        return Err(deny(StatusCode::CONFLICT, "child session is not on this machine"));
+    }
+    adapter_id
+        .filter(|a| !a.is_empty())
+        .ok_or_else(|| deny(StatusCode::CONFLICT, "child session has no adapter"))
 }
 
 /// Env key the opencode adapter reads to select an agent profile.
@@ -476,6 +545,103 @@ mod tests {
             authorize(Some(&cap), &req("claude-code", Some(1_000.0)), 0),
             Err(Denied::Budget { .. })
         ));
+    }
+
+    /// DB-gated: the follow-up target must be the caller's own child on the
+    /// same machine — anything else refuses, or any session could inject
+    /// prompts into any other.
+    #[tokio::test]
+    async fn message_child_only_reaches_own_children_on_the_same_machine() {
+        let Some(url) =
+            crate::routes::gateway::test_db_url("message_child_only_reaches_own_children")
+        else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+
+        let uid = Uuid::new_v4();
+        let stranger = Uuid::new_v4();
+        let machine = Uuid::new_v4();
+        let other_machine = Uuid::new_v4();
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, 'mc-test', $2)")
+            .bind(uid)
+            .bind(format!("kh-{uid}"))
+            .execute(&pool)
+            .await
+            .expect("seed user");
+        for m in [machine, other_machine] {
+            sqlx::query(
+                "INSERT INTO machines (id, user_id, name, key_hash) VALUES ($1, $2, $3, $4)",
+            )
+            .bind(m)
+            .bind(uid)
+            .bind(m.to_string())
+            .bind(format!("kh-{m}"))
+            .execute(&pool)
+            .await
+            .expect("seed machine");
+        }
+        let parent_id = Uuid::new_v4().to_string();
+        let child_id = Uuid::new_v4().to_string();
+        let elsewhere_id = Uuid::new_v4().to_string();
+        let orphan_id = Uuid::new_v4().to_string();
+        for (id, parent, m) in [
+            (&parent_id, None::<&str>, machine),
+            (&child_id, Some(parent_id.as_str()), machine),
+            (&elsewhere_id, Some(parent_id.as_str()), other_machine),
+            (&orphan_id, None, machine),
+        ] {
+            sqlx::query(
+                "INSERT INTO sessions (id, parent_id, machine_id, working_dir, user_id, \
+                 machine_uuid, adapter_id) VALUES ($1, $2, $3, '/w', $4, $5, 'claude-code')",
+            )
+            .bind(id)
+            .bind(parent)
+            .bind(m.to_string())
+            .bind(uid)
+            .bind(m)
+            .execute(&pool)
+            .await
+            .expect("seed session");
+        }
+        let parent = Parent {
+            session_id: parent_id.clone(),
+            machine_uuid: machine,
+            working_dir: None,
+            user_id: uid,
+        };
+
+        assert_eq!(
+            resolve_child_adapter(&pool, uid, &parent, &child_id).await.unwrap(),
+            "claude-code"
+        );
+        assert_eq!(
+            resolve_child_adapter(&pool, uid, &parent, &orphan_id).await.unwrap_err().0,
+            StatusCode::FORBIDDEN,
+            "a non-child of the caller must refuse"
+        );
+        assert_eq!(
+            resolve_child_adapter(&pool, uid, &parent, &elsewhere_id).await.unwrap_err().0,
+            StatusCode::CONFLICT,
+            "a child on another machine must refuse"
+        );
+        assert_eq!(
+            resolve_child_adapter(&pool, stranger, &parent, &child_id).await.unwrap_err().0,
+            StatusCode::NOT_FOUND,
+            "another user's lookup must not even see the session"
+        );
+        assert_eq!(
+            resolve_child_adapter(&pool, uid, &parent, "no-such-session").await.unwrap_err().0,
+            StatusCode::NOT_FOUND,
+        );
+
+        sqlx::query("DELETE FROM sessions WHERE user_id = $1").bind(uid).execute(&pool).await.ok();
+        sqlx::query("DELETE FROM machines WHERE user_id = $1").bind(uid).execute(&pool).await.ok();
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
     }
 
     #[test]

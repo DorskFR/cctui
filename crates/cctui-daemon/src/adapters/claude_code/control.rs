@@ -332,7 +332,7 @@ pub struct Driver {
     /// roster-discovery emit reads it to set `SessionMeta::parent_local_id` (the
     /// link the server resolves into `parent_id`). `Mutex` for the same reason as
     /// `spawn_model_effort`.
-    fork_parent_by_short: std::sync::Mutex<HashMap<String, String>>,
+    fork_parent_by_short: std::sync::Mutex<HashMap<String, (String, &'static str)>>,
     /// Authenticated server client + machine key for the launch-time gateway-env
     /// pull. Every worker (re)launch resolves the session's account
     /// env here from the server's durable `sessions.account_id` binding, so
@@ -1775,11 +1775,12 @@ impl Driver {
         }
         // A `CctuiAgent` child links to its caller through the same stash the
         // fork path uses: roster discovery emits the `SessionStarted` and has no
-        // other way to know the spawn had a parent.
+        // other way to know the spawn had a parent. Relation "subagent", not
+        // "fork" — the webui nests subagents but renders forks as siblings.
         if let Some(parent) = spec.parent_local_id.as_deref()
             && let Ok(mut map) = self.fork_parent_by_short.lock()
         {
-            map.insert(short.to_owned(), parent.to_owned());
+            map.insert(short.to_owned(), (parent.to_owned(), "subagent"));
         }
         let whip = spec.permission_mode.is_some_and(cctui_proto::adapter::PermissionMode::is_whip);
         // Resolve the gateway env + per-account settings from the server's
@@ -2118,7 +2119,7 @@ impl Driver {
         // Remember the parent BEFORE dispatching so the roster-discovery emit
         // (which can race in on the very next poll) finds the link.
         if let Ok(mut map) = self.fork_parent_by_short.lock() {
-            map.insert(short.clone(), parent_local_id.to_owned());
+            map.insert(short.clone(), (parent_local_id.to_owned(), "fork"));
         }
 
         // Gateway env resolved above.
@@ -2293,10 +2294,15 @@ impl Driver {
             if !self.roster.contains(&job.short) {
                 let session_id = job.session_id().map_or_else(|| job.short.clone(), str::to_owned);
                 self.short_by_session.insert(session_id.clone(), job.short.clone());
-                // If this short was just forked, carry the parent link
-                // so the server resolves it into `parent_id`. Consumed once.
-                let parent_local_id =
+                // If this short was just forked or spawned as a subagent,
+                // carry the parent link so the server resolves it into
+                // `parent_id`. Consumed once.
+                let parent =
                     self.fork_parent_by_short.lock().ok().and_then(|mut m| m.remove(&job.short));
+                let (parent_local_id, relation) = match parent {
+                    Some((parent, relation)) => (Some(parent), relation),
+                    None => (None, "root"),
+                };
                 let on_disk = StateJson::read(&self.cfg.jobs_root, &job.short);
                 let created_at = on_disk.as_ref().and_then(|s| s.created_at.clone());
                 let git_branch = job.cwd.as_deref().and_then(read_git_branch);
@@ -2304,11 +2310,11 @@ impl Driver {
                     local_id: session_id,
                     meta: SessionMeta {
                         working_dir: job.cwd.clone(),
-                        parent_local_id: parent_local_id.clone(),
+                        parent_local_id,
                         extra: json!({
                             "short": job.short,
                             "cli_version": job.cli_version,
-                            "relation": if parent_local_id.is_some() { "fork" } else { "root" },
+                            "relation": relation,
                             "created_at": created_at,
                             "git_branch": git_branch,
                         }),
@@ -3184,10 +3190,13 @@ fn build_session_context(
 /// adapters this session may spawn, and one worked call.
 fn agent_tool_context(cap: &cctui_proto::api::SpawnCapability) -> String {
     let mut b = String::from(
-        "CctuiAgent: you can delegate work to a cctui subagent session on this \
-         machine with the MCP tool `mcp__cctui__CctuiAgent`. The child is a real \
-         cctui session — nested under this one in the UI, metered, killable — and \
-         the call blocks until it finishes, returning its final message.\n",
+        "CctuiAgent: you can delegate work to cctui subagent sessions on this \
+         machine with the MCP tool `mcp__cctui__CctuiAgent`. Each child is a real \
+         cctui session — nested under this one in the UI, metered, killable. The \
+         call follows the child (progress streams back while it works) and \
+         returns its final message when its turn completes. Parallel calls run \
+         in parallel. To send a follow-up to a child, call again with its \
+         session_id (included in the reply) and a new prompt.\n",
     );
     let _ = writeln!(b, "  adapters you may spawn: {}", cap.adapters.join(", "));
     if let Some(max) = cap.max_budget_usd {
