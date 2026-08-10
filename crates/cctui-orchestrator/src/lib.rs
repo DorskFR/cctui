@@ -176,6 +176,13 @@ pub struct WorkerProfileSpec {
     /// container for remote commit signing. Off by default.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub gpg_signing: bool,
+
+    /// Ceiling on concurrently *active* (unsuspended, non-terminal) Jobs
+    /// instantiated from this profile. When reached, the dispatcher creates
+    /// further Jobs suspended and resumes them oldest-first as slots free up.
+    /// `None`/`0` ⇒ unlimited.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_inflight: Option<u32>,
 }
 
 impl WorkerProfileSpec {

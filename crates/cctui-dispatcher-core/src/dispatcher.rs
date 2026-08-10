@@ -14,6 +14,9 @@ use sha1::{Digest, Sha1};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HandleState {
     Running,
+    /// Created but held back by a concurrency cap (kube: `spec.suspend`).
+    /// Servers without a dedicated mapping treat it as `Running`.
+    Queued,
     Complete,
     Failed,
     Gone,
@@ -24,6 +27,7 @@ impl HandleState {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Running => "running",
+            Self::Queued => "queued",
             Self::Complete => "complete",
             Self::Failed => "failed",
             Self::Gone => "gone",
