@@ -44,8 +44,9 @@ use cctui_orchestrator::{
 use cctui_proto::ws::WireDispatchSpec;
 use k8s_openapi::api::batch::v1::Job;
 use k8s_openapi::api::core::v1::Pod;
-use kube::api::{Api, DeleteParams, ListParams, PostParams, PropagationPolicy};
+use kube::api::{Api, DeleteParams, ListParams, Patch, PatchParams, PostParams, PropagationPolicy};
 use kube::{Client, Error as KubeError};
+use tokio_util::sync::CancellationToken;
 
 /// A pod wedged `Pending` longer than this (no schedulable node / image still
 /// failing to pull) is reported `Failed` rather than `Running`.
@@ -72,6 +73,10 @@ const ANNOTATION_SESSION_ID: &str = "cctui.dev/session-id";
 /// a ref reaching pod env could be resolved by cluster machinery into the worker.
 const SECRET_REF_PREFIXES: [&str; 3] = ["vault:", "bao:", "k8s:"];
 
+/// How often the queue reconciler resumes suspended Jobs into freed slots.
+const QUEUE_RECONCILE_INTERVAL: Duration = Duration::from_secs(15);
+
+#[derive(Clone)]
 pub struct Spawner {
     namespace: String,
     default_profile: String,
@@ -160,6 +165,7 @@ impl Spawner {
         spec: &WireDispatchSpec,
         name: &str,
         default_deadline_secs: i64,
+        suspend: bool,
     ) -> anyhow::Result<Job> {
         let mut payload = spec.payload.clone();
         let obj = payload.as_object_mut();
@@ -237,7 +243,7 @@ impl Spawner {
 
         let deadline = spec.timeout_minutes.map_or(default_deadline_secs, |m| i64::from(m) * 60);
 
-        let job_json = json!({
+        let mut job_json = json!({
             "apiVersion": "batch/v1",
             "kind": "Job",
             "metadata": {
@@ -245,6 +251,7 @@ impl Spawner {
                 "labels": {
                     LABEL_ORIGIN: "cctui-kube-dispatcher",
                     LABEL_SESSION_ID: label_safe(&spec.session_id),
+                    LABEL_WORKER_PROFILE: label_safe(profile_name),
                 },
                 "annotations": { ANNOTATION_SESSION_ID: spec.session_id },
             },
@@ -258,6 +265,9 @@ impl Spawner {
                 },
             },
         });
+        if suspend {
+            job_json["spec"]["suspend"] = json!(true);
+        }
 
         Ok(serde_json::from_value(job_json)?)
     }
@@ -404,6 +414,8 @@ impl Spawner {
 
         let name = worker_name(dedup_source(spec));
         self.enforce_inflight_cap(&name).await?;
+        let suspend =
+            self.profile_cap_reached(&profile_name, profile.spec.max_inflight, &name).await?;
         let job = Self::build_job(
             &self.cctui_url,
             &profile_name,
@@ -411,9 +423,11 @@ impl Spawner {
             spec,
             &name,
             self.default_deadline_secs,
+            suspend,
         )?;
+        let status = if suspend { "queued" } else { "dispatched" };
 
-        match self.create(&job, "dispatched", &name).await {
+        match self.create(&job, status, &name).await {
             Ok(h) => return Ok(h),
             Err(KubeError::Api(e)) if e.code == 409 => {}
             Err(e) => anyhow::bail!("creating Job: {e}"),
@@ -426,7 +440,7 @@ impl Spawner {
             // Raced its own teardown — name is free again, create afresh.
             Err(KubeError::Api(e)) if e.code == 404 => {
                 return self
-                    .create(&job, "dispatched", &name)
+                    .create(&job, status, &name)
                     .await
                     .map_err(|e| anyhow::anyhow!("creating Job: {e}"));
             }
@@ -444,7 +458,7 @@ impl Spawner {
 
         // Terminal: delete + recreate so a fresh run fires the callback.
         self.delete_and_wait(&name).await?;
-        match self.create(&job, "redispatched", &name).await {
+        match self.create(&job, if suspend { "queued" } else { "redispatched" }, &name).await {
             Ok(h) => Ok(h),
             // A concurrent re-dispatch beat us — its run owns the callback now.
             Err(KubeError::Api(e)) if e.code == 409 => Ok(SpawnOutcome {
@@ -487,6 +501,110 @@ impl Spawner {
         Ok(())
     }
 
+    fn job_suspended(job: &Job) -> bool {
+        job.spec.as_ref().and_then(|s| s.suspend) == Some(true)
+    }
+
+    /// Whether the profile's `maxInflight` is exhausted by *active*
+    /// (non-terminal, unsuspended) Jobs of that profile, `this_name` excluded —
+    /// the same self-exclusion as the global cap, so a dedup/redispatch of a
+    /// running Job never queues behind itself.
+    async fn profile_cap_reached(
+        &self,
+        profile_name: &str,
+        max_inflight: Option<u32>,
+        this_name: &str,
+    ) -> anyhow::Result<bool> {
+        let Some(cap) = max_inflight.filter(|c| *c > 0) else {
+            return Ok(false);
+        };
+        let lp = ListParams::default().labels(&format!(
+            "{LABEL_ORIGIN}=cctui-kube-dispatcher,{LABEL_WORKER_PROFILE}={}",
+            label_safe(profile_name)
+        ));
+        let jobs = self
+            .jobs()
+            .list(&lp)
+            .await
+            .map_err(|e| anyhow::anyhow!("listing worker Jobs for profile cap: {e}"))?;
+        let active = jobs
+            .items
+            .iter()
+            .filter(|j| j.metadata.name.as_deref() != Some(this_name))
+            .filter(|j| Self::job_terminal_state(j).is_none())
+            .filter(|j| !Self::job_suspended(j))
+            .count();
+        Ok(active >= cap as usize)
+    }
+
+    /// Resume suspended Jobs into freed profile slots, oldest-first, forever.
+    /// Runs beside the WS loop; queue state lives entirely in the cluster, so a
+    /// dispatcher restart picks the queue back up from the Job list.
+    pub async fn run_queue_reconciler(self, shutdown: CancellationToken) {
+        let mut tick = tokio::time::interval(QUEUE_RECONCILE_INTERVAL);
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tokio::select! {
+                () = shutdown.cancelled() => return,
+                _ = tick.tick() => {}
+            }
+            if let Err(e) = self.reconcile_queues().await {
+                tracing::warn!(error = %e, "queue reconcile failed");
+            }
+        }
+    }
+
+    async fn reconcile_queues(&self) -> anyhow::Result<()> {
+        let lp = ListParams::default().labels(&format!("{LABEL_ORIGIN}=cctui-kube-dispatcher"));
+        let jobs = self.jobs().list(&lp).await?;
+
+        let mut by_profile: std::collections::BTreeMap<String, (usize, Vec<&Job>)> =
+            std::collections::BTreeMap::new();
+        for job in jobs.items.iter().filter(|j| Self::job_terminal_state(j).is_none()) {
+            let Some(profile) =
+                job.metadata.labels.as_ref().and_then(|l| l.get(LABEL_WORKER_PROFILE))
+            else {
+                continue;
+            };
+            let entry = by_profile.entry(profile.clone()).or_default();
+            if Self::job_suspended(job) {
+                entry.1.push(job);
+            } else {
+                entry.0 += 1;
+            }
+        }
+
+        let profiles: Api<WorkerProfile> = Api::namespaced(self.client.clone(), &self.namespace);
+        for (profile_name, (active, mut queued)) in by_profile {
+            if queued.is_empty() {
+                continue;
+            }
+            let cap = match profiles.get(&profile_name).await {
+                Ok(p) => p.spec.max_inflight.filter(|c| *c > 0),
+                Err(KubeError::Api(e)) if e.code == 404 => None,
+                Err(e) => anyhow::bail!("reading WorkerProfile `{profile_name}`: {e}"),
+            };
+            let slots = cap.map_or(queued.len(), |c| (c as usize).saturating_sub(active));
+            if slots == 0 {
+                continue;
+            }
+            queued.sort_by_key(|j| j.metadata.creation_timestamp.clone());
+            for job in queued.into_iter().take(slots) {
+                let Some(name) = job.metadata.name.as_deref() else { continue };
+                let patch = Patch::Merge(json!({ "spec": { "suspend": false } }));
+                match self.jobs().patch(name, &PatchParams::default(), &patch).await {
+                    Ok(_) => {
+                        tracing::info!(job = %name, profile = %profile_name, "resumed queued worker");
+                    }
+                    Err(e) => {
+                        tracing::warn!(job = %name, error = %e, "resuming queued worker failed");
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Lifecycle of a Job handle, plus a human reason when it FAILED.
     ///
     /// The Job's `conditions` only carry a terminal `Failed` once `backoffLimit`
@@ -510,6 +628,9 @@ impl Spawner {
                 return Ok((HandleState::Failed, reason.or(self.pod_failure_reason(name).await)));
             }
             _ => {}
+        }
+        if Self::job_suspended(&job) {
+            return Ok((HandleState::Queued, None));
         }
         // Job not terminal — look for a doomed pod the Job condition won't
         // surface until backoff is exhausted.
@@ -694,6 +815,7 @@ mod tests {
             spec,
             &name,
             3600,
+            false,
         )
         .unwrap();
         serde_json::to_value(&job).unwrap()
@@ -935,9 +1057,16 @@ mod tests {
             let payload = json!({ "env": { "TOKEN": reference } });
             let s = spec("sess-x", payload);
             let name = worker_name("sess-x");
-            let err =
-                Spawner::build_job("http://cctui:8700", "lean", &lean_profile(), &s, &name, 3600)
-                    .expect_err("secret-ref env must be rejected");
+            let err = Spawner::build_job(
+                "http://cctui:8700",
+                "lean",
+                &lean_profile(),
+                &s,
+                &name,
+                3600,
+                false,
+            )
+            .expect_err("secret-ref env must be rejected");
             let msg = err.to_string();
             assert!(msg.contains("secret-ref"), "unexpected error: {msg}");
         }
@@ -955,10 +1084,48 @@ mod tests {
     fn per_dispatch_timeout_overrides_default_deadline() {
         let s = spec("sess-30", json!({}));
         let name = worker_name("sess-30");
-        let job = Spawner::build_job("http://cctui:8700", "lean", &lean_profile(), &s, &name, 7200)
-            .unwrap();
+        let job = Spawner::build_job(
+            "http://cctui:8700",
+            "lean",
+            &lean_profile(),
+            &s,
+            &name,
+            7200,
+            false,
+        )
+        .unwrap();
         let v = serde_json::to_value(&job).unwrap();
         assert_eq!(v.pointer("/spec/activeDeadlineSeconds"), Some(&json!(1800)));
+    }
+
+    #[test]
+    fn suspend_flag_lands_on_job_spec_and_profile_label_on_job_metadata() {
+        let s = spec("sess-q", json!({}));
+        let name = worker_name("sess-q");
+        let job =
+            Spawner::build_job("http://cctui:8700", "lean", &lean_profile(), &s, &name, 3600, true)
+                .unwrap();
+        let v = serde_json::to_value(&job).unwrap();
+        assert_eq!(v.pointer("/spec/suspend"), Some(&json!(true)));
+        assert_eq!(v.pointer("/metadata/labels/cctui.dev~1worker-profile"), Some(&json!("lean")));
+        assert!(Spawner::job_suspended(&job));
+
+        let unsuspended = build("lean", &lean_profile(), &s);
+        assert!(
+            unsuspended.pointer("/spec/suspend").is_none(),
+            "no cap pressure => suspend absent so the Job starts immediately"
+        );
+    }
+
+    #[test]
+    fn profile_max_inflight_deserializes() {
+        let with_cap: WorkerProfileSpec = serde_json::from_value(json!({
+            "image": "example.com/worker:latest",
+            "maxInflight": 2
+        }))
+        .unwrap();
+        assert_eq!(with_cap.max_inflight, Some(2));
+        assert_eq!(lean_profile().max_inflight, None);
     }
 
     #[test]

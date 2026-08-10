@@ -133,8 +133,9 @@ async fn main() -> anyhow::Result<()> {
                 cfg.worker_url().to_owned(),
             )
             .await?;
-            let runner = Runner::new(client, cfg.dispatcher_key, spawner);
             let shutdown = CancellationToken::new();
+            tokio::spawn(spawner.clone().run_queue_reconciler(shutdown.clone()));
+            let runner = Runner::new(client, cfg.dispatcher_key, spawner);
             let signal_token = shutdown.clone();
             tokio::spawn(async move {
                 let _ = tokio::signal::ctrl_c().await;
