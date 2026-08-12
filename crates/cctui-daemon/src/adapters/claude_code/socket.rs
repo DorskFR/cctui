@@ -130,6 +130,43 @@ pub async fn attach_permission_response(socket: &Path, short: &str, allow: bool)
     }
 }
 
+/// How [`attach_submit`] decides an Enter actually submitted the draft.
+#[derive(Debug, Clone)]
+pub enum SubmitConfirm {
+    /// Any PTY repaint within the confirm window. Only valid mid-turn, where
+    /// the submit queues the message and the transcript won't grow until the
+    /// turn picks it up; also the fallback when no transcript path is known.
+    Repaint,
+    /// A `"type":"user"` line appended to the transcript past `baseline`
+    /// bytes — required for an idle worker: image-path ingestion repaints for
+    /// seconds, so a swallowed Enter still "repaints" and the weaker check
+    /// passes while the draft sits unsent.
+    Transcript { path: PathBuf, baseline: u64 },
+}
+
+/// True once the transcript gained a complete `"type":"user"` line past
+/// `baseline`. Reads only the appended region; partial trailing lines (a
+/// write in flight) don't parse and simply don't match yet.
+fn transcript_gained_user_entry(path: &Path, baseline: u64) -> bool {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut file) = std::fs::File::open(path) else { return false };
+    if !file.metadata().is_ok_and(|m| m.len() > baseline) {
+        return false;
+    }
+    if file.seek(SeekFrom::Start(baseline)).is_err() {
+        return false;
+    }
+    let mut appended = String::new();
+    if file.read_to_string(&mut appended).is_err() {
+        return false;
+    }
+    appended.lines().any(|line| {
+        serde_json::from_str::<Value>(line)
+            .ok()
+            .is_some_and(|v| v.get("type").and_then(Value::as_str) == Some("user"))
+    })
+}
+
 /// Submit the current draft in a worker PTY. Used after multiline `reply`
 /// payloads: current Claude builds can accept the text into the composer but
 /// leave it as an unsent draft, which is most visible for attachment messages
@@ -138,18 +175,26 @@ pub async fn attach_permission_response(socket: &Path, short: &str, allow: bool)
 /// The composer silently drops an Enter that arrives while it is still
 /// ingesting the paste — image paths take seconds (claude reads the file and
 /// swaps it for an `[Image #N]` placeholder), so no fixed delay is safe.
-/// The attach stream carries raw PTY bytes, and a submitted draft always
-/// repaints while a swallowed Enter never does: wait for the screen to go
-/// quiet, press Enter, re-press until a repaint confirms it landed.
-pub async fn attach_submit(socket: &Path, short: &str) -> Result<()> {
+/// Wait for the screen to go quiet, press Enter, and re-press until `confirm`
+/// proves it landed.
+pub async fn attach_submit(socket: &Path, short: &str, confirm: &SubmitConfirm) -> Result<()> {
     /// PTY quiet period treated as "composer settled".
     const QUIET: std::time::Duration = std::time::Duration::from_millis(600);
-    /// Cap on the settle wait, so a worker with periodically ticking output
-    /// (spinner, status line) still gets its Enter.
-    const SETTLE_MAX: std::time::Duration = std::time::Duration::from_secs(10);
-    /// Window in which a submitted Enter must produce output.
+    /// Cap on the settle wait. Multi-image ingest can repaint well past 10s,
+    /// so a swallowed Enter here is expected — the confirm loop retries it.
+    const SETTLE_MAX: std::time::Duration = std::time::Duration::from_secs(30);
+    /// Window in which a submitted Enter must produce its confirm signal.
     const CONFIRM: std::time::Duration = std::time::Duration::from_millis(1500);
-    const ATTEMPTS: usize = 3;
+    /// Poll cadence for the transcript while draining PTY bytes.
+    const POLL: std::time::Duration = std::time::Duration::from_millis(250);
+
+    let (attempts, confirm_window) = match confirm {
+        SubmitConfirm::Repaint => (3, CONFIRM),
+        // Transcript growth lags the keypress (claude appends after the turn
+        // starts), and each Enter swallowed mid-ingest burns an attempt: give
+        // the strict mode more room.
+        SubmitConfirm::Transcript { .. } => (6, std::time::Duration::from_secs(4)),
+    };
 
     let (mut reader, mut write_half) = attach_handshake(socket, short).await?;
     let mut buf = [0_u8; 8192];
@@ -164,25 +209,44 @@ pub async fn attach_submit(socket: &Path, short: &str) -> Result<()> {
         }
     }
 
-    for attempt in 1..=ATTEMPTS {
+    for attempt in 1..=attempts {
         write_half.write_all(b"\r").await?;
         write_half.flush().await?;
-        match tokio::time::timeout(CONFIRM, reader.read(&mut buf)).await {
-            Ok(Ok(0)) => bail!("worker detached during draft submit"),
-            Ok(Ok(_)) => {
-                if attempt > 1 {
-                    tracing::info!(%short, attempt, "draft submit needed a retry Enter");
+        let deadline = tokio::time::Instant::now() + confirm_window;
+        let confirmed = loop {
+            let submitted = match confirm {
+                SubmitConfirm::Repaint => false,
+                SubmitConfirm::Transcript { path, baseline } => {
+                    transcript_gained_user_entry(path, *baseline)
                 }
-                // Hold the connection so the keystroke is fully parsed before
-                // detach fires the worker's attacher-close cleanup.
-                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                return Ok(());
+            };
+            if submitted {
+                break true;
             }
-            Ok(Err(err)) => return Err(err.into()),
-            Err(_) => {}
+            let now = tokio::time::Instant::now();
+            if now >= deadline {
+                break false;
+            }
+            // Drain PTY bytes while waiting: detects detach, and in Repaint
+            // mode any output IS the confirmation.
+            match tokio::time::timeout((deadline - now).min(POLL), reader.read(&mut buf)).await {
+                Ok(Ok(0)) => bail!("worker detached during draft submit"),
+                Ok(Ok(_)) if matches!(confirm, SubmitConfirm::Repaint) => break true,
+                Ok(Ok(_)) | Err(_) => {}
+                Ok(Err(err)) => return Err(err.into()),
+            }
+        };
+        if confirmed {
+            if attempt > 1 {
+                tracing::info!(%short, attempt, "draft submit needed a retry Enter");
+            }
+            // Hold the connection so the keystroke is fully parsed before
+            // detach fires the worker's attacher-close cleanup.
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            return Ok(());
         }
     }
-    bail!("draft submit Enter produced no screen reaction after {ATTEMPTS} attempts")
+    bail!("draft submit Enter went unconfirmed after {attempts} attempts")
 }
 
 /// Answer a pending `AskUserQuestion` form natively: inject the
@@ -419,7 +483,54 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(400)).await;
         });
 
-        attach_submit(&sock, "aaaaaaaa").await.expect("submit should succeed via retry");
+        attach_submit(&sock, "aaaaaaaa", &SubmitConfirm::Repaint)
+            .await
+            .expect("submit should succeed via retry");
+        server.await.unwrap();
+    }
+
+    /// Transcript mode must NOT trust repaints: the fake worker keeps
+    /// streaming ingest output after the first Enter (the exact false-confirm
+    /// of the image-upload bug) and only appends the user entry to the
+    /// transcript after the second Enter — success requires that retry.
+    #[tokio::test]
+    async fn attach_submit_transcript_ignores_repaint_noise() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("control.sock");
+        let transcript = dir.path().join("session.jsonl");
+        std::fs::write(&transcript, "{\"type\":\"assistant\"}\n").unwrap();
+        let baseline = std::fs::metadata(&transcript).unwrap().len();
+        let listener = tokio::net::UnixListener::bind(&sock).unwrap();
+
+        let transcript_srv = transcript.clone();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (read_half, mut write_half) = stream.into_split();
+            let mut reader = BufReader::new(read_half);
+
+            let mut req = String::new();
+            reader.read_line(&mut req).await.unwrap();
+            write_half.write_all(b"{\"ok\":true,\"op\":\"attach\"}\n").await.unwrap();
+
+            let mut key = [0_u8; 1];
+            reader.read_exact(&mut key).await.unwrap();
+            assert_eq!(key[0], b'\r', "first submit keystroke");
+            for _ in 0..4 {
+                write_half.write_all(b"still ingesting [Image #2]...").await.unwrap();
+                write_half.flush().await.unwrap();
+                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            }
+
+            reader.read_exact(&mut key).await.unwrap();
+            assert_eq!(key[0], b'\r', "retry despite repaint noise");
+            let mut f = std::fs::OpenOptions::new().append(true).open(&transcript_srv).unwrap();
+            std::io::Write::write_all(&mut f, b"{\"type\":\"user\"}\n").unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+        });
+
+        attach_submit(&sock, "aaaaaaaa", &SubmitConfirm::Transcript { path: transcript, baseline })
+            .await
+            .expect("submit should confirm via transcript growth");
         server.await.unwrap();
     }
 
@@ -440,7 +551,9 @@ mod tests {
             write_half.write_all(b"{\"ok\":true,\"op\":\"attach\"}\n").await.unwrap();
         });
 
-        let err = attach_submit(&sock, "aaaaaaaa").await.expect_err("FIN must be an error");
+        let err = attach_submit(&sock, "aaaaaaaa", &SubmitConfirm::Repaint)
+            .await
+            .expect_err("FIN must be an error");
         assert!(err.to_string().contains("detached"), "unexpected error: {err}");
         server.await.unwrap();
     }
