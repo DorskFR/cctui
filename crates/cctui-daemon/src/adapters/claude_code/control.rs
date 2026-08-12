@@ -811,16 +811,42 @@ impl Driver {
                 .send(AdapterEvent::PlanResolved { local_id: local_id.to_owned() })
                 .await;
         }
+        // Baseline before the reply op: a build that auto-submits multiline
+        // replies grows the transcript immediately, and a later baseline would
+        // hide that submit from the confirm loop.
+        let confirm = self.submit_confirm(&short, local_id);
         let resp =
             socket::one_shot(sock, &json!({"proto":1,"op":"reply","short":short,"text":text}))
                 .await?;
         tracing::debug!(?resp, %short, "reply ack");
         if text.contains('\n')
-            && let Err(err) = socket::attach_submit(sock, &short).await
+            && let Err(err) = socket::attach_submit(sock, &short, &confirm).await
         {
             tracing::warn!(%err, %short, "failed to submit multiline reply draft");
         }
         Ok(())
+    }
+
+    /// Pick the submit-confirmation signal for a worker: transcript growth
+    /// when idle (the only signal image ingestion can't fake), repaint when
+    /// mid-turn (a submit only queues the message, so the transcript won't
+    /// grow) or when no transcript can be located.
+    fn submit_confirm(&self, short: &str, session_id: &str) -> socket::SubmitConfirm {
+        let busy = self
+            .last_status
+            .get(short)
+            .and_then(|s| s.tempo.as_deref())
+            .is_some_and(|tempo| tempo != "idle");
+        if busy {
+            return socket::SubmitConfirm::Repaint;
+        }
+        let path = self.transcript_locations.get(short).map(|loc| loc.path.clone()).or_else(|| {
+            transcript::newest_transcript_for_session(&self.cfg.projects_root, session_id)
+        });
+        path.map_or(socket::SubmitConfirm::Repaint, |path| {
+            let baseline = std::fs::metadata(&path).map_or(0, |m| m.len());
+            socket::SubmitConfirm::Transcript { path, baseline }
+        })
     }
 
     #[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
