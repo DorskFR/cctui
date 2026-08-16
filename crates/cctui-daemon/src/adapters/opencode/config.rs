@@ -17,6 +17,7 @@ pub const API_KEY_ENV: &str = "FIREWORKS_API_KEY";
 pub const BASE_URL_ENV: &str = "FIREWORKS_BASE_URL";
 pub const DEFAULT_BASE_URL: &str = "https://api.fireworks.ai/inference/v1";
 pub const REVIEWER_AGENT: &str = "cctui-reviewer";
+pub const STOCK_AGENT: &str = "build";
 
 const REVIEWER_PROMPT: &str = "You are an automated code reviewer running without a human in the \
 loop. Inspect the diff and the repository and report security, correctness, performance and \
@@ -77,7 +78,10 @@ pub fn session_config(model: Option<&ModelRef>, env: &BTreeMap<String, String>) 
             }
         },
         "permission": { "doom_loop": "deny" },
-        "agent": { REVIEWER_AGENT: reviewer_agent() },
+        "agent": {
+            REVIEWER_AGENT: reviewer_agent(),
+            STOCK_AGENT: { "permission": reviewer_permission() },
+        },
         "autoupdate": false,
         "share": "disabled",
     });
@@ -91,6 +95,8 @@ pub fn session_config(model: Option<&ModelRef>, env: &BTreeMap<String, String>) 
     cfg
 }
 
+const REVIEW_INPUT_DIRS: [&str; 2] = ["/tmp/review-*", "/tmp/review-*/**"];
+
 /// opencode matches these per pipeline segment, so the pure filters are needed
 /// for `git show … | sed -n` to survive its right-hand side.
 fn reviewer_bash() -> Value {
@@ -103,6 +109,8 @@ fn reviewer_bash() -> Value {
         "git status",
         "git blame",
         "git ls-files",
+        "cat",
+        "ls",
         "sed",
         "head",
         "tail",
@@ -121,6 +129,31 @@ fn reviewer_bash() -> Value {
     Value::Object(rules)
 }
 
+fn reviewer_external_directory() -> Value {
+    let mut rules = serde_json::Map::new();
+    rules.insert("*".to_owned(), json!("deny"));
+    for dir in REVIEW_INPUT_DIRS {
+        rules.insert(dir.to_owned(), json!("allow"));
+    }
+    Value::Object(rules)
+}
+
+fn reviewer_permission() -> Value {
+    json!({
+        "edit": "deny",
+        "webfetch": "deny",
+        "websearch": "deny",
+        "task": "deny",
+        "question": "deny",
+        "doom_loop": "deny",
+        "external_directory": reviewer_external_directory(),
+        "read": "allow",
+        "glob": "allow",
+        "grep": "allow",
+        "bash": reviewer_bash(),
+    })
+}
+
 /// The locked-down reviewer profile: no edits, no network, and bash reduced to
 /// read-only inspection. `doom_loop: deny` hard-stops the repeat-tool-call
 /// loops Kimi is prone to; `steps` bounds the turn.
@@ -131,19 +164,7 @@ pub fn reviewer_agent() -> Value {
         "mode": "primary",
         "prompt": REVIEWER_PROMPT,
         "steps": 120,
-        "permission": {
-            "edit": "deny",
-            "webfetch": "deny",
-            "websearch": "deny",
-            "task": "deny",
-            "question": "deny",
-            "doom_loop": "deny",
-            "external_directory": "deny",
-            "read": "allow",
-            "glob": "allow",
-            "grep": "allow",
-            "bash": reviewer_bash(),
-        },
+        "permission": reviewer_permission(),
     })
 }
 
@@ -306,6 +327,29 @@ mod tests {
         assert!(a["steps"].as_u64().unwrap() > 0);
         // unknown agent keys leak into the provider request body via `options`
         assert!(a.get("retryCount").is_none());
+        assert!(a["permission"].get("retryCount").is_none());
+    }
+
+    #[test]
+    fn reviewer_reads_and_lists_the_review_input_dir() {
+        let a = reviewer_agent();
+        let ext = &a["permission"]["external_directory"];
+        assert_eq!(ext["*"], "deny");
+        assert_eq!(ext["/tmp/review-*"], "allow");
+        assert_eq!(ext["/tmp/review-*/**"], "allow");
+        assert_eq!(a["permission"]["read"], "allow");
+        assert_eq!(a["permission"]["bash"]["ls*"], "allow");
+        assert_eq!(a["permission"]["bash"]["cat*"], "allow");
+    }
+
+    #[test]
+    fn default_stock_agent_is_locked_down() {
+        let cfg = session_config(None, &BTreeMap::new());
+        let build = &cfg["agent"][STOCK_AGENT];
+        assert_eq!(build["permission"]["edit"], "deny");
+        assert_eq!(build["permission"]["bash"]["*"], "deny");
+        assert_eq!(build["permission"]["external_directory"]["/tmp/review-*"], "allow");
+        assert_eq!(cfg["agent"][REVIEWER_AGENT]["permission"]["edit"], "deny");
     }
 
     #[test]

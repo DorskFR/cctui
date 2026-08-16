@@ -24,6 +24,10 @@ use crate::client::ServerClient;
 /// Cadence of progress frames to the relay while a child runs.
 const PROGRESS_EVERY: Duration = Duration::from_secs(15);
 
+/// A child that has shown no sign of life at all by this point never reached
+/// its first model call — waiting out `timeout_secs` only delays the failure.
+const SILENT_CHILD_GRACE: Duration = Duration::from_secs(90);
+
 /// Socket the session's MCP relay connects to. Kept beside the daemon's other
 /// runtime state so a worker container with an unwritable `~/.config` still
 /// finds a usable path.
@@ -138,6 +142,26 @@ async fn follow_child(
     proto: u64,
     out: &mut (impl AsyncWriteExt + Unpin),
 ) -> Value {
+    follow_child_with(handle, child_id, timeout, SILENT_CHILD_GRACE, proto, out).await
+}
+
+/// Whether the child has produced any evidence of a running turn: a bound
+/// session id alone only proves the harness registered it.
+const fn showed_activity(snap: &crate::childwatch::ChildSnapshot) -> bool {
+    snap.final_text.is_some()
+        || snap.last_tool.is_some()
+        || snap.status_line.is_some()
+        || snap.blocked.is_some()
+}
+
+async fn follow_child_with(
+    handle: &WatchHandle,
+    child_id: &str,
+    timeout: Duration,
+    silent_grace: Duration,
+    proto: u64,
+    out: &mut (impl AsyncWriteExt + Unpin),
+) -> Value {
     let started = Instant::now();
     let mut last_progress = Instant::now();
     loop {
@@ -149,6 +173,20 @@ async fn follow_child(
         match snap.assess(now) {
             Assessment::Finished(outcome) => return reply_frame(&outcome),
             Assessment::Running(line) => {
+                if now.duration_since(started) >= silent_grace && !showed_activity(&snap) {
+                    return json!({
+                        "ok": false,
+                        "error": format!(
+                            "child agent {} produced no activity within {}s of being prompted — \
+                             no model call, no output and no error, so it almost certainly died \
+                             at startup (auth, budget or rate-limit rejection). Not waiting out \
+                             the {}s timeout; check the child session in cctui.",
+                            snap.local_id.as_deref().unwrap_or(child_id),
+                            silent_grace.as_secs(),
+                            timeout.as_secs(),
+                        ),
+                    });
+                }
                 if now.duration_since(started) >= timeout {
                     return json!({
                         "ok": false,
@@ -447,6 +485,90 @@ mod tests {
         assert!(text.contains("still running"), "{text}");
         assert!(text.contains("session_id"), "{text}");
         assert!(out.is_empty(), "proto 1 must never receive progress frames");
+    }
+
+    #[tokio::test]
+    async fn a_silent_child_fails_fast_instead_of_waiting_out_the_timeout() {
+        let watch = std::sync::Arc::new(crate::childwatch::ChildWatch::default());
+        let handle = watch.register("child-1");
+        watch.observe(&cctui_proto::adapter::AdapterEvent::SessionStarted {
+            local_id: "child-1".into(),
+            meta: cctui_proto::adapter::SessionMeta::default(),
+        });
+        let mut out: Vec<u8> = Vec::new();
+        let frame = follow_child_with(
+            &handle,
+            "child-1",
+            Duration::from_mins(30),
+            Duration::from_millis(10),
+            2,
+            &mut out,
+        )
+        .await;
+        assert_eq!(frame["ok"], json!(false));
+        let text = frame["error"].as_str().unwrap();
+        assert!(text.contains("no activity"), "{text}");
+        assert!(text.contains("died at startup"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn a_child_that_showed_activity_is_never_failed_fast() {
+        let watch = std::sync::Arc::new(crate::childwatch::ChildWatch::default());
+        let handle = watch.register("child-1");
+        watch.observe(&cctui_proto::adapter::AdapterEvent::SessionStarted {
+            local_id: "child-1".into(),
+            meta: cctui_proto::adapter::SessionMeta::default(),
+        });
+        watch.observe(&cctui_proto::adapter::AdapterEvent::ToolUse {
+            local_id: "child-1".into(),
+            payload: json!({ "tool": "Bash" }),
+        });
+        let mut out: Vec<u8> = Vec::new();
+        let frame = follow_child_with(
+            &handle,
+            "child-1",
+            Duration::from_millis(20),
+            Duration::from_millis(10),
+            1,
+            &mut out,
+        )
+        .await;
+        let text = frame["error"].as_str().unwrap();
+        assert!(
+            text.contains("still running"),
+            "a working child must hit the timeout path: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_crashed_child_returns_before_the_timeout() {
+        let watch = std::sync::Arc::new(crate::childwatch::ChildWatch::default());
+        let handle = watch.register("child-1");
+        let observer = watch.clone();
+        let feeder = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            observer.observe(&cctui_proto::adapter::AdapterEvent::SessionEnded {
+                local_id: "child-1".into(),
+                reason: cctui_proto::adapter::EndReason::Crashed {
+                    detail: "gateway rejected the first model call".into(),
+                },
+            });
+        });
+        let mut out: Vec<u8> = Vec::new();
+        let started = Instant::now();
+        let frame = follow_child_with(
+            &handle,
+            "child-1",
+            Duration::from_mins(30),
+            Duration::from_mins(30),
+            2,
+            &mut out,
+        )
+        .await;
+        feeder.await.unwrap();
+        assert!(started.elapsed() < Duration::from_secs(30), "must not wait out the timeout");
+        assert_eq!(frame["ok"], json!(false));
+        assert!(frame["error"].as_str().unwrap().contains("gateway rejected"));
     }
 
     #[test]

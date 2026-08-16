@@ -29,6 +29,10 @@ use super::normalize::{self, Kind};
 /// keeps retrying instead of blocking on it.
 const HEALTH_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
+/// A live turn always emits part/step updates well inside this window, so
+/// silence this long means the upstream stream is dead rather than slow.
+const STREAM_INACTIVITY: std::time::Duration = std::time::Duration::from_mins(2);
+
 pub type LiveRegistry = Arc<Mutex<HashMap<String, mpsc::Sender<SessionCommand>>>>;
 
 #[derive(Debug)]
@@ -121,6 +125,12 @@ pub struct SpawnParams {
     pub parent_local_id: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Stall {
+    Reattach,
+    Crashed,
+}
+
 pub struct OpenCodeSession {
     params: SpawnParams,
     events: mpsc::Sender<AdapterEvent>,
@@ -136,6 +146,7 @@ pub struct OpenCodeSession {
     /// after assistant output — and any terminal error — must end the session.
     oneshot: bool,
     saw_assistant: bool,
+    in_flight: bool,
 }
 
 impl OpenCodeSession {
@@ -161,13 +172,14 @@ impl OpenCodeSession {
             emitted_usage: HashSet::new(),
             oneshot,
             saw_assistant: false,
+            in_flight: false,
         }
     }
 
     pub async fn run(mut self) {
         let command_id = self.params.command_id.take();
-        match self.run_inner(command_id).await {
-            Ok(()) => {}
+        let failure = match self.run_inner(command_id).await {
+            Ok(()) => None,
             Err(err) => {
                 tracing::error!(%err, "opencode session ended in error");
                 if let Some(command_id) = command_id {
@@ -180,7 +192,12 @@ impl OpenCodeSession {
                         })
                         .await;
                 }
+                Some(err.to_string())
             }
+        };
+        if let Some(detail) = failure {
+            self.crash_all(&detail).await;
+            return;
         }
         for id in self.owned.clone() {
             self.live.lock().await.remove(&id);
@@ -283,17 +300,29 @@ impl OpenCodeSession {
         }
 
         let (evt_tx, mut evt_rx) = mpsc::channel(256);
-        let stream = tokio::spawn(pump_sse(client.clone(), evt_tx, self.shutdown.clone()));
+        let mut stream = tokio::spawn(pump_sse(client.clone(), evt_tx, self.shutdown.clone()));
 
-        if let Some(text) = self.first_turn() {
-            self.prompt(&client, &session.id, &text, model.as_ref()).await;
+        if let Some(text) = self.first_turn()
+            && !self.prompt_or_crash(&client, &session.id, &text, model.as_ref()).await
+        {
+            stream.abort();
+            shutdown_serve(&mut child).await;
+            return Ok(());
         }
 
+        let mut reattached = false;
         loop {
+            if !self.in_flight {
+                reattached = false;
+            }
             tokio::select! {
                 () = self.shutdown.cancelled() => break,
                 status = child.wait() => {
                     tracing::info!(?status, "opencode serve exited");
+                    if self.in_flight {
+                        self.crash_all(&format!("`opencode serve` exited mid-turn ({status:?})"))
+                            .await;
+                    }
                     break;
                 }
                 evt = evt_rx.recv() => {
@@ -307,6 +336,16 @@ impl OpenCodeSession {
                     if !self.on_command(&client, cmd, model.as_ref()).await {
                         break;
                     }
+                }
+                () = tokio::time::sleep(STREAM_INACTIVITY), if self.in_flight => {
+                    if self.on_stall(&client, reattached).await == Stall::Crashed {
+                        break;
+                    }
+                    reattached = true;
+                    stream.abort();
+                    let (tx, rx) = mpsc::channel(256);
+                    evt_rx = rx;
+                    stream = tokio::spawn(pump_sse(client.clone(), tx, self.shutdown.clone()));
                 }
             }
         }
@@ -385,13 +424,14 @@ impl OpenCodeSession {
             .await;
     }
 
+    /// Returns the failure text when the request never reached the model.
     async fn prompt(
-        &self,
+        &mut self,
         client: &OpenCodeClient,
         session_id: &str,
         text: &str,
         model: Option<&ModelRef>,
-    ) {
+    ) -> Option<String> {
         let body = PromptRequest {
             model: model.map(|m| PromptModelRef {
                 provider_id: m.provider_id.clone(),
@@ -400,11 +440,67 @@ impl OpenCodeSession {
             agent: self.agent(),
             parts: vec![PartInput::Text { text: text.to_owned() }],
         };
-        if let Err(err) = client.prompt_async(session_id, &body).await {
-            tracing::error!(%err, %session_id, "opencode prompt failed");
+        match client.prompt_async(session_id, &body).await {
+            Ok(()) => {
+                self.in_flight = true;
+                None
+            }
+            Err(err) => {
+                tracing::error!(%err, %session_id, "opencode prompt failed");
+                let detail = format!("prompt rejected by opencode serve: {err}");
+                self.emit_error(session_id, &detail).await;
+                let _ = self
+                    .events
+                    .send(status(session_id, Some("error".to_owned()), Some(detail.clone()), None))
+                    .await;
+                Some(detail)
+            }
+        }
+    }
+
+    /// Deliver a prompt and, for a one-shot child, end the session as crashed
+    /// when it was rejected outright. Returns `false` when the driver should stop.
+    async fn prompt_or_crash(
+        &mut self,
+        client: &OpenCodeClient,
+        session_id: &str,
+        text: &str,
+        model: Option<&ModelRef>,
+    ) -> bool {
+        let Some(detail) = self.prompt(client, session_id, text, model).await else {
+            return true;
+        };
+        if !self.oneshot {
+            return true;
+        }
+        self.end_crashed(session_id.to_owned(), detail).await
+    }
+
+    /// One bounded retry — reattaching to the bus recovers a dropped stream,
+    /// while re-sending the prompt would double-bill a turn that may still run.
+    async fn on_stall(&mut self, client: &OpenCodeClient, reattached: bool) -> Stall {
+        if reattached {
+            tracing::error!("opencode event stream still silent after reattaching — crashing");
+            self.abort_owned(client).await;
+            self.crash_all(&stalled_detail()).await;
+            self.in_flight = false;
+            return Stall::Crashed;
+        }
+        tracing::warn!("no opencode events under an in-flight turn — reattaching");
+        Stall::Reattach
+    }
+
+    /// Report every still-owned session as crashed.
+    async fn crash_all(&mut self, detail: &str) {
+        for id in std::mem::take(&mut self.owned) {
+            self.emit_error(&id, detail).await;
+            self.live.lock().await.remove(&id);
             let _ = self
                 .events
-                .send(status(session_id, Some("error".to_owned()), Some(err.to_string()), None))
+                .send(AdapterEvent::SessionEnded {
+                    local_id: id,
+                    reason: EndReason::Crashed { detail: detail.to_owned() },
+                })
                 .await;
         }
     }
@@ -419,15 +515,13 @@ impl OpenCodeSession {
     ) -> bool {
         match cmd {
             SessionCommand::Prompt { session_id, text } => {
-                self.prompt(client, &session_id, &text, model).await;
+                return self.prompt_or_crash(client, &session_id, &text, model).await;
             }
             SessionCommand::Kill { session_id } => {
                 if let Err(err) = client.abort(&session_id).await {
                     tracing::warn!(%err, %session_id, "opencode abort failed");
                 }
-                if self.owned.len() <= 1 {
-                    return false;
-                }
+                self.in_flight = false;
                 self.owned.remove(&session_id);
                 self.live.lock().await.remove(&session_id);
                 let _ = self
@@ -437,6 +531,9 @@ impl OpenCodeSession {
                         reason: EndReason::Killed,
                     })
                     .await;
+                if self.owned.is_empty() {
+                    return false;
+                }
             }
             SessionCommand::Fork { parent, prompt, name, command_id } => {
                 self.on_fork(client, &parent, prompt, name, command_id, model).await;
@@ -519,6 +616,7 @@ impl OpenCodeSession {
                 }
                 if let Some(error) = info.error.as_ref() {
                     let text = normalize::error_text(error);
+                    self.in_flight = false;
                     self.emit_error(&session_id, &text).await;
                     if self.oneshot {
                         return self.end_crashed(session_id, text).await;
@@ -529,6 +627,7 @@ impl OpenCodeSession {
                 self.emit_part(&session_id, &properties.part).await;
             }
             OcEvent::SessionIdle { .. } => {
+                self.in_flight = false;
                 if self.oneshot && self.saw_assistant {
                     return false;
                 }
@@ -555,6 +654,7 @@ impl OpenCodeSession {
                     .error
                     .as_ref()
                     .map_or_else(|| "session error".to_owned(), normalize::error_text);
+                self.in_flight = false;
                 self.emit_error(&session_id, &text).await;
                 if self.oneshot {
                     return self.end_crashed(session_id, text).await;
@@ -646,6 +746,14 @@ impl OpenCodeSession {
     }
 }
 
+fn stalled_detail() -> String {
+    format!(
+        "opencode event stream went silent for {}s under an in-flight turn, and reattaching to \
+         it recovered nothing",
+        STREAM_INACTIVITY.as_secs()
+    )
+}
+
 fn status(
     local_id: &str,
     tempo: Option<String>,
@@ -717,20 +825,44 @@ const SERVE_TERM_GRACE: std::time::Duration = std::time::Duration::from_secs(3);
 /// Terminate the serve process *tree*: signal the group (see `process_group`
 /// at spawn), then escalate. Returns once the direct child is reaped.
 async fn shutdown_serve(child: &mut tokio::process::Child) {
+    let pgid = child.id().and_then(|p| i32::try_from(p).ok());
     signal_group(child, rustix::process::Signal::TERM);
-    if tokio::time::timeout(SERVE_TERM_GRACE, child.wait()).await.is_ok() {
-        return;
+    if tokio::time::timeout(SERVE_TERM_GRACE, child.wait()).await.is_err() {
+        signal_group(child, rustix::process::Signal::KILL);
+        let _ = child.start_kill();
+        let _ = child.wait().await;
     }
-    signal_group(child, rustix::process::Signal::KILL);
-    let _ = child.start_kill();
-    let _ = child.wait().await;
+    let Some(pgid) = pgid else { return };
+    for _ in 0..GROUP_REAP_POLLS {
+        if !group_alive(pgid) {
+            return;
+        }
+        signal_group_pid(pgid, rustix::process::Signal::KILL);
+        tokio::time::sleep(GROUP_REAP_POLL_EVERY).await;
+    }
+    if group_alive(pgid) {
+        tracing::error!(pgid, "opencode serve process group survived SIGKILL");
+    }
+}
+
+const GROUP_REAP_POLLS: u32 = 50;
+const GROUP_REAP_POLL_EVERY: std::time::Duration = std::time::Duration::from_millis(20);
+
+/// A fully reaped group yields `ESRCH`.
+fn group_alive(pgid: i32) -> bool {
+    rustix::process::Pid::from_raw(pgid)
+        .is_some_and(|p| rustix::process::test_kill_process_group(p).is_ok())
 }
 
 fn signal_group(child: &tokio::process::Child, signal: rustix::process::Signal) {
     let Some(pid) = child.id().and_then(|p| i32::try_from(p).ok()) else { return };
-    // The child leads its own group, so its pid is the pgid. A reaped
-    // process just yields ESRCH.
-    if let Some(pid) = rustix::process::Pid::from_raw(pid) {
+    signal_group_pid(pid, signal);
+}
+
+/// The child leads its own group, so its pid is the pgid. A reaped process
+/// just yields ESRCH.
+fn signal_group_pid(pgid: i32, signal: rustix::process::Signal) {
+    if let Some(pid) = rustix::process::Pid::from_raw(pgid) {
         let _ = rustix::process::kill_process_group(pid, signal);
     }
 }
@@ -993,6 +1125,191 @@ mod tests {
         };
         assert!(session.on_event(&client, evt).await);
         assert!(session.owned.contains("ses_1"));
+    }
+
+    fn ended_events(rx: &mut mpsc::Receiver<AdapterEvent>) -> Vec<(String, EndReason)> {
+        let mut out = Vec::new();
+        while let Ok(evt) = rx.try_recv() {
+            if let AdapterEvent::SessionEnded { local_id, reason } = evt {
+                out.push((local_id, reason));
+            }
+        }
+        out
+    }
+
+    #[tokio::test]
+    async fn kill_aborts_the_turn_and_ends_the_session_as_killed() {
+        let (mut session, mut rx, client) = test_session(None);
+        session.in_flight = true;
+        let stop = session
+            .on_command(&client, SessionCommand::Kill { session_id: "ses_1".to_owned() }, None)
+            .await;
+        assert!(!stop, "killing the last session must stop the driver so serve is reaped");
+        assert!(!session.in_flight);
+        assert!(session.owned.is_empty());
+        let ended = ended_events(&mut rx);
+        assert_eq!(ended.len(), 1, "{ended:?}");
+        assert_eq!(ended[0].0, "ses_1");
+        assert_eq!(ended[0].1, EndReason::Killed);
+    }
+
+    #[tokio::test]
+    async fn killing_one_of_several_sessions_keeps_the_driver_running() {
+        let (mut session, mut rx, client) = test_session(None);
+        session.owned.insert("ses_2".to_owned());
+        let stop = session
+            .on_command(&client, SessionCommand::Kill { session_id: "ses_1".to_owned() }, None)
+            .await;
+        assert!(stop, "other sessions still live on this serve");
+        assert!(!session.owned.contains("ses_1"));
+        assert!(session.owned.contains("ses_2"));
+        assert_eq!(ended_events(&mut rx), vec![("ses_1".to_owned(), EndReason::Killed)]);
+    }
+
+    #[tokio::test]
+    async fn a_rejected_prompt_crashes_a_oneshot_child() {
+        let (mut session, mut rx, client) = test_session(Some("parent-1".to_owned()));
+        let stop = session
+            .on_command(
+                &client,
+                SessionCommand::Prompt { session_id: "ses_1".to_owned(), text: "go".to_owned() },
+                None,
+            )
+            .await;
+        assert!(!stop, "an unreachable serve must end the child, not hang it");
+        assert!(!session.in_flight);
+        let ended = ended_events(&mut rx);
+        assert_eq!(ended.len(), 1, "{ended:?}");
+        match &ended[0].1 {
+            EndReason::Crashed { detail } => {
+                assert!(detail.contains("prompt rejected"), "{detail}");
+            }
+            other => panic!("expected Crashed, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_rejected_prompt_reports_an_error_without_killing_an_interactive_session() {
+        let (mut session, mut rx, client) = test_session(None);
+        let stop = session
+            .on_command(
+                &client,
+                SessionCommand::Prompt { session_id: "ses_1".to_owned(), text: "go".to_owned() },
+                None,
+            )
+            .await;
+        assert!(stop);
+        assert!(session.owned.contains("ses_1"));
+        assert!(ended_events(&mut rx).is_empty(), "an interactive session must survive");
+    }
+
+    #[tokio::test]
+    async fn a_rejected_prompt_surfaces_an_error_message_and_status() {
+        let (mut session, mut rx, client) = test_session(None);
+        assert!(session.prompt(&client, "ses_1", "go", None).await.is_some());
+        let mut saw_message = false;
+        let mut saw_status = false;
+        while let Ok(evt) = rx.try_recv() {
+            match evt {
+                AdapterEvent::Message { payload, .. } => {
+                    saw_message |=
+                        payload["text"].as_str().unwrap_or_default().contains("rejected");
+                }
+                AdapterEvent::Status { tempo, .. } => {
+                    saw_status |= tempo.as_deref() == Some("error");
+                }
+                _ => {}
+            }
+        }
+        assert!(saw_message, "the failure must reach the transcript");
+        assert!(saw_status, "the failure must flip the session status to error");
+    }
+
+    #[tokio::test]
+    async fn a_stalled_stream_reattaches_once_then_crashes_every_session() {
+        let (mut session, mut rx, client) = test_session(None);
+        session.owned.insert("ses_2".to_owned());
+        session.in_flight = true;
+
+        assert_eq!(session.on_stall(&client, false).await, Stall::Reattach);
+        assert!(ended_events(&mut rx).is_empty(), "the first stall only reattaches");
+
+        assert_eq!(session.on_stall(&client, true).await, Stall::Crashed);
+        assert!(!session.in_flight);
+        assert!(session.owned.is_empty());
+        let mut ended = ended_events(&mut rx);
+        ended.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(ended.len(), 2, "{ended:?}");
+        for (local_id, reason) in ended {
+            match reason {
+                EndReason::Crashed { detail } => {
+                    assert!(detail.contains("went silent"), "{local_id}: {detail}");
+                }
+                other => panic!("{local_id}: expected Crashed, got {other:?}"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_turn_is_only_in_flight_between_the_prompt_and_idle() {
+        let (mut session, _rx, client) = test_session(None);
+        assert!(!session.in_flight);
+        session.in_flight = true;
+        assert!(session.on_event(&client, assistant_message()).await);
+        assert!(session.in_flight, "assistant output does not end the turn");
+        assert!(session.on_event(&client, idle()).await);
+        assert!(!session.in_flight, "idle ends the turn — the watchdog must stand down");
+    }
+
+    #[tokio::test]
+    async fn a_driver_that_fails_after_registering_reports_crashed_not_completed() {
+        let (tx, mut rx) = mpsc::channel(64);
+        let mut params = SpawnParams {
+            cfg: OpenCodeConfig::default(),
+            key: "key-1".to_owned(),
+            cwd: "/definitely/not/a/directory".to_owned(),
+            env: std::collections::BTreeMap::new(),
+            prompt: None,
+            name: None,
+            model: None,
+            agent: None,
+            attachments: Vec::new(),
+            command_id: None,
+            parent_local_id: Some("parent-1".to_owned()),
+        };
+        params.cfg.bin = "/definitely/not/a/binary".to_owned();
+        let mut session =
+            OpenCodeSession::new(params, tx, LiveRegistry::default(), CancellationToken::new());
+        session.owned.insert("ses_1".to_owned());
+        session.run().await;
+        let ended = ended_events(&mut rx);
+        assert_eq!(ended.len(), 1, "{ended:?}");
+        assert!(matches!(ended[0].1, EndReason::Crashed { .. }), "{:?}", ended[0].1);
+    }
+
+    #[test]
+    fn the_stall_detail_names_the_inactivity_window() {
+        let detail = stalled_detail();
+        assert!(detail.contains(&STREAM_INACTIVITY.as_secs().to_string()), "{detail}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn shutdown_serve_leaves_no_live_process_group() {
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c")
+            .arg("sleep 300 & sleep 300 & echo $$; wait")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .process_group(0);
+        let mut child = cmd.spawn().unwrap();
+        let pgid = i32::try_from(child.id().unwrap()).unwrap();
+        let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+        let _ = lines.next_line().await.unwrap();
+        assert!(group_alive(pgid));
+
+        shutdown_serve(&mut child).await;
+        assert!(!group_alive(pgid), "process group {pgid} outlived shutdown_serve");
     }
 
     #[test]
