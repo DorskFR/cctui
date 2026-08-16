@@ -949,4 +949,104 @@ mod tests {
             "session end must drop the capability"
         );
     }
+
+    /// DB-gated: usage captured through the gateway path for an opencode session
+    /// lands under the session FK with its model stamped, so its priced spend is
+    /// non-zero and a `session_usd` cap below it fires — the 429 the proxy returns.
+    #[tokio::test]
+    async fn gateway_captured_opencode_usage_trips_the_usd_cap() {
+        let Some(url) = super::test_db_url("gateway_captured_opencode_usage_trips_the_usd_cap")
+        else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+
+        let uid = uuid::Uuid::new_v4();
+        let acct = uuid::Uuid::new_v4();
+        let prov = uuid::Uuid::new_v4();
+        let session_id = format!("ses_{}", uuid::Uuid::new_v4().simple());
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+            .bind(uid)
+            .bind(format!("cap-{uid}"))
+            .bind(format!("kh-{uid}"))
+            .execute(&pool)
+            .await
+            .expect("seed user");
+        sqlx::query("INSERT INTO accounts (id, user_id, name) VALUES ($1, $2, $3)")
+            .bind(acct)
+            .bind(uid)
+            .bind(format!("cap-acct-{uid}"))
+            .execute(&pool)
+            .await
+            .expect("seed account");
+        sqlx::query(
+            "INSERT INTO account_providers \
+                 (id, user_id, provider, encrypted_refresh_token, account_id) \
+             VALUES ($1, $2, 'fireworks', 'x', $3)",
+        )
+        .bind(prov)
+        .bind(uid)
+        .bind(acct)
+        .execute(&pool)
+        .await
+        .expect("seed provider");
+        sqlx::query(
+            "INSERT INTO sessions (id, machine_id, working_dir, user_id, adapter_id) \
+             VALUES ($1, 'm1', '/w', $2, 'opencode')",
+        )
+        .bind(&session_id)
+        .bind(uid)
+        .execute(&pool)
+        .await
+        .expect("seed session");
+        sqlx::query(
+            "INSERT INTO session_tokens (token_hash, session_id, account_id) VALUES ($1, $2, $3)",
+        )
+        .bind(format!("th-{session_id}"))
+        .bind(&session_id)
+        .bind(prov)
+        .execute(&pool)
+        .await
+        .expect("seed token");
+
+        super::record_fireworks_usage(
+            pool.clone(),
+            session_id.clone(),
+            Some("accounts/fireworks/models/kimi-k3".to_owned()),
+            crate::cost::CapturedUsage {
+                message_id: Some("gw-cap-1".to_owned()),
+                usage: crate::cost::TokenUsage { input: 2_000_000, cached_input: 0, output: 0 },
+            },
+        )
+        .await;
+
+        // 2 Mtok input at $3/Mtok = $6 spent for this one session.
+        let catalog = serde_json::json!([
+            { "model": "accounts/fireworks/models/kimi-k3", "price_input_per_mtok": 3.0 }
+        ]);
+        let spent = super::max_session_spend_usd(&pool, prov, Some(&catalog), "5 hours")
+            .await
+            .expect("the captured row must price to a non-zero session spend");
+        assert!((spent - 6.0).abs() < 1e-6, "expected $6 from the stamped row, got {spent}");
+
+        let caps = crate::soft_limit::SoftLimits::from_json(Some(&serde_json::json!({
+            "session_usd": { "cap_usd": 5.0 }
+        })));
+        let windows =
+            vec![crate::soft_limit::usd_window(crate::soft_limit::KEY_SESSION_USD, spent, None)];
+        match crate::soft_limit::evaluate_soft_limit(&windows, &caps, Utc::now()) {
+            crate::soft_limit::Decision::Block { key, .. } => {
+                assert_eq!(key, crate::soft_limit::KEY_SESSION_USD);
+            }
+            crate::soft_limit::Decision::Allow => {
+                panic!("a $6 session against a $5 cap must block (429)")
+            }
+        }
+
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
+    }
 }
