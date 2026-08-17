@@ -191,11 +191,28 @@ async fn parent_account_name(state: &AppState, session_id: &str) -> Option<Strin
 }
 
 async fn child_count(state: &AppState, parent_id: &str) -> u32 {
-    let n: i64 = sqlx::query_scalar("SELECT count(*) FROM sessions WHERE parent_id = $1")
-        .bind(parent_id)
-        .fetch_one(&state.pool)
-        .await
-        .unwrap_or(0);
+    live_child_count(&state.pool, parent_id).await
+}
+
+/// Children counting against the parent's spawn quota: every child except those
+/// that ended in failure. A child that emitted a terminal `session_ended` whose
+/// reason is anything but `Completed` (crashed, killed, adapter error) has freed
+/// its slot, so the parent can respawn a replacement. Still-running and
+/// completed-successful children both count.
+async fn live_child_count(pool: &sqlx::PgPool, parent_id: &str) -> u32 {
+    let n: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM sessions s \
+         WHERE s.parent_id = $1 \
+         AND NOT EXISTS ( \
+             SELECT 1 FROM stream_events e \
+             WHERE e.session_id = s.id AND e.event_type = 'session_ended' \
+             AND e.payload->>'reason' <> 'Completed' \
+         )",
+    )
+    .bind(parent_id)
+    .fetch_one(pool)
+    .await
+    .unwrap_or(0);
     u32::try_from(n).unwrap_or(u32::MAX)
 }
 
@@ -420,6 +437,7 @@ pub const AGENT_PROFILE_ENV: &str = "CCTUI_OPENCODE_AGENT";
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn cap(
         adapters: &[&str],
@@ -637,6 +655,88 @@ mod tests {
         assert_eq!(
             resolve_child_adapter(&pool, uid, &parent, "no-such-session").await.unwrap_err().0,
             StatusCode::NOT_FOUND,
+        );
+
+        sqlx::query("DELETE FROM sessions WHERE user_id = $1").bind(uid).execute(&pool).await.ok();
+        sqlx::query("DELETE FROM machines WHERE user_id = $1").bind(uid).execute(&pool).await.ok();
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
+    }
+
+    /// DB-gated: a crashed or killed child frees its quota slot, while a
+    /// completed-successful child and a still-running one both keep counting.
+    #[tokio::test]
+    async fn failed_children_free_their_quota_slot() {
+        let Some(url) =
+            crate::routes::gateway::test_db_url("failed_children_free_their_quota_slot")
+        else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+
+        let uid = Uuid::new_v4();
+        let machine = Uuid::new_v4();
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, 'q-test', $2)")
+            .bind(uid)
+            .bind(format!("kh-{uid}"))
+            .execute(&pool)
+            .await
+            .expect("seed user");
+        sqlx::query("INSERT INTO machines (id, user_id, name, key_hash) VALUES ($1, $2, $3, $4)")
+            .bind(machine)
+            .bind(uid)
+            .bind(machine.to_string())
+            .bind(format!("kh-{machine}"))
+            .execute(&pool)
+            .await
+            .expect("seed machine");
+
+        let parent_id = Uuid::new_v4().to_string();
+        let running = Uuid::new_v4().to_string();
+        let completed = Uuid::new_v4().to_string();
+        let crashed = Uuid::new_v4().to_string();
+        let killed = Uuid::new_v4().to_string();
+        for id in [&parent_id, &running, &completed, &crashed, &killed] {
+            let parent = (*id != parent_id).then(|| parent_id.clone());
+            sqlx::query(
+                "INSERT INTO sessions (id, parent_id, machine_id, working_dir, user_id, \
+                 machine_uuid, adapter_id) VALUES ($1, $2, $3, '/w', $4, $5, 'opencode')",
+            )
+            .bind(id)
+            .bind(parent)
+            .bind(machine.to_string())
+            .bind(uid)
+            .bind(machine)
+            .execute(&pool)
+            .await
+            .expect("seed session");
+        }
+        let end = |id: &str, reason: serde_json::Value| {
+            let id = id.to_owned();
+            let pool = pool.clone();
+            async move {
+                sqlx::query(
+                    "INSERT INTO stream_events (session_id, event_type, payload) \
+                     VALUES ($1, 'session_ended', $2)",
+                )
+                .bind(id)
+                .bind(json!({ "reason": reason }))
+                .execute(&pool)
+                .await
+                .expect("seed session_ended");
+            }
+        };
+        end(&completed, json!("Completed")).await;
+        end(&crashed, json!({ "Crashed": { "detail": "gateway rejected" } })).await;
+        end(&killed, json!("Killed")).await;
+
+        assert_eq!(
+            live_child_count(&pool, &parent_id).await,
+            2,
+            "running + completed count; crashed + killed are freed"
         );
 
         sqlx::query("DELETE FROM sessions WHERE user_id = $1").bind(uid).execute(&pool).await.ok();

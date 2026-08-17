@@ -279,6 +279,9 @@ pub struct ProviderInfo {
     /// `context_length_exceeded_behavior`, session affinity, extra body keys).
     /// Distinct from `settings_json`, which is harness settings.
     pub provider_settings: Option<serde_json::Value>,
+    /// Per-(account, provider) gateway rate limits `{ rpm?, tpm? }`, enforced in
+    /// the proxy path. NULL ⇒ no throttling.
+    pub rate_limits: Option<serde_json::Value>,
 }
 
 /// API view of an account identity: name, owner, timestamps, and its
@@ -346,7 +349,7 @@ const PROVIDER_SELECT: &str = "SELECT p.id, p.account_id, p.provider, p.family, 
             p.request_count, p.bytes_transferred, \
             p.soft_limits_json AS soft_limits, \
             p.needs_reauth, p.last_auth_error, p.last_auth_error_at, p.settings_json, \
-            p.provider_settings, \
+            p.provider_settings, p.rate_limits_json AS rate_limits, \
             (COALESCE(t.input_tokens,0) + COALESCE(t.output_tokens,0) \
              + COALESCE(t.cache_read_tokens,0) + COALESCE(t.cache_creation_tokens,0))::bigint \
               AS total_tokens, \
@@ -492,6 +495,10 @@ pub struct ProviderSpec {
     /// the defaults so every knob is visible and editable from the start.
     #[serde(default)]
     pub provider_settings: Option<serde_json::Value>,
+    /// Per-(account, provider) gateway rate limits `{ rpm?, tpm? }`. Absent ⇒
+    /// NULL (no throttling). Validated before persist.
+    #[serde(default)]
+    pub rate_limits: Option<serde_json::Value>,
 }
 
 /// `POST /api/v1/accounts` payload: the identity fields, plus an
@@ -589,6 +596,10 @@ pub struct UpdateProvider {
     /// empty object drops back to the family defaults); absent → unchanged.
     #[serde(default)]
     pub provider_settings: Option<serde_json::Value>,
+    /// Replacement rate-limit object `{ rpm?, tpm? }`. Provided → replaces the
+    /// stored value (an empty object / zeros clear it); absent → unchanged.
+    #[serde(default)]
+    pub rate_limits: Option<serde_json::Value>,
 }
 
 /// `POST /api/v1/accounts/{id}/providers/{provider_id}/move` payload:
@@ -672,6 +683,36 @@ fn build_soft_limits_json(
     }
 
     Ok((!out.is_empty()).then(|| serde_json::to_value(out).unwrap_or(serde_json::Value::Null)))
+}
+
+/// Validate a `{ rpm?, tpm? }` rate-limit object into the JSONB blob to store.
+/// A zero or omitted dimension clears that limit; `Ok(None)` when neither is set
+/// (clears the column). Rejects negative / non-integer values and a non-object.
+fn build_rate_limits_json(
+    map: Option<&serde_json::Value>,
+) -> Result<Option<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+    let Some(map) = map.filter(|v| !v.is_null()) else { return Ok(None) };
+    let Some(obj) = map.as_object() else {
+        return Err(err(StatusCode::BAD_REQUEST, "rate_limits must be an object"));
+    };
+    let mut out = serde_json::Map::new();
+    for key in ["rpm", "tpm"] {
+        match obj.get(key) {
+            None | Some(serde_json::Value::Null) => {}
+            Some(v) => {
+                let Some(n) = v.as_u64() else {
+                    return Err(err(
+                        StatusCode::BAD_REQUEST,
+                        "rate limit must be a whole number >= 0",
+                    ));
+                };
+                if n > 0 {
+                    out.insert(key.to_owned(), serde_json::json!(n));
+                }
+            }
+        }
+    }
+    Ok((!out.is_empty()).then_some(serde_json::Value::Object(out)))
 }
 
 fn err(code: StatusCode, msg: &str) -> (StatusCode, Json<serde_json::Value>) {
@@ -797,6 +838,7 @@ struct ProviderWrite {
     soft_limits_json: Option<serde_json::Value>,
     settings_json: Option<serde_json::Value>,
     provider_settings: Option<serde_json::Value>,
+    rate_limits_json: Option<serde_json::Value>,
 }
 
 /// Validate a [`ProviderSpec`] into a [`ProviderWrite`] (shared by the one-shot
@@ -921,6 +963,7 @@ fn prepare_provider_write(
         )?,
         settings_json,
         provider_settings,
+        rate_limits_json: build_rate_limits_json(spec.rate_limits.as_ref())?,
     })
 }
 
@@ -949,8 +992,8 @@ async fn insert_provider(
         "INSERT INTO account_providers \
             (user_id, account_id, provider, encrypted_refresh_token, encrypted_access_token, \
              expires_at, base_url, models, auth_scheme, model_aliases, \
-             soft_limits_json, settings_json, provider_settings) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) \
+             soft_limits_json, settings_json, provider_settings, rate_limits_json) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) \
          RETURNING id",
     )
     .bind(user_id)
@@ -966,6 +1009,7 @@ async fn insert_provider(
     .bind(&w.soft_limits_json)
     .bind(&w.settings_json)
     .bind(&w.provider_settings)
+    .bind(&w.rate_limits_json)
     .fetch_one(conn)
     .await
 }
@@ -1336,6 +1380,8 @@ pub async fn update_provider(
         Some(v) => Some(validate_provider_settings(v)?),
         None => None,
     };
+    let rate_limits_provided = req.rate_limits.is_some();
+    let rate_limits_json = build_rate_limits_json(req.rate_limits.as_ref())?;
 
     // COALESCE keeps each column when its bind is NULL, so an absent field is a
     // no-op. Admin (`ctx.user_id` = NULL) may edit any provider; a user only its
@@ -1349,7 +1395,8 @@ pub async fn update_provider(
             model_aliases = CASE WHEN $8 THEN $9 ELSE model_aliases END, \
             soft_limits_json = CASE WHEN $10 THEN $11 ELSE soft_limits_json END, \
             settings_json = CASE WHEN $12 THEN $13 ELSE settings_json END, \
-            provider_settings = CASE WHEN $14 THEN $15 ELSE provider_settings END \
+            provider_settings = CASE WHEN $14 THEN $15 ELSE provider_settings END, \
+            rate_limits_json = CASE WHEN $16 THEN $17 ELSE rate_limits_json END \
          WHERE id = $1 AND account_id = $2 \
            AND ($3::uuid IS NULL OR user_id = $3) AND NOT managed \
          RETURNING id",
@@ -1369,6 +1416,8 @@ pub async fn update_provider(
     .bind(&settings_json)
     .bind(gateway_settings_provided)
     .bind(&provider_settings)
+    .bind(rate_limits_provided)
+    .bind(&rate_limits_json)
     .fetch_optional(&state.pool)
     .await
     .map_err(|e| db_err(&e))?;
@@ -2466,5 +2515,35 @@ mod tests {
         // native without refresh token → 400.
         let spec = ProviderSpec { provider: Some("anthropic".into()), ..Default::default() };
         assert!(prepare_provider_write(&spec).is_err());
+    }
+
+    #[test]
+    fn rate_limits_json_validates_and_clears() {
+        let out =
+            build_rate_limits_json(Some(&serde_json::json!({ "rpm": 30, "tpm": 90_000 }))).unwrap();
+        assert_eq!(out, Some(serde_json::json!({ "rpm": 30, "tpm": 90_000 })));
+
+        // Absent, null, empty object, and zeros all clear the column.
+        assert_eq!(build_rate_limits_json(None).unwrap(), None);
+        assert_eq!(build_rate_limits_json(Some(&serde_json::Value::Null)).unwrap(), None);
+        assert_eq!(build_rate_limits_json(Some(&serde_json::json!({}))).unwrap(), None);
+        assert_eq!(
+            build_rate_limits_json(Some(&serde_json::json!({ "rpm": 0, "tpm": 0 }))).unwrap(),
+            None
+        );
+
+        assert_eq!(
+            build_rate_limits_json(Some(&serde_json::json!({ "rpm": 5 }))).unwrap(),
+            Some(serde_json::json!({ "rpm": 5 }))
+        );
+
+        for bad in [
+            serde_json::json!({ "rpm": -1 }),
+            serde_json::json!({ "tpm": 1.5 }),
+            serde_json::json!([1, 2]),
+        ] {
+            let e = build_rate_limits_json(Some(&bad)).expect_err("invalid rate_limits must 400");
+            assert_eq!(e.0, StatusCode::BAD_REQUEST);
+        }
     }
 }
