@@ -1,18 +1,20 @@
 //! Singleton run-lock: at most one `cctui-daemon run` serves per machine.
 //!
 //! `flock(LOCK_EX | LOCK_NB)` on a per-user lock file; the kernel releases it
-//! on process exit so a crash leaves no stale lock. `FD_CLOEXEC` is cleared so
-//! the fd survives `selfupdate::reexec()` (execve, same pid) — else the
-//! re-exec'd image would deadlock against its own lock.
+//! on process exit so a crash leaves no stale lock. The fd must stay
+//! `FD_CLOEXEC` so `selfupdate::reexec()` (execve, same pid) releases the
+//! lock for the new image to re-acquire: flock locks on separate open file
+//! descriptions conflict even within one process, so an inherited fd
+//! deadlocks the new image against its own lock. Fds leaked by pre-CLOEXEC
+//! binaries are reclaimed when the lock owner pid is our own.
 
 use std::fs::{File, OpenOptions};
 use std::io::Write;
-use std::os::fd::AsFd;
-use std::path::PathBuf;
+use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd, RawFd};
+use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
 use rustix::fs::{FlockOperation, flock};
-use rustix::io::{FdFlags, fcntl_getfd, fcntl_setfd};
 
 const FILE_NAME: &str = "daemon.lock";
 
@@ -20,6 +22,23 @@ const FILE_NAME: &str = "daemon.lock";
 #[derive(Debug)]
 pub struct RunLock {
     _file: File,
+    path: PathBuf,
+}
+
+/// Distinguishes an execve-inherited lock (no live holder in this image —
+/// reclaimable) from one a live `RunLock` in this process still owns.
+static HELD_IN_THIS_IMAGE: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+
+fn held_here(path: &Path) -> bool {
+    HELD_IN_THIS_IMAGE.lock().is_ok_and(|held| held.iter().any(|p| p == path))
+}
+
+impl Drop for RunLock {
+    fn drop(&mut self) {
+        if let Ok(mut held) = HELD_IN_THIS_IMAGE.lock() {
+            held.retain(|p| p != &self.path);
+        }
+    }
 }
 
 /// Lock-file locations, most preferred first. Mirrors
@@ -67,17 +86,16 @@ fn acquire_at(candidates: &[PathBuf]) -> Result<RunLock> {
                 continue;
             }
         };
-        // Survive `execve` so the re-exec'd self-update image keeps the lock.
-        let flags = fcntl_getfd(file.as_fd())?;
-        fcntl_setfd(file.as_fd(), flags - FdFlags::CLOEXEC)?;
-
-        match flock(file.as_fd(), FlockOperation::NonBlockingLockExclusive) {
+        match lock_with_self_reclaim(&file, path) {
             Ok(()) => {
                 let mut file = file;
                 let _ = file.set_len(0);
                 let _ = write!(file, "{}", std::process::id());
                 let _ = file.flush();
-                return Ok(RunLock { _file: file });
+                if let Ok(mut held) = HELD_IN_THIS_IMAGE.lock() {
+                    held.push(path.clone());
+                }
+                return Ok(RunLock { _file: file, path: path.clone() });
             }
             Err(err) if err == rustix::io::Errno::WOULDBLOCK || err == rustix::io::Errno::AGAIN => {
                 bail!(already_running_message());
@@ -94,6 +112,49 @@ fn acquire_at(candidates: &[PathBuf]) -> Result<RunLock> {
                 .context("could not acquire the cctui-daemon run-lock at any candidate location"))
         }
         None => bail!("could not acquire the cctui-daemon run-lock: no candidate location"),
+    }
+}
+
+fn lock_with_self_reclaim(file: &File, path: &Path) -> rustix::io::Result<()> {
+    match flock(file.as_fd(), FlockOperation::NonBlockingLockExclusive) {
+        Err(err)
+            if (err == rustix::io::Errno::WOULDBLOCK || err == rustix::io::Errno::AGAIN)
+                && !held_here(path)
+                && lock_owner_pid(path) == Some(std::process::id()) =>
+        {
+            close_inherited_fds(file, path);
+            flock(file.as_fd(), FlockOperation::NonBlockingLockExclusive)
+        }
+        other => other,
+    }
+}
+
+fn lock_owner_pid(path: &Path) -> Option<u32> {
+    std::fs::read_to_string(path).ok()?.trim().parse().ok()
+}
+
+/// Any other fd open on the lock file's inode was leaked across execve by a
+/// pre-CLOEXEC image of this same process; closing it releases its flock.
+#[allow(unsafe_code)]
+fn close_inherited_fds(file: &File, path: &Path) {
+    let Ok(target) = rustix::fs::stat(path) else { return };
+    #[cfg(target_os = "linux")]
+    let fd_dir = "/proc/self/fd";
+    #[cfg(not(target_os = "linux"))]
+    let fd_dir = "/dev/fd";
+    let Ok(entries) = std::fs::read_dir(fd_dir) else { return };
+    let fds: Vec<RawFd> = entries
+        .filter_map(|e| e.ok()?.file_name().to_str()?.parse().ok())
+        .filter(|&fd| fd > 2 && fd != file.as_raw_fd())
+        .collect();
+    for fd in fds {
+        let borrowed = unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) };
+        if let Ok(st) = rustix::fs::fstat(borrowed)
+            && st.st_dev == target.st_dev
+            && st.st_ino == target.st_ino
+        {
+            drop(unsafe { OwnedFd::from_raw_fd(fd) });
+        }
     }
 }
 
@@ -138,11 +199,24 @@ mod tests {
 
     #[test]
     #[allow(clippy::used_underscore_binding)]
-    fn lock_fd_is_not_cloexec() {
+    fn lock_fd_is_cloexec() {
+        use rustix::io::{FdFlags, fcntl_getfd};
         let (_tmp, cands) = lock_path();
         let lock = acquire_at(&cands).expect("acquire succeeds");
         let flags = fcntl_getfd(lock._file.as_fd()).unwrap();
-        assert!(!flags.contains(FdFlags::CLOEXEC), "lock fd must survive execve");
+        assert!(flags.contains(FdFlags::CLOEXEC), "lock fd must not survive execve");
+    }
+
+    #[test]
+    #[allow(clippy::used_underscore_binding)]
+    fn self_owned_inherited_lock_is_reclaimed() {
+        use std::os::fd::IntoRawFd;
+        let (_tmp, cands) = lock_path();
+        let first = acquire_at(&cands).expect("first acquire succeeds");
+        let _leaked = first._file.try_clone().unwrap().into_raw_fd();
+        drop(first);
+        let again = acquire_at(&cands).expect("self-owned lock must be reclaimed");
+        drop(again);
     }
 
     #[test]
