@@ -65,46 +65,64 @@ pub fn acquire() -> Result<RunLock> {
 
 fn acquire_at(candidates: &[PathBuf]) -> Result<RunLock> {
     let mut last_err = None;
-    for path in candidates {
+    'candidate: for path in candidates {
         let Some(dir) = path.parent() else { continue };
         if let Err(err) = std::fs::create_dir_all(dir) {
             tracing::debug!(path = %dir.display(), %err, "run-lock dir candidate unusable");
             last_err = Some(anyhow::Error::from(err));
             continue;
         }
-        let file = match OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(path)
-        {
-            Ok(f) => f,
-            Err(err) => {
-                tracing::debug!(path = %path.display(), %err, "run-lock file candidate unopenable");
-                last_err = Some(anyhow::Error::from(err));
-                continue;
-            }
-        };
-        match lock_with_self_reclaim(&file, path) {
-            Ok(()) => {
-                let mut file = file;
-                let _ = file.set_len(0);
-                let _ = write!(file, "{}", std::process::id());
-                let _ = file.flush();
-                if let Ok(mut held) = HELD_IN_THIS_IMAGE.lock() {
-                    held.push(path.clone());
+        for _ in 0..3 {
+            let file = match OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(path)
+            {
+                Ok(f) => f,
+                Err(err) => {
+                    tracing::debug!(path = %path.display(), %err, "run-lock file candidate unopenable");
+                    last_err = Some(anyhow::Error::from(err));
+                    continue 'candidate;
                 }
-                return Ok(RunLock { _file: file, path: path.clone() });
-            }
-            Err(err) if err == rustix::io::Errno::WOULDBLOCK || err == rustix::io::Errno::AGAIN => {
-                bail!(already_running_message());
-            }
-            Err(err) => {
-                tracing::debug!(path = %path.display(), %err, "run-lock flock candidate failed");
-                last_err = Some(anyhow::Error::from(std::io::Error::from(err)));
+            };
+            match lock_with_self_reclaim(&file, path) {
+                Ok(()) => {
+                    if !fd_matches_path(&file, path) {
+                        continue;
+                    }
+                    let mut file = file;
+                    let _ = file.set_len(0);
+                    let _ = write!(file, "{}", std::process::id());
+                    let _ = file.flush();
+                    if let Ok(mut held) = HELD_IN_THIS_IMAGE.lock() {
+                        held.push(path.clone());
+                    }
+                    return Ok(RunLock { _file: file, path: path.clone() });
+                }
+                Err(err)
+                    if err == rustix::io::Errno::WOULDBLOCK || err == rustix::io::Errno::AGAIN =>
+                {
+                    if !held_here(path) && lock_owner_dead(path) {
+                        tracing::warn!(
+                            path = %path.display(),
+                            "run-lock owner is dead but the lock is held (fds orphaned in its \
+                             children) — rotating the lock file"
+                        );
+                        let _ = std::fs::remove_file(path);
+                        continue;
+                    }
+                    bail!(already_running_message());
+                }
+                Err(err) => {
+                    tracing::debug!(path = %path.display(), %err, "run-lock flock candidate failed");
+                    last_err = Some(anyhow::Error::from(std::io::Error::from(err)));
+                    continue 'candidate;
+                }
             }
         }
+        bail!(already_running_message());
     }
     match last_err {
         Some(err) => {
@@ -131,6 +149,19 @@ fn lock_with_self_reclaim(file: &File, path: &Path) -> rustix::io::Result<()> {
 
 fn lock_owner_pid(path: &Path) -> Option<u32> {
     std::fs::read_to_string(path).ok()?.trim().parse().ok()
+}
+
+fn lock_owner_dead(path: &Path) -> bool {
+    lock_owner_pid(path).is_some_and(|pid| !crate::runtime::pid_alive(pid))
+}
+
+/// After a rotation race, the locked fd may point at an inode another daemon
+/// just unlinked; only a lock on the inode currently at `path` counts.
+fn fd_matches_path(file: &File, path: &Path) -> bool {
+    match (rustix::fs::fstat(file.as_fd()), rustix::fs::stat(path)) {
+        (Ok(a), Ok(b)) => a.st_dev == b.st_dev && a.st_ino == b.st_ino,
+        _ => false,
+    }
 }
 
 /// Any other fd open on the lock file's inode was leaked across execve by a
@@ -205,6 +236,28 @@ mod tests {
         let lock = acquire_at(&cands).expect("acquire succeeds");
         let flags = fcntl_getfd(lock._file.as_fd()).unwrap();
         assert!(flags.contains(FdFlags::CLOEXEC), "lock fd must not survive execve");
+    }
+
+    #[test]
+    #[allow(clippy::used_underscore_binding)]
+    fn dead_owner_lock_is_rotated() {
+        let (_tmp, cands) = lock_path();
+        std::fs::create_dir_all(cands[0].parent().unwrap()).unwrap();
+        let orphan = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&cands[0])
+            .unwrap();
+        flock(orphan.as_fd(), FlockOperation::NonBlockingLockExclusive).unwrap();
+        let mut child = std::process::Command::new("true").spawn().unwrap();
+        let dead_pid = child.id();
+        child.wait().unwrap();
+        std::fs::write(&cands[0], dead_pid.to_string()).unwrap();
+        let lock = acquire_at(&cands).expect("dead-owner lock must be rotated");
+        assert!(fd_matches_path(&lock._file, &cands[0]));
+        drop(orphan);
     }
 
     #[test]
