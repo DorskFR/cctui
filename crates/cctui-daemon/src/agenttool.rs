@@ -28,6 +28,9 @@ const PROGRESS_EVERY: Duration = Duration::from_secs(15);
 /// its first model call — waiting out `timeout_secs` only delays the failure.
 const SILENT_CHILD_GRACE: Duration = Duration::from_secs(90);
 
+const NUDGE_PROMPT: &str =
+    "continue — return your findings / final answer now, in full, and nothing else.";
+
 /// Socket the session's MCP relay connects to. Kept beside the daemon's other
 /// runtime state so a worker container with an unwritable `~/.config` still
 /// finds a usable path.
@@ -133,16 +136,41 @@ fn reply_frame(outcome: &crate::childwatch::ChildOutcome) -> Value {
     }
 }
 
-/// Follow the child until it finishes or `timeout` elapses, streaming progress
-/// frames to a proto≥2 relay via `out`.
-async fn follow_child(
-    handle: &WatchHandle,
-    child_id: &str,
-    timeout: Duration,
-    proto: u64,
-    out: &mut (impl AsyncWriteExt + Unpin),
-) -> Value {
-    follow_child_with(handle, child_id, timeout, SILENT_CHILD_GRACE, proto, out).await
+enum FollowResult {
+    Finished(crate::childwatch::ChildOutcome),
+    Error(Value),
+}
+
+fn follow_result_to_frame(result: FollowResult) -> Value {
+    match result {
+        FollowResult::Finished(outcome) => reply_frame(&outcome),
+        FollowResult::Error(frame) => frame,
+    }
+}
+
+/// Whether a completed turn's final message reads as a truncated non-answer
+/// rather than a deliverable: empty, or ending on a planning/intent tail (a
+/// trailing colon, or a bare enumeration marker the model never filled in).
+fn looks_truncated(final_text: Option<&str>) -> bool {
+    let Some(text) = final_text.map(str::trim).filter(|t| !t.is_empty()) else {
+        return true;
+    };
+    let last = text.lines().rev().map(str::trim).find(|l| !l.is_empty()).unwrap_or("");
+    last.ends_with(':') || is_bare_enumeration_marker(last)
+}
+
+fn is_bare_enumeration_marker(line: &str) -> bool {
+    matches!(line, "-" | "*" | "•") || {
+        let rest = line.trim_start_matches(|c: char| c.is_ascii_digit());
+        rest.len() < line.len() && matches!(rest, "." | ")")
+    }
+}
+
+/// Whether a finished child warrants the single automatic continuation nudge:
+/// only a clean turn (no error) whose final message reads truncated qualifies —
+/// a crashed or errored child is never nudged.
+fn should_nudge(outcome: &crate::childwatch::ChildOutcome) -> bool {
+    outcome.error.is_none() && looks_truncated(outcome.final_text.as_deref())
 }
 
 /// Whether the child has produced any evidence of a running turn: a bound
@@ -161,20 +189,22 @@ async fn follow_child_with(
     silent_grace: Duration,
     proto: u64,
     out: &mut (impl AsyncWriteExt + Unpin),
-) -> Value {
+) -> FollowResult {
     let started = Instant::now();
     let mut last_progress = Instant::now();
     loop {
         handle.changed(Duration::from_secs(2)).await;
         let now = Instant::now();
         let Some(snap) = handle.snapshot() else {
-            return json!({ "ok": false, "error": "child agent tracking was dropped" });
+            return FollowResult::Error(
+                json!({ "ok": false, "error": "child agent tracking was dropped" }),
+            );
         };
         match snap.assess(now) {
-            Assessment::Finished(outcome) => return reply_frame(&outcome),
+            Assessment::Finished(outcome) => return FollowResult::Finished(outcome),
             Assessment::Running(line) => {
                 if now.duration_since(started) >= silent_grace && !showed_activity(&snap) {
-                    return json!({
+                    return FollowResult::Error(json!({
                         "ok": false,
                         "error": format!(
                             "child agent {} produced no activity within {}s of being prompted — \
@@ -185,10 +215,10 @@ async fn follow_child_with(
                             silent_grace.as_secs(),
                             timeout.as_secs(),
                         ),
-                    });
+                    }));
                 }
                 if now.duration_since(started) >= timeout {
-                    return json!({
+                    return FollowResult::Error(json!({
                         "ok": false,
                         "error": format!(
                             "child agent {child_id} did not finish within {}s — it is still \
@@ -197,7 +227,7 @@ async fn follow_child_with(
                             timeout.as_secs(),
                             snap.local_id.as_deref().unwrap_or(child_id),
                         ),
-                    });
+                    }));
                 }
                 if proto >= 2 && now.duration_since(last_progress) >= PROGRESS_EVERY {
                     last_progress = now;
@@ -210,7 +240,9 @@ async fn follow_child_with(
                         ),
                     });
                     if write_line(out, &frame).await.is_err() {
-                        return json!({ "ok": false, "error": "relay went away" });
+                        return FollowResult::Error(
+                            json!({ "ok": false, "error": "relay went away" }),
+                        );
                     }
                 }
             }
@@ -261,7 +293,50 @@ async fn run_call(
             (handle, req.session_id.clone())
         }
     };
-    follow_child(&handle, &child_id, call.timeout, call.proto, out).await
+    let result =
+        follow_child_with(&handle, &child_id, call.timeout, SILENT_CHILD_GRACE, call.proto, out)
+            .await;
+    let FollowResult::Finished(outcome) = result else {
+        return follow_result_to_frame(result);
+    };
+    if !should_nudge(&outcome) {
+        return reply_frame(&outcome);
+    }
+    let Some(target) = outcome.local_id.clone() else {
+        return reply_frame(&outcome);
+    };
+    drop(handle);
+    nudge_once(server, machine_key, &call, &watch, &target, outcome, out).await
+}
+
+/// Send exactly one continuation prompt to a child that finished on a truncated
+/// non-answer and follow that turn. Falls back to the original outcome when the
+/// nudge cannot be relayed or the follow-up itself produces nothing.
+async fn nudge_once(
+    server: &ServerClient,
+    machine_key: &str,
+    call: &Call,
+    watch: &std::sync::Arc<crate::childwatch::ChildWatch>,
+    target: &str,
+    original: crate::childwatch::ChildOutcome,
+    out: &mut (impl AsyncWriteExt + Unpin),
+) -> Value {
+    let req =
+        MessageChildRequest { session_id: target.to_owned(), prompt: NUDGE_PROMPT.to_owned() };
+    let handle = watch.register_bound(target);
+    if let Err(err) = server.message_child(machine_key, &call.session_id, &req).await {
+        tracing::warn!(parent = %call.session_id, child = %target, %err, "CctuiAgent nudge failed");
+        return reply_frame(&original);
+    }
+    tracing::info!(parent = %call.session_id, child = %target, "CctuiAgent nudging truncated child");
+    match follow_child_with(&handle, target, call.timeout, SILENT_CHILD_GRACE, call.proto, out)
+        .await
+    {
+        FollowResult::Finished(nudged) if nudged.final_text.is_some() || nudged.error.is_some() => {
+            reply_frame(&nudged)
+        }
+        _ => reply_frame(&original),
+    }
 }
 
 async fn handle_connection(stream: UnixStream, server: ServerClient, machine_key: String) {
@@ -464,7 +539,17 @@ mod tests {
             });
         });
         let mut out: Vec<u8> = Vec::new();
-        let frame = follow_child(&handle, "child-1", Duration::from_secs(10), 2, &mut out).await;
+        let frame = follow_result_to_frame(
+            follow_child_with(
+                &handle,
+                "child-1",
+                Duration::from_secs(10),
+                SILENT_CHILD_GRACE,
+                2,
+                &mut out,
+            )
+            .await,
+        );
         feeder.await.unwrap();
         assert_eq!(frame["ok"], json!(true));
         assert!(frame["result"].as_str().unwrap().starts_with("all done"));
@@ -479,7 +564,17 @@ mod tests {
             meta: cctui_proto::adapter::SessionMeta::default(),
         });
         let mut out: Vec<u8> = Vec::new();
-        let frame = follow_child(&handle, "child-1", Duration::from_millis(10), 1, &mut out).await;
+        let frame = follow_result_to_frame(
+            follow_child_with(
+                &handle,
+                "child-1",
+                Duration::from_millis(10),
+                SILENT_CHILD_GRACE,
+                1,
+                &mut out,
+            )
+            .await,
+        );
         assert_eq!(frame["ok"], json!(false));
         let text = frame["error"].as_str().unwrap();
         assert!(text.contains("still running"), "{text}");
@@ -496,15 +591,17 @@ mod tests {
             meta: cctui_proto::adapter::SessionMeta::default(),
         });
         let mut out: Vec<u8> = Vec::new();
-        let frame = follow_child_with(
-            &handle,
-            "child-1",
-            Duration::from_mins(30),
-            Duration::from_millis(10),
-            2,
-            &mut out,
-        )
-        .await;
+        let frame = follow_result_to_frame(
+            follow_child_with(
+                &handle,
+                "child-1",
+                Duration::from_mins(30),
+                Duration::from_millis(10),
+                2,
+                &mut out,
+            )
+            .await,
+        );
         assert_eq!(frame["ok"], json!(false));
         let text = frame["error"].as_str().unwrap();
         assert!(text.contains("no activity"), "{text}");
@@ -524,15 +621,17 @@ mod tests {
             payload: json!({ "tool": "Bash" }),
         });
         let mut out: Vec<u8> = Vec::new();
-        let frame = follow_child_with(
-            &handle,
-            "child-1",
-            Duration::from_millis(20),
-            Duration::from_millis(10),
-            1,
-            &mut out,
-        )
-        .await;
+        let frame = follow_result_to_frame(
+            follow_child_with(
+                &handle,
+                "child-1",
+                Duration::from_millis(20),
+                Duration::from_millis(10),
+                1,
+                &mut out,
+            )
+            .await,
+        );
         let text = frame["error"].as_str().unwrap();
         assert!(
             text.contains("still running"),
@@ -556,19 +655,56 @@ mod tests {
         });
         let mut out: Vec<u8> = Vec::new();
         let started = Instant::now();
-        let frame = follow_child_with(
-            &handle,
-            "child-1",
-            Duration::from_mins(30),
-            Duration::from_mins(30),
-            2,
-            &mut out,
-        )
-        .await;
+        let frame = follow_result_to_frame(
+            follow_child_with(
+                &handle,
+                "child-1",
+                Duration::from_mins(30),
+                Duration::from_mins(30),
+                2,
+                &mut out,
+            )
+            .await,
+        );
         feeder.await.unwrap();
         assert!(started.elapsed() < Duration::from_secs(30), "must not wait out the timeout");
         assert_eq!(frame["ok"], json!(false));
         assert!(frame["error"].as_str().unwrap().contains("gateway rejected"));
+    }
+
+    #[test]
+    fn truncated_non_answers_are_detected() {
+        assert!(looks_truncated(None));
+        assert!(looks_truncated(Some("   \n  ")));
+        assert!(looks_truncated(Some("Reviewing the diff.\n\nNow I need to verify key claims:")));
+        assert!(looks_truncated(Some("Here is my plan.\n1.")));
+        assert!(looks_truncated(Some("First steps:\n-")));
+        assert!(looks_truncated(Some("Considering the options:\n2)")));
+    }
+
+    #[test]
+    fn real_deliverables_are_not_truncated() {
+        assert!(!looks_truncated(Some("VERDICT: approve")));
+        assert!(!looks_truncated(Some(
+            "Findings:\n1. off-by-one at line 4\n2. missing await\n\nOverall: ship after fixes."
+        )));
+        assert!(!looks_truncated(Some("No issues found.")));
+        assert!(!looks_truncated(Some("Line 4: the guard is inverted.")));
+    }
+
+    #[test]
+    fn only_clean_truncated_turns_are_nudged_never_crashes() {
+        let outcome = |text: Option<&str>, err: Option<&str>| ChildOutcome {
+            final_text: text.map(str::to_owned),
+            error: err.map(str::to_owned),
+            local_id: Some("child-1".into()),
+        };
+        assert!(should_nudge(&outcome(Some("Now I need to verify key claims:"), None)));
+        assert!(should_nudge(&outcome(None, None)));
+        assert!(!should_nudge(&outcome(Some("VERDICT: approve"), None)));
+        assert!(!should_nudge(&outcome(Some("Now I need to verify:"), Some("crashed"))));
+        assert!(!should_nudge(&outcome(None, Some("gateway rejected"))));
+        assert!(!should_nudge(&outcome(Some("Findings: none, ship it."), None)));
     }
 
     #[test]

@@ -113,6 +113,10 @@ pub struct AppState {
     /// Per-session dollar budgets applied to `CctuiAgent` children, keyed by the
     /// child's session id. Read on the gateway hot path only while non-empty.
     pub session_usd_budgets: Arc<DashMap<String, f64>>,
+    /// Per-(account, provider) gateway rate-limit windows, keyed by provider row
+    /// id. In-memory rolling RPM/TPM counters the proxy admits requests against;
+    /// only touched for a provider whose `rate_limits_json` sets a limit.
+    pub gateway_rate_windows: Arc<DashMap<Uuid, crate::routes::gateway::RateWindow>>,
 }
 
 /// Sliding-window spam state for one orphan token fingerprint. See

@@ -68,6 +68,18 @@ export interface AccountProvider {
    *  provider. Config, not secret → returned. Only SAFE/CARE
    *  settings.json keys; the server rejects MANAGED/SYSTEM keys on write. */
   settings_json: Record<string, unknown> | null;
+  /** Per-(account, provider) gateway rate limits `{ rpm?, tpm? }`, enforced in
+   *  the proxy path. Null ⇒ no throttling. */
+  rate_limits: RateLimits | null;
+}
+
+/** Gateway rate limits shared across an account's concurrent sessions. Each
+ *  dimension optional; absent/zero ⇒ that dimension is unlimited. */
+export interface RateLimits {
+  /** Max requests admitted per rolling 60s window. */
+  rpm?: number | null;
+  /** Max tokens counted per rolling 60s window. */
+  tpm?: number | null;
 }
 
 /** An account identity: name + owner, with zero or more provider
@@ -169,6 +181,8 @@ export interface CreateAccount {
   soft_limits?: Record<string, SoftLimitConfig>;
   /** Gateway settings; absent on a fireworks create seeds the defaults. */
   provider_settings?: Record<string, unknown>;
+  /** Gateway rate limits `{ rpm?, tpm? }`; empty/zero ⇒ no throttling. */
+  rate_limits?: RateLimits;
 }
 
 /** Provider create/attach payload: `POST /accounts/{id}/providers`.
@@ -193,6 +207,8 @@ export interface CreateProvider {
   settings_json?: Record<string, unknown>;
   /** Gateway settings; absent on a fireworks create seeds the defaults. */
   provider_settings?: Record<string, unknown>;
+  /** Gateway rate limits `{ rpm?, tpm? }`; empty/zero ⇒ no throttling. */
+  rate_limits?: RateLimits;
 }
 
 /** Identity-level edit payload: rename and/or replace the write-only
@@ -232,6 +248,9 @@ export interface UpdateProvider {
   /** Replacement gateway settings object; provided replaces wholesale
    *  (an empty object drops back to the family defaults). */
   provider_settings?: Record<string, unknown>;
+  /** Replacement rate-limit object `{ rpm?, tpm? }`; provided replaces the
+   *  stored value (empty/zero clears it), absent → unchanged. */
+  rate_limits?: RateLimits;
 }
 
 /** "Sign in with Claude" OAuth start payload/response. */

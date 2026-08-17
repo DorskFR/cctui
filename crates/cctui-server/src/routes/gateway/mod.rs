@@ -21,6 +21,7 @@ mod config;
 mod limits;
 mod mint;
 mod proxy;
+mod ratelimit;
 mod refresh;
 mod usage;
 
@@ -28,6 +29,7 @@ pub use config::*;
 pub use limits::*;
 pub use mint::*;
 pub use proxy::*;
+pub use ratelimit::*;
 pub use refresh::*;
 pub use usage::*;
 

@@ -121,6 +121,7 @@ async fn main() -> anyhow::Result<()> {
         machine_event_inserts: Arc::new(dashmap::DashMap::new()),
         spawn_capabilities: Arc::new(dashmap::DashMap::new()),
         session_usd_budgets: Arc::new(dashmap::DashMap::new()),
+        gateway_rate_windows: Arc::new(dashmap::DashMap::new()),
     };
 
     // Warm the reauth gate from the persisted flag so a restart doesn't

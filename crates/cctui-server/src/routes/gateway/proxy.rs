@@ -219,6 +219,24 @@ pub async fn passthrough(
         }
     }
 
+    // Gateway rate limit: a pay-per-token provider's RPM/TPM tier is shared by
+    // every session on the account, so throttle at the proxy. Requests count on
+    // admission; tokens accrue when a response's usage lands below. Unset ⇒ skip.
+    if !acct.rate_limits.is_unset()
+        && let Err(retry_after_secs) = super::admit_request(&state, acct.id, &acct.rate_limits)
+    {
+        tracing::info!(account = %acct.id, retry_after_secs, "gateway rate limit hit");
+        let resp = Response::builder()
+            .status(StatusCode::TOO_MANY_REQUESTS)
+            .header(http::header::RETRY_AFTER, retry_after_secs.to_string())
+            .header(http::header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                serde_json::json!({ "error": "gateway rate limit exceeded" }).to_string(),
+            ))
+            .map_err(|_| StatusCode::TOO_MANY_REQUESTS)?;
+        return Ok(resp);
+    }
+
     // The session token is valid (resolved above); a failure to obtain an
     // upstream access token here is a provider-credential problem (no/expired
     // refresh token, failed refresh) — label it as such.
@@ -442,6 +460,10 @@ pub async fn passthrough(
     // Fireworks speaks the OpenAI wire protocol, so it reconstructs as openai.
     let is_openai = Family::from_provider(&acct.provider) != Family::Anthropic;
     let pool = state.pool.clone();
+    // TPM accounting rides the same per-response usage the metering path captures
+    // (Fireworks): the running window total the next request gates against.
+    let rate_windows = acct.rate_limits.tpm.is_some().then(|| state.gateway_rate_windows.clone());
+    let rate_provider = acct.id;
     let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
     tokio::spawn(async move {
         let mut buf = Vec::new();
@@ -455,6 +477,13 @@ pub async fn passthrough(
                 cached_hdr.as_deref(),
             )
         {
+            if let Some(windows) = &rate_windows {
+                let u = &captured.usage;
+                let total = u64::try_from(u.input).unwrap_or(0)
+                    + u64::try_from(u.cached_input).unwrap_or(0)
+                    + u64::try_from(u.output).unwrap_or(0);
+                super::note_tokens(windows, rate_provider, total);
+            }
             record_fireworks_usage(pool, session_id, request_model, captured).await;
         }
         if let Some(langfuse) = langfuse {

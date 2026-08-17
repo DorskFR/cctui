@@ -11,6 +11,7 @@
 		type AccountProvider,
 		type CreateAccount,
 		type CreateProvider,
+		type RateLimits,
 		type SoftLimitConfig,
 		type UpdateAccount,
 		type UpdateProvider,
@@ -119,6 +120,9 @@
 	let softEdits = $state<
 		Record<string, { cap: number | null; capUsd: number | null; bypass: number | null }>
 	>({});
+	// Gateway RPM/TPM ceilings shared across the account's concurrent sessions;
+	// empty inputs ⇒ that dimension unlimited.
+	let rateEdits = $state<{ rpm: number | null; tpm: number | null }>({ rpm: null, tpm: null });
 	// Fireworks shares the static-credential shape (no OAuth) but keeps its own
 	// editor: gateway settings + a priced model catalog instead of a bare model
 	// list, and its base URL is an optional override of a built-in upstream.
@@ -202,6 +206,13 @@
 		return out;
 	}
 
+	/** The rate-limit object to send on save. Always sent as the whole
+	 *  replacement so clearing a dimension sticks; a blank/zero dimension is
+	 *  omitted (server reads that as unlimited). */
+	function rateLimits(): RateLimits {
+		return { rpm: softNum(rateEdits.rpm), tpm: softNum(rateEdits.tpm) };
+	}
+
 	/** Collapse the alias rows into the `{alias: model}` object the API expects,
 	 *  dropping incomplete rows. */
 	function aliasObject(): Record<string, string> {
@@ -262,6 +273,7 @@
 		modelRows = [{ model: '', label: '' }];
 		aliasRows = [];
 		softEdits = {};
+		rateEdits = { rpm: null, tpm: null };
 		oauthNonce = null;
 		oauthCode = '';
 		oauthBusy = false;
@@ -402,6 +414,7 @@
 		}
 		// Settings are editable per provider.
 		acctSettings = { ...(p.settings_json ?? {}) };
+		rateEdits = { rpm: p.rate_limits?.rpm ?? null, tpm: p.rate_limits?.tpm ?? null };
 	}
 
 	// Reauthenticate a flagged provider: open its edit modal, flip into
@@ -443,6 +456,7 @@
 				const body: UpdateProvider = {
 					model_aliases,
 					soft_limits: softLimits(),
+					rate_limits: rateLimits(),
 					...(editingProvider?.family === 'anthropic' ? { settings_json: acctSettings } : {})
 				};
 				if (isFireworks) {
@@ -464,7 +478,8 @@
 				const spec: CreateProvider = {
 					provider,
 					...(Object.keys(model_aliases).length ? { model_aliases } : {}),
-					soft_limits: softLimits()
+					soft_limits: softLimits(),
+					rate_limits: rateLimits()
 				};
 				if (isFireworks) {
 					spec.auth_scheme = authScheme === 'keep' ? 'bearer' : authScheme;
@@ -515,6 +530,7 @@
 						...(Object.keys(fwSettings).length ? { provider_settings: fwSettings } : {}),
 						...(Object.keys(model_aliases).length ? { model_aliases } : {}),
 						soft_limits: softLimits(),
+						rate_limits: rateLimits(),
 						...(isAdmin ? { user_id: ownerId } : {})
 					};
 				} else if (isCompatible) {
@@ -532,6 +548,7 @@
 						...(models.length ? { models } : {}),
 						...(Object.keys(model_aliases).length ? { model_aliases } : {}),
 						soft_limits: softLimits(),
+						rate_limits: rateLimits(),
 						...(isAdmin ? { user_id: ownerId } : {}),
 					};
 				} else {
@@ -545,6 +562,7 @@
 						refresh_token: refreshToken.trim(),
 						...(Object.keys(model_aliases).length ? { model_aliases } : {}),
 						soft_limits: softLimits(),
+						rate_limits: rateLimits(),
 						...(isAdmin ? { user_id: ownerId } : {}),
 					};
 				}
@@ -922,6 +940,22 @@
 						</div>
 					{/if}
 
+					<!-- Gateway rate limits: an account-wide RPM/TPM tier a
+					     pay-per-token provider shares across every concurrent session,
+					     throttled at the proxy. Blank = unlimited. -->
+					<div class="models">
+						<Text as="div" tone="muted" size="sm">{m.accounts_rate_limits_label()}</Text>
+						<Text as="div" tone="faint" size="xs">{m.accounts_rate_limits_help()}</Text>
+						<div class="rate-row">
+							<Field label={m.accounts_rate_rpm_label()}>
+								<Input type="number" min="0" step="1" bind:value={rateEdits.rpm} placeholder="e.g. 60" />
+							</Field>
+							<Field label={m.accounts_rate_tpm_label()}>
+								<Input type="number" min="0" step="1" bind:value={rateEdits.tpm} placeholder="e.g. 90000" />
+							</Field>
+						</div>
+					</div>
+
 					<!-- Per-provider settings. Only the claude-code
 					     harness has an injectable settings.json today, so only
 					     anthropic-family providers get the toggle list. -->
@@ -1048,6 +1082,12 @@
 		grid-template-columns: 1fr auto;
 		gap: var(--sp-2);
 		align-items: center;
+	}
+	.rate-row {
+		display: grid;
+		grid-template-columns: repeat(2, 1fr);
+		gap: var(--sp-2);
+		margin-top: var(--sp-1);
 	}
 	.adv :global(.adv-fld) {
 		margin-top: var(--sp-2);
