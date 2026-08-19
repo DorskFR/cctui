@@ -1,22 +1,55 @@
 // Shared types + constants for the conversation drawer and its sub-components,
 // extracted from ConversationDrawer.svelte (no behavior change).
 import type { TokenUsage as TokenUsageT } from '@bindings/TokenUsage';
+import { m } from '$lib/paraglide/messages';
 
 // ── Message-type tag filter ──────────────────────────────
 // Each message type is a clickable badge with include/exclude semantics:
 //   'off'      → neutral (shown unless something else is set to 'include')
 //   'include'  → if ANY tag is 'include', only included types render
 //   'exclude'  → always hidden
-export type MsgType = 'assistant' | 'user' | 'tool' | 'mcp' | 'system' | 'result';
+export type MsgType =
+	| 'assistant'
+	| 'thinking'
+	| 'user'
+	| 'tool'
+	| 'mcp'
+	| 'system'
+	| 'result'
+	| 'summary';
 export type TagState = 'off' | 'include' | 'exclude';
-export const MSG_TYPES: { id: MsgType; label: string; role: string }[] = [
-	{ id: 'assistant', label: 'Assistant', role: 'assistant' },
-	{ id: 'user', label: 'User', role: 'user' },
-	{ id: 'tool', label: 'Tools', role: 'tool' },
-	{ id: 'mcp', label: 'MCP', role: 'mcp' },
-	{ id: 'system', label: 'System', role: 'system' },
-	{ id: 'result', label: 'Results', role: 'result' }
+export const MSG_TYPES: { id: MsgType }[] = [
+	{ id: 'assistant' },
+	{ id: 'thinking' },
+	{ id: 'user' },
+	{ id: 'tool' },
+	{ id: 'mcp' },
+	{ id: 'system' },
+	{ id: 'result' },
+	{ id: 'summary' }
 ];
+
+// Resolved at call time so a live language switch re-renders the badges.
+export function msgTypeLabel(id: MsgType): string {
+	switch (id) {
+		case 'assistant':
+			return m.conversation_filter_assistant();
+		case 'thinking':
+			return m.conversation_filter_thinking();
+		case 'user':
+			return m.conversation_filter_user();
+		case 'tool':
+			return m.conversation_filter_tool();
+		case 'mcp':
+			return m.conversation_filter_mcp();
+		case 'system':
+			return m.conversation_filter_system();
+		case 'result':
+			return m.conversation_filter_result();
+		case 'summary':
+			return m.conversation_filter_summary();
+	}
+}
 
 export interface ViewOpts {
 	// Per-type tag filter state.
@@ -37,8 +70,25 @@ export interface AskQuestion {
 	options: { label: string; description?: string; preview?: string }[];
 }
 
+// Post-turn summary emitted by the server at turn end. Rendered as a footer on
+// the turn's last assistant bubble, never as a bubble of its own.
+export interface TurnSummary {
+	detail: string;
+	needsAction: boolean;
+	ts: number;
+}
+
 export interface Line {
-	role: 'assistant' | 'user' | 'system' | 'tool' | 'result' | 'reset' | 'compact';
+	role:
+		| 'assistant'
+		| 'thinking'
+		| 'user'
+		| 'system'
+		| 'tool'
+		| 'result'
+		| 'reset'
+		| 'compact'
+		| 'summary';
 	ts: number;
 	html?: string;
 	// Pre-highlighted code HTML for the <pre> bubble (tool/result), {@html}.
@@ -50,6 +100,8 @@ export interface Line {
 	tool?: string;
 	// Tool calls under the mcp__ prefix get the distinct MCP role hue.
 	mcp?: boolean;
+	// Thinking whose content the provider withheld: same brown treatment, dimmed.
+	redacted?: boolean;
 	pending?: boolean;
 	// Set on a pending user line that auto-retry is currently re-attempting
 	//: shows a "retrying (n/m)" hint instead of plain "sending…".
@@ -61,6 +113,8 @@ export interface Line {
 	ask?: AskQuestion[];
 	// Parsed ExitPlanMode plan markdown — rendered as a Plan card.
 	plan?: string;
+	// Turn summary attached to this (assistant) line, rendered under its bubble.
+	summary?: TurnSummary;
 	durationMs?: number;
 	key?: string;
 	// 1-based conversation turn; stamped only on assistant lines.

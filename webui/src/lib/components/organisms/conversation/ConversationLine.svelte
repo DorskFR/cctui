@@ -5,6 +5,7 @@
 	// per-message action buttons, delegating retry/edit/save/copy to callbacks.
 	import TokenUsage from '$lib/components/molecules/TokenUsage.svelte';
 	import { Badge, Button, IconButton, Text, Timestamp, Tooltip } from '@dorsk/tsumikit';
+	import TurnSummaryFooter from './TurnSummaryFooter.svelte';
 	import type { Line } from './types';
 	import { m } from '$lib/paraglide/messages';
 	import './bubble.css';
@@ -48,6 +49,18 @@
 		const mins = Math.floor(secs / 60);
 		return `${mins}m ${secs % 60}s`;
 	}
+
+	// Thinking runs long; clamp it and offer a toggle, but only once the content
+	// actually overflows the clamp. Measuring while expanded would report no
+	// overflow and take the "show less" control away, so skip it then.
+	let thinkingEl = $state<HTMLElement>();
+	let thinkingExpanded = $state(false);
+	let thinkingOverflows = $state(false);
+	$effect(() => {
+		void ln.html;
+		if (thinkingExpanded || !thinkingEl) return;
+		thinkingOverflows = thinkingEl.scrollHeight > thinkingEl.clientHeight + 1;
+	});
 </script>
 
 <div
@@ -138,12 +151,34 @@
 			/>
 		</span>
 	</div>
-	{#if ln.html}
+	{#if ln.role === 'thinking'}
+		<div
+			class="bubble think"
+			class:redacted={ln.redacted}
+			class:clamped={!thinkingExpanded}
+			bind:this={thinkingEl}
+		>
+			{@html ln.html}
+		</div>
+		{#if thinkingOverflows}
+			<button
+				type="button"
+				class="think-toggle"
+				aria-expanded={thinkingExpanded}
+				onclick={() => (thinkingExpanded = !thinkingExpanded)}
+			>
+				{thinkingExpanded ? m.conversation_show_less() : m.conversation_show_more()}
+			</button>
+		{/if}
+	{:else if ln.html}
 		<div class="bubble">{@html ln.html}</div>
 	{:else if ln.htmlCode}
 		<pre class="bubble mono code">{@html ln.htmlCode}</pre>
 	{:else}
 		<pre class="bubble mono code">{ln.text}</pre>
+	{/if}
+	{#if ln.summary}
+		<TurnSummaryFooter summary={ln.summary} />
 	{/if}
 	{#if (ln.durationMs || ln.usage) && (ln.role === 'assistant' || ln.role === 'result')}
 		{@const dur = durationLabel(ln.durationMs)}
@@ -162,6 +197,28 @@
 		flex-direction: column;
 		gap: 2px;
 		max-width: 100%;
+		/* Role tint, inherited by the badge below. Set on the line (not on the
+		   badge itself) so one :global rule serves every role. */
+		--bc: var(--text-muted);
+	}
+	.line.user {
+		--bc: var(--role-user);
+	}
+	.line.assistant {
+		--bc: var(--role-assistant);
+	}
+	.line.thinking {
+		--bc: var(--role-thinking);
+	}
+	.line.system {
+		--bc: var(--role-system);
+	}
+	.line.tool,
+	.line.result {
+		--bc: var(--role-tool);
+	}
+	.line.mcp {
+		--bc: var(--role-mcp);
 	}
 	.lmeta {
 		gap: var(--sp-2);
@@ -187,7 +244,6 @@
 	   shape, sizing); these overrides add the per-role tint via --role-* tokens
 	   and the uppercase treatment Badge doesn't carry. */
 	.line :global(.badge-role) {
-		--bc: var(--text-muted);
 		padding: 1px var(--sp-2);
 		font-weight: var(--fw-semibold);
 		text-transform: uppercase;
@@ -195,25 +251,6 @@
 		color: var(--bc);
 		background: color-mix(in srgb, var(--bc) 14%, transparent);
 		border: 1px solid color-mix(in srgb, var(--bc) 40%, transparent);
-	}
-	.line.user :global(.badge-role) {
-		--bc: var(--role-user);
-	}
-	.line.assistant :global(.badge-role) {
-		--bc: var(--role-assistant);
-	}
-	.line.system :global(.badge-role) {
-		--bc: var(--role-system);
-	}
-	.line.tool :global(.badge-role) {
-		--bc: var(--role-tool);
-	}
-	.line.result :global(.badge-role) {
-		--bc: var(--role-tool);
-	}
-	.line.tool.mcp :global(.badge-role),
-	.line :global(.badge-role.mcp) {
-		--bc: var(--role-mcp);
 	}
 	/* Per-message action buttons (copy-as-Markdown + save-image), pushed to
 	   the right of the meta row. Excluded from the saved image. */
@@ -313,6 +350,38 @@
 	}
 	.line.tool.mcp .bubble {
 		border-left-color: color-mix(in srgb, var(--role-mcp) 60%, transparent);
+	}
+	/* Reasoning — muted brown, visually behind the prose it produced. */
+	.line.thinking .bubble.think {
+		background: color-mix(in srgb, var(--role-thinking) 10%, var(--bg-elevated));
+		border-color: color-mix(in srgb, var(--role-thinking) 35%, transparent);
+		border-left: 2px solid color-mix(in srgb, var(--role-thinking) 60%, transparent);
+		color: color-mix(in srgb, var(--role-thinking) 45%, var(--md-text));
+	}
+	.line.thinking .bubble.think.clamped {
+		max-height: 12rem;
+		overflow: hidden;
+		/* Fade the cut edge so a clamped block reads as truncated, not as ended. */
+		mask-image: linear-gradient(to bottom, #000 8rem, transparent);
+	}
+	/* Provider withheld the content; only the placeholder remains. */
+	.line.thinking .bubble.think.redacted {
+		font-style: italic;
+		opacity: 0.7;
+	}
+	.think-toggle {
+		align-self: flex-start;
+		margin-top: 2px;
+		padding: 0 var(--sp-1);
+		background: none;
+		border: none;
+		color: var(--role-thinking);
+		font-size: var(--fs-xs);
+		font-weight: var(--fw-medium);
+		cursor: pointer;
+	}
+	.think-toggle:hover {
+		text-decoration: underline;
 	}
 	.code {
 		white-space: pre-wrap;

@@ -3,7 +3,7 @@
 	// message-type tag filter, formatting toggles, behavior (auto-approve)
 	// toggle — that on mobile collapse behind three text-button tabs opening
 	// popovers.
-	import { MSG_TYPES, type MsgType, type ViewOpts } from './types';
+	import { MSG_TYPES, msgTypeLabel, type MsgType, type ViewOpts } from './types';
 	import { Toggle } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 
@@ -92,15 +92,16 @@
 	     show a strike. -->
 	<div class="tagbar row row-wrap" class:panel-open={mobilePanel === 'filters'} role="group" aria-label={m.conversation_msg_filter_aria()}>
 		{#each MSG_TYPES as t (t.id)}
+			{@const label = msgTypeLabel(t.id)}
 			<Toggle
 				pill
 				pressed={view.typeFilter[t.id] !== 'off'}
 				struck={view.typeFilter[t.id] === 'exclude'}
 				style={`--toggle-accent: ${view.typeFilter[t.id] === 'exclude' ? 'var(--danger)' : roleVar(t.id)}`}
-				title={m.conversation_filter_tag_title({ label: t.label, state: tagState(view.typeFilter[t.id]) })}
+				title={m.conversation_filter_tag_title({ label, state: tagState(view.typeFilter[t.id]) })}
 				onclick={() => cycleTag(t.id)}
 			>
-				{#if view.typeFilter[t.id] === 'exclude'}✕ {/if}{t.label}
+				{#if view.typeFilter[t.id] === 'exclude'}✕ {/if}{label}
 			</Toggle>
 		{/each}
 	</div>
