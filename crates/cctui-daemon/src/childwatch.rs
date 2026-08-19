@@ -40,6 +40,19 @@ pub struct ChildOutcome {
     /// The session id the child actually registered as (codex mints its own
     /// thread id). This is the id a follow-up message targets.
     pub local_id: Option<String>,
+    /// The turn's last content was a thinking block: the model planned more
+    /// work and stopped, so `final_text` is stale mid-turn narration.
+    pub tail_is_thinking: bool,
+}
+
+/// Which event set `blocked`: a resolution clears only its own kind, so a
+/// resolved permission cannot clear an ask/plan/status block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BlockKind {
+    Status,
+    Ask,
+    Plan,
+    Permission,
 }
 
 /// Everything observed about a watched child so far.
@@ -50,10 +63,14 @@ struct WatchState {
     last_tool: Option<String>,
     status_line: Option<String>,
     blocked: Option<String>,
+    blocked_kind: Option<BlockKind>,
     saw_working: bool,
     done_since: Option<Instant>,
     ended: bool,
     error: Option<String>,
+    tail_is_thinking: bool,
+    tool_errors: u32,
+    tokens: u64,
 }
 
 struct Watch {
@@ -76,6 +93,9 @@ pub struct ChildSnapshot {
     ended: bool,
     error: Option<String>,
     registered_at: Instant,
+    tail_is_thinking: bool,
+    tool_errors: u32,
+    tokens: u64,
 }
 
 /// What the tool handler should do with the current snapshot.
@@ -93,6 +113,7 @@ impl ChildSnapshot {
             final_text: self.final_text.clone(),
             error: self.error.clone(),
             local_id: self.local_id.clone(),
+            tail_is_thinking: self.tail_is_thinking,
         }
     }
 
@@ -108,7 +129,11 @@ impl ChildSnapshot {
         if self.ended || self.error.is_some() {
             return Assessment::Finished(self.outcome());
         }
-        if let Some(done_at) = self.done_since {
+        // claude's control socket reports done while an AskUserQuestion /
+        // ExitPlanMode prompt is pending: a blocked child is never done.
+        if self.blocked.is_none()
+            && let Some(done_at) = self.done_since
+        {
             let trusted = self.saw_working
                 || self.final_text.is_some()
                 || now.duration_since(self.registered_at) >= QUIET_DONE_MIN_AGE;
@@ -136,10 +161,29 @@ impl ChildSnapshot {
         if let Some(tool) = &self.last_tool {
             parts.push(format!("tool: {tool}"));
         }
+        match self.tool_errors {
+            0 => {}
+            1 => parts.push("last tool errored".to_owned()),
+            n => parts.push(format!("{n} consecutive tool errors")),
+        }
         if let Some(text) = &self.final_text {
             parts.push(format!("last message: {}", snippet(text, 160)));
         }
+        if self.tokens > 0 {
+            parts.push(format!("tokens: {}", humanize_tokens(self.tokens)));
+        }
         parts.join(" · ")
+    }
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn humanize_tokens(n: u64) -> String {
+    if n < 1_000 {
+        n.to_string()
+    } else if n < 1_000_000 {
+        format!("{:.1}k", n as f64 / 1_000.0)
+    } else {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
     }
 }
 
@@ -220,11 +264,14 @@ impl ChildWatch {
             ended: w.state.ended,
             error: w.state.error.clone(),
             registered_at: w.registered_at,
+            tail_is_thinking: w.state.tail_is_thinking,
+            tool_errors: w.state.tool_errors,
+            tokens: w.state.tokens,
         })
     }
 
     /// Feed one adapter event. Cheap no-op while nothing is being watched.
-    #[allow(clippy::cognitive_complexity)]
+    #[allow(clippy::cognitive_complexity, clippy::match_same_arms)]
     pub fn observe(&self, event: &AdapterEvent) {
         let Ok(mut guard) = self.watches.lock() else { return };
         if guard.is_empty() {
@@ -237,26 +284,17 @@ impl ChildWatch {
             }
             AdapterEvent::Message { local_id, payload } => {
                 if let Some(w) = find_mut(watches, local_id) {
-                    if let Some(text) = assistant_text(payload) {
-                        w.state.final_text = Some(text);
-                        w.notify.notify_waiters();
-                    } else if is_user_message(payload) {
-                        // A new prompt (follow-up) starts a new turn: the
-                        // previous final text and done reading are stale.
-                        w.state.final_text = None;
-                        w.state.done_since = None;
-                    }
+                    apply_message(w, payload);
                 }
             }
             AdapterEvent::ToolUse { local_id, payload } => {
                 if let Some(w) = find_mut(watches, local_id) {
-                    if let Some(tool) = payload.get("tool").and_then(serde_json::Value::as_str) {
-                        w.state.last_tool = Some(tool.to_owned());
-                    }
-                    // Tool traffic is proof of an in-flight turn.
-                    w.state.saw_working = true;
-                    w.state.done_since = None;
-                    w.notify.notify_waiters();
+                    apply_tool_use(w, payload);
+                }
+            }
+            AdapterEvent::TokenUsage { local_id, input_tokens, output_tokens, .. } => {
+                if let Some(w) = find_mut(watches, local_id) {
+                    w.state.tokens += input_tokens + output_tokens;
                 }
             }
             AdapterEvent::Status { local_id, tempo, state, detail, activity, .. } => {
@@ -271,11 +309,47 @@ impl ChildWatch {
                     w.notify.notify_waiters();
                 }
             }
+            AdapterEvent::AskQuestion { local_id, question, .. } => {
+                if let Some(w) = find_mut(watches, local_id) {
+                    set_blocked(w, BlockKind::Ask, snippet(question, 200));
+                }
+            }
+            AdapterEvent::PlanRequest { local_id, .. } => {
+                if let Some(w) = find_mut(watches, local_id) {
+                    set_blocked(w, BlockKind::Plan, "plan pending approval".to_owned());
+                }
+            }
+            AdapterEvent::PermissionRequest { local_id, tool, .. } => {
+                if let Some(w) = find_mut(watches, local_id) {
+                    set_blocked(w, BlockKind::Permission, format!("permission: {tool}"));
+                }
+            }
+            AdapterEvent::AskResolved { local_id } => {
+                if let Some(w) = find_mut(watches, local_id) {
+                    clear_blocked(w, BlockKind::Ask);
+                }
+            }
+            AdapterEvent::PlanResolved { local_id } => {
+                if let Some(w) = find_mut(watches, local_id) {
+                    clear_blocked(w, BlockKind::Plan);
+                }
+            }
+            AdapterEvent::PermissionResolved { local_id, .. } => {
+                if let Some(w) = find_mut(watches, local_id) {
+                    clear_blocked(w, BlockKind::Permission);
+                }
+            }
             AdapterEvent::SessionEnded { local_id, reason } => {
                 if let Some(w) = find_mut(watches, local_id) {
                     w.state.ended = true;
-                    if let EndReason::Crashed { detail } | EndReason::Other { detail } = reason {
-                        w.state.error = Some(detail.clone());
+                    match reason {
+                        EndReason::Killed => {
+                            w.state.error = Some("child session was killed".to_owned());
+                        }
+                        EndReason::Crashed { detail } | EndReason::Other { detail } => {
+                            w.state.error = Some(detail.clone());
+                        }
+                        _ => {}
                     }
                     w.notify.notify_waiters();
                 }
@@ -289,6 +363,15 @@ impl ChildWatch {
                     w.notify.notify_waiters();
                 }
             }
+            // Listed to record that each was reviewed and is deliberately inert
+            // for the watch; the wildcard below is forced by #[non_exhaustive].
+            AdapterEvent::CommandResult { .. }
+            | AdapterEvent::SessionModel { .. }
+            | AdapterEvent::PrLink { .. }
+            | AdapterEvent::Diagnose { .. }
+            | AdapterEvent::CodexModels { .. }
+            | AdapterEvent::PtyChunk { .. }
+            | AdapterEvent::TranscriptMark { .. } => {}
             _ => {}
         }
     }
@@ -308,17 +391,16 @@ fn apply_status(
         Bucket::Working => {
             w.state.saw_working = true;
             w.state.done_since = None;
-            w.state.blocked = None;
+            clear_blocked(w, BlockKind::Status);
         }
         Bucket::Blocked => {
-            w.state.blocked = Some(detail.unwrap_or("waiting for input").to_owned());
-            w.state.done_since = None;
+            set_blocked(w, BlockKind::Status, detail.unwrap_or("waiting for input").to_owned());
         }
         Bucket::Done | Bucket::Review => {
+            clear_blocked(w, BlockKind::Status);
             if w.state.done_since.is_none() {
                 w.state.done_since = Some(Instant::now());
             }
-            w.state.blocked = None;
         }
     }
     // Hibernation is terminal for a child: the worker is gone, nothing more
@@ -332,6 +414,63 @@ fn apply_status(
         .or(state)
         .map(str::to_owned)
         .or_else(|| w.state.status_line.clone());
+}
+
+fn apply_message(w: &mut Watch, payload: &serde_json::Value) {
+    if let Some(text) = assistant_text(payload) {
+        w.state.final_text = Some(text);
+        w.state.tail_is_thinking = false;
+        w.notify.notify_waiters();
+    } else if is_thinking_message(payload) {
+        w.state.tail_is_thinking = true;
+        w.notify.notify_waiters();
+    } else if is_turn_summary(payload) {
+        apply_summary(w, payload);
+    } else if is_user_message(payload) {
+        // A new prompt (follow-up) starts a new turn: the previous final text
+        // and done reading are stale.
+        w.state.final_text = None;
+        w.state.done_since = None;
+        w.state.tail_is_thinking = false;
+        w.state.tool_errors = 0;
+    }
+}
+
+fn apply_tool_use(w: &mut Watch, payload: &serde_json::Value) {
+    if let Some(tool) = payload.get("tool").and_then(serde_json::Value::as_str) {
+        w.state.last_tool = Some(tool.to_owned());
+    }
+    if let Some("tool_result" | "server_tool_result") =
+        payload.get("kind").and_then(serde_json::Value::as_str)
+    {
+        if payload.get("is_error").and_then(serde_json::Value::as_bool).unwrap_or(false) {
+            w.state.tool_errors += 1;
+        } else {
+            w.state.tool_errors = 0;
+        }
+    }
+    // Tool traffic is proof of an in-flight turn.
+    w.state.saw_working = true;
+    w.state.done_since = None;
+    w.notify.notify_waiters();
+}
+
+fn set_blocked(w: &mut Watch, kind: BlockKind, reason: String) {
+    w.state.blocked = Some(reason);
+    w.state.blocked_kind = Some(kind);
+    w.state.done_since = None;
+    w.notify.notify_waiters();
+}
+
+/// A done reading captured while the block was pending is stale, so the done
+/// clock resets too.
+fn clear_blocked(w: &mut Watch, kind: BlockKind) {
+    if w.state.blocked_kind == Some(kind) {
+        w.state.blocked = None;
+        w.state.blocked_kind = None;
+        w.state.done_since = None;
+        w.notify.notify_waiters();
+    }
 }
 
 /// Bind `local_id` to its watch by exact key, else by the echoed `spawn_key` —
@@ -379,13 +518,55 @@ fn assistant_text(payload: &serde_json::Value) -> Option<String> {
     (!text.is_empty()).then(|| text.to_owned())
 }
 
-/// A user-authored message (a follow-up prompt landing in the child).
+/// A human-authored message (a follow-up prompt landing in the child).
+/// Excludes `meta:true` user turns (system-reminders, task-notifications,
+/// hook feedback): injected content is not a new human turn.
 fn is_user_message(payload: &serde_json::Value) -> bool {
+    if payload.get("meta").and_then(serde_json::Value::as_bool).unwrap_or(false) {
+        return false;
+    }
     payload.get("role").and_then(serde_json::Value::as_str) == Some("user")
         || matches!(
             payload.get("type").and_then(serde_json::Value::as_str),
             Some("userMessage" | "user_message")
         )
+}
+
+fn is_thinking_message(payload: &serde_json::Value) -> bool {
+    matches!(
+        payload.get("role").and_then(serde_json::Value::as_str),
+        Some("assistant_thinking" | "assistant_redacted_thinking")
+    )
+}
+
+fn is_turn_summary(payload: &serde_json::Value) -> bool {
+    payload.get("role").and_then(serde_json::Value::as_str) == Some("summary")
+}
+
+/// Fold a `post_turn_summary` in: `needs_action` (bool or non-empty text)
+/// blocks the child; otherwise the summary is a turn-end hint.
+fn apply_summary(w: &mut Watch, payload: &serde_json::Value) {
+    let text = |key: &str| {
+        payload
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+    };
+    let needs_action = match payload.get("needs_action") {
+        Some(serde_json::Value::Bool(true)) => {
+            Some(text("status_detail").unwrap_or_else(|| "needs action".to_owned()))
+        }
+        Some(serde_json::Value::String(_)) => text("needs_action"),
+        _ => None,
+    };
+    if let Some(reason) = needs_action {
+        set_blocked(w, BlockKind::Status, reason);
+    } else if w.state.done_since.is_none() {
+        w.state.done_since = Some(Instant::now());
+        w.notify.notify_waiters();
+    }
 }
 
 /// First `max` characters of `text` on one line, ellipsised.
@@ -569,6 +750,140 @@ mod tests {
             Assessment::Running(line) => assert!(line.contains("needs input"), "{line}"),
             Assessment::Finished(_) => panic!("blocked is not finished"),
         }
+    }
+
+    fn running_line(handle: &WatchHandle) -> String {
+        match handle.snapshot().unwrap().assess(Instant::now()) {
+            Assessment::Running(line) => line,
+            Assessment::Finished(o) => panic!("expected running, finished with {o:?}"),
+        }
+    }
+
+    #[test]
+    fn ask_question_blocks_even_while_status_reads_done() {
+        // claude's control socket reports state:"done" while AskUserQuestion
+        // is pending — the question must keep the watch open, not finish it
+        // with the preamble prose as the answer.
+        let watch = Arc::new(ChildWatch::default());
+        let h = watch.register("child-1");
+        watch.observe(&started("child-1", None));
+        watch.observe(&status("child-1", Some("active"), Some("working"), None));
+        watch.observe(&msg("child-1", "assistant", "I checked the repo. Before I continue:"));
+        watch.observe(&AdapterEvent::AskQuestion {
+            local_id: "child-1".into(),
+            question: "Which database should the migration target?".into(),
+            questions: None,
+            preamble: None,
+        });
+        watch.observe(&status("child-1", None, Some("done"), Some("success")));
+        let snap = h.snapshot().unwrap();
+        let later = Instant::now() + DONE_TEXT_GRACE * 2;
+        match snap.assess(later) {
+            Assessment::Running(line) => {
+                assert!(line.contains("child needs input"), "{line}");
+                assert!(line.contains("Which database"), "{line}");
+            }
+            Assessment::Finished(o) => panic!("pending question must not finish: {o:?}"),
+        }
+    }
+
+    #[test]
+    fn long_questions_are_snippeted_in_the_progress_line() {
+        let watch = Arc::new(ChildWatch::default());
+        let h = watch.register("child-1");
+        watch.observe(&started("child-1", None));
+        watch.observe(&AdapterEvent::AskQuestion {
+            local_id: "child-1".into(),
+            question: "x".repeat(500),
+            questions: None,
+            preamble: None,
+        });
+        let line = running_line(&h);
+        assert!(line.contains('…'), "{line}");
+        assert!(line.chars().count() < 300, "{line}");
+    }
+
+    #[test]
+    fn plan_and_permission_requests_block_until_resolved() {
+        let watch = Arc::new(ChildWatch::default());
+        let h = watch.register("child-1");
+        watch.observe(&started("child-1", None));
+        watch.observe(&AdapterEvent::PlanRequest {
+            local_id: "child-1".into(),
+            plan: "1. do the thing".into(),
+            preamble: None,
+        });
+        assert!(running_line(&h).contains("plan pending approval"));
+        watch.observe(&AdapterEvent::PlanResolved { local_id: "child-1".into() });
+        assert!(h.snapshot().unwrap().blocked.is_none());
+
+        watch.observe(&AdapterEvent::PermissionRequest {
+            local_id: "child-1".into(),
+            request_id: "req-1".into(),
+            tool: "Bash".into(),
+            input: json!(null),
+        });
+        assert!(running_line(&h).contains("permission: Bash"));
+        watch.observe(&AdapterEvent::PermissionResolved {
+            local_id: "child-1".into(),
+            request_id: "req-1".into(),
+        });
+        assert!(h.snapshot().unwrap().blocked.is_none());
+    }
+
+    #[test]
+    fn a_resolution_only_clears_a_block_of_its_own_kind() {
+        let watch = Arc::new(ChildWatch::default());
+        let h = watch.register("child-1");
+        watch.observe(&started("child-1", None));
+        watch.observe(&AdapterEvent::AskQuestion {
+            local_id: "child-1".into(),
+            question: "pick one".into(),
+            questions: None,
+            preamble: None,
+        });
+        watch.observe(&AdapterEvent::PermissionResolved {
+            local_id: "child-1".into(),
+            request_id: "req-1".into(),
+        });
+        assert!(running_line(&h).contains("pick one"));
+        watch.observe(&AdapterEvent::AskResolved { local_id: "child-1".into() });
+        assert!(h.snapshot().unwrap().blocked.is_none());
+    }
+
+    #[test]
+    fn resolving_a_question_discards_the_done_reading_seen_while_pending() {
+        let watch = Arc::new(ChildWatch::default());
+        let h = watch.register("child-1");
+        watch.observe(&started("child-1", None));
+        watch.observe(&status("child-1", Some("active"), Some("working"), None));
+        watch.observe(&msg("child-1", "assistant", "preamble prose"));
+        watch.observe(&AdapterEvent::AskQuestion {
+            local_id: "child-1".into(),
+            question: "pick one".into(),
+            questions: None,
+            preamble: None,
+        });
+        watch.observe(&status("child-1", None, Some("done"), Some("success")));
+        watch.observe(&AdapterEvent::AskResolved { local_id: "child-1".into() });
+        assert!(finished(&h).is_none(), "the pending-window done reading is stale");
+        watch.observe(&msg("child-1", "assistant", "real answer"));
+        watch.observe(&status("child-1", None, Some("done"), Some("success")));
+        assert_eq!(finished(&h).unwrap().final_text.as_deref(), Some("real answer"));
+    }
+
+    #[test]
+    fn killed_child_finishes_with_a_killed_error() {
+        let watch = Arc::new(ChildWatch::default());
+        let h = watch.register("child-1");
+        watch.observe(&started("child-1", None));
+        watch.observe(&msg("child-1", "assistant", "half-done text"));
+        watch.observe(&AdapterEvent::SessionEnded {
+            local_id: "child-1".into(),
+            reason: EndReason::Killed,
+        });
+        let out = finished(&h).unwrap();
+        assert!(out.error.as_deref().unwrap().contains("killed"), "{out:?}");
     }
 
     #[test]

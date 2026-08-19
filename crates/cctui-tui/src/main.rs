@@ -912,6 +912,12 @@ fn agent_event_to_line(event: &AgentEvent) -> ConversationLine {
             text: format!("⟳ context compacted\n{content}"),
             tool_input: None,
         },
+        AgentEvent::TurnSummary { detail, ts, .. } => ConversationLine {
+            timestamp: *ts,
+            kind: LineKind::System,
+            text: format!("· {detail}"),
+            tool_input: None,
+        },
         AgentEvent::Reply { content, ts, .. } => ConversationLine {
             timestamp: *ts,
             kind: LineKind::Reply,

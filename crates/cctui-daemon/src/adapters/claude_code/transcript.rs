@@ -385,12 +385,95 @@ pub(super) fn parse_line(local_id: &str, line: &Value, out: &mut Vec<AdapterEven
                 });
             }
         }
-        _ => {
-            // attachment, permission-mode, worktree-state, ai-title,
-            // agent-name, agent-setting, last-prompt — silently skipped for v1.
-            // Specific carriers may be added later as their semantics become
-            // useful to the UI.
+        "attachment" | "permission-mode" | "worktree-state" | "ai-title" | "agent-name"
+        | "agent-setting" | "last-prompt" => {
+            out.push(AdapterEvent::Message {
+                local_id: local_id.to_owned(),
+                payload: system_marker_payload(kind, line),
+            });
         }
+        _ => {
+            tracing::debug!(kind, "ignoring unknown transcript line type");
+        }
+    }
+}
+
+/// Never embeds the raw line — attachment bodies can be huge; only the marker,
+/// a few useful fields, and a short `text` survive.
+fn system_marker_payload(marker: &str, line: &Value) -> Value {
+    let str_field = |k: &str| line.get(k).and_then(Value::as_str).unwrap_or_default();
+    match marker {
+        "attachment" => {
+            let att = line
+                .get("attachment")
+                .and_then(|a| a.get("type"))
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            json!({
+                "role": "system_marker",
+                "marker": marker,
+                "attachment_type": att,
+                "text": format!("[attachment: {att}]"),
+            })
+        }
+        "permission-mode" => {
+            let mode = str_field("permissionMode");
+            json!({
+                "role": "system_marker",
+                "marker": marker,
+                "permission_mode": mode,
+                "text": format!("permission mode: {mode}"),
+            })
+        }
+        "worktree-state" => {
+            let state = line.get("worktreeState").cloned().unwrap_or(Value::Null);
+            let text = state.as_str().map_or_else(
+                || "worktree state updated".to_owned(),
+                |s| format!("worktree state: {s}"),
+            );
+            json!({
+                "role": "system_marker",
+                "marker": marker,
+                "worktree_state": state,
+                "text": text,
+            })
+        }
+        "ai-title" => {
+            let title = str_field("aiTitle");
+            json!({
+                "role": "system_marker",
+                "marker": marker,
+                "title": title,
+                "text": format!("title: {title}"),
+            })
+        }
+        "agent-name" => {
+            let name = str_field("agentName");
+            json!({
+                "role": "system_marker",
+                "marker": marker,
+                "agent_name": name,
+                "text": format!("agent name: {name}"),
+            })
+        }
+        "agent-setting" => {
+            let setting = str_field("agentSetting");
+            json!({
+                "role": "system_marker",
+                "marker": marker,
+                "agent_setting": setting,
+                "text": format!("agent setting: {setting}"),
+            })
+        }
+        "last-prompt" => {
+            json!({
+                "role": "system_marker",
+                "marker": marker,
+                "leaf_uuid": str_field("leafUuid"),
+                "text": "last prompt updated",
+            })
+        }
+        _ => json!({ "role": "system_marker", "marker": marker, "text": marker }),
     }
 }
 
@@ -460,39 +543,104 @@ fn parse_assistant(local_id: &str, line: &Value, out: &mut Vec<AdapterEvent>) {
         return;
     };
     for block in content {
-        match block.get("type").and_then(Value::as_str) {
-            Some("text") => {
-                out.push(AdapterEvent::Message {
-                    local_id: local_id.to_owned(),
-                    payload: json!({
-                        "role": "assistant",
-                        "text": block.get("text"),
-                        "message_id": message_id,
-                    }),
-                });
-            }
-            Some("thinking") => {
-                out.push(AdapterEvent::Message {
-                    local_id: local_id.to_owned(),
-                    payload: json!({
-                        "role": "assistant_thinking",
-                        "text": block.get("thinking").or_else(|| block.get("text")),
-                        "message_id": message_id,
-                    }),
-                });
-            }
-            Some("tool_use") => {
-                out.push(AdapterEvent::ToolUse {
-                    local_id: local_id.to_owned(),
-                    payload: json!({
-                        "id": block.get("id"),
-                        "tool": block.get("name"),
-                        "input": block.get("input"),
-                    }),
-                });
-            }
-            _ => {}
+        parse_assistant_block(local_id, message_id, block, out);
+    }
+}
+
+fn parse_assistant_block(
+    local_id: &str,
+    message_id: Option<&str>,
+    block: &Value,
+    out: &mut Vec<AdapterEvent>,
+) {
+    match block.get("type").and_then(Value::as_str) {
+        Some("text") => {
+            out.push(AdapterEvent::Message {
+                local_id: local_id.to_owned(),
+                payload: json!({
+                    "role": "assistant",
+                    "text": block.get("text"),
+                    "message_id": message_id,
+                }),
+            });
         }
+        Some("thinking") => {
+            out.push(AdapterEvent::Message {
+                local_id: local_id.to_owned(),
+                payload: json!({
+                    "role": "assistant_thinking",
+                    "text": block.get("thinking").or_else(|| block.get("text")),
+                    "message_id": message_id,
+                }),
+            });
+        }
+        Some("tool_use") => {
+            out.push(AdapterEvent::ToolUse {
+                local_id: local_id.to_owned(),
+                payload: json!({
+                    "id": block.get("id"),
+                    "tool": block.get("name"),
+                    "input": block.get("input"),
+                }),
+            });
+        }
+        Some("redacted_thinking") => {
+            out.push(AdapterEvent::Message {
+                local_id: local_id.to_owned(),
+                payload: json!({
+                    "role": "assistant_redacted_thinking",
+                    "text": "[redacted thinking]",
+                    "message_id": message_id,
+                }),
+            });
+        }
+        Some("image") => {
+            out.push(AdapterEvent::Message {
+                local_id: local_id.to_owned(),
+                payload: json!({
+                    "role": "assistant_attachment",
+                    "text": "[image attachment]",
+                    "message_id": message_id,
+                }),
+            });
+        }
+        Some("server_tool_use") => {
+            out.push(AdapterEvent::ToolUse {
+                local_id: local_id.to_owned(),
+                payload: json!({
+                    "kind": "server_tool_use",
+                    "id": block.get("id"),
+                    "tool": block.get("name"),
+                    "input": block.get("input"),
+                }),
+            });
+        }
+        Some(t) if t.ends_with("_tool_result") => {
+            out.push(AdapterEvent::ToolUse {
+                local_id: local_id.to_owned(),
+                payload: json!({
+                    "kind": "server_tool_result",
+                    "tool_use_id": block.get("tool_use_id"),
+                    "content": server_result_snippet(block.get("content")),
+                }),
+            });
+        }
+        other => {
+            tracing::debug!(block_type = ?other, "ignoring unknown assistant content block");
+        }
+    }
+}
+
+const SERVER_RESULT_SNIPPET_CHARS: usize = 2000;
+
+/// Web-search results can run to tens of KB; keep only a leading snippet.
+fn server_result_snippet(content: Option<&Value>) -> Value {
+    let Some(v) = content else { return Value::Null };
+    let s = v.as_str().map_or_else(|| v.to_string(), str::to_owned);
+    if s.chars().count() <= SERVER_RESULT_SNIPPET_CHARS {
+        json!(s)
+    } else {
+        json!(s.chars().take(SERVER_RESULT_SNIPPET_CHARS).collect::<String>())
     }
 }
 
@@ -1165,6 +1313,158 @@ mod tests {
         );
         let (events, _) = tail_once(&path, "s", 0).unwrap();
         assert!(!events.iter().any(|e| matches!(e, AdapterEvent::TokenUsage { .. })));
+    }
+
+    fn message_payloads(events: &[AdapterEvent]) -> Vec<&Value> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                AdapterEvent::Message { payload, .. } => Some(payload),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn redacted_thinking_emits_placeholder_message() {
+        let mut out = Vec::new();
+        parse_line(
+            "s",
+            &json!({"type":"assistant","message":{"id":"m1","content":[
+                {"type":"redacted_thinking","data":"EncRypTed=="}
+            ]}}),
+            &mut out,
+        );
+        let msgs = message_payloads(&out);
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(
+            msgs[0].get("role").and_then(Value::as_str),
+            Some("assistant_redacted_thinking")
+        );
+        assert_eq!(msgs[0].get("text").and_then(Value::as_str), Some("[redacted thinking]"));
+        assert_eq!(msgs[0].get("message_id").and_then(Value::as_str), Some("m1"));
+    }
+
+    #[test]
+    fn assistant_image_emits_attachment_message() {
+        let mut out = Vec::new();
+        parse_line(
+            "s",
+            &json!({"type":"assistant","message":{"id":"m2","content":[
+                {"type":"image","source":{"type":"base64","media_type":"image/png","data":"AAAA"}}
+            ]}}),
+            &mut out,
+        );
+        let msgs = message_payloads(&out);
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].get("role").and_then(Value::as_str), Some("assistant_attachment"));
+        assert_eq!(msgs[0].get("text").and_then(Value::as_str), Some("[image attachment]"));
+        assert_eq!(msgs[0].get("message_id").and_then(Value::as_str), Some("m2"));
+    }
+
+    #[test]
+    fn server_tool_use_emits_tool_use_event() {
+        let mut out = Vec::new();
+        parse_line(
+            "s",
+            &json!({"type":"assistant","message":{"content":[
+                {"type":"server_tool_use","id":"srvtoolu_1","name":"web_search","input":{"query":"rust"}}
+            ]}}),
+            &mut out,
+        );
+        match out.as_slice() {
+            [AdapterEvent::ToolUse { payload, .. }] => {
+                assert_eq!(payload.get("kind").and_then(Value::as_str), Some("server_tool_use"));
+                assert_eq!(payload.get("id").and_then(Value::as_str), Some("srvtoolu_1"));
+                assert_eq!(payload.get("tool").and_then(Value::as_str), Some("web_search"));
+                assert_eq!(payload.pointer("/input/query").and_then(Value::as_str), Some("rust"));
+            }
+            other => panic!("expected one ToolUse event, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn server_tool_result_blocks_emit_snipped_tool_use() {
+        let big: String = "x".repeat(10_000);
+        let mut out = Vec::new();
+        parse_line(
+            "s",
+            &json!({"type":"assistant","message":{"content":[
+                {"type":"web_search_tool_result","tool_use_id":"srvtoolu_1","content":big},
+                {"type":"code_execution_tool_result","tool_use_id":"srvtoolu_2","content":{"stdout":"ok","return_code":0}}
+            ]}}),
+            &mut out,
+        );
+        assert_eq!(out.len(), 2);
+        match &out[0] {
+            AdapterEvent::ToolUse { payload, .. } => {
+                assert_eq!(payload.get("kind").and_then(Value::as_str), Some("server_tool_result"));
+                assert_eq!(payload.get("tool_use_id").and_then(Value::as_str), Some("srvtoolu_1"));
+                let content = payload.get("content").and_then(Value::as_str).unwrap();
+                assert_eq!(content.chars().count(), SERVER_RESULT_SNIPPET_CHARS);
+            }
+            other => panic!("expected ToolUse, got {other:?}"),
+        }
+        match &out[1] {
+            AdapterEvent::ToolUse { payload, .. } => {
+                assert_eq!(payload.get("kind").and_then(Value::as_str), Some("server_tool_result"));
+                let content = payload.get("content").and_then(Value::as_str).unwrap();
+                assert!(content.contains("stdout"));
+            }
+            other => panic!("expected ToolUse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn skipped_line_types_emit_system_markers() {
+        let lines = [
+            json!({"type":"attachment","attachment":{"type":"skill_listing","content":"huge blob"}}),
+            json!({"type":"permission-mode","permissionMode":"bypassPermissions","sessionId":"x"}),
+            json!({"type":"worktree-state","worktreeState":"active","sessionId":"x"}),
+            json!({"type":"ai-title","aiTitle":"deploy v1","sessionId":"x"}),
+            json!({"type":"agent-name","agentName":"kusaritoi","sessionId":"x"}),
+            json!({"type":"agent-setting","agentSetting":"claude","sessionId":"x"}),
+            json!({"type":"last-prompt","leafUuid":"07cc9471","sessionId":"x"}),
+        ];
+        let mut out = Vec::new();
+        for l in &lines {
+            parse_line("s", l, &mut out);
+        }
+        let msgs = message_payloads(&out);
+        assert_eq!(msgs.len(), lines.len());
+        for m in &msgs {
+            assert_eq!(m.get("role").and_then(Value::as_str), Some("system_marker"));
+            assert!(m.get("marker").and_then(Value::as_str).is_some());
+            assert!(!m.get("text").and_then(Value::as_str).unwrap_or_default().is_empty());
+        }
+        let by_marker = |marker: &str| {
+            *msgs.iter().find(|m| m.get("marker").and_then(Value::as_str) == Some(marker)).unwrap()
+        };
+        let att = by_marker("attachment");
+        assert_eq!(att.get("attachment_type").and_then(Value::as_str), Some("skill_listing"));
+        assert_eq!(att.get("text").and_then(Value::as_str), Some("[attachment: skill_listing]"));
+        assert!(att.get("content").is_none(), "attachment body must not flow through");
+        assert_eq!(
+            by_marker("permission-mode").get("permission_mode").and_then(Value::as_str),
+            Some("bypassPermissions")
+        );
+        assert_eq!(
+            by_marker("worktree-state").get("text").and_then(Value::as_str),
+            Some("worktree state: active")
+        );
+        assert_eq!(by_marker("ai-title").get("title").and_then(Value::as_str), Some("deploy v1"));
+        assert_eq!(
+            by_marker("agent-name").get("agent_name").and_then(Value::as_str),
+            Some("kusaritoi")
+        );
+        assert_eq!(
+            by_marker("agent-setting").get("agent_setting").and_then(Value::as_str),
+            Some("claude")
+        );
+        assert_eq!(
+            by_marker("last-prompt").get("leaf_uuid").and_then(Value::as_str),
+            Some("07cc9471")
+        );
     }
 
     #[test]

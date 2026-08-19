@@ -2,4 +2,10 @@
 import type { JsonValue } from "./serde_json/JsonValue";
 import type { TokenUsage } from "./TokenUsage";
 
-export type AgentEvent = { "type": "text", content: string, meta: boolean, ts: number, message_id: string | null, usage: TokenUsage | null, seq: number | null, } | { "type": "tool_call", tool: string, input: JsonValue, ts: number, seq: number | null, } | { "type": "tool_result", tool: string, output_summary: string, ts: number, seq: number | null, } | { "type": "heartbeat", tokens_in: number, tokens_out: number, cost_usd: number, ts: number, seq: number | null, } | { "type": "reply", content: string, ts: number, seq: number | null, } | { "type": "context_reset", ts: number, seq: number | null, } | { "type": "compact_summary", content: string, ts: number, seq: number | null, } | { "type": "turn_end", ts: number, seq: number | null, };
+export type AgentEvent = { "type": "text", content: string, meta: boolean, 
+/**
+ * `thinking` | `redacted_thinking` | `attachment` | `system_marker`;
+ * `None` is ordinary visible prose. Free string so an unknown adapter
+ * kind still decodes.
+ */
+kind: string | null, ts: number, message_id: string | null, usage: TokenUsage | null, seq: number | null, } | { "type": "tool_call", tool: string, input: JsonValue, ts: number, seq: number | null, } | { "type": "tool_result", tool: string, output_summary: string, ts: number, seq: number | null, } | { "type": "heartbeat", tokens_in: number, tokens_out: number, cost_usd: number, ts: number, seq: number | null, } | { "type": "reply", content: string, ts: number, seq: number | null, } | { "type": "context_reset", ts: number, seq: number | null, } | { "type": "compact_summary", content: string, ts: number, seq: number | null, } | { "type": "turn_summary", detail: string, status_category: string | null, needs_action: boolean, ts: number, seq: number | null, } | { "type": "turn_end", ts: number, seq: number | null, };

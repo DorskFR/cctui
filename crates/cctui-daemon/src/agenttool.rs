@@ -167,10 +167,12 @@ fn is_bare_enumeration_marker(line: &str) -> bool {
 }
 
 /// Whether a finished child warrants the single automatic continuation nudge:
-/// only a clean turn (no error) whose final message reads truncated qualifies —
-/// a crashed or errored child is never nudged.
+/// only a clean turn (no error) qualifies — a crashed or errored child is
+/// never nudged. A turn whose tail was a thinking block is nudged even when
+/// the held final text reads complete: that text is stale mid-turn narration.
 fn should_nudge(outcome: &crate::childwatch::ChildOutcome) -> bool {
-    outcome.error.is_none() && looks_truncated(outcome.final_text.as_deref())
+    outcome.error.is_none()
+        && (outcome.tail_is_thinking || looks_truncated(outcome.final_text.as_deref()))
 }
 
 /// Whether the child has produced any evidence of a running turn: a bound
@@ -501,6 +503,7 @@ mod tests {
             final_text: text.map(str::to_owned),
             error: err.map(str::to_owned),
             local_id: Some("child-7".into()),
+            tail_is_thinking: false,
         };
         let ok = reply_frame(&out(Some("verdict: ship"), None));
         assert_eq!(ok["ok"], json!(true));
@@ -698,6 +701,7 @@ mod tests {
             final_text: text.map(str::to_owned),
             error: err.map(str::to_owned),
             local_id: Some("child-1".into()),
+            tail_is_thinking: false,
         };
         assert!(should_nudge(&outcome(Some("Now I need to verify key claims:"), None)));
         assert!(should_nudge(&outcome(None, None)));
@@ -705,6 +709,86 @@ mod tests {
         assert!(!should_nudge(&outcome(Some("Now I need to verify:"), Some("crashed"))));
         assert!(!should_nudge(&outcome(None, Some("gateway rejected"))));
         assert!(!should_nudge(&outcome(Some("Findings: none, ship it."), None)));
+    }
+
+    #[test]
+    fn a_thinking_tail_nudges_even_when_the_held_text_reads_complete() {
+        let outcome = |thinking: bool, err: Option<&str>| ChildOutcome {
+            final_text: Some("Verified the fix, all tests pass.".to_owned()),
+            error: err.map(str::to_owned),
+            local_id: Some("child-1".into()),
+            tail_is_thinking: thinking,
+        };
+        assert!(should_nudge(&outcome(true, None)));
+        assert!(!should_nudge(&outcome(false, None)));
+        assert!(!should_nudge(&outcome(true, Some("crashed"))));
+    }
+
+    #[test]
+    fn narration_then_thinking_end_nudges_but_a_final_text_after_thinking_does_not() {
+        let watch = std::sync::Arc::new(crate::childwatch::ChildWatch::default());
+        let handle = watch.register("child-1");
+        watch.observe(&cctui_proto::adapter::AdapterEvent::Message {
+            local_id: "child-1".into(),
+            payload: json!({ "role": "assistant", "text": "Checked the diff, looks clean." }),
+        });
+        watch.observe(&cctui_proto::adapter::AdapterEvent::Message {
+            local_id: "child-1".into(),
+            payload: json!({ "role": "assistant_thinking", "text": "now let me verify" }),
+        });
+        watch.observe(&cctui_proto::adapter::AdapterEvent::SessionEnded {
+            local_id: "child-1".into(),
+            reason: cctui_proto::adapter::EndReason::Completed,
+        });
+        let snap = handle.snapshot().unwrap();
+        let Assessment::Finished(outcome) = snap.assess(Instant::now()) else {
+            panic!("ended child must be finished");
+        };
+        assert!(outcome.tail_is_thinking);
+        assert!(should_nudge(&outcome), "stale narration held as final text must nudge");
+
+        let handle = watch.register("child-2");
+        watch.observe(&cctui_proto::adapter::AdapterEvent::Message {
+            local_id: "child-2".into(),
+            payload: json!({ "role": "assistant_thinking", "text": "planning" }),
+        });
+        watch.observe(&cctui_proto::adapter::AdapterEvent::Message {
+            local_id: "child-2".into(),
+            payload: json!({ "role": "assistant", "text": "VERDICT: approve" }),
+        });
+        watch.observe(&cctui_proto::adapter::AdapterEvent::SessionEnded {
+            local_id: "child-2".into(),
+            reason: cctui_proto::adapter::EndReason::Completed,
+        });
+        let snap = handle.snapshot().unwrap();
+        let Assessment::Finished(outcome) = snap.assess(Instant::now()) else {
+            panic!("ended child must be finished");
+        };
+        assert!(!outcome.tail_is_thinking);
+        assert!(!should_nudge(&outcome));
+    }
+
+    #[test]
+    fn a_killed_child_is_never_nudged() {
+        let watch = std::sync::Arc::new(crate::childwatch::ChildWatch::default());
+        let handle = watch.register("child-1");
+        watch.observe(&cctui_proto::adapter::AdapterEvent::Message {
+            local_id: "child-1".into(),
+            payload: json!({ "role": "assistant", "text": "Now I need to verify key claims:" }),
+        });
+        watch.observe(&cctui_proto::adapter::AdapterEvent::SessionEnded {
+            local_id: "child-1".into(),
+            reason: cctui_proto::adapter::EndReason::Killed,
+        });
+        let snap = handle.snapshot().unwrap();
+        let Assessment::Finished(outcome) = snap.assess(Instant::now()) else {
+            panic!("killed child must be finished");
+        };
+        assert!(outcome.error.as_deref().unwrap().contains("killed"));
+        assert!(
+            !should_nudge(&outcome),
+            "a killed child must never be nudged even on truncated text"
+        );
     }
 
     #[test]
