@@ -9,10 +9,10 @@ import {
 	parsePlan,
 	stampTurns
 } from './format';
-import type { Line, MsgType } from './types';
+import type { Line, MsgCategory } from './types';
 
 export interface LineBuildCtx {
-	typeVisible: (t: MsgType) => boolean;
+	visible: (c: MsgCategory) => boolean;
 	renderMarkdown: (s: string) => string;
 	renderCode: (text: string, lang: string) => string;
 	prettyJson: boolean;
@@ -25,14 +25,12 @@ export interface DeliveryState {
 	retrying: Map<number, { attempt: number; max: number }>;
 }
 
-const THINKING_KINDS = new Set(['thinking', 'redacted_thinking']);
-
 // History stores user turns as a `text` event prefixed with USER_PREFIX; some
 // "user" turns are really harness/system messages (detected structurally via
 // `looksMeta`) and render in a distinct hue.
 function userOrSystem(content: string, ts: number, meta: boolean, ctx: LineBuildCtx): Line | null {
 	const role = meta ? 'system' : 'user';
-	if (!ctx.typeVisible(role)) return null;
+	if (!ctx.visible(role)) return null;
 	return { role, ts, html: ctx.renderMarkdown(content), text: content };
 }
 
@@ -42,14 +40,26 @@ export function toLine(e: AgentEvent, ctx: LineBuildCtx): Line | null {
 			// Streaming emits an empty text event before the populated one — skip
 			// empties so they don't render as blank assistant blocks.
 			if (!e.content.trim()) return null;
-			if (e.kind && THINKING_KINDS.has(e.kind)) {
-				if (!ctx.typeVisible('thinking')) return null;
+			if (e.kind === 'thinking' || e.kind === 'redacted_thinking') {
+				const redacted = e.kind === 'redacted_thinking';
+				if (!ctx.visible(redacted ? 'redacted' : 'thinking')) return null;
 				return {
 					role: 'thinking',
 					ts: Number(e.ts),
 					html: ctx.renderMarkdown(e.content),
 					text: e.content,
-					redacted: e.kind === 'redacted_thinking'
+					redacted
+				};
+			}
+			// Markers carry no USER_PREFIX, so they must be claimed before the
+			// assistant fallthrough or they read as assistant prose.
+			if (e.kind === 'system_marker') {
+				if (!ctx.visible('marker')) return null;
+				return {
+					role: 'marker',
+					ts: Number(e.ts),
+					html: ctx.renderMarkdown(e.content),
+					text: e.content
 				};
 			}
 			if (e.content.startsWith(USER_PREFIX)) {
@@ -59,7 +69,7 @@ export function toLine(e: AgentEvent, ctx: LineBuildCtx): Line | null {
 				// must stay `user` on reload.
 				return userOrSystem(content, Number(e.ts), looksMeta(content), ctx);
 			}
-			if (!ctx.typeVisible('assistant')) return null;
+			if (!ctx.visible(e.kind === 'attachment' ? 'attachment' : 'assistant')) return null;
 			return {
 				role: 'assistant',
 				ts: Number(e.ts),
@@ -83,7 +93,7 @@ export function toLine(e: AgentEvent, ctx: LineBuildCtx): Line | null {
 				if (plan) return { role: 'tool', ts: Number(e.ts), tool: e.tool, plan };
 			}
 			const isMcp = e.tool.startsWith('mcp__');
-			if (!ctx.typeVisible(isMcp ? 'mcp' : 'tool')) return null;
+			if (!ctx.visible(isMcp ? 'mcp' : 'tool')) return null;
 			const { text, lang } = formatToolInput(e.tool, e.input, {
 				prettyDiff: ctx.prettyDiff,
 				prettyJson: ctx.prettyJson
@@ -99,7 +109,7 @@ export function toLine(e: AgentEvent, ctx: LineBuildCtx): Line | null {
 			};
 		}
 		case 'tool_result':
-			if (!ctx.typeVisible('result')) return null;
+			if (!ctx.visible('result')) return null;
 			return {
 				role: 'result',
 				ts: Number(e.ts),
@@ -109,10 +119,12 @@ export function toLine(e: AgentEvent, ctx: LineBuildCtx): Line | null {
 			};
 		case 'context_reset':
 			// /clear: the session id rotated under the same worker.
+			if (!ctx.visible('reset')) return null;
 			return { role: 'reset', ts: Number(e.ts), text: m.conversation_context_reset() };
 		case 'compact_summary':
 			// /compact appends a summary in place (no session-id rotation), so it
 			// arrives with its text.
+			if (!ctx.visible('compact')) return null;
 			if (!e.content.trim()) return null;
 			return {
 				role: 'compact',
@@ -154,7 +166,7 @@ export function buildLines(
 	let prevKey = '';
 	for (const e of events) {
 		if (e.type === 'turn_summary') {
-			if (!ctx.typeVisible('summary')) continue;
+			if (!ctx.visible('summary')) continue;
 			const orphan = attachSummary(out, e);
 			// An attached summary is not a line, so it must stay invisible to the
 			// consecutive-duplicate guard below.

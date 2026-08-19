@@ -213,6 +213,9 @@
 	.line.system {
 		--bc: var(--role-system);
 	}
+	.line.marker {
+		--bc: var(--text-faint);
+	}
 	.line.tool,
 	.line.result {
 		--bc: var(--role-tool);
@@ -296,6 +299,14 @@
 	.line.system .bubble {
 		background: color-mix(in srgb, var(--role-system) 12%, var(--bg-elevated));
 		border-color: color-mix(in srgb, var(--role-system) 40%, transparent);
+	}
+	/* Harness bookkeeping (permission-mode flips, worktree/title updates) —
+	   deliberately the quietest bubble in the log. */
+	.line.marker .bubble {
+		background: none;
+		border-color: var(--border);
+		color: var(--text-faint);
+		font-size: var(--fs-xs);
 	}
 	/* Optimistic reply: muted/amber until the agent acknowledges, then it
 	   settles into the regular green user tint above. */

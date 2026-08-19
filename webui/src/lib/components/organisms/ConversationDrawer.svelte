@@ -25,7 +25,8 @@
 	import Conversation from './conversation/Conversation.svelte';
 	import AccountSwitchModal from './conversation/AccountSwitchModal.svelte';
 	import ConversationComposer from './conversation/ConversationComposer.svelte';
-	import { MSG_TYPES, type MsgType, type ViewOpts } from './conversation/types';
+	import type { MsgCategory, ViewOpts } from './conversation/types';
+	import { parseViewOpts } from './conversation/filters';
 	import { eventSig, orderEvents } from './conversation/format';
 	import { buildLines, type LineBuildCtx } from './conversation/lines';
 	import { ConversationStream } from './conversation/stream.svelte';
@@ -81,47 +82,9 @@
 		terminalOpen = false;
 	});
 
-	// Message-type tag filter, shared types in ./conversation/types.
-	const defaults: ViewOpts = {
-		typeFilter: {
-			assistant: 'off',
-			thinking: 'off',
-			user: 'off',
-			tool: 'off',
-			mcp: 'exclude',
-			system: 'off',
-			result: 'off',
-			summary: 'off'
-		},
-		prettyJson: true,
-		prettyDiff: true,
-		prettyTables: true,
-		paneWidth: null
-	};
 	const PANE_MIN = 360; // px — narrowest the drawer can be dragged
-	let view = $state<ViewOpts>(loadView());
-	function loadView(): ViewOpts {
-		try {
-			const saved = JSON.parse(drafts.get(VIEW_OPTS) || '{}');
-			return {
-				...defaults,
-				...saved,
-				// typeFilter is nested — merge per-key so a partial/old payload keeps
-				// the sensible defaults.
-				typeFilter: { ...defaults.typeFilter, ...(saved.typeFilter ?? {}) }
-			};
-		} catch {
-			return { ...defaults };
-		}
-	}
-	// Whether a given message type passes the current tag filter.
-	const anyIncluded = $derived(MSG_TYPES.some((m) => view.typeFilter[m.id] === 'include'));
-	function typeVisible(t: MsgType): boolean {
-		const st = view.typeFilter[t];
-		if (st === 'exclude') return false;
-		if (anyIncluded) return st === 'include';
-		return true;
-	}
+	let view = $state<ViewOpts>(parseViewOpts(drafts.get(VIEW_OPTS)));
+	const visible = (c: MsgCategory): boolean => view.msgFilter[c];
 	$effect(() => {
 		drafts.set(VIEW_OPTS, JSON.stringify(view));
 	});
@@ -247,7 +210,7 @@
 	// Getters, not snapshots: the toggles are read at build time so the derived
 	// below re-runs when they flip.
 	const lineCtx: LineBuildCtx = {
-		typeVisible,
+		visible,
 		renderMarkdown: mdRender,
 		renderCode: (text, lang) => hl(highlightBlock(text, lang)),
 		get prettyJson() {
