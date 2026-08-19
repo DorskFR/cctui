@@ -39,15 +39,20 @@ pub fn to_agent_event(adapter_id: &str, event_type: &str, payload: &Value) -> Op
                     Some(AgentEvent::Text {
                         content: format!("▷ User: {text}"),
                         meta,
+                        kind: None,
                         ts,
                         message_id: None,
                         usage: None,
                         seq: None,
                     })
                 }
-                "assistant" | "assistant_thinking" => Some(AgentEvent::Text {
+                "assistant"
+                | "assistant_thinking"
+                | "assistant_redacted_thinking"
+                | "assistant_attachment" => Some(AgentEvent::Text {
                     content: text.to_owned(),
                     meta: false,
+                    kind: text_kind(role),
                     ts,
                     message_id: payload
                         .get("message_id")
@@ -55,6 +60,24 @@ pub fn to_agent_event(adapter_id: &str, event_type: &str, payload: &Value) -> Op
                         .map(str::to_owned),
                     usage: None,
                     seq: None,
+                }),
+                "system_marker" => Some(AgentEvent::Text {
+                    content: format!("· {text}"),
+                    meta: true,
+                    kind: text_kind(role),
+                    ts,
+                    message_id: None,
+                    usage: None,
+                    seq: None,
+                }),
+                "summary" => turn_summary_parts(payload).map(|(detail, category, needs_action)| {
+                    AgentEvent::TurnSummary {
+                        detail,
+                        status_category: category,
+                        needs_action,
+                        ts,
+                        seq: None,
+                    }
                 }),
                 "context_reset" => Some(AgentEvent::ContextReset { ts, seq: None }),
                 "compact_summary" => {
@@ -64,7 +87,10 @@ pub fn to_agent_event(adapter_id: &str, event_type: &str, payload: &Value) -> Op
             }
         }
         "tool_use" => {
-            if payload.get("kind").and_then(Value::as_str) == Some("tool_result") {
+            if matches!(
+                payload.get("kind").and_then(Value::as_str),
+                Some("tool_result" | "server_tool_result")
+            ) {
                 let summary = payload
                     .get("content")
                     .and_then(|v| v.as_str().map(str::to_owned).or_else(|| Some(v.to_string())))
@@ -82,6 +108,27 @@ pub fn to_agent_event(adapter_id: &str, event_type: &str, payload: &Value) -> Op
         }
         _ => None,
     }
+}
+
+fn text_kind(role: &str) -> Option<String> {
+    let kind = match role {
+        "assistant_thinking" => "thinking",
+        "assistant_redacted_thinking" => "redacted_thinking",
+        "assistant_attachment" => "attachment",
+        "system_marker" => "system_marker",
+        _ => return None,
+    };
+    Some(kind.to_owned())
+}
+
+/// A summary with neither detail nor category carries nothing renderable.
+fn turn_summary_parts(payload: &Value) -> Option<(String, Option<String>, bool)> {
+    let field =
+        |k: &str| payload.get(k).and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty());
+    let category = field("status_category").map(str::to_owned);
+    let detail = field("status_detail").map(str::to_owned).or_else(|| category.clone())?;
+    let needs_action = payload.get("needs_action").and_then(Value::as_bool).unwrap_or(false);
+    Some((detail, category, needs_action))
 }
 
 #[must_use]
@@ -102,9 +149,17 @@ fn agent_event_from_canonical(v: &Value, ts: i64) -> Option<AgentEvent> {
         "text" => Some(AgentEvent::Text {
             content: v.get("content").and_then(Value::as_str).unwrap_or_default().to_owned(),
             meta: v.get("meta").and_then(Value::as_bool).unwrap_or(false),
+            kind: v.get("kind").and_then(Value::as_str).map(str::to_owned),
             ts,
             message_id: v.get("message_id").and_then(Value::as_str).map(str::to_owned),
             usage: serde_json::from_value(v.get("usage").cloned().unwrap_or(Value::Null)).ok(),
+            seq: None,
+        }),
+        "turn_summary" => Some(AgentEvent::TurnSummary {
+            detail: v.get("detail").and_then(Value::as_str).unwrap_or_default().to_owned(),
+            status_category: v.get("status_category").and_then(Value::as_str).map(str::to_owned),
+            needs_action: v.get("needs_action").and_then(Value::as_bool).unwrap_or(false),
+            ts,
             seq: None,
         }),
         "tool_call" => Some(AgentEvent::ToolCall {
@@ -398,27 +453,30 @@ fn map_daemon_message(payload: &Value) -> Option<Value> {
             let meta = payload.get("meta").and_then(Value::as_bool).unwrap_or(false);
             Some(json!({ "type": "text", "content": format!("▷ User: {text}"), "meta": meta }))
         }
-        "assistant" | "assistant_thinking" => Some(json!({
+        "assistant"
+        | "assistant_thinking"
+        | "assistant_redacted_thinking"
+        | "assistant_attachment" => Some(json!({
             "type": "text",
             "content": text,
             "role": "Assistant",
+            "kind": text_kind(role),
             "message_id": payload.get("message_id"),
         })),
-        "summary" => {
-            // Post-turn summaries carry status_category / status_detail; surface
-            // them only when there's something useful to display.
-            let detail = payload.get("status_detail").and_then(Value::as_str).unwrap_or_default();
-            if detail.is_empty() {
-                None
-            } else {
-                Some(json!({
-                    "type": "text",
-                    "content": format!("· {detail}"),
-                    "needs_action": payload.get("needs_action").and_then(Value::as_bool).unwrap_or(false),
-                    "status_category": payload.get("status_category"),
-                }))
-            }
-        }
+        "system_marker" => Some(json!({
+            "type": "text",
+            "content": format!("· {text}"),
+            "meta": true,
+            "kind": text_kind(role),
+        })),
+        "summary" => turn_summary_parts(payload).map(|(detail, category, needs_action)| {
+            json!({
+                "type": "turn_summary",
+                "detail": detail,
+                "status_category": category,
+                "needs_action": needs_action,
+            })
+        }),
         "context_reset" => Some(json!({ "type": "context_reset" })),
         "compact_summary" => Some(json!({ "type": "compact_summary", "content": text })),
         _ => None,
@@ -426,9 +484,10 @@ fn map_daemon_message(payload: &Value) -> Option<Value> {
 }
 
 fn map_daemon_tool(payload: &Value) -> Option<Value> {
-    // ToolUse comes in two shapes: an assistant tool_use (id, tool, input)
-    // and a user-side tool_result (kind="tool_result", content, ...).
-    if payload.get("kind").and_then(Value::as_str) == Some("tool_result") {
+    if matches!(
+        payload.get("kind").and_then(Value::as_str),
+        Some("tool_result" | "server_tool_result")
+    ) {
         let summary = payload
             .get("content")
             .and_then(|v| v.as_str().map(str::to_owned).or_else(|| Some(v.to_string())))
@@ -520,6 +579,65 @@ mod tests {
     }
 
     #[test]
+    fn daemon_server_tool_result_maps_to_tool_result() {
+        let p =
+            json!({ "kind": "server_tool_result", "tool_use_id": "srv_1", "content": "results" });
+        let n = for_client("claude-code", "tool_use", p).unwrap();
+        assert_eq!(n["type"], "tool_result");
+        assert_eq!(n["output_summary"], "results");
+        let ev = to_agent_event(
+            "claude-code",
+            "tool_use",
+            &json!({ "kind": "server_tool_result", "content": "results" }),
+        )
+        .unwrap();
+        assert!(matches!(ev, AgentEvent::ToolResult { .. }));
+    }
+
+    #[test]
+    fn daemon_server_tool_use_maps_to_tool_call() {
+        let p = json!({ "kind": "server_tool_use", "id": "srv_1", "tool": "web_search", "input": { "query": "q" } });
+        let n = for_client("claude-code", "tool_use", p).unwrap();
+        assert_eq!(n["type"], "tool_call");
+        assert_eq!(n["tool"], "web_search");
+    }
+
+    #[test]
+    fn daemon_redacted_thinking_and_attachment_map_to_text() {
+        for role in ["assistant_redacted_thinking", "assistant_attachment"] {
+            let p = json!({ "role": role, "text": "[placeholder]", "message_id": "m1" });
+            let n = for_client("claude-code", "message", p.clone()).unwrap();
+            assert_eq!(n["type"], "text");
+            assert_eq!(n["content"], "[placeholder]");
+            assert_eq!(n["message_id"], "m1");
+            let ev = to_agent_event("claude-code", "message", &p).unwrap();
+            match ev {
+                AgentEvent::Text { content, message_id, .. } => {
+                    assert_eq!(content, "[placeholder]");
+                    assert_eq!(message_id.as_deref(), Some("m1"));
+                }
+                other => panic!("expected Text, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn daemon_system_marker_maps_to_meta_text() {
+        let p = json!({ "role": "system_marker", "marker": "ai-title", "text": "title: deploy" });
+        let n = for_client("claude-code", "message", p.clone()).unwrap();
+        assert_eq!(n["type"], "text");
+        assert_eq!(n["content"], "· title: deploy");
+        assert_eq!(n["meta"], true);
+        match to_agent_event("claude-code", "message", &p).unwrap() {
+            AgentEvent::Text { content, meta, .. } => {
+                assert_eq!(content, "· title: deploy");
+                assert!(meta);
+            }
+            other => panic!("expected Text, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn daemon_summary_surfaces_needs_action() {
         let p = json!({
             "role": "summary",
@@ -527,10 +645,61 @@ mod tests {
             "status_category": "blocked",
             "needs_action": true,
         });
-        let n = for_client("claude-code", "message", p).unwrap();
-        assert_eq!(n["content"], "· waiting for input");
+        let n = for_client("claude-code", "message", p.clone()).unwrap();
+        assert_eq!(n["type"], "turn_summary");
+        assert_eq!(n["detail"], "waiting for input");
         assert_eq!(n["needs_action"], true);
         assert_eq!(n["status_category"], "blocked");
+        match to_agent_event("claude-code", "message", &p).unwrap() {
+            AgentEvent::TurnSummary { detail, status_category, needs_action, .. } => {
+                assert_eq!(detail, "waiting for input");
+                assert_eq!(status_category.as_deref(), Some("blocked"));
+                assert!(needs_action);
+            }
+            other => panic!("expected TurnSummary, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_summary_with_only_a_category_still_renders() {
+        let p = json!({ "role": "summary", "status_category": "done" });
+        let n = for_client("claude-code", "message", p).unwrap();
+        assert_eq!(n["type"], "turn_summary");
+        assert_eq!(n["detail"], "done");
+        assert_eq!(n["needs_action"], false);
+    }
+
+    #[test]
+    fn text_sub_kinds_are_tagged_for_the_client() {
+        for (role, kind) in [
+            ("assistant_thinking", "thinking"),
+            ("assistant_redacted_thinking", "redacted_thinking"),
+            ("assistant_attachment", "attachment"),
+            ("system_marker", "system_marker"),
+        ] {
+            let p = json!({ "role": role, "text": "body" });
+            let n = for_client("claude-code", "message", p.clone()).unwrap();
+            assert_eq!(n["type"], "text");
+            assert_eq!(n["kind"], kind, "read path must tag {role}");
+            match to_agent_event("claude-code", "message", &p).unwrap() {
+                AgentEvent::Text { kind: got, .. } => {
+                    assert_eq!(got.as_deref(), Some(kind), "live path must tag {role}");
+                }
+                other => panic!("expected Text, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn plain_assistant_and_user_text_carry_no_sub_kind() {
+        for role in ["assistant", "user"] {
+            let p = json!({ "role": role, "text": "body" });
+            assert!(for_client("claude-code", "message", p.clone()).unwrap()["kind"].is_null());
+            match to_agent_event("claude-code", "message", &p).unwrap() {
+                AgentEvent::Text { kind, .. } => assert_eq!(kind, None, "{role} must be untagged"),
+                other => panic!("expected Text, got {other:?}"),
+            }
+        }
     }
 
     #[test]

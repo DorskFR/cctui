@@ -902,7 +902,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-admin"
-version = "0.7.261"
+version = "0.7.262"
 dependencies = [
  "anyhow",
  "cctui-proto",
@@ -917,7 +917,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-crypto"
-version = "0.7.261"
+version = "0.7.262"
 dependencies = [
  "chacha20poly1305",
  "hex",
@@ -930,7 +930,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-daemon"
-version = "0.7.261"
+version = "0.7.262"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -959,7 +959,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-dispatcher-apple"
-version = "0.7.261"
+version = "0.7.262"
 dependencies = [
  "anyhow",
  "cctui-dispatcher-core",
@@ -982,7 +982,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-dispatcher-core"
-version = "0.7.261"
+version = "0.7.262"
 dependencies = [
  "anyhow",
  "cctui-proto",
@@ -1002,7 +1002,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-dispatcher-docker"
-version = "0.7.261"
+version = "0.7.262"
 dependencies = [
  "anyhow",
  "bollard",
@@ -1026,7 +1026,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-dispatcher-kube"
-version = "0.7.261"
+version = "0.7.262"
 dependencies = [
  "anyhow",
  "cctui-dispatcher-core",
@@ -1053,7 +1053,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-guard"
-version = "0.7.261"
+version = "0.7.262"
 dependencies = [
  "anyhow",
  "axum",
@@ -1071,7 +1071,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-guard-proxy"
-version = "0.7.261"
+version = "0.7.262"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1102,7 +1102,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-orchestrator"
-version = "0.7.261"
+version = "0.7.262"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1125,7 +1125,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-proto"
-version = "0.7.261"
+version = "0.7.262"
 dependencies = [
  "base64 0.23.1",
  "chrono",
@@ -1140,7 +1140,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-query"
-version = "0.7.261"
+version = "0.7.262"
 dependencies = [
  "serde",
  "ts-rs",
@@ -1148,7 +1148,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-server"
-version = "0.7.261"
+version = "0.7.262"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1185,7 +1185,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-supervisor"
-version = "0.7.261"
+version = "0.7.262"
 dependencies = [
  "anyhow",
  "caps",
@@ -1201,7 +1201,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-tui"
-version = "0.7.261"
+version = "0.7.262"
 dependencies = [
  "anyhow",
  "cctui-proto",
@@ -1833,7 +1833,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2155,9 +2155,9 @@ dependencies = [
 
 [[package]]
 name = "h2"
-version = "0.4.15"
+version = "0.4.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6cb093c84e8bd9b188d4c4a8cb6579fc016968d14c99882163cd3ff402a4f155"
+checksum = "9f877e75f39e9827ec50a572dd592684ac28c029578726c85f1b2aa6ab807449"
 dependencies = [
  "atomic-waker",
  "bytes",
@@ -3648,7 +3648,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4036,7 +4036,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4095,7 +4095,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4909,7 +4909,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -5840,7 +5840,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

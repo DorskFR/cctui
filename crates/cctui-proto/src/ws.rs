@@ -291,6 +291,11 @@ pub enum AgentEvent {
         content: String,
         #[serde(default)]
         meta: bool,
+        /// `thinking` | `redacted_thinking` | `attachment` | `system_marker`;
+        /// `None` is ordinary visible prose. Free string so an unknown adapter
+        /// kind still decodes.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<String>,
         ts: i64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         message_id: Option<String>,
@@ -348,6 +353,18 @@ pub enum AgentEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         seq: Option<i64>,
     },
+    /// A post-turn summary. Renders as subdued footer subtext on the turn's
+    /// last assistant message, not as its own bubble.
+    TurnSummary {
+        detail: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status_category: Option<String>,
+        #[serde(default)]
+        needs_action: bool,
+        ts: i64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        seq: Option<i64>,
+    },
     TurnEnd {
         ts: i64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -369,6 +386,7 @@ impl AgentEvent {
             | Self::Reply { seq, .. }
             | Self::ContextReset { seq, .. }
             | Self::CompactSummary { seq, .. }
+            | Self::TurnSummary { seq, .. }
             | Self::TurnEnd { seq, .. } => *seq,
         }
     }
@@ -385,6 +403,7 @@ impl AgentEvent {
             | Self::Reply { seq, .. }
             | Self::ContextReset { seq, .. }
             | Self::CompactSummary { seq, .. }
+            | Self::TurnSummary { seq, .. }
             | Self::TurnEnd { seq, .. } => seq,
         };
         *slot = Some(value);
@@ -613,6 +632,7 @@ mod tests {
         let event = AgentEvent::Text {
             content: "hello".into(),
             meta: false,
+            kind: None,
             ts: 1_234_567_890,
             message_id: None,
             usage: None,
@@ -634,6 +654,7 @@ mod tests {
         let mut ev = AgentEvent::Text {
             content: "hi".into(),
             meta: false,
+            kind: None,
             ts: 10,
             message_id: None,
             usage: None,
@@ -656,6 +677,7 @@ mod tests {
         let preamble = AgentEvent::Text {
             content: "Here is my analysis.".into(),
             meta: false,
+            kind: None,
             ts: 100, // ties the answer's ts
             message_id: None,
             usage: None,
@@ -670,6 +692,7 @@ mod tests {
         let answer = AgentEvent::Text {
             content: "▷ User: option A".into(),
             meta: false,
+            kind: None,
             ts: 100,
             message_id: None,
             usage: None,
@@ -746,6 +769,7 @@ mod tests {
             AgentEvent::Text {
                 content: "hello".into(),
                 meta: false,
+                kind: None,
                 ts: 1,
                 message_id: None,
                 usage: None,
@@ -788,6 +812,7 @@ mod tests {
             data: AgentEvent::Text {
                 content: "hi".into(),
                 meta: false,
+                kind: None,
                 ts: 1,
                 message_id: None,
                 usage: None,

@@ -850,6 +850,7 @@ mod tests {
         AgentEvent::Text {
             content: content.into(),
             meta: false,
+            kind: None,
             ts: 0,
             message_id: None,
             usage: None,
