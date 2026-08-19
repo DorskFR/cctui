@@ -29,7 +29,15 @@ import { getLocale } from "$lib/paraglide/runtime";
 /** The subset of the drawer's ViewOpts the export honors. */
 // Mirrors the drawer's ViewOpts filter model. Each message
 // type is off/include/exclude; if any is 'include', only included types export.
-type MsgType = "assistant" | "user" | "tool" | "mcp" | "system" | "result";
+type MsgType =
+  | "assistant"
+  | "thinking"
+  | "user"
+  | "tool"
+  | "mcp"
+  | "system"
+  | "result"
+  | "summary";
 type TagState = "off" | "include" | "exclude";
 
 export interface ExportOpts {
@@ -52,17 +60,21 @@ function typeVisible(opts: ExportOpts, t: MsgType): boolean {
 interface Block {
   role:
     | "assistant"
+    | "thinking"
     | "user"
     | "system"
     | "tool"
     | "result"
     | "reset"
     | "compact"
+    | "summary"
     | "ask";
   ts: number;
   label?: string; // tool name / divider text
   html: string; // inner HTML, already escaped/rendered
 }
+
+const THINKING_KINDS = new Set(["thinking", "redacted_thinking"]);
 
 const META_TAGS = [
   "<task-notification",
@@ -155,6 +167,10 @@ function toBlock(e: AgentEvent, opts: ExportOpts): Block | null {
   switch (e.type) {
     case "text": {
       if (!e.content.trim()) return null;
+      if (e.kind && THINKING_KINDS.has(e.kind)) {
+        if (!typeVisible(opts, "thinking")) return null;
+        return { role: "thinking", ts: Number(e.ts), html: md(e.content, opts) };
+      }
       if (e.content.startsWith(USER_PREFIX)) {
         const content = e.content.slice(USER_PREFIX.length).trimStart();
         const system = e.meta || looksMeta(content);
@@ -209,6 +225,17 @@ function toBlock(e: AgentEvent, opts: ExportOpts): Block | null {
     case "compact_summary":
       if (!e.content.trim()) return null;
       return { role: "compact", ts: Number(e.ts), html: md(e.content, opts) };
+    case "turn_summary": {
+      if (!typeVisible(opts, "summary")) return null;
+      const detail = e.detail.trim() || (e.status_category ?? "").trim();
+      if (!detail) return null;
+      return {
+        role: "summary",
+        ts: Number(e.ts),
+        label: e.needs_action ? "needs action" : undefined,
+        html: escapeHtml(detail),
+      };
+    }
     default:
       return null; // heartbeat, turn_end
   }
@@ -216,10 +243,12 @@ function toBlock(e: AgentEvent, opts: ExportOpts): Block | null {
 
 const ROLE_LABEL: Record<Block["role"], string> = {
   assistant: "Assistant",
+  thinking: "Thinking",
   user: "User",
   system: "System",
   tool: "Tool",
   result: "Result",
+  summary: "Summary",
   ask: "Question",
   reset: "",
   compact: "Compacted context",
@@ -255,6 +284,8 @@ const TOKEN_FALLBACKS: Record<string, string> = {
   "--role-system": "#b48ef0",
   "--role-tool": "#f0b454",
   "--role-mcp": "#4fd6cf",
+  "--role-thinking": "#d69d76",
+  "--role-summary": "#9aa3b2",
   "--font-sans":
     "ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif",
   "--font-mono":
@@ -304,6 +335,8 @@ header h1{font-size:18px;margin:0 0 8px;word-break:break-word}
 .system{border-color:color-mix(in srgb,var(--role-system) 24%,var(--c-border));border-left-color:var(--role-system);background:color-mix(in srgb,var(--role-system) 7%,var(--c-bg-elev));opacity:.9}.system .who .r{color:var(--role-system)}
 .tool{border-color:color-mix(in srgb,var(--role-tool) 26%,var(--c-border));border-left-color:var(--role-tool);background:color-mix(in srgb,var(--role-tool) 6%,var(--c-bg-elev))}.tool .who .r{color:var(--role-tool)}
 .result{border-color:color-mix(in srgb,var(--c-amber) 26%,var(--c-border));border-left-color:var(--c-amber);background:color-mix(in srgb,var(--c-amber) 6%,var(--c-bg-elev))}.result .who .r{color:var(--c-amber)}
+.thinking{border-color:color-mix(in srgb,var(--role-thinking) 30%,var(--c-border));border-left-color:var(--role-thinking);background:color-mix(in srgb,var(--role-thinking) 8%,var(--c-bg-elev))}.thinking .who .r{color:var(--role-thinking)}
+.summary{border-color:color-mix(in srgb,var(--role-summary) 22%,var(--c-border));border-left-color:var(--role-summary);background:none;font-size:12px}.summary .who .r{color:var(--role-summary)}
 .ask{border-left-color:var(--c-red)}.ask .who .r{color:var(--c-red)}
 .compact{border-left-color:var(--c-amber)}
 .reset{border-left:none;background:none;text-align:center;color:var(--c-text-faint);font-size:12px;margin:18px 0}
@@ -406,6 +439,10 @@ function toMarkdownBlock(e: AgentEvent, opts: ExportOpts): string | null {
   switch (e.type) {
     case "text": {
       if (!e.content.trim()) return null;
+      if (e.kind && THINKING_KINDS.has(e.kind)) {
+        if (!typeVisible(opts, "thinking")) return null;
+        return `**Thinking:**\n\n${e.content}`;
+      }
       if (e.content.startsWith(USER_PREFIX)) {
         const content = e.content.slice(USER_PREFIX.length).trimStart();
         const system = e.meta || looksMeta(content);
@@ -454,6 +491,12 @@ function toMarkdownBlock(e: AgentEvent, opts: ExportOpts): string | null {
     case "compact_summary":
       if (!e.content.trim()) return null;
       return `**Compacted context:**\n\n${e.content}`;
+    case "turn_summary": {
+      if (!typeVisible(opts, "summary")) return null;
+      const detail = e.detail.trim() || (e.status_category ?? "").trim();
+      if (!detail) return null;
+      return `_${e.needs_action ? "Needs action" : "Summary"}: ${detail}_`;
+    }
     default:
       return null;
   }

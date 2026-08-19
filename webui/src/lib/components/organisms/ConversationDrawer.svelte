@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { SessionListItem } from '@bindings/SessionListItem';
 	import type { AgentEvent } from '@bindings/AgentEvent';
-	import { ws, USER_PREFIX } from '$lib/ws.svelte';
+	import { ws } from '$lib/ws.svelte';
 	import {
 		useConversation,
 		useSessionActions,
@@ -25,17 +25,9 @@
 	import Conversation from './conversation/Conversation.svelte';
 	import AccountSwitchModal from './conversation/AccountSwitchModal.svelte';
 	import ConversationComposer from './conversation/ConversationComposer.svelte';
-	import { MSG_TYPES, type MsgType, type ViewOpts, type Line } from './conversation/types';
-	import {
-		looksMeta,
-		parseAsk,
-		parsePlan,
-		eventSig,
-		orderEvents,
-		formatToolInput,
-		stampTurns,
-		assignLineKeys
-	} from './conversation/format';
+	import { MSG_TYPES, type MsgType, type ViewOpts } from './conversation/types';
+	import { eventSig, orderEvents } from './conversation/format';
+	import { buildLines, type LineBuildCtx } from './conversation/lines';
 	import { ConversationStream } from './conversation/stream.svelte';
 	import { ScrollController } from './conversation/scroll.svelte';
 	import { ForkController } from './conversation/fork.svelte';
@@ -93,11 +85,13 @@
 	const defaults: ViewOpts = {
 		typeFilter: {
 			assistant: 'off',
+			thinking: 'off',
 			user: 'off',
 			tool: 'off',
 			mcp: 'exclude',
 			system: 'off',
-			result: 'off'
+			result: 'off',
+			summary: 'off'
 		},
 		prettyJson: true,
 		prettyDiff: true,
@@ -250,134 +244,26 @@
 	// Render markdown honoring the table formatting toggle.
 	const mdRender = (s: string) =>
 		hl(renderMarkdown(s, { tables: view.prettyTables, sessionId: id }));
-	// History stores user turns as a `text` event prefixed with USER_PREFIX; some
-	// "user" turns are really harness/system messages (detected structurally via
-	// `looksMeta`) and render in a distinct hue.
-	function userOrSystem(content: string, ts: number, meta: boolean): Line | null {
-		const role = meta ? 'system' : 'user';
-		if (!typeVisible(role)) return null;
-		return { role, ts, html: mdRender(content), text: content };
-	}
-
-	function toLine(e: AgentEvent): Line | null {
-		switch (e.type) {
-			case 'text': {
-				// Streaming emits an empty text event before the populated one — skip
-				// empties so they don't render as blank assistant blocks.
-				if (!e.content.trim()) return null;
-				if (e.content.startsWith(USER_PREFIX)) {
-					const content = e.content.slice(USER_PREFIX.length).trimStart();
-					// Classify structurally from content, not the stored `meta` bit —
-					// cctui-injected human replies carry a spurious `isMeta:true` and
-					// must stay `user` on reload.
-					return userOrSystem(content, Number(e.ts), looksMeta(content));
-				}
-				if (!typeVisible('assistant')) return null;
-				return {
-					role: 'assistant',
-					ts: Number(e.ts),
-					html: mdRender(e.content),
-					text: e.content,
-					messageId: e.message_id ?? undefined,
-					usage: e.usage ?? undefined
-				};
-			}
-			case 'reply':
-				// `reply` is only ever our own optimistic echo of typed input.
-				if (!e.content.trim()) return null;
-				return userOrSystem(e.content, Number(e.ts), false);
-			case 'tool_call': {
-				// AskUserQuestion: render as interactive cards, not raw JSON.
-				if (e.tool === 'AskUserQuestion') {
-					const ask = parseAsk(e.input);
-					if (ask) return { role: 'tool', ts: Number(e.ts), tool: e.tool, ask };
-				}
-				// ExitPlanMode: render the plan + continuations as a Plan card.
-				if (e.tool === 'ExitPlanMode') {
-					const plan = parsePlan(e.input);
-					if (plan) return { role: 'tool', ts: Number(e.ts), tool: e.tool, plan };
-				}
-				const isMcp = e.tool.startsWith('mcp__');
-				// MCP tool calls filter on the 'mcp' tag; other tool calls on 'tool'.
-				if (!typeVisible(isMcp ? 'mcp' : 'tool')) return null;
-				const { text, lang } = formatToolInput(e.tool, e.input, {
-					prettyDiff: view.prettyDiff,
-					prettyJson: view.prettyJson
-				});
-				return {
-					role: 'tool',
-					ts: Number(e.ts),
-					tool: e.tool,
-					mcp: isMcp,
-					text,
-					lang,
-					htmlCode: hl(highlightBlock(text, lang))
-				};
-			}
-			case 'tool_result':
-				if (!typeVisible('result')) return null;
-				return {
-					role: 'result',
-					ts: Number(e.ts),
-					tool: e.tool,
-					text: e.output_summary,
-					htmlCode: hl(highlightBlock(e.output_summary, ''))
-				};
-			case 'context_reset':
-				// /clear: the session id rotated under the same worker.
-				return { role: 'reset', ts: Number(e.ts), text: m.conversation_context_reset() };
-			case 'compact_summary':
-				// /compact appends a summary in place (no session-id rotation), so it
-				// arrives with its text.
-				if (!e.content.trim()) return null;
-				return { role: 'compact', ts: Number(e.ts), html: mdRender(e.content), text: e.content };
-			default:
-				return null; // heartbeat, turn_end
+	// Getters, not snapshots: the toggles are read at build time so the derived
+	// below re-runs when they flip.
+	const lineCtx: LineBuildCtx = {
+		typeVisible,
+		renderMarkdown: mdRender,
+		renderCode: (text, lang) => hl(highlightBlock(text, lang)),
+		get prettyJson() {
+			return view.prettyJson;
+		},
+		get prettyDiff() {
+			return view.prettyDiff;
 		}
-	}
-
-	// Build lines with consecutive-duplicate dedup, tinting user lines with
-	// their per-message delivery state (pending/retrying/failed).
-	const lines = $derived.by(() => {
-		const pendingTs = stream.pendingReplies;
-		const failedTs = stream.failedReplies;
-		const retryingTs = stream.retryingReplies;
-		const out: Line[] = [];
-		let prevKey = '';
-		for (const e of events) {
-			const ln = toLine(e);
-			if (!ln) continue;
-			// Reset/compact markers are keyed by ts so two back-to-back ones aren't
-			// collapsed by the consecutive-duplicate guard.
-			const key =
-				ln.role === 'reset' || ln.role === 'compact'
-					? `${ln.role}|${ln.ts}`
-					: `${ln.role}|${ln.tool ?? ''}|${ln.text ?? ln.html ?? ''}`;
-			if (key === prevKey) continue;
-			prevKey = key;
-			if (ln.role === 'user') {
-				if (pendingTs.has(ln.ts)) ln.pending = true;
-				const retry = retryingTs.get(ln.ts);
-				if (retry !== undefined) ln.retrying = retry;
-				const reason = failedTs.get(ln.ts);
-				if (reason !== undefined) ln.failed = reason;
-			}
-			out.push(ln);
-		}
-		// `events` is already ordered causally by `orderEvents` (server insert
-		// `seq`), so `out` is built in causal order and rendered as-is — no role
-		// grouping, no structural re-anchoring. Ordering by `seq` is what keeps
-		// a reloaded AskUserQuestion in [preamble, card, answer] order.
-		const ordered = out;
-		for (let i = 0; i < ordered.length; i++) {
-			if (ordered[i].role !== 'assistant') continue;
-			const prev = [...ordered.slice(0, i)]
-				.reverse()
-				.find((l) => l.role === 'user' || l.role === 'assistant');
-			if (prev && ordered[i].ts > prev.ts) ordered[i].durationMs = ordered[i].ts - prev.ts;
-		}
-		return assignLineKeys(stampTurns(ordered));
-	});
+	};
+	const lines = $derived.by(() =>
+		buildLines(events, lineCtx, {
+			pending: stream.pendingReplies,
+			failed: stream.failedReplies,
+			retrying: stream.retryingReplies
+		})
+	);
 	// The assistant prose preceding the live question, rendered as
 	// markdown above the card so the user answers with context, not blind.
 	const askPreambleHtml = $derived(

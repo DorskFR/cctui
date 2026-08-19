@@ -4,6 +4,7 @@
 	import PlanCard from '$lib/components/organisms/PlanCard.svelte';
 	import { Button, Text } from '@dorsk/tsumikit';
 	import ConversationLine from './ConversationLine.svelte';
+	import TurnSummaryFooter from './TurnSummaryFooter.svelte';
 	import { copyLineMarkdown, saveLineImage } from './lineActions';
 	import type { ScrollController } from './scroll.svelte';
 	import type { ConversationStream } from './stream.svelte';
@@ -144,6 +145,10 @@
 					<div class="compact-head">{m.conversation_context_compacted()}</div>
 					{#if ln.html}<div class="compact-body">{@html ln.html}</div>{/if}
 				</div>
+			{:else if ln.role === 'summary' && ln.summary}
+				<!-- No assistant bubble to hang this turn summary on; it still shows,
+				     as a bare footer. -->
+				<TurnSummaryFooter summary={ln.summary} />
 			{:else}
 				<ConversationLine
 					{ln}

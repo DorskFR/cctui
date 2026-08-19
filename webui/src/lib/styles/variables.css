@@ -42,6 +42,13 @@
   --role-mcp: var(--c-teal);
   /* compact/clear boundary — neutral "paper white" so it reads as structure */
   --role-boundary: var(--c-text-muted);
+  /* Thinking blocks. Derived, not a literal: every theme redefines --c-gold /
+	   --c-red / --c-text-muted, so the brown lands light on dark grounds and
+	   dark on light ones without a per-theme override. */
+  --c-brown: color-mix(in srgb, var(--c-gold) 62%, var(--c-red) 38%);
+  --role-thinking: color-mix(in srgb, var(--c-brown) 70%, var(--c-text-muted) 30%);
+  /* post-turn summary footer — deliberately colorless, it is subtext */
+  --role-summary: var(--c-text-muted);
 
   /* ---- Markdown / syntax-highlight tokens — themeable ---- */
   --md-text: var(--c-text-muted); /* base prose: grayish */
