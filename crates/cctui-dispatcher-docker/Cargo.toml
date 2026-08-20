@@ -26,4 +26,4 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true
 toml = "1.1"
-bollard = "0.18"
+bollard = "0.21"
