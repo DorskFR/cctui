@@ -253,6 +253,11 @@ impl Supervisor {
                         // completion; this is the one point every adapter's
                         // events pass through.
                         crate::childwatch::global().observe(&event);
+                        // Must stay after `observe`: the turn-tail signal needs
+                        // the event even though it has nothing to persist.
+                        if is_textless_thinking(&event) {
+                            continue;
+                        }
                         // Redact secrets before the event reaches the wire / DB.
                         let event = scrub_event(event, &scrub);
                         let up = DaemonFrameUp::Event { adapter_id, event };
@@ -728,6 +733,17 @@ fn scrub_event(event: AdapterEvent, scrub: &CompiledPatterns) -> AdapterEvent {
     serde_json::from_value(value).unwrap_or(event)
 }
 
+/// Claude Code requests `thinking.display: "omitted"`, so the API returns
+/// thinking blocks as a bare replay signature. They render as nothing and cost
+/// a `stream_events` row each.
+fn is_textless_thinking(event: &AdapterEvent) -> bool {
+    let AdapterEvent::Message { payload, .. } = event else { return false };
+    if payload.get("role").and_then(serde_json::Value::as_str) != Some("assistant_thinking") {
+        return false;
+    }
+    payload.get("text").and_then(serde_json::Value::as_str).is_none_or(|t| t.trim().is_empty())
+}
+
 fn event_local_id(event: &AdapterEvent) -> &str {
     match event {
         AdapterEvent::SessionStarted { local_id, .. }
@@ -864,10 +880,41 @@ mod tests {
 
     use super::{
         AdapterRunning, LIVENESS_TIMEOUT, PING_INTERVAL, PendingTransfer, Supervisor,
-        compile_scrub, scrub_event,
+        compile_scrub, is_textless_thinking, scrub_event,
     };
     use crate::adapter_runtime::{Adapter, AdapterCtx, AdapterFactory};
     use crate::client::ServerClient;
+
+    #[test]
+    fn textless_thinking_is_filtered() {
+        let msg = |payload| cctui_proto::adapter::AdapterEvent::Message {
+            local_id: "s".to_owned(),
+            payload,
+        };
+        let thinking = |text| serde_json::json!({ "role": "assistant_thinking", "text": text });
+
+        assert!(is_textless_thinking(&msg(thinking(""))));
+        assert!(is_textless_thinking(&msg(thinking("   \n "))));
+        assert!(is_textless_thinking(&msg(serde_json::json!({ "role": "assistant_thinking" }))));
+        assert!(is_textless_thinking(&msg(
+            serde_json::json!({ "role": "assistant_thinking", "text": null })
+        )));
+
+        assert!(!is_textless_thinking(&msg(thinking("weighing the options"))));
+        assert!(
+            !is_textless_thinking(&msg(
+                serde_json::json!({ "role": "assistant_redacted_thinking", "text": "" })
+            )),
+            "the redacted placeholder is a distinct role and must survive"
+        );
+        assert!(!is_textless_thinking(&msg(
+            serde_json::json!({ "role": "assistant", "text": "" })
+        )));
+        assert!(!is_textless_thinking(&cctui_proto::adapter::AdapterEvent::ToolUse {
+            local_id: "s".to_owned(),
+            payload: serde_json::json!({ "tool": "Bash" }),
+        }));
+    }
 
     #[test]
     fn scrub_event_masks_tool_use_secret_before_send() {
