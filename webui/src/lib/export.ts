@@ -10,13 +10,17 @@
  *  - THEME: the active theme's palette tokens (dark/light/sepia) are read
  *    from the document's computed styles at export time and baked into the
  *    file, so a sepia screen exports a sepia transcript.
- *  - FILTERS: the drawer's view toggles (Tools / MCP / System / Results,
- *    JSON / Diff prettification) gate the export the same way they gate the
+ *  - FILTERS: the drawer's message-category checkboxes and the JSON / Diff
+ *    prettification toggles gate the export the same way they gate the
  *    on-screen lines — what you see is what you save.
  */
 
 import type { AgentEvent } from "@bindings/AgentEvent";
 import type { SessionListItem } from "@bindings/SessionListItem";
+import type {
+  MsgCategory,
+  MsgFilter,
+} from "$lib/components/organisms/conversation/types";
 import {
   renderMarkdown,
   highlightBlock,
@@ -26,36 +30,17 @@ import {
 import { USER_PREFIX } from "$lib/ws.svelte";
 import { getLocale } from "$lib/paraglide/runtime";
 
-/** The subset of the drawer's ViewOpts the export honors. */
-// Mirrors the drawer's ViewOpts filter model. Each message
-// type is off/include/exclude; if any is 'include', only included types export.
-type MsgType =
-  | "assistant"
-  | "thinking"
-  | "user"
-  | "tool"
-  | "mcp"
-  | "system"
-  | "result"
-  | "summary";
-type TagState = "off" | "include" | "exclude";
-
+/** The subset of the drawer's ViewOpts the export honors. Typed from the
+ * drawer's own categories so a new filter cannot silently skip the export. */
 export interface ExportOpts {
-  typeFilter: Record<MsgType, TagState>;
+  msgFilter: MsgFilter;
   prettyJson: boolean;
   prettyDiff: boolean;
   prettyTables: boolean;
 }
 
-function typeVisible(opts: ExportOpts, t: MsgType): boolean {
-  const f = opts.typeFilter;
-  if (f[t] === "exclude") return false;
-  const anyIncluded = (Object.keys(f) as MsgType[]).some(
-    (k) => f[k] === "include",
-  );
-  if (anyIncluded) return f[t] === "include";
-  return true;
-}
+const visible = (opts: ExportOpts, c: MsgCategory): boolean =>
+  opts.msgFilter[c] !== false;
 
 interface Block {
   role:
@@ -63,6 +48,7 @@ interface Block {
     | "thinking"
     | "user"
     | "system"
+    | "marker"
     | "tool"
     | "result"
     | "reset"
@@ -73,8 +59,6 @@ interface Block {
   label?: string; // tool name / divider text
   html: string; // inner HTML, already escaped/rendered
 }
-
-const THINKING_KINDS = new Set(["thinking", "redacted_thinking"]);
 
 const META_TAGS = [
   "<task-notification",
@@ -167,26 +151,32 @@ function toBlock(e: AgentEvent, opts: ExportOpts): Block | null {
   switch (e.type) {
     case "text": {
       if (!e.content.trim()) return null;
-      if (e.kind && THINKING_KINDS.has(e.kind)) {
-        if (!typeVisible(opts, "thinking")) return null;
+      if (e.kind === "thinking" || e.kind === "redacted_thinking") {
+        const cat = e.kind === "thinking" ? "thinking" : "redacted";
+        if (!visible(opts, cat)) return null;
         return { role: "thinking", ts: Number(e.ts), html: md(e.content, opts) };
+      }
+      if (e.kind === "system_marker") {
+        if (!visible(opts, "marker")) return null;
+        return { role: "marker", ts: Number(e.ts), html: md(e.content, opts) };
       }
       if (e.content.startsWith(USER_PREFIX)) {
         const content = e.content.slice(USER_PREFIX.length).trimStart();
         const system = e.meta || looksMeta(content);
-        if (!typeVisible(opts, system ? "system" : "user")) return null;
+        if (!visible(opts, system ? "system" : "user")) return null;
         return {
           role: system ? "system" : "user",
           ts: Number(e.ts),
           html: md(content, opts),
         };
       }
-      if (!typeVisible(opts, "assistant")) return null;
+      if (!visible(opts, e.kind === "attachment" ? "attachment" : "assistant"))
+        return null;
       return { role: "assistant", ts: Number(e.ts), html: md(e.content, opts) };
     }
     case "reply":
       if (!e.content.trim()) return null;
-      if (!typeVisible(opts, "user")) return null;
+      if (!visible(opts, "user")) return null;
       return { role: "user", ts: Number(e.ts), html: md(e.content, opts) };
     case "tool_call": {
       if (e.tool === "AskUserQuestion") {
@@ -200,7 +190,7 @@ function toBlock(e: AgentEvent, opts: ExportOpts): Block | null {
           };
       }
       const isMcp = e.tool.startsWith("mcp__");
-      if (!typeVisible(opts, isMcp ? "mcp" : "tool")) return null;
+      if (!visible(opts, isMcp ? "mcp" : "tool")) return null;
       return {
         role: "tool",
         ts: Number(e.ts),
@@ -209,7 +199,7 @@ function toBlock(e: AgentEvent, opts: ExportOpts): Block | null {
       };
     }
     case "tool_result":
-      if (!typeVisible(opts, "result")) return null;
+      if (!visible(opts, "result")) return null;
       return {
         role: "result",
         ts: Number(e.ts),
@@ -217,16 +207,18 @@ function toBlock(e: AgentEvent, opts: ExportOpts): Block | null {
         html: `<pre><code>${highlightBlock(e.output_summary, "")}</code></pre>`,
       };
     case "context_reset":
+      if (!visible(opts, "reset")) return null;
       return {
         role: "reset",
         ts: Number(e.ts),
         html: "⟳ context reset · /clear or /compact",
       };
     case "compact_summary":
+      if (!visible(opts, "compact")) return null;
       if (!e.content.trim()) return null;
       return { role: "compact", ts: Number(e.ts), html: md(e.content, opts) };
     case "turn_summary": {
-      if (!typeVisible(opts, "summary")) return null;
+      if (!visible(opts, "summary")) return null;
       const detail = e.detail.trim() || (e.status_category ?? "").trim();
       if (!detail) return null;
       return {
@@ -246,6 +238,7 @@ const ROLE_LABEL: Record<Block["role"], string> = {
   thinking: "Thinking",
   user: "User",
   system: "System",
+  marker: "Marker",
   tool: "Tool",
   result: "Result",
   summary: "Summary",
@@ -337,6 +330,7 @@ header h1{font-size:18px;margin:0 0 8px;word-break:break-word}
 .result{border-color:color-mix(in srgb,var(--c-amber) 26%,var(--c-border));border-left-color:var(--c-amber);background:color-mix(in srgb,var(--c-amber) 6%,var(--c-bg-elev))}.result .who .r{color:var(--c-amber)}
 .thinking{border-color:color-mix(in srgb,var(--role-thinking) 30%,var(--c-border));border-left-color:var(--role-thinking);background:color-mix(in srgb,var(--role-thinking) 8%,var(--c-bg-elev))}.thinking .who .r{color:var(--role-thinking)}
 .summary{border-color:color-mix(in srgb,var(--role-summary) 22%,var(--c-border));border-left-color:var(--role-summary);background:none;font-size:12px}.summary .who .r{color:var(--role-summary)}
+.marker{border-color:var(--c-border);border-left-color:var(--c-text-faint);background:none;font-size:12px}.marker .who .r{color:var(--c-text-faint)}
 .ask{border-left-color:var(--c-red)}.ask .who .r{color:var(--c-red)}
 .compact{border-left-color:var(--c-amber)}
 .reset{border-left:none;background:none;text-align:center;color:var(--c-text-faint);font-size:12px;margin:18px 0}
@@ -439,26 +433,32 @@ function toMarkdownBlock(e: AgentEvent, opts: ExportOpts): string | null {
   switch (e.type) {
     case "text": {
       if (!e.content.trim()) return null;
-      if (e.kind && THINKING_KINDS.has(e.kind)) {
-        if (!typeVisible(opts, "thinking")) return null;
+      if (e.kind === "thinking" || e.kind === "redacted_thinking") {
+        const cat = e.kind === "thinking" ? "thinking" : "redacted";
+        if (!visible(opts, cat)) return null;
         return `**Thinking:**\n\n${e.content}`;
+      }
+      if (e.kind === "system_marker") {
+        if (!visible(opts, "marker")) return null;
+        return `_${e.content}_`;
       }
       if (e.content.startsWith(USER_PREFIX)) {
         const content = e.content.slice(USER_PREFIX.length).trimStart();
         const system = e.meta || looksMeta(content);
-        if (!typeVisible(opts, system ? "system" : "user")) return null;
+        if (!visible(opts, system ? "system" : "user")) return null;
         return `**${system ? "System" : "User"}:**\n\n${content}`;
       }
-      if (!typeVisible(opts, "assistant")) return null;
+      if (!visible(opts, e.kind === "attachment" ? "attachment" : "assistant"))
+        return null;
       return `**Assistant:**\n\n${e.content}`;
     }
     case "reply":
       if (!e.content.trim()) return null;
-      if (!typeVisible(opts, "user")) return null;
+      if (!visible(opts, "user")) return null;
       return `**User:**\n\n${e.content}`;
     case "tool_call": {
       const isMcp = e.tool.startsWith("mcp__");
-      if (!typeVisible(opts, isMcp ? "mcp" : "tool")) return null;
+      if (!visible(opts, isMcp ? "mcp" : "tool")) return null;
       const o = obj(e.input);
       if (opts.prettyDiff && o && "old_string" in o && "new_string" in o) {
         const minus = String(o.old_string ?? "")
@@ -484,15 +484,17 @@ function toMarkdownBlock(e: AgentEvent, opts: ExportOpts): string | null {
       return `**Tool · ${e.tool}**\n\n${fenced(json, "json")}`;
     }
     case "tool_result":
-      if (!typeVisible(opts, "result")) return null;
+      if (!visible(opts, "result")) return null;
       return `**Result · ${e.tool}**\n\n${fenced(e.output_summary)}`;
     case "context_reset":
+      if (!visible(opts, "reset")) return null;
       return `---\n\n_⟳ context reset · /clear or /compact_\n\n---`;
     case "compact_summary":
+      if (!visible(opts, "compact")) return null;
       if (!e.content.trim()) return null;
       return `**Compacted context:**\n\n${e.content}`;
     case "turn_summary": {
-      if (!typeVisible(opts, "summary")) return null;
+      if (!visible(opts, "summary")) return null;
       const detail = e.detail.trim() || (e.status_category ?? "").trim();
       if (!detail) return null;
       return `_${e.needs_action ? "Needs action" : "Summary"}: ${detail}_`;

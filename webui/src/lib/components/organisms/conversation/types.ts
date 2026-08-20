@@ -1,60 +1,85 @@
-// Shared types + constants for the conversation drawer and its sub-components,
-// extracted from ConversationDrawer.svelte (no behavior change).
 import type { TokenUsage as TokenUsageT } from '@bindings/TokenUsage';
 import { m } from '$lib/paraglide/messages';
 
-// ── Message-type tag filter ──────────────────────────────
-// Each message type is a clickable badge with include/exclude semantics:
-//   'off'      → neutral (shown unless something else is set to 'include')
-//   'include'  → if ANY tag is 'include', only included types render
-//   'exclude'  → always hidden
-export type MsgType =
+export type MsgCategory =
 	| 'assistant'
 	| 'thinking'
+	| 'redacted'
+	| 'attachment'
 	| 'user'
+	| 'system'
 	| 'tool'
 	| 'mcp'
-	| 'system'
 	| 'result'
-	| 'summary';
-export type TagState = 'off' | 'include' | 'exclude';
-export const MSG_TYPES: { id: MsgType }[] = [
-	{ id: 'assistant' },
-	{ id: 'thinking' },
-	{ id: 'user' },
-	{ id: 'tool' },
-	{ id: 'mcp' },
-	{ id: 'system' },
-	{ id: 'result' },
-	{ id: 'summary' }
-];
+	| 'marker'
+	| 'summary'
+	| 'compact'
+	| 'reset';
 
-// Resolved at call time so a live language switch re-renders the badges.
-export function msgTypeLabel(id: MsgType): string {
+export type MsgGroup = 'assistant' | 'user' | 'tools' | 'session';
+
+export type QuickFilterId = 'assistant' | 'user' | 'tools';
+
+export type MsgFilter = Record<MsgCategory, boolean>;
+
+// Resolved at call time so a live language switch re-renders the labels.
+export function msgCategoryLabel(id: MsgCategory): string {
 	switch (id) {
 		case 'assistant':
 			return m.conversation_filter_assistant();
 		case 'thinking':
 			return m.conversation_filter_thinking();
+		case 'redacted':
+			return m.conversation_filter_redacted();
+		case 'attachment':
+			return m.conversation_filter_attachment();
 		case 'user':
 			return m.conversation_filter_user();
+		case 'system':
+			return m.conversation_filter_system();
 		case 'tool':
 			return m.conversation_filter_tool();
 		case 'mcp':
 			return m.conversation_filter_mcp();
-		case 'system':
-			return m.conversation_filter_system();
 		case 'result':
 			return m.conversation_filter_result();
+		case 'marker':
+			return m.conversation_filter_marker();
 		case 'summary':
 			return m.conversation_filter_summary();
+		case 'compact':
+			return m.conversation_filter_compact();
+		case 'reset':
+			return m.conversation_filter_reset();
+	}
+}
+
+export function msgGroupLabel(id: MsgGroup): string {
+	switch (id) {
+		case 'assistant':
+			return m.conversation_filter_group_assistant();
+		case 'user':
+			return m.conversation_filter_group_user();
+		case 'tools':
+			return m.conversation_filter_group_tools();
+		case 'session':
+			return m.conversation_filter_group_session();
+	}
+}
+
+export function quickFilterLabel(id: QuickFilterId): string {
+	switch (id) {
+		case 'assistant':
+			return m.conversation_filter_quick_assistant();
+		case 'user':
+			return m.conversation_filter_quick_user();
+		case 'tools':
+			return m.conversation_filter_quick_tools();
 	}
 }
 
 export interface ViewOpts {
-	// Per-type tag filter state.
-	typeFilter: Record<MsgType, TagState>;
-	// Formatting toggles (kept as toggles, visually grouped).
+	msgFilter: MsgFilter;
 	prettyJson: boolean;
 	prettyDiff: boolean;
 	prettyTables: boolean;
@@ -84,6 +109,7 @@ export interface Line {
 		| 'thinking'
 		| 'user'
 		| 'system'
+		| 'marker'
 		| 'tool'
 		| 'result'
 		| 'reset'

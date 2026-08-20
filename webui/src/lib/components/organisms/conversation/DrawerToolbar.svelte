@@ -1,24 +1,20 @@
 <script lang="ts">
 	// Conversation toolbar: three visually-separated control groups —
-	// message-type tag filter, formatting toggles, behavior (auto-approve)
+	// message-category filter, formatting toggles, behavior (auto-approve)
 	// toggle — that on mobile collapse behind three text-button tabs opening
 	// popovers.
-	import { MSG_TYPES, msgTypeLabel, type MsgType, type ViewOpts } from './types';
-	import { Toggle } from '@dorsk/tsumikit';
+	import {
+		MSG_CATEGORIES,
+		QUICK_FILTERS,
+		allFilter,
+		quickOn,
+		quickPartial,
+		withQuick
+	} from './filters';
+	import FilterMenu from './FilterMenu.svelte';
+	import { quickFilterLabel, type MsgCategory, type QuickFilterId, type ViewOpts } from './types';
+	import { Popover, Toggle } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
-
-	// Human-readable filter state for a tag's tooltip.
-	function tagState(s: 'off' | 'include' | 'exclude'): string {
-		return s === 'include'
-			? m.conversation_filter_state_only()
-			: s === 'exclude'
-				? m.conversation_filter_state_hidden()
-				: m.conversation_filter_state_shown();
-	}
-
-	// The on-state tint for a message-type tag: its role color (result reuses
-	// the tool color), or danger when excluded.
-	const roleVar = (id: MsgType) => (id === 'result' ? 'var(--role-tool)' : `var(--role-${id})`);
 
 	let {
 		view = $bindable(),
@@ -40,21 +36,30 @@
 		terminalOpen?: boolean;
 	} = $props();
 
-	// Cycle a tag: off → include → exclude → off.
-	// 'include' is EXCLUSIVE: selecting "only this" for a type clears any other
-	// type's include so the active selection is unambiguous.
-	// 'exclude' is additive — you can hide multiple types independently.
-	function cycleTag(t: MsgType) {
-		const order = ['off', 'include', 'exclude'] as const;
-		const i = order.indexOf(view.typeFilter[t]);
-		const next = order[(i + 1) % order.length];
-		const updated = { ...view.typeFilter, [t]: next };
-		if (next === 'include') {
-			for (const m of MSG_TYPES) {
-				if (m.id !== t && updated[m.id] === 'include') updated[m.id] = 'off';
-			}
-		}
-		view.typeFilter = updated;
+	const QUICK_TINT: Record<QuickFilterId, string> = {
+		assistant: 'var(--role-assistant)',
+		user: 'var(--role-user)',
+		tools: 'var(--role-tool)'
+	};
+
+	const offCount = $derived(MSG_CATEGORIES.filter((c) => !view.msgFilter[c]).length);
+
+	function quickTitle(id: QuickFilterId): string {
+		const label = quickFilterLabel(id);
+		const state = quickOn(view.msgFilter, id)
+			? m.conversation_filter_state_shown()
+			: quickPartial(view.msgFilter, id)
+				? m.conversation_filter_state_partial()
+				: m.conversation_filter_state_hidden();
+		return m.conversation_filter_quick_title({ label, state });
+	}
+
+	function toggleQuick(id: QuickFilterId) {
+		view.msgFilter = withQuick(view.msgFilter, id, !quickOn(view.msgFilter, id));
+	}
+
+	function toggleCategory(c: MsgCategory) {
+		view.msgFilter = { ...view.msgFilter, [c]: !view.msgFilter[c] };
 	}
 
 	function togglePanel(p: 'filters' | 'format' | 'auto') {
@@ -87,23 +92,33 @@
 			onclick={() => togglePanel('auto')}>{m.conversation_auto_approve_tab()}</Toggle
 		>
 	</div>
-	<!-- Message-type filters: click a tag to cycle off → include → exclude.
-	     Active (include) tags wear their message-badge color; excluded tags
-	     show a strike. -->
+	<!-- Quick category toggles + the full per-category picker. A quick chip is
+	     "on" only when every category it covers is on; a partly-on group gets a
+	     dashed border instead. -->
 	<div class="tagbar row row-wrap" class:panel-open={mobilePanel === 'filters'} role="group" aria-label={m.conversation_msg_filter_aria()}>
-		{#each MSG_TYPES as t (t.id)}
-			{@const label = msgTypeLabel(t.id)}
+		{#each QUICK_FILTERS as q (q.id)}
 			<Toggle
 				pill
-				pressed={view.typeFilter[t.id] !== 'off'}
-				struck={view.typeFilter[t.id] === 'exclude'}
-				style={`--toggle-accent: ${view.typeFilter[t.id] === 'exclude' ? 'var(--danger)' : roleVar(t.id)}`}
-				title={m.conversation_filter_tag_title({ label, state: tagState(view.typeFilter[t.id]) })}
-				onclick={() => cycleTag(t.id)}
+				pressed={quickOn(view.msgFilter, q.id)}
+				style={`--toggle-accent: ${QUICK_TINT[q.id]}${quickPartial(view.msgFilter, q.id) ? ';border-style:dashed' : ''}`}
+				title={quickTitle(q.id)}
+				onclick={() => toggleQuick(q.id)}
 			>
-				{#if view.typeFilter[t.id] === 'exclude'}✕ {/if}{label}
+				{quickFilterLabel(q.id)}
 			</Toggle>
 		{/each}
+		<Popover label={m.conversation_filter_menu_aria()} placement="bottom-start" size="sm">
+			{#snippet trigger()}
+				{offCount > 0
+					? m.conversation_filters_off_count({ count: offCount })
+					: m.conversation_filters()}
+			{/snippet}
+			<FilterMenu
+				filter={view.msgFilter}
+				ontoggle={toggleCategory}
+				onall={(on) => (view.msgFilter = allFilter(on))}
+			/>
+		</Popover>
 	</div>
 	<!-- Formatting toggles: gray when off, colored when on. -->
 	<div class="fmtbar row row-wrap" class:panel-open={mobilePanel === 'format'} role="group" aria-label={m.conversation_formatting_aria()}>
@@ -138,8 +153,8 @@
 </div>
 
 <style>
-	/* Toolbar: three visually-separated groups — message-type
-	   tag filter, formatting toggles, behavior toggle — divided by thin rules. */
+	/* Toolbar: three visually-separated groups — message-category
+	   filter, formatting toggles, behavior toggle — divided by thin rules. */
 	.toolbar {
 		display: flex;
 		flex-wrap: wrap;
@@ -173,7 +188,7 @@
 		padding-left: var(--sp-3);
 		border-left: 1px solid var(--border);
 	}
-	/* The filter tags, formatting + behavior toggles, and mobile tabs are all
+	/* The filter chips, formatting + behavior toggles, and mobile tabs are all
 	   <Toggle> chips now; their base/on-state styling lives in Toggle.svelte.
 	   Per-use tint (role color / warm auto-approve) is set via --toggle-accent
 	   inline. Only the mobile tabs need a layout override (full-width, larger). */

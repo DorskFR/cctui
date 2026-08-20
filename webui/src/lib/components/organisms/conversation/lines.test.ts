@@ -1,22 +1,24 @@
 import { describe, expect, it } from 'vitest';
 import type { AgentEvent } from '@bindings/AgentEvent';
+import { allFilter } from './filters';
 import { buildLines, type LineBuildCtx } from './lines';
-import { MSG_TYPES, msgTypeLabel, type MsgType, type TagState } from './types';
+import type { MsgCategory } from './types';
 
-const ctx = (filter: Partial<Record<MsgType, TagState>> = {}): LineBuildCtx => {
-	const state = (t: MsgType): TagState => filter[t] ?? 'off';
-	const anyIncluded = (Object.values(filter) as TagState[]).some((s) => s === 'include');
+const ctx = (overrides: Partial<Record<MsgCategory, boolean>> = {}): LineBuildCtx => {
+	const filter = { ...allFilter(true), ...overrides };
 	return {
-		typeVisible: (t) => {
-			if (state(t) === 'exclude') return false;
-			if (anyIncluded) return state(t) === 'include';
-			return true;
-		},
+		visible: (c) => filter[c],
 		renderMarkdown: (s) => `<p>${s}</p>`,
 		renderCode: (text) => `<code>${text}</code>`,
 		prettyJson: true,
 		prettyDiff: true
 	};
+};
+
+const only = (...cats: MsgCategory[]): LineBuildCtx => {
+	const filter = allFilter(false);
+	for (const c of cats) filter[c] = true;
+	return { ...ctx(), visible: (c) => filter[c] };
 };
 
 const text = (
@@ -50,11 +52,87 @@ const summary = (
 
 const roles = (es: AgentEvent[], c = ctx()) => buildLines(es, c).map((l) => l.role);
 
-describe('filter categories', () => {
-	it('carries a translated label for every tag, including the new ones', () => {
-		expect(MSG_TYPES.map((t) => t.id)).toContain('thinking');
-		expect(MSG_TYPES.map((t) => t.id)).toContain('summary');
-		for (const t of MSG_TYPES) expect(msgTypeLabel(t.id)).toBeTruthy();
+const toolCall = (tool: string, ts: number): AgentEvent => ({
+	type: 'tool_call',
+	tool,
+	input: {},
+	ts,
+	seq: null
+});
+
+const toolResult = (ts: number): AgentEvent => ({
+	type: 'tool_result',
+	tool: 'Bash',
+	output_summary: 'ok',
+	ts,
+	seq: null
+});
+
+describe('per-category visibility', () => {
+	const events: AgentEvent[] = [
+		text('▷ User: go', 1),
+		text('▷ User: <system-reminder>be brief</system-reminder>', 2),
+		text('thought', 3, 'thinking'),
+		text('[redacted thinking]', 4, 'redacted_thinking'),
+		text('answer', 5),
+		text('[image attachment]', 6, 'attachment'),
+		text('· permission mode: plan', 7, 'system_marker'),
+		toolCall('Bash', 8),
+		toolCall('mcp__pg__query', 9),
+		toolResult(10),
+		{ type: 'compact_summary', content: 'so far…', ts: 11, seq: null },
+		{ type: 'context_reset', ts: 12, seq: null },
+		summary('wrapped up', 13)
+	];
+
+	const cases: [MsgCategory, string, number][] = [
+		['user', 'user', 1],
+		['system', 'system', 2],
+		['thinking', 'thinking', 3],
+		['redacted', 'thinking', 4],
+		['assistant', 'assistant', 5],
+		['attachment', 'assistant', 6],
+		['marker', 'marker', 7],
+		['tool', 'tool', 8],
+		['mcp', 'tool', 9],
+		['result', 'result', 10],
+		['compact', 'compact', 11],
+		['reset', 'reset', 12],
+		['summary', 'summary', 13]
+	];
+
+	it.each(cases)('renders only its own line when %s is the sole category', (cat, role, ts) => {
+		const shown = buildLines(events, only(cat));
+		expect(shown.map((l) => [l.role, l.ts])).toEqual([[role, ts]]);
+	});
+
+	it.each(cases)('drops its own line, and only that one, when %s is off', (cat, _role, ts) => {
+		const kept = buildLines(events, ctx({ [cat]: false }));
+		expect(kept.map((l) => l.ts)).not.toContain(ts);
+		for (const [, , otherTs] of cases) {
+			// A summary with no assistant bubble left to hang on is a line of its
+			// own; once one exists again it becomes that bubble's footer.
+			if (otherTs === ts || otherTs === 13) continue;
+			expect(kept.map((l) => l.ts)).toContain(otherTs);
+		}
+	});
+
+	it('renders every category when nothing is filtered', () => {
+		expect(roles(events)).toEqual([
+			'user',
+			'system',
+			'thinking',
+			'thinking',
+			'assistant',
+			'assistant',
+			'marker',
+			'tool',
+			'tool',
+			'result',
+			'compact',
+			'reset',
+			'summary'
+		]);
 	});
 });
 
@@ -79,20 +157,31 @@ describe('thinking lines', () => {
 		expect(lines[0].redacted).toBeUndefined();
 	});
 
-	it('leaves unknown kinds on their existing role', () => {
+	it('keeps attachments assistant-side and markers on their own role', () => {
 		expect(roles([text('a file', 1, 'attachment')])).toEqual(['assistant']);
-		expect(roles([text('▷ User: hi', 1, 'system_marker')])).toEqual(['user']);
+		expect(roles([text('· agent name: qa', 1, 'system_marker')])).toEqual(['marker']);
 	});
 
-	it('is shown by default and hidden when excluded', () => {
+	it('filters redacted thinking apart from ordinary thinking', () => {
+		const events = [
+			text('thought', 1, 'thinking'),
+			text('[redacted thinking]', 2, 'redacted_thinking')
+		];
+		expect(buildLines(events, ctx({ redacted: false })).map((l) => l.text)).toEqual(['thought']);
+		expect(buildLines(events, ctx({ thinking: false })).map((l) => l.text)).toEqual([
+			'[redacted thinking]'
+		]);
+	});
+
+	it('is shown by default and hidden when switched off', () => {
 		const events = [text('thought', 1, 'thinking'), text('answer', 2)];
 		expect(roles(events)).toEqual(['thinking', 'assistant']);
-		expect(roles(events, ctx({ thinking: 'exclude' }))).toEqual(['assistant']);
+		expect(roles(events, ctx({ thinking: false }))).toEqual(['assistant']);
 	});
 
-	it('is the only role left when thinking is the sole include', () => {
+	it('is the only role left when everything else is off', () => {
 		const events = [text('thought', 1, 'thinking'), text('answer', 2)];
-		expect(roles(events, ctx({ thinking: 'include' }))).toEqual(['thinking']);
+		expect(roles(events, only('thinking'))).toEqual(['thinking']);
 	});
 
 	it('does not take a turn number or a fork anchor', () => {
@@ -166,16 +255,16 @@ describe('turn summaries', () => {
 		expect(lines[1].summary?.detail).toBe('second');
 	});
 
-	it('is hidden when excluded, leaving the assistant bubble untouched', () => {
+	it('is hidden when switched off, leaving the assistant bubble untouched', () => {
 		const events = [text('done', 1), summary('Refactored the parser', 2)];
-		const lines = buildLines(events, ctx({ summary: 'exclude' }));
+		const lines = buildLines(events, ctx({ summary: false }));
 		expect(lines).toHaveLength(1);
 		expect(lines[0].summary).toBeUndefined();
 	});
 
 	it('survives an assistant line hidden by the filter, as a standalone footer', () => {
 		const events = [text('done', 1), summary('Refactored the parser', 2)];
-		const lines = buildLines(events, ctx({ assistant: 'exclude' }));
+		const lines = buildLines(events, ctx({ assistant: false }));
 		expect(lines.map((l) => l.role)).toEqual(['summary']);
 	});
 
