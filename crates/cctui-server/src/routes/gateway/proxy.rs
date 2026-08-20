@@ -1,9 +1,10 @@
 use super::{
-    Family, FireworksSettings, anthropic_upstream, clear_account_reauth, clear_soft_limit_block,
-    current_access_token, fireworks_upstream, flag_account_reauth, mark_soft_limit_block,
-    note_orphan_401, note_token_used, openai_upstream, orphan_is_blocked, record_fireworks_usage,
-    resolve_account, session_and_account_name_for_token, session_budget_limits,
-    session_id_for_token, session_spend_usd, tees_response, usage_for_soft_limit,
+    AnthropicSettings, Family, FireworksSettings, anthropic_upstream, clear_account_reauth,
+    clear_soft_limit_block, current_access_token, fireworks_upstream, flag_account_reauth,
+    mark_soft_limit_block, note_orphan_401, note_token_used, openai_upstream, orphan_is_blocked,
+    record_fireworks_usage, resolve_account, session_and_account_name_for_token,
+    session_budget_limits, session_id_for_token, session_spend_usd, tees_response,
+    usage_for_soft_limit,
 };
 
 use axum::body::Body;
@@ -305,6 +306,12 @@ pub async fn passthrough(
         headers.insert("x-session-affinity", hv);
     }
 
+    // Anthropic: same idea, but opt-in per account — only a set `thinking_display`
+    // costs the body a buffer + re-serialize.
+    let anthropic = (Family::from_provider(&acct.provider) == Family::Anthropic)
+        .then(|| AnthropicSettings::resolve(acct.provider_settings.as_ref()))
+        .filter(AnthropicSettings::rewrites_body);
+
     // Langfuse tracing sink: only when configured AND this call is
     // sampled do we reconstruct the bodies — otherwise the gateway stays a pure
     // zero-copy passthrough (request streamed, response streamed). When tracing,
@@ -319,30 +326,38 @@ pub async fn passthrough(
     }
 
     // Stream the request body through without buffering (default), OR buffer it
-    // once for the trace input when Langfuse is sampling this call.
+    // once when something needs to read or reshape it. A body that isn't JSON
+    // falls through to the original bytes, so non-`/v1/messages` calls are
+    // untouched either way.
     let mut request_model: Option<String> = None;
-    let (upstream_body, traced_request) = if langfuse.is_some() || fireworks.is_some() {
-        let bytes = axum::body::to_bytes(req.into_body(), usize::MAX)
-            .await
-            .map_err(|_| StatusCode::BAD_REQUEST)?;
-        let mut parsed = serde_json::from_slice::<serde_json::Value>(&bytes).ok();
-        request_model = parsed
-            .as_ref()
-            .and_then(|r| r.get("model"))
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_owned);
-        let body = match (fireworks.as_ref(), parsed.as_mut()) {
-            (Some(fw), Some(json)) => {
-                fw.apply_body(json, affinity_session.as_deref());
-                reqwest::Body::from(json.to_string())
-            }
-            _ => reqwest::Body::from(bytes),
+    let (upstream_body, traced_request) =
+        if langfuse.is_some() || fireworks.is_some() || anthropic.is_some() {
+            let bytes = axum::body::to_bytes(req.into_body(), usize::MAX)
+                .await
+                .map_err(|_| StatusCode::BAD_REQUEST)?;
+            let mut parsed = serde_json::from_slice::<serde_json::Value>(&bytes).ok();
+            request_model = parsed
+                .as_ref()
+                .and_then(|r| r.get("model"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned);
+            let body = match parsed.as_mut() {
+                Some(json) if fireworks.is_some() || anthropic.is_some() => {
+                    if let Some(fw) = fireworks.as_ref() {
+                        fw.apply_body(json, affinity_session.as_deref());
+                    }
+                    if let Some(an) = anthropic.as_ref() {
+                        an.apply_body(json);
+                    }
+                    reqwest::Body::from(json.to_string())
+                }
+                _ => reqwest::Body::from(bytes),
+            };
+            (body, parsed.filter(|_| langfuse.is_some()))
+        } else {
+            let body_stream = req.into_body().into_data_stream();
+            (reqwest::Body::wrap_stream(body_stream), None)
         };
-        (body, parsed.filter(|_| langfuse.is_some()))
-    } else {
-        let body_stream = req.into_body().into_data_stream();
-        (reqwest::Body::wrap_stream(body_stream), None)
-    };
 
     let upstream = state
         .http_client
