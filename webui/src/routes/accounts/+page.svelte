@@ -34,6 +34,7 @@
 	import DispatchersPanel from '$lib/components/organisms/DispatchersPanel.svelte';
 	import ProviderSettingsList from '$lib/components/organisms/ProviderSettingsList.svelte';
 	import FireworksProviderEditor from '$lib/components/organisms/FireworksProviderEditor.svelte';
+	import AnthropicProviderEditor from '$lib/components/organisms/AnthropicProviderEditor.svelte';
 	import FreeFormEnvEditor from '$lib/components/organisms/FreeFormEnvEditor.svelte';
 	import {
 		AutoGrid,
@@ -132,6 +133,10 @@
 	// the seed lives in exactly one place.
 	let fwSettings = $state<Record<string, unknown>>({});
 	let fwModels = $state<AccountModel[]>([]);
+	// Anthropic's gateway-side request shaping, kept apart from `acctSettings`:
+	// that one is the injected settings.json the harness reads, this one never
+	// leaves the server.
+	let anthropicSettings = $state<Record<string, unknown>>({});
 
 	// Live windows for the provider under edit, so newly discovered (e.g.
 	// model-scoped) windows appear in the editor automatically.
@@ -281,6 +286,7 @@
 		reauthing = false;
 		oauthAttachAccountId = null;
 		acctSettings = {};
+		anthropicSettings = {};
 		acctEnvRows = [];
 		acctReplaceEnv = false;
 		acctEnvRemove = [];
@@ -414,6 +420,7 @@
 		}
 		// Settings are editable per provider.
 		acctSettings = { ...(p.settings_json ?? {}) };
+		anthropicSettings = { ...(p.provider_settings ?? {}) };
 		rateEdits = { rpm: p.rate_limits?.rpm ?? null, tpm: p.rate_limits?.tpm ?? null };
 	}
 
@@ -457,7 +464,9 @@
 					model_aliases,
 					soft_limits: softLimits(),
 					rate_limits: rateLimits(),
-					...(editingProvider?.family === 'anthropic' ? { settings_json: acctSettings } : {})
+					...(editingProvider?.family === 'anthropic'
+						? { settings_json: acctSettings, provider_settings: anthropicSettings }
+						: {})
 				};
 				if (isFireworks) {
 					body.models = fwModelList();
@@ -962,6 +971,7 @@
 					{#if editor?.mode === 'edit-provider' && editingProvider}
 						{#if editingProvider.family === 'anthropic'}
 							<ProviderSettingsList bind:settings={acctSettings} />
+							<AnthropicProviderEditor bind:settings={anthropicSettings} />
 						{:else if editingProvider.family === 'openai'}
 							<Text tone="faint" size="sm">
 								{m.accounts_no_codex_settings()}
