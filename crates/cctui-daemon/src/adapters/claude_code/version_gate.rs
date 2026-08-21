@@ -8,6 +8,16 @@
 //! Unknown counts as busy — a missed upgrade costs a stale daemon until the
 //! next check, a wrong cycle costs somebody's session.
 //!
+//! Worker counts alone can deadlock the cycle: a stale daemon breaks its own
+//! workers, the broken sessions park at the prompt and keep the counts
+//! non-zero (spares inflate the daemon's count the same way), and the
+//! mismatch defers forever while nothing on the machine can reach the API.
+//! Hence the escalation: a mismatch deferred [`ESCALATE_AFTER`] with no
+//! roster session seen busy the whole time cycles anyway — quiescent
+//! sessions survive as resumable transcripts, and a session observed
+//! mid-turn keeps resetting the clock. A human's long-idle `claude --bg`
+//! job is knowingly traded away; a daemon breaking all API traffic is worse.
+//!
 //! The versions cannot come from the control socket: `cliVersion` rides each
 //! *job*, so an idle daemon reports none — exactly when cycling is safe.
 
@@ -17,13 +27,17 @@ use std::time::{Duration, Instant};
 /// Each check shells `claude` twice; upgrades land a few times a day at most.
 const CHECK_MIN_INTERVAL: Duration = Duration::from_mins(5);
 
+/// How long a mismatch must stay deferred, with the roster quiescent the
+/// whole time, before cycling over non-zero worker counts.
+const ESCALATE_AFTER: Duration = Duration::from_mins(30);
+
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Decision {
     Nothing,
     Deferred { running: String, local: String },
-    Cycle { running: String, local: String },
+    Cycle { running: String, local: String, escalated: bool },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,7 +109,7 @@ pub(super) fn decide(
     }
     let (running, local) = (running.to_string(), local.to_string());
     if live_workers == Some(0) {
-        Decision::Cycle { running, local }
+        Decision::Cycle { running, local, escalated: false }
     } else {
         Decision::Deferred { running, local }
     }
@@ -114,11 +128,60 @@ pub(super) struct VersionGate {
     /// The mismatch most recently logged, so a deferred upgrade warns once per
     /// version pair rather than on every check for as long as work is running.
     warned: Mutex<Option<(String, String)>>,
+    /// Escalation clock: the deferred version pair and when the roster was
+    /// last seen busy (or the deferral first seen) — whichever is later.
+    deferred: Mutex<Option<(String, String, Instant)>>,
 }
 
 impl VersionGate {
     pub(super) const fn new(claude_bin: String) -> Self {
-        Self { claude_bin, last: Mutex::new(None), warned: Mutex::new(None) }
+        Self {
+            claude_bin,
+            last: Mutex::new(None),
+            warned: Mutex::new(None),
+            deferred: Mutex::new(None),
+        }
+    }
+
+    /// Reset the escalation clock. Called from every roster poll that sees a
+    /// busy session, so escalation requires quiescence across the whole
+    /// window, not just at check time.
+    pub(super) fn note_roster_busy(&self) {
+        let mut deferred = self.deferred.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some((_, _, since)) = deferred.as_mut() {
+            *since = Instant::now();
+        }
+    }
+
+    /// Upgrade a stale [`Decision::Deferred`] to an escalated cycle once the
+    /// same pair has sat quiet for [`ESCALATE_AFTER`]. Any other decision
+    /// clears the clock.
+    fn maybe_escalate(&self, decision: Decision, now: Instant) -> Decision {
+        let Decision::Deferred { running, local } = decision else {
+            *self.deferred.lock().unwrap_or_else(PoisonError::into_inner) = None;
+            return decision;
+        };
+        let escalate = {
+            let mut deferred = self.deferred.lock().unwrap_or_else(PoisonError::into_inner);
+            match deferred.as_ref() {
+                Some((r, l, since)) if *r == running && *l == local => {
+                    let due = now.duration_since(*since) >= ESCALATE_AFTER;
+                    if due {
+                        *deferred = None;
+                    }
+                    due
+                }
+                _ => {
+                    *deferred = Some((running.clone(), local.clone(), now));
+                    false
+                }
+            }
+        };
+        if escalate {
+            Decision::Cycle { running, local, escalated: true }
+        } else {
+            Decision::Deferred { running, local }
+        }
     }
 
     /// Record `now` and report whether the probe interval has elapsed. Pure —
@@ -173,6 +236,7 @@ impl VersionGate {
             local.as_deref(),
             live_workers(roster_len, status.running_workers),
         );
+        let decision = self.maybe_escalate(decision, Instant::now());
         match &decision {
             Decision::Nothing => None,
             Decision::Deferred { running, local } => {
@@ -188,7 +252,19 @@ impl VersionGate {
                 }
                 Some(decision)
             }
-            Decision::Cycle { .. } => Some(decision),
+            Decision::Cycle { running, local, escalated } => {
+                if *escalated {
+                    tracing::warn!(
+                        %running,
+                        %local,
+                        roster_len,
+                        reported_workers = ?status.running_workers,
+                        "version mismatch deferred past the escalation window with a quiescent \
+                         roster; cycling over non-zero worker counts"
+                    );
+                }
+                Some(decision)
+            }
         }
     }
 
@@ -303,7 +379,11 @@ bg sessions:
     fn mismatch_with_no_workers_cycles() {
         assert_eq!(
             decide(Some("2.1.212"), Some("2.1.220"), Some(0)),
-            Decision::Cycle { running: "2.1.212".into(), local: "2.1.220".into() }
+            Decision::Cycle {
+                running: "2.1.212".into(),
+                local: "2.1.220".into(),
+                escalated: false
+            }
         );
     }
 
@@ -360,6 +440,74 @@ bg sessions:
         assert!(g.gate(t0));
         assert!(!g.gate(t0 + Duration::from_secs(1)));
         assert!(g.gate(t0 + CHECK_MIN_INTERVAL));
+    }
+
+    fn deferred(r: &str, l: &str) -> Decision {
+        Decision::Deferred { running: r.into(), local: l.into() }
+    }
+
+    #[test]
+    fn deferral_escalates_to_a_cycle_after_the_quiet_window() {
+        let g = VersionGate::new("claude".into());
+        let t0 = Instant::now();
+        assert_eq!(
+            g.maybe_escalate(deferred("2.1.212", "2.1.220"), t0),
+            deferred("2.1.212", "2.1.220")
+        );
+        assert_eq!(
+            g.maybe_escalate(deferred("2.1.212", "2.1.220"), t0 + ESCALATE_AFTER),
+            Decision::Cycle { running: "2.1.212".into(), local: "2.1.220".into(), escalated: true }
+        );
+    }
+
+    #[test]
+    fn roster_activity_resets_the_escalation_clock() {
+        let g = VersionGate::new("claude".into());
+        let t0 = Instant::now();
+        g.maybe_escalate(deferred("2.1.212", "2.1.220"), t0);
+        g.note_roster_busy();
+        assert_eq!(
+            g.maybe_escalate(deferred("2.1.212", "2.1.220"), t0 + ESCALATE_AFTER),
+            deferred("2.1.212", "2.1.220")
+        );
+    }
+
+    #[test]
+    fn a_new_version_pair_restarts_the_escalation_clock() {
+        let g = VersionGate::new("claude".into());
+        let t0 = Instant::now();
+        g.maybe_escalate(deferred("2.1.212", "2.1.220"), t0);
+        assert_eq!(
+            g.maybe_escalate(deferred("2.1.212", "2.1.221"), t0 + ESCALATE_AFTER),
+            deferred("2.1.212", "2.1.221")
+        );
+    }
+
+    #[test]
+    fn a_resolved_mismatch_clears_the_escalation_clock() {
+        let g = VersionGate::new("claude".into());
+        let t0 = Instant::now();
+        g.maybe_escalate(deferred("2.1.212", "2.1.220"), t0);
+        assert_eq!(
+            g.maybe_escalate(Decision::Nothing, t0 + Duration::from_secs(1)),
+            Decision::Nothing
+        );
+        assert_eq!(
+            g.maybe_escalate(deferred("2.1.212", "2.1.220"), t0 + ESCALATE_AFTER),
+            deferred("2.1.212", "2.1.220")
+        );
+    }
+
+    #[test]
+    fn busy_note_without_an_active_deferral_is_a_no_op() {
+        let g = VersionGate::new("claude".into());
+        g.note_roster_busy();
+        let t0 = Instant::now();
+        g.maybe_escalate(deferred("2.1.212", "2.1.220"), t0);
+        assert_eq!(
+            g.maybe_escalate(deferred("2.1.212", "2.1.220"), t0 + ESCALATE_AFTER),
+            Decision::Cycle { running: "2.1.212".into(), local: "2.1.220".into(), escalated: true }
+        );
     }
 
     #[test]
