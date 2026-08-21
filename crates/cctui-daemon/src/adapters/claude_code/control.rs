@@ -2214,7 +2214,7 @@ impl Driver {
         if !super::claude_service::manager_available() {
             return;
         }
-        if let Some(Decision::Cycle { running, local }) =
+        if let Some(Decision::Cycle { running, local, escalated: _ }) =
             self.version_gate.check(self.roster.len()).await
         {
             let method = if tokio::task::spawn_blocking(super::claude_service::service_active)
@@ -2308,6 +2308,11 @@ impl Driver {
     async fn apply_snapshot(&mut self, jobs: Vec<LiveSnapshot>) {
         let visible: Vec<LiveSnapshot> =
             jobs.into_iter().filter(LiveSnapshot::is_user_visible).collect();
+        if visible.iter().any(|j| {
+            !j.is_dead() && DispatchDoneTracker::is_busy(j.tempo.as_deref(), j.state.as_deref())
+        }) {
+            self.version_gate.note_roster_busy();
+        }
         let now_shorts: HashSet<String> = visible.iter().map(|j| j.short.clone()).collect();
 
         // Ground-truth effort for every live worker in one `/proc` pass,
@@ -2746,6 +2751,9 @@ impl Driver {
             || job.is_some_and(|j| {
                 !j.is_dead() && DispatchDoneTracker::is_busy(j.tempo.as_deref(), j.state.as_deref())
             });
+        if grew {
+            self.version_gate.note_roster_busy();
+        }
         if tracker.observe(busy, Instant::now()) {
             let path = tracker.marker_path();
             if let Some(parent) = path.parent() {
