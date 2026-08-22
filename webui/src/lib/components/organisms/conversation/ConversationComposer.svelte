@@ -4,7 +4,7 @@
 	import AttachmentList from '$lib/components/molecules/AttachmentList.svelte';
 	import { Button, FileButton, Text, Textarea } from '@dorsk/tsumikit';
 	import { drafts, composerKey, history as msgHistory } from '$lib/drafts';
-	import { mergeFiles, removeFileByName, fileCapError } from '$lib/attachments';
+	import { appendFileTokens, mergeFiles, removeFileByName, fileCapError } from '$lib/attachments';
 	import { compact } from '$lib/format';
 	import { toasts } from '$lib/toast.svelte';
 	import type { ScrollController } from './scroll.svelte';
@@ -57,6 +57,7 @@
 	export function addFiles(incoming: File[]) {
 		if (!supportsAttachments || archived) return;
 		attachments = mergeFiles(attachments, incoming);
+		input = appendFileTokens(input, incoming);
 	}
 	export function setDragActive(active: boolean) {
 		dragActive = active;

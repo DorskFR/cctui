@@ -15,6 +15,18 @@ export function mergeFiles(current: File[], incoming: File[]): File[] {
 	return [...byName.values()];
 }
 
+/** Append a `[name]` reference for each attached file to the draft text,
+ *  skipping names it already contains so a re-pick doesn't duplicate. */
+export function appendFileTokens(text: string, files: File[]): string {
+	let out = text;
+	for (const f of files) {
+		const token = `[${f.name}]`;
+		if (out.includes(token)) continue;
+		out = out && !/\s$/.test(out) ? `${out} ${token}` : `${out}${token}`;
+	}
+	return out;
+}
+
 /** Drop the file with `name` from the list. */
 export function removeFileByName(files: File[], name: string): File[] {
 	return files.filter((f) => f.name !== name);

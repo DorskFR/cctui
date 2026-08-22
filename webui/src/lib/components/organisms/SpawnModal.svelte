@@ -35,7 +35,7 @@
 		DISPATCH_MEMORY_FIELDS,
 		type MemoryPatch
 	} from '$lib/spawnMemory';
-	import { mergeFiles, removeFileByName, fileCapError } from '$lib/attachments';
+	import { appendFileTokens, mergeFiles, removeFileByName, fileCapError } from '$lib/attachments';
 	import {
 		AutoGrid,
 		Badge,
@@ -438,7 +438,10 @@
 	const fileError = $derived(fileCapError(files));
 	const secretsValid = $derived(badEnvKeys.length === 0 && !fileError);
 
-	const addFiles = (incoming: File[]) => (files = mergeFiles(files, incoming));
+	const addFiles = (incoming: File[]) => {
+		files = mergeFiles(files, incoming);
+		form.prompt = appendFileTokens(form.prompt, incoming);
+	};
 	const addEnvRow = () => (envRows = [...envRows, { key: '', value: '' }]);
 
 	/** Collected env map: complete rows only (both key and value set). */
