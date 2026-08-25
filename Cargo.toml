@@ -74,4 +74,4 @@ axum-server = { version = "0.8", features = ["tls-rustls-no-provider"] }
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 k8s-openapi = { version = "0.28", features = ["latest", "schemars"] }
 schemars = { version = "1.2", features = ["derive"] }
-ts-rs = { version = "10", features = ["chrono-impl", "serde-json-impl", "uuid-impl"] }
+ts-rs = { version = "12", features = ["chrono-impl", "serde-json-impl", "uuid-impl"] }
