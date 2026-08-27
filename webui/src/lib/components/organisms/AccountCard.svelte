@@ -15,7 +15,7 @@
 		canAddProvider = false,
 		canShare = false,
 		showOwner = false,
-		redirect = null,
+		redirects = [],
 		redirectTargets = [],
 		onedit,
 		onremove,
@@ -34,18 +34,18 @@
 		canAddProvider?: boolean;
 		canShare?: boolean;
 		showOwner?: boolean;
-		/** The live account-level rule to badge, already resolved for display. */
-		redirect?: { targetName: string; until: string | null } | null;
-		/** Accounts a new rule may point at (share a provider family). */
-		redirectTargets?: { id: string; name: string }[];
+		/** Live rules on this account, one badge each. */
+		redirects?: { id: string; family: string; targetName: string; until: string | null }[];
+		/** Accounts a new rule may point at, with their provider families. */
+		redirectTargets?: { id: string; name: string; families: string[] }[];
 		onedit?: () => void;
 		onremove?: () => void;
 		onaddprovider?: () => void;
 		oneditprovider?: (p: AccountProvider) => void;
 		onreauthprovider?: (p: AccountProvider) => void;
 		onremoveprovider?: (p: AccountProvider) => void;
-		onsetredirect?: (targetId: string, untilHours: number | null) => void;
-		onclearredirect?: () => void;
+		onsetredirect?: (targetId: string, untilHours: number | null, families: string[]) => void;
+		onclearredirect?: (ruleId: string) => void;
 	} = $props();
 
 	const a = $derived(account);
@@ -53,10 +53,36 @@
 	let redirectOpen = $state(false);
 	let redirectTarget = $state('');
 	let redirectHours = $state('');
+	let redirectFamilies = $state<string[]>([]);
+
+	// A family qualifies when both accounts carry it and no rule holds it yet.
+	const availableFamilies = (t: { families: string[] }) => {
+		const mine = new Set(a.providers.map((p) => p.family));
+		const ruled = new Set(redirects.map((r) => r.family));
+		return t.families.filter((f) => mine.has(f) && !ruled.has(f));
+	};
+	const openTargets = $derived(redirectTargets.filter((t) => availableFamilies(t).length > 0));
+	const targetFamilies = $derived.by(() => {
+		const t = openTargets.find((t) => t.id === redirectTarget);
+		return t ? availableFamilies(t) : [];
+	});
+	$effect(() => {
+		redirectFamilies = targetFamilies;
+	});
+
+	function toggleFamily(f: string) {
+		redirectFamilies = redirectFamilies.includes(f)
+			? redirectFamilies.filter((x) => x !== f)
+			: [...redirectFamilies, f];
+	}
 
 	function submitRedirect() {
-		if (!redirectTarget) return;
-		onsetredirect?.(redirectTarget, redirectHours === '' ? null : Number(redirectHours));
+		if (!redirectTarget || redirectFamilies.length === 0) return;
+		onsetredirect?.(
+			redirectTarget,
+			redirectHours === '' ? null : Number(redirectHours),
+			redirectFamilies
+		);
 		redirectOpen = false;
 		redirectTarget = '';
 		redirectHours = '';
@@ -67,12 +93,13 @@
 	<div class="acct">
 		<header class="head">
 			<Heading level={2} size="lg" style="min-width: 0; overflow-wrap: anywhere;">{a.name}</Heading>
-			{#if redirect}
+			{#each redirects as r (r.id)}
 				<span class="redirect-badge">
-					<Text as="span" size="sm">{m.accounts_redirect_to({ target: redirect.targetName })}</Text>
-					{#if redirect.until}
+					<Text as="span" tone="faint" size="xs">{r.family}</Text>
+					<Text as="span" size="sm">{m.accounts_redirect_to({ target: r.targetName })}</Text>
+					{#if r.until}
 						<Text as="span" tone="faint" size="xs">
-							{m.accounts_redirect_until({ time: redirect.until })}
+							{m.accounts_redirect_until({ time: r.until })}
 						</Text>
 					{/if}
 					{#if onclearredirect}
@@ -80,16 +107,16 @@
 							type="button"
 							class="redirect-clear"
 							aria-label={m.common_delete()}
-							onclick={onclearredirect}>✕</button
+							onclick={() => onclearredirect(r.id)}>✕</button
 						>
 					{/if}
 				</span>
-			{/if}
+			{/each}
 			<div class="head-actions">
 				{#if managed}
 					<Text as="span" tone="faint" size="xs">{m.accounts_managed_readonly()}</Text>
 				{:else}
-					{#if !redirect && onsetredirect && redirectTargets.length > 0}
+					{#if onsetredirect && openTargets.length > 0}
 						<Button size="sm" onclick={() => (redirectOpen = !redirectOpen)}>
 							{m.accounts_redirect_button()}
 						</Button>
@@ -103,22 +130,37 @@
 			</div>
 		</header>
 
-		{#if redirectOpen && !redirect}
+		{#if redirectOpen}
 			<div class="redirect-form">
 				<Text as="span" tone="muted" size="sm">{m.accounts_redirect_pick()}</Text>
 				<Select bind:value={redirectTarget}>
 					<option value="" disabled></option>
-					{#each redirectTargets as t (t.id)}
+					{#each openTargets as t (t.id)}
 						<option value={t.id}>{t.name}</option>
 					{/each}
 				</Select>
+				{#each targetFamilies as f (f)}
+					<label class="redirect-family">
+						<input
+							type="checkbox"
+							checked={redirectFamilies.includes(f)}
+							onchange={() => toggleFamily(f)}
+						/>
+						<Text as="span" size="sm">{f}</Text>
+					</label>
+				{/each}
 				<Select bind:value={redirectHours}>
 					<option value="">{m.accounts_redirect_no_expiry()}</option>
 					{#each ['1', '5', '24'] as h (h)}
 						<option value={h}>{m.accounts_redirect_hours({ n: h })}</option>
 					{/each}
 				</Select>
-				<Button size="sm" variant="primary" disabled={!redirectTarget} onclick={submitRedirect}>
+				<Button
+					size="sm"
+					variant="primary"
+					disabled={!redirectTarget || redirectFamilies.length === 0}
+					onclick={submitRedirect}
+				>
 					{m.accounts_redirect_set()}
 				</Button>
 				<Button size="sm" onclick={() => (redirectOpen = false)}>{m.common_cancel()}</Button>
@@ -224,6 +266,12 @@
 		flex-wrap: wrap;
 		align-items: center;
 		gap: var(--sp-2);
+	}
+	.redirect-family {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--sp-1);
+		cursor: pointer;
 	}
 	/* Account-level metadata is secondary to the boxes above it. */
 	.stats {
