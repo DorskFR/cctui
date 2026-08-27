@@ -3,7 +3,7 @@
 # rule 4). The total may never exceed BUDGET; lower BUDGET whenever it drops.
 set -euo pipefail
 
-BUDGET=69
+BUDGET=65
 
 case "${1:-}" in
   --staged) grep_args=(--cached) ;;

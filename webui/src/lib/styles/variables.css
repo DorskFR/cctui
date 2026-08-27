@@ -185,6 +185,10 @@
   --header-h: 52px;
   --nav-h: 3.5rem;
   --content-max: 56rem;
+  /* Wide reading measure for screens whose rows are full-width composites
+	   rather than prose — an accounts row lays its provider boxes out side by
+	   side, which `--content-max` cannot fit without cramping them. */
+  --content-wide: 92rem;
   --z-header: 50;
   --z-nav: 50;
   --z-drawer: 100;
