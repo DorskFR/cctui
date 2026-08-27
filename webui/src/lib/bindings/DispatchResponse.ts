@@ -4,7 +4,7 @@ export type DispatchResponse = { session_id: string, dispatcher: string,
 /**
  * Opaque per-dispatcher identifier (e.g. `"jobs/claude-worker-abc-…"`).
  */
-handle: string, namespace: string | null, 
+handle: string, namespace?: string | null, 
 /**
  * Dispatch outcome: `dispatched` (a fresh run was launched),
  * `deduplicated` (an in-flight Job already owns the one callback the caller

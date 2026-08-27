@@ -25,6 +25,8 @@ import type { CodexModelCatalog } from "@bindings/CodexModelCatalog";
 import type { LabelListResponse } from "@bindings/LabelListResponse";
 import type { SettingsCatalogResponse } from "@bindings/SettingsCatalogResponse";
 import type { SessionDiagnoseResponse } from "@bindings/SessionDiagnoseResponse";
+import type { AccountRedirect } from "@bindings/AccountRedirect";
+import type { PutRedirectRequest } from "@bindings/PutRedirectRequest";
 import { SYSTEM_MACHINE_KINDS } from "./keys";
 import type {
   AccountProvider,
@@ -200,6 +202,11 @@ export const endpoints = {
   deleteDispatcher: (id: string) => api.del<void>(`/dispatchers/${id}`),
   /** The caller's own OAuth accounts. Tokens never returned. */
   accounts: () => api.get<OAuthAccount[]>("/accounts"),
+  /** Live launch-time redirect rules (all users' under the admin token). */
+  redirects: () => api.get<AccountRedirect[]>("/redirects"),
+  putRedirect: (accountId: string, body: PutRedirectRequest) =>
+    api.put<AccountRedirect>(`/accounts/${accountId}/redirect`, body),
+  deleteRedirect: (id: string) => api.del<void>(`/redirects/${id}`),
   /** The per-account settings catalog: exposable settings keys, the
    *  curated env allowlist, and the quiet-defaults preset — served from the
    *  server's embedded catalog so the editor can never drift from what the

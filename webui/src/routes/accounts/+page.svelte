@@ -5,6 +5,8 @@
 		useAccountActions,
 		useAccountUsage,
 		useMe,
+		useRedirects,
+		useRedirectActions,
 		useUsers,
 		type OAuthAccount,
 		type AccountModel,
@@ -64,6 +66,8 @@
 
 	const accounts = useAccounts();
 	const actions = useAccountActions();
+	const redirects = useRedirects();
+	const redirectActions = useRedirectActions();
 	// Accounts are user-owned; the admin token has no user identity, so an
 	// admin operator picks the owning user explicitly.
 	const me = useMe();
@@ -88,6 +92,53 @@
 	let editor = $state<{ mode: EditorMode; accountId?: string; providerId?: string } | null>(null);
 
 	const rows = $derived([...(accounts.data ?? [])]);
+
+	// Account-level rules only (`to_account` set), grouped by source. A source
+	// usually holds one rule per family; the badge shows the first and clearing
+	// removes them all.
+	const accountRedirects = $derived(
+		(redirects.data ?? []).filter((r) => r.to_account !== null)
+	);
+	const redirectsFor = (accountId: string) =>
+		accountRedirects.filter((r) => r.from_account === accountId);
+	const redirectDisplay = (accountId: string) => {
+		const rules = redirectsFor(accountId);
+		if (rules.length === 0) return null;
+		const target = rows.find((t) => t.id === rules[0].to_account);
+		const until = rules[0].expires_at;
+		return {
+			targetName: target?.name ?? '…',
+			until: until ? new Date(until).toLocaleString() : null
+		};
+	};
+	const familiesOf = (acct: OAuthAccount) => new Set(acct.providers.map((p) => p.family));
+	const redirectTargetsFor = (acct: OAuthAccount) => {
+		const from = familiesOf(acct);
+		return rows
+			.filter((t) => t.id !== acct.id && t.providers.some((p) => from.has(p.family)))
+			.map((t) => ({ id: t.id, name: t.name }));
+	};
+	const setRedirect = (acct: OAuthAccount, targetId: string, untilHours: number | null) => {
+		const target = rows.find((t) => t.id === targetId);
+		if (!target) return;
+		const shared = [...familiesOf(acct)].filter((f) => familiesOf(target).has(f));
+		const until =
+			untilHours === null ? null : new Date(Date.now() + untilHours * 3_600_000).toISOString();
+		guard(
+			Promise.all(
+				shared.map((family) =>
+					redirectActions.put(acct.id, {
+						to_account: targetId,
+						family,
+						until,
+						user_id: isAdmin ? acct.user_id : null
+					})
+				)
+			)
+		);
+	};
+	const clearRedirect = (acct: OAuthAccount) =>
+		guard(Promise.all(redirectsFor(acct.id).map((r) => redirectActions.remove(r.id))));
 	const editingAccount = $derived(
 		editor?.accountId ? rows.find((a) => a.id === editor?.accountId) : undefined
 	);
@@ -676,6 +727,10 @@
 								canAddProvider={!isManaged(a) && availableKinds(a).length > 0}
 								canShare={!isManaged(a) && (isAdmin || a.user_id === me.data?.user_id)}
 								showOwner={isAdmin}
+								redirect={redirectDisplay(a.id)}
+								redirectTargets={redirectTargetsFor(a)}
+								onsetredirect={(targetId, untilHours) => setRedirect(a, targetId, untilHours)}
+								onclearredirect={() => clearRedirect(a)}
 								onedit={() => openEditAccount(a)}
 								onremove={() => removeAccount(a)}
 								onaddprovider={() => openAddProvider(a)}

@@ -16,8 +16,8 @@ content: string,
 /**
  * 1-based line number on the old (base) side; `None` for an added line.
  */
-old_line: number | null, 
+old_line?: number | null, 
 /**
  * 1-based line number on the new (head) side; `None` for a deleted line.
  */
-new_line: number | null, };
+new_line?: number | null, };

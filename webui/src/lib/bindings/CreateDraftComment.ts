@@ -21,7 +21,7 @@ line: number,
 /**
  * Inclusive start line for a multi-line range; `None` for a single line.
  */
-start_line: number | null, 
+start_line?: number | null, 
 /**
  * The comment text.
  */
@@ -29,4 +29,4 @@ body: string,
 /**
  * When replying to an existing GitHub thread, the parent comment id.
  */
-in_reply_to: number | null, };
+in_reply_to?: number | null, };

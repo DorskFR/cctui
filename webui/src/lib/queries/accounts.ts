@@ -1,4 +1,5 @@
 import { createQuery, useQueryClient } from "@tanstack/svelte-query";
+import type { PutRedirectRequest } from "@bindings/PutRedirectRequest";
 import { endpoints } from "./endpoints";
 import { qk } from "./keys";
 import type {
@@ -16,6 +17,30 @@ export const useAccounts = (enabled: () => boolean = () => true) =>
     queryFn: endpoints.accounts,
     enabled: enabled(),
   }));
+
+export const useRedirects = (enabled: () => boolean = () => true) =>
+  createQuery(() => ({
+    queryKey: ["redirects"],
+    queryFn: endpoints.redirects,
+    enabled: enabled(),
+  }));
+
+/** Set/clear launch-time redirect rules; both invalidate the rules query. */
+export function useRedirectActions() {
+  const qc = useQueryClient();
+  const invalidate = () => qc.invalidateQueries({ queryKey: ["redirects"] });
+  return {
+    put: async (accountId: string, body: PutRedirectRequest) => {
+      const r = await endpoints.putRedirect(accountId, body);
+      invalidate();
+      return r;
+    },
+    remove: async (id: string) => {
+      await endpoints.deleteRedirect(id);
+      invalidate();
+    },
+  };
+}
 
 /** Per-account subscription usage. Lazy + slow-refresh: only fetched
  *  while the accounts view is mounted (caller gates `enabled`), and re-polled on

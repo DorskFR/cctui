@@ -28,7 +28,7 @@ local_id: string,
 /**
  * The 8-hex worker shortcode, when resolvable.
  */
-short: string | null, 
+short?: string | null, 
 /**
  * When the daemon assembled this report (unix ms). Ages are relative to
  * this instant.
@@ -52,4 +52,4 @@ permission_mode: DiagnoseFact<string>, dispatch: DiagnoseFact<DispatchStatus>, g
 /**
  * Codex-adapter-specific section; `None` for claude-code.
  */
-codex: CodexDiagnose | null, };
+codex?: CodexDiagnose | null, };

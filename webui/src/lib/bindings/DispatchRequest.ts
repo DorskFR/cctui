@@ -20,19 +20,19 @@ export type DispatchRequest = { dispatcher: string,
  * Doubles as the **idempotency key**: a repeat dispatch with the same
  * id returns the existing session without launching a second runtime.
  */
-session_id: string | null, 
+session_id?: string | null, 
 /**
  * Per-flow timeout in minutes. Sets the K8s Job `activeDeadlineSeconds`
  * and is mirrored by the caller's own wait limit. Falls back to the
  * runtime default when absent.
  */
-timeout: number | null, 
+timeout?: number | null, 
 /**
  * Caller resume URL (e.g. an automation `$execution.resumeUrl`). A **bearer
  * capability** — carried to the runtime, never logged or persisted.
  * The worker POSTs its deterministic result here.
  */
-reply_url: string | null, 
+reply_url?: string | null, 
 /**
  * Server-side completion-webhook target: the eventual
  * replacement for `reply_url`. When set, the SERVER (not the worker) POSTs
@@ -43,18 +43,18 @@ reply_url: string | null,
  * `status`, `error`/verdict) so flows migrate by swapping the URL. This is
  * additive: `reply_url` keeps working during migration.
  */
-notify_url: string | null, 
+notify_url?: string | null, 
 /**
  * Optional per-target HMAC secret. When set, the server signs the
  * completion-webhook body with HMAC-SHA256 and sends the hex digest in an
  * `X-CCTUI-Signature: sha256=<hex>` header so the receiver can verify the
  * POST originated from cctui. Never logged.
  */
-notify_secret: string | null, 
+notify_secret?: string | null, 
 /**
  * Free-form, opaque to cctui. Forwarded to the runtime as-is.
  */
-payload: JsonValue, 
+payload?: JsonValue, 
 /**
  * Named account to run the dispatched session under. When set the
  * server mints a session-scoped gateway token bound to `(session_id,
@@ -62,13 +62,13 @@ payload: JsonValue,
  * dispatched worker routes through the passthrough gateway exactly like a
  * machine spawn. `None` → no gateway injection (the worker's own auth).
  */
-account: string | null, 
+account?: string | null, 
 /**
  * Provider of the selected `account`, disambiguating a shared
  * name across providers. `None` → assume the claude-code (anthropic) family,
  * matching the k8s claude-worker the dispatch path runs.
  */
-provider: string | null, 
+provider?: string | null, 
 /**
  * Multiple accounts to route the dispatched session through.
  * When non-empty the server mints a session-scoped gateway token for EACH
@@ -80,4 +80,4 @@ provider: string | null,
  * `account`/`provider` shortcut (and the dispatcher's bound default) when
  * present; an empty list falls back to the single-account path unchanged.
  */
-accounts: Array<DispatchAccount>, };
+accounts?: Array<DispatchAccount>, };

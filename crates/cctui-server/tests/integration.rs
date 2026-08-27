@@ -245,3 +245,151 @@ fn uuid_like() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos().to_string()
 }
+
+/// The full redirect lifecycle: validation ordering, upsert idempotence,
+/// model-flip rules needing no target provider, and delete.
+#[tokio::test]
+#[ignore = "requires running server"]
+#[allow(clippy::too_many_lines)]
+async fn account_redirect_flow() {
+    let client = Client::new();
+    let base = server_url();
+
+    let u: serde_json::Value = client
+        .post(format!("{base}/api/v1/admin/users"))
+        .bearer_auth(admin_token())
+        .json(&json!({"name": format!("redir-{}", uuid_like())}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let user_key = u["key"].as_str().unwrap().to_string();
+
+    let mk_account = |name: String| {
+        let client = client.clone();
+        let base = base.clone();
+        let user_key = user_key.clone();
+        async move {
+            let a: serde_json::Value = client
+                .post(format!("{base}/api/v1/accounts"))
+                .bearer_auth(&user_key)
+                .json(&json!({"name": name}))
+                .send()
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+            a["id"].as_str().unwrap().to_string()
+        }
+    };
+    let hirobot = mk_account(format!("hirobot-{}", uuid_like())).await;
+    let pafin = mk_account(format!("pafin-{}", uuid_like())).await;
+
+    // The target has no anthropic provider yet: the rule must be refused.
+    let resp = client
+        .put(format!("{base}/api/v1/accounts/{hirobot}/redirect"))
+        .bearer_auth(&user_key)
+        .json(&json!({"to_account": pafin, "family": "anthropic"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+
+    let resp = client
+        .post(format!("{base}/api/v1/accounts/{pafin}/providers"))
+        .bearer_auth(&user_key)
+        .json(&json!({
+            "provider": "anthropic-compatible",
+            "base_url": "http://localhost:9",
+            "access_token": "test-cred"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 201, "{}", resp.text().await.unwrap());
+
+    let resp = client
+        .put(format!("{base}/api/v1/accounts/{hirobot}/redirect"))
+        .bearer_auth(&user_key)
+        .json(&json!({"to_account": pafin, "family": "anthropic"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "{}", resp.text().await.unwrap());
+
+    for bad in [
+        json!({"to_account": hirobot, "family": "anthropic"}),
+        json!({"to_account": pafin, "to_model": "opus", "family": "anthropic"}),
+        json!({"family": "anthropic"}),
+        json!({"to_account": pafin, "family": "carrier-pigeon"}),
+        json!({"match_model": "fable", "to_account": pafin, "family": "anthropic"}),
+    ] {
+        let resp = client
+            .put(format!("{base}/api/v1/accounts/{hirobot}/redirect"))
+            .bearer_auth(&user_key)
+            .json(&bad)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 400, "{bad}");
+    }
+
+    // A model flip stays on the account: no target provider involved.
+    let resp = client
+        .put(format!("{base}/api/v1/accounts/{hirobot}/redirect"))
+        .bearer_auth(&user_key)
+        .json(&json!({"to_model": "opus", "match_model": "fable", "family": "anthropic"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "{}", resp.text().await.unwrap());
+
+    // Re-arming the account rule overwrites (unique per source+family+match).
+    let resp = client
+        .put(format!("{base}/api/v1/accounts/{hirobot}/redirect"))
+        .bearer_auth(&user_key)
+        .json(&json!({"to_account": pafin, "family": "anthropic", "reason": "re-armed"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let rules: serde_json::Value = client
+        .get(format!("{base}/api/v1/redirects"))
+        .bearer_auth(&user_key)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let mine: Vec<&serde_json::Value> =
+        rules.as_array().unwrap().iter().filter(|r| r["from_account"] == json!(hirobot)).collect();
+    assert_eq!(mine.len(), 2, "one account rule + one model rule: {rules}");
+
+    for r in mine {
+        let resp = client
+            .delete(format!("{base}/api/v1/redirects/{}", r["id"].as_str().unwrap()))
+            .bearer_auth(&user_key)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 204);
+    }
+    let rules: serde_json::Value = client
+        .get(format!("{base}/api/v1/redirects"))
+        .bearer_auth(&user_key)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        rules.as_array().unwrap().iter().all(|r| r["from_account"] != json!(hirobot)),
+        "{rules}"
+    );
+}

@@ -12,7 +12,7 @@ export type CodexDiagnose = {
 /**
  * Discovered `codex app-server` version (from the `initialize` userAgent).
  */
-codex_version: string | null, 
+codex_version?: string | null, 
 /**
  * The Codex version cctui is built/tested against (`CODEX_PINNED_VERSION`).
  */
@@ -24,7 +24,7 @@ min_version: string,
 /**
  * Whether the discovered version is at or above `min_version`.
  */
-version_supported: boolean | null, 
+version_supported?: boolean | null, 
 /**
  * Transport to the app-server child (always `stdio` today).
  */
@@ -32,7 +32,7 @@ transport: string,
 /**
  * app-server child PID, when a live session owns one.
  */
-app_server_pid: number | null, 
+app_server_pid?: number | null, 
 /**
  * Whether a live command channel exists for this session.
  */
@@ -44,11 +44,11 @@ registered: boolean,
 /**
  * The active thread id (the codex `local_id`).
  */
-thread_id: string | null, 
+thread_id?: string | null, 
 /**
  * In-flight turn id, when a turn is running.
  */
-active_turn_id: string | null, 
+active_turn_id?: string | null, 
 /**
  * Turn status: `working` (a turn is in flight) or `idle`.
  */
@@ -64,23 +64,23 @@ pending_rpc_methods: Array<string>,
 /**
  * Last JSON-RPC protocol error seen on this session, if any.
  */
-last_protocol_error: string | null, 
+last_protocol_error?: string | null, 
 /**
  * Rollout (transcript) file path for the thread.
  */
-rollout_path: string | null, 
+rollout_path?: string | null, 
 /**
  * Rollout file size in bytes at report time — the tail-offset analogue for
  * an app-server-owned rollout (no external tail consumes it).
  */
-rollout_size_bytes: number | null, 
+rollout_size_bytes?: number | null, 
 /**
  * Cheap auth/account posture: whether the launch env carries gateway
  * routing credentials.
  */
-auth_state: string | null, 
+auth_state?: string | null, 
 /**
  * Registry↔live mismatch description, when the two disagree abnormally
  * (e.g. a live channel with no durable record).
  */
-registry_live_mismatch: string | null, };
+registry_live_mismatch?: string | null, };

@@ -4,8 +4,8 @@ import type { DiffSide } from "./DiffSide";
 /**
  * One inline draft comment, anchored to a diff line.
  */
-export type DraftCommentInfo = { id: string, draft_id: string, path: string, side: DiffSide, line: number, start_line: number | null, body: string, 
+export type DraftCommentInfo = { id: string, draft_id: string, path: string, side: DiffSide, line: number, start_line?: number | null, body: string, 
 /**
  * GitHub's comment id once published; `None` while still a draft.
  */
-github_comment_id: number | null, in_reply_to: number | null, created_at: string, updated_at: string, };
+github_comment_id?: number | null, in_reply_to?: number | null, created_at: string, updated_at: string, };

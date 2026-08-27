@@ -9,4 +9,4 @@
  * tokens are minted at launch so they're never stale. An empty map is fine for
  * drafts that need no manual secrets.
  */
-export type LaunchRequest = { env: { [key in string]?: string }, };
+export type LaunchRequest = { env?: { [key in string]: string }, };

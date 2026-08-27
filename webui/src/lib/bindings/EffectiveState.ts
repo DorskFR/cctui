@@ -10,4 +10,4 @@ export type EffectiveState = {
  * Human-readable verdict, e.g. `awaiting ask answer`,
  * `blocked: approve Bash: …`, `active/working`, `hibernated`, `dead`.
  */
-verdict: string, tempo: string | null, state: string | null, detail: string | null, activity: string | null, };
+verdict: string, tempo?: string | null, state?: string | null, detail?: string | null, activity?: string | null, };

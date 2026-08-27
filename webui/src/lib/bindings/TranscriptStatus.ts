@@ -3,7 +3,7 @@
 /**
  * The pinned transcript file for the session.
  */
-export type TranscriptStatus = { path: string, mtime_ms: number | null, size_bytes: number | null, 
+export type TranscriptStatus = { path: string, mtime_ms?: number | null, size_bytes?: number | null, 
 /**
  * Byte offset the tail has consumed up to.
  */
@@ -11,8 +11,8 @@ tail_offset: number,
 /**
  * Kind of the last event parsed out of the tail (e.g. `message`).
  */
-last_parsed_event: string | null, 
+last_parsed_event?: string | null, 
 /**
  * When that event was parsed (unix ms).
  */
-last_parsed_at_ms: number | null, };
+last_parsed_at_ms?: number | null, };

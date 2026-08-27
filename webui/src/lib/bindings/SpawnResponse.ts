@@ -6,4 +6,4 @@ export type SpawnResponse = { command_id: string, status: string,
  * credential is in play — chiefly for an auto-bound default the user never
  * named. `None` for an unbound spawn.
  */
-account: string | null, };
+account?: string | null, };

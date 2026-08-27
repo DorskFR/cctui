@@ -15,4 +15,4 @@ path: string,
  * The blob SHA the reviewer saw for this path (from `DiffFile.blob_sha`).
  * Required on mark; ignored on unmark (the path is the identity there).
  */
-blob_sha: string | null, };
+blob_sha?: string | null, };

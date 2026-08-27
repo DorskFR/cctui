@@ -16,8 +16,8 @@ parked_perm_hook: boolean,
  * The control socket's `needs` string for a pending tool-permission
  * prompt, when one is up.
  */
-control_needs: string | null, 
+control_needs?: string | null, 
 /**
  * The synthesized `request_id` of the pending permission prompt.
  */
-perm_request_id: string | null, };
+perm_request_id?: string | null, };

@@ -5,39 +5,39 @@ export type SpawnRequest = { machine_id: string, working_dir: string, prompt: st
 /**
  * Optional session display name, launched via the adapter (claude `--name`).
  */
-name: string | null, 
+name?: string | null, 
 /**
  * Adapter to spawn under. Defaults to `"claude-code"` when omitted.
  */
-adapter_id: string | null, 
+adapter_id?: string | null, 
 /**
  * Per-spawn permission posture: `yolo` skips all prompts +
  * sandbox, `auto` auto-applies without prompts but keeps the sandbox,
  * `ask` prompts on every action. `None` → the daemon's per-host
  * default. See [`cctui_proto::adapter::PermissionMode`].
  */
-permission_mode: PermissionMode | null, 
+permission_mode?: PermissionMode | null, 
 /**
  * Reasoning/effort level to launch the session with (claude `--effort`,
  * codex `model_reasoning_effort`). Valid values differ per adapter
  * (claude: `low`/`medium`/`high`/`xhigh`/`max`; codex:
  * `minimal`/`low`/`medium`/`high`). `None` → the adapter's default.
  */
-effort: string | null, 
+effort?: string | null, 
 /**
  * Model family to launch under. Passed to claude as `--model`
  * and to codex as `-c model="…"`. Free-form (the adapter resolves family
  * aliases like `opus`/`sonnet`/`haiku`/`fable`); `None` → the adapter's
  * own default model.
  */
-model: string | null, 
+model?: string | null, 
 /**
  * Environment secrets to inject into the worker process env at spawn time.
  * Keys must match `^[A-Z_][A-Z0-9_]*$`. Carried to the runtime
  * like a bearer capability: NEVER persisted, NEVER logged, NEVER written to
  * the transcript/timeline. `Debug` redacts the values.
  */
-env: { [key in string]?: string }, 
+env?: { [key in string]: string }, 
 /**
  * Named OAuth account to run the session under. Resolved against
  * the caller's own vault; the server mints a session-scoped gateway token
@@ -45,7 +45,7 @@ env: { [key in string]?: string },
  * equivalents) into `env` so the worker's traffic flows through the
  * passthrough gateway under that account. `None` → no gateway injection.
  */
-account: string | null, 
+account?: string | null, 
 /**
  * Provider of the selected `account`: `anthropic` |
  * `anthropic-compatible` | `openai` | `openai-compatible`. Disambiguates a
@@ -53,7 +53,7 @@ account: string | null,
  * unambiguously (instead of inferring the family from `adapter_id`). `None`
  * → fall back to the adapter-derived family.
  */
-provider: string | null, 
+provider?: string | null, 
 /**
  * Explicit unbound spawn: when true the server does NOT resolve a
  * default account for an empty `account` — the worker runs on the machine's
@@ -62,7 +62,7 @@ provider: string | null,
  * matching-family account. Ignored when `account` names an
  * account (a named account always binds).
  */
-no_account: boolean, 
+no_account?: boolean, 
 /**
  * Stage this spawn as a draft instead of dispatching it. When
  * true the server validates + persists a `draft` session row carrying the
@@ -71,4 +71,4 @@ no_account: boolean,
  * fresh and dispatches the real spawn. `env` is ignored for a draft (no
  * secrets at rest — re-entered at launch time).
  */
-save_draft: boolean, };
+save_draft?: boolean, };

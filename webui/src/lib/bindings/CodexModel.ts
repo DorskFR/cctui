@@ -48,4 +48,4 @@ input_modalities: Array<string>,
  * Id of the model this one should be upgraded to, when codex marks it as
  * superseded (codex `upgrade`). Drives a disabled/label hint in the UI.
  */
-upgrade: string | null, };
+upgrade?: string | null, };

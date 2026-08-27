@@ -12,11 +12,11 @@ export type ReviewDraftInfo = { id: string, connector_id: string, repo: string, 
 /**
  * The owning user, when `author_kind` is `user`.
  */
-author_user_id: string | null, 
+author_user_id?: string | null, 
 /**
  * The authoring session, when `author_kind` is `agent`.
  */
-author_session_id: string | null, verdict: ReviewVerdict, status: DraftStatus, created_at: string, updated_at: string, 
+author_session_id?: string | null, verdict: ReviewVerdict, status: DraftStatus, created_at: string, updated_at: string, 
 /**
  * The draft's inline comments, oldest first.
  */

@@ -23,4 +23,4 @@ repo: string,
  * The affected PR number, when the object is PR-scoped. `None` for
  * SHA-keyed checks.
  */
-pull_number: number | null, };
+pull_number?: number | null, };

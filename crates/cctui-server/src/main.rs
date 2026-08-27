@@ -805,6 +805,30 @@ fn build_api_routes() -> Routes {
             Authn::Bearer,
             Authenticated,
         )
+        .add(
+            &[Method::PUT],
+            "/accounts/{id}/redirect",
+            "Create/overwrite a launch-time redirect rule for this account.",
+            axum::routing::put(routes::account_redirects::put_redirect),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[GET],
+            "/redirects",
+            "The caller's live account/model redirect rules.",
+            get(routes::account_redirects::list_redirects),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[Method::DELETE],
+            "/redirects/{id}",
+            "Delete a redirect rule.",
+            axum::routing::delete(routes::account_redirects::delete_redirect),
+            Authn::Bearer,
+            Authenticated,
+        )
         // Provider credentials under an account identity: owner-scoped
         // in the handlers like the other account routes.
         .add(

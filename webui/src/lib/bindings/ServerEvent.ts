@@ -2,20 +2,20 @@
 import type { AgentEvent } from "./AgentEvent";
 import type { GithubEventKind } from "./GithubEventKind";
 import type { GithubEventPayload } from "./GithubEventPayload";
-import type { JsonValue } from "./serde_json/JsonValue";
 import type { MachineLiveness } from "./MachineLiveness";
 import type { Session } from "./Session";
 import type { SessionStatus } from "./SessionStatus";
+import type { JsonValue } from "./serde_json/JsonValue";
 
-export type ServerEvent = { "type": "stream", session_id: string, data: AgentEvent, } | { "type": "status", session_id: string, status: SessionStatus, } | { "type": "session_registered", session: Session, } | { "type": "session_deregistered", session_id: string, } | { "type": "permission_request", session_id: string, request_id: string, tool_name: string, description: string, input_preview: string, } | { "type": "permission_resolved", session_id: string, request_id: string, } | { "type": "ask_question", session_id: string, question: string, questions: JsonValue | null, 
+export type ServerEvent = { "type": "stream", session_id: string, data: AgentEvent, } | { "type": "status", session_id: string, status: SessionStatus, } | { "type": "session_registered", session: Session, } | { "type": "session_deregistered", session_id: string, } | { "type": "permission_request", session_id: string, request_id: string, tool_name: string, description: string, input_preview: string, } | { "type": "permission_resolved", session_id: string, request_id: string, } | { "type": "ask_question", session_id: string, question: string, questions?: JsonValue | null, 
 /**
  * Assistant prose preceding the question in the same turn, so clients
  * render the reasoning above the live prompt instead of leaving the
  * user to answer blind. `None` when there was none.
  */
-preamble: string | null, } | { "type": "ask_resolved", session_id: string, } | { "type": "plan_request", session_id: string, plan: string, 
+preamble?: string | null, } | { "type": "ask_resolved", session_id: string, } | { "type": "plan_request", session_id: string, plan: string, 
 /**
  * Assistant prose preceding the plan in the same turn. `None` when
  * there was none.
  */
-preamble: string | null, } | { "type": "plan_resolved", session_id: string, } | { "type": "command_result", command_id: string, ok: boolean, error: string | null, } | { "type": "message_ack", session_id: string, client_msg_id: string, ok: boolean, error: string | null, } | { "type": "archive_manifest", machine_id: string, count: number, } | { "type": "machine_liveness", machine_id: string, liveness: MachineLiveness, } | { "type": "dispatcher_liveness", dispatcher_id: string, liveness: MachineLiveness, } | { "type": "archive_uploaded", machine_id: string, project_dir: string, session_id: string, size_bytes: number, sha256: string, } | { "type": "github_event", kind: GithubEventKind, payload: GithubEventPayload, } | { "type": "soft_limit_reached", session_id: string, account_id: string, account_name: string, reason: string, retry_after_secs: number, } | { "type": "soft_limit_cleared", session_id: string, } | { "type": "pty_chunk", session_id: string, data: string, };
+preamble?: string | null, } | { "type": "plan_resolved", session_id: string, } | { "type": "command_result", command_id: string, ok: boolean, error?: string | null, } | { "type": "message_ack", session_id: string, client_msg_id: string, ok: boolean, error?: string | null, } | { "type": "archive_manifest", machine_id: string, count: number, } | { "type": "machine_liveness", machine_id: string, liveness: MachineLiveness, } | { "type": "dispatcher_liveness", dispatcher_id: string, liveness: MachineLiveness, } | { "type": "archive_uploaded", machine_id: string, project_dir: string, session_id: string, size_bytes: number, sha256: string, } | { "type": "github_event", kind: GithubEventKind, payload: GithubEventPayload, } | { "type": "soft_limit_reached", session_id: string, account_id: string, account_name: string, reason: string, retry_after_secs: number, } | { "type": "soft_limit_cleared", session_id: string, } | { "type": "pty_chunk", session_id: string, data: string, };

@@ -31,10 +31,10 @@ side: DiffSide,
  * GitHub `start_line` — the START line of a multi-line range. `None` for a
  * single-line comment.
  */
-start_line: number | null, 
+start_line?: number | null, 
 /**
  * GitHub `start_side` — the side of `start_line`. Always equals `side`
  * here (cctui never anchors a range across the two columns). `None` when
  * `start_line` is `None`.
  */
-start_side: DiffSide | null, };
+start_side?: DiffSide | null, };

@@ -145,7 +145,7 @@
 	// cache (an expensive "burst"). The button's "cold now" is purely time-based.
 	// The TTL window is provider/family- and model-dependent: Anthropic
 	// 60m, OpenAI GPT-5.6+ 30m, else the 5-min legacy sliding window.
-	const CACHE_TTL_MS = $derived(cacheTtlMs(session.adapter_id, session.model));
+	const CACHE_TTL_MS = $derived(cacheTtlMs(session.adapter_id, session.model ?? null));
 	// Final-minute countdown window.
 	const COLD_WARN_MS = 60 * 1000;
 	let now = $state(Date.now());

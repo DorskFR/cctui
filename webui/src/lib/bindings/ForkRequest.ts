@@ -13,10 +13,10 @@ import type { ForkExtract } from "./ForkExtract";
  * claude (which has no in-place switch). `prompt` is an optional
  * first turn to send on the forked branch.
  */
-export type ForkRequest = { model: string | null, effort: string | null, prompt: string | null, name: string | null, 
+export type ForkRequest = { model?: string | null, effort?: string | null, prompt?: string | null, name?: string | null, 
 /**
  * Conversation-extract selector: fork only a slice of the
  * parent's history. `None` → full-history fork. Claude-only; the
  * server rejects it for codex sessions.
  */
-extract: ForkExtract | null, };
+extract?: ForkExtract | null, };

@@ -6,17 +6,17 @@
  * `value: None` + `missing_reason` means the daemon could not produce the
  * fact right now; the call as a whole still succeeds.
  */
-export type DiagnoseFact<T> = { value: T | null, 
+export type DiagnoseFact<T> = { value?: T | null, 
 /**
  * Unix epoch millis when the daemon last observed this fact. `None`
  * when the underlying signal carries no timestamp.
  */
-observed_at_ms: number | null, 
+observed_at_ms?: number | null, 
 /**
  * Staleness at report-build time: `generated_at_ms - observed_at_ms`,
  * clamped to `>= 0`.
  */
-age_ms: number | null, 
+age_ms?: number | null, 
 /**
  * Which input/subsystem produced the fact (e.g. `hook`,
  * `control_socket`, `discovery`, `filesystem`).
@@ -25,4 +25,4 @@ source: string,
 /**
  * Why `value` is absent. Always `Some` when `value` is `None`.
  */
-missing_reason: string | null, };
+missing_reason?: string | null, };
