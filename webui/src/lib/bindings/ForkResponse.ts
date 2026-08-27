@@ -9,4 +9,4 @@
  * the webui can navigate to the new conversation immediately instead of
  * waiting for the next roster poll to discover it.
  */
-export type ForkResponse = { command_id: string, status: string, session_id: string | null, };
+export type ForkResponse = { command_id: string, status: string, session_id?: string | null, };

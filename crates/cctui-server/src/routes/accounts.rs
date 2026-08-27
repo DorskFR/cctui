@@ -53,7 +53,7 @@ pub struct PendingOAuthLogin {
 /// name the owner explicitly (`user_id` in the request). This is what lets an
 /// admin-authed webui run the "Sign in with Claude/ChatGPT" flows instead of
 /// bouncing off "user token required".
-fn resolve_owner(
+pub fn resolve_owner(
     ctx: &AuthContext,
     explicit: Option<Uuid>,
 ) -> Result<Uuid, (StatusCode, Json<serde_json::Value>)> {
@@ -75,7 +75,7 @@ fn resolve_owner(
 /// Gate the account read/mutation routes to a human identity (a user or admin
 /// token, never a machine key). Admin then sees/acts across all owners via
 /// `owner_filter`.
-fn require_human(ctx: &AuthContext) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+pub fn require_human(ctx: &AuthContext) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
     if ctx.machine_id.is_some() || !ctx.has(Scope::Read) {
         return Err(err(StatusCode::FORBIDDEN, "user or admin token required"));
     }
@@ -715,7 +715,7 @@ fn build_rate_limits_json(
     Ok((!out.is_empty()).then_some(serde_json::Value::Object(out)))
 }
 
-fn err(code: StatusCode, msg: &str) -> (StatusCode, Json<serde_json::Value>) {
+pub fn err(code: StatusCode, msg: &str) -> (StatusCode, Json<serde_json::Value>) {
     (code, Json(serde_json::json!({ "error": msg })))
 }
 

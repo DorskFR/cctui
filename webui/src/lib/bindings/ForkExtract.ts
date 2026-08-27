@@ -8,8 +8,8 @@ export type ForkExtract = { mode: ForkMode,
 /**
  * Anchor assistant `message_id` for `up_to`/`after`.
  */
-anchor_message_id: string | null, 
+anchor_message_id?: string | null, 
 /**
  * Selected assistant `message_id`s for `selected`.
  */
-selected_message_ids: Array<string>, };
+selected_message_ids?: Array<string>, };

@@ -2,11 +2,11 @@
 import type { AdapterId } from "./AdapterId";
 import type { Attention } from "./Attention";
 import type { Bucket } from "./Bucket";
-import type { JsonValue } from "./serde_json/JsonValue";
 import type { Label } from "./Label";
 import type { Liveness } from "./Liveness";
 import type { SessionStatus } from "./SessionStatus";
 import type { TokenUsage } from "./TokenUsage";
+import type { JsonValue } from "./serde_json/JsonValue";
 
 export type SessionListItem = { id: string, parent_id: string | null, machine_id: string, working_dir: string, status: SessionStatus, 
 /**
@@ -18,7 +18,7 @@ liveness: Liveness,
  * What the session is waiting on, if anything (the ✋ "needs input"
  * glyph). `None` when the session needs no attention.
  */
-attention: Attention | null, 
+attention?: Attention | null, 
 /**
  * Classifier bucket this session falls in (Working / Needs input /
  * Ready for review / Completed). Drives the grouped session list in
@@ -34,44 +34,44 @@ adapter_id: AdapterId | null,
  * Machine name (resolved from `machine_id`). `None` if the machine row
  * has been deleted but historical sessions still reference it.
  */
-machine_name: string | null, 
+machine_name?: string | null, 
 /**
  * Operator-set badge hue for the machine (0-359). `None` =
  * client derives the hue from the machine name hash.
  */
-machine_hue: number | null, 
+machine_hue?: number | null, 
 /**
  * Machine kind (resolved from `machine_id`): `"persistent"`
  * for enrolled daemons, `"dispatch"`/`"ephemeral"` for server-managed
  * dispatch workers. Lets clients group dispatched sessions separately.
  * `None` when the machine row is gone.
  */
-machine_kind: string | null, 
+machine_kind?: string | null, 
 /**
  * Last message text seen on this session, truncated to ~120 chars.
  */
-last_message_text: string | null, 
+last_message_text?: string | null, 
 /**
  * Timestamp of the last message event for this session.
  */
-last_message_at: string | null, 
+last_message_at?: string | null, 
 /**
  * Timestamp the conversation was first registered. Surfaced so
  * clients can show the ISO start datetime in the relative-time tooltip.
  */
-registered_at: string | null, 
+registered_at?: string | null, 
 /**
  * User-defined session name, when set (falls back to id in the UI).
  */
-name: string | null, 
+name?: string | null, 
 /**
  * Model the session runs on (e.g. `"opus[1m]"`).
  */
-model: string | null, 
+model?: string | null, 
 /**
  * Reasoning/effort level (e.g. `"low"`, `"high"`), when set.
  */
-effort: string | null, 
+effort?: string | null, 
 /**
  * Whether cctui-side auto-approve is on for this session.
  * In-memory server state, reflected so clients can show the toggle.
@@ -81,7 +81,7 @@ auto_approve: boolean,
  * Transcript snippet around a keyword match. Only populated by
  * the search endpoint to show *why* a session matched; `None` otherwise.
  */
-match_snippet: string | null, 
+match_snippet?: string | null, 
 /**
  * Cold-cache surfacing. Timestamp of the most recent
  * assistant turn (the last `session_token_usage` row). Lets the client
@@ -89,7 +89,7 @@ match_snippet: string | null,
  * window — before the next send, independent of `cache_cold` (which is
  * only known *after* a turn). `None` when no usage has been recorded.
  */
-last_activity_at: string | null, 
+last_activity_at?: string | null, 
 /**
  * *Confirmed* cold cache: the most recent assistant turn
  * re-billed the full context (`cache_creation_tokens > 0` and
@@ -104,7 +104,7 @@ cache_cold: boolean,
  * estimate, shown on the composer's burst-cost indicator. `None` when no
  * usage has been recorded.
  */
-estimated_burst_tokens: number | null, 
+estimated_burst_tokens?: number | null, 
 /**
  * Hibernated: the worker process has exited but its job state
  * survives on disk, so a reply revives it (daemon resume-on-reply).
@@ -133,7 +133,7 @@ labels: Array<Label>,
  * (token-usage row) used for cache-expiry prediction. `None` only on stub
  * rows that never carry liveness.
  */
-last_heartbeat: string | null, 
+last_heartbeat?: string | null, 
 /**
  * OAuth account this session runs under, resolved from the most
  * recent non-revoked `session_tokens` row joined to `account_providers` (name from its `accounts` parent).
@@ -141,7 +141,7 @@ last_heartbeat: string | null,
  * icon + name tooltip). `None` for sessions with no minted gateway token
  * (e.g. local sessions that never routed through the cctui gateway).
  */
-account_name: string | null, 
+account_name?: string | null, 
 /**
  * Unread assistant `message` events for the calling user:
  * messages newer than that user's `session_reads.last_seen_at` (all when
@@ -156,7 +156,7 @@ unread_count: number,
  * now surfaced on the list so a working row shows *what* it's doing without
  * opening the conversation. `None` when the session has no headline.
  */
-activity_detail: string | null, 
+activity_detail?: string | null, 
 /**
  * When the session (or any subagent, rolled up the `parent_id` chain like
  * the heartbeat) last emitted a `ToolUse`. Lets clients tell a
@@ -164,12 +164,12 @@ activity_detail: string | null,
  * heartbeat with no tool activity for minutes — far tighter than the 30-min
  * `last_heartbeat` staleness. `None` when no tool call has been observed.
  */
-last_tool_at: string | null, 
+last_tool_at?: string | null, 
 /**
  * Name of the most recent tool call feeding `last_tool_at`, e.g.
  * `"Read"`, `"Edit"`. `None` when no tool call has been observed.
  */
-last_tool_name: string | null, 
+last_tool_name?: string | null, 
 /**
  * Running count of this session's `ToolUse` events for the current turn,
  * reset on a new user prompt. This session's own count only —
@@ -196,4 +196,4 @@ account_traffic_observed: boolean,
  * Linked-PR hrefs from `sessions.children`. Drives the PR link
  * shown on the session card / TUI line and the `Ready for review` bucket.
  */
-pr_links: Array<string>, };
+pr_links?: Array<string>, };

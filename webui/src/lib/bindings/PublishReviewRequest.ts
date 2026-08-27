@@ -13,7 +13,7 @@ draft_id: string,
 /**
  * Optional review summary (the `body` of the submitted review).
  */
-summary: string | null, 
+summary?: string | null, 
 /**
  * The head SHA the reviewer was viewing the diff against when they hit
  * Publish. The server compares it to the PR's *current* head SHA; a mismatch
@@ -21,4 +21,4 @@ summary: string | null,
  * publish is refused (rather than mis-placing comments onto rotated lines).
  * `None` skips the guard (the caller accepts re-anchoring against current).
  */
-expected_head_sha: string | null, };
+expected_head_sha?: string | null, };

@@ -4,4 +4,4 @@
  * Body for `PATCH /api/v1/labels/{id}` — rename and/or recolor an existing
  * label by id. Either field may be omitted to leave it unchanged.
  */
-export type UpdateLabelRequest = { name: string | null, color: string | null, };
+export type UpdateLabelRequest = { name?: string | null, color?: string | null, };

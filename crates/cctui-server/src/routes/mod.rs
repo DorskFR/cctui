@@ -1,3 +1,4 @@
+pub mod account_redirects;
 pub mod accounts;
 pub mod admin_auth;
 pub mod auth;

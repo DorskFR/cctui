@@ -24,4 +24,4 @@ new_lines: number,
 /**
  * The hunk's section heading (the text after the second `@@`), when present.
  */
-header: string | null, lines: Array<DiffLine>, };
+header?: string | null, lines: Array<DiffLine>, };

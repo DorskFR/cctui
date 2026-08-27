@@ -7,4 +7,4 @@
  * least one of `model`/`effort` should be set; an empty string clears nothing
  * (the field is simply omitted from the adapter command when `None`).
  */
-export type SetModelRequest = { model: string | null, effort: string | null, };
+export type SetModelRequest = { model?: string | null, effort?: string | null, };

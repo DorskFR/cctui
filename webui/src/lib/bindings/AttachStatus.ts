@@ -12,13 +12,13 @@ phase: string,
 /**
  * Current reconnect backoff in ms, when `phase == "reconnecting"`.
  */
-backoff_ms: number | null, 
+backoff_ms?: number | null, 
 /**
  * Outcome of the last liveness probe (`has`): `Some(true)` alive,
  * `Some(false)` found dead, `None` no probe yet.
  */
-last_probe_alive: boolean | null, 
+last_probe_alive?: boolean | null, 
 /**
  * When the last liveness probe ran (unix ms).
  */
-last_probe_at_ms: number | null, };
+last_probe_at_ms?: number | null, };

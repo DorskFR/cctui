@@ -12,15 +12,15 @@ export type ReviewThreadInfo = { thread_node_id: string,
 /**
  * Head-side path the thread is anchored on, when known.
  */
-path: string | null, 
+path?: string | null, 
 /**
  * `LEFT` | `RIGHT` diff side, when anchored.
  */
-side: string | null, 
+side?: string | null, 
 /**
  * 1-based line on `side`, when anchored.
  */
-line: number | null, resolved: boolean, 
+line?: number | null, resolved: boolean, 
 /**
  * The thread's comments, oldest first.
  */

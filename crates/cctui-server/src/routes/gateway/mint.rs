@@ -75,16 +75,85 @@ pub async fn account_provider_rows(
         .bind(account_id)
         .fetch_all(&state.pool)
         .await?;
-    Ok(Some(
-        rows.into_iter()
-            .map(|(id, provider, model_aliases, models)| ProviderRow {
-                id,
-                provider,
-                model_aliases,
-                models,
-            })
-            .collect(),
-    ))
+    let mut rows: Vec<ProviderRow> = rows
+        .into_iter()
+        .map(|(id, provider, model_aliases, models)| ProviderRow {
+            id,
+            provider,
+            model_aliases,
+            models,
+        })
+        .collect();
+    apply_account_redirects(&state.pool, user_id, account_id, &mut rows).await;
+    Ok(Some(rows))
+}
+
+/// Substitute each provider row whose family carries a live account redirect
+/// with the target account's same-family row. Per-family: a rule on the
+/// anthropic binding must not move an openai one. Any failure — no rule, an
+/// inaccessible target, a target without the family, a DB error — leaves the
+/// original row in place: a broken rule must never fail a launch.
+async fn apply_account_redirects(
+    pool: &sqlx::PgPool,
+    user_id: Uuid,
+    account_id: Uuid,
+    rows: &mut [ProviderRow],
+) {
+    let rules = match crate::store::account_redirects::live_for_user(pool, user_id).await {
+        Ok(rules) if !rules.is_empty() => rules,
+        Ok(_) => return,
+        Err(e) => {
+            tracing::error!(%user_id, "loading account redirects (launching unredirected): {e}");
+            return;
+        }
+    };
+    for row in rows {
+        let family = row.family().label();
+        let Some(target) =
+            crate::store::account_redirects::follow_account_chain(&rules, account_id, family)
+        else {
+            continue;
+        };
+        // The target must be usable by this user (owned or shared — the same
+        // predicate the name lookup applies) and carry the family: a redirect
+        // must never widen access.
+        let found: Option<(Uuid, String, Option<serde_json::Value>, Option<serde_json::Value>)> =
+            sqlx::query_as(
+                "SELECT p.id, p.provider, p.model_aliases, p.models \
+                 FROM account_providers p JOIN accounts a ON a.id = p.account_id \
+                 WHERE p.account_id = $2 AND p.family = $3 \
+                   AND (a.user_id = $1 OR EXISTS ( \
+                       SELECT 1 FROM resource_shares s \
+                        WHERE s.resource_type = 'account' AND s.resource_id = a.id \
+                          AND s.grantee_id = $1 AND s.revoked_at IS NULL)) \
+                 LIMIT 1",
+            )
+            .bind(user_id)
+            .bind(target)
+            .bind(family)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten();
+        if let Some((id, provider, model_aliases, models)) = found {
+            tracing::info!(
+                %user_id,
+                from = %account_id,
+                to = %target,
+                family,
+                "account redirect applied at bind time"
+            );
+            *row = ProviderRow { id, provider, model_aliases, models };
+        } else {
+            tracing::warn!(
+                %user_id,
+                from = %account_id,
+                to = %target,
+                family,
+                "account redirect target unusable (inaccessible or no provider) — ignoring rule"
+            );
+        }
+    }
 }
 
 /// Resolve a named account for a user and mint a session-scoped gateway token
@@ -482,6 +551,11 @@ pub async fn resolve_account_model(
     let Some(row) = rows.iter().find(|r| r.family() == family) else {
         return model.to_owned();
     };
+    // A model redirect flips the *requested* model before alias resolution, so
+    // `fable → opus` still maps through the account's `opus` alias. Keyed on
+    // the row's owning account: after an account redirect the target's rules
+    // apply, not the source's.
+    let model = &*flip_model_redirect(state, user_id, row.id, family, model).await;
     let aliased = row
         .model_aliases
         .as_ref()
@@ -493,6 +567,44 @@ pub async fn resolve_account_model(
         return aliased;
     }
     resolve_catalog_model(row.models.as_ref(), &aliased).unwrap_or(aliased)
+}
+
+/// The model to actually spawn with, after any live model-redirect rule on the
+/// provider row's owning account. Fail-soft on every path: no rule, no flip.
+async fn flip_model_redirect(
+    state: &AppState,
+    user_id: Uuid,
+    provider_row_id: Uuid,
+    family: Family,
+    requested: &str,
+) -> String {
+    let account_id: Option<Uuid> =
+        sqlx::query_scalar("SELECT account_id FROM account_providers WHERE id = $1")
+            .bind(provider_row_id)
+            .fetch_optional(&state.pool)
+            .await
+            .ok()
+            .flatten();
+    let Some(account_id) = account_id else { return requested.to_owned() };
+    let Ok(rules) = crate::store::account_redirects::live_for_user(&state.pool, user_id).await
+    else {
+        return requested.to_owned();
+    };
+    crate::store::account_redirects::model_flip(&rules, account_id, family.label(), requested)
+        .map_or_else(
+            || requested.to_owned(),
+            |flipped| {
+                tracing::info!(
+                    %user_id,
+                    account = %account_id,
+                    family = family.label(),
+                    requested,
+                    flipped,
+                    "model redirect applied at spawn time"
+                );
+                flipped.to_owned()
+            },
+        )
 }
 
 /// Resolve a model against an account's catalog: an exact `model` id passes
@@ -698,5 +810,153 @@ mod tests {
             mint_order(&[], Family::Anthropic),
             Err(MintSessionEnvError::NoProviderForFamily(Family::Anthropic))
         ));
+    }
+}
+
+#[cfg(test)]
+mod db_tests {
+    use super::*;
+
+    async fn mk_account(pool: &sqlx::PgPool, user: Uuid, name: &str) -> Uuid {
+        sqlx::query_scalar("INSERT INTO accounts (user_id, name) VALUES ($1, $2) RETURNING id")
+            .bind(user)
+            .bind(name)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    async fn mk_provider(pool: &sqlx::PgPool, user: Uuid, account: Uuid, provider: &str) -> Uuid {
+        sqlx::query_scalar(
+            "INSERT INTO account_providers (user_id, account_id, provider) \
+             VALUES ($1, $2, $3) RETURNING id",
+        )
+        .bind(user)
+        .bind(account)
+        .bind(provider)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+    }
+
+    async fn provider_rows(pool: &sqlx::PgPool, account: Uuid) -> Vec<ProviderRow> {
+        let rows: Vec<(Uuid, String, Option<serde_json::Value>, Option<serde_json::Value>)> =
+            sqlx::query_as(
+                "SELECT id, provider, model_aliases, models FROM account_providers \
+                 WHERE account_id = $1 ORDER BY provider",
+            )
+            .bind(account)
+            .fetch_all(pool)
+            .await
+            .unwrap();
+        rows.into_iter()
+            .map(|(id, provider, model_aliases, models)| ProviderRow {
+                id,
+                provider,
+                model_aliases,
+                models,
+            })
+            .collect()
+    }
+
+    /// Real-DB proof of the bind-time seam: a live rule substitutes the
+    /// target's same-family provider row; other families, expired rules, and
+    /// inaccessible targets leave rows untouched.
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL with migrations applied"]
+    async fn bind_time_redirect_substitutes_target_provider_row() {
+        let url = std::env::var("DATABASE_URL").expect("DATABASE_URL");
+        let pool = sqlx::PgPool::connect(&url).await.unwrap();
+        let suffix = Uuid::new_v4();
+        let user: Uuid = sqlx::query_scalar(
+            "INSERT INTO users (id, name, key_hash) VALUES (gen_random_uuid(), $1, gen_random_uuid()::text) RETURNING id",
+        )
+        .bind(format!("redir-{suffix}"))
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let stranger: Uuid = sqlx::query_scalar(
+            "INSERT INTO users (id, name, key_hash) VALUES (gen_random_uuid(), $1, gen_random_uuid()::text) RETURNING id",
+        )
+        .bind(format!("stranger-{suffix}"))
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        let hirobot = mk_account(&pool, user, &format!("hirobot-{suffix}")).await;
+        let pafin = mk_account(&pool, user, &format!("pafin-{suffix}")).await;
+        let foreign = mk_account(&pool, stranger, &format!("foreign-{suffix}")).await;
+        let hirobot_anthropic = mk_provider(&pool, user, hirobot, "anthropic").await;
+        let hirobot_openai = mk_provider(&pool, user, hirobot, "openai").await;
+        let pafin_anthropic = mk_provider(&pool, user, pafin, "anthropic").await;
+        mk_provider(&pool, stranger, foreign, "openai").await;
+
+        crate::store::account_redirects::upsert(
+            &pool,
+            crate::store::account_redirects::NewRedirect {
+                user_id: user,
+                from_account: hirobot,
+                to_account: Some(pafin),
+                family: "anthropic",
+                match_model: None,
+                to_model: None,
+                expires_at: None,
+                reason: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let mut rows = provider_rows(&pool, hirobot).await;
+        apply_account_redirects(&pool, user, hirobot, &mut rows).await;
+        let anthropic = rows.iter().find(|r| r.family() == Family::Anthropic).unwrap();
+        let openai = rows.iter().find(|r| r.family() == Family::Openai).unwrap();
+        assert_eq!(anthropic.id, pafin_anthropic, "anthropic row must become pafin's");
+        assert_eq!(openai.id, hirobot_openai, "openai row must stay on hirobot");
+
+        // An inaccessible target (no ownership, no share) never applies.
+        crate::store::account_redirects::upsert(
+            &pool,
+            crate::store::account_redirects::NewRedirect {
+                user_id: user,
+                from_account: hirobot,
+                to_account: Some(foreign),
+                family: "openai",
+                match_model: None,
+                to_model: None,
+                expires_at: None,
+                reason: None,
+            },
+        )
+        .await
+        .unwrap();
+        let mut rows = provider_rows(&pool, hirobot).await;
+        apply_account_redirects(&pool, user, hirobot, &mut rows).await;
+        assert_eq!(
+            rows.iter().find(|r| r.family() == Family::Openai).unwrap().id,
+            hirobot_openai,
+            "a redirect must never widen access"
+        );
+
+        // An expired rule is dead.
+        sqlx::query(
+            "UPDATE account_redirects SET expires_at = now() - interval '1 minute' \
+                     WHERE from_account = $1",
+        )
+        .bind(hirobot)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let mut rows = provider_rows(&pool, hirobot).await;
+        apply_account_redirects(&pool, user, hirobot, &mut rows).await;
+        assert_eq!(
+            rows.iter().find(|r| r.family() == Family::Anthropic).unwrap().id,
+            hirobot_anthropic,
+            "expired rules must not redirect"
+        );
+
+        for u in [user, stranger] {
+            sqlx::query("DELETE FROM users WHERE id = $1").bind(u).execute(&pool).await.unwrap();
+        }
     }
 }

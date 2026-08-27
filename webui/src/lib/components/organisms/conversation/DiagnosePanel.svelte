@@ -131,8 +131,8 @@
 			<span>
 				status: {resp.server.status ?? '?'} · adapter: {resp.server.adapter_id ?? '?'} ·
 				account: {resp.server.account_bound ? resp.server.accounts.join(', ') : m.diagnose_not_bound()}
-				{#if resp.server.machine_last_seen_ms !== null}
-					· {m.diagnose_daemon_heartbeat({ age: fmtAge(Date.now() - resp.server.machine_last_seen_ms) })}
+				{#if resp.server.machine_last_seen_ms != null}
+					· {m.diagnose_daemon_heartbeat({ age: fmtAge(Date.now() - (resp.server.machine_last_seen_ms ?? 0)) })}
 				{/if}
 			</span>
 		</div>
@@ -153,7 +153,7 @@
 						<span class="name">{row.name}</span>
 						<span class="meta">
 							<span class="src">{row.fact.source}</span>
-							<span class="age">{fmtAge(row.fact.age_ms)}</span>
+							<span class="age">{fmtAge(row.fact.age_ms ?? null)}</span>
 						</span>
 						{#if row.fact.value !== null}
 							<span class="val">{fmtValue(row.fact.value)}</span>

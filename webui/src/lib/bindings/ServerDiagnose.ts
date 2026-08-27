@@ -8,7 +8,7 @@ export type ServerDiagnose = {
 /**
  * `sessions.status` (`active`/`ended`/`archived`/…).
  */
-status: string | null, adapter_id: string | null, 
+status?: string | null, adapter_id?: string | null, 
 /**
  * Whether a live (non-revoked) gateway session token binds this session
  * to an account.
@@ -17,8 +17,8 @@ account_bound: boolean,
 /**
  * Names of the bound account(s), one per provider family.
  */
-accounts: Array<string>, machine_id: string | null, 
+accounts: Array<string>, machine_id?: string | null, 
 /**
  * `machines.last_seen_at` as unix ms — the daemon heartbeat freshness.
  */
-machine_last_seen_ms: number | null, };
+machine_last_seen_ms?: number | null, };

@@ -7,4 +7,4 @@ import type { SessionDiagnose } from "./SessionDiagnose";
  * round-trip fails (offline, timeout) `daemon` is `None` and `daemon_error`
  * says why; the server facts are still served.
  */
-export type SessionDiagnoseResponse = { session_id: string, daemon: SessionDiagnose | null, daemon_error: string | null, server: ServerDiagnose, };
+export type SessionDiagnoseResponse = { session_id: string, daemon?: SessionDiagnose | null, daemon_error?: string | null, server: ServerDiagnose, };

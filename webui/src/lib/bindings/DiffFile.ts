@@ -12,7 +12,7 @@ path: string,
 /**
  * Previous path when the file was renamed/moved; `None` otherwise.
  */
-previous_path: string | null, 
+previous_path?: string | null, 
 /**
  * GitHub's `status`: `added` | `modified` | `removed` | `renamed` |
  * `copied` | `changed` | `unchanged`.
@@ -37,4 +37,4 @@ binary: boolean,
  * The file's blob SHA on the head side (GitHub's `sha`), for blob-keyed
  * "reviewed" marks (GH-VIEW-6) and the blob fallback.
  */
-blob_sha: string | null, };
+blob_sha?: string | null, };

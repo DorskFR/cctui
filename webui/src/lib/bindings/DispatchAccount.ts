@@ -12,4 +12,4 @@ account: string,
  * Provider disambiguating a name shared across providers. `None` → the
  * anthropic family, matching the singular-account default.
  */
-provider: string | null, };
+provider?: string | null, };

@@ -30,7 +30,7 @@ line: number,
  * For a multi-line selection, the (inclusive) start line on the same side.
  * `None` for a single-line comment. Must be `<= line` and on the same side.
  */
-start_line: number | null, 
+start_line?: number | null, 
 /**
  * The head SHA the selection was made against. A diff whose `head_sha`
  * differs (force-push) makes this selection stale — see [`anchor`] resolve.

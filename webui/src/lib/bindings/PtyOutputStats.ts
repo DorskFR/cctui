@@ -5,4 +5,4 @@
  * the second, hook-independent activity signal. `missing` until
  * the drain loop has read bytes for the session.
  */
-export type PtyOutputStats = { last_output_age_ms: number | null, recent_bytes_per_min: number | null, };
+export type PtyOutputStats = { last_output_age_ms?: number | null, recent_bytes_per_min?: number | null, };

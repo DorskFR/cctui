@@ -8,7 +8,7 @@ export type SocketStatus = {
 /**
  * The live socket path, `None` when no candidate answered.
  */
-path: string | null, live: boolean, 
+path?: string | null, live: boolean, 
 /**
  * Every candidate `control.sock` discovery enumerated.
  */

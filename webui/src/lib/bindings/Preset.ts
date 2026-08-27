@@ -20,8 +20,8 @@ description: string,
 /**
  * `settings.json` fragment this preset writes.
  */
-settings: { [key in string]?: JsonValue }, 
+settings: { [key in string]: JsonValue }, 
 /**
  * Env fragment this preset writes.
  */
-env: { [key in string]?: string }, };
+env: { [key in string]: string }, };

@@ -4,4 +4,4 @@ export type RescrubReport = { dry_run: boolean, rows_scanned: number, rows_chang
 /**
  * Substitution counts keyed by category (e.g. `github_token`).
  */
-by_category: { [key in string]?: number }, };
+by_category: { [key in string]: number }, };
