@@ -126,6 +126,7 @@ jobs:
     env:
       DATABASE_URL: postgres://postgres:postgres@localhost:5432/cctui_test
       CCTUI_ADMIN_TOKENS: test-admin
+      CCTUI_VAULT_KEY: deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef
       TEST_CCTUI_URL: http://localhost:8700
       TEST_ADMIN_TOKEN: test-admin
     steps:
