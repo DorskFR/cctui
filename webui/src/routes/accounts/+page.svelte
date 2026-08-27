@@ -26,10 +26,9 @@
 		PROVIDER_KINDS,
 		type ProviderKind
 	} from '$lib/providers';
-	import ProviderPanel from '$lib/components/molecules/ProviderPanel.svelte';
 	import SoftLimit from '$lib/components/molecules/SoftLimit.svelte';
 	import { editorWindowKeys, isUsdKey } from '$lib/components/molecules/usage-windows';
-	import ResourceShares from '$lib/components/molecules/ResourceShares.svelte';
+	import AccountCard from '$lib/components/organisms/AccountCard.svelte';
 	import GithubConnectors from '$lib/components/organisms/GithubConnectors.svelte';
 	import DispatchersPanel from '$lib/components/organisms/DispatchersPanel.svelte';
 	import ProviderSettingsList from '$lib/components/organisms/ProviderSettingsList.svelte';
@@ -37,20 +36,17 @@
 	import AnthropicProviderEditor from '$lib/components/organisms/AnthropicProviderEditor.svelte';
 	import FreeFormEnvEditor from '$lib/components/organisms/FreeFormEnvEditor.svelte';
 	import {
-		AutoGrid,
 		Button,
-		Card,
 		Cluster,
+		Container,
 		Field,
 		Heading,
 		Input,
 		Link,
 		Modal,
 		Select,
-		Stack,
 		Tabs,
 		Text,
-		Timestamp,
 		type TabItem
 	} from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
@@ -648,88 +644,58 @@
 	);
 </script>
 
-<div class="page-head"><Heading level={1}>{m.accounts_title()}</Heading></div>
+<!-- Accounts rows are full-width composites (provider boxes side by side), so
+     the screen breaks out of the app's prose-width shell and re-centres on the
+     wider measure. Head + tabs + rows share the wrapper so they stay aligned. -->
+<Container fullWidth as="div">
+<div class="accounts-wide">
+	<div class="page-head"><Heading level={1}>{m.accounts_title()}</Heading></div>
 
-<Tabs {tabs} bind:value={tab} label={m.accounts_sections_label()}>
-	{#snippet panel(id)}
-		{#if id === 'ai'}
-			<div class="ai-pane">
-			<Cluster class="acct-bar" justify="space-between" align="center" gap="var(--sp-3)">
-				<Text as="p" tone="muted" size="sm" class="intro">
-					{m.accounts_ai_intro()}
-				</Text>
-				<Button control variant="primary" onclick={openCreate}>{m.accounts_new_account()}</Button>
-			</Cluster>
+	<Tabs {tabs} bind:value={tab} label={m.accounts_sections_label()}>
+		{#snippet panel(id)}
+			{#if id === 'ai'}
+				<div class="ai-pane">
+				<Cluster class="acct-bar" justify="space-between" align="center" gap="var(--sp-3)">
+					<Text as="p" tone="muted" size="sm" class="intro">
+						{m.accounts_ai_intro()}
+					</Text>
+					<Button control variant="primary" onclick={openCreate}>{m.accounts_new_account()}</Button>
+				</Cluster>
 
-			{#if accounts.isLoading}
-				<div class="empty"><span class="spin"></span></div>
-			{:else if rows.length === 0}
-				<div class="empty"><Text tone="muted">{m.accounts_empty()}</Text></div>
-			{:else}
-				<AutoGrid min="22rem" gap="var(--sp-3)">
-					{#each rows as a (a.id)}
-						<Card class="account-card">
-							<Stack gap="var(--sp-3)" class="card-body">
-								<Heading level={2} size="lg" class="account-name">{a.name}</Heading>
-
-								<!-- One panel per provider credential. -->
-								{#each a.providers as p (p.id)}
-									<ProviderPanel
-										provider={p}
-										usageEnabled={tab === 'ai'}
-										canManage={!p.managed}
-										canRemove={!p.managed}
-										onedit={() => openEditProvider(a, p)}
-										onreauth={() => reauth(a, p)}
-										onremove={() => removeProvider(a, p)}
-									/>
-								{:else}
-									<Text tone="faint" size="sm">{m.accounts_no_credentials()}</Text>
-								{/each}
-								{#if !isManaged(a) && availableKinds(a).length}
-									<Button size="sm" style="align-self: flex-start" onclick={() => openAddProvider(a)}>
-										{m.accounts_add_provider()}
-									</Button>
-								{/if}
-
-								<dl class="stats">
-									{#if isAdmin}
-										<div><dt>{m.accounts_stat_owner()}</dt><dd>{a.user_name ?? '—'}</dd></div>
-									{/if}
-									<div><dt>{m.accounts_stat_created()}</dt><dd><Timestamp value={a.created_at} mode="date" tone="inherit" /></dd></div>
-								</dl>
-								{#if !isManaged(a) && (isAdmin || a.user_id === me.data?.user_id)}
-									<!-- Sharing management: owner-only surface to view/grant/
-									     revoke who may USE this account. The list endpoint is
-									     owner-scoped, so only render (and fetch) it for the owner/admin. -->
-									<ResourceShares
-										resourceType="account"
-										id={a.id}
-										noun={m.accounts_share_noun()}
-										enabled={tab === 'ai'}
-									/>
-								{/if}
-							</Stack>
-							<Cluster as="footer" gap="var(--sp-1)" justify="flex-end" class="card-foot">
-								{#if isManaged(a)}
-									<Text tone="faint" size="xs">{m.accounts_managed_readonly()}</Text>
-								{:else}
-									<Button onclick={() => openEditAccount(a)}>{m.common_edit()}</Button>
-									<Button variant="danger" onclick={() => removeAccount(a)}>{m.common_delete()}</Button>
-								{/if}
-							</Cluster>
-						</Card>
-					{/each}
-				</AutoGrid>
+				{#if accounts.isLoading}
+					<div class="empty"><span class="spin"></span></div>
+				{:else if rows.length === 0}
+					<div class="empty"><Text tone="muted">{m.accounts_empty()}</Text></div>
+				{:else}
+					<div class="acct-list">
+						{#each rows as a (a.id)}
+							<AccountCard
+								account={a}
+								enabled={tab === 'ai'}
+								managed={isManaged(a)}
+								canAddProvider={!isManaged(a) && availableKinds(a).length > 0}
+								canShare={!isManaged(a) && (isAdmin || a.user_id === me.data?.user_id)}
+								showOwner={isAdmin}
+								onedit={() => openEditAccount(a)}
+								onremove={() => removeAccount(a)}
+								onaddprovider={() => openAddProvider(a)}
+								oneditprovider={(p) => openEditProvider(a, p)}
+								onreauthprovider={(p) => reauth(a, p)}
+								onremoveprovider={(p) => removeProvider(a, p)}
+							/>
+						{/each}
+					</div>
+				{/if}
+				</div>
+			{:else if id === 'connectors'}
+				<GithubConnectors />
+			{:else if id === 'dispatchers'}
+				<DispatchersPanel heading={false} />
 			{/if}
-			</div>
-		{:else if id === 'connectors'}
-			<GithubConnectors />
-		{:else if id === 'dispatchers'}
-			<DispatchersPanel heading={false} />
-		{/if}
-	{/snippet}
-</Tabs>
+		{/snippet}
+	</Tabs>
+</div>
+</Container>
 
 {#if editor !== null}
 	<Modal title={modalTitle} onclose={close} size="lg" resizeKey="account-editor">
@@ -1025,48 +991,17 @@
 	.ai-pane :global(.acct-bar .intro) {
 		max-width: 60ch;
 	}
-	/* Cards stretch to the tallest in their row (AutoGrid), then the body grows
-	   so the footer's action buttons pin to the bottom edge — consistent across
-	   cards regardless of how many provider panels are present. */
-	.ai-pane :global(.account-card) {
+	/* Re-centre on the wide measure after Container's full-bleed break-out. */
+	.accounts-wide {
+		width: 100%;
+		max-width: var(--content-wide);
+		margin-inline: auto;
+	}
+	/* One account per row; each row owns its own internal box layout. */
+	.acct-list {
 		display: flex;
 		flex-direction: column;
-		height: 100%;
-	}
-	.ai-pane :global(.account-card .card-body) {
-		flex: 1 1 auto;
-		min-width: 0;
-	}
-	.ai-pane :global(.account-card .account-name) {
-		min-width: 0;
-		word-break: break-word;
-	}
-	.ai-pane :global(.account-card .card-foot) {
-		margin-top: var(--sp-3);
-		padding-top: var(--sp-3);
-		border-top: 1px solid var(--border);
-	}
-	/* Account-level stat list — label over value, no input-like chrome. */
-	.stats {
-		display: grid;
-		grid-template-columns: repeat(auto-fit, minmax(7rem, 1fr));
-		gap: var(--sp-2) var(--sp-3);
-		margin: 0;
-	}
-	.stats div {
-		min-width: 0;
-	}
-	.stats dt {
-		color: var(--text-muted);
-		font-size: var(--fs-xs);
-		text-transform: uppercase;
-		letter-spacing: 0.04em;
-	}
-	.stats dd {
-		margin: 0.1rem 0 0;
-		font-size: var(--fs-sm);
-		font-weight: var(--fw-medium);
-		overflow-wrap: anywhere;
+		gap: var(--sp-3);
 	}
 	.editor-body {
 		display: flex;
