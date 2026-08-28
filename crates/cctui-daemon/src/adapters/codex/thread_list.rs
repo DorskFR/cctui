@@ -478,14 +478,11 @@ pub async fn rediscover_owned(cfg: &ThreadListConfig, registry: &SessionRegistry
     let entries = match poll_threads(&cfg.app, cfg.page_size).await {
         Ok(entries) => entries,
         Err(err) => {
-            tracing::debug!(%err, "codex: startup thread rediscovery probe failed");
+            tracing::warn!(%err, "codex: startup thread rediscovery probe failed — hibernated threads stay unresumable until a poll succeeds");
             return;
         }
     };
     let records = owned_records(&entries, &cfg.app);
-    if records.is_empty() {
-        return;
-    }
     let mut count = 0_usize;
     {
         let mut guard = registry.lock().await;
@@ -498,8 +495,39 @@ pub async fn rediscover_owned(cfg: &ThreadListConfig, registry: &SessionRegistry
             });
         }
     }
-    if count > 0 {
-        tracing::info!(count, "codex: rediscovered owned threads, seeded for resume");
+    tracing::info!(count, "codex: rediscovered owned threads, seeded for resume");
+}
+
+/// Build a [`SessionRecord`] for one specific thread out of a `thread/list`
+/// snapshot. Only `appServer`-source threads are cctui's to resume.
+#[must_use]
+pub fn record_for(
+    entries: &[ThreadEntry],
+    app: &AppServerConfig,
+    local_id: &str,
+) -> Option<SessionRecord> {
+    let id = canonical_id(local_id);
+    let entry = entries.iter().find(|e| e.id == id && e.source.as_deref() == Some("appServer"))?;
+    Some(SessionRecord {
+        cfg: app.clone(),
+        cwd: entry.cwd.clone().unwrap_or_default(),
+        name: entry.name.clone(),
+        env: std::collections::BTreeMap::new(),
+    })
+}
+
+const RECOVER_PAGE_LIMIT: u32 = 100;
+
+/// On-demand recovery for a thread that went Missing: one bounded
+/// `thread/list` probe (the poll's own 30s deadline) to reconstruct its
+/// [`SessionRecord`] so the command can take the Resume path.
+pub async fn recover_record(app: &AppServerConfig, local_id: &str) -> Option<SessionRecord> {
+    match poll_threads(app, RECOVER_PAGE_LIMIT).await {
+        Ok(entries) => record_for(&entries, app, local_id),
+        Err(err) => {
+            tracing::warn!(%local_id, %err, "codex: on-demand thread recovery probe failed");
+            None
+        }
     }
 }
 
@@ -1009,6 +1037,40 @@ mod tests {
         assert_eq!(recs[0].0, "mine");
         assert_eq!(recs[0].1.cwd, "/repo");
         assert_eq!(recs[0].1.name.as_deref(), Some("nm"));
+    }
+
+    #[test]
+    fn record_for_recovers_only_app_server_threads() {
+        let entries = vec![
+            ThreadEntry {
+                id: "019ea66a-cf6e-73b1-8000-0000000000ab".into(),
+                parent_id: None,
+                updated_at: None,
+                preview: None,
+                name: Some("nm".into()),
+                cwd: Some("/repo".into()),
+                source: Some("appServer".into()),
+                status: None,
+            },
+            ThreadEntry {
+                id: "cli-thread".into(),
+                parent_id: None,
+                updated_at: None,
+                preview: None,
+                name: None,
+                cwd: Some("/tmp".into()),
+                source: Some("cli".into()),
+                status: None,
+            },
+        ];
+        let app = AppServerConfig::default();
+        let rec = record_for(&entries, &app, "019EA66A-CF6E-73B1-8000-0000000000AB")
+            .expect("appServer thread is recoverable, id canonicalized");
+        assert_eq!(rec.cwd, "/repo");
+        assert_eq!(rec.name.as_deref(), Some("nm"));
+        assert!(rec.env.is_empty());
+        assert!(record_for(&entries, &app, "cli-thread").is_none());
+        assert!(record_for(&entries, &app, "unknown").is_none());
     }
 
     #[tokio::test]

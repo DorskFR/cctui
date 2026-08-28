@@ -27,6 +27,7 @@ mod app_server;
 mod contract;
 mod log_tail;
 mod model_list;
+mod persist;
 mod thread_list;
 
 use std::path::PathBuf;
@@ -144,10 +145,15 @@ async fn run_default(ctx: AdapterCtx) -> anyhow::Result<()> {
     // in-flight `appServer`-source threads unrevivable. Seeding the durable
     // registry from `thread/list` lets the next reply/rename/set-model resume
     // them via `thread/resume`, mirroring the claude-code backfill/reconnect.
+    let restored = persist::load(&registry).await;
+    if restored > 0 {
+        tracing::info!(restored, "codex: session registry restored from state file");
+    }
     if thread_list::ThreadListConfig::enabled(&ctx.config) {
         let cfg = thread_list::ThreadListConfig::from_value(&ctx.config);
         thread_list::rediscover_owned(&cfg, &registry).await;
     }
+    persist::save(&registry).await;
 
     let inventory_handle = if thread_list::ThreadListConfig::enabled(&ctx.config) {
         // the inventory's `seen` set is its own dedup state only — it
@@ -436,6 +442,7 @@ async fn command_pump(
                                    &shutdown,
                                    server.as_ref(),
                                    machine_key.as_ref(),
+                                   &app_cfg,
                                    &local_id,
                                    SessionCommand::Permission { request_id, allow },
                                )
@@ -450,6 +457,7 @@ async fn command_pump(
                                    &shutdown,
                                    server.as_ref(),
                                    machine_key.as_ref(),
+                                   &app_cfg,
                                    &local_id,
                                    SessionCommand::Send { text },
                                )
@@ -463,6 +471,7 @@ async fn command_pump(
                                    &shutdown,
                                    server.as_ref(),
                                    machine_key.as_ref(),
+                                   &app_cfg,
                                    &local_id,
                                    SessionCommand::Kill { signal },
                                )
@@ -508,6 +517,7 @@ async fn command_pump(
                                    &shutdown,
                                    server.as_ref(),
                                    machine_key.as_ref(),
+                                   &app_cfg,
                                    &local_id,
                                    SessionCommand::Rename { name },
                                )
@@ -528,11 +538,13 @@ async fn command_pump(
                                    &shutdown,
                                    server.as_ref(),
                                    machine_key.as_ref(),
+                                   &app_cfg,
                                    &local_id,
                                    SessionCommand::Kill { signal: None },
                                )
                                .await;
                                registry.lock().await.remove(&local_id);
+                               persist::save(&registry).await;
                                let cfg = app_cfg.clone();
                                tokio::spawn(async move {
                                    if let Err(err) = app_server::run_thread_lifecycle(
@@ -573,6 +585,7 @@ async fn command_pump(
                                    &shutdown,
                                    server.as_ref(),
                                    machine_key.as_ref(),
+                                   &app_cfg,
                                    &local_id,
                                    SessionCommand::SetModel { model, effort, command_id },
                                )
@@ -747,11 +760,13 @@ fn now_unix_ms() -> i64 {
     .unwrap_or(i64::MAX)
 }
 
-// Translates codex app-server frames into adapter events; complexity is the
-// breadth of frame-type branches, not nesting. Splitting per frame-type would
-// fragment the codex protocol mapping kept together here on purpose.
-#[allow(clippy::too_many_arguments, clippy::cognitive_complexity)]
-async fn forward(
+enum DispatchOutcome {
+    Handled(bool),
+    Missing,
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn dispatch(
     live: &LiveSessionRegistry,
     registry: &SessionRegistry,
     events: &mpsc::Sender<AdapterEvent>,
@@ -760,9 +775,9 @@ async fn forward(
     machine_key: Option<&String>,
     local_id: &str,
     cmd: SessionCommand,
-) -> bool {
+) -> DispatchOutcome {
     match route_or_prepare_resume(live, registry, local_id, cmd).await {
-        RouteAction::Delivered => true,
+        RouteAction::Delivered => DispatchOutcome::Handled(true),
         RouteAction::Resume { mut record, command } if command.is_resumable() => {
             tracing::info!(%local_id, ?command, "codex: resuming hibernated app-server session");
             // a thread REDISCOVERED from `thread/list` after a daemon
@@ -778,25 +793,27 @@ async fn forward(
                     Ok(env) => record.env = env,
                     Err(err) => {
                         tracing::error!(%local_id, %err, "codex resume: refusing env-less launch");
-                        return false;
+                        let _ = events.send(failed_status(local_id, &err.to_string())).await;
+                        return DispatchOutcome::Handled(false);
                     }
                 }
             }
             spawn_resumed_session(
                 record,
                 local_id.to_owned(),
-                command,
+                vec![command],
                 events.clone(),
                 live.clone(),
                 registry.clone(),
                 shutdown.clone(),
             );
-            true
+            DispatchOutcome::Handled(true)
         }
         RouteAction::Resume { command, .. } => {
             tracing::warn!(%local_id, ?command, "codex: command cannot be applied to hibernated session");
             if matches!(command, SessionCommand::Kill { .. }) {
                 registry.lock().await.remove(local_id);
+                persist::save(registry).await;
                 let _ = events
                     .send(AdapterEvent::SessionEnded {
                         local_id: local_id.to_owned(),
@@ -804,10 +821,114 @@ async fn forward(
                     })
                     .await;
             }
-            false
+            DispatchOutcome::Handled(false)
         }
-        RouteAction::Missing => {
-            tracing::warn!(%local_id, "codex: no app-server session for command");
+        RouteAction::Missing => DispatchOutcome::Missing,
+    }
+}
+
+fn failed_status(local_id: &str, detail: &str) -> AdapterEvent {
+    AdapterEvent::Status {
+        local_id: local_id.to_owned(),
+        tempo: None,
+        state: Some("failed".to_owned()),
+        detail: Some(detail.to_owned()),
+        activity: Some("failure".to_owned()),
+        name: None,
+        intent: None,
+        model: None,
+        effort: None,
+        children: vec![],
+    }
+}
+
+/// Surface a command that could not be routed anywhere: a `CommandResult`
+/// when it carries an id, `SessionEnded` for a kill of an already-gone
+/// session, a failed `Status` otherwise — never a silent drop.
+async fn emit_missing_failure(
+    events: &mpsc::Sender<AdapterEvent>,
+    local_id: &str,
+    cmd: &SessionCommand,
+) {
+    tracing::warn!(%local_id, ?cmd, "codex: no app-server session for command");
+    if let Some(command_id) = cmd.command_id() {
+        let _ = events
+            .send(AdapterEvent::CommandResult {
+                command_id,
+                ok: false,
+                error: Some("no codex session for command".to_owned()),
+            })
+            .await;
+    }
+    if matches!(cmd, SessionCommand::Kill { .. }) {
+        let _ = events
+            .send(AdapterEvent::SessionEnded {
+                local_id: local_id.to_owned(),
+                reason: cctui_proto::adapter::EndReason::Killed,
+            })
+            .await;
+        return;
+    }
+    let _ = events
+        .send(failed_status(
+            local_id,
+            "codex session lost: no live app-server and no resumable thread record",
+        ))
+        .await;
+}
+
+/// Route a session command. When neither a live sender nor a durable record
+/// exists, a resumable command triggers a bounded on-demand `thread/list`
+/// probe to reconstruct the record before failing visibly.
+#[allow(clippy::too_many_arguments)]
+async fn forward(
+    live: &LiveSessionRegistry,
+    registry: &SessionRegistry,
+    events: &mpsc::Sender<AdapterEvent>,
+    shutdown: &tokio_util::sync::CancellationToken,
+    server: Option<&ServerClient>,
+    machine_key: Option<&String>,
+    app_cfg: &AppServerConfig,
+    local_id: &str,
+    cmd: SessionCommand,
+) -> bool {
+    match dispatch(live, registry, events, shutdown, server, machine_key, local_id, cmd.clone())
+        .await
+    {
+        DispatchOutcome::Handled(handled) => handled,
+        DispatchOutcome::Missing if cmd.is_resumable() => {
+            tracing::warn!(%local_id, "codex: session unknown; attempting on-demand thread recovery");
+            let (live, registry, events, shutdown) =
+                (live.clone(), registry.clone(), events.clone(), shutdown.clone());
+            let (server, machine_key) = (server.cloned(), machine_key.cloned());
+            let app = app_cfg.clone();
+            let local_id = local_id.to_owned();
+            tokio::spawn(async move {
+                let Some(record) = thread_list::recover_record(&app, &local_id).await else {
+                    emit_missing_failure(&events, &local_id, &cmd).await;
+                    return;
+                };
+                registry.lock().await.entry(local_id.clone()).or_insert(record);
+                persist::save(&registry).await;
+                let handled = dispatch(
+                    &live,
+                    &registry,
+                    &events,
+                    &shutdown,
+                    server.as_ref(),
+                    machine_key.as_ref(),
+                    &local_id,
+                    cmd.clone(),
+                )
+                .await;
+                if !matches!(handled, DispatchOutcome::Handled(true)) {
+                    emit_missing_failure(&events, &local_id, &cmd).await;
+                }
+            });
+            true
+        }
+        DispatchOutcome::Missing => {
+            emit_missing_failure(events, local_id, &cmd).await;
             false
         }
     }
@@ -857,5 +978,136 @@ impl AdapterFactory for CodexFactory {
     }
     fn build(&self, _config: serde_json::Value) -> Box<dyn Adapter> {
         Box::new(CodexAdapter)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cctui_proto::adapter::EndReason;
+    use std::time::Duration;
+
+    fn unrecoverable_cfg() -> AppServerConfig {
+        AppServerConfig {
+            bin: "/nonexistent/cctui-test-codex".to_owned(),
+            ..AppServerConfig::default()
+        }
+    }
+
+    async fn recv(rx: &mut mpsc::Receiver<AdapterEvent>) -> AdapterEvent {
+        tokio::time::timeout(Duration::from_secs(10), rx.recv())
+            .await
+            .expect("event before timeout")
+            .expect("event channel open")
+    }
+
+    #[tokio::test]
+    async fn missing_non_resumable_command_emits_failed_status() {
+        let (tx, mut rx) = mpsc::channel(8);
+        let handled = forward(
+            &LiveSessionRegistry::default(),
+            &SessionRegistry::default(),
+            &tx,
+            &tokio_util::sync::CancellationToken::new(),
+            None,
+            None,
+            &unrecoverable_cfg(),
+            "ghost",
+            SessionCommand::Permission { request_id: "r".to_owned(), allow: true },
+        )
+        .await;
+        assert!(!handled);
+        match recv(&mut rx).await {
+            AdapterEvent::Status { local_id, state, detail, activity, .. } => {
+                assert_eq!(local_id, "ghost");
+                assert_eq!(state.as_deref(), Some("failed"));
+                assert_eq!(activity.as_deref(), Some("failure"));
+                assert!(detail.unwrap().contains("no live app-server"));
+            }
+            other => panic!("expected failed Status, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn missing_kill_emits_session_ended() {
+        let (tx, mut rx) = mpsc::channel(8);
+        forward(
+            &LiveSessionRegistry::default(),
+            &SessionRegistry::default(),
+            &tx,
+            &tokio_util::sync::CancellationToken::new(),
+            None,
+            None,
+            &unrecoverable_cfg(),
+            "ghost",
+            SessionCommand::Kill { signal: None },
+        )
+        .await;
+        match recv(&mut rx).await {
+            AdapterEvent::SessionEnded { local_id, reason } => {
+                assert_eq!(local_id, "ghost");
+                assert!(matches!(reason, EndReason::Killed));
+            }
+            other => panic!("expected SessionEnded, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn missing_send_with_failed_recovery_emits_failed_status() {
+        let (tx, mut rx) = mpsc::channel(8);
+        let handled = forward(
+            &LiveSessionRegistry::default(),
+            &SessionRegistry::default(),
+            &tx,
+            &tokio_util::sync::CancellationToken::new(),
+            None,
+            None,
+            &unrecoverable_cfg(),
+            "ghost",
+            SessionCommand::Send { text: "hi".to_owned() },
+        )
+        .await;
+        assert!(handled, "recovery is attempted asynchronously");
+        match recv(&mut rx).await {
+            AdapterEvent::Status { local_id, state, .. } => {
+                assert_eq!(local_id, "ghost");
+                assert_eq!(state.as_deref(), Some("failed"));
+            }
+            other => panic!("expected failed Status, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn missing_set_model_failure_resolves_command_id() {
+        let (tx, mut rx) = mpsc::channel(8);
+        let command_id = uuid::Uuid::new_v4();
+        forward(
+            &LiveSessionRegistry::default(),
+            &SessionRegistry::default(),
+            &tx,
+            &tokio_util::sync::CancellationToken::new(),
+            None,
+            None,
+            &unrecoverable_cfg(),
+            "ghost",
+            SessionCommand::SetModel {
+                model: Some("gpt-5-codex".to_owned()),
+                effort: None,
+                command_id: Some(command_id),
+            },
+        )
+        .await;
+        match recv(&mut rx).await {
+            AdapterEvent::CommandResult { command_id: cid, ok, error } => {
+                assert_eq!(cid, command_id);
+                assert!(!ok);
+                assert!(error.is_some());
+            }
+            other => panic!("expected CommandResult, got {other:?}"),
+        }
+        assert!(matches!(
+            recv(&mut rx).await,
+            AdapterEvent::Status { state: Some(s), .. } if s == "failed"
+        ));
     }
 }
