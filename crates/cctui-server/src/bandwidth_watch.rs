@@ -46,6 +46,62 @@ impl EvictionTracker {
     }
 }
 
+/// A crashlooping daemon reconnects this many times within
+/// [`CONNECT_FLAP_WINDOW`]; last-seen liveness stays "online" through the
+/// whole loop, so connect churn is the only signal.
+pub const CONNECT_FLAP_THRESHOLD: usize = 5;
+pub const CONNECT_FLAP_WINDOW: Duration = Duration::from_mins(10);
+pub const CONNECT_NOTIFY_COOLDOWN: Duration = Duration::from_hours(1);
+
+#[derive(Default)]
+struct ConnectState {
+    connects: VecDeque<Instant>,
+    notified_at: Option<Instant>,
+}
+
+pub struct ConnectFlap {
+    /// Connects within the window, threshold included.
+    pub connects: usize,
+    /// Whether the caller should push a notification (at most one per machine
+    /// per [`CONNECT_NOTIFY_COOLDOWN`]).
+    pub notify: bool,
+}
+
+/// Rolling per-machine daemon-WS connect timestamps — the crashloop detector.
+#[derive(Default)]
+pub struct ConnectTracker {
+    inner: Mutex<HashMap<Uuid, ConnectState>>,
+}
+
+impl ConnectTracker {
+    /// Record a daemon WS connect now; `Some` once the machine is flapping.
+    pub fn record(&self, machine_id: Uuid) -> Option<ConnectFlap> {
+        self.record_at(machine_id, Instant::now())
+    }
+
+    fn record_at(&self, machine_id: Uuid, now: Instant) -> Option<ConnectFlap> {
+        let mut map = self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let st = map.entry(machine_id).or_default();
+        st.connects.push_back(now);
+        while st.connects.front().is_some_and(|&t| now.duration_since(t) > CONNECT_FLAP_WINDOW) {
+            st.connects.pop_front();
+        }
+        let connects = st.connects.len();
+        let out = if connects < CONNECT_FLAP_THRESHOLD {
+            None
+        } else {
+            let notify =
+                st.notified_at.is_none_or(|t| now.duration_since(t) >= CONNECT_NOTIFY_COOLDOWN);
+            if notify {
+                st.notified_at = Some(now);
+            }
+            Some(ConnectFlap { connects, notify })
+        };
+        drop(map);
+        out
+    }
+}
+
 /// The last upload/insert observation for one machine.
 #[derive(Clone, Copy)]
 struct Observation {
@@ -130,6 +186,57 @@ mod tests {
         // Well past the window: the old four have aged out, this is a lone event.
         let n = t.record_at(m, base + EVICTION_WINDOW + Duration::from_mins(1));
         assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn connect_flap_fires_at_the_threshold_and_notifies_once() {
+        let t = ConnectTracker::default();
+        let m = Uuid::new_v4();
+        let base = Instant::now();
+        for i in 0..CONNECT_FLAP_THRESHOLD - 1 {
+            assert!(t.record_at(m, base + Duration::from_secs(i as u64)).is_none());
+        }
+        let flap = t
+            .record_at(m, base + Duration::from_secs(CONNECT_FLAP_THRESHOLD as u64))
+            .expect("threshold connect flags the flap");
+        assert_eq!(flap.connects, CONNECT_FLAP_THRESHOLD);
+        assert!(flap.notify, "first flap notifies");
+        let again = t
+            .record_at(m, base + Duration::from_secs(CONNECT_FLAP_THRESHOLD as u64 + 5))
+            .expect("still flapping");
+        assert!(!again.notify, "within the cooldown no second notification");
+    }
+
+    #[test]
+    fn connect_flap_notifies_again_after_the_cooldown() {
+        let t = ConnectTracker::default();
+        let m = Uuid::new_v4();
+        let base = Instant::now();
+        for i in 0..CONNECT_FLAP_THRESHOLD {
+            t.record_at(m, base + Duration::from_secs(i as u64));
+        }
+        let later = base + CONNECT_NOTIFY_COOLDOWN + Duration::from_secs(1);
+        for i in 0..CONNECT_FLAP_THRESHOLD - 1 {
+            t.record_at(m, later + Duration::from_secs(i as u64));
+        }
+        let flap = t
+            .record_at(m, later + Duration::from_secs(CONNECT_FLAP_THRESHOLD as u64))
+            .expect("flapping again");
+        assert!(flap.notify, "cooldown elapsed → notify again");
+    }
+
+    #[test]
+    fn connects_outside_the_window_are_pruned() {
+        let t = ConnectTracker::default();
+        let m = Uuid::new_v4();
+        let base = Instant::now();
+        for i in 0..CONNECT_FLAP_THRESHOLD - 1 {
+            t.record_at(m, base + Duration::from_secs(i as u64));
+        }
+        assert!(
+            t.record_at(m, base + CONNECT_FLAP_WINDOW + Duration::from_mins(1)).is_none(),
+            "old connects aged out — a lone reconnect is not a flap"
+        );
     }
 
     #[test]

@@ -28,6 +28,11 @@ const FILE_NAME: &str = "daemon-runtime.json";
 /// Most preferred first. Worker containers can lack a runtime dir and have a
 /// root-owned `~/.config` where `mkdir` is EACCES; readers must probe
 /// this same list so `status` finds whatever the daemon could write.
+///
+/// No `$TMPDIR` fallback on macOS: launchd and a login shell see different
+/// `/var/folders/…` paths, so a tmp-based run-lock lets a manual `run` and
+/// the agent double-run (or contend on nothing). `~/Library/Application
+/// Support` is deterministic per user in both contexts.
 pub(crate) fn state_candidates(file_name: &str) -> Vec<PathBuf> {
     let mut out = Vec::new();
     if let Some(d) = dirs::runtime_dir() {
@@ -36,8 +41,10 @@ pub(crate) fn state_candidates(file_name: &str) -> Vec<PathBuf> {
     if let Some(d) = dirs::config_dir() {
         out.push(d.join("cctui").join(file_name));
     }
-    let uid = rustix::process::getuid().as_raw();
-    out.push(std::env::temp_dir().join(format!("cctui-{uid}")).join(file_name));
+    if !cfg!(target_os = "macos") {
+        let uid = rustix::process::getuid().as_raw();
+        out.push(std::env::temp_dir().join(format!("cctui-{uid}")).join(file_name));
+    }
     out
 }
 
@@ -164,10 +171,19 @@ mod tests {
         }
     }
 
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn candidates_always_include_a_temp_fallback() {
         let cands = candidates();
         assert!(!cands.is_empty());
         assert!(cands.last().unwrap().starts_with(std::env::temp_dir()));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn candidates_never_use_tmpdir_on_macos() {
+        let cands = candidates();
+        assert!(!cands.is_empty());
+        assert!(cands.iter().all(|p| !p.starts_with(std::env::temp_dir())));
     }
 }

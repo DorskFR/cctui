@@ -121,6 +121,7 @@ async fn main() -> anyhow::Result<()> {
         account_reauth: Arc::new(dashmap::DashMap::new()),
         codex_catalogs: Arc::new(dashmap::DashMap::new()),
         eviction_tracker: Arc::new(bandwidth_watch::EvictionTracker::default()),
+        connect_tracker: Arc::new(bandwidth_watch::ConnectTracker::default()),
         divergence_tracker: Arc::new(bandwidth_watch::DivergenceTracker::default()),
         machine_event_inserts: Arc::new(dashmap::DashMap::new()),
         spawn_capabilities: Arc::new(dashmap::DashMap::new()),

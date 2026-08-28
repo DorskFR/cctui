@@ -204,13 +204,38 @@ fn install_dir() -> Result<PathBuf> {
         .ok_or_else(|| anyhow!("current_exe has no parent dir"))
 }
 
-fn swap_in_place(target: &Path, bytes: &[u8]) -> Result<()> {
+/// Swap the new binary into `target`, keeping the previous image as a
+/// `.{name}-old` sibling so a failed health check can restore it. Returns the
+/// backup path when one was made.
+fn swap_in_place(target: &Path, bytes: &[u8]) -> Result<Option<PathBuf>> {
     use std::os::unix::fs::PermissionsExt;
     let dir = target.parent().context("target has no parent")?;
-    let tmp = dir.join(format!(".{}-new", target.file_name().unwrap().to_string_lossy()));
+    let name = target.file_name().unwrap().to_string_lossy();
+    let tmp = dir.join(format!(".{name}-new"));
     std::fs::write(&tmp, bytes).with_context(|| format!("write {}", tmp.display()))?;
     std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))?;
+    let backup = dir.join(format!(".{name}-old"));
+    let backed_up = target.exists() && std::fs::copy(target, &backup).is_ok();
     std::fs::rename(&tmp, target).with_context(|| format!("rename into {}", target.display()))?;
+    Ok(backed_up.then_some(backup))
+}
+
+const HEALTH_CHECK_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// A binary that cannot even print `--version` would crashloop under
+/// launchd/systemd forever (the updater's first tick is skipped, so a broken
+/// image can never heal itself) — gate the re-exec on it.
+async fn verify_binary(path: &Path) -> Result<()> {
+    let out = tokio::time::timeout(
+        HEALTH_CHECK_TIMEOUT,
+        tokio::process::Command::new(path).arg("--version").kill_on_drop(true).output(),
+    )
+    .await
+    .map_err(|_| anyhow!("`{} --version` timed out", path.display()))?
+    .with_context(|| format!("run `{} --version`", path.display()))?;
+    if !out.status.success() {
+        bail!("`{} --version` exited {}", path.display(), out.status);
+    }
     Ok(())
 }
 
@@ -279,7 +304,28 @@ pub async fn check_and_apply_with(
 
     let dir = install_dir()?;
     let target_path = dir.join("cctui-daemon");
-    swap_in_place(&target_path, &bin_bytes)?;
+    let backup = swap_in_place(&target_path, &bin_bytes)?;
+    if let Err(err) = verify_binary(&target_path).await {
+        match backup.map(|b| std::fs::rename(&b, &target_path)) {
+            Some(Ok(())) => tracing::error!(
+                %err, version = %latest,
+                "upgraded binary failed its health check — previous binary restored, \
+                 staying on the running image"
+            ),
+            Some(Err(restore_err)) => tracing::error!(
+                %err, %restore_err, version = %latest,
+                "upgraded binary failed its health check AND restoring the previous \
+                 binary failed — staying on the running image"
+            ),
+            None => tracing::error!(
+                %err, version = %latest,
+                "upgraded binary failed its health check and no backup exists — \
+                 staying on the running image"
+            ),
+        }
+        return Ok(None);
+    }
+    let _ = backup.map(std::fs::remove_file);
     tracing::info!(version = %latest, target = %target_path.display(), "cctui-daemon binary upgraded");
     Ok(Some(target_path))
 }
@@ -445,6 +491,50 @@ mod tests {
         )
         .await;
         assert!(matches!(out, Ok(None)));
+    }
+
+    fn write_script(dir: &Path, name: &str, body: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join(name);
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    #[tokio::test]
+    async fn verify_binary_accepts_a_healthy_binary() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ok = write_script(tmp.path(), "ok", "exit 0");
+        verify_binary(&ok).await.expect("clean --version passes the gate");
+    }
+
+    #[tokio::test]
+    async fn verify_binary_rejects_broken_binaries() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bad = write_script(tmp.path(), "bad", "exit 3");
+        let err = verify_binary(&bad).await.expect_err("non-zero exit must fail the gate");
+        assert!(err.to_string().contains("exited"), "got: {err}");
+        verify_binary(&tmp.path().join("missing")).await.expect_err("unexecutable must fail");
+    }
+
+    #[test]
+    fn swap_in_place_keeps_a_restorable_backup() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("cctui-daemon");
+        std::fs::write(&target, b"old").unwrap();
+        let backup =
+            swap_in_place(&target, b"new").unwrap().expect("existing target must be backed up");
+        assert_eq!(std::fs::read(&target).unwrap(), b"new");
+        assert_eq!(std::fs::read(&backup).unwrap(), b"old");
+        assert_eq!(backup, tmp.path().join(".cctui-daemon-old"));
+    }
+
+    #[test]
+    fn swap_in_place_first_install_has_no_backup() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("cctui-daemon");
+        assert!(swap_in_place(&target, b"new").unwrap().is_none());
+        assert_eq!(std::fs::read(&target).unwrap(), b"new");
     }
 
     #[test]

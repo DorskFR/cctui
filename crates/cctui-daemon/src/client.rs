@@ -43,6 +43,22 @@ pub struct MachineStatus {
     pub revoked: bool,
 }
 
+/// `daemon_auth` rejected with 401/403: the machine key is bad or revoked,
+/// so retrying can never succeed. Every other failure is transient.
+#[derive(Debug)]
+pub struct AuthRejected {
+    pub status: reqwest::StatusCode,
+    pub body: String,
+}
+
+impl std::fmt::Display for AuthRejected {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "daemon_auth rejected ({}): {}", self.status, self.body)
+    }
+}
+
+impl std::error::Error for AuthRejected {}
+
 impl ServerClient {
     #[must_use]
     pub fn new(base_url: impl Into<String>) -> Self {
@@ -115,6 +131,10 @@ impl ServerClient {
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
+            if matches!(status, reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN)
+            {
+                return Err(AuthRejected { status, body: text }.into());
+            }
             anyhow::bail!("daemon_auth failed ({status}): {text}");
         }
         Ok(resp.json().await?)

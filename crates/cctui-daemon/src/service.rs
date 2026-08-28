@@ -130,6 +130,21 @@ fn current_exe_string() -> Result<String> {
     Ok(path.to_string_lossy().into_owned())
 }
 
+fn tail_lines(text: &str, n: usize) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    lines[lines.len().saturating_sub(n)..].join("\n")
+}
+
+/// `launchctl print` lines worth surfacing on their own (`last exit code =`,
+/// `last exit reason =`), so they aren't buried in the full dump.
+fn exit_lines(launchctl_print: &str) -> Vec<String> {
+    launchctl_print
+        .lines()
+        .filter(|l| l.trim_start().starts_with("last exit"))
+        .map(|l| l.trim().to_owned())
+        .collect()
+}
+
 fn run(cmd: &str, args: &[&str]) -> Result<()> {
     let out = Command::new(cmd)
         .args(args)
@@ -367,25 +382,80 @@ mod macos {
         Ok(true)
     }
 
-    /// `launchctl print` for the agent, then recent daemon logs from the
-    /// unified log. Both tolerate failure (service not loaded / no logs).
+    const LOG_TAIL_LINES: usize = 40;
+
+    /// `launchctl print` for the agent (with its `last exit …` lines echoed
+    /// prominently), then the tail of the launchd-captured stderr log. The
+    /// daemon logs to stderr → `cctui-daemon.err.log`; the unified log
+    /// (`log show`) never sees it, so grepping it always came up empty.
     pub fn status() {
-        let _ = Command::new("launchctl").args(["print", &service_target(PLIST_LABEL)]).status();
-        println!("\n--- recent logs (log show --last 5m) ---");
-        let _ = Command::new("log")
-            .args([
-                "show",
-                "--predicate",
-                "process == \"cctui-daemon\"",
-                "--last",
-                "5m",
-                "--style",
-                "compact",
-            ])
-            .status();
+        match Command::new("launchctl").args(["print", &service_target(PLIST_LABEL)]).output() {
+            Ok(out) => {
+                print!("{}", String::from_utf8_lossy(&out.stdout));
+                if !out.status.success() {
+                    println!(
+                        "launchctl print failed ({}): {}",
+                        out.status,
+                        String::from_utf8_lossy(&out.stderr).trim()
+                    );
+                }
+                let exits = super::exit_lines(&String::from_utf8_lossy(&out.stdout));
+                if !exits.is_empty() {
+                    println!("\n--- last exit ---");
+                    for line in exits {
+                        println!("{line}");
+                    }
+                }
+            }
+            Err(err) => println!("launchctl print failed: {err}"),
+        }
+        let Some(home) = dirs::home_dir() else {
+            println!("\ncannot locate $HOME — no log paths to read");
+            return;
+        };
+        let logs = home.join("Library").join("Logs");
+        let err_log = logs.join("cctui-daemon.err.log");
+        println!("\n--- recent logs (last {LOG_TAIL_LINES} lines of {}) ---", err_log.display());
+        match std::fs::read_to_string(&err_log) {
+            Ok(text) => println!("{}", super::tail_lines(&text, LOG_TAIL_LINES)),
+            Err(err) => println!("cannot read {}: {err}", err_log.display()),
+        }
+        println!("(stdout log: {})", logs.join("cctui-daemon.out.log").display());
     }
 
     pub fn restart() -> Result<()> {
         run("launchctl", &["kickstart", "-k", &service_target(PLIST_LABEL)])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn plist_keepalive_only_respawns_on_failure() {
+        assert!(PLIST_TEMPLATE.contains("<key>SuccessfulExit</key>"));
+        assert!(PLIST_TEMPLATE.contains("<key>ThrottleInterval</key>"));
+        assert!(PLIST_TEMPLATE.contains("<integer>30</integer>"));
+        let keepalive = PLIST_TEMPLATE.split("<key>KeepAlive</key>").nth(1).unwrap();
+        assert!(
+            keepalive.trim_start().starts_with("<dict>"),
+            "KeepAlive must be the SuccessfulExit dict, not a bare <true/>"
+        );
+    }
+
+    #[test]
+    fn tail_lines_keeps_only_the_last_n() {
+        let text = (1..=10).map(|i| format!("line{i}")).collect::<Vec<_>>().join("\n");
+        assert_eq!(tail_lines(&text, 3), "line8\nline9\nline10");
+        assert_eq!(tail_lines(&text, 100), text);
+        assert_eq!(tail_lines("", 5), "");
+    }
+
+    #[test]
+    fn exit_lines_extracts_launchctl_exit_fields() {
+        let print = "\tstate = not running\n\tlast exit code = 78\n\tlast exit reason = exited\n\tpid = 0\n";
+        assert_eq!(exit_lines(print), vec!["last exit code = 78", "last exit reason = exited"]);
+        assert!(exit_lines("state = running").is_empty());
     }
 }
