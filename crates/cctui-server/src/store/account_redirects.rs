@@ -45,6 +45,28 @@ pub async fn live_for_user(
     .await
 }
 
+/// Every unexpired rule that can move a launch by `user_id`: rules they
+/// authored plus rules authored by the owner of the rule's `from_account` — an
+/// owner's rule follows the shared account to every grantee launching on it.
+/// The launcher's own rules sort first so they win when both authors hold a
+/// rule for the same `(from_account, family)`.
+pub async fn live_for_launch(
+    exec: impl PgExecutor<'_>,
+    user_id: Uuid,
+) -> Result<Vec<AccountRedirect>, sqlx::Error> {
+    let cols = COLS.split(", ").map(|c| format!("r.{c}")).collect::<Vec<_>>().join(", ");
+    sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT {cols} FROM account_redirects r \
+         JOIN accounts a ON a.id = r.from_account \
+         WHERE (r.user_id = $1 OR r.user_id = a.user_id) \
+           AND (r.expires_at IS NULL OR r.expires_at > now()) \
+         ORDER BY (r.user_id = $1) DESC, r.created_at DESC"
+    )))
+    .bind(user_id)
+    .fetch_all(exec)
+    .await
+}
+
 /// Insert parameters for [`upsert`]; the XOR of `to_account`/`to_model` is
 /// enforced by the table's CHECK, not here.
 pub struct NewRedirect<'a> {

@@ -99,7 +99,7 @@ async fn apply_account_redirects(
     account_id: Uuid,
     rows: &mut [ProviderRow],
 ) {
-    let rules = match crate::store::account_redirects::live_for_user(pool, user_id).await {
+    let rules = match crate::store::account_redirects::live_for_launch(pool, user_id).await {
         Ok(rules) if !rules.is_empty() => rules,
         Ok(_) => return,
         Err(e) => {
@@ -586,7 +586,7 @@ async fn flip_model_redirect(
             .ok()
             .flatten();
     let Some(account_id) = account_id else { return requested.to_owned() };
-    let Ok(rules) = crate::store::account_redirects::live_for_user(&state.pool, user_id).await
+    let Ok(rules) = crate::store::account_redirects::live_for_launch(&state.pool, user_id).await
     else {
         return requested.to_owned();
     };
@@ -857,6 +857,103 @@ mod db_tests {
                 models,
             })
             .collect()
+    }
+
+    async fn mk_share(pool: &sqlx::PgPool, account: Uuid, grantee: Uuid) {
+        sqlx::query(
+            "INSERT INTO resource_shares (resource_type, resource_id, grantee_id) \
+             VALUES ('account', $1, $2)",
+        )
+        .bind(account)
+        .bind(grantee)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    /// An owner's rule on a shared account must move a grantee's launch; a
+    /// rule authored by someone who owns neither the account nor the launch
+    /// must not.
+    #[tokio::test]
+    #[ignore = "requires DATABASE_URL with migrations applied"]
+    async fn owner_rule_redirects_grantee_launches() {
+        let url = std::env::var("DATABASE_URL").expect("DATABASE_URL");
+        let pool = sqlx::PgPool::connect(&url).await.unwrap();
+        let suffix = Uuid::new_v4();
+        let mut users = Vec::new();
+        for name in ["owner", "grantee", "stranger"] {
+            users.push(sqlx::query_scalar::<_, Uuid>(
+                "INSERT INTO users (id, name, key_hash) VALUES (gen_random_uuid(), $1, gen_random_uuid()::text) RETURNING id",
+            )
+            .bind(format!("{name}-{suffix}"))
+            .fetch_one(&pool)
+            .await
+            .unwrap());
+        }
+        let (owner, grantee, stranger) = (users[0], users[1], users[2]);
+
+        let hirobot = mk_account(&pool, owner, &format!("hirobot-{suffix}")).await;
+        let pafin = mk_account(&pool, owner, &format!("pafin-{suffix}")).await;
+        let hirobot_anthropic = mk_provider(&pool, owner, hirobot, "anthropic").await;
+        let pafin_anthropic = mk_provider(&pool, owner, pafin, "anthropic").await;
+        mk_share(&pool, hirobot, grantee).await;
+        mk_share(&pool, pafin, grantee).await;
+
+        crate::store::account_redirects::upsert(
+            &pool,
+            crate::store::account_redirects::NewRedirect {
+                user_id: owner,
+                from_account: hirobot,
+                to_account: Some(pafin),
+                family: "anthropic",
+                match_model: None,
+                to_model: None,
+                expires_at: None,
+                reason: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let mut rows = provider_rows(&pool, hirobot).await;
+        apply_account_redirects(&pool, grantee, hirobot, &mut rows).await;
+        assert_eq!(
+            rows.iter().find(|r| r.family() == Family::Anthropic).unwrap().id,
+            pafin_anthropic,
+            "owner's rule must redirect a grantee's launch"
+        );
+
+        sqlx::query("DELETE FROM account_redirects WHERE from_account = $1")
+            .bind(hirobot)
+            .execute(&pool)
+            .await
+            .unwrap();
+        crate::store::account_redirects::upsert(
+            &pool,
+            crate::store::account_redirects::NewRedirect {
+                user_id: stranger,
+                from_account: hirobot,
+                to_account: Some(pafin),
+                family: "anthropic",
+                match_model: None,
+                to_model: None,
+                expires_at: None,
+                reason: None,
+            },
+        )
+        .await
+        .unwrap();
+        let mut rows = provider_rows(&pool, hirobot).await;
+        apply_account_redirects(&pool, grantee, hirobot, &mut rows).await;
+        assert_eq!(
+            rows.iter().find(|r| r.family() == Family::Anthropic).unwrap().id,
+            hirobot_anthropic,
+            "a stranger's rule must not move anyone else's launch"
+        );
+
+        for u in [owner, grantee, stranger] {
+            sqlx::query("DELETE FROM users WHERE id = $1").bind(u).execute(&pool).await.unwrap();
+        }
     }
 
     /// Real-DB proof of the bind-time seam: a live rule substitutes the
