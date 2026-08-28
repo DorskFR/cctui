@@ -41,20 +41,11 @@ impl Drop for RunLock {
     }
 }
 
-/// Lock-file locations, most preferred first. Mirrors
-/// `runtime.rs::candidates()` so the lock lands next to `daemon-runtime.json`
-/// and behaves the same across worker containers / missing runtime dirs.
+/// Lock-file locations, most preferred first. Shares
+/// `runtime::state_candidates` so the lock lands next to
+/// `daemon-runtime.json` and the two lists can never drift.
 fn candidates() -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    if let Some(d) = dirs::runtime_dir() {
-        out.push(d.join("cctui").join(FILE_NAME));
-    }
-    if let Some(d) = dirs::config_dir() {
-        out.push(d.join("cctui").join(FILE_NAME));
-    }
-    let uid = rustix::process::getuid().as_raw();
-    out.push(std::env::temp_dir().join(format!("cctui-{uid}")).join(FILE_NAME));
-    out
+    crate::runtime::state_candidates(FILE_NAME)
 }
 
 /// Acquire the machine-wide run-lock. Errors non-zero when another daemon
@@ -190,7 +181,7 @@ fn close_inherited_fds(file: &File, path: &Path) {
 }
 
 fn already_running_message() -> String {
-    match crate::runtime::read() {
+    let mut msg = match crate::runtime::read() {
         Some(rt) => format!(
             "another cctui-daemon is already running (pid {}, version {}, since {}) — \
              refusing to start a second instance",
@@ -198,7 +189,15 @@ fn already_running_message() -> String {
         ),
         None => "another cctui-daemon is already running — refusing to start a second instance"
             .to_owned(),
+    };
+    if crate::service::is_active() {
+        msg.push_str(
+            "\nthe managed cctui-daemon service holds the lock — use \
+             `cctui-daemon service status` / `cctui-daemon service restart` \
+             instead of `cctui-daemon run`",
+        );
     }
+    msg
 }
 
 #[cfg(test)]

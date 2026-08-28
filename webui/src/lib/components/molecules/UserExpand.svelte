@@ -54,9 +54,18 @@
 	// in a popover anchored to the machine badge, not inline.
 	const HUES = [0, 30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330];
 
+	const liveTone = (l: MachineRow['liveness']): 'ok' | 'warn' | 'neutral' =>
+		l === 'online' ? 'ok' : l === 'stale' ? 'warn' : 'neutral';
+	const liveLabel = (l: MachineRow['liveness']): string =>
+		l === 'online'
+			? m.dispatch_liveness_online()
+			: l === 'stale'
+				? m.dispatch_liveness_stale()
+				: m.dispatch_liveness_offline();
+
 	const machineCols: Column<MachineRow>[] = [
 		{ key: 'machine', label: m.users_col_machine() },
-		{ key: 'status', label: m.users_col_status(), width: '8rem' },
+		{ key: 'status', label: m.users_col_status(), width: '11rem' },
 		{ key: 'seen', label: m.users_col_last_seen(), width: '11rem' },
 		{ key: 'actions', label: '', width: '7rem', align: 'right' }
 	];
@@ -118,7 +127,10 @@
 	{:else if mc.kind === 'dispatch'}
 		<Badge tone="neutral">{m.users_badge_system()}</Badge>
 	{:else}
-		<Badge tone="ok">{m.users_badge_enrolled()}</Badge>
+		<Cluster gap="var(--sp-1)" wrap={false}>
+			<Badge tone="ok">{m.users_badge_enrolled()}</Badge>
+			<Badge tone={liveTone(mc.liveness)}>{liveLabel(mc.liveness)}</Badge>
+		</Cluster>
 	{/if}
 {/snippet}
 {#snippet mcSeen(mc: MachineRow)}

@@ -3,10 +3,10 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 use tokio_util::sync::CancellationToken;
 
-use cctui_daemon::client::ServerClient;
+use cctui_daemon::client::{AuthRejected, ServerClient};
 use cctui_daemon::config::Config;
 use cctui_daemon::supervisor::Supervisor;
-use cctui_daemon::{adapters, runlock, runtime, selfupdate, service};
+use cctui_daemon::{adapters, fatal, runlock, runtime, selfupdate, service};
 
 #[derive(Parser)]
 #[command(name = "cctui-daemon", about = "Per-machine agent supervisor for cctui", version)]
@@ -167,10 +167,15 @@ fn auto_update_enabled(flag: bool) -> bool {
     !matches!(std::env::var("CCTUI_DAEMON_AUTOUPDATE").as_deref(), Ok("0" | "false"))
 }
 
+/// Same escalating schedule as the supervisor's WS reconnect loop, applied to
+/// the pre-supervisor auth so a server outage / no-network boot never exits
+/// the service into a launchd/systemd respawn loop.
+const AUTH_BACKOFF_SECS: &[u64] = &[5, 10, 20, 60];
+
 /// Run the long-lived daemon: authenticate, wire up the optional self-update
 /// loop, then run the supervisor until shutdown (`Cmd::Run`).
 async fn run_daemon(path: &std::path::Path, no_auto_update: bool) -> anyhow::Result<()> {
-    let cfg = Config::load_or_env(&path.to_path_buf())?;
+    let cfg = Config::load_or_env(&path.to_path_buf()).map_err(fatal::mark)?;
     let _run_lock = runlock::acquire()?;
     // Record this process as the running service so `status` /
     // `service status` can report the version actually serving.
@@ -178,8 +183,21 @@ async fn run_daemon(path: &std::path::Path, no_auto_update: bool) -> anyhow::Res
     let counters = cctui_daemon::counters::BandwidthCounters::new();
     counters.persist();
     let client = ServerClient::new(&cfg.server_url).with_counters(counters.clone());
-    // Confirm identity once up-front so misconfigurations fail loudly.
-    let auth = client.daemon_auth(&cfg.machine_key).await?;
+    let mut attempt = 0usize;
+    let auth = loop {
+        match client.daemon_auth(&cfg.machine_key).await {
+            Ok(auth) => break auth,
+            Err(err) if err.downcast_ref::<AuthRejected>().is_some() => {
+                return Err(fatal::mark(err));
+            }
+            Err(err) => {
+                let delay = AUTH_BACKOFF_SECS[attempt.min(AUTH_BACKOFF_SECS.len() - 1)];
+                tracing::warn!(%err, retry_in_secs = delay, "daemon_auth failed; retrying");
+                attempt += 1;
+                tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
+            }
+        }
+    };
     tracing::info!(machine_id = %auth.machine_id, user_id = %auth.user_id, "authenticated");
     // Captured for the self-update loop before `machine_key` is moved
     // into the supervisor; both flow to the server-routed updater.
@@ -276,7 +294,13 @@ async fn main() -> anyhow::Result<()> {
             println!("enrolled as {} → {}", resp.machine_id, path.display());
             Ok(())
         }
-        Cmd::Run { no_auto_update } => run_daemon(&path, no_auto_update).await,
+        Cmd::Run { no_auto_update } => match run_daemon(&path, no_auto_update).await {
+            Err(err) if fatal::is_config_fatal(&err) => {
+                eprintln!("Error: {err:#}");
+                std::process::exit(fatal::EXIT_CONFIG);
+            }
+            other => other,
+        },
         Cmd::Update => {
             let cfg = Config::load_from(&path)?;
             match selfupdate::check_and_apply(&cfg.server_url, &cfg.machine_key).await {

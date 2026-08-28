@@ -456,6 +456,40 @@ async fn handle(socket: WebSocket, state: AppState, machine_id: Uuid, user_id: U
     // peer replica can forward daemon-targeted requests here.
     crate::presence::register(&state, crate::presence::Kind::Daemon, machine_id).await;
 
+    if let Some(flap) = state.connect_tracker.record(machine_id) {
+        tracing::error!(
+            %machine_id,
+            connects = flap.connects,
+            window_mins = crate::bandwidth_watch::CONNECT_FLAP_WINDOW.as_secs() / 60,
+            "daemon WS crashloop suspected — machine reconnecting rapidly",
+        );
+        if flap.notify {
+            let name: String = sqlx::query_scalar(
+                "SELECT COALESCE(display_name, name) FROM machines WHERE id = $1",
+            )
+            .bind(machine_id)
+            .fetch_optional(&state.pool)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| machine_id.to_string());
+            crate::ntfy::notify(
+                &state.config,
+                crate::ntfy::Notification {
+                    title: format!("Daemon crashloop: {name}"),
+                    message: format!(
+                        "machine {name} ({machine_id}) opened {} daemon WS connections \
+                         in the last {} minutes — its daemon is likely crashlooping",
+                        flap.connects,
+                        crate::bandwidth_watch::CONNECT_FLAP_WINDOW.as_secs() / 60,
+                    ),
+                    tags: "rotating_light".into(),
+                    priority: 4,
+                },
+            );
+        }
+    }
+
     // Send Reconcile immediately.
     match load_reconcile(&state, machine_id).await {
         Ok(adapters) => {

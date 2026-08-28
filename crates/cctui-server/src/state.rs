@@ -101,6 +101,10 @@ pub struct AppState {
     /// Rolling per-machine daemon-WS eviction counts; an escalation to
     /// ERROR when a machine flaps past the threshold is the eviction-loop alert.
     pub eviction_tracker: Arc<crate::bandwidth_watch::EvictionTracker>,
+    /// Rolling per-machine daemon-WS connect counts; rapid reconnects mean a
+    /// daemon crashloop (launchd/systemd respawn), which last-seen liveness
+    /// never surfaces — escalated to ERROR + ntfy.
+    pub connect_tracker: Arc<crate::bandwidth_watch::ConnectTracker>,
     /// Last-seen upload total vs persisted insert count per machine, so
     /// a heartbeat can flag uploads that grow without matching `stream_events`.
     pub divergence_tracker: Arc<crate::bandwidth_watch::DivergenceTracker>,
