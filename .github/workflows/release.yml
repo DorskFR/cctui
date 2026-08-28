@@ -131,6 +131,14 @@ jobs:
           cp "target/${{ matrix.target }}/release/cctui" "dist/cctui-${{ matrix.os }}-${{ matrix.arch }}"
           cp "target/${{ matrix.target }}/release/cctui-daemon" "dist/cctui-daemon-${{ matrix.os }}-${{ matrix.arch }}"
 
+      # Unsigned arm64 macOS binaries are SIGKILLed at exec; don't rely on the
+      # linker's implicit ad-hoc signature.
+      - name: Ad-hoc codesign (darwin)
+        if: matrix.os == 'darwin'
+        run: |
+          codesign --force --sign - dist/*
+          codesign --verify --verbose dist/*
+
       # These are throwaway hand-offs to the `release` job within the same run;
       # the real binaries live on the published GitHub Release (unmetered
       # Releases storage). 1-day retention stops them piling up against the
