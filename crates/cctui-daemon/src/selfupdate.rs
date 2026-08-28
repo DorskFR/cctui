@@ -41,6 +41,22 @@ pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_mins(5);
 /// Minimum honoured interval — guards against a typo'd env hammering the server.
 const MIN_POLL_INTERVAL_SECS: u64 = 30;
 
+static REEXEC_PREP: std::sync::LazyLock<CancellationToken> =
+    std::sync::LazyLock::new(CancellationToken::new);
+
+/// Cancelled right before the auto-update re-exec.
+///
+/// Adapters with stateful children (codex app-servers) subscribe to hibernate
+/// them gracefully — execve would otherwise kill them mid-write via CLOEXEC
+/// stdin EOF with no teardown at all.
+#[must_use]
+pub fn reexec_prep() -> CancellationToken {
+    REEXEC_PREP.clone()
+}
+
+/// How long adapters get between [`reexec_prep`] firing and the execve.
+const REEXEC_GRACE: Duration = Duration::from_secs(3);
+
 /// Resolve the auto-update poll interval, honouring
 /// `CCTUI_DAEMON_AUTOUPDATE_INTERVAL_SECS` (seconds, floored at
 /// [`MIN_POLL_INTERVAL_SECS`]). Falls back to [`DEFAULT_POLL_INTERVAL`].
@@ -388,6 +404,8 @@ pub fn spawn_loop(
                     // Re-exec the resolved install path, not current_exe() —
                     // see reexec() for why.
                     tracing::info!(exe = %exe.display(), "auto-update applied; re-execing into the new binary");
+                    REEXEC_PREP.cancel();
+                    tokio::time::sleep(REEXEC_GRACE).await;
                     reexec(&exe);
                 }
                 Ok(None) => {}

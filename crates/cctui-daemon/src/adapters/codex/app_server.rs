@@ -1109,6 +1109,14 @@ impl SessionCommand {
     pub const fn is_resumable(&self) -> bool {
         matches!(self, Self::Send { .. } | Self::Rename { .. } | Self::SetModel { .. })
     }
+
+    #[must_use]
+    pub const fn command_id(&self) -> Option<Uuid> {
+        match self {
+            Self::SetModel { command_id, .. } | Self::Interrupt { command_id } => *command_id,
+            _ => None,
+        }
+    }
 }
 
 /// Point-in-time snapshot of a live codex session's internal driver state,
@@ -1188,7 +1196,8 @@ pub async fn route_or_prepare_resume(
 }
 
 /// Configuration for spawning the `codex app-server` subprocess.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct AppServerConfig {
     /// Binary to invoke (default `"codex"`).
     pub bin: String,
@@ -1446,10 +1455,35 @@ impl CodexSession {
         let mut ack = SpawnAck { command_id: self.command_id.take(), events: self.events.clone() };
         let res = self.run_inner(&mut ack).await;
         match &res {
-            Err(err) => ack.fail(&err.to_string()).await,
+            Err(err) => {
+                let detail = err.to_string();
+                ack.fail(&detail).await;
+                self.fail_resume_status(&detail).await;
+            }
             Ok(()) => ack.fail("codex app-server exited before the thread was started").await,
         }
         res
+    }
+
+    /// A failed resume has no spawn `command_id` to resolve, so surface the
+    /// failure as a failed `Status` on the thread instead of dying silently.
+    async fn fail_resume_status(&self, detail: &str) {
+        let SessionLaunch::Resume { thread_id, .. } = &self.launch else { return };
+        self.events
+            .send(AdapterEvent::Status {
+                local_id: thread_id.clone(),
+                tempo: None,
+                state: Some("failed".to_owned()),
+                detail: Some(detail.to_owned()),
+                activity: Some("failure".to_owned()),
+                name: None,
+                intent: None,
+                model: None,
+                effort: None,
+                children: Vec::new(),
+            })
+            .await
+            .ok();
     }
 
     #[allow(clippy::too_many_lines, clippy::cognitive_complexity)]
@@ -1554,12 +1588,21 @@ impl CodexSession {
         let mut model_catalog_pages: usize = 0;
         let mut sweep = tokio::time::interval(Duration::from_secs(1));
         sweep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let reexec = crate::selfupdate::reexec_prep();
+        let mut reexec_exit = false;
 
         loop {
             tokio::select! {
                 () = self.shutdown.cancelled() => {
                     let _ = child.start_kill();
                     killed = true;
+                    break;
+                }
+                // SIGTERM (not kill) so codex flushes its rollout before the
+                // re-exec; the record stays so the new daemon can resume.
+                () = reexec.cancelled() => {
+                    terminate_child(&mut child, Some(SIGTERM));
+                    reexec_exit = true;
                     break;
                 }
                 _ = sweep.tick() => {
@@ -1576,7 +1619,9 @@ impl CodexSession {
                                 .await;
                         }
                         if pending.is_handshake() {
-                            ack.fail(&format!("codex {} timed out", pending.method)).await;
+                            let detail = format!("codex {} timed out", pending.method);
+                            ack.fail(&detail).await;
+                            self.fail_resume_status(&detail).await;
                             handshake_dead = true;
                         }
                     }
@@ -1849,6 +1894,7 @@ impl CodexSession {
                                     env: self.env.clone(),
                                 },
                             );
+                            super::persist::save(&self.registry).await;
                             self.live.lock().await.insert(local_id.clone(), cmd_tx.clone());
                             registered = true;
                             ack.ok().await;
@@ -2024,6 +2070,7 @@ impl CodexSession {
                         (method, Err(err)) if pending.is_handshake() => {
                             tracing::error!(%err, %method, "codex: handshake request failed; ending session");
                             ack.fail(&err).await;
+                            self.fail_resume_status(&err).await;
                             let _ = child.start_kill();
                             break;
                         }
@@ -2194,6 +2241,18 @@ impl CodexSession {
             }
         }
 
+        // The pump has broken: drop the live sender NOW so new commands take
+        // the Resume path instead of landing in this dead channel's buffer,
+        // then drain whatever was already buffered.
+        if !local_id.is_empty() {
+            self.live.lock().await.remove(&local_id);
+        }
+        cmd_rx.close();
+        let mut drained: Vec<SessionCommand> = Vec::new();
+        while let Ok(cmd) = cmd_rx.try_recv() {
+            drained.push(cmd);
+        }
+
         for (id, pending) in pending_rpcs.drain() {
             tracing::warn!(rpc_id = id, method = %pending.method, "codex: cancelling pending request — app-server gone");
             if let Some(command_id) = pending.command_id {
@@ -2215,70 +2274,145 @@ impl CodexSession {
         // that we did not request is surfaced as `Crashed` with the captured
         // stderr tail — the diagnostic for the macOS "randomly dies" report.
         let status = child.wait().await;
-        if !local_id.is_empty() {
-            self.live.lock().await.remove(&local_id);
-            let reason = if killed {
-                Some(EndReason::Killed)
-            } else {
-                match status {
-                    Ok(s) if s.success() => None,
-                    Ok(s) => Some(EndReason::Crashed {
-                        detail: format!(
-                            "codex app-server exited ({s}){}",
-                            stderr_tail(&stderr_ring).await
-                        ),
-                    }),
-                    Err(e) => Some(EndReason::Crashed {
-                        detail: format!("codex app-server wait failed: {e}"),
-                    }),
-                }
-            };
-            if let Some(reason) = reason {
-                if let EndReason::Crashed { detail } = &reason {
-                    tracing::error!(%detail, "codex app-server session crashed");
-                }
+        if reexec_exit || local_id.is_empty() {
+            return Ok(());
+        }
+        let (mut retry, dropped, drained_kill) = partition_drained(drained);
+        let reason = if killed || drained_kill {
+            Some(EndReason::Killed)
+        } else {
+            match status {
+                Ok(s) if s.success() => None,
+                Ok(s) => Some(EndReason::Crashed {
+                    detail: format!(
+                        "codex app-server exited ({s}){}",
+                        stderr_tail(&stderr_ring).await
+                    ),
+                }),
+                Err(e) => Some(EndReason::Crashed {
+                    detail: format!("codex app-server wait failed: {e}"),
+                }),
+            }
+        };
+        if let Some(reason) = reason {
+            if let EndReason::Crashed { detail } = &reason {
+                tracing::error!(%detail, "codex app-server session crashed");
+            }
+            // A crash keeps the durable record: `thread/resume` still works,
+            // so the next command revives the thread instead of going Missing.
+            if removes_record(&reason) {
                 self.registry.lock().await.remove(&local_id);
-                self.events
-                    .send(AdapterEvent::SessionEnded { local_id: local_id.clone(), reason })
-                    .await
-                    .ok();
-            } else {
-                self.events
-                    .send(AdapterEvent::Status {
-                        local_id: local_id.clone(),
-                        tempo: Some("hibernated".to_owned()),
-                        state: None,
-                        detail: None,
-                        activity: None,
-                        name: None,
-                        intent: None,
-                        model: None,
-                        effort: None,
-                        children: Vec::new(),
-                    })
-                    .await
-                    .ok();
-                let retry = if let Some(command) = retry_after_hibernate {
-                    let record = self.registry.lock().await.get(&local_id).cloned();
-                    record.map(|record| (record, command))
-                } else {
-                    None
-                };
-                if let Some((record, command)) = retry {
-                    spawn_resumed_session(
-                        record,
-                        local_id.clone(),
-                        command,
-                        self.events.clone(),
-                        self.live.clone(),
-                        self.registry.clone(),
-                        self.shutdown.clone(),
-                    );
-                }
+                super::persist::save(&self.registry).await;
+            }
+            for cmd in retry.into_iter().chain(dropped) {
+                self.fail_dropped_command(&local_id, &cmd).await;
+            }
+            self.events
+                .send(AdapterEvent::SessionEnded { local_id: local_id.clone(), reason })
+                .await
+                .ok();
+        } else {
+            self.events
+                .send(AdapterEvent::Status {
+                    local_id: local_id.clone(),
+                    tempo: Some("hibernated".to_owned()),
+                    state: None,
+                    detail: None,
+                    activity: None,
+                    name: None,
+                    intent: None,
+                    model: None,
+                    effort: None,
+                    children: Vec::new(),
+                })
+                .await
+                .ok();
+            for cmd in dropped {
+                self.fail_dropped_command(&local_id, &cmd).await;
+            }
+            if let Some(command) = retry_after_hibernate {
+                retry.insert(0, command);
+            }
+            if !retry.is_empty()
+                && let Some(record) = self.registry.lock().await.get(&local_id).cloned()
+            {
+                spawn_resumed_session(
+                    record,
+                    local_id.clone(),
+                    retry,
+                    self.events.clone(),
+                    self.live.clone(),
+                    self.registry.clone(),
+                    self.shutdown.clone(),
+                );
             }
         }
         Ok(())
     }
+
+    /// Fail a command that was sitting in the dead session's channel buffer,
+    /// loudly: `CommandResult` when it carries an id, a failed `Status` for a
+    /// user message so the drop is visible in the webui.
+    async fn fail_dropped_command(&self, local_id: &str, cmd: &SessionCommand) {
+        if let Some(command_id) = cmd.command_id() {
+            self.events
+                .send(AdapterEvent::CommandResult {
+                    command_id,
+                    ok: false,
+                    error: Some("codex app-server exited before the command was delivered".into()),
+                })
+                .await
+                .ok();
+        }
+        if matches!(cmd, SessionCommand::Send { .. }) {
+            self.events
+                .send(AdapterEvent::Status {
+                    local_id: local_id.to_owned(),
+                    tempo: None,
+                    state: Some("failed".to_owned()),
+                    detail: Some(
+                        "message dropped: codex app-server exited before it was delivered"
+                            .to_owned(),
+                    ),
+                    activity: Some("failure".to_owned()),
+                    name: None,
+                    intent: None,
+                    model: None,
+                    effort: None,
+                    children: Vec::new(),
+                })
+                .await
+                .ok();
+        }
+        tracing::warn!(%local_id, ?cmd, "codex: dropping buffered command — app-server gone");
+    }
+}
+
+/// Only an explicit kill removes the durable record; a crash keeps it
+/// resumable.
+const fn removes_record(reason: &EndReason) -> bool {
+    matches!(reason, EndReason::Killed)
+}
+
+/// Split commands drained from a dead session's channel: resumable ones to
+/// retry on the revived thread, the rest to fail visibly. A buffered `Kill`
+/// wins over hibernation.
+fn partition_drained(
+    drained: Vec<SessionCommand>,
+) -> (Vec<SessionCommand>, Vec<SessionCommand>, bool) {
+    let mut retry = Vec::new();
+    let mut dropped = Vec::new();
+    let mut killed = false;
+    for cmd in drained {
+        if matches!(cmd, SessionCommand::Kill { .. }) {
+            killed = true;
+        } else if cmd.is_resumable() {
+            retry.push(cmd);
+        } else {
+            dropped.push(cmd);
+        }
+    }
+    (retry, dropped, killed)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2297,6 +2431,7 @@ async fn set_thread_name<W: AsyncWriteExt + Unpin>(
     if let Some(record) = registry.lock().await.get_mut(thread_id) {
         record.name = Some(name.to_owned());
     }
+    super::persist::save(registry).await;
     events
         .send(AdapterEvent::Status {
             local_id: thread_id.to_owned(),
@@ -2348,6 +2483,7 @@ async fn record_model_override(
             record.cfg.reasoning_effort = Some(effort.to_owned());
         }
     }
+    super::persist::save(registry).await;
     events
         .send(AdapterEvent::Status {
             local_id: thread_id.to_owned(),
@@ -2371,26 +2507,27 @@ async fn record_model_override(
 pub fn spawn_resumed_session(
     record: SessionRecord,
     thread_id: String,
-    command: SessionCommand,
+    commands: Vec<SessionCommand>,
     events: mpsc::Sender<AdapterEvent>,
     live: LiveSessionRegistry,
     registry: SessionRegistry,
     shutdown: CancellationToken,
 ) {
-    if !command.is_resumable() {
-        tracing::warn!(%thread_id, ?command, "codex: command is not resumable");
+    let commands: Vec<SessionCommand> = commands
+        .into_iter()
+        .filter(|command| {
+            let ok = command.is_resumable();
+            if !ok {
+                tracing::warn!(%thread_id, ?command, "codex: command is not resumable");
+            }
+            ok
+        })
+        .collect();
+    if commands.is_empty() {
         return;
     }
     let session = CodexSession::new_resume(
-        record.cfg,
-        record.cwd,
-        record.env,
-        thread_id,
-        vec![command],
-        events,
-        live,
-        registry,
-        shutdown,
+        record.cfg, record.cwd, record.env, thread_id, commands, events, live, registry, shutdown,
     );
     tokio::spawn(async move {
         if let Err(err) = session.run().await {
@@ -3572,6 +3709,47 @@ mod tests {
                 "{ty} should be a ToolUse",
             );
         }
+    }
+
+    #[test]
+    fn crash_keeps_record_kill_removes_it() {
+        assert!(removes_record(&EndReason::Killed));
+        assert!(!removes_record(&EndReason::Crashed { detail: "boom".to_owned() }));
+    }
+
+    #[test]
+    fn partition_drained_splits_retry_dropped_and_kill() {
+        let cid = Uuid::new_v4();
+        let drained = vec![
+            SessionCommand::Send { text: "hi".to_owned() },
+            SessionCommand::Permission { request_id: "r".to_owned(), allow: true },
+            SessionCommand::Kill { signal: None },
+            SessionCommand::Rename { name: "n".to_owned() },
+            SessionCommand::Interrupt { command_id: Some(cid) },
+        ];
+        let (retry, dropped, killed) = partition_drained(drained);
+        assert!(killed);
+        assert_eq!(retry.len(), 2);
+        assert!(matches!(&retry[0], SessionCommand::Send { text } if text == "hi"));
+        assert!(matches!(&retry[1], SessionCommand::Rename { name } if name == "n"));
+        assert_eq!(dropped.len(), 2);
+        assert_eq!(dropped[1].command_id(), Some(cid));
+
+        let (retry, dropped, killed) = partition_drained(Vec::new());
+        assert!(retry.is_empty() && dropped.is_empty() && !killed);
+    }
+
+    #[test]
+    fn command_id_only_on_correlated_commands() {
+        let cid = Uuid::new_v4();
+        assert_eq!(
+            SessionCommand::SetModel { model: None, effort: None, command_id: Some(cid) }
+                .command_id(),
+            Some(cid)
+        );
+        assert_eq!(SessionCommand::Interrupt { command_id: Some(cid) }.command_id(), Some(cid));
+        assert_eq!(SessionCommand::Send { text: String::new() }.command_id(), None);
+        assert_eq!(SessionCommand::Kill { signal: None }.command_id(), None);
     }
 
     #[tokio::test]
