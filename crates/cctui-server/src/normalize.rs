@@ -87,10 +87,8 @@ pub fn to_agent_event(adapter_id: &str, event_type: &str, payload: &Value) -> Op
             }
         }
         "tool_use" => {
-            if matches!(
-                payload.get("kind").and_then(Value::as_str),
-                Some("tool_result" | "server_tool_result")
-            ) {
+            let kind = payload.get("kind").and_then(Value::as_str);
+            if matches!(kind, Some("tool_result" | "server_tool_result")) {
                 let summary = payload
                     .get("content")
                     .and_then(|v| v.as_str().map(str::to_owned).or_else(|| Some(v.to_string())))
@@ -98,13 +96,21 @@ pub fn to_agent_event(adapter_id: &str, event_type: &str, payload: &Value) -> Op
                 return Some(AgentEvent::ToolResult {
                     tool: String::new(),
                     output_summary: summary,
+                    kind: kind.filter(|k| *k == "server_tool_result").map(str::to_owned),
+                    error: payload.get("is_error").and_then(Value::as_bool).unwrap_or(false),
                     ts,
                     seq: None,
                 });
             }
             let tool = payload.get("tool")?.as_str()?.to_owned();
             let input = payload.get("input").cloned().unwrap_or(Value::Null);
-            Some(AgentEvent::ToolCall { tool, input, ts, seq: None })
+            Some(AgentEvent::ToolCall {
+                tool,
+                input,
+                kind: kind.filter(|k| *k == "server_tool_use").map(str::to_owned),
+                ts,
+                seq: None,
+            })
         }
         _ => None,
     }
@@ -165,6 +171,7 @@ fn agent_event_from_canonical(v: &Value, ts: i64) -> Option<AgentEvent> {
         "tool_call" => Some(AgentEvent::ToolCall {
             tool: v.get("tool").and_then(Value::as_str).unwrap_or_default().to_owned(),
             input: v.get("input").cloned().unwrap_or(Value::Null),
+            kind: v.get("kind").and_then(Value::as_str).map(str::to_owned),
             ts,
             seq: None,
         }),
@@ -175,6 +182,8 @@ fn agent_event_from_canonical(v: &Value, ts: i64) -> Option<AgentEvent> {
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_owned(),
+            kind: v.get("kind").and_then(Value::as_str).map(str::to_owned),
+            error: v.get("error").and_then(Value::as_bool).unwrap_or(false),
             ts,
             seq: None,
         }),
@@ -484,20 +493,26 @@ fn map_daemon_message(payload: &Value) -> Option<Value> {
 }
 
 fn map_daemon_tool(payload: &Value) -> Option<Value> {
-    if matches!(
-        payload.get("kind").and_then(Value::as_str),
-        Some("tool_result" | "server_tool_result")
-    ) {
+    let kind = payload.get("kind").and_then(Value::as_str);
+    if matches!(kind, Some("tool_result" | "server_tool_result")) {
         let summary = payload
             .get("content")
             .and_then(|v| v.as_str().map(str::to_owned).or_else(|| Some(v.to_string())))
             .unwrap_or_default();
         let error = payload.get("is_error").and_then(Value::as_bool).unwrap_or(false);
-        return Some(json!({ "type": "tool_result", "output_summary": summary, "error": error }));
+        let mut out = json!({ "type": "tool_result", "output_summary": summary, "error": error });
+        if kind == Some("server_tool_result") {
+            out["kind"] = json!("server_tool_result");
+        }
+        return Some(out);
     }
     let tool = payload.get("tool")?.clone();
     let input = payload.get("input").cloned().unwrap_or(Value::Null);
-    Some(json!({ "type": "tool_call", "tool": tool, "input": input }))
+    let mut out = json!({ "type": "tool_call", "tool": tool, "input": input });
+    if kind == Some("server_tool_use") {
+        out["kind"] = json!("server_tool_use");
+    }
+    Some(out)
 }
 
 fn passthrough_if_canonical(payload: Value) -> Option<Value> {
@@ -573,33 +588,76 @@ mod tests {
         let p = json!({ "kind": "tool_result", "content": "boom", "is_error": true });
         let n = for_client("claude-code", "tool_use", p).unwrap();
         assert_eq!(n["error"], true);
+        assert!(n.get("kind").is_none());
         let p2 = json!({ "kind": "tool_result", "content": "ok" });
         let n2 = for_client("claude-code", "tool_use", p2).unwrap();
         assert_eq!(n2["error"], false);
     }
 
     #[test]
-    fn daemon_server_tool_result_maps_to_tool_result() {
+    fn daemon_tool_result_surfaces_is_error_on_live_path() {
+        for (payload, want) in [
+            (json!({ "kind": "tool_result", "content": "boom", "is_error": true }), true),
+            (json!({ "kind": "tool_result", "content": "ok" }), false),
+        ] {
+            match to_agent_event("claude-code", "tool_use", &payload).unwrap() {
+                AgentEvent::ToolResult { error, kind, .. } => {
+                    assert_eq!(error, want);
+                    assert_eq!(kind, None);
+                }
+                other => panic!("expected ToolResult, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn daemon_server_tool_result_maps_to_tagged_tool_result() {
         let p =
             json!({ "kind": "server_tool_result", "tool_use_id": "srv_1", "content": "results" });
         let n = for_client("claude-code", "tool_use", p).unwrap();
         assert_eq!(n["type"], "tool_result");
         assert_eq!(n["output_summary"], "results");
+        assert_eq!(n["kind"], "server_tool_result");
         let ev = to_agent_event(
             "claude-code",
             "tool_use",
             &json!({ "kind": "server_tool_result", "content": "results" }),
         )
         .unwrap();
-        assert!(matches!(ev, AgentEvent::ToolResult { .. }));
+        match ev {
+            AgentEvent::ToolResult { kind, error, .. } => {
+                assert_eq!(kind.as_deref(), Some("server_tool_result"));
+                assert!(!error);
+            }
+            other => panic!("expected ToolResult, got {other:?}"),
+        }
     }
 
     #[test]
-    fn daemon_server_tool_use_maps_to_tool_call() {
+    fn daemon_server_tool_use_maps_to_tagged_tool_call() {
         let p = json!({ "kind": "server_tool_use", "id": "srv_1", "tool": "web_search", "input": { "query": "q" } });
-        let n = for_client("claude-code", "tool_use", p).unwrap();
+        let n = for_client("claude-code", "tool_use", p.clone()).unwrap();
         assert_eq!(n["type"], "tool_call");
         assert_eq!(n["tool"], "web_search");
+        assert_eq!(n["kind"], "server_tool_use");
+        match to_agent_event("claude-code", "tool_use", &p).unwrap() {
+            AgentEvent::ToolCall { tool, kind, .. } => {
+                assert_eq!(tool, "web_search");
+                assert_eq!(kind.as_deref(), Some("server_tool_use"));
+            }
+            other => panic!("expected ToolCall, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn plain_tool_call_carries_no_kind_on_either_path() {
+        let p = json!({ "id": "x", "tool": "Bash", "input": {} });
+        let n = for_client("claude-code", "tool_use", p.clone()).unwrap();
+        assert!(n.get("kind").is_none());
+        match to_agent_event("claude-code", "tool_use", &p).unwrap() {
+            AgentEvent::ToolCall { kind, .. } => assert_eq!(kind, None),
+            other => panic!("expected ToolCall, got {other:?}"),
+        }
     }
 
     #[test]

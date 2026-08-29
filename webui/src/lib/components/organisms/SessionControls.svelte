@@ -93,29 +93,29 @@
 {#snippet foldControls(menu: boolean)}
 	<LabelFilter {menu} {labels} bind:selected={labelFilter} onUpdate={onUpdateLabel} onDelete={onDeleteLabel} />
 	<ViewPicker {menu} bind:cardView bind:dense bind:kanban />
-	{#if !searching}
-		{#if selecting}
-			<!-- Cancel selection. -->
-			{#if menu}
-				<button type="button" class="menu-trigger" onclick={onCancelSelect}>
-					<Icon name="x" size={18} /><span>{m.sessions_cancel_selection()}</span>
-				</button>
-			{:else}
-				<Button class="ctl btn-control-square" icon title={m.sessions_cancel_selection()} aria-label={m.sessions_cancel_selection()} onclick={onCancelSelect}>
-					<Icon name="x" size={18} />
-				</Button>
-			{/if}
-		{:else if menu}
-			<button type="button" class="menu-trigger" onclick={onStartSelect}>
-				{@render listChecks()}<span>{m.sessions_select_multiple()}</span>
+	<!-- Stays mounted (disabled) while searching: unmounting it re-wraps the
+	     flex bar mid-type and makes the search field jump. -->
+	{#if selecting}
+		<!-- Cancel selection. -->
+		{#if menu}
+			<button type="button" class="menu-trigger" onclick={onCancelSelect}>
+				<Icon name="x" size={18} /><span>{m.sessions_cancel_selection()}</span>
 			</button>
 		{:else}
-			<!-- "Select multiple" wants a checklist/multi-select glyph the registry
-			     doesn't ship; feed Icon a raw list-checks svg via its children. -->
-			<Button class="ctl btn-control-square" icon title={m.sessions_select_multiple()} aria-label={m.sessions_select_multiple()} onclick={onStartSelect}>
-				{@render listChecks()}
+			<Button class="ctl btn-control-square" icon title={m.sessions_cancel_selection()} aria-label={m.sessions_cancel_selection()} onclick={onCancelSelect}>
+				<Icon name="x" size={18} />
 			</Button>
 		{/if}
+	{:else if menu}
+		<button type="button" class="menu-trigger" disabled={searching} onclick={onStartSelect}>
+			{@render listChecks()}<span>{m.sessions_select_multiple()}</span>
+		</button>
+	{:else}
+		<!-- "Select multiple" wants a checklist/multi-select glyph the registry
+		     doesn't ship; feed Icon a raw list-checks svg via its children. -->
+		<Button class="ctl btn-control-square" icon disabled={searching} title={m.sessions_select_multiple()} aria-label={m.sessions_select_multiple()} onclick={onStartSelect}>
+			{@render listChecks()}
+		</Button>
 	{/if}
 {/snippet}
 
@@ -244,6 +244,13 @@
 	}
 	.menu-trigger:hover {
 		background: var(--bg-elevated-3, var(--bg-elevated-2));
+	}
+	.menu-trigger:disabled {
+		opacity: 0.5;
+		cursor: default;
+	}
+	.menu-trigger:disabled:hover {
+		background: none;
 	}
 	@container sess-bar (max-width: 640px) {
 		.inline-fold {

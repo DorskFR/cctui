@@ -10,7 +10,10 @@ export type MsgCategory =
 	| 'system'
 	| 'tool'
 	| 'mcp'
+	| 'server_tool'
 	| 'result'
+	| 'server_result'
+	| 'error'
 	| 'marker'
 	| 'summary'
 	| 'compact'
@@ -41,8 +44,14 @@ export function msgCategoryLabel(id: MsgCategory): string {
 			return m.conversation_filter_tool();
 		case 'mcp':
 			return m.conversation_filter_mcp();
+		case 'server_tool':
+			return m.conversation_filter_server_tool();
 		case 'result':
 			return m.conversation_filter_result();
+		case 'server_result':
+			return m.conversation_filter_server_result();
+		case 'error':
+			return m.conversation_filter_error();
 		case 'marker':
 			return m.conversation_filter_marker();
 		case 'summary':

@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { untrack, onMount } from 'svelte';
+	import { untrack, onMount, type Snippet } from 'svelte';
 	import type { SessionListItem } from '@bindings/SessionListItem';
 	import { useSessions, useSessionActions, useLabels, endpoints, qk } from '$lib/queries';
 	import { useQueryClient } from '@tanstack/svelte-query';
@@ -275,6 +275,14 @@
 	});
 	const matchesLabelFilter = (s: SessionListItem): boolean =>
 		labelFilter.size === 0 || s.labels.some((l) => labelFilter.has(l.id));
+
+	// One predicate for search results AND the archive browse so the two
+	// branches can't drift apart on which filters apply.
+	const keepRow = (s: SessionListItem): boolean =>
+		inEnabledSections(s, sections) &&
+		matchesLabelFilter(s) &&
+		matchesClient(s) &&
+		matchesUnreadFilter(s, sections);
 
 	// Per-card label callbacks, threaded into every SessionCard.
 	const createLabel = (name: string, color: string) => actions.createLabel(name, color);
@@ -593,7 +601,7 @@
 	onDeleteLabel={deleteLabel}
 />
 
-{#if list.selecting && !searching}
+{#if list.selecting}
 		<div class="bulkbar row">
 			<Text class="count" size="sm" weight="semibold" tone="muted">{m.sessions_selected_count({ count: list.selected.size })}</Text>
 			<Button onclick={list.selectAll}>{m.sessions_select_all()}</Button>
@@ -620,6 +628,7 @@
 {#snippet cardItems(
 	rows: SessionListItem[],
 	childGroups: Map<string, SubGroup[]>,
+	hl: string[] = [],
 	depth = 0
 )}
 	{#each rows as s (s.id)}
@@ -641,6 +650,7 @@
 			swipeLabel={m.sessions_archive()}
 			onSwipe={swipeArchive}
 			onTogglePin={depth > 0 ? undefined : togglePin}
+			highlight={hl}
 			subagentCost={costRollup(s, subGroups)}
 			subagentToggles={subGroups.map((g) => ({
 				key: g.key,
@@ -662,23 +672,52 @@
 		{#if depth < 5}
 			{#each subGroups as g (g.key)}
 				{#if list.expanded.has(groupId(s.id, g.key))}
-					{@render cardItems(g.agents, childGroups, depth + 1)}
+					{@render cardItems(g.agents, childGroups, hl, depth + 1)}
 				{/if}
 			{/each}
 		{/if}
 	{/each}
 {/snippet}
 
-{#snippet cardGrid(rows: SessionListItem[], childGroups: Map<string, SubGroup[]>)}
+{#snippet cardGrid(rows: SessionListItem[], childGroups: Map<string, SubGroup[]>, hl: string[] = [])}
 	<!-- Card track widths scale with the UI font: the chrome stays rem-pinned
 	     but card TEXT (working-dir chip, token readout, model) grows with --fs-scale, so
 	     at the largest scale fixed-rem cards overflowed. Multiplying min/max by the same
 	     factor widens cards as the text grows — and raising `min` naturally collapses to
 	     a single compact column / wider detailed cards at high zoom. -->
 	{#if dense}
-		<AutoGrid min="calc(18rem * var(--fs-scale))" max="calc(26.75rem * var(--fs-scale))" maxCols={2} gap="var(--sp-2)">{@render cardItems(rows, childGroups)}</AutoGrid>
+		<AutoGrid min="calc(18rem * var(--fs-scale))" max="calc(26.75rem * var(--fs-scale))" maxCols={2} gap="var(--sp-2)">{@render cardItems(rows, childGroups, hl)}</AutoGrid>
 	{:else}
-		<AutoGrid min="calc(20rem * var(--fs-scale))" max="calc(26.75rem * var(--fs-scale))" gap="var(--sp-3)">{@render cardItems(rows, childGroups)}</AutoGrid>
+		<AutoGrid min="calc(20rem * var(--fs-scale))" max="calc(26.75rem * var(--fs-scale))" gap="var(--sp-3)">{@render cardItems(rows, childGroups, hl)}</AutoGrid>
+	{/if}
+{/snippet}
+
+<!-- Every row set — live buckets, search results, archive browse — renders
+     through this one card-vs-list dispatch so no branch can drift from the
+     view picker. Kanban implies cardView, so search/archive under kanban fall
+     back to the card grid. -->
+{#snippet rowsView(
+	rows: SessionListItem[],
+	childGroups: Map<string, SubGroup[]>,
+	allowSelect: boolean,
+	hl: string[]
+)}
+	{#if cardView}
+		{@render cardGrid(rows, childGroups, hl)}
+	{:else}
+		{@render nestedRows(rows, childGroups, allowSelect, hl)}
+	{/if}
+{/snippet}
+
+<!-- Shared section wrapper: card-detailed breaks out of the centered container
+     to full window width; every other view stays centered. -->
+{#snippet sectionsWrap(body: Snippet)}
+	{#if cardView && !dense}
+		<Container fullWidth as="div">
+			<div class="sections">{@render body()}</div>
+		</Container>
+	{:else}
+		<div class="sections" class:tight={dense && !cardView}>{@render body()}</div>
 	{/if}
 {/snippet}
 
@@ -820,64 +859,57 @@
 		{/if}
 {/snippet}
 
-{#if searching}
-	<!-- Search results, scoped by the Archived checkbox; split Live / Archived. -->
-	{#if pageLoading && pageRows.length === 0}
-		<div class="empty"><span class="spin"></span></div>
-	{:else if pageRows.length === 0}
-		<div class="empty"><Text tone="muted">{m.sessions_search_no_match({ query: serverQuery })}{showArchived ? '.' : ' ' + m.sessions_search_live_only_hint()}</Text></div>
+<!-- The height floor keeps the document from collapsing under the sticky
+     toolbar while a search swaps the tall live list for a short results block —
+     without it the window scrollTop clamps and the bar jumps mid-type. -->
+<div class="list-area">
+	{#if searching}
+		<!-- Search results, scoped by the Archived checkbox; split Live / Archived. -->
+		{#if pageLoading && pageRows.length === 0}
+			<div class="empty"><span class="spin"></span></div>
+		{:else if pageRows.length === 0}
+			<div class="empty"><Text tone="muted">{m.sessions_search_no_match({ query: serverQuery })}{showArchived ? '.' : ' ' + m.sessions_search_live_only_hint()}</Text></div>
+		{:else}
+			{@render sectionsWrap(searchSections)}
+		{/if}
+	{:else if kanban}
+		{#if sessions.isLoading}
+			<div class="empty"><span class="spin"></span></div>
+		{:else}
+			<Container fullWidth as="div">
+				<KanbanBoard columns={list.kanbanColumns} card={kanbanCard} />
+			</Container>
+		{/if}
 	{:else}
-		<!-- Nest over the whole result set so a parent and its subagents stay
-		     grouped even if they land in different status sections; then split
-		     the top-level rows into Live / Archived. -->
-		{@const ns = nest(pageRows)}
-		{@const scoped = ns.topLevel.filter(
-			(s) =>
-				inEnabledSections(s, sections) &&
-				matchesLabelFilter(s) &&
-				matchesClient(s) &&
-				matchesUnreadFilter(s, sections)
-		)}
-		{@const liveTop = scoped.filter((s) => s.status !== 'archived')}
-		{@const archTop = scoped.filter((s) => s.status === 'archived')}
-		<div class="sections" class:tight={dense}>
-			{#if liveTop.length > 0}
-				<div class="section">
-					<div class="group-header">{m.sessions_section_live()} <Text class="count">{liveTop.length}</Text></div>
-					{@render nestedRows(liveTop, ns.childGroups, false, searchTerms)}
-				</div>
-			{/if}
-			{#if archTop.length > 0}
-				<div class="section">
-					<div class="group-header">{m.sessions_section_archived()} <Text class="count">{archTop.length}</Text></div>
-					{@render nestedRows(archTop, ns.childGroups, false, searchTerms)}
-				</div>
-			{/if}
-			{#if scoped.length === 0}
-				<div class="empty"><Text tone="muted">{m.sessions_search_no_sections()}</Text></div>
-			{/if}
-			{@render loadMore()}
+		{@render sectionsWrap(liveSections)}
+	{/if}
+</div>
+
+{#snippet searchSections()}
+	<!-- Nest over the whole result set so a parent and its subagents stay
+	     grouped even if they land in different status sections; then split
+	     the top-level rows into Live / Archived. -->
+	{@const ns = nest(pageRows)}
+	{@const scoped = ns.topLevel.filter(keepRow)}
+	{@const liveTop = scoped.filter((s) => s.status !== 'archived')}
+	{@const archTop = scoped.filter((s) => s.status === 'archived')}
+	{#if liveTop.length > 0}
+		<div class="section">
+			<div class="group-header">{m.sessions_section_live()} <Text class="count">{liveTop.length}</Text></div>
+			{@render rowsView(liveTop, ns.childGroups, false, searchTerms)}
 		</div>
 	{/if}
-{:else if kanban}
-	{#if sessions.isLoading}
-		<div class="empty"><span class="spin"></span></div>
-	{:else}
-		<Container fullWidth as="div">
-			<KanbanBoard columns={list.kanbanColumns} card={kanbanCard} />
-		</Container>
+	{#if archTop.length > 0}
+		<div class="section">
+			<div class="group-header">{m.sessions_section_archived()} <Text class="count">{archTop.length}</Text></div>
+			{@render rowsView(archTop, ns.childGroups, false, searchTerms)}
+		</div>
 	{/if}
-{:else}
-	<!-- Live buckets first, then the paginated archive — all sections share one
-	     flex container so the inter-section gap is uniform. -->
-	{#if cardView && !dense}
-		<Container fullWidth as="div">
-			<div class="sections">{@render liveSections()}</div>
-		</Container>
-	{:else}
-		<div class="sections" class:tight={dense && !cardView}>{@render liveSections()}</div>
+	{#if scoped.length === 0}
+		<div class="empty"><Text tone="muted">{m.sessions_search_no_sections()}</Text></div>
 	{/if}
-{/if}
+	{@render loadMore()}
+{/snippet}
 
 {#snippet dimHeader(label: string, count: number, hue: number | null)}
 	<div class="group-header dim-header">
@@ -897,11 +929,7 @@
 			{#each list.groupedSections as g (g.key)}
 				<div class="section">
 					{@render dimHeader(g.label, g.sessions.length, g.hue)}
-					{#if cardView}
-						{@render cardGrid(g.sessions, childGroupsOf)}
-					{:else}
-						{@render nestedRows(g.sessions, childGroupsOf, true, [])}
-					{/if}
+					{@render rowsView(g.sessions, childGroupsOf, true, [])}
 				</div>
 			{/each}
 		{:else}
@@ -931,11 +959,7 @@
 							{g.label} <Text class="count">{g.sessions.length}</Text>
 						</div>
 					{/if}
-					{#if cardView}
-						{@render cardGrid(vis, childGroupsOf)}
-					{:else}
-						{@render nestedRows(vis, childGroupsOf, true, [])}
-					{/if}
+					{@render rowsView(vis, childGroupsOf, true, [])}
 				</div>
 			{/each}
 		{/if}
@@ -962,22 +986,14 @@
 		{#if showArchived}
 			{@const ns = nest(pageRows)}
 			{@const archTop = ns.topLevel.filter(
-				(s) =>
-					matchesLabelFilter(s) &&
-					matchesClient(s) &&
-					matchesUnreadFilter(s, sections) &&
-					!pinnedArchivedKidIds.has(s.id)
+				(s) => keepRow(s) && !pinnedArchivedKidIds.has(s.id)
 			)}
 			<div class="section">
 				<div class="group-header">{m.sessions_section_archived()} <Text class="count">{archTop.length}</Text></div>
 				{#if pageRows.length === 0 && !pageLoading}
 					<div class="empty"><Text tone="muted">{m.sessions_no_archived()}</Text></div>
-				{:else if cardView}
-					<!-- Card mode applies to archived sessions too. -->
-					{@render cardGrid(archTop, ns.childGroups)}
-					{@render loadMore()}
 				{:else}
-					{@render nestedRows(archTop, ns.childGroups, false, searchTerms)}
+					{@render rowsView(archTop, ns.childGroups, false, searchTerms)}
 					{@render loadMore()}
 				{/if}
 			</div>
@@ -1019,6 +1035,11 @@
 		border-radius: var(--r-md);
 		background: var(--bg-elevated);
 		box-shadow: var(--shadow-md);
+	}
+	/* Height floor so swapping the live list for short search results can't
+	   shrink the document under the sticky bar and clamp the scroll position. */
+	.list-area {
+		min-height: 60vh;
 	}
 	/* Two-axis spacing: the outer container owns the inter-section gap;
 	   each .section owns its row gap. Every section break — Pinned, Working,

@@ -632,31 +632,51 @@
 		display: none;
 	}
 	@media (min-width: 960px) {
+		/* The handle overhangs the drawer's left edge by 6px, but never past the
+		   viewport: at full width the overhang would land off-screen and be
+		   ungrabbable, so the shift clamps to the leftover space and the lost
+		   overhang is added back inside instead (mirrors tsumikit's Modal /
+		   ResizablePanel handle). */
 		.resize-handle {
+			--handle-shift: max(-6px, calc(var(--drawer-width, 100vw) - 100vw));
 			display: block;
 			position: absolute;
 			top: 0;
 			bottom: 0;
-			left: 0;
-			width: 10px;
-			margin-left: -5px;
+			left: var(--handle-shift);
+			width: calc(18px + var(--handle-shift));
 			z-index: 4;
-			cursor: col-resize;
+			cursor: ew-resize;
 			touch-action: none;
 		}
-		/* Persistent grip hint (mirrors tsumikit's Modal): a small pill centered on
-		   the handle, brightening to the accent on hover / while dragging. */
+		/* Full-height edge line that lights up on hover, so the affordance is
+		   findable without knowing it exists. */
+		.resize-handle::before {
+			content: '';
+			position: absolute;
+			top: 0;
+			bottom: 0;
+			left: max(0px, calc(-1 * var(--handle-shift) - 1px));
+			width: 2px;
+			border-radius: 999px;
+			background: transparent;
+			transition: background 0.12s var(--ease);
+		}
 		.resize-handle::after {
 			content: '';
 			position: absolute;
 			top: 50%;
-			left: 50%;
-			transform: translate(-50%, -50%);
-			width: 3px;
-			height: 28px;
+			left: max(0px, calc(-1 * var(--handle-shift) - 2px));
+			transform: translateY(-50%);
+			width: 4px;
+			height: 44px;
 			border-radius: 999px;
 			background: var(--border-strong);
 			transition: background 0.12s var(--ease);
+		}
+		.resize-handle:hover::before,
+		.drawer.resizing .resize-handle::before {
+			background: color-mix(in srgb, var(--accent) 45%, transparent);
 		}
 		.resize-handle:hover::after,
 		.drawer.resizing .resize-handle::after {

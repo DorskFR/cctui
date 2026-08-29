@@ -3,7 +3,7 @@ import type { MsgCategory, MsgFilter, MsgGroup, QuickFilterId, ViewOpts } from '
 export const MSG_GROUPS: { id: MsgGroup; categories: MsgCategory[] }[] = [
 	{ id: 'assistant', categories: ['assistant', 'thinking', 'redacted', 'attachment'] },
 	{ id: 'user', categories: ['user', 'system'] },
-	{ id: 'tools', categories: ['tool', 'mcp', 'result'] },
+	{ id: 'tools', categories: ['tool', 'mcp', 'server_tool', 'result', 'server_result', 'error'] },
 	{ id: 'session', categories: ['marker', 'summary', 'compact', 'reset'] }
 ];
 
@@ -12,7 +12,7 @@ export const MSG_CATEGORIES: MsgCategory[] = MSG_GROUPS.flatMap((g) => g.categor
 export const QUICK_FILTERS: { id: QuickFilterId; categories: MsgCategory[] }[] = [
 	{ id: 'assistant', categories: ['assistant'] },
 	{ id: 'user', categories: ['user'] },
-	{ id: 'tools', categories: ['tool', 'mcp', 'result'] }
+	{ id: 'tools', categories: ['tool', 'mcp', 'server_tool', 'result', 'server_result', 'error'] }
 ];
 
 const HIDDEN_BY_DEFAULT: MsgCategory[] = ['mcp', 'marker'];

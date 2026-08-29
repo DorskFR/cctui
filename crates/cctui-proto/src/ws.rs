@@ -307,6 +307,10 @@ pub enum AgentEvent {
     ToolCall {
         tool: String,
         input: serde_json::Value,
+        /// `server_tool_use` marks a provider-executed tool (web search, code
+        /// execution); `None` is an ordinary client-side tool call.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<String>,
         ts: i64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         seq: Option<i64>,
@@ -314,6 +318,12 @@ pub enum AgentEvent {
     ToolResult {
         tool: String,
         output_summary: String,
+        /// `server_tool_result` marks the output of a provider-executed tool;
+        /// `None` is an ordinary client-side tool result.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<String>,
+        #[serde(default)]
+        error: bool,
         ts: i64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         seq: Option<i64>,
@@ -686,6 +696,7 @@ mod tests {
         let card = AgentEvent::ToolCall {
             tool: "AskUserQuestion".into(),
             input: serde_json::json!({}),
+            kind: None,
             ts: 100, // ties, and flushed late
             seq: Some(2),
         };
@@ -728,6 +739,7 @@ mod tests {
         let event = AgentEvent::ToolCall {
             tool: "Bash".into(),
             input: serde_json::json!({"command": "ls"}),
+            kind: None,
             ts: 42,
             seq: None,
         };
@@ -741,6 +753,8 @@ mod tests {
         let event = AgentEvent::ToolResult {
             tool: "Bash".into(),
             output_summary: "file.txt".into(),
+            kind: None,
+            error: false,
             ts: 42,
             seq: None,
         };
@@ -778,12 +792,15 @@ mod tests {
             AgentEvent::ToolCall {
                 tool: "Read".into(),
                 input: serde_json::json!({}),
+                kind: None,
                 ts: 2,
                 seq: None,
             },
             AgentEvent::ToolResult {
                 tool: "Read".into(),
                 output_summary: "ok".into(),
+                kind: Some("server_tool_result".into()),
+                error: true,
                 ts: 3,
                 seq: None,
             },

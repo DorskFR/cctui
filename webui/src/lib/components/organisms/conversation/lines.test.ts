@@ -52,18 +52,24 @@ const summary = (
 
 const roles = (es: AgentEvent[], c = ctx()) => buildLines(es, c).map((l) => l.role);
 
-const toolCall = (tool: string, ts: number): AgentEvent => ({
+const toolCall = (tool: string, ts: number, kind: string | null = null): AgentEvent => ({
 	type: 'tool_call',
 	tool,
 	input: {},
+	kind,
 	ts,
 	seq: null
 });
 
-const toolResult = (ts: number): AgentEvent => ({
+const toolResult = (
+	ts: number,
+	opts: { kind?: string | null; error?: boolean; output?: string } = {}
+): AgentEvent => ({
 	type: 'tool_result',
 	tool: 'Bash',
-	output_summary: 'ok',
+	output_summary: opts.output ?? 'ok',
+	kind: opts.kind ?? null,
+	error: opts.error ?? false,
 	ts,
 	seq: null
 });
@@ -82,7 +88,10 @@ describe('per-category visibility', () => {
 		toolResult(10),
 		{ type: 'compact_summary', content: 'so far…', ts: 11, seq: null },
 		{ type: 'context_reset', ts: 12, seq: null },
-		summary('wrapped up', 13)
+		summary('wrapped up', 13),
+		toolCall('web_search', 14, 'server_tool_use'),
+		toolResult(15, { kind: 'server_tool_result', output: 'search hits' }),
+		toolResult(16, { error: true, output: 'boom' })
 	];
 
 	const cases: [MsgCategory, string, number][] = [
@@ -98,7 +107,10 @@ describe('per-category visibility', () => {
 		['result', 'result', 10],
 		['compact', 'compact', 11],
 		['reset', 'reset', 12],
-		['summary', 'summary', 13]
+		['summary', 'summary', 13],
+		['server_tool', 'tool', 14],
+		['server_result', 'result', 15],
+		['error', 'result', 16]
 	];
 
 	it.each(cases)('renders only its own line when %s is the sole category', (cat, role, ts) => {
@@ -131,8 +143,17 @@ describe('per-category visibility', () => {
 			'result',
 			'compact',
 			'reset',
-			'summary'
+			'summary',
+			'tool',
+			'result',
+			'result'
 		]);
+	});
+
+	it('classes an errored server result under error, not server_result', () => {
+		const events = [toolResult(1, { kind: 'server_tool_result', error: true })];
+		expect(roles(events, only('server_result'))).toEqual([]);
+		expect(roles(events, only('error'))).toEqual(['result']);
 	});
 });
 
@@ -228,6 +249,7 @@ describe('turn summaries', () => {
 			type: 'tool_result',
 			tool: 'Bash',
 			output_summary: 'ok',
+			error: false,
 			ts: 3,
 			seq: null
 		};

@@ -30,7 +30,7 @@
     "vitest": "^4.1.9"
   },
   "dependencies": {
-    "@dorsk/tsumikit": "^0.17.0",
+    "@dorsk/tsumikit": "^0.18.9",
     "@tanstack/query-async-storage-persister": "^5.101.4",
     "@tanstack/svelte-query": "^6.1.38",
     "@tanstack/svelte-query-persist-client": "^6.1.38",
