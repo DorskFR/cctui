@@ -49,6 +49,11 @@ export interface DisplaySettings {
 	// archives the session (Beeper/Slack-style archive chord). Preserved from the
 	// previous localStorage-only Settings.
 	archiveShortcut: boolean;
+	// Show the bulk "Archive all" button in the Sessions list's Completed group
+	// header. On by default; users who never sweep the bucket (or who fear the
+	// misclick) can hide it from Settings. The action itself is always reachable
+	// per-session, so hiding the button removes an affordance, not a capability.
+	archiveDoneButton: boolean;
 	notifyEnabled: boolean;
 	notifySound: boolean;
 }
@@ -139,6 +144,7 @@ const DEFAULTS: SettingsState = {
 		theme: 'dark',
 		fontScale: 1,
 		archiveShortcut: true,
+		archiveDoneButton: true,
 		notifyEnabled: false,
 		notifySound: true
 	},
@@ -407,6 +413,15 @@ class Settings {
 
 	toggleArchiveShortcut() {
 		this.setDisplay({ archiveShortcut: !this.state.display.archiveShortcut });
+	}
+
+	toggleArchiveDoneButton() {
+		this.setDisplay({ archiveDoneButton: !this.state.display.archiveDoneButton });
+	}
+
+	// Whether the Completed group header shows its bulk "Archive all" button.
+	get archiveDoneButton(): boolean {
+		return this.state.display.archiveDoneButton;
 	}
 
 	// Convenience reader for the most-used toggle (keeps call sites terse).
