@@ -5,7 +5,7 @@
     "": {
       "name": "cctui-ghreview-ui",
       "dependencies": {
-        "@dorsk/tsumikit": "^0.18.3",
+        "@dorsk/tsumikit": "^0.18.9",
         "@tanstack/svelte-query": "^6.1.38",
         "highlight.js": "^11.11.1",
         "marked": "^18.0.7",
@@ -42,7 +42,7 @@
 
     "@biomejs/cli-win32-x64": ["@biomejs/cli-win32-x64@2.5.7", "", { "os": "win32", "cpu": "x64" }, "sha512-V+0wu/nrj2S+MhP4EQ0uHNolP0IALEsz45pg0WoKkHfDeh0+ItHwP/p7bX5RPoMOl9NkpHYWdYPhIcy2mACHvQ=="],
 
-    "@dorsk/tsumikit": ["@dorsk/tsumikit@0.18.4", "", { "peerDependencies": { "svelte": "^5.0.0" } }, "sha512-Atv6wle4psj8+ph9G8zKt6Iwj3y5A4nCgtrwD7esVXyEK5Cn6u5O2KETLao1vvp8310LwVLe5sNKuQSBc/gImA=="],
+    "@dorsk/tsumikit": ["@dorsk/tsumikit@0.18.9", "", { "peerDependencies": { "svelte": "^5.0.0" } }, "sha512-SL8p30fODc9Bg4cCEvg6r4mkYf3Hez6FJznYf8wMbE7Mk1Bjf/QGlymkCE0glbQHd+Zn3B/a+u0qAV5oY+DZbQ=="],
 
     "@jridgewell/gen-mapping": ["@jridgewell/gen-mapping@0.3.13", "", { "dependencies": { "@jridgewell/sourcemap-codec": "^1.5.0", "@jridgewell/trace-mapping": "^0.3.24" } }, "sha512-2kkt/7niJ6MgEPxF0bYdQ6etZaA+fQvDcLKckhy1yIQOzaoKjBBjSj63/aLVjYE3qhRt5dvM+uUyfCg6UKCBbA=="],
 

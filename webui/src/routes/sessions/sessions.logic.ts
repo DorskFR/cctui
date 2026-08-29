@@ -342,18 +342,17 @@ export const groupOf = (s: SessionListItem): GroupKey => {
 	return isDispatched(s) ? 'dispatched' : bucket;
 };
 
-// Map a session to the single view section that owns it, mirroring the live
-// bucket→section mapping (pinned→starred, dispatched→dispatched, else→live)
-// plus the archive split. Used so search results respect the active section
-// toggles: a match is hidden when its owning section is disabled.
-export const sectionOf = (s: SessionListItem): Section => {
-	if (s.status === 'draft') return 'drafts';
-	if (s.status === 'archived') return 'archived';
-	if (s.pinned) return 'starred';
-	return isDispatched(s) ? 'dispatched' : 'live';
+// The view section(s) owning a session; archived rows also keep their
+// starred/dispatched identity so those toggles narrow archived matches too.
+// A row shows only when EVERY owning section is enabled.
+export const sectionsOf = (s: SessionListItem): Section[] => {
+	if (s.status === 'draft') return ['drafts'];
+	const owner: Section = s.pinned ? 'starred' : isDispatched(s) ? 'dispatched' : 'live';
+	if (s.status === 'archived') return owner === 'live' ? ['archived'] : ['archived', owner];
+	return [owner];
 };
 export const inEnabledSections = (s: SessionListItem, sections: Set<Section>): boolean =>
-	sections.has(sectionOf(s));
+	sectionsOf(s).every((sec) => sections.has(sec));
 
 // ── Kanban board ──────────────────────────────────────────────────
 export type KanbanCol = 'drafts' | 'blocked' | 'working' | 'done';

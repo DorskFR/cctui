@@ -12,6 +12,7 @@ import {
 	fmtWhen,
 	formatAgo,
 	groupRows,
+	inEnabledSections,
 	isDimension,
 	isSection,
 	kanbanColOf,
@@ -22,6 +23,7 @@ import {
 	pickFreshSession,
 	rangeIds,
 	scriptPrefill,
+	sectionsOf,
 	sessionDebugRows,
 	sessionHrefFor,
 	sessionIdFromLocation,
@@ -593,5 +595,50 @@ describe('rangeIds', () => {
 
 	it('handles a single-row range', () => {
 		expect(rangeIds(order, 'c', 'c', all)).toEqual(['c']);
+	});
+});
+
+describe('sectionsOf / inEnabledSections', () => {
+	const dispatched = { machine_kind: 'dispatch' } as Partial<SessionListItem>;
+
+	it('maps live rows to their single owning section', () => {
+		expect(sectionsOf(session({ status: 'active' }))).toEqual(['live']);
+		expect(sectionsOf(session({ status: 'active', pinned: true }))).toEqual(['starred']);
+		expect(sectionsOf(session({ status: 'active', ...dispatched }))).toEqual(['dispatched']);
+		expect(sectionsOf(session({ status: 'draft' }))).toEqual(['drafts']);
+	});
+
+	it('keeps starred/dispatched ownership on archived rows', () => {
+		expect(sectionsOf(session({ status: 'archived' }))).toEqual(['archived']);
+		expect(sectionsOf(session({ status: 'archived', pinned: true }))).toEqual([
+			'archived',
+			'starred'
+		]);
+		expect(sectionsOf(session({ status: 'archived', ...dispatched }))).toEqual([
+			'archived',
+			'dispatched'
+		]);
+	});
+
+	it('pinned wins over dispatched, matching the live buckets', () => {
+		expect(sectionsOf(session({ status: 'archived', pinned: true, ...dispatched }))).toEqual([
+			'archived',
+			'starred'
+		]);
+	});
+
+	it('requires every owning section to be enabled', () => {
+		const archivedDispatched = session({ status: 'archived', ...dispatched });
+		expect(inEnabledSections(archivedDispatched, new Set<Section>(['archived', 'dispatched']))).toBe(
+			true
+		);
+		expect(inEnabledSections(archivedDispatched, new Set<Section>(['archived']))).toBe(false);
+		expect(inEnabledSections(archivedDispatched, new Set<Section>(['dispatched']))).toBe(false);
+		expect(inEnabledSections(session({ status: 'archived' }), new Set<Section>(['archived']))).toBe(
+			true
+		);
+		expect(
+			inEnabledSections(session({ status: 'archived', pinned: true }), new Set<Section>(['archived']))
+		).toBe(false);
 	});
 });

@@ -21,6 +21,7 @@ import type {
   MsgCategory,
   MsgFilter,
 } from "$lib/components/organisms/conversation/types";
+import { resultCategory } from "$lib/components/organisms/conversation/lines";
 import {
   renderMarkdown,
   highlightBlock,
@@ -190,7 +191,9 @@ function toBlock(e: AgentEvent, opts: ExportOpts): Block | null {
           };
       }
       const isMcp = e.tool.startsWith("mcp__");
-      if (!visible(opts, isMcp ? "mcp" : "tool")) return null;
+      const cat =
+        e.kind === "server_tool_use" ? "server_tool" : isMcp ? "mcp" : "tool";
+      if (!visible(opts, cat)) return null;
       return {
         role: "tool",
         ts: Number(e.ts),
@@ -199,7 +202,7 @@ function toBlock(e: AgentEvent, opts: ExportOpts): Block | null {
       };
     }
     case "tool_result":
-      if (!visible(opts, "result")) return null;
+      if (!visible(opts, resultCategory(e))) return null;
       return {
         role: "result",
         ts: Number(e.ts),
@@ -458,7 +461,9 @@ function toMarkdownBlock(e: AgentEvent, opts: ExportOpts): string | null {
       return `**User:**\n\n${e.content}`;
     case "tool_call": {
       const isMcp = e.tool.startsWith("mcp__");
-      if (!visible(opts, isMcp ? "mcp" : "tool")) return null;
+      const cat =
+        e.kind === "server_tool_use" ? "server_tool" : isMcp ? "mcp" : "tool";
+      if (!visible(opts, cat)) return null;
       const o = obj(e.input);
       if (opts.prettyDiff && o && "old_string" in o && "new_string" in o) {
         const minus = String(o.old_string ?? "")
@@ -484,7 +489,7 @@ function toMarkdownBlock(e: AgentEvent, opts: ExportOpts): string | null {
       return `**Tool · ${e.tool}**\n\n${fenced(json, "json")}`;
     }
     case "tool_result":
-      if (!visible(opts, "result")) return null;
+      if (!visible(opts, resultCategory(e))) return null;
       return `**Result · ${e.tool}**\n\n${fenced(e.output_summary)}`;
     case "context_reset":
       if (!visible(opts, "reset")) return null;

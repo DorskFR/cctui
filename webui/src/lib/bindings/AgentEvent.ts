@@ -8,4 +8,14 @@ export type AgentEvent = { "type": "text", content: string, meta: boolean,
  * `None` is ordinary visible prose. Free string so an unknown adapter
  * kind still decodes.
  */
-kind?: string | null, ts: number, message_id?: string | null, usage?: TokenUsage | null, seq?: number | null, } | { "type": "tool_call", tool: string, input: JsonValue, ts: number, seq?: number | null, } | { "type": "tool_result", tool: string, output_summary: string, ts: number, seq?: number | null, } | { "type": "heartbeat", tokens_in: number, tokens_out: number, cost_usd: number, ts: number, seq?: number | null, } | { "type": "reply", content: string, ts: number, seq?: number | null, } | { "type": "context_reset", ts: number, seq?: number | null, } | { "type": "compact_summary", content: string, ts: number, seq?: number | null, } | { "type": "turn_summary", detail: string, status_category?: string | null, needs_action: boolean, ts: number, seq?: number | null, } | { "type": "turn_end", ts: number, seq?: number | null, };
+kind?: string | null, ts: number, message_id?: string | null, usage?: TokenUsage | null, seq?: number | null, } | { "type": "tool_call", tool: string, input: JsonValue, 
+/**
+ * `server_tool_use` marks a provider-executed tool (web search, code
+ * execution); `None` is an ordinary client-side tool call.
+ */
+kind?: string | null, ts: number, seq?: number | null, } | { "type": "tool_result", tool: string, output_summary: string, 
+/**
+ * `server_tool_result` marks the output of a provider-executed tool;
+ * `None` is an ordinary client-side tool result.
+ */
+kind?: string | null, error: boolean, ts: number, seq?: number | null, } | { "type": "heartbeat", tokens_in: number, tokens_out: number, cost_usd: number, ts: number, seq?: number | null, } | { "type": "reply", content: string, ts: number, seq?: number | null, } | { "type": "context_reset", ts: number, seq?: number | null, } | { "type": "compact_summary", content: string, ts: number, seq?: number | null, } | { "type": "turn_summary", detail: string, status_category?: string | null, needs_action: boolean, ts: number, seq?: number | null, } | { "type": "turn_end", ts: number, seq?: number | null, };

@@ -34,6 +34,11 @@ function userOrSystem(content: string, ts: number, meta: boolean, ctx: LineBuild
 	return { role, ts, html: ctx.renderMarkdown(content), text: content };
 }
 
+// Errors win so one toggle isolates every failed result, server or client.
+export function resultCategory(e: AgentEvent & { type: 'tool_result' }): MsgCategory {
+	return e.error ? 'error' : e.kind === 'server_tool_result' ? 'server_result' : 'result';
+}
+
 export function toLine(e: AgentEvent, ctx: LineBuildCtx): Line | null {
 	switch (e.type) {
 		case 'text': {
@@ -93,7 +98,8 @@ export function toLine(e: AgentEvent, ctx: LineBuildCtx): Line | null {
 				if (plan) return { role: 'tool', ts: Number(e.ts), tool: e.tool, plan };
 			}
 			const isMcp = e.tool.startsWith('mcp__');
-			if (!ctx.visible(isMcp ? 'mcp' : 'tool')) return null;
+			const cat = e.kind === 'server_tool_use' ? 'server_tool' : isMcp ? 'mcp' : 'tool';
+			if (!ctx.visible(cat)) return null;
 			const { text, lang } = formatToolInput(e.tool, e.input, {
 				prettyDiff: ctx.prettyDiff,
 				prettyJson: ctx.prettyJson
@@ -109,7 +115,7 @@ export function toLine(e: AgentEvent, ctx: LineBuildCtx): Line | null {
 			};
 		}
 		case 'tool_result':
-			if (!ctx.visible('result')) return null;
+			if (!ctx.visible(resultCategory(e))) return null;
 			return {
 				role: 'result',
 				ts: Number(e.ts),

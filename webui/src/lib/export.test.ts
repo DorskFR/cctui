@@ -70,6 +70,7 @@ const events: AgentEvent[] = [
     type: "tool_result",
     tool: "Bash",
     output_summary: "tool-result-payload",
+    error: false,
     ts: 10,
     seq: null,
   },
@@ -81,6 +82,31 @@ const events: AgentEvent[] = [
     status_category: null,
     needs_action: false,
     ts: 13,
+    seq: null,
+  },
+  {
+    type: "tool_call",
+    tool: "web_search",
+    input: { query: "server-side-search" },
+    kind: "server_tool_use",
+    ts: 14,
+    seq: null,
+  },
+  {
+    type: "tool_result",
+    tool: "web_search",
+    output_summary: "server-search-hits",
+    kind: "server_tool_result",
+    error: false,
+    ts: 15,
+    seq: null,
+  },
+  {
+    type: "tool_result",
+    tool: "Bash",
+    output_summary: "errored-tool-output",
+    error: true,
+    ts: 16,
     seq: null,
   },
 ];
@@ -99,6 +125,9 @@ const NEEDLES: [MsgCategory, string][] = [
   ["compact", "compacted-history"],
   ["reset", "context reset"],
   ["summary", "turn-wrapped-up"],
+  ["server_tool", "server-side-search"],
+  ["server_result", "server-search-hits"],
+  ["error", "errored-tool-output"],
 ];
 
 describe("conversationToMarkdown", () => {
