@@ -64,6 +64,16 @@ provider?: string | null,
  */
 no_account?: boolean, 
 /**
+ * Let the server choose between the caller's accounts instead of
+ * refusing to guess. With several matching-family accounts an unset
+ * `account` is a `400` (the caller decides); with `auto_account` the
+ * caller delegates that decision, and the server binds the account with
+ * the most allocation left for this spawn's model — erroring only when
+ * every candidate is measurably out. Ignored when `account` names an
+ * account or `no_account` is set.
+ */
+auto_account?: boolean, 
+/**
  * Stage this spawn as a draft instead of dispatching it. When
  * true the server validates + persists a `draft` session row carrying the
  * spawn payload in `metadata.draft` and does NOT mint account env or

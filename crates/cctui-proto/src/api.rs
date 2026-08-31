@@ -705,6 +705,15 @@ pub struct SpawnRequest {
     /// account (a named account always binds).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub no_account: bool,
+    /// Let the server choose between the caller's accounts instead of
+    /// refusing to guess. With several matching-family accounts an unset
+    /// `account` is a `400` (the caller decides); with `auto_account` the
+    /// caller delegates that decision, and the server binds the account with
+    /// the most allocation left for this spawn's model — erroring only when
+    /// every candidate is measurably out. Ignored when `account` names an
+    /// account or `no_account` is set.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto_account: bool,
     /// Stage this spawn as a draft instead of dispatching it. When
     /// true the server validates + persists a `draft` session row carrying the
     /// spawn payload in `metadata.draft` and does NOT mint account env or
@@ -735,6 +744,7 @@ impl std::fmt::Debug for SpawnRequest {
             .field("account", &self.account)
             .field("provider", &self.provider)
             .field("no_account", &self.no_account)
+            .field("auto_account", &self.auto_account)
             .field("env", &format_args!("<{} secret(s) redacted>", self.env.len()))
             .field("save_draft", &self.save_draft)
             .field("spawn_capability", &self.spawn_capability)

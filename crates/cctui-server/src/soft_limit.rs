@@ -123,8 +123,10 @@ pub fn canonicalize_key(key: &str) -> Option<String> {
 }
 
 /// Lowercase + collapse any run of non-`[a-z0-9._-]` characters to a single `-`,
-/// trimming leading/trailing separators. Stable and markup-free.
-fn slug(s: &str) -> String {
+/// trimming leading/trailing separators. Stable and markup-free. Shared with
+/// `account_pick`, which slugs a requested model id the same way to match it
+/// against a scoped window's key.
+pub fn slug(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut prev_dash = false;
     for c in s.trim().chars() {

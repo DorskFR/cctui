@@ -494,6 +494,10 @@
 			// server resolves the exact credential under the account identity.
 			provider: noAccount ? null : spawnProvider || null,
 			no_account: noAccount,
+			// "Auto" (the empty selection) delegates the choice: the server
+			// binds whichever account has the most allocation left for this
+			// model instead of refusing to pick between several.
+			auto_account: !noAccount && !form.account.trim(),
 			save_draft: false
 		};
 	}
