@@ -8,6 +8,11 @@ ExecStart=__CLAUDE_BIN__ daemon run
 Restart=on-failure
 RestartSec=5s
 
+# A single OOM-killed child (e.g. a multi-GB tsc in a session turn) must not
+# fail the whole unit: the default policy would tear down the supervisor and
+# every live session job in this cgroup. The kernel already picked its victim.
+OOMPolicy=continue
+
 # Give the supervisor an augmented PATH so its own exec'd tooling resolves
 # regardless of the (possibly minimal) inherited environment (CCT-138).
 Environment=PATH=__CLAUDE_DAEMON_PATH__
