@@ -367,9 +367,17 @@ pub async fn pick_with_model(
     if let Some(token) = picker.token {
         req = req.bearer_auth(token);
     }
-    let resp = req.send().await.ok()?;
+    let resp = match req.send().await {
+        Ok(resp) => resp,
+        Err(e) => {
+            // Worth a warn: a misconfigured endpoint is otherwise invisible,
+            // the name just silently keeps the table's emoji.
+            tracing::warn!(error = %e, "emoji picker: request failed");
+            return None;
+        }
+    };
     if !resp.status().is_success() {
-        tracing::debug!(status = %resp.status(), "emoji picker: non-success reply");
+        tracing::warn!(status = %resp.status(), "emoji picker: non-success reply");
         return None;
     }
     let json: serde_json::Value = resp.json().await.ok()?;
