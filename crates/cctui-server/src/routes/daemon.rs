@@ -1220,32 +1220,43 @@ async fn update_status_signals(
     let children = serde_json::to_value(s.children).unwrap_or_else(|_| serde_json::json!([]));
     // Opt-in emoji prefix on the agent-supplied display name. cctui never
     // generates a title itself (see `crate::session_emoji`), so the decoration
-    // has to happen here, where the agent's name lands. The SQL picks the
-    // decorated form only when the owning user enabled `sessionEmojiPrefix`,
-    // and only when the incoming name differs from the stored one: an
-    // unchanged name is the echo of a name the user typed (spawn or rename),
-    // which stays exactly as they wrote it. Turning the setting back off
-    // restores the plain name on the next Status.
+    // has to happen here, where the agent's name lands. The keyword table's
+    // pick is written inline — instant, and the only result when no picker
+    // model is configured; a configured model then refines it below.
+    //
+    // The SQL takes the decorated form only when the owning user enabled
+    // `sessionEmojiPrefix` and the incoming name differs from the stored one:
+    // an unchanged name is the echo of a name the user typed (spawn or
+    // rename), which stays exactly as they wrote it. Turning the setting back
+    // off restores the plain name on the next Status.
     let decorated = s.name.and_then(crate::session_emoji::decorate);
-    sqlx::query(
-        "UPDATE sessions SET \
-            tempo = COALESCE($2, tempo), \
-            agent_state = COALESCE($3, agent_state), \
-            activity = COALESCE($4, activity), \
+    let row: Option<(Option<String>, bool)> = sqlx::query_as(
+        "WITH prev AS ( \
+            SELECT s.id, \
+                   s.session_name AS old_name, \
+                   COALESCE((SELECT us.data->'sessionEmojiPrefix' = 'true'::jsonb \
+                             FROM user_settings us WHERE us.user_id = s.user_id), false) \
+                     AS emoji_on \
+            FROM sessions s WHERE s.id = $1 \
+         ) \
+         UPDATE sessions SET \
+            tempo = COALESCE($2, sessions.tempo), \
+            agent_state = COALESCE($3, sessions.agent_state), \
+            activity = COALESCE($4, sessions.activity), \
             session_name = CASE \
-                WHEN $5::text IS NULL THEN session_name \
-                WHEN session_name IS NOT DISTINCT FROM $5::text THEN session_name \
-                WHEN $10::text IS NOT NULL AND ( \
-                    SELECT us.data->'sessionEmojiPrefix' = 'true'::jsonb \
-                    FROM user_settings us WHERE us.user_id = sessions.user_id \
-                ) THEN $10::text \
+                WHEN $5::text IS NULL THEN sessions.session_name \
+                WHEN sessions.session_name IS NOT DISTINCT FROM $5::text \
+                    THEN sessions.session_name \
+                WHEN prev.emoji_on AND $10::text IS NOT NULL THEN $10::text \
                 ELSE $5::text \
             END, \
-            intent = COALESCE($6, intent), \
-            model = COALESCE(model, $7), \
-            effort = COALESCE($8, effort), \
-            children = CASE WHEN jsonb_array_length($9) > 0 THEN $9 ELSE children END \
-         WHERE id = $1",
+            intent = COALESCE($6, sessions.intent), \
+            model = COALESCE(sessions.model, $7), \
+            effort = COALESCE($8, sessions.effort), \
+            children = CASE WHEN jsonb_array_length($9) > 0 THEN $9 ELSE sessions.children END \
+         FROM prev \
+         WHERE sessions.id = prev.id \
+         RETURNING prev.old_name, prev.emoji_on",
     )
     .bind(local_id)
     .bind(s.tempo)
@@ -1256,10 +1267,64 @@ async fn update_status_signals(
     .bind(s.model)
     .bind(s.effort)
     .bind(children)
-    .bind(decorated)
-    .execute(&state.pool)
+    .bind(decorated.as_deref())
+    .fetch_optional(&state.pool)
     .await?;
+
+    // Hand the freshly-changed name to the picker model, if one is configured.
+    // Only a name we just decorated qualifies, and only when it is genuinely
+    // new: comparing against the stored name with its emoji stripped means the
+    // same title re-reported on every Status costs no second call.
+    if let Some((old_name, true)) = row
+        && let (Some(name), Some(decorated)) = (s.name, decorated.as_deref())
+        && state.config.emoji_picker().is_some()
+    {
+        let already = old_name.as_deref().map(crate::session_emoji::strip_emoji);
+        if already != Some(name) {
+            spawn_emoji_refine(state, local_id, name, decorated);
+        }
+    }
     Ok(())
+}
+
+/// Ask the configured picker model for a better emoji than the table's, in the
+/// background, and swap it in.
+///
+/// Fire-and-forget on purpose: the name is already decorated and visible, so a
+/// slow or failing picker costs nothing but the table's emoji. The write is
+/// guarded on the exact value we wrote, so a rename or a newer title landing
+/// meanwhile wins instead of being clobbered by a stale answer.
+fn spawn_emoji_refine(state: &AppState, local_id: &str, name: &str, decorated: &str) {
+    let (Some(picker), client) = (state.config.emoji_picker(), state.http_client.clone()) else {
+        return;
+    };
+    let (endpoint, model, token) =
+        (picker.endpoint.to_owned(), picker.model.to_owned(), picker.token.map(str::to_owned));
+    let (pool, id) = (state.pool.clone(), local_id.to_owned());
+    let (plain, guard) = (name.to_owned(), decorated.to_owned());
+    tokio::spawn(async move {
+        let picker = crate::session_emoji::Picker {
+            endpoint: &endpoint,
+            model: &model,
+            token: token.as_deref(),
+        };
+        let Some(emoji) = crate::session_emoji::pick_with_model(&client, picker, &plain).await
+        else {
+            return;
+        };
+        let refined = format!("{emoji} {plain}");
+        if refined == guard {
+            return;
+        }
+        let _ = sqlx::query(
+            "UPDATE sessions SET session_name = $2 WHERE id = $1 AND session_name = $3",
+        )
+        .bind(&id)
+        .bind(&refined)
+        .bind(&guard)
+        .execute(&pool)
+        .await;
+    });
 }
 
 /// Fill the session row's `children` from a transcript `pr-link` line, but only
