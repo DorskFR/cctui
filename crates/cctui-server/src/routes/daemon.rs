@@ -1229,11 +1229,15 @@ async fn update_status_signals(
     // an unchanged name is the echo of a name the user typed (spawn or
     // rename), which stays exactly as they wrote it.
     //
-    // A stored name that merely ENDS with the incoming one is already decorated
-    // (by the table or, better, by the picker model) and is left alone too —
-    // without that guard every later Status would paste the table's emoji back
-    // over the model's, while the Rust check below correctly declined to ask
-    // again, pinning the name to the fallback emoji forever.
+    // A stored name that is the incoming one behind a decoration — a run of
+    // symbols and one space, i.e. an emoji prefix — is left alone too. Without
+    // that guard every later Status pasted the table's emoji back over the
+    // model's, while the Rust check below correctly declined to ask again,
+    // pinning the name to the fallback emoji forever.
+    //
+    // The prefix is matched, not just the suffix, so a genuinely new title that
+    // happens to end the old name (`🐳 Docker build` → `build`) still lands
+    // rather than being mistaken for the same name already decorated.
     //
     // Both guards hang off `emoji_on`, so switching the setting off drops
     // through to the plain name on the next Status.
@@ -1257,6 +1261,9 @@ async fn update_status_signals(
                     THEN sessions.session_name \
                 WHEN prev.emoji_on \
                      AND right(sessions.session_name, length($5::text)) = $5::text \
+                     AND left(sessions.session_name, \
+                              length(sessions.session_name) - length($5::text)) \
+                         ~ '^[^[:alnum:][:space:]]+ $' \
                     THEN sessions.session_name \
                 WHEN prev.emoji_on AND $10::text IS NOT NULL THEN $10::text \
                 ELSE $5::text \
