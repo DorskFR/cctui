@@ -157,15 +157,21 @@ async fn dispatch_spawn(
     // With no account named: exactly one matching-family account → bind it;
     // several → 400 (pick explicitly, never guess); none → unbound as before
     // (setups with no accounts configured keep working).
-    let decision = decide_account(req.account.as_deref(), req.no_account);
-    let auto_bound = matches!(decision, AccountDecision::ResolveDefault);
+    let decision = decide_account(req.account.as_deref(), req.no_account, req.auto_account);
+    let auto_bound = matches!(decision, AccountDecision::ResolveDefault | AccountDecision::Auto);
+    let picked_for_you = matches!(decision, AccountDecision::Auto);
     let account_choice = match decision {
         AccountDecision::Named(a) => Some(a),
         AccountDecision::Unbound => None,
         AccountDecision::ResolveDefault => default_account_name(state, uid, &adapter_id).await?,
+        AccountDecision::Auto => {
+            auto_account_name(state, uid, &adapter_id, model.as_deref()).await?
+        }
     };
     if let Some(account_name) = account_choice.as_deref() {
-        let acct_ref = if auto_bound {
+        let acct_ref = if picked_for_you {
+            format!("the auto-selected account {account_name:?}")
+        } else if auto_bound {
             format!("your default account {account_name:?}")
         } else {
             format!("account {account_name:?}")
@@ -352,6 +358,111 @@ async fn default_account_name(
     resolve_default_account(&names, user_id, adapter_id)
 }
 
+/// Pick the account an `auto_account` spawn binds: the one with the most
+/// allocation left for the model it will run.
+///
+/// Reads every candidate the caller may use in this adapter's provider family,
+/// resolves each through any live redirect chain (a rule moves new sessions to
+/// another account at mint time, so ranking the origin would score an account
+/// that will not serve), then reads each one's usage and hands the lot to
+/// [`crate::account_pick::pick_account`].
+///
+/// Usage comes from the same slow-refresh per-provider cache the accounts page
+/// and the gateway's soft-limit check use, so a warm cache costs nothing and a
+/// cold one costs a single tokenless call per account, made concurrently. An
+/// account whose usage cannot be read is ranked but never treated as
+/// exhausted — see the fail-open note on `pick_account`.
+async fn auto_account_name(
+    state: &AppState,
+    user_id: Uuid,
+    adapter_id: &str,
+    model: Option<&str>,
+) -> Result<Option<String>, (StatusCode, Json<ApiError>)> {
+    let family = crate::routes::gateway::Family::from_adapter(adapter_id);
+    let rows: Vec<(Uuid, String, Uuid, Option<serde_json::Value>)> = sqlx::query_as(
+        "SELECT a.id, a.name, ap.id, ap.soft_limits_json \
+         FROM account_providers ap JOIN accounts a ON a.id = ap.account_id \
+         WHERE ap.family = $2 \
+           AND (a.user_id = $1 OR EXISTS ( \
+               SELECT 1 FROM resource_shares s \
+                WHERE s.resource_type = 'account' AND s.resource_id = a.id \
+                  AND s.grantee_id = $1 AND s.revoked_at IS NULL)) \
+         ORDER BY a.name",
+    )
+    .bind(user_id)
+    .bind(family.label())
+    .fetch_all(&state.pool)
+    .await
+    .map_err(|e| {
+        tracing::error!("resolving auto account candidates: {e}");
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
+    })?;
+    if rows.is_empty() {
+        // No accounts configured: unbound spawn, exactly as an unset `account`.
+        return Ok(None);
+    }
+
+    // Redirect rules are best-effort: failing to read them must not fail the
+    // spawn, it only means we rank the origin accounts.
+    let rules = crate::store::account_redirects::live_for_launch(&state.pool, user_id)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!("auto account: reading redirects failed, ranking origins: {e}");
+            Vec::new()
+        });
+    // account id → the provider row whose usage represents it.
+    let providers: std::collections::HashMap<Uuid, Uuid> =
+        rows.iter().map(|(account_id, _, provider_id, _)| (*account_id, *provider_id)).collect();
+
+    let usages =
+        futures_util::future::join_all(rows.iter().map(|(account_id, _, provider_id, _)| {
+            // Follow the chain to whoever will actually serve; fall back to the
+            // account's own credential when the target is not one we can read.
+            let effective = crate::store::account_redirects::follow_account_chain(
+                &rules,
+                *account_id,
+                family.label(),
+            )
+            .and_then(|to| providers.get(&to).copied())
+            .unwrap_or(*provider_id);
+            async move { crate::routes::gateway::usage_for_soft_limit(state, effective).await }
+        }))
+        .await;
+
+    let candidates: Vec<crate::account_pick::Candidate> = rows
+        .iter()
+        .zip(usages)
+        .map(|((_, name, _, soft_limits_json), usage)| crate::account_pick::Candidate {
+            name: name.clone(),
+            windows: usage
+                .as_ref()
+                .map(crate::soft_limit::normalize_usage_windows)
+                .unwrap_or_default(),
+            limits: crate::soft_limit::SoftLimits::from_json(soft_limits_json.as_ref()),
+            usage_known: usage.is_some(),
+        })
+        .collect();
+
+    match crate::account_pick::pick_account(&candidates, model, chrono::Utc::now()) {
+        crate::account_pick::Pick::Chosen { name, headroom_pct } => {
+            tracing::info!(
+                %user_id, account = %name, %adapter_id, headroom_pct,
+                "auto account: bound the account with the most allocation left"
+            );
+            Ok(Some(name))
+        }
+        crate::account_pick::Pick::Exhausted(blocked) => {
+            let detail = blocked
+                .iter()
+                .map(|b| format!("{}: {}", b.name, b.reason))
+                .collect::<Vec<_>>()
+                .join("; ");
+            Err(bad_request(format!("no account has allocation left for this session ({detail})")))
+        }
+        crate::account_pick::Pick::None => Ok(None),
+    }
+}
+
 /// The account path a spawn resolves to before any DB default lookup.
 #[derive(Debug, PartialEq, Eq)]
 enum AccountDecision {
@@ -363,15 +474,19 @@ enum AccountDecision {
     /// No account named, no unbound request: fall back to the single
     /// matching-family account, if any (auto-bind).
     ResolveDefault,
+    /// The caller delegated the choice (`auto_account`): rank every candidate
+    /// by remaining allocation and bind the roomiest.
+    Auto,
 }
 
 /// Pure so the "`no_account` bypasses default resolution" contract is testable
 /// without a DB. A named account wins even if `no_account` is set, so
 /// a stale flag can never suppress an explicit pick.
-fn decide_account(account: Option<&str>, no_account: bool) -> AccountDecision {
+fn decide_account(account: Option<&str>, no_account: bool, auto_account: bool) -> AccountDecision {
     match account.map(str::trim).filter(|a| !a.is_empty()) {
         Some(a) => AccountDecision::Named(a.to_owned()),
         None if no_account => AccountDecision::Unbound,
+        None if auto_account => AccountDecision::Auto,
         None => AccountDecision::ResolveDefault,
     }
 }
@@ -624,22 +739,40 @@ mod tests {
     #[test]
     fn named_account_always_wins() {
         assert_eq!(
-            decide_account(Some(" acme "), false),
+            decide_account(Some(" acme "), false, false),
             AccountDecision::Named("acme".to_owned())
         );
-        assert_eq!(decide_account(Some("acme"), true), AccountDecision::Named("acme".to_owned()));
+        assert_eq!(
+            decide_account(Some("acme"), true, false),
+            AccountDecision::Named("acme".to_owned())
+        );
+        // A stale `auto_account` can no more override an explicit pick than a
+        // stale `no_account` can.
+        assert_eq!(
+            decide_account(Some("acme"), false, true),
+            AccountDecision::Named("acme".to_owned())
+        );
     }
 
     #[test]
     fn no_account_bypasses_default_resolution() {
-        assert_eq!(decide_account(None, true), AccountDecision::Unbound);
-        assert_eq!(decide_account(Some("   "), true), AccountDecision::Unbound);
+        assert_eq!(decide_account(None, true, false), AccountDecision::Unbound);
+        assert_eq!(decide_account(Some("   "), true, false), AccountDecision::Unbound);
+        // An explicit unbound spawn outranks auto-selection: asking for no
+        // account can never be answered with one.
+        assert_eq!(decide_account(None, true, true), AccountDecision::Unbound);
     }
 
     #[test]
     fn unset_account_resolves_default() {
-        assert_eq!(decide_account(None, false), AccountDecision::ResolveDefault);
-        assert_eq!(decide_account(Some(""), false), AccountDecision::ResolveDefault);
+        assert_eq!(decide_account(None, false, false), AccountDecision::ResolveDefault);
+        assert_eq!(decide_account(Some(""), false, false), AccountDecision::ResolveDefault);
+    }
+
+    #[test]
+    fn auto_account_delegates_the_choice() {
+        assert_eq!(decide_account(None, false, true), AccountDecision::Auto);
+        assert_eq!(decide_account(Some("  "), false, true), AccountDecision::Auto);
     }
 
     #[test]

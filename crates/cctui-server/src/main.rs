@@ -1,3 +1,4 @@
+mod account_pick;
 mod auth;
 mod authz;
 mod bandwidth_watch;
