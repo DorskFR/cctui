@@ -119,6 +119,17 @@ pub struct Config {
     /// JSON array of `{model,label}`). Only surfaced to clients when
     /// `claude_litellm_endpoint` is also set — see [`Config::claude_litellm_visible_models`].
     pub claude_litellm_models: Vec<LiteLlmModel>,
+    /// Small-model endpoint used to pick the emoji that prefixes a session
+    /// name when a user enables `sessionEmojiPrefix`. OpenAI-compatible
+    /// (`POST <endpoint>/chat/completions`) so a `LiteLLM`, Ollama or any
+    /// OpenAI-shaped proxy serves it as-is. Unset leaves the feature on its
+    /// deterministic keyword table.
+    pub emoji_endpoint: Option<String>,
+    /// Model id asked for the emoji. Required alongside the endpoint: together
+    /// they gate the model path.
+    pub emoji_model: Option<String>,
+    /// Optional bearer for [`Self::emoji_endpoint`].
+    pub emoji_token: Option<String>,
 }
 
 fn add_origin(out: &mut Vec<String>, origin: &str) {
@@ -200,6 +211,12 @@ impl Config {
             claude_litellm_token: env::var("CCTUI_CLAUDE_LITELLM_TOKEN")
                 .ok()
                 .filter(|s| !s.trim().is_empty()),
+            emoji_endpoint: env::var("CCTUI_EMOJI_ENDPOINT")
+                .ok()
+                .map(|s| s.trim().trim_end_matches('/').to_owned())
+                .filter(|s| !s.is_empty()),
+            emoji_model: env::var("CCTUI_EMOJI_MODEL").ok().filter(|s| !s.trim().is_empty()),
+            emoji_token: env::var("CCTUI_EMOJI_TOKEN").ok().filter(|s| !s.trim().is_empty()),
             claude_litellm_models: env::var("CCTUI_CLAUDE_LITELLM_MODELS")
                 .ok()
                 .filter(|s| !s.trim().is_empty())
@@ -225,6 +242,17 @@ impl Config {
         } else {
             &[]
         }
+    }
+
+    /// The configured emoji picker, or `None` when the model path is dark.
+    /// Endpoint AND model together are the feature gate, mirroring
+    /// [`Self::claude_litellm_visible_models`].
+    pub fn emoji_picker(&self) -> Option<crate::session_emoji::Picker<'_>> {
+        Some(crate::session_emoji::Picker {
+            endpoint: self.emoji_endpoint.as_deref()?,
+            model: self.emoji_model.as_deref()?,
+            token: self.emoji_token.as_deref(),
+        })
     }
 
     pub fn admin_tokens() -> Vec<String> {
@@ -259,6 +287,9 @@ impl Config {
             claude_litellm_endpoint: None,
             claude_litellm_token: None,
             claude_litellm_models: vec![],
+            emoji_endpoint: None,
+            emoji_model: None,
+            emoji_token: None,
         }
     }
 }
@@ -369,6 +400,9 @@ mod tests {
                 model: "qwen3-coder".into(),
                 label: "Qwen3-Coder".into(),
             }],
+            emoji_endpoint: None,
+            emoji_model: None,
+            emoji_token: None,
         };
 
         // Models set but endpoint missing → dark.
