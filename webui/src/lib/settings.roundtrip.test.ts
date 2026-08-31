@@ -44,6 +44,7 @@ describe('Settings save → load round-trip through the blob', () => {
 			whipStopPhrases: { mode: 'replace', phrases: ['stop now'], guidance: 'go' },
 			secretScrubEnabled: true,
 			secretScrubPatterns: [{ name: 'tok', regex: 'sk-\\w+', enabled: true }],
+			sessionEmojiPrefix: true,
 			shortcutsEnabled: true,
 			locale: 'en'
 		} as Record<string, unknown>);

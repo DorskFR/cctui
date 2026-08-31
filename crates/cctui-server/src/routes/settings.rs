@@ -293,6 +293,21 @@ pub fn secret_scrub_of(data: &Value) -> cctui_proto::ws::SecretScrubConfig {
     cctui_proto::ws::SecretScrubConfig { enabled, patterns }
 }
 
+/// Clamp `data.sessionEmojiPrefix` in place on write: coerce a present value
+/// to a real boolean so a stored row never carries a truthy string. Absence
+/// means "off", which stays implicit.
+///
+/// The flag is read back in SQL, not here: `update_status_signals` joins
+/// `user_settings` while it persists the agent-supplied session name (see
+/// `crate::session_emoji`), so a status update costs no extra round-trip.
+fn clamp_session_emoji_prefix(data: &mut Value) {
+    let Some(obj) = data.as_object_mut() else { return };
+    if obj.contains_key("sessionEmojiPrefix") {
+        let on = obj.get("sessionEmojiPrefix").and_then(Value::as_bool).unwrap_or(false);
+        obj.insert("sessionEmojiPrefix".to_owned(), Value::Bool(on));
+    }
+}
+
 pub async fn get_settings(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
@@ -338,6 +353,7 @@ pub async fn put_settings(
         return Err(StatusCode::BAD_REQUEST);
     }
     clamp_locale(&mut data);
+    clamp_session_emoji_prefix(&mut data);
     let new_mode = harness_mode_of(&data);
     let new_scrub = serde_json::to_value(secret_scrub_of(&data)).unwrap_or(Value::Null);
 
@@ -514,10 +530,29 @@ pub async fn rescrub_settings(
 #[cfg(test)]
 mod tests {
     use super::{
-        clamp_harness_mode, clamp_locale, clamp_secret_scrub, clamp_whip_stop_phrases,
-        harness_mode_of, harness_mode_to_adapter_token, secret_scrub_of, whip_stop_phrases_of,
+        clamp_harness_mode, clamp_locale, clamp_secret_scrub, clamp_session_emoji_prefix,
+        clamp_whip_stop_phrases, harness_mode_of, harness_mode_to_adapter_token, secret_scrub_of,
+        whip_stop_phrases_of,
     };
     use serde_json::json;
+
+    #[test]
+    fn clamp_session_emoji_prefix_coerces_to_a_boolean() {
+        // A truthy string must not survive: the SQL read compares the stored
+        // JSON to `true`, so only a real boolean can enable the prefix.
+        let mut truthy = json!({ "sessionEmojiPrefix": "yes" });
+        clamp_session_emoji_prefix(&mut truthy);
+        assert_eq!(truthy["sessionEmojiPrefix"], json!(false));
+
+        let mut on = json!({ "sessionEmojiPrefix": true });
+        clamp_session_emoji_prefix(&mut on);
+        assert_eq!(on["sessionEmojiPrefix"], json!(true));
+
+        // Absence stays implicit rather than being materialized as `false`.
+        let mut absent = json!({});
+        clamp_session_emoji_prefix(&mut absent);
+        assert_eq!(absent, json!({}));
+    }
 
     #[test]
     fn clamp_secret_scrub_rejects_bad_regex_and_keeps_valid() {
