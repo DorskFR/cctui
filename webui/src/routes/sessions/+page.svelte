@@ -11,6 +11,7 @@
 	import SessionCard from '$lib/components/organisms/SessionCard.svelte';
 	import ConversationDrawer from '$lib/components/organisms/ConversationDrawer.svelte';
 	import SpawnModal from '$lib/components/organisms/SpawnModal.svelte';
+	import ConfirmModal from '$lib/components/molecules/ConfirmModal.svelte';
 	import SessionControls from '$lib/components/organisms/SessionControls.svelte';
 	import KanbanBoard from '$lib/components/organisms/KanbanBoard.svelte';
 	import { AutoGrid, Button, Container, Text } from '@dorsk/tsumikit';
@@ -408,6 +409,31 @@
 		if (ids.length === 0) return;
 		if (!confirm(m.sessions_confirm_archive_all_dispatched({ count: ids.length })))
 			return;
+		archiving = true;
+		try {
+			await actions.archiveMany(ids);
+			toasts.ok(m.sessions_toast_archived({ count: ids.length }));
+			refreshTick++;
+			qc.invalidateQueries({ queryKey: ['sessions'] });
+		} catch (e) {
+			toasts.err(errMessage(e));
+		} finally {
+			archiving = false;
+		}
+	}
+
+	// Bulk-archive the Completed bucket. Unlike the dispatched sweep (unattended
+	// noise, archived on a plain confirm), Completed holds conversations the user
+	// actually ran, so it goes through the themed ConfirmModal: we stage the ids
+	// here and the dialog calls back on Yes. `null` = dialog closed.
+	let pendingArchiveDone = $state<string[] | null>(null);
+
+	// The Completed group's header button is opt-out via Settings; the per-session
+	// archive affordances are unaffected.
+	const showArchiveDone = $derived(settings.state.display.archiveDoneButton);
+
+	async function archiveAllDone(ids: string[]) {
+		if (ids.length === 0) return;
 		archiving = true;
 		try {
 			await actions.archiveMany(ids);
@@ -954,6 +980,22 @@
 								{m.sessions_archive_all()}
 							</Button>
 						</div>
+					{:else if g.key === 'done' && showArchiveDone && g.sessions.length > 0}
+						<!-- Same bulk-archive affordance as Dispatched, but confirmed
+						     through the ConfirmModal and hideable from Settings. -->
+						<div class="group-header" data-bucket={g.key}>
+							{g.label} <Text class="count">{g.sessions.length}</Text>
+							{#if !cardView}<div class="spacer"></div>{/if}
+							<Button
+								variant="danger"
+								disabled={archiving}
+								title={m.sessions_archive_all_done_title()}
+								onclick={() => (pendingArchiveDone = g.sessions.map((s) => s.id))}
+							>
+								{#if archiving}<span class="spin"></span>{/if}
+								{m.sessions_archive_all()}
+							</Button>
+						</div>
 					{:else}
 						<div class="group-header" data-bucket={g.key}>
 							{g.label} <Text class="count">{g.sessions.length}</Text>
@@ -1007,6 +1049,16 @@
 		highlight={searchTerms}
 		onNewFromScript={newFromScript}
 		onNavigate={(sid) => void navigateToForked(sid)}
+	/>
+{/if}
+
+{#if pendingArchiveDone}
+	{@const ids = pendingArchiveDone}
+	<ConfirmModal
+		title={m.sessions_confirm_archive_all_done_title()}
+		body={m.sessions_confirm_archive_all_done({ count: ids.length })}
+		onconfirm={() => archiveAllDone(ids)}
+		onclose={() => (pendingArchiveDone = null)}
 	/>
 {/if}
 

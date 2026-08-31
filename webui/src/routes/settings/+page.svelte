@@ -265,6 +265,21 @@
 						/>
 					</dd>
 				</div>
+				<div class="prop">
+					<dt>
+						<Text weight="semibold">{m.settings_archive_done_button_label()}</Text>
+						<Text size="sm" tone="faint">
+							{m.settings_archive_done_button_help()}
+						</Text>
+					</dt>
+					<dd>
+						<Switch
+							checked={settings.state.display.archiveDoneButton}
+							label={m.settings_archive_done_button_label()}
+							onclick={() => settings.toggleArchiveDoneButton()}
+						/>
+					</dd>
+				</div>
 			</dl>
 		</Stack>
 	</Card>

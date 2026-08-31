@@ -63,8 +63,20 @@ describe('Settings save → load round-trip through the blob', () => {
 		expect(loaded.display.theme).toBe('light');
 		expect(loaded.display.fontScale).toBe(1);
 		expect(loaded.display.notifySound).toBe(true);
+		// A blob written before the Completed "Archive all" button existed must
+		// surface the button (default on), not `undefined`.
+		expect(loaded.display.archiveDoneButton).toBe(true);
 		expect(loaded.locale).toBeNull();
 		expect(loaded.harnessMode).toBe('bg');
+	});
+
+	it('the Completed archive-all button toggle round-trips', () => {
+		expect(settings.archiveDoneButton).toBe(true);
+		settings.toggleArchiveDoneButton();
+		expect(settings.archiveDoneButton).toBe(false);
+		expect(loadFromCache().display.archiveDoneButton).toBe(false);
+		settings.toggleArchiveDoneButton();
+		expect(loadFromCache().display.archiveDoneButton).toBe(true);
 	});
 
 	it('clamps an unknown harness mode / locale on load', () => {
