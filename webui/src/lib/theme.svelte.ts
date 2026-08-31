@@ -35,52 +35,101 @@ export const THEMES = [
 	{ id: 'amoled', label: 'AMOLED (high contrast)', icon: '◼', themeColor: '#000000', mode: 'dark' }
 ] as const;
 
-export type Mode = (typeof THEMES)[number]['id'];
+// "Auto" is not a palette: it defers to the OS/browser via
+// `prefers-color-scheme` and resolves to one of the two base themes below. It
+// lives outside THEMES so the registry stays a list of real palettes (every
+// entry there has a [data-theme] block in variables.css); the pickers prepend
+// it themselves.
+export const AUTO = { id: 'auto', label: 'Auto', icon: '\u25d1', mode: 'auto' } as const;
+export const AUTO_DARK: ThemeId = 'dark';
+export const AUTO_LIGHT: ThemeId = 'light';
+
+export type ThemeId = (typeof THEMES)[number]['id'];
+export type Mode = ThemeId | typeof AUTO.id;
 export type ThemeMode = (typeof THEMES)[number]['mode'];
 type ThemeOption = (typeof THEMES)[number];
 
-const ORDER: Mode[] = THEMES.map((theme) => theme.id);
+// 'auto' leads the cycle so the header's keyboard/scroll cycling can reach it.
+const ORDER: Mode[] = [AUTO.id, ...THEMES.map((theme) => theme.id)];
 
 function isMode(value: string | null): value is Mode {
-	return THEMES.some((theme) => theme.id === value);
+	return value === AUTO.id || THEMES.some((theme) => theme.id === value);
 }
 
-function optionFor(mode: Mode): ThemeOption {
+function optionFor(mode: ThemeId): ThemeOption {
 	return THEMES.find((theme) => theme.id === mode) ?? THEMES[0];
+}
+
+// The media query that backs 'auto'. Read lazily: jsdom and older Safari can
+// leave matchMedia undefined, and a missing query must degrade to light rather
+// than throw at module load.
+function prefersDark(): boolean {
+	if (!browser || typeof window.matchMedia !== 'function') return false;
+	return window.matchMedia('(prefers-color-scheme: dark)').matches;
 }
 
 class Theme {
 	current = $state<Mode>('dark');
+	// Bumped by the media-query listener so `resolved` (and everything derived
+	// from it) re-runs when the OS flips light/dark while we sit on 'auto'.
+	private systemDark = $state(false);
 
 	constructor() {
 		if (browser) {
 			const saved = localStorage.getItem(KEY);
 			this.current = isMode(saved) ? saved : 'dark';
+			this.systemDark = prefersDark();
+			this.watchSystem();
 			this.apply();
 		}
 	}
+	// Follow the OS preference for as long as the page lives. The listener stays
+	// attached whatever the current theme: it only costs a state write, and it
+	// means switching to 'auto' later is already up to date.
+	private watchSystem() {
+		if (!browser || typeof window.matchMedia !== 'function') return;
+		const mq = window.matchMedia('(prefers-color-scheme: dark)');
+		const onChange = (e: MediaQueryListEvent) => {
+			this.systemDark = e.matches;
+			if (this.current === AUTO.id) this.apply();
+		};
+		if (typeof mq.addEventListener === 'function') mq.addEventListener('change', onChange);
+		else mq.addListener?.(onChange);
+	}
 	private apply() {
 		if (!browser) return;
-		document.documentElement.setAttribute('data-theme', this.current);
+		document.documentElement.setAttribute('data-theme', this.resolved);
 		document
 			.querySelector<HTMLMetaElement>('meta[name="theme-color"]')
 			?.setAttribute('content', this.option.themeColor);
 	}
-	get option(): ThemeOption {
-		return optionFor(this.current);
+	// The palette actually painted: identity for a real theme, the OS choice for
+	// 'auto'. `data-theme` and the theme-color meta must never see 'auto' — no
+	// such block exists in variables.css.
+	get resolved(): ThemeId {
+		if (this.current !== AUTO.id) return this.current;
+		return this.systemDark ? AUTO_DARK : AUTO_LIGHT;
 	}
+	get isAuto(): boolean {
+		return this.current === AUTO.id;
+	}
+	get option(): ThemeOption {
+		return optionFor(this.resolved);
+	}
+	// Label and icon describe the *selection*, not the resolution, so the header
+	// tooltip reads "Auto" rather than the palette auto happens to land on.
 	get label(): string {
-		return this.option.label;
+		return this.isAuto ? AUTO.label : this.option.label;
 	}
 	get icon(): string {
-		return this.option.icon;
+		return this.isAuto ? AUTO.icon : this.option.icon;
 	}
-	get next(): ThemeOption {
+	get next(): Mode {
 		const i = ORDER.indexOf(this.current);
-		return optionFor(ORDER[(i + 1) % ORDER.length]);
+		return ORDER[(i + 1) % ORDER.length];
 	}
 	toggle() {
-		this.set(this.next.id);
+		this.set(this.next);
 	}
 	set(mode: Mode) {
 		this.current = mode;

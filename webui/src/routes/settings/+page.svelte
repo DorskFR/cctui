@@ -5,7 +5,7 @@
 	// the settings catalogue.
 	import { settings } from '$lib/settings.svelte';
 	import { LOCALE_LABELS, LOCALES, type Locale } from '$lib/locale.svelte';
-	import { theme, THEMES } from '$lib/theme.svelte';
+	import { AUTO, theme, THEMES } from '$lib/theme.svelte';
 	import { fontScale, SCALE_LEVELS } from '$lib/fontscale.svelte';
 	import { notify } from '$lib/notify.svelte';
 	import { Card, Heading, Select, Stack, Switch, Text, Textarea, Field } from '@dorsk/tsumikit';
@@ -230,6 +230,7 @@
 							value={theme.current}
 							onchange={(e) => setTheme((e.currentTarget as HTMLSelectElement).value)}
 						>
+							<option value={AUTO.id}>{AUTO.icon} {m.nav_theme_auto()}</option>
 							{#each THEMES as t (t.id)}
 								<option value={t.id}>{t.icon} {t.label}</option>
 							{/each}
