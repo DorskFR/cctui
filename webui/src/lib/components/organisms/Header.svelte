@@ -3,7 +3,7 @@
 	import { useVersion, useSessions, qk } from '$lib/queries';
 	import type { SessionListResponse } from '@bindings/SessionListResponse';
 	import { useQueryClient } from '@tanstack/svelte-query';
-	import { theme, THEMES } from '$lib/theme.svelte';
+	import { AUTO, theme, THEMES } from '$lib/theme.svelte';
 	import { fontScale, SCALE_LEVELS } from '$lib/fontscale.svelte';
 	import { notify } from '$lib/notify.svelte';
 	import { settings } from '$lib/settings.svelte';
@@ -128,6 +128,10 @@
 			title={m.nav_theme_tooltip({ theme: theme.label })}
 			value={theme.current}
 			groups={[
+				{
+					label: m.nav_theme_system(),
+					options: [{ value: AUTO.id, label: `${AUTO.icon}  ${m.nav_theme_auto()}` }]
+				},
 				{
 					label: m.nav_theme_light(),
 					options: THEMES.filter((t) => t.mode === 'light').map((t) => ({
