@@ -32,10 +32,11 @@ const PLIST_TEMPLATE: &str =
 
 /// Ensure the managed claude-daemon service is installed, loaded and started.
 ///
-/// Idempotent and cheap on the hot path: if the service is already active it
-/// short-circuits after a single status probe, so calling this from every
-/// kickstart poll does not churn the running supervisor. Only when the service
-/// is absent does it write the unit/plist and start it. Best-effort — the
+/// Idempotent and cheap on the hot path: if the service is already active and
+/// the installed unit matches the bundled template it short-circuits, so
+/// calling this from every kickstart poll does not churn the running
+/// supervisor. A stale unit is rewritten and daemon-reloaded in place (Linux)
+/// — no restart, so live session jobs survive the refresh. Best-effort — the
 /// caller logs failures and retries; a still-missing socket surfaces as the
 /// usual poll/dispatch error.
 #[cfg(target_os = "macos")]
@@ -178,15 +179,25 @@ mod linux {
     }
 
     pub(super) fn ensure(claude_bin: &str) -> Result<()> {
+        let dir = unit_dir()?;
+        let path = dir.join(UNIT_NAME);
+        let rendered = render_unit(claude_bin);
+        let stale =
+            std::fs::read_to_string(&path).is_ok_and(|cur| cur != rendered) || !path.is_file();
+        if !stale && is_active() {
+            return Ok(());
+        }
+        if stale {
+            std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
+            std::fs::write(&path, &rendered)
+                .with_context(|| format!("write {}", path.display()))?;
+            // daemon-reload, never restart: live session jobs must survive.
+            systemctl(&["daemon-reload"])?;
+            tracing::info!(unit = UNIT_NAME, "refreshed managed claude daemon unit");
+        }
         if is_active() {
             return Ok(());
         }
-        let dir = unit_dir()?;
-        std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
-        let path = dir.join(UNIT_NAME);
-        std::fs::write(&path, render_unit(claude_bin))
-            .with_context(|| format!("write {}", path.display()))?;
-        systemctl(&["daemon-reload"])?;
         // `enable --now` is idempotent: it enables the unit and starts it if
         // not already running. Its own user unit -> its own cgroup, never
         // cctui-daemon.service's KillMode=control-group cgroup.
@@ -316,6 +327,10 @@ mod tests {
     fn unit_is_restart_on_failure_and_out_of_cctui_cgroup() {
         let unit = render_unit("/usr/local/bin/claude");
         assert!(unit.contains("Restart=on-failure"), "always-resident supervisor:\n{unit}");
+        assert!(
+            unit.contains("OOMPolicy=continue"),
+            "an OOM-killed child must not fail the unit and kill every session:\n{unit}"
+        );
         // Its own unit — must NOT reference cctui-daemon's unit/cgroup, or a
         // cctui restart (KillMode=control-group) would take it down with it.
         let directives: String = unit
