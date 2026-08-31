@@ -1227,8 +1227,16 @@ async fn update_status_signals(
     // The SQL takes the decorated form only when the owning user enabled
     // `sessionEmojiPrefix` and the incoming name differs from the stored one:
     // an unchanged name is the echo of a name the user typed (spawn or
-    // rename), which stays exactly as they wrote it. Turning the setting back
-    // off restores the plain name on the next Status.
+    // rename), which stays exactly as they wrote it.
+    //
+    // A stored name that merely ENDS with the incoming one is already decorated
+    // (by the table or, better, by the picker model) and is left alone too —
+    // without that guard every later Status would paste the table's emoji back
+    // over the model's, while the Rust check below correctly declined to ask
+    // again, pinning the name to the fallback emoji forever.
+    //
+    // Both guards hang off `emoji_on`, so switching the setting off drops
+    // through to the plain name on the next Status.
     let decorated = s.name.and_then(crate::session_emoji::decorate);
     let row: Option<(Option<String>, bool)> = sqlx::query_as(
         "WITH prev AS ( \
@@ -1246,6 +1254,9 @@ async fn update_status_signals(
             session_name = CASE \
                 WHEN $5::text IS NULL THEN sessions.session_name \
                 WHEN sessions.session_name IS NOT DISTINCT FROM $5::text \
+                    THEN sessions.session_name \
+                WHEN prev.emoji_on \
+                     AND right(sessions.session_name, length($5::text)) = $5::text \
                     THEN sessions.session_name \
                 WHEN prev.emoji_on AND $10::text IS NOT NULL THEN $10::text \
                 ELSE $5::text \
