@@ -892,6 +892,8 @@
 	"settings_redaction_patterns_label": "Motifs supplémentaires",
 	"settings_redaction_title": "Masquage des secrets",
 	"settings_sections_label": "Sections",
+	"settings_session_emoji_help": "Préfixe les noms générés par l'agent d'un emoji adapté au sujet. Les noms que vous avez saisis ne sont pas modifiés.",
+	"settings_session_emoji_label": "Emoji dans les noms de session",
 	"settings_session_list_title": "Liste des sessions",
 	"settings_sort_activity": "Activité récente",
 	"settings_sort_created": "Création",

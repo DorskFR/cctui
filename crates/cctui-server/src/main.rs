@@ -20,6 +20,7 @@ mod policy;
 mod presence;
 mod registry;
 mod routes;
+mod session_emoji;
 mod settings_catalog;
 mod skill_store;
 mod soft_limit;

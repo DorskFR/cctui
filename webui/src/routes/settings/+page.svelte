@@ -111,6 +111,11 @@
 		'happy to keep going'
 	];
 
+	// Emoji prefix on agent-generated session names. cctui does not generate the
+	// names itself, so the prefix is added server-side when the name lands; a
+	// name the user typed is left alone.
+	const sessionEmojiPrefix = $derived(settings.sessionEmojiPrefix);
+
 	// Daemon-side secret redaction. The switch toggles live scrubbing;
 	// the textarea holds one extra regex per line, layered on the daemon's
 	// compiled defaults. The server validates each regex on save.
@@ -213,6 +218,19 @@
 						<Text size="sm" tone="faint">{csv(sl.labelFilter) || m.common_none()}</Text>
 					</dt>
 					<dd></dd>
+				</div>
+				<div class="prop">
+					<dt>
+						<Text weight="semibold">{m.settings_session_emoji_label()}</Text>
+						<Text size="sm" tone="faint">{m.settings_session_emoji_help()}</Text>
+					</dt>
+					<dd>
+						<Switch
+							checked={sessionEmojiPrefix}
+							label={m.settings_session_emoji_label()}
+							onclick={() => settings.setSessionEmojiPrefix(!sessionEmojiPrefix)}
+						/>
+					</dd>
 				</div>
 			</dl>
 		</Stack>

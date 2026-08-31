@@ -111,6 +111,11 @@ export interface SettingsState {
 	// clamps and syncs to the daemon via Reconcile.
 	secretScrubEnabled: boolean;
 	secretScrubPatterns: SecretScrubPattern[];
+	// Prefix auto-generated session names with an emoji. Top-level so it
+	// serializes as `data.sessionEmojiPrefix`, which the server reads while it
+	// persists the name the agent reported (cctui does not generate the name
+	// itself). Off by default; a name the user typed is never decorated.
+	sessionEmojiPrefix: boolean;
 	// Per-(machine, working-dir) spawn memory: the config last
 	// submitted from the spawn modal, keyed by machineMemoryKey/dispatchMemoryKey
 	// (spawnMemory.ts), LRU-capped. Replaces the localStorage per-machine prefs
@@ -146,6 +151,7 @@ const DEFAULTS: SettingsState = {
 	whipStopPhrases: { mode: DEFAULT_WHIP_MODE, phrases: [], guidance: '' },
 	secretScrubEnabled: false,
 	secretScrubPatterns: [],
+	sessionEmojiPrefix: false,
 	spawnMemory: {},
 	shortcutsEnabled: false,
 	keymap: {},
@@ -168,6 +174,7 @@ export function mergeDefaults(partial: Partial<SettingsState> | null | undefined
 		whipStopPhrases: mergeWhipStopPhrases(p.whipStopPhrases),
 		secretScrubEnabled: p.secretScrubEnabled === true,
 		secretScrubPatterns: mergeSecretScrubPatterns(p.secretScrubPatterns),
+		sessionEmojiPrefix: p.sessionEmojiPrefix === true,
 		spawnMemory: p.spawnMemory ?? {},
 		shortcutsEnabled: p.shortcutsEnabled ?? DEFAULTS.shortcutsEnabled,
 		keymap: p.keymap ?? DEFAULTS.keymap,
@@ -365,6 +372,18 @@ class Settings {
 
 	get secretScrubPatterns(): SecretScrubPattern[] {
 		return this.state.secretScrubPatterns;
+	}
+
+	// Emoji prefix on agent-generated session names. Applied server-side when
+	// the name lands, so it shows up everywhere the name does (list, cards,
+	// notifications), not just in this browser.
+	setSessionEmojiPrefix(on: boolean) {
+		this.state.sessionEmojiPrefix = on;
+		this.persist();
+	}
+
+	get sessionEmojiPrefix(): boolean {
+		return this.state.sessionEmojiPrefix;
 	}
 
 	// Spawn memory: write on spawn submit, recall on machine/cwd (or

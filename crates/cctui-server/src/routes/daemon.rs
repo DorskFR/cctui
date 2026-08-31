@@ -1218,12 +1218,29 @@ async fn update_status_signals(
     s: StatusSignals<'_>,
 ) -> anyhow::Result<()> {
     let children = serde_json::to_value(s.children).unwrap_or_else(|_| serde_json::json!([]));
+    // Opt-in emoji prefix on the agent-supplied display name. cctui never
+    // generates a title itself (see `crate::session_emoji`), so the decoration
+    // has to happen here, where the agent's name lands. The SQL picks the
+    // decorated form only when the owning user enabled `sessionEmojiPrefix`,
+    // and only when the incoming name differs from the stored one: an
+    // unchanged name is the echo of a name the user typed (spawn or rename),
+    // which stays exactly as they wrote it. Turning the setting back off
+    // restores the plain name on the next Status.
+    let decorated = s.name.and_then(crate::session_emoji::decorate);
     sqlx::query(
         "UPDATE sessions SET \
             tempo = COALESCE($2, tempo), \
             agent_state = COALESCE($3, agent_state), \
             activity = COALESCE($4, activity), \
-            session_name = COALESCE($5, session_name), \
+            session_name = CASE \
+                WHEN $5::text IS NULL THEN session_name \
+                WHEN session_name IS NOT DISTINCT FROM $5::text THEN session_name \
+                WHEN $10::text IS NOT NULL AND ( \
+                    SELECT us.data->'sessionEmojiPrefix' = 'true'::jsonb \
+                    FROM user_settings us WHERE us.user_id = sessions.user_id \
+                ) THEN $10::text \
+                ELSE $5::text \
+            END, \
             intent = COALESCE($6, intent), \
             model = COALESCE(model, $7), \
             effort = COALESCE($8, effort), \
@@ -1239,6 +1256,7 @@ async fn update_status_signals(
     .bind(s.model)
     .bind(s.effort)
     .bind(children)
+    .bind(decorated)
     .execute(&state.pool)
     .await?;
     Ok(())
