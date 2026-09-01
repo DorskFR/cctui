@@ -8,7 +8,7 @@
 	import type { SessionListResponse } from '@bindings/SessionListResponse';
 	import { page } from '$app/state';
 	import { auth } from '$lib/auth.svelte';
-	import { settings } from '$lib/settings.svelte';
+	import { settings, sessionListWidthSize } from '$lib/settings.svelte';
 	import { locale } from '$lib/locale.svelte';
 	import { ws } from '$lib/ws.svelte';
 	import Header from '$lib/components/organisms/Header.svelte';
@@ -24,6 +24,16 @@
 	// The embedded review center manages its own full-height layout, so
 	// it renders outside the width-capped Container and without content padding.
 	const isReview = $derived(page.url.pathname.startsWith('/github'));
+
+	// The session list is the one screen whose rows are wide composites rather
+	// than prose, so its column width is user-settable (Settings › Session list).
+	// Every other route keeps --content-max. `undefined` = keep the default, and
+	// the cap only bites above it, so a phone is unaffected whatever is picked.
+	const contentSize = $derived(
+		page.url.pathname.startsWith('/sessions')
+			? sessionListWidthSize(settings.sessionListWidth)
+			: undefined
+	);
 
 	// One delegated listener for every code-block copy button.
 	$effect(() => {
@@ -108,7 +118,7 @@
 					{#if isReview}
 						{@render children?.()}
 					{:else}
-						<Container>
+						<Container size={contentSize}>
 							{@render children?.()}
 						</Container>
 					{/if}

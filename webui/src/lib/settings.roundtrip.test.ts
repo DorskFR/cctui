@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { CURRENT_VERSION, mergeDefaults, settings } from './settings.svelte';
+import {
+	CURRENT_VERSION,
+	clampSessionListWidth,
+	mergeDefaults,
+	sessionListWidthSize,
+	settings
+} from './settings.svelte';
 import { auth } from './auth.svelte';
 
 const KEY = 'cctui_settings';
@@ -50,6 +56,30 @@ describe('Settings save → load round-trip through the blob', () => {
 		} as Record<string, unknown>);
 		const reloaded = mergeDefaults(JSON.parse(JSON.stringify(saved)) as Record<string, unknown>);
 		expect(reloaded).toEqual(saved);
+	});
+
+	it('list width and account-name toggle survive a persist then reload', () => {
+		settings.setSessionList({ width: 'full', accountNames: true });
+
+		const loaded = loadFromCache();
+		expect(loaded.sessionList.width).toBe('full');
+		expect(loaded.sessionList.accountNames).toBe(true);
+	});
+
+	it('an unknown stored width clamps to the default and account names default off', () => {
+		const merged = mergeDefaults({
+			sessionList: { width: 'gigantic' }
+		} as unknown as Record<string, unknown>);
+		expect(merged.sessionList.width).toBe('default');
+		expect(merged.sessionList.accountNames).toBe(false);
+		expect(clampSessionListWidth(undefined)).toBe('default');
+	});
+
+	it('each width maps to a CSS length, the default keeping --content-max', () => {
+		expect(sessionListWidthSize('default')).toBeUndefined();
+		expect(sessionListWidthSize('wide')).toBe('72rem');
+		expect(sessionListWidthSize('ultra')).toBe('var(--content-wide)');
+		expect(sessionListWidthSize('full')).toBe('100%');
 	});
 
 	it('a persisted blob keyed as version restores through the setter path', () => {
