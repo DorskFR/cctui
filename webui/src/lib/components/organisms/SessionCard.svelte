@@ -3,6 +3,7 @@
 	import { statusBadgeClass, modelShort, modelFamily } from '$lib/format';
 	import MachineBadge from '$lib/components/molecules/MachineBadge.svelte';
 	import AccountBadge from '$lib/components/molecules/AccountBadge.svelte';
+	import { settings } from '$lib/settings.svelte';
 	import SessionDot from '$lib/components/molecules/SessionDot.svelte';
 	import LabelBadge from '$lib/components/molecules/LabelBadge.svelte';
 	import TokenUsage from '$lib/components/molecules/TokenUsage.svelte';
@@ -556,7 +557,7 @@
 		<Badge tone="info" style="padding:0.05rem var(--sp-2)">{m.sessions_subagent_badge()}</Badge>
 	{:else}
 		<MachineBadge name={s.machine_name} id={s.machine_id} hue={s.machine_hue} mono />
-		<AccountBadge name={s.account_name} warn={accountTrafficWarning(s)} />
+		<AccountBadge name={s.account_name} warn={accountTrafficWarning(s)} showName={settings.accountNames} />
 	{/if}
 {/snippet}
 

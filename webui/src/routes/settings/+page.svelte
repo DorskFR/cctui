@@ -207,6 +207,39 @@
 				</div>
 				<div class="prop">
 					<dt>
+						<Text weight="semibold">{m.settings_list_width_label()}</Text>
+						<Text size="sm" tone="faint">{m.settings_list_width_help()}</Text>
+					</dt>
+					<dd>
+						<Select
+							value={sl.width}
+							onchange={(e) =>
+								settings.setSessionList({
+									width: (e.currentTarget as HTMLSelectElement).value as typeof sl.width
+								})}
+						>
+							<option value="default">{m.settings_list_width_default()}</option>
+							<option value="wide">{m.settings_list_width_wide()}</option>
+							<option value="ultra">{m.settings_list_width_ultra()}</option>
+							<option value="full">{m.settings_list_width_full()}</option>
+						</Select>
+					</dd>
+				</div>
+				<div class="prop">
+					<dt>
+						<Text weight="semibold">{m.settings_account_names_label()}</Text>
+						<Text size="sm" tone="faint">{m.settings_account_names_help()}</Text>
+					</dt>
+					<dd>
+						<Switch
+							checked={sl.accountNames}
+							label={m.settings_account_names_label()}
+							onclick={() => settings.setSessionList({ accountNames: !sl.accountNames })}
+						/>
+					</dd>
+				</div>
+				<div class="prop">
+					<dt>
 						<Text weight="semibold">{m.settings_sections_label()}</Text>
 						<Text size="sm" tone="faint">{sl.section || m.common_all()}</Text>
 					</dt>

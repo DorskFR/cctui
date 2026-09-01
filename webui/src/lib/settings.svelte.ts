@@ -40,6 +40,42 @@ export interface SessionListSettings {
 	// dimension enum (`Dimension` in sessions.logic.ts); both default 'none'.
 	colorBy: 'none' | 'label' | 'working_dir' | 'machine';
 	groupBy: 'none' | 'label' | 'working_dir' | 'machine';
+	// How wide the centered session-list column is allowed to grow. Only bites on
+	// screens wider than the chosen cap, so it is a desktop-only knob in practice:
+	// a phone viewport is already narrower than the default.
+	width: SessionListWidth;
+	// Show the account NAME next to each row instead of the key glyph. Off by
+	// default (the glyph keeps the row terse); worth turning on when several
+	// accounts of the same provider are in play, where every glyph looks alike.
+	accountNames: boolean;
+}
+
+// Session-list column widths, as the `size` handed to the layout Container.
+// `default` keeps --content-max (the width every other screen uses).
+export const SESSION_LIST_WIDTHS = ['default', 'wide', 'ultra', 'full'] as const;
+export type SessionListWidth = (typeof SESSION_LIST_WIDTHS)[number];
+export const DEFAULT_SESSION_LIST_WIDTH: SessionListWidth = 'default';
+
+/** The CSS length for a width choice, or `undefined` to keep --content-max. */
+export function sessionListWidthSize(w: SessionListWidth): string | undefined {
+	switch (w) {
+		case 'wide':
+			return '72rem';
+		case 'ultra':
+			return 'var(--content-wide)';
+		case 'full':
+			return '100%';
+		default:
+			return undefined;
+	}
+}
+
+/** Clamp an arbitrary stored value to a known width (an older/corrupt blob must
+ *  not leak an invalid length into the Container's inline style). */
+export function clampSessionListWidth(v: unknown): SessionListWidth {
+	return SESSION_LIST_WIDTHS.includes(v as SessionListWidth)
+		? (v as SessionListWidth)
+		: DEFAULT_SESSION_LIST_WIDTH;
 }
 
 export interface DisplaySettings {
@@ -138,7 +174,9 @@ const DEFAULTS: SettingsState = {
 		section: '',
 		labelFilter: [],
 		colorBy: 'none',
-		groupBy: 'none'
+		groupBy: 'none',
+		width: DEFAULT_SESSION_LIST_WIDTH,
+		accountNames: false
 	},
 	display: {
 		theme: 'dark',
@@ -166,7 +204,14 @@ const DEFAULTS: SettingsState = {
 export function mergeDefaults(partial: Partial<SettingsState> | null | undefined): SettingsState {
 	const p = partial ?? {};
 	return {
-		sessionList: { ...DEFAULTS.sessionList, ...(p.sessionList ?? {}) },
+		sessionList: {
+			...DEFAULTS.sessionList,
+			...(p.sessionList ?? {}),
+			// Clamp so a stale/unknown stored value renders as the default column
+			// width rather than an invalid CSS length.
+			width: clampSessionListWidth(p.sessionList?.width),
+			accountNames: p.sessionList?.accountNames === true
+		},
 		display: { ...DEFAULTS.display, ...(p.display ?? {}) },
 		// Clamp to a known mode so an unknown stored value renders as `bg` (matches
 		// the server's clamp on PUT).
@@ -293,6 +338,17 @@ class Settings {
 	setSessionList(patch: Partial<SessionListSettings>) {
 		this.state.sessionList = { ...this.state.sessionList, ...patch };
 		this.persist();
+	}
+
+	/** Column width of the session list, clamped on read so a blob written by a
+	 *  newer/older build can never feed a bogus length to the Container. */
+	get sessionListWidth(): SessionListWidth {
+		return clampSessionListWidth(this.state.sessionList.width);
+	}
+
+	/** Whether session rows spell the account name out instead of the key glyph. */
+	get accountNames(): boolean {
+		return this.state.sessionList.accountNames === true;
 	}
 	setDisplay(patch: Partial<DisplaySettings>) {
 		this.state.display = { ...this.state.display, ...patch };

@@ -178,7 +178,7 @@
 		{/if}
 		<SessionDot {session} {livenessClass} />
 		<MachineBadge name={session.machine_name} id={session.machine_id} hue={session.machine_hue} mono />
-		<AccountBadge name={session.account_name} onclick={onAccountClick} />
+		<AccountBadge name={session.account_name} onclick={onAccountClick} showName={settings.accountNames} />
 		<div class="dtitle">
 			{#if renaming}
 				<Input bind:value={newName} onkeydown={(e: KeyboardEvent) => e.key === 'Enter' && doRename()} />

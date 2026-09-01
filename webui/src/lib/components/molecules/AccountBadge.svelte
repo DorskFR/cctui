@@ -14,11 +14,18 @@
 	// `warn` marks an account-bound session whose gateway token has never been
 	// observed at the gateway — it may be silently running on ambient credentials.
 	// The glyph turns to a warning hue and the tooltip explains the mismatch.
+	//
+	// `showName` (Settings › Session list › "Account names") swaps the glyph for
+	// the account name itself: with two accounts on the same provider every glyph
+	// looks alike, and the name is the only thing that tells them apart at a
+	// glance. Everything else — tooltip, click target, warn hue — is unchanged.
 	let {
 		name,
 		onclick,
 		warn = false,
-	}: { name?: string | null; onclick?: () => void; warn?: boolean } = $props();
+		showName = false,
+	}: { name?: string | null; onclick?: () => void; warn?: boolean; showName?: boolean } =
+		$props();
 
 	const tip = $derived(
 		warn && name
@@ -38,6 +45,7 @@
 			<span
 				class="acct"
 				class:clickable={!!onclick}
+				class:named={showName}
 				class:warn
 				role={onclick ? 'button' : undefined}
 				tabindex={onclick ? 0 : undefined}
@@ -52,18 +60,22 @@
 						}
 					: undefined}
 			>
-				<!-- lucide key-round, sized in em so it tracks the font-scale picker. -->
-				<svg
-					viewBox="0 0 24 24"
-					fill="none"
-					stroke="currentColor"
-					stroke-width="2"
-					stroke-linecap="round"
-					stroke-linejoin="round"
-					aria-hidden="true"
-				>
-					<path d="m21 2-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0 3 3L22 7l-3-3" />
-				</svg>
+				{#if showName}
+					{name}
+				{:else}
+					<!-- lucide key-round, sized in em so it tracks the font-scale picker. -->
+					<svg
+						viewBox="0 0 24 24"
+						fill="none"
+						stroke="currentColor"
+						stroke-width="2"
+						stroke-linecap="round"
+						stroke-linejoin="round"
+						aria-hidden="true"
+					>
+						<path d="m21 2-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0 3 3L22 7l-3-3" />
+					</svg>
+				{/if}
 			</span>
 		{/snippet}
 	</Tooltip>
@@ -90,6 +102,16 @@
 	}
 	.acct.warn {
 		color: var(--warn);
+	}
+	/* Name variant: a quiet text chip, capped so a long account name can't push
+	   the rest of the row's chips off the end. It still shrinks to its content
+	   when short. */
+	.acct.named {
+		max-width: 12ch;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		font-size: var(--fs-xs);
 	}
 	.acct svg {
 		/* em-relative so the glyph scales with the font-scale picker. */
