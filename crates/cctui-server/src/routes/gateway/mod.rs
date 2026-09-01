@@ -12,7 +12,10 @@
 //!      client header is preserved verbatim.
 //!   3. Status codes, `retry-after`, overload/streaming reconnects pass through
 //!      untouched — the harness handles backoff exactly as if talking upstream
-//!      directly. **No retries, no rate-limit handling.**
+//!      directly. **No retries, no rate-limit handling** — with one exception:
+//!      when the bound account is out of allocation (soft-limit refusal or an
+//!      upstream 429) and a sibling account has headroom, the session is
+//!      rebound to it and the worker's own 429 retry lands there ([`failover`]).
 //!
 //! Request bodies stream through unread unless an account opts into shaping
 //! ([`FireworksSettings`], [`AnthropicSettings`]) or Langfuse samples the call;
@@ -22,6 +25,7 @@
 //! Raw OAuth tokens never enter worker env, logs, or session records.
 
 mod config;
+mod failover;
 mod limits;
 mod mint;
 mod proxy;
@@ -30,6 +34,7 @@ mod refresh;
 mod usage;
 
 pub use config::*;
+pub use failover::*;
 pub use limits::*;
 pub use mint::*;
 pub use proxy::*;
@@ -64,9 +69,10 @@ mod tests {
     use super::{
         AnthropicSettings, AuthStage, Family, FireworksSettings, OrphanSpamMap,
         access_token_is_fresh, apply_anthropic_cache_defaults, apply_gateway_env, auth_error,
-        bump_orphan_401, clear_orphan_fingerprint, map_wham_usage, merge_session_budget,
-        needs_rebind, orphan_is_blocked_at, resolve_catalog_model, skip_request_header,
-        skip_response_header, tees_response, ttl_hours_from, usage_cache_stale, window_utilization,
+        bump_orphan_401, clear_orphan_fingerprint, cooldown_active, failover_retry_response,
+        flag_disables, map_wham_usage, merge_session_budget, needs_rebind, note_failover,
+        orphan_is_blocked_at, resolve_catalog_model, skip_request_header, skip_response_header,
+        tees_response, ttl_hours_from, usage_cache_stale, window_utilization,
     };
     use chrono::{Duration as ChronoDuration, Utc};
     use std::collections::BTreeMap;
@@ -1122,5 +1128,42 @@ mod tests {
         }
 
         sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
+    }
+
+    #[test]
+    fn failover_cooldown_spaces_rebinds_and_expires() {
+        let map = dashmap::DashMap::new();
+        let t0 = Instant::now();
+        assert!(!cooldown_active(&map, "s1", t0, Duration::from_secs(60)));
+        note_failover(&map, "s1", t0);
+        assert!(cooldown_active(&map, "s1", t0 + Duration::from_secs(59), Duration::from_secs(60)));
+        assert!(!cooldown_active(
+            &map,
+            "s1",
+            t0 + Duration::from_secs(61),
+            Duration::from_secs(60)
+        ));
+        // Another session is never held back by s1's stamp.
+        assert!(!cooldown_active(&map, "s2", t0, Duration::from_secs(60)));
+    }
+
+    #[test]
+    fn failover_flag_only_disables_on_explicit_off_values() {
+        for off in ["0", "false", "off", "no", " False ", "OFF"] {
+            assert!(flag_disables(off), "{off:?} must disable");
+        }
+        for on in ["1", "true", "yes", "", "on", "anything"] {
+            assert!(!flag_disables(on), "{on:?} must not disable");
+        }
+    }
+
+    #[test]
+    fn failover_retry_response_sends_the_worker_straight_back() {
+        let resp = failover_retry_response("Secours", true);
+        assert_eq!(resp.status(), http::StatusCode::TOO_MANY_REQUESTS);
+        let retry = resp.headers().get(http::header::RETRY_AFTER).unwrap();
+        assert_eq!(retry, "1", "an immediate retry, not the exhausted window's horizon");
+        assert_eq!(resp.headers().get("x-cctui-failover").unwrap(), "Secours");
+        assert_eq!(resp.headers().get(http::header::CONTENT_TYPE).unwrap(), "application/json");
     }
 }

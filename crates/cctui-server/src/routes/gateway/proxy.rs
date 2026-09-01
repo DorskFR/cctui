@@ -195,6 +195,17 @@ pub async fn passthrough(
             crate::soft_limit::evaluate_soft_limit(&windows, &effective_limits, Utc::now())
         {
             tracing::info!(account = %acct.id, retry_after_secs, "soft limit hit: {reason}");
+            // Before refusing with the account's own reset horizon, try to
+            // rebind the session to a sibling with headroom — the worker's
+            // 429 retry then lands on the new account instead of stalling.
+            // The model isn't known here (the body is still unread), so the
+            // election counts every window: conservative, never overstated.
+            if let Some(target) =
+                super::pick_failover_target(&state, &session_token, acct.id, None).await
+                && super::rebind_session(&state, &target, acct.id).await
+            {
+                return Ok(super::failover_retry_response(&target.account_name, is_anthropic));
+            }
             // Surface the block as a per-session signal so the webui can offer
             // "continue on another account". Best-effort + dedup'd.
             if let Some((session_id, account_name)) =
@@ -400,6 +411,21 @@ pub async fn passthrough(
         tracing::warn!(account = %acct.id, stage = "provider-oauth", "gateway 401: upstream provider rejected account credentials");
         flag_account_reauth(&state, acct.id, "upstream provider rejected account credentials");
         return Ok(auth_error(AuthStage::ProviderOauth, is_anthropic));
+    }
+
+    // Upstream says the account is rate-limited. Mirroring it verbatim strands
+    // the session until the window resets (hours, for a spent 5h/weekly
+    // window) — if a sibling account has allocation, rebind and send the
+    // worker straight back around. A response was received but no body bytes
+    // were forwarded yet, so discarding it is safe. Failovers are cooled down
+    // per session, so a burst-RPM 429 doesn't ping-pong the binding.
+    if status == StatusCode::TOO_MANY_REQUESTS
+        && let Some(target) =
+            super::pick_failover_target(&state, &session_token, acct.id, request_model.as_deref())
+                .await
+        && super::rebind_session(&state, &target, acct.id).await
+    {
+        return Ok(super::failover_retry_response(&target.account_name, is_anthropic));
     }
 
     // A successful upstream call clears any soft-limit block on this session:
