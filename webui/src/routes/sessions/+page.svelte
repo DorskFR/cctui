@@ -11,7 +11,8 @@
 	import SessionCard from '$lib/components/organisms/SessionCard.svelte';
 	import ConversationDrawer from '$lib/components/organisms/ConversationDrawer.svelte';
 	import SpawnModal from '$lib/components/organisms/SpawnModal.svelte';
-	import { spawnDockSide } from '$lib/spawnDock.svelte';
+	import { dockLayout } from '$lib/spawnDock.svelte';
+	import StatsDock from '$lib/components/organisms/statsdock/StatsDock.svelte';
 	import SessionControls from '$lib/components/organisms/SessionControls.svelte';
 	import KanbanBoard from '$lib/components/organisms/KanbanBoard.svelte';
 	import { AutoGrid, Button, Container, Text } from '@dorsk/tsumikit';
@@ -113,9 +114,11 @@
 	const showArchived = $derived(sections.has('archived'));
 	let openSession = $state<SessionListItem | null>(null);
 	let showSpawn = $state(false);
-	// Docked spawn panel (Settings › New session): the form stays pinned to one
-	// edge instead of living behind the "+ New" button. `null` = modal mode.
-	const dockSide = $derived(spawnDockSide());
+	// Docked panels (Settings › New session / Stats panel): the spawn form
+	// stays pinned to one edge instead of living behind the "+ New" button
+	// (`spawn` null = modal mode), and the stats panel to the same or the other.
+	const docks = $derived(dockLayout());
+	const dockSide = $derived(docks.spawn);
 	// Bumped whenever the docked form is done with (spawned, drafted, cleared,
 	// or handed a prefill) so it remounts and reseeds exactly like a reopened
 	// modal would.
@@ -1027,6 +1030,7 @@
 	{#key dockEpoch}
 		<SpawnModal
 			docked={dockSide}
+			stacked={docks.stacked}
 			prefill={spawnPrefill}
 			onclose={() => {
 				spawnPrefill = null;
@@ -1044,6 +1048,10 @@
 		}}
 		onspawned={() => qc.invalidateQueries({ queryKey: ['sessions'] })}
 	/>
+{/if}
+
+{#if docks.stats}
+	<StatsDock side={docks.stats} stacked={docks.stacked} />
 {/if}
 
 <style>

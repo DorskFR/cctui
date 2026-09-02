@@ -91,6 +91,14 @@ export interface SpawnDockSettings {
 	side: SpawnDockSide;
 }
 
+// Docked stats panel: the per-account usage gauges, the rolling token windows
+// and the Overview figures, pinned to one edge of the Sessions screen. Same
+// on/off + side shape as the spawn dock; when both share an edge they stack.
+export interface StatsDockSettings {
+	enabled: boolean;
+	side: SpawnDockSide;
+}
+
 /** Clamp a stored side to a known one (an older/corrupt blob must not pin the
  *  panel nowhere). */
 export function clampSpawnDockSide(v: unknown): SpawnDockSide {
@@ -160,6 +168,8 @@ export interface SettingsState {
 	// Docked spawn panel (Sessions screen). Top-level so it serializes as
 	// `data.spawnDock`; the server passes it through untouched.
 	spawnDock: SpawnDockSettings;
+	// Docked stats panel (Sessions screen). Serializes as `data.statsDock`.
+	statsDock: StatsDockSettings;
 	// Claude harness mode. Top-level so it serializes as `data.harnessMode`,
 	// which the server reads to drive each daemon's Reconcile.
 	harnessMode: HarnessMode;
@@ -210,6 +220,7 @@ const DEFAULTS: SettingsState = {
 		notifySound: true
 	},
 	spawnDock: { enabled: false, side: DEFAULT_SPAWN_DOCK_SIDE },
+	statsDock: { enabled: false, side: DEFAULT_SPAWN_DOCK_SIDE },
 	harnessMode: DEFAULT_HARNESS_MODE,
 	whipStopPhrases: { mode: DEFAULT_WHIP_MODE, phrases: [], guidance: '' },
 	secretScrubEnabled: false,
@@ -241,6 +252,10 @@ export function mergeDefaults(partial: Partial<SettingsState> | null | undefined
 		spawnDock: {
 			enabled: p.spawnDock?.enabled === true,
 			side: clampSpawnDockSide(p.spawnDock?.side)
+		},
+		statsDock: {
+			enabled: p.statsDock?.enabled === true,
+			side: clampSpawnDockSide(p.statsDock?.side)
 		},
 		// Clamp to a known mode so an unknown stored value renders as `bg` (matches
 		// the server's clamp on PUT).
@@ -389,6 +404,19 @@ class Settings {
 		return {
 			enabled: this.state.spawnDock.enabled === true,
 			side: clampSpawnDockSide(this.state.spawnDock.side)
+		};
+	}
+
+	// Docked stats panel: on/off and which edge it pins to.
+	setStatsDock(patch: Partial<StatsDockSettings>) {
+		this.state.statsDock = { ...this.state.statsDock, ...patch };
+		this.persist();
+	}
+
+	get statsDock(): StatsDockSettings {
+		return {
+			enabled: this.state.statsDock.enabled === true,
+			side: clampSpawnDockSide(this.state.statsDock.side)
 		};
 	}
 

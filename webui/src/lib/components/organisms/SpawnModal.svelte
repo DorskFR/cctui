@@ -70,7 +70,8 @@
 		onclose,
 		onspawned,
 		prefill = null,
-		docked = null
+		docked = null,
+		stacked = false
 	}: {
 		// Modal: close the dialog. Docked: the form is done with (spawned, saved
 		// as draft, or cleared) — the parent remounts it so it reseeds exactly the
@@ -80,6 +81,9 @@
 		// Docked panel (Settings › New session): render the same form pinned to
 		// one edge of the Sessions screen instead of inside a Modal.
 		docked?: SpawnDockSide | null;
+		// Docked and sharing its column with the stats panel: keep to the top
+		// half so the stats panel can take the bottom half.
+		stacked?: boolean;
 		// "New session from same script": seed the form from an
 		// existing session's config (machine, dir, adapter, model). Overrides the
 		// persisted draft so the dialog opens ready to re-dispatch.
@@ -707,6 +711,7 @@
 	<aside
 		class="dock"
 		class:dock-left={docked === 'left'}
+		class:stacked
 		aria-label={m.spawn_modal_title()}
 		style:--spawn-dock-w={SPAWN_DOCK_WIDTH}
 	>
@@ -873,6 +878,10 @@
 		left: 0;
 		border-left: 0;
 		border-right: 1px solid var(--border);
+	}
+	/* Sharing the column with the stats panel: top half only. */
+	.dock.stacked {
+		bottom: 50%;
 	}
 	.dock-head {
 		flex: none;

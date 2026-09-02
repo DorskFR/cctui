@@ -116,6 +116,7 @@
 	// name the user typed is left alone.
 	const sessionEmojiPrefix = $derived(settings.sessionEmojiPrefix);
 	const spawnDock = $derived(settings.spawnDock);
+	const statsDock = $derived(settings.statsDock);
 
 	// Daemon-side secret redaction. The switch toggles live scrubbing;
 	// the textarea holds one extra regex per line, layered on the daemon's
@@ -300,6 +301,47 @@
 							onchange={(e) =>
 								settings.setSpawnDock({
 									side: (e.currentTarget as HTMLSelectElement).value as typeof spawnDock.side
+								})}
+						>
+							<option value="left">{m.settings_spawn_dock_side_left()}</option>
+							<option value="right">{m.settings_spawn_dock_side_right()}</option>
+						</Select>
+					</dd>
+				</div>
+			</dl>
+		</Stack>
+	</Card>
+
+	<!-- ── Stats panel ──────────────────────────────────────────────────── -->
+	<Card>
+		<Stack gap="md">
+			<Heading level={2}>{m.settings_stats_title()}</Heading>
+			<dl class="props">
+				<div class="prop">
+					<dt>
+						<Text weight="semibold">{m.settings_stats_dock_label()}</Text>
+						<Text size="sm" tone="faint">{m.settings_stats_dock_help()}</Text>
+					</dt>
+					<dd>
+						<Switch
+							checked={statsDock.enabled}
+							label={m.settings_stats_dock_label()}
+							onclick={() => settings.setStatsDock({ enabled: !statsDock.enabled })}
+						/>
+					</dd>
+				</div>
+				<div class="prop">
+					<dt>
+						<Text weight="semibold">{m.settings_stats_dock_side_label()}</Text>
+						<Text size="sm" tone="faint">{m.settings_stats_dock_side_help()}</Text>
+					</dt>
+					<dd>
+						<Select
+							value={statsDock.side}
+							disabled={!statsDock.enabled}
+							onchange={(e) =>
+								settings.setStatsDock({
+									side: (e.currentTarget as HTMLSelectElement).value as typeof statsDock.side
 								})}
 						>
 							<option value="left">{m.settings_spawn_dock_side_left()}</option>

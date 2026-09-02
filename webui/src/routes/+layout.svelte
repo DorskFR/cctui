@@ -18,7 +18,7 @@
 	import { installCodeCopy } from '$lib/codecopy';
 	import { installImageLightbox } from '$lib/imagelightbox';
 	import { Container } from '@dorsk/tsumikit';
-	import { spawnDockSide, SPAWN_DOCK_WIDTH } from '$lib/spawnDock.svelte';
+	import { dockLayout } from '$lib/spawnDock.svelte';
 
 	let { children } = $props();
 
@@ -36,11 +36,12 @@
 			: undefined
 	);
 
-	// Docked spawn panel (Settings › New session): the Sessions screen pins
-	// the form to one edge, so the content reserves that edge for it. The panel
-	// itself is rendered by the Sessions page (position: fixed); this padding is
-	// what keeps the centered list out from under it.
-	const dockSide = $derived(page.url.pathname.startsWith('/sessions') ? spawnDockSide() : null);
+	// Docked panels (Settings › New session / Stats panel): the Sessions screen
+	// pins the spawn form and/or the stats panel to an edge, so the content
+	// reserves that edge for them. The panels themselves are rendered by the
+	// Sessions page (position: fixed); this padding is what keeps the centered
+	// list out from under them.
+	const docks = $derived(page.url.pathname.startsWith('/sessions') ? dockLayout() : null);
 
 	// One delegated listener for every code-block copy button.
 	$effect(() => {
@@ -124,9 +125,10 @@
 				<main
 					class="content"
 					class:review={isReview}
-					class:dock-left={dockSide === 'left'}
-					class:dock-right={dockSide === 'right'}
-					style:--spawn-dock-w={SPAWN_DOCK_WIDTH}
+					class:dock-left={!!docks?.left}
+					class:dock-right={!!docks?.right}
+					style:--dock-left-w={docks?.left ?? undefined}
+					style:--dock-right-w={docks?.right ?? undefined}
 				>
 					{#if isReview}
 						{@render children?.()}
@@ -157,12 +159,12 @@
 		padding-top: calc(var(--header-h) + var(--safe-top) + var(--sp-3));
 		padding-bottom: calc(var(--nav-h) + var(--safe-bottom) + var(--sp-4));
 	}
-	/* Reserve the docked spawn panel's edge (Sessions screen only). */
+	/* Reserve the docked panels' edges (Sessions screen only). */
 	.content.dock-left {
-		padding-left: var(--spawn-dock-w);
+		padding-left: var(--dock-left-w);
 	}
 	.content.dock-right {
-		padding-right: var(--spawn-dock-w);
+		padding-right: var(--dock-right-w);
 	}
 	/* The review center fills the viewport between header and nav and scrolls
 	   internally, so drop the content padding and pin a definite height. */
