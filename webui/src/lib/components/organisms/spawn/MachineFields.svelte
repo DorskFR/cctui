@@ -187,6 +187,12 @@
 		].join(' · ')
 	);
 
+	// Docked panel: name-only permission cards, tighter than the default
+	// label-over-hint card. Inline so no :global reach into the atom.
+	const compactModeStyle = $derived(
+		docked ? 'padding:var(--sp-1) var(--sp-2);font-size:var(--fs-sm);align-items:center;' : ''
+	);
+
 	// Per-mode accent: ask = green (safe), auto = blue (sandboxed),
 	// yolo = red (no prompts, full access).
 	const modeAccent: Record<string, string> = {
@@ -366,6 +372,7 @@
 					     is forced into the spawn. -->
 					<OptionButton
 						selected={form.permission_mode === ''}
+						style={compactModeStyle || undefined}
 						onclick={() => (form.permission_mode = '')}
 					>
 						<strong>{m.spawn_mode_default_label()}</strong>
@@ -374,7 +381,7 @@
 					{#each modes as md (md.v)}
 						<OptionButton
 							selected={form.permission_mode === md.v}
-							style={`--opt-accent: ${modeAccent[md.v]}`}
+							style={`--opt-accent: ${modeAccent[md.v]};${compactModeStyle}`}
 							onclick={() => (form.permission_mode = md.v)}
 						>
 							<strong>{md.label}</strong>
@@ -446,13 +453,8 @@
 		grid-template-columns: 1fr 1fr 1fr;
 		gap: var(--sp-2);
 	}
-	/* Compact (docked panel): name-only cards, tighter padding and font. */
+	/* Compact (docked panel): name-only cards packed tighter. */
 	.modes.compact {
 		gap: var(--sp-1);
-	}
-	.modes.compact :global(.opt) {
-		padding: var(--sp-1) var(--sp-2);
-		font-size: var(--fs-sm);
-		align-items: center;
 	}
 </style>
