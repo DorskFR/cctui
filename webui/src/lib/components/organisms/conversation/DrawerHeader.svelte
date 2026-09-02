@@ -8,6 +8,7 @@
 	import type { SessionListItem } from '@bindings/SessionListItem';
 	import type { Label } from '@bindings/Label';
 	import { statusBadgeClass } from '$lib/format';
+	import { branchOf } from '../../../../routes/sessions/sessions.logic';
 	import { fontScale, SCALE_LEVELS } from '$lib/fontscale.svelte';
 	import { settings } from '$lib/settings.svelte';
 	import { isArchiveChord } from '$lib/platform';
@@ -19,7 +20,7 @@
 	import WorkingDir from '$lib/components/molecules/WorkingDir.svelte';
 	import TokenUsage from '$lib/components/molecules/TokenUsage.svelte';
 	import LangfuseChip from '$lib/components/molecules/LangfuseChip.svelte';
-	import { Badge, IconButton, Input, Select, SelectButton, Text } from '@dorsk/tsumikit';
+	import { Badge, Icon, IconButton, Input, Select, SelectButton, Text } from '@dorsk/tsumikit';
 	import { codexModelsFor, codexEffortsFor } from '$lib/harnessModels';
 	import { useCodexModels } from '$lib/queries';
 	import { m } from '$lib/paraglide/messages';
@@ -84,6 +85,7 @@
 		onUpdateLabel?: (labelId: string, patch: { name?: string; color?: string }) => Promise<Label>;
 		onDeleteLabel?: (labelId: string) => void | Promise<void>;
 	} = $props();
+	const branch = $derived(branchOf(session));
 
 	// Label picker is interactive only when an attach handler is wired in.
 	const labelEditable = $derived(!!onAttachLabel);
@@ -304,6 +306,12 @@
 	<div class="hmeta row row-wrap">
 		{#if showStatusBadge}<Badge class={statusBadgeClass(session.status)}>{session.status}</Badge>{/if}
 		<WorkingDir path={session.working_dir} />
+		{#if branch}
+			<Badge mono title={m.sessions_branch_title({ branch })} style="display:inline-flex;align-items:center;gap:0.25em;min-width:0;max-width:14rem;flex:none">
+				<Icon name="fork" size={12} label={m.sessions_branch_label()} />
+				<span style="overflow:hidden;white-space:nowrap;text-overflow:ellipsis">{branch}</span>
+			</Badge>
+		{/if}
 		<div class="meta-trail">
 		<TokenUsage usage={session.token_usage} />
 		<LangfuseChip id={session.id} />
