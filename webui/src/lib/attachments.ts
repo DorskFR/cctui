@@ -49,3 +49,53 @@ export function fmtSize(n: number): string {
 	if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
 	return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
+
+// ── Clipboard → files ────────────────────────────────────────────
+// Common clipboard MIME types → file extensions. A pasted screenshot has no
+// filename, so we synthesize `clipboard-N.<ext>`; anything unmapped falls back
+// to the MIME subtype (sanitised) or `.bin`.
+const MIME_EXT: Record<string, string> = {
+	'image/png': 'png',
+	'image/jpeg': 'jpg',
+	'image/gif': 'gif',
+	'image/webp': 'webp',
+	'image/bmp': 'bmp',
+	'image/svg+xml': 'svg',
+	'image/tiff': 'tiff',
+	'application/pdf': 'pdf'
+};
+export function extForType(type: string): string {
+	if (MIME_EXT[type]) return MIME_EXT[type];
+	const sub = type.split('/')[1]?.split(';')[0];
+	return sub ? sub.replace(/[^a-z0-9]/gi, '') || 'bin' : 'bin';
+}
+
+/** Stateful clipboard-file extractor: one per composer/form so the synthesized
+ *  `clipboard-N.<ext>` names stay unique within that surface. */
+export function makeClipboardFiles() {
+	let counter = 1;
+	// Give a clipboard blob a stable, unique filename if it has none (pasted
+	// screenshots/images arrive nameless), so dedupe-by-name doesn't collapse them.
+	const named = (f: File): File => {
+		if (f.name?.trim()) return f;
+		const ext = extForType(f.type || 'application/octet-stream');
+		return new File([f], `clipboard-${counter++}.${ext}`, {
+			type: f.type || 'application/octet-stream'
+		});
+	};
+	// Extract binary files from a paste (copied files OR a pasted image/screenshot).
+	// Prefer `items` (some browsers expose pasted screenshots only there, not in
+	// `.files`), then fall back to `.files`.
+	return (cd: DataTransfer): File[] => {
+		const out: File[] = [];
+		for (const item of Array.from(cd.items ?? [])) {
+			if (item.kind !== 'file') continue;
+			const f = item.getAsFile();
+			if (f) out.push(named(f));
+		}
+		if (out.length === 0) {
+			for (const f of Array.from(cd.files ?? [])) out.push(named(f));
+		}
+		return out;
+	};
+}

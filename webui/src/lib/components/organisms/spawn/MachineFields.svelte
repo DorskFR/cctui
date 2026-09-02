@@ -42,6 +42,7 @@
 		type Adapter
 	} from './options';
 	import { submitChordLabel, isSubmitChord } from '$lib/platform';
+	import { makeClipboardFiles } from '$lib/attachments';
 	import type { Form } from './types';
 	import { m } from '$lib/paraglide/messages';
 
@@ -51,6 +52,7 @@
 		recentDirs,
 		accounts,
 		onsubmit,
+		onfiles,
 		docked = false
 	}: {
 		form: Form;
@@ -61,6 +63,10 @@
 		accounts: OAuthAccount[];
 		// Submit the whole spawn form from the prompt textarea (Ctrl/⌘+Enter).
 		onsubmit?: () => void;
+		// Files pasted into the prompt textarea (Ctrl/⌘+V of a screenshot or a
+		// copied file) go here instead of the "Add files" picker. Text pastes
+		// are left to the browser.
+		onfiles?: (files: File[]) => void;
 		// Docked panel (always-visible form): the account/harness/model/effort/
 		// permission editors stay expanded with no summary line to unfold, and
 		// the permission-mode cards shrink to their name (no hint line).
@@ -77,6 +83,15 @@
 		() => recentDirs,
 		m.spawn_cwd_label()
 	);
+	const clipboardFiles = makeClipboardFiles();
+	function onPromptPaste(e: ClipboardEvent) {
+		if (!onfiles || !e.clipboardData) return;
+		const files = clipboardFiles(e.clipboardData);
+		if (files.length === 0) return;
+		e.preventDefault();
+		onfiles(files);
+	}
+
 	// svelte-ignore state_referenced_locally
 	let cwdRaw = $state(cwdToQuery(form.working_dir));
 	// svelte-ignore state_referenced_locally
@@ -247,6 +262,7 @@
 		placeholder={m.spawn_prompt_placeholder()}
 		bind:value={form.prompt}
 		autoresize
+		onpaste={onPromptPaste}
 		onkeydown={(e: KeyboardEvent) => {
 			if (onsubmit && isSubmitChord(e)) {
 				e.preventDefault();
