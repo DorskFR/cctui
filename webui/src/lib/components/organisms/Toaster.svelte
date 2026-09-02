@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { toasts } from '$lib/toast.svelte';
-	import { Card } from '@dorsk/tsumikit';
+	import { Button, Card } from '@dorsk/tsumikit';
 
 	let wrapEl: HTMLDivElement | undefined = $state();
 
@@ -22,12 +22,27 @@
 
 <div class="toast-wrap" bind:this={wrapEl} popover="manual">
 	{#each toasts.items as t (t.id)}
-		<Card
-			as="button"
-			class="toast {t.kind === 'err' ? 'toast-err' : ''} {t.kind === 'ok' ? 'toast-ok' : ''}"
-			onclick={() => toasts.dismiss(t.id)}
-		>
-			{t.text}
-		</Card>
+		{#if t.action}
+			<!-- A toast with an inline action (e.g. Undo) is a plain card: the text
+			     still dismisses on click, the button runs the action. Nested buttons
+			     are invalid HTML, so this variant can't be `as="button"`. -->
+			<Card
+				as="div"
+				class="toast toast-with-action {t.kind === 'err' ? 'toast-err' : ''} {t.kind === 'ok' ? 'toast-ok' : ''}"
+			>
+				<button type="button" class="toast-text" onclick={() => toasts.dismiss(t.id)}>{t.text}</button>
+				<Button size="sm" variant="ghost" class="toast-action" onclick={() => toasts.act(t.id)}>
+					{t.action.label}
+				</Button>
+			</Card>
+		{:else}
+			<Card
+				as="button"
+				class="toast {t.kind === 'err' ? 'toast-err' : ''} {t.kind === 'ok' ? 'toast-ok' : ''}"
+				onclick={() => toasts.dismiss(t.id)}
+			>
+				{t.text}
+			</Card>
+		{/if}
 	{/each}
 </div>

@@ -19,6 +19,7 @@ import { m } from '$lib/paraglide/messages';
 export interface SessionActionApi {
 	rename: (id: string, name: string) => Promise<unknown>;
 	archive: (id: string) => Promise<unknown>;
+	unarchive: (id: string) => Promise<unknown>;
 	interrupt: (id: string) => Promise<{ command_id: string }>;
 	resume: (id: string) => Promise<unknown>;
 	setModel: (id: string, model: string, effort: string) => Promise<{ command_id: string }>;
@@ -61,7 +62,15 @@ export class SessionActions {
 			// stop tracking any in-flight/failed sends so auto-retry doesn't run.
 			clearSessionStorage(s.id);
 			ws.clearDelivery(s.id);
-			toasts.ok(m.conversation_archived_toast());
+			// Offer an Undo for as long as the toast is on screen: un-archives the
+			// session so it pops back into the live list (the drawer stays closed).
+			toasts.ok(m.conversation_archived_toast(), {
+				label: m.toast_undo(),
+				run: async () => {
+					await this.#opts.actions.unarchive(s.id);
+					toasts.ok(m.sessions_toast_unarchived());
+				}
+			});
 			this.#opts.onclose();
 		} catch (e) {
 			toasts.err(errMessage(e));
