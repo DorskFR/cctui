@@ -6,6 +6,7 @@ import { theme, type Mode } from './theme.svelte';
 import { fontScale } from './fontscale.svelte';
 import { notify } from './notify.svelte';
 import type { SettingsPayload } from '@bindings/SettingsPayload';
+import { clampDockWidth } from './dock';
 import {
 	latestDirFor,
 	latestEntryFor,
@@ -89,6 +90,8 @@ export const DEFAULT_SPAWN_DOCK_SIDE: SpawnDockSide = 'right';
 export interface SpawnDockSettings {
 	enabled: boolean;
 	side: SpawnDockSide;
+	/** Width in px once the user has dragged the panel's grip; unset = default. */
+	width?: number;
 }
 
 // Docked stats panel: the per-account usage gauges, the rolling token windows
@@ -97,6 +100,8 @@ export interface SpawnDockSettings {
 export interface StatsDockSettings {
 	enabled: boolean;
 	side: SpawnDockSide;
+	/** Width in px once the user has dragged the panel's grip; unset = default. */
+	width?: number;
 }
 
 /** Clamp a stored side to a known one (an older/corrupt blob must not pin the
@@ -251,11 +256,13 @@ export function mergeDefaults(partial: Partial<SettingsState> | null | undefined
 		display: { ...DEFAULTS.display, ...(p.display ?? {}) },
 		spawnDock: {
 			enabled: p.spawnDock?.enabled === true,
-			side: clampSpawnDockSide(p.spawnDock?.side)
+			side: clampSpawnDockSide(p.spawnDock?.side),
+			width: clampDockWidth(p.spawnDock?.width)
 		},
 		statsDock: {
 			enabled: p.statsDock?.enabled === true,
-			side: clampSpawnDockSide(p.statsDock?.side)
+			side: clampSpawnDockSide(p.statsDock?.side),
+			width: clampDockWidth(p.statsDock?.width)
 		},
 		// Clamp to a known mode so an unknown stored value renders as `bg` (matches
 		// the server's clamp on PUT).
@@ -403,7 +410,8 @@ class Settings {
 	get spawnDock(): SpawnDockSettings {
 		return {
 			enabled: this.state.spawnDock.enabled === true,
-			side: clampSpawnDockSide(this.state.spawnDock.side)
+			side: clampSpawnDockSide(this.state.spawnDock.side),
+			width: clampDockWidth(this.state.spawnDock.width)
 		};
 	}
 
@@ -416,7 +424,8 @@ class Settings {
 	get statsDock(): StatsDockSettings {
 		return {
 			enabled: this.state.statsDock.enabled === true,
-			side: clampSpawnDockSide(this.state.statsDock.side)
+			side: clampSpawnDockSide(this.state.statsDock.side),
+			width: clampDockWidth(this.state.statsDock.width)
 		};
 	}
 

@@ -15,7 +15,7 @@
 	import StatsDock from '$lib/components/organisms/statsdock/StatsDock.svelte';
 	import SessionControls from '$lib/components/organisms/SessionControls.svelte';
 	import KanbanBoard from '$lib/components/organisms/KanbanBoard.svelte';
-	import { AutoGrid, Button, Container, Text } from '@dorsk/tsumikit';
+	import { AutoGrid, Button, Text } from '@dorsk/tsumikit';
 	import { drafts, LIST_DENSITY, LIST_VIEW, LIST_KANBAN, LIST_SECTION, LIST_LABELS } from '$lib/drafts';
 	import { notify } from '$lib/notify.svelte';
 	import { settings } from '$lib/settings.svelte';
@@ -743,12 +743,15 @@
 {/snippet}
 
 <!-- Shared section wrapper: card-detailed breaks out of the centered container
-     to full window width; every other view stays centered. -->
+     to the full window width MINUS whatever the docked panels reserve on each
+     edge (the layout's --dock-left-w / --dock-right-w); every other view stays
+     centered. tsumikit's Container fullWidth bleeds to 100vw regardless, which
+     slid the outer cards under an open panel. -->
 {#snippet sectionsWrap(body: Snippet)}
 	{#if cardView && !dense}
-		<Container fullWidth as="div">
+		<div class="bleed">
 			<div class="sections">{@render body()}</div>
-		</Container>
+		</div>
 	{:else}
 		<div class="sections" class:tight={dense && !cardView}>{@render body()}</div>
 	{/if}
@@ -909,9 +912,9 @@
 		{#if sessions.isLoading}
 			<div class="empty"><span class="spin"></span></div>
 		{:else}
-			<Container fullWidth as="div">
+			<div class="bleed">
 				<KanbanBoard columns={list.kanbanColumns} card={kanbanCard} />
-			</Container>
+			</div>
 		{/if}
 	{:else}
 		{@render sectionsWrap(liveSections)}
@@ -1048,6 +1051,7 @@
 		<SpawnModal
 			docked={dockSide}
 			stacked={docks.stacked}
+			dockWidth={docks[dockSide] ?? undefined}
 			prefill={spawnPrefill}
 			onclose={() => {
 				spawnPrefill = null;
@@ -1067,8 +1071,8 @@
 	/>
 {/if}
 
-{#if docks.stats}
-	<StatsDock side={docks.stats} stacked={docks.stacked} />
+{#if docks.stats && docks[docks.stats]}
+	<StatsDock side={docks.stats} stacked={docks.stacked} width={docks[docks.stats] ?? ''} />
 {/if}
 
 <style>
@@ -1099,6 +1103,18 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--sp-6);
+	}
+	/* Card-detailed breakout: the same "pull each edge out to the viewport"
+	   trick as tsumikit's Container fullWidth, but the span stops at the docked
+	   panels. The centered parent sits in the middle of the free strip, so the
+	   negative margin is half the difference between the parent and the strip. */
+	.bleed {
+		--bleed-w: calc(100vw - var(--dock-left-w, 0px) - var(--dock-right-w, 0px));
+		width: var(--bleed-w);
+		max-width: none;
+		margin-inline: calc(50% - var(--bleed-w) / 2);
+		padding-left: max(var(--sp-4), var(--safe-left));
+		padding-right: max(var(--sp-4), var(--safe-right));
 	}
 	.section {
 		display: flex;

@@ -491,3 +491,11 @@ svg[aria-hidden="true"] {
   border-radius: var(--r-sm, 4px);
   box-shadow: 0 8px 40px rgb(0 0 0 / 60%);
 }
+
+/* While a docked panel's grip is being dragged (dockResize action): one cursor
+   everywhere and no accidental text selection under the pointer. */
+body.dock-resizing,
+body.dock-resizing * {
+  cursor: ew-resize !important;
+  user-select: none;
+}
