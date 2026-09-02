@@ -50,7 +50,8 @@
 		machines,
 		recentDirs,
 		accounts,
-		onsubmit
+		onsubmit,
+		docked = false
 	}: {
 		form: Form;
 		machines: MachineRow[];
@@ -60,6 +61,10 @@
 		accounts: OAuthAccount[];
 		// Submit the whole spawn form from the prompt textarea (Ctrl/⌘+Enter).
 		onsubmit?: () => void;
+		// Docked panel (always-visible form): the account/harness/model/effort/
+		// permission editors stay expanded with no summary line to unfold, and
+		// the permission-mode cards shrink to their name (no hint line).
+		docked?: boolean;
 	} = $props();
 
 	// The machine badge + working-dir share one FilterInput: machine is
@@ -250,6 +255,7 @@
      line; the gear expands the full editors. Field ORDER inside the
      expansion is stable regardless of selection. -->
 <div class="config">
+	{#if !docked}
 	<div class="config-line">
 		<Text size="sm" tone="faint" truncate title={configSummary}>{configSummary}</Text>
 		<IconButton
@@ -260,8 +266,9 @@
 			onclick={() => (configOpen = !configOpen)}
 		/>
 	</div>
+	{/if}
 
-	{#if configOpen}
+	{#if configOpen || docked}
 		<div class="config-fields">
 			<Field label={m.spawn_account_label()} for="sp-account">
 				<Select id="sp-account" bind:value={form.account}>
@@ -354,7 +361,7 @@
 			{/if}
 
 			<Field label={m.spawn_permission_mode_label()}>
-				<div class="modes">
+				<div class="modes" class:compact={docked}>
 					<!-- "Default" (unset) leaves the mode to claude's own default — no mode
 					     is forced into the spawn. -->
 					<OptionButton
@@ -362,7 +369,7 @@
 						onclick={() => (form.permission_mode = '')}
 					>
 						<strong>{m.spawn_mode_default_label()}</strong>
-						<Text tone="faint" size="xs">{m.spawn_mode_default_hint()}</Text>
+						{#if !docked}<Text tone="faint" size="xs">{m.spawn_mode_default_hint()}</Text>{/if}
 					</OptionButton>
 					{#each modes as md (md.v)}
 						<OptionButton
@@ -371,7 +378,7 @@
 							onclick={() => (form.permission_mode = md.v)}
 						>
 							<strong>{md.label}</strong>
-							<Text tone="faint" size="xs">{md.hint}</Text>
+							{#if !docked}<Text tone="faint" size="xs">{md.hint}</Text>{/if}
 						</OptionButton>
 					{/each}
 				</div>
@@ -438,5 +445,14 @@
 		display: grid;
 		grid-template-columns: 1fr 1fr 1fr;
 		gap: var(--sp-2);
+	}
+	/* Compact (docked panel): name-only cards, tighter padding and font. */
+	.modes.compact {
+		gap: var(--sp-1);
+	}
+	.modes.compact :global(.opt) {
+		padding: var(--sp-1) var(--sp-2);
+		font-size: var(--fs-sm);
+		align-items: center;
 	}
 </style>

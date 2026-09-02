@@ -62,16 +62,24 @@
 		isCompatibleProvider,
 		NO_ACCOUNT
 	} from './spawn/options';
-	import { settings } from '$lib/settings.svelte';
+	import { settings, type SpawnDockSide } from '$lib/settings.svelte';
+	import { SPAWN_DOCK_WIDTH } from '$lib/spawnDock.svelte';
 	import { m } from '$lib/paraglide/messages';
 
 	let {
 		onclose,
 		onspawned,
-		prefill = null
+		prefill = null,
+		docked = null
 	}: {
+		// Modal: close the dialog. Docked: the form is done with (spawned, saved
+		// as draft, or cleared) — the parent remounts it so it reseeds exactly the
+		// way a reopened modal would (draft gone, memory + name proposal replayed).
 		onclose: () => void;
 		onspawned: () => void;
+		// Docked panel (Settings › New session): render the same form pinned to
+		// one edge of the Sessions screen instead of inside a Modal.
+		docked?: SpawnDockSide | null;
 		// "New session from same script": seed the form from an
 		// existing session's config (machine, dir, adapter, model). Overrides the
 		// persisted draft so the dialog opens ready to re-dispatch.
@@ -687,145 +695,203 @@
 		envRows = [];
 		files = [];
 		drafts.clear(SPAWN_DRAFT);
+		// Docked: a cleared form reseeds like a fresh modal would (memory-filled
+		// config, proposed name) instead of sitting blank until the next visit.
+		if (docked) onclose();
 	}
 </script>
 
-<Modal title={m.spawn_modal_title()} {onclose} resizeKey="cctui_spawn_modal_width">
-	{#snippet body()}
-		<!-- The whole dialog is a file drop area: dragging files over it
-		     shows the tsumikit Dropzone overlay; on drop they're staged as
-		     attachments. overlay mode wraps the content without hijacking clicks,
-		     and is disabled on the dispatch target (no attachments there). -->
-		<Dropzone
-			overlay
-			multiple
-			label={m.spawn_dropzone_label()}
-			disabled={target !== 'machine'}
-			onfiles={addFiles}
-		>
-			<div class="stack" use:dialogBackdropGuard>
-			{#snippet machineFields()}
-				<MachineFields
-					bind:form
-					machines={machines.data ?? []}
-					{recentDirs}
-					accounts={allAccounts}
-					onsubmit={submit}
-				/>
-			{/snippet}
-			{#snippet targetPanel(id: string)}
-				<div class="stack">
-					{#if id === 'dispatch'}
-						<DispatchFields bind:form {dispatcherIds} accounts={allAccounts} onsubmit={submit} />
-					{:else}
-						{@render machineFields()}
-					{/if}
-				</div>
-			{/snippet}
-			<!-- Machine / Dispatch are tabs when a dispatcher exists. -->
-			{#if canDispatch}
-				<Tabs
-					label={m.spawn_run_on_label()}
-					tabs={targetTabs}
-					bind:value={() => target as string, (v) => (target = v === 'dispatch' ? 'dispatch' : 'machine')}
-					panel={targetPanel}
-				/>
-			{:else}
-				{@render machineFields()}
-			{/if}
+<!-- The form body and the action row are snippets so the Modal and the docked
+     panel render the very same markup; only the chrome around them differs. -->
+{#if docked}
+	<aside
+		class="dock"
+		class:dock-left={docked === 'left'}
+		aria-label={m.spawn_modal_title()}
+		style:--spawn-dock-w={SPAWN_DOCK_WIDTH}
+	>
+		<div class="dock-head">{m.spawn_modal_title()}</div>
+		<div class="dock-body">{@render body()}</div>
+		<div class="dock-foot">{@render footer()}</div>
+	</aside>
+{:else}
+	<Modal title={m.spawn_modal_title()} {onclose} resizeKey="cctui_spawn_modal_width" {body} {footer} />
+{/if}
 
-			<!-- Shared add-ons: one row of equal-width buttons — Add label
-			     · Add files (machine only) · Add env vars. Each control's
-			     content renders below in the same order
-			     (labels, files, env vars). All three are the canonical Button look
-			     (a FileButton matches the Button atom by design); two carry an
-			     icon. Grid blockifies the items so each fills its 1fr column. -->
-			<div class="addons">
-				<span class="addon-title">{m.spawn_optional_settings()}</span>
-				<AutoGrid min="8rem" gap="var(--sp-2)" maxCols={3} align="stretch">
-					<div
-						class="label-add"
-						bind:this={labelTriggerEl}
-						use:clickOutside={closeLabelMenu}
-					>
-						<Button
-							block
-							aria-haspopup="true"
-							aria-expanded={labelMenuOpen}
-							onclick={toggleLabelMenu}
-						>
-							<Icon name="tag" />{m.spawn_add_label()}
-						</Button>
-						<!-- svelte-ignore a11y_no_static_element_interactions -->
-						<div
-							bind:this={labelMenuEl}
-							class="label-menu"
-							popover="manual"
-							role="menu"
-							aria-label={m.spawn_labels_aria()}
-							tabindex="-1"
-							style:top="{labelMenuPos.top}px"
-							style:left="{labelMenuPos.left}px"
-							onkeydown={(e) => {
-								if (e.key === 'Escape') closeLabelMenu();
-							}}
-						>
-							{#if labelMenuOpen}
-								<LabelMenu
-									labels={allLabels}
-									selectedIds={attachedLabelIds}
-									cap={5}
-									autofocus
-									onToggle={toggleSpawnLabel}
-									onCreate={createAndAttachSpawnLabel}
-									onUpdate={(labelId, patch) => actions.updateLabel(labelId, patch)}
-									onDelete={(labelId) => actions.deleteLabel(labelId)}
-								/>
-							{/if}
-						</div>
-					</div>
-					{#if target === 'machine'}
-						<FileButton label={m.spawn_add_files()} icon="file-text" multiple onfiles={addFiles} />
-					{/if}
-					<Button block onclick={addEnvRow}><Icon name="plus" />{m.spawn_add_env_vars()}</Button>
-				</AutoGrid>
-
-				<!-- Each add-on's content, rendered where due: labels, files, env. -->
-				{#if selectedLabels.length}
-					<div class="addon-labels">
-						{#each selectedLabels as l (l.id)}
-							<Badge
-								style="{labelTint(l)};border-radius:var(--r-sm)"
-								removable
-								onremove={() => detachSpawnLabel(l.id)}
-							>
-								{l.name}
-							</Badge>
-						{/each}
-					</div>
+{#snippet body()}
+	<!-- The whole dialog is a file drop area: dragging files over it
+	     shows the tsumikit Dropzone overlay; on drop they're staged as
+	     attachments. overlay mode wraps the content without hijacking clicks,
+	     and is disabled on the dispatch target (no attachments there). -->
+	<Dropzone
+		overlay
+		multiple
+		label={m.spawn_dropzone_label()}
+		disabled={target !== 'machine'}
+		onfiles={addFiles}
+	>
+		<div class="stack" use:dialogBackdropGuard>
+		{#snippet machineFields()}
+			<MachineFields
+				bind:form
+				machines={machines.data ?? []}
+				{recentDirs}
+				accounts={allAccounts}
+				onsubmit={submit}
+				docked={!!docked}
+			/>
+		{/snippet}
+		{#snippet targetPanel(id: string)}
+			<div class="stack">
+				{#if id === 'dispatch'}
+					<DispatchFields bind:form {dispatcherIds} accounts={allAccounts} onsubmit={submit} />
+				{:else}
+					{@render machineFields()}
 				{/if}
-				{#if target === 'machine'}
-					<AttachmentList {files} onremove={removeFile} />
-				{/if}
-				<EnvSecretsField bind:envRows invalid={badEnvKeys.length > 0} />
 			</div>
-			</div>
-		</Dropzone>
-	{/snippet}
-	{#snippet footer()}
-		<Button size="lg" onclick={clearForm}>{m.spawn_clear()}</Button>
-		{#if target === 'machine'}
-			<Button size="lg" disabled={busy || !draftValid} onclick={submitDraft}>
-				{m.spawn_save_draft()}
-			</Button>
+		{/snippet}
+		<!-- Machine / Dispatch are tabs when a dispatcher exists. -->
+		{#if canDispatch}
+			<Tabs
+				label={m.spawn_run_on_label()}
+				tabs={targetTabs}
+				bind:value={() => target as string, (v) => (target = v === 'dispatch' ? 'dispatch' : 'machine')}
+				panel={targetPanel}
+			/>
+		{:else}
+			{@render machineFields()}
 		{/if}
-		<Button size="lg" variant="primary" block disabled={busy || !valid} onclick={submit}>
-			{#if busy}<span class="spin"></span>{:else}{target === 'machine' ? m.spawn_action_spawn() : m.spawn_action_dispatch()}{/if}
+
+		<!-- Shared add-ons: one row of equal-width buttons — Add label
+		     · Add files (machine only) · Add env vars. Each control's
+		     content renders below in the same order
+		     (labels, files, env vars). All three are the canonical Button look
+		     (a FileButton matches the Button atom by design); two carry an
+		     icon. Grid blockifies the items so each fills its 1fr column. -->
+		<div class="addons">
+			<span class="addon-title">{m.spawn_optional_settings()}</span>
+			<AutoGrid min="8rem" gap="var(--sp-2)" maxCols={3} align="stretch">
+				<div
+					class="label-add"
+					bind:this={labelTriggerEl}
+					use:clickOutside={closeLabelMenu}
+				>
+					<Button
+						block
+						aria-haspopup="true"
+						aria-expanded={labelMenuOpen}
+						onclick={toggleLabelMenu}
+					>
+						<Icon name="tag" />{m.spawn_add_label()}
+					</Button>
+					<!-- svelte-ignore a11y_no_static_element_interactions -->
+					<div
+						bind:this={labelMenuEl}
+						class="label-menu"
+						popover="manual"
+						role="menu"
+						aria-label={m.spawn_labels_aria()}
+						tabindex="-1"
+						style:top="{labelMenuPos.top}px"
+						style:left="{labelMenuPos.left}px"
+						onkeydown={(e) => {
+							if (e.key === 'Escape') closeLabelMenu();
+						}}
+					>
+						{#if labelMenuOpen}
+							<LabelMenu
+								labels={allLabels}
+								selectedIds={attachedLabelIds}
+								cap={5}
+								autofocus
+								onToggle={toggleSpawnLabel}
+								onCreate={createAndAttachSpawnLabel}
+								onUpdate={(labelId, patch) => actions.updateLabel(labelId, patch)}
+								onDelete={(labelId) => actions.deleteLabel(labelId)}
+							/>
+						{/if}
+					</div>
+				</div>
+				{#if target === 'machine'}
+					<FileButton label={m.spawn_add_files()} icon="file-text" multiple onfiles={addFiles} />
+				{/if}
+				<Button block onclick={addEnvRow}><Icon name="plus" />{m.spawn_add_env_vars()}</Button>
+			</AutoGrid>
+
+			<!-- Each add-on's content, rendered where due: labels, files, env. -->
+			{#if selectedLabels.length}
+				<div class="addon-labels">
+					{#each selectedLabels as l (l.id)}
+						<Badge
+							style="{labelTint(l)};border-radius:var(--r-sm)"
+							removable
+							onremove={() => detachSpawnLabel(l.id)}
+						>
+							{l.name}
+						</Badge>
+					{/each}
+				</div>
+			{/if}
+			{#if target === 'machine'}
+				<AttachmentList {files} onremove={removeFile} />
+			{/if}
+			<EnvSecretsField bind:envRows invalid={badEnvKeys.length > 0} />
+		</div>
+		</div>
+	</Dropzone>
+{/snippet}
+{#snippet footer()}
+	<Button size="lg" onclick={clearForm}>{m.spawn_clear()}</Button>
+	{#if target === 'machine'}
+		<Button size="lg" disabled={busy || !draftValid} onclick={submitDraft}>
+			{m.spawn_save_draft()}
 		</Button>
-	{/snippet}
-</Modal>
+	{/if}
+	<Button size="lg" variant="primary" block disabled={busy || !valid} onclick={submit}>
+		{#if busy}<span class="spin"></span>{:else}{target === 'machine' ? m.spawn_action_spawn() : m.spawn_action_dispatch()}{/if}
+	</Button>
+{/snippet}
 
 <style>
+	/* Docked panel: pinned to one edge between the header and the bottom nav,
+	   scrolling its body on its own. The layout reserves the same width. */
+	.dock {
+		position: fixed;
+		top: calc(var(--header-h) + var(--safe-top));
+		bottom: calc(var(--nav-h) + var(--safe-bottom));
+		right: 0;
+		width: var(--spawn-dock-w);
+		display: flex;
+		flex-direction: column;
+		background: var(--bg-elevated);
+		border-left: 1px solid var(--border);
+		z-index: 4;
+	}
+	.dock.dock-left {
+		right: auto;
+		left: 0;
+		border-left: 0;
+		border-right: 1px solid var(--border);
+	}
+	.dock-head {
+		flex: none;
+		padding: var(--sp-3) var(--sp-3) var(--sp-2);
+		font-weight: var(--fw-semibold);
+		border-bottom: 1px solid var(--border);
+	}
+	.dock-body {
+		flex: 1;
+		min-height: 0;
+		overflow-y: auto;
+		padding: var(--sp-3);
+	}
+	.dock-foot {
+		flex: none;
+		display: flex;
+		gap: var(--sp-2);
+		padding: var(--sp-2) var(--sp-3);
+		border-top: 1px solid var(--border);
+	}
 	/* Add-ons: a single wrapping row of "Add …" buttons, with each control's
 	   content stacked below. */
 	.addons {

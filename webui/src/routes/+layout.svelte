@@ -18,6 +18,7 @@
 	import { installCodeCopy } from '$lib/codecopy';
 	import { installImageLightbox } from '$lib/imagelightbox';
 	import { Container } from '@dorsk/tsumikit';
+	import { spawnDockSide, SPAWN_DOCK_WIDTH } from '$lib/spawnDock.svelte';
 
 	let { children } = $props();
 
@@ -34,6 +35,12 @@
 			? sessionListWidthSize(settings.sessionListWidth)
 			: undefined
 	);
+
+	// Docked spawn panel (Settings › New session): the Sessions screen pins
+	// the form to one edge, so the content reserves that edge for it. The panel
+	// itself is rendered by the Sessions page (position: fixed); this padding is
+	// what keeps the centered list out from under it.
+	const dockSide = $derived(page.url.pathname.startsWith('/sessions') ? spawnDockSide() : null);
 
 	// One delegated listener for every code-block copy button.
 	$effect(() => {
@@ -114,7 +121,13 @@
 		{#if auth.isAuthed}
 			<div class="app">
 				<Header />
-				<main class="content" class:review={isReview}>
+				<main
+					class="content"
+					class:review={isReview}
+					class:dock-left={dockSide === 'left'}
+					class:dock-right={dockSide === 'right'}
+					style:--spawn-dock-w={SPAWN_DOCK_WIDTH}
+				>
 					{#if isReview}
 						{@render children?.()}
 					{:else}
@@ -143,6 +156,13 @@
 		/* clear the fixed header and bottom nav (+ safe areas) */
 		padding-top: calc(var(--header-h) + var(--safe-top) + var(--sp-3));
 		padding-bottom: calc(var(--nav-h) + var(--safe-bottom) + var(--sp-4));
+	}
+	/* Reserve the docked spawn panel's edge (Sessions screen only). */
+	.content.dock-left {
+		padding-left: var(--spawn-dock-w);
+	}
+	.content.dock-right {
+		padding-right: var(--spawn-dock-w);
 	}
 	/* The review center fills the viewport between header and nav and scrolls
 	   internally, so drop the content padding and pin a definite height. */

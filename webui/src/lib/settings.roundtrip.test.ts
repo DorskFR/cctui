@@ -75,6 +75,23 @@ describe('Settings save → load round-trip through the blob', () => {
 		expect(clampSessionListWidth(undefined)).toBe('default');
 	});
 
+	it('the docked spawn panel toggle and side survive a persist then reload', () => {
+		settings.setSpawnDock({ enabled: true, side: 'left' });
+
+		const loaded = loadFromCache();
+		expect(loaded.spawnDock.enabled).toBe(true);
+		expect(loaded.spawnDock.side).toBe('left');
+	});
+
+	it('the docked spawn panel defaults off on the right and clamps an unknown side', () => {
+		expect(mergeDefaults(null).spawnDock).toEqual({ enabled: false, side: 'right' });
+		const merged = mergeDefaults({
+			spawnDock: { enabled: 'yes', side: 'top' }
+		} as unknown as Record<string, unknown>);
+		expect(merged.spawnDock.enabled).toBe(false);
+		expect(merged.spawnDock.side).toBe('right');
+	});
+
 	it('each width maps to a CSS length, the default keeping --content-max', () => {
 		expect(sessionListWidthSize('default')).toBeUndefined();
 		expect(sessionListWidthSize('wide')).toBe('72rem');
