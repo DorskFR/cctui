@@ -375,6 +375,7 @@
 	"dispatch_toast_key_copied": "Clé copiée",
 	"dispatch_toast_removed": "Supprimé",
 	"dispatch_toast_renamed": "Dispatcher renommé",
+	"dock_resize_grip": "Glisser pour redimensionner le panneau ; double-clic pour revenir à la largeur par défaut",
 	"drawer_archive": "Archiver",
 	"drawer_back": "Retour",
 	"drawer_change_model_title": "Changer le modèle / l'effort pour le prochain tour",

@@ -375,6 +375,7 @@
 	"dispatch_toast_key_copied": "Key copied",
 	"dispatch_toast_removed": "Removed",
 	"dispatch_toast_renamed": "Dispatcher renamed",
+	"dock_resize_grip": "Drag to resize the panel; double-click to reset its width",
 	"drawer_archive": "Archive",
 	"drawer_back": "Back",
 	"drawer_change_model_title": "Change model / effort for the next turn",

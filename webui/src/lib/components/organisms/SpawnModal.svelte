@@ -64,6 +64,7 @@
 	} from './spawn/options';
 	import { settings, type SpawnDockSide } from '$lib/settings.svelte';
 	import { SPAWN_DOCK_WIDTH } from '$lib/spawnDock.svelte';
+	import DockGrip from '$lib/components/molecules/DockGrip.svelte';
 	import { m } from '$lib/paraglide/messages';
 
 	let {
@@ -71,7 +72,8 @@
 		onspawned,
 		prefill = null,
 		docked = null,
-		stacked = false
+		stacked = false,
+		dockWidth = SPAWN_DOCK_WIDTH
 	}: {
 		// Modal: close the dialog. Docked: the form is done with (spawned, saved
 		// as draft, or cleared) — the parent remounts it so it reseeds exactly the
@@ -84,6 +86,10 @@
 		// Docked and sharing its column with the stats panel: keep to the top
 		// half so the stats panel can take the bottom half.
 		stacked?: boolean;
+		// Docked: the width the layout reserved on that edge (resolveDocks), so
+		// the panel and the content padding never drift apart. The grip on the
+		// inner edge writes a dragged width back to the settings.
+		dockWidth?: string;
 		// "New session from same script": seed the form from an
 		// existing session's config (machine, dir, adapter, model). Overrides the
 		// persisted draft so the dialog opens ready to re-dispatch.
@@ -713,8 +719,13 @@
 		class:dock-left={docked === 'left'}
 		class:stacked
 		aria-label={m.spawn_modal_title()}
-		style:--spawn-dock-w={SPAWN_DOCK_WIDTH}
+		style:--spawn-dock-w={dockWidth}
 	>
+		<DockGrip
+			side={docked}
+			onwidth={(px) => settings.setSpawnDock({ width: px })}
+			onreset={() => settings.setSpawnDock({ width: undefined })}
+		/>
 		<div class="dock-head">{m.spawn_modal_title()}</div>
 		<div class="dock-body">{@render body()}</div>
 		<div class="dock-foot">{@render footer()}</div>

@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { DockSide } from '$lib/dock';
-	import { SPAWN_DOCK_WIDTH, STATS_DOCK_WIDTH } from '$lib/dock';
+	import { settings } from '$lib/settings.svelte';
+	import DockGrip from '$lib/components/molecules/DockGrip.svelte';
 	import AccountUsageList from './AccountUsageList.svelte';
 	import TokenWindows from './TokenWindows.svelte';
 	import OverviewTiles from './OverviewTiles.svelte';
@@ -11,8 +12,20 @@
 	// Stats panel): account usage gauges, rolling token windows, the Overview
 	// counts and its charts, each in a foldable section. When `stacked`, the
 	// spawn form owns the top half of the same column and this panel takes the
-	// bottom half at the spawn panel's width.
-	let { side, stacked = false }: { side: DockSide; stacked?: boolean } = $props();
+	// bottom half at the spawn panel's width. `width` is whatever the layout
+	// reserved on this edge (resolveDocks), so the two never drift apart; the
+	// grip on the inner edge writes a new width back to the settings, and a
+	// stacked column resizes through the spawn panel's width.
+	let {
+		side,
+		stacked = false,
+		width
+	}: { side: DockSide; stacked?: boolean; width: string } = $props();
+
+	function setWidth(px: number | undefined) {
+		if (stacked) settings.setSpawnDock({ width: px });
+		else settings.setStatsDock({ width: px });
+	}
 
 	const sections = [
 		{ key: 'accounts', title: () => m.stats_dock_accounts(), open: true },
@@ -26,9 +39,10 @@
 	class="dock"
 	class:dock-left={side === 'left'}
 	class:stacked
-	style:--stats-dock-w={stacked ? SPAWN_DOCK_WIDTH : STATS_DOCK_WIDTH}
+	style:--stats-dock-w={width}
 	aria-label={m.stats_dock_title()}
 >
+	<DockGrip {side} onwidth={setWidth} onreset={() => setWidth(undefined)} />
 	<div class="dock-head">{m.stats_dock_title()}</div>
 	<div class="dock-body">
 		{#each sections as s (s.key)}
