@@ -15,7 +15,7 @@
 	import StatsDock from '$lib/components/organisms/statsdock/StatsDock.svelte';
 	import SessionControls from '$lib/components/organisms/SessionControls.svelte';
 	import KanbanBoard from '$lib/components/organisms/KanbanBoard.svelte';
-	import { AutoGrid, Button, Text } from '@dorsk/tsumikit';
+	import { AutoGrid, Button, IconButton, Text } from '@dorsk/tsumikit';
 	import { drafts, LIST_DENSITY, LIST_VIEW, LIST_KANBAN, LIST_SECTION, LIST_LABELS } from '$lib/drafts';
 	import { notify } from '$lib/notify.svelte';
 	import { settings } from '$lib/settings.svelte';
@@ -112,6 +112,16 @@
 	// `showArchived` drives the paginated archive pager + search scope; archived is
 	// now just one of the enabled sections, so the existing pager wiring is reused.
 	const showArchived = $derived(sections.has('archived'));
+	// One-click "hide archived" from the Archived header itself, so turning
+	// the section back off doesn't cost a trip through the filter popover.
+	// Mirrors SectionFilter's invariant: the set never goes empty, so when
+	// Archived was the only section on we fall back to Live.
+	function hideArchived() {
+		const next = new Set(sections);
+		next.delete('archived');
+		if (next.size === 0) next.add('live');
+		sections = next;
+	}
 	let openSession = $state<SessionListItem | null>(null);
 	let showSpawn = $state(false);
 	// Docked panels (Settings › New session / Stats panel): the spawn form
@@ -937,7 +947,19 @@
 	{/if}
 	{#if archTop.length > 0}
 		<div class="section">
-			<div class="group-header">{m.sessions_section_archived()} <Text class="count">{archTop.length}</Text></div>
+			<div class="group-header">
+				{m.sessions_section_archived()} <Text class="count">{archTop.length}</Text>
+				{#if showArchived}
+					<IconButton
+						inline
+						icon="eye-off"
+						size={14}
+						label={m.sessions_hide_archived()}
+						title={m.sessions_hide_archived()}
+						onclick={hideArchived}
+					/>
+				{/if}
+			</div>
 			{@render rowsView(archTop, ns.childGroups, false, searchTerms)}
 		</div>
 	{/if}
@@ -1025,7 +1047,19 @@
 				(s) => keepRow(s) && !pinnedArchivedKidIds.has(s.id)
 			)}
 			<div class="section">
-				<div class="group-header">{m.sessions_section_archived()} <Text class="count">{archTop.length}</Text></div>
+				<div class="group-header">
+				{m.sessions_section_archived()} <Text class="count">{archTop.length}</Text>
+				{#if showArchived}
+					<IconButton
+						inline
+						icon="eye-off"
+						size={14}
+						label={m.sessions_hide_archived()}
+						title={m.sessions_hide_archived()}
+						onclick={hideArchived}
+					/>
+				{/if}
+			</div>
 				{#if pageRows.length === 0 && !pageLoading}
 					<div class="empty"><Text tone="muted">{m.sessions_no_archived()}</Text></div>
 				{:else}
