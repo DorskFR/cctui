@@ -52,7 +52,8 @@
 		searching: boolean;
 		onStartSelect: () => void;
 		onCancelSelect: () => void;
-		onNew: () => void;
+		// Absent when the docked spawn panel replaces the "+ New" button.
+		onNew?: () => void;
 		onUpdateLabel?: (labelId: string, patch: { name?: string; color?: string }) => Promise<Label>;
 		onDeleteLabel?: (labelId: string) => void | Promise<void>;
 	} = $props();
@@ -154,7 +155,9 @@
 			<DimensionPicker menu kind="color" value={colorBy} onchange={onColorBy} />
 		</div>
 	</div>
-	<Button class="toolbar-new" control variant="primary" title={m.sessions_new_session()} aria-label={m.sessions_new_session()} onclick={onNew}>+<span class="new-label"> {m.sessions_new()}</span></Button>
+	{#if onNew}
+		<Button class="toolbar-new" control variant="primary" title={m.sessions_new_session()} aria-label={m.sessions_new_session()} onclick={onNew}>+<span class="new-label"> {m.sessions_new()}</span></Button>
+	{/if}
 	<!-- Mobile-only flex row-break: basis:100% forces row 2 (search +
 	     tools) onto a fresh line below title+New. Hidden on desktop where everything
 	     sits on one row. -->

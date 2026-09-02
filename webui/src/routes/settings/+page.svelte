@@ -115,6 +115,7 @@
 	// names itself, so the prefix is added server-side when the name lands; a
 	// name the user typed is left alone.
 	const sessionEmojiPrefix = $derived(settings.sessionEmojiPrefix);
+	const spawnDock = $derived(settings.spawnDock);
 
 	// Daemon-side secret redaction. The switch toggles live scrubbing;
 	// the textarea holds one extra regex per line, layered on the daemon's
@@ -263,6 +264,47 @@
 							label={m.settings_session_emoji_label()}
 							onclick={() => settings.setSessionEmojiPrefix(!sessionEmojiPrefix)}
 						/>
+					</dd>
+				</div>
+			</dl>
+		</Stack>
+	</Card>
+
+	<!-- ── New session ──────────────────────────────────────────────────── -->
+	<Card>
+		<Stack gap="md">
+			<Heading level={2}>{m.settings_spawn_title()}</Heading>
+			<dl class="props">
+				<div class="prop">
+					<dt>
+						<Text weight="semibold">{m.settings_spawn_dock_label()}</Text>
+						<Text size="sm" tone="faint">{m.settings_spawn_dock_help()}</Text>
+					</dt>
+					<dd>
+						<Switch
+							checked={spawnDock.enabled}
+							label={m.settings_spawn_dock_label()}
+							onclick={() => settings.setSpawnDock({ enabled: !spawnDock.enabled })}
+						/>
+					</dd>
+				</div>
+				<div class="prop">
+					<dt>
+						<Text weight="semibold">{m.settings_spawn_dock_side_label()}</Text>
+						<Text size="sm" tone="faint">{m.settings_spawn_dock_side_help()}</Text>
+					</dt>
+					<dd>
+						<Select
+							value={spawnDock.side}
+							disabled={!spawnDock.enabled}
+							onchange={(e) =>
+								settings.setSpawnDock({
+									side: (e.currentTarget as HTMLSelectElement).value as typeof spawnDock.side
+								})}
+						>
+							<option value="left">{m.settings_spawn_dock_side_left()}</option>
+							<option value="right">{m.settings_spawn_dock_side_right()}</option>
+						</Select>
 					</dd>
 				</div>
 			</dl>
@@ -536,23 +578,34 @@
 		flex-direction: column;
 		gap: var(--sp-1);
 	}
+	/* Each card: the section heading gets its own breathing room above the
+	   rows, and each row is a label/help pair centered against its control,
+	   separated by a hairline with even padding on both sides. */
 	.props {
 		display: flex;
 		flex-direction: column;
-		gap: var(--sp-3);
-		margin: 0;
+		gap: 0;
+		margin: var(--sp-3) 0 0;
 	}
 	.prop {
 		display: flex;
-		align-items: flex-start;
+		align-items: center;
 		justify-content: space-between;
-		gap: var(--sp-3);
+		gap: var(--sp-4);
+		padding: var(--sp-3) 0;
+	}
+	.prop:first-child {
+		padding-top: 0;
+	}
+	.prop:last-child {
+		padding-bottom: 0;
 	}
 	.prop dt {
 		display: flex;
 		flex-direction: column;
-		gap: 2px;
+		gap: var(--sp-1);
 		min-width: 0;
+		max-width: 40rem;
 	}
 	.prop dd {
 		margin: 0;
@@ -560,7 +613,6 @@
 	}
 	.prop + .prop {
 		border-top: 1px solid var(--border);
-		padding-top: var(--sp-3);
 	}
 	.defaults ul {
 		display: flex;

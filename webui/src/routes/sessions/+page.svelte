@@ -11,6 +11,7 @@
 	import SessionCard from '$lib/components/organisms/SessionCard.svelte';
 	import ConversationDrawer from '$lib/components/organisms/ConversationDrawer.svelte';
 	import SpawnModal from '$lib/components/organisms/SpawnModal.svelte';
+	import { spawnDockSide } from '$lib/spawnDock.svelte';
 	import SessionControls from '$lib/components/organisms/SessionControls.svelte';
 	import KanbanBoard from '$lib/components/organisms/KanbanBoard.svelte';
 	import { AutoGrid, Button, Container, Text } from '@dorsk/tsumikit';
@@ -112,13 +113,26 @@
 	const showArchived = $derived(sections.has('archived'));
 	let openSession = $state<SessionListItem | null>(null);
 	let showSpawn = $state(false);
+	// Docked spawn panel (Settings › New session): the form stays pinned to one
+	// edge instead of living behind the "+ New" button. `null` = modal mode.
+	const dockSide = $derived(spawnDockSide());
+	// Bumped whenever the docked form is done with (spawned, drafted, cleared,
+	// or handed a prefill) so it remounts and reseeds exactly like a reopened
+	// modal would.
+	let dockEpoch = $state(0);
 	// Prefill for "new session from same script". Seeded from an
 	// archived session's config, then handed to the SpawnModal.
 	let spawnPrefill = $state<Record<string, string> | null>(null);
+	// Open the spawn form seeded with `prefill`: the modal, or a fresh mount of
+	// the docked panel.
+	function openSpawn(prefill: Record<string, string> | null) {
+		spawnPrefill = prefill;
+		if (dockSide) dockEpoch++;
+		else showSpawn = true;
+	}
 	function newFromScript(s: SessionListItem) {
-		spawnPrefill = scriptPrefill(s);
 		openSession = null;
-		showSpawn = true;
+		openSpawn(scriptPrefill(s));
 	}
 
 	// ── Deep-linkable session ─────────────────────────────────────
@@ -531,8 +545,7 @@
 			toasts.err(m.sessions_toast_edit_draft_failed({ error: errMessage(e) }));
 			return;
 		}
-		spawnPrefill = prefill;
-		showSpawn = true;
+		openSpawn(prefill);
 	}
 
 	// A starred parent should keep its full subagent group visible under Pinned
@@ -596,7 +609,7 @@
 	{searching}
 	onStartSelect={() => (list.selecting = true)}
 	onCancelSelect={list.exitSelect}
-	onNew={() => (showSpawn = true)}
+	onNew={dockSide ? undefined : () => (showSpawn = true)}
 	onUpdateLabel={updateLabel}
 	onDeleteLabel={deleteLabel}
 />
@@ -1010,7 +1023,19 @@
 	/>
 {/if}
 
-{#if showSpawn}
+{#if dockSide}
+	{#key dockEpoch}
+		<SpawnModal
+			docked={dockSide}
+			prefill={spawnPrefill}
+			onclose={() => {
+				spawnPrefill = null;
+				dockEpoch++;
+			}}
+			onspawned={() => qc.invalidateQueries({ queryKey: ['sessions'] })}
+		/>
+	{/key}
+{:else if showSpawn}
 	<SpawnModal
 		prefill={spawnPrefill}
 		onclose={() => {

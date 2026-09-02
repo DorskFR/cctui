@@ -78,6 +78,27 @@ export function clampSessionListWidth(v: unknown): SessionListWidth {
 		: DEFAULT_SESSION_LIST_WIDTH;
 }
 
+// Docked spawn panel: instead of the "+ New" button opening a modal, the whole
+// new-session form stays pinned to one edge of the Sessions screen so a serial
+// spawner never opens a dialog. Off by default. Desktop-only in practice: a
+// narrow viewport falls back to the modal whatever is stored here.
+export const SPAWN_DOCK_SIDES = ['left', 'right'] as const;
+export type SpawnDockSide = (typeof SPAWN_DOCK_SIDES)[number];
+export const DEFAULT_SPAWN_DOCK_SIDE: SpawnDockSide = 'right';
+
+export interface SpawnDockSettings {
+	enabled: boolean;
+	side: SpawnDockSide;
+}
+
+/** Clamp a stored side to a known one (an older/corrupt blob must not pin the
+ *  panel nowhere). */
+export function clampSpawnDockSide(v: unknown): SpawnDockSide {
+	return SPAWN_DOCK_SIDES.includes(v as SpawnDockSide)
+		? (v as SpawnDockSide)
+		: DEFAULT_SPAWN_DOCK_SIDE;
+}
+
 export interface DisplaySettings {
 	theme: string;
 	fontScale: number;
@@ -136,6 +157,9 @@ export interface SecretScrubPattern {
 export interface SettingsState {
 	sessionList: SessionListSettings;
 	display: DisplaySettings;
+	// Docked spawn panel (Sessions screen). Top-level so it serializes as
+	// `data.spawnDock`; the server passes it through untouched.
+	spawnDock: SpawnDockSettings;
 	// Claude harness mode. Top-level so it serializes as `data.harnessMode`,
 	// which the server reads to drive each daemon's Reconcile.
 	harnessMode: HarnessMode;
@@ -185,6 +209,7 @@ const DEFAULTS: SettingsState = {
 		notifyEnabled: false,
 		notifySound: true
 	},
+	spawnDock: { enabled: false, side: DEFAULT_SPAWN_DOCK_SIDE },
 	harnessMode: DEFAULT_HARNESS_MODE,
 	whipStopPhrases: { mode: DEFAULT_WHIP_MODE, phrases: [], guidance: '' },
 	secretScrubEnabled: false,
@@ -213,6 +238,10 @@ export function mergeDefaults(partial: Partial<SettingsState> | null | undefined
 			accountNames: p.sessionList?.accountNames === true
 		},
 		display: { ...DEFAULTS.display, ...(p.display ?? {}) },
+		spawnDock: {
+			enabled: p.spawnDock?.enabled === true,
+			side: clampSpawnDockSide(p.spawnDock?.side)
+		},
 		// Clamp to a known mode so an unknown stored value renders as `bg` (matches
 		// the server's clamp on PUT).
 		harnessMode: clampHarnessMode(p.harnessMode),
@@ -350,6 +379,19 @@ class Settings {
 	get accountNames(): boolean {
 		return this.state.sessionList.accountNames === true;
 	}
+	// Docked spawn panel: on/off and which edge it pins to.
+	setSpawnDock(patch: Partial<SpawnDockSettings>) {
+		this.state.spawnDock = { ...this.state.spawnDock, ...patch };
+		this.persist();
+	}
+
+	get spawnDock(): SpawnDockSettings {
+		return {
+			enabled: this.state.spawnDock.enabled === true,
+			side: clampSpawnDockSide(this.state.spawnDock.side)
+		};
+	}
+
 	setDisplay(patch: Partial<DisplaySettings>) {
 		this.state.display = { ...this.state.display, ...patch };
 		this.persist();
