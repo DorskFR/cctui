@@ -129,7 +129,7 @@ RUN arch="$(dpkg --print-architecture)" \
 # CI enforces it via scripts/check-claude-version-drift.sh, which also reports
 # when this pin falls behind upstream. `latest`/`stable` still resolve if passed
 # explicitly as a build arg.
-ARG CLAUDE_CODE_VERSION=2.1.220
+ARG CLAUDE_CODE_VERSION=2.1.258
 RUN base="https://downloads.claude.ai/claude-code-releases" \
     && case "$(dpkg --print-architecture)" in \
          amd64) platform=linux-x64 ;; \
