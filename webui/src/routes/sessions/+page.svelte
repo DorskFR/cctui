@@ -5,7 +5,7 @@
 	import { useQueryClient } from '@tanstack/svelte-query';
 	import { page } from '$app/state';
 	import { pushState, replaceState } from '$app/navigation';
-	import { toasts } from '$lib/toast.svelte';
+	import { toasts, type ToastAction } from '$lib/toast.svelte';
 	import { ApiError, errMessage } from '$lib/api';
 	import { ws } from '$lib/ws.svelte';
 	import SessionCard from '$lib/components/organisms/SessionCard.svelte';
@@ -400,6 +400,20 @@
 			.filter((id) => id);
 	}
 
+	// "Undo" action attached to every archive toast: un-archives the same ids
+	// and refreshes the list. Only reachable while the toast is still visible.
+	function undoArchive(ids: string[]): ToastAction {
+		return {
+			label: m.toast_undo(),
+			run: async () => {
+				await actions.unarchiveMany(ids);
+				toasts.ok(m.sessions_toast_unarchived());
+				refreshTick++;
+				qc.invalidateQueries({ queryKey: ['sessions'] });
+			}
+		};
+	}
+
 	async function archiveSelected() {
 		const ids = [...list.selected];
 		if (ids.length === 0) return;
@@ -407,7 +421,7 @@
 		archiving = true;
 		try {
 			await actions.archiveMany(ids);
-			toasts.ok(m.sessions_toast_archived({ count: ids.length }));
+			toasts.ok(m.sessions_toast_archived({ count: ids.length }), undoArchive(ids));
 			list.exitSelect();
 			refreshTick++;
 		} catch (e) {
@@ -428,7 +442,7 @@
 		archiving = true;
 		try {
 			await actions.archiveMany(ids);
-			toasts.ok(m.sessions_toast_archived({ count: ids.length }));
+			toasts.ok(m.sessions_toast_archived({ count: ids.length }), undoArchive(ids));
 			refreshTick++;
 			qc.invalidateQueries({ queryKey: ['sessions'] });
 		} catch (e) {
@@ -445,7 +459,10 @@
 		try {
 			if (isArchived) await actions.unarchive(s.id);
 			else await actions.archive(s.id);
-			toasts.ok(isArchived ? m.sessions_toast_unarchived() : m.sessions_toast_archived_one());
+			toasts.ok(
+				isArchived ? m.sessions_toast_unarchived() : m.sessions_toast_archived_one(),
+				isArchived ? undefined : undoArchive([s.id])
+			);
 			refreshTick++;
 		} catch (e) {
 			toasts.err(errMessage(e));

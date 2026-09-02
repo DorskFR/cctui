@@ -1011,6 +1011,7 @@
 	"stats_dock_accounts": "Accounts",
 	"stats_dock_no_accounts": "No account with usage data.",
 	"stats_dock_title": "Stats",
+	"toast_undo": "Undo",
 	"turn_result_label": "Result",
 	"turn_tool_label": "Tool",
 	"users_admin_token_note": "The admin token is server-wide and owns no machines or accounts — OAuth accounts are created under a user.",

@@ -336,6 +336,32 @@ svg[aria-hidden="true"] {
 .toast-wrap .toast-ok {
   border-color: var(--accent);
 }
+/* Toast carrying an inline action (Undo): text on the left fills the row and
+   still dismisses on click; the action button sits flush right. */
+.toast-wrap .toast-with-action {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  cursor: default;
+  padding-right: var(--sp-2);
+}
+.toast-wrap .toast-text {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  background: none;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.toast-wrap .toast-action {
+  flex: none;
+  font-weight: 600;
+  color: var(--accent);
+}
 
 /* ---------- misc ---------- */
 .empty {

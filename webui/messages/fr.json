@@ -1010,6 +1010,7 @@
 	"stats_dock_accounts": "Comptes",
 	"stats_dock_no_accounts": "Aucun compte avec des données d’utilisation.",
 	"stats_dock_title": "Statistiques",
+	"toast_undo": "Annuler",
 	"turn_result_label": "Résultat",
 	"turn_tool_label": "Outil",
 	"users_admin_token_note": "Le jeton admin s'applique à tout le serveur et ne possède ni machine ni compte — les comptes OAuth sont créés sous un utilisateur.",
