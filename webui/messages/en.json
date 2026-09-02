@@ -858,6 +858,8 @@
 	"sessions_view_list_detailed": "List · Detailed",
 	"sessions_view_title": "View: {view}",
 	"sessions_workdir_copy_title": "Click to copy — {path}",
+	"sessions_branch_title": "Branch {branch}",
+	"sessions_branch_label": "Branch",
 	"sessions_workflow": "Workflow",
 	"sessions_workflow_named": "Workflow: {name}",
 	"settings_account_names_help": "Show the account name on each session row instead of the key icon. Useful when several accounts share one provider.",

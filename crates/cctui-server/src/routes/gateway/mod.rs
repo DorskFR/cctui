@@ -1134,17 +1134,12 @@ mod tests {
     fn failover_cooldown_spaces_rebinds_and_expires() {
         let map = dashmap::DashMap::new();
         let t0 = Instant::now();
-        assert!(!cooldown_active(&map, "s1", t0, Duration::from_secs(60)));
+        assert!(!cooldown_active(&map, "s1", t0, Duration::from_mins(1)));
         note_failover(&map, "s1", t0);
-        assert!(cooldown_active(&map, "s1", t0 + Duration::from_secs(59), Duration::from_secs(60)));
-        assert!(!cooldown_active(
-            &map,
-            "s1",
-            t0 + Duration::from_secs(61),
-            Duration::from_secs(60)
-        ));
+        assert!(cooldown_active(&map, "s1", t0 + Duration::from_secs(59), Duration::from_mins(1)));
+        assert!(!cooldown_active(&map, "s1", t0 + Duration::from_secs(61), Duration::from_mins(1)));
         // Another session is never held back by s1's stamp.
-        assert!(!cooldown_active(&map, "s2", t0, Duration::from_secs(60)));
+        assert!(!cooldown_active(&map, "s2", t0, Duration::from_mins(1)));
     }
 
     #[test]

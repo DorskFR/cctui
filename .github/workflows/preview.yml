@@ -1,0 +1,55 @@
+name: preview
+
+# Per-PR images for the cctui-preview ApplicationSet
+# (infra.dorsk.dev overlays/dev/cctui-preview): a PR carrying the `preview`
+# label gets ghcr.io/dorskfr/cctui{,-ui}:pr-<n>, rebuilt on every push.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: preview-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  images:
+    name: pr-${{ github.event.pull_request.number }} images
+    if: contains(github.event.pull_request.labels.*.name, 'preview')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+
+      - name: Log in to ghcr
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build + push server image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          file: deploy/Dockerfile
+          platforms: linux/amd64
+          push: true
+          build-args: |
+            CCTUI_GIT_HASH=${{ github.event.pull_request.head.sha }}
+          tags: ghcr.io/dorskfr/cctui:pr-${{ github.event.pull_request.number }}
+
+      - name: Build + push webui image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: .
+          file: webui/Dockerfile
+          platforms: linux/amd64
+          push: true
+          build-args: |
+            CLIENT_VERSION=pr-${{ github.event.pull_request.number }}
+          tags: ghcr.io/dorskfr/cctui-ui:pr-${{ github.event.pull_request.number }}
