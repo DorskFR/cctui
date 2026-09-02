@@ -92,6 +92,23 @@ describe('Settings save → load round-trip through the blob', () => {
 		expect(merged.spawnDock.side).toBe('right');
 	});
 
+	it('the docked stats panel survives a persist then reload', () => {
+		settings.setStatsDock({ enabled: true, side: 'left' });
+
+		const loaded = loadFromCache();
+		expect(loaded.statsDock.enabled).toBe(true);
+		expect(loaded.statsDock.side).toBe('left');
+	});
+
+	it('the docked stats panel defaults off on the right and clamps an unknown side', () => {
+		expect(mergeDefaults(null).statsDock).toEqual({ enabled: false, side: 'right' });
+		const merged = mergeDefaults({
+			statsDock: { enabled: 1, side: 'bottom' }
+		} as unknown as Record<string, unknown>);
+		expect(merged.statsDock.enabled).toBe(false);
+		expect(merged.statsDock.side).toBe('right');
+	});
+
 	it('each width maps to a CSS length, the default keeping --content-max', () => {
 		expect(sessionListWidthSize('default')).toBeUndefined();
 		expect(sessionListWidthSize('wide')).toBe('72rem');
