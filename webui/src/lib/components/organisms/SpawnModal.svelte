@@ -738,6 +738,7 @@
 				{recentDirs}
 				accounts={allAccounts}
 				onsubmit={submit}
+				onfiles={addFiles}
 				docked={!!docked}
 			/>
 		{/snippet}

@@ -945,7 +945,7 @@
 	"spawn_account_none_hint": "S'exécute avec la connexion propre du worker — sans passerelle ni liaison de compte.",
 	"spawn_action_dispatch": "Dispatcher",
 	"spawn_action_spawn": "Lancer",
-	"spawn_add_env_vars": "Ajouter des variables d'env",
+	"spawn_add_env_vars": "Ajouter des env vars",
 	"spawn_add_files": "Ajouter des fichiers",
 	"spawn_add_label": "Ajouter un libellé",
 	"spawn_clear": "Effacer",
