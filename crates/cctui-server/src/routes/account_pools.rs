@@ -78,10 +78,11 @@ pub async fn list_pools(
     Extension(ctx): Extension<AuthContext>,
 ) -> Result<Json<Vec<AccountPoolView>>, ApiErr> {
     require_human(&ctx)?;
-    let pools = account_pools::list_for_owner(&state.pool, ctx.owner_filter()).await.map_err(|e| {
-        tracing::error!("listing account pools: {e}");
-        err(StatusCode::INTERNAL_SERVER_ERROR, "could not list pools")
-    })?;
+    let pools =
+        account_pools::list_for_owner(&state.pool, ctx.owner_filter()).await.map_err(|e| {
+            tracing::error!("listing account pools: {e}");
+            err(StatusCode::INTERNAL_SERVER_ERROR, "could not list pools")
+        })?;
     let mut views = Vec::with_capacity(pools.len());
     for pool in pools {
         let members = account_pools::members(&state.pool, pool.id).await.map_err(|e| {
