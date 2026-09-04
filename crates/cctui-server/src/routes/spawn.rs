@@ -157,15 +157,33 @@ pub async fn dispatch_spawn(
     // With no account named: exactly one matching-family account → bind it;
     // several → 400 (pick explicitly, never guess); none → unbound as before
     // (setups with no accounts configured keep working).
-    let decision = decide_account(req.account.as_deref(), req.no_account, req.auto_account);
-    let auto_bound = matches!(decision, AccountDecision::ResolveDefault | AccountDecision::Auto);
-    let picked_for_you = matches!(decision, AccountDecision::Auto);
+    let decision = decide_account(
+        req.account.as_deref(),
+        req.no_account,
+        req.auto_account,
+        req.pool.as_deref(),
+    );
+    let auto_bound = matches!(
+        decision,
+        AccountDecision::ResolveDefault | AccountDecision::Auto | AccountDecision::Pool(_)
+    );
+    let picked_for_you = matches!(decision, AccountDecision::Auto | AccountDecision::Pool(_));
+    // The pool the session may later be moved inside, stamped on its token
+    // once the account is minted. `None` for every other decision: a session
+    // that named no pool is never moved.
+    let mut bound_pool: Option<Uuid> = None;
     let account_choice = match decision {
         AccountDecision::Named(a) => Some(a),
         AccountDecision::Unbound => None,
         AccountDecision::ResolveDefault => default_account_name(state, uid, &adapter_id).await?,
         AccountDecision::Auto => {
             auto_account_name(state, uid, &adapter_id, model.as_deref()).await?
+        }
+        AccountDecision::Pool(name) => {
+            let (account, pool_id) =
+                pool_account_name(state, uid, &adapter_id, model.as_deref(), &name).await?;
+            bound_pool = Some(pool_id);
+            Some(account)
         }
     };
     if let Some(account_name) = account_choice.as_deref() {
@@ -208,7 +226,25 @@ pub async fn dispatch_spawn(
         )
         .await
         {
-            Ok(gateway_env) => env.extend(gateway_env),
+            Ok(gateway_env) => {
+                env.extend(gateway_env);
+                // Stamp the pool on the freshly minted token. Best-effort: the
+                // session is already provisioned and running on a member, and
+                // losing the stamp only costs it the right to be moved later.
+                if let Some(pool_id) = bound_pool
+                    && let Err(e) = sqlx::query(
+                        "UPDATE session_tokens SET pool_id = $2 \
+                          WHERE session_id = $1 AND revoked_at IS NULL",
+                    )
+                    .bind(&token_session_id)
+                    .bind(pool_id)
+                    .execute(&state.pool)
+                    .await
+                {
+                    tracing::warn!(session_id = %token_session_id, error = %e,
+                        "could not stamp the session's account pool");
+                }
+            }
             Err(crate::routes::gateway::MintSessionEnvError::NoAccount) => {
                 return Err((
                     StatusCode::NOT_FOUND,
@@ -488,6 +524,125 @@ async fn auto_account_name(
     }
 }
 
+/// Pick the account a pool-bound spawn binds, and the pool it stays inside.
+///
+/// The same ranking machinery as [`auto_account_name`], over a strictly
+/// smaller set: the pool's members that this user may still use in this
+/// family. That restriction is the whole point — `auto_account` answers "who
+/// has room?" across everything reachable, which quietly makes every shared
+/// work credential a candidate for personal work; a pool answers "who has room
+/// *among the accounts I said were interchangeable*".
+///
+/// Usage is still measured through any redirect chain, exactly as `auto` does:
+/// a member pointed elsewhere by an explicit rule would otherwise be scored on
+/// a credential that will not serve. The elected *name* stays the member's, so
+/// mint applies that rule as it would for any launch — an explicit, dated rule
+/// the same user wrote outranks the pool's own policy.
+async fn pool_account_name(
+    state: &AppState,
+    user_id: Uuid,
+    adapter_id: &str,
+    model: Option<&str>,
+    pool_name: &str,
+) -> Result<(String, Uuid), (StatusCode, Json<ApiError>)> {
+    let family = crate::routes::gateway::Family::from_adapter(adapter_id);
+    let pool = crate::store::account_pools::by_name(&state.pool, user_id, pool_name)
+        .await
+        .map_err(|e| {
+            tracing::error!("resolving account pool: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
+        })?
+        .ok_or_else(|| bad_request(format!("no account pool named {pool_name:?}")))?;
+
+    let members =
+        crate::store::account_pools::usable_members(&state.pool, pool.id, user_id, family.label())
+            .await
+            .map_err(|e| {
+                tracing::error!("reading account pool members: {e}");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ApiError { error: "database error".into() }),
+                )
+            })?;
+    if members.is_empty() {
+        // Deliberately not a silent fallback to the wider set: the caller
+        // named a boundary, and quietly launching outside it is the exact
+        // failure pools exist to prevent.
+        return Err(bad_request(format!(
+            "pool {:?} has no usable {} account — add one, or check that its members \
+             are still shared with you",
+            pool.name,
+            family.label()
+        )));
+    }
+
+    let rules = crate::store::account_redirects::live_for_launch(&state.pool, user_id)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!("pool account: reading redirects failed, ranking origins: {e}");
+            Vec::new()
+        });
+    let providers: std::collections::HashMap<Uuid, Uuid> =
+        members.iter().map(|m| (m.account_id, m.provider_id)).collect();
+    let usages = futures_util::future::join_all(members.iter().map(|m| {
+        let effective = crate::store::account_redirects::follow_account_chain(
+            &rules,
+            m.account_id,
+            family.label(),
+        )
+        .and_then(|to| providers.get(&to).copied())
+        .unwrap_or(m.provider_id);
+        async move { crate::routes::gateway::usage_for_soft_limit(state, effective).await }
+    }))
+    .await;
+
+    let candidates: Vec<crate::account_pick::Candidate> = members
+        .iter()
+        .zip(usages)
+        .map(|(m, usage)| crate::account_pick::Candidate {
+            name: m.name.clone(),
+            windows: usage
+                .as_ref()
+                .map(crate::soft_limit::normalize_usage_windows)
+                .unwrap_or_default(),
+            limits: crate::soft_limit::SoftLimits::from_json(m.soft_limits_json.as_ref()),
+            usage_known: usage.is_some(),
+        })
+        .collect();
+
+    let now = chrono::Utc::now();
+    let pick = if pool.strategy == crate::store::account_pools::STRATEGY_ORDERED {
+        crate::account_pick::pick_in_order(&candidates, model, now)
+    } else {
+        crate::account_pick::pick_account(&candidates, model, now)
+    };
+    match pick {
+        crate::account_pick::Pick::Chosen { name, headroom_pct } => {
+            tracing::info!(
+                %user_id, account = %name, pool = %pool.name, strategy = %pool.strategy,
+                %adapter_id, headroom_pct, "pool account: bound a member of the pool"
+            );
+            Ok((name, pool.id))
+        }
+        crate::account_pick::Pick::Exhausted(blocked) => {
+            let detail = blocked
+                .iter()
+                .map(|b| format!("{}: {}", b.name, b.reason))
+                .collect::<Vec<_>>()
+                .join("; ");
+            Err(bad_request(format!(
+                "no account in pool {:?} has allocation left for this session ({detail})",
+                pool.name
+            )))
+        }
+        // `members` was non-empty, so the ranker cannot return None; treat it
+        // as exhaustion rather than widening the search.
+        crate::account_pick::Pick::None => {
+            Err(bad_request(format!("no account in pool {:?} can serve this session", pool.name)))
+        }
+    }
+}
+
 /// The account path a spawn resolves to before any DB default lookup.
 #[derive(Debug, PartialEq, Eq)]
 enum AccountDecision {
@@ -502,17 +657,32 @@ enum AccountDecision {
     /// The caller delegated the choice (`auto_account`): rank every candidate
     /// by remaining allocation and bind the roomiest.
     Auto,
+    /// The caller named a pool: choose among its members only, by the pool's
+    /// own strategy, and remember the pool on the session.
+    Pool(String),
 }
 
 /// Pure so the "`no_account` bypasses default resolution" contract is testable
 /// without a DB. A named account wins even if `no_account` is set, so
 /// a stale flag can never suppress an explicit pick.
-fn decide_account(account: Option<&str>, no_account: bool, auto_account: bool) -> AccountDecision {
+fn decide_account(
+    account: Option<&str>,
+    no_account: bool,
+    auto_account: bool,
+    pool: Option<&str>,
+) -> AccountDecision {
+    let pool = pool.map(str::trim).filter(|p| !p.is_empty());
     match account.map(str::trim).filter(|a| !a.is_empty()) {
         Some(a) => AccountDecision::Named(a.to_owned()),
         None if no_account => AccountDecision::Unbound,
-        None if auto_account => AccountDecision::Auto,
-        None => AccountDecision::ResolveDefault,
+        // A pool is a narrower instruction than `auto_account` ("these
+        // accounts" vs "any account"), so it wins when both are set rather
+        // than silently widening the set the caller asked for.
+        None => match pool {
+            Some(p) => AccountDecision::Pool(p.to_owned()),
+            None if auto_account => AccountDecision::Auto,
+            None => AccountDecision::ResolveDefault,
+        },
     }
 }
 
@@ -769,40 +939,64 @@ mod tests {
     #[test]
     fn named_account_always_wins() {
         assert_eq!(
-            decide_account(Some(" acme "), false, false),
+            decide_account(Some(" acme "), false, false, None),
             AccountDecision::Named("acme".to_owned())
         );
         assert_eq!(
-            decide_account(Some("acme"), true, false),
+            decide_account(Some("acme"), true, false, None),
             AccountDecision::Named("acme".to_owned())
         );
         // A stale `auto_account` can no more override an explicit pick than a
         // stale `no_account` can.
         assert_eq!(
-            decide_account(Some("acme"), false, true),
+            decide_account(Some("acme"), false, true, None),
             AccountDecision::Named("acme".to_owned())
         );
     }
 
     #[test]
     fn no_account_bypasses_default_resolution() {
-        assert_eq!(decide_account(None, true, false), AccountDecision::Unbound);
-        assert_eq!(decide_account(Some("   "), true, false), AccountDecision::Unbound);
+        assert_eq!(decide_account(None, true, false, None), AccountDecision::Unbound);
+        assert_eq!(decide_account(Some("   "), true, false, None), AccountDecision::Unbound);
         // An explicit unbound spawn outranks auto-selection: asking for no
         // account can never be answered with one.
-        assert_eq!(decide_account(None, true, true), AccountDecision::Unbound);
+        assert_eq!(decide_account(None, true, true, None), AccountDecision::Unbound);
     }
 
     #[test]
     fn unset_account_resolves_default() {
-        assert_eq!(decide_account(None, false, false), AccountDecision::ResolveDefault);
-        assert_eq!(decide_account(Some(""), false, false), AccountDecision::ResolveDefault);
+        assert_eq!(decide_account(None, false, false, None), AccountDecision::ResolveDefault);
+        assert_eq!(decide_account(Some(""), false, false, None), AccountDecision::ResolveDefault);
     }
 
     #[test]
     fn auto_account_delegates_the_choice() {
-        assert_eq!(decide_account(None, false, true), AccountDecision::Auto);
-        assert_eq!(decide_account(Some("  "), false, true), AccountDecision::Auto);
+        assert_eq!(decide_account(None, false, true, None), AccountDecision::Auto);
+        assert_eq!(decide_account(Some("  "), false, true, None), AccountDecision::Auto);
+    }
+
+    #[test]
+    fn a_pool_bounds_the_choice_and_beats_auto() {
+        assert_eq!(
+            decide_account(None, false, false, Some(" perso ")),
+            AccountDecision::Pool("perso".to_owned())
+        );
+        // `auto_account` widens to every reachable account; a named pool is
+        // the narrower instruction, so it must win rather than be widened.
+        assert_eq!(
+            decide_account(None, false, true, Some("perso")),
+            AccountDecision::Pool("perso".to_owned())
+        );
+        // The two refusals still outrank it: an explicit account, and an
+        // explicit unbound spawn.
+        assert_eq!(
+            decide_account(Some("acme"), false, false, Some("perso")),
+            AccountDecision::Named("acme".to_owned())
+        );
+        assert_eq!(decide_account(None, true, false, Some("perso")), AccountDecision::Unbound);
+        // A blank pool name is not a pool.
+        assert_eq!(decide_account(None, false, true, Some("  ")), AccountDecision::Auto);
+        assert_eq!(decide_account(None, false, false, Some("")), AccountDecision::ResolveDefault);
     }
 
     #[test]

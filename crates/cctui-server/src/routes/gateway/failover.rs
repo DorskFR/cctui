@@ -1,13 +1,27 @@
 //! Gateway account failover — when the bound account runs out of allocation,
-//! rebind the session to the account an explicit redirect rule names instead
-//! of letting it die against a window that resets hours later.
+//! move the session to another account it is allowed to run on instead of
+//! letting it die against a window that resets hours later.
 //!
-//! Off by default: only `CCTUI_GATEWAY_FAILOVER=1|true|on|yes` enables it. Even
-//! then a live session is only ever moved where the user said it may go — an
-//! unexpired `account_redirects` rule for the exhausted account, the same rule
-//! that moves launches ([`super::mint`]). There is no implicit balancing: no
-//! sibling is ever elected by headroom, and a session with no matching rule
-//! stays put and sees the honest refusal.
+//! Two mechanisms, deliberately distinct, and neither one implicit:
+//!
+//!   * **the session's pool** — its user declared a set of interchangeable
+//!     accounts and armed `failover` on it. The election happens *inside that
+//!     set and nowhere else*, by the pool's own strategy. This is the durable
+//!     policy: "these accounts are the same to me".
+//!   * **an explicit redirect rule** — `CCTUI_GATEWAY_FAILOVER=1` plus an
+//!     unexpired `account_redirects` row for the exhausted account, the same
+//!     rule that moves launches ([`super::mint`]). This is the incident knob:
+//!     dated, one-off, "A is spent, send it to B today".
+//!
+//! What is gone, and stays gone, is the third thing that used to sit between
+//! them: an implicit election over *every* account the user could reach. That
+//! is how personal sessions silently ended up on work credentials — nothing had
+//! ever said those accounts were interchangeable. A session with no pool and no
+//! rule stays put and sees the honest refusal.
+//!
+//! Every move is recorded in `session_account_rebinds`, so a session that
+//! changed accounts can say so afterwards. Discovering a rebind weeks later in
+//! a bill was the real complaint; the movement itself was only the symptom.
 //!
 //! Deliberately NOT an in-gateway replay: request bodies stream through
 //! unbuffered on the hot path, so the refused request cannot be re-sent by the
@@ -23,7 +37,6 @@
 //!   * an upstream 429, which is otherwise mirrored verbatim and strands the
 //!     session until its window resets.
 //!
-//! Like a launch, the redirect target is applied regardless of its own usage.
 //! A per-session cooldown keeps a burst-429 (RPM, not quota) from ping-ponging
 //! a session between accounts.
 
@@ -33,6 +46,7 @@ use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 use crate::state::AppState;
+use crate::store::account_pools::AccountPool;
 use crate::store::account_redirects::AccountRedirect;
 
 /// Minimum spacing between two failovers of the same session. A quota 429
@@ -75,11 +89,23 @@ pub fn note_failover(map: &dashmap::DashMap<String, Instant>, session_id: &str, 
     map.insert(session_id.to_owned(), now);
 }
 
+/// Why a session was moved. Recorded verbatim on the audit row and used to
+/// word the retry the worker sees, so "my pool balanced this" is never
+/// confused with "a rule I wrote last Tuesday moved this".
+pub const REASON_POOL: &str = "pool";
+pub const REASON_REDIRECT: &str = "redirect";
+
 /// The credential a failing session should rebind to.
 pub struct FailoverTarget {
     pub session_id: String,
     pub provider_id: Uuid,
     pub account_name: String,
+    /// The account being left, for the audit row.
+    pub from_account_name: String,
+    /// The pool that authorised the move, when one did.
+    pub pool_id: Option<Uuid>,
+    /// [`REASON_POOL`] or [`REASON_REDIRECT`].
+    pub reason: &'static str,
 }
 
 /// The account an explicit rule sends `from_account` to for `model`. A rule
@@ -103,27 +129,25 @@ pub fn explicit_target(
         .and_then(|r| r.to_account)
 }
 
-/// The credential an explicit redirect rule names for the session behind
-/// `session_token`, or `None` when failover is off, on cooldown, no unexpired
-/// rule moves the exhausted account, or the rule's target has no credential
-/// in the family — the caller then mirrors / refuses as before.
+/// The credential the session behind `session_token` may move to, or `None`
+/// when nothing authorises a move — the caller then mirrors / refuses as
+/// before.
 ///
-/// Never picks by headroom: a session goes only where its user configured a
-/// redirect, exactly as a launch would. The rule's target is applied
-/// regardless of its own usage, mirroring launch.
+/// Order of authority: the session's own pool first (the standing policy),
+/// then an explicit redirect rule (the dated override). Never an implicit
+/// election over everything the user can reach.
 pub async fn pick_failover_target(
     state: &AppState,
     session_token: &str,
     exclude_provider: Uuid,
     model: Option<&str>,
 ) -> Option<FailoverTarget> {
-    if !failover_enabled() {
-        return None;
-    }
     let hash = crate::auth::sha256_hex(session_token);
-    let bound: Option<(String, Uuid, Uuid, String)> = sqlx::query_as(
-        "SELECT t.session_id, ap.user_id, ap.account_id, ap.family \
-         FROM session_tokens t JOIN account_providers ap ON ap.id = t.account_id \
+    let bound: Option<(String, Uuid, Uuid, String, String, Option<Uuid>)> = sqlx::query_as(
+        "SELECT t.session_id, ap.user_id, ap.account_id, ap.family, a.name, t.pool_id \
+         FROM session_tokens t \
+         JOIN account_providers ap ON ap.id = t.account_id \
+         JOIN accounts a ON a.id = ap.account_id \
          WHERE t.token_hash = $1 AND t.revoked_at IS NULL",
     )
     .bind(&hash)
@@ -131,11 +155,36 @@ pub async fn pick_failover_target(
     .await
     .ok()
     .flatten();
-    let (session_id, user_id, from_account, family) = bound?;
+    let (session_id, user_id, from_account, family, from_account_name, pool_id) = bound?;
     if cooldown_active(&RECENT_FAILOVERS, &session_id, Instant::now(), FAILOVER_COOLDOWN) {
         return None;
     }
 
+    // 1. The pool the session was launched into, when its owner armed failover.
+    if let Some(pool_id) = pool_id
+        && let Ok(Some(pool)) = crate::store::account_pools::get(&state.pool, pool_id, None).await
+        && pool.failover
+        && let Some(target) = pick_within_pool(
+            state,
+            &pool,
+            user_id,
+            &family,
+            exclude_provider,
+            model,
+            &session_id,
+            &from_account_name,
+        )
+        .await
+    {
+        return Some(target);
+    }
+
+    // 2. The explicit, opt-in redirect path — unchanged, and still gated on the
+    // env flag so an operator who wants no mid-session movement at all keeps
+    // getting none from this direction.
+    if !failover_enabled() {
+        return None;
+    }
     let rules = crate::store::account_redirects::live_for_account(
         &state.pool,
         user_id,
@@ -158,7 +207,85 @@ pub async fn pick_failover_target(
     .await
     .ok()
     .flatten()?;
-    Some(FailoverTarget { session_id, provider_id, account_name })
+    Some(FailoverTarget {
+        session_id,
+        provider_id,
+        account_name,
+        from_account_name,
+        pool_id: None,
+        reason: REASON_REDIRECT,
+    })
+}
+
+/// Elect a member of `pool` for a session whose bound credential just refused.
+///
+/// The pool's own strategy decides (`headroom` ranks, `ordered` walks the
+/// ladder), over the members that are still usable *and* still measurable as
+/// having room. Unlike a launch, a member with no readable usage is not
+/// elected here: at launch an unreadable account is a degraded guess with
+/// nothing at stake, whereas here the current account is already refusing and
+/// moving to another unknown would burn the cooldown for nothing.
+///
+/// The excluded credential is the one that just failed — never a candidate for
+/// its own replacement.
+#[allow(clippy::too_many_arguments)]
+async fn pick_within_pool(
+    state: &AppState,
+    pool: &AccountPool,
+    user_id: Uuid,
+    family: &str,
+    exclude_provider: Uuid,
+    model: Option<&str>,
+    session_id: &str,
+    from_account_name: &str,
+) -> Option<FailoverTarget> {
+    let members =
+        crate::store::account_pools::usable_members(&state.pool, pool.id, user_id, family)
+            .await
+            .ok()?;
+    let members: Vec<_> =
+        members.into_iter().filter(|m| m.provider_id != exclude_provider).collect();
+    if members.is_empty() {
+        return None;
+    }
+
+    let usages = futures_util::future::join_all(
+        members.iter().map(|m| super::usage_for_soft_limit(state, m.provider_id)),
+    )
+    .await;
+    let candidates: Vec<crate::account_pick::Candidate> = members
+        .iter()
+        .zip(usages.iter())
+        .map(|(m, usage)| crate::account_pick::Candidate {
+            name: m.name.clone(),
+            windows: usage
+                .as_ref()
+                .map(crate::soft_limit::normalize_usage_windows)
+                .unwrap_or_default(),
+            limits: crate::soft_limit::SoftLimits::from_json(m.soft_limits_json.as_ref()),
+            usage_known: usage.is_some(),
+        })
+        .collect();
+
+    let now = chrono::Utc::now();
+    let pick = if pool.strategy == crate::store::account_pools::STRATEGY_ORDERED {
+        crate::account_pick::pick_in_order(&candidates, model, now)
+    } else {
+        crate::account_pick::pick_account(&candidates, model, now)
+    };
+    let crate::account_pick::Pick::Chosen { name, .. } = pick else { return None };
+    // Measured room only: see the note above on why an unreadable member is
+    // not a failover target even though it is a launch candidate.
+    let elected =
+        members.iter().zip(usages.iter()).find(|(m, usage)| m.name == name && usage.is_some())?;
+    Some(FailoverTarget {
+        session_id: session_id.to_owned(),
+        provider_id: elected.0.provider_id,
+        account_name: name,
+        from_account_name: from_account_name.to_owned(),
+        pool_id: Some(pool.id),
+        reason: REASON_POOL,
+    })
 }
 
 /// Repoint the session's live token row from `from_provider` to the elected
@@ -192,12 +319,30 @@ pub async fn rebind_session(
         // fingerprint, and dismiss the per-chat soft-limit banner.
         super::clear_orphan_block_for_session(state, &target.session_id).await;
         super::clear_soft_limit_block(state, &target.session_id).await;
+        // The audit row is the whole reason a user can trust this feature:
+        // the session says, afterwards, that it moved and why. Best-effort —
+        // the move already happened, and losing the record must not turn a
+        // successful failover into a failed request.
+        if let Err(e) = crate::store::account_pools::record_rebind(
+            &state.pool,
+            &target.session_id,
+            target.pool_id,
+            &target.from_account_name,
+            &target.account_name,
+            target.reason,
+        )
+        .await
+        {
+            tracing::warn!(session_id = %target.session_id, error = %e,
+                "could not record the session rebind");
+        }
         tracing::warn!(
             session_id = %target.session_id,
             from = %from_provider,
             to = %target.provider_id,
             account = %target.account_name,
-            "gateway failover: rebound session to its explicit redirect target"
+            reason = %target.reason,
+            "gateway failover: rebound session"
         );
     }
     // 0 rows = a concurrent failover won the race; the retry still lands on
@@ -208,12 +353,24 @@ pub async fn rebind_session(
 /// The response that sends the worker back around: 429 with an immediate
 /// `Retry-After`, in the provider's native error envelope so the CLI renders
 /// the message. The harness's own 429 backoff performs the "replay".
-pub fn failover_retry_response(account_name: &str, is_anthropic: bool) -> axum::response::Response {
+pub fn failover_retry_response(
+    account_name: &str,
+    reason: &str,
+    is_anthropic: bool,
+) -> axum::response::Response {
     use axum::response::IntoResponse;
+    // Name the mechanism: the difference between "my pool did its job" and
+    // "a rule I forgot about moved this" is the difference between a feature
+    // and a surprise.
+    let because = if reason == REASON_POOL {
+        "the next account in its pool"
+    } else {
+        "its configured redirect target"
+    };
     let message = format!(
         "cctui gateway: the bound account is out of allocation — session moved to \
-         account '{account_name}' per its configured redirect. Retry now; the request \
-         will be served by that account."
+         account '{account_name}' ({because}). Retry now; the request will be served \
+         by that account."
     );
     let body = if is_anthropic {
         serde_json::json!({
@@ -230,6 +387,7 @@ pub fn failover_retry_response(account_name: &str, is_anthropic: bool) -> axum::
         .header(http::header::RETRY_AFTER, "1")
         .header(http::header::CONTENT_TYPE, "application/json")
         .header("x-cctui-failover", account_name)
+        .header("x-cctui-failover-reason", reason)
         .body(axum::body::Body::from(body.to_string()))
         .unwrap_or_else(|_| axum::http::StatusCode::TOO_MANY_REQUESTS.into_response())
 }

@@ -1133,7 +1133,7 @@ mod tests {
 
     #[test]
     fn failover_retry_response_sends_the_worker_straight_back() {
-        let resp = failover_retry_response("Secours", true);
+        let resp = failover_retry_response("Secours", "pool", true);
         assert_eq!(resp.status(), http::StatusCode::TOO_MANY_REQUESTS);
         let retry = resp.headers().get(http::header::RETRY_AFTER).unwrap();
         assert_eq!(retry, "1", "an immediate retry, not the exhausted window's horizon");

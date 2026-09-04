@@ -5,6 +5,9 @@ import {
 	accountBacksAdapter,
 	adapterForProvider,
 	effectiveAdapterFor,
+	NO_ACCOUNT,
+	poolName,
+	poolValue,
 	providerForAdapter,
 	withAliasTargets
 } from './options';
@@ -95,5 +98,20 @@ describe('withAliasTargets', () => {
 			{ v: 'sonnet', label: 'Sonnet' }
 		]);
 		expect(withAliasTargets(models, null)).toEqual(models);
+	});
+});
+
+describe('pool picker values', () => {
+	it('round-trips a pool name through the sentinel', () => {
+		expect(poolName(poolValue('personal'))).toBe('personal');
+		// A pool named exactly like an account must stay distinguishable: the
+		// value carries the kind, the name alone never does.
+		expect(poolValue('acct')).not.toBe('acct');
+	});
+
+	it('reads every other picker value as not-a-pool', () => {
+		expect(poolName('')).toBeUndefined();
+		expect(poolName('acct')).toBeUndefined();
+		expect(poolName(NO_ACCOUNT)).toBeUndefined();
 	});
 });

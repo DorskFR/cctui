@@ -1,5 +1,7 @@
 import { createQuery, useQueryClient } from "@tanstack/svelte-query";
 import type { PutRedirectRequest } from "@bindings/PutRedirectRequest";
+import type { CreatePoolRequest } from "@bindings/CreatePoolRequest";
+import type { UpdatePoolRequest } from "@bindings/UpdatePoolRequest";
 import { endpoints } from "./endpoints";
 import { qk } from "./keys";
 import type {
@@ -41,6 +43,51 @@ export function useRedirectActions() {
     },
   };
 }
+
+/** The caller's account pools with their membership. A pool is the durable
+ *  "these accounts are interchangeable" statement that bounds both auto-binding
+ *  and mid-session failover; see the accounts screen's Pools tab. */
+export const useAccountPools = (enabled: () => boolean = () => true) =>
+  createQuery(() => ({
+    queryKey: ["account-pools"],
+    queryFn: endpoints.accountPools,
+    enabled: enabled(),
+  }));
+
+/** Create / edit / delete pools; all three invalidate the pools query. */
+export function useAccountPoolActions() {
+  const qc = useQueryClient();
+  const invalidate = () => qc.invalidateQueries({ queryKey: ["account-pools"] });
+  return {
+    create: async (body: CreatePoolRequest) => {
+      const r = await endpoints.createAccountPool(body);
+      invalidate();
+      return r;
+    },
+    update: async (id: string, body: UpdatePoolRequest) => {
+      const r = await endpoints.updateAccountPool(id, body);
+      invalidate();
+      return r;
+    },
+    remove: async (id: string) => {
+      await endpoints.deleteAccountPool(id);
+      invalidate();
+    },
+  };
+}
+
+/** A session's mid-run account moves. Lazy: only fetched while a session's
+ *  drawer is open, since the vast majority of sessions never move at all. */
+export const useSessionRebinds = (
+  sessionId: () => string,
+  enabled: () => boolean = () => true,
+) =>
+  createQuery(() => ({
+    queryKey: ["session-rebinds", sessionId()],
+    queryFn: () => endpoints.sessionRebinds(sessionId()),
+    enabled: enabled(),
+    retry: false,
+  }));
 
 /** Per-account subscription usage. Lazy + slow-refresh: only fetched
  *  while the accounts view is mounted (caller gates `enabled`), and re-polled on

@@ -297,6 +297,10 @@ pub struct AccountInfo {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub providers: Vec<ProviderInfo>,
+    /// The owner's veto on pool membership: with this false, only the owner
+    /// may enrol this account in an account pool. Grantees can still launch on
+    /// it by name — they just cannot make it a silent overflow target.
+    pub pool_eligible: bool,
     /// Names (only) of the account's free-form extra env vars, sorted.
     /// Values stay WRITE-ONLY (encrypted, never returned) — the names let the UI
     /// show what is currently set with a replace-on-save affordance.
@@ -318,6 +322,7 @@ struct AccountRow {
     updated_at: DateTime<Utc>,
     /// Encrypted extra-env blob; decrypted to NAMES only for the API.
     env_json: Option<String>,
+    pool_eligible: bool,
 }
 
 impl AccountRow {
@@ -328,6 +333,7 @@ impl AccountRow {
             name: self.name,
             user_id: self.user_id,
             user_name: self.user_name,
+            pool_eligible: self.pool_eligible,
             created_at: self.created_at,
             updated_at: self.updated_at,
             providers,
@@ -392,7 +398,7 @@ const PROVIDER_SELECT: &str = "SELECT p.id, p.account_id, p.provider, p.family, 
 
 /// Identity SELECT for [`AccountRow`]. Append a `WHERE`/`ORDER BY` before use.
 const ACCOUNT_SELECT: &str = "SELECT a.id, a.name, a.user_id, u.name AS user_name, a.created_at, a.updated_at, \
-     a.env_json \
+     a.env_json, a.pool_eligible \
      FROM accounts a JOIN users u ON u.id = a.user_id";
 
 /// Fetch one account (owner-scoped: `owner` NULL = admin sees all) with its
@@ -537,6 +543,9 @@ pub struct UpdateAccount {
     /// when `env_json` is provided (replace-all wins).
     #[serde(default)]
     pub env_remove: Option<Vec<String>>,
+    /// Owner-only: whether grantees may enrol this account in their pools.
+    #[serde(default)]
+    pub pool_eligible: Option<bool>,
     // Legacy provider fields (any shape): presence ⇒ 400 pointing at
     // PATCH /accounts/{id}/providers/{provider_id}.
     #[serde(default)]
@@ -1183,6 +1192,22 @@ pub async fn update_account(
         (req.env_json.is_some(), encrypt_env(req.env_json.as_ref())?)
     };
 
+    // The owner's pool veto is set on its own: it is a property of lending the
+    // account out, not of its credentials, so it stays editable on a managed
+    // account (which the identity update below refuses to touch).
+    if let Some(eligible) = req.pool_eligible {
+        set_pool_eligible(&state, id, ctx.owner_filter(), eligible).await?;
+        // Nothing else to change: don't run the identity update, whose managed
+        // guard would 404 an account the veto just applied to cleanly.
+        if name.is_none() && !env_provided {
+            let info = fetch_account_info(&state.pool, id, None)
+                .await
+                .map_err(|e| db_err(&e))?
+                .ok_or_else(|| err(StatusCode::NOT_FOUND, "no such account"))?;
+            return Ok(Json(info));
+        }
+    }
+
     let updated: Option<Uuid> = sqlx::query_scalar(
         "UPDATE accounts SET \
             name = COALESCE($3, name), \
@@ -1214,6 +1239,48 @@ pub async fn update_account(
         .map_err(|e| db_err(&e))?
         .ok_or_else(|| err(StatusCode::NOT_FOUND, "no such account"))?;
     Ok(Json(info))
+}
+
+/// Set an account's pool veto, and prune the memberships it withdraws.
+///
+/// Clearing the flag retires the account from every pool it does not belong to
+/// by ownership: leaving those rows would let it come back the moment the flag
+/// flipped, which is not what "stop lending this out" means. The prune is
+/// best-effort — [`crate::store::account_pools::usable_members`] re-checks the
+/// flag at every election, so a failed prune costs tidiness, not safety.
+async fn set_pool_eligible(
+    state: &AppState,
+    id: Uuid,
+    owner: Option<Uuid>,
+    eligible: bool,
+) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+    let touched = sqlx::query(
+        "UPDATE accounts SET pool_eligible = $3, updated_at = now() \
+          WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2)",
+    )
+    .bind(id)
+    .bind(owner)
+    .bind(eligible)
+    .execute(&state.pool)
+    .await
+    .map_err(|e| db_err(&e))?;
+    if touched.rows_affected() == 0 {
+        return Err(err(StatusCode::NOT_FOUND, "no such account"));
+    }
+    if !eligible
+        && let Err(e) = sqlx::query(
+            "DELETE FROM account_pool_members m \
+              USING account_pools p, accounts a \
+              WHERE m.pool_id = p.id AND a.id = m.account_id \
+                AND m.account_id = $1 AND p.user_id <> a.user_id",
+        )
+        .bind(id)
+        .execute(&state.pool)
+        .await
+    {
+        tracing::warn!(account_id = %id, error = %e, "pruning pool memberships failed");
+    }
+    Ok(())
 }
 
 /// `DELETE /api/v1/accounts/{id}` — delete the identity (cascades its providers

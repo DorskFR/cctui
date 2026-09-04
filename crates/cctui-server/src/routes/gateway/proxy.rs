@@ -204,7 +204,11 @@ pub async fn passthrough(
                 super::pick_failover_target(&state, &session_token, acct.id, None).await
                 && super::rebind_session(&state, &target, acct.id).await
             {
-                return Ok(super::failover_retry_response(&target.account_name, is_anthropic));
+                return Ok(super::failover_retry_response(
+                    &target.account_name,
+                    target.reason,
+                    is_anthropic,
+                ));
             }
             // Surface the block as a per-session signal so the webui can offer
             // "continue on another account". Best-effort + dedup'd.
@@ -425,7 +429,11 @@ pub async fn passthrough(
                 .await
         && super::rebind_session(&state, &target, acct.id).await
     {
-        return Ok(super::failover_retry_response(&target.account_name, is_anthropic));
+        return Ok(super::failover_retry_response(
+            &target.account_name,
+            target.reason,
+            is_anthropic,
+        ));
     }
 
     // A successful upstream call clears any soft-limit block on this session:

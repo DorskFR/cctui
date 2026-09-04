@@ -74,6 +74,16 @@ no_account?: boolean,
  */
 auto_account?: boolean, 
 /**
+ * Bind this spawn inside a named account pool: the server picks among the
+ * pool's members only, by the pool's strategy, and remembers the pool so a
+ * long run can be moved between those same members later. This is the
+ * bounded form of `auto_account` — the latter ranks every account the
+ * caller can reach, which is fine for one person with one set of
+ * credentials and wrong the moment personal and work accounts share a
+ * login. Ignored when `account` names an account or `no_account` is set.
+ */
+pool?: string | null, 
+/**
  * Stage this spawn as a draft instead of dispatching it. When
  * true the server validates + persists a `draft` session row carrying the
  * spawn payload in `metadata.draft` and does NOT mint account env or

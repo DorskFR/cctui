@@ -3,6 +3,7 @@
 //! `revoked_at IS NULL` guard, a provider mutation's owner + `NOT managed`
 //! predicate — live in exactly one place.
 
+pub mod account_pools;
 pub mod account_providers;
 pub mod account_redirects;
 pub mod sessions;

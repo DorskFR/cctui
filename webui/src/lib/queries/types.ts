@@ -93,6 +93,9 @@ export interface OAuthAccount {
   created_at: string;
   updated_at: string;
   providers: AccountProvider[];
+  /** The owner's pool veto: with this false, only the owner may enrol the
+   *  account in a pool. Grantees can still launch on it by name. */
+  pool_eligible: boolean;
   /** Names (only) of the account's free-form extra env vars, sorted.
    *  Values stay write-only (never returned); the names drive the "currently
    *  set" display + replace-on-save affordance in the account editor. */
@@ -222,6 +225,10 @@ export interface UpdateAccount {
   /** Stored env var names to delete server-side; ignored when
    *  `env_json` is provided (replace-all wins). */
   env_remove?: string[];
+  /** Owner-only veto: whether grantees may enrol this account in their pools.
+   *  Applied on its own statement server-side, so it also works on a managed
+   *  account (whose identity is otherwise read-only). */
+  pool_eligible?: boolean;
 }
 
 /** Provider-credential edit payload. Every field optional; an absent field leaves that

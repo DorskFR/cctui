@@ -15,6 +15,7 @@ vi.mock('$lib/queries', () => {
 		useDispatchers: () => q([]),
 		useRecentDirs: () => q(recentDirsData),
 		useAccounts: () => q([]),
+		useAccountPools: () => q([]),
 		useLabels: () => q({ labels: [] }),
 		useSessionActions: () => ({}),
 		useCodexModels: () => q(null),

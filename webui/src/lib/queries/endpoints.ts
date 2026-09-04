@@ -42,6 +42,10 @@ import type { LabelListResponse } from "@bindings/LabelListResponse";
 import type { SettingsCatalogResponse } from "@bindings/SettingsCatalogResponse";
 import type { SessionDiagnoseResponse } from "@bindings/SessionDiagnoseResponse";
 import type { AccountRedirect } from "@bindings/AccountRedirect";
+import type { AccountPoolView } from "@bindings/AccountPoolView";
+import type { CreatePoolRequest } from "@bindings/CreatePoolRequest";
+import type { UpdatePoolRequest } from "@bindings/UpdatePoolRequest";
+import type { SessionRebind } from "@bindings/SessionRebind";
 import type { PutRedirectRequest } from "@bindings/PutRedirectRequest";
 import { SYSTEM_MACHINE_KINDS } from "./keys";
 import type {
@@ -268,6 +272,16 @@ export const endpoints = {
   putRedirect: (accountId: string, body: PutRedirectRequest) =>
     api.put<AccountRedirect>(`/accounts/${accountId}/redirect`, body),
   deleteRedirect: (id: string) => api.del<void>(`/redirects/${id}`),
+  /** The caller's account pools with their membership. */
+  accountPools: () => api.get<AccountPoolView[]>("/account-pools"),
+  createAccountPool: (body: CreatePoolRequest) =>
+    api.post<AccountPoolView>("/account-pools", body),
+  updateAccountPool: (id: string, body: UpdatePoolRequest) =>
+    api.patch<AccountPoolView>(`/account-pools/${id}`, body),
+  deleteAccountPool: (id: string) => api.del<void>(`/account-pools/${id}`),
+  /** Every mid-run account move this session made, newest first. */
+  sessionRebinds: (id: string) =>
+    api.get<SessionRebind[]>(`/sessions/${encodeURIComponent(id)}/rebinds`),
   /** The per-account settings catalog: exposable settings keys, the
    *  curated env allowlist, and the quiet-defaults preset — served from the
    *  server's embedded catalog so the editor can never drift from what the

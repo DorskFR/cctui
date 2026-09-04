@@ -33,6 +33,7 @@
 	import AccountCard from '$lib/components/organisms/AccountCard.svelte';
 	import GithubConnectors from '$lib/components/organisms/GithubConnectors.svelte';
 	import DispatchersPanel from '$lib/components/organisms/DispatchersPanel.svelte';
+	import AccountPoolsPanel from '$lib/components/organisms/AccountPoolsPanel.svelte';
 	import ProviderSettingsList from '$lib/components/organisms/ProviderSettingsList.svelte';
 	import FireworksProviderEditor from '$lib/components/organisms/FireworksProviderEditor.svelte';
 	import AnthropicProviderEditor from '$lib/components/organisms/AnthropicProviderEditor.svelte';
@@ -60,6 +61,7 @@
 	let tab = $state('ai');
 	const tabs = $derived<TabItem[]>([
 		{ id: 'ai', label: m.accounts_tab_ai() },
+		{ id: 'pools', label: m.pools_tab() },
 		...(reviewConfigured ? [{ id: 'connectors', label: m.accounts_tab_connectors() }] : []),
 		{ id: 'dispatchers', label: m.accounts_tab_dispatchers() }
 	]);
@@ -626,6 +628,17 @@
 		}
 	}
 
+	// Owner's pool veto. A one-field PATCH: the server applies it on its own
+	// statement, so it also works on a managed account whose identity is
+	// otherwise read-only.
+	function setPoolEligible(a: OAuthAccount, eligible: boolean) {
+		guard(
+			actions
+				.update(a.id, { pool_eligible: eligible } satisfies UpdateAccount)
+				.then(() => toasts.ok(m.accounts_account_updated()))
+		);
+	}
+
 	function removeAccount(a: OAuthAccount) {
 		if (!confirm(m.accounts_confirm_delete_account({ name: a.name }))) return;
 		guard(actions.remove(a.id).then(() => toasts.ok(m.accounts_deleted())));
@@ -727,6 +740,7 @@
 								onsetredirect={(targetId, untilHours, families) =>
 									setRedirect(a, targetId, untilHours, families)}
 								onclearredirect={clearRedirect}
+								onpooleligible={(eligible) => setPoolEligible(a, eligible)}
 								onedit={() => openEditAccount(a)}
 								onremove={() => removeAccount(a)}
 								onaddprovider={() => openAddProvider(a)}
@@ -738,6 +752,8 @@
 					</div>
 				{/if}
 				</div>
+			{:else if id === 'pools'}
+				<AccountPoolsPanel />
 			{:else if id === 'connectors'}
 				<GithubConnectors />
 			{:else if id === 'dispatchers'}

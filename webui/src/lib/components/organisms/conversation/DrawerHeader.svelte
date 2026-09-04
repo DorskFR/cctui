@@ -16,6 +16,7 @@
 	import AdapterIcon from '$lib/components/atoms/AdapterIcon.svelte';
 	import MachineBadge from '$lib/components/molecules/MachineBadge.svelte';
 	import AccountBadge from '$lib/components/molecules/AccountBadge.svelte';
+	import RebindTrail from '$lib/components/molecules/RebindTrail.svelte';
 	import SessionDot from '$lib/components/molecules/SessionDot.svelte';
 	import LabelBadge from '$lib/components/molecules/LabelBadge.svelte';
 	import WorkingDir from '$lib/components/molecules/WorkingDir.svelte';
@@ -184,6 +185,7 @@
 		<SessionDot {session} {livenessClass} />
 		<MachineBadge name={session.machine_name} id={session.machine_id} hue={session.machine_hue} mono />
 		<AccountBadge name={session.account_name} onclick={onAccountClick} showName={settings.accountNames} />
+		<RebindTrail sessionId={session.id} />
 		<div class="dtitle">
 			{#if renaming}
 				<Input bind:value={newName} onkeydown={(e: KeyboardEvent) => e.key === 'Enter' && doRename()} />

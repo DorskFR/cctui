@@ -112,6 +112,19 @@ export const accountBacksAdapter = (a: OAuthAccount | undefined, adapter: string
 // collide with a real account name.
 export const NO_ACCOUNT = '\x00no-account';
 
+// Sentinel prefix for "bind inside this pool". Like NO_ACCOUNT it lives outside
+// the account-name space, so one <Select> can offer accounts and pools without
+// a pool name ever colliding with an account of the same name — they are
+// different kinds of thing and the value says which.
+export const POOL_PREFIX = '\x00pool:';
+
+export const poolValue = (name: string): string => `${POOL_PREFIX}${name}`;
+
+/** The pool name behind a picker value, or undefined when it names an account
+ *  (or Auto / no-account). */
+export const poolName = (value: string): string | undefined =>
+	value.startsWith(POOL_PREFIX) ? value.slice(POOL_PREFIX.length) : undefined;
+
 // A compatible-endpoint account carries its own model list; a native
 // subscription account uses the harness's native families.
 export const isCompatibleProvider = (provider: string): boolean =>

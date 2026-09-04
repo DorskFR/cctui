@@ -722,6 +722,15 @@ pub struct SpawnRequest {
     /// account or `no_account` is set.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub auto_account: bool,
+    /// Bind this spawn inside a named account pool: the server picks among the
+    /// pool's members only, by the pool's strategy, and remembers the pool so a
+    /// long run can be moved between those same members later. This is the
+    /// bounded form of `auto_account` — the latter ranks every account the
+    /// caller can reach, which is fine for one person with one set of
+    /// credentials and wrong the moment personal and work accounts share a
+    /// login. Ignored when `account` names an account or `no_account` is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pool: Option<String>,
     /// Stage this spawn as a draft instead of dispatching it. When
     /// true the server validates + persists a `draft` session row carrying the
     /// spawn payload in `metadata.draft` and does NOT mint account env or
@@ -761,6 +770,7 @@ impl std::fmt::Debug for SpawnRequest {
             .field("provider", &self.provider)
             .field("no_account", &self.no_account)
             .field("auto_account", &self.auto_account)
+            .field("pool", &self.pool)
             .field("env", &format_args!("<{} secret(s) redacted>", self.env.len()))
             .field("save_draft", &self.save_draft)
             .field("env_keys", &self.env_keys)

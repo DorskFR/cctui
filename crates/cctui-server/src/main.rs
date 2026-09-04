@@ -941,6 +941,33 @@ fn build_api_routes() -> Routes {
             Authn::Bearer,
             Authenticated,
         )
+        // Account pools: the durable "these accounts are interchangeable"
+        // statement that bounds both auto-binding and mid-session failover.
+        .add(
+            &[GET, Method::POST],
+            "/account-pools",
+            "List the caller's account pools, or create one.",
+            get(routes::account_pools::list_pools).post(routes::account_pools::create_pool),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[Method::PATCH, Method::DELETE],
+            "/account-pools/{id}",
+            "Edit a pool (name, strategy, failover, membership) or delete it.",
+            patch(routes::account_pools::update_pool)
+                .delete(routes::account_pools::delete_pool),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[GET],
+            "/sessions/{id}/rebinds",
+            "Every mid-run account move this session made, newest first.",
+            get(routes::account_pools::list_session_rebinds),
+            Authn::Bearer,
+            Authenticated,
+        )
         // Provider credentials under an account identity: owner-scoped
         // in the handlers like the other account routes.
         .add(

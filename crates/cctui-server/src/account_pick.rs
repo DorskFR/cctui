@@ -137,41 +137,13 @@ pub fn pick_account(candidates: &[Candidate], model: Option<&str>, now: DateTime
     let mut blocked: Vec<Blocked> = Vec::new();
 
     for candidate in candidates {
-        if !candidate.usage_known {
-            unknown.push(&candidate.name);
-            continue;
-        }
-        let applicable: Vec<&UsageWindow> =
-            candidate.windows.iter().filter(|w| window_applies(w, model)).collect();
-
-        // A spent window is disqualifying on its own; a configured cap
-        // disqualifies through the same evaluator the gateway uses, so `auto`
-        // and the gateway can never disagree about who is available.
-        if let Some(window) = spent_window(&applicable) {
-            blocked.push(Blocked {
-                name: candidate.name.clone(),
-                reason: format!(
-                    "{} at {}%{}",
-                    window.label,
-                    window.utilization.round() as i64,
-                    resets_phrase(window, now)
-                ),
-            });
-            continue;
-        }
-        let owned: Vec<UsageWindow> = applicable.iter().map(|w| (*w).clone()).collect();
-        if let Decision::Block { reason, .. } = evaluate_soft_limit(&owned, &candidate.limits, now)
-        {
-            blocked.push(Blocked { name: candidate.name.clone(), reason });
-            continue;
-        }
-
-        match narrowest_margin(&applicable) {
+        match availability(candidate, model, now) {
+            Err(reason) => blocked.push(reason),
             // Readable, but nothing measurable (no percent window at all):
             // eligible, yet with no margin to compare, so it queues with the
             // unknowns rather than outranking a measured account.
-            None => unknown.push(&candidate.name),
-            Some(margin) => ranked.push((margin, &candidate.name)),
+            Ok(None) => unknown.push(&candidate.name),
+            Ok(Some(margin)) => ranked.push((margin, &candidate.name)),
         }
     }
 
@@ -188,6 +160,70 @@ pub fn pick_account(candidates: &[Candidate], model: Option<&str>, now: DateTime
         return Pick::Chosen { name: (*name).to_owned(), headroom_pct: None };
     }
     blocked.sort_by(|a, b| a.name.cmp(&b.name));
+    Pick::Exhausted(blocked)
+}
+
+/// One candidate's standing: `Err` when it is out (spent window or a cap the
+/// gateway would enforce), `Ok(Some(margin))` when it has measured room, and
+/// `Ok(None)` when it is eligible but unmeasurable — usage unreadable, or read
+/// with no percent window to compare. The three cases are what both strategies
+/// need, so they share one evaluation and can never disagree about who is out.
+fn availability(
+    candidate: &Candidate,
+    model: Option<&str>,
+    now: DateTime<Utc>,
+) -> Result<Option<f64>, Blocked> {
+    if !candidate.usage_known {
+        return Ok(None);
+    }
+    let applicable: Vec<&UsageWindow> =
+        candidate.windows.iter().filter(|w| window_applies(w, model)).collect();
+
+    // A spent window is disqualifying on its own; a configured cap
+    // disqualifies through the same evaluator the gateway uses, so a pick and
+    // the gateway can never disagree about who is available.
+    if let Some(window) = spent_window(&applicable) {
+        return Err(Blocked {
+            name: candidate.name.clone(),
+            reason: format!(
+                "{} at {}%{}",
+                window.label,
+                window.utilization.round() as i64,
+                resets_phrase(window, now)
+            ),
+        });
+    }
+    let owned: Vec<UsageWindow> = applicable.iter().map(|w| (*w).clone()).collect();
+    if let Decision::Block { reason, .. } = evaluate_soft_limit(&owned, &candidate.limits, now) {
+        return Err(Blocked { name: candidate.name.clone(), reason });
+    }
+    Ok(narrowest_margin(&applicable))
+}
+
+/// Walk `candidates` in the order given and take the first one with room — the
+/// `ordered` pool strategy.
+///
+/// A ladder, not a balancer: it exists because "spend the cheap account first,
+/// only spill to the expensive one when it is dry" is a real policy that no
+/// amount of headroom ranking expresses. Position beats margin entirely; a
+/// member at 95% used still wins over an untouched one below it.
+///
+/// Unmeasurable members are eligible in place, on the same fail-open reasoning
+/// as [`pick_account`]: an unreadable usage endpoint must degrade the choice,
+/// never skip a rung the user deliberately put first.
+pub fn pick_in_order(candidates: &[Candidate], model: Option<&str>, now: DateTime<Utc>) -> Pick {
+    if candidates.is_empty() {
+        return Pick::None;
+    }
+    let mut blocked: Vec<Blocked> = Vec::new();
+    for candidate in candidates {
+        match availability(candidate, model, now) {
+            Err(reason) => blocked.push(reason),
+            Ok(headroom_pct) => {
+                return Pick::Chosen { name: candidate.name.clone(), headroom_pct };
+            }
+        }
+    }
     Pick::Exhausted(blocked)
 }
 
@@ -221,6 +257,73 @@ mod tests {
             limits: SoftLimits::default(),
             usage_known: true,
         }
+    }
+
+    #[test]
+    fn ordered_walks_the_ladder_and_ignores_margin() {
+        // Second rung has far more room; the ladder still elects the first.
+        let candidates = vec![
+            candidate("cheap", vec![window(KEY_SESSION, "5h", 80.0, 3)]),
+            candidate("spare", vec![window(KEY_SESSION, "5h", 1.0, 3)]),
+        ];
+        let Pick::Chosen { name, headroom_pct } = pick_in_order(&candidates, None, now()) else {
+            panic!("expected a pick");
+        };
+        assert_eq!(name, "cheap");
+        assert_eq!(headroom_pct, Some(20.0));
+        // Headroom ranking, on the very same list, would have gone the other
+        // way — which is exactly why the two strategies both exist.
+        assert!(matches!(
+            pick_account(&candidates, None, now()),
+            Pick::Chosen { ref name, .. } if name == "spare"
+        ));
+    }
+
+    #[test]
+    fn ordered_skips_a_spent_rung_and_keeps_walking() {
+        let candidates = vec![
+            candidate("first", vec![window(KEY_SESSION, "5h", 100.0, 2)]),
+            candidate("second", vec![window(KEY_WEEKLY_ALL, "weekly", 100.0, 40)]),
+            candidate("third", vec![window(KEY_SESSION, "5h", 42.0, 3)]),
+        ];
+        let Pick::Chosen { name, .. } = pick_in_order(&candidates, None, now()) else {
+            panic!("expected a pick");
+        };
+        assert_eq!(name, "third");
+    }
+
+    #[test]
+    fn ordered_reports_every_blocked_rung_when_all_are_out() {
+        let candidates = vec![
+            candidate("first", vec![window(KEY_SESSION, "5h", 100.0, 2)]),
+            candidate("second", vec![window(KEY_SESSION, "5h", 100.0, 5)]),
+        ];
+        let Pick::Exhausted(blocked) = pick_in_order(&candidates, None, now()) else {
+            panic!("expected exhaustion");
+        };
+        assert_eq!(blocked.len(), 2);
+        assert!(blocked.iter().any(|b| b.name == "first"));
+        assert!(blocked.iter().any(|b| b.name == "second"));
+    }
+
+    #[test]
+    fn ordered_keeps_an_unreadable_rung_in_place() {
+        // Fail open, and in position: an account whose usage endpoint is down
+        // must not silently demote the rung its user put first.
+        let mut unreadable = candidate("first", vec![]);
+        unreadable.usage_known = false;
+        let candidates =
+            vec![unreadable, candidate("second", vec![window(KEY_SESSION, "5h", 1.0, 3)])];
+        let Pick::Chosen { name, headroom_pct } = pick_in_order(&candidates, None, now()) else {
+            panic!("expected a pick");
+        };
+        assert_eq!(name, "first");
+        assert_eq!(headroom_pct, None);
+    }
+
+    #[test]
+    fn ordered_on_an_empty_pool_is_none() {
+        assert_eq!(pick_in_order(&[], Some("opus"), now()), Pick::None);
     }
 
     /// The accounts page as screenshotted when this was specified: Claudo idle

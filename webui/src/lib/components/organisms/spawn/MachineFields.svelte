@@ -11,6 +11,7 @@
 	// backing the effective harness drives the model list + aliases.
 	import type { MachineRow } from '@bindings/MachineRow';
 	import type { OAuthAccount } from '$lib/queries';
+	import type { AccountPoolView } from '@bindings/AccountPoolView';
 	import { useCodexModels, useGitInfo } from '$lib/queries';
 	import type { GitInfo } from '@bindings/GitInfo';
 	import BrandLogo from '$lib/components/atoms/BrandLogo.svelte';
@@ -44,6 +45,8 @@
 		withAliasTargets,
 		adapterLabel,
 		NO_ACCOUNT,
+		poolName,
+		poolValue,
 		type Adapter
 	} from './options';
 	import { submitChordLabel, isSubmitChord } from '$lib/platform';
@@ -56,6 +59,7 @@
 		machines,
 		recentDirs,
 		accounts,
+		pools = [],
 		onsubmit,
 		onfiles,
 		docked = false
@@ -66,6 +70,10 @@
 		// Every account the caller owns. The picker offers them all and
 		// derives the allowed harnesses + model list from the chosen one.
 		accounts: OAuthAccount[];
+		// The caller's account pools. Offered above the individual accounts:
+		// picking one delegates the choice the way Auto does, but bounded to
+		// the pool's members.
+		pools?: AccountPoolView[];
 		// Submit the whole spawn form from the prompt textarea (Ctrl/⌘+Enter).
 		onsubmit?: () => void;
 		// Files pasted into the prompt textarea (Ctrl/⌘+V of a screenshot or a
@@ -136,8 +144,12 @@
 	// Accounts are identities: matched by name. '' = Auto, the
 	// NO_ACCOUNT sentinel = explicit unbound — both resolve to no selected
 	// account here (Auto lets the server bind, unbound skips binding).
+	// The pool the picker currently names, if any. A pool is neither a named
+	// account nor "no account": the server elects a member, so nothing here can
+	// name the credential in advance.
+	const selectedPool = $derived(poolName(form.account));
 	const selectedAccount = $derived(
-		form.account && form.account !== NO_ACCOUNT
+		form.account && form.account !== NO_ACCOUNT && !selectedPool
 			? accounts.find((a) => a.name === form.account)
 			: undefined
 	);
@@ -315,6 +327,16 @@
 				<Select id="sp-account" bind:value={form.account}>
 					<option value="">{m.spawn_account_auto()}{autoAccount ? ` — ${autoAccount}` : ''}</option>
 					<option value={NO_ACCOUNT}>{m.spawn_account_none()}</option>
+					{#if pools.length > 0}
+						<!-- Pools first among the bounded choices: picking one is the
+						     narrow instruction ("these accounts"), where Auto above is
+						     the wide one ("any account I can reach"). -->
+						<optgroup label={m.spawn_account_pool_group()}>
+							{#each pools as p (p.id)}
+								<option value={poolValue(p.name)}>{p.name}</option>
+							{/each}
+						</optgroup>
+					{/if}
 					{#each accounts as a (a.id)}
 						<option value={a.name}>
 							{a.name} ({a.providers.map((p) => p.provider).join(', ') || m.spawn_no_provider()})
@@ -323,6 +345,10 @@
 				</Select>
 				{#if form.account === NO_ACCOUNT}
 					<Text tone="faint" size="xs">{m.spawn_account_none_hint()}</Text>
+				{:else if selectedPool}
+					<Text tone="faint" size="xs">
+						{m.spawn_account_pool_hint({ name: selectedPool })}
+					</Text>
 				{:else if selectedAccount}
 					<Text tone="faint" size="xs">{m.spawn_account_gateway_hint()}</Text>
 				{:else if autoAccount}
