@@ -75,17 +75,21 @@
 
 <header class="hd">
 	<div class="hd-inner container">
-		<div class="brand">
-			<Text variant="code" tone="accent" size="lg" weight="bold">»_</Text>
-			<Text size="lg" weight="bold">cctui</Text>
-			{#if instanceName}
-				<span class="inst">
-					<Text size="lg" weight="bold" tone="faint" title={m.nav_instance_name()}>
-						({instanceName})
-					</Text>
-				</span>
-			{/if}
-		</div>
+		<!-- The whole brand block is the way home: clicking "cctui (NAME)"
+		     goes back to the session list from anywhere. -->
+		<NavLink href="/sessions" title={m.nav_sessions()}>
+			<div class="brand">
+				<Text variant="code" tone="accent" size="lg" weight="bold">»_</Text>
+				<Text size="lg" weight="bold">cctui</Text>
+				{#if instanceName}
+					<span class="inst">
+						<Text size="lg" weight="bold" tone="faint" title={m.nav_instance_name()}>
+							({instanceName})
+						</Text>
+					</span>
+				{/if}
+			</div>
+		</NavLink>
 		<span
 			class="conn"
 			class:on={ws.status === 'open'}
