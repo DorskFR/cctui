@@ -60,6 +60,8 @@ pub struct AppState {
     pub http_client: reqwest::Client,
     /// Newest upstream release, when newer than this build (`/version`).
     pub update_check: Arc<crate::update_check::UpdateCheck>,
+    /// Serialises "Update" clicks: one self-update agent per release at a time.
+    pub self_update: Arc<crate::routes::self_update::SelfUpdateGuard>,
     /// Commands awaiting their daemon `CommandResult`, keyed by `command_id`,
     /// so the result can be scoped to its session and a failed spawn can be
     /// persisted as a session row.

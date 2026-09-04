@@ -34,6 +34,22 @@ bumps for a separate follow-up — they belong in the same change as the code.
 - Keep PRs focused; reference the relevant ticket in the title where applicable.
 - Let the pre-commit hooks (lefthook) run fmt / check / clippy / lint.
 
+## Self-update agent: model floor
+
+The webui's "Update" button (`POST /api/v1/version/self-update`) spawns a YOLO
+agent on the configured machine to deploy the newer release. That agent reads
+a deployment's runbook and acts on infrastructure, so it must **never run on a
+small model**:
+
+- Claude: always a tier **above Sonnet** (Opus or better), `medium` effort.
+- OpenAI: a GPT-5-class frontier model, `medium` effort; never a `mini` / `nano`
+  variant.
+
+The floor lives in `launch_profile()` in
+`crates/cctui-server/src/routes/self_update.rs`. **Raise it whenever a newer
+generation replaces those names** — treat it as part of any model-catalog bump,
+and never lower it to save cost.
+
 ## Releases
 
 After a PR merges, **cut a release so the package is built/published**:

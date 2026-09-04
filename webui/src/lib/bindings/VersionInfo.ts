@@ -14,4 +14,10 @@ latest_url: string | null,
 /**
  * Admin-set deployment label (`PUT /admin/instance`); `null` by default.
  */
-instance_name: string | null, };
+instance_name: string | null, 
+/**
+ * Whether an admin can launch the self-update agent from here: a
+ * self-update machine is configured (settings or env). Everyone sees the
+ * flag, only admins get the button; the machine itself stays admin-only.
+ */
+self_update_ready: boolean, };

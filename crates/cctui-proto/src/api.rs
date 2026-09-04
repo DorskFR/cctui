@@ -780,6 +780,12 @@ pub struct SpawnResponse {
     /// named. `None` for an unbound spawn.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account: Option<String>,
+    /// The id the session will register under when the server pre-minted it
+    /// (claude-code spawns), so a caller can navigate to it once the daemon
+    /// acks `command_id`. `None` for adapters that mint their own id and for
+    /// drafts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<Uuid>,
 }
 
 /// Body for `POST /api/v1/sessions/{id}/launch` — promote a draft

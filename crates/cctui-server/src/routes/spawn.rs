@@ -75,7 +75,7 @@ pub async fn spawn_session(
 /// dispatched identically. Validates env keys + machine ownership, mints any
 /// account gateway env, and pushes `AdapterCommand::Spawn` over the WS.
 #[allow(clippy::too_many_lines)]
-async fn dispatch_spawn(
+pub async fn dispatch_spawn(
     state: &AppState,
     ctx: &AuthContext,
     req: SpawnRequest,
@@ -331,7 +331,12 @@ async fn dispatch_spawn(
     tracing::info!(machine = %req.machine_id, %command_id, %adapter_id, "spawn dispatched");
     Ok((
         StatusCode::ACCEPTED,
-        Json(SpawnResponse { command_id, status: "dispatched".into(), account: account_choice }),
+        Json(SpawnResponse {
+            command_id,
+            status: "dispatched".into(),
+            account: account_choice,
+            session_id: pre_session_id,
+        }),
     ))
 }
 
@@ -610,7 +615,12 @@ async fn save_draft(
     tracing::info!(machine = %req.machine_id, draft = %draft_id, "draft session saved");
     Ok((
         StatusCode::CREATED,
-        Json(SpawnResponse { command_id: draft_id, status: "draft".into(), account: None }),
+        Json(SpawnResponse {
+            command_id: draft_id,
+            status: "draft".into(),
+            account: None,
+            session_id: None,
+        }),
     ))
 }
 

@@ -24,6 +24,7 @@ pub mod me;
 pub mod passkeys;
 pub mod permissions;
 pub mod prompts;
+pub mod self_update;
 pub mod sessions;
 pub mod settings;
 pub mod shares;

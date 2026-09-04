@@ -136,6 +136,7 @@ async fn main() -> anyhow::Result<()> {
         session_usd_budgets: Arc::new(dashmap::DashMap::new()),
         gateway_rate_windows: Arc::new(dashmap::DashMap::new()),
         update_check: update_check::UpdateCheck::shared(),
+        self_update: Arc::new(routes::self_update::SelfUpdateGuard::default()),
         pending_commands: Arc::new(dashmap::DashMap::new()),
     };
 
@@ -372,6 +373,22 @@ fn build_api_routes() -> Routes {
             post(routes::web::refresh_version),
             Authn::Bearer,
             Authenticated,
+        )
+        .add(
+            &[GET],
+            "/version/changelog",
+            "Release notes of every upstream release newer than this server.",
+            get(routes::web::changelog),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[Method::POST],
+            "/version/self-update",
+            "Spawn a YOLO agent on the configured machine to deploy the newer release (admin).",
+            post(routes::self_update::launch),
+            Authn::Bearer,
+            ScopeAz(auth::Scope::Admin),
         )
         .add(
             &[Method::POST],
@@ -1108,6 +1125,14 @@ fn build_api_routes() -> Routes {
             "/admin/instance",
             "Set or clear the server-wide deployment name shown in the webui header (admin).",
             put(routes::instance::update),
+            Authn::Bearer,
+            ScopeAz(auth::Scope::Admin),
+        )
+        .add(
+            &[GET, Method::PUT],
+            "/admin/instance/self-update",
+            "Read or set the machine + directory the self-update agent runs on (admin).",
+            get(routes::instance::get_self_update_target).put(routes::instance::update_self_update_target),
             Authn::Bearer,
             ScopeAz(auth::Scope::Admin),
         )

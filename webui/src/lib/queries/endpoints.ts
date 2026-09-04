@@ -28,6 +28,11 @@ import type { RelabelPasskeyRequest } from "@bindings/RelabelPasskeyRequest";
 import type { VersionInfo } from "@bindings/VersionInfo";
 import type { GitInfo } from "@bindings/GitInfo";
 import type { InstanceInfo } from "@bindings/InstanceInfo";
+import type { ChangelogResponse } from "@bindings/ChangelogResponse";
+import type { SelfUpdateResponse } from "@bindings/SelfUpdateResponse";
+import type { SelfUpdateTarget } from "@bindings/SelfUpdateTarget";
+import type { SelfUpdateTargetInfo } from "@bindings/SelfUpdateTargetInfo";
+import type { SelfUpdateTargetRequest } from "@bindings/SelfUpdateTargetRequest";
 import type { InstanceUpdateRequest } from "@bindings/InstanceUpdateRequest";
 import type { MeResponse } from "@bindings/MeResponse";
 import type { CapabilitiesResponse } from "@bindings/CapabilitiesResponse";
@@ -69,6 +74,19 @@ export const endpoints = {
   /** Server-wide deployment name (admin). Empty clears it; read back on `/version`. */
   updateInstance: (name: string | null) =>
     api.put<InstanceInfo>("/admin/instance", { name } satisfies InstanceUpdateRequest),
+  /** Release notes of every upstream release newer than this server, as the
+   *  background probe last saw them (no network call from the browser). */
+  changelog: () => api.get<ChangelogResponse>("/version/changelog"),
+  /** Hand the upgrade to a YOLO agent on the configured self-update machine
+   *  (admin). `409` when up to date, unconfigured, or one is already running. */
+  selfUpdate: () => api.post<SelfUpdateResponse>("/version/self-update"),
+  /** Machine + directory the self-update agent runs on (admin). */
+  selfUpdateTarget: () => api.get<SelfUpdateTargetInfo>("/admin/instance/self-update"),
+  /** Set (or clear with `null`) the self-update target (admin). */
+  setSelfUpdateTarget: (target: SelfUpdateTarget | null) =>
+    api.put<SelfUpdateTargetInfo>("/admin/instance/self-update", {
+      target,
+    } satisfies SelfUpdateTargetRequest),
   /** Which optional integrations this server has, and whether each is live.
    *  Drives capability-gated UI: the lazy `/github` route + nav. */
   capabilities: () => api.get<CapabilitiesResponse>("/capabilities"),

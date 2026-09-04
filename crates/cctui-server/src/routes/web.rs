@@ -27,6 +27,25 @@ pub struct VersionInfo {
     pub latest_url: Option<String>,
     /// Admin-set deployment label (`PUT /admin/instance`); `null` by default.
     pub instance_name: Option<String>,
+    /// Whether an admin can launch the self-update agent from here: a
+    /// self-update machine is configured (settings or env). Everyone sees the
+    /// flag, only admins get the button; the machine itself stays admin-only.
+    pub self_update_ready: bool,
+}
+
+#[derive(Serialize, ts_rs::TS)]
+#[ts(export)]
+pub struct ChangelogResponse {
+    pub version: &'static str,
+    /// Releases published since `version`, newest first (capped server-side).
+    /// Empty when up to date or before the probe's first answer.
+    pub releases: Vec<update_check::ReleaseNote>,
+}
+
+/// Release notes of every upstream release newer than this build, as the
+/// background probe last saw them. No network call: the modal opens instantly.
+pub async fn changelog(State(state): State<AppState>) -> Json<ChangelogResponse> {
+    Json(ChangelogResponse { version: VERSION, releases: state.update_check.notes().await })
 }
 
 pub async fn version(State(state): State<AppState>) -> Json<VersionInfo> {
@@ -62,6 +81,7 @@ async fn info(state: &AppState) -> VersionInfo {
     };
     let latest = state.update_check.newer().await;
     let instance_name = instance::read_name(&state.pool).await;
+    let self_update_ready = instance::read_self_update_target(&state.pool).await.target.is_some();
     VersionInfo {
         version: VERSION,
         git_hash: GIT_HASH,
@@ -70,5 +90,6 @@ async fn info(state: &AppState) -> VersionInfo {
         latest_version: latest.as_ref().map(|l| l.version.clone()),
         latest_url: latest.map(|l| l.url),
         instance_name,
+        self_update_ready,
     }
 }

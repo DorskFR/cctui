@@ -8,12 +8,16 @@
 	import { notify } from '$lib/notify.svelte';
 	import { settings } from '$lib/settings.svelte';
 	import { toasts } from '$lib/toast.svelte';
-	import { IconButton, SelectButton, Text } from '@dorsk/tsumikit';
+	import { Button, IconButton, SelectButton, Text } from '@dorsk/tsumikit';
 	import NavLink from '$lib/components/atoms/NavLink.svelte';
 	import NetStatsChip from '$lib/components/molecules/NetStatsChip.svelte';
+	import UpdateModal from '$lib/components/organisms/UpdateModal.svelte';
 	import { m } from '$lib/paraglide/messages';
 
 	const version = useVersion();
+	// The red ↑ chip opens the release-notes / update modal instead of
+	// leaving for GitHub; the modal itself links to the release page.
+	let updateOpen = $state(false);
 	// Server-wide deployment label: "cctui (NAME)" in the brand + tab title.
 	const instanceName = $derived(version.data?.instance_name ?? null);
 	$effect(() => notify.setInstanceName(instanceName));
@@ -111,20 +115,23 @@
 			</span>
 			{#if version.data.latest_version}
 				<!-- Red up-arrow + the newer tag: only rendered when the server's
-				     release probe found something strictly newer than itself. -->
-				<NavLink
-					href={version.data.latest_url ?? version.data.repo_url}
-					target="_blank"
-					rel="noopener"
+				     release probe found something strictly newer than itself.
+				     Click → release notes + (admin) the update button. -->
+				<Button
+					variant="ghost"
+					size="sm"
+					chip
 					title={m.nav_update_available({ version: version.data.latest_version })}
+					aria-label={m.nav_update_available({ version: version.data.latest_version })}
+					onclick={() => (updateOpen = true)}
 				>
 					<Text size="xs" variant="code">
-						<span class="ver-part ver-up" aria-label={m.nav_update_available({ version: version.data.latest_version })}>
+						<span class="ver-part ver-up">
 							<span class="ver-up-arrow" aria-hidden="true">↑</span>
 							v{version.data.latest_version}
 						</span>
 					</Text>
-				</NavLink>
+				</Button>
 			{/if}
 		{/if}
 		<!-- Plain ghost button: the on-state accent tint comes from `pressed`
@@ -184,6 +191,15 @@
 		/>
 	</div>
 </header>
+
+{#if updateOpen && version.data?.latest_version}
+	<UpdateModal
+		latestVersion={version.data.latest_version}
+		latestUrl={version.data.latest_url ?? version.data.repo_url}
+		selfUpdateReady={version.data.self_update_ready}
+		onclose={() => (updateOpen = false)}
+	/>
+{/if}
 
 <style>
 	.hd {

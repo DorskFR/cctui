@@ -6,6 +6,11 @@
 //! running build, so the webui can show an update hint next to the server
 //! version without any client-side network access.
 //!
+//! The same probe keeps the release notes of every release published since
+//! the running build (newest first, capped at [`MAX_NOTES`]), so
+//! `GET /version/changelog` can show what an update brings without the
+//! browser ever talking to GitHub itself.
+//!
 //! `POST /version/refresh` runs the same probe on demand (the webui's "check
 //! now" button in Settings), so a fresh answer doesn't require waiting out the
 //! interval or restarting the server; back-to-back clicks inside
@@ -20,7 +25,9 @@ use std::time::{Duration, Instant};
 use serde::Deserialize;
 use tokio::sync::RwLock;
 
-const RELEASES_URL: &str = "https://api.github.com/repos/DorskFR/cctui/releases/latest";
+const RELEASES_URL: &str = "https://api.github.com/repos/DorskFR/cctui/releases?per_page=30";
+/// How many releases newer than the running build are kept for the changelog.
+pub const MAX_NOTES: usize = 10;
 const INITIAL_DELAY: Duration = Duration::from_secs(15);
 const INTERVAL: Duration = Duration::from_hours(6);
 /// Shortest gap between two probes; an on-demand refresh inside this window
@@ -34,9 +41,24 @@ pub struct LatestRelease {
     pub url: String,
 }
 
+/// One release published since the running build: tag, page and Markdown notes.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, ts_rs::TS)]
+#[ts(export)]
+pub struct ReleaseNote {
+    pub version: String,
+    pub url: String,
+    /// The release body as written on GitHub (Markdown); empty when the
+    /// release has no description.
+    pub body: String,
+    /// ISO-8601 publication time as GitHub reports it, `null` for drafts.
+    pub published_at: Option<String>,
+}
+
 #[derive(Default)]
 pub struct UpdateCheck {
     latest: RwLock<Option<LatestRelease>>,
+    /// Releases strictly newer than the running build, newest first.
+    notes: RwLock<Vec<ReleaseNote>>,
     /// When the last probe answered — gates on-demand refreshes.
     probed_at: RwLock<Option<Instant>>,
 }
@@ -54,14 +76,36 @@ impl UpdateCheck {
         self.latest.read().await.clone()
     }
 
-    /// Record a candidate; kept only when strictly newer than the running build.
+    /// Release notes of every release newer than this build, newest first.
+    pub async fn notes(&self) -> Vec<ReleaseNote> {
+        self.notes.read().await.clone()
+    }
+
+    /// Record a single candidate; kept only when strictly newer than the
+    /// running build. Convenience over [`Self::record_all`] for one release
+    /// without notes.
+    #[cfg(test)]
     pub async fn record(&self, tag: &str, url: String) {
-        let version = tag.trim().trim_start_matches('v').to_owned();
-        let newer = is_newer(CURRENT, &version);
-        {
-            let mut slot = self.latest.write().await;
-            *slot = if newer { Some(LatestRelease { version, url }) } else { None };
-        }
+        self.record_all(vec![GithubRelease {
+            tag_name: tag.to_owned(),
+            html_url: url,
+            body: None,
+            published_at: None,
+            draft: false,
+            prerelease: false,
+        }])
+        .await;
+    }
+
+    /// Record a probe answer: the newest published release becomes
+    /// `latest` when strictly newer than the running build, and every newer
+    /// release is kept as a note (newest first, at most [`MAX_NOTES`]).
+    pub async fn record_all(&self, releases: Vec<GithubRelease>) {
+        let notes = newer_notes(CURRENT, releases);
+        let latest =
+            notes.first().map(|n| LatestRelease { version: n.version.clone(), url: n.url.clone() });
+        *self.latest.write().await = latest;
+        *self.notes.write().await = notes;
         *self.probed_at.write().await = Some(Instant::now());
     }
 
@@ -73,8 +117,8 @@ impl UpdateCheck {
         if self.probed_at.read().await.is_some_and(|at| at.elapsed() < MANUAL_COOLDOWN) {
             return Ok(false);
         }
-        let rel = fetch_latest(http).await?;
-        self.record(&rel.tag_name, rel.html_url).await;
+        let releases = fetch_releases(http).await?;
+        self.record_all(releases).await;
         Ok(true)
     }
 }
@@ -93,19 +137,60 @@ pub fn enabled_from_env() -> bool {
     )
 }
 
-#[derive(Deserialize)]
-struct GithubRelease {
-    tag_name: String,
-    html_url: String,
+/// The subset of a GitHub release the probe reads.
+#[derive(Deserialize, Debug, Clone)]
+pub struct GithubRelease {
+    pub tag_name: String,
+    pub html_url: String,
+    #[serde(default)]
+    pub body: Option<String>,
+    #[serde(default)]
+    pub published_at: Option<String>,
+    #[serde(default)]
+    pub draft: bool,
+    #[serde(default)]
+    pub prerelease: bool,
+}
+
+/// Published (non-draft, non-prerelease) releases strictly newer than
+/// `current`, sorted newest first and capped at [`MAX_NOTES`]. Pure so the
+/// filtering is unit-testable without a network.
+#[must_use]
+pub fn newer_notes(current: &str, releases: Vec<GithubRelease>) -> Vec<ReleaseNote> {
+    let mut notes: Vec<ReleaseNote> = releases
+        .into_iter()
+        .filter(|r| !r.draft && !r.prerelease)
+        .filter_map(|r| {
+            let version = r.tag_name.trim().trim_start_matches('v').to_owned();
+            is_newer(current, &version).then(|| ReleaseNote {
+                version,
+                url: r.html_url,
+                body: r.body.unwrap_or_default().trim().to_owned(),
+                published_at: r.published_at,
+            })
+        })
+        .collect();
+    notes.sort_by(|a, b| {
+        if is_newer(&a.version, &b.version) {
+            std::cmp::Ordering::Greater
+        } else if is_newer(&b.version, &a.version) {
+            std::cmp::Ordering::Less
+        } else {
+            std::cmp::Ordering::Equal
+        }
+    });
+    notes.dedup_by(|a, b| a.version == b.version);
+    notes.truncate(MAX_NOTES);
+    notes
 }
 
 /// Long-running probe; spawn once per process.
 pub async fn task(check: Arc<UpdateCheck>, http: reqwest::Client) {
     tokio::time::sleep(INITIAL_DELAY).await;
     loop {
-        match fetch_latest(&http).await {
-            Ok(rel) => {
-                check.record(&rel.tag_name, rel.html_url).await;
+        match fetch_releases(&http).await {
+            Ok(releases) => {
+                check.record_all(releases).await;
                 if let Some(l) = check.newer().await {
                     tracing::info!(current = CURRENT, latest = %l.version, "newer cctui release available");
                 } else {
@@ -118,7 +203,7 @@ pub async fn task(check: Arc<UpdateCheck>, http: reqwest::Client) {
     }
 }
 
-async fn fetch_latest(http: &reqwest::Client) -> Result<GithubRelease, String> {
+async fn fetch_releases(http: &reqwest::Client) -> Result<Vec<GithubRelease>, String> {
     let resp = http
         .get(RELEASES_URL)
         .header("User-Agent", format!("cctui/{CURRENT}"))
@@ -130,7 +215,7 @@ async fn fetch_latest(http: &reqwest::Client) -> Result<GithubRelease, String> {
     if !resp.status().is_success() {
         return Err(format!("github returned {}", resp.status()));
     }
-    resp.json::<GithubRelease>().await.map_err(|e| e.to_string())
+    resp.json::<Vec<GithubRelease>>().await.map_err(|e| e.to_string())
 }
 
 /// Parse `a.b.c[-pre]` into numeric components; anything unparsable is 0.
@@ -187,6 +272,53 @@ mod tests {
         // A later, older answer clears it (release rolled back / API glitch).
         c.record("v0.0.1", "u".into()).await;
         assert_eq!(c.newer().await, None);
+    }
+
+    fn rel(tag: &str, body: &str) -> GithubRelease {
+        GithubRelease {
+            tag_name: tag.into(),
+            html_url: format!("https://example/{tag}"),
+            body: Some(body.into()),
+            published_at: Some("2026-09-04T00:00:00Z".into()),
+            draft: false,
+            prerelease: false,
+        }
+    }
+
+    #[test]
+    fn newer_notes_filters_sorts_and_caps() {
+        let mut releases = vec![
+            rel("v0.7.300", "old"),
+            rel("v0.7.302", "b"),
+            rel("v0.7.305", " c \n"),
+            rel("v0.7.303", "a"),
+            GithubRelease { draft: true, ..rel("v0.7.306", "draft") },
+            GithubRelease { prerelease: true, ..rel("v0.7.307", "rc") },
+            rel("v0.7.303", "dup"),
+        ];
+        releases.push(GithubRelease { body: None, ..rel("v0.7.304", "") });
+        let notes = newer_notes("0.7.301", releases);
+        let versions: Vec<&str> = notes.iter().map(|n| n.version.as_str()).collect();
+        assert_eq!(versions, ["0.7.305", "0.7.304", "0.7.303", "0.7.302"]);
+        assert_eq!(notes[0].body, "c");
+        assert_eq!(notes[1].body, "");
+
+        let many: Vec<GithubRelease> =
+            (1..=MAX_NOTES + 5).map(|i| rel(&format!("v1.0.{i}"), "x")).collect();
+        assert_eq!(newer_notes("0.0.1", many).len(), MAX_NOTES);
+        assert!(newer_notes("999.0.0", vec![rel("v1.0.0", "x")]).is_empty());
+    }
+
+    #[tokio::test]
+    async fn record_all_sets_latest_from_the_newest_note() {
+        let c = UpdateCheck::default();
+        c.record_all(vec![rel("v999.0.1", "n1"), rel("v999.0.2", "n2"), rel("v0.0.1", "old")])
+            .await;
+        assert_eq!(c.newer().await.map(|l| l.version), Some("999.0.2".into()));
+        assert_eq!(c.notes().await.len(), 2);
+        c.record_all(vec![rel("v0.0.1", "old")]).await;
+        assert_eq!(c.newer().await, None);
+        assert!(c.notes().await.is_empty());
     }
 
     #[tokio::test]

@@ -1825,6 +1825,7 @@ pub async fn interrupt_session(
             command_id,
             status: "dispatched".into(),
             account: None,
+            session_id: None,
         }),
     ))
 }
@@ -2132,6 +2133,7 @@ pub async fn set_model(
             command_id,
             status: "dispatched".into(),
             account: None,
+            session_id: None,
         }),
     ))
 }
@@ -2581,7 +2583,12 @@ pub async fn update_draft(
         return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "draft not found".into() })));
     }
     tracing::info!(draft = %session_id, "draft updated");
-    Ok(Json(SpawnResponse { command_id: draft_id, status: "draft".into(), account: None }))
+    Ok(Json(SpawnResponse {
+        command_id: draft_id,
+        status: "draft".into(),
+        account: None,
+        session_id: None,
+    }))
 }
 
 /// The row columns mirrored from a draft payload. Blank strings become NULL
