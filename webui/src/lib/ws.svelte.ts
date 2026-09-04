@@ -5,6 +5,16 @@ import { net } from './netstats.svelte';
 import type { AgentEvent } from '@bindings/AgentEvent';
 import type { GithubEventKind } from '@bindings/GithubEventKind';
 import type { GithubEventPayload } from '@bindings/GithubEventPayload';
+import type { SessionEndReason } from '@bindings/SessionEndReason';
+
+/** Daemon handshake budget (45 s) plus dispatch and relay slack. */
+export const SPAWN_ACK_TIMEOUT_MS = 75_000;
+
+export interface SessionEndedEvent {
+	session_id: string;
+	reason: SessionEndReason;
+	detail: string | null;
+}
 
 export interface PermReq {
 	session_id: string;
@@ -536,12 +546,28 @@ export class WsClient {
 				for (const cb of this.githubCbs) cb(ev);
 				break;
 			}
+			case 'session_ended': {
+				const ev: SessionEndedEvent = {
+					session_id: msg.session_id as string,
+					reason: msg.reason as SessionEndReason,
+					detail: (msg.detail as string | undefined) ?? null
+				};
+				for (const cb of this.sessionEndedCbs) cb(ev);
+				this.markListDirty();
+				break;
+			}
 			case 'status':
 			case 'session_registered':
 			case 'session_deregistered':
 				this.markListDirty();
 				break;
 		}
+	}
+
+	private sessionEndedCbs = new Set<(ev: SessionEndedEvent) => void>();
+	onSessionEnded(cb: (ev: SessionEndedEvent) => void): () => void {
+		this.sessionEndedCbs.add(cb);
+		return () => this.sessionEndedCbs.delete(cb);
 	}
 
 	/** Debounced list-refresh trigger: bumps changeTick at most ~once/2s. */
@@ -947,15 +973,17 @@ export class WsClient {
 
 	/** Resolve when the server reports a result for `commandId` (spawn).
 	 *
-	 * A timeout is NOT a failure: a cold spawn (kickstarting the
-	 * agent daemon, staging uploads) can easily outlive any client-side wait,
-	 * and the session still lands. `timedOut` lets the caller phrase it as
-	 * "unconfirmed, check the list" instead of an error inviting a retry —
-	 * re-submitting dispatches a brand-new spawn and a duplicate agent.
+	 * The daemon fails a codex handshake at 45 s, so the wait outlasts that
+	 * plus dispatch latency: a real failure must arrive here, not after the
+	 * caller gave up. A timeout is still NOT a failure: a cold spawn
+	 * (kickstarting the agent daemon, staging uploads) can outlive any
+	 * client-side wait, and the session still lands. `timedOut` lets the caller
+	 * phrase it as "unconfirmed, check the list" instead of an error inviting a
+	 * retry — re-submitting dispatches a brand-new spawn and a duplicate agent.
 	 */
 	awaitCommand(
 		commandId: string,
-		timeoutMs = 60_000
+		timeoutMs = SPAWN_ACK_TIMEOUT_MS
 	): Promise<{ ok: boolean; error?: string; timedOut?: boolean }> {
 		return new Promise((resolve) => {
 			const timer = setTimeout(() => {

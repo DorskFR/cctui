@@ -12,7 +12,23 @@ export type SessionEnd = {
 	muted: boolean;
 	detail: string | null;
 	endedAt: string | null;
+	/** Badge text: the label, plus the first line of the detail for a failed start. */
+	badge: string;
 };
+
+export const FAILED_START_REASONS: ReadonlySet<SessionEndReason> = new Set([
+	'resume_failed',
+	'spawn_failed'
+]);
+
+const BADGE_DETAIL_MAX = 48;
+
+export function endBadgeText(reason: SessionEndReason, label: string, detail: string | null): string {
+	if (!detail || !FAILED_START_REASONS.has(reason)) return label;
+	const line = detail.split('\n', 1)[0].trim();
+	const short = line.length > BADGE_DETAIL_MAX ? `${line.slice(0, BADGE_DETAIL_MAX - 1)}…` : line;
+	return `${label}: ${short}`;
+}
 
 export function endReasonTone(reason: SessionEndReason): EndTone {
 	switch (reason) {
@@ -20,6 +36,7 @@ export function endReasonTone(reason: SessionEndReason): EndTone {
 			return 'ok';
 		case 'crashed':
 		case 'resume_failed':
+		case 'spawn_failed':
 			return 'danger';
 		case 'daemon_lost':
 		case 'machine_offline':
@@ -45,6 +62,8 @@ export function endReasonLabel(reason: SessionEndReason): string {
 			return m.sessions_end_reaped_inactive();
 		case 'resume_failed':
 			return m.sessions_end_resume_failed();
+		case 'spawn_failed':
+			return m.sessions_end_spawn_failed();
 		default:
 			return m.sessions_end_other();
 	}
@@ -54,13 +73,16 @@ export function endReasonLabel(reason: SessionEndReason): string {
 export function sessionEnd(s: Pick<SessionListItem, 'end_reason' | 'end_detail' | 'ended_at'>): SessionEnd | null {
 	const reason = s.end_reason ?? null;
 	if (!reason) return null;
+	const label = endReasonLabel(reason);
+	const detail = s.end_detail?.trim() || null;
 	return {
 		reason,
-		label: endReasonLabel(reason),
+		label,
 		tone: endReasonTone(reason),
 		muted: reason === 'reaped_inactive',
-		detail: s.end_detail?.trim() || null,
-		endedAt: s.ended_at ?? null
+		detail,
+		endedAt: s.ended_at ?? null,
+		badge: endBadgeText(reason, label, detail)
 	};
 }
 

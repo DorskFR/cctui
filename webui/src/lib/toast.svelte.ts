@@ -30,8 +30,8 @@ class Toasts {
 	ok(text: string, action?: ToastAction) {
 		return this.push(text, 'ok', action ? ACTION_TOAST_MS : 3500, action);
 	}
-	err(text: string) {
-		return this.push(text, 'err', 5000);
+	err(text: string, action?: ToastAction) {
+		return this.push(text, 'err', action ? ACTION_TOAST_MS : 5000, action);
 	}
 	dismiss(id: number) {
 		this.items = this.items.filter((t) => t.id !== id);

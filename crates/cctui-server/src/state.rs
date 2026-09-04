@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use cctui_proto::models::MachineLiveness;
 use dashmap::DashMap;
@@ -55,6 +56,10 @@ pub struct AppState {
     pub http_client: reqwest::Client,
     /// Newest upstream release, when newer than this build (`/version`).
     pub update_check: Arc<crate::update_check::UpdateCheck>,
+    /// Commands awaiting their daemon `CommandResult`, keyed by `command_id`,
+    /// so the result can be scoped to its session and a failed spawn can be
+    /// persisted as a session row.
+    pub pending_commands: Arc<DashMap<Uuid, PendingCommand>>,
     /// Optional Langfuse tracing sink for the `/gateway` proxy.
     /// `None` unless the `CCTUI_LANGFUSE_*` env is configured — when absent the
     /// gateway never reconstructs the body, so there is zero overhead and no
@@ -149,3 +154,42 @@ pub struct CachedUsage {
 
 /// Per-account usage cache.
 pub type AccountUsageCache = Arc<DashMap<Uuid, CachedUsage>>;
+
+/// Everything the daemon's `CommandResult` needs to write a failed spawn as a
+/// `sessions` row: the daemon never registers a session that failed to start,
+/// so this is the only place the row's identity survives.
+#[derive(Debug, Clone)]
+pub struct FailedSpawnRow {
+    pub session_id: String,
+    pub machine_id: Uuid,
+    pub user_id: Uuid,
+    pub adapter_id: String,
+    pub working_dir: String,
+    pub name: Option<String>,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PendingCommand {
+    /// Existing session the command targets (interrupt, set-model).
+    pub session_id: Option<String>,
+    /// Set for spawns; consumed only when the spawn fails.
+    pub spawn: Option<FailedSpawnRow>,
+    pub at: Instant,
+}
+
+/// A daemon that never answers would leak entries forever.
+pub const PENDING_COMMAND_TTL: Duration = Duration::from_mins(10);
+
+/// Register `command_id` and drop entries older than [`PENDING_COMMAND_TTL`].
+pub fn track_command(
+    map: &DashMap<Uuid, PendingCommand>,
+    command_id: Uuid,
+    session_id: Option<String>,
+    spawn: Option<FailedSpawnRow>,
+) {
+    let now = Instant::now();
+    map.retain(|_, c| now.duration_since(c.at) < PENDING_COMMAND_TTL);
+    map.insert(command_id, PendingCommand { session_id, spawn, at: now });
+}

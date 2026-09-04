@@ -252,6 +252,8 @@ async fn dispatch_spawn(
             )
         })?
     };
+    let spec_model = model.clone();
+    let spec_effort = effort.clone();
     let spec = SessionSpec {
         adapter_id: AdapterId::new(&adapter_id),
         working_dir: Some(req.working_dir.clone()),
@@ -295,18 +297,36 @@ async fn dispatch_spawn(
         }),
     };
 
-    state.bus.command_daemon(machine_uuid, frame).await.map_err(|err| match err {
-        crate::bus::BusError::NoDaemon(_) => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(ApiError {
-                error: "daemon for that machine is offline — start `cctui-daemon` first".into(),
-            }),
-        ),
-        _ => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(ApiError { error: "daemon disconnected mid-dispatch".into() }),
-        ),
-    })?;
+    crate::state::track_command(
+        &state.pending_commands,
+        command_id,
+        None,
+        Some(crate::state::FailedSpawnRow {
+            session_id: token_session_id.clone(),
+            machine_id: machine_uuid,
+            user_id: owner,
+            adapter_id: adapter_id.clone(),
+            working_dir: req.working_dir.clone(),
+            name: req.name.clone().filter(|n| !n.trim().is_empty()),
+            model: spec_model,
+            effort: spec_effort,
+        }),
+    );
+    if let Err(err) = state.bus.command_daemon(machine_uuid, frame).await {
+        state.pending_commands.remove(&command_id);
+        return Err(match err {
+            crate::bus::BusError::NoDaemon(_) => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ApiError {
+                    error: "daemon for that machine is offline — start `cctui-daemon` first".into(),
+                }),
+            ),
+            _ => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ApiError { error: "daemon disconnected mid-dispatch".into() }),
+            ),
+        });
+    }
 
     tracing::info!(machine = %req.machine_id, %command_id, %adapter_id, "spawn dispatched");
     Ok((

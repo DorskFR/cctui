@@ -131,6 +131,7 @@ async fn main() -> anyhow::Result<()> {
         session_usd_budgets: Arc::new(dashmap::DashMap::new()),
         gateway_rate_windows: Arc::new(dashmap::DashMap::new()),
         update_check: update_check::UpdateCheck::shared(),
+        pending_commands: Arc::new(dashmap::DashMap::new()),
     };
 
     // Slow upstream release probe feeding `/version.latest_version`;

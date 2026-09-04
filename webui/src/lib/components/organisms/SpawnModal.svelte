@@ -50,6 +50,7 @@
 		Icon,
 		Modal,
 		Tabs,
+		Text,
 		type TabItem
 	} from '@dorsk/tsumikit';
 	import { clickOutside } from '$lib/clickOutside';
@@ -702,8 +703,13 @@
 		onclose();
 	}
 
+	// Daemon-reported start failure; the modal stays open with it until the
+	// next attempt.
+	let spawnFailure = $state<string | null>(null);
+
 	async function spawnOnMachine() {
 		cancelAutosave();
+		spawnFailure = null;
 		const body: SpawnRequest = buildSpawnBody();
 		// Capture label intent before the form is reset on success.
 		const labelIds = [...form.labels];
@@ -744,7 +750,8 @@
 			onspawned();
 			onclose();
 		} else {
-			toasts.err(m.spawn_toast_spawn_failed({ error: result.error ?? m.spawn_error_unknown() }));
+			spawnFailure = result.error ?? m.spawn_error_unknown();
+			toasts.err(m.spawn_toast_spawn_failed({ error: spawnFailure }));
 		}
 	}
 
@@ -1019,6 +1026,12 @@
 	</Dropzone>
 {/snippet}
 {#snippet footer()}
+	{#if spawnFailure}
+		<div class="spawn-failure" role="alert">
+			<Text as="div" tone="danger" size="sm">{m.spawn_failure_inline()}</Text>
+			<pre class="spawn-failure-detail">{spawnFailure}</pre>
+		</div>
+	{/if}
 	<Button size="lg" onclick={clearForm}>{m.spawn_clear()}</Button>
 	{#if target === 'machine'}
 		<Button size="lg" disabled={busy || !draftValid} onclick={submitDraft}>
@@ -1031,6 +1044,17 @@
 {/snippet}
 
 <style>
+	.spawn-failure {
+		flex-basis: 100%;
+	}
+	.spawn-failure-detail {
+		margin: var(--sp-1) 0 0;
+		max-height: 8rem;
+		overflow: auto;
+		white-space: pre-wrap;
+		font-family: var(--font-mono);
+		font-size: var(--text-xs);
+	}
 	/* Docked panel: pinned to one edge between the header and the bottom nav,
 	   scrolling its body on its own. The layout reserves the same width. */
 	.dock {

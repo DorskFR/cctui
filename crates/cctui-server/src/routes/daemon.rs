@@ -961,6 +961,7 @@ async fn handle_event(
         }
         AdapterEvent::SessionEnded { local_id, reason } => {
             mark_session_ended(state, &local_id, &reason).await?;
+            publish_session_ended(state, &local_id, &reason);
         }
         AdapterEvent::TranscriptMark { local_id, offset } => {
             update_transcript_mark(state, &local_id, offset).await?;
@@ -1002,15 +1003,30 @@ async fn handle_event(
             });
         }
         AdapterEvent::CommandResult { command_id, ok, error } => {
-            // Not a session event — rebroadcast straight to clients so the
-            // originating spawn request gets a definitive answer.
             if !ok {
                 tracing::warn!(%command_id, ?error, "command failed on daemon");
+            }
+            let pending = state.pending_commands.remove(&command_id).map(|(_, c)| c);
+            let mut session_id = pending.as_ref().and_then(|c| c.session_id.clone());
+            // A spawn that never started has no row of its own: write one so
+            // the failure shows up on the list with its detail.
+            if !ok && let Some(row) = pending.and_then(|c| c.spawn) {
+                let detail = error.clone().unwrap_or_else(|| "spawn failed".to_owned());
+                let reason = EndReason::SpawnFailed { detail };
+                match persist_failed_spawn(&state.pool, &row, &reason).await {
+                    Ok(true) => {
+                        session_id = Some(row.session_id.clone());
+                        publish_session_ended(state, &row.session_id, &reason);
+                    }
+                    Ok(false) => {}
+                    Err(e) => tracing::error!(%command_id, "db error (failed spawn): {e}"),
+                }
             }
             state.bus.publish_server(cctui_proto::ws::ServerEvent::CommandResult {
                 command_id: command_id.to_string(),
                 ok,
                 error,
+                session_id,
             });
         }
         AdapterEvent::PermissionRequest { local_id, request_id, tool, input } => {
@@ -1679,6 +1695,47 @@ async fn mark_session_ended(
     // die with the session so the gateway can no longer be driven under them.
     crate::routes::gateway::revoke_session_tokens(state, local_id).await;
     Ok(())
+}
+
+fn publish_session_ended(state: &AppState, local_id: &str, reason: &EndReason) {
+    state.bus.publish_server(cctui_proto::ws::ServerEvent::SessionEnded {
+        session_id: local_id.to_owned(),
+        reason: reason.kind(),
+        detail: reason.detail().map(|d| truncate_end_detail(d).to_owned()),
+    });
+}
+
+/// Insert the row for a spawn that never registered, then end it. `false`
+/// when the id already exists (the session did start after all).
+async fn persist_failed_spawn(
+    pool: &sqlx::PgPool,
+    row: &crate::state::FailedSpawnRow,
+    reason: &EndReason,
+) -> anyhow::Result<bool> {
+    let inserted: Option<(String,)> = sqlx::query_as(
+        r"INSERT INTO sessions
+            (id, machine_id, machine_uuid, working_dir, status, registered_at, last_heartbeat,
+             metadata, user_id, adapter_id, session_name, model, effort)
+          VALUES ($1, $2, $3, $4, 'ended', now(), now(), '{}'::jsonb, $5, $6, $7, $8, $9)
+          ON CONFLICT (id) DO NOTHING
+          RETURNING id",
+    )
+    .bind(&row.session_id)
+    .bind(row.machine_id.to_string())
+    .bind(row.machine_id)
+    .bind(&row.working_dir)
+    .bind(row.user_id)
+    .bind(&row.adapter_id)
+    .bind(&row.name)
+    .bind(&row.model)
+    .bind(&row.effort)
+    .fetch_optional(pool)
+    .await?;
+    if inserted.is_none() {
+        return Ok(false);
+    }
+    persist_session_end(pool, &row.session_id, reason).await?;
+    Ok(true)
 }
 
 /// Record the end: a `session_ended` stream event (the conversation's final
@@ -2415,6 +2472,72 @@ mod tests {
         let cut = super::truncate_end_detail(&long);
         assert!(cut.len() <= 2048);
         assert!(cut.chars().all(|c| c == 'é'));
+    }
+
+    #[tokio::test]
+    async fn persist_failed_spawn_writes_an_ended_row_once() {
+        let Some(url) = crate::routes::gateway::test_db_url("persist_failed_spawn") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let uid = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+            .bind(uid)
+            .bind(format!("spawn-{uid}"))
+            .bind(format!("kh-{uid}"))
+            .execute(&pool)
+            .await
+            .expect("seed user");
+        let mid = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO machines (id, user_id, name, key_hash) VALUES ($1, $2, $3, $4)")
+            .bind(mid)
+            .bind(uid)
+            .bind(format!("m-{mid}"))
+            .bind(format!("mk-{mid}"))
+            .execute(&pool)
+            .await
+            .expect("seed machine");
+        let row = crate::state::FailedSpawnRow {
+            session_id: uuid::Uuid::new_v4().to_string(),
+            machine_id: mid,
+            user_id: uid,
+            adapter_id: "codex".into(),
+            working_dir: "/w".into(),
+            name: Some("nope".into()),
+            model: Some("gpt-nope".into()),
+            effort: None,
+        };
+        let reason = EndReason::SpawnFailed {
+            detail: "unknown model gpt-nope; available: gpt-5-codex".into(),
+        };
+        assert!(super::persist_failed_spawn(&pool, &row, &reason).await.expect("persist"));
+        assert!(
+            !super::persist_failed_spawn(&pool, &row, &reason).await.expect("persist again"),
+            "an existing row is left alone"
+        );
+
+        let (status, end_reason, end_detail, model, name): (
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        ) = sqlx::query_as(
+            "SELECT status, end_reason, end_detail, model, session_name FROM sessions WHERE id = $1",
+        )
+        .bind(&row.session_id)
+        .fetch_one(&pool)
+        .await
+        .expect("read row");
+        assert_eq!(status, "ended");
+        assert_eq!(end_reason.as_deref(), Some("spawn_failed"));
+        assert_eq!(end_detail.as_deref(), Some("unknown model gpt-nope; available: gpt-5-codex"));
+        assert_eq!(model.as_deref(), Some("gpt-nope"));
+        assert_eq!(name.as_deref(), Some("nope"));
     }
 
     #[tokio::test]

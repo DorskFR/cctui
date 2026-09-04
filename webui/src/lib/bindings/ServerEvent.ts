@@ -4,6 +4,7 @@ import type { GithubEventKind } from "./GithubEventKind";
 import type { GithubEventPayload } from "./GithubEventPayload";
 import type { MachineLiveness } from "./MachineLiveness";
 import type { Session } from "./Session";
+import type { SessionEndReason } from "./SessionEndReason";
 import type { SessionStatus } from "./SessionStatus";
 import type { JsonValue } from "./serde_json/JsonValue";
 
@@ -18,4 +19,10 @@ preamble?: string | null, } | { "type": "ask_resolved", session_id: string, } | 
  * Assistant prose preceding the plan in the same turn. `None` when
  * there was none.
  */
-preamble?: string | null, } | { "type": "plan_resolved", session_id: string, } | { "type": "command_result", command_id: string, ok: boolean, error?: string | null, } | { "type": "message_ack", session_id: string, client_msg_id: string, ok: boolean, error?: string | null, } | { "type": "archive_manifest", machine_id: string, count: number, } | { "type": "machine_liveness", machine_id: string, liveness: MachineLiveness, } | { "type": "dispatcher_liveness", dispatcher_id: string, liveness: MachineLiveness, } | { "type": "archive_uploaded", machine_id: string, project_dir: string, session_id: string, size_bytes: number, sha256: string, } | { "type": "github_event", kind: GithubEventKind, payload: GithubEventPayload, } | { "type": "soft_limit_reached", session_id: string, account_id: string, account_name: string, reason: string, retry_after_secs: number, } | { "type": "soft_limit_cleared", session_id: string, } | { "type": "pty_chunk", session_id: string, data: string, };
+preamble?: string | null, } | { "type": "plan_resolved", session_id: string, } | { "type": "command_result", command_id: string, ok: boolean, error?: string | null, 
+/**
+ * Set when the command targeted a session the server knows (interrupt,
+ * set-model, a failed spawn persisted as a row); scopes delivery to
+ * that session's owner.
+ */
+session_id?: string | null, } | { "type": "session_ended", session_id: string, reason: SessionEndReason, detail?: string | null, } | { "type": "message_ack", session_id: string, client_msg_id: string, ok: boolean, error?: string | null, } | { "type": "archive_manifest", machine_id: string, count: number, } | { "type": "machine_liveness", machine_id: string, liveness: MachineLiveness, } | { "type": "dispatcher_liveness", dispatcher_id: string, liveness: MachineLiveness, } | { "type": "archive_uploaded", machine_id: string, project_dir: string, session_id: string, size_bytes: number, sha256: string, } | { "type": "github_event", kind: GithubEventKind, payload: GithubEventPayload, } | { "type": "soft_limit_reached", session_id: string, account_id: string, account_name: string, reason: string, retry_after_secs: number, } | { "type": "soft_limit_cleared", session_id: string, } | { "type": "pty_chunk", session_id: string, data: string, };

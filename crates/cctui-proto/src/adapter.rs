@@ -121,8 +121,20 @@ impl std::fmt::Display for JobShort {
 pub enum EndReason {
     Completed,
     Killed,
-    Crashed { detail: String },
-    Other { detail: String },
+    Crashed {
+        detail: String,
+    },
+    /// The adapter could not revive an existing session (`thread/resume`).
+    ResumeFailed {
+        detail: String,
+    },
+    /// A fresh spawn never reached a running session.
+    SpawnFailed {
+        detail: String,
+    },
+    Other {
+        detail: String,
+    },
 }
 
 impl EndReason {
@@ -132,6 +144,8 @@ impl EndReason {
             Self::Completed => crate::models::SessionEndReason::Completed,
             Self::Killed => crate::models::SessionEndReason::Killed,
             Self::Crashed { .. } => crate::models::SessionEndReason::Crashed,
+            Self::ResumeFailed { .. } => crate::models::SessionEndReason::ResumeFailed,
+            Self::SpawnFailed { .. } => crate::models::SessionEndReason::SpawnFailed,
             Self::Other { .. } => crate::models::SessionEndReason::Other,
         }
     }
@@ -140,7 +154,10 @@ impl EndReason {
     pub fn detail(&self) -> Option<&str> {
         match self {
             Self::Completed | Self::Killed => None,
-            Self::Crashed { detail } | Self::Other { detail } => Some(detail),
+            Self::Crashed { detail }
+            | Self::ResumeFailed { detail }
+            | Self::SpawnFailed { detail }
+            | Self::Other { detail } => Some(detail),
         }
     }
 }

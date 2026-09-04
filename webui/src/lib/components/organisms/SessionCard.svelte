@@ -457,7 +457,7 @@
 					</span>
 					<span class="trail">
 						{#if showStatusBadge}<Badge class={statusBadgeClass(s.status)} style="padding:0.05rem var(--sp-2)">{statusLabel(s.status)}</Badge>{/if}
-						{#if end}<span class="end-badge" class:end-muted={end.muted} title={sessionEndTitle(end)}><Badge tone={end.tone} style="padding:0.05rem var(--sp-2)">{end.label}</Badge></span>{/if}
+						{#if end}<span class="end-badge" class:end-muted={end.muted} title={sessionEndTitle(end)}><Badge tone={end.tone} style="padding:0.05rem var(--sp-2)">{end.badge}</Badge></span>{/if}
 						{@render unreadBadge()}
 						{#if pendingCount > 0}<Badge tone="warn" style="padding:0.05rem var(--sp-2)">{m.sessions_perm_count({ count: pendingCount })}</Badge>{/if}
 						{#if s.auto_approve}<Badge tone="warn" style="padding:0.05rem var(--sp-2)" title={m.sessions_auto_approve_title()}>⚡</Badge>{/if}
