@@ -12,8 +12,8 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::auth::{AuthContext, Scope};
-use cctui_proto::api::ApiError;
 use crate::state::AppState;
+use cctui_proto::api::ApiError;
 
 /// Hard cap on the label; it lives in a header slot and the tab title.
 pub const NAME_MAX_CHARS: usize = 48;
@@ -51,13 +51,15 @@ fn normalize(raw: Option<&str>) -> Result<Option<String>, (StatusCode, Json<ApiE
 /// The stored deployment name, `None` when unset or on a read error (the
 /// header degrades to the bare brand rather than failing the version call).
 pub async fn read_name(pool: &sqlx::PgPool) -> Option<String> {
-    sqlx::query_scalar::<_, serde_json::Value>("SELECT value FROM instance_settings WHERE key = 'name'")
-        .fetch_optional(pool)
-        .await
-        .ok()
-        .flatten()
-        .and_then(|v| v.as_str().map(str::to_owned))
-        .filter(|s| !s.is_empty())
+    sqlx::query_scalar::<_, serde_json::Value>(
+        "SELECT value FROM instance_settings WHERE key = 'name'",
+    )
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten()
+    .and_then(|v| v.as_str().map(str::to_owned))
+    .filter(|s| !s.is_empty())
 }
 
 pub async fn update(

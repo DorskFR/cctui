@@ -57,7 +57,12 @@ impl UpdateCheck {
 #[must_use]
 pub fn enabled_from_env() -> bool {
     !matches!(
-        std::env::var("CCTUI_UPDATE_CHECK").ok().as_deref().map(str::trim).map(str::to_ascii_lowercase).as_deref(),
+        std::env::var("CCTUI_UPDATE_CHECK")
+            .ok()
+            .as_deref()
+            .map(str::trim)
+            .map(str::to_ascii_lowercase)
+            .as_deref(),
         Some("0" | "false" | "off" | "no")
     )
 }
