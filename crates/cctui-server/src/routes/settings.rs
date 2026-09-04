@@ -308,6 +308,17 @@ fn clamp_session_emoji_prefix(data: &mut Value) {
     }
 }
 
+/// Clamp `data.autoResumeOnConnectionLoss` in place on write, like
+/// [`clamp_session_emoji_prefix`]. Read back in SQL by `crate::auto_resume`,
+/// which joins `user_settings` while it looks for stuck sessions.
+fn clamp_auto_resume(data: &mut Value) {
+    let Some(obj) = data.as_object_mut() else { return };
+    if obj.contains_key("autoResumeOnConnectionLoss") {
+        let on = obj.get("autoResumeOnConnectionLoss").and_then(Value::as_bool).unwrap_or(false);
+        obj.insert("autoResumeOnConnectionLoss".to_owned(), Value::Bool(on));
+    }
+}
+
 pub async fn get_settings(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
@@ -354,6 +365,7 @@ pub async fn put_settings(
     }
     clamp_locale(&mut data);
     clamp_session_emoji_prefix(&mut data);
+    clamp_auto_resume(&mut data);
     let new_mode = harness_mode_of(&data);
     let new_scrub = serde_json::to_value(secret_scrub_of(&data)).unwrap_or(Value::Null);
 
@@ -530,11 +542,24 @@ pub async fn rescrub_settings(
 #[cfg(test)]
 mod tests {
     use super::{
-        clamp_harness_mode, clamp_locale, clamp_secret_scrub, clamp_session_emoji_prefix,
-        clamp_whip_stop_phrases, harness_mode_of, harness_mode_to_adapter_token, secret_scrub_of,
-        whip_stop_phrases_of,
+        clamp_auto_resume, clamp_harness_mode, clamp_locale, clamp_secret_scrub,
+        clamp_session_emoji_prefix, clamp_whip_stop_phrases, harness_mode_of,
+        harness_mode_to_adapter_token, secret_scrub_of, whip_stop_phrases_of,
     };
     use serde_json::json;
+
+    #[test]
+    fn clamp_auto_resume_coerces_to_a_boolean() {
+        let mut truthy = json!({ "autoResumeOnConnectionLoss": "yes" });
+        clamp_auto_resume(&mut truthy);
+        assert_eq!(truthy["autoResumeOnConnectionLoss"], json!(false));
+        let mut on = json!({ "autoResumeOnConnectionLoss": true });
+        clamp_auto_resume(&mut on);
+        assert_eq!(on["autoResumeOnConnectionLoss"], json!(true));
+        let mut absent = json!({});
+        clamp_auto_resume(&mut absent);
+        assert_eq!(absent, json!({}));
+    }
 
     #[test]
     fn clamp_session_emoji_prefix_coerces_to_a_boolean() {

@@ -208,6 +208,10 @@ export interface SettingsState {
 	// persists the name the agent reported (cctui does not generate the name
 	// itself). Off by default; a name the user typed is never decorated.
 	sessionEmojiPrefix: boolean;
+	// serializes as `data.autoResumeOnConnectionLoss`: the server nudges a
+	// session stuck on an "API Error: Connection lost mid-response" with a
+	// "continue" reply (1, 5 then 10 minutes) when this is on.
+	autoResumeOnConnectionLoss: boolean;
 	// Which edge the toast stack sits on. Top-level so it serializes as
 	// `data.toastPosition`; the server stores the blob untouched.
 	toastPosition: ToastPosition;
@@ -251,6 +255,7 @@ const DEFAULTS: SettingsState = {
 	secretScrubEnabled: false,
 	secretScrubPatterns: [],
 	sessionEmojiPrefix: false,
+	autoResumeOnConnectionLoss: false,
 	toastPosition: DEFAULT_TOAST_POSITION,
 	spawnMemory: {},
 	shortcutsEnabled: false,
@@ -292,6 +297,7 @@ export function mergeDefaults(partial: Partial<SettingsState> | null | undefined
 		secretScrubEnabled: p.secretScrubEnabled === true,
 		secretScrubPatterns: mergeSecretScrubPatterns(p.secretScrubPatterns),
 		sessionEmojiPrefix: p.sessionEmojiPrefix === true,
+		autoResumeOnConnectionLoss: p.autoResumeOnConnectionLoss === true,
 		toastPosition: clampToastPosition(p.toastPosition),
 		spawnMemory: p.spawnMemory ?? {},
 		shortcutsEnabled: p.shortcutsEnabled ?? DEFAULTS.shortcutsEnabled,
@@ -541,6 +547,14 @@ class Settings {
 
 	get sessionEmojiPrefix(): boolean {
 		return this.state.sessionEmojiPrefix;
+	}
+
+	setAutoResumeOnConnectionLoss(on: boolean) {
+		this.state.autoResumeOnConnectionLoss = on;
+		this.persist();
+	}
+	get autoResumeOnConnectionLoss(): boolean {
+		return this.state.autoResumeOnConnectionLoss;
 	}
 
 	// Horizontal placement of the toast stack. Clamped on read so a blob written

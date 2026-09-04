@@ -51,6 +51,7 @@ describe('Settings save → load round-trip through the blob', () => {
 			secretScrubEnabled: true,
 			secretScrubPatterns: [{ name: 'tok', regex: 'sk-\\w+', enabled: true }],
 			sessionEmojiPrefix: true,
+			autoResumeOnConnectionLoss: true,
 			shortcutsEnabled: true,
 			locale: 'en'
 		} as Record<string, unknown>);

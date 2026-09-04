@@ -904,6 +904,8 @@
 	"settings_admin_title": "Instance (admin)",
 	"settings_archive_shortcut_help": "Dans une conversation ouverte, ⌘ E (Mac) / Ctrl + E interrompt le tour en cours et archive la session.",
 	"settings_archive_shortcut_label": "Raccourci d'archivage",
+	"settings_auto_resume_help": "Quand une session s’arrête sur « API Error: Connection lost mid-response », lui envoyer un « continue » après 1, 5 puis 10 minutes, puis abandonner et notifier.",
+	"settings_auto_resume_label": "Reprise automatique après une coupure",
 	"settings_density_compact": "Compact",
 	"settings_density_detailed": "Détaillé",
 	"settings_density_label": "Densité",
