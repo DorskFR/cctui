@@ -6,11 +6,16 @@
 //! running build, so the webui can show an update hint next to the server
 //! version without any client-side network access.
 //!
+//! `POST /version/refresh` runs the same probe on demand (the webui's "check
+//! now" button in Settings), so a fresh answer doesn't require waiting out the
+//! interval or restarting the server; back-to-back clicks inside
+//! [`MANUAL_COOLDOWN`] reuse the last answer instead of hammering GitHub.
+//!
 //! Opt-out: `CCTUI_UPDATE_CHECK=0` (or `false`/`off`) disables the probe; an
 //! air-gapped deployment then simply never reports a newer version.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 use tokio::sync::RwLock;
@@ -18,6 +23,9 @@ use tokio::sync::RwLock;
 const RELEASES_URL: &str = "https://api.github.com/repos/DorskFR/cctui/releases/latest";
 const INITIAL_DELAY: Duration = Duration::from_secs(15);
 const INTERVAL: Duration = Duration::from_hours(6);
+/// Shortest gap between two probes; an on-demand refresh inside this window
+/// serves the answer already recorded.
+pub const MANUAL_COOLDOWN: Duration = Duration::from_mins(1);
 
 /// The newest release seen upstream, only kept when newer than [`CURRENT`].
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -29,6 +37,8 @@ pub struct LatestRelease {
 #[derive(Default)]
 pub struct UpdateCheck {
     latest: RwLock<Option<LatestRelease>>,
+    /// When the last probe answered — gates on-demand refreshes.
+    probed_at: RwLock<Option<Instant>>,
 }
 
 const CURRENT: &str = env!("CARGO_PKG_VERSION");
@@ -48,8 +58,24 @@ impl UpdateCheck {
     pub async fn record(&self, tag: &str, url: String) {
         let version = tag.trim().trim_start_matches('v').to_owned();
         let newer = is_newer(CURRENT, &version);
-        let mut slot = self.latest.write().await;
-        *slot = if newer { Some(LatestRelease { version, url }) } else { None };
+        {
+            let mut slot = self.latest.write().await;
+            *slot = if newer { Some(LatestRelease { version, url }) } else { None };
+        }
+        *self.probed_at.write().await = Some(Instant::now());
+    }
+
+    /// Probe now unless the last answer is younger than [`MANUAL_COOLDOWN`].
+    ///
+    /// `Ok(true)` means GitHub was queried, `Ok(false)` that the recorded
+    /// answer was reused; either way [`Self::newer`] is current afterwards.
+    pub async fn refresh(&self, http: &reqwest::Client) -> Result<bool, String> {
+        if self.probed_at.read().await.is_some_and(|at| at.elapsed() < MANUAL_COOLDOWN) {
+            return Ok(false);
+        }
+        let rel = fetch_latest(http).await?;
+        self.record(&rel.tag_name, rel.html_url).await;
+        Ok(true)
     }
 }
 
@@ -161,5 +187,15 @@ mod tests {
         // A later, older answer clears it (release rolled back / API glitch).
         c.record("v0.0.1", "u".into()).await;
         assert_eq!(c.newer().await, None);
+    }
+
+    #[tokio::test]
+    async fn manual_refresh_reuses_a_fresh_answer() {
+        let c = UpdateCheck::default();
+        // A recorded answer stamps the probe clock, so an immediate on-demand
+        // refresh serves it instead of reaching for the network.
+        c.record("v999.0.0", "u".into()).await;
+        assert_eq!(c.refresh(&reqwest::Client::new()).await, Ok(false));
+        assert_eq!(c.newer().await.map(|l| l.version), Some("999.0.0".into()));
     }
 }

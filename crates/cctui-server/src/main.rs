@@ -299,6 +299,14 @@ fn build_api_routes() -> Routes {
         )
         .add(
             &[Method::POST],
+            "/version/refresh",
+            "Probe upstream for a newer release now instead of waiting out the background interval.",
+            post(routes::web::refresh_version),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[Method::POST],
             "/sessions/register",
             "Register a session the daemon just launched.",
             post(routes::sessions::register),
