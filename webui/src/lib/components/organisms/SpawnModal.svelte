@@ -8,6 +8,7 @@
 		useSessionActions,
 		useRecentDirs,
 		useAccounts,
+		useAccountPools,
 		useLabels,
 		endpoints
 	} from '$lib/queries';
@@ -66,7 +67,8 @@
 		accountBacksAdapter,
 		providerForAdapter,
 		isCompatibleProvider,
-		NO_ACCOUNT
+		NO_ACCOUNT,
+		poolName
 	} from './spawn/options';
 	import { settings, type SpawnDockSide } from '$lib/settings.svelte';
 	import { SPAWN_DOCK_WIDTH } from '$lib/spawnDock.svelte';
@@ -325,6 +327,7 @@
 	// matches the selected adapter (codex → openai, else anthropic). Switching
 	// adapter to one with no matching account clears the stale selection.
 	const accounts = useAccounts(() => true);
+	const pools = useAccountPools(() => true);
 
 	// Labels: the picker selects label ids into `form.labels`; on spawn
 	// they're attached to the new session and remembered for next time. New
@@ -445,8 +448,9 @@
 	//: matched by name; the credential in play is the provider whose
 	// family backs the effective harness.
 	const allAccounts = $derived(accounts.data ?? []);
+	const allPools = $derived(pools.data ?? []);
 	const selectedAccount = $derived(
-		form.account && form.account !== NO_ACCOUNT
+		form.account && form.account !== NO_ACCOUNT && !poolName(form.account)
 			? allAccounts.find((a) => a.name === form.account)
 			: undefined
 	);
@@ -657,6 +661,9 @@
 		const adapter = form.adapter_id;
 		// Explicit unbound spawn: the machine's own login, no gateway.
 		const noAccount = form.account === NO_ACCOUNT;
+		// A pool delegates the choice like Auto does, but bounded: the server
+		// elects a member, so no account/provider name is sent with it.
+		const pool = poolName(form.account) ?? null;
 		const compatible = !!spawnProvider && isCompatibleProvider(spawnProvider);
 		const model = compatible
 			? form.model_account || null
@@ -674,15 +681,18 @@
 			effort: (adapter === 'codex' ? form.effort_codex : form.effort_claude) || null,
 			model,
 			env: envMap(),
-			account: noAccount ? null : form.account.trim() || null,
+			account: noAccount || pool ? null : form.account.trim() || null,
 			// The provider credential backing the chosen harness, so the
 			// server resolves the exact credential under the account identity.
-			provider: noAccount ? null : spawnProvider || null,
+			// A pool has no single credential to name — the server elects one.
+			provider: noAccount || pool ? null : spawnProvider || null,
 			no_account: noAccount,
 			// "Auto" (the empty selection) delegates the choice: the server
 			// binds whichever account has the most allocation left for this
-			// model instead of refusing to pick between several.
-			auto_account: !noAccount && !form.account.trim(),
+			// model instead of refusing to pick between several. A pool is the
+			// bounded form of the same delegation, so the two are exclusive.
+			auto_account: !noAccount && !pool && !form.account.trim(),
+			pool,
 			save_draft: false
 		};
 	}
@@ -809,7 +819,10 @@
 			// Account routing on the dispatch path: the server mints the
 			// gateway token + merges its base-url/token into payload.env. The
 			// no-account sentinel is a machine-tab concept → treat as null.
-			account: form.account === NO_ACCOUNT ? null : form.account.trim() || null,
+			account:
+				form.account === NO_ACCOUNT || poolName(form.account)
+					? null
+					: form.account.trim() || null,
 			provider: dispatchProvider || null,
 			// Multi-account routing isn't driven from the modal; the
 			// singular account/provider pair above is the modal's contract.
@@ -921,6 +934,7 @@
 				machines={machines.data ?? []}
 				{recentDirs}
 				accounts={allAccounts}
+				pools={allPools}
 				onsubmit={submit}
 				onfiles={addFiles}
 				docked={!!docked}

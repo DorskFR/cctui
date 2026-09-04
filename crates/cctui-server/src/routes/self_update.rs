@@ -159,6 +159,9 @@ pub async fn launch(
         provider: None,
         no_account: false,
         auto_account: true,
+        // No pool: the self-update agent is deliberately allowed the widest
+        // account set, since it must run whatever the state of any one of them.
+        pool: None,
         save_draft: false,
         env_keys: Vec::new(),
         attachment_names: Vec::new(),

@@ -2,7 +2,7 @@
 	import type { AccountProvider, OAuthAccount } from '$lib/queries';
 	import ProviderPanel from '$lib/components/molecules/ProviderPanel.svelte';
 	import ResourceShares from '$lib/components/molecules/ResourceShares.svelte';
-	import { Button, Card, Heading, Select, Text, Timestamp } from '@dorsk/tsumikit';
+	import { Button, Card, Heading, Select, Switch, Text, Timestamp } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 
 	// One account identity as a full-width row: name + account actions on the
@@ -19,6 +19,7 @@
 		redirectTargets = [],
 		onedit,
 		onremove,
+		onpooleligible,
 		onaddprovider,
 		oneditprovider,
 		onreauthprovider,
@@ -40,6 +41,8 @@
 		redirectTargets?: { id: string; name: string; families: string[] }[];
 		onedit?: () => void;
 		onremove?: () => void;
+		/** Owner-only: flip whether grantees may enrol this account in a pool. */
+		onpooleligible?: (eligible: boolean) => void;
 		onaddprovider?: () => void;
 		oneditprovider?: (p: AccountProvider) => void;
 		onreauthprovider?: (p: AccountProvider) => void;
@@ -191,6 +194,19 @@
 					noun={m.accounts_share_noun()}
 					{enabled}
 				/>
+				<!-- The owner's veto over an account they lend out. It sits with
+				     sharing rather than with the credentials because that is what it
+				     is about: a grantee can always launch on this account by name,
+				     but with this off they cannot make it a silent overflow target
+				     inside one of their own pools. -->
+				<div class="pool-veto">
+					<Switch
+						checked={a.pool_eligible}
+						label={m.accounts_pool_eligible()}
+						onclick={() => onpooleligible?.(!a.pool_eligible)}
+					/>
+					<Text as="div" tone="faint" size="xs">{m.accounts_pool_eligible_hint()}</Text>
+				</div>
 			{/if}
 		</div>
 
@@ -207,6 +223,13 @@
 </Card>
 
 <style>
+	.pool-veto {
+		display: flex;
+		flex-direction: column;
+		gap: var(--sp-1);
+		margin-top: var(--sp-2);
+	}
+
 	/* The row is the query container: the boxes below reflow against the row's
 	   own width, not the viewport's, so the layout survives being dropped into a
 	   narrower shell (drawer, split pane) unchanged. */
