@@ -54,6 +54,21 @@ use cctui_proto::api::ApiError;
 /// authenticator's own deadline first and gets its error, not ours.
 const CHALLENGE_TTL_MINUTES: i64 = 10;
 
+/// Ceiling on *unauthenticated* in-flight challenges — the ones
+/// `POST /auth/passkey/login/start` creates, which anyone can ask for because a
+/// login ceremony by definition precedes a login.
+///
+/// The TTL alone already bounds the table to ten minutes of traffic, but ten
+/// minutes of a determined flood is a lot of rows; this bounds it to a size
+/// instead. At the ~780 bytes a row costs on disk (256 of data, the rest index
+/// and page overhead) the pool tops out under a megabyte, and a real deployment
+/// never approaches it: this is a thousand people mid-login at the same instant.
+///
+/// Eviction drops the oldest, not the newest, so a flood degrades logins rather
+/// than blocking them outright; a challenge evicted before its `finish` just
+/// makes that attempt fail and the person retries.
+const MAX_ANONYMOUS_CHALLENGES: i64 = 1000;
+
 /// Lifetime of the `auth_keys` row a passkey login mints. The cookie outlives
 /// it; when the key expires the next request 401s and the UI returns to login,
 /// where the passkey signs in again in one gesture.
@@ -137,6 +152,23 @@ async fn stash_challenge(
     .bind(CHALLENGE_TTL_MINUTES.to_string())
     .fetch_one(pool)
     .await?;
+    if user_id.is_none() {
+        // Keep only the newest [`MAX_ANONYMOUS_CHALLENGES`]. The row we just
+        // inserted is excluded by id rather than trusted to sort first: two rows
+        // can share a `created_at` to the microsecond, and the one ceremony we
+        // must never break is the one in progress.
+        let _ = sqlx::query(
+            "DELETE FROM webauthn_challenges WHERE id IN ( \
+               SELECT id FROM webauthn_challenges \
+               WHERE user_id IS NULL AND id <> $1 \
+               ORDER BY created_at DESC OFFSET $2 \
+             )",
+        )
+        .bind(id.0)
+        .bind(MAX_ANONYMOUS_CHALLENGES - 1)
+        .execute(pool)
+        .await;
+    }
     Ok(id.0)
 }
 
