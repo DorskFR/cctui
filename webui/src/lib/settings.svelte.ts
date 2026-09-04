@@ -348,6 +348,11 @@ class Settings {
 
 	private saveTimer: ReturnType<typeof setTimeout> | null = null;
 	private loaded = false;
+	// Save indicator for the Settings screen: `pending` while a debounced PUT is
+	// queued or in flight, `saved` once the server acknowledged it (with the
+	// time), `error` when the PUT failed (the local cache still holds the value).
+	saveStatus = $state<'idle' | 'pending' | 'saved' | 'error'>('idle');
+	savedAt = $state<number | null>(null);
 
 	constructor() {
 		if (browser) {
@@ -394,6 +399,7 @@ class Settings {
 	private scheduleSave() {
 		if (!browser || !auth.isAuthed) return;
 		if (this.saveTimer) clearTimeout(this.saveTimer);
+		this.saveStatus = 'pending';
 		this.saveTimer = setTimeout(() => {
 			this.saveTimer = null;
 			const body: SettingsPayload = {
@@ -401,7 +407,17 @@ class Settings {
 				data: this.state as unknown as SettingsPayload['data']
 			};
 			// Fire-and-forget; the cache already holds the value if the PUT drops.
-			void api.put('/settings', body).catch(() => {});
+			void api
+				.put('/settings', body)
+				.then(() => {
+					// A later mutation re-armed the timer: stay pending for that one.
+					if (this.saveTimer) return;
+					this.saveStatus = 'saved';
+					this.savedAt = Date.now();
+				})
+				.catch(() => {
+					if (!this.saveTimer) this.saveStatus = 'error';
+				});
 		}, SAVE_DEBOUNCE_MS);
 	}
 
