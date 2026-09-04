@@ -2,6 +2,9 @@ import { browser } from '$app/environment';
 import { apiBase } from './config';
 import { clearCctuiStorage } from './drafts';
 import { clearGhreviewToken } from './ghreview';
+import { getAssertion, passkeysSupported } from './passkeys';
+import type { PasskeyChallenge } from '@bindings/PasskeyChallenge';
+import type { PasskeyConfig } from '@bindings/PasskeyConfig';
 
 /**
  * Auth state backed by an `HttpOnly` cookie. The token is set
@@ -41,6 +44,54 @@ class Auth {
 		});
 		this.isAuthed = res.ok;
 		return res.ok;
+	}
+
+	/** What the login screen may offer before anyone has authenticated: whether
+	 *  this server can run a passkey ceremony, whether anyone has enrolled one,
+	 *  and whether the read should start on its own. Any failure answers "no
+	 *  passkeys", so an older server simply shows the token box. */
+	async passkeyConfig(): Promise<PasskeyConfig | null> {
+		if (!browser || !passkeysSupported()) return null;
+		try {
+			const res = await fetch(`${apiBase()}/auth/passkey/config`, { credentials: 'include' });
+			if (!res.ok) return null;
+			return (await res.json()) as PasskeyConfig;
+		} catch {
+			return null;
+		}
+	}
+
+	/** Sign in with a passkey. The assertion is the credential: on success the
+	 *  server mints a session key and sets the same `HttpOnly` cookie the token
+	 *  login sets, so nothing downstream can tell the two apart.
+	 *
+	 *  `mediation` picks the interaction — a modal by default, `'conditional'`
+	 *  to offer the key from the token field's autocomplete — and `signal`
+	 *  cancels a pending conditional request. Throws `PasskeyAborted` when the
+	 *  user dismisses the dialog; returns false when the server refuses. */
+	async loginWithPasskey(
+		mediation?: CredentialMediationRequirement,
+		signal?: AbortSignal
+	): Promise<boolean> {
+		const startRes = await fetch(`${apiBase()}/auth/passkey/login/start`, {
+			method: 'POST',
+			credentials: 'include'
+		});
+		if (!startRes.ok) return false;
+		const challenge = (await startRes.json()) as PasskeyChallenge;
+		const credential = await getAssertion(
+			challenge.options as Record<string, unknown>,
+			mediation,
+			signal
+		);
+		const finishRes = await fetch(`${apiBase()}/auth/passkey/login/finish`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			credentials: 'include',
+			body: JSON.stringify({ challenge_id: challenge.challenge_id, credential })
+		});
+		this.isAuthed = finishRes.ok;
+		return finishRes.ok;
 	}
 
 	/** Clear the cookie server-side and drop back to the login screen. */

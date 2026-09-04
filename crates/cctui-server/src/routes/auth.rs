@@ -40,7 +40,16 @@ pub async fn login(
 
 /// `POST /api/v1/auth/logout` — expire the auth cookie. Always succeeds; the
 /// cookie is the only browser-side state to clear.
-pub async fn logout(headers: HeaderMap) -> Response {
+///
+/// A session opened with a passkey also holds a server-side key minted for that
+/// session alone, so logout revokes it too — otherwise signing out would leave a
+/// live credential behind. A token session is untouched: its key is the user's,
+/// and they did not ask us to throw it away.
+pub async fn logout(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    if let Some(token) = auth::bearer_or_cookie(&headers) {
+        crate::routes::passkeys::revoke_session_key(&state.pool, &token).await;
+        state.auth_config.purge(&auth::sha256_hex(&token));
+    }
     let cookie = auth::clear_auth_cookie(auth::request_is_https(&headers));
     ([(header::SET_COOKIE, cookie)], StatusCode::NO_CONTENT).into_response()
 }

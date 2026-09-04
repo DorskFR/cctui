@@ -21,6 +21,7 @@ pub mod labels;
 pub mod langfuse;
 pub mod manifest;
 pub mod me;
+pub mod passkeys;
 pub mod permissions;
 pub mod prompts;
 pub mod sessions;

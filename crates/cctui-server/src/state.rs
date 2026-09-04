@@ -26,6 +26,10 @@ pub struct AppState {
     pub bus: Bus,
     #[allow(dead_code)]
     pub auth_config: AuthConfig,
+    /// The `WebAuthn` relying party, or `None` when this deployment can't run a
+    /// passkey ceremony (no secure public URL configured). `None` makes every
+    /// passkey route answer "unavailable" and leaves the token login alone.
+    pub webauthn: Option<Arc<webauthn_rs::Webauthn>>,
     pub skills: Arc<SkillStore>,
     /// This pod's identity for replica-aware WS presence. Rows in
     /// `ws_presence` record which pod terminates each daemon/dispatcher WS so

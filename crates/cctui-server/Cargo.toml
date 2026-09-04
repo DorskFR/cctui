@@ -35,6 +35,8 @@ reqwest.workspace = true
 ts-rs.workspace = true
 toml = "1.1"
 log = "0.4.33"
+webauthn-rs = { version = "0.5", features = ["danger-allow-state-serialisation", "conditional-ui"] }
+webauthn-rs-proto = "0.5"
 
 [dev-dependencies]
 reqwest.workspace = true
