@@ -628,6 +628,7 @@
 	"pools_name": "Nom",
 	"pools_name_placeholder": "perso",
 	"pools_new": "Nouveau pool",
+	"pools_owner_hint": "Un pool appartient à un utilisateur. Le jeton admin n’en est pas un, il faut donc nommer le propriétaire : seuls ses comptes peuvent y entrer.",
 	"pools_remove_member": "Retirer du pool",
 	"pools_save": "Enregistrer",
 	"pools_strategy": "Stratégie",

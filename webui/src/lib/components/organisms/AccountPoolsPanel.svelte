@@ -18,6 +18,8 @@
 		useAccountPools,
 		useAccountPoolActions,
 		useAccounts,
+		useMe,
+		useUsers,
 		type OAuthAccount,
 	} from '$lib/queries';
 	import type { AccountPoolView } from '@bindings/AccountPoolView';
@@ -40,6 +42,18 @@
 	const pools = useAccountPools();
 	const accounts = useAccounts();
 	const actions = useAccountPoolActions();
+	// A pool belongs to a user, and the admin token is not one: it has no user
+	// identity, so it must name the owner on create or the server refuses with
+	// "user_id required when using the admin token". Same picker, same default
+	// as the accounts screen's owner field.
+	const me = useMe();
+	const isAdmin = $derived(me.data?.role === 'admin');
+	const users = useUsers(() => isAdmin);
+	const activeUsers = $derived((users.data ?? []).filter((u) => !u.revoked_at));
+	let ownerId = $state('');
+	$effect(() => {
+		if (isAdmin && !ownerId && activeUsers.length) ownerId = activeUsers[0].id;
+	});
 
 	// Editor state. `editing` holds the pool being edited, null while creating
 	// a fresh one, undefined when the editor is closed.
@@ -56,11 +70,24 @@
 	const byId = $derived(new Map(accountList.map((a: OAuthAccount) => [a.id, a])));
 	// Accounts not yet in the pool being edited, and not withheld from pools by
 	// their owner — the latter would only be refused by the server.
+	// An admin sees every user's accounts, so the list is also narrowed to the
+	// pool's owner: sharing grants are not visible from here, and offering an
+	// account the owner cannot reach only buys a 400 from `check_members`.
 	const addable = $derived(
-		accountList.filter((a: OAuthAccount) => !memberIds.includes(a.id) && a.pool_eligible)
+		accountList.filter(
+			(a: OAuthAccount) =>
+				!memberIds.includes(a.id) &&
+				a.pool_eligible &&
+				(!isAdmin || !ownerId || a.user_id === ownerId)
+		)
 	);
+	const ownerName = (id: string) =>
+		activeUsers.find((u) => u.id === id)?.name ?? accountList.find((a) => a.user_id === id)?.user_name ?? '';
 
 	function openCreate() {
+		// Back to the default owner: openEdit() leaves ownerId on the pool it
+		// last showed.
+		if (isAdmin) ownerId = activeUsers[0]?.id ?? '';
 		name = '';
 		strategy = 'headroom';
 		failover = false;
@@ -69,6 +96,9 @@
 	}
 
 	function openEdit(p: AccountPoolView) {
+		// PATCH is owner-scoped server-side; the owner of an existing pool is
+		// never re-parented from here, only shown.
+		ownerId = p.user_id;
 		name = p.name;
 		strategy = p.strategy === 'ordered' ? 'ordered' : 'headroom';
 		failover = p.failover;
@@ -111,12 +141,16 @@
 				});
 				toasts.ok(m.pools_updated());
 			} else {
+				if (isAdmin && !ownerId) {
+					toasts.err(m.accounts_err_pick_owner());
+					return;
+				}
 				await actions.create({
 					name: trimmed,
 					strategy,
 					failover,
 					accounts: memberIds,
-					user_id: null,
+					user_id: isAdmin ? ownerId : null,
 				});
 				toasts.ok(m.pools_created());
 			}
@@ -159,6 +193,9 @@
 				<div class="pool-row">
 					<div class="pool-head">
 						<Heading level={3}>{p.name}</Heading>
+						{#if isAdmin && ownerName(p.user_id)}
+							<Badge tone="neutral">{ownerName(p.user_id)}</Badge>
+						{/if}
 						<Badge tone="neutral">{strategyLabel(p.strategy)}</Badge>
 						{#if p.failover}
 							<Badge tone="info">{m.pools_failover()}</Badge>
@@ -192,6 +229,17 @@
 	<Modal title={editing ? editing.name : m.pools_new()} onclose={close} size="md">
 		{#snippet body()}
 			<div class="editor">
+				{#if isAdmin && !editing}
+					<Field label={m.accounts_field_owner()}>
+						<Select bind:value={ownerId}>
+							{#each activeUsers as u (u.id)}
+								<option value={u.id}>{u.name}</option>
+							{/each}
+						</Select>
+						<Text tone="faint" size="xs">{m.pools_owner_hint()}</Text>
+					</Field>
+				{/if}
+
 				<Field label={m.pools_name()}>
 					<Input bind:value={name} placeholder={m.pools_name_placeholder()} />
 				</Field>
