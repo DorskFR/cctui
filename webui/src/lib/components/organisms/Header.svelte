@@ -116,11 +116,17 @@
 			{#if version.data.latest_version}
 				<!-- Red up-arrow + the newer tag: only rendered when the server's
 				     release probe found something strictly newer than itself.
-				     Click → release notes + (admin) the update button. -->
+				     Click → release notes + (admin) the update button.
+				     NOT tsumikit's `chip`: that is a fixed 2.5rem square with
+				     padding 0 meant for a lone glyph — the version text spilled
+				     out of it over the neighbouring buttons, and its rem height
+				     grew past this scale-immune (px-pinned) header whenever the
+				     UI font slider went up. Pinned in px here for the same
+				     reason the other toolbar controls are. -->
 				<Button
 					variant="ghost"
 					size="sm"
-					chip
+					style="height: 28px; min-height: 28px; width: auto; min-width: 0; padding: 0 var(--sp-2); flex: none;"
 					title={m.nav_update_available({ version: version.data.latest_version })}
 					aria-label={m.nav_update_available({ version: version.data.latest_version })}
 					onclick={() => (updateOpen = true)}
@@ -285,6 +291,8 @@
 		white-space: nowrap;
 	}
 	.ver-up {
+		display: inline-flex;
+		align-items: center;
 		color: var(--danger);
 		font-weight: 700;
 	}
