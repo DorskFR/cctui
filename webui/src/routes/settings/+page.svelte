@@ -134,6 +134,7 @@
 	// names itself, so the prefix is added server-side when the name lands; a
 	// name the user typed is left alone.
 	const sessionEmojiPrefix = $derived(settings.sessionEmojiPrefix);
+	const autoResumeOnConnectionLoss = $derived(settings.autoResumeOnConnectionLoss);
 
 	// Server-wide instance name (admin only). Lives in `instance_settings` on
 	// the server, not in the per-user blob; read back through /version so the
@@ -421,6 +422,19 @@
 							checked={sessionEmojiPrefix}
 							label={m.settings_session_emoji_label()}
 							onclick={() => settings.setSessionEmojiPrefix(!sessionEmojiPrefix)}
+						/>
+					</dd>
+				</div>
+				<div class="prop">
+					<dt>
+						<Text weight="semibold">{m.settings_auto_resume_label()}</Text>
+						<Text size="sm" tone="faint">{m.settings_auto_resume_help()}</Text>
+					</dt>
+					<dd>
+						<Switch
+							checked={autoResumeOnConnectionLoss}
+							label={m.settings_auto_resume_label()}
+							onclick={() => settings.setAutoResumeOnConnectionLoss(!autoResumeOnConnectionLoss)}
 						/>
 					</dd>
 				</div>

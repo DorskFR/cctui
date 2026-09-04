@@ -1,6 +1,7 @@
 mod account_pick;
 mod auth;
 mod authz;
+mod auto_resume;
 mod bandwidth_watch;
 mod bus;
 mod config;
@@ -1438,6 +1439,7 @@ async fn reaper_task(state: AppState) {
         // dispatched session that has reached a terminal state — the
         // crash-coverage path the worker's REPLY_URL exit trap can miss.
         webhook::sweep(&state).await;
+        auto_resume::sweep(&state).await;
 
         {
             let mut pstore = state.permission_store.write().await;

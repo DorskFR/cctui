@@ -905,6 +905,8 @@
 	"settings_admin_title": "Instance (admin)",
 	"settings_archive_shortcut_help": "In an open conversation, ⌘ E (Mac) / Ctrl + E interrupts any running turn and archives the session.",
 	"settings_archive_shortcut_label": "Archive shortcut",
+	"settings_auto_resume_help": "When a session stops on “API Error: Connection lost mid-response”, send it a “continue” after 1, 5 and 10 minutes, then give up and notify.",
+	"settings_auto_resume_label": "Auto-resume after a connection loss",
 	"settings_density_compact": "Compact",
 	"settings_density_detailed": "Detailed",
 	"settings_density_label": "Density",
