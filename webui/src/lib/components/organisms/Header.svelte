@@ -79,9 +79,11 @@
 			<Text variant="code" tone="accent" size="lg" weight="bold">»_</Text>
 			<Text size="lg" weight="bold">cctui</Text>
 			{#if instanceName}
-				<Text size="lg" weight="bold" tone="faint" title={m.nav_instance_name()}>
-					<span class="inst">({instanceName})</span>
-				</Text>
+				<span class="inst">
+					<Text size="lg" weight="bold" tone="faint" title={m.nav_instance_name()}>
+						({instanceName})
+					</Text>
+				</span>
 			{/if}
 		</div>
 		<span
@@ -91,16 +93,18 @@
 			title={m.nav_ws_status({ status: ws.status })}
 		></span>
 		<div class="spacer"></div>
-		<NetStatsChip />
+		<span class="net"><NetStatsChip /></span>
 		{#if version.data}
-			<NavLink href={version.data.commit_url} target="_blank" rel="noopener">
-				<Text size="xs" tone="faint" variant="code">
-					<span class="ver-cluster">
-						<span class="ver-part">srv v{version.data.version}</span>
-						<span class="ver-part">ui v{__CLIENT_VERSION__}</span>
-					</span>
-				</Text>
-			</NavLink>
+			<span class="ver">
+				<NavLink href={version.data.commit_url} target="_blank" rel="noopener">
+					<Text size="xs" tone="faint" variant="code">
+						<span class="ver-cluster">
+							<span class="ver-part">srv v{version.data.version}</span>
+							<span class="ver-part">ui v{__CLIENT_VERSION__}</span>
+						</span>
+					</Text>
+				</NavLink>
+			</span>
 			{#if version.data.latest_version}
 				<!-- Red up-arrow + the newer tag: only rendered when the server's
 				     release probe found something strictly newer than itself. -->
@@ -237,14 +241,25 @@
 		width: 36px;
 		min-width: 36px;
 	}
-	/* Version chip wraps as a cluster: each "srv v…" / "ui v…" segment stays
-	   whole, and a line break only ever falls at the dot separator. */
+	/* The version chip never wraps: a two-line chip inside the 36px bar is
+	   unreadable, so below 640px it (and the net-stats chip) is dropped
+	   instead — the update arrow survives, it's the one that matters. */
+	.ver {
+		flex: none;
+	}
 	.ver-cluster {
 		display: inline-flex;
-		flex-wrap: wrap;
-		justify-content: flex-end;
 		align-items: center;
-		gap: 0 var(--sp-2);
+		gap: var(--sp-2);
+	}
+	.net {
+		display: inline-flex;
+	}
+	@media (max-width: 639px) {
+		.ver,
+		.net {
+			display: none;
+		}
 	}
 	.ver-part {
 		white-space: nowrap;
@@ -258,7 +273,10 @@
 		margin-right: 0.15em;
 	}
 	.inst {
+		min-width: 0;
 		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
 	}
 	.hd-inner {
 		height: var(--header-h);
@@ -270,6 +288,10 @@
 		display: flex;
 		align-items: center;
 		gap: var(--sp-2);
+		min-width: 0;
+	}
+	.spacer {
+		min-width: 0;
 	}
 	.conn {
 		width: 8px;

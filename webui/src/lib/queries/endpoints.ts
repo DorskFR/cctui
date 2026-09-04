@@ -18,6 +18,7 @@ import type { UserTokenRow } from "@bindings/UserTokenRow";
 import type { UserAclsResponse } from "@bindings/UserAclsResponse";
 import type { ApiKeyRow } from "@bindings/ApiKeyRow";
 import type { VersionInfo } from "@bindings/VersionInfo";
+import type { GitInfo } from "@bindings/GitInfo";
 import type { InstanceInfo } from "@bindings/InstanceInfo";
 import type { InstanceUpdateRequest } from "@bindings/InstanceUpdateRequest";
 import type { MeResponse } from "@bindings/MeResponse";
@@ -136,6 +137,9 @@ export const endpoints = {
    *  autocomplete in the spawn dialog. */
   machineDirs: (machineId: string, path: string) =>
     api.get<{ dirs: string[] }>(`/machines/${machineId}/fs/dirs`, { path }),
+  /** Branch / detached HEAD of `path` on a machine (spawn dialog badge). */
+  machineGitInfo: (machineId: string, path: string) =>
+    api.get<GitInfo>(`/machines/${machineId}/fs/gitinfo`, { path }),
   /** Machine/account-scoped codex model catalog. Empty `models`
    *  when none is cached yet — the picker falls back to its static list. */
   codexModels: (machineId: string) =>

@@ -11,12 +11,15 @@
 	// backing the effective harness drives the model list + aliases.
 	import type { MachineRow } from '@bindings/MachineRow';
 	import type { OAuthAccount } from '$lib/queries';
-	import { useCodexModels } from '$lib/queries';
+	import { useCodexModels, useGitInfo } from '$lib/queries';
+	import type { GitInfo } from '@bindings/GitInfo';
 	import BrandLogo from '$lib/components/atoms/BrandLogo.svelte';
 	import MachinePicker from '$lib/components/molecules/MachinePicker.svelte';
 	import {
+		Badge,
 		Field,
 		FilterInput,
+		Icon,
 		IconButton,
 		Input,
 		OptionButton,
@@ -26,6 +29,7 @@
 		type Query
 	} from '@dorsk/tsumikit';
 	import { makeCwdSchema, cwdToQuery, dirFromQuery } from './cwdSchema';
+	import { gitBadge, makeGitInfoWatcher } from './cwdGitInfo';
 	import EffortSlider from './EffortSlider.svelte';
 	import {
 		claudeModels,
@@ -112,6 +116,21 @@
 			lastDir = dir;
 			cwdRaw = cwdToQuery(dir);
 		}
+	});
+
+	const fetchGitInfo = useGitInfo();
+	let cwdGit = $state<GitInfo | null>(null);
+	const cwdBadge = $derived(gitBadge(cwdGit));
+	const gitWatcher = makeGitInfoWatcher(fetchGitInfo, (info) => (cwdGit = info));
+	$effect(() => {
+		gitWatcher.update(form.machine_id, form.working_dir);
+		return gitWatcher.cancel;
+	});
+	const cwdBadgeTitle = $derived.by(() => {
+		if (!cwdBadge) return '';
+		if (cwdBadge.sha) return m.spawn_cwd_detached_title({ sha: cwdBadge.sha });
+		if (cwdBadge.worktree) return m.spawn_cwd_worktree_title({ branch: cwdBadge.text });
+		return m.spawn_cwd_branch_title({ branch: cwdBadge.text });
 	});
 
 	// Accounts are identities: matched by name. '' = Auto, the
@@ -236,6 +255,18 @@
 				<MachinePicker bind:value={form.machine_id} {machines} label={m.spawn_machine_label()} />
 			{/snippet}
 		</FilterInput>
+		{#if cwdBadge}
+			<div style="margin-top:var(--sp-1)">
+				<Badge
+					mono
+					title={cwdBadgeTitle}
+					style="display:inline-flex;align-items:center;gap:0.25em;min-width:0;max-width:100%"
+				>
+					<Icon name="fork" size={12} label={m.sessions_branch_label()} />
+					<span style="overflow:hidden;white-space:nowrap;text-overflow:ellipsis">{cwdBadge.text}{cwdBadge.worktree ? ` · ${m.spawn_cwd_worktree_badge()}` : ''}</span>
+				</Badge>
+			</div>
+		{/if}
 	</Field>
 
 	<Field label={m.spawn_label_label()} for="sp-name">

@@ -26,6 +26,7 @@
 //! credential and no user/machine token can reach these endpoints.
 
 use cctui_proto::adapter::BootstrapFile;
+use cctui_proto::git::GitInfo;
 use cctui_proto::ws::{
     AgentEvent, DaemonFrameDown, DispatcherFrameDown, DispatcherFrameUp, ServerEvent,
 };
@@ -78,6 +79,11 @@ pub enum RouteRequest {
         machine: Uuid,
         path: String,
     },
+    DaemonGitInfo {
+        machine: Uuid,
+        path: String,
+        include_dirty: bool,
+    },
     /// Session-diagnose round-trip: the receiving pod runs the full
     /// command-down / event-up correlation locally and returns the report.
     DaemonDiagnose {
@@ -107,6 +113,7 @@ pub enum RouteResponse {
     Ok,
     StagedFiles { paths: Vec<String> },
     Dirs { dirs: Vec<String> },
+    GitInfo { info: GitInfo },
     Diagnose { report: Box<cctui_proto::diagnose::SessionDiagnose> },
     DispatcherReply { frame: DispatcherFrameUp },
     Err { code: WireErrorCode, message: String },
@@ -124,6 +131,7 @@ pub enum WireErrorCode {
     Timeout,
     Staging,
     ListDirs,
+    GitInfo,
     Other,
 }
 
@@ -139,6 +147,7 @@ pub fn encode_error(err: &BusError) -> (WireErrorCode, String) {
         BusError::Timeout => (WireErrorCode::Timeout, err.to_string()),
         BusError::Staging(msg) => (WireErrorCode::Staging, msg.clone()),
         BusError::ListDirs(msg) => (WireErrorCode::ListDirs, msg.clone()),
+        BusError::GitInfo(msg) => (WireErrorCode::GitInfo, msg.clone()),
         BusError::NotFound
         | BusError::NoAdapter
         | BusError::NoMachine
@@ -159,6 +168,7 @@ pub fn decode_error(code: WireErrorCode, message: String, target: Uuid) -> BusEr
         WireErrorCode::Timeout => BusError::Timeout,
         WireErrorCode::Staging => BusError::Staging(message),
         WireErrorCode::ListDirs => BusError::ListDirs(message),
+        WireErrorCode::GitInfo => BusError::GitInfo(message),
         // An unclassified peer-side failure still means the frame was not
         // delivered; surface the peer's message verbatim.
         WireErrorCode::Other => BusError::Transport(message),
@@ -326,6 +336,10 @@ impl Transport for PeerHttpTransport {
             DaemonRequest::ListDirs { path } => {
                 (RouteRequest::DaemonListDirs { machine, path }, LIST_DIRS_FORWARD_TIMEOUT)
             }
+            DaemonRequest::GitInfo { path, include_dirty } => (
+                RouteRequest::DaemonGitInfo { machine, path, include_dirty },
+                LIST_DIRS_FORWARD_TIMEOUT,
+            ),
             DaemonRequest::Diagnose { adapter_id, local_id } => (
                 RouteRequest::DaemonDiagnose { machine, adapter_id, local_id },
                 DIAGNOSE_FORWARD_TIMEOUT,
@@ -334,6 +348,7 @@ impl Transport for PeerHttpTransport {
         match self.route(Kind::Daemon, machine, &request, timeout).await? {
             RouteResponse::StagedFiles { paths } => Ok(DaemonResponse::StagedFiles(paths)),
             RouteResponse::Dirs { dirs } => Ok(DaemonResponse::Dirs(dirs)),
+            RouteResponse::GitInfo { info } => Ok(DaemonResponse::GitInfo(info)),
             RouteResponse::Diagnose { report } => Ok(DaemonResponse::Diagnose(report)),
             other => Err(BusError::Transport(format!("unexpected peer reply: {other:?}"))),
         }

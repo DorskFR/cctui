@@ -7,6 +7,7 @@ pub mod classifier;
 pub mod codex_catalog;
 pub mod compress;
 pub mod diagnose;
+pub mod git;
 pub mod github;
 pub mod identity;
 pub mod ids;

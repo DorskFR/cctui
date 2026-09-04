@@ -37,14 +37,7 @@ use super::kickstart::Kickstarter;
 use super::state::{StateJson, default_jobs_root};
 use super::transcript::{self, OffsetStore, default_projects_root};
 use super::{SessionMap, socket};
-
-/// Current branch name from `<cwd>/.git/HEAD`, or `None` when detached / not a
-/// repo. A bare file read (no `git` subprocess) keeps the poll loop cheap.
-fn read_git_branch(cwd: &str) -> Option<String> {
-    let head = std::fs::read_to_string(PathBuf::from(cwd).join(".git").join("HEAD")).ok()?;
-    let head = head.trim();
-    head.strip_prefix("ref: refs/heads/").map(str::to_owned)
-}
+use crate::git::read_git_branch;
 
 /// Config knobs read from `adapters_enabled.config`.
 #[derive(Debug, Clone)]
@@ -4554,19 +4547,6 @@ mod tests {
             parse_permission_needs("approve WebFetch"),
             ("WebFetch".to_owned(), "WebFetch".to_owned())
         );
-    }
-
-    #[test]
-    fn read_git_branch_reads_head_ref_and_ignores_detached() {
-        let tmp = tempfile::tempdir().unwrap();
-        let git = tmp.path().join(".git");
-        std::fs::create_dir(&git).unwrap();
-        std::fs::write(git.join("HEAD"), "ref: refs/heads/wave/1-ingest\n").unwrap();
-        assert_eq!(read_git_branch(tmp.path().to_str().unwrap()).as_deref(), Some("wave/1-ingest"));
-        std::fs::write(git.join("HEAD"), "0123456789abcdef0123456789abcdef01234567\n").unwrap();
-        assert_eq!(read_git_branch(tmp.path().to_str().unwrap()), None);
-        let bare = tempfile::tempdir().unwrap();
-        assert_eq!(read_git_branch(bare.path().to_str().unwrap()), None);
     }
 
     #[tokio::test]

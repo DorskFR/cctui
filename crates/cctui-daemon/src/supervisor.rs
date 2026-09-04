@@ -433,6 +433,26 @@ impl Supervisor {
                     tracing::warn!("frame_up channel closed; dropping ListDirsResult");
                 }
             }
+            DaemonFrameDown::GitInfo { request_id, path, include_dirty } => {
+                let roots = crate::git::default_roots();
+                let up = match crate::git::resolve_git_info(&path, &roots, include_dirty).await {
+                    Ok(info) => DaemonFrameUp::GitInfoResult {
+                        request_id,
+                        ok: true,
+                        info: Some(info),
+                        error: None,
+                    },
+                    Err(err) => DaemonFrameUp::GitInfoResult {
+                        request_id,
+                        ok: false,
+                        info: None,
+                        error: Some(err.to_string()),
+                    },
+                };
+                if frame_up_tx.send(up).await.is_err() {
+                    tracing::warn!("frame_up channel closed; dropping GitInfoResult");
+                }
+            }
             _ => {}
         }
     }
