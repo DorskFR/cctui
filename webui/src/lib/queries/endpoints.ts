@@ -55,6 +55,9 @@ import type {
 /** Raw typed fetchers — also usable outside of components. */
 export const endpoints = {
   version: () => api.get<VersionInfo>("/version"),
+  /** Probe upstream for a newer release now rather than waiting out the
+   *  server's 6h background interval; answers the same shape as `/version`. */
+  refreshVersion: () => api.post<VersionInfo>("/version/refresh"),
   /** Server-wide deployment name (admin). Empty clears it; read back on `/version`. */
   updateInstance: (name: string | null) =>
     api.put<InstanceInfo>("/admin/instance", { name } satisfies InstanceUpdateRequest),

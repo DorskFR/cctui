@@ -143,6 +143,27 @@
 		instanceDraft = version.data?.instance_name ?? '';
 	});
 	const instanceDirty = $derived(instanceDraft.trim() !== (version.data?.instance_name ?? ''));
+
+	// The server probes GitHub for a newer release every 6h; this asks it to go
+	// now and swaps the cached `/version` payload with the answer, so the
+	// header's update arrow reflects the result immediately.
+	let updateChecking = $state(false);
+	async function checkForUpdate() {
+		updateChecking = true;
+		try {
+			const info = await endpoints.refreshVersion();
+			qc.setQueryData(qk.version, info);
+			toasts.ok(
+				info.latest_version
+					? m.settings_version_available({ version: info.latest_version })
+					: m.settings_version_up_to_date()
+			);
+		} catch (e) {
+			toasts.err(m.settings_version_check_failed({ error: e instanceof Error ? e.message : String(e) }));
+		} finally {
+			updateChecking = false;
+		}
+	}
 	async function saveInstanceName() {
 		instanceSaving = true;
 		try {
@@ -687,6 +708,41 @@
 			<Text tone="faint">{m.settings_keyboard_soon()}</Text>
 		</Stack>
 	</Card>
+
+	<!-- ── Version ──────────────────────────────────────────────────────── -->
+	<Card>
+		<Stack gap="md">
+			<Heading level={2}>{m.settings_version_title()}</Heading>
+			<dl class="props">
+				<div class="prop">
+					<dt>
+						<Text weight="semibold">{m.settings_version_server_label()}</Text>
+						<Text size="sm" tone="faint">{m.settings_version_check_help()}</Text>
+					</dt>
+					<dd class="inst-dd">
+						{#if version.data}
+							<Text size="sm" variant="code">v{version.data.version}</Text>
+							{#if version.data.latest_version}
+								<a
+									class="ver-link"
+									href={version.data.latest_url ?? version.data.repo_url}
+									target="_blank"
+									rel="noopener"
+								>
+									<Text size="sm" variant="code">
+										↑ v{version.data.latest_version}
+									</Text>
+								</a>
+							{/if}
+						{/if}
+						<Button size="sm" disabled={updateChecking} onclick={checkForUpdate}>
+							{updateChecking ? m.settings_version_checking() : m.settings_version_check()}
+						</Button>
+					</dd>
+				</div>
+			</dl>
+		</Stack>
+	</Card>
 </Stack>
 
 <style>
@@ -732,6 +788,15 @@
 		display: flex;
 		gap: var(--sp-2);
 		align-items: center;
+	}
+	/* Same red-arrow cue as the header badge, so "a newer release exists" reads
+	   the same in both places. */
+	.ver-link {
+		color: var(--danger);
+		text-decoration: none;
+	}
+	.ver-link:hover {
+		text-decoration: underline;
 	}
 	.prop + .prop {
 		border-top: 1px solid var(--border);
