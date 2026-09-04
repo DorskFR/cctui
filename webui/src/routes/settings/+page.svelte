@@ -20,7 +20,10 @@
 		Textarea,
 		Field
 	} from '@dorsk/tsumikit';
-	import { useMe, useVersion, endpoints, qk } from '$lib/queries';
+	import { useMe, useVersion, useAllMachines, endpoints, qk } from '$lib/queries';
+	import MachinePicker from '$lib/components/molecules/MachinePicker.svelte';
+	import UpdateModal from '$lib/components/organisms/UpdateModal.svelte';
+	import type { SelfUpdateTargetInfo } from '@bindings/SelfUpdateTargetInfo';
 	import { useQueryClient } from '@tanstack/svelte-query';
 	import { toasts } from '$lib/toast.svelte';
 	import { m } from '$lib/paraglide/messages';
@@ -136,6 +139,7 @@
 	const sessionEmojiPrefix = $derived(settings.sessionEmojiPrefix);
 	const autoResumeOnConnectionLoss = $derived(settings.autoResumeOnConnectionLoss);
 
+	let updateOpen = $state(false);
 	// Server-wide instance name (admin only). Lives in `instance_settings` on
 	// the server, not in the per-user blob; read back through /version so the
 	// header and tab title pick it up on the next refetch.
@@ -170,6 +174,53 @@
 			updateChecking = false;
 		}
 	}
+	// Self-update target (admin): which enrolled machine + directory the
+	// "Update" button hands the deployment to. The server never learns how
+	// cctui is deployed there — the agent reads that machine's own notes.
+	const allMachines = useAllMachines(() => isAdmin);
+	let suTarget = $state<SelfUpdateTargetInfo | null>(null);
+	let suMachine = $state('');
+	let suDir = $state('');
+	let suAdapter = $state('claude-code');
+	let suSaving = $state(false);
+	$effect(() => {
+		if (!isAdmin) return;
+		endpoints
+			.selfUpdateTarget()
+			.then((info) => {
+				suTarget = info;
+				suMachine = info.target?.machine_id ?? '';
+				suDir = info.target?.working_dir ?? '';
+				suAdapter = info.target?.adapter_id ?? 'claude-code';
+			})
+			.catch(() => {});
+	});
+	const suDirty = $derived(
+		suMachine !== (suTarget?.target?.machine_id ?? '') ||
+			suDir.trim() !== (suTarget?.target?.working_dir ?? '') ||
+			suAdapter !== (suTarget?.target?.adapter_id ?? 'claude-code')
+	);
+	const suValid = $derived(suMachine !== '' && suDir.trim() !== '');
+
+	async function saveSelfUpdateTarget(clear = false) {
+		suSaving = true;
+		try {
+			const info = await endpoints.setSelfUpdateTarget(
+				clear ? null : { machine_id: suMachine, working_dir: suDir.trim(), adapter_id: suAdapter }
+			);
+			suTarget = info;
+			suMachine = info.target?.machine_id ?? '';
+			suDir = info.target?.working_dir ?? '';
+			suAdapter = info.target?.adapter_id ?? 'claude-code';
+			qc.invalidateQueries({ queryKey: qk.version });
+			toasts.ok(clear ? m.settings_self_update_cleared() : m.settings_self_update_saved());
+		} catch (e) {
+			toasts.err(e instanceof Error ? e.message : String(e));
+		} finally {
+			suSaving = false;
+		}
+	}
+
 	async function saveInstanceName() {
 		instanceSaving = true;
 		try {
@@ -553,6 +604,51 @@
 							</Button>
 						</dd>
 					</div>
+					<div class="prop">
+						<dt>
+							<Text weight="semibold">{m.settings_self_update_label()}</Text>
+							<Text size="sm" tone="faint">{m.settings_self_update_help()}</Text>
+							{#if suTarget?.source === 'env'}
+								<Text size="sm" tone="faint">{m.settings_self_update_from_env()}</Text>
+							{/if}
+						</dt>
+						<dd class="su-dd">
+							{#if allMachines.data}
+								<MachinePicker
+									bind:value={suMachine}
+									machines={allMachines.data}
+									label={m.settings_self_update_machine()}
+								/>
+							{/if}
+							<Input
+								bind:value={suDir}
+								placeholder={m.settings_self_update_dir_placeholder()}
+								aria-label={m.settings_self_update_dir()}
+							/>
+							<Select
+								value={suAdapter}
+								aria-label={m.settings_self_update_adapter()}
+								onchange={(e) => (suAdapter = (e.currentTarget as HTMLSelectElement).value)}
+							>
+								<option value="claude-code">claude-code</option>
+								<option value="codex">codex</option>
+							</Select>
+							<div class="su-actions">
+								<Button
+									size="sm"
+									disabled={!suDirty || !suValid || suSaving}
+									onclick={() => saveSelfUpdateTarget()}
+								>
+									{m.settings_admin_instance_save()}
+								</Button>
+								{#if suTarget?.source === 'settings'}
+									<Button size="sm" variant="ghost" disabled={suSaving} onclick={() => saveSelfUpdateTarget(true)}>
+										{m.settings_self_update_clear()}
+									</Button>
+								{/if}
+							</div>
+						</dd>
+					</div>
 				</dl>
 			</Stack>
 		</Card>
@@ -933,16 +1029,11 @@
 						{#if version.data}
 							<Text size="sm" variant="code">v{version.data.version}</Text>
 							{#if version.data.latest_version}
-								<a
-									class="ver-link"
-									href={version.data.latest_url ?? version.data.repo_url}
-									target="_blank"
-									rel="noopener"
-								>
-									<Text size="sm" variant="code">
+								<Button size="sm" variant="ghost" chip onclick={() => (updateOpen = true)}>
+									<Text size="sm" variant="code" tone="danger">
 										↑ v{version.data.latest_version}
 									</Text>
-								</a>
+								</Button>
 							{/if}
 						{/if}
 						<Button size="sm" disabled={updateChecking} onclick={checkForUpdate}>
@@ -955,7 +1046,26 @@
 	</Card>
 </Stack>
 
+{#if updateOpen && version.data?.latest_version}
+	<UpdateModal
+		latestVersion={version.data.latest_version}
+		latestUrl={version.data.latest_url ?? version.data.repo_url}
+		selfUpdateReady={version.data.self_update_ready}
+		onclose={() => (updateOpen = false)}
+	/>
+{/if}
+
 <style>
+	.su-dd {
+		display: flex;
+		flex-direction: column;
+		gap: var(--sp-2);
+		min-width: 0;
+	}
+	.su-actions {
+		display: flex;
+		gap: var(--sp-2);
+	}
 	.head {
 		display: flex;
 		flex-direction: column;
@@ -998,15 +1108,6 @@
 		display: flex;
 		gap: var(--sp-2);
 		align-items: center;
-	}
-	/* Same red-arrow cue as the header badge, so "a newer release exists" reads
-	   the same in both places. */
-	.ver-link {
-		color: var(--danger);
-		text-decoration: none;
-	}
-	.ver-link:hover {
-		text-decoration: underline;
 	}
 	.prop + .prop {
 		border-top: 1px solid var(--border);

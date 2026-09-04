@@ -6,4 +6,11 @@ export type SpawnResponse = { command_id: string, status: string,
  * credential is in play — chiefly for an auto-bound default the user never
  * named. `None` for an unbound spawn.
  */
-account?: string | null, };
+account?: string | null, 
+/**
+ * The id the session will register under when the server pre-minted it
+ * (claude-code spawns), so a caller can navigate to it once the daemon
+ * acks `command_id`. `None` for adapters that mint their own id and for
+ * drafts.
+ */
+session_id?: string | null, };
