@@ -5,8 +5,8 @@
 	import { Button, FileButton, Text, Textarea } from '@dorsk/tsumikit';
 	import { drafts, composerKey, history as msgHistory } from '$lib/drafts';
 	import {
-		appendFileTokens,
-		mergeFiles,
+		attachFiles,
+		nextPasteIndex,
 		removeFileByName,
 		fileCapError,
 		makeClipboardFiles
@@ -62,8 +62,7 @@
 	const attachError = $derived(fileCapError(attachments));
 	export function addFiles(incoming: File[]) {
 		if (!supportsAttachments || archived) return;
-		attachments = mergeFiles(attachments, incoming);
-		input = appendFileTokens(input, incoming);
+		({ files: attachments, text: input } = attachFiles(attachments, input, incoming));
 	}
 	export function setDragActive(active: boolean) {
 		dragActive = active;
@@ -72,9 +71,10 @@
 
 	// Mask a large pasted block: instead of dumping thousands of
 	// characters into the composer, collapse it into a `paste-N.txt` attachment
-	// (the Claude Code trick), keeping the textarea readable.
+	// (the Claude Code trick), keeping the textarea readable. The index is derived
+	// from current attachments + draft tokens: the composer remounts on drawer
+	// close while the draft (and its `[paste-N.txt]`) persists per session.
 	const PASTE_MASK_CHARS = 2000;
-	let pasteCounter = 1;
 	const clipboardBinaryFiles = makeClipboardFiles();
 
 	function onPaste(e: ClipboardEvent) {
@@ -97,7 +97,7 @@
 		const text = cd.getData('text/plain');
 		if (!text || text.length < PASTE_MASK_CHARS) return; // small → normal paste
 		e.preventDefault();
-		const name = `paste-${pasteCounter++}.txt`;
+		const name = `paste-${nextPasteIndex(attachments, input)}.txt`;
 		addFiles([new File([text], name, { type: 'text/plain' })]);
 		const lines = text.split('\n').length;
 		toasts.ok(m.composer_large_paste({ name, lines }));

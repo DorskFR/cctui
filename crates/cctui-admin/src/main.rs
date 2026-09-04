@@ -72,6 +72,10 @@ enum SkillsCmd {
         /// Root containing `<name>/`. Defaults to `~/.claude/skills`.
         #[arg(long)]
         root: Option<std::path::PathBuf>,
+        /// Version label stored with the upload. Defaults server-side to the
+        /// upload time in unix milliseconds.
+        #[arg(long)]
+        version: Option<String>,
     },
 }
 
@@ -323,8 +327,8 @@ async fn skills_cmd(
             let rows: Vec<SkillIndexEntry> = get_json(client, &url, &tok).await?;
             print_skills(&rows);
         }
-        SkillsCmd::Push { name, root } => {
-            skills_push(client, &server_url, &tok, &name, root).await?;
+        SkillsCmd::Push { name, root, version } => {
+            skills_push(client, &server_url, &tok, &name, root, version.as_deref()).await?;
         }
     }
     Ok(())
@@ -336,6 +340,7 @@ async fn skills_push(
     token: &str,
     name: &str,
     root: Option<std::path::PathBuf>,
+    version: Option<&str>,
 ) -> Result<()> {
     validate_skill_name(name)?;
     let root = if let Some(p) = root {
@@ -369,17 +374,19 @@ async fn skills_push(
     let sha = cctui_proto::util::sha256_hex(&bytes);
 
     let url = format!("{server_url}/api/v1/skills/{name}");
-    let resp = client
+    let mut req = client
         .put(&url)
         .bearer_auth(token)
         .header("X-CCTUI-SHA256", &sha)
-        .header("Content-Type", "application/zstd")
-        .body(bytes.clone())
-        .send()
-        .await?;
+        .header("Content-Type", "application/zstd");
+    if let Some(v) = version {
+        req = req.header("X-CCTUI-Version", v);
+    }
+    let resp = req.body(bytes.clone()).send().await?;
     let entry: SkillIndexEntry = decode(resp).await?;
 
     println!("name:       {}", entry.name);
+    println!("version:    {}", entry.version);
     println!("sha256:     {}", entry.sha256);
     println!("size:       {} bytes", entry.size_bytes);
     println!("uploaded:   {}", entry.uploaded_at.format("%Y-%m-%d %H:%M:%S"));
@@ -403,11 +410,12 @@ fn tempfile_path(name: &str) -> std::path::PathBuf {
 }
 
 fn print_skills(rows: &[SkillIndexEntry]) {
-    println!("{:<32}  {:<64}  {:>10}  uploaded", "name", "sha256", "bytes");
+    println!("{:<32}  {:<16}  {:<64}  {:>10}  uploaded", "name", "version", "sha256", "bytes");
     for r in rows {
         println!(
-            "{:<32}  {:<64}  {:>10}  {}",
+            "{:<32}  {:<16}  {:<64}  {:>10}  {}",
             truncate(&r.name, 32),
+            truncate(&r.version, 16),
             r.sha256,
             r.size_bytes,
             r.uploaded_at.format("%Y-%m-%d %H:%M:%S"),

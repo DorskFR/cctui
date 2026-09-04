@@ -91,7 +91,12 @@ export class SessionActions {
 			} else if (ack.timedOut) {
 				toasts.push(m.conversation_interrupt_unconfirmed(), 'info');
 			} else {
-				toasts.err(ack.error ?? m.conversation_interrupt_failed());
+				// Daemon detail (e.g. "no turn in flight", codex -32602) rides on
+				// `error`; keep the generic label as prefix so the toast is still
+				// recognisable as the Stop outcome.
+				toasts.err(
+					ack.error ? `${m.conversation_interrupt_failed()}: ${ack.error}` : m.conversation_interrupt_failed()
+				);
 			}
 		} catch (e) {
 			toasts.err(errMessage(e));

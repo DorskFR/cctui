@@ -157,7 +157,11 @@
 			const raw = drafts.get(SPAWN_DRAFT);
 			const saved = raw ? (JSON.parse(raw) as SpawnDraftPayload) : {};
 			loadedDraft = !!raw && !prefill;
-			restoredEnvRows = Array.isArray(saved.envRows) ? saved.envRows : [];
+			// Values are never restored from disk: older drafts may carry them,
+			// so strip on load and let the persist effect rewrite the draft.
+			restoredEnvRows = Array.isArray(saved.envRows)
+				? saved.envRows.map((r) => ({ key: String(r?.key ?? ''), value: '' }))
+				: [];
 			const { envRows: _envRows, ...savedForm } = saved;
 			const seeded = { ...blank, ...savedForm, ...(prefill ?? {}) };
 			// Fresh open (no draft to restore, no explicit prefill): propose the
@@ -437,6 +441,7 @@
 	// Deliberately kept OUT of `form` (which is persisted to localStorage drafts)
 	// so secret values and file handles are never written to disk — they live for
 	// the modal's lifetime only and are fixed for the session once spawned.
+	// Only env keys (values blanked) go into the draft.
 	interface EnvRow {
 		key: string;
 		value: string;
@@ -444,7 +449,8 @@
 	let envRows = $state<EnvRow[]>(restoredEnvRows);
 	let files = $state<File[]>([]);
 	$effect(() => {
-		drafts.set(SPAWN_DRAFT, JSON.stringify({ ...form, envRows }));
+		const envKeys = envRows.map((r) => ({ key: r.key, value: '' }));
+		drafts.set(SPAWN_DRAFT, JSON.stringify({ ...form, envRows: envKeys }));
 	});
 
 	const ENV_KEY_RE = /^[A-Z_][A-Z0-9_]*$/;
