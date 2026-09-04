@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { toasts } from '$lib/toast.svelte';
+	import { settings } from '$lib/settings.svelte';
 	import { Button, Card } from '@dorsk/tsumikit';
 
 	let wrapEl: HTMLDivElement | undefined = $state();
@@ -20,7 +21,9 @@
 	});
 </script>
 
-<div class="toast-wrap" bind:this={wrapEl} popover="manual">
+<!-- `data-pos` carries the user's toast-position setting; app.css turns it into
+     the left/center/right placement of the fixed stack. -->
+<div class="toast-wrap" data-pos={settings.toastPosition} bind:this={wrapEl} popover="manual">
 	{#each toasts.items as t (t.id)}
 		{#if t.action}
 			<!-- A toast with an inline action (e.g. Undo) is a plain card: the text

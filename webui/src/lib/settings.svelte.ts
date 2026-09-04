@@ -112,6 +112,23 @@ export function clampSpawnDockSide(v: unknown): SpawnDockSide {
 		: DEFAULT_SPAWN_DOCK_SIDE;
 }
 
+// Horizontal placement of the toast stack (the "Archived" confirmation and
+// friends). Centered by default, which is where the stack has always been;
+// `left`/`right` pin it to that edge with the same gutter the centered stack
+// keeps on a narrow viewport. Purely presentational, so it lives entirely in
+// the webui: the value drives a `data-pos` attribute on `.toast-wrap`.
+export const TOAST_POSITIONS = ['center', 'left', 'right'] as const;
+export type ToastPosition = (typeof TOAST_POSITIONS)[number];
+export const DEFAULT_TOAST_POSITION: ToastPosition = 'center';
+
+/** Clamp a stored position to a known one, so an older/corrupt blob leaves the
+ *  toast centered rather than unplaced. */
+export function clampToastPosition(v: unknown): ToastPosition {
+	return TOAST_POSITIONS.includes(v as ToastPosition)
+		? (v as ToastPosition)
+		: DEFAULT_TOAST_POSITION;
+}
+
 export interface DisplaySettings {
 	theme: string;
 	fontScale: number;
@@ -191,6 +208,9 @@ export interface SettingsState {
 	// persists the name the agent reported (cctui does not generate the name
 	// itself). Off by default; a name the user typed is never decorated.
 	sessionEmojiPrefix: boolean;
+	// Which edge the toast stack sits on. Top-level so it serializes as
+	// `data.toastPosition`; the server stores the blob untouched.
+	toastPosition: ToastPosition;
 	// Per-(machine, working-dir) spawn memory: the config last
 	// submitted from the spawn modal, keyed by machineMemoryKey/dispatchMemoryKey
 	// (spawnMemory.ts), LRU-capped. Replaces the localStorage per-machine prefs
@@ -231,6 +251,7 @@ const DEFAULTS: SettingsState = {
 	secretScrubEnabled: false,
 	secretScrubPatterns: [],
 	sessionEmojiPrefix: false,
+	toastPosition: DEFAULT_TOAST_POSITION,
 	spawnMemory: {},
 	shortcutsEnabled: false,
 	keymap: {},
@@ -271,6 +292,7 @@ export function mergeDefaults(partial: Partial<SettingsState> | null | undefined
 		secretScrubEnabled: p.secretScrubEnabled === true,
 		secretScrubPatterns: mergeSecretScrubPatterns(p.secretScrubPatterns),
 		sessionEmojiPrefix: p.sessionEmojiPrefix === true,
+		toastPosition: clampToastPosition(p.toastPosition),
 		spawnMemory: p.spawnMemory ?? {},
 		shortcutsEnabled: p.shortcutsEnabled ?? DEFAULTS.shortcutsEnabled,
 		keymap: p.keymap ?? DEFAULTS.keymap,
@@ -519,6 +541,18 @@ class Settings {
 
 	get sessionEmojiPrefix(): boolean {
 		return this.state.sessionEmojiPrefix;
+	}
+
+	// Horizontal placement of the toast stack. Clamped on read so a blob written
+	// by another build can never feed an unknown value to the `data-pos`
+	// attribute (which would leave the stack with no placement rule at all).
+	setToastPosition(pos: ToastPosition) {
+		this.state.toastPosition = pos;
+		this.persist();
+	}
+
+	get toastPosition(): ToastPosition {
+		return clampToastPosition(this.state.toastPosition);
 	}
 
 	// Spawn memory: write on spawn submit, recall on machine/cwd (or

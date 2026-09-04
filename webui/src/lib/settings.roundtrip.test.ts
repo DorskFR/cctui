@@ -92,6 +92,21 @@ describe('Settings save → load round-trip through the blob', () => {
 		expect(merged.spawnDock.side).toBe('right');
 	});
 
+	it('the toast position survives a persist then reload', () => {
+		settings.setToastPosition('right');
+
+		expect(loadFromCache().toastPosition).toBe('right');
+	});
+
+	it('the toast position defaults to center and clamps an unknown value', () => {
+		expect(mergeDefaults(null).toastPosition).toBe('center');
+		const merged = mergeDefaults({ toastPosition: 'bottom' } as unknown as Record<
+			string,
+			unknown
+		>);
+		expect(merged.toastPosition).toBe('center');
+	});
+
 	it('the docked stats panel survives a persist then reload', () => {
 		settings.setStatsDock({ enabled: true, side: 'left' });
 
