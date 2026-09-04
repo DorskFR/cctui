@@ -349,12 +349,13 @@ startup**: a partially applied credential config is worse than none.
 | Field | Required | Meaning |
 |---|---|---|
 | `host` | yes | Host to TLS-terminate (lowercased). Repeat the host for several path-scoped rules. |
-| `secret` | yes | Secret ref of the credential to inject. |
-| `shape` | no (`bearer`) | `bearer`, `basic`/`git`, `bearer+cookie`/`cookie`, or `sigv4`. |
+| `secret` | yes (except `headers`) | Secret ref of the credential to inject. |
+| `shape` | no (`bearer`) | `bearer`, `basic`/`git`, `bearer+cookie`/`cookie`, `sigv4`, or `headers`. |
 | `service` | no (`host`) | Label for logs and GitHub-App provider matching — never a lookup key. |
 | `path_prefix` | no | Scopes the rule to a request path; must start with `/`. The **longest** matching prefix wins, ties keep config order, and a request matching no rule forwards the agent's head unchanged. |
 | `username` | no (`x-access-token`) | Basic-auth username. |
 | `cookie_name` / `cookie_secret` | `cookie_secret` required for `bearer+cookie` | Companion session cookie (default name `d`). |
+| `headers` | required for `headers` | Map of header name → secret ref (no `Authorization`). Replaces `secret`. |
 | `region` / `aws_service` / `key_id_secret` | `key_id_secret` required for `sigv4` | `SigV4` signing params; `region`/`aws_service` default from a `<service>.<region>.amazonaws.com` host. `secret` is the secret access key, `key_id_secret` the access key id. |
 
 ```jsonc
@@ -363,7 +364,9 @@ startup**: a partially applied credential config is worse than none.
     "secret": "vault:kvmount/data/cctui/workers#GITHUB_TOKEN_${IDENTITY}" },
   { "host": "github.com", "service": "github", "shape": "git",
     "secret": "vault:kvmount/data/cctui/workers#GITHUB_TOKEN_${IDENTITY}" },
-  { "host": "registry.npmjs.org", "service": "npm", "secret": "env:CRED_NPM" }
+  { "host": "registry.npmjs.org", "service": "npm", "secret": "env:CRED_NPM" },
+  { "host": "api.datadoghq.com", "service": "datadog", "shape": "headers",
+    "headers": { "DD-API-KEY": "env:DD_API_KEY", "DD-APPLICATION-KEY": "env:DD_APP_KEY" } }
 ]
 ```
 
@@ -387,7 +390,10 @@ never MITM, so they skip this.
 `_authToken` rides as a Bearer header). `basic`/`git` covers git-over-HTTPS,
 rewritten to the GitHub-blessed `x-access-token:<token>` Basic form.
 `bearer+cookie` covers browser-session tokens that need a companion cookie (e.g.
-Slack's `xoxc` + `d`). `sigv4` covers AWS APIs.
+Slack's `xoxc` + `d`). `sigv4` covers AWS APIs. `headers` covers APIs keyed by
+named non-`Authorization` headers (Datadog's `DD-API-KEY` + `DD-APPLICATION-KEY`):
+the agent's copies of those headers are stripped and every ref must resolve or
+the request forwards unchanged.
 
 **Fail-closed on lookup problems.** The agent never holds a real secret, so on
 `NotFound` **or** backend error the injector forwards the agent's ORIGINAL
