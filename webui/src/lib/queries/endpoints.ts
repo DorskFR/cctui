@@ -18,6 +18,8 @@ import type { UserTokenRow } from "@bindings/UserTokenRow";
 import type { UserAclsResponse } from "@bindings/UserAclsResponse";
 import type { ApiKeyRow } from "@bindings/ApiKeyRow";
 import type { VersionInfo } from "@bindings/VersionInfo";
+import type { InstanceInfo } from "@bindings/InstanceInfo";
+import type { InstanceUpdateRequest } from "@bindings/InstanceUpdateRequest";
 import type { MeResponse } from "@bindings/MeResponse";
 import type { CapabilitiesResponse } from "@bindings/CapabilitiesResponse";
 import type { LangfuseSessionUsage } from "@bindings/LangfuseSessionUsage";
@@ -52,6 +54,9 @@ import type {
 /** Raw typed fetchers — also usable outside of components. */
 export const endpoints = {
   version: () => api.get<VersionInfo>("/version"),
+  /** Server-wide deployment name (admin). Empty clears it; read back on `/version`. */
+  updateInstance: (name: string | null) =>
+    api.put<InstanceInfo>("/admin/instance", { name } satisfies InstanceUpdateRequest),
   /** Which optional integrations this server has, and whether each is live.
    *  Drives capability-gated UI: the lazy `/github` route + nav. */
   capabilities: () => api.get<CapabilitiesResponse>("/capabilities"),

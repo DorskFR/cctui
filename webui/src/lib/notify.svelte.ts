@@ -5,7 +5,7 @@ import type { SessionListItem } from "@bindings/SessionListItem";
 
 const KEY_ENABLED = "cctui_notify_enabled";
 const KEY_SOUND = "cctui_notify_sound";
-const TITLE = "cctui";
+const BRAND = "cctui";
 
 /**
  * Browser-notification + sound for sessions that need the user's input.
@@ -28,6 +28,10 @@ class Notifier {
   pendingOpen = $state<string | null>(null);
 
   private notified = new Set<string>();
+  /** Last badge count, replayed when the base title changes. */
+  private badgeCount = 0;
+  /** Server-wide instance name (`/version.instance_name`); part of the tab title. */
+  private instanceName: string | null = null;
   private audioCtx: AudioContext | null = null;
 
   constructor() {
@@ -107,8 +111,23 @@ class Notifier {
     }
   }
 
+  /** Base tab title: `cctui`, or `cctui (NAME)` when the admin labelled the instance. */
+  baseTitle(): string {
+    return this.instanceName ? `${BRAND} (${this.instanceName})` : BRAND;
+  }
+
+  /** Header feeds this from `/version`; re-renders the title with the current badge. */
+  setInstanceName(name: string | null | undefined) {
+    const next = name?.trim() || null;
+    if (next === this.instanceName) return;
+    this.instanceName = next;
+    this.updateBadge(this.badgeCount);
+  }
+
   private updateBadge(n: number) {
-    if (browser) document.title = n > 0 ? `(${n}) ${TITLE}` : TITLE;
+    this.badgeCount = n;
+    const base = this.baseTitle();
+    if (browser) document.title = n > 0 ? `(${n}) ${base}` : base;
   }
 
   private label(s: SessionListItem): string {

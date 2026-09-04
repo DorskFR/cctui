@@ -53,6 +53,8 @@ pub struct AppState {
     pub account_locks: Arc<DashMap<Uuid, Arc<tokio::sync::Mutex<()>>>>,
     /// Shared outbound HTTP client for the gateway passthrough.
     pub http_client: reqwest::Client,
+    /// Newest upstream release, when newer than this build (`/version`).
+    pub update_check: Arc<crate::update_check::UpdateCheck>,
     /// Optional Langfuse tracing sink for the `/gateway` proxy.
     /// `None` unless the `CCTUI_LANGFUSE_*` env is configured — when absent the
     /// gateway never reconstructs the body, so there is zero overhead and no

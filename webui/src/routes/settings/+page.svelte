@@ -8,7 +8,21 @@
 	import { AUTO, theme, THEMES } from '$lib/theme.svelte';
 	import { fontScale, SCALE_LEVELS } from '$lib/fontscale.svelte';
 	import { notify } from '$lib/notify.svelte';
-	import { Card, Heading, Select, Stack, Switch, Text, Textarea, Field } from '@dorsk/tsumikit';
+	import {
+		Button,
+		Card,
+		Heading,
+		Input,
+		Select,
+		Stack,
+		Switch,
+		Text,
+		Textarea,
+		Field
+	} from '@dorsk/tsumikit';
+	import { useMe, useVersion, endpoints, qk } from '$lib/queries';
+	import { useQueryClient } from '@tanstack/svelte-query';
+	import { toasts } from '$lib/toast.svelte';
 	import { m } from '$lib/paraglide/messages';
 	import type { HarnessMode, WhipMode } from '$lib/settings.svelte';
 
@@ -115,6 +129,33 @@
 	// names itself, so the prefix is added server-side when the name lands; a
 	// name the user typed is left alone.
 	const sessionEmojiPrefix = $derived(settings.sessionEmojiPrefix);
+
+	// Server-wide instance name (admin only). Lives in `instance_settings` on
+	// the server, not in the per-user blob; read back through /version so the
+	// header and tab title pick it up on the next refetch.
+	const me = useMe();
+	const version = useVersion();
+	const qc = useQueryClient();
+	const isAdmin = $derived(me.data?.role === 'admin');
+	let instanceDraft = $state('');
+	let instanceSaving = $state(false);
+	$effect(() => {
+		instanceDraft = version.data?.instance_name ?? '';
+	});
+	const instanceDirty = $derived(instanceDraft.trim() !== (version.data?.instance_name ?? ''));
+	async function saveInstanceName() {
+		instanceSaving = true;
+		try {
+			const res = await endpoints.updateInstance(instanceDraft.trim() || null);
+			instanceDraft = res.name ?? '';
+			await qc.invalidateQueries({ queryKey: qk.version });
+			toasts.ok(res.name ? m.settings_admin_instance_saved() : m.settings_admin_instance_cleared());
+		} catch (e) {
+			toasts.err(e instanceof Error ? e.message : String(e));
+		} finally {
+			instanceSaving = false;
+		}
+	}
 	const spawnDock = $derived(settings.spawnDock);
 	const statsDock = $derived(settings.statsDock);
 
@@ -270,6 +311,40 @@
 			</dl>
 		</Stack>
 	</Card>
+
+	<!-- ── Instance (admin, server-wide) ────────────────────────────────── -->
+	{#if isAdmin}
+		<Card>
+			<Stack gap="md">
+				<Heading level={2}>{m.settings_admin_title()}</Heading>
+				<dl class="props">
+					<div class="prop">
+						<dt>
+							<Text weight="semibold">{m.settings_admin_instance_name_label()}</Text>
+							<Text size="sm" tone="faint">{m.settings_admin_instance_name_help()}</Text>
+						</dt>
+						<dd class="inst-dd">
+							<Input
+								bind:value={instanceDraft}
+								maxlength={48}
+								placeholder={m.settings_admin_instance_name_placeholder()}
+								onkeydown={(e: KeyboardEvent) => {
+									if (e.key === 'Enter' && instanceDirty && !instanceSaving) saveInstanceName();
+								}}
+							/>
+							<Button
+								size="sm"
+								disabled={!instanceDirty || instanceSaving}
+								onclick={saveInstanceName}
+							>
+								{m.settings_admin_instance_save()}
+							</Button>
+						</dd>
+					</div>
+				</dl>
+			</Stack>
+		</Card>
+	{/if}
 
 	<!-- ── New session ──────────────────────────────────────────────────── -->
 	<Card>
@@ -652,6 +727,11 @@
 	.prop dd {
 		margin: 0;
 		flex: none;
+	}
+	.inst-dd {
+		display: flex;
+		gap: var(--sp-2);
+		align-items: center;
 	}
 	.prop + .prop {
 		border-top: 1px solid var(--border);
