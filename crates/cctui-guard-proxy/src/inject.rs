@@ -22,7 +22,7 @@
 
 #![allow(clippy::large_futures)]
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
@@ -65,6 +65,9 @@ pub enum AuthShape {
     /// is the access key id. The signature covers the body's SHA-256, so these
     /// requests are buffered (bounded) instead of streamed.
     SigV4 { region: String, service: String },
+    /// Named non-`Authorization` headers, one secret each (Datadog's
+    /// `DD-API-KEY` + `DD-APPLICATION-KEY`). Every ref must resolve or none is injected.
+    Headers { headers: Vec<(String, SecretRef)> },
 }
 
 /// One allow-listed host and how to inject its credential. The secret is an
@@ -97,9 +100,12 @@ struct InjectEntry {
     path_prefix: Option<String>,
     #[serde(default)]
     service: Option<String>,
-    /// `bearer` (default) | `basic`/`git` | `bearer+cookie`/`cookie`.
+    /// `bearer` (default) | `basic`/`git` | `bearer+cookie`/`cookie` | `sigv4` | `headers`.
     #[serde(default)]
     shape: Option<String>,
+    /// `headers` shape: header name → secret ref.
+    #[serde(default)]
+    headers: Option<BTreeMap<String, String>>,
     /// Basic-auth username; default `x-access-token`.
     #[serde(default)]
     username: Option<String>,
@@ -112,7 +118,8 @@ struct InjectEntry {
     region: Option<String>,
     #[serde(default)]
     aws_service: Option<String>,
-    secret: String,
+    #[serde(default)]
+    secret: Option<String>,
     #[serde(default)]
     cookie_secret: Option<String>,
     #[serde(default)]
@@ -123,32 +130,64 @@ impl InjectEntry {
     fn into_rule(self, identity: &str) -> anyhow::Result<InjectionRule> {
         let host = self.host.trim().to_ascii_lowercase();
         anyhow::ensure!(!host.is_empty(), "inject entry with an empty host");
-        let shape =
-            match self.shape.as_deref().unwrap_or("bearer").trim().to_ascii_lowercase().as_str() {
-                "bearer" => AuthShape::Bearer,
-                "basic" | "git" | "gitbasic" | "git-basic" => AuthShape::Basic {
-                    username: self.username.unwrap_or_else(|| "x-access-token".to_owned()),
-                },
-                "bearer+cookie" | "cookie" | "slack" => AuthShape::BearerCookie {
-                    cookie_name: self.cookie_name.unwrap_or_else(|| "d".to_owned()),
-                },
-                "sigv4" => {
-                    let derived = derive_aws_host(&host);
-                    let region = self
-                        .region
-                        .or_else(|| derived.as_ref().map(|(_, r)| r.clone()))
-                        .ok_or_else(|| {
-                        anyhow::anyhow!("inject entry for {host}: sigv4 needs region")
+        let shape = match self
+            .shape
+            .as_deref()
+            .unwrap_or("bearer")
+            .trim()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "bearer" => AuthShape::Bearer,
+            "basic" | "git" | "gitbasic" | "git-basic" => AuthShape::Basic {
+                username: self.username.unwrap_or_else(|| "x-access-token".to_owned()),
+            },
+            "bearer+cookie" | "cookie" | "slack" => AuthShape::BearerCookie {
+                cookie_name: self.cookie_name.unwrap_or_else(|| "d".to_owned()),
+            },
+            "sigv4" => {
+                let derived = derive_aws_host(&host);
+                let region =
+                    self.region.or_else(|| derived.as_ref().map(|(_, r)| r.clone())).ok_or_else(
+                        || anyhow::anyhow!("inject entry for {host}: sigv4 needs region"),
+                    )?;
+                let service =
+                    self.aws_service.or_else(|| derived.map(|(s, _)| s)).ok_or_else(|| {
+                        anyhow::anyhow!("inject entry for {host}: sigv4 needs aws_service")
                     })?;
-                    let service =
-                        self.aws_service.or_else(|| derived.map(|(s, _)| s)).ok_or_else(|| {
-                            anyhow::anyhow!("inject entry for {host}: sigv4 needs aws_service")
-                        })?;
-                    AuthShape::SigV4 { region, service }
+                AuthShape::SigV4 { region, service }
+            }
+            "headers" => {
+                let mut headers = Vec::new();
+                for (name, r) in self.headers.iter().flatten() {
+                    let name = name.trim();
+                    anyhow::ensure!(
+                        !name.is_empty()
+                            && !name.eq_ignore_ascii_case("authorization")
+                            && name.bytes().all(|b| b.is_ascii_graphic() && b != b':'),
+                        "inject entry for {host}: headers shape has an invalid header name {name:?}"
+                    );
+                    headers
+                        .push((name.to_owned(), SecretRef::parse(&render_identity(r, identity)?)?));
                 }
-                other => anyhow::bail!("inject entry for {host}: unknown shape {other:?}"),
-            };
-        let secret = SecretRef::parse(&render_identity(&self.secret, identity)?)?;
+                anyhow::ensure!(
+                    !headers.is_empty(),
+                    "inject entry for {host}: headers shape needs a non-empty headers map"
+                );
+                AuthShape::Headers { headers }
+            }
+            other => anyhow::bail!("inject entry for {host}: unknown shape {other:?}"),
+        };
+        let secret = match (&shape, self.secret) {
+            (AuthShape::Headers { headers }, None) => headers[0].1.clone(),
+            (AuthShape::Headers { .. }, Some(_)) => {
+                anyhow::bail!(
+                    "inject entry for {host}: headers shape takes `headers`, not `secret`"
+                )
+            }
+            (_, Some(s)) => SecretRef::parse(&render_identity(&s, identity)?)?,
+            (_, None) => anyhow::bail!("inject entry for {host}: missing `secret`"),
+        };
         let cookie_secret = self
             .cookie_secret
             .map(|s| SecretRef::parse(&render_identity(&s, identity)?))
@@ -470,6 +509,24 @@ impl Injector {
     /// forward the ORIGINAL head unchanged (fail-closed — never a blank secret).
     #[allow(clippy::cognitive_complexity)]
     async fn inject_head(&self, host: &str, rule: &InjectionRule, head: &[u8]) -> Vec<u8> {
+        if let AuthShape::Headers { headers } = &rule.shape {
+            let mut pairs: Vec<(&str, Credential)> = Vec::with_capacity(headers.len());
+            for (name, r) in headers {
+                match self.secrets.fetch(r).await {
+                    Ok(c) => pairs.push((name, c)),
+                    Err(e) => {
+                        tracing::warn!(
+                            "header {name} fetch for {}/{host} failed; forwarding agent headers \
+                             unchanged (fail closed): {e}",
+                            rule.service
+                        );
+                        return head.to_vec();
+                    }
+                }
+            }
+            let pairs: Vec<(&str, &str)> = pairs.iter().map(|(n, c)| (*n, c.expose())).collect();
+            return rewrite_head_named(head, &pairs);
+        }
         match self.resolve_credential(rule).await {
             Ok(cred) => {
                 let cookie = match (&rule.shape, &rule.cookie_secret) {
@@ -726,6 +783,7 @@ fn rewrite_head(head: &[u8], shape: &AuthShape, credential: &str, cookie: Option
             kept.push(format!("Authorization: Basic {encoded}"));
         }
         AuthShape::SigV4 { .. } => unreachable!("sigv4 is routed through forward_sigv4"),
+        AuthShape::Headers { .. } => unreachable!("headers is routed through rewrite_head_named"),
     }
     if let AuthShape::BearerCookie { cookie_name } = shape
         && let Some(c) = cookie
@@ -733,11 +791,39 @@ fn rewrite_head(head: &[u8], shape: &AuthShape, credential: &str, cookie: Option
         kept.push(format!("Cookie: {cookie_name}={c}"));
     }
 
-    let mut out = String::with_capacity(head.len() + 128);
+    assemble_head(head.len(), request_line, &kept)
+}
+
+fn rewrite_head_named(head: &[u8], pairs: &[(&str, &str)]) -> Vec<u8> {
+    let text = String::from_utf8_lossy(head);
+    let mut lines = text.split("\r\n");
+    let request_line = lines.next().unwrap_or_default();
+
+    let mut kept: Vec<String> = Vec::new();
+    for line in lines {
+        if line.is_empty() {
+            break;
+        }
+        let name = line.split(':').next().unwrap_or_default().trim();
+        if name.eq_ignore_ascii_case("authorization")
+            || pairs.iter().any(|(n, _)| name.eq_ignore_ascii_case(n))
+        {
+            continue;
+        }
+        kept.push(line.to_owned());
+    }
+    for (name, value) in pairs {
+        kept.push(format!("{name}: {value}"));
+    }
+    assemble_head(head.len(), request_line, &kept)
+}
+
+fn assemble_head(capacity_hint: usize, request_line: &str, kept: &[String]) -> Vec<u8> {
+    let mut out = String::with_capacity(capacity_hint + 128);
     out.push_str(request_line);
     out.push_str("\r\n");
     for line in kept {
-        out.push_str(&line);
+        out.push_str(line);
         out.push_str("\r\n");
     }
     out.push_str("\r\n");
@@ -1134,6 +1220,42 @@ mod tests {
     }
 
     #[test]
+    fn inject_config_parses_headers_shape() {
+        let json = r#"[
+            {"host": "api.datadoghq.com", "service": "datadog", "shape": "headers",
+             "headers": {"DD-API-KEY": "env:DD_API_KEY_${IDENTITY}",
+                         "DD-APPLICATION-KEY": "env:DD_APP_KEY"}}
+        ]"#;
+        let rules = load_inject_config(json, "acme").unwrap();
+        assert_eq!(rules.len(), 1);
+        let AuthShape::Headers { headers } = &rules[0].shape else {
+            panic!("expected headers shape, got {:?}", rules[0].shape)
+        };
+        assert_eq!(
+            headers,
+            &vec![
+                ("DD-API-KEY".to_owned(), SecretRef::parse("env:DD_API_KEY_ACME").unwrap()),
+                ("DD-APPLICATION-KEY".to_owned(), SecretRef::parse("env:DD_APP_KEY").unwrap()),
+            ]
+        );
+        assert_eq!(rules[0].secret, headers[0].1);
+    }
+
+    #[test]
+    fn inject_config_rejects_malformed_headers_shape() {
+        for json in [
+            r#"[{"host": "h", "shape": "headers", "headers": {}}]"#,
+            r#"[{"host": "h", "shape": "headers"}]"#,
+            r#"[{"host": "h", "shape": "headers", "headers": {"Authorization": "env:X"}}]"#,
+            r#"[{"host": "h", "shape": "headers", "headers": {"Bad Name": "env:X"}}]"#,
+            r#"[{"host": "h", "shape": "headers", "secret": "env:Y", "headers": {"X-K": "env:X"}}]"#,
+            r#"[{"host": "h", "shape": "bearer"}]"#,
+        ] {
+            assert!(load_inject_config(json, "acme").is_err(), "should reject: {json}");
+        }
+    }
+
+    #[test]
     fn inject_config_parses_path_prefix_and_selects_by_longest_match() {
         let json = r#"[
             {"host": "github.com", "shape": "git", "path_prefix": "/Acme/context-packs",
@@ -1317,6 +1439,26 @@ mod tests {
         let expected = base64::engine::general_purpose::STANDARD.encode("x-access-token:ghp_real");
         assert!(out.contains(&format!("Authorization: Basic {expected}\r\n")), "{out}");
         assert!(!out.contains(&agent), "agent basic creds must be gone");
+    }
+
+    #[test]
+    fn named_headers_strip_agent_copies_and_authorization_then_inject() {
+        let h = head(
+            "POST /api/v2/logs/events/search HTTP/1.1\nHost: api.datadoghq.com\ndd-api-key: cctui-placeholder\nDD-APPLICATION-KEY: cctui-placeholder\nAuthorization: Bearer junk\nContent-Type: application/json\nContent-Length: 2\n\n",
+        );
+        let out = as_text(&rewrite_head_named(
+            &h,
+            &[("DD-API-KEY", "real-api"), ("DD-APPLICATION-KEY", "real-app")],
+        ));
+        assert!(out.starts_with("POST /api/v2/logs/events/search HTTP/1.1\r\n"));
+        assert!(out.contains("Content-Type: application/json\r\n"));
+        assert!(out.contains("Content-Length: 2\r\n"));
+        assert!(out.contains("DD-API-KEY: real-api\r\n"), "{out}");
+        assert!(out.contains("DD-APPLICATION-KEY: real-app\r\n"), "{out}");
+        assert!(!out.contains("cctui-placeholder"), "agent placeholders must be gone: {out}");
+        assert!(!out.to_ascii_lowercase().contains("authorization"), "{out}");
+        assert_eq!(out.matches("DD-API-KEY").count(), 1);
+        assert!(out.ends_with("\r\n\r\n"));
     }
 
     #[test]
