@@ -52,3 +52,7 @@ export interface Form {
 	// last-used set. Resolved against the live label list for display.
 	labels: string[];
 }
+
+/** What opens the form pre-seeded: a session's config, or a draft to edit
+ * (`draft_id` names its row, `env_keys` the comma-joined env var names). */
+export type SpawnPrefill = Partial<Form> & { draft_id?: string; env_keys?: string };

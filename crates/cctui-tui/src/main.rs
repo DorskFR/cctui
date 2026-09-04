@@ -716,6 +716,9 @@ fn register_session(app: &mut App, session: cctui_proto::models::Session) {
         labels: Vec::new(),
         last_heartbeat: None,
         pr_links: Vec::new(),
+        end_reason: None,
+        end_detail: None,
+        ended_at: None,
     });
     app.update_aggregates();
 }

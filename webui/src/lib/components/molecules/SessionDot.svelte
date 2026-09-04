@@ -3,6 +3,7 @@
 	import { Tooltip, copyToClipboard } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 	import { sessionDebugRows } from '../../../routes/sessions/sessions.logic';
+	import { sessionEnd } from '$lib/sessionEnd';
 
 	// Activity dot: the liveness dot carries a rich debug tooltip —
 	// session id (surfaced nowhere else, click-to-copy) plus account, created,
@@ -15,7 +16,17 @@
 		now = Date.now()
 	}: { session: SessionListItem; livenessClass: string; now?: number } = $props();
 
-	const rows = $derived(sessionDebugRows(session, now));
+	const rows = $derived.by(() => {
+		const base = sessionDebugRows(session, now);
+		const end = sessionEnd(session);
+		if (!end) return base;
+		const extra = [
+			{ label: m.sessions_dot_ended(), value: end.endedAt ? new Date(end.endedAt).toLocaleString() : '—' },
+			{ label: m.sessions_dot_end_reason(), value: end.label }
+		];
+		if (end.detail) extra.push({ label: m.sessions_dot_end_detail(), value: end.detail });
+		return [...base, ...extra];
+	});
 
 	let copied = $state(false);
 	let timer: ReturnType<typeof setTimeout> | undefined;

@@ -187,6 +187,11 @@ export function useSessionActions() {
       await endpoints.discardDraft(id);
       inval();
     },
+    updateDraft: async (id: string, body: SpawnRequest) => {
+      const res = await endpoints.updateDraft(id, body);
+      inval();
+      return res;
+    },
     // Fork a conversation into a new session. Optionally overrides
     // model/effort (the "fork to change model" path for claude). The new
     // session links back to the parent and registers shortly after; refetch.

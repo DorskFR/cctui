@@ -94,7 +94,7 @@ describe('SpawnModal cwd prefill', () => {
 });
 
 function draftDir(): string {
-	const raw = localStorage.getItem('cctui_spawn_draft');
+	const raw = localStorage.getItem(localStorage.getItem('cctui_spawn_slot') ?? 'cctui_spawn_draft');
 	return raw ? JSON.parse(raw).working_dir : '<no draft>';
 }
 

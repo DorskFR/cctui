@@ -4,6 +4,7 @@ import type { Attention } from "./Attention";
 import type { Bucket } from "./Bucket";
 import type { Label } from "./Label";
 import type { Liveness } from "./Liveness";
+import type { SessionEndReason } from "./SessionEndReason";
 import type { SessionStatus } from "./SessionStatus";
 import type { TokenUsage } from "./TokenUsage";
 import type { JsonValue } from "./serde_json/JsonValue";
@@ -196,4 +197,12 @@ account_traffic_observed: boolean,
  * Linked-PR hrefs from `sessions.children`. Drives the PR link
  * shown on the session card / TUI line and the `Ready for review` bucket.
  */
-pr_links?: Array<string>, };
+pr_links?: Array<string>, 
+/**
+ * Why the session ended; `None` while it is alive.
+ */
+end_reason?: SessionEndReason | null, 
+/**
+ * Adapter/server diagnostic for the end (exit status, stderr tail).
+ */
+end_detail?: string | null, ended_at?: string | null, };

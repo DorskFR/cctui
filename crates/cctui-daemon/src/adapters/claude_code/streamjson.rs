@@ -37,8 +37,14 @@
 // land in follow-up tickets (ships only the shared codec + stubs).
 #![allow(dead_code)]
 
+use std::collections::VecDeque;
+use std::sync::Arc;
+
 use cctui_proto::adapter::{AdapterEvent, EndReason, SessionMeta};
 use serde_json::{Value, json};
+use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::process::ChildStderr;
+use tokio::sync::Mutex;
 
 use super::transcript;
 
@@ -122,6 +128,46 @@ fn parse_system(local_id: &str, v: &Value, out: &mut Vec<AdapterEvent>) -> Strea
     }
 }
 
+/// How many trailing child stderr lines to retain for crash diagnostics.
+/// When `claude` dies unexpectedly these lines are the only clue why, so they
+/// ride along in the [`EndReason::Crashed`] detail.
+pub const STDERR_RING: usize = 40;
+
+pub type StderrRing = Arc<Mutex<VecDeque<String>>>;
+
+/// Drain a child's stderr into a bounded ring (and the log at debug level).
+pub fn spawn_stderr_ring(stderr: ChildStderr, driver: &'static str) -> StderrRing {
+    let ring: StderrRing = Arc::new(Mutex::new(VecDeque::with_capacity(STDERR_RING)));
+    let writer = ring.clone();
+    tokio::spawn(async move {
+        let mut lines = BufReader::new(stderr).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            if line.trim().is_empty() {
+                continue;
+            }
+            tracing::debug!(target: "claude_stderr", driver, "{line}");
+            let mut guard = writer.lock().await;
+            if guard.len() == STDERR_RING {
+                guard.pop_front();
+            }
+            guard.push_back(line);
+        }
+    });
+    ring
+}
+
+/// `"; last stderr:\n…"` suffix from the ring, or empty when nothing was logged.
+pub async fn stderr_tail(ring: &StderrRing) -> String {
+    let lines: Vec<String> = { ring.lock().await.iter().cloned().collect() };
+    if lines.is_empty() { String::new() } else { format!("; last stderr:\n{}", lines.join("\n")) }
+}
+
+/// Crash detail for an abnormal child exit: `<what> exited (<status>)` — the
+/// status carries the exit code or the terminating signal — plus the stderr tail.
+pub fn exit_detail(what: &str, status: std::process::ExitStatus, tail: &str) -> String {
+    format!("{what} exited ({status}){tail}")
+}
+
 /// [`EndReason::Crashed`] carrying an error frame's `message`/`error` text
 /// (best-effort) so the failure isn't anonymous.
 fn error_end(v: &Value) -> EndReason {
@@ -143,11 +189,12 @@ fn result_end_reason(v: &Value) -> EndReason {
     if ok {
         EndReason::Completed
     } else {
-        let detail = v
-            .get("subtype")
-            .and_then(Value::as_str)
-            .unwrap_or("stream-json result error")
-            .to_owned();
+        let subtype =
+            v.get("subtype").and_then(Value::as_str).unwrap_or("stream-json result error");
+        let detail = match v.get("result").and_then(Value::as_str).map(str::trim) {
+            Some(result) if !result.is_empty() => format!("{subtype}: {result}"),
+            _ => subtype.to_owned(),
+        };
         EndReason::Crashed { detail }
     }
 }
@@ -271,6 +318,39 @@ impl LaunchArgs {
 mod tests {
     use super::*;
     use cctui_proto::adapter::{AdapterId, PermissionMode, SessionSpec};
+
+    #[tokio::test]
+    async fn exit_detail_carries_status_and_stderr_tail() {
+        let mut child = tokio::process::Command::new("sh")
+            .arg("-c")
+            .arg("for i in $(seq 1 45); do echo \"line $i\" >&2; done; exit 3")
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let ring = spawn_stderr_ring(child.stderr.take().unwrap(), "test_stderr");
+        let status = child.wait().await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let detail = exit_detail("claude -p", status, &stderr_tail(&ring).await);
+        assert!(
+            detail.starts_with("claude -p exited (exit status: 3); last stderr:\n"),
+            "{detail}"
+        );
+        assert!(!detail.contains("line 5\n"), "ring must drop lines beyond the last 40: {detail}");
+        assert!(detail.contains("line 6\n"), "{detail}");
+        assert!(detail.ends_with("line 45"), "{detail}");
+        assert_eq!(exit_detail("claude -p", status, ""), "claude -p exited (exit status: 3)");
+    }
+
+    #[test]
+    fn result_error_includes_result_text() {
+        let v = json!({ "type": "result", "subtype": "error_during_execution", "is_error": true, "result": "Invalid model" });
+        match result_end_reason(&v) {
+            EndReason::Crashed { detail } => {
+                assert_eq!(detail, "error_during_execution: Invalid model");
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
 
     fn base_spec() -> SessionSpec {
         SessionSpec {

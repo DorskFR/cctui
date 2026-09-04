@@ -70,8 +70,9 @@ async function typeInto(input: HTMLInputElement, value: string) {
 	await tick();
 }
 
+const slot = () => localStorage.getItem(localStorage.getItem('cctui_spawn_slot') ?? DRAFT);
 function draftEnvRows(): { key: string; value: string }[] {
-	const raw = localStorage.getItem(DRAFT);
+	const raw = slot();
 	return raw ? (JSON.parse(raw).envRows ?? []) : [];
 }
 
@@ -89,7 +90,7 @@ describe('SpawnModal env draft persistence', () => {
 		await typeInto(inputByLabel('Secret value'), SECRET);
 
 		expect(inputByLabel('Secret value').value).toBe(SECRET);
-		expect(localStorage.getItem(DRAFT)).not.toContain(SECRET);
+		expect(slot()).not.toContain(SECRET);
 		expect(draftEnvRows()).toEqual([{ key: 'API_KEY', value: '' }]);
 	});
 
@@ -100,7 +101,7 @@ describe('SpawnModal env draft persistence', () => {
 		);
 		await open();
 
-		expect(localStorage.getItem(DRAFT)).not.toContain(SECRET);
+		expect(slot()).not.toContain(SECRET);
 		expect(draftEnvRows()).toEqual([{ key: 'TOKEN', value: '' }]);
 		expect(inputByLabel('Secret name').value).toBe('TOKEN');
 		expect(inputByLabel('Secret value').value).toBe('');

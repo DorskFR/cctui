@@ -477,7 +477,7 @@
 	/>
 
 	{#if diagnoseOpen}
-		<DiagnosePanel sessionId={id} onclose={() => (diagnoseOpen = false)} />
+		<DiagnosePanel sessionId={id} {session} onclose={() => (diagnoseOpen = false)} />
 	{/if}
 
 	{#if terminalOpen && !isCodexSession}

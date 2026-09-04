@@ -510,13 +510,13 @@ impl SdkDriver {
         })?;
         let stdin = child.stdin.take().expect("piped stdin");
         let stdout = child.stdout.take().expect("piped stdout");
-        if let Some(stderr) = child.stderr.take() {
-            tokio::spawn(drain_stderr(stderr));
-        }
+        let stderr_ring =
+            child.stderr.take().map(|stderr| streamjson::spawn_stderr_ring(stderr, "sdk"));
 
         let pump = tokio::spawn(pump_stdout(
             local_id.to_owned(),
             stdout,
+            stderr_ring,
             self.events.clone(),
             self.shutdown.clone(),
         ));
@@ -629,6 +629,7 @@ impl SdkDriver {
 async fn pump_stdout(
     local_id: String,
     stdout: ChildStdout,
+    stderr_ring: Option<streamjson::StderrRing>,
     events: mpsc::Sender<AdapterEvent>,
     shutdown: CancellationToken,
 ) {
@@ -664,7 +665,15 @@ async fn pump_stdout(
     }
     // Child stdout closed: the process is gone but the conversation stays
     // resumable (relaunch on the next command). Idle rather than SessionEnded.
-    tracing::info!(%local_id, "sdk persistent child stdout closed; session idle+resumable");
+    let tail = match &stderr_ring {
+        Some(ring) => streamjson::stderr_tail(ring).await,
+        None => String::new(),
+    };
+    if tail.is_empty() {
+        tracing::info!(%local_id, "sdk persistent child stdout closed; session idle+resumable");
+    } else {
+        tracing::warn!(%local_id, %tail, "sdk persistent child stdout closed; session idle+resumable");
+    }
     let _ = events.send(idle_status(&local_id)).await;
 }
 
@@ -682,16 +691,6 @@ fn idle_status(local_id: &str) -> AdapterEvent {
         model: None,
         effort: None,
         children: Vec::new(),
-    }
-}
-
-/// Drain a child's stderr to the log so a failure isn't anonymous.
-async fn drain_stderr(stderr: tokio::process::ChildStderr) {
-    let mut lines = BufReader::new(stderr).lines();
-    while let Ok(Some(line)) = lines.next_line().await {
-        if !line.trim().is_empty() {
-            tracing::debug!(target: "claude_sdk_stderr", "{line}");
-        }
     }
 }
 

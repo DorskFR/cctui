@@ -174,10 +174,13 @@ pub async fn session_gateway_env(
     // worker — a session marked `ended` (possibly by a spurious end)
     // is provably coming back to life, so un-stick the terminal status here.
     // `archived` stays parked: un-archiving is an explicit user action.
-    let _ = sqlx::query("UPDATE sessions SET status = 'active' WHERE id = $1 AND status = 'ended'")
-        .bind(&session_id)
-        .execute(&state.pool)
-        .await;
+    let _ = sqlx::query(
+        "UPDATE sessions SET status = 'active', ended_at = NULL, end_reason = NULL, end_detail = NULL \
+         WHERE id = $1 AND status = 'ended'",
+    )
+    .bind(&session_id)
+    .execute(&state.pool)
+    .await;
     Ok(Json(cctui_proto::api::GatewayEnvResponse {
         account_bound: true,
         env,
@@ -627,8 +630,31 @@ async fn handle(socket: WebSocket, state: AppState, machine_id: Uuid, user_id: U
     // of the same race.
     if state.bus.unregister_daemon(machine_id, &tx) {
         crate::presence::unregister(&state, crate::presence::Kind::Daemon, machine_id).await;
+        mark_daemon_lost(&state, machine_id).await;
     }
     outbound.abort();
+}
+
+/// The daemon's WS is gone: every session it was running is now unreachable,
+/// so end them as `daemon_lost`. Soft — [`upsert_session`] reverts it when the
+/// daemon reconnects and re-registers the session as alive.
+async fn mark_daemon_lost(state: &AppState, machine_id: Uuid) {
+    match sqlx::query(
+        "UPDATE sessions SET status = 'ended', ended_at = now(), end_reason = 'daemon_lost', \
+             end_detail = 'daemon connection closed' \
+         WHERE machine_uuid = $1 AND status IN ('new', 'active', 'inactive') \
+           AND end_reason IS NULL AND last_heartbeat > now() - interval '1 hour'",
+    )
+    .bind(machine_id)
+    .execute(&state.pool)
+    .await
+    {
+        Ok(res) if res.rows_affected() > 0 => {
+            tracing::info!(%machine_id, count = res.rows_affected(), "sessions marked daemon_lost");
+        }
+        Ok(_) => {}
+        Err(err) => tracing::warn!(%err, %machine_id, "daemon_lost mark failed"),
+    }
 }
 
 fn frame_trace(frame: &DaemonFrameUp) -> String {
@@ -877,6 +903,12 @@ async fn handle_event(
             crate::normalize::to_agent_event(adapter_id, "tool_use", payload)
                 .map(|ae| (local_id.clone(), ae))
         }
+        AdapterEvent::SessionEnded { local_id, reason } => crate::normalize::to_agent_event(
+            adapter_id,
+            "session_ended",
+            &json!({ "reason": reason }),
+        )
+        .map(|ae| (local_id.clone(), ae)),
         _ => None,
     };
     // Whether the broadcast below should actually fire. For Message/ToolUse we
@@ -1499,6 +1531,15 @@ async fn upsert_session(
     .bind(extra)
     .execute(&state.pool)
     .await?;
+    // A daemon that re-registers the session after a reconnect proves the
+    // `daemon_lost` / `machine_offline` end was spurious.
+    sqlx::query(
+        "UPDATE sessions SET status = 'active', ended_at = NULL, end_reason = NULL, end_detail = NULL \
+         WHERE id = $1 AND status = 'ended' AND end_reason IN ('daemon_lost', 'machine_offline')",
+    )
+    .bind(local_id)
+    .execute(&state.pool)
+    .await?;
     // Repair the durable account binding: the dispatch path mints the
     // gateway token BEFORE the daemon registers the session, so mint-time's
     // best-effort `UPDATE sessions SET account_id` hit no row and the binding
@@ -1611,8 +1652,40 @@ async fn insert_token_usage(
     Ok(())
 }
 
+/// `end_detail` cap: enough for an exit status plus a 40-line stderr tail
+/// without letting a runaway log balloon the sessions row.
+const END_DETAIL_MAX_BYTES: usize = 2048;
+
+/// Trim `detail` to [`END_DETAIL_MAX_BYTES`] on a char boundary.
+pub fn truncate_end_detail(detail: &str) -> &str {
+    if detail.len() <= END_DETAIL_MAX_BYTES {
+        return detail;
+    }
+    let mut end = END_DETAIL_MAX_BYTES;
+    while !detail.is_char_boundary(end) {
+        end -= 1;
+    }
+    &detail[..end]
+}
+
 async fn mark_session_ended(
     state: &AppState,
+    local_id: &str,
+    reason: &EndReason,
+) -> anyhow::Result<()> {
+    persist_session_end(&state.pool, local_id, reason).await?;
+    // Revoke any per-session gateway tokens: the session-scoped
+    // cctui tokens minted at spawn map to `(session_id, account_id)` and must
+    // die with the session so the gateway can no longer be driven under them.
+    crate::routes::gateway::revoke_session_tokens(state, local_id).await;
+    Ok(())
+}
+
+/// Record the end: a `session_ended` stream event (the conversation's final
+/// line) plus the row's sticky `ended` status, `ended_at`, `end_reason` and
+/// `end_detail`.
+async fn persist_session_end(
+    pool: &sqlx::PgPool,
     local_id: &str,
     reason: &EndReason,
 ) -> anyhow::Result<()> {
@@ -1628,7 +1701,7 @@ async fn mark_session_ended(
     )
     .bind(local_id)
     .bind(&payload)
-    .execute(&state.pool)
+    .execute(pool)
     .await?;
     // Flip to the sticky terminal status `ended` so clients render the
     // terminal state IMMEDIATELY. Plain `inactive` was re-derived back to
@@ -1637,14 +1710,15 @@ async fn mark_session_ended(
     // is honoured as terminal by the list/search read paths regardless of
     // heartbeat age. We do not delete the row — archival remains the
     // persistence story; un-archive/resume can revive it.
-    sqlx::query("UPDATE sessions SET status = 'ended' WHERE id = $1 AND status <> 'archived'")
-        .bind(local_id)
-        .execute(&state.pool)
-        .await?;
-    // Revoke any per-session gateway tokens: the session-scoped
-    // cctui tokens minted at spawn map to `(session_id, account_id)` and must
-    // die with the session so the gateway can no longer be driven under them.
-    crate::routes::gateway::revoke_session_tokens(state, local_id).await;
+    sqlx::query(
+        "UPDATE sessions SET status = 'ended', ended_at = now(), end_reason = $2, end_detail = $3 \
+         WHERE id = $1 AND status <> 'archived'",
+    )
+    .bind(local_id)
+    .bind(reason.kind().as_str())
+    .bind(reason.detail().map(truncate_end_detail))
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
@@ -1861,8 +1935,8 @@ mod tests {
     use cctui_proto::ws::{DaemonFrameDown, DaemonFrameUp};
 
     use super::{
-        Inbound, MAX_TRANSFER_BYTES, bearer_token, decode_compressed_frame, event_kind,
-        event_local_id, expand_batch, handle_chunk, merge_known_adapters, next_inbound,
+        EndReason, Inbound, MAX_TRANSFER_BYTES, Utc, bearer_token, decode_compressed_frame,
+        event_kind, event_local_id, expand_batch, handle_chunk, merge_known_adapters, next_inbound,
         should_auto_approve, strip_nul,
     };
 
@@ -2331,5 +2405,88 @@ mod tests {
         assert_eq!(rows, 1, "a non-opencode session keeps its single daemon-metered row");
 
         sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
+    }
+
+    #[test]
+    fn end_detail_truncates_on_char_boundary() {
+        let short = "exit status: 1";
+        assert_eq!(super::truncate_end_detail(short), short);
+        let long = "é".repeat(2000);
+        let cut = super::truncate_end_detail(&long);
+        assert!(cut.len() <= 2048);
+        assert!(cut.chars().all(|c| c == 'é'));
+    }
+
+    #[tokio::test]
+    async fn persist_session_end_fills_reason_columns() {
+        let Some(url) = crate::routes::gateway::test_db_url("persist_session_end") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let uid = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+            .bind(uid)
+            .bind(format!("end-{uid}"))
+            .bind(format!("kh-{uid}"))
+            .execute(&pool)
+            .await
+            .expect("seed user");
+        let sid = format!("end-{}", uuid::Uuid::new_v4().simple());
+        sqlx::query(
+            "INSERT INTO sessions (id, machine_id, working_dir, user_id, adapter_id) \
+             VALUES ($1, 'm1', '/w', $2, 'claude-code')",
+        )
+        .bind(&sid)
+        .bind(uid)
+        .execute(&pool)
+        .await
+        .expect("seed session");
+
+        let detail =
+            format!("claude -p exited (exit status: 1); last stderr:\n{}", "x".repeat(3000));
+        let reason = EndReason::Crashed { detail: detail.clone() };
+        super::persist_session_end(&pool, &sid, &reason).await.expect("persist");
+
+        let (status, end_reason, end_detail, ended_at): (
+            String,
+            Option<String>,
+            Option<String>,
+            Option<chrono::DateTime<Utc>>,
+        ) = sqlx::query_as(
+            "SELECT status, end_reason, end_detail, ended_at FROM sessions WHERE id = $1",
+        )
+        .bind(&sid)
+        .fetch_one(&pool)
+        .await
+        .expect("read back");
+        assert_eq!(status, "ended");
+        assert_eq!(end_reason.as_deref(), Some("crashed"));
+        let end_detail = end_detail.expect("detail persisted");
+        assert!(detail.starts_with(&end_detail));
+        assert_eq!(end_detail.len(), 2048);
+        assert!(ended_at.is_some());
+
+        let events: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM stream_events WHERE session_id = $1 AND event_type = 'session_ended'",
+        )
+        .bind(&sid)
+        .fetch_one(&pool)
+        .await
+        .expect("count events");
+        assert_eq!(events, 1);
+
+        super::persist_session_end(&pool, &sid, &EndReason::Killed).await.expect("persist");
+        let (end_reason, end_detail): (Option<String>, Option<String>) =
+            sqlx::query_as("SELECT end_reason, end_detail FROM sessions WHERE id = $1")
+                .bind(&sid)
+                .fetch_one(&pool)
+                .await
+                .expect("read back");
+        assert_eq!(end_reason.as_deref(), Some("killed"));
+        assert_eq!(end_detail, None);
     }
 }

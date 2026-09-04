@@ -9,12 +9,13 @@ use serde::Deserialize;
 use cctui_proto::adapter::SessionChild;
 use cctui_proto::api::{
     ApiError, Label, MessageRequest, RegisterRequest, RegisterResponse, RenameRequest,
-    SessionListItem, SessionListResponse,
+    SessionListItem, SessionListResponse, SpawnRequest, SpawnResponse,
 };
 use cctui_proto::classifier::{Bucket, ClassifyInput, PrStatus, PrStatusCache, classify};
-use cctui_proto::models::{Attention, Liveness, Session, SessionStatus};
+use cctui_proto::models::{Attention, Liveness, Session, SessionEndReason, SessionStatus};
 
 use crate::auth::AuthContext;
+use crate::routes::spawn::{bad_request, resolve_owned_machine};
 use crate::state::AppState;
 
 pub async fn register(
@@ -364,6 +365,9 @@ pub async fn list_sessions(
                         has_token_credentials: false,
                         account_traffic_observed: false,
                         pr_links: Vec::new(),
+                        end_reason: None,
+                        end_detail: None,
+                        ended_at: None,
                     },
                 )
             })
@@ -461,6 +465,9 @@ pub async fn list_sessions(
                 has_token_credentials: false,
                 account_traffic_observed: false,
                 pr_links: Vec::new(),
+                end_reason: None,
+                end_detail: None,
+                ended_at: None,
             },
         ));
     }
@@ -682,11 +689,14 @@ async fn enrich_and_sort(
             Option<String>,
             i32,
             serde_json::Value,
+            Option<String>,
+            Option<String>,
+            Option<DateTime<Utc>>,
         );
         let rows: Vec<SignalRow> = sqlx::query_as(
             "SELECT id, tempo, agent_state, activity, session_name, model, effort, pinned, \
                     soft_limit_reason, last_tool_at, last_tool_name, tool_use_count, \
-                    children \
+                    children, end_reason, end_detail, ended_at \
              FROM sessions WHERE id = ANY($1)",
         )
         .bind(&session_ids)
@@ -718,8 +728,14 @@ async fn enrich_and_sort(
                 last_tool_name,
                 tool_use_count,
                 children,
+                end_reason,
+                end_detail,
+                ended_at,
             )) = by_session.remove(&s.id)
             {
+                s.end_reason = end_reason.as_deref().map(SessionEndReason::parse);
+                s.end_detail = end_detail;
+                s.ended_at = ended_at;
                 let children: Vec<SessionChild> =
                     serde_json::from_value(children).unwrap_or_default();
                 let bucket = bucket_from_signals(
@@ -1243,6 +1259,9 @@ pub async fn search_sessions(
                     has_token_credentials: false,
                     account_traffic_observed: false,
                     pr_links: Vec::new(),
+                    end_reason: None,
+                    end_detail: None,
+                    ended_at: None,
                 },
             )
         })
@@ -1396,6 +1415,8 @@ pub async fn search_field_values(
     Ok(Json(rows.into_iter().map(|(v,)| v).collect()))
 }
 
+type EndRow = (Option<String>, Option<String>, Option<DateTime<Utc>>);
+
 #[allow(clippy::too_many_lines)]
 pub async fn get_session(
     State(state): State<AppState>,
@@ -1448,6 +1469,9 @@ pub async fn get_session(
                 has_token_credentials: false,
                 account_traffic_observed: false,
                 pr_links: Vec::new(),
+                end_reason: None,
+                end_detail: None,
+                ended_at: None,
             };
             return Ok(Json(item));
         }
@@ -1469,7 +1493,7 @@ pub async fn get_session(
 
     let (status, liveness) =
         resolve_status_liveness(&row.status, row.registered_at, row.last_heartbeat);
-    let item = SessionListItem {
+    let mut item = SessionListItem {
         id: row.id.clone(),
         parent_id: row.parent_id,
         machine_id: row.machine_id,
@@ -1508,7 +1532,27 @@ pub async fn get_session(
         has_token_credentials: false,
         account_traffic_observed: false,
         pr_links: Vec::new(),
+        end_reason: None,
+        end_detail: None,
+        ended_at: None,
     };
+    let end: Option<EndRow> =
+        sqlx::query_as("SELECT end_reason, end_detail, ended_at FROM sessions WHERE id = $1")
+            .bind(&item.id)
+            .fetch_optional(&state.pool)
+            .await
+            .map_err(|e| {
+                tracing::error!("db error: {e}");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ApiError { error: "database error".into() }),
+                )
+            })?;
+    if let Some((end_reason, end_detail, ended_at)) = end {
+        item.end_reason = end_reason.as_deref().map(SessionEndReason::parse);
+        item.end_detail = end_detail;
+        item.ended_at = ended_at;
+    }
     Ok(Json(item))
 }
 
@@ -2477,6 +2521,83 @@ fn normalize_last_message(s: &str) -> String {
     if iter.next().is_some() { format!("{head}…") } else { head }
 }
 
+/// `PUT /api/v1/sessions/{id}/draft`. Replace a draft's stored spawn payload
+/// in place, so an edit or autosave never has to discard and recreate the
+/// row. Only `draft` rows are touched; env values are never stored.
+pub async fn update_draft(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Path(session_id): Path<String>,
+    Json(req): Json<SpawnRequest>,
+) -> Result<Json<SpawnResponse>, (StatusCode, Json<ApiError>)> {
+    let draft_id =
+        uuid::Uuid::parse_str(&session_id).map_err(|_| bad_request("session id must be a uuid"))?;
+    let machine_uuid = resolve_owned_machine(&state, &ctx, &req.machine_id).await?;
+    let fields = DraftRowFields::from_request(&req);
+    let draft_json = serde_json::to_value(fields.payload).map_err(|e| {
+        tracing::error!("serializing draft payload: {e}");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError { error: "could not encode draft".into() }),
+        )
+    })?;
+    let metadata =
+        serde_json::json!({ "draft": draft_json, "draft_saved_at": Utc::now().to_rfc3339() });
+    let res = sqlx::query(
+        r"UPDATE sessions
+          SET machine_id = $2, machine_uuid = $3, working_dir = $4, metadata = $5,
+              adapter_id = $6, session_name = $7, model = $8, effort = $9,
+              last_heartbeat = now()
+          WHERE id = $1 AND status = 'draft'",
+    )
+    .bind(&session_id)
+    .bind(&req.machine_id)
+    .bind(machine_uuid)
+    .bind(&req.working_dir)
+    .bind(&metadata)
+    .bind(&fields.adapter_id)
+    .bind(fields.name)
+    .bind(fields.model)
+    .bind(fields.effort)
+    .execute(&state.pool)
+    .await
+    .map_err(|e| {
+        tracing::error!("db error (update draft): {e}");
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
+    })?;
+    if res.rows_affected() == 0 {
+        return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "draft not found".into() })));
+    }
+    tracing::info!(draft = %session_id, "draft updated");
+    Ok(Json(SpawnResponse { command_id: draft_id, status: "draft".into(), account: None }))
+}
+
+/// The row columns mirrored from a draft payload. Blank strings become NULL
+/// so the list renders the row exactly like a freshly saved draft.
+struct DraftRowFields<'a> {
+    payload: SpawnRequest,
+    adapter_id: String,
+    name: Option<&'a str>,
+    model: Option<&'a str>,
+    effort: Option<&'a str>,
+}
+
+impl<'a> DraftRowFields<'a> {
+    fn from_request(req: &'a SpawnRequest) -> Self {
+        let mut payload = req.clone();
+        payload.env.clear();
+        payload.save_draft = false;
+        let non_blank = |v: &'a Option<String>| v.as_deref().filter(|s| !s.trim().is_empty());
+        Self {
+            payload,
+            adapter_id: req.adapter_id.clone().unwrap_or_else(|| "claude-code".to_owned()),
+            name: non_blank(&req.name),
+            model: non_blank(&req.model),
+            effort: non_blank(&req.effort),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -2485,6 +2606,26 @@ mod tests {
     };
     use cctui_proto::models::{Attention, Liveness};
     use chrono::{Duration, Utc};
+
+    #[test]
+    fn draft_row_fields_strip_env_and_blank_columns() {
+        let req: super::SpawnRequest = serde_json::from_value(serde_json::json!({
+            "machine_id": "m", "working_dir": "/w", "prompt": "hi", "prompt_name": null,
+            "name": "  ", "model": "opus", "effort": "",
+            "env": {"TOKEN": "secret"}, "env_keys": ["TOKEN"], "save_draft": true
+        }))
+        .unwrap();
+        let f = super::DraftRowFields::from_request(&req);
+        assert_eq!(f.adapter_id, "claude-code");
+        assert_eq!(f.name, None);
+        assert_eq!(f.model, Some("opus"));
+        assert_eq!(f.effort, None);
+        assert!(f.payload.env.is_empty());
+        assert!(!f.payload.save_draft);
+        assert_eq!(f.payload.env_keys, vec!["TOKEN"]);
+        let json = serde_json::to_value(&f.payload).unwrap();
+        assert!(json.get("env").is_none(), "{json}");
+    }
 
     fn compile(q: &str) -> (String, Vec<String>) {
         let mut params = Vec::new();
