@@ -24,7 +24,7 @@
 	import { useQueryClient } from '@tanstack/svelte-query';
 	import { toasts } from '$lib/toast.svelte';
 	import { m } from '$lib/paraglide/messages';
-	import type { HarnessMode, WhipMode } from '$lib/settings.svelte';
+	import type { HarnessMode, ToastPosition, WhipMode } from '$lib/settings.svelte';
 
 	const sl = $derived(settings.state.sessionList);
 
@@ -494,6 +494,25 @@
 							label={m.settings_archive_shortcut_label()}
 							onclick={() => settings.toggleArchiveShortcut()}
 						/>
+					</dd>
+				</div>
+				<div class="prop">
+					<dt>
+						<Text weight="semibold">{m.settings_toast_position_label()}</Text>
+						<Text size="sm" tone="faint">{m.settings_toast_position_help()}</Text>
+					</dt>
+					<dd>
+						<Select
+							value={settings.toastPosition}
+							onchange={(e) =>
+								settings.setToastPosition(
+									(e.currentTarget as HTMLSelectElement).value as ToastPosition
+								)}
+						>
+							<option value="center">{m.settings_toast_position_center()}</option>
+							<option value="left">{m.settings_toast_position_left()}</option>
+							<option value="right">{m.settings_toast_position_right()}</option>
+						</Select>
 					</dd>
 				</div>
 			</dl>

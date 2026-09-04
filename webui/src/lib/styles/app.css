@@ -312,6 +312,28 @@ svg[aria-hidden="true"] {
   max-width: 30rem;
   pointer-events: none;
 }
+/* Horizontal placement, driven by the `toastPosition` user setting via the
+   `data-pos` attribute the Toaster sets. `center` restates the base rule so the
+   three values read as one set; `left`/`right` pin the stack to that edge with
+   the same gutter the centered stack keeps on a narrow viewport (half of the
+   `--sp-8` the width subtracts), never flush against it. Below ~32rem of
+   viewport the stack is already full-width-minus-gutters, so all three render
+   identically. */
+.toast-wrap[data-pos='center'] {
+  left: 50%;
+  right: auto;
+  transform: translateX(-50%);
+}
+.toast-wrap[data-pos='left'] {
+  left: var(--sp-4);
+  right: auto;
+  transform: none;
+}
+.toast-wrap[data-pos='right'] {
+  left: auto;
+  right: var(--sp-4);
+  transform: none;
+}
 /* Rendered via <Card as="button">; the `.toast-wrap` prefix lifts specificity
    above Card's base `.card` so the toast keeps its own surface (elevated-2 bg,
    r-md radius, shadow) and left-aligned full-width clickable layout. */
