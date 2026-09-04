@@ -27,6 +27,7 @@ pub mod peer;
 use std::sync::Arc;
 
 use cctui_proto::adapter::{AdapterCommand, BootstrapFile};
+use cctui_proto::git::GitInfo;
 use cctui_proto::ws::{
     AgentEvent, DaemonFrameDown, DispatcherFrameDown, DispatcherFrameUp, ServerEvent,
 };
@@ -43,6 +44,9 @@ type StageFilesOutcome = Result<Vec<String>, String>;
 /// Outcome of a working-dir autocomplete listing (spawn dialog): the
 /// directory names on success, or an error string on failure.
 type ListDirsOutcome = Result<Vec<String>, String>;
+
+/// Outcome of a git-info lookup (spawn dialog branch badge).
+type GitInfoOutcome = Result<GitInfo, String>;
 
 /// How long [`Bus::request_daemon`] waits for the daemon's `StageFilesResult`
 /// before giving up. Staging is local filesystem work after a small base64
@@ -93,6 +97,8 @@ pub enum BusError {
     Staging(String),
     #[error("daemon could not list the directory: {0}")]
     ListDirs(String),
+    #[error("daemon could not read git info: {0}")]
+    GitInfo(String),
     #[error("db error: {0}")]
     Db(#[from] sqlx::Error),
     #[error("reconcile build error: {0}")]
@@ -113,6 +119,8 @@ pub enum DaemonRequest {
     StageFiles { adapter_id: String, local_id: String, uploads: Vec<BootstrapFile> },
     /// Working-directory autocomplete listing → `ListDirsResult`.
     ListDirs { path: String },
+    /// Git facts for a directory → `GitInfoResult`.
+    GitInfo { path: String, include_dirty: bool },
     /// Session diagnose snapshot. Unlike the two above this rides
     /// the generic `Command` frame into the adapter (the facts live in the
     /// adapter's driver, not the supervisor) and the reply comes back as an
@@ -126,6 +134,7 @@ pub enum DaemonRequest {
 pub enum DaemonResponse {
     StagedFiles(Vec<String>),
     Dirs(Vec<String>),
+    GitInfo(GitInfo),
     Diagnose(Box<cctui_proto::diagnose::SessionDiagnose>),
 }
 
@@ -245,6 +254,8 @@ struct Inner {
     pending_stage: DashMap<Uuid, oneshot::Sender<StageFilesOutcome>>,
     /// In-flight autocomplete listings awaiting a daemon `ListDirsResult`.
     pending_listdirs: DashMap<Uuid, oneshot::Sender<ListDirsOutcome>>,
+    /// In-flight git-info lookups awaiting a daemon `GitInfoResult`.
+    pending_gitinfo: DashMap<Uuid, oneshot::Sender<GitInfoOutcome>>,
     /// In-flight session-diagnose round-trips awaiting the adapter's
     /// `AdapterEvent::Diagnose` reply.
     pending_diagnose: DashMap<Uuid, oneshot::Sender<Box<cctui_proto::diagnose::SessionDiagnose>>>,
@@ -280,6 +291,7 @@ impl Bus {
                 dispatchers: DashMap::new(),
                 pending_stage: DashMap::new(),
                 pending_listdirs: DashMap::new(),
+                pending_gitinfo: DashMap::new(),
                 pending_diagnose: DashMap::new(),
                 pending_dispatcher: DashMap::new(),
                 server_tx: broadcast::channel(CHANNEL_CAPACITY).0,
@@ -515,6 +527,27 @@ impl Bus {
                     }
                 }
             }
+            DaemonRequest::GitInfo { path, include_dirty } => {
+                let (reply_tx, reply_rx) = oneshot::channel();
+                self.inner.pending_gitinfo.insert(request_id, reply_tx);
+                let frame = DaemonFrameDown::GitInfo { request_id, path, include_dirty };
+                if tx.send(frame).await.is_err() {
+                    self.inner.pending_gitinfo.remove(&request_id);
+                    return Err(BusError::Closed);
+                }
+                match tokio::time::timeout(LIST_DIRS_TIMEOUT, reply_rx).await {
+                    Ok(Ok(Ok(info))) => Ok(DaemonResponse::GitInfo(info)),
+                    Ok(Ok(Err(msg))) => Err(BusError::GitInfo(msg)),
+                    Ok(Err(_)) => {
+                        self.inner.pending_gitinfo.remove(&request_id);
+                        Err(BusError::Closed)
+                    }
+                    Err(_) => {
+                        self.inner.pending_gitinfo.remove(&request_id);
+                        Err(BusError::Timeout)
+                    }
+                }
+            }
             DaemonRequest::Diagnose { adapter_id, local_id } => {
                 let (reply_tx, reply_rx) = oneshot::channel();
                 self.inner.pending_diagnose.insert(request_id, reply_tx);
@@ -621,6 +654,18 @@ impl Bus {
     pub fn resolve_list_dirs(&self, request_id: Uuid, outcome: ListDirsOutcome) -> bool {
         self.inner
             .pending_listdirs
+            .remove(&request_id)
+            .map(|(_, reply_tx)| {
+                let _ = reply_tx.send(outcome);
+            })
+            .is_some()
+    }
+
+    /// Fire the oneshot a git-info round-trip is awaiting. Returns `false`
+    /// for an unknown request id.
+    pub fn resolve_git_info(&self, request_id: Uuid, outcome: GitInfoOutcome) -> bool {
+        self.inner
+            .pending_gitinfo
             .remove(&request_id)
             .map(|(_, reply_tx)| {
                 let _ = reply_tx.send(outcome);
@@ -821,6 +866,21 @@ pub async fn list_dirs(
 ) -> Result<Vec<String>, BusError> {
     match state.bus.request_daemon(machine_uuid, DaemonRequest::ListDirs { path }).await? {
         DaemonResponse::Dirs(dirs) => Ok(dirs),
+        _ => Err(BusError::Closed), // unreachable: variant-matched
+    }
+}
+
+/// Ask the daemon on `machine_uuid` for the git facts of `path` (spawn
+/// dialog branch badge). Machine-addressed — no session involved.
+pub async fn git_info(
+    state: &AppState,
+    machine_uuid: Uuid,
+    path: String,
+    include_dirty: bool,
+) -> Result<GitInfo, BusError> {
+    let request = DaemonRequest::GitInfo { path, include_dirty };
+    match state.bus.request_daemon(machine_uuid, request).await? {
+        DaemonResponse::GitInfo(info) => Ok(info),
         _ => Err(BusError::Closed), // unreachable: variant-matched
     }
 }

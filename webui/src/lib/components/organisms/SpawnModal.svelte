@@ -36,6 +36,7 @@
 		type MemoryPatch
 	} from '$lib/spawnMemory';
 	import { appendFileTokens, mergeFiles, removeFileByName, fileCapError } from '$lib/attachments';
+	import { attachmentStore, dropMissingTokens } from '$lib/attachmentStore';
 	import {
 		AutoGrid,
 		Badge,
@@ -439,9 +440,9 @@
 
 	// --- Environment secrets & file uploads ---
 	// Deliberately kept OUT of `form` (which is persisted to localStorage drafts)
-	// so secret values and file handles are never written to disk — they live for
-	// the modal's lifetime only and are fixed for the session once spawned.
-	// Only env keys (values blanked) go into the draft.
+	// so secret values are never written to disk; only env keys (values blanked)
+	// go into the draft. Files outlive the modal in IndexedDB (attachmentStore),
+	// keyed like the draft.
 	interface EnvRow {
 		key: string;
 		value: string;
@@ -451,6 +452,32 @@
 	$effect(() => {
 		const envKeys = envRows.map((r) => ({ key: r.key, value: '' }));
 		drafts.set(SPAWN_DRAFT, JSON.stringify({ ...form, envRows: envKeys }));
+	});
+	// The persist effect only runs after the restore so the initial [] can't
+	// wipe the record; an empty list (spawn/dispatch/clear) removes it.
+	let filesRestored = $state(false);
+	$effect(() => {
+		if (!filesRestored) return;
+		void attachmentStore.set(SPAWN_DRAFT, [...files]);
+	});
+	$effect(() => {
+		let live = true;
+		(async () => {
+			if (!prefill) {
+				const restored = await attachmentStore.get(SPAWN_DRAFT);
+				if (!live) return;
+				files = restored.files;
+				const { text, dropped } = dropMissingTokens(form.prompt, restored.missing);
+				if (dropped) {
+					form.prompt = text;
+					toasts.push(m.attachments_missing_dropped({ count: dropped }), 'info');
+				}
+			}
+			if (live) filesRestored = true;
+		})();
+		return () => {
+			live = false;
+		};
 	});
 
 	const ENV_KEY_RE = /^[A-Z_][A-Z0-9_]*$/;

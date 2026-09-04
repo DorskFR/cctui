@@ -20,6 +20,7 @@ pub mod counters;
 pub mod dispatch_codex;
 pub mod enroll;
 pub mod fatal;
+pub mod git;
 pub mod imagepost;
 pub mod listdirs;
 pub mod mcp;

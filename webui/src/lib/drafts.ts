@@ -1,4 +1,5 @@
 import { browser } from '$app/environment';
+import { attachmentStore } from './attachmentStore';
 
 /** localStorage-backed draft text (composer per session, spawn form). */
 export const drafts = {
@@ -54,6 +55,7 @@ export function clearSessionStorage(sessionId: string) {
 	if (!browser) return;
 	localStorage.removeItem(composerKey(sessionId));
 	localStorage.removeItem(historyKey(sessionId));
+	void attachmentStore.clear(composerKey(sessionId));
 }
 
 /** Wipe every `cctui`-namespaced key from both web storages (drafts, sent
@@ -70,6 +72,7 @@ export function clearCctuiStorage() {
 		}
 		for (const k of doomed) store.removeItem(k);
 	}
+	void attachmentStore.clearAll();
 }
 
 /** Canonicalize a working-directory path for storage/dedup: strip

@@ -744,6 +744,19 @@ async fn process_frame(
             }
             Ok(())
         }
+        DaemonFrameUp::GitInfoResult { request_id, ok, info, error } => {
+            let outcome = match (ok, info) {
+                (true, Some(info)) => Ok(info),
+                (true, None) => Err("daemon returned no git info".to_owned()),
+                (false, _) => {
+                    Err(error.unwrap_or_else(|| "daemon reported a git info failure".to_owned()))
+                }
+            };
+            if !state.bus.resolve_git_info(request_id, outcome) {
+                tracing::debug!(%request_id, "GitInfoResult for unknown request (timed out?)");
+            }
+            Ok(())
+        }
         DaemonFrameUp::Heartbeat { bandwidth, .. } => {
             // Machine liveness: advance `last_seen_at` on EVERY
             // heartbeat (not just connect, as auth.rs does), then derive the

@@ -11,6 +11,7 @@
 		fileCapError,
 		makeClipboardFiles
 	} from '$lib/attachments';
+	import { attachmentStore, dropMissingTokens } from '$lib/attachmentStore';
 	import { compact } from '$lib/format';
 	import { toasts } from '$lib/toast.svelte';
 	import type { ScrollController } from './scroll.svelte';
@@ -53,10 +54,36 @@
 	});
 
 	// ── Mid-chat file attachments ────────────────────────────────
-	// Held client-side next to the draft (File handles can't be persisted to
-	// localStorage). On send we upload first, then append the staged paths under
-	// the message text so the agent reads them.
+	// Persisted per session in IndexedDB next to the localStorage draft. On send
+	// we upload first, then append the staged paths under the message text so
+	// the agent reads them.
 	let attachments = $state<File[]>([]);
+	// Key of the session whose attachments are loaded; null while a restore is
+	// in flight so a session switch never writes the old list under the new key.
+	let attachmentsKey = $state<string | null>(null);
+	$effect(() => {
+		if (!attachmentsKey) return;
+		void attachmentStore.set(attachmentsKey, [...attachments]);
+	});
+	$effect(() => {
+		const key = composerKey(session.id);
+		attachmentsKey = null;
+		let live = true;
+		(async () => {
+			const restored = await attachmentStore.get(key);
+			if (!live) return;
+			attachments = restored.files;
+			const { text, dropped } = dropMissingTokens(input, restored.missing);
+			if (dropped) {
+				input = text;
+				toasts.push(m.attachments_missing_dropped({ count: dropped }), 'info');
+			}
+			attachmentsKey = key;
+		})();
+		return () => {
+			live = false;
+		};
+	});
 	let uploading = $state(false);
 	let dragActive = $state(false);
 	const attachError = $derived(fileCapError(attachments));

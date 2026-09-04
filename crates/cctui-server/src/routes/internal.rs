@@ -73,6 +73,15 @@ fn authenticate(state: &AppState, headers: &HeaderMap) -> Result<(), StatusCode>
     if constant_time_eq(bearer, secret) { Ok(()) } else { Err(StatusCode::UNAUTHORIZED) }
 }
 
+fn daemon_response(response: DaemonResponse) -> RouteResponse {
+    match response {
+        DaemonResponse::StagedFiles(paths) => RouteResponse::StagedFiles { paths },
+        DaemonResponse::Dirs(dirs) => RouteResponse::Dirs { dirs },
+        DaemonResponse::GitInfo(info) => RouteResponse::GitInfo { info },
+        DaemonResponse::Diagnose(report) => RouteResponse::Diagnose { report },
+    }
+}
+
 /// `POST /internal/bus/route` — deliver one forwarded frame/round-trip to a WS
 /// terminated by THIS pod. Local delivery only (`*_local`): if the target
 /// isn't here (it moved, or the presence row was stale) the miss is reported
@@ -95,29 +104,22 @@ pub async fn bus_route(
                 DaemonRequest::StageFiles { adapter_id, local_id, uploads },
             )
             .await
-            .map(|response| match response {
-                DaemonResponse::StagedFiles(paths) => RouteResponse::StagedFiles { paths },
-                DaemonResponse::Dirs(dirs) => RouteResponse::Dirs { dirs },
-                DaemonResponse::Diagnose(report) => RouteResponse::Diagnose { report },
-            }),
-        RouteRequest::DaemonListDirs { machine, path } => {
-            state.bus.request_daemon_local(machine, DaemonRequest::ListDirs { path }).await.map(
-                |response| match response {
-                    DaemonResponse::Dirs(dirs) => RouteResponse::Dirs { dirs },
-                    DaemonResponse::StagedFiles(paths) => RouteResponse::StagedFiles { paths },
-                    DaemonResponse::Diagnose(report) => RouteResponse::Diagnose { report },
-                },
-            )
-        }
+            .map(daemon_response),
+        RouteRequest::DaemonListDirs { machine, path } => state
+            .bus
+            .request_daemon_local(machine, DaemonRequest::ListDirs { path })
+            .await
+            .map(daemon_response),
+        RouteRequest::DaemonGitInfo { machine, path, include_dirty } => state
+            .bus
+            .request_daemon_local(machine, DaemonRequest::GitInfo { path, include_dirty })
+            .await
+            .map(daemon_response),
         RouteRequest::DaemonDiagnose { machine, adapter_id, local_id } => state
             .bus
             .request_daemon_local(machine, DaemonRequest::Diagnose { adapter_id, local_id })
             .await
-            .map(|response| match response {
-                DaemonResponse::Diagnose(report) => RouteResponse::Diagnose { report },
-                DaemonResponse::StagedFiles(paths) => RouteResponse::StagedFiles { paths },
-                DaemonResponse::Dirs(dirs) => RouteResponse::Dirs { dirs },
-            }),
+            .map(daemon_response),
         RouteRequest::DispatcherCommand { dispatcher, frame } => {
             state.bus.command_dispatcher_local(dispatcher, frame).await.map(|()| RouteResponse::Ok)
         }

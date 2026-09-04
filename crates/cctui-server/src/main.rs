@@ -931,6 +931,14 @@ fn build_api_routes() -> Routes {
         )
         .add(
             &[GET],
+            "/machines/{machine_id}/fs/gitinfo",
+            "Git branch / detached HEAD of a directory on a machine (spawn dir badge).",
+            get(routes::fs::git_info),
+            Authn::Bearer,
+            Authz::Resource(ResourceKind::Machine, Action::Read, IdFrom::Path("machine_id")),
+        )
+        .add(
+            &[GET],
             "/machines/{machine_id}/codex-models",
             "Machine/account-scoped codex model catalog.",
             get(routes::codex_models::get_codex_models),

@@ -57,6 +57,16 @@ pub enum DaemonFrameUp {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
+    /// Reply to a [`DaemonFrameDown::GitInfo`] request; `request_id`
+    /// correlates with the originating `GET /api/v1/machines/{id}/fs/gitinfo`.
+    GitInfoResult {
+        request_id: uuid::Uuid,
+        ok: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        info: Option<crate::git::GitInfo>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
     /// One chunk of a serialized up-frame split by [`crate::chunk`].
     /// `transfer_id` is the content hash of the full payload (idempotent
     /// retransmission); `data` is standard-base64 of the raw chunk bytes. The
@@ -125,6 +135,16 @@ pub enum DaemonFrameDown {
     /// leading `~`, reads one directory level, and replies with a
     /// [`DaemonFrameUp::ListDirsResult`] carrying the sorted entry names.
     ListDirs { request_id: uuid::Uuid, path: String },
+    /// Git facts for `path` (spawn dialog branch badge). The daemon expands
+    /// `~`, refuses paths outside its allowed roots, and replies with a
+    /// [`DaemonFrameUp::GitInfoResult`]. `include_dirty` opts into a
+    /// `git status` subprocess.
+    GitInfo {
+        request_id: uuid::Uuid,
+        path: String,
+        #[serde(default)]
+        include_dirty: bool,
+    },
     /// Acknowledge chunked-transfer progress: the highest contiguous
     /// chunk index the server has reassembled for `transfer_id`, or `None` when
     /// it holds no usable prefix (unknown/evicted transfer) so the daemon
@@ -1062,6 +1082,37 @@ mod tests {
         let json = serde_json::to_string(&f).unwrap();
         assert!(json.contains(r#""type":"list_dirs_result""#));
         assert!(!json.contains("error"), "None error must be skipped: {json}");
+        let _back: DaemonFrameUp = serde_json::from_str(&json).unwrap();
+    }
+
+    #[test]
+    fn daemon_git_info_frames_roundtrip() {
+        let down = DaemonFrameDown::GitInfo {
+            request_id: uuid::Uuid::nil(),
+            path: "~/repo".into(),
+            include_dirty: false,
+        };
+        let json = serde_json::to_string(&down).unwrap();
+        assert!(json.contains(r#""type":"git_info""#));
+        let _back: DaemonFrameDown = serde_json::from_str(&json).unwrap();
+        // Legacy senders omit include_dirty.
+        let legacy = r#"{"type":"git_info","request_id":"00000000-0000-0000-0000-000000000000","path":"/x"}"#;
+        let back: DaemonFrameDown = serde_json::from_str(legacy).unwrap();
+        assert!(matches!(back, DaemonFrameDown::GitInfo { include_dirty: false, .. }));
+
+        let up = DaemonFrameUp::GitInfoResult {
+            request_id: uuid::Uuid::nil(),
+            ok: true,
+            info: Some(crate::git::GitInfo {
+                is_repo: true,
+                branch: Some("main".into()),
+                ..Default::default()
+            }),
+            error: None,
+        };
+        let json = serde_json::to_string(&up).unwrap();
+        assert!(json.contains(r#""type":"git_info_result""#));
+        assert!(!json.contains("detached_sha"), "None fields must be skipped: {json}");
         let _back: DaemonFrameUp = serde_json::from_str(&json).unwrap();
     }
 
