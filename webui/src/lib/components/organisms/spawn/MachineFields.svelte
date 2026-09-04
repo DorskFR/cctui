@@ -13,6 +13,7 @@
 	import type { OAuthAccount } from '$lib/queries';
 	import { useCodexModels } from '$lib/queries';
 	import BrandLogo from '$lib/components/atoms/BrandLogo.svelte';
+	import MachinePicker from '$lib/components/molecules/MachinePicker.svelte';
 	import {
 		Field,
 		FilterInput,
@@ -73,8 +74,8 @@
 		docked?: boolean;
 	} = $props();
 
-	// The machine badge + working-dir share one FilterInput: machine is
-	// picked via the inline badge; the dir is a single `cwd:` field whose async
+	// The machine picker + working-dir share one FilterInput: machine is
+	// picked via the inline badge-tinted listbox; the dir is a single `cwd:` field whose async
 	// provider serves recent dirs + live typeahead. `form.working_dir` is the
 	// source of truth — the raw query mirrors it both ways, `lastDir` tracking
 	// what the current query represents so the two syncs never loop.
@@ -232,20 +233,7 @@
 			onchange={onCwdChange}
 		>
 			{#snippet inline()}
-				<span class="machine-badge">
-					<select
-						class="machine-select"
-						aria-label={m.spawn_machine_label()}
-						bind:value={form.machine_id}
-					>
-						{#if !machines.length}
-							<option value="">{m.spawn_no_machines()}</option>
-						{/if}
-						{#each machines as mc (mc.id)}
-							<option value={mc.id}>{mc.display_name || mc.name}</option>
-						{/each}
-					</select>
-				</span>
+				<MachinePicker bind:value={form.machine_id} {machines} label={m.spawn_machine_label()} />
 			{/snippet}
 		</FilterInput>
 	</Field>
@@ -415,29 +403,6 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--sp-2);
-	}
-	.machine-badge {
-		display: inline-flex;
-		align-items: center;
-		flex: none;
-		padding: 2px var(--sp-1) 2px var(--sp-2);
-		border-radius: var(--r-sm);
-		background: color-mix(in srgb, var(--c-blue) 16%, var(--bg));
-		color: var(--c-blue);
-		font-size: var(--fs-xs);
-		font-weight: var(--fw-medium);
-	}
-	.machine-select {
-		border: 0;
-		background: transparent;
-		color: inherit;
-		font: inherit;
-		cursor: pointer;
-		outline: none;
-		max-width: 12rem;
-	}
-	.machine-select option {
-		color: var(--text);
 	}
 	.config {
 		display: flex;

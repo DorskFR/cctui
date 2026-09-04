@@ -55,6 +55,9 @@ const STDERR_RING: usize = 40;
 
 const RPC_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// `CommandResult` error for an `Interrupt` received while no turn is active.
+pub const NO_TURN_IN_FLIGHT: &str = "no turn in flight";
+
 /// `thread/resume` of a long transcript can legitimately exceed the normal
 /// RPC deadline, so handshake requests get a longer one.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_mins(2);
@@ -721,8 +724,15 @@ fn turn_steer_req(
     })
 }
 
-fn turn_interrupt_req(id: i64, thread_id: &str) -> Value {
-    json!({"jsonrpc": "2.0", "id": id, "method": "turn/interrupt", "params": {"threadId": thread_id}})
+/// Interrupt the active turn. `TurnInterruptParams` requires both
+/// `threadId` and `turnId`; codex rejects the request with `-32602` otherwise.
+fn turn_interrupt_req(id: i64, thread_id: &str, turn_id: &str) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "method": "turn/interrupt",
+        "params": {"threadId": thread_id, "turnId": turn_id},
+    })
 }
 
 /// A turn lifecycle transition parsed from a `turn/started` or `turn/completed`
@@ -1706,8 +1716,10 @@ impl CodexSession {
                             }
                         }
                         Some(SessionCommand::Kill { signal }) => {
-                            let req = turn_interrupt_req(next_id, &local_id);
-                            let _ = write_json(&mut stdin, &req).await;
+                            if let Some(turn_id) = active_turn.id() {
+                                let req = turn_interrupt_req(next_id, &local_id, turn_id);
+                                let _ = write_json(&mut stdin, &req).await;
+                            }
                             terminate_child(&mut child, signal);
                             killed = true;
                             break;
@@ -1716,7 +1728,19 @@ impl CodexSession {
                             // Keep-alive interrupt: abort the turn but
                             // leave the app-server running so the session keeps
                             // going — unlike Kill, we do NOT terminate the child.
-                            let req = turn_interrupt_req(next_id, &local_id);
+                            let Some(turn_id) = active_turn.id() else {
+                                if let Some(command_id) = command_id {
+                                    let _ = self.events
+                                        .send(AdapterEvent::CommandResult {
+                                            command_id,
+                                            ok: false,
+                                            error: Some(NO_TURN_IN_FLIGHT.to_owned()),
+                                        })
+                                        .await;
+                                }
+                                continue;
+                            };
+                            let req = turn_interrupt_req(next_id, &local_id, turn_id);
                             pending_rpcs.insert(next_id, "turn/interrupt", command_id, Instant::now() + RPC_TIMEOUT);
                             next_id += 1;
                             if let Err(e) = write_json(&mut stdin, &req).await {
@@ -3536,6 +3560,72 @@ mod tests {
         assert_eq!(req["params"]["expectedTurnId"], "turn-1");
         assert_eq!(req["params"]["input"][0]["type"], "text");
         assert_eq!(req["params"]["input"][0]["text"], "keep going");
+    }
+
+    #[test]
+    fn turn_interrupt_req_shape() {
+        let req = turn_interrupt_req(7, "tid", "turn-1");
+        assert_eq!(req["method"], "turn/interrupt");
+        assert_eq!(req["id"], 7);
+        assert_eq!(req["params"]["threadId"], "tid");
+        assert_eq!(req["params"]["turnId"], "turn-1");
+    }
+
+    // --- outbound builders vs retained schema `required` -----------
+
+    /// `required` param keys for `method` from the retained
+    /// `ClientRequest` schema, following the `params.$ref` one level.
+    fn schema_required_params(schema: &Value, method: &str) -> Vec<String> {
+        let variants = schema["definitions"]["ClientRequest"]["oneOf"]
+            .as_array()
+            .expect("ClientRequest.oneOf");
+        let variant = variants
+            .iter()
+            .find(|v| v["properties"]["method"]["enum"][0] == method)
+            .unwrap_or_else(|| panic!("schema has no ClientRequest variant for `{method}`"));
+        let params = &variant["properties"]["params"];
+        let resolved = params.get("$ref").and_then(Value::as_str).map_or(params, |r| {
+            schema
+                .pointer(r.trim_start_matches('#'))
+                .unwrap_or_else(|| panic!("unresolvable $ref {r} for `{method}`"))
+        });
+        resolved["required"]
+            .as_array()
+            .map(|a| a.iter().filter_map(Value::as_str).map(str::to_owned).collect())
+            .unwrap_or_default()
+    }
+
+    /// Every outbound request builder must carry all `required` params of
+    /// its method in the retained schema, so a protocol bump that adds a
+    /// required field fails here instead of as `-32602` at runtime.
+    #[test]
+    fn outbound_request_builders_satisfy_schema_required_params() {
+        let schema: Value =
+            serde_json::from_str(include_str!("schema/codex_app_server_protocol.schemas.json"))
+                .expect("retained schema bundle is valid JSON");
+        let reqs = [
+            initialize_req(),
+            thread_start_req("/cwd"),
+            thread_resume_req("tid", "/cwd"),
+            thread_fork_req("tid", "/cwd"),
+            thread_name_set_req(1, "tid", "name"),
+            thread_lifecycle_req(2, LifecycleOp::Archive, "tid"),
+            thread_lifecycle_req(3, LifecycleOp::Unarchive, "tid"),
+            thread_lifecycle_req(4, LifecycleOp::Delete, "tid"),
+            turn_start_req(5, "tid", "hi", &[], None, None),
+            turn_steer_req(6, "tid", "turn-1", "hi", &[]),
+            turn_interrupt_req(7, "tid", "turn-1"),
+        ];
+        for req in reqs {
+            let method = req["method"].as_str().expect("method");
+            let params = req["params"].as_object().expect("params object");
+            for key in schema_required_params(&schema, method) {
+                assert!(
+                    params.contains_key(&key),
+                    "`{method}` builder is missing required param `{key}`"
+                );
+            }
+        }
     }
 
     // --- item/started + delta accumulation, new item types ---------

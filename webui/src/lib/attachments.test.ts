@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { appendFileTokens, extForType, makeClipboardFiles } from './attachments';
+import {
+	appendFileTokens,
+	attachFiles,
+	extForType,
+	makeClipboardFiles,
+	mergeFiles,
+	mergeFilesRenamed,
+	nextPasteIndex
+} from './attachments';
 
 const f = (name: string) => new File(['x'], name, { type: 'text/plain' });
 
@@ -26,6 +34,57 @@ describe('appendFileTokens', () => {
 	it('is idempotent on a re-pick of the same file', () => {
 		const once = appendFileTokens('', [f('a.png')]);
 		expect(appendFileTokens(once, [f('a.png')])).toBe(once);
+	});
+});
+
+describe('mergeFiles', () => {
+	it('keeps distinct names in order', () => {
+		expect(mergeFiles([f('a.txt')], [f('b.txt')]).map((x) => x.name)).toEqual(['a.txt', 'b.txt']);
+	});
+
+	it('renames a duplicate instead of replacing it', () => {
+		const { files, added } = mergeFilesRenamed([f('a.txt')], [f('a.txt')]);
+		expect(files.map((x) => x.name)).toEqual(['a.txt', 'a-2.txt']);
+		expect(added.map((x) => x.name)).toEqual(['a-2.txt']);
+	});
+
+	it('skips suffixes already taken, including within one batch', () => {
+		const out = mergeFiles([f('a.txt'), f('a-2.txt')], [f('a.txt'), f('a.txt'), f('noext')]);
+		expect(out.map((x) => x.name)).toEqual(['a.txt', 'a-2.txt', 'a-3.txt', 'a-4.txt', 'noext']);
+		expect(mergeFiles([f('noext')], [f('noext')]).map((x) => x.name)).toEqual(['noext', 'noext-2']);
+	});
+});
+
+describe('attachFiles', () => {
+	it('rewrites the token to the renamed file', () => {
+		const { files, text } = attachFiles([f('a.txt')], '[a.txt]', [f('a.txt')]);
+		expect(files.map((x) => x.name)).toEqual(['a.txt', 'a-2.txt']);
+		expect(text).toBe('[a.txt] [a-2.txt]');
+	});
+});
+
+describe('nextPasteIndex', () => {
+	const paste = (files: File[], text: string) => {
+		const name = `paste-${nextPasteIndex(files, text)}.txt`;
+		return attachFiles(files, text, [f(name)]);
+	};
+
+	it('numbers consecutive pastes paste-1, paste-2', () => {
+		const a = paste([], '');
+		const b = paste(a.files, a.text);
+		expect(b.files.map((x) => x.name)).toEqual(['paste-1.txt', 'paste-2.txt']);
+		expect(b.text).toBe('[paste-1.txt] [paste-2.txt]');
+	});
+
+	it('continues from tokens in the draft after a remount with no attachments', () => {
+		expect(nextPasteIndex([], 'notes [paste-1.txt] more')).toBe(2);
+		expect(paste([], '[paste-3.txt] [paste-1.txt]').text).toBe(
+			'[paste-3.txt] [paste-1.txt] [paste-4.txt]'
+		);
+	});
+
+	it('ignores non-paste names', () => {
+		expect(nextPasteIndex([f('clipboard-7.png'), f('mypaste-2.txt')], '')).toBe(1);
 	});
 });
 

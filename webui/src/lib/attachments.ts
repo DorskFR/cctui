@@ -1,5 +1,5 @@
 // Shared file-attachment helpers for the spawn modal and the mid-chat
-// composer: one source of truth for caps, dedupe-by-name merging, error
+// composer: one source of truth for caps, unique-name merging, error
 // derivation, and size formatting. Mirrors the server caps in
 // `cctui-server/src/uploads.rs` so we reject before uploading.
 
@@ -7,12 +7,65 @@ export const MAX_FILE_BYTES = 5 * 1024 * 1024;
 export const MAX_TOTAL_BYTES = 20 * 1024 * 1024;
 export const MAX_FILES = 10;
 
-/** Merge `incoming` into `current`, de-duping by filename (a re-pick / re-drop
- *  of the same name replaces rather than double-adds). */
+/** Split `name` into stem and extension (`a.tar.gz` → `a.tar` + `.gz`). */
+function splitExt(name: string): [string, string] {
+	const i = name.lastIndexOf('.');
+	return i > 0 ? [name.slice(0, i), name.slice(i)] : [name, ''];
+}
+
+/** Merge `incoming` into `current` with names kept unique: a clash is renamed
+ *  `stem-2.ext`, `stem-3.ext`, … (never replaced), so the list always matches
+ *  what the daemon stages. Returns the merged list and the incoming files as
+ *  actually added (post-rename), for tokenizing. */
+export function mergeFilesRenamed(
+	current: File[],
+	incoming: File[]
+): { files: File[]; added: File[] } {
+	const taken = new Set(current.map((f) => f.name));
+	const added: File[] = [];
+	for (const f of incoming) {
+		let file = f;
+		if (taken.has(f.name)) {
+			const [stem, ext] = splitExt(f.name);
+			let n = 2;
+			while (taken.has(`${stem}-${n}${ext}`)) n++;
+			file = new File([f], `${stem}-${n}${ext}`, { type: f.type, lastModified: f.lastModified });
+		}
+		taken.add(file.name);
+		added.push(file);
+	}
+	return { files: [...current, ...added], added };
+}
+
+/** Merge `incoming` into `current`, renaming duplicate names (see
+ *  `mergeFilesRenamed`). */
 export function mergeFiles(current: File[], incoming: File[]): File[] {
-	const byName = new Map(current.map((f) => [f.name, f]));
-	for (const f of incoming) byName.set(f.name, f);
-	return [...byName.values()];
+	return mergeFilesRenamed(current, incoming).files;
+}
+
+/** Add `incoming` to `files` and reference each (post-rename) name in `text`. */
+export function attachFiles(
+	files: File[],
+	text: string,
+	incoming: File[]
+): { files: File[]; text: string } {
+	const merged = mergeFilesRenamed(files, incoming);
+	return { files: merged.files, text: appendFileTokens(text, merged.added) };
+}
+
+const PASTE_NAME = /\bpaste-(\d+)\.txt\b/g;
+
+/** Next free `paste-N.txt` index: max N over attachment names and `[paste-N.txt]`
+ *  tokens in `text`, plus one. Derived, not counted, so it survives a remount
+ *  whose draft still references earlier pastes. */
+export function nextPasteIndex(files: File[], text: string): number {
+	let max = 0;
+	const scan = (s: string) => {
+		for (const m of s.matchAll(PASTE_NAME)) max = Math.max(max, Number(m[1]));
+	};
+	for (const f of files) scan(f.name);
+	scan(text);
+	return max + 1;
 }
 
 /** Append a `[name]` reference for each attached file to the draft text,
