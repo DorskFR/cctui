@@ -14,6 +14,9 @@
 	import { m } from '$lib/paraglide/messages';
 
 	const version = useVersion();
+	// Server-wide deployment label: "cctui (NAME)" in the brand + tab title.
+	const instanceName = $derived(version.data?.instance_name ?? null);
+	$effect(() => notify.setInstanceName(instanceName));
 
 	// Global "needs input" watcher. Header is always mounted inside
 	// the query provider, so it's the natural home for the cross-route watcher.
@@ -75,6 +78,11 @@
 		<div class="brand">
 			<Text variant="code" tone="accent" size="lg" weight="bold">»_</Text>
 			<Text size="lg" weight="bold">cctui</Text>
+			{#if instanceName}
+				<Text size="lg" weight="bold" tone="faint" title={m.nav_instance_name()}>
+					<span class="inst">({instanceName})</span>
+				</Text>
+			{/if}
 		</div>
 		<span
 			class="conn"
@@ -93,6 +101,23 @@
 					</span>
 				</Text>
 			</NavLink>
+			{#if version.data.latest_version}
+				<!-- Red up-arrow + the newer tag: only rendered when the server's
+				     release probe found something strictly newer than itself. -->
+				<NavLink
+					href={version.data.latest_url ?? version.data.repo_url}
+					target="_blank"
+					rel="noopener"
+					title={m.nav_update_available({ version: version.data.latest_version })}
+				>
+					<Text size="xs" variant="code">
+						<span class="ver-part ver-up" aria-label={m.nav_update_available({ version: version.data.latest_version })}>
+							<span class="ver-up-arrow" aria-hidden="true">↑</span>
+							v{version.data.latest_version}
+						</span>
+					</Text>
+				</NavLink>
+			{/if}
 		{/if}
 		<!-- Plain ghost button: the on-state accent tint comes from `pressed`
 		     (aria-pressed → accent glyph), NOT a `tone` border — a tinted border
@@ -222,6 +247,17 @@
 		gap: 0 var(--sp-2);
 	}
 	.ver-part {
+		white-space: nowrap;
+	}
+	.ver-up {
+		color: var(--danger);
+		font-weight: 700;
+	}
+	.ver-up-arrow {
+		display: inline-block;
+		margin-right: 0.15em;
+	}
+	.inst {
 		white-space: nowrap;
 	}
 	.hd-inner {

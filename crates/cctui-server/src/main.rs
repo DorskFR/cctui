@@ -26,6 +26,7 @@ mod skill_store;
 mod soft_limit;
 mod state;
 mod store;
+mod update_check;
 mod uploads;
 mod webhook;
 mod ws;
@@ -129,7 +130,14 @@ async fn main() -> anyhow::Result<()> {
         spawn_capabilities: Arc::new(dashmap::DashMap::new()),
         session_usd_budgets: Arc::new(dashmap::DashMap::new()),
         gateway_rate_windows: Arc::new(dashmap::DashMap::new()),
+        update_check: update_check::UpdateCheck::shared(),
     };
+
+    // Slow upstream release probe feeding `/version.latest_version`;
+    // `CCTUI_UPDATE_CHECK=0` keeps air-gapped deployments quiet.
+    if update_check::enabled_from_env() {
+        tokio::spawn(update_check::task(state.update_check.clone(), state.http_client.clone()));
+    }
 
     // Warm the reauth gate from the persisted flag so a restart doesn't
     // strand an account: without this the success path couldn't clear a flag set
@@ -1000,6 +1008,14 @@ fn build_api_routes() -> Routes {
             "/admin/users",
             "List all users, or create a user (admin).",
             post(routes::admin_auth::create_user).get(routes::admin_auth::list_users),
+            Authn::Bearer,
+            ScopeAz(auth::Scope::Admin),
+        )
+        .add(
+            &[Method::PUT],
+            "/admin/instance",
+            "Set or clear the server-wide deployment name shown in the webui header (admin).",
+            put(routes::instance::update),
             Authn::Bearer,
             ScopeAz(auth::Scope::Admin),
         )
