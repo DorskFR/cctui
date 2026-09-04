@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { SessionListItem } from '@bindings/SessionListItem';
 import {
 	accountTrafficWarning,
+	branchOf,
 	bucketInSection,
 	colorHueOf,
 	dimGroupsOf,
@@ -39,6 +40,15 @@ function session(over: Partial<SessionListItem>): SessionListItem {
 }
 
 const label = (id: string, name: string, color = ''): Label => ({ id, name, color });
+
+describe('branchOf', () => {
+	it('reads metadata.git_branch, null when absent or not a string', () => {
+		expect(branchOf(session({ metadata: { git_branch: 'wave/1-webui' } }))).toBe('wave/1-webui');
+		expect(branchOf(session({ metadata: { git_branch: 7 } }))).toBeNull();
+		expect(branchOf(session({ metadata: {} }))).toBeNull();
+		expect(branchOf(session({ metadata: null }))).toBeNull();
+	});
+});
 
 describe('accountTrafficWarning', () => {
 	it('warns only for an account-bound session with no observed gateway traffic', () => {

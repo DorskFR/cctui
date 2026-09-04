@@ -79,6 +79,7 @@ export function metaBool(s: SessionListItem, key: string): boolean {
 	const m = s.metadata as Record<string, unknown> | null;
 	return m?.[key] === true;
 }
+export const branchOf = (s: SessionListItem) => metaStr(s, 'git_branch');
 export const relationOf = (s: SessionListItem) =>
 	metaStr(s, 'relation') ?? (metaBool(s, 'subagent') ? 'subagent' : 'root');
 export const runningCount = (agents: SessionListItem[]) =>

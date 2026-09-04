@@ -859,6 +859,8 @@
 	"sessions_view_list_detailed": "Liste · Détaillé",
 	"sessions_view_title": "Affichage : {view}",
 	"sessions_workdir_copy_title": "Cliquer pour copier — {path}",
+	"sessions_branch_title": "Branche {branch}",
+	"sessions_branch_label": "Branche",
 	"sessions_workflow": "Flux de travail",
 	"sessions_workflow_named": "Flux de travail : {name}",
 	"settings_account_names_help": "Affiche le nom du compte sur chaque ligne de session à la place de l'icône de clé. Utile quand plusieurs comptes partagent un même fournisseur.",

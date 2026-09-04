@@ -11,7 +11,7 @@
 	import SubagentBadge from '$lib/components/molecules/SubagentBadge.svelte';
 	import type { Label } from '@bindings/Label';
 	import AdapterIcon from '$lib/components/atoms/AdapterIcon.svelte';
-	import { Badge, Button, Card, Cluster, Stack, Text, Timestamp } from '@dorsk/tsumikit';
+	import { Badge, Button, Card, Cluster, Icon, Stack, Text, Timestamp } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 	import { escapeHtml } from '$lib/markdown';
 	import { highlightTerms } from '$lib/search';
@@ -21,6 +21,7 @@
 		toolActivity,
 		formatAgo,
 		accountTrafficWarning,
+		branchOf,
 	} from '../../../routes/sessions/sessions.logic';
 	import { onMount } from 'svelte';
 
@@ -191,6 +192,7 @@
 						: 'dot-dead'
 	);
 	const u = $derived(s.token_usage);
+	const branch = $derived(branchOf(s));
 	// Subagent cost rollup: only meaningful when there are agents.
 	const rollup = $derived(subagentCost && subagentCost.count > 0 ? subagentCost : null);
 	// Liveness is conveyed by the colored dot, so the badge only carries the
@@ -474,6 +476,12 @@
 					     as width shrinks (see WorkingDir). In detailed cards it keeps its
 					     natural width (no shrink) and the footer wraps; elsewhere it flexes. -->
 					<WorkingDir path={s.working_dir} full={detailed} style={detailed ? '' : 'max-width:22rem'} />
+					{#if branch}
+						<Badge mono title={m.sessions_branch_title({ branch })} style="display:inline-flex;align-items:center;gap:0.25em;min-width:0;max-width:14rem;flex:none">
+							<Icon name="fork" size={12} label={m.sessions_branch_label()} />
+							<span style="overflow:hidden;white-space:nowrap;text-overflow:ellipsis">{branch}</span>
+						</Badge>
+					{/if}
 					{#each prLinks as pr (pr.href)}
 						<a
 							class="pr-link"
@@ -489,7 +497,7 @@
 							{#if s.model}<Text tone="muted" size="xs" style="flex:none;white-space:nowrap">{modelShort(s.model)}{s.effort ? ` · ${s.effort}` : ''}</Text>{/if}
 							{@render draftActions()}
 						{:else}
-							<TokenUsage usage={u} cold={s.cache_cold} sum={rollup ? rollup.tokens : null} />
+							<TokenUsage usage={u} cold={s.cache_cold} sum={rollup ? rollup.tokens : null} compact={grid && dense} />
 							{#if s.model}<Text tone="muted" size="xs" truncate={!detailed} style={detailed ? 'flex:none;white-space:nowrap' : 'max-width:14rem;flex:none'}>{modelShort(s.model)}{s.effort ? ` · ${s.effort}` : ''}</Text>{/if}
 							{@render logo()}
 						{/if}

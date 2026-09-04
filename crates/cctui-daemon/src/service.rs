@@ -145,6 +145,19 @@ fn exit_lines(launchctl_print: &str) -> Vec<String> {
         .collect()
 }
 
+/// What `service restart` must do given whether the service manager currently
+/// has the job loaded. A restart request against an unloaded launchd job
+/// would otherwise silently no-op.
+#[derive(Debug, PartialEq, Eq)]
+enum RestartPlan {
+    Kickstart,
+    Install,
+}
+
+const fn restart_plan(loaded: bool) -> RestartPlan {
+    if loaded { RestartPlan::Kickstart } else { RestartPlan::Install }
+}
+
 fn run(cmd: &str, args: &[&str]) -> Result<()> {
     let out = Command::new(cmd)
         .args(args)
@@ -237,7 +250,10 @@ mod linux {
 }
 
 mod macos {
-    use super::{Context, PLIST_LABEL, PLIST_TEMPLATE, Result, bail, current_exe_string, run};
+    use super::{
+        Context, PLIST_LABEL, PLIST_TEMPLATE, RestartPlan, Result, bail, current_exe_string,
+        restart_plan, run,
+    };
     use std::path::PathBuf;
     use std::process::Command;
     use std::time::Duration;
@@ -423,8 +439,20 @@ mod macos {
         println!("(stdout log: {})", logs.join("cctui-daemon.out.log").display());
     }
 
+    /// `kickstart -k` only restarts a job launchd already knows about; when
+    /// the agent is not bootstrapped (fresh machine, or booted out by an
+    /// earlier failure) it exits 0 without starting anything, so fall back to
+    /// the install path in that case.
     pub fn restart() -> Result<()> {
-        run("launchctl", &["kickstart", "-k", &service_target(PLIST_LABEL)])
+        match restart_plan(is_loaded(PLIST_LABEL)) {
+            RestartPlan::Kickstart => {
+                run("launchctl", &["kickstart", "-k", &service_target(PLIST_LABEL)])
+            }
+            RestartPlan::Install => {
+                println!("{PLIST_LABEL} is not loaded in {}; installing it instead", gui_domain());
+                install()
+            }
+        }
     }
 }
 
@@ -442,6 +470,12 @@ mod tests {
             keepalive.trim_start().starts_with("<dict>"),
             "KeepAlive must be the SuccessfulExit dict, not a bare <true/>"
         );
+    }
+
+    #[test]
+    fn restart_plan_installs_when_not_loaded_and_kickstarts_when_loaded() {
+        assert_eq!(restart_plan(false), RestartPlan::Install);
+        assert_eq!(restart_plan(true), RestartPlan::Kickstart);
     }
 
     #[test]
