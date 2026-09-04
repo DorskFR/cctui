@@ -66,6 +66,10 @@ pub struct Config {
     /// `CCTUI_ALLOWED_ORIGINS` (comma-separated). A credentialed CORS response
     /// must never use `*`, so this is an explicit list.
     pub allowed_origins: Vec<String>,
+    /// `WebAuthn` relying-party id override (`CCTUI_RP_ID`). Unset — the normal
+    /// case — derives it from `external_url`'s host. Set it only to scope
+    /// passkeys to a parent domain of the host serving the UI.
+    pub rp_id: Option<String>,
     /// How long a session may sit without activity before the reaper
     /// demotes it from `Active` to `Inactive`. The old
     /// `CCTUI_HEARTBEAT_TIMEOUT` env var is still accepted for
@@ -174,6 +178,7 @@ impl Config {
             database_url: env::var("DATABASE_URL").expect("DATABASE_URL must be set"),
             external_url,
             allowed_origins,
+            rp_id: env::var("CCTUI_RP_ID").ok().filter(|s| !s.trim().is_empty()),
             inactive_after_secs: env::var("CCTUI_INACTIVE_AFTER")
                 .or_else(|_| env::var("CCTUI_HEARTBEAT_TIMEOUT"))
                 .ok()
@@ -276,6 +281,7 @@ impl Config {
             database_url: String::new(),
             external_url: String::new(),
             allowed_origins,
+            rp_id: None,
             inactive_after_secs: 0,
             archive_after_secs: 0,
             github_token: None,
@@ -386,6 +392,7 @@ mod tests {
             database_url: String::new(),
             external_url: String::new(),
             allowed_origins: vec![],
+            rp_id: None,
             inactive_after_secs: 0,
             archive_after_secs: 0,
             github_token: None,

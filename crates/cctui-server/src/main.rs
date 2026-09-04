@@ -28,6 +28,7 @@ mod state;
 mod store;
 mod update_check;
 mod uploads;
+mod webauthn;
 mod webhook;
 mod ws;
 
@@ -104,6 +105,9 @@ async fn main() -> anyhow::Result<()> {
         // the transport behind it is chosen above.
         bus: bus::Bus::new(transport),
         auth_config: auth_config.clone(),
+        // Passkeys ride the deployment's own public URL: a server already
+        // configured with an https `CCTUI_EXTERNAL_URL` needs no new env.
+        webauthn: webauthn::build(&config.external_url, config.rp_id.as_deref()).map(Arc::new),
         skills,
         presence,
         internal_secret,
@@ -191,6 +195,12 @@ async fn main() -> anyhow::Result<()> {
         // clears it — both live outside the `auth_middleware` group.
         .route("/api/v1/auth/login", post(routes::auth::login))
         .route("/api/v1/auth/logout", post(routes::auth::logout))
+        // Passkey login. Unauthenticated for the same reason `login` is: the
+        // assertion IS the credential. `config` is the pre-auth probe the login
+        // screen makes to decide whether to offer the passkey button at all.
+        .route("/api/v1/auth/passkey/config", get(routes::passkeys::config))
+        .route("/api/v1/auth/passkey/login/start", post(routes::passkeys::login_start))
+        .route("/api/v1/auth/passkey/login/finish", post(routes::passkeys::login_finish))
         // Daemon-facing endpoints. `auth` and `ws` carry their own auth
         // (machine-key Bearer) so they live outside the user-token-only
         // `api_router` group.
@@ -297,6 +307,62 @@ fn build_api_routes() -> Routes {
             get(routes::web::version),
             Authn::Bearer,
             Authenticated,
+        )
+        .add(
+            &[GET],
+            "/passkeys",
+            "List the passkeys enrolled on your account.",
+            get(routes::passkeys::list),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[Method::POST],
+            "/passkeys/register/start",
+            "Begin enrolling a passkey on your account.",
+            post(routes::passkeys::register_start),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[Method::POST],
+            "/passkeys/register/finish",
+            "Finish enrolling a passkey and store the credential.",
+            post(routes::passkeys::register_finish),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[Method::POST],
+            "/passkeys/test/start",
+            "Begin a test of an enrolled passkey without signing out.",
+            post(routes::passkeys::test_start),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[Method::POST],
+            "/passkeys/test/finish",
+            "Finish a passkey test and report which key answered.",
+            post(routes::passkeys::test_finish),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[Method::PATCH, Method::DELETE],
+            "/passkeys/{id}",
+            "Rename or revoke one of your passkeys.",
+            patch(routes::passkeys::relabel).delete(routes::passkeys::revoke),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[Method::PUT],
+            "/admin/passkeys/auto-prompt",
+            "Server-wide: try the passkey as soon as the login screen opens (admin).",
+            put(routes::passkeys::set_auto_prompt),
+            Authn::Bearer,
+            ScopeAz(auth::Scope::Admin),
         )
         .add(
             &[Method::POST],

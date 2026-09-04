@@ -17,6 +17,14 @@ import type { MachineRow } from "@bindings/MachineRow";
 import type { UserTokenRow } from "@bindings/UserTokenRow";
 import type { UserAclsResponse } from "@bindings/UserAclsResponse";
 import type { ApiKeyRow } from "@bindings/ApiKeyRow";
+import type { PasskeyAssertion } from "@bindings/PasskeyAssertion";
+import type { PasskeyAutoPromptRequest } from "@bindings/PasskeyAutoPromptRequest";
+import type { PasskeyChallenge } from "@bindings/PasskeyChallenge";
+import type { PasskeyListResponse } from "@bindings/PasskeyListResponse";
+import type { PasskeyRegisterFinish } from "@bindings/PasskeyRegisterFinish";
+import type { PasskeyRow } from "@bindings/PasskeyRow";
+import type { PasskeyTestResult } from "@bindings/PasskeyTestResult";
+import type { RelabelPasskeyRequest } from "@bindings/RelabelPasskeyRequest";
 import type { VersionInfo } from "@bindings/VersionInfo";
 import type { GitInfo } from "@bindings/GitInfo";
 import type { InstanceInfo } from "@bindings/InstanceInfo";
@@ -66,6 +74,26 @@ export const endpoints = {
   capabilities: () => api.get<CapabilitiesResponse>("/capabilities"),
   /** Who the stored bearer token resolves to. */
   me: () => api.get<MeResponse>("/me"),
+  /** Passkeys enrolled on the caller's account. */
+  passkeys: () => api.get<PasskeyListResponse>("/passkeys"),
+  /** Begin enrolling a passkey; the options go to `navigator.credentials.create()`. */
+  passkeyRegisterStart: () => api.post<PasskeyChallenge>("/passkeys/register/start"),
+  /** Store the credential the authenticator just produced. */
+  passkeyRegisterFinish: (body: PasskeyRegisterFinish) =>
+    api.post<PasskeyRow>("/passkeys/register/finish", body),
+  /** Begin a "does my key answer?" check; mints nothing. */
+  passkeyTestStart: () => api.post<PasskeyChallenge>("/passkeys/test/start"),
+  passkeyTestFinish: (body: PasskeyAssertion) =>
+    api.post<PasskeyTestResult>("/passkeys/test/finish", body),
+  renamePasskey: (id: string, label: string) =>
+    api.patch<void>(`/passkeys/${id}`, { label } satisfies RelabelPasskeyRequest),
+  revokePasskey: (id: string) => api.del<void>(`/passkeys/${id}`),
+  /** Server-wide (admin): read the passkey ceremony as soon as the login
+   *  screen opens, instead of waiting for a click. */
+  setPasskeyAutoPrompt: (auto_prompt: boolean) =>
+    api.put<void>("/admin/passkeys/auto-prompt", {
+      auto_prompt,
+    } satisfies PasskeyAutoPromptRequest),
   sessions: (archived: boolean) =>
     api.get<SessionListResponse>("/sessions", {
       include_archived: archived || undefined,

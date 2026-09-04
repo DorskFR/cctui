@@ -25,6 +25,11 @@
 	import { toasts } from '$lib/toast.svelte';
 	import { m } from '$lib/paraglide/messages';
 	import type { HarnessMode, ToastPosition, WhipMode } from '$lib/settings.svelte';
+	import { auth } from '$lib/auth.svelte';
+	import { PasskeyAborted, createPasskey, getAssertion, passkeysSupported } from '$lib/passkeys';
+	import type { PasskeyConfig } from '@bindings/PasskeyConfig';
+	import type { PasskeyRow } from '@bindings/PasskeyRow';
+	import type { JsonValue } from '@bindings/serde_json/JsonValue';
 
 	const sl = $derived(settings.state.sessionList);
 
@@ -177,6 +182,96 @@
 			instanceSaving = false;
 		}
 	}
+	// ── Passkeys ────────────────────────────────────────────────────────
+	// Enrolment and management of the caller's own WebAuthn credentials, plus
+	// the one server-wide knob (admin) that decides whether the login screen
+	// reads the key on its own. The list is loaded on demand rather than through
+	// the query cache: it changes only from this screen.
+	let passkeyCfg = $state<PasskeyConfig | null>(null);
+	let passkeyList = $state<PasskeyRow[]>([]);
+	let passkeyLabel = $state('');
+	let passkeyBusy = $state(false);
+	let passkeyTesting = $state(false);
+	const passkeysUsable = $derived(passkeysSupported() && !!passkeyCfg?.available);
+
+	async function loadPasskeys() {
+		passkeyCfg = await auth.passkeyConfig();
+		if (!passkeyCfg?.available) return;
+		try {
+			passkeyList = (await endpoints.passkeys()).passkeys;
+		} catch {
+			// A server too old to know the route simply has no passkeys to show.
+			passkeyList = [];
+		}
+	}
+
+	async function enrollPasskey() {
+		if (passkeyBusy) return;
+		passkeyBusy = true;
+		try {
+			const challenge = await endpoints.passkeyRegisterStart();
+			const { credential, discoverable } = await createPasskey(
+				challenge.options as Record<string, unknown>
+			);
+			await endpoints.passkeyRegisterFinish({
+				challenge_id: challenge.challenge_id,
+				label: passkeyLabel.trim() || null,
+				// The credential is the W3C JSON blob; the binding types it as
+				// `JsonValue` because the server hands it straight to webauthn-rs.
+				credential: credential as JsonValue,
+				discoverable
+			});
+			passkeyLabel = '';
+			await loadPasskeys();
+			toasts.ok(m.settings_passkeys_enrolled());
+		} catch (e) {
+			if (!(e instanceof PasskeyAborted)) toasts.err(e instanceof Error ? e.message : String(e));
+		} finally {
+			passkeyBusy = false;
+		}
+	}
+
+	async function testPasskey() {
+		if (passkeyTesting) return;
+		passkeyTesting = true;
+		try {
+			const challenge = await endpoints.passkeyTestStart();
+			const credential = await getAssertion(challenge.options as Record<string, unknown>);
+			const res = await endpoints.passkeyTestFinish({
+				challenge_id: challenge.challenge_id,
+				credential: credential as JsonValue
+			});
+			toasts.ok(m.settings_passkeys_test_ok({ label: res.label }));
+		} catch (e) {
+			if (!(e instanceof PasskeyAborted)) toasts.err(e instanceof Error ? e.message : String(e));
+		} finally {
+			passkeyTesting = false;
+		}
+	}
+
+	async function revokePasskey(id: string) {
+		try {
+			await endpoints.revokePasskey(id);
+			await loadPasskeys();
+			toasts.ok(m.settings_passkeys_revoked());
+		} catch (e) {
+			toasts.err(e instanceof Error ? e.message : String(e));
+		}
+	}
+
+	async function setPasskeyAutoPrompt(on: boolean) {
+		try {
+			await endpoints.setPasskeyAutoPrompt(on);
+			if (passkeyCfg) passkeyCfg = { ...passkeyCfg, auto_prompt: on };
+		} catch (e) {
+			toasts.err(e instanceof Error ? e.message : String(e));
+		}
+	}
+
+	$effect(() => {
+		void loadPasskeys();
+	});
+
 	const spawnDock = $derived(settings.spawnDock);
 	const statsDock = $derived(settings.statsDock);
 
@@ -330,6 +425,88 @@
 					</dd>
 				</div>
 			</dl>
+		</Stack>
+	</Card>
+
+	<!-- ── Security (passkeys) ──────────────────────────────────────────── -->
+	<Card>
+		<Stack gap="md">
+			<Heading level={2}>{m.settings_passkeys_title()}</Heading>
+			{#if !passkeysUsable}
+				<Text as="p" tone="faint" size="sm">{m.settings_passkeys_unavailable()}</Text>
+			{:else}
+				<Text as="p" tone="faint" size="sm">{m.settings_passkeys_help()}</Text>
+				<dl class="props">
+					{#each passkeyList as key (key.id)}
+						<div class="prop">
+							<dt>
+								<Text weight="semibold">{key.label}</Text>
+								<Text size="sm" tone="faint">
+									{#if key.last_used_at}
+										{m.settings_passkeys_last_used({
+											date: new Date(key.last_used_at).toLocaleString()
+										})}
+									{:else}
+										{m.settings_passkeys_never_used()}
+									{/if}
+								</Text>
+								{#if !key.discoverable}
+									<Text size="sm" tone="danger">{m.settings_passkeys_not_discoverable()}</Text>
+								{/if}
+							</dt>
+							<dd>
+								<Button size="sm" variant="ghost" onclick={() => revokePasskey(key.id)}>
+									{m.settings_passkeys_revoke()}
+								</Button>
+							</dd>
+						</div>
+					{/each}
+					<div class="prop">
+						<dt>
+							<Text weight="semibold">{m.settings_passkeys_add_label()}</Text>
+							<Text size="sm" tone="faint">{m.settings_passkeys_add_help()}</Text>
+						</dt>
+						<dd class="inst-dd">
+							<Input
+								bind:value={passkeyLabel}
+								maxlength={64}
+								placeholder={m.settings_passkeys_name_placeholder()}
+							/>
+							<Button size="sm" disabled={passkeyBusy} onclick={enrollPasskey}>
+								{m.settings_passkeys_add()}
+							</Button>
+						</dd>
+					</div>
+					{#if passkeyList.length > 0}
+						<div class="prop">
+							<dt>
+								<Text weight="semibold">{m.settings_passkeys_test_label()}</Text>
+								<Text size="sm" tone="faint">{m.settings_passkeys_test_help()}</Text>
+							</dt>
+							<dd>
+								<Button size="sm" disabled={passkeyTesting} onclick={testPasskey}>
+									{m.settings_passkeys_test()}
+								</Button>
+							</dd>
+						</div>
+					{/if}
+					{#if isAdmin}
+						<div class="prop">
+							<dt>
+								<Text weight="semibold">{m.settings_passkeys_auto_prompt_label()}</Text>
+								<Text size="sm" tone="faint">{m.settings_passkeys_auto_prompt_help()}</Text>
+							</dt>
+							<dd>
+								<Switch
+									checked={passkeyCfg?.auto_prompt === true}
+									label={m.settings_passkeys_auto_prompt_label()}
+									onclick={() => setPasskeyAutoPrompt(passkeyCfg?.auto_prompt !== true)}
+								/>
+							</dd>
+						</div>
+					{/if}
+				</dl>
+			{/if}
 		</Stack>
 	</Card>
 

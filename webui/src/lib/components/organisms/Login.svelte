@@ -1,11 +1,72 @@
 <script lang="ts">
 	import { auth } from '$lib/auth.svelte';
+	import { PasskeyAborted, conditionalUiSupported } from '$lib/passkeys';
 	import { Button, Card, Field, Input, Text } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
+	import type { PasskeyConfig } from '@bindings/PasskeyConfig';
 
 	let token = $state('');
 	let err = $state('');
 	let busy = $state(false);
+	let passkeyBusy = $state(false);
+	let passkeys = $state<PasskeyConfig | null>(null);
+	// Cancels a pending conditional-mediation request. A conditional `get()`
+	// stays open until it is used or aborted, and only one may be in flight, so
+	// the modal path has to close it first.
+	let conditional: AbortController | null = null;
+
+	const offerPasskey = $derived(!!passkeys?.available && passkeys.enrolled);
+
+	// Probe the server once. When the passkey button is on offer we also arm the
+	// browser's autofill flow, so the key shows up in the token field's
+	// dropdown; that is silent and dismissible, unlike the modal, which we open
+	// only on a click or when the server says to.
+	$effect(() => {
+		let cancelled = false;
+		void (async () => {
+			const cfg = await auth.passkeyConfig();
+			if (cancelled) return;
+			passkeys = cfg;
+			if (!cfg?.available || !cfg.enrolled) return;
+			if (cfg.auto_prompt) {
+				await signInWithPasskey();
+			} else if (await conditionalUiSupported()) {
+				armConditional();
+			}
+		})();
+		return () => {
+			cancelled = true;
+			conditional?.abort();
+		};
+	});
+
+	/** Offer the passkey from the token field's autocomplete. Never interrupts:
+	 *  it resolves only if the user picks the key, and a failure leaves the form
+	 *  exactly as it was. On success `auth.isAuthed` flips and the layout swaps
+	 *  this screen out on its own. */
+	function armConditional() {
+		conditional = new AbortController();
+		void auth.loginWithPasskey('conditional', conditional.signal).catch(() => {});
+	}
+
+	async function signInWithPasskey() {
+		if (passkeyBusy) return;
+		// A conditional request already holds the authenticator; drop it or the
+		// modal call is rejected outright.
+		conditional?.abort();
+		conditional = null;
+		passkeyBusy = true;
+		err = '';
+		try {
+			const ok = await auth.loginWithPasskey();
+			if (!ok) err = m.login_passkey_failed();
+		} catch (e) {
+			// A dismissed dialog is a choice, not an error worth shouting about.
+			if (!(e instanceof PasskeyAborted)) err = m.login_passkey_failed();
+		} finally {
+			passkeyBusy = false;
+		}
+	}
 
 	async function submit(e: SubmitEvent) {
 		e.preventDefault();
@@ -35,7 +96,7 @@
 				id="token"
 				mono
 				type="password"
-				autocomplete="current-password"
+				autocomplete={offerPasskey ? 'current-password webauthn' : 'current-password'}
 				placeholder={m.login_token_placeholder()}
 				bind:value={token}
 			/>
@@ -44,6 +105,11 @@
 		<Button variant="primary" block type="submit" disabled={busy || !token.trim()}>
 			{#if busy}<span class="spin"></span>{:else}{m.login_sign_in()}{/if}
 		</Button>
+		{#if offerPasskey}
+			<Button block type="button" disabled={passkeyBusy} onclick={signInWithPasskey}>
+				{#if passkeyBusy}<span class="spin"></span>{:else}{m.login_passkey_button()}{/if}
+			</Button>
+		{/if}
 	</Card>
 </div>
 
