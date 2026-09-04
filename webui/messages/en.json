@@ -628,6 +628,7 @@
 	"pools_name": "Name",
 	"pools_name_placeholder": "personal",
 	"pools_new": "New pool",
+	"pools_owner_hint": "A pool belongs to a user. The admin token has no identity of its own, so name the owner: only that user’s accounts can join.",
 	"pools_remove_member": "Remove from pool",
 	"pools_save": "Save",
 	"pools_strategy": "Strategy",

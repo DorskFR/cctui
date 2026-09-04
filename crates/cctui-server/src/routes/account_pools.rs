@@ -70,16 +70,19 @@ pub struct UpdatePoolRequest {
     pub accounts: Option<Vec<Uuid>>,
 }
 
-/// `GET /account-pools` — the caller's pools with their members.
+/// `GET /account-pools` — the caller's pools with their members. An admin
+/// token has no pools of its own, so it reads every user's (`owner_filter`),
+/// which is what the other three handlers already do.
 pub async fn list_pools(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
 ) -> Result<Json<Vec<AccountPoolView>>, ApiErr> {
     require_human(&ctx)?;
-    let pools = account_pools::list_for_user(&state.pool, ctx.user_id).await.map_err(|e| {
-        tracing::error!("listing account pools: {e}");
-        err(StatusCode::INTERNAL_SERVER_ERROR, "could not list pools")
-    })?;
+    let pools =
+        account_pools::list_for_owner(&state.pool, ctx.owner_filter()).await.map_err(|e| {
+            tracing::error!("listing account pools: {e}");
+            err(StatusCode::INTERNAL_SERVER_ERROR, "could not list pools")
+        })?;
     let mut views = Vec::with_capacity(pools.len());
     for pool in pools {
         let members = account_pools::members(&state.pool, pool.id).await.map_err(|e| {

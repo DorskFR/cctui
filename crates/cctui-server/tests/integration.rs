@@ -393,3 +393,71 @@ async fn account_redirect_flow() {
         "{rules}"
     );
 }
+
+/// Pools through the admin token, which has no user identity of its own: create
+/// must name the owner (and be accepted when it does), and the listing must be
+/// the cross-user god-view rather than "the pools of nobody".
+#[tokio::test]
+#[ignore = "requires running server"]
+async fn admin_creates_and_lists_a_pool_for_a_user() {
+    let client = Client::new();
+    let base = server_url();
+
+    let owner: serde_json::Value = client
+        .post(format!("{base}/api/v1/admin/users"))
+        .bearer_auth(admin_token())
+        .json(&json!({"name": format!("pool-owner-{}", uuid_like())}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let owner_id = owner["id"].as_str().unwrap().to_string();
+
+    // No owner named: still a 400, so the admin token cannot create ownerless pools.
+    let resp = client
+        .post(format!("{base}/api/v1/account-pools"))
+        .bearer_auth(admin_token())
+        .json(&json!({"name": format!("pool-{}", uuid_like())}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+
+    let name = format!("pool-{}", uuid_like());
+    let resp = client
+        .post(format!("{base}/api/v1/account-pools"))
+        .bearer_auth(admin_token())
+        .json(&json!({"name": name, "user_id": owner_id, "accounts": []}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 201);
+    let pool: serde_json::Value = resp.json().await.unwrap();
+    let pool_id = pool["id"].as_str().unwrap().to_string();
+    assert_eq!(pool["user_id"].as_str(), Some(owner_id.as_str()));
+
+    // The admin listing sees another user's pool.
+    let pools: serde_json::Value = client
+        .get(format!("{base}/api/v1/account-pools"))
+        .bearer_auth(admin_token())
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(
+        pools.as_array().unwrap().iter().any(|p| p["id"].as_str() == Some(pool_id.as_str())),
+        "{pools}"
+    );
+
+    let resp = client
+        .delete(format!("{base}/api/v1/account-pools/{pool_id}"))
+        .bearer_auth(admin_token())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 204);
+}

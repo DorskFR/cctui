@@ -66,15 +66,18 @@ pub struct AccountPoolMember {
 
 const COLS: &str = "id, user_id, name, strategy, failover, created_at";
 
-/// Every pool `user_id` owns, oldest name order for a stable UI.
-pub async fn list_for_user(
+/// Every pool `owner` owns, name order for a stable UI. `owner` scopes the
+/// read the same way `get` does: `None` (the admin token, which has no user
+/// identity of its own) lists every user's pools rather than nobody's.
+pub async fn list_for_owner(
     exec: impl PgExecutor<'_>,
-    user_id: Uuid,
+    owner: Option<Uuid>,
 ) -> Result<Vec<AccountPool>, sqlx::Error> {
     sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "SELECT {COLS} FROM account_pools WHERE user_id = $1 ORDER BY lower(name)"
+        "SELECT {COLS} FROM account_pools \
+         WHERE $1::uuid IS NULL OR user_id = $1 ORDER BY lower(name)"
     )))
-    .bind(user_id)
+    .bind(owner)
     .fetch_all(exec)
     .await
 }
