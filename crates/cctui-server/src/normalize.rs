@@ -12,6 +12,7 @@
 //! Returning `None` drops the row from the conversation view (e.g.
 //! `session_ended` markers, summaries with no UI value).
 
+use cctui_proto::models::SessionEndReason;
 use cctui_proto::ws::AgentEvent;
 use serde_json::{Value, json};
 
@@ -23,6 +24,17 @@ use serde_json::{Value, json};
 #[must_use]
 pub fn to_agent_event(adapter_id: &str, event_type: &str, payload: &Value) -> Option<AgentEvent> {
     let ts = chrono::Utc::now().timestamp_millis();
+    if event_type == "session_ended" {
+        return Some(AgentEvent::Text {
+            content: session_ended_line(payload),
+            meta: true,
+            kind: Some("system_marker".to_owned()),
+            ts,
+            message_id: None,
+            usage: None,
+            seq: None,
+        });
+    }
     if adapter_id == "codex" {
         // Reuse the read-side canonicalizer, then lift the canonical client
         // Value into the live `AgentEvent` shape — one source of truth for
@@ -139,12 +151,42 @@ fn turn_summary_parts(payload: &Value) -> Option<(String, Option<String>, bool)>
 
 #[must_use]
 pub fn for_client(adapter_id: &str, event_type: &str, payload: Value) -> Option<Value> {
+    if event_type == "session_ended" {
+        return Some(json!({
+            "type": "text",
+            "content": session_ended_line(&payload),
+            "meta": true,
+            "kind": "system_marker",
+        }));
+    }
     match adapter_id {
         "claude-code" => claude_code(event_type, payload),
         "codex" => codex(event_type, &payload),
         // Future adapters: add their mappers here.
         _ => passthrough_if_canonical(payload),
     }
+}
+
+/// The conversation's synthetic final line for a `session_ended` event:
+/// `Session ended: <reason> — <detail>`. The payload is
+/// `{reason: EndReason}` (adapter-tagged `{kind, detail?}`).
+fn session_ended_line(payload: &Value) -> String {
+    let reason = payload.get("reason");
+    let kind = reason
+        .and_then(|r| r.get("kind"))
+        .and_then(Value::as_str)
+        .map_or(SessionEndReason::Other, SessionEndReason::parse);
+    let detail = reason
+        .and_then(|r| r.get("detail"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|d| !d.is_empty());
+    let mut line = format!("Session ended: {}", kind.as_str());
+    if let Some(detail) = detail {
+        line.push_str(" — ");
+        line.push_str(detail);
+    }
+    line
 }
 
 /// Lift a canonical client Value (`{type:"text"|"tool_call"|"tool_result", …}`)
@@ -524,6 +566,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn session_ended_becomes_final_system_line() {
+        let p = json!({ "reason": { "kind": "crashed", "detail": "exit status: 1; last stderr:\nboom" } });
+        let n = for_client("claude-code", "session_ended", p.clone()).unwrap();
+        assert_eq!(n["type"], "text");
+        assert_eq!(n["meta"], true);
+        assert_eq!(n["content"], "Session ended: crashed — exit status: 1; last stderr:\nboom");
+        let n = for_client("codex", "session_ended", json!({ "reason": { "kind": "killed" } }))
+            .unwrap();
+        assert_eq!(n["content"], "Session ended: killed");
+        let n = for_client("opencode", "session_ended", json!({ "reason": { "kind": "weird" } }))
+            .unwrap();
+        assert_eq!(n["content"], "Session ended: other");
+        match to_agent_event("codex", "session_ended", &p) {
+            Some(AgentEvent::Text { content, meta, .. }) => {
+                assert!(meta);
+                assert!(content.starts_with("Session ended: crashed"));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
     fn legacy_payload_passes_through() {
         let p = json!({ "type": "text", "content": "hi" });
         assert_eq!(for_client("claude-code", "message", p.clone()), Some(p));
@@ -758,12 +822,6 @@ mod tests {
                 other => panic!("expected Text, got {other:?}"),
             }
         }
-    }
-
-    #[test]
-    fn session_ended_dropped() {
-        let p = json!({ "reason": { "Completed": {} } });
-        assert_eq!(for_client("claude-code", "session_ended", p), None);
     }
 
     #[test]

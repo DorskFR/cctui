@@ -389,10 +389,8 @@ impl OneshotDriver {
             .spawn()
             .with_context(|| format!("spawning `{} -p` in {cwd}", self.cfg.claude_bin))?;
         let stdout = child.stdout.take().expect("piped stdout");
-        // Keep stderr for diagnostics without blocking the child.
-        if let Some(stderr) = child.stderr.take() {
-            tokio::spawn(drain_stderr(stderr));
-        }
+        let stderr_ring =
+            child.stderr.take().map(|stderr| streamjson::spawn_stderr_ring(stderr, "oneshot"));
         // Register so Kill/Interrupt can terminate this turn.
         self.running.insert(local_id.to_owned(), child);
 
@@ -434,8 +432,12 @@ impl OneshotDriver {
         if let Some(mut child) = self.running.remove(local_id) {
             match child.wait().await {
                 Ok(status) if !status.success() && crashed.is_none() => {
+                    let tail = match &stderr_ring {
+                        Some(ring) => streamjson::stderr_tail(ring).await,
+                        None => String::new(),
+                    };
                     crashed = Some(EndReason::Crashed {
-                        detail: format!("claude -p exited with {status}"),
+                        detail: streamjson::exit_detail("claude -p", status, &tail),
                     });
                 }
                 Ok(_) => {}
@@ -522,16 +524,6 @@ fn idle_status(local_id: &str) -> AdapterEvent {
         model: None,
         effort: None,
         children: Vec::new(),
-    }
-}
-
-/// Drain a child's stderr to the log so a `-p` failure isn't anonymous.
-async fn drain_stderr(stderr: tokio::process::ChildStderr) {
-    let mut lines = BufReader::new(stderr).lines();
-    while let Ok(Some(line)) = lines.next_line().await {
-        if !line.trim().is_empty() {
-            tracing::debug!(target: "claude_oneshot_stderr", "{line}");
-        }
     }
 }
 

@@ -45,6 +45,57 @@ pub enum Liveness {
     Dead,
 }
 
+/// Why an ended session ended — the persisted `sessions.end_reason`.
+///
+/// Coarser than [`crate::adapter::EndReason`]: the adapter's free-form detail
+/// lives in `end_detail`, and the server adds the reasons no adapter can
+/// report (daemon gone, machine offline, aged out by the reaper).
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionEndReason {
+    Completed,
+    Killed,
+    Crashed,
+    DaemonLost,
+    MachineOffline,
+    ReapedInactive,
+    ResumeFailed,
+    #[default]
+    Other,
+}
+
+impl SessionEndReason {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Completed => "completed",
+            Self::Killed => "killed",
+            Self::Crashed => "crashed",
+            Self::DaemonLost => "daemon_lost",
+            Self::MachineOffline => "machine_offline",
+            Self::ReapedInactive => "reaped_inactive",
+            Self::ResumeFailed => "resume_failed",
+            Self::Other => "other",
+        }
+    }
+
+    /// Lenient parse for DB/wire strings; unknown values fold into `Other`.
+    #[must_use]
+    pub fn parse(s: &str) -> Self {
+        match s {
+            "completed" => Self::Completed,
+            "killed" => Self::Killed,
+            "crashed" => Self::Crashed,
+            "daemon_lost" => Self::DaemonLost,
+            "machine_offline" => Self::MachineOffline,
+            "reaped_inactive" => Self::ReapedInactive,
+            "resume_failed" => Self::ResumeFailed,
+            _ => Self::Other,
+        }
+    }
+}
+
 /// Coarse liveness tier for a machine (its daemon's WS).
 ///
 /// Derived from the age

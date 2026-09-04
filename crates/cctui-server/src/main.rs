@@ -578,6 +578,14 @@ fn build_api_routes() -> Routes {
             sess_write(),
         )
         .add(
+            &[Method::PUT],
+            "/sessions/{id}/draft",
+            "Replace a draft session's stored spawn payload in place.",
+            put(routes::sessions::update_draft),
+            Authn::Bearer,
+            sess_write(),
+        )
+        .add(
             &[Method::POST],
             "/sessions/{id}/interrupt",
             "Interrupt a session's current turn.",
@@ -1261,7 +1269,9 @@ async fn reaper_task(state: AppState) {
                 );
             match sqlx::query(
                 // Drafts are staged-not-running — never auto-archive them.
-                "UPDATE sessions SET status = 'archived' \
+                "UPDATE sessions SET status = 'archived', \
+                     ended_at = COALESCE(ended_at, now()), \
+                     end_reason = COALESCE(end_reason, 'reaped_inactive') \
                  WHERE status NOT IN ('archived', 'draft') AND pinned = false AND last_heartbeat < $1",
             )
             .bind(cutoff)

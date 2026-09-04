@@ -35,6 +35,7 @@ vi.mock('$lib/settings.svelte', () => ({
 vi.mock('$lib/ws.svelte', () => ({ ws: { sessions: [] } }));
 
 const DRAFT = 'cctui_spawn_draft';
+const slot = () => localStorage.getItem('cctui_spawn_slot') ?? DRAFT;
 const file = (name: string) => new File(['hello'], name, { type: 'text/plain' });
 
 let component: ReturnType<typeof mount> | undefined;
@@ -107,7 +108,7 @@ describe('SpawnModal attachment persistence', () => {
 	it('clears the store on Clear', async () => {
 		await open();
 		await pick([file('a.txt')]);
-		expect((await attachmentStore.get(DRAFT)).files.length).toBe(1);
+		expect((await attachmentStore.get(slot())).files.length).toBe(1);
 		const clear = must(
 			[...document.querySelectorAll<HTMLButtonElement>('button')].find(
 				(b) => b.textContent?.trim() === 'Clear'
@@ -116,6 +117,6 @@ describe('SpawnModal attachment persistence', () => {
 		);
 		clear.click();
 		await tick();
-		expect((await attachmentStore.get(DRAFT)).files).toEqual([]);
+		expect((await attachmentStore.get(slot())).files).toEqual([]);
 	});
 });

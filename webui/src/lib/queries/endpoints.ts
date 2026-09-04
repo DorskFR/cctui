@@ -197,6 +197,9 @@ export const endpoints = {
   /** Discard (delete) a draft session row. */
   discardDraft: (sessionId: string) =>
     api.post<void>(`/sessions/${sessionId}/discard`, {}),
+  /** Replace a draft's stored spawn payload in place (edit / autosave). */
+  updateDraft: (sessionId: string, body: SpawnRequest) =>
+    api.put<SpawnResponse>(`/sessions/${sessionId}/draft`, body),
   dispatch: (body: DispatchRequest) =>
     api.post<DispatchResponse>("/sessions/dispatch", body),
   /** Configured dispatcher ids (e.g. `["claude-worker"]`); empty when none. */

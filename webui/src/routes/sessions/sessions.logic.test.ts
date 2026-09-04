@@ -9,7 +9,10 @@ import {
 	DIM_NONE_KEY,
 	draftEditPrefill,
 	draftPayload,
+	draftPreview,
 	draftPromptPreview,
+	draftSavedAt,
+	editDraftNeedsConfirm,
 	fmtWhen,
 	formatAgo,
 	groupRows,
@@ -25,6 +28,7 @@ import {
 	rangeIds,
 	scriptPrefill,
 	sectionsOf,
+	spawnRequestFromSlot,
 	sessionDebugRows,
 	sessionHrefFor,
 	sessionIdFromLocation,
@@ -579,6 +583,87 @@ describe('draft payload + prefills', () => {
 		);
 		expect(p.model_codex).toBe('gpt');
 		expect(p.effort_codex).toBe('low');
+	});
+
+	it('draftEditPrefill omits empty fields and carries the draft id + env keys', () => {
+		const p = draftEditPrefill(
+			session({
+				id: 'd-1',
+				machine_id: 'm',
+				working_dir: '/w',
+				metadata: { draft: { prompt: 'p', name: '', env_keys: ['TOKEN', 'API_KEY'] } }
+			})
+		);
+		expect(p).toEqual({
+			draft_id: 'd-1',
+			machine_id: 'm',
+			working_dir: '/w',
+			adapter_id: 'claude-code',
+			prompt: 'p',
+			env_keys: 'TOKEN,API_KEY'
+		});
+		expect('name' in p).toBe(false);
+	});
+
+	it('draftSavedAt prefers the autosave stamp over the creation time', () => {
+		const at = '2026-09-04T10:00:00Z';
+		expect(draftSavedAt(session({ registered_at: '2026-09-01T00:00:00Z', metadata: { draft_saved_at: at } }))).toBe(at);
+		expect(draftSavedAt(session({ registered_at: '2026-09-01T00:00:00Z', metadata: { draft: {} } }))).toBe('2026-09-01T00:00:00Z');
+	});
+
+	it('draftPreview leads with "autosaved <when>"', () => {
+		const s = session({ registered_at: new Date(Date.now() - 120_000).toISOString(), metadata: { draft: { prompt: 'fix it' } } });
+		expect(draftPreview(s)).toMatch(/^autosaved .*ago — fix it$/);
+	});
+});
+
+describe('editDraftNeedsConfirm', () => {
+	it('asks when the mounted form is dirty with another draft', () => {
+		expect(editDraftNeedsConfirm('d-2', { dirty: true, draftId: 'd-1' }, null)).toBe(true);
+		expect(editDraftNeedsConfirm('d-2', { dirty: true, draftId: null }, null)).toBe(true);
+	});
+
+	it('opens straight away when the form is clean or already this draft', () => {
+		expect(editDraftNeedsConfirm('d-2', { dirty: false, draftId: null }, null)).toBe(false);
+		expect(editDraftNeedsConfirm('d-1', { dirty: true, draftId: 'd-1' }, null)).toBe(false);
+	});
+
+	it('falls back to the stored slot when the form is closed', () => {
+		expect(editDraftNeedsConfirm('d-2', null, { prompt: 'typed', draftId: null })).toBe(true);
+		expect(editDraftNeedsConfirm('d-2', null, { prompt: 'typed', draftId: 'd-2' })).toBe(false);
+		expect(editDraftNeedsConfirm('d-2', null, { prompt: '', machine_id: 'm', working_dir: '/w' })).toBe(false);
+		expect(editDraftNeedsConfirm('d-2', null, null)).toBe(false);
+	});
+});
+
+describe('spawnRequestFromSlot', () => {
+	it('needs a machine, a cwd and a prompt', () => {
+		expect(spawnRequestFromSlot({ machine_id: 'm', working_dir: '/w', prompt: ' ' })).toBeNull();
+		expect(spawnRequestFromSlot({ machine_id: '', working_dir: '/w', prompt: 'p' })).toBeNull();
+	});
+
+	it('carries env keys and attachment names, never values', () => {
+		const r = spawnRequestFromSlot({
+			machine_id: 'm',
+			working_dir: '/w/',
+			prompt: 'p',
+			adapter_id: 'codex',
+			model_codex: 'gpt',
+			effort_codex: 'low',
+			envRows: [{ key: 'TOKEN', value: 'secret' }, { key: ' ', value: '' }],
+			attachmentNames: ['a.txt']
+		});
+		expect(r).toMatchObject({
+			machine_id: 'm',
+			working_dir: '/w',
+			adapter_id: 'codex',
+			model: 'gpt',
+			effort: 'low',
+			env: {},
+			env_keys: ['TOKEN'],
+			attachment_names: ['a.txt']
+		});
+		expect(JSON.stringify(r)).not.toContain('secret');
 	});
 });
 

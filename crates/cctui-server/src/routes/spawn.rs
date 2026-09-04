@@ -30,7 +30,7 @@ use crate::registry::MachineCommand;
 use crate::state::AppState;
 use crate::uploads::parse_upload_multipart;
 
-fn bad_request(msg: impl Into<String>) -> (StatusCode, Json<ApiError>) {
+pub fn bad_request(msg: impl Into<String>) -> (StatusCode, Json<ApiError>) {
     (StatusCode::BAD_REQUEST, Json(ApiError { error: msg.into() }))
 }
 
@@ -511,7 +511,7 @@ fn resolve_default_account(
     }
 }
 
-async fn resolve_owned_machine(
+pub async fn resolve_owned_machine(
     state: &AppState,
     ctx: &AuthContext,
     machine_id: &str,

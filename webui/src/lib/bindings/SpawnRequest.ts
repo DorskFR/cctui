@@ -81,4 +81,14 @@ auto_account?: boolean,
  * fresh and dispatches the real spawn. `env` is ignored for a draft (no
  * secrets at rest — re-entered at launch time).
  */
-save_draft?: boolean, };
+save_draft?: boolean, 
+/**
+ * Draft bookkeeping: the env var names the form holds, so an edit can
+ * re-propose them (values are re-entered at launch, never stored).
+ */
+env_keys?: Array<string>, 
+/**
+ * Draft bookkeeping: names of the files attached in the browser (the
+ * bytes stay client-side until launch).
+ */
+attachment_names?: Array<string>, };

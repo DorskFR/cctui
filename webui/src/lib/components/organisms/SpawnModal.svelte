@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { errMessage } from '$lib/api';
+	import { ApiError, errMessage } from '$lib/api';
 	import type { SpawnRequest } from '@bindings/SpawnRequest';
 	import type { DispatchRequest } from '@bindings/DispatchRequest';
 	import {
@@ -16,7 +16,11 @@
 	import { toasts } from '$lib/toast.svelte';
 	import {
 		drafts,
-		SPAWN_DRAFT,
+		SPAWN_SLOT,
+		spawnSlotKey,
+		currentSpawnSlot,
+		readSpawnSlot,
+		type SpawnSlotPayload,
 		LAST_MACHINE,
 		LAST_SPAWN_NAME,
 		LAST_SPAWN_LABELS,
@@ -56,7 +60,7 @@
 	import EnvSecretsField from './spawn/EnvSecretsField.svelte';
 	import MachineFields from './spawn/MachineFields.svelte';
 	import DispatchFields from './spawn/DispatchFields.svelte';
-	import type { Form, Target } from './spawn/types';
+	import type { Form, SpawnPrefill, Target } from './spawn/types';
 	import {
 		accountBacksAdapter,
 		providerForAdapter,
@@ -74,7 +78,8 @@
 		prefill = null,
 		docked = null,
 		stacked = false,
-		dockWidth = SPAWN_DOCK_WIDTH
+		dockWidth = SPAWN_DOCK_WIDTH,
+		autosaveDelay = 2000
 	}: {
 		// Modal: close the dialog. Docked: the form is done with (spawned, saved
 		// as draft, or cleared) — the parent remounts it so it reseeds exactly the
@@ -92,9 +97,13 @@
 		// inner edge writes a dragged width back to the settings.
 		dockWidth?: string;
 		// "New session from same script": seed the form from an
-		// existing session's config (machine, dir, adapter, model). Overrides the
-		// persisted draft so the dialog opens ready to re-dispatch.
-		prefill?: Partial<Form> | null;
+		// existing session's config (machine, dir, adapter, model), or "Edit
+		// draft" (`draft_id` ties the form to its server row, `env_keys` the env
+		// var names to re-propose). Non-empty prefill values win over the target's
+		// local slot; empty ones never clear what the slot holds.
+		prefill?: SpawnPrefill | null;
+		// Quiet time before the form is mirrored to its server draft.
+		autosaveDelay?: number;
 	} = $props();
 
 	const machines = useAllMachines(() => true);
@@ -137,9 +146,16 @@
 		timeout: '',
 		labels: []
 	};
-	interface SpawnDraftPayload extends Partial<Form> {
-		envRows?: EnvRow[];
-	}
+	// Local autosave slot, one per (machine, cwd): a prefill names its target's
+	// slot, a plain open resumes the slot last in progress. The slot's server
+	// mirror is the draft row `draftId`, created on the first autosave.
+	// svelte-ignore state_referenced_locally
+	let slotKey =
+		prefill?.machine_id && prefill.working_dir
+			? spawnSlotKey(prefill.machine_id, prefill.working_dir)
+			: currentSpawnSlot();
+	const loadKey = slotKey;
+	let draftId = $state<string | null>(null);
 	let loadedDraft = false;
 	let restoredEnvRows: EnvRow[] = [];
 	let form = $state<Form>(load());
@@ -155,16 +171,27 @@
 	let labelsApplied: string[] | null = null;
 	function load(): Form {
 		try {
-			const raw = drafts.get(SPAWN_DRAFT);
-			const saved = raw ? (JSON.parse(raw) as SpawnDraftPayload) : {};
-			loadedDraft = !!raw && !prefill;
+			const saved: SpawnSlotPayload = readSpawnSlot(slotKey) ?? {};
+			const raw = Object.keys(saved).length > 0;
+			const { draft_id, env_keys, ...prefillForm } = prefill ?? {};
+			draftId = draft_id ?? saved.draftId ?? null;
+			loadedDraft = (raw || !!draft_id) && !(prefill && !draft_id);
 			// Values are never restored from disk: older drafts may carry them,
 			// so strip on load and let the persist effect rewrite the draft.
-			restoredEnvRows = Array.isArray(saved.envRows)
-				? saved.envRows.map((r) => ({ key: String(r?.key ?? ''), value: '' }))
-				: [];
-			const { envRows: _envRows, ...savedForm } = saved;
-			const seeded = { ...blank, ...savedForm, ...(prefill ?? {}) };
+			const keys = new Set<string>();
+			for (const r of saved.envRows ?? []) if (r?.key) keys.add(String(r.key));
+			for (const k of env_keys?.split(',') ?? []) if (k) keys.add(k);
+			restoredEnvRows = [...keys].map((key) => ({ key, value: '' }));
+			const {
+				envRows: _envRows,
+				draftId: _draftId,
+				attachmentNames: _names,
+				...savedForm
+			} = saved;
+			const given = Object.fromEntries(
+				Object.entries(prefillForm).filter(([, v]) => v !== '' && v != null)
+			);
+			const seeded = { ...blank, ...savedForm, ...given } as Form;
 			// Fresh open (no draft to restore, no explicit prefill): propose the
 			// last submitted session name with a bumped numeric suffix, so serial
 			// spawns don't retype a label (toto → toto-2 → toto-3).
@@ -179,7 +206,8 @@
 			}
 			return seeded;
 		} catch {
-			return { ...blank, ...(prefill ?? {}) };
+			const { draft_id: _d, env_keys: _k, ...rest } = prefill ?? {};
+			return { ...blank, ...rest } as Form;
 		}
 	}
 
@@ -449,36 +477,140 @@
 	}
 	let envRows = $state<EnvRow[]>(restoredEnvRows);
 	let files = $state<File[]>([]);
-	$effect(() => {
-		const envKeys = envRows.map((r) => ({ key: r.key, value: '' }));
-		drafts.set(SPAWN_DRAFT, JSON.stringify({ ...form, envRows: envKeys }));
-	});
-	// The persist effect only runs after the restore so the initial [] can't
+	// The file mirror only runs after the restore so the initial [] can't
 	// wipe the record; an empty list (spawn/dispatch/clear) removes it.
 	let filesRestored = $state(false);
+	// Mirror the form to its slot; a machine/cwd edit moves the slot (and its
+	// files) rather than forking it, so one form stays one draft.
 	$effect(() => {
-		if (!filesRestored) return;
-		void attachmentStore.set(SPAWN_DRAFT, [...files]);
+		const key = form.machine_id ? spawnSlotKey(form.machine_id, form.working_dir) : slotKey;
+		if (key !== slotKey) {
+			drafts.clear(slotKey);
+			if (filesRestored) void attachmentStore.clear(slotKey);
+			slotKey = key;
+		}
+		const envKeys = envRows.map((r) => ({ key: r.key, value: '' }));
+		const payload: SpawnSlotPayload = {
+			...form,
+			envRows: envKeys,
+			draftId,
+			attachmentNames: files.map((f) => f.name)
+		};
+		drafts.set(slotKey, JSON.stringify(payload));
+		drafts.set(SPAWN_SLOT, slotKey);
+		if (filesRestored) void attachmentStore.set(slotKey, [...files]);
 	});
 	$effect(() => {
 		let live = true;
 		(async () => {
-			if (!prefill) {
-				const restored = await attachmentStore.get(SPAWN_DRAFT);
-				if (!live) return;
-				files = restored.files;
-				const { text, dropped } = dropMissingTokens(form.prompt, restored.missing);
-				if (dropped) {
-					form.prompt = text;
-					toasts.push(m.attachments_missing_dropped({ count: dropped }), 'info');
-				}
+			const restored = await attachmentStore.get(loadKey);
+			if (!live) return;
+			files = restored.files;
+			const { text, dropped } = dropMissingTokens(form.prompt, restored.missing);
+			if (dropped) {
+				form.prompt = text;
+				toasts.push(m.attachments_missing_dropped({ count: dropped }), 'info');
 			}
-			if (live) filesRestored = true;
+			filesRestored = true;
+			if (loadKey !== slotKey) void attachmentStore.clear(loadKey);
 		})();
 		return () => {
 			live = false;
 		};
 	});
+
+	// Server autosave: `autosaveDelay` after the last edit the form is written
+	// to its draft row (created on first save, updated in place after), so
+	// every form in progress shows in the Drafts section. Env values never
+	// travel; only keys and attachment names do.
+	let autosaveTimer: ReturnType<typeof setTimeout> | null = null;
+	let autosaving = false;
+	let autosaveSnapshot: string | null = null;
+	$effect(() => {
+		const snapshot = JSON.stringify({
+			form,
+			keys: envRows.map((r) => r.key),
+			names: files.map((f) => f.name)
+		});
+		if (snapshot === autosaveSnapshot) return;
+		const first = autosaveSnapshot === null;
+		autosaveSnapshot = snapshot;
+		if (first) return;
+		if (autosaveTimer) clearTimeout(autosaveTimer);
+		autosaveTimer = setTimeout(() => void autosave(), autosaveDelay);
+	});
+	$effect(() => () => cancelAutosave());
+	function cancelAutosave() {
+		if (autosaveTimer) clearTimeout(autosaveTimer);
+		autosaveTimer = null;
+	}
+	function draftBody(): SpawnRequest {
+		return {
+			...buildSpawnBody(),
+			env: {},
+			env_keys: envRows.map((r) => r.key.trim()).filter(Boolean),
+			attachment_names: files.map((f) => f.name)
+		};
+	}
+	async function autosave(): Promise<boolean> {
+		cancelAutosave();
+		if (busy || autosaving || !autosaveReady) return false;
+		autosaving = true;
+		try {
+			const body = draftBody();
+			if (draftId) {
+				try {
+					await actions.updateDraft(draftId, body);
+					return true;
+				} catch (e) {
+					if (!(e instanceof ApiError && e.status === 404)) throw e;
+					draftId = null;
+				}
+			}
+			const res = await actions.spawn({ ...body, save_draft: true }, []);
+			draftId = String(res.command_id);
+			return true;
+		} catch (e) {
+			toasts.err(m.spawn_toast_save_draft_failed({ error: errMessage(e) }));
+			return false;
+		} finally {
+			autosaving = false;
+		}
+	}
+
+	/** Whether the form holds anything the user would miss. */
+	export function isDirty(): boolean {
+		return (
+			!!form.prompt.trim() ||
+			!!form.name.trim() ||
+			envRows.some((r) => r.key.trim()) ||
+			files.length > 0
+		);
+	}
+	/** The server draft this form mirrors, once autosaved. */
+	export function currentDraftId(): string | null {
+		return draftId;
+	}
+	/** Write the form to its draft row now; false when it can't be a draft yet. */
+	export function flushDraft(): Promise<boolean> {
+		return autosave();
+	}
+
+	function resetForm() {
+		cancelAutosave();
+		draftId = null;
+		drafts.clear(slotKey);
+		drafts.clear(SPAWN_SLOT);
+		form = { ...blank, machine_id: form.machine_id, dispatcher: form.dispatcher };
+		envRows = [];
+		files = [];
+	}
+	function discardMirror() {
+		if (!draftId) return;
+		const id = draftId;
+		draftId = null;
+		actions.discardDraft(id).catch(() => {});
+	}
 
 	const ENV_KEY_RE = /^[A-Z_][A-Z0-9_]*$/;
 
@@ -514,6 +646,7 @@
 		!!form.dispatcher && (!!form.prompt.trim() || !!form.prompt_file.trim())
 	);
 	const valid = $derived((target === 'machine' ? spawnValid : dispatchValid) && secretsValid);
+	const autosaveReady = $derived(target === 'machine' && spawnValid && !!form.prompt.trim());
 
 	// Build the SpawnRequest from the current machine-target form. Shared by the
 	// immediate spawn and the "Save as draft" path; `save_draft` and
@@ -553,23 +686,24 @@
 		};
 	}
 
-	// Save the current form as a draft instead of dispatching. No env
-	// is sent (re-entered at launch); the draft appears in the Drafts section.
+	// Save the current form as a draft instead of dispatching: the autosaved
+	// row is updated in place, else one is created. No env values are sent
+	// (re-entered at launch).
 	async function saveDraft() {
-		const body: SpawnRequest = { ...buildSpawnBody(), env: {}, save_draft: true };
-		await actions.spawn(body, []);
+		cancelAutosave();
+		const body = draftBody();
+		if (draftId) await actions.updateDraft(draftId, body);
+		else await actions.spawn({ ...body, save_draft: true }, []);
 		drafts.set(LAST_MACHINE, form.machine_id);
 		drafts.set(LAST_SPAWN_NAME, form.name.trim());
 		toasts.ok(m.spawn_toast_saved_draft());
-		drafts.clear(SPAWN_DRAFT);
-		form = { ...blank, machine_id: form.machine_id, dispatcher: form.dispatcher };
-		envRows = [];
-		files = [];
+		resetForm();
 		onspawned();
 		onclose();
 	}
 
 	async function spawnOnMachine() {
+		cancelAutosave();
 		const body: SpawnRequest = buildSpawnBody();
 		// Capture label intent before the form is reset on success.
 		const labelIds = [...form.labels];
@@ -595,10 +729,8 @@
 			toasts.ok(m.spawn_toast_spawned());
 			// Attach labels to the freshly-registered session (best-effort, async).
 			void attachLabelsToSpawned(labelMachine, labelCwd, requestedAt, labelIds);
-			drafts.clear(SPAWN_DRAFT);
-			form = { ...blank, machine_id: form.machine_id, dispatcher: form.dispatcher };
-			envRows = [];
-			files = [];
+			discardMirror();
+			resetForm();
 			onspawned();
 			onclose();
 		} else if (result.timedOut) {
@@ -691,10 +823,8 @@
 		void attachLabelsTo(dispatchedId, labelIds);
 		toasts.ok(m.spawn_toast_dispatched({ dispatcher: res.dispatcher, handle: res.handle }));
 		pendingDispatchId = null;
-		drafts.clear(SPAWN_DRAFT);
-		form = { ...blank, machine_id: form.machine_id, dispatcher: form.dispatcher };
-		envRows = [];
-		files = [];
+		discardMirror();
+		resetForm();
 		onspawned();
 		onclose();
 	}
@@ -734,10 +864,8 @@
 	}
 
 	function clearForm() {
-		form = { ...blank, machine_id: form.machine_id, dispatcher: form.dispatcher };
-		envRows = [];
-		files = [];
-		drafts.clear(SPAWN_DRAFT);
+		discardMirror();
+		resetForm();
 		// Docked: a cleared form reseeds like a fresh modal would (memory-filled
 		// config, proposed name) instead of sitting blank until the next visit.
 		if (docked) onclose();

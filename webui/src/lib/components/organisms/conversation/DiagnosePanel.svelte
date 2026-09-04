@@ -7,18 +7,23 @@
 	import { useSessionDiagnose } from '$lib/queries';
 	import type { CodexDiagnose } from '@bindings/CodexDiagnose';
 	import type { DiagnoseFact } from '@bindings/DiagnoseFact';
+	import type { SessionListItem } from '@bindings/SessionListItem';
+	import { sessionEnd } from '$lib/sessionEnd';
 	import { Button, Heading, Text } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 
 	let {
 		sessionId,
+		session = null,
 		onclose
 	}: {
 		sessionId: string;
+		session?: SessionListItem | null;
 		onclose: () => void;
 	} = $props();
 
 	const query = useSessionDiagnose(() => sessionId);
+	const end = $derived(session ? sessionEnd(session) : null);
 
 	function fmtAge(ms: number | null): string {
 		if (ms === null) return m.diagnose_undated();
@@ -118,6 +123,30 @@
 	</div>
 	<Text size="xs" tone="muted">{sessionId}</Text>
 
+	{#if session}
+		<Heading level={4}>{m.diagnose_end_of_life()}</Heading>
+		{#if end}
+			<div class="facts" role="table" aria-label={m.diagnose_end_of_life()}>
+				<div class="fact codex-fact" role="row">
+					<span class="name">{m.diagnose_end_reason()}</span>
+					<span class="val">{end.label} ({end.reason})</span>
+				</div>
+				<div class="fact codex-fact" role="row">
+					<span class="name">{m.diagnose_end_at()}</span>
+					<span class="val">{end.endedAt ? new Date(end.endedAt).toLocaleString() : '—'}</span>
+				</div>
+				{#if end.detail}
+					<div class="fact codex-fact" role="row">
+						<span class="name">{m.diagnose_end_detail()}</span>
+						<pre class="val end-detail">{end.detail}</pre>
+					</div>
+				{/if}
+			</div>
+		{:else}
+			<Text size="sm" tone="muted">{m.diagnose_end_none()}</Text>
+		{/if}
+	{/if}
+
 	{#if query.isLoading}
 		<Text size="sm" tone="muted">{m.diagnose_asking()}</Text>
 	{:else if query.error}
@@ -181,6 +210,15 @@
 </div>
 
 <style>
+	.end-detail {
+		margin: 0;
+		white-space: pre-wrap;
+		word-break: break-word;
+		font-family: var(--font-mono, monospace);
+		font-size: var(--fs-xs);
+		max-height: 12rem;
+		overflow: auto;
+	}
 	.diag-scrim {
 		position: fixed;
 		inset: 0;

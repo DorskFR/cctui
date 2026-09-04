@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 use crate::adapter::AdapterId;
 use crate::classifier::Bucket;
-use crate::models::{Attention, Liveness, SessionStatus, TokenUsage};
+use crate::models::{Attention, Liveness, SessionEndReason, SessionStatus, TokenUsage};
 
 // --- Daemon ↔ Server ---
 
@@ -398,6 +398,14 @@ pub struct SessionListItem {
     /// shown on the session card / TUI line and the `Ready for review` bucket.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pr_links: Vec<String>,
+    /// Why the session ended; `None` while it is alive.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_reason: Option<SessionEndReason>,
+    /// Adapter/server diagnostic for the end (exit status, stderr tail).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_detail: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ended_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// A reusable, user-defined colored label.
@@ -722,6 +730,14 @@ pub struct SpawnRequest {
     /// secrets at rest — re-entered at launch time).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub save_draft: bool,
+    /// Draft bookkeeping: the env var names the form holds, so an edit can
+    /// re-propose them (values are re-entered at launch, never stored).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub env_keys: Vec<String>,
+    /// Draft bookkeeping: names of the files attached in the browser (the
+    /// bytes stay client-side until launch).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachment_names: Vec<String>,
     /// What this session may spawn through the `CctuiAgent` tool. Omitted →
     /// the session cannot spawn children.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -747,6 +763,8 @@ impl std::fmt::Debug for SpawnRequest {
             .field("auto_account", &self.auto_account)
             .field("env", &format_args!("<{} secret(s) redacted>", self.env.len()))
             .field("save_draft", &self.save_draft)
+            .field("env_keys", &self.env_keys)
+            .field("attachment_names", &self.attachment_names)
             .field("spawn_capability", &self.spawn_capability)
             .finish()
     }

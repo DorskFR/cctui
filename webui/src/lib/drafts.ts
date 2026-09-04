@@ -85,7 +85,66 @@ export function normalizeDir(path: string): string {
 	return stripped === '' ? '/' : stripped;
 }
 
+/** The spawn form's local autosave, one slot per (machine, cwd) target:
+ * `cctui_spawn_draft` + SEP + machine + SEP + cwd. The pointer key names the
+ * slot in progress so a reopen resumes it. */
 export const SPAWN_DRAFT = 'cctui_spawn_draft';
+export const SPAWN_SLOT = 'cctui_spawn_slot';
+const SLOT_SEP = '\u001f';
+
+export function spawnSlotKey(machineId: string, workingDir: string): string {
+	return `${SPAWN_DRAFT}${SLOT_SEP}${machineId}${SLOT_SEP}${normalizeDir(workingDir.trim())}`;
+}
+
+/** The slot a reopen resumes: the pointer's, else the legacy single slot. */
+export function currentSpawnSlot(): string {
+	return drafts.get(SPAWN_SLOT) || SPAWN_DRAFT;
+}
+
+export interface SpawnSlotPayload {
+	prompt?: string;
+	name?: string;
+	machine_id?: string;
+	working_dir?: string;
+	adapter_id?: string;
+	permission_mode?: string;
+	account?: string;
+	account_provider?: string;
+	model_claude?: string;
+	model_codex?: string;
+	model_account?: string;
+	effort_claude?: string;
+	effort_codex?: string;
+	labels?: string[];
+	envRows?: { key: string; value?: string }[];
+	/** Server draft row this slot autosaves into, once created. */
+	draftId?: string | null;
+	attachmentNames?: string[];
+	[k: string]: unknown;
+}
+
+export function readSpawnSlot(key: string): SpawnSlotPayload | null {
+	const raw = drafts.get(key);
+	if (!raw) return null;
+	try {
+		const v = JSON.parse(raw);
+		return v && typeof v === 'object' ? (v as SpawnSlotPayload) : null;
+	} catch {
+		return null;
+	}
+}
+
+/** Whether a slot holds anything the user would miss: a prompt, a name, an
+ * env key or an attachment. Config alone (machine, cwd, model) is not dirt. */
+export function spawnSlotDirty(p: SpawnSlotPayload | null): boolean {
+	if (!p) return false;
+	return (
+		!!p.prompt?.trim() ||
+		!!p.name?.trim() ||
+		(p.envRows ?? []).some((r) => r.key?.trim()) ||
+		(p.attachmentNames ?? []).length > 0
+	);
+}
 export const LAST_MACHINE = 'cctui_last_machine';
 
 /** The session name last submitted from the spawn dialog (either target).

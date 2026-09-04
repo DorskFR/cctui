@@ -15,8 +15,17 @@
 	import StatsDock from '$lib/components/organisms/statsdock/StatsDock.svelte';
 	import SessionControls from '$lib/components/organisms/SessionControls.svelte';
 	import KanbanBoard from '$lib/components/organisms/KanbanBoard.svelte';
-	import { AutoGrid, Button, IconButton, Text } from '@dorsk/tsumikit';
-	import { drafts, LIST_DENSITY, LIST_VIEW, LIST_KANBAN, LIST_SECTION, LIST_LABELS } from '$lib/drafts';
+	import { AutoGrid, Button, IconButton, Modal, Text } from '@dorsk/tsumikit';
+	import {
+		drafts,
+		currentSpawnSlot,
+		readSpawnSlot,
+		LIST_DENSITY,
+		LIST_VIEW,
+		LIST_KANBAN,
+		LIST_SECTION,
+		LIST_LABELS
+	} from '$lib/drafts';
 	import { notify } from '$lib/notify.svelte';
 	import { settings } from '$lib/settings.svelte';
 	import { tokenizeQuery } from '$lib/search';
@@ -46,7 +55,9 @@
 		sessionHrefFor,
 		scriptPrefill,
 		draftEditPrefill,
-		draftPromptPreview,
+		draftPreview,
+		editDraftNeedsConfirm,
+		spawnRequestFromSlot,
 		type Section,
 		type SubGroup,
 		type Dimension
@@ -136,6 +147,7 @@
 	// Prefill for "new session from same script". Seeded from an
 	// archived session's config, then handed to the SpawnModal.
 	let spawnPrefill = $state<Record<string, string> | null>(null);
+	let spawnModal = $state<ReturnType<typeof SpawnModal> | null>(null);
 	// Open the spawn form seeded with `prefill`: the modal, or a fresh mount of
 	// the docked panel.
 	function openSpawn(prefill: Record<string, string> | null) {
@@ -565,17 +577,50 @@
 		}
 	}
 
-	// Edit a draft: discard it and reopen the spawn modal prefilled from its
-	// stored config, so saving/launching from there replaces it (no duplicate).
-	async function editDraft(s: SessionListItem) {
-		const prefill = draftEditPrefill(s);
-		try {
-			await actions.discardDraft(s.id);
-		} catch (e) {
-			toasts.err(m.sessions_toast_edit_draft_failed({ error: errMessage(e) }));
+	// Edit a draft: open the spawn form on the draft's row (updated in place,
+	// deleted only on launch). A form already holding someone else's content
+	// asks first — replace it, or save it as its own draft before.
+	let pendingDraftEdit = $state<SessionListItem | null>(null);
+	function editDraft(s: SessionListItem) {
+		const live = spawnModal
+			? { dirty: spawnModal.isDirty(), draftId: spawnModal.currentDraftId() }
+			: null;
+		if (editDraftNeedsConfirm(s.id, live, readSpawnSlot(currentSpawnSlot()))) {
+			pendingDraftEdit = s;
 			return;
 		}
-		openSpawn(prefill);
+		openSpawn(draftEditPrefill(s));
+	}
+	async function saveCurrentSpawnForm() {
+		if (spawnModal) {
+			if (!(await spawnModal.flushDraft())) throw new Error(m.spawn_draft_incomplete());
+			return;
+		}
+		const key = currentSpawnSlot();
+		const slot = readSpawnSlot(key);
+		const body = slot && spawnRequestFromSlot(slot);
+		if (!body) throw new Error(m.spawn_draft_incomplete());
+		if (slot.draftId) {
+			await actions.updateDraft(slot.draftId, body);
+			return;
+		}
+		const res = await actions.spawn({ ...body, save_draft: true }, []);
+		drafts.set(key, JSON.stringify({ ...slot, draftId: String(res.command_id) }));
+	}
+	async function confirmDraftEdit(saveFirst: boolean) {
+		const s = pendingDraftEdit;
+		pendingDraftEdit = null;
+		if (!s) return;
+		if (saveFirst) {
+			try {
+				await saveCurrentSpawnForm();
+				toasts.ok(m.sessions_toast_current_saved_draft());
+			} catch (e) {
+				toasts.err(m.sessions_toast_save_current_failed({ error: errMessage(e) }));
+				return;
+			}
+		}
+		openSpawn(draftEditPrefill(s));
 	}
 
 	// A starred parent should keep its full subagent group visible under Pinned
@@ -835,7 +880,7 @@
 				accentHue={accentOf(s)}
 				draft
 				draftLaunching={launchingDraft === s.id}
-				preview={draftPromptPreview(s)}
+				preview={draftPreview(s)}
 				onLaunch={launchDraft}
 				onEdit={editDraft}
 				onDiscard={discardDraft}
@@ -853,7 +898,7 @@
 			compact
 			draft
 			draftLaunching={launchingDraft === s.id}
-			preview={draftPromptPreview(s)}
+			preview={draftPreview(s)}
 			onLaunch={launchDraft}
 			onEdit={editDraft}
 			onDiscard={discardDraft}
@@ -1083,6 +1128,7 @@
 {#if dockSide}
 	{#key dockEpoch}
 		<SpawnModal
+			bind:this={spawnModal}
 			docked={dockSide}
 			stacked={docks.stacked}
 			dockWidth={docks[dockSide] ?? undefined}
@@ -1096,6 +1142,7 @@
 	{/key}
 {:else if showSpawn}
 	<SpawnModal
+		bind:this={spawnModal}
 		prefill={spawnPrefill}
 		onclose={() => {
 			showSpawn = false;
@@ -1103,6 +1150,19 @@
 		}}
 		onspawned={() => qc.invalidateQueries({ queryKey: ['sessions'] })}
 	/>
+{/if}
+
+{#if pendingDraftEdit}
+	<Modal title={m.sessions_edit_draft_title()} onclose={() => (pendingDraftEdit = null)} size="sm">
+		{#snippet body()}
+			<Text>{m.sessions_edit_draft_body()}</Text>
+		{/snippet}
+		{#snippet footer()}
+			<Button block onclick={() => (pendingDraftEdit = null)}>{m.common_cancel()}</Button>
+			<Button block onclick={() => void confirmDraftEdit(true)}>{m.sessions_edit_draft_save_first()}</Button>
+			<Button block variant="primary" onclick={() => void confirmDraftEdit(false)}>{m.sessions_edit_draft_replace()}</Button>
+		{/snippet}
+	</Modal>
 {/if}
 
 {#if docks.stats && docks[docks.stats]}

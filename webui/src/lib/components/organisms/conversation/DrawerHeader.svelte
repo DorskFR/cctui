@@ -8,6 +8,7 @@
 	import type { SessionListItem } from '@bindings/SessionListItem';
 	import type { Label } from '@bindings/Label';
 	import { statusBadgeClass } from '$lib/format';
+	import { sessionEnd, sessionEndTitle } from '$lib/sessionEnd';
 	import { branchOf } from '../../../../routes/sessions/sessions.logic';
 	import { fontScale, SCALE_LEVELS } from '$lib/fontscale.svelte';
 	import { settings } from '$lib/settings.svelte';
@@ -85,6 +86,8 @@
 		onUpdateLabel?: (labelId: string, patch: { name?: string; color?: string }) => Promise<Label>;
 		onDeleteLabel?: (labelId: string) => void | Promise<void>;
 	} = $props();
+
+	const end = $derived(sessionEnd(session));
 	const branch = $derived(branchOf(session));
 
 	// Label picker is interactive only when an attach handler is wired in.
@@ -305,6 +308,7 @@
 	{/if}
 	<div class="hmeta row row-wrap">
 		{#if showStatusBadge}<Badge class={statusBadgeClass(session.status)}>{session.status}</Badge>{/if}
+		{#if end}<Badge tone={end.tone} title={sessionEndTitle(end)} style={end.muted ? 'opacity:0.6' : undefined}>{end.label}</Badge>{/if}
 		<WorkingDir path={session.working_dir} />
 		{#if branch}
 			<Badge mono title={m.sessions_branch_title({ branch })} style="display:inline-flex;align-items:center;gap:0.25em;min-width:0;max-width:14rem;flex:none">

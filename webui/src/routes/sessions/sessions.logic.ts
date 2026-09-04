@@ -3,8 +3,11 @@
 // that reads $state (e.g. the section toggles, the expand set) stays in the
 // component; only data-shape transforms and static config live here.
 import type { SessionListItem } from '@bindings/SessionListItem';
+import type { SpawnRequest } from '@bindings/SpawnRequest';
+import { normalizeDir, spawnSlotDirty, type SpawnSlotPayload } from '$lib/drafts';
+import { NO_ACCOUNT } from '$lib/components/organisms/spawn/options';
 import { SYSTEM_MACHINE_KINDS } from '$lib/queries';
-import { hashHue } from '$lib/format';
+import { hashHue, relativeTime } from '$lib/format';
 import { labelHue } from '$lib/labels';
 import { m } from '$lib/paraglide/messages';
 
@@ -527,14 +530,34 @@ export function scriptPrefill(s: SessionListItem): Record<string, string> {
 	};
 }
 
-// Prefill for editing a draft: its stored payload, falling back to the row.
+/** When the draft was last written: the autosave stamp, else its creation. */
+export function draftSavedAt(s: SessionListItem): string | null {
+	const m = s.metadata as Record<string, unknown> | null;
+	const at = m?.draft_saved_at;
+	return typeof at === 'string' ? at : (s.registered_at ?? null);
+}
+
+/** Card preview for a draft: "autosaved <when>" ahead of the staged prompt. */
+export function draftPreview(s: SessionListItem): string {
+	const when = relativeTime(draftSavedAt(s));
+	const prompt = draftPromptPreview(s);
+	if (!when) return prompt;
+	const stamp = m.sessions_draft_autosaved({ when });
+	return prompt ? `${stamp} — ${prompt}` : stamp;
+}
+
+/** Prefill for editing a draft: its stored payload, falling back to the row.
+ * Only carries what the draft actually holds, so a blank draft field never
+ * wipes what the open form has; `draft_id` ties the form back to the row and
+ * `env_keys` re-proposes the env var names (values are re-entered). */
 export function draftEditPrefill(s: SessionListItem): Record<string, string> {
 	const d = draftPayload(s);
 	const adapter = (typeof d.adapter_id === 'string' && d.adapter_id) || s.adapter_id || 'claude-code';
 	const modelField = adapter === 'codex' ? 'model_codex' : 'model_claude';
 	const effortField = adapter === 'codex' ? 'effort_codex' : 'effort_claude';
 	const str = (v: unknown) => (typeof v === 'string' ? v : '');
-	return {
+	const full: Record<string, string> = {
+		draft_id: s.id,
 		machine_id: str(d.machine_id) || s.machine_id,
 		working_dir: str(d.working_dir) || s.working_dir,
 		adapter_id: adapter,
@@ -542,8 +565,57 @@ export function draftEditPrefill(s: SessionListItem): Record<string, string> {
 		prompt: str(d.prompt),
 		account: str(d.account),
 		account_provider: str(d.provider),
+		permission_mode: str(d.permission_mode),
 		[modelField]: str(d.model),
-		[effortField]: str(d.effort)
+		[effortField]: str(d.effort),
+		env_keys: Array.isArray(d.env_keys) ? d.env_keys.filter((k) => typeof k === 'string').join(',') : ''
+	};
+	return Object.fromEntries(Object.entries(full).filter(([, v]) => v !== ''));
+}
+
+/** Whether opening draft `targetId` for editing must ask first: the form in
+ * progress (the mounted modal's state, else its stored slot) holds content
+ * that isn't already this very draft. */
+export function editDraftNeedsConfirm(
+	targetId: string,
+	live: { dirty: boolean; draftId: string | null } | null,
+	slot: SpawnSlotPayload | null
+): boolean {
+	const dirty = live ? live.dirty : spawnSlotDirty(slot);
+	const editing = live ? live.draftId : (slot?.draftId ?? null);
+	return dirty && editing !== targetId;
+}
+
+/** The draft row a local spawn slot would save as, or null when it lacks a
+ * machine, a cwd or a prompt. Mirrors the modal's own body for the case where
+ * the modal isn't mounted (Edit draft with the form closed). */
+export function spawnRequestFromSlot(p: SpawnSlotPayload): SpawnRequest | null {
+	const machine_id = p.machine_id?.trim() ?? '';
+	const working_dir = normalizeDir(p.working_dir?.trim() ?? '');
+	const prompt = p.prompt?.trim() ?? '';
+	if (!machine_id || !working_dir || !prompt) return null;
+	const adapter = p.adapter_id || 'claude-code';
+	const noAccount = p.account === NO_ACCOUNT;
+	const model = p.model_account || (adapter === 'codex' ? p.model_codex : p.model_claude) || null;
+	const effort = (adapter === 'codex' ? p.effort_codex : p.effort_claude) || null;
+	return {
+		machine_id,
+		working_dir,
+		adapter_id: adapter,
+		name: p.name?.trim() || null,
+		prompt,
+		prompt_name: null,
+		permission_mode: (p.permission_mode as SpawnRequest['permission_mode']) || null,
+		effort,
+		model,
+		env: {},
+		account: noAccount ? null : p.account?.trim() || null,
+		provider: noAccount ? null : p.account_provider || null,
+		no_account: noAccount,
+		auto_account: !noAccount && !p.account?.trim(),
+		save_draft: false,
+		env_keys: (p.envRows ?? []).map((r) => r.key.trim()).filter(Boolean),
+		attachment_names: p.attachmentNames ?? []
 	};
 }
 

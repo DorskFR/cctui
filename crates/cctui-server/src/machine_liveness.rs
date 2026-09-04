@@ -68,7 +68,31 @@ pub async fn sweep(state: &AppState) {
         }
     };
     for (id, last_seen_at) in rows {
-        record_and_broadcast(state, id, derive(last_seen_at));
+        let tier = derive(last_seen_at);
+        record_and_broadcast(state, id, tier);
+        if tier == MachineLiveness::Offline {
+            mark_sessions_machine_offline(state, id).await;
+        }
+    }
+}
+
+/// End every still-live session of an offline machine as `machine_offline`.
+/// Soft: the daemon re-registering the session on reconnect reverts it.
+async fn mark_sessions_machine_offline(state: &AppState, machine_id: Uuid) {
+    match sqlx::query(
+        "UPDATE sessions SET status = 'ended', ended_at = now(), end_reason = 'machine_offline', \
+             end_detail = 'machine offline: no daemon heartbeat' \
+         WHERE machine_uuid = $1 AND status IN ('new', 'active', 'inactive') AND end_reason IS NULL",
+    )
+    .bind(machine_id)
+    .execute(&state.pool)
+    .await
+    {
+        Ok(res) if res.rows_affected() > 0 => {
+            tracing::info!(%machine_id, count = res.rows_affected(), "sessions marked machine_offline");
+        }
+        Ok(_) => {}
+        Err(err) => tracing::warn!(%err, %machine_id, "machine_offline mark failed"),
     }
 }
 

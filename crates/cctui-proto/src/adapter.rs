@@ -125,6 +125,26 @@ pub enum EndReason {
     Other { detail: String },
 }
 
+impl EndReason {
+    #[must_use]
+    pub const fn kind(&self) -> crate::models::SessionEndReason {
+        match self {
+            Self::Completed => crate::models::SessionEndReason::Completed,
+            Self::Killed => crate::models::SessionEndReason::Killed,
+            Self::Crashed { .. } => crate::models::SessionEndReason::Crashed,
+            Self::Other { .. } => crate::models::SessionEndReason::Other,
+        }
+    }
+
+    #[must_use]
+    pub fn detail(&self) -> Option<&str> {
+        match self {
+            Self::Completed | Self::Killed => None,
+            Self::Crashed { detail } | Self::Other { detail } => Some(detail),
+        }
+    }
+}
+
 /// Events emitted by an adapter and forwarded by the daemon to the server.
 ///
 /// `local_id` is the adapter's own session identifier (claude session id,

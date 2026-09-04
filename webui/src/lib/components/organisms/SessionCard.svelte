@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { SessionListItem } from '@bindings/SessionListItem';
 	import { statusBadgeClass, modelShort, modelFamily } from '$lib/format';
+	import { sessionEnd, sessionEndTitle } from '$lib/sessionEnd';
 	import MachineBadge from '$lib/components/molecules/MachineBadge.svelte';
 	import AccountBadge from '$lib/components/molecules/AccountBadge.svelte';
 	import { settings } from '$lib/settings.svelte';
@@ -198,6 +199,7 @@
 	// Liveness is conveyed by the colored dot, so the badge only carries the
 	// meaningful lifecycle states ("new", "archived"), not active/inactive.
 	const showStatusBadge = $derived(s.status === 'new' || s.status === 'archived');
+	const end = $derived(sessionEnd(s));
 	// Translate the server status enum at render (never the raw value itself).
 	const statusLabel = (st: string): string => {
 		switch (st) {
@@ -455,6 +457,7 @@
 					</span>
 					<span class="trail">
 						{#if showStatusBadge}<Badge class={statusBadgeClass(s.status)} style="padding:0.05rem var(--sp-2)">{statusLabel(s.status)}</Badge>{/if}
+						{#if end}<span class="end-badge" class:end-muted={end.muted} title={sessionEndTitle(end)}><Badge tone={end.tone} style="padding:0.05rem var(--sp-2)">{end.label}</Badge></span>{/if}
 						{@render unreadBadge()}
 						{#if pendingCount > 0}<Badge tone="warn" style="padding:0.05rem var(--sp-2)">{m.sessions_perm_count({ count: pendingCount })}</Badge>{/if}
 						{#if s.auto_approve}<Badge tone="warn" style="padding:0.05rem var(--sp-2)" title={m.sessions_auto_approve_title()}>⚡</Badge>{/if}
@@ -648,6 +651,12 @@
 {/snippet}
 
 <style>
+	.end-badge {
+		display: inline-flex;
+	}
+	.end-muted {
+		opacity: 0.6;
+	}
 	/* Swipe wrapper: positioning context for the reveal layer behind
 	   the row, and the owner of the subagent indent (moved off the card so the
 	   reveal aligns with the card edge). pan-y keeps vertical scrolling native
