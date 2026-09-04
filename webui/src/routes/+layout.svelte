@@ -11,6 +11,8 @@
 	import { settings, sessionListWidthSize } from '$lib/settings.svelte';
 	import { locale } from '$lib/locale.svelte';
 	import { ws } from '$lib/ws.svelte';
+	import { goto } from '$app/navigation';
+	import { sessionFailureToast } from '$lib/sessionFailureToast';
 	import Header from '$lib/components/organisms/Header.svelte';
 	import BottomNav from '$lib/components/organisms/BottomNav.svelte';
 	import Toaster from '$lib/components/organisms/Toaster.svelte';
@@ -102,6 +104,8 @@
 		if (auth.isAuthed) ws.connect();
 		else ws.disconnect();
 	});
+
+	$effect(() => ws.onSessionEnded((ev) => sessionFailureToast(ev, (href) => void goto(href))));
 
 	// Pull server-persisted user settings once a token is established.
 	// `load()` is idempotent (runs once) and tolerates 401/offline by keeping the

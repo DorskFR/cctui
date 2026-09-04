@@ -60,6 +60,20 @@ describe('SessionCard end-of-life badge', () => {
 		expect(badge?.classList.contains('end-muted')).toBe(false);
 	});
 
+	it('renders a failed spawn with its detail in the badge and the tooltip', () => {
+		const el = render(
+			session({
+				adapter_id: 'codex',
+				end_reason: 'spawn_failed',
+				end_detail: 'unknown model gpt-nope; available: gpt-5-codex',
+				ended_at: '2026-09-04T10:00:00Z'
+			})
+		);
+		const badge = el.querySelector('.end-badge');
+		expect(badge?.textContent?.trim()).toBe('failed: unknown model gpt-nope; available: gpt-5-codex');
+		expect(badge?.getAttribute('title')).toContain('available: gpt-5-codex');
+	});
+
 	it('fades a reaped session and shows nothing for a live one', () => {
 		const reaped = render(session({ end_reason: 'reaped_inactive', ended_at: '2026-09-04T10:00:00Z' }));
 		const badge = reaped.querySelector('.end-badge');

@@ -633,6 +633,7 @@ fn handle_server_event(app: &mut App, event: ServerEvent) {
         ServerEvent::ArchiveManifest { .. }
         | ServerEvent::ArchiveUploaded { .. }
         | ServerEvent::CommandResult { .. }
+        | ServerEvent::SessionEnded { .. }
         | ServerEvent::AskQuestion { .. }
         | ServerEvent::MessageAck { .. }
         | ServerEvent::MachineLiveness { .. }

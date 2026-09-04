@@ -61,6 +61,7 @@ pub enum SessionEndReason {
     MachineOffline,
     ReapedInactive,
     ResumeFailed,
+    SpawnFailed,
     #[default]
     Other,
 }
@@ -76,6 +77,7 @@ impl SessionEndReason {
             Self::MachineOffline => "machine_offline",
             Self::ReapedInactive => "reaped_inactive",
             Self::ResumeFailed => "resume_failed",
+            Self::SpawnFailed => "spawn_failed",
             Self::Other => "other",
         }
     }
@@ -91,6 +93,7 @@ impl SessionEndReason {
             "machine_offline" => Self::MachineOffline,
             "reaped_inactive" => Self::ReapedInactive,
             "resume_failed" => Self::ResumeFailed,
+            "spawn_failed" => Self::SpawnFailed,
             _ => Self::Other,
         }
     }

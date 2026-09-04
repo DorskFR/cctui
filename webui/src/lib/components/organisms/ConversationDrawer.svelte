@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { SessionListItem } from '@bindings/SessionListItem';
 	import type { AgentEvent } from '@bindings/AgentEvent';
+	import { page } from '$app/state';
 	import { ws } from '$lib/ws.svelte';
 	import {
 		useConversation,
@@ -71,14 +72,15 @@
 	const showStatusBadge = $derived(session.status === 'new' || session.status === 'archived');
 	const qc = useQueryClient();
 
-	// Session diagnose panel, opened from the toolbar.
+	// Session diagnose panel, opened from the toolbar or a failure toast's
+	// Diagnose action (`?diagnose=1`).
 	let diagnoseOpen = $state(false);
 	// Read-only live terminal pane, toggled from the toolbar.
 	let terminalOpen = $state(false);
 	// A navigation to another session must not leave a stale panel open.
 	$effect(() => {
 		void id;
-		diagnoseOpen = false;
+		diagnoseOpen = page.url.searchParams.get('diagnose') === '1';
 		terminalOpen = false;
 	});
 

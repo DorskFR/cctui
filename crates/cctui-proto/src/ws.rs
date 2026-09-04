@@ -568,6 +568,20 @@ pub enum ServerEvent {
         ok: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
+        /// Set when the command targeted a session the server knows (interrupt,
+        /// set-model, a failed spawn persisted as a row); scopes delivery to
+        /// that session's owner.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
+    },
+    /// A session reached its end of life: the `sessions` row now carries
+    /// `end_reason` / `end_detail`. List-level peer of the `session_ended`
+    /// stream event, so clients can toast a failure without subscribing.
+    SessionEnded {
+        session_id: String,
+        reason: crate::models::SessionEndReason,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
     },
     /// Outcome of a client-sent [`TuiCommand::Message`] carrying a
     /// `client_msg_id`. Sent only to the originating socket. `ok=false` means

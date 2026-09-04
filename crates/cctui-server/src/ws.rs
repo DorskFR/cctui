@@ -427,7 +427,9 @@ fn event_session_id(event: &ServerEvent) -> Option<&str> {
         | ServerEvent::PlanRequest { session_id, .. }
         | ServerEvent::PlanResolved { session_id }
         | ServerEvent::PtyChunk { session_id, .. }
+        | ServerEvent::SessionEnded { session_id, .. }
         | ServerEvent::MessageAck { session_id, .. } => Some(session_id),
+        ServerEvent::CommandResult { session_id, .. } => session_id.as_deref(),
         // `SessionRegistered` carries a whole Session; resolving its owner from
         // the broadcast path is heavier and it is list-metadata, not the
         // conversation surface this ticket scopes — left as-is.

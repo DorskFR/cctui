@@ -7,4 +7,4 @@
  * lives in `end_detail`, and the server adds the reasons no adapter can
  * report (daemon gone, machine offline, aged out by the reaper).
  */
-export type SessionEndReason = "completed" | "killed" | "crashed" | "daemon_lost" | "machine_offline" | "reaped_inactive" | "resume_failed" | "other";
+export type SessionEndReason = "completed" | "killed" | "crashed" | "daemon_lost" | "machine_offline" | "reaped_inactive" | "resume_failed" | "spawn_failed" | "other";

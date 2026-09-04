@@ -1803,6 +1803,12 @@ pub async fn interrupt_session(
     Path(session_id): Path<String>,
 ) -> Result<(StatusCode, Json<cctui_proto::api::SpawnResponse>), (StatusCode, Json<ApiError>)> {
     let command_id = uuid::Uuid::new_v4();
+    crate::state::track_command(
+        &state.pending_commands,
+        command_id,
+        Some(session_id.clone()),
+        None,
+    );
     let _ = crate::bus::dispatch(
         &state,
         &session_id,
@@ -2102,6 +2108,12 @@ pub async fn set_model(
         ));
     }
     let command_id = uuid::Uuid::new_v4();
+    crate::state::track_command(
+        &state.pending_commands,
+        command_id,
+        Some(session_id.clone()),
+        None,
+    );
     let _ = crate::bus::dispatch(
         &state,
         &session_id,

@@ -58,9 +58,12 @@ const RPC_TIMEOUT: Duration = Duration::from_secs(30);
 /// `CommandResult` error for an `Interrupt` received while no turn is active.
 pub const NO_TURN_IN_FLIGHT: &str = "no turn in flight";
 
-/// `thread/resume` of a long transcript can legitimately exceed the normal
-/// RPC deadline, so handshake requests get a longer one.
-const HANDSHAKE_TIMEOUT: Duration = Duration::from_mins(2);
+/// Budget for the whole handshake (`initialize` → model check →
+/// `thread/start|resume|fork`), measured from process launch. A resume of a
+/// long transcript needs more than one RPC deadline; the spawn caller
+/// (webui `awaitCommand`) waits this long plus a margin, so a hung handshake
+/// must fail here first.
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(45);
 
 // ---------------------------------------------------------------------------
 // Pure protocol layer
@@ -1463,21 +1466,24 @@ impl CodexSession {
     /// `ok` after the thread request succeeds, failure on any other outcome.
     pub async fn run(mut self) -> Result<()> {
         let mut ack = SpawnAck { command_id: self.command_id.take(), events: self.events.clone() };
-        let res = self.run_inner(&mut ack).await;
+        let stderr_ring: Arc<Mutex<VecDeque<String>>> =
+            Arc::new(Mutex::new(VecDeque::with_capacity(STDERR_RING)));
+        let res = self.run_inner(&mut ack, &stderr_ring).await;
         match &res {
             Err(err) => {
-                let detail = err.to_string();
-                ack.fail(&detail).await;
-                self.fail_resume_status(&detail).await;
+                let detail = format!("{err}{}", stderr_tail(&stderr_ring).await);
+                self.fail_handshake(&mut ack, &detail).await;
             }
             Ok(()) => ack.fail("codex app-server exited before the thread was started").await,
         }
         res
     }
 
-    /// A failed resume has no spawn `command_id` to resolve, so surface the
-    /// failure as a failed `Status` on the thread instead of dying silently.
-    async fn fail_resume_status(&self, detail: &str) {
+    /// Resolve the spawn ack as failed. A resume has no `command_id`, so its
+    /// failure is reported on the thread instead: a failed `Status` plus a
+    /// `SessionEnded` the server persists as `resume_failed`.
+    async fn fail_handshake(&self, ack: &mut SpawnAck, detail: &str) {
+        ack.fail(detail).await;
         let SessionLaunch::Resume { thread_id, .. } = &self.launch else { return };
         self.events
             .send(AdapterEvent::Status {
@@ -1494,10 +1500,33 @@ impl CodexSession {
             })
             .await
             .ok();
+        self.events
+            .send(AdapterEvent::SessionEnded {
+                local_id: thread_id.clone(),
+                reason: EndReason::ResumeFailed { detail: detail.to_owned() },
+            })
+            .await
+            .ok();
+    }
+
+    fn thread_request(&self) -> (Value, &'static str) {
+        match &self.launch {
+            SessionLaunch::Fresh { .. } => (thread_start_req(&self.cwd), "thread/start"),
+            SessionLaunch::Resume { thread_id, .. } => {
+                (thread_resume_req(thread_id, &self.cwd), "thread/resume")
+            }
+            SessionLaunch::Fork { parent_thread_id, .. } => {
+                (thread_fork_req(parent_thread_id, &self.cwd), "thread/fork")
+            }
+        }
     }
 
     #[allow(clippy::too_many_lines, clippy::cognitive_complexity)]
-    async fn run_inner(&self, ack: &mut SpawnAck) -> Result<()> {
+    async fn run_inner(
+        &self,
+        ack: &mut SpawnAck,
+        stderr_ring: &Arc<Mutex<VecDeque<String>>>,
+    ) -> Result<()> {
         let cwd_path = std::path::Path::new(&self.cwd);
         if !cwd_path.is_dir() {
             anyhow::bail!("spawn: working_dir does not exist or is not a directory: {}", self.cwd);
@@ -1541,12 +1570,10 @@ impl CodexSession {
         let stdout = child.stdout.take().context("child stdout missing")?;
         let mut lines = BufReader::new(stdout).lines();
 
-        // Drain stderr into a bounded ring buffer in the background. Each
-        // line is also logged at debug; the retained tail is surfaced in the
-        // crash detail below.
-        let stderr_ring: Arc<Mutex<VecDeque<String>>> =
-            Arc::new(Mutex::new(VecDeque::with_capacity(STDERR_RING)));
-        if let Some(stderr) = child.stderr.take() {
+        // Drain stderr into the bounded ring in the background. Each line
+        // is also logged at debug; the retained tail is surfaced in every
+        // failure detail (handshake and crash).
+        let stderr_drain = child.stderr.take().map(|stderr| {
             let ring = stderr_ring.clone();
             tokio::spawn(async move {
                 let mut err_lines = BufReader::new(stderr).lines();
@@ -1558,13 +1585,24 @@ impl CodexSession {
                     }
                     guard.push_back(line);
                 }
-            });
-        }
+            })
+        });
 
         // Handshake: initialize → thread/start or thread/resume.
         let mut pending_rpcs = PendingRpcs::default();
-        pending_rpcs.insert(ID_INITIALIZE, "initialize", None, Instant::now() + RPC_TIMEOUT);
-        write_json(&mut stdin, &initialize_req()).await?;
+        let handshake_deadline = Instant::now() + HANDSHAKE_TIMEOUT;
+        pending_rpcs.insert(ID_INITIALIZE, "initialize", None, handshake_deadline);
+        // EPIPE here means codex already died (auth/config errors exit at
+        // once); let the stdout EOF below reach the epilogue, which reports the
+        // exit status with the stderr tail.
+        if let Err(e) = write_json(&mut stdin, &initialize_req()).await {
+            tracing::warn!(%e, "codex: initialize write failed");
+        }
+        // `model/list` issued before the thread request to reject an unknown
+        // `-c model=` up front; while set, that request is part of the handshake.
+        let mut validating_model = false;
+        let mut catalog_sent = false;
+        let mut handshake_failed = false;
         let mut local_id = String::new();
         let mut codex_version: Option<String> = None;
         let mut rollout_path: Option<String> = None;
@@ -1628,14 +1666,19 @@ impl CodexSession {
                                 })
                                 .await;
                         }
-                        if pending.is_handshake() {
-                            let detail = format!("codex {} timed out", pending.method);
-                            ack.fail(&detail).await;
-                            self.fail_resume_status(&detail).await;
+                        if pending.is_handshake() || validating_model {
+                            let detail = format!(
+                                "codex {} timed out after {}s{}",
+                                pending.method,
+                                HANDSHAKE_TIMEOUT.as_secs(),
+                                stderr_tail(stderr_ring).await
+                            );
+                            self.fail_handshake(ack, &detail).await;
                             handshake_dead = true;
                         }
                     }
                     if handshake_dead {
+                        handshake_failed = true;
                         let _ = child.start_kill();
                         break;
                     }
@@ -1844,24 +1887,17 @@ impl CodexSession {
                             // thread request: the server treats
                             // `thread/*` sent before `initialized` as premature.
                             write_json(&mut stdin, &initialized_notification()).await?;
-                            let (req, method) = match &self.launch {
-                                SessionLaunch::Fresh { .. } => {
-                                    (thread_start_req(&self.cwd), "thread/start")
-                                }
-                                SessionLaunch::Resume { thread_id, .. } => {
-                                    (thread_resume_req(thread_id, &self.cwd), "thread/resume")
-                                }
-                                SessionLaunch::Fork { parent_thread_id, .. } => {
-                                    (thread_fork_req(parent_thread_id, &self.cwd), "thread/fork")
-                                }
-                            };
-                            pending_rpcs.insert(
-                                ID_THREAD_START,
-                                method,
-                                None,
-                                Instant::now() + HANDSHAKE_TIMEOUT,
-                            );
-                            write_json(&mut stdin, &req).await?;
+                            if self.cfg.model_catalog && self.cfg.model.is_some() {
+                                validating_model = true;
+                                pending_rpcs.insert(next_id, "model/list", None, handshake_deadline);
+                                write_json(&mut stdin, &model_list::model_list_req(next_id, None))
+                                    .await?;
+                                next_id += 1;
+                            } else {
+                                let (req, method) = self.thread_request();
+                                pending_rpcs.insert(ID_THREAD_START, method, None, handshake_deadline);
+                                write_json(&mut stdin, &req).await?;
+                            }
                         }
                         ("thread/start" | "thread/resume" | "thread/fork", Ok(result)) => {
                             let Some(info) = thread_info(&result) else {
@@ -1928,7 +1964,7 @@ impl CodexSession {
                             // the current remote list instead of a stale
                             // unauthenticated fallback. Best-effort: a failure is
                             // logged, never fatal to the session.
-                            if self.cfg.model_catalog {
+                            if self.cfg.model_catalog && !catalog_sent {
                                 pending_rpcs.insert(
                                     next_id,
                                     "model/list",
@@ -2093,10 +2129,56 @@ impl CodexSession {
                         }
                         (method, Err(err)) if pending.is_handshake() => {
                             tracing::error!(%err, %method, "codex: handshake request failed; ending session");
-                            ack.fail(&err).await;
-                            self.fail_resume_status(&err).await;
+                            let detail = format!("codex {method}: {err}{}", stderr_tail(stderr_ring).await);
+                            self.fail_handshake(ack, &detail).await;
+                            handshake_failed = true;
                             let _ = child.start_kill();
                             break;
+                        }
+                        ("model/list", Err(err)) if validating_model => {
+                            // The catalog is best-effort; codex still rejects a bad
+                            // model itself on the first turn.
+                            tracing::debug!(%err, "codex: pre-start model/list failed; skipping model check");
+                            validating_model = false;
+                            model_catalog.clear();
+                            let (req, method) = self.thread_request();
+                            pending_rpcs.insert(ID_THREAD_START, method, None, handshake_deadline);
+                            write_json(&mut stdin, &req).await?;
+                        }
+                        ("model/list", Ok(result)) if validating_model => {
+                            model_catalog.extend(model_list::parse_model_list(&result));
+                            model_catalog_pages += 1;
+                            if let model_list::PageStep::Next { cursor } =
+                                model_list::page_step(model_catalog_pages, &result)
+                            {
+                                pending_rpcs.insert(next_id, "model/list", None, handshake_deadline);
+                                write_json(
+                                    &mut stdin,
+                                    &model_list::model_list_req(next_id, Some(&cursor)),
+                                )
+                                .await?;
+                                next_id += 1;
+                                continue;
+                            }
+                            validating_model = false;
+                            let catalog =
+                                CodexModelCatalog { models: std::mem::take(&mut model_catalog) };
+                            if let Some(err) = unknown_model(self.cfg.model.as_deref(), &catalog) {
+                                self.events
+                                    .send(AdapterEvent::CodexModels { catalog })
+                                    .await
+                                    .ok();
+                                tracing::error!(%err, "codex: rejecting spawn");
+                                self.fail_handshake(ack, &err).await;
+                                handshake_failed = true;
+                                let _ = child.start_kill();
+                                break;
+                            }
+                            catalog_sent = true;
+                            self.events.send(AdapterEvent::CodexModels { catalog }).await.ok();
+                            let (req, method) = self.thread_request();
+                            pending_rpcs.insert(ID_THREAD_START, method, None, handshake_deadline);
+                            write_json(&mut stdin, &req).await?;
                         }
                         ("turn/interrupt", outcome) => {
                             if let Some(command_id) = pending.command_id {
@@ -2298,7 +2380,18 @@ impl CodexSession {
         // that we did not request is surfaced as `Crashed` with the captured
         // stderr tail — the diagnostic for the macOS "randomly dies" report.
         let status = child.wait().await;
-        if reexec_exit || local_id.is_empty() {
+        // Let the drain catch codex's final lines before any tail is read.
+        if let Some(drain) = stderr_drain {
+            let _ = tokio::time::timeout(Duration::from_secs(1), drain).await;
+        }
+        if local_id.is_empty() {
+            if reexec_exit || handshake_failed {
+                return Ok(());
+            }
+            let exit = status.map_or_else(|e| e.to_string(), |s| s.to_string());
+            anyhow::bail!("codex app-server exited ({exit}) before the thread was started");
+        }
+        if reexec_exit {
             return Ok(());
         }
         let (mut retry, dropped, drained_kill) = partition_drained(drained);
@@ -2310,7 +2403,7 @@ impl CodexSession {
                 Ok(s) => Some(EndReason::Crashed {
                     detail: format!(
                         "codex app-server exited ({s}){}",
-                        stderr_tail(&stderr_ring).await
+                        stderr_tail(stderr_ring).await
                     ),
                 }),
                 Err(e) => Some(EndReason::Crashed {
@@ -2558,6 +2651,22 @@ pub fn spawn_resumed_session(
             tracing::error!(%err, "codex resumed app-server session ended in error");
         }
     });
+}
+
+/// `Some(message)` when `model` is set and absent from the catalog (by id or
+/// underlying slug). An empty catalog cannot vouch for anything and passes.
+fn unknown_model(model: Option<&str>, catalog: &CodexModelCatalog) -> Option<String> {
+    let model = model?;
+    if catalog.models.is_empty() || catalog.models.iter().any(|m| m.id == model || m.model == model)
+    {
+        return None;
+    }
+    let mut available: Vec<&str> =
+        catalog.models.iter().filter(|m| !m.hidden).map(|m| m.id.as_str()).collect();
+    if available.is_empty() {
+        available = catalog.models.iter().map(|m| m.id.as_str()).collect();
+    }
+    Some(format!("unknown model {model}; available: {}", available.join(", ")))
 }
 
 /// Format the retained stderr tail for inclusion in a crash detail. Empty
@@ -3141,6 +3250,125 @@ mod tests {
         }
         shutdown.cancel();
         let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle).await;
+    }
+
+    fn fake_codex(script: &str) -> (tempfile::TempDir, String) {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("codex");
+        std::fs::write(&bin, script).unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let path = bin.to_string_lossy().into_owned();
+        (dir, path)
+    }
+
+    /// Answers `initialize`, serves a two-model catalog, and records any
+    /// `thread/start` in `marker` so a test can assert it never got there.
+    fn catalog_server_script(marker: &std::path::Path) -> String {
+        FAKE_CATALOG_SERVER.replace("$MARKER", &marker.to_string_lossy())
+    }
+
+    const FAKE_CATALOG_SERVER: &str = r#"#!/bin/sh
+while IFS= read -r line; do
+  case "$line" in
+    *'"method":"initialize"'*) echo '{"jsonrpc":"2.0","id":1,"result":{"userAgent":"codex/0.144.1"}}' ;;
+    *'"method":"model/list"'*) echo '{"jsonrpc":"2.0","id":100,"result":{"data":[{"id":"gpt-5-codex","model":"gpt-5-codex","displayName":"GPT-5 Codex","hidden":false,"isDefault":true},{"id":"gpt-5-secret","model":"gpt-5-secret","displayName":"hidden","hidden":true}]}}' ;;
+    *'"method":"thread/start"'*) echo started > "$MARKER"; echo '{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"t-1","cwd":"/tmp"}}}' ;;
+  esac
+done
+"#;
+
+    fn run_fresh_spawn(
+        bin: String,
+        model: Option<&str>,
+    ) -> (Uuid, mpsc::Receiver<AdapterEvent>, CancellationToken) {
+        let (tx, rx) = mpsc::channel(64);
+        let command_id = Uuid::new_v4();
+        let shutdown = CancellationToken::new();
+        let session = CodexSession::new_fresh(
+            AppServerConfig { bin, model: model.map(str::to_owned), ..AppServerConfig::default() },
+            "/tmp".to_string(),
+            std::collections::BTreeMap::new(),
+            None,
+            None,
+            Vec::new(),
+            Some(command_id),
+            None,
+            None,
+            tx,
+            LiveSessionRegistry::default(),
+            SessionRegistry::default(),
+            shutdown.clone(),
+        );
+        tokio::spawn(session.run());
+        (command_id, rx, shutdown)
+    }
+
+    async fn spawn_result(rx: &mut mpsc::Receiver<AdapterEvent>) -> (bool, Option<String>) {
+        let wait = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while let Some(evt) = rx.recv().await {
+                if let AdapterEvent::CommandResult { ok, error, .. } = evt {
+                    return (ok, error);
+                }
+            }
+            panic!("no CommandResult");
+        });
+        wait.await.expect("spawn ack within 10s")
+    }
+
+    #[tokio::test]
+    async fn early_exit_folds_stderr_into_spawn_failure() {
+        let (_dir, bin) =
+            fake_codex("#!/bin/sh\necho 'error: not logged in; run codex login' >&2\nexit 1\n");
+        let (command_id, mut rx, shutdown) = run_fresh_spawn(bin, None);
+        let (ok, error) = spawn_result(&mut rx).await;
+        shutdown.cancel();
+        assert!(!ok, "{command_id} should fail");
+        let error = error.unwrap();
+        assert!(error.contains("exited (exit status: 1) before the thread was started"), "{error}");
+        assert!(error.contains("not logged in; run codex login"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn unknown_model_fails_before_thread_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("started");
+        let (_bin_dir, bin) = fake_codex(&catalog_server_script(&marker));
+        let (_, mut rx, shutdown) = run_fresh_spawn(bin, Some("gpt-nope"));
+        let (ok, error) = spawn_result(&mut rx).await;
+        shutdown.cancel();
+        assert!(!ok);
+        assert_eq!(error.as_deref(), Some("unknown model gpt-nope; available: gpt-5-codex"));
+        assert!(!marker.exists(), "thread/start must not be sent for an unknown model");
+    }
+
+    #[tokio::test]
+    async fn known_model_passes_the_catalog_check() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("started");
+        let (_bin_dir, bin) = fake_codex(&catalog_server_script(&marker));
+        let (_, mut rx, shutdown) = run_fresh_spawn(bin, Some("gpt-5-codex"));
+        let (ok, error) = spawn_result(&mut rx).await;
+        shutdown.cancel();
+        assert!(ok, "{error:?}");
+        assert!(marker.exists());
+    }
+
+    #[test]
+    fn unknown_model_lists_visible_ids() {
+        let catalog = CodexModelCatalog {
+            models: model_list::parse_model_list(&json!({"data": [
+                {"id": "a", "hidden": false}, {"id": "b", "hidden": true}
+            ]})),
+        };
+        assert_eq!(unknown_model(Some("a"), &catalog), None);
+        assert_eq!(unknown_model(Some("b"), &catalog), None);
+        assert_eq!(unknown_model(None, &catalog), None);
+        assert_eq!(
+            unknown_model(Some("x"), &catalog).as_deref(),
+            Some("unknown model x; available: a")
+        );
+        assert_eq!(unknown_model(Some("x"), &CodexModelCatalog { models: vec![] }), None);
     }
 
     #[test]
