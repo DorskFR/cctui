@@ -117,7 +117,7 @@ mod tests {
     fn registration_options_ask_for_a_resident_key() {
         let webauthn = build("https://cctui.example.com", None).unwrap();
         let (mut ccr, _state) = webauthn
-            .start_passkey_registration(Uuid::new_v4(), "morveus", "morveus", None)
+            .start_passkey_registration(Uuid::new_v4(), "alice", "alice", None)
             .unwrap();
         require_resident_key(&mut ccr);
         let sel = ccr.public_key.authenticator_selection.unwrap();
