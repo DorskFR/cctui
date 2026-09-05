@@ -931,6 +931,22 @@
 		left: auto;
 		right: -5px;
 	}
+	/* An always-visible knob in the middle of the edge, like the kit's panel handle. */
+	.grip::before {
+		content: '';
+		position: absolute;
+		top: 50%;
+		left: 3px;
+		width: 4px;
+		height: 2.5rem;
+		margin-top: -1.25rem;
+		border-radius: var(--r-pill);
+		background: var(--border-strong);
+	}
+	.grip:hover::before,
+	.grip.dragging::before {
+		background: var(--accent);
+	}
 	.grip::after {
 		content: '';
 		position: absolute;

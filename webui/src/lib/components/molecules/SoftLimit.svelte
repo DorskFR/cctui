@@ -101,7 +101,7 @@
 
 {#snippet readoutSnippet()}
 	<span class="readout">
-		{readoutText}{#if showReset && resets}{' · '}<Timestamp
+		{readoutText}{#if showReset && resets}{' ·\u00a0'}<Timestamp
 				value={resets}
 				mode="relative"
 				tone="inherit"

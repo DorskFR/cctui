@@ -260,6 +260,6 @@
 		width: 22rem;
 		max-width: 90vw;
 		max-height: 75dvh;
-		overflow-y: auto;
+		overflow: hidden auto;
 	}
 </style>
