@@ -126,12 +126,11 @@
 	     `const`s (not just reactive template reads) re-localize live. -->
 	{#key locale.current}
 		{#if auth.isAuthed}
-			<div class="app">
+			<div class="app" class:top-nav={topNav}>
 				<Header />
 				<main
 					class="content"
 					class:review={isReview}
-					class:top-nav={topNav}
 					class:dock-left={!!docks?.left}
 					class:dock-right={!!docks?.right}
 					style:--dock-left-w={docks?.left ?? undefined}
@@ -159,12 +158,17 @@
 		min-height: 100dvh;
 		display: flex;
 		flex-direction: column;
+		/* Height of the chrome pinned to the bottom of the viewport. Everything
+		   that has to stop above it (the content padding, the docked panels)
+		   reads this one variable rather than re-deriving --nav-h, so moving the
+		   nav into the header cannot leave a strip of dead space behind. */
+		--bottom-chrome: calc(var(--nav-h) + var(--safe-bottom));
 	}
 	.content {
 		flex: 1;
 		/* clear the fixed header and bottom nav (+ safe areas) */
 		padding-top: calc(var(--header-h) + var(--safe-top) + var(--sp-3));
-		padding-bottom: calc(var(--nav-h) + var(--safe-bottom) + var(--sp-4));
+		padding-bottom: calc(var(--bottom-chrome) + var(--sp-4));
 	}
 	/* Reserve the docked panels' edges (Sessions screen only). */
 	.content.dock-left {
@@ -180,15 +184,13 @@
 		flex-direction: column;
 		height: 100dvh;
 		padding-top: calc(var(--header-h) + var(--safe-top));
-		padding-bottom: calc(var(--nav-h) + var(--safe-bottom));
+		padding-bottom: var(--bottom-chrome);
 	}
-	/* With the tabs in the header the bottom bar is gone on wide screens. */
+	/* With the tabs in the header the bottom bar is gone on wide screens, so the
+	   only thing left to clear is the safe area. */
 	@media (min-width: 48rem) {
-		.content.top-nav {
-			padding-bottom: calc(var(--safe-bottom) + var(--sp-4));
-		}
-		.content.top-nav.review {
-			padding-bottom: var(--safe-bottom);
+		.app.top-nav {
+			--bottom-chrome: var(--safe-bottom);
 		}
 	}
 </style>

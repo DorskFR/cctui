@@ -997,7 +997,7 @@
 	"sessions_section_live": "Actives",
 	"sessions_section_show": "Afficher la section {section}",
 	"sessions_section_starred": "Favoris",
-	"sessions_section_unread": "Non lues",
+	"sessions_section_unread": "Non lues seulement",
 	"sessions_sections_aria": "Sections",
 	"sessions_select_all": "Tout sélectionner",
 	"sessions_select_multiple": "Sélectionner plusieurs à archiver",
