@@ -1,12 +1,10 @@
 import type { SessionListItem } from '@bindings/SessionListItem';
 import {
 	BUCKETS,
-	KANBAN_COLS,
 	bucketInSection,
 	groupId,
 	groupOf,
 	groupRows,
-	kanbanColOf,
 	matchesUnreadFilter,
 	nest,
 	rangeIds,
@@ -91,17 +89,6 @@ export class SessionsListController {
 			: this.groupedSections.length > 0;
 	}
 
-	#kanbanNest = $derived.by(() => nest(this.#in.items().filter((s) => s.status !== 'archived')));
-	get kanbanChildGroups(): Map<string, SubGroup[]> {
-		return this.#kanbanNest.childGroups;
-	}
-	kanbanColumns = $derived.by(() => {
-		const rows = this.#kanbanNest.topLevel.filter((s) => this.#keep(s));
-		return KANBAN_COLS.map((c) => ({
-			...c,
-			sessions: this.#sort(rows.filter((s) => kanbanColOf(s) === c.key))
-		}));
-	});
 
 	toggleGroup = (parentId: string, key: string) => {
 		const id = groupId(parentId, key);

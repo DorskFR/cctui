@@ -30,7 +30,6 @@
 		labels,
 		labelFilter = $bindable(),
 		cardView = $bindable(),
-		kanban = $bindable(),
 		colorBy,
 		groupBy,
 		onColorBy,
@@ -49,7 +48,6 @@
 		labels: Label[];
 		labelFilter: Set<string>;
 		cardView: boolean;
-		kanban: boolean;
 		colorBy: Dimension;
 		groupBy: Dimension;
 		onColorBy: (v: Dimension) => void;
@@ -101,7 +99,7 @@
 {/snippet}
 {#snippet foldControls(menu: boolean)}
 	<LabelFilter {menu} {labels} bind:selected={labelFilter} onUpdate={onUpdateLabel} onDelete={onDeleteLabel} />
-	<ViewPicker {menu} bind:cardView bind:kanban />
+	<ViewPicker {menu} bind:cardView />
 	<!-- Stays mounted (disabled) while searching: unmounting it re-wraps the
 	     flex bar mid-type and makes the search field jump. -->
 	{#if selecting}

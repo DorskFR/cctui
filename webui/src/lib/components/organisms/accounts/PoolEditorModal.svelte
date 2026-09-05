@@ -132,10 +132,11 @@
 				</Text>
 			</Field>
 
-			<Field label={m.pools_failover()}>
+			<div class="switch-row">
+				<Text as="span" size="sm">{m.pools_failover()}</Text>
 				<Switch checked={failover} label={m.pools_failover()} onclick={() => (failover = !failover)} />
-				<Text tone="faint" size="xs">{m.pools_failover_hint()}</Text>
-			</Field>
+			</div>
+			<Text tone="faint" size="xs">{m.pools_failover_hint()}</Text>
 
 			<Field label={m.pools_members()}>
 				{#if memberIds.length === 0}
@@ -186,7 +187,7 @@
 	{#snippet footer()}
 		<Cluster justify="space-between" align="center" gap="var(--sp-2)">
 			{#if pool}
-				<Button control variant="danger" onclick={remove}>{m.pools_delete()}</Button>
+				<Button variant="danger" onclick={remove}>{m.pools_delete()}</Button>
 			{:else}
 				<span></span>
 			{/if}
@@ -201,6 +202,12 @@
 	.editor {
 		display: flex;
 		flex-direction: column;
+		gap: var(--sp-3);
+	}
+	.switch-row {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
 		gap: var(--sp-3);
 	}
 	.member-editor {

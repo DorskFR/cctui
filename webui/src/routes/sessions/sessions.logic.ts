@@ -12,11 +12,10 @@ import { labelHue } from '$lib/labels';
 import { m } from '$lib/paraglide/messages';
 
 // ── View picker ───────────────────────────────────────────────────
-export type ViewMode = 'list' | 'card' | 'kanban';
+export type ViewMode = 'list' | 'card';
 export const VIEW_OPTIONS: { value: ViewMode; label: string }[] = [
 	{ value: 'list', get label() { return m.sessions_view_list(); } },
-	{ value: 'card', get label() { return m.sessions_view_card(); } },
-	{ value: 'kanban', get label() { return m.sessions_view_kanban(); } }
+	{ value: 'card', get label() { return m.sessions_view_card(); } }
 ];
 
 // ── Section filter ──────────────────────────────────────
@@ -370,25 +369,6 @@ export const sectionsOf = (s: SessionListItem): Section[] => {
 export const inEnabledSections = (s: SessionListItem, sections: Set<Section>): boolean =>
 	sectionsOf(s).every((sec) => sections.has(sec));
 
-// ── Kanban board ──────────────────────────────────────────────────
-export type KanbanCol = 'drafts' | 'blocked' | 'working' | 'done';
-export const KANBAN_COLS: { key: KanbanCol; label: string }[] = [
-	{ key: 'drafts', get label() { return m.sessions_section_drafts(); } },
-	{ key: 'blocked', get label() { return m.sessions_bucket_blocked(); } },
-	{ key: 'working', get label() { return m.sessions_bucket_working(); } },
-	{ key: 'done', get label() { return m.sessions_bucket_done(); } }
-];
-
-// Pinned rows classify by raw `bucket`, not `groupOf` (which short-circuits to
-// 'pinned'); dispatched + review fold into Working.
-export function kanbanColOf(s: SessionListItem): KanbanCol | null {
-	if (s.status === 'archived') return null;
-	if (s.status === 'draft') return 'drafts';
-	const bucket = s.bucket ?? 'working';
-	if (bucket === 'blocked') return 'blocked';
-	if (bucket === 'done') return 'done';
-	return 'working';
-}
 
 // ── Color / group dimension ───────────────────────────────────────────────
 export type Dimension = 'none' | 'status' | 'label' | 'working_dir' | 'machine';
