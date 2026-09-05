@@ -8,22 +8,18 @@
 		type AccountProvider,
 		type CreateAccount,
 		type CreateProvider,
-		type UsageNotices,
-		type UpdateAccount,
-		type UpdateProvider
+		type UpdateAccount
 	} from '$lib/queries';
 	import { toasts } from '$lib/toast.svelte';
 	import { safeHref } from '$lib/safeHref';
-	import { isStaticCredential, providerLabel, PROVIDER_KINDS, type ProviderKind } from '$lib/providers';
+	import { isStaticCredential, PROVIDER_KINDS, type ProviderKind } from '$lib/providers';
 	import SoftLimit from '$lib/components/molecules/SoftLimit.svelte';
-	import UsageNoticesEditor from '$lib/components/molecules/UsageNoticesEditor.svelte';
 	import AccountAvatar from '$lib/components/molecules/AccountAvatar.svelte';
 	import { isValidAccountEmoji } from '$lib/components/molecules/avatar';
 	import { editorWindowKeys, isUsdKey } from '$lib/components/molecules/usage-windows';
-	import ProviderSettingsList from '$lib/components/organisms/ProviderSettingsList.svelte';
 	import FireworksProviderEditor from '$lib/components/organisms/FireworksProviderEditor.svelte';
-	import AnthropicProviderEditor from '$lib/components/organisms/AnthropicProviderEditor.svelte';
 	import FreeFormEnvEditor from '$lib/components/organisms/FreeFormEnvEditor.svelte';
+	import ProviderDrawer from './provider-drawer/ProviderDrawer.svelte';
 	import { Button, Field, Input, Link, Modal, Select, Text } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 	import {
@@ -31,7 +27,6 @@
 		availableKinds,
 		buildRateLimits,
 		buildSoftLimits,
-		buildUsageNotices,
 		envObject,
 		fwModelList,
 		modelList
@@ -54,23 +49,22 @@
 		if (isAdmin && !ownerId && activeUsers.length) ownerId = activeUsers[0].id;
 	});
 
-	// ------------------------------------------------------------------------
 	// Editor state. One modal, four modes:
 	//   create        — new identity + its first provider credential
 	//   add-provider  — attach a credential to an existing identity
 	//   edit-account  — identity fields: name + write-only extra env
-	//   edit-provider — one credential: aliases, soft limits, settings,
-	//                   compatible-endpoint config, reauth, move
-	type EditorMode = 'create' | 'add-provider' | 'edit-account' | 'edit-provider';
+	//   reauth        — refresh a rejected credential through the sign-in block
+	// Editing an existing credential happens in the provider drawer instead.
+	type EditorMode = 'create' | 'add-provider' | 'edit-account' | 'reauth';
 	let editor = $state<{ mode: EditorMode; accountId?: string; providerId?: string } | null>(null);
+	let drawer = $state<{ accountId: string; providerId: string } | null>(null);
 
 	const editingAccount = $derived(
 		editor?.accountId ? rows.find((a) => a.id === editor?.accountId) : undefined
 	);
-	const editingProvider = $derived(
-		editor?.providerId
-			? editingAccount?.providers.find((p) => p.id === editor?.providerId)
-			: undefined
+	const drawerAccount = $derived(drawer ? rows.find((a) => a.id === drawer?.accountId) : undefined);
+	const drawerProvider = $derived(
+		drawerAccount?.providers.find((p) => p.id === drawer?.providerId)
 	);
 
 	let name = $state('');
@@ -97,7 +91,6 @@
 	// Gateway RPM/TPM ceilings shared across the account's concurrent sessions;
 	// empty inputs ⇒ that dimension unlimited.
 	let rateEdits = $state<{ rpm: number | null; tpm: number | null }>({ rpm: null, tpm: null });
-	let usageNoticesEdit = $state<UsageNotices>({ enabled: false, step_pct: 10 });
 	// Fireworks shares the static-credential shape (no OAuth) but keeps its own
 	// editor: gateway settings + a priced model catalog instead of a bare model
 	// list, and its base URL is an optional override of a built-in upstream.
@@ -107,30 +100,11 @@
 	// the seed lives in exactly one place.
 	let fwSettings = $state<Record<string, unknown>>({});
 	let fwModels = $state<AccountModel[]>([]);
-	// Anthropic's gateway-side request shaping, kept apart from `acctSettings`:
-	// that one is the injected settings.json the harness reads, this one never
-	// leaves the server.
-	let anthropicSettings = $state<Record<string, unknown>>({});
-
-	// Live windows for the provider under edit, so newly discovered (e.g.
-	// model-scoped) windows appear in the editor automatically.
-	const editorUsage = useAccountUsage(
-		() => editingProvider?.id ?? '',
-		() =>
-			!!editingProvider &&
-			(editingProvider.provider === 'anthropic' ||
-				editingProvider.provider === 'openai' ||
-				editingProvider.provider === 'fireworks')
-	);
-	const editorWindows = $derived(editorUsage.data?.windows ?? []);
-	// Window keys to offer: baseline + observed + already-configured.
+	// Window keys to offer on a fresh credential: the baseline pair, so caps can
+	// be set before any usage is reported.
 	const editorRows = $derived(
-		editor?.mode === 'create' || editor?.mode === 'add-provider' || editor?.mode === 'edit-provider'
-			? editorWindowKeys(
-					editorWindows,
-					editingProvider?.soft_limits ?? null,
-					isFireworks ? 'fireworks' : (editingProvider?.family ?? null)
-				)
+		editor?.mode === 'create' || editor?.mode === 'add-provider'
+			? editorWindowKeys([], null, isFireworks ? 'fireworks' : null)
 			: []
 	);
 	// Ensure every offered key has an edit slot (seeded null; open* seeds configured).
@@ -140,25 +114,17 @@
 		}
 	});
 
-	// Per-provider settings + per-account env. `settings`
-	// mirrors the provider's settings_json; `envRows` feed the identity's
-	// write-only env_json (never read back, so they start empty on edit);
-	// `replaceEnv` gates whether env_json is sent at all.
-	let acctSettings = $state<Record<string, unknown>>({});
+	// `envRows` feed the identity's write-only env_json (never read back, so they
+	// start empty on edit); `replaceEnv` gates whether env_json is sent at all.
 	let acctEnvRows = $state<{ name: string; value: string }[]>([]);
 	let acctReplaceEnv = $state(false);
 	let acctEnvRemove = $state<string[]>([]);
-	// Move-provider target (merge path): another account of the same owner.
-	let moveTarget = $state('');
 
 	// "Sign in with Claude" OAuth flow state.
 	let oauthNonce = $state<string | null>(null);
 	let oauthCode = $state('');
 	let oauthBusy = $state(false);
 	let showAdvanced = $state(false);
-	// Reauth mode: editing an existing native provider to refresh its
-	// rejected credentials, which reveals the sign-in block inside the edit modal.
-	let reauthing = $state(false);
 	// OAuth attach target: when adding/reauthenticating, finish the flow
 	// as a provider under this existing account instead of creating a new identity.
 	let oauthAttachAccountId = $state<string | null>(null);
@@ -175,19 +141,14 @@
 		aliasRows = [];
 		softEdits = {};
 		rateEdits = { rpm: null, tpm: null };
-		usageNoticesEdit = { enabled: false, step_pct: 10 };
 		oauthNonce = null;
 		oauthCode = '';
 		oauthBusy = false;
 		showAdvanced = false;
-		reauthing = false;
 		oauthAttachAccountId = null;
-		acctSettings = {};
-		anthropicSettings = {};
 		acctEnvRows = [];
 		acctReplaceEnv = false;
 		acctEnvRemove = [];
-		moveTarget = '';
 		fwSettings = {};
 		fwModels = [];
 	}
@@ -281,52 +242,17 @@
 	}
 
 	export function openEditProvider(a: OAuthAccount, p: AccountProvider) {
-		resetForm();
-		editor = { mode: 'edit-provider', accountId: a.id, providerId: p.id };
-		provider = p.provider as ProviderKind;
-		// Compatible endpoints can edit their model list in place. The
-		// base URL, credential, and scheme are never read back, so they start
-		// blank/"keep" — supplying one overwrites, leaving it keeps the stored value.
-		if (p.provider === 'fireworks') {
-			fwSettings = { ...(p.provider_settings ?? {}) };
-			fwModels = (p.models ?? []).map((mo) => ({ ...mo }));
-			authScheme = 'keep';
-		} else if (p.provider.endsWith('-compatible')) {
-			const ms = p.models ?? [];
-			modelRows = ms.length
-				? ms.map((m) => ({ model: m.model, label: m.label }))
-				: [{ model: '', label: '' }];
-			authScheme = 'keep';
-		}
-		// Aliases are editable for every provider.
-		aliasRows = Object.entries(p.model_aliases ?? {}).map(([alias, model]) => ({ alias, model }));
-		// Soft limits are editable per window for every provider.
-		softEdits = {};
-		for (const [key, v] of Object.entries(p.soft_limits ?? {})) {
-			softEdits[key] = {
-				cap: v.cap_pct ?? null,
-				capUsd: v.cap_usd ?? null,
-				bypass: v.bypass_minutes ?? null
-			};
-		}
-		// Settings are editable per provider.
-		acctSettings = { ...(p.settings_json ?? {}) };
-		anthropicSettings = { ...(p.provider_settings ?? {}) };
-		rateEdits = { rpm: p.rate_limits?.rpm ?? null, tpm: p.rate_limits?.tpm ?? null };
-		usageNoticesEdit = {
-			enabled: p.usage_notices?.enabled ?? false,
-			step_pct: p.usage_notices?.step_pct ?? 10
-		};
+		drawer = { accountId: a.id, providerId: p.id };
 	}
 
-	// Reauthenticate a flagged provider: open its edit modal, flip into
-	// reauth mode (reveals the sign-in block), and kick the authorize leg. The
-	// pasted code is exchanged by finishOAuthLogin, which refreshes the
-	// same-family credential in place and clears `needs_reauth` server-side.
+	// Reauthenticate a flagged provider: open the sign-in block and kick the
+	// authorize leg. The pasted code is exchanged by finishOAuthLogin, which
+	// refreshes the same-family credential in place and clears `needs_reauth`.
 	export function reauth(a: OAuthAccount, p: AccountProvider) {
-		openEditProvider(a, p);
+		resetForm();
+		editor = { mode: 'reauth', accountId: a.id, providerId: p.id };
+		provider = p.provider as ProviderKind;
 		ownerId = a.user_id;
-		reauthing = true;
 		// Attach the refreshed credential to THIS account rather than
 		// creating a new identity from the name.
 		oauthAttachAccountId = a.id;
@@ -355,32 +281,6 @@
 				else if (acctEnvRemove.length) identity.env_remove = acctEnvRemove;
 				await actions.update(editor.accountId, identity);
 				toasts.ok(m.accounts_account_updated());
-			} else if (mode === 'edit-provider' && editor?.accountId && editor.providerId) {
-				// Always send the alias map + soft limits + settings so clearing
-				// them sticks (empty object clears the stored blob). Settings only
-				// apply to the claude-code harness → anthropic-family providers.
-				const body: UpdateProvider = {
-					model_aliases,
-					soft_limits: buildSoftLimits(softEdits),
-					rate_limits: buildRateLimits(rateEdits),
-					usage_notices: buildUsageNotices(usageNoticesEdit),
-					...(editingProvider?.family === 'anthropic'
-						? { settings_json: acctSettings, provider_settings: anthropicSettings }
-						: {})
-				};
-				if (isFireworks) {
-					body.models = fwModelList(fwModels);
-					body.provider_settings = fwSettings;
-					if (baseUrl.trim()) body.base_url = baseUrl.trim();
-					if (credential.trim()) body.access_token = credential.trim();
-				} else if (isCompatible) {
-					body.models = modelList(modelRows);
-					if (baseUrl.trim()) body.base_url = baseUrl.trim();
-					if (credential.trim()) body.access_token = credential.trim();
-					if (authScheme !== 'keep') body.auth_scheme = authScheme;
-				}
-				await actions.updateProvider(editor.accountId, editor.providerId, body);
-				toasts.ok(m.accounts_provider_updated());
 			} else if (mode === 'add-provider' && editor?.accountId) {
 				// Native OAuth adds go through finishOAuthLogin instead; this path is
 				// the compatible-endpoint / pasted-refresh-token attach.
@@ -492,36 +392,14 @@
 		}
 	}
 
-	async function moveProvider() {
-		if (!editor?.accountId || !editor.providerId || !moveTarget) return;
-		try {
-			await actions.moveProvider(editor.accountId, editor.providerId, moveTarget);
-			toasts.ok(m.accounts_provider_moved());
-			close();
-		} catch (e) {
-			toasts.error(errMessage(e));
-		}
-	}
-
-	/** Same-owner move targets whose family slot is free (server 409s otherwise). */
-	const moveTargets = $derived(
-		editingAccount && editingProvider
-			? rows.filter(
-					(a) =>
-						a.id !== editingAccount.id &&
-						a.user_id === editingAccount.user_id &&
-						!a.providers.some((p) => p.family === editingProvider.family)
-				)
-			: []
-	);
-
 	// Native OAuth flows save via finishOAuthLogin (the pasted-code exchange).
 	const oauthSaves = $derived(
 		editor !== null &&
-			(editor?.mode === 'create' || editor?.mode === 'add-provider' || reauthing) &&
-			!isCompatible &&
-			oauthNonce !== null &&
-			!showAdvanced
+			(editor.mode === 'reauth' ||
+				((editor.mode === 'create' || editor.mode === 'add-provider') &&
+					!isCompatible &&
+					oauthNonce !== null &&
+					!showAdvanced))
 	);
 
 	const modalTitle = $derived(
@@ -531,9 +409,7 @@
 				? m.accounts_modal_add_provider({ name: editingAccount?.name ?? '' })
 				: editor?.mode === 'edit-account'
 					? m.accounts_modal_edit_account()
-					: reauthing
-						? m.accounts_modal_reauth()
-						: m.accounts_modal_edit_provider({ provider: providerLabel(editingProvider?.provider ?? '') })
+					: m.accounts_modal_reauth()
 	);
 </script>
 
@@ -600,43 +476,22 @@
 						     optional override of the built-in upstream, so it is not
 						     required; the gateway settings + priced model catalog live in
 						     their own editor. -->
-						{@const isEdit = editor?.mode === 'edit-provider'}
 						<Field label={m.accounts_field_credential()}>
-							<Input
-								type="password"
-								bind:value={credential}
-								placeholder={isEdit
-									? m.accounts_placeholder_keep_current()
-									: 'fw_...'}
-							/>
+							<Input type="password" bind:value={credential} placeholder="fw_..." />
 						</Field>
 						<Field label={m.accounts_field_base_url()}>
-							<Input
-								bind:value={baseUrl}
-								placeholder={isEdit
-									? m.accounts_placeholder_keep_current()
-									: 'https://api.fireworks.ai/inference/v1'}
-							/>
+							<Input bind:value={baseUrl} placeholder="https://api.fireworks.ai/inference/v1" />
 						</Field>
 						<FireworksProviderEditor bind:settings={fwSettings} bind:models={fwModels} />
 					{:else if isCompatible}
-						<!-- Compatible endpoint: base URL + a static credential +
-						     a model list. No OAuth; the gateway forwards the credential and
-						     skips refresh. On edit the model list is editable in
-						     place; base URL / credential / scheme are write-only — blank or
-						     "keep" leaves the stored value untouched. -->
-						{@const isEdit = editor?.mode === 'edit-provider'}
+							<!-- Compatible endpoint: base URL + a static credential + a model
+						     list. No OAuth; the gateway forwards the credential and skips
+						     refresh. -->
 						<Field label={m.accounts_field_base_url()}>
-							<Input
-								bind:value={baseUrl}
-								placeholder={isEdit ? m.accounts_placeholder_keep_current() : 'https://litellm.example/v1'}
-							/>
+							<Input bind:value={baseUrl} placeholder="https://litellm.example/v1" />
 						</Field>
 						<Field label={m.accounts_field_auth_scheme()}>
 							<Select bind:value={authScheme}>
-								{#if isEdit}
-									<option value="keep">{m.accounts_auth_keep()}</option>
-								{/if}
 								<option value="bearer">{m.accounts_auth_bearer()}</option>
 								<option value="api_key">{m.accounts_auth_api_key()}</option>
 							</Select>
@@ -645,9 +500,7 @@
 							<Input
 								type="password"
 								bind:value={credential}
-								placeholder={isEdit
-									? m.accounts_placeholder_keep_current()
-									: m.accounts_placeholder_credential()}
+								placeholder={m.accounts_placeholder_credential()}
 							/>
 						</Field>
 						<div class="models">
@@ -676,7 +529,7 @@
 								>{m.accounts_add_model()}</Button
 							>
 						</div>
-					{:else if editor?.mode === 'create' || editor?.mode === 'add-provider' || reauthing}
+					{:else if editor?.mode === 'create' || editor?.mode === 'add-provider' || editor?.mode === 'reauth'}
 						<!-- Sign in with Claude / ChatGPT: authorize upstream, paste back.
 						     Also shown when reauthenticating an existing provider. -->
 						{#if !oauthNonce}
@@ -713,7 +566,7 @@
 								>
 							</Text>
 						{/if}
-						{#if !reauthing}
+						{#if editor?.mode !== 'reauth'}
 							<details bind:open={showAdvanced} class="adv">
 								<summary><Text tone="muted" size="sm">{m.accounts_adv_refresh_summary()}</Text></summary>
 								<Field label={m.accounts_refresh_token_label()} class="adv-fld">
@@ -729,7 +582,7 @@
 
 					<!-- Model aliases: logical name -> concrete model code,
 					     resolved server-side at spawn; works for every provider. -->
-					{#if editor?.mode === 'edit-provider' || isCompatible}
+					{#if isCompatible}
 						<div class="models">
 							<Text as="div" tone="muted" size="sm">{m.accounts_aliases_label()}</Text>
 							<Text as="div" tone="faint" size="xs">
@@ -763,7 +616,7 @@
 					     (baseline + observed + configured), so model-scoped windows appear
 					     automatically. Works for anthropic (upstream usage API) and openai
 					     (locally metered). -->
-					{#if provider === 'anthropic' || provider === 'anthropic-compatible' || provider === 'openai' || isFireworks}
+					{#if editor?.mode !== 'reauth' && (provider === 'anthropic' || provider === 'anthropic-compatible' || provider === 'openai' || isFireworks)}
 						<div class="models">
 							<Text as="div" tone="muted" size="sm">{m.accounts_soft_limits_label()}</Text>
 							<Text as="div" tone="faint" size="xs">
@@ -784,58 +637,22 @@
 						</div>
 					{/if}
 
-					{#if editor?.mode === 'edit-provider' && (provider === 'anthropic' || provider === 'openai')}
-						<UsageNoticesEditor bind:value={usageNoticesEdit} />
-					{/if}
-
 					<!-- Gateway rate limits: an account-wide RPM/TPM tier a
 					     pay-per-token provider shares across every concurrent session,
 					     throttled at the proxy. Blank = unlimited. -->
-					<div class="models">
-						<Text as="div" tone="muted" size="sm">{m.accounts_rate_limits_label()}</Text>
-						<Text as="div" tone="faint" size="xs">{m.accounts_rate_limits_help()}</Text>
-						<div class="rate-row">
-							<Field label={m.accounts_rate_rpm_label()}>
-								<Input type="number" min="0" step="1" bind:value={rateEdits.rpm} placeholder="e.g. 60" />
-							</Field>
-							<Field label={m.accounts_rate_tpm_label()}>
-								<Input type="number" min="0" step="1" bind:value={rateEdits.tpm} placeholder="e.g. 90000" />
-							</Field>
-						</div>
-					</div>
-
-					<!-- Per-provider settings. Only the claude-code
-					     harness has an injectable settings.json today, so only
-					     anthropic-family providers get the toggle list. -->
-					{#if editor?.mode === 'edit-provider' && editingProvider}
-						{#if editingProvider.family === 'anthropic'}
-							<ProviderSettingsList bind:settings={acctSettings} />
-							<AnthropicProviderEditor bind:settings={anthropicSettings} />
-						{:else if editingProvider.family === 'openai'}
-							<Text tone="faint" size="sm">
-								{m.accounts_no_codex_settings()}
-							</Text>
-						{/if}
-
-						<!-- Move: re-parent this credential onto another account of
-						     the same owner — the merge path for migrated split rows. -->
-						{#if !reauthing && moveTargets.length}
-							<div class="models">
-								<Text as="div" tone="muted" size="sm">{m.accounts_move_label()}</Text>
-								<Text as="div" tone="faint" size="xs">
-									{m.accounts_move_help({ family: editingProvider.family })}
-								</Text>
-								<div class="move-row">
-									<Select bind:value={moveTarget} aria-label={m.accounts_move_label()}>
-										<option value="">{m.accounts_move_pick()}</option>
-										{#each moveTargets as t (t.id)}
-											<option value={t.id}>{t.name}</option>
-										{/each}
-									</Select>
-									<Button disabled={!moveTarget} onclick={moveProvider}>{m.accounts_move_button()}</Button>
-								</div>
+					{#if editor?.mode !== 'reauth'}
+						<div class="models">
+							<Text as="div" tone="muted" size="sm">{m.accounts_rate_limits_label()}</Text>
+							<Text as="div" tone="faint" size="xs">{m.accounts_rate_limits_help()}</Text>
+							<div class="rate-row">
+								<Field label={m.accounts_rate_rpm_label()}>
+									<Input type="number" min="0" step="1" bind:value={rateEdits.rpm} placeholder="e.g. 60" />
+								</Field>
+								<Field label={m.accounts_rate_tpm_label()}>
+									<Input type="number" min="0" step="1" bind:value={rateEdits.tpm} placeholder="e.g. 90000" />
+								</Field>
 							</div>
-						{/if}
+						</div>
 					{/if}
 				{/if}
 			</div>
@@ -850,6 +667,15 @@
 			{/if}
 		{/snippet}
 	</Modal>
+{/if}
+
+{#if drawer && drawerAccount && drawerProvider}
+	<ProviderDrawer
+		account={drawerAccount}
+		provider={drawerProvider}
+		accounts={rows}
+		onclose={() => (drawer = null)}
+	/>
 {/if}
 
 <style>
@@ -874,12 +700,6 @@
 	.model-row {
 		display: grid;
 		grid-template-columns: 1fr 1fr auto;
-		gap: var(--sp-2);
-		align-items: center;
-	}
-	.move-row {
-		display: grid;
-		grid-template-columns: 1fr auto;
 		gap: var(--sp-2);
 		align-items: center;
 	}

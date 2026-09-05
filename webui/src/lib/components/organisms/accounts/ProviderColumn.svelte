@@ -1,15 +1,11 @@
 <script lang="ts">
 	import type { AccountProvider } from '$lib/queries';
-	import { useAccountActions } from '$lib/queries';
 	import { compact } from '$lib/format';
 	import UsageBars from '$lib/components/molecules/UsageBars.svelte';
 	import AdapterIcon from '$lib/components/atoms/AdapterIcon.svelte';
-	import { Button, IconButton, Switch, Text, Timestamp } from '@dorsk/tsumikit';
+	import { Button, IconButton, Text, Timestamp } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 	import { providerLabel } from '$lib/providers';
-	import { useQueryClient } from '@tanstack/svelte-query';
-	import { toasts } from '$lib/toast.svelte';
-	import { errMessage } from '$lib/api';
 
 	let {
 		provider,
@@ -36,26 +32,6 @@
 		if (aliases.length) return aliases.join(', ');
 		return (p.models ?? []).map((mo) => mo.label || mo.model).join(', ');
 	});
-
-	const actions = useAccountActions();
-	const qc = useQueryClient();
-	let pinned = $state<boolean | null>(null);
-	const headerPin = $derived(pinned ?? p.header_pin);
-	const canPin = $derived(canManage && (native || p.provider === 'fireworks') && !p.managed);
-	$effect(() => {
-		if (pinned !== null && p.header_pin === pinned) pinned = null;
-	});
-	async function togglePin() {
-		const next = !headerPin;
-		pinned = next;
-		try {
-			await actions.updateProvider(p.account_id, p.id, { header_pin: next });
-			qc.invalidateQueries({ queryKey: ['accounts-usage'] });
-		} catch (e) {
-			pinned = !next;
-			toasts.error(errMessage(e));
-		}
-	}
 </script>
 
 <div class="column">
@@ -102,15 +78,6 @@
 		softLimits={p.soft_limits}
 	/>
 
-	{#if canPin}
-		<div class="pin">
-			<Text as="span" size="xs" tone="muted" title={m.providers_header_pin_help()}>
-				{m.providers_header_pin()}
-			</Text>
-			<Switch checked={headerPin} label={m.providers_header_pin()} onclick={togglePin} />
-		</div>
-	{/if}
-
 	<div class="stats">
 		<Text as="span" size="xs" tone="faint">{m.providers_requests({ n: compact(p.request_count) })}</Text>
 		<Text as="span" size="xs" tone="faint">
@@ -156,12 +123,6 @@
 		border-radius: var(--r-sm);
 		background: color-mix(in srgb, var(--danger) 12%, transparent);
 		color: var(--danger);
-	}
-	.pin {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: var(--sp-3);
 	}
 	.stats {
 		display: flex;
