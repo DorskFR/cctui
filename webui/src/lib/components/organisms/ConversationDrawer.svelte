@@ -576,12 +576,6 @@
 		position: relative;
 		z-index: var(--z-drawer);
 	}
-	/* ResizablePanel has no prop to suppress its edge toggle in overlay mode,
-	   where the scrim already closes the drawer and the chevron only lands on
-	   top of the toolbar. Drop the override once tsumikit grows the prop. */
-	.drawer-host :global(.collapse-control) {
-		display: none;
-	}
 	.drawer {
 		display: flex;
 		flex-direction: column;

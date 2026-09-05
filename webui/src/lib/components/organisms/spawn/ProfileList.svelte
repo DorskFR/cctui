@@ -5,7 +5,7 @@
 	import ProfileRow from './ProfileRow.svelte';
 	import ProfileAdjust from './ProfileAdjust.svelte';
 	import { claudeModels } from './options';
-	import { specChain, specOf, type ProfileSpec } from './profiles';
+	import { EMPTY_SPEC, specChain, specOf, type ProfileSpec } from './profiles';
 	import { profileUsage } from '$lib/spawnMemory';
 	import { m } from '$lib/paraglide/messages';
 
@@ -77,6 +77,23 @@
 </script>
 
 <div class="list" role="radiogroup" aria-label={m.spawn_profiles_aria()}>
+	<!-- No saved profile yet: the kit editor stands in for the profile rows, so
+	     harness / account / model / effort / permissions are always reachable. -->
+	{#if profiles.length === 0}
+		<ProfileAdjust
+			initial={oneOff ?? EMPTY_SPEC}
+			{accounts}
+			{pools}
+			{usage}
+			{machineId}
+			{busy}
+			onuseonce={(s) => (oneOff = s)}
+			onsave={(_name, s) => {
+				oneOff = s;
+				oncreate();
+			}}
+		/>
+	{/if}
 	{#each profiles as p (p.id)}
 		{@const spec = selectedId === p.id && oneOff ? oneOff : specOf(p)}
 		<ProfileRow

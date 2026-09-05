@@ -1,8 +1,7 @@
 <script lang="ts">
-	// A file as a small bordered box: glyph · name (truncating) · size. NOT
-	// tsumikit's `Button chip`, which is a fixed 2.5rem square meant for a lone
-	// glyph — file names spill straight out of it.
-	import { Icon, Text } from '@dorsk/tsumikit';
+	// A file as a chip: glyph · name (truncating) · size. Uses the kit's Badge in
+	// button form — the same shape WorkingDir builds its path chip from.
+	import { Badge, Text } from '@dorsk/tsumikit';
 	import { fmtSize } from '$lib/attachments';
 
 	let {
@@ -27,56 +26,32 @@
 	} = $props();
 </script>
 
-<button
-	type="button"
-	class="file-chip"
-	class:unavailable
-	{title}
-	disabled={unavailable}
-	aria-expanded={expanded === null ? undefined : expanded}
-	onclick={() => onclick?.()}
->
-	<span class="glyph"><Icon name={expanded === null ? 'file-text' : expanded ? 'chevron-down' : 'chevron-right'} size={12} /></span>
-	<span class="name">{name}</span>
-	{#if detail ?? size !== null}
-		<Text size="xs" tone="faint" as="span">{detail ?? fmtSize(size ?? 0)}</Text>
-	{/if}
-</button>
+<span class="chip" class:unavailable>
+	<Badge
+		as="button"
+		mono
+		truncate
+		maxWidth="100%"
+		icon={expanded === null ? 'file-text' : expanded ? 'chevron-down' : 'chevron-right'}
+		{title}
+		disabled={unavailable}
+		aria-expanded={expanded === null ? undefined : expanded}
+		onclick={() => onclick?.()}
+	>
+		{name}
+		{#if detail ?? size !== null}
+			<Text size="xs" tone="faint" as="span">{detail ?? fmtSize(size ?? 0)}</Text>
+		{/if}
+	</Badge>
+</span>
 
 <style>
-	.file-chip {
+	.chip {
 		display: inline-flex;
-		align-items: center;
-		gap: var(--sp-2);
 		min-width: 0;
 		max-width: 100%;
-		padding: 3px var(--sp-2);
-		border: 1px solid var(--border);
-		border-radius: var(--r-sm);
-		background: var(--bg-elevated);
-		color: var(--text);
-		cursor: pointer;
-		text-align: left;
 	}
-	.file-chip:hover:not(.unavailable) {
-		background: var(--bg-elevated-2);
-		border-color: var(--border-strong);
-	}
-	.file-chip.unavailable {
+	.unavailable {
 		opacity: 0.5;
-		cursor: default;
-	}
-	.glyph {
-		display: inline-flex;
-		flex: none;
-		color: var(--text-faint);
-	}
-	.name {
-		min-width: 0;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-		font-family: var(--font-mono);
-		font-size: var(--fs-xs);
 	}
 </style>

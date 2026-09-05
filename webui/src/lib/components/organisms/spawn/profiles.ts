@@ -50,6 +50,17 @@ type SpecForm = Pick<
 
 const blank = (v: string | null | undefined): string | null => (v?.trim() ? v.trim() : null);
 
+/** An unsaved kit: the harness default, everything else left to the server. */
+export const EMPTY_SPEC: ProfileSpec = {
+	harness: 'claude-code',
+	account_id: null,
+	pool_id: null,
+	no_account: false,
+	model_alias: null,
+	effort: null,
+	permission_mode: null
+};
+
 export function specOf(p: SessionProfile): ProfileSpec {
 	return {
 		harness: p.harness,

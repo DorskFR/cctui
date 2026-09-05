@@ -52,13 +52,20 @@
 		<Text as="p" size="sm" tone="faint">{help}</Text>
 		<div class="scopes">
 			{#each ALL_SCOPES as s (s)}
-				<Switch
-					checked={picked.has(s)}
-					label={s}
-					disabled={!ceiling.has(s)}
-					title={ceiling.has(s) ? m.users_scope_grant({ scope: s }) : m.users_scope_not_in_ceiling()}
-					onclick={() => toggle(s)}
-				/>
+				{@const allowed = ceiling.has(s)}
+				<div
+					class="scope-row"
+					class:out-of-ceiling={!allowed}
+					title={allowed ? m.users_scope_grant({ scope: s }) : m.users_scope_not_in_ceiling()}
+				>
+					<span class="scope-name"><Text as="span" size="sm" variant="code">{s}</Text></span>
+					<Switch
+						checked={picked.has(s)}
+						label={s}
+						disabled={!allowed}
+						onclick={() => toggle(s)}
+					/>
+				</div>
 			{/each}
 		</div>
 	{/snippet}
@@ -71,8 +78,24 @@
 <style>
 	.scopes {
 		display: flex;
-		flex-wrap: wrap;
-		gap: var(--sp-3);
+		flex-direction: column;
 		margin-top: var(--sp-2);
+	}
+	.scope-row {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: var(--sp-3);
+		padding: var(--sp-2) 0;
+		border-bottom: 1px solid var(--border);
+	}
+	.scope-row:last-child {
+		border-bottom: 0;
+	}
+	.out-of-ceiling {
+		opacity: 0.5;
+	}
+	.scope-name {
+		min-width: 0;
 	}
 </style>

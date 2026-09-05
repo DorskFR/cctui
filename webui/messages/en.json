@@ -180,7 +180,7 @@
 	"ask_questions_heading": "❓ Questions",
 	"ask_send_answer": "Send answer",
 	"attachments_missing_dropped": "{count} attachment(s) could not be restored; their references were removed from the prompt",
-	"capbar_readout_resets": "{pct}% · resets {time}",
+	"capbar_caption_resets": "resets {time}",
 	"capbar_tooltip": "cap {pct}% — drag the bar",
 	"capbar_tooltip_readonly": "cap {pct}%",
 	"codex_models_refresh": "Refresh codex models",

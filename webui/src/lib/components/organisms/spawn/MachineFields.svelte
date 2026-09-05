@@ -118,8 +118,7 @@
 	aria-label={m.spawn_prompt_label()}
 	placeholder={m.spawn_prompt_placeholder_chord({ chord: submitChordLabel() })}
 	bind:value={form.prompt}
-	autoresize
-	maxHeight="14rem"
+	resize="bottom"
 	onpaste={onPromptPaste}
 	onkeydown={(e: KeyboardEvent) => {
 		if (onsubmit && isSubmitChord(e)) {

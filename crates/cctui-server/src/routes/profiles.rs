@@ -145,13 +145,13 @@ fn clean_spec(spec: ProfileSpec) -> Result<ProfileSpec, ApiErr> {
 /// The account must be one the caller can launch on: owned, or shared to them.
 async fn account_usable(
     pool: &PgPool,
-    user_id: Uuid,
+    user_id: Option<Uuid>,
     account_id: Uuid,
 ) -> Result<bool, sqlx::Error> {
     sqlx::query_scalar::<_, bool>(
         "SELECT EXISTS (SELECT 1 FROM accounts a \
           WHERE a.id = $2 \
-            AND (a.user_id = $1 OR EXISTS ( \
+            AND ($1::uuid IS NULL OR a.user_id = $1 OR EXISTS ( \
                 SELECT 1 FROM resource_shares s \
                  WHERE s.resource_type = 'account' AND s.resource_id = a.id \
                    AND s.grantee_id = $1 AND s.revoked_at IS NULL)))",
@@ -162,9 +162,14 @@ async fn account_usable(
     .await
 }
 
-async fn pool_owned(pool: &PgPool, user_id: Uuid, pool_id: Uuid) -> Result<bool, sqlx::Error> {
+async fn pool_owned(
+    pool: &PgPool,
+    user_id: Option<Uuid>,
+    pool_id: Uuid,
+) -> Result<bool, sqlx::Error> {
     sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS (SELECT 1 FROM account_pools WHERE id = $2 AND user_id = $1)",
+        "SELECT EXISTS (SELECT 1 FROM account_pools \
+          WHERE id = $2 AND ($1::uuid IS NULL OR user_id = $1))",
     )
     .bind(user_id)
     .bind(pool_id)
@@ -172,7 +177,13 @@ async fn pool_owned(pool: &PgPool, user_id: Uuid, pool_id: Uuid) -> Result<bool,
     .await
 }
 
-async fn check_account(pool: &PgPool, user_id: Uuid, spec: &ProfileSpec) -> Result<(), ApiErr> {
+/// `user_id` is the caller's owner filter: `None` (admin) matches the account
+/// list's own scoping, so the picker cannot offer what this then rejects.
+async fn check_account(
+    pool: &PgPool,
+    user_id: Option<Uuid>,
+    spec: &ProfileSpec,
+) -> Result<(), ApiErr> {
     if let Some(account) = spec.account_id
         && !account_usable(pool, user_id, account).await.map_err(|e| db_err(&e))?
     {
@@ -286,7 +297,7 @@ pub async fn create_profile(
     require_human(&ctx)?;
     let name = clean_name(&req.name)?;
     let spec = clean_spec(req.spec)?;
-    check_account(&state.pool, ctx.user_id, &spec).await?;
+    check_account(&state.pool, ctx.owner_filter(), &spec).await?;
     let row = insert(&state.pool, ctx.user_id, &name, &spec).await.map_err(|e| db_err(&e))?;
     Ok((StatusCode::CREATED, Json(row)))
 }
@@ -302,7 +313,7 @@ pub async fn update_profile(
     let name = req.name.as_deref().map(clean_name).transpose()?;
     let spec = req.spec.map(clean_spec).transpose()?;
     if let Some(spec) = &spec {
-        check_account(&state.pool, ctx.user_id, spec).await?;
+        check_account(&state.pool, ctx.owner_filter(), spec).await?;
     }
     let row = update(&state.pool, ctx.user_id, id, name.as_deref(), spec.as_ref())
         .await
@@ -430,10 +441,14 @@ mod tests {
         assert_eq!(db_err(&dup).0, StatusCode::CONFLICT);
         assert!(insert(&pool, other, "Orchestrator", &kit).await.is_ok());
 
-        assert!(account_usable(&pool, owner, account).await.unwrap());
-        assert!(!account_usable(&pool, other, account).await.unwrap());
-        assert!(pool_owned(&pool, owner, pool_id).await.unwrap());
-        assert!(!pool_owned(&pool, other, pool_id).await.unwrap());
+        assert!(account_usable(&pool, Some(owner), account).await.unwrap());
+        assert!(!account_usable(&pool, Some(other), account).await.unwrap());
+        assert!(pool_owned(&pool, Some(owner), pool_id).await.unwrap());
+        assert!(!pool_owned(&pool, Some(other), pool_id).await.unwrap());
+        // Admin (no owner filter) reaches any account or pool, matching the
+        // scoping the account list itself uses to populate the picker.
+        assert!(account_usable(&pool, None, account).await.unwrap());
+        assert!(pool_owned(&pool, None, pool_id).await.unwrap());
 
         let pooled = ProfileSpec { account_id: None, pool_id: Some(pool_id), ..kit.clone() };
         let with_pool = insert(&pool, owner, "Pooled", &pooled).await.expect("insert pooled");

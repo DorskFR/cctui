@@ -46,12 +46,14 @@
 	);
 	const reported = $derived(usd ? amountUsd !== null : utilization !== null);
 	const now = Date.now();
+	// The readout sits in a fixed-width column, so it carries the percentage
+	// only; the reset countdown rides the caption line, which can wrap.
 	const readout = $derived.by(() => {
 		if (usd) return usdReadout(amountUsd, capUsd) ?? m.softlimit_not_reported();
 		if (pct === null) return m.softlimit_not_reported();
-		const time = resetIn(resets, now);
-		return time ? m.capbar_readout_resets({ pct, time }) : `${pct}%`;
+		return `${pct}%`;
 	});
+	const resetText = $derived(usd || pct === null ? null : resetIn(resets, now));
 	const readonly = $derived(usd || (!editable && !oncapchange));
 
 	// The three-column bar (label | track | readout) only fits while the readout
@@ -110,6 +112,9 @@
 		onchange={commit}
 	>
 		{#snippet caption()}
+			{#if resetText}
+				<Text as="span" size="xs" tone="faint">{m.capbar_caption_resets({ time: resetText })}</Text>
+			{/if}
 			{#if paceKind}
 				<Text
 					as="span"

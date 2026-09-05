@@ -180,7 +180,7 @@
 	"ask_questions_heading": "❓ Questions",
 	"ask_send_answer": "Envoyer la réponse",
 	"attachments_missing_dropped": "{count} pièce(s) jointe(s) n'ont pas pu être restaurées ; leurs références ont été retirées du prompt",
-	"capbar_readout_resets": "{pct} % · réinit. {time}",
+	"capbar_caption_resets": "réinitialisation {time}",
 	"capbar_tooltip": "plafond {pct} % — glissez la barre",
 	"capbar_tooltip_readonly": "plafond {pct} %",
 	"codex_models_refresh": "Rafraîchir les modèles codex",

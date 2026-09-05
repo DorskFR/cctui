@@ -15,7 +15,7 @@
 	import StatsDock from '$lib/components/organisms/statsdock/StatsDock.svelte';
 	import SessionControls from '$lib/components/organisms/SessionControls.svelte';
 	import KanbanBoard from '$lib/components/organisms/KanbanBoard.svelte';
-	import { Button, Callout, Dot, IconButton, Menu, Modal, SectionHeader, Text } from '@dorsk/tsumikit';
+	import { AutoGrid, Button, Callout, Dot, IconButton, Menu, Modal, SectionHeader, Text } from '@dorsk/tsumikit';
 	import MachineBadge from '$lib/components/molecules/MachineBadge.svelte';
 	import { useAllMachines } from '$lib/queries';
 	import {
@@ -791,7 +791,15 @@
 {/snippet}
 
 {#snippet cardGrid(rows: SessionListItem[], childGroups: Map<string, SubGroup[]>, hl: string[] = [])}
-	<div class="card-grid">{@render cardItems(rows, childGroups, hl)}</div>
+	<AutoGrid
+		min="calc(20rem * var(--fs-scale))"
+		max="calc(26.75rem * var(--fs-scale))"
+		gap="var(--sp-3)"
+		align="stretch"
+		style="grid-auto-rows: 250px"
+	>
+		{@render cardItems(rows, childGroups, hl)}
+	</AutoGrid>
 {/snippet}
 
 <!-- Every row set — live buckets, search results, archive browse — renders
@@ -1130,7 +1138,13 @@
 				{@render groupHeader('drafts', m.sessions_section_drafts(), list.draftRows.length, {})}
 				{#if !hiddenSections.has('drafts')}
 					{#if cardView}
-						<div class="card-grid">{@render draftItems(list.draftRows, true)}</div>
+						<AutoGrid
+							min="calc(20rem * var(--fs-scale))"
+							max="calc(26.75rem * var(--fs-scale))"
+							gap="var(--sp-3)"
+							align="stretch"
+							style="grid-auto-rows: 250px"
+						>{@render draftItems(list.draftRows, true)}</AutoGrid>
 					{:else}
 						{@render draftItems(list.draftRows, false)}
 					{/if}
@@ -1291,24 +1305,6 @@
 	}
 	.liveness.online {
 		color: var(--ok);
-	}
-	/* 3-up detailed cards at a uniform height; the container query steps the
-	   columns down before a card gets cramped enough to degrade its footer. */
-	.card-grid {
-		display: grid;
-		grid-template-columns: repeat(3, minmax(0, 1fr));
-		grid-auto-rows: 250px;
-		gap: var(--sp-3);
-	}
-	@container (max-width: 60rem) {
-		.card-grid {
-			grid-template-columns: repeat(2, minmax(0, 1fr));
-		}
-	}
-	@container (max-width: 36rem) {
-		.card-grid {
-			grid-template-columns: minmax(0, 1fr);
-		}
 	}
 	.sections {
 		container-type: inline-size;

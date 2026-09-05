@@ -27,7 +27,7 @@
 	import { m } from '$lib/paraglide/messages';
 
 	let {
-		profile,
+		profile = null,
 		initial,
 		accounts,
 		pools = [],
@@ -38,7 +38,8 @@
 		onsave,
 		ondelete
 	}: {
-		profile: SessionProfile;
+		/** null = no saved profile yet: the panel edits an unsaved kit. */
+		profile?: SessionProfile | null;
 		initial: ProfileSpec;
 		accounts: OAuthAccount[];
 		pools?: AccountPoolView[];
@@ -47,16 +48,18 @@
 		busy?: boolean;
 		onuseonce: (spec: ProfileSpec) => void;
 		onsave: (name: string, spec: ProfileSpec) => void;
-		ondelete: () => void;
+		ondelete?: () => void;
 	} = $props();
 
 	// svelte-ignore state_referenced_locally
 	let draft = $state<ProfileSpec>({ ...initial });
 	// svelte-ignore state_referenced_locally
-	let name = $state(profile.name);
+	let name = $state(profile?.name ?? '');
 
-	const saved = $derived(specOf(profile));
-	const changes = $derived(specChanges(saved, draft) + (name.trim() !== profile.name ? 1 : 0));
+	const saved = $derived(profile ? specOf(profile) : { ...initial });
+	const changes = $derived(
+		specChanges(saved, draft) + (profile && name.trim() !== profile.name ? 1 : 0)
+	);
 
 	const account = $derived(accountById(accounts, draft.account_id));
 	const provider = $derived(providerForAdapter(account, draft.harness));
@@ -134,7 +137,15 @@
 			aria-label={m.spawn_profile_name_aria()}
 			placeholder={m.spawn_profile_name_aria()}
 		/>
-		<IconButton icon="trash" label={m.spawn_profile_delete()} inline hoverDanger onclick={ondelete} />
+		{#if profile}
+			<IconButton
+				icon="trash"
+				label={m.spawn_profile_delete()}
+				inline
+				hoverDanger
+				onclick={ondelete}
+			/>
+		{/if}
 	</div>
 
 	<div class="harness" role="radiogroup" aria-label={m.spawn_profile_harness_aria()}>
@@ -169,7 +180,7 @@
 	</div>
 
 	<EffortSlider
-		id="sp-profile-effort-{profile.id}"
+		id="sp-profile-effort-{profile?.id ?? 'new'}"
 		levels={efforts}
 		current={draft.effort ?? ''}
 		onset={(v) => (draft.effort = v || null)}

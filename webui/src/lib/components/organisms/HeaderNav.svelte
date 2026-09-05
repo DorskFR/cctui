@@ -1,7 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/state';
-	import { Badge } from '@dorsk/tsumikit';
-	import NavLink from '$lib/components/atoms/NavLink.svelte';
+	import { NavItem } from '@dorsk/tsumikit';
 	import { useSessions } from '$lib/queries';
 	import { isNavActive, navItems } from '$lib/navItems';
 	import { m } from '$lib/paraglide/messages';
@@ -17,26 +16,23 @@
 
 <nav class="tabs" aria-label={m.nav_main_label()}>
 	{#each items as it (it.href)}
-		<NavLink href={it.href} variant="tab" active={isNavActive(it.href, page.url.pathname)}>
-			<span class="tab-label">{it.label}</span>
-			{#if it.href === '/sessions' && unreadSessions > 0}
-				<Badge tone="danger" size="xs">{unreadSessions}</Badge>
-			{/if}
-		</NavLink>
+		<NavItem
+			href={it.href}
+			label={it.label}
+			active={isNavActive(it.href, page.url.pathname)}
+			activeStyle="bar"
+			badge={it.href === '/sessions' && unreadSessions > 0 ? unreadSessions : undefined}
+			badgeTone="danger"
+		/>
 	{/each}
 </nav>
 
 <style>
 	.tabs {
 		display: flex;
-		align-items: stretch;
-		align-self: stretch;
+		align-items: center;
+		gap: var(--sp-1);
 		min-width: 0;
 		overflow: hidden;
-		font-size: var(--fs-sm);
-		font-weight: var(--fw-medium);
-	}
-	.tab-label {
-		white-space: nowrap;
 	}
 </style>
