@@ -32,9 +32,11 @@ describe('customModelValue', () => {
 
 describe('withCurrentModel', () => {
 	it('lists an unknown current id as its own option', () => {
-		expect(withCurrentModel(codexModels, 'gpt-6-astra').at(-1)).toEqual({
-			v: 'gpt-6-astra',
-			label: 'gpt-6-astra'
+		// Deliberately an id the static list does not carry: the point is the
+		// fallback path for a remembered/free-text model, not this id.
+		expect(withCurrentModel(codexModels, 'gpt-nonesuch').at(-1)).toEqual({
+			v: 'gpt-nonesuch',
+			label: 'gpt-nonesuch'
 		});
 	});
 

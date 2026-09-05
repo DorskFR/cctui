@@ -15,8 +15,11 @@ export interface ModelOption {
 // purpose: the live catalog is the source of truth and free text covers the rest.
 export const codexModels: ModelOption[] = [
 	{ v: '', label: 'Default' },
-	{ v: 'gpt-5.5', label: 'GPT-5.5' },
-	{ v: 'gpt-5.4', label: 'GPT-5.4' }
+	{ v: 'gpt-6-astra', label: 'GPT-6-Astra' },
+	{ v: 'gpt-5.6-sol', label: 'GPT-5.6-Sol' },
+	{ v: 'gpt-5.6-terra', label: 'GPT-5.6-Terra' },
+	{ v: 'gpt-5.6-luna', label: 'GPT-5.6-Luna' },
+	{ v: 'gpt-5.5', label: 'GPT-5.5' }
 ];
 export const codexEfforts = ['', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 

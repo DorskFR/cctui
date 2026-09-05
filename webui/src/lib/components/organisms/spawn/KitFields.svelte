@@ -8,6 +8,7 @@
 	import { AutoGrid, Field, OptionButton, Select, Text } from '@dorsk/tsumikit';
 	import type { SelectOption } from '@dorsk/tsumikit';
 	import BrandLogo from '$lib/components/atoms/BrandLogo.svelte';
+	import CodexModelsRefresh from '$lib/components/molecules/CodexModelsRefresh.svelte';
 	import EffortSlider from './EffortSlider.svelte';
 	import PermissionModes from './PermissionModes.svelte';
 	import { preferCatalog } from '$lib/harnessModels';
@@ -140,11 +141,22 @@
 			/>
 		</Field>
 		<Field label={m.spawn_field_model()} for="sp-kit-model-{idSuffix}">
-			<Select
-				id="sp-kit-model-{idSuffix}"
-				options={modelOptions}
-				bind:value={() => draft.model_alias ?? '', (v) => (draft.model_alias = v || null)}
-			/>
+			<div class="model">
+				<div class="grow">
+					<Select
+						id="sp-kit-model-{idSuffix}"
+						options={modelOptions}
+						bind:value={() => draft.model_alias ?? '', (v) => (draft.model_alias = v || null)}
+					/>
+				</div>
+				<!-- A model codex only just started advertising reaches the picker
+				     when some session refreshes the machine's catalog. Offer that
+				     refresh at spawn time too, so picking it does not require first
+				     opening a codex conversation. -->
+				{#if draft.harness === 'codex' && machineId}
+					<CodexModelsRefresh {machineId} size={14} />
+				{/if}
+			</div>
 		</Field>
 	</AutoGrid>
 
@@ -166,5 +178,15 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--sp-3);
+	}
+	.model {
+		display: flex;
+		align-items: center;
+		gap: var(--sp-1);
+		min-width: 0;
+	}
+	.grow {
+		flex: 1;
+		min-width: 0;
 	}
 </style>
