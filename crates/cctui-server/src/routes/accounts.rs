@@ -292,6 +292,9 @@ pub struct ProviderInfo {
 pub struct AccountInfo {
     pub id: Uuid,
     pub name: String,
+    /// Owner-chosen identity glyph: one emoji grapheme, or NULL for the
+    /// generated letter square.
+    pub emoji: Option<String>,
     /// Owning user — admins see all accounts, so the owner matters.
     pub user_id: Uuid,
     /// Owner's name for display, joined from `users`.
@@ -318,6 +321,7 @@ pub struct AccountInfo {
 struct AccountRow {
     id: Uuid,
     name: String,
+    emoji: Option<String>,
     user_id: Uuid,
     user_name: Option<String>,
     created_at: DateTime<Utc>,
@@ -333,6 +337,7 @@ impl AccountRow {
         AccountInfo {
             id: self.id,
             name: self.name,
+            emoji: self.emoji,
             user_id: self.user_id,
             user_name: self.user_name,
             pool_eligible: self.pool_eligible,
@@ -399,7 +404,7 @@ const PROVIDER_SELECT: &str = "SELECT p.id, p.account_id, p.provider, p.family, 
      ) fw ON p.family = 'fireworks'";
 
 /// Identity SELECT for [`AccountRow`]. Append a `WHERE`/`ORDER BY` before use.
-const ACCOUNT_SELECT: &str = "SELECT a.id, a.name, a.user_id, u.name AS user_name, a.created_at, a.updated_at, \
+const ACCOUNT_SELECT: &str = "SELECT a.id, a.name, a.emoji, a.user_id, u.name AS user_name, a.created_at, a.updated_at, \
      a.env_json, a.pool_eligible \
      FROM accounts a JOIN users u ON u.id = a.user_id";
 
@@ -515,6 +520,9 @@ pub struct ProviderSpec {
 #[derive(Debug, serde::Deserialize)]
 pub struct CreateAccount {
     pub name: String,
+    /// Identity glyph; one emoji grapheme. Blank/absent ⇒ the letter square.
+    #[serde(default)]
+    pub emoji: Option<String>,
     /// Owning user — required (and only honoured) when authenticated with the
     /// admin token, which has no user identity of its own.
     #[serde(default)]
@@ -538,6 +546,10 @@ pub struct CreateAccount {
 pub struct UpdateAccount {
     #[serde(default)]
     pub name: Option<String>,
+    /// Identity glyph. A blank string clears it back to the letter square;
+    /// absent leaves it unchanged.
+    #[serde(default)]
+    pub emoji: Option<String>,
     #[serde(default)]
     pub env_json: Option<std::collections::HashMap<String, String>>,
     /// Names to remove from the stored env without re-sending the other
@@ -771,6 +783,79 @@ pub async fn settings_catalog() -> Json<SettingsCatalogResponse> {
         env: c.env_allowlist().to_vec(),
         preset,
     })
+}
+
+/// Longest accepted glyph in scalar values: a family ZWJ sequence with skin
+/// tones sits well inside this, a pasted sentence does not.
+const EMOJI_MAX_SCALARS: usize = 8;
+
+const fn is_emoji_base(c: char) -> bool {
+    matches!(c as u32,
+        0x203C | 0x2049 | 0x2122 | 0x2139
+        | 0x2190..=0x21FF
+        | 0x2300..=0x23FF
+        | 0x25AA..=0x25FF
+        | 0x2600..=0x27BF
+        | 0x2934 | 0x2935
+        | 0x2B00..=0x2BFF
+        | 0x3030 | 0x303D | 0x3297 | 0x3299
+        | 0x1F000..=0x1FAFF)
+}
+
+/// Modifiers that decorate a base without starting a new glyph: variation
+/// selectors, skin tones, the keycap enclosure and tag characters.
+const fn is_emoji_modifier(c: char) -> bool {
+    matches!(c as u32, 0xFE0E | 0xFE0F | 0x20E3 | 0x1F3FB..=0x1F3FF | 0xE0020..=0xE007F)
+}
+
+const fn is_regional_indicator(c: char) -> bool {
+    matches!(c as u32, 0x1F1E6..=0x1F1FF)
+}
+
+/// Normalize an account's identity glyph: trimmed, and either a single emoji
+/// grapheme or nothing. Accepts ZWJ sequences (👨‍👩‍👧), skin-tone modifiers and
+/// two-scalar regional-indicator flags; rejects plain text, two glyphs stuck
+/// together, and anything longer than [`EMOJI_MAX_SCALARS`] scalar values.
+/// A blank input is [`None`] — "clear it".
+fn normalize_emoji(raw: &str) -> Result<Option<String>, &'static str> {
+    const BAD: &str = "emoji must be a single emoji character";
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    let chars: Vec<char> = trimmed.chars().collect();
+    if chars.len() > EMOJI_MAX_SCALARS {
+        return Err(BAD);
+    }
+    if is_regional_indicator(chars[0]) {
+        return if chars.len() == 2 && is_regional_indicator(chars[1]) {
+            Ok(Some(trimmed.to_owned()))
+        } else {
+            Err(BAD)
+        };
+    }
+    let mut want_base = true;
+    for &c in &chars {
+        if want_base {
+            if !is_emoji_base(c) {
+                return Err(BAD);
+            }
+            want_base = false;
+        } else if c == '\u{200D}' {
+            want_base = true;
+        } else if !is_emoji_modifier(c) {
+            return Err(BAD);
+        }
+    }
+    if want_base {
+        return Err(BAD);
+    }
+    Ok(Some(trimmed.to_owned()))
+}
+
+/// [`normalize_emoji`] as an API-level check.
+fn emoji_field(raw: Option<&str>) -> Result<Option<String>, (StatusCode, Json<serde_json::Value>)> {
+    raw.map_or(Ok(None), |v| normalize_emoji(v).map_err(|msg| err(StatusCode::BAD_REQUEST, msg)))
 }
 
 /// Validate a pasted `settings_json` blob before persisting it via the
@@ -1102,6 +1187,7 @@ pub async fn create_account(
     if req.name.trim().is_empty() {
         return Err(err(StatusCode::BAD_REQUEST, "name required"));
     }
+    let emoji = emoji_field(req.emoji.as_deref())?;
     let enc_env = encrypt_env(req.env_json.as_ref())?;
     // Validate the optional provider payload BEFORE creating the identity so a
     // bad credential body doesn't leave an empty account behind.
@@ -1113,11 +1199,12 @@ pub async fn create_account(
 
     let mut tx = state.pool.begin().await.map_err(|e| db_err(&e))?;
     let account_id: Uuid = match sqlx::query_scalar(
-        "INSERT INTO accounts (user_id, name, env_json) VALUES ($1, $2, $3) RETURNING id",
+        "INSERT INTO accounts (user_id, name, env_json, emoji) VALUES ($1, $2, $3, $4) RETURNING id",
     )
     .bind(uid)
     .bind(req.name.trim())
     .bind(&enc_env)
+    .bind(&emoji)
     .fetch_one(&mut *tx)
     .await
     {
@@ -1174,6 +1261,9 @@ pub async fn update_account(
         return Err(err(StatusCode::BAD_REQUEST, "name required"));
     }
     let name = req.name.as_deref().map(str::trim).map(str::to_owned);
+    // emoji: provided → set (a blank string clears it); absent → unchanged.
+    let emoji_provided = req.emoji.is_some();
+    let emoji = emoji_field(req.emoji.as_deref())?;
     // env_json: provided → re-encrypt + replace (empty map clears); absent →
     // unchanged. COALESCE can't distinguish those, so carry a provided-flag.
     let (env_provided, enc_env) = if req.env_json.is_none()
@@ -1205,7 +1295,7 @@ pub async fn update_account(
         set_pool_eligible(&state, id, ctx.owner_filter(), eligible).await?;
         // Nothing else to change: don't run the identity update, whose managed
         // guard would 404 an account the veto just applied to cleanly.
-        if name.is_none() && !env_provided {
+        if name.is_none() && !env_provided && !emoji_provided {
             let info = fetch_account_info(&state.pool, id, None)
                 .await
                 .map_err(|e| db_err(&e))?
@@ -1218,6 +1308,7 @@ pub async fn update_account(
         "UPDATE accounts SET \
             name = COALESCE($3, name), \
             env_json = CASE WHEN $4 THEN $5 ELSE env_json END, \
+            emoji = CASE WHEN $6 THEN $7 ELSE emoji END, \
             updated_at = now() \
          WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2) \
            AND NOT EXISTS (SELECT 1 FROM account_providers p \
@@ -1229,6 +1320,8 @@ pub async fn update_account(
     .bind(&name)
     .bind(env_provided)
     .bind(&enc_env)
+    .bind(emoji_provided)
+    .bind(&emoji)
     .fetch_optional(&state.pool)
     .await
     .map_err(|e| match &e {
@@ -2512,6 +2605,43 @@ mod tests {
             soft_now(),
         );
         assert!(cleared.is_empty());
+    }
+
+    #[test]
+    fn accepts_a_single_emoji_grapheme() {
+        for one in [
+            "\u{1F419}",
+            "\u{2764}\u{FE0F}",
+            "\u{1F44D}\u{1F3FD}",
+            "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}",
+            "\u{1F1EB}\u{1F1F7}",
+            "\u{2600}",
+        ] {
+            assert_eq!(normalize_emoji(one), Ok(Some(one.to_string())), "{one} should be accepted");
+        }
+        assert_eq!(normalize_emoji("  \u{1F419}  "), Ok(Some("\u{1F419}".to_string())));
+    }
+
+    #[test]
+    fn blank_emoji_clears_the_glyph() {
+        assert_eq!(normalize_emoji(""), Ok(None));
+        assert_eq!(normalize_emoji("   "), Ok(None));
+    }
+
+    #[test]
+    fn rejects_text_and_multiple_glyphs() {
+        for bad in [
+            "\u{1F419}\u{1F419}",
+            "hi",
+            "a",
+            "\u{1F419} \u{1F419}",
+            "\u{1F1EB}\u{1F1F7}\u{1F1EB}\u{1F1F7}",
+            "\u{1F419}\u{200D}",
+            "\u{1F419}x",
+            "\u{1F419}\u{1F419}\u{1F419}\u{1F419}\u{1F419}\u{1F419}\u{1F419}\u{1F419}\u{1F419}",
+        ] {
+            assert!(normalize_emoji(bad).is_err(), "{bad:?} should be rejected");
+        }
     }
 
     #[test]
