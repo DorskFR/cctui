@@ -2,7 +2,8 @@
 	import { page } from '$app/state';
 	import NavLink from '$lib/components/atoms/NavLink.svelte';
 	import { useSessions } from '$lib/queries';
-	import { ghreviewUrl } from '$lib/config';
+	import { settings } from '$lib/settings.svelte';
+	import { isNavActive, navItems } from '$lib/navItems';
 	import { m } from '$lib/paraglide/messages';
 
 	// Aggregate unread count across the live list, surfaced as a red
@@ -13,29 +14,18 @@
 		(sessions.data?.sessions ?? []).reduce((n, s) => n + (s.unread_count ?? 0), 0)
 	);
 
-	// The GitHub review center is gated on the ghreview backend origin
-	// (`ghreviewUrl`) being deployed. Without an account it still routes and
-	// shows an unlock screen pointing to Accounts → Connectors.
-	const reviewEnabled = ghreviewUrl() !== null;
-
-	const items = $derived([
-		{ href: '/', label: m.nav_overview(), icon: '◧' },
-		{ href: '/sessions', label: m.nav_sessions(), icon: '◰' },
-		{ href: '/users', label: m.nav_users(), icon: '◍' },
-		{ href: '/accounts', label: m.nav_accounts(), icon: '◉' },
-		...(reviewEnabled
-			? [{ href: '/github', label: m.nav_github(), icon: '◐' }]
-			: []),
-		{ href: '/settings', label: m.nav_settings(), icon: '⚙' }
-	]);
-	const active = (href: string) =>
-		href === '/' ? page.url.pathname === '/' : page.url.pathname.startsWith(href);
+	const items = $derived(navItems());
 </script>
 
-<nav class="nav">
+<nav class="nav" class:top={settings.nav === 'top'} aria-label={m.nav_main_label()}>
 	<div class="nav-inner">
 		{#each items as it (it.href)}
-			<NavLink href={it.href} class="nav-btn {active(it.href) ? 'active' : ''}">
+			{@const active = isNavActive(it.href, page.url.pathname)}
+			<NavLink
+				href={it.href}
+				class="nav-btn {active ? 'active' : ''}"
+				aria-current={active ? 'page' : undefined}
+			>
 				<span class="ico"
 					>{it.icon}{#if it.href === '/sessions' && totalUnread > 0}<span
 							class="unread-badge">{totalUnread > 99 ? '99+' : totalUnread}</span
@@ -59,9 +49,14 @@
 		border-top: 1px solid var(--border);
 		padding-bottom: var(--safe-bottom);
 	}
+	@media (min-width: 48rem) {
+		.nav.top {
+			display: none;
+		}
+	}
 	.nav-inner {
 		height: var(--nav-h);
-		max-width: var(--content-max);
+		max-width: var(--content-wide);
 		margin-inline: auto;
 		display: flex;
 	}

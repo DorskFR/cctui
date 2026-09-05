@@ -28,15 +28,15 @@
 	// it renders outside the width-capped Container and without content padding.
 	const isReview = $derived(page.url.pathname.startsWith('/github'));
 
-	// The session list is the one screen whose rows are wide composites rather
-	// than prose, so its column width is user-settable (Settings › Session list).
-	// Every other route keeps --content-max. `undefined` = keep the default, and
-	// the cap only bites above it, so a phone is unaffected whatever is picked.
+	// Every route renders in the --content-wide column; only the session list's
+	// width is user-settable (Settings › Session list), and the cap only bites
+	// above it, so a phone is unaffected whatever is picked.
 	const contentSize = $derived(
-		page.url.pathname.startsWith('/sessions')
+		(page.url.pathname.startsWith('/sessions')
 			? sessionListWidthSize(settings.sessionListWidth)
-			: undefined
+			: undefined) ?? 'var(--content-wide)'
 	);
+	const topNav = $derived(settings.nav === 'top');
 
 	// Docked panels (Settings › New session / Stats panel): the Sessions screen
 	// pins the spawn form and/or the stats panel to an edge, so the content
@@ -131,6 +131,7 @@
 				<main
 					class="content"
 					class:review={isReview}
+					class:top-nav={topNav}
 					class:dock-left={!!docks?.left}
 					class:dock-right={!!docks?.right}
 					style:--dock-left-w={docks?.left ?? undefined}
@@ -180,5 +181,14 @@
 		height: 100dvh;
 		padding-top: calc(var(--header-h) + var(--safe-top));
 		padding-bottom: calc(var(--nav-h) + var(--safe-bottom));
+	}
+	/* With the tabs in the header the bottom bar is gone on wide screens. */
+	@media (min-width: 48rem) {
+		.content.top-nav {
+			padding-bottom: calc(var(--safe-bottom) + var(--sp-4));
+		}
+		.content.top-nav.review {
+			padding-bottom: var(--safe-bottom);
+		}
 	}
 </style>

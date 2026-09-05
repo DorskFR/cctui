@@ -45,7 +45,6 @@
 	import {
 		Button,
 		Cluster,
-		Container,
 		Field,
 		Heading,
 		Input,
@@ -737,11 +736,7 @@
 	);
 </script>
 
-<!-- Accounts rows are full-width composites (provider boxes side by side), so
-     the screen breaks out of the app's prose-width shell and re-centres on the
-     wider measure. Head + tabs + rows share the wrapper so they stay aligned. -->
-<Container fullWidth as="div">
-<div class="accounts-wide">
+<div>
 	<div class="page-head"><Heading level={1}>{m.accounts_title()}</Heading></div>
 
 	<Tabs {tabs} bind:value={tab} label={m.accounts_sections_label()}>
@@ -796,7 +791,6 @@
 		{/snippet}
 	</Tabs>
 </div>
-</Container>
 
 {#if editor !== null}
 	<Modal title={modalTitle} onclose={close} size="lg" resizeKey="account-editor">
@@ -1125,12 +1119,6 @@
 	   to a Text atom, so reach it through the atom's rendered element. */
 	.ai-pane :global(.acct-bar .intro) {
 		max-width: 60ch;
-	}
-	/* Re-centre on the wide measure after Container's full-bleed break-out. */
-	.accounts-wide {
-		width: 100%;
-		max-width: var(--content-wide);
-		margin-inline: auto;
 	}
 	/* One account per row; each row owns its own internal box layout. */
 	.acct-list {

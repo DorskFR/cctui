@@ -1,25 +1,25 @@
 <script lang="ts">
+	import { goto } from '$app/navigation';
 	import { ws } from '$lib/ws.svelte';
-	import { useVersion, useSessions, qk } from '$lib/queries';
+	import { useMe, useVersion, useSessions, qk } from '$lib/queries';
 	import type { SessionListResponse } from '@bindings/SessionListResponse';
 	import { useQueryClient } from '@tanstack/svelte-query';
 	import { AUTO, theme, THEMES } from '$lib/theme.svelte';
-	import { fontScale, SCALE_LEVELS } from '$lib/fontscale.svelte';
+	import { auth } from '$lib/auth.svelte';
 	import { notify } from '$lib/notify.svelte';
 	import { settings } from '$lib/settings.svelte';
 	import { toasts } from '$lib/toast.svelte';
-	import { Button, IconButton, SelectButton, Text } from '@dorsk/tsumikit';
+	import { IconButton, Menu, SelectButton, Text } from '@dorsk/tsumikit';
+	import type { MenuItem } from '@dorsk/tsumikit';
 	import NavLink from '$lib/components/atoms/NavLink.svelte';
-	import NetStatsChip from '$lib/components/molecules/NetStatsChip.svelte';
+	import HeaderNav from '$lib/components/organisms/HeaderNav.svelte';
 	import HeaderGauges from '$lib/components/molecules/HeaderGauges.svelte';
 	import UpdateModal from '$lib/components/organisms/UpdateModal.svelte';
 	import { m } from '$lib/paraglide/messages';
 
 	const version = useVersion();
-	// The red ↑ chip opens the release-notes / update modal instead of
-	// leaving for GitHub; the modal itself links to the release page.
+	const me = useMe();
 	let updateOpen = $state(false);
-	// Server-wide deployment label: "cctui (NAME)" in the brand + tab title.
 	const instanceName = $derived(version.data?.instance_name ?? null);
 	$effect(() => notify.setInstanceName(instanceName));
 
@@ -76,23 +76,35 @@
 		if (ok) toasts.ok(m.nav_notify_on());
 		else toasts.error(m.nav_notify_blocked());
 	}
+
+	const userName = $derived(me.data?.user_name ?? '');
+	const userRole = $derived(me.data?.role ?? '');
+	const userInitial = $derived((userName || userRole || '?').slice(0, 1).toUpperCase());
+	const latest = $derived(version.data?.latest_version ?? null);
+
+	const userMenu = $derived<MenuItem[]>([
+		...(latest
+			? [
+					{
+						label: m.nav_update_available({ version: latest }),
+						icon: 'arrow-up' as const,
+						tag: `v${latest}`,
+						tagTone: 'danger' as const,
+						onselect: () => (updateOpen = true)
+					}
+				]
+			: []),
+		{ label: m.nav_settings(), onselect: () => void goto('/settings') },
+		{ label: m.nav_log_out(), icon: 'log-out' as const, danger: true, onselect: () => void auth.logout() }
+	]);
 </script>
 
 <header class="hd">
-	<div class="hd-inner container">
-		<!-- The whole brand block is the way home: clicking "cctui (NAME)"
-		     goes back to the session list from anywhere. -->
+	<div class="hd-inner">
 		<NavLink href="/sessions" title={m.nav_sessions()}>
 			<div class="brand">
 				<Text variant="code" tone="accent" size="lg" weight="bold">»_</Text>
 				<Text size="lg" weight="bold">cctui</Text>
-				{#if instanceName}
-					<span class="inst">
-						<Text size="lg" weight="bold" tone="faint" title={m.nav_instance_name()}>
-							({instanceName})
-						</Text>
-					</span>
-				{/if}
 			</div>
 		</NavLink>
 		<span
@@ -101,50 +113,12 @@
 			class:mid={ws.status === 'connecting'}
 			title={m.nav_ws_status({ status: ws.status })}
 		></span>
-		<div class="spacer"></div>
-		<span class="net"><NetStatsChip /></span>
-		<span class="batt"><HeaderGauges /></span>
-		{#if version.data}
-			<span class="ver">
-				<NavLink href={version.data.commit_url} target="_blank" rel="noopener">
-					<Text size="xs" tone="faint" variant="code">
-						<span class="ver-cluster">
-							<span class="ver-part">srv v{version.data.version}</span>
-							<span class="ver-part">ui v{__CLIENT_VERSION__}</span>
-						</span>
-					</Text>
-				</NavLink>
-			</span>
-			{#if version.data.latest_version}
-				<!-- Red up-arrow + the newer tag: only rendered when the server's
-				     release probe found something strictly newer than itself.
-				     Click → release notes + (admin) the update button.
-				     NOT tsumikit's `chip`: that is a fixed 2.5rem square with
-				     padding 0 meant for a lone glyph — the version text spilled
-				     out of it over the neighbouring buttons, and its rem height
-				     grew past this scale-immune (px-pinned) header whenever the
-				     UI font slider went up. Pinned in px here for the same
-				     reason the other toolbar controls are. -->
-				<Button
-					variant="ghost"
-					size="sm"
-					style="height: 28px; min-height: 28px; width: auto; min-width: 0; padding: 0 var(--sp-2); flex: none;"
-					title={m.nav_update_available({ version: version.data.latest_version })}
-					aria-label={m.nav_update_available({ version: version.data.latest_version })}
-					onclick={() => (updateOpen = true)}
-				>
-					<Text size="xs" variant="code">
-						<span class="ver-part ver-up">
-							<span class="ver-up-arrow" aria-hidden="true">↑</span>
-							v{version.data.latest_version}
-						</span>
-					</Text>
-				</Button>
-			{/if}
+		{#if settings.nav === 'top'}
+			<span class="tabs"><HeaderNav /></span>
 		{/if}
-		<!-- Plain ghost button: the on-state accent tint comes from `pressed`
-		     (aria-pressed → accent glyph), NOT a `tone` border — a tinted border
-		     read blurry/strange against the header's backdrop blur. -->
+		<div class="spacer"></div>
+		<span class="batt"><HeaderGauges /></span>
+		<span class="divider" aria-hidden="true"></span>
 		<IconButton
 			emoji={notify.enabled ? '🔔' : '🔕'}
 			size={12}
@@ -153,23 +127,10 @@
 			onclick={toggleNotify}
 			oncontextmenu={(e: MouseEvent) => {
 				e.preventDefault();
-					settings.setNotifySound(!notify.sound);
+				settings.setNotifySound(!notify.sound);
 				toasts.info(notify.sound ? m.nav_sound_on() : m.nav_sound_off());
 			}}
 		/>
-		<!-- UI font size as 5 discrete levels: a native <select>
-		     overlaid on an "A" glyph. Discrete steps avoid the live-reflow
-		     "seizure" the continuous slider caused. -->
-		<SelectButton
-			glyph="A"
-			label={m.nav_font_size()}
-			title={m.nav_font_size()}
-			value={fontScale.levelId}
-			options={SCALE_LEVELS.map((l) => ({ value: l.id, label: l.label }))}
-			onchange={(v) => settings.setFontScaleLevel(v)}
-		/>
-		<!-- Theme picker: pick any palette directly. Grouped into
-		     light/dark sections so the long list stays scannable. -->
 		<SelectButton
 			glyph={theme.icon}
 			label={m.nav_theme()}
@@ -197,6 +158,18 @@
 			]}
 			onchange={(v) => settings.setTheme(v)}
 		/>
+		<Menu label={m.nav_user_menu()} items={userMenu} bare placement="bottom-end">
+			{#snippet trigger()}
+				<span class="pill">
+					<span class="avatar" class:alert={!!latest} aria-hidden="true">{userInitial}</span>
+					<span class="who">
+						{#if userName}<span class="who-name">{userName}</span>{/if}
+						{#if userName && userRole}<span class="who-sep">·</span>{/if}
+						{#if userRole}<span class="who-role">{userRole}</span>{/if}
+					</span>
+				</span>
+			{/snippet}
+		</Menu>
 	</div>
 </header>
 
@@ -221,14 +194,9 @@
 		border-bottom: 1px solid var(--border);
 		padding-top: var(--safe-top);
 
-		/* Detach the toolbar from the global UI scale. The app scales
-		   by changing the ROOT font-size, so every rem — including the header's
-		   sizing tokens — tracks the slider this header hosts. Dragging it then
-		   reflowed the whole header and slid the slider out from under the
-		   cursor, oscillating the value. Redefining the size tokens here in px
-		   (the exact equivalents of the :root rem values at the 1.0/16px base)
-		   makes the header subtree scale-immune: content rescales live while the
-		   toolbar — and the slider — stay put. Pixel-identical at scale 1. */
+		/* The app scales by changing the ROOT font-size; the header is chrome
+		   that must not reflow with it, so its size tokens are pinned in px
+		   (the :root rem values at the 16px base). */
 		--fs-xs: 12px;
 		--fs-sm: 13px;
 		--fs-base: 15px;
@@ -237,20 +205,8 @@
 		--sp-2: 8px;
 		--sp-3: 12px;
 		--sp-4: 16px;
-		/* The header's inner is a `.container` (max-width: --content-max,
-		   margin-inline:auto). --content-max is 56rem, so it ALSO tracked the
-		   root font-size: scaling up widened the centered container and slid its
-		   right-aligned contents (the slider) rightward under the cursor — the
-		   real remaining cause of the drag "seizure" after the token pin above.
-		   Pin it to px (56rem @16px = 896px) so the header's width is fully
-		   scale-immune. */
-		--content-max: 896px;
 	}
-	/* All three toolbar controls (bell IconButton + the two SelectButtons) are
-	   icon-only `.btn-icon`s that size off hardcoded rem — pin them so they don't
-	   grow with the global scale. Use a FIXED square (not min-*) so the differing
-	   glyphs (bell SVG, "A", theme emoji) all share one footprint instead of each
-	   sizing to its own content — the cause of the lopsided look on mobile. */
+	/* Icon-only controls size off rem: pin them to one fixed square. */
 	.hd :global(.btn-icon) {
 		flex: none;
 		height: 36px;
@@ -259,65 +215,17 @@
 		min-width: 36px;
 		padding: 0;
 	}
-	/* SelectButton wraps its inner .btn-icon in this clip span; match the square
-	   AND refuse to flex-shrink — otherwise the header's flex row squishes the
-	   wrapper horizontally on narrow screens (the bell resists via its own
-	   min-width; the wrapper needs it spelled out too). */
 	.hd :global(.select-button) {
 		flex: none;
 		height: 36px;
 		width: 36px;
 		min-width: 36px;
 	}
-	/* The version chip never wraps: a two-line chip inside the 36px bar is
-	   unreadable, so below 640px it (and the net-stats chip) is dropped
-	   instead — the update arrow survives, it's the one that matters. */
-	.ver {
-		flex: none;
-	}
-	.ver-cluster {
-		display: inline-flex;
-		align-items: center;
-		gap: var(--sp-2);
-	}
-	.net {
-		display: inline-flex;
-	}
-	/* Usage batteries: sized in px inside the component. Collapses to nothing
-	   (no stray flex gap) while no account reports usage. */
-	.batt {
-		display: inline-flex;
-		flex: none;
-	}
-	.batt:empty {
-		display: none;
-	}
-	@media (max-width: 639px) {
-		.ver,
-		.net {
-			display: none;
-		}
-	}
-	.ver-part {
-		white-space: nowrap;
-	}
-	.ver-up {
-		display: inline-flex;
-		align-items: center;
-		color: var(--danger);
-		font-weight: 700;
-	}
-	.ver-up-arrow {
-		display: inline-block;
-		margin-right: 0.15em;
-	}
-	.inst {
-		min-width: 0;
-		white-space: nowrap;
-		overflow: hidden;
-		text-overflow: ellipsis;
-	}
 	.hd-inner {
+		width: 100%;
+		max-width: var(--content-wide);
+		margin-inline: auto;
+		padding-inline: max(var(--sp-4), var(--safe-left)) max(var(--sp-4), var(--safe-right));
 		height: var(--header-h);
 		display: flex;
 		align-items: center;
@@ -329,7 +237,18 @@
 		gap: var(--sp-2);
 		min-width: 0;
 	}
+	.tabs {
+		display: none;
+		min-width: 0;
+		margin-left: var(--sp-3);
+	}
+	@media (min-width: 48rem) {
+		.tabs {
+			display: inline-flex;
+		}
+	}
 	.spacer {
+		flex: 1;
 		min-width: 0;
 	}
 	.conn {
@@ -337,6 +256,7 @@
 		height: 8px;
 		border-radius: 50%;
 		background: var(--dot-dead);
+		flex: none;
 	}
 	.conn.on {
 		background: var(--ok);
@@ -344,5 +264,85 @@
 	}
 	.conn.mid {
 		background: var(--warn);
+	}
+	.batt {
+		display: inline-flex;
+		flex: none;
+	}
+	.batt:empty {
+		display: none;
+	}
+	.divider {
+		flex: none;
+		width: 1px;
+		height: 20px;
+		background: var(--border);
+	}
+	.batt:empty + .divider {
+		display: none;
+	}
+	.pill {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--sp-2);
+		height: 32px;
+		padding: 0 var(--sp-3) 0 var(--sp-1);
+		border: 1px solid var(--border);
+		border-radius: var(--r-pill);
+		color: var(--text);
+		font-size: var(--fs-sm);
+		max-width: 16rem;
+	}
+	.pill:hover {
+		background: var(--bg-elevated-2);
+	}
+	.avatar {
+		position: relative;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 24px;
+		height: 24px;
+		border-radius: 50%;
+		background: color-mix(in srgb, var(--accent) 18%, transparent);
+		color: var(--accent);
+		font-size: var(--fs-xs);
+		font-weight: var(--fw-semibold);
+		flex: none;
+	}
+	.avatar.alert::after {
+		content: '';
+		position: absolute;
+		top: -1px;
+		right: -1px;
+		width: 8px;
+		height: 8px;
+		border-radius: 50%;
+		background: var(--danger);
+		border: 2px solid var(--bg-elevated);
+	}
+	.who {
+		display: inline-flex;
+		align-items: baseline;
+		gap: var(--sp-1);
+		min-width: 0;
+		white-space: nowrap;
+	}
+	.who-name {
+		font-weight: var(--fw-medium);
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+	.who-sep,
+	.who-role {
+		color: var(--text-muted);
+	}
+	@media (max-width: 47.999rem) {
+		.who {
+			display: none;
+		}
+		.pill {
+			padding-right: var(--sp-1);
+		}
 	}
 </style>

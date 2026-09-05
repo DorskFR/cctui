@@ -22,7 +22,6 @@
      translucent fill). Same hue, mixed over the elevated surface. */
   --attention-bg-solid: color-mix(in srgb, var(--c-amber) 12%, var(--bg-elevated));
 
-  /* Wide reading measure for screens whose rows are full-width composites
-     rather than prose (the accounts page lays provider boxes side by side). */
-  --content-wide: 92rem;
+  /* The one centred content column every route renders in. */
+  --content-wide: 1180px;
 }

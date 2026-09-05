@@ -15,7 +15,7 @@
 <script lang="ts">
 	import { ghreviewUrl } from '$lib/config';
 	import { ensureGhreviewToken } from '$lib/ghreview';
-	import { Card, Field, Heading, Link, Select, Stack, Text } from '@dorsk/tsumikit';
+	import { Card, Container, Field, Heading, Link, Select, Stack, Text } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 
 	const url = ghreviewUrl();
@@ -59,14 +59,16 @@
 </script>
 
 {#if !url}
-	<Card>
-		<Stack gap="var(--sp-2)">
-			<Heading level={2}>{m.review_center_not_configured()}</Heading>
-			<Text tone="faint">
-				{m.review_config_hint_prefix()} <code>ghreviewUrl</code> {m.review_config_hint_suffix()}
-			</Text>
-		</Stack>
-	</Card>
+	<Container size="var(--content-wide)">
+		<Card>
+			<Stack gap="var(--sp-2)">
+				<Heading level={2}>{m.review_center_not_configured()}</Heading>
+				<Text tone="faint">
+					{m.review_config_hint_prefix()} <code>ghreviewUrl</code> {m.review_config_hint_suffix()}
+				</Text>
+			</Stack>
+		</Card>
+	</Container>
 {:else}
 	{#if !booted}
 		<Text tone="faint">{m.review_center_loading()}</Text>
@@ -75,13 +77,15 @@
 			<Text tone="faint">{m.review_center_loading()}</Text>
 		{:then { Review, token, base }}
 			{#if accounts.length === 0}
-				<Card>
-					<Stack gap="var(--sp-2)">
-						<Heading level={2}>{m.github_no_review_accounts_heading()}</Heading>
-						<Text tone="faint">{m.github_no_review_accounts_body()}</Text>
-						<Link href="/accounts">{m.github_unlock_cta()}</Link>
-					</Stack>
-				</Card>
+				<Container size="var(--content-wide)">
+					<Card>
+						<Stack gap="var(--sp-2)">
+							<Heading level={2}>{m.github_no_review_accounts_heading()}</Heading>
+							<Text tone="faint">{m.github_no_review_accounts_body()}</Text>
+							<Link href="/accounts">{m.github_unlock_cta()}</Link>
+						</Stack>
+					</Card>
+				</Container>
 			{:else}
 				{#if accounts.length > 1}
 					<Field label={m.github_account_label()}>
@@ -95,12 +99,14 @@
 				<Review baseUrl={base} {token} {account} basePath="/github" />
 			{/if}
 		{:catch}
-			<Card>
-				<Stack gap="var(--sp-2)">
-					<Heading level={2}>{m.review_center_unavailable()}</Heading>
-					<Text tone="faint">{m.review_center_unreachable()}</Text>
-				</Stack>
-			</Card>
+			<Container size="var(--content-wide)">
+				<Card>
+					<Stack gap="var(--sp-2)">
+						<Heading level={2}>{m.review_center_unavailable()}</Heading>
+						<Text tone="faint">{m.review_center_unreachable()}</Text>
+					</Stack>
+				</Card>
+			</Container>
 		{/await}
 	{/if}
 {/if}
