@@ -12,7 +12,7 @@
 	import { toasts } from '$lib/toast.svelte';
 	import { providerLabel } from '$lib/providers';
 	import { m } from '$lib/paraglide/messages';
-	import { Button, Drawer, IconButton, Text } from '@dorsk/tsumikit';
+	import { Button, Drawer, IconButton, NavItem, Text } from '@dorsk/tsumikit';
 	import AdapterIcon from '$lib/components/atoms/AdapterIcon.svelte';
 	import UsageNoticesEditor from '$lib/components/molecules/UsageNoticesEditor.svelte';
 	import AnthropicProviderEditor from '$lib/components/organisms/AnthropicProviderEditor.svelte';
@@ -139,14 +139,7 @@
 
 	{#snippet nav()}
 		{#each pages as id (id)}
-			<button
-				type="button"
-				class="nav-item"
-				class:active={edit.page === id}
-				onclick={() => (edit.page = id)}
-			>
-				{LABELS[id]()}
-			</button>
+			<NavItem label={LABELS[id]()} active={edit.page === id} activeStyle="bar" onclick={() => (edit.page = id)} />
 		{/each}
 	{/snippet}
 
@@ -236,27 +229,6 @@
 	}
 	.spacer {
 		flex: 1;
-	}
-	.nav-item {
-		appearance: none;
-		border: 0;
-		border-left: 2px solid transparent;
-		background: none;
-		color: var(--text-muted);
-		font: inherit;
-		font-size: var(--fs-sm);
-		text-align: left;
-		padding: var(--sp-1) var(--sp-2);
-		border-radius: var(--r-sm);
-		cursor: pointer;
-	}
-	.nav-item:hover {
-		color: var(--text);
-	}
-	.nav-item.active {
-		background: var(--bg-elevated-2);
-		color: var(--text);
-		border-left-color: var(--accent);
 	}
 	.pane {
 		container-type: inline-size;

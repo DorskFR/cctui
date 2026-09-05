@@ -96,12 +96,13 @@
 			<MachinePicker bind:value={form.machine_id} {machines} label={m.spawn_machine_label()} />
 		{/snippet}
 	</FilterInput>
-	{#if cwdBadge}
-		<span class="branch" title={cwdBadgeTitle}>
+	<!-- Always one line tall so the form doesn't jump when a branch resolves. -->
+	<span class="branch" title={cwdBadge ? cwdBadgeTitle : undefined}>
+		{#if cwdBadge}
 			<Icon name="fork" size={12} label={m.sessions_branch_label()} />
 			<span class="truncate">{cwdBadge.text}{cwdBadge.worktree ? ` · ${m.spawn_cwd_worktree_badge()}` : ''}</span>
-		</span>
-	{/if}
+		{/if}
+	</span>
 </div>
 
 <Input
@@ -139,6 +140,7 @@
 		display: inline-flex;
 		align-items: center;
 		gap: 0.25em;
+		min-height: 1.25rem;
 		min-width: 0;
 		max-width: 100%;
 		padding: 0 var(--sp-1);

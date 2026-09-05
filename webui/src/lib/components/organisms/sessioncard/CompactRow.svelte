@@ -1,5 +1,6 @@
 <script lang="ts">
-	import { Badge, Cluster, Text, Timestamp } from '@dorsk/tsumikit';
+	import { Badge, Cluster, Icon, Text, Timestamp, WorkingDir } from '@dorsk/tsumikit';
+	import { m } from '$lib/paraglide/messages';
 	import { statusBadgeTone } from '$lib/format';
 	import { sessionEndTitle } from '$lib/sessionEnd';
 	import Badges from './Badges.svelte';
@@ -8,8 +9,8 @@
 	import Readout from './Readout.svelte';
 	import { type SessionActions, type SessionView, statusLabel } from './view';
 
-	// One real row, no wrap: lead · preview (takes the slack) · perm · unread ·
-	// Σ $ · model · effort · logo · time.
+	// One real row, no wrap: lead · preview (takes the slack) · cwd · branch ·
+	// perm · unread · Σ $ · model · effort · logo · time.
 	let { view, actions }: { view: SessionView; actions: SessionActions } = $props();
 	const s = $derived(view.s);
 </script>
@@ -26,6 +27,17 @@
 		>
 	{:else}
 		<span style="flex:1 1 auto"></span>
+	{/if}
+	<span class="cwd">
+		<WorkingDir path={s.working_dir} copy title={m.sessions_workdir_copy_title({ path: s.working_dir })} style="min-width:0;max-width:100%" />
+	</span>
+	{#if view.branch}
+		<span class="branch" title={m.sessions_branch_title({ branch: view.branch })}>
+			<Badge mono style="display:inline-flex;align-items:center;gap:0.25em;min-width:0;max-width:100%">
+				<Icon name="fork" size={12} label={m.sessions_branch_label()} />
+				<span class="branch-name">{view.branch}</span>
+			</Badge>
+		</span>
 	{/if}
 	{#if view.showStatusBadge}<Badge tone={statusBadgeTone(s.status)} size="xs" style="flex:none"
 			>{statusLabel(s.status)}</Badge
@@ -47,6 +59,29 @@
 </Cluster>
 
 <style>
+	.cwd {
+		display: inline-flex;
+		flex: 0 1 auto;
+		min-width: 0;
+		max-width: 20rem;
+	}
+	.branch {
+		display: inline-flex;
+		flex: 0 1 auto;
+		min-width: 0;
+		max-width: 14rem;
+	}
+	.branch-name {
+		overflow: hidden;
+		white-space: nowrap;
+		text-overflow: ellipsis;
+	}
+	@container sess-card (max-width: 48rem) {
+		.cwd,
+		.branch {
+			display: none;
+		}
+	}
 	.end-badge {
 		display: inline-flex;
 		flex: 0 1 auto;

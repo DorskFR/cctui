@@ -54,11 +54,12 @@ function render(props: Record<string, unknown>): HTMLElement {
 }
 
 describe('SessionCard modes', () => {
-	it('the compact row has no footer, no preview clamp and carries the machine badge', () => {
+	it('the compact row has no preview clamp and carries the machine badge, cwd and branch inline', () => {
 		const el = render({ variant: 'row', pendingCount: 2 });
-		expect(el.querySelector('.sc-wrap.row')).not.toBeNull();
+		expect(el.querySelector('.sc-wrap.compact')).not.toBeNull();
 		expect(el.querySelector('.preview')).toBeNull();
-		expect(el.querySelector('[data-tsu="WorkingDir"], .branch')).toBeNull();
+		expect(el.querySelector('[data-tsu="WorkingDir"]')).not.toBeNull();
+		expect(el.querySelector('.branch')?.getAttribute('title')).toContain('cct-925-sessions-modes');
 		expect(el.querySelector('.badge[style*="--mh"]')?.textContent?.trim()).toBe('dev1');
 		expect(el.textContent).toContain('2 perm');
 	});

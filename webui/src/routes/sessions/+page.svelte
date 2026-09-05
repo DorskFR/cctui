@@ -14,7 +14,7 @@
 	import { dockLayout } from '$lib/spawnDock.svelte';
 	import StatsDock from '$lib/components/organisms/statsdock/StatsDock.svelte';
 	import SessionControls from '$lib/components/organisms/SessionControls.svelte';
-	import { AutoGrid, Button, Callout, Dot, IconButton, Menu, Modal, SectionHeader, Text } from '@dorsk/tsumikit';
+	import { Button, Callout, Dot, IconButton, Menu, Modal, SectionHeader, Text } from '@dorsk/tsumikit';
 	import MachineBadge from '$lib/components/molecules/MachineBadge.svelte';
 	import { useAllMachines } from '$lib/queries';
 	import {
@@ -782,15 +782,7 @@
 {/snippet}
 
 {#snippet cardGrid(rows: SessionListItem[], childGroups: Map<string, SubGroup[]>, hl: string[] = [])}
-	<AutoGrid
-		min="calc(20rem * var(--fs-scale))"
-		max="calc(26.75rem * var(--fs-scale))"
-		gap="var(--sp-3)"
-		align="stretch"
-		style="grid-auto-rows: 250px"
-	>
-		{@render cardItems(rows, childGroups, hl)}
-	</AutoGrid>
+	<div class="card-grid">{@render cardItems(rows, childGroups, hl)}</div>
 {/snippet}
 
 <!-- Every row set — live buckets, search results, archive browse — renders
@@ -1076,13 +1068,7 @@
 				{@render groupHeader('drafts', m.sessions_section_drafts(), list.draftRows.length, {})}
 				{#if !hiddenSections.has('drafts')}
 					{#if cardView}
-						<AutoGrid
-							min="calc(20rem * var(--fs-scale))"
-							max="calc(26.75rem * var(--fs-scale))"
-							gap="var(--sp-3)"
-							align="stretch"
-							style="grid-auto-rows: 250px"
-						>{@render draftItems(list.draftRows, true)}</AutoGrid>
+						<div class="card-grid">{@render draftItems(list.draftRows, true)}</div>
 					{:else}
 						{@render draftItems(list.draftRows, false)}
 					{/if}
@@ -1243,6 +1229,16 @@
 	}
 	.liveness.online {
 		color: var(--ok);
+	}
+	/* Detailed cards auto-fill the strip: never narrower than a compact card,
+	   capped so a wide window packs more columns instead of stretching them,
+	   and each row takes its tallest card's natural height. */
+	.card-grid {
+		display: grid;
+		grid-template-columns: repeat(auto-fill, minmax(min(100%, 20rem), 26.75rem));
+		justify-content: start;
+		align-items: stretch;
+		gap: var(--sp-3);
 	}
 	.sections {
 		container-type: inline-size;

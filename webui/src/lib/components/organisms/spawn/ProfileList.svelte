@@ -2,6 +2,7 @@
 	import type { SessionProfile } from '@bindings/SessionProfile';
 	import type { AccountPoolView } from '@bindings/AccountPoolView';
 	import type { AccountUsageEntry, OAuthAccount } from '$lib/queries';
+	import { Button } from '@dorsk/tsumikit';
 	import ProfileRow from './ProfileRow.svelte';
 	import ProfileAdjust from './ProfileAdjust.svelte';
 	import KitFields from './KitFields.svelte';
@@ -122,9 +123,7 @@
 		</ProfileRow>
 	{/each}
 	<div class="new">
-		<button type="button" class="new-link" disabled={busy} onclick={oncreate}>
-			{m.spawn_profile_new()}
-		</button>
+		<Button variant="link" size="sm" disabled={busy} onclick={oncreate}>{m.spawn_profile_new()}</Button>
 	</div>
 </div>
 
@@ -138,21 +137,5 @@
 		display: flex;
 		justify-content: flex-end;
 		padding: 0 var(--sp-1);
-	}
-	.new-link {
-		background: none;
-		border: none;
-		padding: 0;
-		font: inherit;
-		font-size: var(--fs-xs);
-		color: var(--link);
-		cursor: pointer;
-	}
-	.new-link:hover {
-		text-decoration: underline;
-	}
-	.new-link:disabled {
-		opacity: 0.5;
-		cursor: default;
 	}
 </style>
