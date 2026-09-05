@@ -110,7 +110,10 @@
 	<div class="stats">
 		<Text as="span" size="xs" tone="faint">{m.providers_requests({ n: compact(p.request_count) })}</Text>
 		<Text as="span" size="xs" tone="faint">
-			{m.providers_used()} <Timestamp value={p.last_used_at} mode="relative" tone="inherit" />
+			{m.providers_used()}
+			<span title={p.last_used_at ? new Date(p.last_used_at).toLocaleString() : undefined}>
+				<Timestamp value={p.last_used_at} mode="relative" tone="inherit" details={false} />
+			</span>
 		</Text>
 	</div>
 </div>

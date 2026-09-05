@@ -83,7 +83,7 @@
 	const wallMs = $derived(paceKind ? wallInMs(pace, resets, now) : null);
 	const rowTitle = $derived.by(() => {
 		const parts: string[] = [];
-		if (resetText) parts.push(m.capbar_caption_resets({ time: resetText }));
+		if (resetText && resets) parts.push(`${m.capbar_caption_resets({ time: resetText })} (${new Date(resets).toLocaleString()})`);
 		if (paceKind && expectedPct !== null) {
 			parts.push(
 				paceKind === 'leaf'
@@ -105,6 +105,7 @@
 				value={resets}
 				mode="relative"
 				tone="inherit"
+				details={false}
 			/>{/if}{#if paceKind === 'flame'}{' 🔥'}{/if}
 	</span>
 {/snippet}

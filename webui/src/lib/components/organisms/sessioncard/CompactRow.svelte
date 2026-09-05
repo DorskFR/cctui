@@ -33,7 +33,7 @@
 	</span>
 	{#if view.branch}
 		<span class="branch" title={m.sessions_branch_title({ branch: view.branch })}>
-			<Badge mono style="display:inline-flex;align-items:center;gap:0.25em;min-width:0;max-width:100%">
+			<Badge mono size="xs" style="display:inline-flex;align-items:center;gap:0.25em;min-width:0;max-width:100%">
 				<Icon name="fork" size={12} label={m.sessions_branch_label()} />
 				<span class="branch-name">{view.branch}</span>
 			</Badge>
@@ -54,7 +54,7 @@
 		<Readout {view} compact />
 	{/if}
 	{#if s.last_message_at}<span class="time"
-			><Timestamp value={s.last_message_at} mode="relative" tone="faint" size="xs" /></span
+			><Timestamp value={s.last_message_at} mode="relative" tone="faint" size="xs" details={false} /></span
 		>{/if}
 </Cluster>
 
@@ -64,6 +64,8 @@
 		flex: 0 1 auto;
 		min-width: 0;
 		max-width: 20rem;
+		font-size: var(--fs-xs);
+		line-height: 1.2;
 	}
 	.branch {
 		display: inline-flex;
@@ -94,8 +96,9 @@
 	}
 	.time {
 		flex: none;
-		min-width: 30px;
-		text-align: right;
+		display: inline-flex;
+		justify-content: flex-end;
+		min-width: 4.5rem;
 		white-space: nowrap;
 	}
 </style>

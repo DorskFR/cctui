@@ -22,7 +22,11 @@
 	const q = useAllAccountsUsage(() => true);
 	// The popovers show the same read-only AccountCard the stats dock shows.
 	const accounts = useAccounts();
-	const accountOf = (id: string) => (accounts.data ?? []).find((a) => a.id === id);
+	// Only the pinned providers: that is what the strip shows.
+	const accountOf = (id: string) => {
+		const a = (accounts.data ?? []).find((a) => a.id === id);
+		return a ? { ...a, providers: a.providers.filter((p) => p.header_pin) } : undefined;
+	};
 	const entries = $derived(batteryEntries(q.data));
 	const groups = $derived.by(() => {
 		const byAccount = new Map<string, BatteryEntry[]>();
@@ -255,5 +259,7 @@
 		gap: var(--sp-2);
 		width: 22rem;
 		max-width: 90vw;
+		max-height: 75dvh;
+		overflow-y: auto;
 	}
 </style>
