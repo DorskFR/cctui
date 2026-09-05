@@ -152,13 +152,13 @@
 					<Text size="sm" tone="muted">{statusText}</Text>
 					{#if user.last_seen_at && !user.revoked_at}
 						<Text size="xs" tone="faint">· {m.access_last_seen()}</Text>
-						<Timestamp value={user.last_seen_at} mode="relative" size="xs" tone="faint" details={false} />
+						<Timestamp value={user.last_seen_at} mode="relative" size="xs" tone="faint" />
 					{/if}
 				</span>
 			</div>
 			<div class="meta">
 				<Text size="xs" tone="faint">{m.access_since()}</Text>
-				<Timestamp value={user.created_at} mode="short-iso" size="xs" tone="faint" details={false} />
+				<Timestamp value={user.created_at} mode="short-iso" size="xs" tone="faint" />
 				<Text size="xs" tone="faint">
 					· {m.access_ceiling()}
 					{[...ALL_SCOPES].filter((s) => ceiling.has(s)).join(' · ') || m.access_ceiling_none()}

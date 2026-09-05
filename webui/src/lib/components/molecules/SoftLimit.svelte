@@ -83,7 +83,7 @@
 	const wallMs = $derived(paceKind ? wallInMs(pace, resets, now) : null);
 	const rowTitle = $derived.by(() => {
 		const parts: string[] = [];
-		if (resetText && resets) parts.push(`${m.capbar_caption_resets({ time: resetText })} (${new Date(resets).toLocaleString()})`);
+		if (resetText) parts.push(m.capbar_caption_resets({ time: resetText }));
 		if (paceKind && expectedPct !== null) {
 			parts.push(
 				paceKind === 'leaf'
@@ -153,11 +153,9 @@
 	.dense-label {
 		min-width: 0;
 	}
-	/* Same cap as the session row: the Timestamp trigger must not size the row. */
 	.readout {
 		display: inline-flex;
 		align-items: center;
-		max-height: 1.25rem;
 		white-space: nowrap;
 	}
 	.controls {

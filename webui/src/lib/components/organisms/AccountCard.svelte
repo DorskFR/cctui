@@ -7,7 +7,6 @@
 	import ProviderColumn from '$lib/components/organisms/accounts/ProviderColumn.svelte';
 	import { ACCOUNT_DRAG_MIME, exhaustedWindow } from '$lib/components/organisms/accounts/pools.logic';
 	import { accountDrag, poolZoneAt } from '$lib/components/organisms/accounts/drag.svelte';
-	import { resetIn } from '$lib/components/molecules/cap-bar.logic';
 	import { providerLabel } from '$lib/providers';
 	import { Button, Icon, IconButton, Menu, Select, Text, Timestamp, type MenuItem } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
@@ -65,15 +64,13 @@
 
 	const usage = useAllAccountsUsage(() => enabled);
 	const exhausted = $derived(exhaustedWindow(usage.data, a.id));
-	const exhaustedText = $derived.by(() => {
-		if (!exhausted) return null;
-		const time = resetIn(exhausted.window.resets_at, Date.now());
-		const label = `${providerLabel(exhausted.provider)} ${exhausted.window.label}`;
-		return time
-			? m.accounts_exhausted_resets({ window: label, time })
-			: m.accounts_exhausted({ window: label });
-	});
-
+	const exhaustedLabel = $derived(
+		exhausted
+			? m.accounts_exhausted({
+					window: `${providerLabel(exhausted.provider)} ${exhausted.window.label}`
+				})
+			: null
+	);
 	const shares = useResourceShares(
 		() => 'account',
 		() => a.id,
@@ -221,15 +218,21 @@
 				<Text as="span" tone="faint" size="xs">{meta}</Text>
 			{/if}
 		</div>
-		{#if exhaustedText}
-			<span class="exhausted"><span class="dot"></span><Text as="span" size="xs" tone="danger">{exhaustedText}</Text></span>
+		{#if exhausted && exhaustedLabel}
+			<span class="exhausted">
+				<span class="dot"></span>
+				<Text as="span" size="xs" tone="danger">
+					{exhaustedLabel}{#if exhausted.window.resets_at}
+						· <Timestamp value={exhausted.window.resets_at} mode="relative" tone="inherit" />{/if}
+				</Text>
+			</span>
 		{/if}
 		{#each compact ? [] : redirects as r (r.id)}
 			<span class="redirect-badge">
 				<Text as="span" tone="faint" size="xs">{r.family}</Text>
 				<Text as="span" size="sm">{m.accounts_redirect_to({ target: r.targetName })}</Text>
 				{#if r.until}
-					<Text as="span" tone="faint" size="xs">{m.accounts_redirect_until({ time: r.until })}</Text>
+					<Text as="span" tone="faint" size="xs">{m.accounts_until()} <Timestamp value={r.until} mode="relative" tone="inherit" /></Text>
 				{/if}
 				{#if onclearredirect}
 					<IconButton icon="x" label={m.common_delete()} inline size={12} onclick={() => onclearredirect(r.id)} />

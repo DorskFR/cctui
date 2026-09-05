@@ -3,7 +3,7 @@
 	// test, revoke) plus the one server-wide knob (admin) that decides whether
 	// the login screen reads the key on its own. The list is loaded on demand
 	// rather than through the query cache: it changes only from this screen.
-	import { Button, Icon, Input, Switch, Text } from '@dorsk/tsumikit';
+	import { Button, Icon, Input, Switch, Text, Timestamp } from '@dorsk/tsumikit';
 	import SettingGroup from '$lib/components/molecules/SettingGroup.svelte';
 	import SettingRow from '$lib/components/molecules/SettingRow.svelte';
 	import SettingSection from '$lib/components/molecules/SettingSection.svelte';
@@ -103,15 +103,6 @@
 		void loadPasskeys();
 	});
 
-	function keyMeta(key: PasskeyRow): string {
-		const parts = [m.settings_passkeys_added({ date: new Date(key.created_at).toLocaleDateString() })];
-		parts.push(
-			key.last_used_at
-				? m.settings_passkeys_last_used({ date: new Date(key.last_used_at).toLocaleString() })
-				: m.settings_passkeys_never_used()
-		);
-		return parts.join(' · ');
-	}
 </script>
 
 <SettingSection
@@ -127,7 +118,15 @@
 					<span class="kicon"><Icon name="lock" size={16} /></span>
 					<div class="kbody">
 						<Text weight="semibold" size="sm" as="div">{key.label}</Text>
-						<Text size="xs" tone="faint" as="div">{keyMeta(key)}</Text>
+						<Text size="xs" tone="faint" as="div">
+							{m.settings_passkeys_added_label()} <Timestamp value={key.created_at} mode="date" size="xs" tone="inherit" />
+							·
+							{#if key.last_used_at}
+								{m.settings_passkeys_last_used_label()} <Timestamp value={key.last_used_at} mode="relative" size="xs" tone="inherit" />
+							{:else}
+								{m.settings_passkeys_never_used()}
+							{/if}
+						</Text>
 						{#if !key.discoverable}
 							<Text size="xs" tone="danger" as="div">{m.settings_passkeys_not_discoverable()}</Text>
 						{/if}

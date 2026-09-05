@@ -91,11 +91,11 @@
 	</span>
 {/snippet}
 {#snippet colCreated(k: ApiKeyRow)}
-	<Timestamp value={k.created_at} mode="short-iso" mono size="xs" tone="faint" details={false} />
+	<Timestamp value={k.created_at} mode="short-iso" mono size="xs" tone="faint" />
 {/snippet}
 {#snippet colUsed(k: ApiKeyRow)}
 	{#if k.last_used_at}
-		<Timestamp value={k.last_used_at} mode="relative" size="xs" tone="faint" details={false} />
+		<Timestamp value={k.last_used_at} mode="relative" size="xs" tone="faint" />
 	{:else}
 		<Text size="xs" tone="faint">{m.users_never_used()}</Text>
 	{/if}

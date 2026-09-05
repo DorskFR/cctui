@@ -60,7 +60,7 @@
 				id: r.id,
 				family: r.family,
 				targetName: rows.find((t) => t.id === r.to_account)?.name ?? '…',
-				until: r.expires_at ? new Date(r.expires_at).toLocaleString() : null
+				until: r.expires_at ?? null
 			}));
 	const redirectTargetsFor = (acct: OAuthAccount) =>
 		rows

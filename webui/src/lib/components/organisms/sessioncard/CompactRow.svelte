@@ -94,15 +94,12 @@
 	.end-muted {
 		opacity: 0.6;
 	}
-	/* The Timestamp's details trigger is a 36px button (TSU-101); cap the cell
-	   so it overflows instead of stretching the row. */
 	.time {
 		flex: none;
 		display: inline-flex;
 		align-items: center;
 		justify-content: flex-end;
 		min-width: 4.5rem;
-		max-height: 1.25rem;
 		white-space: nowrap;
 	}
 </style>

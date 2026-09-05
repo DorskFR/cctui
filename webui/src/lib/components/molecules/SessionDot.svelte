@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { SessionListItem } from '@bindings/SessionListItem';
-	import { Tooltip, copyToClipboard } from '@dorsk/tsumikit';
+	import { Tooltip, copyToClipboard, Timestamp } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 	import { sessionDebugRows } from '../../../routes/sessions/sessions.logic';
 	import { sessionEnd } from '$lib/sessionEnd';
@@ -16,12 +16,12 @@
 		now = Date.now()
 	}: { session: SessionListItem; livenessClass: string; now?: number } = $props();
 
-	const rows = $derived.by(() => {
+	const rows = $derived.by((): { label: string; value: string; at?: string }[] => {
 		const base = sessionDebugRows(session, now);
 		const end = sessionEnd(session);
 		if (!end) return base;
-		const extra = [
-			{ label: m.sessions_dot_ended(), value: end.endedAt ? new Date(end.endedAt).toLocaleString() : '—' },
+		const extra: { label: string; value: string; at?: string }[] = [
+			{ label: m.sessions_dot_ended(), value: end.endedAt ? '' : '—', at: end.endedAt ?? undefined },
 			{ label: m.sessions_dot_end_reason(), value: end.label }
 		];
 		if (end.detail) extra.push({ label: m.sessions_dot_end_detail(), value: end.detail });
@@ -59,7 +59,7 @@
 			<dl class="grid">
 				{#each rows as r (r.label)}
 					<dt>{r.label}</dt>
-					<dd>{r.value}</dd>
+					<dd>{#if r.at}<Timestamp value={r.at} size="xs" tone="inherit" />{:else}{r.value}{/if}</dd>
 				{/each}
 			</dl>
 		</div>

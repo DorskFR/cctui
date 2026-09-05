@@ -83,7 +83,7 @@
 	</span>
 {/snippet}
 {#snippet colSeen(mc: MachineRow)}
-	<Timestamp value={mc.last_seen_at} mode="relative" size="xs" tone="faint" details={false} />
+	<Timestamp value={mc.last_seen_at} mode="relative" size="xs" tone="faint" />
 {/snippet}
 {#snippet colPreview(mc: MachineRow)}
 	<span class="mono faint">{mc.key_preview ?? '••••'}</span>
