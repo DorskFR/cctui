@@ -66,7 +66,7 @@
 		<span class="spacer"></span>
 		{#if canManage}
 			<IconButton
-				icon="bookmark"
+				emoji="📌"
 				label={p.header_pin ? m.providers_unpin() : m.providers_pin()}
 				title={p.header_pin ? m.providers_unpin() : m.providers_pin()}
 				pressed={p.header_pin}
