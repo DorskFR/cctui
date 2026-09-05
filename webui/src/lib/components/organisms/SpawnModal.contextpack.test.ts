@@ -114,9 +114,7 @@ async function addEnvRow(key: string, value: string) {
 	await tick();
 }
 async function submitDispatch() {
-	const btn = [...document.querySelectorAll<HTMLButtonElement>('button')].find(
-		(b) => b.textContent?.trim().startsWith('Dispatch')
-	);
+	const btn = document.querySelector<HTMLButtonElement>('.foot-primary button');
 	if (!btn) throw new Error('dispatch button not found');
 	btn.click();
 	await tick(60);
