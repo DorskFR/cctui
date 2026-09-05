@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { CapBar, Input, Text } from '@dorsk/tsumikit';
+	import { CapBar, Input, Text, Timestamp } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 	import type { UsagePace } from '$lib/queries';
 	import { countdown, paceState, wallInMs } from '$lib/components/molecules/usage-battery.logic';
@@ -50,14 +50,15 @@
 	const resetShort = $derived(usd || pct === null ? null : resetInShort(resets, now));
 	const readonly = $derived(usd || (!editable && !oncapchange));
 
-	// One line per window: label | track | "69% · resets 3h". Pace and the full
-	// countdown live in the row's tooltip; only a burn (flame) earns a glyph.
-	const readout = $derived.by(() => {
+	// One line per window: label | track | "69% · in 3h" with a live relative
+	// Timestamp. Pace and the full countdown live in the row's tooltip; only a
+	// burn (flame) earns a glyph.
+	const readoutText = $derived.by(() => {
 		if (usd) return usdReadout(amountUsd, capUsd) ?? m.softlimit_not_reported();
 		if (pct === null) return m.softlimit_not_reported();
-		const base = resetShort ? `${pct}% · ${m.capbar_caption_resets({ time: resetShort })}` : `${pct}%`;
-		return paceKind === 'flame' ? `${base} 🔥` : base;
+		return `${pct}%`;
 	});
+	const showReset = $derived(!usd && pct !== null && resetShort !== null);
 
 	// The three-column bar only fits while the readout column can hold
 	// "100% · resets 5d 🔥" next to a track worth looking at. Below that the
@@ -98,6 +99,14 @@
 	});
 </script>
 
+{#snippet readoutSnippet()}
+	<span class="readout">
+		{readoutText}{#if showReset && resets}
+			· <Timestamp value={resets} mode="relative" tone="inherit" details={false} />{/if}{#if paceKind === 'flame'}
+			🔥{/if}
+	</span>
+{/snippet}
+
 <div class="soft-limit" bind:clientWidth={width} title={rowTitle || undefined}>
 	{#if dense}
 		<div class="dense-label"><Text size="xs" tone="muted" truncate>{label}</Text></div>
@@ -110,7 +119,7 @@
 		warnAt={75}
 		labelWidth={dense ? '0px' : '96px'}
 		readoutWidth={reported ? (dense ? 'max-content' : READOUT_W) : 'auto'}
-		{readout}
+		readout={showReset || paceKind === 'flame' ? readoutSnippet : readoutText}
 		{readonly}
 		tooltip={readonly ? m.capbar_tooltip_readonly({ pct: barCap }) : m.capbar_tooltip({ pct: barCap })}
 		onchange={commit}
@@ -141,6 +150,9 @@
 	}
 	.dense-label {
 		min-width: 0;
+	}
+	.readout {
+		white-space: nowrap;
 	}
 	.controls {
 		display: grid;

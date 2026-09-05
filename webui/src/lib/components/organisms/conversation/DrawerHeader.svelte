@@ -21,7 +21,7 @@
 	import LabelBadge from '$lib/components/molecules/LabelBadge.svelte';
 	import TokenUsage from '$lib/components/molecules/TokenUsage.svelte';
 	import LangfuseChip from '$lib/components/molecules/LangfuseChip.svelte';
-	import { Badge, Icon, IconButton, Input, Select, SelectButton, Text, WorkingDir } from '@dorsk/tsumikit';
+	import { Badge, Icon, IconButton, Input, Select, Text, WorkingDir, FontScalePicker } from '@dorsk/tsumikit';
 	import { codexModelsFor, codexEffortsFor, preferCatalog } from '$lib/harnessModels';
 	import { useCodexModels, useMergedCodexModels } from '$lib/queries';
 	import ModelPicker from '$lib/components/molecules/ModelPicker.svelte';
@@ -215,20 +215,9 @@
 				{/if}
 			{/if}
 		</div>
-		<!-- UI font size: the SAME discrete "A" control as
-		     the main window header. It stays a standalone icon button
-		     at all widths — it does NOT fold into the ⋯ flyout on mobile, sitting
-		     just left of it instead. Both write the single global
-		     fontScale. -->
-		<SelectButton
-			class="font-pick"
-			glyph="A"
-			label={m.drawer_font_size_label()}
-			title={m.drawer_font_size_title()}
-			value={fontScale.levelId}
-			options={SCALE_LEVELS.map((l) => ({ value: l.id, label: l.label }))}
-			onchange={(v) => fontScale.set(v)}
-		/>
+		<!-- Text size: the same kit picker as the main header, writing the one
+		     global fontScale. It stays out of the ⋯ flyout on mobile. -->
+		<FontScalePicker class="font-pick" />
 		<!-- Secondary actions: inline on desktop, collapsed into the
 		     ⋯ flyout on mobile so a long title + many buttons no longer overflow.
 		     A single fork lives at the end of the group. -->
@@ -459,8 +448,12 @@
 		.dhead .secondary :global(.tapbtn svg) {
 			flex: none;
 		}
+		/* The kit stretches an invisible ::after into a touch hit-slab on
+		   coarse pointers; here that pseudo IS the label, so keep it in flow. */
 		.dhead .secondary :global(.tapbtn)::after {
 			content: attr(aria-label);
+			position: static;
+			inset: auto;
 			font-size: var(--fs-sm);
 			font-weight: var(--fw-medium);
 			/* Let a long label wrap inside the panel instead of clipping at the

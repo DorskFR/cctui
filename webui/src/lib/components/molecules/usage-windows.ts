@@ -31,16 +31,27 @@ export function isUsdKey(key: string): boolean {
 	return USD_WINDOW_KEYS.includes(key);
 }
 
-/** Human label for a canonical window key when the server didn't supply one
- *  (configured-but-unobserved keys carry no server label). */
+/** Short label for a canonical window key: 5h · 7d · <model>, and Session ·
+ *  5h · 7d for dollar windows. Canonical keys always read this way; only an
+ *  unknown key falls back to whatever the server called it. */
 export function windowLabelFromKey(key: string): string {
-	if (key === 'session_usd') return 'Session spend';
-	if (key === 'usd_5h') return '5h spend';
-	if (key === 'usd_7d') return '7d spend';
+	if (key === 'session_usd') return 'Session';
+	if (key === 'usd_5h') return '5h';
+	if (key === 'usd_7d') return '7d';
 	if (key === 'session') return '5h';
-	if (key === 'weekly_all') return 'Weekly (all models)';
-	if (key.startsWith(WEEKLY_MODEL_PREFIX)) return `Weekly ${key.slice(WEEKLY_MODEL_PREFIX.length)}`;
+	if (key === 'weekly_all') return '7d';
+	if (key.startsWith(WEEKLY_MODEL_PREFIX)) return key.slice(WEEKLY_MODEL_PREFIX.length);
 	return key;
+}
+
+function isCanonicalKey(key: string): boolean {
+	return (
+		key === 'session' || key === 'weekly_all' || key.startsWith(WEEKLY_MODEL_PREFIX) || isUsdKey(key)
+	);
+}
+
+function windowLabel(key: string, serverLabel: string | null | undefined): string {
+	return isCanonicalKey(key) ? windowLabelFromKey(key) : serverLabel || windowLabelFromKey(key);
 }
 
 /** Merge the observed usage windows with the configured soft-limit map. Observed
@@ -57,7 +68,7 @@ export function mergeUsageWindows(
 		const l = limits[w.key];
 		return {
 			key: w.key,
-			label: w.label || windowLabelFromKey(w.key),
+			label: windowLabel(w.key, w.label),
 			utilization: w.utilization,
 			amountUsd: w.amount_usd ?? null,
 			resets: w.resets_at ?? null,
@@ -102,7 +113,7 @@ export function editorWindowKeys(
 	const labels: Record<string, string> = {};
 	for (const w of windows) {
 		if (!order.includes(w.key)) order.push(w.key);
-		labels[w.key] = w.label || windowLabelFromKey(w.key);
+		labels[w.key] = windowLabel(w.key, w.label);
 	}
 	for (const k of Object.keys(softLimits ?? {})) if (!order.includes(k)) order.push(k);
 	return order.map((k) => ({ key: k, label: labels[k] ?? windowLabelFromKey(k) }));

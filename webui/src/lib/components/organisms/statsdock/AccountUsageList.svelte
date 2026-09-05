@@ -40,11 +40,9 @@
 				</div>
 				<UsageBars id={r.provider.id} provider={r.provider.provider} softLimits={r.provider.soft_limits} />
 				<div class="meta">
-					<Text as="span" size="xs" tone="muted">
-						{m.providers_stat_requests()} <Text as="span" size="xs" weight="medium" numeric>{compact(r.provider.request_count)}</Text>
-					</Text>
-					<Text as="span" size="xs" tone="muted">
-						{m.providers_stat_last_used()} <Timestamp value={r.provider.last_used_at} mode="relative" tone="inherit" />
+					<Text as="span" size="xs" tone="faint">{m.providers_requests({ n: compact(r.provider.request_count) })}</Text>
+					<Text as="span" size="xs" tone="faint">
+						{m.providers_used()} <Timestamp value={r.provider.last_used_at} mode="relative" tone="inherit" />
 					</Text>
 				</div>
 			</div>
