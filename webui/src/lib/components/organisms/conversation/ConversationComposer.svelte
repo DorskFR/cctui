@@ -2,6 +2,8 @@
 	import { errMessage } from '$lib/api';
 	import type { SessionListItem } from '@bindings/SessionListItem';
 	import AttachmentList from '$lib/components/molecules/AttachmentList.svelte';
+	import SessionMention from '$lib/components/molecules/SessionMention.svelte';
+	import { useSessions } from '$lib/queries';
 	import { Button, FileButton, Text, Textarea } from '@dorsk/tsumikit';
 	import { drafts, composerKey, history as msgHistory } from '$lib/drafts';
 	import {
@@ -43,6 +45,10 @@
 		onFork: () => void;
 		onResume: () => void;
 	} = $props();
+
+	// `#` mention popover source: the shared (cached) session list.
+	const sessionsQuery = useSessions(() => false);
+	const mentionSessions = $derived(sessionsQuery.data?.sessions ?? []);
 
 	// Composer draft, persisted per session in localStorage. Initialized once (the
 	// drawer instance persists across session switches; matching the original we do
@@ -325,23 +331,33 @@
 			     content (autoresize). The top handle drags a min-height floor so
 			     the user can pin a taller working area; content still grows past it
 			     (tsumikit 0.2.15). -->
+			<!-- The `#` session-mention panel opens as a dropup above the field
+			     (the composer is pinned to the bottom of the drawer). -->
 			<div class="composer-input">
-				<Textarea
-					rows={1}
-					autoresize
-					resize="top"
-					aria-label={m.a11y_composer_message()}
-					placeholder={dragActive
-						? m.composer_drop_files()
-						: coarsePointer
-							? m.composer_placeholder_message()
-							: m.composer_placeholder_message_enter()}
+				<SessionMention
 					bind:value={input}
-					bind:el={scroll.textarea}
-					onkeydown={onKey}
-					oninput={() => resetHistoryNav()}
-					onpaste={onPaste}
-				/>
+					el={scroll.textarea}
+					sessions={mentionSessions}
+					excludeId={session.id}
+					placement="up"
+				>
+					<Textarea
+						rows={1}
+						autoresize
+						resize="top"
+						aria-label={m.a11y_composer_message()}
+						placeholder={dragActive
+							? m.composer_drop_files()
+							: coarsePointer
+								? m.composer_placeholder_message()
+								: m.composer_placeholder_message_enter()}
+						bind:value={input}
+						bind:el={scroll.textarea}
+						onkeydown={onKey}
+						oninput={() => resetHistoryNav()}
+						onpaste={onPaste}
+					/>
+				</SessionMention>
 			</div>
 			<!-- Stays a plain primary button across all cost states: layering a `tone`
 			     (info/warn) on `primary` recolored the LABEL to the tone hue over the
