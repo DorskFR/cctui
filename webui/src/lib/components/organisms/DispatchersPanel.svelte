@@ -13,7 +13,8 @@
 		type UserDispatcher,
 	} from '$lib/queries';
 	import { toasts } from '$lib/toast.svelte';
-	import { Badge, Button, Field, Heading, Input, Modal, Select, Text, Timestamp } from '@dorsk/tsumikit';
+	import { Badge, Button, DataTable, Field, Heading, Input, Modal, Select, Text, Timestamp } from '@dorsk/tsumikit';
+	import type { Column } from '@dorsk/tsumikit';
 	import { livenessLabel, livenessTone } from '$lib/dispatchers.logic';
 	import { m } from '$lib/paraglide/messages';
 
@@ -108,7 +109,37 @@
 	}
 
 	const rows = $derived([...(dispatchers.data ?? [])]);
+
+	const cols: Column<UserDispatcher>[] = [
+		{ key: 'name', label: m.dispatch_col_name() },
+		{ key: 'kind', label: m.dispatch_col_type(), width: '8rem' },
+		{ key: 'status', label: m.dispatch_col_status(), width: '8rem' },
+		{ key: 'key', label: m.dispatch_col_key(), hideBelow: 'md', truncate: true },
+		{ key: 'seen', label: m.dispatch_col_last_seen(), width: '9rem', hideBelow: 'md' }
+	];
 </script>
+
+{#snippet colName(d: UserDispatcher)}
+	<Text weight="semibold">{d.name}</Text>
+{/snippet}
+{#snippet colKind(d: UserDispatcher)}
+	<Badge>{d.kind}</Badge>
+{/snippet}
+{#snippet colStatus(d: UserDispatcher)}
+	<Badge tone={livenessTone(d)}>{livenessLabel(d)}</Badge>
+{/snippet}
+{#snippet colKey(d: UserDispatcher)}
+	<Text tone="faint" truncate>{d.key_preview ?? '—'}</Text>
+{/snippet}
+{#snippet colSeen(d: UserDispatcher)}
+	<Text tone="faint"><Timestamp value={d.last_seen_at} mode="relative" tone="inherit" /></Text>
+{/snippet}
+{#snippet colActions(d: UserDispatcher)}
+	<div class="row acts">
+		<Button onclick={() => openRename(d)}>{m.dispatch_rename()}</Button>
+		<Button variant="danger" onclick={() => remove(d)}>{m.common_remove()}</Button>
+	</div>
+{/snippet}
 
 <div class="bar row">
 	{#if heading}<Heading level={1}>{m.dispatch_heading()}</Heading>{/if}
@@ -122,43 +153,18 @@
 	</Text>
 </div>
 
-{#if dispatchers.isLoading}
-	<div class="empty"><span class="spin"></span></div>
-{:else if rows.length === 0}
-	<div class="empty"><Text tone="muted">{m.dispatch_empty()}</Text></div>
-{:else}
-	<div class="card table-card">
-		<table class="disp">
-			<thead>
-				<tr>
-					<th class="col-name">{m.dispatch_col_name()}</th>
-					<th class="col-kind">{m.dispatch_col_type()}</th>
-					<th class="col-status">{m.dispatch_col_status()}</th>
-					<th class="col-key faint">{m.dispatch_col_key()}</th>
-					<th class="col-seen">{m.dispatch_col_last_seen()}</th>
-					<th class="col-actions">{m.dispatch_col_actions()}</th>
-				</tr>
-			</thead>
-			<tbody>
-				{#each rows as d (d.id)}
-					<tr>
-						<td class="col-name"><Text weight="semibold">{d.name}</Text></td>
-						<td class="col-kind"><Badge>{d.kind}</Badge></td>
-						<td class="col-status"><Badge tone={livenessTone(d)}>{livenessLabel(d)}</Badge></td>
-						<td class="col-key faint truncate">{d.key_preview ?? '—'}</td>
-						<td class="col-seen faint"><Timestamp value={d.last_seen_at} mode="relative" tone="inherit" /></td>
-						<td class="col-actions">
-							<div class="row acts">
-								<Button onclick={() => openRename(d)}>{m.dispatch_rename()}</Button>
-								<Button variant="danger" onclick={() => remove(d)}>{m.common_remove()}</Button>
-							</div>
-						</td>
-					</tr>
-				{/each}
-			</tbody>
-		</table>
-	</div>
-{/if}
+<DataTable
+	columns={cols}
+	rows={rows}
+	rowKey={(d) => d.id}
+	layout="fixed"
+	loading={dispatchers.isLoading}
+	loadingLabel={m.common_loading()}
+	empty={m.dispatch_empty()}
+	rowActions={colActions}
+	rowActionsLabel={m.dispatch_col_actions()}
+	cellSnippets={{ name: colName, kind: colKind, status: colStatus, key: colKey, seen: colSeen }}
+/>
 
 {#if editing !== undefined}
 	<Modal title={editing ? m.dispatch_modal_rename_title() : m.dispatch_modal_enroll_title()} onclose={close}>
@@ -222,45 +228,6 @@
 	.intro {
 		margin-bottom: var(--sp-4);
 	}
-	.table-card {
-		padding: 0;
-		overflow-x: auto;
-	}
-	table.disp {
-		width: 100%;
-		border-collapse: collapse;
-		table-layout: fixed;
-	}
-	th {
-		text-align: left;
-		font-size: var(--fs-xs);
-		color: var(--text-muted);
-		text-transform: uppercase;
-		letter-spacing: 0.04em;
-		font-weight: var(--fw-semibold);
-		padding: var(--sp-2) var(--sp-3);
-		border-bottom: 1px solid var(--border);
-	}
-	td {
-		padding: var(--sp-2) var(--sp-3);
-		vertical-align: middle;
-		border-top: 1px solid var(--border);
-	}
-	tbody tr:first-child td {
-		border-top: none;
-	}
-	.col-kind {
-		width: 8rem;
-	}
-	.col-status {
-		width: 8rem;
-	}
-	.col-seen {
-		width: 9rem;
-	}
-	.col-actions {
-		width: 13rem;
-	}
 	.acts {
 		gap: var(--sp-1);
 	}
@@ -279,11 +246,5 @@
 	.keybox code {
 		font-size: var(--fs-sm);
 		word-break: break-all;
-	}
-	@media (max-width: 720px) {
-		.col-seen,
-		.col-key {
-			display: none;
-		}
 	}
 </style>

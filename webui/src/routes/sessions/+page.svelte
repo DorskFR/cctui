@@ -961,15 +961,15 @@
 	{#if searching}
 		<!-- Search results, scoped by the Archived checkbox; split Live / Archived. -->
 		{#if pageLoading && pageRows.length === 0}
-			<div class="empty"><span class="spin"></span></div>
+			<div class="placeholder"><span class="spin"></span></div>
 		{:else if pageRows.length === 0}
-			<div class="empty"><Text tone="muted">{m.sessions_search_no_match({ query: serverQuery })}{showArchived ? '.' : ' ' + m.sessions_search_live_only_hint()}</Text></div>
+			<div class="placeholder"><Text tone="muted">{m.sessions_search_no_match({ query: serverQuery })}{showArchived ? '.' : ' ' + m.sessions_search_live_only_hint()}</Text></div>
 		{:else}
 			{@render sectionsWrap(searchSections)}
 		{/if}
 	{:else if kanban}
 		{#if sessions.isLoading}
-			<div class="empty"><span class="spin"></span></div>
+			<div class="placeholder"><span class="spin"></span></div>
 		{:else}
 			<div class="bleed">
 				<KanbanBoard columns={list.kanbanColumns} card={kanbanCard} />
@@ -1003,7 +1003,7 @@
 		</div>
 	{/if}
 	{#if scoped.length === 0}
-		<div class="empty"><Text tone="muted">{m.sessions_search_no_sections()}</Text></div>
+		<div class="placeholder"><Text tone="muted">{m.sessions_search_no_sections()}</Text></div>
 	{/if}
 	{@render loadMore()}
 {/snippet}
@@ -1054,9 +1054,9 @@
 
 {#snippet liveSections()}
 		{#if sessions.isLoading}
-			<div class="empty"><span class="spin"></span></div>
+			<div class="placeholder"><span class="spin"></span></div>
 		{:else if !list.hasLiveRows && !showArchived && !sections.has('drafts')}
-			<div class="empty">
+			<div class="placeholder">
 				<Text tone="muted">{m.sessions_empty_sections()}</Text>
 			</div>
 		{:else if groupBy !== 'none'}
@@ -1111,7 +1111,7 @@
 				{@render groupHeader('archived', m.sessions_section_archived(), archTop.length, {})}
 				{#if !hiddenSections.has('archived')}
 					{#if pageRows.length === 0 && !pageLoading}
-						<div class="empty"><Text tone="muted">{m.sessions_no_archived()}</Text></div>
+						<div class="placeholder"><Text tone="muted">{m.sessions_no_archived()}</Text></div>
 					{:else}
 						{@render rowsView(archTop, ns.childGroups, false, searchTerms)}
 						{@render loadMore()}

@@ -9,7 +9,7 @@
 	import type { DiagnoseFact } from '@bindings/DiagnoseFact';
 	import type { SessionListItem } from '@bindings/SessionListItem';
 	import { sessionEnd } from '$lib/sessionEnd';
-	import { Button, Heading, Text } from '@dorsk/tsumikit';
+	import { Button, Heading, Modal, Text } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 
 	let {
@@ -103,111 +103,104 @@
 	}
 </script>
 
-<div
-	class="diag-scrim"
-	role="button"
-	tabindex="-1"
-	aria-label={m.diagnose_close_aria()}
-	onclick={onclose}
-	onkeydown={(e) => e.key === 'Escape' && onclose()}
-></div>
-<div class="diag-modal" role="dialog" aria-modal="true" aria-label={m.diagnose_title()}>
-	<div class="diag-head">
-		<Heading level={3}>{m.diagnose_title()}</Heading>
-		<div class="diag-actions">
-			<Button size="sm" variant="ghost" onclick={() => query.refetch()} loading={query.isFetching}>
-				{m.diagnose_refresh()}
-			</Button>
-			<Button size="sm" variant="ghost" onclick={onclose}>{m.common_close()}</Button>
-		</div>
-	</div>
-	<Text size="xs" tone="muted">{sessionId}</Text>
+<Modal title={m.diagnose_title()} size="lg" onclose={onclose}>
+	{#snippet body()}
+		<div class="diag-body">
+			<Text size="xs" tone="muted">{sessionId}</Text>
 
-	{#if session}
-		<Heading level={4}>{m.diagnose_end_of_life()}</Heading>
-		{#if end}
-			<div class="facts" role="table" aria-label={m.diagnose_end_of_life()}>
-				<div class="fact codex-fact" role="row">
-					<span class="name">{m.diagnose_end_reason()}</span>
-					<span class="val">{end.label} ({end.reason})</span>
-				</div>
-				<div class="fact codex-fact" role="row">
-					<span class="name">{m.diagnose_end_at()}</span>
-					<span class="val">{end.endedAt ? new Date(end.endedAt).toLocaleString() : '—'}</span>
-				</div>
-				{#if end.detail}
-					<div class="fact codex-fact" role="row">
-						<span class="name">{m.diagnose_end_detail()}</span>
-						<pre class="val end-detail">{end.detail}</pre>
-					</div>
-				{/if}
-			</div>
-		{:else}
-			<Text size="sm" tone="muted">{m.diagnose_end_none()}</Text>
-		{/if}
-	{/if}
-
-	{#if query.isLoading}
-		<Text size="sm" tone="muted">{m.diagnose_asking()}</Text>
-	{:else if query.error}
-		<Text size="sm" tone="danger">
-			{query.error instanceof Error ? query.error.message : m.diagnose_failed()}
-		</Text>
-	{:else if query.data}
-		{@const resp = query.data}
-		<div class="server-facts">
-			<span class="src">{m.diagnose_src_server()}</span>
-			<span>
-				status: {resp.server.status ?? '?'} · adapter: {resp.server.adapter_id ?? '?'} ·
-				account: {resp.server.account_bound ? resp.server.accounts.join(', ') : m.diagnose_not_bound()}
-				{#if resp.server.machine_last_seen_ms != null}
-					· {m.diagnose_daemon_heartbeat({ age: fmtAge(Date.now() - (resp.server.machine_last_seen_ms ?? 0)) })}
-				{/if}
-			</span>
-		</div>
-
-		{#if resp.daemon_error}
-			<div class="daemon-error">
-				<Text size="sm" tone="danger">{m.diagnose_daemon_unavailable({ error: resp.daemon_error })}</Text>
-			</div>
-		{/if}
-
-		{#if resp.daemon}
-			<Text size="xs" tone="muted">
-				{m.diagnose_report_from({ adapter: resp.daemon.adapter, worker: resp.daemon.short ?? '?' })}
-			</Text>
-			<div class="facts" role="table" aria-label={m.diagnose_facts_aria()}>
-				{#each visibleRows as row (row.name)}
-					<div class="fact" role="row">
-						<span class="name">{row.name}</span>
-						<span class="meta">
-							<span class="src">{row.fact.source}</span>
-							<span class="age">{fmtAge(row.fact.age_ms ?? null)}</span>
-						</span>
-						{#if row.fact.value !== null}
-							<span class="val">{fmtValue(row.fact.value)}</span>
-						{:else}
-							<span class="val missing">— {row.fact.missing_reason ?? m.diagnose_missing()}</span>
+			{#if session}
+				<Heading level={4}>{m.diagnose_end_of_life()}</Heading>
+				{#if end}
+					<div class="facts" role="table" aria-label={m.diagnose_end_of_life()}>
+						<div class="fact codex-fact" role="row">
+							<span class="name">{m.diagnose_end_reason()}</span>
+							<span class="val">{end.label} ({end.reason})</span>
+						</div>
+						<div class="fact codex-fact" role="row">
+							<span class="name">{m.diagnose_end_at()}</span>
+							<span class="val">{end.endedAt ? new Date(end.endedAt).toLocaleString() : '—'}</span>
+						</div>
+						{#if end.detail}
+							<div class="fact codex-fact" role="row">
+								<span class="name">{m.diagnose_end_detail()}</span>
+								<pre class="val end-detail">{end.detail}</pre>
+							</div>
 						{/if}
 					</div>
-				{/each}
-			</div>
-
-			{#if resp.daemon.codex}
-				{@const cx = resp.daemon.codex}
-				<Heading level={4}>Codex</Heading>
-				<div class="facts" role="table" aria-label={m.diagnose_codex_facts_aria()}>
-					{#each codexRows(cx) as row (row.name)}
-						<div class="fact codex-fact" role="row">
-							<span class="name">{row.name}</span>
-							<span class="val">{row.value}</span>
-						</div>
-					{/each}
-				</div>
+				{:else}
+					<Text size="sm" tone="muted">{m.diagnose_end_none()}</Text>
+				{/if}
 			{/if}
-		{/if}
-	{/if}
-</div>
+
+			{#if query.isLoading}
+				<Text size="sm" tone="muted">{m.diagnose_asking()}</Text>
+			{:else if query.error}
+				<Text size="sm" tone="danger">
+					{query.error instanceof Error ? query.error.message : m.diagnose_failed()}
+				</Text>
+			{:else if query.data}
+				{@const resp = query.data}
+				<div class="server-facts">
+					<span class="src">{m.diagnose_src_server()}</span>
+					<span>
+						status: {resp.server.status ?? '?'} · adapter: {resp.server.adapter_id ?? '?'} ·
+						account: {resp.server.account_bound ? resp.server.accounts.join(', ') : m.diagnose_not_bound()}
+						{#if resp.server.machine_last_seen_ms != null}
+							· {m.diagnose_daemon_heartbeat({ age: fmtAge(Date.now() - (resp.server.machine_last_seen_ms ?? 0)) })}
+						{/if}
+					</span>
+				</div>
+
+				{#if resp.daemon_error}
+					<div class="daemon-error">
+						<Text size="sm" tone="danger">{m.diagnose_daemon_unavailable({ error: resp.daemon_error })}</Text>
+					</div>
+				{/if}
+
+				{#if resp.daemon}
+					<Text size="xs" tone="muted">
+						{m.diagnose_report_from({ adapter: resp.daemon.adapter, worker: resp.daemon.short ?? '?' })}
+					</Text>
+					<div class="facts" role="table" aria-label={m.diagnose_facts_aria()}>
+						{#each visibleRows as row (row.name)}
+							<div class="fact" role="row">
+								<span class="name">{row.name}</span>
+								<span class="meta">
+									<span class="src">{row.fact.source}</span>
+									<span class="age">{fmtAge(row.fact.age_ms ?? null)}</span>
+								</span>
+								{#if row.fact.value !== null}
+									<span class="val">{fmtValue(row.fact.value)}</span>
+								{:else}
+									<span class="val missing">— {row.fact.missing_reason ?? m.diagnose_missing()}</span>
+								{/if}
+							</div>
+						{/each}
+					</div>
+
+					{#if resp.daemon.codex}
+						{@const cx = resp.daemon.codex}
+						<Heading level={4}>Codex</Heading>
+						<div class="facts" role="table" aria-label={m.diagnose_codex_facts_aria()}>
+							{#each codexRows(cx) as row (row.name)}
+								<div class="fact codex-fact" role="row">
+									<span class="name">{row.name}</span>
+									<span class="val">{row.value}</span>
+								</div>
+							{/each}
+						</div>
+					{/if}
+				{/if}
+			{/if}
+		</div>
+	{/snippet}
+	{#snippet footer()}
+		<Button size="sm" variant="ghost" onclick={() => query.refetch()} loading={query.isFetching}>
+			{m.diagnose_refresh()}
+		</Button>
+		<Button size="sm" variant="ghost" onclick={onclose}>{m.common_close()}</Button>
+	{/snippet}
+</Modal>
 
 <style>
 	.end-detail {
@@ -219,41 +212,11 @@
 		max-height: 12rem;
 		overflow: auto;
 	}
-	.diag-scrim {
-		position: fixed;
-		inset: 0;
-		z-index: 70;
-		background: rgba(0, 0, 0, 0.45);
-		border: none;
-	}
-	.diag-modal {
-		position: fixed;
-		z-index: 71;
-		top: 50%;
-		left: 50%;
-		transform: translate(-50%, -50%);
+	.diag-body {
 		display: flex;
 		flex-direction: column;
 		gap: var(--sp-2);
-		width: min(42rem, calc(100vw - 2rem));
-		max-height: calc(100vh - 4rem);
-		overflow-y: auto;
-		padding: var(--sp-4);
-		background: var(--bg-elevated);
-		border: 1px solid var(--border-strong);
-		border-radius: var(--r-lg, var(--r-md));
-		box-shadow: var(--shadow-lg, 0 8px 24px rgba(0, 0, 0, 0.5));
 		font-size: var(--fs-sm);
-	}
-	.diag-head {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: var(--sp-2);
-	}
-	.diag-actions {
-		display: flex;
-		gap: var(--sp-1);
 	}
 	.server-facts {
 		display: flex;

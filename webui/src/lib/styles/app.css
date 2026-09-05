@@ -1,266 +1,19 @@
 /*
- * Base reset + element defaults + reusable component classes.
- * Consumes ONLY tokens from variables.css — never a raw color/size.
- * Mobile-first: base styles target phones; `min-width` queries enhance up.
+ * App-wide stylesheet. Tokens/themes (variables.css), the reset and the generic
+ * utilities come from the kit; only app-specific global rules live below —
+ * mostly styles for {@html}-rendered markup that no component scope can reach.
  */
 @import "./variables.css";
+@import "@dorsk/tsumikit/styles/reset.css";
+@import "@dorsk/tsumikit/styles/utilities.css";
 
-*,
-*::before,
-*::after {
-  box-sizing: border-box;
-}
-
-html {
-  -webkit-text-size-adjust: 100%;
-  text-size-adjust: 100%;
-  /* The UI font scaler drives --fs-scale, so only --fs-* text tokens
-	   grow — chrome rem dimensions stay fixed. A scaled-up text token can still
-	   push a fixed/min-width child past the viewport on small screens; clip
-	   sideways here too (not just on body) so the whole page never gains a
-	   horizontal scrollbar. */
-  overflow-x: hidden;
-  max-width: 100%;
-  scrollbar-gutter: stable;
-}
-
-body {
-  margin: 0;
-  background: var(--bg);
-  color: var(--text);
-  font-family: var(--font-sans);
-  font-size: var(--fs-base);
-  line-height: var(--lh-normal);
-  -webkit-font-smoothing: antialiased;
-  text-rendering: optimizeLegibility;
-  /* never allow the whole page to scroll sideways */
-  overflow-x: hidden;
-  scrollbar-gutter: stable;
-}
-
-h1,
-h2,
-h3,
-h4,
-p,
-figure {
-  margin: 0;
-}
-
-a {
-  color: var(--link);
-  text-decoration: none;
-}
-a:hover {
-  text-decoration: underline;
-}
-
-button {
-  font: inherit;
-  color: inherit;
-  cursor: pointer;
-}
-
-input,
-textarea,
-select {
-  font: inherit;
-  color: inherit;
-}
-
-/* iOS: inputs <16px trigger an auto-zoom on focus — never let that happen */
-input,
-textarea,
-select {
-  font-size: max(16px, var(--fs-base));
-}
-
-code,
-pre {
-  font-family: var(--font-mono);
-  font-size: 0.875em;
-}
-
-:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-  border-radius: var(--r-sm);
-}
-
-::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
-}
-::-webkit-scrollbar-thumb {
-  background: var(--border-strong);
-  border-radius: var(--r-pill);
-}
-
-/* ---------- layout primitives ---------- */
-.container {
-  width: 100%;
-  max-width: var(--content-max);
-  margin-inline: auto;
-  padding-inline: var(--sp-4);
-  padding-left: max(var(--sp-4), var(--safe-left));
-  padding-right: max(var(--sp-4), var(--safe-right));
-}
-
-.stack {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sp-3);
-}
-.row {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-}
-.row-wrap {
-  flex-wrap: wrap;
-}
-.spacer {
-  flex: 1;
-}
 .muted {
   color: var(--text-muted);
 }
-.faint {
-  color: var(--text-faint);
-}
-.mono {
-  font-family: var(--font-mono);
-}
-.truncate {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  min-width: 0;
-}
-.nowrap {
-  white-space: nowrap;
-}
 
-/* ---------- buttons ----------
- * The Button primitive (Button.svelte) owns the .btn base + .btn-primary/
- * ghost/danger/sm/block variants in its scoped style now. What stays global
- * here are: the svg/icon sizing rule (used by raw aria-hidden svgs too), and
- * the string-passed utility modifiers .btn-icon / .btn-control* that ride on a
- * Button-rendered element or a bespoke control div (e.g. the sessions view
- * picker) and so can't live in a single component's scope. */
-.btn svg,
-.icon,
-svg[aria-hidden="true"] {
-  flex: none;
-  width: 1em;
-  height: 1em;
-  min-width: 1em;
-  min-height: 1em;
-}
-.btn-icon {
-  min-height: 2.25rem;
-  min-width: 2.25rem;
-  padding: var(--sp-2);
-}
-/* Borderless, compact icon affordance (IconButton `inline`): chip-remove ✕,
-   hover-reveal edit ✎. Overrides the .btn chrome down to a bare muted glyph
-   that brightens on hover. Add `.hover-danger` for destructive removers. */
-.btn-icon-inline {
-  min-height: 0;
-  min-width: 0;
-  padding: 0 var(--sp-1);
-  border: none;
-  background: none;
-  color: var(--text-muted);
-}
-.btn-icon-inline:hover:not(:disabled) {
-  border: none;
-  background: none;
-  color: var(--text);
-}
-.btn-icon-inline.hover-danger:hover:not(:disabled) {
-  color: var(--c-red);
-}
-/* Uniform-height control. Use on icon buttons, inputs, and
-   action buttons that share a toolbar/composer row so they line up exactly.
-   Square icon variant: add `.btn-control-square`. */
-.btn-control {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--sp-2);
-  height: var(--control-height);
-  min-height: var(--control-height);
-  padding: 0 var(--sp-3);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--r-md);
-  background: var(--surface);
-  color: var(--text);
-  font-weight: var(--fw-medium);
-  font-size: var(--fs-sm);
-  line-height: 1;
-  white-space: nowrap;
-  transition:
-    background 0.12s var(--ease),
-    border-color 0.12s var(--ease),
-    opacity 0.12s var(--ease);
-  user-select: none;
-}
-.btn-control:hover:not(:disabled) {
-  border-color: var(--accent);
-}
-.btn-control:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-/* A control-sized button can still be the primary action (e.g. the toolbar
-   "New" button). .btn-control follows .btn-primary in source order and would
-   otherwise paint it with the neutral --surface, so restore the accent fill
-   when both classes are present. */
-.btn-control.btn-primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--text-on-accent);
-}
-.btn-control.btn-primary:hover:not(:disabled) {
-  border-color: var(--accent);
-  filter: brightness(1.08);
-}
-.btn-control-square {
-  width: var(--control-height);
-  /* Pin BOTH dimensions to --control-height so the box is truly square and lines
-     up with sibling .btn-control items. IconButton renders as .btn-icon (a
-     shorter 2.25rem box), so without an explicit height the square controls came
-     out shorter than the view/select controls next to them. */
-  height: var(--control-height);
-  min-height: var(--control-height);
-  padding: 0;
-  flex: none;
-}
-
-/* ---------- cards / surfaces ---------- */
-.card {
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
-  border-radius: var(--r-lg);
-  padding: var(--sp-4);
-}
-.card-tap {
-  cursor: pointer;
-  transition:
-    border-color 0.12s var(--ease),
-    background 0.12s var(--ease);
-}
-.card-tap:active {
-  background: var(--bg-elevated-2);
-}
-.card-tap:hover {
-  border-color: var(--border-strong);
-}
-
-/* ---------- status dots ----------
- * The badge/pill shape + tone palette now lives in the Badge primitive
- * (Badge.svelte). The liveness dots are a separate, non-badge indicator. */
+/* ---------- liveness dots ----------
+ * Raw `.dot` spans in SessionDot / DrawerHeader; the kit's Dot atom is a
+ * different, colour-driven indicator. */
 .dot {
   width: 0.55rem;
   height: 0.55rem;
@@ -386,16 +139,10 @@ svg[aria-hidden="true"] {
 }
 
 /* ---------- misc ---------- */
-.empty {
+.placeholder {
   text-align: center;
   color: var(--text-faint);
   padding: var(--sp-10) var(--sp-4);
-}
-.divider {
-  height: 1px;
-  background: var(--border);
-  border: 0;
-  margin: var(--sp-2) 0;
 }
 .spin {
   width: 1.1rem;
@@ -411,18 +158,6 @@ svg[aria-hidden="true"] {
     transform: rotate(360deg);
   }
 }
-.sr-only {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-  border: 0;
-}
-
 @media (prefers-reduced-motion: reduce) {
   * {
     animation-duration: 0.01ms !important;

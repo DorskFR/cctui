@@ -1,7 +1,15 @@
 <script lang="ts">
 	import type { Label } from '@bindings/Label';
 	import type { Section } from '../../../routes/sessions/sessions.logic';
-	import { Button, FilterSearchBar, Heading, Icon, IconButton, type Schema } from '@dorsk/tsumikit';
+	import {
+		Button,
+		Field,
+		FilterSearchBar,
+		Heading,
+		Icon,
+		type Schema,
+		Text
+	} from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 	import { sessionSearchPlaceholder } from '$lib/searchSchema';
 	import SectionFilter from '../molecules/SectionFilter.svelte';
@@ -103,7 +111,7 @@
 				<Icon name="x" size={18} /><span>{m.sessions_cancel_selection()}</span>
 			</button>
 		{:else}
-			<Button class="ctl btn-control-square" icon title={m.sessions_cancel_selection()} aria-label={m.sessions_cancel_selection()} onclick={onCancelSelect}>
+			<Button class="ctl" square title={m.sessions_cancel_selection()} aria-label={m.sessions_cancel_selection()} onclick={onCancelSelect}>
 				<Icon name="x" size={18} />
 			</Button>
 		{/if}
@@ -114,7 +122,7 @@
 	{:else}
 		<!-- "Select multiple" wants a checklist/multi-select glyph the registry
 		     doesn't ship; feed Icon a raw list-checks svg via its children. -->
-		<Button class="ctl btn-control-square" icon disabled={searching} title={m.sessions_select_multiple()} aria-label={m.sessions_select_multiple()} onclick={onStartSelect}>
+		<Button class="ctl" square disabled={searching} title={m.sessions_select_multiple()} aria-label={m.sessions_select_multiple()} onclick={onStartSelect}>
 			{@render listChecks()}
 		</Button>
 	{/if}
@@ -139,14 +147,16 @@
 	     drops directly under the ⋯ button at every width instead of detaching to
 	     the bar's far edge. -->
 	<div class="more-wrap">
-		<IconButton
-			class="more btn-control-square"
-			icon="more"
-			label={m.drawer_more_actions()}
+		<Button
+			class="more"
+			square
+			aria-label={m.drawer_more_actions()}
 			title={m.drawer_more_actions()}
 			aria-expanded={moreOpen}
 			onclick={() => (moreOpen = !moreOpen)}
-		/>
+		>
+			<Icon name="more" size={18} />
+		</Button>
 		<!-- The two DimensionPickers live here at all widths; narrow widths also
 		     receive the foldable controls (menu-only copy). -->
 		<div class="secondary" class:open={moreOpen}>
@@ -156,7 +166,7 @@
 		</div>
 	</div>
 	{#if onNew}
-		<Button class="toolbar-new" control variant="primary" title={m.sessions_new_session()} aria-label={m.sessions_new_session()} onclick={onNew}>+<span class="new-label"> {m.sessions_new()}</span></Button>
+		<Button class="toolbar-new" variant="primary" title={m.sessions_new_session()} aria-label={m.sessions_new_session()} onclick={onNew}>+<span class="new-label"> {m.sessions_new()}</span></Button>
 	{/if}
 	<!-- Mobile-only flex row-break: basis:100% forces row 2 (search +
 	     tools) onto a fresh line below title+New. Hidden on desktop where everything

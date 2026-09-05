@@ -97,18 +97,20 @@
      bearer, so "user token required" errors stop being a mystery. -->
 {#if me.data}
 	{@const meData = me.data}
-	<div class="card whoami row">
-		<Text tone="faint">{m.users_signed_in_as()}</Text>
-		<Badge tone={meData.role === 'admin' ? 'warn' : meData.role === 'user' ? 'ok' : 'neutral'}>{meData.role}</Badge>
-		{#if meData.user_name}<Text weight="semibold">{meData.user_name}</Text>{/if}
-		<Text variant="code" tone="faint" size="xs">{meData.token_preview}</Text>
-		{#if meData.role === 'admin'}
-			<Text tone="faint" size="xs"
-				>{m.users_admin_token_note()}</Text
-			>
-		{/if}
-		<div class="spacer"></div>
-		<Button onclick={() => void auth.logout()}>{m.users_log_out()}</Button>
+	<div class="whoami">
+		<Card padding="sm">
+			<div class="row whoami-row">
+				<Text tone="faint">{m.users_signed_in_as()}</Text>
+				<Badge tone={meData.role === 'admin' ? 'warn' : meData.role === 'user' ? 'ok' : 'neutral'}>{meData.role}</Badge>
+				{#if meData.user_name}<Text weight="semibold">{meData.user_name}</Text>{/if}
+				<Text variant="code" tone="faint" size="xs">{meData.token_preview}</Text>
+				{#if meData.role === 'admin'}
+					<Text tone="faint" size="xs">{m.users_admin_token_note()}</Text>
+				{/if}
+				<div class="spacer"></div>
+				<Button onclick={() => void auth.logout()}>{m.users_log_out()}</Button>
+			</div>
+		</Card>
 	</div>
 {/if}
 

@@ -66,15 +66,15 @@
 	const machineCols: Column<MachineRow>[] = [
 		{ key: 'machine', label: m.users_col_machine() },
 		{ key: 'status', label: m.users_col_status(), width: '11rem' },
-		{ key: 'seen', label: m.users_col_last_seen(), width: '11rem' },
-		{ key: 'actions', label: '', width: '7rem', align: 'right' }
+		{ key: 'seen', label: m.users_col_last_seen(), width: '11rem' }
 	];
 	const tokenCols: Column<UserTokenRow>[] = [
 		{ key: 'label', label: m.users_col_token() },
 		{ key: 'status', label: m.users_col_status(), width: '8rem' },
-		{ key: 'created', label: m.users_col_created(), width: '13rem' },
-		{ key: 'actions', label: '', width: '17rem', align: 'right' }
+		{ key: 'created', label: m.users_col_created(), width: '13rem' }
 	];
+	const revokedTone = (r: { revoked_at: string | null }): 'danger' | undefined =>
+		r.revoked_at ? 'danger' : undefined;
 
 	// Edit/create flows go through EditEntityModal — no native prompt().
 	let mintOpen = $state(false);
@@ -187,17 +187,18 @@
 					>{m.users_machines_help()}</Text
 				>
 			</div>
-			{#if machines.isLoading}
-				<span class="spin"></span>
-			{:else}
-				<DataTable
-					columns={machineCols}
-					rows={shownMachines}
-					rowKey={(m) => m.id}
-					empty={m.users_machines_empty()}
-					cellSnippets={{ machine: mcMachine, status: mcStatus, seen: mcSeen, actions: mcActions }}
-				/>
-			{/if}
+			<DataTable
+				columns={machineCols}
+				rows={shownMachines}
+				rowKey={(m) => m.id}
+				loading={machines.isLoading}
+				loadingLabel={m.common_loading()}
+				empty={m.users_machines_empty()}
+				rowTone={revokedTone}
+				rowActions={mcActions}
+				rowActionsLabel={m.common_actions()}
+				cellSnippets={{ machine: mcMachine, status: mcStatus, seen: mcSeen }}
+			/>
 			{#if hiddenCount > 0}
 				<Text as="p" size="xs" tone="faint"
 					>{m.users_machines_hidden({ count: hiddenCount })}</Text
@@ -221,17 +222,18 @@
 					<Button onclick={() => (mintOpen = true)}>{m.users_new_token()}</Button>
 				{/if}
 			</div>
-			{#if tokens.isLoading}
-				<span class="spin"></span>
-			{:else}
-				<DataTable
-					columns={tokenCols}
-					rows={tokenRows}
-					rowKey={(t) => t.id}
-					empty={m.users_tokens_empty()}
-					cellSnippets={{ label: tkLabel, status: tkStatus, created: tkCreated, actions: tkActions }}
-				/>
-			{/if}
+			<DataTable
+				columns={tokenCols}
+				rows={tokenRows}
+				rowKey={(t) => t.id}
+				loading={tokens.isLoading}
+				loadingLabel={m.common_loading()}
+				empty={m.users_tokens_empty()}
+				rowTone={revokedTone}
+				rowActions={tkActions}
+				rowActionsLabel={m.common_actions()}
+				cellSnippets={{ label: tkLabel, status: tkStatus, created: tkCreated }}
+			/>
 		</Card>
 	</div>
 </div>

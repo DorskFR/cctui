@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Icon, Select } from '@dorsk/tsumikit';
+	import { Button, Icon, Select } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 	import { VIEW_OPTIONS } from '../../../routes/sessions/sessions.logic';
 
@@ -35,11 +35,7 @@
 	}
 </script>
 
-<div
-	class="view-picker {menu ? 'menu-row' : 'btn-control btn-control-square'}"
-	title={m.sessions_view_title({ view: label })}
-	aria-label={m.sessions_view_title({ view: label })}
->
+{#snippet content()}
 	<!-- Icons at size 18 to match the sibling IconButton controls (the old
 	     unicode glyphs rendered at the inherited font size, so they read smaller).
 	     `menu` for list; a raw layout-grid svg (no grid glyph in the registry) for
@@ -64,7 +60,27 @@
 			<option value={o.value}>{o.label}</option>
 		{/each}
 	</Select>
-</div>
+{/snippet}
+
+{#if menu}
+	<div
+		class="view-picker menu-row"
+		title={m.sessions_view_title({ view: label })}
+		aria-label={m.sessions_view_title({ view: label })}
+	>
+		{@render content()}
+	</div>
+{:else}
+	<span class="view-picker">
+		<Button
+			square
+			title={m.sessions_view_title({ view: label })}
+			aria-label={m.sessions_view_title({ view: label })}
+		>
+			{@render content()}
+		</Button>
+	</span>
+{/if}
 
 <style>
 	.view-picker {
@@ -73,6 +89,8 @@
 		align-items: center;
 		justify-content: center;
 		flex: none;
+		overflow: hidden;
+		border-radius: var(--r-md);
 		white-space: nowrap;
 		cursor: pointer;
 	}
