@@ -57,6 +57,8 @@ export interface AccountProvider {
   /** Usage ticker: a system-reminder to running sessions each time a usage
    *  window crosses another `step_pct` bucket. Null ⇒ off. */
   usage_notices: UsageNotices | null;
+  /** Whether this credential's gauge shows in the header strip. */
+  header_pin: boolean;
   /** Credential health: true once the gateway saw the upstream provider
    *  reject this credential; cleared on the next successful upstream call. UI
    *  shows a "reauthenticate" badge + button when set. */
@@ -192,6 +194,9 @@ export interface AccountUsage {
 export interface AccountUsageEntry extends AccountUsage {
   account: string;
   account_name: string;
+  /** The account's identity glyph; null ⇒ the generated letter square. */
+  account_emoji: string | null;
+  header_pin: boolean;
 }
 
 /** Codex reset credits (`kind: codex`) or Claude Code's `/limit-reset`
@@ -314,6 +319,8 @@ export interface UpdateProvider {
   soft_limits?: Record<string, SoftLimitConfig>;
   /** Replacement usage ticker setting; `enabled: false` turns it off. */
   usage_notices?: UsageNotices;
+  /** Show this credential's gauge in the header strip; absent → unchanged. */
+  header_pin?: boolean;
   /** Replacement validated settings blob. Provided → replaces
    *  the stored settings wholesale (an empty object clears it); absent →
    *  unchanged. Validated against the SAFE/CARE allowlist before persist. */

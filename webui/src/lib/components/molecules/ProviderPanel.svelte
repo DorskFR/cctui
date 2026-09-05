@@ -3,9 +3,13 @@
 	import { compact } from '$lib/format';
 	import UsageBars from '$lib/components/molecules/UsageBars.svelte';
 	import AdapterIcon from '$lib/components/atoms/AdapterIcon.svelte';
-	import { Button, Cluster, Text, Timestamp } from '@dorsk/tsumikit';
+	import { Button, Cluster, Switch, Text, Timestamp } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 	import { providerLabel } from '$lib/providers';
+	import { useAccountActions } from '$lib/queries';
+	import { useQueryClient } from '@tanstack/svelte-query';
+	import { toasts } from '$lib/toast.svelte';
+	import { errMessage } from '$lib/api';
 
 	// One provider credential inside an account card: an account
 	// identity owns an array of these (at most one per anthropic/openai family).
@@ -34,6 +38,30 @@
 
 	const p = $derived(provider);
 	const native = $derived(p.provider === 'anthropic' || p.provider === 'openai');
+
+	const actions = useAccountActions();
+	const qc = useQueryClient();
+	// Optimistic so the switch answers the click; the accounts refetch and the
+	// header's own usage query then agree on the server's answer.
+	let pinned = $state<boolean | null>(null);
+	const headerPin = $derived(pinned ?? p.header_pin);
+	const canPin = $derived(
+		canManage && (native || p.provider === 'fireworks') && !p.managed
+	);
+	$effect(() => {
+		if (pinned !== null && p.header_pin === pinned) pinned = null;
+	});
+	async function togglePin() {
+		const next = !headerPin;
+		pinned = next;
+		try {
+			await actions.updateProvider(p.account_id, p.id, { header_pin: next });
+			qc.invalidateQueries({ queryKey: ['accounts-usage'] });
+		} catch (e) {
+			pinned = !next;
+			toasts.error(errMessage(e));
+		}
+	}
 </script>
 
 <div class="provider-panel">
@@ -67,6 +95,16 @@
 
 	<UsageBars id={p.id} provider={p.provider} enabled={usageEnabled} softLimits={p.soft_limits} />
 
+	{#if canPin}
+		<div class="pin">
+			<span class="pin-copy">
+				<Text as="span" size="sm">{m.providers_header_pin()}</Text>
+				<Text as="span" size="xs" tone="faint">{m.providers_header_pin_help()}</Text>
+			</span>
+			<Switch checked={headerPin} label={m.providers_header_pin()} onclick={togglePin} />
+		</div>
+	{/if}
+
 	<dl class="stats">
 		<div><dt>{m.providers_stat_requests()}</dt><dd>{compact(p.request_count)}</dd></div>
 		<div>
@@ -99,6 +137,17 @@
 	}
 	.spacer {
 		flex: 1;
+	}
+	.pin {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: var(--sp-3);
+	}
+	.pin-copy {
+		display: flex;
+		flex-direction: column;
+		min-width: 0;
 	}
 	.provider-panel :global(.panel-title) {
 		min-width: 0;

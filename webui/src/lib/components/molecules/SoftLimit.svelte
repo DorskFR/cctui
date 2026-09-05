@@ -2,7 +2,7 @@
 	import { Input, Progress, Text, Timestamp } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 	import type { UsagePace } from '$lib/queries';
-	import { countdown, paceState, wallInMs } from '$lib/components/molecules/UsageBattery.logic';
+	import { countdown, paceState, wallInMs } from '$lib/components/molecules/header-gauges.logic';
 
 	// One usage window: its label + utilization bar + percent + reset +
 	// configured-cap marker, optionally with controls to set/clear the window's
