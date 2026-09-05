@@ -268,6 +268,8 @@ pub struct ProviderInfo {
     pub soft_limits: Option<serde_json::Value>,
     /// Usage ticker `{ enabled, step_pct }`; NULL ⇒ off.
     pub usage_notices: Option<serde_json::Value>,
+    /// Whether this credential's gauge shows in the header strip.
+    pub header_pin: bool,
     /// Credential health: `true` once the gateway saw the upstream
     /// provider reject this credential, cleared on the next successful upstream
     /// call. The accounts UI shows a "reauthenticate" badge.
@@ -360,7 +362,7 @@ const PROVIDER_SELECT: &str = "SELECT p.id, p.account_id, p.provider, p.family, 
             p.base_url, p.auth_scheme, p.provider_account_id, \
             p.expires_at, p.created_at, p.last_used_at, \
             p.request_count, p.bytes_transferred, \
-            p.soft_limits_json AS soft_limits, p.usage_notices, \
+            p.soft_limits_json AS soft_limits, p.usage_notices, p.header_pin, \
             p.needs_reauth, p.last_auth_error, p.last_auth_error_at, p.settings_json, \
             p.provider_settings, p.rate_limits_json AS rate_limits, \
             (COALESCE(t.input_tokens,0) + COALESCE(t.output_tokens,0) \
@@ -614,6 +616,9 @@ pub struct UpdateProvider {
     /// (an empty object / `enabled: false` turns it off); absent → unchanged.
     #[serde(default)]
     pub usage_notices: Option<serde_json::Value>,
+    /// Show this credential's gauge in the header strip; absent → unchanged.
+    #[serde(default)]
+    pub header_pin: Option<bool>,
     /// Replacement validated settings blob. Provided → replaces the
     /// stored settings wholesale (an empty object clears it); absent → unchanged.
     /// Validated against the allowlist before persist.
@@ -1446,6 +1451,27 @@ pub async fn add_provider(
     Ok((StatusCode::CREATED, Json(info)))
 }
 
+/// The provider PATCH's single UPDATE. COALESCE keeps each column when its bind
+/// is NULL, so an absent field is a no-op; the `CASE WHEN $n` pairs carry an
+/// explicit provided-flag for the columns whose "clear" is also NULL. Admin
+/// (`ctx.user_id` = NULL) may edit any provider, a user only its own; managed
+/// rows are excluded.
+const UPDATE_PROVIDER_SQL: &str = "UPDATE account_providers SET \
+            base_url = COALESCE($4, base_url), \
+            auth_scheme = COALESCE($5, auth_scheme), \
+            models = COALESCE($6, models), \
+            encrypted_access_token = COALESCE($7, encrypted_access_token), \
+            model_aliases = CASE WHEN $8 THEN $9 ELSE model_aliases END, \
+            soft_limits_json = CASE WHEN $10 THEN $11 ELSE soft_limits_json END, \
+            settings_json = CASE WHEN $12 THEN $13 ELSE settings_json END, \
+            provider_settings = CASE WHEN $14 THEN $15 ELSE provider_settings END, \
+            rate_limits_json = CASE WHEN $16 THEN $17 ELSE rate_limits_json END, \
+            usage_notices = CASE WHEN $18 THEN $19 ELSE usage_notices END, \
+            header_pin = COALESCE($20, header_pin) \
+         WHERE id = $1 AND account_id = $2 \
+           AND ($3::uuid IS NULL OR user_id = $3) AND NOT managed \
+         RETURNING id";
+
 /// `PATCH /api/v1/accounts/{id}/providers/{provider_id}` — edit a provider
 /// — compatible endpoints may change
 /// models / base URL / auth scheme / credential; aliases, soft limits, and
@@ -1553,47 +1579,30 @@ pub async fn update_provider(
         crate::routes::gateway::usage_notices::UsageNotices::build_json(req.usage_notices.as_ref())
             .map_err(|m| err(StatusCode::BAD_REQUEST, &m))?;
 
-    // COALESCE keeps each column when its bind is NULL, so an absent field is a
-    // no-op. Admin (`ctx.user_id` = NULL) may edit any provider; a user only its
-    // own. Managed rows are excluded.
-    let updated: Option<Uuid> = sqlx::query_scalar(
-        "UPDATE account_providers SET \
-            base_url = COALESCE($4, base_url), \
-            auth_scheme = COALESCE($5, auth_scheme), \
-            models = COALESCE($6, models), \
-            encrypted_access_token = COALESCE($7, encrypted_access_token), \
-            model_aliases = CASE WHEN $8 THEN $9 ELSE model_aliases END, \
-            soft_limits_json = CASE WHEN $10 THEN $11 ELSE soft_limits_json END, \
-            settings_json = CASE WHEN $12 THEN $13 ELSE settings_json END, \
-            provider_settings = CASE WHEN $14 THEN $15 ELSE provider_settings END, \
-            rate_limits_json = CASE WHEN $16 THEN $17 ELSE rate_limits_json END, \
-            usage_notices = CASE WHEN $18 THEN $19 ELSE usage_notices END \
-         WHERE id = $1 AND account_id = $2 \
-           AND ($3::uuid IS NULL OR user_id = $3) AND NOT managed \
-         RETURNING id",
-    )
-    .bind(provider_id)
-    .bind(id)
-    .bind(ctx.owner_filter())
-    .bind(&base_url)
-    .bind(&auth_scheme)
-    .bind(&models)
-    .bind(&enc_access)
-    .bind(aliases_provided)
-    .bind(&model_aliases)
-    .bind(soft_provided)
-    .bind(&soft_limits_json)
-    .bind(settings_provided)
-    .bind(&settings_json)
-    .bind(gateway_settings_provided)
-    .bind(&provider_settings)
-    .bind(rate_limits_provided)
-    .bind(&rate_limits_json)
-    .bind(usage_notices_provided)
-    .bind(&usage_notices)
-    .fetch_optional(&state.pool)
-    .await
-    .map_err(|e| db_err(&e))?;
+    let updated: Option<Uuid> = sqlx::query_scalar(UPDATE_PROVIDER_SQL)
+        .bind(provider_id)
+        .bind(id)
+        .bind(ctx.owner_filter())
+        .bind(&base_url)
+        .bind(&auth_scheme)
+        .bind(&models)
+        .bind(&enc_access)
+        .bind(aliases_provided)
+        .bind(&model_aliases)
+        .bind(soft_provided)
+        .bind(&soft_limits_json)
+        .bind(settings_provided)
+        .bind(&settings_json)
+        .bind(gateway_settings_provided)
+        .bind(&provider_settings)
+        .bind(rate_limits_provided)
+        .bind(&rate_limits_json)
+        .bind(usage_notices_provided)
+        .bind(&usage_notices)
+        .bind(req.header_pin)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(|e| db_err(&e))?;
     if updated.is_none() {
         return Err(err(StatusCode::NOT_FOUND, "no such provider"));
     }
@@ -2319,6 +2328,10 @@ pub struct AccountUsageEntry {
     pub usage: AccountUsage,
     pub account: Uuid,
     pub account_name: String,
+    /// The account's identity glyph, so the header can group without a second request.
+    pub account_emoji: Option<String>,
+    /// Whether this credential's gauge shows in the header strip.
+    pub header_pin: bool,
 }
 
 #[derive(sqlx::FromRow)]
@@ -2327,6 +2340,8 @@ struct UsageProviderRow {
     provider: String,
     account_id: Uuid,
     account_name: String,
+    account_emoji: Option<String>,
+    header_pin: bool,
 }
 
 /// `GET /api/v1/accounts/usage` — usage windows of every provider credential
@@ -2340,7 +2355,7 @@ pub async fn all_accounts_usage(
 ) -> Result<Json<Vec<AccountUsageEntry>>, (StatusCode, Json<serde_json::Value>)> {
     require_human(&ctx)?;
     let rows: Vec<UsageProviderRow> = sqlx::query_as(
-        "SELECT p.id, p.provider, p.account_id, a.name AS account_name          FROM account_providers p JOIN accounts a ON a.id = p.account_id          WHERE ($1::uuid IS NULL OR p.user_id = $1)            AND p.provider IN ('anthropic', 'openai', 'fireworks')          ORDER BY a.name, p.family",
+        "SELECT p.id, p.provider, p.account_id, p.header_pin, a.name AS account_name, a.emoji AS account_emoji          FROM account_providers p JOIN accounts a ON a.id = p.account_id          WHERE ($1::uuid IS NULL OR p.user_id = $1)            AND p.provider IN ('anthropic', 'openai', 'fireworks')          ORDER BY a.name, p.family",
     )
     .bind(ctx.owner_filter())
     .fetch_all(&state.pool)
@@ -2361,6 +2376,8 @@ pub async fn all_accounts_usage(
                 usage: AccountUsage::build(r.id, r.provider, usage, age_secs),
                 account: r.account_id,
                 account_name: r.account_name,
+                account_emoji: r.account_emoji,
+                header_pin: r.header_pin,
             }
         })
         .collect();
@@ -2642,6 +2659,94 @@ mod tests {
         ] {
             assert!(normalize_emoji(bad).is_err(), "{bad:?} should be rejected");
         }
+    }
+
+    /// The PATCH's own UPDATE against a migrated database: a provider is pinned
+    /// to the header by default, `header_pin: false` unpins it, and an absent
+    /// field leaves the column alone.
+    #[tokio::test]
+    async fn header_pin_round_trips_through_the_provider_patch() {
+        let Some(url) = crate::routes::gateway::test_db_url("header_pin_round_trips") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+
+        let suffix = Uuid::new_v4();
+        let user: Uuid = sqlx::query_scalar(
+            "INSERT INTO users (id, name, key_hash) \
+             VALUES (gen_random_uuid(), $1, gen_random_uuid()::text) RETURNING id",
+        )
+        .bind(format!("cct922-{suffix}"))
+        .fetch_one(&pool)
+        .await
+        .expect("insert user");
+        let account: Uuid =
+            sqlx::query_scalar("INSERT INTO accounts (user_id, name) VALUES ($1, $2) RETURNING id")
+                .bind(user)
+                .bind(format!("cct922-{suffix}"))
+                .fetch_one(&pool)
+                .await
+                .expect("insert account");
+        let provider: Uuid = sqlx::query_scalar(
+            "INSERT INTO account_providers (user_id, account_id, provider) \
+             VALUES ($1, $2, 'anthropic') RETURNING id",
+        )
+        .bind(user)
+        .bind(account)
+        .fetch_one(&pool)
+        .await
+        .expect("insert provider");
+
+        let patch = |header_pin: Option<bool>| {
+            let pool = pool.clone();
+            async move {
+                let updated: Option<Uuid> = sqlx::query_scalar(UPDATE_PROVIDER_SQL)
+                    .bind(provider)
+                    .bind(account)
+                    .bind(Some(user))
+                    .bind(None::<String>)
+                    .bind(None::<String>)
+                    .bind(None::<serde_json::Value>)
+                    .bind(None::<String>)
+                    .bind(false)
+                    .bind(None::<serde_json::Value>)
+                    .bind(false)
+                    .bind(None::<serde_json::Value>)
+                    .bind(false)
+                    .bind(None::<serde_json::Value>)
+                    .bind(false)
+                    .bind(None::<serde_json::Value>)
+                    .bind(false)
+                    .bind(None::<serde_json::Value>)
+                    .bind(false)
+                    .bind(None::<serde_json::Value>)
+                    .bind(header_pin)
+                    .fetch_optional(&pool)
+                    .await
+                    .expect("patch provider");
+                assert_eq!(updated, Some(provider));
+                fetch_provider_info(&pool, provider)
+                    .await
+                    .expect("fetch provider")
+                    .expect("provider exists")
+                    .header_pin
+            }
+        };
+
+        assert!(patch(None).await, "a new credential is pinned to the header");
+        assert!(!patch(Some(false)).await, "header_pin: false unpins it");
+        assert!(!patch(None).await, "an absent header_pin leaves the column unchanged");
+        assert!(patch(Some(true)).await, "header_pin: true pins it again");
+
+        sqlx::query("DELETE FROM users WHERE id = $1")
+            .bind(user)
+            .execute(&pool)
+            .await
+            .expect("cleanup");
     }
 
     #[test]

@@ -11,7 +11,7 @@
 	import { Button, IconButton, SelectButton, Text } from '@dorsk/tsumikit';
 	import NavLink from '$lib/components/atoms/NavLink.svelte';
 	import NetStatsChip from '$lib/components/molecules/NetStatsChip.svelte';
-	import UsageBattery from '$lib/components/molecules/UsageBattery.svelte';
+	import HeaderGauges from '$lib/components/molecules/HeaderGauges.svelte';
 	import UpdateModal from '$lib/components/organisms/UpdateModal.svelte';
 	import { m } from '$lib/paraglide/messages';
 
@@ -103,7 +103,7 @@
 		></span>
 		<div class="spacer"></div>
 		<span class="net"><NetStatsChip /></span>
-		<span class="batt"><UsageBattery /></span>
+		<span class="batt"><HeaderGauges /></span>
 		{#if version.data}
 			<span class="ver">
 				<NavLink href={version.data.commit_url} target="_blank" rel="noopener">
