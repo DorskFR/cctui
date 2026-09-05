@@ -217,7 +217,7 @@
 		</div>
 		<!-- Text size: the same kit picker as the main header, writing the one
 		     global fontScale. It stays out of the ⋯ flyout on mobile. -->
-		<FontScalePicker class="font-pick" />
+		<FontScalePicker class="tapbtn font-pick" />
 		<!-- Secondary actions: inline on desktop, collapsed into the
 		     ⋯ flyout on mobile so a long title + many buttons no longer overflow.
 		     A single fork lives at the end of the group. -->
