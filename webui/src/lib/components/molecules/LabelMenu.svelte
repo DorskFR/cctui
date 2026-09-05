@@ -222,12 +222,11 @@
      propagation guard keeps a backdrop/close click from bubbling to a clickable
      ancestor (e.g. the session Card the picker lives on). -->
 {#if editing}
-	<!-- svelte-ignore a11y_no_static_element_interactions -->
+	<!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
 	<span
 		class="modal-host"
 		onpointerdown={(e) => e.stopPropagation()}
 		onclick={(e) => e.stopPropagation()}
-		onkeydown={(e) => e.stopPropagation()}
 	>
 		<Modal title={m.sessions_edit_label()} size="sm" onclose={closeEdit}>
 			{#snippet body()}

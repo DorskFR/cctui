@@ -374,28 +374,20 @@
 	{/if}
 	<!-- Tappable surface is the tsumikit Card as a <div> (NOT a <button>): the row
 	     hosts its own interactive controls (label color pickers, the +-popover,
-	     remove buttons), which can't legally nest inside a <button>. `tap` carries
-	     the hover/active affordance; role/tabindex/onkeydown restore button a11y.
-	     The layout is built ENTIRELY from kit primitives (Stack / Cluster) — no card
-	     class overrides; the only per-card styling is the surface state passed inline
-	     on the Card (scoped CSS can't reach a child component's root element). -->
+	     remove buttons), which can't legally nest inside a <button>. `interactive`
+	     gives it button a11y (role/tabindex/Enter/Space) and ignores events from
+	     those nested controls. The layout is built ENTIRELY from kit primitives
+	     (Stack / Cluster); the only per-card styling is the surface state passed
+	     inline on the Card (scoped CSS can't reach a child component's root). -->
 	<Card
 		as="div"
-		tap
+		interactive
 		stacked={stacked}
 		stackTone="info"
 		padding={dense && !grid ? 'sm' : 'md'}
-		role="button"
-		tabindex={0}
 		style={cardStyle}
 		data-session-id={s.id}
 		onclick={handleClick}
-		onkeydown={(e: KeyboardEvent) => {
-			if (e.key === 'Enter' || e.key === ' ') {
-				e.preventDefault();
-				handleClick(e);
-			}
-		}}
 	>
 		{#if dense && !grid}
 			<!-- COMPACT LIST = ONE real row: a single no-wrap Cluster whose direct
