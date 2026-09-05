@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { AccountProvider, OAuthAccount } from '$lib/queries';
+	import AccountAvatar from '$lib/components/molecules/AccountAvatar.svelte';
 	import ProviderPanel from '$lib/components/molecules/ProviderPanel.svelte';
 	import ResourceShares from '$lib/components/molecules/ResourceShares.svelte';
 	import { Button, Card, Heading, Select, Switch, Text, Timestamp } from '@dorsk/tsumikit';
@@ -95,6 +96,7 @@
 <Card>
 	<div class="acct">
 		<header class="head">
+			<AccountAvatar emoji={a.emoji} name={a.name} id={a.id} size={24} decorative />
 			<Heading level={2} size="lg" style="min-width: 0; overflow-wrap: anywhere;">{a.name}</Heading>
 			{#each redirects as r (r.id)}
 				<span class="redirect-badge">

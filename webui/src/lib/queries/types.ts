@@ -87,6 +87,8 @@ export interface RateLimits {
 export interface OAuthAccount {
   id: string;
   name: string;
+  /** Owner-chosen identity glyph (one emoji); null ⇒ the generated letter square. */
+  emoji: string | null;
   /** Owning user — shown to admins, who see all accounts. */
   user_id: string;
   user_name: string | null;
@@ -190,6 +192,8 @@ export interface LimitResetResponse {
  *  encrypted, and never read back. */
 export interface CreateAccount {
   name: string;
+  /** Identity glyph; blank/absent ⇒ the letter square. */
+  emoji?: string;
   provider: string;
   /** OAuth refresh token (native subscription accounts). */
   refresh_token?: string;
@@ -245,6 +249,9 @@ export interface CreateProvider {
  *  extra-env map. Provider-credential fields moved to [`UpdateProvider`]. */
 export interface UpdateAccount {
   name?: string;
+  /** Identity glyph. A blank string clears it back to the letter square;
+   *  absent leaves it unchanged. */
+  emoji?: string;
   /** Replacement extra-env map. Provided → re-encrypts and replaces
    *  (an empty map clears it); absent → unchanged. WRITE-ONLY: never returned,
    *  so the editor only ever sends new values, it can't display stored ones. */

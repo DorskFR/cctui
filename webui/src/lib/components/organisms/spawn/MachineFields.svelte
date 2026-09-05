@@ -35,6 +35,7 @@
 	import { makeCwdSchema, cwdToQuery, dirFromQuery } from './cwdSchema';
 	import { gitBadge, makeGitInfoWatcher } from './cwdGitInfo';
 	import EffortSlider from './EffortSlider.svelte';
+	import AccountAvatar from '$lib/components/molecules/AccountAvatar.svelte';
 	import {
 		claudeModels,
 		claudeEfforts,
@@ -344,7 +345,7 @@
 					{/if}
 					{#each accounts as a (a.id)}
 						<option value={a.name}>
-							{a.name} ({a.providers.map((p) => p.provider).join(', ') || m.spawn_no_provider()})
+							{a.emoji ? `${a.emoji} ` : ''}{a.name} ({a.providers.map((p) => p.provider).join(', ') || m.spawn_no_provider()})
 						</option>
 					{/each}
 				</Select>
@@ -355,7 +356,15 @@
 						{m.spawn_account_pool_hint({ name: selectedPool })}
 					</Text>
 				{:else if selectedAccount}
-					<Text tone="faint" size="xs">{m.spawn_account_gateway_hint()}</Text>
+					<span class="acct-hint">
+						<AccountAvatar
+							emoji={selectedAccount.emoji}
+							name={selectedAccount.name}
+							id={selectedAccount.id}
+							size={16}
+						/>
+						<Text tone="faint" size="xs">{m.spawn_account_gateway_hint()}</Text>
+					</span>
 				{:else if autoAccount}
 					<Text tone="faint" size="xs">{m.spawn_account_auto_hint({ account: autoAccount })}</Text>
 				{:else}

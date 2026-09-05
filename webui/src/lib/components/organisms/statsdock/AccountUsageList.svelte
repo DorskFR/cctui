@@ -4,6 +4,7 @@
 	import { providerLabel } from '$lib/providers';
 	import UsageBars from '$lib/components/molecules/UsageBars.svelte';
 	import AdapterIcon from '$lib/components/atoms/AdapterIcon.svelte';
+	import AccountAvatar from '$lib/components/molecules/AccountAvatar.svelte';
 	import { Text, Timestamp } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 
@@ -16,7 +17,7 @@
 		(accounts.data ?? []).flatMap((a) =>
 			a.providers
 				.filter((p) => HAS_USAGE.has(p.provider))
-				.map((p) => ({ account: a.name, provider: p }))
+				.map((p) => ({ account: a.name, accountId: a.id, emoji: a.emoji, provider: p }))
 		)
 	);
 </script>
@@ -33,6 +34,7 @@
 					<span class="mark" title={providerLabel(r.provider.provider)}>
 						<AdapterIcon provider={r.provider.provider} size={14} />
 					</span>
+					<AccountAvatar emoji={r.emoji} name={r.account} id={r.accountId} size={16} decorative />
 					<Text as="span" size="sm" weight="semibold" truncate>{r.account}</Text>
 					<Text as="span" size="xs" tone="faint">{providerLabel(r.provider.provider)}</Text>
 				</div>

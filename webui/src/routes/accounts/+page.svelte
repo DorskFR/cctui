@@ -29,6 +29,9 @@
 		type ProviderKind
 	} from '$lib/providers';
 	import SoftLimit from '$lib/components/molecules/SoftLimit.svelte';
+	import UsageNoticesEditor from '$lib/components/molecules/UsageNoticesEditor.svelte';
+	import AccountAvatar from '$lib/components/molecules/AccountAvatar.svelte';
+	import { isValidAccountEmoji } from '$lib/components/molecules/avatar';
 	import { editorWindowKeys, isUsdKey } from '$lib/components/molecules/usage-windows';
 	import AccountCard from '$lib/components/organisms/AccountCard.svelte';
 	import GithubConnectors from '$lib/components/organisms/GithubConnectors.svelte';
@@ -146,6 +149,7 @@
 	);
 
 	let name = $state('');
+	let emoji = $state('');
 	let provider = $state<ProviderKind>('anthropic');
 	let refreshToken = $state('');
 	// Compatible-endpoint fields: base URL, a static credential, the
@@ -314,6 +318,7 @@
 
 	function resetForm() {
 		name = '';
+		emoji = '';
 		provider = 'anthropic';
 		refreshToken = '';
 		baseUrl = '';
@@ -430,6 +435,7 @@
 		resetForm();
 		editor = { mode: 'edit-account', accountId: a.id };
 		name = a.name;
+		emoji = a.emoji ?? '';
 		// env_json is write-only: rows start empty; editing them flips replaceEnv.
 	}
 
@@ -495,7 +501,11 @@
 					toasts.err(m.accounts_err_name_required());
 					return;
 				}
-				const identity: UpdateAccount = { name: name.trim() };
+				if (!isValidAccountEmoji(emoji)) {
+					toasts.error(m.account_emoji_invalid());
+					return;
+				}
+				const identity: UpdateAccount = { name: name.trim(), emoji: emoji.trim() };
 				if (acctReplaceEnv) identity.env_json = envObject();
 				else if (acctEnvRemove.length) identity.env_remove = acctEnvRemove;
 				await actions.update(editor.accountId, identity);
@@ -570,11 +580,17 @@
 					toasts.error(m.accounts_err_pick_owner());
 					return;
 				}
+				if (!isValidAccountEmoji(emoji)) {
+					toasts.error(m.account_emoji_invalid());
+					return;
+				}
+				const emojiField = emoji.trim() ? { emoji: emoji.trim() } : {};
 				let body: CreateAccount;
 				if (isFireworks) {
 					const models = fwModelList();
 					body = {
 						name: name.trim(),
+						...emojiField,
 						provider,
 						auth_scheme: authScheme === 'keep' ? 'bearer' : authScheme,
 						...(baseUrl.trim() ? { base_url: baseUrl.trim() } : {}),
@@ -594,6 +610,7 @@
 					const models = modelList();
 					body = {
 						name: name.trim(),
+						...emojiField,
 						provider,
 						base_url: baseUrl.trim(),
 						auth_scheme: authScheme === 'keep' ? 'bearer' : authScheme,
@@ -611,6 +628,7 @@
 					}
 					body = {
 						name: name.trim(),
+						...emojiField,
 						provider,
 						refresh_token: refreshToken.trim(),
 						...(Object.keys(model_aliases).length ? { model_aliases } : {}),
@@ -771,6 +789,20 @@
 				{#if editor?.mode === 'create' || editor?.mode === 'edit-account'}
 					<Field label={m.accounts_field_name()}>
 						<Input bind:value={name} placeholder={m.accounts_field_name_placeholder()} />
+					</Field>
+					<Field label={m.account_emoji_label()}>
+						<div class="emoji-field">
+							<AccountAvatar {emoji} {name} id={editor?.accountId ?? name} size={24} />
+							<Input bind:value={emoji} placeholder={m.account_emoji_placeholder()} maxlength={16} style="max-width: 8rem" />
+							<Button control onclick={() => (emoji = '')} disabled={!emoji}>
+								{m.account_emoji_clear()}
+							</Button>
+						</div>
+						{#if !isValidAccountEmoji(emoji)}
+							<Text tone="danger" size="xs">{m.account_emoji_invalid()}</Text>
+						{:else}
+							<Text tone="faint" size="xs">{m.account_emoji_hint()}</Text>
+						{/if}
 					</Field>
 				{/if}
 				{#if editor?.mode === 'create' && isAdmin}
@@ -1074,6 +1106,11 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--sp-3);
+	}
+	.emoji-field {
+		display: flex;
+		align-items: center;
+		gap: var(--sp-2);
 	}
 	.adv summary {
 		cursor: pointer;

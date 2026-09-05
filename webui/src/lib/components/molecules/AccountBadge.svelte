@@ -1,10 +1,12 @@
 <script lang="ts">
 	import { Tooltip } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
+	import AccountAvatar from './AccountAvatar.svelte';
+	import { useAccounts } from '$lib/queries';
 
-	// Which OAuth account a session runs under. A compact key glyph
-	// shown next to the machine/session name; the full account name is revealed
-	// on hover/tap via the tsumikit Tooltip. Renders nothing when the session
+	// Which OAuth account a session runs under: the account's identity mark
+	// (owner emoji, else its colour square) next to the machine/session name.
+	// The full account name is revealed on hover/tap via the tsumikit Tooltip. Renders nothing when the session
 	// has no resolved account (e.g. a local session that never routed through
 	// the cctui gateway), so it never disrupts the existing layout.
 	//
@@ -13,19 +15,39 @@
 	// read-only indicator.
 	// `warn` marks an account-bound session whose gateway token has never been
 	// observed at the gateway — it may be silently running on ambient credentials.
-	// The glyph turns to a warning hue and the tooltip explains the mismatch.
+	// The mark gains a warning ring and the tooltip explains the mismatch.
 	//
 	// `showName` (Settings › Session list › "Account names") swaps the glyph for
 	// the account name itself: with two accounts on the same provider every glyph
 	// looks alike, and the name is the only thing that tells them apart at a
 	// glance. Everything else — tooltip, click target, warn hue — is unchanged.
+	// `emoji`/`id` are optional: callers that only know the account NAME (the
+	// session list, the drawer) get them resolved from the accounts cache.
 	let {
 		name,
+		emoji,
+		id,
 		onclick,
 		warn = false,
 		showName = false,
-	}: { name?: string | null; onclick?: () => void; warn?: boolean; showName?: boolean } =
-		$props();
+	}: {
+		name?: string | null;
+		emoji?: string | null;
+		id?: string;
+		onclick?: () => void;
+		warn?: boolean;
+		showName?: boolean;
+	} = $props();
+
+	const accounts = useAccounts();
+	const resolved = $derived(
+		emoji !== undefined && id !== undefined
+			? { emoji, id }
+			: (() => {
+					const a = (accounts.data ?? []).find((x) => x.name === name);
+					return { emoji: emoji ?? a?.emoji ?? null, id: id ?? a?.id ?? '' };
+				})(),
+	);
 
 	const tip = $derived(
 		warn && name
@@ -63,18 +85,7 @@
 				{#if showName}
 					{name}
 				{:else}
-					<!-- lucide key-round, sized in em so it tracks the font-scale picker. -->
-					<svg
-						viewBox="0 0 24 24"
-						fill="none"
-						stroke="currentColor"
-						stroke-width="2"
-						stroke-linecap="round"
-						stroke-linejoin="round"
-						aria-hidden="true"
-					>
-						<path d="m21 2-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0 3 3L22 7l-3-3" />
-					</svg>
+					<AccountAvatar emoji={resolved.emoji} id={resolved.id} name={name ?? ''} size={14} decorative />
 				{/if}
 			</span>
 		{/snippet}
@@ -102,6 +113,8 @@
 	}
 	.acct.warn {
 		color: var(--warn);
+		border-radius: var(--r-sm);
+		box-shadow: 0 0 0 2px var(--warn);
 	}
 	/* Name variant: a quiet text chip, capped so a long account name can't push
 	   the rest of the row's chips off the end. It still shrinks to its content
@@ -112,10 +125,5 @@
 		text-overflow: ellipsis;
 		white-space: nowrap;
 		font-size: var(--fs-xs);
-	}
-	.acct svg {
-		/* em-relative so the glyph scales with the font-scale picker. */
-		width: 1em;
-		height: 1em;
 	}
 </style>

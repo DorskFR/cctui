@@ -1,4 +1,9 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('$lib/queries', async (importOriginal) => ({
+	...(await importOriginal<typeof import('$lib/queries')>()),
+	useAccounts: () => ({ data: undefined })
+}));
 import { mount, unmount } from 'svelte';
 import type { SessionListItem } from '@bindings/SessionListItem';
 import SessionCard from './SessionCard.svelte';
