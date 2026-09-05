@@ -99,6 +99,12 @@
 		padding-block: var(--sp-1) var(--sp-4);
 		padding-inline-end: var(--sp-4);
 	}
+	/* Stacked under the breakpoint there is no divider to keep off. */
+	@media (max-width: 47.999rem) {
+		.master {
+			padding-inline-end: 0;
+		}
+	}
 	.list {
 		border: 1px solid var(--border);
 		border-radius: var(--r-md);
