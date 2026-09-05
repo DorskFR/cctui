@@ -185,6 +185,20 @@ describe('SpawnModal profiles', () => {
 		});
 	});
 
+	it('with no profile it renders the bare kit and settles (no effect loop)', async () => {
+		profileList = [];
+		await open();
+		await tick(120);
+		// An unguarded mirror of `oneOff` re-entered until Svelte threw
+		// effect_update_depth_exceeded and the tab died.
+		expect(mode('ask')).toBeTruthy();
+		expect(document.querySelector('select[id^="sp-kit-account"]')).not.toBeNull();
+		// The kit is editable and its writes land on the one-off spec.
+		mode('yolo').click();
+		await tick();
+		expect(mode('yolo').getAttribute('aria-checked')).toBe('true');
+	});
+
 	it('"Use once" adjusts this run only and marks the Spawn button', async () => {
 		await open();
 		button('Adjust profile').click();

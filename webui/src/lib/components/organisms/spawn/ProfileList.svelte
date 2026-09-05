@@ -40,11 +40,12 @@
 
 	let openId = $state<string | null>(null);
 
-	// With no profile the kit IS the one-off spec the spawn will use.
-	// svelte-ignore state_referenced_locally
-	let bareKit = $state<ProfileSpec>({ ...(oneOff ?? EMPTY_SPEC) });
+	// With no profile the kit IS the one-off spec the spawn will use, so the
+	// editor binds straight to it. Seed it once — mirroring it into a second
+	// $state and syncing with an effect writes the parent on every run and
+	// re-enters until the tab dies.
 	$effect(() => {
-		if (profiles.length === 0) oneOff = { ...bareKit };
+		if (profiles.length === 0 && oneOff === null) oneOff = { ...EMPTY_SPEC };
 	});
 
 	const chainLabels = $derived({
@@ -88,8 +89,8 @@
 	<!-- No saved profile yet: the bare kit stands in for the profile rows, so
 	     harness / account / model / effort / permissions are always reachable
 	     and a session can be started without creating a profile first. -->
-	{#if profiles.length === 0}
-		<KitFields bind:draft={bareKit} {accounts} {pools} {usage} {machineId} />
+	{#if profiles.length === 0 && oneOff}
+		<KitFields bind:draft={oneOff} {accounts} {pools} {usage} {machineId} />
 	{/if}
 	{#each profiles as p (p.id)}
 		{@const spec = selectedId === p.id && oneOff ? oneOff : specOf(p)}
