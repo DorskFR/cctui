@@ -3,7 +3,7 @@
 	import { compact as compactNum, usd } from '$lib/format';
 	import { Cluster, Text, Tooltip } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
-	import { tokenUsageLayout } from './TokenUsage.logic';
+	import { tokenUsageLayout, tokenUsageTitle } from './TokenUsage.logic';
 
 	// Canonical token-usage readout — the SINGLE token block, shared by the session
 	// list/card, the chat header, and each assistant/result line in the conversation.
@@ -19,10 +19,11 @@
 	//   • `wrap`: false (default) keeps the readout on one line — the list/header/
 	//     lines never want it to break; the overview stats pass wrap so the larger
 	//     `size` can fold inside a narrow card instead of spilling.
-	//   • `compact`: forces the degraded Σtotal + $cost form. The same degradation
-	//     happens on its own inside a cramped `sess-card` / `drawer-head` size
-	//     container (see the style block); the prop is the manual override.
-	//     Σ always renders in the degraded form, even with showSum={false}.
+	//   • `compact`: forces the degraded Σtotal + $cost form. Inside a cramped
+	//     `sess-card` / `drawer-head` size container the readout steps down on its
+	//     own: Σ ↑↓⚡ $ → Σ $ → Σ (see the style block); the prop is the manual
+	//     override. Σ always renders in the degraded forms, even with
+	//     showSum={false}, and its tooltip always carries the full readout.
 	// `size` rides through to each Text segment — defaults to the compact `xs`.
 	//
 	// The clarity hints render via the tsumikit Tooltip — no
@@ -48,7 +49,9 @@
 
 	const layout = $derived(tokenUsageLayout(usage, { sum, showSum, cold }));
 
-	const sumHint = m.sessions_token_sum_hint();
+	const sumHint = $derived(
+		`${m.sessions_token_sum_hint()} — ${tokenUsageTitle(usage, layout, { num: compactNum, usd })}`
+	);
 	const costHint = m.sessions_token_cost_hint();
 	const inHint = m.sessions_token_in_hint();
 	const outHint = m.sessions_token_out_hint();
@@ -91,15 +94,17 @@
 						>{/snippet}
 				</Tooltip>{/if}</span
 		>
-		{#if layout.showCost}<Tooltip text={costHint}>
-				{#snippet trigger()}<Text
-						variant="code"
-						{size}
-						tone="success"
-						weight="semibold"
-						style="cursor:help">{usd(layout.cost)}</Text
-					>{/snippet}
-			</Tooltip>{/if}
+		{#if layout.showCost}<span class="cost"
+				><Tooltip text={costHint}>
+					{#snippet trigger()}<Text
+							variant="code"
+							{size}
+							tone="success"
+							weight="semibold"
+							style="cursor:help">{usd(layout.cost)}</Text
+						>{/snippet}
+				</Tooltip></span
+			>{/if}
 		{#if layout.showCold}<span class="detail"
 				><Tooltip text={coldHint}>
 					{#snippet trigger()}<Text
@@ -118,6 +123,7 @@
 		min-width: 0;
 	}
 	.detail,
+	.cost,
 	.sum-compact-only {
 		display: contents;
 	}
@@ -128,7 +134,7 @@
 	.forced .sum-compact-only {
 		display: contents;
 	}
-	/* Degrade to Σtotal + $cost when the HOST is cramped. The queries name the
+	/* Degrade Σ ↑↓⚡ $ → Σ $ → Σ as the HOST gets cramped. The queries name the
 	   ancestor size containers (`sess-card` on the card wrapper, `drawer-head` on
 	   the chat header) rather than this block: the trailing footer groups are
 	   flex:none, so the molecule's own inline size always equals its content size
@@ -140,6 +146,11 @@
 		}
 		.sum-compact-only {
 			display: contents;
+		}
+	}
+	@container sess-card (max-width: 16rem) {
+		.cost {
+			display: none;
 		}
 	}
 	@container drawer-head (max-width: 40rem) {

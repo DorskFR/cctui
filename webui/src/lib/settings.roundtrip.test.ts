@@ -72,6 +72,15 @@ describe('Settings save → load round-trip through the blob', () => {
 		expect(clampNavPosition(undefined)).toBe('top');
 	});
 
+	it('groupBy defaults to status and migrates the legacy none', () => {
+		expect(mergeDefaults(null).sessionList.groupBy).toBe('status');
+		const legacy = mergeDefaults({ sessionList: { groupBy: 'none' } } as unknown as Record<string, unknown>);
+		expect(legacy.sessionList.groupBy).toBe('status');
+		expect(mergeDefaults({ sessionList: { groupBy: 'machine' } } as Record<string, unknown>).sessionList.groupBy).toBe('machine');
+		settings.setSessionList({ groupBy: 'label' });
+		expect(loadFromCache().sessionList.groupBy).toBe('label');
+	});
+
 	it('list width and account-name toggle survive a persist then reload', () => {
 		settings.setSessionList({ width: 'full', accountNames: true });
 

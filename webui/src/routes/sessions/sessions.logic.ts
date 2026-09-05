@@ -12,15 +12,12 @@ import { labelHue } from '$lib/labels';
 import { m } from '$lib/paraglide/messages';
 
 // ── View picker ───────────────────────────────────────────────────
-// The 4 explicit layout × density combinations offered by the view picker.
-export const VIEW_OPTIONS = [
-	{ value: 'list-compact', get label() { return m.sessions_view_list_compact(); }, card: false, dense: true },
-	{ value: 'list-detailed', get label() { return m.sessions_view_list_detailed(); }, card: false, dense: false },
-	{ value: 'card-compact', get label() { return m.sessions_view_card_compact(); }, card: true, dense: true },
-	{ value: 'card-detailed', get label() { return m.sessions_view_card_detailed(); }, card: true, dense: false },
-	// Kanban needs a flag of its own: its card×dense pair collides with card-compact.
-	{ value: 'kanban', get label() { return m.sessions_view_kanban(); }, card: true, dense: true }
-] as const;
+export type ViewMode = 'list' | 'card' | 'kanban';
+export const VIEW_OPTIONS: { value: ViewMode; label: string }[] = [
+	{ value: 'list', get label() { return m.sessions_view_list(); } },
+	{ value: 'card', get label() { return m.sessions_view_card(); } },
+	{ value: 'kanban', get label() { return m.sessions_view_kanban(); } }
+];
 
 // ── Section filter ──────────────────────────────────────
 export type Section = 'starred' | 'live' | 'dispatched' | 'drafts' | 'archived' | 'unread';
@@ -394,15 +391,28 @@ export function kanbanColOf(s: SessionListItem): KanbanCol | null {
 }
 
 // ── Color / group dimension ───────────────────────────────────────────────
-export type Dimension = 'none' | 'label' | 'working_dir' | 'machine';
-export const DIMENSIONS: { value: Dimension; label: string }[] = [
-	{ value: 'none', get label() { return m.common_none(); } },
+export type Dimension = 'none' | 'status' | 'label' | 'working_dir' | 'machine';
+// Grouping has no "off": the status buckets are the ungrouped list.
+export type GroupDimension = Exclude<Dimension, 'none'>;
+const DIM_LABELS: { value: Exclude<Dimension, 'none' | 'status'>; label: string }[] = [
 	{ value: 'label', get label() { return m.sessions_dim_label(); } },
 	{ value: 'working_dir', get label() { return m.sessions_dim_working_dir(); } },
 	{ value: 'machine', get label() { return m.sessions_dim_machine(); } }
 ];
+export const COLOR_DIMENSIONS: { value: Dimension; label: string }[] = [
+	{ value: 'none', get label() { return m.common_none(); } },
+	...DIM_LABELS
+];
+export const GROUP_DIMENSIONS: { value: GroupDimension; label: string }[] = [
+	{ value: 'status', get label() { return m.sessions_dim_status(); } },
+	...DIM_LABELS
+];
 export const isDimension = (v: string): v is Dimension =>
-	v === 'none' || v === 'label' || v === 'working_dir' || v === 'machine';
+	v === 'none' || v === 'status' || v === 'label' || v === 'working_dir' || v === 'machine';
+export const isGroupDimension = (v: string): v is GroupDimension => isDimension(v) && v !== 'none';
+/** Legacy `groupBy: 'none'` means the status buckets. */
+export const toGroupDimension = (v: string | null | undefined): GroupDimension =>
+	v && isGroupDimension(v) ? v : 'status';
 
 export const DIM_NONE_KEY = '__none__';
 export const DIM_NONE_LABEL = '—';
@@ -434,7 +444,7 @@ export function dimGroupsOf(s: SessionListItem, dim: Dimension): DimGroup[] {
 }
 
 export function colorHueOf(s: SessionListItem, dim: Dimension): number | null {
-	if (dim === 'none') return null;
+	if (dim === 'none' || dim === 'status') return null;
 	return dimGroupsOf(s, dim)[0]?.hue ?? null;
 }
 
@@ -442,7 +452,8 @@ export type RowGroup = { key: string; label: string; hue: number | null; session
 
 // Sorted by name, "—" bucket last; input row order preserved within each group.
 export function groupRows(rows: SessionListItem[], dim: Dimension): RowGroup[] {
-	if (dim === 'none') return [{ key: '__all__', label: '', hue: null, sessions: rows }];
+	if (dim === 'none' || dim === 'status')
+		return [{ key: '__all__', label: '', hue: null, sessions: rows }];
 	const map = new Map<string, RowGroup>();
 	for (const s of rows) {
 		for (const g of dimGroupsOf(s, dim)) {

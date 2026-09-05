@@ -19,10 +19,9 @@
 	import RebindTrail from '$lib/components/molecules/RebindTrail.svelte';
 	import SessionDot from '$lib/components/molecules/SessionDot.svelte';
 	import LabelBadge from '$lib/components/molecules/LabelBadge.svelte';
-	import WorkingDir from '$lib/components/molecules/WorkingDir.svelte';
 	import TokenUsage from '$lib/components/molecules/TokenUsage.svelte';
 	import LangfuseChip from '$lib/components/molecules/LangfuseChip.svelte';
-	import { Badge, Icon, IconButton, Input, Select, SelectButton, Text } from '@dorsk/tsumikit';
+	import { Badge, Icon, IconButton, Input, Select, SelectButton, Text, WorkingDir } from '@dorsk/tsumikit';
 	import { codexModelsFor, codexEffortsFor, preferCatalog } from '$lib/harnessModels';
 	import { useCodexModels, useMergedCodexModels } from '$lib/queries';
 	import ModelPicker from '$lib/components/molecules/ModelPicker.svelte';
@@ -319,7 +318,7 @@
 	<div class="hmeta row row-wrap">
 		{#if showStatusBadge}<Badge tone={statusBadgeTone(session.status)}>{session.status}</Badge>{/if}
 		{#if end}<Badge tone={end.tone} title={sessionEndTitle(end)} style={end.muted ? 'opacity:0.6' : undefined}>{end.label}</Badge>{/if}
-		<WorkingDir path={session.working_dir} />
+		<WorkingDir path={session.working_dir} copy title={m.sessions_workdir_copy_title({ path: session.working_dir })} />
 		{#if branch}
 			<Badge mono title={m.sessions_branch_title({ branch })} style="display:inline-flex;align-items:center;gap:0.25em;min-width:0;max-width:14rem;flex:none">
 				<Icon name="fork" size={12} label={m.sessions_branch_label()} />

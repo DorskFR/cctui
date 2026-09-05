@@ -1,36 +1,21 @@
 <script lang="ts">
-	import type { SessionListItem } from '@bindings/SessionListItem';
-	import { statusBadgeTone, modelShort, modelFamily } from '$lib/format';
-	import { sessionEnd, sessionEndTitle } from '$lib/sessionEnd';
-	import MachineBadge from '$lib/components/molecules/MachineBadge.svelte';
-	import AccountBadge from '$lib/components/molecules/AccountBadge.svelte';
-	import { settings } from '$lib/settings.svelte';
-	import SessionDot from '$lib/components/molecules/SessionDot.svelte';
-	import LabelBadge from '$lib/components/molecules/LabelBadge.svelte';
-	import TokenUsage from '$lib/components/molecules/TokenUsage.svelte';
-	import WorkingDir from '$lib/components/molecules/WorkingDir.svelte';
-	import SubagentBadge from '$lib/components/molecules/SubagentBadge.svelte';
 	import type { Label } from '@bindings/Label';
-	import AdapterIcon from '$lib/components/atoms/AdapterIcon.svelte';
-	import { Badge, Button, Card, Cluster, Icon, Stack, Text, Timestamp } from '@dorsk/tsumikit';
+	import type { SessionListItem } from '@bindings/SessionListItem';
 	import { m } from '$lib/paraglide/messages';
-	import { escapeHtml } from '$lib/markdown';
-	import { highlightTerms } from '$lib/search';
-	import { safeHref } from '$lib/safeHref';
-	import {
-		isStaleWorking,
-		toolActivity,
-		formatAgo,
-		accountTrafficWarning,
-		branchOf,
-	} from '../../../routes/sessions/sessions.logic';
+	import { Card } from '@dorsk/tsumikit';
 	import { onMount } from 'svelte';
+	import CompactRow from './sessioncard/CompactRow.svelte';
+	import DetailedCard from './sessioncard/DetailedCard.svelte';
+	import { SwipeGesture } from './sessioncard/swipe.svelte';
+	import { type SessionActions, type SubagentToggle, buildView } from './sessioncard/view';
 
+	// Two layouts only: the compact list row and the detailed card. The wrapper
+	// is the `sess-card` size container every readout degrades against.
 	let {
 		session,
+		variant = 'card',
 		child = false,
-		compact: dense = false,
-		grid = false,
+		showMachine = true,
 		pendingCount = 0,
 		unreadCount = 0,
 		onopen,
@@ -45,18 +30,12 @@
 		subagentCost = null,
 		subagentToggles = [],
 		stacked = false,
-		// Label editing: when `onAttachLabel` is supplied the card shows
-		// the inline add/remove picker; otherwise the chips render read-only.
 		allLabels = [],
 		onCreateLabel,
 		onAttachLabel,
 		onDetachLabel,
 		onUpdateLabel,
 		onDeleteLabel,
-		// Draft sessions: staged spawns not yet launched. When `draft`,
-		// the card body click is inert (no drawer) and a Launch/Edit/Discard action
-		// group renders in place of the live-session affordances, so drafts share
-		// the exact same compact-list / card layout as every other section.
 		draft = false,
 		draftLaunching = false,
 		preview = null,
@@ -66,207 +45,107 @@
 		accentHue = null
 	}: {
 		session: SessionListItem;
+		variant?: 'row' | 'card';
 		child?: boolean;
-		compact?: boolean;
-		// Grid (card-view) layout: keeps cards uniform — single-line cwd
-		// path (ellipsis, no wrap) and full-height fill — so a row of cards is the
-		// same height with no ragged wrapping. List view leaves this false so the
-		// detailed card keeps wrapping the full path (seeing it whole is the point).
-		grid?: boolean;
+		/** Off when the section header already names the machine. */
+		showMachine?: boolean;
 		pendingCount?: number;
-		// Unread assistant messages: a red count pill, distinct from the
-		// amber pending-permission badge. Suppressed at 0 or for the open session
-		// (the caller passes 0 there).
+		/** Unread assistant messages; the caller passes 0 for the open session. */
 		unreadCount?: number;
 		onopen: (s: SessionListItem) => void;
-		// Search terms to highlight in the match snippet.
 		highlight?: string[];
-		// Multi-select mode: when `selectable`, a tap toggles selection
-		// instead of opening the drawer, and a checkbox is shown.
 		selectable?: boolean;
 		selected?: boolean;
-		// `range` is true when Shift was held: the caller extends the selection
-		// from its anchor to this row instead of toggling a single one.
+		/** `range` is true when Shift was held. */
 		onToggleSelect?: (s: SessionListItem, range?: boolean) => void;
-		// Swipe-to-archive: on touch, a left-swipe of the row past a
-		// threshold fires `onSwipe` (archive, or unarchive in the archived view) —
-		// the same gesture as archiving an email. Disabled in multi-select mode so
-		// it never fights checkbox tapping.
 		swipeable?: boolean;
 		swipeLabel?: string;
 		onSwipe?: (s: SessionListItem) => void;
-		// Pin/star toggle: when provided, a star button appears in the
-		// header. Pinned sessions sort to the top and skip auto-archive.
 		onTogglePin?: (s: SessionListItem) => void;
-		// Rolled-up subagent usage: on a parent that spawned
-		// subagents, the parent's own tokens plus the aggregated tokens of all its
-		// subagents, with the subagent count. Reported in tokens.
+		/** Parent's own tokens plus every subagent's, with the subagent count. */
 		subagentCost?: { tokens: number; count: number } | null;
-		// Subagent group toggles: collapsible (>=3 agent) groups this
-		// session parents, rendered as count badges in the leading gutter slot so
-		// they share the title's left edge instead of hanging in an external rail.
-		subagentToggles?: {
-			key: string;
-			count: number;
-			running: number;
-			open: boolean;
-			label: string;
-			ontoggle: () => void;
-		}[];
-		// Stacked surface: in card view, a conversation that parents
-		// subagents is drawn as a stacked card (a pile peeking out bottom-right) so
-		// it reads as "has more behind it" at a glance.
+		subagentToggles?: SubagentToggle[];
 		stacked?: boolean;
-		// Label editing.
 		allLabels?: Label[];
 		onCreateLabel?: (name: string, color: string) => Promise<Label>;
 		onAttachLabel?: (id: string, labelId: string) => void | Promise<void>;
 		onDetachLabel?: (id: string, labelId: string) => void | Promise<void>;
 		onUpdateLabel?: (labelId: string, patch: { name?: string; color?: string }) => Promise<Label>;
 		onDeleteLabel?: (labelId: string) => void | Promise<void>;
-		// Draft affordances.
+		/** Staged spawn: inert body, Launch/Edit/Discard in the trailing slot. */
 		draft?: boolean;
 		draftLaunching?: boolean;
-		// Optional message-preview override (drafts show their staged prompt here,
-		// since a not-yet-launched session has no last message).
+		/** Drafts show their staged prompt here (no last message yet). */
 		preview?: string | null;
 		onLaunch?: (s: SessionListItem) => void;
 		onEdit?: (s: SessionListItem) => void;
 		onDiscard?: (s: SessionListItem) => void;
-		// Color-by accent hue: a left-border strip tinting the card by its
-		// label / working dir / machine. null = no accent.
+		/** Color-by hue for the left strip; null = none. */
 		accentHue?: number | null;
 	} = $props();
 
-	const s = $derived(session);
-	// Detailed card (grid, not compact) has room to spare, so its footer chips
-	// keep their natural size and wrap to a second row instead of shrinking.
-	const detailed = $derived(grid && !dense);
-	// Match snippet with search terms wrapped in <mark> (escape first → safe HTML).
-	const snippetHtml = $derived(
-		s.match_snippet && highlight.length
-			? highlightTerms(escapeHtml(s.match_snippet), highlight)
-			: null
-	);
-	// Drafts pass their staged prompt as `preview` since there's no last message.
-	const lastMsg = $derived(preview ?? s.last_message_text);
-	const dirName = $derived(s.working_dir.split('/').filter(Boolean).pop() || '');
-	// Subagents inherit the parent's working dir, so the dir-basename fallback
-	// makes every child read the same ("cctui"). Give nameless subagents the
-	// short id (the adjacent "subagent" badge already labels the kind), so
-	// siblings are distinguishable without a redundant "subagent ·" prefix.
-	const title = $derived(s.name || (child ? s.id.slice(0, 6) : dirName || s.id));
-	const needsInput = $derived(s.attention === 'needs_input' && s.status !== 'archived');
-	// Hibernated: worker exited but resumable — a reply revives it
-	// (daemon resume-on-reply). Red dot, mirroring claude's own agents view.
-	// Stale Working sessions: a derived, time-based display signal that
-	// re-evaluates on a clock tick (60s — the 30-min horizon doesn't need finer)
-	// and clears the instant fresh activity (a newer `last_heartbeat`, bumped
-	// by subagent work too) arrives. Not a persisted state.
-	// 5s tick: the tool-cadence age needs second-ish freshness to read
-	// "grinding" vs "asleep"; the coarse 30-min stale signal rides the same clock.
+	const row = $derived(variant === 'row');
+
+	// 5s tick: the tool cadence needs second-ish freshness; the 30-min stale
+	// signal rides the same clock.
 	let now = $state(Date.now());
 	onMount(() => {
 		const t = setInterval(() => (now = Date.now()), 5_000);
 		return () => clearInterval(t);
 	});
-	const stale = $derived(isStaleWorking(s, now));
-	const act = $derived(toolActivity(s, now));
-	const prLinks = $derived(
-		(s.pr_links ?? []).map((href) => {
-			const parts = href.replace(/\/+$/, '').split('/');
-			const i = parts.findIndex((p) => p === 'pull' || p === 'pulls');
-			const label =
-				i >= 2 && parts[i + 1] ? `${parts[i - 2]}/${parts[i - 1]}#${parts[i + 1]}` : href;
-			return { href, label };
+
+	const view = $derived(
+		buildView(session, {
+			child,
+			showMachine,
+			now,
+			preview,
+			highlight,
+			subagentCost,
+			pendingCount,
+			unreadCount,
+			draft,
+			draftLaunching
 		})
 	);
-	const livenessClass = $derived(
-		s.hibernated
-			? 'dot-hibernated'
-			: stale
-				? 'dot-stale'
-				: s.liveness === 'active'
-					? 'dot-active'
-					: s.liveness === 'stale'
-						? 'dot-stale'
-						: 'dot-dead'
+	const actions = $derived<SessionActions>({
+		selectable,
+		selected,
+		subagentToggles,
+		onTogglePin,
+		labelEditable: !!onAttachLabel && !child,
+		allLabels,
+		onCreateLabel,
+		onAttachLabel,
+		onDetachLabel,
+		onUpdateLabel,
+		onDeleteLabel,
+		onLaunch,
+		onEdit,
+		onDiscard
+	});
+
+	const swipe = new SwipeGesture(
+		() => swipeable && !selectable,
+		() => onSwipe?.(session)
 	);
-	const u = $derived(s.token_usage);
-	const branch = $derived(branchOf(s));
-	// Subagent cost rollup: only meaningful when there are agents.
-	const rollup = $derived(subagentCost && subagentCost.count > 0 ? subagentCost : null);
-	// Liveness is conveyed by the colored dot, so the badge only carries the
-	// meaningful lifecycle states ("new", "archived"), not active/inactive.
-	const showStatusBadge = $derived(s.status === 'new' || s.status === 'archived');
-	const end = $derived(sessionEnd(s));
-	// Translate the server status enum at render (never the raw value itself).
-	const statusLabel = (st: string): string => {
-		switch (st) {
-			case 'new':
-				return m.sessions_status_new();
-			case 'archived':
-				return m.sessions_status_archived();
-			case 'active':
-				return m.sessions_status_active();
-			case 'inactive':
-				return m.sessions_status_inactive();
-			case 'dead':
-				return m.sessions_status_dead();
-			case 'draft':
-				return m.sessions_status_draft();
-			default:
-				return st;
-		}
-	};
-	// Label picker is only interactive on top-level rows with an attach handler.
-	const labelEditable = $derived(!!onAttachLabel && !child);
 
-	// ── Swipe-to-archive (touch only) ────────────────────────────────────────
-	// Track a dominantly-horizontal left-swipe of the row; commit (archive) once
-	// it passes ~40% of the row width, otherwise spring back. Vertical scrolling
-	// is preserved by only "arming" once the gesture is clearly horizontal, and
-	// the browser keeps handling pan-y on the wrapper.
-	let swipeX = $state(0); // current horizontal offset (≤ 0; left only)
-	let swiping = $state(false); // armed → tracking a horizontal swipe
-	let swipeArmed = false; // committed to horizontal (vs vertical scroll)
-	let didSwipe = false; // a swipe happened → suppress the trailing click
-	let sx = 0;
-	let sy = 0;
-	let cardW = $state(0); // row width captured at gesture start
-	const swipeThreshold = $derived(cardW ? cardW * 0.4 : Infinity);
-	const swipeProgress = $derived(Math.min(1, -swipeX / swipeThreshold));
-
-	// Surface state is passed inline on the Card element: the swipe
-	// transform/transition, the compact tighter padding, and the attention/selection
-	// tints. (Scoped CSS can't reach a child component's root element, so these can't
-	// live in the style block; they're card-instance state, not reusable rules, so
-	// inline is the right home.)
+	// Surface state lives inline on the Card: scoped CSS can't reach a child
+	// component's root. The transform is only set mid-swipe — at rest it would
+	// trap the stacked pseudo-elements' z-index inside the card. The attention
+	// fill is opaque so a stacked back-card never bleeds through.
 	const cardStyle = $derived(
 		[
-			// Only apply the transform while actually swiped: a `transform` creates a
-			// stacking context, which would trap the stacked-card pseudo-elements
-			// (z-index:-1/-2) inside the card and paint them OVER its background
-			// instead of behind it. At rest (swipeX 0) we omit it so the
-			// stack peeks out behind as intended.
-			swipeX !== 0 ? `transform: translateX(${swipeX}px)` : '',
-			`transition: ${swiping ? 'none' : 'transform 0.2s var(--ease)'}`,
-			// Opaque attention fill (not the translucent --attention-bg): a parent with
-			// subagents renders as a `stacked` Card, and a see-through front surface lets
-			// the back-stack pseudo-elements (z-index:-1/-2) bleed through the card body
-			// instead of only peeking at the edges.
-			needsInput ? 'background: var(--attention-bg-solid); border-left: 3px solid var(--attention-bar)' : '',
-			// Subagent (child) cards carry an info-tinted border so they read as part
-			// of the parent's stacked group (matches the "subagent" info badge).
-			child && !needsInput ? 'border-color: color-mix(in srgb, var(--info) 45%, var(--border))' : '',
-			// Color-by accent: the dimension's hue tints the whole
-			// card so types read at a distance. The left strip resolves against the
-			// theme's --mach-border-sl pair (same infra as MachineBadge); the body tint
-			// mixes a sliver of the pure hue into --bg-elevated so lightness/contrast
-			// track each theme automatically. needsInput keeps its own opaque attention
-			// fill + bar and stays dominant over the tint.
-			accentHue != null && !needsInput
-				? `--mh:${accentHue}; background: color-mix(in srgb, hsl(var(--mh) 65% 50%) 8%, var(--bg-elevated)); border-left: 3px solid hsl(var(--mh) var(--mach-border-sl))`
+			swipe.x !== 0 ? `transform: translateX(${swipe.x}px)` : '',
+			`transition: ${swipe.active ? 'none' : 'transform 0.2s var(--ease)'}`,
+			view.needsInput
+				? 'background: var(--attention-bg-solid); border-left: 3px solid var(--attention-bar)'
+				: '',
+			child && !view.needsInput
+				? 'border-color: color-mix(in srgb, var(--info) 45%, var(--border))'
+				: '',
+			accentHue != null && !view.needsInput
+				? `--mh:${accentHue}; border-left: 3px solid hsl(var(--mh) var(--mach-border-sl))`
 				: '',
 			selected
 				? 'background: color-mix(in srgb, var(--accent) 12%, var(--bg-elevated)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent)'
@@ -277,454 +156,77 @@
 	);
 
 	function handleClick(e?: MouseEvent | KeyboardEvent) {
-		// Clicks on a nested overlay control (e.g. the Timestamp details popover)
-		// bubble up to the card; they shouldn't also open the session.
 		if (e?.target instanceof Element && e.target.closest('[popovertarget],[popover]')) return;
-		// Drafts aren't openable — their action buttons handle everything.
 		if (draft) return;
-		// A drag (even one that sprang back) shouldn't also open the session.
-		if (didSwipe) {
-			didSwipe = false;
-			return;
-		}
+		if (swipe.consumeClick()) return;
 		if (selectable) {
-			// Shift-clicking a row would otherwise leave a text selection smeared
-			// across the range the user just picked.
 			if (e?.shiftKey) window.getSelection()?.removeAllRanges();
-			onToggleSelect?.(s, e?.shiftKey === true);
-		} else onopen(s);
-	}
-
-	function swipeStart(e: PointerEvent) {
-		if (!swipeable || selectable || e.pointerType !== 'touch') return;
-		sx = e.clientX;
-		sy = e.clientY;
-		cardW = (e.currentTarget as HTMLElement).offsetWidth;
-		swipeArmed = false;
-		didSwipe = false;
-	}
-	function swipeMove(e: PointerEvent) {
-		if (!swipeable || selectable || e.pointerType !== 'touch' || !cardW) return;
-		const dx = e.clientX - sx;
-		const dy = e.clientY - sy;
-		if (!swipeArmed) {
-			if (Math.abs(dx) < 12) return; // below the deadzone — undecided
-			// Dominantly vertical → it's a scroll, bail out of swipe handling.
-			if (Math.abs(dx) <= Math.abs(dy) * 1.5) {
-				cardW = 0;
-				return;
-			}
-			swipeArmed = true;
-			swiping = true;
-			try {
-				(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-			} catch {
-				/* capture unsupported — move events still arrive */
-			}
-		}
-		swipeX = Math.min(0, dx); // left only
-	}
-	function swipeEnd() {
-		if (!swiping) {
-			cardW = 0;
-			swipeArmed = false;
-			return;
-		}
-		const commit = -swipeX >= swipeThreshold;
-		swiping = false;
-		swipeArmed = false;
-		didSwipe = true;
-		if (commit) {
-			if (typeof navigator !== 'undefined' && navigator.vibrate) navigator.vibrate(20);
-			swipeX = -cardW; // slide the rest of the way out, then archive
-			onSwipe?.(s);
-		} else {
-			swipeX = 0; // spring back
-		}
-		cardW = 0;
+			onToggleSelect?.(session, e?.shiftKey === true);
+		} else onopen(session);
 	}
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
 	class="sc-wrap"
-	class:stale
+	class:stale={view.stale}
 	class:child
-	class:dense
-	class:grid
-	class:swiping
-	onpointerdown={swipeStart}
-	onpointermove={swipeMove}
-	onpointerup={swipeEnd}
-	onpointercancel={swipeEnd}
+	class:row
+	onpointerdown={swipe.start}
+	onpointermove={swipe.move}
+	onpointerup={swipe.end}
+	onpointercancel={swipe.end}
 >
-	<!-- Swipe-to-archive reveal: a colored layer behind the row that
-	     shows as the card slides left under a touch swipe. -->
-	{#if swipeable && swipeX < 0}
-		<div class="swipe-reveal" style="opacity: {0.25 + 0.75 * swipeProgress}" aria-hidden="true">
-			<div class="swipe-reveal-inner" class:armed={swipeProgress >= 1}>
+	{#if swipeable && swipe.x < 0}
+		<div class="swipe-reveal" style="opacity: {0.25 + 0.75 * swipe.progress}" aria-hidden="true">
+			<div class="swipe-reveal-inner" class:armed={swipe.progress >= 1}>
 				<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
 					<rect x="3" y="4" width="18" height="4" rx="1" />
 					<path d="M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8" />
 					<path d="M9 12h6" />
 				</svg>
-				<span>{swipeProgress >= 1 ? m.sessions_swipe_release({ action: swipeLabel.toLowerCase() }) : swipeLabel}</span>
+				<span>{swipe.progress >= 1 ? m.sessions_swipe_release({ action: swipeLabel.toLowerCase() }) : swipeLabel}</span>
 			</div>
 		</div>
 	{/if}
-	<!-- Tappable surface is the tsumikit Card as a <div> (NOT a <button>): the row
-	     hosts its own interactive controls (label color pickers, the +-popover,
-	     remove buttons), which can't legally nest inside a <button>. `interactive`
-	     gives it button a11y (role/tabindex/Enter/Space) and ignores events from
-	     those nested controls. The layout is built ENTIRELY from kit primitives
-	     (Stack / Cluster); the only per-card styling is the surface state passed
-	     inline on the Card (scoped CSS can't reach a child component's root). -->
+	<!-- A <div> Card, not a <button>: the row hosts its own controls (label
+	     picker, star, toggles) which can't nest inside a button. -->
 	<Card
 		as="div"
 		interactive
-		stacked={stacked}
+		{stacked}
 		stackTone="info"
-		padding={dense && !grid ? 'sm' : 'md'}
+		padding={row ? 'sm' : 'md'}
 		style={cardStyle}
-		data-session-id={s.id}
+		data-session-id={session.id}
 		onclick={handleClick}
 	>
-		{#if dense && !grid}
-			<!-- COMPACT LIST = ONE real row: a single no-wrap Cluster whose direct
-			     children are the surviving fields, left→right. No nested bands. -->
-			<Cluster wrap={false} gap="var(--sp-2)">
-				{@render gutter()}
-				{@render engine()}
-				{@render titleText()}
-				<!-- Message takes the slack and ellipsises aggressively. -->
-				{#if s.match_snippet || lastMsg}
-					<Text
-						truncate
-						tone={s.match_snippet ? 'default' : 'muted'}
-						size="xs"
-						style="flex:1 1 0;min-width:0"
-						>{s.match_snippet ? `🔍 ${s.match_snippet}` : lastMsg}</Text
-					>
-				{:else}
-					<span style="flex:1 1 auto"></span>
-				{/if}
-				<!-- No working-dir chip in compact list: the basename already leads the
-				     title, and a bare folder glyph here can't be hovered or copied. -->
-				{@render activity()}
-				{@render unreadBadge()}
-				{@render time()}
-				{#if s.model}<Text tone="muted" size="xs" style="flex:none;white-space:nowrap">{modelFamily(s.model)}</Text>{/if}
-				{#if draft}{@render draftActions()}{:else}{@render logo()}{/if}
-			</Cluster>
+		{#if row}
+			<CompactRow {view} {actions} />
 		{:else}
-			<!-- DETAILED / PROJ = stacked bands (Stack), each horizontal band a Cluster. -->
-			<Stack gap="var(--sp-2)" style={grid ? 'height:100%' : ''}>
-				<!-- 1. LEAD: gutter · dot · engine · title · labels ···· status · perm · time
-				     Labels live on this first row, right after the title. The lead group
-				     flex-wraps, so when the title + chips can't fit the row width the chips
-				     drop to a second line WITHOUT dragging the status/perm/time group with
-				     them — that `.trail` group is pinned top-right (align="flex-start" on
-				     the Cluster, which it applies via a style: directive so a style="" on
-				     it would be silently overridden). Both groups carry the same min-height
-				     so on a single line everything reads vertically centered, while a wrapped
-				     label line sits cleanly below (row-gap) instead of overlapping. -->
-				<Cluster wrap={false} gap="var(--sp-2)" align="flex-start">
-					<span class="lead">
-						{@render gutter()}
-						{@render engine()}
-						{@render titleText()}
-						{#if s.labels.length > 0 || labelEditable}
-							<LabelBadge
-								labels={s.labels}
-								editable={labelEditable}
-								{allLabels}
-								onCreate={onCreateLabel}
-								onAttach={(lid) => onAttachLabel?.(s.id, lid)}
-								onDetach={(lid) => onDetachLabel?.(s.id, lid)}
-								onUpdate={onUpdateLabel}
-								onDelete={onDeleteLabel}
-							/>
-						{/if}
-						{@render activity()}
-					</span>
-					<span class="trail">
-						{#if showStatusBadge}<Badge tone={statusBadgeTone(s.status)} size="xs">{statusLabel(s.status)}</Badge>{/if}
-						{#if end}<span class="end-badge" class:end-muted={end.muted} title={sessionEndTitle(end)}><Badge tone={end.tone} size="xs">{end.badge}</Badge></span>{/if}
-						{@render unreadBadge()}
-						{#if pendingCount > 0}<Badge tone="warn" size="xs" numeric>{m.sessions_perm_count({ count: pendingCount })}</Badge>{/if}
-						{#if s.auto_approve}<Badge tone="warn" size="xs" title={m.sessions_auto_approve_title()}>⚡</Badge>{/if}
-						{@render time()}
-					</span>
-				</Cluster>
-
-				<!-- 2. PREVIEW: multi-line clamp (grid grows to fill). -->
-				{#if s.match_snippet}
-					<div class="preview match" style={grid ? 'flex:1 1 auto' : ''}>🔍 {#if snippetHtml}{@html snippetHtml}{:else}{s.match_snippet}{/if}</div>
-				{:else if lastMsg}
-					<div class="preview last muted" style={grid ? 'flex:1 1 auto' : ''}>{lastMsg}</div>
-				{/if}
-
-				<!-- 3. FOOTER: path ···· tokens · Σ · model · logo. Wraps when tight so a
-				     long model can't shove the logo out (grid pins it to the bottom). -->
-				<Cluster gap="var(--sp-2)" style={grid ? 'margin-top:auto' : ''}>
-					<!-- Fish-style working-dir chip: leaf stays whole, ancestors abbreviate
-					     as width shrinks (see WorkingDir). In detailed cards it keeps its
-					     natural width (no shrink) and the footer wraps; elsewhere it flexes. -->
-					<WorkingDir path={s.working_dir} full={detailed} style={detailed ? '' : 'max-width:22rem'} />
-					{#if branch}
-						<Badge mono title={m.sessions_branch_title({ branch })} style="display:inline-flex;align-items:center;gap:0.25em;min-width:0;max-width:14rem;flex:none">
-							<Icon name="fork" size={12} label={m.sessions_branch_label()} />
-							<span style="overflow:hidden;white-space:nowrap;text-overflow:ellipsis">{branch}</span>
-						</Badge>
-					{/if}
-					{#each prLinks as pr (pr.href)}
-						<a
-							class="pr-link"
-							href={safeHref(pr.href)}
-							target="_blank"
-							rel="noopener noreferrer"
-							title={pr.href}
-							onclick={(e) => e.stopPropagation()}>⇄ {pr.label}</a
-						>
-					{/each}
-					<Cluster wrap={false} gap="var(--sp-2)" style="margin-left:auto;flex:none">
-						{#if draft}
-							{#if s.model}<Text tone="muted" size="xs" style="flex:none;white-space:nowrap">{modelShort(s.model)}{s.effort ? ` · ${s.effort}` : ''}</Text>{/if}
-							{@render draftActions()}
-						{:else}
-							<TokenUsage usage={u} cold={s.cache_cold} sum={rollup ? rollup.tokens : null} compact={grid && dense} />
-							{#if s.model}<Text tone="muted" size="xs" truncate={!detailed} style={detailed ? 'flex:none;white-space:nowrap' : 'max-width:14rem;flex:none'}>{modelShort(s.model)}{s.effort ? ` · ${s.effort}` : ''}</Text>{/if}
-							{@render logo()}
-						{/if}
-					</Cluster>
-				</Cluster>
-			</Stack>
+			<DetailedCard {view} {actions} />
 		{/if}
 	</Card>
 </div>
 
-<!-- ── Shared field snippets (rendered into both the compact row and the detailed
-     bands so the markup isn't duplicated) ───────────────────────────────────── -->
-{#snippet gutter()}
-	{#if selectable}
-		<span class="gutter check" class:on={selected} aria-hidden="true">{selected ? '✓' : ''}</span>
-	{:else}
-		<!-- Toggle badges, ↳ indent, and star all share the one fixed gutter slot so
-		     titles line up. A parent can carry both a toggle and a star, so they sit
-		     side by side here rather than one excluding the other. -->
-		<span class="gutter-group">
-			{#each subagentToggles as t (t.key)}
-				<SubagentBadge
-					count={t.count}
-					running={t.running}
-					open={t.open}
-					label={t.label}
-					ontoggle={t.ontoggle}
-				/>
-			{/each}
-			{#if child}
-				<span class="gutter indent" title={m.sessions_subagent_badge()} aria-hidden="true">↳</span>
-			{:else if onTogglePin}
-				<span
-					class="gutter star"
-					class:on={s.pinned}
-					role="button"
-					tabindex="0"
-					title={s.pinned ? m.sessions_unpin_title() : m.sessions_pin_title()}
-					aria-pressed={s.pinned}
-					aria-label={s.pinned ? m.sessions_unpin_aria() : m.sessions_pin_aria()}
-					onpointerdown={(e) => e.stopPropagation()}
-					onclick={(e) => {
-						e.stopPropagation();
-						onTogglePin?.(s);
-					}}
-					onkeydown={(e) => {
-						if (e.key === 'Enter' || e.key === ' ') {
-							e.preventDefault();
-							e.stopPropagation();
-							onTogglePin?.(s);
-						}
-					}}>{s.pinned ? '★' : '☆'}</span
-				>
-			{/if}
-		</span>
-	{/if}
-{/snippet}
-
-{#snippet engine()}
-	<SessionDot session={s} {livenessClass} {now} />
-	{#if stale}
-		<Badge tone="warn" size="xs" title={m.sessions_stale_title()}>{m.sessions_stale_badge()}</Badge>
-	{/if}
-	{#if child}
-		<Badge tone="info" size="xs">{m.sessions_subagent_badge()}</Badge>
-	{:else}
-		<MachineBadge name={s.machine_name} id={s.machine_id} hue={s.machine_hue} mono />
-		<AccountBadge name={s.account_name} warn={accountTrafficWarning(s)} showName={settings.accountNames} />
-	{/if}
-{/snippet}
-
-{#snippet titleText()}
-	<!-- Compact row: the title shows in full up to a max-width cap (~28ch, but never
-	     more than ~55% of the row) and ellipsises past it; the message preview gets
-	     `flex:1 1 0` so it grows into whatever space is left WITHOUT exerting shrink
-	     pressure on the title. A short title shrink-wraps to its content (no blank
-	     gap), a long title caps and the message fills the remainder. (A flat
-	     `min-width` floor was wrong both ways: it reserved space for short titles —
-	     blank gap — and `fit-content(18ch)` is an invalid min-width value so it was
-	     dropped, leaving the truncate class's min-width:0 → squished to nothing.)
-	     Detailed/grid bands keep the plain shrink-to-fit. -->
-	<Text
-		weight="semibold"
-		size={dense ? 'md' : 'lg'}
-		truncate
-		style={dense && !grid ? 'flex:0 1 auto;min-width:0;max-width:min(28ch,55%)' : 'flex:0 1 auto;min-width:0'}
-		>{title}</Text
-	>
-{/snippet}
-
-{#snippet time()}
-	{#if s.last_message_at}<span style="flex:none;white-space:nowrap"
-			><Timestamp value={s.last_message_at} mode="relative" tone="faint" size="xs" /></span
-		>{/if}
-{/snippet}
-
-{#snippet logo()}
-	<span style="flex:none;display:inline-flex"><AdapterIcon adapter={s.adapter_id} size={14} /></span>
-{/snippet}
-
-{#snippet unreadBadge()}
-	{#if unreadCount > 0}<Badge
-			tone="danger"
-			active
-			size="sm"
-			numeric
-			style="flex:none"
-			title={m.sessions_unread_title({ count: unreadCount })}>{unreadCount}</Badge
-		>{/if}
-{/snippet}
-
-<!-- Live tool cadence: a dense "⚙N · Xs" chip that distinguishes a
-     grinding session (fresh tool calls, incl. subagent roll-ups) from one that
-     looks alive but is asleep (no tool call for minutes → amber). The detail
-     headline rides alongside in the roomier detailed/grid bands only. -->
-{#snippet activity()}
-	{#if act.show && !stale}
-		<span
-			class="activity"
-			class:asleep={act.asleep}
-			title={act.detail ??
-				(act.asleep ? m.sessions_activity_asleep_title() : m.sessions_activity_live_title())}
-		>
-			<span class="act-cadence"
-				>⚙{act.count}{#if act.ageMs !== null}&nbsp;·&nbsp;{formatAgo(act.ageMs)}{/if}</span
-			>
-			{#if act.detail && !dense}<span class="act-detail">{act.detail}</span>{/if}
-		</span>
-	{/if}
-{/snippet}
-
-<!-- Draft action group: Launch / Edit / Discard. Each stops propagation
-     so a button tap never bubbles to the card surface. Rendered in the trailing
-     slot of both the compact row and the detailed/grid footer. -->
-{#snippet draftActions()}
-	<span
-		class="draft-actions"
-		role="presentation"
-		onpointerdown={(e) => e.stopPropagation()}
-		onclick={(e) => e.stopPropagation()}
-	>
-		<Button size="sm" variant="primary" disabled={draftLaunching} onclick={() => onLaunch?.(s)}>
-			{#if draftLaunching}<span class="spin"></span>{/if}
-			{m.sessions_launch()}
-		</Button>
-		<Button size="sm" onclick={() => onEdit?.(s)}>{m.common_edit()}</Button>
-		<Button size="sm" variant="danger" onclick={() => onDiscard?.(s)}>{m.sessions_discard()}</Button>
-	</span>
-{/snippet}
-
 <style>
-	.end-badge {
-		display: inline-flex;
-	}
-	.end-muted {
-		opacity: 0.6;
-	}
-	/* Swipe wrapper: positioning context for the reveal layer behind
-	   the row, and the owner of the subagent indent (moved off the card so the
-	   reveal aligns with the card edge). pan-y keeps vertical scrolling native
-	   while we handle the horizontal swipe ourselves. */
 	.sc-wrap {
 		position: relative;
 		width: 100%;
+		height: 100%;
 		touch-action: pan-y;
-		/* Size container for the footer readouts (TokenUsage degrades to Σ + $ in a
-		   narrow kanban column). Floating UI inside the card lives in the browser
-		   top layer, so the implied `contain: layout` can't trap it. */
 		container: sess-card / inline-size;
 	}
 	.sc-wrap.child {
 		width: auto;
 		margin-left: var(--sp-4);
 	}
-	/* Stale Working session: dim the whole card so a long-idle session
-	   reads as "needs attention, not live" at a glance. Paired with the amber
-	   dot + "stale" badge. Re-evaluated on the clock tick; clears on activity. */
+	.sc-wrap.row.child {
+		margin-left: 28px;
+	}
 	.sc-wrap.stale {
 		opacity: 0.6;
 	}
-	/* Grid cards: the wrapper and the card fill the grid cell's full
-	   height so every card in a row matches (the grid stretches the cells), and
-	   the footer pins to the bottom for a uniform silhouette regardless of how
-	   much middle content each card has. */
-	.sc-wrap.grid {
-		height: 100%;
-	}
-	/* Lead group of the detailed/grid header band: gutter · engine · title · labels.
-	   Wraps so the label chips fall to a second line when the title is long / the
-	   row is narrow, while the trailing status/perm/time group (`.trail`) stays
-	   pinned to the first line. Both share `min-height` (one lg-title line) so a
-	   single-line row reads vertically centered; `row-gap` keeps a wrapped label
-	   line off the machine badge above it. */
-	.lead {
-		display: flex;
-		flex-wrap: wrap;
-		align-items: center;
-		column-gap: var(--sp-2);
-		row-gap: var(--sp-2);
-		flex: 1 1 auto;
-		min-width: 0;
-		min-height: 1.75rem;
-	}
-	.trail {
-		display: flex;
-		align-items: center;
-		gap: var(--sp-2);
-		flex: none;
-		min-height: 1.75rem;
-	}
-	/* ── Last-message preview (detailed / grid only) ────────────────────────────
-	   The compact row renders the message as a <Text truncate> inline; here it's a
-	   multi-line clamp. List clamps to 3 lines; grid grows (flex set inline) and
-	   clamps to 6. (This is a native element WE render, so plain scoped CSS works.) */
-	.preview {
-		min-width: 0;
-		overflow: hidden;
-		font-size: var(--fs-sm);
-		white-space: normal;
-		display: -webkit-box;
-		-webkit-line-clamp: 3;
-		line-clamp: 3;
-		-webkit-box-orient: vertical;
-	}
-	/* Detailed card view is the spacious one: give the message preview
-	   far more verticality so the card reads tall, not wide. */
-	.sc-wrap.grid:not(.dense) .preview {
-		min-height: 0;
-		-webkit-line-clamp: 12;
-		line-clamp: 12;
-	}
-	/* Colored layer revealed behind the row as it slides left. */
 	.swipe-reveal {
 		position: absolute;
 		inset: 0;
@@ -747,118 +249,5 @@
 	}
 	.swipe-reveal-inner.armed {
 		transform: scale(1.12);
-	}
-	/* Compact mode is a flat list — no indent for subagents. */
-	.sc-wrap.dense.child {
-		margin-left: 0;
-	}
-	.check {
-		flex: none;
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-		width: 1.15rem;
-		height: 1.15rem;
-		border-radius: var(--r-sm);
-		border: 1.5px solid var(--border-strong);
-		background: var(--bg);
-		color: var(--bg);
-		font-size: 0.8rem;
-		line-height: 1;
-	}
-	.check.on {
-		background: var(--accent);
-		border-color: var(--accent);
-		color: var(--bg);
-	}
-	/* Draft action group: keeps Launch/Edit/Discard on one line, sharing
-	   the trailing slot of both the compact row and the detailed footer. */
-	.draft-actions {
-		display: inline-flex;
-		align-items: center;
-		gap: var(--sp-1);
-		flex: none;
-	}
-	/* Fixed gutter slot: star / checkbox / ↳ all share it so titles align. */
-	.gutter {
-		flex: none;
-	}
-	/* Holds the toggle badge(s) + star/↳ together in the single gutter slot so a
-	   parent that's both collapsible and pinnable shows both, side by side. */
-	.gutter-group {
-		flex: none;
-		display: inline-flex;
-		align-items: center;
-		gap: var(--sp-1);
-	}
-	.gutter.indent {
-		color: var(--text-faint);
-		font-size: var(--fs-md);
-		line-height: 1;
-	}
-	.star {
-		background: none;
-		border: none;
-		cursor: pointer;
-		user-select: none;
-		padding: 0;
-		line-height: 1;
-		font-size: var(--fs-md);
-		color: var(--text-faint);
-		flex: none;
-	}
-	.star.on {
-		color: var(--warn);
-	}
-	.star:hover {
-		color: var(--warn);
-	}
-	/* Live tool-cadence chip. Dense, muted, single line; the cadence
-	   count/age stays whole while the optional detail headline ellipsises. Amber
-	   when asleep — the evidence-based "looks alive but wedged" tell. */
-	.activity {
-		display: inline-flex;
-		align-items: baseline;
-		gap: var(--sp-1);
-		min-width: 0;
-		flex: 0 1 auto;
-		font-size: var(--fs-xs);
-		color: var(--text-faint);
-		white-space: nowrap;
-	}
-	.act-cadence {
-		flex: none;
-		font-variant-numeric: tabular-nums;
-	}
-	.act-detail {
-		min-width: 0;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-		color: var(--text-muted);
-		max-width: 22rem;
-	}
-	.activity.asleep {
-		color: var(--warn);
-	}
-	.activity.asleep .act-detail {
-		color: var(--warn);
-	}
-	/* Search match snippet: accent rule + clamp, sharing the .preview
-	   sizing above so the snippet sits in the same slot as the message preview. */
-	.match {
-		color: var(--text);
-		border-left: 2px solid var(--accent);
-		padding-left: var(--sp-2);
-	}
-	.pr-link {
-		flex: none;
-		font-size: var(--fs-xs);
-		color: var(--accent);
-		text-decoration: none;
-		white-space: nowrap;
-	}
-	.pr-link:hover {
-		text-decoration: underline;
 	}
 </style>

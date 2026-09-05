@@ -18,6 +18,8 @@ import {
 	type SubGroup
 } from './sessions.logic';
 
+const bucketed = (dim: Dimension) => dim === 'none' || dim === 'status';
+
 export interface SessionsListInputs {
 	items: () => SessionListItem[];
 	// Archived descendants of pinned parents, spliced back under their parent.
@@ -79,12 +81,12 @@ export class SessionsListController {
 		)
 	);
 	groupedSections = $derived.by(() =>
-		this.#in.groupBy() === 'none'
+		bucketed(this.#in.groupBy())
 			? []
 			: groupRows(this.#sort(this.#liveTopFiltered), this.#in.groupBy())
 	);
 	get hasLiveRows(): boolean {
-		return this.#in.groupBy() === 'none'
+		return bucketed(this.#in.groupBy())
 			? this.groups.some((g) => g.sessions.length > 0)
 			: this.groupedSections.length > 0;
 	}

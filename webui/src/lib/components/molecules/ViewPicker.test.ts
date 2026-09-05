@@ -14,7 +14,7 @@ describe('square toolbar pickers ride the kit Button control/square contract', (
 	it('ViewPicker toolbar trigger is a default-tier square Button hosting the ghost select', () => {
 		comp = mount(ViewPicker, {
 			target: document.body,
-			props: { cardView: false, dense: false, kanban: false }
+			props: { cardView: false, kanban: false }
 		});
 		const btn = document.querySelector('button.btn');
 		expect(btn?.classList.contains('btn-control')).toBe(false);
@@ -23,10 +23,20 @@ describe('square toolbar pickers ride the kit Button control/square contract', (
 		expect(document.querySelector('.btn-control-square')).toBeNull();
 	});
 
+	it('ViewPicker offers exactly list, cards and kanban', () => {
+		comp = mount(ViewPicker, {
+			target: document.body,
+			props: { cardView: true, kanban: false }
+		});
+		const select = document.querySelector('select') as HTMLSelectElement;
+		expect([...select.options].map((o) => o.value)).toEqual(['list', 'card', 'kanban']);
+		expect(document.querySelector('button.btn')?.getAttribute('title')).toContain('Cards');
+	});
+
 	it('menu rows stay plain full-width rows without a Button', () => {
 		comp = mount(DimensionPicker, {
 			target: document.body,
-			props: { menu: true, kind: 'group', value: 'none', onchange: () => {} }
+			props: { menu: true, kind: 'group', value: 'status', onchange: () => {} }
 		});
 		expect(document.querySelector('.dim-picker.menu-row')).not.toBeNull();
 		expect(document.querySelector('button')).toBeNull();

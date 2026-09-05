@@ -37,10 +37,10 @@ export interface SessionListSettings {
 	density: 'compact' | 'normal';
 	section: string;
 	labelFilter: string[];
-	// Card accent color and section grouping, sharing one
-	// dimension enum (`Dimension` in sessions.logic.ts); both default 'none'.
+	// Card accent color and section grouping share the dimension enum of
+	// sessions.logic.ts; grouping has no "off" — 'status' is the bucketed list.
 	colorBy: 'none' | 'label' | 'working_dir' | 'machine';
-	groupBy: 'none' | 'label' | 'working_dir' | 'machine';
+	groupBy: 'status' | 'label' | 'working_dir' | 'machine';
 	// How wide the centered session-list column is allowed to grow. Only bites on
 	// screens wider than the chosen cap, so it is a desktop-only knob in practice:
 	// a phone viewport is already narrower than the default.
@@ -56,6 +56,14 @@ export interface SessionListSettings {
 export const SESSION_LIST_WIDTHS = ['default', 'wide', 'ultra', 'full'] as const;
 export type SessionListWidth = (typeof SESSION_LIST_WIDTHS)[number];
 export const DEFAULT_SESSION_LIST_WIDTH: SessionListWidth = 'default';
+
+const GROUP_BY_VALUES = ['status', 'label', 'working_dir', 'machine'] as const;
+/** Blobs written before grouping had a status mode stored 'none' for it. */
+export function clampGroupBy(v: unknown): SessionListSettings['groupBy'] {
+	return (GROUP_BY_VALUES as readonly unknown[]).includes(v)
+		? (v as SessionListSettings['groupBy'])
+		: 'status';
+}
 
 /** The CSS length for a width choice, or `undefined` to keep --content-wide. */
 export function sessionListWidthSize(w: SessionListWidth): string | undefined {
@@ -251,7 +259,7 @@ const DEFAULTS: SettingsState = {
 		section: '',
 		labelFilter: [],
 		colorBy: 'none',
-		groupBy: 'none',
+		groupBy: 'status',
 		width: DEFAULT_SESSION_LIST_WIDTH,
 		accountNames: false
 	},
@@ -293,6 +301,7 @@ export function mergeDefaults(partial: Partial<SettingsState> | null | undefined
 			// Clamp so a stale/unknown stored value renders as the default column
 			// width rather than an invalid CSS length.
 			width: clampSessionListWidth(p.sessionList?.width),
+			groupBy: clampGroupBy(p.sessionList?.groupBy),
 			accountNames: p.sessionList?.accountNames === true
 		},
 		display: {
