@@ -9,7 +9,7 @@
 	import { accountDrag } from '$lib/components/organisms/accounts/drag.svelte';
 	import { resetIn } from '$lib/components/molecules/cap-bar.logic';
 	import { providerLabel } from '$lib/providers';
-	import { Button, IconButton, Menu, Select, Text, Timestamp, type MenuItem } from '@dorsk/tsumikit';
+	import { Button, Icon, IconButton, Menu, Select, Text, Timestamp, type MenuItem } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 
 	let {
@@ -194,10 +194,8 @@
 			{#if canAddProvider}
 				<Button size="sm" variant="ghost" onclick={onaddprovider}>{m.accounts_add_provider()}</Button>
 			{/if}
-			<Menu label={m.accounts_more()} items={menu} bare placement="bottom-end">
-				{#snippet trigger()}
-					<IconButton icon="more" label={m.accounts_more()} variant="ghost" box="sm" />
-				{/snippet}
+			<Menu label={m.accounts_more()} items={menu} placement="bottom-end" box="sm">
+				{#snippet trigger()}<Icon name="more" size={16} />{/snippet}
 			</Menu>
 		{/if}
 	</header>

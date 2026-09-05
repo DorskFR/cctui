@@ -101,9 +101,11 @@
 
 {#snippet readoutSnippet()}
 	<span class="readout">
-		{readoutText}{#if showReset && resets}
-			· <Timestamp value={resets} mode="relative" tone="inherit" details={false} />{/if}{#if paceKind === 'flame'}
-			{' '}🔥{/if}
+		{readoutText}{#if showReset && resets}{' · '}<Timestamp
+				value={resets}
+				mode="relative"
+				tone="inherit"
+			/>{/if}{#if paceKind === 'flame'}{' 🔥'}{/if}
 	</span>
 {/snippet}
 
