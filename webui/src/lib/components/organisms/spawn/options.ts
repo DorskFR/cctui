@@ -132,3 +132,25 @@ export const isCompatibleProvider = (provider: string): boolean =>
 
 export const adapterLabel = (adapter: string): string =>
 	adapter === 'codex' ? 'Codex' : 'Claude Code';
+
+// Context-pack form fields → the env vars the worker entrypoint reads. Keys are
+// fixed and match ENV_KEY_RE by construction.
+export const CONTEXT_PACK_ENV = {
+	context_pack_url: 'CONTEXT_PACK_URL',
+	context_pack_ref: 'CONTEXT_PACK_REF',
+	context_pack_subdir: 'CONTEXT_PACK_SUBDIR',
+	context_pack_token: 'CONTEXT_PACK_TOKEN'
+} as const;
+
+export type ContextPackFields = Record<keyof typeof CONTEXT_PACK_ENV, string>;
+
+/** The CONTEXT_PACK_* env entries for the filled-in fields. Spread over the raw
+ *  env rows so an explicit field wins over a hand-typed duplicate. */
+export function contextPackEnv(form: ContextPackFields): Record<string, string> {
+	const out: Record<string, string> = {};
+	for (const [field, key] of Object.entries(CONTEXT_PACK_ENV)) {
+		const v = (form[field as keyof ContextPackFields] ?? '').trim();
+		if (v) out[key] = v;
+	}
+	return out;
+}

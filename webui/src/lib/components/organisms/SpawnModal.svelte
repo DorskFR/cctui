@@ -65,6 +65,7 @@
 	import type { Form, SpawnPrefill, Target } from './spawn/types';
 	import {
 		accountBacksAdapter,
+		contextPackEnv,
 		providerForAdapter,
 		isCompatibleProvider,
 		NO_ACCOUNT,
@@ -147,6 +148,10 @@
 		effort_claude: '',
 		effort_codex: '',
 		timeout: '',
+		context_pack_url: '',
+		context_pack_ref: '',
+		context_pack_subdir: '',
+		context_pack_token: '',
 		labels: []
 	};
 	// Local autosave slot, one per (machine, cwd): a prefill names its target's
@@ -495,8 +500,10 @@
 			slotKey = key;
 		}
 		const envKeys = envRows.map((r) => ({ key: r.key, value: '' }));
+		// The pack token is a credential: like the env values it never reaches disk.
+		const { context_pack_token: _packToken, ...persisted } = form;
 		const payload: SpawnSlotPayload = {
-			...form,
+			...persisted,
 			envRows: envKeys,
 			draftId,
 			attachmentNames: files.map((f) => f.name)
@@ -801,7 +808,9 @@
 		// Environment secrets: the external dispatcher turns `env` into
 		// pod env / an ephemeral Secret. The server redacts these from its dispatch
 		// notifications and never persists them.
-		const env = envMap();
+		// The context-pack fields are sugar over the same env map: an explicit
+		// field overrides a hand-typed CONTEXT_PACK_* row.
+		const env = { ...envMap(), ...contextPackEnv(form) };
 		if (Object.keys(env).length) payload.env = env;
 		const timeout = form.timeout.trim() ? Number(form.timeout.trim()) : null;
 		// Client-minted id doubles as the idempotency key; held stable

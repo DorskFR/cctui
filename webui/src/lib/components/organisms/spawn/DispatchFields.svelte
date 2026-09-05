@@ -5,7 +5,7 @@
 	// effort). The adapter picker chooses the claude or codex worker; the
 	// model/effort sets follow it.
 	import EffortSlider from './EffortSlider.svelte';
-	import { Field, Input, Select, Text, Textarea } from '@dorsk/tsumikit';
+	import { Button, Field, Input, Select, Text, Textarea } from '@dorsk/tsumikit';
 	import {
 		claudeModels,
 		claudeEfforts,
@@ -68,6 +68,12 @@
 	$effect(() => {
 		form.account_provider = selectedProvider?.provider ?? '';
 	});
+
+	// The advanced pack knobs start folded: the URL alone covers the common case
+	// (it carries @ref/#subdir), but stay open when a draft/prefill set one.
+	let packAdvanced = $state(
+		!!(form.context_pack_ref || form.context_pack_subdir || form.context_pack_token)
+	);
 </script>
 
 {#if dispatcherIds.length >= 1}
@@ -167,6 +173,53 @@
 	</div>
 </div>
 
+<div class="pack">
+	<Text as="div" size="sm" weight="semibold">{m.dispatch_pack_section()}</Text>
+
+	<Field label={m.dispatch_pack_url_label()} for="sp-pack-url">
+		<Input
+			id="sp-pack-url"
+			mono
+			placeholder="https://github.com/org/pack@main#subdir"
+			bind:value={form.context_pack_url}
+		/>
+		<Text tone="faint" size="xs">{m.dispatch_pack_url_hint()}</Text>
+	</Field>
+
+	<Button
+		variant="ghost"
+		size="sm"
+		style="align-self:flex-start"
+		aria-expanded={packAdvanced}
+		onclick={() => (packAdvanced = !packAdvanced)}
+	>
+		{m.dispatch_pack_advanced()}
+	</Button>
+
+	{#if packAdvanced}
+		<Field label={m.dispatch_pack_ref_label()} for="sp-pack-ref">
+			<Input id="sp-pack-ref" mono placeholder="main" bind:value={form.context_pack_ref} />
+			<Text tone="faint" size="xs">{m.dispatch_pack_ref_hint()}</Text>
+		</Field>
+
+		<Field label={m.dispatch_pack_subdir_label()} for="sp-pack-subdir">
+			<Input id="sp-pack-subdir" mono placeholder="packs/cctui" bind:value={form.context_pack_subdir} />
+			<Text tone="faint" size="xs">{m.dispatch_pack_subdir_hint()}</Text>
+		</Field>
+
+		<Field label={m.dispatch_pack_token_label()} for="sp-pack-token">
+			<Input
+				id="sp-pack-token"
+				mono
+				type="password"
+				placeholder="ghp_… / vault:… / k8s:…"
+				bind:value={form.context_pack_token}
+			/>
+			<Text tone="faint" size="xs">{m.dispatch_pack_token_hint()}</Text>
+		</Field>
+	{/if}
+</div>
+
 {#if isCodex}
 	<EffortSlider
 		id="sp-effort-d"
@@ -191,5 +244,13 @@
 	.grow {
 		flex: 1;
 		min-width: 0;
+	}
+	.pack {
+		display: flex;
+		flex-direction: column;
+		gap: var(--sp-2);
+		padding: var(--sp-2);
+		border: 1px solid var(--border);
+		border-radius: var(--r-md);
 	}
 </style>
