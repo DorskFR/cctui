@@ -998,7 +998,7 @@
 	"sessions_section_live": "Live",
 	"sessions_section_show": "Show {section} section",
 	"sessions_section_starred": "Starred",
-	"sessions_section_unread": "Unread",
+	"sessions_section_unread": "Unread only",
 	"sessions_sections_aria": "Sections",
 	"sessions_select_all": "Select all",
 	"sessions_select_multiple": "Select multiple to archive",

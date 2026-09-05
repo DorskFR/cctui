@@ -1105,7 +1105,7 @@
 	.dock {
 		position: fixed;
 		top: calc(var(--header-h) + var(--safe-top));
-		bottom: calc(var(--nav-h) + var(--safe-bottom));
+		bottom: var(--bottom-chrome, calc(var(--nav-h) + var(--safe-bottom)));
 		right: 0;
 		width: var(--spawn-dock-w);
 		display: flex;

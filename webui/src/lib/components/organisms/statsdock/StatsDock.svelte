@@ -1,6 +1,10 @@
 <script lang="ts">
 	import { DOCK_MIN_PX, maxDockWidth, type DockSide } from '$lib/dock';
 	import { settings } from '$lib/settings.svelte';
+	import { useVersion } from '$lib/queries';
+	import NavLink from '$lib/components/atoms/NavLink.svelte';
+	import UpdateModal from '$lib/components/organisms/UpdateModal.svelte';
+	import { Button, Text } from '@dorsk/tsumikit';
 	import { resizeHandle } from '@dorsk/tsumikit';
 	import AccountUsageList from './AccountUsageList.svelte';
 	import TokenWindows from './TokenWindows.svelte';
@@ -29,6 +33,13 @@
 	let dragging = $state(false);
 	let viewportWidth = $state(0);
 	const maxPx = $derived(maxDockWidth(viewportWidth));
+
+	// Server + client versions, with the red ↑ chip when the server's release
+	// probe found something newer. They used to live in the header; the redesign
+	// gave that room away, and this panel is the one piece of always-on chrome
+	// left where a build number belongs.
+	const version = useVersion();
+	let updateOpen = $state(false);
 
 	const sections = [
 		{ key: 'accounts', title: () => m.stats_dock_accounts(), open: true },
@@ -90,13 +101,45 @@
 			</details>
 		{/each}
 	</div>
+	{#if version.data}
+		<div class="dock-ver">
+			<NavLink href={version.data.commit_url} target="_blank" rel="noopener">
+				<Text size="xs" tone="faint" variant="code">srv v{version.data.version}</Text>
+			</NavLink>
+			<Text size="xs" tone="faint" variant="code">ui v{__CLIENT_VERSION__}</Text>
+			{#if version.data.latest_version}
+				<!-- NOT tsumikit's `chip`: that is a fixed 2.5rem square with padding 0
+				     meant for a lone glyph, and the version text spills out of it.
+				     A plain ghost button sized to its content instead. -->
+				<Button
+					size="sm"
+					variant="ghost"
+					style="height: 22px; min-height: 22px; width: auto; min-width: 0; padding: 0 var(--sp-1); flex: none;"
+					title={m.nav_update_available({ version: version.data.latest_version })}
+					aria-label={m.nav_update_available({ version: version.data.latest_version })}
+					onclick={() => (updateOpen = true)}
+				>
+					<Text size="xs" variant="code" tone="danger">↑ v{version.data.latest_version}</Text>
+				</Button>
+			{/if}
+		</div>
+	{/if}
 </aside>
+
+{#if updateOpen && version.data?.latest_version}
+	<UpdateModal
+		latestVersion={version.data.latest_version}
+		latestUrl={version.data.latest_url ?? version.data.repo_url}
+		selfUpdateReady={version.data.self_update_ready}
+		onclose={() => (updateOpen = false)}
+	/>
+{/if}
 
 <style>
 	.dock {
 		position: fixed;
 		top: calc(var(--header-h) + var(--safe-top));
-		bottom: calc(var(--nav-h) + var(--safe-bottom));
+		bottom: var(--bottom-chrome, calc(var(--nav-h) + var(--safe-bottom)));
 		right: 0;
 		width: var(--stats-dock-w);
 		display: flex;
@@ -190,5 +233,15 @@
 	}
 	.section-body {
 		padding-top: var(--sp-1);
+	}
+	/* Version strip pinned under the scrolling body, mirroring .dock-head. */
+	.dock-ver {
+		flex: none;
+		display: flex;
+		align-items: center;
+		flex-wrap: wrap;
+		gap: var(--sp-1) var(--sp-2);
+		padding: var(--sp-2) var(--sp-3);
+		border-top: 1px solid var(--border);
 	}
 </style>
