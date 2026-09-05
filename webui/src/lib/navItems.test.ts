@@ -9,10 +9,16 @@ describe('navItems', () => {
 		expect(hrefs.at(-1)).toBe('/settings');
 	});
 
+	it('exposes access as the merged users/keys/machines/tokens route', () => {
+		const access = navItems().find((i) => i.href === '/access');
+		expect(access?.label).toBe('Access');
+		expect(navItems().some((i) => i.href === '/users')).toBe(false);
+	});
+
 	it('marks the root only on an exact match and the others by prefix', () => {
 		expect(isNavActive('/', '/')).toBe(true);
 		expect(isNavActive('/', '/sessions')).toBe(false);
 		expect(isNavActive('/sessions', '/sessions/abc')).toBe(true);
-		expect(isNavActive('/users', '/sessions')).toBe(false);
+		expect(isNavActive('/access', '/sessions')).toBe(false);
 	});
 });

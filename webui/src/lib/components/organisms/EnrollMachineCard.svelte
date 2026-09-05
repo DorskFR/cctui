@@ -4,6 +4,8 @@
 	import { m } from '$lib/paraglide/messages';
 	import { Button, Card, Cluster, Stack, Text } from '@dorsk/tsumikit';
 
+	let { dashed = false }: { dashed?: boolean } = $props();
+
 	const enrollCmd = $derived(
 		`cctui-daemon enroll --server-url ${apiOrigin()} --token <user-token> --name "$(hostname)"`
 	);
@@ -13,7 +15,12 @@
 	}
 </script>
 
-<Card>
+<Card
+	padding={dashed ? 'sm' : 'md'}
+	style={dashed
+		? 'border-style: dashed; border-color: var(--border-strong); background: transparent'
+		: undefined}
+>
 	<Stack>
 		<Text weight="bold">{m.home_enroll_title()}</Text>
 		<Text as="p" tone="muted" size="sm">
