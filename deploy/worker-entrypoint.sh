@@ -938,6 +938,9 @@ phase_codex_config() {
         printf 'base_url = "%s"\n' "$_base"
         printf 'env_key = "OPENAI_API_KEY"\n'
         printf 'wire_api = "responses"\n'
+        # Unlocks codex's built-in image_gen tool (gated on
+        # uses_openai_actor_authorization); the gateway strips the dummy value.
+        printf 'http_headers = { "x-openai-actor-authorization" = "cctui-gateway" }\n'
         printf '[features]\n'
         printf 'fast_mode = false\n'
         # MCP tables MUST stay last: a bare key after a [table] binds to it.
