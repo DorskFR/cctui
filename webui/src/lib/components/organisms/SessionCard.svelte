@@ -145,7 +145,7 @@
 				? 'border-color: color-mix(in srgb, var(--info) 45%, var(--border))'
 				: '',
 			accentHue != null && !view.needsInput
-				? `--mh:${accentHue}; border-left: 3px solid hsl(var(--mh) var(--mach-border-sl))`
+				? `--mh:${accentHue}; background: color-mix(in srgb, hsl(var(--mh) 65% 50%) 8%, var(--bg-elevated)); border-left: 3px solid hsl(var(--mh) var(--mach-border-sl))`
 				: '',
 			selected
 				? 'background: color-mix(in srgb, var(--accent) 12%, var(--bg-elevated)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent)'
@@ -171,7 +171,7 @@
 	class="sc-wrap"
 	class:stale={view.stale}
 	class:child
-	class:row
+	class:compact={row}
 	onpointerdown={swipe.start}
 	onpointermove={swipe.move}
 	onpointerup={swipe.end}
@@ -217,12 +217,16 @@
 		touch-action: pan-y;
 		container: sess-card / inline-size;
 	}
+	/* Rows and cards degrade at different widths, so each names its own container. */
+	.sc-wrap.compact {
+		container: sess-row / inline-size;
+	}
 	.sc-wrap.child {
 		width: auto;
 		margin-left: var(--sp-4);
 	}
-	.sc-wrap.row.child {
-		margin-left: 28px;
+	.sc-wrap.compact.child {
+		margin-left: 14px;
 	}
 	.sc-wrap.stale {
 		opacity: 0.6;

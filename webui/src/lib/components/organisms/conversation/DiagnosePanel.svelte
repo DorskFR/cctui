@@ -9,7 +9,7 @@
 	import type { DiagnoseFact } from '@bindings/DiagnoseFact';
 	import type { SessionListItem } from '@bindings/SessionListItem';
 	import { sessionEnd } from '$lib/sessionEnd';
-	import { Button, Heading, Modal, Text } from '@dorsk/tsumikit';
+	import { Button, Heading, Modal, Text, Timestamp } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 
 	let {
@@ -118,7 +118,7 @@
 						</div>
 						<div class="fact codex-fact" role="row">
 							<span class="name">{m.diagnose_end_at()}</span>
-							<span class="val">{end.endedAt ? new Date(end.endedAt).toLocaleString() : '—'}</span>
+							<span class="val">{#if end.endedAt}<Timestamp value={end.endedAt} tone="inherit" />{:else}—{/if}</span>
 						</div>
 						{#if end.detail}
 							<div class="fact codex-fact" role="row">

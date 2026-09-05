@@ -21,17 +21,15 @@
 	<SettingGroup>
 		<SettingRow label={m.settings_notify_input_label()} help={m.settings_notify_input_help()}>
 			<Switch
-				checked={notify.enabled}
+				bind:checked={() => notify.enabled, () => void toggleNotify()}
 				label={m.settings_notifications_title()}
 				disabled={!notify.supported}
-				onclick={() => void toggleNotify()}
 			/>
 		</SettingRow>
 		<SettingRow label={m.settings_sound_label()}>
 			<Switch
-				checked={notify.sound}
+				bind:checked={() => notify.sound, (v) => settings.setNotifySound(v)}
 				label={m.settings_notification_sound_label()}
-				onclick={() => settings.setNotifySound(!notify.sound)}
 			/>
 		</SettingRow>
 	</SettingGroup>

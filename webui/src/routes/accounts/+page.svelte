@@ -19,7 +19,8 @@
 	import AccountsBoard from '$lib/components/organisms/accounts/AccountsBoard.svelte';
 	import AccountEditorModal from '$lib/components/organisms/accounts/AccountEditorModal.svelte';
 	import { availableKinds } from '$lib/components/organisms/accounts/account-editor.logic';
-	import { Button, Heading, Tabs, Text, type TabItem } from '@dorsk/tsumikit';
+	import { Button, Tabs, Text, type TabItem } from '@dorsk/tsumikit';
+	import PageHead from '$lib/components/molecules/PageHead.svelte';
 	import { m } from '$lib/paraglide/messages';
 
 	// The Connectors tab only appears when the ghreview backend is deployed.
@@ -59,7 +60,7 @@
 				id: r.id,
 				family: r.family,
 				targetName: rows.find((t) => t.id === r.to_account)?.name ?? '…',
-				until: r.expires_at ? new Date(r.expires_at).toLocaleString() : null
+				until: r.expires_at ?? null
 			}));
 	const redirectTargetsFor = (acct: OAuthAccount) =>
 		rows
@@ -108,19 +109,10 @@
 </script>
 
 <div class="page">
-	<div class="page-head">
-		<div class="titles">
-			<Heading level={1}>{m.accounts_title()}</Heading>
-			<Text as="p" tone="muted" size="sm">{m.accounts_intro()}</Text>
-		</div>
-		<span class="spacer"></span>
-		<Button control size="sm" onclick={() => (drafting = true)} disabled={drafting}>
-			{m.accounts_add_pool()}
-		</Button>
-		<Button control size="sm" variant="primary" onclick={() => editor?.openCreate()}>
-			{m.accounts_new_account()}
-		</Button>
-	</div>
+	<PageHead title={m.accounts_title()}>
+		<Button onclick={() => (drafting = true)} disabled={drafting}>{m.accounts_add_pool()}</Button>
+		<Button variant="primary" onclick={() => editor?.openCreate()}>{m.accounts_new_account()}</Button>
+	</PageHead>
 
 	<Tabs {tabs} bind:value={tab} label={m.accounts_sections_label()}>
 		{#snippet panel(id)}
@@ -173,19 +165,5 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--sp-4);
-	}
-	.page-head {
-		display: flex;
-		align-items: flex-end;
-		gap: var(--sp-3);
-	}
-	.titles {
-		display: flex;
-		flex-direction: column;
-		gap: var(--sp-1);
-		min-width: 0;
-	}
-	.spacer {
-		flex: 1;
 	}
 </style>

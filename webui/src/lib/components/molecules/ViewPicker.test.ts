@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mount, unmount } from 'svelte';
+import { flushSync, mount, unmount } from 'svelte';
 import ViewPicker from './ViewPicker.svelte';
 import DimensionPicker from './DimensionPicker.svelte';
 
@@ -11,28 +11,28 @@ afterEach(() => {
 });
 
 describe('square toolbar pickers ride the kit Button control/square contract', () => {
-	it('ViewPicker toolbar trigger is a default-tier square Button hosting the ghost select', () => {
-		comp = mount(ViewPicker, {
-			target: document.body,
-			props: { cardView: false, kanban: false }
-		});
-		const btn = document.querySelector('button.btn');
-		expect(btn?.classList.contains('btn-control')).toBe(false);
-		expect(btn?.classList.contains('btn-square')).toBe(true);
-		expect(btn?.querySelector('select')).not.toBeNull();
-		expect(document.querySelector('.btn-control-square')).toBeNull();
+	it('ViewPicker is the kit icon toggle — two segments, no native select', () => {
+		comp = mount(ViewPicker, { target: document.body, props: { cardView: false } });
+		const segments = [...document.querySelectorAll('button')];
+		expect(segments).toHaveLength(2);
+		expect(document.querySelector('select')).toBeNull();
+		// list is selected while cardView is false
+		expect(segments[0].getAttribute('aria-checked') ?? segments[0].getAttribute('aria-pressed')).toBe(
+			'true'
+		);
 	});
 
-	it('ViewPicker offers exactly list, cards and kanban', () => {
-		comp = mount(ViewPicker, {
-			target: document.body,
-			props: { cardView: true, kanban: false }
-		});
-		const select = document.querySelector('select') as HTMLSelectElement;
-		expect([...select.options].map((o) => o.value)).toEqual(['list', 'card', 'kanban']);
-		expect(document.querySelector('button.btn')?.getAttribute('title')).toContain('Cards');
-	});
 
+	it('ViewPicker in the menu is one full-width row that flips the view', () => {
+		comp = mount(ViewPicker, { target: document.body, props: { cardView: false, menu: true } });
+		const row = document.querySelector('button.menu-row') as HTMLButtonElement;
+		expect(row).not.toBeNull();
+		expect(document.querySelectorAll('button')).toHaveLength(1);
+		expect(row.textContent).toContain('Cards');
+		row.click();
+		flushSync();
+		expect(row.textContent).toContain('List');
+	});
 	it('menu rows stay plain full-width rows without a Button', () => {
 		comp = mount(DimensionPicker, {
 			target: document.body,

@@ -120,6 +120,7 @@
 
 <style>
 	.usage {
+		flex: none;
 		min-width: 0;
 	}
 	.detail,
@@ -149,6 +150,19 @@
 		}
 	}
 	@container sess-card (max-width: 16rem) {
+		.cost {
+			display: none;
+		}
+	}
+	@container sess-row (max-width: 40rem) {
+		.detail {
+			display: none;
+		}
+		.sum-compact-only {
+			display: contents;
+		}
+	}
+	@container sess-row (max-width: 20rem) {
 		.cost {
 			display: none;
 		}

@@ -97,16 +97,14 @@
 		</SettingRow>
 		<SettingRow label={m.settings_account_names_label()} help={m.settings_account_names_help()}>
 			<Switch
-				checked={sl.accountNames}
+				bind:checked={() => sl.accountNames, (v) => settings.setSessionList({ accountNames: v })}
 				label={m.settings_account_names_label()}
-				onclick={() => settings.setSessionList({ accountNames: !sl.accountNames })}
 			/>
 		</SettingRow>
 		<SettingRow label={m.settings_session_emoji_label()} help={m.settings_session_emoji_help()} server>
 			<Switch
-				checked={sessionEmojiPrefix}
+				bind:checked={() => sessionEmojiPrefix, (v) => settings.setSessionEmojiPrefix(v)}
 				label={m.settings_session_emoji_label()}
-				onclick={() => settings.setSessionEmojiPrefix(!sessionEmojiPrefix)}
 			/>
 		</SettingRow>
 	</SettingGroup>
@@ -114,9 +112,8 @@
 	<SettingGroup title={m.settings_spawn_title()}>
 		<SettingRow label={m.settings_spawn_dock_label()} help={m.settings_spawn_dock_help()}>
 			<Switch
-				checked={spawnDock.enabled}
+				bind:checked={() => spawnDock.enabled, (v) => settings.setSpawnDock({ enabled: v })}
 				label={m.settings_spawn_dock_label()}
-				onclick={() => settings.setSpawnDock({ enabled: !spawnDock.enabled })}
 			/>
 		</SettingRow>
 		<SettingRow label={m.settings_spawn_dock_side_label()} disabled={!spawnDock.enabled} selfLabelled>
@@ -134,9 +131,8 @@
 	<SettingGroup title={m.settings_stats_title()}>
 		<SettingRow label={m.settings_stats_dock_label()} help={m.settings_stats_dock_help()}>
 			<Switch
-				checked={statsDock.enabled}
+				bind:checked={() => statsDock.enabled, (v) => settings.setStatsDock({ enabled: v })}
 				label={m.settings_stats_dock_label()}
-				onclick={() => settings.setStatsDock({ enabled: !statsDock.enabled })}
 			/>
 		</SettingRow>
 		<SettingRow label={m.settings_stats_dock_side_label()} disabled={!statsDock.enabled} selfLabelled>
@@ -154,16 +150,14 @@
 	<SettingGroup title={m.settings_group_conversation()}>
 		<SettingRow label={m.settings_auto_resume_label()} help={m.settings_auto_resume_help()}>
 			<Switch
-				checked={autoResume}
+				bind:checked={() => autoResume, (v) => settings.setAutoResumeOnConnectionLoss(v)}
 				label={m.settings_auto_resume_label()}
-				onclick={() => settings.setAutoResumeOnConnectionLoss(!autoResume)}
 			/>
 		</SettingRow>
 		<SettingRow label={m.settings_archive_shortcut_label()} helpSlot={archiveHelp}>
 			<Switch
-				checked={settings.state.display.archiveShortcut}
+				bind:checked={() => settings.state.display.archiveShortcut, () => settings.toggleArchiveShortcut()}
 				label={m.settings_archive_shortcut_label()}
-				onclick={() => settings.toggleArchiveShortcut()}
 			/>
 		</SettingRow>
 	</SettingGroup>

@@ -121,27 +121,6 @@ describe('SessionsListController — group-by dimension', () => {
 	});
 });
 
-describe('SessionsListController — kanban', () => {
-	it('maps rows into their stage columns, drafts included, archived excluded', () => {
-		const { ctl, setItems } = make();
-		setItems([
-			session({ id: 'dr', status: 'draft' }),
-			session({ id: 'bl', bucket: 'blocked' }),
-			session({ id: 'wk', bucket: 'working' }),
-			session({ id: 'dn', bucket: 'done' }),
-			session({ id: 'ar', status: 'archived' })
-		]);
-		const byKey = Object.fromEntries(
-			ctl.kanbanColumns.map((c) => [c.key, c.sessions.map((s) => s.id)])
-		);
-		expect(byKey.drafts).toEqual(['dr']);
-		expect(byKey.blocked).toEqual(['bl']);
-		expect(byKey.working).toEqual(['wk']);
-		expect(byKey.done).toEqual(['dn']);
-		expect(ctl.kanbanColumns.flatMap((c) => c.sessions.map((s) => s.id))).not.toContain('ar');
-	});
-});
-
 describe('SessionsListController — expand/collapse', () => {
 	it('toggles a subagent group open then closed', () => {
 		const { ctl } = make();

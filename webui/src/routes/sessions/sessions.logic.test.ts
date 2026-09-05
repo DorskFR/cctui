@@ -19,7 +19,6 @@ import {
 	inEnabledSections,
 	isDimension,
 	isSection,
-	kanbanColOf,
 	matchesLabelFilter,
 	matchesUnreadFilter,
 	parseLabelFilter,
@@ -233,48 +232,6 @@ describe('debug tooltip rows', () => {
 	it('reports hibernated as the status word', () => {
 		const rows = sessionDebugRows(session({ hibernated: true, liveness: 'dead' }), NOW);
 		expect(rows.find((r) => r.label === 'status')?.value).toBe('hibernated');
-	});
-});
-
-describe('kanbanColOf', () => {
-	it('routes a draft to the Drafts column', () => {
-		expect(kanbanColOf(session({ status: 'draft' }))).toBe('drafts');
-	});
-
-	it('routes a blocked session to Needs input', () => {
-		expect(kanbanColOf(session({ status: 'active', bucket: 'blocked' }))).toBe('blocked');
-	});
-
-	it('routes a done session to Completed', () => {
-		expect(kanbanColOf(session({ status: 'active', bucket: 'done' }))).toBe('done');
-	});
-
-	it('routes working / review / missing bucket to Working', () => {
-		expect(kanbanColOf(session({ status: 'active', bucket: 'working' }))).toBe('working');
-		expect(kanbanColOf(session({ status: 'active', bucket: 'review' }))).toBe('working');
-		expect(kanbanColOf(session({ status: 'active', bucket: undefined }))).toBe('working');
-	});
-
-	it('classifies a pinned working session by its raw bucket, not a pinned column', () => {
-		expect(kanbanColOf(session({ status: 'active', pinned: true, bucket: 'working' }))).toBe(
-			'working'
-		);
-		expect(kanbanColOf(session({ status: 'active', pinned: true, bucket: 'blocked' }))).toBe(
-			'blocked'
-		);
-	});
-
-	it('folds dispatched sessions into their bucket column (working / blocked)', () => {
-		expect(
-			kanbanColOf(session({ status: 'active', machine_kind: 'dispatch', bucket: 'working' }))
-		).toBe('working');
-		expect(
-			kanbanColOf(session({ status: 'active', machine_kind: 'dispatch', bucket: 'blocked' }))
-		).toBe('blocked');
-	});
-
-	it('keeps archived sessions off the board (null)', () => {
-		expect(kanbanColOf(session({ status: 'archived', bucket: 'done' }))).toBeNull();
 	});
 });
 

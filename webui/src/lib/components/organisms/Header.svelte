@@ -4,16 +4,17 @@
 	import { useMe, useVersion, useSessions, qk } from '$lib/queries';
 	import type { SessionListResponse } from '@bindings/SessionListResponse';
 	import { useQueryClient } from '@tanstack/svelte-query';
-	import { AUTO, theme, THEMES } from '$lib/theme.svelte';
+	import { theme } from '$lib/theme.svelte';
+	import { fontScale } from '$lib/fontscale.svelte';
 	import { auth } from '$lib/auth.svelte';
 	import { notify } from '$lib/notify.svelte';
 	import { settings } from '$lib/settings.svelte';
 	import { toasts } from '$lib/toast.svelte';
-	import { IconButton, Menu, SelectButton, Text } from '@dorsk/tsumikit';
+	import { FontScalePicker, IconButton, Menu, Text, ThemePicker } from '@dorsk/tsumikit';
 	import type { MenuItem } from '@dorsk/tsumikit';
 	import NavLink from '$lib/components/atoms/NavLink.svelte';
-	import HeaderNav from '$lib/components/organisms/HeaderNav.svelte';
-	import HeaderGauges from '$lib/components/molecules/HeaderGauges.svelte';
+	import MainNav from '$lib/components/organisms/MainNav.svelte';
+	import UsageBattery from '$lib/components/molecules/UsageBattery.svelte';
 	import UpdateModal from '$lib/components/organisms/UpdateModal.svelte';
 	import { m } from '$lib/paraglide/messages';
 
@@ -80,7 +81,19 @@
 	const userName = $derived(me.data?.user_name ?? '');
 	const userRole = $derived(me.data?.role ?? '');
 	const userInitial = $derived((userName || userRole || '?').slice(0, 1).toUpperCase());
+	const roleSuffix = $derived(
+		userRole && userRole.toLowerCase() !== userName.toLowerCase() ? userRole : ''
+	);
 	const latest = $derived(version.data?.latest_version ?? null);
+
+	// The kit pickers write the kit stores; the blob follows so the choice
+	// round-trips across devices like it did through the old header select.
+	$effect(() => {
+		const t = theme.current;
+		const f = fontScale.current;
+		const d = settings.state.display;
+		if (d.theme !== t || d.fontScale !== f) settings.setDisplay({ theme: t, fontScale: f });
+	});
 
 	const userMenu = $derived<MenuItem[]>([
 		...(latest
@@ -101,75 +114,76 @@
 
 <header class="hd">
 	<div class="hd-inner">
-		<NavLink href="/sessions" title={m.nav_sessions()}>
-			<div class="brand">
-				<Text variant="code" tone="accent" size="lg" weight="bold">»_</Text>
-				<Text size="lg" weight="bold">cctui</Text>
-			</div>
-		</NavLink>
-		<span
-			class="conn"
-			class:on={ws.status === 'open'}
-			class:mid={ws.status === 'connecting'}
-			title={m.nav_ws_status({ status: ws.status })}
-		></span>
-		{#if settings.nav === 'top'}
-			<span class="tabs"><HeaderNav /></span>
-		{/if}
-		<div class="spacer"></div>
-		<span class="batt"><HeaderGauges /></span>
-		<span class="divider" aria-hidden="true"></span>
-		<IconButton
-			emoji={notify.enabled ? '🔔' : '🔕'}
-			size={12}
-			label={notify.enabled ? m.nav_notify_on_label() : m.nav_notify_off_label()}
-			pressed={notify.enabled}
-			onclick={toggleNotify}
-			oncontextmenu={(e: MouseEvent) => {
-				e.preventDefault();
-				settings.setNotifySound(!notify.sound);
-				toasts.info(notify.sound ? m.nav_sound_on() : m.nav_sound_off());
-			}}
-		/>
-		<SelectButton
-			glyph={theme.icon}
-			label={m.nav_theme()}
-			title={m.nav_theme_tooltip({ theme: theme.label })}
-			value={theme.current}
-			groups={[
-				{
-					label: m.nav_theme_system(),
-					options: [{ value: AUTO.id, label: `${AUTO.icon}  ${m.nav_theme_auto()}` }]
-				},
-				{
-					label: m.nav_theme_light(),
-					options: THEMES.filter((t) => t.mode === 'light').map((t) => ({
-						value: t.id,
-						label: `${t.icon}  ${t.label}`
-					}))
-				},
-				{
-					label: m.nav_theme_dark(),
-					options: THEMES.filter((t) => t.mode === 'dark').map((t) => ({
-						value: t.id,
-						label: `${t.icon}  ${t.label}`
-					}))
-				}
-			]}
-			onchange={(v) => settings.setTheme(v)}
-		/>
-		<Menu label={m.nav_user_menu()} items={userMenu} bare placement="bottom-end">
-			{#snippet trigger()}
-				<span class="pill">
-					<span class="avatar" class:alert={!!latest} aria-hidden="true">{userInitial}</span>
-					<span class="who">
-						{#if userName}<span class="who-name">{userName}</span>{/if}
-						{#if userName && userRole}<span class="who-sep">·</span>{/if}
-						{#if userRole}<span class="who-role">{userRole}</span>{/if}
+		<div class="lead">
+			<NavLink href="/sessions" title={m.nav_sessions()}>
+				<div class="brand">
+					<Text variant="code" tone="accent" size="lg" weight="bold">»_</Text>
+					<Text size="lg" weight="bold">cctui</Text>
+				</div>
+			</NavLink>
+			<span
+				class="conn"
+				class:on={ws.status === 'open'}
+				class:mid={ws.status === 'connecting'}
+				title={m.nav_ws_status({ status: ws.status })}
+			></span>
+			<span class="vers">
+				<Text size="xs" tone="faint" variant="code">ui v{__CLIENT_VERSION__}</Text>
+				{#if version.data}
+					<NavLink href={version.data.commit_url} target="_blank" rel="noopener">
+						<Text size="xs" tone="faint" variant="code">srv v{version.data.version}</Text>
+					</NavLink>
+				{/if}
+			</span>
+			{#if latest}
+				<button
+					class="upd"
+					type="button"
+					title={m.nav_update_available({ version: latest })}
+					onclick={() => (updateOpen = true)}
+				>
+					<span class="upd-dot" aria-hidden="true"></span>
+					<Text size="xs" tone="danger" variant="code">v{latest}</Text>
+				</button>
+			{/if}
+		</div>
+		<div class="tabs">
+			{#if settings.nav === 'top'}
+				<MainNav placement="top" />
+			{/if}
+		</div>
+		<div class="tail">
+			<span class="batt"><UsageBattery /></span>
+			<span class="divider" aria-hidden="true"></span>
+			<IconButton
+				emoji={notify.enabled ? '🔔' : '🔕'}
+				size={12}
+				label={notify.enabled ? m.nav_notify_on_label() : m.nav_notify_off_label()}
+				pressed={notify.enabled}
+				onclick={toggleNotify}
+				oncontextmenu={(e: MouseEvent) => {
+					e.preventDefault();
+					settings.setNotifySound(!notify.sound);
+					toasts.info(notify.sound ? m.nav_sound_on() : m.nav_sound_off());
+				}}
+			/>
+			<span class="prefs">
+				<ThemePicker />
+				<FontScalePicker />
+			</span>
+			<Menu label={m.nav_user_menu()} items={userMenu} bare placement="bottom-end">
+				{#snippet trigger()}
+					<span class="pill">
+						<span class="avatar" class:alert={!!latest} aria-hidden="true">{userInitial}</span>
+						<span class="who">
+							{#if userName}<span class="who-name">{userName}</span>{/if}
+							{#if userName && roleSuffix}<span class="who-sep">·</span>{/if}
+							{#if roleSuffix}<span class="who-role">{roleSuffix}</span>{/if}
+						</span>
 					</span>
-				</span>
-			{/snippet}
-		</Menu>
+				{/snippet}
+			</Menu>
+		</div>
 	</div>
 </header>
 
@@ -224,13 +238,24 @@
 	}
 	.hd-inner {
 		width: 100%;
-		max-width: var(--content-wide);
-		margin-inline: auto;
 		padding-inline: max(var(--sp-4), var(--safe-left)) max(var(--sp-4), var(--safe-right));
 		height: var(--header-h);
+		/* Three equal tracks so the nav sits on the header's true centre,
+		   whatever the brand and the right-hand cluster weigh. */
+		display: grid;
+		grid-template-columns: repeat(3, minmax(0, 1fr));
+		align-items: center;
+		gap: var(--sp-2);
+	}
+	.lead,
+	.tail {
 		display: flex;
 		align-items: center;
 		gap: var(--sp-2);
+		min-width: 0;
+	}
+	.tail {
+		justify-content: flex-end;
 	}
 	.brand {
 		display: flex;
@@ -241,16 +266,19 @@
 	.tabs {
 		display: none;
 		min-width: 0;
-		margin-left: var(--sp-3);
+		align-self: stretch;
+		justify-content: center;
 	}
 	@media (min-width: 48rem) {
 		.tabs {
-			display: inline-flex;
+			display: flex;
 		}
 	}
-	.spacer {
-		flex: 1;
-		min-width: 0;
+	/* No room for the centre track: the brand keeps its width, the cluster takes the rest. */
+	@media (max-width: 47.999rem) {
+		.hd-inner {
+			grid-template-columns: auto minmax(0, 1fr);
+		}
 	}
 	.conn {
 		width: 8px;
@@ -265,6 +293,38 @@
 	}
 	.conn.mid {
 		background: var(--warn);
+	}
+	.vers {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+		flex: none;
+		line-height: 1.15;
+		white-space: nowrap;
+	}
+	.upd {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--sp-1);
+		flex: none;
+		height: 20px;
+		padding: 0 var(--sp-2);
+		border: 1px solid var(--danger);
+		border-radius: var(--r-pill);
+		background: none;
+		cursor: pointer;
+	}
+	.upd-dot {
+		width: 6px;
+		height: 6px;
+		border-radius: 50%;
+		background: var(--danger);
+	}
+	.prefs {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--sp-1);
+		flex: none;
 	}
 	.batt {
 		display: inline-flex;

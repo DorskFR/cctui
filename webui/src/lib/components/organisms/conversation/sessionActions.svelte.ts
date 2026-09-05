@@ -9,6 +9,7 @@ import type { SessionListItem } from '@bindings/SessionListItem';
 import type { AgentEvent } from '@bindings/AgentEvent';
 import type { ViewOpts } from './types';
 import { toasts } from '$lib/toast.svelte';
+import { copyText } from '$lib/clipboard';
 import { ws } from '$lib/ws.svelte';
 import { clearSessionStorage } from '$lib/drafts';
 import { downloadConversationHtml, conversationToMarkdown } from '$lib/export';
@@ -176,8 +177,7 @@ export class SessionActions {
 	copyMarkdown = async () => {
 		try {
 			const md = conversationToMarkdown(this.#opts.session(), this.#opts.events(), this.#opts.view());
-			await navigator.clipboard.writeText(md);
-			toasts.ok(m.conversation_copied_markdown());
+			await copyText(md, m.conversation_copied_markdown());
 		} catch (e) {
 			toasts.error(m.conversation_copy_failed({ message: errMessage(e) }));
 		}
@@ -186,11 +186,6 @@ export class SessionActions {
 	// Copy the session's stable, shareable URL.
 	copyLink = async () => {
 		const url = `${location.origin}/sessions?session=${this.#opts.id()}`;
-		try {
-			await navigator.clipboard.writeText(url);
-			toasts.ok(m.conversation_link_copied());
-		} catch {
-			toasts.error(url);
-		}
+		await copyText(url, m.conversation_link_copied());
 	};
 }

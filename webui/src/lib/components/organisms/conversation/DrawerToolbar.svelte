@@ -107,7 +107,7 @@
 				{quickFilterLabel(q.id)}
 			</Toggle>
 		{/each}
-		<Popover label={m.conversation_filter_menu_aria()} placement="bottom-start" size="sm">
+		<Popover label={m.conversation_filter_menu_aria()} placement="bottom-start" bare triggerClass="filters-trigger">
 			{#snippet trigger()}
 				{offCount > 0
 					? m.conversation_filters_off_count({ count: offCount })
@@ -153,6 +153,22 @@
 </div>
 
 <style>
+	/* The trigger reads like the Toggles beside it. `.bare` in the selector:
+	   the kit's `.pop-trigger.bare` ties on specificity and loads later. */
+	:global(.filters-trigger.bare) {
+		display: inline-flex;
+		align-items: center;
+		padding: 0.15rem var(--sp-2);
+		border: 1px solid var(--border);
+		border-radius: var(--r-pill);
+		background: var(--bg-elevated-2);
+		color: var(--text-muted);
+		font-size: var(--fs-xs);
+		font-weight: var(--fw-medium);
+		line-height: 1.4;
+		white-space: nowrap;
+	}
+
 	/* Toolbar: three visually-separated groups — message-category
 	   filter, formatting toggles, behavior toggle — divided by thin rules. */
 	.toolbar {

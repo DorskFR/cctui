@@ -1,110 +1,64 @@
 <script lang="ts">
-	import { Button, Icon, Select } from '@dorsk/tsumikit';
+	// List vs cards, as the kit's icon toggle. `cardView` is bindable so the
+	// parent keeps owning persistence. In the overflow ⋯ menu it is a plain
+	// full-width row like the dimension pickers; tapping it flips the view.
+	import { Icon, SegmentedControl } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
-	import { VIEW_OPTIONS } from '../../../routes/sessions/sessions.logic';
 
-	// One square control offering list · cards · kanban. A native <select>
-	// overlaid transparently on a styled trigger (the Select atom's `ghost`
-	// variant) gives the platform popup with zero outside-click bookkeeping.
-	// `cardView` and `kanban` are bindable so the parent keeps owning persistence.
 	let {
 		cardView = $bindable(),
-		kanban = $bindable(),
 		menu = false
 	}: {
 		cardView: boolean;
-		kanban: boolean;
-		/** Render as a full-width labeled row for the overflow ⋯ menu. */
+		/** Overflow ⋯ menu row: icon + "View: …", one tap toggles. */
 		menu?: boolean;
 	} = $props();
 
-	const mode = $derived(kanban ? 'kanban' : cardView ? 'card' : 'list');
-	const label = $derived(VIEW_OPTIONS.find((o) => o.value === mode)?.label ?? m.sessions_view_label());
-
-	function select(value: string) {
-		const opt = VIEW_OPTIONS.find((o) => o.value === value);
-		if (!opt) return;
-		kanban = opt.value === 'kanban';
-		cardView = opt.value !== 'list';
-	}
+	const options = [
+		{ value: 'list', icon: 'list' as const },
+		{ value: 'card', icon: 'grid' as const }
+	];
+	// The menu row is an action, so it names the view it switches TO.
+	const target = $derived(
+		m.sessions_view_title({ view: cardView ? m.sessions_view_list() : m.sessions_view_card() })
+	);
 </script>
 
-{#snippet content()}
-	<!-- Icons at size 18 to match the sibling IconButton controls (the old
-	     unicode glyphs rendered at the inherited font size, so they read smaller).
-	     `menu` for list; a raw layout-grid svg (no grid glyph in the registry) for
-	     card. -->
-	{#if cardView}
-		<Icon size={18}>
-			<rect x="3" y="3" width="7" height="7" rx="1" />
-			<rect x="14" y="3" width="7" height="7" rx="1" />
-			<rect x="3" y="14" width="7" height="7" rx="1" />
-			<rect x="14" y="14" width="7" height="7" rx="1" />
-		</Icon>
-	{:else}
-		<Icon name="menu" size={18} />
-	{/if}
-	<Select
-		variant="ghost"
-		aria-label={m.sessions_view_choose()}
-		value={mode}
-		onchange={(e) => select((e.currentTarget as HTMLSelectElement).value)}
-	>
-		{#each VIEW_OPTIONS as o (o.value)}
-			<option value={o.value}>{o.label}</option>
-		{/each}
-	</Select>
-{/snippet}
-
 {#if menu}
-	<div
-		class="view-picker menu-row"
-		title={m.sessions_view_title({ view: label })}
-		aria-label={m.sessions_view_title({ view: label })}
-	>
-		{@render content()}
-	</div>
+	<button type="button" class="menu-row" title={target} onclick={() => (cardView = !cardView)}>
+		<Icon name={cardView ? 'list' : 'grid'} size={18} />
+		<span>{target}</span>
+	</button>
 {:else}
-	<span class="view-picker">
-		<Button
-			square
-			title={m.sessions_view_title({ view: label })}
-			aria-label={m.sessions_view_title({ view: label })}
-		>
-			{@render content()}
-		</Button>
-	</span>
+	<SegmentedControl
+		variant="icon"
+		box
+		label={m.sessions_view_label()}
+		{options}
+		bind:value={() => (cardView ? 'card' : 'list'), (v) => (cardView = v === 'card')}
+	/>
 {/if}
 
 <style>
-	.view-picker {
-		position: relative;
-		display: inline-flex;
+	.menu-row {
+		display: flex;
 		align-items: center;
-		justify-content: center;
-		flex: none;
-		overflow: hidden;
-		border-radius: var(--r-md);
-		white-space: nowrap;
-		cursor: pointer;
-	}
-	/* Overflow-menu row: full-width, left-aligned icon + label (the aria-label,
-	   e.g. "View: List · compact"). The ghost <Select> fills the row (inset:0), so
-	   clicking anywhere opens the native picker. */
-	.view-picker.menu-row {
 		width: 100%;
 		justify-content: flex-start;
 		gap: var(--sp-2);
 		min-height: 2.25rem;
 		padding: var(--sp-1) var(--sp-2);
+		border: 0;
 		border-radius: var(--r-sm);
+		background: none;
+		color: inherit;
+		font: inherit;
 		font-size: var(--fs-sm);
-	}
-	.view-picker.menu-row:hover {
-		background: var(--bg-elevated-3, var(--bg-elevated-2));
-	}
-	.view-picker.menu-row::after {
-		content: attr(aria-label);
 		font-weight: var(--fw-medium);
+		white-space: nowrap;
+		cursor: pointer;
+	}
+	.menu-row:hover {
+		background: var(--bg-elevated-3, var(--bg-elevated-2));
 	}
 </style>

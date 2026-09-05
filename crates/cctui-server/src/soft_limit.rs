@@ -270,17 +270,49 @@ fn normalize_structured_limit(entry: &serde_json::Value) -> Option<UsageWindow> 
     }
 }
 
+/// Identity from the duration upstream reported. The `five_hour`/`seven_day`
+/// slots are positional, not descriptive — a weekly-only plan reports its
+/// weekly limit in the primary slot. `None` keeps the slot's default identity.
+fn identity_from_seconds(secs: i64) -> Option<(String, &'static str, String)> {
+    if secs <= 0 {
+        return None;
+    }
+    if secs < 86_400 {
+        let hours = (secs as f64 / 3600.0).round().max(1.0) as i64;
+        return Some((KEY_SESSION.to_owned(), "session", format!("{hours}h")));
+    }
+    let days = (secs as f64 / 86_400.0).round().max(1.0) as i64;
+    let label =
+        if days == 7 { "Weekly (all models)".to_owned() } else { format!("{days}d (all models)") };
+    Some((KEY_WEEKLY_ALL.to_owned(), "weekly_all", label))
+}
+
 /// Legacy/OpenAI fixed-field shape → windows.
 fn normalize_fixed_fields(usage: &serde_json::Value) -> Vec<UsageWindow> {
-    let mut out = Vec::new();
+    let mut out: Vec<UsageWindow> = Vec::new();
     let mut push = |field: &str, key: String, kind: &str, label: &str, model: Option<&str>| {
         if let Some(w) = usage.get(field)
             && let Some(utilization) = parse_percent(w)
         {
+            let reclassified = model
+                .is_none()
+                .then(|| {
+                    w.get("window_seconds")
+                        .and_then(serde_json::Value::as_i64)
+                        .and_then(identity_from_seconds)
+                })
+                .flatten();
+            let (key, kind, label) = match reclassified {
+                Some((k, kd, l)) => (k, kd, l),
+                None => (key, kind, label.to_owned()),
+            };
+            if out.iter().any(|existing| existing.key == key) {
+                return;
+            }
             out.push(UsageWindow {
                 key,
                 kind: kind.to_owned(),
-                label: label.to_owned(),
+                label,
                 utilization,
                 amount_usd: None,
                 resets_at: parse_resets_at(w),
@@ -454,6 +486,47 @@ mod tests {
     }
 
     // ---- normalization -----------------------------------------------------
+
+    #[test]
+    fn primary_slot_carrying_a_weekly_duration_is_keyed_weekly() {
+        let payload = json!({
+            "five_hour": {
+                "utilization": 35.0,
+                "resets_at": "2026-09-11T06:02:31Z",
+                "window_seconds": 604_800,
+            },
+        });
+        let w = normalize_usage_windows(&payload);
+        assert_eq!(w.len(), 1);
+        assert_eq!(w[0].key, "weekly_all");
+        assert_eq!(w[0].kind, "weekly_all");
+        assert_eq!(w[0].label, "Weekly (all models)");
+    }
+
+    #[test]
+    fn duplicate_durations_collapse_to_one_window() {
+        let payload = json!({
+            "five_hour": { "utilization": 35.0, "window_seconds": 604_800 },
+            "seven_day": { "utilization": 40.0, "window_seconds": 604_800 },
+        });
+        let w = normalize_usage_windows(&payload);
+        assert_eq!(w.len(), 1);
+        assert_eq!(w[0].key, "weekly_all");
+        assert!((w[0].utilization - 35.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn windows_without_a_duration_keep_their_slot_identity() {
+        let w = normalize_usage_windows(&legacy(
+            90.0,
+            "2026-06-19T16:00:00Z",
+            10.0,
+            "2026-06-26T00:00:00Z",
+        ));
+        assert_eq!(w[0].key, "session");
+        assert_eq!(w[0].label, "5h");
+        assert_eq!(w[1].key, "weekly_all");
+    }
 
     #[test]
     fn structured_limits_render_all_windows() {

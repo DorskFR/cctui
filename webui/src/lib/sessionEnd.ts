@@ -69,10 +69,11 @@ export function endReasonLabel(reason: SessionEndReason): string {
 	}
 }
 
-/** Badge model for an ended session; `null` while it is alive. */
+/** Badge model for an ended session; `null` while it is alive or when it
+ *  simply completed — a normal end is the row's resting state, not a badge. */
 export function sessionEnd(s: Pick<SessionListItem, 'end_reason' | 'end_detail' | 'ended_at'>): SessionEnd | null {
 	const reason = s.end_reason ?? null;
-	if (!reason) return null;
+	if (!reason || reason === 'completed') return null;
 	const label = endReasonLabel(reason);
 	const detail = s.end_detail?.trim() || null;
 	return {

@@ -10,4 +10,8 @@ disabled_at: string | null,
  * Per-user dispatch permission. Enforced on `POST
  * /sessions/dispatch`; defaults TRUE.
  */
-can_dispatch: boolean, };
+can_dispatch: boolean, 
+/**
+ * Latest use of any of the user's keys; None until one authenticates.
+ */
+last_seen_at: string | null, };

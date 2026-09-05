@@ -27,13 +27,13 @@
 			<Text size="xs" tone="faint" uppercase style={TH}>{m.home_windows_col_volume()}</Text>
 		</div>
 		<div class="cell end">
-			<Text size="xs" tone="faint" uppercase nowrap style={TH}>↑ {m.home_usage_input()}</Text>
+			<Text size="xs" tone="faint" uppercase style={TH}>↑ {m.home_usage_input()}</Text>
 		</div>
 		<div class="cell end">
-			<Text size="xs" tone="faint" uppercase nowrap style={TH}>↓ {m.home_usage_output()}</Text>
+			<Text size="xs" tone="faint" uppercase style={TH}>↓ {m.home_usage_output()}</Text>
 		</div>
 		<div class="cell end">
-			<Text size="xs" tone="faint" uppercase nowrap style={TH}>⚡ {m.home_usage_cache()}</Text>
+			<Text size="xs" tone="faint" uppercase style={TH}>⚡ {m.home_usage_cache()}</Text>
 		</div>
 	</div>
 	{#each rows as r (r.key)}
@@ -76,7 +76,7 @@
 	}
 	/* The relative bar goes first when the column narrows: it only ranks the
 	   rows, the three token figures carry the data. */
-	@container (max-width: 32rem) {
+	@container (max-width: 40rem) {
 		.row {
 			grid-template-columns: minmax(0, 1fr) repeat(3, minmax(0, 3.5rem));
 			gap: var(--sp-2);

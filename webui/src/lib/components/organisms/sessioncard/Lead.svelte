@@ -5,8 +5,8 @@
 	import SessionDot from '$lib/components/molecules/SessionDot.svelte';
 	import { m } from '$lib/paraglide/messages';
 	import { settings } from '$lib/settings.svelte';
-	import { Badge, Text } from '@dorsk/tsumikit';
-	import { accountTrafficWarning, formatAgo } from '../../../../routes/sessions/sessions.logic';
+	import { Badge, Text, Timestamp } from '@dorsk/tsumikit';
+	import { accountTrafficWarning } from '../../../../routes/sessions/sessions.logic';
 	import Gutter from './Gutter.svelte';
 	import type { SessionActions, SessionView } from './view';
 
@@ -36,9 +36,6 @@
 	onTogglePin={actions.onTogglePin}
 />
 <SessionDot session={s} livenessClass={view.livenessClass} now={view.now} />
-{#if view.stale}
-	<Badge tone="warn" size="xs" title={m.sessions_stale_title()}>{m.sessions_stale_badge()}</Badge>
-{/if}
 {#if view.child}
 	<Badge tone="info" size="xs">{m.sessions_subagent_badge()}</Badge>
 {:else if view.showMachine}
@@ -74,7 +71,12 @@
 			(act.asleep ? m.sessions_activity_asleep_title() : m.sessions_activity_live_title())}
 	>
 		<span class="act-cadence"
-			>⚙{act.count}{#if act.ageMs !== null}&nbsp;·&nbsp;{formatAgo(act.ageMs)}{/if}</span
+			>⚙{act.count}{#if act.ageMs !== null && s.last_tool_at}&nbsp;·&nbsp;<Timestamp
+					value={s.last_tool_at}
+					mode="relative"
+					size="xs"
+					tone="inherit"
+				/>{/if}</span
 		>
 		{#if act.detail && !row}<span class="act-detail">{act.detail}</span>{/if}
 	</span>
@@ -87,9 +89,15 @@
 		gap: var(--sp-1);
 		min-width: 0;
 		flex: 0 1 auto;
+		overflow: hidden;
 		font-size: var(--fs-xs);
 		color: var(--text-faint);
 		white-space: nowrap;
+	}
+	@container sess-row (max-width: 40rem) {
+		.activity {
+			display: none;
+		}
 	}
 	.act-cadence {
 		flex: none;

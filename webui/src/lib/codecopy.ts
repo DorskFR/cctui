@@ -1,3 +1,4 @@
+import { copyToClipboard } from '@dorsk/tsumikit';
 import { browser } from '$app/environment';
 
 // Single delegated click handler for the per-code-block copy buttons. Code
@@ -18,10 +19,7 @@ export function installCodeCopy(): void {
 		const code = btn.closest('.md-pre-wrap')?.querySelector('code');
 		const text = code?.textContent ?? '';
 		if (!text) return;
-		navigator.clipboard
-			.writeText(text)
-			.then(() => flash(btn, 'Copied'))
-			.catch(() => flash(btn, 'Failed'));
+		void copyToClipboard(text).then((ok) => flash(btn, ok ? 'Copied' : 'Failed'));
 	});
 }
 

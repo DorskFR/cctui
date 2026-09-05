@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { capFromBar, capToBar, resetIn, usdPct, usdReadout, withCap } from './cap-bar.logic';
+import { capFromBar, capToBar, resetIn, resetInShort, usdPct, usdReadout, withCap } from './cap-bar.logic';
 
 describe('cap ↔ bar', () => {
 	it('treats 100 as no cap and rounds otherwise', () => {
@@ -49,5 +49,18 @@ describe('withCap', () => {
 		expect(withCap({ session: { cap_pct: 50, bypass_minutes: 5 } }, 'session', null)).toEqual({
 			session: { cap_pct: null, bypass_minutes: 5 }
 		});
+	});
+});
+
+describe('resetInShort', () => {
+	const now = Date.parse('2026-09-05T10:00:00Z');
+	it('keeps only the largest unit', () => {
+		expect(resetInShort('2026-09-05T10:20:00Z', now)).toBe('20m');
+		expect(resetInShort('2026-09-05T13:30:00Z', now)).toBe('3h');
+		expect(resetInShort('2026-09-10T22:00:00Z', now)).toBe('5d');
+	});
+	it('is null once the window has reset', () => {
+		expect(resetInShort('2026-09-05T09:00:00Z', now)).toBeNull();
+		expect(resetInShort(null, now)).toBeNull();
 	});
 });

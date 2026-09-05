@@ -71,6 +71,13 @@ describe('isStale', () => {
 	it('keeps composer records when the roster is unknown', () => {
 		expect(isStale('cctui_files_cctui_draft_s9', fresh, { now, live: null })).toBe(false);
 	});
+
+	it('drops a cached attachment body once its session is archived', () => {
+		const cached = { names: [], files: [], text: 'hello', updatedAt: now - 1000 };
+		expect(isStale('cctui_files_att_s1:abc123', cached, { now, live })).toBe(false);
+		expect(isStale('cctui_files_att_s9:abc123', cached, { now, live })).toBe(true);
+		expect(isStale('cctui_files_att_s9:abc123', cached, { now, live: null })).toBe(false);
+	});
 });
 
 describe('sweep', () => {

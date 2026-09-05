@@ -22,8 +22,8 @@ describe('mergeUsageWindows pace', () => {
 describe('windowLabelFromKey', () => {
 	it('labels the canonical keys and falls back for model-scoped', () => {
 		expect(windowLabelFromKey('session')).toBe('5h');
-		expect(windowLabelFromKey('weekly_all')).toBe('Weekly (all models)');
-		expect(windowLabelFromKey('weekly_model:fable')).toBe('Weekly fable');
+		expect(windowLabelFromKey('weekly_all')).toBe('7d');
+		expect(windowLabelFromKey('weekly_model:fable')).toBe('fable');
 	});
 });
 
@@ -37,7 +37,9 @@ describe('mergeUsageWindows', () => {
 		const { observed, unobserved } = mergeUsageWindows(windows, { session: { cap_pct: 80 } });
 		expect(observed.map((r) => r.key)).toEqual(['session', 'weekly_all', 'weekly_model:fable']);
 		expect(observed[0].cap).toBe(80);
-		expect(observed[2].label).toBe('Weekly Fable');
+		// The server's long label never wins over the short canonical one.
+		expect(observed[1].label).toBe('7d');
+		expect(observed[2].label).toBe('fable');
 		expect(observed[2].utilization).toBe(12);
 		expect(unobserved).toHaveLength(0);
 	});
@@ -81,7 +83,7 @@ describe('editorWindowKeys', () => {
 			'weekly_model:opus',
 			'weekly_model:extra'
 		]);
-		expect(keys[2].label).toBe('Weekly Opus');
+		expect(keys[2].label).toBe('opus');
 	});
 });
 
@@ -95,9 +97,9 @@ describe('dollar windows', () => {
 	});
 
 	it('labels and flags the dollar keys', () => {
-		expect(windowLabelFromKey('session_usd')).toBe('Session spend');
-		expect(windowLabelFromKey('usd_5h')).toBe('5h spend');
-		expect(windowLabelFromKey('usd_7d')).toBe('7d spend');
+		expect(windowLabelFromKey('session_usd')).toBe('Session');
+		expect(windowLabelFromKey('usd_5h')).toBe('5h');
+		expect(windowLabelFromKey('usd_7d')).toBe('7d');
 		expect(isUsdKey('usd_7d')).toBe(true);
 		expect(isUsdKey('weekly_all')).toBe(false);
 	});

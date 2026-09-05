@@ -14,7 +14,6 @@
 	import { dockLayout } from '$lib/spawnDock.svelte';
 	import StatsDock from '$lib/components/organisms/statsdock/StatsDock.svelte';
 	import SessionControls from '$lib/components/organisms/SessionControls.svelte';
-	import KanbanBoard from '$lib/components/organisms/KanbanBoard.svelte';
 	import { Button, Callout, Dot, IconButton, Menu, Modal, SectionHeader, Text } from '@dorsk/tsumikit';
 	import MachineBadge from '$lib/components/molecules/MachineBadge.svelte';
 	import { useAllMachines } from '$lib/queries';
@@ -24,7 +23,6 @@
 		currentSpawnSlot,
 		readSpawnSlot,
 		LIST_VIEW,
-		LIST_KANBAN,
 		LIST_SECTION,
 		LIST_LABELS,
 		LIST_HIDDEN
@@ -79,12 +77,6 @@
 		drafts.set(LIST_VIEW, cardView ? 'card' : 'list');
 	});
 
-	// Kanban board view: a distinct layout persisted alongside the
-	// list/card picker; when set it overrides it.
-	let kanban = $state(drafts.get(LIST_KANBAN) === '1');
-	$effect(() => {
-		drafts.set(LIST_KANBAN, kanban ? '1' : '');
-	});
 
 	// Color-by and group-by dimensions, read live from the
 	// server-persisted settings blob (so an async settings.load() reflows the UI)
@@ -667,7 +659,7 @@
 	// top-level rows — they already show nested under their pinned parent.
 	const pinnedArchivedKidIds = $derived(new Set(pinnedArchivedKids.map((s) => s.id)));
 
-	// The list derivations (nest/buckets/group-by/kanban) + multi-select and
+	// The list derivations (nest/buckets/group-by) + multi-select and
 	// subagent-group expand state live on the controller; the component supplies
 	// the reactive inputs and delegates. Subagent nesting and the cost rollup are
 	// pure data transforms — see sessions.logic.ts.
@@ -699,7 +691,6 @@
 	labels={allLabels}
 	bind:labelFilter
 	bind:cardView
-	bind:kanban
 	{colorBy}
 	{groupBy}
 	onColorBy={(v) => settings.setSessionList({ colorBy: v === 'status' ? 'none' : v })}
@@ -796,8 +787,7 @@
 
 <!-- Every row set — live buckets, search results, archive browse — renders
      through this one card-vs-list dispatch so no branch can drift from the
-     view picker. Kanban implies cardView, so search/archive under kanban fall
-     back to the card grid. -->
+     view picker. -->
 {#snippet rowsView(
 	rows: SessionListItem[],
 	childGroups: Map<string, SubGroup[]>,
@@ -905,50 +895,6 @@
 	{/each}
 {/snippet}
 
-{#snippet kanbanCard(s: SessionListItem)}
-	{#if s.status === 'draft'}
-		<SessionCard
-			session={s}
-			draft
-			draftLaunching={launchingDraft === s.id}
-			preview={draftPreview(s)}
-			onLaunch={launchDraft}
-			onEdit={editDraft}
-			onDiscard={discardDraft}
-			onopen={() => {}}
-		/>
-	{:else}
-		{@const subGroups = list.kanbanChildGroups.get(s.id) ?? []}
-		<SessionCard
-			session={s}
-			accentHue={accentOf(s)}
-			stacked={subGroups.length > 0}
-			pendingCount={pending(s.id)}
-			unreadCount={openSession?.id === s.id ? 0 : (s.unread_count ?? 0)}
-			onopen={(x) => (openSession = x)}
-			swipeable
-			swipeLabel={m.sessions_archive()}
-			onSwipe={swipeArchive}
-			onTogglePin={togglePin}
-			subagentCost={costRollup(s, subGroups)}
-			subagentToggles={subGroups.map((g) => ({
-				key: g.key,
-				count: g.agents.length,
-				running: g.running,
-				open: false,
-				label: g.label,
-				ontoggle: () => {}
-			}))}
-			{allLabels}
-			onCreateLabel={createLabel}
-			onAttachLabel={attachLabel}
-			onDetachLabel={detachLabel}
-			onUpdateLabel={updateLabel}
-			onDeleteLabel={deleteLabel}
-		/>
-	{/if}
-{/snippet}
-
 {#snippet loadMore()}
 	{#if pageError}
 		<Callout tone="danger">{m.sessions_search_failed({ error: pageError })}</Callout>
@@ -973,14 +919,6 @@
 			<div class="placeholder"><Text tone="muted">{m.sessions_search_no_match({ query: serverQuery })}{showArchived ? '.' : ' ' + m.sessions_search_live_only_hint()}</Text></div>
 		{:else}
 			{@render sectionsWrap(searchSections)}
-		{/if}
-	{:else if kanban}
-		{#if sessions.isLoading}
-			<div class="placeholder"><span class="spin"></span></div>
-		{:else}
-			<div class="bleed">
-				<KanbanBoard columns={list.kanbanColumns} card={kanbanCard} />
-			</div>
 		{/if}
 	{:else}
 		{@render sectionsWrap(liveSections)}
@@ -1267,14 +1205,14 @@
 		position: relative;
 	}
 	.agent-children {
-		margin-left: min(calc(var(--agent-depth) * var(--sp-4)), 5rem);
+		margin-left: min(calc(var(--agent-depth) * var(--sp-2)), 2.5rem);
 		display: flex;
 		flex-direction: column;
 		gap: var(--sp-1);
 	}
 	@media (max-width: 639px) {
 		.agent-children {
-			margin-left: min(calc(var(--agent-depth) * var(--sp-2)), 2.5rem);
+			margin-left: min(calc(var(--agent-depth) * var(--sp-1)), 1.25rem);
 		}
 	}
 	.loadmore {
@@ -1292,20 +1230,18 @@
 	.liveness.online {
 		color: var(--ok);
 	}
-	/* 3-up detailed cards at a uniform height; the container query steps the
-	   columns down before a card gets cramped enough to degrade its footer. */
+	/* Detailed cards auto-fill the strip: never narrower than a compact card,
+	   capped so a wide window packs more columns instead of stretching them,
+	   and each row takes its tallest card's natural height. */
 	.card-grid {
 		display: grid;
-		grid-template-columns: repeat(3, minmax(0, 1fr));
-		grid-auto-rows: 250px;
+		grid-template-columns: repeat(auto-fill, minmax(min(100%, 20rem), 26.75rem));
+		justify-content: start;
+		align-items: stretch;
 		gap: var(--sp-3);
 	}
-	@container (max-width: 60rem) {
-		.card-grid {
-			grid-template-columns: repeat(2, minmax(0, 1fr));
-		}
-	}
-	@container (max-width: 36rem) {
+	/* One column takes the whole strip: a capped track leaves a gutter on phones. */
+	@container (max-width: 40rem) {
 		.card-grid {
 			grid-template-columns: minmax(0, 1fr);
 		}

@@ -68,6 +68,7 @@ vi.mock('$lib/queries', () => {
 
 vi.mock('$lib/settings.svelte', () => ({
 	settings: {
+		state: { display: { archiveShortcut: true } },
 		lastDirFor: () => null,
 		lastEntryFor: () => lastEntry,
 		recallSpawn: () => null,
@@ -121,6 +122,12 @@ const button = (text: string | RegExp) => {
 	return b;
 };
 const spawnButton = () => button(/^Spawn/);
+// The button's text minus the Kbd chord hint that follows the label.
+const mode = (v: string) => {
+	const el = document.querySelector<HTMLButtonElement>(`button[data-mode="${v}"]`);
+	if (!el) throw new Error(`permission mode ${v} not found`);
+	return el;
+};
 const radio = (id: string) => {
 	const el = document.querySelector<HTMLInputElement>(`#sp-profile-${id}`);
 	if (!el) throw new Error(`profile radio ${id} not found`);
@@ -139,7 +146,6 @@ describe('SpawnModal profiles', () => {
 		await open();
 		expect(radio('p1').checked).toBe(true);
 		expect(radio('p2').checked).toBe(false);
-		expect(spawnButton().textContent?.trim()).toBe('Spawn · Orchestrator');
 		expect(document.body.textContent).toContain('Claude Code · 🐼 personal · Fable · medium · Yolo');
 	});
 
@@ -165,7 +171,6 @@ describe('SpawnModal profiles', () => {
 		lastEntry = { profile_id: 'p2' };
 		await open();
 		expect(radio('p2').checked).toBe(true);
-		expect(spawnButton().textContent?.trim()).toBe('Spawn · Codex quick');
 		radio('p1').click();
 		await tick();
 		radio('p2').click();
@@ -180,16 +185,29 @@ describe('SpawnModal profiles', () => {
 		});
 	});
 
+	it('with no profile it renders the bare kit and settles (no effect loop)', async () => {
+		profileList = [];
+		await open();
+		await tick(120);
+		// An unguarded mirror of `oneOff` re-entered until Svelte threw
+		// effect_update_depth_exceeded and the tab died.
+		expect(mode('ask')).toBeTruthy();
+		expect(document.querySelector('select[id^="sp-kit-account"]')).not.toBeNull();
+		// The kit is editable and its writes land on the one-off spec.
+		mode('yolo').click();
+		await tick();
+		expect(mode('yolo').getAttribute('aria-checked')).toBe('true');
+	});
+
 	it('"Use once" adjusts this run only and marks the Spawn button', async () => {
 		await open();
 		button('Adjust profile').click();
 		await tick();
-		button('Ask').click();
+		mode('ask').click();
 		await tick();
 		expect(document.body.textContent).toContain('1 changes');
 		button('Use once').click();
 		await tick();
-		expect(spawnButton().textContent?.trim()).toBe('Spawn · Orchestrator*');
 		expect(update).not.toHaveBeenCalled();
 		const body = await submit();
 		expect(body).toMatchObject({ permission_mode: 'ask', model: 'fable' });
@@ -199,7 +217,7 @@ describe('SpawnModal profiles', () => {
 		await open();
 		button('Adjust profile').click();
 		await tick();
-		button('Auto').click();
+		mode('auto').click();
 		await tick();
 		button('Save to profile').click();
 		await tick();
@@ -209,7 +227,6 @@ describe('SpawnModal profiles', () => {
 			name: 'Orchestrator',
 			spec: { harness: 'claude-code', account_id: 'a1', permission_mode: 'auto' }
 		});
-		expect(spawnButton().textContent?.trim()).toBe('Spawn · Orchestrator');
 	});
 
 	it('spawns inside the profile\'s pool, and unbound for a no-account profile', async () => {
@@ -236,7 +253,7 @@ describe('SpawnModal profiles', () => {
 		await open();
 		button('Adjust profile').click();
 		await tick();
-		const select = document.querySelector<HTMLSelectElement>('select[aria-label="Account"]');
+		const select = document.querySelector<HTMLSelectElement>('select[id^="sp-kit-account"]');
 		if (!select) throw new Error('account select not found');
 		const values = [...select.options].map((o) => o.value);
 		expect(values).toEqual(['', '\x00no-account', '\x00pool:pool1', 'a1']);

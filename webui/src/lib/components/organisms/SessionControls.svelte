@@ -1,15 +1,7 @@
 <script lang="ts">
 	import type { Label } from '@bindings/Label';
 	import type { Section } from '../../../routes/sessions/sessions.logic';
-	import {
-		Button,
-		Field,
-		FilterSearchBar,
-		Heading,
-		Icon,
-		type Schema,
-		Text
-	} from '@dorsk/tsumikit';
+	import { Button, Field, FilterSearchBar, Heading, Icon, type Schema } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 	import { sessionSearchPlaceholder } from '$lib/searchSchema';
 	import SectionFilter from '../molecules/SectionFilter.svelte';
@@ -30,7 +22,6 @@
 		labels,
 		labelFilter = $bindable(),
 		cardView = $bindable(),
-		kanban = $bindable(),
 		colorBy,
 		groupBy,
 		onColorBy,
@@ -49,7 +40,6 @@
 		labels: Label[];
 		labelFilter: Set<string>;
 		cardView: boolean;
-		kanban: boolean;
 		colorBy: Dimension;
 		groupBy: Dimension;
 		onColorBy: (v: Dimension) => void;
@@ -101,7 +91,7 @@
 {/snippet}
 {#snippet foldControls(menu: boolean)}
 	<LabelFilter {menu} {labels} bind:selected={labelFilter} onUpdate={onUpdateLabel} onDelete={onDeleteLabel} />
-	<ViewPicker {menu} bind:cardView bind:kanban />
+	<ViewPicker {menu} bind:cardView />
 	<!-- Stays mounted (disabled) while searching: unmounting it re-wraps the
 	     flex bar mid-type and makes the search field jump. -->
 	{#if selecting}
@@ -129,11 +119,11 @@
 {/snippet}
 
 <div class="bar row">
-	<Heading level={1} class="sess-title">{m.sessions_title()}</Heading>
+	<Heading level={1} size="xl" class="sess-title" style="align-self:center">{m.sessions_title()}</Heading>
 	<!-- FilterSearchBar forwards no id/aria-label, so the name reaches its input
 	     through the Field context; the label itself is screen-reader only. -->
 	<div class="search-box">
-		<Text as="label" for={searchId} class="sr-only">{m.a11y_sessions_search()}</Text>
+		<label for={searchId} class="sr-only">{m.a11y_sessions_search()}</label>
 		<Field for={searchId}>
 			<FilterSearchBar
 				schema={searchSchema}
@@ -281,11 +271,6 @@
 	/* The title is the Heading atom; target it via :global. Pinned to a fixed px
 	   size (it's toolbar chrome, not content) so the UI font scale doesn't push
 	   the action buttons out of frame. */
-	.bar > :global(.sess-title) {
-		font-size: 28px;
-		align-self: center;
-		flex: none;
-	}
 	/* Search fills the gap between the title and the right-hand controls. Our
 	   own wrapper is the flex item and is sized directly, so the FilterSearchBar
 	   root fills it (block, width:100%) and its below-bar chips stack onto their

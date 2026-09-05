@@ -2,10 +2,14 @@
 	import type { AccountProvider } from '$lib/queries';
 	import { compact } from '$lib/format';
 	import UsageBars from '$lib/components/molecules/UsageBars.svelte';
+	import LimitResetButton from '$lib/components/molecules/LimitResetButton.svelte';
 	import AdapterIcon from '$lib/components/atoms/AdapterIcon.svelte';
 	import { Button, IconButton, Text, Timestamp } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 	import { providerLabel } from '$lib/providers';
+	import { useAccountActions } from '$lib/queries';
+	import { errMessage } from '$lib/api';
+	import { toasts } from '$lib/toast.svelte';
 
 	let {
 		provider,
@@ -27,6 +31,20 @@
 
 	const p = $derived(provider);
 	const native = $derived(p.provider === 'anthropic' || p.provider === 'openai');
+	const actions = useAccountActions();
+	let pinning = $state(false);
+	async function togglePin() {
+		if (pinning) return;
+		pinning = true;
+		try {
+			await actions.updateProvider(p.account_id, p.id, { header_pin: !p.header_pin });
+		} catch (e) {
+			toasts.error(errMessage(e));
+		} finally {
+			pinning = false;
+		}
+	}
+
 	const summary = $derived.by(() => {
 		const aliases = Object.keys(p.model_aliases ?? {});
 		if (aliases.length) return aliases.join(', ');
@@ -46,7 +64,18 @@
 			<span class="summary" title={summary}><Text as="span" tone="faint" size="xs">{summary}</Text></span>
 		{/if}
 		<span class="spacer"></span>
+		<LimitResetButton providerId={p.id} enabled={usageEnabled} />
 		{#if canManage}
+			<IconButton
+				icon={p.header_pin ? 'pin-off' : 'pin'}
+				label={p.header_pin ? m.providers_unpin() : m.providers_pin()}
+				title={p.header_pin ? m.providers_unpin() : m.providers_pin()}
+				pressed={p.header_pin}
+				inline
+				size={14}
+				disabled={pinning}
+				onclick={togglePin}
+			/>
 			{#if p.needs_reauth && native}
 				<Button size="sm" variant="primary" onclick={onreauth}>{m.providers_reauthenticate()}</Button>
 			{/if}
@@ -94,6 +123,7 @@
 		padding: var(--sp-3) var(--sp-4);
 		border-right: 1px solid var(--border);
 		min-width: 0;
+		overflow: hidden;
 	}
 	.column:last-child {
 		border-right: 0;
@@ -126,6 +156,7 @@
 	}
 	.stats {
 		display: flex;
+		justify-content: space-between;
 		gap: var(--sp-4);
 		margin-top: auto;
 		padding-top: var(--sp-1);

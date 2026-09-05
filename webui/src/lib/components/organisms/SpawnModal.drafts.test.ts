@@ -37,6 +37,7 @@ vi.mock('$lib/queries', () => {
 
 vi.mock('$lib/settings.svelte', () => ({
 	settings: {
+		state: { display: { archiveShortcut: true } },
 		lastDirFor: () => null,
 		lastEntryFor: () => null,
 		recallSpawn: () => null,

@@ -1,16 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import type { AccountUsageEntry, UsagePace, UsageWindow } from '$lib/queries';
 import {
-	busiest,
+	aggregateBars,
+	barPct,
+	batteryBars,
+	batteryEntries,
 	countdown,
-	gaugeEntries,
-	gaugeGroups,
-	gaugePace,
-	gaugeWindow,
+	headroomTone,
 	paceState,
-	utilizationPct,
-	wallInMs
-} from './header-gauges.logic';
+	wallInMs,
+	worstPace
+} from './usage-battery.logic';
 
 const pace = (ratio: number, wall: string | null = null): UsagePace => ({
 	elapsed_fraction: 0.5,
@@ -81,61 +81,66 @@ describe('countdown', () => {
 	});
 });
 
-describe('gaugePace', () => {
-	it('flames when the projected wall lands before the reset', () => {
-		expect(gaugePace(win('session', 80, pace(2, '2026-01-01T03:00:00Z')), now)).toBe('flame');
-	});
-	it('leafs under half the sustainable pace, and is silent on pace', () => {
-		expect(gaugePace(win('session', 5, pace(0.4)), now)).toBe('leaf');
-		expect(gaugePace(win('session', 40, pace(0.5)), now)).toBeNull();
-		expect(gaugePace(win('session', 60, pace(1.4)), now)).toBeNull();
-		expect(gaugePace(win('session', 60), now)).toBeNull();
-		expect(gaugePace(null, now)).toBeNull();
+describe('headroomTone', () => {
+	it('greens above 50% headroom, ambers to 20%, then reds', () => {
+		expect(headroomTone(10)).toBe('ok');
+		expect(headroomTone(60)).toBe('warn');
+		expect(headroomTone(90)).toBe('danger');
+		expect(headroomTone(null)).toBe('unknown');
+		expect(headroomTone(Number.NaN)).toBe('unknown');
 	});
 });
 
-describe('gaugeWindow / utilizationPct', () => {
-	it('prefers the 5h session window', () => {
-		const w = gaugeWindow([win('weekly_all', 90), win('session', 12)]);
-		expect(w?.key).toBe('session');
-		expect(utilizationPct(w)).toBe(12);
+describe('batteryBars / barPct', () => {
+	it('picks the 5h and weekly windows by key', () => {
+		const bars = batteryBars([win('weekly_all', 90), win('session', 12)]);
+		expect(bars.fiveHour?.key).toBe('session');
+		expect(bars.weekly?.key).toBe('weekly_all');
 	});
-	it('falls back to the fullest window when there is no 5h one', () => {
-		expect(gaugeWindow([win('weekly_all', 33.6), win('weekly_model:x', 70)])?.key).toBe(
-			'weekly_model:x'
-		);
-		expect(gaugeWindow([])).toBeNull();
+	it('leaves a missing window null', () => {
+		const bars = batteryBars([win('weekly_model:x', 70)]);
+		expect(bars.fiveHour).toBeNull();
+		expect(bars.weekly).toBeNull();
 	});
 	it('rounds and clamps the percentage', () => {
-		expect(utilizationPct(win('session', 33.6))).toBe(34);
-		expect(utilizationPct(win('session', 120))).toBe(100);
-		expect(utilizationPct(win('session', Number.NaN))).toBeNull();
-		expect(utilizationPct(null)).toBeNull();
+		expect(barPct(win('session', 33.6))).toBe(34);
+		expect(barPct(win('session', 120))).toBe(100);
+		expect(barPct(win('session', Number.NaN))).toBeNull();
+		expect(barPct(null)).toBeNull();
 	});
 });
 
-describe('gaugeEntries / gaugeGroups / busiest', () => {
+describe('worstPace', () => {
+	it('picks the window burning hardest, ignoring ones without a pace', () => {
+		expect(worstPace([win('session', 10, pace(0.4)), win('weekly_all', 20, pace(1.9))])?.key).toBe(
+			'weekly_all'
+		);
+		expect(worstPace([win('session', 10), null])).toBeNull();
+	});
+});
+
+describe('batteryEntries / aggregateBars', () => {
 	const rows = [
-		entry('p1', 'A', [win('session', 10)]),
+		entry('p1', 'A', [win('session', 10), win('weekly_all', 20)]),
 		entry('p2', 'A', [win('session', 80)]),
 		entry('p3', 'B', []),
 		entry('p4', 'C', [win('session', 95)], false)
 	];
 
 	it('keeps only pinned providers that reported a window', () => {
-		expect(gaugeEntries(rows).map((e) => e.providerId)).toEqual(['p1', 'p2']);
-		expect(gaugeEntries(null)).toEqual([]);
+		expect(batteryEntries(rows).map((e) => e.providerId)).toEqual(['p1', 'p2']);
+		expect(batteryEntries(null)).toEqual([]);
 	});
 
-	it('groups the cells of one account together', () => {
-		const groups = gaugeGroups(gaugeEntries(rows));
-		expect(groups).toHaveLength(1);
-		expect(groups[0].accountName).toBe('A');
-		expect(groups[0].entries.map((e) => e.providerId)).toEqual(['p1', 'p2']);
+	it('aggregates each bar to the fullest window across providers', () => {
+		const agg = aggregateBars(batteryEntries(rows));
+		expect(barPct(agg.fiveHour)).toBe(80);
+		expect(barPct(agg.weekly)).toBe(20);
 	});
 
-	it('picks the most-used provider for the narrow strip', () => {
-		expect(busiest(gaugeEntries(rows))?.providerId).toBe('p2');
-		expect(busiest([])).toBeNull();
+	it('has nothing to aggregate when no provider is pinned', () => {
+		const agg = aggregateBars([]);
+		expect(agg.fiveHour).toBeNull();
+		expect(agg.weekly).toBeNull();
 	});
 });

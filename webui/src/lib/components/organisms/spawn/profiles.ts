@@ -1,7 +1,7 @@
 import type { SessionProfile } from '@bindings/SessionProfile';
 import type { AccountPoolView } from '@bindings/AccountPoolView';
 import type { AccountUsageEntry, OAuthAccount } from '$lib/queries';
-import { gaugeWindow, utilizationPct } from '$lib/components/molecules/header-gauges.logic';
+import { headlinePct } from '$lib/components/molecules/usage-battery.logic';
 import {
 	adapterLabel,
 	isCompatibleProvider,
@@ -50,6 +50,17 @@ type SpecForm = Pick<
 
 const blank = (v: string | null | undefined): string | null => (v?.trim() ? v.trim() : null);
 
+/** An unsaved kit: the harness default, everything else left to the server. */
+export const EMPTY_SPEC: ProfileSpec = {
+	harness: 'claude-code',
+	account_id: null,
+	pool_id: null,
+	no_account: false,
+	model_alias: null,
+	effort: null,
+	permission_mode: null
+};
+
 export function specOf(p: SessionProfile): ProfileSpec {
 	return {
 		harness: p.harness,
@@ -97,7 +108,7 @@ export function accountPick(
 /** The account's busiest window as a percentage, for the account picker hint. */
 export function accountUsedPct(rows: readonly AccountUsageEntry[], accountId: string): number | null {
 	const windows = rows.filter((r) => r.account === accountId).flatMap((r) => r.windows);
-	return utilizationPct(gaugeWindow(windows));
+	return headlinePct(windows);
 }
 
 /** Read the profile knobs out of a form (the seed for the first profile). */

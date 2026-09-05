@@ -6,10 +6,9 @@
 	import ResourceShares from '$lib/components/molecules/ResourceShares.svelte';
 	import ProviderColumn from '$lib/components/organisms/accounts/ProviderColumn.svelte';
 	import { ACCOUNT_DRAG_MIME, exhaustedWindow } from '$lib/components/organisms/accounts/pools.logic';
-	import { accountDrag } from '$lib/components/organisms/accounts/drag.svelte';
-	import { resetIn } from '$lib/components/molecules/cap-bar.logic';
+	import { accountDrag, poolZoneAt } from '$lib/components/organisms/accounts/drag.svelte';
 	import { providerLabel } from '$lib/providers';
-	import { Button, IconButton, Menu, Select, Text, Timestamp, type MenuItem } from '@dorsk/tsumikit';
+	import { Button, Icon, IconButton, Menu, Select, Text, Timestamp, type MenuItem } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 
 	let {
@@ -21,6 +20,7 @@
 		canAddProvider = false,
 		canShare = false,
 		showOwner = false,
+		compact = false,
 		redirects = [],
 		redirectTargets = [],
 		onedit,
@@ -45,6 +45,8 @@
 		canAddProvider?: boolean;
 		canShare?: boolean;
 		showOwner?: boolean;
+		/** Read-only gauge view (the stats dock): no drag, redirects, menu, sharing or per-provider management. */
+		compact?: boolean;
 		redirects?: { id: string; family: string; targetName: string; until: string | null }[];
 		redirectTargets?: { id: string; name: string; families: string[] }[];
 		onedit?: () => void;
@@ -62,15 +64,13 @@
 
 	const usage = useAllAccountsUsage(() => enabled);
 	const exhausted = $derived(exhaustedWindow(usage.data, a.id));
-	const exhaustedText = $derived.by(() => {
-		if (!exhausted) return null;
-		const time = resetIn(exhausted.window.resets_at, Date.now());
-		const label = `${providerLabel(exhausted.provider)} ${exhausted.window.label}`;
-		return time
-			? m.accounts_exhausted_resets({ window: label, time })
-			: m.accounts_exhausted({ window: label });
-	});
-
+	const exhaustedLabel = $derived(
+		exhausted
+			? m.accounts_exhausted({
+					window: `${providerLabel(exhausted.provider)} ${exhausted.window.label}`
+				})
+			: null
+	);
 	const shares = useResourceShares(
 		() => 'account',
 		() => a.id,
@@ -88,15 +88,6 @@
 			.join(' · ')
 	);
 
-	const menu = $derived<MenuItem[]>([
-		{ label: m.common_edit(), icon: 'edit', onselect: () => onedit?.() },
-		...pools
-			.filter((p) => p.id !== pool?.id)
-			.map((p) => ({ label: m.pools_move_to({ name: p.name }), onselect: () => onmovepool?.(p) })),
-		...(pool ? [{ label: m.pools_leave(), onselect: () => onmovepool?.(null) }] : []),
-		{ label: m.common_delete(), icon: 'trash', danger: true, onselect: () => onremove?.() }
-	]);
-
 	function dragStart(e: DragEvent) {
 		if (!e.dataTransfer) return;
 		e.dataTransfer.setData(ACCOUNT_DRAG_MIME, a.id);
@@ -105,6 +96,57 @@
 	}
 	function dragEnd() {
 		accountDrag.accountId = '';
+	}
+	// Touch / pen: no HTML5 drag. A short hold on the handle arms the drag (a
+	// quick swipe still scrolls), then the finger carries the card and drops it
+	// on whichever pool zone is under it on release.
+	const HOLD_MS = 120;
+	const SLOP_PX = 8;
+	let touchDragging = $state(false);
+	let holdTimer: ReturnType<typeof setTimeout> | undefined;
+	let origin = { x: 0, y: 0 };
+	function endTouchDrag() {
+		clearTimeout(holdTimer);
+		holdTimer = undefined;
+		touchDragging = false;
+		accountDrag.accountId = '';
+		accountDrag.overId = '';
+	}
+	function pointerDown(e: PointerEvent) {
+		if (e.pointerType === 'mouse') return;
+		e.preventDefault();
+		try {
+			(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+		} catch {
+			/* synthetic pointer: nothing to capture */
+		}
+		origin = { x: e.clientX, y: e.clientY };
+		holdTimer = setTimeout(() => {
+			touchDragging = true;
+			accountDrag.accountId = a.id;
+			navigator.vibrate?.(10);
+		}, HOLD_MS);
+	}
+	function pointerMove(e: PointerEvent) {
+		if (touchDragging) {
+			accountDrag.overId = poolZoneAt(e.clientX, e.clientY);
+			return;
+		}
+		if (holdTimer && Math.hypot(e.clientX - origin.x, e.clientY - origin.y) > SLOP_PX) {
+			clearTimeout(holdTimer);
+			holdTimer = undefined;
+		}
+	}
+	function pointerUp(e: PointerEvent) {
+		const was = touchDragging;
+		const target = was ? poolZoneAt(e.clientX, e.clientY) : '';
+		endTouchDrag();
+		if (!was) return;
+		const to = pools.find((p) => p.id === target);
+		if (to && to.id !== pool?.id) onmovepool?.(to);
+	}
+	function pointerCancel() {
+		endTouchDrag();
 	}
 
 	let redirectOpen = $state(false);
@@ -122,6 +164,27 @@
 		return t ? availableFamilies(t) : [];
 	});
 	let redirectFamilies = $derived<string[]>(targetFamilies);
+
+	const menu = $derived<MenuItem[]>([
+		{ label: m.common_edit(), icon: 'edit', onselect: () => onedit?.() },
+		...(canAddProvider
+			? [{ label: m.accounts_add_provider(), icon: 'plus' as const, onselect: () => onaddprovider?.() }]
+			: []),
+		...(onsetredirect && openTargets.length > 0
+			? [
+					{
+						label: m.accounts_redirect_button(),
+						icon: 'arrow-right' as const,
+						onselect: () => (redirectOpen = !redirectOpen)
+					}
+				]
+			: []),
+		...pools
+			.filter((p) => p.id !== pool?.id)
+			.map((p) => ({ label: m.pools_move_to({ name: p.name }), icon: 'life-buoy' as const, onselect: () => onmovepool?.(p) })),
+		...(pool ? [{ label: m.pools_leave(), onselect: () => onmovepool?.(null) }] : []),
+		{ label: m.common_delete(), icon: 'trash', danger: true, onselect: () => onremove?.() }
+	]);
 
 	function toggleFamily(f: string) {
 		redirectFamilies = redirectFamilies.includes(f)
@@ -142,9 +205,9 @@
 	}
 </script>
 
-<article class="acct" id={a.id}>
+<article class="acct" class:lifted={touchDragging} id={a.id}>
 	<header class="head">
-		{#if onmovepool && !managed}
+		{#if onmovepool && !managed && !compact}
 			<span
 				class="handle"
 				draggable="true"
@@ -152,7 +215,11 @@
 				aria-label={m.pools_drag_handle()}
 				title={m.pools_drag_handle()}
 				ondragstart={dragStart}
-				ondragend={dragEnd}>⋮⋮</span
+				ondragend={dragEnd}
+				onpointerdown={pointerDown}
+				onpointermove={pointerMove}
+				onpointerup={pointerUp}
+				onpointercancel={pointerCancel}>⋮⋮</span
 			>
 		{/if}
 		<AccountAvatar emoji={a.emoji} name={a.name} id={a.id} size={28} decorative />
@@ -162,15 +229,21 @@
 				<Text as="span" tone="faint" size="xs">{meta}</Text>
 			{/if}
 		</div>
-		{#if exhaustedText}
-			<span class="exhausted"><span class="dot"></span><Text as="span" size="xs" tone="danger">{exhaustedText}</Text></span>
+		{#if exhausted && exhaustedLabel}
+			<span class="exhausted">
+				<span class="dot"></span>
+				<Text as="span" size="xs" tone="danger">
+					{exhaustedLabel}{#if exhausted.window.resets_at}
+						· <Timestamp value={exhausted.window.resets_at} mode="relative" tone="inherit" />{/if}
+				</Text>
+			</span>
 		{/if}
-		{#each redirects as r (r.id)}
+		{#each compact ? [] : redirects as r (r.id)}
 			<span class="redirect-badge">
 				<Text as="span" tone="faint" size="xs">{r.family}</Text>
 				<Text as="span" size="sm">{m.accounts_redirect_to({ target: r.targetName })}</Text>
 				{#if r.until}
-					<Text as="span" tone="faint" size="xs">{m.accounts_redirect_until({ time: r.until })}</Text>
+					<Text as="span" tone="faint" size="xs">{m.accounts_until()} <Timestamp value={r.until} mode="relative" tone="inherit" /></Text>
 				{/if}
 				{#if onclearredirect}
 					<IconButton icon="x" label={m.common_delete()} inline size={12} onclick={() => onclearredirect(r.id)} />
@@ -178,22 +251,16 @@
 			</span>
 		{/each}
 		<span class="spacer"></span>
-		{#if managed}
+		{#if compact}
+			<!-- gauges only -->
+		{:else if managed}
 			<Text as="span" tone="faint" size="xs">{m.accounts_managed_readonly()}</Text>
 		{:else}
-			{#if onsetredirect && openTargets.length > 0}
-				<Button size="sm" variant="ghost" onclick={() => (redirectOpen = !redirectOpen)}>
-					{m.accounts_redirect_button()}
-				</Button>
-			{/if}
-			{#if canAddProvider}
-				<Button size="sm" variant="ghost" onclick={onaddprovider}>{m.accounts_add_provider()}</Button>
-			{/if}
-			<Menu label={m.accounts_more()} items={menu} bare placement="bottom-end">
-				{#snippet trigger()}
-					<IconButton icon="more" label={m.accounts_more()} variant="ghost" box="sm" />
-				{/snippet}
-			</Menu>
+			<span class="actions">
+				<Menu label={m.accounts_more()} items={menu} placement="bottom-end" box="sm">
+					{#snippet trigger()}<Icon name="more" size={16} />{/snippet}
+				</Menu>
+			</span>
 		{/if}
 	</header>
 
@@ -235,8 +302,8 @@
 			<ProviderColumn
 				provider={p}
 				usageEnabled={enabled}
-				canManage={!p.managed}
-				canRemove={!p.managed}
+				canManage={!p.managed && !compact}
+				canRemove={!p.managed && !compact}
 				onedit={() => oneditprovider?.(p)}
 				onreauth={() => onreauthprovider?.(p)}
 				onremove={() => onremoveprovider?.(p)}
@@ -246,6 +313,7 @@
 		{/each}
 	</div>
 
+	{#if !compact}
 	<footer class="foot">
 		{#if canShare}
 			<Text as="span" size="xs" tone="muted">
@@ -255,7 +323,7 @@
 					{m.accounts_shared_none()}
 				{/if}
 			</Text>
-			<Button variant="link" size="sm" onclick={() => (sharingOpen = !sharingOpen)}>
+			<Button variant="link" size="sm" style="font-size: var(--fs-xs)" onclick={() => (sharingOpen = !sharingOpen)}>
 				{m.accounts_manage_sharing()}
 			</Button>
 		{/if}
@@ -264,6 +332,7 @@
 			{m.accounts_created()} <Timestamp value={a.created_at} mode="short-iso" mono tone="inherit" />
 		</Text>
 	</footer>
+	{/if}
 	{#if canShare && sharingOpen}
 		<div class="sharing">
 			<ResourceShares resourceType="account" id={a.id} noun={m.accounts_share_noun()} {enabled} />
@@ -282,6 +351,11 @@
 		background: var(--bg-elevated);
 		overflow: hidden;
 	}
+	.acct.lifted {
+		box-shadow: var(--shadow-lg);
+		outline: 2px solid var(--accent);
+		opacity: 0.85;
+	}
 	.head {
 		display: flex;
 		flex-wrap: wrap;
@@ -292,10 +366,18 @@
 		min-width: 0;
 	}
 	.handle {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		min-width: var(--touch-target, 2.75rem);
+		min-height: var(--touch-target, 2.75rem);
+		margin: calc(-1 * var(--sp-2)) 0 calc(-1 * var(--sp-2)) calc(-1 * var(--sp-2));
 		color: var(--text-faint);
 		letter-spacing: -0.15em;
 		cursor: grab;
 		user-select: none;
+		/* The browser would claim a pan and cancel the pointer mid-drag. */
+		touch-action: none;
 	}
 	.handle:active {
 		cursor: grabbing;
@@ -367,12 +449,17 @@
 		padding: var(--sp-3) var(--sp-4);
 		border-top: 1px solid var(--border);
 	}
-	@container acct-row (max-width: 48rem) {
+	@container acct-row (max-width: 66rem) {
 		.columns {
 			grid-template-columns: repeat(2, minmax(0, 1fr));
 		}
 	}
-	@container acct-row (max-width: 30rem) {
+	.actions {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--sp-2);
+	}
+	@container acct-row (max-width: 34rem) {
 		.columns {
 			grid-template-columns: minmax(0, 1fr);
 		}

@@ -33,6 +33,7 @@
 	const dragged = $derived(accounts.find((a) => a.id === accountDrag.accountId)?.name ?? '');
 </script>
 
+<div class="zone" class:over={accountDrag.overId === pool.id} data-pool-id={pool.id}>
 <Fieldset
 	tone="accent"
 	dashed
@@ -58,8 +59,17 @@
 		{/if}
 	</div>
 </Fieldset>
+</div>
 
 <style>
+	.zone {
+		border-radius: var(--r-lg);
+	}
+	/* Touch drag hover: the kit Fieldset only reacts to HTML5 dragover. */
+	.zone.over {
+		outline: 2px solid var(--accent);
+		outline-offset: 2px;
+	}
 	.members {
 		display: flex;
 		flex-direction: column;

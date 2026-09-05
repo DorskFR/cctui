@@ -138,6 +138,14 @@
 			display: inline-flex;
 		}
 	}
+	@container sess-row (max-width: 40rem) {
+		.full {
+			display: none;
+		}
+		.dots {
+			display: inline-flex;
+		}
+	}
 	/* `tag` trigger: a small ghost icon-button reading clearly as "labels". */
 	.add :global(.tag-trigger) {
 		min-width: 1.5rem;

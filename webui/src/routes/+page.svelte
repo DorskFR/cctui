@@ -6,7 +6,8 @@
 	import WindowsTable from '$lib/components/molecules/WindowsTable.svelte';
 	import UsageAnalyticsSection from '$lib/components/organisms/overview/UsageAnalyticsSection.svelte';
 	import { RANGES } from '$lib/components/organisms/overview/usage-analytics';
-	import { Card, Heading, SegmentedControl, Stack, Text } from '@dorsk/tsumikit';
+	import { Card, SegmentedControl, Stack } from '@dorsk/tsumikit';
+	import PageHead from '$lib/components/molecules/PageHead.svelte';
 	import { buildMetricTiles, machinesOnline, type MetricKey } from './home.logic';
 
 	const stats = useSessionStats();
@@ -18,12 +19,6 @@
 	const rangeOptions = RANGES.map((r) => ({ value: r.key, label: r.key }));
 
 	const machineRows = $derived(machines.data ?? []);
-	const scope = $derived(
-		m.home_usage_scope({
-			machines: machinesOnline(machineRows).total,
-			accounts: (accounts.data ?? []).length
-		})
-	);
 
 	const num = (n: number) => n.toLocaleString(getLocale());
 	const tiles = $derived(buildMetricTiles(stats.data, machineRows));
@@ -38,17 +33,9 @@
 </script>
 
 <Stack gap="var(--sp-5)">
-	<div class="head">
-		<Heading level={1} size="xl">{m.home_usage_page_title()}</Heading>
-		<Text size="xs" tone="muted">{scope}</Text>
-		<div class="spacer"></div>
-		<SegmentedControl
-			bind:value={rangeKey}
-			options={rangeOptions}
-			size="sm"
-			label={m.home_usage_range_label()}
-		/>
-	</div>
+	<PageHead title={m.home_usage_page_title()}>
+		<SegmentedControl bind:value={rangeKey} options={rangeOptions} label={m.home_usage_range_label()} />
+	</PageHead>
 
 	<div class="tiles">
 		{#each tiles as t (t.key)}
@@ -67,15 +54,6 @@
 </Stack>
 
 <style>
-	.head {
-		display: flex;
-		align-items: baseline;
-		gap: var(--sp-3);
-		flex-wrap: wrap;
-	}
-	.spacer {
-		flex: 1;
-	}
 	.tiles {
 		display: grid;
 		grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));

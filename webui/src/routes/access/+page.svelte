@@ -27,7 +27,8 @@
 						created_at: '',
 						revoked_at: null,
 						disabled_at: null,
-						can_dispatch: true
+						can_dispatch: true,
+						last_seen_at: null
 					}
 				]
 			: []

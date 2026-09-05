@@ -1,4 +1,7 @@
 <script lang="ts">
+	// The one route navigation: icon over label with the Sessions badge. At the
+	// bottom it is the fixed phone bar; in the header it is the same items laid
+	// out the same way. Which one shows is the nav position setting.
 	import { page } from '$app/state';
 	import NavLink from '$lib/components/atoms/NavLink.svelte';
 	import { useSessions } from '$lib/queries';
@@ -6,18 +9,25 @@
 	import { isNavActive, navItems } from '$lib/navItems';
 	import { m } from '$lib/paraglide/messages';
 
-	// Aggregate unread count across the live list, surfaced as a red
-	// pill on the Sessions item. The list is already fetched app-wide (Header),
-	// so this shares the query cache — no extra request.
-	const sessions = useSessions(() => false);
-	const totalUnread = $derived(
-		(sessions.data?.sessions ?? []).reduce((n, s) => n + (s.unread_count ?? 0), 0)
-	);
+	let { placement = 'bottom' }: { placement?: 'bottom' | 'top' } = $props();
 
+	// Top-level sessions carrying unread activity: the unit the list shows a
+	// badge on. Children fold under their parent and are not counted twice.
+	const sessions = useSessions(() => false);
+	const unread = $derived(
+		(sessions.data?.sessions ?? []).filter((s) => s.parent_id === null && (s.unread_count ?? 0) > 0)
+			.length
+	);
 	const items = $derived(navItems());
 </script>
 
-<nav class="nav" class:top={settings.nav === 'top'} aria-label={m.nav_main_label()}>
+<nav
+	class="nav"
+	class:bar={placement === 'bottom'}
+	class:inline={placement === 'top'}
+	class:hide-wide={placement === 'bottom' && settings.nav === 'top'}
+	aria-label={m.nav_main_label()}
+>
 	<div class="nav-inner">
 		{#each items as it (it.href)}
 			{@const active = isNavActive(it.href, page.url.pathname)}
@@ -27,8 +37,8 @@
 				aria-current={active ? 'page' : undefined}
 			>
 				<span class="ico"
-					>{it.icon}{#if it.href === '/sessions' && totalUnread > 0}<span
-							class="unread-badge">{totalUnread > 99 ? '99+' : totalUnread}</span
+					>{it.icon}{#if it.href === '/sessions' && unread > 0}<span class="unread-badge"
+							>{unread > 99 ? '99+' : unread}</span
 						>{/if}</span
 				>
 				<span class="lbl">{it.label}</span>
@@ -38,7 +48,7 @@
 </nav>
 
 <style>
-	.nav {
+	.nav.bar {
 		position: fixed;
 		bottom: 0;
 		left: 0;
@@ -50,7 +60,7 @@
 		padding-bottom: var(--safe-bottom);
 	}
 	@media (min-width: 48rem) {
-		.nav.top {
+		.nav.hide-wide {
 			display: none;
 		}
 	}
@@ -59,6 +69,15 @@
 		max-width: var(--content-wide);
 		margin-inline: auto;
 		display: flex;
+	}
+	.nav.inline {
+		align-self: stretch;
+		width: 100%;
+		min-width: 0;
+	}
+	/* Only the height differs: the header owns it. Everything else is the bar's. */
+	.nav.inline .nav-inner {
+		height: 100%;
 	}
 	/* nav-btn is the class on the NavLink atom, so reach it via :global. */
 	.nav-inner :global(.nav-btn) {
@@ -69,9 +88,8 @@
 		justify-content: center;
 		gap: 2px;
 		color: var(--text-faint);
-		/* Footer is fixed chrome (like the px-pinned header) — it deliberately does
-		   NOT respond to the font-scale picker, so use fixed sizes for both the
-		   label and the glyph so they scale together / not at all. */
+		/* Fixed chrome (like the px-pinned header): deliberately not on the
+		   font scale, so label and glyph never drift apart. */
 		font-size: 0.6875rem;
 		font-weight: var(--fw-medium);
 	}

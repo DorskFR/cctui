@@ -2,8 +2,9 @@
 	// Chips under a user bubble for the files that message uploaded: a
 	// `paste-N.txt` mask expands inline, an image shows as a thumbnail, anything
 	// else opens through the remote-file viewer (overlay or download).
-	import { Button, IconButton, Text } from '@dorsk/tsumikit';
-	import { fmtSize } from '$lib/attachments';
+	import { IconButton } from '@dorsk/tsumikit';
+	import FileChip from '$lib/components/molecules/FileChip.svelte';
+	import { attachmentStore } from '$lib/attachmentStore';
 	import { copyText } from '$lib/clipboard';
 	import { openLocalFile } from '$lib/fileviewer';
 	import { m } from '$lib/paraglide/messages';
@@ -12,7 +13,11 @@
 	import { toasts } from '$lib/toast.svelte';
 	import { isPasteName, type UserUploadRefs } from './lines';
 
-	let { refs, ts }: { refs: UserUploadRefs; ts: number } = $props();
+	let {
+		refs,
+		ts,
+		archived = false
+	}: { refs: UserUploadRefs; ts: number; archived?: boolean } = $props();
 
 	const query = useSessionAttachments(
 		() => refs.sessionId ?? '',
@@ -34,11 +39,17 @@
 
 	async function loadText(a: SessionAttachment): Promise<string | null> {
 		if (texts[a.id] !== undefined) return texts[a.id];
+		const cached = await attachmentStore.cachedText(a.session_id, a.hash);
+		if (cached !== null) {
+			texts[a.id] = cached;
+			return cached;
+		}
 		try {
 			const res = await fetch(url(a), { credentials: 'same-origin' });
 			if (!res.ok) throw new Error(String(res.status));
 			const text = await res.text();
 			texts[a.id] = text;
+			void attachmentStore.cacheText(a.session_id, a.hash, text);
 			return text;
 		} catch {
 			toasts.error(m.conversation_attachment_load_failed({ name: a.name }));
@@ -65,32 +76,28 @@
 			{#if isPaste(a)}
 				<div class="paste">
 					<div class="paste-head">
-						<Button
-							chip
-							size="sm"
-							variant="ghost"
-							icon
-							iconInline
-							aria-expanded={!!expanded[a.id]}
+						<FileChip
+							name={a.name}
+							size={a.size}
+							detail={texts[a.id] !== undefined
+								? m.conversation_attachment_lines({ lines: lineCount(texts[a.id]) })
+								: null}
+							expanded={!!expanded[a.id]}
+							unavailable={archived}
 							title={expanded[a.id]
 								? m.conversation_attachment_collapse({ name: a.name })
 								: m.conversation_attachment_expand({ name: a.name })}
 							onclick={() => toggle(a)}
-						>
-							<span class="name">{a.name}</span>
-							<Text size="xs" tone="faint" as="span">
-								{texts[a.id] !== undefined
-									? m.conversation_attachment_lines({ lines: lineCount(texts[a.id]) })
-									: fmtSize(a.size)}
-							</Text>
-						</Button>
-						<IconButton
-							inline
-							icon="copy"
-							label={m.conversation_attachment_copy({ name: a.name })}
-							title={m.conversation_attachment_copy({ name: a.name })}
-							onclick={() => copy(a)}
 						/>
+						{#if !archived}
+							<IconButton
+								inline
+								icon="copy"
+								label={m.conversation_attachment_copy({ name: a.name })}
+								title={m.conversation_attachment_copy({ name: a.name })}
+								onclick={() => copy(a)}
+							/>
+						{/if}
 					</div>
 					{#if expanded[a.id] && texts[a.id] !== undefined}
 						<pre class="paste-body mono">{texts[a.id]}</pre>
@@ -106,16 +113,13 @@
 					<img src={url(a)} alt={a.name} loading="lazy" />
 				</button>
 			{:else}
-				<Button
-					chip
-					size="sm"
-					variant="ghost"
+				<FileChip
+					name={a.name}
+					size={a.size}
+					unavailable={archived}
 					title={m.conversation_attachment_open({ name: a.name })}
 					onclick={() => openLocalFile(url(a), a.name)}
-				>
-					<span class="name">{a.name}</span>
-					<Text size="xs" tone="faint" as="span">{fmtSize(a.size)}</Text>
-				</Button>
+				/>
 			{/if}
 		{/each}
 	</div>
@@ -139,11 +143,6 @@
 		display: inline-flex;
 		align-items: center;
 		gap: var(--sp-1);
-	}
-	.name {
-		font-family: var(--font-mono);
-		font-size: var(--fs-xs);
-		margin-right: var(--sp-1);
 	}
 	.paste-body {
 		margin: var(--sp-1) 0 0;

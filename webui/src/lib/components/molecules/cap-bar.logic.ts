@@ -1,5 +1,5 @@
 import type { SoftLimitConfig } from '$lib/queries';
-import { countdown } from './header-gauges.logic';
+import { countdown } from './usage-battery.logic';
 
 /** A cap parked at 100% is no cap: the stored config drops the window's `cap_pct`. */
 export function capFromBar(cap: number): number | null {
@@ -21,6 +21,17 @@ export function resetIn(resets: string | null | undefined, now: number): string 
 	const at = resets ? Date.parse(resets) : Number.NaN;
 	if (!Number.isFinite(at) || at <= now) return null;
 	return countdown(at - now);
+}
+
+/** Largest unit only: the readout column holds "100% · resets 5d". */
+export function resetInShort(resets: string | null | undefined, now: number): string | null {
+	const at = resets ? Date.parse(resets) : Number.NaN;
+	if (!Number.isFinite(at) || at <= now) return null;
+	const mins = Math.max(1, Math.round((at - now) / 60_000));
+	if (mins < 60) return `${mins}m`;
+	const hours = Math.floor(mins / 60);
+	if (hours < 24) return `${hours}h`;
+	return `${Math.floor(hours / 24)}d`;
 }
 
 export function usdReadout(

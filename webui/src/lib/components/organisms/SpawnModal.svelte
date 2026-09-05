@@ -17,6 +17,7 @@
 	} from '$lib/queries';
 	import { ws } from '$lib/ws.svelte';
 	import { toasts } from '$lib/toast.svelte';
+	import { isSubmitChord, submitChordLabel } from '$lib/platform';
 	import {
 		drafts,
 		SPAWN_SLOT,
@@ -46,7 +47,7 @@
 	} from '$lib/spawnMemory';
 	import { appendFileTokens, mergeFiles, removeFileByName, fileCapError } from '$lib/attachments';
 	import { attachmentStore, dropMissingTokens } from '$lib/attachmentStore';
-	import { Button, Callout, Dropzone, Modal, SegmentedControl, resizeHandle } from '@dorsk/tsumikit';
+	import { AutoGrid, Button, Callout, Dropzone, Modal, OptionButton, resizeHandle, Text } from '@dorsk/tsumikit';
 	import { dialogBackdropGuard } from '$lib/dialogBackdropGuard';
 	import MachineFields from './spawn/MachineFields.svelte';
 	import DispatchFields from './spawn/DispatchFields.svelte';
@@ -63,7 +64,6 @@
 	import {
 		applySpec,
 		initialProfile,
-		sameSpec,
 		specFromForm,
 		specOf,
 		uniqueProfileName,
@@ -319,9 +319,6 @@
 	let usageRaw = $state(drafts.get(PROFILE_USES));
 	const selectedProfile = $derived(profiles.find((p) => p.id === selectedProfileId) ?? null);
 	const profileSpec = $derived(oneOff ?? (selectedProfile ? specOf(selectedProfile) : null));
-	const adjusted = $derived(
-		!!oneOff && !!selectedProfile && !sameSpec(oneOff, specOf(selectedProfile))
-	);
 	const effectiveForm = $derived(
 		target === 'machine' && profileSpec ? applySpec(form, profileSpec, allAccounts, allPools) : form
 	);
@@ -725,12 +722,9 @@
 		if (docked) onclose();
 	}
 
-	const spawnLabel = $derived.by(() => {
-		if (target !== 'machine') return m.spawn_action_dispatch();
-		if (!selectedProfile) return m.spawn_action_spawn();
-		const text = m.spawn_action_spawn_profile({ profile: selectedProfile.name });
-		return adjusted ? `${text}*` : text;
-	});
+	const spawnLabel = $derived(
+		`${target !== 'machine' ? m.spawn_action_dispatch() : m.spawn_action_spawn()} (${submitChordLabel()})`
+	);
 </script>
 
 <!-- The form body and the action row are snippets so the Modal and the docked
@@ -739,12 +733,19 @@
 
 {#snippet targetSwitch()}
 	{#if canDispatch}
-		<SegmentedControl
-			size="sm"
-			label={m.spawn_run_on_label()}
-			options={targetOptions}
-			bind:value={() => target as string, (v) => (target = v === 'dispatch' ? 'dispatch' : 'machine')}
-		/>
+		<AutoGrid min="8rem" maxCols={2} gap="var(--sp-2)" role="radiogroup" aria-label={m.spawn_run_on_label()}>
+			{#each targetOptions as o (o.value)}
+				<OptionButton
+					row
+					selected={target === o.value}
+					role="radio"
+					aria-checked={target === o.value}
+					onclick={() => (target = o.value === 'dispatch' ? 'dispatch' : 'machine')}
+				>
+					<Text>{o.label}</Text>
+				</OptionButton>
+			{/each}
+		</AutoGrid>
 	{/if}
 {/snippet}
 
@@ -782,7 +783,6 @@
 	></div>
 		<div class="dock-head">
 			<span>{m.spawn_modal_title()}</span>
-			{@render targetSwitch()}
 		</div>
 		<div class="dock-body">{@render body()}</div>
 		<div class="dock-foot">{@render footer()}</div>
@@ -800,8 +800,17 @@
 		disabled={target !== 'machine'}
 		onfiles={addFiles}
 	>
-		<div class="stack" use:dialogBackdropGuard>
-			{#if !docked && canDispatch}
+		<div
+			class="stack"
+			use:dialogBackdropGuard
+			onkeydown={(e: KeyboardEvent) => {
+				if (isSubmitChord(e) && !busy && valid) {
+					e.preventDefault();
+					void submit();
+				}
+			}}
+		>
+			{#if canDispatch}
 				<div class="switch-row">{@render targetSwitch()}</div>
 			{/if}
 			{#if target === 'dispatch'}
@@ -849,15 +858,24 @@
 			<pre class="spawn-failure-detail">{spawnFailure}</pre>
 		</Callout>
 	{/if}
-	<Button size="sm" onclick={clearForm}>{m.spawn_clear()}</Button>
-	{#if target === 'machine'}
-		<Button size="sm" disabled={busy || !draftValid} onclick={submitDraft}>
-			{m.spawn_draft()}
+	<span class="foot-secondary">
+		<Button onclick={clearForm}>{m.spawn_clear()}</Button>
+		{#if target === 'machine'}
+			<Button disabled={busy || !draftValid} onclick={submitDraft}>
+				{m.spawn_draft()}
+			</Button>
+		{/if}
+	</span>
+	<span class="foot-primary">
+		<Button
+			variant="primary"
+			grow
+			disabled={busy || !valid}
+			onclick={submit}
+		>
+			{#if busy}<span class="spin"></span>{:else}{spawnLabel}{/if}
 		</Button>
-	{/if}
-	<Button size="sm" variant="primary" grow disabled={busy || !valid} onclick={submit}>
-		{#if busy}<span class="spin"></span>{:else}{spawnLabel}{/if}
-	</Button>
+	</span>
 {/snippet}
 
 <style>
@@ -867,8 +885,7 @@
 		gap: var(--sp-3);
 	}
 	.switch-row {
-		display: flex;
-		justify-content: flex-end;
+		display: block;
 	}
 	.spawn-failure-detail {
 		margin: var(--sp-1) 0 0;
@@ -917,6 +934,22 @@
 		left: auto;
 		right: -5px;
 	}
+	/* An always-visible knob in the middle of the edge, like the kit's panel handle. */
+	.grip::before {
+		content: '';
+		position: absolute;
+		top: 50%;
+		left: 3px;
+		width: 4px;
+		height: 2.5rem;
+		margin-top: -1.25rem;
+		border-radius: var(--r-pill);
+		background: var(--border-strong);
+	}
+	.grip:hover::before,
+	.grip.dragging::before {
+		background: var(--accent);
+	}
 	.grip::after {
 		content: '';
 		position: absolute;
@@ -960,8 +993,20 @@
 	.dock-foot {
 		flex: none;
 		display: flex;
+		flex-wrap: wrap;
 		gap: var(--sp-2);
 		padding: var(--sp-2) var(--sp-3);
 		border-top: 1px solid var(--border);
+	}
+	.foot-secondary {
+		display: flex;
+		gap: var(--sp-2);
+		flex: 0 1 auto;
+	}
+	/* The basis is the width below which the primary action would be squeezed:
+	   past it the row wraps and grow makes it span the whole footer. */
+	.foot-primary {
+		display: flex;
+		flex: 1 1 11rem;
 	}
 </style>

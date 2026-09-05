@@ -23,7 +23,6 @@ describe('SessionControls', () => {
 				labels: [],
 				labelFilter: new Set<string>(),
 				cardView: false,
-				kanban: false,
 				colorBy: 'none',
 				groupBy: 'status',
 				onColorBy: () => {},

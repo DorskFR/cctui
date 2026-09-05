@@ -2,8 +2,8 @@ import { browser } from '$app/environment';
 import { api } from './api';
 import { auth } from './auth.svelte';
 import { clampLocale, locale as localeStore, type Locale } from './locale.svelte';
-import { theme, type Mode } from './theme.svelte';
-import { fontScale } from './fontscale.svelte';
+import { theme } from './theme.svelte';
+import { fontScale, nearestLevel } from './fontscale.svelte';
 import { notify } from './notify.svelte';
 import type { SettingsPayload } from '@bindings/SettingsPayload';
 import { clampDockWidth } from './dock';
@@ -146,9 +146,6 @@ export interface DisplaySettings {
 	archiveShortcut: boolean;
 	notifyEnabled: boolean;
 	notifySound: boolean;
-	// Per-provider usage batteries in the header. On by default; off hides the
-	// whole strip (the stats dock still shows the full bars).
-	usageBatteries: boolean;
 	// Where the route navigation lives on a wide screen: tabs inline in the
 	// header, or the bottom bar. Below 48rem the bottom bar is always used.
 	nav: NavPosition;
@@ -269,7 +266,6 @@ const DEFAULTS: SettingsState = {
 		archiveShortcut: true,
 		notifyEnabled: false,
 		notifySound: true,
-		usageBatteries: true,
 		nav: DEFAULT_NAV_POSITION
 	},
 	spawnDock: { enabled: false, side: DEFAULT_SPAWN_DOCK_SIDE },
@@ -512,7 +508,7 @@ class Settings {
 	// singleton AND records the value here, and `load()` replays the blob back
 	// into the singletons via `applyDisplay`.
 	setTheme(id: string) {
-		theme.set(id as Mode);
+		if (theme.has(id)) theme.set(id);
 		this.setDisplay({ theme: id });
 	}
 
@@ -534,8 +530,8 @@ class Settings {
 
 	private applyDisplay() {
 		const d = this.state.display;
-		theme.set(d.theme as Mode);
-		fontScale.setScale(d.fontScale);
+		if (theme.has(d.theme)) theme.set(d.theme);
+		fontScale.set(nearestLevel(d.fontScale));
 		notify.applyPersisted(d.notifyEnabled, d.notifySound);
 	}
 
@@ -650,14 +646,6 @@ class Settings {
 
 	get locale(): Locale | null {
 		return this.state.locale;
-	}
-
-	setUsageBatteries(on: boolean) {
-		this.setDisplay({ usageBatteries: on });
-	}
-
-	get usageBatteries(): boolean {
-		return this.state.display.usageBatteries !== false;
 	}
 
 	setNav(nav: NavPosition) {

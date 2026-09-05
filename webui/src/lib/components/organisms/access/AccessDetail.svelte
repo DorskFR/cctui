@@ -150,11 +150,15 @@
 				<span class="status">
 					<Dot status={statusDot} />
 					<Text size="sm" tone="muted">{statusText}</Text>
+					{#if user.last_seen_at && !user.revoked_at}
+						<Text size="xs" tone="faint">· {m.access_last_seen()}</Text>
+						<Timestamp value={user.last_seen_at} mode="relative" size="xs" tone="faint" />
+					{/if}
 				</span>
 			</div>
 			<div class="meta">
 				<Text size="xs" tone="faint">{m.access_since()}</Text>
-				<Timestamp value={user.created_at} mode="short-iso" size="xs" tone="faint" details={false} />
+				<Timestamp value={user.created_at} mode="short-iso" size="xs" tone="faint" />
 				<Text size="xs" tone="faint">
 					· {m.access_ceiling()}
 					{[...ALL_SCOPES].filter((s) => ceiling.has(s)).join(' · ') || m.access_ceiling_none()}
@@ -237,6 +241,12 @@
 		flex-direction: column;
 		gap: var(--sp-4);
 		padding: var(--sp-1) 0 var(--sp-4) var(--sp-4);
+	}
+	/* Stacked under the breakpoint the pane already spans the page: no inset. */
+	@media (max-width: 47.999rem) {
+		.detail {
+			padding-left: 0;
+		}
 	}
 	.dhead {
 		display: flex;

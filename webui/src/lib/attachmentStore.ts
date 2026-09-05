@@ -12,6 +12,12 @@ export const attachmentKey = (draftKey: string) => `${PREFIX}${draftKey}`;
  *  sweep match a record against the session roster. */
 const COMPOSER_PREFIX = `${PREFIX}cctui_draft_`;
 
+/** Cached bodies of already-sent attachments, keyed by session so the sweep
+ *  can drop them the moment that session is archived. */
+const ATTACH_PREFIX = `${PREFIX}att_`;
+export const attachmentCacheKey = (sessionId: string, hash: string) =>
+	`${ATTACH_PREFIX}${sessionId}:${hash}`;
+
 /** A record untouched for this long is dropped on the next boot. */
 export const MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
 
@@ -20,6 +26,8 @@ export const MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
 interface Record {
 	names: string[];
 	files: File[];
+	/** Body of a cached sent attachment; absent on composer records. */
+	text?: string;
 	/** Last write, epoch ms. Absent on pre-sweep records, which age out at once. */
 	updatedAt?: number;
 }
@@ -107,6 +115,7 @@ export const attachmentStore = {
 			const rec = await read(key);
 			const files = Array.isArray(rec?.files) ? rec.files : [];
 			for (const f of files) if (f instanceof Blob) total += f.size;
+			if (typeof rec?.text === 'string') total += rec.text.length;
 		}
 		return total;
 	},
@@ -124,6 +133,19 @@ export const attachmentStore = {
 			dropped++;
 		}
 		return dropped;
+	},
+	/** A sent attachment's body, cached until its session is archived. */
+	async cachedText(sessionId: string, hash: string): Promise<string | null> {
+		const rec = await read(attachmentCacheKey(sessionId, hash));
+		return typeof rec?.text === 'string' ? rec.text : null;
+	},
+	async cacheText(sessionId: string, hash: string, text: string): Promise<void> {
+		await write(attachmentCacheKey(sessionId, hash), {
+			names: [],
+			files: [],
+			text,
+			updatedAt: Date.now()
+		});
 	},
 	async clearAll(): Promise<void> {
 		if (!hasIdb()) {
@@ -159,6 +181,10 @@ export function isStale(key: string, rec: unknown, ctx: SweepContext): boolean {
 	if (typeof updatedAt !== 'number' || ctx.now - updatedAt > MAX_AGE_MS) return true;
 	if (ctx.live && key.startsWith(COMPOSER_PREFIX)) {
 		return !ctx.live.has(key.slice(COMPOSER_PREFIX.length));
+	}
+	if (ctx.live && key.startsWith(ATTACH_PREFIX)) {
+		const sid = key.slice(ATTACH_PREFIX.length).split(':')[0];
+		return !ctx.live.has(sid);
 	}
 	return false;
 }

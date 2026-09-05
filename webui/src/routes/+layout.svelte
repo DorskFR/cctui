@@ -15,7 +15,7 @@
 	import { goto } from '$app/navigation';
 	import { sessionFailureToast } from '$lib/sessionFailureToast';
 	import Header from '$lib/components/organisms/Header.svelte';
-	import BottomNav from '$lib/components/organisms/BottomNav.svelte';
+	import MainNav from '$lib/components/organisms/MainNav.svelte';
 	import Login from '$lib/components/organisms/Login.svelte';
 	import { installCodeCopy } from '$lib/codecopy';
 	import { installImageLightbox } from '$lib/imagelightbox';
@@ -37,6 +37,12 @@
 			: undefined) ?? 'var(--content-wide)'
 	);
 	const topNav = $derived(settings.nav === 'top');
+
+	// Published on the document element so --bottom-chrome (app.css) resolves
+	// for fixed panels wherever they sit in the tree.
+	$effect(() => {
+		document.documentElement.dataset.nav = topNav ? 'top' : 'bottom';
+	});
 
 	// Docked panels (Settings › New session / Stats panel): the Sessions screen
 	// pins the spawn form and/or the stats panel to an edge, so the content
@@ -126,7 +132,7 @@
 	     `const`s (not just reactive template reads) re-localize live. -->
 	{#key locale.current}
 		{#if auth.isAuthed}
-			<div class="app" class:top-nav={topNav}>
+			<div class="app">
 				<Header />
 				<main
 					class="content"
@@ -144,7 +150,7 @@
 						</Container>
 					{/if}
 				</main>
-				<BottomNav />
+				<MainNav />
 			</div>
 		{:else if !auth.checking}
 			<Login />
@@ -158,11 +164,6 @@
 		min-height: 100dvh;
 		display: flex;
 		flex-direction: column;
-		/* Height of the chrome pinned to the bottom of the viewport. Everything
-		   that has to stop above it (the content padding, the docked panels)
-		   reads this one variable rather than re-deriving --nav-h, so moving the
-		   nav into the header cannot leave a strip of dead space behind. */
-		--bottom-chrome: calc(var(--nav-h) + var(--safe-bottom));
 	}
 	.content {
 		flex: 1;
@@ -185,12 +186,5 @@
 		height: 100dvh;
 		padding-top: calc(var(--header-h) + var(--safe-top));
 		padding-bottom: var(--bottom-chrome);
-	}
-	/* With the tabs in the header the bottom bar is gone on wide screens, so the
-	   only thing left to clear is the safe area. */
-	@media (min-width: 48rem) {
-		.app.top-nav {
-			--bottom-chrome: var(--safe-bottom);
-		}
 	}
 </style>

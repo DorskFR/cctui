@@ -132,13 +132,15 @@
 		font-size: var(--fs-xs);
 		font-weight: var(--fw-medium);
 	}
-	.picker :global(.machine-trigger) {
+	/* .bare in the selector: the kit's `.pop-trigger.bare { padding: 0 }` ties on
+	   specificity and loads later, so it wins without it. */
+	.picker :global(.machine-trigger.bare) {
 		display: inline-flex;
 		align-items: center;
 		gap: var(--sp-1);
 		min-height: 0;
 		min-width: 0;
-		padding: 2px var(--sp-1) 2px var(--sp-2);
+		padding: 3px var(--sp-2);
 		border: 0;
 		border-radius: inherit;
 		background: transparent;

@@ -17,8 +17,8 @@
 
 <div class="menu">
 	<div class="bulk">
-		<Button variant="ghost" onclick={() => onall(true)}>{m.conversation_filter_all()}</Button>
-		<Button variant="ghost" onclick={() => onall(false)}>{m.conversation_filter_none()}</Button>
+		<Button variant="link" size="sm" onclick={() => onall(true)}>{m.conversation_filter_all()}</Button>
+		<Button variant="link" size="sm" onclick={() => onall(false)}>{m.conversation_filter_none()}</Button>
 	</div>
 	{#each MSG_GROUPS as g (g.id)}
 		<div class="group" role="group" aria-label={msgGroupLabel(g.id)}>
@@ -40,8 +40,11 @@
 		flex-direction: column;
 		gap: var(--sp-2);
 		min-width: 13rem;
-		max-height: min(60vh, 28rem);
+		/* Tall enough for the full category list, so the common case has no
+		   scrollbar of its own riding alongside the transcript's. */
+		max-height: min(80vh, 40rem);
 		overflow-y: auto;
+		scrollbar-gutter: stable;
 		padding: var(--sp-1);
 	}
 	.bulk {

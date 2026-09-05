@@ -1,13 +1,12 @@
 <script lang="ts">
 	import type { SoftLimitConfig } from '$lib/queries';
-	import { useAccountActions, useAccountUsage, useLimitReset } from '$lib/queries';
-	import { Button, Modal, Text, Tooltip } from '@dorsk/tsumikit';
+	import { useAccountActions, useAccountUsage } from '$lib/queries';
+	import { Text } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 	import { toasts } from '$lib/toast.svelte';
 	import { errMessage } from '$lib/api';
 	import SoftLimit from '$lib/components/molecules/SoftLimit.svelte';
 	import { mergeUsageWindows } from '$lib/components/molecules/usage-windows';
-	import { limitResetHint, limitResetLabel } from '$lib/components/molecules/limit-reset';
 	import { withCap } from '$lib/components/molecules/cap-bar.logic';
 
 	// Per-provider subscription usage as cap bars: one SoftLimit row per
@@ -56,25 +55,6 @@
 	const rows = $derived(mergeUsageWindows(q.data?.windows ?? [], softLimits));
 	const hasRows = $derived(rows.observed.length > 0 || rows.unobserved.length > 0);
 
-	const reset = $derived(q.data?.limit_reset ?? null);
-	const claim = useLimitReset();
-	let claiming = $state(false);
-	let confirming = $state(false);
-	async function onreset() {
-		if (!reset || claiming) return;
-		confirming = false;
-		claiming = true;
-		try {
-			const r = await claim(id, reset.credit_id);
-			const text = m.sessions_limit_reset_outcome({ outcome: r.outcome });
-			if (r.outcome === 'reset') toasts.ok(text);
-			else toasts.error(text);
-		} catch (e) {
-			toasts.error(errMessage(e));
-		} finally {
-			claiming = false;
-		}
-	}
 </script>
 
 {#if !active}
@@ -113,39 +93,6 @@
 			/>
 			{/each}
 		{/if}
-		{#if reset}
-			<div class="reset">
-				{#if reset.available}
-					<Button size="sm" onclick={() => (confirming = true)} loading={claiming}>
-						{limitResetLabel(reset)}
-					</Button>
-					{#if confirming}
-						<Modal
-							title={m.sessions_limit_reset_confirm_title()}
-							tone="warn"
-							size="sm"
-							onclose={() => (confirming = false)}
-						>
-							{#snippet body()}
-								<Text>{m.sessions_limit_reset_confirm_body({ title: reset.title ?? m.sessions_limit_reset() })}</Text>
-							{/snippet}
-							{#snippet footer()}
-								<Button variant="ghost" onclick={() => (confirming = false)}>{m.sessions_limit_reset_cancel()}</Button>
-								<Button tone="warn" onclick={onreset}>{m.sessions_limit_reset_confirm()}</Button>
-							{/snippet}
-						</Modal>
-					{/if}
-				{:else}
-					<Tooltip text={limitResetHint(reset)}>
-						{#snippet trigger()}
-							<span class="reset-trigger">
-								<Button size="sm" disabled title={limitResetHint(reset)}>{limitResetLabel(reset)}</Button>
-							</span>
-						{/snippet}
-					</Tooltip>
-				{/if}
-			</div>
-		{/if}
 	</div>
 {:else}
 	<Text tone="faint">{m.sessions_no_usage_data()}</Text>
@@ -156,12 +103,5 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--sp-2);
-	}
-	.reset {
-		display: flex;
-		justify-content: flex-end;
-	}
-	.reset-trigger {
-		display: inline-flex;
 	}
 </style>
