@@ -24,6 +24,9 @@ import {
 	matchesUnreadFilter,
 	parseLabelFilter,
 	parseSections,
+	parseHiddenSections,
+	serializeHiddenSections,
+	toggleHiddenSection,
 	pickFreshSession,
 	rangeIds,
 	scriptPrefill,
@@ -85,6 +88,28 @@ describe('unread section', () => {
 	it('is off by default (never in the fallback set)', () => {
 		expect(parseSections(null).has('unread')).toBe(false);
 		expect(parseSections('').has('unread')).toBe(false);
+	});
+
+	describe('hidden sections', () => {
+		it('round-trips a persisted set, dropping empties', () => {
+			expect(parseHiddenSections('live,drafts')).toEqual(new Set(['live', 'drafts']));
+			expect(parseHiddenSections(null)).toEqual(new Set());
+			expect(parseHiddenSections('')).toEqual(new Set());
+			expect(parseHiddenSections(',live,')).toEqual(new Set(['live']));
+			expect(serializeHiddenSections(new Set(['drafts', 'live']))).toBe('drafts,live');
+			expect(serializeHiddenSections(new Set())).toBe('');
+			expect(parseHiddenSections(serializeHiddenSections(new Set(['archived', 'dim:x'])))).toEqual(
+				new Set(['archived', 'dim:x'])
+			);
+		});
+
+		it('toggles one section without mutating the previous set', () => {
+			const before = new Set(['live']);
+			const on = toggleHiddenSection(before, 'drafts');
+			expect(on).toEqual(new Set(['live', 'drafts']));
+			expect(before).toEqual(new Set(['live']));
+			expect(toggleHiddenSection(on, 'live')).toEqual(new Set(['drafts']));
+		});
 	});
 
 	describe('matchesUnreadFilter', () => {

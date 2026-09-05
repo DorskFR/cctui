@@ -53,6 +53,21 @@ export const parseSections = (raw: string | null): Set<Section> => {
 	return set.size ? set : new Set<Section>(['starred', 'live', 'dispatched']);
 };
 
+// ── Per-section collapse ────────────────────────────────
+// Every section header carries an eye/eye-off toggle; a hidden section keeps
+// its header and live count and drops its rows. Keys are free-form (a bucket
+// key, 'drafts', 'archived', 'search:live', `dim:<key>`), so parsing only drops
+// empties.
+export const parseHiddenSections = (raw: string | null): Set<string> =>
+	new Set((raw ?? '').split(',').filter((v) => v.length > 0));
+export const serializeHiddenSections = (hidden: Set<string>): string =>
+	[...hidden].sort().join(',');
+export const toggleHiddenSection = (hidden: Set<string>, key: string): Set<string> => {
+	const next = new Set(hidden);
+	if (!next.delete(key)) next.add(key);
+	return next;
+};
+
 // Search/archive pager page size.
 export const PAGE = 50;
 

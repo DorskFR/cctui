@@ -71,7 +71,6 @@ export class SessionsListController {
 					this.#liveNest.topLevel.filter((s) => groupOf(s) === b.key && this.#keep(s))
 				)
 			}))
-			.filter((g) => g.sessions.length > 0)
 	);
 
 	#liveTopFiltered = $derived.by(() =>
@@ -85,7 +84,9 @@ export class SessionsListController {
 			: groupRows(this.#sort(this.#liveTopFiltered), this.#in.groupBy())
 	);
 	get hasLiveRows(): boolean {
-		return this.#in.groupBy() === 'none' ? this.groups.length > 0 : this.groupedSections.length > 0;
+		return this.#in.groupBy() === 'none'
+			? this.groups.some((g) => g.sessions.length > 0)
+			: this.groupedSections.length > 0;
 	}
 
 	#kanbanNest = $derived.by(() => nest(this.#in.items().filter((s) => s.status !== 'archived')));

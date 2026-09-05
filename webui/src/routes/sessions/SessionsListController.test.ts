@@ -44,8 +44,11 @@ function make(over: Partial<SessionsListInputs> = {}) {
 	};
 }
 
+const working = (ctl: SessionsListController) =>
+	ctl.groups.find((g) => g.key === 'working')?.sessions ?? [];
+
 describe('SessionsListController — buckets', () => {
-	it('partitions top-level rows into attention buckets and drops empties', () => {
+	it('partitions top-level rows into attention buckets, keeping empty ones', () => {
 		const { ctl, setItems } = make();
 		setItems([
 			session({ id: 'w', bucket: 'working' }),
@@ -57,14 +60,15 @@ describe('SessionsListController — buckets', () => {
 		expect(byKey.pinned).toEqual(['p']);
 		expect(byKey.working).toEqual(['w']);
 		expect(byKey.done).toEqual(['d']);
-		expect(groups.find((g) => g.key === 'blocked')).toBeUndefined();
+		expect(byKey.blocked).toEqual([]);
 	});
 
 	it('hides a bucket whose owning section toggle is off', () => {
 		const { ctl, setItems, setSections } = make();
 		setItems([session({ id: 'p', pinned: true }), session({ id: 'w', bucket: 'working' })]);
 		setSections(new Set<Section>(['live']));
-		expect(ctl.groups.map((g) => g.key)).toEqual(['working']);
+		expect(ctl.groups.map((g) => g.key)).toEqual(['blocked', 'review', 'working', 'done']);
+		expect(ctl.groups.flatMap((g) => g.sessions.map((x) => x.id))).toEqual(['w']);
 	});
 
 	it('excludes drafts from the live nest and exposes them separately', () => {
@@ -81,13 +85,13 @@ describe('SessionsListController — buckets', () => {
 			session({ id: 'old', bucket: 'working', registered_at: '2020-01-01T00:00:00Z' }),
 			session({ id: 'new', bucket: 'working', registered_at: '2024-01-01T00:00:00Z' })
 		]);
-		expect(ctl.groups[0].sessions.map((s) => s.id)).toEqual(['new', 'old']);
+		expect(working(ctl).map((s) => s.id)).toEqual(['new', 'old']);
 	});
 
 	it('respects the injected label/client filters', () => {
 		const { ctl, setItems } = make({ matchesClient: (s) => s.id !== 'hidden' });
 		setItems([session({ id: 'hidden', bucket: 'working' }), session({ id: 'shown', bucket: 'working' })]);
-		expect(ctl.groups[0].sessions.map((s) => s.id)).toEqual(['shown']);
+		expect(working(ctl).map((s) => s.id)).toEqual(['shown']);
 	});
 });
 
@@ -97,6 +101,12 @@ describe('SessionsListController — group-by dimension', () => {
 		setItems([session({ id: 'w', bucket: 'working' })]);
 		expect(ctl.groupedSections).toEqual([]);
 		expect(ctl.hasLiveRows).toBe(true);
+	});
+
+	it('reports no live rows when every bucket header is empty', () => {
+		const { ctl } = make();
+		expect(ctl.groups.length).toBeGreaterThan(0);
+		expect(ctl.hasLiveRows).toBe(false);
 	});
 
 	it('re-partitions the live rows by the chosen dimension', () => {
