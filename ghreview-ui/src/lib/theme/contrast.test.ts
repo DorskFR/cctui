@@ -4,10 +4,9 @@ import { describe, expect, it } from "vitest";
 import { hexToRgb, type Rgb } from "./contrast";
 import { THEMES } from "./theme";
 
-const TSUMIKIT_VARS = readFileSync(
-  resolve(process.cwd(), "node_modules/@dorsk/tsumikit/dist/styles/variables.css"),
-  "utf8",
-);
+const TSUMIKIT_VARS = ["tokens.css", "themes.css"]
+  .map((f) => readFileSync(resolve(process.cwd(), `node_modules/@dorsk/tsumikit/dist/styles/${f}`), "utf8"))
+  .join("\n");
 const TOKENS = readFileSync(resolve(process.cwd(), "src/tokens.css"), "utf8");
 
 function block(selector: string): Record<string, string> {
