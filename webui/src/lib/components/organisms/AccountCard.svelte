@@ -88,15 +88,6 @@
 			.join(' · ')
 	);
 
-	const menu = $derived<MenuItem[]>([
-		{ label: m.common_edit(), icon: 'edit', onselect: () => onedit?.() },
-		...pools
-			.filter((p) => p.id !== pool?.id)
-			.map((p) => ({ label: m.pools_move_to({ name: p.name }), icon: 'life-buoy' as const, onselect: () => onmovepool?.(p) })),
-		...(pool ? [{ label: m.pools_leave(), onselect: () => onmovepool?.(null) }] : []),
-		{ label: m.common_delete(), icon: 'trash', danger: true, onselect: () => onremove?.() }
-	]);
-
 	function dragStart(e: DragEvent) {
 		if (!e.dataTransfer) return;
 		e.dataTransfer.setData(ACCOUNT_DRAG_MIME, a.id);
@@ -106,7 +97,6 @@
 	function dragEnd() {
 		accountDrag.accountId = '';
 	}
-
 	// Touch / pen: no HTML5 drag. A short hold on the handle arms the drag (a
 	// quick swipe still scrolls), then the finger carries the card and drops it
 	// on whichever pool zone is under it on release.
@@ -174,6 +164,27 @@
 		return t ? availableFamilies(t) : [];
 	});
 	let redirectFamilies = $derived<string[]>(targetFamilies);
+
+	const menu = $derived<MenuItem[]>([
+		{ label: m.common_edit(), icon: 'edit', onselect: () => onedit?.() },
+		...(canAddProvider
+			? [{ label: m.accounts_add_provider(), icon: 'plus' as const, onselect: () => onaddprovider?.() }]
+			: []),
+		...(onsetredirect && openTargets.length > 0
+			? [
+					{
+						label: m.accounts_redirect_button(),
+						icon: 'arrow-right' as const,
+						onselect: () => (redirectOpen = !redirectOpen)
+					}
+				]
+			: []),
+		...pools
+			.filter((p) => p.id !== pool?.id)
+			.map((p) => ({ label: m.pools_move_to({ name: p.name }), icon: 'life-buoy' as const, onselect: () => onmovepool?.(p) })),
+		...(pool ? [{ label: m.pools_leave(), onselect: () => onmovepool?.(null) }] : []),
+		{ label: m.common_delete(), icon: 'trash', danger: true, onselect: () => onremove?.() }
+	]);
 
 	function toggleFamily(f: string) {
 		redirectFamilies = redirectFamilies.includes(f)
@@ -246,14 +257,6 @@
 			<Text as="span" tone="faint" size="xs">{m.accounts_managed_readonly()}</Text>
 		{:else}
 			<span class="actions">
-				{#if onsetredirect && openTargets.length > 0}
-					<Button size="sm" variant="ghost" onclick={() => (redirectOpen = !redirectOpen)}>
-						{m.accounts_redirect_button()}
-					</Button>
-				{/if}
-				{#if canAddProvider}
-					<Button size="sm" variant="ghost" onclick={onaddprovider}>{m.accounts_add_provider()}</Button>
-				{/if}
 				<Menu label={m.accounts_more()} items={menu} placement="bottom-end" box="sm">
 					{#snippet trigger()}<Icon name="more" size={16} />{/snippet}
 				</Menu>
@@ -459,11 +462,6 @@
 	@container acct-row (max-width: 34rem) {
 		.columns {
 			grid-template-columns: minmax(0, 1fr);
-		}
-		/* Narrow card: the actions take a line of their own under the name. */
-		.actions {
-			flex-basis: 100%;
-			justify-content: flex-end;
 		}
 	}
 </style>

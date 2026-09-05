@@ -1,7 +1,7 @@
 <script lang="ts">
 	// The one route navigation: icon over label with the Sessions badge. At the
-	// bottom it is the fixed phone bar; in the header it is the same items,
-	// grouped closer and centred. Which one shows is the nav position setting.
+	// bottom it is the fixed phone bar; in the header it is the same items laid
+	// out the same way. Which one shows is the nav position setting.
 	import { page } from '$app/state';
 	import NavLink from '$lib/components/atoms/NavLink.svelte';
 	import { useSessions } from '$lib/queries';
@@ -72,20 +72,16 @@
 	}
 	.nav.inline {
 		align-self: stretch;
+		width: 100%;
 		min-width: 0;
 	}
+	/* Only the height differs: the header owns it. Everything else is the bar's. */
 	.nav.inline .nav-inner {
-		--nav-btn-flex: none;
-		--nav-btn-pad: var(--sp-3);
 		height: 100%;
-		max-width: none;
-		justify-content: center;
-		gap: var(--sp-1);
 	}
 	/* nav-btn is the class on the NavLink atom, so reach it via :global. */
 	.nav-inner :global(.nav-btn) {
-		flex: var(--nav-btn-flex, 1);
-		padding-inline: var(--nav-btn-pad, 0);
+		flex: 1;
 		display: flex;
 		flex-direction: column;
 		align-items: center;

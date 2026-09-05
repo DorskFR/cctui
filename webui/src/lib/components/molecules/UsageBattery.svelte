@@ -257,8 +257,10 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--sp-2);
-		width: 22rem;
-		max-width: 90vw;
+		/* The kit caps .pop-panel at 22rem and spends sp-1 + 1px border on chrome,
+		   so a 22rem child overflows it sideways. */
+		width: 21rem;
+		max-width: 100%;
 		max-height: 75dvh;
 		overflow: hidden auto;
 	}
