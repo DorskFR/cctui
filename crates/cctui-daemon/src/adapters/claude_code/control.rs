@@ -731,6 +731,7 @@ impl Driver {
         // records option 1 ("Proceed"-style) and the user's text is
         // swallowed.
         let pending_ask = self.pending_asks.lock().ok().and_then(|mut m| m.remove(local_id));
+        let had_pending_ask = pending_ask.is_some();
         if let Some(questions) = pending_ask {
             // Native answer first: drive the real form via keystrokes.
             let native_picks = ask_picks
@@ -804,6 +805,15 @@ impl Driver {
                 .send(AdapterEvent::PlanResolved { local_id: local_id.to_owned() })
                 .await;
         }
+        // The `reply` op types into the live composer, which is not empty after
+        // an ESC ESC draft restore. Only an idle worker with no form up is safe
+        // to clear (mid-turn the composer is a queue, and a form eats the keys).
+        if !had_pending_ask && !self.is_busy(&short) {
+            match socket::attach_clear_composer(sock, &short).await {
+                Ok(()) => tracing::debug!(%short, "cleared composer before reply"),
+                Err(err) => tracing::warn!(%err, %short, "failed to clear composer before reply"),
+            }
+        }
         // Baseline before the reply op: a build that auto-submits multiline
         // replies grows the transcript immediately, and a later baseline would
         // hide that submit from the confirm loop.
@@ -825,12 +835,7 @@ impl Driver {
     /// mid-turn (a submit only queues the message, so the transcript won't
     /// grow) or when no transcript can be located.
     fn submit_confirm(&self, short: &str, session_id: &str) -> socket::SubmitConfirm {
-        let busy = self
-            .last_status
-            .get(short)
-            .and_then(|s| s.tempo.as_deref())
-            .is_some_and(|tempo| tempo != "idle");
-        if busy {
+        if self.is_busy(short) {
             return socket::SubmitConfirm::Repaint;
         }
         let path = self.transcript_locations.get(short).map(|loc| loc.path.clone()).or_else(|| {
@@ -840,6 +845,14 @@ impl Driver {
             let baseline = std::fs::metadata(&path).map_or(0, |m| m.len());
             socket::SubmitConfirm::Transcript { path, baseline }
         })
+    }
+
+    /// Whether the worker's last status reported a non-idle tempo (mid-turn).
+    fn is_busy(&self, short: &str) -> bool {
+        self.last_status
+            .get(short)
+            .and_then(|s| s.tempo.as_deref())
+            .is_some_and(|tempo| tempo != "idle")
     }
 
     #[allow(clippy::cognitive_complexity, clippy::too_many_lines)]

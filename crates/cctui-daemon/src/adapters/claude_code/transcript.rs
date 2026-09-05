@@ -699,16 +699,26 @@ fn compact_summary_text(line: &Value) -> String {
         .join("\n")
 }
 
+/// Claude writes this user line when ESC (or ESC ESC) aborts a turn. It also
+/// means the TUI composer likely holds the restored previous prompt.
+const INTERRUPTED_MARKER: &str = "[Request interrupted by user";
+
+fn interrupted_marker_payload(text: &str) -> Option<Value> {
+    text.trim_start()
+        .starts_with(INTERRUPTED_MARKER)
+        .then(|| json!({ "role": "system_marker", "marker": "interrupted", "text": text.trim() }))
+}
+
 fn parse_user(local_id: &str, line: &Value, out: &mut Vec<AdapterEvent>) {
     // User lines can be plain text or carry tool_result blocks.
     let Some(content) = line.get("message").and_then(|m| m.get("content")) else {
         return;
     };
     if let Some(text) = content.as_str() {
-        out.push(AdapterEvent::Message {
-            local_id: local_id.to_owned(),
-            payload: json!({"role": "user", "text": text, "meta": user_text_is_meta(text)}),
-        });
+        let payload = interrupted_marker_payload(text).unwrap_or_else(
+            || json!({"role": "user", "text": text, "meta": user_text_is_meta(text)}),
+        );
+        out.push(AdapterEvent::Message { local_id: local_id.to_owned(), payload });
         return;
     }
     let Some(blocks) = content.as_array() else { return };
@@ -751,10 +761,10 @@ fn parse_user(local_id: &str, line: &Value, out: &mut Vec<AdapterEvent>) {
         if has_attachment && joined.trim().is_empty() {
             "[image attachment]".clone_into(&mut joined);
         }
-        out.push(AdapterEvent::Message {
-            local_id: local_id.to_owned(),
-            payload: json!({"role": "user", "text": joined, "meta": user_text_is_meta(&joined)}),
-        });
+        let payload = interrupted_marker_payload(&joined).unwrap_or_else(
+            || json!({"role": "user", "text": joined, "meta": user_text_is_meta(&joined)}),
+        );
+        out.push(AdapterEvent::Message { local_id: local_id.to_owned(), payload });
     }
     out.extend(tool_results);
 }
@@ -1146,6 +1156,28 @@ mod tests {
         let (events, _) = tail_once(&path, "s", 0).unwrap();
         assert_eq!(events.len(), 1);
         assert!(matches!(&events[0], AdapterEvent::ToolUse { .. }));
+    }
+
+    #[test]
+    fn interrupted_user_line_becomes_marker_not_user_message() {
+        for content in [
+            r#""[Request interrupted by user]""#,
+            r#"[{"type":"text","text":"[Request interrupted by user for tool use]"}]"#,
+        ] {
+            let mut events = Vec::new();
+            let line: Value = serde_json::from_str(&format!(
+                r#"{{"type":"user","message":{{"role":"user","content":{content}}}}}"#
+            ))
+            .unwrap();
+            parse_line("s", &line, &mut events);
+            assert_eq!(events.len(), 1, "{content}");
+            let AdapterEvent::Message { payload, .. } = &events[0] else {
+                panic!("expected Message for {content}");
+            };
+            assert_eq!(payload["role"], "system_marker");
+            assert_eq!(payload["marker"], "interrupted");
+            assert!(payload["text"].as_str().unwrap().starts_with("[Request interrupted by user"));
+        }
     }
 
     #[test]

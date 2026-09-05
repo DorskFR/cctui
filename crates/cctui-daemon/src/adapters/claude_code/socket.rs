@@ -187,6 +187,10 @@ pub async fn attach_submit(socket: &Path, short: &str, confirm: &SubmitConfirm) 
     const CONFIRM: std::time::Duration = std::time::Duration::from_millis(1500);
     /// Poll cadence for the transcript while draining PTY bytes.
     const POLL: std::time::Duration = std::time::Duration::from_millis(250);
+    /// Enters that were followed by a repaint but no transcript growth: the
+    /// keystroke probably landed and the transcript is lagging, so pressing
+    /// again risks submitting a second (now empty or queued) message.
+    const MAX_LANDED_ENTERS: u32 = 2;
 
     let (attempts, confirm_window) = match confirm {
         SubmitConfirm::Repaint => (3, CONFIRM),
@@ -198,6 +202,7 @@ pub async fn attach_submit(socket: &Path, short: &str, confirm: &SubmitConfirm) 
 
     let (mut reader, mut write_half) = attach_handshake(socket, short).await?;
     let mut buf = [0_u8; 8192];
+    let mut landed_enters = 0_u32;
 
     let settle_start = tokio::time::Instant::now();
     loop {
@@ -213,6 +218,7 @@ pub async fn attach_submit(socket: &Path, short: &str, confirm: &SubmitConfirm) 
         write_half.write_all(b"\r").await?;
         write_half.flush().await?;
         let deadline = tokio::time::Instant::now() + confirm_window;
+        let mut repainted = false;
         let confirmed = loop {
             let submitted = match confirm {
                 SubmitConfirm::Repaint => false,
@@ -232,7 +238,8 @@ pub async fn attach_submit(socket: &Path, short: &str, confirm: &SubmitConfirm) 
             match tokio::time::timeout((deadline - now).min(POLL), reader.read(&mut buf)).await {
                 Ok(Ok(0)) => bail!("worker detached during draft submit"),
                 Ok(Ok(_)) if matches!(confirm, SubmitConfirm::Repaint) => break true,
-                Ok(Ok(_)) | Err(_) => {}
+                Ok(Ok(_)) => repainted = true,
+                Err(_) => {}
                 Ok(Err(err)) => return Err(err.into()),
             }
         };
@@ -244,6 +251,16 @@ pub async fn attach_submit(socket: &Path, short: &str, confirm: &SubmitConfirm) 
             // detach fires the worker's attacher-close cleanup.
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
             return Ok(());
+        }
+        if repainted {
+            landed_enters += 1;
+            if landed_enters >= MAX_LANDED_ENTERS {
+                bail!(
+                    "draft submit unconfirmed after {attempt} attempts; \
+                     {landed_enters} Enters repainted without transcript growth, \
+                     not retrying to avoid a double submit"
+                );
+            }
         }
     }
     bail!("draft submit Enter went unconfirmed after {attempts} attempts")
@@ -263,6 +280,23 @@ pub async fn attach_submit(socket: &Path, short: &str, confirm: &SubmitConfirm) 
 /// "User declined to answer questions", no extra user turn.
 pub async fn attach_answer_keys(socket: &Path, short: &str, chunks: &[Vec<u8>]) -> Result<()> {
     attach_send_chunks(socket, short, chunks).await
+}
+
+/// Lines of restored draft `attach_clear_composer` can remove: an ESC-ESC
+/// restore of an attachment message is the user text plus the
+/// `Attached file(s):` block, so a handful of lines covers the common case.
+pub const CLEAR_COMPOSER_LINES: usize = 4;
+
+/// Empty the worker's TUI composer before a `reply` types into it. ESC ESC in
+/// the terminal restores the previous prompt as a draft, and the `reply` op
+/// appends to whatever is there. Each paced step is Ctrl+U (kill to line
+/// start) followed by Backspace (join onto the previous line), so a multiline
+/// draft is eaten one line per step; both keys are no-ops on an empty
+/// composer. Never a bare ESC: idle ESC is exactly what restores the draft,
+/// and mid-turn it aborts the turn.
+pub async fn attach_clear_composer(socket: &Path, short: &str) -> Result<()> {
+    let chunks = vec![b"\x15\x7f".to_vec(); CLEAR_COMPOSER_LINES];
+    attach_send_chunks(socket, short, &chunks).await
 }
 
 /// Attach to a worker's PTY mirror, inject `keys` as raw keystroke bytes, hold
@@ -531,6 +565,93 @@ mod tests {
         attach_submit(&sock, "aaaaaaaa", &SubmitConfirm::Transcript { path: transcript, baseline })
             .await
             .expect("submit should confirm via transcript growth");
+        server.await.unwrap();
+    }
+
+    /// The pre-reply clear must be exactly `CLEAR_COMPOSER_LINES` paced
+    /// Ctrl+U+Backspace steps and nothing else: no ESC (idle ESC restores the
+    /// draft we are trying to remove), no Enter.
+    #[tokio::test]
+    async fn attach_clear_composer_sends_paced_kill_line_steps() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("control.sock");
+        let listener = tokio::net::UnixListener::bind(&sock).unwrap();
+
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (read_half, mut write_half) = stream.into_split();
+            let mut reader = BufReader::new(read_half);
+            let mut req = String::new();
+            reader.read_line(&mut req).await.unwrap();
+            let req: Value = serde_json::from_str(req.trim()).unwrap();
+            assert_eq!(req.get("op").and_then(Value::as_str), Some("attach"));
+            write_half.write_all(b"{\"ok\":true,\"op\":\"attach\"}\n").await.unwrap();
+
+            let mut keys = Vec::new();
+            let mut step = [0_u8; 2];
+            let mut last = tokio::time::Instant::now();
+            for i in 0..CLEAR_COMPOSER_LINES {
+                reader.read_exact(&mut step).await.unwrap();
+                let now = tokio::time::Instant::now();
+                if i > 0 {
+                    assert!(
+                        now - last >= std::time::Duration::from_millis(300),
+                        "step {i} unpaced"
+                    );
+                }
+                last = now;
+                keys.extend_from_slice(&step);
+            }
+            assert_eq!(keys, b"\x15\x7f".repeat(CLEAR_COMPOSER_LINES));
+            let mut rest = Vec::new();
+            reader.read_to_end(&mut rest).await.unwrap();
+            assert!(rest.is_empty(), "unexpected trailing keys: {rest:?}");
+        });
+
+        attach_clear_composer(&sock, "aaaaaaaa").await.expect("clear should succeed");
+        server.await.unwrap();
+    }
+
+    /// Transcript mode stops re-pressing Enter once two presses each drew a
+    /// repaint without transcript growth: the message most likely landed and
+    /// the transcript is lagging, and a third Enter could submit again.
+    #[tokio::test]
+    async fn attach_submit_caps_enters_that_probably_landed() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("control.sock");
+        let transcript = dir.path().join("session.jsonl");
+        std::fs::write(&transcript, "{\"type\":\"assistant\"}\n").unwrap();
+        let baseline = std::fs::metadata(&transcript).unwrap().len();
+        let listener = tokio::net::UnixListener::bind(&sock).unwrap();
+
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (read_half, mut write_half) = stream.into_split();
+            let mut reader = BufReader::new(read_half);
+            let mut req = String::new();
+            reader.read_line(&mut req).await.unwrap();
+            write_half.write_all(b"{\"ok\":true,\"op\":\"attach\"}\n").await.unwrap();
+
+            let mut key = [0_u8; 1];
+            for _ in 0..2 {
+                reader.read_exact(&mut key).await.unwrap();
+                assert_eq!(key[0], b'\r');
+                write_half.write_all(b"turn started, composer empty").await.unwrap();
+                write_half.flush().await.unwrap();
+            }
+            let mut rest = Vec::new();
+            reader.read_to_end(&mut rest).await.unwrap();
+            assert!(rest.is_empty(), "a third Enter was sent: {rest:?}");
+        });
+
+        let err = attach_submit(
+            &sock,
+            "aaaaaaaa",
+            &SubmitConfirm::Transcript { path: transcript, baseline },
+        )
+        .await
+        .expect_err("unconfirmed submit must not report success");
+        assert!(err.to_string().contains("double submit"), "unexpected error: {err}");
         server.await.unwrap();
     }
 
