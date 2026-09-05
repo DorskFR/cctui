@@ -5,11 +5,8 @@
 	// parent's modal-scoped state (kept out of the persisted draft); this component
 	// just renders + edits the rows. The "add" affordance lives in the parent's
 	// shared action row, so this component only renders existing rows + the error.
-	interface EnvRow {
-		key: string;
-		value: string;
-	}
 	import { IconButton, Input, Text } from '@dorsk/tsumikit';
+	import type { EnvRow } from './types';
 	import Error from '$lib/components/atoms/Error.svelte';
 	import { m } from '$lib/paraglide/messages';
 

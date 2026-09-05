@@ -26,6 +26,7 @@ pub mod manifest;
 pub mod me;
 pub mod passkeys;
 pub mod permissions;
+pub mod profiles;
 pub mod prompts;
 pub mod self_update;
 pub mod sessions;

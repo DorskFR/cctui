@@ -16,6 +16,13 @@ vi.mock('$lib/queries', () => {
 		useAccounts: () => q([]),
 		useAccountPools: () => q([]),
 		useLabels: () => q({ labels: [] }),
+		useProfiles: () => q([]),
+		useProfileActions: () => ({
+			create: async () => ({ id: 'p-1', name: 'Default' }),
+			update: async () => ({}),
+			remove: async () => {}
+		}),
+		useAllAccountsUsage: () => q([]),
 		useSessionActions: () => ({ dispatch, discardDraft: async () => {} }),
 		useCodexModels: () => q(null),
 		useMergedCodexModels: () => q(null),
@@ -48,6 +55,11 @@ afterEach(async () => {
 	document.body.replaceChildren();
 });
 
+function must<T>(v: T | undefined, what: string): T {
+	if (!v) throw new Error(`${what} not found`);
+	return v;
+}
+
 const tick = (ms = 30) => new Promise((r) => setTimeout(r, ms));
 
 async function openDispatch(prefill: Record<string, string> | null = null) {
@@ -56,8 +68,10 @@ async function openDispatch(prefill: Record<string, string> | null = null) {
 		props: { onclose: () => {}, onspawned: () => {}, prefill, autosaveDelay: 10_000 }
 	});
 	await tick(60);
-	const tabs = [...document.querySelectorAll<HTMLButtonElement>('[role="tab"]')];
-	tabs[1].click();
+	const segments = [
+		...document.querySelectorAll<HTMLButtonElement>('[role="radiogroup"] button[role="radio"]')
+	];
+	must(segments.find((b) => b.textContent?.trim().startsWith('Dispatch')), 'dispatch segment').click();
 	await tick(60);
 }
 

@@ -17,6 +17,9 @@ export interface SpawnMemoryEntry {
 	permission_mode: string;
 	name: string;
 	labels?: string[];
+	/** The spawn profile the config came from; the machine's latest entry
+	 *  names its last-used profile. */
+	profile_id?: string;
 	/** Last-write timestamp; drives LRU eviction and "latest dir on machine". */
 	at: number;
 }
@@ -78,6 +81,53 @@ export function latestEntryFor(map: SpawnMemoryMap, machineId: string): SpawnMem
 		if (!best || e.at > best.at) best = e;
 	}
 	return best;
+}
+
+/** The profile last spawned from on `machineId`, if its latest entry names one. */
+export function latestProfileFor(map: SpawnMemoryMap, machineId: string): string | null {
+	return latestEntryFor(map, machineId)?.profile_id ?? null;
+}
+
+export const PROFILE_USES = 'cctui_profile_uses';
+const PROFILE_USES_CAP = 200;
+export const WEEK_MS = 7 * 24 * 3600 * 1000;
+
+type ProfileUses = Record<string, number[]>;
+
+function parseUses(raw: string): ProfileUses {
+	try {
+		const v: unknown = raw ? JSON.parse(raw) : {};
+		if (!v || typeof v !== 'object') return {};
+		const out: ProfileUses = {};
+		for (const [k, ts] of Object.entries(v as Record<string, unknown>)) {
+			if (Array.isArray(ts)) out[k] = ts.filter((t): t is number => typeof t === 'number');
+		}
+		return out;
+	} catch {
+		return {};
+	}
+}
+
+/** Append a spawn timestamp for `profileId` to the serialized use log,
+ *  keeping the newest `PROFILE_USES_CAP` per profile. Pure. */
+export function recordProfileUse(raw: string, profileId: string, now = Date.now()): string {
+	const uses = parseUses(raw);
+	uses[profileId] = [...(uses[profileId] ?? []), now].slice(-PROFILE_USES_CAP);
+	return JSON.stringify(uses);
+}
+
+/** How a profile row annotates its usage: spawns in the last week, else the
+ *  most recent use, else nothing. */
+export function profileUsage(
+	raw: string,
+	profileId: string,
+	now = Date.now()
+): { week: number } | { lastAt: number } | null {
+	const ts = parseUses(raw)[profileId] ?? [];
+	const week = ts.filter((t) => now - t < WEEK_MS).length;
+	if (week > 0) return { week };
+	const last = Math.max(...ts, 0);
+	return last > 0 ? { lastAt: last } : null;
 }
 
 /** Whether the cwd field should be filled with `last` (the machine's
