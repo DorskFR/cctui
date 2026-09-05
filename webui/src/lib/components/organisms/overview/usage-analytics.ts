@@ -73,6 +73,26 @@ export function peakBucketTotal(buckets: readonly FilledBucket[]): number {
 	return peak || 1;
 }
 
+export const bucketTotal = (b: FilledBucket): number => b.input + b.output + b.cache_read;
+
+export function peakBucket(buckets: readonly FilledBucket[]): FilledBucket | undefined {
+	let best: FilledBucket | undefined;
+	for (const b of buckets) {
+		if (!best || bucketTotal(b) > bucketTotal(best)) best = b;
+	}
+	return best;
+}
+
+export function recentFrom(count: number, n = 5): number {
+	return Math.max(0, count - n);
+}
+
+/** Every `every`-th slot counting back from the newest, so the last bucket is
+ *  always labelled. */
+export function isAxisTick(index: number, count: number, every: number): boolean {
+	return (count - 1 - index) % every === 0;
+}
+
 export interface ModelRow extends ModelUsage {
 	/** Share of the range's total output tokens, 0–1 (for the bar width). */
 	share: number;

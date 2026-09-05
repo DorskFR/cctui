@@ -8,6 +8,10 @@ import {
 	rankModels,
 	buildHeatGrid,
 	hasUsage,
+	bucketTotal,
+	peakBucket,
+	recentFrom,
+	isAxisTick,
 } from './usage-analytics';
 
 // Anchor "now" to a fixed local wall-clock instant so bucket keys are stable.
@@ -90,6 +94,37 @@ describe('buildHeatGrid', () => {
 	it('ignores out-of-range cells', () => {
 		const { maxMessages } = buildHeatGrid([{ dow: 9, hour: 40, messages: 100, output: 1 }]);
 		expect(maxMessages).toBe(0);
+	});
+});
+
+describe('peakBucket', () => {
+	it('returns the heaviest bucket of the series', () => {
+		const heavy = new Date(2026, 6, 10, 4, 0, 0);
+		const rows = [
+			bucket(new Date(2026, 6, 14), { input: 1 }),
+			bucket(heavy, { input: 500, output: 100, cache_read: 400 }),
+		];
+		const peak = peakBucket(fillBuckets(rows, 7, 'day', NOW));
+		expect(peak && bucketTotal(peak)).toBe(1000);
+		expect(peak && new Date(peak.ms).getDate()).toBe(10);
+	});
+
+	it('is undefined for an empty series', () => {
+		expect(peakBucket([])).toBeUndefined();
+	});
+});
+
+describe('recentFrom', () => {
+	it('marks the last five slots, and every slot in a shorter series', () => {
+		expect(recentFrom(30)).toBe(25);
+		expect(recentFrom(3)).toBe(0);
+	});
+});
+
+describe('isAxisTick', () => {
+	it('ticks every Nth slot counting back from the newest', () => {
+		const ticks = Array.from({ length: 30 }, (_, i) => i).filter((i) => isAxisTick(i, 30, 7));
+		expect(ticks).toEqual([1, 8, 15, 22, 29]);
 	});
 });
 
