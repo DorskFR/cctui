@@ -8,8 +8,11 @@
 
 	let {
 		settings = $bindable({}),
-		models = $bindable([])
+		models = $bindable([]),
+		section = 'all'
 	}: {
+		/** Render only the gateway knobs or only the catalog (drawer pages). */
+		section?: 'all' | 'gateway' | 'models';
 		/** Mirrors the provider's `provider_settings` blob. */
 		settings?: Record<string, unknown>;
 		/** Mirrors the provider's `models` catalog. */
@@ -62,6 +65,7 @@
 	const show = (v: number | null | undefined) => (v === null || v === undefined ? '' : String(v));
 </script>
 
+{#if section !== 'models'}
 <div class="block">
 	<Text as="div" tone="muted" size="sm">{m.fireworks_settings_label()}</Text>
 	<Text as="div" tone="faint" size="xs">{m.fireworks_settings_help()}</Text>
@@ -82,7 +86,9 @@
 		<Text as="div" tone="faint" size="xs">{m.fireworks_affinity_help()}</Text>
 	</div>
 </div>
+{/if}
 
+{#if section !== 'gateway'}
 <div class="block">
 	<Text as="div" tone="muted" size="sm">{m.fireworks_catalog_label()}</Text>
 	<Text as="div" tone="faint" size="xs">{m.fireworks_catalog_help()}</Text>
@@ -145,6 +151,7 @@
 	{/each}
 	<Button onclick={addModel}>{m.fireworks_add_model()}</Button>
 </div>
+{/if}
 
 <style>
 	.block {
