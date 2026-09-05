@@ -17,7 +17,7 @@
 	} from '$lib/queries';
 	import { ws } from '$lib/ws.svelte';
 	import { toasts } from '$lib/toast.svelte';
-	import { isSubmitChord, submitChordKeys, submitChordLabel } from '$lib/platform';
+	import { isSubmitChord, submitChordLabel } from '$lib/platform';
 	import {
 		drafts,
 		SPAWN_SLOT,
@@ -47,7 +47,7 @@
 	} from '$lib/spawnMemory';
 	import { appendFileTokens, mergeFiles, removeFileByName, fileCapError } from '$lib/attachments';
 	import { attachmentStore, dropMissingTokens } from '$lib/attachmentStore';
-	import { Button, Callout, Dropzone, Modal, SegmentedControl, resizeHandle, Kbd } from '@dorsk/tsumikit';
+	import { Button, Callout, Dropzone, Modal, SegmentedControl, resizeHandle } from '@dorsk/tsumikit';
 	import { dialogBackdropGuard } from '$lib/dialogBackdropGuard';
 	import MachineFields from './spawn/MachineFields.svelte';
 	import DispatchFields from './spawn/DispatchFields.svelte';
@@ -64,7 +64,6 @@
 	import {
 		applySpec,
 		initialProfile,
-		sameSpec,
 		specFromForm,
 		specOf,
 		uniqueProfileName,
@@ -320,9 +319,6 @@
 	let usageRaw = $state(drafts.get(PROFILE_USES));
 	const selectedProfile = $derived(profiles.find((p) => p.id === selectedProfileId) ?? null);
 	const profileSpec = $derived(oneOff ?? (selectedProfile ? specOf(selectedProfile) : null));
-	const adjusted = $derived(
-		!!oneOff && !!selectedProfile && !sameSpec(oneOff, specOf(selectedProfile))
-	);
 	const effectiveForm = $derived(
 		target === 'machine' && profileSpec ? applySpec(form, profileSpec, allAccounts, allPools) : form
 	);
@@ -726,11 +722,10 @@
 		if (docked) onclose();
 	}
 
+	const hotkeys = $derived(settings.state.display.archiveShortcut);
 	const spawnLabel = $derived.by(() => {
-		if (target !== 'machine') return m.spawn_action_dispatch();
-		if (!selectedProfile) return m.spawn_action_spawn();
-		const text = m.spawn_action_spawn_profile({ profile: selectedProfile.name });
-		return adjusted ? `${text}*` : text;
+		const text = target !== 'machine' ? m.spawn_action_dispatch() : m.spawn_action_spawn();
+		return hotkeys ? `${text} (${submitChordLabel()})` : text;
 	});
 </script>
 
@@ -805,7 +800,7 @@
 			class="stack"
 			use:dialogBackdropGuard
 			onkeydown={(e: KeyboardEvent) => {
-				if (isSubmitChord(e) && !busy && valid) {
+				if (hotkeys && isSubmitChord(e) && !busy && valid) {
 					e.preventDefault();
 					void submit();
 				}
@@ -872,11 +867,9 @@
 			variant="primary"
 			grow
 			disabled={busy || !valid}
-			title={submitChordLabel()}
 			onclick={submit}
 		>
-			{#if busy}<span class="spin"></span>{:else}{spawnLabel}
-				<span class="chord"><Kbd keys={submitChordKeys()} size="sm" /></span>{/if}
+			{#if busy}<span class="spin"></span>{:else}{spawnLabel}{/if}
 		</Button>
 	</span>
 {/snippet}
@@ -996,9 +989,5 @@
 	.foot-primary {
 		display: flex;
 		flex: 1 1 11rem;
-	}
-	.chord {
-		margin-left: var(--sp-2);
-		opacity: 0.7;
 	}
 </style>

@@ -96,10 +96,8 @@
 	}
 	.time {
 		flex: none;
-		display: inline-flex;
-		align-items: center;
-		justify-content: flex-end;
-		min-width: 4.5rem;
+		min-width: 30px;
+		text-align: right;
 		white-space: nowrap;
 	}
 </style>

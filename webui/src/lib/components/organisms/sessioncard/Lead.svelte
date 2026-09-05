@@ -89,9 +89,15 @@
 		gap: var(--sp-1);
 		min-width: 0;
 		flex: 0 1 auto;
+		overflow: hidden;
 		font-size: var(--fs-xs);
 		color: var(--text-faint);
 		white-space: nowrap;
+	}
+	@container sess-row (max-width: 40rem) {
+		.activity {
+			display: none;
+		}
 	}
 	.act-cadence {
 		flex: none;
