@@ -13,6 +13,7 @@
 		type UserDispatcher,
 	} from '$lib/queries';
 	import { toasts } from '$lib/toast.svelte';
+	import { copyText } from '$lib/clipboard';
 	import { Badge, Button, DataTable, Field, Heading, Input, Modal, Select, Text, Timestamp } from '@dorsk/tsumikit';
 	import type { Column } from '@dorsk/tsumikit';
 	import { livenessLabel, livenessTone } from '$lib/dispatchers.logic';
@@ -100,12 +101,7 @@
 
 	async function copyKey() {
 		if (!newKey) return;
-		try {
-			await navigator.clipboard.writeText(newKey);
-			toasts.ok(m.dispatch_toast_key_copied());
-		} catch {
-			toasts.error(m.dispatch_err_copy_failed());
-		}
+		await copyText(newKey, m.dispatch_toast_key_copied());
 	}
 
 	const rows = $derived([...(dispatchers.data ?? [])]);

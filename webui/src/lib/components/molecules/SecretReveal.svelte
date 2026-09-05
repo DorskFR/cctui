@@ -1,18 +1,13 @@
 <script lang="ts">
 	import { Button, Modal, Text } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
-	import { toasts } from '$lib/toast.svelte';
+	import { copyText } from '$lib/clipboard';
 
 	let { title, secret, onclose }: { title: string; secret: string; onclose: () => void } =
 		$props();
 
 	async function copy() {
-		try {
-			await navigator.clipboard.writeText(secret);
-			toasts.ok(m.users_secret_copied());
-		} catch {
-			toasts.error(m.users_secret_clipboard_unavailable());
-		}
+		await copyText(secret, m.users_secret_copied());
 	}
 </script>
 
