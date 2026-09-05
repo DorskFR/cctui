@@ -29,7 +29,7 @@
 {:else}
 	<div class="list">
 		{#each rows as r (r.provider.id)}
-			<div class="row">
+			<div class="acct">
 				<div class="head">
 					<span class="mark" title={providerLabel(r.provider.provider)}>
 						<AdapterIcon provider={r.provider.provider} size={14} />
@@ -58,7 +58,11 @@
 		flex-direction: column;
 		gap: var(--sp-2);
 	}
-	.row {
+	/* NOT `.row`: tsumikit ships a global `.row` utility (flex, align-items:
+	   center). A scoped `.row` here only overrode the direction, so the centering
+	   survived and every child was sized to its content — a bar wider than the
+	   card then overflowed on BOTH sides and got clipped by the panel. */
+	.acct {
 		display: flex;
 		flex-direction: column;
 		gap: var(--sp-2);
