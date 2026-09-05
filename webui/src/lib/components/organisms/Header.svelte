@@ -11,6 +11,7 @@
 	import { Button, IconButton, SelectButton, Text } from '@dorsk/tsumikit';
 	import NavLink from '$lib/components/atoms/NavLink.svelte';
 	import NetStatsChip from '$lib/components/molecules/NetStatsChip.svelte';
+	import UsageBattery from '$lib/components/molecules/UsageBattery.svelte';
 	import UpdateModal from '$lib/components/organisms/UpdateModal.svelte';
 	import { m } from '$lib/paraglide/messages';
 
@@ -102,6 +103,7 @@
 		></span>
 		<div class="spacer"></div>
 		<span class="net"><NetStatsChip /></span>
+		<span class="batt"><UsageBattery /></span>
 		{#if version.data}
 			<span class="ver">
 				<NavLink href={version.data.commit_url} target="_blank" rel="noopener">
@@ -280,6 +282,15 @@
 	}
 	.net {
 		display: inline-flex;
+	}
+	/* Usage batteries: sized in px inside the component. Collapses to nothing
+	   (no stray flex gap) while no account reports usage. */
+	.batt {
+		display: inline-flex;
+		flex: none;
+	}
+	.batt:empty {
+		display: none;
 	}
 	@media (max-width: 639px) {
 		.ver,

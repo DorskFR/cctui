@@ -140,6 +140,19 @@ export interface UsageWindow {
   resets_at?: string | null;
   model_id?: string | null;
   model_display_name?: string | null;
+  /** Burn rate against the window's linear budget; absent when the window has
+   *  no reset time or no known length. */
+  pace?: UsagePace | null;
+}
+
+/** Server-computed pace of a window: `ratio` < 1 is under the linear pace,
+ *  > 1 is burning faster; `projected_wall_at` is when 100% lands at the
+ *  current rate (absent while idle). */
+export interface UsagePace {
+  elapsed_fraction: number;
+  expected_pct: number;
+  ratio: number;
+  projected_wall_at?: string | null;
 }
 
 /** Per-account subscription usage. `windows` is the normalized
@@ -160,6 +173,13 @@ export interface AccountUsage {
   /** Whether a usage-limit reset can be claimed right now; absent when the
    *  provider's payload carries no reset mechanism. */
   limit_reset?: LimitResetStatus | null;
+}
+
+/** One row of `GET /accounts/usage`: a provider's usage plus the account it
+ *  belongs to, so the header can group without a second request. */
+export interface AccountUsageEntry extends AccountUsage {
+  account: string;
+  account_name: string;
 }
 
 /** Codex reset credits (`kind: codex`) or Claude Code's `/limit-reset`

@@ -1,6 +1,8 @@
 <script lang="ts">
 	import { Input, Progress, Text, Timestamp } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
+	import type { UsagePace } from '$lib/queries';
+	import { countdown, paceState, wallInMs } from '$lib/components/molecules/UsageBattery.logic';
 
 	// One usage window: its label + utilization bar + percent + reset +
 	// configured-cap marker, optionally with controls to set/clear the window's
@@ -17,7 +19,8 @@
 		bypass = $bindable(null),
 		editable = false,
 		observed = true,
-		usd = false
+		usd = false,
+		pace = null
 	}: {
 		label: string;
 		/** 0–100 (may exceed); null ⇒ not currently reported. */
@@ -32,6 +35,8 @@
 		observed?: boolean;
 		/** Dollar window: spend against a $ cap instead of % of a quota. */
 		usd?: boolean;
+		/** Server burn rate: draws the expected-now marker and the pace glyph. */
+		pace?: UsagePace | null;
 	} = $props();
 
 	// Severity breakpoints on window utilization (%): below WARN → success,
@@ -58,6 +63,26 @@
 		pct === null ? 'success' : pct >= HOT_PCT ? 'danger' : pct >= WARN_PCT ? 'warn' : 'success'
 	);
 	const capPct = $derived(cap != null && cap >= 0 && cap <= 100 ? cap : null);
+
+	const state = $derived(usd ? null : paceState(pace));
+	const expectedPct = $derived(
+		state && pace ? Math.max(0, Math.min(100, Math.round(pace.expected_pct))) : null
+	);
+	const wallMs = $derived(state ? wallInMs(pace, resets, Date.now()) : null);
+	const paceGlyph = $derived(state === 'leaf' ? '🍃' : state === 'flame' ? '🔥' : '•');
+	const paceTitle = $derived.by(() => {
+		if (!state || expectedPct === null) return '';
+		const parts = [
+			state === 'leaf'
+				? m.usage_battery_pace_leaf()
+				: state === 'flame'
+					? m.usage_battery_pace_flame()
+					: m.usage_battery_pace_neutral(),
+			m.usage_battery_pace_expected({ expected: expectedPct })
+		];
+		if (wallMs !== null) parts.push(m.usage_battery_pace_wall({ time: countdown(wallMs) }));
+		return parts.join(' · ');
+	});
 </script>
 
 <div class="soft-limit">
@@ -69,7 +94,7 @@
 			</Text>
 		{:else if pct !== null}
 			<Text size="xs" numeric tone={tone === 'danger' ? 'danger' : tone === 'warn' ? 'warn' : 'success'} class="sl-pct">
-				{pct}%{#if resets}<Text tone="faint" class="sl-reset"> · resets <Timestamp value={resets} mode="relative" tone="faint" /></Text>{/if}
+				{pct}%{#if resets}<Text tone="faint" class="sl-reset"> · resets <Timestamp value={resets} mode="relative" tone="faint" /></Text>{/if}{#if state}<Text as="span" tone={state === 'flame' ? 'danger' : state === 'leaf' ? 'success' : 'faint'} title={paceTitle} aria-label={paceTitle} class="sl-pace"> {paceGlyph}{#if wallMs !== null} {countdown(wallMs)}{/if}</Text>{/if}
 			</Text>
 		{:else}
 			<Text size="xs" tone="faint" class="sl-pct">{m.softlimit_not_reported()}</Text>
@@ -81,6 +106,9 @@
 			<Progress value={pct} label={m.sessions_usage_bar_aria({ label })} tone={tone} class="sl-track" />
 			{#if !usd && capPct != null}
 				<span class="cap-marker" style={`left: ${capPct}%`} title={m.sessions_usage_soft_limit({ pct: capPct })}></span>
+			{/if}
+			{#if expectedPct !== null}
+				<span class="pace-marker" style={`left: ${expectedPct}%`} title={m.usage_battery_pace_marker({ pct: expectedPct })}></span>
 			{/if}
 		</div>
 	{/if}
@@ -136,6 +164,17 @@
 		opacity: 0.8;
 		pointer-events: none;
 		border-radius: 1px;
+	}
+	/* Expected-now marker: where an even spend would sit, so the fill reads
+	   as ahead of or behind pace at a glance. */
+	.pace-marker {
+		position: absolute;
+		top: -3px;
+		bottom: -3px;
+		width: 1px;
+		background: var(--accent);
+		opacity: 0.9;
+		pointer-events: none;
 	}
 	.controls {
 		display: grid;

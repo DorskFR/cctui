@@ -2,9 +2,11 @@ import { createQuery, useQueryClient } from "@tanstack/svelte-query";
 import type { PutRedirectRequest } from "@bindings/PutRedirectRequest";
 import type { CreatePoolRequest } from "@bindings/CreatePoolRequest";
 import type { UpdatePoolRequest } from "@bindings/UpdatePoolRequest";
+import { api } from "../api";
 import { endpoints } from "./endpoints";
 import { qk } from "./keys";
 import type {
+  AccountUsageEntry,
   CreateAccount,
   CreateProvider,
   GrantShare,
@@ -100,6 +102,20 @@ export const useAccountUsage = (
   createQuery(() => ({
     queryKey: ["account-usage", accountId()],
     queryFn: () => endpoints.accountUsage(accountId()),
+    enabled: enabled(),
+    staleTime: 180_000,
+    refetchInterval: 180_000,
+    refetchOnWindowFocus: false,
+    retry: false,
+  }));
+
+/** Every owned provider's usage windows in one request, for the header
+ *  batteries. Same slow cadence as `useAccountUsage`; server-side each row is
+ *  served by the same per-provider cache, so the two never double-hit upstream. */
+export const useAllAccountsUsage = (enabled: () => boolean = () => true) =>
+  createQuery(() => ({
+    queryKey: ["accounts-usage"],
+    queryFn: () => api.get<AccountUsageEntry[]>("/accounts/usage"),
     enabled: enabled(),
     staleTime: 180_000,
     refetchInterval: 180_000,

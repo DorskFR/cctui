@@ -1,4 +1,4 @@
-import type { SoftLimitConfig, UsageWindow } from '$lib/queries';
+import type { SoftLimitConfig, UsagePace, UsageWindow } from '$lib/queries';
 
 /** One merged row for the usage view: an observed window (or a configured-but-
  *  unobserved key with `utilization === null`) plus its soft-limit config. */
@@ -17,6 +17,8 @@ export interface UsageRow {
 	observed: boolean;
 	/** Dollar-denominated window: rendered and edited in $, not %. */
 	usd: boolean;
+	/** Server-computed burn rate; null when unknown. */
+	pace: UsagePace | null;
 }
 
 const WEEKLY_MODEL_PREFIX = 'weekly_model:';
@@ -63,7 +65,8 @@ export function mergeUsageWindows(
 			capUsd: l?.cap_usd ?? null,
 			bypass: l?.bypass_minutes ?? null,
 			observed: true,
-			usd: isUsdKey(w.key)
+			usd: isUsdKey(w.key),
+			pace: w.pace ?? null
 		};
 	});
 	const unobserved = Object.keys(limits)
@@ -80,7 +83,8 @@ export function mergeUsageWindows(
 				capUsd: l?.cap_usd ?? null,
 				bypass: l?.bypass_minutes ?? null,
 				observed: false,
-				usd: isUsdKey(k)
+				usd: isUsdKey(k),
+				pace: null
 			};
 		});
 	return { observed, unobserved };

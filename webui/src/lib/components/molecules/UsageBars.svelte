@@ -77,6 +77,7 @@
 				capUsd={r.capUsd}
 				bypass={r.bypass}
 				usd={r.usd}
+				pace={r.pace}
 			/>
 		{/each}
 		{#if rows.unobserved.length}
