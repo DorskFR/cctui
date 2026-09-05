@@ -54,6 +54,16 @@
 	});
 	const readonly = $derived(usd || (!editable && !oncapchange));
 
+	// The three-column bar (label | track | readout) only fits while the readout
+	// column can hold "100 % · resets 5d 12h" next to a track worth looking at.
+	// Below that the row goes dense: the window name takes its own line above a
+	// full-width track, so neither the name nor the reset countdown is clipped.
+	// Measured rather than a media query — the stats panel is drag-resizable.
+	const READOUT_W = '9.5rem';
+	const DENSE_BELOW_PX = 340;
+	let width = $state(0);
+	const dense = $derived(width > 0 && width < DENSE_BELOW_PX);
+
 	let barCap = $derived(capToBar(cap));
 	function commit(next: number) {
 		const value = capFromBar(next);
@@ -82,15 +92,18 @@
 	});
 </script>
 
-<div class="soft-limit">
+<div class="soft-limit" bind:clientWidth={width}>
+	{#if dense}
+		<div class="dense-label"><Text size="xs" tone="muted" truncate>{label}</Text></div>
+	{/if}
 	<CapBar
-		{label}
+		label={dense ? undefined : label}
 		value={pct ?? 0}
 		bind:cap={barCap}
 		step={5}
 		warnAt={75}
-		labelWidth="96px"
-		readoutWidth={reported ? '76px' : 'auto'}
+		labelWidth={dense ? '0px' : '96px'}
+		readoutWidth={reported ? (dense ? 'max-content' : READOUT_W) : 'auto'}
 		{readout}
 		{readonly}
 		tooltip={readonly ? m.capbar_tooltip_readonly({ pct: barCap }) : m.capbar_tooltip({ pct: barCap })}
@@ -133,6 +146,9 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--sp-1);
+		min-width: 0;
+	}
+	.dense-label {
 		min-width: 0;
 	}
 	.controls {
