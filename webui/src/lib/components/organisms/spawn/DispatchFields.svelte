@@ -7,7 +7,8 @@
 	import EffortSlider from './EffortSlider.svelte';
 	import ModelPicker from '$lib/components/molecules/ModelPicker.svelte';
 	import { Button, Field, Input, Select, Text, Textarea } from '@dorsk/tsumikit';
-	import { useMergedCodexModels } from '$lib/queries';
+	import { useMergedCodexModels, useSessions } from '$lib/queries';
+	import SessionMention from '$lib/components/molecules/SessionMention.svelte';
 	import {
 		claudeModels,
 		claudeEfforts,
@@ -39,6 +40,11 @@
 		// Submit the spawn form from the prompt textarea (Ctrl/⌘+Enter).
 		onsubmit?: () => void;
 	} = $props();
+
+	// `#` session-mention popover on the prompt (see SessionMention).
+	const sessionsQuery = useSessions(() => false);
+	const mentionSessions = $derived(sessionsQuery.data?.sessions ?? []);
+	let promptEl = $state<HTMLTextAreaElement | null>(null);
 
 	const adapter = $derived(form.dispatch_adapter || 'claude-code');
 	const isCodex = $derived(adapter === 'codex');
@@ -122,19 +128,22 @@
 </Field>
 
 <Field label={m.dispatch_prompt_label()} for="sp-prompt-d">
-	<Textarea
-		id="sp-prompt-d"
-		style="min-height:8rem;max-height:60vh;resize:none;overflow-y:auto"
-		placeholder={m.dispatch_prompt_placeholder()}
-		bind:value={form.prompt}
-		autoresize
-		onkeydown={(e: KeyboardEvent) => {
-			if (onsubmit && isSubmitChord(e)) {
-				e.preventDefault();
-				onsubmit();
-			}
-		}}
-	/>
+	<SessionMention bind:value={form.prompt} el={promptEl} sessions={mentionSessions}>
+		<Textarea
+			id="sp-prompt-d"
+			style="min-height:8rem;max-height:60vh;resize:none;overflow-y:auto"
+			placeholder={m.dispatch_prompt_placeholder()}
+			bind:value={form.prompt}
+			bind:el={promptEl}
+			autoresize
+			onkeydown={(e: KeyboardEvent) => {
+				if (onsubmit && isSubmitChord(e)) {
+					e.preventDefault();
+					onsubmit();
+				}
+			}}
+		/>
+	</SessionMention>
 	<Text size="xs" tone="faint" style="display:block;margin-top:var(--sp-1)">{m.dispatch_prompt_submit_hint({ chord: submitChordLabel() })}</Text>
 </Field>
 

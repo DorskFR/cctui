@@ -671,6 +671,8 @@
 	"login_subtitle": "Enter an admin or user token to continue.",
 	"login_token_label": "Token",
 	"login_token_placeholder": "cctui token",
+	"mention_empty": "No running session matches",
+	"mention_list_aria": "Sessions to mention",
 	"misc_clear_search": "Clear search",
 	"misc_color_auto_label": "Auto color",
 	"misc_color_auto_title": "Auto (name hash)",

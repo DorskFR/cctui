@@ -3,7 +3,8 @@
 	// branch), the session name, and the prompt. The harness / account / model /
 	// effort / permission knobs come from the selected profile (ProfileList).
 	import type { MachineRow } from '@bindings/MachineRow';
-	import { useGitInfo } from '$lib/queries';
+	import { useGitInfo, useSessions } from '$lib/queries';
+	import SessionMention from '$lib/components/molecules/SessionMention.svelte';
 	import type { GitInfo } from '@bindings/GitInfo';
 	import MachinePicker from '$lib/components/molecules/MachinePicker.svelte';
 	import { FilterInput, Icon, Input, Textarea, type Query } from '@dorsk/tsumikit';
@@ -29,6 +30,11 @@
 		// attachments; text pastes are left to the browser.
 		onfiles?: (files: File[]) => void;
 	} = $props();
+
+	// `#` session-mention popover on the prompt (see SessionMention).
+	const sessionsQuery = useSessions(() => false);
+	const mentionSessions = $derived(sessionsQuery.data?.sessions ?? []);
+	let promptEl = $state<HTMLTextAreaElement | null>(null);
 
 	// The machine picker + working dir share one FilterInput; `form.working_dir`
 	// is the source of truth and the raw query mirrors it both ways, `lastDir`
@@ -112,21 +118,24 @@
 	bind:value={form.name}
 />
 
-<Textarea
-	id="sp-prompt"
-	rows={10}
-	aria-label={m.spawn_prompt_label()}
-	placeholder={m.spawn_prompt_placeholder_chord({ chord: submitChordLabel() })}
-	bind:value={form.prompt}
-	resize="bottom"
-	onpaste={onPromptPaste}
-	onkeydown={(e: KeyboardEvent) => {
-		if (onsubmit && isSubmitChord(e)) {
-			e.preventDefault();
-			onsubmit();
-		}
-	}}
-/>
+<SessionMention bind:value={form.prompt} el={promptEl} sessions={mentionSessions}>
+	<Textarea
+		id="sp-prompt"
+		rows={10}
+		aria-label={m.spawn_prompt_label()}
+		placeholder={m.spawn_prompt_placeholder_chord({ chord: submitChordLabel() })}
+		bind:value={form.prompt}
+		bind:el={promptEl}
+		resize="bottom"
+		onpaste={onPromptPaste}
+		onkeydown={(e: KeyboardEvent) => {
+			if (onsubmit && isSubmitChord(e)) {
+				e.preventDefault();
+				onsubmit();
+			}
+		}}
+	/>
+</SessionMention>
 
 <style>
 	.where {

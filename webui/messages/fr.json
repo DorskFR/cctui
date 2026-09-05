@@ -671,6 +671,8 @@
 	"login_subtitle": "Saisissez un token administrateur ou utilisateur pour continuer.",
 	"login_token_label": "Token",
 	"login_token_placeholder": "token cctui",
+	"mention_empty": "Aucune session en cours ne correspond",
+	"mention_list_aria": "Sessions à mentionner",
 	"misc_clear_search": "Effacer la recherche",
 	"misc_color_auto_label": "Couleur automatique",
 	"misc_color_auto_title": "Auto (hachage du nom)",
