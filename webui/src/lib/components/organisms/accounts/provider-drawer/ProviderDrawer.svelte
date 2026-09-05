@@ -12,7 +12,7 @@
 	import { toasts } from '$lib/toast.svelte';
 	import { providerLabel } from '$lib/providers';
 	import { m } from '$lib/paraglide/messages';
-	import { Button, Drawer, IconButton, NavItem, Text } from '@dorsk/tsumikit';
+	import { Button, Drawer, IconButton, NavItem, Text, resizeHandle } from '@dorsk/tsumikit';
 	import AdapterIcon from '$lib/components/atoms/AdapterIcon.svelte';
 	import UsageNoticesEditor from '$lib/components/molecules/UsageNoticesEditor.svelte';
 	import AnthropicProviderEditor from '$lib/components/organisms/AnthropicProviderEditor.svelte';
@@ -114,11 +114,31 @@
 			toasts.error(errMessage(e));
 		}
 	}
+
+	// The drawer keeps the width the user last dragged it to.
+	const DRAWER_WIDTH_KEY = 'cctui_provider_drawer_width';
+	const DRAWER_DEFAULT_PX = 620;
+	const DRAWER_MIN_PX = 420;
+	let width = $state(readWidth());
+	let dragging = $state(false);
+	let viewportWidth = $state(0);
+	const maxPx = $derived(Math.max(DRAWER_MIN_PX, viewportWidth - 80));
+	function readWidth(): number {
+		if (typeof localStorage === 'undefined') return DRAWER_DEFAULT_PX;
+		const n = Number(localStorage.getItem(DRAWER_WIDTH_KEY));
+		return Number.isFinite(n) && n >= DRAWER_MIN_PX ? n : DRAWER_DEFAULT_PX;
+	}
+	function setWidth(px: number | undefined) {
+		width = Math.max(DRAWER_MIN_PX, Math.round(px ?? DRAWER_DEFAULT_PX));
+		localStorage.setItem(DRAWER_WIDTH_KEY, String(width));
+	}
 </script>
+
+<svelte:window bind:innerWidth={viewportWidth} />
 
 <Drawer
 	side="right"
-	width="620px"
+	width="{width}px"
 	navWidth="150px"
 	{title}
 	page={LABELS[edit.page]()}
@@ -127,6 +147,28 @@
 >
 	{#snippet header()}
 		<div class="head">
+			<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+			<div
+				class="grip"
+				class:dragging
+				role="separator"
+				tabindex="0"
+				aria-orientation="vertical"
+				aria-valuemin={DRAWER_MIN_PX}
+				aria-valuemax={maxPx}
+				aria-label={m.dock_resize_grip()}
+				title={m.dock_resize_grip()}
+				use:resizeHandle={{
+					side: 'right',
+					min: DRAWER_MIN_PX,
+					max: maxPx,
+					onwidth: setWidth,
+					onreset: () => setWidth(DRAWER_DEFAULT_PX),
+					onactive: (a) => {
+						dragging = a;
+					}
+				}}
+			></div>
 			<span class="mark"><AdapterIcon provider={kind} size={20} /></span>
 			<div class="titles">
 				<Text as="div" size="md" weight="semibold">{title}</Text>
@@ -211,12 +253,47 @@
 </Drawer>
 
 <style>
+	/* A custom header lands in the panel grid's first cell (the nav column);
+	   span it across the whole panel. */
 	.head {
+		grid-column: 1 / -1;
 		display: flex;
 		align-items: center;
 		gap: var(--sp-3);
 		padding: var(--sp-3) var(--sp-4);
 		border-bottom: 1px solid var(--border);
+	}
+	/* The knob rides the panel's outer edge for the full height; the dialog is
+	   in the top layer, so a fixed box lands on the viewport. */
+	.grip {
+		position: fixed;
+		top: 0;
+		bottom: 0;
+		right: calc(var(--drawer-w) - 5px);
+		width: 10px;
+		cursor: ew-resize;
+		touch-action: none;
+		z-index: 1;
+	}
+	.grip::before {
+		content: '';
+		position: absolute;
+		top: 50%;
+		left: 3px;
+		width: 4px;
+		height: 2.5rem;
+		margin-top: -1.25rem;
+		border-radius: var(--r-pill);
+		background: var(--border-strong);
+	}
+	.grip:hover::before,
+	.grip.dragging::before {
+		background: var(--accent);
+	}
+	@media (max-width: 47.999rem) {
+		.grip {
+			display: none;
+		}
 	}
 	.mark {
 		display: inline-flex;

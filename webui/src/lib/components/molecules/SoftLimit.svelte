@@ -131,13 +131,13 @@
 		<div class="controls">
 			{#if usd}
 				<label class="ctrl">
-					<Text as="div" tone="faint" size="xs">{m.softlimit_cap_usd_label()}</Text>
-					<Input type="number" step="0.01" bind:value={capUsd} placeholder="e.g. 5.00" />
+					<Text as="span" tone="faint" size="xs">{m.softlimit_cap_usd_label()}</Text>
+					<Input type="number" step="0.01" size="sm" mono width="6rem" bind:value={capUsd} placeholder="e.g. 5.00" />
 				</label>
 			{/if}
 			<label class="ctrl">
-				<Text as="div" tone="faint" size="xs">{m.softlimit_bypass_label()}</Text>
-				<Input type="number" bind:value={bypass} placeholder="e.g. 30" />
+				<Text as="span" tone="faint" size="xs">{m.softlimit_bypass_label()}</Text>
+				<Input type="number" size="sm" mono width="5rem" bind:value={bypass} placeholder="e.g. 30" />
 			</label>
 		</div>
 	{/if}
@@ -158,16 +158,16 @@
 		align-items: center;
 		white-space: nowrap;
 	}
+	/* The editor's fields ride one line under the bar, flush right. */
 	.controls {
-		display: grid;
-		grid-template-columns: repeat(2, 1fr);
-		gap: var(--sp-2);
-		margin-top: var(--sp-1);
+		display: flex;
+		justify-content: flex-end;
+		gap: var(--sp-3);
 	}
 	.ctrl {
-		display: flex;
-		flex-direction: column;
-		gap: var(--sp-1);
+		display: inline-flex;
+		align-items: center;
+		gap: var(--sp-2);
 		min-width: 0;
 	}
 </style>
