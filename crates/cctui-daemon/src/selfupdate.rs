@@ -360,7 +360,10 @@ pub async fn check_and_apply_with(
 /// useful.
 pub fn reexec(exe: &Path) -> ! {
     let args: Vec<String> = std::env::args().collect();
-    let err = std::process::Command::new(exe).args(&args[1..]).exec();
+    let mut cmd = std::process::Command::new(exe);
+    cmd.args(&args[1..]);
+    crate::runlock::export_for_reexec(&mut cmd);
+    let err = cmd.exec();
     eprintln!("re-exec failed: {err}");
     std::process::exit(1);
 }
