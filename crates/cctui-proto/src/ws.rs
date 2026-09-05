@@ -70,6 +70,13 @@ pub enum DaemonFrameUp {
         sent_at: chrono::DateTime<chrono::Utc>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         bandwidth: Option<crate::bandwidth::BandwidthSummary>,
+        /// Whether this machine has a deterministic update hook configured
+        /// (`CCTUI_UPDATE_COMMAND`), so the server can offer the hook instead
+        /// of a YOLO agent. Optional: a daemon too old to know the field
+        /// omits it, and the server then leaves the stored flag alone rather
+        /// than reading the absence as "no hook".
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        update_hook: Option<bool>,
     },
     /// Reply to a [`DaemonFrameDown::StageFiles`] request (mid-chat
     /// attachments). `request_id` correlates with the originating
@@ -230,6 +237,15 @@ pub enum DaemonFrameDown {
     /// Fire-and-forget: the refreshed catalog arrives on the event stream like
     /// a session-start refresh does.
     RefreshCodexModels {},
+    /// Run this machine's deterministic update hook to deploy cctui `version`.
+    ///
+    /// Fire-and-forget on purpose: the hook restarts the very server that sent
+    /// this frame, so there is no reply to wait for. Progress comes back out
+    /// of band over HTTP (`POST /api/v1/daemon/update-hook/{run_id}`), where it
+    /// reaches whichever server process is alive by then, and the run row in
+    /// Postgres outlives them both. A daemon with no hook configured reports
+    /// `failed` immediately rather than silently dropping the frame.
+    RunUpdateHook { run_id: uuid::Uuid, version: String, release_url: String },
 }
 
 /// Effective secret-scrub config synced to the daemon.
@@ -968,16 +984,39 @@ mod tests {
                 blob_put: 42,
                 ..Default::default()
             }),
+            update_hook: Some(true),
         };
         let json = serde_json::to_string(&hb).unwrap();
         assert!(json.contains(r#""forward":900"#), "{json}");
         assert!(json.contains(r#""blob_put":42"#), "{json}");
+        assert!(json.contains(r#""update_hook":true"#), "{json}");
 
         let legacy = r#"{"type":"heartbeat","sent_at":"2026-07-21T00:00:00Z"}"#;
         let back: DaemonFrameUp = serde_json::from_str(legacy).unwrap();
         match back {
-            DaemonFrameUp::Heartbeat { bandwidth, .. } => assert!(bandwidth.is_none()),
+            // A daemon that predates either field says nothing about both; the
+            // server must not read that silence as "no hook".
+            DaemonFrameUp::Heartbeat { bandwidth, update_hook, .. } => {
+                assert!(bandwidth.is_none());
+                assert!(update_hook.is_none());
+            }
             _ => panic!("expected Heartbeat"),
+        }
+    }
+
+    #[test]
+    fn run_update_hook_roundtrips() {
+        let f = DaemonFrameDown::RunUpdateHook {
+            run_id: uuid::Uuid::nil(),
+            version: "0.7.319".into(),
+            release_url: "https://github.com/DorskFR/cctui/releases/tag/v0.7.319".into(),
+        };
+        let json = serde_json::to_string(&f).unwrap();
+        assert!(json.contains(r#""type":"run_update_hook""#), "{json}");
+        let back: DaemonFrameDown = serde_json::from_str(&json).unwrap();
+        match back {
+            DaemonFrameDown::RunUpdateHook { version, .. } => assert_eq!(version, "0.7.319"),
+            _ => panic!("expected RunUpdateHook"),
         }
     }
 

@@ -1,12 +1,23 @@
-//! `POST /api/v1/version/self-update` — hand the upgrade to an agent.
+//! `POST /api/v1/version/self-update` — deploy the newer release.
 //!
-//! The webui's update modal ends here: an admin confirmed that a YOLO agent may
-//! deploy the newer release. The server knows *nothing* about how this
-//! deployment is updated (Kubernetes rollout, Compose pull, a systemd unit…):
-//! it spawns a session on the configured self-update machine (see
-//! `routes::instance`) with a generic prompt, and the agent follows the local
-//! instructions of that machine. The session runs under the caller's own
-//! accounts (`auto_account`), so the admin who clicks pays for it.
+//! The webui's update modal ends here, and there are two ways out of it. The
+//! server knows *nothing* about how this deployment is updated (Kubernetes
+//! rollout, Compose pull, a systemd unit…), and there are as many answers as
+//! there are installations, so it never guesses. It asks whoever does know:
+//!
+//! 1. **The machine, if it was told.** A daemon with `CCTUI_UPDATE_COMMAND`
+//!    set advertises a deterministic update hook; the server hands it the
+//!    target version and the machine runs the operator's own command, verifies
+//!    the served version and rolls back on failure. No model, no account, the
+//!    same bytes every time. See `routes::update_hook` and
+//!    `docs/update-hook.md`.
+//!
+//! 2. **A YOLO agent, otherwise.** The fallback for a deployment nobody has
+//!    written a hook for: spawn a session on the configured self-update
+//!    machine (see `routes::instance`) with a generic prompt, and let the
+//!    agent read that machine's local instructions. The session runs under the
+//!    caller's own accounts (`auto_account`), so the admin who clicks pays for
+//!    it. It is the fallback, not the design: prefer a hook.
 //!
 //! Model floor: see [`launch_profile`]. The point of a self-update agent is
 //! to read a deployment's runbook and act on infrastructure — never hand that
@@ -25,7 +36,7 @@ use tokio::sync::Mutex;
 use ts_rs::TS;
 
 use crate::auth::{AuthContext, Scope};
-use crate::routes::{instance, spawn};
+use crate::routes::{instance, spawn, update_hook};
 use crate::state::AppState;
 use crate::update_check;
 
@@ -99,18 +110,30 @@ pub fn prompt(current: &str, latest: &update_check::LatestRelease) -> String {
     )
 }
 
+/// Which of the two paths took the job, and what to watch as a result.
 #[derive(Serialize, TS)]
 #[ts(export)]
-pub struct SelfUpdateResponse {
-    /// Spawn command id, to await on the websocket like a manual spawn.
-    pub command_id: uuid::Uuid,
-    /// The id the new session registers under (claude-code pre-mints it),
-    /// so the webui can jump to it; `null` for adapters that mint their own.
-    pub session_id: Option<uuid::Uuid>,
-    /// Version the agent was asked to deploy.
-    pub version: String,
-    /// Account the spawn bound (see `SpawnResponse::account`).
-    pub account: Option<String>,
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum SelfUpdateResponse {
+    /// The machine's own update command is running. There is no session to
+    /// open: progress is the run, polled from `GET /version/self-update`.
+    Hook {
+        run_id: uuid::Uuid,
+        /// Version the machine was asked to deploy.
+        version: String,
+    },
+    /// No hook on the target machine, so an agent got the job.
+    Agent {
+        /// Spawn command id, to await on the websocket like a manual spawn.
+        command_id: uuid::Uuid,
+        /// The id the new session registers under (claude-code pre-mints it),
+        /// so the webui can jump to it; `null` for adapters that mint their own.
+        session_id: Option<uuid::Uuid>,
+        /// Version the agent was asked to deploy.
+        version: String,
+        /// Account the spawn bound (see `SpawnResponse::account`).
+        account: Option<String>,
+    },
 }
 
 fn conflict(msg: impl Into<String>) -> (StatusCode, Json<ApiError>) {
@@ -140,6 +163,21 @@ pub async fn launch(
             latest.version,
             RELAUNCH_COOLDOWN.saturating_sub(remaining).as_secs().div_ceil(60)
         )));
+    }
+
+    // The deterministic path, when the machine was told how to update this
+    // deployment. Preferred over the agent whenever it exists.
+    let machine_uuid = uuid::Uuid::parse_str(&target.machine_id).ok();
+    if let Some(machine) = machine_uuid
+        && update_hook::machine_has_hook(&state.pool, machine).await
+    {
+        return match launch_hook(&state, &ctx, machine, &latest).await {
+            Ok(res) => Ok((StatusCode::ACCEPTED, Json(res))),
+            Err(e) => {
+                state.self_update.release().await;
+                Err(e)
+            }
+        };
     }
 
     let adapter_id = target.adapter_id.clone().unwrap_or_else(|| "claude-code".to_owned());
@@ -177,7 +215,7 @@ pub async fn launch(
             );
             Ok((
                 status,
-                Json(SelfUpdateResponse {
+                Json(SelfUpdateResponse::Agent {
                     command_id: res.command_id,
                     session_id: res.session_id,
                     version: latest.version,
@@ -190,6 +228,50 @@ pub async fn launch(
             Err(e)
         }
     }
+}
+
+/// Open a run row, then hand the frame to the daemon. The row goes first on
+/// purpose: the hook restarts this process, so by the time the daemon reports
+/// anything, the only thing that still remembers the run is Postgres.
+async fn launch_hook(
+    state: &AppState,
+    ctx: &AuthContext,
+    machine: uuid::Uuid,
+    latest: &update_check::LatestRelease,
+) -> Result<SelfUpdateResponse, (StatusCode, Json<ApiError>)> {
+    let run_id =
+        update_hook::open_run(&state.pool, machine, &latest.version, CURRENT, Some(ctx.user_id))
+            .await
+            .map_err(|err| {
+                tracing::error!(%err, "could not open a self-update run");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ApiError { error: "could not record the update run".into() }),
+                )
+            })?;
+
+    let frame = cctui_proto::ws::DaemonFrameDown::RunUpdateHook {
+        run_id,
+        version: latest.version.clone(),
+        release_url: latest.url.clone(),
+    };
+    if let Err(err) = state.bus.command_daemon(machine, frame).await {
+        update_hook::abandon_run(&state.pool, run_id).await;
+        return Err(conflict(format!("could not reach the update machine: {err}")));
+    }
+
+    tracing::info!(%run_id, %machine, version = %latest.version, "update hook dispatched");
+    Ok(SelfUpdateResponse::Hook { run_id, version: latest.version.clone() })
+}
+
+/// The most recent hook run, for the webui's progress panel. `null` when this
+/// deployment has never run one (every agent-path deployment, forever).
+///
+/// Readable by any authenticated user: an outage everyone can see is not a
+/// secret, and knowing an update is mid-flight is exactly what stops a second
+/// person from starting another one.
+pub async fn status(State(state): State<AppState>) -> Json<Option<update_hook::SelfUpdateRun>> {
+    Json(update_hook::latest_run(&state.pool).await)
 }
 
 #[cfg(test)]

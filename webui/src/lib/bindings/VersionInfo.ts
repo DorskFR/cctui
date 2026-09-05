@@ -16,8 +16,14 @@ latest_url: string | null,
  */
 instance_name: string | null, 
 /**
- * Whether an admin can launch the self-update agent from here: a
- * self-update machine is configured (settings or env). Everyone sees the
- * flag, only admins get the button; the machine itself stays admin-only.
+ * Whether an admin can launch a self-update from here: a self-update
+ * machine is configured (settings or env). Everyone sees the flag, only
+ * admins get the button; the machine itself stays admin-only.
  */
-self_update_ready: boolean, };
+self_update_ready: boolean, 
+/**
+ * Whether that machine has a deterministic update hook
+ * (`CCTUI_UPDATE_COMMAND`), so the update runs the operator's own command
+ * instead of a YOLO agent. Drives what the update modal promises.
+ */
+self_update_hook: boolean, };

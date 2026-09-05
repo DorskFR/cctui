@@ -322,6 +322,10 @@ impl Supervisor {
                         let hb = DaemonFrameUp::Heartbeat {
                             sent_at: chrono::Utc::now(),
                             bandwidth: Some(self.counters.summary()),
+                            // Re-read per heartbeat: an operator who configures
+                            // the hook and restarts the daemon is picked up on
+                            // the next ping, with nothing to do server-side.
+                            update_hook: Some(crate::updatehook::configured()),
                         };
                         let payload = serde_json::to_string(&hb)?;
                         self.counters.add(Subsystem::Heartbeat, payload.len() as u64);
@@ -461,8 +465,27 @@ impl Supervisor {
             DaemonFrameDown::ReadFile { request_id, path, max_bytes, cwd } => {
                 self.spawn_read_file(request_id, path, max_bytes, cwd, frame_up_tx.clone());
             }
+            DaemonFrameDown::RunUpdateHook { run_id, version, release_url } => {
+                self.spawn_update_hook(run_id, version, release_url);
+            }
             _ => {}
         }
+    }
+
+    /// Run the deployment's update hook off the frame loop.
+    ///
+    /// Deliberately not a correlated request: the hook restarts the server that
+    /// sent the frame, so there is no reply to send back — progress goes over
+    /// HTTP instead, to whichever server process is alive by then.
+    fn spawn_update_hook(&self, run_id: uuid::Uuid, version: String, release_url: String) {
+        crate::updatehook::spawn(
+            self.client.http(),
+            self.client.base_url().to_owned(),
+            self.machine_key.clone(),
+            run_id,
+            version,
+            release_url,
+        );
     }
 
     /// One-shot codex `model/list` off the frame loop; the catalog rides the
@@ -1290,7 +1313,11 @@ mod tests {
         // Heartbeats never enter the batch buffer (the ping arm sends them
         // directly); prepared, one is a small plain frame, proving the control
         // path is never delayed or wrapped by batching.
-        let hb = DaemonFrameUp::Heartbeat { sent_at: chrono::Utc::now(), bandwidth: None };
+        let hb = DaemonFrameUp::Heartbeat {
+            sent_at: chrono::Utc::now(),
+            bandwidth: None,
+            update_hook: None,
+        };
         let super::Prepared::Frame(text) = super::prepare_send(&hb).unwrap() else {
             panic!("heartbeat must not chunk")
         };

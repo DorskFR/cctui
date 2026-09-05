@@ -33,6 +33,7 @@ import type { GitInfo } from "@bindings/GitInfo";
 import type { InstanceInfo } from "@bindings/InstanceInfo";
 import type { ChangelogResponse } from "@bindings/ChangelogResponse";
 import type { SelfUpdateResponse } from "@bindings/SelfUpdateResponse";
+import type { SelfUpdateRun } from "@bindings/SelfUpdateRun";
 import type { SelfUpdateTarget } from "@bindings/SelfUpdateTarget";
 import type { SelfUpdateTargetInfo } from "@bindings/SelfUpdateTargetInfo";
 import type { SelfUpdateTargetRequest } from "@bindings/SelfUpdateTargetRequest";
@@ -86,9 +87,14 @@ export const endpoints = {
   /** Release notes of every upstream release newer than this server, as the
    *  background probe last saw them (no network call from the browser). */
   changelog: () => api.get<ChangelogResponse>("/version/changelog"),
-  /** Hand the upgrade to a YOLO agent on the configured self-update machine
-   *  (admin). `409` when up to date, unconfigured, or one is already running. */
+  /** Deploy the newer release on the configured self-update machine (admin):
+   *  the machine's own update hook when it has one, a YOLO agent otherwise —
+   *  the answer's `mode` says which. `409` when up to date, unconfigured, or
+   *  one is already running. */
   selfUpdate: () => api.post<SelfUpdateResponse>("/version/self-update"),
+  /** The most recent update-hook run, or `null` on a deployment that has never
+   *  run one. Polled while an update is in flight. */
+  selfUpdateStatus: () => api.get<SelfUpdateRun | null>("/version/self-update"),
   /** Machine + directory the self-update agent runs on (admin). */
   selfUpdateTarget: () => api.get<SelfUpdateTargetInfo>("/admin/instance/self-update"),
   /** Set (or clear with `null`) the self-update target (admin). */

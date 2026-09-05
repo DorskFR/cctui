@@ -34,12 +34,27 @@ bumps for a separate follow-up — they belong in the same change as the code.
 - Keep PRs focused; reference the relevant ticket in the title where applicable.
 - Let the pre-commit hooks (lefthook) run fmt / check / clippy / lint.
 
-## Self-update agent: model floor
+## Self-update
 
-The webui's "Update" button (`POST /api/v1/version/self-update`) spawns a YOLO
-agent on the configured machine to deploy the newer release. That agent reads
-a deployment's runbook and acts on infrastructure, so it must **never run on a
-small model**:
+The webui's "Update" button (`POST /api/v1/version/self-update`) has two paths,
+and the deterministic one is the default whenever it is available.
+
+**Prefer the update hook.** A daemon with `CCTUI_UPDATE_COMMAND` set advertises
+it on every heartbeat; the server then hands that machine the target version and
+it runs the operator's own command, verifies the served version, and rolls back
+on failure. No model, no account, the same bytes every release. The contract and
+per-platform recipes live in [docs/update-hook.md](./docs/update-hook.md); the
+code is `crates/cctui-daemon/src/updatehook.rs` and
+`crates/cctui-server/src/routes/update_hook.rs`.
+
+Don't teach the server how any deployment updates. There are as many answers as
+there are installations, and the operator already knows theirs.
+
+### Agent fallback: model floor
+
+With no hook on the target machine, the button spawns a YOLO agent there
+instead. That agent reads a deployment's runbook and acts on infrastructure, so
+it must **never run on a small model**:
 
 - Claude: always a tier **above Sonnet** (Opus or better), `medium` effort.
 - OpenAI: a GPT-5-class frontier model, `medium` effort; never a `mini` / `nano`

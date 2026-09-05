@@ -811,7 +811,13 @@ async fn process_frame(
             resolve_read_file_result(state, request_id, ok, file, error_kind, error);
             Ok(())
         }
-        DaemonFrameUp::Heartbeat { bandwidth, .. } => {
+        DaemonFrameUp::Heartbeat { bandwidth, update_hook, .. } => {
+            // A daemon too old to advertise omits the field; leave the stored
+            // flag alone rather than reading silence as "no hook".
+            if let Some(has_hook) = update_hook {
+                crate::routes::update_hook::record_hook_flag(&state.pool, machine_id, has_hook)
+                    .await;
+            }
             // Machine liveness: advance `last_seen_at` on EVERY
             // heartbeat (not just connect, as auth.rs does), then derive the
             // online/stale/offline tier and broadcast it on transition. This is

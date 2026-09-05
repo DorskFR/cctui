@@ -82,6 +82,20 @@ impl ServerClient {
         self.counters.clone()
     }
 
+    /// The server this daemon is enrolled with, without its trailing slash.
+    /// The update hook needs it to build its own health-probe and report URLs.
+    #[must_use]
+    pub fn base_url(&self) -> &str {
+        self.base_url.trim_end_matches('/')
+    }
+
+    /// A clone of the pooled HTTP client, for callers that need to issue their
+    /// own requests to the server (the update hook's probe/report loop).
+    #[must_use]
+    pub fn http(&self) -> reqwest::Client {
+        self.http.clone()
+    }
+
     pub async fn enroll(
         &self,
         user_token: &str,
