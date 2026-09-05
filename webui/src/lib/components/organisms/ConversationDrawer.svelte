@@ -18,8 +18,7 @@
 		/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
 	import { highlightTerms } from '$lib/search';
 	import { drafts, VIEW_OPTS } from '$lib/drafts';
-	import { Button, Dropzone } from '@dorsk/tsumikit';
-	import BackdropScrim from './conversation/BackdropScrim.svelte';
+	import { Button, Dropzone, ResizablePanel } from '@dorsk/tsumikit';
 	import ForkModal from './conversation/ForkModal.svelte';
 	import DrawerHeader from './conversation/DrawerHeader.svelte';
 	import DrawerToolbar from './conversation/DrawerToolbar.svelte';
@@ -86,7 +85,8 @@
 		terminalOpen = false;
 	});
 
-	const PANE_MIN = 360; // px — narrowest the drawer can be dragged
+	const DRAWER_MIN_PX = 360;
+	const DRAWER_DEFAULT_PX = 900;
 	let view = $state<ViewOpts>(parseViewOpts(drafts.get(VIEW_OPTS)));
 	const visible = (c: MsgCategory): boolean => view.msgFilter[c];
 	$effect(() => {
@@ -365,226 +365,187 @@
 		onNewFromScript?.(session);
 	}
 
-	// ── Drag-to-resize the desktop drawer (left border) ─────────────────────
-	let resizing = $state(false);
-	// Coalesce pointermoves to one width update per frame (mirrors tsumikit's
-	// Modal): pointer events fire faster than the refresh and each width change
-	// reflows + repaints the pane, so writing once per rAF caps that to the frame
-	// rate and keeps the drag smooth instead of jaggery.
-	let rafId = 0;
-	let lastX = 0;
-	function startResize(e: PointerEvent) {
-		resizing = true;
-		lastX = e.clientX;
-		(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-		e.preventDefault();
-	}
-	function onResize(e: PointerEvent) {
-		if (!resizing) return;
-		lastX = e.clientX;
-		if (rafId) return;
-		rafId = requestAnimationFrame(() => {
-			rafId = 0;
-			const w = window.innerWidth - lastX;
-			view.paneWidth = Math.round(Math.max(PANE_MIN, Math.min(w, window.innerWidth)));
-		});
-	}
-	function endResize(e: PointerEvent) {
-		if (!resizing) return;
-		resizing = false;
-		if (rafId) {
-			cancelAnimationFrame(rafId);
-			rafId = 0;
-		}
-		try {
-			(e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
-		} catch {
-			/* pointer already released */
+	// Nested dialogs and the rename input take Escape for themselves; keep it
+	// from reaching the panel's document-level close handler.
+	function guardEscape(e: KeyboardEvent) {
+		if (e.key !== 'Escape') return;
+		const target = e.target as Element | null;
+		const own = (e.currentTarget as Element).closest('[role="dialog"]');
+		if (target instanceof HTMLInputElement || target?.closest('[role="dialog"]') !== own) {
+			e.preventDefault();
 		}
 	}
-	const drawerWidth = $derived(
-		view.paneWidth ? `min(${view.paneWidth}px, 100vw)` : 'min(900px, 100vw)'
-	);
-
-	// Re-clamp the dragged width when the OS window itself shrinks. The
-	// drag path clamps `paneWidth` to the window width at DRAG time, but a stored
-	// width wider than a now-smaller viewport leaves the drawer (and its left
-	// resize border) off-screen and unreachable. Re-apply the same clamp on every
-	// window 'resize' so the border always stays within the viewport. Registered
-	// on mount, torn down on destroy via the effect's cleanup.
-	$effect(() => {
-		const reclamp = () => {
-			if (view.paneWidth === null) return;
-			const clamped = Math.round(Math.max(PANE_MIN, Math.min(view.paneWidth, window.innerWidth)));
-			if (clamped !== view.paneWidth) view.paneWidth = clamped;
-		};
-		window.addEventListener('resize', reclamp);
-		return () => window.removeEventListener('resize', reclamp);
-	});
 </script>
 
-<BackdropScrim {onclose} />
+<div class="drawer-host">
+<ResizablePanel
+	mode="overlay"
+	side="right"
+	open
+	{onclose}
+	label={m.settings_group_conversation()}
+	width={view.paneWidth ?? DRAWER_DEFAULT_PX}
+	minWidth={DRAWER_MIN_PX}
+	maxWidth="100vw"
+	widthKey="cctui_drawer_width"
+	fullWidthBelow="959px"
+	handlePlacement="top"
+	resizeStep={32}
+>
+	{#snippet panel()}
+		<!-- svelte-ignore a11y_no_static_element_interactions -->
+		<div class="drawer" onkeydown={guardEscape}>
+			<!-- The whole drawer is a file drop area: dragging files over it
+			     shows the tsumikit Dropzone overlay; on drop they're staged as composer
+			     attachments. overlay mode wraps the content without hijacking clicks. -->
+			<Dropzone
+				overlay
+				multiple
+				label={m.composer_drop_files()}
+				disabled={!supportsAttachments || archived}
+				onfiles={(f) => composer?.addFiles(f)}
+				onactive={(a) => composer?.setDragActive(a)}
+			>
+				<DrawerHeader
+				{session}
+				{archived}
+				{isCodexSession}
+				{livenessClass}
+				{showStatusBadge}
+				{onclose}
+				onrename={sa.rename}
+				onsetmodel={sa.setModel}
+				oncopylink={sa.copyLink}
+				oncopymarkdown={sa.copyMarkdown}
+				onexport={sa.export}
+				onfork={fork.openDialog}
+				onforkselect={forkable
+					? () => (selectMode ? exitSelect() : (selectMode = true))
+					: undefined}
+				forkSelectActive={selectMode}
+				oninterrupt={sa.interrupt}
+				onarchive={sa.archive}
+				onstoparchive={sa.stopAndArchive}
+				onTogglePin={togglePin}
+				onAccountClick={() => (acctModalOpen = true)}
+				{allLabels}
+				onCreateLabel={createLabel}
+				onAttachLabel={attachLabel}
+				onDetachLabel={detachLabel}
+				onUpdateLabel={updateLabel}
+				onDeleteLabel={deleteLabel}
+			/>
 
-<div class="drawer" class:resizing style="--drawer-width: {drawerWidth}">
-	<!-- Drag the left border to resize the desktop side-pane. -->
-	<div
-		class="resize-handle"
-		role="separator"
-		aria-label={m.drawer_resize_panel()}
-		aria-orientation="vertical"
-		onpointerdown={startResize}
-		onpointermove={onResize}
-		onpointerup={endResize}
-		onpointercancel={endResize}
-	></div>
-	<!-- The whole drawer is a file drop area: dragging files over it
-	     shows the tsumikit Dropzone overlay; on drop they're staged as composer
-	     attachments. overlay mode wraps the content without hijacking clicks. -->
-	<Dropzone
-		overlay
-		multiple
-		label={m.composer_drop_files()}
-		disabled={!supportsAttachments || archived}
-		onfiles={(f) => composer?.addFiles(f)}
-		onactive={(a) => composer?.setDragActive(a)}
-	>
-		<DrawerHeader
-		{session}
-		{archived}
-		{isCodexSession}
-		{livenessClass}
-		{showStatusBadge}
-		{onclose}
-		onrename={sa.rename}
-		onsetmodel={sa.setModel}
-		oncopylink={sa.copyLink}
-		oncopymarkdown={sa.copyMarkdown}
-		onexport={sa.export}
-		onfork={fork.openDialog}
-		onforkselect={forkable
-			? () => (selectMode ? exitSelect() : (selectMode = true))
-			: undefined}
-		forkSelectActive={selectMode}
-		oninterrupt={sa.interrupt}
-		onarchive={sa.archive}
-		onstoparchive={sa.stopAndArchive}
-		onTogglePin={togglePin}
-		onAccountClick={() => (acctModalOpen = true)}
-		{allLabels}
-		onCreateLabel={createLabel}
-		onAttachLabel={attachLabel}
-		onDetachLabel={detachLabel}
-		onUpdateLabel={updateLabel}
-		onDeleteLabel={deleteLabel}
-	/>
+			<DrawerToolbar
+				bind:view
+				autoApprove={session.auto_approve}
+				bind:mobilePanel
+				ontoggleAuto={sa.toggleAutoApprove}
+				ondiagnose={() => (diagnoseOpen = true)}
+				onterminal={isCodexSession ? undefined : () => (terminalOpen = !terminalOpen)}
+				{terminalOpen}
+			/>
 
-	<DrawerToolbar
-		bind:view
-		autoApprove={session.auto_approve}
-		bind:mobilePanel
-		ontoggleAuto={sa.toggleAutoApprove}
-		ondiagnose={() => (diagnoseOpen = true)}
-		onterminal={isCodexSession ? undefined : () => (terminalOpen = !terminalOpen)}
-		{terminalOpen}
-	/>
+			{#if diagnoseOpen}
+				<DiagnosePanel sessionId={id} {session} onclose={() => (diagnoseOpen = false)} />
+			{/if}
 
-	{#if diagnoseOpen}
-		<DiagnosePanel sessionId={id} {session} onclose={() => (diagnoseOpen = false)} />
-	{/if}
+			{#if terminalOpen && !isCodexSession}
+				<TerminalPane sessionId={id} onclose={() => (terminalOpen = false)} />
+			{/if}
 
-	{#if terminalOpen && !isCodexSession}
-		<TerminalPane sessionId={id} onclose={() => (terminalOpen = false)} />
-	{/if}
+			{#if needsInput}
+				<div class="attn-banner">{m.conversation_waiting_input()}</div>
+			{/if}
 
-	{#if needsInput}
-		<div class="attn-banner">{m.conversation_waiting_input()}</div>
-	{/if}
+			{#if stream.softLimit}
+				<!-- Slim notice once the auto-opened modal is dismissed, so the stalled chat
+				     keeps an obvious way back to the switcher. -->
+				<div class="attn-banner soft-limit-notice">
+					<span>{m.conversation_soft_limit_reached({ account: stream.softLimit.account_name })}</span>
+					<button type="button" class="soft-limit-switch" onclick={() => (acctModalOpen = true)}>
+						{m.conversation_switch_account()}
+					</button>
+				</div>
+			{/if}
 
-	{#if stream.softLimit}
-		<!-- Slim notice once the auto-opened modal is dismissed, so the stalled chat
-		     keeps an obvious way back to the switcher. -->
-		<div class="attn-banner soft-limit-notice">
-			<span>{m.conversation_soft_limit_reached({ account: stream.softLimit.account_name })}</span>
-			<button type="button" class="soft-limit-switch" onclick={() => (acctModalOpen = true)}>
-				{m.conversation_switch_account()}
-			</button>
+			{#if acctModalOpen}
+				<AccountSwitchModal
+					sessionId={id}
+					accounts={accounts.data ?? []}
+					softLimit={stream.softLimit}
+					onswitch={(acct) => stream.switchAccount(acct)}
+					onclose={() => (acctModalOpen = false)}
+				/>
+			{/if}
+
+			<Conversation
+				{stream}
+				{scroll}
+				sessionId={id}
+				{lines}
+				isLoading={history.isLoading}
+				canFetchOlder={canFetchEarlier}
+				fetchingOlder={fetchingEarlier}
+				onfetcholder={fetchEarlier}
+				{archived}
+				{askPreambleHtml}
+				{planPreambleHtml}
+				onedit={editPending}
+				onrespondperm={(rid, allow) => ws.respondPermission(id, rid, allow)}
+				{forkable}
+				{selectMode}
+				{selected}
+				ontoggleselect={toggleSelect}
+			/>
+
+			<ConversationComposer
+				bind:this={composer}
+				{session}
+				{archived}
+				working={stream.working}
+				{supportsAttachments}
+				{scroll}
+				onsend={(body) => stream.sendBody(body)}
+				stageFiles={(files) => actions.stageFiles(id, files)}
+				onNewFromScript={newFromScript}
+				onFork={fork.openDialog}
+				onResume={sa.resume}
+			/>
+			</Dropzone>
 		</div>
-	{/if}
 
-	{#if acctModalOpen}
-		<AccountSwitchModal
-			sessionId={id}
-			accounts={accounts.data ?? []}
-			softLimit={stream.softLimit}
-			onswitch={(acct) => stream.switchAccount(acct)}
-			onclose={() => (acctModalOpen = false)}
-		/>
-	{/if}
-
-	<Conversation
-		{stream}
-		{scroll}
-		sessionId={id}
-		{lines}
-		isLoading={history.isLoading}
-		canFetchOlder={canFetchEarlier}
-		fetchingOlder={fetchingEarlier}
-		onfetcholder={fetchEarlier}
-		{archived}
-		{askPreambleHtml}
-		{planPreambleHtml}
-		onedit={editPending}
-		onrespondperm={(rid, allow) => ws.respondPermission(id, rid, allow)}
-		{forkable}
-		{selectMode}
-		{selected}
-		ontoggleselect={toggleSelect}
-	/>
-
-	<ConversationComposer
-		bind:this={composer}
-		{session}
-		{archived}
-		working={stream.working}
-		{supportsAttachments}
-		{scroll}
-		onsend={(body) => stream.sendBody(body)}
-		stageFiles={(files) => actions.stageFiles(id, files)}
-		onNewFromScript={newFromScript}
-		onFork={fork.openDialog}
-		onResume={sa.resume}
-	/>
-	</Dropzone>
-</div>
-
-{#if selectMode}
-	<div class="fork-select-bar row">
-		{#if selected.size > 0}
-			<span class="fork-select-count">{selected.size}</span>
+		{#if selectMode}
+			<div class="fork-select-bar row">
+				{#if selected.size > 0}
+					<span class="fork-select-count">{selected.size}</span>
+				{/if}
+				<Button variant="primary" onclick={forkSelection} disabled={selected.size === 0}>
+					{m.fork_selection()}
+				</Button>
+				<Button onclick={fork.openDialog}>{m.drawer_fork_label()}</Button>
+				<Button onclick={exitSelect}>{m.common_cancel()}</Button>
+			</div>
 		{/if}
-		<Button variant="primary" onclick={forkSelection} disabled={selected.size === 0}>
-			{m.fork_selection()}
-		</Button>
-		<Button onclick={fork.openDialog}>{m.drawer_fork_label()}</Button>
-		<Button onclick={exitSelect}>{m.common_cancel()}</Button>
-	</div>
-{/if}
 
-{#if fork.open}
-	<ForkModal
-		{archived}
-		{isCodexSession}
-		parentTokens={fork.parentTokens}
-		models={fork.models}
-		efforts={fork.efforts}
-		forking={fork.forking}
-		extractLabel={fork.extractLabel}
-		bind:model={fork.model}
-		bind:effort={fork.effort}
-		oncancel={fork.cancel}
-		onsubmit={fork.submit}
-	/>
-{/if}
+		{#if fork.open}
+			<ForkModal
+				{archived}
+				{isCodexSession}
+				parentTokens={fork.parentTokens}
+				models={fork.models}
+				efforts={fork.efforts}
+				forking={fork.forking}
+				extractLabel={fork.extractLabel}
+				bind:model={fork.model}
+				bind:effort={fork.effort}
+				oncancel={fork.cancel}
+				onsubmit={fork.submit}
+			/>
+		{/if}
+	{/snippet}
+</ResizablePanel>
+</div>
 
 <style>
 	.fork-select-bar {
@@ -609,97 +570,18 @@
 		opacity: 0.85;
 		padding-left: var(--sp-1);
 	}
-	.drawer {
-		position: fixed;
-		inset: 0;
+	/* Zero-size stacking-context host so the fixed panel and scrim paint on
+	   the drawer layer instead of inside the page's own stacking order. */
+	.drawer-host {
+		position: relative;
 		z-index: var(--z-drawer);
-		background: var(--bg);
+	}
+	.drawer {
 		display: flex;
 		flex-direction: column;
+		height: 100%;
+		background: var(--bg);
 		padding-top: var(--safe-top);
-		animation: slide 0.18s var(--ease);
-	}
-	/* Full-width on narrow viewports; a right-anchored side pane on wide ones. */
-	@media (min-width: 960px) {
-		.drawer {
-			left: auto;
-			right: 0;
-			width: var(--drawer-width, min(900px, 100vw));
-			border-left: 1px solid var(--border);
-			box-shadow: -4px 0 24px rgba(0, 0, 0, 0.4);
-		}
-	}
-	/* While dragging the resize handle, suppress text selection / the slide-in
-	   animation so the pane tracks the pointer cleanly. */
-	.drawer.resizing {
-		user-select: none;
-		animation: none;
-		/* Make per-frame width changes cheap to paint while dragging (mirrors the
-		   Modal): hint the animated property and isolate layout/paint to the pane. */
-		will-change: width;
-		contain: layout paint;
-	}
-	/* Drag handle on the left border — desktop only (mobile is full-width). */
-	.resize-handle {
-		display: none;
-	}
-	@media (min-width: 960px) {
-		/* The handle overhangs the drawer's left edge by 6px, but never past the
-		   viewport: at full width the overhang would land off-screen and be
-		   ungrabbable, so the shift clamps to the leftover space and the lost
-		   overhang is added back inside instead (mirrors tsumikit's Modal /
-		   ResizablePanel handle). */
-		.resize-handle {
-			--handle-shift: max(-6px, calc(var(--drawer-width, 100vw) - 100vw));
-			display: block;
-			position: absolute;
-			top: 0;
-			bottom: 0;
-			left: var(--handle-shift);
-			width: calc(18px + var(--handle-shift));
-			z-index: 4;
-			cursor: ew-resize;
-			touch-action: none;
-		}
-		/* Full-height edge line that lights up on hover, so the affordance is
-		   findable without knowing it exists. */
-		.resize-handle::before {
-			content: '';
-			position: absolute;
-			top: 0;
-			bottom: 0;
-			left: max(0px, calc(-1 * var(--handle-shift) - 1px));
-			width: 2px;
-			border-radius: 999px;
-			background: transparent;
-			transition: background 0.12s var(--ease);
-		}
-		.resize-handle::after {
-			content: '';
-			position: absolute;
-			top: 50%;
-			left: max(0px, calc(-1 * var(--handle-shift) - 2px));
-			transform: translateY(-50%);
-			width: 4px;
-			height: 44px;
-			border-radius: 999px;
-			background: var(--border-strong);
-			transition: background 0.12s var(--ease);
-		}
-		.resize-handle:hover::before,
-		.drawer.resizing .resize-handle::before {
-			background: color-mix(in srgb, var(--accent) 45%, transparent);
-		}
-		.resize-handle:hover::after,
-		.drawer.resizing .resize-handle::after {
-			background: var(--accent);
-		}
-	}
-	@keyframes slide {
-		from {
-			transform: translateX(4%);
-			opacity: 0.5;
-		}
 	}
 	.attn-banner {
 		padding: var(--sp-2) var(--sp-3);

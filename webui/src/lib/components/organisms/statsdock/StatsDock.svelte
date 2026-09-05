@@ -1,7 +1,7 @@
 <script lang="ts">
-	import type { DockSide } from '$lib/dock';
+	import { DOCK_MIN_PX, maxDockWidth, type DockSide } from '$lib/dock';
 	import { settings } from '$lib/settings.svelte';
-	import DockGrip from '$lib/components/molecules/DockGrip.svelte';
+	import { resizeHandle } from '@dorsk/tsumikit';
 	import AccountUsageList from './AccountUsageList.svelte';
 	import TokenWindows from './TokenWindows.svelte';
 	import OverviewTiles from './OverviewTiles.svelte';
@@ -26,6 +26,9 @@
 		if (stacked) settings.setSpawnDock({ width: px });
 		else settings.setStatsDock({ width: px });
 	}
+	let dragging = $state(false);
+	let viewportWidth = $state(0);
+	const maxPx = $derived(maxDockWidth(viewportWidth));
 
 	const sections = [
 		{ key: 'accounts', title: () => m.stats_dock_accounts(), open: true },
@@ -35,6 +38,8 @@
 	];
 </script>
 
+<svelte:window bind:innerWidth={viewportWidth} />
+
 <aside
 	class="dock"
 	class:dock-left={side === 'left'}
@@ -42,7 +47,30 @@
 	style:--stats-dock-w={width}
 	aria-label={m.stats_dock_title()}
 >
-	<DockGrip {side} onwidth={setWidth} onreset={() => setWidth(undefined)} />
+	<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+	<div
+		class="grip"
+		class:grip-left={side === 'left'}
+		class:dragging
+		role="separator"
+		tabindex="0"
+		aria-orientation="vertical"
+		aria-valuemin={DOCK_MIN_PX}
+		aria-valuemax={maxPx}
+		aria-label={m.dock_resize_grip()}
+		title={m.dock_resize_grip()}
+		use:resizeHandle={{
+			side: side,
+			min: DOCK_MIN_PX,
+			max: maxPx,
+			onwidth: setWidth,
+			onreset: () => setWidth(undefined),
+			onactive: (a) => {
+				dragging = a;
+				document.body.classList.toggle('dock-resizing', a);
+			}
+		}}
+	></div>
 	<div class="dock-head">{m.stats_dock_title()}</div>
 	<div class="dock-body">
 		{#each sections as s (s.key)}
@@ -87,6 +115,46 @@
 	.dock.stacked {
 		top: 50%;
 		border-top: 1px solid var(--border);
+	}
+	/* A 10px hit area straddling the panel's border, with a 2px line that only
+	   shows on hover, focus or while dragging so the border stays quiet otherwise. */
+	.grip {
+		position: absolute;
+		top: 0;
+		bottom: 0;
+		left: -5px;
+		width: 10px;
+		cursor: ew-resize;
+		touch-action: none;
+		z-index: 1;
+	}
+	.grip-left {
+		left: auto;
+		right: -5px;
+	}
+	.grip::after {
+		content: '';
+		position: absolute;
+		top: 0;
+		bottom: 0;
+		left: 4px;
+		width: 2px;
+		background: var(--accent);
+		opacity: 0;
+		transition: opacity 0.12s var(--ease);
+	}
+	.grip:hover::after,
+	.grip:focus-visible::after,
+	.grip.dragging::after {
+		opacity: 1;
+	}
+	.grip:focus-visible {
+		outline: none;
+	}
+	@media (hover: none) {
+		.grip::after {
+			opacity: 0.35;
+		}
 	}
 	.dock-head {
 		flex: none;
