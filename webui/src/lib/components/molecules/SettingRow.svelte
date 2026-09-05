@@ -6,8 +6,8 @@
 	// `data-setting-row` hook is what the Settings page filter walks. Controls
 	// that should fill the column pass `style="width:100%"` themselves (rule 4.2
 	// of webui/DESIGN.md), so this row never reaches into Tsumikit internals.
-	import type { Snippet } from 'svelte';
-	import { Badge, Text } from '@dorsk/tsumikit';
+	import { untrack, type Snippet } from 'svelte';
+	import { Badge, setFieldContext, Text } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 
 	let {
@@ -17,6 +17,7 @@
 		admin = false,
 		wide = false,
 		disabled = false,
+		selfLabelled = false,
 		children,
 		helpSlot
 	}: {
@@ -26,21 +27,33 @@
 		admin?: boolean;
 		wide?: boolean;
 		disabled?: boolean;
+		/** The row's control(s) name themselves (a segmented group, or several
+		 *  controls sharing the row), so the row label owns no `for`. */
+		selfLabelled?: boolean;
 		children?: Snippet;
 		/** Rich help (links, kbd) — used instead of `help` when given. */
 		helpSlot?: Snippet;
 	} = $props();
+
+	const uid = $props.id();
+	if (!untrack(() => selfLabelled)) setFieldContext({ id: uid, invalid: false });
 </script>
+
+{#snippet lblLine()}
+	<span class="lbl-line">
+		{label}
+		{#if server}<Badge tone="info" size="sm" uppercase border>{m.settings_scope_server()}</Badge>{/if}
+		{#if admin}<Badge tone="warn" size="sm" uppercase border>{m.settings_scope_admin()}</Badge>{/if}
+	</span>
+{/snippet}
 
 <div class="row" class:wide class:disabled data-setting-row>
 	<div class="lbl">
-		<Text weight="semibold" as="div">
-			<span class="lbl-line">
-				{label}
-				{#if server}<Badge tone="info" size="sm" uppercase border>{m.settings_scope_server()}</Badge>{/if}
-				{#if admin}<Badge tone="warn" size="sm" uppercase border>{m.settings_scope_admin()}</Badge>{/if}
-			</span>
-		</Text>
+		{#if selfLabelled}
+			<Text weight="semibold" as="div">{@render lblLine()}</Text>
+		{:else}
+			<Text weight="semibold" as="label" for={uid}>{@render lblLine()}</Text>
+		{/if}
 		{#if helpSlot}
 			<Text size="sm" tone="faint" as="div">{@render helpSlot()}</Text>
 		{:else if help}

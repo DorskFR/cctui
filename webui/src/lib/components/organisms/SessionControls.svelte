@@ -66,6 +66,8 @@
 		onDeleteLabel?: (labelId: string) => void | Promise<void>;
 	} = $props();
 
+	const searchId = $props.id();
+
 	// Overflow menu: the toolbar grew too many buttons and squeezed the
 	// search bar. A ⋯ flyout collapses the secondary controls. On desktop it holds
 	// the two DimensionPickers (color-by · group-by) so the search bar reclaims
@@ -130,12 +132,17 @@
 
 <div class="bar row">
 	<Heading level={1} class="sess-title">{m.sessions_title()}</Heading>
+	<!-- FilterSearchBar forwards no id/aria-label, so the name reaches its input
+	     through the Field context; the label itself is screen-reader only. -->
 	<div class="search-box">
-		<FilterSearchBar
-			schema={searchSchema}
-			bind:value={rawQuery}
-			placeholder={sessionSearchPlaceholder()}
-		/>
+		<Text as="label" for={searchId} class="sr-only">{m.a11y_sessions_search()}</Text>
+		<Field for={searchId}>
+			<FilterSearchBar
+				schema={searchSchema}
+				bind:value={rawQuery}
+				placeholder={sessionSearchPlaceholder()}
+			/>
+		</Field>
 	</div>
 	<SectionFilter bind:sections />
 	<!-- Inline copy of the foldable controls: visible on desktop, hidden by the

@@ -91,9 +91,8 @@
 	<Card as="form" class="stack" maxWidth="22rem" onsubmit={submit}>
 		<Text size="xl" weight="bold" class="brand"><Text variant="code" tone="accent">»_</Text> cctui</Text>
 		<Text as="p" tone="muted">{m.login_subtitle()}</Text>
-		<Field label={m.login_token_label()} for="token">
+		<Field label={m.login_token_label()}>
 			<Input
-				id="token"
 				mono
 				type="password"
 				autocomplete={offerPasskey ? 'current-password webauthn' : 'current-password'}

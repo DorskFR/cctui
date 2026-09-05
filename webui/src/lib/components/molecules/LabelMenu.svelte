@@ -154,7 +154,7 @@
 
 <form class="filter" onsubmit={onSubmit}>
 	<!-- svelte-ignore a11y_autofocus -->
-	<Input size="sm" placeholder={ph} {autofocus} bind:value={q} maxlength={40} />
+	<Input size="sm" placeholder={ph} aria-label={ph} {autofocus} bind:value={q} maxlength={40} />
 </form>
 
 <div class="list">

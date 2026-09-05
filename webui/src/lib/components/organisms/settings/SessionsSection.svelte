@@ -61,7 +61,7 @@
 				<option value="name">{m.settings_sort_name()}</option>
 			</Select>
 		</SettingRow>
-		<SettingRow label={m.settings_view_label()}>
+		<SettingRow label={m.settings_view_label()} selfLabelled>
 			<SegmentedControl
 				options={viewOptions}
 				label={m.settings_view_label()}
@@ -69,7 +69,7 @@
 				bind:value={() => sl.view, (v) => settings.setSessionList({ view: v as typeof sl.view })}
 			/>
 		</SettingRow>
-		<SettingRow label={m.settings_density_label()}>
+		<SettingRow label={m.settings_density_label()} selfLabelled>
 			<SegmentedControl
 				options={densityOptions}
 				label={m.settings_density_label()}
@@ -118,7 +118,7 @@
 				onclick={() => settings.setSpawnDock({ enabled: !spawnDock.enabled })}
 			/>
 		</SettingRow>
-		<SettingRow label={m.settings_spawn_dock_side_label()} disabled={!spawnDock.enabled}>
+		<SettingRow label={m.settings_spawn_dock_side_label()} disabled={!spawnDock.enabled} selfLabelled>
 			<SegmentedControl
 				options={sideOptions}
 				label={m.settings_spawn_dock_side_label()}
@@ -138,7 +138,7 @@
 				onclick={() => settings.setStatsDock({ enabled: !statsDock.enabled })}
 			/>
 		</SettingRow>
-		<SettingRow label={m.settings_stats_dock_side_label()} disabled={!statsDock.enabled}>
+		<SettingRow label={m.settings_stats_dock_side_label()} disabled={!statsDock.enabled} selfLabelled>
 			<SegmentedControl
 				options={sideOptions}
 				label={m.settings_stats_dock_side_label()}

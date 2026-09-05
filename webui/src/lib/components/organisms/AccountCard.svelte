@@ -138,7 +138,7 @@
 		{#if redirectOpen}
 			<div class="redirect-form">
 				<Text as="span" tone="muted" size="sm">{m.accounts_redirect_pick()}</Text>
-				<Select bind:value={redirectTarget}>
+				<Select bind:value={redirectTarget} aria-label={m.accounts_redirect_pick()}>
 					<option value="" disabled></option>
 					{#each openTargets as t (t.id)}
 						<option value={t.id}>{t.name}</option>
@@ -154,7 +154,7 @@
 						<Text as="span" size="sm">{f}</Text>
 					</label>
 				{/each}
-				<Select bind:value={redirectHours}>
+				<Select bind:value={redirectHours} aria-label={m.a11y_redirect_expiry()}>
 					<option value="">{m.accounts_redirect_no_expiry()}</option>
 					{#each ['1', '5', '24'] as h (h)}
 						<option value={h}>{m.accounts_redirect_hours({ n: h })}</option>

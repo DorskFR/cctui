@@ -111,7 +111,12 @@
 		</Text>
 
 		<div class="mint">
-			<Input mono placeholder={m.users_label_optional_placeholder()} bind:value={newLabel} />
+			<Input
+				mono
+				placeholder={m.users_label_optional_placeholder()}
+				aria-label={m.a11y_api_key_label()}
+				bind:value={newLabel}
+			/>
 			<div class="scopes">
 				{#each ALL_SCOPES as s (s)}
 					<Switch

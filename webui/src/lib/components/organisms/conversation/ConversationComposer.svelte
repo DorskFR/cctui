@@ -330,6 +330,7 @@
 					rows={1}
 					autoresize
 					resize="top"
+					aria-label={m.a11y_composer_message()}
 					placeholder={dragActive
 						? m.composer_drop_files()
 						: coarsePointer

@@ -192,7 +192,11 @@
 		<RebindTrail sessionId={session.id} />
 		<div class="dtitle">
 			{#if renaming}
-				<Input bind:value={newName} onkeydown={(e: KeyboardEvent) => e.key === 'Enter' && doRename()} />
+				<Input
+					bind:value={newName}
+					aria-label={m.a11y_rename_session()}
+					onkeydown={(e: KeyboardEvent) => e.key === 'Enter' && doRename()}
+				/>
 			{:else}
 				<Text class="name" weight="semibold" size="md" truncate>{headTitle}</Text>
 				{#if session.labels.length === 0 && labelEditable}

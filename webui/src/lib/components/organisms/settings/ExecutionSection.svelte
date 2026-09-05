@@ -46,7 +46,7 @@
 	description={m.settings_execution_desc()}
 >
 	<SettingGroup>
-		<SettingRow label={m.settings_harness_execution_label()} server wide>
+		<SettingRow label={m.settings_harness_execution_label()} server wide selfLabelled>
 			<div class="radios" role="radiogroup" aria-label={m.settings_harness_execution_label()}>
 				{#each harnessOpts as o (o.v)}
 					<OptionButton
@@ -74,6 +74,7 @@
 				? m.settings_whip_mode_replace_help()
 				: m.settings_whip_mode_extend_help()}
 			server
+			selfLabelled
 		>
 			<SegmentedControl
 				options={whipModeOptions}
