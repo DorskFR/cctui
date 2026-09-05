@@ -14,6 +14,8 @@
 	} from '$lib/queries';
 	import { useQueryClient } from '@tanstack/svelte-query';
 	import { renderMarkdown, highlightBlock } from '$lib/markdown';
+	const isMachineUuid = (v: string) =>
+		/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
 	import { highlightTerms } from '$lib/search';
 	import { drafts, VIEW_OPTS } from '$lib/drafts';
 	import { Button, Dropzone } from '@dorsk/tsumikit';
@@ -206,9 +208,17 @@
 	}
 
 	// ── Line building (parse + filter + dedup + delivery tinting) ───────────
-	// Render markdown honoring the table formatting toggle.
+	// Render markdown honoring the table formatting toggle. Local file paths
+	// link to the machine read-file route only when `machine_id` is the machine
+	// UUID (daemon sessions); legacy hostname-valued rows keep paths as text.
 	const mdRender = (s: string) =>
-		hl(renderMarkdown(s, { tables: view.prettyTables, sessionId: id }));
+		hl(
+			renderMarkdown(s, {
+				tables: view.prettyTables,
+				sessionId: id,
+				machineId: isMachineUuid(session.machine_id) ? session.machine_id : undefined
+			})
+		);
 	// Getters, not snapshots: the toggles are read at build time so the derived
 	// below re-runs when they flip.
 	const lineCtx: LineBuildCtx = {

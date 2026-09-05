@@ -29,7 +29,8 @@ use std::sync::Arc;
 use cctui_proto::adapter::{AdapterCommand, BootstrapFile};
 use cctui_proto::git::GitInfo;
 use cctui_proto::ws::{
-    AgentEvent, DaemonFrameDown, DispatcherFrameDown, DispatcherFrameUp, ServerEvent,
+    AgentEvent, DaemonFrameDown, DispatcherFrameDown, DispatcherFrameUp, ReadFileErrorKind,
+    ReadFileOk, ServerEvent,
 };
 use dashmap::DashMap;
 use tokio::sync::{broadcast, mpsc, oneshot};
@@ -48,6 +49,10 @@ type ListDirsOutcome = Result<Vec<String>, String>;
 /// Outcome of a git-info lookup (spawn dialog branch badge).
 type GitInfoOutcome = Result<GitInfo, String>;
 
+/// Outcome of a file read: the payload on success, or the refusal kind + a
+/// message on failure.
+type ReadFileOutcome = Result<ReadFileOk, (ReadFileErrorKind, String)>;
+
 /// How long [`Bus::request_daemon`] waits for the daemon's `StageFilesResult`
 /// before giving up. Staging is local filesystem work after a small base64
 /// decode, so this is generous-but-bounded.
@@ -57,6 +62,11 @@ const STAGE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 /// Autocomplete is interactive — better to fail fast than to hold the
 /// typeahead open.
 const LIST_DIRS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// How long [`Bus::request_daemon`] waits for the daemon's `ReadFileResult`.
+/// A large file is PUT to the blob store before the reply, so this is sized
+/// for a 32 MiB upload over a slow link.
+const READ_FILE_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(1);
 
 /// How long [`Bus::request_dispatcher`] awaits a dispatcher reply. Spawning a
 /// container/pod can take a few seconds; status/cancel are quick. One generous
@@ -99,6 +109,8 @@ pub enum BusError {
     ListDirs(String),
     #[error("daemon could not read git info: {0}")]
     GitInfo(String),
+    #[error("daemon could not read the file: {1}")]
+    ReadFile(ReadFileErrorKind, String),
     #[error("db error: {0}")]
     Db(#[from] sqlx::Error),
     #[error("reconcile build error: {0}")]
@@ -121,6 +133,8 @@ pub enum DaemonRequest {
     ListDirs { path: String },
     /// Git facts for a directory → `GitInfoResult`.
     GitInfo { path: String, include_dirty: bool },
+    /// One file's bytes (inline or via the blob store) → `ReadFileResult`.
+    ReadFile { path: String, max_bytes: u64, cwd: Option<String> },
     /// Session diagnose snapshot. Unlike the two above this rides
     /// the generic `Command` frame into the adapter (the facts live in the
     /// adapter's driver, not the supervisor) and the reply comes back as an
@@ -135,6 +149,7 @@ pub enum DaemonResponse {
     StagedFiles(Vec<String>),
     Dirs(Vec<String>),
     GitInfo(GitInfo),
+    File(ReadFileOk),
     Diagnose(Box<cctui_proto::diagnose::SessionDiagnose>),
 }
 
@@ -256,6 +271,8 @@ struct Inner {
     pending_listdirs: DashMap<Uuid, oneshot::Sender<ListDirsOutcome>>,
     /// In-flight git-info lookups awaiting a daemon `GitInfoResult`.
     pending_gitinfo: DashMap<Uuid, oneshot::Sender<GitInfoOutcome>>,
+    /// In-flight file reads awaiting a daemon `ReadFileResult`.
+    pending_readfile: DashMap<Uuid, oneshot::Sender<ReadFileOutcome>>,
     /// In-flight session-diagnose round-trips awaiting the adapter's
     /// `AdapterEvent::Diagnose` reply.
     pending_diagnose: DashMap<Uuid, oneshot::Sender<Box<cctui_proto::diagnose::SessionDiagnose>>>,
@@ -292,6 +309,7 @@ impl Bus {
                 pending_stage: DashMap::new(),
                 pending_listdirs: DashMap::new(),
                 pending_gitinfo: DashMap::new(),
+                pending_readfile: DashMap::new(),
                 pending_diagnose: DashMap::new(),
                 pending_dispatcher: DashMap::new(),
                 server_tx: broadcast::channel(CHANNEL_CAPACITY).0,
@@ -548,6 +566,9 @@ impl Bus {
                     }
                 }
             }
+            DaemonRequest::ReadFile { path, max_bytes, cwd } => {
+                self.read_file_via(tx, request_id, path, max_bytes, cwd).await
+            }
             DaemonRequest::Diagnose { adapter_id, local_id } => {
                 let (reply_tx, reply_rx) = oneshot::channel();
                 self.inner.pending_diagnose.insert(request_id, reply_tx);
@@ -574,6 +595,35 @@ impl Bus {
                         Err(BusError::Timeout)
                     }
                 }
+            }
+        }
+    }
+
+    async fn read_file_via(
+        &self,
+        tx: mpsc::Sender<DaemonFrameDown>,
+        request_id: Uuid,
+        path: String,
+        max_bytes: u64,
+        cwd: Option<String>,
+    ) -> Result<DaemonResponse, BusError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.inner.pending_readfile.insert(request_id, reply_tx);
+        let frame = DaemonFrameDown::ReadFile { request_id, path, max_bytes, cwd };
+        if tx.send(frame).await.is_err() {
+            self.inner.pending_readfile.remove(&request_id);
+            return Err(BusError::Closed);
+        }
+        match tokio::time::timeout(READ_FILE_TIMEOUT, reply_rx).await {
+            Ok(Ok(Ok(file))) => Ok(DaemonResponse::File(file)),
+            Ok(Ok(Err((kind, msg)))) => Err(BusError::ReadFile(kind, msg)),
+            Ok(Err(_)) => {
+                self.inner.pending_readfile.remove(&request_id);
+                Err(BusError::Closed)
+            }
+            Err(_) => {
+                self.inner.pending_readfile.remove(&request_id);
+                Err(BusError::Timeout)
             }
         }
     }
@@ -666,6 +716,18 @@ impl Bus {
     pub fn resolve_git_info(&self, request_id: Uuid, outcome: GitInfoOutcome) -> bool {
         self.inner
             .pending_gitinfo
+            .remove(&request_id)
+            .map(|(_, reply_tx)| {
+                let _ = reply_tx.send(outcome);
+            })
+            .is_some()
+    }
+
+    /// Fire the oneshot a read-file round-trip is awaiting. Returns `false`
+    /// for an unknown request id.
+    pub fn resolve_read_file(&self, request_id: Uuid, outcome: ReadFileOutcome) -> bool {
+        self.inner
+            .pending_readfile
             .remove(&request_id)
             .map(|(_, reply_tx)| {
                 let _ = reply_tx.send(outcome);
@@ -881,6 +943,23 @@ pub async fn git_info(
     let request = DaemonRequest::GitInfo { path, include_dirty };
     match state.bus.request_daemon(machine_uuid, request).await? {
         DaemonResponse::GitInfo(info) => Ok(info),
+        _ => Err(BusError::Closed), // unreachable: variant-matched
+    }
+}
+
+/// Ask the daemon on `machine_uuid` for the bytes of `path` (a file an agent
+/// linked in a message). `cwd` widens the daemon's allow-list to the
+/// session's working directory.
+pub async fn read_file(
+    state: &AppState,
+    machine_uuid: Uuid,
+    path: String,
+    max_bytes: u64,
+    cwd: Option<String>,
+) -> Result<ReadFileOk, BusError> {
+    let request = DaemonRequest::ReadFile { path, max_bytes, cwd };
+    match state.bus.request_daemon(machine_uuid, request).await? {
+        DaemonResponse::File(file) => Ok(file),
         _ => Err(BusError::Closed), // unreachable: variant-matched
     }
 }

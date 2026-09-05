@@ -1075,6 +1075,14 @@ fn build_api_routes() -> Routes {
         )
         .add(
             &[GET],
+            "/machines/{machine_id}/fs/file",
+            "Read one file on a machine (agent-linked path): inline or blob redirect.",
+            get(routes::fs::read_file),
+            Authn::Bearer,
+            Authz::Resource(ResourceKind::Machine, Action::Read, IdFrom::Path("machine_id")),
+        )
+        .add(
+            &[GET],
             "/machines/{machine_id}/codex-models",
             "Machine/account-scoped codex model catalog.",
             get(routes::codex_models::get_codex_models),

@@ -707,6 +707,30 @@ const fn event_kind(event: &AdapterEvent) -> &'static str {
 // Breadth-of-match dispatch over inbound daemon frames; complexity is per-frame
 // handling, not nesting.
 #[allow(clippy::cognitive_complexity)]
+fn resolve_read_file_result(
+    state: &AppState,
+    request_id: Uuid,
+    ok: bool,
+    file: Option<cctui_proto::ws::ReadFileOk>,
+    error_kind: Option<cctui_proto::ws::ReadFileErrorKind>,
+    error: Option<String>,
+) {
+    let outcome = match (ok, file) {
+        (true, Some(file)) => Ok(file),
+        (true, None) => Err((
+            cctui_proto::ws::ReadFileErrorKind::Io,
+            "daemon returned no file payload".to_owned(),
+        )),
+        (false, _) => Err((
+            error_kind.unwrap_or(cctui_proto::ws::ReadFileErrorKind::Io),
+            error.unwrap_or_else(|| "daemon reported a read failure".to_owned()),
+        )),
+    };
+    if !state.bus.resolve_read_file(request_id, outcome) {
+        tracing::debug!(%request_id, "ReadFileResult for unknown request (timed out?)");
+    }
+}
+
 async fn process_frame(
     state: &AppState,
     machine_id: Uuid,
@@ -781,6 +805,10 @@ async fn process_frame(
             if !state.bus.resolve_git_info(request_id, outcome) {
                 tracing::debug!(%request_id, "GitInfoResult for unknown request (timed out?)");
             }
+            Ok(())
+        }
+        DaemonFrameUp::ReadFileResult { request_id, ok, file, error_kind, error } => {
+            resolve_read_file_result(state, request_id, ok, file, error_kind, error);
             Ok(())
         }
         DaemonFrameUp::Heartbeat { bandwidth, .. } => {

@@ -1,4 +1,5 @@
 import { browser } from '$app/environment';
+import { installFileViewer } from '$lib/fileviewer';
 
 // Delegated click-to-open-full for agent-posted images. Inline images
 // are injected as raw HTML via {@html} in markdown bodies, so — like the
@@ -11,6 +12,7 @@ let installed = false;
 export function installImageLightbox(): void {
 	if (!browser || installed) return;
 	installed = true;
+	installFileViewer();
 	document.addEventListener('click', (e) => {
 		const target = e.target as HTMLElement | null;
 		const img = target?.closest('.md-img') as HTMLImageElement | null;

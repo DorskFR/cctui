@@ -78,6 +78,7 @@ fn daemon_response(response: DaemonResponse) -> RouteResponse {
         DaemonResponse::StagedFiles(paths) => RouteResponse::StagedFiles { paths },
         DaemonResponse::Dirs(dirs) => RouteResponse::Dirs { dirs },
         DaemonResponse::GitInfo(info) => RouteResponse::GitInfo { info },
+        DaemonResponse::File(file) => RouteResponse::File { file },
         DaemonResponse::Diagnose(report) => RouteResponse::Diagnose { report },
     }
 }
@@ -113,6 +114,11 @@ pub async fn bus_route(
         RouteRequest::DaemonGitInfo { machine, path, include_dirty } => state
             .bus
             .request_daemon_local(machine, DaemonRequest::GitInfo { path, include_dirty })
+            .await
+            .map(daemon_response),
+        RouteRequest::DaemonReadFile { machine, path, max_bytes, cwd } => state
+            .bus
+            .request_daemon_local(machine, DaemonRequest::ReadFile { path, max_bytes, cwd })
             .await
             .map(daemon_response),
         RouteRequest::DaemonDiagnose { machine, adapter_id, local_id } => state

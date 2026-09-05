@@ -28,7 +28,8 @@
 use cctui_proto::adapter::BootstrapFile;
 use cctui_proto::git::GitInfo;
 use cctui_proto::ws::{
-    AgentEvent, DaemonFrameDown, DispatcherFrameDown, DispatcherFrameUp, ServerEvent,
+    AgentEvent, DaemonFrameDown, DispatcherFrameDown, DispatcherFrameUp, ReadFileErrorKind,
+    ReadFileOk, ServerEvent,
 };
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
@@ -48,6 +49,8 @@ const STAGE_FORWARD_TIMEOUT: std::time::Duration = std::time::Duration::from_sec
 const LIST_DIRS_FORWARD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
 /// Timeout for a forwarded session-diagnose round-trip (peer waits 10s).
 const DIAGNOSE_FORWARD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+/// Outlasts the bus's 60 s `READ_FILE_TIMEOUT`.
+const READ_FILE_FORWARD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(70);
 /// Timeout for a forwarded dispatcher round-trip (peer waits 30s).
 const DISPATCHER_FORWARD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(35);
 /// Timeout for one relay POST to one peer. Publish is best-effort; a slow peer
@@ -84,6 +87,12 @@ pub enum RouteRequest {
         path: String,
         include_dirty: bool,
     },
+    DaemonReadFile {
+        machine: Uuid,
+        path: String,
+        max_bytes: u64,
+        cwd: Option<String>,
+    },
     /// Session-diagnose round-trip: the receiving pod runs the full
     /// command-down / event-up correlation locally and returns the report.
     DaemonDiagnose {
@@ -114,6 +123,7 @@ pub enum RouteResponse {
     StagedFiles { paths: Vec<String> },
     Dirs { dirs: Vec<String> },
     GitInfo { info: GitInfo },
+    File { file: ReadFileOk },
     Diagnose { report: Box<cctui_proto::diagnose::SessionDiagnose> },
     DispatcherReply { frame: DispatcherFrameUp },
     Err { code: WireErrorCode, message: String },
@@ -132,6 +142,7 @@ pub enum WireErrorCode {
     Staging,
     ListDirs,
     GitInfo,
+    ReadFile { kind: ReadFileErrorKind },
     Other,
 }
 
@@ -148,6 +159,7 @@ pub fn encode_error(err: &BusError) -> (WireErrorCode, String) {
         BusError::Staging(msg) => (WireErrorCode::Staging, msg.clone()),
         BusError::ListDirs(msg) => (WireErrorCode::ListDirs, msg.clone()),
         BusError::GitInfo(msg) => (WireErrorCode::GitInfo, msg.clone()),
+        BusError::ReadFile(kind, msg) => (WireErrorCode::ReadFile { kind: *kind }, msg.clone()),
         BusError::NotFound
         | BusError::NoAdapter
         | BusError::NoMachine
@@ -169,6 +181,7 @@ pub fn decode_error(code: WireErrorCode, message: String, target: Uuid) -> BusEr
         WireErrorCode::Staging => BusError::Staging(message),
         WireErrorCode::ListDirs => BusError::ListDirs(message),
         WireErrorCode::GitInfo => BusError::GitInfo(message),
+        WireErrorCode::ReadFile { kind } => BusError::ReadFile(kind, message),
         // An unclassified peer-side failure still means the frame was not
         // delivered; surface the peer's message verbatim.
         WireErrorCode::Other => BusError::Transport(message),
@@ -340,6 +353,10 @@ impl Transport for PeerHttpTransport {
                 RouteRequest::DaemonGitInfo { machine, path, include_dirty },
                 LIST_DIRS_FORWARD_TIMEOUT,
             ),
+            DaemonRequest::ReadFile { path, max_bytes, cwd } => (
+                RouteRequest::DaemonReadFile { machine, path, max_bytes, cwd },
+                READ_FILE_FORWARD_TIMEOUT,
+            ),
             DaemonRequest::Diagnose { adapter_id, local_id } => (
                 RouteRequest::DaemonDiagnose { machine, adapter_id, local_id },
                 DIAGNOSE_FORWARD_TIMEOUT,
@@ -349,6 +366,7 @@ impl Transport for PeerHttpTransport {
             RouteResponse::StagedFiles { paths } => Ok(DaemonResponse::StagedFiles(paths)),
             RouteResponse::Dirs { dirs } => Ok(DaemonResponse::Dirs(dirs)),
             RouteResponse::GitInfo { info } => Ok(DaemonResponse::GitInfo(info)),
+            RouteResponse::File { file } => Ok(DaemonResponse::File(file)),
             RouteResponse::Diagnose { report } => Ok(DaemonResponse::Diagnose(report)),
             other => Err(BusError::Transport(format!("unexpected peer reply: {other:?}"))),
         }
