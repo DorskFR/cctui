@@ -17,6 +17,7 @@ mod machine_liveness;
 mod normalize;
 mod ntfy;
 mod openapi;
+mod pace;
 mod policy;
 mod presence;
 mod registry;
@@ -1002,6 +1003,14 @@ fn build_api_routes() -> Routes {
             "/accounts/{id}/providers/{provider_id}/move",
             "Move a provider credential to another account of the same owner.",
             post(routes::accounts::move_provider),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[GET],
+            "/accounts/usage",
+            "Usage windows of every provider credential the caller owns, in one call.",
+            get(routes::accounts::all_accounts_usage),
             Authn::Bearer,
             Authenticated,
         )

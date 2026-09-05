@@ -2113,13 +2113,30 @@ pub struct AccountUsage {
     /// Normalized, provider-agnostic usage windows: the collection the
     /// UI renders and the soft-limit evaluator gates on. Empty ⇒ no supported
     /// windows in the latest response (distinct from a fetch error).
-    pub windows: Vec<crate::soft_limit::UsageWindow>,
+    pub windows: Vec<UsageWindowView>,
     /// Seconds since this usage was fetched upstream (0 = just now). Lets the UI
     /// show staleness; values refresh on the slow cache TTL, not per request.
     pub age_secs: u64,
     /// Whether a usage-limit reset can be claimed right now (Codex reset
     /// credits, Claude `juniper_tide`); `None` when the payload has no such block.
     pub limit_reset: Option<crate::routes::limit_reset::LimitResetStatus>,
+}
+
+/// A normalized window plus its pace against the window's linear budget
+/// (`None` when the window has no reset time or no known length).
+#[derive(Debug, serde::Serialize)]
+pub struct UsageWindowView {
+    #[serde(flatten)]
+    pub window: crate::soft_limit::UsageWindow,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pace: Option<crate::pace::Pace>,
+}
+
+impl UsageWindowView {
+    fn now(window: crate::soft_limit::UsageWindow) -> Self {
+        let pace = crate::pace::for_window(Utc::now(), &window, None);
+        Self { window, pace }
+    }
 }
 
 impl AccountUsage {
@@ -2129,8 +2146,13 @@ impl AccountUsage {
         usage: Option<serde_json::Value>,
         age_secs: u64,
     ) -> Self {
-        let windows =
-            usage.as_ref().map(crate::soft_limit::normalize_usage_windows).unwrap_or_default();
+        let windows = usage
+            .as_ref()
+            .map(crate::soft_limit::normalize_usage_windows)
+            .unwrap_or_default()
+            .into_iter()
+            .map(UsageWindowView::now)
+            .collect();
         let limit_reset = usage
             .as_ref()
             .and_then(|u| crate::routes::limit_reset::limit_reset_status(&provider, u));
@@ -2194,6 +2216,62 @@ pub async fn account_usage(
         crate::state::CachedUsage { fetched_at: std::time::Instant::now(), usage: usage.clone() },
     );
     Ok(Json(AccountUsage::build(id, provider, usage, 0)))
+}
+
+/// One row of `GET /api/v1/accounts/usage`: a provider credential's usage plus
+/// the account it hangs off, so a caller can group without a second request.
+#[derive(Debug, serde::Serialize)]
+pub struct AccountUsageEntry {
+    #[serde(flatten)]
+    pub usage: AccountUsage,
+    pub account: Uuid,
+    pub account_name: String,
+}
+
+#[derive(sqlx::FromRow)]
+struct UsageProviderRow {
+    id: Uuid,
+    provider: String,
+    account_id: Uuid,
+    account_name: String,
+}
+
+/// `GET /api/v1/accounts/usage` — usage windows of every provider credential
+/// the caller owns (admin: all), in one round trip. Each row is served by the
+/// same per-provider cache as the single-provider route, refreshed upstream at
+/// most once per [`USAGE_CACHE_TTL`]; a provider whose fetch fails and has no
+/// cached value reports empty windows rather than failing the whole list.
+pub async fn all_accounts_usage(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+) -> Result<Json<Vec<AccountUsageEntry>>, (StatusCode, Json<serde_json::Value>)> {
+    require_human(&ctx)?;
+    let rows: Vec<UsageProviderRow> = sqlx::query_as(
+        "SELECT p.id, p.provider, p.account_id, a.name AS account_name          FROM account_providers p JOIN accounts a ON a.id = p.account_id          WHERE ($1::uuid IS NULL OR p.user_id = $1)            AND p.provider IN ('anthropic', 'openai', 'fireworks')          ORDER BY a.name, p.family",
+    )
+    .bind(ctx.owner_filter())
+    .fetch_all(&state.pool)
+    .await
+    .map_err(|e| db_err(&e))?;
+
+    let fetches = rows.iter().map(|r| gateway::usage_for_soft_limit(&state, r.id));
+    let usages = futures_util::future::join_all(fetches).await;
+    let out = rows
+        .into_iter()
+        .zip(usages)
+        .map(|(r, usage)| {
+            let age_secs = state
+                .account_usage_cache
+                .get(&r.id)
+                .map_or(0, |hit| hit.fetched_at.elapsed().as_secs());
+            AccountUsageEntry {
+                usage: AccountUsage::build(r.id, r.provider, usage, age_secs),
+                account: r.account_id,
+                account_name: r.account_name,
+            }
+        })
+        .collect();
+    Ok(Json(out))
 }
 
 // ----------------------------------------------------------------------------
@@ -2384,6 +2462,24 @@ mod tests {
             "five_hour": { "utilization": 90.0, "resets_at": "2026-06-19T16:00:00Z" },
             "seven_day": { "utilization": 10.0, "resets_at": "2026-06-26T00:00:00Z" },
         })
+    }
+
+    #[test]
+    fn usage_window_view_flattens_and_carries_pace() {
+        let resets = (Utc::now() + Duration::hours(2)).to_rfc3339();
+        let usage = serde_json::json!({
+            "five_hour": { "utilization": 60.0, "resets_at": resets },
+        });
+        let built = AccountUsage::build(Uuid::nil(), "anthropic".into(), Some(usage), 7);
+        let json = serde_json::to_value(&built).unwrap();
+        let w = &json["windows"][0];
+        assert_eq!(w["key"], "session");
+        assert_eq!(w["utilization"], 60.0);
+        let pace = &w["pace"];
+        assert!(pace["ratio"].as_f64().unwrap() > 0.0);
+        assert!(pace["expected_pct"].as_f64().unwrap() > 50.0);
+        assert!(pace["projected_wall_at"].is_string());
+        assert_eq!(json["age_secs"], 7);
     }
 
     #[test]

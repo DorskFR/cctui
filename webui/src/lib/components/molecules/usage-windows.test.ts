@@ -10,6 +10,15 @@ const win = (key: string, label: string, utilization: number, extra: Partial<Usa
 	...extra
 });
 
+describe('mergeUsageWindows pace', () => {
+	it('carries the server pace onto observed rows and nulls it on unobserved ones', () => {
+		const pace = { elapsed_fraction: 0.5, expected_pct: 50, ratio: 1.4, projected_wall_at: null };
+		const rows = mergeUsageWindows([win('session', '5h', 70, { pace })], { weekly_all: { cap_pct: 80 } });
+		expect(rows.observed[0].pace).toEqual(pace);
+		expect(rows.unobserved[0].pace).toBeNull();
+	});
+});
+
 describe('windowLabelFromKey', () => {
 	it('labels the canonical keys and falls back for model-scoped', () => {
 		expect(windowLabelFromKey('session')).toBe('5h');
