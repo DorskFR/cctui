@@ -10,12 +10,12 @@
 	}: { value: string | null; onpick: (v: PermissionMode) => void } = $props();
 
 	// Per-mode accent: ask = green (safe), auto = blue (sandboxed),
-	// yolo / whip = red (no prompts, full access).
+	// yolo = red (no prompts, full access), whip = violet (yolo and never stalls).
 	const modeAccent: Record<string, string> = {
 		ask: 'var(--c-green)',
 		auto: 'var(--c-blue)',
 		yolo: 'var(--c-red)',
-		whip: 'var(--c-red)'
+		whip: 'var(--c-violet)'
 	};
 </script>
 

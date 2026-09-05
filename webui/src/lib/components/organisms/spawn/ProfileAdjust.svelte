@@ -4,7 +4,7 @@
 	import type { SessionProfile } from '@bindings/SessionProfile';
 	import type { AccountPoolView } from '@bindings/AccountPoolView';
 	import type { AccountUsageEntry, OAuthAccount } from '$lib/queries';
-	import { Button, Field, IconButton, Input, Text } from '@dorsk/tsumikit';
+	import { Button, Field, Input, Text } from '@dorsk/tsumikit';
 	import KitFields from './KitFields.svelte';
 	import { specChanges, specOf, type ProfileSpec } from './profiles';
 	import { m } from '$lib/paraglide/messages';
@@ -47,22 +47,11 @@
 
 <div class="panel">
 	<Field label={m.spawn_profile_name_aria()} for="sp-profile-name-{profile?.id ?? 'new'}">
-		<div class="name-row">
-			<Input
-				id="sp-profile-name-{profile?.id ?? 'new'}"
-				bind:value={name}
-				placeholder={m.spawn_profile_name_aria()}
-			/>
-			{#if profile}
-				<IconButton
-					icon="trash"
-					label={m.spawn_profile_delete()}
-					inline
-					hoverDanger
-					onclick={ondelete}
-				/>
-			{/if}
-		</div>
+		<Input
+			id="sp-profile-name-{profile?.id ?? 'new'}"
+			bind:value={name}
+			placeholder={m.spawn_profile_name_aria()}
+		/>
 	</Field>
 
 	<KitFields
@@ -77,6 +66,11 @@
 	<div class="foot">
 		<Text size="xs" tone="faint">{m.spawn_profile_changes({ count: changes })}</Text>
 		<span class="spacer"></span>
+		{#if profile}
+			<Button size="sm" variant="danger" disabled={busy} onclick={ondelete}>
+				{m.spawn_profile_delete()}
+			</Button>
+		{/if}
 		<Button size="sm" disabled={busy} onclick={() => onuseonce({ ...draft })}>
 			{m.spawn_profile_use_once()}
 		</Button>
@@ -99,11 +93,6 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--sp-3);
-	}
-	.name-row {
-		display: flex;
-		align-items: center;
-		gap: var(--sp-2);
 	}
 	.foot {
 		display: flex;

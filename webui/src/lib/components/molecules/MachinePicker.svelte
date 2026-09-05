@@ -138,7 +138,7 @@
 		gap: var(--sp-1);
 		min-height: 0;
 		min-width: 0;
-		padding: 2px var(--sp-1) 2px var(--sp-2);
+		padding: 3px var(--sp-2);
 		border: 0;
 		border-radius: inherit;
 		background: transparent;
