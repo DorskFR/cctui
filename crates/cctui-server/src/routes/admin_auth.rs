@@ -56,6 +56,9 @@ pub struct UserRow {
     /// Per-user dispatch permission. Enforced on `POST
     /// /sessions/dispatch`; defaults TRUE.
     pub can_dispatch: bool,
+    /// Latest use of any of the user's keys; None until one authenticates.
+    #[sqlx(default)]
+    pub last_seen_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Serialize, sqlx::FromRow, TS)]
@@ -195,8 +198,9 @@ pub async fn list_users(
 ) -> Result<Json<Vec<UserRow>>, (StatusCode, Json<ApiError>)> {
     forbid_or(&ctx)?;
     let rows: Vec<UserRow> = sqlx::query_as(
-        "SELECT id, name, created_at, revoked_at, disabled_at, can_dispatch \
-         FROM users ORDER BY created_at",
+        "SELECT u.id, u.name, u.created_at, u.revoked_at, u.disabled_at, u.can_dispatch, \
+         (SELECT max(k.last_used_at) FROM auth_keys k WHERE k.user_id = u.id) AS last_seen_at \
+         FROM users u ORDER BY u.created_at",
     )
     .fetch_all(&state.pool)
     .await
@@ -785,6 +789,7 @@ pub struct ApiKeyRow {
     pub created_at: DateTime<Utc>,
     pub expires_at: Option<DateTime<Utc>>,
     pub revoked_at: Option<DateTime<Utc>>,
+    pub last_used_at: Option<DateTime<Utc>>,
     /// The key's granted scopes (`key_acls`), filled by the handler.
     #[sqlx(skip)]
     pub scopes: Vec<String>,
@@ -799,7 +804,7 @@ pub async fn list_user_keys(
 ) -> Result<Json<Vec<ApiKeyRow>>, (StatusCode, Json<ApiError>)> {
     self_or_admin(&ctx, user_id)?;
     let mut rows: Vec<ApiKeyRow> = sqlx::query_as(
-        "SELECT id, label, key_preview, kind, created_at, expires_at, revoked_at \
+        "SELECT id, label, key_preview, kind, created_at, expires_at, revoked_at, last_used_at \
          FROM auth_keys WHERE user_id = $1 ORDER BY created_at",
     )
     .bind(user_id)

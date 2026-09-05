@@ -150,6 +150,10 @@
 				<span class="status">
 					<Dot status={statusDot} />
 					<Text size="sm" tone="muted">{statusText}</Text>
+					{#if user.last_seen_at && !user.revoked_at}
+						<Text size="xs" tone="faint">· {m.access_last_seen()}</Text>
+						<Timestamp value={user.last_seen_at} mode="relative" size="xs" tone="faint" details={false} />
+					{/if}
 				</span>
 			</div>
 			<div class="meta">

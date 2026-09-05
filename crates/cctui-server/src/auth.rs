@@ -301,6 +301,7 @@ impl AuthConfig {
         .unwrap_or(None)?;
         let KeyRow { id: key_id, user_id, machine_id } = row;
         let scopes = self.effective_scopes(key_id, user_id).await;
+        self.touch_key(key_id);
         if let Some(mid) = machine_id {
             self.touch_machine(mid);
         }
@@ -378,6 +379,20 @@ impl AuthConfig {
             .await
             .unwrap_or_default();
         rows.iter().filter_map(|(s,)| Scope::parse(s)).collect()
+    }
+
+    /// Coarse to the minute so a chatty client is one write, not one per request.
+    fn touch_key(&self, key_id: Uuid) {
+        let pool = self.pool.clone();
+        tokio::spawn(async move {
+            let _ = sqlx::query(
+                "UPDATE auth_keys SET last_used_at = now() \
+                 WHERE id = $1 AND (last_used_at IS NULL OR last_used_at < now() - interval '1 minute')",
+            )
+            .bind(key_id)
+            .execute(&pool)
+            .await;
+        });
     }
 
     fn touch_machine(&self, machine_id: Uuid) {

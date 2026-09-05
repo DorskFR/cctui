@@ -42,6 +42,7 @@
 		{ key: 'preview', label: m.access_col_preview(), width: 'minmax(0, 1fr)' },
 		{ key: 'scopes', label: m.access_col_scopes(), width: 'minmax(0, 1.6fr)' },
 		{ key: 'created', label: m.users_col_created(), width: '96px' },
+		{ key: 'used', label: m.users_col_last_used(), width: '88px' },
 		{ key: 'actions', width: '56px' }
 	];
 
@@ -103,6 +104,13 @@
 		</span>
 		<span class="stamp">
 			<Timestamp value={k.created_at} mode="short-iso" mono size="xs" tone="faint" details={false} />
+		</span>
+		<span class="stamp">
+			{#if k.last_used_at}
+				<Timestamp value={k.last_used_at} mode="relative" size="xs" tone="faint" details={false} />
+			{:else}
+				<Text size="xs" tone="faint">{m.users_never_used()}</Text>
+			{/if}
 		</span>
 		{#if canManage && !k.revoked_at}
 			<RowActions>
