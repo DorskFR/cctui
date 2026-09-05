@@ -41,7 +41,6 @@ export function mentionableSessions(
   return sessions.filter(
     (s) =>
       s.id !== excludeId &&
-      s.bucket !== "done" &&
       s.status !== "archived" &&
       s.status !== "draft",
   );
