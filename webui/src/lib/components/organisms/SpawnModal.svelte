@@ -17,7 +17,7 @@
 	} from '$lib/queries';
 	import { ws } from '$lib/ws.svelte';
 	import { toasts } from '$lib/toast.svelte';
-	import { isSubmitChord, submitChordLabel } from '$lib/platform';
+	import { isSubmitChord, submitChordKeys, submitChordLabel } from '$lib/platform';
 	import {
 		drafts,
 		SPAWN_SLOT,
@@ -47,7 +47,7 @@
 	} from '$lib/spawnMemory';
 	import { appendFileTokens, mergeFiles, removeFileByName, fileCapError } from '$lib/attachments';
 	import { attachmentStore, dropMissingTokens } from '$lib/attachmentStore';
-	import { Button, Callout, Dropzone, Modal, SegmentedControl, resizeHandle } from '@dorsk/tsumikit';
+	import { Button, Callout, Dropzone, Modal, SegmentedControl, resizeHandle, Kbd } from '@dorsk/tsumikit';
 	import { dialogBackdropGuard } from '$lib/dialogBackdropGuard';
 	import MachineFields from './spawn/MachineFields.svelte';
 	import DispatchFields from './spawn/DispatchFields.svelte';
@@ -875,7 +875,8 @@
 			title={submitChordLabel()}
 			onclick={submit}
 		>
-			{#if busy}<span class="spin"></span>{:else}{spawnLabel}{/if}
+			{#if busy}<span class="spin"></span>{:else}{spawnLabel}
+				<span class="chord"><Kbd keys={submitChordKeys()} size="sm" /></span>{/if}
 		</Button>
 	</span>
 {/snippet}
@@ -995,5 +996,9 @@
 	.foot-primary {
 		display: flex;
 		flex: 1 1 11rem;
+	}
+	.chord {
+		margin-left: var(--sp-2);
+		opacity: 0.7;
 	}
 </style>

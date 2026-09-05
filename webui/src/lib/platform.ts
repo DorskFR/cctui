@@ -16,6 +16,11 @@ export function submitChordLabel(): string {
 	return isMac() ? '⌘ Enter' : 'Ctrl + Enter';
 }
 
+/** The same chord as separate keys, for a <Kbd> hint. */
+export function submitChordKeys(): string[] {
+	return isMac() ? ['⌘', '↩'] : ['Ctrl', '↩'];
+}
+
 /** True when a keydown event carries the platform submit chord (Ctrl/⌘ + Enter).
  *  Both modifiers are accepted on every platform so external keyboards work. */
 export function isSubmitChord(e: KeyboardEvent): boolean {
