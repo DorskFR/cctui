@@ -91,6 +91,9 @@ pub struct AppState {
     /// on the actual transition so the worker's repeated Retry-After retries
     /// don't spam the WS stream.
     pub soft_limit_blocked: Arc<DashMap<String, ()>>,
+    /// Last usage-notice bucket delivered per `(session_id, window key)`; read
+    /// only for a provider whose `usage_notices` setting is enabled.
+    pub usage_notice_buckets: Arc<crate::routes::gateway::usage_notices::NoticeBuckets>,
     /// Orphan-token spam guard for the gateway, keyed by the SHA-256 fingerprint
     /// of the (unresolvable) session token. A worker whose session→account
     /// binding was lost retries `/gateway` indefinitely; each retry ran a DB

@@ -15,6 +15,7 @@
 		type CreateProvider,
 		type RateLimits,
 		type SoftLimitConfig,
+		type UsageNotices,
 		type UpdateAccount,
 		type UpdateProvider,
 	} from '$lib/queries';
@@ -168,6 +169,7 @@
 	// Gateway RPM/TPM ceilings shared across the account's concurrent sessions;
 	// empty inputs ⇒ that dimension unlimited.
 	let rateEdits = $state<{ rpm: number | null; tpm: number | null }>({ rpm: null, tpm: null });
+	let usageNoticesEdit = $state<UsageNotices>({ enabled: false, step_pct: 10 });
 	// Fireworks shares the static-credential shape (no OAuth) but keeps its own
 	// editor: gateway settings + a priced model catalog instead of a bare model
 	// list, and its base URL is an optional override of a built-in upstream.
@@ -262,6 +264,14 @@
 		return { rpm: softNum(rateEdits.rpm), tpm: softNum(rateEdits.tpm) };
 	}
 
+	function usageNotices(): UsageNotices {
+		const step = Math.round(Number(usageNoticesEdit.step_pct));
+		return {
+			enabled: usageNoticesEdit.enabled,
+			step_pct: Number.isFinite(step) && step >= 1 && step <= 100 ? step : 10
+		};
+	}
+
 	/** Collapse the alias rows into the `{alias: model}` object the API expects,
 	 *  dropping incomplete rows. */
 	function aliasObject(): Record<string, string> {
@@ -323,6 +333,7 @@
 		aliasRows = [];
 		softEdits = {};
 		rateEdits = { rpm: null, tpm: null };
+		usageNoticesEdit = { enabled: false, step_pct: 10 };
 		oauthNonce = null;
 		oauthCode = '';
 		oauthBusy = false;
@@ -466,6 +477,10 @@
 		acctSettings = { ...(p.settings_json ?? {}) };
 		anthropicSettings = { ...(p.provider_settings ?? {}) };
 		rateEdits = { rpm: p.rate_limits?.rpm ?? null, tpm: p.rate_limits?.tpm ?? null };
+		usageNoticesEdit = {
+			enabled: p.usage_notices?.enabled ?? false,
+			step_pct: p.usage_notices?.step_pct ?? 10
+		};
 	}
 
 	// Reauthenticate a flagged provider: open its edit modal, flip into
@@ -508,6 +523,7 @@
 					model_aliases,
 					soft_limits: softLimits(),
 					rate_limits: rateLimits(),
+					usage_notices: usageNotices(),
 					...(editingProvider?.family === 'anthropic'
 						? { settings_json: acctSettings, provider_settings: anthropicSettings }
 						: {})
@@ -980,6 +996,10 @@
 								{/if}
 							{/each}
 						</div>
+					{/if}
+
+					{#if editor?.mode === 'edit-provider' && (provider === 'anthropic' || provider === 'openai')}
+						<UsageNoticesEditor bind:value={usageNoticesEdit} />
 					{/if}
 
 					<!-- Gateway rate limits: an account-wide RPM/TPM tier a

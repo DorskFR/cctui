@@ -266,6 +266,8 @@ pub struct ProviderInfo {
     /// canonical window identity (`session` | `weekly_all` | `weekly_model:<id>`),
     /// each value `{cap_pct?, bypass_minutes?}`. NULL ⇒ no soft limits configured.
     pub soft_limits: Option<serde_json::Value>,
+    /// Usage ticker `{ enabled, step_pct }`; NULL ⇒ off.
+    pub usage_notices: Option<serde_json::Value>,
     /// Credential health: `true` once the gateway saw the upstream
     /// provider reject this credential, cleared on the next successful upstream
     /// call. The accounts UI shows a "reauthenticate" badge.
@@ -353,7 +355,7 @@ const PROVIDER_SELECT: &str = "SELECT p.id, p.account_id, p.provider, p.family, 
             p.base_url, p.auth_scheme, p.provider_account_id, \
             p.expires_at, p.created_at, p.last_used_at, \
             p.request_count, p.bytes_transferred, \
-            p.soft_limits_json AS soft_limits, \
+            p.soft_limits_json AS soft_limits, p.usage_notices, \
             p.needs_reauth, p.last_auth_error, p.last_auth_error_at, p.settings_json, \
             p.provider_settings, p.rate_limits_json AS rate_limits, \
             (COALESCE(t.input_tokens,0) + COALESCE(t.output_tokens,0) \
@@ -596,6 +598,10 @@ pub struct UpdateProvider {
     /// absent → unchanged. Validated before persist.
     #[serde(default)]
     pub soft_limits: Option<serde_json::Value>,
+    /// Replacement usage ticker `{ enabled?, step_pct? }`. Provided → replaces
+    /// (an empty object / `enabled: false` turns it off); absent → unchanged.
+    #[serde(default)]
+    pub usage_notices: Option<serde_json::Value>,
     /// Replacement validated settings blob. Provided → replaces the
     /// stored settings wholesale (an empty object clears it); absent → unchanged.
     /// Validated against the allowlist before persist.
@@ -1449,6 +1455,10 @@ pub async fn update_provider(
     };
     let rate_limits_provided = req.rate_limits.is_some();
     let rate_limits_json = build_rate_limits_json(req.rate_limits.as_ref())?;
+    let usage_notices_provided = req.usage_notices.is_some();
+    let usage_notices =
+        crate::routes::gateway::usage_notices::UsageNotices::build_json(req.usage_notices.as_ref())
+            .map_err(|m| err(StatusCode::BAD_REQUEST, &m))?;
 
     // COALESCE keeps each column when its bind is NULL, so an absent field is a
     // no-op. Admin (`ctx.user_id` = NULL) may edit any provider; a user only its
@@ -1463,7 +1473,8 @@ pub async fn update_provider(
             soft_limits_json = CASE WHEN $10 THEN $11 ELSE soft_limits_json END, \
             settings_json = CASE WHEN $12 THEN $13 ELSE settings_json END, \
             provider_settings = CASE WHEN $14 THEN $15 ELSE provider_settings END, \
-            rate_limits_json = CASE WHEN $16 THEN $17 ELSE rate_limits_json END \
+            rate_limits_json = CASE WHEN $16 THEN $17 ELSE rate_limits_json END, \
+            usage_notices = CASE WHEN $18 THEN $19 ELSE usage_notices END \
          WHERE id = $1 AND account_id = $2 \
            AND ($3::uuid IS NULL OR user_id = $3) AND NOT managed \
          RETURNING id",
@@ -1485,6 +1496,8 @@ pub async fn update_provider(
     .bind(&provider_settings)
     .bind(rate_limits_provided)
     .bind(&rate_limits_json)
+    .bind(usage_notices_provided)
+    .bind(&usage_notices)
     .fetch_optional(&state.pool)
     .await
     .map_err(|e| db_err(&e))?;

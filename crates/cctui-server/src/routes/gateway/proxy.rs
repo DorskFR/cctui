@@ -337,6 +337,7 @@ pub async fn passthrough(
     // zero-copy passthrough (request streamed, response streamed). When tracing,
     // we buffer the request body (it is the prompt, already fully in flight) so it
     // can be both forwarded upstream and used as the generation input.
+    let usage_notice = super::usage_notices::pending(&state, &acct, &session_token).await;
     let langfuse = state.langfuse.clone().filter(|lf| lf.should_sample());
     let trace_session_id =
         if langfuse.is_some() { session_id_for_token(&state, &session_token).await } else { None };
@@ -350,34 +351,42 @@ pub async fn passthrough(
     // falls through to the original bytes, so non-`/v1/messages` calls are
     // untouched either way.
     let mut request_model: Option<String> = None;
-    let (upstream_body, traced_request) =
-        if langfuse.is_some() || fireworks.is_some() || anthropic.is_some() {
-            let bytes = axum::body::to_bytes(req.into_body(), usize::MAX)
-                .await
-                .map_err(|_| StatusCode::BAD_REQUEST)?;
-            let mut parsed = serde_json::from_slice::<serde_json::Value>(&bytes).ok();
-            request_model = parsed
-                .as_ref()
-                .and_then(|r| r.get("model"))
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned);
-            let body = match parsed.as_mut() {
-                Some(json) if fireworks.is_some() || anthropic.is_some() => {
-                    if let Some(fw) = fireworks.as_ref() {
-                        fw.apply_body(json, affinity_session.as_deref());
-                    }
-                    if let Some(an) = anthropic.as_ref() {
-                        an.apply_body(json);
-                    }
-                    reqwest::Body::from(json.to_string())
+    let (upstream_body, traced_request) = if langfuse.is_some()
+        || fireworks.is_some()
+        || anthropic.is_some()
+        || usage_notice.is_some()
+    {
+        let bytes = axum::body::to_bytes(req.into_body(), usize::MAX)
+            .await
+            .map_err(|_| StatusCode::BAD_REQUEST)?;
+        let mut parsed = serde_json::from_slice::<serde_json::Value>(&bytes).ok();
+        request_model = parsed
+            .as_ref()
+            .and_then(|r| r.get("model"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned);
+        let body = match parsed.as_mut() {
+            Some(json) if fireworks.is_some() || anthropic.is_some() || usage_notice.is_some() => {
+                if let Some(fw) = fireworks.as_ref() {
+                    fw.apply_body(json, affinity_session.as_deref());
                 }
-                _ => reqwest::Body::from(bytes),
-            };
-            (body, parsed.filter(|_| langfuse.is_some()))
-        } else {
-            let body_stream = req.into_body().into_data_stream();
-            (reqwest::Body::wrap_stream(body_stream), None)
+                if let Some(an) = anthropic.as_ref() {
+                    an.apply_body(json);
+                }
+                if let Some(notice) = usage_notice
+                    && notice.inject(json)
+                {
+                    notice.commit(&state);
+                }
+                reqwest::Body::from(json.to_string())
+            }
+            _ => reqwest::Body::from(bytes),
         };
+        (body, parsed.filter(|_| langfuse.is_some()))
+    } else {
+        let body_stream = req.into_body().into_data_stream();
+        (reqwest::Body::wrap_stream(body_stream), None)
+    };
 
     let upstream = state
         .http_client

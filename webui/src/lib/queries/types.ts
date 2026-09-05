@@ -54,6 +54,9 @@ export interface AccountProvider {
    *  none at all. The per-window bypass ignores that window's cap when
    *  it resets within that many minutes. */
   soft_limits: Record<string, SoftLimitConfig> | null;
+  /** Usage ticker: a system-reminder to running sessions each time a usage
+   *  window crosses another `step_pct` bucket. Null ⇒ off. */
+  usage_notices: UsageNotices | null;
   /** Credential health: true once the gateway saw the upstream provider
    *  reject this credential; cleared on the next successful upstream call. UI
    *  shows a "reauthenticate" badge + button when set. */
@@ -116,6 +119,13 @@ export interface SessionBinding {
   credential_id: string;
   account_id: string;
   account_name: string;
+}
+
+/** Per-provider usage ticker setting. */
+export interface UsageNotices {
+  enabled: boolean;
+  /** Percent granularity of the notices, 1–100. */
+  step_pct: number;
 }
 
 /** One window's soft-limit config. Absent field ⇒ unset for that
@@ -275,6 +285,8 @@ export interface UpdateProvider {
    *  Provided → REPLACES the whole stored map ({} clears all, a dropped key
    *  removes that window's config); absent → unchanged. */
   soft_limits?: Record<string, SoftLimitConfig>;
+  /** Replacement usage ticker setting; `enabled: false` turns it off. */
+  usage_notices?: UsageNotices;
   /** Replacement validated settings blob. Provided → replaces
    *  the stored settings wholesale (an empty object clears it); absent →
    *  unchanged. Validated against the SAFE/CARE allowlist before persist. */
