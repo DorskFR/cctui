@@ -514,6 +514,76 @@ svg[aria-hidden="true"] {
   box-shadow: 0 8px 40px rgb(0 0 0 / 60%);
 }
 
+/* Agent-linked local file paths (`a.md-file`) and the overlay that shows
+   them. Rendered inside {@html} / built imperatively, so global. */
+.md-file {
+  color: var(--link);
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+  word-break: break-all;
+}
+.md-fileviewer {
+  cursor: default;
+}
+.md-fileviewer-panel {
+  display: flex;
+  flex-direction: column;
+  width: min(100%, 960px);
+  max-height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md, 6px);
+  box-shadow: 0 8px 40px rgb(0 0 0 / 60%);
+  overflow: hidden;
+}
+.md-fileviewer-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2, 8px);
+  padding: var(--sp-2, 8px) var(--sp-3, 12px);
+  border-bottom: 1px solid var(--border);
+}
+.md-fileviewer-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm, 0.85rem);
+}
+.md-fileviewer-btn {
+  font: inherit;
+  font-size: var(--fs-sm, 0.85rem);
+  color: var(--text);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm, 4px);
+  padding: 2px var(--sp-2, 8px);
+  cursor: pointer;
+  text-decoration: none;
+}
+.md-fileviewer-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.md-fileviewer-body {
+  overflow: auto;
+  padding: var(--sp-3, 12px);
+}
+.md-fileviewer-body .md-lightbox-img {
+  display: block;
+  margin: 0 auto;
+}
+.md-fileviewer-pre {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm, 0.85rem);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 /* While a docked panel's grip is being dragged (dockResize action): one cursor
    everywhere and no accidental text selection under the pointer. */
 body.dock-resizing,

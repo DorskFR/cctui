@@ -25,6 +25,7 @@ pub mod imagepost;
 pub mod listdirs;
 pub mod mcp;
 pub mod offsets;
+pub mod readfile;
 pub mod runlock;
 pub mod runtime;
 pub mod selfupdate;

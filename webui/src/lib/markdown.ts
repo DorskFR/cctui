@@ -237,9 +237,51 @@ function autolinkUrls(s: string): string {
   );
 }
 
+// Where agent-linked local paths resolve: the machine the session runs on
+// (the read-file route is machine-scoped; the session widens its allow-list).
+export interface LocalFileLinks {
+  machineId: string;
+  sessionId?: string;
+}
+
+/** Same-origin URL that serves `path` off `links.machineId` (see
+ * `GET /api/v1/machines/{id}/fs/file`). */
+export function localFileHref(path: string, links: LocalFileLinks): string {
+  let href =
+    `/api/v1/machines/${encodeURIComponent(links.machineId)}/fs/file` +
+    `?path=${encodeURIComponent(path)}`;
+  if (links.sessionId) href += `&session_id=${encodeURIComponent(links.sessionId)}`;
+  return href;
+}
+
+// An absolute (`/a/b.ext`) or home-relative (`~/a/b.ext`) path with a file
+// extension. Runs on escaped text, so `&`, `<`, `>`, quotes never appear in a
+// path; the left boundary is start / whitespace / an opener / an entity's `;` /
+// one of our own tags' `>`, so `</code>` or a URL's path part never match.
+const LOCAL_PATH =
+  /(^|[\s([;>])(~?\/(?:[A-Za-z0-9_.@+%-]+\/)*[A-Za-z0-9_.@+%-]+\.[A-Za-z0-9]{1,8})(?=[\s)\],;:!?<]|\.(?:\s|$)|$)/g;
+
+// Turn local file paths into links to the machine-scoped read-file route.
+// Runs after autolinkUrls so anchors (and the paths inside their URLs) are
+// stashed out of reach first.
+function linkifyLocalPaths(s: string, links: LocalFileLinks): string {
+  const saved: string[] = [];
+  const stash = (html: string) => `${AUTO_L}${saved.push(html) - 1}${AUTO_R}`;
+  s = s.replace(/<a\b[^>]*>[\s\S]*?<\/a>/g, stash);
+  s = s.replace(LOCAL_PATH, (_m, lead: string, path: string) => {
+    const href = localFileHref(path, links);
+    const name = escapeHtml(path.slice(path.lastIndexOf("/") + 1));
+    return `${lead}<a class="md-file" href="${href}" data-file-name="${name}" rel="noopener noreferrer">${path}</a>`;
+  });
+  return s.replace(
+    new RegExp(`${AUTO_L}(\\d+)${AUTO_R}`, "g"),
+    (_m, i) => saved[Number(i)],
+  );
+}
+
 // Inline markdown passes (code, bold, italic, links) shared between the main
 // body render and table-cell rendering. Operates on already-escaped text.
-function inlineMd(s: string): string {
+function inlineMd(s: string, links?: LocalFileLinks): string {
   // inline code
   s = s.replace(/`([^`]+)`/g, '<code class="md-code">$1</code>');
   // bold
@@ -253,6 +295,7 @@ function inlineMd(s: string): string {
   );
   // bare URLs -> links (after the markdown-link pass so they aren't double-linked)
   s = autolinkUrls(s);
+  if (links) s = linkifyLocalPaths(s, links);
   return s;
 }
 
@@ -296,8 +339,12 @@ function imageMarkerHtml(alt: string, id: string, sessionId: string): string {
 
 export function renderMarkdown(
   src: string,
-  opts: { tables?: boolean; sessionId?: string } = {},
+  opts: { tables?: boolean; sessionId?: string; machineId?: string } = {},
 ): string {
+  // Local paths become links only when the machine to read them from is known.
+  const links: LocalFileLinks | undefined = opts.machineId
+    ? { machineId: opts.machineId, sessionId: opts.sessionId }
+    : undefined;
   // Render GFM tables as real <table>s by default; when `tables` is false
   // leave the pipe rows as plain text.
   const tables = opts.tables !== false;
@@ -349,7 +396,7 @@ export function renderMarkdown(
         });
         const cell = (txt: string, i: number, tag: "th" | "td") => {
           const a = aligns[i] ? ` style="text-align:${aligns[i]}"` : "";
-          return `<${tag}${a}>${inlineMd(txt.trim())}</${tag}>`;
+          return `<${tag}${a}>${inlineMd(txt.trim(), links)}</${tag}>`;
         };
         const head = `<tr>${splitRow(header)
           .map((c, i) => cell(c, i, "th"))
@@ -376,7 +423,7 @@ export function renderMarkdown(
   s = s.replace(PSEUDO_TAG, '<span class="md-meta-tag">&lt;$1&gt;</span>');
 
   // inline emphasis/code/links
-  s = inlineMd(s);
+  s = inlineMd(s, links);
   // headings -> styled bold line
   s = s.replace(/^#{1,6}\s+(.+)$/gm, '<span class="md-h">$1</span>');
   // blockquote

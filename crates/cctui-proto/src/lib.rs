@@ -11,6 +11,7 @@ pub mod git;
 pub mod github;
 pub mod identity;
 pub mod ids;
+pub mod media;
 pub mod models;
 pub mod util;
 pub mod ws;

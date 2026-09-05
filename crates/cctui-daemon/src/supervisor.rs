@@ -453,8 +453,39 @@ impl Supervisor {
                     tracing::warn!("frame_up channel closed; dropping GitInfoResult");
                 }
             }
+            DaemonFrameDown::ReadFile { request_id, path, max_bytes, cwd } => {
+                self.spawn_read_file(request_id, path, max_bytes, cwd, frame_up_tx.clone());
+            }
             _ => {}
         }
+    }
+
+    /// A file read may PUT up to 32 MiB to the blob store, so it runs off the
+    /// frame loop.
+    fn spawn_read_file(
+        &self,
+        request_id: uuid::Uuid,
+        path: String,
+        max_bytes: u64,
+        cwd: Option<String>,
+        frame_up_tx: mpsc::Sender<DaemonFrameUp>,
+    ) {
+        let client = self.client.clone();
+        let machine_key = self.machine_key.clone();
+        tokio::spawn(async move {
+            let up = crate::readfile::handle(
+                &client,
+                &machine_key,
+                request_id,
+                &path,
+                max_bytes,
+                cwd.as_deref(),
+            )
+            .await;
+            if frame_up_tx.send(up).await.is_err() {
+                tracing::warn!("frame_up channel closed; dropping ReadFileResult");
+            }
+        });
     }
 
     #[allow(clippy::cognitive_complexity)]

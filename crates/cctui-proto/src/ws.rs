@@ -6,12 +6,50 @@ use crate::api::DaemonAdapterConfig;
 
 // --- Daemon → Server ---
 
+/// Successful [`DaemonFrameUp::ReadFileResult`] payload.
+///
+/// Exactly one of `data` (standard base64, files up to
+/// [`READ_FILE_INLINE_BYTES`]) or `blob_hash` (sha256 hex of the bytes the
+/// daemon PUT to the blob store) is set. `sha256` is always the content hash
+/// (the server's `ETag`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReadFileOk {
+    pub name: String,
+    pub size: u64,
+    pub sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blob_hash: Option<String>,
+}
+
+/// Why a [`DaemonFrameDown::ReadFile`] was refused; the server maps these
+/// onto HTTP statuses (403 / 413 / 404 / 500).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReadFileErrorKind {
+    Denied,
+    TooLarge,
+    NotFound,
+    Io,
+}
+
+/// Files up to this size ride inline in the `ReadFileResult`; larger ones go
+/// through the blob store.
+pub const READ_FILE_INLINE_BYTES: u64 = 1024 * 1024;
+
+/// Hard cap on a `ReadFile` (the blob store's own limit).
+pub const READ_FILE_MAX_BYTES: u64 = 32 * 1024 * 1024;
+
 /// Frames sent by a daemon to the server over `/api/v1/daemon/ws`.
 ///
 /// `Event` is inherently the largest variant (it carries an [`AdapterEvent`]
 /// with JSON payloads / many optional fields); boxing it would ripple
 /// through every construct/match site for no real benefit on this
 /// non-hot-path wire enum.
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[non_exhaustive]
@@ -64,6 +102,18 @@ pub enum DaemonFrameUp {
         ok: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         info: Option<crate::git::GitInfo>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+    /// Reply to a [`DaemonFrameDown::ReadFile`] request; `request_id`
+    /// correlates with the originating `GET /api/v1/machines/{id}/fs/file`.
+    ReadFileResult {
+        request_id: uuid::Uuid,
+        ok: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        file: Option<ReadFileOk>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error_kind: Option<ReadFileErrorKind>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
@@ -144,6 +194,20 @@ pub enum DaemonFrameDown {
         path: String,
         #[serde(default)]
         include_dirty: bool,
+    },
+    /// Read one file on the daemon's machine for the webui (a path an agent
+    /// linked in a message). The daemon expands `~`, canonicalises, refuses
+    /// anything outside its allow-list (temp dirs, `$HOME`, plus `cwd` — the
+    /// session's working directory), and replies with a
+    /// [`DaemonFrameUp::ReadFileResult`]: bytes inline when small, otherwise
+    /// the sha256 of the blob it PUT to the store. `max_bytes` is the server's
+    /// hard cap; larger files are refused with [`ReadFileErrorKind::TooLarge`].
+    ReadFile {
+        request_id: uuid::Uuid,
+        path: String,
+        max_bytes: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
     },
     /// Acknowledge chunked-transfer progress: the highest contiguous
     /// chunk index the server has reassembled for `transfer_id`, or `None` when
@@ -1096,6 +1160,52 @@ mod tests {
         let json = serde_json::to_string(&f).unwrap();
         assert!(json.contains(r#""type":"list_dirs_result""#));
         assert!(!json.contains("error"), "None error must be skipped: {json}");
+        let _back: DaemonFrameUp = serde_json::from_str(&json).unwrap();
+    }
+
+    #[test]
+    fn daemon_read_file_frames_roundtrip() {
+        let down = DaemonFrameDown::ReadFile {
+            request_id: uuid::Uuid::nil(),
+            path: "~/out/report.md".into(),
+            max_bytes: READ_FILE_MAX_BYTES,
+            cwd: Some("/home/u/proj".into()),
+        };
+        let json = serde_json::to_string(&down).unwrap();
+        assert!(json.contains(r#""type":"read_file""#));
+        let _back: DaemonFrameDown = serde_json::from_str(&json).unwrap();
+        let legacy = r#"{"type":"read_file","request_id":"00000000-0000-0000-0000-000000000000","path":"/x","max_bytes":1}"#;
+        let back: DaemonFrameDown = serde_json::from_str(legacy).unwrap();
+        assert!(matches!(back, DaemonFrameDown::ReadFile { cwd: None, .. }));
+
+        let up = DaemonFrameUp::ReadFileResult {
+            request_id: uuid::Uuid::nil(),
+            ok: true,
+            file: Some(ReadFileOk {
+                name: "report.md".into(),
+                size: 3,
+                sha256: "ab".into(),
+                media_type: Some("text/markdown".into()),
+                data: Some("YWJj".into()),
+                blob_hash: None,
+            }),
+            error_kind: None,
+            error: None,
+        };
+        let json = serde_json::to_string(&up).unwrap();
+        assert!(json.contains(r#""type":"read_file_result""#));
+        assert!(!json.contains("blob_hash"), "None fields must be skipped: {json}");
+        let _back: DaemonFrameUp = serde_json::from_str(&json).unwrap();
+
+        let err = DaemonFrameUp::ReadFileResult {
+            request_id: uuid::Uuid::nil(),
+            ok: false,
+            file: None,
+            error_kind: Some(ReadFileErrorKind::TooLarge),
+            error: Some("too big".into()),
+        };
+        let json = serde_json::to_string(&err).unwrap();
+        assert!(json.contains(r#""error_kind":"too_large""#));
         let _back: DaemonFrameUp = serde_json::from_str(&json).unwrap();
     }
 
