@@ -1,13 +1,25 @@
 import type { SessionProfile } from '@bindings/SessionProfile';
+import type { AccountPoolView } from '@bindings/AccountPoolView';
 import type { AccountUsageEntry, OAuthAccount } from '$lib/queries';
 import { gaugeWindow, utilizationPct } from '$lib/components/molecules/header-gauges.logic';
-import { adapterLabel, isCompatibleProvider, providerForAdapter } from './options';
+import {
+	adapterLabel,
+	isCompatibleProvider,
+	NO_ACCOUNT,
+	poolName,
+	poolValue,
+	providerForAdapter
+} from './options';
 import type { Form } from './types';
 
-/** The knobs a profile carries; `null` = Auto account / harness default. */
+/** The knobs a profile carries. The account pick is at most one of
+ *  `account_id` / `pool_id` / `no_account`; none = Auto. `null` model /
+ *  effort / permission mode = the harness or account default. */
 export interface ProfileSpec {
 	harness: string;
 	account_id: string | null;
+	pool_id: string | null;
+	no_account: boolean;
 	model_alias: string | null;
 	effort: string | null;
 	permission_mode: string | null;
@@ -16,6 +28,8 @@ export interface ProfileSpec {
 export const SPEC_FIELDS = [
 	'harness',
 	'account_id',
+	'pool_id',
+	'no_account',
 	'model_alias',
 	'effort',
 	'permission_mode'
@@ -40,6 +54,8 @@ export function specOf(p: SessionProfile): ProfileSpec {
 	return {
 		harness: p.harness,
 		account_id: p.account_id,
+		pool_id: p.pool_id,
+		no_account: p.no_account,
 		model_alias: blank(p.model_alias),
 		effort: blank(p.effort),
 		permission_mode: blank(p.permission_mode)
@@ -61,6 +77,22 @@ export const accountByName = (accounts: readonly OAuthAccount[], name: string) =
 	name ? accounts.find((a) => a.name === name) : undefined;
 export const accountById = (accounts: readonly OAuthAccount[], id: string | null) =>
 	id ? accounts.find((a) => a.id === id) : undefined;
+const poolById = (pools: readonly AccountPoolView[], id: string | null) =>
+	id ? pools.find((p) => p.id === id) : undefined;
+
+/** The form's account picker value for a spec: '' Auto, the no-account
+ *  sentinel, a pool value, or the account name. A pool or account that no
+ *  longer exists falls back to Auto. */
+export function accountPick(
+	spec: ProfileSpec,
+	accounts: readonly OAuthAccount[],
+	pools: readonly AccountPoolView[]
+): string {
+	if (spec.no_account) return NO_ACCOUNT;
+	const pool = poolById(pools, spec.pool_id);
+	if (pool) return poolValue(pool.name);
+	return accountById(accounts, spec.account_id)?.name ?? '';
+}
 
 /** The account's busiest window as a percentage, for the account picker hint. */
 export function accountUsedPct(rows: readonly AccountUsageEntry[], accountId: string): number | null {
@@ -69,12 +101,19 @@ export function accountUsedPct(rows: readonly AccountUsageEntry[], accountId: st
 }
 
 /** Read the profile knobs out of a form (the seed for the first profile). */
-export function specFromForm(form: SpecForm, accounts: readonly OAuthAccount[]): ProfileSpec {
+export function specFromForm(
+	form: SpecForm,
+	accounts: readonly OAuthAccount[],
+	pools: readonly AccountPoolView[] = []
+): ProfileSpec {
 	const harness = form.adapter_id || 'claude-code';
-	const account = accountByName(accounts, form.account);
+	const pool = poolName(form.account);
+	const account = pool === undefined ? accountByName(accounts, form.account) : undefined;
 	return {
 		harness,
 		account_id: account?.id ?? null,
+		pool_id: pool === undefined ? null : (pools.find((p) => p.name === pool)?.id ?? null),
+		no_account: form.account === NO_ACCOUNT,
 		model_alias: blank(form[modelField(harness, account)]),
 		effort: blank(harness === 'codex' ? form.effort_codex : form.effort_claude),
 		permission_mode: blank(form.permission_mode)
@@ -86,13 +125,14 @@ export function specFromForm(form: SpecForm, accounts: readonly OAuthAccount[]):
 export function applySpec<T extends SpecForm>(
 	form: T,
 	spec: ProfileSpec,
-	accounts: readonly OAuthAccount[]
+	accounts: readonly OAuthAccount[],
+	pools: readonly AccountPoolView[] = []
 ): T {
 	const account = accountById(accounts, spec.account_id);
 	const out: T = {
 		...form,
 		adapter_id: spec.harness,
-		account: account?.name ?? '',
+		account: accountPick(spec, accounts, pools),
 		account_provider: providerForAdapter(account, spec.harness)?.provider ?? '',
 		permission_mode: (spec.permission_mode ?? '') as T['permission_mode']
 	};
@@ -116,13 +156,25 @@ export function sameSpec(a: ProfileSpec, b: ProfileSpec): boolean {
 export function specChain(
 	spec: ProfileSpec,
 	accounts: readonly OAuthAccount[],
-	labels: { auto: string; defaultModel: string; defaultEffort: string; defaultMode: string },
+	pools: readonly AccountPoolView[],
+	labels: {
+		auto: string;
+		noAccount: string;
+		defaultModel: string;
+		defaultEffort: string;
+		defaultMode: string;
+	},
 	modelLabel: (harness: string, alias: string) => string = (_h, alias) => alias
 ): string {
 	const account = accountById(accounts, spec.account_id);
-	const accountText = account
-		? `${account.emoji ? `${account.emoji} ` : ''}${account.name}`
-		: labels.auto;
+	const pool = poolById(pools, spec.pool_id);
+	const accountText = spec.no_account
+		? labels.noAccount
+		: pool
+			? pool.name
+			: account
+				? `${account.emoji ? `${account.emoji} ` : ''}${account.name}`
+				: labels.auto;
 	const mode = spec.permission_mode
 		? spec.permission_mode[0].toUpperCase() + spec.permission_mode.slice(1)
 		: labels.defaultMode;

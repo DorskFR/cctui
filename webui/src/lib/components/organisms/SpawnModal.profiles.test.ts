@@ -20,6 +20,8 @@ const orchestrator: SessionProfile = {
 	name: 'Orchestrator',
 	harness: 'claude-code',
 	account_id: 'a1',
+	pool_id: null,
+	no_account: false,
 	model_alias: 'fable',
 	effort: 'medium',
 	permission_mode: 'yolo',
@@ -50,7 +52,7 @@ vi.mock('$lib/queries', () => {
 		useDispatchers: () => q([]),
 		useRecentDirs: () => q([]),
 		useAccounts: () => q(accounts),
-		useAccountPools: () => q([]),
+		useAccountPools: () => q([{ id: 'pool1', name: 'shared', members: [] }]),
 		useLabels: () => q({ labels: [] }),
 		useProfiles: () => q(profileList),
 		useProfileActions: () => ({ create, update, remove: async () => {} }),
@@ -208,6 +210,48 @@ describe('SpawnModal profiles', () => {
 			spec: { harness: 'claude-code', account_id: 'a1', permission_mode: 'auto' }
 		});
 		expect(spawnButton().textContent?.trim()).toBe('Spawn · Orchestrator');
+	});
+
+	it('spawns inside the profile\'s pool, and unbound for a no-account profile', async () => {
+		profileList = [
+			{ ...orchestrator, account_id: null, pool_id: 'pool1' },
+			{ ...codexQuick, no_account: true }
+		];
+		await open();
+		expect(document.body.textContent).toContain('Claude Code · shared · Fable');
+		let body = await submit();
+		expect(body).toMatchObject({ pool: 'shared', account: null, auto_account: false, no_account: false });
+
+		await unmount(component as NonNullable<typeof component>);
+		component = undefined;
+		document.body.replaceChildren();
+		spawn.mockClear();
+		lastEntry = { profile_id: 'p2' };
+		await open();
+		body = await submit();
+		expect(body).toMatchObject({ pool: null, account: null, no_account: true, auto_account: false });
+	});
+
+	it('offers pools and "no account" in the adjust panel and persists the pick', async () => {
+		await open();
+		button('Adjust profile').click();
+		await tick();
+		const select = document.querySelector<HTMLSelectElement>('select[aria-label="Account"]');
+		if (!select) throw new Error('account select not found');
+		const values = [...select.options].map((o) => o.value);
+		expect(values).toEqual(['', '\x00no-account', '\x00pool:pool1', 'a1']);
+		const pick = select.options[2];
+		pick.selected = true;
+		// jsdom cannot match `option:checked`, which Svelte's select binding reads.
+		const nativeQuery = select.querySelector.bind(select);
+		select.querySelector = ((q: string) => (q === ':checked' ? pick : nativeQuery(q))) as typeof select.querySelector;
+		select.dispatchEvent(new Event('change', { bubbles: true }));
+		await tick();
+		button('Save to profile').click();
+		await tick();
+		expect(update.mock.calls[0][1]).toMatchObject({
+			spec: { account_id: null, pool_id: 'pool1', no_account: false }
+		});
 	});
 
 	it('seeds a "Default" profile from the form when the user has none', async () => {

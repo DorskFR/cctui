@@ -323,7 +323,7 @@
 		!!oneOff && !!selectedProfile && !sameSpec(oneOff, specOf(selectedProfile))
 	);
 	const effectiveForm = $derived(
-		target === 'machine' && profileSpec ? applySpec(form, profileSpec, allAccounts) : form
+		target === 'machine' && profileSpec ? applySpec(form, profileSpec, allAccounts, allPools) : form
 	);
 
 	// Each machine opens on the profile it last spawned from.
@@ -343,15 +343,15 @@
 	let seeded = false;
 	$effect(() => {
 		if (seeded || profilesQuery.data === undefined || profiles.length) return;
-		if (!form.machine_id || accounts.data === undefined) return;
+		if (!form.machine_id || accounts.data === undefined || pools.data === undefined) return;
 		seeded = true;
 		void profileActions
-			.create({ name: m.spawn_profile_default_name(), ...specFromForm(form, allAccounts) })
+			.create({ name: m.spawn_profile_default_name(), ...specFromForm(form, allAccounts, allPools) })
 			.catch(() => {});
 	});
 
 	async function createProfile() {
-		const base = profileSpec ?? specFromForm(form, allAccounts);
+		const base = profileSpec ?? specFromForm(form, allAccounts, allPools);
 		const name = uniqueProfileName(
 			m.spawn_profile_new_name(),
 			profiles.map((p) => p.name)
@@ -819,6 +819,7 @@
 					bind:selectedId={selectedProfileId}
 					bind:oneOff
 					accounts={allAccounts}
+					pools={allPools}
 					usage={allUsage}
 					{usageRaw}
 					machineId={form.machine_id}

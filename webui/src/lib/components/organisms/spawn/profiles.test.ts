@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import type { SessionProfile } from '@bindings/SessionProfile';
+import type { AccountPoolView } from '@bindings/AccountPoolView';
 import type { OAuthAccount } from '$lib/queries';
 import {
+	accountPick,
 	applySpec,
 	initialProfile,
 	modelField,
@@ -33,6 +35,8 @@ const accounts = [
 	account({ id: 'a3', name: 'oai', emoji: '🦊', providers: [{ provider: 'openai' }] })
 ];
 
+const pools = [{ id: 'pool1', name: 'shared', members: [] }] as unknown as AccountPoolView[];
+
 const form = {
 	adapter_id: 'claude-code',
 	account: 'personal',
@@ -51,6 +55,8 @@ const profile = (over: Partial<SessionProfile> = {}): SessionProfile => ({
 	name: 'Orchestrator',
 	harness: 'claude-code',
 	account_id: 'a1',
+	pool_id: null,
+	no_account: false,
 	model_alias: 'fable',
 	effort: 'medium',
 	permission_mode: 'yolo',
@@ -61,6 +67,7 @@ const profile = (over: Partial<SessionProfile> = {}): SessionProfile => ({
 
 const labels = {
 	auto: 'Auto',
+	noAccount: 'none',
 	defaultModel: 'default model',
 	defaultEffort: 'default',
 	defaultMode: 'Default'
@@ -80,6 +87,8 @@ describe('specFromForm / applySpec', () => {
 		expect(spec).toEqual({
 			harness: 'claude-code',
 			account_id: 'a1',
+			pool_id: null,
+			no_account: false,
 			model_alias: 'fable',
 			effort: 'medium',
 			permission_mode: 'yolo'
@@ -98,6 +107,8 @@ describe('specFromForm / applySpec', () => {
 		const spec: ProfileSpec = {
 			harness: 'codex',
 			account_id: 'gone',
+			pool_id: null,
+			no_account: false,
 			model_alias: null,
 			effort: 'xhigh',
 			permission_mode: null
@@ -110,6 +121,21 @@ describe('specFromForm / applySpec', () => {
 		expect(out.effort_codex).toBe('xhigh');
 		expect(out.effort_claude).toBe('medium');
 		expect(out.permission_mode).toBe('');
+	});
+
+	it('carries a pool pick and the no-account sentinel through the form', () => {
+		const pooled = specFromForm({ ...form, account: '\x00pool:shared' }, accounts, pools);
+		expect(pooled).toMatchObject({ account_id: null, pool_id: 'pool1', no_account: false });
+		expect(accountPick(pooled, accounts, pools)).toBe('\x00pool:shared');
+		expect(applySpec(form, pooled, accounts, pools).account).toBe('\x00pool:shared');
+		expect(applySpec(form, pooled, accounts, []).account).toBe('');
+
+		const unbound = specFromForm({ ...form, account: '\x00no-account' }, accounts, pools);
+		expect(unbound).toMatchObject({ account_id: null, pool_id: null, no_account: true });
+		expect(applySpec(form, unbound, accounts, pools)).toMatchObject({
+			account: '\x00no-account',
+			account_provider: ''
+		});
 	});
 
 	it('treats blank strings as unset', () => {
@@ -131,7 +157,7 @@ describe('specChanges / specChain', () => {
 	});
 
 	it('renders the summary line', () => {
-		expect(specChain(specOf(profile()), accounts, labels, (_h, alias) => `${alias}!`)).toBe(
+		expect(specChain(specOf(profile()), accounts, pools, labels, (_h, alias) => `${alias}!`)).toBe(
 			'Claude Code · 🐼 personal · fable! · medium · Yolo'
 		);
 		expect(
@@ -139,14 +165,23 @@ describe('specChanges / specChain', () => {
 				{
 					harness: 'codex',
 					account_id: null,
+					pool_id: null,
+					no_account: false,
 					model_alias: null,
 					effort: null,
 					permission_mode: null
 				},
 				accounts,
+				pools,
 				labels
 			)
 		).toBe('Codex · Auto · default model · default · Default');
+		expect(
+			specChain(specOf(profile({ account_id: null, pool_id: 'pool1' })), accounts, pools, labels)
+		).toContain('· shared ·');
+		expect(
+			specChain(specOf(profile({ account_id: null, no_account: true })), accounts, pools, labels)
+		).toContain('· none ·');
 	});
 });
 

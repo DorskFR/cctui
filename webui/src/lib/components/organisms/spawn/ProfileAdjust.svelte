@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { SessionProfile } from '@bindings/SessionProfile';
+	import type { AccountPoolView } from '@bindings/AccountPoolView';
 	import type { AccountUsageEntry, OAuthAccount } from '$lib/queries';
 	import { useCodexModels, useMergedCodexModels } from '$lib/queries';
 	import { Button, IconButton, Input, SegmentedControl, Select, Text } from '@dorsk/tsumikit';
@@ -17,6 +18,8 @@
 		codexModelsFor,
 		isCompatibleProvider,
 		modes,
+		NO_ACCOUNT,
+		POOL_PREFIX,
 		providerForAdapter,
 		withAliasTargets
 	} from './options';
@@ -27,6 +30,7 @@
 		profile,
 		initial,
 		accounts,
+		pools = [],
 		usage,
 		machineId,
 		busy = false,
@@ -37,6 +41,7 @@
 		profile: SessionProfile;
 		initial: ProfileSpec;
 		accounts: OAuthAccount[];
+		pools?: AccountPoolView[];
 		usage: AccountUsageEntry[];
 		machineId: string;
 		busy?: boolean;
@@ -57,8 +62,28 @@
 	const provider = $derived(providerForAdapter(account, draft.harness));
 	const usesAccountModels = $derived(!!provider && isCompatibleProvider(provider.provider));
 
+	// One picker value space: '' Auto · the no-account sentinel · pool ids
+	// behind POOL_PREFIX · account ids.
+	const accountPick = $derived(
+		draft.no_account
+			? NO_ACCOUNT
+			: draft.pool_id
+				? `${POOL_PREFIX}${draft.pool_id}`
+				: (draft.account_id ?? '')
+	);
+	function setAccountPick(v: string) {
+		draft.no_account = v === NO_ACCOUNT;
+		draft.pool_id = v.startsWith(POOL_PREFIX) ? v.slice(POOL_PREFIX.length) : null;
+		draft.account_id = v && v !== NO_ACCOUNT && !v.startsWith(POOL_PREFIX) ? v : null;
+	}
 	const accountOptions = $derived<SelectOption[]>([
 		{ value: '', label: m.spawn_account_auto() },
+		{ value: NO_ACCOUNT, label: m.spawn_account_none() },
+		...pools.map((p) => ({
+			value: `${POOL_PREFIX}${p.id}`,
+			label: p.name,
+			hint: m.spawn_account_pool_group()
+		})),
 		...accounts
 			.filter((a) => accountBacksAdapter(a, draft.harness))
 			.map((a) => {
@@ -137,7 +162,7 @@
 			size="sm"
 			aria-label={m.spawn_profile_account_aria()}
 			options={accountOptions}
-			bind:value={() => draft.account_id ?? '', (v) => (draft.account_id = v || null)}
+			bind:value={() => accountPick, setAccountPick}
 		/>
 		<Select
 			size="sm"

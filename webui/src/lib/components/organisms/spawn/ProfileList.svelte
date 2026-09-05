@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { SessionProfile } from '@bindings/SessionProfile';
+	import type { AccountPoolView } from '@bindings/AccountPoolView';
 	import type { AccountUsageEntry, OAuthAccount } from '$lib/queries';
 	import ProfileRow from './ProfileRow.svelte';
 	import ProfileAdjust from './ProfileAdjust.svelte';
@@ -13,6 +14,7 @@
 		selectedId = $bindable(),
 		oneOff = $bindable(),
 		accounts,
+		pools = [],
 		usage,
 		usageRaw,
 		machineId,
@@ -25,6 +27,7 @@
 		selectedId: string | null;
 		oneOff: ProfileSpec | null;
 		accounts: OAuthAccount[];
+		pools?: AccountPoolView[];
 		usage: AccountUsageEntry[];
 		usageRaw: string;
 		machineId: string;
@@ -38,6 +41,7 @@
 
 	const chainLabels = $derived({
 		auto: m.spawn_account_auto(),
+		noAccount: m.spawn_account_none(),
 		defaultModel: m.spawn_model_default(),
 		defaultEffort: m.spawn_effort_default(),
 		defaultMode: m.spawn_mode_default_label()
@@ -78,7 +82,7 @@
 		<ProfileRow
 			id={p.id}
 			name={p.name}
-			chain={specChain(spec, accounts, chainLabels, modelLabel)}
+			chain={specChain(spec, accounts, pools, chainLabels, modelLabel)}
 			usage={usageText(p.id)}
 			selected={selectedId === p.id}
 			open={openId === p.id}
@@ -89,6 +93,7 @@
 				profile={p}
 				initial={spec}
 				{accounts}
+				{pools}
 				{usage}
 				{machineId}
 				{busy}

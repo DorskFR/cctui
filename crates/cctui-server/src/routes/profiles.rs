@@ -29,6 +29,9 @@ pub struct SessionProfile {
     pub harness: String,
     #[ts(type = "string | null")]
     pub account_id: Option<Uuid>,
+    #[ts(type = "string | null")]
+    pub pool_id: Option<Uuid>,
+    pub no_account: bool,
     pub model_alias: Option<String>,
     pub effort: Option<String>,
     pub permission_mode: Option<String>,
@@ -38,7 +41,8 @@ pub struct SessionProfile {
     pub updated_at: DateTime<Utc>,
 }
 
-/// The knobs a profile carries. `None` account = Auto (the server elects one);
+/// The knobs a profile carries. The account pick is at most one of
+/// `account_id` / `pool_id` / `no_account`; none = Auto (the server elects one).
 /// `None` model / effort / permission mode = the harness or account default.
 #[derive(Clone, Debug, Default, serde::Deserialize, ts_rs::TS)]
 #[ts(export)]
@@ -47,6 +51,12 @@ pub struct ProfileSpec {
     #[serde(default)]
     #[ts(type = "string | null", optional)]
     pub account_id: Option<Uuid>,
+    #[serde(default)]
+    #[ts(type = "string | null", optional)]
+    pub pool_id: Option<Uuid>,
+    #[serde(default)]
+    #[ts(type = "boolean", optional)]
+    pub no_account: bool,
     #[serde(default)]
     #[ts(type = "string | null", optional)]
     pub model_alias: Option<String>,
@@ -79,8 +89,8 @@ pub struct UpdateProfileRequest {
     pub spec: Option<ProfileSpec>,
 }
 
-const COLS: &str = "id, user_id, name, harness, account_id, model_alias, effort, permission_mode, \
-                    created_at, updated_at";
+const COLS: &str = "id, user_id, name, harness, account_id, pool_id, no_account, model_alias, \
+                    effort, permission_mode, created_at, updated_at";
 
 fn db_err(e: &sqlx::Error) -> ApiErr {
     if let sqlx::Error::Database(dbe) = e
@@ -117,9 +127,15 @@ fn clean_spec(spec: ProfileSpec) -> Result<ProfileSpec, ApiErr> {
     {
         return Err(err(StatusCode::BAD_REQUEST, "unknown permission mode"));
     }
+    let picks = [spec.account_id.is_some(), spec.pool_id.is_some(), spec.no_account];
+    if picks.iter().filter(|p| **p).count() > 1 {
+        return Err(err(StatusCode::BAD_REQUEST, "pick one of account, pool or no account"));
+    }
     Ok(ProfileSpec {
         harness,
         account_id: spec.account_id,
+        pool_id: spec.pool_id,
+        no_account: spec.no_account,
         model_alias: opt(spec.model_alias),
         effort: opt(spec.effort),
         permission_mode,
@@ -146,11 +162,26 @@ async fn account_usable(
     .await
 }
 
+async fn pool_owned(pool: &PgPool, user_id: Uuid, pool_id: Uuid) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS (SELECT 1 FROM account_pools WHERE id = $2 AND user_id = $1)",
+    )
+    .bind(user_id)
+    .bind(pool_id)
+    .fetch_one(pool)
+    .await
+}
+
 async fn check_account(pool: &PgPool, user_id: Uuid, spec: &ProfileSpec) -> Result<(), ApiErr> {
     if let Some(account) = spec.account_id
         && !account_usable(pool, user_id, account).await.map_err(|e| db_err(&e))?
     {
         return Err(err(StatusCode::BAD_REQUEST, "unknown account"));
+    }
+    if let Some(id) = spec.pool_id
+        && !pool_owned(pool, user_id, id).await.map_err(|e| db_err(&e))?
+    {
+        return Err(err(StatusCode::BAD_REQUEST, "unknown pool"));
     }
     Ok(())
 }
@@ -175,13 +206,16 @@ pub async fn insert(
 ) -> Result<SessionProfile, sqlx::Error> {
     sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "INSERT INTO session_profiles \
-            (user_id, name, harness, account_id, model_alias, effort, permission_mode) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING {COLS}"
+            (user_id, name, harness, account_id, pool_id, no_account, model_alias, effort, \
+             permission_mode) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING {COLS}"
     )))
     .bind(user_id)
     .bind(name)
     .bind(&spec.harness)
     .bind(spec.account_id)
+    .bind(spec.pool_id)
+    .bind(spec.no_account)
     .bind(spec.model_alias.as_deref())
     .bind(spec.effort.as_deref())
     .bind(spec.permission_mode.as_deref())
@@ -201,9 +235,11 @@ pub async fn update(
             name = COALESCE($3, name), \
             harness = CASE WHEN $4 THEN $5 ELSE harness END, \
             account_id = CASE WHEN $4 THEN $6 ELSE account_id END, \
-            model_alias = CASE WHEN $4 THEN $7 ELSE model_alias END, \
-            effort = CASE WHEN $4 THEN $8 ELSE effort END, \
-            permission_mode = CASE WHEN $4 THEN $9 ELSE permission_mode END, \
+            pool_id = CASE WHEN $4 THEN $7 ELSE pool_id END, \
+            no_account = CASE WHEN $4 THEN $8 ELSE no_account END, \
+            model_alias = CASE WHEN $4 THEN $9 ELSE model_alias END, \
+            effort = CASE WHEN $4 THEN $10 ELSE effort END, \
+            permission_mode = CASE WHEN $4 THEN $11 ELSE permission_mode END, \
             updated_at = now() \
          WHERE id = $1 AND user_id = $2 RETURNING {COLS}"
     )))
@@ -213,6 +249,8 @@ pub async fn update(
     .bind(spec.is_some())
     .bind(spec.map(|s| s.harness.as_str()))
     .bind(spec.and_then(|s| s.account_id))
+    .bind(spec.and_then(|s| s.pool_id))
+    .bind(spec.is_some_and(|s| s.no_account))
     .bind(spec.and_then(|s| s.model_alias.as_deref()))
     .bind(spec.and_then(|s| s.effort.as_deref()))
     .bind(spec.and_then(|s| s.permission_mode.as_deref()))
@@ -295,6 +333,8 @@ mod tests {
         ProfileSpec {
             harness: harness.into(),
             account_id: None,
+            pool_id: None,
+            no_account: false,
             model_alias: Some(" fable ".into()),
             effort: Some(String::new()),
             permission_mode: mode.map(str::to_string),
@@ -318,6 +358,9 @@ mod tests {
             StatusCode::BAD_REQUEST
         );
         assert!(clean_spec(spec("claude-code", Some(" "))).unwrap().permission_mode.is_none());
+        let both =
+            ProfileSpec { pool_id: Some(Uuid::new_v4()), no_account: true, ..spec("codex", None) };
+        assert_eq!(clean_spec(both).unwrap_err().0, StatusCode::BAD_REQUEST);
     }
 
     #[test]
@@ -361,9 +404,20 @@ mod tests {
                 .await
                 .expect("insert account");
 
+        let pool_id: Uuid = sqlx::query_scalar(
+            "INSERT INTO account_pools (user_id, name) VALUES ($1, $2) RETURNING id",
+        )
+        .bind(owner)
+        .bind(format!("profiles-pool-{suffix}"))
+        .fetch_one(&pool)
+        .await
+        .expect("insert pool");
+
         let kit = ProfileSpec {
             harness: "claude-code".into(),
             account_id: Some(account),
+            pool_id: None,
+            no_account: false,
             model_alias: Some("fable".into()),
             effort: Some("medium".into()),
             permission_mode: Some("yolo".into()),
@@ -378,9 +432,18 @@ mod tests {
 
         assert!(account_usable(&pool, owner, account).await.unwrap());
         assert!(!account_usable(&pool, other, account).await.unwrap());
+        assert!(pool_owned(&pool, owner, pool_id).await.unwrap());
+        assert!(!pool_owned(&pool, other, pool_id).await.unwrap());
+
+        let pooled = ProfileSpec { account_id: None, pool_id: Some(pool_id), ..kit.clone() };
+        let with_pool = insert(&pool, owner, "Pooled", &pooled).await.expect("insert pooled");
+        assert_eq!(with_pool.pool_id, Some(pool_id));
+        assert_eq!(with_pool.account_id, None);
+        let clash = ProfileSpec { no_account: true, ..pooled.clone() };
+        assert!(insert(&pool, owner, "Clash", &clash).await.is_err());
 
         let mine = list_for_user(&pool, owner).await.expect("list");
-        assert_eq!(mine.iter().map(|p| p.id).collect::<Vec<_>>(), vec![created.id]);
+        assert_eq!(mine.iter().map(|p| p.id).collect::<Vec<_>>(), vec![created.id, with_pool.id]);
 
         let renamed = update(&pool, owner, created.id, Some("Deep review"), None)
             .await
@@ -389,7 +452,8 @@ mod tests {
         assert_eq!(renamed.name, "Deep review");
         assert_eq!(renamed.model_alias.as_deref(), Some("fable"));
 
-        let cleared = ProfileSpec { harness: "codex".into(), ..ProfileSpec::default() };
+        let cleared =
+            ProfileSpec { harness: "codex".into(), no_account: true, ..ProfileSpec::default() };
         let replaced = update(&pool, owner, created.id, None, Some(&cleared))
             .await
             .expect("replace")
@@ -397,12 +461,14 @@ mod tests {
         assert_eq!(replaced.name, "Deep review");
         assert_eq!(replaced.harness, "codex");
         assert_eq!(replaced.account_id, None);
+        assert!(replaced.no_account);
         assert_eq!(replaced.effort, None);
         assert!(replaced.updated_at >= created.updated_at);
 
         assert!(update(&pool, other, created.id, Some("hijack"), None).await.unwrap().is_none());
         assert!(!delete(&pool, other, created.id).await.unwrap());
         assert!(delete(&pool, owner, created.id).await.unwrap());
+        assert!(delete(&pool, owner, with_pool.id).await.unwrap());
         assert!(list_for_user(&pool, owner).await.unwrap().is_empty());
 
         sqlx::query("DELETE FROM users WHERE id = $1 OR id = $2")
