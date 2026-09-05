@@ -38,7 +38,6 @@
 		size="sm"
 		active={open}
 		class={`badge-toggle${running > 0 ? ' running' : ''}`}
-		type="button"
 		{title}
 		aria-label={ariaLabel}
 		aria-expanded={open}

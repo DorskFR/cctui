@@ -34,9 +34,12 @@
 		maxWidth="100%"
 		icon={expanded === null ? 'file-text' : expanded ? 'chevron-down' : 'chevron-right'}
 		{title}
-		disabled={unavailable}
+		aria-disabled={unavailable}
 		aria-expanded={expanded === null ? undefined : expanded}
-		onclick={() => onclick?.()}
+		style={unavailable ? 'opacity:0.5;cursor:not-allowed' : undefined}
+		onclick={() => {
+			if (!unavailable) onclick?.();
+		}}
 	>
 		{name}
 		{#if detail ?? size !== null}

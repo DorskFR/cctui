@@ -32,7 +32,7 @@
 {:else}
 	<SegmentedControl
 		variant="icon"
-		size="md"
+		box
 		label={m.sessions_view_label()}
 		{options}
 		bind:value={() => (cardView ? 'card' : 'list'), (v) => (cardView = v === 'card')}

@@ -1,15 +1,7 @@
 <script lang="ts">
 	import type { Label } from '@bindings/Label';
 	import type { Section } from '../../../routes/sessions/sessions.logic';
-	import {
-		Button,
-		Field,
-		FilterSearchBar,
-		Heading,
-		Icon,
-		type Schema,
-		Text
-	} from '@dorsk/tsumikit';
+	import { Button, Field, FilterSearchBar, Heading, Icon, type Schema } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 	import { sessionSearchPlaceholder } from '$lib/searchSchema';
 	import SectionFilter from '../molecules/SectionFilter.svelte';
@@ -127,11 +119,11 @@
 {/snippet}
 
 <div class="bar row">
-	<Heading level={1} size="xl" class="sess-title" style="align-self:center;flex:none">{m.sessions_title()}</Heading>
+	<Heading level={1} size="xl" class="sess-title" style="align-self:center">{m.sessions_title()}</Heading>
 	<!-- FilterSearchBar forwards no id/aria-label, so the name reaches its input
 	     through the Field context; the label itself is screen-reader only. -->
 	<div class="search-box">
-		<Text as="label" for={searchId} class="sr-only">{m.a11y_sessions_search()}</Text>
+		<label for={searchId} class="sr-only">{m.a11y_sessions_search()}</label>
 		<Field for={searchId}>
 			<FilterSearchBar
 				schema={searchSchema}

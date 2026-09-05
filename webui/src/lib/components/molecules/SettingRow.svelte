@@ -52,7 +52,7 @@
 		{#if selfLabelled}
 			<Text weight="semibold" as="div">{@render lblLine()}</Text>
 		{:else}
-			<Text weight="semibold" as="label" for={uid}>{@render lblLine()}</Text>
+			<label for={uid}><Text weight="semibold" as="span">{@render lblLine()}</Text></label>
 		{/if}
 		{#if helpSlot}
 			<Text size="sm" tone="faint" as="div">{@render helpSlot()}</Text>

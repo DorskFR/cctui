@@ -242,6 +242,12 @@
 		gap: var(--sp-4);
 		padding: var(--sp-1) 0 var(--sp-4) var(--sp-4);
 	}
+	/* Stacked under the breakpoint the pane already spans the page: no inset. */
+	@media (max-width: 47.999rem) {
+		.detail {
+			padding-left: 0;
+		}
+	}
 	.dhead {
 		display: flex;
 		align-items: center;
