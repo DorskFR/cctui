@@ -1240,6 +1240,12 @@
 		align-items: stretch;
 		gap: var(--sp-3);
 	}
+	/* One column takes the whole strip: a capped track leaves a gutter on phones. */
+	@container (max-width: 40rem) {
+		.card-grid {
+			grid-template-columns: minmax(0, 1fr);
+		}
+	}
 	.sections {
 		container-type: inline-size;
 	}
