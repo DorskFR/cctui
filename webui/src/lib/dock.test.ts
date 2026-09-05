@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { clampDockWidth, DOCK_MAX_PX, DOCK_MIN_PX, resolveDocks, SPAWN_DOCK_WIDTH, STATS_DOCK_WIDTH } from './dock';
+import {
+	clampDockWidth,
+	DOCK_MAX_PX,
+	DOCK_MIN_PX,
+	maxDockWidth,
+	resolveDocks,
+	SPAWN_DOCK_WIDTH,
+	STATS_DOCK_WIDTH
+} from './dock';
 
 const off = { enabled: false, side: 'right' as const };
 const on = (side: 'left' | 'right') => ({ enabled: true, side });
@@ -82,5 +90,16 @@ describe('clampDockWidth', () => {
 		expect(clampDockWidth('400')).toBeUndefined();
 		expect(clampDockWidth(undefined)).toBeUndefined();
 		expect(clampDockWidth(Number.POSITIVE_INFINITY)).toBeUndefined();
+	});
+});
+
+describe('maxDockWidth', () => {
+	it('caps a dragged panel at a share of the viewport', () => {
+		expect(maxDockWidth(2000)).toBe(1200);
+	});
+
+	it('keeps the floor on a viewport too narrow for the share', () => {
+		expect(maxDockWidth(100)).toBe(DOCK_MIN_PX);
+		expect(maxDockWidth(0)).toBe(DOCK_MIN_PX);
 	});
 });

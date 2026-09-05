@@ -7,8 +7,8 @@ export type DockSide = SpawnDockSide;
 
 // Default width of each docked panel. Also the padding the Sessions screen's
 // content reserves on that edge, so the two never drift apart. A panel's inner
-// edge is a drag grip: the width the user settles on is stored in px in the
-// settings blob and wins over the default.
+// edge is a tsumikit resizeHandle grip: the width the user settles on is stored
+// in px in the settings blob and wins over the default.
 export const SPAWN_DOCK_WIDTH = '30rem';
 export const STATS_DOCK_WIDTH = '24rem';
 
@@ -19,6 +19,12 @@ export const DOCK_MIN_PX = 240;
 export const DOCK_MAX_PX = 1600;
 /** Largest share of the viewport a single dragged panel may take. */
 export const DOCK_MAX_VIEWPORT_SHARE = 0.6;
+
+/** Widest a dragged panel may get on this viewport: a share of the window,
+ *  never below the floor. */
+export function maxDockWidth(viewportWidth: number): number {
+	return Math.max(DOCK_MIN_PX, Math.floor(viewportWidth * DOCK_MAX_VIEWPORT_SHARE));
+}
 
 /** Clamp a stored width to the drag bounds; anything that isn't a finite
  *  number means "not set" so the rem default applies. */

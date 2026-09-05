@@ -53,6 +53,7 @@
 		Modal,
 		Tabs,
 		Text,
+		resizeHandle,
 		type TabItem
 	} from '@dorsk/tsumikit';
 	import { clickOutside } from '$lib/clickOutside';
@@ -74,7 +75,10 @@
 	} from './spawn/options';
 	import { settings, type SpawnDockSide } from '$lib/settings.svelte';
 	import { SPAWN_DOCK_WIDTH } from '$lib/spawnDock.svelte';
-	import DockGrip from '$lib/components/molecules/DockGrip.svelte';
+	import { DOCK_MIN_PX, maxDockWidth } from '$lib/dock';
+	let dragging = $state(false);
+	let viewportWidth = $state(0);
+	const maxPx = $derived(maxDockWidth(viewportWidth));
 	import { m } from '$lib/paraglide/messages';
 
 	let {
@@ -904,6 +908,8 @@
 
 <!-- The form body and the action row are snippets so the Modal and the docked
      panel render the very same markup; only the chrome around them differs. -->
+<svelte:window bind:innerWidth={viewportWidth} />
+
 {#if docked}
 	<aside
 		class="dock"
@@ -912,11 +918,30 @@
 		aria-label={m.spawn_modal_title()}
 		style:--spawn-dock-w={dockWidth}
 	>
-		<DockGrip
-			side={docked}
-			onwidth={(px) => settings.setSpawnDock({ width: px })}
-			onreset={() => settings.setSpawnDock({ width: undefined })}
-		/>
+	<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+	<div
+		class="grip"
+		class:grip-left={docked === 'left'}
+		class:dragging
+		role="separator"
+		tabindex="0"
+		aria-orientation="vertical"
+		aria-valuemin={DOCK_MIN_PX}
+		aria-valuemax={maxPx}
+		aria-label={m.dock_resize_grip()}
+		title={m.dock_resize_grip()}
+		use:resizeHandle={{
+			side: docked,
+			min: DOCK_MIN_PX,
+			max: maxPx,
+			onwidth: (px) => settings.setSpawnDock({ width: px }),
+			onreset: () => settings.setSpawnDock({ width: undefined }),
+			onactive: (a) => {
+				dragging = a;
+				document.body.classList.toggle('dock-resizing', a);
+			}
+		}}
+	></div>
 		<div class="dock-head">{m.spawn_modal_title()}</div>
 		<div class="dock-body">{@render body()}</div>
 		<div class="dock-foot">{@render footer()}</div>
@@ -1098,6 +1123,46 @@
 	/* Sharing the column with the stats panel: top half only. */
 	.dock.stacked {
 		bottom: 50%;
+	}
+	/* A 10px hit area straddling the panel's border, with a 2px line that only
+	   shows on hover, focus or while dragging so the border stays quiet otherwise. */
+	.grip {
+		position: absolute;
+		top: 0;
+		bottom: 0;
+		left: -5px;
+		width: 10px;
+		cursor: ew-resize;
+		touch-action: none;
+		z-index: 1;
+	}
+	.grip-left {
+		left: auto;
+		right: -5px;
+	}
+	.grip::after {
+		content: '';
+		position: absolute;
+		top: 0;
+		bottom: 0;
+		left: 4px;
+		width: 2px;
+		background: var(--accent);
+		opacity: 0;
+		transition: opacity 0.12s var(--ease);
+	}
+	.grip:hover::after,
+	.grip:focus-visible::after,
+	.grip.dragging::after {
+		opacity: 1;
+	}
+	.grip:focus-visible {
+		outline: none;
+	}
+	@media (hover: none) {
+		.grip::after {
+			opacity: 0.35;
+		}
 	}
 	.dock-head {
 		flex: none;
