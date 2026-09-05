@@ -36,9 +36,6 @@
 	onTogglePin={actions.onTogglePin}
 />
 <SessionDot session={s} livenessClass={view.livenessClass} now={view.now} />
-{#if view.stale}
-	<Badge tone="warn" size="xs" title={m.sessions_stale_title()}>{m.sessions_stale_badge()}</Badge>
-{/if}
 {#if view.child}
 	<Badge tone="info" size="xs">{m.sessions_subagent_badge()}</Badge>
 {:else if view.showMachine}

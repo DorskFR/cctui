@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mount, unmount } from 'svelte';
+import { flushSync, mount, unmount } from 'svelte';
 import ViewPicker from './ViewPicker.svelte';
 import DimensionPicker from './DimensionPicker.svelte';
 
@@ -23,6 +23,16 @@ describe('square toolbar pickers ride the kit Button control/square contract', (
 	});
 
 
+	it('ViewPicker in the menu is one full-width row that flips the view', () => {
+		comp = mount(ViewPicker, { target: document.body, props: { cardView: false, menu: true } });
+		const row = document.querySelector('button.menu-row') as HTMLButtonElement;
+		expect(row).not.toBeNull();
+		expect(document.querySelectorAll('button')).toHaveLength(1);
+		expect(row.textContent).toContain('List');
+		row.click();
+		flushSync();
+		expect(row.textContent).toContain('Cards');
+	});
 	it('menu rows stay plain full-width rows without a Button', () => {
 		comp = mount(DimensionPicker, {
 			target: document.body,

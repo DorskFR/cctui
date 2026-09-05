@@ -18,12 +18,6 @@
 	const rangeOptions = RANGES.map((r) => ({ value: r.key, label: r.key }));
 
 	const machineRows = $derived(machines.data ?? []);
-	const scope = $derived(
-		m.home_usage_scope({
-			machines: machinesOnline(machineRows).total,
-			accounts: (accounts.data ?? []).length
-		})
-	);
 
 	const num = (n: number) => n.toLocaleString(getLocale());
 	const tiles = $derived(buildMetricTiles(stats.data, machineRows));
@@ -40,7 +34,6 @@
 <Stack gap="var(--sp-5)">
 	<div class="head">
 		<Heading level={1} size="xl">{m.home_usage_page_title()}</Heading>
-		<Text size="xs" tone="muted">{scope}</Text>
 		<div class="spacer"></div>
 		<SegmentedControl
 			bind:value={rangeKey}

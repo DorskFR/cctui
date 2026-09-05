@@ -1,9 +1,10 @@
 <script lang="ts">
 	// Navigation of the Settings screen: a search box that reaches every page and
 	// one link per page — each entry is a route, the current one marked with an
-	// accent bar. On narrow screens it turns into a horizontally scrolling strip
-	// of pills above the content (the search box moves to the page head there).
-	import { Badge, Icon, Input, Text } from '@dorsk/tsumikit';
+	// accent bar. On narrow screens the list gives way to a row of tabs (the
+	// search box moves to the page head there).
+	import { Badge, Icon, Input, Tabs, Text, type TabItem } from '@dorsk/tsumikit';
+	import { goto } from '$app/navigation';
 	import NavLink from '$lib/components/atoms/NavLink.svelte';
 	import { settingsHref, type SettingsPage } from './settings.logic';
 	import { m } from '$lib/paraglide/messages';
@@ -24,7 +25,20 @@
 		active: SettingsPage;
 		query?: string;
 	} = $props();
+
+	// Narrow screens: the same pages as kit tabs; picking one routes.
+	const tabs = $derived<TabItem[]>(entries.map((e) => ({ id: e.page, label: e.label })));
+	let tab = $derived(active as string);
+	$effect(() => {
+		if (tab !== active) void goto(settingsHref(tab as SettingsPage), { noScroll: true });
+	});
 </script>
+
+<div class="tabs">
+	<Tabs {tabs} bind:value={tab} label={m.settings_title()}>
+		{#snippet panel()}{/snippet}
+	</Tabs>
+</div>
 
 <nav class="toc" aria-label={m.settings_title()}>
 	<div class="search">
@@ -99,17 +113,16 @@
 	.tag {
 		margin-left: auto;
 	}
+	.tabs {
+		display: none;
+	}
 	@media (max-width: 47.999rem) {
-		.toc {
-			top: var(--header-h);
-			z-index: 1;
-			flex-direction: row;
+		.tabs {
+			display: block;
 			overflow-x: auto;
-			gap: var(--sp-2);
-			background: var(--bg);
-			padding: var(--sp-2) var(--sp-4);
-			margin: 0 calc(-1 * var(--sp-4));
-			border-bottom: 1px solid var(--border);
+		}
+		.toc {
+			display: none;
 		}
 		.search {
 			display: none;

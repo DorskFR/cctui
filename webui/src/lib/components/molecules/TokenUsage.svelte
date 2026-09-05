@@ -120,6 +120,7 @@
 
 <style>
 	.usage {
+		flex: none;
 		min-width: 0;
 	}
 	.detail,
@@ -140,7 +141,7 @@
 	   flex:none, so the molecule's own inline size always equals its content size
 	   and a self-query could never fire. They come last so they win the
 	   equal-specificity tie against the defaults above. */
-	@container sess-card (max-width: 26rem) {
+	@container sess-card (max-width: 40rem) {
 		.detail {
 			display: none;
 		}

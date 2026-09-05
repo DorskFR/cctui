@@ -860,16 +860,15 @@
 		</Callout>
 	{/if}
 	<span class="foot-secondary">
-		<Button size="sm" onclick={clearForm}>{m.spawn_clear()}</Button>
+		<Button onclick={clearForm}>{m.spawn_clear()}</Button>
 		{#if target === 'machine'}
-			<Button size="sm" disabled={busy || !draftValid} onclick={submitDraft}>
+			<Button disabled={busy || !draftValid} onclick={submitDraft}>
 				{m.spawn_draft()}
 			</Button>
 		{/if}
 	</span>
 	<span class="foot-primary">
 		<Button
-			size="sm"
 			variant="primary"
 			grow
 			disabled={busy || !valid}

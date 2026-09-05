@@ -17,8 +17,8 @@
 
 <div class="menu">
 	<div class="bulk">
-		<Button variant="ghost" onclick={() => onall(true)}>{m.conversation_filter_all()}</Button>
-		<Button variant="ghost" onclick={() => onall(false)}>{m.conversation_filter_none()}</Button>
+		<Button variant="link" size="sm" onclick={() => onall(true)}>{m.conversation_filter_all()}</Button>
+		<Button variant="link" size="sm" onclick={() => onall(false)}>{m.conversation_filter_none()}</Button>
 	</div>
 	{#each MSG_GROUPS as g (g.id)}
 		<div class="group" role="group" aria-label={msgGroupLabel(g.id)}>

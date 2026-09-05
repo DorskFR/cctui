@@ -61,6 +61,7 @@
 		border-radius: var(--r-md);
 		background: var(--bg-elevated);
 		overflow: hidden;
+		overflow-x: auto;
 	}
 	.bar {
 		display: flex;
@@ -76,6 +77,7 @@
 		gap: 0 var(--sp-3);
 		align-items: center;
 		padding-inline: var(--sp-4);
+		min-width: 38rem;
 	}
 	.hrow {
 		padding-block: 6px;

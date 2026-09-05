@@ -109,10 +109,7 @@
 
 <div class="page">
 	<div class="page-head">
-		<div class="titles">
-			<Heading level={1}>{m.accounts_title()}</Heading>
-			<Text as="p" tone="muted" size="sm">{m.accounts_intro()}</Text>
-		</div>
+		<Heading level={1} size="xl">{m.accounts_title()}</Heading>
 		<span class="spacer"></span>
 		<Button control size="sm" onclick={() => (drafting = true)} disabled={drafting}>
 			{m.accounts_add_pool()}
@@ -178,12 +175,6 @@
 		display: flex;
 		align-items: flex-end;
 		gap: var(--sp-3);
-	}
-	.titles {
-		display: flex;
-		flex-direction: column;
-		gap: var(--sp-1);
-		min-width: 0;
 	}
 	.spacer {
 		flex: 1;

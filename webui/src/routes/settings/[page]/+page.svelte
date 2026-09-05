@@ -16,7 +16,6 @@
 		firstMatchingPage,
 		firstMatchingRow,
 		isSettingsPage,
-		pagerNeighbours,
 		settingsHref,
 		type SettingsPage
 	} from '$lib/components/organisms/settings/settings.logic';
@@ -44,8 +43,6 @@
 		{ page: 'security', icon: '⚿', label: m.settings_nav_security() },
 		{ page: 'instance', icon: '⚙', label: m.settings_nav_instance(), admin: true }
 	]);
-	const labelOf = (p: SettingsPage) => entries.find((e) => e.page === p)?.label ?? p;
-	const pager = $derived(pagerNeighbours(current));
 
 	// The filter reads the rendered rows back instead of keeping a parallel
 	// catalogue of localized copy. Every page is in the DOM, so a query that
@@ -96,20 +93,19 @@
 </script>
 
 <div class="page">
-	<div class="mobile-search">
-		<Input
-			type="search"
-			bind:value={query}
-			size="sm"
-			placeholder={m.settings_filter_placeholder()}
-			aria-label={m.settings_filter_placeholder()}
-			style="width:100%"
-		/>
-	</div>
-
 	<div class="layout">
 		<aside class="side">
-			<Heading level={1}>{m.settings_title()}</Heading>
+			<Heading level={1} size="xl">{m.settings_title()}</Heading>
+			<div class="mobile-search">
+				<Input
+					type="search"
+					bind:value={query}
+					size="sm"
+					placeholder={m.settings_filter_placeholder()}
+					aria-label={m.settings_filter_placeholder()}
+					style="width:100%"
+				/>
+			</div>
 			<SettingsToc {entries} active={current} bind:query />
 		</aside>
 
@@ -137,19 +133,6 @@
 				</div>
 			{/if}
 
-			<nav class="pager" aria-label={m.settings_pager_label()}>
-				{#if pager.prev}
-					<Button as="a" href={settingsHref(pager.prev)} variant="ghost" size="sm">
-						← {labelOf(pager.prev)}
-					</Button>
-				{/if}
-				<span class="pager-gap"></span>
-				{#if pager.next}
-					<Button as="a" href={settingsHref(pager.next)} variant="ghost" size="sm">
-						{labelOf(pager.next)} →
-					</Button>
-				{/if}
-			</nav>
 		</main>
 	</div>
 </div>
@@ -201,15 +184,6 @@
 	.empty {
 		padding: var(--sp-6) 0;
 		text-align: center;
-	}
-	.pager {
-		display: flex;
-		align-items: center;
-		gap: var(--sp-2);
-		padding-top: var(--sp-1);
-	}
-	.pager-gap {
-		flex: 1;
 	}
 	@media (max-width: 47.999rem) {
 		.mobile-search {

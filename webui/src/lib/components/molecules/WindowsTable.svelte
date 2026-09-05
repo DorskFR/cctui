@@ -76,7 +76,7 @@
 	}
 	/* The relative bar goes first when the column narrows: it only ranks the
 	   rows, the three token figures carry the data. */
-	@container (max-width: 32rem) {
+	@container (max-width: 40rem) {
 		.row {
 			grid-template-columns: minmax(0, 1fr) repeat(3, minmax(0, 3.5rem));
 			gap: var(--sp-2);

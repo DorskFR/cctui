@@ -48,12 +48,12 @@
 	.fam {
 		display: none;
 	}
-	@container sess-card (max-width: 26rem) {
+	@container sess-card (max-width: 40rem) {
 		.effort {
 			display: none;
 		}
 	}
-	@container sess-card (max-width: 16rem) {
+	@container sess-card (max-width: 34rem) {
 		.full {
 			display: none;
 		}
