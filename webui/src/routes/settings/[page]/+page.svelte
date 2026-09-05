@@ -7,7 +7,7 @@
 	import { tick } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { page as route } from '$app/state';
-	import { Icon, Input, Text } from '@dorsk/tsumikit';
+	import { FilterInput, Icon, Text, type Schema } from '@dorsk/tsumikit';
 	import PageHead from '$lib/components/molecules/PageHead.svelte';
 	import SettingsToc, { type TocEntry } from '$lib/components/organisms/settings/SettingsToc.svelte';
 	import SettingsPages from '$lib/components/organisms/settings/SettingsPages.svelte';
@@ -50,6 +50,7 @@
 	// matches nothing here but something elsewhere navigates to that page and
 	// brings its first match into view.
 	let query = $state('');
+	const PLAIN: Schema = { fields: [] };
 	let content = $state<HTMLElement | null>(null);
 	let visibleRows = $state(-1);
 	$effect(() => {
@@ -98,13 +99,12 @@
 		<aside class="side">
 			<PageHead title={m.settings_title()} />
 			<div class="mobile-search">
-				<Input
-					type="search"
+				<label for="settings-filter-mobile" class="sr-only">{m.settings_filter_placeholder()}</label>
+				<FilterInput
+					id="settings-filter-mobile"
+					schema={PLAIN}
 					bind:value={query}
-					size="sm"
 					placeholder={m.settings_filter_placeholder()}
-					aria-label={m.settings_filter_placeholder()}
-					style="width:100%"
 				/>
 			</div>
 			<SettingsToc {entries} active={current} bind:query />

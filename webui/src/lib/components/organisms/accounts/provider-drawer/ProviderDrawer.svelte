@@ -153,6 +153,9 @@
 				bind:edits={edit.soft}
 				bind:rate={edit.rate}
 			/>
+			{#if kind === 'anthropic' || kind === 'openai'}
+				<UsageNoticesEditor bind:value={edit.notices} />
+			{/if}
 		{:else if edit.page === 'models'}
 			<ModelsPage
 				fireworks={edit.isFireworks}
@@ -170,9 +173,6 @@
 				{#if edit.page === 'ui' && edit.isAnthropic}
 					<AnthropicProviderEditor bind:settings={edit.providerSettings} />
 				{:else if edit.page === 'gateway'}
-					{#if kind === 'anthropic' || kind === 'openai'}
-						<UsageNoticesEditor bind:value={edit.notices} />
-					{/if}
 					{#if edit.isFireworks}
 						<FireworksProviderEditor
 							section="gateway"

@@ -119,7 +119,7 @@
 		bind:cap={barCap}
 		step={5}
 		warnAt={75}
-		labelWidth={dense ? '0px' : '96px'}
+		labelWidth={dense ? '0px' : '4rem'}
 		readoutWidth={reported ? (dense ? 'max-content' : READOUT_W) : 'auto'}
 		readout={showReset || paceKind === 'flame' ? readoutSnippet : readoutText}
 		{readonly}

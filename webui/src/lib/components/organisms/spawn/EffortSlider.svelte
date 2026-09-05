@@ -22,7 +22,6 @@
 </script>
 
 <Field label={m.spawn_effort_label()} for={id}>
-	<div class="inset">
 	<Slider
 		{id}
 		min={0}
@@ -34,13 +33,5 @@
 		bind:value={() => idx, (v) => onset(levels[Number(v)] ?? '')}
 		aria-valuetext={levels[idx] || m.spawn_effort_default()}
 	/>
-	</div>
 </Field>
 
-<style>
-	/* Mark labels centre on their tick, so the first and last would hang past
-	   the track; half a label of inset keeps them inside the field. */
-	.inset {
-		padding-inline: 1.5rem;
-	}
-</style>

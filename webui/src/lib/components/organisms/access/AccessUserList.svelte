@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { UserRow } from '@bindings/UserRow';
-	import { Button, Dot, Input, Spinner, Text } from '@dorsk/tsumikit';
+	import { Button, Dot, FilterInput, Spinner, Text, type Schema } from '@dorsk/tsumikit';
 	import PageHead from '$lib/components/molecules/PageHead.svelte';
 	import EnrollMachineCard from '$lib/components/organisms/EnrollMachineCard.svelte';
 	import { hashHue } from '$lib/format';
@@ -28,6 +28,8 @@
 	} = $props();
 
 	let query = $state('');
+	// Free text only: no fields, so the bar is a search box with the kit chrome.
+	const PLAIN: Schema = { fields: [] };
 	const matched = $derived(filterByName(users, query));
 	const groups = $derived(splitRevoked(matched));
 </script>
@@ -60,11 +62,11 @@
 		{/if}
 	</PageHead>
 
-	<Input
-		icon="search"
-		size="sm"
+	<label for="access-filter" class="sr-only">{m.access_filter_placeholder()}</label>
+	<FilterInput
+		id="access-filter"
+		schema={PLAIN}
 		placeholder={m.access_filter_placeholder()}
-		aria-label={m.access_filter_placeholder()}
 		bind:value={query}
 	/>
 
@@ -96,7 +98,7 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--sp-3);
-		padding-block: var(--sp-1) var(--sp-4);
+		padding-block: 0 var(--sp-4);
 		padding-inline-end: var(--sp-4);
 	}
 	/* Stacked under the breakpoint there is no divider to keep off. */
