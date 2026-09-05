@@ -115,7 +115,7 @@ async function addEnvRow(key: string, value: string) {
 }
 async function submitDispatch() {
 	const btn = [...document.querySelectorAll<HTMLButtonElement>('button')].find(
-		(b) => b.textContent?.trim() === 'Dispatch'
+		(b) => b.textContent?.trim().startsWith('Dispatch')
 	);
 	if (!btn) throw new Error('dispatch button not found');
 	btn.click();
