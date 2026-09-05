@@ -27,7 +27,7 @@
 	}
 	.group-h {
 		padding: var(--sp-2) var(--sp-4);
-		background: var(--bg-elevated-2);
+		background: var(--bg);
 		border-bottom: 1px solid var(--border);
 		letter-spacing: 0.06em;
 		text-transform: uppercase;
