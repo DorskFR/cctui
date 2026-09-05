@@ -4,12 +4,13 @@
 	import { useMe, useVersion, useSessions, qk } from '$lib/queries';
 	import type { SessionListResponse } from '@bindings/SessionListResponse';
 	import { useQueryClient } from '@tanstack/svelte-query';
-	import { AUTO, theme, THEMES } from '$lib/theme.svelte';
+	import { theme } from '$lib/theme.svelte';
+	import { fontScale } from '$lib/fontscale.svelte';
 	import { auth } from '$lib/auth.svelte';
 	import { notify } from '$lib/notify.svelte';
 	import { settings } from '$lib/settings.svelte';
 	import { toasts } from '$lib/toast.svelte';
-	import { IconButton, Menu, SelectButton, Text } from '@dorsk/tsumikit';
+	import { FontScalePicker, IconButton, Menu, Text, ThemePicker } from '@dorsk/tsumikit';
 	import type { MenuItem } from '@dorsk/tsumikit';
 	import NavLink from '$lib/components/atoms/NavLink.svelte';
 	import HeaderNav from '$lib/components/organisms/HeaderNav.svelte';
@@ -85,6 +86,15 @@
 	);
 	const latest = $derived(version.data?.latest_version ?? null);
 
+	// The kit pickers write the kit stores; the blob follows so the choice
+	// round-trips across devices like it did through the old header select.
+	$effect(() => {
+		const t = theme.current;
+		const f = fontScale.current;
+		const d = settings.state.display;
+		if (d.theme !== t || d.fontScale !== f) settings.setDisplay({ theme: t, fontScale: f });
+	});
+
 	const userMenu = $derived<MenuItem[]>([
 		...(latest
 			? [
@@ -144,33 +154,10 @@
 				toasts.info(notify.sound ? m.nav_sound_on() : m.nav_sound_off());
 			}}
 		/>
-		<SelectButton
-			glyph={theme.icon}
-			label={m.nav_theme()}
-			title={m.nav_theme_tooltip({ theme: theme.label })}
-			value={theme.current}
-			groups={[
-				{
-					label: m.nav_theme_system(),
-					options: [{ value: AUTO.id, label: `${AUTO.icon}  ${m.nav_theme_auto()}` }]
-				},
-				{
-					label: m.nav_theme_light(),
-					options: THEMES.filter((t) => t.mode === 'light').map((t) => ({
-						value: t.id,
-						label: `${t.icon}  ${t.label}`
-					}))
-				},
-				{
-					label: m.nav_theme_dark(),
-					options: THEMES.filter((t) => t.mode === 'dark').map((t) => ({
-						value: t.id,
-						label: `${t.icon}  ${t.label}`
-					}))
-				}
-			]}
-			onchange={(v) => settings.setTheme(v)}
-		/>
+		<span class="prefs">
+			<ThemePicker />
+			<FontScalePicker />
+		</span>
 		<Menu label={m.nav_user_menu()} items={userMenu} bare placement="bottom-end">
 			{#snippet trigger()}
 				<span class="pill">
@@ -291,6 +278,12 @@
 		.ver {
 			display: inline-flex;
 		}
+	}
+	.prefs {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--sp-1);
+		flex: none;
 	}
 	.batt {
 		display: inline-flex;

@@ -10,7 +10,7 @@
 	import SettingSection from '$lib/components/molecules/SettingSection.svelte';
 	import { settings, type NavPosition, type ToastPosition } from '$lib/settings.svelte';
 	import { LOCALE_LABELS, LOCALES, type Locale } from '$lib/locale.svelte';
-	import { AUTO, theme, THEMES } from '$lib/theme.svelte';
+	import { theme } from '$lib/theme.svelte';
 	import { fontScale, SCALE_LEVELS } from '$lib/fontscale.svelte';
 	import { m } from '$lib/paraglide/messages';
 
@@ -37,9 +37,8 @@
 				style="width:100%"
 				onchange={(e) => settings.setTheme((e.currentTarget as HTMLSelectElement).value)}
 			>
-				<option value={AUTO.id}>{AUTO.icon} {m.nav_theme_auto()}</option>
-				{#each THEMES as t (t.id)}
-					<option value={t.id}>{t.icon} {t.label}</option>
+				{#each theme.all as t (t.id)}
+					<option value={t.id}>{t.icon ?? theme.fallbackIcon} {t.label}</option>
 				{/each}
 			</Select>
 		</SettingRow>

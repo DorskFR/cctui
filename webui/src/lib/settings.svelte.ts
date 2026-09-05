@@ -2,8 +2,8 @@ import { browser } from '$app/environment';
 import { api } from './api';
 import { auth } from './auth.svelte';
 import { clampLocale, locale as localeStore, type Locale } from './locale.svelte';
-import { theme, type Mode } from './theme.svelte';
-import { fontScale } from './fontscale.svelte';
+import { theme } from './theme.svelte';
+import { fontScale, nearestLevel } from './fontscale.svelte';
 import { notify } from './notify.svelte';
 import type { SettingsPayload } from '@bindings/SettingsPayload';
 import { clampDockWidth } from './dock';
@@ -508,7 +508,7 @@ class Settings {
 	// singleton AND records the value here, and `load()` replays the blob back
 	// into the singletons via `applyDisplay`.
 	setTheme(id: string) {
-		theme.set(id as Mode);
+		if (theme.has(id)) theme.set(id);
 		this.setDisplay({ theme: id });
 	}
 
@@ -530,8 +530,8 @@ class Settings {
 
 	private applyDisplay() {
 		const d = this.state.display;
-		theme.set(d.theme as Mode);
-		fontScale.setScale(d.fontScale);
+		if (theme.has(d.theme)) theme.set(d.theme);
+		fontScale.set(nearestLevel(d.fontScale));
 		notify.applyPersisted(d.notifyEnabled, d.notifySound);
 	}
 

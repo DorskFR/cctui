@@ -1,9 +1,8 @@
 <script lang="ts">
-	// A discrete reasoning-effort slider, extracted from SpawnModal. `levels[0]`
-	// is "" (the adapter's default); the track snaps to each named level and the
-	// active label is highlighted. Per-adapter level sets are passed in.
-	import { Field } from '@dorsk/tsumikit';
-	import Range from '$lib/components/atoms/Range.svelte';
+	// A discrete reasoning-effort slider. `levels[0]` is "" (the adapter's
+	// default); the kit Slider snaps to each named level and its marks are the
+	// tick labels, clickable.
+	import { Field, Slider } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 
 	let {
@@ -19,48 +18,19 @@
 	} = $props();
 
 	const idx = $derived(Math.max(0, levels.indexOf(current)));
+	const marks = $derived(levels.map((lv, i) => ({ value: i, label: lv || m.spawn_effort_default() })));
 </script>
 
 <Field label={m.spawn_effort_label()} for={id}>
-	<Range
+	<Slider
 		{id}
-		style="accent-color:var(--c-blue);margin:2px 0"
-		min="0"
+		min={0}
 		max={levels.length - 1}
-		step="1"
-		value={idx}
-		oninput={(e) => onset(levels[Number((e.currentTarget as HTMLInputElement).value)])}
+		step={1}
+		ticks
+		{marks}
+		style="--slider-accent: var(--c-blue)"
+		bind:value={() => idx, (v) => onset(levels[Number(v)] ?? '')}
+		aria-valuetext={levels[idx] || m.spawn_effort_default()}
 	/>
-	<div class="ticks">
-		{#each levels as lv, i (lv)}
-			<button
-				type="button"
-				class="tick"
-				class:on={i === idx}
-				onclick={() => onset(lv)}>{lv || m.spawn_effort_default()}</button
-			>
-		{/each}
-	</div>
 </Field>
-
-<style>
-	.ticks {
-		display: flex;
-		justify-content: space-between;
-		gap: var(--sp-1);
-	}
-	.tick {
-		flex: 1;
-		padding: 2px 0;
-		background: none;
-		border: none;
-		text-align: center;
-		font-size: var(--fs-xs);
-		color: var(--text-muted);
-		cursor: pointer;
-	}
-	.tick.on {
-		color: var(--c-blue);
-		font-weight: var(--fw-medium);
-	}
-</style>
