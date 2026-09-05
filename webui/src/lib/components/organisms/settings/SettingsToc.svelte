@@ -3,7 +3,7 @@
 	// one link per page — each entry is a route, the current one marked with an
 	// accent bar. On narrow screens the list gives way to a row of tabs (the
 	// search box moves to the page head there).
-	import { Badge, FilterInput, Tabs, Text, type Schema, type TabItem } from '@dorsk/tsumikit';
+	import { Input, Badge, Tabs, Text, type TabItem } from '@dorsk/tsumikit';
 	import { goto } from '$app/navigation';
 	import NavLink from '$lib/components/atoms/NavLink.svelte';
 	import { settingsHref, type SettingsPage } from './settings.logic';
@@ -25,7 +25,6 @@
 		active: SettingsPage;
 		query?: string;
 	} = $props();
-	const PLAIN: Schema = { fields: [] };
 
 	// Narrow screens: the same pages as kit tabs; picking one routes.
 	const tabs = $derived<TabItem[]>(entries.map((e) => ({ id: e.page, label: e.label })));
@@ -43,10 +42,10 @@
 
 <nav class="toc" aria-label={m.settings_title()}>
 	<div class="search">
-		<label for="settings-filter" class="sr-only">{m.settings_filter_placeholder()}</label>
-		<FilterInput
-			id="settings-filter"
-			schema={PLAIN}
+		<Input
+			icon="search"
+			type="search"
+			aria-label={m.settings_filter_placeholder()}
 			bind:value={query}
 			placeholder={m.settings_filter_placeholder()}
 		/>
