@@ -15,7 +15,7 @@
 	import { goto } from '$app/navigation';
 	import { sessionFailureToast } from '$lib/sessionFailureToast';
 	import Header from '$lib/components/organisms/Header.svelte';
-	import BottomNav from '$lib/components/organisms/BottomNav.svelte';
+	import MainNav from '$lib/components/organisms/MainNav.svelte';
 	import Login from '$lib/components/organisms/Login.svelte';
 	import { installCodeCopy } from '$lib/codecopy';
 	import { installImageLightbox } from '$lib/imagelightbox';
@@ -150,7 +150,7 @@
 						</Container>
 					{/if}
 				</main>
-				<BottomNav />
+				<MainNav />
 			</div>
 		{:else if !auth.checking}
 			<Login />

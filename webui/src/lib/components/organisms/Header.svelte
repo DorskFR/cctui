@@ -13,7 +13,7 @@
 	import { FontScalePicker, IconButton, Menu, Text, ThemePicker } from '@dorsk/tsumikit';
 	import type { MenuItem } from '@dorsk/tsumikit';
 	import NavLink from '$lib/components/atoms/NavLink.svelte';
-	import HeaderNav from '$lib/components/organisms/HeaderNav.svelte';
+	import MainNav from '$lib/components/organisms/MainNav.svelte';
 	import UsageBattery from '$lib/components/molecules/UsageBattery.svelte';
 	import UpdateModal from '$lib/components/organisms/UpdateModal.svelte';
 	import { m } from '$lib/paraglide/messages';
@@ -128,7 +128,7 @@
 			title={m.nav_ws_status({ status: ws.status })}
 		></span>
 		{#if settings.nav === 'top'}
-			<span class="tabs"><HeaderNav /></span>
+			<span class="tabs"><MainNav placement="top" /></span>
 		{/if}
 		<div class="spacer"></div>
 		{#if version.data}

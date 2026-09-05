@@ -1205,14 +1205,14 @@
 		position: relative;
 	}
 	.agent-children {
-		margin-left: min(calc(var(--agent-depth) * var(--sp-4)), 5rem);
+		margin-left: min(calc(var(--agent-depth) * var(--sp-2)), 2.5rem);
 		display: flex;
 		flex-direction: column;
 		gap: var(--sp-1);
 	}
 	@media (max-width: 639px) {
 		.agent-children {
-			margin-left: min(calc(var(--agent-depth) * var(--sp-2)), 2.5rem);
+			margin-left: min(calc(var(--agent-depth) * var(--sp-1)), 1.25rem);
 		}
 	}
 	.loadmore {

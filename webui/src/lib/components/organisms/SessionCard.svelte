@@ -226,7 +226,7 @@
 		margin-left: var(--sp-4);
 	}
 	.sc-wrap.compact.child {
-		margin-left: 28px;
+		margin-left: 14px;
 	}
 	.sc-wrap.stale {
 		opacity: 0.6;
