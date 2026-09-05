@@ -6,7 +6,7 @@
 	import ResourceShares from '$lib/components/molecules/ResourceShares.svelte';
 	import ProviderColumn from '$lib/components/organisms/accounts/ProviderColumn.svelte';
 	import { ACCOUNT_DRAG_MIME, exhaustedWindow } from '$lib/components/organisms/accounts/pools.logic';
-	import { accountDrag } from '$lib/components/organisms/accounts/drag.svelte';
+	import { accountDrag, poolZoneAt } from '$lib/components/organisms/accounts/drag.svelte';
 	import { resetIn } from '$lib/components/molecules/cap-bar.logic';
 	import { providerLabel } from '$lib/providers';
 	import { Button, Icon, IconButton, Menu, Select, Text, Timestamp, type MenuItem } from '@dorsk/tsumikit';
@@ -110,6 +110,58 @@
 		accountDrag.accountId = '';
 	}
 
+	// Touch / pen: no HTML5 drag. A short hold on the handle arms the drag (a
+	// quick swipe still scrolls), then the finger carries the card and drops it
+	// on whichever pool zone is under it on release.
+	const HOLD_MS = 120;
+	const SLOP_PX = 8;
+	let touchDragging = $state(false);
+	let holdTimer: ReturnType<typeof setTimeout> | undefined;
+	let origin = { x: 0, y: 0 };
+	function endTouchDrag() {
+		clearTimeout(holdTimer);
+		holdTimer = undefined;
+		touchDragging = false;
+		accountDrag.accountId = '';
+		accountDrag.overId = '';
+	}
+	function pointerDown(e: PointerEvent) {
+		if (e.pointerType === 'mouse') return;
+		e.preventDefault();
+		try {
+			(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+		} catch {
+			/* synthetic pointer: nothing to capture */
+		}
+		origin = { x: e.clientX, y: e.clientY };
+		holdTimer = setTimeout(() => {
+			touchDragging = true;
+			accountDrag.accountId = a.id;
+			navigator.vibrate?.(10);
+		}, HOLD_MS);
+	}
+	function pointerMove(e: PointerEvent) {
+		if (touchDragging) {
+			accountDrag.overId = poolZoneAt(e.clientX, e.clientY);
+			return;
+		}
+		if (holdTimer && Math.hypot(e.clientX - origin.x, e.clientY - origin.y) > SLOP_PX) {
+			clearTimeout(holdTimer);
+			holdTimer = undefined;
+		}
+	}
+	function pointerUp(e: PointerEvent) {
+		const was = touchDragging;
+		const target = was ? poolZoneAt(e.clientX, e.clientY) : '';
+		endTouchDrag();
+		if (!was) return;
+		const to = pools.find((p) => p.id === target);
+		if (to && to.id !== pool?.id) onmovepool?.(to);
+	}
+	function pointerCancel() {
+		endTouchDrag();
+	}
+
 	let redirectOpen = $state(false);
 	let redirectTarget = $state('');
 	let redirectHours = $state('');
@@ -158,7 +210,7 @@
 	<span>{item.label}</span>
 {/snippet}
 
-<article class="acct" id={a.id}>
+<article class="acct" class:lifted={touchDragging} id={a.id}>
 	<header class="head">
 		{#if onmovepool && !managed && !compact}
 			<span
@@ -168,7 +220,11 @@
 				aria-label={m.pools_drag_handle()}
 				title={m.pools_drag_handle()}
 				ondragstart={dragStart}
-				ondragend={dragEnd}>⋮⋮</span
+				ondragend={dragEnd}
+				onpointerdown={pointerDown}
+				onpointermove={pointerMove}
+				onpointerup={pointerUp}
+				onpointercancel={pointerCancel}>⋮⋮</span
 			>
 		{/if}
 		<AccountAvatar emoji={a.emoji} name={a.name} id={a.id} size={28} decorative />
@@ -300,6 +356,11 @@
 		background: var(--bg-elevated);
 		overflow: hidden;
 	}
+	.acct.lifted {
+		box-shadow: var(--shadow-lg);
+		outline: 2px solid var(--accent);
+		opacity: 0.85;
+	}
 	.head {
 		display: flex;
 		flex-wrap: wrap;
@@ -310,10 +371,18 @@
 		min-width: 0;
 	}
 	.handle {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		min-width: var(--touch-target, 2.75rem);
+		min-height: var(--touch-target, 2.75rem);
+		margin: calc(-1 * var(--sp-2)) 0 calc(-1 * var(--sp-2)) calc(-1 * var(--sp-2));
 		color: var(--text-faint);
 		letter-spacing: -0.15em;
 		cursor: grab;
 		user-select: none;
+		/* The browser would claim a pan and cancel the pointer mid-drag. */
+		touch-action: none;
 	}
 	.handle:active {
 		cursor: grabbing;
