@@ -95,7 +95,7 @@
 		{ label: m.common_edit(), icon: 'edit', onselect: () => onedit?.() },
 		...pools
 			.filter((p) => p.id !== pool?.id)
-			.map((p) => ({ label: m.pools_move_to({ name: p.name }), onselect: () => onmovepool?.(p) })),
+			.map((p) => ({ label: m.pools_move_to({ name: p.name }), content: poolRow, onselect: () => onmovepool?.(p) })),
 		...(pool ? [{ label: m.pools_leave(), onselect: () => onmovepool?.(null) }] : []),
 		{ label: m.common_delete(), icon: 'trash', danger: true, onselect: () => onremove?.() }
 	]);
@@ -144,6 +144,19 @@
 		redirectHours = '';
 	}
 </script>
+
+{#snippet poolRow(item: MenuItem)}
+	<!-- Life buoy: the kit has no such icon yet (TSU-100). -->
+	<Icon size={16} label="">
+		<circle cx="12" cy="12" r="10" />
+		<circle cx="12" cy="12" r="4" />
+		<path d="m4.93 4.93 4.24 4.24" />
+		<path d="m14.83 9.17 4.24-4.24" />
+		<path d="m14.83 14.83 4.24 4.24" />
+		<path d="m9.17 14.83-4.24 4.24" />
+	</Icon>
+	<span>{item.label}</span>
+{/snippet}
 
 <article class="acct" id={a.id}>
 	<header class="head">

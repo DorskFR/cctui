@@ -24,7 +24,7 @@
 		loading?: boolean;
 		/** Admin only: users a pool may belong to; also labels each pool's owner. */
 		owners?: { id: string; name: string }[];
-		/** The empty "+ Add pool" zone at the bottom. */
+		/** The empty "+ Add pool" zone, first so its name field is in reach on a phone. */
 		drafting?: boolean;
 		card: Snippet<[OAuthAccount, AccountPoolView | null, (to: AccountPoolView | null) => void]>;
 	} = $props();
@@ -79,6 +79,9 @@
 	{:else if accounts.length === 0 && !drafting}
 		<div class="empty"><Text tone="muted">{m.accounts_empty()}</Text></div>
 	{:else}
+		{#if drafting}
+			<NewPoolZone {accounts} {busy} oncreate={createPool} ondiscard={() => (drafting = false)} />
+		{/if}
 		{#each groups.pooled as g (g.pool.id)}
 			<PoolZone
 				pool={g.pool}
@@ -95,9 +98,6 @@
 		{#each groups.solo as a (a.id)}
 			{@render card(a, null, (to) => move(a.id, to))}
 		{/each}
-		{#if drafting}
-			<NewPoolZone {accounts} {busy} oncreate={createPool} ondiscard={() => (drafting = false)} />
-		{/if}
 	{/if}
 </div>
 
