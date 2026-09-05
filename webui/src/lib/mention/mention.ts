@@ -1,6 +1,6 @@
 // Pure logic for the `#` session-mention popover shared by the chat composer
-// and the spawn prompt fields. Typing `#` opens a list of sessions that may
-// still be working (every bucket but `done`, non-archived); picking one
+// and the spawn prompt fields. Typing `#` opens a list of non-archived
+// sessions (completed ones included); picking one
 // replaces the `#query` under the caret with `#<id> (<name>) ` so the user can
 // hand the id to their agent ("sync with #<id>").
 import type { SessionListItem } from "@bindings/SessionListItem";
@@ -31,8 +31,9 @@ export function findTrigger(
   return { start: hash, query };
 }
 
-/** Sessions that may still be working: every bucket but `done`, never archived
- *  or draft. `excludeId` drops the session the composer belongs to. */
+/** Every session an agent could still be pointed at: any bucket, completed
+ *  ones included, but never archived or draft. `excludeId` drops the session
+ *  the composer belongs to. */
 export function mentionableSessions(
   sessions: SessionListItem[],
   excludeId?: string | null,
