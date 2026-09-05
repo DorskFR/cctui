@@ -1319,6 +1319,14 @@ pub fn gateway_provider_overrides(
         ("model_providers.cctui.base_url".to_owned(), base_url.clone()),
         ("model_providers.cctui.env_key".to_owned(), "OPENAI_API_KEY".to_owned()),
         ("model_providers.cctui.wire_api".to_owned(), "responses".to_owned()),
+        // Codex only registers the built-in `image_gen` tool for a provider that
+        // `uses_openai_actor_authorization()` — a non-empty static
+        // `x-openai-actor-authorization` header with `requires_openai_auth`
+        // false. The value is never read upstream: the gateway strips it.
+        (
+            "model_providers.cctui.http_headers.\"x-openai-actor-authorization\"".to_owned(),
+            "cctui-gateway".to_owned(),
+        ),
     ]
 }
 
@@ -2728,8 +2736,15 @@ mod tests {
                 ),
                 ("model_providers.cctui.env_key".to_owned(), "OPENAI_API_KEY".to_owned()),
                 ("model_providers.cctui.wire_api".to_owned(), "responses".to_owned()),
+                (
+                    "model_providers.cctui.http_headers.\"x-openai-actor-authorization\""
+                        .to_owned(),
+                    "cctui-gateway".to_owned()
+                ),
             ]
         );
+        assert!(got.iter().map(|(k, v)| format!("{k}=\"{v}\"")).any(|arg| arg
+            == "model_providers.cctui.http_headers.\"x-openai-actor-authorization\"=\"cctui-gateway\""));
     }
 
     #[test]

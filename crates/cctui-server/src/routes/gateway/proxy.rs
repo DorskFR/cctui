@@ -98,7 +98,12 @@ pub async fn fireworks(
 }
 
 pub fn skip_request_header(lower_name: &str) -> bool {
-    matches!(lower_name, "authorization" | "host" | "content-length" | "connection")
+    // `x-openai-actor-authorization` is a dummy the codex provider config carries
+    // purely to unlock the built-in image_gen tool; it must never reach upstream.
+    matches!(
+        lower_name,
+        "authorization" | "host" | "content-length" | "connection" | "x-openai-actor-authorization"
+    )
 }
 
 pub fn skip_response_header(lower_name: &str) -> bool {
@@ -561,4 +566,15 @@ pub async fn passthrough(
         tracing::error!("gateway response build error: {e}");
         StatusCode::INTERNAL_SERVER_ERROR
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::skip_request_header;
+
+    #[test]
+    fn actor_authorization_dummy_is_stripped_before_forwarding() {
+        assert!(skip_request_header("x-openai-actor-authorization"));
+        assert!(!skip_request_header("chatgpt-account-id"));
+    }
 }
