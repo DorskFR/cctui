@@ -1,8 +1,8 @@
 <script lang="ts">
 	import { Popover, Text } from '@dorsk/tsumikit';
 	import AdapterIcon from '$lib/components/atoms/AdapterIcon.svelte';
-	import UsageBars from '$lib/components/molecules/UsageBars.svelte';
-	import { useAllAccountsUsage } from '$lib/queries';
+	import AccountCard from '$lib/components/organisms/AccountCard.svelte';
+	import { useAccounts, useAllAccountsUsage } from '$lib/queries';
 	import type { UsageWindow } from '$lib/queries';
 	import { providerLabel } from '$lib/providers';
 	import { m } from '$lib/paraglide/messages';
@@ -20,6 +20,9 @@
 	} from '$lib/components/molecules/usage-battery.logic';
 
 	const q = useAllAccountsUsage(() => true);
+	// The popovers show the same read-only AccountCard the stats dock shows.
+	const accounts = useAccounts();
+	const accountOf = (id: string) => (accounts.data ?? []).find((a) => a.id === id);
 	const entries = $derived(batteryEntries(q.data));
 	const groups = $derived.by(() => {
 		const byAccount = new Map<string, BatteryEntry[]>();
@@ -108,6 +111,7 @@
 			<span class="group">
 				{#each group as e (e.providerId)}
 					{@const head = `${e.accountName} · ${providerLabel(e.provider)}`}
+					{@const acct = accountOf(e.account)}
 					<Popover
 						label={m.usage_battery_aria({
 							account: e.accountName,
@@ -123,8 +127,11 @@
 							{@render cell(e.bars, titleOf(head, e.bars), e.provider)}
 						{/snippet}
 						<div class="panel">
-							<Text size="sm" weight="semibold">{head}</Text>
-							<UsageBars id={e.providerId} provider={e.provider} />
+							{#if acct}
+								<AccountCard account={acct} compact />
+							{:else}
+								<Text size="sm" weight="semibold">{head}</Text>
+							{/if}
 						</div>
 					</Popover>
 				{/each}
@@ -145,9 +152,11 @@
 				{@render cell(agg, titleOf(m.usage_battery_aggregate_title(), agg), null)}
 			{/snippet}
 			<div class="panel">
-				{#each entries as e (e.providerId)}
-					<Text size="sm" weight="semibold">{e.accountName} · {providerLabel(e.provider)}</Text>
-					<UsageBars id={e.providerId} provider={e.provider} />
+				{#each groups as group (group[0].account)}
+					{@const acct = accountOf(group[0].account)}
+					{#if acct}
+						<AccountCard account={acct} compact />
+					{/if}
 				{/each}
 			</div>
 		</Popover>
@@ -244,7 +253,7 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--sp-2);
-		min-width: 260px;
+		width: 22rem;
 		max-width: 90vw;
 	}
 </style>
