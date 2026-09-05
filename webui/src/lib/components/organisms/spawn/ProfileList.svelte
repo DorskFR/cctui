@@ -4,6 +4,7 @@
 	import type { AccountUsageEntry, OAuthAccount } from '$lib/queries';
 	import ProfileRow from './ProfileRow.svelte';
 	import ProfileAdjust from './ProfileAdjust.svelte';
+	import KitFields from './KitFields.svelte';
 	import { claudeModels } from './options';
 	import { EMPTY_SPEC, specChain, specOf, type ProfileSpec } from './profiles';
 	import { profileUsage } from '$lib/spawnMemory';
@@ -38,6 +39,13 @@
 	} = $props();
 
 	let openId = $state<string | null>(null);
+
+	// With no profile the kit IS the one-off spec the spawn will use.
+	// svelte-ignore state_referenced_locally
+	let bareKit = $state<ProfileSpec>({ ...(oneOff ?? EMPTY_SPEC) });
+	$effect(() => {
+		if (profiles.length === 0) oneOff = { ...bareKit };
+	});
 
 	const chainLabels = $derived({
 		auto: m.spawn_account_auto(),
@@ -77,22 +85,11 @@
 </script>
 
 <div class="list" role="radiogroup" aria-label={m.spawn_profiles_aria()}>
-	<!-- No saved profile yet: the kit editor stands in for the profile rows, so
-	     harness / account / model / effort / permissions are always reachable. -->
+	<!-- No saved profile yet: the bare kit stands in for the profile rows, so
+	     harness / account / model / effort / permissions are always reachable
+	     and a session can be started without creating a profile first. -->
 	{#if profiles.length === 0}
-		<ProfileAdjust
-			initial={oneOff ?? EMPTY_SPEC}
-			{accounts}
-			{pools}
-			{usage}
-			{machineId}
-			{busy}
-			onuseonce={(s) => (oneOff = s)}
-			onsave={(_name, s) => {
-				oneOff = s;
-				oncreate();
-			}}
-		/>
+		<KitFields bind:draft={bareKit} {accounts} {pools} {usage} {machineId} />
 	{/if}
 	{#each profiles as p (p.id)}
 		{@const spec = selectedId === p.id && oneOff ? oneOff : specOf(p)}

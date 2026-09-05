@@ -241,7 +241,7 @@ describe('SpawnModal profiles', () => {
 		await open();
 		button('Adjust profile').click();
 		await tick();
-		const select = document.querySelector<HTMLSelectElement>('select[aria-label="Account"]');
+		const select = document.querySelector<HTMLSelectElement>('select[id^="sp-kit-account"]');
 		if (!select) throw new Error('account select not found');
 		const values = [...select.options].map((o) => o.value);
 		expect(values).toEqual(['', '\x00no-account', '\x00pool:pool1', 'a1']);

@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { PermissionMode } from '@bindings/PermissionMode';
-	import { OptionButton, Text } from '@dorsk/tsumikit';
+	import { AutoGrid, OptionButton, Text } from '@dorsk/tsumikit';
 	import { modes } from '$lib/components/organisms/spawn/options';
 	import { m } from '$lib/paraglide/messages';
 
@@ -8,11 +8,20 @@
 		value,
 		onpick
 	}: { value: string | null; onpick: (v: PermissionMode) => void } = $props();
+
+	// Per-mode accent: ask = green (safe), auto = blue (sandboxed),
+	// yolo / whip = red (no prompts, full access).
+	const modeAccent: Record<string, string> = {
+		ask: 'var(--c-green)',
+		auto: 'var(--c-blue)',
+		yolo: 'var(--c-red)',
+		whip: 'var(--c-red)'
+	};
 </script>
 
 <div class="modes">
 	<Text size="xs" tone="muted">{m.spawn_permission_mode_label()}</Text>
-	<div class="grid" role="radiogroup" aria-label={m.spawn_permission_mode_label()}>
+	<AutoGrid min="8rem" maxCols={2} gap="var(--sp-2)" role="radiogroup" aria-label={m.spawn_permission_mode_label()}>
 		{#each modes as md (md.v)}
 			<OptionButton
 				block
@@ -21,6 +30,7 @@
 				role="radio"
 				aria-checked={value === md.v}
 				data-mode={md.v}
+				style={`--opt-accent: ${modeAccent[md.v]}`}
 				title={md.hint}
 				onclick={() => onpick(md.v)}
 			>
@@ -30,7 +40,7 @@
 				</span>
 			</OptionButton>
 		{/each}
-	</div>
+	</AutoGrid>
 </div>
 
 <style>
@@ -40,26 +50,10 @@
 		gap: var(--sp-1);
 		container-type: inline-size;
 	}
-	.grid {
-		display: grid;
-		grid-template-columns: repeat(2, minmax(0, 1fr));
-		gap: var(--sp-2);
-	}
 	.mode-body {
 		display: flex;
 		flex-direction: column;
 		gap: 2px;
 		min-width: 0;
-	}
-	/* Too narrow for a two-up card: drop to one compact row of four, so every
-	   label has to survive on a single line. */
-	@container (max-width: 22rem) {
-		.grid {
-			grid-template-columns: repeat(4, minmax(0, 1fr));
-			gap: var(--sp-1);
-		}
-		.mode-hint {
-			display: none;
-		}
 	}
 </style>
