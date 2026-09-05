@@ -175,5 +175,7 @@ export const LIST_KANBAN = 'cctui_list_kanban';
 // Which session section is in view: 'starred' | 'live' | 'dispatched'
 // | 'archived'. Replaces the old archived on/off checkbox with a 4-way picker.
 export const LIST_SECTION = 'cctui_list_section';
+// Section headers hidden by their eye toggle, comma-joined section keys.
+export const LIST_HIDDEN = 'cctui_list_hidden';
 // Selected label-filter ids, comma-joined. Empty = show all.
 export const LIST_LABELS = 'cctui_list_labels';

@@ -24,7 +24,8 @@
 		LIST_VIEW,
 		LIST_KANBAN,
 		LIST_SECTION,
-		LIST_LABELS
+		LIST_LABELS,
+		LIST_HIDDEN
 	} from '$lib/drafts';
 	import { notify } from '$lib/notify.svelte';
 	import { settings } from '$lib/settings.svelte';
@@ -39,6 +40,9 @@
 	} from '$lib/searchSchema';
 	import {
 		parseSections,
+		parseHiddenSections,
+		serializeHiddenSections,
+		toggleHiddenSection,
 		PAGE,
 		INLINE_THRESHOLD,
 		nest,
@@ -123,16 +127,16 @@
 	// `showArchived` drives the paginated archive pager + search scope; archived is
 	// now just one of the enabled sections, so the existing pager wiring is reused.
 	const showArchived = $derived(sections.has('archived'));
-	// One-click "hide archived" from the Archived header itself, so turning
-	// the section back off doesn't cost a trip through the filter popover.
-	// Mirrors SectionFilter's invariant: the set never goes empty, so when
-	// Archived was the only section on we fall back to Live.
-	function hideArchived() {
-		const next = new Set(sections);
-		next.delete('archived');
-		if (next.size === 0) next.add('live');
-		sections = next;
-	}
+	// Per-section collapse, independent of the section filter: every group
+	// header carries an eye toggle that drops its rows while keeping the header
+	// and its live count. Persisted alongside the section set.
+	let hiddenSections = $state<Set<string>>(parseHiddenSections(drafts.get(LIST_HIDDEN)));
+	$effect(() => {
+		drafts.set(LIST_HIDDEN, serializeHiddenSections(hiddenSections));
+	});
+	const toggleSection = (key: string) => {
+		hiddenSections = toggleHiddenSection(hiddenSections, key);
+	};
 	let openSession = $state<SessionListItem | null>(null);
 	let showSpawn = $state(false);
 	// Docked panels (Settings › New session / Stats panel): the spawn form
@@ -984,28 +988,18 @@
 	{@const scoped = ns.topLevel.filter(keepRow)}
 	{@const liveTop = scoped.filter((s) => s.status !== 'archived')}
 	{@const archTop = scoped.filter((s) => s.status === 'archived')}
-	{#if liveTop.length > 0}
-		<div class="section">
-			<div class="group-header">{m.sessions_section_live()} <Text class="count">{liveTop.length}</Text></div>
+	<div class="section">
+		{@render groupHeader('live', m.sessions_section_live(), liveTop.length, {})}
+		{#if !hiddenSections.has('live')}
 			{@render rowsView(liveTop, ns.childGroups, false, searchTerms)}
-		</div>
-	{/if}
-	{#if archTop.length > 0}
+		{/if}
+	</div>
+	{#if showArchived}
 		<div class="section">
-			<div class="group-header">
-				{m.sessions_section_archived()} <Text class="count">{archTop.length}</Text>
-				{#if showArchived}
-					<IconButton
-						inline
-						icon="eye-off"
-						size={14}
-						label={m.sessions_hide_archived()}
-						title={m.sessions_hide_archived()}
-						onclick={hideArchived}
-					/>
-				{/if}
-			</div>
-			{@render rowsView(archTop, ns.childGroups, false, searchTerms)}
+			{@render groupHeader('archived', m.sessions_section_archived(), archTop.length, {})}
+			{#if !hiddenSections.has('archived')}
+				{@render rowsView(archTop, ns.childGroups, false, searchTerms)}
+			{/if}
 		</div>
 	{/if}
 	{#if scoped.length === 0}
@@ -1014,74 +1008,96 @@
 	{@render loadMore()}
 {/snippet}
 
-{#snippet dimHeader(label: string, count: number, hue: number | null)}
-	<div class="group-header dim-header">
+<!-- One header for every section: label, live count, and an eye toggle that
+     collapses the section's rows while leaving the header in place. -->
+{#snippet groupHeader(
+	key: string,
+	label: string,
+	count: number,
+	opts: { hue?: number | null; bucket?: string | null; dim?: boolean; trailing?: Snippet }
+)}
+	{@const hidden = hiddenSections.has(key)}
+	{@const action = hidden
+		? m.sessions_section_show({ section: label })
+		: m.sessions_section_hide({ section: label })}
+	{@const hue = opts.hue ?? null}
+	<div class="group-header" class:dim-header={opts.dim} data-bucket={opts.bucket ?? null}>
 		{#if hue !== null}<span class="dim-swatch" style="--mh:{hue}"></span>{/if}
-		{label} <Text class="count">{count}</Text>
+		{label}
+		<span class="cnt" class:zero={count === 0}><Text class="count">{count}</Text></span>
+		<IconButton
+			inline
+			icon={hidden ? 'eye' : 'eye-off'}
+			size={14}
+			label={action}
+			title={action}
+			onclick={() => toggleSection(key)}
+		/>
+		{#if opts.trailing}{@render opts.trailing()}{/if}
 	</div>
+{/snippet}
+
+{#snippet archiveAllDispatchedAction()}
+	<!-- In card mode the action sits right next to the title; in list mode it's
+	     pushed to the far right via the spacer. -->
+	{#if !cardView}<div class="spacer"></div>{/if}
+	<Button
+		variant="danger"
+		disabled={archiving}
+		title={m.sessions_archive_all_dispatched_title()}
+		onclick={archiveAllDispatched}
+	>
+		{#if archiving}<span class="spin"></span>{/if}
+		{m.sessions_archive_all()}
+	</Button>
 {/snippet}
 
 {#snippet liveSections()}
 		{#if sessions.isLoading}
 			<div class="empty"><span class="spin"></span></div>
-		{:else if !list.hasLiveRows && !showArchived && !(sections.has('drafts') && list.draftRows.length > 0)}
+		{:else if !list.hasLiveRows && !showArchived && !sections.has('drafts')}
 			<div class="empty">
 				<Text tone="muted">{m.sessions_empty_sections()}</Text>
 			</div>
 		{:else if groupBy !== 'none'}
 			{#each list.groupedSections as g (g.key)}
+				{@const key = `dim:${g.key}`}
 				<div class="section">
-					{@render dimHeader(g.label, g.sessions.length, g.hue)}
-					{@render rowsView(g.sessions, childGroupsOf, true, [])}
+					{@render groupHeader(key, g.label, g.sessions.length, { hue: g.hue, dim: true })}
+					{#if !hiddenSections.has(key)}
+						{@render rowsView(g.sessions, childGroupsOf, true, [])}
+					{/if}
 				</div>
 			{/each}
 		{:else}
 			{#each list.groups as g (g.key)}
-				{@const vis = g.sessions}
 				<div class="section">
-					{#if g.key === 'dispatched'}
-						<!-- Dispatched is a plain section header like Pinned/Completed, with a
-						     bulk "Archive all" action on the right. -->
-						<div class="group-header" data-bucket={g.key}>
-							{g.label} <Text class="count">{g.sessions.length}</Text>
-							<!-- In card mode the action sits right next to the title; in
-							     list mode it's pushed to the far right via the spacer. -->
-							{#if !cardView}<div class="spacer"></div>{/if}
-							<Button
-								variant="danger"
-								disabled={archiving}
-								title={m.sessions_archive_all_dispatched_title()}
-								onclick={archiveAllDispatched}
-							>
-								{#if archiving}<span class="spin"></span>{/if}
-								{m.sessions_archive_all()}
-							</Button>
-						</div>
-					{:else}
-						<div class="group-header" data-bucket={g.key}>
-							{g.label} <Text class="count">{g.sessions.length}</Text>
-						</div>
+					{@render groupHeader(g.key, g.label, g.sessions.length, {
+						bucket: g.key,
+						trailing: g.key === 'dispatched' ? archiveAllDispatchedAction : undefined
+					})}
+					{#if !hiddenSections.has(g.key)}
+						{@render rowsView(g.sessions, childGroupsOf, true, [])}
 					{/if}
-					{@render rowsView(vis, childGroupsOf, true, [])}
 				</div>
 			{/each}
 		{/if}
 
-		{#if sections.has('drafts') && list.draftRows.length > 0}
+		{#if sections.has('drafts')}
 			<!-- Drafts render through the SAME SessionCard path as every other
 			     section, so they honor the card-view / compact toggles
 			     identically; the card surfaces Launch/Edit/Discard in place of the
 			     live-session affordances. -->
 			<div class="section">
-				<div class="group-header">{m.sessions_section_drafts()} <Text class="count">{list.draftRows.length}</Text></div>
-				{#if cardView}
-					{#if dense}
+				{@render groupHeader('drafts', m.sessions_section_drafts(), list.draftRows.length, {})}
+				{#if !hiddenSections.has('drafts')}
+					{#if cardView && dense}
 						<AutoGrid min="calc(18rem * var(--fs-scale))" max="calc(26.75rem * var(--fs-scale))" maxCols={2} gap="var(--sp-2)">{@render draftItems(list.draftRows, true)}</AutoGrid>
-					{:else}
+					{:else if cardView}
 						<AutoGrid min="calc(20rem * var(--fs-scale))" max="calc(26.75rem * var(--fs-scale))" gap="var(--sp-3)">{@render draftItems(list.draftRows, true)}</AutoGrid>
+					{:else}
+						{@render draftItems(list.draftRows, false)}
 					{/if}
-				{:else}
-					{@render draftItems(list.draftRows, false)}
 				{/if}
 			</div>
 		{/if}
@@ -1092,24 +1108,14 @@
 				(s) => keepRow(s) && !pinnedArchivedKidIds.has(s.id)
 			)}
 			<div class="section">
-				<div class="group-header">
-				{m.sessions_section_archived()} <Text class="count">{archTop.length}</Text>
-				{#if showArchived}
-					<IconButton
-						inline
-						icon="eye-off"
-						size={14}
-						label={m.sessions_hide_archived()}
-						title={m.sessions_hide_archived()}
-						onclick={hideArchived}
-					/>
-				{/if}
-			</div>
-				{#if pageRows.length === 0 && !pageLoading}
-					<div class="empty"><Text tone="muted">{m.sessions_no_archived()}</Text></div>
-				{:else}
-					{@render rowsView(archTop, ns.childGroups, false, searchTerms)}
-					{@render loadMore()}
+				{@render groupHeader('archived', m.sessions_section_archived(), archTop.length, {})}
+				{#if !hiddenSections.has('archived')}
+					{#if pageRows.length === 0 && !pageLoading}
+						<div class="empty"><Text tone="muted">{m.sessions_no_archived()}</Text></div>
+					{:else}
+						{@render rowsView(archTop, ns.childGroups, false, searchTerms)}
+						{@render loadMore()}
+					{/if}
 				{/if}
 			</div>
 		{/if}
@@ -1254,6 +1260,10 @@
 	.group-header :global(.count) {
 		font-weight: 400;
 		opacity: 0.7;
+	}
+	/* An empty section keeps its header; the 0 reads as inert. */
+	.cnt.zero {
+		opacity: 0.5;
 	}
 	/* Group-by header: a hue swatch keyed to the color-by palette, in the
 	   dimension's own casing (label/dir/machine names aren't uppercased chrome). */
