@@ -50,7 +50,7 @@ export class SessionActions {
 			await this.#opts.actions.rename(this.#opts.id(), name);
 			toasts.ok(m.conversation_renamed());
 		} catch (e) {
-			toasts.err(errMessage(e));
+			toasts.error(errMessage(e));
 		}
 	};
 
@@ -64,7 +64,7 @@ export class SessionActions {
 			ws.clearDelivery(s.id);
 			// Offer an Undo for as long as the toast is on screen: un-archives the
 			// session so it pops back into the live list (the drawer stays closed).
-			toasts.ok(m.conversation_archived_toast(), {
+			toasts.ok(m.conversation_archived_toast(), undefined, {
 				label: m.toast_undo(),
 				run: async () => {
 					await this.#opts.actions.unarchive(s.id);
@@ -73,7 +73,7 @@ export class SessionActions {
 			});
 			this.#opts.onclose();
 		} catch (e) {
-			toasts.err(errMessage(e));
+			toasts.error(errMessage(e));
 		}
 	};
 
@@ -89,17 +89,17 @@ export class SessionActions {
 			if (ack.ok) {
 				toasts.ok(m.conversation_interrupted());
 			} else if (ack.timedOut) {
-				toasts.push(m.conversation_interrupt_unconfirmed(), 'info');
+				toasts.info(m.conversation_interrupt_unconfirmed());
 			} else {
 				// Daemon detail (e.g. "no turn in flight", codex -32602) rides on
 				// `error`; keep the generic label as prefix so the toast is still
 				// recognisable as the Stop outcome.
-				toasts.err(
+				toasts.error(
 					ack.error ? `${m.conversation_interrupt_failed()}: ${ack.error}` : m.conversation_interrupt_failed()
 				);
 			}
 		} catch (e) {
-			toasts.err(errMessage(e));
+			toasts.error(errMessage(e));
 		}
 	};
 
@@ -127,7 +127,7 @@ export class SessionActions {
 			toasts.ok(m.conversation_resume_dispatched());
 			this.#opts.onclose();
 		} catch (e) {
-			toasts.err(errMessage(e));
+			toasts.error(errMessage(e));
 		}
 	};
 
@@ -142,12 +142,12 @@ export class SessionActions {
 			if (ack.ok) {
 				toasts.ok(m.conversation_model_updated());
 			} else if (ack.timedOut) {
-				toasts.push(m.conversation_model_unconfirmed(), 'info');
+				toasts.info(m.conversation_model_unconfirmed());
 			} else {
-				toasts.err(ack.error ?? m.conversation_model_failed());
+				toasts.error(ack.error ?? m.conversation_model_failed());
 			}
 		} catch (e) {
-			toasts.err(errMessage(e));
+			toasts.error(errMessage(e));
 		}
 	};
 
@@ -156,7 +156,7 @@ export class SessionActions {
 		try {
 			await this.#opts.actions.setAutoApprove(this.#opts.id(), want);
 		} catch (e) {
-			toasts.err(errMessage(e));
+			toasts.error(errMessage(e));
 		}
 	};
 
@@ -167,7 +167,7 @@ export class SessionActions {
 			downloadConversationHtml(this.#opts.session(), this.#opts.events(), this.#opts.view());
 			toasts.ok(m.conversation_transcript_downloaded());
 		} catch (e) {
-			toasts.err(errMessage(e));
+			toasts.error(errMessage(e));
 		}
 	};
 
@@ -179,7 +179,7 @@ export class SessionActions {
 			await navigator.clipboard.writeText(md);
 			toasts.ok(m.conversation_copied_markdown());
 		} catch (e) {
-			toasts.err(m.conversation_copy_failed({ message: errMessage(e) }));
+			toasts.error(m.conversation_copy_failed({ message: errMessage(e) }));
 		}
 	};
 
@@ -190,7 +190,7 @@ export class SessionActions {
 			await navigator.clipboard.writeText(url);
 			toasts.ok(m.conversation_link_copied());
 		} catch {
-			toasts.err(url);
+			toasts.error(url);
 		}
 	};
 }

@@ -11,7 +11,7 @@
 			await navigator.clipboard.writeText(secret);
 			toasts.ok(m.users_secret_copied());
 		} catch {
-			toasts.err(m.users_secret_clipboard_unavailable());
+			toasts.error(m.users_secret_clipboard_unavailable());
 		}
 	}
 </script>

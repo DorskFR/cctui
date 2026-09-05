@@ -81,7 +81,7 @@
 	$effect(() => {
 		if (isAdmin && !ownerId && activeUsers.length) ownerId = activeUsers[0].id;
 	});
-	const guard = (p: Promise<unknown>) => p.catch((e: Error) => toasts.err(e.message));
+	const guard = (p: Promise<unknown>) => p.catch((e: Error) => toasts.error(e.message));
 
 	// ------------------------------------------------------------------------
 	// Editor state. One modal, four modes:
@@ -344,7 +344,7 @@
 	// "Sign in with ChatGPT" for Codex (openai).
 	async function startOAuthLogin() {
 		if (isAdmin && !ownerId && !oauthAttachAccountId) {
-			toasts.err(m.accounts_err_pick_owner());
+			toasts.error(m.accounts_err_pick_owner());
 			return;
 		}
 		oauthBusy = true;
@@ -364,7 +364,7 @@
 				toasts.ok(m.accounts_oauth_opened_claude());
 			}
 		} catch (e) {
-			toasts.err(errMessage(e));
+			toasts.error(errMessage(e));
 		} finally {
 			oauthBusy = false;
 		}
@@ -377,11 +377,11 @@
 	// name is ignored server-side.
 	async function finishOAuthLogin() {
 		if (!oauthAttachAccountId && !name.trim()) {
-			toasts.err(m.accounts_err_name_required());
+			toasts.error(m.accounts_err_name_required());
 			return;
 		}
 		if (!oauthNonce || !oauthCode.trim()) {
-			toasts.err(
+			toasts.error(
 				provider === 'openai'
 					? m.accounts_err_paste_url_first()
 					: m.accounts_err_paste_code_first(),
@@ -399,7 +399,7 @@
 			toasts.ok(oauthAttachAccountId ? m.accounts_provider_added() : m.accounts_account_added());
 			close();
 		} catch (e) {
-			toasts.err(errMessage(e));
+			toasts.error(errMessage(e));
 		} finally {
 			oauthBusy = false;
 		}
@@ -543,7 +543,7 @@
 					if (Object.keys(fwSettings).length) spec.provider_settings = fwSettings;
 				} else if (isCompatible) {
 					if (!baseUrl.trim()) {
-						toasts.err(m.accounts_err_base_url_required());
+						toasts.error(m.accounts_err_base_url_required());
 						return;
 					}
 					spec.base_url = baseUrl.trim();
@@ -553,7 +553,7 @@
 					if (models.length) spec.models = models;
 				} else {
 					if (!refreshToken.trim()) {
-						toasts.err(m.accounts_err_refresh_token_required());
+						toasts.error(m.accounts_err_refresh_token_required());
 						return;
 					}
 					spec.refresh_token = refreshToken.trim();
@@ -563,11 +563,11 @@
 			} else {
 				// create: identity + first credential in one call.
 				if (!name.trim()) {
-					toasts.err(m.accounts_err_name_required());
+					toasts.error(m.accounts_err_name_required());
 					return;
 				}
 				if (isAdmin && !ownerId) {
-					toasts.err(m.accounts_err_pick_owner());
+					toasts.error(m.accounts_err_pick_owner());
 					return;
 				}
 				let body: CreateAccount;
@@ -588,7 +588,7 @@
 					};
 				} else if (isCompatible) {
 					if (!baseUrl.trim()) {
-						toasts.err(m.accounts_err_base_url_required());
+						toasts.error(m.accounts_err_base_url_required());
 						return;
 					}
 					const models = modelList();
@@ -606,7 +606,7 @@
 					};
 				} else {
 					if (!refreshToken.trim()) {
-						toasts.err(m.accounts_err_refresh_token_required());
+						toasts.error(m.accounts_err_refresh_token_required());
 						return;
 					}
 					body = {
@@ -624,7 +624,7 @@
 			}
 			close();
 		} catch (e) {
-			toasts.err(errMessage(e));
+			toasts.error(errMessage(e));
 		}
 	}
 
@@ -661,7 +661,7 @@
 			toasts.ok(m.accounts_provider_moved());
 			close();
 		} catch (e) {
-			toasts.err(errMessage(e));
+			toasts.error(errMessage(e));
 		}
 	}
 

@@ -17,16 +17,16 @@ if (typeof window !== 'undefined') {
 	window.addEventListener('error', (e) => {
 		// Resource-load failures (a missing <img>/<script>) surface here with no
 		// `error` object and a non-window target — those aren't app errors, skip them.
-		if (e.error || e.message) toasts.err(message(e.error ?? e.message));
+		if (e.error || e.message) toasts.error(message(e.error ?? e.message));
 	});
 	window.addEventListener('unhandledrejection', (e) => {
-		toasts.err(message(e.reason));
+		toasts.error(message(e.reason));
 	});
 }
 
 export const handleError: HandleClientError = ({ error }) => {
 	const text = message(error);
-	toasts.err(text);
+	toasts.error(text);
 	// Returned shape is exposed to the app as `page.error`; keep it message-only.
 	return { message: text };
 };

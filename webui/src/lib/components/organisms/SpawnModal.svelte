@@ -522,7 +522,7 @@
 			const { text, dropped } = dropMissingTokens(form.prompt, restored.missing);
 			if (dropped) {
 				form.prompt = text;
-				toasts.push(m.attachments_missing_dropped({ count: dropped }), 'info');
+				toasts.info(m.attachments_missing_dropped({ count: dropped }));
 			}
 			filesRestored = true;
 			if (loadKey !== slotKey) void attachmentStore.clear(loadKey);
@@ -584,7 +584,7 @@
 			draftId = String(res.command_id);
 			return true;
 		} catch (e) {
-			toasts.err(m.spawn_toast_save_draft_failed({ error: errMessage(e) }));
+			toasts.error(m.spawn_toast_save_draft_failed({ error: errMessage(e) }));
 			return false;
 		} finally {
 			autosaving = false;
@@ -737,7 +737,7 @@
 		const res = await actions.spawn(body, files);
 		// Surface which credential the server bound — chiefly an
 		// auto-bound default the user never named.
-		if (res.account) toasts.push(m.spawn_toast_bound_account({ account: res.account }), 'info');
+		if (res.account) toasts.info(m.spawn_toast_bound_account({ account: res.account }));
 		drafts.set(LAST_MACHINE, form.machine_id);
 		// An empty submitted name clears the proposal (drafts.set removes the key).
 		drafts.set(LAST_SPAWN_NAME, form.name.trim());
@@ -747,7 +747,7 @@
 		// here pre-selects it. Saved on submit (not just on confirmed success)
 		// so a slow/unconfirmed spawn still records the operator's intent.
 		settings.rememberSpawn(machineMemoryKey(labelMachine, labelCwd), entryFromForm(form));
-		toasts.push(m.spawn_toast_spawning(), 'info');
+		toasts.info(m.spawn_toast_spawning());
 		const result = await ws.awaitCommand(res.command_id);
 		if (result.ok) {
 			toasts.ok(m.spawn_toast_spawned());
@@ -764,12 +764,12 @@
 			// after the wait. Close + refresh so the new session shows up; keep the
 			// draft so a *real* miss is one re-open away. Re-submitting blindly
 			// would dispatch a second spawn → duplicate agent.
-			toasts.push(m.spawn_toast_unconfirmed(), 'info');
+			toasts.info(m.spawn_toast_unconfirmed());
 			onspawned();
 			onclose();
 		} else {
 			spawnFailure = result.error ?? m.spawn_error_unknown();
-			toasts.err(m.spawn_toast_spawn_failed({ error: spawnFailure }));
+			toasts.error(m.spawn_toast_spawn_failed({ error: spawnFailure }));
 		}
 	}
 
@@ -867,7 +867,7 @@
 			else await dispatchToK8s();
 		} catch (e) {
 			const msg = errMessage(e);
-			toasts.err(
+			toasts.error(
 				target === 'machine'
 					? m.spawn_toast_spawn_failed({ error: msg })
 					: m.spawn_toast_dispatch_failed({ error: msg })
@@ -887,7 +887,7 @@
 		try {
 			await saveDraft();
 		} catch (e) {
-			toasts.err(m.spawn_toast_save_draft_failed({ error: errMessage(e) }));
+			toasts.error(m.spawn_toast_save_draft_failed({ error: errMessage(e) }));
 		} finally {
 			busy = false;
 		}

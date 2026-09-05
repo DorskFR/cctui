@@ -41,7 +41,7 @@
 		() => true
 	);
 	const actions = useUserActions();
-	const guard = (p: Promise<unknown>) => p.catch((e: Error) => toasts.err(e.message));
+	const guard = (p: Promise<unknown>) => p.catch((e: Error) => toasts.error(e.message));
 
 	// Real enrolled daemons plus the server-managed per-user `dispatch` machine
 	// (shown read-only so its badge color stays editable). One-shot

@@ -142,7 +142,7 @@
 				toasts.ok(m.pools_updated());
 			} else {
 				if (isAdmin && !ownerId) {
-					toasts.err(m.accounts_err_pick_owner());
+					toasts.error(m.accounts_err_pick_owner());
 					return;
 				}
 				await actions.create({
@@ -156,7 +156,7 @@
 			}
 			close();
 		} catch (e) {
-			toasts.err(errMessage(e));
+			toasts.error(errMessage(e));
 		} finally {
 			saving = false;
 		}
@@ -169,7 +169,7 @@
 			toasts.ok(m.pools_deleted());
 			close();
 		} catch (e) {
-			toasts.err(errMessage(e));
+			toasts.error(errMessage(e));
 		}
 	}
 

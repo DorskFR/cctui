@@ -36,16 +36,16 @@ export function uptime(secs: number): string {
 }
 
 /** Map a session status to a badge color class (active = green, etc.). */
-export function statusBadgeClass(status: string): string {
+export function statusBadgeTone(status: string): 'ok' | 'info' | 'danger' | 'neutral' {
 	switch (status) {
 		case 'active':
-			return 'badge-ok';
+			return 'ok';
 		case 'new':
-			return 'badge-info';
+			return 'info';
 		case 'archived':
-			return 'badge-danger';
+			return 'danger';
 		default:
-			return ''; // inactive / dead → neutral grey
+			return 'neutral';
 	}
 }
 

@@ -6,5 +6,5 @@ import { m } from '$lib/paraglide/messages';
 // instead of re-implementing navigator.clipboard everywhere.
 export async function copyText(text: string, okMsg?: string): Promise<void> {
 	if (await copyToClipboard(text)) toasts.ok(okMsg ?? m.common_copied());
-	else toasts.err(m.common_clipboard_unavailable());
+	else toasts.error(m.common_clipboard_unavailable());
 }

@@ -116,7 +116,7 @@ export function clampSpawnDockSide(v: unknown): SpawnDockSide {
 // friends). Centered by default, which is where the stack has always been;
 // `left`/`right` pin it to that edge with the same gutter the centered stack
 // keeps on a narrow viewport. Purely presentational, so it lives entirely in
-// the webui: the value drives a `data-pos` attribute on `.toast-wrap`.
+// the webui: the value drives the `data-toast-pos` attribute on the Toaster host.
 export const TOAST_POSITIONS = ['center', 'left', 'right'] as const;
 export type ToastPosition = (typeof TOAST_POSITIONS)[number];
 export const DEFAULT_TOAST_POSITION: ToastPosition = 'center';
@@ -574,7 +574,7 @@ class Settings {
 	}
 
 	// Horizontal placement of the toast stack. Clamped on read so a blob written
-	// by another build can never feed an unknown value to the `data-pos`
+	// by another build can never feed an unknown value to the `data-toast-pos`
 	// attribute (which would leave the stack with no placement rule at all).
 	setToastPosition(pos: ToastPosition) {
 		this.state.toastPosition = pos;

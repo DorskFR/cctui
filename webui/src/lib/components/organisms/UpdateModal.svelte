@@ -43,16 +43,16 @@
 		launching = true;
 		try {
 			const res = await endpoints.selfUpdate();
-			toasts.push(m.update_toast_launched({ version: res.version }), 'info');
+			toasts.info(m.update_toast_launched({ version: res.version }));
 			const ack = await ws.awaitCommand(String(res.command_id));
 			if (ack.ok || ack.timedOut) {
 				onclose();
 				await goto(res.session_id ? `/sessions/${encodeURIComponent(res.session_id)}` : '/sessions');
 			} else {
-				toasts.err(m.update_toast_failed({ error: ack.error ?? m.spawn_error_unknown() }));
+				toasts.error(m.update_toast_failed({ error: ack.error ?? m.spawn_error_unknown() }));
 			}
 		} catch (e) {
-			toasts.err(m.update_toast_failed({ error: e instanceof Error ? e.message : String(e) }));
+			toasts.error(m.update_toast_failed({ error: e instanceof Error ? e.message : String(e) }));
 		} finally {
 			launching = false;
 		}

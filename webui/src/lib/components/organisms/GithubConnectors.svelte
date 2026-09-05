@@ -37,7 +37,7 @@
 		try {
 			accounts = await listGhreviewAccounts();
 		} catch (e) {
-			toasts.err(e instanceof Error ? e.message : m.github_save_failed());
+			toasts.error(e instanceof Error ? e.message : m.github_save_failed());
 		} finally {
 			loading = false;
 		}
@@ -60,7 +60,7 @@
 
 	async function save() {
 		if (!pat.trim()) {
-			toasts.err(m.github_credential_required());
+			toasts.error(m.github_credential_required());
 			return;
 		}
 		saving = true;
@@ -70,7 +70,7 @@
 			showModal = false;
 			await load();
 		} catch (e) {
-			toasts.err(e instanceof Error ? e.message : m.github_save_failed());
+			toasts.error(e instanceof Error ? e.message : m.github_save_failed());
 		} finally {
 			saving = false;
 		}
@@ -83,7 +83,7 @@
 			toasts.ok(m.github_connector_removed());
 			await load();
 		} catch (e) {
-			toasts.err(e instanceof Error ? e.message : m.github_remove_failed());
+			toasts.error(e instanceof Error ? e.message : m.github_remove_failed());
 		}
 	}
 </script>

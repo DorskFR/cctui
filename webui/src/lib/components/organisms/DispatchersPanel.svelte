@@ -35,7 +35,7 @@
 	// Optional default OAuth account to bind at enroll; the picker is only
 	// shown while enrolling (not renaming).
 	const accounts = useAccounts(() => editing === null);
-	const guard = (p: Promise<unknown>) => p.catch((e: Error) => toasts.err(e.message));
+	const guard = (p: Promise<unknown>) => p.catch((e: Error) => toasts.error(e.message));
 
 	let name = $state('');
 	let kind = $state<'kubernetes' | 'docker' | 'http'>('kubernetes');
@@ -69,7 +69,7 @@
 
 	async function save() {
 		if (!name.trim()) {
-			toasts.err(m.dispatch_err_name_required());
+			toasts.error(m.dispatch_err_name_required());
 			return;
 		}
 		try {
@@ -89,7 +89,7 @@
 				newKey = r.dispatcher_key;
 			}
 		} catch (e) {
-			toasts.err(errMessage(e));
+			toasts.error(errMessage(e));
 		}
 	}
 
@@ -104,7 +104,7 @@
 			await navigator.clipboard.writeText(newKey);
 			toasts.ok(m.dispatch_toast_key_copied());
 		} catch {
-			toasts.err(m.dispatch_err_copy_failed());
+			toasts.error(m.dispatch_err_copy_failed());
 		}
 	}
 

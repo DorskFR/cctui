@@ -34,7 +34,7 @@
 	async function grant() {
 		const user = grantee.trim();
 		if (!user) {
-			toasts.err(m.providers_share_err_enter_user());
+			toasts.error(m.providers_share_err_enter_user());
 			return;
 		}
 		busy = true;
@@ -43,7 +43,7 @@
 			grantee = '';
 			toasts.ok(m.providers_share_shared());
 		} catch (e) {
-			toasts.err(errMessage(e));
+			toasts.error(errMessage(e));
 		} finally {
 			busy = false;
 		}
@@ -55,7 +55,7 @@
 			await actions.revoke(resourceType, id, userId);
 			toasts.ok(m.providers_share_revoked());
 		} catch (e) {
-			toasts.err(errMessage(e));
+			toasts.error(errMessage(e));
 		}
 	}
 

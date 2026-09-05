@@ -82,10 +82,10 @@
 		{/if}
 		{#if ln.role === 'assistant' && ln.turn !== undefined}
 			<Tooltip text={`turn ${ln.turn}`}>
-				{#snippet trigger()}<Badge size="sm" class="badge-role">{ln.role}</Badge>{/snippet}
+				{#snippet trigger()}<Badge size="xs" uppercase color="var(--bc)">{ln.role}</Badge>{/snippet}
 			</Tooltip>
 		{:else}
-			<Badge size="sm" class={`badge-role${ln.mcp ? ' mcp' : ''}`}
+			<Badge size="xs" uppercase color="var(--bc)"
 				>{ln.mcp ? 'mcp' : ln.role === 'result' ? 'result' : ln.role}</Badge
 			>
 		{/if}
@@ -246,15 +246,6 @@
 	/* Role badge pill — rides on the tsumikit Badge atom (pill
 	   shape, sizing); these overrides add the per-role tint via --role-* tokens
 	   and the uppercase treatment Badge doesn't carry. */
-	.line :global(.badge-role) {
-		padding: 1px var(--sp-2);
-		font-weight: var(--fw-semibold);
-		text-transform: uppercase;
-		letter-spacing: 0.04em;
-		color: var(--bc);
-		background: color-mix(in srgb, var(--bc) 14%, transparent);
-		border: 1px solid color-mix(in srgb, var(--bc) 40%, transparent);
-	}
 	/* Per-message action buttons (copy-as-Markdown + save-image), pushed to
 	   the right of the meta row. Excluded from the saved image. */
 	.line-actions {

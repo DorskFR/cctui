@@ -63,17 +63,17 @@
 		if (notify.enabled) {
 			notify.disable();
 			settings.recordNotifyEnabled();
-			toasts.push(m.nav_notify_off(), 'info');
+			toasts.info(m.nav_notify_off());
 			return;
 		}
 		if (!notify.supported) {
-			toasts.err(m.nav_notify_unsupported());
+			toasts.error(m.nav_notify_unsupported());
 			return;
 		}
 		const ok = await notify.enable();
 		settings.recordNotifyEnabled();
 		if (ok) toasts.ok(m.nav_notify_on());
-		else toasts.err(m.nav_notify_blocked());
+		else toasts.error(m.nav_notify_blocked());
 	}
 </script>
 
@@ -152,7 +152,7 @@
 			oncontextmenu={(e: MouseEvent) => {
 				e.preventDefault();
 					settings.setNotifySound(!notify.sound);
-				toasts.push(notify.sound ? m.nav_sound_on() : m.nav_sound_off(), 'info');
+				toasts.info(notify.sound ? m.nav_sound_on() : m.nav_sound_off());
 			}}
 		/>
 		<!-- UI font size as 5 discrete levels: a native <select>
