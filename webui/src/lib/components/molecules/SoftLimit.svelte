@@ -105,7 +105,6 @@
 				value={resets}
 				mode="relative"
 				tone="inherit"
-				details={false}
 			/>{/if}{#if paceKind === 'flame'}{' 🔥'}{/if}
 	</span>
 {/snippet}
@@ -154,7 +153,11 @@
 	.dense-label {
 		min-width: 0;
 	}
+	/* Same cap as the session row: the Timestamp trigger must not size the row. */
 	.readout {
+		display: inline-flex;
+		align-items: center;
+		max-height: 1.25rem;
 		white-space: nowrap;
 	}
 	.controls {

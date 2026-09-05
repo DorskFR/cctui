@@ -54,7 +54,7 @@
 		<Readout {view} compact />
 	{/if}
 	{#if s.last_message_at}<span class="time"
-			><Timestamp value={s.last_message_at} mode="relative" tone="faint" size="xs" details={false} /></span
+			><Timestamp value={s.last_message_at} mode="relative" tone="faint" size="xs" /></span
 		>{/if}
 </Cluster>
 
@@ -94,11 +94,15 @@
 	.end-muted {
 		opacity: 0.6;
 	}
+	/* The Timestamp's details trigger is a 36px button (TSU-101); cap the cell
+	   so it overflows instead of stretching the row. */
 	.time {
 		flex: none;
 		display: inline-flex;
+		align-items: center;
 		justify-content: flex-end;
 		min-width: 4.5rem;
+		max-height: 1.25rem;
 		white-space: nowrap;
 	}
 </style>
