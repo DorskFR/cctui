@@ -9,11 +9,14 @@
 	// container the model drops its effort, then falls back to the family.
 	let {
 		view,
-		compact = false
+		compact = false,
+		spread = false
 	}: {
 		view: SessionView;
 		/** Σ + $ only (the compact row). */
 		compact?: boolean;
+		/** Push the model and logo to the far end of the line. */
+		spread?: boolean;
 	} = $props();
 
 	const s = $derived(view.s);
@@ -25,6 +28,7 @@
 {#if !view.draft}
 	<TokenUsage usage={s.token_usage} cold={s.cache_cold} sum={view.rollup ? view.rollup.tokens : null} {compact} />
 {/if}
+{#if spread}<span class="gap"></span>{/if}
 {#if s.model}
 	<span class="model" title={modelTitle}>
 		<Text tone="muted" size="xs" style="white-space:nowrap">
@@ -45,15 +49,31 @@
 		flex: none;
 		display: inline-flex;
 	}
+	.gap {
+		flex: 1 1 0;
+	}
 	.fam {
 		display: none;
 	}
-	@container sess-card (max-width: 40rem) {
+	@container sess-card (max-width: 26rem) {
 		.effort {
 			display: none;
 		}
 	}
-	@container sess-card (max-width: 34rem) {
+	@container sess-card (max-width: 16rem) {
+		.full {
+			display: none;
+		}
+		.fam {
+			display: inline;
+		}
+	}
+	@container sess-row (max-width: 40rem) {
+		.effort {
+			display: none;
+		}
+	}
+	@container sess-row (max-width: 34rem) {
 		.full {
 			display: none;
 		}

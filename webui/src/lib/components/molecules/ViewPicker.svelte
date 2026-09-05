@@ -18,15 +18,16 @@
 		{ value: 'list', icon: 'list' as const },
 		{ value: 'card', icon: 'grid' as const }
 	];
-	const title = $derived(
-		m.sessions_view_title({ view: cardView ? m.sessions_view_card() : m.sessions_view_list() })
+	// The menu row is an action, so it names the view it switches TO.
+	const target = $derived(
+		m.sessions_view_title({ view: cardView ? m.sessions_view_list() : m.sessions_view_card() })
 	);
 </script>
 
 {#if menu}
-	<button type="button" class="menu-row" {title} onclick={() => (cardView = !cardView)}>
-		<Icon name={cardView ? 'grid' : 'list'} size={18} />
-		<span>{title}</span>
+	<button type="button" class="menu-row" title={target} onclick={() => (cardView = !cardView)}>
+		<Icon name={cardView ? 'list' : 'grid'} size={18} />
+		<span>{target}</span>
 	</button>
 {:else}
 	<SegmentedControl

@@ -7,7 +7,8 @@
 	import { tick } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { page as route } from '$app/state';
-	import { Button, Heading, Icon, Input, Text } from '@dorsk/tsumikit';
+	import { Icon, Input, Text } from '@dorsk/tsumikit';
+	import PageHead from '$lib/components/molecules/PageHead.svelte';
 	import SettingsToc, { type TocEntry } from '$lib/components/organisms/settings/SettingsToc.svelte';
 	import SettingsPages from '$lib/components/organisms/settings/SettingsPages.svelte';
 	import {
@@ -95,7 +96,7 @@
 <div class="page">
 	<div class="layout">
 		<aside class="side">
-			<Heading level={1} size="xl">{m.settings_title()}</Heading>
+			<PageHead title={m.settings_title()} />
 			<div class="mobile-search">
 				<Input
 					type="search"

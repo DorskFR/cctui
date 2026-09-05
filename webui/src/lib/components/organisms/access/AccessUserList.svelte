@@ -1,6 +1,7 @@
 <script lang="ts">
 	import type { UserRow } from '@bindings/UserRow';
-	import { Button, Dot, Heading, Input, Spinner, Text } from '@dorsk/tsumikit';
+	import { Button, Dot, Input, Spinner, Text } from '@dorsk/tsumikit';
+	import PageHead from '$lib/components/molecules/PageHead.svelte';
 	import EnrollMachineCard from '$lib/components/organisms/EnrollMachineCard.svelte';
 	import { hashHue } from '$lib/format';
 	import { m } from '$lib/paraglide/messages';
@@ -53,13 +54,11 @@
 {/snippet}
 
 <div class="master">
-	<div class="head">
-		<Heading level={1} size="xl">{m.access_title()}</Heading>
-		<div class="spacer"></div>
+	<PageHead title={m.access_title()}>
 		{#if canCreate}
-			<Button variant="primary" size="sm" onclick={oncreate}>{m.users_new_user()}</Button>
+			<Button variant="primary" onclick={oncreate}>{m.users_new_user()}</Button>
 		{/if}
-	</div>
+	</PageHead>
 
 	<Input
 		icon="search"
@@ -99,14 +98,6 @@
 		gap: var(--sp-3);
 		padding-block: var(--sp-1) var(--sp-4);
 		padding-inline-end: var(--sp-4);
-	}
-	.head {
-		display: flex;
-		align-items: center;
-		gap: var(--sp-2);
-	}
-	.spacer {
-		flex: 1;
 	}
 	.list {
 		border: 1px solid var(--border);

@@ -7,9 +7,9 @@
 	import Readout from './Readout.svelte';
 	import type { SessionActions, SessionView } from './view';
 
-	// Three lines: cwd chip / branch chip + PR links / Σ ↑ ↓ ⚡ $ · model ·
-	// effort · logo. The path and the branch keep their text; only the readout
-	// degrades when the `sess-card` container is cramped.
+	// Two lines: cwd chip · branch chip · PR links (wrapping) / Σ ↑ ↓ ⚡ $ ·
+	// model · effort · logo. The path and the branch keep their text; only the
+	// readout degrades when the `sess-card` container is cramped.
 	let { view, actions }: { view: SessionView; actions: SessionActions } = $props();
 
 	const s = $derived(view.s);
@@ -23,49 +23,47 @@
 </script>
 
 <Stack gap="var(--sp-1)" style="min-width:0">
-	<span class="cwd">
-		<WorkingDir
-			path={s.working_dir}
-			copy
-			full
-			title={m.sessions_workdir_copy_title({ path: s.working_dir })}
-			style="min-width:0;max-width:100%"
-		/>
-	</span>
-	{#if view.branch || view.prLinks.length > 0}
-		<Cluster wrap={false} gap="var(--sp-2)" align="center" style="min-width:0">
-			{#if view.branch}
-				<span class="branch" title={m.sessions_branch_title({ branch: view.branch })}>
-					<Badge mono style="display:inline-flex;align-items:center;gap:0.25em;min-width:0;max-width:100%">
-						<Icon name="fork" size={12} label={m.sessions_branch_label()} />
-						<span class="branch-name">{view.branch}</span>
-					</Badge>
-				</span>
-			{/if}
-			{#if view.prLinks.length > 0}
-				<span class="prs">
-					{#each shownPrs as pr (pr.href)}
-						<a
-							class="pr-link"
-							href={safeHref(pr.href)}
-							target="_blank"
-							rel="noopener noreferrer"
-							title={m.sessions_pr_title({ label: pr.label })}
-							onclick={(e) => e.stopPropagation()}
-						>
-							<PrIcon />
-							<span class="pr-label">{pr.label}</span>
-						</a>
-					{/each}
-					{#if hiddenPrs > 0}
-						<span class="pr-more" title={allPrLabels}>+{hiddenPrs}</span>
-					{/if}
-				</span>
-			{/if}
-		</Cluster>
-	{/if}
-	<Cluster wrap={false} gap="var(--sp-2)" align="center" style="min-width:0;justify-content:flex-end">
-		<Readout {view} />
+	<Cluster gap="var(--sp-2)" align="center" style="min-width:0">
+		<span class="cwd">
+			<WorkingDir
+				path={s.working_dir}
+				copy
+				full
+				title={m.sessions_workdir_copy_title({ path: s.working_dir })}
+				style="min-width:0;max-width:100%"
+			/>
+		</span>
+		{#if view.branch}
+			<span class="branch" title={m.sessions_branch_title({ branch: view.branch })}>
+				<Badge mono style="display:inline-flex;align-items:center;gap:0.25em;min-width:0;max-width:100%">
+					<Icon name="fork" size={12} label={m.sessions_branch_label()} />
+					<span class="branch-name">{view.branch}</span>
+				</Badge>
+			</span>
+		{/if}
+		{#if view.prLinks.length > 0}
+			<span class="prs">
+				{#each shownPrs as pr (pr.href)}
+					<a
+						class="pr-link"
+						href={safeHref(pr.href)}
+						target="_blank"
+						rel="noopener noreferrer"
+						title={m.sessions_pr_title({ label: pr.label })}
+						onclick={(e) => e.stopPropagation()}
+					>
+						<PrIcon />
+						<span class="pr-label">{pr.label}</span>
+					</a>
+				{/each}
+				{#if hiddenPrs > 0}
+					<span class="pr-more" title={allPrLabels}>+{hiddenPrs}</span>
+				{/if}
+			</span>
+		{/if}
+	</Cluster>
+	<Cluster wrap={false} gap="var(--sp-2)" align="center" style="min-width:0">
+		<Readout {view} spread />
 		{#if view.draft}<DraftActions {view} {actions} />{/if}
 	</Cluster>
 </Stack>

@@ -217,6 +217,10 @@
 		touch-action: pan-y;
 		container: sess-card / inline-size;
 	}
+	/* Rows and cards degrade at different widths, so each names its own container. */
+	.sc-wrap.compact {
+		container: sess-row / inline-size;
+	}
 	.sc-wrap.child {
 		width: auto;
 		margin-left: var(--sp-4);

@@ -76,7 +76,7 @@
 		white-space: nowrap;
 		text-overflow: ellipsis;
 	}
-	@container sess-card (max-width: 48rem) {
+	@container sess-row (max-width: 48rem) {
 		.cwd,
 		.branch {
 			display: none;
