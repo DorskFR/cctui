@@ -1,119 +1,84 @@
 <script lang="ts">
-	import { useUsers, useSessionStats, useTokenStats } from '$lib/queries';
-	import { apiOrigin } from '$lib/config';
-	import { copyText } from '$lib/clipboard';
-	import TokenUsage from '$lib/components/molecules/TokenUsage.svelte';
-	import UsageAnalyticsSection from '$lib/components/organisms/overview/UsageAnalyticsSection.svelte';
-	import { AutoGrid, Button, Card, Cluster, Heading, Stack, Text } from '@dorsk/tsumikit';
-	import { asUsage } from './home.logic';
+	import { useAccounts, useAllMachines, useSessionStats, useTokenStats } from '$lib/queries';
+	import { getLocale } from '$lib/paraglide/runtime';
 	import { m } from '$lib/paraglide/messages';
+	import MetricTile from '$lib/components/molecules/MetricTile.svelte';
+	import WindowsTable from '$lib/components/molecules/WindowsTable.svelte';
+	import UsageAnalyticsSection from '$lib/components/organisms/overview/UsageAnalyticsSection.svelte';
+	import { RANGES } from '$lib/components/organisms/overview/usage-analytics';
+	import { Card, Heading, SegmentedControl, Stack, Text } from '@dorsk/tsumikit';
+	import { buildMetricTiles, machinesOnline, type MetricKey } from './home.logic';
 
-	const users = useUsers();
-	// Aggregate counts from the server, not the capped session list — the list
-	// tops out at 25 rows so counting it client-side undercounts (CCT).
 	const stats = useSessionStats();
-	// Token totals across rolling windows, same ↑in ↓out ⚡cache readout the
-	// session list shows.
 	const tokens = useTokenStats();
+	const machines = useAllMachines(() => true);
+	const accounts = useAccounts();
 
-	const tokenCards = $derived([
-		{ lbl: m.home_window_hour(), usage: asUsage(tokens.data?.hour) },
-		{ lbl: m.home_window_today(), usage: asUsage(tokens.data?.today) },
-		{ lbl: m.home_window_day(), usage: asUsage(tokens.data?.day) },
-		{ lbl: m.home_window_week(), usage: asUsage(tokens.data?.week) },
-		{ lbl: m.home_window_month(), usage: asUsage(tokens.data?.month) }
-	]);
+	let rangeKey = $state('30d');
+	const rangeOptions = RANGES.map((r) => ({ value: r.key, label: r.key }));
 
-	const activeUsers = $derived((users.data ?? []).filter((u) => !u.revoked_at).length);
-	const revokedUsers = $derived((users.data ?? []).filter((u) => u.revoked_at).length);
-	const live = $derived(stats.data?.live ?? 0);
-	const archived = $derived(stats.data?.archived ?? 0);
-	const needs = $derived(stats.data?.needs_input ?? 0);
-	const total = $derived(stats.data?.total ?? 0);
-
-	const statCards = $derived([
-		{ lbl: m.home_stat_live(), num: live },
-		{ lbl: m.home_stat_needs_input(), num: needs, warn: needs > 0 },
-		{ lbl: m.home_stat_archived(), num: archived },
-		{ lbl: m.home_stat_active_users(), num: activeUsers },
-		{ lbl: m.home_stat_revoked_users(), num: revokedUsers },
-		{ lbl: m.home_stat_total_sessions(), num: total }
-	]);
-
-	const enrollCmd = $derived(
-		`cctui-daemon enroll --server-url ${apiOrigin()} --token <user-token> --name "$(hostname)"`
+	const machineRows = $derived(machines.data ?? []);
+	const scope = $derived(
+		m.home_usage_scope({
+			machines: machinesOnline(machineRows).total,
+			accounts: (accounts.data ?? []).length
+		})
 	);
 
-	async function copyEnroll() {
-		await copyText(enrollCmd);
-	}
+	const num = (n: number) => n.toLocaleString(getLocale());
+	const tiles = $derived(buildMetricTiles(stats.data, machineRows));
+	const tileLabel = (key: MetricKey, sub: number | undefined) =>
+		key === 'live'
+			? m.home_stat_live()
+			: key === 'needs_input'
+				? m.home_stat_needs_input()
+				: key === 'machines'
+					? m.home_stat_machines_online()
+					: m.home_stat_total_sessions_archived({ n: num(sub ?? 0) });
 </script>
 
-<Stack gap="var(--sp-6)">
-		<Heading level={1}>{m.home_overview_title()}</Heading>
+<Stack gap="var(--sp-5)">
+	<div class="head">
+		<Heading level={1} size="xl">{m.home_usage_page_title()}</Heading>
+		<Text size="xs" tone="muted">{scope}</Text>
+		<div class="spacer"></div>
+		<SegmentedControl
+			bind:value={rangeKey}
+			options={rangeOptions}
+			size="sm"
+			label={m.home_usage_range_label()}
+		/>
+	</div>
 
-		<AutoGrid min="10rem" gap="var(--sp-3)" maxCols={3}>
-			{#each statCards as c (c.lbl)}
-				<Card>
-					<Stack gap="var(--sp-1)" align="flex-start">
-						<Text
-							size="2xl"
-							weight="bold"
-							style="line-height: 1{c.warn ? '; color: var(--warn)' : ''}">{c.num}</Text
-						>
-						<Text size="sm" tone="muted">{c.lbl}</Text>
-					</Stack>
-				</Card>
-			{/each}
-		</AutoGrid>
+	<div class="tiles">
+		{#each tiles as t (t.key)}
+			<MetricTile
+				value={num(t.value)}
+				suffix={t.suffix}
+				warn={t.warn}
+				label={tileLabel(t.key, t.sub)}
+			/>
+		{/each}
+	</div>
 
-		<Stack gap="var(--sp-3)">
-			<Heading level={2} size="lg">{m.home_token_usage()}</Heading>
-			<AutoGrid min="10rem" gap="var(--sp-3)"  maxCols={3}>
-				{#each tokenCards as c (c.lbl)}
-					<Card>
-						<Stack gap="var(--sp-1)" align="flex-start">
-							<TokenUsage usage={c.usage} showSum={false} size="lg" wrap />
-							<Text size="sm" tone="muted">{c.lbl}</Text>
-						</Stack>
-					</Card>
-				{/each}
-			</AutoGrid>
-		</Stack>
+	<Card padding="none"><WindowsTable windows={tokens.data} /></Card>
 
-		<UsageAnalyticsSection />
-
-		<Card>
-			<Stack>
-				<Text weight="bold">{m.home_enroll_title()}</Text>
-				<Text as="p" tone="muted" size="sm">
-					{m.home_enroll_install_before()} <Text variant="code">cctui-daemon</Text>
-					{m.home_enroll_install_after()}
-				</Text>
-				<Cluster wrap={false} align="center">
-					<!-- as="div": truncate needs a block element — text-overflow:ellipsis is
-					     ignored on an inline <span>, so the long command would spill. -->
-					<div class="cmd"><Text as="div" variant="code" truncate>{enrollCmd}</Text></div>
-					<Button onclick={copyEnroll}>{m.common_copy()}</Button>
-				</Cluster>
-				<Text as="p" tone="muted" size="sm">
-					{m.home_enroll_run_as_service()} <Text variant="code">cctui-daemon service install</Text>
-				</Text>
-			</Stack>
-		</Card>
+	<UsageAnalyticsSection {rangeKey} />
 </Stack>
 
 <style>
-	/* The enroll command box is structural chrome — a LOCAL element wrapping the
-	   Text atom, so it styles itself with scoped CSS (no :global reach-in). It owns
-	   the shrink (min-width:0 + flex:1) that lets the Text inside truncate. */
-	.cmd {
+	.head {
+		display: flex;
+		align-items: baseline;
+		gap: var(--sp-3);
+		flex-wrap: wrap;
+	}
+	.spacer {
 		flex: 1;
-		min-width: 0;
-		padding: var(--sp-2) var(--sp-3);
-		background: var(--bg);
-		border: 1px solid var(--border-strong);
-		border-radius: var(--r-md);
-		font-size: var(--fs-xs);
+	}
+	.tiles {
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+		gap: var(--sp-3);
 	}
 </style>
