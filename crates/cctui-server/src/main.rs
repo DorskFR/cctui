@@ -125,6 +125,7 @@ async fn main() -> anyhow::Result<()> {
         account_usage_cache: Arc::new(dashmap::DashMap::new()),
         pr_status_cache: cctui_proto::classifier::PrStatusCache::new(),
         soft_limit_blocked: Arc::new(dashmap::DashMap::new()),
+        usage_notice_buckets: Arc::new(dashmap::DashMap::new()),
         gateway_orphan_spam: Arc::new(dashmap::DashMap::new()),
         account_reauth: Arc::new(dashmap::DashMap::new()),
         codex_catalogs: Arc::new(dashmap::DashMap::new()),

@@ -33,6 +33,7 @@ mod proxy;
 mod ratelimit;
 mod refresh;
 mod usage;
+pub mod usage_notices;
 
 pub use config::*;
 pub use failover::*;

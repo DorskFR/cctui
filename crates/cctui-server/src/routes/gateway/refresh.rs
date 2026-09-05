@@ -22,6 +22,7 @@ pub type AccountRow = (
     Option<serde_json::Value>,
     Option<serde_json::Value>,
     Option<serde_json::Value>,
+    Option<serde_json::Value>,
 );
 /// Raw account row by id (no id column, before decrypt).
 pub type ReloadRow = (
@@ -54,6 +55,8 @@ pub struct Account {
     /// Enforced in `passthrough` against the cached usage. All NULL ⇒
     /// no soft limit (prior behaviour).
     pub soft_limits: crate::soft_limit::SoftLimits,
+    /// Per-provider usage ticker setting; off ⇒ the proxy skips it.
+    pub usage_notices: super::usage_notices::UsageNotices,
     /// Per-provider gateway request-shaping settings; see [`FireworksSettings`].
     pub provider_settings: Option<serde_json::Value>,
     /// Per-(account, provider) RPM/TPM ceilings enforced in the proxy path.
@@ -85,7 +88,8 @@ pub async fn resolve_account(
     let row: Option<AccountRow> = sqlx::query_as(
         "SELECT a.id, a.provider, a.encrypted_access_token, a.encrypted_refresh_token, \
                     a.expires_at, a.provider_account_id, a.base_url, a.auth_scheme, \
-                    a.soft_limits_json, a.provider_settings, a.rate_limits_json \
+                    a.soft_limits_json, a.provider_settings, a.rate_limits_json, \
+                    a.usage_notices \
              FROM session_tokens t JOIN account_providers a ON a.id = t.account_id \
              WHERE t.token_hash = $1 AND t.revoked_at IS NULL \
                AND (t.expires_at IS NULL OR t.expires_at > now())",
@@ -105,6 +109,7 @@ pub async fn resolve_account(
         soft_limits_json,
         provider_settings,
         rate_limits_json,
+        usage_notices,
     )) = row
     else {
         return Ok(None);
@@ -122,6 +127,7 @@ pub async fn resolve_account(
         base_url,
         auth_scheme,
         soft_limits: crate::soft_limit::SoftLimits::from_json(soft_limits_json.as_ref()),
+        usage_notices: super::usage_notices::UsageNotices::from_json(usage_notices.as_ref()),
         provider_settings,
         rate_limits: crate::routes::gateway::RateLimits::from_json(rate_limits_json.as_ref()),
     }))
@@ -325,6 +331,7 @@ pub async fn reload_account(state: &AppState, id: Uuid) -> Option<Account> {
         // caps are irrelevant here — default them, as are the gateway settings
         // (request shaping runs off `resolve_account` too).
         soft_limits: crate::soft_limit::SoftLimits::default(),
+        usage_notices: super::usage_notices::UsageNotices::default(),
         provider_settings: None,
         rate_limits: crate::routes::gateway::RateLimits::default(),
     })
