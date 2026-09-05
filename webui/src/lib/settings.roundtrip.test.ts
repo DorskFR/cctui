@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
 	CURRENT_VERSION,
+	clampNavPosition,
 	clampSessionListWidth,
 	mergeDefaults,
 	sessionListWidthSize,
@@ -57,6 +58,18 @@ describe('Settings save → load round-trip through the blob', () => {
 		} as Record<string, unknown>);
 		const reloaded = mergeDefaults(JSON.parse(JSON.stringify(saved)) as Record<string, unknown>);
 		expect(reloaded).toEqual(saved);
+	});
+
+	it('the nav position defaults to top, survives a reload, and clamps unknown values', () => {
+		expect(mergeDefaults(null).display.nav).toBe('top');
+		settings.setNav('bottom');
+		expect(loadFromCache().display.nav).toBe('bottom');
+		settings.setNav('top');
+		expect(loadFromCache().display.nav).toBe('top');
+
+		const merged = mergeDefaults({ display: { nav: 'sideways' } } as unknown as Record<string, unknown>);
+		expect(merged.display.nav).toBe('top');
+		expect(clampNavPosition(undefined)).toBe('top');
 	});
 
 	it('list width and account-name toggle survive a persist then reload', () => {
@@ -125,10 +138,10 @@ describe('Settings save → load round-trip through the blob', () => {
 		expect(merged.statsDock.side).toBe('right');
 	});
 
-	it('each width maps to a CSS length, the default keeping --content-max', () => {
+	it('each width maps to a CSS length, the default keeping --content-wide', () => {
 		expect(sessionListWidthSize('default')).toBeUndefined();
-		expect(sessionListWidthSize('wide')).toBe('72rem');
-		expect(sessionListWidthSize('ultra')).toBe('var(--content-wide)');
+		expect(sessionListWidthSize('wide')).toBe('80rem');
+		expect(sessionListWidthSize('ultra')).toBe('92rem');
 		expect(sessionListWidthSize('full')).toBe('100%');
 	});
 

@@ -8,7 +8,7 @@
 	import SettingGroup from '$lib/components/molecules/SettingGroup.svelte';
 	import SettingRow from '$lib/components/molecules/SettingRow.svelte';
 	import SettingSection from '$lib/components/molecules/SettingSection.svelte';
-	import { settings, type ToastPosition } from '$lib/settings.svelte';
+	import { settings, type NavPosition, type ToastPosition } from '$lib/settings.svelte';
 	import { LOCALE_LABELS, LOCALES, type Locale } from '$lib/locale.svelte';
 	import { AUTO, theme, THEMES } from '$lib/theme.svelte';
 	import { fontScale, SCALE_LEVELS } from '$lib/fontscale.svelte';
@@ -80,6 +80,16 @@
 				<option value="center">{m.settings_toast_position_center()}</option>
 				<option value="left">{m.settings_toast_position_left()}</option>
 				<option value="right">{m.settings_toast_position_right()}</option>
+			</Select>
+		</SettingRow>
+		<SettingRow label={m.settings_nav_position_label()} help={m.settings_nav_position_help()}>
+			<Select
+				value={settings.nav}
+				style="width:100%"
+				onchange={(e) => settings.setNav((e.currentTarget as HTMLSelectElement).value as NavPosition)}
+			>
+				<option value="top">{m.settings_nav_position_top()}</option>
+				<option value="bottom">{m.settings_nav_position_bottom()}</option>
 			</Select>
 		</SettingRow>
 		<SettingRow label={m.usage_battery_setting_label()} help={m.usage_battery_setting_help()}>

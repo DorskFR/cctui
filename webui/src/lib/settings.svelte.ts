@@ -52,18 +52,18 @@ export interface SessionListSettings {
 }
 
 // Session-list column widths, as the `size` handed to the layout Container.
-// `default` keeps --content-max (the width every other screen uses).
+// `default` keeps --content-wide (the width every other screen uses).
 export const SESSION_LIST_WIDTHS = ['default', 'wide', 'ultra', 'full'] as const;
 export type SessionListWidth = (typeof SESSION_LIST_WIDTHS)[number];
 export const DEFAULT_SESSION_LIST_WIDTH: SessionListWidth = 'default';
 
-/** The CSS length for a width choice, or `undefined` to keep --content-max. */
+/** The CSS length for a width choice, or `undefined` to keep --content-wide. */
 export function sessionListWidthSize(w: SessionListWidth): string | undefined {
 	switch (w) {
 		case 'wide':
-			return '72rem';
+			return '80rem';
 		case 'ultra':
-			return 'var(--content-wide)';
+			return '92rem';
 		case 'full':
 			return '100%';
 		default:
@@ -141,6 +141,17 @@ export interface DisplaySettings {
 	// Per-provider usage batteries in the header. On by default; off hides the
 	// whole strip (the stats dock still shows the full bars).
 	usageBatteries: boolean;
+	// Where the route navigation lives on a wide screen: tabs inline in the
+	// header, or the bottom bar. Below 48rem the bottom bar is always used.
+	nav: NavPosition;
+}
+
+export const NAV_POSITIONS = ['top', 'bottom'] as const;
+export type NavPosition = (typeof NAV_POSITIONS)[number];
+export const DEFAULT_NAV_POSITION: NavPosition = 'top';
+
+export function clampNavPosition(v: unknown): NavPosition {
+	return (NAV_POSITIONS as readonly unknown[]).includes(v) ? (v as NavPosition) : DEFAULT_NAV_POSITION;
 }
 
 // The claude-code execution harness modes. Stored top-level in the settings
@@ -250,7 +261,8 @@ const DEFAULTS: SettingsState = {
 		archiveShortcut: true,
 		notifyEnabled: false,
 		notifySound: true,
-		usageBatteries: true
+		usageBatteries: true,
+		nav: DEFAULT_NAV_POSITION
 	},
 	spawnDock: { enabled: false, side: DEFAULT_SPAWN_DOCK_SIDE },
 	statsDock: { enabled: false, side: DEFAULT_SPAWN_DOCK_SIDE },
@@ -283,7 +295,11 @@ export function mergeDefaults(partial: Partial<SettingsState> | null | undefined
 			width: clampSessionListWidth(p.sessionList?.width),
 			accountNames: p.sessionList?.accountNames === true
 		},
-		display: { ...DEFAULTS.display, ...(p.display ?? {}) },
+		display: {
+			...DEFAULTS.display,
+			...(p.display ?? {}),
+			nav: clampNavPosition(p.display?.nav)
+		},
 		spawnDock: {
 			enabled: p.spawnDock?.enabled === true,
 			side: clampSpawnDockSide(p.spawnDock?.side),
@@ -633,6 +649,14 @@ class Settings {
 
 	get usageBatteries(): boolean {
 		return this.state.display.usageBatteries !== false;
+	}
+
+	setNav(nav: NavPosition) {
+		this.setDisplay({ nav: clampNavPosition(nav) });
+	}
+
+	get nav(): NavPosition {
+		return clampNavPosition(this.state.display.nav);
 	}
 
 	toggleArchiveShortcut() {
