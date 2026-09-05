@@ -116,6 +116,7 @@ impl Supervisor {
                 }
             });
         }
+        crate::configsweep::spawn_loop(shutdown.clone());
         let mut attempt = 0usize;
         loop {
             if shutdown.is_cancelled() {
@@ -402,6 +403,7 @@ impl Supervisor {
                 }
             }
             DaemonFrameDown::ResumeMarks { session_marks } => {
+                crate::configsweep::note_server_sessions(session_marks.iter().map(|(id, _)| id));
                 // Fan the marks to every running adapter; each clamps the
                 // sessions it owns and ignores ids it doesn't know.
                 for running in running.values() {

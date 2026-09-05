@@ -975,7 +975,9 @@ impl Driver {
                 let _ =
                     socket::one_shot(&sock, &json!({"proto":1,"op":"kill","short":short})).await;
                 Self::await_worker_exit(&sock, &short).await;
-                self.claude_rm(&short).await?;
+                let rm = self.claude_rm(&short).await;
+                crate::configsweep::remove_session_files(&short);
+                rm?;
             }
             AdapterCommand::Spawn { spec, session_id, .. } => {
                 self.spawn(&sock, &spec, session_id.map(|id| id.to_string())).await?;
@@ -1850,7 +1852,9 @@ impl Driver {
         // prepend their absolute paths to the prompt so the worker reads them.
         // A staging failure is fatal to the spawn — silently dropping
         // an attachment the user expects the worker to read would be worse.
-        let staged = stage_uploads(&session_id, &spec.bootstrap)?;
+        let staged = stage_uploads(&session_id, &spec.bootstrap).inspect_err(|_| {
+            crate::configsweep::remove_session_files(short);
+        })?;
         // Prepend a delimited `<session-context>` block to the SPAWN prompt only:
         // give the agent the same at-a-glance context a human sees in
         // the UI — name, model·effort, permission posture, env var NAMES (never
@@ -1926,8 +1930,10 @@ impl Driver {
 
         // `call` (not `one_shot`) so an `ok:false` reply becomes an Err that
         // propagates back to the client instead of being logged as success.
-        let resp: serde_json::Value =
-            socket::call(sock, &req).await.with_context(|| format!("dispatch spawn in {cwd}"))?;
+        let resp: serde_json::Value = socket::call(sock, &req)
+            .await
+            .inspect_err(|_| crate::configsweep::remove_session_files(short))
+            .with_context(|| format!("dispatch spawn in {cwd}"))?;
         tracing::info!(?resp, %cwd, %session_id, "spawn dispatched via control socket");
         Ok(())
     }
@@ -2184,6 +2190,7 @@ impl Driver {
         });
         let resp: serde_json::Value = socket::call(sock, &req)
             .await
+            .inspect_err(|_| crate::configsweep::remove_session_files(&short))
             .with_context(|| format!("dispatch fork of {parent_local_id} in {cwd}"))?;
         tracing::info!(?resp, %cwd, %session_id, %parent_local_id, %resume_id, "fork dispatched via control socket");
         Ok(())
@@ -2418,10 +2425,12 @@ impl Driver {
                             reason: EndReason::Completed,
                         })
                         .await;
-                        // Truly gone — drop the remembered spawn flags.
+                        // Truly gone — no job state left to cold resume from, so
+                        // the spawn flags and per-session config files are dead.
                         if let Ok(mut m) = self.spawn_model_effort.lock() {
                             m.remove(&job.short);
                         }
+                        crate::configsweep::remove_session_files(&job.short);
                     }
                     // Drop the cached status so a later revive (worker reports
                     // alive again) is detected as a change and re-emitted.

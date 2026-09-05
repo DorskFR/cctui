@@ -28,7 +28,7 @@ mod mode;
 mod oneshot;
 mod pty_view;
 mod socket;
-mod state;
+pub(crate) mod state;
 mod streamjson;
 mod transcript;
 mod version_gate;
