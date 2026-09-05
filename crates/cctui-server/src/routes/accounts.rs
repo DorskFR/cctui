@@ -2104,6 +2104,9 @@ pub struct AccountUsage {
     /// Seconds since this usage was fetched upstream (0 = just now). Lets the UI
     /// show staleness; values refresh on the slow cache TTL, not per request.
     pub age_secs: u64,
+    /// Whether a usage-limit reset can be claimed right now (Codex reset
+    /// credits, Claude `juniper_tide`); `None` when the payload has no such block.
+    pub limit_reset: Option<crate::routes::limit_reset::LimitResetStatus>,
 }
 
 impl AccountUsage {
@@ -2115,7 +2118,10 @@ impl AccountUsage {
     ) -> Self {
         let windows =
             usage.as_ref().map(crate::soft_limit::normalize_usage_windows).unwrap_or_default();
-        Self { account_id, provider, usage, windows, age_secs }
+        let limit_reset = usage
+            .as_ref()
+            .and_then(|u| crate::routes::limit_reset::limit_reset_status(&provider, u));
+        Self { account_id, provider, usage, windows, age_secs, limit_reset }
     }
 }
 

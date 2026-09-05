@@ -20,6 +20,7 @@ pub mod instance;
 pub mod internal;
 pub mod labels;
 pub mod langfuse;
+pub mod limit_reset;
 pub mod manifest;
 pub mod me;
 pub mod passkeys;

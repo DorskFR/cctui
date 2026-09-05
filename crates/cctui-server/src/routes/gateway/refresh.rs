@@ -134,6 +134,16 @@ pub struct TokenResponse {
     refresh_token: Option<String>,
     #[serde(default)]
     expires_in: Option<i64>,
+    /// Anthropic's token response names the organization the credential
+    /// belongs to; the limit-reset endpoint is addressed by that uuid.
+    #[serde(default)]
+    organization: Option<OrganizationRef>,
+}
+
+#[derive(serde::Deserialize)]
+pub struct OrganizationRef {
+    #[serde(default)]
+    pub uuid: Option<String>,
 }
 
 /// Exchange the refresh token for a fresh access token and persist the rotated
@@ -217,8 +227,26 @@ pub async fn refresh_account(state: &AppState, acct: &Account) -> Result<String,
         tracing::error!(account = %acct.id, "persist refreshed token failed: {e}");
         return Err(StatusCode::INTERNAL_SERVER_ERROR);
     }
+    if let Some(org) = tok.organization.as_ref().and_then(|o| o.uuid.as_deref()) {
+        remember_organization_uuid(state, acct.id, org).await;
+    }
     tracing::info!(account = %acct.id, "refreshed oauth access token");
     Ok(tok.access_token)
+}
+
+/// Persist the organization uuid a token or profile payload named. Best-effort.
+pub async fn remember_organization_uuid(state: &AppState, id: Uuid, org: &str) {
+    if let Err(e) = sqlx::query(
+        "UPDATE account_providers SET organization_uuid = $2 \
+         WHERE id = $1 AND organization_uuid IS DISTINCT FROM $2",
+    )
+    .bind(id)
+    .bind(org)
+    .execute(&state.pool)
+    .await
+    {
+        tracing::warn!(account = %id, "persist organization uuid failed: {e}");
+    }
 }
 
 /// A NULL expiry counts as stale (not fresh-forever) so an unbounded OAuth

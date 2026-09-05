@@ -51,6 +51,7 @@ import { SYSTEM_MACHINE_KINDS } from "./keys";
 import type {
   AccountProvider,
   AccountUsage,
+  LimitResetResponse,
   CreateAccount,
   CreateProvider,
   GrantShare,
@@ -311,6 +312,8 @@ export const endpoints = {
   /** Current subscription usage for an account. Free + tokenless;
    *  the server slow-refreshes a cache so polling never spams upstream. */
   accountUsage: (id: string) => api.get<AccountUsage>(`/accounts/${id}/usage`),
+  accountLimitReset: (id: string, creditId?: string | null) =>
+    api.post<LimitResetResponse>(`/accounts/${id}/limit-reset`, { credit_id: creditId ?? null }),
   /** Who an account is shared with. Owner-scoped server-side. */
   accountShares: (id: string) => api.get<ShareInfo[]>(`/accounts/${id}/shares`),
   grantShare: (id: string, body: GrantShare) =>

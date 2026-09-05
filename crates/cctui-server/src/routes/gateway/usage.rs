@@ -33,8 +33,58 @@ pub fn openai_usage_url() -> String {
         .unwrap_or_else(|_| "https://chatgpt.com/backend-api/wham/usage".into())
 }
 
+/// Codex's "Redeem usage limit reset" credits (`GET`), consumed via
+/// `POST {url}/consume {redeem_request_id, credit_id?}`.
+pub fn openai_reset_credits_url() -> String {
+    std::env::var("CCTUI_OPENAI_RESET_CREDITS_URL")
+        .unwrap_or_else(|_| "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits".into())
+}
+
+/// Normalize a `rate_limit_reset_credits` block (either the one embedded in
+/// `wham/usage` or the standalone endpoint's body, snake or camel case) to
+/// `{available_count, credits[{id, status, reset_type, granted_at, expires_at,
+/// title}]}`. `None` when the body carries no such block.
+pub fn map_reset_credits(body: &serde_json::Value) -> Option<serde_json::Value> {
+    let block = body
+        .get("rate_limit_reset_credits")
+        .or_else(|| body.get("rateLimitResetCredits"))
+        .unwrap_or(body);
+    let credits = block.get("credits")?.as_array()?;
+    let pick = |c: &serde_json::Value, snake: &str, camel: &str| {
+        c.get(snake).or_else(|| c.get(camel)).cloned().unwrap_or(serde_json::Value::Null)
+    };
+    let credits: Vec<_> = credits
+        .iter()
+        .map(|c| {
+            serde_json::json!({
+                "id": pick(c, "id", "id"),
+                "status": pick(c, "status", "status"),
+                "reset_type": pick(c, "reset_type", "resetType"),
+                "granted_at": pick(c, "granted_at", "grantedAt"),
+                "expires_at": pick(c, "expires_at", "expiresAt"),
+                "title": pick(c, "title", "title"),
+            })
+        })
+        .collect();
+    let available_count = block
+        .get("available_count")
+        .or_else(|| block.get("availableCount"))
+        .and_then(serde_json::Value::as_i64)
+        .unwrap_or_else(|| {
+            credits
+                .iter()
+                .filter(|c| {
+                    c.get("status").and_then(serde_json::Value::as_str) == Some("available")
+                })
+                .count()
+                .try_into()
+                .unwrap_or(i64::MAX)
+        });
+    Some(serde_json::json!({ "available_count": available_count, "credits": credits }))
+}
+
 /// Map the `ChatGPT` `wham/usage` body to our provider-agnostic `{five_hour,
-/// seven_day}` usage shape. `primary_window` is the 5h window,
+/// seven_day}` usage shape, plus `reset_credits` when the body embeds them. `primary_window` is the 5h window,
 /// `secondary_window` the 7d one; `used_percent` → `utilization`, `reset_at`
 /// (unix epoch seconds) → `resets_at` (rfc3339). Returns `None` if the body has
 /// no `rate_limit` or is missing either window, so the caller can fall back to the
@@ -52,7 +102,39 @@ pub fn map_wham_usage(body: &serde_json::Value) -> Option<serde_json::Value> {
     };
     let five_hour = window(rate_limit.get("primary_window")?);
     let seven_day = window(rate_limit.get("secondary_window")?);
-    Some(serde_json::json!({ "five_hour": five_hour, "seven_day": seven_day }))
+    let mut usage = serde_json::json!({ "five_hour": five_hour, "seven_day": seven_day });
+    if let Some(credits) = map_reset_credits(body) {
+        usage["reset_credits"] = credits;
+    }
+    Some(usage)
+}
+
+/// Standalone read of the account's reset credits, for a `wham/usage` body
+/// that did not embed them. Best-effort: `None` on any failure.
+pub async fn fetch_openai_reset_credits(
+    state: &AppState,
+    acct: &Account,
+    access_token: &str,
+) -> Option<serde_json::Value> {
+    let account_id = acct.provider_account_id.as_deref()?;
+    let resp = state
+        .http_client
+        .get(openai_reset_credits_url())
+        .header(reqwest::header::AUTHORIZATION, format!("Bearer {access_token}"))
+        .header("chatgpt-account-id", account_id)
+        .header(reqwest::header::ACCEPT, "*/*")
+        .send()
+        .await
+        .map_err(
+            |e| tracing::debug!(account = %acct.id, "openai reset credits transport error: {e}"),
+        )
+        .ok()?;
+    if !resp.status().is_success() {
+        tracing::debug!(account = %acct.id, status = %resp.status(), "openai reset credits rejected");
+        return None;
+    }
+    let body: serde_json::Value = resp.json().await.ok()?;
+    map_reset_credits(&body)
 }
 
 /// Fetch an OpenAI/codex account's real 5h/7d usage from `wham/usage`.
@@ -84,7 +166,13 @@ pub async fn fetch_openai_usage(state: &AppState, acct: &Account) -> Option<serd
         .await
         .map_err(|e| tracing::warn!(account = %acct.id, "openai usage decode error: {e}"))
         .ok()?;
-    map_wham_usage(&body)
+    let mut usage = map_wham_usage(&body)?;
+    if usage.get("reset_credits").is_none()
+        && let Some(credits) = fetch_openai_reset_credits(state, acct, &access_token).await
+    {
+        usage["reset_credits"] = credits;
+    }
+    Some(usage)
 }
 
 /// Whether the soft-limit check must refresh usage from upstream before deciding.
