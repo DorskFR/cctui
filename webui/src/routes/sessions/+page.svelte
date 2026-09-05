@@ -18,6 +18,7 @@
 	import { AutoGrid, Button, Callout, IconButton, Modal, Text } from '@dorsk/tsumikit';
 	import {
 		drafts,
+		clearSpawnSlot,
 		currentSpawnSlot,
 		readSpawnSlot,
 		LIST_DENSITY,
@@ -564,6 +565,7 @@
 		launchingDraft = s.id;
 		try {
 			await actions.launchDraft(s.id);
+			clearSpawnSlot(s.machine_id, s.working_dir);
 			toasts.ok(m.sessions_toast_draft_launched());
 		} catch (e) {
 			toasts.error(m.sessions_toast_launch_failed({ error: errMessage(e) }));
@@ -576,6 +578,7 @@
 		if (!confirm(m.sessions_confirm_discard_draft())) return;
 		try {
 			await actions.discardDraft(s.id);
+			clearSpawnSlot(s.machine_id, s.working_dir);
 			toasts.ok(m.sessions_toast_draft_discarded());
 		} catch (e) {
 			toasts.error(errMessage(e));

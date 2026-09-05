@@ -5,6 +5,7 @@
 	import { createAsyncStoragePersister } from '@tanstack/query-async-storage-persister';
 	import { get as idbGet, set as idbSet, del as idbDel } from 'idb-keyval';
 	import { qk } from '$lib/queries';
+	import { attachmentStore } from '$lib/attachmentStore';
 	import type { SessionListResponse } from '@bindings/SessionListResponse';
 	import { page } from '$app/state';
 	import { auth } from '$lib/auth.svelte';
@@ -80,10 +81,12 @@
 		}
 	};
 
-	// Restore-time reconciliation: drop persisted conversations whose session
-	// is archived or no longer in the restored list.
+	// Restore-time reconciliation: drop persisted conversations, and IndexedDB
+	// attachment records, whose session is archived or no longer in the
+	// restored list (plus, for attachments, anything long untouched).
 	function purgeStaleConversations() {
 		const live = queryClient.getQueryData<SessionListResponse>(qk.sessions(false));
+		void attachmentStore.sweep(live?.sessions ?? null);
 		if (!live) return;
 		const keep = new Set(live.sessions.filter((s) => s.status !== 'archived').map((s) => s.id));
 		for (const q of queryClient.getQueryCache().findAll({ queryKey: ['conversation'] })) {
