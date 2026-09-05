@@ -106,11 +106,9 @@ pub struct AppState {
     /// gate every successful passthrough would issue a conditional UPDATE.
     pub account_reauth: Arc<DashMap<Uuid, ()>>,
     /// Latest machine/account-scoped codex model catalog per machine,
-    /// keyed by `machine_id`. The daemon re-ships it on every connect, so an
-    /// in-memory cache is authoritative enough — a fresh row after a server
-    /// restart is simply absent until the next daemon poll, and the webui falls
-    /// back to its static offline model list meanwhile.
-    pub codex_catalogs: Arc<DashMap<Uuid, cctui_proto::codex_catalog::CodexModelCatalog>>,
+    /// keyed by `machine_id`. Read-through cache over `codex_model_catalogs`,
+    /// warmed on boot and written through on every daemon report.
+    pub codex_catalogs: Arc<DashMap<Uuid, crate::routes::codex_models::CachedCatalog>>,
     /// Rolling per-machine daemon-WS eviction counts; an escalation to
     /// ERROR when a machine flaps past the threshold is the eviction-loop alert.
     pub eviction_tracker: Arc<crate::bandwidth_watch::EvictionTracker>,

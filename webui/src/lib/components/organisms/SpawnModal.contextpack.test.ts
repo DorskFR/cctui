@@ -18,6 +18,7 @@ vi.mock('$lib/queries', () => {
 		useLabels: () => q({ labels: [] }),
 		useSessionActions: () => ({ dispatch, discardDraft: async () => {} }),
 		useCodexModels: () => q(null),
+		useMergedCodexModels: () => q(null),
 		useGitInfo: () => async () => ({ is_repo: false, is_worktree: false }),
 		useMachineDirs: () => q([]),
 		endpoints: { machineDirs: async () => [] }

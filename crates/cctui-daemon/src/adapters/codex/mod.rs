@@ -23,7 +23,7 @@
 //! Socket path: `$CCTUI_CODEX_SOCK`, defaulting to
 //! `$XDG_RUNTIME_DIR/cctui-codex.sock`.
 
-mod app_server;
+pub(crate) mod app_server;
 mod contract;
 mod log_tail;
 mod model_list;

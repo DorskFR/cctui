@@ -198,6 +198,13 @@ export const endpoints = {
    *  when none is cached yet — the picker falls back to its static list. */
   codexModels: (machineId: string) =>
     api.get<CodexModelCatalog>(`/machines/${machineId}/codex-models`),
+  /** Codex catalog merged across every machine (newest report wins) for
+   *  pickers with no machine in hand (dispatch, fork). */
+  codexModelsMerged: () => api.get<CodexModelCatalog>("/models/codex"),
+  /** Ask the machine's daemon to re-run codex `model/list`; the fresh
+   *  catalog lands asynchronously. */
+  refreshCodexModels: (machineId: string) =>
+    api.post<void>(`/machines/${machineId}/codex-models/refresh`),
   users: () => api.get<UserRow[]>("/admin/users"),
   machines: (userId: string) =>
     api.get<MachineRow[]>(`/admin/users/${userId}/machines`),

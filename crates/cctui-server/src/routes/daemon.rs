@@ -757,7 +757,7 @@ async fn process_frame(
             // machine_id — it is not a session event and never reaches the
             // per-session handler below.
             if let AdapterEvent::CodexModels { catalog } = event {
-                state.codex_catalogs.insert(machine_id, catalog);
+                crate::routes::codex_models::store_catalog(state, machine_id, catalog).await;
                 return Ok(());
             }
             tracing::debug!(

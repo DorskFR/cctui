@@ -132,6 +132,15 @@ export const useCodexModels = (machineId: () => string) =>
     retry: false,
   }));
 
+export const useMergedCodexModels = (enabled: () => boolean = () => true) =>
+  createQuery(() => ({
+    queryKey: ["codex-models", "merged"],
+    queryFn: () => endpoints.codexModelsMerged(),
+    enabled: enabled(),
+    staleTime: 60_000,
+    retry: false,
+  }));
+
 export const useSessionBindings = (sessionId: () => string, enabled: () => boolean = () => true) =>
   createQuery(() => ({
     queryKey: ["session-bindings", sessionId()],

@@ -1,23 +1,22 @@
-// Single source of truth for harness model + effort option lists.
-// The server has no model allowlist; these strings pass through verbatim.
+// Harness model + effort option lists. The server has no model allowlist;
+// these strings pass through verbatim, and every picker accepts a free-text id.
 import type { CodexModelCatalog } from '@bindings/CodexModelCatalog';
+
+// Select sentinel for the free-text "Other model…" entry; never a real id.
+export const OTHER_MODEL = '\u0000other';
 
 export interface ModelOption {
 	v: string;
 	label: string;
 }
 
-// Static offline fallback for codex. Used when the machine has no
-// live `model/list` catalog cached (daemon offline, older daemon, codex
-// missing). A machine-scoped catalog supersedes it via codexModelsFor/…Efforts.
+// Static offline fallback for codex, used only when no live `model/list`
+// catalog is known (daemon offline, older daemon, codex missing). Kept short on
+// purpose: the live catalog is the source of truth and free text covers the rest.
 export const codexModels: ModelOption[] = [
 	{ v: '', label: 'Default' },
-	{ v: 'gpt-5.6-sol', label: 'GPT-5.6 Sol' },
-	{ v: 'gpt-5.6-terra', label: 'GPT-5.6 Terra' },
-	{ v: 'gpt-5.6-luna', label: 'GPT-5.6 Luna' },
 	{ v: 'gpt-5.5', label: 'GPT-5.5' },
-	{ v: 'gpt-5.4', label: 'GPT-5.4' },
-	{ v: 'gpt-5.4-mini', label: 'GPT-5.4 Mini' }
+	{ v: 'gpt-5.4', label: 'GPT-5.4' }
 ];
 export const codexEfforts = ['', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 
@@ -59,3 +58,23 @@ export const claudeModels: ModelOption[] = [
 	{ v: 'fable', label: 'Fable' }
 ];
 export const claudeEfforts = ['', 'low', 'medium', 'high', 'xhigh', 'max'];
+
+// Reads a free-text model id: whitespace-trimmed, empty meaning "Default".
+export function customModelValue(text: string): string {
+	return text.trim();
+}
+
+// Keeps a value the option list doesn't know (a free-text or remembered id)
+// selectable by listing it as its own option.
+export function withCurrentModel(options: ModelOption[], current: string): ModelOption[] {
+	if (!current || options.some((o) => o.v === current)) return options;
+	return [...options, { v: current, label: current }];
+}
+
+// The live catalog to drive a codex picker with: the machine's own when it
+// has one, else the cross-machine merge, else nothing (static fallback).
+export function preferCatalog(
+	...catalogs: (CodexModelCatalog | undefined)[]
+): CodexModelCatalog | undefined {
+	return catalogs.find((c) => c?.models.length);
+}

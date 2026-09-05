@@ -5,12 +5,14 @@
 	// effort). The adapter picker chooses the claude or codex worker; the
 	// model/effort sets follow it.
 	import EffortSlider from './EffortSlider.svelte';
+	import ModelPicker from '$lib/components/molecules/ModelPicker.svelte';
 	import { Button, Field, Input, Select, Text, Textarea } from '@dorsk/tsumikit';
+	import { useMergedCodexModels } from '$lib/queries';
 	import {
 		claudeModels,
 		claudeEfforts,
-		codexModels,
-		codexEfforts,
+		codexModelsFor,
+		codexEffortsFor,
 		accountAdapters,
 		providerForAdapter,
 		isCompatibleProvider,
@@ -51,13 +53,19 @@
 	const selectedProvider = $derived(providerForAdapter(selectedAccount, adapter));
 	const accountModelOptions = $derived((selectedProvider?.models ?? []).map((m) => ({ v: m.model, label: m.label })));
 	const usesAccountModels = $derived(!!selectedProvider && isCompatibleProvider(selectedProvider.provider));
-	// Native families for the selected harness. Codex dispatch uses the static
-	// offline catalog (an ephemeral worker has no machine-scoped catalog); claude
-	// families are annotated with the account's alias targets.
+	// Native families for the selected harness. An ephemeral worker has no
+	// machine-scoped catalog, so codex dispatch reads the cross-machine merge
+	// (static offline list when empty); claude families are annotated with the
+	// account's alias targets.
+	const mergedCodexCatalog = useMergedCodexModels(() => isCodex);
 	const nativeModelOptions = $derived(
-		isCodex ? codexModels : withAliasTargets(claudeModels, selectedProvider?.model_aliases)
+		isCodex
+			? codexModelsFor(mergedCodexCatalog.data)
+			: withAliasTargets(claudeModels, selectedProvider?.model_aliases)
 	);
-	const nativeEfforts = $derived(isCodex ? codexEfforts : claudeEfforts);
+	const nativeEfforts = $derived(
+		isCodex ? codexEffortsFor(mergedCodexCatalog.data, form.model_codex) : claudeEfforts
+	);
 
 	$effect(() => {
 		if (form.account && !dispatchAccounts.some((a) => a.name === form.account)) {
@@ -151,18 +159,15 @@
 	<div class="grow">
 		<Field label={m.spawn_field_model()} for="sp-model">
 			{#if usesAccountModels}
-				<Select id="sp-model" bind:value={form.model_account}>
-					{#if !accountModelOptions.length}<option value="">{m.spawn_model_default()}</option>{/if}
-					{#each accountModelOptions as m (m.v)}<option value={m.v}>{m.label}</option>{/each}
-				</Select>
+				<ModelPicker
+					id="sp-model"
+					bind:value={form.model_account}
+					options={accountModelOptions.length ? accountModelOptions : [{ v: '', label: m.spawn_model_default() }]}
+				/>
 			{:else if isCodex}
-				<Select id="sp-model" bind:value={form.model_codex}>
-					{#each nativeModelOptions as m (m.v)}<option value={m.v}>{m.label}</option>{/each}
-				</Select>
+				<ModelPicker id="sp-model" bind:value={form.model_codex} options={nativeModelOptions} />
 			{:else}
-				<Select id="sp-model" bind:value={form.model_claude}>
-					{#each nativeModelOptions as m (m.v)}<option value={m.v}>{m.label}</option>{/each}
-				</Select>
+				<ModelPicker id="sp-model" bind:value={form.model_claude} options={nativeModelOptions} />
 			{/if}
 		</Field>
 	</div>

@@ -224,6 +224,12 @@ pub enum DaemonFrameDown {
     /// the server's stored transcript byte offset, so the daemon clamps its tail
     /// cursor forward and resumes instead of replaying the transcript from zero.
     ResumeMarks { session_marks: Vec<(String, u64)> },
+    /// Re-run codex `model/list` over a one-shot app-server (no session
+    /// spawned) and ship the result as an
+    /// [`AdapterEvent::CodexModels`](crate::adapter::AdapterEvent::CodexModels).
+    /// Fire-and-forget: the refreshed catalog arrives on the event stream like
+    /// a session-start refresh does.
+    RefreshCodexModels {},
 }
 
 /// Effective secret-scrub config synced to the daemon.
@@ -1147,6 +1153,14 @@ mod tests {
         let json = serde_json::to_string(&f).unwrap();
         assert!(json.contains(r#""type":"list_dirs""#));
         let _back: DaemonFrameDown = serde_json::from_str(&json).unwrap();
+    }
+
+    #[test]
+    fn daemon_frame_down_refresh_codex_models_roundtrips() {
+        let json = serde_json::to_string(&DaemonFrameDown::RefreshCodexModels {}).unwrap();
+        assert!(json.contains(r#""type":"refresh_codex_models""#));
+        let back: DaemonFrameDown = serde_json::from_str(&json).unwrap();
+        assert!(matches!(back, DaemonFrameDown::RefreshCodexModels {}));
     }
 
     #[test]

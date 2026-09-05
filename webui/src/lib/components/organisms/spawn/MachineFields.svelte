@@ -12,7 +12,10 @@
 	import type { MachineRow } from '@bindings/MachineRow';
 	import type { OAuthAccount } from '$lib/queries';
 	import type { AccountPoolView } from '@bindings/AccountPoolView';
-	import { useCodexModels, useGitInfo } from '$lib/queries';
+	import { useCodexModels, useMergedCodexModels, useGitInfo } from '$lib/queries';
+	import ModelPicker from '$lib/components/molecules/ModelPicker.svelte';
+	import CodexModelsRefresh from '$lib/components/molecules/CodexModelsRefresh.svelte';
+	import { preferCatalog } from '$lib/harnessModels';
 	import type { GitInfo } from '@bindings/GitInfo';
 	import BrandLogo from '$lib/components/atoms/BrandLogo.svelte';
 	import MachinePicker from '$lib/components/molecules/MachinePicker.svelte';
@@ -185,11 +188,13 @@
 		withAliasTargets(claudeModels, selectedProvider?.model_aliases)
 	);
 
-	// Machine-scoped codex catalog: the picker offers the account's
-	// real models + supported efforts, falling back to the static offline list.
-	const codexCatalog = useCodexModels(() => (effectiveAdapter === 'codex' ? form.machine_id : ''));
-	const codexModelOptions = $derived(codexModelsFor(codexCatalog.data));
-	const codexEffortOptions = $derived(codexEffortsFor(codexCatalog.data, form.model_codex));
+	// Codex catalog: the machine's own `model/list` report, else the
+	// cross-machine merge, else the static offline list.
+	const machineCodexCatalog = useCodexModels(() => (effectiveAdapter === 'codex' ? form.machine_id : ''));
+	const mergedCodexCatalog = useMergedCodexModels(() => effectiveAdapter === 'codex');
+	const codexCatalog = $derived(preferCatalog(machineCodexCatalog.data, mergedCodexCatalog.data));
+	const codexModelOptions = $derived(codexModelsFor(codexCatalog));
+	const codexEffortOptions = $derived(codexEffortsFor(codexCatalog, form.model_codex));
 
 	// Clear a stale account selection if it no longer exists (e.g. accounts
 	// reloaded); keep account_provider tracking the credential actually in use so
@@ -392,20 +397,18 @@
 			     a compatible endpoint, else the harness's native families. -->
 			<Field label={m.spawn_field_model()} for="sp-model">
 				{#if usesAccountModels}
-					<Select id="sp-model" bind:value={form.model_account}>
-						{#if !accountModelOptions.length}
-							<option value="">{m.spawn_model_default()}</option>
-						{/if}
-						{#each accountModelOptions as m (m.v)}<option value={m.v}>{m.label}</option>{/each}
-					</Select>
+					<ModelPicker
+						id="sp-model"
+						bind:value={form.model_account}
+						options={accountModelOptions.length ? accountModelOptions : [{ v: '', label: m.spawn_model_default() }]}
+					/>
 				{:else if effectiveAdapter === 'codex'}
-					<Select id="sp-model" bind:value={form.model_codex}>
-						{#each codexModelOptions as m (m.v)}<option value={m.v}>{m.label}</option>{/each}
-					</Select>
+					<div class="model-row">
+						<ModelPicker id="sp-model" bind:value={form.model_codex} options={codexModelOptions} />
+						{#if form.machine_id}<CodexModelsRefresh machineId={form.machine_id} />{/if}
+					</div>
 				{:else}
-					<Select id="sp-model" bind:value={form.model_claude}>
-						{#each claudeModelOptions as m (m.v)}<option value={m.v}>{m.label}</option>{/each}
-					</Select>
+					<ModelPicker id="sp-model" bind:value={form.model_claude} options={claudeModelOptions} />
 				{/if}
 			</Field>
 
@@ -456,6 +459,16 @@
 </div>
 
 <style>
+	.model-row {
+		display: flex;
+		align-items: flex-start;
+		gap: var(--sp-1);
+	}
+	.model-row > :global(:first-child) {
+		flex: 1;
+		min-width: 0;
+	}
+
 	.top-stack {
 		display: flex;
 		flex-direction: column;
@@ -480,6 +493,11 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--sp-3);
+	}
+	.acct-hint {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--sp-2);
 	}
 	.adapters {
 		display: grid;
