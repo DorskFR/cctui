@@ -45,7 +45,7 @@ describe("findTrigger", () => {
 });
 
 describe("mentionableSessions", () => {
-  it("keeps every bucket but done and drops archived, draft and self", () => {
+  it("keeps every bucket, done included, and drops archived, draft and self", () => {
     const list = [
       sess({ id: "w", bucket: "working" }),
       sess({ id: "b", bucket: "blocked" }),
@@ -59,11 +59,13 @@ describe("mentionableSessions", () => {
       "w",
       "b",
       "r",
+      "d",
     ]);
     expect(mentionableSessions(list).map((s) => s.id)).toEqual([
       "w",
       "b",
       "r",
+      "d",
       "me",
     ]);
   });
