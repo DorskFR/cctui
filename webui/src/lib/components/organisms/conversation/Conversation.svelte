@@ -102,9 +102,9 @@
 		onkeydown={scroll.markUserScroll}
 	>
 		{#if isLoading}
-			<div class="empty"><span class="spin"></span></div>
+			<div class="placeholder"><span class="spin"></span></div>
 		{:else if lines.length === 0 && stream.perms.length === 0 && !stream.ask && !stream.plan}
-			<div class="empty"><Text>{m.conversation_no_events()}</Text></div>
+			<div class="placeholder"><Text>{m.conversation_no_events()}</Text></div>
 		{/if}
 
 		{#if hiddenOlder > 0 || canFetchOlder}

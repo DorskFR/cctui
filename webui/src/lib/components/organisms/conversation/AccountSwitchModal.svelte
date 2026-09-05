@@ -5,7 +5,7 @@
 	// same family. Opened from the drawer key glyph, or auto-opened on a
 	// soft-limit block (the limited binding is highlighted and preselected).
 	// Switching is a pure server-side rebind: the worker keeps running.
-	import { Button, Field, Select, Heading, Text } from '@dorsk/tsumikit';
+	import { Button, Field, Modal, Select, Spinner, Text } from '@dorsk/tsumikit';
 	import type { SoftLimit } from '$lib/ws.svelte';
 	import {
 		useSessionBindings,
@@ -109,59 +109,55 @@
 	};
 </script>
 
-<div
-	class="acct-scrim"
-	role="button"
-	tabindex="-1"
-	aria-label={m.conversation_acct_close_aria()}
-	onclick={onclose}
-	onkeydown={(e) => e.key === 'Escape' && onclose()}
-></div>
-<div class="acct-modal" role="dialog" aria-modal="true" aria-label={m.conversation_acct_switch_aria()}>
-	{#if softLimit}
-		<Heading level={3}>{m.conversation_acct_soft_limit({ account: softLimit.account_name })}</Heading>
-		<Text as="p" tone="muted" size="sm">
-			{m.conversation_acct_soft_desc()}
-		</Text>
-	{:else}
-		<Heading level={3}>{m.conversation_acct_switch_title()}</Heading>
-		<Text as="p" tone="muted" size="sm">{m.conversation_acct_bindings_desc()}</Text>
-	{/if}
-
-	{#if bindings.isLoading}
-		<span class="spin"></span>
-	{:else if rows.length === 0}
-		<Text size="sm" tone="muted">{m.conversation_acct_no_bindings()}</Text>
-	{:else}
-		{#each rows as r (r.binding.family)}
-			{@const shown = shownCred(r)}
-			<div class="binding" class:limited={r.limited}>
-				<div class="binding-head">
-					<Text size="sm"><strong>{providerLabel(r.binding.family)}</strong> · {r.binding.account_name}</Text>
-					{#if r.limited}
-						<Text size="xs" tone="danger">{m.conversation_acct_limited()}</Text>
-					{/if}
-				</div>
-				{#if r.options.length}
-					<Field label={m.conversation_acct_field_label()}>
-						<Select bind:value={chosen[r.binding.family]} disabled={switching}>
-							<option value={KEEP}>{m.conversation_acct_keep({ account: r.binding.account_name })}</option>
-							{#each r.options as o (o.credId)}
-								<option value={o.credId}>{o.name}</option>
-							{/each}
-						</Select>
-					</Field>
-				{:else}
-					<Text size="xs" tone="muted">{m.conversation_acct_none()}</Text>
-				{/if}
-				<UsageBars id={shown.id} provider={shown.provider} softLimits={shown.softLimits} />
-			</div>
-		{/each}
-	{/if}
-	{#if error}
-		<Text size="xs" tone="danger">{error}</Text>
-	{/if}
-	<div class="acct-foot">
+<Modal
+	title={softLimit
+		? m.conversation_acct_soft_limit({ account: softLimit.account_name })
+		: m.conversation_acct_switch_title()}
+	tone={softLimit ? 'warn' : 'neutral'}
+	busy={switching}
+	{onclose}
+>
+	{#snippet body()}
+		<div class="acct-body">
+			<Text as="p" tone="muted" size="sm">
+				{softLimit ? m.conversation_acct_soft_desc() : m.conversation_acct_bindings_desc()}
+			</Text>
+			{#if bindings.isLoading}
+				<Spinner label={m.common_loading()} />
+			{:else if rows.length === 0}
+				<Text size="sm" tone="muted">{m.conversation_acct_no_bindings()}</Text>
+			{:else}
+				{#each rows as r (r.binding.family)}
+					{@const shown = shownCred(r)}
+					<div class="binding" class:limited={r.limited}>
+						<div class="binding-head">
+							<Text size="sm"><strong>{providerLabel(r.binding.family)}</strong> · {r.binding.account_name}</Text>
+							{#if r.limited}
+								<Text size="xs" tone="danger">{m.conversation_acct_limited()}</Text>
+							{/if}
+						</div>
+						{#if r.options.length}
+							<Field label={m.conversation_acct_field_label()}>
+								<Select bind:value={chosen[r.binding.family]} disabled={switching}>
+									<option value={KEEP}>{m.conversation_acct_keep({ account: r.binding.account_name })}</option>
+									{#each r.options as o (o.credId)}
+										<option value={o.credId}>{o.name}</option>
+									{/each}
+								</Select>
+							</Field>
+						{:else}
+							<Text size="xs" tone="muted">{m.conversation_acct_none()}</Text>
+						{/if}
+						<UsageBars id={shown.id} provider={shown.provider} softLimits={shown.softLimits} />
+					</div>
+				{/each}
+			{/if}
+			{#if error}
+				<Text size="xs" tone="danger">{error}</Text>
+			{/if}
+		</div>
+	{/snippet}
+	{#snippet footer()}
 		<Button size="sm" variant="ghost" onclick={onclose}>{m.common_close()}</Button>
 		{#if rows.some((r) => r.options.length)}
 			<Button
@@ -174,41 +170,21 @@
 				{m.conversation_acct_switch_btn()}
 			</Button>
 		{/if}
-	</div>
-</div>
+	{/snippet}
+</Modal>
 
 <style>
-	.acct-scrim {
-		position: fixed;
-		inset: 0;
-		z-index: 70;
-		background: rgba(0, 0, 0, 0.45);
-		border: none;
-	}
-	.acct-modal {
-		position: fixed;
-		z-index: 71;
-		top: 50%;
-		left: 50%;
-		transform: translate(-50%, -50%);
+	.acct-body {
 		display: flex;
 		flex-direction: column;
 		gap: var(--sp-3);
-		width: min(28rem, calc(100vw - 2rem));
-		max-height: calc(100vh - 4rem);
-		overflow-y: auto;
-		padding: var(--sp-4);
-		background: var(--bg-elevated);
-		border: 1px solid var(--border-strong);
-		border-radius: var(--r-lg, var(--r-md));
-		box-shadow: var(--shadow-lg, 0 8px 24px rgba(0, 0, 0, 0.5));
 	}
 	.binding {
 		display: flex;
 		flex-direction: column;
 		gap: var(--sp-2);
 		padding: var(--sp-3);
-		border: 1px solid var(--border-default);
+		border: 1px solid var(--border);
 		border-radius: var(--r-md);
 	}
 	.binding.limited {
@@ -219,25 +195,5 @@
 		align-items: center;
 		justify-content: space-between;
 		gap: var(--sp-2);
-	}
-	.acct-foot {
-		display: flex;
-		justify-content: flex-end;
-		gap: var(--sp-2);
-		margin-top: var(--sp-1);
-	}
-	.spin {
-		width: 1rem;
-		height: 1rem;
-		border: 2px solid var(--border-default);
-		border-top-color: var(--text-muted);
-		border-radius: 50%;
-		animation: spin 0.8s linear infinite;
-		align-self: center;
-	}
-	@keyframes spin {
-		to {
-			transform: rotate(360deg);
-		}
 	}
 </style>

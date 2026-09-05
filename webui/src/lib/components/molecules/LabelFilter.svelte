@@ -1,13 +1,13 @@
 <script lang="ts">
 	import type { Label } from '@bindings/Label';
-	import { Icon, IconButton } from '@dorsk/tsumikit';
+	import { Button, Icon } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 	import { clickOutside } from '$lib/clickOutside';
 	import LabelMenu from './LabelMenu.svelte';
 
 	// One square toolbar button that opens a popover of label toggles; a session
 	// shows when it carries ANY selected label (OR semantics). The menu
-	// body is the shared LabelMenu molecule; this wrapper owns the IconButton
+	// body is the shared LabelMenu molecule; this wrapper owns the
 	// trigger, the count badge and the open/close (clickOutside). `selected` is
 	// bindable so the parent owns persistence. Renders nothing until at least one
 	// label exists, so the caller doesn't have to guard.
@@ -56,17 +56,17 @@
 				{#if selected.size > 0}<span class="menu-count" aria-hidden="true">{selected.size}</span>{/if}
 			</button>
 		{:else}
-			<IconButton
-				variant="default"
-				class="btn-control-square"
-				icon="tag"
-				label={m.sessions_filter_by_label()}
+			<Button
+				square
+				aria-label={m.sessions_filter_by_label()}
 				title={selected.size > 0 ? m.sessions_filtering_by_labels({ count: selected.size }) : m.sessions_filter_by_label()}
 				aria-haspopup="true"
 				aria-expanded={open}
 				aria-pressed={selected.size > 0}
 				onclick={() => (open = !open)}
-			/>
+			>
+				<Icon name="tag" size={18} />
+			</Button>
 			{#if selected.size > 0}<span class="count-badge" aria-hidden="true">{selected.size}</span>{/if}
 		{/if}
 		{#if open}

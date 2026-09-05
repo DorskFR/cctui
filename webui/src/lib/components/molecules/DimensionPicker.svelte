@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Icon, Select } from '@dorsk/tsumikit';
+	import { Button, Icon, Select } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 	import { DIMENSIONS, type Dimension } from '../../../routes/sessions/sessions.logic';
 
@@ -27,12 +27,7 @@
 	);
 </script>
 
-<div
-	class="dim-picker {menu ? 'menu-row' : 'btn-control btn-control-square'}"
-	class:active
-	{title}
-	aria-label={title}
->
+{#snippet content()}
 	{#if kind === 'color'}
 		<Icon size={18}>
 			<circle cx="13.5" cy="6.5" r=".5" fill="currentColor" />
@@ -57,7 +52,19 @@
 			<option value={d.value}>{m.misc_dimension_option({ noun, label: d.label })}</option>
 		{/each}
 	</Select>
-</div>
+{/snippet}
+
+{#if menu}
+	<div class="dim-picker menu-row" class:active {title} aria-label={title}>
+		{@render content()}
+	</div>
+{:else}
+	<span class="dim-picker">
+		<Button square style={active ? 'color: var(--accent)' : undefined} {title} aria-label={title}>
+			{@render content()}
+		</Button>
+	</span>
+{/if}
 
 <style>
 	.dim-picker {
@@ -66,6 +73,8 @@
 		align-items: center;
 		justify-content: center;
 		flex: none;
+		overflow: hidden;
+		border-radius: var(--r-md);
 		white-space: nowrap;
 		cursor: pointer;
 	}
