@@ -107,3 +107,84 @@ export function applySettingsFilter(root: ParentNode, query: string): number {
 	}
 	return visible;
 }
+
+/** The routed Settings pages, in navigation order. */
+export const SETTINGS_PAGES = [
+	'appearance',
+	'sessions',
+	'execution',
+	'privacy',
+	'notifications',
+	'security',
+	'instance'
+] as const;
+
+export type SettingsPage = (typeof SETTINGS_PAGES)[number];
+
+export const DEFAULT_SETTINGS_PAGE: SettingsPage = 'appearance';
+
+/** Anchors older deep links point at, and the page that now owns them. */
+const HASH_ALIASES: Record<string, SettingsPage> = {
+	storage: 'instance',
+	version: 'instance',
+	'self-update': 'instance',
+	'net-stats': 'instance',
+	theme: 'appearance',
+	language: 'appearance',
+	spawn: 'sessions',
+	harness: 'execution',
+	redaction: 'privacy',
+	secrets: 'privacy',
+	notify: 'notifications',
+	passkeys: 'security'
+};
+
+export function isSettingsPage(slug: string | null | undefined): slug is SettingsPage {
+	return !!slug && (SETTINGS_PAGES as readonly string[]).includes(slug);
+}
+
+/** `/settings#passkeys` and friends keep working: hash → owning page. */
+export function pageForHash(hash: string | null | undefined): SettingsPage {
+	const id = (hash ?? '').replace(/^#/, '').trim().toLowerCase();
+	if (isSettingsPage(id)) return id;
+	return HASH_ALIASES[id] ?? DEFAULT_SETTINGS_PAGE;
+}
+
+export function settingsHref(page: SettingsPage): string {
+	return `/settings/${page}`;
+}
+
+export function pagerNeighbours(page: SettingsPage): {
+	prev: SettingsPage | null;
+	next: SettingsPage | null;
+} {
+	const i = SETTINGS_PAGES.indexOf(page);
+	return {
+		prev: i > 0 ? SETTINGS_PAGES[i - 1] : null,
+		next: i >= 0 && i < SETTINGS_PAGES.length - 1 ? SETTINGS_PAGES[i + 1] : null
+	};
+}
+
+/**
+ * First page still holding a visible row once `applySettingsFilter` has run
+ * over the whole tree — where the search box jumps to.
+ */
+export function firstMatchingPage(root: ParentNode): SettingsPage | null {
+	for (const el of root.querySelectorAll<HTMLElement>('[data-settings-page]')) {
+		const slug = el.dataset.settingsPage;
+		if (!isSettingsPage(slug)) continue;
+		for (const row of el.querySelectorAll<HTMLElement>('[data-setting-row]')) {
+			if (!isFiltered(row)) return slug;
+		}
+	}
+	return null;
+}
+
+export function firstMatchingRow(root: ParentNode, page: SettingsPage): HTMLElement | null {
+	const el = root.querySelector<HTMLElement>(`[data-settings-page="${page}"]`);
+	if (!el) return null;
+	for (const row of el.querySelectorAll<HTMLElement>('[data-setting-row]')) {
+		if (!isFiltered(row)) return row;
+	}
+	return null;
+}

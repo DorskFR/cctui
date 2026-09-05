@@ -1,14 +1,15 @@
 <script lang="ts">
-	// Sticky table of contents of the Settings screen: a filter box and one link
-	// per section, the active one marked by the scroll spy. On narrow screens it
-	// turns into a horizontally scrolling strip of pills under the header (the
-	// filter box moves to the page head there).
+	// Navigation of the Settings screen: a search box that reaches every page and
+	// one link per page — each entry is a route, the current one marked with an
+	// accent bar. On narrow screens it turns into a horizontally scrolling strip
+	// of pills above the content (the search box moves to the page head there).
 	import { Badge, Icon, Input, Text } from '@dorsk/tsumikit';
 	import NavLink from '$lib/components/atoms/NavLink.svelte';
+	import { settingsHref, type SettingsPage } from './settings.logic';
 	import { m } from '$lib/paraglide/messages';
 
 	export interface TocEntry {
-		id: string;
+		page: SettingsPage;
 		icon: string;
 		label: string;
 		admin?: boolean;
@@ -17,13 +18,11 @@
 	let {
 		entries,
 		active,
-		query = $bindable(''),
-		onpick
+		query = $bindable('')
 	}: {
 		entries: TocEntry[];
-		active: string;
+		active: SettingsPage;
 		query?: string;
-		onpick: (id: string) => void;
 	} = $props();
 </script>
 
@@ -33,26 +32,23 @@
 		<Input
 			type="search"
 			bind:value={query}
+			size="sm"
 			placeholder={m.settings_filter_placeholder()}
 			aria-label={m.settings_filter_placeholder()}
 			style="width:100%; padding-left: var(--sp-8)"
 		/>
 	</div>
-	{#each entries as e (e.id)}
+	{#each entries as e (e.page)}
 		<NavLink
-			href="#{e.id}"
+			href={settingsHref(e.page)}
 			class="toc-link"
-			aria-current={active === e.id ? 'location' : undefined}
-			onclick={(ev: MouseEvent) => {
-				ev.preventDefault();
-				onpick(e.id);
-			}}
+			aria-current={active === e.page ? 'page' : undefined}
 		>
-			<span class="toc-item" class:active={active === e.id} class:admin={e.admin}>
-				<span class="ico"><Text tone={active === e.id ? 'accent' : 'faint'}>{e.icon}</Text></span>
-				<Text size="sm" tone={active === e.id ? 'default' : 'muted'}>{e.label}</Text>
+			<span class="toc-item" class:active={active === e.page}>
+				<span class="ico"><Text tone={active === e.page ? 'accent' : 'faint'}>{e.icon}</Text></span>
+				<Text size="sm" tone={active === e.page ? 'default' : 'muted'}>{e.label}</Text>
 				{#if e.admin}
-					<span class="tag"><Badge size="sm" border>{m.settings_scope_admin()}</Badge></span>
+					<span class="tag"><Badge tone="warn" size="sm" border>{m.settings_scope_admin()}</Badge></span>
 				{/if}
 			</span>
 		</NavLink>
@@ -85,7 +81,7 @@
 		align-items: center;
 		gap: var(--sp-2);
 		padding: var(--sp-2) var(--sp-3);
-		border-radius: var(--r-md);
+		border-radius: var(--r-sm);
 		border-left: 2px solid transparent;
 	}
 	.toc-item:hover {
