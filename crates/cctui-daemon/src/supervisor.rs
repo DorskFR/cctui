@@ -435,6 +435,9 @@ impl Supervisor {
                     tracing::warn!("frame_up channel closed; dropping ListDirsResult");
                 }
             }
+            DaemonFrameDown::RefreshCodexModels {} => {
+                Self::spawn_codex_model_refresh(running, event_tx);
+            }
             DaemonFrameDown::GitInfo { request_id, path, include_dirty } => {
                 let roots = crate::git::default_roots();
                 let up = match crate::git::resolve_git_info(&path, &roots, include_dirty).await {
@@ -460,6 +463,30 @@ impl Supervisor {
             }
             _ => {}
         }
+    }
+
+    /// One-shot codex `model/list` off the frame loop; the catalog rides the
+    /// event stream like a session-start refresh.
+    fn spawn_codex_model_refresh(
+        running: &HashMap<String, AdapterRunning>,
+        event_tx: &mpsc::Sender<(String, AdapterEvent)>,
+    ) {
+        let Some(codex) = running.get("codex") else {
+            tracing::warn!("codex model refresh requested but the adapter is not running");
+            return;
+        };
+        let app = crate::adapters::codex::app_server::AppServerConfig::from_value(&codex.config);
+        let event_tx = event_tx.clone();
+        tokio::spawn(async move {
+            match crate::adapters::codex::app_server::fetch_model_catalog(&app).await {
+                Ok(catalog) => {
+                    let _ = event_tx
+                        .send(("codex".to_owned(), AdapterEvent::CodexModels { catalog }))
+                        .await;
+                }
+                Err(err) => tracing::warn!(%err, "codex model refresh failed"),
+            }
+        });
     }
 
     /// A file read may PUT up to 32 MiB to the blob store, so it runs off the

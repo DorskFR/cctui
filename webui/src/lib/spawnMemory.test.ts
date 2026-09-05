@@ -271,6 +271,20 @@ describe('latestEntryFor', () => {
 	});
 });
 
+describe('free-text model ids', () => {
+	it('round-trip through memory verbatim', () => {
+		const remembered = entryFromForm({
+			...fields({ model_codex: 'gpt-6-astra', model_claude: 'claude-opus-4-8' }),
+			account_provider: ''
+		});
+		expect(remembered.model_codex).toBe('gpt-6-astra');
+		expect(remembered.model_claude).toBe('claude-opus-4-8');
+		const patch = applyMemory(MACHINE_MEMORY_FIELDS, fields(), fields(), null, entry(remembered));
+		expect(patch.model_codex).toBe('gpt-6-astra');
+		expect(patch.model_claude).toBe('claude-opus-4-8');
+	});
+});
+
 describe('labelPrefill', () => {
 	const withLabels = (labels?: string[]) => entry({ labels });
 

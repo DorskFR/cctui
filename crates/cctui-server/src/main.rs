@@ -159,6 +159,8 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    routes::codex_models::warm_cache(&state).await;
+
     // Replica-aware WS presence: registered only when the pod knows
     // its routable IP; the heartbeat task keeps this pod's rows trusted and
     // reaps rows crashed pods left behind.
@@ -1088,6 +1090,22 @@ fn build_api_routes() -> Routes {
             get(routes::codex_models::get_codex_models),
             Authn::Bearer,
             Authz::Resource(ResourceKind::Machine, Action::Read, IdFrom::Path("machine_id")),
+        )
+        .add(
+            &[Method::POST],
+            "/machines/{machine_id}/codex-models/refresh",
+            "Ask the machine's daemon to re-run codex model/list.",
+            post(routes::codex_models::refresh_codex_models),
+            Authn::Bearer,
+            Authz::Resource(ResourceKind::Machine, Action::Read, IdFrom::Path("machine_id")),
+        )
+        .add(
+            &[GET],
+            "/models/codex",
+            "Codex model catalog merged across every machine (newest report wins).",
+            get(routes::codex_models::get_merged_codex_models),
+            Authn::Bearer,
+            Authenticated,
         )
         .add(
             &[GET],

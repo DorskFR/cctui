@@ -639,6 +639,69 @@ pub async fn run_thread_lifecycle(
     }
 }
 
+/// Fetch the codex model catalog over a one-shot stdio `codex app-server`.
+///
+/// Same pattern as [`run_thread_lifecycle`]: `initialize` → `initialized` →
+/// paginated `model/list`, then reap. No session is spawned and no gateway env
+/// is injected, so on a gateway-only machine codex may answer with its bundled
+/// fallback list; the caller ships whatever comes back.
+pub async fn fetch_model_catalog(app: &AppServerConfig) -> Result<CodexModelCatalog> {
+    let mut cmd = Command::new(&app.bin);
+    cmd.arg("app-server")
+        .arg("-c")
+        .arg(format!("sandbox_mode=\"{}\"", app.sandbox_mode))
+        .env("PATH", crate::childenv::child_path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    crate::childenv::ScrubChildEnv::scrub_child_env(&mut cmd);
+    let mut child = cmd.spawn()?;
+    let mut stdin = child.stdin.take().context("codex app-server stdin unavailable")?;
+    let stdout = child.stdout.take().context("codex app-server stdout unavailable")?;
+
+    let outcome = tokio::time::timeout(RPC_TIMEOUT, async {
+        let mut lines = BufReader::new(stdout).lines();
+        write_json(&mut stdin, &initialize_req()).await?;
+        write_json(&mut stdin, &initialized_notification()).await?;
+        let mut req_id = RUN_BASE;
+        write_json(&mut stdin, &model_list::model_list_req(req_id, None)).await?;
+        let mut models = Vec::new();
+        let mut pages = 0usize;
+        while let Some(line) = lines.next_line().await? {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let Ok(v) = serde_json::from_str::<Value>(trimmed) else { continue };
+            if v.get("id").and_then(Value::as_i64) != Some(req_id) {
+                continue;
+            }
+            let result = response_outcome(&v).map_err(|e| anyhow::anyhow!(e))?;
+            models.extend(model_list::parse_model_list(&result));
+            pages += 1;
+            match model_list::page_step(pages, &result) {
+                model_list::PageStep::Next { cursor } => {
+                    req_id += 1;
+                    write_json(&mut stdin, &model_list::model_list_req(req_id, Some(&cursor)))
+                        .await?;
+                }
+                model_list::PageStep::Done => return anyhow::Ok(CodexModelCatalog { models }),
+            }
+        }
+        anyhow::bail!("codex model/list response not received before EOF")
+    })
+    .await;
+
+    drop(stdin);
+    let _ = child.start_kill();
+    let _ = child.wait().await;
+
+    match outcome {
+        Err(_) => anyhow::bail!("codex model/list timed out"),
+        Ok(res) => res,
+    }
+}
+
 /// Build the `input` array for a turn. Staged image attachments ride
 /// as native `localImage` items so codex feeds the picture to the model; every
 /// other staged file keeps the path/text semantics — its absolute path is
@@ -3367,6 +3430,27 @@ done
         shutdown.cancel();
         assert!(ok, "{error:?}");
         assert!(marker.exists());
+    }
+
+    #[tokio::test]
+    async fn fetch_model_catalog_one_shot_never_starts_a_thread() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("started");
+        let (_bin_dir, bin) = fake_codex(&catalog_server_script(&marker));
+        let catalog = fetch_model_catalog(&AppServerConfig { bin, ..AppServerConfig::default() })
+            .await
+            .unwrap();
+        let ids: Vec<&str> = catalog.models.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, ["gpt-5-codex", "gpt-5-secret"]);
+        assert!(!marker.exists());
+    }
+
+    #[tokio::test]
+    async fn fetch_model_catalog_reports_a_dead_binary() {
+        let (_dir, bin) = fake_codex("#!/bin/sh\nexit 1\n");
+        fetch_model_catalog(&AppServerConfig { bin, ..AppServerConfig::default() })
+            .await
+            .unwrap_err();
     }
 
     #[test]

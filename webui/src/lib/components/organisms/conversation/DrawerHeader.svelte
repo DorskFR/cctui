@@ -23,8 +23,10 @@
 	import TokenUsage from '$lib/components/molecules/TokenUsage.svelte';
 	import LangfuseChip from '$lib/components/molecules/LangfuseChip.svelte';
 	import { Badge, Icon, IconButton, Input, Select, SelectButton, Text } from '@dorsk/tsumikit';
-	import { codexModelsFor, codexEffortsFor } from '$lib/harnessModels';
-	import { useCodexModels } from '$lib/queries';
+	import { codexModelsFor, codexEffortsFor, preferCatalog } from '$lib/harnessModels';
+	import { useCodexModels, useMergedCodexModels } from '$lib/queries';
+	import ModelPicker from '$lib/components/molecules/ModelPicker.svelte';
+	import CodexModelsRefresh from '$lib/components/molecules/CodexModelsRefresh.svelte';
 	import { m } from '$lib/paraglide/messages';
 
 	let {
@@ -108,13 +110,15 @@
 	let pendingModel = $state('');
 	let pendingEffort = $state('');
 
-	// Machine-scoped codex catalog: fetched only while the editor is
-	// open, offers the account's real models + supported efforts, static fallback.
-	const codexCatalog = useCodexModels(() =>
+	// Codex catalog, fetched only while the editor is open: the session
+	// machine's own report, else the cross-machine merge, else the static list.
+	const machineCodexCatalog = useCodexModels(() =>
 		isCodexSession && modelEditing ? session.machine_id : ''
 	);
-	const codexModelOptions = $derived(codexModelsFor(codexCatalog.data));
-	const codexEffortOptions = $derived(codexEffortsFor(codexCatalog.data, pendingModel));
+	const mergedCodexCatalog = useMergedCodexModels(() => isCodexSession && modelEditing);
+	const codexCatalog = $derived(preferCatalog(machineCodexCatalog.data, mergedCodexCatalog.data));
+	const codexModelOptions = $derived(codexModelsFor(codexCatalog));
+	const codexEffortOptions = $derived(codexEffortsFor(codexCatalog, pendingModel));
 
 	function doRename() {
 		const n = newName.trim();
@@ -328,9 +332,8 @@
 				     isn't a document-wide :global leak. -->
 				<span class="model-edit">
 					<Badge class="row" style="gap:var(--sp-1);padding:0.05rem var(--sp-1)">
-						<Select compact chevron={false} bind:value={pendingModel} aria-label={m.drawer_model_aria()}>
-							{#each codexModelOptions as opt (opt.v)}<option value={opt.v}>{opt.label}</option>{/each}
-						</Select>
+						<ModelPicker id="drawer-model" compact bind:value={pendingModel} options={codexModelOptions} aria-label={m.drawer_model_aria()} />
+						<CodexModelsRefresh machineId={session.machine_id} size={14} />
 						<Select compact chevron={false} bind:value={pendingEffort} aria-label={m.drawer_effort_aria()}>
 							{#each codexEffortOptions as e (e)}<option value={e}>{e || m.drawer_default_effort()}</option>{/each}
 						</Select>
