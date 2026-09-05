@@ -47,7 +47,7 @@
 	} from '$lib/spawnMemory';
 	import { appendFileTokens, mergeFiles, removeFileByName, fileCapError } from '$lib/attachments';
 	import { attachmentStore, dropMissingTokens } from '$lib/attachmentStore';
-	import { Button, Callout, Dropzone, Modal, SegmentedControl, resizeHandle } from '@dorsk/tsumikit';
+	import { AutoGrid, Button, Callout, Dropzone, Modal, OptionButton, resizeHandle, Text } from '@dorsk/tsumikit';
 	import { dialogBackdropGuard } from '$lib/dialogBackdropGuard';
 	import MachineFields from './spawn/MachineFields.svelte';
 	import DispatchFields from './spawn/DispatchFields.svelte';
@@ -733,12 +733,19 @@
 
 {#snippet targetSwitch()}
 	{#if canDispatch}
-		<SegmentedControl
-			size="sm"
-			label={m.spawn_run_on_label()}
-			options={targetOptions}
-			bind:value={() => target as string, (v) => (target = v === 'dispatch' ? 'dispatch' : 'machine')}
-		/>
+		<AutoGrid min="8rem" maxCols={2} gap="var(--sp-2)" role="radiogroup" aria-label={m.spawn_run_on_label()}>
+			{#each targetOptions as o (o.value)}
+				<OptionButton
+					row
+					selected={target === o.value}
+					role="radio"
+					aria-checked={target === o.value}
+					onclick={() => (target = o.value === 'dispatch' ? 'dispatch' : 'machine')}
+				>
+					<Text>{o.label}</Text>
+				</OptionButton>
+			{/each}
+		</AutoGrid>
 	{/if}
 {/snippet}
 
@@ -776,7 +783,6 @@
 	></div>
 		<div class="dock-head">
 			<span>{m.spawn_modal_title()}</span>
-			{@render targetSwitch()}
 		</div>
 		<div class="dock-body">{@render body()}</div>
 		<div class="dock-foot">{@render footer()}</div>
@@ -804,7 +810,7 @@
 				}
 			}}
 		>
-			{#if !docked && canDispatch}
+			{#if canDispatch}
 				<div class="switch-row">{@render targetSwitch()}</div>
 			{/if}
 			{#if target === 'dispatch'}
@@ -879,8 +885,7 @@
 		gap: var(--sp-3);
 	}
 	.switch-row {
-		display: flex;
-		justify-content: flex-end;
+		display: block;
 	}
 	.spawn-failure-detail {
 		margin: var(--sp-1) 0 0;

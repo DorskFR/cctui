@@ -134,7 +134,7 @@
 
 			<div class="switch-row">
 				<Text as="span" size="sm">{m.pools_failover()}</Text>
-				<Switch checked={failover} label={m.pools_failover()} onclick={() => (failover = !failover)} />
+				<Switch bind:checked={() => failover, (v) => (failover = v)} label={m.pools_failover()} />
 			</div>
 			<Text tone="faint" size="xs">{m.pools_failover_hint()}</Text>
 

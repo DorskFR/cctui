@@ -10,11 +10,10 @@
 <div class="usage-notices">
 	<div class="line">
 		<Switch
-			checked={value.enabled}
+			bind:checked={() => value.enabled, (v) => (value = { ...value, enabled: v })}
 			label={m.usage_notices_enabled()}
 			labelVisible
 			size="sm"
-			onclick={() => (value = { ...value, enabled: !value.enabled })}
 		/>
 		<span class="spacer"></span>
 		<label class="step" for={stepId}>

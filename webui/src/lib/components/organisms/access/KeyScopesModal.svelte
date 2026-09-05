@@ -60,10 +60,9 @@
 				>
 					<span class="scope-name"><Text as="span" size="sm" variant="code">{s}</Text></span>
 					<Switch
-						checked={picked.has(s)}
+						bind:checked={() => picked.has(s), () => toggle(s)}
 						label={s}
 						disabled={!allowed}
-						onclick={() => toggle(s)}
 					/>
 				</div>
 			{/each}

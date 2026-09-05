@@ -31,9 +31,8 @@
 	<SettingGroup>
 		<SettingRow label={m.settings_redaction_enable_label()} help={m.settings_redaction_enable_help()} server>
 			<Switch
-				checked={scrubEnabled}
+				bind:checked={() => scrubEnabled, (v) => settings.setSecretScrubEnabled(v)}
 				label={m.settings_redaction_enable_label()}
-				onclick={() => settings.setSecretScrubEnabled(!scrubEnabled)}
 			/>
 		</SettingRow>
 		<SettingRow

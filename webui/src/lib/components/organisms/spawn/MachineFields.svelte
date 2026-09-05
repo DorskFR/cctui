@@ -107,7 +107,6 @@
 
 <Input
 	id="sp-name"
-	size="sm"
 	aria-label={m.spawn_session_name_aria()}
 	placeholder={m.spawn_session_label_placeholder()}
 	bind:value={form.name}
@@ -115,7 +114,7 @@
 
 <Textarea
 	id="sp-prompt"
-	rows={4}
+	rows={10}
 	aria-label={m.spawn_prompt_label()}
 	placeholder={m.spawn_prompt_placeholder_chord({ chord: submitChordLabel() })}
 	bind:value={form.prompt}

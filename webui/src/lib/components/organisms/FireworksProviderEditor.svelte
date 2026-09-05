@@ -79,9 +79,8 @@
 	</Field>
 	<div class="switch-row">
 		<Switch
-			checked={affinity}
+			bind:checked={() => affinity, (v) => setAffinity(v)}
 			label={m.fireworks_affinity_label()}
-			onclick={() => setAffinity(!affinity)}
 		/>
 		<Text as="div" tone="faint" size="xs">{m.fireworks_affinity_help()}</Text>
 	</div>

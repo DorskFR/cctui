@@ -171,9 +171,8 @@
 					admin
 				>
 					<Switch
-						checked={passkeyCfg?.auto_prompt === true}
+						bind:checked={() => passkeyCfg?.auto_prompt === true, (v) => setPasskeyAutoPrompt(v)}
 						label={m.settings_passkeys_auto_prompt_label()}
-						onclick={() => setPasskeyAutoPrompt(passkeyCfg?.auto_prompt !== true)}
 					/>
 				</SettingRow>
 			</SettingGroup>
