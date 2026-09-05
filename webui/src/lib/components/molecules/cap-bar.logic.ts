@@ -23,6 +23,17 @@ export function resetIn(resets: string | null | undefined, now: number): string 
 	return countdown(at - now);
 }
 
+/** Largest unit only: the readout column holds "100% · resets 5d". */
+export function resetInShort(resets: string | null | undefined, now: number): string | null {
+	const at = resets ? Date.parse(resets) : Number.NaN;
+	if (!Number.isFinite(at) || at <= now) return null;
+	const mins = Math.max(1, Math.round((at - now) / 60_000));
+	if (mins < 60) return `${mins}m`;
+	const hours = Math.floor(mins / 60);
+	if (hours < 24) return `${hours}h`;
+	return `${Math.floor(hours / 24)}d`;
+}
+
 export function usdReadout(
 	amountUsd: number | null,
 	capUsd: number | null | undefined

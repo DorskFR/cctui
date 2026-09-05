@@ -3,7 +3,7 @@
 	import { m } from '$lib/paraglide/messages';
 	import type { UsagePace } from '$lib/queries';
 	import { countdown, paceState, wallInMs } from '$lib/components/molecules/usage-battery.logic';
-	import { capFromBar, capToBar, resetIn, usdPct, usdReadout } from './cap-bar.logic';
+	import { capFromBar, capToBar, resetIn, resetInShort, usdPct, usdReadout } from './cap-bar.logic';
 
 	// One usage window as a cap bar: consumption fill, draggable cap, readout.
 	// The same component renders the read-only usage view (`oncapchange`
@@ -46,23 +46,25 @@
 	);
 	const reported = $derived(usd ? amountUsd !== null : utilization !== null);
 	const now = Date.now();
-	// The readout sits in a fixed-width column, so it carries the percentage
-	// only; the reset countdown rides the caption line, which can wrap.
+	const resetText = $derived(usd || pct === null ? null : resetIn(resets, now));
+	const resetShort = $derived(usd || pct === null ? null : resetInShort(resets, now));
+	const readonly = $derived(usd || (!editable && !oncapchange));
+
+	// One line per window: label | track | "69% · resets 3h". Pace and the full
+	// countdown live in the row's tooltip; only a burn (flame) earns a glyph.
 	const readout = $derived.by(() => {
 		if (usd) return usdReadout(amountUsd, capUsd) ?? m.softlimit_not_reported();
 		if (pct === null) return m.softlimit_not_reported();
-		return `${pct}%`;
+		const base = resetShort ? `${pct}% · ${m.capbar_caption_resets({ time: resetShort })}` : `${pct}%`;
+		return paceKind === 'flame' ? `${base} 🔥` : base;
 	});
-	const resetText = $derived(usd || pct === null ? null : resetIn(resets, now));
-	const readonly = $derived(usd || (!editable && !oncapchange));
 
-	// The three-column bar (label | track | readout) only fits while the readout
-	// column can hold "100 % · resets 5d 12h" next to a track worth looking at.
-	// Below that the row goes dense: the window name takes its own line above a
-	// full-width track, so neither the name nor the reset countdown is clipped.
-	// Measured rather than a media query — the stats panel is drag-resizable.
-	const READOUT_W = '9.5rem';
-	const DENSE_BELOW_PX = 340;
+	// The three-column bar only fits while the readout column can hold
+	// "100% · resets 5d 🔥" next to a track worth looking at. Below that the
+	// window name takes its own line above a full-width track. Measured rather
+	// than a media query — the stats panel is drag-resizable.
+	const READOUT_W = '8rem';
+	const DENSE_BELOW_PX = 300;
 	let width = $state(0);
 	const dense = $derived(width > 0 && width < DENSE_BELOW_PX);
 
@@ -78,23 +80,25 @@
 		paceKind && pace ? Math.max(0, Math.min(100, Math.round(pace.expected_pct))) : null
 	);
 	const wallMs = $derived(paceKind ? wallInMs(pace, resets, now) : null);
-	const paceGlyph = $derived(paceKind === 'leaf' ? '🍃' : paceKind === 'flame' ? '🔥' : '•');
-	const paceTitle = $derived.by(() => {
-		if (!paceKind || expectedPct === null) return '';
-		const parts = [
-			paceKind === 'leaf'
-				? m.usage_battery_pace_leaf()
-				: paceKind === 'flame'
-					? m.usage_battery_pace_flame()
-					: m.usage_battery_pace_neutral(),
-			m.usage_battery_pace_expected({ expected: expectedPct })
-		];
-		if (wallMs !== null) parts.push(m.usage_battery_pace_wall({ time: countdown(wallMs) }));
+	const rowTitle = $derived.by(() => {
+		const parts: string[] = [];
+		if (resetText) parts.push(m.capbar_caption_resets({ time: resetText }));
+		if (paceKind && expectedPct !== null) {
+			parts.push(
+				paceKind === 'leaf'
+					? m.usage_battery_pace_leaf()
+					: paceKind === 'flame'
+						? m.usage_battery_pace_flame()
+						: m.usage_battery_pace_neutral(),
+				m.usage_battery_pace_expected({ expected: expectedPct })
+			);
+			if (wallMs !== null) parts.push(m.usage_battery_pace_wall({ time: countdown(wallMs) }));
+		}
 		return parts.join(' · ');
 	});
 </script>
 
-<div class="soft-limit" bind:clientWidth={width}>
+<div class="soft-limit" bind:clientWidth={width} title={rowTitle || undefined}>
 	{#if dense}
 		<div class="dense-label"><Text size="xs" tone="muted" truncate>{label}</Text></div>
 	{/if}
@@ -110,25 +114,7 @@
 		{readonly}
 		tooltip={readonly ? m.capbar_tooltip_readonly({ pct: barCap }) : m.capbar_tooltip({ pct: barCap })}
 		onchange={commit}
-	>
-		{#snippet caption()}
-			{#if resetText}
-				<Text as="span" size="xs" tone="faint">{m.capbar_caption_resets({ time: resetText })}</Text>
-			{/if}
-			{#if paceKind}
-				<Text
-					as="span"
-					size="xs"
-					tone={paceKind === 'flame' ? 'danger' : paceKind === 'leaf' ? 'success' : 'faint'}
-					title={paceTitle}
-					aria-label={paceTitle}
-				>
-					{paceGlyph}{#if wallMs !== null} {countdown(wallMs)}{/if}
-					{#if expectedPct !== null}· {m.usage_battery_pace_marker({ pct: expectedPct })}{/if}
-				</Text>
-			{/if}
-		{/snippet}
-	</CapBar>
+	/>
 
 	{#if editable}
 		<div class="controls">
