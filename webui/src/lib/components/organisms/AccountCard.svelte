@@ -21,6 +21,7 @@
 		canAddProvider = false,
 		canShare = false,
 		showOwner = false,
+		compact = false,
 		redirects = [],
 		redirectTargets = [],
 		onedit,
@@ -45,6 +46,8 @@
 		canAddProvider?: boolean;
 		canShare?: boolean;
 		showOwner?: boolean;
+		/** Read-only gauge view (the stats dock): no drag, redirects, menu, sharing or per-provider management. */
+		compact?: boolean;
 		redirects?: { id: string; family: string; targetName: string; until: string | null }[];
 		redirectTargets?: { id: string; name: string; families: string[] }[];
 		onedit?: () => void;
@@ -144,7 +147,7 @@
 
 <article class="acct" id={a.id}>
 	<header class="head">
-		{#if onmovepool && !managed}
+		{#if onmovepool && !managed && !compact}
 			<span
 				class="handle"
 				draggable="true"
@@ -165,7 +168,7 @@
 		{#if exhaustedText}
 			<span class="exhausted"><span class="dot"></span><Text as="span" size="xs" tone="danger">{exhaustedText}</Text></span>
 		{/if}
-		{#each redirects as r (r.id)}
+		{#each compact ? [] : redirects as r (r.id)}
 			<span class="redirect-badge">
 				<Text as="span" tone="faint" size="xs">{r.family}</Text>
 				<Text as="span" size="sm">{m.accounts_redirect_to({ target: r.targetName })}</Text>
@@ -178,7 +181,9 @@
 			</span>
 		{/each}
 		<span class="spacer"></span>
-		{#if managed}
+		{#if compact}
+			<!-- gauges only -->
+		{:else if managed}
 			<Text as="span" tone="faint" size="xs">{m.accounts_managed_readonly()}</Text>
 		{:else}
 			{#if onsetredirect && openTargets.length > 0}
@@ -235,8 +240,8 @@
 			<ProviderColumn
 				provider={p}
 				usageEnabled={enabled}
-				canManage={!p.managed}
-				canRemove={!p.managed}
+				canManage={!p.managed && !compact}
+				canRemove={!p.managed && !compact}
 				onedit={() => oneditprovider?.(p)}
 				onreauth={() => onreauthprovider?.(p)}
 				onremove={() => onremoveprovider?.(p)}
@@ -246,6 +251,7 @@
 		{/each}
 	</div>
 
+	{#if !compact}
 	<footer class="foot">
 		{#if canShare}
 			<Text as="span" size="xs" tone="muted">
@@ -264,6 +270,7 @@
 			{m.accounts_created()} <Timestamp value={a.created_at} mode="short-iso" mono tone="inherit" />
 		</Text>
 	</footer>
+	{/if}
 	{#if canShare && sharingOpen}
 		<div class="sharing">
 			<ResourceShares resourceType="account" id={a.id} noun={m.accounts_share_noun()} {enabled} />
