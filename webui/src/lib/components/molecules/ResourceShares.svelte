@@ -82,7 +82,11 @@
 		</ul>
 	{/if}
 	<div class="share-add">
-		<Input bind:value={grantee} placeholder={m.providers_share_input_placeholder()} />
+		<Input
+			bind:value={grantee}
+			placeholder={m.providers_share_input_placeholder()}
+			aria-label={m.a11y_share_user()}
+		/>
 		<Button disabled={busy} onclick={grant}>{busy ? m.providers_share_sharing() : m.providers_share_button()}</Button>
 	</div>
 </div>

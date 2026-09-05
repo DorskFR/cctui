@@ -3,7 +3,7 @@
 	// position. The blob-backed wrappers on `settings` drive the runtime
 	// theme/fontScale singletons AND persist, so this section and the header
 	// pickers share one round-tripping surface.
-	import { SegmentedControl, Select, Text } from '@dorsk/tsumikit';
+	import { SegmentedControl, Select, Switch, Text } from '@dorsk/tsumikit';
 	import type { SegmentOption } from '@dorsk/tsumikit';
 	import SettingGroup from '$lib/components/molecules/SettingGroup.svelte';
 	import SettingRow from '$lib/components/molecules/SettingRow.svelte';
@@ -43,7 +43,7 @@
 				{/each}
 			</Select>
 		</SettingRow>
-		<SettingRow label={m.settings_font_size_label()}>
+		<SettingRow label={m.settings_font_size_label()} selfLabelled>
 			<SegmentedControl
 				options={scaleOptions}
 				label={m.settings_font_size_label()}

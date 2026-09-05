@@ -330,6 +330,7 @@
 			<Input
 				bind:value={rawJson}
 				placeholder={'{ "editorMode": "vim" }'}
+				aria-label={m.a11y_advanced_json()}
 				mono
 				onkeydown={(e: KeyboardEvent) => e.key === 'Enter' && applyRawJson()}
 			/>

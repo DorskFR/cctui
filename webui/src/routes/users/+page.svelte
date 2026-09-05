@@ -127,8 +127,8 @@
 	<div class="empty"><span class="spin"></span></div>
 {:else}
 	<div class="picker">
-		<Field label={m.users_select_user()} for="user-select">
-			<Select id="user-select" bind:value={selectedId}>
+		<Field label={m.users_select_user()}>
+			<Select bind:value={selectedId}>
 				<option value="">{m.users_select_user_placeholder()}</option>
 				<optgroup label={m.users_group_active()}>
 					{#each active as u (u.id)}<option value={u.id}>{u.name}</option>{/each}
@@ -245,9 +245,10 @@
 		margin-bottom: var(--sp-4);
 	}
 	.whoami {
-		gap: var(--sp-2);
-		padding: var(--sp-2) var(--sp-3);
 		margin-bottom: var(--sp-4);
+	}
+	.whoami-row {
+		gap: var(--sp-2);
 		flex-wrap: wrap;
 		align-items: center;
 	}

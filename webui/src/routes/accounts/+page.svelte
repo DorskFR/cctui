@@ -492,7 +492,7 @@
 		try {
 			if (mode === 'edit-account' && editor?.accountId) {
 				if (!name.trim()) {
-					toasts.err(m.accounts_err_name_required());
+					toasts.error(m.accounts_err_name_required());
 					return;
 				}
 				const identity: UpdateAccount = { name: name.trim() };
@@ -867,8 +867,16 @@
 							<Text as="div" tone="muted" size="sm">{m.accounts_models_label()}</Text>
 							{#each modelRows as row, i (i)}
 								<div class="model-row">
-									<Input bind:value={row.model} placeholder={m.accounts_placeholder_model_code()} />
-									<Input bind:value={row.label} placeholder={m.accounts_placeholder_model_label()} />
+									<Input
+										bind:value={row.model}
+										placeholder={m.accounts_placeholder_model_code()}
+										aria-label={m.a11y_model_code()}
+									/>
+									<Input
+										bind:value={row.label}
+										placeholder={m.accounts_placeholder_model_label()}
+										aria-label={m.a11y_model_label()}
+									/>
 									<Button
 										variant="danger"
 										onclick={() => (modelRows = modelRows.filter((_, j) => j !== i))}
@@ -942,8 +950,16 @@
 							</Text>
 							{#each aliasRows as row, i (i)}
 								<div class="model-row">
-									<Input bind:value={row.alias} placeholder={m.accounts_placeholder_alias_name()} />
-									<Input bind:value={row.model} placeholder={m.accounts_placeholder_alias_model()} />
+									<Input
+										bind:value={row.alias}
+										placeholder={m.accounts_placeholder_alias_name()}
+										aria-label={m.a11y_alias_name()}
+									/>
+									<Input
+										bind:value={row.model}
+										placeholder={m.accounts_placeholder_alias_model()}
+										aria-label={m.a11y_alias_model()}
+									/>
 									<Button
 										variant="danger"
 										onclick={() => (aliasRows = aliasRows.filter((_, j) => j !== i))}>✕</Button
@@ -1020,7 +1036,7 @@
 									{m.accounts_move_help({ family: editingProvider.family })}
 								</Text>
 								<div class="move-row">
-									<Select bind:value={moveTarget}>
+									<Select bind:value={moveTarget} aria-label={m.accounts_move_label()}>
 										<option value="">{m.accounts_move_pick()}</option>
 										{#each moveTargets as t (t.id)}
 											<option value={t.id}>{t.name}</option>

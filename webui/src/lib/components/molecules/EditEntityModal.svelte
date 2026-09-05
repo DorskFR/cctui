@@ -63,8 +63,8 @@
 				save();
 			}}
 		>
-			<Field label={fieldLabel} for="edit-name" {hint}>
-				<Input id="edit-name" bind:value={name} bind:el={inputEl} {placeholder} />
+			<Field label={fieldLabel} {hint}>
+				<Input bind:value={name} bind:el={inputEl} {placeholder} />
 			</Field>
 			{#if color}
 				<Field label={m.users_badge_colour()}>

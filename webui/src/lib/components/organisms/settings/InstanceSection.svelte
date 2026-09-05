@@ -135,7 +135,7 @@
 				{m.settings_admin_instance_save()}
 			</Button>
 		</SettingRow>
-		<SettingRow label={m.settings_version_title()} help={m.settings_version_check_help()}>
+		<SettingRow label={m.settings_version_title()} help={m.settings_version_check_help()} selfLabelled>
 			<div class="ver">
 				{#if version.data}
 					<Text size="sm" variant="code">srv {version.data.version}</Text>
@@ -160,6 +160,7 @@
 				? `${m.settings_self_update_help()} ${m.settings_self_update_from_env()}`
 				: m.settings_self_update_help()}
 			wide
+			selfLabelled
 		>
 			<div class="su">
 				{#if allMachines.data}

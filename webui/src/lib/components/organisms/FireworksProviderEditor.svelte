@@ -92,11 +92,13 @@
 				<Input
 					value={row.model}
 					placeholder="accounts/fireworks/models/…"
+					aria-label={m.a11y_model_code()}
 					oninput={(e) => setField(i, 'model', (e.currentTarget as HTMLInputElement).value)}
 				/>
 				<Input
 					value={row.label}
 					placeholder={m.accounts_placeholder_model_label()}
+					aria-label={m.a11y_model_label()}
 					oninput={(e) => setField(i, 'label', (e.currentTarget as HTMLInputElement).value)}
 				/>
 				<Button variant="danger" onclick={() => removeModel(i)}>✕</Button>
