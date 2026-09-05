@@ -1,7 +1,6 @@
 <script lang="ts">
 	import type { UserTokenRow } from '@bindings/UserTokenRow';
-	import { Button, ConfirmModal, IconButton, Text, Timestamp } from '@dorsk/tsumikit';
-	import AccessTable, { type AccessColumn } from '$lib/components/molecules/AccessTable.svelte';
+	import { Button, type Column, ConfirmModal, DataTable, IconButton, Text, Timestamp } from '@dorsk/tsumikit';
 	import EditEntityModal from '$lib/components/molecules/EditEntityModal.svelte';
 	import RowActions from '$lib/components/molecules/RowActions.svelte';
 	import { useTokens, useUserActions } from '$lib/queries';
@@ -38,11 +37,10 @@
 	const groups = $derived(splitRevoked(all));
 	const rows = $derived(visibleRows(all, showRevoked));
 
-	const columns: AccessColumn[] = [
-		{ key: 'label', label: m.users_col_token(), width: 'minmax(0, 1.6fr)' },
-		{ key: 'status', label: m.users_col_status(), width: '96px' },
-		{ key: 'created', label: m.users_col_created(), width: 'minmax(0, 1fr)' },
-		{ key: 'actions', width: '56px' }
+	const columns: Column<UserTokenRow>[] = [
+		{ key: 'label', label: m.users_col_token(), role: 'title' },
+		{ key: 'status', label: m.users_col_status(), width: '7rem', role: 'meta' },
+		{ key: 'created', label: m.users_col_created(), width: '16rem', role: 'meta' }
 	];
 
 	function mint(label: string | null) {
@@ -58,15 +56,54 @@
 	}
 </script>
 
-<AccessTable
-	{columns}
-	{rows}
-	rowKey={(t) => t.id}
-	loading={tokens.isLoading}
-	empty={m.users_tokens_empty()}
-	dim={(t) => !!t.revoked_at}
->
-	{#snippet bar()}
+{#snippet colLabel(t: UserTokenRow)}
+	<span class="id">
+		<span class="nm">{t.label || m.users_unlabeled()}</span>
+		<span class="mono faint">{t.token_preview ?? '••••••••'}</span>
+	</span>
+{/snippet}
+{#snippet colStatus(t: UserTokenRow)}
+	<Text size="xs" tone={t.revoked_at ? 'danger' : 'muted'}>
+		{t.revoked_at ? m.users_badge_revoked() : m.users_badge_active()}
+	</Text>
+{/snippet}
+{#snippet colCreated(t: UserTokenRow)}
+	<span class="stamp">
+		<Timestamp value={t.created_at} mode="short-iso" mono size="xs" tone="faint" details={false} />
+		{#if t.expires_at}
+			<Text size="xs" tone="faint">{m.users_expires_prefix()}</Text>
+			<Timestamp value={t.expires_at} mode="short-iso" mono size="xs" tone="faint" details={false} />
+		{/if}
+	</span>
+{/snippet}
+{#snippet colActions(t: UserTokenRow)}
+	{#if canManage}
+		<RowActions>
+			{#if !t.revoked_at}
+				<IconButton
+					inline
+					icon="edit"
+					size={14}
+					label={m.users_relabel()}
+					title={m.users_relabel()}
+					onclick={() => (relabel = t)}
+				/>
+			{/if}
+			<IconButton
+				inline
+				hoverDanger
+				icon="trash"
+				size={14}
+				label={t.revoked_at ? m.common_delete() : m.users_revoke()}
+				title={t.revoked_at ? m.common_delete() : m.users_revoke()}
+				onclick={() => (dropTarget = t)}
+			/>
+		</RowActions>
+	{/if}
+{/snippet}
+
+<section class="tbl">
+	<div class="bar">
 		<Text size="xs" tone="faint"
 			>{m.access_counts({ active: groups.active.length, revoked: groups.revoked.length })}</Text
 		>
@@ -79,59 +116,22 @@
 		{#if canManage}
 			<Button variant="primary" size="sm" onclick={() => (mintOpen = true)}>{m.users_new_token()}</Button>
 		{/if}
-	{/snippet}
-
-	{#snippet row(t: UserTokenRow)}
-		<span class="id">
-			<span class="nm">{t.label || m.users_unlabeled()}</span>
-			<span class="mono faint">{t.token_preview ?? '••••••••'}</span>
-		</span>
-		<span class="status">
-			<Text size="xs" tone={t.revoked_at ? 'danger' : 'muted'}>
-				{t.revoked_at ? m.users_badge_revoked() : m.users_badge_active()}
-			</Text>
-		</span>
-		<span class="stamp">
-			<Timestamp value={t.created_at} mode="short-iso" mono size="xs" tone="faint" details={false} />
-			{#if t.expires_at}
-				<Text size="xs" tone="faint">{m.users_expires_prefix()}</Text>
-				<Timestamp
-					value={t.expires_at}
-					mode="short-iso"
-					mono
-					size="xs"
-					tone="faint"
-					details={false}
-				/>
-			{/if}
-		</span>
-		{#if canManage}
-			<RowActions>
-				{#if !t.revoked_at}
-					<IconButton
-						inline
-						icon="edit"
-						size={14}
-						label={m.users_relabel()}
-						title={m.users_relabel()}
-						onclick={() => (relabel = t)}
-					/>
-				{/if}
-				<IconButton
-					inline
-					hoverDanger
-					icon="trash"
-					size={14}
-					label={t.revoked_at ? m.common_delete() : m.users_revoke()}
-					title={t.revoked_at ? m.common_delete() : m.users_revoke()}
-					onclick={() => (dropTarget = t)}
-				/>
-			</RowActions>
-		{:else}
-			<span></span>
-		{/if}
-	{/snippet}
-</AccessTable>
+	</div>
+	<DataTable
+		{columns}
+		{rows}
+		rowKey={(t) => t.id}
+		responsive="stack"
+		style="border: 0; border-radius: 0"
+		loading={tokens.isLoading}
+		loadingLabel={m.common_loading()}
+		empty={m.users_tokens_empty()}
+		rowClass={(t) => (t.revoked_at ? 'row-dim' : undefined)}
+		rowActions={colActions}
+		rowActionsLabel={m.common_actions()}
+		cellSnippets={{ label: colLabel, status: colStatus, created: colCreated }}
+	/>
+</section>
 
 {#if mintOpen}
 	<EditEntityModal
@@ -170,6 +170,19 @@
 {/if}
 
 <style>
+	.tbl {
+		border: 1px solid var(--border);
+		border-radius: var(--r-md);
+		background: var(--bg-elevated);
+		overflow: hidden;
+	}
+	.bar {
+		display: flex;
+		align-items: center;
+		gap: var(--sp-3);
+		padding: var(--sp-3) var(--sp-4);
+		border-bottom: 1px solid var(--border);
+	}
 	.spacer {
 		flex: 1;
 	}
@@ -183,11 +196,11 @@
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
-	.status,
 	.stamp {
 		min-width: 0;
-		display: flex;
+		display: inline-flex;
 		align-items: center;
+		flex-wrap: wrap;
 		gap: var(--sp-1);
 	}
 	.mono {

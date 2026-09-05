@@ -255,7 +255,7 @@
 					{m.accounts_shared_none()}
 				{/if}
 			</Text>
-			<Button variant="link" size="sm" onclick={() => (sharingOpen = !sharingOpen)}>
+			<Button variant="link" size="sm" style="font-size: var(--fs-xs)" onclick={() => (sharingOpen = !sharingOpen)}>
 				{m.accounts_manage_sharing()}
 			</Button>
 		{/if}

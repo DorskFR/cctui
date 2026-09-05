@@ -27,13 +27,13 @@
 			<Text size="xs" tone="faint" uppercase style={TH}>{m.home_windows_col_volume()}</Text>
 		</div>
 		<div class="cell end">
-			<Text size="xs" tone="faint" uppercase nowrap style={TH}>↑ {m.home_usage_input()}</Text>
+			<Text size="xs" tone="faint" uppercase style={TH}>↑ {m.home_usage_input()}</Text>
 		</div>
 		<div class="cell end">
-			<Text size="xs" tone="faint" uppercase nowrap style={TH}>↓ {m.home_usage_output()}</Text>
+			<Text size="xs" tone="faint" uppercase style={TH}>↓ {m.home_usage_output()}</Text>
 		</div>
 		<div class="cell end">
-			<Text size="xs" tone="faint" uppercase nowrap style={TH}>⚡ {m.home_usage_cache()}</Text>
+			<Text size="xs" tone="faint" uppercase style={TH}>⚡ {m.home_usage_cache()}</Text>
 		</div>
 	</div>
 	{#each rows as r (r.key)}

@@ -2,6 +2,7 @@
 	import type { AccountProvider } from '$lib/queries';
 	import { compact } from '$lib/format';
 	import UsageBars from '$lib/components/molecules/UsageBars.svelte';
+	import LimitResetButton from '$lib/components/molecules/LimitResetButton.svelte';
 	import AdapterIcon from '$lib/components/atoms/AdapterIcon.svelte';
 	import { Button, IconButton, Text, Timestamp } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
@@ -77,6 +78,7 @@
 			{#if p.needs_reauth && native}
 				<Button size="sm" variant="primary" onclick={onreauth}>{m.providers_reauthenticate()}</Button>
 			{/if}
+			<LimitResetButton providerId={p.id} enabled={usageEnabled} />
 			<IconButton icon="settings" label={m.providers_edit()} inline size={14} onclick={onedit} />
 			{#if canRemove}
 				<IconButton
@@ -154,6 +156,7 @@
 	}
 	.stats {
 		display: flex;
+		justify-content: space-between;
 		gap: var(--sp-4);
 		margin-top: auto;
 		padding-top: var(--sp-1);

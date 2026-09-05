@@ -24,6 +24,11 @@
   color: var(--text-muted);
 }
 
+/* DataTable rowClass hook (revoked keys/tokens/machines). */
+.row-dim > td {
+  opacity: 0.55;
+}
+
 /* ---------- liveness dots ----------
  * Raw `.dot` spans in SessionDot / DrawerHeader; the kit's Dot atom is a
  * different, colour-driven indicator. */

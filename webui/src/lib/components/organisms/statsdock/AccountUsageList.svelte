@@ -3,6 +3,7 @@
 	import { compact } from '$lib/format';
 	import { providerLabel } from '$lib/providers';
 	import UsageBars from '$lib/components/molecules/UsageBars.svelte';
+	import LimitResetButton from '$lib/components/molecules/LimitResetButton.svelte';
 	import AdapterIcon from '$lib/components/atoms/AdapterIcon.svelte';
 	import AccountAvatar from '$lib/components/molecules/AccountAvatar.svelte';
 	import { Text, Timestamp } from '@dorsk/tsumikit';
@@ -37,6 +38,8 @@
 					<AccountAvatar emoji={r.emoji} name={r.account} id={r.accountId} size={16} decorative />
 					<Text as="span" size="sm" weight="semibold" truncate>{r.account}</Text>
 					<Text as="span" size="xs" tone="faint">{providerLabel(r.provider.provider)}</Text>
+					<span class="spacer"></span>
+					<LimitResetButton providerId={r.provider.id} />
 				</div>
 				<UsageBars id={r.provider.id} provider={r.provider.provider} softLimits={r.provider.soft_limits} />
 				<div class="meta">

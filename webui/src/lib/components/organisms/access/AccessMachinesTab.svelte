@@ -1,7 +1,15 @@
 <script lang="ts">
 	import type { MachineRow } from '@bindings/MachineRow';
-	import { Button, ConfirmModal, Dot, IconButton, Text, Timestamp } from '@dorsk/tsumikit';
-	import AccessTable, { type AccessColumn } from '$lib/components/molecules/AccessTable.svelte';
+	import {
+		Button,
+		type Column,
+		ConfirmModal,
+		DataTable,
+		Dot,
+		IconButton,
+		Text,
+		Timestamp
+	} from '@dorsk/tsumikit';
 	import EditEntityModal from '$lib/components/molecules/EditEntityModal.svelte';
 	import MachineBadge from '$lib/components/molecules/MachineBadge.svelte';
 	import RowActions from '$lib/components/molecules/RowActions.svelte';
@@ -31,13 +39,12 @@
 	const groups = $derived(splitRevoked(shown));
 	const rows = $derived(visibleRows(shown, showRevoked));
 
-	const columns: AccessColumn[] = [
-		{ key: 'machine', label: m.users_col_machine(), width: 'minmax(0, 1.2fr)' },
-		{ key: 'status', label: m.users_col_status(), width: 'minmax(0, 0.9fr)' },
-		{ key: 'seen', label: m.users_col_last_seen(), width: 'minmax(0, 0.9fr)' },
-		{ key: 'preview', label: m.access_col_preview(), width: 'minmax(0, 1.2fr)' },
-		{ key: 'kind', label: m.access_col_kind(), width: '80px' },
-		{ key: 'actions', width: '56px' }
+	const columns: Column<MachineRow>[] = [
+		{ key: 'machine', label: m.users_col_machine(), role: 'title' },
+		{ key: 'status', label: m.users_col_status(), width: '7rem', role: 'meta' },
+		{ key: 'seen', label: m.users_col_last_seen(), width: '8rem', role: 'meta' },
+		{ key: 'preview', label: m.access_col_preview(), width: '9rem', role: 'detail', hideBelow: 'md' },
+		{ key: 'kind', label: m.access_col_kind(), width: '6rem', role: 'meta', hideBelow: 'sm' }
 	];
 
 	const liveText = (mc: MachineRow) =>
@@ -64,15 +71,54 @@
 	}
 </script>
 
-<AccessTable
-	{columns}
-	{rows}
-	rowKey={(mc) => mc.id}
-	loading={machines.isLoading}
-	empty={m.users_machines_empty()}
-	dim={(mc) => !!mc.revoked_at}
->
-	{#snippet bar()}
+{#snippet colMachine(mc: MachineRow)}
+	<span class="lead">
+		<MachineBadge name={mc.display_name || mc.name} id={mc.id} hue={mc.hue} />
+	</span>
+{/snippet}
+{#snippet colStatus(mc: MachineRow)}
+	<span class="live">
+		<Dot status={liveDot(mc)} />
+		<Text size="xs" tone="muted">{liveText(mc)}</Text>
+	</span>
+{/snippet}
+{#snippet colSeen(mc: MachineRow)}
+	<Timestamp value={mc.last_seen_at} mode="relative" size="xs" tone="faint" details={false} />
+{/snippet}
+{#snippet colPreview(mc: MachineRow)}
+	<span class="mono faint">{mc.key_preview ?? '••••'}</span>
+{/snippet}
+{#snippet colKind(mc: MachineRow)}
+	<Text size="xs" tone="faint">{mc.kind}</Text>
+{/snippet}
+{#snippet colActions(mc: MachineRow)}
+	{#if canManage && mc.kind !== 'dispatch'}
+		<RowActions>
+			{#if !mc.revoked_at}
+				<IconButton
+					inline
+					icon="edit"
+					size={14}
+					label={m.users_edit_machine()}
+					title={m.users_edit_machine()}
+					onclick={() => (editMachine = mc)}
+				/>
+			{/if}
+			<IconButton
+				inline
+				hoverDanger
+				icon="trash"
+				size={14}
+				label={mc.revoked_at ? m.users_purge() : m.users_revoke()}
+				title={mc.revoked_at ? m.users_purge() : m.users_revoke()}
+				onclick={() => (dropTarget = mc)}
+			/>
+		</RowActions>
+	{/if}
+{/snippet}
+
+<section class="tbl">
+	<div class="bar">
 		<Text size="xs" tone="faint"
 			>{m.access_counts({ active: groups.active.length, revoked: groups.revoked.length })}</Text
 		>
@@ -85,48 +131,28 @@
 				{showRevoked ? m.access_hide_revoked() : m.access_show_revoked()}
 			</Button>
 		{/if}
-	{/snippet}
-
-	{#snippet row(mc: MachineRow)}
-		<span class="lead">
-			<MachineBadge name={mc.display_name || mc.name} id={mc.id} hue={mc.hue} />
-		</span>
-		<span class="live">
-			<Dot status={liveDot(mc)} />
-			<Text size="xs" tone="muted">{liveText(mc)}</Text>
-		</span>
-		<span class="stamp">
-			<Timestamp value={mc.last_seen_at} mode="relative" size="xs" tone="faint" details={false} />
-		</span>
-		<span class="mono faint">{mc.key_preview ?? '••••'}</span>
-		<span class="kind"><Text size="xs" tone="faint">{mc.kind}</Text></span>
-		{#if canManage && mc.kind !== 'dispatch'}
-			<RowActions>
-				{#if !mc.revoked_at}
-					<IconButton
-						inline
-						icon="edit"
-						size={14}
-						label={m.users_edit_machine()}
-						title={m.users_edit_machine()}
-						onclick={() => (editMachine = mc)}
-					/>
-				{/if}
-				<IconButton
-					inline
-					hoverDanger
-					icon="trash"
-					size={14}
-					label={mc.revoked_at ? m.users_purge() : m.users_revoke()}
-					title={mc.revoked_at ? m.users_purge() : m.users_revoke()}
-					onclick={() => (dropTarget = mc)}
-				/>
-			</RowActions>
-		{:else}
-			<span></span>
-		{/if}
-	{/snippet}
-</AccessTable>
+	</div>
+	<DataTable
+		{columns}
+		{rows}
+		rowKey={(mc) => mc.id}
+		responsive="stack"
+		style="border: 0; border-radius: 0"
+		loading={machines.isLoading}
+		loadingLabel={m.common_loading()}
+		empty={m.users_machines_empty()}
+		rowClass={(mc) => (mc.revoked_at ? 'row-dim' : undefined)}
+		rowActions={colActions}
+		rowActionsLabel={m.common_actions()}
+		cellSnippets={{
+			machine: colMachine,
+			status: colStatus,
+			seen: colSeen,
+			preview: colPreview,
+			kind: colKind
+		}}
+	/>
+</section>
 
 {#if editMachine}
 	{@const mc = editMachine}
@@ -158,6 +184,19 @@
 {/if}
 
 <style>
+	.tbl {
+		border: 1px solid var(--border);
+		border-radius: var(--r-md);
+		background: var(--bg-elevated);
+		overflow: hidden;
+	}
+	.bar {
+		display: flex;
+		align-items: center;
+		gap: var(--sp-3);
+		padding: var(--sp-3) var(--sp-4);
+		border-bottom: 1px solid var(--border);
+	}
 	.spacer {
 		flex: 1;
 	}
@@ -167,13 +206,9 @@
 		align-items: center;
 	}
 	.live {
-		display: flex;
+		display: inline-flex;
 		align-items: center;
 		gap: var(--sp-1);
-		min-width: 0;
-	}
-	.stamp,
-	.kind {
 		min-width: 0;
 	}
 	.mono {

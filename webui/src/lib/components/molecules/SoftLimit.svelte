@@ -64,7 +64,7 @@
 	// "100% · resets 5d 🔥" next to a track worth looking at. Below that the
 	// window name takes its own line above a full-width track. Measured rather
 	// than a media query — the stats panel is drag-resizable.
-	const READOUT_W = '8rem';
+	const READOUT_W = $derived(usd ? '7.5rem' : '6rem');
 	const DENSE_BELOW_PX = 300;
 	let width = $state(0);
 	const dense = $derived(width > 0 && width < DENSE_BELOW_PX);
@@ -103,7 +103,7 @@
 	<span class="readout">
 		{readoutText}{#if showReset && resets}
 			· <Timestamp value={resets} mode="relative" tone="inherit" details={false} />{/if}{#if paceKind === 'flame'}
-			🔥{/if}
+			{' '}🔥{/if}
 	</span>
 {/snippet}
 

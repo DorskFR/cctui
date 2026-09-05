@@ -1,7 +1,15 @@
 <script lang="ts">
 	import type { ApiKeyRow } from '@bindings/ApiKeyRow';
-	import { Button, ConfirmModal, Icon, IconButton, Text, Timestamp } from '@dorsk/tsumikit';
-	import AccessTable, { type AccessColumn } from '$lib/components/molecules/AccessTable.svelte';
+	import {
+		Button,
+		type Column,
+		ConfirmModal,
+		DataTable,
+		Icon,
+		IconButton,
+		Text,
+		Timestamp
+	} from '@dorsk/tsumikit';
 	import MachineBadge from '$lib/components/molecules/MachineBadge.svelte';
 	import RowActions from '$lib/components/molecules/RowActions.svelte';
 	import { useUserActions, useUserKeys } from '$lib/queries';
@@ -36,14 +44,12 @@
 	const groups = $derived(splitRevoked(all));
 	const rows = $derived(visibleRows(all, showRevoked));
 
-	const columns: AccessColumn[] = [
-		{ key: 'icon', width: '24px' },
-		{ key: 'label', label: m.access_col_key(), width: 'minmax(0, 1.3fr)' },
-		{ key: 'preview', label: m.access_col_preview(), width: 'minmax(0, 1fr)' },
-		{ key: 'scopes', label: m.access_col_scopes(), width: 'minmax(0, 1.6fr)' },
-		{ key: 'created', label: m.users_col_created(), width: '96px' },
-		{ key: 'used', label: m.users_col_last_used(), width: '88px' },
-		{ key: 'actions', width: '56px' }
+	const columns: Column<ApiKeyRow>[] = [
+		{ key: 'label', label: m.access_col_key(), role: 'title' },
+		{ key: 'preview', label: m.access_col_preview(), width: '9rem', role: 'detail', hideBelow: 'md' },
+		{ key: 'scopes', label: m.access_col_scopes(), role: 'meta' },
+		{ key: 'created', label: m.users_col_created(), width: '7rem', role: 'meta', hideBelow: 'sm' },
+		{ key: 'used', label: m.users_col_last_used(), width: '7rem', role: 'meta' }
 	];
 
 	function mint(label: string | null, scopes: string[]) {
@@ -64,15 +70,62 @@
 	}
 </script>
 
-<AccessTable
-	{columns}
-	{rows}
-	rowKey={(k) => k.id}
-	loading={keys.isLoading}
-	empty={m.access_keys_empty()}
-	dim={(k) => !!k.revoked_at}
->
-	{#snippet bar()}
+{#snippet colLabel(k: ApiKeyRow)}
+	<span class="lead">
+		<span class="glyph" title={k.kind}><Icon name={keyIcon(k.kind)} size={15} /></span>
+		{#if k.kind === 'machine'}
+			<MachineBadge name={k.label ?? k.id} id={k.id} hue={null} />
+		{:else}
+			<span class="nm">{k.label ?? m.users_unlabeled()}</span>
+		{/if}
+	</span>
+{/snippet}
+{#snippet colPreview(k: ApiKeyRow)}
+	<span class="mono faint">{k.key_preview ?? '••••'}</span>
+{/snippet}
+{#snippet colScopes(k: ApiKeyRow)}
+	<span class="scopes">
+		{#each scopeCells(k.scopes) as s (s.name)}
+			<span class:missing={!s.granted}>{s.name}</span>
+		{/each}
+	</span>
+{/snippet}
+{#snippet colCreated(k: ApiKeyRow)}
+	<Timestamp value={k.created_at} mode="short-iso" mono size="xs" tone="faint" details={false} />
+{/snippet}
+{#snippet colUsed(k: ApiKeyRow)}
+	{#if k.last_used_at}
+		<Timestamp value={k.last_used_at} mode="relative" size="xs" tone="faint" details={false} />
+	{:else}
+		<Text size="xs" tone="faint">{m.users_never_used()}</Text>
+	{/if}
+{/snippet}
+{#snippet colActions(k: ApiKeyRow)}
+	{#if canManage && !k.revoked_at}
+		<RowActions>
+			<IconButton
+				inline
+				icon="edit"
+				size={14}
+				label={m.access_edit_scopes()}
+				title={m.access_edit_scopes()}
+				onclick={() => (editKey = k)}
+			/>
+			<IconButton
+				inline
+				hoverDanger
+				icon="trash"
+				size={14}
+				label={m.users_revoke_key()}
+				title={m.users_revoke_key()}
+				onclick={() => (revokeTarget = k)}
+			/>
+		</RowActions>
+	{/if}
+{/snippet}
+
+<section class="tbl">
+	<div class="bar">
 		<Text size="xs" tone="faint"
 			>{m.access_counts({ active: groups.active.length, revoked: groups.revoked.length })}</Text
 		>
@@ -85,58 +138,28 @@
 		{#if canManage}
 			<Button variant="primary" size="sm" onclick={() => (mintOpen = true)}>{m.users_mint_key()}</Button>
 		{/if}
-	{/snippet}
-
-	{#snippet row(k: ApiKeyRow)}
-		<span class="glyph" title={k.kind}><Icon name={keyIcon(k.kind)} size={15} /></span>
-		<span class="lead">
-			{#if k.kind === 'machine'}
-				<MachineBadge name={k.label ?? k.id} id={k.id} hue={null} />
-			{:else}
-				<span class="nm">{k.label ?? m.users_unlabeled()}</span>
-			{/if}
-		</span>
-		<span class="mono faint">{k.key_preview ?? '••••'}</span>
-		<span class="scopes">
-			{#each scopeCells(k.scopes) as s (s.name)}
-				<span class:missing={!s.granted}>{s.name}</span>
-			{/each}
-		</span>
-		<span class="stamp">
-			<Timestamp value={k.created_at} mode="short-iso" mono size="xs" tone="faint" details={false} />
-		</span>
-		<span class="stamp">
-			{#if k.last_used_at}
-				<Timestamp value={k.last_used_at} mode="relative" size="xs" tone="faint" details={false} />
-			{:else}
-				<Text size="xs" tone="faint">{m.users_never_used()}</Text>
-			{/if}
-		</span>
-		{#if canManage && !k.revoked_at}
-			<RowActions>
-				<IconButton
-					inline
-					icon="edit"
-					size={14}
-					label={m.access_edit_scopes()}
-					title={m.access_edit_scopes()}
-					onclick={() => (editKey = k)}
-				/>
-				<IconButton
-					inline
-					hoverDanger
-					icon="trash"
-					size={14}
-					label={m.users_revoke_key()}
-					title={m.users_revoke_key()}
-					onclick={() => (revokeTarget = k)}
-				/>
-			</RowActions>
-		{:else}
-			<span></span>
-		{/if}
-	{/snippet}
-</AccessTable>
+	</div>
+	<DataTable
+		{columns}
+		{rows}
+		rowKey={(k) => k.id}
+		responsive="stack"
+		style="border: 0; border-radius: 0"
+		loading={keys.isLoading}
+		loadingLabel={m.common_loading()}
+		empty={m.access_keys_empty()}
+		rowClass={(k) => (k.revoked_at ? 'row-dim' : undefined)}
+		rowActions={colActions}
+		rowActionsLabel={m.common_actions()}
+		cellSnippets={{
+			label: colLabel,
+			preview: colPreview,
+			scopes: colScopes,
+			created: colCreated,
+			used: colUsed
+		}}
+	/>
+</section>
 
 {#if mintOpen}
 	<KeyScopesModal
@@ -174,6 +197,19 @@
 {/if}
 
 <style>
+	.tbl {
+		border: 1px solid var(--border);
+		border-radius: var(--r-md);
+		background: var(--bg-elevated);
+		overflow: hidden;
+	}
+	.bar {
+		display: flex;
+		align-items: center;
+		gap: var(--sp-3);
+		padding: var(--sp-3) var(--sp-4);
+		border-bottom: 1px solid var(--border);
+	}
 	.spacer {
 		flex: 1;
 	}
@@ -186,6 +222,7 @@
 		min-width: 0;
 		display: flex;
 		align-items: center;
+		gap: var(--sp-2);
 	}
 	.nm {
 		font-weight: var(--fw-medium);
@@ -213,8 +250,5 @@
 	.scopes .missing {
 		color: var(--text-faint);
 		text-decoration: line-through;
-	}
-	.stamp {
-		min-width: 0;
 	}
 </style>
