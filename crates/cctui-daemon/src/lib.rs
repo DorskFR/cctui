@@ -33,4 +33,5 @@ pub mod selfupdate;
 pub mod sendguard;
 pub mod service;
 pub mod supervisor;
+pub mod updatehook;
 pub mod whipstop;

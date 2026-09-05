@@ -13,5 +13,6 @@ pub mod identity;
 pub mod ids;
 pub mod media;
 pub mod models;
+pub mod updatehook;
 pub mod util;
 pub mod ws;

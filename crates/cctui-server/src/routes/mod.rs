@@ -36,4 +36,5 @@ pub mod spawn;
 pub mod spawn_child;
 pub mod stats;
 pub mod triggers;
+pub mod update_hook;
 pub mod web;

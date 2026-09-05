@@ -246,6 +246,12 @@ async fn main() -> anyhow::Result<()> {
             put(routes::blobs::put_blob)
                 .layer(DefaultBodyLimit::max(routes::blobs::MAX_BLOB_BYTES + 1024 * 1024)),
         )
+        // Update-hook endpoints. Machine-key Bearer self-auth like the blob
+        // upload above, so they live outside the user-token `api_router`: a
+        // daemon has no user token, and the health probe below is what tells
+        // it whether the update it just ran actually took.
+        .route("/api/v1/daemon/version", get(routes::update_hook::daemon_version))
+        .route("/api/v1/daemon/update-hook/{run_id}", post(routes::update_hook::report))
         // Enrolled-dispatcher endpoints. Carry their own key auth
         // (dispatcher-key Bearer / `?token=`), so they live outside the
         // user-token `api_router` group, like the daemon endpoints.
@@ -389,10 +395,18 @@ fn build_api_routes() -> Routes {
         .add(
             &[Method::POST],
             "/version/self-update",
-            "Spawn a YOLO agent on the configured machine to deploy the newer release (admin).",
+            "Deploy the newer release: the machine's own update hook when it has one, a YOLO agent otherwise (admin).",
             post(routes::self_update::launch),
             Authn::Bearer,
             ScopeAz(auth::Scope::Admin),
+        )
+        .add(
+            &[GET],
+            "/version/self-update",
+            "The most recent update-hook run and where it got to.",
+            get(routes::self_update::status),
+            Authn::Bearer,
+            Authenticated,
         )
         .add(
             &[Method::POST],

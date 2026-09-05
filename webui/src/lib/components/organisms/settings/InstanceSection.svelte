@@ -228,6 +228,7 @@
 		latestVersion={version.data.latest_version}
 		latestUrl={version.data.latest_url ?? version.data.repo_url}
 		selfUpdateReady={version.data.self_update_ready}
+		selfUpdateHook={version.data.self_update_hook}
 		onclose={() => (updateOpen = false)}
 	/>
 {/if}

@@ -9,7 +9,7 @@ use crate::state::AppState;
 use crate::update_check;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
-const GIT_HASH: &str = env!("CCTUI_GIT_HASH");
+pub const GIT_HASH: &str = env!("CCTUI_GIT_HASH");
 const REPO_URL: &str = "https://github.com/DorskFR/cctui";
 
 #[derive(Serialize, ts_rs::TS)]
@@ -27,10 +27,14 @@ pub struct VersionInfo {
     pub latest_url: Option<String>,
     /// Admin-set deployment label (`PUT /admin/instance`); `null` by default.
     pub instance_name: Option<String>,
-    /// Whether an admin can launch the self-update agent from here: a
-    /// self-update machine is configured (settings or env). Everyone sees the
-    /// flag, only admins get the button; the machine itself stays admin-only.
+    /// Whether an admin can launch a self-update from here: a self-update
+    /// machine is configured (settings or env). Everyone sees the flag, only
+    /// admins get the button; the machine itself stays admin-only.
     pub self_update_ready: bool,
+    /// Whether that machine has a deterministic update hook
+    /// (`CCTUI_UPDATE_COMMAND`), so the update runs the operator's own command
+    /// instead of a YOLO agent. Drives what the update modal promises.
+    pub self_update_hook: bool,
 }
 
 #[derive(Serialize, ts_rs::TS)]
@@ -81,7 +85,14 @@ async fn info(state: &AppState) -> VersionInfo {
     };
     let latest = state.update_check.newer().await;
     let instance_name = instance::read_name(&state.pool).await;
-    let self_update_ready = instance::read_self_update_target(&state.pool).await.target.is_some();
+    let self_update_target = instance::read_self_update_target(&state.pool).await.target;
+    let self_update_ready = self_update_target.is_some();
+    let self_update_hook = match self_update_target
+        .and_then(|t| uuid::Uuid::parse_str(&t.machine_id).ok())
+    {
+        Some(machine) => crate::routes::update_hook::machine_has_hook(&state.pool, machine).await,
+        None => false,
+    };
     VersionInfo {
         version: VERSION,
         git_hash: GIT_HASH,
@@ -91,5 +102,6 @@ async fn info(state: &AppState) -> VersionInfo {
         latest_url: latest.map(|l| l.url),
         instance_name,
         self_update_ready,
+        self_update_hook,
     }
 }
