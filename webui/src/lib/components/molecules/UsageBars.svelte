@@ -2,7 +2,7 @@
 	import type { SoftLimitConfig } from '$lib/queries';
 	import { useAccountUsage } from '$lib/queries';
 	import { useLimitReset } from '$lib/queries';
-	import { Button, Text, Tooltip } from '@dorsk/tsumikit';
+	import { Button, Modal, Text, Tooltip } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 	import { toasts } from '$lib/toast.svelte';
 	import { errMessage } from '$lib/api';
@@ -41,8 +41,10 @@
 	const reset = $derived(q.data?.limit_reset ?? null);
 	const claim = useLimitReset();
 	let claiming = $state(false);
+	let confirming = $state(false);
 	async function onreset() {
 		if (!reset || claiming) return;
+		confirming = false;
 		claiming = true;
 		try {
 			const r = await claim(id, reset.credit_id);
@@ -94,10 +96,26 @@
 		{#if reset}
 			<div class="reset">
 				{#if reset.available}
-					<Button size="sm" onclick={onreset} loading={claiming}>
+					<Button size="sm" onclick={() => (confirming = true)} loading={claiming}>
 						{limitResetLabel(reset)}
 					</Button>
 				{:else}
+					{#if confirming}
+						<Modal
+							title={m.sessions_limit_reset_confirm_title()}
+							tone="warn"
+							size="sm"
+							onclose={() => (confirming = false)}
+						>
+							{#snippet body()}
+								<Text>{m.sessions_limit_reset_confirm_body({ title: reset.title ?? m.sessions_limit_reset() })}</Text>
+							{/snippet}
+							{#snippet footer()}
+								<Button variant="ghost" onclick={() => (confirming = false)}>{m.sessions_limit_reset_cancel()}</Button>
+								<Button tone="warn" onclick={onreset}>{m.sessions_limit_reset_confirm()}</Button>
+							{/snippet}
+						</Modal>
+					{/if}
 					<Tooltip text={limitResetHint(reset)}>
 						{#snippet trigger()}
 							<span class="reset-trigger">
