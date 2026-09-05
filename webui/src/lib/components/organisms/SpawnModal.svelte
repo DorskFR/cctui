@@ -46,6 +46,7 @@
 		AutoGrid,
 		Badge,
 		Button,
+		Callout,
 		Dropzone,
 		FileButton,
 		Icon,
@@ -1050,10 +1051,9 @@
 {/snippet}
 {#snippet footer()}
 	{#if spawnFailure}
-		<div class="spawn-failure" role="alert">
-			<Text as="div" tone="danger" size="sm">{m.spawn_failure_inline()}</Text>
+		<Callout tone="danger" title={m.spawn_failure_inline()} style="flex-basis:100%">
 			<pre class="spawn-failure-detail">{spawnFailure}</pre>
-		</div>
+		</Callout>
 	{/if}
 	<Button size="lg" onclick={clearForm}>{m.spawn_clear()}</Button>
 	{#if target === 'machine'}
@@ -1067,9 +1067,6 @@
 {/snippet}
 
 <style>
-	.spawn-failure {
-		flex-basis: 100%;
-	}
 	.spawn-failure-detail {
 		margin: var(--sp-1) 0 0;
 		max-height: 8rem;

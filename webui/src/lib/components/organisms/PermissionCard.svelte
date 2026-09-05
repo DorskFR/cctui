@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { renderMarkdown } from '$lib/markdown';
 	import type { PermReq } from '$lib/ws.svelte';
-	import { Badge, Button, Text } from '@dorsk/tsumikit';
+	import { Badge, Button, Card, Text } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 
 	let {
@@ -23,7 +23,7 @@
 	});
 </script>
 
-<div class="perm">
+<Card tone="attention" padding="sm" gap="var(--sp-2)">
 	<div class="row">
 		<Badge tone="warn">{m.permission_badge()}</Badge>
 		<Text variant="code" weight="semibold" truncate>{req.tool_name}</Text>
@@ -36,18 +36,9 @@
 		<Button variant="danger" block onclick={() => onrespond(req.request_id, false)}>{m.permission_deny()}</Button>
 		<Button variant="primary" block onclick={() => onrespond(req.request_id, true)}>{m.permission_allow()}</Button>
 	</div>
-</div>
+</Card>
 
 <style>
-	.perm {
-		background: var(--attention-bg);
-		border: 1px solid var(--attention-bar);
-		border-radius: var(--r-md);
-		padding: var(--sp-3);
-		display: flex;
-		flex-direction: column;
-		gap: var(--sp-2);
-	}
 	.prev {
 		max-height: 8rem;
 		overflow: auto;

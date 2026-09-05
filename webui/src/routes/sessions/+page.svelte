@@ -15,7 +15,7 @@
 	import StatsDock from '$lib/components/organisms/statsdock/StatsDock.svelte';
 	import SessionControls from '$lib/components/organisms/SessionControls.svelte';
 	import KanbanBoard from '$lib/components/organisms/KanbanBoard.svelte';
-	import { AutoGrid, Button, IconButton, Modal, Text } from '@dorsk/tsumikit';
+	import { AutoGrid, Button, Callout, IconButton, Modal, Text } from '@dorsk/tsumikit';
 	import {
 		drafts,
 		currentSpawnSlot,
@@ -944,7 +944,7 @@
 
 {#snippet loadMore()}
 	{#if pageError}
-		<div class="empty err"><Text tone="danger">{m.sessions_search_failed({ error: pageError })}</Text></div>
+		<Callout tone="danger">{m.sessions_search_failed({ error: pageError })}</Callout>
 	{:else if pageLoading}
 		<div class="loadmore"><span class="spin"></span></div>
 		{:else if !pageDone && pageRows.length > 0}

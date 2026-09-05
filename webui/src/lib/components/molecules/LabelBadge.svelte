@@ -63,16 +63,11 @@
 </script>
 
 {#if labels.length > 0 || editable}
-	<!-- Swallow clicks/keys so interacting with labels never taps the parent
-	     session card (the row is a clickable Card). svelte-ignore: the span is a
-	     pure event boundary, not itself an interactive control. -->
-	<!-- svelte-ignore a11y_no_static_element_interactions -->
-	<span
-		class="labels"
-		onpointerdown={(e) => e.stopPropagation()}
-		onclick={(e) => e.stopPropagation()}
-		onkeydown={(e) => e.stopPropagation()}
-	>
+	<!-- Swallow clicks so tapping a label chip never opens the parent session
+	     Card (keys are already ignored there when they come from a nested
+	     control). svelte-ignore: the span is a pure event boundary. -->
+	<!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
+	<span class="labels" onpointerdown={(e) => e.stopPropagation()} onclick={(e) => e.stopPropagation()}>
 		{#each labels as l (l.id)}
 			<Badge
 				class="label"

@@ -88,7 +88,7 @@
 </script>
 
 <div class="login">
-	<Card as="form" class="stack" style="width:100%;max-width:22rem" onsubmit={submit}>
+	<Card as="form" class="stack" maxWidth="22rem" onsubmit={submit}>
 		<Text size="xl" weight="bold" class="brand"><Text variant="code" tone="accent">»_</Text> cctui</Text>
 		<Text as="p" tone="muted">{m.login_subtitle()}</Text>
 		<Field label={m.login_token_label()} for="token">

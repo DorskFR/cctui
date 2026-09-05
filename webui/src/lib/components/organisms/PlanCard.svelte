@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { renderMarkdown } from '$lib/markdown';
-	import { Button, Heading, Text } from '@dorsk/tsumikit';
+	import { Button, Card, Heading, Text } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 
 	let {
@@ -57,7 +57,13 @@
 	}
 </script>
 
-<div class="plan" class:done={!live}>
+<Card
+	tone={live ? 'attention' : 'neutral'}
+	surface={live ? 'base' : 'raised'}
+	padding="sm"
+	gap="var(--sp-3)"
+	style="margin:var(--sp-2) 0{live ? '' : ';opacity:0.7'}"
+>
 	<Heading level={3} size="sm">{m.plan_heading()}</Heading>
 	<div class="plan-body">{@html renderMarkdown(plan)}</div>
 	{#if live}
@@ -81,28 +87,13 @@
 			{/if}
 		</div>
 	{:else if submitted && interactive}
-		<Text as="div" class="answered" tone="muted" size="xs">{m.plan_answering()}</Text>
+		<Text as="div" tone="muted" size="xs" style="font-style:italic">{m.plan_answering()}</Text>
 	{:else}
-		<Text as="div" class="answered" tone="muted" size="xs">{m.plan_answered()}</Text>
+		<Text as="div" tone="muted" size="xs" style="font-style:italic">{m.plan_answered()}</Text>
 	{/if}
-</div>
+</Card>
 
 <style>
-	.plan {
-		border: 1px solid var(--c-violet);
-		border-radius: var(--r-md);
-		background: color-mix(in srgb, var(--c-violet) 6%, var(--bg-elevated));
-		padding: var(--sp-3);
-		margin: var(--sp-2) 0;
-		display: flex;
-		flex-direction: column;
-		gap: var(--sp-3);
-	}
-	.plan.done {
-		opacity: 0.7;
-		border-color: var(--border);
-		background: var(--bg-elevated-2);
-	}
 	.plan-body {
 		border: 1px solid var(--border);
 		border-radius: var(--r-sm);
@@ -133,8 +124,5 @@
 		padding: var(--sp-2);
 		resize: vertical;
 		outline: none;
-	}
-	.plan :global(.answered) {
-		font-style: italic;
 	}
 </style>
