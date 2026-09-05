@@ -10,6 +10,7 @@
 	import SettingSection from '$lib/components/molecules/SettingSection.svelte';
 	import { settings } from '$lib/settings.svelte';
 	import { m } from '$lib/paraglide/messages';
+	import { GROUP_DIMENSIONS } from '../../../../routes/sessions/sessions.logic';
 
 	const sl = $derived(settings.state.sessionList);
 	const spawnDock = $derived(settings.spawnDock);
@@ -20,10 +21,6 @@
 	const viewOptions: SegmentOption[] = [
 		{ value: 'list', label: m.settings_view_list() },
 		{ value: 'card', label: m.settings_view_cards() }
-	];
-	const densityOptions: SegmentOption[] = [
-		{ value: 'normal', label: m.settings_density_detailed() },
-		{ value: 'compact', label: m.settings_density_compact() }
 	];
 	const sideOptions: SegmentOption[] = [
 		{ value: 'left', label: m.settings_spawn_dock_side_left() },
@@ -69,15 +66,19 @@
 				bind:value={() => sl.view, (v) => settings.setSessionList({ view: v as typeof sl.view })}
 			/>
 		</SettingRow>
-		<SettingRow label={m.settings_density_label()} selfLabelled>
-			<SegmentedControl
-				options={densityOptions}
-				label={m.settings_density_label()}
-				control
-				bind:value={
-					() => sl.density, (v) => settings.setSessionList({ density: v as typeof sl.density })
-				}
-			/>
+		<SettingRow label={m.settings_group_by_label()}>
+			<Select
+				value={sl.groupBy}
+				style="width:100%"
+				onchange={(e) =>
+					settings.setSessionList({
+						groupBy: (e.currentTarget as HTMLSelectElement).value as typeof sl.groupBy
+					})}
+			>
+				{#each GROUP_DIMENSIONS as d (d.value)}
+					<option value={d.value}>{d.label}</option>
+				{/each}
+			</Select>
 		</SettingRow>
 		<SettingRow label={m.settings_list_width_label()} help={m.settings_list_width_help()}>
 			<Select

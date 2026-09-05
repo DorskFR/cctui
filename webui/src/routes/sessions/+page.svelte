@@ -15,13 +15,14 @@
 	import StatsDock from '$lib/components/organisms/statsdock/StatsDock.svelte';
 	import SessionControls from '$lib/components/organisms/SessionControls.svelte';
 	import KanbanBoard from '$lib/components/organisms/KanbanBoard.svelte';
-	import { AutoGrid, Button, Callout, IconButton, Modal, Text } from '@dorsk/tsumikit';
+	import { Button, Callout, Dot, IconButton, Menu, Modal, SectionHeader, Text } from '@dorsk/tsumikit';
+	import MachineBadge from '$lib/components/molecules/MachineBadge.svelte';
+	import { useAllMachines } from '$lib/queries';
 	import {
 		drafts,
 		clearSpawnSlot,
 		currentSpawnSlot,
 		readSpawnSlot,
-		LIST_DENSITY,
 		LIST_VIEW,
 		LIST_KANBAN,
 		LIST_SECTION,
@@ -65,35 +66,21 @@
 		spawnRequestFromSlot,
 		type Section,
 		type SubGroup,
-		type Dimension
+		type Dimension,
+		toGroupDimension
 	} from './sessions.logic';
 	import { SessionsListController } from './SessionsListController.svelte';
 
-	let dense = $state(drafts.get(LIST_DENSITY) === 'compact');
-	$effect(() => {
-		drafts.set(LIST_DENSITY, dense ? 'compact' : 'normal');
-	});
-
-	// Main-list layout × density semantics. Two independent toggles:
-	//   list ⇄ grid (cardView) and compact ⇄ detailed (dense). The 2×2 matrix:
-	//     list  + compact  → one row per session
-	//     list  + detailed → multi-row per session
-	//     grid  + compact  → 2-column grid of cards kept INSIDE the centered list
-	//                        container (same max-width as the rest of the UI)
-	//     grid  + detailed → the container max-width is released: section headings
-	//                        AND the grid span the full window; cards auto-fill up
-	//                        to a max width (never narrower than a compact card)
-	//                        and gain extra verticality (a taller message clamp)
-	//   Card MARKUP is identical across compact/detailed in grid (always the
-	//   detailed card); only the container width / column template / message clamp
-	//   change. Grid is top-level only (subagents stay in list view / the drawer).
+	// Two layouts: list (compact rows, centered column) and card (detailed 3-up
+	// grid released to the full window). Grid is top-level only (subagents stay
+	// in list view / the drawer).
 	let cardView = $state(drafts.get(LIST_VIEW) === 'card');
 	$effect(() => {
 		drafts.set(LIST_VIEW, cardView ? 'card' : 'list');
 	});
 
 	// Kanban board view: a distinct layout persisted alongside the
-	// list/card × density picker; when set it overrides the other two.
+	// list/card picker; when set it overrides it.
 	let kanban = $state(drafts.get(LIST_KANBAN) === '1');
 	$effect(() => {
 		drafts.set(LIST_KANBAN, kanban ? '1' : '');
@@ -105,10 +92,40 @@
 	const colorBy = $derived(settings.state.sessionList.colorBy as Dimension);
 	const groupBy = $derived(settings.state.sessionList.groupBy as Dimension);
 	const accentOf = (s: SessionListItem) => colorHueOf(s, colorBy);
+	const showMachine = $derived(groupBy !== 'machine');
 
-	// View picker: `cardView` (list ⇄ card) and `dense` (compact ⇄
-	// detailed) round-trip through drafts above; the ViewPicker molecule owns the
-	// picker UI and writes back to them via bindable props.
+	// Machine liveness for the group headers; falls back to "unknown" (no dot)
+	// when the machines endpoint is not readable.
+	const machines = useAllMachines(() => groupBy === 'machine');
+	const machineLiveness = (name: string): 'online' | 'stale' | 'offline' | null =>
+		(machines.data ?? []).find((mc) => mc.name === name)?.liveness ?? null;
+	const sortItems = $derived(
+		(['activity', 'created', 'name'] as const).map((sort) => ({
+			label: sortLabel(sort),
+			onselect: () => settings.setSessionList({ sort })
+		}))
+	);
+	function sortLabel(sort: string): string {
+		return sort === 'created'
+			? m.settings_sort_created()
+			: sort === 'name'
+				? m.settings_sort_name()
+				: m.settings_sort_activity();
+	}
+	function bucketColor(key: string | null | undefined): string {
+		switch (key) {
+			case 'blocked':
+				return 'var(--warn)';
+			case 'review':
+				return 'var(--accent)';
+			case 'working':
+				return 'var(--ok)';
+			case 'dispatched':
+				return 'var(--info)';
+			default:
+				return 'var(--text-faint)';
+		}
+	}
 
 // Section filter: the sessions list is partitioned into
 	// four sections, each an INDEPENDENT on/off toggle (not a forced single
@@ -682,12 +699,11 @@
 	labels={allLabels}
 	bind:labelFilter
 	bind:cardView
-	bind:dense
 	bind:kanban
 	{colorBy}
 	{groupBy}
-	onColorBy={(v) => settings.setSessionList({ colorBy: v })}
-	onGroupBy={(v) => settings.setSessionList({ groupBy: v })}
+	onColorBy={(v) => settings.setSessionList({ colorBy: v === 'status' ? 'none' : v })}
+	onGroupBy={(v) => settings.setSessionList({ groupBy: toGroupDimension(v) })}
 	selecting={list.selecting}
 	{searching}
 	onStartSelect={() => (list.selecting = true)}
@@ -732,8 +748,7 @@
 		<SessionCard
 			session={s}
 			child={depth > 0}
-			compact={dense}
-			grid
+			{showMachine}
 			accentHue={accentOf(s)}
 			stacked={subGroups.length > 0}
 			pendingCount={pending(s.id)}
@@ -776,16 +791,7 @@
 {/snippet}
 
 {#snippet cardGrid(rows: SessionListItem[], childGroups: Map<string, SubGroup[]>, hl: string[] = [])}
-	<!-- Card track widths scale with the UI font: the chrome stays rem-pinned
-	     but card TEXT (working-dir chip, token readout, model) grows with --fs-scale, so
-	     at the largest scale fixed-rem cards overflowed. Multiplying min/max by the same
-	     factor widens cards as the text grows — and raising `min` naturally collapses to
-	     a single compact column / wider detailed cards at high zoom. -->
-	{#if dense}
-		<AutoGrid min="calc(18rem * var(--fs-scale))" max="calc(26.75rem * var(--fs-scale))" maxCols={2} gap="var(--sp-2)">{@render cardItems(rows, childGroups, hl)}</AutoGrid>
-	{:else}
-		<AutoGrid min="calc(20rem * var(--fs-scale))" max="calc(26.75rem * var(--fs-scale))" gap="var(--sp-3)">{@render cardItems(rows, childGroups, hl)}</AutoGrid>
-	{/if}
+	<div class="card-grid">{@render cardItems(rows, childGroups, hl)}</div>
 {/snippet}
 
 <!-- Every row set — live buckets, search results, archive browse — renders
@@ -811,12 +817,12 @@
      centered. tsumikit's Container fullWidth bleeds to 100vw regardless, which
      slid the outer cards under an open panel. -->
 {#snippet sectionsWrap(body: Snippet)}
-	{#if cardView && !dense}
+	{#if cardView}
 		<div class="bleed">
 			<div class="sections">{@render body()}</div>
 		</div>
 	{:else}
-		<div class="sections" class:tight={dense && !cardView}>{@render body()}</div>
+		<div class="sections tight">{@render body()}</div>
 	{/if}
 {/snippet}
 
@@ -832,11 +838,12 @@
 		{@const collapsibleGroups = subGroups.filter((g) => g.agents.length >= INLINE_THRESHOLD)}
 		<!-- Collapsible (>=3) groups surface as count badges outside the parent
 		     row layout; smaller groups render inline below. -->
-		<div class="parent-row" class:dense>
+		<div class="parent-row">
 			<SessionCard
 				session={s}
+				variant="row"
 				child={depth > 0}
-				compact={dense}
+				{showMachine}
 				accentHue={accentOf(s)}
 				pendingCount={pending(s.id)}
 				unreadCount={openSession?.id === s.id ? 0 : (s.unread_count ?? 0)}
@@ -880,11 +887,11 @@
 
 {#snippet draftItems(rows: SessionListItem[], grid: boolean)}
 	{#each rows as s (s.id)}
-		<div class="parent-row" class:dense={dense && !grid}>
+		<div class="parent-row">
 			<SessionCard
 				session={s}
-				{grid}
-				compact={dense && !grid}
+				variant={grid ? 'card' : 'row'}
+				{showMachine}
 				accentHue={accentOf(s)}
 				draft
 				draftLaunching={launchingDraft === s.id}
@@ -902,8 +909,6 @@
 	{#if s.status === 'draft'}
 		<SessionCard
 			session={s}
-			grid
-			compact
 			draft
 			draftLaunching={launchingDraft === s.id}
 			preview={draftPreview(s)}
@@ -916,8 +921,6 @@
 		{@const subGroups = list.kanbanChildGroups.get(s.id) ?? []}
 		<SessionCard
 			session={s}
-			grid
-			compact
 			accentHue={accentOf(s)}
 			stacked={subGroups.length > 0}
 			pendingCount={pending(s.id)}
@@ -1018,17 +1021,48 @@
 	key: string,
 	label: string,
 	count: number,
-	opts: { hue?: number | null; bucket?: string | null; dim?: boolean; trailing?: Snippet }
+	opts: { hue?: number | null; bucket?: string | null; machine?: string | null; trailing?: Snippet }
 )}
 	{@const hidden = hiddenSections.has(key)}
 	{@const action = hidden
 		? m.sessions_section_show({ section: label })
 		: m.sessions_section_hide({ section: label })}
-	{@const hue = opts.hue ?? null}
-	<div class="group-header" class:dim-header={opts.dim} data-bucket={opts.bucket ?? null}>
-		{#if hue !== null}<span class="dim-swatch" style="--mh:{hue}"></span>{/if}
-		{label}
-		<span class="cnt" class:zero={count === 0}><Text class="count">{count}</Text></span>
+	{@const liveness = opts.machine ? machineLiveness(opts.machine) : null}
+	<SectionHeader
+		variant="group"
+		level={3}
+		size="sm"
+		title={opts.machine ? '' : label}
+		hue={opts.machine || opts.hue == null ? undefined : opts.hue}
+		count={m.sessions_group_count({ count })}
+		lead={headerLead}
+		actions={headerActions}
+	/>
+	{#snippet headerLead()}
+		{#if opts.machine}
+			<MachineBadge name={opts.machine} id={opts.machine} hue={opts.hue} mono />
+			{#if liveness}
+				<span class="liveness" class:online={liveness === 'online'}>
+					<Dot status={liveness === 'online' ? 'active' : liveness === 'stale' ? 'stale' : 'dead'} />
+					{liveness === 'online'
+						? m.sessions_machine_online()
+						: liveness === 'stale'
+							? m.sessions_machine_stale()
+							: m.sessions_machine_offline()}
+				</span>
+			{/if}
+		{:else if opts.bucket}
+			<Dot color={bucketColor(opts.bucket)} />
+		{/if}
+	{/snippet}
+	{#snippet headerActions()}
+		<Menu label={m.sessions_sort_menu_label()} items={sortItems} bare placement="bottom-end">
+			{#snippet trigger()}
+				<Text size="xs" tone="faint" style="white-space:nowrap"
+					>{m.sessions_sort_menu({ sort: sortLabel(settings.state.sessionList.sort) })} ▾</Text
+				>
+			{/snippet}
+		</Menu>
 		<IconButton
 			inline
 			icon={hidden ? 'eye' : 'eye-off'}
@@ -1038,13 +1072,10 @@
 			onclick={() => toggleSection(key)}
 		/>
 		{#if opts.trailing}{@render opts.trailing()}{/if}
-	</div>
+	{/snippet}
 {/snippet}
 
 {#snippet archiveAllDispatchedAction()}
-	<!-- In card mode the action sits right next to the title; in list mode it's
-	     pushed to the far right via the spacer. -->
-	{#if !cardView}<div class="spacer"></div>{/if}
 	<Button
 		variant="danger"
 		disabled={archiving}
@@ -1063,11 +1094,14 @@
 			<div class="placeholder">
 				<Text tone="muted">{m.sessions_empty_sections()}</Text>
 			</div>
-		{:else if groupBy !== 'none'}
+		{:else if groupBy !== 'status'}
 			{#each list.groupedSections as g (g.key)}
 				{@const key = `dim:${g.key}`}
 				<div class="section">
-					{@render groupHeader(key, g.label, g.sessions.length, { hue: g.hue, dim: true })}
+					{@render groupHeader(key, g.label, g.sessions.length, {
+						hue: g.hue,
+						machine: groupBy === 'machine' && g.hue !== null ? g.label : null
+					})}
 					{#if !hiddenSections.has(key)}
 						{@render rowsView(g.sessions, childGroupsOf, true, [])}
 					{/if}
@@ -1095,10 +1129,8 @@
 			<div class="section">
 				{@render groupHeader('drafts', m.sessions_section_drafts(), list.draftRows.length, {})}
 				{#if !hiddenSections.has('drafts')}
-					{#if cardView && dense}
-						<AutoGrid min="calc(18rem * var(--fs-scale))" max="calc(26.75rem * var(--fs-scale))" maxCols={2} gap="var(--sp-2)">{@render draftItems(list.draftRows, true)}</AutoGrid>
-					{:else if cardView}
-						<AutoGrid min="calc(20rem * var(--fs-scale))" max="calc(26.75rem * var(--fs-scale))" gap="var(--sp-3)">{@render draftItems(list.draftRows, true)}</AutoGrid>
+					{#if cardView}
+						<div class="card-grid">{@render draftItems(list.draftRows, true)}</div>
 					{:else}
 						{@render draftItems(list.draftRows, false)}
 					{/if}
@@ -1250,43 +1282,35 @@
 		justify-content: center;
 		padding: var(--sp-3) 0;
 	}
-	.group-header {
-		display: flex;
+	.liveness {
+		display: inline-flex;
 		align-items: center;
-		gap: var(--sp-2);
-		font-size: var(--fs-sm);
-		font-weight: 600;
-		text-transform: uppercase;
-		letter-spacing: 0.04em;
-		color: var(--text-muted);
+		gap: var(--sp-1);
+		font-size: var(--fs-xs);
+		color: var(--text-faint);
 	}
-	/* The count is a Text atom; target the passed class via :global. */
-	.group-header :global(.count) {
-		font-weight: 400;
-		opacity: 0.7;
+	.liveness.online {
+		color: var(--ok);
 	}
-	/* An empty section keeps its header; the 0 reads as inert. */
-	.cnt.zero {
-		opacity: 0.5;
+	/* 3-up detailed cards at a uniform height; the container query steps the
+	   columns down before a card gets cramped enough to degrade its footer. */
+	.card-grid {
+		display: grid;
+		grid-template-columns: repeat(3, minmax(0, 1fr));
+		grid-auto-rows: 250px;
+		gap: var(--sp-3);
 	}
-	/* Group-by header: a hue swatch keyed to the color-by palette, in the
-	   dimension's own casing (label/dir/machine names aren't uppercased chrome). */
-	.dim-header {
-		text-transform: none;
-		letter-spacing: normal;
+	@container (max-width: 60rem) {
+		.card-grid {
+			grid-template-columns: repeat(2, minmax(0, 1fr));
+		}
 	}
-	.dim-swatch {
-		flex: none;
-		width: 0.7rem;
-		height: 0.7rem;
-		border-radius: var(--r-sm);
-		background: hsl(var(--mh) var(--mach-border-sl));
+	@container (max-width: 36rem) {
+		.card-grid {
+			grid-template-columns: minmax(0, 1fr);
+		}
 	}
-	/* Dispatched group collapse toggle. */
-	.group-header[data-bucket='blocked'] {
-		color: var(--warn);
-	}
-	.group-header[data-bucket='review'] {
-		color: var(--accent);
+	.sections {
+		container-type: inline-size;
 	}
 </style>

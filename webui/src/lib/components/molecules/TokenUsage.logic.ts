@@ -31,3 +31,19 @@ export function tokenUsageLayout(
 		showCold: cold
 	};
 }
+
+export function tokenUsageTitle(
+	usage: TokenUsage,
+	layout: TokenUsageLayout,
+	fmt: { num: (n: number) => string; usd: (n: number) => string }
+): string {
+	const parts = [
+		layout.sumMode === 'never' ? '' : `Σ${fmt.num(layout.total)}`,
+		`↑${fmt.num(Number(usage.tokens_in))}`,
+		`↓${fmt.num(Number(usage.tokens_out))}`,
+		layout.showCache ? `⚡${fmt.num(layout.cacheTotal)}` : '',
+		layout.showCost ? fmt.usd(layout.cost) : '',
+		layout.showCold ? '❄️' : ''
+	];
+	return parts.filter(Boolean).join(' ');
+}

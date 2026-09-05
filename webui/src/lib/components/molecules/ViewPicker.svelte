@@ -3,35 +3,29 @@
 	import { m } from '$lib/paraglide/messages';
 	import { VIEW_OPTIONS } from '../../../routes/sessions/sessions.logic';
 
-	// One square control offering the 4 explicit layout × density combinations.
-	// A native <select> overlaid transparently on a styled trigger
-	// (the Select atom's `ghost` variant) gives the platform popup with zero
-	// outside-click bookkeeping. `cardView` (list ⇄ card) and `dense` (compact ⇄
-	// detailed) are bindable so the parent keeps owning persistence.
+	// One square control offering list · cards · kanban. A native <select>
+	// overlaid transparently on a styled trigger (the Select atom's `ghost`
+	// variant) gives the platform popup with zero outside-click bookkeeping.
+	// `cardView` and `kanban` are bindable so the parent keeps owning persistence.
 	let {
 		cardView = $bindable(),
-		dense = $bindable(),
 		kanban = $bindable(),
 		menu = false
 	}: {
 		cardView: boolean;
-		dense: boolean;
 		kanban: boolean;
 		/** Render as a full-width labeled row for the overflow ⋯ menu. */
 		menu?: boolean;
 	} = $props();
 
-	const mode = $derived(
-		kanban ? 'kanban' : `${cardView ? 'card' : 'list'}-${dense ? 'compact' : 'detailed'}`
-	);
+	const mode = $derived(kanban ? 'kanban' : cardView ? 'card' : 'list');
 	const label = $derived(VIEW_OPTIONS.find((o) => o.value === mode)?.label ?? m.sessions_view_label());
 
 	function select(value: string) {
 		const opt = VIEW_OPTIONS.find((o) => o.value === value);
 		if (!opt) return;
-		kanban = value === 'kanban';
-		cardView = opt.card;
-		dense = opt.dense;
+		kanban = opt.value === 'kanban';
+		cardView = opt.value !== 'list';
 	}
 </script>
 

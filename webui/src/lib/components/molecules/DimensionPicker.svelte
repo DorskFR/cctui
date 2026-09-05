@@ -1,7 +1,11 @@
 <script lang="ts">
 	import { Button, Icon, Select } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
-	import { DIMENSIONS, type Dimension } from '../../../routes/sessions/sessions.logic';
+	import {
+		COLOR_DIMENSIONS,
+		GROUP_DIMENSIONS,
+		type Dimension
+	} from '../../../routes/sessions/sessions.logic';
 
 	// Toolbar picker for a session-list dimension (color · group), mirroring
 	// ViewPicker: a native <select> overlaid on a styled square trigger.
@@ -20,8 +24,9 @@
 	} = $props();
 
 	const noun = $derived(kind === 'color' ? m.misc_color_noun() : m.misc_group_noun());
-	const current = $derived(DIMENSIONS.find((d) => d.value === value)?.label ?? m.common_none());
-	const active = $derived(value !== 'none');
+	const options = $derived(kind === 'color' ? COLOR_DIMENSIONS : GROUP_DIMENSIONS);
+	const current = $derived(options.find((d) => d.value === value)?.label ?? m.common_none());
+	const active = $derived(value !== 'none' && value !== 'status');
 	const title = $derived(
 		active ? m.misc_dimension_by({ noun, value: current }) : m.misc_dimension_by_prompt({ noun })
 	);
@@ -48,7 +53,7 @@
 		{value}
 		onchange={(e) => onchange((e.currentTarget as HTMLSelectElement).value as Dimension)}
 	>
-		{#each DIMENSIONS as d (d.value)}
+		{#each options as d (d.value)}
 			<option value={d.value}>{m.misc_dimension_option({ noun, label: d.label })}</option>
 		{/each}
 	</Select>

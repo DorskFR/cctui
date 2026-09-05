@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import type { TokenUsage } from '@bindings/TokenUsage';
-import { tokenUsageLayout } from './TokenUsage.logic';
+import { tokenUsageLayout, tokenUsageTitle } from './TokenUsage.logic';
 
 const usage = (over: Partial<TokenUsage> = {}): TokenUsage =>
 	({
@@ -52,6 +52,24 @@ describe('tokenUsageLayout', () => {
 	});
 });
 
+describe('tokenUsageTitle', () => {
+	const fmt = { num: (n: number) => String(n), usd: (n: number) => `$${n}` };
+
+	it('spells the whole readout out, Σ first, cold last', () => {
+		const u = usage();
+		expect(tokenUsageTitle(u, tokenUsageLayout(u, { cold: true }), fmt)).toBe(
+			'Σ6500 ↑1000 ↓200 ⚡5300 $1.25 ❄️'
+		);
+	});
+
+	it('omits the segments the layout hides', () => {
+		const u = usage({ cache_read_tokens: 0, cache_creation_tokens: 0, cost_usd: 0 });
+		expect(tokenUsageTitle(u, tokenUsageLayout(u), fmt)).toBe('Σ1200 ↑1000 ↓200');
+		const empty = usage({ tokens_in: 0, tokens_out: 0, cache_read_tokens: 0, cache_creation_tokens: 0 });
+		expect(tokenUsageTitle(empty, tokenUsageLayout(empty), fmt)).toBe('↑0 ↓0 $1.25');
+	});
+});
+
 // The degradation itself is CSS (a container query cannot be evaluated in a
 // layout-less DOM), so what a unit test CAN guard is the wiring that made
 // CCT-846 regress: the molecule querying host containers that nobody declared.
@@ -66,6 +84,16 @@ describe('cramped-container degradation', () => {
 		const block = containerBlock(svelte, name);
 		expect(block).toMatch(/\.detail \{\s*display: none;/);
 		expect(block).toMatch(/\.sum-compact-only \{\s*display: contents;/);
+	});
+
+	it('drops the $ cost as the last step, keeping only Σ', () => {
+		const block = svelte.match(/@container sess-card \(max-width: 16rem\) \{[\s\S]*?\n\t\}/)?.[0] ?? '';
+		expect(block).toMatch(/\.cost \{\s*display: none;/);
+		expect(block).not.toContain('.sum-compact-only');
+	});
+
+	it('the Σ tooltip carries the full readout', () => {
+		expect(svelte).toContain('tokenUsageTitle(usage, layout, { num: compactNum, usd })');
 	});
 
 	it('has the hosts that declare those containers', () => {

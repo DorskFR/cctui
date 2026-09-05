@@ -1,9 +1,9 @@
 <script lang="ts">
 	import type { Label } from '@bindings/Label';
-	import { Badge, Icon, Popover } from '@dorsk/tsumikit';
+	import { Badge, Dot, Icon, Popover } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 	import LabelMenu from './LabelMenu.svelte';
-	import { labelTint, hueToColor } from '$lib/labels';
+	import { labelHue, labelTint, hueToColor } from '$lib/labels';
 
 	// Session-label strip + picker. Attached labels render as hue-tinted,
 	// removable Badges. When `editable`, a shared LabelMenu (the same molecule the
@@ -69,17 +69,24 @@
 	<!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
 	<span class="labels" onpointerdown={(e) => e.stopPropagation()} onclick={(e) => e.stopPropagation()}>
 		{#each labels as l (l.id)}
-			<Badge
-				class="label"
-				style="{labelTint(l)};border-radius:var(--r-sm)"
-				removable={editable}
-				onremove={() => {
-					if (!busy) onDetach?.(l.id);
-				}}
-			>
-				<span class="name">{l.name}</span>
-			</Badge>
+			<span class="full">
+				<Badge
+					class="label"
+					style="{labelTint(l)};border-radius:var(--r-sm)"
+					removable={editable}
+					onremove={() => {
+						if (!busy) onDetach?.(l.id);
+					}}
+				>
+					<span class="name">{l.name}</span>
+				</Badge>
+			</span>
 		{/each}
+		{#if labels.length > 0}
+			<span class="dots" title={m.sessions_labels_collapsed_title({ names: labels.map((l) => l.name).join(', ') })}>
+				{#each labels as l (l.id)}<Dot color="hsl({labelHue(l)} var(--mach-border-sl))" />{/each}
+			</span>
+		{/if}
 
 		{#if editable}
 			<span class="add">
@@ -108,11 +115,28 @@
 		align-items: center;
 		gap: var(--sp-1);
 	}
+	.full {
+		display: contents;
+	}
 	.name {
 		min-width: 0;
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+	}
+	/* Cramped `sess-card` host: the chips collapse to coloured dots. */
+	.dots {
+		display: none;
+		align-items: center;
+		gap: var(--sp-1);
+	}
+	@container sess-card (max-width: 20rem) {
+		.full {
+			display: none;
+		}
+		.dots {
+			display: inline-flex;
+		}
 	}
 	/* `tag` trigger: a small ghost icon-button reading clearly as "labels". */
 	.add :global(.tag-trigger) {
