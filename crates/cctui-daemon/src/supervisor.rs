@@ -466,19 +466,26 @@ impl Supervisor {
                 self.spawn_read_file(request_id, path, max_bytes, cwd, frame_up_tx.clone());
             }
             DaemonFrameDown::RunUpdateHook { run_id, version, release_url } => {
-                // Deliberately not a correlated request: the hook restarts the
-                // server that sent this, so progress goes back over HTTP.
-                crate::updatehook::spawn(
-                    self.client.http(),
-                    self.client.base_url().to_owned(),
-                    self.machine_key.clone(),
-                    run_id,
-                    version,
-                    release_url,
-                );
+                self.spawn_update_hook(run_id, version, release_url);
             }
             _ => {}
         }
+    }
+
+    /// Run the deployment's update hook off the frame loop.
+    ///
+    /// Deliberately not a correlated request: the hook restarts the server that
+    /// sent the frame, so there is no reply to send back — progress goes over
+    /// HTTP instead, to whichever server process is alive by then.
+    fn spawn_update_hook(&self, run_id: uuid::Uuid, version: String, release_url: String) {
+        crate::updatehook::spawn(
+            self.client.http(),
+            self.client.base_url().to_owned(),
+            self.machine_key.clone(),
+            run_id,
+            version,
+            release_url,
+        );
     }
 
     /// One-shot codex `model/list` off the frame loop; the catalog rides the
