@@ -616,6 +616,14 @@ fn build_api_routes() -> Routes {
         )
         .add(
             &[GET],
+            "/sessions/{id}/attachments",
+            "List the files the user uploaded into a session (served via blobs).",
+            get(routes::attachments::get_session_attachments),
+            Authn::Bearer,
+            sess_read(),
+        )
+        .add(
+            &[GET],
             "/sessions/{id}/diagnose",
             "Snapshot everything the daemon knows about a session, dated.",
             get(routes::diagnose::diagnose_session),

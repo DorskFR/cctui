@@ -163,6 +163,48 @@ function attachSummary(out: Line[], e: AgentEvent & { type: 'turn_summary' }): L
 	return { role: 'summary', ts: summary.ts, summary, text: detail };
 }
 
+// What the composer wrote for a message that carried uploads: `[name]` tokens
+// in the prose plus an "Attached file(s)" block listing the daemon's staged
+// paths (`/tmp/cctui-uploads/<session>/<name>`). The session id is taken from
+// those paths so the line can resolve its blobs without the drawer threading
+// it through. Mirrors the composer's naming in `$lib/attachments`.
+export const PASTE_NAME_RE = /^paste-\d+\.txt$/;
+const STAGED_PATH_RE = /^- \/tmp\/cctui-uploads\/([^/\s]+)\/(\S.*?)\s*$/;
+const BRACKET_TOKEN_RE = /\[([^\[\]\n]+\.[A-Za-z0-9]{1,8})\]/g;
+
+export interface UserUploadRefs {
+	sessionId: string | null;
+	names: string[];
+}
+
+export function isPasteName(name: string): boolean {
+	return PASTE_NAME_RE.test(name);
+}
+
+export function parseUserUploadRefs(text: string | undefined): UserUploadRefs {
+	const names: string[] = [];
+	let sessionId: string | null = null;
+	if (!text) return { sessionId, names };
+	const seen = new Set<string>();
+	const push = (n: string) => {
+		if (!seen.has(n)) {
+			seen.add(n);
+			names.push(n);
+		}
+	};
+	for (const line of text.split('\n')) {
+		const st = STAGED_PATH_RE.exec(line);
+		if (st) {
+			sessionId ??= st[1];
+			push(st[2]);
+		}
+	}
+	for (const m of text.matchAll(BRACKET_TOKEN_RE)) {
+		if (isPasteName(m[1])) push(m[1]);
+	}
+	return { sessionId, names };
+}
+
 export function buildLines(
 	events: AgentEvent[],
 	ctx: LineBuildCtx,

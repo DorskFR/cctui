@@ -890,6 +890,18 @@ pub async fn stage_session_files(
     match crate::bus::stage_files(&state, &session_id, parsed.files).await {
         Ok(paths) => {
             tracing::info!(%session_id, count, "staged mid-chat files");
+            let names: Vec<String> =
+                paths.iter().map(|p| p.rsplit('/').next().unwrap_or(p).to_owned()).collect();
+            if let Err(e) = crate::routes::attachments::record_uploads(
+                &state.pool,
+                &session_id,
+                &parsed.raw,
+                &names,
+            )
+            .await
+            {
+                tracing::error!(%session_id, "recording attachments: {e}");
+            }
             Ok(Json(cctui_proto::api::StageFilesResponse { paths }))
         }
         Err(crate::bus::BusError::NotFound) => {

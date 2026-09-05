@@ -9,6 +9,7 @@
 //! once.
 
 use axum::Json;
+use axum::body::Bytes;
 use axum::extract::Multipart;
 use axum::http::StatusCode;
 use base64::Engine;
@@ -55,6 +56,14 @@ pub fn sanitize_upload_name(raw: &str) -> Result<String, ApiErr> {
 pub struct ParsedUploads {
     pub files: Vec<BootstrapFile>,
     pub request_json: Option<String>,
+    /// Same order as `files`, still raw: what the blob store copies.
+    pub raw: Vec<RawUpload>,
+}
+
+pub struct RawUpload {
+    pub name: String,
+    pub bytes: Bytes,
+    pub content_type: Option<String>,
 }
 
 /// Drain a `multipart/form-data` body into [`BootstrapFile`]s, enforcing the
@@ -64,6 +73,7 @@ pub struct ParsedUploads {
 pub async fn parse_upload_multipart(mut multipart: Multipart) -> Result<ParsedUploads, ApiErr> {
     let mut files: Vec<BootstrapFile> = Vec::new();
     let mut request_json: Option<String> = None;
+    let mut raw: Vec<RawUpload> = Vec::new();
     let mut total_bytes = 0usize;
 
     while let Some(field) = multipart
@@ -75,6 +85,7 @@ pub async fn parse_upload_multipart(mut multipart: Multipart) -> Result<ParsedUp
         let file_name = field.file_name().map(str::to_owned);
         if let Some(raw_name) = file_name {
             let name = sanitize_upload_name(&raw_name)?;
+            let content_type = field.content_type().map(str::to_owned);
             let bytes = field
                 .bytes()
                 .await
@@ -92,9 +103,10 @@ pub async fn parse_upload_multipart(mut multipart: Multipart) -> Result<ParsedUp
                 )));
             }
             files.push(BootstrapFile {
-                name,
+                name: name.clone(),
                 content_b64: base64::engine::general_purpose::STANDARD.encode(&bytes),
             });
+            raw.push(RawUpload { name, bytes, content_type });
             if files.len() > MAX_FILES {
                 return Err(too_large(format!("too many files; cap is {MAX_FILES}")));
             }
@@ -108,7 +120,7 @@ pub async fn parse_upload_multipart(mut multipart: Multipart) -> Result<ParsedUp
         // Unknown non-file parts are ignored.
     }
 
-    Ok(ParsedUploads { files, request_json })
+    Ok(ParsedUploads { files, request_json, raw })
 }
 
 #[cfg(test)]
