@@ -19,8 +19,10 @@
 	//   • `wrap`: false (default) keeps the readout on one line — the list/header/
 	//     lines never want it to break; the overview stats pass wrap so the larger
 	//     `size` can fold inside a narrow card instead of spilling.
-	//   • `compact`: Σtotal + $cost only, for cramped mounts (kanban card footer).
-	//     Σ always renders there, even with showSum={false}.
+	//   • `compact`: forces the degraded Σtotal + $cost form. The same degradation
+	//     happens on its own inside a cramped `sess-card` / `drawer-head` size
+	//     container (see the style block); the prop is the manual override.
+	//     Σ always renders in the degraded form, even with showSum={false}.
 	// `size` rides through to each Text segment — defaults to the compact `xs`.
 	//
 	// The clarity hints render via the tsumikit Tooltip — no
@@ -125,5 +127,27 @@
 	}
 	.forced .sum-compact-only {
 		display: contents;
+	}
+	/* Degrade to Σtotal + $cost when the HOST is cramped. The queries name the
+	   ancestor size containers (`sess-card` on the card wrapper, `drawer-head` on
+	   the chat header) rather than this block: the trailing footer groups are
+	   flex:none, so the molecule's own inline size always equals its content size
+	   and a self-query could never fire. They come last so they win the
+	   equal-specificity tie against the defaults above. */
+	@container sess-card (max-width: 26rem) {
+		.detail {
+			display: none;
+		}
+		.sum-compact-only {
+			display: contents;
+		}
+	}
+	@container drawer-head (max-width: 40rem) {
+		.detail {
+			display: none;
+		}
+		.sum-compact-only {
+			display: contents;
+		}
 	}
 </style>

@@ -665,6 +665,10 @@
 		position: relative;
 		width: 100%;
 		touch-action: pan-y;
+		/* Size container for the footer readouts (TokenUsage degrades to Σ + $ in a
+		   narrow kanban column). Floating UI inside the card lives in the browser
+		   top layer, so the implied `contain: layout` can't trap it. */
+		container: sess-card / inline-size;
 	}
 	.sc-wrap.child {
 		width: auto;
