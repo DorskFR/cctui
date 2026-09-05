@@ -59,6 +59,7 @@ import type {
   OAuthFinish,
   OAuthStartResponse,
   ResourceShareInfo,
+  SessionAttachment,
   SessionBinding,
   ShareInfo,
   UpdateAccount,
@@ -227,6 +228,8 @@ export const endpoints = {
   /** Stage mid-chat attachments for a running session. Same
    *  multipart shape + caps as spawn; resolves to the staged absolute paths
    *  on the session's machine, which the composer appends under the reply. */
+  sessionAttachments: (sessionId: string) =>
+    api.get<SessionAttachment[]>(`/sessions/${sessionId}/attachments`),
   stageFiles: (sessionId: string, files: File[]) => {
     const form = new FormData();
     for (const f of files) form.append("files", f, f.name);

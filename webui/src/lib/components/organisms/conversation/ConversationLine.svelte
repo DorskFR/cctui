@@ -6,6 +6,8 @@
 	import TokenUsage from '$lib/components/molecules/TokenUsage.svelte';
 	import { Badge, Button, IconButton, Text, Timestamp, Tooltip } from '@dorsk/tsumikit';
 	import TurnSummaryFooter from './TurnSummaryFooter.svelte';
+	import UserAttachments from './UserAttachments.svelte';
+	import { parseUserUploadRefs } from './lines';
 	import type { Line } from './types';
 	import { m } from '$lib/paraglide/messages';
 	import './bubble.css';
@@ -37,6 +39,8 @@
 		onforkafter?: (messageId: string) => void;
 		ontoggleselect?: (messageId: string) => void;
 	} = $props();
+
+	const uploadRefs = $derived(ln.role === 'user' ? parseUserUploadRefs(ln.text) : null);
 
 	const forkAnchor = $derived(
 		forkable && ln.role === 'assistant' && ln.messageId ? ln.messageId : null
@@ -176,6 +180,9 @@
 		<pre class="bubble mono code">{@html ln.htmlCode}</pre>
 	{:else}
 		<pre class="bubble mono code">{ln.text}</pre>
+	{/if}
+	{#if uploadRefs && uploadRefs.names.length}
+		<UserAttachments refs={uploadRefs} ts={ln.ts} />
 	{/if}
 	{#if ln.summary}
 		<TurnSummaryFooter summary={ln.summary} />

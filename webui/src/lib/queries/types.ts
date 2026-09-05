@@ -334,3 +334,40 @@ export interface ResourceShareInfo {
   action: string;
   granted_at: string;
 }
+
+/** A file the user uploaded into a session, kept in the blob store so the
+ *  conversation can show it again (`GET /sessions/{id}/attachments`). */
+export interface SessionAttachment {
+  id: string;
+  session_id: string;
+  message_id: string | null;
+  name: string;
+  hash: string;
+  size: number;
+  content_type: string | null;
+  /** Epoch ms. */
+  created_at: number;
+}
+
+export const ATTACHMENT_CLOCK_SLACK_MS = 60_000;
+
+/** The upload a user message refers to by `name`: the newest one recorded
+ *  before the message (plus clock slack), else the earliest of that name. */
+export function pickAttachment(
+  all: SessionAttachment[],
+  name: string,
+  messageTs: number,
+): SessionAttachment | null {
+  const same = all.filter((a) => a.name === name);
+  if (same.length === 0) return null;
+  const before = same.filter(
+    (a) => a.created_at <= messageTs + ATTACHMENT_CLOCK_SLACK_MS,
+  );
+  if (before.length)
+    return before.reduce((best, a) => (a.created_at > best.created_at ? a : best));
+  return same.reduce((best, a) => (a.created_at < best.created_at ? a : best));
+}
+
+export function attachmentBlobUrl(sessionId: string, hash: string): string {
+  return `/api/v1/sessions/${encodeURIComponent(sessionId)}/blobs/${encodeURIComponent(hash)}`;
+}

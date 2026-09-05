@@ -106,6 +106,20 @@ export const useSessionLangfuse = (
     retry: false,
   }));
 
+/** Files the user uploaded into a session. Immutable per session id (a
+ *  send appends, never rewrites), so the sender invalidates after staging. */
+export const useSessionAttachments = (
+  id: () => string,
+  enabled: () => boolean = () => true,
+) =>
+  createQuery(() => ({
+    queryKey: qk.sessionAttachments(id()),
+    queryFn: () => endpoints.sessionAttachments(id()),
+    enabled: enabled() && !!id(),
+    staleTime: 5 * 60_000,
+    retry: false,
+  }));
+
 export const useRecentDirs = (machineId: () => string) =>
   createQuery(() => ({
     queryKey: ["recent-dirs", machineId()],

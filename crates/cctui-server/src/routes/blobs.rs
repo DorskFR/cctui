@@ -58,41 +58,46 @@ pub async fn put_blob(
         return Err(StatusCode::BAD_REQUEST);
     }
 
-    let exists: Option<String> =
-        sqlx::query_scalar("SELECT hash FROM daemon_blobs WHERE hash = $1")
-            .bind(&hash)
-            .fetch_optional(&state.pool)
-            .await
-            .map_err(|e| {
-                tracing::error!("blob dedup lookup: {e}");
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?;
-    if exists.is_some() {
-        return Ok(StatusCode::OK);
-    }
-
     let media_type = headers
         .get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .filter(|v| !v.is_empty() && *v != "application/octet-stream");
-    let byte_len = i64::try_from(body.len()).unwrap_or(i64::MAX);
 
-    sqlx::query(
+    match store_blob(&state.pool, &body, media_type).await {
+        Ok(StoredBlob { created: true, .. }) => Ok(StatusCode::CREATED),
+        Ok(StoredBlob { created: false, .. }) => Ok(StatusCode::OK),
+        Err(e) => {
+            tracing::error!("blob store: {e}");
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+pub struct StoredBlob {
+    pub hash: String,
+    pub created: bool,
+}
+
+/// Idempotent: an existing hash is left as is (`created: false`).
+pub async fn store_blob(
+    pool: &sqlx::PgPool,
+    bytes: &[u8],
+    media_type: Option<&str>,
+) -> Result<StoredBlob, sqlx::Error> {
+    let hash = hex::encode(Sha256::digest(bytes));
+    let byte_len = i64::try_from(bytes.len()).unwrap_or(i64::MAX);
+    let rows = sqlx::query(
         "INSERT INTO daemon_blobs (hash, media_type, byte_len, bytes) VALUES ($1, $2, $3, $4) \
          ON CONFLICT (hash) DO NOTHING",
     )
     .bind(&hash)
     .bind(media_type)
     .bind(byte_len)
-    .bind(body.as_ref())
-    .execute(&state.pool)
-    .await
-    .map_err(|e| {
-        tracing::error!("blob insert: {e}");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
-
-    Ok(StatusCode::CREATED)
+    .bind(bytes)
+    .execute(pool)
+    .await?
+    .rows_affected();
+    Ok(StoredBlob { hash, created: rows == 1 })
 }
 
 pub async fn get_blob(

@@ -2,6 +2,7 @@ pub mod account_pools;
 pub mod account_redirects;
 pub mod accounts;
 pub mod admin_auth;
+pub mod attachments;
 pub mod auth;
 pub mod blobs;
 pub mod capabilities;
