@@ -2,7 +2,6 @@
 	import type { UserTokenRow } from '@bindings/UserTokenRow';
 	import { Button, type Column, ConfirmModal, DataTable, IconButton, Text, Timestamp } from '@dorsk/tsumikit';
 	import EditEntityModal from '$lib/components/molecules/EditEntityModal.svelte';
-	import RowActions from '$lib/components/molecules/RowActions.svelte';
 	import { useTokens, useUserActions } from '$lib/queries';
 	import { toasts } from '$lib/toast.svelte';
 	import { errMessage } from '$lib/api';
@@ -39,8 +38,9 @@
 
 	const columns: Column<UserTokenRow>[] = [
 		{ key: 'label', label: m.users_col_token(), role: 'title' },
-		{ key: 'status', label: m.users_col_status(), width: '7rem', role: 'meta' },
-		{ key: 'created', label: m.users_col_created(), width: '16rem', role: 'meta' }
+		{ key: 'status', label: m.users_col_status(), width: '7rem', nowrap: true, role: 'meta' },
+		{ key: 'created', label: m.users_col_created(), width: '16rem', nowrap: true, role: 'meta' },
+		{ key: 'actions', label: '', width: '5rem', nowrap: true, align: 'right', role: 'actions' }
 	];
 
 	function mint(label: string | null) {
@@ -78,7 +78,7 @@
 {/snippet}
 {#snippet colActions(t: UserTokenRow)}
 	{#if canManage}
-		<RowActions>
+		<span class="row-actions">
 			{#if !t.revoked_at}
 				<IconButton
 					inline
@@ -98,7 +98,7 @@
 				title={t.revoked_at ? m.common_delete() : m.users_revoke()}
 				onclick={() => (dropTarget = t)}
 			/>
-		</RowActions>
+		</span>
 	{/if}
 {/snippet}
 
@@ -127,9 +127,8 @@
 		loadingLabel={m.common_loading()}
 		empty={m.users_tokens_empty()}
 		rowClass={(t) => (t.revoked_at ? 'row-dim' : undefined)}
-		rowActions={colActions}
-		rowActionsLabel={m.common_actions()}
-		cellSnippets={{ label: colLabel, status: colStatus, created: colCreated }}
+		layout="fixed"
+		cellSnippets={{ label: colLabel, status: colStatus, created: colCreated, actions: colActions }}
 	/>
 </section>
 
@@ -170,6 +169,12 @@
 {/if}
 
 <style>
+	.row-actions {
+		display: inline-flex;
+		align-items: center;
+		justify-content: flex-end;
+		gap: var(--sp-1);
+	}
 	.tbl {
 		border: 1px solid var(--border);
 		border-radius: var(--r-md);

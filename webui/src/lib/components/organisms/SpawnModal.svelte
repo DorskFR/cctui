@@ -722,11 +722,9 @@
 		if (docked) onclose();
 	}
 
-	const hotkeys = $derived(settings.state.display.archiveShortcut);
-	const spawnLabel = $derived.by(() => {
-		const text = target !== 'machine' ? m.spawn_action_dispatch() : m.spawn_action_spawn();
-		return hotkeys ? `${text} (${submitChordLabel()})` : text;
-	});
+	const spawnLabel = $derived(
+		`${target !== 'machine' ? m.spawn_action_dispatch() : m.spawn_action_spawn()} (${submitChordLabel()})`
+	);
 </script>
 
 <!-- The form body and the action row are snippets so the Modal and the docked
@@ -800,7 +798,7 @@
 			class="stack"
 			use:dialogBackdropGuard
 			onkeydown={(e: KeyboardEvent) => {
-				if (hotkeys && isSubmitChord(e) && !busy && valid) {
+				if (isSubmitChord(e) && !busy && valid) {
 					e.preventDefault();
 					void submit();
 				}

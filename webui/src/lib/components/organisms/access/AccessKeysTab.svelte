@@ -11,7 +11,6 @@
 		Timestamp
 	} from '@dorsk/tsumikit';
 	import MachineBadge from '$lib/components/molecules/MachineBadge.svelte';
-	import RowActions from '$lib/components/molecules/RowActions.svelte';
 	import { useUserActions, useUserKeys } from '$lib/queries';
 	import { toasts } from '$lib/toast.svelte';
 	import { errMessage } from '$lib/api';
@@ -46,10 +45,11 @@
 
 	const columns: Column<ApiKeyRow>[] = [
 		{ key: 'label', label: m.access_col_key(), role: 'title' },
-		{ key: 'preview', label: m.access_col_preview(), width: '9rem', role: 'detail', hideBelow: 'md' },
-		{ key: 'scopes', label: m.access_col_scopes(), role: 'meta' },
-		{ key: 'created', label: m.users_col_created(), width: '7rem', role: 'meta', hideBelow: 'sm' },
-		{ key: 'used', label: m.users_col_last_used(), width: '7rem', role: 'meta' }
+		{ key: 'preview', label: m.access_col_preview(), width: '9rem', nowrap: true, role: 'detail', hideBelow: 'md' },
+		{ key: 'scopes', label: m.access_col_scopes(), width: '15rem', role: 'meta' },
+		{ key: 'created', label: m.users_col_created(), width: '7rem', nowrap: true, role: 'meta', hideBelow: 'sm' },
+		{ key: 'used', label: m.users_col_last_used(), width: '7rem', nowrap: true, role: 'meta' },
+		{ key: 'actions', label: '', width: '5rem', nowrap: true, align: 'right', role: 'actions' }
 	];
 
 	function mint(label: string | null, scopes: string[]) {
@@ -102,7 +102,7 @@
 {/snippet}
 {#snippet colActions(k: ApiKeyRow)}
 	{#if canManage && !k.revoked_at}
-		<RowActions>
+		<span class="row-actions">
 			<IconButton
 				inline
 				icon="edit"
@@ -120,7 +120,7 @@
 				title={m.users_revoke_key()}
 				onclick={() => (revokeTarget = k)}
 			/>
-		</RowActions>
+		</span>
 	{/if}
 {/snippet}
 
@@ -149,14 +149,14 @@
 		loadingLabel={m.common_loading()}
 		empty={m.access_keys_empty()}
 		rowClass={(k) => (k.revoked_at ? 'row-dim' : undefined)}
-		rowActions={colActions}
-		rowActionsLabel={m.common_actions()}
+		layout="fixed"
 		cellSnippets={{
 			label: colLabel,
 			preview: colPreview,
 			scopes: colScopes,
 			created: colCreated,
-			used: colUsed
+			used: colUsed,
+			actions: colActions
 		}}
 	/>
 </section>
@@ -197,6 +197,12 @@
 {/if}
 
 <style>
+	.row-actions {
+		display: inline-flex;
+		align-items: center;
+		justify-content: flex-end;
+		gap: var(--sp-1);
+	}
 	.tbl {
 		border: 1px solid var(--border);
 		border-radius: var(--r-md);
@@ -241,11 +247,9 @@
 		color: var(--text-faint);
 	}
 	.scopes {
-		display: flex;
-		flex-wrap: wrap;
+		display: inline-flex;
 		gap: var(--sp-2);
-		font-size: var(--fs-xs);
-		color: var(--text);
+		white-space: nowrap;
 	}
 	.scopes .missing {
 		color: var(--text-faint);

@@ -12,7 +12,6 @@
 	} from '@dorsk/tsumikit';
 	import EditEntityModal from '$lib/components/molecules/EditEntityModal.svelte';
 	import MachineBadge from '$lib/components/molecules/MachineBadge.svelte';
-	import RowActions from '$lib/components/molecules/RowActions.svelte';
 	import { useMachines, useUserActions } from '$lib/queries';
 	import { toasts } from '$lib/toast.svelte';
 	import { errMessage } from '$lib/api';
@@ -41,10 +40,11 @@
 
 	const columns: Column<MachineRow>[] = [
 		{ key: 'machine', label: m.users_col_machine(), role: 'title' },
-		{ key: 'status', label: m.users_col_status(), width: '7rem', role: 'meta' },
-		{ key: 'seen', label: m.users_col_last_seen(), width: '8rem', role: 'meta' },
-		{ key: 'preview', label: m.access_col_preview(), width: '9rem', role: 'detail', hideBelow: 'md' },
-		{ key: 'kind', label: m.access_col_kind(), width: '6rem', role: 'meta', hideBelow: 'sm' }
+		{ key: 'status', label: m.users_col_status(), width: '7rem', nowrap: true, role: 'meta' },
+		{ key: 'seen', label: m.users_col_last_seen(), width: '8rem', nowrap: true, role: 'meta' },
+		{ key: 'preview', label: m.access_col_preview(), width: '9rem', nowrap: true, role: 'detail', hideBelow: 'md' },
+		{ key: 'kind', label: m.access_col_kind(), width: '6rem', nowrap: true, role: 'meta', hideBelow: 'sm' },
+		{ key: 'actions', label: '', width: '5rem', nowrap: true, align: 'right', role: 'actions' }
 	];
 
 	const liveText = (mc: MachineRow) =>
@@ -93,7 +93,7 @@
 {/snippet}
 {#snippet colActions(mc: MachineRow)}
 	{#if canManage && mc.kind !== 'dispatch'}
-		<RowActions>
+		<span class="row-actions">
 			{#if !mc.revoked_at}
 				<IconButton
 					inline
@@ -113,7 +113,7 @@
 				title={mc.revoked_at ? m.users_purge() : m.users_revoke()}
 				onclick={() => (dropTarget = mc)}
 			/>
-		</RowActions>
+		</span>
 	{/if}
 {/snippet}
 
@@ -142,14 +142,14 @@
 		loadingLabel={m.common_loading()}
 		empty={m.users_machines_empty()}
 		rowClass={(mc) => (mc.revoked_at ? 'row-dim' : undefined)}
-		rowActions={colActions}
-		rowActionsLabel={m.common_actions()}
+		layout="fixed"
 		cellSnippets={{
 			machine: colMachine,
 			status: colStatus,
 			seen: colSeen,
 			preview: colPreview,
-			kind: colKind
+			kind: colKind,
+			actions: colActions
 		}}
 	/>
 </section>
@@ -184,6 +184,12 @@
 {/if}
 
 <style>
+	.row-actions {
+		display: inline-flex;
+		align-items: center;
+		justify-content: flex-end;
+		gap: var(--sp-1);
+	}
 	.tbl {
 		border: 1px solid var(--border);
 		border-radius: var(--r-md);
