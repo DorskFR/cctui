@@ -171,7 +171,7 @@
 	class="sc-wrap"
 	class:stale={view.stale}
 	class:child
-	class:row
+	class:compact={row}
 	onpointerdown={swipe.start}
 	onpointermove={swipe.move}
 	onpointerup={swipe.end}
@@ -221,7 +221,7 @@
 		width: auto;
 		margin-left: var(--sp-4);
 	}
-	.sc-wrap.row.child {
+	.sc-wrap.compact.child {
 		margin-left: 28px;
 	}
 	.sc-wrap.stale {

@@ -108,6 +108,7 @@
 			<div class="brand">
 				<Text variant="code" tone="accent" size="lg" weight="bold">»_</Text>
 				<Text size="lg" weight="bold">cctui</Text>
+				<span class="semver"><Text size="xs" tone="faint" variant="code">v{__CLIENT_VERSION__}</Text></span>
 			</div>
 		</NavLink>
 		<span
@@ -124,10 +125,7 @@
 			<span class="ver">
 				<NavLink href={version.data.commit_url} target="_blank" rel="noopener">
 					<Text size="xs" tone="faint" variant="code">
-						<span class="ver-cluster">
-							<span class="ver-part">srv v{version.data.version}</span>
-							<span class="ver-part">ui v{__CLIENT_VERSION__}</span>
-						</span>
+						srv v{version.data.version}
 					</Text>
 				</NavLink>
 			</span>
@@ -284,10 +282,9 @@
 		display: none;
 		flex: none;
 	}
-	.ver-cluster {
-		display: inline-flex;
-		flex-direction: column;
-		line-height: 1.15;
+	.semver {
+		align-self: flex-end;
+		padding-bottom: 0.2em;
 		white-space: nowrap;
 	}
 	@media (min-width: 64rem) {

@@ -26,7 +26,7 @@
 	} = $props();
 </script>
 
-<div class="row" class:selected>
+<div class="profile" class:selected>
 	<div class="head">
 		<input
 			class="radio"
@@ -58,13 +58,13 @@
 </div>
 
 <style>
-	.row {
+	.profile {
 		border: 1px solid var(--border);
 		border-radius: var(--r-md);
 		background: var(--bg);
 		overflow: hidden;
 	}
-	.row.selected {
+	.profile.selected {
 		border-color: var(--accent-dim);
 	}
 	.head {

@@ -17,6 +17,7 @@
 	} from '$lib/queries';
 	import { ws } from '$lib/ws.svelte';
 	import { toasts } from '$lib/toast.svelte';
+	import { isSubmitChord, submitChordLabel } from '$lib/platform';
 	import {
 		drafts,
 		SPAWN_SLOT,
@@ -800,7 +801,16 @@
 		disabled={target !== 'machine'}
 		onfiles={addFiles}
 	>
-		<div class="stack" use:dialogBackdropGuard>
+		<div
+			class="stack"
+			use:dialogBackdropGuard
+			onkeydown={(e: KeyboardEvent) => {
+				if (isSubmitChord(e) && !busy && valid) {
+					e.preventDefault();
+					void submit();
+				}
+			}}
+		>
 			{#if !docked && canDispatch}
 				<div class="switch-row">{@render targetSwitch()}</div>
 			{/if}
@@ -858,7 +868,14 @@
 		{/if}
 	</span>
 	<span class="foot-primary">
-		<Button size="sm" variant="primary" grow disabled={busy || !valid} onclick={submit}>
+		<Button
+			size="sm"
+			variant="primary"
+			grow
+			disabled={busy || !valid}
+			title={submitChordLabel()}
+			onclick={submit}
+		>
 			{#if busy}<span class="spin"></span>{:else}{spawnLabel}{/if}
 		</Button>
 	</span>
