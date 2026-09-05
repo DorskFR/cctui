@@ -47,6 +47,15 @@ export interface Form {
 	effort_claude: string;
 	effort_codex: string;
 	timeout: string;
+	// Context pack: a git repo the worker clones at boot, delivered as
+	// CONTEXT_PACK_* env vars on the opaque dispatch payload. The URL accepts the
+	// `@<ref>`/`#<subdir>` shorthand, so the three advanced fields are only for
+	// pinning them explicitly. The token may be a `vault:`/`k8s:` ref and falls
+	// back to GITHUB_TOKEN.
+	context_pack_url: string;
+	context_pack_ref: string;
+	context_pack_subdir: string;
+	context_pack_token: string;
 	// Label ids to attach to the spawned session. Remembered between
 	// New Session opens via LAST_SPAWN_LABELS so the next spawn defaults to the
 	// last-used set. Resolved against the live label list for display.

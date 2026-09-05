@@ -9,6 +9,8 @@ import {
 	poolName,
 	poolValue,
 	providerForAdapter,
+	contextPackEnv,
+	CONTEXT_PACK_ENV,
 	withAliasTargets
 } from './options';
 
@@ -113,5 +115,37 @@ describe('pool picker values', () => {
 		expect(poolName('')).toBeUndefined();
 		expect(poolName('acct')).toBeUndefined();
 		expect(poolName(NO_ACCOUNT)).toBeUndefined();
+	});
+});
+
+describe('contextPackEnv', () => {
+	const pack = (over: Partial<Record<string, string>> = {}) => ({
+		context_pack_url: '',
+		context_pack_ref: '',
+		context_pack_subdir: '',
+		context_pack_token: '',
+		...over
+	});
+
+	it('maps only the filled fields, trimmed', () => {
+		expect(contextPackEnv(pack({ context_pack_url: '  https://x/y  ' }))).toEqual({
+			CONTEXT_PACK_URL: 'https://x/y'
+		});
+	});
+
+	it('is empty when nothing is set (blanks add no env)', () => {
+		expect(contextPackEnv(pack({ context_pack_ref: '   ' }))).toEqual({});
+	});
+
+	it('overrides a duplicate raw env row when spread last', () => {
+		const raw = { CONTEXT_PACK_URL: 'https://typo', OTHER: 'keep' };
+		expect({ ...raw, ...contextPackEnv(pack({ context_pack_url: 'https://real' })) }).toEqual({
+			CONTEXT_PACK_URL: 'https://real',
+			OTHER: 'keep'
+		});
+	});
+
+	it('emits keys the env-key pattern accepts', () => {
+		for (const key of Object.values(CONTEXT_PACK_ENV)) expect(key).toMatch(/^[A-Z_][A-Z0-9_]*$/);
 	});
 });
