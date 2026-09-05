@@ -125,6 +125,16 @@ export const poolValue = (name: string): string => `${POOL_PREFIX}${name}`;
 export const poolName = (value: string): string | undefined =>
 	value.startsWith(POOL_PREFIX) ? value.slice(POOL_PREFIX.length) : undefined;
 
+/** Whether a picker value names an account that is no longer in the list, so
+ *  the form should fall back to Auto. Auto, the no-account sentinel and pool
+ *  picks are never stale: none of them is matched against account names (a
+ *  pool is resolved server-side to one of its members). */
+export const staleAccountPick = (value: string, accounts: OAuthAccount[]): boolean =>
+	!!value &&
+	value !== NO_ACCOUNT &&
+	poolName(value) === undefined &&
+	!accounts.some((a) => a.name === value);
+
 // A compatible-endpoint account carries its own model list; a native
 // subscription account uses the harness's native families.
 export const isCompatibleProvider = (provider: string): boolean =>

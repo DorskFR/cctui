@@ -7,6 +7,7 @@ import {
 	effectiveAdapterFor,
 	NO_ACCOUNT,
 	poolName,
+	staleAccountPick,
 	poolValue,
 	providerForAdapter,
 	contextPackEnv,
@@ -147,5 +148,23 @@ describe('contextPackEnv', () => {
 
 	it('emits keys the env-key pattern accepts', () => {
 		for (const key of Object.values(CONTEXT_PACK_ENV)) expect(key).toMatch(/^[A-Z_][A-Z0-9_]*$/);
+	});
+});
+
+describe('staleAccountPick', () => {
+	const accounts = [account('anthropic')];
+
+	it('flags a named account that no longer exists', () => {
+		expect(staleAccountPick('gone', accounts)).toBe(true);
+		expect(staleAccountPick('acct', accounts)).toBe(false);
+	});
+
+	it('never flags Auto, no-account, or a pool pick', () => {
+		// A pool is neither Auto nor a named account: it must survive the
+		// stale-account sweep or the picker snaps back to Auto on every click.
+		expect(staleAccountPick('', accounts)).toBe(false);
+		expect(staleAccountPick(NO_ACCOUNT, accounts)).toBe(false);
+		expect(staleAccountPick(poolValue('personal'), accounts)).toBe(false);
+		expect(staleAccountPick(poolValue('personal'), [])).toBe(false);
 	});
 });

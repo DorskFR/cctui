@@ -51,6 +51,7 @@
 		NO_ACCOUNT,
 		poolName,
 		poolValue,
+		staleAccountPick,
 		type Adapter
 	} from './options';
 	import { submitChordLabel, isSubmitChord } from '$lib/platform';
@@ -199,13 +200,10 @@
 
 	// Clear a stale account selection if it no longer exists (e.g. accounts
 	// reloaded); keep account_provider tracking the credential actually in use so
-	// the spawn request stays unambiguous.
+	// the spawn request stays unambiguous. A pool pick is not an account name and
+	// must survive this sweep, or the picker snaps back to Auto on every click.
 	$effect(() => {
-		if (
-			form.account &&
-			form.account !== NO_ACCOUNT &&
-			!accounts.some((a) => a.name === form.account)
-		) {
+		if (staleAccountPick(form.account, accounts)) {
 			form.account = '';
 		}
 	});
