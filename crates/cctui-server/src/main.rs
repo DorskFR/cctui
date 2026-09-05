@@ -953,6 +953,22 @@ fn build_api_routes() -> Routes {
             Authn::Bearer,
             Authenticated,
         )
+        .add(
+            &[GET, Method::POST],
+            "/profiles",
+            "List the caller's spawn profiles, or create one.",
+            get(routes::profiles::list_profiles).post(routes::profiles::create_profile),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[Method::PATCH, Method::DELETE],
+            "/profiles/{id}",
+            "Rename, adjust or delete a spawn profile.",
+            patch(routes::profiles::update_profile).delete(routes::profiles::delete_profile),
+            Authn::Bearer,
+            Authenticated,
+        )
         // Account pools: the durable "these accounts are interchangeable"
         // statement that bounds both auto-binding and mid-session failover.
         .add(

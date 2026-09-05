@@ -6,6 +6,9 @@ import type { UsageAnalytics } from "@bindings/UsageAnalytics";
 import type { SessionListItem } from "@bindings/SessionListItem";
 import type { AgentEvent } from "@bindings/AgentEvent";
 import type { SpawnRequest } from "@bindings/SpawnRequest";
+import type { SessionProfile } from "@bindings/SessionProfile";
+import type { CreateProfileRequest } from "@bindings/CreateProfileRequest";
+import type { UpdateProfileRequest } from "@bindings/UpdateProfileRequest";
 import type { SpawnResponse } from "@bindings/SpawnResponse";
 import type { ForkRequest } from "@bindings/ForkRequest";
 import type { ForkResponse } from "@bindings/ForkResponse";
@@ -127,6 +130,13 @@ export const endpoints = {
   sessionStats: () => api.get<SessionStats>("/sessions/stats"),
   /** Every label known to the server — feeds the picker + filter. */
   labels: () => api.get<LabelListResponse>("/labels"),
+  /** The caller's spawn profiles, oldest first. */
+  profiles: () => api.get<SessionProfile[]>("/profiles"),
+  createProfile: (body: CreateProfileRequest) =>
+    api.post<SessionProfile>("/profiles", body),
+  updateProfile: (id: string, body: UpdateProfileRequest) =>
+    api.patch<SessionProfile>(`/profiles/${id}`, body),
+  deleteProfile: (id: string) => api.del<void>(`/profiles/${id}`),
   /** Token totals across rolling windows for the Overview. `tzOffset` is
    * `Date.getTimezoneOffset()` — only used to anchor "today" to local midnight. */
   tokenStats: (tzOffset: number) =>

@@ -8,6 +8,10 @@ import {
 	labelPrefill,
 	latestDirFor,
 	latestEntryFor,
+	latestProfileFor,
+	profileUsage,
+	recordProfileUse,
+	WEEK_MS,
 	MACHINE_MEMORY_FIELDS,
 	machineMemoryKey,
 	memoryFieldsOf,
@@ -303,5 +307,41 @@ describe('labelPrefill', () => {
 	it('no-ops on an entry with no remembered labels, or when already equal', () => {
 		expect(labelPrefill([], [], null, withLabels(undefined))).toBeNull();
 		expect(labelPrefill(['a'], ['a'], null, withLabels(['a']))).toBeNull();
+	});
+});
+
+describe('latestProfileFor', () => {
+	it("names the profile of the machine's latest entry", () => {
+		let map: SpawnMemoryMap = {};
+		map = putSpawnMemory(map, machineMemoryKey('m1', '/a'), entry({ profile_id: 'p-old', at: 1 }));
+		map = putSpawnMemory(map, machineMemoryKey('m1', '/b'), entry({ profile_id: 'p-new', at: 9 }));
+		expect(latestProfileFor(map, 'm1')).toBe('p-new');
+		expect(latestProfileFor(map, 'm2')).toBeNull();
+	});
+
+	it('is null when the latest entry predates profiles', () => {
+		const map = putSpawnMemory({}, machineMemoryKey('m1', '/a'), entry());
+		expect(latestProfileFor(map, 'm1')).toBeNull();
+	});
+});
+
+describe('profile usage log', () => {
+	const now = 1_000_000_000_000;
+
+	it('counts this week, else reports the last use, else nothing', () => {
+		expect(profileUsage('', 'p1', now)).toBeNull();
+		let raw = recordProfileUse('', 'p1', now - 2 * WEEK_MS);
+		expect(profileUsage(raw, 'p1', now)).toEqual({ lastAt: now - 2 * WEEK_MS });
+		raw = recordProfileUse(raw, 'p1', now - 1000);
+		raw = recordProfileUse(raw, 'p1', now);
+		expect(profileUsage(raw, 'p1', now)).toEqual({ week: 2 });
+		expect(profileUsage(raw, 'p2', now)).toBeNull();
+	});
+
+	it('survives garbage and caps the log', () => {
+		expect(profileUsage('{not json', 'p1', now)).toBeNull();
+		let raw = '[]';
+		for (let i = 0; i < 250; i++) raw = recordProfileUse(raw, 'p1', now - i);
+		expect(JSON.parse(raw).p1).toHaveLength(200);
 	});
 });

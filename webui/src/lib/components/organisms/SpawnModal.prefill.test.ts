@@ -17,6 +17,13 @@ vi.mock('$lib/queries', () => {
 		useAccounts: () => q([]),
 		useAccountPools: () => q([]),
 		useLabels: () => q({ labels: [] }),
+		useProfiles: () => q([]),
+		useProfileActions: () => ({
+			create: async () => ({ id: 'p-1', name: 'Default' }),
+			update: async () => ({}),
+			remove: async () => {}
+		}),
+		useAllAccountsUsage: () => q([]),
 		useSessionActions: () => ({}),
 		useCodexModels: () => q(null),
 		useMergedCodexModels: () => q(null),

@@ -65,3 +65,9 @@ export interface Form {
 /** What opens the form pre-seeded: a session's config, or a draft to edit
  * (`draft_id` names its row, `env_keys` the comma-joined env var names). */
 export type SpawnPrefill = Partial<Form> & { draft_id?: string; env_keys?: string };
+
+/** One env-secret row of the spawn form. Values never reach a draft. */
+export interface EnvRow {
+	key: string;
+	value: string;
+}
