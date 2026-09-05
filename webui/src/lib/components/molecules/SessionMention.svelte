@@ -1,7 +1,7 @@
 <script lang="ts">
 	// `#` session-mention popover. Wraps a textarea (passed as children) and
-	// watches its caret: typing `#` opens a list of sessions that may still be
-	// working (see $lib/mention), filtered by what follows the `#`. Up/Down move
+	// watches its caret: typing `#` opens a list of non-archived sessions (see
+	// $lib/mention), filtered by what follows the `#`. Up/Down move
 	// the highlight, Enter/Tab or a tap picks, Escape closes. Picking replaces
 	// the `#query` with `#<id> (<name>) ` so the user can hand the id to their
 	// agent. The panel spans the wrapper's width: `placement="up"` pins it above
@@ -9,8 +9,9 @@
 	// opens below and flips up when the viewport has no room.
 	import type { SessionListItem } from '@bindings/SessionListItem';
 	import type { Snippet } from 'svelte';
-	import { tick } from 'svelte';
+	import { tick, untrack } from 'svelte';
 	import { Text } from '@dorsk/tsumikit';
+	import { clickOutside } from '$lib/clickOutside';
 	import { m } from '$lib/paraglide/messages';
 	import {
 		applyMention,
@@ -44,16 +45,27 @@
 	let index = $state(0);
 	let flipUp = $state(false);
 	let listEl = $state<HTMLElement | null>(null);
+	// `#` position the user dismissed (Escape / click away): the panel stays
+	// closed while the caret sits in that same trigger and comes back once the
+	// caret leaves it, or focus returns to the field.
+	let dismissed = $state<number | null>(null);
 
 	const candidates = $derived(mentionableSessions(sessions, excludeId));
 	const matches = $derived(trigger ? filterMentions(candidates, trigger.query).slice(0, 30) : []);
 	const open = $derived(trigger !== null);
 	const up = $derived(placement === 'up' || flipUp);
 
-	// Re-read the caret after any edit or caret move inside the textarea.
+	// Re-read the field after any edit, caret move or focus change. Reads the
+	// DOM value rather than the bound prop: the binding may lag the input event.
 	function refresh() {
 		if (!el) return;
-		const next = findTrigger(value, el.selectionStart ?? value.length);
+		const text = el.value;
+		const next = candidates.length ? findTrigger(text, el.selectionStart ?? text.length) : null;
+		if (!next) dismissed = null;
+		if (next && dismissed === next.start) {
+			trigger = null;
+			return;
+		}
 		const wasOpen = trigger !== null;
 		trigger = next;
 		if (!wasOpen && next) {
@@ -64,11 +76,12 @@
 			}
 		}
 	}
-	// A refresh runs on `input` from inside the wrapped field, but a
-	// programmatic clear (send) must close the panel too.
+	// Programmatic value changes (send clears the draft, history recall) must
+	// re-evaluate too, not only the field's own input events.
 	$effect(() => {
 		void value;
-		if (trigger) refresh();
+		void candidates;
+		untrack(refresh);
 	});
 	$effect(() => {
 		if (index >= matches.length) index = 0;
@@ -76,17 +89,21 @@
 	$effect(() => {
 		// Keep the highlighted row in view while arrowing through a long list.
 		const row = listEl?.children[index] as HTMLElement | undefined;
-		row?.scrollIntoView({ block: 'nearest' });
+		row?.scrollIntoView?.({ block: 'nearest' });
 	});
 
 	function close() {
 		trigger = null;
 	}
+	function dismiss() {
+		if (trigger) dismissed = trigger.start;
+		close();
+	}
 
 	async function pick(s: SessionListItem) {
 		if (!el || !trigger) return;
-		const caret = el.selectionStart ?? value.length;
-		const out = applyMention(value, caret, trigger, s);
+		const caret = el.selectionStart ?? el.value.length;
+		const out = applyMention(el.value, caret, trigger, s);
 		value = out.text;
 		close();
 		await tick();
@@ -116,7 +133,7 @@
 			case 'Escape':
 				e.preventDefault();
 				e.stopPropagation();
-				close();
+				dismiss();
 				return;
 		}
 	}
@@ -139,9 +156,11 @@
 <div
 	class="mention-wrap"
 	role="presentation"
+	use:clickOutside={dismiss}
 	onkeydowncapture={onKeydownCapture}
 	oninput={refresh}
 	onclick={refresh}
+	onfocusin={refresh}
 	onkeyup={(e) => {
 		if (!open && (e.key.startsWith('Arrow') || e.key === 'Home' || e.key === 'End')) refresh();
 	}}
