@@ -28,7 +28,7 @@
 	const acls = useUserAcls(() => userId);
 	const keys = useUserKeys(() => userId);
 	const actions = useUserActions();
-	const guard = (p: Promise<unknown>) => p.catch((e: Error) => toasts.err(e.message));
+	const guard = (p: Promise<unknown>) => p.catch((e: Error) => toasts.error(e.message));
 
 	const ceiling = $derived(new Set((acls.data?.scopes ?? []) as ScopeName[]));
 	// Only an admin may grant a user new capabilities; a user sees its own
@@ -64,7 +64,7 @@
 			newLabel = '';
 			newScopes = new Set(['read']);
 		} catch (e) {
-			toasts.err(errMessage(e));
+			toasts.error(errMessage(e));
 		}
 	}
 

@@ -34,7 +34,7 @@
 			await qc.invalidateQueries({ queryKey: qk.version });
 			toasts.ok(res.name ? m.settings_admin_instance_saved() : m.settings_admin_instance_cleared());
 		} catch (e) {
-			toasts.err(e instanceof Error ? e.message : String(e));
+			toasts.error(e instanceof Error ? e.message : String(e));
 		} finally {
 			instanceSaving = false;
 		}
@@ -56,7 +56,7 @@
 					: m.settings_version_up_to_date()
 			);
 		} catch (e) {
-			toasts.err(m.settings_version_check_failed({ error: e instanceof Error ? e.message : String(e) }));
+			toasts.error(m.settings_version_check_failed({ error: e instanceof Error ? e.message : String(e) }));
 		} finally {
 			updateChecking = false;
 		}
@@ -102,7 +102,7 @@
 			qc.invalidateQueries({ queryKey: qk.version });
 			toasts.ok(clear ? m.settings_self_update_cleared() : m.settings_self_update_saved());
 		} catch (e) {
-			toasts.err(e instanceof Error ? e.message : String(e));
+			toasts.error(e instanceof Error ? e.message : String(e));
 		} finally {
 			suSaving = false;
 		}

@@ -15,7 +15,7 @@ export function sessionFailureToast(ev: SessionEndedEvent, navigate: (href: stri
 	if (ev.reason !== 'crashed' && !FAILED_START_REASONS.has(ev.reason)) return false;
 	const raw = ev.detail?.trim() || m.spawn_error_unknown();
 	const detail = raw.length > TOAST_DETAIL_MAX ? `${raw.slice(0, TOAST_DETAIL_MAX - 1)}…` : raw;
-	toasts.err(m.sessions_end_failed_toast({ label: endReasonLabel(ev.reason), detail }), {
+	toasts.error(m.sessions_end_failed_toast({ label: endReasonLabel(ev.reason), detail }), undefined, {
 		label: m.sessions_end_diagnose(),
 		run: () => navigate(diagnoseHref(ev.session_id))
 	});

@@ -76,7 +76,7 @@
 			const { text, dropped } = dropMissingTokens(input, restored.missing);
 			if (dropped) {
 				input = text;
-				toasts.push(m.attachments_missing_dropped({ count: dropped }), 'info');
+				toasts.info(m.attachments_missing_dropped({ count: dropped }));
 			}
 			attachmentsKey = key;
 		})();
@@ -194,7 +194,7 @@
 		// message), but require at least one of text/attachments.
 		if ((!text && attachments.length === 0) || archived || uploading) return;
 		if (attachError) {
-			toasts.err(attachError);
+			toasts.error(attachError);
 			return;
 		}
 		// Stage any pending attachments first; append the staged absolute paths under
@@ -210,7 +210,7 @@
 				body = text ? `${text}\n\n${header}\n${list}` : `${header}\n${list}`;
 				attachments = [];
 			} catch (e) {
-				toasts.err(m.composer_attachment_upload_failed({ message: errMessage(e) }));
+				toasts.error(m.composer_attachment_upload_failed({ message: errMessage(e) }));
 				return;
 			} finally {
 				uploading = false;

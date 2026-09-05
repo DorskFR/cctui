@@ -7,7 +7,7 @@
 	// are delegated to callbacks; the editing UI state lives here.
 	import type { SessionListItem } from '@bindings/SessionListItem';
 	import type { Label } from '@bindings/Label';
-	import { statusBadgeClass } from '$lib/format';
+	import { statusBadgeTone } from '$lib/format';
 	import { sessionEnd, sessionEndTitle } from '$lib/sessionEnd';
 	import { branchOf } from '../../../../routes/sessions/sessions.logic';
 	import { fontScale, SCALE_LEVELS } from '$lib/fontscale.svelte';
@@ -309,7 +309,7 @@
 		</div>
 	{/if}
 	<div class="hmeta row row-wrap">
-		{#if showStatusBadge}<Badge class={statusBadgeClass(session.status)}>{session.status}</Badge>{/if}
+		{#if showStatusBadge}<Badge tone={statusBadgeTone(session.status)}>{session.status}</Badge>{/if}
 		{#if end}<Badge tone={end.tone} title={sessionEndTitle(end)} style={end.muted ? 'opacity:0.6' : undefined}>{end.label}</Badge>{/if}
 		<WorkingDir path={session.working_dir} />
 		{#if branch}

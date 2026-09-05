@@ -26,7 +26,7 @@
 	// Only an admin may list all users; a non-admin uses the self-service view.
 	const users = useUsers(() => me.data?.role === 'admin');
 	const actions = useUserActions();
-	const guard = (p: Promise<unknown>) => p.catch((e: Error) => toasts.err(e.message));
+	const guard = (p: Promise<unknown>) => p.catch((e: Error) => toasts.error(e.message));
 
 	let secret = $state<{ title: string; value: string } | null>(null);
 	// Pick a user from the dropdown; their detail renders full-width below.
@@ -47,7 +47,7 @@
 			selectedId = r.id;
 			showSecret(m.users_key_secret_title({ label: r.name }), r.key);
 		} catch (e) {
-			toasts.err(errMessage(e));
+			toasts.error(errMessage(e));
 		}
 	}
 	function rename(id: string, name: string | null) {

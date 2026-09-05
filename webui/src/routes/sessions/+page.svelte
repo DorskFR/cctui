@@ -221,11 +221,11 @@
 			// drop the id. Transient errors (network, 5xx) leave
 			// the URL intact so a retry/refresh can recover instead of nagging.
 			if (e instanceof ApiError && e.status === 404) {
-				toasts.err(m.sessions_toast_not_found());
+				toasts.error(m.sessions_toast_not_found());
 				openSession = null;
 				setUrlSession(null, true);
 			} else {
-				toasts.err(m.sessions_toast_open_failed({ error: errMessage(e) }));
+				toasts.error(m.sessions_toast_open_failed({ error: errMessage(e) }));
 			}
 		} finally {
 			urlResolving = false;
@@ -252,7 +252,7 @@
 			await qc.invalidateQueries({ queryKey: qk.sessions(false) });
 			await new Promise((r) => setTimeout(r, 500));
 		}
-		toasts.err(m.sessions_toast_fork_slow());
+		toasts.error(m.sessions_toast_fork_slow());
 	}
 
 	// URL → drawer: react to the `session` param (initial load, back/forward,
@@ -447,11 +447,11 @@
 		archiving = true;
 		try {
 			await actions.archiveMany(ids);
-			toasts.ok(m.sessions_toast_archived({ count: ids.length }), undoArchive(ids));
+			toasts.ok(m.sessions_toast_archived({ count: ids.length }), undefined, undoArchive(ids));
 			list.exitSelect();
 			refreshTick++;
 		} catch (e) {
-			toasts.err(errMessage(e));
+			toasts.error(errMessage(e));
 		} finally {
 			archiving = false;
 		}
@@ -468,11 +468,11 @@
 		archiving = true;
 		try {
 			await actions.archiveMany(ids);
-			toasts.ok(m.sessions_toast_archived({ count: ids.length }), undoArchive(ids));
+			toasts.ok(m.sessions_toast_archived({ count: ids.length }), undefined, undoArchive(ids));
 			refreshTick++;
 			qc.invalidateQueries({ queryKey: ['sessions'] });
 		} catch (e) {
-			toasts.err(errMessage(e));
+			toasts.error(errMessage(e));
 		} finally {
 			archiving = false;
 		}
@@ -487,11 +487,12 @@
 			else await actions.archive(s.id);
 			toasts.ok(
 				isArchived ? m.sessions_toast_unarchived() : m.sessions_toast_archived_one(),
+				undefined,
 				isArchived ? undefined : undoArchive([s.id])
 			);
 			refreshTick++;
 		} catch (e) {
-			toasts.err(errMessage(e));
+			toasts.error(errMessage(e));
 		}
 	}
 
@@ -504,7 +505,7 @@
 			toasts.ok(s.pinned ? m.sessions_toast_unpinned() : m.sessions_toast_pinned());
 			refreshTick++;
 		} catch (e) {
-			toasts.err(errMessage(e));
+			toasts.error(errMessage(e));
 		}
 	}
 
@@ -565,7 +566,7 @@
 			await actions.launchDraft(s.id);
 			toasts.ok(m.sessions_toast_draft_launched());
 		} catch (e) {
-			toasts.err(m.sessions_toast_launch_failed({ error: errMessage(e) }));
+			toasts.error(m.sessions_toast_launch_failed({ error: errMessage(e) }));
 		} finally {
 			launchingDraft = null;
 		}
@@ -577,7 +578,7 @@
 			await actions.discardDraft(s.id);
 			toasts.ok(m.sessions_toast_draft_discarded());
 		} catch (e) {
-			toasts.err(errMessage(e));
+			toasts.error(errMessage(e));
 		}
 	}
 
@@ -620,7 +621,7 @@
 				await saveCurrentSpawnForm();
 				toasts.ok(m.sessions_toast_current_saved_draft());
 			} catch (e) {
-				toasts.err(m.sessions_toast_save_current_failed({ error: errMessage(e) }));
+				toasts.error(m.sessions_toast_save_current_failed({ error: errMessage(e) }));
 				return;
 			}
 		}

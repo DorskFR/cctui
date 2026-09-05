@@ -50,9 +50,9 @@
 			const r = await claim(id, reset.credit_id);
 			const text = m.sessions_limit_reset_outcome({ outcome: r.outcome });
 			if (r.outcome === 'reset') toasts.ok(text);
-			else toasts.err(text);
+			else toasts.error(text);
 		} catch (e) {
-			toasts.err(errMessage(e));
+			toasts.error(errMessage(e));
 		} finally {
 			claiming = false;
 		}
@@ -99,7 +99,6 @@
 					<Button size="sm" onclick={() => (confirming = true)} loading={claiming}>
 						{limitResetLabel(reset)}
 					</Button>
-				{:else}
 					{#if confirming}
 						<Modal
 							title={m.sessions_limit_reset_confirm_title()}
@@ -116,6 +115,7 @@
 							{/snippet}
 						</Modal>
 					{/if}
+				{:else}
 					<Tooltip text={limitResetHint(reset)}>
 						{#snippet trigger()}
 							<span class="reset-trigger">

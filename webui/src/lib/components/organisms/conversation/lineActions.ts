@@ -68,6 +68,6 @@ export async function saveLineImage(e: MouseEvent, ln: Line) {
 		a.click();
 		toasts.ok(m.conversation_saved_image());
 	} catch (err) {
-		toasts.err(m.conversation_image_export_failed({ message: errMessage(err) }));
+		toasts.error(m.conversation_image_export_failed({ message: errMessage(err) }));
 	}
 }

@@ -15,11 +15,10 @@
 	import { sessionFailureToast } from '$lib/sessionFailureToast';
 	import Header from '$lib/components/organisms/Header.svelte';
 	import BottomNav from '$lib/components/organisms/BottomNav.svelte';
-	import Toaster from '$lib/components/organisms/Toaster.svelte';
 	import Login from '$lib/components/organisms/Login.svelte';
 	import { installCodeCopy } from '$lib/codecopy';
 	import { installImageLightbox } from '$lib/imagelightbox';
-	import { Container } from '@dorsk/tsumikit';
+	import { Container, Toaster } from '@dorsk/tsumikit';
 	import { dockLayout } from '$lib/spawnDock.svelte';
 
 	let { children } = $props();
@@ -148,7 +147,7 @@
 			<Login />
 		{/if}
 	{/key}
-	<Toaster />
+	<div class="toaster-host" data-toast-pos={settings.toastPosition}><Toaster /></div>
 </PersistQueryClientProvider>
 
 <style>

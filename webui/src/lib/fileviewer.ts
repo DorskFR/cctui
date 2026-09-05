@@ -61,11 +61,11 @@ export async function openLocalFile(href: string, name: string): Promise<void> {
 	try {
 		res = await fetch(href, { credentials: 'same-origin' });
 	} catch {
-		toasts.err(m.conversation_file_open_failed({ name, status: 'network' }));
+		toasts.error(m.conversation_file_open_failed({ name, status: 'network' }));
 		return;
 	}
 	if (!res.ok) {
-		toasts.err(refusalMessage(res.status, name));
+		toasts.error(refusalMessage(res.status, name));
 		return;
 	}
 	const kind = classify(res.headers.get('content-type'));

@@ -56,7 +56,7 @@
 			await loadPasskeys();
 			toasts.ok(m.settings_passkeys_enrolled());
 		} catch (e) {
-			if (!(e instanceof PasskeyAborted)) toasts.err(e instanceof Error ? e.message : String(e));
+			if (!(e instanceof PasskeyAborted)) toasts.error(e instanceof Error ? e.message : String(e));
 		} finally {
 			passkeyBusy = false;
 		}
@@ -74,7 +74,7 @@
 			});
 			toasts.ok(m.settings_passkeys_test_ok({ label: res.label }));
 		} catch (e) {
-			if (!(e instanceof PasskeyAborted)) toasts.err(e instanceof Error ? e.message : String(e));
+			if (!(e instanceof PasskeyAborted)) toasts.error(e instanceof Error ? e.message : String(e));
 		} finally {
 			passkeyTesting = false;
 		}
@@ -86,7 +86,7 @@
 			await loadPasskeys();
 			toasts.ok(m.settings_passkeys_revoked());
 		} catch (e) {
-			toasts.err(e instanceof Error ? e.message : String(e));
+			toasts.error(e instanceof Error ? e.message : String(e));
 		}
 	}
 
@@ -95,7 +95,7 @@
 			await endpoints.setPasskeyAutoPrompt(on);
 			if (passkeyCfg) passkeyCfg = { ...passkeyCfg, auto_prompt: on };
 		} catch (e) {
-			toasts.err(e instanceof Error ? e.message : String(e));
+			toasts.error(e instanceof Error ? e.message : String(e));
 		}
 	}
 

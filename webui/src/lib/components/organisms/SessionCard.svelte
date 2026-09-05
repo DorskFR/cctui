@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { SessionListItem } from '@bindings/SessionListItem';
-	import { statusBadgeClass, modelShort, modelFamily } from '$lib/format';
+	import { statusBadgeTone, modelShort, modelFamily } from '$lib/format';
 	import { sessionEnd, sessionEndTitle } from '$lib/sessionEnd';
 	import MachineBadge from '$lib/components/molecules/MachineBadge.svelte';
 	import AccountBadge from '$lib/components/molecules/AccountBadge.svelte';
@@ -448,11 +448,11 @@
 						{@render activity()}
 					</span>
 					<span class="trail">
-						{#if showStatusBadge}<Badge class={statusBadgeClass(s.status)} style="padding:0.05rem var(--sp-2)">{statusLabel(s.status)}</Badge>{/if}
-						{#if end}<span class="end-badge" class:end-muted={end.muted} title={sessionEndTitle(end)}><Badge tone={end.tone} style="padding:0.05rem var(--sp-2)">{end.badge}</Badge></span>{/if}
+						{#if showStatusBadge}<Badge tone={statusBadgeTone(s.status)} size="xs">{statusLabel(s.status)}</Badge>{/if}
+						{#if end}<span class="end-badge" class:end-muted={end.muted} title={sessionEndTitle(end)}><Badge tone={end.tone} size="xs">{end.badge}</Badge></span>{/if}
 						{@render unreadBadge()}
-						{#if pendingCount > 0}<Badge tone="warn" style="padding:0.05rem var(--sp-2)">{m.sessions_perm_count({ count: pendingCount })}</Badge>{/if}
-						{#if s.auto_approve}<Badge tone="warn" style="padding:0.05rem var(--sp-2)" title={m.sessions_auto_approve_title()}>⚡</Badge>{/if}
+						{#if pendingCount > 0}<Badge tone="warn" size="xs" numeric>{m.sessions_perm_count({ count: pendingCount })}</Badge>{/if}
+						{#if s.auto_approve}<Badge tone="warn" size="xs" title={m.sessions_auto_approve_title()}>⚡</Badge>{/if}
 						{@render time()}
 					</span>
 				</Cluster>
@@ -554,10 +554,10 @@
 {#snippet engine()}
 	<SessionDot session={s} {livenessClass} {now} />
 	{#if stale}
-		<Badge tone="warn" style="padding:0.05rem var(--sp-2)" title={m.sessions_stale_title()}>{m.sessions_stale_badge()}</Badge>
+		<Badge tone="warn" size="xs" title={m.sessions_stale_title()}>{m.sessions_stale_badge()}</Badge>
 	{/if}
 	{#if child}
-		<Badge tone="info" style="padding:0.05rem var(--sp-2)">{m.sessions_subagent_badge()}</Badge>
+		<Badge tone="info" size="xs">{m.sessions_subagent_badge()}</Badge>
 	{:else}
 		<MachineBadge name={s.machine_name} id={s.machine_id} hue={s.machine_hue} mono />
 		<AccountBadge name={s.account_name} warn={accountTrafficWarning(s)} showName={settings.accountNames} />
@@ -598,6 +598,7 @@
 			tone="danger"
 			active
 			size="sm"
+			numeric
 			style="flex:none"
 			title={m.sessions_unread_title({ count: unreadCount })}>{unreadCount}</Badge
 		>{/if}
