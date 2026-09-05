@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import type { TokenUsage } from '@bindings/TokenUsage';
 import { tokenUsageLayout } from './TokenUsage.logic';
@@ -48,5 +49,32 @@ describe('tokenUsageLayout', () => {
 		expect(l.total).toBe(1200);
 		expect(tokenUsageLayout(usage({ cost_usd: null as unknown as number })).cost).toBe(0);
 		expect(tokenUsageLayout(usage(), { cold: true }).showCold).toBe(true);
+	});
+});
+
+// The degradation itself is CSS (a container query cannot be evaluated in a
+// layout-less DOM), so what a unit test CAN guard is the wiring that made
+// CCT-846 regress: the molecule querying host containers that nobody declared.
+const src = (rel: string) => readFileSync(new URL(rel, import.meta.url), 'utf8');
+const containerBlock = (css: string, name: string) =>
+	css.match(new RegExp(`@container ${name} \\(max-width:[^)]+\\) \\{[\\s\\S]*?\\n\\t\\}`))?.[0] ?? '';
+
+describe('cramped-container degradation', () => {
+	const svelte = src('./TokenUsage.svelte');
+
+	it.each(['sess-card', 'drawer-head'])('drops the ↑↓⚡ detail and keeps Σ inside a cramped %s', (name) => {
+		const block = containerBlock(svelte, name);
+		expect(block).toMatch(/\.detail \{\s*display: none;/);
+		expect(block).toMatch(/\.sum-compact-only \{\s*display: contents;/);
+	});
+
+	it('has the hosts that declare those containers', () => {
+		expect(src('../organisms/SessionCard.svelte')).toContain('container: sess-card / inline-size;');
+		expect(src('../organisms/conversation/DrawerHeader.svelte')).toContain('container: drawer-head / inline-size;');
+	});
+
+	it('renders Σ in the degraded form even when the mount opted out of it', () => {
+		expect(tokenUsageLayout(usage(), { showSum: false }).sumMode).toBe('compact-only');
+		expect(svelte).toContain('class:sum-compact-only={layout.sumMode === \'compact-only\'}');
 	});
 });
