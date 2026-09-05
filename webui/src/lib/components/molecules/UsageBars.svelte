@@ -1,7 +1,6 @@
 <script lang="ts">
 	import type { SoftLimitConfig } from '$lib/queries';
-	import { useAccountUsage } from '$lib/queries';
-	import { useLimitReset } from '$lib/queries';
+	import { useAccountActions, useAccountUsage, useLimitReset } from '$lib/queries';
 	import { Button, Modal, Text, Tooltip } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 	import { toasts } from '$lib/toast.svelte';
@@ -9,23 +8,42 @@
 	import SoftLimit from '$lib/components/molecules/SoftLimit.svelte';
 	import { mergeUsageWindows } from '$lib/components/molecules/usage-windows';
 	import { limitResetHint, limitResetLabel } from '$lib/components/molecules/limit-reset';
+	import { withCap } from '$lib/components/molecules/cap-bar.logic';
 
-	// Per-account subscription usage shown as horizontal bars:
-	// one SoftLimit row per normalized usage window, plus a separate section for
-	// caps configured on windows the latest response didn't report. Reuses the
-	// lazy/slow-refresh fetch; renders nothing for providers without a usage API.
+	// Per-provider subscription usage as cap bars: one SoftLimit row per
+	// normalized usage window, plus a section for caps configured on windows the
+	// latest response didn't report. Renders nothing for providers without a
+	// usage API.
 	let {
 		id,
 		provider,
+		accountId = null,
 		enabled = true,
 		softLimits = null
 	}: {
 		id: string;
 		provider: string;
+		/** With the owning account, a dragged cap PATCHes the provider's soft limits. */
+		accountId?: string | null;
 		enabled?: boolean;
 		/** Configured caps, merged onto the matching window by key. */
 		softLimits?: Record<string, SoftLimitConfig> | null;
 	} = $props();
+
+	const actions = useAccountActions();
+	const setCap = $derived(
+		accountId === null
+			? undefined
+			: (key: string) => async (cap: number | null) => {
+					try {
+						await actions.updateProvider(accountId, id, {
+							soft_limits: withCap(softLimits, key, cap)
+						});
+					} catch (e) {
+						toasts.error(errMessage(e));
+					}
+				}
+	);
 
 	const active = $derived(
 		enabled && (provider === 'anthropic' || provider === 'openai' || provider === 'fireworks')
@@ -78,6 +96,7 @@
 				bypass={r.bypass}
 				usd={r.usd}
 				pace={r.pace}
+				oncapchange={r.usd ? undefined : setCap?.(r.key)}
 			/>
 		{/each}
 		{#if rows.unobserved.length}
@@ -89,8 +108,8 @@
 				cap={r.cap}
 				capUsd={r.capUsd}
 				bypass={r.bypass}
-				observed={false}
 				usd={r.usd}
+				oncapchange={r.usd ? undefined : setCap?.(r.key)}
 			/>
 			{/each}
 		{/if}

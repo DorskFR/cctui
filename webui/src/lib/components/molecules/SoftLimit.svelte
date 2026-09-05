@@ -1,14 +1,13 @@
 <script lang="ts">
-	import { Input, Progress, Text, Timestamp } from '@dorsk/tsumikit';
+	import { CapBar, Input, Text } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 	import type { UsagePace } from '$lib/queries';
 	import { countdown, paceState, wallInMs } from '$lib/components/molecules/header-gauges.logic';
+	import { capFromBar, capToBar, resetIn, usdPct, usdReadout } from './cap-bar.logic';
 
-	// One usage window: its label + utilization bar + percent + reset +
-	// configured-cap marker, optionally with controls to set/clear the window's
-	// cap% and bypass minutes. The SAME component renders every window both in the
-	// read-only usage view and in the account editor — behaviour keyed off props,
-	// never a hardcoded window list.
+	// One usage window as a cap bar: consumption fill, draggable cap, readout.
+	// The same component renders the read-only usage view (`oncapchange`
+	// commits the drag) and the editor (`editable` adds the bypass input).
 	let {
 		label,
 		utilization = null,
@@ -18,64 +17,62 @@
 		capUsd = $bindable(null),
 		bypass = $bindable(null),
 		editable = false,
-		observed = true,
 		usd = false,
-		pace = null
+		pace = null,
+		oncapchange
 	}: {
 		label: string;
 		/** 0–100 (may exceed); null ⇒ not currently reported. */
 		utilization?: number | null;
-		/** USD spent, for a dollar window. */
 		amountUsd?: number | null;
 		resets?: string | null;
 		cap?: number | null;
 		capUsd?: number | null;
 		bypass?: number | null;
 		editable?: boolean;
-		observed?: boolean;
 		/** Dollar window: spend against a $ cap instead of % of a quota. */
 		usd?: boolean;
-		/** Server burn rate: draws the expected-now marker and the pace glyph. */
 		pace?: UsagePace | null;
+		/** Commits a dragged cap; absent (and not `editable`) ⇒ the bar is read-only. */
+		oncapchange?: (cap: number | null) => void;
 	} = $props();
 
-	// Severity breakpoints on window utilization (%): below WARN → success,
-	// WARN–HOT → warn, at/above HOT → danger. Keeps bar + percent in lockstep.
-	const WARN_PCT = 70;
-	const HOT_PCT = 90;
-
-	// A dollar window has no quota to be a percentage of, so its bar is spend
-	// against its own cap; with no cap there is nothing to fill.
-	const usdPct = $derived(
-		amountUsd === null || capUsd == null || capUsd <= 0
-			? null
-			: Math.max(0, Math.min(100, Math.round((amountUsd / capUsd) * 100)))
-	);
 	const pct = $derived(
 		usd
-			? usdPct
+			? usdPct(amountUsd, capUsd)
 			: utilization === null
 				? null
 				: Math.max(0, Math.min(100, Math.round(utilization)))
 	);
-	const money = (n: number) => `$${n.toFixed(2)}`;
-	const tone = $derived(
-		pct === null ? 'success' : pct >= HOT_PCT ? 'danger' : pct >= WARN_PCT ? 'warn' : 'success'
-	);
-	const capPct = $derived(cap != null && cap >= 0 && cap <= 100 ? cap : null);
+	const reported = $derived(usd ? amountUsd !== null : utilization !== null);
+	const now = Date.now();
+	const readout = $derived.by(() => {
+		if (usd) return usdReadout(amountUsd, capUsd) ?? m.softlimit_not_reported();
+		if (pct === null) return m.softlimit_not_reported();
+		const time = resetIn(resets, now);
+		return time ? m.capbar_readout_resets({ pct, time }) : `${pct}%`;
+	});
+	const readonly = $derived(usd || (!editable && !oncapchange));
 
-	const state = $derived(usd ? null : paceState(pace));
+	let barCap = $derived(capToBar(cap));
+	function commit(next: number) {
+		const value = capFromBar(next);
+		cap = value;
+		oncapchange?.(value);
+	}
+
+	const paceKind = $derived(usd ? null : paceState(pace));
 	const expectedPct = $derived(
-		state && pace ? Math.max(0, Math.min(100, Math.round(pace.expected_pct))) : null
+		paceKind && pace ? Math.max(0, Math.min(100, Math.round(pace.expected_pct))) : null
 	);
-	const wallMs = $derived(state ? wallInMs(pace, resets, Date.now()) : null);
-	const paceGlyph = $derived(state === 'leaf' ? '🍃' : state === 'flame' ? '🔥' : '•');
+	const wallMs = $derived(paceKind ? wallInMs(pace, resets, now) : null);
+	const paceGlyph = $derived(paceKind === 'leaf' ? '🍃' : paceKind === 'flame' ? '🔥' : '•');
 	const paceTitle = $derived.by(() => {
-		if (!state || expectedPct === null) return '';
+		if (!paceKind || expectedPct === null) return '';
 		const parts = [
-			state === 'leaf'
+			paceKind === 'leaf'
 				? m.usage_battery_pace_leaf()
-				: state === 'flame'
+				: paceKind === 'flame'
 					? m.usage_battery_pace_flame()
 					: m.usage_battery_pace_neutral(),
 			m.usage_battery_pace_expected({ expected: expectedPct })
@@ -86,44 +83,43 @@
 </script>
 
 <div class="soft-limit">
-	<div class="head">
-		<Text size="xs" tone="muted" numeric class="sl-label">{label}</Text>
-		{#if usd && amountUsd !== null}
-			<Text size="xs" numeric tone={tone === 'danger' ? 'danger' : tone === 'warn' ? 'warn' : 'success'} class="sl-pct">
-				{money(amountUsd)}{#if capUsd != null}<Text tone="faint"> / {money(capUsd)}</Text>{/if}{#if resets}<Text tone="faint" class="sl-reset"> · resets <Timestamp value={resets} mode="relative" tone="faint" /></Text>{/if}
-			</Text>
-		{:else if pct !== null}
-			<Text size="xs" numeric tone={tone === 'danger' ? 'danger' : tone === 'warn' ? 'warn' : 'success'} class="sl-pct">
-				{pct}%{#if resets}<Text tone="faint" class="sl-reset"> · resets <Timestamp value={resets} mode="relative" tone="faint" /></Text>{/if}{#if state}<Text as="span" tone={state === 'flame' ? 'danger' : state === 'leaf' ? 'success' : 'faint'} title={paceTitle} aria-label={paceTitle} class="sl-pace"> {paceGlyph}{#if wallMs !== null} {countdown(wallMs)}{/if}</Text>{/if}
-			</Text>
-		{:else}
-			<Text size="xs" tone="faint" class="sl-pct">{m.softlimit_not_reported()}</Text>
-		{/if}
-	</div>
-
-	{#if pct !== null}
-		<div class="track-wrap">
-			<Progress value={pct} label={m.sessions_usage_bar_aria({ label })} tone={tone} class="sl-track" />
-			{#if !usd && capPct != null}
-				<span class="cap-marker" style={`left: ${capPct}%`} title={m.sessions_usage_soft_limit({ pct: capPct })}></span>
+	<CapBar
+		{label}
+		value={pct ?? 0}
+		bind:cap={barCap}
+		step={5}
+		warnAt={75}
+		labelWidth="96px"
+		readoutWidth={reported ? '76px' : 'auto'}
+		{readout}
+		{readonly}
+		tooltip={readonly ? m.capbar_tooltip_readonly({ pct: barCap }) : m.capbar_tooltip({ pct: barCap })}
+		onchange={commit}
+	>
+		{#snippet caption()}
+			{#if paceKind}
+				<Text
+					as="span"
+					size="xs"
+					tone={paceKind === 'flame' ? 'danger' : paceKind === 'leaf' ? 'success' : 'faint'}
+					title={paceTitle}
+					aria-label={paceTitle}
+				>
+					{paceGlyph}{#if wallMs !== null} {countdown(wallMs)}{/if}
+					{#if expectedPct !== null}· {m.usage_battery_pace_marker({ pct: expectedPct })}{/if}
+				</Text>
 			{/if}
-			{#if expectedPct !== null}
-				<span class="pace-marker" style={`left: ${expectedPct}%`} title={m.usage_battery_pace_marker({ pct: expectedPct })}></span>
-			{/if}
-		</div>
-	{/if}
+		{/snippet}
+	</CapBar>
 
 	{#if editable}
 		<div class="controls">
-			<label class="ctrl">
-				{#if usd}
+			{#if usd}
+				<label class="ctrl">
 					<Text as="div" tone="faint" size="xs">{m.softlimit_cap_usd_label()}</Text>
 					<Input type="number" step="0.01" bind:value={capUsd} placeholder="e.g. 5.00" />
-				{:else}
-					<Text as="div" tone="faint" size="xs">{m.softlimit_cap_label()}</Text>
-					<Input type="number" bind:value={cap} placeholder="e.g. 80" />
-				{/if}
-			</label>
+				</label>
+			{/if}
 			<label class="ctrl">
 				<Text as="div" tone="faint" size="xs">{m.softlimit_bypass_label()}</Text>
 				<Input type="number" bind:value={bypass} placeholder="e.g. 30" />
@@ -136,45 +132,8 @@
 	.soft-limit {
 		display: flex;
 		flex-direction: column;
-		gap: 0.25rem;
+		gap: var(--sp-1);
 		min-width: 0;
-	}
-	.head {
-		display: grid;
-		grid-template-columns: auto 1fr;
-		align-items: baseline;
-		column-gap: var(--sp-2);
-	}
-	.soft-limit :global(.sl-pct) {
-		justify-self: end;
-	}
-	.track-wrap {
-		position: relative;
-		margin-top: 0.15rem;
-	}
-	/* Soft-limit cap marker: a thin vertical line at the
-	   configured % so the ceiling reads against the live fill. */
-	.cap-marker {
-		position: absolute;
-		top: -1px;
-		bottom: -1px;
-		width: 2px;
-		transform: translateX(-1px);
-		background: var(--text-muted, currentColor);
-		opacity: 0.8;
-		pointer-events: none;
-		border-radius: 1px;
-	}
-	/* Expected-now marker: where an even spend would sit, so the fill reads
-	   as ahead of or behind pace at a glance. */
-	.pace-marker {
-		position: absolute;
-		top: -3px;
-		bottom: -3px;
-		width: 1px;
-		background: var(--accent);
-		opacity: 0.9;
-		pointer-events: none;
 	}
 	.controls {
 		display: grid;
@@ -185,7 +144,7 @@
 	.ctrl {
 		display: flex;
 		flex-direction: column;
-		gap: 0.25rem;
+		gap: var(--sp-1);
 		min-width: 0;
 	}
 </style>
