@@ -56,11 +56,19 @@ export const useAccountPools = (enabled: () => boolean = () => true) =>
     enabled: enabled(),
   }));
 
-/** Create / edit / delete pools; all three invalidate the pools query. */
+/** Create / edit / delete pools; every call invalidates the pools query. */
 export function useAccountPoolActions() {
   const qc = useQueryClient();
   const invalidate = () => qc.invalidateQueries({ queryKey: ["account-pools"] });
   return {
+    /** Replace several pools' memberships in order (an account leaving one
+     *  pool before joining another), invalidating once at the end. */
+    move: async (changes: { poolId: string; accounts: string[] }[]) => {
+      for (const c of changes) {
+        await endpoints.updateAccountPool(c.poolId, { accounts: c.accounts });
+      }
+      if (changes.length) invalidate();
+    },
     create: async (body: CreatePoolRequest) => {
       const r = await endpoints.createAccountPool(body);
       invalidate();
