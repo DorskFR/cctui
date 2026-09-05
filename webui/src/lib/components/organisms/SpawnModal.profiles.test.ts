@@ -121,6 +121,12 @@ const button = (text: string | RegExp) => {
 	return b;
 };
 const spawnButton = () => button(/^Spawn/);
+// The button's text minus the Kbd chord hint that follows the label.
+const spawnLabel = () => {
+	const b = spawnButton();
+	const chord = b.querySelector('.chord')?.textContent ?? '';
+	return (b.textContent ?? '').replace(chord, '').trim();
+};
 const mode = (v: string) => {
 	const el = document.querySelector<HTMLButtonElement>(`button[data-mode="${v}"]`);
 	if (!el) throw new Error(`permission mode ${v} not found`);
@@ -144,7 +150,7 @@ describe('SpawnModal profiles', () => {
 		await open();
 		expect(radio('p1').checked).toBe(true);
 		expect(radio('p2').checked).toBe(false);
-		expect(spawnButton().textContent?.trim()).toBe('Spawn · Orchestrator');
+		expect(spawnLabel()).toBe('Spawn · Orchestrator');
 		expect(document.body.textContent).toContain('Claude Code · 🐼 personal · Fable · medium · Yolo');
 	});
 
@@ -170,7 +176,7 @@ describe('SpawnModal profiles', () => {
 		lastEntry = { profile_id: 'p2' };
 		await open();
 		expect(radio('p2').checked).toBe(true);
-		expect(spawnButton().textContent?.trim()).toBe('Spawn · Codex quick');
+		expect(spawnLabel()).toBe('Spawn · Codex quick');
 		radio('p1').click();
 		await tick();
 		radio('p2').click();
@@ -208,7 +214,7 @@ describe('SpawnModal profiles', () => {
 		expect(document.body.textContent).toContain('1 changes');
 		button('Use once').click();
 		await tick();
-		expect(spawnButton().textContent?.trim()).toBe('Spawn · Orchestrator*');
+		expect(spawnLabel()).toBe('Spawn · Orchestrator*');
 		expect(update).not.toHaveBeenCalled();
 		const body = await submit();
 		expect(body).toMatchObject({ permission_mode: 'ask', model: 'fable' });
@@ -228,7 +234,7 @@ describe('SpawnModal profiles', () => {
 			name: 'Orchestrator',
 			spec: { harness: 'claude-code', account_id: 'a1', permission_mode: 'auto' }
 		});
-		expect(spawnButton().textContent?.trim()).toBe('Spawn · Orchestrator');
+		expect(spawnLabel()).toBe('Spawn · Orchestrator');
 	});
 
 	it('spawns inside the profile\'s pool, and unbound for a no-account profile', async () => {
