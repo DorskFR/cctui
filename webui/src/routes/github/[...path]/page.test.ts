@@ -44,6 +44,6 @@ describe('/github page (graceful degradation)', () => {
 		component = mount(Page, { target: document.body, context });
 		for (let i = 0; i < 5; i++) await tick();
 
-		expect(document.body.textContent).toContain('No review account linked yet');
+		expect(document.body.textContent).toContain('No GitHub connector yet');
 	});
 });

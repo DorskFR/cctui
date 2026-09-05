@@ -40,8 +40,11 @@
 		flex-direction: column;
 		gap: var(--sp-2);
 		min-width: 13rem;
-		max-height: min(60vh, 28rem);
+		/* Tall enough for the full category list, so the common case has no
+		   scrollbar of its own riding alongside the transcript's. */
+		max-height: min(80vh, 40rem);
 		overflow-y: auto;
+		scrollbar-gutter: stable;
 		padding: var(--sp-1);
 	}
 	.bulk {
