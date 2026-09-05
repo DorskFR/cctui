@@ -92,12 +92,5 @@
 				<option value="bottom">{m.settings_nav_position_bottom()}</option>
 			</Select>
 		</SettingRow>
-		<SettingRow label={m.usage_battery_setting_label()} help={m.usage_battery_setting_help()}>
-			<Switch
-				checked={settings.usageBatteries}
-				label={m.usage_battery_setting_label()}
-				onclick={() => settings.setUsageBatteries(!settings.usageBatteries)}
-			/>
-		</SettingRow>
 	</SettingGroup>
 </SettingSection>

@@ -2,7 +2,7 @@
 	import { CapBar, Input, Text } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 	import type { UsagePace } from '$lib/queries';
-	import { countdown, paceState, wallInMs } from '$lib/components/molecules/header-gauges.logic';
+	import { countdown, paceState, wallInMs } from '$lib/components/molecules/usage-battery.logic';
 	import { capFromBar, capToBar, resetIn, usdPct, usdReadout } from './cap-bar.logic';
 
 	// One usage window as a cap bar: consumption fill, draggable cap, readout.

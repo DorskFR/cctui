@@ -13,7 +13,7 @@
 	import type { MenuItem } from '@dorsk/tsumikit';
 	import NavLink from '$lib/components/atoms/NavLink.svelte';
 	import HeaderNav from '$lib/components/organisms/HeaderNav.svelte';
-	import HeaderGauges from '$lib/components/molecules/HeaderGauges.svelte';
+	import UsageBattery from '$lib/components/molecules/UsageBattery.svelte';
 	import UpdateModal from '$lib/components/organisms/UpdateModal.svelte';
 	import { m } from '$lib/paraglide/messages';
 
@@ -80,6 +80,9 @@
 	const userName = $derived(me.data?.user_name ?? '');
 	const userRole = $derived(me.data?.role ?? '');
 	const userInitial = $derived((userName || userRole || '?').slice(0, 1).toUpperCase());
+	const roleSuffix = $derived(
+		userRole && userRole.toLowerCase() !== userName.toLowerCase() ? userRole : ''
+	);
 	const latest = $derived(version.data?.latest_version ?? null);
 
 	const userMenu = $derived<MenuItem[]>([
@@ -117,7 +120,19 @@
 			<span class="tabs"><HeaderNav /></span>
 		{/if}
 		<div class="spacer"></div>
-		<span class="batt"><HeaderGauges /></span>
+		{#if version.data}
+			<span class="ver">
+				<NavLink href={version.data.commit_url} target="_blank" rel="noopener">
+					<Text size="xs" tone="faint" variant="code">
+						<span class="ver-cluster">
+							<span class="ver-part">srv v{version.data.version}</span>
+							<span class="ver-part">ui v{__CLIENT_VERSION__}</span>
+						</span>
+					</Text>
+				</NavLink>
+			</span>
+		{/if}
+		<span class="batt"><UsageBattery /></span>
 		<span class="divider" aria-hidden="true"></span>
 		<IconButton
 			emoji={notify.enabled ? '🔔' : '🔕'}
@@ -164,8 +179,8 @@
 					<span class="avatar" class:alert={!!latest} aria-hidden="true">{userInitial}</span>
 					<span class="who">
 						{#if userName}<span class="who-name">{userName}</span>{/if}
-						{#if userName && userRole}<span class="who-sep">·</span>{/if}
-						{#if userRole}<span class="who-role">{userRole}</span>{/if}
+						{#if userName && roleSuffix}<span class="who-sep">·</span>{/if}
+						{#if roleSuffix}<span class="who-role">{roleSuffix}</span>{/if}
 					</span>
 				</span>
 			{/snippet}
@@ -224,8 +239,6 @@
 	}
 	.hd-inner {
 		width: 100%;
-		max-width: var(--content-wide);
-		margin-inline: auto;
 		padding-inline: max(var(--sp-4), var(--safe-left)) max(var(--sp-4), var(--safe-right));
 		height: var(--header-h);
 		display: flex;
@@ -241,6 +254,7 @@
 	.tabs {
 		display: none;
 		min-width: 0;
+		align-self: stretch;
 		margin-left: var(--sp-3);
 	}
 	@media (min-width: 48rem) {
@@ -265,6 +279,21 @@
 	}
 	.conn.mid {
 		background: var(--warn);
+	}
+	.ver {
+		display: none;
+		flex: none;
+	}
+	.ver-cluster {
+		display: inline-flex;
+		flex-direction: column;
+		line-height: 1.15;
+		white-space: nowrap;
+	}
+	@media (min-width: 64rem) {
+		.ver {
+			display: inline-flex;
+		}
 	}
 	.batt {
 		display: inline-flex;

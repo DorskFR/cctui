@@ -849,15 +849,19 @@
 			<pre class="spawn-failure-detail">{spawnFailure}</pre>
 		</Callout>
 	{/if}
-	<Button size="sm" onclick={clearForm}>{m.spawn_clear()}</Button>
-	{#if target === 'machine'}
-		<Button size="sm" disabled={busy || !draftValid} onclick={submitDraft}>
-			{m.spawn_draft()}
+	<span class="foot-secondary">
+		<Button size="sm" onclick={clearForm}>{m.spawn_clear()}</Button>
+		{#if target === 'machine'}
+			<Button size="sm" disabled={busy || !draftValid} onclick={submitDraft}>
+				{m.spawn_draft()}
+			</Button>
+		{/if}
+	</span>
+	<span class="foot-primary">
+		<Button size="sm" variant="primary" grow disabled={busy || !valid} onclick={submit}>
+			{#if busy}<span class="spin"></span>{:else}{spawnLabel}{/if}
 		</Button>
-	{/if}
-	<Button size="sm" variant="primary" grow disabled={busy || !valid} onclick={submit}>
-		{#if busy}<span class="spin"></span>{:else}{spawnLabel}{/if}
-	</Button>
+	</span>
 {/snippet}
 
 <style>
@@ -960,8 +964,20 @@
 	.dock-foot {
 		flex: none;
 		display: flex;
+		flex-wrap: wrap;
 		gap: var(--sp-2);
 		padding: var(--sp-2) var(--sp-3);
 		border-top: 1px solid var(--border);
+	}
+	.foot-secondary {
+		display: flex;
+		gap: var(--sp-2);
+		flex: 0 1 auto;
+	}
+	/* The basis is the width below which the primary action would be squeezed:
+	   past it the row wraps and grow makes it span the whole footer. */
+	.foot-primary {
+		display: flex;
+		flex: 1 1 11rem;
 	}
 </style>

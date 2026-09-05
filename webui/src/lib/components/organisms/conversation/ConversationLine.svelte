@@ -182,7 +182,7 @@
 		<pre class="bubble mono code">{ln.text}</pre>
 	{/if}
 	{#if uploadRefs && uploadRefs.names.length}
-		<UserAttachments refs={uploadRefs} ts={ln.ts} />
+		<UserAttachments refs={uploadRefs} ts={ln.ts} {archived} />
 	{/if}
 	{#if ln.summary}
 		<TurnSummaryFooter summary={ln.summary} />

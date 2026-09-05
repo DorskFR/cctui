@@ -146,9 +146,6 @@ export interface DisplaySettings {
 	archiveShortcut: boolean;
 	notifyEnabled: boolean;
 	notifySound: boolean;
-	// Per-provider usage batteries in the header. On by default; off hides the
-	// whole strip (the stats dock still shows the full bars).
-	usageBatteries: boolean;
 	// Where the route navigation lives on a wide screen: tabs inline in the
 	// header, or the bottom bar. Below 48rem the bottom bar is always used.
 	nav: NavPosition;
@@ -269,7 +266,6 @@ const DEFAULTS: SettingsState = {
 		archiveShortcut: true,
 		notifyEnabled: false,
 		notifySound: true,
-		usageBatteries: true,
 		nav: DEFAULT_NAV_POSITION
 	},
 	spawnDock: { enabled: false, side: DEFAULT_SPAWN_DOCK_SIDE },
@@ -650,14 +646,6 @@ class Settings {
 
 	get locale(): Locale | null {
 		return this.state.locale;
-	}
-
-	setUsageBatteries(on: boolean) {
-		this.setDisplay({ usageBatteries: on });
-	}
-
-	get usageBatteries(): boolean {
-		return this.state.display.usageBatteries !== false;
 	}
 
 	setNav(nav: NavPosition) {

@@ -121,6 +121,11 @@ const button = (text: string | RegExp) => {
 	return b;
 };
 const spawnButton = () => button(/^Spawn/);
+const mode = (v: string) => {
+	const el = document.querySelector<HTMLButtonElement>(`button[data-mode="${v}"]`);
+	if (!el) throw new Error(`permission mode ${v} not found`);
+	return el;
+};
 const radio = (id: string) => {
 	const el = document.querySelector<HTMLInputElement>(`#sp-profile-${id}`);
 	if (!el) throw new Error(`profile radio ${id} not found`);
@@ -184,7 +189,7 @@ describe('SpawnModal profiles', () => {
 		await open();
 		button('Adjust profile').click();
 		await tick();
-		button('Ask').click();
+		mode('ask').click();
 		await tick();
 		expect(document.body.textContent).toContain('1 changes');
 		button('Use once').click();
@@ -199,7 +204,7 @@ describe('SpawnModal profiles', () => {
 		await open();
 		button('Adjust profile').click();
 		await tick();
-		button('Auto').click();
+		mode('auto').click();
 		await tick();
 		button('Save to profile').click();
 		await tick();

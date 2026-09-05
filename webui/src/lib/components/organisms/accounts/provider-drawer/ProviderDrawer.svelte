@@ -84,22 +84,6 @@
 		m.provider_drawer_title({ provider: providerLabel(kind), account: account.name })
 	);
 
-	const headerPin = $derived(edit.pinned ?? p.header_pin);
-	const canPin = $derived(
-		(kind === 'anthropic' || kind === 'openai' || kind === 'fireworks') && !p.managed
-	);
-	async function togglePin() {
-		const next = !headerPin;
-		edit.pinned = next;
-		try {
-			await actions.updateProvider(p.account_id, p.id, { header_pin: next });
-			qc.invalidateQueries({ queryKey: ['accounts-usage'] });
-		} catch (e) {
-			edit.pinned = !next;
-			toasts.error(errMessage(e));
-		}
-	}
-
 	const moveTargets = $derived(
 		accounts
 			.filter(
@@ -175,9 +159,6 @@
 				{windows}
 				bind:edits={edit.soft}
 				bind:rate={edit.rate}
-				{canPin}
-				pinned={headerPin}
-				onpin={togglePin}
 			/>
 		{:else if edit.page === 'models'}
 			<ModelsPage

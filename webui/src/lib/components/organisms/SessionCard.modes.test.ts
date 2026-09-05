@@ -73,7 +73,7 @@ describe('SessionCard modes', () => {
 		expect(el.querySelector('.preview')?.textContent).toBe('hello');
 		expect(el.querySelector('.branch')?.getAttribute('title')).toContain('cct-925-sessions-modes');
 		const pr = el.querySelector('a.pr-link');
-		expect(pr?.textContent?.trim()).toBe('⇄ DorskFR/cctui#311');
+		expect(pr?.textContent?.trim()).toBe('DorskFR/cctui#311');
 		expect(pr?.getAttribute('href')).toBe('https://github.com/DorskFR/cctui/pull/311');
 		expect(el.textContent).toContain('opus-4-8');
 	});

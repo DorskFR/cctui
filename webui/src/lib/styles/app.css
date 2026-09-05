@@ -7,6 +7,19 @@
 @import "@dorsk/tsumikit/styles/reset.css";
 @import "@dorsk/tsumikit/styles/utilities.css";
 
+/* Height of the chrome pinned to the bottom of the viewport. Everything that
+ * has to stop above it (content padding, the fixed docked panels) reads this.
+ * It lives on the document element, not the app shell, so a fixed panel cannot
+ * miss it by sitting outside that subtree. */
+:root {
+  --bottom-chrome: calc(var(--nav-h) + var(--safe-bottom));
+}
+@media (min-width: 48rem) {
+  :root[data-nav="top"] {
+    --bottom-chrome: var(--safe-bottom);
+  }
+}
+
 .muted {
   color: var(--text-muted);
 }

@@ -21,11 +21,7 @@
 	<div class="nav-inner">
 		{#each items as it (it.href)}
 			{@const active = isNavActive(it.href, page.url.pathname)}
-			<NavLink
-				href={it.href}
-				class="nav-btn {active ? 'active' : ''}"
-				aria-current={active ? 'page' : undefined}
-			>
+			<NavLink href={it.href} variant="bottom" {active}>
 				<span class="ico"
 					>{it.icon}{#if it.href === '/sessions' && totalUnread > 0}<span
 							class="unread-badge">{totalUnread > 99 ? '99+' : totalUnread}</span
@@ -60,21 +56,6 @@
 		margin-inline: auto;
 		display: flex;
 	}
-	/* nav-btn is the class on the NavLink atom, so reach it via :global. */
-	.nav-inner :global(.nav-btn) {
-		flex: 1;
-		display: flex;
-		flex-direction: column;
-		align-items: center;
-		justify-content: center;
-		gap: 2px;
-		color: var(--text-faint);
-		/* Footer is fixed chrome (like the px-pinned header) — it deliberately does
-		   NOT respond to the font-scale picker, so use fixed sizes for both the
-		   label and the glyph so they scale together / not at all. */
-		font-size: 0.6875rem;
-		font-weight: var(--fw-medium);
-	}
 	.nav-inner .ico {
 		font-size: 1.25rem;
 		line-height: 1;
@@ -95,11 +76,5 @@
 		line-height: 1rem;
 		text-align: center;
 		pointer-events: none;
-	}
-	.nav-inner :global(.nav-btn.active) {
-		color: var(--accent);
-	}
-	.nav-inner :global(.nav-btn:active) {
-		background: var(--bg-elevated-2);
 	}
 </style>

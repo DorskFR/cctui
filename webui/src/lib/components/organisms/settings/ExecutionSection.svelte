@@ -89,8 +89,8 @@
 			<Textarea
 				mono
 				autoresize
-				rows={3}
-				style="width:100%"
+				rows={6}
+				style="width:100%;min-height:9rem"
 				value={whipPhrasesText}
 				placeholder={'pour une autre session\nprêt pour ta relecture'}
 				onchange={(e) => setWhipPhrasesText((e.currentTarget as HTMLTextAreaElement).value)}
@@ -99,8 +99,8 @@
 		<SettingRow label={m.settings_whip_guidance_label()} help={m.settings_whip_guidance_hint()} wide>
 			<Textarea
 				autoresize
-				rows={2}
-				style="width:100%"
+				rows={4}
+				style="width:100%;min-height:6rem"
 				value={whip.guidance}
 				onchange={(e) =>
 					settings.setWhipStopPhrases({

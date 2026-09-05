@@ -91,7 +91,6 @@
 		padding: 0;
 	}
 	.trow {
-		--act-o: 0;
 		padding-block: var(--pad);
 		min-height: var(--rowh);
 		font-size: var(--fs-sm);
@@ -102,16 +101,10 @@
 	}
 	.trow:hover,
 	.trow:focus-within {
-		--act-o: 1;
 		background: var(--bg-elevated-2);
 	}
 	.trow.dim {
 		opacity: 0.55;
-	}
-	@media (hover: none) {
-		.trow {
-			--act-o: 1;
-		}
 	}
 	.msg {
 		display: grid;

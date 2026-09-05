@@ -46,15 +46,18 @@
 		align-items: center;
 		column-gap: var(--sp-2);
 		row-gap: var(--sp-2);
-		flex: 1 1 auto;
+		flex: 1 1 12rem;
 		min-width: 0;
 		min-height: 1.75rem;
 	}
+	/* The trail must never crush the lead: an end reason can be a whole error
+	   sentence, and a squeezed lead collapses its badges into circles. */
 	.trail {
 		display: flex;
 		align-items: center;
 		gap: var(--sp-2);
-		flex: none;
+		flex: 0 1 auto;
+		min-width: 0;
 		min-height: 1.75rem;
 	}
 	.time {
@@ -63,6 +66,9 @@
 	}
 	.end-badge {
 		display: inline-flex;
+		min-width: 0;
+		max-width: 22ch;
+		overflow: hidden;
 	}
 	.end-muted {
 		opacity: 0.6;

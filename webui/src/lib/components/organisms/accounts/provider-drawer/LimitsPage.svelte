@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { CapBar, Input, Switch, Text } from '@dorsk/tsumikit';
+	import { CapBar, Input, Text } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 	import type { UsageWindow } from '$lib/queries';
 	import type { SoftEdit } from '../account-editor.logic';
@@ -10,18 +10,12 @@
 		rows,
 		windows = [],
 		edits = $bindable({}),
-		rate = $bindable({ rpm: null, tpm: null }),
-		canPin = false,
-		pinned = false,
-		onpin
+		rate = $bindable({ rpm: null, tpm: null })
 	}: {
 		rows: { key: string; label: string }[];
 		windows?: UsageWindow[];
 		edits?: Record<string, SoftEdit>;
 		rate?: { rpm: number | null; tpm: number | null };
-		canPin?: boolean;
-		pinned?: boolean;
-		onpin?: () => void;
 	} = $props();
 
 	const now = Date.now();
@@ -131,15 +125,6 @@
 	</div>
 	<Text as="p" tone="faint" size="xs">{m.accounts_rate_limits_help()}</Text>
 
-	{#if canPin}
-		<div class="pin">
-			<span class="pin-copy">
-				<Text as="span" size="sm">{m.providers_header_pin()}</Text>
-				<Text as="span" size="xs" tone="faint">{m.providers_header_pin_help()}</Text>
-			</span>
-			<Switch checked={pinned} label={m.providers_header_pin()} onclick={onpin} />
-		</div>
-	{/if}
 </div>
 
 <style>
@@ -180,19 +165,6 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--sp-1);
-		min-width: 0;
-	}
-	.pin {
-		display: flex;
-		align-items: center;
-		justify-content: space-between;
-		gap: var(--sp-3);
-		padding-top: var(--sp-3);
-		border-top: 1px solid var(--border);
-	}
-	.pin-copy {
-		display: flex;
-		flex-direction: column;
 		min-width: 0;
 	}
 </style>

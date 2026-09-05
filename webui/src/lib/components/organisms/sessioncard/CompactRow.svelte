@@ -1,10 +1,12 @@
 <script lang="ts">
-	import { Cluster, Text, Timestamp } from '@dorsk/tsumikit';
+	import { Badge, Cluster, Text, Timestamp } from '@dorsk/tsumikit';
+	import { statusBadgeTone } from '$lib/format';
+	import { sessionEndTitle } from '$lib/sessionEnd';
 	import Badges from './Badges.svelte';
 	import DraftActions from './DraftActions.svelte';
 	import Lead from './Lead.svelte';
 	import Readout from './Readout.svelte';
-	import type { SessionActions, SessionView } from './view';
+	import { type SessionActions, type SessionView, statusLabel } from './view';
 
 	// One real row, no wrap: lead · preview (takes the slack) · perm · unread ·
 	// Σ $ · model · effort · logo · time.
@@ -25,6 +27,14 @@
 	{:else}
 		<span style="flex:1 1 auto"></span>
 	{/if}
+	{#if view.showStatusBadge}<Badge tone={statusBadgeTone(s.status)} size="xs" style="flex:none"
+			>{statusLabel(s.status)}</Badge
+		>{/if}
+	{#if view.end}<span
+			class="end-badge"
+			class:end-muted={view.end.muted}
+			title={sessionEndTitle(view.end)}><Badge tone={view.end.tone} size="xs">{view.end.badge}</Badge></span
+		>{/if}
 	<Badges {view} />
 	{#if view.draft}
 		<DraftActions {view} {actions} />
@@ -37,6 +47,16 @@
 </Cluster>
 
 <style>
+	.end-badge {
+		display: inline-flex;
+		flex: 0 1 auto;
+		min-width: 0;
+		max-width: 22ch;
+		overflow: hidden;
+	}
+	.end-muted {
+		opacity: 0.6;
+	}
 	.time {
 		flex: none;
 		min-width: 30px;

@@ -98,7 +98,13 @@ pub fn map_wham_usage(body: &serde_json::Value) -> Option<serde_json::Value> {
             .and_then(serde_json::Value::as_i64)
             .and_then(|s| chrono::DateTime::<chrono::Utc>::from_timestamp(s, 0))
             .map(|dt| dt.to_rfc3339());
-        serde_json::json!({ "utilization": utilization, "resets_at": resets_at })
+        // Some plans report a weekly-only primary window; the slot does not imply the duration.
+        let window_seconds = w.get("limit_window_seconds").and_then(serde_json::Value::as_i64);
+        serde_json::json!({
+            "utilization": utilization,
+            "resets_at": resets_at,
+            "window_seconds": window_seconds
+        })
     };
     let five_hour = window(rate_limit.get("primary_window")?);
     let seven_day = window(rate_limit.get("secondary_window")?);

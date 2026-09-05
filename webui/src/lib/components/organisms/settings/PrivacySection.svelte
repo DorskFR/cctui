@@ -44,8 +44,8 @@
 			<Textarea
 				mono
 				autoresize
-				rows={3}
-				style="width:100%"
+				rows={6}
+				style="width:100%;min-height:9rem"
 				value={scrubPatternsText}
 				placeholder={'ACME-[0-9]{6}\nMYCORP_[A-Za-z0-9]{20,}'}
 				onchange={(e) => setScrubPatternsText((e.currentTarget as HTMLTextAreaElement).value)}

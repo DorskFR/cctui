@@ -3,10 +3,11 @@
 	import type { AccountPoolView } from '@bindings/AccountPoolView';
 	import type { AccountUsageEntry, OAuthAccount } from '$lib/queries';
 	import { useCodexModels, useMergedCodexModels } from '$lib/queries';
-	import { Button, IconButton, Input, SegmentedControl, Select, Text } from '@dorsk/tsumikit';
+	import { Button, IconButton, Input, Select, Text } from '@dorsk/tsumikit';
 	import type { SelectOption } from '@dorsk/tsumikit';
 	import AdapterIcon from '$lib/components/atoms/AdapterIcon.svelte';
 	import EffortSlider from './EffortSlider.svelte';
+	import PermissionModes from './PermissionModes.svelte';
 	import { preferCatalog } from '$lib/harnessModels';
 	import {
 		accountBacksAdapter,
@@ -17,7 +18,6 @@
 		codexEffortsFor,
 		codexModelsFor,
 		isCompatibleProvider,
-		modes,
 		NO_ACCOUNT,
 		POOL_PREFIX,
 		providerForAdapter,
@@ -124,10 +124,6 @@
 		if (account && !accountBacksAdapter(account, harness)) draft.account_id = null;
 	}
 
-	const modeOptions = $derived([
-		{ value: '', label: m.spawn_mode_default_label() },
-		...modes.map((md) => ({ value: md.v, label: md.label }))
-	]);
 </script>
 
 <div class="panel">
@@ -179,12 +175,9 @@
 		onset={(v) => (draft.effort = v || null)}
 	/>
 
-	<SegmentedControl
-		size="sm"
-		block
-		label={m.spawn_permission_mode_label()}
-		options={modeOptions}
-		bind:value={() => draft.permission_mode ?? '', (v) => (draft.permission_mode = v || null)}
+	<PermissionModes
+		value={draft.permission_mode ?? null}
+		onpick={(v) => (draft.permission_mode = v)}
 	/>
 
 	<div class="foot">

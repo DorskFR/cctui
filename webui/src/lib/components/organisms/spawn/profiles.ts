@@ -1,7 +1,7 @@
 import type { SessionProfile } from '@bindings/SessionProfile';
 import type { AccountPoolView } from '@bindings/AccountPoolView';
 import type { AccountUsageEntry, OAuthAccount } from '$lib/queries';
-import { gaugeWindow, utilizationPct } from '$lib/components/molecules/header-gauges.logic';
+import { headlinePct } from '$lib/components/molecules/usage-battery.logic';
 import {
 	adapterLabel,
 	isCompatibleProvider,
@@ -97,7 +97,7 @@ export function accountPick(
 /** The account's busiest window as a percentage, for the account picker hint. */
 export function accountUsedPct(rows: readonly AccountUsageEntry[], accountId: string): number | null {
 	const windows = rows.filter((r) => r.account === accountId).flatMap((r) => r.windows);
-	return utilizationPct(gaugeWindow(windows));
+	return headlinePct(windows);
 }
 
 /** Read the profile knobs out of a form (the seed for the first profile). */

@@ -367,12 +367,12 @@
 		padding: var(--sp-3) var(--sp-4);
 		border-top: 1px solid var(--border);
 	}
-	@container acct-row (max-width: 48rem) {
+	@container acct-row (max-width: 66rem) {
 		.columns {
 			grid-template-columns: repeat(2, minmax(0, 1fr));
 		}
 	}
-	@container acct-row (max-width: 30rem) {
+	@container acct-row (max-width: 34rem) {
 		.columns {
 			grid-template-columns: minmax(0, 1fr);
 		}
