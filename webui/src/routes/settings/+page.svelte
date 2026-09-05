@@ -1,8 +1,8 @@
 <script lang="ts">
 	// User settings. Server-persisted via the `settings` singleton (GET/PUT
-	// /api/v1/settings, localStorage-mirrored). Seven anchored sections —
+	// /api/v1/settings, localStorage-mirrored). Eight anchored sections —
 	// Appearance · Sessions · Execution · Privacy · Notifications · Security ·
-	// Instance (admin) — behind a sticky table of contents with a free-text
+	// Storage · Instance (admin) — behind a sticky table of contents with a free-text
 	// filter and a save indicator. Each section is its own organism; this page
 	// only assembles them and runs the filter / scroll spy.
 	import { onMount, tick } from 'svelte';
@@ -14,6 +14,7 @@
 	import PrivacySection from '$lib/components/organisms/settings/PrivacySection.svelte';
 	import NotificationsSection from '$lib/components/organisms/settings/NotificationsSection.svelte';
 	import SecuritySection from '$lib/components/organisms/settings/SecuritySection.svelte';
+	import StorageSection from '$lib/components/organisms/settings/StorageSection.svelte';
 	import InstanceSection from '$lib/components/organisms/settings/InstanceSection.svelte';
 	import { applySettingsFilter, isFiltered } from '$lib/components/organisms/settings/settings.logic';
 	import { settings } from '$lib/settings.svelte';
@@ -30,6 +31,7 @@
 		{ id: 'privacy', icon: '◈', label: m.settings_nav_privacy() },
 		{ id: 'notifications', icon: '🔔', label: m.settings_notifications_title() },
 		{ id: 'security', icon: '⚿', label: m.settings_nav_security() },
+		{ id: 'storage', icon: '▤', label: m.settings_storage_title() },
 		...(isAdmin
 			? [{ id: 'instance', icon: '⚙', label: m.settings_nav_instance(), admin: true }]
 			: [])
@@ -162,6 +164,7 @@
 			<PrivacySection />
 			<NotificationsSection />
 			<SecuritySection {isAdmin} />
+			<StorageSection />
 			{#if isAdmin}
 				<InstanceSection />
 			{/if}

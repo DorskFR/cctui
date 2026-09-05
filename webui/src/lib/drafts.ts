@@ -58,6 +58,18 @@ export function clearSessionStorage(sessionId: string) {
 	void attachmentStore.clear(composerKey(sessionId));
 }
 
+/** Remove the spawn slot for a (machine, cwd) target: its autosaved payload,
+ * its attachments, and the resume pointer when it names this slot. Called when
+ * the draft behind the slot is launched or discarded, so a later form for the
+ * same cwd does not restore files from a draft that no longer exists. */
+export function clearSpawnSlot(machineId: string, workingDir: string) {
+	if (!browser) return;
+	const key = spawnSlotKey(machineId, workingDir);
+	drafts.clear(key);
+	if (drafts.get(SPAWN_SLOT) === key) drafts.clear(SPAWN_SLOT);
+	void attachmentStore.clear(key);
+}
+
 /** Wipe every `cctui`-namespaced key from both web storages (drafts, sent
  * history, view options, settings mirror, theme/font/notify, gh-review token).
  * Called on logout so a shared browser never hands the next user the previous
