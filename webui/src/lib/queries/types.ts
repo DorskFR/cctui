@@ -157,6 +157,33 @@ export interface AccountUsage {
   } | null;
   windows: UsageWindow[];
   age_secs: number;
+  /** Whether a usage-limit reset can be claimed right now; absent when the
+   *  provider's payload carries no reset mechanism. */
+  limit_reset?: LimitResetStatus | null;
+}
+
+/** Codex reset credits (`kind: codex`) or Claude Code's `/limit-reset`
+ *  (`kind: claude`), normalized for the button in the usage row. */
+export interface LimitResetStatus {
+  kind: "codex" | "claude";
+  available: boolean;
+  title?: string | null;
+  credit_id?: string | null;
+  ineligible_reason?: string | null;
+  next_available_at?: string | null;
+  weekly_resets_at?: string | null;
+}
+
+/** Outcome of one limit-reset claim, upstream's verdict verbatim. */
+export interface LimitResetResponse {
+  account_id: string;
+  provider: string;
+  outcome: string;
+  credit_id?: string | null;
+  next_available_at?: string | null;
+  weekly_resets_at?: string | null;
+  idempotency_key: string;
+  reused: boolean;
 }
 
 /** Register payload — the refresh token is sent cleartext once, stored

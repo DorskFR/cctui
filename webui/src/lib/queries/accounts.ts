@@ -107,6 +107,17 @@ export const useAccountUsage = (
     retry: false,
   }));
 
+/** Claim a usage-limit reset on a provider credential and refresh its usage
+ *  row right away so the bars reflect the claim. */
+export function useLimitReset() {
+  const qc = useQueryClient();
+  return async (accountId: string, creditId?: string | null) => {
+    const r = await endpoints.accountLimitReset(accountId, creditId);
+    qc.invalidateQueries({ queryKey: ["account-usage", accountId] });
+    return r;
+  };
+}
+
 /** Who an account is shared with. Owner-scoped: the server 404s the
  *  list for a non-owner, so callers gate `enabled` to the account owner/admin. */
 export const useAccountShares = (

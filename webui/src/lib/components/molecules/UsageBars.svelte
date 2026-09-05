@@ -1,10 +1,14 @@
 <script lang="ts">
 	import type { SoftLimitConfig } from '$lib/queries';
 	import { useAccountUsage } from '$lib/queries';
-	import { Text } from '@dorsk/tsumikit';
+	import { useLimitReset } from '$lib/queries';
+	import { Button, Text, Tooltip } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
+	import { toasts } from '$lib/toast.svelte';
+	import { errMessage } from '$lib/api';
 	import SoftLimit from '$lib/components/molecules/SoftLimit.svelte';
 	import { mergeUsageWindows } from '$lib/components/molecules/usage-windows';
+	import { limitResetHint, limitResetLabel } from '$lib/components/molecules/limit-reset';
 
 	// Per-account subscription usage shown as horizontal bars:
 	// one SoftLimit row per normalized usage window, plus a separate section for
@@ -33,6 +37,24 @@
 
 	const rows = $derived(mergeUsageWindows(q.data?.windows ?? [], softLimits));
 	const hasRows = $derived(rows.observed.length > 0 || rows.unobserved.length > 0);
+
+	const reset = $derived(q.data?.limit_reset ?? null);
+	const claim = useLimitReset();
+	let claiming = $state(false);
+	async function onreset() {
+		if (!reset || claiming) return;
+		claiming = true;
+		try {
+			const r = await claim(id, reset.credit_id);
+			const text = m.sessions_limit_reset_outcome({ outcome: r.outcome });
+			if (r.outcome === 'reset') toasts.ok(text);
+			else toasts.err(text);
+		} catch (e) {
+			toasts.err(errMessage(e));
+		} finally {
+			claiming = false;
+		}
+	}
 </script>
 
 {#if !active}
@@ -69,6 +91,23 @@
 			/>
 			{/each}
 		{/if}
+		{#if reset}
+			<div class="reset">
+				{#if reset.available}
+					<Button size="sm" onclick={onreset} loading={claiming}>
+						{limitResetLabel(reset)}
+					</Button>
+				{:else}
+					<Tooltip text={limitResetHint(reset)}>
+						{#snippet trigger()}
+							<span class="reset-trigger">
+								<Button size="sm" disabled title={limitResetHint(reset)}>{limitResetLabel(reset)}</Button>
+							</span>
+						{/snippet}
+					</Tooltip>
+				{/if}
+			</div>
+		{/if}
 	</div>
 {:else}
 	<Text tone="faint">{m.sessions_no_usage_data()}</Text>
@@ -79,5 +118,12 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--sp-2);
+	}
+	.reset {
+		display: flex;
+		justify-content: flex-end;
+	}
+	.reset-trigger {
+		display: inline-flex;
 	}
 </style>

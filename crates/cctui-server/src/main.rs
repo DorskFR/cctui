@@ -1002,6 +1002,14 @@ fn build_api_routes() -> Routes {
             Authn::Bearer,
             Authenticated,
         )
+        .add(
+            &[Method::POST],
+            "/accounts/{id}/limit-reset",
+            "Claim a usage-limit reset on a provider credential.",
+            post(routes::limit_reset::limit_reset),
+            Authn::Bearer,
+            Authenticated,
+        )
         // Account sharing management: owner-scoped in the handler
         // (require_account_owner) just like the other account routes.
         .add(
