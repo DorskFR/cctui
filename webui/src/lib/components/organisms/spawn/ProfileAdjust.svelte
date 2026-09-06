@@ -66,6 +66,7 @@
 	<div class="foot">
 		<Text size="xs" tone="faint">{m.spawn_profile_changes({ count: changes })}</Text>
 		<span class="spacer"></span>
+		<div class="foot-actions">
 		{#if profile}
 			<Button size="sm" variant="danger" disabled={busy} onclick={ondelete}>
 				{m.spawn_profile_delete()}
@@ -82,6 +83,7 @@
 		>
 			{m.spawn_profile_save()}
 		</Button>
+		</div>
 	</div>
 </div>
 
@@ -94,10 +96,21 @@
 		flex-direction: column;
 		gap: var(--sp-3);
 	}
+	/* Three localized buttons don't always fit beside the counter in a narrow
+	   panel: the action group wraps under it (right-aligned) instead of the last
+	   button being clipped. */
 	.foot {
 		display: flex;
+		flex-wrap: wrap;
 		align-items: center;
 		gap: var(--sp-2);
+	}
+	.foot-actions {
+		display: flex;
+		flex-wrap: wrap;
+		justify-content: flex-end;
+		gap: var(--sp-2);
+		margin-left: auto;
 	}
 	.spacer {
 		flex: 1;

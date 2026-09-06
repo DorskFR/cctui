@@ -83,7 +83,9 @@
 
 <div class="addons">
 	<span class="addon-title">{m.spawn_optional_settings()}</span>
-	<AutoGrid min="8rem" gap="var(--sp-2)" maxCols={3} align="stretch">
+	<!-- Button labels never wrap, so the column floor must fit the longest localized
+	     label plus icon ("Ajouter des fichiers" in fr); 8rem let them overflow. -->
+	<AutoGrid min="12rem" gap="var(--sp-2)" maxCols={3} align="stretch">
 		<div class="label-add" bind:this={triggerEl} use:clickOutside={closeMenu}>
 			<Button block aria-haspopup="true" aria-expanded={menuOpen} onclick={toggleMenu}>
 				<Icon name="tag" />{m.spawn_add_label()}
