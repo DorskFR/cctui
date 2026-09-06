@@ -1,0 +1,73 @@
+{
+	"id": "settings-tour",
+	"title": "Tune how agents behave",
+	"version": 1,
+	"variants": {
+		"desktop-dark": {
+			"captures": [
+				{
+					"index": 0,
+					"name": "appearance",
+					"file": "desktop-dark/01-appearance.png",
+					"title": "Make it yours",
+					"body": "Theme, font size, language, and where the navigation sits — the whole interface follows the theme you pick."
+				},
+				{
+					"index": 1,
+					"name": "sessions",
+					"file": "desktop-dark/02-sessions.png",
+					"title": "Defaults for every run",
+					"body": "How the list sorts and groups, and what a new session starts with, so you set it once instead of every time."
+				},
+				{
+					"index": 2,
+					"name": "execution",
+					"file": "desktop-dark/03-execution.png",
+					"title": "How much rope an agent gets",
+					"body": "Permission handling, auto-approval and the phrases that mean an agent has stopped early rather than finished."
+				},
+				{
+					"index": 3,
+					"name": "privacy",
+					"file": "desktop-dark/04-privacy.png",
+					"title": "Secrets never reach the transcript",
+					"body": "Tokens and keys are detected and replaced before anything is stored, and you can add patterns of your own."
+				}
+			],
+			"storyboard": "desktop-dark/storyboard.png"
+		},
+		"mobile-dark": {
+			"captures": [
+				{
+					"index": 0,
+					"name": "appearance",
+					"file": "mobile-dark/01-appearance.png",
+					"title": "Make it yours",
+					"body": "Theme, font size, language, and where the navigation sits — the whole interface follows the theme you pick."
+				},
+				{
+					"index": 1,
+					"name": "sessions",
+					"file": "mobile-dark/02-sessions.png",
+					"title": "Defaults for every run",
+					"body": "How the list sorts and groups, and what a new session starts with, so you set it once instead of every time."
+				},
+				{
+					"index": 2,
+					"name": "execution",
+					"file": "mobile-dark/03-execution.png",
+					"title": "How much rope an agent gets",
+					"body": "Permission handling, auto-approval and the phrases that mean an agent has stopped early rather than finished."
+				},
+				{
+					"index": 3,
+					"name": "privacy",
+					"file": "mobile-dark/04-privacy.png",
+					"title": "Secrets never reach the transcript",
+					"body": "Tokens and keys are detected and replaced before anything is stored, and you can add patterns of your own."
+				}
+			],
+			"storyboard": "mobile-dark/storyboard.png"
+		}
+	}
+}

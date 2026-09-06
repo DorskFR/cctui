@@ -1,0 +1,45 @@
+{
+	"id": "sessions-list",
+	"title": "Read the fleet at a glance",
+	"version": 1,
+	"variants": {
+		"desktop-gruvbox": {
+			"captures": [
+				{
+					"index": 0,
+					"name": "list",
+					"file": "desktop-gruvbox/01-list.png",
+					"title": "Every session, grouped",
+					"body": "Sessions group by what they need — pinned first, then anything waiting on you."
+				},
+				{
+					"index": 1,
+					"name": "themes",
+					"file": "desktop-gruvbox/02-themes.png",
+					"title": "Every screen, in your palette",
+					"body": "Twenty-one built-in themes, light and dark; the whole interface follows the swatch you pick."
+				}
+			],
+			"storyboard": "desktop-gruvbox/storyboard.png"
+		},
+		"mobile-gruvbox": {
+			"captures": [
+				{
+					"index": 0,
+					"name": "list",
+					"file": "mobile-gruvbox/01-list.png",
+					"title": "Every session, grouped",
+					"body": "Sessions group by what they need — pinned first, then anything waiting on you."
+				},
+				{
+					"index": 1,
+					"name": "themes",
+					"file": "mobile-gruvbox/02-themes.png",
+					"title": "Every screen, in your palette",
+					"body": "Twenty-one built-in themes, light and dark; the whole interface follows the swatch you pick."
+				}
+			],
+			"storyboard": "mobile-gruvbox/storyboard.png"
+		}
+	}
+}

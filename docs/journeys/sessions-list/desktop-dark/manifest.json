@@ -1,0 +1,26 @@
+{
+	"id": "sessions-list",
+	"title": "Read the fleet at a glance",
+	"version": 1,
+	"variants": {
+		"desktop-dark": {
+			"captures": [
+				{
+					"index": 0,
+					"name": "list",
+					"file": "01-list.png",
+					"title": "Every session, grouped",
+					"body": "Sessions group by what they need — pinned first, then anything waiting on you."
+				},
+				{
+					"index": 1,
+					"name": "themes",
+					"file": "02-themes.png",
+					"title": "Every screen, in your palette",
+					"body": "Twenty-one built-in themes, light and dark; the whole interface follows the swatch you pick."
+				}
+			],
+			"storyboard": "storyboard.png"
+		}
+	}
+}

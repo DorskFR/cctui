@@ -1,0 +1,40 @@
+{
+	"id": "spawn-session",
+	"title": "Start a new agent",
+	"version": 1,
+	"variants": {
+		"desktop-dark": {
+			"captures": [
+				{
+					"index": 0,
+					"name": "dialog",
+					"file": "01-dialog.png",
+					"title": "Open the new-session dialog",
+					"body": "One dialog covers everything a run needs: the machine, the folder, the prompt and the profile. It opens on the folder you used last."
+				},
+				{
+					"index": 2,
+					"name": "filled",
+					"file": "02-filled.png",
+					"title": "Say what you want done",
+					"body": "The prompt is the whole brief; the profile below it decides which harness, model and folder carry it out."
+				},
+				{
+					"index": 3,
+					"name": "saved",
+					"file": "03-saved.png",
+					"title": "Keep it for later",
+					"body": "Saving a draft parks the whole configuration in the list, ready to launch when you are."
+				},
+				{
+					"index": 5,
+					"name": "draft",
+					"file": "04-draft.png",
+					"title": "The draft is waiting",
+					"body": "Drafts sit in their own section, holding the machine, folder, profile and prompt until you launch them."
+				}
+			],
+			"storyboard": "storyboard.png"
+		}
+	}
+}

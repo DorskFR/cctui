@@ -1,0 +1,59 @@
+{
+	"id": "search-sessions",
+	"title": "Find a session again",
+	"version": 1,
+	"variants": {
+		"desktop-dark": {
+			"captures": [
+				{
+					"index": 0,
+					"name": "before",
+					"file": "desktop-dark/01-before.png",
+					"title": "Start from the whole list",
+					"body": "Every session you have run is searchable, live ones and finished ones alike."
+				},
+				{
+					"index": 1,
+					"name": "text",
+					"file": "desktop-dark/02-text.png",
+					"title": "Search the transcripts, not just the titles",
+					"body": "A plain word is matched against what the agents actually said and did, so you can find a run by what it touched."
+				},
+				{
+					"index": 2,
+					"name": "facet",
+					"file": "desktop-dark/03-facet.png",
+					"title": "Narrow by label, machine or status",
+					"body": "Typed filters like label:, machine: and status: combine with the free text to cut a large fleet down fast."
+				}
+			],
+			"storyboard": "desktop-dark/storyboard.png"
+		},
+		"mobile-dark": {
+			"captures": [
+				{
+					"index": 0,
+					"name": "before",
+					"file": "mobile-dark/01-before.png",
+					"title": "Start from the whole list",
+					"body": "Every session you have run is searchable, live ones and finished ones alike."
+				},
+				{
+					"index": 1,
+					"name": "text",
+					"file": "mobile-dark/02-text.png",
+					"title": "Search the transcripts, not just the titles",
+					"body": "A plain word is matched against what the agents actually said and did, so you can find a run by what it touched."
+				},
+				{
+					"index": 2,
+					"name": "facet",
+					"file": "mobile-dark/03-facet.png",
+					"title": "Narrow by label, machine or status",
+					"body": "Typed filters like label:, machine: and status: combine with the free text to cut a large fleet down fast."
+				}
+			],
+			"storyboard": "mobile-dark/storyboard.png"
+		}
+	}
+}

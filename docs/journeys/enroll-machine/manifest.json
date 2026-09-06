@@ -1,0 +1,73 @@
+{
+	"id": "enroll-machine",
+	"title": "Bring a machine into the fleet",
+	"version": 1,
+	"variants": {
+		"desktop-dark": {
+			"captures": [
+				{
+					"index": 0,
+					"name": "access",
+					"file": "desktop-dark/01-access.png",
+					"title": "People, keys and machines",
+					"body": "Everything that can act on this instance is listed here, one user at a time."
+				},
+				{
+					"index": 1,
+					"name": "enroll",
+					"file": "desktop-dark/02-enroll.png",
+					"title": "One command per machine",
+					"body": "A machine joins by running the daemon with a user token; from then on it can host sessions."
+				},
+				{
+					"index": 2,
+					"name": "user",
+					"file": "desktop-dark/03-user.png",
+					"title": "Open a user",
+					"body": "Each user carries their own API keys, machines, tokens and AI accounts."
+				},
+				{
+					"index": 3,
+					"name": "machines",
+					"file": "desktop-dark/04-machines.png",
+					"title": "The machines that answered",
+					"body": "Enrolled machines report in with a heartbeat, so you know which are online."
+				}
+			],
+			"storyboard": "desktop-dark/storyboard.png"
+		},
+		"mobile-dark": {
+			"captures": [
+				{
+					"index": 0,
+					"name": "access",
+					"file": "mobile-dark/01-access.png",
+					"title": "People, keys and machines",
+					"body": "Everything that can act on this instance is listed here, one user at a time."
+				},
+				{
+					"index": 1,
+					"name": "enroll",
+					"file": "mobile-dark/02-enroll.png",
+					"title": "One command per machine",
+					"body": "A machine joins by running the daemon with a user token; from then on it can host sessions."
+				},
+				{
+					"index": 2,
+					"name": "user",
+					"file": "mobile-dark/03-user.png",
+					"title": "Open a user",
+					"body": "Each user carries their own API keys, machines, tokens and AI accounts."
+				},
+				{
+					"index": 3,
+					"name": "machines",
+					"file": "mobile-dark/04-machines.png",
+					"title": "The machines that answered",
+					"body": "Enrolled machines report in with a heartbeat, so you know which are online."
+				}
+			],
+			"storyboard": "mobile-dark/storyboard.png"
+		}
+	}
+}

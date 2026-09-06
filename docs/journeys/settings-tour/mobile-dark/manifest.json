@@ -1,0 +1,40 @@
+{
+	"id": "settings-tour",
+	"title": "Tune how agents behave",
+	"version": 1,
+	"variants": {
+		"mobile-dark": {
+			"captures": [
+				{
+					"index": 0,
+					"name": "appearance",
+					"file": "01-appearance.png",
+					"title": "Make it yours",
+					"body": "Theme, font size, language, and where the navigation sits — the whole interface follows the theme you pick."
+				},
+				{
+					"index": 1,
+					"name": "sessions",
+					"file": "02-sessions.png",
+					"title": "Defaults for every run",
+					"body": "How the list sorts and groups, and what a new session starts with, so you set it once instead of every time."
+				},
+				{
+					"index": 2,
+					"name": "execution",
+					"file": "03-execution.png",
+					"title": "How much rope an agent gets",
+					"body": "Permission handling, auto-approval and the phrases that mean an agent has stopped early rather than finished."
+				},
+				{
+					"index": 3,
+					"name": "privacy",
+					"file": "04-privacy.png",
+					"title": "Secrets never reach the transcript",
+					"body": "Tokens and keys are detected and replaced before anything is stored, and you can add patterns of your own."
+				}
+			],
+			"storyboard": "storyboard.png"
+		}
+	}
+}
