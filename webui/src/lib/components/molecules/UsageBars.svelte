@@ -53,7 +53,7 @@
 	);
 
 	const rows = $derived(mergeUsageWindows(q.data?.windows ?? [], softLimits));
-	const hasRows = $derived(rows.observed.length > 0 || rows.unobserved.length > 0);
+	const hasRows = $derived(rows.observed.length > 0);
 
 </script>
 
@@ -79,20 +79,6 @@
 				oncapchange={r.usd ? undefined : setCap?.(r.key)}
 			/>
 		{/each}
-		{#if rows.unobserved.length}
-			<Text size="xs" tone="faint">{m.sessions_usage_configured_unreported()}</Text>
-			{#each rows.unobserved as r (r.key)}
-				<SoftLimit
-				label={r.label}
-				utilization={null}
-				cap={r.cap}
-				capUsd={r.capUsd}
-				bypass={r.bypass}
-				usd={r.usd}
-				oncapchange={r.usd ? undefined : setCap?.(r.key)}
-			/>
-			{/each}
-		{/if}
 	</div>
 {:else}
 	<Text tone="faint">{m.sessions_no_usage_data()}</Text>
