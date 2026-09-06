@@ -21,7 +21,7 @@
 
 <div class="modes">
 	<Text size="xs" tone="muted">{m.spawn_permission_mode_label()}</Text>
-	<AutoGrid min="8rem" maxCols={2} gap="var(--sp-2)" role="radiogroup" aria-label={m.spawn_permission_mode_label()}>
+	<AutoGrid min="8rem" maxCols={2} gap="var(--sp-2)" align="stretch" role="radiogroup" aria-label={m.spawn_permission_mode_label()}>
 		{#each modes as md (md.v)}
 			<OptionButton
 				block
@@ -50,6 +50,8 @@
 		gap: var(--sp-1);
 		container-type: inline-size;
 	}
+	/* Cards stretch to the tallest sibling of their row (align="stretch"), so a
+	   one-line hint next to a two-line one no longer leaves a shorter card. */
 	.mode-body {
 		display: flex;
 		flex-direction: column;
