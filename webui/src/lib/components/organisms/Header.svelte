@@ -15,6 +15,7 @@
 	import NavLink from '$lib/components/atoms/NavLink.svelte';
 	import MainNav from '$lib/components/organisms/MainNav.svelte';
 	import UsageBattery from '$lib/components/molecules/UsageBattery.svelte';
+import ResourceBattery from '$lib/components/molecules/ResourceBattery.svelte';
 	import UpdateModal from '$lib/components/organisms/UpdateModal.svelte';
 	import { m } from '$lib/paraglide/messages';
 
@@ -153,7 +154,7 @@
 			{/if}
 		</div>
 		<div class="tail">
-			<span class="batt"><UsageBattery /></span>
+			<span class="batt"><ResourceBattery /><UsageBattery /></span>
 			<span class="divider" aria-hidden="true"></span>
 			<IconButton
 				emoji={notify.enabled ? '🔔' : '🔕'}
@@ -329,6 +330,8 @@
 	}
 	.batt {
 		display: inline-flex;
+		align-items: center;
+		gap: 6px;
 		flex: none;
 	}
 	.batt:empty {

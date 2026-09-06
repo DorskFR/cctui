@@ -69,6 +69,8 @@ export type * from './LangfuseSessionUsage';
 export type * from './LaunchRequest';
 export type * from './Liveness';
 export type * from './MachineLiveness';
+export type * from './MachineResourcesRow';
+export type * from './MachineResources';
 export type * from './MachineRow';
 export type * from './MarkViewedRequest';
 export type * from './MeResponse';

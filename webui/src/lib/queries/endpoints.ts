@@ -17,6 +17,7 @@ import type { DispatchRequest } from "@bindings/DispatchRequest";
 import type { DispatchResponse } from "@bindings/DispatchResponse";
 import type { UserRow } from "@bindings/UserRow";
 import type { MachineRow } from "@bindings/MachineRow";
+import type { MachineResourcesRow } from "@bindings/MachineResourcesRow";
 import type { UserTokenRow } from "@bindings/UserTokenRow";
 import type { UserAclsResponse } from "@bindings/UserAclsResponse";
 import type { ApiKeyRow } from "@bindings/ApiKeyRow";
@@ -364,6 +365,11 @@ export const endpoints = {
     }),
   oauthFinish: (body: OAuthFinish) =>
     api.post<OAuthAccount>("/accounts/oauth/finish", body),
+  /** The caller's daemon machines (every user's for an admin) with their
+   *  last host CPU / memory / disk snapshot — Settings › Resource monitoring
+   *  and the header gauge. */
+  machineResources: () =>
+    api.get<MachineResourcesRow[]>("/machines/resources"),
   /** Every spawnable machine across all active users — for the spawn picker.
    * Excludes server-managed machines (`ephemeral` worker pods and the per-user
    * `dispatch` machine): those aren't somewhere you'd start an interactive

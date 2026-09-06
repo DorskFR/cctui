@@ -77,6 +77,11 @@ pub enum DaemonFrameUp {
         /// than reading the absence as "no hook".
         #[serde(default, skip_serializing_if = "Option::is_none")]
         update_hook: Option<bool>,
+        /// Host CPU / memory / disk snapshot for the header resource gauge.
+        /// Optional: a daemon too old (or on a platform without `/proc`)
+        /// omits it and the server keeps the last stored snapshot.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resources: Option<crate::resources::MachineResources>,
     },
     /// Reply to a [`DaemonFrameDown::StageFiles`] request (mid-chat
     /// attachments). `request_id` correlates with the originating
@@ -695,6 +700,12 @@ pub enum ServerEvent {
         machine_id: uuid::Uuid,
         liveness: crate::models::MachineLiveness,
     },
+    /// A daemon heartbeat carried a fresh host resource snapshot. Broadcast on
+    /// every heartbeat so a pinned header gauge follows the machine live.
+    MachineResources {
+        machine_id: uuid::Uuid,
+        resources: crate::resources::MachineResources,
+    },
     /// An enrolled dispatcher's liveness tier just changed. Peer of
     /// [`Self::MachineLiveness`], derived from `dispatchers.last_seen_at`.
     DispatcherLiveness {
@@ -985,9 +996,14 @@ mod tests {
                 ..Default::default()
             }),
             update_hook: Some(true),
+            resources: Some(crate::resources::MachineResources {
+                cpu_pct: 12.5,
+                ..Default::default()
+            }),
         };
         let json = serde_json::to_string(&hb).unwrap();
         assert!(json.contains(r#""forward":900"#), "{json}");
+        assert!(json.contains(r#""cpu_pct":12.5"#), "{json}");
         assert!(json.contains(r#""blob_put":42"#), "{json}");
         assert!(json.contains(r#""update_hook":true"#), "{json}");
 
@@ -996,9 +1012,10 @@ mod tests {
         match back {
             // A daemon that predates either field says nothing about both; the
             // server must not read that silence as "no hook".
-            DaemonFrameUp::Heartbeat { bandwidth, update_hook, .. } => {
+            DaemonFrameUp::Heartbeat { bandwidth, update_hook, resources, .. } => {
                 assert!(bandwidth.is_none());
                 assert!(update_hook.is_none());
+                assert!(resources.is_none());
             }
             _ => panic!("expected Heartbeat"),
         }

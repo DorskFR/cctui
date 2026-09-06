@@ -14,6 +14,7 @@ mod fireworks_billing;
 mod http_cache;
 mod langfuse;
 mod machine_liveness;
+mod machine_resources;
 mod normalize;
 mod ntfy;
 mod openapi;
@@ -1202,6 +1203,14 @@ fn build_api_routes() -> Routes {
             post(routes::enroll::enroll),
             Authn::Bearer,
             ScopeAz(auth::Scope::Enroll),
+        )
+        .add(
+            &[GET],
+            "/machines/resources",
+            "The caller's daemon machines with their last host CPU/memory/disk snapshot.",
+            get(machine_resources::list),
+            Authn::Bearer,
+            Authenticated,
         )
         .add(
             &[GET],
