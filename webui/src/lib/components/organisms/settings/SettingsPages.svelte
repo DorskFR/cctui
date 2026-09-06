@@ -8,7 +8,8 @@
 	import ExecutionSection from './ExecutionSection.svelte';
 	import PrivacySection from './PrivacySection.svelte';
 	import NotificationsSection from './NotificationsSection.svelte';
-	import SecuritySection from './SecuritySection.svelte';
+	import MonitoringSection from './MonitoringSection.svelte';
+import SecuritySection from './SecuritySection.svelte';
 	import InstanceSection from './InstanceSection.svelte';
 	import type { SettingsPage } from './settings.logic';
 
@@ -29,6 +30,9 @@
 </div>
 <div class="pg" class:on={current === 'notifications'} data-settings-page="notifications">
 	<NotificationsSection />
+</div>
+<div class="pg" class:on={current === 'monitoring'} data-settings-page="monitoring">
+	<MonitoringSection />
 </div>
 <div class="pg" class:on={current === 'security'} data-settings-page="security">
 	<SecuritySection {isAdmin} />

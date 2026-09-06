@@ -41,6 +41,7 @@
 		{ page: 'execution', icon: '▶', label: m.settings_nav_execution() },
 		{ page: 'privacy', icon: '◈', label: m.settings_nav_privacy() },
 		{ page: 'notifications', icon: '🔔', label: m.settings_notifications_title() },
+		{ page: 'monitoring', icon: '▥', label: m.settings_nav_monitoring() },
 		{ page: 'security', icon: '⚿', label: m.settings_nav_security() },
 		{ page: 'instance', icon: '⚙', label: m.settings_nav_instance(), admin: true }
 	]);

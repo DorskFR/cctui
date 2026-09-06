@@ -3,6 +3,7 @@ import { wsBase } from './config';
 import { auth } from './auth.svelte';
 import { net } from './netstats.svelte';
 import type { AgentEvent } from '@bindings/AgentEvent';
+import type { MachineResources } from '@bindings/MachineResources';
 import type { GithubEventKind } from '@bindings/GithubEventKind';
 import type { GithubEventPayload } from '@bindings/GithubEventPayload';
 import type { SessionEndReason } from '@bindings/SessionEndReason';
@@ -129,6 +130,11 @@ type SoftLimitCb = (sl: SoftLimit | null) => void;
 /** Server ack for a client-sent message. `ok=false` means the server
  * could not dispatch the reply to the session's daemon, so the client should
  * mark the message failed and offer a retry. */
+export interface MachineResourcesEvent {
+	machine_id: string;
+	resources: MachineResources;
+}
+
 export interface SessionListPatch {
 	session_id: string;
 	last_message_text?: string;
@@ -561,7 +567,20 @@ export class WsClient {
 			case 'session_deregistered':
 				this.markListDirty();
 				break;
+			case 'machine_resources': {
+				const p = msg as unknown as MachineResourcesEvent;
+				for (const cb of this.machineResourcesCbs) cb(p);
+				break;
+			}
 		}
+	}
+
+	/** Live host resource snapshots, one per daemon heartbeat, for the header
+	 *  gauge to patch its query cache without a refetch. */
+	private machineResourcesCbs = new Set<(ev: MachineResourcesEvent) => void>();
+	onMachineResources(cb: (ev: MachineResourcesEvent) => void): () => void {
+		this.machineResourcesCbs.add(cb);
+		return () => this.machineResourcesCbs.delete(cb);
 	}
 
 	private sessionEndedCbs = new Set<(ev: SessionEndedEvent) => void>();

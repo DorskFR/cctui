@@ -112,6 +112,24 @@ export interface StatsDockSettings {
 	width?: number;
 }
 
+// Header resource gauge: the machines whose CPU / memory / disk the header
+// shows a battery-style gauge for. Serializes as `data.resourceMonitor`; the
+// server stores the blob untouched. Empty (the default) hides the strip.
+export interface ResourceMonitorSettings {
+	/** Machine ids ticked in Settings › Resource monitoring. */
+	machines: string[];
+}
+
+/** Keep only well-formed, de-duplicated machine ids from a stored blob. */
+export function clampMonitoredMachines(v: unknown): string[] {
+	if (!Array.isArray(v)) return [];
+	const out: string[] = [];
+	for (const id of v) {
+		if (typeof id === 'string' && id.length > 0 && !out.includes(id)) out.push(id);
+	}
+	return out;
+}
+
 /** Clamp a stored side to a known one (an older/corrupt blob must not pin the
  *  panel nowhere). */
 export function clampSpawnDockSide(v: unknown): SpawnDockSide {
@@ -211,6 +229,8 @@ export interface SettingsState {
 	spawnDock: SpawnDockSettings;
 	// Docked stats panel (Sessions screen). Serializes as `data.statsDock`.
 	statsDock: StatsDockSettings;
+	// Header resource gauge machines. Serializes as `data.resourceMonitor`.
+	resourceMonitor: ResourceMonitorSettings;
 	// Claude harness mode. Top-level so it serializes as `data.harnessMode`,
 	// which the server reads to drive each daemon's Reconcile.
 	harnessMode: HarnessMode;
@@ -270,6 +290,7 @@ const DEFAULTS: SettingsState = {
 	},
 	spawnDock: { enabled: false, side: DEFAULT_SPAWN_DOCK_SIDE },
 	statsDock: { enabled: false, side: DEFAULT_SPAWN_DOCK_SIDE },
+	resourceMonitor: { machines: [] },
 	harnessMode: DEFAULT_HARNESS_MODE,
 	whipStopPhrases: { mode: DEFAULT_WHIP_MODE, phrases: [], guidance: '' },
 	secretScrubEnabled: false,
@@ -315,6 +336,7 @@ export function mergeDefaults(partial: Partial<SettingsState> | null | undefined
 			side: clampSpawnDockSide(p.statsDock?.side),
 			width: clampDockWidth(p.statsDock?.width)
 		},
+		resourceMonitor: { machines: clampMonitoredMachines(p.resourceMonitor?.machines) },
 		// Clamp to a known mode so an unknown stored value renders as `bg` (matches
 		// the server's clamp on PUT).
 		harnessMode: clampHarnessMode(p.harnessMode),
@@ -485,6 +507,23 @@ class Settings {
 	}
 
 	// Docked stats panel: on/off and which edge it pins to.
+	/** Machines the header resource gauge shows, in the order they were ticked. */
+	get monitoredMachines(): string[] {
+		return clampMonitoredMachines(this.state.resourceMonitor?.machines);
+	}
+
+	setMonitoredMachine(machineId: string, on: boolean) {
+		const cur = this.monitoredMachines;
+		const next = on
+			? cur.includes(machineId)
+				? cur
+				: [...cur, machineId]
+			: cur.filter((id) => id !== machineId);
+		if (next.length === cur.length && next.every((id, i) => id === cur[i])) return;
+		this.state.resourceMonitor = { machines: next };
+		this.persist();
+	}
+
 	setStatsDock(patch: Partial<StatsDockSettings>) {
 		this.state.statsDock = { ...this.state.statsDock, ...patch };
 		this.persist();

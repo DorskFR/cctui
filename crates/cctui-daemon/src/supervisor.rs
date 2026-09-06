@@ -79,6 +79,8 @@ pub struct Supervisor {
     guard: std::sync::Mutex<SendGuard>,
     /// Per-subsystem byte counters, shared with the HTTP client.
     counters: BandwidthCounters,
+    /// Host CPU / memory / disk sampler for the heartbeat's `resources` block.
+    resources: std::sync::Mutex<crate::resources::ResourceSampler>,
 }
 
 impl Supervisor {
@@ -96,6 +98,7 @@ impl Supervisor {
             pending_transfer: std::sync::Mutex::new(None),
             guard: std::sync::Mutex::new(SendGuard::open_default()),
             counters,
+            resources: std::sync::Mutex::new(crate::resources::ResourceSampler::new()),
         }
     }
 
@@ -326,6 +329,12 @@ impl Supervisor {
                             // the hook and restarts the daemon is picked up on
                             // the next ping, with nothing to do server-side.
                             update_hook: Some(crate::updatehook::configured()),
+                            // Sampled per heartbeat; `None` until the second
+                            // ping (CPU needs an interval) or off-Linux.
+                            resources: self
+                                .resources
+                                .lock()
+                                .map_or(None, |mut s| s.sample()),
                         };
                         let payload = serde_json::to_string(&hb)?;
                         self.counters.add(Subsystem::Heartbeat, payload.len() as u64);
@@ -1317,6 +1326,7 @@ mod tests {
             sent_at: chrono::Utc::now(),
             bandwidth: None,
             update_hook: None,
+            resources: None,
         };
         let super::Prepared::Frame(text) = super::prepare_send(&hb).unwrap() else {
             panic!("heartbeat must not chunk")

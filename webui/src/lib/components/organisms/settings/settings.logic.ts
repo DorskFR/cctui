@@ -115,6 +115,7 @@ export const SETTINGS_PAGES = [
 	'execution',
 	'privacy',
 	'notifications',
+	'monitoring',
 	'security',
 	'instance'
 ] as const;
@@ -136,6 +137,7 @@ const HASH_ALIASES: Record<string, SettingsPage> = {
 	redaction: 'privacy',
 	secrets: 'privacy',
 	notify: 'notifications',
+	resources: 'monitoring',
 	passkeys: 'security'
 };
 

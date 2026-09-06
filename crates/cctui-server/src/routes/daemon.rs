@@ -811,7 +811,7 @@ async fn process_frame(
             resolve_read_file_result(state, request_id, ok, file, error_kind, error);
             Ok(())
         }
-        DaemonFrameUp::Heartbeat { bandwidth, update_hook, .. } => {
+        DaemonFrameUp::Heartbeat { bandwidth, update_hook, resources, .. } => {
             // A daemon too old to advertise omits the field; leave the stored
             // flag alone rather than reading silence as "no hook".
             if let Some(has_hook) = update_hook {
@@ -838,6 +838,13 @@ async fn process_frame(
             if let Some(bandwidth) = bandwidth {
                 persist_bandwidth(state, machine_id, &bandwidth).await;
                 detect_divergence(state, machine_id, bandwidth.event_bytes());
+            }
+            if let Some(resources) = resources {
+                crate::machine_resources::persist(state, machine_id, &resources).await;
+                state.bus.publish_server(cctui_proto::ws::ServerEvent::MachineResources {
+                    machine_id,
+                    resources,
+                });
             }
             Ok(())
         }

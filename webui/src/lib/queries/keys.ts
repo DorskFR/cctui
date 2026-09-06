@@ -27,6 +27,7 @@ export const qk = {
   resourceShares: (resourceType: string, id: string) =>
     ["resource-shares", resourceType, id] as const,
   settingsCatalog: ["settings-catalog"] as const,
+  machineResources: ["machine-resources"] as const,
   gitInfo: (machineId: string, path: string) =>
     ["machines", machineId, "gitinfo", path] as const,
 };
