@@ -37,20 +37,22 @@
 		<SegmentedControl bind:value={rangeKey} options={rangeOptions} label={m.home_usage_range_label()} />
 	</PageHead>
 
-	<div class="tiles">
+	<div class="tiles" data-journey="tiles">
 		{#each tiles as t (t.key)}
-			<MetricTile
-				value={num(t.value)}
-				suffix={t.suffix}
-				warn={t.warn}
-				label={tileLabel(t.key, t.sub)}
-			/>
+			<div data-journey="tile" data-journey-key={t.key}>
+				<MetricTile
+					value={num(t.value)}
+					suffix={t.suffix}
+					warn={t.warn}
+					label={tileLabel(t.key, t.sub)}
+				/>
+			</div>
 		{/each}
 	</div>
 
-	<Card padding="none"><WindowsTable windows={tokens.data} /></Card>
+	<Card padding="none" data-journey="windows"><WindowsTable windows={tokens.data} /></Card>
 
-	<UsageAnalyticsSection {rangeKey} />
+	<div data-journey="analytics"><UsageAnalyticsSection {rangeKey} /></div>
 </Stack>
 
 <style>

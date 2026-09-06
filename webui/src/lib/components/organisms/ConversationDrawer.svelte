@@ -394,7 +394,7 @@
 >
 	{#snippet panel()}
 		<!-- svelte-ignore a11y_no_static_element_interactions -->
-		<div class="drawer" onkeydown={guardEscape}>
+		<div class="drawer" data-journey="conversation" onkeydown={guardEscape}>
 			<!-- The whole drawer is a file drop area: dragging files over it
 			     shows the tsumikit Dropzone overlay; on drop they're staged as composer
 			     attachments. overlay mode wraps the content without hijacking clicks. -->

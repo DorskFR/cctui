@@ -128,11 +128,19 @@ clean:  ## Remove build artifacts
 # together. UI on :8088, server API on :8700. See deploy/local/.
 LOCAL_COMPOSE ?= deploy/local/docker-compose.yaml
 
-.PHONY: local/up local/down local/logs local/pull local/ps
+.PHONY: local/up local/down local/logs local/pull local/ps local/seed local/demo
 
 local/up:  ## Start the full local stack (postgres + server + UI) from published images
 	docker compose -f $(LOCAL_COMPOSE) up -d
 	@echo "cctui up — UI: http://localhost:8088  ·  API: http://localhost:8700  (admin token: dev-admin)"
+
+local/seed:  ## Load the demo fixture into the running local stack
+	env -u DATABASE_URL bash deploy/local/fixture/seed.sh
+
+local/demo: local/up  ## Start the local stack and fill it with demo data
+	@until curl -s -o /dev/null $(CCTUI_URL)/api/v1/version 2>/dev/null; do sleep 1; done
+	@$(MAKE) local/seed
+	@echo "demo data loaded — open http://localhost:8088 and log in with 'dev-admin'"
 
 local/down:  ## Stop the local stack (keeps the postgres volume)
 	docker compose -f $(LOCAL_COMPOSE) down

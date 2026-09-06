@@ -1,7 +1,7 @@
 {
   "name": "cctui-webui",
   "private": true,
-  "version": "0.8.3",
+  "version": "0.8.4",
   "type": "module",
   "scripts": {
     "dev": "vite dev",
@@ -13,16 +13,25 @@
     "check:watch": "npm run paraglide && svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
     "bindings": "bash scripts/gen-bindings.sh",
     "test": "npm run paraglide && vitest run",
-    "lint": "biome lint ."
+    "lint": "biome lint .",
+    "journey:seed": "bash ../deploy/local/fixture/seed.sh",
+    "journey:auth": "node scripts/journey-auth.mjs",
+    "journey:changed": "node scripts/journeys-for-changes.mjs",
+    "journey:compress": "node scripts/journey-compress.mjs",
+    "journey:shoot": "node scripts/journey-shoot.mjs",
+    "journey:book": "npm run journey:shoot -- --all"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.6",
+    "@dorsk/journey": "^0.1.4",
     "@inlang/paraglide-js": "^2.24.1",
+    "@playwright/test": "^1.63.0",
     "@sveltejs/adapter-static": "^3.0.8",
     "@sveltejs/kit": "^2.70.2",
     "@sveltejs/vite-plugin-svelte": "^6.0.0",
     "@types/node": "^26.2.0",
     "happy-dom": "^20.10.6",
+    "sharp": "^0.35.4",
     "svelte": "^5.25.0",
     "svelte-check": "^4.0.0",
     "typescript": "^5.0.0",

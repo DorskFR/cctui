@@ -85,5 +85,13 @@ export default defineConfig({
 		host: true,
 		port: 5273,
 		proxy: devProxy(process.env.CCTUI_PROXY)
+	},
+	// `preview` serves the production build with the same proxy, which is what
+	// the journeys replay against: a dev server transforms modules on demand, so
+	// a cold first paint can lose a click to hydration.
+	preview: {
+		host: true,
+		port: 5273,
+		proxy: devProxy(process.env.CCTUI_PROXY)
 	}
 });

@@ -302,7 +302,7 @@
 	}
 </script>
 
-<div class="composer" class:dropping={dragActive}>
+<div class="composer" data-journey="composer" class:dropping={dragActive}>
 	{#if archived}
 		<div class="archived-actions">
 			<div class="hint"><Text tone="muted" size="sm">{m.composer_archived_readonly()}</Text></div>
@@ -345,6 +345,7 @@
 						rows={1}
 						autoresize
 						resize="top"
+						data-journey="message"
 						aria-label={m.a11y_composer_message()}
 						placeholder={dragActive
 							? m.composer_drop_files()

@@ -199,6 +199,8 @@
 		padding={row ? 'sm' : 'md'}
 		style={cardStyle}
 		data-session-id={session.id}
+		data-journey="session"
+		data-journey-key={session.id}
 		onclick={handleClick}
 	>
 		{#if row}

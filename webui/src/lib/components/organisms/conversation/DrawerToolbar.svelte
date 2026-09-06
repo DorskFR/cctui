@@ -74,18 +74,24 @@
 	<div class="mobile-tabs" role="group" aria-label={m.conversation_chat_controls_aria()}>
 		<Toggle
 			class="mtab"
+			data-journey="mobile-panel"
+			data-journey-key="filters"
 			pressed={mobilePanel === 'filters'}
 			aria-expanded={mobilePanel === 'filters'}
 			onclick={() => togglePanel('filters')}>{m.conversation_filters()}</Toggle
 		>
 		<Toggle
 			class="mtab"
+			data-journey="mobile-panel"
+			data-journey-key="format"
 			pressed={mobilePanel === 'format'}
 			aria-expanded={mobilePanel === 'format'}
 			onclick={() => togglePanel('format')}>{m.conversation_format()}</Toggle
 		>
 		<Toggle
 			class="mtab"
+			data-journey="mobile-panel"
+			data-journey-key="auto"
 			pressed={mobilePanel === 'auto' || autoApprove}
 			style={autoApprove ? '--toggle-accent: var(--warn)' : ''}
 			aria-expanded={mobilePanel === 'auto'}
@@ -95,10 +101,12 @@
 	<!-- Quick category toggles + the full per-category picker. A quick chip is
 	     "on" only when every category it covers is on; a partly-on group gets a
 	     dashed border instead. -->
-	<div class="tagbar row row-wrap" class:panel-open={mobilePanel === 'filters'} role="group" aria-label={m.conversation_msg_filter_aria()}>
+	<div class="tagbar row row-wrap" data-journey="filters" class:panel-open={mobilePanel === 'filters'} role="group" aria-label={m.conversation_msg_filter_aria()}>
 		{#each QUICK_FILTERS as q (q.id)}
 			<Toggle
 				pill
+				data-journey="quick"
+				data-journey-key={q.id}
 				pressed={quickOn(view.msgFilter, q.id)}
 				style={`--toggle-accent: ${QUICK_TINT[q.id]}${quickPartial(view.msgFilter, q.id) ? ';border-style:dashed' : ''}`}
 				title={quickTitle(q.id)}

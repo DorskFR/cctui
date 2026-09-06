@@ -33,6 +33,7 @@
 	<SettingGroup>
 		<SettingRow label={m.settings_theme_label()} help={m.settings_theme_help()}>
 			<Select
+				data-journey="theme"
 				value={theme.current}
 				style="width:100%"
 				onchange={(e) => settings.setTheme((e.currentTarget as HTMLSelectElement).value)}

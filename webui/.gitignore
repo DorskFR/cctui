@@ -7,3 +7,7 @@ node_modules
 .env.*
 !.env.example
 vite.config.ts.timestamp-*
+
+# Journey auth state: minted from a token at run time, never committed.
+journeys/.auth/
+test-results/
