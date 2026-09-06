@@ -122,7 +122,7 @@
 	<Heading level={1} size="xl" class="sess-title" style="align-self:center">{m.sessions_title()}</Heading>
 	<!-- FilterSearchBar forwards no id/aria-label, so the name reaches its input
 	     through the Field context; the label itself is screen-reader only. -->
-	<div class="search-box">
+	<div class="search-box" data-journey="search">
 		<label for={searchId} class="sr-only">{m.a11y_sessions_search()}</label>
 		<Field for={searchId}>
 			<FilterSearchBar
@@ -161,7 +161,7 @@
 		</div>
 	</div>
 	{#if onNew}
-		<Button class="toolbar-new" variant="primary" title={m.sessions_new_session()} aria-label={m.sessions_new_session()} onclick={onNew}>+<span class="new-label"> {m.sessions_new()}</span></Button>
+		<Button class="toolbar-new" data-journey="new" variant="primary" title={m.sessions_new_session()} aria-label={m.sessions_new_session()} onclick={onNew}>+<span class="new-label"> {m.sessions_new()}</span></Button>
 	{/if}
 	<!-- Mobile-only flex row-break: basis:100% forces row 2 (search +
 	     tools) onto a fresh line below title+New. Hidden on desktop where everything

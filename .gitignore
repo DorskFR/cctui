@@ -22,3 +22,6 @@ docs/superpowers/
 !CLAUDE.md
 .qa/
 tmp/
+
+# Journey replay scratch, written next to the generated tour.
+docs/journeys/.test-results/

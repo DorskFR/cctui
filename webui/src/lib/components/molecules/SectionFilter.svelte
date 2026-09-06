@@ -22,9 +22,10 @@
 	}
 </script>
 
-<div class="section-filter" use:clickOutside={() => (open = false)}>
+<div class="section-filter" data-journey="sections" use:clickOutside={() => (open = false)}>
 	<Button
 		square
+		data-journey="toggle"
 		aria-label={m.sessions_filter_sections()}
 		title={m.sessions_filter_sections_count({ count, total: SECTIONS.length })}
 		aria-haspopup="true"
@@ -42,6 +43,8 @@
 					type="button"
 					role="menuitemcheckbox"
 					class="opt"
+					data-journey="option"
+					data-journey-key={sec.value}
 					aria-checked={sections.has(sec.value)}
 					onclick={() => toggle(sec.value)}
 				>

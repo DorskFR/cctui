@@ -1,0 +1,73 @@
+{
+	"id": "follow-session",
+	"title": "Follow a session while it works",
+	"version": 1,
+	"variants": {
+		"desktop-dark": {
+			"captures": [
+				{
+					"index": 0,
+					"name": "drawer",
+					"file": "desktop-dark/01-drawer.png",
+					"title": "Open a session",
+					"body": "Selecting a session opens its conversation beside the list, so the rest of the fleet stays in view."
+				},
+				{
+					"index": 2,
+					"name": "timeline",
+					"file": "desktop-dark/02-timeline.png",
+					"title": "Read the whole transcript",
+					"body": "Every prompt, reply, tool call and tool result is kept, so you can see exactly what the agent did."
+				},
+				{
+					"index": 4,
+					"name": "tools",
+					"file": "desktop-dark/03-tools.png",
+					"title": "Filter the noise",
+					"body": "Hiding the assistant messages leaves the tool calls — the fastest way to audit what an agent touched."
+				},
+				{
+					"index": 5,
+					"name": "reply",
+					"file": "desktop-dark/04-reply.png",
+					"title": "Steer it mid-run",
+					"body": "A reply goes to the running agent, so you can redirect the work without restarting it."
+				}
+			],
+			"storyboard": "desktop-dark/storyboard.png"
+		},
+		"mobile-dark": {
+			"captures": [
+				{
+					"index": 1,
+					"name": "drawer",
+					"file": "mobile-dark/01-drawer.png",
+					"title": "Open a session",
+					"body": "A session has its own address, so the conversation opens straight from a link."
+				},
+				{
+					"index": 2,
+					"name": "timeline",
+					"file": "mobile-dark/02-timeline.png",
+					"title": "Read the whole transcript",
+					"body": "Every prompt, reply, tool call and tool result is kept, so you can see exactly what the agent did."
+				},
+				{
+					"index": 4,
+					"name": "tools",
+					"file": "mobile-dark/03-tools.png",
+					"title": "Filter the noise",
+					"body": "Hiding the assistant messages leaves the tool calls — the fastest way to audit what an agent touched."
+				},
+				{
+					"index": 5,
+					"name": "reply",
+					"file": "mobile-dark/04-reply.png",
+					"title": "Steer it mid-run",
+					"body": "A reply goes to the running agent, so you can redirect the work without restarting it."
+				}
+			],
+			"storyboard": "mobile-dark/storyboard.png"
+		}
+	}
+}

@@ -1,0 +1,40 @@
+{
+	"id": "follow-session",
+	"title": "Follow a session while it works",
+	"version": 1,
+	"variants": {
+		"desktop-dark": {
+			"captures": [
+				{
+					"index": 0,
+					"name": "drawer",
+					"file": "01-drawer.png",
+					"title": "Open a session",
+					"body": "Selecting a session opens its conversation beside the list, so the rest of the fleet stays in view."
+				},
+				{
+					"index": 2,
+					"name": "timeline",
+					"file": "02-timeline.png",
+					"title": "Read the whole transcript",
+					"body": "Every prompt, reply, tool call and tool result is kept, so you can see exactly what the agent did."
+				},
+				{
+					"index": 4,
+					"name": "tools",
+					"file": "03-tools.png",
+					"title": "Filter the noise",
+					"body": "Hiding the assistant messages leaves the tool calls — the fastest way to audit what an agent touched."
+				},
+				{
+					"index": 5,
+					"name": "reply",
+					"file": "04-reply.png",
+					"title": "Steer it mid-run",
+					"body": "A reply goes to the running agent, so you can redirect the work without restarting it."
+				}
+			],
+			"storyboard": "storyboard.png"
+		}
+	}
+}

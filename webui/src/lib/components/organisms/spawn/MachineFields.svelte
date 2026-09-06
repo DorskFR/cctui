@@ -89,7 +89,7 @@
 	});
 </script>
 
-<div class="where">
+<div class="where" data-journey="where">
 	<FilterInput
 		schema={cwdSchema}
 		bind:value={cwdRaw}
@@ -112,6 +112,7 @@
 </div>
 
 <Input
+	data-journey="label"
 	id="sp-name"
 	aria-label={m.spawn_session_name_aria()}
 	placeholder={m.spawn_session_label_placeholder()}
@@ -120,6 +121,7 @@
 
 <SessionMention bind:value={form.prompt} el={promptEl} sessions={mentionSessions}>
 	<Textarea
+		data-journey="prompt"
 		id="sp-prompt"
 		rows={10}
 		aria-label={m.spawn_prompt_label()}

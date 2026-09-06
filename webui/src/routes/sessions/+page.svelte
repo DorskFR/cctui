@@ -1057,7 +1057,7 @@
 			{/each}
 		{:else}
 			{#each list.groups as g (g.key)}
-				<div class="section">
+				<div class="section" data-journey="section" data-journey-key={g.key}>
 					{@render groupHeader(g.key, g.label, g.sessions.length, {
 						bucket: g.key,
 						trailing: g.key === 'dispatched' ? archiveAllDispatchedAction : undefined
@@ -1074,7 +1074,7 @@
 			     section, so they honor the card-view / compact toggles
 			     identically; the card surfaces Launch/Edit/Discard in place of the
 			     live-session affordances. -->
-			<div class="section">
+			<div class="section" data-journey="section" data-journey-key="drafts">
 				{@render groupHeader('drafts', m.sessions_section_drafts(), list.draftRows.length, {})}
 				{#if !hiddenSections.has('drafts')}
 					{#if cardView}

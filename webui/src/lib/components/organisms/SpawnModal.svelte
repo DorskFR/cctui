@@ -802,6 +802,7 @@
 	>
 		<div
 			class="stack"
+			data-journey="spawn"
 			use:dialogBackdropGuard
 			onkeydown={(e: KeyboardEvent) => {
 				if (isSubmitChord(e) && !busy && valid) {
@@ -861,13 +862,14 @@
 	<span class="foot-secondary">
 		<Button onclick={clearForm}>{m.spawn_clear()}</Button>
 		{#if target === 'machine'}
-			<Button disabled={busy || !draftValid} onclick={submitDraft}>
+			<Button data-journey="draft" disabled={busy || !draftValid} onclick={submitDraft}>
 				{m.spawn_draft()}
 			</Button>
 		{/if}
 	</span>
 	<span class="foot-primary">
 		<Button
+			data-journey="submit"
 			variant="primary"
 			grow
 			disabled={busy || !valid}

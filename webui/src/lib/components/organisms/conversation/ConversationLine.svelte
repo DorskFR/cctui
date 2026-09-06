@@ -69,6 +69,8 @@
 
 <div
 	class="line {ln.role}"
+	data-journey="line"
+	data-journey-key={ln.role}
 	class:mcp={ln.mcp}
 	class:pending={ln.pending}
 	class:failed={!!ln.failed}

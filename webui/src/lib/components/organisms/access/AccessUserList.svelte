@@ -36,6 +36,8 @@
 	<button
 		type="button"
 		class="row"
+		data-journey="user"
+		data-journey-key={u.name}
 		class:on={u.id === selectedId}
 		class:dim={revoked}
 		style:--h={hashHue(u.name)}

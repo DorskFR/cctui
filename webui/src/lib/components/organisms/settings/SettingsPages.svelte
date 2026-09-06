@@ -16,28 +16,28 @@ import SecuritySection from './SecuritySection.svelte';
 	let { current, isAdmin }: { current: SettingsPage; isAdmin: boolean } = $props();
 </script>
 
-<div class="pg" class:on={current === 'appearance'} data-settings-page="appearance">
+<div class="pg" class:on={current === 'appearance'} data-settings-page="appearance" data-journey="page" data-journey-key="appearance">
 	<AppearanceSection />
 </div>
-<div class="pg" class:on={current === 'sessions'} data-settings-page="sessions">
+<div class="pg" class:on={current === 'sessions'} data-settings-page="sessions" data-journey="page" data-journey-key="sessions">
 	<SessionsSection />
 </div>
-<div class="pg" class:on={current === 'execution'} data-settings-page="execution">
+<div class="pg" class:on={current === 'execution'} data-settings-page="execution" data-journey="page" data-journey-key="execution">
 	<ExecutionSection />
 </div>
-<div class="pg" class:on={current === 'privacy'} data-settings-page="privacy">
+<div class="pg" class:on={current === 'privacy'} data-settings-page="privacy" data-journey="page" data-journey-key="privacy">
 	<PrivacySection />
 </div>
-<div class="pg" class:on={current === 'notifications'} data-settings-page="notifications">
+<div class="pg" class:on={current === 'notifications'} data-settings-page="notifications" data-journey="page" data-journey-key="notifications">
 	<NotificationsSection />
 </div>
-<div class="pg" class:on={current === 'monitoring'} data-settings-page="monitoring">
+<div class="pg" class:on={current === 'monitoring'} data-settings-page="monitoring" data-journey="page" data-journey-key="monitoring">
 	<MonitoringSection />
 </div>
-<div class="pg" class:on={current === 'security'} data-settings-page="security">
+<div class="pg" class:on={current === 'security'} data-settings-page="security" data-journey="page" data-journey-key="security">
 	<SecuritySection {isAdmin} />
 </div>
-<div class="pg" class:on={current === 'instance'} data-settings-page="instance">
+<div class="pg" class:on={current === 'instance'} data-settings-page="instance" data-journey="page" data-journey-key="instance">
 	<InstanceSection {isAdmin} />
 </div>
 

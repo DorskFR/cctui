@@ -45,6 +45,7 @@
 	<AccountBadge name={s.account_name} warn={accountTrafficWarning(s)} showName={settings.accountNames} />
 {/if}
 <Text
+	data-journey="title"
 	weight="semibold"
 	size={row ? 'md' : 'lg'}
 	truncate

@@ -14,6 +14,7 @@
       "!**/.superpowers/**",
       "!**/adapters/codex/schema/**",
       "!webui/messages/**",
+      "!docs/journeys/**",
       "!webui/src/lib/paraglide/**"
     ]
   },

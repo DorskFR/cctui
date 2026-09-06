@@ -21,7 +21,7 @@
 		? 'border-style: dashed; border-color: var(--border-strong); background: transparent'
 		: undefined}
 >
-	<Stack>
+	<Stack data-journey="enroll">
 		<Text weight="bold">{m.home_enroll_title()}</Text>
 		<Text as="p" tone="muted" size="sm">
 			{m.home_enroll_install_before()} <Text variant="code">cctui-daemon</Text>

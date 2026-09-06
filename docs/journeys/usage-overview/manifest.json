@@ -1,0 +1,59 @@
+{
+	"id": "usage-overview",
+	"title": "See what the fleet is costing",
+	"version": 1,
+	"variants": {
+		"desktop-dark": {
+			"captures": [
+				{
+					"index": 0,
+					"name": "tiles",
+					"file": "desktop-dark/01-tiles.png",
+					"title": "The fleet in four numbers",
+					"body": "Sessions running now, sessions waiting on you, machines online, and the all-time total."
+				},
+				{
+					"index": 1,
+					"name": "windows",
+					"file": "desktop-dark/02-windows.png",
+					"title": "Tokens by time window",
+					"body": "The same usage read over the last hour, day, week and month, split into input, output and cached tokens."
+				},
+				{
+					"index": 2,
+					"name": "analytics",
+					"file": "desktop-dark/03-analytics.png",
+					"title": "Where the tokens went",
+					"body": "Daily volume and a per-model breakdown, so an expensive habit shows up before the bill does."
+				}
+			],
+			"storyboard": "desktop-dark/storyboard.png"
+		},
+		"mobile-dark": {
+			"captures": [
+				{
+					"index": 0,
+					"name": "tiles",
+					"file": "mobile-dark/01-tiles.png",
+					"title": "The fleet in four numbers",
+					"body": "Sessions running now, sessions waiting on you, machines online, and the all-time total."
+				},
+				{
+					"index": 1,
+					"name": "windows",
+					"file": "mobile-dark/02-windows.png",
+					"title": "Tokens by time window",
+					"body": "The same usage read over the last hour, day, week and month, split into input, output and cached tokens."
+				},
+				{
+					"index": 2,
+					"name": "analytics",
+					"file": "mobile-dark/03-analytics.png",
+					"title": "Where the tokens went",
+					"body": "Daily volume and a per-model breakdown, so an expensive habit shows up before the bill does."
+				}
+			],
+			"storyboard": "mobile-dark/storyboard.png"
+		}
+	}
+}

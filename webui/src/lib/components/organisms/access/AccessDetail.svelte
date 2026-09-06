@@ -182,6 +182,7 @@
 
 	<Tabs {tabs} bind:value={tab} label={m.access_tabs_label()}>
 		{#snippet panel(id)}
+			<div data-journey="tab" data-journey-key={id}>
 			{#if id === 'keys'}
 				<AccessKeysTab userId={user.id} {ceiling} canManage={canManageKeys && !user.revoked_at} {onsecret} />
 			{:else if id === 'machines'}
@@ -196,6 +197,7 @@
 			{:else}
 				<AccessAccountsTab {accounts} loading={accountsLoading} />
 			{/if}
+			</div>
 		{/snippet}
 	</Tabs>
 </div>

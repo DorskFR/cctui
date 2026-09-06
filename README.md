@@ -35,6 +35,40 @@ A terminal UI crate (`cctui-tui`) also exists but is currently work-in-progress.
 - **Multi-machine** — Enroll any number of machines; sessions, liveness, and token usage roll up into one view.
 - **Adapter-agnostic** — Claude Code and Codex events normalize to a single canonical shape, so the UI has one renderer.
 
+### See it
+
+Every screen below is captured from a running instance on a synthetic fixture,
+and re-captured whenever the UI moves. The same flows are recorded at phone
+width and in other themes: **[docs/journeys.md](docs/journeys.md)**.
+
+**Read the fleet at a glance** — sessions grouped by what they need from you.
+
+![Sessions grouped by what they need](docs/journeys/sessions-list/desktop-dark/01-list.png)
+
+**Follow a session while it works** — the transcript, its tool calls, and a composer that reaches the running agent.
+
+![Following a running session](docs/journeys/follow-session/desktop-dark/01-drawer.png)
+
+**Start a new agent** — pick the machine and folder, write the brief, or park it as a draft.
+
+![Starting a new session](docs/journeys/spawn-session/desktop-dark/01-dialog.png)
+
+**Find a session again** — free text searches the transcripts; `label:`, `machine:` and `status:` narrow the list.
+
+![Searching sessions](docs/journeys/search-sessions/desktop-dark/02-text.png)
+
+**See what the fleet is costing** — live counts, token windows and a per-model breakdown.
+
+![The usage overview](docs/journeys/usage-overview/desktop-dark/01-tiles.png)
+
+**Bring a machine into the fleet** — users, keys, one enrolment command, and machine liveness.
+
+![Enrolling a machine](docs/journeys/enroll-machine/desktop-dark/04-machines.png)
+
+**Twenty-one themes** — light and dark, applied to every screen.
+
+![The theme picker](docs/journeys/sessions-list/desktop-dark/02-themes.png)
+
 ## Enrolling a machine
 
 Install `cctui-daemon` on the target host (download the matching binary from GitHub Releases), then enroll it with a user token:
