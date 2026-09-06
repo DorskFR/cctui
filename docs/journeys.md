@@ -24,7 +24,9 @@ also recorded in `light` and `gruvbox`, which is where the themes are shown.
 
 The screens are captured by hand and committed with the change that moved them,
 so a pull request that alters the UI carries its own before/after. Nothing
-regenerates them in CI — a PR that forgets gets a comment, not a failure.
+regenerates them in CI; it only reads the diff and comments — the screens the
+branch moved, and any journey it looks like it should have refreshed but did
+not. That comment never fails the run.
 
 Start a stack with demo data in it, then shoot the journeys your change affects:
 
