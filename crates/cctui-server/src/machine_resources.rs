@@ -2,10 +2,11 @@
 //! (`machine_resources`, one row per machine) and served to the webui's
 //! header gauge via `GET /api/v1/machines/resources`.
 
-use axum::{Extension, Json, extract::State};
-use chrono::{DateTime, Utc};
+use axum::extract::State;
+use axum::{Extension, Json};
 use cctui_proto::models::MachineLiveness;
 use cctui_proto::resources::MachineResources;
+use chrono::{DateTime, Utc};
 use serde::Serialize;
 use ts_rs::TS;
 use uuid::Uuid;
@@ -44,6 +45,15 @@ pub async fn persist(state: &AppState, machine_id: Uuid, r: &MachineResources) {
     if let Err(err) = res {
         tracing::warn!(%err, %machine_id, "machine_resources upsert failed");
     }
+}
+
+/// Persist a heartbeat snapshot, then push it to every webui/TUI so a pinned
+/// header gauge follows the machine live rather than on the next poll.
+pub async fn record_and_broadcast(state: &AppState, machine_id: Uuid, resources: MachineResources) {
+    persist(state, machine_id, &resources).await;
+    state
+        .bus
+        .publish_server(cctui_proto::ws::ServerEvent::MachineResources { machine_id, resources });
 }
 
 /// One enrolled daemon machine and its last-known resource snapshot, for the

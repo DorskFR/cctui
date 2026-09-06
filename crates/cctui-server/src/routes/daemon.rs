@@ -840,11 +840,7 @@ async fn process_frame(
                 detect_divergence(state, machine_id, bandwidth.event_bytes());
             }
             if let Some(resources) = resources {
-                crate::machine_resources::persist(state, machine_id, &resources).await;
-                state.bus.publish_server(cctui_proto::ws::ServerEvent::MachineResources {
-                    machine_id,
-                    resources,
-                });
+                crate::machine_resources::record_and_broadcast(state, machine_id, resources).await;
             }
             Ok(())
         }

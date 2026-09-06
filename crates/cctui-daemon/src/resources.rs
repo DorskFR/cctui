@@ -143,7 +143,7 @@ mod tests {
         let a = parse_cpu_times(STAT_A).unwrap();
         let b = parse_cpu_times(STAT_B).unwrap();
         // Δtotal = 1500-1000 = 500, Δidle (idle+iowait) = 1100-800 = 300 → 40 % busy.
-        assert_eq!(cpu_busy_pct(a, b), Some(40.0));
+        assert!((cpu_busy_pct(a, b).unwrap() - 40.0).abs() < f32::EPSILON);
         // No interval elapsed → nothing to report, never a division by zero.
         assert_eq!(cpu_busy_pct(a, a), None);
     }
@@ -176,8 +176,8 @@ mod tests {
 
     #[test]
     fn pct_is_clamped_and_zero_safe() {
-        assert_eq!(pct(0, 0), 0.0);
-        assert_eq!(pct(50, 100), 50.0);
-        assert_eq!(pct(200, 100), 100.0);
+        assert!((pct(0, 0) - 0.0).abs() < f32::EPSILON);
+        assert!((pct(50, 100) - 50.0).abs() < f32::EPSILON);
+        assert!((pct(200, 100) - 100.0).abs() < f32::EPSILON);
     }
 }

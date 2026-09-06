@@ -1,7 +1,6 @@
 pub mod adapter;
 pub mod api;
 pub mod bandwidth;
-pub mod resources;
 pub mod blob;
 pub mod chunk;
 pub mod classifier;
@@ -14,6 +13,7 @@ pub mod identity;
 pub mod ids;
 pub mod media;
 pub mod models;
+pub mod resources;
 pub mod updatehook;
 pub mod util;
 pub mod ws;

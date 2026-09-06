@@ -996,7 +996,10 @@ mod tests {
                 ..Default::default()
             }),
             update_hook: Some(true),
-            resources: Some(crate::resources::MachineResources { cpu_pct: 12.5, ..Default::default() }),
+            resources: Some(crate::resources::MachineResources {
+                cpu_pct: 12.5,
+                ..Default::default()
+            }),
         };
         let json = serde_json::to_string(&hb).unwrap();
         assert!(json.contains(r#""forward":900"#), "{json}");
