@@ -18,6 +18,7 @@
 	.head {
 		display: flex;
 		align-items: center;
+		flex-wrap: wrap;
 		gap: var(--sp-2);
 		min-height: var(--control-height-default);
 		margin-bottom: var(--sp-4);

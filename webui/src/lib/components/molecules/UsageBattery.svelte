@@ -180,7 +180,10 @@
 	.agg {
 		display: none;
 	}
-	@media (max-width: 639px) {
+	/* The strip widens with every header-pinned provider, and the header only
+	   has room for it once the brand and the nav have been served. Tablet and
+	   below get the single aggregate cell instead. */
+	@media (max-width: 1023px) {
 		.full {
 			display: none;
 		}

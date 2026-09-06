@@ -62,8 +62,9 @@
 
 	// The three-column bar only fits while the readout column can hold
 	// "100% · resets 5d 🔥" next to a track worth looking at. Below that the
-	// window name takes its own line above a full-width track. Measured rather
-	// than a media query — the stats panel is drag-resizable.
+	// window name gives way so the row stays one line: the track and its readout
+	// are what carry the meaning, and the name survives in the tooltip. Measured
+	// rather than a media query — the stats panel is drag-resizable.
 	const READOUT_W = $derived(usd ? '7.5rem' : '6rem');
 	const DENSE_BELOW_PX = 300;
 	let width = $state(0);
@@ -83,6 +84,7 @@
 	const wallMs = $derived(paceKind ? wallInMs(pace, resets, now) : null);
 	const rowTitle = $derived.by(() => {
 		const parts: string[] = [];
+		if (dense) parts.push(label);
 		if (resetText) parts.push(m.capbar_caption_resets({ time: resetText }));
 		if (paceKind && expectedPct !== null) {
 			parts.push(
@@ -110,9 +112,6 @@
 {/snippet}
 
 <div class="soft-limit" bind:clientWidth={width} title={rowTitle || undefined}>
-	{#if dense}
-		<div class="dense-label"><Text size="xs" tone="muted" truncate>{label}</Text></div>
-	{/if}
 	<CapBar
 		label={dense ? undefined : label}
 		value={pct ?? 0}
@@ -148,9 +147,6 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--sp-1);
-		min-width: 0;
-	}
-	.dense-label {
 		min-width: 0;
 	}
 	.readout {

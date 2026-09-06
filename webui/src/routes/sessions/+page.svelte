@@ -14,7 +14,17 @@
 	import { dockLayout } from '$lib/spawnDock.svelte';
 	import StatsDock from '$lib/components/organisms/statsdock/StatsDock.svelte';
 	import SessionControls from '$lib/components/organisms/SessionControls.svelte';
-	import { Button, Callout, Dot, IconButton, Menu, Modal, SectionHeader, Text } from '@dorsk/tsumikit';
+	import {
+		Button,
+		Callout,
+		Cluster,
+		Dot,
+		IconButton,
+		Menu,
+		Modal,
+		SectionHeader,
+		Text
+	} from '@dorsk/tsumikit';
 	import MachineBadge from '$lib/components/molecules/MachineBadge.svelte';
 	import { useAllMachines } from '$lib/queries';
 	import {
@@ -1133,14 +1143,18 @@
 {/if}
 
 {#if pendingDraftEdit}
-	<Modal title={m.sessions_edit_draft_title()} onclose={() => (pendingDraftEdit = null)} size="sm">
+	<Modal title={m.sessions_edit_draft_title()} onclose={() => (pendingDraftEdit = null)} footerFill>
 		{#snippet body()}
 			<Text>{m.sessions_edit_draft_body()}</Text>
 		{/snippet}
 		{#snippet footer()}
-			<Button block onclick={() => (pendingDraftEdit = null)}>{m.common_cancel()}</Button>
-			<Button block onclick={() => void confirmDraftEdit(true)}>{m.sessions_edit_draft_save_first()}</Button>
-			<Button block variant="primary" onclick={() => void confirmDraftEdit(false)}>{m.sessions_edit_draft_replace()}</Button>
+			<Cluster>
+				<Button grow onclick={() => (pendingDraftEdit = null)}>{m.common_cancel()}</Button>
+				<Button grow onclick={() => void confirmDraftEdit(true)}>{m.sessions_edit_draft_save_first()}</Button>
+				<Button grow variant="primary" onclick={() => void confirmDraftEdit(false)}
+					>{m.sessions_edit_draft_replace()}</Button
+				>
+			</Cluster>
 		{/snippet}
 	</Modal>
 {/if}

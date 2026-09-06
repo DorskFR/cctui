@@ -79,9 +79,19 @@
 	.nav.inline .nav-inner {
 		height: 100%;
 	}
-	/* nav-btn is the class on the NavLink atom, so reach it via :global. */
+	.lbl {
+		max-width: 100%;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	/* nav-btn is the class on the NavLink atom, so reach it via :global. In the
+	   header the nav takes what the brand and the account cluster leave, so a
+	   label gives way inside its own button rather than running over whatever
+	   sits beside it. */
 	.nav-inner :global(.nav-btn) {
 		flex: 1;
+		min-width: 0;
 		display: flex;
 		flex-direction: column;
 		align-items: center;

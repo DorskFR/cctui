@@ -134,18 +134,18 @@
 						<Text size="xs" tone="faint" variant="code">srv v{version.data.version}</Text>
 					</NavLink>
 				{/if}
+				{#if latest}
+					<button
+						class="upd"
+						type="button"
+						title={m.nav_update_available({ version: latest })}
+						onclick={() => (updateOpen = true)}
+					>
+						<span class="upd-dot" aria-hidden="true"></span>
+						<Text size="xs" tone="danger" variant="code">v{latest}</Text>
+					</button>
+				{/if}
 			</span>
-			{#if latest}
-				<button
-					class="upd"
-					type="button"
-					title={m.nav_update_available({ version: latest })}
-					onclick={() => (updateOpen = true)}
-				>
-					<span class="upd-dot" aria-hidden="true"></span>
-					<Text size="xs" tone="danger" variant="code">v{latest}</Text>
-				</button>
-			{/if}
 		</div>
 		<div class="tabs">
 			{#if settings.nav === 'top'}
@@ -240,10 +240,12 @@
 		width: 100%;
 		padding-inline: max(var(--sp-4), var(--safe-left)) max(var(--sp-4), var(--safe-right));
 		height: var(--header-h);
-		/* Three equal tracks so the nav sits on the header's true centre,
-		   whatever the brand and the right-hand cluster weigh. */
+		/* The brand and the account cluster take the width they need; the nav
+		   centres in what is left. Equal thirds put the nav on the header's true
+		   centre but capped the cluster at a third, which the usage strip
+		   outgrows — it then spilled back over the nav. */
 		display: grid;
-		grid-template-columns: repeat(3, minmax(0, 1fr));
+		grid-template-columns: auto minmax(0, 1fr) auto;
 		align-items: center;
 		gap: var(--sp-2);
 	}
@@ -294,23 +296,22 @@
 	.conn.mid {
 		background: var(--warn);
 	}
+	/* ui / srv / update stacked in one column: three lines cost no more width
+	   than two, so the block never has to compete with the nav for room. */
 	.vers {
 		display: flex;
 		flex-direction: column;
 		align-items: flex-start;
 		flex: none;
-		line-height: 1.15;
+		line-height: 1;
 		white-space: nowrap;
 	}
 	.upd {
 		display: inline-flex;
 		align-items: center;
 		gap: var(--sp-1);
-		flex: none;
-		height: 20px;
-		padding: 0 var(--sp-2);
-		border: 1px solid var(--danger);
-		border-radius: var(--r-pill);
+		padding: 0;
+		border: 0;
 		background: none;
 		cursor: pointer;
 	}
