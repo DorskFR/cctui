@@ -618,7 +618,9 @@ impl Spawner {
     /// the validating webhook rejects each attempt and the Job spins silently.
     /// Recreate such a Job from the current profile, keeping its dispatch
     /// identity. A Job whose pod may already have run is never touched (that
-    /// would double-dispatch real work) — it is surfaced as stranded instead.
+    /// would double-dispatch real work); a Job that owns a pod finishes on its
+    /// original template, and only one that should have a pod and has none is
+    /// surfaced as stranded.
     async fn reconcile_drift(&self, job: &Job, profile_name: &str, profile: &WorkerProfileSpec) {
         let Some(name) = job.metadata.name.as_deref() else { return };
         let Some(template) = job.spec.as_ref().map(|s| &s.template) else { return };
@@ -630,13 +632,25 @@ impl Spawner {
             .and_then(|a| a.get(ANNOTATION_SESSION_ID))
             .map_or("<unknown>", String::as_str);
 
-        if !Self::job_never_ran(job) || !self.job_has_no_pods(name).await {
-            tracing::warn!(
-                job = %name, session = %session, profile = %profile_name, drift = %drift,
-                "queued worker is stranded: its pod template no longer conforms to the profile \
-                 and a pod may already have run, so it cannot be safely recreated"
-            );
-            return;
+        let suspended = job.spec.as_ref().and_then(|s| s.suspend).unwrap_or(false);
+        let has_pods = !self.job_has_no_pods(name).await;
+        match drift_disposition(Self::job_never_ran(job), has_pods, suspended) {
+            Disposition::Recreate => {}
+            Disposition::LeaveAlone => {
+                tracing::debug!(
+                    job = %name, session = %session, profile = %profile_name, drift = %drift,
+                    "drifted worker Job owns a pod; leaving it to finish on its original template"
+                );
+                return;
+            }
+            Disposition::Stranded => {
+                tracing::warn!(
+                    job = %name, session = %session, profile = %profile_name, drift = %drift,
+                    "worker Job is stranded: it no longer conforms to its profile and has no pod, \
+                     but it is recorded as having run so it cannot be safely recreated"
+                );
+                return;
+            }
         }
 
         let job = match Self::rebuild_job(job, profile) {
@@ -906,6 +920,29 @@ impl Dispatcher for Spawner {
     async fn cancel(&self, handle: &str) -> anyhow::Result<()> {
         self.cancel_worker(handle).await
     }
+}
+
+/// What to do with a Job whose pod template no longer matches its profile.
+#[derive(Debug, PartialEq, Eq)]
+enum Disposition {
+    /// Never ran and owns no pod: rebuild it from the current profile.
+    Recreate,
+    /// Owns a pod (or is still suspended): it is progressing and will finish on
+    /// its original template, so the drift is harmless.
+    LeaveAlone,
+    /// Should own a pod and does not, yet is recorded as having run — the one
+    /// case that needs a human, since recreating it could double-dispatch.
+    Stranded,
+}
+
+const fn drift_disposition(never_ran: bool, has_pods: bool, suspended: bool) -> Disposition {
+    if never_ran && !has_pods {
+        return Disposition::Recreate;
+    }
+    if has_pods || suspended {
+        return Disposition::LeaveAlone;
+    }
+    Disposition::Stranded
 }
 
 #[cfg(test)]
@@ -1381,6 +1418,28 @@ mod tests {
         assert!(
             Spawner::job_never_ran(&job),
             "a resumed job carries a startTime the moment it unsuspends, pod or no pod"
+        );
+    }
+
+    #[test]
+    fn a_drifted_job_that_owns_a_pod_is_not_reported_as_stranded() {
+        // Regression: every reconcile tick warned "stranded" for a healthy job
+        // that simply owned a pod, ~4/min per job, burying real strandings.
+        assert_eq!(drift_disposition(true, false, true), Disposition::Recreate);
+        assert_eq!(drift_disposition(true, false, false), Disposition::Recreate);
+        for suspended in [true, false] {
+            assert_eq!(
+                drift_disposition(false, true, suspended),
+                Disposition::LeaveAlone,
+                "a running pod means the Job finishes on its old template"
+            );
+            assert_eq!(drift_disposition(true, true, suspended), Disposition::LeaveAlone);
+        }
+        assert_eq!(drift_disposition(false, false, true), Disposition::LeaveAlone);
+        assert_eq!(
+            drift_disposition(false, false, false),
+            Disposition::Stranded,
+            "resumed, no pod, recorded as having run — the only case needing a human"
         );
     }
 
