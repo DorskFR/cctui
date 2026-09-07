@@ -735,7 +735,9 @@ async fn build_diagnose(
             .as_ref()
             .map(|s| s.pending_rpc_methods.clone())
             .unwrap_or_default(),
-        last_protocol_error: snapshot.as_ref().and_then(|s| s.last_protocol_error.clone()),
+        protocol_errors: snapshot.as_ref().map(|s| s.protocol_errors.clone()).unwrap_or_default(),
+        stderr_tail: snapshot.as_ref().map(|s| s.stderr_tail.clone()).unwrap_or_default(),
+        rpc_tail: snapshot.as_ref().map(|s| s.rpc_tail.clone()).unwrap_or_default(),
         rollout_path: snapshot.as_ref().and_then(|s| s.rollout_path.clone()),
         rollout_size_bytes: snapshot.as_ref().and_then(|s| s.rollout_size_bytes),
         auth_state,

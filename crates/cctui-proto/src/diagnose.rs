@@ -227,6 +227,34 @@ pub struct GatewayStatus {
 ///
 /// Present only when the session is driven by the codex adapter; `None` for
 /// claude-code, whose facts are the neutral top-level fields instead. Kept as
+/// One retained `codex app-server` stderr line, secret-redacted.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct CodexStderrLine {
+    pub ts_ms: i64,
+    pub line: String,
+}
+
+/// One retained JSON-RPC frame, secret-redacted and truncated to 2 KiB.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct CodexRpcFrame {
+    pub ts_ms: i64,
+    /// `out` (daemon → app-server) or `in` (app-server → daemon).
+    pub direction: String,
+    /// The frame's `method`, else its `id`, else `frame`.
+    pub label: String,
+    pub json: String,
+}
+
+/// One JSON-RPC protocol error (`<method>: <error>`), secret-redacted.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct CodexProtocolError {
+    pub ts_ms: i64,
+    pub message: String,
+}
+
 /// an optional tagged section so the claude wire shape stays unchanged
 /// (additive-only).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -263,9 +291,15 @@ pub struct CodexDiagnose {
     pub pending_rpc_count: u32,
     /// Methods of the outstanding JSON-RPC requests.
     pub pending_rpc_methods: Vec<String>,
-    /// Last JSON-RPC protocol error seen on this session, if any.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub last_protocol_error: Option<String>,
+    /// JSON-RPC protocol errors seen on this session, oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub protocol_errors: Vec<CodexProtocolError>,
+    /// Trailing `codex app-server` stderr lines, oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stderr_tail: Vec<CodexStderrLine>,
+    /// The last JSON-RPC frames in both directions, oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rpc_tail: Vec<CodexRpcFrame>,
     /// Rollout (transcript) file path for the thread.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rollout_path: Option<String>,
@@ -512,7 +546,20 @@ mod tests {
             turn_status: "working".into(),
             pending_rpc_count: 1,
             pending_rpc_methods: vec!["turn/start".into()],
-            last_protocol_error: None,
+            protocol_errors: vec![CodexProtocolError {
+                ts_ms: 1_700_000_000_000,
+                message: "turn/start: boom".into(),
+            }],
+            stderr_tail: vec![CodexStderrLine {
+                ts_ms: 1_700_000_000_001,
+                line: "ERROR stream disconnected".into(),
+            }],
+            rpc_tail: vec![CodexRpcFrame {
+                ts_ms: 1_700_000_000_002,
+                direction: "out".into(),
+                label: "turn/start".into(),
+                json: "{\"method\":\"turn/start\"}".into(),
+            }],
             rollout_path: Some("/home/u/.codex/sessions/x/019e6628.jsonl".into()),
             rollout_size_bytes: Some(2048),
             auth_state: Some("gateway env present".into()),

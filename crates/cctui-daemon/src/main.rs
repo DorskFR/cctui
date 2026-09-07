@@ -256,10 +256,13 @@ async fn wait_for_termination() {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "cctui_daemon=info".into()),
-        )
+        .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(
+            |_| {
+                // `codex_app_server_stderr` is its own target, outside the
+                // `cctui_daemon` tree, so journald keeps codex's stderr.
+                "cctui_daemon=info,codex_app_server_stderr=info".into()
+            },
+        ))
         .init();
 
     let cli = Cli::parse();
