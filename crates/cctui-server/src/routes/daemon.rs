@@ -55,6 +55,12 @@ const STALE_TRANSFER: std::time::Duration = std::time::Duration::from_mins(10);
 /// network blip, all of which reconnect within seconds.
 const DAEMON_LOST_GRACE: Duration = Duration::from_secs(45);
 
+/// A `machines.last_seen_at` younger than this means the daemon is heartbeating
+/// at *some* replica. Two of the daemon's 20s heartbeat cadences, so one missed
+/// heartbeat does not read as death, and under [`DAEMON_LOST_GRACE`] so a
+/// machine that is genuinely gone is never held alive by its own last beat.
+const DAEMON_SEEN_FRESH: Duration = Duration::from_secs(40);
+
 // ---- /api/v1/daemon/auth ----
 
 /// Daemon presents its long-lived machine key (or a session token re-issued
@@ -689,8 +695,41 @@ static PENDING_DAEMON_LOST: LazyLock<Arc<PendingDaemonLost>> =
 fn schedule_daemon_lost(state: &AppState, machine_id: Uuid) {
     let state = state.clone();
     PENDING_DAEMON_LOST.schedule(machine_id, DAEMON_LOST_GRACE, async move {
+        if daemon_seen_recently(&state.pool, machine_id).await {
+            tracing::info!(%machine_id, "daemon_lost mark skipped — machine heartbeating elsewhere");
+            return;
+        }
         mark_daemon_lost(&state, machine_id).await;
     });
+}
+
+/// Cross-pod backstop for the local cancel: a daemon that dropped this pod's WS
+/// and reconnected to a peer replica never cancels the mark scheduled here, but
+/// its heartbeats keep `machines.last_seen_at` fresh from whichever pod they
+/// land on. A DB error answers "not seen", so the mark still lands.
+async fn daemon_seen_recently(pool: &sqlx::PgPool, machine_id: Uuid) -> bool {
+    match sqlx::query_scalar::<_, chrono::DateTime<Utc>>(
+        "SELECT last_seen_at FROM machines WHERE id = $1",
+    )
+    .bind(machine_id)
+    .fetch_optional(pool)
+    .await
+    {
+        Ok(last_seen_at) => seen_within(last_seen_at, Utc::now(), DAEMON_SEEN_FRESH),
+        Err(err) => {
+            tracing::warn!(%err, %machine_id, "last_seen_at lookup failed before daemon_lost mark");
+            false
+        }
+    }
+}
+
+fn seen_within(
+    last_seen_at: Option<chrono::DateTime<Utc>>,
+    now: chrono::DateTime<Utc>,
+    window: Duration,
+) -> bool {
+    let window = chrono::Duration::seconds(i64::try_from(window.as_secs()).unwrap_or(i64::MAX));
+    last_seen_at.is_some_and(|seen| now.signed_duration_since(seen) < window)
 }
 
 async fn mark_daemon_lost(state: &AppState, machine_id: Uuid) {
@@ -2085,10 +2124,10 @@ mod tests {
     use cctui_proto::ws::{DaemonFrameDown, DaemonFrameUp};
 
     use super::{
-        Arc, DAEMON_LOST_GRACE, EndReason, Future, Inbound, MAX_TRANSFER_BYTES, Ordering,
-        PendingDaemonLost, Utc, Uuid, bearer_token, decode_compressed_frame, event_kind,
+        Arc, DAEMON_LOST_GRACE, DAEMON_SEEN_FRESH, EndReason, Future, Inbound, MAX_TRANSFER_BYTES,
+        Ordering, PendingDaemonLost, Utc, Uuid, bearer_token, decode_compressed_frame, event_kind,
         event_local_id, expand_batch, handle_chunk, merge_known_adapters, next_inbound,
-        should_auto_approve, strip_nul,
+        seen_within, should_auto_approve, strip_nul,
     };
 
     #[test]
@@ -2795,5 +2834,90 @@ mod tests {
         tokio::time::advance(DAEMON_LOST_GRACE).await;
         settle().await;
         assert_eq!(marked.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn a_gone_daemons_own_last_beat_can_never_look_fresh() {
+        assert!(
+            DAEMON_SEEN_FRESH < DAEMON_LOST_GRACE,
+            "a mark fires DAEMON_LOST_GRACE after the disconnect, so last_seen_at is at least \
+             that old unless some other replica advanced it",
+        );
+    }
+
+    #[test]
+    fn freshness_reads_the_heartbeat_not_the_row() {
+        let now = Utc::now();
+        let fresh = now - chrono::Duration::seconds(4);
+        let stale = now - chrono::Duration::seconds(600);
+
+        assert!(seen_within(Some(fresh), now, DAEMON_SEEN_FRESH));
+        assert!(!seen_within(Some(stale), now, DAEMON_SEEN_FRESH));
+        assert!(!seen_within(None, now, DAEMON_SEEN_FRESH), "an unknown machine is not alive");
+        assert!(
+            seen_within(Some(now + chrono::Duration::seconds(5)), now, DAEMON_SEEN_FRESH),
+            "clock skew must not read as death",
+        );
+        assert!(
+            !seen_within(
+                Some(now - chrono::Duration::from_std(DAEMON_LOST_GRACE).expect("grace fits")),
+                now,
+                DAEMON_SEEN_FRESH,
+            ),
+            "a beat older than the grace window is exactly the gone-daemon case",
+        );
+    }
+
+    /// DB-gated: the cross-pod backstop. A daemon that reconnected to a peer
+    /// replica keeps `last_seen_at` fresh, and this pod's pending mark must
+    /// stand down; a machine nobody has heard from is still marked.
+    #[tokio::test]
+    async fn a_machine_heartbeating_at_a_peer_replica_is_not_marked() {
+        let Some(url) = crate::routes::gateway::test_db_url("daemon_seen_recently") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let uid = Uuid::new_v4();
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+            .bind(uid)
+            .bind(format!("seen-{uid}"))
+            .bind(format!("kh-{uid}"))
+            .execute(&pool)
+            .await
+            .expect("seed user");
+
+        let seed_machine = async |last_seen_at: chrono::DateTime<Utc>| {
+            let mid = Uuid::new_v4();
+            sqlx::query(
+                "INSERT INTO machines (id, user_id, name, key_hash, last_seen_at) \
+                 VALUES ($1, $2, $3, $4, $5)",
+            )
+            .bind(mid)
+            .bind(uid)
+            .bind(format!("m-{mid}"))
+            .bind(format!("mk-{mid}"))
+            .bind(last_seen_at)
+            .execute(&pool)
+            .await
+            .expect("seed machine");
+            mid
+        };
+
+        let live = seed_machine(Utc::now() - chrono::Duration::seconds(4)).await;
+        let gone = seed_machine(Utc::now() - chrono::Duration::seconds(600)).await;
+
+        assert!(
+            super::daemon_seen_recently(&pool, live).await,
+            "a 4s-old heartbeat means the daemon reconnected somewhere",
+        );
+        assert!(!super::daemon_seen_recently(&pool, gone).await);
+        assert!(
+            !super::daemon_seen_recently(&pool, Uuid::new_v4()).await,
+            "an unknown machine is not alive",
+        );
     }
 }
