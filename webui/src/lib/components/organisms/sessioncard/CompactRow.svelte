@@ -10,7 +10,8 @@
 	import { type SessionActions, type SessionView, statusLabel } from './view';
 
 	// One real row, no wrap: lead · preview (takes the slack) · cwd · branch ·
-	// perm · unread · Σ $ · model · effort · logo · time.
+	// perm · unread · Σ $ · model · effort · logo · time. Narrow enough and the
+	// preview yields the slack to the title.
 	let { view, actions }: { view: SessionView; actions: SessionActions } = $props();
 	const s = $derived(view.s);
 </script>
@@ -18,15 +19,17 @@
 <Cluster wrap={false} gap="var(--sp-2)">
 	<Lead {view} {actions} row />
 	{#if s.match_snippet || view.lastMsg}
-		<Text
-			truncate
-			tone={s.match_snippet ? 'default' : 'muted'}
-			size="xs"
-			style="flex:1 1 0;min-width:0"
-			>{s.match_snippet ? `🔍 ${s.match_snippet}` : view.lastMsg}</Text
-		>
+		<span class="snippet">
+			<Text
+				truncate
+				tone={s.match_snippet ? 'default' : 'muted'}
+				size="xs"
+				style="min-width:0;max-width:100%"
+				>{s.match_snippet ? `🔍 ${s.match_snippet}` : view.lastMsg}</Text
+			>
+		</span>
 	{:else}
-		<span style="flex:1 1 auto"></span>
+		<span class="snippet"></span>
 	{/if}
 	<span class="cwd">
 		<WorkingDir path={s.working_dir} copy title={m.sessions_workdir_copy_title({ path: s.working_dir })} style="min-width:0;max-width:100%" />
@@ -54,11 +57,23 @@
 		<Readout {view} compact />
 	{/if}
 	{#if s.last_message_at}<span class="time"
-			><Timestamp value={s.last_message_at} mode="relative" tone="faint" size="xs" /></span
+			><Timestamp value={s.last_message_at} mode="relative" short tone="faint" size="xs" /></span
 		>{/if}
 </Cluster>
 
 <style>
+	.snippet {
+		display: inline-flex;
+		flex: 1 1 0;
+		min-width: 0;
+	}
+	/* Below this the row cannot seat both a snippet and a legible title, and the
+	   title is what identifies the session. */
+	@container sess-row (max-width: 34rem) {
+		.snippet {
+			display: none;
+		}
+	}
 	.cwd {
 		display: inline-flex;
 		flex: 0 1 auto;

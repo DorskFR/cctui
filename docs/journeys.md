@@ -72,7 +72,3 @@ the record is refreshed deliberately, not diffed.
 provider on each request, so a fixture cannot fill them — a seeded account shows
 "configured but not currently reported". Documenting that screen needs a real
 credential, so it is left out.
-
-**The session title at phone width.** The compact card gives the title no room
-to survive at 390px, so `follow-session` opens the session by its URL on mobile
-rather than by tapping it. The mobile screens show the card as it really is.

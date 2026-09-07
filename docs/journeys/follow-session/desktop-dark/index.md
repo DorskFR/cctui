@@ -6,7 +6,7 @@
 
 **Open a session**
 
-Selecting a session opens its conversation beside the list, so the rest of the fleet stays in view.
+Tapping a session by name opens its conversation — beside the list on a desktop, over it on a phone.
 
 ![timeline](02-timeline.png)
 
