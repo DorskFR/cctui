@@ -21,7 +21,7 @@ use crate::{
     ANNOTATION_ENVELOPE_INJECTED, ANNOTATION_WORKER_CONTAINER, DEFAULT_WORKER_CONTAINER,
     LABEL_WORKER_PROFILE, WorkerProfileSpec,
 };
-use k8s_openapi::api::core::v1::{Container, Pod, PodSpec};
+use k8s_openapi::api::core::v1::{Container, Pod, PodSpec, PodTemplateSpec};
 use std::collections::BTreeSet;
 
 const SECRET_REF_PREFIXES: [&str; 3] = ["vault:", "bao:", "k8s:"];
@@ -198,6 +198,25 @@ fn check_conformance(
     worker_name: &str,
     profile: &WorkerProfileSpec,
 ) -> Result<(), String> {
+    check_template_conformance(spec, worker, profile)?;
+    check_name_sets(spec, worker_name, profile)?;
+    check_volumes(spec, profile)?;
+    check_worker_mounts(worker, worker_name, profile)?;
+    check_worker_env(worker, worker_name, profile)
+}
+
+/// The conformance decided entirely by the Job's pod *template*.
+///
+/// These are the fields the dispatcher fixes at creation, before the envelope is
+/// injected. The kube dispatcher calls this to spot a queued Job whose template
+/// no longer matches its profile; the field list lives here so the dispatcher's
+/// notion of "conformant" cannot drift from the webhook's.
+pub fn check_template_conformance(
+    spec: &PodSpec,
+    worker: &Container,
+    profile: &WorkerProfileSpec,
+) -> Result<(), String> {
+    let worker_name = worker.name.as_str();
     if spec.service_account_name != profile.service_account_name {
         return Err(format!(
             "serviceAccountName `{}` does not match the profile's `{}` — the dispatch must not \
@@ -233,11 +252,22 @@ fn check_conformance(
         return Err("runtimeClassName does not match the profile".to_owned());
     }
 
-    check_name_sets(spec, worker_name, profile)?;
-    check_volumes(spec, profile)?;
-    check_worker_env_from(worker, worker_name, profile)?;
-    check_worker_mounts(worker, worker_name, profile)?;
-    check_worker_env(worker, worker_name, profile)
+    check_worker_env_from(worker, worker_name, profile)
+}
+
+/// Why a Job's immutable pod template no longer conforms to `profile`, or
+/// `None` if it still does.
+#[must_use]
+pub fn template_drift(template: &PodTemplateSpec, profile: &WorkerProfileSpec) -> Option<String> {
+    let spec = template.spec.as_ref()?;
+    let worker_name = template
+        .metadata
+        .as_ref()
+        .and_then(|m| m.annotations.as_ref())
+        .and_then(|a| a.get(ANNOTATION_WORKER_CONTAINER))
+        .map_or(DEFAULT_WORKER_CONTAINER, String::as_str);
+    let worker = spec.containers.iter().find(|c| c.name == worker_name)?;
+    check_template_conformance(spec, worker, profile).err()
 }
 
 /// Worker `envFrom` must be exactly the profile's — the envelope never adds
