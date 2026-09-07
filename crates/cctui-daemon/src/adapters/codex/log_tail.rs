@@ -11,8 +11,10 @@
 //!    `{role: "assistant", text: <line>}`. Tool-call payloads are
 //!    recognised heuristically by the presence of a `"tool"` or
 //!    `"function_call"` field.
-//! 3. After `quiesce_secs` of no new bytes on a tracked file, emit
-//!    `SessionEnded { Completed }` and drop the tracking entry.
+//! 3. After `quiesce_secs` of no new bytes on a tracked file, emit a
+//!    `hibernated` `Status`: an idle rollout is not a finished one, so the
+//!    session stays tracked and resumes streaming when it grows again.
+//!    `SessionEnded` is reserved for the rollout file disappearing.
 //!
 //! The exact Codex log schema isn't documented here — this is an
 //! opt-in scaffold that will need refinement once we have concrete
@@ -72,6 +74,7 @@ struct TrackedSession {
     local_id: String,
     offset: u64,
     last_activity: Instant,
+    hibernated: bool,
 }
 
 pub struct LogTail {
@@ -153,17 +156,9 @@ impl LogTail {
             alive.insert(path.clone());
             self.tail_file(path).await;
         }
-        // Quiesce check: anything tracked but not seen this scan OR not
-        // updated for `quiesce` → emit SessionEnded.
-        let now = Instant::now();
-        let ended: Vec<PathBuf> = self
-            .sessions
-            .iter()
-            .filter(|(p, s)| {
-                !alive.contains(*p) || now.duration_since(s.last_activity) > self.cfg.quiesce
-            })
-            .map(|(p, _)| p.clone())
-            .collect();
+        // The rollout is gone: the only evidence of an end this adapter has.
+        let ended: Vec<PathBuf> =
+            self.sessions.keys().filter(|p| !alive.contains(*p)).cloned().collect();
         for path in ended {
             if let Some(s) = self.sessions.remove(&path) {
                 let _ = self
@@ -174,6 +169,21 @@ impl LogTail {
                     })
                     .await;
             }
+        }
+        let now = Instant::now();
+        let idle: Vec<PathBuf> = self
+            .sessions
+            .iter()
+            .filter(|(_, s)| {
+                !s.hibernated && now.duration_since(s.last_activity) > self.cfg.quiesce
+            })
+            .map(|(p, _)| p.clone())
+            .collect();
+        for path in idle {
+            let Some(s) = self.sessions.get_mut(&path) else { continue };
+            s.hibernated = true;
+            let local_id = s.local_id.clone();
+            let _ = self.events.send(hibernated_status(local_id)).await;
         }
         if !alive.is_empty() {
             let keep: HashSet<String> =
@@ -237,6 +247,7 @@ impl LogTail {
                     local_id,
                     offset: self.offsets.get(&key).min(len),
                     last_activity: Instant::now(),
+                    hibernated: false,
                 },
             );
         }
@@ -257,10 +268,26 @@ impl LogTail {
         self.offsets_dirty = true;
         if !events.is_empty() {
             session.last_activity = Instant::now();
+            session.hibernated = false;
         }
         for evt in events {
             let _ = self.events.send(evt).await;
         }
+    }
+}
+
+fn hibernated_status(local_id: String) -> AdapterEvent {
+    AdapterEvent::Status {
+        local_id,
+        tempo: Some("hibernated".to_owned()),
+        state: None,
+        detail: None,
+        activity: None,
+        name: None,
+        intent: None,
+        model: None,
+        effort: None,
+        children: Vec::new(),
     }
 }
 
@@ -529,7 +556,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn quiesce_emits_session_ended() {
+    async fn quiesce_emits_hibernated_status() {
         let tmp = tempfile::tempdir().unwrap();
         let sessions = tmp.path().to_path_buf();
         let (tx, mut rx) = mpsc::channel(64);
@@ -546,14 +573,14 @@ mod tests {
         let path = sessions.join("s1.jsonl");
         std::fs::write(&path, r#"{"role":"assistant","text":"hi"}"#).unwrap();
         tail.scan_once().await;
-        // Drain Started + Message.
         rx.recv().await.unwrap();
         rx.recv().await.unwrap();
-        // Wait past quiesce window, then scan again.
         tokio::time::sleep(Duration::from_millis(20)).await;
         tail.scan_once().await;
-        let evt = rx.recv().await.unwrap();
-        assert!(matches!(evt, AdapterEvent::SessionEnded { .. }));
+        match rx.recv().await.unwrap() {
+            AdapterEvent::Status { tempo, .. } => assert_eq!(tempo.as_deref(), Some("hibernated")),
+            other => panic!("expected hibernated status, got {other:?}"),
+        }
     }
 
     #[tokio::test]
@@ -762,8 +789,6 @@ mod tests {
 
     #[tokio::test]
     async fn quiesced_rollout_is_not_replayed_on_rediscovery() {
-        // regression: quiesce eviction used to drop the offset, so the
-        // next scan re-read the whole file and re-uploaded it every ~62s.
         let tmp = tempfile::tempdir().unwrap();
         let sessions = tmp.path().join("sessions");
         std::fs::create_dir_all(&sessions).unwrap();
@@ -785,15 +810,13 @@ mod tests {
         rx.recv().await.unwrap(); // Message
         tokio::time::sleep(Duration::from_millis(20)).await;
         tail.scan_once().await;
-        assert!(matches!(rx.recv().await.unwrap(), AdapterEvent::SessionEnded { .. }));
+        assert!(matches!(rx.recv().await.unwrap(), AdapterEvent::Status { .. }));
         tail.scan_once().await;
         tail.scan_once().await;
         assert!(rx.try_recv().is_err(), "quiesced rollout must stay silent");
-        // New bytes revive the session and only they are emitted.
         let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
         writeln!(f, "{{\"role\":\"assistant\",\"text\":\"more\"}}").unwrap();
         tail.scan_once().await;
-        assert!(matches!(rx.recv().await.unwrap(), AdapterEvent::SessionStarted { .. }));
         match rx.recv().await.unwrap() {
             AdapterEvent::Message { payload, .. } => {
                 assert_eq!(payload["text"], json!("more"));
@@ -801,6 +824,54 @@ mod tests {
             other => panic!("expected only the appended line, got {other:?}"),
         }
         assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn idle_rollout_hibernates_and_resumes_without_replay() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sessions = tmp.path().join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        let (tx, mut rx) = mpsc::channel(64);
+        let mut tail = LogTail::new(
+            LogTailConfig {
+                sessions_root: sessions.clone(),
+                poll_interval: Duration::from_millis(10),
+                quiesce: Duration::from_millis(1),
+                offsets_path: Some(tmp.path().join("offsets.json")),
+            },
+            tx,
+            CancellationToken::new(),
+        );
+        let path = sessions.join("s1.jsonl");
+        std::fs::write(&path, "{\"role\":\"assistant\",\"text\":\"hi\"}\n").unwrap();
+        tail.scan_once().await;
+        assert!(matches!(rx.recv().await.unwrap(), AdapterEvent::SessionStarted { .. }));
+        assert!(matches!(rx.recv().await.unwrap(), AdapterEvent::Message { .. }));
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        tail.scan_once().await;
+        match rx.recv().await.unwrap() {
+            AdapterEvent::Status { tempo, .. } => assert_eq!(tempo.as_deref(), Some("hibernated")),
+            other => panic!("an idle rollout must hibernate, got {other:?}"),
+        }
+        tail.scan_once().await;
+        assert!(rx.try_recv().is_err(), "hibernation must be emitted once");
+
+        let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        writeln!(f, "{{\"role\":\"assistant\",\"text\":\"more\"}}").unwrap();
+        tail.scan_once().await;
+        match rx.recv().await.unwrap() {
+            AdapterEvent::Message { payload, .. } => assert_eq!(payload["text"], json!("more")),
+            other => panic!("expected only the appended line, got {other:?}"),
+        }
+        assert!(rx.try_recv().is_err());
+
+        std::fs::remove_file(&path).unwrap();
+        tail.scan_once().await;
+        assert!(
+            matches!(rx.recv().await.unwrap(), AdapterEvent::SessionEnded { .. }),
+            "a removed rollout is the one real end"
+        );
     }
 
     #[tokio::test]
