@@ -13,9 +13,10 @@
 //! `auth_middleware` resolves it to `TokenRole::Machine` with
 //! `machine_id` + `user_id` populated.
 
+use std::collections::HashSet;
 use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, LazyLock};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
 use axum::extract::ws::{Message, WebSocket};
@@ -467,6 +468,11 @@ fn expand_batch(frame: DaemonFrameUp) -> Vec<DaemonFrameUp> {
 async fn handle(socket: WebSocket, state: AppState, machine_id: Uuid, user_id: Uuid) {
     let (mut sink, mut stream) = socket.split();
     let (tx, mut rx) = mpsc::channel::<DaemonFrameDown>(64);
+    // Sessions this connection announced. Several daemons can share one
+    // machine id (every dispatched worker pod authenticates as the user's
+    // `dispatch` machine), so the close path may only end these, never the
+    // machine's whole roster.
+    let announced: Arc<Mutex<HashSet<String>>> = Arc::default();
 
     // Register the daemon for command fan-out with the bus. If a
     // stale entry exists, overwrite it (newest connection wins).
@@ -629,6 +635,11 @@ async fn handle(socket: WebSocket, state: AppState, machine_id: Uuid, user_id: U
             other => vec![other],
         };
         for frame in leaves {
+            if let Some(local_id) = announced_session(&frame)
+                && let Ok(mut set) = announced.lock()
+            {
+                set.insert(local_id.to_owned());
+            }
             let trace = frame_trace(&frame);
             if let Err(err) = process_frame(&state, machine_id, user_id, frame).await {
                 tracing::warn!(%err, %trace, "process_frame error");
@@ -647,9 +658,22 @@ async fn handle(socket: WebSocket, state: AppState, machine_id: Uuid, user_id: U
     // of the same race.
     if state.bus.unregister_daemon(machine_id, &tx) {
         crate::presence::unregister(&state, crate::presence::Kind::Daemon, machine_id).await;
-        schedule_daemon_lost(&state, machine_id);
+        let sessions: Vec<String> =
+            announced.lock().map(|mut set| set.drain().collect()).unwrap_or_default();
+        schedule_daemon_lost(&state, machine_id, sessions);
     }
     outbound.abort();
+}
+
+/// The session a daemon frame announces as live on this connection, if any.
+fn announced_session(frame: &DaemonFrameUp) -> Option<&str> {
+    match frame {
+        DaemonFrameUp::SessionRegistered { local_id, .. }
+        | DaemonFrameUp::Event { event: AdapterEvent::SessionStarted { local_id, .. }, .. } => {
+            Some(local_id)
+        }
+        _ => None,
+    }
 }
 
 /// Deferred `daemon_lost` marks, one at most per machine, cancelled by a
@@ -688,18 +712,23 @@ impl PendingDaemonLost {
 static PENDING_DAEMON_LOST: LazyLock<Arc<PendingDaemonLost>> =
     LazyLock::new(|| Arc::new(PendingDaemonLost::default()));
 
-/// The daemon's WS is gone: every session it was running is now unreachable,
+/// The daemon's WS is gone: every session it announced is now unreachable,
 /// so end them as `daemon_lost` — but only if it has not reconnected within
 /// [`DAEMON_LOST_GRACE`]. Soft — [`upsert_session`] reverts it when the daemon
-/// reconnects and re-registers the session as alive.
-fn schedule_daemon_lost(state: &AppState, machine_id: Uuid) {
+/// reconnects and re-registers the session as alive. Only `sessions` are
+/// eligible: other daemons on the same machine id keep theirs.
+fn schedule_daemon_lost(state: &AppState, machine_id: Uuid, sessions: Vec<String>) {
+    if sessions.is_empty() {
+        tracing::info!(%machine_id, "daemon_lost mark skipped — connection announced no sessions");
+        return;
+    }
     let state = state.clone();
     PENDING_DAEMON_LOST.schedule(machine_id, DAEMON_LOST_GRACE, async move {
         if daemon_seen_recently(&state.pool, machine_id).await {
             tracing::info!(%machine_id, "daemon_lost mark skipped — machine heartbeating elsewhere");
             return;
         }
-        mark_daemon_lost(&state, machine_id).await;
+        mark_daemon_lost(&state.pool, machine_id, &sessions).await;
     });
 }
 
@@ -732,15 +761,16 @@ fn seen_within(
     last_seen_at.is_some_and(|seen| now.signed_duration_since(seen) < window)
 }
 
-async fn mark_daemon_lost(state: &AppState, machine_id: Uuid) {
+async fn mark_daemon_lost(pool: &sqlx::PgPool, machine_id: Uuid, sessions: &[String]) {
     match sqlx::query(
         "UPDATE sessions SET status = 'ended', ended_at = now(), end_reason = 'daemon_lost', \
              end_detail = 'daemon connection closed' \
-         WHERE machine_uuid = $1 AND status IN ('new', 'active', 'inactive') \
+         WHERE machine_uuid = $1 AND id = ANY($2) AND status IN ('new', 'active', 'inactive') \
            AND end_reason IS NULL AND last_heartbeat > now() - interval '1 hour'",
     )
     .bind(machine_id)
-    .execute(&state.pool)
+    .bind(sessions)
+    .execute(pool)
     .await
     {
         Ok(res) if res.rows_affected() > 0 => {
@@ -2919,5 +2949,89 @@ mod tests {
             !super::daemon_seen_recently(&pool, Uuid::new_v4()).await,
             "an unknown machine is not alive",
         );
+    }
+
+    #[test]
+    fn announced_session_reads_registration_and_start_frames() {
+        use cctui_proto::adapter::{AdapterEvent, SessionMeta};
+        let registered = DaemonFrameUp::SessionRegistered {
+            adapter_id: "claude-code".into(),
+            local_id: "s1".into(),
+        };
+        let started = DaemonFrameUp::Event {
+            adapter_id: "codex".into(),
+            event: AdapterEvent::SessionStarted {
+                local_id: "s2".into(),
+                meta: SessionMeta::default(),
+            },
+        };
+        let other = DaemonFrameUp::Event {
+            adapter_id: "codex".into(),
+            event: AdapterEvent::SessionEnded {
+                local_id: "s3".into(),
+                reason: EndReason::Completed,
+            },
+        };
+        assert_eq!(super::announced_session(&registered), Some("s1"));
+        assert_eq!(super::announced_session(&started), Some("s2"));
+        assert_eq!(super::announced_session(&other), None);
+    }
+
+    /// Two worker pods share one machine id. Closing one pod's WS must end
+    /// only the sessions that pod announced, not its neighbour's.
+    #[tokio::test]
+    async fn daemon_lost_is_scoped_to_the_closing_connections_sessions() {
+        let Some(url) = crate::routes::gateway::test_db_url("daemon_lost_scope") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let uid = Uuid::new_v4();
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+            .bind(uid)
+            .bind(format!("scope-{uid}"))
+            .bind(format!("kh-{uid}"))
+            .execute(&pool)
+            .await
+            .expect("seed user");
+        let mid = Uuid::new_v4();
+        sqlx::query("INSERT INTO machines (id, user_id, name, key_hash) VALUES ($1, $2, $3, $4)")
+            .bind(mid)
+            .bind(uid)
+            .bind(format!("m-{mid}"))
+            .bind(format!("mk-{mid}"))
+            .execute(&pool)
+            .await
+            .expect("seed machine");
+        let mine = format!("mine-{}", Uuid::new_v4());
+        let neighbour = format!("neighbour-{}", Uuid::new_v4());
+        for id in [&mine, &neighbour] {
+            sqlx::query(
+                "INSERT INTO sessions (id, machine_id, working_dir, status, user_id, machine_uuid, adapter_id) \
+                 VALUES ($1, $2, '/w', 'active', $3, $4, 'claude-code')",
+            )
+            .bind(id)
+            .bind(mid.to_string())
+            .bind(uid)
+            .bind(mid)
+            .execute(&pool)
+            .await
+            .expect("seed session");
+        }
+
+        super::mark_daemon_lost(&pool, mid, std::slice::from_ref(&mine)).await;
+
+        let status = async |id: &str| -> (String, Option<String>) {
+            sqlx::query_as("SELECT status, end_reason FROM sessions WHERE id = $1")
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+                .expect("session row")
+        };
+        assert_eq!(status(&mine).await, ("ended".into(), Some("daemon_lost".into())));
+        assert_eq!(status(&neighbour).await, ("active".into(), None));
     }
 }
