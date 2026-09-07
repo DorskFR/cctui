@@ -6,7 +6,7 @@
 
 **Open a session**
 
-Selecting a session opens its conversation beside the list, so the rest of the fleet stays in view.
+Tapping a session by name opens its conversation — beside the list on a desktop, over it on a phone.
 
 ![timeline](desktop-dark/02-timeline.png)
 
@@ -32,7 +32,7 @@ A reply goes to the running agent, so you can redirect the work without restarti
 
 **Open a session**
 
-A session has its own address, so the conversation opens straight from a link.
+Tapping a session by name opens its conversation — beside the list on a desktop, over it on a phone.
 
 ![timeline](mobile-dark/02-timeline.png)
 

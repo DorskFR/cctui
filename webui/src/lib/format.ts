@@ -62,12 +62,47 @@ export function modelShort(model: string): string {
 /** Model FAMILY only — the one word that survives in the compact list row
  *  ("claude-opus-4-8" → "opus", "gpt-5-codex" → "gpt"). Falls back to the first
  *  segment of the (prefix-stripped) id for engines we don't enumerate. */
+const FAMILIES = ['opus', 'sonnet', 'haiku', 'fable', 'gpt', 'o1', 'o3', 'o4', 'gemini', 'grok'];
+
 export function modelFamily(model: string): string {
 	const m = model.toLowerCase();
-	for (const fam of ['opus', 'sonnet', 'haiku', 'fable', 'gpt', 'o1', 'o3', 'o4', 'gemini', 'grok']) {
+	for (const fam of FAMILIES) {
 		if (m.includes(fam)) return fam;
 	}
 	return modelShort(model).split(/[-\s]/)[0] || model;
+}
+
+/** Codex codenames all share the "gpt" family word, so they are matched ahead of
+ *  it — otherwise Sol, Terra, Luna and Astra are one indistinguishable label. */
+const CODENAMES = ['sol', 'terra', 'luna', 'astra'];
+
+const VOCABULARY = [...FAMILIES, ...CODENAMES];
+
+/** Shortest prefix, two letters up, unique across VOCABULARY: Sonnet and Sol
+ *  both start "so" and would otherwise render identically. */
+function distinctPrefix(word: string): string {
+	let n = 2;
+	while (n < word.length && VOCABULARY.some((w) => w !== word && w.startsWith(word.slice(0, n)))) n++;
+	return word.slice(0, n);
+}
+
+/** The narrowest a model can still be named in ("claude-opus-4-8" → "Op.",
+ *  "gpt-5.6-terra" → "Te.", "claude-sonnet-5" → "Son."). */
+export function modelAbbrev(model: string): string {
+	const m = model.toLowerCase();
+	const word = CODENAMES.find((c) => new RegExp(`(^|[^a-z])${c}([^a-z]|$)`).test(m)) ?? modelFamily(model);
+	if (word === 'gpt') return 'GPT';
+	return `${distinctPrefix(word).replace(/^./, (c) => c.toUpperCase())}.`;
+}
+
+/** The machine badge's smallest legible form. A fleet numbers its machines
+ *  (`ci-runner-01`, `dev2`), so a bare first letter renders them identically;
+ *  any trailing number is kept, without its padding. */
+export function machineInitial(label: string): string {
+	const head = label.match(/[a-z0-9]/i)?.[0];
+	if (!head) return '?';
+	const tail = label.match(/(\d+)\s*$/)?.[1];
+	return tail === undefined ? head.toUpperCase() : `${head.toUpperCase()}${Number(tail)}`;
 }
 
 export function usd(n: number): string {

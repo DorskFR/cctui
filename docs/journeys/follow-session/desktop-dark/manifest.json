@@ -10,24 +10,24 @@
 					"name": "drawer",
 					"file": "01-drawer.png",
 					"title": "Open a session",
-					"body": "Selecting a session opens its conversation beside the list, so the rest of the fleet stays in view."
+					"body": "Tapping a session by name opens its conversation — beside the list on a desktop, over it on a phone."
 				},
 				{
-					"index": 2,
+					"index": 1,
 					"name": "timeline",
 					"file": "02-timeline.png",
 					"title": "Read the whole transcript",
 					"body": "Every prompt, reply, tool call and tool result is kept, so you can see exactly what the agent did."
 				},
 				{
-					"index": 4,
+					"index": 3,
 					"name": "tools",
 					"file": "03-tools.png",
 					"title": "Filter the noise",
 					"body": "Hiding the assistant messages leaves the tool calls — the fastest way to audit what an agent touched."
 				},
 				{
-					"index": 5,
+					"index": 4,
 					"name": "reply",
 					"file": "04-reply.png",
 					"title": "Steer it mid-run",

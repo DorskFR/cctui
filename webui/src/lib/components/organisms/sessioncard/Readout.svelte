@@ -1,12 +1,14 @@
 <script lang="ts">
 	import AdapterIcon from '$lib/components/atoms/AdapterIcon.svelte';
 	import TokenUsage from '$lib/components/molecules/TokenUsage.svelte';
-	import { modelFamily, modelShort } from '$lib/format';
+	import { modelAbbrev, modelFamily, modelShort } from '$lib/format';
 	import { Text } from '@dorsk/tsumikit';
 	import type { SessionView } from './view';
 
-	// Σ ↑ ↓ ⚡ $ · model · effort · adapter logo. Inside a cramped `sess-card`
-	// container the model drops its effort, then falls back to the family.
+	// Σ ↑ ↓ ⚡ $ · model · effort · adapter logo. As the container tightens the
+	// model sheds its effort, then its version ("opus"), then all but two letters
+	// ("Op."); at the last step the adapter logo goes too. The chip's tooltip
+	// carries the full id at every step.
 	let {
 		view,
 		compact = false,
@@ -33,6 +35,7 @@
 	<span class="model" title={modelTitle}>
 		<Text tone="muted" size="xs" style="white-space:nowrap">
 			<span class="full">{modelShort(s.model)}</span><span class="fam">{modelFamily(s.model)}</span
+			><span class="abbr">{modelAbbrev(s.model)}</span
 			>{#if s.effort}<span class="effort"> · {s.effort}</span>{/if}
 		</Text>
 	</span>
@@ -52,7 +55,8 @@
 	.gap {
 		flex: 1 1 0;
 	}
-	.fam {
+	.fam,
+	.abbr {
 		display: none;
 	}
 	@container sess-card (max-width: 26rem) {
@@ -68,6 +72,14 @@
 			display: inline;
 		}
 	}
+	@container sess-card (max-width: 14rem) {
+		.fam {
+			display: none;
+		}
+		.abbr {
+			display: inline;
+		}
+	}
 	@container sess-row (max-width: 40rem) {
 		.effort {
 			display: none;
@@ -79,6 +91,17 @@
 		}
 		.fam {
 			display: inline;
+		}
+	}
+	@container sess-row (max-width: 30rem) {
+		.fam {
+			display: none;
+		}
+		.abbr {
+			display: inline;
+		}
+		.logo {
+			display: none;
 		}
 	}
 </style>

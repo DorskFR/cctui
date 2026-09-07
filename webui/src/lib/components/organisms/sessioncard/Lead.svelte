@@ -39,19 +39,20 @@
 {#if view.child}
 	<Badge tone="info" size="xs">{m.sessions_subagent_badge()}</Badge>
 {:else if view.showMachine}
-	<MachineBadge name={s.machine_name} id={s.machine_id} hue={s.machine_hue} mono />
+	<MachineBadge name={s.machine_name} id={s.machine_id} hue={s.machine_hue} mono dense />
 {/if}
 {#if !view.child}
 	<AccountBadge name={s.account_name} warn={accountTrafficWarning(s)} showName={settings.accountNames} />
 {/if}
-<Text
-	data-journey="title"
-	weight="semibold"
-	size={row ? 'md' : 'lg'}
-	truncate
-	style={row ? 'flex:0 1 auto;min-width:0;max-width:min(28ch,40%)' : 'flex:0 1 auto;min-width:0'}
-	>{view.title}</Text
->
+<span class="title" class:capped={row}>
+	<Text
+		data-journey="title"
+		weight="semibold"
+		size={row ? 'md' : 'lg'}
+		truncate
+		style="min-width:0;max-width:100%">{view.title}</Text
+	>
+</span>
 {#if s.labels.length > 0 || actions.labelEditable}
 	<LabelBadge
 		labels={s.labels}
@@ -84,6 +85,26 @@
 {/if}
 
 <style>
+	.title {
+		display: inline-flex;
+		flex: 0 1 auto;
+		min-width: 0;
+	}
+	/* `ch` has to resolve against the title's own size, not the row's. */
+	.title.capped {
+		font-size: var(--fs-md);
+		max-width: min(28ch, 40%);
+	}
+	/* The surrounding chips have degraded by here, so the title takes the slack
+	   instead of being the first thing squeezed: a capped, shrinkable title goes
+	   to zero width on a phone, which is both unreadable and untappable. */
+	@container sess-row (max-width: 34rem) {
+		.title.capped {
+			flex: 1 1 auto;
+			max-width: none;
+			min-width: 6ch;
+		}
+	}
 	.activity {
 		display: inline-flex;
 		align-items: baseline;

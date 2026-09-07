@@ -77,7 +77,7 @@ INSERT INTO sessions (
    now() - interval '1 day', now() - interval '20 hours',
    '{"title":"Update the onboarding copy"}'::jsonb,
    '00000000-0000-0000-0000-000000000000', 'codex', 'idle', 'done', 'success',
-   'Update the onboarding copy', 'gpt-5-codex', 'medium', false, NULL,
+   'Update the onboarding copy', 'gpt-5.6-sol', 'medium', false, NULL,
    now() - interval '20 hours', 'apply_patch', 9, '[]'::jsonb,
    now() - interval '20 hours', 'completed'),
 
@@ -180,6 +180,6 @@ VALUES
   ('a0000000-0000-4000-8000-000000000001', 'msg_seed_02', 3100, 640, 74000,     0, now() - interval '19 minutes', 'opus'),
   ('a0000000-0000-4000-8000-000000000002', 'msg_seed_03', 2600, 410, 38000,  9000, now() - interval '3 minutes',  'sonnet'),
   ('a0000000-0000-4000-8000-000000000003', 'msg_seed_04', 5400, 1220, 88000, 15000, now() - interval '26 minutes', 'opus'),
-  ('a0000000-0000-4000-8000-000000000004', 'msg_seed_05', 1900, 350, 21000,  6000, now() - interval '20 hours',   'gpt-5-codex');
+  ('a0000000-0000-4000-8000-000000000004', 'msg_seed_05', 1900, 350, 21000,  6000, now() - interval '20 hours',   'gpt-5.6-sol');
 
 COMMIT;
