@@ -16,7 +16,8 @@
 	const s = $derived(view.s);
 </script>
 
-<Cluster wrap={false} gap="var(--sp-2)">
+<div class="gaps">
+<Cluster wrap={false} gap="var(--row-gap)">
 	<Lead {view} {actions} row />
 	{#if s.match_snippet || view.lastMsg}
 		<span class="snippet">
@@ -60,8 +61,20 @@
 			><Timestamp value={s.last_message_at} mode="relative" tone="faint" size="xs" /></span
 		>{/if}
 </Cluster>
+</div>
 
 <style>
+	.gaps {
+		display: contents;
+		--row-gap: var(--sp-2);
+	}
+	/* Everything else in the row is at its floor by here, so the space between the
+	   chips is the last slack before the time chip spills past the card edge. */
+	@container sess-row (max-width: 34rem) {
+		.gaps {
+			--row-gap: var(--sp-1);
+		}
+	}
 	.snippet {
 		display: inline-flex;
 		flex: 1 1 0;
