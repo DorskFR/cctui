@@ -37,9 +37,10 @@ use std::time::Duration;
 use cctui_dispatcher_core::{
     Dispatcher, HandleState, SpawnOutcome, dedup_source, label_safe, worker_name,
 };
+use cctui_orchestrator::validate::template_drift;
 use cctui_orchestrator::{
     ANNOTATION_GPG_SIGNING, ANNOTATION_GUARD_IDENTITY, ANNOTATION_WORKER_CONTAINER,
-    LABEL_WORKER_PROFILE, WorkerProfile, WorkerProfileSpec,
+    DEFAULT_WORKER_CONTAINER, LABEL_WORKER_PROFILE, WorkerProfile, WorkerProfileSpec,
 };
 use cctui_proto::ws::WireDispatchSpec;
 use k8s_openapi::api::batch::v1::Job;
@@ -558,7 +559,7 @@ impl Spawner {
         let lp = ListParams::default().labels(&format!("{LABEL_ORIGIN}=cctui-kube-dispatcher"));
         let jobs = self.jobs().list(&lp).await?;
 
-        let mut by_profile: std::collections::BTreeMap<String, (usize, Vec<&Job>)> =
+        let mut by_profile: std::collections::BTreeMap<String, (Vec<&Job>, Vec<&Job>)> =
             std::collections::BTreeMap::new();
         for job in jobs.items.iter().filter(|j| Self::job_terminal_state(j).is_none()) {
             let Some(profile) =
@@ -570,20 +571,27 @@ impl Spawner {
             if Self::job_suspended(job) {
                 entry.1.push(job);
             } else {
-                entry.0 += 1;
+                entry.0.push(job);
             }
         }
 
         let profiles: Api<WorkerProfile> = Api::namespaced(self.client.clone(), &self.namespace);
-        for (profile_name, (active, mut queued)) in by_profile {
-            if queued.is_empty() {
-                continue;
-            }
-            let cap = match profiles.get(&profile_name).await {
-                Ok(p) => p.spec.max_inflight.filter(|c| *c > 0),
+        for (profile_name, (running, mut queued)) in by_profile {
+            let profile = match profiles.get(&profile_name).await {
+                Ok(p) => Some(p.spec),
                 Err(KubeError::Api(e)) if e.code == 404 => None,
                 Err(e) => anyhow::bail!("reading WorkerProfile `{profile_name}`: {e}"),
             };
+            if let Some(profile) = &profile {
+                for job in running.iter().chain(queued.iter()) {
+                    self.reconcile_drift(job, &profile_name, profile).await;
+                }
+            }
+            if queued.is_empty() {
+                continue;
+            }
+            let active = running.len();
+            let cap = profile.and_then(|p| p.max_inflight).filter(|c| *c > 0);
             let slots = cap.map_or(queued.len(), |c| (c as usize).saturating_sub(active));
             if slots == 0 {
                 continue;
@@ -603,6 +611,165 @@ impl Spawner {
             }
         }
         Ok(())
+    }
+
+    /// A Job's `spec.template` is immutable, so editing a `WorkerProfile` leaves
+    /// every Job already queued against it unable to create a pod ever again —
+    /// the validating webhook rejects each attempt and the Job spins silently.
+    /// Recreate such a Job from the current profile, keeping its dispatch
+    /// identity. A Job whose pod may already have run is never touched (that
+    /// would double-dispatch real work) — it is surfaced as stranded instead.
+    async fn reconcile_drift(&self, job: &Job, profile_name: &str, profile: &WorkerProfileSpec) {
+        let Some(name) = job.metadata.name.as_deref() else { return };
+        let Some(template) = job.spec.as_ref().map(|s| &s.template) else { return };
+        let Some(drift) = template_drift(template, profile) else { return };
+        let session = job
+            .metadata
+            .annotations
+            .as_ref()
+            .and_then(|a| a.get(ANNOTATION_SESSION_ID))
+            .map_or("<unknown>", String::as_str);
+
+        if !Self::job_never_ran(job) || !self.job_has_no_pods(name).await {
+            tracing::warn!(
+                job = %name, session = %session, profile = %profile_name, drift = %drift,
+                "queued worker is stranded: its pod template no longer conforms to the profile \
+                 and a pod may already have run, so it cannot be safely recreated"
+            );
+            return;
+        }
+
+        let job = match Self::rebuild_job(job, profile) {
+            Ok(j) => j,
+            Err(e) => {
+                tracing::warn!(job = %name, session = %session, error = %e, drift = %drift, "rebuilding drifted worker Job failed; it stays stranded");
+                return;
+            }
+        };
+        if let Err(e) = self.delete_and_wait(name).await {
+            tracing::warn!(job = %name, session = %session, error = %e, "deleting drifted worker Job failed; it stays stranded");
+            return;
+        }
+        match self.jobs().create(&PostParams::default(), &job).await {
+            Ok(_) => tracing::info!(
+                job = %name, session = %session, profile = %profile_name, drift = %drift,
+                "recreated queued worker from the current profile"
+            ),
+            Err(e) => {
+                tracing::warn!(job = %name, session = %session, error = %e, "recreating drifted worker Job failed; the dispatch is lost");
+            }
+        }
+    }
+
+    /// No pod of this Job has ever been counted by the Job controller.
+    fn job_never_ran(job: &Job) -> bool {
+        let Some(status) = job.status.as_ref() else { return true };
+        let zero = |v: Option<i32>| v.unwrap_or(0) == 0;
+        let uncounted = status.uncounted_terminated_pods.as_ref().is_none_or(|u| {
+            u.succeeded.as_ref().is_none_or(Vec::is_empty)
+                && u.failed.as_ref().is_none_or(Vec::is_empty)
+        });
+        zero(status.active)
+            && zero(status.succeeded)
+            && zero(status.failed)
+            && zero(status.ready)
+            && uncounted
+    }
+
+    /// Whether the Job owns no pod at all. A listing error answers `false`: an
+    /// API hiccup must never be read as proof that nothing ran.
+    async fn job_has_no_pods(&self, job_name: &str) -> bool {
+        let lp = ListParams::default().labels(&format!("job-name={job_name}"));
+        self.pods().list(&lp).await.is_ok_and(|pods| pods.items.is_empty())
+    }
+
+    /// Rebuild a Job from the current profile, preserving its dispatch identity:
+    /// the same name, `cctui.dev/*` labels and annotations, suspend state, Job
+    /// mechanics, and the literal per-run env the dispatch carried.
+    /// Cluster-owned metadata (`batch.kubernetes.io/*`) is dropped — the Job
+    /// controller re-stamps it. `valueFrom` env comes from the profile only, so
+    /// a reference the profile has dropped cannot survive the rebuild.
+    fn rebuild_job(old: &Job, profile: &WorkerProfileSpec) -> anyhow::Result<Job> {
+        let name =
+            old.metadata.name.clone().ok_or_else(|| anyhow::anyhow!("worker Job has no name"))?;
+        let old_spec =
+            old.spec.as_ref().ok_or_else(|| anyhow::anyhow!("worker Job `{name}` has no spec"))?;
+        let old_meta = old_spec.template.metadata.as_ref();
+        let old_pod_spec = old_spec
+            .template
+            .spec
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("worker Job `{name}` has no pod template spec"))?;
+
+        let old_worker = old_meta
+            .and_then(|m| m.annotations.as_ref())
+            .and_then(|a| a.get(ANNOTATION_WORKER_CONTAINER))
+            .map_or(DEFAULT_WORKER_CONTAINER, String::as_str);
+        let overrides: Vec<(String, String)> = old_pod_spec
+            .containers
+            .iter()
+            .find(|c| c.name == old_worker)
+            .into_iter()
+            .flat_map(|c| c.env.iter().flatten())
+            .filter_map(|e| Some((e.name.clone(), e.value.clone()?)))
+            .collect();
+
+        let worker_name = profile.worker_container_name().to_owned();
+        let pod_spec = Self::pod_spec(profile, &worker_name, &overrides)?;
+
+        let mut annotations = serde_json::Map::new();
+        for (k, v) in profile.pod_annotations.iter().flatten() {
+            annotations.insert(k.clone(), json!(v));
+        }
+        for (k, v) in old_meta.and_then(|m| m.annotations.as_ref()).into_iter().flatten() {
+            if k.starts_with("cctui.dev/") {
+                annotations.insert(k.clone(), json!(v));
+            }
+        }
+        annotations.insert(ANNOTATION_WORKER_CONTAINER.into(), json!(worker_name));
+        if profile.gpg_signing {
+            annotations.insert(ANNOTATION_GPG_SIGNING.into(), json!("true"));
+        } else {
+            annotations.remove(ANNOTATION_GPG_SIGNING);
+        }
+
+        let ours = |m: Option<&std::collections::BTreeMap<String, String>>| {
+            m.into_iter()
+                .flatten()
+                .filter(|(k, _)| k.starts_with("cctui.dev/"))
+                .map(|(k, v)| (k.clone(), json!(v)))
+                .collect::<serde_json::Map<String, Value>>()
+        };
+
+        let mut job_json = json!({
+            "apiVersion": "batch/v1",
+            "kind": "Job",
+            "metadata": {
+                "name": name,
+                "labels": ours(old.metadata.labels.as_ref()),
+                "annotations": ours(old.metadata.annotations.as_ref()),
+            },
+            "spec": {
+                "backoffLimit": old_spec.backoff_limit.unwrap_or(0),
+                "ttlSecondsAfterFinished": old_spec
+                    .ttl_seconds_after_finished
+                    .unwrap_or_else(|| i32::try_from(JOB_TTL_SECONDS).unwrap_or(i32::MAX)),
+                "template": {
+                    "metadata": {
+                        "labels": ours(old_meta.and_then(|m| m.labels.as_ref())),
+                        "annotations": annotations,
+                    },
+                    "spec": pod_spec,
+                },
+            },
+        });
+        if let Some(deadline) = old_spec.active_deadline_seconds {
+            job_json["spec"]["activeDeadlineSeconds"] = json!(deadline);
+        }
+        if old_spec.suspend == Some(true) {
+            job_json["spec"]["suspend"] = json!(true);
+        }
+        Ok(serde_json::from_value(job_json)?)
     }
 
     /// Lifecycle of a Job handle, plus a human reason when it FAILED.
@@ -744,6 +911,8 @@ impl Dispatcher for Spawner {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    type Mutation = (&'static str, fn(&mut WorkerProfileSpec));
 
     fn spec(session_id: &str, payload: Value) -> WireDispatchSpec {
         WireDispatchSpec {
@@ -1115,6 +1284,142 @@ mod tests {
             unsuspended.pointer("/spec/suspend").is_none(),
             "no cap pressure => suspend absent so the Job starts immediately"
         );
+    }
+
+    /// A queued Job as the cluster hands it back: the dispatcher's own manifest
+    /// plus the metadata the Job controller and kubectl stamp on top.
+    fn queued_job(profile_name: &str, profile: &WorkerProfileSpec, s: &WireDispatchSpec) -> Job {
+        let name = worker_name(&s.session_id);
+        let job =
+            Spawner::build_job("http://cctui:8700", profile_name, profile, s, &name, 3600, true)
+                .unwrap();
+        let mut v = serde_json::to_value(&job).unwrap();
+        v["metadata"]["labels"]["batch.kubernetes.io/controller-uid"] = json!("uid-1");
+        v["metadata"]["annotations"]["kubectl.kubernetes.io/last-applied-configuration"] =
+            json!("{}");
+        v["spec"]["template"]["metadata"]["labels"]["batch.kubernetes.io/job-name"] = json!(name);
+        serde_json::from_value(v).unwrap()
+    }
+
+    fn drift_of(job: &Job, profile: &WorkerProfileSpec) -> Option<String> {
+        template_drift(&job.spec.as_ref().unwrap().template, profile)
+    }
+
+    #[test]
+    fn profile_image_bump_recreates_the_queued_job_as_the_same_dispatch() {
+        let s = spec("sess-drift", json!({ "name": "triage", "env": { "EXTRA": "x" } }));
+        let old = queued_job("lean", &lean_profile(), &s);
+        let mut bumped = lean_profile();
+        bumped.image = "example.com/worker:0.8.14".to_owned();
+
+        let drift = drift_of(&old, &bumped).expect("an image bump strands the immutable template");
+        assert!(drift.contains("0.8.14"), "{drift}");
+        assert!(Spawner::job_never_ran(&old));
+
+        let new = Spawner::rebuild_job(&old, &bumped).unwrap();
+        assert!(drift_of(&new, &bumped).is_none(), "the rebuilt Job conforms to the new profile");
+
+        let v = serde_json::to_value(&new).unwrap();
+        assert_eq!(new.metadata.name, old.metadata.name);
+        assert_eq!(
+            v.pointer("/spec/template/spec/containers/0/image"),
+            Some(&json!("example.com/worker:0.8.14"))
+        );
+        assert_eq!(v.pointer("/spec/suspend"), Some(&json!(true)));
+        assert_eq!(v.pointer("/spec/activeDeadlineSeconds"), Some(&json!(1800)));
+        for p in [
+            "/metadata/labels/cctui.dev~1session-id",
+            "/metadata/annotations/cctui.dev~1session-id",
+            "/spec/template/metadata/labels/cctui.dev~1session-id",
+            "/spec/template/metadata/annotations/cctui.dev~1session-id",
+        ] {
+            assert_eq!(v.pointer(p), Some(&json!("sess-drift")), "{p} identifies the dispatch");
+        }
+        assert_eq!(
+            v.pointer("/metadata/labels/cctui.dev~1origin"),
+            Some(&json!("cctui-kube-dispatcher"))
+        );
+        assert_eq!(v.pointer("/metadata/labels/cctui.dev~1worker-profile"), Some(&json!("lean")));
+        assert_eq!(env_value(&v, "SESSION_ID").as_deref(), Some("sess-drift"));
+        assert_eq!(env_value(&v, "TASK_NAME").as_deref(), Some("triage"));
+        assert_eq!(env_value(&v, "REPLY_URL").as_deref(), Some("https://cb"));
+        assert_eq!(env_value(&v, "EXTRA").as_deref(), Some("x"));
+        assert_eq!(env_value(&v, "CCTUI_URL").as_deref(), Some("http://cctui:8700"));
+        assert!(env_value(&v, "TASK_PAYLOAD_JSON").is_some());
+
+        for p in [
+            "/metadata/labels/batch.kubernetes.io~1controller-uid",
+            "/metadata/annotations/kubectl.kubernetes.io~1last-applied-configuration",
+            "/spec/template/metadata/labels/batch.kubernetes.io~1job-name",
+        ] {
+            assert!(v.pointer(p).is_none(), "cluster-owned {p} must not be recreated");
+        }
+    }
+
+    #[test]
+    fn a_job_whose_pod_ran_is_never_recreated() {
+        let s = spec("sess-ran", json!({}));
+        let mut job = queued_job("lean", &lean_profile(), &s);
+        let mut bumped = lean_profile();
+        bumped.image = "example.com/worker:0.8.14".to_owned();
+        assert!(drift_of(&job, &bumped).is_some());
+
+        for status in [
+            json!({ "active": 1 }),
+            json!({ "succeeded": 1 }),
+            json!({ "failed": 1 }),
+            json!({ "ready": 1 }),
+            json!({ "uncountedTerminatedPods": { "succeeded": ["pod-1"] } }),
+            json!({ "uncountedTerminatedPods": { "failed": ["pod-1"] } }),
+        ] {
+            job.status = Some(serde_json::from_value(status.clone()).unwrap());
+            assert!(!Spawner::job_never_ran(&job), "{status} means a pod ran; leave the Job alone");
+        }
+
+        job.status =
+            Some(serde_json::from_value(json!({ "startTime": "2026-09-07T00:00:00Z" })).unwrap());
+        assert!(
+            Spawner::job_never_ran(&job),
+            "a resumed job carries a startTime the moment it unsuspends, pod or no pod"
+        );
+    }
+
+    #[test]
+    fn a_conforming_queued_job_has_no_drift() {
+        let s = spec("sess-ok", json!({}));
+        for profile in [lean_profile(), full_profile()] {
+            let job = queued_job("p", &profile, &s);
+            assert!(drift_of(&job, &profile).is_none(), "a freshly built Job conforms");
+        }
+    }
+
+    #[test]
+    fn every_template_conformance_field_strands_and_is_repaired_by_a_rebuild() {
+        let s = spec("sess-fields", json!({}));
+        let job = queued_job("full", &full_profile(), &s);
+        let mutations: [Mutation; 8] = [
+            ("serviceAccountName", |p| p.service_account_name = Some("other".to_owned())),
+            ("workerContainer", |p| p.worker_container = Some("other".to_owned())),
+            ("image", |p| p.image = "example.com/worker:next".to_owned()),
+            ("command", |p| p.command = Some(vec!["/other".to_owned()])),
+            ("args", |p| p.args = None),
+            ("nodeSelector", |p| p.node_selector = None),
+            ("runtimeClassName", |p| p.runtime_class_name = None),
+            ("envFrom", |p| p.env_from = None),
+        ];
+        for (field, mutate) in mutations {
+            let mut profile = full_profile();
+            mutate(&mut profile);
+            assert!(drift_of(&job, &profile).is_some(), "changing {field} strands the queued Job");
+            let rebuilt = Spawner::rebuild_job(&job, &profile).unwrap();
+            assert!(drift_of(&rebuilt, &profile).is_none(), "the rebuild repairs {field}");
+            assert_eq!(
+                serde_json::to_value(&rebuilt)
+                    .unwrap()
+                    .pointer("/metadata/annotations/cctui.dev~1session-id"),
+                Some(&json!("sess-fields"))
+            );
+        }
     }
 
     #[test]
