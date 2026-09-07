@@ -620,11 +620,47 @@ async fn command_pump(
                                    })
                                    .await;
                            }
-                           AdapterCommand::ResumeMarks { .. } => {}
+                           AdapterCommand::ResumeMarks { marks } => {
+                               announce_resume_marks(&registry, &events, &marks).await;
+                           }
                            _ => tracing::warn!("codex: unhandled AdapterCommand variant"),
                        }
                    }
                }
+    }
+}
+
+/// Re-announce the cctui-owned threads the server still believes are live:
+/// only a `SessionStarted` reverts `daemon_lost`, and owned threads have no
+/// other event source after a reconnect (the inventory and the log-tail both
+/// skip them). The source must stay `codex-app-server` — the server merges
+/// metadata, so a different value would downgrade the live driver's.
+async fn announce_resume_marks(
+    registry: &SessionRegistry,
+    events: &mpsc::Sender<AdapterEvent>,
+    marks: &[(String, u64)],
+) {
+    let known: Vec<(String, String)> = {
+        let guard = registry.lock().await;
+        marks
+            .iter()
+            .filter_map(|(local_id, _)| {
+                guard.get(local_id).map(|r| (local_id.clone(), r.cwd.clone()))
+            })
+            .collect()
+    };
+    for (local_id, cwd) in known {
+        events
+            .send(AdapterEvent::SessionStarted {
+                local_id,
+                meta: cctui_proto::adapter::SessionMeta {
+                    working_dir: Some(cwd),
+                    parent_local_id: None,
+                    extra: serde_json::json!({ "source": "codex-app-server" }),
+                },
+            })
+            .await
+            .ok();
     }
 }
 
@@ -699,7 +735,9 @@ async fn build_diagnose(
             .as_ref()
             .map(|s| s.pending_rpc_methods.clone())
             .unwrap_or_default(),
-        last_protocol_error: snapshot.as_ref().and_then(|s| s.last_protocol_error.clone()),
+        protocol_errors: snapshot.as_ref().map(|s| s.protocol_errors.clone()).unwrap_or_default(),
+        stderr_tail: snapshot.as_ref().map(|s| s.stderr_tail.clone()).unwrap_or_default(),
+        rpc_tail: snapshot.as_ref().map(|s| s.rpc_tail.clone()).unwrap_or_default(),
         rollout_path: snapshot.as_ref().and_then(|s| s.rollout_path.clone()),
         rollout_size_bytes: snapshot.as_ref().and_then(|s| s.rollout_size_bytes),
         auth_state,
@@ -999,6 +1037,38 @@ mod tests {
             .await
             .expect("event before timeout")
             .expect("event channel open")
+    }
+
+    #[tokio::test]
+    async fn resume_marks_re_announce_owned_threads_only() {
+        let registry = SessionRegistry::default();
+        registry.lock().await.insert(
+            "owned-thread".to_owned(),
+            app_server::SessionRecord {
+                cfg: AppServerConfig::default(),
+                cwd: "/tmp/work".to_owned(),
+                name: None,
+                env: std::collections::BTreeMap::new(),
+            },
+        );
+        let (tx, mut rx) = mpsc::channel(8);
+        announce_resume_marks(
+            &registry,
+            &tx,
+            &[("owned-thread".to_owned(), 3), ("stranger".to_owned(), 7)],
+        )
+        .await;
+        drop(tx);
+
+        match recv(&mut rx).await {
+            AdapterEvent::SessionStarted { local_id, meta } => {
+                assert_eq!(local_id, "owned-thread");
+                assert_eq!(meta.working_dir.as_deref(), Some("/tmp/work"));
+                assert_eq!(meta.extra["source"], "codex-app-server");
+            }
+            other => panic!("expected SessionStarted, got {other:?}"),
+        }
+        assert!(rx.recv().await.is_none(), "unknown ids must not be announced");
     }
 
     #[tokio::test]

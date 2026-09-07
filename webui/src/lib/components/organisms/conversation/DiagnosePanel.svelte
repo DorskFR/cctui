@@ -95,11 +95,44 @@
 			{ name: m.diagnose_codex_rollout(), value: rollout }
 		];
 		if (cx.auth_state) out.push({ name: m.diagnose_codex_auth(), value: cx.auth_state });
-		if (cx.last_protocol_error)
-			out.push({ name: m.diagnose_codex_last_protocol_error(), value: cx.last_protocol_error });
 		if (cx.registry_live_mismatch)
 			out.push({ name: m.diagnose_codex_registry_mismatch(), value: cx.registry_live_mismatch });
 		return out;
+	}
+
+	const STALLED_RPC_MS = 60_000;
+
+	// Each entry is an independent reason the session can look silent; they are
+	// derived from the codex facts alone, no extra sensing.
+	function silenceReasons(cx: CodexDiagnose, generatedAtMs: number): string[] {
+		const out: string[] = [];
+		const frames = cx.rpc_tail ?? [];
+		const lastFrameMs = frames.length ? frames[frames.length - 1].ts_ms : null;
+		const idleMs = lastFrameMs === null ? null : generatedAtMs - lastFrameMs;
+		if (cx.pending_rpc_count > 0 && idleMs !== null && idleMs > STALLED_RPC_MS)
+			out.push(
+				m.diagnose_codex_silence_stalled_rpc({ count: cx.pending_rpc_count, age: fmtAge(idleMs) })
+			);
+		if (!cx.active_turn_id) out.push(m.diagnose_codex_silence_no_turn());
+		if (cx.auth_state && !cx.auth_state.startsWith('gateway env present'))
+			out.push(m.diagnose_codex_silence_auth({ state: cx.auth_state }));
+		if (cx.registry_live_mismatch)
+			out.push(m.diagnose_codex_silence_mismatch({ detail: cx.registry_live_mismatch }));
+		if (!cx.live) out.push(m.diagnose_codex_silence_not_live());
+		return out;
+	}
+
+	function stderrText(cx: CodexDiagnose, generatedAtMs: number): string {
+		return (cx.stderr_tail ?? []).map((l) => `${fmtAge(generatedAtMs - l.ts_ms)}  ${l.line}`).join('\n');
+	}
+
+	function rpcText(cx: CodexDiagnose, generatedAtMs: number): string {
+		return (cx.rpc_tail ?? [])
+			.map(
+				(f) =>
+					`${fmtAge(generatedAtMs - f.ts_ms)}  ${f.direction === 'out' ? '→' : '←'} ${f.label}  ${f.json}`
+			)
+			.join('\n');
 	}
 </script>
 
@@ -189,6 +222,44 @@
 								</div>
 							{/each}
 						</div>
+
+						{@const reasons = silenceReasons(cx, resp.daemon.generated_at_ms)}
+						<Heading level={4}>{m.diagnose_codex_silence()}</Heading>
+						{#if reasons.length}
+							<ul class="silence">
+								{#each reasons as reason (reason)}
+									<li>{reason}</li>
+								{/each}
+							</ul>
+						{:else}
+							<Text size="sm" tone="muted">{m.diagnose_codex_silence_none()}</Text>
+						{/if}
+
+						{#if cx.protocol_errors?.length}
+							<Heading level={4}>{m.diagnose_codex_protocol_errors()}</Heading>
+							<ul class="silence">
+								{#each cx.protocol_errors ?? [] as err (err.ts_ms + err.message)}
+									<li>
+										<span class="age">{fmtAge(resp.daemon.generated_at_ms - err.ts_ms)}</span>
+										{err.message}
+									</li>
+								{/each}
+							</ul>
+						{/if}
+
+						<Heading level={4}>{m.diagnose_codex_stderr_tail({ count: cx.stderr_tail?.length ?? 0 })}</Heading>
+						{#if cx.stderr_tail?.length}
+							<pre class="tail">{stderrText(cx, resp.daemon.generated_at_ms)}</pre>
+						{:else}
+							<Text size="sm" tone="muted">{m.diagnose_codex_stderr_empty()}</Text>
+						{/if}
+
+						<Heading level={4}>{m.diagnose_codex_rpc_tail({ count: cx.rpc_tail?.length ?? 0 })}</Heading>
+						{#if cx.rpc_tail?.length}
+							<pre class="tail">{rpcText(cx, resp.daemon.generated_at_ms)}</pre>
+						{:else}
+							<Text size="sm" tone="muted">{m.diagnose_codex_rpc_empty()}</Text>
+						{/if}
 					{/if}
 				{/if}
 			{/if}
@@ -203,6 +274,22 @@
 </Modal>
 
 <style>
+	.tail {
+		margin: 0;
+		white-space: pre-wrap;
+		word-break: break-word;
+		font-family: var(--font-mono, monospace);
+		font-size: var(--fs-xs);
+		max-height: 14rem;
+		overflow: auto;
+	}
+	.silence {
+		margin: 0;
+		padding-left: var(--sp-4);
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+	}
 	.end-detail {
 		margin: 0;
 		white-space: pre-wrap;

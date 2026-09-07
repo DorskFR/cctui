@@ -24,12 +24,14 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::process::Stdio;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
+use cctui_crypto::redact::{self, CompiledPatterns};
 use cctui_proto::adapter::{AdapterEvent, EndReason, SessionMeta};
 use cctui_proto::codex_catalog::{CodexModel, CodexModelCatalog};
+use cctui_proto::diagnose::{CodexProtocolError, CodexRpcFrame, CodexStderrLine};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
@@ -51,7 +53,17 @@ const RUN_BASE: i64 = 100;
 /// unexpectedly these lines are the only clue why, so they are folded into
 /// the [`EndReason::Crashed`] detail instead of being discarded to
 /// `/dev/null`.
-const STDERR_RING: usize = 40;
+const STDERR_RING: usize = 200;
+
+const RPC_RING: usize = 50;
+
+const PROTOCOL_ERROR_RING: usize = 20;
+
+const RPC_FRAME_MAX: usize = 2 * 1024;
+
+/// Prefix of a frame actually scanned for secrets. Larger than [`RPC_FRAME_MAX`]
+/// so a token straddling the retention cut is still masked in what is kept.
+const RPC_SCAN_MAX: usize = 8 * 1024;
 
 const RPC_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -1203,7 +1215,9 @@ pub struct CodexLiveSnapshot {
     pub pid: Option<u32>,
     pub active_turn_id: Option<String>,
     pub pending_rpc_methods: Vec<String>,
-    pub last_protocol_error: Option<String>,
+    pub protocol_errors: Vec<CodexProtocolError>,
+    pub stderr_tail: Vec<CodexStderrLine>,
+    pub rpc_tail: Vec<CodexRpcFrame>,
     pub rollout_path: Option<String>,
     pub rollout_size_bytes: Option<u64>,
 }
@@ -1537,12 +1551,11 @@ impl CodexSession {
     /// `ok` after the thread request succeeds, failure on any other outcome.
     pub async fn run(mut self) -> Result<()> {
         let mut ack = SpawnAck { command_id: self.command_id.take(), events: self.events.clone() };
-        let stderr_ring: Arc<Mutex<VecDeque<String>>> =
-            Arc::new(Mutex::new(VecDeque::with_capacity(STDERR_RING)));
-        let res = self.run_inner(&mut ack, &stderr_ring).await;
+        let rings = Arc::new(DiagnoseRings::default());
+        let res = self.run_inner(&mut ack, &rings).await;
         match &res {
             Err(err) => {
-                let detail = format!("{err}{}", stderr_tail(&stderr_ring).await);
+                let detail = format!("{err}{}", stderr_tail(&rings));
                 self.fail_handshake(&mut ack, &detail).await;
             }
             Ok(()) => ack.fail("codex app-server exited before the thread was started").await,
@@ -1593,11 +1606,7 @@ impl CodexSession {
     }
 
     #[allow(clippy::too_many_lines, clippy::cognitive_complexity)]
-    async fn run_inner(
-        &self,
-        ack: &mut SpawnAck,
-        stderr_ring: &Arc<Mutex<VecDeque<String>>>,
-    ) -> Result<()> {
+    async fn run_inner(&self, ack: &mut SpawnAck, rings: &Arc<DiagnoseRings>) -> Result<()> {
         let cwd_path = std::path::Path::new(&self.cwd);
         if !cwd_path.is_dir() {
             anyhow::bail!("spawn: working_dir does not exist or is not a directory: {}", self.cwd);
@@ -1637,24 +1646,23 @@ impl CodexSession {
             .spawn()
             .with_context(|| format!("spawn `{} app-server`", self.cfg.bin))?;
 
-        let mut stdin = child.stdin.take().context("child stdin missing")?;
+        let mut stdin = RpcStdin {
+            inner: child.stdin.take().context("child stdin missing")?,
+            rings: rings.clone(),
+        };
         let stdout = child.stdout.take().context("child stdout missing")?;
         let mut lines = BufReader::new(stdout).lines();
 
         // Drain stderr into the bounded ring in the background. Each line
-        // is also logged at debug; the retained tail is surfaced in every
-        // failure detail (handshake and crash).
+        // is also logged at info under its own target; the retained tail is
+        // surfaced in every failure detail (handshake and crash).
         let stderr_drain = child.stderr.take().map(|stderr| {
-            let ring = stderr_ring.clone();
+            let rings = rings.clone();
             tokio::spawn(async move {
                 let mut err_lines = BufReader::new(stderr).lines();
                 while let Ok(Some(line)) = err_lines.next_line().await {
-                    tracing::debug!(target: "codex_app_server_stderr", "{line}");
-                    let mut guard = ring.lock().await;
-                    if guard.len() == STDERR_RING {
-                        guard.pop_front();
-                    }
-                    guard.push_back(line);
+                    tracing::info!(target: "codex_app_server_stderr", "{line}");
+                    rings.note_stderr(&line);
                 }
             })
         });
@@ -1666,7 +1674,7 @@ impl CodexSession {
         // EPIPE here means codex already died (auth/config errors exit at
         // once); let the stdout EOF below reach the epilogue, which reports the
         // exit status with the stderr tail.
-        if let Err(e) = write_json(&mut stdin, &initialize_req()).await {
+        if let Err(e) = stdin.send(&initialize_req()).await {
             tracing::warn!(%e, "codex: initialize write failed");
         }
         // `model/list` issued before the thread request to reject an unknown
@@ -1677,7 +1685,6 @@ impl CodexSession {
         let mut local_id = String::new();
         let mut codex_version: Option<String> = None;
         let mut rollout_path: Option<String> = None;
-        let mut last_protocol_error: Option<String> = None;
         let mut next_id = RUN_BASE;
         // request_id (surfaced to TUI) → (rpc_id echoed to codex, decision kind).
         let mut pending_approvals: HashMap<String, (Value, ApprovalKind)> = HashMap::new();
@@ -1742,7 +1749,7 @@ impl CodexSession {
                                 "codex {} timed out after {}s{}",
                                 pending.method,
                                 HANDSHAKE_TIMEOUT.as_secs(),
-                                stderr_tail(stderr_ring).await
+                                stderr_tail(rings)
                             );
                             self.fail_handshake(ack, &detail).await;
                             handshake_dead = true;
@@ -1759,7 +1766,7 @@ impl CodexSession {
                         Some(SessionCommand::Permission { request_id, allow }) => {
                             if let Some((rpc_id, kind)) = pending_approvals.remove(&request_id) {
                                 if let Err(e) =
-                                    write_json(&mut stdin, &approval_reply(&rpc_id, kind, allow)).await
+                                    stdin.send(&approval_reply(&rpc_id, kind, allow)).await
                                 {
                                     tracing::warn!(%e, "codex: approval write failed; ending session");
                                     break;
@@ -1771,7 +1778,7 @@ impl CodexSession {
                         Some(SessionCommand::Send { text }) => {
                             if let Some((rpc_id, question_ids)) = pending_questions.pop_front() {
                                 let reply = user_input_reply(&rpc_id, &question_ids, &text);
-                                if let Err(e) = write_json(&mut stdin, &reply).await {
+                                if let Err(e) = stdin.send(&reply).await {
                                     tracing::warn!(%e, "codex: requestUserInput answer write failed; ending session");
                                     break;
                                 }
@@ -1805,7 +1812,7 @@ impl CodexSession {
                             // A write failure here means the app-server is gone
                             // — remember the turn and let the epilogue revive
                             // the thread if this was a clean hibernation exit.
-                            if let Err(e) = write_json(&mut stdin, &req).await {
+                            if let Err(e) = stdin.send(&req).await {
                                 tracing::warn!(%e, "codex: turn dispatch write failed; ending session");
                                 steer_texts.remove(&(next_id - 1));
                                 retry_after_hibernate = Some(SessionCommand::Send { text });
@@ -1832,7 +1839,7 @@ impl CodexSession {
                         Some(SessionCommand::Kill { signal }) => {
                             if let Some(turn_id) = active_turn.id() {
                                 let req = turn_interrupt_req(next_id, &local_id, turn_id);
-                                let _ = write_json(&mut stdin, &req).await;
+                                let _ = stdin.send(&req).await;
                             }
                             terminate_child(&mut child, signal);
                             killed = true;
@@ -1857,7 +1864,7 @@ impl CodexSession {
                             let req = turn_interrupt_req(next_id, &local_id, turn_id);
                             pending_rpcs.insert(next_id, "turn/interrupt", command_id, Instant::now() + RPC_TIMEOUT);
                             next_id += 1;
-                            if let Err(e) = write_json(&mut stdin, &req).await {
+                            if let Err(e) = stdin.send(&req).await {
                                 tracing::warn!(%e, "codex: turn/interrupt write failed; ending session");
                                 break;
                             }
@@ -1881,7 +1888,9 @@ impl CodexSession {
                                 pid: child.id(),
                                 active_turn_id: active_turn.id().map(str::to_owned),
                                 pending_rpc_methods: pending_rpcs.pending_methods(),
-                                last_protocol_error: last_protocol_error.clone(),
+                                protocol_errors: rings.protocol_errors(),
+                                stderr_tail: rings.stderr_tail(),
+                                rpc_tail: rings.rpc_tail(),
                                 rollout_path: rollout_path.clone(),
                                 rollout_size_bytes: rollout_path
                                     .as_ref()
@@ -1912,6 +1921,7 @@ impl CodexSession {
                         tracing::debug!(line = %trimmed, "codex: non-JSON line");
                         continue;
                     };
+                    rings.note_rpc("in", &value);
                     if let Some(ev) = turn_lifecycle(&value) {
                         active_turn.apply(&ev);
                         // A spawned child's caller is parked on turn
@@ -1949,7 +1959,7 @@ impl CodexSession {
                                 continue;
                             };
                             if let Err(ref e) = outcome {
-                                last_protocol_error = Some(format!("{}: {e}", pending.method));
+                                rings.note_protocol_error(&format!("{}: {e}", pending.method));
                             }
                             match (pending.method.as_str(), outcome) {
                         ("initialize", Ok(_)) => {
@@ -1957,17 +1967,17 @@ impl CodexSession {
                             // Complete the documented handshake before any
                             // thread request: the server treats
                             // `thread/*` sent before `initialized` as premature.
-                            write_json(&mut stdin, &initialized_notification()).await?;
+                            stdin.send(&initialized_notification()).await?;
                             if self.cfg.model_catalog && self.cfg.model.is_some() {
                                 validating_model = true;
                                 pending_rpcs.insert(next_id, "model/list", None, handshake_deadline);
-                                write_json(&mut stdin, &model_list::model_list_req(next_id, None))
+                                stdin.send(&model_list::model_list_req(next_id, None))
                                     .await?;
                                 next_id += 1;
                             } else {
                                 let (req, method) = self.thread_request();
                                 pending_rpcs.insert(ID_THREAD_START, method, None, handshake_deadline);
-                                write_json(&mut stdin, &req).await?;
+                                stdin.send(&req).await?;
                             }
                         }
                         ("thread/start" | "thread/resume" | "thread/fork", Ok(result)) => {
@@ -2043,7 +2053,7 @@ impl CodexSession {
                                     Instant::now() + RPC_TIMEOUT,
                                 );
                                 if let Err(e) =
-                                    write_json(&mut stdin, &model_list::model_list_req(next_id, None))
+                                    stdin.send(&model_list::model_list_req(next_id, None))
                                         .await
                                 {
                                     tracing::debug!(%e, "codex: model/list write failed");
@@ -2120,7 +2130,7 @@ impl CodexSession {
                                             Instant::now() + RPC_TIMEOUT,
                                         );
                                         next_id += 1;
-                                        if let Err(e) = write_json(&mut stdin, &req).await {
+                                        if let Err(e) = stdin.send(&req).await {
                                             tracing::warn!(%e, "codex: initial prompt write failed; ending session");
                                             retry_after_hibernate =
                                                 Some(SessionCommand::Send { text: prompt_text.to_owned() });
@@ -2147,7 +2157,7 @@ impl CodexSession {
                                                     Instant::now() + RPC_TIMEOUT,
                                                 );
                                                 next_id += 1;
-                                                if let Err(e) = write_json(&mut stdin, &req).await {
+                                                if let Err(e) = stdin.send(&req).await {
                                                     tracing::warn!(%e, "codex: resumed turn/start write failed");
                                                     retry_after_hibernate =
                                                         Some(SessionCommand::Send { text });
@@ -2200,7 +2210,7 @@ impl CodexSession {
                         }
                         (method, Err(err)) if pending.is_handshake() => {
                             tracing::error!(%err, %method, "codex: handshake request failed; ending session");
-                            let detail = format!("codex {method}: {err}{}", stderr_tail(stderr_ring).await);
+                            let detail = format!("codex {method}: {err}{}", stderr_tail(rings));
                             self.fail_handshake(ack, &detail).await;
                             handshake_failed = true;
                             let _ = child.start_kill();
@@ -2214,7 +2224,7 @@ impl CodexSession {
                             model_catalog.clear();
                             let (req, method) = self.thread_request();
                             pending_rpcs.insert(ID_THREAD_START, method, None, handshake_deadline);
-                            write_json(&mut stdin, &req).await?;
+                            stdin.send(&req).await?;
                         }
                         ("model/list", Ok(result)) if validating_model => {
                             model_catalog.extend(model_list::parse_model_list(&result));
@@ -2223,8 +2233,7 @@ impl CodexSession {
                                 model_list::page_step(model_catalog_pages, &result)
                             {
                                 pending_rpcs.insert(next_id, "model/list", None, handshake_deadline);
-                                write_json(
-                                    &mut stdin,
+                                stdin.send(
                                     &model_list::model_list_req(next_id, Some(&cursor)),
                                 )
                                 .await?;
@@ -2249,7 +2258,7 @@ impl CodexSession {
                             self.events.send(AdapterEvent::CodexModels { catalog }).await.ok();
                             let (req, method) = self.thread_request();
                             pending_rpcs.insert(ID_THREAD_START, method, None, handshake_deadline);
-                            write_json(&mut stdin, &req).await?;
+                            stdin.send(&req).await?;
                         }
                         ("turn/interrupt", outcome) => {
                             if let Some(command_id) = pending.command_id {
@@ -2276,8 +2285,7 @@ impl CodexSession {
                                         None,
                                         Instant::now() + RPC_TIMEOUT,
                                     );
-                                    if let Err(e) = write_json(
-                                        &mut stdin,
+                                    if let Err(e) = stdin.send(
                                         &model_list::model_list_req(next_id, Some(&cursor)),
                                     )
                                     .await
@@ -2321,7 +2329,7 @@ impl CodexSession {
                                     );
                                     pending_rpcs.insert(next_id, "turn/start", None, Instant::now() + RPC_TIMEOUT);
                                     next_id += 1;
-                                    if let Err(e) = write_json(&mut stdin, &req).await {
+                                    if let Err(e) = stdin.send(&req).await {
                                         tracing::warn!(%e, "codex: turn/start fallback write failed; ending session");
                                         retry_after_hibernate = Some(SessionCommand::Send { text });
                                         break;
@@ -2404,7 +2412,7 @@ impl CodexSession {
                                 .ok();
                         }
                         Incoming::Decline { reply } => {
-                            if let Err(e) = write_json(&mut stdin, &reply).await {
+                            if let Err(e) = stdin.send(&reply).await {
                                 tracing::warn!(%e, "codex: decline write failed; ending session");
                                 break;
                             }
@@ -2472,10 +2480,7 @@ impl CodexSession {
             match status {
                 Ok(s) if s.success() => None,
                 Ok(s) => Some(EndReason::Crashed {
-                    detail: format!(
-                        "codex app-server exited ({s}){}",
-                        stderr_tail(stderr_ring).await
-                    ),
+                    detail: format!("codex app-server exited ({s}){}", stderr_tail(rings)),
                 }),
                 Err(e) => Some(EndReason::Crashed {
                     detail: format!("codex app-server wait failed: {e}"),
@@ -2604,8 +2609,8 @@ fn partition_drained(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn set_thread_name<W: AsyncWriteExt + Unpin>(
-    stdin: &mut W,
+async fn set_thread_name(
+    stdin: &mut RpcStdin,
     next_id: &mut i64,
     pending_rpcs: &mut PendingRpcs,
     thread_id: &str,
@@ -2614,7 +2619,7 @@ async fn set_thread_name<W: AsyncWriteExt + Unpin>(
     registry: &SessionRegistry,
 ) -> Result<()> {
     pending_rpcs.insert(*next_id, "thread/name/set", None, Instant::now() + RPC_TIMEOUT);
-    write_json(stdin, &thread_name_set_req(*next_id, thread_id, name)).await?;
+    stdin.send(&thread_name_set_req(*next_id, thread_id, name)).await?;
     *next_id += 1;
     if let Some(record) = registry.lock().await.get_mut(thread_id) {
         record.name = Some(name.to_owned());
@@ -2742,9 +2747,134 @@ fn unknown_model(model: Option<&str>, catalog: &CodexModelCatalog) -> Option<Str
 
 /// Format the retained stderr tail for inclusion in a crash detail. Empty
 /// when nothing was captured.
-async fn stderr_tail(ring: &Arc<Mutex<VecDeque<String>>>) -> String {
-    let lines: Vec<String> = { ring.lock().await.iter().cloned().collect() };
+fn stderr_tail(rings: &DiagnoseRings) -> String {
+    let lines: Vec<String> = rings.stderr_tail().into_iter().map(|l| l.line).collect();
     if lines.is_empty() { String::new() } else { format!("; last stderr:\n{}", lines.join("\n")) }
+}
+
+/// The always-on builtin detector set. The daemon's synced user patterns live
+/// in the supervisor and are not reachable from the driver, so the rings scrub
+/// with the builtins alone rather than not scrubbing at all.
+fn ring_scrub() -> &'static CompiledPatterns {
+    static SCRUB: OnceLock<CompiledPatterns> = OnceLock::new();
+    SCRUB.get_or_init(|| redact::compile(true, &[], &cctui_crypto::vault_key()))
+}
+
+fn redact_text(text: &str) -> String {
+    let mut value = Value::String(text.to_owned());
+    redact::redact_json(&mut value, ring_scrub());
+    match value {
+        Value::String(s) => s,
+        _ => text.to_owned(),
+    }
+}
+
+fn truncate_chars(text: &str, max: usize) -> String {
+    if text.len() <= max {
+        return text.to_owned();
+    }
+    let mut end = max;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &text[..end])
+}
+
+fn now_ms() -> i64 {
+    i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis(),
+    )
+    .unwrap_or(i64::MAX)
+}
+
+/// Bounded, redacted observability rings for the diagnose report.
+///
+/// Every producer sits on the JSON-RPC write path or the stdout read loop, so
+/// the locks are `try_lock` only: a contended ring drops the entry rather than
+/// stalling the session.
+#[derive(Debug, Default)]
+pub struct DiagnoseRings {
+    stderr: StdMutex<VecDeque<CodexStderrLine>>,
+    rpc: StdMutex<VecDeque<CodexRpcFrame>>,
+    errors: StdMutex<VecDeque<CodexProtocolError>>,
+}
+
+impl DiagnoseRings {
+    fn push<T>(ring: &StdMutex<VecDeque<T>>, cap: usize, item: T) {
+        let Ok(mut guard) = ring.try_lock() else { return };
+        while guard.len() >= cap {
+            guard.pop_front();
+        }
+        guard.push_back(item);
+    }
+
+    fn snapshot<T: Clone>(ring: &StdMutex<VecDeque<T>>) -> Vec<T> {
+        ring.try_lock().map(|g| g.iter().cloned().collect()).unwrap_or_default()
+    }
+
+    fn note_stderr(&self, line: &str) {
+        Self::push(
+            &self.stderr,
+            STDERR_RING,
+            CodexStderrLine { ts_ms: now_ms(), line: redact_text(line) },
+        );
+    }
+
+    fn note_rpc(&self, direction: &'static str, value: &Value) {
+        let label = value
+            .get("method")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .or_else(|| value.get("id").map(ToString::to_string))
+            .unwrap_or_else(|| "frame".to_owned());
+        let raw = value.to_string();
+        let json = truncate_chars(&redact_text(&truncate_chars(&raw, RPC_SCAN_MAX)), RPC_FRAME_MAX);
+        Self::push(
+            &self.rpc,
+            RPC_RING,
+            CodexRpcFrame {
+                ts_ms: now_ms(),
+                direction: direction.to_owned(),
+                label: redact_text(&label),
+                json,
+            },
+        );
+    }
+
+    fn note_protocol_error(&self, message: &str) {
+        Self::push(
+            &self.errors,
+            PROTOCOL_ERROR_RING,
+            CodexProtocolError { ts_ms: now_ms(), message: redact_text(message) },
+        );
+    }
+
+    fn stderr_tail(&self) -> Vec<CodexStderrLine> {
+        Self::snapshot(&self.stderr)
+    }
+
+    fn rpc_tail(&self) -> Vec<CodexRpcFrame> {
+        Self::snapshot(&self.rpc)
+    }
+
+    fn protocol_errors(&self) -> Vec<CodexProtocolError> {
+        Self::snapshot(&self.errors)
+    }
+}
+
+struct RpcStdin {
+    inner: tokio::process::ChildStdin,
+    rings: Arc<DiagnoseRings>,
+}
+
+impl RpcStdin {
+    async fn send(&mut self, v: &Value) -> Result<()> {
+        self.rings.note_rpc("out", v);
+        write_json(&mut self.inner, v).await
+    }
 }
 
 /// SIGTERM, per POSIX. The control-plane `Kill { signal }` uses raw signal
@@ -2777,6 +2907,52 @@ async fn write_json<W: AsyncWriteExt + Unpin>(w: &mut W, v: &Value) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn diagnose_rings_redact_tool_output_secrets() {
+        let token = "ghp_0123456789abcdefghijABCDEFGHIJ0123";
+        let rings = DiagnoseRings::default();
+        rings.note_rpc(
+            "in",
+            &json!({
+                "method": "item/completed",
+                "params": { "item": { "output": format!("export GITHUB_TOKEN={token}") } }
+            }),
+        );
+        rings.note_stderr(&format!("tool stdout: {token}"));
+        rings.note_protocol_error(&format!("turn/start: upstream rejected {token}"));
+
+        let rpc = rings.rpc_tail();
+        let stderr = rings.stderr_tail();
+        let errors = rings.protocol_errors();
+        assert!(!rpc[0].json.contains(token), "{}", rpc[0].json);
+        assert!(rpc[0].json.contains("[REDACTED:github_token"), "{}", rpc[0].json);
+        assert_eq!(rpc[0].label, "item/completed");
+        assert!(!stderr[0].line.contains(token), "{}", stderr[0].line);
+        assert!(!errors[0].message.contains(token), "{}", errors[0].message);
+    }
+
+    #[test]
+    fn diagnose_rings_are_bounded_and_frames_truncated() {
+        let rings = DiagnoseRings::default();
+        for i in 0..(RPC_RING + 10) {
+            rings.note_rpc("out", &json!({ "id": i, "method": "turn/start" }));
+        }
+        for i in 0..(STDERR_RING + 10) {
+            rings.note_stderr(&format!("line {i}"));
+        }
+        for i in 0..(PROTOCOL_ERROR_RING + 10) {
+            rings.note_protocol_error(&format!("err {i}"));
+        }
+        assert_eq!(rings.rpc_tail().len(), RPC_RING);
+        assert_eq!(rings.stderr_tail().len(), STDERR_RING);
+        assert_eq!(rings.protocol_errors().len(), PROTOCOL_ERROR_RING);
+        assert_eq!(rings.stderr_tail()[0].line, format!("line {}", 10));
+
+        rings.note_rpc("out", &json!({ "method": "turn/start", "text": "x".repeat(64 * 1024) }));
+        let last = rings.rpc_tail().pop().unwrap();
+        assert!(last.json.len() <= RPC_FRAME_MAX + 4, "{}", last.json.len());
+    }
 
     #[test]
     fn gateway_provider_overrides_route_via_gateway_when_env_bound() {
