@@ -6,7 +6,7 @@
 
 **Open a session**
 
-A session has its own address, so the conversation opens straight from a link.
+Tapping a session by name opens its conversation — beside the list on a desktop, over it on a phone.
 
 ![timeline](02-timeline.png)
 

@@ -12,27 +12,12 @@ export default defineJourney({
 	steps: [
 		{
 			id: 'open',
-			when: { viewport: 'desktop' },
 			route: '/sessions',
 			target: `session[${SESSION}]/title`,
 			do: { kind: 'click' },
 			say: {
 				title: 'Open a session',
-				body: 'Selecting a session opens its conversation beside the list, so the rest of the fleet stays in view.'
-			},
-			expect: [{ visible: 'conversation' }, { visible: 'composer' }],
-			capture: 'drawer'
-		},
-		// The compact card gives the title no width to survive at 390px, so there
-		// is nothing to click; a session is deep-linkable, so navigate instead.
-		{
-			id: 'open-mobile',
-			when: { viewport: 'mobile' },
-			route: `/sessions/${SESSION}`,
-			target: 'conversation',
-			say: {
-				title: 'Open a session',
-				body: 'A session has its own address, so the conversation opens straight from a link.'
+				body: 'Tapping a session by name opens its conversation — beside the list on a desktop, over it on a phone.'
 			},
 			expect: [{ visible: 'conversation' }, { visible: 'composer' }],
 			capture: 'drawer'

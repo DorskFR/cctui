@@ -60,8 +60,23 @@ describe('SessionCard modes', () => {
 		expect(el.querySelector('.preview')).toBeNull();
 		expect(el.querySelector('[data-tsu="WorkingDir"]')).not.toBeNull();
 		expect(el.querySelector('.branch')?.getAttribute('title')).toContain('cct-925-sessions-modes');
-		expect(el.querySelector('.badge[style*="--mh"]')?.textContent?.trim()).toBe('dev1');
+		const machine = el.querySelector('.badge[style*="--mh"]');
+		expect(machine?.querySelector('.full')?.textContent).toBe('dev1');
+		expect(machine?.querySelector('.initial')?.textContent).toBe('D1');
+		expect(machine?.getAttribute('title')).toBe('dev1');
 		expect(el.textContent).toContain('2 perm');
+	});
+
+	// jsdom does not evaluate the container queries that pick between these, so
+	// the assertion is that every step exists for the stylesheet to choose from.
+	it('carries every degradation step of the model chip, and a capped title', () => {
+		const el = render({ variant: 'row' });
+		const model = el.querySelector('.model');
+		expect(model?.querySelector('.full')?.textContent).toBe('opus-4-8');
+		expect(model?.querySelector('.fam')?.textContent).toBe('opus');
+		expect(model?.querySelector('.abbr')?.textContent).toBe('Op.');
+		expect(model?.getAttribute('title')).toBe('opus-4-8 · high');
+		expect(el.querySelector('.title.capped')).not.toBeNull();
 	});
 
 	it('hides the machine badge when the section header already names it', () => {
