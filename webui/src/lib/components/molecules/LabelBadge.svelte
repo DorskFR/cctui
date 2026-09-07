@@ -146,6 +146,14 @@
 			display: inline-flex;
 		}
 	}
+	/* A row is one line, so the strip may not wrap or be shrunk under its own
+	   content: squeezed, the dots and the tag trigger stack and double its height. */
+	@container sess-row (min-width: 0) {
+		.labels {
+			flex: none;
+			flex-wrap: nowrap;
+		}
+	}
 	/* `tag` trigger: a small ghost icon-button reading clearly as "labels". */
 	.add :global(.tag-trigger) {
 		min-width: 1.5rem;
