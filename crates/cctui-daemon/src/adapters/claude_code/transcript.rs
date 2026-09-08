@@ -709,6 +709,25 @@ fn interrupted_marker_payload(text: &str) -> Option<Value> {
         .then(|| json!({ "role": "system_marker", "marker": "interrupted", "text": text.trim() }))
 }
 
+/// Stamp a user-line payload with the transcript line's identity.
+///
+/// The server dedupes on `digest(payload)`, so a user turn — the only payload
+/// made purely of content — must carry a discriminator or the same prose sent
+/// twice is dropped. It has to come from the line itself (`uuid`, or
+/// `timestamp` for stream-json frames that have none), never be generated at
+/// emit time, so a replay of the same line still hashes identically.
+fn with_line_id(mut payload: Value, line: &Value) -> Value {
+    let id = line
+        .get("uuid")
+        .or_else(|| line.get("timestamp"))
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty());
+    if let (Some(id), Some(obj)) = (id, payload.as_object_mut()) {
+        obj.insert("line_id".to_owned(), Value::String(id.to_owned()));
+    }
+    payload
+}
+
 fn parse_user(local_id: &str, line: &Value, out: &mut Vec<AdapterEvent>) {
     // User lines can be plain text or carry tool_result blocks.
     let Some(content) = line.get("message").and_then(|m| m.get("content")) else {
@@ -718,7 +737,10 @@ fn parse_user(local_id: &str, line: &Value, out: &mut Vec<AdapterEvent>) {
         let payload = interrupted_marker_payload(text).unwrap_or_else(
             || json!({"role": "user", "text": text, "meta": user_text_is_meta(text)}),
         );
-        out.push(AdapterEvent::Message { local_id: local_id.to_owned(), payload });
+        out.push(AdapterEvent::Message {
+            local_id: local_id.to_owned(),
+            payload: with_line_id(payload, line),
+        });
         return;
     }
     let Some(blocks) = content.as_array() else { return };
@@ -764,7 +786,10 @@ fn parse_user(local_id: &str, line: &Value, out: &mut Vec<AdapterEvent>) {
         let payload = interrupted_marker_payload(&joined).unwrap_or_else(
             || json!({"role": "user", "text": joined, "meta": user_text_is_meta(&joined)}),
         );
-        out.push(AdapterEvent::Message { local_id: local_id.to_owned(), payload });
+        out.push(AdapterEvent::Message {
+            local_id: local_id.to_owned(),
+            payload: with_line_id(payload, line),
+        });
     }
     out.extend(tool_results);
 }
@@ -1156,6 +1181,60 @@ mod tests {
         let (events, _) = tail_once(&path, "s", 0).unwrap();
         assert_eq!(events.len(), 1);
         assert!(matches!(&events[0], AdapterEvent::ToolUse { .. }));
+    }
+
+    fn user_payloads(lines: &[&str]) -> Vec<Value> {
+        let mut events = Vec::new();
+        for line in lines {
+            parse_line("s", &serde_json::from_str::<Value>(line).unwrap(), &mut events);
+        }
+        events
+            .iter()
+            .filter_map(|e| match e {
+                AdapterEvent::Message { payload, .. } if payload["role"] == "user" => {
+                    Some(payload.clone())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The server's idempotency index is `(session_id, event_type,
+    /// digest(payload::text))`, so payload equality is exactly what decides
+    /// whether a turn survives.
+    #[test]
+    fn repeated_user_text_on_distinct_lines_yields_distinct_payloads() {
+        for content in [r#""continue""#, r#"[{"type":"text","text":"continue"}]"#] {
+            let payloads = user_payloads(&[
+                &format!(
+                    r#"{{"type":"user","uuid":"u-1","message":{{"role":"user","content":{content}}}}}"#
+                ),
+                &format!(
+                    r#"{{"type":"user","uuid":"u-2","message":{{"role":"user","content":{content}}}}}"#
+                ),
+            ]);
+            assert_eq!(payloads.len(), 2, "{content}");
+            assert_eq!(payloads[0]["text"], payloads[1]["text"]);
+            assert_ne!(payloads[0], payloads[1], "{content}");
+        }
+    }
+
+    #[test]
+    fn replayed_user_line_yields_an_identical_payload() {
+        let line = r#"{"type":"user","uuid":"u-1","message":{"role":"user","content":"continue"}}"#;
+        let payloads = user_payloads(&[line, line]);
+        assert_eq!(payloads.len(), 2);
+        assert_eq!(payloads[0], payloads[1]);
+    }
+
+    #[test]
+    fn user_line_without_uuid_falls_back_to_timestamp() {
+        let payloads = user_payloads(&[
+            r#"{"type":"user","timestamp":"2026-09-08T10:00:00Z","message":{"role":"user","content":"go"}}"#,
+            r#"{"type":"user","timestamp":"2026-09-08T10:00:01Z","message":{"role":"user","content":"go"}}"#,
+        ]);
+        assert_eq!(payloads[0]["line_id"], "2026-09-08T10:00:00Z");
+        assert_ne!(payloads[0], payloads[1]);
     }
 
     #[test]
