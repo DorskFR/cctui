@@ -686,6 +686,11 @@ pub enum ServerEvent {
         ok: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
+        /// Correlation id of the dispatched `Reply`. An `ok` ack only says the
+        /// frame was queued toward a daemon; the client awaits the adapter's
+        /// [`ServerEvent::CommandResult`] under this id for actual delivery.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        command_id: Option<uuid::Uuid>,
     },
     /// A machine has just reported a fresh expected-files manifest.
     ArchiveManifest {
@@ -1144,6 +1149,7 @@ mod tests {
             client_msg_id: "abc-123".into(),
             ok: false,
             error: Some("no daemon connected for machine …".into()),
+            command_id: None,
         };
         let json = serde_json::to_string(&ev).unwrap();
         assert!(json.contains(r#""type":"message_ack""#));
@@ -1332,6 +1338,7 @@ mod tests {
             client_msg_id: "abc-123".into(),
             ok: true,
             error: None,
+            command_id: None,
         };
         let json = serde_json::to_string(&ev).unwrap();
         assert!(!json.contains("error"), "None error must be skipped: {json}");

@@ -229,6 +229,7 @@ async fn fire(state: &AppState, row: &StuckRow, attempt: i32, now: DateTime<Utc>
             text: resume_prompt(now, attempt),
             ask_picks: None,
             env,
+            command_id: None,
         },
     )
     .await;

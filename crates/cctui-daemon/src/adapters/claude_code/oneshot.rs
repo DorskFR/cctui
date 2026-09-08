@@ -128,11 +128,7 @@ impl OneshotDriver {
                         self.kill_all().await;
                         return Ok(());
                     };
-                    let command_id = match &cmd {
-                        AdapterCommand::Spawn { command_id, .. }
-                        | AdapterCommand::Interrupt { command_id, .. } => *command_id,
-                        _ => None,
-                    };
+                    let command_id = cmd.command_id();
                     let res = self.handle_command(cmd).await;
                     if let Some(command_id) = command_id {
                         let (ok, error) = match &res {

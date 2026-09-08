@@ -473,10 +473,13 @@ async fn handle(socket: WebSocket, state: AppState, machine_id: Uuid, user_id: U
     // `dispatch` machine), so the close path may only end these, never the
     // machine's whole roster.
     let announced: Arc<Mutex<HashSet<String>>> = Arc::default();
+    // This connection's own routing address. The machine id groups the
+    // dispatched pods; only this distinguishes them.
+    let conn_id = Uuid::new_v4();
 
     // Register the daemon for command fan-out with the bus. If a
     // stale entry exists, overwrite it (newest connection wins).
-    state.bus.register_daemon(machine_id, tx.clone());
+    state.bus.register_daemon(machine_id, conn_id, tx.clone());
     PENDING_DAEMON_LOST.cancel(machine_id);
     // Replica-aware presence: record this pod as the WS owner so a
     // peer replica can forward daemon-targeted requests here.
@@ -635,10 +638,11 @@ async fn handle(socket: WebSocket, state: AppState, machine_id: Uuid, user_id: U
             other => vec![other],
         };
         for frame in leaves {
-            if let Some(local_id) = announced_session(&frame)
-                && let Ok(mut set) = announced.lock()
-            {
-                set.insert(local_id.to_owned());
+            if let Some(local_id) = announced_session(&frame) {
+                state.bus.bind_session_conn(local_id, conn_id);
+                if let Ok(mut set) = announced.lock() {
+                    set.insert(local_id.to_owned());
+                }
             }
             let trace = frame_trace(&frame);
             if let Err(err) = process_frame(&state, machine_id, user_id, frame).await {
@@ -656,7 +660,7 @@ async fn handle(socket: WebSocket, state: AppState, machine_id: Uuid, user_id: U
     // bus's `unregister_daemon` applies the same-channel guard. The
     // presence row mirrors it, with its own pod guard for the cross-pod twin
     // of the same race.
-    if state.bus.unregister_daemon(machine_id, &tx) {
+    if state.bus.unregister_daemon(machine_id, conn_id, &tx) {
         crate::presence::unregister(&state, crate::presence::Kind::Daemon, machine_id).await;
         let sessions: Vec<String> =
             announced.lock().map(|mut set| set.drain().collect()).unwrap_or_default();

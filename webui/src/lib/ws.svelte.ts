@@ -147,7 +147,13 @@ export interface MessageAck {
 	client_msg_id: string;
 	ok: boolean;
 	error?: string;
+	command_id?: string;
 }
+
+/** How long to wait for the adapter's delivery result after the server acked
+ *  the dispatch. Adapters that never report one leave the send unconfirmed
+ *  rather than failed, so a slow agent never invites a duplicate send. */
+const DELIVERY_ACK_TIMEOUT_MS = 20_000;
 /**
  * Per-session delivery state. A snapshot the drawer mirrors into
  * component-local `$state` (via `onDelivery`) so the red/Retry affordance and
@@ -529,7 +535,8 @@ export class WsClient {
 				const ack: MessageAck = {
 					client_msg_id: msg.client_msg_id as string,
 					ok: msg.ok as boolean,
-					error: msg.error as string | undefined
+					error: msg.error as string | undefined,
+					command_id: msg.command_id as string | undefined
 				};
 				// Resolve the tracked send (delivered / failed → auto-retry).
 				this.resolveAck(ack);
@@ -957,8 +964,24 @@ export class WsClient {
 		const send = this.sends.get(idx.sid)?.get(idx.ts);
 		// Ignore a stale ack for a superseded attempt (a newer retry rotated the id).
 		if (!send || send.clientMsgId !== ack.client_msg_id) return;
-		if (ack.ok) this.clearSend(idx.sid, idx.ts);
-		else this.onAttemptFailed(send, ack.error ?? 'could not deliver to the agent');
+		if (!ack.ok) {
+			this.onAttemptFailed(send, ack.error ?? 'could not deliver to the agent');
+			return;
+		}
+		if (!ack.command_id) {
+			this.clearSend(idx.sid, idx.ts);
+			return;
+		}
+		// An ok ack only means the frame was queued toward a daemon. Hold the
+		// send until the adapter reports it actually delivered, so a reply that
+		// reached the wrong daemon goes red instead of vanishing.
+		this.clearTimer(send);
+		void this.awaitCommand(ack.command_id, DELIVERY_ACK_TIMEOUT_MS).then((res) => {
+			const current = this.sends.get(idx.sid)?.get(idx.ts);
+			if (!current || current.clientMsgId !== ack.client_msg_id) return;
+			if (res.ok || res.timedOut) this.clearSend(idx.sid, idx.ts);
+			else this.onAttemptFailed(current, res.error ?? 'the agent did not accept the message');
+		});
 	}
 
 	private clearSend(sid: string, ts: number) {

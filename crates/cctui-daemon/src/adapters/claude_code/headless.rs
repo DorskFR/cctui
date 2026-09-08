@@ -175,13 +175,7 @@ impl SdkDriver {
                         self.kill_all().await;
                         return Ok(());
                     };
-                    let command_id = match &cmd {
-                        AdapterCommand::Spawn { command_id, .. }
-                        | AdapterCommand::Fork { command_id, .. }
-                        | AdapterCommand::Interrupt { command_id, .. }
-                        | AdapterCommand::SetModel { command_id, .. } => *command_id,
-                        _ => None,
-                    };
+                    let command_id = cmd.command_id();
                     let res = self.handle_command(cmd).await;
                     if let Some(command_id) = command_id {
                         let (ok, error) = match &res {

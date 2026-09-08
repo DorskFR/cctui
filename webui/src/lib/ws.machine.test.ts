@@ -62,6 +62,7 @@ function openClient(): WsClient {
 }
 
 const ACK_TIMEOUT_MS = 8000;
+const DELIVERY_ACK_TIMEOUT_MS = 20_000;
 const MAX_ATTEMPTS = 5;
 
 describe('backoffDelay (send auto-retry)', () => {
@@ -188,6 +189,61 @@ describe('TrackedSend ack / retry / reconnect state machine', () => {
 
 		vi.advanceTimersByTime(backoffDelay(1));
 		expect(messages(s).length).toBe(2);
+	});
+
+	// An ok ack only says the server queued the frame toward a daemon. With a
+	// `command_id` the send stays pending until the adapter reports it actually
+	// delivered, so a reply routed to the wrong worker pod goes red.
+	it('holds the send pending after an ok ack that carries a command_id', async () => {
+		const c = openClient();
+		c.trackedSend('s1', 'hello', 100);
+		const s = last();
+		const cid = messages(s)[0].client_msg_id as string;
+
+		s.deliver({ type: 'message_ack', client_msg_id: cid, ok: true, command_id: 'cmd-1' });
+		expect(c.deliverySnapshot('s1').pending.has(100)).toBe(true);
+
+		s.deliver({ type: 'command_result', command_id: 'cmd-1', ok: true });
+		await vi.advanceTimersByTimeAsync(0);
+		expect(c.deliverySnapshot('s1').pending.size).toBe(0);
+		expect(c.deliverySnapshot('s1').failed.size).toBe(0);
+	});
+
+	it('retries the send when the adapter reports it could not deliver', async () => {
+		const c = openClient();
+		c.trackedSend('s1', 'hello', 100);
+		const s = last();
+		const cid = messages(s)[0].client_msg_id as string;
+
+		s.deliver({ type: 'message_ack', client_msg_id: cid, ok: true, command_id: 'cmd-1' });
+		s.deliver({
+			type: 'command_result',
+			command_id: 'cmd-1',
+			ok: false,
+			error: 'no session id on disk to resume'
+		});
+		await vi.advanceTimersByTimeAsync(0);
+		expect(c.deliverySnapshot('s1').retrying.has(100)).toBe(true);
+
+		await vi.advanceTimersByTimeAsync(backoffDelay(1));
+		expect(messages(s).length).toBe(2);
+	});
+
+	// Adapters that never report a delivery result must not strand the send:
+	// unconfirmed clears rather than failing, so it never invites a duplicate.
+	it('clears the send when no adapter delivery result ever arrives', async () => {
+		const c = openClient();
+		c.trackedSend('s1', 'hello', 100);
+		const s = last();
+		const cid = messages(s)[0].client_msg_id as string;
+
+		s.deliver({ type: 'message_ack', client_msg_id: cid, ok: true, command_id: 'cmd-1' });
+		await vi.advanceTimersByTimeAsync(DELIVERY_ACK_TIMEOUT_MS);
+
+		const snap = c.deliverySnapshot('s1');
+		expect(snap.pending.size).toBe(0);
+		expect(snap.failed.size).toBe(0);
+		expect(messages(s).length).toBe(1);
 	});
 });
 

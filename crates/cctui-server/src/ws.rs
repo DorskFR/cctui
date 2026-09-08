@@ -126,6 +126,15 @@ async fn handle_message(
     // a hibernated worker revives it with a fresh valid token rather than empty
     // env. Ignored when the worker is already alive.
     let env = crate::routes::gateway::resume_env_for_session(state, &session_id).await;
+    // A successful dispatch only means the frame was queued toward a daemon; the
+    // adapter's `CommandResult` under this id is the delivery proof.
+    let command_id = uuid::Uuid::new_v4();
+    crate::state::track_command(
+        &state.pending_commands,
+        command_id,
+        Some(session_id.clone()),
+        None,
+    );
     let dispatch = crate::bus::dispatch(
         state,
         &session_id,
@@ -134,6 +143,7 @@ async fn handle_message(
             text: content,
             ask_picks,
             env,
+            command_id: Some(command_id),
         },
     )
     .await;
@@ -154,6 +164,7 @@ async fn handle_message(
                 client_msg_id,
                 ok: err_reason.is_none(),
                 error: err_reason,
+                command_id: Some(command_id),
             })
             .await;
     }
@@ -292,6 +303,7 @@ async fn run_tui_socket(
                                 client_msg_id,
                                 ok: false,
                                 error: Some("forbidden".into()),
+                                command_id: None,
                             })
                             .await;
                     }
