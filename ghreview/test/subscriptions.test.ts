@@ -74,6 +74,21 @@ guarded("subscription management", () => {
     expect(await listActiveSubscriptionsForAccount(db, "nobody")).toEqual([]);
   });
 
+  test("a null-target upsert is idempotent and owned by its account", async () => {
+    for (let i = 0; i < 3; i++) {
+      await upsertSubscription(db, "alpha", "notification", null, "notification");
+    }
+
+    const rows = await db.sql<
+      { id: string; account_id: string | null }[]
+    >`SELECT id::text, account_id::text FROM subscriptions WHERE kind = 'notification'`;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.account_id).not.toBeNull();
+
+    await db.sql.unsafe("DELETE FROM gh_accounts WHERE login = 'alpha'");
+    expect(await listActiveSubscriptionsForAccount(db, "alpha")).toEqual([]);
+  });
+
   test("subscribe by PR URL parses target, sets account_id, and triggers an immediate sync", async () => {
     const app = createApp(deps());
     const res = await app.request("/v1/subscriptions", {
