@@ -834,9 +834,11 @@ async fn dispatch(
             // and 401 for an account-bound session. Re-pull the gateway env from
             // the server's durable `sessions.account_id` binding — same
             // fail-closed contract as spawn/fork — but ONLY when the stored env
-            // is empty, so we don't double-pull (and regress) spawn/fork which
-            // already resolved a fresh env at launch.
-            if record.env.is_empty() {
+            // carries no credential, so we don't double-pull (and regress)
+            // spawn/fork which already resolved a fresh env at launch. A
+            // restored record keeps its gateway base URL, so emptiness alone no
+            // longer says whether the credential is there.
+            if !record.env.contains_key("OPENAI_API_KEY") {
                 match resolve_launch_env(server, machine_key, local_id, &record.env).await {
                     Ok(env) => record.env = env,
                     Err(err) => {

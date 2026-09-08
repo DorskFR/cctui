@@ -1380,14 +1380,19 @@ impl AppServerConfig {
 /// through a `model_providers` entry — `base_url` inlined here, the bearer via
 /// `env_key` from the launch env at request time. Mirrors the worker
 /// entrypoint's `phase_codex_config`, which fixed the same failure
-/// for k8s workers by writing this block into config.toml. Empty when either
-/// var is absent (an unbound session keeps codex's default provider).
+/// for k8s workers by writing this block into config.toml. Empty only when the
+/// base URL is absent (an unbound session keeps codex's default provider).
+///
+/// The block is emitted on the base URL ALONE, without the credential: codex
+/// persists `model_provider = "cctui"` in the rollout, so a relaunch that omits
+/// the definition fails config load on resume and bricks the thread
+/// permanently, whereas a definition whose `env_key` is unset merely fails the
+/// turn and heals on the next credential pull.
 #[must_use]
 pub fn gateway_provider_overrides(
     env: &std::collections::BTreeMap<String, String>,
 ) -> Vec<(String, String)> {
-    let (Some(base_url), Some(_key)) = (env.get("OPENAI_BASE_URL"), env.get("OPENAI_API_KEY"))
-    else {
+    let Some(base_url) = env.get("OPENAI_BASE_URL") else {
         return Vec::new();
     };
     vec![
@@ -2987,15 +2992,37 @@ mod tests {
     }
 
     #[test]
-    fn gateway_provider_overrides_empty_without_full_gateway_env() {
+    fn gateway_provider_overrides_empty_without_a_gateway_base_url() {
         let empty = std::collections::BTreeMap::new();
         assert!(gateway_provider_overrides(&empty).is_empty());
-        let url_only: std::collections::BTreeMap<String, String> =
-            std::iter::once(("OPENAI_BASE_URL".to_owned(), "https://x".to_owned())).collect();
-        assert!(gateway_provider_overrides(&url_only).is_empty());
         let key_only: std::collections::BTreeMap<String, String> =
             std::iter::once(("OPENAI_API_KEY".to_owned(), "tok".to_owned())).collect();
         assert!(gateway_provider_overrides(&key_only).is_empty());
+    }
+
+    /// A resume whose credential re-pull came back empty still has to DEFINE
+    /// `model_providers.cctui`: codex reads the provider NAME back out of the
+    /// rollout and fails config load (-32600) on a dangling reference.
+    #[test]
+    fn gateway_provider_is_defined_from_the_base_url_alone() {
+        let url_only: std::collections::BTreeMap<String, String> =
+            std::iter::once(("OPENAI_BASE_URL".to_owned(), "https://x/gateway".to_owned()))
+                .collect();
+        let got = gateway_provider_overrides(&url_only);
+        assert_eq!(
+            got.iter()
+                .find(|(k, _)| k == "model_providers.cctui.base_url")
+                .map(|(_, v)| v.as_str()),
+            Some("https://x/gateway")
+        );
+        assert!(got.contains(&("model_provider".to_owned(), "cctui".to_owned())));
+        assert!(
+            got.contains(&(
+                "model_providers.cctui.env_key".to_owned(),
+                "OPENAI_API_KEY".to_owned()
+            )),
+            "the bearer still comes from the launch env at request time"
+        );
     }
 
     #[test]
