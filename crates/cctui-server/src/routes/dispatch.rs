@@ -207,7 +207,33 @@ async fn mint_ephemeral_dispatch_key(
     Ok(token)
 }
 
-/// The account a dispatch should route through, after applying the
+/// The provider family a pool election is scoped to. Dispatch carries no
+/// adapter of its own: the entry's provider hint names the family when there is
+/// one, otherwise the forwarded payload's adapter does, defaulting to
+/// `claude-code` as the rest of the dispatch path does.
+fn binding_family(hint: Option<&str>, payload_adapter: &str) -> crate::routes::gateway::Family {
+    hint.map(str::trim).filter(|p| !p.is_empty()).map_or_else(
+        || crate::routes::gateway::Family::from_adapter(payload_adapter),
+        crate::routes::gateway::Family::from_provider,
+    )
+}
+
+/// Map a shared resolver failure onto the dispatch error surface. Callers here
+/// are machines: a rejection is a 400 whose detail names every account that was
+/// considered and why it was skipped.
+fn dispatch_resolve_err(e: crate::account_resolve::ResolveError) -> (StatusCode, Json<ApiError>) {
+    match e {
+        crate::account_resolve::ResolveError::Rejected(msg) => {
+            (StatusCode::BAD_REQUEST, Json(ApiError { error: msg }))
+        }
+        crate::account_resolve::ResolveError::Db => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError { error: "could not provision account session".into() }),
+        ),
+    }
+}
+
+/// The account or pool name a dispatch should route through, after applying the
 /// fallback precedence: an explicit `req.account` always wins; otherwise the
 /// dispatcher's bound default account (if any) is used. The optional provider
 /// hint constrains the mint to that provider's family; without one the
@@ -573,6 +599,45 @@ pub async fn dispatch(
             req.accounts.iter().map(|a| (a.account.clone(), a.provider.clone())).collect()
         };
 
+        // Every name accepted here may be a pool: elect a member now, by the
+        // pool's own strategy, and keep the pool so the minted token can be
+        // stamped with it. An account of the caller's answering to the same
+        // name always wins.
+        let requested_model = req
+            .payload
+            .get("model")
+            .and_then(serde_json::Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned);
+        let payload_adapter = req
+            .payload
+            .get("adapter_id")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("claude-code")
+            .to_owned();
+        let mut bound_pool: Option<uuid::Uuid> = None;
+        let mut resolved: Vec<(String, Option<String>)> = Vec::with_capacity(accounts.len());
+        for (name, hint) in accounts {
+            let family = binding_family(hint.as_deref(), &payload_adapter);
+            let bound = crate::account_resolve::resolve_account_or_pool(
+                &state,
+                uid,
+                family,
+                requested_model.as_deref(),
+                &name,
+            )
+            .await
+            .map_err(dispatch_resolve_err)?;
+            if bound.pool_id.is_some() {
+                // One column, one pool: the first pool named owns the session's
+                // failover boundary. A second pool in the same cross-family list
+                // still elects, it just cannot also claim the stamp.
+                bound_pool = bound_pool.or(bound.pool_id);
+            }
+            resolved.push((bound.account, hint));
+        }
+        let accounts = resolved;
+
         // Map `payload.model` through the resolved account(s) `model_aliases`,
         // mirroring the spawn path. Try Anthropic then Openai per
         // account; first rewrite wins. `resolve_account_model` fails soft
@@ -705,6 +770,10 @@ pub async fn dispatch(
                     ));
                 }
             }
+        }
+
+        if let Some(pool_id) = bound_pool {
+            crate::account_resolve::stamp_pool(&state, &session_id, pool_id).await;
         }
     }
 
@@ -847,7 +916,7 @@ pub async fn dispatch(
 #[cfg(test)]
 mod tests {
     use super::{
-        colliding_family, resolve_dispatch_account, resolve_dispatch_session_id,
+        binding_family, colliding_family, resolve_dispatch_account, resolve_dispatch_session_id,
         rewrite_model_if_aliased,
     };
     use crate::routes::gateway::Family;
@@ -974,5 +1043,18 @@ mod tests {
         assert!(!rewrite_model_if_aliased(&mut payload, "opus", "opus"));
         assert_eq!(payload["model"], "opus", "unchanged on alias miss");
         assert_eq!(payload["effort"], "high");
+    }
+
+    #[test]
+    fn a_provider_hint_scopes_the_binding_family() {
+        assert_eq!(binding_family(Some("openai"), "claude-code"), Family::Openai);
+        assert_eq!(binding_family(Some("fireworks"), "claude-code"), Family::Fireworks);
+    }
+
+    #[test]
+    fn without_a_hint_the_payload_adapter_scopes_the_binding_family() {
+        assert_eq!(binding_family(None, "codex"), Family::Openai);
+        assert_eq!(binding_family(Some("  "), "codex"), Family::Openai);
+        assert_eq!(binding_family(None, "claude-code"), Family::Anthropic);
     }
 }

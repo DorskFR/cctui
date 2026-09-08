@@ -1,4 +1,5 @@
 mod account_pick;
+mod account_resolve;
 mod auth;
 mod authz;
 mod auto_resume;
