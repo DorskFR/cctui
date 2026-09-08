@@ -1462,6 +1462,35 @@ fn init_dispatchers(config: &Config) -> Arc<dispatchers::Registry> {
 }
 
 #[allow(clippy::cognitive_complexity)]
+/// Backstop for the usage-notice buckets the per-session drop can't reach: the
+/// auto-archive UPDATE above, a row deleted out from under us, or an entry this
+/// replica recorded for a session another replica ended.
+async fn sweep_usage_notice_buckets(state: &AppState) {
+    let sessions: std::collections::HashSet<String> =
+        state.usage_notice_buckets.iter().map(|e| e.key().0.clone()).collect();
+    if sessions.is_empty() {
+        return;
+    }
+    let ids: Vec<String> = sessions.into_iter().collect();
+    let live = match sqlx::query_scalar::<_, String>(
+        "SELECT id FROM sessions WHERE id = ANY($1) AND status NOT IN ('archived', 'ended')",
+    )
+    .bind(&ids)
+    .fetch_all(&state.pool)
+    .await
+    {
+        Ok(live) => live.into_iter().collect(),
+        Err(err) => {
+            tracing::warn!(%err, "usage notice bucket sweep failed");
+            return;
+        }
+    };
+    let dropped = state::sweep_usage_notice_buckets(&state.usage_notice_buckets, &live);
+    if dropped > 0 {
+        tracing::debug!(dropped, "swept usage notice buckets for dead sessions");
+    }
+}
+
 async fn reaper_task(state: AppState) {
     let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
     loop {
@@ -1583,9 +1612,8 @@ async fn reaper_task(state: AppState) {
         webhook::sweep(&state).await;
         auto_resume::sweep(&state).await;
 
-        {
-            let mut pstore = state.permission_store.write().await;
-            pstore.reap_stale(300); // 5 minutes
-        }
+        sweep_usage_notice_buckets(&state).await;
+
+        state.permission_store.write().await.reap_stale(300); // seconds
     }
 }
