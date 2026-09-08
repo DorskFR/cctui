@@ -33,7 +33,14 @@ const HEALTH_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs
 /// silence this long means the upstream stream is dead rather than slow.
 const STREAM_INACTIVITY: std::time::Duration = std::time::Duration::from_mins(2);
 
-pub type LiveRegistry = Arc<Mutex<HashMap<String, mpsc::Sender<SessionCommand>>>>;
+pub type LiveRegistry = Arc<Mutex<HashMap<String, LiveSession>>>;
+
+/// `meta` is retained so a reconnect can replay the original `SessionStarted`.
+#[derive(Debug, Clone)]
+pub struct LiveSession {
+    pub commands: mpsc::Sender<SessionCommand>,
+    pub meta: SessionMeta,
+}
 
 #[derive(Debug)]
 pub enum SessionCommand {
@@ -407,20 +414,21 @@ impl OpenCodeSession {
         working_dir: Option<String>,
     ) {
         self.owned.insert(local_id.to_owned());
-        self.live.lock().await.insert(local_id.to_owned(), self.commands_tx.clone());
+        let meta = SessionMeta {
+            working_dir,
+            parent_local_id,
+            extra: serde_json::json!({
+                "harness": "opencode",
+                "spawn_key": self.params.key,
+            }),
+        };
+        self.live.lock().await.insert(
+            local_id.to_owned(),
+            LiveSession { commands: self.commands_tx.clone(), meta: meta.clone() },
+        );
         let _ = self
             .events
-            .send(AdapterEvent::SessionStarted {
-                local_id: local_id.to_owned(),
-                meta: SessionMeta {
-                    working_dir,
-                    parent_local_id,
-                    extra: serde_json::json!({
-                        "harness": "opencode",
-                        "spawn_key": self.params.key,
-                    }),
-                },
-            })
+            .send(AdapterEvent::SessionStarted { local_id: local_id.to_owned(), meta })
             .await;
     }
 
