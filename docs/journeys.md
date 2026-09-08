@@ -46,7 +46,10 @@ token or a new common component is never quietly missed.
 Capture replays against a production build (`vite preview`), which the shoot
 builds and starts for you; a dev server transforms modules on demand and can
 lose the first click to hydration. Screens are then palette-quantised, which
-takes them to roughly a third of their size.
+takes them to roughly a third of their size. That pass runs over the journeys
+the shoot just captured, and only those: quantisation is lossy and cannot be
+detected after the fact, so re-running it over the whole record would both
+degrade screens nobody re-rendered and show them up as a diff.
 
 The admin token defaults to `dev-admin` and only ever reaches the login
 endpoint; the browser state it mints lands in `webui/journeys/.auth/`, which is
