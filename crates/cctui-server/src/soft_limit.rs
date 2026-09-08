@@ -36,6 +36,17 @@ pub const KEY_USD_7D: &str = "usd_7d";
 /// never resets): a bounded hint, not `i64::MAX`.
 const NO_RESET_RETRY_SECS: i64 = 3600;
 
+/// Minimum elapsed share before a window's pace is enforceable: `expected_pct`
+/// is ~0 at a window's start, so the first request of a fresh window would
+/// otherwise read as an infinite burn. 10% is 30 minutes of a 5h window.
+const PACE_MIN_ELAPSED_FRACTION: f64 = 0.10;
+/// Bounds on the pace back-off — long enough to slow a burst, short enough that
+/// the harness keeps making progress.
+const PACE_RETRY_MIN_SECS: i64 = 30;
+const PACE_RETRY_MAX_SECS: i64 = 900;
+/// Prefix on a pace refusal's blocking key: a burn rate, not a spent budget.
+pub const PACE_REASON_PREFIX: &str = "pace:";
+
 /// Whether a canonical key denotes a dollar-denominated window.
 pub fn is_usd_key(key: &str) -> bool {
     matches!(key, KEY_SESSION_USD | KEY_USD_5H | KEY_USD_7D)
@@ -81,11 +92,22 @@ pub struct SoftLimit {
     /// If the window's `resets_at` is within this many minutes, ignore its cap.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bypass_minutes: Option<i32>,
+    /// Max burn rate as a multiple of the window's linear budget: `1.5` refuses
+    /// once the window is spent 50% faster than evenly. Percent windows only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pace_cap: Option<f32>,
 }
 
 impl SoftLimit {
     const fn is_empty(&self) -> bool {
-        self.cap_pct.is_none() && self.cap_usd.is_none() && self.bypass_minutes.is_none()
+        self.cap_pct.is_none()
+            && self.cap_usd.is_none()
+            && self.bypass_minutes.is_none()
+            && self.pace_cap.is_none()
+    }
+
+    fn effective_pace_cap(&self) -> Option<f64> {
+        self.pace_cap.map(f64::from).filter(|c| c.is_finite() && *c > 0.0)
     }
 }
 
@@ -102,7 +124,10 @@ impl SoftLimits {
     /// No window has a cap configured ⇒ nothing to evaluate (fast path). A bypass
     /// without a cap is inert, so it does not count as "set".
     pub fn is_unset(&self) -> bool {
-        !self.limits.values().any(|l| l.cap_pct.is_some() || l.cap_usd.is_some())
+        !self
+            .limits
+            .values()
+            .any(|l| l.cap_pct.is_some() || l.cap_usd.is_some() || l.pace_cap.is_some())
     }
 
     /// Parse a stored JSONB soft-limit map. Unknown/malformed keys or entries are
@@ -124,6 +149,11 @@ impl SoftLimits {
                     .get("bypass_minutes")
                     .and_then(serde_json::Value::as_i64)
                     .map(|n| n as i32),
+                pace_cap: v
+                    .get("pace_cap")
+                    .and_then(serde_json::Value::as_f64)
+                    .filter(|n| n.is_finite() && *n > 0.0)
+                    .map(|n| n as f32),
             };
             if !limit.is_empty() {
                 limits.insert(canon, limit);
@@ -475,7 +505,65 @@ pub fn evaluate_soft_limit(
         ));
     }
 
-    match blocking.into_iter().min_by_key(|(secs, _, _)| *secs) {
+    // A level block outranks a pace block: its horizon is the real one, and a
+    // pace back-off (seconds) would otherwise always win the `min` and send the
+    // worker back into a wall it cannot clear until the window resets.
+    if let Some((retry_after_secs, reason, key)) =
+        blocking.into_iter().min_by_key(|(secs, _, _)| *secs)
+    {
+        return Decision::Block { retry_after_secs, reason, key };
+    }
+    evaluate_pace(windows, caps, model, now)
+}
+
+/// Refuse a window being burned faster than `pace_cap` times its linear budget.
+///
+/// Fails open wherever the rate is unknowable: no `pace_cap`, no matching
+/// window, a window with no `resets_at` or no known length, or one too early in
+/// its span to divide by (see [`PACE_MIN_ELAPSED_FRACTION`]). Dollar windows
+/// report no utilization, so they never have a pace.
+fn evaluate_pace(
+    windows: &[UsageWindow],
+    caps: &SoftLimits,
+    model: Option<&str>,
+    now: DateTime<Utc>,
+) -> Decision {
+    let mut blocking: Vec<(i64, String, String)> = Vec::new();
+    for (key, limit) in &caps.limits {
+        let Some(cap) = limit.effective_pace_cap() else { continue };
+        let Some(win) = windows.iter().find(|w| &w.key == key) else { continue };
+        if win.amount_usd.is_some() || !window_applies(win, model) {
+            continue;
+        }
+        let Some(pace) = crate::pace::for_window(now, win, None) else { continue };
+        if pace.elapsed_fraction < PACE_MIN_ELAPSED_FRACTION || pace.ratio <= cap {
+            continue;
+        }
+        if let Some(resets_at) = win.resets_at {
+            let bypass = i64::from(limit.bypass_minutes.unwrap_or(0).max(0));
+            let secs_to_reset = (resets_at - now).num_seconds();
+            if secs_to_reset > 0 && secs_to_reset <= bypass * 60 {
+                continue;
+            }
+        }
+        // Waiting this long re-earns the budget already spent: the elapsed span
+        // grows until `expected_pct` has caught up with the current burn.
+        let elapsed_secs = pace.elapsed_fraction
+            * crate::pace::window_duration(&win.key).map_or(0.0, |d| d.num_seconds() as f64);
+        let retry = (elapsed_secs * (pace.ratio / cap - 1.0)).round() as i64;
+        blocking.push((
+            retry.clamp(PACE_RETRY_MIN_SECS, PACE_RETRY_MAX_SECS),
+            format!(
+                "cctui pace limit: {} window at {}% with {}% expected by now ({:.1}x, cap {cap:.1}x)",
+                win.label,
+                win.utilization.round() as i64,
+                pace.expected_pct.round() as i64,
+                pace.ratio,
+            ),
+            format!("{PACE_REASON_PREFIX}{key}"),
+        ));
+    }
+    match blocking.into_iter().max_by_key(|(secs, _, _)| *secs) {
         Some((retry_after_secs, reason, key)) => Decision::Block { retry_after_secs, reason, key },
         None => Decision::Allow,
     }
@@ -495,7 +583,7 @@ mod tests {
         for (k, cap, bypass) in pairs {
             limits.insert(
                 (*k).to_owned(),
-                SoftLimit { cap_pct: *cap, cap_usd: None, bypass_minutes: *bypass },
+                SoftLimit { cap_pct: *cap, cap_usd: None, bypass_minutes: *bypass, pace_cap: None },
             );
         }
         SoftLimits { limits }
@@ -506,7 +594,12 @@ mod tests {
         for (k, cap, bypass) in pairs {
             limits.insert(
                 (*k).to_owned(),
-                SoftLimit { cap_pct: None, cap_usd: Some(*cap), bypass_minutes: *bypass },
+                SoftLimit {
+                    cap_pct: None,
+                    cap_usd: Some(*cap),
+                    bypass_minutes: *bypass,
+                    pace_cap: None,
+                },
             );
         }
         SoftLimits { limits }
@@ -804,6 +897,137 @@ mod tests {
         let c = caps(&[(KEY_SESSION, Some(80), None)]);
         let u = legacy(10.0, "2026-06-19T16:00:00Z", 99.0, "2026-06-26T00:00:00Z");
         assert_eq!(eval(&u, &c), Decision::Allow);
+    }
+
+    // ---- pace --------------------------------------------------------------
+
+    fn pace_caps(pairs: &[(&str, f32, Option<i32>)]) -> SoftLimits {
+        let mut limits = BTreeMap::new();
+        for (k, cap, bypass) in pairs {
+            limits.insert(
+                (*k).to_owned(),
+                SoftLimit {
+                    cap_pct: None,
+                    cap_usd: None,
+                    bypass_minutes: *bypass,
+                    pace_cap: Some(*cap),
+                },
+            );
+        }
+        SoftLimits { limits }
+    }
+
+    /// One hour into a 5h window ⇒ 20% expected; `resets_at` is 4h out.
+    fn one_hour_in(utilization: f64) -> serde_json::Value {
+        json!({"limits": [{
+            "kind": "session", "percent": utilization, "resets_at": "2026-06-19T16:00:00Z",
+        }]})
+    }
+
+    #[test]
+    fn over_pace_blocks_with_a_bounded_retry_after() {
+        // Acceptance: pace_cap 1.5 on the 5h window, 60% used after 1h of 5
+        // (20% expected) ⇒ ratio 3.0 ⇒ 429.
+        let c = pace_caps(&[(KEY_SESSION, 1.5, None)]);
+        match eval(&one_hour_in(60.0), &c) {
+            Decision::Block { retry_after_secs, reason, key } => {
+                assert_eq!(key, "pace:session");
+                assert!(
+                    (PACE_RETRY_MIN_SECS..=PACE_RETRY_MAX_SECS).contains(&retry_after_secs),
+                    "retry {retry_after_secs}s must stay bounded"
+                );
+                assert_eq!(
+                    reason,
+                    "cctui pace limit: 5h window at 60% with 20% expected by now \
+                     (3.0x, cap 1.5x)"
+                );
+            }
+            d @ Decision::Allow => panic!("expected a pace block, got {d:?}"),
+        }
+    }
+
+    #[test]
+    fn the_block_clears_once_the_ratio_falls_under_the_cap() {
+        // Same window and cap; 25% after 1h is 1.25x — under 1.5x.
+        let c = pace_caps(&[(KEY_SESSION, 1.5, None)]);
+        assert_eq!(eval(&one_hour_in(25.0), &c), Decision::Allow);
+    }
+
+    #[test]
+    fn a_window_barely_started_makes_no_pace_decision() {
+        // 6 minutes into 5h is 2% elapsed: below the enforceable floor, so even
+        // a wild ratio must fail open rather than refuse the window's first call.
+        let c = pace_caps(&[(KEY_SESSION, 1.5, None)]);
+        let u = json!({"limits":[{"kind":"session","percent":30.0,
+            "resets_at":"2026-06-19T16:54:00Z"}]});
+        assert_eq!(eval(&u, &c), Decision::Allow);
+    }
+
+    #[test]
+    fn a_window_without_a_reset_makes_no_pace_decision() {
+        let c = pace_caps(&[(KEY_SESSION, 1.5, None)]);
+        let u = json!({"limits":[{"kind":"session","percent":99.0}]});
+        assert_eq!(
+            eval(&u, &c),
+            Decision::Allow,
+            "no resets_at ⇒ no elapsed fraction ⇒ no pace decision"
+        );
+    }
+
+    #[test]
+    fn a_pace_cap_on_a_missing_window_fails_open() {
+        let c = pace_caps(&[("weekly_model:ghost", 1.1, None)]);
+        assert_eq!(eval(&one_hour_in(99.0), &c), Decision::Allow);
+    }
+
+    #[test]
+    fn a_scoped_pace_cap_only_burdens_the_model_it_names() {
+        let c = pace_caps(&[("weekly_model:fable", 1.5, None)]);
+        let u = json!({"limits":[{"kind":"weekly_scoped","percent":90.0,
+            "resets_at":"2026-06-23T12:00:00Z",
+            "scope":{"model":{"id":null,"display_name":"Fable"}}}]});
+        assert!(matches!(eval_for(&u, &c, Some("claude-fable-5")), Decision::Block { .. }));
+        assert_eq!(eval_for(&u, &c, Some("claude-opus-4-8")), Decision::Allow);
+    }
+
+    #[test]
+    fn the_bypass_window_silences_pace_too() {
+        // 4h55m into the 5h window: over pace, but the reset is minutes away.
+        let c = pace_caps(&[(KEY_SESSION, 1.5, Some(10))]);
+        let u = json!({"limits":[{"kind":"session","percent":100.0,
+            "resets_at":"2026-06-19T12:05:00Z"}]});
+        assert_eq!(eval(&u, &c), Decision::Allow);
+    }
+
+    #[test]
+    fn a_level_block_outranks_a_pace_block() {
+        let mut c = pace_caps(&[(KEY_SESSION, 1.5, None)]);
+        c.limits.get_mut(KEY_SESSION).unwrap().cap_pct = Some(50);
+        match eval(&one_hour_in(60.0), &c) {
+            Decision::Block { retry_after_secs, key, .. } => {
+                assert_eq!(key, "session", "the spent budget names the block, not the burn rate");
+                assert_eq!(retry_after_secs, 4 * 3600);
+            }
+            d @ Decision::Allow => panic!("expected a block, got {d:?}"),
+        }
+    }
+
+    #[test]
+    fn a_dollar_window_has_no_pace() {
+        let c = pace_caps(&[(KEY_USD_5H, 1.1, None)]);
+        assert_eq!(eval(&usd_usage(99.0, "2026-06-19T16:00:00Z", 0.0), &c), Decision::Allow);
+    }
+
+    #[test]
+    fn a_pace_cap_alone_counts_as_configured_and_round_trips() {
+        let sl = SoftLimits::from_json(Some(&json!({
+            "session": {"pace_cap": 1.5},
+            "weekly_all": {"pace_cap": 0},
+        })));
+        assert!(!sl.is_unset(), "a pace cap alone must open the evaluation path");
+        assert!((sl.limits["session"].pace_cap.unwrap() - 1.5).abs() < 1e-6);
+        assert!(!sl.limits.contains_key("weekly_all"), "a non-positive pace cap is dropped");
+        assert_eq!(sl, SoftLimits::from_json(Some(&serde_json::to_value(&sl).unwrap())));
     }
 
     // ---- dollar windows ----------------------------------------------------

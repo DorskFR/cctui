@@ -163,7 +163,7 @@ pub async fn pick_failover_target(
     // 1. The pool the session was launched into, when its owner armed failover.
     if let Some(pool_id) = pool_id
         && let Ok(Some(pool)) = crate::store::account_pools::get(&state.pool, pool_id, None).await
-        && pool.failover
+        && in_pool_failover_armed(Some(&pool))
         && let Some(target) = pick_within_pool(
             state,
             &pool,
@@ -267,20 +267,50 @@ async fn pick_within_pool(
         })
         .collect();
 
-    let now = chrono::Utc::now();
+    let providers: Vec<Uuid> = members.iter().map(|m| m.provider_id).collect();
+    elect_replacement(
+        pool,
+        &candidates,
+        &providers,
+        model,
+        chrono::Utc::now(),
+        session_id,
+        from_account_name,
+    )
+}
+
+/// Whether a session's stamped pool actually authorises an in-pool move. A
+/// session whose token carries no `pool_id` — every dispatched session before
+/// the dispatch path started stamping one — can never reach this path.
+fn in_pool_failover_armed(pool: Option<&AccountPool>) -> bool {
+    pool.is_some_and(|p| p.failover)
+}
+
+/// The election itself, over `candidates` paired positionally with
+/// `providers`. Split from the DB/usage fetch so the rule that decides where a
+/// refused session lands is testable without a gateway.
+#[allow(clippy::too_many_arguments)]
+fn elect_replacement(
+    pool: &AccountPool,
+    candidates: &[crate::account_pick::Candidate],
+    providers: &[Uuid],
+    model: Option<&str>,
+    now: chrono::DateTime<chrono::Utc>,
+    session_id: &str,
+    from_account_name: &str,
+) -> Option<FailoverTarget> {
     let pick = if pool.strategy == crate::store::account_pools::STRATEGY_ORDERED {
-        crate::account_pick::pick_in_order(&candidates, model, now)
+        crate::account_pick::pick_in_order(candidates, model, now)
     } else {
-        crate::account_pick::pick_account(&candidates, model, now)
+        crate::account_pick::pick_account(candidates, model, now)
     };
     let crate::account_pick::Pick::Chosen { name, .. } = pick else { return None };
     // Measured room only: see the note above on why an unreadable member is
     // not a failover target even though it is a launch candidate.
-    let elected =
-        members.iter().zip(usages.iter()).find(|(m, usage)| m.name == name && usage.is_some())?;
+    let idx = candidates.iter().position(|c| c.name == name && c.usage_known)?;
     Some(FailoverTarget {
         session_id: session_id.to_owned(),
-        provider_id: elected.0.provider_id,
+        provider_id: *providers.get(idx)?,
         account_name: name,
         from_account_name: from_account_name.to_owned(),
         pool_id: Some(pool.id),
@@ -495,5 +525,93 @@ mod tests {
         assert!(cooldown_active(&map, "s1", t0 + Duration::from_secs(59), Duration::from_mins(1)));
         assert!(!cooldown_active(&map, "s1", t0 + Duration::from_secs(61), Duration::from_mins(1)));
         assert!(!cooldown_active(&map, "s2", t0, Duration::from_mins(1)));
+    }
+
+    fn pool(strategy: &str, failover: bool) -> AccountPool {
+        AccountPool {
+            id: Uuid::new_v4(),
+            user_id: Uuid::new_v4(),
+            name: "work".into(),
+            strategy: strategy.to_owned(),
+            failover,
+            created_at: Utc::now(),
+        }
+    }
+
+    fn member(name: &str, five_hour_pct: f64, usage_known: bool) -> crate::account_pick::Candidate {
+        crate::account_pick::Candidate {
+            name: name.to_owned(),
+            windows: if usage_known {
+                vec![crate::soft_limit::UsageWindow {
+                    key: crate::soft_limit::KEY_SESSION.to_owned(),
+                    kind: "session".to_owned(),
+                    label: "5h".to_owned(),
+                    utilization: five_hour_pct,
+                    amount_usd: None,
+                    resets_at: Some(Utc::now() + chrono::Duration::hours(3)),
+                    model_id: None,
+                    model_display_name: None,
+                }]
+            } else {
+                Vec::new()
+            },
+            limits: crate::soft_limit::SoftLimits::default(),
+            usage_known,
+        }
+    }
+
+    #[test]
+    fn an_unstamped_session_is_not_eligible_for_an_in_pool_move() {
+        // The dispatch path used to leave `session_tokens.pool_id` null, which
+        // is what made `pool.failover` inert for every dispatched session.
+        assert!(!in_pool_failover_armed(None));
+        assert!(!in_pool_failover_armed(Some(&pool(
+            crate::store::account_pools::STRATEGY_HEADROOM,
+            false
+        ))));
+        assert!(in_pool_failover_armed(Some(&pool(
+            crate::store::account_pools::STRATEGY_HEADROOM,
+            true
+        ))));
+    }
+
+    #[test]
+    fn a_refused_session_moves_to_the_member_with_room_and_records_the_pool() {
+        let p = pool(crate::store::account_pools::STRATEGY_HEADROOM, true);
+        let spare = Uuid::new_v4();
+        let candidates = [member("hirobot", 100.0, true), member("pafin", 9.0, true)];
+        let providers = [Uuid::new_v4(), spare];
+        let target =
+            elect_replacement(&p, &candidates, &providers, None, Utc::now(), "sess-1", "hirobot")
+                .expect("a member with room");
+        assert_eq!(target.account_name, "pafin");
+        assert_eq!(target.provider_id, spare);
+        assert_eq!(target.from_account_name, "hirobot");
+        // `rebind_session` writes exactly these two into `session_account_rebinds`,
+        // so the move is attributable to the pool afterwards.
+        assert_eq!(target.pool_id, Some(p.id));
+        assert_eq!(target.reason, REASON_POOL);
+    }
+
+    #[test]
+    fn an_unmeasurable_member_is_not_a_failover_target() {
+        let p = pool(crate::store::account_pools::STRATEGY_HEADROOM, true);
+        let candidates = [member("pafin", 0.0, false)];
+        let providers = [Uuid::new_v4()];
+        assert!(
+            elect_replacement(&p, &candidates, &providers, None, Utc::now(), "sess-1", "hirobot")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn every_remaining_member_out_leaves_the_session_put() {
+        let p = pool(crate::store::account_pools::STRATEGY_HEADROOM, true);
+        let candidates = [member("hirobot", 100.0, true), member("pafin", 100.0, true)];
+        let providers = [Uuid::new_v4(), Uuid::new_v4()];
+        assert!(
+            elect_replacement(&p, &candidates, &providers, None, Utc::now(), "sess-1", "hirobot")
+                .is_none()
+        );
     }
 }

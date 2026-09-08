@@ -11,7 +11,7 @@
     "prepare": "npm run paraglide && (svelte-kit sync || echo '')",
     "check": "npm run paraglide && svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "check:watch": "npm run paraglide && svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
-    "bindings": "bash scripts/gen-bindings.sh",
+    "bindings": "bash scripts/gen-bindings.sh && node scripts/gen-scrub-detectors.mjs",
     "test": "npm run paraglide && vitest run",
     "lint": "biome lint .",
     "journey:seed": "bash ../deploy/local/fixture/seed.sh",

@@ -28,7 +28,7 @@ pub fn valid_strategy(s: &str) -> bool {
 }
 
 /// One pool, without its members.
-#[derive(Clone, Debug, sqlx::FromRow, serde::Serialize, ts_rs::TS)]
+#[derive(Clone, Debug, PartialEq, Eq, sqlx::FromRow, serde::Serialize, ts_rs::TS)]
 #[ts(export)]
 pub struct AccountPool {
     #[ts(type = "string")]

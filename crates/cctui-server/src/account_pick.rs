@@ -18,6 +18,10 @@
 //!   * dollar windows are excluded from the margin (a percent of a USD budget
 //!     means nothing), though their caps still block through the soft limit.
 //!
+//! An account that opted into pace limits and is burning faster than its linear
+//! budget has its margin discounted by that burn rate, so equal room goes to
+//! the calmer account.
+//!
 //! This module is pure: the caller does the DB reads and the usage fetches, so
 //! every rule above is unit-testable without a database or a network.
 
@@ -178,7 +182,24 @@ fn availability(
     {
         return Err(Blocked { name: candidate.name.clone(), reason });
     }
-    Ok(narrowest_margin(&applicable))
+    let penalty = pace_penalty(candidate, &applicable, now);
+    Ok(narrowest_margin(&applicable).map(|margin| margin / penalty))
+}
+
+/// Divisor discounting the margin of an account that is burning faster than its
+/// windows' linear budget, so a new session prefers a calmer sibling with the
+/// same room. `1.0` (no discount) unless the account opted into pace limits and
+/// some applicable window is actually over pace.
+fn pace_penalty(candidate: &Candidate, applicable: &[&UsageWindow], now: DateTime<Utc>) -> f64 {
+    if !candidate.limits.limits.values().any(|l| l.pace_cap.is_some()) {
+        return 1.0;
+    }
+    applicable
+        .iter()
+        .filter(|w| is_percent_window(w))
+        .filter_map(|w| crate::pace::for_window(now, w, None))
+        .map(|p| p.ratio)
+        .fold(1.0_f64, f64::max)
 }
 
 /// Walk `candidates` in the order given and take the first one with room — the
@@ -238,6 +259,42 @@ mod tests {
             limits: SoftLimits::default(),
             usage_known: true,
         }
+    }
+
+    /// Equal room, opposite burn rates: both at 40% of the 5h window, but
+    /// `aburner` got there in one hour and `zcalm` over four. Alphabetical
+    /// order would elect `aburner`; the pace penalty must not let it.
+    #[test]
+    fn the_calmer_account_wins_a_tie_on_room() {
+        let paced = |name: &str, resets_in_hours: i64| Candidate {
+            name: name.to_owned(),
+            windows: vec![window(KEY_SESSION, "5h", 40.0, resets_in_hours)],
+            limits: SoftLimits {
+                limits: std::iter::once((
+                    KEY_SESSION.to_owned(),
+                    SoftLimit { pace_cap: Some(4.0), ..SoftLimit::default() },
+                ))
+                .collect(),
+            },
+            usage_known: true,
+        };
+        let candidates = vec![paced("aburner", 4), paced("zcalm", 1)];
+        assert!(matches!(
+            pick_account(&candidates, None, now()),
+            Pick::Chosen { ref name, .. } if name == "zcalm"
+        ));
+
+        // Without an opted-in pace cap the margins stay equal and the
+        // deterministic name tiebreak decides, exactly as before.
+        let unpaced: Vec<Candidate> = candidates
+            .iter()
+            .cloned()
+            .map(|c| Candidate { limits: SoftLimits::default(), ..c })
+            .collect();
+        assert!(matches!(
+            pick_account(&unpaced, None, now()),
+            Pick::Chosen { ref name, .. } if name == "aburner"
+        ));
     }
 
     #[test]
@@ -390,7 +447,7 @@ mod tests {
         let mut candidates = real_world();
         candidates[1].limits.limits.insert(
             KEY_WEEKLY_ALL.to_owned(),
-            SoftLimit { cap_pct: Some(40), cap_usd: None, bypass_minutes: None },
+            SoftLimit { cap_pct: Some(40), ..SoftLimit::default() },
         );
         // Patrigeon is at 48% against a 40% cap, Claudo is weekly-spent: nobody left.
         let Pick::Exhausted(blocked) = pick_account(&candidates, Some("opus"), now()) else {

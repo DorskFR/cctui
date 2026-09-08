@@ -125,10 +125,11 @@ RUN arch="$(dpkg --print-architecture)" \
 # native binary never invokes node, so it stays independent of whatever node a
 # derived image puts on PATH. Checksum-verified against the release manifest,
 # mirroring codex below.
-# Must stay an exact x.y.z so a rebuild of a given commit ships the same harness;
-# CI enforces it via scripts/check-claude-version-drift.sh, which also reports
-# when this pin falls behind upstream. `latest`/`stable` still resolve if passed
-# explicitly as a build arg.
+# A concrete x.y.z MINIMUM, not an exact pin: derived images (the harbor worker
+# bake) refetch the harness, so the guarantee is only "never older than this".
+# scripts/check-claude-version-drift.sh enforces the floor against the installed
+# binary and reports when it falls behind upstream. `latest`/`stable` still
+# resolve if passed explicitly as a build arg.
 ARG CLAUDE_CODE_VERSION=2.1.258
 RUN base="https://downloads.claude.ai/claude-code-releases" \
     && case "$(dpkg --print-architecture)" in \

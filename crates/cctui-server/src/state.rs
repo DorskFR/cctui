@@ -105,6 +105,10 @@ pub struct AppState {
     /// keyed by `machine_id`. Read-through cache over `codex_model_catalogs`,
     /// warmed on boot and written through on every daemon report.
     pub codex_catalogs: Arc<DashMap<Uuid, crate::routes::codex_models::CachedCatalog>>,
+    /// Codex catalog read from upstream with an account's own OAuth, keyed by
+    /// the provider credential that holds it. Outranks every machine catalog:
+    /// a gateway-only machine's codex can only report its compiled-in list.
+    pub codex_account_catalogs: Arc<DashMap<Uuid, crate::routes::codex_models::CachedCatalog>>,
     /// Rolling per-machine daemon-WS eviction counts; an escalation to
     /// ERROR when a machine flaps past the threshold is the eviction-loop alert.
     pub eviction_tracker: Arc<crate::bandwidth_watch::EvictionTracker>,

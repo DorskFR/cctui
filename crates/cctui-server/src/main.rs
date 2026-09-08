@@ -1,4 +1,5 @@
 mod account_pick;
+mod account_resolve;
 mod auth;
 mod authz;
 mod auto_resume;
@@ -130,6 +131,7 @@ async fn main() -> anyhow::Result<()> {
         gateway_orphan_spam: Arc::new(dashmap::DashMap::new()),
         account_reauth: Arc::new(dashmap::DashMap::new()),
         codex_catalogs: Arc::new(dashmap::DashMap::new()),
+        codex_account_catalogs: Arc::new(dashmap::DashMap::new()),
         eviction_tracker: Arc::new(bandwidth_watch::EvictionTracker::default()),
         connect_tracker: Arc::new(bandwidth_watch::ConnectTracker::default()),
         divergence_tracker: Arc::new(bandwidth_watch::DivergenceTracker::default()),
@@ -1142,7 +1144,7 @@ fn build_api_routes() -> Routes {
         .add(
             &[Method::POST],
             "/machines/{machine_id}/codex-models/refresh",
-            "Ask the machine's daemon to re-run codex model/list.",
+            "Re-read every OpenAI account's codex model catalog from upstream.",
             post(routes::codex_models::refresh_codex_models),
             Authn::Bearer,
             Authz::Resource(ResourceKind::Machine, Action::Read, IdFrom::Path("machine_id")),

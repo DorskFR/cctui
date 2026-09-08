@@ -11,7 +11,7 @@
 	import CodexModelsRefresh from '$lib/components/molecules/CodexModelsRefresh.svelte';
 	import EffortSlider from './EffortSlider.svelte';
 	import PermissionModes from './PermissionModes.svelte';
-	import { preferCatalog } from '$lib/harnessModels';
+	import { declaredModelOptions, preferCatalog, withDeclaredModels } from '$lib/harnessModels';
 	import {
 		accountBacksAdapter,
 		adapterLabel,
@@ -90,10 +90,13 @@
 	const codexCatalog = $derived(preferCatalog(machineCodex.data, mergedCodex.data));
 	const modelOptions = $derived.by<SelectOption[]>(() => {
 		const list = usesAccountModels
-			? (provider?.models ?? []).map((x) => ({ v: x.model, label: x.label }))
-			: draft.harness === 'codex'
-				? codexModelsFor(codexCatalog)
-				: withAliasTargets(claudeModels, provider?.model_aliases);
+			? declaredModelOptions(provider?.models)
+			: withDeclaredModels(
+					provider?.models,
+					draft.harness === 'codex'
+						? codexModelsFor(codexCatalog)
+						: withAliasTargets(claudeModels, provider?.model_aliases)
+				);
 		const out = list.map((o) => ({ value: o.v, label: o.v ? o.label : m.spawn_model_default() }));
 		if (!out.some((o) => o.value === '')) out.unshift({ value: '', label: m.spawn_model_default() });
 		const current = draft.model_alias ?? '';
@@ -149,10 +152,8 @@
 						bind:value={() => draft.model_alias ?? '', (v) => (draft.model_alias = v || null)}
 					/>
 				</div>
-				<!-- A model codex only just started advertising reaches the picker
-				     when some session refreshes the machine's catalog. Offer that
-				     refresh at spawn time too, so picking it does not require first
-				     opening a codex conversation. -->
+				<!-- Re-reads every account's catalog upstream, for a model that
+				     appeared since the last refresh. -->
 				{#if draft.harness === 'codex' && machineId}
 					<CodexModelsRefresh {machineId} size={14} />
 				{/if}

@@ -172,16 +172,38 @@ pub async fn dispatch_spawn(
     // once the account is minted. `None` for every other decision: a session
     // that named no pool is never moved.
     let mut bound_pool: Option<Uuid> = None;
+    let family_for_binding = crate::routes::gateway::Family::from_adapter(&adapter_id);
     let account_choice = match decision {
-        AccountDecision::Named(a) => Some(a),
+        // A name is an account name first; it only elects a pool when no
+        // account of the user's answers to it.
+        AccountDecision::Named(a) => {
+            let bound = crate::account_resolve::resolve_account_or_pool(
+                state,
+                uid,
+                family_for_binding,
+                model.as_deref(),
+                &a,
+            )
+            .await
+            .map_err(resolve_err)?;
+            bound_pool = bound.pool_id;
+            Some(bound.account)
+        }
         AccountDecision::Unbound => None,
         AccountDecision::ResolveDefault => default_account_name(state, uid, &adapter_id).await?,
         AccountDecision::Auto => {
             auto_account_name(state, uid, &adapter_id, model.as_deref()).await?
         }
         AccountDecision::Pool(name) => {
-            let (account, pool_id) =
-                pool_account_name(state, uid, &adapter_id, model.as_deref(), &name).await?;
+            let (account, pool_id) = crate::account_resolve::resolve_pool(
+                state,
+                uid,
+                family_for_binding,
+                model.as_deref(),
+                &name,
+            )
+            .await
+            .map_err(resolve_err)?;
             bound_pool = Some(pool_id);
             Some(account)
         }
@@ -228,21 +250,8 @@ pub async fn dispatch_spawn(
         {
             Ok(gateway_env) => {
                 env.extend(gateway_env);
-                // Stamp the pool on the freshly minted token. Best-effort: the
-                // session is already provisioned and running on a member, and
-                // losing the stamp only costs it the right to be moved later.
-                if let Some(pool_id) = bound_pool
-                    && let Err(e) = sqlx::query(
-                        "UPDATE session_tokens SET pool_id = $2 \
-                          WHERE session_id = $1 AND revoked_at IS NULL",
-                    )
-                    .bind(&token_session_id)
-                    .bind(pool_id)
-                    .execute(&state.pool)
-                    .await
-                {
-                    tracing::warn!(session_id = %token_session_id, error = %e,
-                        "could not stamp the session's account pool");
+                if let Some(pool_id) = bound_pool {
+                    crate::account_resolve::stamp_pool(state, &token_session_id, pool_id).await;
                 }
             }
             Err(crate::routes::gateway::MintSessionEnvError::NoAccount) => {
@@ -524,121 +533,12 @@ async fn auto_account_name(
     }
 }
 
-/// Pick the account a pool-bound spawn binds, and the pool it stays inside.
-///
-/// The same ranking machinery as [`auto_account_name`], over a strictly
-/// smaller set: the pool's members that this user may still use in this
-/// family. That restriction is the whole point — `auto_account` answers "who
-/// has room?" across everything reachable, which quietly makes every shared
-/// work credential a candidate for personal work; a pool answers "who has room
-/// *among the accounts I said were interchangeable*".
-///
-/// Usage is still measured through any redirect chain, exactly as `auto` does:
-/// a member pointed elsewhere by an explicit rule would otherwise be scored on
-/// a credential that will not serve. The elected *name* stays the member's, so
-/// mint applies that rule as it would for any launch — an explicit, dated rule
-/// the same user wrote outranks the pool's own policy.
-async fn pool_account_name(
-    state: &AppState,
-    user_id: Uuid,
-    adapter_id: &str,
-    model: Option<&str>,
-    pool_name: &str,
-) -> Result<(String, Uuid), (StatusCode, Json<ApiError>)> {
-    let family = crate::routes::gateway::Family::from_adapter(adapter_id);
-    let pool = crate::store::account_pools::by_name(&state.pool, user_id, pool_name)
-        .await
-        .map_err(|e| {
-            tracing::error!("resolving account pool: {e}");
+/// Map a shared resolver failure onto the spawn error surface.
+fn resolve_err(e: crate::account_resolve::ResolveError) -> (StatusCode, Json<ApiError>) {
+    match e {
+        crate::account_resolve::ResolveError::Rejected(msg) => bad_request(msg),
+        crate::account_resolve::ResolveError::Db => {
             (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-        })?
-        .ok_or_else(|| bad_request(format!("no account pool named {pool_name:?}")))?;
-
-    let members =
-        crate::store::account_pools::usable_members(&state.pool, pool.id, user_id, family.label())
-            .await
-            .map_err(|e| {
-                tracing::error!("reading account pool members: {e}");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ApiError { error: "database error".into() }),
-                )
-            })?;
-    if members.is_empty() {
-        // Deliberately not a silent fallback to the wider set: the caller
-        // named a boundary, and quietly launching outside it is the exact
-        // failure pools exist to prevent.
-        return Err(bad_request(format!(
-            "pool {:?} has no usable {} account — add one, or check that its members \
-             are still shared with you",
-            pool.name,
-            family.label()
-        )));
-    }
-
-    let rules = crate::store::account_redirects::live_for_launch(&state.pool, user_id)
-        .await
-        .unwrap_or_else(|e| {
-            tracing::warn!("pool account: reading redirects failed, ranking origins: {e}");
-            Vec::new()
-        });
-    let providers: std::collections::HashMap<Uuid, Uuid> =
-        members.iter().map(|m| (m.account_id, m.provider_id)).collect();
-    let usages = futures_util::future::join_all(members.iter().map(|m| {
-        let effective = crate::store::account_redirects::follow_account_chain(
-            &rules,
-            m.account_id,
-            family.label(),
-        )
-        .and_then(|to| providers.get(&to).copied())
-        .unwrap_or(m.provider_id);
-        async move { crate::routes::gateway::usage_for_soft_limit(state, effective).await }
-    }))
-    .await;
-
-    let candidates: Vec<crate::account_pick::Candidate> = members
-        .iter()
-        .zip(usages)
-        .map(|(m, usage)| crate::account_pick::Candidate {
-            name: m.name.clone(),
-            windows: usage
-                .as_ref()
-                .map(crate::soft_limit::normalize_usage_windows)
-                .unwrap_or_default(),
-            limits: crate::soft_limit::SoftLimits::from_json(m.soft_limits_json.as_ref()),
-            usage_known: usage.is_some(),
-        })
-        .collect();
-
-    let now = chrono::Utc::now();
-    let pick = if pool.strategy == crate::store::account_pools::STRATEGY_ORDERED {
-        crate::account_pick::pick_in_order(&candidates, model, now)
-    } else {
-        crate::account_pick::pick_account(&candidates, model, now)
-    };
-    match pick {
-        crate::account_pick::Pick::Chosen { name, headroom_pct } => {
-            tracing::info!(
-                %user_id, account = %name, pool = %pool.name, strategy = %pool.strategy,
-                %adapter_id, headroom_pct, "pool account: bound a member of the pool"
-            );
-            Ok((name, pool.id))
-        }
-        crate::account_pick::Pick::Exhausted(blocked) => {
-            let detail = blocked
-                .iter()
-                .map(|b| format!("{}: {}", b.name, b.reason))
-                .collect::<Vec<_>>()
-                .join("; ");
-            Err(bad_request(format!(
-                "no account in pool {:?} has allocation left for this session ({detail})",
-                pool.name
-            )))
-        }
-        // `members` was non-empty, so the ranker cannot return None; treat it
-        // as exhaustion rather than widening the search.
-        crate::account_pick::Pick::None => {
-            Err(bad_request(format!("no account in pool {:?} can serve this session", pool.name)))
         }
     }
 }

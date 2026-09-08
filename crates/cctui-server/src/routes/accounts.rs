@@ -233,8 +233,9 @@ pub struct ProviderInfo {
     /// Provider family (generated column): `anthropic` | `openai`. At most one
     /// provider per family per account, guaranteed by construction.
     pub family: String,
-    /// Selectable models for a compatible endpoint. `None`/empty for
-    /// native subscription providers (they use the harness's native families).
+    /// Models this credential offers, declared by the operator, with optional
+    /// pricing. `None`/empty falls back to the harness catalog / native
+    /// families. Honoured for every provider kind.
     pub models: Option<serde_json::Value>,
     /// Per-provider logical→concrete model alias map, e.g.
     /// `{"opus": "claude-opus-4-8[1m]"}`. Resolved server-side at spawn.
@@ -264,7 +265,7 @@ pub struct ProviderInfo {
     pub est_cost_usd: f64,
     /// Per-provider soft limits: a validated JSONB map keyed by
     /// canonical window identity (`session` | `weekly_all` | `weekly_model:<id>`),
-    /// each value `{cap_pct?, bypass_minutes?}`. NULL ⇒ no soft limits configured.
+    /// each value `{cap_pct?, bypass_minutes?, pace_cap?}`. NULL ⇒ no soft limits configured.
     pub soft_limits: Option<serde_json::Value>,
     /// Usage ticker `{ enabled, step_pct }`; NULL ⇒ off.
     pub usage_notices: Option<serde_json::Value>,
@@ -474,7 +475,7 @@ pub struct ProviderSpec {
     /// Required for `*-compatible` providers; ignored for native ones.
     #[serde(default)]
     pub base_url: Option<String>,
-    /// Selectable models for a compatible endpoint.
+    /// Models this credential offers; empty falls back to the harness catalog.
     #[serde(default)]
     pub models: Option<Vec<AccountModel>>,
     /// Logical→concrete model alias map, e.g.
@@ -486,7 +487,7 @@ pub struct ProviderSpec {
     #[serde(default)]
     pub auth_scheme: Option<String>,
     /// Per-provider soft limits: a canonical-key map
-    /// `{ "session": {cap_pct?, bypass_minutes?}, "weekly_all": {…}, … }`.
+    /// `{ "session": {cap_pct?, bypass_minutes?, pace_cap?}, "weekly_all": {…}, … }`.
     /// Absent ⇒ NULL (no caps). Validated before persist.
     #[serde(default)]
     pub soft_limits: Option<serde_json::Value>,
@@ -583,10 +584,10 @@ pub struct UpdateAccount {
 }
 
 /// `PATCH /api/v1/accounts/{id}/providers/{provider_id}` payload. A partial update:
-/// for a non-managed compatible endpoint the operator may edit `models`,
-/// `base_url`, `auth_scheme`, and rotate the static credential (`access_token`).
-/// `model_aliases` / `soft_limits` / `settings_json` are editable for every
-/// provider. All optional; an absent field leaves that column unchanged.
+/// for a non-managed compatible endpoint the operator may edit `base_url`,
+/// `auth_scheme`, and rotate the static credential (`access_token`).
+/// `models` / `model_aliases` / `soft_limits` / `settings_json` are editable
+/// for every provider. All optional; an absent field leaves that column unchanged.
 /// `base_url`/credential are never returned, so the editor re-supplies
 /// `base_url` when changing it and leaves the credential blank to keep the
 /// stored one.
@@ -607,7 +608,7 @@ pub struct UpdateProvider {
     #[serde(default)]
     pub access_token: Option<String>,
     /// Replacement soft-limit config: a canonical-key map
-    /// `{ key: {cap_pct?, bypass_minutes?} }`. Provided → replaces the whole
+    /// `{ key: {cap_pct?, bypass_minutes?, pace_cap?} }`. Provided → replaces the whole
     /// stored map (an empty object clears it, an omitted key drops that window);
     /// absent → unchanged. Validated before persist.
     #[serde(default)]
@@ -656,11 +657,22 @@ fn build_soft_limits_json(
     use std::collections::BTreeMap;
     let mut out: BTreeMap<String, serde_json::Value> = BTreeMap::new();
 
-    let mut insert = |key: &str, cap: Option<i32>, cap_usd: Option<f64>, bypass: Option<i32>| {
+    let mut insert = |key: &str,
+                      cap: Option<i32>,
+                      cap_usd: Option<f64>,
+                      bypass: Option<i32>,
+                      pace_cap: Option<f64>| {
         if let Some(c) = cap
             && !(0..=100).contains(&c)
         {
             return Err(err(StatusCode::BAD_REQUEST, "soft-limit cap must be 0-100"));
+        }
+        // Below 1x is a cap tighter than an even spend, which would refuse an
+        // idle-then-work account forever; above 100x can never trigger.
+        if let Some(p) = pace_cap
+            && (!p.is_finite() || !(1.0..=100.0).contains(&p))
+        {
+            return Err(err(StatusCode::BAD_REQUEST, "soft-limit pace_cap must be 1-100"));
         }
         if let Some(c) = cap_usd
             && (!c.is_finite() || c < 0.0)
@@ -672,7 +684,7 @@ fn build_soft_limits_json(
         {
             return Err(err(StatusCode::BAD_REQUEST, "soft-limit bypass must be >= 0"));
         }
-        if cap.is_none() && cap_usd.is_none() && bypass.is_none() {
+        if cap.is_none() && cap_usd.is_none() && bypass.is_none() && pace_cap.is_none() {
             return Ok(());
         }
         let Some(canon) = crate::soft_limit::canonicalize_key(key) else {
@@ -691,6 +703,9 @@ fn build_soft_limits_json(
         if let Some(b) = bypass {
             entry.insert("bypass_minutes".into(), serde_json::json!(b));
         }
+        if let Some(p) = pace_cap.filter(|_| !usd_window) {
+            entry.insert("pace_cap".into(), serde_json::json!(p));
+        }
         if entry.is_empty() {
             return Ok(());
         }
@@ -704,14 +719,27 @@ fn build_soft_limits_json(
             let cap_usd = v.get("cap_usd").and_then(serde_json::Value::as_f64);
             let bypass =
                 v.get("bypass_minutes").and_then(serde_json::Value::as_i64).map(|n| n as i32);
-            insert(key, cap, cap_usd, bypass)?;
+            let pace_cap = v.get("pace_cap").and_then(serde_json::Value::as_f64);
+            insert(key, cap, cap_usd, bypass, pace_cap)?;
         }
     } else if map.is_some_and(|v| !v.is_null()) {
         return Err(err(StatusCode::BAD_REQUEST, "soft_limits must be an object"));
     } else {
         // No map supplied — fold the legacy scalar fields.
-        insert(crate::soft_limit::KEY_SESSION, legacy_session_cap, None, legacy_session_bypass)?;
-        insert(crate::soft_limit::KEY_WEEKLY_ALL, legacy_weekly_cap, None, legacy_weekly_bypass)?;
+        insert(
+            crate::soft_limit::KEY_SESSION,
+            legacy_session_cap,
+            None,
+            legacy_session_bypass,
+            None,
+        )?;
+        insert(
+            crate::soft_limit::KEY_WEEKLY_ALL,
+            legacy_weekly_cap,
+            None,
+            legacy_weekly_bypass,
+            None,
+        )?;
     }
 
     Ok((!out.is_empty()).then(|| serde_json::to_value(out).unwrap_or(serde_json::Value::Null)))
@@ -1451,6 +1479,13 @@ pub async fn add_provider(
     Ok((StatusCode::CREATED, Json(info)))
 }
 
+/// Whether the payload touches a field only a compatible endpoint has.
+/// `models` is deliberately not one: a declared model list is honoured for
+/// every provider kind, native subscriptions included.
+const fn endpoint_fields_present(req: &UpdateProvider) -> bool {
+    req.base_url.is_some() || req.auth_scheme.is_some() || req.access_token.is_some()
+}
+
 /// The provider PATCH's single UPDATE. COALESCE keeps each column when its bind
 /// is NULL, so an absent field is a no-op; the `CASE WHEN $n` pairs carry an
 /// explicit provided-flag for the columns whose "clear" is also NULL. Admin
@@ -1474,8 +1509,8 @@ const UPDATE_PROVIDER_SQL: &str = "UPDATE account_providers SET \
 
 /// `PATCH /api/v1/accounts/{id}/providers/{provider_id}` — edit a provider
 /// — compatible endpoints may change
-/// models / base URL / auth scheme / credential; aliases, soft limits, and
-/// settings are editable for every provider. Managed providers are read-only.
+/// base URL / auth scheme / credential; the declared model list, aliases, soft
+/// limits, and settings are editable for every provider. Managed providers are read-only.
 // Linear handler: per-field optional updates built into one dynamic UPDATE.
 #[allow(clippy::too_many_lines)]
 pub async fn update_provider(
@@ -1501,14 +1536,9 @@ pub async fn update_provider(
     let compatible =
         matches!(provider.as_str(), "anthropic-compatible" | "openai-compatible" | "fireworks");
 
-    // Compatible-only fields are rejected for native providers so the edit form
-    // can't silently no-op against a subscription credential.
-    if !compatible
-        && (req.base_url.is_some()
-            || req.auth_scheme.is_some()
-            || req.models.is_some()
-            || req.access_token.is_some())
-    {
+    // Endpoint fields are rejected for native providers so the edit form can't
+    // silently no-op against a subscription credential.
+    if !compatible && endpoint_fields_present(&req) {
         return Err(err(
             StatusCode::BAD_REQUEST,
             "endpoint fields are only editable for a compatible provider",
@@ -2575,6 +2605,28 @@ mod tests {
         })
     }
 
+    fn update_provider(json: serde_json::Value) -> UpdateProvider {
+        serde_json::from_value(json).unwrap()
+    }
+
+    #[test]
+    fn a_declared_model_list_is_not_an_endpoint_field() {
+        let models = update_provider(serde_json::json!({
+            "models": [{"model": "claude-opus-5", "label": "Opus 5"}]
+        }));
+        assert!(!endpoint_fields_present(&models));
+        assert!(!endpoint_fields_present(&update_provider(serde_json::json!({"models": []}))));
+        assert!(endpoint_fields_present(&update_provider(
+            serde_json::json!({"base_url": "https://x"})
+        )));
+        assert!(endpoint_fields_present(&update_provider(
+            serde_json::json!({"auth_scheme": "bearer"})
+        )));
+        assert!(endpoint_fields_present(&update_provider(
+            serde_json::json!({"access_token": "sk-x"})
+        )));
+    }
+
     #[test]
     fn usage_window_view_flattens_and_carries_pace() {
         let resets = (Utc::now() + Duration::hours(2)).to_rfc3339();
@@ -2591,6 +2643,40 @@ mod tests {
         assert!(pace["expected_pct"].as_f64().unwrap() > 50.0);
         assert!(pace["projected_wall_at"].is_string());
         assert_eq!(json["age_secs"], 7);
+    }
+
+    #[test]
+    fn a_pace_cap_persists_on_percent_windows_and_is_range_checked() {
+        let built = build_soft_limits_json(
+            Some(&serde_json::json!({
+                "session": {"pace_cap": 1.5},
+                "usd_5h": {"cap_usd": 2.0, "pace_cap": 1.5},
+            })),
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("valid")
+        .expect("non-empty");
+        assert_eq!(built["session"]["pace_cap"], 1.5);
+        assert!(
+            built["usd_5h"].get("pace_cap").is_none(),
+            "a dollar window reports no utilization, so a pace cap there is unenforceable"
+        );
+        for bad in [0.5, 0.0, 1000.0] {
+            assert!(
+                build_soft_limits_json(
+                    Some(&serde_json::json!({ "session": {"pace_cap": bad} })),
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .is_err(),
+                "pace_cap {bad} must be rejected"
+            );
+        }
     }
 
     #[test]

@@ -1,5 +1,5 @@
 import type { SoftEdit } from '../account-editor.logic';
-import { isStaticCredential, providerFamily } from '$lib/providers';
+import { providerFamily } from '$lib/providers';
 
 export type PageId =
 	| 'aliases'
@@ -39,8 +39,7 @@ export function pagesFor(kind: string): PageId[] {
 	const family = providerFamily(kind);
 	const out: PageId[] = ['aliases', 'limits'];
 	if (family === 'anthropic') out.push('ui', 'privacy', 'tools');
-	if (kind === 'fireworks' || isStaticCredential(kind)) out.push('models');
-	out.push('gateway', 'advanced');
+	out.push('models', 'gateway', 'advanced');
 	return out;
 }
 
@@ -60,6 +59,7 @@ export function softFlat(edits: Record<string, SoftEdit>): Record<string, unknow
 		if (v.cap !== null) out[`${key}.cap`] = v.cap;
 		if (v.capUsd !== null) out[`${key}.capUsd`] = v.capUsd;
 		if (v.bypass !== null) out[`${key}.bypass`] = v.bypass;
+		if (v.paceCap !== null) out[`${key}.paceCap`] = v.paceCap;
 	}
 	return out;
 }

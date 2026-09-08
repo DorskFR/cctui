@@ -38,6 +38,7 @@
 				bind:cap={edits[row.key].cap}
 				bind:capUsd={edits[row.key].capUsd}
 				bind:bypass={edits[row.key].bypass}
+				bind:paceCap={edits[row.key].paceCap}
 			/>
 		{/if}
 	{/each}

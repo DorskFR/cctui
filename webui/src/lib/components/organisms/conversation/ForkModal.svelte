@@ -5,6 +5,8 @@
 	// model" substitute for claude (no in-place switch).
 	import { compact } from '$lib/format';
 	import { Button, Field, Modal, Select, Text } from '@dorsk/tsumikit';
+	import ModelPicker from '$lib/components/molecules/ModelPicker.svelte';
+	import type { ModelOption } from '$lib/harnessModels';
 	import { m } from '$lib/paraglide/messages';
 
 	let {
@@ -25,7 +27,7 @@
 		// Parent's total tokens — shown so the user knows the opening turn re-bills
 		// this much context.
 		parentTokens: number;
-		models: { v: string; label: string }[];
+		models: ModelOption[];
 		efforts: string[];
 		forking: boolean;
 		// Non-null → subset fork: the slice of the conversation to keep.
@@ -53,10 +55,8 @@
 				</Text>
 				<Text as="p" tone="muted" size="sm">{m.fork_cost({ tokens: compact(parentTokens) })}</Text>
 			{/if}
-			<Field label={m.fork_model()}>
-				<Select bind:value={model}>
-					{#each models as opt (opt.v)}<option value={opt.v}>{opt.label}</option>{/each}
-				</Select>
+			<Field label={m.fork_model()} for="fork-model">
+				<ModelPicker id="fork-model" bind:value={model} options={models} />
 			</Field>
 			<Field label={m.fork_effort()}>
 				<Select bind:value={effort}>

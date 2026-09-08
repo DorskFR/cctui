@@ -44,6 +44,8 @@ import type { CapabilitiesResponse } from "@bindings/CapabilitiesResponse";
 import type { LangfuseSessionUsage } from "@bindings/LangfuseSessionUsage";
 import type { CodexModelCatalog } from "@bindings/CodexModelCatalog";
 import type { LabelListResponse } from "@bindings/LabelListResponse";
+import type { RescrubRequest } from "@bindings/RescrubRequest";
+import type { RescrubReport } from "@bindings/RescrubReport";
 import type { SettingsCatalogResponse } from "@bindings/SettingsCatalogResponse";
 import type { SessionDiagnoseResponse } from "@bindings/SessionDiagnoseResponse";
 import type { AccountRedirect } from "@bindings/AccountRedirect";
@@ -316,6 +318,10 @@ export const endpoints = {
    *  server validates on write. */
   settingsCatalog: () =>
     api.get<SettingsCatalogResponse>("/accounts/settings-catalog"),
+  /** Apply the current detector set to already-stored transcripts. `dry_run`
+   *  reports counts and writes nothing; a real pass is irreversible. */
+  rescrubSettings: (req: RescrubRequest) =>
+    api.post<RescrubReport>("/settings/rescrub", req),
   createAccount: (body: CreateAccount) =>
     api.post<OAuthAccount>("/accounts", body),
   updateAccount: (id: string, body: UpdateAccount) =>

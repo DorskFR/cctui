@@ -8,7 +8,12 @@ import type {
 import { isUsdKey } from '$lib/components/molecules/usage-windows';
 import { PROVIDER_KINDS, providerFamily, type ProviderKind } from '$lib/providers';
 
-export type SoftEdit = { cap: number | null; capUsd: number | null; bypass: number | null };
+export type SoftEdit = {
+	cap: number | null;
+	capUsd: number | null;
+	bypass: number | null;
+	paceCap: number | null;
+};
 
 /** Empty ⇒ null, else a clamped non-negative integer; tolerates the number a
  *  number-input binds or a stray string. */
@@ -24,6 +29,13 @@ function softUsd(v: number | string | null | undefined): number | null {
 	return Number.isFinite(n) ? Math.max(0, n) : null;
 }
 
+/** Empty ⇒ null, else a finite positive multiplier of the linear budget. */
+function softPace(v: number | string | null | undefined): number | null {
+	if (v === null || v === undefined || v === '') return null;
+	const n = Number(v);
+	return Number.isFinite(n) && n > 0 ? n : null;
+}
+
 /** The whole replacement map: windows with neither cap nor bypass are dropped. */
 export function buildSoftLimits(edits: Record<string, SoftEdit>): Record<string, SoftLimitConfig> {
 	const out: Record<string, SoftLimitConfig> = {};
@@ -35,7 +47,9 @@ export function buildSoftLimits(edits: Record<string, SoftEdit>): Record<string,
 			continue;
 		}
 		const cap = softNum(v.cap);
-		if (cap !== null || bypass !== null) out[key] = { cap_pct: cap, bypass_minutes: bypass };
+		const paceCap = softPace(v.paceCap);
+		if (cap !== null || bypass !== null || paceCap !== null)
+			out[key] = { cap_pct: cap, bypass_minutes: bypass, pace_cap: paceCap };
 	}
 	return out;
 }

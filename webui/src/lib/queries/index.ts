@@ -9,3 +9,4 @@ export * from "./users";
 export * from "./dispatchers";
 export * from "./machines";
 export * from "./profiles";
+export * from "./settings";

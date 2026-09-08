@@ -54,6 +54,12 @@ pub struct EnrollRequest {
     /// providers. Recorded as `default_account_provider`.
     #[serde(default)]
     pub provider: Option<String>,
+    /// Optional account-pool name to bind instead: a dispatch naming no
+    /// account then elects a member per dispatch rather than riding one
+    /// credential until it refuses. Ignored when `account` is also given —
+    /// the account is the more specific instruction.
+    #[serde(default)]
+    pub pool: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -167,11 +173,41 @@ pub async fn enroll(
         None
     };
 
+    // Only consulted when no account was named — the account is the more
+    // specific instruction, so binding both is not an error, just a no-op here.
+    let default_pool_id: Option<Uuid> = match req
+        .pool
+        .as_deref()
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .filter(|_| default_account_id.is_none())
+    {
+        Some(pool_name) => Some(
+            crate::store::account_pools::by_name(&state.pool, user_id, pool_name)
+                .await
+                .map_err(|e| {
+                    tracing::error!("account pool lookup failed: {e}");
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ApiError { error: "database error".into() }),
+                    )
+                })?
+                .ok_or_else(|| {
+                    (
+                        StatusCode::NOT_FOUND,
+                        Json(ApiError { error: format!("no account pool named {pool_name:?}") }),
+                    )
+                })?
+                .id,
+        ),
+        None => None,
+    };
+
     sqlx::query(
         "INSERT INTO dispatchers \
            (id, user_id, name, kind, key_hash, key_preview, \
-            default_account_id, default_account_provider) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+            default_account_id, default_account_provider, default_pool_id) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
     )
     .bind(dispatcher_id)
     .bind(user_id)
@@ -181,6 +217,7 @@ pub async fn enroll(
     .bind(token_preview(&token))
     .bind(default_account_id)
     .bind(provider)
+    .bind(default_pool_id)
     .execute(&state.pool)
     .await
     .map_err(|e| {

@@ -260,7 +260,7 @@ fn normalize_scrub_patterns(raw: Option<&Value>) -> Result<Vec<Value>, String> {
 fn clamp_secret_scrub(data: &mut Value) -> Result<(), String> {
     let Some(obj) = data.as_object_mut() else { return Ok(()) };
     if obj.contains_key("secretScrubEnabled") {
-        let on = obj.get("secretScrubEnabled").and_then(Value::as_bool).unwrap_or(false);
+        let on = obj.get("secretScrubEnabled").and_then(Value::as_bool).unwrap_or(true);
         obj.insert("secretScrubEnabled".to_owned(), Value::Bool(on));
     }
     if obj.contains_key("secretScrubPatterns") {
@@ -278,7 +278,7 @@ fn clamp_secret_scrub(data: &mut Value) -> Result<(), String> {
 /// enable flag plus the enabled, validated user patterns from a settings blob.
 #[must_use]
 pub fn secret_scrub_of(data: &Value) -> cctui_proto::ws::SecretScrubConfig {
-    let enabled = data.get("secretScrubEnabled").and_then(Value::as_bool).unwrap_or(false);
+    let enabled = data.get("secretScrubEnabled").and_then(Value::as_bool).unwrap_or(true);
     let patterns = normalize_scrub_patterns(data.get("secretScrubPatterns"))
         .unwrap_or_default()
         .into_iter()
@@ -605,6 +605,13 @@ mod tests {
         assert!(cfg.enabled);
         assert_eq!(cfg.patterns.len(), 1);
         assert_eq!(cfg.patterns[0].name, "on");
+    }
+
+    #[test]
+    fn secret_scrub_is_on_when_the_user_never_chose() {
+        assert!(secret_scrub_of(&json!({})).enabled);
+        assert!(secret_scrub_of(&json!(null)).enabled);
+        assert!(!secret_scrub_of(&json!({ "secretScrubEnabled": false })).enabled);
     }
 
     #[test]
