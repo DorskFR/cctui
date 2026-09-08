@@ -303,7 +303,7 @@ const DEFAULTS: SettingsState = {
 	resourceMonitor: { machines: [] },
 	harnessMode: DEFAULT_HARNESS_MODE,
 	whipStopPhrases: { mode: DEFAULT_WHIP_MODE, phrases: [], guidance: '' },
-	secretScrubEnabled: false,
+	secretScrubEnabled: true,
 	secretScrubPatterns: [],
 	sessionEmojiPrefix: false,
 	autoResumeOnConnectionLoss: false,
@@ -351,7 +351,7 @@ export function mergeDefaults(partial: Partial<SettingsState> | null | undefined
 		// the server's clamp on PUT).
 		harnessMode: clampHarnessMode(p.harnessMode),
 		whipStopPhrases: mergeWhipStopPhrases(p.whipStopPhrases),
-		secretScrubEnabled: p.secretScrubEnabled === true,
+		secretScrubEnabled: p.secretScrubEnabled !== false,
 		secretScrubPatterns: mergeSecretScrubPatterns(p.secretScrubPatterns),
 		sessionEmojiPrefix: p.sessionEmojiPrefix === true,
 		autoResumeOnConnectionLoss: p.autoResumeOnConnectionLoss === true,
