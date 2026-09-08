@@ -23,9 +23,7 @@
 
 use chrono::{DateTime, Utc};
 
-use crate::soft_limit::{
-    Decision, SoftLimits, UsageWindow, WEEKLY_MODEL_PREFIX, evaluate_soft_limit, slug,
-};
+use crate::soft_limit::{Decision, SoftLimits, UsageWindow, evaluate_soft_limit, window_applies};
 
 /// One account the spawn could bind to, as the ranker sees it.
 #[derive(Debug, Clone)]
@@ -61,25 +59,6 @@ pub enum Pick {
     Exhausted(Vec<Blocked>),
     /// No candidate at all.
     None,
-}
-
-/// Whether a normalized window applies to the model this spawn will run.
-///
-/// Non-scoped windows (5h, weekly-all) always apply. A scoped window applies
-/// only when its model matches the requested one; with no model requested we
-/// cannot tell, so every window applies (the conservative side: it can only
-/// narrow the margin, never overstate it).
-fn window_applies(window: &UsageWindow, model: Option<&str>) -> bool {
-    let Some(scoped) = window.key.strip_prefix(WEEKLY_MODEL_PREFIX) else { return true };
-    let Some(model) = model else { return true };
-    let requested = slug(model);
-    if requested.is_empty() || scoped.is_empty() {
-        return true;
-    }
-    // Either direction: the request may be an alias the window spells out
-    // (`fable` vs `claude-fable-5`) or a fuller id than the window's
-    // (`claude-opus-4-8-1m` vs `claude-opus-4-8`).
-    requested.contains(scoped) || scoped.contains(&requested)
 }
 
 /// Percent windows carry a meaningful margin; dollar ones do not.
@@ -194,7 +173,9 @@ fn availability(
         });
     }
     let owned: Vec<UsageWindow> = applicable.iter().map(|w| (*w).clone()).collect();
-    if let Decision::Block { reason, .. } = evaluate_soft_limit(&owned, &candidate.limits, now) {
+    if let Decision::Block { reason, .. } =
+        evaluate_soft_limit(&owned, &candidate.limits, model, now)
+    {
         return Err(Blocked { name: candidate.name.clone(), reason });
     }
     Ok(narrowest_margin(&applicable))

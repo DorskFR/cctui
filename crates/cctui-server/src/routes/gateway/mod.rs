@@ -1120,7 +1120,7 @@ mod tests {
         })));
         let windows =
             vec![crate::soft_limit::usd_window(crate::soft_limit::KEY_SESSION_USD, spent, None)];
-        match crate::soft_limit::evaluate_soft_limit(&windows, &caps, Utc::now()) {
+        match crate::soft_limit::evaluate_soft_limit(&windows, &caps, None, Utc::now()) {
             crate::soft_limit::Decision::Block { key, .. } => {
                 assert_eq!(key, crate::soft_limit::KEY_SESSION_USD);
             }

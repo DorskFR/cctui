@@ -1642,7 +1642,7 @@ fn soft_limit_blocks_to_clear(
     now: DateTime<Utc>,
 ) -> Vec<String> {
     if !matches!(
-        crate::soft_limit::evaluate_soft_limit(windows, caps, now),
+        crate::soft_limit::evaluate_soft_limit(windows, caps, None, now),
         crate::soft_limit::Decision::Allow
     ) {
         return Vec::new();
