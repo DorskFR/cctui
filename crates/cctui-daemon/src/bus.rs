@@ -8,7 +8,7 @@
 //! and multiplexes them onto the WS.
 
 use cctui_proto::adapter::{AdapterCommand, AdapterEvent};
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
 
 use crate::adapter_runtime::AdapterCtx;
@@ -27,6 +27,7 @@ pub fn build_ctx(
     shutdown: CancellationToken,
     server: Option<crate::client::ServerClient>,
     machine_key: Option<String>,
+    connected: &broadcast::Sender<()>,
 ) -> (AdapterCtx, AdapterChannels) {
     let (events_tx, events_rx) = mpsc::channel(EVENT_BUFFER);
     let (commands_tx, commands_rx) = mpsc::channel(COMMAND_BUFFER);
@@ -37,6 +38,10 @@ pub fn build_ctx(
         config,
         server,
         machine_key,
+        // Subscribed here, synchronously, so the connect edge that follows this
+        // adapter's first build is not missed: a broadcast receiver only gets
+        // sends made after it subscribed.
+        connected: connected.subscribe(),
     };
     let channels = AdapterChannels { events_rx, commands_tx };
     (ctx, channels)
