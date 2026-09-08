@@ -756,6 +756,8 @@
 	"pools_draft_name_first": "Nommez le pool, puis déposez des comptes ici ou appuyez sur Entrée",
 	"pools_drag_handle": "Glisser dans un pool",
 	"pools_drop_hint": "Déposer pour ajouter {name}",
+	"pools_drop_refused": "{name} ne peut pas être ajouté à ce pool",
+	"pools_drop_refused_member": "{name} est déjà dans ce pool",
 	"pools_edit": "Modifier le pool",
 	"pools_failover": "Déplacer les sessions en cours",
 	"pools_failover_hint": "Quand le compte lié est refusé en cours de route, relie la session à un autre membre au lieu de la laisser bloquée. Désactivé par défaut ; le déplacement est toujours consigné sur la session.",

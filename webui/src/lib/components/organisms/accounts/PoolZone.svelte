@@ -31,9 +31,37 @@
 			: m.pools_legend({ n: pool.members.length })
 	);
 	const dragged = $derived(accounts.find((a) => a.id === accountDrag.accountId)?.name ?? '');
+
+	// A refused zone never `preventDefault`s dragover, so the kit Fieldset stays
+	// unlit and cannot tell us the pointer is here — the zone counts dragenter /
+	// dragleave itself (nested children fire both, hence the depth).
+	let depth = $state(0);
+	const dragging = $derived(accountDrag.accountId !== '');
+	const hovering = $derived(depth > 0 || accountDrag.overId === pool.id);
+	const refused = $derived(
+		dragging && hovering && !acceptsDrop(pool, accountDrag.accountId, accounts)
+	);
+	const isMember = $derived(pool.members.some((mem) => mem.account_id === accountDrag.accountId));
+	const refusal = $derived(
+		isMember ? m.pools_drop_refused_member({ name: dragged }) : m.pools_drop_refused({ name: dragged })
+	);
+	$effect(() => {
+		if (!dragging) depth = 0;
+	});
 </script>
 
-<div class="zone" class:over={accountDrag.overId === pool.id} data-pool-id={pool.id} data-journey="pool" data-journey-key={pool.name}>
+<div
+	class="zone"
+	class:over={accountDrag.overId === pool.id}
+	class:refused
+	data-pool-id={pool.id}
+	data-journey="pool"
+	data-journey-key={pool.name}
+	title={refused ? refusal : undefined}
+	ondragenter={() => depth++}
+	ondragleave={() => (depth = Math.max(0, depth - 1))}
+	ondrop={() => (depth = 0)}
+>
 <Fieldset
 	tone="accent"
 	dashed
@@ -58,6 +86,9 @@
 			<Text as="p" tone="faint" size="sm">{m.pools_members_empty()}</Text>
 		{/if}
 	</div>
+	{#if refused}
+		<p class="refusal" aria-live="polite">{refusal}</p>
+	{/if}
 </Fieldset>
 </div>
 
@@ -69,6 +100,27 @@
 	.zone.over {
 		outline: 2px solid var(--accent);
 		outline-offset: 2px;
+	}
+	.zone.refused {
+		outline: 2px dashed var(--danger);
+		outline-offset: 2px;
+	}
+	/* Overlaid, not in flow: a banner that grew the zone would shove the other
+	   pools out from under the pointer mid-drag. */
+	.refusal {
+		position: absolute;
+		left: 50%;
+		bottom: var(--sp-2);
+		transform: translateX(-50%);
+		margin: 0;
+		padding: var(--sp-2) var(--sp-3);
+		border: 1px dashed var(--danger);
+		border-radius: var(--r-md);
+		background: color-mix(in srgb, var(--danger) 12%, var(--bg-elevated));
+		color: var(--danger);
+		font-size: var(--fs-sm);
+		text-align: center;
+		pointer-events: none;
 	}
 	.members {
 		display: flex;
