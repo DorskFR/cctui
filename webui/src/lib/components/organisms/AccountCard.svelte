@@ -6,7 +6,7 @@
 	import ResourceShares from '$lib/components/molecules/ResourceShares.svelte';
 	import ProviderColumn from '$lib/components/organisms/accounts/ProviderColumn.svelte';
 	import { ACCOUNT_DRAG_MIME, exhaustedWindow } from '$lib/components/organisms/accounts/pools.logic';
-	import { accountDrag, poolZoneAt } from '$lib/components/organisms/accounts/drag.svelte';
+	import { accountDrag, isTouchPointer, poolZoneAt } from '$lib/components/organisms/accounts/drag.svelte';
 	import { providerLabel } from '$lib/providers';
 	import { Button, Icon, IconButton, Menu, Select, Text, Timestamp, type MenuItem } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
@@ -113,7 +113,7 @@
 		accountDrag.overId = '';
 	}
 	function pointerDown(e: PointerEvent) {
-		if (e.pointerType === 'mouse') return;
+		if (!isTouchPointer(e)) return;
 		e.preventDefault();
 		try {
 			(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
@@ -128,6 +128,7 @@
 		}, HOLD_MS);
 	}
 	function pointerMove(e: PointerEvent) {
+		if (!isTouchPointer(e)) return;
 		if (touchDragging) {
 			accountDrag.overId = poolZoneAt(e.clientX, e.clientY);
 			return;
@@ -138,6 +139,7 @@
 		}
 	}
 	function pointerUp(e: PointerEvent) {
+		if (!isTouchPointer(e)) return;
 		const was = touchDragging;
 		const target = was ? poolZoneAt(e.clientX, e.clientY) : '';
 		endTouchDrag();
@@ -145,7 +147,8 @@
 		const to = pools.find((p) => p.id === target);
 		if (to && to.id !== pool?.id) onmovepool?.(to);
 	}
-	function pointerCancel() {
+	function pointerCancel(e: PointerEvent) {
+		if (!isTouchPointer(e)) return;
 		endTouchDrag();
 	}
 
