@@ -4,6 +4,7 @@ import AppearanceSection from './AppearanceSection.svelte';
 import ExecutionSection from './ExecutionSection.svelte';
 import NotificationsSection from './NotificationsSection.svelte';
 import PrivacySection from './PrivacySection.svelte';
+import SectionHost from './section.host.test.svelte';
 import SessionsSection from './SessionsSection.svelte';
 
 type Control = HTMLElement;
@@ -57,7 +58,7 @@ const sections: [string, Component<Record<string, never>>][] = [
 
 describe('settings sections', () => {
 	it.each(sections)('%s labels every control', (_name, Section) => {
-		component = mount(Section, { target: document.body, props: {} });
+		component = mount(SectionHost, { target: document.body, props: { section: Section } });
 		flushSync();
 
 		const found = controls();
@@ -72,7 +73,7 @@ describe('settings sections', () => {
 	});
 
 	it.each(sections)('%s gives each control a unique id', (_name, Section) => {
-		component = mount(Section, { target: document.body, props: {} });
+		component = mount(SectionHost, { target: document.body, props: { section: Section } });
 		flushSync();
 
 		const ids = controls()
