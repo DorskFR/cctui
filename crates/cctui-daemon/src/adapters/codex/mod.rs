@@ -131,6 +131,8 @@ async fn run_default(ctx: AdapterCtx) -> anyhow::Result<()> {
         ctx.shutdown.clone(),
     );
     log.set_owned(registry.clone());
+    let marks: log_tail::ResumeMarks = log_tail::ResumeMarks::default();
+    log.set_resume_marks(marks.clone());
 
     // poll `codex app-server`'s state-DB-backed `thread/list` for a
     // first-class inventory of EVERY machine session (cli/vscode/exec/
@@ -183,6 +185,7 @@ async fn run_default(ctx: AdapterCtx) -> anyhow::Result<()> {
         ctx.shutdown,
         ctx.server,
         ctx.machine_key,
+        marks,
     );
     pump.await;
     log_handle.abort();
@@ -205,6 +208,7 @@ async fn command_pump(
     shutdown: tokio_util::sync::CancellationToken,
     server: Option<ServerClient>,
     machine_key: Option<String>,
+    marks: log_tail::ResumeMarks,
 ) {
     loop {
         tokio::select! {
@@ -620,8 +624,14 @@ async fn command_pump(
                                    })
                                    .await;
                            }
-                           AdapterCommand::ResumeMarks { marks } => {
-                               announce_resume_marks(&registry, &events, &marks).await;
+                           AdapterCommand::ResumeMarks { marks: session_marks } => {
+                               // the tail needs the marks before it adopts a rollout:
+                               // they are the only evidence of where the server's copy
+                               // of the transcript actually stops.
+                               if let Ok(mut store) = marks.lock() {
+                                   store.extend(session_marks.iter().cloned());
+                               }
+                               announce_resume_marks(&registry, &events, &session_marks).await;
                            }
                            _ => tracing::warn!("codex: unhandled AdapterCommand variant"),
                        }
