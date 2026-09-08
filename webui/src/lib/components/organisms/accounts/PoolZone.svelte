@@ -33,7 +33,7 @@
 	const dragged = $derived(accounts.find((a) => a.id === accountDrag.accountId)?.name ?? '');
 </script>
 
-<div class="zone" class:over={accountDrag.overId === pool.id} data-pool-id={pool.id}>
+<div class="zone" class:over={accountDrag.overId === pool.id} data-pool-id={pool.id} data-journey="pool" data-journey-key={pool.name}>
 <Fieldset
 	tone="accent"
 	dashed

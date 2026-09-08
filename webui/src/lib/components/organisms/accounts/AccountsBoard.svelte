@@ -73,7 +73,7 @@
 	}
 </script>
 
-<div class="board">
+<div class="board" data-journey="accounts">
 	{#if loading}
 		<div class="empty"><span class="spin"></span></div>
 	{:else if accounts.length === 0 && !drafting}

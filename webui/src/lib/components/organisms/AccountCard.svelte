@@ -208,11 +208,12 @@
 	}
 </script>
 
-<article class="acct" class:lifted={touchDragging} id={a.id}>
+<article class="acct" class:lifted={touchDragging} id={a.id} data-journey="account" data-journey-key={a.name}>
 	<header class="head">
 		{#if onmovepool && !managed && !compact}
 			<span
 				class="handle"
+				data-journey="drag-handle"
 				draggable="true"
 				role="img"
 				aria-label={m.pools_drag_handle()}
@@ -259,7 +260,7 @@
 		{:else if managed}
 			<Text as="span" tone="faint" size="xs">{m.accounts_managed_readonly()}</Text>
 		{:else}
-			<span class="actions">
+			<span class="actions" data-journey="account-menu">
 				<Menu label={m.accounts_more()} items={menu} placement="bottom-end" box="sm">
 					{#snippet trigger()}<Icon name="more" size={16} />{/snippet}
 				</Menu>
