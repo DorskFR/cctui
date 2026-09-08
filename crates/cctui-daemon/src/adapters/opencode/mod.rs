@@ -63,14 +63,30 @@ impl Adapter for OpenCodeAdapter {
     }
 }
 
-#[allow(clippy::too_many_lines, clippy::cognitive_complexity)]
 async fn command_pump(cfg: OpenCodeConfig, ctx: AdapterCtx) {
-    let AdapterCtx { events, mut commands, shutdown, server, machine_key, .. } = ctx;
-    let live: LiveRegistry = LiveRegistry::default();
+    pump(cfg, ctx, LiveRegistry::default()).await;
+}
+
+#[allow(clippy::too_many_lines, clippy::cognitive_complexity)]
+async fn pump(cfg: OpenCodeConfig, ctx: AdapterCtx, live: LiveRegistry) {
+    let AdapterCtx { events, mut commands, shutdown, server, machine_key, mut connected, .. } = ctx;
+    let mut announced: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut connect_closed = false;
 
     loop {
         tokio::select! {
             () = shutdown.cancelled() => return,
+            edge = connected.recv(), if !connect_closed => {
+                // Lagged is an edge like any other — the signal has no payload.
+                // Closed only disables this arm: a closed receiver returns
+                // ready forever, and the pump still owns live sessions.
+                if matches!(edge, Err(tokio::sync::broadcast::error::RecvError::Closed)) {
+                    connect_closed = true;
+                    continue;
+                }
+                announced.clear();
+                announce_live_sessions(&live, &events, &mut announced).await;
+            }
             cmd = commands.recv() => {
                 let Some(cmd) = cmd else { return };
                 match cmd {
@@ -241,8 +257,38 @@ fn agent_of(spec: &cctui_proto::adapter::SessionSpec, cfg: &OpenCodeConfig) -> O
         .or_else(|| Some(config::REVIEWER_AGENT.to_owned()))
 }
 
+/// Announce every session the adapter still drives, which on a `connected`
+/// edge re-announces them: only a `SessionStarted` reverts the server's
+/// `daemon_lost`, and an opencode session has no other event source.
+///
+/// The registry alone decides what is live; the server has no say, and its
+/// resume marks never name an opencode session (they are keyed on
+/// `transcript_offset`, which only the transcript-tailing adapters set).
+///
+/// `announced` is scoped to one connection: it stops repeated sweeps from
+/// emitting twice, and is cleared on each edge because every new connection
+/// starts from a server that has marked these sessions lost again.
+async fn announce_live_sessions(
+    live: &LiveRegistry,
+    events: &mpsc::Sender<AdapterEvent>,
+    announced: &mut std::collections::HashSet<String>,
+) {
+    let pending: Vec<(String, cctui_proto::adapter::SessionMeta)> = {
+        let guard = live.lock().await;
+        guard
+            .iter()
+            .filter(|(local_id, _)| !announced.contains(*local_id))
+            .map(|(local_id, s)| (local_id.clone(), s.meta.clone()))
+            .collect()
+    };
+    for (local_id, meta) in pending {
+        announced.insert(local_id.clone());
+        let _ = events.send(AdapterEvent::SessionStarted { local_id, meta }).await;
+    }
+}
+
 async fn route(live: &LiveRegistry, local_id: &str, cmd: SessionCommand) -> bool {
-    let Some(tx) = live.lock().await.get(local_id).cloned() else {
+    let Some(tx) = live.lock().await.get(local_id).map(|s| s.commands.clone()) else {
         tracing::warn!(%local_id, "opencode: no live session for command");
         return false;
     };
@@ -383,5 +429,136 @@ mod tests {
             agent_of(&spec_with_env(&[(AGENT_ENV, "build")]), &cfg).as_deref(),
             Some("build")
         );
+    }
+}
+
+#[cfg(test)]
+mod reconnect_tests {
+    use cctui_proto::adapter::{AdapterEvent, SessionMeta};
+    use tokio::sync::mpsc;
+
+    use super::{LiveRegistry, announce_live_sessions};
+    use crate::adapters::opencode::session::LiveSession;
+
+    async fn registry_with(local_id: &str) -> LiveRegistry {
+        let live = LiveRegistry::default();
+        let (tx, _rx) = mpsc::channel(1);
+        live.lock().await.insert(
+            local_id.to_owned(),
+            LiveSession {
+                commands: tx,
+                meta: SessionMeta {
+                    working_dir: Some("/repo".to_owned()),
+                    parent_local_id: None,
+                    extra: serde_json::json!({ "harness": "opencode" }),
+                },
+            },
+        );
+        live
+    }
+
+    #[tokio::test]
+    async fn a_surviving_registry_is_re_announced_on_reconnect() {
+        let live = registry_with("ses_live").await;
+        let (events, mut rx) = mpsc::channel(8);
+        let mut announced = std::collections::HashSet::new();
+
+        announce_live_sessions(&live, &events, &mut announced).await;
+
+        match rx.try_recv().expect("no SessionStarted") {
+            AdapterEvent::SessionStarted { local_id, meta } => {
+                assert_eq!(local_id, "ses_live");
+                assert_eq!(meta.working_dir.as_deref(), Some("/repo"));
+            }
+            other => panic!("unexpected event {other:?}"),
+        }
+        assert!(rx.try_recv().is_err(), "a session not in the registry was announced");
+    }
+
+    #[tokio::test]
+    async fn an_id_the_adapter_no_longer_drives_is_not_announced() {
+        let live = registry_with("ses_live").await;
+        live.lock().await.remove("ses_live");
+        let (events, mut rx) = mpsc::channel(8);
+        let mut announced = std::collections::HashSet::new();
+
+        announce_live_sessions(&live, &events, &mut announced).await;
+
+        assert!(rx.try_recv().is_err(), "an ended session was announced as live");
+    }
+
+    #[tokio::test]
+    async fn a_repeated_sweep_does_not_double_announce() {
+        let live = registry_with("ses_live").await;
+        let (events, mut rx) = mpsc::channel(8);
+        let mut announced = std::collections::HashSet::new();
+
+        announce_live_sessions(&live, &events, &mut announced).await;
+        announce_live_sessions(&live, &events, &mut announced).await;
+
+        assert!(rx.try_recv().is_ok(), "the first announce was dropped");
+        assert!(rx.try_recv().is_err(), "the session was announced twice");
+    }
+
+    /// The `connected` edge, not a server frame, is what drives the sweep, and
+    /// every edge must announce again — the server re-applies `daemon_lost` on
+    /// each drop.
+    #[tokio::test]
+    async fn every_connected_edge_re_announces_through_the_pump() {
+        use tokio_util::sync::CancellationToken;
+
+        use crate::adapter_runtime::AdapterCtx;
+
+        let live = registry_with("ses_live").await;
+        let (events, mut rx) = mpsc::channel(8);
+        let (_commands_tx, commands) = mpsc::channel(8);
+        let (connect_tx, connected) = tokio::sync::broadcast::channel(8);
+        let shutdown = CancellationToken::new();
+        let ctx = AdapterCtx {
+            events,
+            commands,
+            shutdown: shutdown.clone(),
+            config: serde_json::Value::Null,
+            server: None,
+            machine_key: None,
+            connected,
+        };
+        let pump = tokio::spawn(super::pump(
+            crate::adapters::opencode::session::OpenCodeConfig::default(),
+            ctx,
+            live,
+        ));
+
+        for connection in 1..=2 {
+            connect_tx.send(()).expect("no receiver");
+            let event = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+                .await
+                .unwrap_or_else(|_| panic!("connection {connection} was never announced"))
+                .expect("pump stopped");
+            match event {
+                AdapterEvent::SessionStarted { local_id, .. } => {
+                    assert_eq!(local_id, "ses_live", "connection {connection}");
+                }
+                other => panic!("unexpected event {other:?}"),
+            }
+        }
+
+        shutdown.cancel();
+        pump.await.expect("pump panicked");
+    }
+
+    #[tokio::test]
+    async fn the_next_connection_announces_the_session_again() {
+        let live = registry_with("ses_live").await;
+        let (events, mut rx) = mpsc::channel(8);
+        let mut announced = std::collections::HashSet::new();
+
+        announce_live_sessions(&live, &events, &mut announced).await;
+        assert!(rx.try_recv().is_ok());
+
+        announced.clear();
+        announce_live_sessions(&live, &events, &mut announced).await;
+
+        assert!(rx.try_recv().is_ok(), "a second connection left the session daemon_lost");
     }
 }
