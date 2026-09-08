@@ -5,6 +5,7 @@ on:
     paths:
       - "deploy/worker.Dockerfile"
       - "scripts/check-claude-version-drift.sh"
+      - "scripts/check-claude-version-drift.test.sh"
       - ".github/workflows/claude-version-drift.yml"
   push:
     branches: [main]
@@ -18,9 +19,11 @@ permissions:
 
 jobs:
   drift:
-    name: claude code version pin drift
+    name: claude code version floor drift
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Check Claude Code version pin
+      - name: Drift check self-test
+        run: bash scripts/check-claude-version-drift.test.sh
+      - name: Check Claude Code version floor
         run: bash scripts/check-claude-version-drift.sh
