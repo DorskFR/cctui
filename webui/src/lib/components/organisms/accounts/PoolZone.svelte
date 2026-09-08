@@ -58,6 +58,7 @@
 	data-journey="pool"
 	data-journey-key={pool.name}
 	title={refused ? refusal : undefined}
+	role="none"
 	ondragenter={() => depth++}
 	ondragleave={() => (depth = Math.max(0, depth - 1))}
 	ondrop={() => (depth = 0)}
