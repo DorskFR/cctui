@@ -1,8 +1,10 @@
 //! Durable snapshot of the codex [`SessionRegistry`], written on mutation and
 //! merged back on adapter startup so a daemon restart / self-update re-exec
-//! does not strand hibernated threads. The launch env is never persisted —
-//! it carries the gateway credential; a resume with an empty env re-pulls it
-//! from the server.
+//! does not strand hibernated threads. The gateway CREDENTIAL is never
+//! persisted — a resume re-pulls it from the server — but the gateway base URL
+//! is: codex records `model_provider = "cctui"` in its own rollout, so a
+//! relaunch that cannot rebuild `model_providers.cctui` fails config load
+//! outright (`Model provider `cctui` not found`) instead of merely 401ing.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -18,7 +20,11 @@ struct PersistedRecord {
     name: Option<String>,
     #[serde(default)]
     cfg: AppServerConfig,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    gateway_base_url: Option<String>,
 }
+
+const GATEWAY_BASE_URL: &str = "OPENAI_BASE_URL";
 
 #[must_use]
 pub fn store_path() -> Option<PathBuf> {
@@ -30,14 +36,22 @@ pub fn to_json(records: &HashMap<String, SessionRecord>) -> String {
     let map: std::collections::BTreeMap<&String, PersistedRecord> = records
         .iter()
         .map(|(id, r)| {
-            (id, PersistedRecord { cwd: r.cwd.clone(), name: r.name.clone(), cfg: r.cfg.clone() })
+            (
+                id,
+                PersistedRecord {
+                    cwd: r.cwd.clone(),
+                    name: r.name.clone(),
+                    cfg: r.cfg.clone(),
+                    gateway_base_url: r.env.get(GATEWAY_BASE_URL).cloned(),
+                },
+            )
         })
         .collect();
     serde_json::to_string_pretty(&map).unwrap_or_else(|_| "{}".to_owned())
 }
 
-/// Parse a persisted snapshot. Records come back with an empty env so the
-/// first resume re-pulls the gateway credential from the server.
+/// Parse a persisted snapshot. Records come back carrying at most the gateway
+/// base URL; the credential is absent, so the first resume re-pulls it.
 #[must_use]
 pub fn from_json(text: &str) -> HashMap<String, SessionRecord> {
     serde_json::from_str::<HashMap<String, PersistedRecord>>(text)
@@ -50,7 +64,12 @@ pub fn from_json(text: &str) -> HashMap<String, SessionRecord> {
                             cfg: r.cfg,
                             cwd: r.cwd,
                             name: r.name,
-                            env: std::collections::BTreeMap::new(),
+                            env: r
+                                .gateway_base_url
+                                .map(|url| {
+                                    std::iter::once((GATEWAY_BASE_URL.to_owned(), url)).collect()
+                                })
+                                .unwrap_or_default(),
                         },
                     )
                 })
@@ -140,6 +159,27 @@ mod tests {
         assert_eq!(r.cfg.model.as_deref(), Some("gpt-5-codex"));
         assert_eq!(r.cfg.reasoning_effort.as_deref(), Some("high"));
         assert!(r.env.is_empty());
+    }
+
+    /// The credential must not survive a restart, but the base URL must: it is
+    /// the only thing that lets the relaunch redefine `model_providers.cctui`,
+    /// whose NAME codex reads back out of the rollout.
+    #[test]
+    fn round_trip_keeps_the_gateway_base_url_and_drops_the_credential() {
+        let mut rec = record("/repo", None);
+        rec.env.insert("OPENAI_BASE_URL".to_owned(), "https://cctui/gw".to_owned());
+        let mut map = HashMap::new();
+        map.insert("tid".to_owned(), rec);
+        let json = to_json(&map);
+        assert!(!json.contains("secret"), "the credential must never be persisted");
+        let back = from_json(&json);
+        let env = &back.get("tid").expect("record survives").env;
+        assert_eq!(env.get("OPENAI_BASE_URL").map(String::as_str), Some("https://cctui/gw"));
+        assert!(!env.contains_key("OPENAI_API_KEY"));
+        assert!(
+            !super::super::app_server::gateway_provider_overrides(env).is_empty(),
+            "a restored gateway session must still define its provider"
+        );
     }
 
     #[test]
