@@ -138,7 +138,15 @@ async fn main() -> anyhow::Result<()> {
             let runner = Runner::new(client, cfg.dispatcher_key, spawner);
             let signal_token = shutdown.clone();
             tokio::spawn(async move {
-                let _ = tokio::signal::ctrl_c().await;
+                // Kubernetes terminates pods with SIGTERM, not SIGINT.
+                let mut term =
+                    tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                        .expect("install SIGTERM handler");
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {}
+                    _ = term.recv() => {}
+                }
+                tracing::info!("shutdown signal received; draining in-flight dispatches");
                 signal_token.cancel();
             });
             runner.run(shutdown).await;

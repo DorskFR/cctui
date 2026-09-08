@@ -7,12 +7,23 @@
 //! The server forwards only a [`WireDispatchSpec`]; machine-key lifting and
 //! payload semantics live in the executor binary.
 
+use std::time::Duration;
+
 use cctui_proto::ws::{DispatcherFrameDown, DispatcherFrameUp, WireDispatchSpec};
 use uuid::Uuid;
 
 use super::{DispatchError, DispatchHandle, DispatchSpec, Dispatcher, HandleStatus};
 use crate::bus::{Bus, BusError};
 use crate::state::AppState;
+
+/// How long a dispatch is held while the dispatcher is not connected. A release
+/// rolling-restarts the dispatcher and the observed re-enrol gap is ~30s; 45s
+/// covers it with margin yet stays far below the caller's HTTP timeout, so a
+/// dead dispatcher still fails the request rather than hanging it.
+const DISPATCH_HOLD: Duration = Duration::from_secs(45);
+
+/// Backoff between hold attempts, capped at the last entry.
+const HOLD_BACKOFF_SECS: &[u64] = &[1, 2, 4, 8];
 
 pub struct EnrolledDispatcher {
     /// The dispatcher's display name (the `dispatcher` field of the caller's
@@ -51,17 +62,79 @@ async fn round_trip(
     request_id: Uuid,
     frame: DispatcherFrameDown,
 ) -> Result<DispatcherFrameUp, DispatchError> {
-    bus.request_dispatcher(dispatcher_id, request_id, frame).await.map_err(|err| {
-        DispatchError::Backend(match err {
-            BusError::NoDispatcher(_) => format!("dispatcher '{name}' is offline"),
-            BusError::Closed => format!("dispatcher '{name}' connection closed"),
-            BusError::Disconnected => {
-                format!("dispatcher '{name}' disconnected before replying")
-            }
-            BusError::Timeout => format!("dispatcher '{name}' did not reply within 30s"),
-            other => format!("dispatcher '{name}' round-trip failed: {other}"),
-        })
+    bus.request_dispatcher(dispatcher_id, request_id, frame)
+        .await
+        .map_err(|err| backend_error(name, &err))
+}
+
+fn backend_error(name: &str, err: &BusError) -> DispatchError {
+    DispatchError::Backend(match err {
+        BusError::NoDispatcher(_) => format!("dispatcher '{name}' is offline"),
+        BusError::Closed => format!("dispatcher '{name}' connection closed"),
+        BusError::Disconnected => {
+            format!("dispatcher '{name}' disconnected before replying")
+        }
+        BusError::Timeout => format!("dispatcher '{name}' did not reply within 30s"),
+        other => format!("dispatcher '{name}' round-trip failed: {other}"),
     })
+}
+
+/// True when the dispatch frame provably never reached a dispatcher, so
+/// re-sending it cannot duplicate work.
+const fn never_delivered(err: &BusError) -> bool {
+    matches!(err, BusError::NoDispatcher(_) | BusError::Closed)
+}
+
+/// Send a `Dispatch` frame, holding it across a dispatcher restart rather than
+/// failing the caller.
+///
+/// Retrying is safe only because a frame that never reached a dispatcher
+/// registered nothing — no dedup key, no Job — so nothing is duplicated and
+/// nothing is left claimed when the hold expires unplaced.
+async fn dispatch_held(
+    bus: &Bus,
+    dispatcher_id: Uuid,
+    name: &str,
+    spec: &WireDispatchSpec,
+    hold: Duration,
+) -> Result<DispatcherFrameUp, DispatchError> {
+    let deadline = tokio::time::Instant::now() + hold;
+    let mut attempt = 0usize;
+    loop {
+        let request_id = Uuid::new_v4();
+        let frame = DispatcherFrameDown::Dispatch { request_id, spec: spec.clone() };
+        let err = match bus.request_dispatcher(dispatcher_id, request_id, frame).await {
+            Ok(reply) => return Ok(reply),
+            Err(err) => err,
+        };
+
+        let now = tokio::time::Instant::now();
+        if !never_delivered(&err) || now >= deadline {
+            if never_delivered(&err) {
+                tracing::error!(
+                    dispatcher = name,
+                    session = %spec.session_id,
+                    attempts = attempt + 1,
+                    held_secs = hold.as_secs(),
+                    "dispatch could not be placed before the hold expired — nothing was \
+                     dispatched, the caller must retry or release the claim"
+                );
+            }
+            return Err(backend_error(name, &err));
+        }
+
+        let backoff =
+            Duration::from_secs(HOLD_BACKOFF_SECS[attempt.min(HOLD_BACKOFF_SECS.len() - 1)]);
+        tracing::warn!(
+            dispatcher = name,
+            session = %spec.session_id,
+            attempt = attempt + 1,
+            "dispatcher unreachable ({err}); holding dispatch and retrying in {}s",
+            backoff.as_secs()
+        );
+        tokio::time::sleep_until((now + backoff).min(deadline)).await;
+        attempt = attempt.saturating_add(1);
+    }
 }
 
 #[async_trait::async_trait]
@@ -71,7 +144,6 @@ impl Dispatcher for EnrolledDispatcher {
     }
 
     async fn dispatch(&self, spec: &DispatchSpec<'_>) -> Result<DispatchHandle, DispatchError> {
-        let request_id = Uuid::new_v4();
         let wire = WireDispatchSpec {
             session_id: spec.session_id.to_owned(),
             timeout_minutes: spec.timeout_minutes,
@@ -80,9 +152,9 @@ impl Dispatcher for EnrolledDispatcher {
             profile: None,
             payload: spec.payload.clone(),
         };
-        let reply = self
-            .round_trip(request_id, DispatcherFrameDown::Dispatch { request_id, spec: wire })
-            .await?;
+        let reply =
+            dispatch_held(&self.state.bus, self.dispatcher_id, &self.name, &wire, DISPATCH_HOLD)
+                .await?;
         match reply {
             DispatcherFrameUp::DispatchResult { handle, namespace, status, error, .. } => {
                 if let Some(err) = error {
@@ -211,6 +283,76 @@ mod tests {
             other => panic!("unexpected reply: {other:?}"),
         }
         fake.await.unwrap();
+    }
+
+    fn spec(session: &str) -> WireDispatchSpec {
+        WireDispatchSpec {
+            session_id: session.into(),
+            timeout_minutes: None,
+            reply_url: None,
+            dedup_key: Some("dedup-1".into()),
+            profile: None,
+            payload: serde_json::json!({}),
+        }
+    }
+
+    /// A rolling restart: the dispatcher is absent when the dispatch arrives and
+    /// re-enrols inside the hold. The caller must see a success, not an error.
+    #[tokio::test]
+    async fn dispatch_survives_a_dispatcher_restart_within_the_hold() {
+        let bus = bus();
+        let id = Uuid::new_v4();
+
+        let late = bus.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(1200)).await;
+            let (tx, mut rx) = mpsc::channel::<DispatcherFrameDown>(8);
+            late.register_dispatcher(id, tx);
+            let frame = rx.recv().await.unwrap();
+            let DispatcherFrameDown::Dispatch { request_id, spec } = frame else {
+                panic!("expected Dispatch");
+            };
+            assert!(late.resolve_dispatcher_reply(
+                request_id,
+                DispatcherFrameUp::DispatchResult {
+                    request_id,
+                    session_id: spec.session_id,
+                    handle: "job/worker-1".into(),
+                    namespace: Some("cctui".into()),
+                    status: Some("dispatched".into()),
+                    error: None,
+                },
+            ));
+        });
+
+        let reply =
+            dispatch_held(&bus, id, "k8s", &spec("sess-restart"), Duration::from_secs(10)).await;
+        match reply.unwrap() {
+            DispatcherFrameUp::DispatchResult { handle, error, .. } => {
+                assert_eq!(handle, "job/worker-1");
+                assert!(error.is_none());
+            }
+            other => panic!("unexpected reply: {other:?}"),
+        }
+    }
+
+    /// Past the bound the dispatch fails loudly. Nothing was ever sent, so no
+    /// dedup key / Job exists for it — the caller is free to retry.
+    #[tokio::test]
+    async fn dispatch_beyond_the_hold_errors_and_sends_nothing() {
+        let bus = bus();
+        let id = Uuid::new_v4();
+        let (tx, mut rx) = mpsc::channel::<DispatcherFrameDown>(8);
+
+        let err = dispatch_held(&bus, id, "k8s", &spec("sess-lost"), Duration::from_millis(1500))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, DispatchError::Backend(m) if m.contains("k8s") && m.contains("offline"))
+        );
+
+        bus.register_dispatcher(id, tx);
+        assert!(rx.try_recv().is_err(), "no frame may reach a dispatcher that never held one");
     }
 
     #[tokio::test]

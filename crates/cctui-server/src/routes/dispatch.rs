@@ -802,6 +802,13 @@ pub async fn dispatch(
             h
         }
         Err(e) => {
+            tracing::error!(
+                dispatcher = %req.dispatcher,
+                session = %session_id,
+                error = %e,
+                "dispatch not placed — no worker exists for this session; any claim the \
+                 caller took (tag/assignee) is now stale"
+            );
             ntfy::notify(
                 &state.config,
                 Notification {
