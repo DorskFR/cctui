@@ -58,6 +58,10 @@ const SHUTDOWN_DRAIN_QUIET: Duration = Duration::from_millis(500);
 /// open indefinitely.
 const SHUTDOWN_DRAIN_MAX: Duration = Duration::from_secs(3);
 
+/// Ceiling on how long a cancelled adapter may take to exit before the next
+/// connection rebuilds it anyway.
+const ADAPTER_STOP_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Sleep until `deadline`, or never when there's nothing buffered to flush.
 async fn wait_deadline(deadline: Option<tokio::time::Instant>) {
     match deadline {
@@ -346,6 +350,8 @@ impl Supervisor {
         }
         .await;
 
+        stop_adapters(&mut running).await;
+
         // An unfinished transfer resumes next connection, unless it has burned
         // MAX_ATTEMPTS without progress: then tombstone + drop it.
         if let Some(t) = active
@@ -631,7 +637,7 @@ impl Supervisor {
             let img_client = self.client.clone();
             let img_key = self.machine_key.clone();
             let img_roots = image_roots.clone();
-            tokio::spawn(async move {
+            let pump = tokio::spawn(async move {
                 while let Some(evt) = events_rx.recv().await {
                     let evt =
                         crate::imagepost::process_event(&img_client, &img_key, evt, &img_roots)
@@ -642,7 +648,7 @@ impl Supervisor {
                 }
             });
             let id_for_task = id.clone();
-            tokio::spawn(async move {
+            let driver = tokio::spawn(async move {
                 if let Err(err) = adapter.start(ctx).await {
                     tracing::error!(adapter_id = %id_for_task, %err, "adapter exited with error");
                 }
@@ -655,6 +661,7 @@ impl Supervisor {
                     // next reconcile can detect a change.
                     config: cfg.config,
                     commands_tx: channels.commands_tx,
+                    tasks: vec![pump, driver],
                 },
             );
             tracing::info!(adapter_id = %id, "started adapter");
@@ -780,6 +787,42 @@ struct AdapterRunning {
     config: serde_json::Value,
     /// Command sink the supervisor routes server `Command` frames into.
     commands_tx: mpsc::Sender<cctui_proto::adapter::AdapterCommand>,
+    tasks: Vec<tokio::task::JoinHandle<()>>,
+}
+
+impl AdapterRunning {
+    /// Cancel and wait for the tasks to observe it: a replacement must not
+    /// overlap its predecessor, two codex `LogTail`s sharing one
+    /// `codex-offsets.json` corrupt the offsets.
+    async fn stop(mut self) {
+        self.shutdown.cancel();
+        let tasks = std::mem::take(&mut self.tasks);
+        if tokio::time::timeout(ADAPTER_STOP_TIMEOUT, futures_util::future::join_all(tasks))
+            .await
+            .is_err()
+        {
+            tracing::warn!("adapter did not stop within {ADAPTER_STOP_TIMEOUT:?}");
+        }
+    }
+}
+
+async fn stop_adapters(running: &mut HashMap<String, AdapterRunning>) {
+    let ids: Vec<String> = running.keys().cloned().collect();
+    for id in ids {
+        if let Some(r) = running.remove(&id) {
+            r.stop().await;
+            tracing::info!(adapter_id = %id, "stopped adapter for connection teardown");
+        }
+    }
+}
+
+impl Drop for AdapterRunning {
+    /// A `CancellationToken` is not cancelled by being dropped, and the token is
+    /// a child of the global shutdown token, so without this every dropped
+    /// instance (notably the whole map, on a WS reconnect) would keep polling.
+    fn drop(&mut self) {
+        self.shutdown.cancel();
+    }
 }
 
 /// Stage mid-chat attachments and build the `StageFilesResult` reply.
@@ -1498,5 +1541,120 @@ mod tests {
         }
         assert!(super::parse_frame(Message::Ping(Vec::new().into())).unwrap().is_none());
         assert!(super::parse_frame(Message::Close(None)).unwrap().is_none());
+    }
+
+    /// Counts adapter instances that are live at the same time. `peak > 1`
+    /// means two codex `LogTail`s would share one `codex-offsets.json`.
+    #[derive(Clone, Default)]
+    struct LiveTracker {
+        live: Arc<Mutex<usize>>,
+        peak: Arc<Mutex<usize>>,
+    }
+
+    impl LiveTracker {
+        fn live(&self) -> usize {
+            *self.live.lock().unwrap()
+        }
+        fn peak(&self) -> usize {
+            *self.peak.lock().unwrap()
+        }
+    }
+
+    struct TrackedAdapter {
+        tracker: LiveTracker,
+    }
+
+    #[async_trait::async_trait]
+    impl Adapter for TrackedAdapter {
+        fn id(&self) -> &'static str {
+            "stub"
+        }
+        async fn start(&self, ctx: AdapterCtx) -> anyhow::Result<()> {
+            {
+                let mut live = self.tracker.live.lock().unwrap();
+                *live += 1;
+                let mut peak = self.tracker.peak.lock().unwrap();
+                *peak = (*peak).max(*live);
+            }
+            ctx.shutdown.cancelled().await;
+            *self.tracker.live.lock().unwrap() -= 1;
+            Ok(())
+        }
+    }
+
+    struct TrackedFactory {
+        tracker: LiveTracker,
+    }
+
+    impl AdapterFactory for TrackedFactory {
+        fn id(&self) -> &'static str {
+            "stub"
+        }
+        fn build(&self, _config: serde_json::Value) -> Box<dyn Adapter> {
+            Box::new(TrackedAdapter { tracker: self.tracker.clone() })
+        }
+    }
+
+    async fn wait_until(mut cond: impl FnMut() -> bool) {
+        for _ in 0..1000 {
+            if cond() {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+        panic!("condition never held");
+    }
+
+    fn tracked() -> (Supervisor, LiveTracker) {
+        let tracker = LiveTracker::default();
+        let supervisor = Supervisor::new(
+            ServerClient::new("http://localhost"),
+            "machine-key".to_string(),
+            vec![Box::new(TrackedFactory { tracker: tracker.clone() })],
+        );
+        (supervisor, tracker)
+    }
+
+    #[tokio::test]
+    async fn reconnect_stops_the_previous_adapter_set() {
+        let (supervisor, tracker) = tracked();
+        let shutdown = CancellationToken::new();
+        let (event_tx, _event_rx) = mpsc::channel(8);
+        let mut running: std::collections::HashMap<String, AdapterRunning> =
+            std::collections::HashMap::new();
+
+        supervisor.reconcile(vec![cfg("bg")], &mut running, &event_tx, &shutdown);
+        let first = running.get("stub").expect("adapter running").shutdown.clone();
+        wait_until(|| tracker.live() == 1).await;
+
+        super::stop_adapters(&mut running).await;
+        assert!(first.is_cancelled(), "the previous connection's token must be cancelled");
+        assert_eq!(tracker.live(), 0, "the previous adapter task must have observed cancellation");
+        assert!(running.is_empty());
+        assert!(!shutdown.is_cancelled(), "a reconnect must not cancel the global token");
+
+        supervisor.reconcile(vec![cfg("bg")], &mut running, &event_tx, &shutdown);
+        let second = running.get("stub").expect("adapter running").shutdown.clone();
+        wait_until(|| tracker.live() == 1).await;
+        assert!(!second.is_cancelled(), "the surviving instance is the new one");
+        assert!(first.is_cancelled());
+        assert_eq!(tracker.peak(), 1, "only one instance may own codex-offsets.json at a time");
+    }
+
+    #[tokio::test]
+    async fn dropping_a_running_adapter_cancels_it() {
+        let (supervisor, tracker) = tracked();
+        let shutdown = CancellationToken::new();
+        let (event_tx, _event_rx) = mpsc::channel(8);
+        let mut running: std::collections::HashMap<String, AdapterRunning> =
+            std::collections::HashMap::new();
+
+        supervisor.reconcile(vec![cfg("bg")], &mut running, &event_tx, &shutdown);
+        let token = running.get("stub").expect("adapter running").shutdown.clone();
+        wait_until(|| tracker.live() == 1).await;
+
+        drop(running);
+        assert!(token.is_cancelled(), "dropping the map must cancel, not orphan, the adapter");
+        wait_until(|| tracker.live() == 0).await;
     }
 }
