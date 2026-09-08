@@ -1129,10 +1129,8 @@ mod tests {
     /// `node webui/scripts/gen-scrub-detectors.mjs` when this fails.
     #[test]
     fn builtin_list_matches_the_webui_copy() {
-        let path = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../webui/src/lib/scrubDetectors.generated.ts"
-        );
+        let path =
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../../webui/src/lib/scrubDetectors.generated.ts");
         let generated = std::fs::read_to_string(path).expect("generated detector list is present");
         for (category, family) in builtin_categories() {
             let line = format!("{{ category: '{category}', family: '{family}' }}");
