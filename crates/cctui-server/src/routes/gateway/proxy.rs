@@ -72,6 +72,55 @@ pub fn auth_error(stage: AuthStage, is_anthropic: bool) -> Response {
         .unwrap_or_else(|_| StatusCode::UNAUTHORIZED.into_response())
 }
 
+/// Refuse a request the soft limit blocks: fail it over to a sibling account
+/// with headroom if there is one, else flag the session and 429.
+///
+/// `model` is what the sibling must have room for; `None` (model not yet read
+/// off the body) elects conservatively, counting every window.
+async fn soft_limit_refusal(
+    state: &AppState,
+    session_token: &str,
+    acct: &super::Account,
+    is_anthropic: bool,
+    model: Option<&str>,
+    retry_after_secs: i64,
+    reason: String,
+) -> Result<Response, StatusCode> {
+    // Before refusing with the account's own reset horizon, try to rebind the
+    // session to a sibling with headroom — the worker's 429 retry then lands on
+    // the new account instead of stalling.
+    if let Some(target) = super::pick_failover_target(state, session_token, acct.id, model).await
+        && super::rebind_session(state, &target, acct.id).await
+    {
+        return Ok(super::failover_retry_response(
+            &target.account_name,
+            target.reason,
+            is_anthropic,
+        ));
+    }
+    // Surface the block as a per-session signal so the webui can offer
+    // "continue on another account". Best-effort + dedup'd.
+    if let Some((session_id, account_name)) =
+        session_and_account_name_for_token(state, session_token).await
+    {
+        mark_soft_limit_block(
+            state,
+            &session_id,
+            acct.id,
+            &account_name,
+            &reason,
+            retry_after_secs,
+        )
+        .await;
+    }
+    Response::builder()
+        .status(StatusCode::TOO_MANY_REQUESTS)
+        .header(http::header::RETRY_AFTER, retry_after_secs.to_string())
+        .header(http::header::CONTENT_TYPE, "application/json")
+        .body(Body::from(serde_json::json!({ "error": reason }).to_string()))
+        .map_err(|_| StatusCode::TOO_MANY_REQUESTS)
+}
+
 pub async fn anthropic(
     State(state): State<AppState>,
     req: Request,
@@ -180,6 +229,7 @@ pub async fn passthrough(
     // stored limits know nothing about. Overlay it here; the map is empty on the
     // ordinary path, so this costs a lock-free length check per request.
     let effective_limits = session_budget_limits(&state, &acct, &session_token).await;
+    let mut model_gate: Option<Vec<crate::soft_limit::UsageWindow>> = None;
     if !effective_limits.is_unset() {
         let cached = usage_for_soft_limit(&state, acct.id).await;
         let mut windows =
@@ -196,47 +246,34 @@ pub async fn passthrough(
                 None,
             ));
         }
+        // A `weekly_model:` cap can only be judged once the request's model is
+        // known, which needs the body. Gate the model-blind windows here so the
+        // zero-copy passthrough survives for every account without such a cap,
+        // and defer the scoped ones to `model_soft_limit_gate` below.
+        let scoped_caps =
+            effective_limits.limits.keys().any(|k| crate::soft_limit::is_model_scoped_key(k));
+        let unscoped: Vec<crate::soft_limit::UsageWindow> = windows
+            .iter()
+            .filter(|w| !crate::soft_limit::is_model_scoped_key(&w.key))
+            .cloned()
+            .collect();
         if let crate::soft_limit::Decision::Block { retry_after_secs, reason, .. } =
-            crate::soft_limit::evaluate_soft_limit(&windows, &effective_limits, Utc::now())
+            crate::soft_limit::evaluate_soft_limit(&unscoped, &effective_limits, None, Utc::now())
         {
             tracing::info!(account = %acct.id, retry_after_secs, "soft limit hit: {reason}");
-            // Before refusing with the account's own reset horizon, try to
-            // rebind the session to a sibling with headroom — the worker's
-            // 429 retry then lands on the new account instead of stalling.
-            // The model isn't known here (the body is still unread), so the
-            // election counts every window: conservative, never overstated.
-            if let Some(target) =
-                super::pick_failover_target(&state, &session_token, acct.id, None).await
-                && super::rebind_session(&state, &target, acct.id).await
-            {
-                return Ok(super::failover_retry_response(
-                    &target.account_name,
-                    target.reason,
-                    is_anthropic,
-                ));
-            }
-            // Surface the block as a per-session signal so the webui can offer
-            // "continue on another account". Best-effort + dedup'd.
-            if let Some((session_id, account_name)) =
-                session_and_account_name_for_token(&state, &session_token).await
-            {
-                mark_soft_limit_block(
-                    &state,
-                    &session_id,
-                    acct.id,
-                    &account_name,
-                    &reason,
-                    retry_after_secs,
-                )
-                .await;
-            }
-            let resp = Response::builder()
-                .status(StatusCode::TOO_MANY_REQUESTS)
-                .header(http::header::RETRY_AFTER, retry_after_secs.to_string())
-                .header(http::header::CONTENT_TYPE, "application/json")
-                .body(Body::from(serde_json::json!({ "error": reason }).to_string()))
-                .map_err(|_| StatusCode::TOO_MANY_REQUESTS)?;
-            return Ok(resp);
+            return soft_limit_refusal(
+                &state,
+                &session_token,
+                &acct,
+                is_anthropic,
+                None,
+                retry_after_secs,
+                reason,
+            )
+            .await;
+        }
+        if scoped_caps {
+            model_gate = Some(windows);
         }
     }
 
@@ -355,6 +392,7 @@ pub async fn passthrough(
         || fireworks.is_some()
         || anthropic.is_some()
         || usage_notice.is_some()
+        || model_gate.is_some()
     {
         let bytes = axum::body::to_bytes(req.into_body(), usize::MAX)
             .await
@@ -365,6 +403,37 @@ pub async fn passthrough(
             .and_then(|r| r.get("model"))
             .and_then(serde_json::Value::as_str)
             .map(str::to_owned);
+        // The deferred half of the soft limit: a `weekly_model:` cap gates only
+        // the model it names, so a spent weekly Fable budget must let an Opus
+        // request through. Decided before the body is reshaped, so a refusal
+        // never consumes a usage notice. Same `window_applies` the account
+        // election uses, so the two can never disagree.
+        if let Some(windows) = model_gate
+            && let crate::soft_limit::Decision::Block { retry_after_secs, reason, .. } =
+                crate::soft_limit::evaluate_soft_limit(
+                    &windows,
+                    &effective_limits,
+                    request_model.as_deref(),
+                    Utc::now(),
+                )
+        {
+            tracing::info!(
+                account = %acct.id,
+                model = request_model.as_deref().unwrap_or("unknown"),
+                retry_after_secs,
+                "soft limit hit: {reason}"
+            );
+            return soft_limit_refusal(
+                &state,
+                &session_token,
+                &acct,
+                is_anthropic,
+                request_model.as_deref(),
+                retry_after_secs,
+                reason,
+            )
+            .await;
+        }
         let body = match parsed.as_mut() {
             Some(json) if fireworks.is_some() || anthropic.is_some() || usage_notice.is_some() => {
                 if let Some(fw) = fireworks.as_ref() {

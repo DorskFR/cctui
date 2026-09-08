@@ -758,14 +758,14 @@ mod tests {
             "session": {"cap_pct": 80},
         })));
         // Blocked case: still no tracing-side effects.
-        assert!(matches!(evaluate_soft_limit(&windows, &caps, now), Decision::Block { .. }));
+        assert!(matches!(evaluate_soft_limit(&windows, &caps, None, now), Decision::Block { .. }));
         assert!(client.usage_cache.is_empty(), "blocked eval must not warm the trace cache");
 
         // Allowed case (under cap): likewise untouched.
         let allow_caps = SoftLimits::from_json(Some(&serde_json::json!({
             "session": {"cap_pct": 99},
         })));
-        assert_eq!(evaluate_soft_limit(&windows, &allow_caps, now), Decision::Allow);
+        assert_eq!(evaluate_soft_limit(&windows, &allow_caps, None, now), Decision::Allow);
         assert!(client.usage_cache.is_empty(), "allowed eval must not warm the trace cache");
     }
 }

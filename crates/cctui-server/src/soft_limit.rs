@@ -41,6 +41,31 @@ pub fn is_usd_key(key: &str) -> bool {
     matches!(key, KEY_SESSION_USD | KEY_USD_5H | KEY_USD_7D)
 }
 
+/// Whether a canonical key denotes a per-model weekly window.
+pub fn is_model_scoped_key(key: &str) -> bool {
+    key.starts_with(WEEKLY_MODEL_PREFIX)
+}
+
+/// Whether a normalized window applies to the model a request will run.
+///
+/// Non-scoped windows (5h, weekly-all, the dollar ones) always apply. A scoped
+/// window applies only when its model matches; with no model known we cannot
+/// tell, so every window applies — the conservative side, which can only narrow
+/// a margin, never overstate it. Enforcement and election share this one
+/// definition so they cannot drift apart.
+pub fn window_applies(window: &UsageWindow, model: Option<&str>) -> bool {
+    let Some(scoped) = window.key.strip_prefix(WEEKLY_MODEL_PREFIX) else { return true };
+    let Some(model) = model else { return true };
+    let requested = slug(model);
+    if requested.is_empty() || scoped.is_empty() {
+        return true;
+    }
+    // Either direction: the request may be an alias the window spells out
+    // (`fable` vs `claude-fable-5`) or a fuller id than the window's
+    // (`claude-opus-4-8-1m` vs `claude-opus-4-8`).
+    requested.contains(scoped) || scoped.contains(&requested)
+}
+
 /// One window's independently editable soft-limit config. All fields optional:
 /// no `cap_pct`/`cap_usd` ⇒ no cap on that window; `bypass_minutes` `None` ⇒ no
 /// bypass. `cap_usd` applies to the dollar windows, `cap_pct` to the percent
@@ -396,9 +421,15 @@ pub enum Decision {
 /// utilization is at/above its cap AND its reset is more than its own
 /// `bypass_minutes` away (or unknown). When several keys block, the reason names
 /// the nearest-resetting one and `retry_after` is derived from that reset.
+///
+/// `model` is the model the request will run. A `weekly_model:` window is only
+/// evaluated when it applies to it (see [`window_applies`]) — a spent weekly
+/// Fable budget must not block an Opus request. `None` means "not known here"
+/// and keeps the conservative reading: every window counts.
 pub fn evaluate_soft_limit(
     windows: &[UsageWindow],
     caps: &SoftLimits,
+    model: Option<&str>,
     now: DateTime<Utc>,
 ) -> Decision {
     if caps.is_unset() {
@@ -409,6 +440,9 @@ pub fn evaluate_soft_limit(
     for (key, limit) in &caps.limits {
         // Missing window for a configured key ⇒ fail open for that key only.
         let Some(win) = windows.iter().find(|w| &w.key == key) else { continue };
+        if !window_applies(win, model) {
+            continue;
+        }
         let over = match (limit.cap_usd, win.amount_usd, limit.cap_pct) {
             (Some(cap_usd), Some(spent), _) => (spent >= cap_usd)
                 .then(|| format!("{} at ${spent:.2} (cap ${cap_usd:.2})", win.label)),
@@ -619,14 +653,18 @@ mod tests {
     // ---- evaluation --------------------------------------------------------
 
     fn eval(usage: &serde_json::Value, c: &SoftLimits) -> Decision {
-        evaluate_soft_limit(&normalize_usage_windows(usage), c, now())
+        eval_for(usage, c, None)
+    }
+
+    fn eval_for(usage: &serde_json::Value, c: &SoftLimits, model: Option<&str>) -> Decision {
+        evaluate_soft_limit(&normalize_usage_windows(usage), c, model, now())
     }
 
     #[test]
     fn no_caps_allows() {
         let u = legacy(99.0, "2026-06-19T16:00:00Z", 99.0, "2026-06-26T00:00:00Z");
         assert_eq!(
-            evaluate_soft_limit(&normalize_usage_windows(&u), &SoftLimits::default(), now()),
+            evaluate_soft_limit(&normalize_usage_windows(&u), &SoftLimits::default(), None, now()),
             Decision::Allow
         );
     }
@@ -634,7 +672,7 @@ mod tests {
     #[test]
     fn missing_usage_allows() {
         let c = caps(&[(KEY_SESSION, Some(80), None)]);
-        assert_eq!(evaluate_soft_limit(&[], &c, now()), Decision::Allow);
+        assert_eq!(evaluate_soft_limit(&[], &c, None, now()), Decision::Allow);
     }
 
     #[test]
@@ -696,15 +734,60 @@ mod tests {
     #[test]
     fn model_scoped_limit_blocks_and_names_itself() {
         // Acceptance (7): a model-scoped window is the blocker and is identified.
+        // It blocks the model it names, and requests whose model is unknown here
+        // (the conservative reading), but nothing else.
         let c = caps(&[("weekly_model:fable", Some(90), None)]);
         let u = json!({"limits":[{"kind":"weekly_scoped","percent":100,
             "resets_at":"2026-06-20T12:00:00Z","scope":{"model":{"id":null,"display_name":"Fable"}}}]});
-        match eval(&u, &c) {
-            Decision::Block { key, reason, .. } => {
-                assert_eq!(key, "weekly_model:fable");
-                assert!(reason.contains("Weekly Fable"), "{reason}");
+        for model in [None, Some("claude-fable-5")] {
+            match eval_for(&u, &c, model) {
+                Decision::Block { key, reason, .. } => {
+                    assert_eq!(key, "weekly_model:fable");
+                    assert!(reason.contains("Weekly Fable"), "{reason}");
+                }
+                d @ Decision::Allow => panic!("expected block for {model:?}, got {d:?}"),
             }
-            d @ Decision::Allow => panic!("expected block, got {d:?}"),
+        }
+    }
+
+    #[test]
+    fn a_spent_fable_budget_does_not_block_another_model() {
+        let c = caps(&[("weekly_model:fable", Some(90), None)]);
+        let u = json!({"limits":[{"kind":"weekly_scoped","percent":100,
+            "resets_at":"2026-06-20T12:00:00Z","scope":{"model":{"id":null,"display_name":"Fable"}}}]});
+        assert_eq!(
+            eval_for(&u, &c, Some("claude-opus-4-8-1m")),
+            Decision::Allow,
+            "a spent weekly Fable budget must not refuse an Opus request"
+        );
+    }
+
+    /// The gateway gates the model-blind windows before it has read the body,
+    /// then the scoped ones once the model is known. The early half must fail
+    /// open on a scoped cap rather than block on a window it cannot judge.
+    #[test]
+    fn the_model_blind_window_subset_never_enforces_a_scoped_cap() {
+        let c = caps(&[("weekly_model:fable", Some(90), None)]);
+        let u = json!({"limits":[
+            {"kind":"session","percent":10,"resets_at":"2026-06-19T16:00:00Z"},
+            {"kind":"weekly_scoped","percent":100,"resets_at":"2026-06-20T12:00:00Z",
+             "scope":{"model":{"id":null,"display_name":"Fable"}}}]});
+        let unscoped: Vec<UsageWindow> = normalize_usage_windows(&u)
+            .into_iter()
+            .filter(|w| !is_model_scoped_key(&w.key))
+            .collect();
+        assert_eq!(evaluate_soft_limit(&unscoped, &c, None, now()), Decision::Allow);
+    }
+
+    #[test]
+    fn an_account_wide_window_blocks_every_model() {
+        let c = caps(&[(KEY_WEEKLY_ALL, Some(90), None)]);
+        let u = legacy(10.0, "2026-06-19T16:00:00Z", 95.0, "2026-06-26T00:00:00Z");
+        for model in [None, Some("claude-fable-5"), Some("claude-opus-4-8")] {
+            assert!(
+                matches!(eval_for(&u, &c, model), Decision::Block { .. }),
+                "the weekly-all window applies to {model:?} like any other"
+            );
         }
     }
 
@@ -785,7 +868,7 @@ mod tests {
     fn session_usd_budget_blocks_without_a_reset() {
         let c = usd_caps(&[(KEY_SESSION_USD, 2.0, Some(60))]);
         let windows = vec![usd_window(KEY_SESSION_USD, 2.0, None)];
-        match evaluate_soft_limit(&windows, &c, now()) {
+        match evaluate_soft_limit(&windows, &c, None, now()) {
             Decision::Block { retry_after_secs, reason, key } => {
                 assert_eq!(key, KEY_SESSION_USD);
                 assert_eq!(retry_after_secs, NO_RESET_RETRY_SECS);
@@ -798,7 +881,7 @@ mod tests {
     #[test]
     fn usd_cap_without_spend_data_fails_open() {
         let c = usd_caps(&[(KEY_USD_7D, 0.5, None)]);
-        assert_eq!(evaluate_soft_limit(&[], &c, now()), Decision::Allow);
+        assert_eq!(evaluate_soft_limit(&[], &c, None, now()), Decision::Allow);
     }
 
     #[test]
