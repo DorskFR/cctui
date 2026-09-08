@@ -516,6 +516,33 @@ impl Bus {
         self.request_daemon_via(tx, request).await
     }
 
+    /// [`Self::command_daemon_local`] for a frame that belongs to ONE session.
+    pub async fn command_daemon_local_for_session(
+        &self,
+        machine: Uuid,
+        session_id: &str,
+        frame: DaemonFrameDown,
+    ) -> Result<(), BusError> {
+        let Some(tx) = self.session_channel(machine, session_id) else {
+            return Err(BusError::NoDaemon(machine));
+        };
+        tx.send(frame).await.map_err(|_| BusError::Closed)
+    }
+
+    /// [`Self::request_daemon_local`] for a round-trip that belongs to ONE
+    /// session.
+    pub async fn request_daemon_local_for_session(
+        &self,
+        machine: Uuid,
+        session_id: &str,
+        request: DaemonRequest,
+    ) -> Result<DaemonResponse, BusError> {
+        let Some(tx) = self.session_channel(machine, session_id) else {
+            return Err(BusError::NoDaemon(machine));
+        };
+        self.request_daemon_via(tx, request).await
+    }
+
     /// [`Self::command_daemon`] restricted to THIS pod's registry — a miss is a
     /// hard [`BusError::NoDaemon`], never the transport. Used by the internal
     /// peer-ingest endpoints, whose loop guard is exactly "deliver

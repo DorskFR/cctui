@@ -28,6 +28,10 @@ use crate::state::AppState;
 pub enum Kind {
     Daemon,
     Dispatcher,
+    /// One announced session, so session-scoped frames reach the pod holding
+    /// the WS that announced it rather than whichever pod owns the (possibly
+    /// shared) machine identity.
+    Session,
 }
 
 impl Kind {
@@ -35,6 +39,7 @@ impl Kind {
         match self {
             Self::Daemon => "daemon",
             Self::Dispatcher => "dispatcher",
+            Self::Session => "session",
         }
     }
 }

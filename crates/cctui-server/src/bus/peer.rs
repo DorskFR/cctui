@@ -217,6 +217,14 @@ impl From<WireBusEvent> for BusEvent {
     }
 }
 
+/// The session a down-frame belongs to, when it is session-scoped.
+pub fn frame_session(frame: &DaemonFrameDown) -> Option<&str> {
+    match frame {
+        DaemonFrameDown::Command { command, .. } => command.local_id(),
+        _ => None,
+    }
+}
+
 /// Format a peer IP + port as an HTTP authority (IPv6 literals need brackets).
 fn peer_base(ip: &str, port: u16) -> String {
     if ip.contains(':') { format!("http://[{ip}]:{port}") } else { format!("http://{ip}:{port}") }
@@ -264,9 +272,22 @@ impl PeerHttpTransport {
     /// The miss error for `kind` — what the caller would have seen locally.
     const fn miss(kind: Kind, target: Uuid) -> BusError {
         match kind {
-            Kind::Daemon => BusError::NoDaemon(target),
+            Kind::Daemon | Kind::Session => BusError::NoDaemon(target),
             Kind::Dispatcher => BusError::NoDispatcher(target),
         }
+    }
+
+    /// The peer owning a SESSION-scoped frame: the pod that announced the
+    /// session, else the pod owning the machine. A machine id can be shared by
+    /// several daemons, so its owner row alone would pick an arbitrary one.
+    async fn session_owner_ip(&self, machine: Uuid, session: Option<&str>) -> Option<String> {
+        if let Some(session) = session.and_then(|s| Uuid::parse_str(s).ok())
+            && let Some(ip) =
+                presence::peer_owner_ip(&self.pool, &self.pod, Kind::Session, session).await
+        {
+            return Some(ip);
+        }
+        presence::peer_owner_ip(&self.pool, &self.pod, Kind::Daemon, machine).await
     }
 
     /// Look up the live peer owning `target`'s WS and POST the route request to
@@ -280,7 +301,20 @@ impl PeerHttpTransport {
         request: &RouteRequest,
         timeout: std::time::Duration,
     ) -> Result<RouteResponse, BusError> {
-        let Some(owner) = presence::peer_owner_ip(&self.pool, &self.pod, kind, target).await else {
+        let owner = presence::peer_owner_ip(&self.pool, &self.pod, kind, target).await;
+        self.route_to(owner, kind, target, request, timeout).await
+    }
+
+    /// [`Self::route`] against an already-resolved owner.
+    async fn route_to(
+        &self,
+        owner: Option<String>,
+        kind: Kind,
+        target: Uuid,
+        request: &RouteRequest,
+        timeout: std::time::Duration,
+    ) -> Result<RouteResponse, BusError> {
+        let Some(owner) = owner else {
             return Err(Self::miss(kind, target));
         };
         let url = format!("{}/internal/bus/route", peer_base(&owner, self.port));
@@ -317,8 +351,9 @@ impl PeerHttpTransport {
 #[async_trait::async_trait]
 impl Transport for PeerHttpTransport {
     async fn forward_daemon(&self, machine: Uuid, frame: DaemonFrameDown) -> Result<(), BusError> {
+        let owner = self.session_owner_ip(machine, frame_session(&frame)).await;
         let request = RouteRequest::DaemonCommand { machine, frame };
-        match self.route(Kind::Daemon, machine, &request, COMMAND_TIMEOUT).await? {
+        match self.route_to(owner, Kind::Daemon, machine, &request, COMMAND_TIMEOUT).await? {
             RouteResponse::Ok => Ok(()),
             other => Err(BusError::Transport(format!("unexpected peer reply: {other:?}"))),
         }
@@ -341,6 +376,12 @@ impl Transport for PeerHttpTransport {
         machine: Uuid,
         request: DaemonRequest,
     ) -> Result<DaemonResponse, BusError> {
+        let session = match &request {
+            DaemonRequest::StageFiles { local_id, .. }
+            | DaemonRequest::Diagnose { local_id, .. } => Some(local_id.clone()),
+            _ => None,
+        };
+        let owner = self.session_owner_ip(machine, session.as_deref()).await;
         let (request, timeout) = match request {
             DaemonRequest::StageFiles { adapter_id, local_id, uploads } => (
                 RouteRequest::DaemonStageFiles { machine, adapter_id, local_id, uploads },
@@ -362,7 +403,7 @@ impl Transport for PeerHttpTransport {
                 DIAGNOSE_FORWARD_TIMEOUT,
             ),
         };
-        match self.route(Kind::Daemon, machine, &request, timeout).await? {
+        match self.route_to(owner, Kind::Daemon, machine, &request, timeout).await? {
             RouteResponse::StagedFiles { paths } => Ok(DaemonResponse::StagedFiles(paths)),
             RouteResponse::Dirs { dirs } => Ok(DaemonResponse::Dirs(dirs)),
             RouteResponse::GitInfo { info } => Ok(DaemonResponse::GitInfo(info)),
@@ -450,6 +491,37 @@ async fn relay_worker(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Cross-replica forwarding keys on the session, so a machine-scoped
+    /// frame and a session-scoped one must be told apart from the frame alone.
+    #[test]
+    fn frame_session_reads_the_target_of_session_scoped_frames() {
+        let reply = DaemonFrameDown::Command {
+            adapter_id: "claude-code".into(),
+            command: Box::new(cctui_proto::adapter::AdapterCommand::Reply {
+                local_id: "sess-1".into(),
+                text: "hi".into(),
+                ask_picks: None,
+                env: std::collections::BTreeMap::new(),
+                command_id: None,
+            }),
+        };
+        assert_eq!(frame_session(&reply), Some("sess-1"));
+
+        let reconcile = DaemonFrameDown::Reconcile {
+            adapters: Vec::new(),
+            secret_scrub: cctui_proto::ws::SecretScrubConfig::default(),
+        };
+        assert_eq!(frame_session(&reconcile), None);
+
+        let spawn = DaemonFrameDown::Command {
+            adapter_id: "claude-code".into(),
+            command: Box::new(cctui_proto::adapter::AdapterCommand::ResumeMarks {
+                marks: Vec::new(),
+            }),
+        };
+        assert_eq!(frame_session(&spawn), None, "adapter-wide commands stay machine-scoped");
+    }
 
     #[test]
     fn error_codes_round_trip_meaningfully() {

@@ -609,6 +609,27 @@ impl AdapterCommand {
     /// The correlation id this command carries, if any. Every adapter's
     /// command loop reports the outcome under it, so a command that carries one
     /// must never fail silently.
+    /// The session this command targets. `None` for the adapter-wide commands
+    /// (`Spawn`, `ResumeMarks`), which no single session owns.
+    #[must_use]
+    pub fn local_id(&self) -> Option<&str> {
+        match self {
+            Self::SendMessage { local_id, .. }
+            | Self::Kill { local_id, .. }
+            | Self::Reply { local_id, .. }
+            | Self::Interrupt { local_id, .. }
+            | Self::Resume { local_id, .. }
+            | Self::PermissionResponse { local_id, .. }
+            | Self::Rename { local_id, .. }
+            | Self::Remove { local_id }
+            | Self::SetModel { local_id, .. }
+            | Self::Diagnose { local_id, .. }
+            | Self::WatchPty { local_id, .. } => Some(local_id),
+            Self::Fork { parent_local_id, .. } => Some(parent_local_id),
+            Self::Spawn { .. } | Self::ResumeMarks { .. } => None,
+        }
+    }
+
     #[must_use]
     pub const fn command_id(&self) -> Option<Uuid> {
         match self {
