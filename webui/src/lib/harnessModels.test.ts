@@ -42,7 +42,7 @@ describe('withCurrentModel', () => {
 
 	it('leaves the list alone for a known or empty value', () => {
 		expect(withCurrentModel(codexModels, '')).toBe(codexModels);
-		expect(withCurrentModel(codexModels, codexModels[1].v)).toBe(codexModels);
+		expect(withCurrentModel(codexModels, codexModels[0].v)).toBe(codexModels);
 	});
 
 	it('never mistakes the sentinel for a model', () => {
@@ -62,3 +62,10 @@ describe('preferCatalog', () => {
 		expect(codexModelsFor(preferCatalog(undefined))).toBe(codexModels);
 	});
 });
+
+describe('codexModels', () => {
+	it('hardcodes no model slug', () => {
+		expect(codexModels.map((o) => o.v)).toEqual(['']);
+	});
+});
+

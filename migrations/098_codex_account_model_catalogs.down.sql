@@ -1,0 +1,1 @@
+DROP TABLE codex_account_model_catalogs;

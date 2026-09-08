@@ -10,17 +10,10 @@ export interface ModelOption {
 	label: string;
 }
 
-// Static offline fallback for codex, used only when no live `model/list`
-// catalog is known (daemon offline, older daemon, codex missing). Kept short on
-// purpose: the live catalog is the source of truth and free text covers the rest.
-export const codexModels: ModelOption[] = [
-	{ v: '', label: 'Default' },
-	{ v: 'gpt-6-astra', label: 'GPT-6-Astra' },
-	{ v: 'gpt-5.6-sol', label: 'GPT-5.6-Sol' },
-	{ v: 'gpt-5.6-terra', label: 'GPT-5.6-Terra' },
-	{ v: 'gpt-5.6-luna', label: 'GPT-5.6-Luna' },
-	{ v: 'gpt-5.5', label: 'GPT-5.5' }
-];
+// Offline fallback for codex, used only when no catalog is known. No model slug
+// is listed here on purpose: the server fetches the catalog per account, and
+// free text covers a model no catalog has reached yet.
+export const codexModels: ModelOption[] = [{ v: '', label: 'Default' }];
 export const codexEfforts = ['', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 
 // Model options from a machine's live catalog, hidden models dropped and
