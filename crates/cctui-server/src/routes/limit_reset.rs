@@ -131,13 +131,15 @@ pub fn consume_outcome(credit_id: Option<&str>, body: &serde_json::Value) -> Str
         return "unconfirmed".to_owned();
     };
     let list = credits["credits"].as_array().cloned().unwrap_or_default();
-    let spent = match credit_id {
-        Some(id) => !list.iter().any(|c| {
-            c.get("id").and_then(serde_json::Value::as_str) == Some(id)
-                && c.get("status").and_then(serde_json::Value::as_str) == Some("available")
-        }),
-        None => credits["available_count"].as_i64() == Some(0),
-    };
+    let spent = credit_id.map_or_else(
+        || credits["available_count"].as_i64() == Some(0),
+        |id| {
+            !list.iter().any(|c| {
+                c.get("id").and_then(serde_json::Value::as_str) == Some(id)
+                    && c.get("status").and_then(serde_json::Value::as_str) == Some("available")
+            })
+        },
+    );
     if spent { "reset".to_owned() } else { "unconfirmed".to_owned() }
 }
 
