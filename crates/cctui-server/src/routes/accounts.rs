@@ -265,7 +265,7 @@ pub struct ProviderInfo {
     pub est_cost_usd: f64,
     /// Per-provider soft limits: a validated JSONB map keyed by
     /// canonical window identity (`session` | `weekly_all` | `weekly_model:<id>`),
-    /// each value `{cap_pct?, bypass_minutes?}`. NULL ⇒ no soft limits configured.
+    /// each value `{cap_pct?, bypass_minutes?, pace_cap?}`. NULL ⇒ no soft limits configured.
     pub soft_limits: Option<serde_json::Value>,
     /// Usage ticker `{ enabled, step_pct }`; NULL ⇒ off.
     pub usage_notices: Option<serde_json::Value>,
@@ -487,7 +487,7 @@ pub struct ProviderSpec {
     #[serde(default)]
     pub auth_scheme: Option<String>,
     /// Per-provider soft limits: a canonical-key map
-    /// `{ "session": {cap_pct?, bypass_minutes?}, "weekly_all": {…}, … }`.
+    /// `{ "session": {cap_pct?, bypass_minutes?, pace_cap?}, "weekly_all": {…}, … }`.
     /// Absent ⇒ NULL (no caps). Validated before persist.
     #[serde(default)]
     pub soft_limits: Option<serde_json::Value>,
@@ -608,7 +608,7 @@ pub struct UpdateProvider {
     #[serde(default)]
     pub access_token: Option<String>,
     /// Replacement soft-limit config: a canonical-key map
-    /// `{ key: {cap_pct?, bypass_minutes?} }`. Provided → replaces the whole
+    /// `{ key: {cap_pct?, bypass_minutes?, pace_cap?} }`. Provided → replaces the whole
     /// stored map (an empty object clears it, an omitted key drops that window);
     /// absent → unchanged. Validated before persist.
     #[serde(default)]
@@ -657,11 +657,22 @@ fn build_soft_limits_json(
     use std::collections::BTreeMap;
     let mut out: BTreeMap<String, serde_json::Value> = BTreeMap::new();
 
-    let mut insert = |key: &str, cap: Option<i32>, cap_usd: Option<f64>, bypass: Option<i32>| {
+    let mut insert = |key: &str,
+                      cap: Option<i32>,
+                      cap_usd: Option<f64>,
+                      bypass: Option<i32>,
+                      pace_cap: Option<f64>| {
         if let Some(c) = cap
             && !(0..=100).contains(&c)
         {
             return Err(err(StatusCode::BAD_REQUEST, "soft-limit cap must be 0-100"));
+        }
+        // Below 1x is a cap tighter than an even spend, which would refuse an
+        // idle-then-work account forever; above 100x can never trigger.
+        if let Some(p) = pace_cap
+            && (!p.is_finite() || !(1.0..=100.0).contains(&p))
+        {
+            return Err(err(StatusCode::BAD_REQUEST, "soft-limit pace_cap must be 1-100"));
         }
         if let Some(c) = cap_usd
             && (!c.is_finite() || c < 0.0)
@@ -673,7 +684,7 @@ fn build_soft_limits_json(
         {
             return Err(err(StatusCode::BAD_REQUEST, "soft-limit bypass must be >= 0"));
         }
-        if cap.is_none() && cap_usd.is_none() && bypass.is_none() {
+        if cap.is_none() && cap_usd.is_none() && bypass.is_none() && pace_cap.is_none() {
             return Ok(());
         }
         let Some(canon) = crate::soft_limit::canonicalize_key(key) else {
@@ -692,6 +703,9 @@ fn build_soft_limits_json(
         if let Some(b) = bypass {
             entry.insert("bypass_minutes".into(), serde_json::json!(b));
         }
+        if let Some(p) = pace_cap.filter(|_| !usd_window) {
+            entry.insert("pace_cap".into(), serde_json::json!(p));
+        }
         if entry.is_empty() {
             return Ok(());
         }
@@ -705,14 +719,27 @@ fn build_soft_limits_json(
             let cap_usd = v.get("cap_usd").and_then(serde_json::Value::as_f64);
             let bypass =
                 v.get("bypass_minutes").and_then(serde_json::Value::as_i64).map(|n| n as i32);
-            insert(key, cap, cap_usd, bypass)?;
+            let pace_cap = v.get("pace_cap").and_then(serde_json::Value::as_f64);
+            insert(key, cap, cap_usd, bypass, pace_cap)?;
         }
     } else if map.is_some_and(|v| !v.is_null()) {
         return Err(err(StatusCode::BAD_REQUEST, "soft_limits must be an object"));
     } else {
         // No map supplied — fold the legacy scalar fields.
-        insert(crate::soft_limit::KEY_SESSION, legacy_session_cap, None, legacy_session_bypass)?;
-        insert(crate::soft_limit::KEY_WEEKLY_ALL, legacy_weekly_cap, None, legacy_weekly_bypass)?;
+        insert(
+            crate::soft_limit::KEY_SESSION,
+            legacy_session_cap,
+            None,
+            legacy_session_bypass,
+            None,
+        )?;
+        insert(
+            crate::soft_limit::KEY_WEEKLY_ALL,
+            legacy_weekly_cap,
+            None,
+            legacy_weekly_bypass,
+            None,
+        )?;
     }
 
     Ok((!out.is_empty()).then(|| serde_json::to_value(out).unwrap_or(serde_json::Value::Null)))
@@ -2616,6 +2643,40 @@ mod tests {
         assert!(pace["expected_pct"].as_f64().unwrap() > 50.0);
         assert!(pace["projected_wall_at"].is_string());
         assert_eq!(json["age_secs"], 7);
+    }
+
+    #[test]
+    fn a_pace_cap_persists_on_percent_windows_and_is_range_checked() {
+        let built = build_soft_limits_json(
+            Some(&serde_json::json!({
+                "session": {"pace_cap": 1.5},
+                "usd_5h": {"cap_usd": 2.0, "pace_cap": 1.5},
+            })),
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("valid")
+        .expect("non-empty");
+        assert_eq!(built["session"]["pace_cap"], 1.5);
+        assert!(
+            built["usd_5h"].get("pace_cap").is_none(),
+            "a dollar window reports no utilization, so a pace cap there is unenforceable"
+        );
+        for bad in [0.5, 0.0, 1000.0] {
+            assert!(
+                build_soft_limits_json(
+                    Some(&serde_json::json!({ "session": {"pace_cap": bad} })),
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .is_err(),
+                "pace_cap {bad} must be rejected"
+            );
+        }
     }
 
     #[test]

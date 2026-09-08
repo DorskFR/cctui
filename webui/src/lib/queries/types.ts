@@ -139,6 +139,9 @@ export interface SoftLimitConfig {
   /** Dollar cap; applies to the `session_usd` / `usd_5h` / `usd_7d` windows. */
   cap_usd?: number | null;
   bypass_minutes?: number | null;
+  /** Max burn rate as a multiple of the window's linear budget; percent
+   *  windows only. 1.5 ⇒ refuse once spent 50% faster than evenly. */
+  pace_cap?: number | null;
 }
 
 /** One normalized, provider-agnostic usage window. `key` is the

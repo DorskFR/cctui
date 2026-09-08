@@ -59,6 +59,7 @@ export function softFlat(edits: Record<string, SoftEdit>): Record<string, unknow
 		if (v.cap !== null) out[`${key}.cap`] = v.cap;
 		if (v.capUsd !== null) out[`${key}.capUsd`] = v.capUsd;
 		if (v.bypass !== null) out[`${key}.bypass`] = v.bypass;
+		if (v.paceCap !== null) out[`${key}.paceCap`] = v.paceCap;
 	}
 	return out;
 }

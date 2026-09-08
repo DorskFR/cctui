@@ -58,15 +58,18 @@ describe('diffCount', () => {
 });
 
 describe('softFlat', () => {
-	it('flattens a cap and a bypass into separate entries', () => {
-		expect(softFlat({ session: { cap: 80, capUsd: null, bypass: 30 } })).toEqual({
+	it('flattens a cap, a bypass and a pace cap into separate entries', () => {
+		expect(softFlat({ session: { cap: 80, capUsd: null, bypass: 30, paceCap: 1.5 } })).toEqual({
 			'session.cap': 80,
-			'session.bypass': 30
+			'session.bypass': 30,
+			'session.paceCap': 1.5
 		});
 	});
 
 	it('drops empty windows', () => {
-		expect(softFlat({ weekly_all: { cap: null, capUsd: null, bypass: null } })).toEqual({});
+		expect(
+			softFlat({ weekly_all: { cap: null, capUsd: null, bypass: null, paceCap: null } })
+		).toEqual({});
 	});
 });
 

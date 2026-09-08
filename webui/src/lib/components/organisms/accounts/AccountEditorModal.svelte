@@ -87,7 +87,10 @@
 	// window, keyed by canonical window id. Edited per window via the reusable
 	// SoftLimit component; empty inputs = no cap/bypass on that window.
 	let softEdits = $state<
-		Record<string, { cap: number | null; capUsd: number | null; bypass: number | null }>
+		Record<
+			string,
+			{ cap: number | null; capUsd: number | null; bypass: number | null; paceCap: number | null }
+		>
 	>({});
 	// Gateway RPM/TPM ceilings shared across the account's concurrent sessions;
 	// empty inputs ⇒ that dimension unlimited.
@@ -111,7 +114,8 @@
 	// Ensure every offered key has an edit slot (seeded null; open* seeds configured).
 	$effect(() => {
 		for (const { key } of editorRows) {
-			if (!(key in softEdits)) softEdits[key] = { cap: null, capUsd: null, bypass: null };
+			if (!(key in softEdits))
+				softEdits[key] = { cap: null, capUsd: null, bypass: null, paceCap: null };
 		}
 	});
 
@@ -633,6 +637,7 @@
 										bind:cap={softEdits[row.key].cap}
 										bind:capUsd={softEdits[row.key].capUsd}
 										bind:bypass={softEdits[row.key].bypass}
+										bind:paceCap={softEdits[row.key].paceCap}
 									/>
 								{/if}
 							{/each}

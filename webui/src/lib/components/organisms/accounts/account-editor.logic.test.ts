@@ -15,16 +15,26 @@ describe('buildSoftLimits', () => {
 	it('keeps percent and dollar windows apart and drops empty ones', () => {
 		expect(
 			buildSoftLimits({
-				session: { cap: 80, capUsd: null, bypass: '30' as unknown as number },
-				weekly_all: { cap: null, capUsd: null, bypass: null },
-				usd_5h: { cap: null, capUsd: 2.5, bypass: null },
-				odd: { cap: 'x' as unknown as number, capUsd: null, bypass: -3 }
+				session: { cap: 80, capUsd: null, bypass: '30' as unknown as number, paceCap: null },
+				weekly_all: { cap: null, capUsd: null, bypass: null, paceCap: null },
+				usd_5h: { cap: null, capUsd: 2.5, bypass: null, paceCap: null },
+				odd: { cap: 'x' as unknown as number, capUsd: null, bypass: -3, paceCap: null }
 			})
 		).toEqual({
-			session: { cap_pct: 80, bypass_minutes: 30 },
+			session: { cap_pct: 80, bypass_minutes: 30, pace_cap: null },
 			usd_5h: { cap_usd: 2.5, bypass_minutes: null },
-			odd: { cap_pct: null, bypass_minutes: 0 }
+			odd: { cap_pct: null, bypass_minutes: 0, pace_cap: null }
 		});
+	});
+
+	it('carries a pace cap alone and rejects a non-positive one', () => {
+		expect(
+			buildSoftLimits({
+				session: { cap: null, capUsd: null, bypass: null, paceCap: 1.5 },
+				weekly_all: { cap: null, capUsd: null, bypass: null, paceCap: 0 },
+				usd_5h: { cap: null, capUsd: null, bypass: null, paceCap: 2 }
+			})
+		).toEqual({ session: { cap_pct: null, bypass_minutes: null, pace_cap: 1.5 } });
 	});
 });
 

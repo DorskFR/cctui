@@ -1309,6 +1309,7 @@
 	"settings_whip_phrases_field_label": "Vos phrases (une par ligne)",
 	"settings_whip_phrases_help": "Une par ligne. Nettoyées et dédoublonnées à l'enregistrement.",
 	"settings_whip_title": "Mode fouet (🐎)",
+	"softlimit_pace_label": "Rythme (x)",
 	"softlimit_bypass_label": "Dérogation (min)",
 	"softlimit_cap_usd_label": "Plafond ($)",
 	"softlimit_not_reported": "Non rapporté actuellement",

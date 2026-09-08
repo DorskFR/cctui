@@ -14,6 +14,8 @@ export interface UsageRow {
 	/** Dollar cap for a dollar window. */
 	capUsd: number | null;
 	bypass: number | null;
+	/** Max burn rate as a multiple of the window's linear budget. */
+	paceCap: number | null;
 	observed: boolean;
 	/** Dollar-denominated window: rendered and edited in $, not %. */
 	usd: boolean;
@@ -75,6 +77,7 @@ export function mergeUsageWindows(
 			cap: l?.cap_pct ?? null,
 			capUsd: l?.cap_usd ?? null,
 			bypass: l?.bypass_minutes ?? null,
+			paceCap: l?.pace_cap ?? null,
 			observed: true,
 			usd: isUsdKey(w.key),
 			pace: w.pace ?? null
@@ -93,6 +96,7 @@ export function mergeUsageWindows(
 				cap: l?.cap_pct ?? null,
 				capUsd: l?.cap_usd ?? null,
 				bypass: l?.bypass_minutes ?? null,
+				paceCap: l?.pace_cap ?? null,
 				observed: false,
 				usd: isUsdKey(k),
 				pace: null

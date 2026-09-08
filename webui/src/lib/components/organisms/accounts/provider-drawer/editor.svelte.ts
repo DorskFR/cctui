@@ -18,7 +18,8 @@ const seedSoft = (p: AccountProvider): Record<string, SoftEdit> => {
 		out[key] = {
 			cap: v.cap_pct ?? null,
 			capUsd: v.cap_usd ?? null,
-			bypass: v.bypass_minutes ?? null
+			bypass: v.bypass_minutes ?? null,
+			paceCap: v.pace_cap ?? null
 		};
 	}
 	return out;
@@ -81,7 +82,7 @@ export class ProviderEdit {
 
 	seedWindows(keys: string[]) {
 		for (const key of keys) {
-			if (!(key in this.soft)) this.soft[key] = { cap: null, capUsd: null, bypass: null };
+			if (!(key in this.soft)) this.soft[key] = { cap: null, capUsd: null, bypass: null, paceCap: null };
 		}
 	}
 

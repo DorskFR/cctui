@@ -1310,6 +1310,7 @@
 	"settings_whip_phrases_field_label": "Your phrases (one per line)",
 	"settings_whip_phrases_help": "One per line. Trimmed and de-duplicated on save.",
 	"settings_whip_title": "Whip mode (🐎)",
+	"softlimit_pace_label": "Pace (x)",
 	"softlimit_bypass_label": "Bypass (min)",
 	"softlimit_cap_usd_label": "Cap ($)",
 	"softlimit_not_reported": "Not currently reported",

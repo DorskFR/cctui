@@ -16,6 +16,7 @@
 		cap = $bindable(null),
 		capUsd = $bindable(null),
 		bypass = $bindable(null),
+		paceCap = $bindable(null),
 		editable = false,
 		usd = false,
 		pace = null,
@@ -29,6 +30,8 @@
 		cap?: number | null;
 		capUsd?: number | null;
 		bypass?: number | null;
+		/** Max burn rate as a multiple of the window's linear budget; % windows only. */
+		paceCap?: number | null;
 		editable?: boolean;
 		/** Dollar window: spend against a $ cap instead of % of a quota. */
 		usd?: boolean;
@@ -132,6 +135,22 @@
 				<label class="ctrl">
 					<Text as="span" tone="faint" size="xs">{m.softlimit_cap_usd_label()}</Text>
 					<Input type="number" step="0.01" size="sm" mono width="6rem" bind:value={capUsd} placeholder="e.g. 5.00" />
+				</label>
+			{/if}
+			{#if !usd}
+				<label class="ctrl">
+					<Text as="span" tone="faint" size="xs">{m.softlimit_pace_label()}</Text>
+					<Input
+						type="number"
+						min="1"
+						max="100"
+						step="0.1"
+						size="sm"
+						mono
+						width="5rem"
+						bind:value={paceCap}
+						placeholder="e.g. 1.5"
+					/>
 				</label>
 			{/if}
 			<label class="ctrl">
