@@ -62,6 +62,10 @@ const SHUTDOWN_DRAIN_MAX: Duration = Duration::from_secs(3);
 /// connection rebuilds it anyway.
 const ADAPTER_STOP_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Connect-edge broadcast depth. An adapter that lags past this sees `Lagged`,
+/// which is still an edge — the signal carries no payload.
+const CONNECT_SIGNAL_BUFFER: usize = 8;
+
 /// Sleep until `deadline`, or never when there's nothing buffered to flush.
 async fn wait_deadline(deadline: Option<tokio::time::Instant>) {
     match deadline {
@@ -85,6 +89,8 @@ pub struct Supervisor {
     counters: BandwidthCounters,
     /// Host CPU / memory / disk sampler for the heartbeat's `resources` block.
     resources: std::sync::Mutex<crate::resources::ResourceSampler>,
+    /// Broadcast of connect edges; every adapter ctx holds a subscription.
+    connected: tokio::sync::broadcast::Sender<()>,
 }
 
 impl Supervisor {
@@ -103,6 +109,7 @@ impl Supervisor {
             guard: std::sync::Mutex::new(SendGuard::open_default()),
             counters,
             resources: std::sync::Mutex::new(crate::resources::ResourceSampler::new()),
+            connected: tokio::sync::broadcast::Sender::new(CONNECT_SIGNAL_BUFFER),
         }
     }
 
@@ -124,12 +131,20 @@ impl Supervisor {
             });
         }
         crate::configsweep::spawn_loop(shutdown.clone());
+
+        // Adapters live for the life of the process, not of a connection: their
+        // tokens own live session subprocesses (`opencode serve`, `codex
+        // app-server`, headless claude), so tearing them down on a WS drop would
+        // kill running work. The WS is only the transport.
+        let mut running: HashMap<String, AdapterRunning> = HashMap::new();
+        let (event_tx, mut event_rx) = mpsc::channel::<(String, AdapterEvent)>(256);
+
         let mut attempt = 0usize;
         loop {
             if shutdown.is_cancelled() {
-                return;
+                break;
             }
-            match self.run_once(shutdown.clone()).await {
+            match self.run_once(shutdown.clone(), &mut running, &event_tx, &mut event_rx).await {
                 Ok(()) => {
                     tracing::info!("daemon WS closed cleanly, reconnecting");
                     attempt = 0;
@@ -140,35 +155,37 @@ impl Supervisor {
                     attempt = attempt.saturating_add(1);
                     tokio::select! {
                         () = tokio::time::sleep(Duration::from_secs(delay)) => {}
-                        () = shutdown.cancelled() => return,
+                        () = shutdown.cancelled() => break,
                     }
                 }
             }
         }
+
+        stop_adapters(&mut running).await;
     }
 
     #[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
-    async fn run_once(&self, shutdown: CancellationToken) -> anyhow::Result<()> {
+    async fn run_once(
+        &self,
+        shutdown: CancellationToken,
+        running: &mut HashMap<String, AdapterRunning>,
+        event_tx: &mpsc::Sender<(String, AdapterEvent)>,
+        event_rx: &mut mpsc::Receiver<(String, AdapterEvent)>,
+    ) -> anyhow::Result<()> {
         let url = self.client.daemon_ws_url();
         tracing::info!(%url, "connecting to daemon WS");
         let request = crate::client::daemon_ws_request(&url, &self.machine_key)?;
         let (ws, _) = tokio_tungstenite::connect_async(request).await?;
         let (mut sink, mut stream) = ws.split();
 
-        // Events from all running adapters fan into this single channel
-        // and from there onto the WS.
-        let (event_tx, mut event_rx) = mpsc::channel::<(String, AdapterEvent)>(256);
-
         // Out-of-band frames the supervisor itself produces (currently the
         // `StageFilesResult` reply to a mid-chat attachment request),
         // fanned onto the same WS sink as adapter events.
         let (frame_up_tx, mut frame_up_rx) = mpsc::channel::<DaemonFrameUp>(64);
 
-        // Per-adapter command sinks (so `Command` frames from the server can
-        // be routed to the right adapter by `adapter_id`).
-        let mut running: HashMap<String, AdapterRunning> = HashMap::new();
-
         let mut scrub = CompiledPatterns::disabled();
+
+        let mut announced = false;
 
         let mut ping = tokio::time::interval(PING_INTERVAL);
         ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -198,7 +215,7 @@ impl Supervisor {
                     () = shutdown.cancelled() => {
                         let frames = drain_for_shutdown(
                             std::mem::take(&mut batch),
-                            &mut event_rx,
+                            event_rx,
                             &scrub,
                         )
                         .await;
@@ -230,7 +247,15 @@ impl Supervisor {
                                         }
                                     }
                             } else {
-                                self.handle_frame(frame, &mut running, &event_tx, &frame_up_tx, &mut scrub, &shutdown).await;
+                                let reconciled =
+                                    matches!(frame, DaemonFrameDown::Reconcile { .. });
+                                self.handle_frame(frame, running, event_tx, &frame_up_tx, &mut scrub, &shutdown).await;
+                                // Announce the edge once the connection's first
+                                // reconcile has built (and subscribed) the adapters.
+                                if reconciled && !announced {
+                                    announced = true;
+                                    let _ = self.connected.send(());
+                                }
                             }
                         }
                     }
@@ -349,8 +374,6 @@ impl Supervisor {
             }
         }
         .await;
-
-        stop_adapters(&mut running).await;
 
         // An unfinished transfer resumes next connection, unless it has burned
         // MAX_ATTEMPTS without progress: then tombstone + drop it.
@@ -625,6 +648,7 @@ impl Supervisor {
                 token.clone(),
                 Some(self.client.clone()),
                 Some(self.machine_key.clone()),
+                &self.connected,
             );
             let adapter = factory.build(cfg.config.clone());
             let adapter_id_for_pump = id.clone();
@@ -811,7 +835,7 @@ async fn stop_adapters(running: &mut HashMap<String, AdapterRunning>) {
     for id in ids {
         if let Some(r) = running.remove(&id) {
             r.stop().await;
-            tracing::info!(adapter_id = %id, "stopped adapter for connection teardown");
+            tracing::info!(adapter_id = %id, "stopped adapter for daemon shutdown");
         }
     }
 }
@@ -1549,6 +1573,9 @@ mod tests {
     struct LiveTracker {
         live: Arc<Mutex<usize>>,
         peak: Arc<Mutex<usize>>,
+        sessions: Arc<Mutex<usize>>,
+        builds: Arc<Mutex<usize>>,
+        connects: Arc<Mutex<usize>>,
     }
 
     impl LiveTracker {
@@ -1557,6 +1584,15 @@ mod tests {
         }
         fn peak(&self) -> usize {
             *self.peak.lock().unwrap()
+        }
+        fn sessions(&self) -> usize {
+            *self.sessions.lock().unwrap()
+        }
+        fn builds(&self) -> usize {
+            *self.builds.lock().unwrap()
+        }
+        fn connects(&self) -> usize {
+            *self.connects.lock().unwrap()
         }
     }
 
@@ -1569,14 +1605,27 @@ mod tests {
         fn id(&self) -> &'static str {
             "stub"
         }
-        async fn start(&self, ctx: AdapterCtx) -> anyhow::Result<()> {
+        async fn start(&self, mut ctx: AdapterCtx) -> anyhow::Result<()> {
             {
                 let mut live = self.tracker.live.lock().unwrap();
                 *live += 1;
                 let mut peak = self.tracker.peak.lock().unwrap();
                 *peak = (*peak).max(*live);
             }
-            ctx.shutdown.cancelled().await;
+            // Stands in for a session subprocess whose lifetime is bound to the
+            // adapter token, the way `opencode serve` and `codex app-server` are.
+            *self.tracker.sessions.lock().unwrap() += 1;
+            loop {
+                tokio::select! {
+                    () = ctx.shutdown.cancelled() => break,
+                    edge = ctx.connected.recv() => {
+                        if edge.is_ok() {
+                            *self.tracker.connects.lock().unwrap() += 1;
+                        }
+                    }
+                }
+            }
+            *self.tracker.sessions.lock().unwrap() -= 1;
             *self.tracker.live.lock().unwrap() -= 1;
             Ok(())
         }
@@ -1591,6 +1640,7 @@ mod tests {
             "stub"
         }
         fn build(&self, _config: serde_json::Value) -> Box<dyn Adapter> {
+            *self.tracker.builds.lock().unwrap() += 1;
             Box::new(TrackedAdapter { tracker: self.tracker.clone() })
         }
     }
@@ -1615,30 +1665,104 @@ mod tests {
         (supervisor, tracker)
     }
 
+    /// Accept one WS connection, send a `Reconcile` for the stub adapter, then
+    /// close — the server-rollout shape of a disconnect.
+    async fn serve_one_reconcile(listener: &tokio::net::TcpListener) {
+        use futures_util::SinkExt;
+        use tokio_tungstenite::tungstenite::Message;
+
+        let (sock, _) = listener.accept().await.unwrap();
+        let mut ws = tokio_tungstenite::accept_async(sock).await.unwrap();
+        let frame = serde_json::json!({
+            "type": "reconcile",
+            "adapters": [{ "adapter_id": "stub", "config": { "mode": "bg" }, "enabled": true }],
+            "secret_scrub": [],
+        });
+        ws.send(Message::Text(frame.to_string().into())).await.unwrap();
+        ws.close(None).await.unwrap();
+    }
+
     #[tokio::test]
-    async fn reconnect_stops_the_previous_adapter_set() {
-        let (supervisor, tracker) = tracked();
+    async fn reconnect_keeps_adapters_and_their_live_sessions_running() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let tracker = LiveTracker::default();
+        let supervisor = Supervisor::new(
+            ServerClient::new(format!("http://{addr}")),
+            "machine-key".to_string(),
+            vec![Box::new(TrackedFactory { tracker: tracker.clone() })],
+        );
         let shutdown = CancellationToken::new();
-        let (event_tx, _event_rx) = mpsc::channel(8);
+        let (event_tx, mut event_rx) = mpsc::channel(8);
         let mut running: std::collections::HashMap<String, AdapterRunning> =
             std::collections::HashMap::new();
 
-        supervisor.reconcile(vec![cfg("bg")], &mut running, &event_tx, &shutdown);
-        let first = running.get("stub").expect("adapter running").shutdown.clone();
-        wait_until(|| tracker.live() == 1).await;
+        let server = tokio::spawn(async move {
+            serve_one_reconcile(&listener).await;
+            listener
+        });
+        supervisor
+            .run_once(shutdown.clone(), &mut running, &event_tx, &mut event_rx)
+            .await
+            .unwrap();
+        let listener = server.await.unwrap();
+        let token = running.get("stub").expect("adapter running").shutdown.clone();
+        wait_until(|| tracker.sessions() == 1).await;
+
+        assert!(!token.is_cancelled(), "a WS disconnect must not cancel a live adapter");
+        assert_eq!(tracker.sessions(), 1, "a WS disconnect must not kill a live session");
+        assert!(!shutdown.is_cancelled());
+
+        let server = tokio::spawn(async move { serve_one_reconcile(&listener).await });
+        supervisor
+            .run_once(shutdown.clone(), &mut running, &event_tx, &mut event_rx)
+            .await
+            .unwrap();
+        server.await.unwrap();
+
+        let after = running.get("stub").expect("adapter still running").shutdown.clone();
+        assert!(!after.is_cancelled(), "the reconnect must not cancel the adapter");
+        assert_eq!(tracker.sessions(), 1, "the live session must survive the reconnect");
+        assert_eq!(tracker.builds(), 1, "a reconnect with unchanged config must not rebuild");
+        assert_eq!(tracker.peak(), 1, "only one instance may own codex-offsets.json at a time");
 
         super::stop_adapters(&mut running).await;
-        assert!(first.is_cancelled(), "the previous connection's token must be cancelled");
-        assert_eq!(tracker.live(), 0, "the previous adapter task must have observed cancellation");
+        assert!(after.is_cancelled());
+        assert_eq!(tracker.sessions(), 0, "daemon shutdown must stop the session");
         assert!(running.is_empty());
-        assert!(!shutdown.is_cancelled(), "a reconnect must not cancel the global token");
+    }
 
-        supervisor.reconcile(vec![cfg("bg")], &mut running, &event_tx, &shutdown);
-        let second = running.get("stub").expect("adapter running").shutdown.clone();
-        wait_until(|| tracker.live() == 1).await;
-        assert!(!second.is_cancelled(), "the surviving instance is the new one");
-        assert!(first.is_cancelled());
-        assert_eq!(tracker.peak(), 1, "only one instance may own codex-offsets.json at a time");
+    #[tokio::test]
+    async fn every_connect_signals_the_adapter_including_the_first() {
+        let mut listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let tracker = LiveTracker::default();
+        let supervisor = Supervisor::new(
+            ServerClient::new(format!("http://{addr}")),
+            "machine-key".to_string(),
+            vec![Box::new(TrackedFactory { tracker: tracker.clone() })],
+        );
+        let shutdown = CancellationToken::new();
+        let (event_tx, mut event_rx) = mpsc::channel(8);
+        let mut running: std::collections::HashMap<String, AdapterRunning> =
+            std::collections::HashMap::new();
+
+        for expected in 1..=3 {
+            let server = tokio::spawn(async move {
+                serve_one_reconcile(&listener).await;
+                listener
+            });
+            supervisor
+                .run_once(shutdown.clone(), &mut running, &event_tx, &mut event_rx)
+                .await
+                .unwrap();
+            listener = server.await.unwrap();
+            wait_until(|| tracker.connects() == expected).await;
+        }
+        assert_eq!(tracker.builds(), 1, "three connects, one adapter build");
+        assert_eq!(tracker.connects(), 3, "one signal per connection, no more");
     }
 
     #[tokio::test]

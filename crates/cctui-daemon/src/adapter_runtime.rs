@@ -28,6 +28,11 @@ pub struct AdapterCtx {
     pub server: Option<crate::client::ServerClient>,
     /// The daemon's machine key, paired with `server` for authenticated pulls.
     pub machine_key: Option<String>,
+    /// Fires once per established server connection, including the first.
+    /// An adapter owning live sessions must re-announce them on each edge: the
+    /// server re-applies `daemon_lost` on every WS drop and only a fresh
+    /// `SessionStarted` clears it. Carries no payload.
+    pub connected: tokio::sync::broadcast::Receiver<()>,
 }
 
 #[async_trait::async_trait]
