@@ -1,6 +1,6 @@
 # Feature tour
 
-A visual record of the web UI: seven flows, captured from a running instance on
+A visual record of the web UI: eight flows, captured from a running instance on
 a synthetic fixture, at desktop and phone width. It is committed alongside the
 code it pictures, so `git log docs/journeys` is a history of how the app looked.
 
@@ -15,6 +15,7 @@ one PNG per step, a storyboard, and an `index.md` carrying the captions.
 | Find a session again | Free-text and faceted search over transcripts | [index](./journeys/search-sessions/index.md) |
 | See what the fleet is costing | Live counts, token windows, per-model usage | [index](./journeys/usage-overview/index.md) |
 | Bring a machine into the fleet | Users, keys, enrolment and machine liveness | [index](./journeys/enroll-machine/index.md) |
+| Group accounts into a pool | Account cards, pool membership and the drag handle | [index](./journeys/accounts-pools/index.md) |
 | Tune how agents behave | Appearance, session defaults, execution limits, redaction | [index](./journeys/settings-tour/index.md) |
 
 Every flow is recorded in `desktop-dark` and `mobile-dark`. `sessions-list` is
