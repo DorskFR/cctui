@@ -102,7 +102,7 @@
 	"accounts_modal_new_account": "New account",
 	"accounts_modal_reauth": "Reauthenticate provider",
 	"accounts_model_remove_aria": "Remove model {model}",
-	"accounts_models_help": "Model ids this endpoint serves, with the label the pickers show.",
+	"accounts_models_help": "Models this credential offers, with the label the pickers show. Leave empty to offer the catalog's own list.",
 	"accounts_models_label": "Models",
 	"accounts_more": "More",
 	"accounts_move_button": "Move",

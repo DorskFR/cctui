@@ -18,6 +18,8 @@
 		providerForAdapter,
 		isCompatibleProvider,
 		withAliasTargets,
+		declaredModelOptions,
+		withDeclaredModels,
 		allAdapters,
 		adapterLabel,
 		type Adapter
@@ -57,7 +59,7 @@
 		form.account ? dispatchAccounts.find((a) => a.name === form.account) : undefined
 	);
 	const selectedProvider = $derived(providerForAdapter(selectedAccount, adapter));
-	const accountModelOptions = $derived((selectedProvider?.models ?? []).map((m) => ({ v: m.model, label: m.label })));
+	const accountModelOptions = $derived(declaredModelOptions(selectedProvider?.models));
 	const usesAccountModels = $derived(!!selectedProvider && isCompatibleProvider(selectedProvider.provider));
 	// Native families for the selected harness. An ephemeral worker has no
 	// machine-scoped catalog, so codex dispatch reads the cross-machine merge
@@ -65,9 +67,12 @@
 	// account's alias targets.
 	const mergedCodexCatalog = useMergedCodexModels(() => isCodex);
 	const nativeModelOptions = $derived(
-		isCodex
-			? codexModelsFor(mergedCodexCatalog.data)
-			: withAliasTargets(claudeModels, selectedProvider?.model_aliases)
+		withDeclaredModels(
+			selectedProvider?.models,
+			isCodex
+				? codexModelsFor(mergedCodexCatalog.data)
+				: withAliasTargets(claudeModels, selectedProvider?.model_aliases)
+		)
 	);
 	const nativeEfforts = $derived(
 		isCodex ? codexEffortsFor(mergedCodexCatalog.data, form.model_codex) : claudeEfforts

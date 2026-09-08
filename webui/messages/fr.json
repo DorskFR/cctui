@@ -102,7 +102,7 @@
 	"accounts_modal_new_account": "Nouveau compte",
 	"accounts_modal_reauth": "Réauthentifier le fournisseur",
 	"accounts_model_remove_aria": "Supprimer le modèle {model}",
-	"accounts_models_help": "Identifiants de modèles servis par cet endpoint, avec le libellé affiché dans les sélecteurs.",
+	"accounts_models_help": "Modèles proposés par cet identifiant, avec le libellé affiché dans les sélecteurs. Laisser vide pour proposer la liste du catalogue.",
 	"accounts_models_label": "Modèles",
 	"accounts_more": "Plus",
 	"accounts_move_button": "Déplacer",

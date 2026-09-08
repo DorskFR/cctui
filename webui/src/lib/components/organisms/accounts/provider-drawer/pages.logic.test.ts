@@ -2,20 +2,21 @@ import { describe, expect, it } from 'vitest';
 import { diffCount, groupPage, looseSettings, pagesFor, settingsSlice, softFlat } from './pages.logic';
 
 describe('pagesFor', () => {
-	it('gives an anthropic credential the settings pages', () => {
+	it('gives an anthropic credential the settings pages and its model list', () => {
 		expect(pagesFor('anthropic')).toEqual([
 			'aliases',
 			'limits',
 			'ui',
 			'privacy',
 			'tools',
+			'models',
 			'gateway',
 			'advanced'
 		]);
 	});
 
-	it('drops the settings pages for codex and adds models for fireworks', () => {
-		expect(pagesFor('openai')).toEqual(['aliases', 'limits', 'gateway', 'advanced']);
+	it('drops the settings pages for codex but keeps the model list everywhere', () => {
+		expect(pagesFor('openai')).toEqual(['aliases', 'limits', 'models', 'gateway', 'advanced']);
 		expect(pagesFor('fireworks')).toEqual(['aliases', 'limits', 'models', 'gateway', 'advanced']);
 	});
 

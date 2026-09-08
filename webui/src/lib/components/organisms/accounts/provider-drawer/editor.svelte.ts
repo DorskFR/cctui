@@ -144,7 +144,7 @@ export class ProviderEdit {
 		if (this.isFireworks) {
 			out.models = fwModelList(this.models);
 			out.provider_settings = this.providerSettings;
-		} else if (this.isCompatible) {
+		} else {
 			out.models = modelList(this.models);
 		}
 		if (this.isFireworks || this.isCompatible) {

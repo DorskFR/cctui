@@ -50,7 +50,9 @@ export {
 	codexModelsFor,
 	codexEffortsFor,
 	claudeModels,
-	claudeEfforts
+	claudeEfforts,
+	declaredModelOptions,
+	withDeclaredModels
 } from '$lib/harnessModels';
 
 // Annotate native-family options with the per-account alias target

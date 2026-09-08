@@ -233,8 +233,9 @@ pub struct ProviderInfo {
     /// Provider family (generated column): `anthropic` | `openai`. At most one
     /// provider per family per account, guaranteed by construction.
     pub family: String,
-    /// Selectable models for a compatible endpoint. `None`/empty for
-    /// native subscription providers (they use the harness's native families).
+    /// Models this credential offers, declared by the operator, with optional
+    /// pricing. `None`/empty falls back to the harness catalog / native
+    /// families. Honoured for every provider kind.
     pub models: Option<serde_json::Value>,
     /// Per-provider logical→concrete model alias map, e.g.
     /// `{"opus": "claude-opus-4-8[1m]"}`. Resolved server-side at spawn.
@@ -474,7 +475,7 @@ pub struct ProviderSpec {
     /// Required for `*-compatible` providers; ignored for native ones.
     #[serde(default)]
     pub base_url: Option<String>,
-    /// Selectable models for a compatible endpoint.
+    /// Models this credential offers; empty falls back to the harness catalog.
     #[serde(default)]
     pub models: Option<Vec<AccountModel>>,
     /// Logical→concrete model alias map, e.g.
@@ -583,10 +584,10 @@ pub struct UpdateAccount {
 }
 
 /// `PATCH /api/v1/accounts/{id}/providers/{provider_id}` payload. A partial update:
-/// for a non-managed compatible endpoint the operator may edit `models`,
-/// `base_url`, `auth_scheme`, and rotate the static credential (`access_token`).
-/// `model_aliases` / `soft_limits` / `settings_json` are editable for every
-/// provider. All optional; an absent field leaves that column unchanged.
+/// for a non-managed compatible endpoint the operator may edit `base_url`,
+/// `auth_scheme`, and rotate the static credential (`access_token`).
+/// `models` / `model_aliases` / `soft_limits` / `settings_json` are editable
+/// for every provider. All optional; an absent field leaves that column unchanged.
 /// `base_url`/credential are never returned, so the editor re-supplies
 /// `base_url` when changing it and leaves the credential blank to keep the
 /// stored one.
@@ -1451,6 +1452,13 @@ pub async fn add_provider(
     Ok((StatusCode::CREATED, Json(info)))
 }
 
+/// Whether the payload touches a field only a compatible endpoint has.
+/// `models` is deliberately not one: a declared model list is honoured for
+/// every provider kind, native subscriptions included.
+const fn endpoint_fields_present(req: &UpdateProvider) -> bool {
+    req.base_url.is_some() || req.auth_scheme.is_some() || req.access_token.is_some()
+}
+
 /// The provider PATCH's single UPDATE. COALESCE keeps each column when its bind
 /// is NULL, so an absent field is a no-op; the `CASE WHEN $n` pairs carry an
 /// explicit provided-flag for the columns whose "clear" is also NULL. Admin
@@ -1474,8 +1482,8 @@ const UPDATE_PROVIDER_SQL: &str = "UPDATE account_providers SET \
 
 /// `PATCH /api/v1/accounts/{id}/providers/{provider_id}` — edit a provider
 /// — compatible endpoints may change
-/// models / base URL / auth scheme / credential; aliases, soft limits, and
-/// settings are editable for every provider. Managed providers are read-only.
+/// base URL / auth scheme / credential; the declared model list, aliases, soft
+/// limits, and settings are editable for every provider. Managed providers are read-only.
 // Linear handler: per-field optional updates built into one dynamic UPDATE.
 #[allow(clippy::too_many_lines)]
 pub async fn update_provider(
@@ -1501,14 +1509,9 @@ pub async fn update_provider(
     let compatible =
         matches!(provider.as_str(), "anthropic-compatible" | "openai-compatible" | "fireworks");
 
-    // Compatible-only fields are rejected for native providers so the edit form
-    // can't silently no-op against a subscription credential.
-    if !compatible
-        && (req.base_url.is_some()
-            || req.auth_scheme.is_some()
-            || req.models.is_some()
-            || req.access_token.is_some())
-    {
+    // Endpoint fields are rejected for native providers so the edit form can't
+    // silently no-op against a subscription credential.
+    if !compatible && endpoint_fields_present(&req) {
         return Err(err(
             StatusCode::BAD_REQUEST,
             "endpoint fields are only editable for a compatible provider",
@@ -2573,6 +2576,28 @@ mod tests {
             "five_hour": { "utilization": 90.0, "resets_at": "2026-06-19T16:00:00Z" },
             "seven_day": { "utilization": 10.0, "resets_at": "2026-06-26T00:00:00Z" },
         })
+    }
+
+    fn update_provider(json: serde_json::Value) -> UpdateProvider {
+        serde_json::from_value(json).unwrap()
+    }
+
+    #[test]
+    fn a_declared_model_list_is_not_an_endpoint_field() {
+        let models = update_provider(serde_json::json!({
+            "models": [{"model": "claude-opus-5", "label": "Opus 5"}]
+        }));
+        assert!(!endpoint_fields_present(&models));
+        assert!(!endpoint_fields_present(&update_provider(serde_json::json!({"models": []}))));
+        assert!(endpoint_fields_present(&update_provider(
+            serde_json::json!({"base_url": "https://x"})
+        )));
+        assert!(endpoint_fields_present(&update_provider(
+            serde_json::json!({"auth_scheme": "bearer"})
+        )));
+        assert!(endpoint_fields_present(&update_provider(
+            serde_json::json!({"access_token": "sk-x"})
+        )));
     }
 
     #[test]

@@ -55,6 +55,33 @@ export const claudeModels: ModelOption[] = [
 ];
 export const claudeEfforts = ['', 'low', 'medium', 'high', 'xhigh', 'max'];
 
+// The models a provider declares, in the order the operator listed them; a row
+// with no id is a half-filled editor row and is dropped.
+export function declaredModelOptions(
+	models: { model: string; label: string }[] | null | undefined
+): ModelOption[] {
+	return (models ?? [])
+		.filter((mo) => mo.model.trim())
+		.map((mo) => ({ v: mo.model.trim(), label: mo.label.trim() || mo.model.trim() }));
+}
+
+// Declared models first, then whatever the catalog/native list adds that they
+// don't already cover, so an operator's curated set leads the picker without
+// hiding the rest.
+export function withDeclaredModels(
+	models: { model: string; label: string }[] | null | undefined,
+	fallback: ModelOption[]
+): ModelOption[] {
+	const declared = declaredModelOptions(models);
+	if (!declared.length) return fallback;
+	const seen = new Set(declared.map((o) => o.v));
+	return [
+		...(fallback.some((o) => o.v === '') ? [{ v: '', label: 'Default' }] : []),
+		...declared,
+		...fallback.filter((o) => o.v && !seen.has(o.v))
+	];
+}
+
 // Reads a free-text model id: whitespace-trimmed, empty meaning "Default".
 export function customModelValue(text: string): string {
 	return text.trim();
