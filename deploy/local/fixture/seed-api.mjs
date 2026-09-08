@@ -26,18 +26,42 @@ const call = async (method, path, body) => {
 	return res.status === 204 ? null : res.json();
 };
 
+// Three accounts and one pool: enough for the accounts board to show a pool
+// with a member, and two loose accounts to drag into it. A single account
+// pictures neither.
+const ACCOUNTS = [
+	{ name: 'acme-team', emoji: '🛠' },
+	{ name: 'acme-research', emoji: '🔬' },
+	{ name: 'acme-ops', emoji: '🚚' }
+];
+
 const accounts = await call('GET', '/accounts');
-if (!accounts.some((a) => a.name === 'acme-team')) {
+for (const { name, emoji } of ACCOUNTS) {
+	if (accounts.some((a) => a.name === name)) continue;
 	await call('POST', '/accounts', {
-		name: 'acme-team',
-		emoji: '🛠',
+		name,
+		emoji,
 		user_id: USER,
 		provider: 'anthropic',
 		refresh_token: 'fixture-not-a-real-token',
 		access_token: 'fixture-not-a-real-token',
 		expires_at: 4102444800
 	});
-	console.log('fixture: created account acme-team');
+	console.log('fixture: created account', name);
+}
+
+// Re-read so the pool can name its member by id, whether it was just created
+// or already existed from an earlier run.
+const byName = new Map((await call('GET', '/accounts')).map((a) => [a.name, a.id]));
+const pools = await call('GET', '/account-pools');
+if (!pools.some((p) => p.name === 'production')) {
+	await call('POST', '/account-pools', {
+		name: 'production',
+		strategy: 'headroom',
+		accounts: [byName.get('acme-team')].filter(Boolean),
+		user_id: USER
+	});
+	console.log('fixture: created pool production with acme-team');
 }
 
 // The theme the app resolves on load. The book renders one variant per pass
