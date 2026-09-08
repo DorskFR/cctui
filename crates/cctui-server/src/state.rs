@@ -193,3 +193,68 @@ pub fn track_command(
     map.retain(|_, c| now.duration_since(c.at) < PENDING_COMMAND_TTL);
     map.insert(command_id, PendingCommand { session_id, spawn, at: now });
 }
+
+/// Drop every usage-notice bucket recorded for `session_id`. A bucket is a
+/// dedup hint, so losing one costs at most a repeated notice if the session
+/// comes back.
+pub fn drop_usage_notice_buckets(
+    buckets: &crate::routes::gateway::usage_notices::NoticeBuckets,
+    session_id: &str,
+) {
+    buckets.retain(|(sid, _), _| sid != session_id);
+}
+
+/// Drop the buckets of every session not in `live`, returning how many went.
+pub fn sweep_usage_notice_buckets(
+    buckets: &crate::routes::gateway::usage_notices::NoticeBuckets,
+    live: &std::collections::HashSet<String>,
+) -> usize {
+    let before = buckets.len();
+    buckets.retain(|(sid, _), _| live.contains(sid));
+    before - buckets.len()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn buckets() -> crate::routes::gateway::usage_notices::NoticeBuckets {
+        let m = crate::routes::gateway::usage_notices::NoticeBuckets::new();
+        m.insert(("s1".into(), "session".into()), 5);
+        m.insert(("s1".into(), "weekly".into()), 2);
+        m.insert(("s2".into(), "session".into()), 7);
+        m
+    }
+
+    #[test]
+    fn dropping_a_session_leaves_the_others_alone() {
+        let m = buckets();
+        drop_usage_notice_buckets(&m, "s1");
+        assert_eq!(m.len(), 1);
+        assert_eq!(m.get(&("s2".into(), "session".into())).map(|b| *b), Some(7));
+    }
+
+    #[test]
+    fn dropping_an_unknown_session_is_a_no_op() {
+        let m = buckets();
+        drop_usage_notice_buckets(&m, "s3");
+        assert_eq!(m.len(), 3);
+    }
+
+    #[test]
+    fn the_sweep_keeps_only_live_sessions() {
+        let m = buckets();
+        let live = std::collections::HashSet::from(["s2".to_owned()]);
+        assert_eq!(sweep_usage_notice_buckets(&m, &live), 2);
+        assert_eq!(m.len(), 1);
+        assert_eq!(m.get(&("s2".into(), "session".into())).map(|b| *b), Some(7));
+    }
+
+    #[test]
+    fn the_sweep_keeps_everything_when_all_sessions_live() {
+        let m = buckets();
+        let live = std::collections::HashSet::from(["s1".to_owned(), "s2".to_owned()]);
+        assert_eq!(sweep_usage_notice_buckets(&m, &live), 0);
+        assert_eq!(m.len(), 3);
+    }
+}

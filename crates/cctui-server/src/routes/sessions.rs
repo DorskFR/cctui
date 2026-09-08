@@ -2332,8 +2332,10 @@ async fn archive_one(state: &AppState, session_id: &str) -> Result<(), sqlx::Err
         }
     }
     state.bus.deregister_session_stream(session_id);
+    crate::state::drop_usage_notice_buckets(&state.usage_notice_buckets, session_id);
     for child in &children {
         state.bus.deregister_session_stream(child);
+        crate::state::drop_usage_notice_buckets(&state.usage_notice_buckets, child);
     }
     tracing::info!(session_id = %session_id, children = children.len(), "session archived");
     Ok(())

@@ -1868,6 +1868,7 @@ async fn mark_session_ended(
     // cctui tokens minted at spawn map to `(session_id, account_id)` and must
     // die with the session so the gateway can no longer be driven under them.
     crate::routes::gateway::revoke_session_tokens(state, local_id).await;
+    crate::state::drop_usage_notice_buckets(&state.usage_notice_buckets, local_id);
     Ok(())
 }
 
