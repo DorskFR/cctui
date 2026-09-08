@@ -22,6 +22,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use cctui_proto::adapter::{AdapterEvent, EndReason, SessionMeta};
@@ -90,7 +91,22 @@ pub struct LogTail {
     /// evictions never re-read (re-upload) historical rollouts.
     offsets: crate::offsets::OffsetStore,
     offsets_dirty: bool,
+    /// `local_id` → offset the server last persisted. A mark behind our own
+    /// offset means events were emitted but never stored, so the reconcile
+    /// pass replays from the mark instead.
+    marks: ResumeMarks,
+    reconciled: HashSet<PathBuf>,
 }
+
+/// The server's per-session transcript marks, written by the codex command
+/// pump on a `ResumeMarks` frame and read by the tail when it adopts a rollout.
+pub type ResumeMarks = Arc<Mutex<HashMap<String, u64>>>;
+
+/// How far behind the persisted offset the reconcile pass backs up before
+/// re-reading, mirroring the claude-code transcript tailer. The server's
+/// `(session_id, event_type, content_hash)` dedup drops every replayed
+/// duplicate, so the window can be generous.
+pub const RECONCILE_BACKUP_BYTES: u64 = 64 * 1024;
 
 impl LogTail {
     pub fn new(
@@ -107,7 +123,14 @@ impl LogTail {
             owned: None,
             offsets,
             offsets_dirty: false,
+            marks: ResumeMarks::default(),
+            reconciled: HashSet::new(),
         }
+    }
+
+    /// Share the store the command pump writes server transcript marks into.
+    pub fn set_resume_marks(&mut self, marks: ResumeMarks) {
+        self.marks = marks;
     }
 
     /// Share the app-server session registry so app-server-owned rollout
@@ -206,8 +229,10 @@ impl LogTail {
         let is_new = !self.sessions.contains_key(&path);
         if is_new {
             // Quiet rollout with nothing beyond the persisted offset: leave it
-            // untracked so it stays invisible (no Started/Ended churn).
-            if len <= self.offsets.get(&key) {
+            // untracked so it stays invisible (no Started/Ended churn) unless
+            // the server still holds a mark for it — then the gap behind that
+            // mark is exactly what the reconcile pass must replay.
+            if len <= self.offsets.get(&key) && !self.needs_quiet_reconcile(&path, &key) {
                 return;
             }
             let local_id = derive_local_id(&path);
@@ -252,26 +277,88 @@ impl LogTail {
             );
         }
 
-        let session = self.sessions.get_mut(&path).expect("inserted above");
-        if len <= session.offset {
+        self.reconcile_once(&path, &key).await;
+
+        let session = self.sessions.get(&path).expect("inserted above");
+        let (offset, local_id) = (session.offset, session.local_id.clone());
+        if len <= offset {
             return; // no new bytes
         }
-        let events = match read_new_lines(&path, session.offset, &session.local_id) {
+        let (events, new_offset) = match read_new_lines(&path, offset, &local_id) {
             Ok(res) => res,
             Err(err) => {
                 tracing::debug!(%err, ?path, "codex log read failed");
                 return;
             }
         };
-        session.offset = len;
-        self.offsets.set(key, len);
-        self.offsets_dirty = true;
-        if !events.is_empty() {
-            session.last_activity = Instant::now();
-            session.hibernated = false;
+        if events.is_empty() {
+            let session = self.sessions.get_mut(&path).expect("inserted above");
+            session.offset = new_offset;
+            if new_offset > offset {
+                self.offsets.set(key, new_offset);
+                self.offsets_dirty = true;
+            }
+            return;
         }
+        // The offset may only advance over events the receiver actually took:
+        // a dropped send is a hole the next scan has to re-read, and a
+        // persisted offset past it would make that hole permanent.
         for evt in events {
-            let _ = self.events.send(evt).await;
+            if self.events.send(evt).await.is_err() {
+                return;
+            }
+        }
+        let session = self.sessions.get_mut(&path).expect("inserted above");
+        session.offset = new_offset;
+        session.last_activity = Instant::now();
+        session.hibernated = false;
+        self.offsets.set(key, new_offset);
+        self.offsets_dirty = true;
+        let _ =
+            self.events.send(AdapterEvent::TranscriptMark { local_id, offset: new_offset }).await;
+    }
+
+    /// A quiet rollout still worth adopting: one we have tailed before and the
+    /// server holds a mark for, i.e. a candidate for a gap that opened while
+    /// its events were going nowhere.
+    fn needs_quiet_reconcile(&self, path: &Path, key: &str) -> bool {
+        if self.reconciled.contains(path) || self.offsets.get(key) == 0 {
+            return false;
+        }
+        let local_id = derive_local_id(path);
+        self.marks.lock().is_ok_and(|m| m.contains_key(&local_id))
+    }
+
+    /// Bounded re-read behind the persisted offset, once per rollout per
+    /// process. Emits without advancing any offset: it deliberately re-reads
+    /// seen lines and leans on the server's content-hash dedup.
+    async fn reconcile_once(&mut self, path: &Path, key: &str) {
+        if !self.reconciled.insert(path.to_path_buf()) {
+            return;
+        }
+        let persisted = self.offsets.get(key);
+        if persisted == 0 {
+            return;
+        }
+        let Some(session) = self.sessions.get(path) else { return };
+        let local_id = session.local_id.clone();
+        let mark = self.marks.lock().ok().and_then(|m| m.get(&local_id).copied());
+        let anchor = mark.map_or(persisted, |m| m.min(persisted));
+        let events = match reconcile_tail(path, &local_id, anchor) {
+            Ok(events) => events,
+            Err(err) => {
+                tracing::debug!(%err, ?path, "codex reconcile read failed");
+                return;
+            }
+        };
+        if events.is_empty() {
+            return;
+        }
+        tracing::info!(%local_id, anchor, count = events.len(), "codex: reconciling rollout tail");
+        for evt in events {
+            if self.events.send(evt).await.is_err() {
+                return;
+            }
         }
     }
 }
@@ -404,19 +491,74 @@ fn uuid_from_stem(stem: &str) -> Option<String> {
     None
 }
 
-fn read_new_lines(path: &Path, offset: u64, local_id: &str) -> std::io::Result<Vec<AdapterEvent>> {
+/// Parse from `offset` to the last complete line, returning the events and the
+/// offset that line ends at. A truncated trailing line never advances the
+/// offset, so the next scan re-reads it whole.
+fn read_new_lines(
+    path: &Path,
+    offset: u64,
+    local_id: &str,
+) -> std::io::Result<(Vec<AdapterEvent>, u64)> {
     use std::io::{BufRead, BufReader, Seek, SeekFrom};
 
     let mut file = std::fs::File::open(path)?;
     let len = file.metadata()?.len();
     if len <= offset {
-        return Ok(vec![]);
+        return Ok((vec![], offset));
     }
     file.seek(SeekFrom::Start(offset))?;
-    let reader = BufReader::new(file);
+    let mut reader = BufReader::new(file);
     let mut out = Vec::new();
-    for line in reader.lines() {
-        let line = line?;
+    let mut new_offset = offset;
+    loop {
+        let mut line = String::new();
+        let n = reader.read_line(&mut line)?;
+        if n == 0 || !line.ends_with('\n') {
+            break;
+        }
+        new_offset += n as u64;
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        out.push(parse_line(local_id, trimmed));
+    }
+    Ok((out, new_offset))
+}
+
+/// Re-read `path` from a window BEHIND `anchor`, realigned to a line boundary
+/// so parsing never starts mid-line. The caller must not persist any offset
+/// from this: it re-reads already-seen lines and relies on the server's
+/// content-hash dedup to drop the duplicates and surface only real gaps.
+fn reconcile_tail(path: &Path, local_id: &str, anchor: u64) -> std::io::Result<Vec<AdapterEvent>> {
+    use std::io::{BufRead, BufReader, Seek, SeekFrom};
+
+    let mut file = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+        Err(e) => return Err(e),
+    };
+    let len = file.metadata()?.len();
+    if len == 0 {
+        return Ok(vec![]);
+    }
+    let start = anchor.min(len).saturating_sub(RECONCILE_BACKUP_BYTES);
+    file.seek(SeekFrom::Start(start))?;
+    let mut reader = BufReader::new(file);
+    if start > 0 {
+        let mut partial = String::new();
+        reader.read_line(&mut partial)?;
+        if !partial.ends_with('\n') {
+            return Ok(vec![]);
+        }
+    }
+    let mut out = Vec::new();
+    loop {
+        let mut line = String::new();
+        let n = reader.read_line(&mut line)?;
+        if n == 0 || !line.ends_with('\n') {
+            break;
+        }
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;
@@ -530,6 +672,140 @@ mod tests {
     use super::*;
     use std::io::Write;
 
+    const ROLLOUT: &str = "rollout-2026-09-07T01-00-00-019f51ff-f19f-7ed2-bf2a-bbb0d5cc5b90";
+    const ROLLOUT_ID: &str = "019f51ff-f19f-7ed2-bf2a-bbb0d5cc5b90";
+
+    fn write_turns(path: &Path, range: std::ops::Range<usize>) {
+        let mut f =
+            std::fs::OpenOptions::new().create(true).append(true).open(path).expect("open rollout");
+        for i in range {
+            writeln!(f, r#"{{"role":"assistant","text":"turn {i}"}}"#).unwrap();
+        }
+    }
+
+    fn texts(events: &[AdapterEvent]) -> Vec<String> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                AdapterEvent::Message { payload, .. } => {
+                    payload.get("text").and_then(Value::as_str).map(str::to_owned)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn drain(rx: &mut mpsc::Receiver<AdapterEvent>) -> Vec<AdapterEvent> {
+        let mut out = Vec::new();
+        while let Ok(evt) = rx.try_recv() {
+            out.push(evt);
+        }
+        out
+    }
+
+    fn tail_with(
+        sessions: &Path,
+        offsets_path: Option<PathBuf>,
+        tx: mpsc::Sender<AdapterEvent>,
+    ) -> LogTail {
+        LogTail::new(
+            LogTailConfig {
+                sessions_root: sessions.to_path_buf(),
+                poll_interval: Duration::from_millis(10),
+                quiesce: Duration::from_hours(1),
+                offsets_path,
+            },
+            tx,
+            CancellationToken::new(),
+        )
+    }
+
+    /// A daemon that kept tailing while its events went nowhere leaves the
+    /// persisted offset past turns the server never stored. On restart the
+    /// server's resume mark is the only evidence of where its copy stops, so
+    /// the reconcile pass must replay from there — even though the rollout has
+    /// not grown since.
+    #[tokio::test]
+    async fn resume_mark_replays_the_gap_a_dropped_connection_left() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sessions = tmp.path().to_path_buf();
+        let path = sessions.join(format!("{ROLLOUT}.jsonl"));
+        let offsets_path = tmp.path().join("offsets.json");
+
+        let (tx, mut rx) = mpsc::channel(64);
+        let mut tail = tail_with(&sessions, Some(offsets_path.clone()), tx);
+        write_turns(&path, 0..2);
+        tail.scan_once().await;
+        let stored = drain(&mut rx);
+        assert_eq!(texts(&stored), ["turn 0", "turn 1"]);
+        let mark = match stored.last().expect("events") {
+            AdapterEvent::TranscriptMark { offset, .. } => *offset,
+            other => panic!("expected a transcript mark, got {other:?}"),
+        };
+
+        // the WS is down: these turns are tailed but never reach the server,
+        // and the offset is flushed past them anyway.
+        write_turns(&path, 2..4);
+        tail.scan_once().await;
+        drop(tail);
+        drop(rx);
+
+        let (tx, mut rx) = mpsc::channel(64);
+        let mut tail = tail_with(&sessions, Some(offsets_path), tx);
+        tail.set_resume_marks(Arc::new(Mutex::new(HashMap::from([(ROLLOUT_ID.to_owned(), mark)]))));
+        tail.scan_once().await;
+        let healed = texts(&drain(&mut rx));
+        assert!(
+            healed.contains(&"turn 2".to_owned()) && healed.contains(&"turn 3".to_owned()),
+            "the gap behind the mark must be replayed, got {healed:?}"
+        );
+    }
+
+    /// The offset is a promise that everything before it was handed off. A
+    /// failed send must leave it where it was so the next scan re-reads.
+    #[tokio::test]
+    async fn offset_does_not_advance_past_events_that_were_not_sent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sessions = tmp.path().to_path_buf();
+        let path = sessions.join(format!("{ROLLOUT}.jsonl"));
+        let offsets_path = tmp.path().join("offsets.json");
+        write_turns(&path, 0..3);
+
+        let (tx, rx) = mpsc::channel(64);
+        drop(rx);
+        let mut tail = tail_with(&sessions, Some(offsets_path), tx);
+        tail.scan_once().await;
+        let key = path.to_string_lossy().into_owned();
+        assert_eq!(tail.offsets.get(&key), 0, "a dropped send must not advance the offset");
+
+        let (tx, mut rx) = mpsc::channel(64);
+        let mut tail = tail_with(&sessions, tail.cfg.offsets_path.clone(), tx);
+        tail.scan_once().await;
+        assert_eq!(texts(&drain(&mut rx)), ["turn 0", "turn 1", "turn 2"]);
+    }
+
+    #[tokio::test]
+    async fn a_partial_trailing_line_is_re_read_whole() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sessions = tmp.path().to_path_buf();
+        let path = sessions.join(format!("{ROLLOUT}.jsonl"));
+        let (tx, mut rx) = mpsc::channel(64);
+        let mut tail = tail_with(&sessions, None, tx);
+
+        std::fs::write(&path, "{\"role\":\"assistant\",\"text\":\"turn 0\"}\n{\"role\":\"assis")
+            .unwrap();
+        tail.scan_once().await;
+        assert_eq!(texts(&drain(&mut rx)), ["turn 0"]);
+
+        std::fs::write(
+            &path,
+            "{\"role\":\"assistant\",\"text\":\"turn 0\"}\n{\"role\":\"assistant\",\"text\":\"turn 1\"}\n",
+        )
+        .unwrap();
+        tail.scan_once().await;
+        assert_eq!(texts(&drain(&mut rx)), ["turn 1"]);
+    }
+
     #[tokio::test]
     async fn detects_new_session_file() {
         let tmp = tempfile::tempdir().unwrap();
@@ -546,7 +822,7 @@ mod tests {
             CancellationToken::new(),
         );
         let path = sessions.join("session-abc.jsonl");
-        std::fs::write(&path, r#"{"role":"assistant","text":"hi"}"#).unwrap();
+        std::fs::write(&path, "{\"role\":\"assistant\",\"text\":\"hi\"}\n").unwrap();
         tail.scan_once().await;
         // Started + Message.
         let evt1 = rx.recv().await.unwrap();
@@ -571,10 +847,9 @@ mod tests {
             CancellationToken::new(),
         );
         let path = sessions.join("s1.jsonl");
-        std::fs::write(&path, r#"{"role":"assistant","text":"hi"}"#).unwrap();
+        std::fs::write(&path, "{\"role\":\"assistant\",\"text\":\"hi\"}\n").unwrap();
         tail.scan_once().await;
-        rx.recv().await.unwrap();
-        rx.recv().await.unwrap();
+        drain(&mut rx);
         tokio::time::sleep(Duration::from_millis(20)).await;
         tail.scan_once().await;
         match rx.recv().await.unwrap() {
@@ -629,7 +904,7 @@ mod tests {
         // Rollout filename whose stem ends with the inventory-discovered id.
         let id = "019ea66a-cf6e-73b1";
         let path = sessions.join(format!("rollout-2026-{id}.jsonl"));
-        std::fs::write(&path, r#"{"role":"assistant","text":"real transcript"}"#).unwrap();
+        std::fs::write(&path, "{\"role\":\"assistant\",\"text\":\"real transcript\"}\n").unwrap();
         tail.scan_once().await;
         let evt1 = rx.recv().await.unwrap();
         let evt2 = rx.recv().await.unwrap();
@@ -666,7 +941,7 @@ mod tests {
         );
         tail.set_owned(registry);
         let path = sessions.join(format!("rollout-{id}.jsonl"));
-        std::fs::write(&path, r#"{"role":"assistant","text":"x"}"#).unwrap();
+        std::fs::write(&path, "{\"role\":\"assistant\",\"text\":\"x\"}\n").unwrap();
         tail.scan_once().await;
         assert!(rx.try_recv().is_err(), "owned rollout file must not be tailed");
     }
@@ -806,8 +1081,7 @@ mod tests {
         let path = sessions.join("s1.jsonl");
         std::fs::write(&path, "{\"role\":\"assistant\",\"text\":\"hi\"}\n").unwrap();
         tail.scan_once().await;
-        rx.recv().await.unwrap(); // Started
-        rx.recv().await.unwrap(); // Message
+        drain(&mut rx); // Started + Message + mark
         tokio::time::sleep(Duration::from_millis(20)).await;
         tail.scan_once().await;
         assert!(matches!(rx.recv().await.unwrap(), AdapterEvent::Status { .. }));
@@ -823,7 +1097,7 @@ mod tests {
             }
             other => panic!("expected only the appended line, got {other:?}"),
         }
-        assert!(rx.try_recv().is_err());
+        assert!(texts(&drain(&mut rx)).is_empty());
     }
 
     #[tokio::test]
@@ -847,6 +1121,7 @@ mod tests {
         tail.scan_once().await;
         assert!(matches!(rx.recv().await.unwrap(), AdapterEvent::SessionStarted { .. }));
         assert!(matches!(rx.recv().await.unwrap(), AdapterEvent::Message { .. }));
+        drain(&mut rx);
 
         tokio::time::sleep(Duration::from_millis(20)).await;
         tail.scan_once().await;
@@ -864,7 +1139,7 @@ mod tests {
             AdapterEvent::Message { payload, .. } => assert_eq!(payload["text"], json!("more")),
             other => panic!("expected only the appended line, got {other:?}"),
         }
-        assert!(rx.try_recv().is_err());
+        assert!(texts(&drain(&mut rx)).is_empty());
 
         std::fs::remove_file(&path).unwrap();
         tail.scan_once().await;
@@ -964,7 +1239,7 @@ mod tests {
         let path = tmp
             .path()
             .join("rollout-2026-07-12T01-25-55-019f51ff-f19f-7ed2-bf2a-bbb0d5cc5b90.jsonl");
-        std::fs::write(&path, r#"{"role":"assistant","text":"no meta"}"#).unwrap();
+        std::fs::write(&path, "{\"role\":\"assistant\",\"text\":\"no meta\"}\n").unwrap();
         assert_eq!(derive_local_id(&path), "019f51ff-f19f-7ed2-bf2a-bbb0d5cc5b90");
     }
 
@@ -1003,7 +1278,8 @@ mod tests {
                 AdapterEvent::Message { local_id, .. }
                 | AdapterEvent::ToolUse { local_id, .. }
                 | AdapterEvent::Status { local_id, .. }
-                | AdapterEvent::TokenUsage { local_id, .. } => local_id.clone(),
+                | AdapterEvent::TokenUsage { local_id, .. }
+                | AdapterEvent::TranscriptMark { local_id, .. } => local_id.clone(),
                 other => panic!("unexpected event {other:?}"),
             };
             assert_eq!(id, "019f5200-aaaa-7bbb-8ccc-000000000001");
