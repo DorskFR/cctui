@@ -41,26 +41,6 @@ export const BUILTIN_STALL_PHRASES = [
 	'happy to keep going'
 ];
 
-// Mirrors the daemon's built-in secret detectors (category names as they
-// appear in `[REDACTED:<category>]` markers).
-export const BUILTIN_SCRUB_CATEGORIES = [
-	'github_token',
-	'github_pat',
-	'npm_token',
-	'anthropic_key',
-	'aws_access_key',
-	'vault_token',
-	'gitlab_token',
-	'slack_token',
-	'youtrack_token',
-	'bitwarden_token',
-	'cctui_token',
-	'ccipat',
-	'private_key',
-	'jwt',
-	'db_url_password'
-];
-
 /** Lowercase, strip diacritics: "Réglages" matches "reglages" and vice versa. */
 export function normalizeForFilter(s: string): string {
 	return s

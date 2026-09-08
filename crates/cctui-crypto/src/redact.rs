@@ -1125,6 +1125,26 @@ mod tests {
         }
     }
 
+    /// The settings UI renders a checked-in copy of this table. Regenerate with
+    /// `node webui/scripts/gen-scrub-detectors.mjs` when this fails.
+    #[test]
+    fn builtin_list_matches_the_webui_copy() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../webui/src/lib/scrubDetectors.generated.ts"
+        );
+        let generated = std::fs::read_to_string(path).expect("generated detector list is present");
+        for (category, family) in builtin_categories() {
+            let line = format!("{{ category: '{category}', family: '{family}' }}");
+            assert!(generated.contains(&line), "webui detector list is stale: missing {line}");
+        }
+        assert_eq!(
+            generated.matches("{ category:").count(),
+            BUILTINS.len(),
+            "webui detector list has entries the engine does not"
+        );
+    }
+
     #[test]
     fn corpus_no_builtin_fires_on_benign_text() {
         let benign = [
