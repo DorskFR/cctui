@@ -44,11 +44,11 @@ pub fn is_final(part: &Part, role: &str) -> bool {
 #[must_use]
 pub fn part_payloads(part: &Part, role: &str) -> Vec<(Kind, Value)> {
     match part {
-        Part::Text { text, message_id, .. } => {
+        Part::Text { id, text, message_id, .. } => {
             if text.trim().is_empty() {
                 return Vec::new();
             }
-            vec![(Kind::Message, text_payload(role, text, message_id.as_deref()))]
+            vec![(Kind::Message, text_payload(role, text, message_id.as_deref(), id))]
         }
         Part::Reasoning { text, message_id, .. } => {
             if text.trim().is_empty() {
@@ -71,7 +71,11 @@ pub fn part_payloads(part: &Part, role: &str) -> Vec<(Kind, Value)> {
     }
 }
 
-fn text_payload(role: &str, text: &str, message_id: Option<&str>) -> Value {
+/// A user turn carries no id of its own, and the server dedupes on
+/// `digest(payload)` — without the part id the same prose sent twice in one
+/// session is silently dropped. The id comes from the part so a replay of the
+/// same part still hashes identically.
+fn text_payload(role: &str, text: &str, message_id: Option<&str>, part_id: &str) -> Value {
     if role == "user" {
         return json!({
             "type": "text",
@@ -79,6 +83,7 @@ fn text_payload(role: &str, text: &str, message_id: Option<&str>) -> Value {
             "role": "user",
             "text": text,
             "meta": false,
+            "line_id": part_id,
         });
     }
     json!({
@@ -207,6 +212,20 @@ mod tests {
         assert_eq!(p["content"], "▷ User: do it");
         assert_eq!(p["text"], "do it");
         assert_eq!(p["role"], "user");
+    }
+
+    #[test]
+    fn repeated_user_text_differs_by_part_id() {
+        let mut part = text_part("continue", None);
+        let (_, first) = part_payloads(&part, "user").remove(0);
+        let (_, replay) = part_payloads(&part, "user").remove(0);
+        assert_eq!(first, replay);
+        if let Part::Text { id, .. } = &mut part {
+            "prt_2".clone_into(id);
+        }
+        let (_, second) = part_payloads(&part, "user").remove(0);
+        assert_eq!(first["text"], second["text"]);
+        assert_ne!(first, second);
     }
 
     #[test]
