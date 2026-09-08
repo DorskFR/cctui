@@ -11,6 +11,8 @@
 	import { settings, type NavPosition, type ToastPosition } from '$lib/settings.svelte';
 	import { LOCALE_LABELS, LOCALES, type Locale } from '$lib/locale.svelte';
 	import { theme } from '$lib/theme.svelte';
+	import { themeMode } from '$lib/themeMode.svelte';
+	import { themePickerGroups } from '$lib/components/molecules/themePicker.logic';
 	import { fontScale, SCALE_LEVELS } from '$lib/fontscale.svelte';
 	import { m } from '$lib/paraglide/messages';
 
@@ -18,6 +20,15 @@
 	function scaleOf(id: string): number {
 		return SCALE_LEVELS.find((l) => l.id === id)?.value ?? 1;
 	}
+	// Auto first (its label recalls the remembered light and dark themes), then
+	// the light and dark sections. Same groups as the header picker.
+	const themeGroups = $derived(
+		themePickerGroups(theme.all, themeMode.pref, {
+			auto: m.theme_auto_label(),
+			light: m.theme_group_light(),
+			dark: m.theme_group_dark()
+		})
+	);
 </script>
 
 {#snippet scaleGlyph(o: SegmentOption)}
@@ -34,12 +45,16 @@
 		<SettingRow label={m.settings_theme_label()} help={m.settings_theme_help()}>
 			<Select
 				data-journey="theme"
-				value={theme.current}
+				value={themeMode.value}
 				style="width:100%"
 				onchange={(e) => settings.setTheme((e.currentTarget as HTMLSelectElement).value)}
 			>
-				{#each theme.all as t (t.id)}
-					<option value={t.id}>{t.icon ?? theme.fallbackIcon} {t.label}</option>
+				{#each themeGroups as g (g.label)}
+					<optgroup label={g.label}>
+						{#each g.options as o (o.value)}
+							<option value={o.value}>{o.label}</option>
+						{/each}
+					</optgroup>
 				{/each}
 			</Select>
 		</SettingRow>

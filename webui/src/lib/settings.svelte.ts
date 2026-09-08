@@ -2,7 +2,8 @@ import { browser } from '$app/environment';
 import { api } from './api';
 import { auth } from './auth.svelte';
 import { clampLocale, locale as localeStore, type Locale } from './locale.svelte';
-import { theme } from './theme.svelte';
+import { themeMode } from './themeMode.svelte';
+import { preferenceFrom, type ThemeChoice } from './themeMode';
 import { fontScale, nearestLevel } from './fontscale.svelte';
 import { notify } from './notify.svelte';
 import type { SettingsPayload } from '@bindings/SettingsPayload';
@@ -156,7 +157,16 @@ export function clampToastPosition(v: unknown): ToastPosition {
 }
 
 export interface DisplaySettings {
+	/** The theme currently painted (resolved from the preference below). Kept
+	 *  so older builds and the first paint still find a plain id here. */
 	theme: string;
+	/** `auto` follows the system's colour scheme; `light` / `dark` pin a slot.
+	 *  Absent in blobs written before the auto mode: `theme` then pins its own slot. */
+	themeMode?: ThemeChoice;
+	/** Last light theme the user picked (what `auto` paints by day). */
+	lightTheme?: string;
+	/** Last dark theme the user picked (what `auto` paints by night). */
+	darkTheme?: string;
 	fontScale: number;
 	// Cmd/Ctrl+E in an open conversation interrupts any in-flight turn and then
 	// archives the session (Beeper/Slack-style archive chord). Preserved from the
@@ -546,9 +556,16 @@ class Settings {
 	// across devices: every surface (header + settings panel) mutates the runtime
 	// singleton AND records the value here, and `load()` replays the blob back
 	// into the singletons via `applyDisplay`.
-	setTheme(id: string) {
-		if (theme.has(id)) theme.set(id);
-		this.setDisplay({ theme: id });
+	/** A picker choice: `auto`, or a theme id (which also becomes the memory of
+	 *  its light/dark slot). Persists the whole preference plus the resolved id. */
+	setTheme(choice: string) {
+		const p = themeMode.choose(choice);
+		this.setDisplay({
+			theme: themeMode.resolved,
+			themeMode: p.mode,
+			lightTheme: p.light,
+			darkTheme: p.dark
+		});
 	}
 
 	setFontScaleLevel(levelId: string) {
@@ -569,7 +586,7 @@ class Settings {
 
 	private applyDisplay() {
 		const d = this.state.display;
-		if (theme.has(d.theme)) theme.set(d.theme);
+		themeMode.hydrate(preferenceFrom(d, themeMode.slotOf));
 		fontScale.set(nearestLevel(d.fontScale));
 		notify.applyPersisted(d.notifyEnabled, d.notifySound);
 	}
