@@ -1379,6 +1379,7 @@
 	"stats_dock_accounts": "Comptes",
 	"stats_dock_no_accounts": "Aucun compte avec des données d’utilisation.",
 	"stats_dock_title": "Statistiques",
+	"theme_auto_help": "Suit le système, avec tes derniers thèmes clair et sombre",
 	"theme_auto_label": "Auto (système)",
 	"theme_group_dark": "Sombre",
 	"theme_group_light": "Clair",
