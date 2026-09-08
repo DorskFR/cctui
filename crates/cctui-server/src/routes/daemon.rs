@@ -640,8 +640,12 @@ async fn handle(socket: WebSocket, state: AppState, machine_id: Uuid, user_id: U
         for frame in leaves {
             if let Some(local_id) = announced_session(&frame) {
                 state.bus.bind_session_conn(local_id, conn_id);
-                if let Ok(mut set) = announced.lock() {
-                    set.insert(local_id.to_owned());
+                // First announcement only: these frames repeat constantly and
+                // the presence row is a DB upsert.
+                let first = announced.lock().is_ok_and(|mut set| set.insert(local_id.to_owned()));
+                if first && let Ok(session) = Uuid::parse_str(local_id) {
+                    crate::presence::register(&state, crate::presence::Kind::Session, session)
+                        .await;
                 }
             }
             let trace = frame_trace(&frame);
@@ -660,10 +664,15 @@ async fn handle(socket: WebSocket, state: AppState, machine_id: Uuid, user_id: U
     // bus's `unregister_daemon` applies the same-channel guard. The
     // presence row mirrors it, with its own pod guard for the cross-pod twin
     // of the same race.
+    let sessions: Vec<String> =
+        announced.lock().map(|mut set| set.drain().collect()).unwrap_or_default();
+    // Session rows belong to THIS connection, so they go whether or not the
+    // machine entry was still ours.
+    for session in sessions.iter().filter_map(|s| Uuid::parse_str(s).ok()) {
+        crate::presence::unregister(&state, crate::presence::Kind::Session, session).await;
+    }
     if state.bus.unregister_daemon(machine_id, conn_id, &tx) {
         crate::presence::unregister(&state, crate::presence::Kind::Daemon, machine_id).await;
-        let sessions: Vec<String> =
-            announced.lock().map(|mut set| set.drain().collect()).unwrap_or_default();
         schedule_daemon_lost(&state, machine_id, sessions);
     }
     outbound.abort();

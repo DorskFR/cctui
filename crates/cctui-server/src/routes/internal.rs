@@ -96,12 +96,22 @@ pub async fn bus_route(
     authenticate(&state, &headers)?;
     let outcome: Result<RouteResponse, BusError> = match request {
         RouteRequest::DaemonCommand { machine, frame } => {
-            state.bus.command_daemon_local(machine, frame).await.map(|()| RouteResponse::Ok)
+            match crate::bus::peer::frame_session(&frame).map(ToOwned::to_owned) {
+                Some(session) => state
+                    .bus
+                    .command_daemon_local_for_session(machine, &session, frame)
+                    .await
+                    .map(|()| RouteResponse::Ok),
+                None => {
+                    state.bus.command_daemon_local(machine, frame).await.map(|()| RouteResponse::Ok)
+                }
+            }
         }
         RouteRequest::DaemonStageFiles { machine, adapter_id, local_id, uploads } => state
             .bus
-            .request_daemon_local(
+            .request_daemon_local_for_session(
                 machine,
+                &local_id.clone(),
                 DaemonRequest::StageFiles { adapter_id, local_id, uploads },
             )
             .await
@@ -123,7 +133,11 @@ pub async fn bus_route(
             .map(daemon_response),
         RouteRequest::DaemonDiagnose { machine, adapter_id, local_id } => state
             .bus
-            .request_daemon_local(machine, DaemonRequest::Diagnose { adapter_id, local_id })
+            .request_daemon_local_for_session(
+                machine,
+                &local_id.clone(),
+                DaemonRequest::Diagnose { adapter_id, local_id },
+            )
             .await
             .map(daemon_response),
         RouteRequest::DispatcherCommand { dispatcher, frame } => {
