@@ -1380,6 +1380,7 @@
 	"stats_dock_accounts": "Accounts",
 	"stats_dock_no_accounts": "No account with usage data.",
 	"stats_dock_title": "Stats",
+	"theme_auto_help": "Follows the system, with your last light and dark themes",
 	"theme_auto_label": "Auto (system)",
 	"theme_group_dark": "Dark",
 	"theme_group_light": "Light",
