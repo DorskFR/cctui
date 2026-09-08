@@ -17,6 +17,14 @@ use crate::state::AppState;
 
 type ApiError = (StatusCode, Json<serde_json::Value>);
 
+/// The endpoint that spends a Codex reset credit, overridable on its own: the
+/// `wham` default performs the reset but answers in the credits shape, while
+/// codex's own `/api/codex/rate-limit-reset-credits/consume` answers `{outcome}`.
+pub fn openai_consume_url() -> String {
+    std::env::var("CCTUI_OPENAI_RESET_CREDITS_CONSUME_URL")
+        .unwrap_or_else(|_| format!("{}/consume", gateway::openai_reset_credits_url()))
+}
+
 pub fn anthropic_profile_url() -> String {
     std::env::var("CCTUI_ANTHROPIC_OAUTH_PROFILE_URL")
         .unwrap_or_else(|_| "https://api.anthropic.com/api/oauth/profile".into())
@@ -107,6 +115,38 @@ pub fn normalize_outcome(raw: &str) -> String {
     out
 }
 
+/// The outcome of a 2xx `consume` response. The `wham` endpoint answers with the
+/// credits block instead of the app-server's `{outcome}`, so the claimed credit
+/// no longer being available is proof it was spent. `error` means the body said
+/// nothing at all; `unconfirmed` means the call went through but the body could
+/// not be read, and must not read as an upstream rejection.
+pub fn consume_outcome(credit_id: Option<&str>, body: &serde_json::Value) -> String {
+    if let Some(raw) = body.get("outcome").and_then(|o| o.as_str()) {
+        return normalize_outcome(raw);
+    }
+    if !body.is_object() {
+        return "error".to_owned();
+    }
+    let Some(credits) = gateway::map_reset_credits(body) else {
+        return "unconfirmed".to_owned();
+    };
+    let list = credits["credits"].as_array().cloned().unwrap_or_default();
+    let spent = match credit_id {
+        Some(id) => !list.iter().any(|c| {
+            c.get("id").and_then(serde_json::Value::as_str) == Some(id)
+                && c.get("status").and_then(serde_json::Value::as_str) == Some("available")
+        }),
+        None => credits["available_count"].as_i64() == Some(0),
+    };
+    if spent { "reset".to_owned() } else { "unconfirmed".to_owned() }
+}
+
+/// Whether the claim may have moved the account's windows, so the cached usage
+/// must be dropped rather than served until the next poll.
+pub fn invalidates_usage(outcome: &str) -> bool {
+    !matches!(outcome, "error" | "unavailable" | "already_redeemed")
+}
+
 /// What a repeat claim on the same credit does with the prior attempt's row.
 #[derive(Debug, PartialEq, Eq)]
 pub enum ClaimPlan {
@@ -139,7 +179,8 @@ pub struct LimitResetRequest {
 pub struct LimitResetResponse {
     pub account_id: Uuid,
     pub provider: String,
-    /// Upstream outcome verbatim (`snake_case`), or `error` when the call failed.
+    /// Upstream outcome verbatim (`snake_case`), `error` when the call failed, or
+    /// `unconfirmed` when it succeeded with a body we could not read.
     pub outcome: String,
     pub credit_id: Option<String>,
     pub next_available_at: Option<String>,
@@ -188,7 +229,7 @@ pub async fn limit_reset(
         _ => return Err(err(StatusCode::BAD_REQUEST, "this provider has no limit reset")),
     };
     record(&state, id, &out, ctx.user_id).await;
-    if out.outcome == "reset" {
+    if invalidates_usage(&out.outcome) {
         state.account_usage_cache.remove(&id);
     }
     Ok(Json(LimitResetResponse { account_id: id, provider, ..out }))
@@ -270,7 +311,7 @@ async fn claim_codex(
     }
     let resp = state
         .http_client
-        .post(format!("{}/consume", gateway::openai_reset_credits_url()))
+        .post(openai_consume_url())
         .header(reqwest::header::AUTHORIZATION, format!("Bearer {access_token}"))
         .header("chatgpt-account-id", account_id)
         .header(reqwest::header::ACCEPT, "*/*")
@@ -289,10 +330,10 @@ async fn claim_codex(
         }
     };
     let json: serde_json::Value = resp.json().await.unwrap_or_default();
-    out.outcome = json
-        .get("outcome")
-        .and_then(|o| o.as_str())
-        .map_or_else(|| "error".to_owned(), normalize_outcome);
+    if json.get("outcome").and_then(|o| o.as_str()).is_none() {
+        tracing::warn!(account = %acct.id, body = %json, "codex limit reset: 2xx body carries no outcome");
+    }
+    out.outcome = consume_outcome(credit_id.as_deref(), &json);
     out
 }
 
@@ -477,6 +518,69 @@ mod tests {
             plan_claim(Some(("k1".into(), "error".into())), fresh()),
             ClaimPlan::Send { idempotency_key: "k1".into(), reused: true }
         );
+    }
+
+    #[test]
+    fn consume_body_without_outcome_is_read_from_the_credits_block() {
+        let claimed = "RateLimitResetCredit_6feb0bc2664c8191ae128bfe969348f5";
+
+        assert_eq!(
+            consume_outcome(Some(claimed), &serde_json::json!({ "outcome": "reset" })),
+            "reset"
+        );
+        assert_eq!(
+            consume_outcome(Some(claimed), &serde_json::json!({ "outcome": "alreadyRedeemed" })),
+            "already_redeemed"
+        );
+        assert_eq!(
+            consume_outcome(Some(claimed), &serde_json::json!({ "outcome": "nothingToReset" })),
+            "nothing_to_reset"
+        );
+
+        let wham = serde_json::json!({
+            "rateLimitResetCredits": {
+                "availableCount": 1,
+                "credits": [{
+                    "id": "RateLimitResetCredit_72cf3aea", "status": "available",
+                    "resetType": "full", "grantedAt": "2026-09-04T00:00:00Z",
+                    "expiresAt": "2026-09-11T00:00:00Z", "title": "Full reset"
+                }]
+            },
+            "rate_limit": {
+                "primary_window": { "used_percent": 0.0, "reset_at": 1_800_000_000 },
+                "secondary_window": { "used_percent": 0.0, "reset_at": 1_800_500_000 }
+            }
+        });
+        assert_eq!(consume_outcome(Some(claimed), &wham), "reset");
+
+        let redeemed = serde_json::json!({
+            "credits": [{ "id": claimed, "status": "redeemed" }]
+        });
+        assert_eq!(consume_outcome(Some(claimed), &redeemed), "reset");
+
+        let untouched = serde_json::json!({
+            "credits": [{ "id": claimed, "status": "available" }]
+        });
+        assert_eq!(consume_outcome(Some(claimed), &untouched), "unconfirmed");
+        assert_eq!(consume_outcome(None, &untouched), "unconfirmed");
+        assert_eq!(
+            consume_outcome(None, &serde_json::json!({ "availableCount": 0, "credits": [] })),
+            "reset"
+        );
+
+        assert_eq!(consume_outcome(Some(claimed), &serde_json::json!({})), "unconfirmed");
+        assert_eq!(consume_outcome(Some(claimed), &serde_json::Value::Null), "error");
+        assert_eq!(consume_outcome(Some(claimed), &serde_json::json!("not json")), "error");
+    }
+
+    #[test]
+    fn usage_cache_is_dropped_for_every_outcome_that_may_have_reset() {
+        assert!(invalidates_usage("reset"));
+        assert!(invalidates_usage("unconfirmed"));
+        assert!(invalidates_usage("nothing_to_reset"));
+        assert!(!invalidates_usage("error"));
+        assert!(!invalidates_usage("unavailable"));
+        assert!(!invalidates_usage("already_redeemed"));
     }
 
     #[test]
