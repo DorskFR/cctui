@@ -18,11 +18,18 @@ export interface UserDispatcher {
   last_seen_at: string;
   created_at: string;
   updated_at: string;
+  /** The account a dispatch that names none routes through. */
+  default_account: string | null;
+  /** The pool such a dispatch elects within; only consulted with no account. */
+  default_pool: string | null;
 }
 
-/** Rename payload for an enrolled dispatcher. */
+/** Edit payload for an enrolled dispatcher. Each binding field is left alone
+ *  when omitted, unbound by an empty string, and set by a name. */
 export interface RenameDispatcher {
   name: string;
+  default_account?: string;
+  default_pool?: string;
 }
 
 /** Response to a dispatcher enroll — `dispatcher_key` is shown ONCE. */
@@ -55,7 +62,13 @@ export function useDispatcherActions() {
     qc.invalidateQueries({ queryKey: ["dispatchers"] });
   };
   return {
-    enroll: async (body: { name: string; kind?: string; account?: string; provider?: string }) => {
+    enroll: async (body: {
+      name: string;
+      kind?: string;
+      account?: string;
+      provider?: string;
+      pool?: string;
+    }) => {
       const r = await endpoints.enrollDispatcher(body);
       inval();
       return r;

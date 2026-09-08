@@ -317,22 +317,38 @@ fn rewrite_model_if_aliased(payload: &mut serde_json::Value, raw: &str, mapped: 
     false
 }
 
-/// The account identity a dispatcher is bound to, resolved
-/// to the identity *name* `mint` resolution consumes — default injection mints
-/// ALL of that identity's providers, so no provider hint travels with it.
-/// Returns `None` when the dispatcher row carries no `default_account_id` or it
-/// points at a deleted account (the `ON DELETE SET NULL` FK clears the
-/// binding). A DB error degrades to `None` so a lookup hiccup never blocks an
-/// otherwise-valid dispatch.
-async fn dispatcher_default_account(
+/// What a dispatcher routes an account-less dispatch through.
+#[derive(Debug, PartialEq, Eq)]
+enum DefaultBinding {
+    /// One account identity, by the *name* `mint` resolution consumes —
+    /// default injection mints ALL of that identity's providers, so no
+    /// provider hint travels with it.
+    Account(String),
+    /// A pool, by id: elected per dispatch, and no account name can shadow it.
+    Pool(uuid::Uuid),
+}
+
+/// An account binding is the more specific instruction, so it wins when a
+/// dispatcher carries both. Pure so the precedence is unit-testable.
+fn default_binding(account: Option<String>, pool_id: Option<uuid::Uuid>) -> Option<DefaultBinding> {
+    account.map(DefaultBinding::Account).or_else(|| pool_id.map(DefaultBinding::Pool))
+}
+
+/// The identity a dispatcher is bound to for dispatches that name no account.
+///
+/// `None` when the row carries neither binding, or when the one it carries
+/// points at a deleted row (the `ON DELETE SET NULL` FKs clear it). A DB error
+/// degrades to `None` so a lookup hiccup never blocks an otherwise-valid
+/// dispatch.
+async fn dispatcher_default_binding(
     state: &AppState,
     dispatcher_name: &str,
     user_id: uuid::Uuid,
-) -> Option<String> {
-    sqlx::query_scalar::<_, String>(
-        "SELECT a.name \
+) -> Option<DefaultBinding> {
+    let row: Option<(Option<String>, Option<uuid::Uuid>)> = sqlx::query_as(
+        "SELECT a.name, d.default_pool_id \
          FROM dispatchers d \
-         JOIN accounts a ON a.id = d.default_account_id \
+         LEFT JOIN accounts a ON a.id = d.default_account_id \
          WHERE d.name = $1 AND d.user_id = $2 \
            AND d.deleted_at IS NULL AND d.revoked_at IS NULL \
          ORDER BY d.created_at LIMIT 1",
@@ -342,7 +358,8 @@ async fn dispatcher_default_account(
     .fetch_optional(&state.pool)
     .await
     .ok()
-    .flatten()
+    .flatten();
+    row.and_then(|(account, pool_id)| default_binding(account, pool_id))
 }
 
 /// Resolve a dispatcher *name* for the caller: an enrolled dispatcher
@@ -581,28 +598,6 @@ pub async fn dispatch(
         // identity carries — one worker gets claude + codex creds
         // from `account: "acme"` alone, no accounts[] boilerplate. With no
         // account either way, no gateway env is injected (unchanged).
-        let accounts: Vec<(String, Option<String>)> = if req.accounts.is_empty() {
-            let default_account = if req.account.as_deref().map(str::trim).is_none_or(str::is_empty)
-            {
-                dispatcher_default_account(&state, &req.dispatcher, uid).await
-            } else {
-                None
-            };
-            resolve_dispatch_account(
-                req.account.as_deref(),
-                req.provider.as_deref(),
-                default_account.as_deref(),
-            )
-            .into_iter()
-            .collect()
-        } else {
-            req.accounts.iter().map(|a| (a.account.clone(), a.provider.clone())).collect()
-        };
-
-        // Every name accepted here may be a pool: elect a member now, by the
-        // pool's own strategy, and keep the pool so the minted token can be
-        // stamped with it. An account of the caller's answering to the same
-        // name always wins.
         let requested_model = req
             .payload
             .get("model")
@@ -616,6 +611,38 @@ pub async fn dispatch(
             .unwrap_or("claude-code")
             .to_owned();
         let mut bound_pool: Option<uuid::Uuid> = None;
+        let accounts: Vec<(String, Option<String>)> = if !req.accounts.is_empty() {
+            req.accounts.iter().map(|a| (a.account.clone(), a.provider.clone())).collect()
+        } else if let Some(explicit) =
+            resolve_dispatch_account(req.account.as_deref(), req.provider.as_deref(), None)
+        {
+            vec![explicit]
+        } else {
+            // Nothing named: the dispatcher's own binding decides. A bound pool
+            // elects here, per dispatch — the whole point of binding one.
+            match dispatcher_default_binding(&state, &req.dispatcher, uid).await {
+                Some(DefaultBinding::Account(name)) => vec![(name, None)],
+                Some(DefaultBinding::Pool(pool_id)) => {
+                    let (account, pool_id) = crate::account_resolve::resolve_pool_by_id(
+                        &state,
+                        uid,
+                        binding_family(None, &payload_adapter),
+                        requested_model.as_deref(),
+                        pool_id,
+                    )
+                    .await
+                    .map_err(dispatch_resolve_err)?;
+                    bound_pool = Some(pool_id);
+                    vec![(account, None)]
+                }
+                None => Vec::new(),
+            }
+        };
+
+        // Every name accepted here may be a pool: elect a member now, by the
+        // pool's own strategy, and keep the pool so the minted token can be
+        // stamped with it. An account of the caller's answering to the same
+        // name always wins.
         let mut resolved: Vec<(String, Option<String>)> = Vec::with_capacity(accounts.len());
         for (name, hint) in accounts {
             let family = binding_family(hint.as_deref(), &payload_adapter);
@@ -916,8 +943,8 @@ pub async fn dispatch(
 #[cfg(test)]
 mod tests {
     use super::{
-        binding_family, colliding_family, resolve_dispatch_account, resolve_dispatch_session_id,
-        rewrite_model_if_aliased,
+        DefaultBinding, binding_family, colliding_family, default_binding,
+        resolve_dispatch_account, resolve_dispatch_session_id, rewrite_model_if_aliased,
     };
     use crate::routes::gateway::Family;
 
@@ -1056,5 +1083,27 @@ mod tests {
         assert_eq!(binding_family(None, "codex"), Family::Openai);
         assert_eq!(binding_family(Some("  "), "codex"), Family::Openai);
         assert_eq!(binding_family(None, "claude-code"), Family::Anthropic);
+    }
+
+    #[test]
+    fn a_bound_account_beats_a_bound_pool() {
+        // Both columns set: the account is the more specific instruction, the
+        // same rule a name that denotes both an account and a pool follows.
+        let pool = uuid::Uuid::new_v4();
+        assert_eq!(
+            default_binding(Some("hirobot".into()), Some(pool)),
+            Some(DefaultBinding::Account("hirobot".into()))
+        );
+    }
+
+    #[test]
+    fn a_bound_pool_alone_elects_per_dispatch() {
+        let pool = uuid::Uuid::new_v4();
+        assert_eq!(default_binding(None, Some(pool)), Some(DefaultBinding::Pool(pool)));
+    }
+
+    #[test]
+    fn an_unbound_dispatcher_injects_nothing() {
+        assert_eq!(default_binding(None, None), None);
     }
 }

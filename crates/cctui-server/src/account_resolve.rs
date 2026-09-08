@@ -199,6 +199,27 @@ pub async fn resolve_pool(
     Ok((account, pool.id))
 }
 
+/// Elect within a pool already identified by id — the shape a stored binding
+/// (`dispatchers.default_pool_id`) has, where no name is involved and so no
+/// account can shadow it.
+pub async fn resolve_pool_by_id(
+    state: &AppState,
+    user_id: Uuid,
+    family: Family,
+    model: Option<&str>,
+    pool_id: Uuid,
+) -> Result<(String, Uuid), ResolveError> {
+    let pool = account_pools::get(&state.pool, pool_id, Some(user_id))
+        .await
+        .map_err(|e| {
+            tracing::error!("resolving account pool: {e}");
+            ResolveError::Db
+        })?
+        .ok_or_else(|| ResolveError::Rejected("the bound account pool no longer exists".into()))?;
+    let account = elect_pool_member(state, user_id, family, model, &pool).await?;
+    Ok((account, pool.id))
+}
+
 /// Resolve a name that may be either an account or a pool.
 pub async fn resolve_account_or_pool(
     state: &AppState,
