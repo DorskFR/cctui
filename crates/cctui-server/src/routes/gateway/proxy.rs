@@ -1,10 +1,10 @@
 use super::{
     AnthropicSettings, Family, FireworksSettings, anthropic_upstream, clear_account_reauth,
-    clear_soft_limit_block, current_access_token, fireworks_upstream, flag_account_reauth,
-    mark_soft_limit_block, note_orphan_401, note_token_used, openai_upstream, orphan_is_blocked,
-    record_fireworks_usage, resolve_account, session_and_account_name_for_token,
-    session_budget_limits, session_id_for_token, session_spend_usd, tees_response,
-    usage_for_soft_limit,
+    clear_soft_limit_block, clear_soft_limit_block_for_token, current_access_token,
+    fireworks_upstream, flag_account_reauth, mark_soft_limit_block, note_orphan_401,
+    note_token_used, openai_upstream, orphan_is_blocked, record_fireworks_usage, resolve_account,
+    session_and_account_name_for_token, session_budget_limits, session_id_for_token,
+    session_spend_usd, tees_response, usage_for_soft_limit,
 };
 
 use axum::body::Body;
@@ -452,15 +452,11 @@ pub async fn passthrough(
 
     // A successful upstream call clears any soft-limit block on this session:
     // after the user switches accounts (or a window resets) the next
-    // 2xx dismisses the banner. Only touch the DB when something is actually
-    // blocked, and reuse the trace lookup when Langfuse already resolved it.
-    if status.is_success() && !state.soft_limit_blocked.is_empty() {
-        let session_id = match &trace_session_id {
-            Some(sid) => Some(sid.clone()),
-            None => session_id_for_token(&state, &session_token).await,
-        };
-        if let Some(sid) = session_id {
-            clear_soft_limit_block(&state, &sid).await;
+    // 2xx dismisses the banner. Unconditional: another replica may hold the block.
+    if status.is_success() {
+        match &trace_session_id {
+            Some(sid) => clear_soft_limit_block(&state, sid).await,
+            None => clear_soft_limit_block_for_token(&state, &session_token).await,
         }
     }
     // A successful upstream call means the account's credentials are good again —

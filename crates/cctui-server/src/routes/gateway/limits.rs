@@ -60,13 +60,63 @@ pub async fn session_and_account_name_for_token(
     .flatten()
 }
 
+/// Set the durable block on the session row, reporting whether it changed.
+/// `false` means the row already carried this reason — another pod, or this
+/// one, has already announced the episode.
+async fn mark_block_row(
+    pool: &sqlx::PgPool,
+    session_id: &str,
+    reason: &str,
+) -> Result<bool, sqlx::Error> {
+    let res = sqlx::query(
+        "UPDATE sessions SET soft_limit_reason = $2 \
+         WHERE id = $1 AND status != 'archived' AND soft_limit_reason IS DISTINCT FROM $2",
+    )
+    .bind(session_id)
+    .bind(reason)
+    .execute(pool)
+    .await?;
+    Ok(res.rows_affected() > 0)
+}
+
+/// Drop the durable block on a session row, reporting whether it was set.
+async fn clear_block_row(pool: &sqlx::PgPool, session_id: &str) -> Result<bool, sqlx::Error> {
+    let res = sqlx::query(
+        "UPDATE sessions SET soft_limit_reason = NULL \
+         WHERE id = $1 AND soft_limit_reason IS NOT NULL",
+    )
+    .bind(session_id)
+    .execute(pool)
+    .await?;
+    Ok(res.rows_affected() > 0)
+}
+
+/// Drop the durable block on whatever session `token_hash` is bound to,
+/// returning the session id when one was actually cleared.
+async fn clear_block_row_for_token(
+    pool: &sqlx::PgPool,
+    token_hash: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    sqlx::query_scalar::<_, String>(
+        "UPDATE sessions SET soft_limit_reason = NULL \
+         WHERE soft_limit_reason IS NOT NULL AND id = ( \
+             SELECT session_id FROM session_tokens \
+             WHERE token_hash = $1 AND revoked_at IS NULL) \
+         RETURNING id",
+    )
+    .bind(token_hash)
+    .fetch_optional(pool)
+    .await
+}
+
 /// Record a soft-limit block against a session and broadcast it.
 ///
-/// Idempotent per block episode: the first refused passthrough for a session
-/// flips `soft_limit_blocked` and emits [`ServerEvent::SoftLimitReached`]; the
-/// worker's repeated Retry-After retries (still blocked) are no-ops, so the WS
-/// stream isn't spammed. The webui shows the banner; the matching clear arrives
-/// from [`clear_soft_limit_block`] on the next success or an account switch.
+/// Idempotent per block episode, across replicas: the UPDATE only touches a row
+/// whose reason actually changes, so the first refused passthrough emits
+/// [`ServerEvent::SoftLimitReached`] and the worker's repeated Retry-After
+/// retries (still blocked) are no-ops on any pod. The webui shows the banner;
+/// the matching clear arrives from [`clear_soft_limit_block`] on the next
+/// success or an account switch.
 pub async fn mark_soft_limit_block(
     state: &AppState,
     session_id: &str,
@@ -84,18 +134,14 @@ pub async fn mark_soft_limit_block(
     // another account" hint; `list_sessions` reads it. Idempotent (overwrite),
     // and never clobbers the churning daemon `tempo`/`agent_state` signals.
     let needs = format!("switch account: {account_name} rate-limited");
-    if let Err(e) = sqlx::query(
-        "UPDATE sessions SET soft_limit_reason = $2 WHERE id = $1 AND status != 'archived'",
-    )
-    .bind(session_id)
-    .bind(&needs)
-    .execute(&state.pool)
-    .await
-    {
-        tracing::warn!(%session_id, error = %e, "failed to persist soft-limit block");
-    }
-    // Only broadcast on the clear→blocked transition.
-    if state.soft_limit_blocked.insert(session_id.to_owned(), ()).is_none() {
+    let changed = match mark_block_row(&state.pool, session_id, &needs).await {
+        Ok(changed) => changed,
+        Err(e) => {
+            tracing::warn!(%session_id, error = %e, "failed to persist soft-limit block");
+            false
+        }
+    };
+    if changed {
         state.bus.publish_server(cctui_proto::ws::ServerEvent::SoftLimitReached {
             session_id: session_id.to_owned(),
             account_id,
@@ -107,29 +153,37 @@ pub async fn mark_soft_limit_block(
 }
 
 /// Clear a session's soft-limit block and broadcast the dismissal.
-/// Only emits on the blocked→clear transition (no-op if it wasn't blocked).
+///
+/// The session row is the only source of truth: the UPDATE reports whether it
+/// really flipped, so exactly one pod emits [`ServerEvent::SoftLimitCleared`]
+/// however many replicas race, and a block set before a rollout still clears.
 pub async fn clear_soft_limit_block(state: &AppState, session_id: &str) {
     if session_id.is_empty() {
         return;
     }
-    // Drop the durable block on the session row so the classifier stops forcing
-    // `Bucket::Blocked` and the session returns to its real signal-derived
-    // bucket. Best-effort; clear it whenever set, even if the
-    // in-memory dedup entry was already gone (e.g. after a server restart).
-    if let Err(e) = sqlx::query(
-        "UPDATE sessions SET soft_limit_reason = NULL \
-         WHERE id = $1 AND soft_limit_reason IS NOT NULL",
-    )
-    .bind(session_id)
-    .execute(&state.pool)
-    .await
-    {
-        tracing::warn!(%session_id, error = %e, "failed to clear soft-limit block");
+    match clear_block_row(&state.pool, session_id).await {
+        Ok(true) => {
+            state.bus.publish_server(cctui_proto::ws::ServerEvent::SoftLimitCleared {
+                session_id: session_id.into(),
+            });
+        }
+        Ok(false) => {}
+        Err(e) => tracing::warn!(%session_id, error = %e, "failed to clear soft-limit block"),
     }
-    if state.soft_limit_blocked.remove(session_id).is_some() {
-        state.bus.publish_server(cctui_proto::ws::ServerEvent::SoftLimitCleared {
-            session_id: session_id.into(),
-        });
+}
+
+/// Clear whatever session a gateway token is bound to, in one statement.
+///
+/// The success path runs on every proxied 2xx, so it resolves the token inside
+/// the UPDATE rather than paying a separate lookup per request.
+pub async fn clear_soft_limit_block_for_token(state: &AppState, session_token: &str) {
+    let hash = crate::auth::sha256_hex(session_token);
+    match clear_block_row_for_token(&state.pool, &hash).await {
+        Ok(Some(session_id)) => {
+            state.bus.publish_server(cctui_proto::ws::ServerEvent::SoftLimitCleared { session_id });
+        }
+        Ok(None) => {}
+        Err(e) => tracing::warn!(error = %e, "failed to clear soft-limit block"),
     }
 }
 
@@ -330,4 +384,118 @@ pub fn bump_orphan_401(
     }
     drop(entry);
     (count, newly_blocked)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{clear_block_row, clear_block_row_for_token, mark_block_row};
+
+    /// DB-gated: a block this process never observed — set by the other replica,
+    /// or before a rollout — must still clear through both paths, and each write
+    /// must report the transition exactly once so only one pod broadcasts.
+    #[tokio::test]
+    async fn a_block_no_process_remembers_still_clears() {
+        let Some(url) =
+            crate::routes::gateway::test_db_url("a_block_no_process_remembers_still_clears")
+        else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+
+        let uid = uuid::Uuid::new_v4();
+        let acct = uuid::Uuid::new_v4();
+        let prov = uuid::Uuid::new_v4();
+        let session_id = format!("soft-limit-{uid}");
+        let token_hash = format!("th-{uid}");
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+            .bind(uid)
+            .bind(format!("soft-limit-{uid}"))
+            .bind(format!("kh-{uid}"))
+            .execute(&pool)
+            .await
+            .expect("seed user");
+        sqlx::query("INSERT INTO accounts (id, user_id, name) VALUES ($1, $2, $3)")
+            .bind(acct)
+            .bind(uid)
+            .bind(format!("soft-limit-acct-{uid}"))
+            .execute(&pool)
+            .await
+            .expect("seed account");
+        sqlx::query(
+            "INSERT INTO account_providers \
+                 (id, user_id, provider, encrypted_refresh_token, account_id) \
+             VALUES ($1, $2, 'anthropic', 'x', $3)",
+        )
+        .bind(prov)
+        .bind(uid)
+        .bind(acct)
+        .execute(&pool)
+        .await
+        .expect("seed provider");
+        sqlx::query(
+            "INSERT INTO sessions (id, machine_id, working_dir, user_id, status) \
+             VALUES ($1, 'm1', '/w', $2, 'active')",
+        )
+        .bind(&session_id)
+        .bind(uid)
+        .execute(&pool)
+        .await
+        .expect("seed session");
+        sqlx::query(
+            "INSERT INTO session_tokens (token_hash, session_id, account_id) VALUES ($1, $2, $3)",
+        )
+        .bind(&token_hash)
+        .bind(&session_id)
+        .bind(prov)
+        .execute(&pool)
+        .await
+        .expect("seed token");
+
+        let reason = "switch account: personal rate-limited";
+        assert!(
+            mark_block_row(&pool, &session_id, reason).await.unwrap(),
+            "the first mark is the transition"
+        );
+        assert!(
+            !mark_block_row(&pool, &session_id, reason).await.unwrap(),
+            "a retry against the same block must not re-announce it"
+        );
+
+        assert_eq!(
+            clear_block_row_for_token(&pool, &token_hash).await.unwrap().as_deref(),
+            Some(session_id.as_str()),
+            "a 2xx must clear a block this pod never set"
+        );
+        assert!(
+            clear_block_row_for_token(&pool, &token_hash).await.unwrap().is_none(),
+            "the clear must announce once, not on every later success"
+        );
+
+        mark_block_row(&pool, &session_id, reason).await.unwrap();
+        assert!(
+            clear_block_row(&pool, &session_id).await.unwrap(),
+            "raising the cap must clear a block this pod never set"
+        );
+        assert!(!clear_block_row(&pool, &session_id).await.unwrap(), "already clear");
+
+        sqlx::query("DELETE FROM session_tokens WHERE session_id = $1")
+            .bind(&session_id)
+            .execute(&pool)
+            .await
+            .expect("cleanup tokens");
+        sqlx::query("DELETE FROM sessions WHERE user_id = $1")
+            .bind(uid)
+            .execute(&pool)
+            .await
+            .expect("cleanup sessions");
+        sqlx::query("DELETE FROM users WHERE id = $1")
+            .bind(uid)
+            .execute(&pool)
+            .await
+            .expect("cleanup");
+    }
 }

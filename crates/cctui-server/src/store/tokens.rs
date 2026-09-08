@@ -58,18 +58,6 @@ pub async fn token_hashes_by_session(
     .await
 }
 
-pub async fn session_ids_by_account(
-    exec: impl PgExecutor<'_>,
-    account_id: uuid::Uuid,
-) -> Result<Vec<String>, sqlx::Error> {
-    sqlx::query_scalar(
-        "SELECT session_id FROM session_tokens WHERE account_id = $1 AND revoked_at IS NULL",
-    )
-    .bind(account_id)
-    .fetch_all(exec)
-    .await
-}
-
 /// Stamp `last_used_at`, throttled to at most one write per minute so the
 /// gateway passthrough hot path never turns into a write per request.
 pub async fn stamp_last_used(
