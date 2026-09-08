@@ -1667,10 +1667,17 @@ pub async fn send_message(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
     Json(req): Json<MessageRequest>,
-) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+) -> Result<(StatusCode, Json<cctui_proto::api::SpawnResponse>), (StatusCode, Json<ApiError>)> {
     // Carry re-minted gateway env so a reply-driven cold-resume revives the
     // worker with a fresh valid token rather than empty env.
     let env = crate::routes::gateway::resume_env_for_session(&state, &session_id).await;
+    let command_id = uuid::Uuid::new_v4();
+    crate::state::track_command(
+        &state.pending_commands,
+        command_id,
+        Some(session_id.clone()),
+        None,
+    );
     let dispatch = crate::bus::dispatch(
         &state,
         &session_id,
@@ -1679,19 +1686,28 @@ pub async fn send_message(
             text: req.content,
             ask_picks: None,
             env,
+            command_id: Some(command_id),
         },
     )
     .await;
     if let Err(err) = dispatch {
         use crate::bus::BusError;
-        match err {
-            BusError::NoDaemon(_) | BusError::NoAdapter | BusError::NotFound => {
-                tracing::debug!(%session_id, ?err, "daemon dispatch skipped");
-            }
-            _ => tracing::warn!(%session_id, %err, "daemon dispatch failed"),
-        }
+        let status = match err {
+            BusError::NotFound => StatusCode::NOT_FOUND,
+            _ => StatusCode::SERVICE_UNAVAILABLE,
+        };
+        tracing::warn!(%session_id, %err, "message dispatch failed");
+        return Err((status, Json(ApiError { error: err.to_string() })));
     }
-    Ok(StatusCode::ACCEPTED)
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(cctui_proto::api::SpawnResponse {
+            command_id,
+            status: "dispatched".into(),
+            account: None,
+            session_id: None,
+        }),
+    ))
 }
 
 pub async fn rename_session(

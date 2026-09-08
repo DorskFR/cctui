@@ -627,11 +627,7 @@ impl Driver {
                     } else {
                     // Capture the correlation id before `cmd` is moved so we can
                     // report the outcome back to the originating client.
-                    let command_id = match &cmd {
-                        AdapterCommand::Spawn { command_id, .. }
-                        | AdapterCommand::Interrupt { command_id, .. } => *command_id,
-                        _ => None,
-                    };
+                    let command_id = cmd.command_id();
                     let res = self.handle_command(cmd).await;
                     if let Some(command_id) = command_id {
                         let (ok, error) = match &res {
@@ -718,9 +714,21 @@ impl Driver {
     ) -> anyhow::Result<()> {
         // Hibernated sessions (worker exited, job state still on disk)
         // have left `short_by_session`, so fall back to deriving the
-        // short from the session id — same as the removal path.
-        let short =
-            self.resolve_short(local_id).or_else(|_| self.resolve_short_for_removal(local_id))?;
+        // short from the session id — same as the removal path. The derived
+        // short is a pure function of the session id, so it "resolves" on a
+        // machine that has never seen the session; without the on-disk job
+        // check a misrouted reply would cold-resume a duplicate worker for
+        // another daemon's session.
+        let short = if let Ok(short) = self.resolve_short(local_id) {
+            short
+        } else {
+            let short = self.resolve_short_for_removal(local_id)?;
+            anyhow::ensure!(
+                self.cfg.jobs_root.join(&short).is_dir(),
+                "session {local_id} is not on this machine",
+            );
+            short
+        };
         // Resume-on-reply: a reply to an exited worker is
         // ENOJOB'd by the claude daemon and silently lost. Revive it
         // first via a resume `dispatch`, then deliver as normal. Live
@@ -889,7 +897,7 @@ impl Driver {
                 )
                 .await?;
             }
-            AdapterCommand::Reply { local_id, text, ask_picks, env } => {
+            AdapterCommand::Reply { local_id, text, ask_picks, env, .. } => {
                 self.deliver_reply(&sock, &local_id, &text, ask_picks, &env).await?;
             }
             AdapterCommand::Kill { local_id, signal } => {

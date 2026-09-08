@@ -259,8 +259,21 @@ impl Transport for NoopTransport {
 
 struct Inner {
     /// Per-machine outbound channel into the connected daemon's WS task.
-    /// Absent entry = daemon not terminated by this pod.
+    /// Absent entry = daemon not terminated by this pod. A machine id names a
+    /// GROUP, not a connection — every dispatched worker pod authenticates as
+    /// the user's shared `dispatch` machine — so this is only sound for
+    /// machine-scoped frames (Reconcile, discovery, update). Session-scoped
+    /// frames must go through [`Inner::session_conn`].
     daemons: DashMap<Uuid, mpsc::Sender<DaemonFrameDown>>,
+    /// Every live daemon WS this pod terminates, keyed by its own connection
+    /// id, with the machine it authenticated as.
+    conns: DashMap<Uuid, (Uuid, mpsc::Sender<DaemonFrameDown>)>,
+    /// Connection ids per machine, so a shared identity can be recognised as
+    /// ambiguous instead of silently resolving to whichever pod connected last.
+    machine_conns: DashMap<Uuid, std::collections::HashSet<Uuid>>,
+    /// Which connection announced each session — the routing address for every
+    /// session-scoped frame.
+    session_conn: DashMap<String, Uuid>,
     /// Per-dispatcher outbound channel into the connected enrolled
     /// dispatcher's WS task. Peer of `daemons`.
     dispatchers: DashMap<Uuid, mpsc::Sender<DispatcherFrameDown>>,
@@ -305,6 +318,9 @@ impl Bus {
         Self {
             inner: Arc::new(Inner {
                 daemons: DashMap::new(),
+                conns: DashMap::new(),
+                machine_conns: DashMap::new(),
+                session_conn: DashMap::new(),
                 dispatchers: DashMap::new(),
                 pending_stage: DashMap::new(),
                 pending_listdirs: DashMap::new(),
@@ -322,19 +338,71 @@ impl Bus {
 
     // ---- connection registry (daemon / dispatcher WS handlers) ----
 
-    /// Register the outbound channel of a freshly connected daemon WS. If a
-    /// stale entry exists, overwrite it (newest connection wins).
-    pub fn register_daemon(&self, machine: Uuid, tx: mpsc::Sender<DaemonFrameDown>) {
+    /// Register the outbound channel of a freshly connected daemon WS under its
+    /// own `conn_id`. The machine entry is overwritten (newest connection
+    /// wins); the per-connection entry is additive, so sibling connections
+    /// sharing the machine identity stay addressable.
+    pub fn register_daemon(&self, machine: Uuid, conn_id: Uuid, tx: mpsc::Sender<DaemonFrameDown>) {
+        self.inner.conns.insert(conn_id, (machine, tx.clone()));
+        self.inner.machine_conns.entry(machine).or_default().insert(conn_id);
         self.inner.daemons.insert(machine, tx);
     }
 
-    /// Drop `machine`'s connection entry, but only if it is STILL `tx` —
-    /// during a reconnect race the daemon's new connection may already have
-    /// overwritten the map with its own channel, and an unconditional remove
-    /// would delete that live channel. Returns whether an entry was
-    /// removed, so the caller can mirror it into presence.
-    pub fn unregister_daemon(&self, machine: Uuid, tx: &mpsc::Sender<DaemonFrameDown>) -> bool {
+    /// Drop a closing connection: its own entry and its session bindings
+    /// unconditionally (nothing else can own them), but `machine`'s entry only
+    /// if it is STILL `tx` — during a reconnect race the daemon's new
+    /// connection may already have overwritten the map with its own channel,
+    /// and an unconditional remove would delete that live channel. Returns
+    /// whether the machine entry was removed, so the caller can mirror it into
+    /// presence.
+    pub fn unregister_daemon(
+        &self,
+        machine: Uuid,
+        conn_id: Uuid,
+        tx: &mpsc::Sender<DaemonFrameDown>,
+    ) -> bool {
+        self.inner.conns.remove(&conn_id);
+        self.inner.machine_conns.remove_if_mut(&machine, |_, conns| {
+            conns.remove(&conn_id);
+            conns.is_empty()
+        });
+        self.inner.session_conn.retain(|_, owner| *owner != conn_id);
         self.inner.daemons.remove_if(&machine, |_, current| current.same_channel(tx)).is_some()
+    }
+
+    /// Bind `session_id` to the connection that announced it. Called from the
+    /// daemon WS read loop on every `SessionRegistered`/`SessionStarted`, so a
+    /// session that migrates between pods follows its newest announcement.
+    pub fn bind_session_conn(&self, session_id: &str, conn_id: Uuid) {
+        self.inner.session_conn.insert(session_id.to_owned(), conn_id);
+    }
+
+    /// The channel a SESSION-scoped frame must take. The connection that
+    /// announced the session when known; otherwise the machine entry, but only
+    /// while that machine has at most one live connection here. With several
+    /// connections and no binding, any choice is a coin flip that silently
+    /// delivers one session's command to another's worker, so refuse instead.
+    fn session_channel(
+        &self,
+        machine: Uuid,
+        session_id: &str,
+    ) -> Option<mpsc::Sender<DaemonFrameDown>> {
+        if let Some(conn_id) = self.inner.session_conn.get(session_id).map(|r| *r)
+            && let Some(entry) = self.inner.conns.get(&conn_id)
+        {
+            return Some(entry.1.clone());
+        }
+        let ambiguous = self.inner.machine_conns.get(&machine).is_some_and(|conns| conns.len() > 1);
+        if ambiguous {
+            tracing::warn!(
+                %machine,
+                %session_id,
+                "refusing to route a session command: the machine identity is shared by \
+                 several live daemon connections and this session announced none of them",
+            );
+            return None;
+        }
+        self.inner.daemons.get(&machine).map(|r| r.clone())
     }
 
     /// Whether THIS pod terminates `machine`'s daemon WS.
@@ -419,6 +487,33 @@ impl Bus {
             return self.inner.transport.forward_daemon(machine, frame).await;
         };
         tx.send(frame).await.map_err(|_| BusError::Closed)
+    }
+
+    /// [`Self::command_daemon`] for a frame that belongs to ONE session:
+    /// resolved against the announcing connection rather than the machine.
+    pub async fn command_daemon_for_session(
+        &self,
+        machine: Uuid,
+        session_id: &str,
+        frame: DaemonFrameDown,
+    ) -> Result<(), BusError> {
+        let Some(tx) = self.session_channel(machine, session_id) else {
+            return self.inner.transport.forward_daemon(machine, frame).await;
+        };
+        tx.send(frame).await.map_err(|_| BusError::Closed)
+    }
+
+    /// [`Self::request_daemon`] for a round-trip that belongs to ONE session.
+    pub async fn request_daemon_for_session(
+        &self,
+        machine: Uuid,
+        session_id: &str,
+        request: DaemonRequest,
+    ) -> Result<DaemonResponse, BusError> {
+        let Some(tx) = self.session_channel(machine, session_id) else {
+            return self.inner.transport.request_daemon(machine, request).await;
+        };
+        self.request_daemon_via(tx, request).await
     }
 
     /// [`Self::command_daemon`] restricted to THIS pod's registry — a miss is a
@@ -847,8 +942,9 @@ pub async fn dispatch(
     let (adapter_id, machine_uuid) = resolve_session(state, session_id).await?;
     state
         .bus
-        .command_daemon(
+        .command_daemon_for_session(
             machine_uuid,
+            session_id,
             DaemonFrameDown::Command { adapter_id, command: Box::new(command) },
         )
         .await
@@ -882,8 +978,9 @@ pub async fn stage_files(
     let (adapter_id, machine_uuid) = resolve_session(state, session_id).await?;
     let response = state
         .bus
-        .request_daemon(
+        .request_daemon_for_session(
             machine_uuid,
+            session_id,
             DaemonRequest::StageFiles {
                 adapter_id,
                 local_id: session_id.to_owned(),
@@ -908,8 +1005,9 @@ pub async fn diagnose(
     let (adapter_id, machine_uuid) = resolve_session(state, session_id).await?;
     let response = state
         .bus
-        .request_daemon(
+        .request_daemon_for_session(
             machine_uuid,
+            session_id,
             DaemonRequest::Diagnose { adapter_id, local_id: session_id.to_owned() },
         )
         .await?;
@@ -1002,7 +1100,7 @@ mod tests {
         let bus = bus();
         let machine = Uuid::new_v4();
         let (tx, mut rx) = mpsc::channel(8);
-        bus.register_daemon(machine, tx);
+        bus.register_daemon(machine, Uuid::new_v4(), tx);
 
         bus.command_daemon(
             machine,
@@ -1014,6 +1112,178 @@ mod tests {
         .await
         .unwrap();
         assert!(matches!(rx.recv().await, Some(DaemonFrameDown::Reconcile { .. })));
+    }
+
+    fn reply(local_id: &str) -> DaemonFrameDown {
+        DaemonFrameDown::Command {
+            adapter_id: "claude-code".into(),
+            command: Box::new(AdapterCommand::Reply {
+                local_id: local_id.into(),
+                text: "hi".into(),
+                ask_picks: None,
+                env: std::collections::BTreeMap::new(),
+                command_id: None,
+            }),
+        }
+    }
+
+    fn replied_to(frame: &DaemonFrameDown) -> String {
+        let DaemonFrameDown::Command { command, .. } = frame else { panic!("expected Command") };
+        let AdapterCommand::Reply { local_id, .. } = &**command else { panic!("expected Reply") };
+        local_id.clone()
+    }
+
+    /// Two dispatched worker pods share one `dispatch` machine identity: each
+    /// session's command must reach the connection that announced it, never
+    /// whichever pod connected last.
+    #[tokio::test]
+    async fn session_commands_route_to_the_announcing_connection() {
+        let bus = bus();
+        let machine = Uuid::new_v4();
+        let (tx_a, mut rx_a) = mpsc::channel(8);
+        let (tx_b, mut rx_b) = mpsc::channel(8);
+        let conn_a = Uuid::new_v4();
+        let conn_b = Uuid::new_v4();
+        bus.register_daemon(machine, conn_a, tx_a);
+        bus.register_daemon(machine, conn_b, tx_b);
+        bus.bind_session_conn("sess-a", conn_a);
+        bus.bind_session_conn("sess-b", conn_b);
+
+        bus.command_daemon_for_session(machine, "sess-a", reply("sess-a")).await.unwrap();
+        bus.command_daemon_for_session(machine, "sess-b", reply("sess-b")).await.unwrap();
+
+        assert_eq!(replied_to(&rx_a.recv().await.unwrap()), "sess-a");
+        assert_eq!(replied_to(&rx_b.recv().await.unwrap()), "sess-b");
+        assert!(rx_a.try_recv().is_err(), "conn A must not see conn B's session");
+        assert!(rx_b.try_recv().is_err(), "conn B must not see conn A's session");
+    }
+
+    /// The ordinary single-connection machine: an unannounced session still
+    /// routes exactly as it did before per-connection routing existed.
+    #[tokio::test]
+    async fn single_connection_machine_keeps_the_machine_fallback() {
+        let bus = bus();
+        let machine = Uuid::new_v4();
+        let (tx, mut rx) = mpsc::channel(8);
+        bus.register_daemon(machine, Uuid::new_v4(), tx);
+
+        bus.command_daemon_for_session(machine, "never-announced", reply("never-announced"))
+            .await
+            .unwrap();
+        assert_eq!(replied_to(&rx.recv().await.unwrap()), "never-announced");
+    }
+
+    /// A shared identity with no binding is ambiguous: refuse loudly rather
+    /// than deliver one worker's command to another's.
+    #[tokio::test]
+    async fn unbound_session_on_a_shared_machine_is_no_daemon() {
+        let bus = bus();
+        let machine = Uuid::new_v4();
+        let (tx_a, mut rx_a) = mpsc::channel(8);
+        let (tx_b, mut rx_b) = mpsc::channel(8);
+        bus.register_daemon(machine, Uuid::new_v4(), tx_a);
+        bus.register_daemon(machine, Uuid::new_v4(), tx_b);
+
+        let err = bus
+            .command_daemon_for_session(machine, "never-announced", reply("never-announced"))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, BusError::NoDaemon(m) if m == machine));
+        assert!(rx_a.try_recv().is_err());
+        assert!(rx_b.try_recv().is_err());
+    }
+
+    /// One pod's exit must not unbind its neighbour's sessions, and the
+    /// surviving connection becomes the machine's sole — hence unambiguous —
+    /// daemon again.
+    #[tokio::test]
+    async fn closing_a_connection_drops_only_its_own_bindings() {
+        let bus = bus();
+        let machine = Uuid::new_v4();
+        let (tx_a, _rx_a) = mpsc::channel::<DaemonFrameDown>(8);
+        let (tx_b, mut rx_b) = mpsc::channel(8);
+        let conn_a = Uuid::new_v4();
+        let conn_b = Uuid::new_v4();
+        bus.register_daemon(machine, conn_a, tx_a.clone());
+        bus.register_daemon(machine, conn_b, tx_b.clone());
+        bus.bind_session_conn("sess-a", conn_a);
+        bus.bind_session_conn("sess-b", conn_b);
+
+        // A's WS closes. B is the newest connection, so the machine entry is
+        // still B's and A's cleanup must leave it alone.
+        assert!(!bus.unregister_daemon(machine, conn_a, &tx_a));
+
+        bus.command_daemon_for_session(machine, "sess-b", reply("sess-b")).await.unwrap();
+        assert_eq!(replied_to(&rx_b.recv().await.unwrap()), "sess-b");
+
+        // A's binding is gone, but the machine now has one live connection, so
+        // the fallback applies again.
+        bus.command_daemon_for_session(machine, "sess-a", reply("sess-a")).await.unwrap();
+        assert_eq!(replied_to(&rx_b.recv().await.unwrap()), "sess-a");
+
+        assert!(bus.unregister_daemon(machine, conn_b, &tx_b));
+        let err =
+            bus.command_daemon_for_session(machine, "sess-b", reply("sess-b")).await.unwrap_err();
+        assert!(matches!(err, BusError::NoDaemon(m) if m == machine));
+    }
+
+    /// A session that migrates to a new pod follows its newest announcement.
+    #[tokio::test]
+    async fn rebinding_a_session_moves_it_to_the_new_connection() {
+        let bus = bus();
+        let machine = Uuid::new_v4();
+        let (tx_a, mut rx_a) = mpsc::channel(8);
+        let (tx_b, mut rx_b) = mpsc::channel(8);
+        let conn_a = Uuid::new_v4();
+        let conn_b = Uuid::new_v4();
+        bus.register_daemon(machine, conn_a, tx_a);
+        bus.register_daemon(machine, conn_b, tx_b);
+
+        bus.bind_session_conn("sess", conn_a);
+        bus.command_daemon_for_session(machine, "sess", reply("sess")).await.unwrap();
+        assert!(rx_a.recv().await.is_some());
+
+        bus.bind_session_conn("sess", conn_b);
+        bus.command_daemon_for_session(machine, "sess", reply("sess")).await.unwrap();
+        assert!(rx_b.recv().await.is_some());
+        assert!(rx_a.try_recv().is_err());
+    }
+
+    /// Correlated round-trips take the same per-connection address.
+    #[tokio::test]
+    async fn session_round_trips_route_to_the_announcing_connection() {
+        let bus = bus();
+        let machine = Uuid::new_v4();
+        let (tx_a, mut rx_a) = mpsc::channel(8);
+        let (tx_b, mut rx_b) = mpsc::channel::<DaemonFrameDown>(8);
+        let conn_a = Uuid::new_v4();
+        bus.register_daemon(machine, conn_a, tx_a);
+        bus.register_daemon(machine, Uuid::new_v4(), tx_b);
+        bus.bind_session_conn("sess-a", conn_a);
+
+        let bus2 = bus.clone();
+        let fake = tokio::spawn(async move {
+            let Some(DaemonFrameDown::StageFiles { request_id, .. }) = rx_a.recv().await else {
+                panic!("expected StageFiles on conn A");
+            };
+            assert!(bus2.resolve_stage_files(request_id, Ok(vec!["/tmp/a.txt".into()])));
+        });
+
+        let response = bus
+            .request_daemon_for_session(
+                machine,
+                "sess-a",
+                DaemonRequest::StageFiles {
+                    adapter_id: "claude-code".into(),
+                    local_id: "sess-a".into(),
+                    uploads: Vec::new(),
+                },
+            )
+            .await
+            .unwrap();
+        assert!(matches!(response, DaemonResponse::StagedFiles(p) if p == vec!["/tmp/a.txt"]));
+        fake.await.unwrap();
+        assert!(rx_b.try_recv().is_err(), "the sibling connection must see nothing");
     }
 
     #[test]
@@ -1051,7 +1321,7 @@ mod tests {
         let bus = bus();
         let machine = Uuid::new_v4();
         let (tx, rx) = mpsc::channel(1);
-        bus.register_daemon(machine, tx);
+        bus.register_daemon(machine, Uuid::new_v4(), tx);
         drop(rx);
         let err = bus
             .command_daemon(
@@ -1076,11 +1346,12 @@ mod tests {
         let (old_tx, _old_rx) = mpsc::channel::<DaemonFrameDown>(1);
         let (new_tx, mut new_rx) = mpsc::channel::<DaemonFrameDown>(8);
 
-        bus.register_daemon(machine, old_tx.clone());
+        let old_conn = Uuid::new_v4();
+        bus.register_daemon(machine, old_conn, old_tx.clone());
         // Reconnect: newest connection wins.
-        bus.register_daemon(machine, new_tx);
+        bus.register_daemon(machine, Uuid::new_v4(), new_tx);
         // Old task's cleanup: entry is no longer ours — must NOT remove it.
-        assert!(!bus.unregister_daemon(machine, &old_tx));
+        assert!(!bus.unregister_daemon(machine, old_conn, &old_tx));
         assert!(bus.daemon_connected(machine));
 
         bus.command_daemon(
@@ -1102,7 +1373,7 @@ mod tests {
         let bus = bus();
         let machine = Uuid::new_v4();
         let (tx, mut rx) = mpsc::channel(8);
-        bus.register_daemon(machine, tx);
+        bus.register_daemon(machine, Uuid::new_v4(), tx);
 
         let bus2 = bus.clone();
         let fake_daemon = tokio::spawn(async move {
@@ -1132,7 +1403,7 @@ mod tests {
         let bus = bus();
         let machine = Uuid::new_v4();
         let (tx, mut rx) = mpsc::channel(8);
-        bus.register_daemon(machine, tx);
+        bus.register_daemon(machine, Uuid::new_v4(), tx);
 
         let bus2 = bus.clone();
         tokio::spawn(async move {
@@ -1187,7 +1458,7 @@ mod tests {
         let bus = bus();
         let machine = Uuid::new_v4();
         let (tx, mut rx) = mpsc::channel(8);
-        bus.register_daemon(machine, tx);
+        bus.register_daemon(machine, Uuid::new_v4(), tx);
 
         let bus2 = bus.clone();
         let fake_daemon = tokio::spawn(async move {

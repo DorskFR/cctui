@@ -394,12 +394,7 @@ impl Supervisor {
                 } else {
                     tracing::warn!(%adapter_id, "command for unknown adapter; rejecting");
                     // Silent drop would leave the server-side waiter hanging.
-                    let command_id = match *command {
-                        AdapterCommand::Spawn { command_id, .. }
-                        | AdapterCommand::Fork { command_id, .. } => command_id,
-                        _ => None,
-                    };
-                    if let Some(command_id) = command_id {
+                    if let Some(command_id) = command.command_id() {
                         let _ = event_tx
                             .send((
                                 adapter_id.clone(),

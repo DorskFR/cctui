@@ -492,6 +492,12 @@ pub enum AdapterCommand {
         /// sessions with no account binding.
         #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
         env: std::collections::BTreeMap<String, String>,
+        /// Correlation id minted by the server's send-message routes, echoed
+        /// back in an [`AdapterEvent::CommandResult`] so the originating client
+        /// learns whether the adapter actually delivered the reply.
+        /// `None` for non-client callers.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        command_id: Option<Uuid>,
     },
     /// Interrupt the in-flight turn WITHOUT tearing the session down — the
     /// keep-alive equivalent of pressing Esc in the TUI. Distinct
@@ -597,6 +603,23 @@ pub enum AdapterCommand {
         local_id: String,
         watch: bool,
     },
+}
+
+impl AdapterCommand {
+    /// The correlation id this command carries, if any. Every adapter's
+    /// command loop reports the outcome under it, so a command that carries one
+    /// must never fail silently.
+    #[must_use]
+    pub const fn command_id(&self) -> Option<Uuid> {
+        match self {
+            Self::Spawn { command_id, .. }
+            | Self::Fork { command_id, .. }
+            | Self::Reply { command_id, .. }
+            | Self::Interrupt { command_id, .. }
+            | Self::SetModel { command_id, .. } => *command_id,
+            _ => None,
+        }
+    }
 }
 
 /// Which slice of a parent conversation a subset fork keeps.
@@ -955,6 +978,7 @@ mod tests {
                 text: "go on".into(),
                 ask_picks: None,
                 env: std::collections::BTreeMap::default(),
+                command_id: None,
             },
             AdapterCommand::Kill { local_id: "s1".into(), signal: Some(15) },
             AdapterCommand::Kill { local_id: "s1".into(), signal: None },
