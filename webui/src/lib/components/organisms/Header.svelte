@@ -4,13 +4,13 @@
 	import { useMe, useVersion, useSessions, qk } from '$lib/queries';
 	import type { SessionListResponse } from '@bindings/SessionListResponse';
 	import { useQueryClient } from '@tanstack/svelte-query';
-	import { theme } from '$lib/theme.svelte';
 	import { fontScale } from '$lib/fontscale.svelte';
 	import { auth } from '$lib/auth.svelte';
 	import { notify } from '$lib/notify.svelte';
 	import { settings } from '$lib/settings.svelte';
 	import { toasts } from '$lib/toast.svelte';
-	import { FontScalePicker, IconButton, Menu, Text, ThemePicker } from '@dorsk/tsumikit';
+	import { FontScalePicker, IconButton, Menu, Text } from '@dorsk/tsumikit';
+	import ThemeModePicker from '$lib/components/molecules/ThemeModePicker.svelte';
 	import type { MenuItem } from '@dorsk/tsumikit';
 	import NavLink from '$lib/components/atoms/NavLink.svelte';
 	import MainNav from '$lib/components/organisms/MainNav.svelte';
@@ -87,13 +87,13 @@ import ResourceBattery from '$lib/components/molecules/ResourceBattery.svelte';
 	);
 	const latest = $derived(version.data?.latest_version ?? null);
 
-	// The kit pickers write the kit stores; the blob follows so the choice
+	// The kit font picker writes the kit store; the blob follows so the choice
 	// round-trips across devices like it did through the old header select.
+	// (The theme picker is app-owned and persists through `settings.setTheme`.)
 	$effect(() => {
-		const t = theme.current;
 		const f = fontScale.current;
 		const d = settings.state.display;
-		if (d.theme !== t || d.fontScale !== f) settings.setDisplay({ theme: t, fontScale: f });
+		if (d.fontScale !== f) settings.setDisplay({ fontScale: f });
 	});
 
 	const userMenu = $derived<MenuItem[]>([
@@ -169,7 +169,7 @@ import ResourceBattery from '$lib/components/molecules/ResourceBattery.svelte';
 				}}
 			/>
 			<span class="prefs">
-				<ThemePicker />
+				<ThemeModePicker />
 				<FontScalePicker />
 			</span>
 			<Menu label={m.nav_user_menu()} items={userMenu} bare placement="bottom-end">

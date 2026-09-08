@@ -15,6 +15,7 @@
 	import { isStaticCredential, PROVIDER_KINDS, type ProviderKind } from '$lib/providers';
 	import SoftLimit from '$lib/components/molecules/SoftLimit.svelte';
 	import AccountAvatar from '$lib/components/molecules/AccountAvatar.svelte';
+	import EmojiPicker from '$lib/components/molecules/EmojiPicker.svelte';
 	import { isValidAccountEmoji } from '$lib/components/molecules/avatar';
 	import { editorWindowKeys, isUsdKey } from '$lib/components/molecules/usage-windows';
 	import FireworksProviderEditor from '$lib/components/organisms/FireworksProviderEditor.svelte';
@@ -424,6 +425,7 @@
 					<Field label={m.account_emoji_label()}>
 						<div class="emoji-field">
 							<AccountAvatar {emoji} {name} id={editor?.accountId ?? name} size={24} />
+							<EmojiPicker value={emoji} onselect={(v) => (emoji = v)} />
 							<Input bind:value={emoji} placeholder={m.account_emoji_placeholder()} maxlength={16} style="max-width: 8rem" />
 							<Button control onclick={() => (emoji = '')} disabled={!emoji}>
 								{m.account_emoji_clear()}
