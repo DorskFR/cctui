@@ -33,6 +33,7 @@ import {
 	spawnRequestFromSlot,
 	sessionDebugRows,
 	sessionHrefFor,
+	hrefWithoutDiagnose,
 	sessionIdFromLocation,
 	sortSessions,
 	toolActivity,
@@ -422,6 +423,27 @@ describe('sessionHrefFor', () => {
 	it('is null (no navigation) when the target already matches the current href', () => {
 		expect(sessionHrefFor('http://h/sessions/abc', 'abc')).toBeNull();
 		expect(sessionHrefFor('http://h/sessions', null)).toBeNull();
+	});
+
+	it('drops ?diagnose when moving to another session', () => {
+		expect(sessionHrefFor('http://h/sessions/abc?diagnose=1', 'def')).toBe('http://h/sessions/def');
+		expect(sessionHrefFor('http://h/sessions/abc?diagnose=1', null)).toBe('http://h/sessions');
+	});
+
+	it('keeps ?diagnose while the url already points at that session', () => {
+		expect(sessionHrefFor('http://h/sessions/abc?diagnose=1', 'abc')).toBeNull();
+	});
+});
+
+describe('hrefWithoutDiagnose', () => {
+	it('strips the diagnose param and keeps the rest', () => {
+		expect(hrefWithoutDiagnose('http://h/sessions/abc?q=x&diagnose=1')).toBe(
+			'http://h/sessions/abc?q=x'
+		);
+	});
+
+	it('is null when there is no diagnose param', () => {
+		expect(hrefWithoutDiagnose('http://h/sessions/abc')).toBeNull();
 	});
 });
 

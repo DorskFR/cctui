@@ -2,6 +2,8 @@
 	import type { SessionListItem } from '@bindings/SessionListItem';
 	import type { AgentEvent } from '@bindings/AgentEvent';
 	import { page } from '$app/state';
+	import { replaceState } from '$app/navigation';
+	import { hrefWithoutDiagnose } from '../../../routes/sessions/sessions.logic';
 	import { ws } from '$lib/ws.svelte';
 	import {
 		useConversation,
@@ -84,6 +86,12 @@
 		diagnoseOpen = page.url.searchParams.get('diagnose') === '1';
 		terminalOpen = false;
 	});
+
+	function closeDiagnose() {
+		diagnoseOpen = false;
+		const href = hrefWithoutDiagnose(location.href);
+		if (href) replaceState(href, page.state);
+	}
 
 	const DRAWER_MIN_PX = 360;
 	const DRAWER_DEFAULT_PX = 900;
@@ -447,7 +455,7 @@
 			/>
 
 			{#if diagnoseOpen}
-				<DiagnosePanel sessionId={id} {session} onclose={() => (diagnoseOpen = false)} />
+				<DiagnosePanel sessionId={id} {session} onclose={closeDiagnose} />
 			{/if}
 
 			{#if terminalOpen && !isCodexSession}
