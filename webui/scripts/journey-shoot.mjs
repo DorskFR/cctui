@@ -58,4 +58,9 @@ for (const [theme, themeIds] of byTheme) {
 	run('bash', [seed, theme]);
 	run('npx', ['journey', 'book', ...themeIds, '--variant', `theme=${theme}`]);
 }
-run('node', [resolve(here, 'journey-compress.mjs')]);
+// Only what this run captured: compressing the whole record would rewrite
+// flows that were never re-rendered and bury the real change in the diff.
+run('node', [
+	resolve(here, 'journey-compress.mjs'),
+	...ids.map((id) => resolve(webui, '../docs/journeys', id))
+]);
