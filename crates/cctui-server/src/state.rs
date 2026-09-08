@@ -84,13 +84,6 @@ pub struct AppState {
     /// PR status cache the classifier reads for the `Review` bucket. Has no
     /// feeder currently, so it stays empty (no `Review` bucket surfaces).
     pub pr_status_cache: cctui_proto::classifier::PrStatusCache,
-    /// Sessions currently refused by the per-account soft limit, keyed
-    /// by `session_id`. The gateway sets the entry when a passthrough is blocked
-    /// and clears it on the next success (or on an explicit account switch), and
-    /// only broadcasts the [`ServerEvent::SoftLimitReached`]/`SoftLimitCleared`
-    /// on the actual transition so the worker's repeated Retry-After retries
-    /// don't spam the WS stream.
-    pub soft_limit_blocked: Arc<DashMap<String, ()>>,
     /// Last usage-notice bucket delivered per `(session_id, window key)`; read
     /// only for a provider whose `usage_notices` setting is enabled.
     pub usage_notice_buckets: Arc<crate::routes::gateway::usage_notices::NoticeBuckets>,

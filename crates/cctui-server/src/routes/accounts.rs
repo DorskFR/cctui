@@ -1617,26 +1617,37 @@ pub async fn update_provider(
     Ok(Json(info))
 }
 
+/// Sessions bound to `provider_id` that currently carry a soft-limit block. The
+/// session row owns the block, so a block another replica set is visible here.
+async fn soft_limit_blocked_sessions(
+    pool: &sqlx::PgPool,
+    provider_id: Uuid,
+) -> Result<Vec<String>, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT DISTINCT s.id FROM sessions s \
+         JOIN session_tokens t ON t.session_id = s.id AND t.revoked_at IS NULL \
+         WHERE t.account_id = $1 AND s.soft_limit_reason IS NOT NULL",
+    )
+    .bind(provider_id)
+    .fetch_all(pool)
+    .await
+}
+
 /// Blocked sessions among `candidates` that now evaluate to `Allow` under `caps`.
 /// Clear-only (no re-block); pure so it is unit-testable.
 fn soft_limit_blocks_to_clear(
     candidates: &[String],
-    blocked: &DashMap<String, ()>,
     windows: &[crate::soft_limit::UsageWindow],
     caps: &crate::soft_limit::SoftLimits,
     now: DateTime<Utc>,
 ) -> Vec<String> {
-    candidates
-        .iter()
-        .filter(|sid| blocked.contains_key(*sid))
-        .filter(|_| {
-            matches!(
-                crate::soft_limit::evaluate_soft_limit(windows, caps, now),
-                crate::soft_limit::Decision::Allow
-            )
-        })
-        .cloned()
-        .collect()
+    if !matches!(
+        crate::soft_limit::evaluate_soft_limit(windows, caps, now),
+        crate::soft_limit::Decision::Allow
+    ) {
+        return Vec::new();
+    }
+    candidates.to_vec()
 }
 
 /// After a provider's soft-limit config is raised, lift the blocks it holds that
@@ -1647,14 +1658,7 @@ async fn reevaluate_soft_limit_block(
     provider_id: Uuid,
     caps: &crate::soft_limit::SoftLimits,
 ) {
-    if state.soft_limit_blocked.is_empty() {
-        return;
-    }
-    let candidates: Vec<String> = match crate::store::tokens::session_ids_by_account(
-        &state.pool,
-        provider_id,
-    )
-    .await
+    let candidates: Vec<String> = match soft_limit_blocked_sessions(&state.pool, provider_id).await
     {
         Ok(rows) => rows,
         Err(e) => {
@@ -1662,16 +1666,13 @@ async fn reevaluate_soft_limit_block(
             return;
         }
     };
+    if candidates.is_empty() {
+        return;
+    }
     let usage = gateway::usage_for_soft_limit(state, provider_id).await;
     let windows =
         usage.as_ref().map(crate::soft_limit::normalize_usage_windows).unwrap_or_default();
-    let to_clear = soft_limit_blocks_to_clear(
-        &candidates,
-        &state.soft_limit_blocked,
-        &windows,
-        caps,
-        Utc::now(),
-    );
+    let to_clear = soft_limit_blocks_to_clear(&candidates, &windows, caps, Utc::now());
     for session_id in to_clear {
         gateway::clear_soft_limit_block(state, &session_id).await;
     }
@@ -2593,35 +2594,119 @@ mod tests {
     }
 
     #[test]
-    fn raising_cap_over_usage_clears_only_blocked_sessions() {
-        let blocked: DashMap<String, ()> = DashMap::new();
-        blocked.insert("s-blocked".into(), ());
+    fn raising_cap_over_usage_clears_every_blocked_session() {
         let caps = crate::soft_limit::SoftLimits::from_json(Some(&serde_json::json!({
             "session": {"cap_pct": 95}
         })));
-        let candidates = vec!["s-blocked".to_owned(), "s-unblocked".to_owned()];
+        // The candidates come from `soft_limit_reason IS NOT NULL`, so a block
+        // this process never saw (other replica, or set before a rollout) clears.
+        let candidates = vec!["s-other-replica".to_owned(), "s-pre-rollout".to_owned()];
         let windows = crate::soft_limit::normalize_usage_windows(&hot_usage());
-        let cleared =
-            soft_limit_blocks_to_clear(&candidates, &blocked, &windows, &caps, soft_now());
-        assert_eq!(cleared, vec!["s-blocked".to_owned()]);
+        let cleared = soft_limit_blocks_to_clear(&candidates, &windows, &caps, soft_now());
+        assert_eq!(cleared, candidates);
     }
 
     #[test]
     fn still_over_new_cap_clears_nothing() {
-        let blocked: DashMap<String, ()> = DashMap::new();
-        blocked.insert("s-blocked".into(), ());
         let caps = crate::soft_limit::SoftLimits::from_json(Some(&serde_json::json!({
             "session": {"cap_pct": 85}
         })));
         let windows = crate::soft_limit::normalize_usage_windows(&hot_usage());
-        let cleared = soft_limit_blocks_to_clear(
-            &["s-blocked".to_owned()],
-            &blocked,
-            &windows,
-            &caps,
-            soft_now(),
-        );
+        let cleared =
+            soft_limit_blocks_to_clear(&["s-blocked".to_owned()], &windows, &caps, soft_now());
         assert!(cleared.is_empty());
+    }
+
+    /// DB-gated: the re-evaluation picks its candidates from the session rows,
+    /// so raising a cap lifts a block set by the other replica (or before a
+    /// rollout) that this process has no memory of.
+    #[tokio::test]
+    async fn blocked_candidates_come_from_the_session_rows() {
+        let Some(url) =
+            crate::routes::gateway::test_db_url("blocked_candidates_come_from_the_session_rows")
+        else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+
+        let uid = Uuid::new_v4();
+        let acct = Uuid::new_v4();
+        let prov = Uuid::new_v4();
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+            .bind(uid)
+            .bind(format!("reeval-{uid}"))
+            .bind(format!("kh-{uid}"))
+            .execute(&pool)
+            .await
+            .expect("seed user");
+        sqlx::query("INSERT INTO accounts (id, user_id, name) VALUES ($1, $2, $3)")
+            .bind(acct)
+            .bind(uid)
+            .bind(format!("reeval-acct-{uid}"))
+            .execute(&pool)
+            .await
+            .expect("seed account");
+        sqlx::query(
+            "INSERT INTO account_providers \
+                 (id, user_id, provider, encrypted_refresh_token, account_id) \
+             VALUES ($1, $2, 'anthropic', 'x', $3)",
+        )
+        .bind(prov)
+        .bind(uid)
+        .bind(acct)
+        .execute(&pool)
+        .await
+        .expect("seed provider");
+
+        let blocked = format!("reeval-blocked-{uid}");
+        let running = format!("reeval-running-{uid}");
+        for (id, reason) in
+            [(&blocked, Some("switch account: personal rate-limited")), (&running, None)]
+        {
+            sqlx::query(
+                "INSERT INTO sessions (id, machine_id, working_dir, user_id, status, soft_limit_reason) \
+                 VALUES ($1, 'm1', '/w', $2, 'active', $3)",
+            )
+            .bind(id)
+            .bind(uid)
+            .bind(reason)
+            .execute(&pool)
+            .await
+            .expect("seed session");
+            sqlx::query(
+                "INSERT INTO session_tokens (token_hash, session_id, account_id) \
+                 VALUES ($1, $2, $3)",
+            )
+            .bind(format!("th-{id}"))
+            .bind(id)
+            .bind(prov)
+            .execute(&pool)
+            .await
+            .expect("seed token");
+        }
+
+        let candidates = soft_limit_blocked_sessions(&pool, prov).await.expect("candidates");
+        assert_eq!(candidates, vec![blocked]);
+
+        sqlx::query("DELETE FROM session_tokens WHERE account_id = $1")
+            .bind(prov)
+            .execute(&pool)
+            .await
+            .expect("cleanup tokens");
+        sqlx::query("DELETE FROM sessions WHERE user_id = $1")
+            .bind(uid)
+            .execute(&pool)
+            .await
+            .expect("cleanup sessions");
+        sqlx::query("DELETE FROM users WHERE id = $1")
+            .bind(uid)
+            .execute(&pool)
+            .await
+            .expect("cleanup");
     }
 
     #[test]
