@@ -5,15 +5,16 @@
   "type": "module",
   "scripts": {
     "dev": "vite dev",
-    "build": "vite build",
+    "build": "npm run journey:compile && vite build",
     "preview": "vite preview --host",
     "paraglide": "paraglide-js compile --project ./project.inlang --outdir ./src/lib/paraglide",
-    "prepare": "npm run paraglide && (svelte-kit sync || echo '')",
-    "check": "npm run paraglide && svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+    "prepare": "npm run paraglide && npm run journey:compile && (svelte-kit sync || echo '')",
+    "check": "npm run paraglide && npm run journey:compile && svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "check:watch": "npm run paraglide && svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
     "bindings": "bash scripts/gen-bindings.sh && node scripts/gen-scrub-detectors.mjs",
-    "test": "npm run paraglide && vitest run",
+    "test": "npm run paraglide && npm run journey:compile && vitest run",
     "lint": "biome lint .",
+    "journey:compile": "journey compile --public -o src/lib/journeys.generated.json",
     "journey:seed": "bash ../deploy/local/fixture/seed.sh",
     "journey:auth": "node scripts/journey-auth.mjs",
     "journey:changed": "node scripts/journeys-for-changes.mjs",
@@ -23,7 +24,6 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.6",
-    "@dorsk/journey": "^0.1.4",
     "@inlang/paraglide-js": "^2.25.0",
     "@playwright/test": "^1.63.0",
     "@sveltejs/adapter-static": "^3.0.8",
@@ -39,6 +39,7 @@
     "vitest": "^4.1.9"
   },
   "dependencies": {
+    "@dorsk/journey": "^0.2.0",
     "@dorsk/tsumikit": "^0.43.1",
     "@tanstack/query-async-storage-persister": "^5.102.8",
     "@tanstack/svelte-query": "^6.1.38",
