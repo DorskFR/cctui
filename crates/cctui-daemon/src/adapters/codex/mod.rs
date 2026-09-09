@@ -215,6 +215,7 @@ async fn command_pump(
                    () = shutdown.cancelled() => return,
                    cmd = commands.recv() => {
                        let Some(cmd) = cmd else { return };
+                       let cmd_id = cmd.command_id();
                        match cmd {
                            // codex mints its own thread id, so the server-pre-minted
                            // `session_id` is ignored here.
@@ -463,7 +464,7 @@ async fn command_pump(
                                    machine_key.as_ref(),
                                    &app_cfg,
                                    &local_id,
-                                   SessionCommand::Send { text },
+                                   SessionCommand::Send { text, command_id: cmd_id },
                                )
                                .await;
                            }
@@ -582,7 +583,7 @@ async fn command_pump(
                                });
                            }
                            AdapterCommand::SetModel { local_id, model, effort, command_id } => {
-                               let handled = forward(
+                               forward(
                                    &live,
                                    &registry,
                                    &events,
@@ -594,18 +595,6 @@ async fn command_pump(
                                    SessionCommand::SetModel { model, effort, command_id },
                                )
                                .await;
-                               // Delivered/resumed paths resolve `command_id` in the
-                               // driver; an untracked session resolves it as failure
-                               // here so the webui doesn't wait out the ack.
-                               if !handled && let Some(command_id) = command_id {
-                                   let _ = events
-                                       .send(AdapterEvent::CommandResult {
-                                           command_id,
-                                           ok: false,
-                                           error: Some("no codex session to change model on".to_owned()),
-                                       })
-                                       .await;
-                               }
                            }
                            AdapterCommand::Diagnose { local_id, request_id } => {
                                let report = build_diagnose(
@@ -844,6 +833,7 @@ async fn dispatch(
                     Err(err) => {
                         tracing::error!(%local_id, %err, "codex resume: refusing env-less launch");
                         let _ = events.send(failed_status(local_id, &err.to_string())).await;
+                        fail_command(events, &command, &err.to_string()).await;
                         return DispatchOutcome::Handled(false);
                     }
                 }
@@ -861,6 +851,7 @@ async fn dispatch(
         }
         RouteAction::Resume { command, .. } => {
             tracing::warn!(%local_id, ?command, "codex: command cannot be applied to hibernated session");
+            fail_command(events, &command, "codex session is hibernated").await;
             if matches!(command, SessionCommand::Kill { .. }) {
                 registry.lock().await.remove(local_id);
                 persist::save(registry).await;
@@ -874,6 +865,18 @@ async fn dispatch(
             DispatchOutcome::Handled(false)
         }
         RouteAction::Missing => DispatchOutcome::Missing,
+    }
+}
+
+async fn fail_command(events: &mpsc::Sender<AdapterEvent>, cmd: &SessionCommand, error: &str) {
+    if let Some(command_id) = cmd.command_id() {
+        let _ = events
+            .send(AdapterEvent::CommandResult {
+                command_id,
+                ok: false,
+                error: Some(error.to_owned()),
+            })
+            .await;
     }
 }
 
@@ -901,15 +904,7 @@ async fn emit_missing_failure(
     cmd: &SessionCommand,
 ) {
     tracing::warn!(%local_id, ?cmd, "codex: no app-server session for command");
-    if let Some(command_id) = cmd.command_id() {
-        let _ = events
-            .send(AdapterEvent::CommandResult {
-                command_id,
-                ok: false,
-                error: Some("no codex session for command".to_owned()),
-            })
-            .await;
-    }
+    fail_command(events, cmd, "no codex session for command").await;
     if matches!(cmd, SessionCommand::Kill { .. }) {
         let _ = events
             .send(AdapterEvent::SessionEnded {
@@ -971,7 +966,7 @@ async fn forward(
                     cmd.clone(),
                 )
                 .await;
-                if !matches!(handled, DispatchOutcome::Handled(true)) {
+                if matches!(handled, DispatchOutcome::Missing) {
                     emit_missing_failure(&events, &local_id, &cmd).await;
                 }
             });
@@ -1146,7 +1141,7 @@ mod tests {
             None,
             &unrecoverable_cfg(),
             "ghost",
-            SessionCommand::Send { text: "hi".to_owned() },
+            SessionCommand::Send { text: "hi".to_owned(), command_id: None },
         )
         .await;
         assert!(handled, "recovery is attempted asynchronously");

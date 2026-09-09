@@ -89,6 +89,7 @@ async fn pump(cfg: OpenCodeConfig, ctx: AdapterCtx, live: LiveRegistry) {
             }
             cmd = commands.recv() => {
                 let Some(cmd) = cmd else { return };
+                let cmd_id = cmd.command_id();
                 match cmd {
                     AdapterCommand::Spawn { spec, command_id, session_id } => {
                         let Some(working_dir) = spec.working_dir.clone() else {
@@ -172,12 +173,20 @@ async fn pump(cfg: OpenCodeConfig, ctx: AdapterCtx, live: LiveRegistry) {
                     }
                     AdapterCommand::SendMessage { local_id, text }
                     | AdapterCommand::Reply { local_id, text, .. } => {
-                        route(
+                        let command_id = cmd_id;
+                        let delivered = route(
                             &live,
                             &local_id,
-                            SessionCommand::Prompt { session_id: local_id.clone(), text },
+                            SessionCommand::Prompt {
+                                session_id: local_id.clone(),
+                                text,
+                                command_id,
+                            },
                         )
                         .await;
+                        if !delivered {
+                            fail(&events, command_id, "no live opencode session").await;
+                        }
                     }
                     AdapterCommand::Kill { local_id, .. } | AdapterCommand::Remove { local_id } => {
                         if !route(
