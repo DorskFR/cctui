@@ -23,15 +23,6 @@ export default defineJourney({
 			capture: 'board'
 		},
 		{
-			id: 'add',
-			target: 'new-account',
-			do: { kind: 'click' },
-			say: {
-				title: 'Add your first account',
-				body: 'Add your first account. Once it is saved, this guide is complete; pools are for when you have more than one.'
-			}
-		},
-		{
 			id: 'pool',
 			qaOnly: true,
 			target: 'pool[production]',
@@ -63,6 +54,17 @@ export default defineJourney({
 				body: 'The same membership change without a mouse drag, which is also how it is done on a phone.'
 			},
 			capture: 'menu'
+		},
+		// Must stay last: the click opens a modal over the board, hiding every
+		// capture above it.
+		{
+			id: 'add',
+			target: 'new-account',
+			do: { kind: 'click' },
+			say: {
+				title: 'Add your first account',
+				body: 'Add your first account. Once it is saved, this guide is complete; pools are for when you have more than one.'
+			}
 		}
 	]
 });

@@ -113,6 +113,13 @@ describe('public journey set', () => {
 		]);
 	});
 
+	it('adds an account only after the book has captured the board', () => {
+		expect(pub('accounts-pools').steps.map((s) => s.id)).toEqual(['board', 'add']);
+		const ids = book('accounts-pools').steps.map((s) => s.id);
+		expect(ids).toEqual(['board', 'pool', 'handle', 'menu', 'add']);
+		expect(ids.indexOf('add')).toBeGreaterThan(ids.lastIndexOf('menu'));
+	});
+
 	it('walks spawn-session through the machine and folder before the fills', () => {
 		const ids = pub('spawn-session').steps.map((s) => s.id);
 		expect(ids).toEqual(['open', 'where', 'name', 'prompt', 'save', 'sections', 'show-drafts']);
