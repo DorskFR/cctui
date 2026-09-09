@@ -499,20 +499,61 @@ export const matchesLabelFilter = (s: SessionListItem, filter: Set<string>): boo
 	filter.size === 0 || s.labels.some((l) => filter.has(l.id));
 
 export type SessionSort = 'activity' | 'created' | 'name';
+export type SessionSortDir = 'asc' | 'desc';
+export interface SessionSortState {
+	sort: SessionSort;
+	sortDir: SessionSortDir;
+}
 
-// 'activity' keeps the server order (last_message_at desc); the rest reorder a copy.
-export function sortSessions(rows: SessionListItem[], sort: SessionSort): SessionListItem[] {
-	if (sort === 'activity') return rows;
+// Newest-first for the date fields, A→Z for names.
+export const naturalSortDir = (sort: SessionSort): SessionSortDir =>
+	sort === 'name' ? 'asc' : 'desc';
+
+// Picking the active field flips its direction; picking another field resets
+// to that field's natural direction.
+export function nextSort(current: SessionSortState, sort: SessionSort): SessionSortState {
+	if (current.sort === sort)
+		return { sort, sortDir: current.sortDir === 'asc' ? 'desc' : 'asc' };
+	return { sort, sortDir: naturalSortDir(sort) };
+}
+
+// 'activity' desc is the server order and returns the input untouched; every
+// other combination reorders a copy.
+export function sortSessions(
+	rows: SessionListItem[],
+	sort: SessionSort,
+	dir: SessionSortDir = naturalSortDir(sort)
+): SessionListItem[] {
+	if (sort === 'activity') return dir === 'desc' ? rows : [...rows].reverse();
 	const ts = (v: string | null | undefined) => (v ? new Date(v).getTime() : 0);
 	const sorted = [...rows];
+	const sign = dir === 'asc' ? 1 : -1;
 	if (sort === 'created') {
-		sorted.sort((a, b) => ts(b.registered_at) - ts(a.registered_at));
+		sorted.sort((a, b) => sign * (ts(a.registered_at) - ts(b.registered_at)));
 	} else if (sort === 'name') {
 		const label = (s: SessionListItem) =>
 			(s.name || s.working_dir?.split('/').filter(Boolean).pop() || s.id).toLowerCase();
-		sorted.sort((a, b) => label(a).localeCompare(label(b)));
+		sorted.sort((a, b) => sign * label(a).localeCompare(label(b)));
 	}
 	return sorted;
+}
+
+// Every id a section's bulk archive covers: its top-level rows plus the
+// subagents nested under them, so a parent never leaves its children behind.
+export function idsForSection(
+	rows: SessionListItem[],
+	childGroups: Map<string, SubGroup[]>
+): string[] {
+	const out: string[] = [];
+	const seen = new Set<string>();
+	const visit = (s: SessionListItem) => {
+		if (seen.has(s.id)) return;
+		seen.add(s.id);
+		out.push(s.id);
+		for (const g of childGroups.get(s.id) ?? []) g.agents.forEach(visit);
+	};
+	rows.forEach(visit);
+	return out;
 }
 
 // Which enabled section owns a live bucket: pinned←starred, dispatched←dispatched,
