@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { flushSync, mount, unmount, type ComponentProps } from 'svelte';
+import { flushSync, mount, tick, unmount, type ComponentProps } from 'svelte';
 import SessionSectionHeader from './SessionSectionHeader.svelte';
 
 let comp: ReturnType<typeof mount> | null = null;
@@ -68,18 +68,28 @@ describe('SessionSectionHeader', () => {
 		expect(document.querySelector('[aria-label="Ascending"]')).not.toBeNull();
 	});
 
-	it('picking a field from the menu reports that field', () => {
+	// happy-dom implements no Popover API, so the panel neither fires its own
+	// toggle (leaving the items unrendered) nor answers the hidePopover() that
+	// Menu calls before an item's onselect.
+	async function openMenu() {
+		const panel = document.querySelector('[popover]') as
+			| (HTMLElement & { hidePopover?: () => void })
+			| null;
+		expect(panel).not.toBeNull();
+		if (panel && typeof panel.hidePopover !== 'function') panel.hidePopover = () => {};
+		const toggle = new Event('toggle') as Event & { newState: string };
+		toggle.newState = 'open';
+		panel?.dispatchEvent(toggle);
+		await tick();
+	}
+
+	it('picking a field from the menu reports that field', async () => {
 		const onsort = vi.fn();
 		render({ onsort });
-		const trigger = [...document.querySelectorAll('button')].find((b) =>
-			b.textContent?.includes('Sort:')
-		);
-		expect(trigger).toBeDefined();
-		trigger?.click();
-		flushSync();
-		const created = [...document.querySelectorAll('[role="menuitem"], [role="menuitemcheckbox"]')].find(
-			(el) => el.textContent?.includes('Created')
-		) as HTMLElement | undefined;
+		await openMenu();
+		const created = [
+			...document.querySelectorAll('[role="menuitem"], [role="menuitemcheckbox"]')
+		].find((el) => el.textContent?.includes('Created')) as HTMLElement | undefined;
 		expect(created).toBeDefined();
 		created?.click();
 		flushSync();

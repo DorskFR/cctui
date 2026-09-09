@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { SessionListItem } from '@bindings/SessionListItem';
 import { SessionsListController, type SessionsListInputs } from './SessionsListController.svelte';
-import type { Section, Dimension, SessionSort, SessionSortDir } from './sessions.logic';
+import type { Section, Dimension, SessionSort } from './sessions.logic';
 
 function session(over: Partial<SessionListItem>): SessionListItem {
 	return {
