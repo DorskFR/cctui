@@ -220,6 +220,43 @@ impl LiveSnapshot {
 /// Spawn-time `(model, effort)` pair remembered per worker `short`.
 type SpawnModelEffort = (Option<String>, Option<String>);
 
+/// A prepared spawn/fork `dispatch` request whose control-socket round-trip
+/// is awaited outside the run loop, so a slow or silent claude daemon can't
+/// wedge polling and every later command for the adapter.
+pub struct DeferredDispatch {
+    sock: PathBuf,
+    req: serde_json::Value,
+    short: String,
+    what: String,
+    session_id: String,
+}
+
+impl DeferredDispatch {
+    /// Send the dispatch and await the daemon's reply. An `ok:false` reply or
+    /// a silent daemon (see [`socket::ONE_SHOT_TIMEOUT`]) is an error, and the
+    /// worker's managed config files are swept so nothing dangles.
+    pub async fn send(self) -> anyhow::Result<()> {
+        let resp: serde_json::Value = socket::call(&self.sock, &self.req)
+            .await
+            .inspect_err(|_| crate::configsweep::remove_session_files(&self.short))
+            .with_context(|| format!("dispatch {}", self.what))?;
+        tracing::info!(?resp, session_id = %self.session_id, "{} dispatched via control socket", self.what);
+        Ok(())
+    }
+
+    /// [`send`](Self::send) on its own task, reporting the outcome as the
+    /// `CommandResult` for `command_id`.
+    fn run_detached(self, events: mpsc::Sender<AdapterEvent>, command_id: Option<uuid::Uuid>) {
+        tokio::spawn(async move {
+            let res = self.send().await;
+            if let Err(err) = &res {
+                tracing::warn!(%err, "command dispatch failed");
+            }
+            Driver::report_command(&events, command_id, res).await;
+        });
+    }
+}
+
 pub struct Driver {
     cfg: DriverConfig,
     events: mpsc::Sender<AdapterEvent>,
@@ -628,19 +665,17 @@ impl Driver {
                     // Capture the correlation id before `cmd` is moved so we can
                     // report the outcome back to the originating client.
                     let command_id = cmd.command_id();
-                    let res = self.handle_command(cmd).await;
-                    if let Some(command_id) = command_id {
-                        let (ok, error) = match &res {
-                            Ok(()) => (true, None),
-                            Err(err) => (false, Some(err.to_string())),
-                        };
-                        let _ = self
-                            .events
-                            .send(AdapterEvent::CommandResult { command_id, ok, error })
-                            .await;
-                    }
-                    if let Err(err) = res {
-                        tracing::warn!(%err, "command dispatch failed");
+                    match self.handle_command(cmd).await {
+                        Ok(Some(dispatch)) => {
+                            dispatch.run_detached(self.events.clone(), command_id);
+                        }
+                        Ok(None) => {
+                            Self::report_command(&self.events, command_id, Ok(())).await;
+                        }
+                        Err(err) => {
+                            tracing::warn!(%err, "command dispatch failed");
+                            Self::report_command(&self.events, command_id, Err(err)).await;
+                        }
                     }
                     }
                 }
@@ -864,12 +899,19 @@ impl Driver {
     }
 
     #[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
-    async fn handle_command(&self, cmd: AdapterCommand) -> anyhow::Result<()> {
+    /// Handles `cmd` inline, except for the control-socket dispatch of a
+    /// spawn/fork: that reply can take as long as a cold worker bring-up (or
+    /// never come), so it is returned as a [`DeferredDispatch`] for the run
+    /// loop to await off the poll path.
+    async fn handle_command(
+        &self,
+        cmd: AdapterCommand,
+    ) -> anyhow::Result<Option<DeferredDispatch>> {
         // Diagnose is read-only aggregation and must answer even
         // when the claude daemon is down (the report *says* the socket is
         // gone), so it is handled before the socket requirement below.
         if let AdapterCommand::Diagnose { local_id, request_id } = cmd {
-            return self.handle_diagnose(&local_id, request_id).await;
+            return self.handle_diagnose(&local_id, request_id).await.map(|()| None);
         }
         // Live-view watch toggle only needs the in-memory short map, and
         // stopping a viewer must work even when the claude daemon has gone away —
@@ -880,7 +922,7 @@ impl Driver {
                 Ok(short) => self.pty_view.unwatch(&short),
                 Err(err) => tracing::debug!(%err, watch, "watch_pty for unknown session; ignoring"),
             }
-            return Ok(());
+            return Ok(None);
         }
         // A command (spawn/reply/kill/…) needs a live control socket. If the
         // on-demand claude daemon has shut down, boot it and wait briefly for
@@ -956,7 +998,7 @@ impl Driver {
                 if let Some(tx) = hook {
                     if tx.send(allow).is_ok() {
                         tracing::info!(%local_id, %request_id, allow, "answered permission prompt via PreToolUse hook");
-                        return Ok(());
+                        return Ok(None);
                     }
                     // The hook already gave up (its wait timed out and the
                     // receiver was dropped). Fall through to the keystroke path,
@@ -988,11 +1030,15 @@ impl Driver {
                 rm?;
             }
             AdapterCommand::Spawn { spec, session_id, .. } => {
-                self.spawn(&sock, &spec, session_id.map(|id| id.to_string())).await?;
+                let dispatch =
+                    self.spawn(&sock, &spec, session_id.map(|id| id.to_string())).await?;
+                return Ok(Some(dispatch));
             }
             AdapterCommand::Fork { parent_local_id, spec, session_id, extract, .. } => {
-                self.fork(&sock, &parent_local_id, &spec, session_id.as_deref(), extract.as_ref())
+                let dispatch = self
+                    .fork(&sock, &parent_local_id, &spec, session_id.as_deref(), extract.as_ref())
                     .await?;
+                return Ok(Some(dispatch));
             }
             AdapterCommand::Rename { local_id, name } => {
                 let short = self.resolve_short(&local_id)?;
@@ -1022,7 +1068,20 @@ impl Driver {
                 tracing::warn!("unhandled AdapterCommand variant");
             }
         }
-        Ok(())
+        Ok(None)
+    }
+
+    async fn report_command(
+        events: &mpsc::Sender<AdapterEvent>,
+        command_id: Option<uuid::Uuid>,
+        res: anyhow::Result<()>,
+    ) {
+        let Some(command_id) = command_id else { return };
+        let (ok, error) = match res {
+            Ok(()) => (true, None),
+            Err(err) => (false, Some(err.to_string())),
+        };
+        let _ = events.send(AdapterEvent::CommandResult { command_id, ok, error }).await;
     }
 
     fn resolve_short(&self, local_id: &str) -> anyhow::Result<String> {
@@ -1657,7 +1716,11 @@ impl Driver {
             }
         };
         tracing::info!(session_id = %session_id, "dispatch-on-start: launching dispatched session");
-        if let Err(err) = self.spawn(&sock, &spec, Some(session_id.clone())).await {
+        let dispatched = match self.spawn(&sock, &spec, Some(session_id.clone())).await {
+            Ok(dispatch) => dispatch.send().await,
+            Err(err) => Err(err),
+        };
+        if let Err(err) = dispatched {
             tracing::error!(%err, session_id = %session_id, "dispatch-on-start: spawn failed");
         } else {
             tracing::info!(session_id = %session_id, "dispatch-on-start: session dispatched");
@@ -1741,7 +1804,7 @@ impl Driver {
         sock: &std::path::Path,
         spec: &cctui_proto::adapter::SessionSpec,
         forced_session_id: Option<String>,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<DeferredDispatch> {
         let cwd = spec
             .working_dir
             .as_deref()
@@ -1936,14 +1999,13 @@ impl Driver {
             }
         });
 
-        // `call` (not `one_shot`) so an `ok:false` reply becomes an Err that
-        // propagates back to the client instead of being logged as success.
-        let resp: serde_json::Value = socket::call(sock, &req)
-            .await
-            .inspect_err(|_| crate::configsweep::remove_session_files(short))
-            .with_context(|| format!("dispatch spawn in {cwd}"))?;
-        tracing::info!(?resp, %cwd, %session_id, "spawn dispatched via control socket");
-        Ok(())
+        Ok(DeferredDispatch {
+            sock: sock.to_path_buf(),
+            req,
+            short: short.to_owned(),
+            what: format!("spawn in {cwd}"),
+            session_id,
+        })
     }
 
     /// Fork an existing conversation into a brand-new claude session.
@@ -2017,7 +2079,7 @@ impl Driver {
         spec: &cctui_proto::adapter::SessionSpec,
         forced_session_id: Option<&str>,
         extract: Option<&cctui_proto::adapter::ForkExtract>,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<DeferredDispatch> {
         let cwd = spec
             .working_dir
             .as_deref()
@@ -2196,12 +2258,14 @@ impl Driver {
                 "rows": 40,
             }
         });
-        let resp: serde_json::Value = socket::call(sock, &req)
-            .await
-            .inspect_err(|_| crate::configsweep::remove_session_files(&short))
-            .with_context(|| format!("dispatch fork of {parent_local_id} in {cwd}"))?;
-        tracing::info!(?resp, %cwd, %session_id, %parent_local_id, %resume_id, "fork dispatched via control socket");
-        Ok(())
+        tracing::info!(%cwd, %session_id, %parent_local_id, %resume_id, "fork prepared for control socket");
+        Ok(DeferredDispatch {
+            sock: sock.to_path_buf(),
+            req,
+            short: short.clone(),
+            what: format!("fork of {parent_local_id} in {cwd}"),
+            session_id,
+        })
     }
 
     /// Locate the control socket, booting the on-demand claude daemon if it's
@@ -3662,6 +3726,61 @@ mod tests {
 
     fn env_of(pairs: &[(&str, &str)]) -> std::collections::BTreeMap<String, String> {
         pairs.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect()
+    }
+
+    fn deferred(sock: PathBuf) -> DeferredDispatch {
+        DeferredDispatch {
+            sock,
+            req: serde_json::json!({ "proto": 1, "op": "dispatch" }),
+            short: format!("t-{}", uuid::Uuid::new_v4()),
+            what: "spawn in /tmp".to_owned(),
+            session_id: uuid::Uuid::new_v4().to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_detached_dispatch_to_a_dead_daemon_reports_a_failed_command_result() {
+        let (tx, mut rx) = mpsc::channel(4);
+        let command_id = uuid::Uuid::new_v4();
+        deferred(std::env::temp_dir().join(format!("absent-{}.sock", uuid::Uuid::new_v4())))
+            .run_detached(tx, Some(command_id));
+        let ev = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("a dead daemon must not hang the command")
+            .expect("an outcome");
+        match ev {
+            AdapterEvent::CommandResult { command_id: got, ok, error } => {
+                assert_eq!(got, command_id);
+                assert!(!ok);
+                assert!(error.is_some_and(|e| e.contains("spawn in /tmp")));
+            }
+            other => panic!("expected a CommandResult, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_detached_dispatch_reports_ok_once_the_daemon_answers() {
+        let dir = std::env::temp_dir().join(format!("cctui-dd-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let sock = dir.join("d.sock");
+        let listener = tokio::net::UnixListener::bind(&sock).unwrap();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (r, mut w) = stream.into_split();
+            let mut line = String::new();
+            tokio::io::AsyncBufReadExt::read_line(&mut tokio::io::BufReader::new(r), &mut line)
+                .await
+                .unwrap();
+            tokio::io::AsyncWriteExt::write_all(&mut w, b"{\"ok\":true}\n").await.unwrap();
+        });
+        let (tx, mut rx) = mpsc::channel(4);
+        let command_id = uuid::Uuid::new_v4();
+        deferred(sock).run_detached(tx, Some(command_id));
+        let ev = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("an outcome within the bound")
+            .expect("an outcome");
+        assert!(matches!(ev, AdapterEvent::CommandResult { ok: true, .. }), "{ev:?}");
     }
 
     #[test]

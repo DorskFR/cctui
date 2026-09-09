@@ -93,7 +93,7 @@ vi.mock("$lib/settings.svelte", () => ({
 }));
 
 vi.mock("$lib/ws.svelte", () => ({
-  ws: { sessions: [], awaitCommand: async () => ({ ok: true }) },
+  ws: { sessions: [], awaitSpawn: async () => ({ ok: true }) },
 }));
 
 let component: ReturnType<typeof mount> | undefined;
