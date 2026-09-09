@@ -21,6 +21,7 @@
 	import { installImageLightbox } from '$lib/imagelightbox';
 	import { Container, Toaster } from '@dorsk/tsumikit';
 	import { dockLayout } from '$lib/spawnDock.svelte';
+	import { mountJourneys } from '$lib/journey';
 
 	let { children } = $props();
 
@@ -120,6 +121,12 @@
 	// localStorage-cached / default state, so it's safe to call on every auth flip.
 	$effect(() => {
 		if (auth.isAuthed) void settings.load();
+	});
+
+	// The guided tours spotlight elements behind the login, so they mount once
+	// a session exists; `mountJourneys` is idempotent across auth flips.
+	$effect(() => {
+		if (auth.isAuthed) void mountJourneys();
 	});
 </script>
 

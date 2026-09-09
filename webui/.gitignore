@@ -11,3 +11,6 @@ vite.config.ts.timestamp-*
 # Journey auth state: minted from a token at run time, never committed.
 journeys/.auth/
 test-results/
+
+# Public journey IR, compiled from journeys/ by `npm run journey:compile`.
+/src/lib/journeys.generated.json

@@ -1,34 +1,37 @@
 //! Versioned Codex `app-server` protocol contract.
 //!
-//! Single source of truth for the Codex version cctui is built and tested
-//! against. The pinned version is consumed by:
+//! Single source of truth for the minimum Codex version cctui supports. The
+//! floor is consumed by:
 //!
 //! - the [`super::app_server`] handshake (declared client version, and the
 //!   floor the discovered server version is checked against);
-//! - `deploy/worker.Dockerfile` (`ARG CODEX_VERSION`), kept in lockstep by the
-//!   `scripts/check-codex-version-drift.sh` CI drift check;
-//! - the retained JSON Schema under `schema/`, generated from this exact
-//!   Codex build with `codex app-server generate-json-schema --out schema/`.
+//! - `deploy/worker.Dockerfile` (`ARG CODEX_VERSION`), which installs exactly
+//!   the floor; `scripts/check-codex-version-drift.sh` keeps the two equal and
+//!   checks any installed `codex` against the floor;
+//! - the retained JSON Schema under `schema/`, generated from the floor build
+//!   with `codex app-server generate-json-schema --out schema/`.
 //!
-//! The schema bundle (`schema/codex_app_server_protocol.schemas.json`) pins the
-//! method names and shapes the adapter relies on — `initialize`, `initialized`,
+//! The floor is a MINIMUM, not an exact pin: derived worker images (the harbor
+//! bake) refetch the harness, so workers run whatever is current at bake time,
+//! never older than the floor. The schema bundle
+//! (`schema/codex_app_server_protocol.schemas.json`) therefore documents the
+//! shapes the adapter is guaranteed to find — `initialize`, `initialized`,
 //! `thread/start`, `thread/resume`, `thread/fork`, `turn/start`, `thread/list`,
-//! `thread/read`, and the approval requests. Regenerate it whenever
-//! [`CODEX_PINNED_VERSION`] is bumped.
+//! `thread/read`, and the approval requests — not everything a newer server
+//! may send. Additions in a newer Codex are methods and notifications the
+//! adapter may not consume yet; they must surface as a visible gap, never be
+//! silently dropped. Regenerate the bundle whenever [`CODEX_MIN_VERSION`] is
+//! raised.
 
-/// The exact Codex version cctui is pinned to: the version installed by the
-/// worker image and the one the retained JSON Schema was generated from. The
-/// Dockerfile `ARG CODEX_VERSION` must equal this (CI enforces it).
-pub const CODEX_PINNED_VERSION: &str = "0.144.1";
-
-/// The minimum Codex version whose `app-server` protocol the adapter still
-/// speaks correctly. Sessions started against an older server keep running but
-/// are flagged loudly in diagnostics — the handshake / thread / approval shapes
-/// below this floor are not guaranteed.
-pub const CODEX_MIN_VERSION: &str = "0.142.0";
+/// The minimum Codex version whose `app-server` protocol the adapter speaks
+/// correctly. It is the version the worker image installs and the retained
+/// JSON Schema was generated from. Sessions started against an older server
+/// keep running but are flagged loudly in diagnostics — the handshake /
+/// thread / approval shapes below this floor are not guaranteed.
+pub const CODEX_MIN_VERSION: &str = "0.153.4";
 
 /// A parsed `major.minor.patch` triple. Pre-release / build metadata is
-/// ignored — the pin only reasons about the release line.
+/// ignored — the floor only reasons about the release line.
 type SemVer = (u64, u64, u64);
 
 /// Parse a leading `major.minor.patch` out of a version string, tolerating a
@@ -85,19 +88,22 @@ mod tests {
     #[test]
     fn support_floor_is_inclusive() {
         assert!(version_supported(CODEX_MIN_VERSION));
-        assert!(version_supported(CODEX_PINNED_VERSION));
-        assert!(version_supported("0.142.4"));
+        assert!(version_supported("0.153.9"));
+        assert!(version_supported("0.154.0"));
         assert!(version_supported("1.0.0"));
-        assert!(!version_supported("0.141.9"));
-        assert!(!version_supported("0.99.0")); // 0.99 < 0.142
+        assert!(!version_supported("0.153.3"));
+        assert!(!version_supported("0.144.1"));
+        assert!(!version_supported("0.99.0"));
         assert!(!version_supported("garbage"));
     }
 
     #[test]
-    fn pinned_is_at_or_above_min() {
-        assert!(
-            version_supported(CODEX_PINNED_VERSION),
-            "pinned {CODEX_PINNED_VERSION} must be >= min {CODEX_MIN_VERSION}"
+    fn floor_is_a_concrete_release() {
+        assert!(parse_semver(CODEX_MIN_VERSION).is_some());
+        assert_eq!(
+            CODEX_MIN_VERSION.split('.').count(),
+            3,
+            "CODEX_MIN_VERSION {CODEX_MIN_VERSION} must be a concrete x.y.z"
         );
     }
 
@@ -110,8 +116,8 @@ mod tests {
     }
 
     /// The retained JSON Schema bundle must stay present, parseable, and cover
-    /// the methods the adapter drives — it is the machine-readable half of the
-    /// contract this module pins.
+    /// the methods the adapter drives at the floor — it is the machine-readable
+    /// half of the contract this module declares.
     #[test]
     fn retained_schema_bundle_is_present_and_covers_core_methods() {
         let raw = include_str!("schema/codex_app_server_protocol.schemas.json");
@@ -125,10 +131,13 @@ mod tests {
             "thread/fork",
             "turn/start",
             "thread/list",
+            "thread/read",
+            "thread/turns/list",
+            "thread/queue/changed",
         ] {
             assert!(
                 raw.contains(method),
-                "retained schema must mention `{method}` (regenerate after a Codex bump)"
+                "retained schema must mention `{method}` (regenerate after raising the floor)"
             );
         }
         assert!(doc.is_object(), "schema bundle should be a JSON object");

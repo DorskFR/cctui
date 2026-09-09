@@ -572,9 +572,9 @@ SDK. Rationale:
   output into `RESULT_FILE` — with one result-reporting seam instead of two.
 - **No Python runtime in the worker.** The SDK is a Python library that pins its
   own Codex runtime; adopting it would add a Python layer (and a second,
-  independently-versioned Codex) to an image that already ships the pinned
-  `codex` binary (`ARG CODEX_VERSION`, drift-checked against
-  `contract::CODEX_PINNED_VERSION`). `codex exec` reuses that one binary.
+  independently-versioned Codex) to an image that already ships the `codex`
+  binary (`ARG CODEX_VERSION`, the floor drift-checked against
+  `contract::CODEX_MIN_VERSION`). `codex exec` reuses that one binary.
 - **Reuses existing hardening.** `phase_codex_config` already writes a locked-down
   `config.toml` (approvals off, full-access sandbox — the pod is the sandbox — and
   the cctui gateway model provider). `codex exec` honours it verbatim; the SDK

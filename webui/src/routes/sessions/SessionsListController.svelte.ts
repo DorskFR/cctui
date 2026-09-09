@@ -13,6 +13,7 @@ import {
 	type GroupKey,
 	type Section,
 	type SessionSort,
+	type SessionSortDir,
 	type SubGroup
 } from './sessions.logic';
 
@@ -25,6 +26,7 @@ export interface SessionsListInputs {
 	sections: () => Set<Section>;
 	groupBy: () => Dimension;
 	sort: () => SessionSort;
+	sortDir: () => SessionSortDir;
 	matchesLabel: (s: SessionListItem) => boolean;
 	matchesClient: (s: SessionListItem) => boolean;
 	// Visual document order of the rendered rows, for shift-range selection.
@@ -45,7 +47,7 @@ export class SessionsListController {
 		this.#in = inputs;
 	}
 
-	#sort = (rows: SessionListItem[]) => sortSessions(rows, this.#in.sort());
+	#sort = (rows: SessionListItem[]) => sortSessions(rows, this.#in.sort(), this.#in.sortDir());
 	#keep = (s: SessionListItem): boolean =>
 		this.#in.matchesLabel(s) &&
 		this.#in.matchesClient(s) &&

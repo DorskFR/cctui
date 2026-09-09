@@ -34,6 +34,7 @@ const SAVE_DEBOUNCE_MS = 400;
 
 export interface SessionListSettings {
 	sort: 'activity' | 'created' | 'name';
+	sortDir: SortDir;
 	view: 'list' | 'card';
 	density: 'compact' | 'normal';
 	section: string;
@@ -50,6 +51,13 @@ export interface SessionListSettings {
 	// default (the glyph keeps the row terse); worth turning on when several
 	// accounts of the same provider are in play, where every glyph looks alike.
 	accountNames: boolean;
+}
+
+export const SORT_DIRS = ['asc', 'desc'] as const;
+export type SortDir = (typeof SORT_DIRS)[number];
+export const DEFAULT_SORT_DIR: SortDir = 'desc';
+export function clampSortDir(v: unknown): SortDir {
+	return (SORT_DIRS as readonly unknown[]).includes(v) ? (v as SortDir) : DEFAULT_SORT_DIR;
 }
 
 // Session-list column widths, as the `size` handed to the layout Container.
@@ -172,6 +180,9 @@ export interface DisplaySettings {
 	// archives the session (Beeper/Slack-style archive chord). Preserved from the
 	// previous localStorage-only Settings.
 	archiveShortcut: boolean;
+	// Bulk-archive control on the Completed group header. Off removes only that
+	// affordance; per-session archive stays.
+	archiveDoneButton: boolean;
 	notifyEnabled: boolean;
 	notifySound: boolean;
 	// Where the route navigation lives on a wide screen: tabs inline in the
@@ -231,6 +242,26 @@ export interface SecretScrubPattern {
 	enabled: boolean;
 }
 
+// Guided-tour state. Serializes as `data.onboarding` so a tour resumes on any
+// device the user signs in from; the server stores the blob untouched.
+export interface OnboardingSettings {
+	/** Journey id -> the version of it the user completed. */
+	seenVersion: Record<string, number>;
+	/** The runtime's serialized resume record for the tour in progress. */
+	progress: string | null;
+}
+
+export function mergeOnboarding(v: unknown): OnboardingSettings {
+	const raw = (v ?? {}) as Partial<OnboardingSettings>;
+	const seenVersion: Record<string, number> = {};
+	if (raw.seenVersion && typeof raw.seenVersion === 'object') {
+		for (const [id, ver] of Object.entries(raw.seenVersion)) {
+			if (typeof ver === 'number' && Number.isFinite(ver)) seenVersion[id] = ver;
+		}
+	}
+	return { seenVersion, progress: typeof raw.progress === 'string' ? raw.progress : null };
+}
+
 export interface SettingsState {
 	sessionList: SessionListSettings;
 	display: DisplaySettings;
@@ -276,11 +307,13 @@ export interface SettingsState {
 	// the server clamps to en|fr|null. `null` means "auto" — fall back to the
 	// browser's language / the base locale (Paraglide resolves it at runtime).
 	locale: Locale | null;
+	onboarding: OnboardingSettings;
 }
 
 const DEFAULTS: SettingsState = {
 	sessionList: {
 		sort: 'activity',
+		sortDir: DEFAULT_SORT_DIR,
 		view: 'list',
 		density: 'normal',
 		section: '',
@@ -294,6 +327,7 @@ const DEFAULTS: SettingsState = {
 		theme: 'dark',
 		fontScale: 1,
 		archiveShortcut: true,
+		archiveDoneButton: true,
 		notifyEnabled: false,
 		notifySound: true,
 		nav: DEFAULT_NAV_POSITION
@@ -311,7 +345,8 @@ const DEFAULTS: SettingsState = {
 	spawnMemory: {},
 	shortcutsEnabled: false,
 	keymap: {},
-	locale: null
+	locale: null,
+	onboarding: { seenVersion: {}, progress: null }
 };
 
 // Deep-merge a partial saved blob over DEFAULTS so a value missing from an older
@@ -328,12 +363,14 @@ export function mergeDefaults(partial: Partial<SettingsState> | null | undefined
 			// Clamp so a stale/unknown stored value renders as the default column
 			// width rather than an invalid CSS length.
 			width: clampSessionListWidth(p.sessionList?.width),
+			sortDir: clampSortDir(p.sessionList?.sortDir),
 			groupBy: clampGroupBy(p.sessionList?.groupBy),
 			accountNames: p.sessionList?.accountNames === true
 		},
 		display: {
 			...DEFAULTS.display,
 			...(p.display ?? {}),
+			archiveDoneButton: p.display?.archiveDoneButton !== false,
 			nav: clampNavPosition(p.display?.nav)
 		},
 		spawnDock: {
@@ -359,7 +396,8 @@ export function mergeDefaults(partial: Partial<SettingsState> | null | undefined
 		spawnMemory: p.spawnMemory ?? {},
 		shortcutsEnabled: p.shortcutsEnabled ?? DEFAULTS.shortcutsEnabled,
 		keymap: p.keymap ?? DEFAULTS.keymap,
-		locale: clampLocale(p.locale)
+		locale: clampLocale(p.locale),
+		onboarding: mergeOnboarding(p.onboarding)
 	};
 }
 
@@ -404,7 +442,7 @@ class Settings {
 	state = $state<SettingsState>(mergeDefaults(null));
 
 	private saveTimer: ReturnType<typeof setTimeout> | null = null;
-	private loaded = false;
+	private loading: Promise<void> | null = null;
 	// Save indicator for the Settings screen: `pending` while a debounced PUT is
 	// queued or in flight, `saved` once the server acknowledged it (with the
 	// time), `error` when the PUT failed (the local cache still holds the value).
@@ -428,9 +466,13 @@ class Settings {
 	/** Pull the server copy once auth is known, run the migration chain, merge
 	 *  over defaults, and refresh the cache. Tolerates failure (401/offline) by
 	 *  keeping the cached/default state. Safe to call repeatedly; runs once. */
-	async load(): Promise<void> {
-		if (!browser || this.loaded || !auth.isAuthed) return;
-		this.loaded = true;
+	load(): Promise<void> {
+		if (!browser || !auth.isAuthed) return Promise.resolve();
+		this.loading ??= this.fetchServerCopy();
+		return this.loading;
+	}
+
+	private async fetchServerCopy(): Promise<void> {
 		try {
 			const payload = await api.get<SettingsPayload>('/settings');
 			const migrated = migrate(payload.data, payload.version ?? CURRENT_VERSION);
@@ -712,6 +754,17 @@ class Settings {
 		return clampNavPosition(this.state.display.nav);
 	}
 
+	// Guided-tour state, read and written by the journey runtime's storage
+	// adapter (journey.ts). Kept opaque here: the runtime owns the shape.
+	get onboarding(): OnboardingSettings {
+		return mergeOnboarding(this.state.onboarding);
+	}
+
+	setOnboarding(patch: Partial<OnboardingSettings>) {
+		this.state.onboarding = { ...this.onboarding, ...patch };
+		this.persist();
+	}
+
 	toggleArchiveShortcut() {
 		this.setDisplay({ archiveShortcut: !this.state.display.archiveShortcut });
 	}
@@ -719,6 +772,14 @@ class Settings {
 	// Convenience reader for the most-used toggle (keeps call sites terse).
 	get archiveShortcut(): boolean {
 		return this.state.display.archiveShortcut;
+	}
+
+	get archiveDoneButton(): boolean {
+		return this.state.display.archiveDoneButton;
+	}
+
+	setArchiveDoneButton(on: boolean) {
+		this.setDisplay({ archiveDoneButton: on });
 	}
 }
 
