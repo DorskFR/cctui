@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import type { Label } from '@bindings/Label';
 	import { Badge, Button, Field, Icon, Input, Modal } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
@@ -21,7 +22,7 @@
 		selectedIds,
 		cap = 8,
 		placeholder,
-		autofocus = false,
+		autofocus = true,
 		busy = false,
 		onToggle,
 		onCreate,
@@ -37,7 +38,7 @@
 		cap?: number;
 		/** Search box placeholder; defaults to reflect whether create is offered. */
 		placeholder?: string;
-		/** Focus the search box on mount (the filter's manual menu wants this). */
+		/** Focus the search box on mount. */
 		autofocus?: boolean;
 		/** Disable row interactions while a mutation is in flight. */
 		busy?: boolean;
@@ -52,6 +53,14 @@
 		/** Clear-all footer; omit to drop it (picker mode). */
 		onClear?: () => void;
 	} = $props();
+
+	let searchInput = $state<HTMLInputElement | null>(null);
+	export function focusSearch() {
+		searchInput?.focus({ preventScroll: true });
+	}
+	onMount(() => {
+		if (autofocus) focusSearch();
+	});
 
 	let q = $state('');
 	const query = $derived(q.trim());
@@ -90,10 +99,11 @@
 		q = '';
 	}
 
-	// Enter in the search box: toggle the single exact match, else create.
+	// Prefer an exact match or the sole search result; otherwise keep creation.
 	function onSubmit(e: SubmitEvent) {
 		e.preventDefault();
 		if (exactMatch) toggle(exactMatch);
+		else if (query && matches.length === 1) toggle(matches[0]);
 		else if (showCreate) create();
 	}
 
@@ -154,7 +164,15 @@
 
 <form class="filter" onsubmit={onSubmit}>
 	<!-- svelte-ignore a11y_autofocus -->
-	<Input size="sm" placeholder={ph} aria-label={ph} {autofocus} bind:value={q} maxlength={40} />
+	<Input
+		bind:el={searchInput}
+		size="sm"
+		placeholder={ph}
+		aria-label={ph}
+		{autofocus}
+		bind:value={q}
+		maxlength={40}
+	/>
 </form>
 
 <div class="list">
