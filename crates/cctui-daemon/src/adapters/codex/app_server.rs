@@ -9,7 +9,7 @@
 //! `codex app-server` speaks newline-delimited JSON-RPC 2.0 over stdio
 //! (stderr is logs). The handshake is `initialize` (declaring client
 //! capabilities) → `initialized` notification → `thread/start { cwd }`
-//! → `turn/start { threadId, input }`. The pinned/minimum supported Codex
+//! → `turn/start { threadId, input }`. The minimum supported Codex
 //! version and the retained JSON Schema live in [`super::contract`]. A stale
 //! cctui-owned thread is revived
 //! with `thread/resume { threadId }` before the next `turn/start`.
@@ -464,7 +464,7 @@ fn record_codex_version(response: &Value) -> Option<String> {
         Some(v) if contract::version_supported(v) => {
             tracing::info!(
                 codex_version = %v,
-                pinned = contract::CODEX_PINNED_VERSION,
+                min = contract::CODEX_MIN_VERSION,
                 "codex app-server handshake: supported version",
             );
         }
@@ -472,7 +472,6 @@ fn record_codex_version(response: &Value) -> Option<String> {
             tracing::warn!(
                 codex_version = %v,
                 min = contract::CODEX_MIN_VERSION,
-                pinned = contract::CODEX_PINNED_VERSION,
                 "codex app-server is below the minimum supported version; protocol may drift",
             );
         }

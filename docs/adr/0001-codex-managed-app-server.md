@@ -63,7 +63,8 @@ Today's process model spawns codex **five different ways**, none of them shared:
 
 This is the load-bearing finding, and it changes the option space. `codex
 app-server` is **not** stdio-only in 0.144.1 (pinned:
-`contract::CODEX_PINNED_VERSION = "0.144.1"`, min `0.142.0`):
+`contract::CODEX_PINNED_VERSION = "0.144.1"` at the time, since folded into the
+floor `contract::CODEX_MIN_VERSION`):
 
 - `codex app-server --listen <URL>` accepts `stdio://` (default), **`unix://PATH`**,
   **`ws://IP:PORT`**, or `off`. A long-lived socket-listening app-server is a

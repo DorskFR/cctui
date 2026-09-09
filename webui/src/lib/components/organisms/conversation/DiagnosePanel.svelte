@@ -84,7 +84,7 @@
 			? `${cx.rollout_path}${cx.rollout_size_bytes !== null ? ` · ${cx.rollout_size_bytes} bytes` : ''}`
 			: '—';
 		const out: { name: string; value: string }[] = [
-			{ name: m.diagnose_codex_version(), value: `${version} · pinned ${cx.pinned_version} · min ${cx.min_version}` },
+			{ name: m.diagnose_codex_version(), value: `${version} · min ${cx.min_version}` },
 			{
 				name: m.diagnose_codex_app_server(),
 				value: `${cx.transport}${cx.app_server_pid !== null ? ` · pid ${cx.app_server_pid}` : ''} · live ${cx.live} · registered ${cx.registered}`

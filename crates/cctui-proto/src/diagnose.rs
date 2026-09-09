@@ -263,9 +263,8 @@ pub struct CodexDiagnose {
     /// Discovered `codex app-server` version (from the `initialize` userAgent).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub codex_version: Option<String>,
-    /// The Codex version cctui is built/tested against (`CODEX_PINNED_VERSION`).
-    pub pinned_version: String,
-    /// The minimum app-server protocol version still spoken (`CODEX_MIN_VERSION`).
+    /// The minimum Codex version the adapter supports (`CODEX_MIN_VERSION`);
+    /// also the version the worker image installs.
     pub min_version: String,
     /// Whether the discovered version is at or above `min_version`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -533,9 +532,8 @@ mod tests {
         let mut report = sample_report();
         report.adapter = "codex".into();
         report.codex = Some(CodexDiagnose {
-            codex_version: Some("0.144.1".into()),
-            pinned_version: "0.144.1".into(),
-            min_version: "0.142.0".into(),
+            codex_version: Some("0.153.4".into()),
+            min_version: "0.153.4".into(),
             version_supported: Some(true),
             transport: "stdio".into(),
             app_server_pid: Some(4242),
