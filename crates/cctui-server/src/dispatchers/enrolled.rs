@@ -7,9 +7,11 @@
 //! The server forwards only a [`WireDispatchSpec`]; machine-key lifting and
 //! payload semantics live in the executor binary.
 
+use std::sync::LazyLock;
 use std::time::Duration;
 
 use cctui_proto::ws::{DispatcherFrameDown, DispatcherFrameUp, WireDispatchSpec};
+use tokio::sync::Semaphore;
 use uuid::Uuid;
 
 use super::{DispatchError, DispatchHandle, DispatchSpec, Dispatcher, HandleStatus};
@@ -24,6 +26,18 @@ const DISPATCH_HOLD: Duration = Duration::from_secs(45);
 
 /// Backoff between hold attempts, capped at the last entry.
 const HOLD_BACKOFF_SECS: &[u64] = &[1, 2, 4, 8];
+
+/// How many dispatches may be held concurrently while the dispatcher is away;
+/// the rest fail fast on the existing loud path (error log, 502, ntfy) so the
+/// caller can reconcile its claim. A dispatcher restart is ~30s and dispatches
+/// arrive in bursts of at most a handful (n8n retries, a wave of tagged
+/// tickets), so 32 covers any realistic burst several times over while
+/// bounding held connections and tasks to a few dozen per replica.
+const MAX_HELD_DISPATCHES: usize = 32;
+
+/// Process-wide permits for [`dispatch_held`]; one dispatcher hub per process,
+/// so one cap.
+static HELD: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(MAX_HELD_DISPATCHES));
 
 pub struct EnrolledDispatcher {
     /// The dispatcher's display name (the `dispatcher` field of the caller's
@@ -86,7 +100,9 @@ const fn never_delivered(err: &BusError) -> bool {
 }
 
 /// Send a `Dispatch` frame, holding it across a dispatcher restart rather than
-/// failing the caller.
+/// failing the caller. At most [`MAX_HELD_DISPATCHES`] are held at once; beyond
+/// that a dispatch fails immediately with the same "nothing was dispatched"
+/// contract as an expired hold.
 ///
 /// Retrying is safe only because a frame that never reached a dispatcher
 /// registered nothing — no dedup key, no Job — so nothing is duplicated and
@@ -98,8 +114,21 @@ async fn dispatch_held(
     spec: &WireDispatchSpec,
     hold: Duration,
 ) -> Result<DispatcherFrameUp, DispatchError> {
+    dispatch_held_with(&HELD, bus, dispatcher_id, name, spec, hold).await
+}
+
+#[allow(clippy::significant_drop_tightening)]
+async fn dispatch_held_with(
+    permits: &Semaphore,
+    bus: &Bus,
+    dispatcher_id: Uuid,
+    name: &str,
+    spec: &WireDispatchSpec,
+    hold: Duration,
+) -> Result<DispatcherFrameUp, DispatchError> {
     let deadline = tokio::time::Instant::now() + hold;
     let mut attempt = 0usize;
+    let mut permit = None;
     loop {
         let request_id = Uuid::new_v4();
         let frame = DispatcherFrameDown::Dispatch { request_id, spec: spec.clone() };
@@ -109,7 +138,22 @@ async fn dispatch_held(
         };
 
         let now = tokio::time::Instant::now();
-        if !never_delivered(&err) || now >= deadline {
+        let mut expired = now >= deadline;
+        if never_delivered(&err) && !expired && permit.is_none() {
+            if let Ok(p) = permits.try_acquire() {
+                permit = Some(p);
+            } else {
+                tracing::warn!(
+                    dispatcher = name,
+                    session = %spec.session_id,
+                    cap = MAX_HELD_DISPATCHES,
+                    "dispatcher unreachable ({err}) and the held-dispatch cap is reached; \
+                     failing fast instead of holding"
+                );
+                expired = true;
+            }
+        }
+        if !never_delivered(&err) || expired {
             if never_delivered(&err) {
                 tracing::error!(
                     dispatcher = name,
@@ -353,6 +397,63 @@ mod tests {
 
         bus.register_dispatcher(id, tx);
         assert!(rx.try_recv().is_err(), "no frame may reach a dispatcher that never held one");
+    }
+
+    /// With every permit taken, a dispatch that would need to hold fails at
+    /// once instead of joining the hold. Once a held dispatch ends its permit is
+    /// free again, and a dispatcher that is present never needs one.
+    #[tokio::test]
+    async fn held_dispatches_are_capped() {
+        let held = std::sync::Arc::new(Semaphore::new(1));
+        let bus = bus();
+        let id = Uuid::new_v4();
+
+        let holder = {
+            let (held, bus) = (held.clone(), bus.clone());
+            tokio::spawn(async move {
+                dispatch_held_with(&held, &bus, id, "k8s", &spec("sess-a"), Duration::from_secs(2))
+                    .await
+            })
+        };
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(held.available_permits(), 0);
+
+        let started = tokio::time::Instant::now();
+        let err =
+            dispatch_held_with(&held, &bus, id, "k8s", &spec("sess-b"), Duration::from_secs(10))
+                .await
+                .unwrap_err();
+        assert!(started.elapsed() < Duration::from_secs(1), "over the cap must fail fast");
+        assert!(matches!(&err, DispatchError::Backend(m) if m.contains("offline")));
+
+        assert!(holder.await.unwrap().is_err());
+        assert_eq!(held.available_permits(), 1, "permit returns when the hold ends");
+
+        let (tx, mut rx) = mpsc::channel::<DispatcherFrameDown>(8);
+        bus.register_dispatcher(id, tx);
+        let bus2 = bus.clone();
+        let fake = tokio::spawn(async move {
+            let DispatcherFrameDown::Dispatch { request_id, spec } = rx.recv().await.unwrap()
+            else {
+                panic!("expected Dispatch");
+            };
+            assert!(bus2.resolve_dispatcher_reply(
+                request_id,
+                DispatcherFrameUp::DispatchResult {
+                    request_id,
+                    session_id: spec.session_id,
+                    handle: "job/worker-2".into(),
+                    namespace: None,
+                    status: Some("dispatched".into()),
+                    error: None,
+                },
+            ));
+        });
+        let exhausted = std::sync::Arc::new(Semaphore::new(0));
+        dispatch_held_with(&exhausted, &bus, id, "k8s", &spec("sess-c"), Duration::from_secs(2))
+            .await
+            .expect("a present dispatcher needs no hold permit");
+        fake.await.unwrap();
     }
 
     #[tokio::test]
