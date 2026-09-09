@@ -14,7 +14,7 @@ export default defineJourney({
 			target: 'tiles',
 			say: {
 				title: 'The fleet in four numbers',
-				body: 'Sessions running now, sessions waiting on you, machines online, and the all-time total.'
+				body: 'Four numbers: sessions running now, sessions waiting on you, machines online, and the all-time total. They read zero until your first run.'
 			},
 			expect: [
 				{ visible: 'tiles' },

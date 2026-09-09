@@ -2,6 +2,7 @@ import { defineJourney } from '@dorsk/journey';
 
 // Tsumikit's FilterSearchBar forwards no attributes to its input, so this
 // target is an accessible name rather than a `data-journey` path.
+// Every step asserts a fixture count, so the whole journey is book-only.
 const BOX = { label: 'Search sessions', within: 'search' } as const;
 
 export default defineJourney({
@@ -14,6 +15,7 @@ export default defineJourney({
 	steps: [
 		{
 			id: 'start',
+			qaOnly: true,
 			route: '/sessions',
 			target: 'section[blocked]',
 			say: {
@@ -25,6 +27,7 @@ export default defineJourney({
 		},
 		{
 			id: 'free-text',
+			qaOnly: true,
 			target: BOX,
 			do: { kind: 'fill', value: 'pagination' },
 			say: {
@@ -36,6 +39,7 @@ export default defineJourney({
 		},
 		{
 			id: 'facet',
+			qaOnly: true,
 			target: BOX,
 			do: { kind: 'fill', value: 'label:backend' },
 			say: {

@@ -4,9 +4,9 @@ const LOOSE = 'acme-research';
 
 export default defineJourney({
 	id: 'accounts-pools',
-	title: 'Group accounts into a pool',
+	title: 'Connect a provider account',
 	description:
-		'Accounts are the credentials work runs on; a pool makes several of them interchangeable so a launch can pick whichever has headroom.',
+		'Accounts are the credentials work runs on. Add one so a session has something to run with.',
 	route: '/accounts',
 	variants: { viewport: ['desktop', 'mobile'], theme: ['dark'] },
 	level: 'checked',
@@ -17,17 +17,23 @@ export default defineJourney({
 			target: 'accounts',
 			say: {
 				title: 'Every account you can run on',
-				body: 'One card per account, each showing the providers it carries. Pools sit alongside them as drop zones.'
+				body: 'Accounts are the provider credentials your agents run on. This board is empty until you add one.'
 			},
-			expect: [
-				{ visible: { role: 'heading', name: 'Accounts' } },
-				{ visible: 'accounts' },
-				{ visible: `account[${LOOSE}]` }
-			],
+			expect: [{ visible: { role: 'heading', name: 'Accounts' } }, { visible: 'accounts' }],
 			capture: 'board'
 		},
 		{
+			id: 'add',
+			target: 'new-account',
+			do: { kind: 'click' },
+			say: {
+				title: 'Add your first account',
+				body: 'Add your first account. Once it is saved, this guide is complete; pools are for when you have more than one.'
+			}
+		},
+		{
 			id: 'pool',
+			qaOnly: true,
 			target: 'pool[production]',
 			say: {
 				title: 'A pool is a set of interchangeable accounts',
@@ -38,6 +44,7 @@ export default defineJourney({
 		},
 		{
 			id: 'handle',
+			qaOnly: true,
 			target: `account[${LOOSE}]/drag-handle`,
 			say: {
 				title: 'Drag an account into a pool',
@@ -48,6 +55,7 @@ export default defineJourney({
 		},
 		{
 			id: 'menu',
+			qaOnly: true,
 			target: `account[${LOOSE}]/account-menu`,
 			do: { kind: 'click' },
 			say: {

@@ -15,16 +15,18 @@ export default defineJourney({
 		{
 			id: 'list',
 			route: '/sessions',
-			target: 'section[blocked]',
+			target: 'sections',
 			say: {
 				title: 'Every session, grouped',
-				body: 'Sessions group by what they need — pinned first, then anything waiting on you.'
+				body: 'Sessions group by what they need from you: pinned first, then anything waiting on an answer. This filter chooses which groups are shown.'
 			},
-			expect: [
-				{ visible: { role: 'heading', name: 'Sessions' } },
-				{ count: ['session', { min: 4 }] },
-				{ visible: 'section[blocked]' }
-			],
+			expect: [{ visible: { role: 'heading', name: 'Sessions' } }, { visible: 'sections' }]
+		},
+		{
+			id: 'list-fixture',
+			qaOnly: true,
+			target: 'section[blocked]',
+			expect: [{ count: ['session', { min: 4 }] }, { visible: 'section[blocked]' }],
 			capture: 'list'
 		},
 		{

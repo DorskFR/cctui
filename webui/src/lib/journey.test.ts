@@ -1,8 +1,24 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { QueryClient } from '@tanstack/svelte-query';
 import { DONE_PREFIX, PROGRESS_KEY } from '@dorsk/journey/runtime';
-import { parseDoneKey, settingsStorage } from './journey';
+import {
+	guideParams,
+	MOBILE_QUERY,
+	parseDoneKey,
+	requiredParams,
+	settingsStorage,
+	viewportVariant
+} from './journey';
 import { auth } from './auth.svelte';
 import { mergeDefaults, settings } from './settings.svelte';
+
+const api = vi.hoisted(() => ({
+	me: vi.fn(),
+	accounts: vi.fn(),
+	accountPools: vi.fn(),
+	sessions: vi.fn()
+}));
+vi.mock('$lib/queries/endpoints', () => ({ endpoints: api }));
 
 const KEY = 'cctui_settings';
 
@@ -54,5 +70,57 @@ describe('settingsStorage', () => {
 		await settingsStorage.set('journey:other', 'x');
 		expect(await settingsStorage.get('journey:other')).toBeNull();
 		expect(blob()).toEqual({ seenVersion: {}, progress: null });
+	});
+});
+
+describe('requiredParams', () => {
+	it('lists every {param} key a journey addresses', () => {
+		expect(
+			requiredParams({
+				id: 'x',
+				steps: [
+					{ id: 'a', target: 'user[{me}]', expect: [{ visible: 'tab[keys]' }] },
+					{ id: 'b', target: { role: 'tab', within: 'account[{account}]' } },
+					{ id: 'c', expect: [{ count: ['pool[{pool}]/member', { min: 1 }] }, { probe: 'accounts' }] }
+				]
+			})
+		).toEqual(['me', 'account', 'pool']);
+	});
+	it('ignores literal keys', () => {
+		expect(requiredParams({ id: 'x', steps: [{ id: 'a', target: 'tab[machines]' }] })).toEqual([]);
+	});
+});
+
+describe('viewportVariant', () => {
+	it('maps the toolbar breakpoint to the mobile variant', () => {
+		expect(viewportVariant((q) => q === MOBILE_QUERY)).toEqual({ viewport: 'mobile' });
+		expect(viewportVariant(() => false)).toEqual({ viewport: 'desktop' });
+	});
+});
+
+describe('guideParams', () => {
+	beforeEach(() => {
+		for (const fn of Object.values(api)) fn.mockReset();
+		api.me.mockResolvedValue({ role: 'admin', user_id: 'u1', user_name: 'root' });
+		api.accounts.mockResolvedValue([]);
+		api.accountPools.mockResolvedValue([]);
+		api.sessions.mockResolvedValue({ sessions: [] });
+	});
+	const qc = () => new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+	it('leaves absent names out so the guide that needs them is refused', async () => {
+		expect(await guideParams(qc())).toEqual({ 'var.label': '', 'var.prompt': '', me: 'root' });
+	});
+
+	it('names the first account, pool and live session', async () => {
+		api.accounts.mockResolvedValue([{ name: 'main' }, { name: 'other' }]);
+		api.accountPools.mockResolvedValue([{ name: 'prod' }]);
+		api.sessions.mockResolvedValue({
+			sessions: [
+				{ id: 'd', status: 'draft', liveness: 'dead' },
+				{ id: 'l', status: 'active', liveness: 'active' }
+			]
+		});
+		expect(await guideParams(qc())).toMatchObject({ me: 'root', account: 'main', pool: 'prod', session: 'l' });
 	});
 });

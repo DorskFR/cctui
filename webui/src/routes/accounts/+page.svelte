@@ -111,7 +111,9 @@
 <div class="page">
 	<PageHead title={m.accounts_title()}>
 		<Button onclick={() => (drafting = true)} disabled={drafting}>{m.accounts_add_pool()}</Button>
-		<Button variant="primary" onclick={() => editor?.openCreate()}>{m.accounts_new_account()}</Button>
+		<Button variant="primary" data-journey="new-account" onclick={() => editor?.openCreate()}>
+			{m.accounts_new_account()}
+		</Button>
 	</PageHead>
 
 	<Tabs {tabs} bind:value={tab} label={m.accounts_sections_label()}>
