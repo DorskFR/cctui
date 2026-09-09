@@ -83,9 +83,10 @@ describe('renderMarkdown local path links', () => {
 		expect(anchors(renderMarkdown(table, opts)).map((a) => a.text)).toEqual(['/tmp/c.log']);
 	});
 
-	it('does not link without a machine id, inside URLs, code blocks, or extension-less paths', () => {
+	it('does not link without both ids, inside URLs, code blocks, or extension-less paths', () => {
 		expect(anchors(renderMarkdown('see /tmp/x.png'))).toEqual([]);
 		expect(anchors(renderMarkdown('see /tmp/x.png', { sessionId: 'sess-1' }))).toEqual([]);
+		expect(anchors(renderMarkdown('see /tmp/x.png', { machineId: 'mach-1' }))).toEqual([]);
 		const url = anchors(renderMarkdown('https://ok.example/dir/file.md', opts));
 		expect(url).toHaveLength(1);
 		expect(url[0].href).toBe('https://ok.example/dir/file.md');

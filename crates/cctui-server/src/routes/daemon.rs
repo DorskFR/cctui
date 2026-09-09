@@ -1773,6 +1773,7 @@ async fn insert_event(
     // spamming WARN logs and burning a failed DB round-trip per event. The
     // `WHERE EXISTS` makes that case a clean no-op (0 rows) instead — when the
     // session is present this is identical to the old insert.
+    let links = crate::routes::fs::extract_links(&payload);
     let id: Option<i64> = sqlx::query_scalar(
         "INSERT INTO stream_events (session_id, event_type, payload) \
          SELECT $1, $2, $3 WHERE EXISTS (SELECT 1 FROM sessions WHERE id = $1) \
@@ -1784,6 +1785,9 @@ async fn insert_event(
     .bind(payload)
     .fetch_optional(&state.pool)
     .await?;
+    if id.is_some() {
+        crate::routes::fs::record_links(&state.pool, local_id, &links).await?;
+    }
     Ok(id)
 }
 
