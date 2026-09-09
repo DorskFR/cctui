@@ -155,21 +155,24 @@ RUN base="https://downloads.claude.ai/claude-code-releases" \
 # through the shim and can fail before codex starts (the
 # "mise ERROR Permission denied (os error 13)" seen in the acme fat image).
 # The standalone binary has no node dependency and sidesteps that entirely.
-# Pinned + checksum-verified.
+# Checksum-verified.
 #
 # Model provider: codex IGNORES OPENAI_API_KEY / OPENAI_BASE_URL env and reads
 # its provider only from ~/.codex/config.toml. Do NOT bake a static config here —
 # it would clobber codex's own runtime writes (trust_level) and pin a stale
 # base_url. The entrypoint's phase_codex_config MERGES the cctui gateway provider
 # in at runtime from the injected OPENAI_* env.
-# Keep CODEX_VERSION in lockstep with contract::CODEX_PINNED_VERSION
-# (crates/cctui-daemon/src/adapters/codex/contract.rs) — CI enforces it via
-# scripts/check-codex-version-drift.sh.
-ARG CODEX_VERSION=0.144.1
+# A concrete x.y.z MINIMUM, not an exact pin: derived images (the harbor worker
+# bake) refetch the harness, so the guarantee is only "never older than this".
+# Must equal contract::CODEX_MIN_VERSION
+# (crates/cctui-daemon/src/adapters/codex/contract.rs), the build the retained
+# JSON Schema was generated from; scripts/check-codex-version-drift.sh enforces
+# both that and the floor against any installed binary.
+ARG CODEX_VERSION=0.153.4
 RUN arch="$(dpkg --print-architecture)" \
     && case "$arch" in \
-         amd64) target=x86_64-unknown-linux-musl;  sha=84091ae20c65fcc7d4120db97d1bd57d7ff8df9c7609fb781c78c2ebbd4f5a28 ;; \
-         arm64) target=aarch64-unknown-linux-musl; sha=b9f8ef5f98e46ced4dbbd3756a4223e3ee299a457ff488a3305bea455da8b5b8 ;; \
+         amd64) target=x86_64-unknown-linux-musl;  sha=f479424eca092484dc40d87ae28c44f4cc40234a60045d6131e493800d814a30 ;; \
+         arm64) target=aarch64-unknown-linux-musl; sha=5cda6182bd94c3a30f2eb63a495489ebf7f691fddb14d70f48c6c1a5071b6cde ;; \
          *) echo "codex: unsupported arch '$arch'" >&2; exit 1 ;; \
        esac \
     && curl -fsSL "https://github.com/openai/codex/releases/download/rust-v${CODEX_VERSION}/codex-${target}.tar.gz" \

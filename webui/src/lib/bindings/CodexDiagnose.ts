@@ -13,11 +13,8 @@ export type CodexDiagnose = {
  */
 codex_version?: string | null, 
 /**
- * The Codex version cctui is built/tested against (`CODEX_PINNED_VERSION`).
- */
-pinned_version: string, 
-/**
- * The minimum app-server protocol version still spoken (`CODEX_MIN_VERSION`).
+ * The minimum Codex version the adapter supports (`CODEX_MIN_VERSION`);
+ * also the version the worker image installs.
  */
 min_version: string, 
 /**

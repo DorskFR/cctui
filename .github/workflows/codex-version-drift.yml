@@ -1,14 +1,12 @@
 name: codex-version-drift
 
-# CCT-630: enforce that the pinned Codex version stays consistent across
-# contract::CODEX_PINNED_VERSION and the worker image ARG CODEX_VERSION.
-
 on:
   pull_request:
     paths:
       - "crates/cctui-daemon/src/adapters/codex/**"
       - "deploy/worker.Dockerfile"
       - "scripts/check-codex-version-drift.sh"
+      - "scripts/check-codex-version-drift.test.sh"
       - ".github/workflows/codex-version-drift.yml"
   push:
     branches: [main]
@@ -19,9 +17,11 @@ permissions:
 
 jobs:
   drift:
-    name: codex version pin drift
+    name: codex version floor drift
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Check Codex version pin
+      - name: Drift check self-test
+        run: bash scripts/check-codex-version-drift.test.sh
+      - name: Check Codex version floor
         run: bash scripts/check-codex-version-drift.sh

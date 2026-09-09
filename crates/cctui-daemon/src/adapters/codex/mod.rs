@@ -714,7 +714,6 @@ async fn build_diagnose(
 
     let codex = CodexDiagnose {
         codex_version: snapshot.as_ref().and_then(|s| s.codex_version.clone()),
-        pinned_version: contract::CODEX_PINNED_VERSION.to_owned(),
         min_version: contract::CODEX_MIN_VERSION.to_owned(),
         version_supported: snapshot
             .as_ref()
