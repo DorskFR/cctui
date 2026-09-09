@@ -180,6 +180,9 @@ export interface DisplaySettings {
 	// archives the session (Beeper/Slack-style archive chord). Preserved from the
 	// previous localStorage-only Settings.
 	archiveShortcut: boolean;
+	// Bulk-archive control on the Completed group header. Off removes only that
+	// affordance; per-session archive stays.
+	archiveDoneButton: boolean;
 	notifyEnabled: boolean;
 	notifySound: boolean;
 	// Where the route navigation lives on a wide screen: tabs inline in the
@@ -303,6 +306,7 @@ const DEFAULTS: SettingsState = {
 		theme: 'dark',
 		fontScale: 1,
 		archiveShortcut: true,
+		archiveDoneButton: true,
 		notifyEnabled: false,
 		notifySound: true,
 		nav: DEFAULT_NAV_POSITION
@@ -344,6 +348,7 @@ export function mergeDefaults(partial: Partial<SettingsState> | null | undefined
 		display: {
 			...DEFAULTS.display,
 			...(p.display ?? {}),
+			archiveDoneButton: p.display?.archiveDoneButton !== false,
 			nav: clampNavPosition(p.display?.nav)
 		},
 		spawnDock: {
@@ -729,6 +734,14 @@ class Settings {
 	// Convenience reader for the most-used toggle (keeps call sites terse).
 	get archiveShortcut(): boolean {
 		return this.state.display.archiveShortcut;
+	}
+
+	get archiveDoneButton(): boolean {
+		return this.state.display.archiveDoneButton;
+	}
+
+	setArchiveDoneButton(on: boolean) {
+		this.setDisplay({ archiveDoneButton: on });
 	}
 }
 

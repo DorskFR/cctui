@@ -18,16 +18,14 @@
 		Button,
 		Callout,
 		Cluster,
+		ConfirmModal,
 		Dot,
-		Icon,
-		IconButton,
-		Menu,
 		Modal,
-		SectionHeader,
-		Text,
-		type IconName
+		Text
 	} from '@dorsk/tsumikit';
 	import MachineBadge from '$lib/components/molecules/MachineBadge.svelte';
+	import SessionSectionHeader from '$lib/components/molecules/SessionSectionHeader.svelte';
+	import { ArchiveConfirm } from './archiveConfirm.svelte';
 	import { useAllMachines } from '$lib/queries';
 	import {
 		drafts,
@@ -59,10 +57,10 @@
 		INLINE_THRESHOLD,
 		nest,
 		nextSort,
+		idsForSection,
 		archivedDescendantsOf,
 		costRollup,
 		groupId,
-		isDispatched,
 		inEnabledSections,
 		matchesUnreadFilter,
 		parseLabelFilter,
@@ -76,6 +74,7 @@
 		editDraftNeedsConfirm,
 		spawnRequestFromSlot,
 		type Section,
+		type SessionSort,
 		type SubGroup,
 		type Dimension,
 		toGroupDimension
@@ -108,25 +107,7 @@
 		sort: settings.state.sessionList.sort,
 		sortDir: settings.state.sessionList.sortDir
 	});
-	const sortDirIcon = $derived<IconName>(sortState.sortDir === 'asc' ? 'arrow-up' : 'arrow-down');
-	const sortDirLabel = $derived(
-		sortState.sortDir === 'asc' ? m.sessions_sort_asc() : m.sessions_sort_desc()
-	);
-	const sortItems = $derived(
-		(['activity', 'created', 'name'] as const).map((sort) => ({
-			label: sortLabel(sort),
-			pressed: sort === sortState.sort,
-			icon: sort === sortState.sort ? sortDirIcon : undefined,
-			onselect: () => settings.setSessionList(nextSort(sortState, sort))
-		}))
-	);
-	function sortLabel(sort: string): string {
-		return sort === 'created'
-			? m.settings_sort_created()
-			: sort === 'name'
-				? m.settings_sort_name()
-				: m.settings_sort_activity();
-	}
+	const selectSort = (sort: SessionSort) => settings.setSessionList(nextSort(sortState, sort));
 	function bucketColor(key: string | null | undefined): string {
 		switch (key) {
 			case 'blocked':
@@ -448,7 +429,7 @@
 	// Multi-select (selecting / selected / anchor) + subagent-group expand state
 	// and their transitions live on the controller; the batch archive that calls
 	// the server stays here.
-	let archiving = $state(false);
+	let archivingOne = $state(false);
 
 	// Visual order of the list, read from the DOM: rows are rendered by a
 	// recursive snippet across several buckets, so document order is the only
@@ -473,42 +454,44 @@
 		};
 	}
 
+	async function runArchive(ids: string[]) {
+		await actions.archiveMany(ids);
+		toasts.ok(m.sessions_toast_archived({ count: ids.length }), undefined, undoArchive(ids));
+		refreshTick++;
+		qc.invalidateQueries({ queryKey: ['sessions'] });
+	}
+	const archiveConfirm = new ArchiveConfirm(runArchive, (e) => toasts.error(errMessage(e)));
+	const archiving = $derived(archivingOne || archiveConfirm.busy);
+
 	async function archiveSelected() {
 		const ids = [...list.selected];
 		if (ids.length === 0) return;
-		if (ids.length > 1 && !confirm(m.sessions_confirm_archive_many({ count: ids.length }))) return;
-		archiving = true;
+		if (ids.length > 1) {
+			archiveConfirm.request({
+				title: m.sessions_confirm_archive_many_title(),
+				message: m.sessions_confirm_archive_many({ count: ids.length }),
+				ids,
+				onDone: list.exitSelect
+			});
+			return;
+		}
+		archivingOne = true;
 		try {
-			await actions.archiveMany(ids);
-			toasts.ok(m.sessions_toast_archived({ count: ids.length }), undefined, undoArchive(ids));
+			await runArchive(ids);
 			list.exitSelect();
-			refreshTick++;
 		} catch (e) {
 			toasts.error(errMessage(e));
 		} finally {
-			archiving = false;
+			archivingOne = false;
 		}
 	}
 
-	// Bulk-archive every Dispatched conversation at once. Uses
-	// the existing batch endpoint (POST /sessions/archive) over all dispatched
-	// (server-managed machine) sessions in the live list, children included.
-	async function archiveAllDispatched() {
-		const ids = items.filter(isDispatched).map((s) => s.id);
-		if (ids.length === 0) return;
-		if (!confirm(m.sessions_confirm_archive_all_dispatched({ count: ids.length })))
-			return;
-		archiving = true;
-		try {
-			await actions.archiveMany(ids);
-			toasts.ok(m.sessions_toast_archived({ count: ids.length }), undefined, undoArchive(ids));
-			refreshTick++;
-			qc.invalidateQueries({ queryKey: ['sessions'] });
-		} catch (e) {
-			toasts.error(errMessage(e));
-		} finally {
-			archiving = false;
-		}
+	function archiveSection(label: string, ids: string[]) {
+		archiveConfirm.request({
+			title: m.sessions_archive_section({ section: label }),
+			message: m.sessions_confirm_archive_section({ count: ids.length, section: label }),
+			ids
+		});
 	}
 
 	// Swipe-to-archive a single row. Status-aware so it works for both
@@ -958,7 +941,9 @@
 	{@const liveTop = scoped.filter((s) => s.status !== 'archived')}
 	{@const archTop = scoped.filter((s) => s.status === 'archived')}
 	<div class="section">
-		{@render groupHeader('live', m.sessions_section_live(), liveTop.length, {})}
+		{@render groupHeader('live', m.sessions_section_live(), liveTop.length, {
+			archiveIds: idsForSection(liveTop, ns.childGroups)
+		})}
 		{#if !hiddenSections.has('live')}
 			{@render rowsView(liveTop, ns.childGroups, false, searchTerms)}
 		{/if}
@@ -977,28 +962,30 @@
 	{@render loadMore()}
 {/snippet}
 
-<!-- One header for every section: label, live count, and an eye toggle that
-     collapses the section's rows while leaving the header in place. -->
+<!-- One header for every section: label, live count, sort menu, an eye toggle
+     that collapses the rows, and (where `archiveIds` is given) a bulk archive
+     behind the shared confirm dialog. -->
 {#snippet groupHeader(
 	key: string,
 	label: string,
 	count: number,
-	opts: { hue?: number | null; bucket?: string | null; machine?: string | null; trailing?: Snippet }
+	opts: { hue?: number | null; bucket?: string | null; machine?: string | null; archiveIds?: string[] }
 )}
-	{@const hidden = hiddenSections.has(key)}
-	{@const action = hidden
-		? m.sessions_section_show({ section: label })
-		: m.sessions_section_hide({ section: label })}
 	{@const liveness = opts.machine ? machineLiveness(opts.machine) : null}
-	<SectionHeader
-		variant="group"
-		level={3}
-		size="sm"
+	{@const archiveIds = opts.archiveIds}
+	<SessionSectionHeader
+		{label}
 		title={opts.machine ? '' : label}
+		{count}
 		hue={opts.machine || opts.hue == null ? undefined : opts.hue}
-		count={m.sessions_group_count({ count })}
 		lead={headerLead}
-		actions={headerActions}
+		sort={sortState.sort}
+		sortDir={sortState.sortDir}
+		onsort={selectSort}
+		hidden={hiddenSections.has(key)}
+		ontogglehidden={() => toggleSection(key)}
+		onarchive={archiveIds ? () => archiveSection(label, archiveIds) : undefined}
+		{archiving}
 	/>
 	{#snippet headerLead()}
 		{#if opts.machine}
@@ -1017,39 +1004,6 @@
 			<Dot color={bucketColor(opts.bucket)} />
 		{/if}
 	{/snippet}
-	{#snippet headerActions()}
-		<Menu label={m.sessions_sort_menu_label()} items={sortItems} bare placement="bottom-end">
-			{#snippet trigger()}
-				<Text size="xs" tone="faint" style="white-space:nowrap; display:inline-flex; align-items:center; gap: var(--sp-1)"
-					>{m.sessions_sort_menu({ sort: sortLabel(sortState.sort) })}<Icon
-						name={sortDirIcon}
-						label={sortDirLabel}
-					/></Text
-				>
-			{/snippet}
-		</Menu>
-		<IconButton
-			inline
-			icon={hidden ? 'eye' : 'eye-off'}
-			size={14}
-			label={action}
-			title={action}
-			onclick={() => toggleSection(key)}
-		/>
-		{#if opts.trailing}{@render opts.trailing()}{/if}
-	{/snippet}
-{/snippet}
-
-{#snippet archiveAllDispatchedAction()}
-	<Button
-		variant="danger"
-		disabled={archiving}
-		title={m.sessions_archive_all_dispatched_title()}
-		onclick={archiveAllDispatched}
-	>
-		{#if archiving}<span class="spin"></span>{/if}
-		{m.sessions_archive_all()}
-	</Button>
 {/snippet}
 
 {#snippet liveSections()}
@@ -1065,7 +1019,8 @@
 				<div class="section">
 					{@render groupHeader(key, g.label, g.sessions.length, {
 						hue: g.hue,
-						machine: groupBy === 'machine' && g.hue !== null ? g.label : null
+						machine: groupBy === 'machine' && g.hue !== null ? g.label : null,
+						archiveIds: idsForSection(g.sessions, childGroupsOf)
 					})}
 					{#if !hiddenSections.has(key)}
 						{@render rowsView(g.sessions, childGroupsOf, true, [])}
@@ -1077,7 +1032,10 @@
 				<div class="section" data-journey="section" data-journey-key={g.key}>
 					{@render groupHeader(g.key, g.label, g.sessions.length, {
 						bucket: g.key,
-						trailing: g.key === 'dispatched' ? archiveAllDispatchedAction : undefined
+						archiveIds:
+							g.key !== 'done' || settings.archiveDoneButton
+								? idsForSection(g.sessions, childGroupsOf)
+								: undefined
 					})}
 					{#if !hiddenSections.has(g.key)}
 						{@render rowsView(g.sessions, childGroupsOf, true, [])}
@@ -1174,6 +1132,19 @@
 			</Cluster>
 		{/snippet}
 	</Modal>
+{/if}
+
+{#if archiveConfirm.pending}
+	<ConfirmModal
+		open
+		tone="danger"
+		title={archiveConfirm.pending.title}
+		message={archiveConfirm.pending.message}
+		confirmLabel={m.sessions_archive_all()}
+		busy={archiveConfirm.busy}
+		onconfirm={archiveConfirm.confirm}
+		oncancel={archiveConfirm.cancel}
+	/>
 {/if}
 
 {#if docks.stats && docks[docks.stats]}

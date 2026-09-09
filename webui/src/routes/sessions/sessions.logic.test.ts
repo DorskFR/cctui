@@ -37,6 +37,7 @@ import {
 	sessionIdFromLocation,
 	sortSessions,
 	nextSort,
+	idsForSection,
 	toolActivity,
 	TOOL_ASLEEP_AFTER_MS,
 	type Section
@@ -550,6 +551,30 @@ describe('nextSort', () => {
 			sort: 'created',
 			sortDir: 'desc'
 		});
+	});
+});
+
+describe('idsForSection', () => {
+	it('lists the top-level rows plus every nested subagent, without duplicates', () => {
+		const parent = session({ id: 'p' });
+		const kidA = session({ id: 'a', parent_id: 'p' });
+		const kidB = session({ id: 'b', parent_id: 'p' });
+		const grand = session({ id: 'g', parent_id: 'a' });
+		const childGroups = new Map([
+			['p', [{ key: 'plain', runId: null, label: '', agents: [kidA, kidB], running: 0 }]],
+			['a', [{ key: 'plain', runId: null, label: '', agents: [grand, kidB], running: 0 }]]
+		]);
+		expect(idsForSection([parent, session({ id: 'q' })], childGroups)).toEqual([
+			'p',
+			'a',
+			'g',
+			'b',
+			'q'
+		]);
+	});
+
+	it('is empty for an empty section', () => {
+		expect(idsForSection([], new Map())).toEqual([]);
 	});
 });
 

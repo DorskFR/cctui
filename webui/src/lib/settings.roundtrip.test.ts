@@ -117,6 +117,18 @@ describe("Settings save → load round-trip through the blob", () => {
     expect(loaded.sessionList.sortDir).toBe("desc");
   });
 
+  it("the Completed archive-all button defaults on, survives a reload, and only false turns it off", () => {
+    expect(mergeDefaults(null).display.archiveDoneButton).toBe(true);
+    settings.setArchiveDoneButton(false);
+    expect(loadFromCache().display.archiveDoneButton).toBe(false);
+    settings.setArchiveDoneButton(true);
+    expect(loadFromCache().display.archiveDoneButton).toBe(true);
+    const merged = mergeDefaults({
+      display: { archiveDoneButton: "no" },
+    } as unknown as Record<string, unknown>);
+    expect(merged.display.archiveDoneButton).toBe(true);
+  });
+
   it("list width and account-name toggle survive a persist then reload", () => {
     settings.setSessionList({ width: "full", accountNames: true });
 

@@ -160,5 +160,11 @@
 				label={m.settings_archive_shortcut_label()}
 			/>
 		</SettingRow>
+		<SettingRow label={m.settings_archive_done_button_label()} help={m.settings_archive_done_button_help()}>
+			<Switch
+				bind:checked={() => settings.archiveDoneButton, (v) => settings.setArchiveDoneButton(v)}
+				label={m.settings_archive_done_button_label()}
+			/>
+		</SettingRow>
 	</SettingGroup>
 </SettingSection>

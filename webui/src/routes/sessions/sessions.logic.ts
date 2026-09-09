@@ -538,6 +538,24 @@ export function sortSessions(
 	return sorted;
 }
 
+// Every id a section's bulk archive covers: its top-level rows plus the
+// subagents nested under them, so a parent never leaves its children behind.
+export function idsForSection(
+	rows: SessionListItem[],
+	childGroups: Map<string, SubGroup[]>
+): string[] {
+	const out: string[] = [];
+	const seen = new Set<string>();
+	const visit = (s: SessionListItem) => {
+		if (seen.has(s.id)) return;
+		seen.add(s.id);
+		out.push(s.id);
+		for (const g of childGroups.get(s.id) ?? []) g.agents.forEach(visit);
+	};
+	rows.forEach(visit);
+	return out;
+}
+
 // Which enabled section owns a live bucket: pinned←starred, dispatched←dispatched,
 // every other bucket←live.
 export function bucketInSection(key: GroupKey, sections: Set<Section>): boolean {
