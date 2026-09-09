@@ -527,7 +527,7 @@ async fn command_pump(
                                )
                                .await;
                            }
-                           AdapterCommand::Remove { local_id } => {
+                           AdapterCommand::Remove { local_id, .. } => {
                                // Stop the live worker, drop the durable record, then
                                // archive the thread natively so it disappears
                                // from codex's own views too — the analogue of claude's

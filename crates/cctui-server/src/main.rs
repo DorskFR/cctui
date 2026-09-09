@@ -1516,19 +1516,23 @@ async fn reaper_task(state: AppState) {
                 - chrono::Duration::seconds(
                     i64::try_from(state.config.archive_after_secs).unwrap_or(i64::MAX),
                 );
-            match sqlx::query(
+            match sqlx::query_scalar::<_, String>(
                 // Drafts are staged-not-running — never auto-archive them.
                 "UPDATE sessions SET status = 'archived', \
                      ended_at = COALESCE(ended_at, now()), \
                      end_reason = COALESCE(end_reason, 'reaped_inactive') \
-                 WHERE status NOT IN ('archived', 'draft') AND pinned = false AND last_heartbeat < $1",
+                 WHERE status NOT IN ('archived', 'draft') AND pinned = false AND last_heartbeat < $1 \
+                 RETURNING id",
             )
             .bind(cutoff)
-            .execute(&state.pool)
+            .fetch_all(&state.pool)
             .await
             {
-                Ok(res) if res.rows_affected() > 0 => {
-                    tracing::info!(count = res.rows_affected(), "auto-archived stale sessions");
+                Ok(ids) if !ids.is_empty() => {
+                    tracing::info!(count = ids.len(), "auto-archived stale sessions");
+                    for id in &ids {
+                        crate::routes::sessions::dispatch_remove(&state, id).await;
+                    }
                 }
                 Ok(_) => {}
                 Err(err) => tracing::warn!(%err, "auto-archive sweep failed"),

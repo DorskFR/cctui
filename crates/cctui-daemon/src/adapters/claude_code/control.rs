@@ -1014,7 +1014,7 @@ impl Driver {
                 socket::attach_permission_response(&sock, &short, allow).await?;
                 tracing::info!(%short, %request_id, allow, "answered permission prompt via attach (fallback)");
             }
-            AdapterCommand::Remove { local_id } => {
+            AdapterCommand::Remove { local_id, .. } => {
                 let short = self.resolve_short_for_removal(&local_id)?;
                 // Imitate the agent-view Ctrl+X: there is no
                 // control-socket removal op, so (1) stop the worker if it is
@@ -1617,9 +1617,9 @@ impl Driver {
     }
 
     /// Run `claude rm <short>` to delete the job metadata + Claude-created
-    /// worktree. Best-effort: a worktree with uncommitted changes makes the CLI
-    /// refuse and print the path — we log that but do not fail the archive, so
-    /// the cctui-side state still moves to `archived`.
+    /// worktree. A job the CLI no longer knows is already gone and counts as
+    /// success; any other non-zero exit (typically a worktree with
+    /// uncommitted changes) is a real failure the archive must report.
     async fn claude_rm(&self, short: &str) -> anyhow::Result<()> {
         let mut cmd = tokio::process::Command::new(&self.cfg.claude_bin);
         cmd.arg("rm")
@@ -1632,17 +1632,21 @@ impl Driver {
             .output()
             .await
             .with_context(|| format!("spawning `{} rm {short}`", self.cfg.claude_bin))?;
-        if out.status.success() {
-            tracing::info!(%short, "removed claude job via `claude rm`");
-        } else {
-            tracing::warn!(
-                %short,
-                code = ?out.status.code(),
-                stderr = %String::from_utf8_lossy(&out.stderr).trim(),
-                "`claude rm` did not complete cleanly (worktree changes?)"
-            );
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        match classify_claude_rm(out.status.code(), out.status.success(), &stderr) {
+            ClaudeRmOutcome::Removed => {
+                tracing::info!(%short, "removed claude job via `claude rm`");
+                Ok(())
+            }
+            ClaudeRmOutcome::AlreadyGone => {
+                tracing::info!(%short, "claude job already gone; nothing to remove");
+                Ok(())
+            }
+            ClaudeRmOutcome::Refused(detail) => {
+                tracing::warn!(%short, %detail, "`claude rm` refused");
+                anyhow::bail!("claude rm {short} failed: {detail}")
+            }
         }
-        Ok(())
     }
 
     /// Dispatched-worker bring-up.
@@ -3720,6 +3724,26 @@ fn ask_keystrokes(questions: &serde_json::Value, picks: &[Vec<usize>]) -> Option
     Some(chunks)
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum ClaudeRmOutcome {
+    Removed,
+    AlreadyGone,
+    Refused(String),
+}
+
+fn classify_claude_rm(code: Option<i32>, success: bool, stderr: &str) -> ClaudeRmOutcome {
+    if success {
+        return ClaudeRmOutcome::Removed;
+    }
+    let stderr = stderr.trim();
+    if stderr.contains("No job matching") {
+        return ClaudeRmOutcome::AlreadyGone;
+    }
+    let code = code.map_or_else(|| "signal".to_owned(), |c| c.to_string());
+    let detail = if stderr.is_empty() { format!("exit {code}") } else { format!("exit {code}: {stderr}") };
+    ClaudeRmOutcome::Refused(detail)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4237,6 +4261,21 @@ mod tests {
         assert_eq!(std::fs::read_to_string(dir.join("report-2.pdf")).unwrap(), "three");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn claude_rm_outcome_distinguishes_gone_from_refused() {
+        use super::{ClaudeRmOutcome, classify_claude_rm};
+        assert_eq!(classify_claude_rm(Some(0), true, ""), ClaudeRmOutcome::Removed);
+        assert_eq!(
+            classify_claude_rm(Some(1), false, "No job matching 'ad162ca8'\n"),
+            ClaudeRmOutcome::AlreadyGone
+        );
+        assert_eq!(
+            classify_claude_rm(Some(1), false, "worktree has uncommitted changes: /w\n"),
+            ClaudeRmOutcome::Refused("exit 1: worktree has uncommitted changes: /w".into())
+        );
+        assert_eq!(classify_claude_rm(None, false, ""), ClaudeRmOutcome::Refused("exit signal".into()));
     }
 
     fn driver() -> (Driver, mpsc::Receiver<AdapterEvent>) {

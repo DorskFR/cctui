@@ -203,7 +203,7 @@ impl OneshotDriver {
                 self.kill(&local_id).await;
                 Ok(())
             }
-            AdapterCommand::Remove { local_id } => {
+            AdapterCommand::Remove { local_id, .. } => {
                 self.kill(&local_id).await;
                 self.names.remove(&local_id);
                 self.cwds.remove(&local_id);

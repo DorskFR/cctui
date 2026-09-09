@@ -249,7 +249,7 @@ impl SdkDriver {
                 self.kill(&local_id).await;
                 Ok(())
             }
-            AdapterCommand::Remove { local_id } => {
+            AdapterCommand::Remove { local_id, .. } => {
                 self.kill(&local_id).await;
                 self.postures.remove(&local_id);
                 self.names.remove(&local_id);

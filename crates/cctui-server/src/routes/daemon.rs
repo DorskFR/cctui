@@ -534,9 +534,13 @@ async fn handle(socket: WebSocket, state: AppState, machine_id: Uuid, user_id: U
 
     // Resume marks must follow Reconcile: the daemon needs its adapters live to
     // route the marks to before it can clamp their tail cursors.
+    let archived = load_archived(&state, machine_id).await.unwrap_or_else(|err| {
+        tracing::error!(%err, "load_archived failed");
+        Vec::new()
+    });
     match load_resume_marks(&state, machine_id).await {
-        Ok(session_marks) if !session_marks.is_empty() => {
-            if tx.send(DaemonFrameDown::ResumeMarks { session_marks }).await.is_err() {
+        Ok(session_marks) if !session_marks.is_empty() || !archived.is_empty() => {
+            if tx.send(DaemonFrameDown::ResumeMarks { session_marks, archived }).await.is_err() {
                 tracing::warn!("daemon tx closed before resume marks");
             }
         }
@@ -1995,6 +1999,20 @@ pub async fn load_resume_marks(
     Ok(rows.into_iter().map(|(id, off)| (id, u64::try_from(off).unwrap_or(0))).collect())
 }
 
+/// Archived claude-code sessions on `machine_id`, newest first. The daemon
+/// removes any job still on disk for one of these, converging a machine whose
+/// removals were lost. Bounded so the frame stays small on a long-lived machine.
+pub async fn load_archived(state: &AppState, machine_id: Uuid) -> anyhow::Result<Vec<String>> {
+    Ok(sqlx::query_scalar(
+        "SELECT id FROM sessions \
+         WHERE machine_uuid = $1 AND status = 'archived' AND adapter_id = 'claude-code' \
+         ORDER BY COALESCE(ended_at, last_heartbeat) DESC LIMIT 500",
+    )
+    .bind(machine_id)
+    .fetch_all(&state.pool)
+    .await?)
+}
+
 /// Union the machine's `adapters_enabled` rows with [`KNOWN_ADAPTERS`]: every
 /// known adapter runs by default, a row only overrides its config or disables
 /// it.
@@ -2304,11 +2322,26 @@ mod tests {
     #[test]
     fn resume_marks_frame_carries_stored_offsets() {
         let rows: Vec<(String, u64)> = vec![("sess-a".into(), 4096), ("sess-b".into(), 12)];
-        let frame = DaemonFrameDown::ResumeMarks { session_marks: rows.clone() };
+        let frame = DaemonFrameDown::ResumeMarks {
+            session_marks: rows.clone(),
+            archived: vec!["sess-z".into()],
+        };
         let json = serde_json::to_string(&frame).unwrap();
         assert!(json.contains(r#""type":"resume_marks""#));
         match serde_json::from_str::<DaemonFrameDown>(&json).unwrap() {
-            DaemonFrameDown::ResumeMarks { session_marks } => assert_eq!(session_marks, rows),
+            DaemonFrameDown::ResumeMarks { session_marks, archived } => {
+                assert_eq!(session_marks, rows);
+                assert_eq!(archived, vec!["sess-z".to_owned()]);
+            }
+            _ => panic!("expected ResumeMarks"),
+        }
+    }
+
+    #[test]
+    fn resume_marks_frame_from_older_server_omits_archived() {
+        let json = r#"{"type":"resume_marks","session_marks":[["sess-a",4096]]}"#;
+        match serde_json::from_str::<DaemonFrameDown>(json).unwrap() {
+            DaemonFrameDown::ResumeMarks { archived, .. } => assert!(archived.is_empty()),
             _ => panic!("expected ResumeMarks"),
         }
     }
