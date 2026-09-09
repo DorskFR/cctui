@@ -18,13 +18,14 @@
 //! single-pod model; lookups still work so such a pod can forward
 //! *to* registered peers.
 
+use dashmap::DashMap;
 use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::state::AppState;
 
 /// What kind of WS a presence row describes. Stored as text.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Kind {
     Daemon,
     Dispatcher,
@@ -50,6 +51,9 @@ impl Kind {
 const LIVE_WITHIN_SECS: i32 = 45;
 /// Cadence of the per-pod heartbeat task.
 const HEARTBEAT_SECS: u64 = 15;
+/// Rows a crashed peer never deleted are reaped past this age. Far beyond
+/// [`LIVE_WITHIN_SECS`] so a reap never races a slow-but-alive heartbeat.
+const REAP_AFTER_SECS: i32 = 600;
 
 /// This pod's identity for presence rows. Built once at boot.
 pub struct PodIdentity {
@@ -58,6 +62,10 @@ pub struct PodIdentity {
     /// Routable IP peers can reach this pod's HTTP port on. `None` disables
     /// registration (this pod never OWNS forwardable rows).
     pub ip: Option<String>,
+    /// The `ws_presence` rows this pod currently owns. The heartbeat re-upserts
+    /// them, so a row reaped while the DB was unreachable comes back on the
+    /// next tick instead of staying gone until the WS reconnects.
+    owned: DashMap<(Kind, Uuid), ()>,
 }
 
 impl PodIdentity {
@@ -71,7 +79,12 @@ impl PodIdentity {
                 tracing::info!(pod, "CCTUI_POD_IP unset — WS presence registration disabled");
             }
         }
-        Self { pod, ip }
+        Self { pod, ip, owned: DashMap::new() }
+    }
+
+    #[cfg(test)]
+    fn for_test(pod: &str, ip: &str) -> Self {
+        Self { pod: pod.into(), ip: Some(ip.into()), owned: DashMap::new() }
     }
 }
 
@@ -81,6 +94,7 @@ impl PodIdentity {
 /// must never break the WS itself.
 pub async fn register(state: &AppState, kind: Kind, entity_id: Uuid) {
     let Some(ip) = state.presence.ip.as_deref() else { return };
+    state.presence.owned.insert((kind, entity_id), ());
     if let Err(err) = sqlx::query(
         "INSERT INTO ws_presence (kind, entity_id, pod, pod_ip, connected_at, heartbeat_at) \
          VALUES ($1, $2, $3, $4, now(), now()) \
@@ -107,6 +121,7 @@ pub async fn unregister(state: &AppState, kind: Kind, entity_id: Uuid) {
     if state.presence.ip.is_none() {
         return;
     }
+    state.presence.owned.remove(&(kind, entity_id));
     if let Err(err) =
         sqlx::query("DELETE FROM ws_presence WHERE kind = $1 AND entity_id = $2 AND pod = $3")
             .bind(kind.as_str())
@@ -166,17 +181,17 @@ pub async fn live_peer_pods(pool: &PgPool, self_pod: &str) -> Vec<String> {
 
 /// Boot cleanup + heartbeat loop. On start, drop any rows a previous
 /// incarnation of THIS pod name left behind (a crashed process can't
-/// unregister) and register this pod in `pods`; then refresh our
-/// rows' heartbeats every [`HEARTBEAT_SECS`] and opportunistically reap
-/// long-dead rows from crashed peers so the tables stay small. Spawned from
-/// `main` only when registration is enabled (pod IP known).
+/// unregister) and register this pod in `pods`; then re-upsert our rows every
+/// [`HEARTBEAT_SECS`] and opportunistically reap long-dead rows from crashed
+/// peers so the tables stay small. Spawned from `main` only when registration
+/// is enabled (pod IP known).
 pub async fn heartbeat_task(state: AppState) {
     boot_register(&state).await;
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(HEARTBEAT_SECS));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         interval.tick().await;
-        heartbeat_tick(&state).await;
+        heartbeat_tick(&state.pool, &state.presence).await;
     }
 }
 
@@ -207,29 +222,188 @@ async fn boot_register(state: &AppState) {
     }
 }
 
-/// One heartbeat: refresh this pod's `ws_presence` + `pods` rows and reap rows
-/// crashed pods never deleted — long past any liveness window, safe for anyone
-/// to reap (idempotent across replicas).
-async fn heartbeat_tick(state: &AppState) {
-    if let Err(err) = sqlx::query("UPDATE ws_presence SET heartbeat_at = now() WHERE pod = $1")
-        .bind(&state.presence.pod)
-        .execute(&state.pool)
-        .await
+/// One heartbeat: re-upsert this pod's `pods` row and every `ws_presence` row
+/// it owns, then reap rows crashed PEERS never deleted. Upserts rather than
+/// updates because a DB outage longer than [`REAP_AFTER_SECS`] lets a peer reap
+/// our rows; an UPDATE would then match nothing forever and this replica would
+/// silently vanish from fan-out until restarted. The reaps exclude our own rows
+/// so a replica can never delete itself.
+async fn heartbeat_tick(pool: &PgPool, me: &PodIdentity) {
+    let Some(ip) = me.ip.as_deref() else { return };
+    match sqlx::query_scalar::<_, bool>(
+        "INSERT INTO pods (pod, pod_ip, started_at, heartbeat_at) \
+         VALUES ($1, $2, now(), now()) \
+         ON CONFLICT (pod) DO UPDATE SET pod_ip = EXCLUDED.pod_ip, heartbeat_at = now() \
+         RETURNING (xmax = 0)",
+    )
+    .bind(&me.pod)
+    .bind(ip)
+    .fetch_one(pool)
+    .await
     {
-        tracing::warn!(%err, "ws_presence heartbeat failed");
+        Ok(true) => tracing::warn!(pod = me.pod, "pods row was missing; re-registered"),
+        Ok(false) => {}
+        Err(err) => tracing::warn!(%err, "pods heartbeat failed"),
     }
-    if let Err(err) = sqlx::query("UPDATE pods SET heartbeat_at = now() WHERE pod = $1")
-        .bind(&state.presence.pod)
-        .execute(&state.pool)
+
+    let owned: Vec<(Kind, Uuid)> = me.owned.iter().map(|r| *r.key()).collect();
+    for (kind, entity_id) in owned {
+        if let Err(err) = sqlx::query(
+            "INSERT INTO ws_presence (kind, entity_id, pod, pod_ip, connected_at, heartbeat_at) \
+             VALUES ($1, $2, $3, $4, now(), now()) \
+             ON CONFLICT (kind, entity_id) DO UPDATE SET heartbeat_at = now() \
+             WHERE ws_presence.pod = EXCLUDED.pod",
+        )
+        .bind(kind.as_str())
+        .bind(entity_id)
+        .bind(&me.pod)
+        .bind(ip)
+        .execute(pool)
         .await
-    {
-        tracing::warn!(%err, "pods heartbeat failed");
+        {
+            tracing::warn!(%err, %entity_id, kind = kind.as_str(), "ws_presence heartbeat failed");
+        }
     }
-    let _ =
-        sqlx::query("DELETE FROM ws_presence WHERE heartbeat_at < now() - interval '10 minutes'")
-            .execute(&state.pool)
-            .await;
-    let _ = sqlx::query("DELETE FROM pods WHERE heartbeat_at < now() - interval '10 minutes'")
-        .execute(&state.pool)
-        .await;
+
+    for sql in [
+        "DELETE FROM ws_presence \
+         WHERE pod <> $1 AND heartbeat_at < now() - make_interval(secs => $2)",
+        "DELETE FROM pods WHERE pod <> $1 AND heartbeat_at < now() - make_interval(secs => $2)",
+    ] {
+        let _ = sqlx::query(sql).bind(&me.pod).bind(f64::from(REAP_AFTER_SECS)).execute(pool).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn pool() -> Option<PgPool> {
+        let url = crate::routes::gateway::test_db_url("presence")?;
+        Some(
+            sqlx::postgres::PgPoolOptions::new()
+                .max_connections(2)
+                .connect(&url)
+                .await
+                .expect("connect test db"),
+        )
+    }
+
+    async fn wipe(pool: &PgPool, prefix: &str) {
+        let like = format!("{prefix}%");
+        sqlx::query("DELETE FROM pods WHERE pod LIKE $1").bind(&like).execute(pool).await.unwrap();
+        sqlx::query("DELETE FROM ws_presence WHERE pod LIKE $1")
+            .bind(&like)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+
+    async fn age_pod(pool: &PgPool, pod: &str, secs: i32) {
+        sqlx::query(
+            "UPDATE pods SET heartbeat_at = now() - make_interval(secs => $2) WHERE pod = $1",
+        )
+        .bind(pod)
+        .bind(f64::from(secs))
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    async fn pod_exists(pool: &PgPool, pod: &str) -> bool {
+        sqlx::query_scalar::<_, bool>("SELECT EXISTS (SELECT 1 FROM pods WHERE pod = $1)")
+            .bind(pod)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    async fn ws_owner(pool: &PgPool, kind: Kind, id: Uuid) -> Option<String> {
+        sqlx::query_scalar::<_, String>(
+            "SELECT pod FROM ws_presence WHERE kind = $1 AND entity_id = $2",
+        )
+        .bind(kind.as_str())
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+        .unwrap()
+    }
+
+    /// A DB outage past the reap window lets a peer delete our `pods` row. The
+    /// next heartbeat must bring it back so fan-out resumes without a restart.
+    #[tokio::test]
+    async fn heartbeat_re_registers_a_reaped_pods_row() {
+        let Some(pool) = pool().await else { return };
+        let prefix = "cct976-rereg-";
+        wipe(&pool, prefix).await;
+        let a = PodIdentity::for_test(&format!("{prefix}a"), "10.0.0.1");
+        let b = PodIdentity::for_test(&format!("{prefix}b"), "10.0.0.2");
+
+        heartbeat_tick(&pool, &a).await;
+        assert!(pod_exists(&pool, &a.pod).await);
+        sqlx::query("DELETE FROM pods WHERE pod = $1").bind(&a.pod).execute(&pool).await.unwrap();
+        assert!(live_peer_pods(&pool, &b.pod).await.is_empty());
+
+        heartbeat_tick(&pool, &a).await;
+        assert_eq!(live_peer_pods(&pool, &b.pod).await, vec!["10.0.0.1".to_owned()]);
+        wipe(&pool, prefix).await;
+    }
+
+    /// The reap deletes stale peers but never this pod's own row, even when
+    /// our own heartbeat is older than the reap window.
+    #[tokio::test]
+    async fn reap_skips_self_and_removes_stale_peers() {
+        let Some(pool) = pool().await else { return };
+        let prefix = "cct976-reap-";
+        wipe(&pool, prefix).await;
+        let a = PodIdentity::for_test(&format!("{prefix}a"), "10.0.1.1");
+        let b = PodIdentity::for_test(&format!("{prefix}b"), "10.0.1.2");
+        let c = PodIdentity::for_test(&format!("{prefix}c"), "10.0.1.3");
+        for p in [&a, &b, &c] {
+            heartbeat_tick(&pool, p).await;
+        }
+        age_pod(&pool, &a.pod, REAP_AFTER_SECS + 60).await;
+        age_pod(&pool, &b.pod, REAP_AFTER_SECS + 60).await;
+
+        heartbeat_tick(&pool, &a).await;
+        assert!(pod_exists(&pool, &a.pod).await, "a must never reap itself");
+        assert!(!pod_exists(&pool, &b.pod).await, "stale peer b is reaped");
+        assert!(pod_exists(&pool, &c.pod).await, "live peer c is kept");
+        assert_eq!(live_peer_pods(&pool, &c.pod).await, vec!["10.0.1.1".to_owned()]);
+        wipe(&pool, prefix).await;
+    }
+
+    /// Owned `ws_presence` rows are re-upserted on every tick, so a reaped row
+    /// returns; a row a peer has since taken over is left alone.
+    #[tokio::test]
+    async fn heartbeat_restores_owned_ws_rows_without_stealing_peer_rows() {
+        let Some(pool) = pool().await else { return };
+        let prefix = "cct976-ws-";
+        wipe(&pool, prefix).await;
+        let a = PodIdentity::for_test(&format!("{prefix}a"), "10.0.2.1");
+        let reaped = Uuid::new_v4();
+        let moved = Uuid::new_v4();
+        a.owned.insert((Kind::Daemon, reaped), ());
+        a.owned.insert((Kind::Session, moved), ());
+        sqlx::query(
+            "INSERT INTO ws_presence (kind, entity_id, pod, pod_ip) VALUES ('session', $1, $2, '10.0.2.2')",
+        )
+        .bind(moved)
+        .bind(format!("{prefix}b"))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        heartbeat_tick(&pool, &a).await;
+        assert_eq!(ws_owner(&pool, Kind::Daemon, reaped).await.as_deref(), Some(a.pod.as_str()));
+        assert_eq!(
+            ws_owner(&pool, Kind::Session, moved).await.as_deref(),
+            Some(format!("{prefix}b").as_str())
+        );
+        assert_eq!(
+            peer_owner_ip(&pool, &format!("{prefix}b"), Kind::Daemon, reaped).await.as_deref(),
+            Some("10.0.2.1")
+        );
+        wipe(&pool, prefix).await;
+    }
 }

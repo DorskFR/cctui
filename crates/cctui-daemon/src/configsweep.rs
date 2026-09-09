@@ -50,7 +50,8 @@ where
     }
 }
 
-fn short_of(session_id: &str) -> Option<String> {
+#[must_use]
+pub fn short_of(session_id: &str) -> Option<String> {
     let short = session_id.get(..8)?.to_ascii_lowercase();
     is_short(&short).then_some(short)
 }

@@ -33,17 +33,14 @@
 			import('$ghreview/Review.svelte'),
 			ensureGhreviewToken()
 		]);
-		try {
-			const res = await fetch(`${base}/v1/accounts`, {
-				headers: { authorization: `Bearer ${token}` }
-			});
-			if (res.ok) {
-				const body = (await res.json()) as { items?: GhAccount[] };
-				accounts = body.items ?? [];
-			}
-		} catch {
-			accounts = [];
-		}
+		// A failed lookup must not fall through to the unlock screen: "the backend
+		// is down" and "you have no connector" are different answers.
+		const res = await fetch(`${base}/v1/accounts`, {
+			headers: { authorization: `Bearer ${token}` }
+		});
+		if (!res.ok) throw new Error(`gh-review responded ${res.status}`);
+		const body = (await res.json()) as { items?: GhAccount[] };
+		accounts = body.items ?? [];
 		if (accounts.length > 0) account = accounts[0].login;
 		return { Review: mod.default, token, base };
 	}

@@ -16,20 +16,25 @@
 
 use std::fmt::Write as _;
 
-use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Redirect, Response};
+use axum::{Extension, Json};
 use base64::Engine;
 use cctui_proto::git::GitInfo;
 use cctui_proto::media::{is_inline_type, sniff_media_type};
+use cctui_proto::models::{Liveness, SessionStatus};
 use cctui_proto::ws::{READ_FILE_MAX_BYTES, ReadFileErrorKind, ReadFileOk};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::auth::AuthContext;
 use crate::bus;
 use crate::error::AppError;
 use crate::state::AppState;
+
+type SessionLivenessRow = (Option<Uuid>, Option<String>, String, DateTime<Utc>, DateTime<Utc>);
 
 #[derive(Debug, Deserialize)]
 pub struct ListDirsParams {
@@ -100,16 +105,18 @@ pub async fn git_info(
 #[derive(Debug, Deserialize)]
 pub struct ReadFileParams {
     pub path: String,
-    /// Session the link came from: widens the daemon's allow-list to its
-    /// working directory and names the blob endpoint a large file redirects to.
-    #[serde(default)]
-    pub session_id: Option<String>,
+    /// Session the link came from. Required: it is what the path grant, the
+    /// liveness gate and the session-read authz are all resolved against.
+    pub session_id: String,
 }
 
-/// Same ownership guard as [`list_dirs`]; the daemon enforces the path
-/// allow-list and the size cap, and every refusal is logged here.
+/// Machine ownership is the outer guard; this handler adds the three checks
+/// that make the route conversation-scoped rather than a `$HOME` read:
+/// session-read authz for the caller, a live (non-archived, non-dead) session,
+/// and a path the agent actually linked in that session.
 pub async fn read_file(
     State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
     Path(machine_id): Path<String>,
     Query(params): Query<ReadFileParams>,
     headers: HeaderMap,
@@ -120,25 +127,12 @@ pub async fn read_file(
     if path.is_empty() {
         return Err(AppError::new(StatusCode::BAD_REQUEST, "path is required"));
     }
-
-    let mut cwd = None;
-    if let Some(sid) = params.session_id.as_deref() {
-        let row: Option<(Option<Uuid>, Option<String>)> =
-            sqlx::query_as("SELECT machine_uuid, working_dir FROM sessions WHERE id = $1")
-                .bind(sid)
-                .fetch_optional(&state.pool)
-                .await?;
-        match row {
-            Some((Some(m), wd)) if m == machine_uuid => cwd = wd,
-            Some(_) => {
-                return Err(AppError::new(
-                    StatusCode::BAD_REQUEST,
-                    "session_id does not belong to this machine",
-                ));
-            }
-            None => return Err(AppError::new(StatusCode::NOT_FOUND, "unknown session_id")),
-        }
+    let sid = params.session_id.trim().to_owned();
+    if sid.is_empty() {
+        return Err(AppError::new(StatusCode::BAD_REQUEST, "session_id is required"));
     }
+
+    let cwd = authorize_read(&state.pool, &ctx, machine_uuid, &sid, &path).await?;
 
     let file =
         match bus::read_file(&state, machine_uuid, path.clone(), READ_FILE_MAX_BYTES, cwd).await {
@@ -160,7 +154,201 @@ pub async fn read_file(
             Err(e) => return Err(AppError::new(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
         };
 
-    file_response(&file, params.session_id.as_deref(), &headers)
+    if let Some(hash) = file.blob_hash.as_deref() {
+        record_blob_link(&state.pool, &sid, hash).await?;
+    }
+    file_response(&file, Some(sid.as_str()), &headers)
+}
+
+/// The three gates that make `fs/file` conversation-scoped, in the order that
+/// leaks least: caller may read the session, the session is live, the path was
+/// linked in it. Returns the session's working dir for the daemon's own root
+/// check.
+async fn authorize_read(
+    pool: &sqlx::PgPool,
+    ctx: &AuthContext,
+    machine_uuid: Uuid,
+    sid: &str,
+    path: &str,
+) -> Result<Option<String>, AppError> {
+    crate::authz::authorize_session_read(ctx, sid, pool)
+        .await
+        .map_err(|status| AppError::new(status, "not allowed to read this session"))?;
+
+    let row: Option<SessionLivenessRow> = sqlx::query_as(
+        "SELECT machine_uuid, working_dir, status, registered_at, last_heartbeat \
+             FROM sessions WHERE id = $1",
+    )
+    .bind(sid)
+    .fetch_optional(pool)
+    .await?;
+    let Some((machine, cwd, status, registered_at, last_heartbeat)) = row else {
+        return Err(AppError::new(StatusCode::NOT_FOUND, "unknown session_id"));
+    };
+    if machine != Some(machine_uuid) {
+        return Err(AppError::new(
+            StatusCode::BAD_REQUEST,
+            "session_id does not belong to this machine",
+        ));
+    }
+
+    let (session_status, liveness) =
+        crate::routes::sessions::resolve_status_liveness(&status, registered_at, last_heartbeat);
+    if session_status == SessionStatus::Archived || liveness == Liveness::Dead {
+        tracing::warn!(%sid, %path, ?session_status, ?liveness, "read-file refused: session not live");
+        return Err(AppError::new(StatusCode::FORBIDDEN, "session is no longer live"));
+    }
+
+    if !path_is_linked(pool, sid, path).await? {
+        tracing::warn!(%sid, %path, "read-file refused: path not linked in this session");
+        return Err(AppError::new(StatusCode::FORBIDDEN, "path was not linked in this session"));
+    }
+    Ok(cwd)
+}
+
+const MAX_LINKS_PER_EVENT: usize = 64;
+
+async fn path_is_linked(
+    pool: &sqlx::PgPool,
+    session_id: &str,
+    path: &str,
+) -> Result<bool, sqlx::Error> {
+    let hit: Option<i32> =
+        sqlx::query_scalar("SELECT 1 FROM session_file_links WHERE session_id = $1 AND path = $2")
+            .bind(session_id)
+            .bind(path)
+            .fetch_optional(pool)
+            .await?;
+    Ok(hit.is_some())
+}
+
+async fn record_blob_link(
+    pool: &sqlx::PgPool,
+    session_id: &str,
+    hash: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO session_blob_links (session_id, hash) VALUES ($1, $2) \
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(session_id)
+    .bind(hash)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Grant every local path and blob reference an event mentions, so the paths
+/// the renderer will linkify are exactly the ones the read route will serve.
+pub async fn record_links(
+    pool: &sqlx::PgPool,
+    session_id: &str,
+    (paths, blobs): &(Vec<String>, Vec<String>),
+) -> Result<(), sqlx::Error> {
+    if !paths.is_empty() {
+        sqlx::query(
+            "INSERT INTO session_file_links (session_id, path) \
+             SELECT $1, * FROM UNNEST($2::text[]) ON CONFLICT DO NOTHING",
+        )
+        .bind(session_id)
+        .bind(paths)
+        .execute(pool)
+        .await?;
+    }
+    if !blobs.is_empty() {
+        sqlx::query(
+            "INSERT INTO session_blob_links (session_id, hash) \
+             SELECT $1, * FROM UNNEST($2::text[]) ON CONFLICT DO NOTHING",
+        )
+        .bind(session_id)
+        .bind(blobs)
+        .execute(pool)
+        .await?;
+    }
+    Ok(())
+}
+
+/// Rust twin of `markdown.ts`'s `LOCAL_PATH`: absolute or `~/`-relative paths
+/// with a file extension, plus the `blob_id` of every embedded blob reference.
+#[must_use]
+pub fn extract_links(payload: &serde_json::Value) -> (Vec<String>, Vec<String>) {
+    let mut paths = std::collections::BTreeSet::new();
+    let mut blobs = std::collections::BTreeSet::new();
+    walk(payload, &mut paths, &mut blobs);
+    (
+        paths.into_iter().take(MAX_LINKS_PER_EVENT).collect(),
+        blobs.into_iter().take(MAX_LINKS_PER_EVENT).collect(),
+    )
+}
+
+fn walk(
+    v: &serde_json::Value,
+    paths: &mut std::collections::BTreeSet<String>,
+    blobs: &mut std::collections::BTreeSet<String>,
+) {
+    match v {
+        serde_json::Value::String(s) => scan_paths(s, paths),
+        serde_json::Value::Array(a) => a.iter().for_each(|x| walk(x, paths, blobs)),
+        serde_json::Value::Object(o) => {
+            for (k, val) in o {
+                if k == "blob_id"
+                    && let Some(h) = val.as_str()
+                    && h.len() == 64
+                    && h.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+                {
+                    blobs.insert(h.to_owned());
+                    continue;
+                }
+                walk(val, paths, blobs);
+            }
+        }
+        _ => {}
+    }
+}
+
+const fn is_path_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'@' | b'+' | b'%' | b'-' | b'/')
+}
+
+/// A candidate starts at a word boundary, so a URL's path (`https://h/a.png`)
+/// never matches: its `//` is preceded by `:` and `h/a.png` does not start
+/// with `/`.
+fn scan_paths(s: &str, out: &mut std::collections::BTreeSet<String>) {
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let lead_ok = i == 0
+            || matches!(bytes[i - 1], b' ' | b'\t' | b'\n' | b'\r' | b'(' | b'[' | b';' | b'>')
+            || matches!(bytes[i - 1], b'"' | b'\'' | b'`' | b',' | b'=' | b'*');
+        let starts = bytes[i] == b'/' || (bytes[i] == b'~' && bytes.get(i + 1) == Some(&b'/'));
+        if !(lead_ok && starts) {
+            i += 1;
+            continue;
+        }
+        let mut j = if bytes[i] == b'~' { i + 1 } else { i };
+        while j < bytes.len() && is_path_byte(bytes[j]) {
+            j += 1;
+        }
+        let mut cand = &s[i..j];
+        while cand.ends_with('.') {
+            cand = &cand[..cand.len() - 1];
+        }
+        if has_extension(cand) {
+            out.insert(cand.to_owned());
+        }
+        i = j.max(i + 1);
+    }
+}
+
+fn has_extension(cand: &str) -> bool {
+    let name = &cand[cand.rfind('/').map_or(0, |p| p + 1)..];
+    name.rfind('.').is_some_and(|dot| {
+        let ext = &name[dot + 1..];
+        !ext.is_empty()
+            && ext.len() <= 8
+            && ext.bytes().all(|b| b.is_ascii_alphanumeric())
+            && dot > 0
+    })
 }
 
 const fn read_error_status(kind: ReadFileErrorKind) -> StatusCode {
@@ -321,6 +509,235 @@ mod tests {
         );
         let err = file_response(&file, None, &HeaderMap::new()).unwrap_err();
         assert!(matches!(err, AppError::Status(StatusCode::CONFLICT, _)));
+    }
+
+    #[test]
+    fn only_linked_local_paths_are_extracted() {
+        let payload = serde_json::json!({
+            "content": "wrote /home/u/out/report.md and ~/shots/x.png, see https://ex.com/a/b.png",
+            "nested": [{ "text": "also `/tmp/c.log`." }],
+            "source": { "type": "cctui-blob", "blob_id": "ab".repeat(32) },
+        });
+        let (paths, blobs) = extract_links(&payload);
+        assert_eq!(paths, vec!["/home/u/out/report.md", "/tmp/c.log", "~/shots/x.png"]);
+        assert_eq!(blobs, vec!["ab".repeat(32)]);
+    }
+
+    #[test]
+    fn bare_urls_directories_and_extensionless_paths_are_not_grants() {
+        let payload = serde_json::json!({
+            "a": "https://ok.example/dir/file.md",
+            "b": "cd /home/u/proj and /usr/bin",
+            "c": "a/b.txt and 1/2.5",
+            "d": "http://h/etc/passwd.conf",
+        });
+        assert_eq!(extract_links(&payload).0, Vec::<String>::new());
+    }
+
+    struct Fixture {
+        pool: sqlx::PgPool,
+        machine: Uuid,
+        owner: AuthContext,
+        stranger: AuthContext,
+        session: String,
+    }
+
+    fn ctx(user_id: Uuid) -> AuthContext {
+        AuthContext {
+            user_id,
+            key_id: Uuid::new_v4(),
+            machine_id: None,
+            scopes: std::collections::BTreeSet::new(),
+        }
+    }
+
+    async fn fixture(tag: &str) -> Option<Fixture> {
+        let url = crate::routes::gateway::test_db_url(tag)?;
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let (owner, stranger, machine) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        let session = format!("cct985-{tag}");
+        for (uid, name) in [(owner, "owner"), (stranger, "stranger")] {
+            sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+                .bind(uid)
+                .bind(format!("{tag}-{name}"))
+                .bind(format!("{tag}-{name}-hash"))
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        sqlx::query("INSERT INTO machines (id, user_id, name, key_hash) VALUES ($1, $2, $3, $4)")
+            .bind(machine)
+            .bind(owner)
+            .bind(tag)
+            .bind(format!("{tag}-mkey"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO sessions (id, machine_id, machine_uuid, user_id, working_dir, status) \
+             VALUES ($1, $2, $2, $3, '/home/u/proj', 'active')",
+        )
+        .bind(&session)
+        .bind(machine)
+        .bind(owner)
+        .execute(&pool)
+        .await
+        .unwrap();
+        Some(Fixture { pool, machine, owner: ctx(owner), stranger: ctx(stranger), session })
+    }
+
+    async fn cleanup(f: &Fixture) {
+        sqlx::query("DELETE FROM sessions WHERE id = $1")
+            .bind(&f.session)
+            .execute(&f.pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM machines WHERE id = $1")
+            .bind(f.machine)
+            .execute(&f.pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM users WHERE id = ANY($1)")
+            .bind(vec![f.owner.user_id, f.stranger.user_id])
+            .execute(&f.pool)
+            .await
+            .unwrap();
+    }
+
+    fn status_of(e: &AppError) -> StatusCode {
+        match e {
+            AppError::Status(s, _) => *s,
+            other => panic!("expected a status error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn an_ungranted_path_is_refused_and_a_granted_one_passes_every_gate() {
+        let Some(f) = fixture("ungranted_path_is_refused").await else { return };
+        let secret = "/home/u/.ssh/id_ed25519";
+        let linked = "/home/u/proj/out/report.md";
+
+        let err =
+            authorize_read(&f.pool, &f.owner, f.machine, &f.session, secret).await.unwrap_err();
+        assert_eq!(status_of(&err), StatusCode::FORBIDDEN, "ungranted path");
+        let err =
+            authorize_read(&f.pool, &f.owner, f.machine, &f.session, linked).await.unwrap_err();
+        assert_eq!(status_of(&err), StatusCode::FORBIDDEN, "under cwd but never linked");
+
+        let payload = serde_json::json!({ "content": format!("wrote {linked} for you") });
+        record_links(&f.pool, &f.session, &extract_links(&payload)).await.unwrap();
+
+        assert_eq!(
+            authorize_read(&f.pool, &f.owner, f.machine, &f.session, linked).await.unwrap(),
+            Some("/home/u/proj".to_owned())
+        );
+        let err =
+            authorize_read(&f.pool, &f.owner, f.machine, &f.session, secret).await.unwrap_err();
+        assert_eq!(status_of(&err), StatusCode::FORBIDDEN, "grants do not widen to siblings");
+        cleanup(&f).await;
+    }
+
+    #[tokio::test]
+    async fn another_users_session_is_refused_even_with_a_grant() {
+        let Some(f) = fixture("another_users_session_is_refused").await else { return };
+        let linked = "/home/u/proj/out/report.md";
+        let payload = serde_json::json!({ "content": linked });
+        record_links(&f.pool, &f.session, &extract_links(&payload)).await.unwrap();
+
+        assert!(authorize_read(&f.pool, &f.owner, f.machine, &f.session, linked).await.is_ok());
+        let err =
+            authorize_read(&f.pool, &f.stranger, f.machine, &f.session, linked).await.unwrap_err();
+        assert_eq!(status_of(&err), StatusCode::FORBIDDEN);
+
+        let err = authorize_read(&f.pool, &f.owner, f.machine, "no-such-session", linked)
+            .await
+            .unwrap_err();
+        assert_eq!(status_of(&err), StatusCode::NOT_FOUND, "unknown sessions never leak as 403");
+        cleanup(&f).await;
+    }
+
+    #[tokio::test]
+    async fn archived_ended_and_dead_sessions_are_refused() {
+        let Some(f) = fixture("dead_sessions_are_refused").await else { return };
+        let linked = "/home/u/proj/out/report.md";
+        record_links(&f.pool, &f.session, &extract_links(&serde_json::json!(linked)))
+            .await
+            .unwrap();
+
+        let set = |status: &'static str, heartbeat_age_secs: i64| {
+            let pool = f.pool.clone();
+            let sid = f.session.clone();
+            async move {
+                sqlx::query(
+                    "UPDATE sessions SET status = $2, \
+                     last_heartbeat = now() - make_interval(secs => $3) WHERE id = $1",
+                )
+                .bind(&sid)
+                .bind(status)
+                .bind(heartbeat_age_secs as f64)
+                .execute(&pool)
+                .await
+                .unwrap();
+            }
+        };
+
+        set("active", 60).await;
+        assert!(
+            authorize_read(&f.pool, &f.owner, f.machine, &f.session, linked).await.is_ok(),
+            "a live session serves"
+        );
+        set("active", 15 * 60).await;
+        assert!(
+            authorize_read(&f.pool, &f.owner, f.machine, &f.session, linked).await.is_ok(),
+            "stale (under an hour) still serves"
+        );
+
+        for (status, age) in [("active", 2 * 3600), ("archived", 60), ("ended", 60), ("failed", 60)]
+        {
+            set(status, age).await;
+            let err =
+                authorize_read(&f.pool, &f.owner, f.machine, &f.session, linked).await.unwrap_err();
+            assert_eq!(status_of(&err), StatusCode::FORBIDDEN, "{status} @ {age}s must refuse");
+        }
+        cleanup(&f).await;
+    }
+
+    #[tokio::test]
+    async fn a_grant_does_not_cross_sessions_or_machines() {
+        let Some(f) = fixture("grant_does_not_cross_sessions").await else { return };
+        let linked = "/home/u/proj/out/report.md";
+        record_links(&f.pool, &f.session, &extract_links(&serde_json::json!(linked)))
+            .await
+            .unwrap();
+
+        let other_machine = Uuid::new_v4();
+        let err =
+            authorize_read(&f.pool, &f.owner, other_machine, &f.session, linked).await.unwrap_err();
+        assert_eq!(status_of(&err), StatusCode::BAD_REQUEST, "session must live on the machine");
+
+        let other = format!("{}-b", f.session);
+        sqlx::query(
+            "INSERT INTO sessions (id, machine_id, machine_uuid, user_id, working_dir, status) \
+             VALUES ($1, $2, $2, $3, '/home/u/proj', 'active')",
+        )
+        .bind(&other)
+        .bind(f.machine)
+        .bind(f.owner.user_id)
+        .execute(&f.pool)
+        .await
+        .unwrap();
+        let err = authorize_read(&f.pool, &f.owner, f.machine, &other, linked).await.unwrap_err();
+        assert_eq!(status_of(&err), StatusCode::FORBIDDEN, "grants are per-session");
+        sqlx::query("DELETE FROM sessions WHERE id = $1")
+            .bind(&other)
+            .execute(&f.pool)
+            .await
+            .unwrap();
+        cleanup(&f).await;
     }
 
     #[test]

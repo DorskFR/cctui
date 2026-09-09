@@ -1,10 +1,12 @@
 //! Serve one file off this machine for the webui (`DaemonFrameDown::ReadFile`).
 //!
-//! The path is one an agent linked in a message. The allow-list is the
-//! image-post one (temp dirs + `$HOME`) widened by the session's working
-//! directory; the path is canonicalised so a symlink pointing outside every
-//! root is refused. Small files ride back inline, larger ones are PUT to the
-//! blob store and answered by hash.
+//! The path is one an agent linked in a message, and the server has already
+//! checked that grant. The allow-list here is defense in depth: the temp dirs
+//! plus the session's working directory and its enclosing git repo — never a
+//! blanket `$HOME`. A secret deny-list applies inside every root. The path is
+//! canonicalised so a symlink pointing outside every root is refused. Small
+//! files ride back inline, larger ones are PUT to the blob store and answered
+//! by hash.
 
 use std::path::{Path, PathBuf};
 
@@ -27,17 +29,53 @@ fn refused(kind: ReadFileErrorKind, message: impl Into<String>) -> Refused {
     Refused { kind, message: message.into() }
 }
 
-/// The image-post roots plus the session's working directory (when given),
-/// each canonicalised so `starts_with` compares real paths.
+/// Temp dirs plus the session's working directory and its enclosing git repo.
+///
+/// Each is canonicalised so `starts_with` compares real paths. Deliberately no
+/// `$HOME` root: without a session there is nothing to serve but temp files.
 #[must_use]
 pub fn allowed_roots(cwd: Option<&str>) -> Vec<PathBuf> {
-    let mut roots = crate::imagepost::default_allowed_roots();
+    let mut roots: Vec<PathBuf> =
+        [std::env::temp_dir(), PathBuf::from("/tmp"), PathBuf::from("/private/tmp")]
+            .into_iter()
+            .filter_map(|r| r.canonicalize().ok())
+            .collect();
     if let Some(cwd) = cwd
         && let Ok(real) = crate::git::expand_tilde(cwd).canonicalize()
     {
+        if let Some(root) = git_root(&real) {
+            roots.push(root);
+        }
         roots.push(real);
     }
     roots
+}
+
+/// Nearest ancestor of `dir` (inclusive) holding a `.git` entry.
+fn git_root(dir: &Path) -> Option<PathBuf> {
+    dir.ancestors().find(|a| a.join(".git").exists()).map(Path::to_path_buf)
+}
+
+/// Secrets that stay unreadable however the roots are widened — a session
+/// whose cwd is `$HOME` or a repo carrying a `.env` must not become a
+/// credential dump.
+fn is_denied(real: &Path) -> bool {
+    const DENIED_DIRS: [&str; 3] = [".ssh", ".gnupg", ".aws"];
+    let name = real.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+    let Some(parent) = real.parent() else { return true };
+    if parent
+        .components()
+        .any(|c| DENIED_DIRS.contains(&c.as_os_str().to_str().unwrap_or_default()))
+        || parent.ends_with(".config/gh")
+    {
+        return true;
+    }
+    name == ".netrc"
+        || name == ".credentials.json"
+        || name.starts_with(".env")
+        || name.starts_with("id_rsa")
+        || name.starts_with("id_ed25519")
+        || matches!(name.to_ascii_lowercase().rsplit_once('.'), Some((_, "pem" | "key")))
 }
 
 /// Expand `~`, canonicalise (following symlinks), and require a regular file
@@ -62,6 +100,9 @@ pub fn resolve(path: &str, roots: &[PathBuf]) -> Result<PathBuf, Refused> {
             ReadFileErrorKind::Denied,
             format!("{path} is outside the allowed roots"),
         ));
+    }
+    if is_denied(&real) {
+        return Err(refused(ReadFileErrorKind::Denied, format!("{path} is not readable")));
     }
     let meta = std::fs::metadata(&real)
         .map_err(|err| refused(ReadFileErrorKind::Io, format!("cannot stat {path}: {err}")))?;
@@ -223,15 +264,84 @@ mod tests {
     }
 
     #[test]
-    fn cwd_widens_the_allow_list() {
+    fn cwd_is_the_only_widening_and_home_is_never_a_root() {
         let dir = tempfile::tempdir().unwrap();
         let f = dir.path().join("out.txt");
         std::fs::write(&f, "x").unwrap();
         let roots = allowed_roots(Some(dir.path().to_str().unwrap()));
         assert!(roots.contains(&dir.path().canonicalize().unwrap()));
         assert!(resolve(f.to_str().unwrap(), &roots).is_ok());
-        let none = allowed_roots(Some("/definitely/not/a/dir"));
-        assert_eq!(none, crate::imagepost::default_allowed_roots());
+
+        let home = PathBuf::from(std::env::var("HOME").unwrap()).canonicalize().unwrap();
+        for cwd in [None, Some("/definitely/not/a/dir")] {
+            assert!(
+                !allowed_roots(cwd).contains(&home),
+                "$HOME must never be a root (cwd {cwd:?})"
+            );
+        }
+    }
+
+    #[test]
+    fn the_git_root_of_the_cwd_is_readable_but_its_siblings_are_not() {
+        let repo = tempfile::tempdir().unwrap();
+        std::fs::create_dir(repo.path().join(".git")).unwrap();
+        std::fs::create_dir_all(repo.path().join("sub")).unwrap();
+        let top = repo.path().join("README.md");
+        std::fs::write(&top, "x").unwrap();
+        let roots = allowed_roots(Some(repo.path().join("sub").to_str().unwrap()));
+        assert!(resolve(top.to_str().unwrap(), &roots).is_ok());
+        assert_eq!(
+            resolve("/etc/passwd", &roots).unwrap_err().kind,
+            ReadFileErrorKind::Denied,
+            "the git root does not widen past the repo"
+        );
+    }
+
+    #[test]
+    fn secrets_are_denied_inside_an_allowed_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let roots = roots_of(dir.path());
+        for rel in [
+            ".ssh/id_ed25519",
+            ".aws/credentials",
+            ".gnupg/secring.gpg",
+            ".config/gh/hosts.yml",
+            ".claude/.credentials.json",
+            "repo/.env",
+            "repo/.env.local",
+            "certs/server.pem",
+            "certs/server.key",
+            "certs/SERVER.PEM",
+            "certs/Server.Key",
+            "certs/.pem",
+            ".netrc",
+        ] {
+            let f = dir.path().join(rel);
+            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+            std::fs::write(&f, "secret").unwrap();
+            assert_eq!(
+                resolve(f.to_str().unwrap(), &roots).unwrap_err().kind,
+                ReadFileErrorKind::Denied,
+                "{rel} must be denied"
+            );
+        }
+        let ok = dir.path().join("repo/report.md");
+        std::fs::write(&ok, "x").unwrap();
+        assert!(resolve(ok.to_str().unwrap(), &roots).is_ok());
+    }
+
+    #[test]
+    fn secrets_are_denied_when_the_cwd_is_the_home_that_holds_them() {
+        let home = tempfile::tempdir().unwrap();
+        let key = home.path().join(".ssh/id_ed25519");
+        std::fs::create_dir_all(key.parent().unwrap()).unwrap();
+        std::fs::write(&key, "PRIVATE KEY").unwrap();
+        let roots = allowed_roots(Some(home.path().to_str().unwrap()));
+        assert!(roots.contains(&home.path().canonicalize().unwrap()), "cwd is a root");
+        assert_eq!(
+            resolve(key.to_str().unwrap(), &roots).unwrap_err().kind,
+            ReadFileErrorKind::Denied
+        );
     }
 
     #[test]

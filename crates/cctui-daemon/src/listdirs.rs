@@ -26,11 +26,25 @@ fn expand_tilde(path: &str) -> PathBuf {
     PathBuf::from(path)
 }
 
+/// Roots the spawn dialog may browse: `$HOME` plus the temp dirs. `/etc`,
+/// `/var` and other users' homes are not enumerable.
+fn listable_roots() -> Vec<PathBuf> {
+    crate::git::default_roots()
+        .into_iter()
+        .chain([std::env::temp_dir(), PathBuf::from("/tmp"), PathBuf::from("/private/tmp")])
+        .filter_map(|r| r.canonicalize().ok())
+        .collect()
+}
+
+fn resolve_listable(dir: &std::path::Path) -> anyhow::Result<PathBuf> {
+    crate::git::resolve_allowed(dir, &listable_roots())
+}
+
 /// Names of the sub-directories of `path` (directories only, dotdirs
 /// included — display filtering is client-side), sorted case-insensitively,
 /// capped at [`MAX_ENTRIES`].
 pub fn list_dirs(path: &str) -> anyhow::Result<Vec<String>> {
-    let dir = expand_tilde(path);
+    let dir = resolve_listable(&expand_tilde(path))?;
     let read = std::fs::read_dir(&dir)
         .map_err(|err| anyhow::anyhow!("cannot read {}: {err}", dir.display()))?;
     let mut names: Vec<String> = read
@@ -72,6 +86,14 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let missing = tmp.path().join("nope");
         assert!(list_dirs(missing.to_str().unwrap()).is_err());
+    }
+
+    #[test]
+    fn paths_outside_home_and_the_temp_dirs_are_refused() {
+        assert!(list_dirs("/etc").is_err());
+        assert!(list_dirs("/var").is_err());
+        assert!(list_dirs("/").is_err());
+        assert!(list_dirs("~").is_ok(), "$HOME stays browsable");
     }
 
     #[test]

@@ -44,10 +44,20 @@ pub struct LiveSession {
 
 #[derive(Debug)]
 pub enum SessionCommand {
-    Prompt { session_id: String, text: String },
+    Prompt { session_id: String, text: String, command_id: Option<Uuid> },
     Kill { session_id: String },
     Fork { parent: String, prompt: Option<String>, name: Option<String>, command_id: Option<Uuid> },
     Permission { session_id: String, request_id: String, allow: bool },
+}
+
+impl SessionCommand {
+    #[must_use]
+    pub const fn command_id(&self) -> Option<Uuid> {
+        match self {
+            Self::Prompt { command_id, .. } | Self::Fork { command_id, .. } => *command_id,
+            Self::Kill { .. } | Self::Permission { .. } => None,
+        }
+    }
 }
 
 /// Adapter-level knobs from `adapters_enabled.config`.
@@ -310,7 +320,7 @@ impl OpenCodeSession {
         let mut stream = tokio::spawn(pump_sse(client.clone(), evt_tx, self.shutdown.clone()));
 
         if let Some(text) = self.first_turn()
-            && !self.prompt_or_crash(&client, &session.id, &text, model.as_ref()).await
+            && !self.prompt_or_crash(&client, &session.id, &text, model.as_ref(), None).await
         {
             stream.abort();
             shutdown_serve(&mut child).await;
@@ -358,9 +368,27 @@ impl OpenCodeSession {
         }
 
         stream.abort();
+        self.fail_buffered_commands().await;
         self.abort_owned(&client).await;
         shutdown_serve(&mut child).await;
         Ok(())
+    }
+
+    async fn fail_buffered_commands(&mut self) {
+        self.commands.close();
+        while let Ok(cmd) = self.commands.try_recv() {
+            if let Some(command_id) = cmd.command_id() {
+                tracing::warn!(?cmd, "opencode: command dropped, session is ending");
+                let _ = self
+                    .events
+                    .send(AdapterEvent::CommandResult {
+                        command_id,
+                        ok: false,
+                        error: Some("opencode session ended before the command ran".to_owned()),
+                    })
+                    .await;
+            }
+        }
     }
 
     /// Abort every in-flight turn before the server goes away: a killed session
@@ -474,8 +502,20 @@ impl OpenCodeSession {
         session_id: &str,
         text: &str,
         model: Option<&ModelRef>,
+        command_id: Option<Uuid>,
     ) -> bool {
-        let Some(detail) = self.prompt(client, session_id, text, model).await else {
+        let failure = self.prompt(client, session_id, text, model).await;
+        if let Some(command_id) = command_id {
+            let _ = self
+                .events
+                .send(AdapterEvent::CommandResult {
+                    command_id,
+                    ok: failure.is_none(),
+                    error: failure.clone(),
+                })
+                .await;
+        }
+        let Some(detail) = failure else {
             return true;
         };
         if !self.oneshot {
@@ -522,8 +562,8 @@ impl OpenCodeSession {
         model: Option<&ModelRef>,
     ) -> bool {
         match cmd {
-            SessionCommand::Prompt { session_id, text } => {
-                return self.prompt_or_crash(client, &session_id, &text, model).await;
+            SessionCommand::Prompt { session_id, text, command_id } => {
+                return self.prompt_or_crash(client, &session_id, &text, model, command_id).await;
             }
             SessionCommand::Kill { session_id } => {
                 if let Err(err) = client.abort(&session_id).await {
@@ -1180,7 +1220,11 @@ mod tests {
         let stop = session
             .on_command(
                 &client,
-                SessionCommand::Prompt { session_id: "ses_1".to_owned(), text: "go".to_owned() },
+                SessionCommand::Prompt {
+                    session_id: "ses_1".to_owned(),
+                    text: "go".to_owned(),
+                    command_id: None,
+                },
                 None,
             )
             .await;
@@ -1202,13 +1246,97 @@ mod tests {
         let stop = session
             .on_command(
                 &client,
-                SessionCommand::Prompt { session_id: "ses_1".to_owned(), text: "go".to_owned() },
+                SessionCommand::Prompt {
+                    session_id: "ses_1".to_owned(),
+                    text: "go".to_owned(),
+                    command_id: None,
+                },
                 None,
             )
             .await;
         assert!(stop);
         assert!(session.owned.contains("ses_1"));
         assert!(ended_events(&mut rx).is_empty(), "an interactive session must survive");
+    }
+
+    #[tokio::test]
+    async fn a_command_still_buffered_when_the_session_ends_is_acked_as_failed() {
+        let (mut session, mut rx, _client) = test_session(None);
+        let command_id = Uuid::new_v4();
+        session
+            .commands_tx
+            .send(SessionCommand::Prompt {
+                session_id: "ses_1".to_owned(),
+                text: "go".to_owned(),
+                command_id: Some(command_id),
+            })
+            .await
+            .unwrap();
+        session
+            .commands_tx
+            .send(SessionCommand::Kill { session_id: "ses_1".to_owned() })
+            .await
+            .unwrap();
+        session.fail_buffered_commands().await;
+        let mut acks = Vec::new();
+        while let Ok(evt) = rx.try_recv() {
+            if let AdapterEvent::CommandResult { command_id: cid, ok, .. } = evt {
+                acks.push((cid, ok));
+            }
+        }
+        assert_eq!(acks, vec![(command_id, false)], "only correlated commands are answered");
+    }
+
+    #[test]
+    fn command_id_is_read_from_every_correlated_variant() {
+        let cid = Uuid::new_v4();
+        assert_eq!(
+            SessionCommand::Prompt {
+                session_id: String::new(),
+                text: String::new(),
+                command_id: Some(cid),
+            }
+            .command_id(),
+            Some(cid)
+        );
+        assert_eq!(
+            SessionCommand::Fork {
+                parent: String::new(),
+                prompt: None,
+                name: None,
+                command_id: Some(cid),
+            }
+            .command_id(),
+            Some(cid)
+        );
+        assert_eq!(SessionCommand::Kill { session_id: String::new() }.command_id(), None);
+    }
+
+    #[tokio::test]
+    async fn a_rejected_prompt_acks_its_command_id_as_failed() {
+        let (mut session, mut rx, client) = test_session(None);
+        let command_id = Uuid::new_v4();
+        session
+            .on_command(
+                &client,
+                SessionCommand::Prompt {
+                    session_id: "ses_1".to_owned(),
+                    text: "go".to_owned(),
+                    command_id: Some(command_id),
+                },
+                None,
+            )
+            .await;
+        let mut ack = None;
+        while let Ok(evt) = rx.try_recv() {
+            if let AdapterEvent::CommandResult { command_id: cid, ok, error } = evt {
+                assert_eq!(cid, command_id);
+                ack = Some((ok, error));
+            }
+        }
+        let (ok, error) = ack.expect("a send must report an outcome, not stay unconfirmed");
+        assert!(!ok);
+        assert!(error.is_some_and(|e| e.contains("rejected")), "expected the rejection detail");
     }
 
     #[tokio::test]

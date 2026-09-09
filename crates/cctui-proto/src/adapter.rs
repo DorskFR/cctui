@@ -562,6 +562,11 @@ pub enum AdapterCommand {
     /// the archive route.
     Remove {
         local_id: String,
+        /// Correlation id minted by the archive route, echoed back in an
+        /// [`AdapterEvent::CommandResult`] so the caller learns whether the
+        /// job was actually removed. `None` for the reconcile path.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        command_id: Option<Uuid>,
     },
     /// Change the model and/or reasoning effort of an already-running session
     /// **in place**, without spawning a new conversation. Applies to
@@ -606,9 +611,6 @@ pub enum AdapterCommand {
 }
 
 impl AdapterCommand {
-    /// The correlation id this command carries, if any. Every adapter's
-    /// command loop reports the outcome under it, so a command that carries one
-    /// must never fail silently.
     /// The session this command targets. `None` for the adapter-wide commands
     /// (`Spawn`, `ResumeMarks`), which no single session owns.
     #[must_use]
@@ -621,7 +623,7 @@ impl AdapterCommand {
             | Self::Resume { local_id, .. }
             | Self::PermissionResponse { local_id, .. }
             | Self::Rename { local_id, .. }
-            | Self::Remove { local_id }
+            | Self::Remove { local_id, .. }
             | Self::SetModel { local_id, .. }
             | Self::Diagnose { local_id, .. }
             | Self::WatchPty { local_id, .. } => Some(local_id),
@@ -637,6 +639,7 @@ impl AdapterCommand {
             | Self::Fork { command_id, .. }
             | Self::Reply { command_id, .. }
             | Self::Interrupt { command_id, .. }
+            | Self::Remove { command_id, .. }
             | Self::SetModel { command_id, .. } => *command_id,
             _ => None,
         }
@@ -835,6 +838,24 @@ impl std::fmt::Debug for BootstrapFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn remove_carries_its_correlation_id() {
+        let id = Uuid::new_v4();
+        let cmd = AdapterCommand::Remove { local_id: "sess-1".into(), command_id: Some(id) };
+        assert_eq!(cmd.command_id(), Some(id));
+        assert_eq!(cmd.local_id(), Some("sess-1"));
+        let back: AdapterCommand =
+            serde_json::from_str(&serde_json::to_string(&cmd).unwrap()).unwrap();
+        assert_eq!(back.command_id(), Some(id));
+    }
+
+    #[test]
+    fn remove_from_older_peer_has_no_correlation_id() {
+        let json = r#"{"kind":"remove","local_id":"sess-1"}"#;
+        let cmd: AdapterCommand = serde_json::from_str(json).unwrap();
+        assert_eq!(cmd.command_id(), None);
+    }
 
     #[test]
     fn adapter_id_roundtrips() {

@@ -533,6 +533,17 @@ async fn authorize_resource(
     }
 }
 
+/// In-handler session-read gate for routes whose declarative guard names a
+/// different resource (`fs/file` is machine-scoped in the path but
+/// session-scoped in what it serves).
+pub async fn authorize_session_read(
+    ctx: &AuthContext,
+    id: &str,
+    pool: &PgPool,
+) -> Result<(), StatusCode> {
+    authorize_resource(ResourceKind::Session, ctx, Action::Read, Some(id), pool).await
+}
+
 /// Public re-export of the session owner lookup so the WS path (`ws.rs`) can
 /// reuse the exact same ownership query as the HTTP guard (one authorizer,
 /// two transports). Returns the owning user, or `None` for an

@@ -20,11 +20,15 @@ export async function upsertSubscription(
   source: SubscriptionSource | null = null,
 ): Promise<void> {
   await db.sql`
-    INSERT INTO subscriptions (account, kind, target, active, source)
-    VALUES (${account}, ${kind}, ${target}, true, ${source})
+    INSERT INTO subscriptions (account, kind, target, active, source, account_id)
+    VALUES (
+      ${account}, ${kind}, ${target}, true, ${source},
+      (SELECT id FROM gh_accounts WHERE login = ${account})
+    )
     ON CONFLICT (account, kind, target) DO UPDATE SET
       active = true,
-      source = COALESCE(subscriptions.source, EXCLUDED.source)
+      source = COALESCE(subscriptions.source, EXCLUDED.source),
+      account_id = COALESCE(subscriptions.account_id, EXCLUDED.account_id)
   `;
 }
 

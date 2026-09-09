@@ -46,4 +46,15 @@ describe('/github page (graceful degradation)', () => {
 
 		expect(document.body.textContent).toContain('No GitHub connector yet');
 	});
+
+	it('reports an unreachable backend instead of claiming no connector exists', async () => {
+		window.CCTUI_CONFIG = { ghreviewUrl: 'https://gh.example' };
+		vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('boom', { status: 503 }));
+
+		component = mount(Page, { target: document.body, context });
+		for (let i = 0; i < 5; i++) await tick();
+
+		expect(document.body.textContent).not.toContain('No GitHub connector yet');
+		expect(document.body.textContent).toContain('Review center unavailable');
+	});
 });

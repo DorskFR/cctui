@@ -5,6 +5,7 @@
 //! connection open and stream multiple response lines.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use serde::de::DeserializeOwned;
@@ -56,8 +57,31 @@ fn inject_auth(request: &mut Value) {
     }
 }
 
-/// Send a single request and read a single JSON-line response.
+/// Upper bound on a request/response exchange. The claude daemon drops a
+/// dispatch it deems stale without ever answering, so an unbounded
+/// `read_line` here would hang the command forever.
+pub const ONE_SHOT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Send a single request and read a single JSON-line response, failing after
+/// [`ONE_SHOT_TIMEOUT`] if the daemon never answers.
 pub async fn one_shot(socket: &Path, request: &Value) -> Result<Value> {
+    one_shot_within(socket, request, ONE_SHOT_TIMEOUT).await
+}
+
+/// [`one_shot`] with an explicit bound on the whole exchange.
+pub async fn one_shot_within(socket: &Path, request: &Value, bound: Duration) -> Result<Value> {
+    let op = request.get("op").and_then(Value::as_str).unwrap_or("?").to_owned();
+    match tokio::time::timeout(bound, exchange(socket, request)).await {
+        Ok(res) => res,
+        Err(_) => bail!(
+            "claude daemon did not answer `{op}` within {}s ({})",
+            bound.as_secs(),
+            socket.display()
+        ),
+    }
+}
+
+async fn exchange(socket: &Path, request: &Value) -> Result<Value> {
     let stream = UnixStream::connect(socket)
         .await
         .with_context(|| format!("connecting to {}", socket.display()))?;
@@ -377,6 +401,54 @@ pub async fn ping(socket: &Path) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn scratch_socket(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("cctui-sock-{tag}-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("d.sock")
+    }
+
+    #[tokio::test]
+    async fn one_shot_fails_within_bound_when_daemon_never_answers() {
+        let path = scratch_socket("silent");
+        let listener = tokio::net::UnixListener::bind(&path).unwrap();
+        let hold = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            drop(stream);
+        });
+        let started = std::time::Instant::now();
+        let err = one_shot_within(
+            &path,
+            &serde_json::json!({"proto": 1, "op": "dispatch"}),
+            Duration::from_millis(200),
+        )
+        .await
+        .expect_err("a silent daemon must not hang the call");
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(err.to_string().contains("did not answer `dispatch`"), "{err}");
+        hold.abort();
+    }
+
+    #[tokio::test]
+    async fn one_shot_returns_the_reply_when_the_daemon_answers() {
+        let path = scratch_socket("reply");
+        let listener = tokio::net::UnixListener::bind(&path).unwrap();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (r, mut w) = stream.into_split();
+            let mut line = String::new();
+            BufReader::new(r).read_line(&mut line).await.unwrap();
+            let req: Value = serde_json::from_str(line.trim()).unwrap();
+            assert_eq!(req.get("op").and_then(Value::as_str), Some("ping"));
+            w.write_all(b"{\"ok\":true,\"op\":\"ping\"}\n").await.unwrap();
+        });
+        let resp =
+            one_shot_within(&path, &serde_json::json!({"op": "ping"}), Duration::from_secs(5))
+                .await
+                .unwrap();
+        assert_eq!(resp.get("ok"), Some(&Value::Bool(true)));
+    }
 
     /// End-to-end check against a *live* `claude daemon` control socket:
     /// proves the half-open fix (we must NOT close the write half) and that

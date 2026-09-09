@@ -1016,6 +1016,12 @@ impl PendingRpcs {
         Some((pending, response_outcome(response)))
     }
 
+    /// Forget a request whose write never reached the app-server, so the
+    /// retry that re-issues it owns its correlation id alone.
+    pub fn remove(&mut self, id: i64) -> Option<PendingRpc> {
+        self.inner.remove(&id)
+    }
+
     /// Remove and return every request whose deadline has passed.
     pub fn expire(&mut self, now: Instant) -> Vec<(i64, PendingRpc)> {
         self.inner.extract_if(|_, p| p.deadline <= now).collect()
@@ -1102,8 +1108,10 @@ pub enum SessionCommand {
     /// Answer a pending approval (`request_id` came from the emitted
     /// `PermissionRequest`).
     Permission { request_id: String, allow: bool },
-    /// Start a new turn with user text.
-    Send { text: String },
+    /// Start a new turn with user text. `command_id` correlates the
+    /// `turn/start` (or `turn/steer`) JSON-RPC outcome back to an
+    /// [`AdapterEvent::CommandResult`].
+    Send { text: String, command_id: Option<Uuid> },
     /// Persist the display name into Codex's thread metadata.
     Rename { name: String },
     /// Interrupt the in-flight turn and terminate the session. `signal` is
@@ -1138,7 +1146,9 @@ impl SessionCommand {
     #[must_use]
     pub const fn command_id(&self) -> Option<Uuid> {
         match self {
-            Self::SetModel { command_id, .. } | Self::Interrupt { command_id } => *command_id,
+            Self::Send { command_id, .. }
+            | Self::SetModel { command_id, .. }
+            | Self::Interrupt { command_id } => *command_id,
             _ => None,
         }
     }
@@ -1717,12 +1727,17 @@ impl CodexSession {
                                 tracing::warn!(%request_id, "codex: no pending approval for response");
                             }
                         }
-                        Some(SessionCommand::Send { text }) => {
+                        Some(SessionCommand::Send { text, command_id }) => {
                             if let Some((rpc_id, question_ids)) = pending_questions.pop_front() {
                                 let reply = user_input_reply(&rpc_id, &question_ids, &text);
                                 if let Err(e) = stdin.send(&reply).await {
                                     tracing::warn!(%e, "codex: requestUserInput answer write failed; ending session");
                                     break;
+                                }
+                                if let Some(command_id) = command_id {
+                                    let _ = self.events
+                                        .send(AdapterEvent::CommandResult { command_id, ok: true, error: None })
+                                        .await;
                                 }
                                 self.events
                                     .send(AdapterEvent::AskResolved { local_id: local_id.clone() })
@@ -1749,7 +1764,7 @@ impl CodexSession {
                                     )
                                 }
                             };
-                            pending_rpcs.insert(next_id, method, None, Instant::now() + RPC_TIMEOUT);
+                            pending_rpcs.insert(next_id, method, command_id, Instant::now() + RPC_TIMEOUT);
                             next_id += 1;
                             // A write failure here means the app-server is gone
                             // — remember the turn and let the epilogue revive
@@ -1757,7 +1772,8 @@ impl CodexSession {
                             if let Err(e) = stdin.send(&req).await {
                                 tracing::warn!(%e, "codex: turn dispatch write failed; ending session");
                                 steer_texts.remove(&(next_id - 1));
-                                retry_after_hibernate = Some(SessionCommand::Send { text });
+                                pending_rpcs.remove(next_id - 1);
+                                retry_after_hibernate = Some(SessionCommand::Send { text, command_id });
                                 break;
                             }
                         }
@@ -1902,6 +1918,11 @@ impl CodexSession {
                             };
                             if let Err(ref e) = outcome {
                                 rings.note_protocol_error(&format!("{}: {e}", pending.method));
+                            }
+                            if outcome.is_ok() && let Some(command_id) = pending.command_id {
+                                let _ = self.events
+                                    .send(AdapterEvent::CommandResult { command_id, ok: true, error: None })
+                                    .await;
                             }
                             match (pending.method.as_str(), outcome) {
                         ("initialize", Ok(_)) => {
@@ -2075,7 +2096,7 @@ impl CodexSession {
                                         if let Err(e) = stdin.send(&req).await {
                                             tracing::warn!(%e, "codex: initial prompt write failed; ending session");
                                             retry_after_hibernate =
-                                                Some(SessionCommand::Send { text: prompt_text.to_owned() });
+                                                Some(SessionCommand::Send { text: prompt_text.to_owned(), command_id: None });
                                             end_after_initial = true;
                                         }
                                     }
@@ -2083,7 +2104,7 @@ impl CodexSession {
                                 SessionLaunch::Resume { initial_commands, .. } => {
                                     for command in initial_commands.clone() {
                                         match command {
-                                            SessionCommand::Send { text } => {
+                                            SessionCommand::Send { text, command_id } => {
                                                 let req = turn_start_req(
                                                     next_id,
                                                     &local_id,
@@ -2095,14 +2116,15 @@ impl CodexSession {
                                                 pending_rpcs.insert(
                                                     next_id,
                                                     "turn/start",
-                                                    None,
+                                                    command_id,
                                                     Instant::now() + RPC_TIMEOUT,
                                                 );
                                                 next_id += 1;
                                                 if let Err(e) = stdin.send(&req).await {
                                                     tracing::warn!(%e, "codex: resumed turn/start write failed");
+                                                    pending_rpcs.remove(next_id - 1);
                                                     retry_after_hibernate =
-                                                        Some(SessionCommand::Send { text });
+                                                        Some(SessionCommand::Send { text, command_id });
                                                     end_after_initial = true;
                                                     break;
                                                 }
@@ -2195,20 +2217,6 @@ impl CodexSession {
                             pending_rpcs.insert(ID_THREAD_START, method, None, handshake_deadline);
                             stdin.send(&req).await?;
                         }
-                        ("turn/interrupt", outcome) => {
-                            if let Some(command_id) = pending.command_id {
-                                let (ok, error) = match &outcome {
-                                    Ok(_) => (true, None),
-                                    Err(e) => (false, Some(e.clone())),
-                                };
-                                let _ = self.events
-                                    .send(AdapterEvent::CommandResult { command_id, ok, error })
-                                    .await;
-                            }
-                            if let Err(err) = outcome {
-                                tracing::warn!(%err, "codex: turn/interrupt failed");
-                            }
-                        }
                         ("model/list", Ok(result)) => {
                             model_catalog.extend(model_list::parse_model_list(&result));
                             model_catalog_pages += 1;
@@ -2262,16 +2270,26 @@ impl CodexSession {
                                         override_model.as_deref(),
                                         override_effort.as_deref(),
                                     );
-                                    pending_rpcs.insert(next_id, "turn/start", None, Instant::now() + RPC_TIMEOUT);
+                                    pending_rpcs.insert(next_id, "turn/start", pending.command_id, Instant::now() + RPC_TIMEOUT);
                                     next_id += 1;
                                     if let Err(e) = stdin.send(&req).await {
                                         tracing::warn!(%e, "codex: turn/start fallback write failed; ending session");
-                                        retry_after_hibernate = Some(SessionCommand::Send { text });
+                                        pending_rpcs.remove(next_id - 1);
+                                        retry_after_hibernate = Some(SessionCommand::Send { text, command_id: pending.command_id });
                                         break;
                                     }
                                 }
                                 (recovery, _) => {
                                     tracing::warn!(%err, ?recovery, "codex: turn/steer rejected");
+                                    if let Some(command_id) = pending.command_id {
+                                        let _ = self.events
+                                            .send(AdapterEvent::CommandResult {
+                                                command_id,
+                                                ok: false,
+                                                error: Some(err.clone()),
+                                            })
+                                            .await;
+                                    }
                                     self.events
                                         .send(AdapterEvent::Status {
                                             local_id: local_id.clone(),
@@ -2387,6 +2405,24 @@ impl CodexSession {
                         )),
                     })
                     .await;
+            }
+        }
+
+        // Paths that hand a request to a retry (`retry_after_hibernate`) must
+        // `pending_rpcs.remove` it first, or it is failed here as well.
+        for (_, pending) in pending_rpcs.drain() {
+            if let Some(command_id) = pending.command_id {
+                self.events
+                    .send(AdapterEvent::CommandResult {
+                        command_id,
+                        ok: false,
+                        error: Some(format!(
+                            "codex app-server exited before {} was acknowledged",
+                            pending.method
+                        )),
+                    })
+                    .await
+                    .ok();
             }
         }
 
@@ -3371,11 +3407,11 @@ mod tests {
             &live,
             &registry,
             "tid",
-            SessionCommand::Send { text: "hi".to_owned() },
+            SessionCommand::Send { text: "hi".to_owned(), command_id: None },
         )
         .await;
         assert!(matches!(action, RouteAction::Delivered));
-        assert!(matches!(rx.recv().await, Some(SessionCommand::Send { text }) if text == "hi"));
+        assert!(matches!(rx.recv().await, Some(SessionCommand::Send { text, .. }) if text == "hi"));
     }
 
     #[tokio::test]
@@ -3421,7 +3457,7 @@ mod tests {
             &live,
             &registry,
             "missing",
-            SessionCommand::Send { text: "hi".to_owned() },
+            SessionCommand::Send { text: "hi".to_owned(), command_id: None },
         )
         .await;
         assert!(matches!(action, RouteAction::Missing));
@@ -3565,6 +3601,108 @@ done
         shutdown.cancel();
         assert!(ok, "{error:?}");
         assert!(marker.exists());
+    }
+
+    /// Answers the handshake, then runs `$TURN` for a `turn/start`. Echoes the
+    /// request's own id back so the driver's correlation table resolves.
+    fn turn_server_script(turn: &str) -> String {
+        format!(
+            r#"#!/bin/sh
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed 's/^[^}}]*"id":\([0-9]*\).*$/\1/')
+  case "$line" in
+    *'"method":"initialize"'*) echo "{{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{{\"userAgent\":\"codex/0.144.1\"}}}}" ;;
+    *'"method":"thread/start"'*) echo "{{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{{\"thread\":{{\"id\":\"t-1\",\"cwd\":\"/tmp\"}}}}}}" ;;
+    *'"method":"turn/start"'*) {turn} ;;
+  esac
+done
+"#
+        )
+    }
+
+    async fn send_to_live_session(
+        bin: String,
+        cmd: SessionCommand,
+    ) -> (mpsc::Receiver<AdapterEvent>, CancellationToken) {
+        let (tx, mut rx) = mpsc::channel(64);
+        let shutdown = CancellationToken::new();
+        let live = LiveSessionRegistry::default();
+        let session = CodexSession::new_fresh(
+            AppServerConfig { bin, ..AppServerConfig::default() },
+            "/tmp".to_string(),
+            std::collections::BTreeMap::new(),
+            None,
+            None,
+            Vec::new(),
+            Some(Uuid::new_v4()),
+            None,
+            None,
+            tx,
+            live.clone(),
+            SessionRegistry::default(),
+            shutdown.clone(),
+        );
+        tokio::spawn(session.run());
+        let (ok, error) = spawn_result(&mut rx).await;
+        assert!(ok, "spawn failed: {error:?}");
+        let sender = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let registered = live.lock().await.get("t-1").cloned();
+                if let Some(tx) = registered {
+                    return tx;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("session registered within 10s");
+        sender.send(cmd).await.unwrap();
+        (rx, shutdown)
+    }
+
+    #[tokio::test]
+    async fn a_send_is_acked_once_the_app_server_accepts_the_turn() {
+        let (_dir, bin) = fake_codex(&turn_server_script(
+            r#"echo "{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{}}""#,
+        ));
+        let command_id = Uuid::new_v4();
+        let (mut rx, shutdown) = send_to_live_session(
+            bin,
+            SessionCommand::Send { text: "hi".to_owned(), command_id: Some(command_id) },
+        )
+        .await;
+        let (ok, error) = spawn_result(&mut rx).await;
+        shutdown.cancel();
+        assert!(ok, "a delivered send must confirm, not stay unconfirmed: {error:?}");
+    }
+
+    #[tokio::test]
+    async fn a_send_in_flight_when_the_app_server_dies_is_acked_as_failed() {
+        let (_dir, bin) = fake_codex(&turn_server_script("exit 0"));
+        let command_id = Uuid::new_v4();
+        let (mut rx, shutdown) = send_to_live_session(
+            bin,
+            SessionCommand::Send { text: "hi".to_owned(), command_id: Some(command_id) },
+        )
+        .await;
+        let (ok, error) = spawn_result(&mut rx).await;
+        shutdown.cancel();
+        assert!(!ok, "an unanswered turn/start must not resolve as success");
+        let error = error.unwrap();
+        assert!(error.contains("turn/start"), "{error}");
+    }
+
+    #[test]
+    fn drain_takes_every_unanswered_request() {
+        let mut pending = PendingRpcs::default();
+        let cid = Uuid::new_v4();
+        pending.insert(1, "turn/start", Some(cid), Instant::now() + RPC_TIMEOUT);
+        pending.insert(2, "model/list", None, Instant::now() + RPC_TIMEOUT);
+        let mut drained = pending.drain();
+        drained.sort_by_key(|(id, _)| *id);
+        assert_eq!(drained.len(), 2);
+        assert_eq!(drained[0].1.command_id, Some(cid));
+        assert!(pending.drain().is_empty());
     }
 
     #[test]
@@ -4252,7 +4390,7 @@ done
     fn partition_drained_splits_retry_dropped_and_kill() {
         let cid = Uuid::new_v4();
         let drained = vec![
-            SessionCommand::Send { text: "hi".to_owned() },
+            SessionCommand::Send { text: "hi".to_owned(), command_id: None },
             SessionCommand::Permission { request_id: "r".to_owned(), allow: true },
             SessionCommand::Kill { signal: None },
             SessionCommand::Rename { name: "n".to_owned() },
@@ -4261,7 +4399,7 @@ done
         let (retry, dropped, killed) = partition_drained(drained);
         assert!(killed);
         assert_eq!(retry.len(), 2);
-        assert!(matches!(&retry[0], SessionCommand::Send { text } if text == "hi"));
+        assert!(matches!(&retry[0], SessionCommand::Send { text, .. } if text == "hi"));
         assert!(matches!(&retry[1], SessionCommand::Rename { name } if name == "n"));
         assert_eq!(dropped.len(), 2);
         assert_eq!(dropped[1].command_id(), Some(cid));
@@ -4279,7 +4417,10 @@ done
             Some(cid)
         );
         assert_eq!(SessionCommand::Interrupt { command_id: Some(cid) }.command_id(), Some(cid));
-        assert_eq!(SessionCommand::Send { text: String::new() }.command_id(), None);
+        assert_eq!(
+            SessionCommand::Send { text: String::new(), command_id: None }.command_id(),
+            None
+        );
         assert_eq!(SessionCommand::Kill { signal: None }.command_id(), None);
     }
 

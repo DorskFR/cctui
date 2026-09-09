@@ -8,8 +8,9 @@
 //!
 //! `GET /api/v1/sessions/{id}/blobs/{hash}` — a consumer resolves a
 //! `{type:"cctui-blob", blob_id}` reference. Session-read authz (enforced by the
-//! `api_router` layer via `{id}`) + the same-origin cookie, like the
-//! image GET. The 256-bit content hash is itself an unguessable capability.
+//! `api_router` layer via `{id}`) plus a `session_blob_links` row: a hash is
+//! only servable through a session that actually referenced it, so knowing a
+//! hash is not by itself a capability across tenants.
 
 use axum::body::Bytes;
 use axum::extract::{Path, State};
@@ -102,20 +103,24 @@ pub async fn store_blob(
 
 pub async fn get_blob(
     State(state): State<AppState>,
-    Path((_session_id, hash)): Path<(String, String)>,
+    Path((session_id, hash)): Path<(String, String)>,
 ) -> Result<Response, StatusCode> {
     if !is_sha256_hex(&hash) {
         return Err(StatusCode::BAD_REQUEST);
     }
-    let row: Option<(Option<String>, Vec<u8>)> =
-        sqlx::query_as("SELECT media_type, bytes FROM daemon_blobs WHERE hash = $1")
-            .bind(&hash)
-            .fetch_optional(&state.pool)
-            .await
-            .map_err(|e| {
-                tracing::error!("blob get: {e}");
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?;
+    let row: Option<(Option<String>, Vec<u8>)> = sqlx::query_as(
+        "SELECT b.media_type, b.bytes FROM daemon_blobs b \
+         JOIN session_blob_links l ON l.hash = b.hash \
+         WHERE b.hash = $1 AND l.session_id = $2",
+    )
+    .bind(&hash)
+    .bind(&session_id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| {
+        tracing::error!("blob get: {e}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
     let (media_type, bytes) = row.ok_or(StatusCode::NOT_FOUND)?;
 
     let mut resp = Response::new(axum::body::Body::from(bytes));
@@ -153,6 +158,87 @@ mod tests {
                 .await
                 .expect("connect test db"),
         )
+    }
+
+    #[tokio::test]
+    async fn a_blob_is_only_reachable_through_a_session_that_referenced_it() {
+        let Some(pool) = test_pool("blob_is_only_reachable_through_its_session").await else {
+            return;
+        };
+        let bytes = b"cct985-cross-tenant".to_vec();
+        let hash = hex::encode(Sha256::digest(&bytes));
+        store_blob(&pool, &bytes, Some("image/png")).await.unwrap();
+
+        let fetch = |session: &'static str| {
+            let pool = pool.clone();
+            let hash = hash.clone();
+            async move {
+                sqlx::query_as::<_, (Option<String>, Vec<u8>)>(
+                    "SELECT b.media_type, b.bytes FROM daemon_blobs b \
+                     JOIN session_blob_links l ON l.hash = b.hash \
+                     WHERE b.hash = $1 AND l.session_id = $2",
+                )
+                .bind(&hash)
+                .bind(session)
+                .fetch_optional(&pool)
+                .await
+                .unwrap()
+            }
+        };
+        assert!(fetch("session-a").await.is_none(), "no link yet → not servable");
+
+        let uid = uuid::Uuid::new_v4();
+        let machine = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, 'cct985-blob', 'h985b')")
+            .bind(uid)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO machines (id, user_id, name, key_hash) VALUES ($1, $2, 'm', 'mk985b')",
+        )
+        .bind(machine)
+        .bind(uid)
+        .execute(&pool)
+        .await
+        .unwrap();
+        for sid in ["session-a", "session-b"] {
+            sqlx::query(
+                "INSERT INTO sessions (id, machine_id, machine_uuid, user_id, working_dir, \
+                 status) VALUES ($1, $2, $2, $3, '/w', 'active')",
+            )
+            .bind(sid)
+            .bind(machine)
+            .bind(uid)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        sqlx::query("INSERT INTO session_blob_links (session_id, hash) VALUES ('session-a', $1)")
+            .bind(&hash)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        assert!(fetch("session-a").await.is_some(), "the referencing session serves it");
+        assert!(fetch("session-b").await.is_none(), "another session cannot fetch it by hash");
+
+        sqlx::query("DELETE FROM sessions WHERE id = ANY($1)")
+            .bind(vec!["session-a".to_owned(), "session-b".to_owned()])
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM machines WHERE id = $1")
+            .bind(machine)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.unwrap();
+        sqlx::query("DELETE FROM daemon_blobs WHERE hash = $1")
+            .bind(&hash)
+            .execute(&pool)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]

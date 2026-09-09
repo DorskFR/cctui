@@ -1493,6 +1493,39 @@ async fn sweep_usage_notice_buckets(state: &AppState) {
     }
 }
 
+/// Auto-archive sessions silent past the TTL so the default list stays
+/// self-cleaning, asking the daemon to remove each underlying job. `0` disables.
+async fn auto_archive_stale(state: &AppState) {
+    if state.config.archive_after_secs == 0 {
+        return;
+    }
+    let cutoff = chrono::Utc::now()
+        - chrono::Duration::seconds(
+            i64::try_from(state.config.archive_after_secs).unwrap_or(i64::MAX),
+        );
+    match sqlx::query_scalar::<_, String>(
+        // Drafts are staged-not-running — never auto-archive them.
+        "UPDATE sessions SET status = 'archived', \
+             ended_at = COALESCE(ended_at, now()), \
+             end_reason = COALESCE(end_reason, 'reaped_inactive') \
+         WHERE status NOT IN ('archived', 'draft') AND pinned = false AND last_heartbeat < $1 \
+         RETURNING id",
+    )
+    .bind(cutoff)
+    .fetch_all(&state.pool)
+    .await
+    {
+        Ok(ids) if !ids.is_empty() => {
+            tracing::info!(count = ids.len(), "auto-archived stale sessions");
+            for id in &ids {
+                crate::routes::sessions::dispatch_remove(state, id).await;
+            }
+        }
+        Ok(_) => {}
+        Err(err) => tracing::warn!(%err, "auto-archive sweep failed"),
+    }
+}
+
 async fn reaper_task(state: AppState) {
     let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
     loop {
@@ -1509,31 +1542,7 @@ async fn reaper_task(state: AppState) {
             tracing::info!(session_id = %session_id, "session demoted to inactive");
         }
 
-        // Auto-archive sessions that have been silent past the TTL so the
-        // default list stays self-cleaning. `0` disables it.
-        if state.config.archive_after_secs > 0 {
-            let cutoff = chrono::Utc::now()
-                - chrono::Duration::seconds(
-                    i64::try_from(state.config.archive_after_secs).unwrap_or(i64::MAX),
-                );
-            match sqlx::query(
-                // Drafts are staged-not-running — never auto-archive them.
-                "UPDATE sessions SET status = 'archived', \
-                     ended_at = COALESCE(ended_at, now()), \
-                     end_reason = COALESCE(end_reason, 'reaped_inactive') \
-                 WHERE status NOT IN ('archived', 'draft') AND pinned = false AND last_heartbeat < $1",
-            )
-            .bind(cutoff)
-            .execute(&state.pool)
-            .await
-            {
-                Ok(res) if res.rows_affected() > 0 => {
-                    tracing::info!(count = res.rows_affected(), "auto-archived stale sessions");
-                }
-                Ok(_) => {}
-                Err(err) => tracing::warn!(%err, "auto-archive sweep failed"),
-            }
-        }
+        auto_archive_stale(&state).await;
 
         // Soft-delete ephemeral (dispatch/worker) machines that have gone
         // quiet past the TTL — pods that died before self-deenroll.

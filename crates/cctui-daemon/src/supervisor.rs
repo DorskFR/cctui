@@ -402,7 +402,7 @@ impl Supervisor {
     // Dispatch over every `DaemonFrameDown` variant (reconcile / spawn / command /
     // …); complexity is the breadth of the match arms, not nesting. Per-arm helpers
     // would be churn and obscure the frame-handling overview.
-    #[allow(clippy::cognitive_complexity)]
+    #[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
     async fn handle_frame(
         &self,
         frame: DaemonFrameDown,
@@ -439,7 +439,7 @@ impl Supervisor {
                     }
                 }
             }
-            DaemonFrameDown::ResumeMarks { session_marks } => {
+            DaemonFrameDown::ResumeMarks { session_marks, archived } => {
                 crate::configsweep::note_server_sessions(session_marks.iter().map(|(id, _)| id));
                 // Fan the marks to every running adapter; each clamps the
                 // sessions it owns and ignores ids it doesn't know.
@@ -448,6 +448,29 @@ impl Supervisor {
                         .commands_tx
                         .send(AdapterCommand::ResumeMarks { marks: session_marks.clone() })
                         .await;
+                }
+                if let Some(claude) = running.get(CLAUDE_ADAPTER_ID) {
+                    let jobs_root = claude
+                        .config
+                        .get("jobs_root")
+                        .and_then(serde_json::Value::as_str)
+                        .map_or_else(
+                            crate::adapters::claude_code::state::default_jobs_root,
+                            std::path::PathBuf::from,
+                        );
+                    let leaked = leaked_jobs(&jobs_root, &archived);
+                    if !leaked.is_empty() {
+                        tracing::info!(
+                            count = leaked.len(),
+                            "removing claude jobs of archived sessions"
+                        );
+                    }
+                    for local_id in leaked {
+                        let _ = claude
+                            .commands_tx
+                            .send(AdapterCommand::Remove { local_id, command_id: None })
+                            .await;
+                    }
                 }
             }
             DaemonFrameDown::StageFiles { request_id, adapter_id, local_id, uploads } => {
@@ -1004,6 +1027,19 @@ fn classify(bytes: Vec<u8>, codec: Option<String>) -> anyhow::Result<Prepared> {
     }
 }
 
+const CLAUDE_ADAPTER_ID: &str = "claude-code";
+
+/// Archived session ids whose claude job directory is still on disk.
+fn leaked_jobs(jobs_root: &std::path::Path, archived: &[String]) -> Vec<String> {
+    archived
+        .iter()
+        .filter(|id| {
+            crate::configsweep::short_of(id).is_some_and(|short| jobs_root.join(short).is_dir())
+        })
+        .cloned()
+        .collect()
+}
+
 fn parse_frame(msg: Message) -> anyhow::Result<Option<DaemonFrameDown>> {
     let txt = match msg {
         Message::Text(t) => t.to_string(),
@@ -1216,6 +1252,66 @@ mod tests {
             }
             other => panic!("expected a failed CommandResult, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn resume_marks_removes_leaked_jobs_of_archived_sessions() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jobs = tmp.path().join("jobs");
+        std::fs::create_dir_all(jobs.join("deadbeef")).unwrap();
+        std::fs::create_dir_all(jobs.join("cafebabe")).unwrap();
+        let (commands_tx, mut commands_rx) = mpsc::channel(8);
+        let mut running: std::collections::HashMap<String, AdapterRunning> =
+            std::collections::HashMap::new();
+        running.insert(
+            "claude-code".to_owned(),
+            AdapterRunning {
+                shutdown: CancellationToken::new(),
+                config: serde_json::json!({ "jobs_root": jobs.to_str().unwrap() }),
+                commands_tx,
+                tasks: Vec::new(),
+            },
+        );
+        let (event_tx, _event_rx) = mpsc::channel(8);
+        let (frame_up_tx, _frame_up_rx) = mpsc::channel(8);
+        let mut scrub = cctui_crypto::redact::CompiledPatterns::disabled();
+        let supervisor = Supervisor::new(
+            ServerClient::new("http://localhost"),
+            "machine-key".to_string(),
+            vec![],
+        );
+        let frame = cctui_proto::ws::DaemonFrameDown::ResumeMarks {
+            session_marks: vec![],
+            archived: vec![
+                "deadbeef-0000-0000-0000-000000000000".to_owned(),
+                "12345678-0000-0000-0000-000000000000".to_owned(),
+                "cafebabe-0000-0000-0000-000000000000".to_owned(),
+            ],
+        };
+        supervisor
+            .handle_frame(
+                frame,
+                &mut running,
+                &event_tx,
+                &frame_up_tx,
+                &mut scrub,
+                &CancellationToken::new(),
+            )
+            .await;
+        let mut removed = Vec::new();
+        while let Ok(cmd) = commands_rx.try_recv() {
+            if let cctui_proto::adapter::AdapterCommand::Remove { local_id, command_id } = cmd {
+                assert!(command_id.is_none());
+                removed.push(local_id);
+            }
+        }
+        assert_eq!(
+            removed,
+            vec![
+                "deadbeef-0000-0000-0000-000000000000".to_owned(),
+                "cafebabe-0000-0000-0000-000000000000".to_owned(),
+            ]
+        );
     }
 
     fn chunk_parts(frame: DaemonFrameUp) -> (String, u32, u32, String) {
