@@ -235,7 +235,15 @@ pub enum DaemonFrameDown {
     /// Reconcile on connect. `session_marks` maps each session's `local_id` to
     /// the server's stored transcript byte offset, so the daemon clamps its tail
     /// cursor forward and resumes instead of replaying the transcript from zero.
-    ResumeMarks { session_marks: Vec<(String, u64)> },
+    ResumeMarks {
+        session_marks: Vec<(String, u64)>,
+        /// Sessions the server has archived on this machine. The daemon
+        /// removes any claude job still on disk for one of them, so a removal
+        /// that was lost (daemon offline, `claude rm` refused) converges on
+        /// reconnect. Defaulted so older servers' frames keep parsing.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        archived: Vec<String>,
+    },
     /// Re-run codex `model/list` over a one-shot app-server (no session
     /// spawned) and ship the result as an
     /// [`AdapterEvent::CodexModels`](crate::adapter::AdapterEvent::CodexModels).
@@ -1068,13 +1076,15 @@ mod tests {
     fn daemon_frame_down_resume_marks_roundtrips() {
         let f = DaemonFrameDown::ResumeMarks {
             session_marks: vec![("sess-1".into(), 4096), ("sess-2".into(), 0)],
+            archived: vec!["sess-3".into()],
         };
         let json = serde_json::to_string(&f).unwrap();
         assert!(json.contains(r#""type":"resume_marks""#));
         let back: DaemonFrameDown = serde_json::from_str(&json).unwrap();
         match back {
-            DaemonFrameDown::ResumeMarks { session_marks } => {
+            DaemonFrameDown::ResumeMarks { session_marks, archived } => {
                 assert_eq!(session_marks, vec![("sess-1".into(), 4096), ("sess-2".into(), 0)]);
+                assert_eq!(archived, vec!["sess-3".to_string()]);
             }
             _ => panic!("expected ResumeMarks"),
         }

@@ -2296,16 +2296,42 @@ pub async fn archive_session(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Ask the owning daemon to remove `session_id`'s underlying job. Tracked so a
+/// refusal surfaces as a `ServerEvent::CommandResult` rather than reading as a
+/// clean archive; an undeliverable dispatch leaves the job for the daemon's
+/// `ResumeMarks` reconcile to remove on reconnect.
+pub(crate) async fn dispatch_remove(state: &AppState, session_id: &str) {
+    let command_id = uuid::Uuid::new_v4();
+    crate::state::track_command(
+        &state.pending_commands,
+        command_id,
+        Some(session_id.to_owned()),
+        None,
+    );
+    if let Err(err) = crate::bus::dispatch(
+        state,
+        session_id,
+        cctui_proto::adapter::AdapterCommand::Remove {
+            local_id: session_id.to_owned(),
+            command_id: Some(command_id),
+        },
+    )
+    .await
+    {
+        state.pending_commands.remove(&command_id);
+        tracing::warn!(
+            %session_id,
+            %err,
+            "archive could not reach the owning daemon; job removal deferred to reconcile"
+        );
+    }
+}
+
 /// Archive a single session (+ its subagents) — the reusable core shared by the
 /// single-session route and the batch route. Dispatches `Remove`, marks the row
 /// `archived`, clears classifier signals, and drops it from the live registry.
 async fn archive_one(state: &AppState, session_id: &str) -> Result<(), sqlx::Error> {
-    let _ = crate::bus::dispatch(
-        state,
-        session_id,
-        cctui_proto::adapter::AdapterCommand::Remove { local_id: session_id.to_string() },
-    )
-    .await;
+    dispatch_remove(state, session_id).await;
     // Archive the session AND any Task-tool subagents nested under it:
     // a parent's children should never outlive it in the list.
     // Subagents are observe-only (no worker), so they need no `claude rm` —

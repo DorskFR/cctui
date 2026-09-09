@@ -179,7 +179,7 @@ async fn pump(cfg: OpenCodeConfig, ctx: AdapterCtx, live: LiveRegistry) {
                         )
                         .await;
                     }
-                    AdapterCommand::Kill { local_id, .. } | AdapterCommand::Remove { local_id } => {
+                    AdapterCommand::Kill { local_id, .. } | AdapterCommand::Remove { local_id, .. } => {
                         if !route(
                             &live,
                             &local_id,
