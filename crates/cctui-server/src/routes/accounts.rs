@@ -2816,7 +2816,7 @@ mod tests {
         }
 
         let candidates = soft_limit_blocked_sessions(&pool, prov).await.expect("candidates");
-        assert_eq!(candidates, vec![(blocked.to_owned(), None)]);
+        assert_eq!(candidates, vec![(blocked.clone(), None)]);
 
         sqlx::query("DELETE FROM session_tokens WHERE account_id = $1")
             .bind(prov)

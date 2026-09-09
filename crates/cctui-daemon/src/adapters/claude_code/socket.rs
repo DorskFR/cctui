@@ -443,13 +443,10 @@ mod tests {
             assert_eq!(req.get("op").and_then(Value::as_str), Some("ping"));
             w.write_all(b"{\"ok\":true,\"op\":\"ping\"}\n").await.unwrap();
         });
-        let resp = one_shot_within(
-            &path,
-            &serde_json::json!({"op": "ping"}),
-            Duration::from_secs(5),
-        )
-        .await
-        .unwrap();
+        let resp =
+            one_shot_within(&path, &serde_json::json!({"op": "ping"}), Duration::from_secs(5))
+                .await
+                .unwrap();
         assert_eq!(resp.get("ok"), Some(&Value::Bool(true)));
     }
 

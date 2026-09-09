@@ -228,7 +228,11 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
-        sqlx::query("DELETE FROM machines WHERE id = $1").bind(machine).execute(&pool).await.unwrap();
+        sqlx::query("DELETE FROM machines WHERE id = $1")
+            .bind(machine)
+            .execute(&pool)
+            .await
+            .unwrap();
         sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.unwrap();
         sqlx::query("DELETE FROM daemon_blobs WHERE hash = $1")
             .bind(&hash)

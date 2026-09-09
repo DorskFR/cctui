@@ -3647,7 +3647,8 @@ done
         assert!(ok, "spawn failed: {error:?}");
         let sender = tokio::time::timeout(std::time::Duration::from_secs(10), async {
             loop {
-                if let Some(tx) = live.lock().await.get("t-1").cloned() {
+                let registered = live.lock().await.get("t-1").cloned();
+                if let Some(tx) = registered {
                     return tx;
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(20)).await;
@@ -4416,7 +4417,10 @@ done
             Some(cid)
         );
         assert_eq!(SessionCommand::Interrupt { command_id: Some(cid) }.command_id(), Some(cid));
-        assert_eq!(SessionCommand::Send { text: String::new(), command_id: None }.command_id(), None);
+        assert_eq!(
+            SessionCommand::Send { text: String::new(), command_id: None }.command_id(),
+            None
+        );
         assert_eq!(SessionCommand::Kill { signal: None }.command_id(), None);
     }
 

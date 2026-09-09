@@ -77,6 +77,7 @@ pub fn auth_error(stage: AuthStage, is_anthropic: bool) -> Response {
 ///
 /// `model` is what the sibling must have room for; `None` (model not yet read
 /// off the body) elects conservatively, counting every window.
+#[allow(clippy::too_many_arguments)]
 async fn soft_limit_refusal(
     state: &AppState,
     session_token: &str,

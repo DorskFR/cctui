@@ -402,7 +402,7 @@ impl Supervisor {
     // Dispatch over every `DaemonFrameDown` variant (reconcile / spawn / command /
     // …); complexity is the breadth of the match arms, not nesting. Per-arm helpers
     // would be churn and obscure the frame-handling overview.
-    #[allow(clippy::cognitive_complexity)]
+    #[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
     async fn handle_frame(
         &self,
         frame: DaemonFrameDown,

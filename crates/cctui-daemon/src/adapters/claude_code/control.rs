@@ -3740,7 +3740,8 @@ fn classify_claude_rm(code: Option<i32>, success: bool, stderr: &str) -> ClaudeR
         return ClaudeRmOutcome::AlreadyGone;
     }
     let code = code.map_or_else(|| "signal".to_owned(), |c| c.to_string());
-    let detail = if stderr.is_empty() { format!("exit {code}") } else { format!("exit {code}: {stderr}") };
+    let detail =
+        if stderr.is_empty() { format!("exit {code}") } else { format!("exit {code}: {stderr}") };
     ClaudeRmOutcome::Refused(detail)
 }
 
@@ -4275,7 +4276,10 @@ mod tests {
             classify_claude_rm(Some(1), false, "worktree has uncommitted changes: /w\n"),
             ClaudeRmOutcome::Refused("exit 1: worktree has uncommitted changes: /w".into())
         );
-        assert_eq!(classify_claude_rm(None, false, ""), ClaudeRmOutcome::Refused("exit signal".into()));
+        assert_eq!(
+            classify_claude_rm(None, false, ""),
+            ClaudeRmOutcome::Refused("exit signal".into())
+        );
     }
 
     fn driver() -> (Driver, mpsc::Receiver<AdapterEvent>) {

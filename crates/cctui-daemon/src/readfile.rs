@@ -29,10 +29,10 @@ fn refused(kind: ReadFileErrorKind, message: impl Into<String>) -> Refused {
     Refused { kind, message: message.into() }
 }
 
-/// Temp dirs plus the session's working directory and the git repo enclosing
-/// it, each canonicalised so `starts_with` compares real paths. Deliberately
-/// no `$HOME` root: without a session there is nothing to serve but temp
-/// files.
+/// Temp dirs plus the session's working directory and its enclosing git repo.
+///
+/// Each is canonicalised so `starts_with` compares real paths. Deliberately no
+/// `$HOME` root: without a session there is nothing to serve but temp files.
 #[must_use]
 pub fn allowed_roots(cwd: Option<&str>) -> Vec<PathBuf> {
     let mut roots: Vec<PathBuf> =
@@ -75,8 +75,7 @@ fn is_denied(real: &Path) -> bool {
         || name.starts_with(".env")
         || name.starts_with("id_rsa")
         || name.starts_with("id_ed25519")
-        || name.ends_with(".pem")
-        || name.ends_with(".key")
+        || matches!(name.to_ascii_lowercase().rsplit_once('.'), Some((_, "pem" | "key")))
 }
 
 /// Expand `~`, canonicalise (following symlinks), and require a regular file
@@ -312,6 +311,9 @@ mod tests {
             "repo/.env.local",
             "certs/server.pem",
             "certs/server.key",
+            "certs/SERVER.PEM",
+            "certs/Server.Key",
+            "certs/.pem",
             ".netrc",
         ] {
             let f = dir.path().join(rel);

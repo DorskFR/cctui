@@ -270,11 +270,7 @@ async fn heartbeat_tick(pool: &PgPool, me: &PodIdentity) {
          WHERE pod <> $1 AND heartbeat_at < now() - make_interval(secs => $2)",
         "DELETE FROM pods WHERE pod <> $1 AND heartbeat_at < now() - make_interval(secs => $2)",
     ] {
-        let _ = sqlx::query(sql)
-            .bind(&me.pod)
-            .bind(f64::from(REAP_AFTER_SECS))
-            .execute(pool)
-            .await;
+        let _ = sqlx::query(sql).bind(&me.pod).bind(f64::from(REAP_AFTER_SECS)).execute(pool).await;
     }
 }
 

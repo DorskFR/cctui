@@ -21,11 +21,11 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::{Extension, Json};
 use base64::Engine;
-use chrono::{DateTime, Utc};
 use cctui_proto::git::GitInfo;
-use cctui_proto::models::{Liveness, SessionStatus};
 use cctui_proto::media::{is_inline_type, sniff_media_type};
+use cctui_proto::models::{Liveness, SessionStatus};
 use cctui_proto::ws::{READ_FILE_MAX_BYTES, ReadFileErrorKind, ReadFileOk};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -33,6 +33,8 @@ use crate::auth::AuthContext;
 use crate::bus;
 use crate::error::AppError;
 use crate::state::AppState;
+
+type SessionLivenessRow = (Option<Uuid>, Option<String>, String, DateTime<Utc>, DateTime<Utc>);
 
 #[derive(Debug, Deserialize)]
 pub struct ListDirsParams {
@@ -173,14 +175,13 @@ async fn authorize_read(
         .await
         .map_err(|status| AppError::new(status, "not allowed to read this session"))?;
 
-    let row: Option<(Option<Uuid>, Option<String>, String, DateTime<Utc>, DateTime<Utc>)> =
-        sqlx::query_as(
-            "SELECT machine_uuid, working_dir, status, registered_at, last_heartbeat \
+    let row: Option<SessionLivenessRow> = sqlx::query_as(
+        "SELECT machine_uuid, working_dir, status, registered_at, last_heartbeat \
              FROM sessions WHERE id = $1",
-        )
-        .bind(sid)
-        .fetch_optional(pool)
-        .await?;
+    )
+    .bind(sid)
+    .fetch_optional(pool)
+    .await?;
     let Some((machine, cwd, status, registered_at, last_heartbeat)) = row else {
         return Err(AppError::new(StatusCode::NOT_FOUND, "unknown session_id"));
     };
@@ -620,7 +621,8 @@ mod tests {
         let secret = "/home/u/.ssh/id_ed25519";
         let linked = "/home/u/proj/out/report.md";
 
-        let err = authorize_read(&f.pool, &f.owner, f.machine, &f.session, secret).await.unwrap_err();
+        let err =
+            authorize_read(&f.pool, &f.owner, f.machine, &f.session, secret).await.unwrap_err();
         assert_eq!(status_of(&err), StatusCode::FORBIDDEN, "ungranted path");
         let err =
             authorize_read(&f.pool, &f.owner, f.machine, &f.session, linked).await.unwrap_err();
@@ -633,7 +635,8 @@ mod tests {
             authorize_read(&f.pool, &f.owner, f.machine, &f.session, linked).await.unwrap(),
             Some("/home/u/proj".to_owned())
         );
-        let err = authorize_read(&f.pool, &f.owner, f.machine, &f.session, secret).await.unwrap_err();
+        let err =
+            authorize_read(&f.pool, &f.owner, f.machine, &f.session, secret).await.unwrap_err();
         assert_eq!(status_of(&err), StatusCode::FORBIDDEN, "grants do not widen to siblings");
         cleanup(&f).await;
     }
@@ -712,9 +715,8 @@ mod tests {
             .unwrap();
 
         let other_machine = Uuid::new_v4();
-        let err = authorize_read(&f.pool, &f.owner, other_machine, &f.session, linked)
-            .await
-            .unwrap_err();
+        let err =
+            authorize_read(&f.pool, &f.owner, other_machine, &f.session, linked).await.unwrap_err();
         assert_eq!(status_of(&err), StatusCode::BAD_REQUEST, "session must live on the machine");
 
         let other = format!("{}-b", f.session);
@@ -728,8 +730,7 @@ mod tests {
         .execute(&f.pool)
         .await
         .unwrap();
-        let err =
-            authorize_read(&f.pool, &f.owner, f.machine, &other, linked).await.unwrap_err();
+        let err = authorize_read(&f.pool, &f.owner, f.machine, &other, linked).await.unwrap_err();
         assert_eq!(status_of(&err), StatusCode::FORBIDDEN, "grants are per-session");
         sqlx::query("DELETE FROM sessions WHERE id = $1")
             .bind(&other)

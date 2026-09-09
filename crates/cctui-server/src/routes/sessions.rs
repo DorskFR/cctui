@@ -2300,7 +2300,7 @@ pub async fn archive_session(
 /// refusal surfaces as a `ServerEvent::CommandResult` rather than reading as a
 /// clean archive; an undeliverable dispatch leaves the job for the daemon's
 /// `ResumeMarks` reconcile to remove on reconnect.
-pub(crate) async fn dispatch_remove(state: &AppState, session_id: &str) {
+pub async fn dispatch_remove(state: &AppState, session_id: &str) {
     let command_id = uuid::Uuid::new_v4();
     crate::state::track_command(
         &state.pending_commands,

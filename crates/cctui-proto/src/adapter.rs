@@ -852,7 +852,7 @@ mod tests {
 
     #[test]
     fn remove_from_older_peer_has_no_correlation_id() {
-        let json = r#"{"type":"remove","local_id":"sess-1"}"#;
+        let json = r#"{"kind":"remove","local_id":"sess-1"}"#;
         let cmd: AdapterCommand = serde_json::from_str(json).unwrap();
         assert_eq!(cmd.command_id(), None);
     }
