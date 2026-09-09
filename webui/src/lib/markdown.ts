@@ -340,7 +340,6 @@ export function renderMarkdown(
   src: string,
   opts: { tables?: boolean; sessionId?: string; machineId?: string } = {},
 ): string {
-  // Local paths become links only when the machine to read them from is known.
   const links: LocalFileLinks | undefined =
     opts.machineId && opts.sessionId
     ? { machineId: opts.machineId, sessionId: opts.sessionId }
