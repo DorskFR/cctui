@@ -36,6 +36,7 @@
 	} = $props();
 
 	let busy = $state(false);
+	let menu = $state<LabelMenu>();
 
 	const attachedIds = $derived(new Set(labels.map((l) => l.id)));
 
@@ -90,9 +91,15 @@
 
 		{#if editable}
 			<span class="add">
-				<Popover label={m.sessions_edit_labels()} placement="bottom-start" triggerClass="tag-trigger">
+				<Popover
+					label={m.sessions_edit_labels()}
+					placement="bottom-start"
+					triggerClass="tag-trigger"
+					onopen={() => menu?.focusSearch()}
+				>
 					{#snippet trigger()}<Icon name="tag" />{/snippet}
 					<LabelMenu
+						bind:this={menu}
 						labels={allLabels}
 						selectedIds={attachedIds}
 						cap={5}
