@@ -1059,6 +1059,8 @@
 	"sessions_select_multiple": "Sélectionner plusieurs à archiver",
 	"sessions_select_range_hint": "Maj+clic pour sélectionner une plage",
 	"sessions_selected_count": "{count} sélectionnée(s)",
+	"sessions_sort_asc": "Croissant",
+	"sessions_sort_desc": "Décroissant",
 	"sessions_sort_menu": "Tri : {sort}",
 	"sessions_sort_menu_label": "Trier les sessions",
 	"sessions_stale_badge": "inactive",

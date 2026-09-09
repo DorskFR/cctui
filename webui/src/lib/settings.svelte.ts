@@ -34,6 +34,7 @@ const SAVE_DEBOUNCE_MS = 400;
 
 export interface SessionListSettings {
 	sort: 'activity' | 'created' | 'name';
+	sortDir: SortDir;
 	view: 'list' | 'card';
 	density: 'compact' | 'normal';
 	section: string;
@@ -50,6 +51,13 @@ export interface SessionListSettings {
 	// default (the glyph keeps the row terse); worth turning on when several
 	// accounts of the same provider are in play, where every glyph looks alike.
 	accountNames: boolean;
+}
+
+export const SORT_DIRS = ['asc', 'desc'] as const;
+export type SortDir = (typeof SORT_DIRS)[number];
+export const DEFAULT_SORT_DIR: SortDir = 'desc';
+export function clampSortDir(v: unknown): SortDir {
+	return (SORT_DIRS as readonly unknown[]).includes(v) ? (v as SortDir) : DEFAULT_SORT_DIR;
 }
 
 // Session-list column widths, as the `size` handed to the layout Container.
@@ -281,6 +289,7 @@ export interface SettingsState {
 const DEFAULTS: SettingsState = {
 	sessionList: {
 		sort: 'activity',
+		sortDir: DEFAULT_SORT_DIR,
 		view: 'list',
 		density: 'normal',
 		section: '',
@@ -328,6 +337,7 @@ export function mergeDefaults(partial: Partial<SettingsState> | null | undefined
 			// Clamp so a stale/unknown stored value renders as the default column
 			// width rather than an invalid CSS length.
 			width: clampSessionListWidth(p.sessionList?.width),
+			sortDir: clampSortDir(p.sessionList?.sortDir),
 			groupBy: clampGroupBy(p.sessionList?.groupBy),
 			accountNames: p.sessionList?.accountNames === true
 		},

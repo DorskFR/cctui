@@ -98,6 +98,25 @@ describe("Settings save → load round-trip through the blob", () => {
     expect(loadFromCache().sessionList.groupBy).toBe("label");
   });
 
+  it("the sort direction defaults to desc, survives a reload, and clamps unknown values", () => {
+    expect(mergeDefaults(null).sessionList.sortDir).toBe("desc");
+    settings.setSessionList({ sort: "name", sortDir: "asc" });
+    expect(loadFromCache().sessionList.sort).toBe("name");
+    expect(loadFromCache().sessionList.sortDir).toBe("asc");
+    const merged = mergeDefaults({
+      sessionList: { sort: "created", sortDir: "sideways" },
+    } as unknown as Record<string, unknown>);
+    expect(merged.sessionList.sortDir).toBe("desc");
+  });
+
+  it("a blob that predates sortDir merges with the default direction", () => {
+    const loaded = mergeDefaults({
+      sessionList: { sort: "created", view: "list" },
+    } as Record<string, unknown>);
+    expect(loaded.sessionList.sort).toBe("created");
+    expect(loaded.sessionList.sortDir).toBe("desc");
+  });
+
   it("list width and account-name toggle survive a persist then reload", () => {
     settings.setSessionList({ width: "full", accountNames: true });
 

@@ -19,11 +19,13 @@
 		Callout,
 		Cluster,
 		Dot,
+		Icon,
 		IconButton,
 		Menu,
 		Modal,
 		SectionHeader,
-		Text
+		Text,
+		type IconName
 	} from '@dorsk/tsumikit';
 	import MachineBadge from '$lib/components/molecules/MachineBadge.svelte';
 	import { useAllMachines } from '$lib/queries';
@@ -56,6 +58,7 @@
 		PAGE,
 		INLINE_THRESHOLD,
 		nest,
+		nextSort,
 		archivedDescendantsOf,
 		costRollup,
 		groupId,
@@ -101,10 +104,20 @@
 	const machines = useAllMachines(() => groupBy === 'machine');
 	const machineLiveness = (name: string): 'online' | 'stale' | 'offline' | null =>
 		(machines.data ?? []).find((mc) => mc.name === name)?.liveness ?? null;
+	const sortState = $derived({
+		sort: settings.state.sessionList.sort,
+		sortDir: settings.state.sessionList.sortDir
+	});
+	const sortDirIcon = $derived<IconName>(sortState.sortDir === 'asc' ? 'arrow-up' : 'arrow-down');
+	const sortDirLabel = $derived(
+		sortState.sortDir === 'asc' ? m.sessions_sort_asc() : m.sessions_sort_desc()
+	);
 	const sortItems = $derived(
 		(['activity', 'created', 'name'] as const).map((sort) => ({
 			label: sortLabel(sort),
-			onselect: () => settings.setSessionList({ sort })
+			pressed: sort === sortState.sort,
+			icon: sort === sortState.sort ? sortDirIcon : undefined,
+			onselect: () => settings.setSessionList(nextSort(sortState, sort))
 		}))
 	);
 	function sortLabel(sort: string): string {
@@ -679,6 +692,7 @@
 		sections: () => sections,
 		groupBy: () => groupBy,
 		sort: () => settings.state.sessionList.sort,
+		sortDir: () => settings.state.sessionList.sortDir,
 		matchesLabel: matchesLabelFilter,
 		matchesClient,
 		renderedOrder: renderedIds
@@ -1006,8 +1020,11 @@
 	{#snippet headerActions()}
 		<Menu label={m.sessions_sort_menu_label()} items={sortItems} bare placement="bottom-end">
 			{#snippet trigger()}
-				<Text size="xs" tone="faint" style="white-space:nowrap"
-					>{m.sessions_sort_menu({ sort: sortLabel(settings.state.sessionList.sort) })} ▾</Text
+				<Text size="xs" tone="faint" style="white-space:nowrap; display:inline-flex; align-items:center; gap: var(--sp-1)"
+					>{m.sessions_sort_menu({ sort: sortLabel(sortState.sort) })}<Icon
+						name={sortDirIcon}
+						label={sortDirLabel}
+					/></Text
 				>
 			{/snippet}
 		</Menu>

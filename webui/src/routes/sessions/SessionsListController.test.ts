@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { SessionListItem } from '@bindings/SessionListItem';
 import { SessionsListController, type SessionsListInputs } from './SessionsListController.svelte';
-import type { Section, Dimension, SessionSort } from './sessions.logic';
+import type { Section, Dimension, SessionSort, SessionSortDir } from './sessions.logic';
 
 function session(over: Partial<SessionListItem>): SessionListItem {
 	return {
@@ -28,6 +28,7 @@ function make(over: Partial<SessionsListInputs> = {}) {
 		sections: () => sections,
 		groupBy: () => groupBy,
 		sort: () => sort,
+		sortDir: () => 'desc',
 		matchesLabel: () => true,
 		matchesClient: () => true,
 		renderedOrder: () => order,
@@ -86,6 +87,19 @@ describe('SessionsListController — buckets', () => {
 			session({ id: 'new', bucket: 'working', registered_at: '2024-01-01T00:00:00Z' })
 		]);
 		expect(working(ctl).map((s) => s.id)).toEqual(['new', 'old']);
+	});
+
+	it('applies the sort direction within a bucket', () => {
+		const rows = [
+			session({ id: 'old', bucket: 'working', registered_at: '2020-01-01T00:00:00Z' }),
+			session({ id: 'new', bucket: 'working', registered_at: '2024-01-01T00:00:00Z' })
+		];
+		const desc = make({ sort: () => 'created', sortDir: () => 'desc' });
+		desc.setItems(rows);
+		expect(working(desc.ctl).map((s) => s.id)).toEqual(['new', 'old']);
+		const asc = make({ sort: () => 'created', sortDir: () => 'asc' });
+		asc.setItems(rows);
+		expect(working(asc.ctl).map((s) => s.id)).toEqual(['old', 'new']);
 	});
 
 	it('respects the injected label/client filters', () => {

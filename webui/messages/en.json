@@ -1060,6 +1060,8 @@
 	"sessions_select_multiple": "Select multiple to archive",
 	"sessions_select_range_hint": "Shift-click to select a range",
 	"sessions_selected_count": "{count} selected",
+	"sessions_sort_asc": "Ascending",
+	"sessions_sort_desc": "Descending",
 	"sessions_sort_menu": "Sort: {sort}",
 	"sessions_sort_menu_label": "Sort sessions",
 	"sessions_stale_badge": "stale",

@@ -10,7 +10,7 @@
 	import SettingSection from '$lib/components/molecules/SettingSection.svelte';
 	import { settings } from '$lib/settings.svelte';
 	import { m } from '$lib/paraglide/messages';
-	import { GROUP_DIMENSIONS } from '../../../../routes/sessions/sessions.logic';
+	import { GROUP_DIMENSIONS, nextSort } from '../../../../routes/sessions/sessions.logic';
 
 	const sl = $derived(settings.state.sessionList);
 	const spawnDock = $derived(settings.spawnDock);
@@ -49,9 +49,9 @@
 				value={sl.sort}
 				style="width:100%"
 				onchange={(e) =>
-					settings.setSessionList({
-						sort: (e.currentTarget as HTMLSelectElement).value as typeof sl.sort
-					})}
+					settings.setSessionList(
+						nextSort(sl, (e.currentTarget as HTMLSelectElement).value as typeof sl.sort)
+					)}
 			>
 				<option value="activity">{m.settings_sort_activity()}</option>
 				<option value="created">{m.settings_sort_created()}</option>

@@ -36,6 +36,7 @@ import {
 	hrefWithoutDiagnose,
 	sessionIdFromLocation,
 	sortSessions,
+	nextSort,
 	toolActivity,
 	TOOL_ASLEEP_AFTER_MS,
 	type Section
@@ -484,32 +485,71 @@ describe('label filter', () => {
 });
 
 describe('sortSessions', () => {
-	it('keeps the server order for the activity sort (same reference)', () => {
+	const dated = () => [
+		session({ id: 'old', registered_at: '2020-01-01T00:00:00Z' }),
+		session({ id: 'new', registered_at: '2024-01-01T00:00:00Z' })
+	];
+	const named = () => [
+		session({ id: 'z', name: 'zebra' }),
+		session({ id: 'a', name: 'apple' }),
+		session({ id: 'm', name: '', working_dir: '/x/mango' })
+	];
+
+	it('keeps the server order for activity desc (same reference)', () => {
 		const rows = [session({ id: 'a' }), session({ id: 'b' })];
 		expect(sortSessions(rows, 'activity')).toBe(rows);
+		expect(sortSessions(rows, 'activity', 'desc')).toBe(rows);
 	});
 
-	it('sorts by registered_at descending for created', () => {
-		const rows = [
-			session({ id: 'old', registered_at: '2020-01-01T00:00:00Z' }),
-			session({ id: 'new', registered_at: '2024-01-01T00:00:00Z' })
-		];
-		expect(sortSessions(rows, 'created').map((s) => s.id)).toEqual(['new', 'old']);
+	it('reverses a copy for activity asc, leaving the input untouched', () => {
+		const rows = [session({ id: 'a' }), session({ id: 'b' })];
+		const out = sortSessions(rows, 'activity', 'asc');
+		expect(out).not.toBe(rows);
+		expect(out.map((s) => s.id)).toEqual(['b', 'a']);
+		expect(rows.map((s) => s.id)).toEqual(['a', 'b']);
 	});
 
-	it('sorts by name, falling back to working-dir basename then id', () => {
-		const rows = [
-			session({ id: 'z', name: 'zebra' }),
-			session({ id: 'a', name: 'apple' }),
-			session({ id: 'm', name: '', working_dir: '/x/mango' })
-		];
-		expect(sortSessions(rows, 'name').map((s) => s.id)).toEqual(['a', 'm', 'z']);
+	it('sorts created newest-first by default and oldest-first ascending', () => {
+		expect(sortSessions(dated(), 'created').map((s) => s.id)).toEqual(['new', 'old']);
+		expect(sortSessions(dated(), 'created', 'desc').map((s) => s.id)).toEqual(['new', 'old']);
+		expect(sortSessions(dated(), 'created', 'asc').map((s) => s.id)).toEqual(['old', 'new']);
+	});
+
+	it('sorts by name A→Z by default, Z→A descending, falling back to working-dir basename then id', () => {
+		expect(sortSessions(named(), 'name').map((s) => s.id)).toEqual(['a', 'm', 'z']);
+		expect(sortSessions(named(), 'name', 'asc').map((s) => s.id)).toEqual(['a', 'm', 'z']);
+		expect(sortSessions(named(), 'name', 'desc').map((s) => s.id)).toEqual(['z', 'm', 'a']);
 	});
 
 	it('does not mutate the input array', () => {
 		const rows = [session({ id: 'b', name: 'b' }), session({ id: 'a', name: 'a' })];
 		sortSessions(rows, 'name');
+		sortSessions(rows, 'created', 'asc');
 		expect(rows.map((s) => s.id)).toEqual(['b', 'a']);
+	});
+});
+
+describe('nextSort', () => {
+	it('re-selecting the active field flips the direction', () => {
+		expect(nextSort({ sort: 'activity', sortDir: 'desc' }, 'activity')).toEqual({
+			sort: 'activity',
+			sortDir: 'asc'
+		});
+		expect(nextSort({ sort: 'activity', sortDir: 'asc' }, 'activity')).toEqual({
+			sort: 'activity',
+			sortDir: 'desc'
+		});
+	});
+
+	it('selecting another field resets to its natural direction', () => {
+		expect(nextSort({ sort: 'activity', sortDir: 'asc' }, 'name')).toEqual({
+			sort: 'name',
+			sortDir: 'asc'
+		});
+		expect(nextSort({ sort: 'name', sortDir: 'desc' }, 'created')).toEqual({
+			sort: 'created',
+			sortDir: 'desc'
+		});
 	});
 });
 
