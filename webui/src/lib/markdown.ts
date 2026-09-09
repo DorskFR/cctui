@@ -237,21 +237,20 @@ function autolinkUrls(s: string): string {
   );
 }
 
-// Where agent-linked local paths resolve: the machine the session runs on
-// (the read-file route is machine-scoped; the session widens its allow-list).
+// Where agent-linked local paths resolve. Both ids are required: the route
+// authorises and scopes the read against the session, not the machine.
 export interface LocalFileLinks {
   machineId: string;
-  sessionId?: string;
+  sessionId: string;
 }
 
 /** Same-origin URL that serves `path` off `links.machineId` (see
  * `GET /api/v1/machines/{id}/fs/file`). */
 export function localFileHref(path: string, links: LocalFileLinks): string {
-  let href =
+  const href =
     `/api/v1/machines/${encodeURIComponent(links.machineId)}/fs/file` +
     `?path=${encodeURIComponent(path)}`;
-  if (links.sessionId) href += `&session_id=${encodeURIComponent(links.sessionId)}`;
-  return href;
+  return `${href}&session_id=${encodeURIComponent(links.sessionId)}`;
 }
 
 // An absolute (`/a/b.ext`) or home-relative (`~/a/b.ext`) path with a file
@@ -342,7 +341,8 @@ export function renderMarkdown(
   opts: { tables?: boolean; sessionId?: string; machineId?: string } = {},
 ): string {
   // Local paths become links only when the machine to read them from is known.
-  const links: LocalFileLinks | undefined = opts.machineId
+  const links: LocalFileLinks | undefined =
+    opts.machineId && opts.sessionId
     ? { machineId: opts.machineId, sessionId: opts.sessionId }
     : undefined;
   // Render GFM tables as real <table>s by default; when `tables` is false
