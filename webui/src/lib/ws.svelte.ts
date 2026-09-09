@@ -10,6 +10,21 @@ import type { SessionEndReason } from '@bindings/SessionEndReason';
 
 /** Daemon handshake budget (45 s) plus dispatch and relay slack. */
 export const SPAWN_ACK_TIMEOUT_MS = 75_000;
+/** How often `awaitSpawn` re-derives the outcome from the session list. */
+export const SPAWN_PROBE_INTERVAL_MS = 5_000;
+
+export interface CommandOutcome {
+	ok: boolean;
+	error?: string;
+	timedOut?: boolean;
+}
+
+/** What a spawn probe found for the pre-minted session id: `null` while no
+ * row exists yet. */
+export interface SpawnProbeHit {
+	end_reason?: SessionEndReason | null;
+	end_detail?: string | null;
+}
 
 export interface SessionEndedEvent {
 	session_id: string;
@@ -364,10 +379,9 @@ export class WsClient {
 
 	private socket: WebSocket | null = null;
 	private subscribed = new Set<string>();
-	private waiters = new Map<
-		string,
-		(r: { ok: boolean; error?: string; timedOut?: boolean }) => void
-	>();
+	private waiters = new Map<string, (r: CommandOutcome) => void>();
+	/** Spawns waiting on their pre-minted session id to show up on this socket. */
+	private spawnWaiters = new Map<string, (r: CommandOutcome) => void>();
 	private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 	private listDirtyTimer: ReturnType<typeof setTimeout> | null = null;
 	private want = false;
@@ -455,6 +469,7 @@ export class WsClient {
 			case 'stream': {
 				const sid = msg.session_id as string;
 				const data = msg.data as AgentEvent;
+				this.settleSpawn(sid, { ok: true });
 				this.appendEvent(sid, data);
 				// The list's last-message column tracks USER messages only
 				// (server: event_type='message'); assistant text must not patch it.
@@ -565,12 +580,19 @@ export class WsClient {
 					reason: msg.reason as SessionEndReason,
 					detail: (msg.detail as string | undefined) ?? null
 				};
+				this.settleSpawn(ev.session_id, spawnOutcomeFromEnd(ev.reason, ev.detail));
 				for (const cb of this.sessionEndedCbs) cb(ev);
 				this.markListDirty();
 				break;
 			}
 			case 'status':
+				this.settleSpawn(msg.session_id as string, { ok: true });
+				this.markListDirty();
+				break;
 			case 'session_registered':
+				this.settleSpawn((msg.session as { id: string } | undefined)?.id, { ok: true });
+				this.markListDirty();
+				break;
 			case 'session_deregistered':
 				this.markListDirty();
 				break;
@@ -1023,10 +1045,7 @@ export class WsClient {
 	 * phrase it as "unconfirmed, check the list" instead of an error inviting a
 	 * retry — re-submitting dispatches a brand-new spawn and a duplicate agent.
 	 */
-	awaitCommand(
-		commandId: string,
-		timeoutMs = SPAWN_ACK_TIMEOUT_MS
-	): Promise<{ ok: boolean; error?: string; timedOut?: boolean }> {
+	awaitCommand(commandId: string, timeoutMs = SPAWN_ACK_TIMEOUT_MS): Promise<CommandOutcome> {
 		return new Promise((resolve) => {
 			const timer = setTimeout(() => {
 				if (this.waiters.delete(commandId)) {
@@ -1039,6 +1058,76 @@ export class WsClient {
 			});
 		});
 	}
+
+	private settleSpawn(sessionId: string | undefined, r: CommandOutcome) {
+		if (!sessionId) return;
+		const w = this.spawnWaiters.get(sessionId);
+		if (!w) return;
+		this.spawnWaiters.delete(sessionId);
+		w(r);
+	}
+
+	/** Resolve a spawn on whichever lands first: the daemon's `command_result`
+	 * for `commandId`, any event for the pre-minted `sessionId` on this
+	 * socket, or `probe` finding the session's row. The ack is the only one of
+	 * those the server never replays, so the other two cover a lost or late
+	 * frame; the timeout is the last resort and still not a failure (see
+	 * `awaitCommand`). */
+	awaitSpawn(
+		commandId: string,
+		sessionId: string | null | undefined,
+		opts: {
+			probe?: () => Promise<SpawnProbeHit | null>;
+			probeIntervalMs?: number;
+			timeoutMs?: number;
+		} = {}
+	): Promise<CommandOutcome> {
+		if (!sessionId) return this.awaitCommand(commandId, opts.timeoutMs);
+		const interval = opts.probeIntervalMs ?? SPAWN_PROBE_INTERVAL_MS;
+		return new Promise((resolve) => {
+			let settled = false;
+			let probeTimer: ReturnType<typeof setTimeout> | null = null;
+			const finish = (r: CommandOutcome) => {
+				if (settled) return;
+				settled = true;
+				this.waiters.delete(commandId);
+				this.spawnWaiters.delete(sessionId);
+				if (probeTimer) clearTimeout(probeTimer);
+				resolve(r);
+			};
+			void this.awaitCommand(commandId, opts.timeoutMs).then(finish);
+			this.spawnWaiters.set(sessionId, finish);
+			const { probe } = opts;
+			if (!probe) return;
+			const tick = async () => {
+				if (settled) return;
+				let hit: SpawnProbeHit | null = null;
+				try {
+					hit = await probe();
+				} catch {
+					hit = null;
+				}
+				if (settled) return;
+				if (hit) {
+					finish(spawnOutcomeFromEnd(hit.end_reason ?? null, hit.end_detail ?? null));
+					return;
+				}
+				probeTimer = setTimeout(() => void tick(), interval);
+			};
+			probeTimer = setTimeout(() => void tick(), interval);
+		});
+	}
+}
+
+/** A row that exists is a landed spawn unless it ended as a failed start. */
+export function spawnOutcomeFromEnd(
+	reason: SessionEndReason | null,
+	detail: string | null
+): CommandOutcome {
+	if (reason === 'spawn_failed' || reason === 'resume_failed') {
+		return { ok: false, error: detail ?? reason };
+	}
+	return { ok: true };
 }
 
 export const ws = new WsClient();

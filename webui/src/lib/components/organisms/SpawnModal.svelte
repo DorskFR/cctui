@@ -15,7 +15,7 @@
 		useProfileActions,
 		endpoints
 	} from '$lib/queries';
-	import { ws } from '$lib/ws.svelte';
+	import { ws, type SpawnProbeHit } from '$lib/ws.svelte';
 	import { toasts } from '$lib/toast.svelte';
 	import { isSubmitChord, submitChordLabel } from '$lib/platform';
 	import {
@@ -612,6 +612,10 @@
 	}
 
 	let spawnFailure = $state<string | null>(null);
+	async function spawnProbe(sessionId: string): Promise<SpawnProbeHit | null> {
+		const { sessions } = await labelApi.listSessions();
+		return sessions.find((s) => s.id === sessionId) ?? null;
+	}
 	const labelApi = {
 		attachLabel: (sessionId: string, labelId: string) => actions.attachLabel(sessionId, labelId),
 		listSessions: () => endpoints.sessions(false)
@@ -639,7 +643,10 @@
 		});
 		rememberProfileUse(profile);
 		toasts.info(m.spawn_toast_spawning());
-		const result = await ws.awaitCommand(res.command_id);
+		const sessionId = res.session_id ?? null;
+		const result = await ws.awaitSpawn(res.command_id, sessionId, {
+			probe: sessionId ? () => spawnProbe(sessionId) : undefined
+		});
 		if (result.ok) {
 			toasts.ok(m.spawn_toast_spawned());
 			void attachLabelsToSpawned(labelApi, labelMachine, labelCwd, requestedAt, labelIds);
