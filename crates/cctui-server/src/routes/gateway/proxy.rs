@@ -1,10 +1,10 @@
 use super::{
     AnthropicSettings, Family, FireworksSettings, anthropic_upstream, clear_account_reauth,
     clear_soft_limit_block, clear_soft_limit_block_for_token, current_access_token,
-    fireworks_upstream, flag_account_reauth, mark_soft_limit_block, note_orphan_401,
-    note_token_used, openai_upstream, orphan_is_blocked, record_fireworks_usage, resolve_account,
-    session_and_account_name_for_token, session_budget_limits, session_id_for_token,
-    session_spend_usd, tees_response, usage_for_soft_limit,
+    durable_block_key, fireworks_upstream, flag_account_reauth, mark_soft_limit_block,
+    note_orphan_401, note_token_used, openai_upstream, orphan_is_blocked, record_fireworks_usage,
+    resolve_account, session_and_account_name_for_token, session_budget_limits,
+    session_id_for_token, session_spend_usd, tees_response, usage_for_soft_limit,
 };
 
 use axum::body::Body;
@@ -85,6 +85,7 @@ async fn soft_limit_refusal(
     model: Option<&str>,
     retry_after_secs: i64,
     reason: String,
+    block_key: String,
 ) -> Result<Response, StatusCode> {
     // Before refusing with the account's own reset horizon, try to rebind the
     // session to a sibling with headroom — the worker's 429 retry then lands on
@@ -109,6 +110,7 @@ async fn soft_limit_refusal(
             acct.id,
             &account_name,
             &reason,
+            &block_key,
             retry_after_secs,
         )
         .await;
@@ -257,7 +259,7 @@ pub async fn passthrough(
             .filter(|w| !crate::soft_limit::is_model_scoped_key(&w.key))
             .cloned()
             .collect();
-        if let crate::soft_limit::Decision::Block { retry_after_secs, reason, .. } =
+        if let crate::soft_limit::Decision::Block { retry_after_secs, reason, key } =
             crate::soft_limit::evaluate_soft_limit(&unscoped, &effective_limits, None, Utc::now())
         {
             tracing::info!(account = %acct.id, retry_after_secs, "soft limit hit: {reason}");
@@ -269,6 +271,7 @@ pub async fn passthrough(
                 None,
                 retry_after_secs,
                 reason,
+                durable_block_key(&acct.soft_limits, &effective_limits, &key),
             )
             .await;
         }
@@ -409,7 +412,7 @@ pub async fn passthrough(
         // never consumes a usage notice. Same `window_applies` the account
         // election uses, so the two can never disagree.
         if let Some(windows) = model_gate
-            && let crate::soft_limit::Decision::Block { retry_after_secs, reason, .. } =
+            && let crate::soft_limit::Decision::Block { retry_after_secs, reason, key } =
                 crate::soft_limit::evaluate_soft_limit(
                     &windows,
                     &effective_limits,
@@ -431,6 +434,7 @@ pub async fn passthrough(
                 request_model.as_deref(),
                 retry_after_secs,
                 reason,
+                durable_block_key(&acct.soft_limits, &effective_limits, &key),
             )
             .await;
         }

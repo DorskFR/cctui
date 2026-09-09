@@ -20,6 +20,22 @@ pub fn merge_session_budget(
     merged
 }
 
+/// Durable key for a block, marked [`SESSION_SCOPE_PREFIX`] when the blocking
+/// cap came from the child's own budget rather than the account configuration:
+/// raising an account cap must not lift it.
+pub fn durable_block_key(
+    account: &crate::soft_limit::SoftLimits,
+    effective: &crate::soft_limit::SoftLimits,
+    key: &str,
+) -> String {
+    let usd = crate::soft_limit::KEY_SESSION_USD;
+    let cap_of = |c: &crate::soft_limit::SoftLimits| c.limits.get(usd).and_then(|l| l.cap_usd);
+    if key == usd && cap_of(effective) != cap_of(account) {
+        return format!("{}{key}", crate::soft_limit::SESSION_SCOPE_PREFIX);
+    }
+    key.to_owned()
+}
+
 /// The account's soft limits with any per-session `CctuiAgent` budget applied.
 /// Skips the token→session lookup entirely while no child budget is live.
 pub async fn session_budget_limits(
@@ -67,13 +83,16 @@ async fn mark_block_row(
     pool: &sqlx::PgPool,
     session_id: &str,
     reason: &str,
+    key: &str,
 ) -> Result<bool, sqlx::Error> {
     let res = sqlx::query(
-        "UPDATE sessions SET soft_limit_reason = $2 \
-         WHERE id = $1 AND status != 'archived' AND soft_limit_reason IS DISTINCT FROM $2",
+        "UPDATE sessions SET soft_limit_reason = $2, soft_limit_key = $3 \
+         WHERE id = $1 AND status != 'archived' \
+           AND (soft_limit_reason IS DISTINCT FROM $2 OR soft_limit_key IS DISTINCT FROM $3)",
     )
     .bind(session_id)
     .bind(reason)
+    .bind(key)
     .execute(pool)
     .await?;
     Ok(res.rows_affected() > 0)
@@ -82,7 +101,7 @@ async fn mark_block_row(
 /// Drop the durable block on a session row, reporting whether it was set.
 async fn clear_block_row(pool: &sqlx::PgPool, session_id: &str) -> Result<bool, sqlx::Error> {
     let res = sqlx::query(
-        "UPDATE sessions SET soft_limit_reason = NULL \
+        "UPDATE sessions SET soft_limit_reason = NULL, soft_limit_key = NULL \
          WHERE id = $1 AND soft_limit_reason IS NOT NULL",
     )
     .bind(session_id)
@@ -98,7 +117,7 @@ async fn clear_block_row_for_token(
     token_hash: &str,
 ) -> Result<Option<String>, sqlx::Error> {
     sqlx::query_scalar::<_, String>(
-        "UPDATE sessions SET soft_limit_reason = NULL \
+        "UPDATE sessions SET soft_limit_reason = NULL, soft_limit_key = NULL \
          WHERE soft_limit_reason IS NOT NULL AND id = ( \
              SELECT session_id FROM session_tokens \
              WHERE token_hash = $1 AND revoked_at IS NULL) \
@@ -123,6 +142,7 @@ pub async fn mark_soft_limit_block(
     account_id: Uuid,
     account_name: &str,
     reason: &str,
+    block_key: &str,
     retry_after_secs: i64,
 ) {
     if session_id.is_empty() {
@@ -134,7 +154,7 @@ pub async fn mark_soft_limit_block(
     // another account" hint; `list_sessions` reads it. Idempotent (overwrite),
     // and never clobbers the churning daemon `tempo`/`agent_state` signals.
     let needs = format!("switch account: {account_name} rate-limited");
-    let changed = match mark_block_row(&state.pool, session_id, &needs).await {
+    let changed = match mark_block_row(&state.pool, session_id, &needs, block_key).await {
         Ok(changed) => changed,
         Err(e) => {
             tracing::warn!(%session_id, error = %e, "failed to persist soft-limit block");
@@ -388,7 +408,27 @@ pub fn bump_orphan_401(
 
 #[cfg(test)]
 mod tests {
-    use super::{clear_block_row, clear_block_row_for_token, mark_block_row};
+    use super::{clear_block_row, clear_block_row_for_token, durable_block_key, mark_block_row};
+    use crate::soft_limit::{KEY_SESSION_USD, SESSION_SCOPE_PREFIX, SoftLimits};
+
+    #[test]
+    fn a_child_budget_block_is_marked_session_scoped() {
+        let account = SoftLimits::from_json(Some(&serde_json::json!({
+            "session_usd": {"cap_usd": 10.0}
+        })));
+        let from_budget = crate::routes::gateway::merge_session_budget(&account, Some(2.0));
+        assert_eq!(
+            durable_block_key(&account, &from_budget, KEY_SESSION_USD),
+            format!("{SESSION_SCOPE_PREFIX}{KEY_SESSION_USD}"),
+            "a tighter child budget owns the block, not the account"
+        );
+        assert_eq!(
+            durable_block_key(&account, &account, KEY_SESSION_USD),
+            KEY_SESSION_USD,
+            "the account's own session_usd cap stays account-scoped"
+        );
+        assert_eq!(durable_block_key(&account, &from_budget, "session"), "session");
+    }
 
     /// DB-gated: a block this process never observed — set by the other replica,
     /// or before a rollout — must still clear through both paths, and each write
@@ -457,11 +497,11 @@ mod tests {
 
         let reason = "switch account: personal rate-limited";
         assert!(
-            mark_block_row(&pool, &session_id, reason).await.unwrap(),
+            mark_block_row(&pool, &session_id, reason, "session").await.unwrap(),
             "the first mark is the transition"
         );
         assert!(
-            !mark_block_row(&pool, &session_id, reason).await.unwrap(),
+            !mark_block_row(&pool, &session_id, reason, "session").await.unwrap(),
             "a retry against the same block must not re-announce it"
         );
 
@@ -475,7 +515,7 @@ mod tests {
             "the clear must announce once, not on every later success"
         );
 
-        mark_block_row(&pool, &session_id, reason).await.unwrap();
+        mark_block_row(&pool, &session_id, reason, "session").await.unwrap();
         assert!(
             clear_block_row(&pool, &session_id).await.unwrap(),
             "raising the cap must clear a block this pod never set"

@@ -1652,9 +1652,9 @@ pub async fn update_provider(
 async fn soft_limit_blocked_sessions(
     pool: &sqlx::PgPool,
     provider_id: Uuid,
-) -> Result<Vec<String>, sqlx::Error> {
-    sqlx::query_scalar(
-        "SELECT DISTINCT s.id FROM sessions s \
+) -> Result<Vec<(String, Option<String>)>, sqlx::Error> {
+    sqlx::query_as(
+        "SELECT DISTINCT s.id, s.soft_limit_key FROM sessions s \
          JOIN session_tokens t ON t.session_id = s.id AND t.revoked_at IS NULL \
          WHERE t.account_id = $1 AND s.soft_limit_reason IS NOT NULL",
     )
@@ -1663,21 +1663,30 @@ async fn soft_limit_blocked_sessions(
     .await
 }
 
-/// Blocked sessions among `candidates` that now evaluate to `Allow` under `caps`.
-/// Clear-only (no re-block); pure so it is unit-testable.
+/// Blocked sessions among `candidates` whose own block `caps` now lifts.
+///
+/// Each candidate is judged against the limit that blocked it, so a session over
+/// its own `session_usd` budget stays blocked however high the account cap goes.
+/// A row from before the key column carries `None` and keeps the old
+/// whole-config reading. Clear-only (no re-block); pure so it is unit-testable.
 fn soft_limit_blocks_to_clear(
-    candidates: &[String],
+    candidates: &[(String, Option<String>)],
     windows: &[crate::soft_limit::UsageWindow],
     caps: &crate::soft_limit::SoftLimits,
     now: DateTime<Utc>,
 ) -> Vec<String> {
-    if !matches!(
+    let all_allow = matches!(
         crate::soft_limit::evaluate_soft_limit(windows, caps, None, now),
         crate::soft_limit::Decision::Allow
-    ) {
-        return Vec::new();
-    }
-    candidates.to_vec()
+    );
+    candidates
+        .iter()
+        .filter(|(_, key)| {
+            key.as_ref()
+                .map_or(all_allow, |k| crate::soft_limit::block_lifted_by(k, windows, caps, now))
+        })
+        .map(|(id, _)| id.clone())
+        .collect()
 }
 
 /// After a provider's soft-limit config is raised, lift the blocks it holds that
@@ -1688,8 +1697,7 @@ async fn reevaluate_soft_limit_block(
     provider_id: Uuid,
     caps: &crate::soft_limit::SoftLimits,
 ) {
-    let candidates: Vec<String> = match soft_limit_blocked_sessions(&state.pool, provider_id).await
-    {
+    let candidates = match soft_limit_blocked_sessions(&state.pool, provider_id).await {
         Ok(rows) => rows,
         Err(e) => {
             tracing::warn!(%provider_id, error = %e, "soft-limit re-eval: session lookup failed");
@@ -2686,10 +2694,13 @@ mod tests {
         })));
         // The candidates come from `soft_limit_reason IS NOT NULL`, so a block
         // this process never saw (other replica, or set before a rollout) clears.
-        let candidates = vec!["s-other-replica".to_owned(), "s-pre-rollout".to_owned()];
+        let candidates = vec![
+            ("s-other-replica".to_owned(), Some("session".to_owned())),
+            ("s-pre-rollout".to_owned(), None),
+        ];
         let windows = crate::soft_limit::normalize_usage_windows(&hot_usage());
         let cleared = soft_limit_blocks_to_clear(&candidates, &windows, &caps, soft_now());
-        assert_eq!(cleared, candidates);
+        assert_eq!(cleared, ["s-other-replica", "s-pre-rollout"]);
     }
 
     #[test]
@@ -2698,9 +2709,38 @@ mod tests {
             "session": {"cap_pct": 85}
         })));
         let windows = crate::soft_limit::normalize_usage_windows(&hot_usage());
-        let cleared =
-            soft_limit_blocks_to_clear(&["s-blocked".to_owned()], &windows, &caps, soft_now());
+        let cleared = soft_limit_blocks_to_clear(
+            &[("s-blocked".to_owned(), Some("session".to_owned()))],
+            &windows,
+            &caps,
+            soft_now(),
+        );
         assert!(cleared.is_empty());
+    }
+
+    /// CCT-962, both directions: the account cap only lifts the blocks it owns.
+    #[test]
+    fn raising_an_account_cap_spares_a_session_over_its_own_budget() {
+        let caps = crate::soft_limit::SoftLimits::from_json(Some(&serde_json::json!({
+            "session": {"cap_pct": 95}
+        })));
+        let mut windows = crate::soft_limit::normalize_usage_windows(&hot_usage());
+        windows.push(crate::soft_limit::usd_window(crate::soft_limit::KEY_SESSION_USD, 5.0, None));
+        let over_budget = format!(
+            "{}{}",
+            crate::soft_limit::SESSION_SCOPE_PREFIX,
+            crate::soft_limit::KEY_SESSION_USD
+        );
+        let candidates = vec![
+            ("s-own-budget".to_owned(), Some(over_budget)),
+            ("s-account-cap".to_owned(), Some("session".to_owned())),
+        ];
+        let cleared = soft_limit_blocks_to_clear(&candidates, &windows, &caps, soft_now());
+        assert_eq!(
+            cleared,
+            ["s-account-cap"],
+            "the account cap clears its own block and never the session budget's"
+        );
     }
 
     /// DB-gated: the re-evaluation picks its candidates from the session rows,
@@ -2776,7 +2816,7 @@ mod tests {
         }
 
         let candidates = soft_limit_blocked_sessions(&pool, prov).await.expect("candidates");
-        assert_eq!(candidates, vec![blocked]);
+        assert_eq!(candidates, vec![(blocked.to_owned(), None)]);
 
         sqlx::query("DELETE FROM session_tokens WHERE account_id = $1")
             .bind(prov)

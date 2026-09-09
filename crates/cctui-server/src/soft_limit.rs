@@ -47,6 +47,10 @@ const PACE_RETRY_MAX_SECS: i64 = 900;
 /// Prefix on a pace refusal's blocking key: a burn rate, not a spent budget.
 pub const PACE_REASON_PREFIX: &str = "pace:";
 
+/// Prefix on a durable block key whose cap came from the session's own budget
+/// rather than the account configuration.
+pub const SESSION_SCOPE_PREFIX: &str = "session_scope:";
+
 /// Whether a canonical key denotes a dollar-denominated window.
 pub fn is_usd_key(key: &str) -> bool {
     matches!(key, KEY_SESSION_USD | KEY_USD_5H | KEY_USD_7D)
@@ -514,6 +518,29 @@ pub fn evaluate_soft_limit(
         return Decision::Block { retry_after_secs, reason, key };
     }
     evaluate_pace(windows, caps, model, now)
+}
+
+/// Whether a block durably recorded under `key` is lifted by an account's
+/// `caps`.
+///
+/// Only the limit that caused the block gets a say: a session refused by its own
+/// `CctuiAgent` budget carries a [`SESSION_SCOPE_PREFIX`] key and survives every
+/// account-level change, and an account window is judged against its own cap
+/// alone so an unrelated window still over cap cannot hold it. A key the account
+/// no longer caps is lifted — the cap that produced it is gone.
+pub fn block_lifted_by(
+    key: &str,
+    windows: &[UsageWindow],
+    caps: &SoftLimits,
+    now: DateTime<Utc>,
+) -> bool {
+    if key.starts_with(SESSION_SCOPE_PREFIX) {
+        return false;
+    }
+    let window_key = key.strip_prefix(PACE_REASON_PREFIX).unwrap_or(key);
+    let Some(limit) = caps.limits.get(window_key) else { return true };
+    let scoped = SoftLimits { limits: BTreeMap::from([(window_key.to_owned(), *limit)]) };
+    matches!(evaluate_soft_limit(windows, &scoped, None, now), Decision::Allow)
 }
 
 /// Refuse a window being burned faster than `pace_cap` times its linear budget.
@@ -1120,6 +1147,45 @@ mod tests {
         assert_eq!(sl.limits["session_usd"].cap_usd, Some(2.5));
         assert!(!sl.limits.contains_key("usd_7d"));
         assert_eq!(sl, SoftLimits::from_json(Some(&serde_json::to_value(&sl).unwrap())));
+    }
+
+    // ---- durable block keys ------------------------------------------------
+
+    #[test]
+    fn a_session_scoped_block_survives_every_account_change() {
+        let c = usd_caps(&[(KEY_SESSION_USD, 100.0, None)]);
+        let windows = vec![usd_window(KEY_SESSION_USD, 5.0, None)];
+        let key = format!("{SESSION_SCOPE_PREFIX}{KEY_SESSION_USD}");
+        assert!(
+            !block_lifted_by(&key, &windows, &c, now()),
+            "the session's own budget refused it; no account cap can speak for that"
+        );
+    }
+
+    #[test]
+    fn an_account_block_is_lifted_only_by_its_own_window() {
+        let windows = normalize_usage_windows(&legacy(
+            90.0,
+            "2026-06-19T16:00:00Z",
+            95.0,
+            "2026-06-26T00:00:00Z",
+        ));
+        let raised = caps(&[(KEY_SESSION, Some(95), None), (KEY_WEEKLY_ALL, Some(70), None)]);
+        assert!(
+            block_lifted_by(KEY_SESSION, &windows, &raised, now()),
+            "an unrelated window still over cap must not hold the raised one"
+        );
+        assert!(!block_lifted_by(KEY_WEEKLY_ALL, &windows, &raised, now()));
+        assert!(
+            block_lifted_by(KEY_SESSION, &windows, &SoftLimits::default(), now()),
+            "a removed cap has nothing left to block with"
+        );
+        assert!(block_lifted_by(
+            &format!("{PACE_REASON_PREFIX}{KEY_SESSION}"),
+            &windows,
+            &SoftLimits::default(),
+            now()
+        ));
     }
 
     // ---- persistence round-trip -------------------------------------------
