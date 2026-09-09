@@ -133,3 +133,36 @@ describe('every token the kit reads resolves from the imported stylesheets', () 
 		}
 	);
 });
+
+describe('the journey overlay is themed from the palette, not the library fallbacks', () => {
+	const overlay = read('node_modules/@dorsk/journey/dist/runtime/overlay.js');
+	const fallbacks = new Map<string, string>();
+	for (const m of overlay.matchAll(/var\((--journey-[\w-]+),\s*([^()]*(?:\([^()]*\)[^()]*)*)\)/g))
+		fallbacks.set(m[1], m[2].trim());
+	const host = block(app, 'journey-overlay');
+	const root = block(tokens, ':root');
+
+	it('reads at least the accent, surface and text tokens', () => {
+		for (const t of ['--journey-accent', '--journey-surface', '--journey-text'])
+			expect(fallbacks.has(t), t).toBe(true);
+	});
+
+	it('maps every token the package reads, and nothing it does not', () => {
+		expect([...host.keys()].sort()).toEqual([...fallbacks.keys()].sort());
+	});
+
+	// Resolved values cannot be compared to the fallbacks: --r-sm is 6px and so
+	// is the library's. Sourcing from a palette var() is the check that holds.
+	it('sources every token from the palette rather than a literal of its own', () => {
+		for (const [name, value] of host) expect(value, name).toMatch(/var\(--/);
+	});
+
+	it.each(['dark', ...THEMES.map((t) => t.id).filter((id) => id !== 'dark')])(
+		'%s resolves every token to a literal',
+		(id) => {
+			const scopes = [host, ...(id === 'dark' ? [] : [block(themes, `[data-theme="${id}"]`)]), root];
+			for (const name of fallbacks.keys())
+				expect(resolve(name, scopes), `${id} ${name}`).not.toMatch(/var\(/);
+		}
+	);
+});
