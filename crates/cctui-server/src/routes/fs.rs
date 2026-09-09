@@ -325,7 +325,7 @@ fn scan_paths(s: &str, out: &mut std::collections::BTreeSet<String>) {
             i += 1;
             continue;
         }
-        let mut j = i;
+        let mut j = if bytes[i] == b'~' { i + 1 } else { i };
         while j < bytes.len() && is_path_byte(bytes[j]) {
             j += 1;
         }
