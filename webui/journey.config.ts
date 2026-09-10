@@ -1,4 +1,5 @@
 import { defineConfig } from '@dorsk/journey';
+import { isLive } from './src/lib/journeys/live.ts';
 
 const url = process.env.JOURNEY_APP_URL ?? 'http://localhost:5273';
 const api = process.env.CCTUI_PROXY ?? 'http://localhost:8700';
@@ -14,6 +15,19 @@ export default defineConfig({
 		timeout: 120000
 	},
 	journeys: 'journeys/*.journey.ts',
+	// A step addressing a real row (`user[{fixture.me}]`) needs the name the
+	// instance answers to. The app fills the same keys from `guideParams`.
+	fixtures: {
+		instance: {
+			setup: async ({ baseUrl, request }) => {
+				const get = async (path: string) => (await request.get(new URL(path, baseUrl).href)).json();
+				const me = await get('/api/v1/me');
+				const { sessions } = await get('/api/v1/sessions');
+				const live = sessions.find(isLive);
+				return live ? { me: me.user_name, session: live.id } : { me: me.user_name };
+			}
+		}
+	},
 	// The guided fills take any text; the book types these so the spawn-session
 	// screenshots keep their captions.
 	vars: {
