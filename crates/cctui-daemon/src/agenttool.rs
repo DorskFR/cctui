@@ -185,7 +185,7 @@ fn dispatch_note(kind: &CallKind, timeout: Duration) -> String {
             timeout.as_secs(),
         ),
         CallKind::Message(req) => format!(
-            "\n\n[follow-up to child {} · follow window {}s]",
+            "\n\n[follow-up to child {} · runs on the child's original model, `model` is ignored here · follow window {}s]",
             req.session_id,
             timeout.as_secs(),
         ),
@@ -636,6 +636,7 @@ mod tests {
         );
         assert!(follow.contains("follow-up to child child-9"), "{follow}");
         assert!(follow.contains("follow window 1800s"), "{follow}");
+        assert!(follow.contains("`model` is ignored here"), "{follow}");
     }
 
     #[test]
