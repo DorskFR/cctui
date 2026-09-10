@@ -2,14 +2,18 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { QueryClient } from '@tanstack/svelte-query';
 import { DONE_PREFIX, PROGRESS_KEY } from '@dorsk/journey/runtime';
 import type { Journey } from '@dorsk/journey';
+import type { JourneyApi } from '@dorsk/journey/runtime';
 import { resolveText } from '@dorsk/journey/runtime';
 import journeys from './journeys.generated.json';
 import { locale } from './locale.svelte';
 import {
+	driverRun,
 	guideParams,
 	MOBILE_QUERY,
 	parseDoneKey,
 	requiredParams,
+	reserveRuntime,
+	resolveRuntime,
 	settingsStorage,
 	strings,
 	translate,
@@ -176,5 +180,38 @@ describe('journey copy and chrome follow the active locale', () => {
 		const en = texts('en');
 		const fr = texts('fr');
 		expect(fr.filter((t, i) => t !== en[i]).length).toBeGreaterThan(0);
+	});
+});
+
+describe('book driver slot', () => {
+	beforeEach(() => {
+		sessionStorage.clear();
+		delete window.__journey;
+	});
+
+	it('remembers the driver mark across the plain routes the driver reloads', () => {
+		expect(driverRun(sessionStorage, '')).toBe(false);
+		expect(driverRun(sessionStorage, '?journey=run')).toBe(true);
+		expect(driverRun(sessionStorage, '')).toBe(true);
+	});
+
+	it('leaves the slot alone outside a driver run', () => {
+		reserveRuntime();
+		expect(window.__journey).toBeUndefined();
+	});
+
+	it('holds the slot so the driver cannot mount a probe-less runtime', () => {
+		driverRun(sessionStorage, '?journey=run');
+		reserveRuntime();
+		expect(window.__journey).toBeDefined();
+	});
+
+	it('forwards the driver calls it parked to the app runtime once it mounts', async () => {
+		driverRun(sessionStorage, '?journey=run');
+		reserveRuntime();
+		const parked = window.__journey?.driver.step();
+		const real = { driver: { step: () => Promise.resolve({ done: true }) } } as unknown as JourneyApi;
+		resolveRuntime(real);
+		await expect(parked).resolves.toEqual({ done: true });
 	});
 });
