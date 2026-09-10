@@ -94,6 +94,55 @@ pub fn history_events(local_id: &str, items: &[Value]) -> Vec<AdapterEvent> {
     items.iter().map(|item| super::app_server::item_event(local_id, item)).collect()
 }
 
+/// Read one thread's structured history over the shared daemon connection,
+/// falling back to a short-lived stdio child when no daemon is reachable.
+pub async fn read_history_any(
+    app: &AppServerConfig,
+    daemon: Option<&super::daemon::SharedDaemon>,
+    thread_id: &str,
+) -> anyhow::Result<(Value, Vec<Value>)> {
+    if let Some(shared) = daemon
+        && let Some(handle) = shared.handle().await
+    {
+        match read_history_shared(&handle, thread_id).await {
+            Ok(out) => return Ok(out),
+            Err(err) => {
+                tracing::debug!(%err, thread = %thread_id, "codex: shared thread/read failed, using stdio");
+            }
+        }
+    }
+    read_history(app, thread_id).await
+}
+
+async fn read_history_shared(
+    handle: &super::daemon::DaemonHandle,
+    thread_id: &str,
+) -> anyhow::Result<(Value, Vec<Value>)> {
+    let meta = handle
+        .request("thread/read", json!({"threadId": thread_id, "includeTurns": false}))
+        .await?;
+    let mut pages = Vec::new();
+    let mut cursor: Option<String> = None;
+    for _ in 0..MAX_PAGES {
+        let mut params = serde_json::Map::new();
+        params.insert("threadId".to_owned(), json!(thread_id));
+        params.insert("limit".to_owned(), json!(TURN_PAGE));
+        params.insert("itemsView".to_owned(), json!("full"));
+        params.insert("sortDirection".to_owned(), json!("ascending"));
+        if let Some(c) = cursor.as_deref() {
+            params.insert("cursor".to_owned(), json!(c));
+        }
+        let result = handle.request("thread/turns/list", Value::Object(params)).await?;
+        let next = next_cursor(&result);
+        pages.push(result);
+        match next {
+            Some(next) => cursor = Some(next),
+            None => break,
+        }
+    }
+    Ok((meta, items_from_turns(&pages)))
+}
+
 /// Read one thread's structured history. `Ok(vec![])` means the server served
 /// the thread but it has no items; `Err` means the caller should fall back to
 /// the JSONL tail.

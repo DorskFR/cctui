@@ -426,7 +426,13 @@ impl ThreadListInventory {
     /// Returns `true` only when real items were emitted — an empty or failed
     /// read leaves the thread to the preview seed and the log-tail.
     async fn emit_history(&self, entry: &ThreadEntry) -> bool {
-        let items = match super::thread_read::read_history(&self.cfg.app, &entry.id).await {
+        let items = match super::thread_read::read_history_any(
+            &self.cfg.app,
+            self.daemon.as_ref(),
+            &entry.id,
+        )
+        .await
+        {
             Ok((_, items)) => items,
             Err(err) => {
                 tracing::debug!(%err, thread = %entry.id, "codex: structured history unavailable, falling back to the rollout tail");

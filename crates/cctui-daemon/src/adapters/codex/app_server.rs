@@ -4915,8 +4915,7 @@ done
     #[test]
     fn per_thread_config_falls_back_to_env_key_without_a_credential() {
         let env: std::collections::BTreeMap<String, String> =
-            [("OPENAI_BASE_URL".to_owned(), "https://gw.example/v1".to_owned())]
-                .into_iter()
+            std::iter::once(("OPENAI_BASE_URL".to_owned(), "https://gw.example/v1".to_owned()))
                 .collect();
         let (_, config) = gateway_thread_config(&env).expect("gateway-bound session");
         let p = &config["model_providers"]["cctui"];
