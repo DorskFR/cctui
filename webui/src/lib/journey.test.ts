@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { QueryClient } from '@tanstack/svelte-query';
 import { DONE_PREFIX, PROGRESS_KEY } from '@dorsk/journey/runtime';
@@ -12,7 +13,6 @@ import {
 	MOBILE_QUERY,
 	parseDoneKey,
 	requiredParams,
-	reserveRuntime,
 	resolveRuntime,
 	settingsStorage,
 	strings,
@@ -119,7 +119,7 @@ describe('guideParams', () => {
 	const qc = () => new QueryClient({ defaultOptions: { queries: { retry: false } } });
 
 	it('leaves absent names out so the guide that needs them is refused', async () => {
-		expect(await guideParams(qc())).toEqual({ 'var.label': '', 'var.prompt': '', me: 'root' });
+		expect(await guideParams(qc())).toEqual({ 'var.label': '', 'var.prompt': '', 'fixture.me': 'root' });
 	});
 
 	it('names the first account, pool and live session', async () => {
@@ -131,7 +131,7 @@ describe('guideParams', () => {
 				{ id: 'l', status: 'active', liveness: 'active' }
 			]
 		});
-		expect(await guideParams(qc())).toMatchObject({ me: 'root', account: 'main', pool: 'prod', session: 'l' });
+		expect(await guideParams(qc())).toMatchObject({ 'fixture.me': 'root', account: 'main', pool: 'prod', session: 'l' });
 	});
 });
 
@@ -184,9 +184,19 @@ describe('journey copy and chrome follow the active locale', () => {
 });
 
 describe('book driver slot', () => {
+	const shim = readFileSync('src/app.html', 'utf8').match(
+		/<script>([\s\S]*?)<\/script>/
+	);
+
+	function runShim(search: string): void {
+		history.replaceState(null, '', `/${search}`);
+		new Function(shim?.[1] ?? '')();
+	}
+
 	beforeEach(() => {
 		sessionStorage.clear();
 		delete window.__journey;
+		delete (window as Window & { __journeyReady?: unknown }).__journeyReady;
 	});
 
 	it('remembers the driver mark across the plain routes the driver reloads', () => {
@@ -195,23 +205,26 @@ describe('book driver slot', () => {
 		expect(driverRun(sessionStorage, '')).toBe(true);
 	});
 
+	it('parks the slot in the document head, before the app can boot', () => {
+		expect(shim?.[1]).toContain('__journeyReady');
+	});
+
 	it('leaves the slot alone outside a driver run', () => {
-		reserveRuntime();
+		runShim('');
 		expect(window.__journey).toBeUndefined();
 	});
 
 	it('holds the slot so the driver cannot mount a probe-less runtime', () => {
-		driverRun(sessionStorage, '?journey=run');
-		reserveRuntime();
+		runShim('?journey=run');
 		expect(window.__journey).toBeDefined();
+		expect(sessionStorage.getItem('journey:driver')).toBe('1');
 	});
 
-	it('forwards the driver calls it parked to the app runtime once it mounts', async () => {
-		driverRun(sessionStorage, '?journey=run');
-		reserveRuntime();
+	it('forwards the calls it parked to the app runtime once that mounts', async () => {
+		runShim('?journey=run');
 		const parked = window.__journey?.driver.step();
 		const real = { driver: { step: () => Promise.resolve({ done: true }) } } as unknown as JourneyApi;
-		resolveRuntime(real);
+		resolveRuntime(real, window);
 		await expect(parked).resolves.toEqual({ done: true });
 	});
 });

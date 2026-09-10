@@ -5,6 +5,7 @@ export default defineJourney({
 	title: 'Bring a machine into the fleet',
 	description: 'Access holds the people, their keys and the machines that run their agents.',
 	route: '/access',
+	fixture: 'instance',
 	variants: { viewport: ['desktop', 'mobile'], theme: ['dark'] },
 	level: 'checked',
 	steps: [
@@ -34,7 +35,7 @@ export default defineJourney({
 		},
 		{
 			id: 'user',
-			target: 'user[{me}]',
+			target: 'user[{fixture.me}]',
 			do: { kind: 'click' },
 			say: {
 				title: 'Open a user',

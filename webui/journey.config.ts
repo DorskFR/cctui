@@ -14,6 +14,16 @@ export default defineConfig({
 		timeout: 120000
 	},
 	journeys: 'journeys/*.journey.ts',
+	// A step addressing a real row (`user[{fixture.me}]`) needs the name the
+	// instance answers to. The app fills the same keys from `guideParams`.
+	fixtures: {
+		instance: {
+			setup: async ({ request }) => {
+				const me = await (await request.get('/api/v1/me')).json();
+				return { me: me.user_name };
+			}
+		}
+	},
 	// The guided fills take any text; the book types these so the spawn-session
 	// screenshots keep their captions.
 	vars: {

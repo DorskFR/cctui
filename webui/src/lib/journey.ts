@@ -143,7 +143,7 @@ export type GuideParams = Record<string, string>;
 export async function guideParams(qc: QueryClient): Promise<GuideParams> {
 	const out: GuideParams = { 'var.label': '', 'var.prompt': '' };
 	const me = await qc.fetchQuery({ queryKey: ['me'], queryFn: endpoints.me, staleTime: 5 * 60_000 });
-	if (me.user_name) out.me = me.user_name;
+	if (me.user_name) out['fixture.me'] = me.user_name;
 	const [accounts, pools, sessions] = await Promise.all([
 		qc.fetchQuery({ queryKey: ['accounts'], queryFn: endpoints.accounts }),
 		qc.fetchQuery({ queryKey: ['account-pools'], queryFn: endpoints.accountPools }),
@@ -197,47 +197,11 @@ export function driverRun(storage: Storage = sessionStorage, search = location.s
 	return storage.getItem(DRIVER_MARK) === '1';
 }
 
-export const SLOT_TIMEOUT = 60_000;
-
-let slot: JourneyApi | null = null;
-let ready: ((api: JourneyApi) => void) | null = null;
-
-/** `mount()` keeps the first runtime that claims `window.__journey`, and the
- *  book driver claims it — without probes — as soon as the page loads. Holding
- *  the slot with a forwarder makes the driver wait for the app's runtime, so
- *  probe-gated steps read the same registry the guide does. */
-export function reserveRuntime(): void {
-	if (!driverRun() || window.__journey) return;
-	let timer: ReturnType<typeof setTimeout>;
-	const pending = new Promise<JourneyApi>((resolve, reject) => {
-		ready = (api) => {
-			clearTimeout(timer);
-			resolve(api);
-		};
-		timer = setTimeout(
-			() => reject(new Error('journey: the app runtime never mounted')),
-			SLOT_TIMEOUT
-		);
-	});
-	pending.catch(() => {});
-	const on = <T>(use: (api: JourneyApi) => T | Promise<T>): Promise<T> => pending.then(use);
-	slot = {
-		applyVariant: (dim, value) => on((a) => a.applyVariant(dim, value)),
-		driver: {
-			load: (ir, opts) => on((a) => a.driver.load(ir, opts)),
-			step: () => on((a) => a.driver.step()),
-			acted: () => on((a) => a.driver.acted()),
-			settle: () => on((a) => a.driver.settle())
-		}
-	} as JourneyApi;
-	window.__journey = slot;
+/** The slot forwarder parked in `app.html` waits on this; handing it the app's
+ *  runtime is what releases the driver. */
+export function resolveRuntime(api: JourneyApi, w: Window = window): void {
+	(w as Window & { __journeyReady?: (api: JourneyApi) => void }).__journeyReady?.(api);
 }
-
-export function resolveRuntime(api: JourneyApi): void {
-	ready?.(api);
-}
-
-if (browser) reserveRuntime();
 
 let mounted: Promise<void> | null = null;
 
@@ -246,6 +210,8 @@ let mounted: Promise<void> | null = null;
  *  than the local cache. */
 export function mountJourneys(qc: QueryClient): Promise<void> {
 	mounted ??= (async () => {
+		const driver = browser && driverRun();
+		if (driver) delete window.__journey;
 		await settings.load();
 		const probes = createProbes(qc);
 		let api: JourneyApi | null = null;
@@ -261,7 +227,6 @@ export function mountJourneys(qc: QueryClient): Promise<void> {
 			markSeen: () => markSeen(self()),
 			fallback
 		});
-		if (slot && window.__journey === slot) delete window.__journey;
 		api = mount({
 			storage: settingsStorage,
 			navigate: (route) => goto(route),
@@ -277,10 +242,10 @@ export function mountJourneys(qc: QueryClient): Promise<void> {
 			}
 		});
 		host = { api, qc, probes };
-		resolveRuntime(api);
+		if (driver) resolveRuntime(api);
 		// Registering arms `autostart`, which would draw the welcome deck over
 		// whatever screen the driver is capturing; the driver hands it the IR.
-		if (!slot) await api.register(publicJourneys);
+		if (!driver) await api.register(publicJourneys);
 		watchLocale(api);
 	})();
 	return mounted;
