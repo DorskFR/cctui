@@ -112,6 +112,7 @@ export type * from './RelabelTokenRequest';
 export type * from './ReleaseNote';
 export type * from './RenameMachineRequest';
 export type * from './RenameRequest';
+export type * from './ReorderProfilesRequest';
 export type * from './RescrubReport';
 export type * from './RescrubRequest';
 export type * from './ReviewCommentUpsert';
