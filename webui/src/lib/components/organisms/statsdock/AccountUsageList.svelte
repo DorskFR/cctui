@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { useAccounts } from '$lib/queries';
+	import { useAccounts, useRedirectChips } from '$lib/queries';
 	import AccountCard from '$lib/components/organisms/AccountCard.svelte';
 	import { Text } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
@@ -8,6 +8,7 @@
 	// screen shows, in its read-only gauge form.
 	const accounts = useAccounts();
 	const rows = $derived(accounts.data ?? []);
+	const chips = useRedirectChips();
 </script>
 
 {#if accounts.isLoading}
@@ -17,7 +18,7 @@
 {:else}
 	<div class="list">
 		{#each rows as a (a.id)}
-			<AccountCard account={a} compact showOwner />
+			<AccountCard account={a} compact showOwner redirects={chips.chipsFor(a.id)} />
 		{/each}
 	</div>
 {/if}
