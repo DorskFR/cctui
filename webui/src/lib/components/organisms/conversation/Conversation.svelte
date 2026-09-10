@@ -11,6 +11,7 @@
 	import type { RenderWindow } from './jump';
 	import type { Line } from './types';
 	import { m } from '$lib/paraglide/messages';
+	import { untrack } from 'svelte';
 
 	let {
 		stream,
@@ -34,7 +35,8 @@
 		ontoggleselect,
 		pinnedSeqs = new Set<number>(),
 		onpin,
-		jumper = $bindable()
+		jumper = $bindable(),
+		focusTs = null
 	}: {
 		/** Live-stream controller. Passed whole rather than as a dozen
 		 * pass-through props; its `$state` fields stay reactive when read through it. */
@@ -64,6 +66,9 @@
 		/** Bound out: the render-window half of `ensureSeqVisible` lives here,
 		 *  since `renderLimit` is component state. */
 		jumper?: RenderWindow;
+		/** `ts` of the searched-for message, when opened from a search hit; gets
+		 *  the persistent focus ring and is scrolled to on open. */
+		focusTs?: number | null;
 	} = $props();
 
 	// ── Lazy render of large transcripts ───────────────────
@@ -88,10 +93,52 @@
 		grow: () => scroll.holdForPrepend(() => (renderLimit += RENDER_CHUNK))
 	};
 	const visibleLines = $derived(hiddenOlder > 0 ? lines.slice(hiddenOlder) : lines);
-	async function loadOlder() {
+	export async function loadOlder() {
 		if (hiddenOlder === 0 && canFetchOlder && onfetcholder) await onfetcholder();
 		scroll.holdForPrepend(() => (renderLimit += RENDER_CHUNK));
 	}
+
+	// ── Search focus ────────────────────────────────────────────────────────
+	// Matched by `ts` rather than causal seq: `Line` carries no seq today. The
+	// drawer resolves focusSeq → focusTs from the raw events.
+	const focusIdx = $derived(focusTs == null ? -1 : lines.findIndex((l) => l.ts === focusTs));
+	// The focused line is usually far above the tail render window; widen the
+	// window so it mounts at all.
+	$effect(() => {
+		if (focusIdx < 0) return;
+		const needed = lines.length - focusIdx + RENDER_CHUNK;
+		if (needed > renderLimit) renderLimit = needed;
+	});
+
+	// Dropped on the first real scroll gesture, so the ring marks the hit
+	// without following the user around the transcript.
+	let ringDismissedAt = $state(0);
+	$effect(() => {
+		void focusTs;
+		ringDismissedAt = untrack(() => scroll.gestures);
+	});
+	const showFocusRing = $derived(focusIdx >= 0 && scroll.gestures === ringDismissedAt);
+
+	let focusEl = $state<HTMLElement | undefined>(undefined);
+	// ── INTEGRATION NOTE (wave 8) ───────────────────────────────────────────
+	// Deliberately LOCAL and minimal: only handles the already-rendered-window
+	// case. Reconcile this call site onto lane w8-A's `ensureSeqVisible(seq)`,
+	// which also pages older history until the seq is in `lines`.
+	function scrollFocusLineIntoViewLocal() {
+		const el = focusEl;
+		if (!el) return;
+		el.scrollIntoView({ block: 'center', behavior: 'auto' });
+	}
+	let scrolledToTs = $state<number | null>(null);
+	$effect(() => {
+		if (focusTs == null) {
+			scrolledToTs = null;
+			return;
+		}
+		if (!focusEl || scrolledToTs === focusTs) return;
+		scrolledToTs = focusTs;
+		requestAnimationFrame(scrollFocusLineIntoViewLocal);
+	});
 
 	// Suppress the live preamble block when the same assistant prose has already
 	// streamed into the transcript.
@@ -106,16 +153,35 @@
 	});
 </script>
 
+{#snippet convLine(ln: Line)}
+	<ConversationLine
+		{ln}
+		{archived}
+		pinned={ln.seq !== undefined && pinnedSeqs.has(ln.seq)}
+		{onpin}
+		onretry={(ts) => stream.retryFailed(ts)}
+		{onedit}
+		onsaveimage={saveLineImage}
+		oncopymarkdown={copyLineMarkdown}
+		{forkable}
+		{selectMode}
+		selectedForFork={ln.messageId ? selected.has(ln.messageId) : false}
+		{onforkfrom}
+		{onforkafter}
+		{ontoggleselect}
+	/>
+{/snippet}
+
 <div class="conv-wrap">
 	<!-- svelte-ignore a11y_no_static_element_interactions -->
 	<div
 		class="conv"
 		bind:this={scroll.scroller}
 		onscroll={scroll.onScroll}
-		onwheel={scroll.markUserScroll}
-		ontouchmove={scroll.markUserScroll}
+		onwheel={scroll.markScrollGesture}
+		ontouchmove={scroll.markScrollGesture}
 		onpointerdown={scroll.markUserScroll}
-		onkeydown={scroll.markUserScroll}
+		onkeydown={scroll.markScrollGesture}
 	>
 		{#if isLoading}
 			<div class="placeholder"><span class="spin"></span></div>
@@ -165,23 +231,14 @@
 				<!-- No assistant bubble to hang this turn summary on; it still shows,
 				     as a bare footer. -->
 				<TurnSummaryFooter summary={ln.summary} />
+			{:else if hiddenOlder + i === focusIdx}
+				<!-- The searched-for message: wrapped rather than styled in place so
+				     ConversationLine stays untouched. -->
+				<div class="focus-wrap" class:line-focus={showFocusRing} bind:this={focusEl}>
+					{@render convLine(ln)}
+				</div>
 			{:else}
-				<ConversationLine
-					{ln}
-					{archived}
-					pinned={ln.seq !== undefined && pinnedSeqs.has(ln.seq)}
-					{onpin}
-					onretry={(ts) => stream.retryFailed(ts)}
-					onedit={onedit}
-					onsaveimage={saveLineImage}
-					oncopymarkdown={copyLineMarkdown}
-					{forkable}
-					{selectMode}
-					selectedForFork={ln.messageId ? selected.has(ln.messageId) : false}
-					{onforkfrom}
-					{onforkafter}
-					{ontoggleselect}
-				/>
+				{@render convLine(ln)}
 			{/if}
 		{/each}
 
@@ -385,6 +442,31 @@
 		font-size: var(--fs-sm);
 		opacity: 0.9;
 	}
+	/* The searched-for message, opened from a search hit. A ring on a wrapper
+	   (ConversationLine is owned elsewhere) so the *message* is findable even
+	   when the term also matches a dozen other lines. */
+	.focus-wrap {
+		display: flex;
+		flex-direction: column;
+		max-width: 100%;
+		border-radius: var(--r-md);
+		transition: box-shadow 160ms var(--ease), background 160ms var(--ease);
+	}
+	.focus-wrap.line-focus {
+		box-shadow: 0 0 0 2px var(--accent);
+		background: color-mix(in srgb, var(--accent) 10%, transparent);
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.focus-wrap {
+			transition: none;
+		}
+	}
+	/* The hit prev/next stepping currently sits on. */
+	.conv :global(mark.search-hit.hit-current) {
+		outline: 2px solid var(--accent);
+		outline-offset: 1px;
+	}
+
 	/* Lazy-render "load older" control. */
 	.conv :global(.load-older) {
 		align-self: center;

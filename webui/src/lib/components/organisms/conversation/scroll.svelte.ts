@@ -35,8 +35,17 @@ export class ScrollController {
 	// visualViewport resize) and must never clear the pin.
 	#lastUserScroll = 0;
 
+	// Counts wheel/touchmove/keyboard gestures only — deliberately not
+	// pointerdown, so a click inside a message is not a "the user moved" signal.
+	gestures = $state(0);
+
 	markUserScroll = () => {
 		this.#lastUserScroll = performance.now();
+	};
+
+	markScrollGesture = () => {
+		this.gestures++;
+		this.markUserScroll();
 	};
 
 	#atBottom(): boolean {

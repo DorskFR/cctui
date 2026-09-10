@@ -84,6 +84,11 @@ auto_approve: boolean,
  */
 match_snippet?: string | null, 
 /**
+ * Causal seq of the event `match_snippet` was taken from, so clients can
+ * open the conversation at the hit. `None` for id/name/dir-only matches.
+ */
+match_seq?: number | null, 
+/**
  * Cold-cache surfacing. Timestamp of the most recent
  * assistant turn (the last `session_token_usage` row). Lets the client
  * predict prompt-cache expiry — Anthropic's cache is a ~5-minute sliding

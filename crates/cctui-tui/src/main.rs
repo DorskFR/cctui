@@ -710,6 +710,7 @@ fn register_session(app: &mut App, session: cctui_proto::models::Session) {
         effort: None,
         auto_approve: false,
         match_snippet: None,
+        match_seq: None,
         last_activity_at: None,
         cache_cold: false,
         estimated_burst_tokens: None,

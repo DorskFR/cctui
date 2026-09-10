@@ -30,7 +30,11 @@
 		pins = [],
 		lines = [],
 		onjumpseq,
-		onunpin
+		onunpin,
+		hitCount = 0,
+		hitIndex = -1,
+		onprevhit,
+		onnexthit
 	}: {
 		view: ViewOpts;
 		autoApprove: boolean;
@@ -46,6 +50,11 @@
 		/** Omit both to hide the pins button (e.g. no session context). */
 		onjumpseq?: (seq: number) => void;
 		onunpin?: (seq: number) => void;
+		/** Search-hit stepping; the whole group hides when there are no hits. */
+		hitCount?: number;
+		hitIndex?: number;
+		onprevhit?: () => void;
+		onnexthit?: () => void;
 	} = $props();
 
 	const QUICK_TINT: Record<QuickFilterId, string> = {
@@ -140,6 +149,15 @@
 			/>
 		</Popover>
 	</div>
+	{#if hitCount > 0}
+		<div class="hitbar row" role="group" aria-label={m.conversation_hits_aria()}>
+			<Toggle pressed={false} title={m.conversation_hit_prev()} onclick={onprevhit}>↑</Toggle>
+			<Toggle pressed={false} title={m.conversation_hit_next()} onclick={onnexthit}>↓</Toggle>
+			<span class="hit-count" aria-live="polite"
+				>{m.conversation_hit_counter({ n: hitIndex + 1, total: hitCount })}</span
+			>
+		</div>
+	{/if}
 	<!-- Formatting toggles: gray when off, colored when on. -->
 	<div class="fmtbar row row-wrap" class:panel-open={mobilePanel === 'format'} role="group" aria-label={m.conversation_formatting_aria()}>
 		<Toggle pressed={view.prettyJson} onclick={() => (view.prettyJson = !view.prettyJson)}>{m.conversation_fmt_json()}</Toggle>
@@ -239,11 +257,21 @@
 	}
 	.tagbar,
 	.fmtbar,
-	.behbar {
+	.behbar,
+	.hitbar {
 		gap: var(--sp-1);
 	}
+	.hitbar {
+		align-items: center;
+	}
+	.hit-count {
+		color: var(--text-muted);
+		font-variant-numeric: tabular-nums;
+		white-space: nowrap;
+	}
 	.fmtbar,
-	.behbar {
+	.behbar,
+	.hitbar {
 		padding-left: var(--sp-3);
 		border-left: 1px solid var(--border);
 	}

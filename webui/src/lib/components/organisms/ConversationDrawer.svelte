@@ -38,6 +38,7 @@
 	import { ConversationStream } from './conversation/stream.svelte';
 	import { ScrollController } from './conversation/scroll.svelte';
 	import { createSeqJumper, type RenderWindow } from './conversation/jump';
+	import { SearchHitStepper } from './conversation/searchHits.svelte';
 	import { ForkController } from './conversation/fork.svelte';
 	import { SessionActions } from './conversation/sessionActions.svelte';
 	import { m } from '$lib/paraglide/messages';
@@ -46,12 +47,16 @@
 		session,
 		onclose,
 		highlight = [],
+		focusSeq = null,
 		onNewFromScript,
 		onNavigate
 	}: {
 		session: SessionListItem;
 		onclose: () => void;
 		highlight?: string[];
+		/** Causal seq of the matched message when opened from a search hit
+		 *  (`SessionListItem.match_seq`). `null` opens tail-anchored as usual. */
+		focusSeq?: number | null;
 		// "New session from same script" for archived sessions.
 		onNewFromScript?: (s: SessionListItem) => void;
 		// Open another session in place by id — used to jump straight to a
@@ -187,7 +192,8 @@
 		earlierExhausted = false;
 	});
 	const canFetchEarlier = $derived(
-		!earlierExhausted && (history.data?.length ?? 0) >= CONVERSATION_FETCH_LIMIT
+		!earlierExhausted &&
+			((history.data?.length ?? 0) >= CONVERSATION_FETCH_LIMIT || earlier.length > 0)
 	);
 
 	const events = $derived.by(() => {
@@ -217,6 +223,41 @@
 			fetchingEarlier = false;
 		}
 	}
+
+	// ── Search focus: open centred on the hit instead of the tail ───────────
+	// One extra window fetch, prepended into `earlier`. The cached tail query is
+	// left alone so live events, dedup and jump-to-bottom keep working; on a
+	// session longer than both windows the two are not contiguous, and the
+	// jump-to-bottom pill is the bridge.
+	const FOCUS_CONTEXT = 40;
+	let focusFetched = $state<string | null>(null);
+	$effect(() => {
+		const seq = focusSeq;
+		const sid = id;
+		if (seq == null) return;
+		const token = `${sid}|${seq}`;
+		if (focusFetched === token) return;
+		focusFetched = token;
+		void (async () => {
+			const win = await endpoints.conversation(sid, {
+				limit: FOCUS_CONTEXT * 2,
+				before: seq + FOCUS_CONTEXT
+			});
+			if (sid !== id) return;
+			// A short window really is the head of the transcript: `before` is an
+			// absolute cursor, not a page number.
+			if (win.length < FOCUS_CONTEXT * 2) earlierExhausted = true;
+			earlier = [...win, ...earlier];
+		})();
+	});
+
+	// `Line` carries no seq, so the focused line is addressed by `ts`. A pruned
+	// or filtered-out event resolves to null and the drawer just opens normally.
+	const focusTs = $derived.by(() => {
+		if (focusSeq == null) return null;
+		const ev = events.find((e) => e.seq === focusSeq);
+		return ev ? Number(ev.ts) : null;
+	});
 
 	// ── Line building (parse + filter + dedup + delivery tinting) ───────────
 	// Render markdown honoring the table formatting toggle. Local file paths
@@ -268,10 +309,12 @@
 		void stream.working;
 		scroll.followIfStuck();
 	});
-	// Reset to bottom + sticky when switching sessions.
+	// Reset to bottom + sticky when switching sessions — except when opened on a
+	// search hit, which must land mid-transcript and stay there.
 	$effect(() => {
 		void id;
-		scroll.resetForSession();
+		if (focusSeq == null) scroll.resetForSession();
+		else scroll.unstick();
 	});
 	// Keep pinned to the bottom while the composer grows. Re-runs when
 	// the scroller / textarea attach (the controller reads both reactively).
@@ -298,6 +341,21 @@
 			? pinActions.unpin(id, ln.seq)
 			: pinActions.pin(id, ln.seq, ln.messageId ?? null));
 	}
+	// ── Search hit stepping ─────────────────────────────────────────────────
+	let conv = $state<Conversation>();
+	const hits = new SearchHitStepper({
+		scroller: () => scroll.scroller,
+		loadOlder: () => conv?.loadOlder()
+	});
+	$effect(() => {
+		void lines.length;
+		void highlight;
+		hits.refresh();
+	});
+	$effect(() => {
+		void id;
+		hits.reset();
+	});
 
 	const isCodexSession = $derived((session.adapter_id ?? '').startsWith('codex'));
 
@@ -470,6 +528,10 @@
 			/>
 
 			<DrawerToolbar
+				hitCount={hits.count}
+				hitIndex={hits.index}
+				onprevhit={hits.prev}
+				onnexthit={hits.next}
 				bind:view
 				autoApprove={session.auto_approve}
 				bind:mobilePanel
@@ -517,6 +579,7 @@
 			{/if}
 
 			<Conversation
+				bind:this={conv}
 				{stream}
 				{scroll}
 				sessionId={id}
@@ -537,6 +600,7 @@
 				{pinnedSeqs}
 				onpin={togglePinLine}
 				bind:jumper={renderWindow}
+				{focusTs}
 			/>
 
 			<ConversationComposer

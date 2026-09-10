@@ -689,6 +689,17 @@
 
 	// keep the open drawer's session object fresh as the list refetches
 	const liveOpen = $derived(pickFreshSession(openSession, [...items, ...pageRows]));
+
+	// Opening a CARD while searching focuses that card's transcript hit. Kept
+	// keyed by session id so every other open path (deep link, notification,
+	// fork navigation) and every list refetch leave it null.
+	let focusHit = $state<{ id: string; seq: number } | null>(null);
+	function openFromCard(s: SessionListItem) {
+		const seq = searchTerms.length ? s.match_seq : null;
+		focusHit = seq == null ? null : { id: s.id, seq };
+		openSession = s;
+	}
+	const focusSeq = $derived(focusHit && focusHit.id === liveOpen?.id ? focusHit.seq : null);
 </script>
 
 <SessionControls
@@ -751,7 +762,7 @@
 			stacked={subGroups.length > 0}
 			pendingCount={pending(s.id)}
 			unreadCount={openSession?.id === s.id ? 0 : (s.unread_count ?? 0)}
-			onopen={(x) => (openSession = x)}
+			onopen={openFromCard}
 			selectable={list.selecting}
 			selected={list.selected.has(s.id)}
 			onToggleSelect={list.toggleSelect}
@@ -844,7 +855,7 @@
 				accentHue={accentOf(s)}
 				pendingCount={pending(s.id)}
 				unreadCount={openSession?.id === s.id ? 0 : (s.unread_count ?? 0)}
-				onopen={(x) => (openSession = x)}
+				onopen={openFromCard}
 				selectable={allowSelect && list.selecting}
 				selected={list.selected.has(s.id)}
 				onToggleSelect={list.toggleSelect}
@@ -1085,6 +1096,7 @@
 		session={liveOpen}
 		onclose={() => (openSession = null)}
 		highlight={searchTerms}
+		{focusSeq}
 		onNewFromScript={newFromScript}
 		onNavigate={(sid) => void navigateToForked(sid)}
 	/>
