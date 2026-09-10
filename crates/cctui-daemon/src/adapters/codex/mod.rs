@@ -25,6 +25,7 @@
 
 pub(crate) mod app_server;
 mod contract;
+pub mod daemon;
 mod log_tail;
 mod model_list;
 mod persist;

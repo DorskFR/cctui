@@ -695,7 +695,7 @@ fn initialize_req() -> Value {
 /// The `initialized` notification that completes the handshake. Codex expects
 /// it after the client has processed the `initialize` response; only then is
 /// the server fully ready for `thread/*` requests.
-fn initialized_notification() -> Value {
+pub(super) fn initialized_notification() -> Value {
     json!({"jsonrpc": "2.0", "method": "initialized"})
 }
 
@@ -704,7 +704,7 @@ fn initialized_notification() -> Value {
 /// [`contract::CODEX_MIN_VERSION`] (the protocol shapes cctui relies on are not
 /// guaranteed there). The version is returned so it can ride on the
 /// [`AdapterEvent::SessionStarted`] meta for downstream diagnose reports.
-fn record_codex_version(response: &Value) -> Option<String> {
+pub(super) fn record_codex_version(response: &Value) -> Option<String> {
     let user_agent = response.pointer("/result/userAgent").and_then(Value::as_str);
     let version = user_agent.and_then(contract::version_from_user_agent);
     match &version {
