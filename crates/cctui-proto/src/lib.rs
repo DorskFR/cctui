@@ -5,6 +5,7 @@ pub mod blob;
 pub mod chunk;
 pub mod classifier;
 pub mod codex_catalog;
+pub mod codex_config;
 pub mod compress;
 pub mod diagnose;
 pub mod git;
