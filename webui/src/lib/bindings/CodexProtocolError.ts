@@ -3,4 +3,8 @@
 /**
  * One JSON-RPC protocol error (`<method>: <error>`), secret-redacted.
  */
-export type CodexProtocolError = { ts_ms: number, message: string, };
+export type CodexProtocolError = { ts_ms: number, message: string, 
+/**
+ * Which transport the error was observed on: `stdio` or `shared`.
+ */
+transport: string, };

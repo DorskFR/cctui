@@ -576,7 +576,7 @@
 				bind:mobilePanel
 				ontoggleAuto={sa.toggleAutoApprove}
 				ondiagnose={() => (diagnoseOpen = true)}
-				onterminal={isCodexSession ? undefined : () => (terminalOpen = !terminalOpen)}
+				onterminal={() => (terminalOpen = !terminalOpen)}
 				{terminalOpen}
 				{pins}
 				{lines}
@@ -589,7 +589,7 @@
 				<DiagnosePanel sessionId={id} {session} onclose={closeDiagnose} />
 			{/if}
 
-			{#if terminalOpen && !isCodexSession}
+			{#if terminalOpen}
 				<TerminalPane sessionId={id} onclose={() => (terminalOpen = false)} />
 			{/if}
 

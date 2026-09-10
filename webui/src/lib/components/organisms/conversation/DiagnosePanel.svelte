@@ -9,6 +9,7 @@
 	import type { DiagnoseFact } from '@bindings/DiagnoseFact';
 	import type { SessionListItem } from '@bindings/SessionListItem';
 	import { sessionEnd } from '$lib/sessionEnd';
+	import { fmtAge, silenceReasons } from '$lib/diagnoseSilence';
 	import { Button, Heading, Modal, Text, Timestamp } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 
@@ -24,14 +25,6 @@
 
 	const query = useSessionDiagnose(() => sessionId);
 	const end = $derived(session ? sessionEnd(session) : null);
-
-	function fmtAge(ms: number | null): string {
-		if (ms === null) return m.diagnose_undated();
-		if (ms < 1_000) return m.diagnose_age_ms({ ms });
-		if (ms < 60_000) return m.diagnose_age_s({ s: Math.floor(ms / 1_000) });
-		if (ms < 3_600_000) return m.diagnose_age_m({ min: Math.floor(ms / 60_000) });
-		return m.diagnose_age_h({ h: Math.floor(ms / 3_600_000) });
-	}
 
 	// Compact one-line rendering of a fact value: strings as-is, objects as
 	// `key: value` pairs with nulls dropped (the reason a field is absent is
@@ -100,28 +93,6 @@
 		return out;
 	}
 
-	const STALLED_RPC_MS = 60_000;
-
-	// Each entry is an independent reason the session can look silent; they are
-	// derived from the codex facts alone, no extra sensing.
-	function silenceReasons(cx: CodexDiagnose, generatedAtMs: number): string[] {
-		const out: string[] = [];
-		const frames = cx.rpc_tail ?? [];
-		const lastFrameMs = frames.length ? frames[frames.length - 1].ts_ms : null;
-		const idleMs = lastFrameMs === null ? null : generatedAtMs - lastFrameMs;
-		if (cx.pending_rpc_count > 0 && idleMs !== null && idleMs > STALLED_RPC_MS)
-			out.push(
-				m.diagnose_codex_silence_stalled_rpc({ count: cx.pending_rpc_count, age: fmtAge(idleMs) })
-			);
-		if (!cx.active_turn_id) out.push(m.diagnose_codex_silence_no_turn());
-		if (cx.auth_state && !cx.auth_state.startsWith('gateway env present'))
-			out.push(m.diagnose_codex_silence_auth({ state: cx.auth_state }));
-		if (cx.registry_live_mismatch)
-			out.push(m.diagnose_codex_silence_mismatch({ detail: cx.registry_live_mismatch }));
-		if (!cx.live) out.push(m.diagnose_codex_silence_not_live());
-		return out;
-	}
-
 	function stderrText(cx: CodexDiagnose, generatedAtMs: number): string {
 		return (cx.stderr_tail ?? []).map((l) => `${fmtAge(generatedAtMs - l.ts_ms)}  ${l.line}`).join('\n');
 	}
@@ -130,7 +101,7 @@
 		return (cx.rpc_tail ?? [])
 			.map(
 				(f) =>
-					`${fmtAge(generatedAtMs - f.ts_ms)}  ${f.direction === 'out' ? '→' : '←'} ${f.label}  ${f.json}`
+					`${fmtAge(generatedAtMs - f.ts_ms)}  [${f.transport}] ${f.direction === 'out' ? '→' : '←'} ${f.label}  ${f.json}`
 			)
 			.join('\n');
 	}
@@ -241,6 +212,7 @@
 								{#each cx.protocol_errors ?? [] as err (err.ts_ms + err.message)}
 									<li>
 										<span class="age">{fmtAge(resp.daemon.generated_at_ms - err.ts_ms)}</span>
+										<span class="age">[{err.transport}]</span>
 										{err.message}
 									</li>
 								{/each}

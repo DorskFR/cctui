@@ -6,31 +6,31 @@
  * Computed from full SQL aggregates + the live registry rather than the capped
  * session list, so the numbers stay correct past the list's display limit.
  */
-export type SessionStats = {
+export type SessionStats = { 
 /**
  * All sessions, including archived.
  */
-total: number,
+total: number, 
 /**
  * Sessions currently live in the registry (active or new).
  */
-live: number,
+live: number, 
 /**
  * Sessions whose classifier bucket is `Blocked` (✋ needs input).
  */
-needs_input: number,
+needs_input: number, 
 /**
  * Sessions in the sticky `archived` state.
  */
-archived: number,
+archived: number, 
 /**
  * Sessions first registered in local calendar periods, including archived.
  */
-today: number, yesterday: number,
+today: number, yesterday: number, 
 /**
  * Since Monday at local midnight.
  */
-week: number,
+week: number, 
 /**
  * Since the first day of the local month.
  */

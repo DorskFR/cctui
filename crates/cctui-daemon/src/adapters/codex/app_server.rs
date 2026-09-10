@@ -2254,9 +2254,9 @@ impl CodexSession {
                                 pid: child.id(),
                                 active_turn_id: active_turn.id().map(str::to_owned),
                                 pending_rpc_methods: pending_rpcs.pending_methods(),
-                                protocol_errors: rings.protocol_errors(),
+                                protocol_errors: rings.protocol_errors_with_shared(),
                                 stderr_tail: rings.stderr_tail(),
-                                rpc_tail: rings.rpc_tail(),
+                                rpc_tail: rings.rpc_tail_with_shared(),
                                 rollout_path: rollout_path.clone(),
                                 rollout_size_bytes: rollout_path
                                     .as_ref()
@@ -3168,17 +3168,43 @@ fn stderr_tail(rings: &DiagnoseRings) -> String {
     if lines.is_empty() { String::new() } else { format!("; last stderr:\n{}", lines.join("\n")) }
 }
 
-/// The always-on builtin detector set. The daemon's synced user patterns live
-/// in the supervisor and are not reachable from the driver, so the rings scrub
-/// with the builtins alone rather than not scrubbing at all.
-fn ring_scrub() -> &'static CompiledPatterns {
-    static SCRUB: OnceLock<CompiledPatterns> = OnceLock::new();
-    SCRUB.get_or_init(|| redact::compile(true, &[], &cctui_crypto::vault_key()))
+/// The per-session app-server child's stdio pipes.
+pub const TRANSPORT_STDIO: &str = "stdio";
+/// The process-wide `codex app-server daemon` control socket.
+pub const TRANSPORT_SHARED: &str = "shared";
+
+type RingScrub = std::sync::RwLock<Arc<CompiledPatterns>>;
+
+/// The effective detector set for the rings: the builtins, plus whatever custom
+/// patterns the server last synced (see [`set_ring_scrub`]). Builtins stay on
+/// unconditionally — a session's tool output is echoed into these rings, so
+/// "scrubbing disabled" must not mean "tokens in the diagnose report".
+fn ring_scrub_cell() -> &'static RingScrub {
+    static SCRUB: OnceLock<RingScrub> = OnceLock::new();
+    SCRUB.get_or_init(|| {
+        std::sync::RwLock::new(Arc::new(redact::compile(true, &[], &cctui_crypto::vault_key())))
+    })
+}
+
+/// Install the user-configured scrub patterns on the rings. Called by the
+/// supervisor whenever the server syncs a `SecretScrubConfig`; the rings live
+/// in the driver and have no other route to them.
+pub fn set_ring_scrub(user: &[(String, String)]) {
+    let compiled = Arc::new(redact::compile(true, user, &cctui_crypto::vault_key()));
+    if let Ok(mut guard) = ring_scrub_cell().write() {
+        *guard = compiled;
+    }
+}
+
+fn ring_scrub() -> Arc<CompiledPatterns> {
+    ring_scrub_cell()
+        .read()
+        .map_or_else(|e| Arc::clone(&e.into_inner()), |g| Arc::clone(&g))
 }
 
 fn redact_text(text: &str) -> String {
     let mut value = Value::String(text.to_owned());
-    redact::redact_json(&mut value, ring_scrub());
+    redact::redact_json(&mut value, &ring_scrub());
     match value {
         Value::String(s) => s,
         _ => text.to_owned(),
@@ -3211,14 +3237,51 @@ fn now_ms() -> i64 {
 /// Every producer sits on the JSON-RPC write path or the stdout read loop, so
 /// the locks are `try_lock` only: a contended ring drops the entry rather than
 /// stalling the session.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct DiagnoseRings {
+    /// Stamped onto every entry so a reader can tell "no frames on the shared
+    /// connection" from "no frames at all".
+    transport: &'static str,
     stderr: StdMutex<VecDeque<CodexStderrLine>>,
     rpc: StdMutex<VecDeque<CodexRpcFrame>>,
     errors: StdMutex<VecDeque<CodexProtocolError>>,
 }
 
+impl Default for DiagnoseRings {
+    fn default() -> Self {
+        Self::new(TRANSPORT_STDIO)
+    }
+}
+
+/// The rings for the shared `codex app-server daemon` connection. That socket
+/// is process-wide, not per-session, so its frames are collected once here and
+/// merged into every session's diagnose snapshot.
+pub fn shared_rings() -> &'static Arc<DiagnoseRings> {
+    static RINGS: OnceLock<Arc<DiagnoseRings>> = OnceLock::new();
+    RINGS.get_or_init(|| Arc::new(DiagnoseRings::new(TRANSPORT_SHARED)))
+}
+
+/// Merge a session's stdio tail with the shared connection's, oldest first.
+/// Neither side is truncated against the other: the whole point of the tagging
+/// is that a flood on one transport must not hide the silence of the other.
+fn merge_by_ts<T: Clone, F: Fn(&T) -> i64>(a: Vec<T>, b: Vec<T>, ts: F) -> Vec<T> {
+    let mut out = a;
+    out.extend(b);
+    out.sort_by_key(|e| ts(e));
+    out
+}
+
 impl DiagnoseRings {
+    #[must_use]
+    pub fn new(transport: &'static str) -> Self {
+        Self {
+            transport,
+            stderr: StdMutex::default(),
+            rpc: StdMutex::default(),
+            errors: StdMutex::default(),
+        }
+    }
+
     fn push<T>(ring: &StdMutex<VecDeque<T>>, cap: usize, item: T) {
         let Ok(mut guard) = ring.try_lock() else { return };
         while guard.len() >= cap {
@@ -3239,7 +3302,7 @@ impl DiagnoseRings {
         );
     }
 
-    fn note_rpc(&self, direction: &'static str, value: &Value) {
+    pub fn note_rpc(&self, direction: &'static str, value: &Value) {
         let label = value
             .get("method")
             .and_then(Value::as_str)
@@ -3256,15 +3319,20 @@ impl DiagnoseRings {
                 direction: direction.to_owned(),
                 label: redact_text(&label),
                 json,
+                transport: self.transport.to_owned(),
             },
         );
     }
 
-    fn note_protocol_error(&self, message: &str) {
+    pub fn note_protocol_error(&self, message: &str) {
         Self::push(
             &self.errors,
             PROTOCOL_ERROR_RING,
-            CodexProtocolError { ts_ms: now_ms(), message: redact_text(message) },
+            CodexProtocolError {
+                ts_ms: now_ms(),
+                message: redact_text(message),
+                transport: self.transport.to_owned(),
+            },
         );
     }
 
@@ -3272,12 +3340,21 @@ impl DiagnoseRings {
         Self::snapshot(&self.stderr)
     }
 
-    fn rpc_tail(&self) -> Vec<CodexRpcFrame> {
+    pub fn rpc_tail(&self) -> Vec<CodexRpcFrame> {
         Self::snapshot(&self.rpc)
     }
 
-    fn protocol_errors(&self) -> Vec<CodexProtocolError> {
+    pub fn protocol_errors(&self) -> Vec<CodexProtocolError> {
         Self::snapshot(&self.errors)
+    }
+
+    /// This ring's frames plus the shared connection's, oldest first.
+    fn rpc_tail_with_shared(&self) -> Vec<CodexRpcFrame> {
+        merge_by_ts(self.rpc_tail(), shared_rings().rpc_tail(), |f| f.ts_ms)
+    }
+
+    fn protocol_errors_with_shared(&self) -> Vec<CodexProtocolError> {
+        merge_by_ts(self.protocol_errors(), shared_rings().protocol_errors(), |e| e.ts_ms)
     }
 }
 
@@ -3400,6 +3477,55 @@ mod tests {
         assert_eq!(rpc[0].label, "item/completed");
         assert!(!stderr[0].line.contains(token), "{}", stderr[0].line);
         assert!(!errors[0].message.contains(token), "{}", errors[0].message);
+    }
+
+    /// Without the tag a flood of stdio frames makes an entirely dead shared
+    /// connection look healthy — the blind spot CCT-966 opened.
+    #[test]
+    fn ring_entries_carry_the_transport_that_produced_them() {
+        let stdio = DiagnoseRings::default();
+        let shared = DiagnoseRings::new(TRANSPORT_SHARED);
+        stdio.note_rpc("out", &json!({"method": "turn/start"}));
+        shared.note_rpc("out", &json!({"method": "thread/list"}));
+        stdio.note_protocol_error("turn/start: boom");
+        shared.note_protocol_error("connection dropped before request 4 was answered");
+
+        assert_eq!(stdio.rpc_tail()[0].transport, "stdio");
+        assert_eq!(shared.rpc_tail()[0].transport, "shared");
+        assert_eq!(stdio.protocol_errors()[0].transport, "stdio");
+        assert_eq!(shared.protocol_errors()[0].transport, "shared");
+    }
+
+    #[test]
+    fn a_session_snapshot_merges_the_shared_connection_tail_oldest_first() {
+        let stdio = DiagnoseRings::default();
+        shared_rings().note_rpc("in", &json!({"method": "thread/list"}));
+        stdio.note_rpc("out", &json!({"method": "turn/start"}));
+
+        let merged = stdio.rpc_tail_with_shared();
+        assert!(merged.iter().any(|f| f.transport == "shared"), "{merged:?}");
+        assert!(merged.iter().any(|f| f.transport == "stdio"), "{merged:?}");
+        assert!(merged.windows(2).all(|w| w[0].ts_ms <= w[1].ts_ms), "{merged:?}");
+    }
+
+    /// The builtins alone would let a user-configured secret through; the
+    /// rings echo tool output, so this is a live leak path.
+    #[test]
+    fn diagnose_rings_apply_user_configured_scrub_patterns() {
+        set_ring_scrub(&[("acme_key".to_owned(), "ACME-[0-9]{6}".to_owned())]);
+        let rings = DiagnoseRings::default();
+        rings.note_rpc(
+            "in",
+            &json!({"method": "item/completed", "params": {"output": "token ACME-424242 ok"}}),
+        );
+        rings.note_stderr("leaked ACME-424242 to stderr");
+
+        let frame = &rings.rpc_tail()[0];
+        assert!(!frame.json.contains("ACME-424242"), "{}", frame.json);
+        assert!(frame.json.contains("[REDACTED:acme_key"), "{}", frame.json);
+        assert!(!rings.stderr_tail()[0].line.contains("ACME-424242"));
+
+        set_ring_scrub(&[]);
     }
 
     #[test]

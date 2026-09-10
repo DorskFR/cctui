@@ -32,6 +32,13 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_util::sync::CancellationToken;
 
+/// Every frame on this socket is mirrored into the shared diagnose ring,
+/// tagged `shared`, so the protocol tail does not go blind on the transport
+/// that carries all inventory/lifecycle/history traffic.
+fn rings() -> &'static Arc<super::app_server::DiagnoseRings> {
+    super::app_server::shared_rings()
+}
+
 const RPC_TIMEOUT: Duration = Duration::from_secs(30);
 const BACKOFF_MIN: Duration = Duration::from_millis(250);
 const BACKOFF_MAX: Duration = Duration::from_secs(30);
@@ -202,13 +209,16 @@ async fn handshake(endpoint: &DaemonEndpoint) -> Result<WsStream> {
         .context("codex control socket websocket upgrade")?;
 
     let id = next_id();
-    ws.send(Message::Text(initialize_req(id).to_string().into())).await?;
+    let init = initialize_req(id);
+    rings().note_rpc("out", &init);
+    ws.send(Message::Text(init.to_string().into())).await?;
     let resp = tokio::time::timeout(RPC_TIMEOUT, read_response(&mut ws, id))
         .await
         .map_err(|_| anyhow::anyhow!("codex daemon initialize timed out"))??;
     super::app_server::record_codex_version(&resp);
-    ws.send(Message::Text(super::app_server::initialized_notification().to_string().into()))
-        .await?;
+    let initialized = super::app_server::initialized_notification();
+    rings().note_rpc("out", &initialized);
+    ws.send(Message::Text(initialized.to_string().into())).await?;
     Ok(ws)
 }
 
@@ -227,8 +237,10 @@ async fn read_response(ws: &mut WsStream, id: i64) -> Result<Value> {
     while let Some(frame) = ws.next().await {
         let Message::Text(text) = frame? else { continue };
         let Ok(v) = serde_json::from_str::<Value>(&text) else { continue };
+        rings().note_rpc("in", &v);
         if v.get("id").and_then(Value::as_i64) == Some(id) {
             if let Some(err) = v.get("error") {
+                rings().note_protocol_error(&format!("initialize: {err}"));
                 anyhow::bail!("codex daemon initialize error: {err}");
             }
             return Ok(v);
@@ -256,7 +268,9 @@ async fn pump(
                 let frame = json!({
                     "jsonrpc": "2.0", "id": id, "method": method, "params": params,
                 });
+                rings().note_rpc("out", &frame);
                 if let Err(err) = ws.send(Message::Text(frame.to_string().into())).await {
+                    rings().note_protocol_error(&format!("{method}: write failed: {err}"));
                     let _ = reply.send(Err(anyhow::anyhow!("codex daemon write failed: {err}")));
                     break;
                 }
@@ -277,9 +291,9 @@ async fn pump(
         }
     }
     for (id, reply) in pending {
-        let _ = reply.send(Err(anyhow::anyhow!(
-            "codex daemon connection dropped before request {id} was answered"
-        )));
+        let message = format!("connection dropped before request {id} was answered");
+        rings().note_protocol_error(&message);
+        let _ = reply.send(Err(anyhow::anyhow!("codex daemon {message}")));
     }
 }
 
@@ -289,12 +303,16 @@ fn dispatch(
     events: &broadcast::Sender<DaemonEvent>,
 ) {
     let Ok(v) = serde_json::from_str::<Value>(text) else { return };
+    rings().note_rpc("in", &v);
     if let Some(id) = v.get("id").and_then(Value::as_i64)
         && let Some(reply) = pending.remove(&id)
     {
         let outcome = v.get("error").map_or_else(
             || Ok(v.get("result").cloned().unwrap_or(Value::Null)),
-            |err| Err(anyhow::anyhow!("codex daemon error: {err}")),
+            |err| {
+                rings().note_protocol_error(&format!("request {id}: {err}"));
+                Err(anyhow::anyhow!("codex daemon error: {err}"))
+            },
         );
         let _ = reply.send(outcome);
         return;
@@ -412,6 +430,33 @@ mod tests {
             }
             other => panic!("expected a notification, got {other:?}"),
         }
+    }
+
+    /// The end-to-end proof that the shared socket is no longer a blind spot:
+    /// a real request over a real WS connection must land in the ring tagged
+    /// `shared`, in both directions.
+    #[tokio::test]
+    async fn frames_on_the_shared_connection_are_ringed_and_tagged_shared() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sock = dir.path().join("ctl.sock");
+        let _server = testserver::spawn(&sock, |_method, _params| json!({"threads": []}));
+
+        let shutdown = CancellationToken::new();
+        let handle = connect(DaemonEndpoint { socket: sock }, shutdown.clone());
+        handle.request("thread/list/ringprobe", json!({})).await.expect("request");
+        shutdown.cancel();
+
+        let tail = super::super::app_server::shared_rings().rpc_tail();
+        let sent = tail
+            .iter()
+            .find(|f| f.label == "thread/list/ringprobe")
+            .expect("the outbound frame is in the ring");
+        assert_eq!(sent.transport, "shared");
+        assert_eq!(sent.direction, "out");
+        assert!(
+            tail.iter().any(|f| f.direction == "in" && f.transport == "shared"),
+            "the receive loop feeds the ring too: {tail:?}"
+        );
     }
 
     /// A response nobody awaits has no `method` and must not be mistaken for a
