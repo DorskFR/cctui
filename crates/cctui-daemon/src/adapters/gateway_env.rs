@@ -80,18 +80,39 @@ pub async fn resolve_env(
     hint: &BTreeMap<String, String>,
     required_keys: &[&str],
 ) -> anyhow::Result<BTreeMap<String, String>> {
+    resolve_env_and_settings(adapter, server, machine_key, local_id, hint, required_keys)
+        .await
+        .map(|(env, _)| env)
+}
+
+/// [`resolve_env`], plus the per-account `settings` blob the pull carried.
+///
+/// `settings` is `None` whenever the env came from `hint` rather than a
+/// successful pull.
+pub async fn resolve_env_and_settings(
+    adapter: &str,
+    server: Option<&ServerClient>,
+    machine_key: Option<&String>,
+    local_id: &str,
+    hint: &BTreeMap<String, String>,
+    required_keys: &[&str],
+) -> anyhow::Result<(BTreeMap<String, String>, Option<serde_json::Value>)> {
     let (Some(server), Some(mk)) = (server, machine_key) else {
-        return Ok(hint.clone());
+        return Ok((hint.clone(), None));
     };
     match server.gateway_env(mk, local_id).await {
-        Ok(resp) => launch_env_decision(adapter, local_id, &resp, hint, required_keys),
+        Ok(resp) => {
+            let settings = resp.settings.clone();
+            launch_env_decision(adapter, local_id, &resp, hint, required_keys)
+                .map(|env| (env, settings))
+        }
         Err(e) => {
             tracing::warn!(
                 %local_id,
                 adapter,
                 "gateway-env pull failed; falling back to pushed env: {e}"
             );
-            Ok(hint.clone())
+            Ok((hint.clone(), None))
         }
     }
 }

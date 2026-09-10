@@ -760,28 +760,63 @@ pub fn gateway_thread_config(
     Some(("cctui".to_owned(), json!({"model_providers": {"cctui": provider}})))
 }
 
-/// Attach the per-thread provider + credential to a `thread/{start,resume,fork}`
-/// params object. A session with no gateway binding keeps codex's default
-/// provider.
+/// `"default"` or `"fast"` (codex maps `fast` → request tier `priority`).
+/// Anything else resolves to `None`: supplying no tier beats guessing one.
+#[must_use]
+pub fn normalize_service_tier(raw: Option<&str>) -> Option<String> {
+    match raw?.trim().to_ascii_lowercase().as_str() {
+        "default" => Some("default".to_owned()),
+        "fast" => Some("fast".to_owned()),
+        _ => None,
+    }
+}
+
+#[must_use]
+pub fn service_tier_from_settings(settings: Option<&Value>) -> Option<String> {
+    normalize_service_tier(settings?.get("service_tier").and_then(Value::as_str))
+}
+
+/// Attach the per-thread provider + credential and the per-thread service tier
+/// to a `thread/{start,resume,fork}` params object. A session with no gateway
+/// binding keeps codex's default provider.
+///
+/// The tier rides both the native `serviceTier` param and the per-thread
+/// `config` overlay, because codex persists NEITHER in the rollout — only
+/// `model_provider` survives — so every resume and fork must re-supply it or
+/// the thread silently falls back to codex's own `priority` default.
 fn with_thread_config(
     mut params: Value,
     env: &std::collections::BTreeMap<String, String>,
+    service_tier: Option<&str>,
 ) -> Value {
-    if let Some((provider, config)) = gateway_thread_config(env)
-        && let Some(map) = params.as_object_mut()
-    {
-        map.insert("modelProvider".to_owned(), json!(provider));
+    let Some(map) = params.as_object_mut() else { return params };
+    let mut config = match gateway_thread_config(env) {
+        Some((provider, config)) => {
+            map.insert("modelProvider".to_owned(), json!(provider));
+            config
+        }
+        None => json!({}),
+    };
+    if let Some(tier) = normalize_service_tier(service_tier) {
+        map.insert("serviceTier".to_owned(), json!(tier));
+        config["service_tier"] = json!(tier);
+    }
+    if config.as_object().is_some_and(|c| !c.is_empty()) {
         map.insert("config".to_owned(), config);
     }
     params
 }
 
-fn thread_start_req(cwd: &str, env: &std::collections::BTreeMap<String, String>) -> Value {
+fn thread_start_req(
+    cwd: &str,
+    env: &std::collections::BTreeMap<String, String>,
+    service_tier: Option<&str>,
+) -> Value {
     json!({
         "jsonrpc": "2.0",
         "id": ID_THREAD_START,
         "method": "thread/start",
-        "params": with_thread_config(json!({"cwd": cwd}), env),
+        "params": with_thread_config(json!({"cwd": cwd}), env, service_tier),
     })
 }
 
@@ -789,12 +824,17 @@ fn thread_resume_req(
     thread_id: &str,
     cwd: &str,
     env: &std::collections::BTreeMap<String, String>,
+    service_tier: Option<&str>,
 ) -> Value {
     json!({
         "jsonrpc": "2.0",
         "id": ID_THREAD_START,
         "method": "thread/resume",
-        "params": with_thread_config(json!({"threadId": thread_id, "cwd": cwd}), env),
+        "params": with_thread_config(
+            json!({"threadId": thread_id, "cwd": cwd}),
+            env,
+            service_tier,
+        ),
     })
 }
 
@@ -807,12 +847,17 @@ fn thread_fork_req(
     parent_thread_id: &str,
     cwd: &str,
     env: &std::collections::BTreeMap<String, String>,
+    service_tier: Option<&str>,
 ) -> Value {
     json!({
         "jsonrpc": "2.0",
         "id": ID_THREAD_START,
         "method": "thread/fork",
-        "params": with_thread_config(json!({"threadId": parent_thread_id, "cwd": cwd}), env),
+        "params": with_thread_config(
+            json!({"threadId": parent_thread_id, "cwd": cwd}),
+            env,
+            service_tier,
+        ),
     })
 }
 
@@ -1578,6 +1623,12 @@ pub struct AppServerConfig {
     /// Model passed via `-c model="…"`. `None` keeps the codex
     /// default. Set per-spawn from the spawn request.
     pub model: Option<String>,
+    /// Per-session service tier, `"default"` or `"fast"`. NOT a
+    /// `config_overrides()` key: it is per-thread, and lives here only because
+    /// this struct is the durable per-session cache (persisted in
+    /// [`SessionRecord::cfg`]) that lets `thread/{resume,fork}` re-supply it.
+    /// `None` keeps codex's own (expensive `priority`) default.
+    pub service_tier: Option<String>,
     /// Whether to refresh the codex model catalog on session start
     /// by issuing `model/list` over this session's authenticated app-server
     /// connection. `false` (`model_catalog = false`) disables the refresh.
@@ -1592,6 +1643,7 @@ impl Default for AppServerConfig {
             sandbox_mode: "workspace-write".to_string(),
             reasoning_effort: None,
             model: None,
+            service_tier: None,
             model_catalog: true,
         }
     }
@@ -1645,6 +1697,8 @@ impl AppServerConfig {
         if let Some(m) = v.get("model").and_then(Value::as_str) {
             cfg.model = Some(m.to_string());
         }
+        cfg.service_tier =
+            normalize_service_tier(v.get("service_tier").and_then(Value::as_str));
         cfg.model_catalog = model_list::catalog_enabled(v);
         cfg
     }
@@ -1876,13 +1930,14 @@ impl CodexSession {
     }
 
     fn thread_request(&self) -> (Value, &'static str) {
+        let tier = self.cfg.service_tier.as_deref();
         match &self.launch {
-            SessionLaunch::Fresh { .. } => (thread_start_req(&self.cwd, &self.env), "thread/start"),
+            SessionLaunch::Fresh { .. } => (thread_start_req(&self.cwd, &self.env, tier), "thread/start"),
             SessionLaunch::Resume { thread_id, .. } => {
-                (thread_resume_req(thread_id, &self.cwd, &self.env), "thread/resume")
+                (thread_resume_req(thread_id, &self.cwd, &self.env, tier), "thread/resume")
             }
             SessionLaunch::Fork { parent_thread_id, .. } => {
-                (thread_fork_req(parent_thread_id, &self.cwd, &self.env), "thread/fork")
+                (thread_fork_req(parent_thread_id, &self.cwd, &self.env, tier), "thread/fork")
             }
         }
     }
@@ -3726,14 +3781,14 @@ mod tests {
     fn request_builders_shape() {
         assert_eq!(initialize_req()["method"], "initialize");
         assert_eq!(
-            thread_start_req("/tmp", &std::collections::BTreeMap::default())["params"]["cwd"],
+            thread_start_req("/tmp", &std::collections::BTreeMap::default(), None)["params"]["cwd"],
             "/tmp"
         );
-        let resume = thread_resume_req("tid", "/repo", &std::collections::BTreeMap::default());
+        let resume = thread_resume_req("tid", "/repo", &std::collections::BTreeMap::default(), None);
         assert_eq!(resume["method"], "thread/resume");
         assert_eq!(resume["params"]["threadId"], "tid");
         assert_eq!(resume["params"]["cwd"], "/repo");
-        let fork = thread_fork_req("parent-tid", "/repo", &std::collections::BTreeMap::default());
+        let fork = thread_fork_req("parent-tid", "/repo", &std::collections::BTreeMap::default(), None);
         assert_eq!(fork["method"], "thread/fork");
         assert_eq!(fork["params"]["threadId"], "parent-tid");
         assert_eq!(fork["params"]["cwd"], "/repo");
@@ -4646,9 +4701,9 @@ done
                 .expect("retained schema bundle is valid JSON");
         let reqs = [
             initialize_req(),
-            thread_start_req("/cwd", &std::collections::BTreeMap::default()),
-            thread_resume_req("tid", "/cwd", &std::collections::BTreeMap::default()),
-            thread_fork_req("tid", "/cwd", &std::collections::BTreeMap::default()),
+            thread_start_req("/cwd", &std::collections::BTreeMap::default(), None),
+            thread_resume_req("tid", "/cwd", &std::collections::BTreeMap::default(), None),
+            thread_fork_req("tid", "/cwd", &std::collections::BTreeMap::default(), None),
             thread_name_set_req(1, "tid", "name"),
             thread_lifecycle_req(2, LifecycleOp::Archive, "tid"),
             thread_lifecycle_req(3, LifecycleOp::Unarchive, "tid"),
@@ -4931,7 +4986,7 @@ done
     #[test]
     fn an_unbound_session_keeps_the_default_provider() {
         assert!(gateway_thread_config(&std::collections::BTreeMap::new()).is_none());
-        let req = thread_start_req("/tmp", &std::collections::BTreeMap::new());
+        let req = thread_start_req("/tmp", &std::collections::BTreeMap::new(), None);
         assert!(req["params"].get("config").is_none());
         assert!(req["params"].get("modelProvider").is_none());
     }
@@ -4945,9 +5000,9 @@ done
         .into_iter()
         .collect();
         for req in [
-            thread_start_req("/repo", &env),
-            thread_resume_req("tid", "/repo", &env),
-            thread_fork_req("tid", "/repo", &env),
+            thread_start_req("/repo", &env, None),
+            thread_resume_req("tid", "/repo", &env, None),
+            thread_fork_req("tid", "/repo", &env, None),
         ] {
             let params = &req["params"];
             assert_eq!(params["modelProvider"], "cctui", "{}", req["method"]);
@@ -4958,6 +5013,198 @@ done
                 req["method"]
             );
         }
+    }
+
+    #[test]
+    fn service_tier_normalization_accepts_only_the_two_codex_tiers() {
+        assert_eq!(normalize_service_tier(Some("fast")).as_deref(), Some("fast"));
+        assert_eq!(normalize_service_tier(Some(" FAST ")).as_deref(), Some("fast"));
+        assert_eq!(normalize_service_tier(Some("default")).as_deref(), Some("default"));
+        assert_eq!(normalize_service_tier(Some("priority")), None);
+        assert_eq!(normalize_service_tier(Some("")), None);
+        assert_eq!(normalize_service_tier(None), None);
+    }
+
+    #[test]
+    fn service_tier_reads_out_of_the_served_gateway_settings() {
+        assert_eq!(
+            service_tier_from_settings(Some(&json!({"service_tier": "fast"}))).as_deref(),
+            Some("fast")
+        );
+        assert_eq!(
+            service_tier_from_settings(Some(&json!({"service_tier": "default"}))).as_deref(),
+            Some("default")
+        );
+        assert_eq!(service_tier_from_settings(Some(&json!({}))), None);
+        assert_eq!(service_tier_from_settings(None), None);
+    }
+
+    #[test]
+    fn start_resume_and_fork_all_carry_the_per_session_service_tier() {
+        let env = std::collections::BTreeMap::default();
+        for tier in ["fast", "default"] {
+            for req in [
+                thread_start_req("/repo", &env, Some(tier)),
+                thread_resume_req("tid", "/repo", &env, Some(tier)),
+                thread_fork_req("tid", "/repo", &env, Some(tier)),
+            ] {
+                let params = &req["params"];
+                assert_eq!(params["config"]["service_tier"], tier, "{}", req["method"]);
+                assert_eq!(params["serviceTier"], tier, "{}", req["method"]);
+            }
+        }
+    }
+
+    #[test]
+    fn a_session_with_no_tier_supplies_none_on_any_thread_op() {
+        let env = std::collections::BTreeMap::default();
+        for req in [
+            thread_start_req("/repo", &env, None),
+            thread_resume_req("tid", "/repo", &env, None),
+            thread_fork_req("tid", "/repo", &env, None),
+        ] {
+            let params = &req["params"];
+            assert!(params.get("serviceTier").is_none(), "{}", req["method"]);
+            assert!(
+                params.get("config").and_then(|c| c.get("service_tier")).is_none(),
+                "{}",
+                req["method"]
+            );
+        }
+    }
+
+    #[test]
+    fn the_gateway_config_block_and_the_tier_coexist() {
+        let env: std::collections::BTreeMap<String, String> = [
+            ("OPENAI_BASE_URL".to_owned(), "https://gw.example/v1".to_owned()),
+            ("OPENAI_API_KEY".to_owned(), "SECRET-C".to_owned()),
+        ]
+        .into_iter()
+        .collect();
+        let params = &thread_resume_req("tid", "/repo", &env, Some("fast"))["params"];
+        assert_eq!(params["config"]["service_tier"], "fast");
+        assert_eq!(
+            params["config"]["model_providers"]["cctui"]["http_headers"]["authorization"],
+            "Bearer SECRET-C"
+        );
+    }
+
+    fn session_with_tier(launch: SessionLaunch, tier: Option<&str>) -> CodexSession {
+        let (events, _rx) = mpsc::channel(8);
+        CodexSession {
+            cfg: AppServerConfig {
+                service_tier: tier.map(str::to_owned),
+                ..AppServerConfig::default()
+            },
+            cwd: "/repo".to_owned(),
+            env: std::collections::BTreeMap::default(),
+            launch,
+            command_id: None,
+            spawn_key: None,
+            parent_local_id: None,
+            events,
+            live: LiveSessionRegistry::default(),
+            registry: SessionRegistry::default(),
+            shutdown: CancellationToken::new(),
+        }
+    }
+
+    /// The resume trap: a `thread/resume` does not re-pull the gateway env, and
+    /// codex persists no tier in the rollout, so the tier cached on the record
+    /// must ride every resume or Fast lapses silently after the first one.
+    #[test]
+    fn a_resumed_session_re_supplies_the_cached_tier() {
+        let (req, method) = session_with_tier(
+            SessionLaunch::Resume { thread_id: "tid".to_owned(), initial_commands: Vec::new() },
+            Some("fast"),
+        )
+        .thread_request();
+        assert_eq!(method, "thread/resume");
+        assert_eq!(req["params"]["config"]["service_tier"], "fast");
+        assert_eq!(req["params"]["serviceTier"], "fast");
+    }
+
+    #[test]
+    fn a_resumed_session_without_a_cached_tier_supplies_none() {
+        let (req, _) = session_with_tier(
+            SessionLaunch::Resume { thread_id: "tid".to_owned(), initial_commands: Vec::new() },
+            None,
+        )
+        .thread_request();
+        assert!(req["params"].get("serviceTier").is_none());
+    }
+
+    #[test]
+    fn a_forked_session_re_supplies_the_cached_tier() {
+        let (req, method) = session_with_tier(
+            SessionLaunch::Fork {
+                parent_thread_id: "parent".to_owned(),
+                prompt: None,
+                name: None,
+                attachments: Vec::new(),
+            },
+            Some("fast"),
+        )
+        .thread_request();
+        assert_eq!(method, "thread/fork");
+        assert_eq!(req["params"]["config"]["service_tier"], "fast");
+    }
+
+    #[test]
+    fn a_fresh_session_carries_the_tier_on_thread_start() {
+        let (req, method) = session_with_tier(
+            SessionLaunch::Fresh { prompt: None, name: None, attachments: Vec::new() },
+            Some("default"),
+        )
+        .thread_request();
+        assert_eq!(method, "thread/start");
+        assert_eq!(req["params"]["config"]["service_tier"], "default");
+        assert_eq!(req["params"]["serviceTier"], "default");
+    }
+
+    /// The record the registry stores after a launch is what a later resume
+    /// relaunches from, so the tier must survive that round-trip.
+    #[tokio::test]
+    async fn a_hibernated_record_hands_its_tier_to_the_resume() {
+        let registry = SessionRegistry::default();
+        registry.lock().await.insert(
+            "tid".to_owned(),
+            SessionRecord {
+                cfg: AppServerConfig {
+                    service_tier: Some("fast".to_owned()),
+                    ..AppServerConfig::default()
+                },
+                cwd: "/repo".to_owned(),
+                name: None,
+                env: std::collections::BTreeMap::default(),
+            },
+        );
+        let action = route_or_prepare_resume(
+            &LiveSessionRegistry::default(),
+            &registry,
+            "tid",
+            SessionCommand::Send { text: "hi".to_owned(), command_id: None },
+        )
+        .await;
+        let RouteAction::Resume { record, .. } = action else { panic!("expected a resume") };
+        let (req, _) =
+            session_with_tier(
+                SessionLaunch::Resume {
+                    thread_id: "tid".to_owned(),
+                    initial_commands: Vec::new(),
+                },
+                record.cfg.service_tier.as_deref(),
+            )
+            .thread_request();
+        assert_eq!(req["params"]["config"]["service_tier"], "fast");
+    }
+
+    /// The per-thread tier must never leak into the process-level `-c` flags.
+    #[test]
+    fn config_overrides_stay_free_of_the_tier_even_when_one_is_set() {
+        let cfg =
+            AppServerConfig { service_tier: Some("fast".to_owned()), ..AppServerConfig::default() };
+        assert!(cfg.config_overrides().iter().all(|(k, _)| k != "service_tier"));
     }
 
     /// The per-op lifecycle child is gone: archive/unarchive are answered over
