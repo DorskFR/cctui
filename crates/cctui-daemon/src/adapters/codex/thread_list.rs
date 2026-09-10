@@ -1346,4 +1346,39 @@ mod tests {
             assert!(!changes_inventory(m), "{m} must not refresh the inventory");
         }
     }
+
+    /// The 15 s respawn is gone: with a reachable daemon, `thread/list` is
+    /// answered over the shared socket even though `codex` does not exist on
+    /// PATH, which a fallback spawn could not survive.
+    #[tokio::test]
+    async fn inventory_never_spawns_a_child_when_the_daemon_answers() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sock = dir.path().join("app-server.sock");
+        let _srv = super::super::daemon::testserver::spawn(&sock, |method, params| {
+            assert_eq!(method, "thread/list");
+            assert_eq!(params["archived"], json!(false));
+            json!({"data": [{"id": "018f0000-0000-7000-8000-000000000001", "cwd": "/w"}]})
+        });
+
+        let shutdown = CancellationToken::new();
+        let shared = super::super::daemon::SharedDaemon::from_endpoint(
+            super::super::daemon::DaemonEndpoint { socket: sock },
+            shutdown.clone(),
+        );
+        let mut app = AppServerConfig::from_value(&json!({}));
+        app.bin = "/nonexistent/codex-must-not-be-spawned".to_owned();
+
+        let entries = poll_threads_any(&app, Some(&shared), 10).await.expect("served over the ws");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].cwd.as_deref(), Some("/w"));
+        shutdown.cancel();
+    }
+
+    /// Without a daemon the stdio tier is still the one that runs.
+    #[tokio::test]
+    async fn inventory_falls_back_to_stdio_without_a_daemon() {
+        let mut app = AppServerConfig::from_value(&json!({}));
+        app.bin = "/nonexistent/codex".to_owned();
+        assert!(poll_threads_any(&app, None, 10).await.is_err());
+    }
 }

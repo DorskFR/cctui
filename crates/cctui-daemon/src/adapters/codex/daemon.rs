@@ -322,6 +322,14 @@ impl SharedDaemon {
         Self { inner: Arc::new(tokio::sync::OnceCell::new()), bin, shutdown }
     }
 
+    /// Bypass discovery for a known endpoint.
+    #[must_use]
+    pub fn from_endpoint(endpoint: DaemonEndpoint, shutdown: CancellationToken) -> Self {
+        let cell = tokio::sync::OnceCell::new();
+        let _ = cell.set(Some(connect(endpoint, shutdown.clone())));
+        Self { inner: Arc::new(cell), bin: String::new(), shutdown }
+    }
+
     pub async fn handle(&self) -> Option<DaemonHandle> {
         self.inner
             .get_or_init(|| async {
@@ -414,5 +422,43 @@ mod tests {
         let (events, mut rx) = broadcast::channel(8);
         dispatch(r#"{"id":99,"result":{}}"#, &mut pending, &events);
         assert!(rx.try_recv().is_err());
+    }
+}
+
+/// A minimal app-server stand-in: answers `initialize` and whatever canned
+/// responses the case needs, so the transport can be exercised without a
+/// real codex.
+#[cfg(test)]
+pub(super) mod testserver {
+    use super::*;
+    use tokio::net::UnixListener;
+
+    /// Serves one connection, replying to every request with
+    /// `responses(method) -> result`.
+    pub fn spawn<F>(path: &std::path::Path, responses: F) -> tokio::task::JoinHandle<()>
+    where
+        F: Fn(&str, &Value) -> Value + Send + 'static,
+    {
+        let listener = UnixListener::bind(path).expect("bind test socket");
+        tokio::spawn(async move {
+            let Ok((stream, _)) = listener.accept().await else { return };
+            let Ok(mut ws) = tokio_tungstenite::accept_async(stream).await else { return };
+            while let Some(Ok(frame)) = ws.next().await {
+                let Message::Text(text) = frame else { continue };
+                let Ok(v) = serde_json::from_str::<Value>(&text) else { continue };
+                let Some(id) = v.get("id").and_then(Value::as_i64) else { continue };
+                let method = v.get("method").and_then(Value::as_str).unwrap_or("");
+                let params = v.get("params").cloned().unwrap_or(Value::Null);
+                let result = if method == "initialize" {
+                    json!({"userAgent": "codex/0.153.4"})
+                } else {
+                    responses(method, &params)
+                };
+                let reply = json!({"jsonrpc": "2.0", "id": id, "result": result});
+                if ws.send(Message::Text(reply.to_string().into())).await.is_err() {
+                    return;
+                }
+            }
+        })
     }
 }

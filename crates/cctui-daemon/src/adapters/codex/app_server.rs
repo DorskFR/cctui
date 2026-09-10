@@ -4954,4 +4954,38 @@ done
             );
         }
     }
+
+    /// The per-op lifecycle child is gone: archive/unarchive are answered over
+    /// the shared socket with no `codex` binary present to spawn.
+    #[tokio::test]
+    async fn lifecycle_ops_never_spawn_a_child_when_the_daemon_answers() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sock = dir.path().join("app-server.sock");
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorder = std::sync::Arc::clone(&seen);
+        let _srv = super::super::daemon::testserver::spawn(&sock, move |method, params| {
+            recorder.lock().unwrap().push(method.to_owned());
+            assert_eq!(params["threadId"], "tid-1");
+            json!({})
+        });
+
+        let shutdown = CancellationToken::new();
+        let shared = super::super::daemon::SharedDaemon::from_endpoint(
+            super::super::daemon::DaemonEndpoint { socket: sock },
+            shutdown.clone(),
+        );
+        let mut app = AppServerConfig::from_value(&json!({}));
+        app.bin = "/nonexistent/codex-must-not-be-spawned".to_owned();
+
+        for op in [LifecycleOp::Archive, LifecycleOp::Unarchive] {
+            run_thread_lifecycle(&app, Some(&shared), "tid-1", op)
+                .await
+                .expect("served over the ws");
+        }
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec!["thread/archive".to_owned(), "thread/unarchive".to_owned()]
+        );
+        shutdown.cancel();
+    }
 }
