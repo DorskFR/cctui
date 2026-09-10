@@ -76,17 +76,9 @@ impl AgentMcp {
     /// through verbatim rather than re-quoted like the scalar config knobs.
     #[must_use]
     pub fn codex_config_overrides(&self) -> Vec<(String, String)> {
-        let args = self
-            .argv()
-            .iter()
-            .map(|a| toml_string(a))
-            .collect::<Vec<_>>()
-            .join(", ");
+        let args = self.argv().iter().map(|a| toml_string(a)).collect::<Vec<_>>().join(", ");
         vec![
-            (
-                format!("mcp_servers.{SERVER_NAME}.command"),
-                toml_string(&self.exe),
-            ),
+            (format!("mcp_servers.{SERVER_NAME}.command"), toml_string(&self.exe)),
             (format!("mcp_servers.{SERVER_NAME}.args"), format!("[{args}]")),
         ]
     }

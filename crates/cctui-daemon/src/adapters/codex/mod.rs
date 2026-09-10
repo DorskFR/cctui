@@ -886,11 +886,10 @@ async fn dispatch(
                         record.env = launch.env;
                         // A rediscovered thread has no cached tier; adopt the
                         // served one rather than resuming on codex's default.
-                        record.cfg.service_tier = record
-                            .cfg
-                            .service_tier
-                            .take()
-                            .or_else(|| app_server::service_tier_from_settings(settings.as_ref()));
+                        record.cfg.service_tier =
+                            record.cfg.service_tier.take().or_else(|| {
+                                app_server::service_tier_from_settings(settings.as_ref())
+                            });
                     }
                     Err(err) => {
                         tracing::error!(%local_id, %err, "codex resume: refusing env-less launch");

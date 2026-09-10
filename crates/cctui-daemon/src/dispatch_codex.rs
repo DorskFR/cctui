@@ -524,7 +524,10 @@ mod tests {
         let mut d = dispatch("go");
         d.service_tier = Some("fast".to_owned());
         let argv = d.build_argv();
-        assert!(argv.windows(2).any(|w| w[0] == "-c" && w[1] == "service_tier=\"fast\""), "{argv:?}");
+        assert!(
+            argv.windows(2).any(|w| w[0] == "-c" && w[1] == "service_tier=\"fast\""),
+            "{argv:?}"
+        );
     }
 
     #[test]

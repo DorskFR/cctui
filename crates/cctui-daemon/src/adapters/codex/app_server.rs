@@ -1697,8 +1697,7 @@ impl AppServerConfig {
         if let Some(m) = v.get("model").and_then(Value::as_str) {
             cfg.model = Some(m.to_string());
         }
-        cfg.service_tier =
-            normalize_service_tier(v.get("service_tier").and_then(Value::as_str));
+        cfg.service_tier = normalize_service_tier(v.get("service_tier").and_then(Value::as_str));
         cfg.model_catalog = model_list::catalog_enabled(v);
         cfg
     }
@@ -1767,8 +1766,7 @@ fn launch_overrides(
         .get(cctui_proto::codex_config::CONFIG_TOML_ENV)
         .map(|b| cctui_proto::codex_config::overrides_from_block(b))
         .unwrap_or_default();
-    let owned: std::collections::BTreeSet<&str> =
-        managed.iter().map(|(k, _)| k.as_str()).collect();
+    let owned: std::collections::BTreeSet<&str> = managed.iter().map(|(k, _)| k.as_str()).collect();
     account
         .into_iter()
         .filter(|(k, _)| !owned.contains(k.as_str()))
@@ -1981,7 +1979,9 @@ impl CodexSession {
     fn thread_request(&self) -> (Value, &'static str) {
         let tier = self.cfg.service_tier.as_deref();
         match &self.launch {
-            SessionLaunch::Fresh { .. } => (thread_start_req(&self.cwd, &self.env, tier), "thread/start"),
+            SessionLaunch::Fresh { .. } => {
+                (thread_start_req(&self.cwd, &self.env, tier), "thread/start")
+            }
             SessionLaunch::Resume { thread_id, .. } => {
                 (thread_resume_req(thread_id, &self.cwd, &self.env, tier), "thread/resume")
             }
@@ -3227,9 +3227,7 @@ pub fn set_ring_scrub(user: &[(String, String)]) {
 }
 
 fn ring_scrub() -> Arc<CompiledPatterns> {
-    ring_scrub_cell()
-        .read()
-        .map_or_else(|e| Arc::clone(&e.into_inner()), |g| Arc::clone(&g))
+    ring_scrub_cell().read().map_or_else(|e| Arc::clone(&e.into_inner()), |g| Arc::clone(&g))
 }
 
 fn redact_text(text: &str) -> String {
@@ -4041,11 +4039,13 @@ mod tests {
             thread_start_req("/tmp", &std::collections::BTreeMap::default(), None)["params"]["cwd"],
             "/tmp"
         );
-        let resume = thread_resume_req("tid", "/repo", &std::collections::BTreeMap::default(), None);
+        let resume =
+            thread_resume_req("tid", "/repo", &std::collections::BTreeMap::default(), None);
         assert_eq!(resume["method"], "thread/resume");
         assert_eq!(resume["params"]["threadId"], "tid");
         assert_eq!(resume["params"]["cwd"], "/repo");
-        let fork = thread_fork_req("parent-tid", "/repo", &std::collections::BTreeMap::default(), None);
+        let fork =
+            thread_fork_req("parent-tid", "/repo", &std::collections::BTreeMap::default(), None);
         assert_eq!(fork["method"], "thread/fork");
         assert_eq!(fork["params"]["threadId"], "parent-tid");
         assert_eq!(fork["params"]["cwd"], "/repo");
@@ -5508,15 +5508,11 @@ done
         )
         .await;
         let RouteAction::Resume { record, .. } = action else { panic!("expected a resume") };
-        let (req, _) =
-            session_with_tier(
-                SessionLaunch::Resume {
-                    thread_id: "tid".to_owned(),
-                    initial_commands: Vec::new(),
-                },
-                record.cfg.service_tier.as_deref(),
-            )
-            .thread_request();
+        let (req, _) = session_with_tier(
+            SessionLaunch::Resume { thread_id: "tid".to_owned(), initial_commands: Vec::new() },
+            record.cfg.service_tier.as_deref(),
+        )
+        .thread_request();
         assert_eq!(req["params"]["config"]["service_tier"], "fast");
     }
 

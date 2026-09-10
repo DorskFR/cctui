@@ -136,7 +136,9 @@ mod tests {
     fn quiet_defaults_preset_validates_and_renders() {
         let c = catalog();
         let p = c.preset(super::super::QUIET_DEFAULTS_ID).expect("preset present");
-        let blob = serde_json::Value::Object(p.settings.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
+        let blob = serde_json::Value::Object(
+            p.settings.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+        );
         assert!(c.validate_settings(&blob).ok(), "preset must pass its own validation");
         assert_eq!(
             cctui_proto::codex_config::render_lines(&blob).len(),
