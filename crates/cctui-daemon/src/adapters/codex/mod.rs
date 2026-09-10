@@ -26,6 +26,7 @@
 pub(crate) mod app_server;
 mod contract;
 mod log_tail;
+pub mod thread_read;
 mod model_list;
 mod persist;
 mod thread_list;
@@ -133,6 +134,8 @@ async fn run_default(ctx: AdapterCtx) -> anyhow::Result<()> {
     log.set_owned(registry.clone());
     let marks: log_tail::ResumeMarks = log_tail::ResumeMarks::default();
     log.set_resume_marks(marks.clone());
+    let served = thread_read::ServedIds::default();
+    log.set_served(served.clone());
 
     // poll `codex app-server`'s state-DB-backed `thread/list` for a
     // first-class inventory of EVERY machine session (cli/vscode/exec/
@@ -168,6 +171,7 @@ async fn run_default(ctx: AdapterCtx) -> anyhow::Result<()> {
             ctx.shutdown.clone(),
             registry.clone(),
             seen,
+            served,
         );
         Some(tokio::spawn(inv.run()))
     } else {

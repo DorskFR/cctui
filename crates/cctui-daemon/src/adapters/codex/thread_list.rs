@@ -143,7 +143,7 @@ pub fn parse_thread_list(result: &Value) -> Vec<ThreadEntry> {
         .unwrap_or_default()
 }
 
-fn initialize_req() -> Value {
+pub fn initialize_req() -> Value {
     json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -262,6 +262,9 @@ pub struct ThreadListInventory {
     /// emit `SessionStarted` once and only re-emit `Status` on change. Shared
     /// with the log-tail so it skips these files.
     seen: SeenIds,
+    /// Threads whose structured history has been emitted; shared with the
+    /// log-tail so it does not re-ingest them from the rollout JSONL.
+    served: super::thread_read::ServedIds,
 }
 
 impl ThreadListInventory {
@@ -271,8 +274,9 @@ impl ThreadListInventory {
         shutdown: CancellationToken,
         owned: SessionRegistry,
         seen: SeenIds,
+        served: super::thread_read::ServedIds,
     ) -> Self {
-        Self { cfg, events, shutdown, owned, seen }
+        Self { cfg, events, shutdown, owned, seen, served }
     }
 
     pub async fn run(self) {
@@ -336,6 +340,12 @@ impl ThreadListInventory {
         if let Some(name) = entry.name.clone() {
             let _ = self.events.send(status_name(&entry.id, name)).await;
         }
+        // Structured history is the primary transcript source; the log-tail's
+        // JSONL scrape stays the fallback for threads the server won't serve.
+        if self.emit_history(entry).await {
+            self.emit_status(entry).await;
+            return;
+        }
         if let Some(preview) = entry.preview.clone() {
             // Emit the preview as a codex-native `userMessage` so it survives
             // the server's `normalize::for_client("codex","message",…)` (which
@@ -354,6 +364,29 @@ impl ThreadListInventory {
                 .await;
         }
         self.emit_status(entry).await;
+    }
+
+    /// Replay a thread's history from `thread/read` + `thread/turns/list`.
+    /// Returns `true` only when real items were emitted — an empty or failed
+    /// read leaves the thread to the preview seed and the log-tail.
+    async fn emit_history(&self, entry: &ThreadEntry) -> bool {
+        let items = match super::thread_read::read_history(&self.cfg.app, &entry.id).await {
+            Ok((_, items)) => items,
+            Err(err) => {
+                tracing::debug!(%err, thread = %entry.id, "codex: structured history unavailable, falling back to the rollout tail");
+                return false;
+            }
+        };
+        if items.is_empty() {
+            return false;
+        }
+        let count = items.len();
+        for evt in super::thread_read::history_events(&entry.id, &items) {
+            let _ = self.events.send(evt).await;
+        }
+        self.served.lock().await.insert(entry.id.clone());
+        tracing::info!(thread = %entry.id, count, "codex: history from thread/turns/list");
+        true
     }
 
     async fn emit_status(&self, entry: &ThreadEntry) {
@@ -418,6 +451,17 @@ async fn read_response<R: AsyncBufRead + Unpin>(
     lines: &mut Lines<R>,
     id: i64,
 ) -> anyhow::Result<Value> {
+    read_response_for(lines, id, "thread/list").await
+}
+
+/// Read stdout until the JSON-RPC response with `id` arrives, skipping
+/// notifications and unrelated responses. `label` names the method in the
+/// error paths. Errors on a JSON-RPC `error` object.
+pub async fn read_response_for<R: AsyncBufRead + Unpin>(
+    lines: &mut Lines<R>,
+    id: i64,
+    label: &str,
+) -> anyhow::Result<Value> {
     while let Some(line) = lines.next_line().await? {
         let trimmed = line.trim();
         if trimmed.is_empty() {
@@ -426,12 +470,12 @@ async fn read_response<R: AsyncBufRead + Unpin>(
         let Ok(v) = serde_json::from_str::<Value>(trimmed) else { continue };
         if v.get("id").and_then(Value::as_i64) == Some(id) {
             if let Some(err) = v.get("error") {
-                anyhow::bail!("thread/list error: {err}");
+                anyhow::bail!("{label} error: {err}");
             }
             return Ok(v.get("result").cloned().unwrap_or(Value::Null));
         }
     }
-    anyhow::bail!("thread/list response {id} not received before EOF")
+    anyhow::bail!("{label} response {id} not received before EOF")
 }
 
 /// `appServer`-source threads from a `thread/list` snapshot are the ones cctui
@@ -571,7 +615,7 @@ fn status_name(local_id: &str, name: String) -> AdapterEvent {
     }
 }
 
-async fn write_line<W: AsyncWriteExt + Unpin>(w: &mut W, v: &Value) -> anyhow::Result<()> {
+pub async fn write_line<W: AsyncWriteExt + Unpin>(w: &mut W, v: &Value) -> anyhow::Result<()> {
     let mut line = serde_json::to_string(v)?;
     line.push('\n');
     w.write_all(line.as_bytes()).await?;
@@ -581,7 +625,7 @@ async fn write_line<W: AsyncWriteExt + Unpin>(w: &mut W, v: &Value) -> anyhow::R
 
 /// Tiny helpers so `take()`-of-`None` reads as a clear error rather than an
 /// `unwrap`.
-trait OptionStdioExt<T> {
+pub trait OptionStdioExt<T> {
     fn context_stdin(self) -> anyhow::Result<T>;
     fn context_stdout(self) -> anyhow::Result<T>;
 }
@@ -939,6 +983,7 @@ mod tests {
             CancellationToken::new(),
             owned,
             SeenIds::default(),
+            crate::adapters::codex::thread_read::ServedIds::default(),
         );
         let entry = ThreadEntry {
             id: "t1".into(),
@@ -986,6 +1031,7 @@ mod tests {
             CancellationToken::new(),
             SessionRegistry::default(),
             SeenIds::default(),
+            crate::adapters::codex::thread_read::ServedIds::default(),
         );
         let entry = ThreadEntry {
             id: "child".into(),
@@ -1149,6 +1195,7 @@ mod tests {
             CancellationToken::new(),
             owned,
             SeenIds::default(),
+            crate::adapters::codex::thread_read::ServedIds::default(),
         );
         inv.reconcile(vec![ThreadEntry {
             id: "owned1".into(),
