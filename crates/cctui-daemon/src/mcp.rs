@@ -68,7 +68,12 @@ pub fn tool_schema() -> Value {
                 },
                 "model": {
                     "type": "string",
-                    "description": "Model id from the account's catalog. Omit for the account default.",
+                    "description": "REQUIRED. Model id to run the child on — there is no \
+    account default, and a call without one is rejected. Known claude_code ids: \
+    \"claude-opus-5[1m]\", \"claude-opus-5\", \"claude-sonnet-5\", \"claude-haiku-4-5\", \
+    \"claude-fable-5\"; codex: \"gpt-5.6-sol\", \"gpt-5.6-terra\". An alias from the \
+    account's own catalog also works. Ignored when session_id is set, but still name the \
+    child's model so the call records what it is talking to.",
                 },
                 "agent_profile": {
                     "type": "string",
@@ -97,11 +102,12 @@ pub fn tool_schema() -> Value {
                 "timeout_secs": {
                     "type": "integer",
                     "description": "How long to wait for the child before giving up \
-    (default 1800, max 7200). On timeout the child keeps running and can be followed up \
-    via session_id.",
+    (default 1800, max 7200). Expiry is not a failure of the child: it keeps running, its \
+    work stays on disk, and it can be reattached via session_id. Raise it for work that \
+    routinely runs long. The effective window is echoed in the result.",
                 },
             },
-            "required": ["prompt"],
+            "required": ["prompt", "model"],
             "additionalProperties": false,
         },
     })
@@ -310,7 +316,12 @@ mod tests {
     fn tool_schema_names_the_tool_and_its_required_args() {
         let schema = tool_schema();
         assert_eq!(schema["name"], TOOL_NAME);
-        assert_eq!(schema["inputSchema"]["required"], json!(["prompt"]));
+        assert_eq!(schema["inputSchema"]["required"], json!(["prompt", "model"]));
+        let model_doc =
+            schema["inputSchema"]["properties"]["model"]["description"].as_str().unwrap();
+        assert!(model_doc.contains("REQUIRED"), "{model_doc}");
+        assert!(model_doc.contains("claude-opus-5[1m]"), "{model_doc}");
+        assert!(model_doc.contains("no account default"), "{model_doc}");
         let props = schema["inputSchema"]["properties"].as_object().unwrap();
         for key in [
             "adapter",
