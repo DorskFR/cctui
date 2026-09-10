@@ -13,6 +13,8 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
+use std::fmt::Write;
+
 use crate::auth::AuthContext;
 use crate::routes::sessions::ilike_contains;
 use crate::state::AppState;
@@ -126,9 +128,10 @@ pub async fn list_bookmarks(
     );
     for i in 0..terms.len() {
         let p = i + 4;
-        sql.push_str(&format!(
+        let _ = write!(
+            sql,
             " AND (title ILIKE ${p} OR body ILIKE ${p} OR COALESCE(note, '') ILIKE ${p})"
-        ));
+        );
     }
     sql.push_str(" ORDER BY created_at DESC LIMIT $3");
 

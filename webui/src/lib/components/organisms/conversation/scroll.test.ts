@@ -3,12 +3,11 @@ import { ScrollController } from './scroll.svelte';
 
 // Mutations must go through `c.scroller`: the field is `$state`, and its proxy
 // caches values read off the raw object.
-function attach(
-	c: ScrollController,
-	init: { scrollHeight: number; clientHeight: number; scrollTop: number }
-): HTMLElement {
+type ScrollerStub = { scrollHeight: number; clientHeight: number; scrollTop: number };
+
+function attach(c: ScrollController, init: ScrollerStub): ScrollerStub {
 	c.scroller = { ...init } as unknown as HTMLElement;
-	return c.scroller as HTMLElement;
+	return c.scroller as unknown as ScrollerStub;
 }
 
 describe('ScrollController layout-induced scrolls', () => {

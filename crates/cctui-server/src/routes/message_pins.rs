@@ -15,7 +15,7 @@ use cctui_proto::api::ApiError;
 use crate::auth::AuthContext;
 use crate::state::AppState;
 
-fn db_err(e: sqlx::Error) -> (StatusCode, Json<ApiError>) {
+fn db_err(e: &sqlx::Error) -> (StatusCode, Json<ApiError>) {
     tracing::error!("db error (message pins): {e}");
     (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
 }
@@ -40,7 +40,7 @@ pub async fn list_pins(
     .bind(&session_id)
     .fetch_all(&state.pool)
     .await
-    .map_err(db_err)?;
+    .map_err(|e| db_err(&e))?;
     Ok(Json(rows.into_iter().map(to_pin).collect()))
 }
 
@@ -80,7 +80,7 @@ pub async fn create_pin(
     .bind(body.note.as_deref())
     .fetch_one(&state.pool)
     .await
-    .map_err(db_err)?;
+    .map_err(|e| db_err(&e))?;
     Ok(Json(to_pin(row)))
 }
 
@@ -97,6 +97,6 @@ pub async fn delete_pin(
     .bind(seq)
     .execute(&state.pool)
     .await
-    .map_err(db_err)?;
+    .map_err(|e| db_err(&e))?;
     Ok(StatusCode::NO_CONTENT)
 }
