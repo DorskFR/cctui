@@ -92,16 +92,18 @@
 	<Field label={m.spawn_cwd_label()} for="sp-cwd">
 		<div class="cwd-row">
 			<MachinePicker bind:value={form.machine_id} {machines} label={m.spawn_machine_label()} />
-			<Input
-				id="sp-cwd"
-				grow
-				mono
-				list="sp-cwd-options"
-				autocomplete="off"
-				spellcheck={false}
-				placeholder="/home/user/project"
-				bind:value={form.working_dir}
-			/>
+			<span class="cwd-in">
+				<Input
+					id="sp-cwd"
+					grow
+					mono
+					list="sp-cwd-options"
+					autocomplete="off"
+					spellcheck={false}
+					placeholder="/home/user/project"
+					bind:value={form.working_dir}
+				/>
+			</span>
 			<datalist id="sp-cwd-options" aria-label={m.spawn_cwd_suggestions_aria()}>
 				{#each cwdOptions as d (d)}<option value={d}></option>{/each}
 			</datalist>
@@ -164,8 +166,16 @@
 	}
 	.cwd-row {
 		display: flex;
+		flex-wrap: wrap;
 		align-items: center;
 		gap: var(--sp-2);
+		min-width: 0;
+	}
+	/* Below ~12rem of room the path drops to its own full-width line rather
+	   than being squeezed to a few characters beside the machine picker. */
+	.cwd-in {
+		display: flex;
+		flex: 1 1 12rem;
 		min-width: 0;
 	}
 	.where {
