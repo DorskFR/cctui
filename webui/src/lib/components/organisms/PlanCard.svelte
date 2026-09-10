@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { renderMarkdown } from '$lib/markdown';
-	import { Button, Card, Heading, Text } from '@dorsk/tsumikit';
+	import { Button, Card, Heading, Text, Textarea } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 
 	let {
@@ -75,11 +75,13 @@
 			{/each}
 			{#if refining}
 				<div class="refine">
-					<textarea
-						class="refine-in"
+					<Textarea
+						autoresize
+						block
+						aria-label={m.plan_refine_prompt()}
 						placeholder={m.plan_refine_prompt()}
 						bind:value={refineText}
-					></textarea>
+					/>
 					<Button variant="primary" disabled={!refineText.trim()} onclick={sendRefine}>{m.plan_send()}</Button>
 				</div>
 			{:else}
@@ -87,9 +89,9 @@
 			{/if}
 		</div>
 	{:else if submitted && interactive}
-		<Text as="div" tone="muted" size="xs" style="font-style:italic">{m.plan_answering()}</Text>
+		<Text as="div" tone="muted" size="xs" italic>{m.plan_answering()}</Text>
 	{:else}
-		<Text as="div" tone="muted" size="xs" style="font-style:italic">{m.plan_answered()}</Text>
+		<Text as="div" tone="muted" size="xs" italic>{m.plan_answered()}</Text>
 	{/if}
 </Card>
 
@@ -113,16 +115,5 @@
 		flex-direction: column;
 		gap: var(--sp-2);
 		width: 100%;
-	}
-	.refine-in {
-		width: 100%;
-		min-height: 64px;
-		background: var(--bg-elevated-2);
-		border: 1px solid var(--border);
-		border-radius: var(--r-sm);
-		color: var(--text);
-		padding: var(--sp-2);
-		resize: vertical;
-		outline: none;
 	}
 </style>
