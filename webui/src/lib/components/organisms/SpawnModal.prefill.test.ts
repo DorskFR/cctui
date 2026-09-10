@@ -87,19 +87,19 @@ describe("SpawnModal cwd prefill", () => {
   it("fills the cwd from the server recent dirs when spawn memory is empty", async () => {
     recentDirsData = ["/home/dorsk/Documents/cctui"];
     await open();
-    expect(cwdValue()).toBe("/home/dorsk/Documents/cctui");
+    expect(cwdValue()).toBe("cwd:/home/dorsk/Documents/cctui");
   });
 
   it("prefers the remembered dir over the recent dirs", async () => {
     recentDirsData = ["/srv/other"];
     memoryDir = "/home/dorsk/Documents/cctui";
     await open();
-    expect(cwdValue()).toBe("/home/dorsk/Documents/cctui");
+    expect(cwdValue()).toBe("cwd:/home/dorsk/Documents/cctui");
   });
 
   it("leaves the cwd empty when there is nothing to recall", async () => {
     await open();
-    expect(cwdValue()).toBe("");
+    expect(cwdValue()).toBe("cwd:");
   });
 
   it("still takes a typed dir, and a cleared field, from the user", async () => {
@@ -107,10 +107,10 @@ describe("SpawnModal cwd prefill", () => {
     await open();
     expect(draftDir()).toBe("/srv/other");
 
-    await type("/typed/by/hand");
+    await type("cwd:/typed/by/hand");
     expect(draftDir()).toBe("/typed/by/hand");
 
-    await type("");
+    await type("cwd:");
     expect(draftDir()).toBe("");
   });
 });
