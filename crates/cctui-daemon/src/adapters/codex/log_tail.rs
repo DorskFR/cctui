@@ -87,6 +87,10 @@ pub struct LogTail {
     /// skipped here so we don't double-ingest. `local_id` is the rollout
     /// `UUIDv7`, which is a suffix of the rollout filename stem.
     owned: Option<super::app_server::SessionRegistry>,
+    /// Threads whose transcript was served structurally via
+    /// `thread/read` + `thread/turns/list`. Their rollout files are skipped
+    /// for the same no-double-ingest reason as `owned`.
+    served: Option<super::thread_read::ServedIds>,
     /// Rollout-path → byte offset, persisted so restarts and quiesce
     /// evictions never re-read (re-upload) historical rollouts.
     offsets: crate::offsets::OffsetStore,
@@ -121,6 +125,7 @@ impl LogTail {
             shutdown,
             sessions: HashMap::new(),
             owned: None,
+            served: None,
             offsets,
             offsets_dirty: false,
             marks: ResumeMarks::default(),
@@ -137,6 +142,12 @@ impl LogTail {
     /// files are skipped (no double-ingest of the same session).
     pub fn set_owned(&mut self, registry: super::app_server::SessionRegistry) {
         self.owned = Some(registry);
+    }
+
+    /// Share the set of threads the structured history reader has already
+    /// served, so the heuristic tail stays a fallback rather than a duplicate.
+    pub fn set_served(&mut self, served: super::thread_read::ServedIds) {
+        self.served = Some(served);
     }
 
     pub async fn run(mut self) -> anyhow::Result<()> {
@@ -156,16 +167,18 @@ impl LogTail {
         // App-server-owned session ids (rollout UUIDv7). Files whose stem
         // ends with one of these are driven directly via app-server and must
         // not be tailed here.
-        let owned: Vec<String> = match &self.owned {
+        let mut owned: Vec<String> = match &self.owned {
             Some(reg) => reg.lock().await.keys().cloned().collect(),
             None => Vec::new(),
         };
-        // NOTE: we deliberately do NOT skip files for ids the
-        // `thread/list` inventory has surfaced. The inventory only seeds a
-        // single preview message; the real transcript lives in the rollout
-        // JSONL. Suppressing the tail left discovered CLI sessions with an
-        // empty conversation ("No events yet"). The app-server `owned` set
-        // above is still skipped — those threads are driven live by cctui.
+        if let Some(served) = &self.served {
+            owned.extend(served.lock().await.iter().cloned());
+        }
+        // Ids merely surfaced by the `thread/list` inventory are NOT skipped:
+        // the inventory alone seeds only a preview, and suppressing the tail
+        // left discovered CLI sessions with an empty conversation. Only
+        // threads cctui drives live (`owned`) or whose real transcript came
+        // back from `thread/turns/list` (`served`) are skipped.
         let mut alive: HashSet<PathBuf> = HashSet::new();
         // real rollouts live under YYYY/MM/DD subdirectories, not
         // directly under the sessions root, so the scan recurses.
