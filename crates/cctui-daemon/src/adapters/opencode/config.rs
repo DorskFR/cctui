@@ -95,6 +95,20 @@ pub fn session_config(model: Option<&ModelRef>, env: &BTreeMap<String, String>) 
     cfg
 }
 
+/// Declare the `CctuiAgent` relay in a session config. A session the server
+/// granted no spawn capability gets `None` and no `mcp` block at all, so the
+/// tool is not merely denied but absent.
+#[must_use]
+pub fn with_agent_mcp(
+    mut cfg: Value,
+    agent_mcp: Option<&crate::adapters::agent_mcp::AgentMcp>,
+) -> Value {
+    if let Some(agent_mcp) = agent_mcp {
+        cfg["mcp"] = agent_mcp.opencode_config();
+    }
+    cfg
+}
+
 const REVIEW_INPUT_DIRS: [&str; 2] = ["/tmp/review-*", "/tmp/review-*/**"];
 
 /// opencode matches these per pipeline segment, so the pure filters are needed
@@ -231,6 +245,30 @@ mod tests {
 
     fn env_of(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
         pairs.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect()
+    }
+
+    #[test]
+    fn a_capability_declares_the_cctui_agent_relay_in_the_session_config() {
+        let mcp = crate::adapters::agent_mcp::AgentMcp::new(
+            "/usr/bin/cctui-daemon".to_owned(),
+            "ses-key".to_owned(),
+            "/run/cctui-agent.sock".into(),
+        );
+        let cfg = with_agent_mcp(session_config(None, &BTreeMap::new()), Some(&mcp));
+        let command: Vec<&str> = cfg["mcp"]["cctui"]["command"]
+            .as_array()
+            .expect("the relay is declared as a local command")
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert!(command.contains(&"mcp-agent"), "{command:?}");
+        assert!(command.contains(&"ses-key"), "{command:?}");
+    }
+
+    #[test]
+    fn no_capability_leaves_the_session_config_without_an_mcp_block() {
+        let cfg = with_agent_mcp(session_config(None, &BTreeMap::new()), None);
+        assert!(cfg.get("mcp").is_none(), "the tool must be absent, not merely denied: {cfg}");
     }
 
     #[test]

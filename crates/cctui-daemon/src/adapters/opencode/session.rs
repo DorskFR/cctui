@@ -140,6 +140,9 @@ pub struct SpawnParams {
     /// Set for a `CctuiAgent` child so the session registers nested under the
     /// caller instead of as a top-level session.
     pub parent_local_id: Option<String>,
+    /// `CctuiAgent` relay to declare in this session's config, when the server
+    /// granted it spawn rights. `None` leaves the tool absent.
+    pub agent_mcp: Option<crate::adapters::agent_mcp::AgentMcp>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -246,7 +249,10 @@ impl OpenCodeSession {
             .or(self.params.cfg.default_model.as_deref())
             .and_then(ModelRef::parse);
         let home = SessionHome::under(&self.params.cfg.state_root, &self.params.key);
-        home.write_config(&session_config(model.as_ref(), &self.params.env))?;
+        home.write_config(&super::config::with_agent_mcp(
+            session_config(model.as_ref(), &self.params.env),
+            self.params.agent_mcp.as_ref(),
+        ))?;
 
         let port = free_port(&self.params.cfg.hostname)?;
         let password = Uuid::new_v4().to_string();
@@ -442,6 +448,11 @@ impl OpenCodeSession {
         working_dir: Option<String>,
     ) {
         self.owned.insert(local_id.to_owned());
+        // opencode mints `ses_…` only now, but the relay argv was baked with the
+        // launch key, and the server resolves a parent by `sessions.id`.
+        if let Some(agent_mcp) = &self.params.agent_mcp {
+            crate::agenttool::bind_session_alias(agent_mcp.session_key(), local_id);
+        }
         let meta = SessionMeta {
             working_dir,
             parent_local_id,
@@ -1013,6 +1024,7 @@ mod tests {
             attachments: Vec::new(),
             command_id: Some(command_id),
             parent_local_id: None,
+            agent_mcp: None,
         };
         let live = LiveRegistry::default();
         let handle =
@@ -1087,6 +1099,7 @@ mod tests {
             attachments: Vec::new(),
             command_id: None,
             parent_local_id,
+            agent_mcp: None,
         };
         let mut session =
             OpenCodeSession::new(params, tx, LiveRegistry::default(), CancellationToken::new());
@@ -1412,6 +1425,7 @@ mod tests {
             attachments: Vec::new(),
             command_id: None,
             parent_local_id: Some("parent-1".to_owned()),
+            agent_mcp: None,
         };
         params.cfg.bin = "/definitely/not/a/binary".to_owned();
         let mut session =

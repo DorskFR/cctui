@@ -80,31 +80,35 @@ pub async fn resolve_env(
     hint: &BTreeMap<String, String>,
     required_keys: &[&str],
 ) -> anyhow::Result<BTreeMap<String, String>> {
-    resolve_env_and_settings(adapter, server, machine_key, local_id, hint, required_keys)
-        .await
-        .map(|(env, _)| env)
+    resolve_launch(adapter, server, machine_key, local_id, hint, required_keys).await.map(|l| l.env)
 }
 
-/// [`resolve_env`], plus the per-account `settings` blob the pull carried.
-///
-/// `settings` is `None` whenever the env came from `hint` rather than a
-/// successful pull.
-pub async fn resolve_env_and_settings(
+/// `settings` and `spawn_capability` are `None` whenever the env came from
+/// `hint` rather than a successful pull.
+#[derive(Debug, Default, Clone)]
+pub struct LaunchEnv {
+    pub env: BTreeMap<String, String>,
+    pub settings: Option<serde_json::Value>,
+    pub spawn_capability: Option<cctui_proto::api::SpawnCapability>,
+}
+
+pub async fn resolve_launch(
     adapter: &str,
     server: Option<&ServerClient>,
     machine_key: Option<&String>,
     local_id: &str,
     hint: &BTreeMap<String, String>,
     required_keys: &[&str],
-) -> anyhow::Result<(BTreeMap<String, String>, Option<serde_json::Value>)> {
+) -> anyhow::Result<LaunchEnv> {
     let (Some(server), Some(mk)) = (server, machine_key) else {
-        return Ok((hint.clone(), None));
+        return Ok(LaunchEnv { env: hint.clone(), ..LaunchEnv::default() });
     };
     match server.gateway_env(mk, local_id).await {
         Ok(resp) => {
             let settings = resp.settings.clone();
-            launch_env_decision(adapter, local_id, &resp, hint, required_keys)
-                .map(|env| (env, settings))
+            let spawn_capability = resp.spawn_capability.clone();
+            let env = launch_env_decision(adapter, local_id, &resp, hint, required_keys)?;
+            Ok(LaunchEnv { env, settings, spawn_capability })
         }
         Err(e) => {
             tracing::warn!(
@@ -112,7 +116,7 @@ pub async fn resolve_env_and_settings(
                 adapter,
                 "gateway-env pull failed; falling back to pushed env: {e}"
             );
-            Ok((hint.clone(), None))
+            Ok(LaunchEnv { env: hint.clone(), ..LaunchEnv::default() })
         }
     }
 }
