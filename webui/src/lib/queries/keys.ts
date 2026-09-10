@@ -17,6 +17,8 @@ export const qk = {
   // messages. Live updates come through the ws listener, not refetch.
   conversation: (id: string) => ["conversation", id] as const,
   sessionAttachments: (id: string) => ["session-attachments", id] as const,
+  conversationHead: (id: string) => ["conversation-head", id] as const,
+  messagePins: (id: string) => ["message-pins", id] as const,
   users: ["users"] as const,
   machines: (userId: string) => ["users", userId, "machines"] as const,
   tokens: (userId: string) => ["users", userId, "tokens"] as const,

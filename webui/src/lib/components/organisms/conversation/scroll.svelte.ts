@@ -8,6 +8,15 @@
 
 const STICK_SLOP = 48; // px from bottom still counts as "at bottom"
 
+export const FOCUS_FLASH_MS = 1200;
+
+function flashLine(node: HTMLElement) {
+	node.classList.remove('line-focus');
+	void node.offsetWidth;
+	node.classList.add('line-focus');
+	setTimeout(() => node.classList.remove('line-focus'), FOCUS_FLASH_MS);
+}
+
 export class ScrollController {
 	// Bound by the viewport / composer via bind:this.
 	scroller = $state<HTMLElement | undefined>(undefined);
@@ -86,6 +95,27 @@ export class ScrollController {
 	// down even if the user had scrolled up.
 	stickToBottom = () => {
 		this.stuck = true;
+	};
+
+	// Leave sticky mode. A jump to an older message must not be yanked back down
+	// by the next live event; the "jump to bottom" pill is the way back.
+	unstick = () => {
+		this.stuck = false;
+		if (this.scroller) this.#lastClientHeight = this.scroller.clientHeight;
+	};
+
+	// Centre the line carrying `seq` and flash it. False when the line is not
+	// mounted (the caller grows the render window / fetches older pages first).
+	centerOnSeq = (seq: number): boolean => {
+		const el = this.scroller;
+		const node = el?.querySelector<HTMLElement>(`[data-seq="${Number(seq)}"]`);
+		if (!el || !node) return false;
+		this.stuck = false;
+		const offset = node.offsetTop - el.offsetTop;
+		el.scrollTop = Math.max(0, offset - Math.max(0, (el.clientHeight - node.clientHeight) / 2));
+		this.#lastClientHeight = el.clientHeight;
+		flashLine(node);
+		return true;
 	};
 
 	// Reset to bottom + sticky when switching sessions.

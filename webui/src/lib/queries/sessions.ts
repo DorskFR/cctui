@@ -1,5 +1,6 @@
 import { createQuery, useQueryClient } from "@tanstack/svelte-query";
 import type { AgentEvent } from "@bindings/AgentEvent";
+import type { MessagePin } from "@bindings/MessagePin";
 import { endpoints } from "./endpoints";
 import { qk } from "./keys";
 
@@ -74,6 +75,87 @@ export const useConversation = (
     gcTime: CONVERSATION_GC_MS,
   }));
 };
+
+/** Oldest events of a session, independent of the tail window the drawer
+ *  renders — the brief strip needs the FIRST user message, which paging back
+ *  from the tail would take many fetches to reach. */
+export const CONVERSATION_HEAD_LIMIT = 20;
+
+export const useConversationHead = (
+  id: () => string,
+  enabled: () => boolean = () => true,
+) =>
+  createQuery(() => ({
+    queryKey: qk.conversationHead(id()),
+    queryFn: () =>
+      endpoints.conversation(id(), {
+        limit: CONVERSATION_HEAD_LIMIT,
+        order: "asc",
+      }),
+    enabled: enabled() && !!id(),
+    // The head of a transcript never changes.
+    staleTime: Infinity,
+    gcTime: CONVERSATION_GC_MS,
+  }));
+
+/** Messages the caller pinned in this session (server-side, per user). */
+export const useMessagePins = (
+  id: () => string,
+  enabled: () => boolean = () => true,
+) =>
+  createQuery(() => ({
+    queryKey: qk.messagePins(id()),
+    queryFn: () => endpoints.messagePins(id()),
+    enabled: enabled() && !!id(),
+    staleTime: 30_000,
+  }));
+
+/** Optimistic pin/unpin: the glyph and the panel must flip on click, not a
+ *  round-trip later. */
+export function useMessagePinActions() {
+  const qc = useQueryClient();
+  const key = (id: string) => qk.messagePins(id);
+  const write = (id: string, next: MessagePin[]) =>
+    qc.setQueryData<MessagePin[]>(key(id), next);
+  const read = (id: string) => qc.getQueryData<MessagePin[]>(key(id)) ?? [];
+  const inval = (id: string) => qc.invalidateQueries({ queryKey: key(id) });
+  return {
+    async pin(id: string, seq: number, messageId?: string | null) {
+      const prev = read(id);
+      if (!prev.some((p) => p.seq === seq))
+        write(id, [
+          ...prev,
+          {
+            session_id: id,
+            seq,
+            message_id: messageId ?? null,
+            note: null,
+            created_at: new Date().toISOString(),
+          },
+        ].sort((a, b) => a.seq - b.seq));
+      try {
+        await endpoints.pinMessage(id, seq, messageId);
+      } catch (e) {
+        write(id, prev);
+        throw e;
+      } finally {
+        void inval(id);
+      }
+    },
+    async unpin(id: string, seq: number) {
+      const prev = read(id);
+      write(id, prev.filter((p) => p.seq !== seq));
+      try {
+        await endpoints.unpinMessage(id, seq);
+      } catch (e) {
+        write(id, prev);
+        throw e;
+      } finally {
+        void inval(id);
+      }
+    },
+  };
+}
 
 /** Session diagnose panel. Fetched only while the panel is open;
  *  no polling — the panel offers an explicit refresh instead, since the call

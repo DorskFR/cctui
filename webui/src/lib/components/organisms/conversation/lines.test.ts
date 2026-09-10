@@ -295,3 +295,21 @@ describe('turn summaries', () => {
 		expect(roles(events)).toEqual(['assistant']);
 	});
 });
+
+describe('seq stamping', () => {
+	it('carries the event seq onto its line', () => {
+		const lines = buildLines([text('▷ User: go', 1, null, 7), text('sure', 2, null, 8)], ctx());
+		expect(lines.map((l) => l.seq)).toEqual([7, 8]);
+	});
+
+	it('leaves seq undefined for events the server never numbered', () => {
+		const lines = buildLines([text('▷ User: go', 1)], ctx());
+		expect(lines[0].seq).toBeUndefined();
+	});
+
+	it('stamps seq on tool lines too, so any message is addressable', () => {
+		const call = { ...toolCall('Bash', 3), seq: 11 } as AgentEvent;
+		const res = { ...toolResult(4), seq: 12 } as AgentEvent;
+		expect(buildLines([call, res], ctx()).map((l) => l.seq)).toEqual([11, 12]);
+	});
+});

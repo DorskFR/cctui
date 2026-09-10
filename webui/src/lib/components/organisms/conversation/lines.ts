@@ -40,6 +40,12 @@ export function resultCategory(e: AgentEvent & { type: 'tool_result' }): MsgCate
 }
 
 export function toLine(e: AgentEvent, ctx: LineBuildCtx): Line | null {
+	const ln = buildLine(e, ctx);
+	if (ln && typeof e.seq === 'number') ln.seq = e.seq;
+	return ln;
+}
+
+function buildLine(e: AgentEvent, ctx: LineBuildCtx): Line | null {
 	switch (e.type) {
 		case 'text': {
 			// Streaming emits an empty text event before the populated one — skip

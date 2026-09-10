@@ -1564,6 +1564,35 @@ pub struct ConversationQuery {
     pub before: Option<i64>,
     /// Exclusive lower `seq` bound for delta catch-up.
     pub after: Option<i64>,
+    /// Which end of the range `limit` takes: `desc` (default) keeps the newest
+    /// events, `asc` the oldest. The response is always oldest-first.
+    #[serde(default)]
+    pub order: ConversationOrder,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ConversationOrder {
+    #[default]
+    Desc,
+    Asc,
+}
+
+fn conversation_sql(order: ConversationOrder) -> &'static str {
+    match order {
+        ConversationOrder::Desc => {
+            "SELECT id, event_type, payload, created_at FROM stream_events \
+             WHERE session_id = $1 AND ($2::bigint IS NULL OR id < $2) \
+               AND ($4::bigint IS NULL OR id > $4) \
+             ORDER BY id DESC LIMIT $3"
+        }
+        ConversationOrder::Asc => {
+            "SELECT id, event_type, payload, created_at FROM stream_events \
+             WHERE session_id = $1 AND ($2::bigint IS NULL OR id < $2) \
+               AND ($4::bigint IS NULL OR id > $4) \
+             ORDER BY id ASC LIMIT $3"
+        }
+    }
 }
 
 pub async fn get_conversation(
@@ -1582,23 +1611,24 @@ pub async fn get_conversation(
     // the causal `seq` and is a strict total order, so a late-flushed
     // AskUserQuestion card+preamble keep their insert position even when their
     // `created_at` ties or lands after the user's answer.
-    let mut rows: Vec<(i64, String, serde_json::Value, DateTime<Utc>)> = sqlx::query_as(
-        "SELECT id, event_type, payload, created_at FROM stream_events \
-         WHERE session_id = $1 AND ($2::bigint IS NULL OR id < $2) \
-           AND ($4::bigint IS NULL OR id > $4) \
-         ORDER BY id DESC LIMIT $3",
-    )
-    .bind(&session_id)
-    .bind(params.before)
-    .bind(params.limit.map(|l| l.clamp(1, 10_000)))
-    .bind(params.after)
-    .fetch_all(&state.pool)
-    .await
-    .map_err(|e| {
-        tracing::error!("db error: {e}");
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-    })?;
-    rows.reverse();
+    let mut rows: Vec<(i64, String, serde_json::Value, DateTime<Utc>)> =
+        sqlx::query_as(conversation_sql(params.order))
+            .bind(&session_id)
+            .bind(params.before)
+            .bind(params.limit.map(|l| l.clamp(1, 10_000)))
+            .bind(params.after)
+            .fetch_all(&state.pool)
+            .await
+            .map_err(|e| {
+                tracing::error!("db error: {e}");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ApiError { error: "database error".into() }),
+                )
+            })?;
+    if params.order == ConversationOrder::Desc {
+        rows.reverse();
+    }
 
     let usage_rows: Vec<(String, Option<String>, i64, i64, i64, i64)> = sqlx::query_as(
         "SELECT message_id, model, \
@@ -2669,6 +2699,28 @@ mod tests {
     };
     use cctui_proto::models::{Attention, Liveness};
     use chrono::{Duration, Utc};
+
+    #[test]
+    fn conversation_order_defaults_to_desc() {
+        let q: super::ConversationQuery =
+            serde_json::from_value(serde_json::json!({"limit": 20})).unwrap();
+        assert_eq!(q.order, super::ConversationOrder::Desc);
+        assert!(super::conversation_sql(q.order).ends_with("ORDER BY id DESC LIMIT $3"));
+    }
+
+    #[test]
+    fn conversation_order_asc_flips_the_inner_order_by() {
+        let q: super::ConversationQuery =
+            serde_json::from_value(serde_json::json!({"limit": 20, "order": "asc"})).unwrap();
+        assert_eq!(q.order, super::ConversationOrder::Asc);
+        assert!(super::conversation_sql(q.order).ends_with("ORDER BY id ASC LIMIT $3"));
+        let desc = super::conversation_sql(super::ConversationOrder::Desc);
+        assert_eq!(
+            super::conversation_sql(super::ConversationOrder::Asc).replace("id ASC", "id DESC"),
+            desc,
+            "asc/desc must differ only in the ORDER BY direction"
+        );
+    }
 
     #[test]
     fn draft_row_fields_strip_env_and_blank_columns() {

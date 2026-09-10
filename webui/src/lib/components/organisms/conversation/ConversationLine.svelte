@@ -22,7 +22,9 @@
 		forkable = false,
 		selectMode = false,
 		selectedForFork = false,
-		ontoggleselect
+		ontoggleselect,
+		pinned = false,
+		onpin
 	}: {
 		ln: Line;
 		archived: boolean;
@@ -38,7 +40,16 @@
 		onforkfrom?: (messageId: string) => void;
 		onforkafter?: (messageId: string) => void;
 		ontoggleselect?: (messageId: string) => void;
+		pinned?: boolean;
+		/** Toggle the pin on this line; omit to hide the action. */
+		onpin?: (ln: Line) => void;
 	} = $props();
+
+	// An optimistic user echo carries a synthetic `maxSeq + 1` seq that no server
+	// row backs, so it must not be pinnable until the send is confirmed.
+	const pinnable = $derived(
+		!!onpin && typeof ln.seq === 'number' && !ln.pending && !ln.failed
+	);
 
 	const uploadRefs = $derived(ln.role === 'user' ? parseUserUploadRefs(ln.text) : null);
 
@@ -69,6 +80,8 @@
 
 <div
 	class="line {ln.role}"
+	class:pinned
+	data-seq={ln.seq}
 	data-journey="line"
 	data-journey-key={ln.role}
 	class:mcp={ln.mcp}
@@ -135,7 +148,18 @@
 				/>
 			{/if}
 		{/if}
-		<span class="line-actions">
+		<span class="line-actions" class:has-pin={pinned}>
+			{#if pinnable}
+				<button
+					type="button"
+					class="pin-btn"
+					class:on={pinned}
+					aria-pressed={pinned}
+					aria-label={pinned ? m.conversation_unpin_label() : m.conversation_pin_label()}
+					title={pinned ? m.conversation_unpin_title() : m.conversation_pin_title()}
+					onclick={() => onpin?.(ln)}>{pinned ? '★' : '☆'}</button
+				>
+			{/if}
 			<!-- Copy-as-Markdown uses the same markdown glyph as the
 			     conversation-level copy; save-as-image uses a
 			     plain image icon and sits right next to it. -->
@@ -262,6 +286,27 @@
 		display: inline-flex;
 		align-items: center;
 		gap: var(--sp-1);
+	}
+	/* The pin stays visible once set — it marks the line in the flow, so it
+	   cannot be a hover-only affordance like the copy buttons. */
+	.pin-btn {
+		padding: 0 var(--sp-1);
+		background: none;
+		border: none;
+		line-height: 1;
+		font-size: var(--fs-sm);
+		color: var(--text-faint);
+		cursor: pointer;
+	}
+	.pin-btn:hover,
+	.pin-btn.on {
+		color: var(--warn);
+	}
+	/* Pinned line marker: a warm rail down its left edge. */
+	.line.pinned {
+		border-left: 2px solid var(--warn);
+		padding-left: var(--sp-2);
+		margin-left: calc(-1 * var(--sp-2));
 	}
 	.line-actions :global(.copy) {
 		display: inline-flex;

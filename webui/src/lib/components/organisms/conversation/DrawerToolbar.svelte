@@ -14,6 +14,9 @@
 	import FilterMenu from './FilterMenu.svelte';
 	import { quickFilterLabel, type MsgCategory, type QuickFilterId, type ViewOpts } from './types';
 	import { Popover, Toggle } from '@dorsk/tsumikit';
+	import PinsPanel from './PinsPanel.svelte';
+	import type { MessagePin } from '@bindings/MessagePin';
+	import type { Line } from './types';
 	import { m } from '$lib/paraglide/messages';
 
 	let {
@@ -23,7 +26,11 @@
 		ontoggleAuto,
 		ondiagnose,
 		onterminal,
-		terminalOpen = false
+		terminalOpen = false,
+		pins = [],
+		lines = [],
+		onjumpseq,
+		onunpin
 	}: {
 		view: ViewOpts;
 		autoApprove: boolean;
@@ -34,6 +41,11 @@
 		/** Toggles the read-only live terminal; omit to hide (codex). */
 		onterminal?: () => void;
 		terminalOpen?: boolean;
+		pins?: MessagePin[];
+		lines?: Line[];
+		/** Omit both to hide the pins button (e.g. no session context). */
+		onjumpseq?: (seq: number) => void;
+		onunpin?: (seq: number) => void;
 	} = $props();
 
 	const QUICK_TINT: Record<QuickFilterId, string> = {
@@ -150,6 +162,14 @@
 				onclick={ondiagnose}
 			>{m.conversation_diagnose_btn()}</Toggle>
 		{/if}
+		{#if onjumpseq && onunpin}
+			<Popover label={m.conversation_pins_aria()} placement="bottom-end" bare triggerClass="pins-trigger">
+				{#snippet trigger()}
+					★ {m.conversation_pins()}{pins.length ? ` ${pins.length}` : ''}
+				{/snippet}
+				<PinsPanel {pins} {lines} onjump={onjumpseq} {onunpin} />
+			</Popover>
+		{/if}
 		{#if onterminal}
 			<Toggle
 				pressed={terminalOpen}
@@ -166,6 +186,21 @@
 	:global(.filters-trigger.bare) {
 		display: inline-flex;
 		align-items: center;
+		padding: 0.15rem var(--sp-2);
+		border: 1px solid var(--border);
+		border-radius: var(--r-pill);
+		background: var(--bg-elevated-2);
+		color: var(--text-muted);
+		font-size: var(--fs-xs);
+		font-weight: var(--fw-medium);
+		line-height: 1.4;
+		white-space: nowrap;
+	}
+
+	:global(.pins-trigger.bare) {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--sp-1);
 		padding: 0.15rem var(--sp-2);
 		border: 1px solid var(--border);
 		border-radius: var(--r-pill);

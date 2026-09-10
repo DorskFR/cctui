@@ -24,6 +24,7 @@ pub mod langfuse;
 pub mod limit_reset;
 pub mod manifest;
 pub mod me;
+pub mod message_pins;
 pub mod passkeys;
 pub mod permissions;
 pub mod profiles;

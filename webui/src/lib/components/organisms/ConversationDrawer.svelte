@@ -12,7 +12,9 @@
 		useAccounts,
 		qk,
 		endpoints,
-		CONVERSATION_FETCH_LIMIT
+		CONVERSATION_FETCH_LIMIT,
+		useMessagePins,
+		useMessagePinActions
 	} from '$lib/queries';
 	import { useQueryClient } from '@tanstack/svelte-query';
 	import { renderMarkdown, highlightBlock } from '$lib/markdown';
@@ -29,12 +31,13 @@
 	import Conversation from './conversation/Conversation.svelte';
 	import AccountSwitchModal from './conversation/AccountSwitchModal.svelte';
 	import ConversationComposer from './conversation/ConversationComposer.svelte';
-	import type { MsgCategory, ViewOpts } from './conversation/types';
+	import type { Line, MsgCategory, ViewOpts } from './conversation/types';
 	import { parseViewOpts } from './conversation/filters';
 	import { eventSig, orderEvents } from './conversation/format';
 	import { buildLines, type LineBuildCtx } from './conversation/lines';
 	import { ConversationStream } from './conversation/stream.svelte';
 	import { ScrollController } from './conversation/scroll.svelte';
+	import { createSeqJumper, type RenderWindow } from './conversation/jump';
 	import { ForkController } from './conversation/fork.svelte';
 	import { SessionActions } from './conversation/sessionActions.svelte';
 	import { m } from '$lib/paraglide/messages';
@@ -274,6 +277,28 @@
 	// the scroller / textarea attach (the controller reads both reactively).
 	$effect(() => scroll.observeResize());
 
+	// ── Message pins + the shared jump primitive ───────────────────────────
+	const pinsQuery = useMessagePins(() => id);
+	const pins = $derived(pinsQuery.data ?? []);
+	const pinnedSeqs = $derived(new Set(pins.map((p) => p.seq)));
+	const pinActions = useMessagePinActions();
+	let renderWindow = $state<RenderWindow | undefined>(undefined);
+	const { ensureSeqVisible } = createSeqJumper({
+		hasSeq: (seq) => events.some((e) => e.seq === seq),
+		isRendered: (seq) => renderWindow?.isRendered(seq) ?? false,
+		growRender: () => renderWindow?.grow(),
+		canFetchOlder: () => canFetchEarlier,
+		fetchOlder: fetchEarlier,
+		centerOnSeq: scroll.centerOnSeq,
+		unstick: scroll.unstick
+	});
+	function togglePinLine(ln: Line) {
+		if (ln.seq === undefined || ln.pending || ln.failed) return;
+		void (pinnedSeqs.has(ln.seq)
+			? pinActions.unpin(id, ln.seq)
+			: pinActions.pin(id, ln.seq, ln.messageId ?? null));
+	}
+
 	const isCodexSession = $derived((session.adapter_id ?? '').startsWith('codex'));
 
 	// ── Session actions (rename / archive / interrupt / resume / model switch /
@@ -452,6 +477,10 @@
 				ondiagnose={() => (diagnoseOpen = true)}
 				onterminal={isCodexSession ? undefined : () => (terminalOpen = !terminalOpen)}
 				{terminalOpen}
+				{pins}
+				{lines}
+				onjumpseq={(seq) => void ensureSeqVisible(seq)}
+				onunpin={(seq) => void pinActions.unpin(id, seq)}
 			/>
 
 			{#if diagnoseOpen}
@@ -505,6 +534,9 @@
 				{selectMode}
 				{selected}
 				ontoggleselect={toggleSelect}
+				{pinnedSeqs}
+				onpin={togglePinLine}
+				bind:jumper={renderWindow}
 			/>
 
 			<ConversationComposer

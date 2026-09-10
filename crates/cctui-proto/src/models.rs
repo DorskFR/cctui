@@ -176,9 +176,35 @@ impl Default for TokenUsage {
     }
 }
 
+/// `seq` is the `stream_events.id` insert sequence: the only stable address of
+/// a message (`ts` collides).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
+#[ts(export)]
+pub struct MessagePin {
+    pub session_id: String,
+    pub seq: i64,
+    pub message_id: Option<String>,
+    pub note: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn message_pin_roundtrips_json() {
+        let pin = MessagePin {
+            session_id: "s1".into(),
+            seq: 42,
+            message_id: Some("msg_1".into()),
+            note: None,
+            created_at: Utc::now(),
+        };
+        let parsed: MessagePin =
+            serde_json::from_str(&serde_json::to_string(&pin).unwrap()).unwrap();
+        assert_eq!(parsed, pin);
+    }
 
     #[test]
     fn session_status_serializes_to_snake_case() {
