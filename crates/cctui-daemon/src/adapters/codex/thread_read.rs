@@ -49,9 +49,11 @@ pub fn thread_read_req(id: i64, thread_id: &str) -> Value {
     })
 }
 
-/// `thread/turns/list`. `itemsView: "full"` is required — the default
-/// `summary` view omits the item bodies the transcript is made of. Ascending
-/// order so the emitted events are already in conversation order.
+/// `thread/turns/list`.
+///
+/// `itemsView: "full"` is required — the default `summary` view omits the item
+/// bodies the transcript is made of. Ascending order so the emitted events are
+/// already in conversation order.
 #[must_use]
 pub fn turns_list_req(id: i64, thread_id: &str, cursor: Option<&str>) -> Value {
     let mut params = serde_json::Map::new();
