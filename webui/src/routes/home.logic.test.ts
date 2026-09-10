@@ -22,7 +22,7 @@ const machine = (
 	liveness
 });
 
-const stats: SessionStats = { total: 12193, live: 8, needs_input: 1, archived: 12076 };
+const stats: SessionStats = { total: 12193, live: 8, needs_input: 1, archived: 12076, today: 3, yesterday: 4, week: 12, month: 30 };
 
 describe('asUsage', () => {
 	it('maps a window to the session-card readout, zeroed when absent', () => {

@@ -17,7 +17,7 @@ export function createProbes(qc: QueryClient): Probes {
 	const pools = () => qc.fetchQuery({ queryKey: ['account-pools'], queryFn: endpoints.accountPools });
 	const sessions = () =>
 		qc.fetchQuery({ queryKey: qk.sessions(false), queryFn: () => endpoints.sessions(false) });
-	const stats = () => qc.fetchQuery({ queryKey: qk.sessionStats, queryFn: endpoints.sessionStats });
+	const stats = () => qc.fetchQuery({ queryKey: qk.sessionStats, queryFn: () => endpoints.sessionStats(Intl.DateTimeFormat().resolvedOptions().timeZone) });
 	const machines = async (): Promise<MachineRow[]> => {
 		const who = await me();
 		if (who.role === 'admin') {

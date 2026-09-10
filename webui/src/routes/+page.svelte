@@ -2,6 +2,7 @@
 	import { useAccounts, useAllMachines, useSessionStats, useTokenStats } from '$lib/queries';
 	import { getLocale } from '$lib/paraglide/runtime';
 	import { m } from '$lib/paraglide/messages';
+	import SessionPeriodSummary from '$lib/components/organisms/overview/SessionPeriodSummary.svelte';
 	import MetricTile from '$lib/components/molecules/MetricTile.svelte';
 	import WindowsTable from '$lib/components/molecules/WindowsTable.svelte';
 	import UsageAnalyticsSection from '$lib/components/organisms/overview/UsageAnalyticsSection.svelte';
@@ -49,6 +50,8 @@
 			</div>
 		{/each}
 	</div>
+
+	<SessionPeriodSummary stats={stats.data} />
 
 	<Card padding="none" data-journey="windows"><WindowsTable windows={tokens.data} /></Card>
 

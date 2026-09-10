@@ -479,6 +479,13 @@ pub struct SessionStats {
     pub needs_input: i64,
     /// Sessions in the sticky `archived` state.
     pub archived: i64,
+    /// Sessions first registered in local calendar periods, including archived.
+    pub today: i64,
+    pub yesterday: i64,
+    /// Since Monday at local midnight.
+    pub week: i64,
+    /// Since the first day of the local month.
+    pub month: i64,
 }
 
 /// Token totals for one time window, mirroring the three figures the session
