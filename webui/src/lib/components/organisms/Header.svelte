@@ -17,7 +17,10 @@
 	import UsageBattery from '$lib/components/molecules/UsageBattery.svelte';
 import ResourceBattery from '$lib/components/molecules/ResourceBattery.svelte';
 	import UpdateModal from '$lib/components/organisms/UpdateModal.svelte';
+	import { settingsHref } from '$lib/components/organisms/settings/settings.logic';
 	import { m } from '$lib/paraglide/messages';
+
+	const GUIDES_HREF = settingsHref('guides');
 
 	const version = useVersion();
 	const me = useMe();
@@ -108,6 +111,11 @@ import ResourceBattery from '$lib/components/molecules/ResourceBattery.svelte';
 					}
 				]
 			: []),
+		{
+			label: m.nav_getting_started(),
+			icon: 'life-buoy' as const,
+			onselect: () => void goto(GUIDES_HREF)
+		},
 		{ label: m.nav_settings(), onselect: () => void goto('/settings') },
 		{ label: m.nav_log_out(), icon: 'log-out' as const, danger: true, onselect: () => void auth.logout() }
 	]);
@@ -156,6 +164,13 @@ import ResourceBattery from '$lib/components/molecules/ResourceBattery.svelte';
 		<div class="tail">
 			<span class="batt"><ResourceBattery /><UsageBattery /></span>
 			<span class="divider" aria-hidden="true"></span>
+			<IconButton
+				emoji="?"
+				size={12}
+				label={m.nav_guides_label()}
+				as="a"
+				href={GUIDES_HREF}
+			/>
 			<IconButton
 				emoji={notify.enabled ? '🔔' : '🔕'}
 				size={12}
