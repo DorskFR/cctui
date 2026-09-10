@@ -6,7 +6,7 @@
 
 **The fleet in four numbers**
 
-Sessions running now, sessions waiting on you, machines online, and the all-time total.
+Four numbers: sessions running now, sessions waiting on you, machines online, and the all-time total. They read zero until your first run.
 
 ![windows](02-windows.png)
 

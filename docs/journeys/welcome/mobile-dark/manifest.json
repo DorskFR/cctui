@@ -1,6 +1,6 @@
 {
-	"id": "search-sessions",
-	"title": "Find a session again",
+	"id": "welcome",
+	"title": "Welcome to cctui",
 	"version": 1,
 	"variants": {
 		"mobile-dark": {

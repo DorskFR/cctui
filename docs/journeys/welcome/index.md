@@ -1,4 +1,4 @@
-# Find a session again
+# Welcome to cctui
 
 ## viewport=desktop theme=dark
 
