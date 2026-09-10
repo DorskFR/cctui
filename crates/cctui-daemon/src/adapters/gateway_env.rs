@@ -80,18 +80,43 @@ pub async fn resolve_env(
     hint: &BTreeMap<String, String>,
     required_keys: &[&str],
 ) -> anyhow::Result<BTreeMap<String, String>> {
+    resolve_launch(adapter, server, machine_key, local_id, hint, required_keys).await.map(|l| l.env)
+}
+
+/// A resolved launch: the worker env plus the `CctuiAgent` capability the same
+/// pull carries. Adapters that offer the spawn tool need both, and the pull is
+/// the only place the capability is served.
+#[derive(Debug, Default, Clone)]
+pub struct LaunchEnv {
+    pub env: BTreeMap<String, String>,
+    pub spawn_capability: Option<cctui_proto::api::SpawnCapability>,
+}
+
+/// [`resolve_env`], keeping the capability the pull returned.
+pub async fn resolve_launch(
+    adapter: &str,
+    server: Option<&ServerClient>,
+    machine_key: Option<&String>,
+    local_id: &str,
+    hint: &BTreeMap<String, String>,
+    required_keys: &[&str],
+) -> anyhow::Result<LaunchEnv> {
     let (Some(server), Some(mk)) = (server, machine_key) else {
-        return Ok(hint.clone());
+        return Ok(LaunchEnv { env: hint.clone(), spawn_capability: None });
     };
     match server.gateway_env(mk, local_id).await {
-        Ok(resp) => launch_env_decision(adapter, local_id, &resp, hint, required_keys),
+        Ok(resp) => {
+            let spawn_capability = resp.spawn_capability.clone();
+            let env = launch_env_decision(adapter, local_id, &resp, hint, required_keys)?;
+            Ok(LaunchEnv { env, spawn_capability })
+        }
         Err(e) => {
             tracing::warn!(
                 %local_id,
                 adapter,
                 "gateway-env pull failed; falling back to pushed env: {e}"
             );
-            Ok(hint.clone())
+            Ok(LaunchEnv { env: hint.clone(), spawn_capability: None })
         }
     }
 }

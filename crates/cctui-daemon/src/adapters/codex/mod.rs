@@ -57,7 +57,18 @@ async fn resolve_launch_env(
     local_id: &str,
     hint: &std::collections::BTreeMap<String, String>,
 ) -> anyhow::Result<std::collections::BTreeMap<String, String>> {
-    crate::adapters::gateway_env::resolve_env(
+    resolve_launch(server, machine_key, local_id, hint).await.map(|l| l.env)
+}
+
+/// [`resolve_launch_env`], keeping the `CctuiAgent` capability the same pull
+/// serves so the launch can decide whether to register the spawn tool.
+async fn resolve_launch(
+    server: Option<&ServerClient>,
+    machine_key: Option<&String>,
+    local_id: &str,
+    hint: &std::collections::BTreeMap<String, String>,
+) -> anyhow::Result<crate::adapters::gateway_env::LaunchEnv> {
+    crate::adapters::gateway_env::resolve_launch(
         "codex",
         server,
         machine_key,
@@ -254,17 +265,18 @@ async fn command_pump(
                                // account-bound
                                // session with empty gateway env refuses to launch
                                // rather than starting env-less and 401ing.
-                               let env = match resolve_launch_env(
+                               let launch_key = session_id
+                                   .or(command_id)
+                                   .map_or_else(String::new, |id| id.to_string());
+                               let launch = match resolve_launch(
                                    server.as_ref(),
                                    machine_key.as_ref(),
-                                   &session_id
-                                       .or(command_id)
-                                       .map_or_else(String::new, |id| id.to_string()),
+                                   &launch_key,
                                    &spec.env,
                                )
                                .await
                                {
-                                   Ok(env) => env,
+                                   Ok(launch) => launch,
                                    Err(err) => {
                                        tracing::error!(%err, "codex spawn: refusing env-less launch");
                                        if let Some(command_id) = command_id {
@@ -279,6 +291,7 @@ async fn command_pump(
                                        continue;
                                    }
                                };
+                               let env = launch.env;
                                // The CommandResult for `command_id` is deferred to the
                                // session driver: it reports ok only after
                                // `thread/start` succeeds.
@@ -310,11 +323,8 @@ async fn command_pump(
                                // expects the session to read is the P0 bug this fixes.
                                // Keyed by the same id the gateway env used so the staging
                                // dir is stable across the session lifetime.
-                               let stage_id = session_id
-                                   .or(command_id)
-                                   .map_or_else(String::new, |id| id.to_string());
                                let attachments = match crate::adapters::uploads::stage_bootstrap(
-                                   &stage_id,
+                                   &launch_key,
                                    &spec.bootstrap,
                                ) {
                                    Ok(paths) => paths,
@@ -346,6 +356,12 @@ async fn command_pump(
                                    live.clone(),
                                    registry.clone(),
                                    shutdown.clone(),
+                               )
+                               .with_agent_mcp(
+                                   crate::adapters::agent_mcp::AgentMcp::for_capability(
+                                       &launch_key,
+                                       launch.spawn_capability.as_ref(),
+                                   ),
                                );
                                tokio::spawn(async move {
                                    if let Err(err) = session.run().await {
@@ -853,7 +869,7 @@ async fn dispatch(
             }
             spawn_resumed_session(
                 record,
-                local_id.to_owned(),
+                local_id,
                 vec![command],
                 events.clone(),
                 live.clone(),

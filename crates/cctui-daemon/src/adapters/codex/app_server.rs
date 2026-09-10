@@ -1732,6 +1732,10 @@ pub struct CodexSession {
     /// The spawning parent session for a `CctuiAgent` child, carried onto
     /// `SessionStarted` so the server nests it under its caller.
     parent_local_id: Option<String>,
+    /// `CctuiAgent` relay to declare to this app-server, when the server granted
+    /// the session spawn rights. `None` means the tool is absent — a session
+    /// without a capability must not be able to see it.
+    agent_mcp: Option<crate::adapters::agent_mcp::AgentMcp>,
     events: mpsc::Sender<AdapterEvent>,
     live: LiveSessionRegistry,
     registry: SessionRegistry,
@@ -1739,6 +1743,15 @@ pub struct CodexSession {
 }
 
 impl CodexSession {
+    #[must_use]
+    pub fn with_agent_mcp(
+        mut self,
+        agent_mcp: Option<crate::adapters::agent_mcp::AgentMcp>,
+    ) -> Self {
+        self.agent_mcp = agent_mcp;
+        self
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub const fn new_fresh(
         cfg: AppServerConfig,
@@ -1763,6 +1776,7 @@ impl CodexSession {
             command_id,
             spawn_key,
             parent_local_id,
+            agent_mcp: None,
             events,
             live,
             registry,
@@ -1793,6 +1807,7 @@ impl CodexSession {
             command_id,
             spawn_key: None,
             parent_local_id: None,
+            agent_mcp: None,
             events,
             live,
             registry,
@@ -1820,6 +1835,7 @@ impl CodexSession {
             command_id: None,
             spawn_key: None,
             parent_local_id: None,
+            agent_mcp: None,
             events,
             live,
             registry,
@@ -1901,6 +1917,13 @@ impl CodexSession {
         }
         for (key, value) in gateway_provider_overrides(&self.env) {
             cmd.arg("-c").arg(format!("{key}=\"{value}\""));
+        }
+        // Already TOML literals (quoted scalar / array), unlike the scalar knobs
+        // above which are quoted here.
+        if let Some(agent_mcp) = &self.agent_mcp {
+            for (key, value) in agent_mcp.codex_config_overrides() {
+                cmd.arg("-c").arg(format!("{key}={value}"));
+            }
         }
         // Forward the resolved launch env — chiefly the gateway
         // credential pulled from the server's `sessions.account_id` binding —
@@ -2279,19 +2302,18 @@ impl CodexSession {
                             };
                             local_id.clone_from(&info.thread_id);
                             rollout_path.clone_from(&info.rollout_path);
-                            // Link a forked thread to its parent thread, and a
-                            // `CctuiAgent` child to its spawning session, so
-                            // the server resolves `parent_id`. Relation
-                            // "subagent" (not "fork") is what the webui nests.
-                            let (parent_local_id, relation) = match &self.launch {
-                                SessionLaunch::Fork { parent_thread_id, .. } => {
-                                    (Some(parent_thread_id.clone()), Some("fork"))
-                                }
-                                _ => (
-                                    self.parent_local_id.clone(),
-                                    self.parent_local_id.as_ref().map(|_| "subagent"),
-                                ),
-                            };
+                            let (parent_local_id, relation) =
+                                child_linkage(&self.launch, self.parent_local_id.as_deref());
+                            // A `CctuiAgent` call from this session arrives keyed
+                            // by the launch key baked into the relay argv; the
+                            // thread id it really is only exists now.
+                            if let Some(agent_mcp) = &self.agent_mcp {
+                                crate::agenttool::bind_session_alias(
+                                    agent_mcp.session_key(),
+                                    &local_id,
+                                );
+                                crate::adapters::agent_mcp::remember(&local_id, agent_mcp);
+                            }
                             self.events
                                 .send(AdapterEvent::SessionStarted {
                                     local_id: local_id.clone(),
@@ -2842,7 +2864,7 @@ impl CodexSession {
             {
                 spawn_resumed_session(
                     record,
-                    local_id.clone(),
+                    &local_id,
                     retry,
                     self.events.clone(),
                     self.live.clone(),
@@ -3008,9 +3030,25 @@ async fn record_model_override(
     }
 }
 
+/// The `(parent_local_id, relation)` a freshly started thread reports, so the
+/// server resolves `parent_id`. Relation `"subagent"` — not `"fork"` — is what
+/// the webui nests, so a `CctuiAgent` child must not be labelled a fork.
+#[must_use]
+fn child_linkage(
+    launch: &SessionLaunch,
+    parent_local_id: Option<&str>,
+) -> (Option<String>, Option<&'static str>) {
+    match launch {
+        SessionLaunch::Fork { parent_thread_id, .. } => {
+            (Some(parent_thread_id.clone()), Some("fork"))
+        }
+        _ => (parent_local_id.map(str::to_owned), parent_local_id.map(|_| "subagent")),
+    }
+}
+
 pub fn spawn_resumed_session(
     record: SessionRecord,
-    thread_id: String,
+    thread_id: &str,
     commands: Vec<SessionCommand>,
     events: mpsc::Sender<AdapterEvent>,
     live: LiveSessionRegistry,
@@ -3031,8 +3069,17 @@ pub fn spawn_resumed_session(
         return;
     }
     let session = CodexSession::new_resume(
-        record.cfg, record.cwd, record.env, thread_id, commands, events, live, registry, shutdown,
-    );
+        record.cfg,
+        record.cwd,
+        record.env,
+        thread_id.to_owned(),
+        commands,
+        events,
+        live,
+        registry,
+        shutdown,
+    )
+    .with_agent_mcp(crate::adapters::agent_mcp::recall(thread_id));
     tokio::spawn(async move {
         if let Err(err) = session.run().await {
             tracing::error!(%err, "codex resumed app-server session ended in error");
@@ -3221,6 +3268,60 @@ async fn write_json<W: AsyncWriteExt + Unpin>(w: &mut W, v: &Value) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn fresh_launch() -> SessionLaunch {
+        SessionLaunch::Fresh { prompt: None, name: None, attachments: Vec::new() }
+    }
+
+    #[test]
+    fn a_cctui_agent_child_reports_its_spawning_parent_as_a_subagent() {
+        let (parent, relation) = child_linkage(&fresh_launch(), Some("parent-thread-1"));
+        assert_eq!(parent.as_deref(), Some("parent-thread-1"));
+        assert_eq!(
+            relation,
+            Some("subagent"),
+            "the webui nests on \"subagent\"; anything else orphans the child"
+        );
+    }
+
+    #[test]
+    fn a_parentless_thread_reports_no_linkage() {
+        assert_eq!(child_linkage(&fresh_launch(), None), (None, None));
+    }
+
+    #[test]
+    fn a_fork_links_to_its_parent_thread_as_a_fork() {
+        let launch = SessionLaunch::Fork {
+            parent_thread_id: "thread-7".to_owned(),
+            prompt: None,
+            name: None,
+            attachments: Vec::new(),
+        };
+        assert_eq!(
+            child_linkage(&launch, Some("ignored")),
+            (Some("thread-7".to_owned()), Some("fork"))
+        );
+    }
+
+    #[test]
+    fn a_codex_session_with_a_capability_launches_the_agent_relay() {
+        let cap = cctui_proto::api::SpawnCapability {
+            adapters: vec!["codex".to_owned()],
+            ..Default::default()
+        };
+        let with = crate::adapters::agent_mcp::AgentMcp::for_capability("key-1", Some(&cap));
+        assert!(with.is_some(), "a granted capability must register the MCP tool");
+        let keys: Vec<String> =
+            with.unwrap().codex_config_overrides().into_iter().map(|(k, _)| k).collect();
+        assert!(
+            keys.iter().any(|k| k.starts_with("mcp_servers.")),
+            "the relay must ride codex `-c mcp_servers.…`; got {keys:?}"
+        );
+        assert!(
+            crate::adapters::agent_mcp::AgentMcp::for_capability("key-1", None).is_none(),
+            "a session with no capability must not see the tool at all"
+        );
+    }
 
     #[test]
     fn diagnose_rings_redact_tool_output_secrets() {

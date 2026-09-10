@@ -98,6 +98,7 @@ fn parse_call(line: &str) -> Result<Call, String> {
         .filter(|s| !s.trim().is_empty())
         .ok_or("request carries no session id")?
         .to_owned();
+    let session_id = resolve_session_alias(&session_id);
     let args = v.get("args").cloned().unwrap_or_else(|| json!({}));
     let prompt = args.get("prompt").and_then(Value::as_str).unwrap_or("").to_owned();
     if prompt.trim().is_empty() {
@@ -465,6 +466,37 @@ pub fn is_available(machine_key: &str) -> bool {
     !machine_key.trim().is_empty()
 }
 
+/// Launch-key → real-session-id map for harnesses that mint their own id.
+///
+/// A codex thread id / opencode `ses_…` does not exist yet when the relay's
+/// argv is baked, so those sessions carry their launch key as `--session`. The
+/// server resolves a parent by `sessions.id`, so without this the call would
+/// 404 against a key no session row uses.
+static SESSION_ALIASES: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, String>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+/// Record that the session launched as `launch_key` really is `session_id`.
+pub fn bind_session_alias(launch_key: &str, session_id: &str) {
+    if launch_key.trim().is_empty() || session_id.trim().is_empty() || launch_key == session_id {
+        return;
+    }
+    if let Ok(mut map) = SESSION_ALIASES.lock() {
+        map.insert(launch_key.to_owned(), session_id.to_owned());
+    }
+}
+
+/// Resolve a relay-supplied session id through [`bind_session_alias`]. An id
+/// that was never aliased is already the real one and passes through.
+#[must_use]
+pub fn resolve_session_alias(id: &str) -> String {
+    SESSION_ALIASES
+        .lock()
+        .ok()
+        .and_then(|map| map.get(id).cloned())
+        .unwrap_or_else(|| id.to_owned())
+}
+
 /// Path used when writing a session's MCP config, exposed for the launch path.
 #[must_use]
 pub fn socket_for_launch() -> &'static Path {
@@ -476,6 +508,28 @@ pub fn socket_for_launch() -> &'static Path {
 mod tests {
     use super::*;
     use crate::childwatch::ChildOutcome;
+
+    #[test]
+    fn a_launch_key_alias_resolves_a_call_onto_the_real_parent_session() {
+        bind_session_alias("launch-key-abc", "thread_0199real");
+        let line = json!({
+            "kind": "spawn_agent",
+            "session_id": "launch-key-abc",
+            "args": { "prompt": "review this", "model": "gpt-5.6-sol", "adapter": "codex" },
+        })
+        .to_string();
+        let call = parse_call(&line).unwrap();
+        assert_eq!(
+            call.session_id, "thread_0199real",
+            "a codex/opencode child must be attributed to the thread id the server knows, \
+             not the key baked into the relay argv"
+        );
+    }
+
+    #[test]
+    fn an_unaliased_session_id_passes_through() {
+        assert_eq!(resolve_session_alias("never-bound"), "never-bound");
+    }
 
     #[test]
     fn parses_a_full_spawn_call() {
