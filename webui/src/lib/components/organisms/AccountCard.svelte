@@ -8,7 +8,7 @@
 	import { ACCOUNT_DRAG_MIME, exhaustedWindow } from '$lib/components/organisms/accounts/pools.logic';
 	import { accountDrag, isTouchPointer, poolZoneAt } from '$lib/components/organisms/accounts/drag.svelte';
 	import { providerLabel } from '$lib/providers';
-	import { Button, Icon, IconButton, Menu, Select, Text, Timestamp, type MenuItem } from '@dorsk/tsumikit';
+	import { Button, Checkbox, Icon, IconButton, Menu, Select, Text, Timestamp, type MenuItem } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 
 	let {
@@ -228,7 +228,7 @@
 		{/if}
 		<AccountAvatar emoji={a.emoji} name={a.name} id={a.id} size={28} decorative />
 		<div class="title">
-			<h2 class="name"><Text as="span" size="md" weight="semibold">{a.name}</Text></h2>
+			<h2 class="name"><Text as="span" size="md" weight="semibold" wrap="anywhere">{a.name}</Text></h2>
 			{#if meta}
 				<Text as="span" tone="faint" size="xs">{meta}</Text>
 			{/if}
@@ -250,7 +250,7 @@
 					<Text as="span" tone="faint" size="xs">{m.accounts_until()} <Timestamp value={r.until} mode="relative" tone="inherit" /></Text>
 				{/if}
 				{#if onclearredirect}
-					<IconButton icon="x" label={m.common_delete()} inline size={12} onclick={() => onclearredirect(r.id)} />
+					<IconButton icon="x" label={m.accounts_redirect_clear()} inline size={12} onclick={() => onclearredirect(r.id)} />
 				{/if}
 			</span>
 		{/each}
@@ -278,10 +278,7 @@
 				{/each}
 			</Select>
 			{#each targetFamilies as f (f)}
-				<label class="redirect-family">
-					<input type="checkbox" checked={redirectFamilies.includes(f)} onchange={() => toggleFamily(f)} />
-					<Text as="span" size="sm">{f}</Text>
-				</label>
+				<Checkbox label={f} checked={redirectFamilies.includes(f)} onchange={() => toggleFamily(f)} />
 			{/each}
 			<Select bind:value={redirectHours} aria-label={m.a11y_redirect_expiry()}>
 				<option value="">{m.accounts_redirect_no_expiry()}</option>
@@ -395,7 +392,6 @@
 	.name {
 		margin: 0;
 		min-width: 0;
-		overflow-wrap: anywhere;
 	}
 	.exhausted {
 		display: inline-flex;
@@ -429,12 +425,6 @@
 		gap: var(--sp-2);
 		padding: var(--sp-2) var(--sp-4);
 		border-bottom: 1px solid var(--border);
-	}
-	.redirect-family {
-		display: inline-flex;
-		align-items: center;
-		gap: var(--sp-1);
-		cursor: pointer;
 	}
 	.columns {
 		display: grid;

@@ -20,7 +20,7 @@
 	<ul class="files" class:compact>
 		{#each files as f (f.name)}
 			<li>
-				<Text variant="code" truncate class="fname">{f.name}</Text>
+				<Text variant="code" truncate grow class="fname">{f.name}</Text>
 				<Text size="xs" tone="faint">{fmtSize(f.size)}</Text>
 				<IconButton inline class="hover-danger" icon="x"  label={m.common_remove()} title={m.common_remove()} onclick={() => onremove(f.name)} />
 			</li>
@@ -55,12 +55,5 @@
 		border-radius: var(--r-md);
 		padding: 2px var(--sp-2);
 		max-width: 100%;
-	}
-	/* The filename is rendered by the Text atom, so its residual layout chrome
-	   must be :global to reach that element; ellipsis is handled by Text's
-	   `truncate` prop. (The cap error is now the Error atom — no reach-in.) */
-	.files :global(.fname) {
-		flex: 1;
-		min-width: 0;
 	}
 </style>

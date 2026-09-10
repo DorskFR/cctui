@@ -7,7 +7,7 @@
 	// these checks are fast feedback). Saving replaces the whole stored blob;
 	// stored names can also be deleted individually via `env_remove` (the server
 	// drops them from the decrypted blob without the other values round-tripping).
-	import { Button, Input, Text } from '@dorsk/tsumikit';
+	import { Button, IconButton, Input, Text } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 	import Error from '$lib/components/atoms/Error.svelte';
 
@@ -92,12 +92,12 @@
 					{#if envRemove.includes(n)}
 						<span class="chip removing">
 							<s>{n}</s>
-							<button class="chip-x" onclick={() => unmarkRemove(n)} aria-label={m.providers_env_keep_aria({ name: n })}>↩</button>
+							<IconButton icon="retry" inline size={12} label={m.providers_env_keep_aria({ name: n })} onclick={() => unmarkRemove(n)} />
 						</span>
 					{:else}
 						<span class="chip">
 							{n}
-							<button class="chip-x" onclick={() => markRemove(n)} aria-label={m.providers_env_delete_aria({ name: n })}>✕</button>
+							<IconButton icon="x" inline size={12} label={m.providers_env_remove_named_aria({ name: n })} onclick={() => markRemove(n)} />
 						</span>
 					{/if}
 				{/each}
@@ -137,10 +137,12 @@
 						placeholder={m.providers_env_value_placeholder()}
 						aria-label={m.providers_env_value_aria()}
 					/>
-					<Button onclick={() => toggleReveal(i)} aria-label={revealed.has(i) ? m.providers_env_hide_value() : m.providers_env_show_value()}>
-						{revealed.has(i) ? '🙈' : '👁'}
-					</Button>
-					<Button variant="danger" onclick={() => removeEnvRow(i)} aria-label={m.providers_env_remove_aria()}>✕</Button>
+					<IconButton
+						icon={revealed.has(i) ? 'eye-off' : 'eye'}
+						label={revealed.has(i) ? m.providers_env_hide_value() : m.providers_env_show_value()}
+						onclick={() => toggleReveal(i)}
+					/>
+					<IconButton icon="x" variant="danger" label={m.providers_env_remove_aria()} onclick={() => removeEnvRow(i)} />
 				</div>
 			{/each}
 		</div>
@@ -179,15 +181,6 @@
 	}
 	.chip.removing {
 		opacity: 0.6;
-	}
-	.chip-x {
-		border: none;
-		background: none;
-		cursor: pointer;
-		padding: 0;
-		font-size: var(--fs-xs);
-		color: inherit;
-		line-height: 1;
 	}
 	.env-rows {
 		display: flex;

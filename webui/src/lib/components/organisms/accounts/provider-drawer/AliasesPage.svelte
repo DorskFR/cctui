@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Button, Input, Text } from '@dorsk/tsumikit';
+	import { Button, IconButton, Input, Text } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 	import type { AccountModel } from '$lib/queries';
 	import type { ModelOption } from '$lib/harnessModels';
@@ -20,7 +20,7 @@
 </script>
 
 <div class="page">
-	<Text as="p" tone="muted" size="sm">{m.accounts_aliases_help()}</Text>
+	<Text as="p" tone="muted" size="sm" measure="60ch">{m.accounts_aliases_help()}</Text>
 
 	{#each rows as row, i (i)}
 		<div class="row">
@@ -51,12 +51,13 @@
 					/>
 				{/if}
 			</div>
-			<Button
-				size="sm"
+			<IconButton
+				box="sm"
+				icon="x"
 				variant="danger"
-				aria-label={m.accounts_alias_remove_aria({ alias: row.alias })}
-				onclick={() => (rows = rows.filter((_, j) => j !== i))}>✕</Button
-			>
+				label={m.accounts_alias_remove_aria({ alias: row.alias })}
+				onclick={() => (rows = rows.filter((_, j) => j !== i))}
+			/>
 		</div>
 	{/each}
 

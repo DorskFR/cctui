@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Button, Field, Input, Select, Text } from '@dorsk/tsumikit';
+	import { Button, Field, IconButton, Input, Select, Text } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 	import Error from '$lib/components/atoms/Error.svelte';
 	import { looseSettings } from './pages.logic';
@@ -111,7 +111,7 @@
 			{#each loose as [k, v] (k)}
 				<div class="loose">
 					<Text variant="code" size="xs">{k}: {JSON.stringify(v)}</Text>
-					<Button size="sm" onclick={() => clearLoose(k)} aria-label={m.providers_remove_key_aria({ key: k })}>✕</Button>
+					<IconButton box="sm" icon="x" label={m.providers_remove_key_aria({ key: k })} onclick={() => clearLoose(k)} />
 				</div>
 			{/each}
 			<Input

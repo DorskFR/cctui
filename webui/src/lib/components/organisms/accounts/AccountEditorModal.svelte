@@ -575,13 +575,15 @@
 						{#if editor?.mode !== 'reauth'}
 							<details bind:open={showAdvanced} class="adv">
 								<summary><Text tone="muted" size="sm">{m.accounts_adv_refresh_summary()}</Text></summary>
-								<Field label={m.accounts_refresh_token_label()} class="adv-fld">
+								<div class="adv-fld">
+								<Field label={m.accounts_refresh_token_label()}>
 									<Input
 										type="password"
 										bind:value={refreshToken}
 										placeholder={m.accounts_refresh_token_placeholder()}
 									/>
 								</Field>
+								</div>
 							</details>
 						{/if}
 					{/if}
@@ -716,7 +718,7 @@
 		gap: var(--sp-2);
 		margin-top: var(--sp-1);
 	}
-	.adv :global(.adv-fld) {
+	.adv-fld {
 		margin-top: var(--sp-2);
 	}
 </style>
