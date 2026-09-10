@@ -110,7 +110,7 @@ describe("SpawnModal with no machines enrolled", () => {
     ).toBeTruthy();
 
     const buttons = [...document.querySelectorAll("button")];
-    const spawn = buttons.find((b) => b.textContent?.includes("Spawn"));
+    const spawn = buttons.find((b) => b.textContent?.includes("Launch"));
     const draft = buttons.find((b) => b.textContent?.includes("Draft"));
     expect(spawn?.disabled).toBe(true);
     expect(spawn?.title).toBe(reason);
