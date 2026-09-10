@@ -2,7 +2,9 @@
 // change). Used by the machine + dispatch field groups for their model/effort
 // selectors and permission-mode picker.
 import type { PermissionMode } from '@bindings/PermissionMode';
+import type { AccountPoolView } from '@bindings/AccountPoolView';
 import type { AccountProvider, OAuthAccount } from '$lib/queries';
+import type { SelectOption } from '@dorsk/tsumikit';
 import { m } from '$lib/paraglide/messages';
 
 export const modes: { v: PermissionMode; label: string; hint: string }[] = [
@@ -136,6 +138,38 @@ export const staleAccountPick = (value: string, accounts: OAuthAccount[]): boole
 	value !== NO_ACCOUNT &&
 	poolName(value) === undefined &&
 	!accounts.some((a) => a.name === value);
+
+/** One value space: '' Auto · NO_ACCOUNT · POOL_PREFIX-prefixed pool ids ·
+ *  account ids. Sectioned Pools · Accounts · Other. */
+export function accountPickOptions(args: {
+	accounts: readonly OAuthAccount[];
+	pools: readonly AccountPoolView[];
+	harness: string;
+	usedPct: (accountId: string) => number | null;
+}): SelectOption[] {
+	const other = m.spawn_account_other_group();
+	return [
+		...args.pools.map((p) => ({
+			value: `${POOL_PREFIX}${p.id}`,
+			label: p.name,
+			group: m.spawn_account_pool_group()
+		})),
+		...args.accounts
+			.filter((a) => accountBacksAdapter(a, args.harness))
+			.map((a) => {
+				const pct = args.usedPct(a.id);
+				return {
+					value: a.id,
+					label: a.name,
+					emoji: a.emoji ?? undefined,
+					hint: pct === null ? undefined : `${pct}%`,
+					group: m.spawn_account_account_group()
+				};
+			}),
+		{ value: '', label: m.spawn_account_auto(), group: other },
+		{ value: NO_ACCOUNT, label: m.spawn_account_none(), group: other }
+	];
+}
 
 // A compatible-endpoint account carries its own model list; a native
 // subscription account uses the harness's native families.

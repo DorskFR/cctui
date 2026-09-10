@@ -291,6 +291,25 @@ fn codex(_event_type: &str, payload: &Value) -> Option<Value> {
         }
         // A context compaction boundary renders like a /clear cut.
         "contextCompaction" => Some(json!({ "type": "context_reset" })),
+        // Server notifications with no dedicated rendering (warnings, model
+        // reroutes, hook/account/mcp lifecycle, and any method newer than the
+        // pinned schema) → a compact marker line.
+        "codexNotice" => {
+            let text = payload.get("text").and_then(Value::as_str).unwrap_or_default();
+            if text.is_empty() {
+                return None;
+            }
+            let label = match payload.get("level").and_then(Value::as_str) {
+                Some("warning") => "codex warning",
+                Some("unhandled") => "unhandled codex notification",
+                _ => "codex",
+            };
+            Some(json!({
+                "type": "text",
+                "content": format!("· {label}: {text}"),
+                "kind": "system_marker",
+            }))
+        }
         // Sub-agent hand-off activity → a compact status line.
         "subAgentActivity" => {
             let kind = payload.get("kind").and_then(Value::as_str).unwrap_or_default();
@@ -911,6 +930,29 @@ mod tests {
     fn codex_unknown_item_dropped() {
         let p = json!({ "type": "sleep", "id": "x", "durationMs": 500 });
         assert_eq!(for_client("codex", "message", p), None);
+    }
+
+    #[test]
+    fn codex_notice_renders_as_a_marker_line() {
+        let p = json!({
+            "type": "codexNotice", "level": "warning",
+            "method": "guardianWarning", "text": "guardianWarning: careful",
+        });
+        let n = for_client("codex", "message", p).expect("expected a marker Text");
+        assert_eq!(n["type"], "text");
+        assert_eq!(n["content"], "· codex warning: guardianWarning: careful");
+        assert_eq!(n["kind"], "system_marker");
+    }
+
+    #[test]
+    fn codex_unhandled_notice_is_labelled_as_a_protocol_gap() {
+        let p = json!({
+            "type": "codexNotice", "level": "unhandled",
+            "method": "future/thing", "text": "future/thing",
+        });
+        let n = for_client("codex", "message", p).expect("expected a marker Text");
+        assert_eq!(n["type"], "text");
+        assert_eq!(n["content"], "· unhandled codex notification: future/thing");
     }
 
     // --- expanded item fidelity ------------------------------------

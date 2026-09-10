@@ -14,6 +14,9 @@
 	import { makeClipboardFiles } from '$lib/attachments';
 	import type { Form } from './types';
 	import { m } from '$lib/paraglide/messages';
+	import { promptHistory } from '$lib/drafts';
+	import { HistoryNav } from '$lib/historyNav';
+	import PromptHistoryMenu from '$lib/components/molecules/PromptHistoryMenu.svelte';
 
 	let {
 		form = $bindable(),
@@ -35,6 +38,13 @@
 	const sessionsQuery = useSessions(() => false);
 	const mentionSessions = $derived(sessionsQuery.data?.sessions ?? []);
 	let promptEl = $state<HTMLTextAreaElement | null>(null);
+
+	const nav = new HistoryNav({
+		list: () => promptHistory.get(),
+		value: () => form.prompt,
+		setValue: (v) => (form.prompt = v),
+		el: () => promptEl
+	});
 
 	// The machine picker + working dir share one FilterInput; `form.working_dir`
 	// is the source of truth and the raw query mirrors it both ways, `lastDir`
@@ -119,6 +129,15 @@
 	bind:value={form.name}
 />
 
+<div class="prompt-bar">
+	<PromptHistoryMenu
+		onpick={(v) => {
+			nav.recall(v);
+			promptEl?.focus();
+		}}
+	/>
+</div>
+
 <SessionMention bind:value={form.prompt} el={promptEl} sessions={mentionSessions}>
 	<Textarea
 		data-journey="prompt"
@@ -131,6 +150,7 @@
 		resize="bottom"
 		onpaste={onPromptPaste}
 		onkeydown={(e: KeyboardEvent) => {
+			if (nav.handleKey(e)) return;
 			if (onsubmit && isSubmitChord(e)) {
 				e.preventDefault();
 				onsubmit();
@@ -140,6 +160,10 @@
 </SessionMention>
 
 <style>
+	.prompt-bar {
+		display: flex;
+		justify-content: flex-end;
+	}
 	.where {
 		display: flex;
 		flex-direction: column;

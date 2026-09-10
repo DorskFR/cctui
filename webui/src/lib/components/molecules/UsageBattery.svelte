@@ -2,7 +2,7 @@
 	import { Popover, Text } from '@dorsk/tsumikit';
 	import AdapterIcon from '$lib/components/atoms/AdapterIcon.svelte';
 	import AccountCard from '$lib/components/organisms/AccountCard.svelte';
-	import { useAccounts, useAllAccountsUsage } from '$lib/queries';
+	import { useAccounts, useAllAccountsUsage, useRedirectChips } from '$lib/queries';
 	import type { UsageWindow } from '$lib/queries';
 	import { providerLabel } from '$lib/providers';
 	import { m } from '$lib/paraglide/messages';
@@ -27,6 +27,7 @@
 		const a = (accounts.data ?? []).find((a) => a.id === id);
 		return a ? { ...a, providers: a.providers.filter((p) => p.header_pin) } : undefined;
 	};
+	const chips = useRedirectChips();
 	const entries = $derived(batteryEntries(q.data));
 	const groups = $derived.by(() => {
 		const byAccount = new Map<string, BatteryEntry[]>();
@@ -132,7 +133,7 @@
 						{/snippet}
 						<div class="panel">
 							{#if acct}
-								<AccountCard account={acct} compact />
+								<AccountCard account={acct} compact redirects={chips.chipsFor(acct.id)} />
 							{:else}
 								<Text size="sm" weight="semibold">{head}</Text>
 							{/if}
@@ -159,7 +160,7 @@
 				{#each groups as group (group[0].account)}
 					{@const acct = accountOf(group[0].account)}
 					{#if acct}
-						<AccountCard account={acct} compact />
+						<AccountCard account={acct} compact redirects={chips.chipsFor(acct.id)} />
 					{/if}
 				{/each}
 			</div>

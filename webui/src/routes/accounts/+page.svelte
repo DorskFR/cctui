@@ -4,7 +4,7 @@
 		useAccountActions,
 		useAccountPools,
 		useMe,
-		useRedirects,
+		useRedirectChips,
 		useRedirectActions,
 		useUsers,
 		type OAuthAccount,
@@ -30,7 +30,7 @@
 	const accounts = useAccounts();
 	const pools = useAccountPools();
 	const actions = useAccountActions();
-	const redirects = useRedirects();
+	const redirectChips = useRedirectChips();
 	const redirectActions = useRedirectActions();
 	const me = useMe();
 	const isAdmin = $derived(me.data?.role === 'admin');
@@ -52,16 +52,7 @@
 	let drafting = $state(false);
 	let editor = $state<AccountEditorModal>();
 
-	const accountRedirects = $derived((redirects.data ?? []).filter((r) => r.to_account !== null));
-	const redirectsFor = (accountId: string) =>
-		accountRedirects
-			.filter((r) => r.from_account === accountId)
-			.map((r) => ({
-				id: r.id,
-				family: r.family,
-				targetName: rows.find((t) => t.id === r.to_account)?.name ?? '…',
-				until: r.expires_at ?? null
-			}));
+	const redirectsFor = (accountId: string) => redirectChips.chipsFor(accountId);
 	const redirectTargetsFor = (acct: OAuthAccount) =>
 		rows
 			.filter((t) => t.id !== acct.id)

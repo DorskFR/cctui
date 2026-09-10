@@ -1,4 +1,5 @@
 import { createQuery, useQueryClient } from "@tanstack/svelte-query";
+import type { AccountRedirect } from "@bindings/AccountRedirect";
 import type { PutRedirectRequest } from "@bindings/PutRedirectRequest";
 import type { CreatePoolRequest } from "@bindings/CreatePoolRequest";
 import type { UpdatePoolRequest } from "@bindings/UpdatePoolRequest";
@@ -28,6 +29,39 @@ export const useRedirects = (enabled: () => boolean = () => true) =>
     queryFn: endpoints.redirects,
     enabled: enabled(),
   }));
+
+export type RedirectChip = {
+  id: string;
+  family: string;
+  targetName: string;
+  until: string | null;
+};
+
+/** Redirect rules for one account, `to_account` resolved to a name. A rule
+ *  without a target is not a redirect and is dropped. */
+export function redirectChipsFor(
+  rules: readonly AccountRedirect[],
+  accounts: readonly { id: string; name: string }[],
+  accountId: string,
+): RedirectChip[] {
+  return rules
+    .filter((r) => r.to_account !== null && r.from_account === accountId)
+    .map((r) => ({
+      id: r.id,
+      family: r.family,
+      targetName: accounts.find((t) => t.id === r.to_account)?.name ?? "…",
+      until: r.expires_at ?? null,
+    }));
+}
+
+export function useRedirectChips(enabled: () => boolean = () => true) {
+  const redirects = useRedirects(enabled);
+  const accounts = useAccounts(enabled);
+  return {
+    chipsFor: (accountId: string): RedirectChip[] =>
+      redirectChipsFor(redirects.data ?? [], accounts.data ?? [], accountId),
+  };
+}
 
 /** Set/clear launch-time redirect rules; both invalidate the rules query. */
 export function useRedirectActions() {

@@ -128,8 +128,10 @@ RUN arch="$(dpkg --print-architecture)" \
 # A concrete x.y.z MINIMUM, not an exact pin: derived images (the harbor worker
 # bake) refetch the harness, so the guarantee is only "never older than this".
 # scripts/check-claude-version-drift.sh enforces the floor against the installed
-# binary and reports when it falls behind upstream. `latest`/`stable` still
-# resolve if passed explicitly as a build arg.
+# binary and reports when it falls behind upstream; the release workflow runs it
+# via scripts/check-worker-image-harness.sh against this image before pushing,
+# which is the only place a real binary exists. `latest`/`stable` still resolve
+# if passed explicitly as a build arg.
 ARG CLAUDE_CODE_VERSION=2.1.258
 RUN base="https://downloads.claude.ai/claude-code-releases" \
     && case "$(dpkg --print-architecture)" in \

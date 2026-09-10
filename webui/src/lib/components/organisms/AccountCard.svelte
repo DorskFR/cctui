@@ -45,7 +45,7 @@
 		canAddProvider?: boolean;
 		canShare?: boolean;
 		showOwner?: boolean;
-		/** Read-only gauge view (the stats dock): no drag, redirects, menu, sharing or per-provider management. */
+		/** Read-only gauge view (the stats dock): no drag, menu, sharing or per-provider management. Redirect chips still show, without their clear affordance. */
 		compact?: boolean;
 		redirects?: { id: string; family: string; targetName: string; until: string | null }[];
 		redirectTargets?: { id: string; name: string; families: string[] }[];
@@ -242,7 +242,7 @@
 				</Text>
 			</span>
 		{/if}
-		{#each compact ? [] : redirects as r (r.id)}
+		{#each redirects as r (r.id)}
 			<span class="redirect-badge">
 				<Text as="span" tone="faint" size="xs">{r.family}</Text>
 				<Text as="span" size="sm">{m.accounts_redirect_to({ target: r.targetName })}</Text>
@@ -414,6 +414,8 @@
 	.redirect-badge {
 		display: inline-flex;
 		align-items: center;
+		flex-wrap: wrap;
+		min-width: 0;
 		gap: var(--sp-2);
 		padding: 0 var(--sp-2);
 		border: 1px solid var(--border);

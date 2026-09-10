@@ -6,6 +6,7 @@
 	import { useSessions } from '$lib/queries';
 	import { Button, FileButton, Text, Textarea } from '@dorsk/tsumikit';
 	import { drafts, composerKey, history as msgHistory } from '$lib/drafts';
+	import { HistoryNav } from '$lib/historyNav';
 	import {
 		attachFiles,
 		nextPasteIndex,
@@ -170,21 +171,18 @@
 		return () => clearInterval(t);
 	});
 
-	// ── Sent-message history recall (ArrowUp/ArrowDown) ─────────────────────
-	// histIndex: -1 = editing the live draft; 0..n-1 = browsing history (newest-
-	// first as you press Up). draftStash holds the in-progress text so returning
-	// past the newest entry restores it.
-	let histIndex = $state(-1);
-	let draftStash = '';
+	const nav = new HistoryNav({
+		list: () => msgHistory.get(session.id),
+		value: () => input,
+		setValue: (v) => (input = v),
+		el: () => scroll.textarea
+	});
 	function resetHistoryNav() {
-		histIndex = -1;
+		nav.reset();
 	}
-	// Reset the history-nav cursor when the open session changes (matching the
-	// original drawer's subscribe-effect reset).
 	$effect(() => {
 		void session.id;
-		histIndex = -1;
-		draftStash = '';
+		nav.resetAll();
 	});
 
 	// Pull a still-pending message back into the composer to edit + resend.
@@ -244,51 +242,8 @@
 		typeof window.matchMedia === 'function' &&
 		window.matchMedia('(pointer: coarse)').matches;
 
-	// True when the caret is at the very start of the textarea (so ArrowUp can
-	// recall history without fighting normal multiline cursor movement).
-	function caretAtStart(): boolean {
-		const el = scroll.textarea;
-		if (!el) return false;
-		return el.selectionStart === 0 && el.selectionEnd === 0;
-	}
-	function caretAtEnd(): boolean {
-		const el = scroll.textarea;
-		if (!el) return false;
-		return el.selectionStart === input.length && el.selectionEnd === input.length;
-	}
-
-	function historyBack() {
-		const list = msgHistory.get(session.id);
-		if (list.length === 0) return;
-		if (histIndex === -1) draftStash = input; // stash live draft before browsing
-		const next = Math.min(histIndex + 1, list.length - 1);
-		histIndex = next;
-		input = list[list.length - 1 - next]; // newest-first
-	}
-	function historyForward() {
-		const list = msgHistory.get(session.id);
-		if (histIndex === -1) return;
-		const next = histIndex - 1;
-		if (next < 0) {
-			histIndex = -1;
-			input = draftStash; // restored the in-progress draft
-		} else {
-			histIndex = next;
-			input = list[list.length - 1 - next];
-		}
-	}
-
 	function onKey(e: KeyboardEvent) {
-		if (e.key === 'ArrowUp' && (histIndex !== -1 || caretAtStart())) {
-			e.preventDefault();
-			historyBack();
-			return;
-		}
-		if (e.key === 'ArrowDown' && histIndex !== -1 && caretAtEnd()) {
-			e.preventDefault();
-			historyForward();
-			return;
-		}
+		if (nav.handleKey(e)) return;
 		if (e.key !== 'Enter') return;
 		if (e.ctrlKey || e.metaKey) {
 			e.preventDefault();
