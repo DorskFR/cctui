@@ -16,7 +16,8 @@ export interface GuideEntry {
 export function guideText(text: Text | undefined): string {
 	if (text === undefined) return '';
 	if (typeof text === 'string') return text;
-	return globalThis.window?.__journey?.translate(text) ?? '';
+	const runtime = globalThis.window?.__journey;
+	return typeof runtime?.translate === 'function' ? runtime.translate(text) : '';
 }
 
 /** The compiled book still carries journeys whose public step count is zero. */

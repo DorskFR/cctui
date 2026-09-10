@@ -40,6 +40,9 @@
 					return mounted.then(use);
 				};
 				window.__journey = {
+					translate: function () {
+						return '';
+					},
 					applyVariant: function (dim, value) {
 						return on(function (api) {
 							return api.applyVariant(dim, value);
