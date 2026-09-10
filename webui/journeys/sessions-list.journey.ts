@@ -37,7 +37,7 @@ export default defineJourney({
 				title: { en: 'Every screen, in your palette', fr: 'Chaque écran, dans votre palette' },
 				body: { en: 'Twenty-one built-in themes, light and dark; the whole interface follows the swatch you pick.', fr: 'Vingt et un thèmes intégrés, clairs et sombres ; toute l’interface suit la teinte que vous choisissez.' }
 			},
-			expect: [{ visible: { role: 'group', name: 'dark themes' } }],
+			expect: [{ visible: 'theme-auto' }],
 			capture: 'themes'
 		}
 	]

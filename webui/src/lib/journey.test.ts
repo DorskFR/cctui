@@ -131,7 +131,7 @@ describe('guideParams', () => {
 				{ id: 'l', status: 'active', liveness: 'active' }
 			]
 		});
-		expect(await guideParams(qc())).toMatchObject({ 'fixture.me': 'root', account: 'main', pool: 'prod', session: 'l' });
+		expect(await guideParams(qc())).toMatchObject({ 'fixture.me': 'root', account: 'main', pool: 'prod', 'fixture.session': 'l' });
 	});
 });
 

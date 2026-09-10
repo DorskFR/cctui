@@ -1,8 +1,10 @@
 import type { QueryClient } from '@tanstack/svelte-query';
 import type { MachineRow } from '@bindings/MachineRow';
-import type { SessionListItem } from '@bindings/SessionListItem';
 import { endpoints } from '$lib/queries/endpoints';
 import { qk } from '$lib/queries/keys';
+import { isLive } from './live';
+
+export { isLive };
 
 export type Probe = () => Promise<boolean | number>;
 export type Probes = Record<string, Probe>;
@@ -36,9 +38,4 @@ export function createProbes(qc: QueryClient): Probes {
 		'sessions.drafts': async () => (await sessions()).sessions.filter((s) => s.status === 'draft').length,
 		'sessions.live': async () => (await stats()).live > 0
 	};
-}
-
-/** A session the follow-session guide can open: in the registry and not dead. */
-export function isLive(s: SessionListItem): boolean {
-	return (s.status === 'active' || s.status === 'new') && s.liveness !== 'dead';
 }

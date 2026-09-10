@@ -18,7 +18,8 @@ import {
 	translator
 } from '@dorsk/journey/runtime';
 import journeys from './journeys.generated.json';
-import { createProbes, isLive, type Probes } from './journeys/probes';
+import { isLive } from './journeys/live';
+import { createProbes, type Probes } from './journeys/probes';
 import { m } from './paraglide/messages';
 import { endpoints } from './queries/endpoints';
 import { qk } from './queries/keys';
@@ -152,7 +153,7 @@ export async function guideParams(qc: QueryClient): Promise<GuideParams> {
 	if (accounts[0]) out.account = accounts[0].name;
 	if (pools[0]) out.pool = pools[0].name;
 	const live = sessions.sessions.find(isLive);
-	if (live) out.session = live.id;
+	if (live) out['fixture.session'] = live.id;
 	return out;
 }
 
