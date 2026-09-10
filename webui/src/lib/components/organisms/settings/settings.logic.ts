@@ -97,7 +97,8 @@ export const SETTINGS_PAGES = [
 	'notifications',
 	'monitoring',
 	'security',
-	'instance'
+	'instance',
+	'guides'
 ] as const;
 
 export type SettingsPage = (typeof SETTINGS_PAGES)[number];
@@ -118,7 +119,9 @@ const HASH_ALIASES: Record<string, SettingsPage> = {
 	secrets: 'privacy',
 	notify: 'notifications',
 	resources: 'monitoring',
-	passkeys: 'security'
+	passkeys: 'security',
+	onboarding: 'guides',
+	tour: 'guides'
 };
 
 export function isSettingsPage(slug: string | null | undefined): slug is SettingsPage {
