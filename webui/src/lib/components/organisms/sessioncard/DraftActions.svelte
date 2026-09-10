@@ -12,8 +12,13 @@
 	onpointerdown={(e) => e.stopPropagation()}
 	onclick={(e) => e.stopPropagation()}
 >
-	<Button size="sm" variant="primary" disabled={view.draftLaunching} onclick={() => actions.onLaunch?.(view.s)}>
-		{#if view.draftLaunching}<span class="spin"></span>{/if}
+	<Button
+		size="sm"
+		variant="primary"
+		loading={view.draftLaunching}
+		disabled={view.draftLaunching}
+		onclick={() => actions.onLaunch?.(view.s)}
+	>
 		{m.sessions_launch()}
 	</Button>
 	<Button size="sm" onclick={() => actions.onEdit?.(view.s)}>{m.common_edit()}</Button>

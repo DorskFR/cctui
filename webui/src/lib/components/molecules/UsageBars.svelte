@@ -1,7 +1,7 @@
 <script lang="ts">
 	import type { SoftLimitConfig } from '$lib/queries';
 	import { useAccountActions, useAccountUsage } from '$lib/queries';
-	import { Text } from '@dorsk/tsumikit';
+	import { Spinner, Text } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 	import { toasts } from '$lib/toast.svelte';
 	import { errMessage } from '$lib/api';
@@ -60,7 +60,7 @@
 {#if !active}
 	<!-- provider without a usage API: nothing to show -->
 {:else if q.isLoading}
-	<span class="spin"></span>
+	<Spinner label={m.common_loading()} />
 {:else if q.isError}
 	<Text tone="danger" size="xs">{m.sessions_usage_error()}</Text>
 {:else if hasRows}

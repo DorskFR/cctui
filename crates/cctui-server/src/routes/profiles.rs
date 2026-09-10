@@ -323,7 +323,7 @@ pub async fn delete(pool: &PgPool, user_id: Uuid, id: Uuid) -> Result<bool, sqlx
     Ok(done.rows_affected() > 0)
 }
 
-/// `GET /profiles` — the caller's profiles, oldest first (stable panel order).
+/// `GET /profiles` — the caller's profiles in their chosen order.
 pub async fn list_profiles(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
