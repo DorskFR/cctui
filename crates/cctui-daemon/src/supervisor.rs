@@ -1218,6 +1218,7 @@ mod tests {
         let mut scrub = cctui_crypto::redact::CompiledPatterns::disabled();
         let command_id = uuid::Uuid::new_v4();
         let spec = cctui_proto::adapter::SessionSpec {
+            service_tier: None,
             adapter_id: "opencode".into(),
             working_dir: None,
             prompt: None,

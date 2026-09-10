@@ -1599,13 +1599,20 @@ impl Default for AppServerConfig {
 
 impl AppServerConfig {
     /// The `-c key="value"` overrides passed to `codex app-server` for a spawn.
-    /// This is the COMPLETE set of config knobs cctui sets — kept as a single
-    /// function so the "Fast mode is never silently enabled" guarantee
-    /// is testable. Codex's "Fast mode" is a separate per-thread setting; cctui
-    /// never sets it here (no `fast`/`model_fast`/`reasoning_fast` key), so a
-    /// spawned session always uses the user's normal model/effort, never the
-    /// degraded fast path. Reasoning effort and model are the only opt-in
-    /// quality knobs, both surfaced explicitly in the spawn picker (303).
+    /// This is the COMPLETE set of config knobs cctui sets. They are
+    /// PROCESS-level — they apply to every thread this app-server serves — so
+    /// nothing per-session belongs here.
+    ///
+    /// Fast mode (`service_tier = "fast"`) is deliberately absent. It is a
+    /// speed/price tier — 1.5x speed and increased usage on the SAME model at
+    /// the SAME quality, not a quality downgrade — and it is per-thread, so it
+    /// rides `with_thread_config()` on `thread/{start,resume,fork}` instead.
+    ///
+    /// Omitting it here is NOT the safe branch: codex's own default tier is
+    /// `priority` (every gpt-5.x entry in `models_cache.json` carries
+    /// `"default_service_tier": "priority"`), so an app-server with no opinion
+    /// runs the EXPENSIVE tier. The server resolves a concrete tier per session;
+    /// the daemon must supply it per thread.
     #[must_use]
     pub fn config_overrides(&self) -> Vec<(String, String)> {
         let mut args = vec![
@@ -4200,9 +4207,7 @@ done
     }
 
     #[test]
-    fn config_overrides_never_enable_fast_mode() {
-        // assert the COMPLETE set of `-c` knobs cctui sets — Fast mode
-        // must never sneak in, on a default spawn or with model/effort set.
+    fn config_overrides_carry_no_per_session_tier() {
         for cfg in [
             AppServerConfig::default(),
             AppServerConfig {

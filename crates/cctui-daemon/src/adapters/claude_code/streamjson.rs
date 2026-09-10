@@ -354,6 +354,7 @@ mod tests {
 
     fn base_spec() -> SessionSpec {
         SessionSpec {
+            service_tier: None,
             adapter_id: AdapterId::new("claude-code"),
             working_dir: None,
             prompt: None,

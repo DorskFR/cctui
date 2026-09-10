@@ -27,7 +27,8 @@ const pub = (id: string) => compile(byId(id), { public: true });
 const book = (id: string) => compile(byId(id));
 const captures = (ir: ReturnType<typeof compile>) =>
 	ir.steps.flatMap((s) => (s.capture ? [s.capture.name] : []));
-const HOST_PARAMS = ['me', 'account', 'pool', 'session'];
+// Must mirror the keys guideParams() fills.
+const HOST_PARAMS = ['fixture.me', 'account', 'pool', 'fixture.session'];
 const FILL_PARAMS = ['var.label', 'var.prompt'];
 const PROBES = Object.keys(createProbes(new QueryClient()));
 

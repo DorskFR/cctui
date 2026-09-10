@@ -4170,6 +4170,7 @@ mod tests {
         env.insert("CCTUI_GITHUB_TOKEN".to_owned(), "super-secret".to_owned());
         env.insert("REGISTRY_USER".to_owned(), "admin".to_owned());
         let spec = SessionSpec {
+            service_tier: None,
             adapter_id: AdapterId::new("claude-code"),
             working_dir: Some("/work/cctui".to_owned()),
             prompt: Some("refactor it".to_owned()),
@@ -4201,6 +4202,7 @@ mod tests {
     fn session_context_advertises_the_agent_tool_when_capable() {
         use cctui_proto::adapter::{AdapterId, SessionSpec};
         let spec = SessionSpec {
+            service_tier: None,
             adapter_id: AdapterId::new("claude-code"),
             working_dir: Some("/work/cctui".to_owned()),
             prompt: None,

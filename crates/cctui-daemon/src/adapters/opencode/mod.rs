@@ -393,6 +393,7 @@ mod tests {
 
     fn spec_with_env(env: &[(&str, &str)]) -> cctui_proto::adapter::SessionSpec {
         cctui_proto::adapter::SessionSpec {
+            service_tier: None,
             adapter_id: ADAPTER_ID.into(),
             working_dir: Some("/repo".to_owned()),
             prompt: None,
