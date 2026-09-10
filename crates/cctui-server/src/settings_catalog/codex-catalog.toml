@@ -8,12 +8,11 @@
 #   care    — exposable but has caveats (cost / privacy / footgun)
 #   managed — cctui owns this key per session; a per-account value must never
 #             clobber the gateway wiring or the permission posture
-#   system  — not exposable: booleans/numbers cannot round-trip through the
-#             daemon's `-c key="value"` emitter (a quoted boolean is a hard
-#             app-server startup failure). Typed emission is CCT-709.
+#   system  — not exposable as a per-account key
 #
-# Only `type = "string"` keys carry a `group` (and so render as an editable row);
-# a test enforces that every exposable key is string-typed.
+# Every exposable key must also appear in `cctui_proto::codex_config::CURATED`,
+# which renders it into both injection paths; a test holds the two in exact
+# agreement, so adding a key here without a renderer entry fails the build.
 
 reference_url = "https://learn.chatgpt.com/docs/config-file/config-reference"
 captured = "2026-09-10"
@@ -162,9 +161,85 @@ tag = "managed"
 source = "docs"
 notes = "routes off the gateway entirely"
 
-# ---- blocked on typed `-c` emission (CCT-709) -----------------------------
-# Catalogued so the curation is on record and so a pasted blob fails closed with
-# a named key rather than "unknown". Each would brick the app-server spawn today.
+# ---- typed keys, unblocked by the shared TOML emitter -----------------------
+# cctui_proto::codex_config renders these as real TOML literals (bare booleans
+# and integers), so they no longer have to be quoted strings. A server test
+# holds this exposable set to exact agreement with that renderer's CURATED list.
+
+[[keys]]
+name = "web_search"
+group = "Tools"
+label = "Web search"
+tag = "care"
+source = "docs"
+type = "boolean"
+notes = "lets the model search the web mid-turn; egress + cost"
+
+[[keys]]
+name = "tools.web_search"
+group = "Tools"
+label = "Web search tool"
+tag = "care"
+source = "docs"
+type = "boolean"
+notes = "the newer `[tools]` spelling of `web_search`; set one or the other"
+
+[[keys]]
+name = "tools.view_image"
+group = "Tools"
+label = "View image"
+tag = "safe"
+source = "docs"
+type = "boolean"
+notes = "lets the model attach a local image file to its context"
+
+[[keys]]
+name = "hide_agent_reasoning"
+group = "Reasoning"
+label = "Hide reasoning"
+tag = "safe"
+source = "docs"
+type = "boolean"
+notes = "suppresses reasoning events from the stream"
+
+[[keys]]
+name = "show_raw_agent_reasoning"
+group = "Reasoning"
+label = "Raw reasoning"
+tag = "care"
+source = "docs"
+type = "boolean"
+notes = "emits raw chain-of-thought where the model exposes it; verbose transcripts"
+
+[[keys]]
+name = "check_for_update_on_startup"
+group = "Quiet"
+label = "Check for updates"
+tag = "safe"
+source = "docs"
+type = "boolean"
+default = "true"
+notes = "cctui pins the codex version per machine/pod, so the startup check is pure noise"
+
+[[keys]]
+name = "model_context_window"
+group = "Context"
+label = "Context window"
+tag = "care"
+source = "docs"
+type = "number"
+notes = "overrides the model's advertised context window; too high and turns fail upstream"
+
+[[keys]]
+name = "model_auto_compact_token_limit"
+group = "Context"
+label = "Auto-compact limit"
+tag = "care"
+source = "docs"
+type = "number"
+notes = "token count at which codex auto-compacts; lower trades context for cost"
+
+# ---- still not renderable ---------------------------------------------------
 
 [[keys]]
 name = "features.fast_mode"
@@ -172,68 +247,14 @@ tag = "system"
 source = "docs"
 type = "boolean"
 default = "true"
-notes = "gates whether the tier selector is offered; NOT the tier itself. Boolean — needs typed `-c` emission or `app-server --enable/--disable`"
-
-[[keys]]
-name = "hide_agent_reasoning"
-tag = "system"
-source = "docs"
-type = "boolean"
-notes = "boolean — blocked on typed `-c` emission"
-
-[[keys]]
-name = "show_raw_agent_reasoning"
-tag = "system"
-source = "docs"
-type = "boolean"
-notes = "boolean — blocked on typed `-c` emission"
-
-[[keys]]
-name = "web_search"
-tag = "system"
-source = "docs"
-type = "boolean"
-notes = "boolean — blocked on typed `-c` emission"
-
-[[keys]]
-name = "tools.web_search"
-tag = "system"
-source = "docs"
-type = "boolean"
-notes = "boolean — blocked on typed `-c` emission"
-
-[[keys]]
-name = "tools.view_image"
-tag = "system"
-source = "docs"
-type = "boolean"
-notes = "boolean — blocked on typed `-c` emission"
-
-[[keys]]
-name = "check_for_update_on_startup"
-tag = "system"
-source = "docs"
-type = "boolean"
-notes = "boolean — blocked on typed `-c` emission; a quiet-defaults candidate once it can be emitted"
-
-[[keys]]
-name = "model_context_window"
-tag = "system"
-source = "docs"
-type = "number"
-notes = "number — blocked on typed `-c` emission"
-
-[[keys]]
-name = "model_auto_compact_token_limit"
-tag = "system"
-source = "docs"
-type = "number"
-notes = "number — blocked on typed `-c` emission"
+notes = "gates whether the tier selector is offered, NOT the tier itself; a process-level value would mask the per-session toggle"
 
 [[presets]]
 id = "quiet-defaults"
 name = "Quiet defaults"
-description = "Stop codex writing its own local history file. The telemetry/updater half of the claude preset (check_for_update_on_startup, analytics, feedback) is all boolean and cannot be emitted through `-c key=\"value\"` yet — see CCT-709."
+description = "Stop codex writing its own local history file, skip the startup update check (cctui pins the codex version per machine and per pod), and keep raw chain-of-thought out of the transcript."
 
 [presets.settings]
 "history.persistence" = "none"
+check_for_update_on_startup = false
+show_raw_agent_reasoning = false

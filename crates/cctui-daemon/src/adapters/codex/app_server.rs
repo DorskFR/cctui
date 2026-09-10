@@ -1743,6 +1743,39 @@ pub fn gateway_provider_overrides(
     ]
 }
 
+/// Quote a value that is always a TOML string (`config_overrides` and the
+/// gateway provider block are string-valued by construction).
+fn quoted(pairs: Vec<(String, String)>) -> Vec<(String, String)> {
+    pairs.into_iter().map(|(k, v)| (k, format!("\"{v}\""))).collect()
+}
+
+/// The full, ordered `-c key=value` list for an app-server launch, with values
+/// already rendered as TOML literals.
+///
+/// Per-account settings go FIRST and cctui's managed overrides LAST, and a
+/// managed key drops any account entry of the same name outright: the ladder
+/// must not depend on codex's own last-wins behaviour for `-c` duplicates, and
+/// an account must never be able to move gateway routing, the permission
+/// posture, or the session's model.
+fn launch_overrides(
+    cfg: &AppServerConfig,
+    env: &std::collections::BTreeMap<String, String>,
+) -> Vec<(String, String)> {
+    let managed: Vec<(String, String)> =
+        [quoted(cfg.config_overrides()), quoted(gateway_provider_overrides(env))].concat();
+    let account = env
+        .get(cctui_proto::codex_config::CONFIG_TOML_ENV)
+        .map(|b| cctui_proto::codex_config::overrides_from_block(b))
+        .unwrap_or_default();
+    let owned: std::collections::BTreeSet<&str> =
+        managed.iter().map(|(k, _)| k.as_str()).collect();
+    account
+        .into_iter()
+        .filter(|(k, _)| !owned.contains(k.as_str()))
+        .chain(managed.iter().cloned())
+        .collect()
+}
+
 #[derive(Debug, Clone)]
 enum SessionLaunch {
     Fresh {
@@ -1967,11 +2000,8 @@ impl CodexSession {
 
         let mut cmd = Command::new(&self.cfg.bin);
         cmd.arg("app-server");
-        for (key, value) in self.cfg.config_overrides() {
-            cmd.arg("-c").arg(format!("{key}=\"{value}\""));
-        }
-        for (key, value) in gateway_provider_overrides(&self.env) {
-            cmd.arg("-c").arg(format!("{key}=\"{value}\""));
+        for (key, value) in launch_overrides(&self.cfg, &self.env) {
+            cmd.arg("-c").arg(format!("{key}={value}"));
         }
         // Already TOML literals (quoted scalar / array), unlike the scalar knobs
         // above which are quoted here.
@@ -4532,6 +4562,69 @@ done
         .config_overrides();
         assert!(with.contains(&("model_reasoning_effort".to_owned(), "high".to_owned())));
         assert!(with.contains(&("model".to_owned(), "gpt-5-codex".to_owned())));
+    }
+
+    fn env_with_block(block: &str) -> std::collections::BTreeMap<String, String> {
+        let mut env = std::collections::BTreeMap::new();
+        env.insert("OPENAI_BASE_URL".to_owned(), "https://gw/openai".to_owned());
+        env.insert(cctui_proto::codex_config::CONFIG_TOML_ENV.to_owned(), block.to_owned());
+        env
+    }
+
+    /// A curated setting stored on `account_providers.settings_json` must reach
+    /// the launched process — as a `-c` flag with a correctly typed value.
+    #[test]
+    fn account_settings_reach_the_launch_command_line() {
+        let block = cctui_proto::codex_config::render_block(&json!({
+            "web_search": true,
+            "model_verbosity": "low",
+            "model_context_window": 272_000,
+        }))
+        .expect("rendered");
+        let got = launch_overrides(&AppServerConfig::default(), &env_with_block(&block));
+        let flags: Vec<String> = got.iter().map(|(k, v)| format!("{k}={v}")).collect();
+        assert!(flags.contains(&"web_search=true".to_owned()), "{flags:?}");
+        assert!(flags.contains(&"model_verbosity=\"low\"".to_owned()), "{flags:?}");
+        assert!(flags.contains(&"model_context_window=272000".to_owned()), "{flags:?}");
+        // The managed knobs still ride along, still quoted.
+        assert!(flags.contains(&"approval_policy=\"untrusted\"".to_owned()), "{flags:?}");
+        assert!(flags.contains(&"model_provider=\"cctui\"".to_owned()), "{flags:?}");
+    }
+
+    /// Anything outside the curated set is dropped rather than forwarded — an
+    /// unknown key fails app-server startup, and a managed one would move
+    /// gateway routing or the permission posture.
+    #[test]
+    fn uncurated_and_managed_keys_never_reach_the_command_line() {
+        let hostile = "model_provider = \"evil\"\napproval_policy = \"never\"\n\
+                       sandbox_mode = \"danger-full-access\"\nservice_tier = \"fast\"\n\
+                       disableBundledSkills = true\ntotallyNotAKey = 1";
+        let got = launch_overrides(&AppServerConfig::default(), &env_with_block(hostile));
+        assert!(!got.iter().any(|(k, _)| k == "service_tier" || k == "disableBundledSkills"));
+        assert!(!got.iter().any(|(k, _)| k == "totallyNotAKey"));
+        // The keys that collide with managed ones survive only with cctui's values.
+        for (key, want) in [
+            ("model_provider", "\"cctui\""),
+            ("approval_policy", "\"untrusted\""),
+            ("sandbox_mode", "\"workspace-write\""),
+        ] {
+            let vals: Vec<&str> =
+                got.iter().filter(|(k, _)| k == key).map(|(_, v)| v.as_str()).collect();
+            assert_eq!(vals, vec![want], "{key} must be cctui's alone");
+        }
+    }
+
+    #[test]
+    fn launch_overrides_are_unchanged_without_an_account_block() {
+        let env = std::collections::BTreeMap::new();
+        let got = launch_overrides(&AppServerConfig::default(), &env);
+        assert_eq!(
+            got,
+            vec![
+                ("approval_policy".to_owned(), "\"untrusted\"".to_owned()),
+                ("sandbox_mode".to_owned(), "\"workspace-write\"".to_owned()),
+            ]
+        );
     }
 
     // --- v2 notification mapping (codex-cli 0.135 wire payloads) ----------

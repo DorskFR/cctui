@@ -6,12 +6,11 @@
 //! yet, so every entry is `source = "docs"`, hand-maintained against
 //! <https://learn.chatgpt.com/docs/config-file/config-reference>.
 //!
-//! Curation rule for v1 (CCT-986), which the growth path in CCT-709 must keep:
-//! **only string-valued keys are exposable.** The daemon delivers overrides as
-//! `-c key="value"` with unconditional TOML string quoting, and codex parses
-//! that value as TOML — so a quoted boolean (`features.fast_mode="true"`) is a
-//! hard app-server startup failure, not a silent no-op. Boolean and numeric keys
-//! are catalogued as `system` with a note until typed emission lands.
+//! Curation rule: a key is exposable only if
+//! [`cctui_proto::codex_config::CURATED`] can render it into a session, and the
+//! two lists are held to exact agreement by a test here. Anything cctui sets
+//! per session itself (gateway routing, permission posture, model/effort) stays
+//! `managed`, so an account value can never clobber it.
 //!
 //! Dotted names (`history.persistence`) are stored literally as top-level JSON
 //! keys and map 1:1 onto codex's own `-c` dotted path syntax.
@@ -86,6 +85,7 @@ mod tests {
     use super::*;
     use crate::settings_catalog::{Policy, SettingKey};
     use serde_json::json;
+    use std::collections::BTreeSet;
 
     #[test]
     fn codex_catalog_loads_and_exposes_service_tier() {
@@ -97,16 +97,52 @@ mod tests {
         assert!(c.preset(super::super::QUIET_DEFAULTS_ID).is_some());
     }
 
-    /// Every exposable key must be string-valued: the daemon's `-c key="value"`
-    /// emitter cannot round-trip a boolean or a number without bricking the spawn.
+    /// The catalog says what an account MAY set; `codex_config::CURATED` says
+    /// what actually gets rendered into a session. A key in one and not the
+    /// other is either an unsettable toggle or an unvetted injection, so the two
+    /// must agree exactly — `service_tier` excepted, which is stored per account
+    /// but supplied per thread rather than rendered.
     #[test]
-    fn exposable_codex_keys_are_string_typed() {
-        let bad: Vec<&str> = catalog()
+    fn exposable_codex_keys_match_the_renderer() {
+        let exposable: BTreeSet<&str> = catalog()
             .exposable_keys()
-            .filter(|k| k.r#type.as_deref() != Some("string"))
             .map(|k: &SettingKey| k.name.as_str())
+            .filter(|n| *n != SERVICE_TIER_KEY)
             .collect();
-        assert!(bad.is_empty(), "non-string exposable codex keys: {bad:?}");
+        let rendered: BTreeSet<&str> =
+            cctui_proto::codex_config::CURATED.iter().map(|c| c.name).collect();
+        assert_eq!(exposable, rendered);
+    }
+
+    /// A catalogued type that disagrees with the renderer's TOML type emits a
+    /// literal codex will reject, so the declared types must line up too.
+    #[test]
+    fn catalogued_types_match_the_rendered_toml_types() {
+        use cctui_proto::codex_config::TomlType;
+        for c in cctui_proto::codex_config::CURATED {
+            let k = catalog().key(c.name).unwrap_or_else(|| panic!("{} catalogued", c.name));
+            let want = match c.ty {
+                TomlType::Str => "string",
+                TomlType::Bool => "boolean",
+                TomlType::Int => "number",
+            };
+            assert_eq!(k.r#type.as_deref(), Some(want), "{} type mismatch", c.name);
+        }
+    }
+
+    /// The preset is applied by writing it straight into `settings_json`, so
+    /// every value in it must survive validation and actually render.
+    #[test]
+    fn quiet_defaults_preset_validates_and_renders() {
+        let c = catalog();
+        let p = c.preset(super::super::QUIET_DEFAULTS_ID).expect("preset present");
+        let blob = serde_json::Value::Object(p.settings.iter().map(|(k, v)| (k.clone(), v.clone())).collect());
+        assert!(c.validate_settings(&blob).ok(), "preset must pass its own validation");
+        assert_eq!(
+            cctui_proto::codex_config::render_lines(&blob).len(),
+            p.settings.len(),
+            "every preset key must render"
+        );
     }
 
     #[test]

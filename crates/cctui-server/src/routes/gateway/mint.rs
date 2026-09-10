@@ -456,8 +456,29 @@ pub async fn mint_env_for_account(
     if let Some(account_env) = account_env_json(state, account_id, &key).await {
         env.extend(account_env);
     }
+    if family == Family::Openai
+        && let Some(block) = codex_config_block(state, account_id).await
+    {
+        env.insert(cctui_proto::codex_config::CONFIG_TOML_ENV.to_owned(), block);
+    }
     apply_gateway_env(&mut env, family, base, token);
     Ok(env)
+}
+
+/// Render this openai account's curated `config.toml` settings for the launch
+/// env. Both codex injection paths read the rendered block from there — the
+/// daemon turns it into `-c` flags, the k8s worker entrypoint splices it into
+/// `~/.codex/config.toml` — so every (re)launch that mints env also re-derives
+/// the settings, and neither path re-renders them itself.
+async fn codex_config_block(state: &AppState, account_id: Uuid) -> Option<String> {
+    let settings: Option<serde_json::Value> =
+        sqlx::query_scalar("SELECT settings_json FROM account_providers WHERE id = $1")
+            .bind(account_id)
+            .fetch_optional(&state.pool)
+            .await
+            .ok()
+            .flatten();
+    cctui_proto::codex_config::render_block(&settings?)
 }
 
 /// Insert the family's gateway routing keys over whatever the account env

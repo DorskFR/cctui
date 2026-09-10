@@ -919,6 +919,13 @@ phase_codex_config() {
     {
         [ -n "$_kept" ] && printf '%s\n' "$_kept"
         printf '%s\n' "$CODEX_MARKER_BEGIN"
+        # Per-account settings first, so the managed keys below win on a
+        # duplicate. Rendered server-side by cctui_proto::codex_config (the same
+        # block the daemon turns into `-c` flags) — dotted assignments only,
+        # never a [table] header, which would capture the bare keys that follow.
+        if [ -n "${CCTUI_CODEX_CONFIG_TOML:-}" ]; then
+            printf '%s\n' "$CCTUI_CODEX_CONFIG_TOML"
+        fi
         printf 'model_provider = "cctui"\n'
         # Standard tier, fast mode off — never bill credits at the 2-2.5x fast rate.
         printf 'service_tier = "default"\n'

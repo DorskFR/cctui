@@ -29,15 +29,20 @@ export interface KnobGroup {
 }
 
 /** A grouped settings key. Booleans render tri-state (unset / on / off); a
- *  string key with an enum renders as a picker whose blank option is unset. */
+ *  string key with an enum renders as a picker whose blank option is unset; a
+ *  number takes a numeric input. A number MUST NOT fall through to tri-state —
+ *  that writes a boolean into a numeric key, which the codex config renderer
+ *  then drops as wrong-typed, silently losing the setting. */
 function settingKnob(k: SettingKey, twin?: EnvVar): Knob {
 	const values = k.enum ? k.enum.split(',').map((v) => v.trim()) : undefined;
+	const control: KnobControl =
+		k.type === 'string' ? (values ? 'enum' : 'string') : k.type === 'number' ? 'number' : 'tristate';
 	return {
 		id: `s:${k.name}`,
 		label: k.label ?? k.name,
 		sub: twin ? `${k.name} · ${twin.name}` : k.name,
 		care: k.tag === 'care',
-		control: k.type === 'string' ? (values ? 'enum' : 'string') : 'tristate',
+		control,
 		loc: 'setting',
 		name: k.name,
 		values,
@@ -147,6 +152,7 @@ export function getKnob(settings: Record<string, unknown>, k: Knob): string {
 	if (k.loc === 'setting') {
 		const v = settings[k.name];
 		if (typeof v === 'string') return v;
+		if (k.control === 'number' && typeof v === 'number') return String(v);
 		return k.envName ? (envObj(settings)[k.envName] ?? '') : '';
 	}
 	return envObj(settings)[k.name] ?? '';
@@ -161,6 +167,12 @@ export function setKnob(
 		return setSetting(settings, k.name, v === 'true' ? true : v === 'false' ? false : undefined);
 	}
 	if (k.loc !== 'setting') return setEnv(settings, k.name, v);
+	// A numeric settings key must persist as a JSON number: the config renderer
+	// type-checks each value and silently drops a stringified one.
+	if (k.control === 'number') {
+		const n = Number(v);
+		return setSetting(settings, k.name, v === '' || !Number.isFinite(n) ? undefined : n);
+	}
 	if (k.envName && k.settingsValues && v !== '' && !k.settingsValues.includes(v)) {
 		return setEnv(setSetting(settings, k.name, undefined), k.envName, v);
 	}
