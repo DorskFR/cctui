@@ -151,3 +151,37 @@ describe('overriddenCount and applyPreset', () => {
 		expect(knobEnvNames(groups[1].knobs)).toEqual(['MAX_TOKENS']);
 	});
 });
+
+describe('string-enum settings keys', () => {
+	const tierCatalog = catalog({
+		keys: [
+			key({
+				name: 'service_tier',
+				group: 'Speed & cost',
+				label: 'Fast mode',
+				tag: 'care',
+				type: 'string',
+				enum: 'default, fast'
+			})
+		]
+	});
+
+	it('renders a picker rather than a tri-state boolean', () => {
+		const [group] = knobGroups(tierCatalog);
+		expect(group.page).toBe('speed');
+		expect(group.knobs[0]).toMatchObject({
+			control: 'enum',
+			loc: 'setting',
+			name: 'service_tier',
+			values: ['default', 'fast']
+		});
+	});
+
+	it('round-trips a string value instead of a boolean', () => {
+		const knob = knobGroups(tierCatalog)[0].knobs[0];
+		const on = setKnob({}, knob, 'fast');
+		expect(on).toEqual({ service_tier: 'fast' });
+		expect(getKnob(on, knob)).toBe('fast');
+		expect(setKnob(on, knob, '')).toEqual({});
+	});
+});

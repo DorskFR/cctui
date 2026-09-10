@@ -319,6 +319,15 @@ pub async fn spawn_child(
         env.insert(AGENT_PROFILE_ENV.to_owned(), profile.to_owned());
     }
 
+    // A child never self-selects Fast: it inherits the bound account's default,
+    // else the standard tier.
+    let service_tier = if family == crate::routes::gateway::Family::Openai {
+        let account_settings =
+            crate::routes::gateway::resolve_session_settings(&state, &child_key).await;
+        Some(crate::settings_catalog::codex::resolve_service_tier(None, account_settings.as_ref()))
+    } else {
+        None
+    };
     let spec = SessionSpec {
         adapter_id: AdapterId::new(&authorized.adapter),
         working_dir: req
@@ -333,6 +342,7 @@ pub async fn spawn_child(
         permission_mode: req.permission_mode.or(Some(cctui_proto::adapter::PermissionMode::Yolo)),
         effort: None,
         model,
+        service_tier,
         env,
         bootstrap: serde_json::Value::Null,
         parent_local_id: Some(parent.session_id.clone()),

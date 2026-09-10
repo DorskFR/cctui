@@ -1661,5 +1661,9 @@
 	"users_user_deleted": "Utilisateur supprimé",
 	"users_user_disabled": "{name} désactivé",
 	"users_user_enabled": "{name} activé",
-	"users_user_name_placeholder": "p. ex. alice"
+	"users_user_name_placeholder": "p. ex. alice",
+	"provider_page_speed": "Vitesse & coût",
+	"provider_page_reasoning": "Raisonnement",
+	"spawn_fast_label": "Mode rapide",
+	"spawn_fast_hint": "1,5x plus rapide, consommation accrue. Même modèle, même qualité."
 }

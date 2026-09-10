@@ -5,13 +5,14 @@ export default defineJourney({
 	title: { en: 'Follow a session while it works', fr: 'Suivre une session pendant son travail' },
 	description: { en: 'Open a running agent, read what it did, and reply without leaving the list.', fr: 'Ouvrez un agent en cours, lisez ce qu’il a fait et répondez sans quitter la liste.' },
 	route: '/sessions',
+	fixture: 'instance',
 	variants: { viewport: ['desktop', 'mobile'], theme: ['dark'] },
 	level: 'checked',
 	steps: [
 		{
 			id: 'open',
 			route: '/sessions',
-			target: 'session[{session}]/title',
+			target: 'session[{fixture.session}]/title',
 			do: { kind: 'click' },
 			say: {
 				title: 'Open a session',

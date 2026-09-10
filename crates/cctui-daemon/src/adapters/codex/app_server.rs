@@ -695,7 +695,7 @@ fn initialize_req() -> Value {
 /// The `initialized` notification that completes the handshake. Codex expects
 /// it after the client has processed the `initialize` response; only then is
 /// the server fully ready for `thread/*` requests.
-fn initialized_notification() -> Value {
+pub(super) fn initialized_notification() -> Value {
     json!({"jsonrpc": "2.0", "method": "initialized"})
 }
 
@@ -704,7 +704,7 @@ fn initialized_notification() -> Value {
 /// [`contract::CODEX_MIN_VERSION`] (the protocol shapes cctui relies on are not
 /// guaranteed there). The version is returned so it can ride on the
 /// [`AdapterEvent::SessionStarted`] meta for downstream diagnose reports.
-fn record_codex_version(response: &Value) -> Option<String> {
+pub(super) fn record_codex_version(response: &Value) -> Option<String> {
     let user_agent = response.pointer("/result/userAgent").and_then(Value::as_str);
     let version = user_agent.and_then(contract::version_from_user_agent);
     match &version {
@@ -732,16 +732,69 @@ fn record_codex_version(response: &Value) -> Option<String> {
     version
 }
 
-fn thread_start_req(cwd: &str) -> Value {
-    json!({"jsonrpc": "2.0", "id": ID_THREAD_START, "method": "thread/start", "params": {"cwd": cwd}})
+/// The gateway routing block as a per-thread `ThreadStart`/`ThreadResumeParams`
+/// input rather than a process-level `-c` flag, so one app-server can host
+/// threads for several accounts at once.
+///
+/// The bearer is a literal `authorization` header instead of the `env_key`
+/// indirection, which resolves against the *process* env and so cannot differ
+/// per thread. Codex persists only `model_provider = "cctui"` in the rollout —
+/// never the definition or the secret — so this must be re-supplied on every
+/// resume or the thread fails config load.
+#[must_use]
+pub fn gateway_thread_config(
+    env: &std::collections::BTreeMap<String, String>,
+) -> Option<(String, Value)> {
+    let base_url = env.get("OPENAI_BASE_URL")?;
+    let mut headers = json!({"x-openai-actor-authorization": "cctui-gateway"});
+    let mut provider = json!({
+        "name": "cctui-gateway",
+        "base_url": base_url,
+        "wire_api": "responses",
+    });
+    match env.get("OPENAI_API_KEY").filter(|k| !k.is_empty()) {
+        Some(key) => headers["authorization"] = json!(format!("Bearer {key}")),
+        None => provider["env_key"] = json!("OPENAI_API_KEY"),
+    }
+    provider["http_headers"] = headers;
+    Some(("cctui".to_owned(), json!({"model_providers": {"cctui": provider}})))
 }
 
-fn thread_resume_req(thread_id: &str, cwd: &str) -> Value {
+/// Attach the per-thread provider + credential to a `thread/{start,resume,fork}`
+/// params object. A session with no gateway binding keeps codex's default
+/// provider.
+fn with_thread_config(
+    mut params: Value,
+    env: &std::collections::BTreeMap<String, String>,
+) -> Value {
+    if let Some((provider, config)) = gateway_thread_config(env)
+        && let Some(map) = params.as_object_mut()
+    {
+        map.insert("modelProvider".to_owned(), json!(provider));
+        map.insert("config".to_owned(), config);
+    }
+    params
+}
+
+fn thread_start_req(cwd: &str, env: &std::collections::BTreeMap<String, String>) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "id": ID_THREAD_START,
+        "method": "thread/start",
+        "params": with_thread_config(json!({"cwd": cwd}), env),
+    })
+}
+
+fn thread_resume_req(
+    thread_id: &str,
+    cwd: &str,
+    env: &std::collections::BTreeMap<String, String>,
+) -> Value {
     json!({
         "jsonrpc": "2.0",
         "id": ID_THREAD_START,
         "method": "thread/resume",
-        "params": {"threadId": thread_id, "cwd": cwd},
+        "params": with_thread_config(json!({"threadId": thread_id, "cwd": cwd}), env),
     })
 }
 
@@ -750,12 +803,16 @@ fn thread_resume_req(thread_id: &str, cwd: &str) -> Value {
 /// `thread/start`, so the response is parsed through the same `ID_THREAD_START`
 /// path. Model/effort overrides ride on the subprocess `-c` flags (set in the
 /// command pump), mirroring the spawn path, so they apply to the forked thread.
-fn thread_fork_req(parent_thread_id: &str, cwd: &str) -> Value {
+fn thread_fork_req(
+    parent_thread_id: &str,
+    cwd: &str,
+    env: &std::collections::BTreeMap<String, String>,
+) -> Value {
     json!({
         "jsonrpc": "2.0",
         "id": ID_THREAD_START,
         "method": "thread/fork",
-        "params": {"threadId": parent_thread_id, "cwd": cwd},
+        "params": with_thread_config(json!({"threadId": parent_thread_id, "cwd": cwd}), env),
     })
 }
 
@@ -834,9 +891,29 @@ pub fn is_idempotent_lifecycle_error(op: LifecycleOp, err: &str) -> bool {
 /// needed — no turn is started.
 pub async fn run_thread_lifecycle(
     app: &AppServerConfig,
+    daemon: Option<&super::daemon::SharedDaemon>,
     thread_id: &str,
     op: LifecycleOp,
 ) -> Result<()> {
+    if let Some(shared) = daemon
+        && let Some(handle) = shared.handle().await
+    {
+        match handle.request(op.method(), json!({"threadId": thread_id})).await {
+            Ok(_) => return Ok(()),
+            Err(err) => {
+                let msg = err.to_string();
+                if is_idempotent_lifecycle_error(op, &msg) {
+                    tracing::info!(
+                        %thread_id,
+                        op = op.method(),
+                        "codex lifecycle op idempotent no-op: {msg}"
+                    );
+                    return Ok(());
+                }
+                tracing::debug!(%err, op = op.method(), "codex: shared lifecycle op failed, using stdio");
+            }
+        }
+    }
     let mut cmd = Command::new(&app.bin);
     cmd.arg("app-server")
         // No turn is started, so sandbox mode only matters because codex
@@ -1522,13 +1599,20 @@ impl Default for AppServerConfig {
 
 impl AppServerConfig {
     /// The `-c key="value"` overrides passed to `codex app-server` for a spawn.
-    /// This is the COMPLETE set of config knobs cctui sets — kept as a single
-    /// function so the "Fast mode is never silently enabled" guarantee
-    /// is testable. Codex's "Fast mode" is a separate per-thread setting; cctui
-    /// never sets it here (no `fast`/`model_fast`/`reasoning_fast` key), so a
-    /// spawned session always uses the user's normal model/effort, never the
-    /// degraded fast path. Reasoning effort and model are the only opt-in
-    /// quality knobs, both surfaced explicitly in the spawn picker (303).
+    /// This is the COMPLETE set of config knobs cctui sets. They are
+    /// PROCESS-level — they apply to every thread this app-server serves — so
+    /// nothing per-session belongs here.
+    ///
+    /// Fast mode (`service_tier = "fast"`) is deliberately absent. It is a
+    /// speed/price tier — 1.5x speed and increased usage on the SAME model at
+    /// the SAME quality, not a quality downgrade — and it is per-thread, so it
+    /// rides `with_thread_config()` on `thread/{start,resume,fork}` instead.
+    ///
+    /// Omitting it here is NOT the safe branch: codex's own default tier is
+    /// `priority` (every gpt-5.x entry in `models_cache.json` carries
+    /// `"default_service_tier": "priority"`), so an app-server with no opinion
+    /// runs the EXPENSIVE tier. The server resolves a concrete tier per session;
+    /// the daemon must supply it per thread.
     #[must_use]
     pub fn config_overrides(&self) -> Vec<(String, String)> {
         let mut args = vec![
@@ -1793,12 +1877,12 @@ impl CodexSession {
 
     fn thread_request(&self) -> (Value, &'static str) {
         match &self.launch {
-            SessionLaunch::Fresh { .. } => (thread_start_req(&self.cwd), "thread/start"),
+            SessionLaunch::Fresh { .. } => (thread_start_req(&self.cwd, &self.env), "thread/start"),
             SessionLaunch::Resume { thread_id, .. } => {
-                (thread_resume_req(thread_id, &self.cwd), "thread/resume")
+                (thread_resume_req(thread_id, &self.cwd, &self.env), "thread/resume")
             }
             SessionLaunch::Fork { parent_thread_id, .. } => {
-                (thread_fork_req(parent_thread_id, &self.cwd), "thread/fork")
+                (thread_fork_req(parent_thread_id, &self.cwd, &self.env), "thread/fork")
             }
         }
     }
@@ -3641,12 +3725,15 @@ mod tests {
     #[test]
     fn request_builders_shape() {
         assert_eq!(initialize_req()["method"], "initialize");
-        assert_eq!(thread_start_req("/tmp")["params"]["cwd"], "/tmp");
-        let resume = thread_resume_req("tid", "/repo");
+        assert_eq!(
+            thread_start_req("/tmp", &std::collections::BTreeMap::default())["params"]["cwd"],
+            "/tmp"
+        );
+        let resume = thread_resume_req("tid", "/repo", &std::collections::BTreeMap::default());
         assert_eq!(resume["method"], "thread/resume");
         assert_eq!(resume["params"]["threadId"], "tid");
         assert_eq!(resume["params"]["cwd"], "/repo");
-        let fork = thread_fork_req("parent-tid", "/repo");
+        let fork = thread_fork_req("parent-tid", "/repo", &std::collections::BTreeMap::default());
         assert_eq!(fork["method"], "thread/fork");
         assert_eq!(fork["params"]["threadId"], "parent-tid");
         assert_eq!(fork["params"]["cwd"], "/repo");
@@ -4120,9 +4207,7 @@ done
     }
 
     #[test]
-    fn config_overrides_never_enable_fast_mode() {
-        // assert the COMPLETE set of `-c` knobs cctui sets — Fast mode
-        // must never sneak in, on a default spawn or with model/effort set.
+    fn config_overrides_carry_no_per_session_tier() {
         for cfg in [
             AppServerConfig::default(),
             AppServerConfig {
@@ -4561,9 +4646,9 @@ done
                 .expect("retained schema bundle is valid JSON");
         let reqs = [
             initialize_req(),
-            thread_start_req("/cwd"),
-            thread_resume_req("tid", "/cwd"),
-            thread_fork_req("tid", "/cwd"),
+            thread_start_req("/cwd", &std::collections::BTreeMap::default()),
+            thread_resume_req("tid", "/cwd", &std::collections::BTreeMap::default()),
+            thread_fork_req("tid", "/cwd", &std::collections::BTreeMap::default()),
             thread_name_set_req(1, "tid", "name"),
             thread_lifecycle_req(2, LifecycleOp::Archive, "tid"),
             thread_lifecycle_req(3, LifecycleOp::Unarchive, "tid"),
@@ -4810,5 +4895,102 @@ done
             .expect("child survived SIGTERM")
             .unwrap();
         assert!(!status.success());
+    }
+
+    #[test]
+    fn per_thread_config_carries_a_literal_bearer_not_an_env_key() {
+        let env: std::collections::BTreeMap<String, String> = [
+            ("OPENAI_BASE_URL".to_owned(), "https://gw.example/v1".to_owned()),
+            ("OPENAI_API_KEY".to_owned(), "SECRET-A".to_owned()),
+        ]
+        .into_iter()
+        .collect();
+        let (provider, config) = gateway_thread_config(&env).expect("gateway-bound session");
+        assert_eq!(provider, "cctui");
+        let p = &config["model_providers"]["cctui"];
+        assert_eq!(p["base_url"], "https://gw.example/v1");
+        assert_eq!(p["wire_api"], "responses");
+        assert_eq!(p["http_headers"]["authorization"], "Bearer SECRET-A");
+        assert_eq!(p["http_headers"]["x-openai-actor-authorization"], "cctui-gateway");
+        assert!(p.get("env_key").is_none(), "a literal bearer must not also indirect via env");
+    }
+
+    /// Without a credential the definition must still be emitted, or codex
+    /// fails config load on a rollout that persisted `model_provider`.
+    #[test]
+    fn per_thread_config_falls_back_to_env_key_without_a_credential() {
+        let env: std::collections::BTreeMap<String, String> =
+            std::iter::once(("OPENAI_BASE_URL".to_owned(), "https://gw.example/v1".to_owned()))
+                .collect();
+        let (_, config) = gateway_thread_config(&env).expect("gateway-bound session");
+        let p = &config["model_providers"]["cctui"];
+        assert_eq!(p["env_key"], "OPENAI_API_KEY");
+        assert!(p["http_headers"].get("authorization").is_none());
+    }
+
+    #[test]
+    fn an_unbound_session_keeps_the_default_provider() {
+        assert!(gateway_thread_config(&std::collections::BTreeMap::new()).is_none());
+        let req = thread_start_req("/tmp", &std::collections::BTreeMap::new());
+        assert!(req["params"].get("config").is_none());
+        assert!(req["params"].get("modelProvider").is_none());
+    }
+
+    #[test]
+    fn start_resume_and_fork_all_carry_the_per_thread_credential() {
+        let env: std::collections::BTreeMap<String, String> = [
+            ("OPENAI_BASE_URL".to_owned(), "https://gw.example/v1".to_owned()),
+            ("OPENAI_API_KEY".to_owned(), "SECRET-B".to_owned()),
+        ]
+        .into_iter()
+        .collect();
+        for req in [
+            thread_start_req("/repo", &env),
+            thread_resume_req("tid", "/repo", &env),
+            thread_fork_req("tid", "/repo", &env),
+        ] {
+            let params = &req["params"];
+            assert_eq!(params["modelProvider"], "cctui", "{}", req["method"]);
+            assert_eq!(
+                params["config"]["model_providers"]["cctui"]["http_headers"]["authorization"],
+                "Bearer SECRET-B",
+                "{}",
+                req["method"]
+            );
+        }
+    }
+
+    /// The per-op lifecycle child is gone: archive/unarchive are answered over
+    /// the shared socket with no `codex` binary present to spawn.
+    #[tokio::test]
+    async fn lifecycle_ops_never_spawn_a_child_when_the_daemon_answers() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sock = dir.path().join("app-server.sock");
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorder = std::sync::Arc::clone(&seen);
+        let _srv = super::super::daemon::testserver::spawn(&sock, move |method, params| {
+            recorder.lock().unwrap().push(method.to_owned());
+            assert_eq!(params["threadId"], "tid-1");
+            json!({})
+        });
+
+        let shutdown = CancellationToken::new();
+        let shared = super::super::daemon::SharedDaemon::from_endpoint(
+            super::super::daemon::DaemonEndpoint { socket: sock },
+            shutdown.clone(),
+        );
+        let mut app = AppServerConfig::from_value(&json!({}));
+        app.bin = "/nonexistent/codex-must-not-be-spawned".to_owned();
+
+        for op in [LifecycleOp::Archive, LifecycleOp::Unarchive] {
+            run_thread_lifecycle(&app, Some(&shared), "tid-1", op)
+                .await
+                .expect("served over the ws");
+        }
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec!["thread/archive".to_owned(), "thread/unarchive".to_owned()]
+        );
+        shutdown.cancel();
     }
 }

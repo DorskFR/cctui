@@ -18,6 +18,61 @@
 		<!-- Runtime config: deploy can override window.CCTUI_CONFIG (api base /
 		     ws base) without rebuilding. Served as a static asset. -->
 		<script src="%sveltekit.assets%/config.js"></script>
+		<!-- The journey book driver mounts its own probe-less runtime into
+		     `window.__journey` at the load event, and the first runtime to claim
+		     the slot is the one that keeps it — the app boots too late to win.
+		     Park a forwarder here so the driver waits for the runtime
+		     `mountJourneys` mounts, probes and all. Inert outside a book run. -->
+		<script>
+			(function () {
+				if (new URLSearchParams(location.search).get('journey') === 'run') {
+					sessionStorage.setItem('journey:driver', '1');
+				}
+				if (sessionStorage.getItem('journey:driver') !== '1') return;
+				var mounted = new Promise(function (resolve, reject) {
+					window.__journeyReady = resolve;
+					setTimeout(function () {
+						reject(new Error('journey: the app runtime never mounted'));
+					}, 60000);
+				});
+				mounted.catch(function () {});
+				var on = function (use) {
+					return mounted.then(use);
+				};
+				window.__journey = {
+					translate: function () {
+						return '';
+					},
+					applyVariant: function (dim, value) {
+						return on(function (api) {
+							return api.applyVariant(dim, value);
+						});
+					},
+					driver: {
+						load: function (ir, opts) {
+							return on(function (api) {
+								return api.driver.load(ir, opts);
+							});
+						},
+						step: function () {
+							return on(function (api) {
+								return api.driver.step();
+							});
+						},
+						acted: function () {
+							return on(function (api) {
+								return api.driver.acted();
+							});
+						},
+						settle: function () {
+							return on(function (api) {
+								return api.driver.settle();
+							});
+						}
+					}
+				};
+			})();
+		</script>
 		%sveltekit.head%
 	</head>
 	<body data-sveltekit-preload-data="hover">

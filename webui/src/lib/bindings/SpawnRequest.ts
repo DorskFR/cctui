@@ -32,6 +32,13 @@ effort?: string | null,
  */
 model?: string | null, 
 /**
+ * Codex Fast mode: `"fast"` opts this one session into the priority tier
+ * (1.5x speed, increased usage — same model, same quality), `"default"`
+ * pins the standard tier. `None` → the bound account's `service_tier`
+ * setting, else `"default"`. Ignored by non-codex adapters.
+ */
+service_tier?: string | null, 
+/**
  * Environment secrets to inject into the worker process env at spawn time.
  * Keys must match `^[A-Z_][A-Z0-9_]*$`. Carried to the runtime
  * like a bearer capability: NEVER persisted, NEVER logged, NEVER written to

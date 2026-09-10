@@ -773,6 +773,12 @@ pub struct SessionSpec {
     /// `-c model="…"`. `None` defers to the adapter default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Codex service tier: `"default"` (standard) or `"fast"` (1.5x speed,
+    /// increased usage — same model, same quality). Resolved server-side, so a
+    /// codex spawn always carries a concrete value rather than inheriting
+    /// codex's own `priority` default. `None` on every other adapter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<String>,
     /// Environment secrets injected into the worker process env at spawn time.
     /// Merged on top of the pre-forked spare's baseline env and
     /// mirrored into `reattachEnv` so they survive a respawn/reattach. NEVER
@@ -801,6 +807,7 @@ impl std::fmt::Debug for SessionSpec {
             .field("permission_mode", &self.permission_mode)
             .field("effort", &self.effort)
             .field("model", &self.model)
+            .field("service_tier", &self.service_tier)
             // Redacted: secret values / file bytes must never reach a log.
             .field("env", &format_args!("<{} secret(s) redacted>", self.env.len()))
             .field("bootstrap", &format_args!("<redacted>"))
@@ -1126,6 +1133,7 @@ mod tests {
             permission_mode: None,
             effort: None,
             model: None,
+            service_tier: None,
             env: std::collections::BTreeMap::new(),
             bootstrap: serde_json::Value::Null,
             parent_local_id: None,

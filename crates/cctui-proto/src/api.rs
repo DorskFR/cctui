@@ -689,6 +689,12 @@ pub struct SpawnRequest {
     /// own default model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Codex Fast mode: `"fast"` opts this one session into the priority tier
+    /// (1.5x speed, increased usage — same model, same quality), `"default"`
+    /// pins the standard tier. `None` → the bound account's `service_tier`
+    /// setting, else `"default"`. Ignored by non-codex adapters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<String>,
     /// Environment secrets to inject into the worker process env at spawn time.
     /// Keys must match `^[A-Z_][A-Z0-9_]*$`. Carried to the runtime
     /// like a bearer capability: NEVER persisted, NEVER logged, NEVER written to
@@ -770,6 +776,7 @@ impl std::fmt::Debug for SpawnRequest {
             .field("permission_mode", &self.permission_mode)
             .field("effort", &self.effort)
             .field("model", &self.model)
+            .field("service_tier", &self.service_tier)
             .field("account", &self.account)
             .field("provider", &self.provider)
             .field("no_account", &self.no_account)

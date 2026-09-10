@@ -35,6 +35,9 @@ export class ProviderEdit {
 	readonly isFireworks: boolean;
 	readonly isCompatible: boolean;
 	readonly isAnthropic: boolean;
+	readonly isOpenai: boolean;
+	/** Families the server serves a settings catalog for. */
+	readonly hasCatalog: boolean;
 
 	page = $state<PageId>('limits');
 	aliasRows = $state<{ alias: string; model: string }[]>([]);
@@ -56,6 +59,8 @@ export class ProviderEdit {
 		this.isFireworks = p.provider === 'fireworks';
 		this.isCompatible = isStaticCredential(p.provider);
 		this.isAnthropic = p.family === 'anthropic';
+		this.isOpenai = p.family === 'openai';
+		this.hasCatalog = this.isAnthropic || this.isOpenai;
 		this.aliasRows = Object.entries(p.model_aliases ?? {}).map(([alias, model]) => ({
 			alias,
 			model

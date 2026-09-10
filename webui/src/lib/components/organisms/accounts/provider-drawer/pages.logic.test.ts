@@ -15,8 +15,17 @@ describe('pagesFor', () => {
 		]);
 	});
 
-	it('drops the settings pages for codex but keeps the model list everywhere', () => {
-		expect(pagesFor('openai')).toEqual(['aliases', 'limits', 'models', 'gateway', 'advanced']);
+	it('gives codex its own settings pages, and none to a family without a catalog', () => {
+		expect(pagesFor('openai')).toEqual([
+			'aliases',
+			'limits',
+			'speed',
+			'reasoning',
+			'privacy',
+			'models',
+			'gateway',
+			'advanced'
+		]);
 		expect(pagesFor('fireworks')).toEqual(['aliases', 'limits', 'models', 'gateway', 'advanced']);
 	});
 

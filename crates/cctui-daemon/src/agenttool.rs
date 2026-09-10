@@ -55,6 +55,41 @@ struct Call {
     proto: u64,
 }
 
+/// A signpost, not an allowlist: an account catalog may alias other ids, and
+/// the daemon never rejects an id it does not recognise.
+const KNOWN_MODELS: &[(&str, &str)] = &[
+    (
+        "claude-code",
+        "claude-opus-5[1m], claude-opus-5, claude-sonnet-5, claude-haiku-4-5, claude-fable-5",
+    ),
+    ("codex", "gpt-5.6-sol, gpt-5.6-terra"),
+];
+
+fn known_models_for(adapter: &str) -> String {
+    let normalized = normalize_adapter(adapter);
+    KNOWN_MODELS.iter().find(|(id, _)| *id == normalized).map_or_else(
+        || {
+            KNOWN_MODELS
+                .iter()
+                .map(|(id, models)| format!("{id}: {models}"))
+                .collect::<Vec<_>>()
+                .join("; ")
+        },
+        |(_, models)| (*models).to_owned(),
+    )
+}
+
+fn missing_model_error(adapter: &str) -> String {
+    format!(
+        "model is required and was not given. CctuiAgent never falls back to the account \
+         default: that silently spends a different budget than the caller intended, and a \
+         whole fan-out can die on 429 minutes later without the cause being visible. Pass \
+         model explicitly — known ids: {}. An alias from the account's own catalog is also \
+         accepted.",
+        known_models_for(adapter),
+    )
+}
+
 fn parse_call(line: &str) -> Result<Call, String> {
     let v: Value = serde_json::from_str(line).map_err(|e| format!("malformed request: {e}"))?;
     let session_id = v
@@ -75,12 +110,15 @@ fn parse_call(line: &str) -> Result<Call, String> {
             if let Some(child) = string_arg(&args, "session_id") {
                 CallKind::Message(MessageChildRequest { session_id: child, prompt })
             } else {
+                let adapter =
+                    normalize_adapter(args.get("adapter").and_then(Value::as_str).unwrap_or(""));
+                let Some(model) = string_arg(&args, "model") else {
+                    return Err(missing_model_error(&adapter));
+                };
                 CallKind::Spawn(SpawnChildRequest {
-                    adapter: normalize_adapter(
-                        args.get("adapter").and_then(Value::as_str).unwrap_or(""),
-                    ),
+                    adapter,
                     prompt,
-                    model: string_arg(&args, "model"),
+                    model: Some(model),
                     agent_profile: string_arg(&args, "agent_profile"),
                     budget_usd: args.get("budget_usd").and_then(Value::as_f64),
                     cwd: string_arg(&args, "cwd"),
@@ -134,6 +172,34 @@ fn reply_frame(outcome: &crate::childwatch::ChildOutcome) -> Value {
             "result": format!("child agent finished without producing any output{id_line}"),
         }),
     }
+}
+
+/// Appended to every frame a call returns: the caller must be able to see the
+/// model it got rather than the one it assumed.
+fn dispatch_note(kind: &CallKind, timeout: Duration) -> String {
+    match kind {
+        CallKind::Spawn(req) => format!(
+            "\n\n[spawned on model {} · adapter {} · follow window {}s]",
+            req.model.as_deref().unwrap_or("<unset>"),
+            req.adapter,
+            timeout.as_secs(),
+        ),
+        CallKind::Message(req) => format!(
+            "\n\n[follow-up to child {} · runs on the child's original model, `model` is ignored here · follow window {}s]",
+            req.session_id,
+            timeout.as_secs(),
+        ),
+    }
+}
+
+fn annotate(mut frame: Value, note: &str) -> Value {
+    let key =
+        if frame.get("ok").and_then(Value::as_bool) == Some(true) { "result" } else { "error" };
+    if let Some(text) = frame.get(key).and_then(Value::as_str) {
+        let joined = format!("{text}{note}");
+        frame[key] = Value::String(joined);
+    }
+    frame
 }
 
 enum FollowResult {
@@ -223,9 +289,12 @@ async fn follow_child_with(
                     return FollowResult::Error(json!({
                         "ok": false,
                         "error": format!(
-                            "child agent {child_id} did not finish within {}s — it is still \
-                             running; check it in cctui, or follow up by calling CctuiAgent \
-                             with session_id {:?}",
+                            "the {}s follow window expired for child agent {child_id}. THIS IS \
+                             NOT A CRASH: the child is still running, and whatever it has \
+                             already written is on disk. Only the wait gave up. Watch it in \
+                             cctui, or call CctuiAgent again with session_id {:?} to reattach \
+                             and collect its answer. Pass a larger timeout_secs (max 7200) \
+                             next time to wait longer.",
                             timeout.as_secs(),
                             snap.local_id.as_deref().unwrap_or(child_id),
                         ),
@@ -263,12 +332,15 @@ async fn run_call(
     call: Call,
     out: &mut (impl AsyncWriteExt + Unpin),
 ) -> Value {
+    let note = dispatch_note(&call.kind, call.timeout);
     let watch = crate::childwatch::global();
     let (handle, child_id) = match &call.kind {
         CallKind::Spawn(req) => {
             let child = match server.spawn_child(machine_key, &call.session_id, req).await {
                 Ok(child) => child,
-                Err(err) => return json!({ "ok": false, "error": err.to_string() }),
+                Err(err) => {
+                    return annotate(json!({ "ok": false, "error": err.to_string() }), &note);
+                }
             };
             // Register BEFORE the spawn frame can produce events; the server
             // has already dispatched the spawn at this point, but the child
@@ -285,7 +357,7 @@ async fn run_call(
         CallKind::Message(req) => {
             let handle = watch.register_bound(&req.session_id);
             if let Err(err) = server.message_child(machine_key, &call.session_id, req).await {
-                return json!({ "ok": false, "error": err.to_string() });
+                return annotate(json!({ "ok": false, "error": err.to_string() }), &note);
             }
             tracing::info!(
                 parent = %call.session_id,
@@ -299,16 +371,16 @@ async fn run_call(
         follow_child_with(&handle, &child_id, call.timeout, SILENT_CHILD_GRACE, call.proto, out)
             .await;
     let FollowResult::Finished(outcome) = result else {
-        return follow_result_to_frame(result);
+        return annotate(follow_result_to_frame(result), &note);
     };
     if !should_nudge(&outcome) {
-        return reply_frame(&outcome);
+        return annotate(reply_frame(&outcome), &note);
     }
     let Some(target) = outcome.local_id.clone() else {
-        return reply_frame(&outcome);
+        return annotate(reply_frame(&outcome), &note);
     };
     drop(handle);
-    nudge_once(server, machine_key, &call, &watch, &target, outcome, out).await
+    annotate(nudge_once(server, machine_key, &call, &watch, &target, outcome, out).await, &note)
 }
 
 /// Send exactly one continuation prompt to a child that finished on a truncated
@@ -456,7 +528,7 @@ mod tests {
         let line = json!({
             "kind": "spawn_agent",
             "session_id": "p",
-            "args": { "adapter": "codex", "prompt": "go" },
+            "args": { "adapter": "codex", "prompt": "go", "model": "gpt-5.6-sol" },
         })
         .to_string();
         assert_eq!(parse_call(&line).unwrap().proto, 1);
@@ -467,15 +539,104 @@ mod tests {
         let line = json!({
             "kind": "spawn_agent",
             "session_id": "p",
-            "args": { "adapter": "codex", "prompt": "go", "model": "  ", "cwd": "",
+            "args": { "adapter": "codex", "prompt": "go", "model": "gpt-5.6-sol", "cwd": "",
                       "permission_mode": "notamode" },
         })
         .to_string();
         let call = parse_call(&line).unwrap();
         let CallKind::Spawn(req) = call.kind else { panic!("expected spawn") };
-        assert!(req.model.is_none());
         assert!(req.cwd.is_none());
         assert!(req.permission_mode.is_none());
+    }
+
+    #[test]
+    fn a_spawn_without_a_model_is_rejected_and_the_error_names_the_ids() {
+        for args in [
+            json!({ "adapter": "claude-code", "prompt": "go" }),
+            json!({ "adapter": "claude-code", "prompt": "go", "model": "   " }),
+            json!({ "adapter": "claude-code", "prompt": "go", "model": "" }),
+        ] {
+            let line =
+                json!({ "kind": "spawn_agent", "session_id": "p", "args": args }).to_string();
+            let Err(err) = parse_call(&line) else { panic!("a spawn without a model must fail") };
+            assert!(err.contains("model is required"), "{err}");
+            assert!(err.contains("claude-opus-5[1m]"), "{err}");
+            assert!(err.contains("claude-fable-5"), "{err}");
+            assert!(err.contains("never falls back"), "{err}");
+        }
+    }
+
+    #[test]
+    fn the_missing_model_error_lists_the_ids_of_the_named_adapter() {
+        let codex = missing_model_error("codex-cli");
+        assert!(codex.contains("gpt-5.6-sol"), "{codex}");
+        assert!(!codex.contains("claude-opus-5"), "{codex}");
+        let unknown = missing_model_error("opencode");
+        assert!(unknown.contains("claude-code:"), "{unknown}");
+        assert!(unknown.contains("codex:"), "{unknown}");
+    }
+
+    #[test]
+    fn a_spawn_with_a_model_still_parses_unchanged() {
+        let line = json!({
+            "kind": "spawn_agent",
+            "session_id": "p",
+            "args": { "adapter": "claude", "prompt": "go", "model": " claude-opus-5[1m] " },
+        })
+        .to_string();
+        let CallKind::Spawn(req) = parse_call(&line).unwrap().kind else {
+            panic!("expected spawn")
+        };
+        assert_eq!(req.model.as_deref(), Some("claude-opus-5[1m]"));
+        assert_eq!(req.adapter, "claude-code");
+    }
+
+    #[test]
+    fn a_follow_up_needs_no_model() {
+        let line = json!({
+            "kind": "spawn_agent",
+            "session_id": "p",
+            "args": { "session_id": "child-9", "prompt": "carry on" },
+        })
+        .to_string();
+        assert!(matches!(parse_call(&line).unwrap().kind, CallKind::Message(_)));
+    }
+
+    #[test]
+    fn every_frame_echoes_the_model_and_the_follow_window() {
+        let spawn = CallKind::Spawn(SpawnChildRequest {
+            adapter: "claude-code".to_owned(),
+            prompt: "go".to_owned(),
+            model: Some("claude-opus-5[1m]".to_owned()),
+            agent_profile: None,
+            budget_usd: None,
+            cwd: None,
+            permission_mode: None,
+            name: None,
+        });
+        let note = dispatch_note(&spawn, Duration::from_hours(2));
+        assert!(note.contains("spawned on model claude-opus-5[1m]"), "{note}");
+        assert!(note.contains("adapter claude-code"), "{note}");
+        assert!(note.contains("follow window 7200s"), "{note}");
+
+        let ok = annotate(json!({ "ok": true, "result": "all done" }), &note);
+        let text = ok["result"].as_str().unwrap();
+        assert!(text.starts_with("all done"));
+        assert!(text.contains("claude-opus-5[1m]"), "{text}");
+
+        let failed = annotate(json!({ "ok": false, "error": "child agent failed" }), &note);
+        assert!(failed["error"].as_str().unwrap().contains("claude-opus-5[1m]"));
+
+        let follow = dispatch_note(
+            &CallKind::Message(MessageChildRequest {
+                session_id: "child-9".to_owned(),
+                prompt: "carry on".to_owned(),
+            }),
+            Duration::from_mins(30),
+        );
+        assert!(follow.contains("follow-up to child child-9"), "{follow}");
+        assert!(follow.contains("follow window 1800s"), "{follow}");
+        assert!(follow.contains("`model` is ignored here"), "{follow}");
     }
 
     #[test]
@@ -580,7 +741,9 @@ mod tests {
         );
         assert_eq!(frame["ok"], json!(false));
         let text = frame["error"].as_str().unwrap();
+        assert!(text.contains("NOT A CRASH"), "{text}");
         assert!(text.contains("still running"), "{text}");
+        assert!(text.contains("on disk"), "{text}");
         assert!(text.contains("session_id"), "{text}");
         assert!(out.is_empty(), "proto 1 must never receive progress frames");
     }

@@ -1,3 +1,4 @@
+import { browser } from '$app/environment';
 import { goto } from '$app/navigation';
 import type { QueryClient } from '@tanstack/svelte-query';
 import type { IR, Journey } from '@dorsk/journey';
@@ -17,7 +18,8 @@ import {
 	translator
 } from '@dorsk/journey/runtime';
 import journeys from './journeys.generated.json';
-import { createProbes, isLive, type Probes } from './journeys/probes';
+import { isLive } from './journeys/live';
+import { createProbes, type Probes } from './journeys/probes';
 import { m } from './paraglide/messages';
 import { endpoints } from './queries/endpoints';
 import { qk } from './queries/keys';
@@ -142,7 +144,7 @@ export type GuideParams = Record<string, string>;
 export async function guideParams(qc: QueryClient): Promise<GuideParams> {
 	const out: GuideParams = { 'var.label': '', 'var.prompt': '' };
 	const me = await qc.fetchQuery({ queryKey: ['me'], queryFn: endpoints.me, staleTime: 5 * 60_000 });
-	if (me.user_name) out.me = me.user_name;
+	if (me.user_name) out['fixture.me'] = me.user_name;
 	const [accounts, pools, sessions] = await Promise.all([
 		qc.fetchQuery({ queryKey: ['accounts'], queryFn: endpoints.accounts }),
 		qc.fetchQuery({ queryKey: ['account-pools'], queryFn: endpoints.accountPools }),
@@ -151,7 +153,7 @@ export async function guideParams(qc: QueryClient): Promise<GuideParams> {
 	if (accounts[0]) out.account = accounts[0].name;
 	if (pools[0]) out.pool = pools[0].name;
 	const live = sessions.sessions.find(isLive);
-	if (live) out.session = live.id;
+	if (live) out['fixture.session'] = live.id;
 	return out;
 }
 
@@ -187,6 +189,21 @@ function markSeen(api: JourneyApi): void {
 	settingsStorage.set(`${DONE_PREFIX}${ir.id}@${ir.version}`, '1');
 }
 
+/** The book driver marks its first navigation with `?journey=run`; later steps
+ *  reload plain routes in the same tab, so the mark has to outlive the query. */
+export const DRIVER_MARK = 'journey:driver';
+
+export function driverRun(storage: Storage = sessionStorage, search = location.search): boolean {
+	if (new URLSearchParams(search).get('journey') === 'run') storage.setItem(DRIVER_MARK, '1');
+	return storage.getItem(DRIVER_MARK) === '1';
+}
+
+/** The slot forwarder parked in `app.html` waits on this; handing it the app's
+ *  runtime is what releases the driver. */
+export function resolveRuntime(api: JourneyApi, w: Window = window): void {
+	(w as Window & { __journeyReady?: (api: JourneyApi) => void }).__journeyReady?.(api);
+}
+
 let mounted: Promise<void> | null = null;
 
 /** Mount the runtime once and register the public journeys. Waits for the
@@ -194,6 +211,8 @@ let mounted: Promise<void> | null = null;
  *  than the local cache. */
 export function mountJourneys(qc: QueryClient): Promise<void> {
 	mounted ??= (async () => {
+		const driver = browser && driverRun();
+		if (driver) delete window.__journey;
 		await settings.load();
 		const probes = createProbes(qc);
 		let api: JourneyApi | null = null;
@@ -224,7 +243,10 @@ export function mountJourneys(qc: QueryClient): Promise<void> {
 			}
 		});
 		host = { api, qc, probes };
-		await api.register(publicJourneys);
+		if (driver) resolveRuntime(api);
+		// Registering arms `autostart`, which would draw the welcome deck over
+		// whatever screen the driver is capturing; the driver hands it the IR.
+		if (!driver) await api.register(publicJourneys);
 		watchLocale(api);
 	})();
 	return mounted;

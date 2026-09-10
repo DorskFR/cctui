@@ -352,8 +352,10 @@ export const endpoints = {
    *  curated env allowlist, and the quiet-defaults preset — served from the
    *  server's embedded catalog so the editor can never drift from what the
    *  server validates on write. */
-  settingsCatalog: () =>
-    api.get<SettingsCatalogResponse>("/accounts/settings-catalog"),
+  settingsCatalog: (family = "anthropic") =>
+    api.get<SettingsCatalogResponse>(
+      `/accounts/settings-catalog?family=${encodeURIComponent(family)}`,
+    ),
   /** Apply the current detector set to already-stored transcripts. `dry_run`
    *  reports counts and writes nothing; a real pass is irreversible. */
   rescrubSettings: (req: RescrubRequest) =>
