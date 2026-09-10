@@ -5,6 +5,7 @@ import type { TokenUsageWindows } from "@bindings/TokenUsageWindows";
 import type { UsageAnalytics } from "@bindings/UsageAnalytics";
 import type { SessionListItem } from "@bindings/SessionListItem";
 import type { AgentEvent } from "@bindings/AgentEvent";
+import type { MessagePin } from "@bindings/MessagePin";
 import type { SpawnRequest } from "@bindings/SpawnRequest";
 import type { SessionProfile } from "@bindings/SessionProfile";
 import type { CreateProfileRequest } from "@bindings/CreateProfileRequest";
@@ -54,6 +55,9 @@ import type { CreatePoolRequest } from "@bindings/CreatePoolRequest";
 import type { UpdatePoolRequest } from "@bindings/UpdatePoolRequest";
 import type { SessionRebind } from "@bindings/SessionRebind";
 import type { PutRedirectRequest } from "@bindings/PutRedirectRequest";
+import type { Bookmark } from "@bindings/Bookmark";
+import type { CreateBookmark } from "@bindings/CreateBookmark";
+import type { UpdateBookmark } from "@bindings/UpdateBookmark";
 import { SYSTEM_MACHINE_KINDS } from "./keys";
 import type {
   AccountProvider,
@@ -139,6 +143,18 @@ export const endpoints = {
   sessionStats: () => api.get<SessionStats>("/sessions/stats"),
   /** Every label known to the server — feeds the picker + filter. */
   labels: () => api.get<LabelListResponse>("/labels"),
+  /** Saved messages, newest first. `q` filters over title/body/note. */
+  bookmarks: (q?: string, limit?: number, before?: string) =>
+    api.get<Bookmark[]>("/bookmarks", {
+      q: q && q.trim() !== "" ? q : undefined,
+      limit,
+      before,
+    }),
+  createBookmark: (body: CreateBookmark) =>
+    api.post<Bookmark>("/bookmarks", body),
+  updateBookmark: (id: string, body: UpdateBookmark) =>
+    api.patch<Bookmark>(`/bookmarks/${id}`, body),
+  deleteBookmark: (id: string) => api.del<void>(`/bookmarks/${id}`),
   /** The caller's spawn profiles, oldest first. */
   profiles: () => api.get<SessionProfile[]>("/profiles"),
   createProfile: (body: CreateProfileRequest) =>
@@ -187,13 +203,30 @@ export const endpoints = {
   markSeen: (id: string) => api.post<void>(`/sessions/${id}/seen`),
   conversation: (
     id: string,
-    opts?: { limit?: number; before?: number; after?: number },
+    opts?: {
+      limit?: number;
+      before?: number;
+      after?: number;
+      /** `asc` takes the OLDEST `limit` events; default `desc` (newest). The
+       *  response is oldest-first either way. */
+      order?: "asc" | "desc";
+    },
   ) =>
     api.get<AgentEvent[]>(`/sessions/${id}/conversation`, {
       limit: opts?.limit,
       before: opts?.before,
       after: opts?.after,
+      order: opts?.order,
     }),
+  messagePins: (id: string) =>
+    api.get<MessagePin[]>(`/sessions/${id}/pins`),
+  pinMessage: (id: string, seq: number, messageId?: string | null) =>
+    api.post<MessagePin>(`/sessions/${id}/pins`, {
+      seq,
+      message_id: messageId ?? null,
+    }),
+  unpinMessage: (id: string, seq: number) =>
+    api.del<void>(`/sessions/${id}/pins/${seq}`),
   /** One-call session diagnose: everything the daemon knows about
    *  the session — each fact dated + sourced, plus the arbitration verdict —
    *  merged with the server-side gateway/account binding facts. */

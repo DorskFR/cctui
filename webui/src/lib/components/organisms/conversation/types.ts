@@ -152,6 +152,9 @@ export interface Line {
 	summary?: TurnSummary;
 	durationMs?: number;
 	key?: string;
+	// Server insert sequence (`stream_events.id`). The stable address of a
+	// message: `key` is content-derived and `ts` collides.
+	seq?: number;
 	// 1-based conversation turn; stamped only on assistant lines.
 	turn?: number;
 	messageId?: string;

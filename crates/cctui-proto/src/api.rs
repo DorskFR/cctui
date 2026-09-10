@@ -299,6 +299,10 @@ pub struct SessionListItem {
     /// the search endpoint to show *why* a session matched; `None` otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub match_snippet: Option<String>,
+    /// Causal seq of the event `match_snippet` was taken from, so clients can
+    /// open the conversation at the hit. `None` for id/name/dir-only matches.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub match_seq: Option<i64>,
     /// Cold-cache surfacing. Timestamp of the most recent
     /// assistant turn (the last `session_token_usage` row). Lets the client
     /// predict prompt-cache expiry — Anthropic's cache is a ~5-minute sliding

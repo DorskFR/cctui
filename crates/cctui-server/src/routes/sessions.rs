@@ -349,6 +349,7 @@ pub async fn list_sessions(
                         effort: None,
                         auto_approve: false,
                         match_snippet: None,
+                        match_seq: None,
                         last_activity_at: None,
                         cache_cold: false,
                         estimated_burst_tokens: None,
@@ -449,6 +450,7 @@ pub async fn list_sessions(
                 effort: None,
                 auto_approve: false,
                 match_snippet: None,
+                match_seq: None,
                 last_activity_at: None,
                 cache_cold: false,
                 estimated_burst_tokens: None,
@@ -966,7 +968,7 @@ const SEARCH_MAX_LIMIT: i64 = 500;
 /// Escape LIKE/ILIKE wildcards so a user's literal `%`/`_` aren't treated as
 /// pattern metacharacters, then wrap in `%…%` for a substring match. `\` is
 /// the default ILIKE escape char.
-fn ilike_contains(q: &str) -> String {
+pub fn ilike_contains(q: &str) -> String {
     let escaped = q.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
     format!("%{escaped}%")
 }
@@ -1243,6 +1245,7 @@ pub async fn search_sessions(
                     effort: None,
                     auto_approve: false,
                     match_snippet: None,
+                    match_seq: None,
                     last_activity_at: None,
                     cache_cold: false,
                     estimated_burst_tokens: None,
@@ -1283,12 +1286,13 @@ pub async fn search_sessions(
             .join(" OR ");
         let sql = format!(
             "SELECT DISTINCT ON (session_id) session_id, \
-             left(search_text, {SEARCH_TEXT_CAP}) \
+             left(search_text, {SEARCH_TEXT_CAP}), id \
              FROM stream_events \
              WHERE session_id = ANY($1) AND ({or}) \
              ORDER BY session_id, created_at DESC"
         );
-        let mut query = sqlx::query_as::<_, (String, String)>(sqlx::AssertSqlSafe(sql)).bind(&ids);
+        let mut query =
+            sqlx::query_as::<_, (String, String, i64)>(sqlx::AssertSqlSafe(sql)).bind(&ids);
         for p in &patterns {
             query = query.bind(p);
         }
@@ -1296,16 +1300,27 @@ pub async fn search_sessions(
             tracing::error!("db error (search snippets): {e}");
             (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
         })?;
-        let mut by_session: std::collections::HashMap<String, String> = snippet_rows
-            .into_iter()
-            .map(|(id, text)| (id, make_snippet(&text, &text_terms)))
-            .collect();
-        for s in &mut sessions {
-            s.match_snippet = by_session.remove(&s.id);
-        }
+        attach_transcript_hits(&mut sessions, snippet_rows, &text_terms);
     }
 
     Ok(Json(SessionListResponse { sessions }))
+}
+
+/// Sessions with no matching event keep both fields `None`; clients read that
+/// as an id/name/dir-only match and open the drawer normally.
+fn attach_transcript_hits(
+    sessions: &mut [SessionListItem],
+    rows: Vec<(String, String, i64)>,
+    terms: &[String],
+) {
+    let mut by_session: std::collections::HashMap<String, (String, i64)> =
+        rows.into_iter().map(|(id, text, seq)| (id, (make_snippet(&text, terms), seq))).collect();
+    for s in sessions {
+        if let Some((snippet, seq)) = by_session.remove(&s.id) {
+            s.match_snippet = Some(snippet);
+            s.match_seq = Some(seq);
+        }
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1453,6 +1468,7 @@ pub async fn get_session(
                     .await
                     .is_auto_approve(&handle.session.id),
                 match_snippet: None,
+                match_seq: None,
                 last_activity_at: None,
                 cache_cold: false,
                 estimated_burst_tokens: None,
@@ -1516,6 +1532,7 @@ pub async fn get_session(
         effort: None,
         auto_approve: state.permission_store.read().await.is_auto_approve(&row.id),
         match_snippet: None,
+        match_seq: None,
         last_activity_at: None,
         cache_cold: false,
         estimated_burst_tokens: None,
@@ -1564,6 +1581,35 @@ pub struct ConversationQuery {
     pub before: Option<i64>,
     /// Exclusive lower `seq` bound for delta catch-up.
     pub after: Option<i64>,
+    /// Which end of the range `limit` takes: `desc` (default) keeps the newest
+    /// events, `asc` the oldest. The response is always oldest-first.
+    #[serde(default)]
+    pub order: ConversationOrder,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ConversationOrder {
+    #[default]
+    Desc,
+    Asc,
+}
+
+const fn conversation_sql(order: ConversationOrder) -> &'static str {
+    match order {
+        ConversationOrder::Desc => {
+            "SELECT id, event_type, payload, created_at FROM stream_events \
+             WHERE session_id = $1 AND ($2::bigint IS NULL OR id < $2) \
+               AND ($4::bigint IS NULL OR id > $4) \
+             ORDER BY id DESC LIMIT $3"
+        }
+        ConversationOrder::Asc => {
+            "SELECT id, event_type, payload, created_at FROM stream_events \
+             WHERE session_id = $1 AND ($2::bigint IS NULL OR id < $2) \
+               AND ($4::bigint IS NULL OR id > $4) \
+             ORDER BY id ASC LIMIT $3"
+        }
+    }
 }
 
 pub async fn get_conversation(
@@ -1582,23 +1628,24 @@ pub async fn get_conversation(
     // the causal `seq` and is a strict total order, so a late-flushed
     // AskUserQuestion card+preamble keep their insert position even when their
     // `created_at` ties or lands after the user's answer.
-    let mut rows: Vec<(i64, String, serde_json::Value, DateTime<Utc>)> = sqlx::query_as(
-        "SELECT id, event_type, payload, created_at FROM stream_events \
-         WHERE session_id = $1 AND ($2::bigint IS NULL OR id < $2) \
-           AND ($4::bigint IS NULL OR id > $4) \
-         ORDER BY id DESC LIMIT $3",
-    )
-    .bind(&session_id)
-    .bind(params.before)
-    .bind(params.limit.map(|l| l.clamp(1, 10_000)))
-    .bind(params.after)
-    .fetch_all(&state.pool)
-    .await
-    .map_err(|e| {
-        tracing::error!("db error: {e}");
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-    })?;
-    rows.reverse();
+    let mut rows: Vec<(i64, String, serde_json::Value, DateTime<Utc>)> =
+        sqlx::query_as(conversation_sql(params.order))
+            .bind(&session_id)
+            .bind(params.before)
+            .bind(params.limit.map(|l| l.clamp(1, 10_000)))
+            .bind(params.after)
+            .fetch_all(&state.pool)
+            .await
+            .map_err(|e| {
+                tracing::error!("db error: {e}");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ApiError { error: "database error".into() }),
+                )
+            })?;
+    if params.order == ConversationOrder::Desc {
+        rows.reverse();
+    }
 
     let usage_rows: Vec<(String, Option<String>, i64, i64, i64, i64)> = sqlx::query_as(
         "SELECT message_id, model, \
@@ -2669,6 +2716,54 @@ mod tests {
     };
     use cctui_proto::models::{Attention, Liveness};
     use chrono::{Duration, Utc};
+
+    fn bare_session(id: &str) -> cctui_proto::api::SessionListItem {
+        serde_json::from_value(serde_json::json!({
+            "id": id, "parent_id": null, "machine_id": "m", "working_dir": "/w",
+            "status": "active", "metadata": {},
+            "token_usage": serde_json::to_value(
+                cctui_proto::models::TokenUsage::default()
+            ).unwrap(),
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn transcript_hits_attach_seq_and_leave_id_only_matches_none() {
+        let mut sessions = vec![bare_session("s-transcript"), bare_session("s-id-only")];
+        let rows =
+            vec![("s-transcript".to_owned(), "the quick brown fox jumps".to_owned(), 4242_i64)];
+
+        super::attach_transcript_hits(&mut sessions, rows, &["brown".to_owned()]);
+
+        assert_eq!(sessions[0].match_seq, Some(4242));
+        assert!(sessions[0].match_snippet.as_deref().unwrap().contains("brown"));
+
+        assert_eq!(sessions[1].match_seq, None);
+        assert_eq!(sessions[1].match_snippet, None);
+    }
+
+    #[test]
+    fn conversation_order_defaults_to_desc() {
+        let q: super::ConversationQuery =
+            serde_json::from_value(serde_json::json!({"limit": 20})).unwrap();
+        assert_eq!(q.order, super::ConversationOrder::Desc);
+        assert!(super::conversation_sql(q.order).ends_with("ORDER BY id DESC LIMIT $3"));
+    }
+
+    #[test]
+    fn conversation_order_asc_flips_the_inner_order_by() {
+        let q: super::ConversationQuery =
+            serde_json::from_value(serde_json::json!({"limit": 20, "order": "asc"})).unwrap();
+        assert_eq!(q.order, super::ConversationOrder::Asc);
+        assert!(super::conversation_sql(q.order).ends_with("ORDER BY id ASC LIMIT $3"));
+        let desc = super::conversation_sql(super::ConversationOrder::Desc);
+        assert_eq!(
+            super::conversation_sql(super::ConversationOrder::Asc).replace("id ASC", "id DESC"),
+            desc,
+            "asc/desc must differ only in the ORDER BY direction"
+        );
+    }
 
     #[test]
     fn draft_row_fields_strip_env_and_blank_columns() {

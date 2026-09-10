@@ -9,6 +9,12 @@ describe('navItems', () => {
 		expect(hrefs.at(-1)).toBe('/settings');
 	});
 
+	it('places bookmarks between sessions and access', () => {
+		const hrefs = navItems().map((i) => i.href);
+		expect(hrefs.indexOf('/bookmarks')).toBe(hrefs.indexOf('/sessions') + 1);
+		expect(hrefs.indexOf('/access')).toBe(hrefs.indexOf('/bookmarks') + 1);
+	});
+
 	it('exposes access as the merged users/keys/machines/tokens route', () => {
 		const access = navItems().find((i) => i.href === '/access');
 		expect(access?.label).toBe('Access');

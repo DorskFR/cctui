@@ -12,7 +12,9 @@
 		useAccounts,
 		qk,
 		endpoints,
-		CONVERSATION_FETCH_LIMIT
+		CONVERSATION_FETCH_LIMIT,
+		useMessagePins,
+		useMessagePinActions
 	} from '$lib/queries';
 	import { useQueryClient } from '@tanstack/svelte-query';
 	import { renderMarkdown, highlightBlock } from '$lib/markdown';
@@ -29,26 +31,42 @@
 	import Conversation from './conversation/Conversation.svelte';
 	import AccountSwitchModal from './conversation/AccountSwitchModal.svelte';
 	import ConversationComposer from './conversation/ConversationComposer.svelte';
-	import type { MsgCategory, ViewOpts } from './conversation/types';
+	import BookmarkSaveModal from './bookmarks/BookmarkSaveModal.svelte';
+	import type { Line, MsgCategory, ViewOpts } from './conversation/types';
 	import { parseViewOpts } from './conversation/filters';
 	import { eventSig, orderEvents } from './conversation/format';
 	import { buildLines, type LineBuildCtx } from './conversation/lines';
 	import { ConversationStream } from './conversation/stream.svelte';
 	import { ScrollController } from './conversation/scroll.svelte';
+	import { createSeqJumper, type RenderWindow } from './conversation/jump';
+	import { SearchHitStepper } from './conversation/searchHits.svelte';
 	import { ForkController } from './conversation/fork.svelte';
 	import { SessionActions } from './conversation/sessionActions.svelte';
+	import {
+		draftFromLine,
+		isLineBookmarked,
+		lastAssistantLine
+	} from '$lib/bookmarks';
+	import type { CreateBookmark } from '@bindings/CreateBookmark';
+	import { useBookmarkActions, useBookmarks } from '$lib/queries';
+	import { toasts } from '$lib/toast.svelte';
+	import { errMessage } from '$lib/api';
 	import { m } from '$lib/paraglide/messages';
 
 	let {
 		session,
 		onclose,
 		highlight = [],
+		focusSeq = null,
 		onNewFromScript,
 		onNavigate
 	}: {
 		session: SessionListItem;
 		onclose: () => void;
 		highlight?: string[];
+		/** Causal seq of the matched message when opened from a search hit
+		 *  (`SessionListItem.match_seq`). `null` opens tail-anchored as usual. */
+		focusSeq?: number | null;
 		// "New session from same script" for archived sessions.
 		onNewFromScript?: (s: SessionListItem) => void;
 		// Open another session in place by id — used to jump straight to a
@@ -184,7 +202,8 @@
 		earlierExhausted = false;
 	});
 	const canFetchEarlier = $derived(
-		!earlierExhausted && (history.data?.length ?? 0) >= CONVERSATION_FETCH_LIMIT
+		!earlierExhausted &&
+			((history.data?.length ?? 0) >= CONVERSATION_FETCH_LIMIT || earlier.length > 0)
 	);
 
 	const events = $derived.by(() => {
@@ -214,6 +233,41 @@
 			fetchingEarlier = false;
 		}
 	}
+
+	// ── Search focus: open centred on the hit instead of the tail ───────────
+	// One extra window fetch, prepended into `earlier`. The cached tail query is
+	// left alone so live events, dedup and jump-to-bottom keep working; on a
+	// session longer than both windows the two are not contiguous, and the
+	// jump-to-bottom pill is the bridge.
+	const FOCUS_CONTEXT = 40;
+	let focusFetched = $state<string | null>(null);
+	$effect(() => {
+		const seq = focusSeq;
+		const sid = id;
+		if (seq == null) return;
+		const token = `${sid}|${seq}`;
+		if (focusFetched === token) return;
+		focusFetched = token;
+		void (async () => {
+			const win = await endpoints.conversation(sid, {
+				limit: FOCUS_CONTEXT * 2,
+				before: seq + FOCUS_CONTEXT
+			});
+			if (sid !== id) return;
+			// A short window really is the head of the transcript: `before` is an
+			// absolute cursor, not a page number.
+			if (win.length < FOCUS_CONTEXT * 2) earlierExhausted = true;
+			earlier = [...win, ...earlier];
+		})();
+	});
+
+	// `Line` carries no seq, so the focused line is addressed by `ts`. A pruned
+	// or filtered-out event resolves to null and the drawer just opens normally.
+	const focusTs = $derived.by(() => {
+		if (focusSeq == null) return null;
+		const ev = events.find((e) => e.seq === focusSeq);
+		return ev ? Number(ev.ts) : null;
+	});
 
 	// ── Line building (parse + filter + dedup + delivery tinting) ───────────
 	// Render markdown honoring the table formatting toggle. Local file paths
@@ -265,14 +319,53 @@
 		void stream.working;
 		scroll.followIfStuck();
 	});
-	// Reset to bottom + sticky when switching sessions.
+	// Reset to bottom + sticky when switching sessions — except when opened on a
+	// search hit, which must land mid-transcript and stay there.
 	$effect(() => {
 		void id;
-		scroll.resetForSession();
+		if (focusSeq == null) scroll.resetForSession();
+		else scroll.unstick();
 	});
 	// Keep pinned to the bottom while the composer grows. Re-runs when
 	// the scroller / textarea attach (the controller reads both reactively).
 	$effect(() => scroll.observeResize());
+
+	// ── Message pins + the shared jump primitive ───────────────────────────
+	const pinsQuery = useMessagePins(() => id);
+	const pins = $derived(pinsQuery.data ?? []);
+	const pinnedSeqs = $derived(new Set(pins.map((p) => p.seq)));
+	const pinActions = useMessagePinActions();
+	let renderWindow = $state<RenderWindow | undefined>(undefined);
+	const { ensureSeqVisible } = createSeqJumper({
+		hasSeq: (seq) => events.some((e) => e.seq === seq),
+		isRendered: (seq) => renderWindow?.isRendered(seq) ?? false,
+		growRender: () => renderWindow?.grow(),
+		canFetchOlder: () => canFetchEarlier,
+		fetchOlder: fetchEarlier,
+		centerOnSeq: scroll.centerOnSeq,
+		unstick: scroll.unstick
+	});
+	function togglePinLine(ln: Line) {
+		if (ln.seq === undefined || ln.pending || ln.failed) return;
+		void (pinnedSeqs.has(ln.seq)
+			? pinActions.unpin(id, ln.seq)
+			: pinActions.pin(id, ln.seq, ln.messageId ?? null));
+	}
+	// ── Search hit stepping ─────────────────────────────────────────────────
+	let conv = $state<Conversation>();
+	const hits = new SearchHitStepper({
+		scroller: () => scroll.scroller,
+		loadOlder: () => conv?.loadOlder()
+	});
+	$effect(() => {
+		void lines.length;
+		void highlight;
+		hits.refresh();
+	});
+	$effect(() => {
+		void id;
+		hits.reset();
+	});
 
 	const isCodexSession = $derived((session.adapter_id ?? '').startsWith('codex'));
 
@@ -364,6 +457,35 @@
 		composer?.loadDraft(text);
 	}
 
+	// ── Bookmarks (CCT-992) ────────────────────────────────
+	const savedBookmarks = useBookmarks();
+	const bookmarkActions = useBookmarkActions();
+	let bookmarkDraft = $state<CreateBookmark | null>(null);
+
+	const isBookmarked = (ln: Line) =>
+		isLineBookmarked(savedBookmarks.data ?? [], id, ln) !== null;
+
+	function bookmarkWrapUp() {
+		const ln = lastAssistantLine(lines);
+		if (!ln) {
+			toasts.error(m.bookmarks_no_wrapup());
+			return;
+		}
+		bookmarkDraft = draftFromLine(ln, id, session.name ?? null);
+	}
+
+	async function saveBookmark(title: string, note: string | null) {
+		const draft = bookmarkDraft;
+		bookmarkDraft = null;
+		if (!draft) return;
+		try {
+			await bookmarkActions.create({ ...draft, title, note });
+			toasts.ok(m.bookmarks_saved());
+		} catch (e) {
+			toasts.error(m.bookmarks_save_failed({ message: errMessage(e) }));
+		}
+	}
+
 	// Mobile chat controls collapse behind text buttons that open popovers
 	//; null = no panel open. Desktop shows the controls inline.
 	let mobilePanel = $state<'filters' | 'format' | 'auto' | null>(null);
@@ -445,6 +567,10 @@
 			/>
 
 			<DrawerToolbar
+				hitCount={hits.count}
+				hitIndex={hits.index}
+				onprevhit={hits.prev}
+				onnexthit={hits.next}
 				bind:view
 				autoApprove={session.auto_approve}
 				bind:mobilePanel
@@ -452,6 +578,11 @@
 				ondiagnose={() => (diagnoseOpen = true)}
 				onterminal={isCodexSession ? undefined : () => (terminalOpen = !terminalOpen)}
 				{terminalOpen}
+				{pins}
+				{lines}
+				onjumpseq={(seq) => void ensureSeqVisible(seq)}
+				onunpin={(seq) => void pinActions.unpin(id, seq)}
+				onbookmarkwrapup={bookmarkWrapUp}
 			/>
 
 			{#if diagnoseOpen}
@@ -488,6 +619,7 @@
 			{/if}
 
 			<Conversation
+				bind:this={conv}
 				{stream}
 				{scroll}
 				sessionId={id}
@@ -505,6 +637,12 @@
 				{selectMode}
 				{selected}
 				ontoggleselect={toggleSelect}
+				{pinnedSeqs}
+				onpin={togglePinLine}
+				bind:jumper={renderWindow}
+				{focusTs}
+				onbookmark={(ln) => (bookmarkDraft = draftFromLine(ln, id, session.name ?? null))}
+				{isBookmarked}
 			/>
 
 			<ConversationComposer
@@ -553,6 +691,16 @@
 		{/if}
 	{/snippet}
 </ResizablePanel>
+
+{#if bookmarkDraft}
+	<BookmarkSaveModal
+		heading={m.bookmarks_save_title()}
+		saveLabel={m.bookmarks_save_action()}
+		title={bookmarkDraft.title}
+		onsave={saveBookmark}
+		onclose={() => (bookmarkDraft = null)}
+	/>
+{/if}
 </div>
 
 <style>

@@ -183,6 +183,9 @@ export interface DisplaySettings {
 	// Bulk-archive control on the Completed group header. Off removes only that
 	// affordance; per-session archive stays.
 	archiveDoneButton: boolean;
+	// Sticky strip at the top of a conversation showing its first user message
+	// (the brief). Off hides the strip entirely.
+	pinFirstMessage: boolean;
 	notifyEnabled: boolean;
 	notifySound: boolean;
 	// Where the route navigation lives on a wide screen: tabs inline in the
@@ -328,6 +331,7 @@ const DEFAULTS: SettingsState = {
 		fontScale: 1,
 		archiveShortcut: true,
 		archiveDoneButton: true,
+		pinFirstMessage: true,
 		notifyEnabled: false,
 		notifySound: true,
 		nav: DEFAULT_NAV_POSITION
@@ -371,6 +375,7 @@ export function mergeDefaults(partial: Partial<SettingsState> | null | undefined
 			...DEFAULTS.display,
 			...(p.display ?? {}),
 			archiveDoneButton: p.display?.archiveDoneButton !== false,
+			pinFirstMessage: p.display?.pinFirstMessage !== false,
 			nav: clampNavPosition(p.display?.nav)
 		},
 		spawnDock: {
@@ -799,6 +804,14 @@ class Settings {
 
 	setArchiveDoneButton(on: boolean) {
 		this.setDisplay({ archiveDoneButton: on });
+	}
+
+	get pinFirstMessage(): boolean {
+		return this.state.display.pinFirstMessage;
+	}
+
+	setPinFirstMessage(on: boolean) {
+		this.setDisplay({ pinFirstMessage: on });
 	}
 }
 

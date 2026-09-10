@@ -114,6 +114,31 @@
   padding: 0 1px;
 }
 
+/* The hit that prev/next stepping currently sits on. */
+.search-hit.hit-current {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* Jump-target flash (`ensureSeqVisible`): the class is added to a line node
+   imperatively by ScrollController, so it must be global. Same warm token as
+   `.search-hit` above. */
+.line-focus {
+  outline: 2px solid var(--warn);
+  outline-offset: 2px;
+  border-radius: 6px;
+  animation: line-focus-fade 1.2s ease forwards;
+}
+@keyframes line-focus-fade {
+  0%,
+  70% {
+    outline-color: var(--warn);
+  }
+  100% {
+    outline-color: transparent;
+  }
+}
+
 /* Per-code-block copy button. The block is wrapped in a positioned
    figure; the button hovers in the top-right and reveals on hover (always visible
    on touch, where there's no hover). Rendered inside {@html}, so global. */

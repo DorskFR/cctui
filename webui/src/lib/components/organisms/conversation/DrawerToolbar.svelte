@@ -14,6 +14,9 @@
 	import FilterMenu from './FilterMenu.svelte';
 	import { quickFilterLabel, type MsgCategory, type QuickFilterId, type ViewOpts } from './types';
 	import { Popover, Toggle } from '@dorsk/tsumikit';
+	import PinsPanel from './PinsPanel.svelte';
+	import type { MessagePin } from '@bindings/MessagePin';
+	import type { Line } from './types';
 	import { m } from '$lib/paraglide/messages';
 
 	let {
@@ -23,7 +26,16 @@
 		ontoggleAuto,
 		ondiagnose,
 		onterminal,
-		terminalOpen = false
+		terminalOpen = false,
+		pins = [],
+		lines = [],
+		onjumpseq,
+		onunpin,
+		hitCount = 0,
+		hitIndex = -1,
+		onprevhit,
+		onnexthit,
+		onbookmarkwrapup
 	}: {
 		view: ViewOpts;
 		autoApprove: boolean;
@@ -34,6 +46,19 @@
 		/** Toggles the read-only live terminal; omit to hide (codex). */
 		onterminal?: () => void;
 		terminalOpen?: boolean;
+		pins?: MessagePin[];
+		lines?: Line[];
+		/** Omit both to hide the pins button (e.g. no session context). */
+		onjumpseq?: (seq: number) => void;
+		onunpin?: (seq: number) => void;
+		/** Search-hit stepping; the whole group hides when there are no hits. */
+		hitCount?: number;
+		hitIndex?: number;
+		onprevhit?: () => void;
+		onnexthit?: () => void;
+		/** One-click save of the session's newest assistant message (the wrap-up)
+		 * to bookmarks; omit to hide the button. */
+		onbookmarkwrapup?: () => void;
 	} = $props();
 
 	const QUICK_TINT: Record<QuickFilterId, string> = {
@@ -128,6 +153,15 @@
 			/>
 		</Popover>
 	</div>
+	{#if hitCount > 0}
+		<div class="hitbar row" role="group" aria-label={m.conversation_hits_aria()}>
+			<Toggle pressed={false} title={m.conversation_hit_prev()} onclick={onprevhit}>↑</Toggle>
+			<Toggle pressed={false} title={m.conversation_hit_next()} onclick={onnexthit}>↓</Toggle>
+			<span class="hit-count" aria-live="polite"
+				>{m.conversation_hit_counter({ n: hitIndex + 1, total: hitCount })}</span
+			>
+		</div>
+	{/if}
 	<!-- Formatting toggles: gray when off, colored when on. -->
 	<div class="fmtbar row row-wrap" class:panel-open={mobilePanel === 'format'} role="group" aria-label={m.conversation_formatting_aria()}>
 		<Toggle pressed={view.prettyJson} onclick={() => (view.prettyJson = !view.prettyJson)}>{m.conversation_fmt_json()}</Toggle>
@@ -143,12 +177,28 @@
 			aria-label={m.conversation_auto_approve_aria()}
 			onclick={ontoggleAuto}
 		>{m.conversation_auto_approve_btn()}</Toggle>
+		{#if onbookmarkwrapup}
+			<Toggle
+				pressed={false}
+				title={m.bookmarks_toolbar_title()}
+				aria-label={m.bookmarks_toolbar_label()}
+				onclick={onbookmarkwrapup}
+			>◈ {m.bookmarks_toolbar_title()}</Toggle>
+		{/if}
 		{#if ondiagnose}
 			<Toggle
 				pressed={false}
 				title={m.conversation_diagnose_title()}
 				onclick={ondiagnose}
 			>{m.conversation_diagnose_btn()}</Toggle>
+		{/if}
+		{#if onjumpseq && onunpin}
+			<Popover label={m.conversation_pins_aria()} placement="bottom-end" bare triggerClass="pins-trigger">
+				{#snippet trigger()}
+					★ {m.conversation_pins()}{pins.length ? ` ${pins.length}` : ''}
+				{/snippet}
+				<PinsPanel {pins} {lines} onjump={onjumpseq} {onunpin} />
+			</Popover>
 		{/if}
 		{#if onterminal}
 			<Toggle
@@ -163,9 +213,10 @@
 <style>
 	/* The trigger reads like the Toggles beside it. `.bare` in the selector:
 	   the kit's `.pop-trigger.bare` ties on specificity and loads later. */
-	:global(.filters-trigger.bare) {
+	:global(.filters-trigger.bare, .pins-trigger.bare) {
 		display: inline-flex;
 		align-items: center;
+		gap: var(--sp-1);
 		padding: 0.15rem var(--sp-2);
 		border: 1px solid var(--border);
 		border-radius: var(--r-pill);
@@ -204,11 +255,21 @@
 	}
 	.tagbar,
 	.fmtbar,
-	.behbar {
+	.behbar,
+	.hitbar {
 		gap: var(--sp-1);
 	}
+	.hitbar {
+		align-items: center;
+	}
+	.hit-count {
+		color: var(--text-muted);
+		font-variant-numeric: tabular-nums;
+		white-space: nowrap;
+	}
 	.fmtbar,
-	.behbar {
+	.behbar,
+	.hitbar {
 		padding-left: var(--sp-3);
 		border-left: 1px solid var(--border);
 	}
