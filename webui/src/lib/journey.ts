@@ -12,6 +12,7 @@ import {
 	type Presenter,
 	PROGRESS_KEY,
 	type RunResult,
+	spotPresenter,
 	type Strings,
 	translator
 } from '@dorsk/journey/runtime';
@@ -214,8 +215,13 @@ export function mountJourneys(qc: QueryClient): Promise<void> {
 			probes,
 			translate,
 			strings,
-			presenter: (name) =>
-				name === 'guide' ? deck : name === 'doc' ? docPresenter(self().overlay) : nonePresenter
+			presenter: (name) => {
+				const t = translator(() => self().strings());
+				if (name === 'guide') return deck;
+				if (name === 'doc') return docPresenter(self().overlay, t);
+				if (name === 'spot') return spotPresenter(self().overlay, t);
+				return nonePresenter;
+			}
 		});
 		host = { api, qc, probes };
 		await api.register(publicJourneys);

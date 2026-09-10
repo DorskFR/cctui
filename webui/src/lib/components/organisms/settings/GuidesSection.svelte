@@ -26,7 +26,12 @@
 	async function replay(id: string) {
 		busy = id;
 		try {
-			await replayGuide(id);
+			const outcome = await replayGuide(id);
+			if (!outcome.ok && outcome.reason === 'gated') {
+				toasts.info(m.settings_guides_gated({ prerequisite: outcome.prerequisite }));
+			} else if (!outcome.ok) {
+				toasts.error(m.settings_guides_unavailable());
+			}
 		} finally {
 			busy = null;
 		}

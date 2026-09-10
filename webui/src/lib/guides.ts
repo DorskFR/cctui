@@ -1,6 +1,5 @@
 import type { Journey, Text } from '@dorsk/journey';
-import journeys from './journeys.generated.json';
-import { mountJourneys } from './journey';
+import { publicJourneys, type StartOutcome, startGuide } from './journey';
 import type { OnboardingSettings } from './settings.svelte';
 import { settings } from './settings.svelte';
 
@@ -20,7 +19,8 @@ export function guideText(text: Text | undefined): string {
 	return globalThis.window?.__journey?.translate(text) ?? '';
 }
 
-export function guideEntries(source: Journey[] = journeys as Journey[]): GuideEntry[] {
+/** The compiled book still carries journeys whose public step count is zero. */
+export function guideEntries(source: Journey[] = publicJourneys as Journey[]): GuideEntry[] {
 	return source.map((j) => ({
 		id: j.id,
 		version: j.version ?? 1,
@@ -58,8 +58,7 @@ export function resetGuides() {
 	settings.setOnboarding({ seenVersion: {}, progress: null });
 }
 
-export async function replayGuide(id: string): Promise<void> {
+export async function replayGuide(id: string): Promise<StartOutcome> {
 	clearGuide(id);
-	await mountJourneys();
-	await window.__journey?.start(id);
+	return startGuide(id);
 }

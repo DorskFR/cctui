@@ -153,8 +153,12 @@ describe('the journey overlay is themed from the palette, not the library fallba
 
 	// Resolved values cannot be compared to the fallbacks: --r-sm is 6px and so
 	// is the library's. Sourcing from a palette var() is the check that holds.
+	// A keyword, not a colour or a measure: the palette has no analogue to source it from.
+	const KEYWORD_TOKENS = new Set(['--journey-banner-align']);
+
 	it('sources every token from the palette rather than a literal of its own', () => {
-		for (const [name, value] of host) expect(value, name).toMatch(/var\(--/);
+		for (const [name, value] of host)
+			if (!KEYWORD_TOKENS.has(name)) expect(value, name).toMatch(/var\(--/);
 	});
 
 	it.each(['dark', ...THEMES.map((t) => t.id).filter((id) => id !== 'dark')])(

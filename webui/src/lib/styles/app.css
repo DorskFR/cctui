@@ -289,4 +289,9 @@ journey-overlay {
   --journey-radius: var(--r-md);
   --journey-radius-sm: var(--r-sm);
   --journey-font: var(--fs-sm) / 1.4 var(--font-sans);
+  --journey-banner-surface: color-mix(in srgb, var(--bg-elevated) 72%, transparent);
+  --journey-banner-text: var(--text);
+  --journey-banner-padding: var(--sp-4) var(--sp-6);
+  --journey-banner-inset: var(--sp-0);
+  --journey-banner-align: center;
 }
