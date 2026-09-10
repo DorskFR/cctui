@@ -216,3 +216,36 @@ export function initialProfile(
 ): SessionProfile | null {
 	return profiles.find((p) => p.id === lastUsedId) ?? profiles[0] ?? null;
 }
+
+/** `dataTransfer` payloads are unreadable while a drag hovers, so the dragged
+ *  row publishes its id here for the zone under the pointer (CCT-929). */
+let draggedId = '';
+export const setDraggedProfile = (id: string) => {
+	draggedId = id;
+};
+export const draggedProfile = (): string => draggedId;
+
+/** Move `id` to `index` (clamped). An id the list lacks changes nothing. */
+export function moveProfile<T extends { id: string }>(
+	list: readonly T[],
+	id: string,
+	index: number
+): T[] {
+	const next = [...list];
+	const from = next.findIndex((p) => p.id === id);
+	if (from < 0) return next;
+	const [row] = next.splice(from, 1);
+	next.splice(Math.max(0, Math.min(next.length, index)), 0, row);
+	return next;
+}
+
+/** Drop `id` onto `targetId`: it takes the target's slot. */
+export function moveProfileOnto<T extends { id: string }>(
+	list: readonly T[],
+	id: string,
+	targetId: string
+): T[] {
+	const to = list.findIndex((p) => p.id === targetId);
+	if (to < 0 || id === targetId) return [...list];
+	return moveProfile(list, id, to);
+}

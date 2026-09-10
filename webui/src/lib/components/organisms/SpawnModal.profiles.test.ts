@@ -33,6 +33,7 @@ const orchestrator: SessionProfile = {
   model_alias: "fable",
   effort: "medium",
   permission_mode: "yolo",
+  sort_order: 0,
   created_at: "",
   updated_at: "",
 };
@@ -52,6 +53,7 @@ const spawn = vi.fn();
 const create = vi.fn();
 const update = vi.fn();
 const remember = vi.fn();
+const reorder = vi.fn();
 
 vi.mock("$lib/queries", () => {
   const q = <T>(data: T) => ({ data, isLoading: false, isError: false });
@@ -64,7 +66,7 @@ vi.mock("$lib/queries", () => {
     useAccountPools: () => q([{ id: "pool1", name: "shared", members: [] }]),
     useLabels: () => q({ labels: [] }),
     useProfiles: () => q(profileList),
-    useProfileActions: () => ({ create, update, remove: async () => {} }),
+    useProfileActions: () => ({ create, update, remove: async () => {}, reorder }),
     useAllAccountsUsage: () => q([]),
     useSessionActions: () => ({
       spawn,
@@ -109,6 +111,7 @@ beforeEach(() => {
     .mockReset()
     .mockResolvedValue({ ...orchestrator, id: "p-new", name: "Default" });
   update.mockReset().mockResolvedValue(orchestrator);
+  reorder.mockReset().mockResolvedValue([codexQuick, orchestrator]);
   remember.mockReset();
 });
 afterEach(async () => {
@@ -329,5 +332,62 @@ describe("SpawnModal profiles", () => {
       name: "Default",
       harness: "claude-code",
     });
+  });
+
+  const rowNames = () =>
+    [...document.querySelectorAll('label[for^="sp-profile-"] .name .truncate')].map((n) =>
+      n.textContent?.trim(),
+    );
+
+  it("moves a profile with the keyboard and persists the new order", async () => {
+    await open();
+    expect(rowNames()).toEqual(["Orchestrator", "Codex quick"]);
+
+    let release: (() => void) | undefined;
+    reorder.mockImplementationOnce(
+      () =>
+        new Promise((ok) => {
+          release = () => ok([codexQuick, orchestrator]);
+        }),
+    );
+
+    const up = button("Move Codex quick up");
+    expect(up.disabled).toBe(false);
+    up.click();
+    await tick();
+
+    expect(reorder).toHaveBeenCalledWith(["p2", "p1"]);
+    expect(rowNames()).toEqual(["Codex quick", "Orchestrator"]);
+
+    release?.();
+    await tick();
+    expect(reorder).toHaveBeenCalledTimes(1);
+  });
+
+  it("names every reorder control and disables the ends", async () => {
+    await open();
+    expect(button("Move Orchestrator up").disabled).toBe(true);
+    expect(button("Move Orchestrator down").disabled).toBe(false);
+    expect(button("Move Codex quick up").disabled).toBe(false);
+    expect(button("Move Codex quick down").disabled).toBe(true);
+  });
+
+  it("reverts the optimistic order when the reorder call fails", async () => {
+    await open();
+    let release: (() => void) | undefined;
+    reorder.mockImplementationOnce(
+      () =>
+        new Promise((_ok, fail) => {
+          release = () => fail(new Error("nope"));
+        }),
+    );
+
+    button("Move Codex quick up").click();
+    await tick();
+    expect(rowNames()).toEqual(["Codex quick", "Orchestrator"]);
+
+    release?.();
+    await tick();
+    expect(rowNames()).toEqual(["Orchestrator", "Codex quick"]);
   });
 });

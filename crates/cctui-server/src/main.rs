@@ -1019,6 +1019,14 @@ fn build_api_routes() -> Routes {
             Authenticated,
         )
         .add(
+            &[Method::PUT],
+            "/profiles/order",
+            "Persist the caller's profile order.",
+            axum::routing::put(routes::profiles::reorder_profiles),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
             &[Method::PATCH, Method::DELETE],
             "/profiles/{id}",
             "Rename, adjust or delete a spawn profile.",

@@ -35,6 +35,7 @@ pub struct SessionProfile {
     pub model_alias: Option<String>,
     pub effort: Option<String>,
     pub permission_mode: Option<String>,
+    pub sort_order: i32,
     #[ts(type = "string")]
     pub created_at: DateTime<Utc>,
     #[ts(type = "string")]
@@ -90,7 +91,7 @@ pub struct UpdateProfileRequest {
 }
 
 const COLS: &str = "id, user_id, name, harness, account_id, pool_id, no_account, model_alias, \
-                    effort, permission_mode, created_at, updated_at";
+                    effort, permission_mode, sort_order, created_at, updated_at";
 
 fn db_err(e: &sqlx::Error) -> ApiErr {
     if let sqlx::Error::Database(dbe) = e
@@ -202,7 +203,8 @@ pub async fn list_for_user(
     user_id: Uuid,
 ) -> Result<Vec<SessionProfile>, sqlx::Error> {
     sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "SELECT {COLS} FROM session_profiles WHERE user_id = $1 ORDER BY created_at, lower(name)"
+        "SELECT {COLS} FROM session_profiles WHERE user_id = $1 \
+         ORDER BY sort_order, created_at, lower(name)"
     )))
     .bind(user_id)
     .fetch_all(pool)
@@ -218,8 +220,10 @@ pub async fn insert(
     sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "INSERT INTO session_profiles \
             (user_id, name, harness, account_id, pool_id, no_account, model_alias, effort, \
-             permission_mode) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING {COLS}"
+             permission_mode, sort_order) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, \
+                 (SELECT COALESCE(MAX(sort_order) + 1, 0) FROM session_profiles WHERE user_id = $1)) \
+         RETURNING {COLS}"
     )))
     .bind(user_id)
     .bind(name)
@@ -267,6 +271,47 @@ pub async fn update(
     .bind(spec.and_then(|s| s.permission_mode.as_deref()))
     .fetch_optional(pool)
     .await
+}
+
+#[derive(Debug, serde::Deserialize, ts_rs::TS)]
+#[ts(export)]
+pub struct ReorderProfilesRequest {
+    #[ts(type = "string[]")]
+    pub ids: Vec<Uuid>,
+}
+
+/// `ids` must be a permutation of the caller's current set; anything else
+/// (duplicate, stale, foreign or missing id) fails the whole call.
+pub async fn reorder(pool: &PgPool, user_id: Uuid, ids: &[Uuid]) -> Result<bool, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    let current: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM session_profiles WHERE user_id = $1 ORDER BY id FOR UPDATE",
+    )
+    .bind(user_id)
+    .fetch_all(&mut *tx)
+    .await?;
+
+    let mut sorted: Vec<Uuid> = ids.to_vec();
+    sorted.sort_unstable();
+    sorted.dedup();
+    if sorted.len() != ids.len() || sorted != current {
+        tx.rollback().await?;
+        return Ok(false);
+    }
+
+    for (rank, id) in ids.iter().enumerate() {
+        sqlx::query(
+            "UPDATE session_profiles SET sort_order = $3, updated_at = now() \
+              WHERE id = $1 AND user_id = $2",
+        )
+        .bind(id)
+        .bind(user_id)
+        .bind(i32::try_from(rank).unwrap_or(i32::MAX))
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(true)
 }
 
 pub async fn delete(pool: &PgPool, user_id: Uuid, id: Uuid) -> Result<bool, sqlx::Error> {
@@ -319,6 +364,24 @@ pub async fn update_profile(
         .await
         .map_err(|e| db_err(&e))?;
     row.map(Json).ok_or_else(|| err(StatusCode::NOT_FOUND, "profile not found"))
+}
+
+/// `PUT /profiles/order` — persist the panel order; body is the caller's full
+/// id list, most-preferred first.
+pub async fn reorder_profiles(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Json(req): Json<ReorderProfilesRequest>,
+) -> Result<Json<Vec<SessionProfile>>, ApiErr> {
+    require_human(&ctx)?;
+    if !reorder(&state.pool, ctx.user_id, &req.ids).await.map_err(|e| db_err(&e))? {
+        return Err(err(
+            StatusCode::BAD_REQUEST,
+            "order must list each of your profiles exactly once",
+        ));
+    }
+    let rows = list_for_user(&state.pool, ctx.user_id).await.map_err(|e| db_err(&e))?;
+    Ok(Json(rows))
 }
 
 /// `DELETE /profiles/{id}` — the caller's own profile only; sessions spawned
@@ -489,6 +552,129 @@ mod tests {
         sqlx::query("DELETE FROM users WHERE id = $1 OR id = $2")
             .bind(owner)
             .bind(other)
+            .execute(&pool)
+            .await
+            .expect("cleanup");
+    }
+
+    #[tokio::test]
+    async fn profile_order_over_db() {
+        let Some(url) = crate::routes::gateway::test_db_url("profile_order_over_db") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let suffix = Uuid::new_v4();
+        let mk_user = |tag: &'static str| {
+            let pool = pool.clone();
+            async move {
+                sqlx::query_scalar::<_, Uuid>(
+                    "INSERT INTO users (id, name, key_hash) \
+                     VALUES (gen_random_uuid(), $1, gen_random_uuid()::text) RETURNING id",
+                )
+                .bind(format!("order-{tag}-{suffix}"))
+                .fetch_one(&pool)
+                .await
+                .expect("insert user")
+            }
+        };
+        let owner = mk_user("owner").await;
+        let other = mk_user("other").await;
+        let kit = ProfileSpec { harness: "claude-code".into(), ..ProfileSpec::default() };
+
+        let a = insert(&pool, owner, "A", &kit).await.expect("a");
+        let b = insert(&pool, owner, "B", &kit).await.expect("b");
+        let c = insert(&pool, owner, "C", &kit).await.expect("c");
+        let theirs = insert(&pool, other, "Theirs", &kit).await.expect("theirs");
+
+        assert_eq!((a.sort_order, b.sort_order, c.sort_order), (0, 1, 2));
+        assert_eq!(theirs.sort_order, 0);
+        let ids = |v: &[SessionProfile]| v.iter().map(|p| p.id).collect::<Vec<_>>();
+        assert_eq!(ids(&list_for_user(&pool, owner).await.unwrap()), vec![a.id, b.id, c.id]);
+
+        assert!(reorder(&pool, owner, &[c.id, a.id, b.id]).await.expect("reorder"));
+        assert_eq!(ids(&list_for_user(&pool, owner).await.unwrap()), vec![c.id, a.id, b.id]);
+
+        let d = insert(&pool, owner, "D", &kit).await.expect("d");
+        assert_eq!(ids(&list_for_user(&pool, owner).await.unwrap()), vec![c.id, a.id, b.id, d.id]);
+
+        assert!(delete(&pool, owner, a.id).await.unwrap());
+        assert_eq!(ids(&list_for_user(&pool, owner).await.unwrap()), vec![c.id, b.id, d.id]);
+
+        let rejected: Vec<Vec<Uuid>> = vec![
+            vec![c.id, b.id],
+            vec![c.id, b.id, d.id, d.id],
+            vec![c.id, b.id, d.id, Uuid::new_v4()],
+            vec![c.id, b.id, d.id, theirs.id],
+            vec![theirs.id],
+            vec![],
+        ];
+        for bad in rejected {
+            assert!(!reorder(&pool, owner, &bad).await.expect("reorder runs"), "{bad:?}");
+        }
+        assert_eq!(ids(&list_for_user(&pool, owner).await.unwrap()), vec![c.id, b.id, d.id]);
+        assert_eq!(ids(&list_for_user(&pool, other).await.unwrap()), vec![theirs.id]);
+
+        sqlx::query("DELETE FROM users WHERE id = $1 OR id = $2")
+            .bind(owner)
+            .bind(other)
+            .execute(&pool)
+            .await
+            .expect("cleanup");
+    }
+
+    #[tokio::test]
+    async fn migration_backfills_existing_order() {
+        let Some(url) = crate::routes::gateway::test_db_url("migration_backfills_existing_order")
+        else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let suffix = Uuid::new_v4();
+        let user: Uuid = sqlx::query_scalar(
+            "INSERT INTO users (id, name, key_hash) \
+             VALUES (gen_random_uuid(), $1, gen_random_uuid()::text) RETURNING id",
+        )
+        .bind(format!("backfill-{suffix}"))
+        .fetch_one(&pool)
+        .await
+        .expect("insert user");
+
+        for (name, age) in [("zeta", 3), ("alpha", 2), ("Beta", 1)] {
+            sqlx::query(
+                "INSERT INTO session_profiles (user_id, name, created_at, sort_order) \
+                 VALUES ($1, $2, now() - ($3 || ' hours')::interval, 0)",
+            )
+            .bind(user)
+            .bind(name)
+            .bind(age.to_string())
+            .execute(&pool)
+            .await
+            .expect("insert legacy row");
+        }
+        let names: Vec<String> =
+            list_for_user(&pool, user).await.unwrap().into_iter().map(|p| p.name).collect();
+        assert_eq!(names, vec!["zeta", "alpha", "Beta"]);
+
+        let backfilled: Vec<i32> = sqlx::query_scalar(
+            "SELECT (row_number() OVER (ORDER BY created_at, lower(name)))::int - 1 \
+               FROM session_profiles WHERE user_id = $1",
+        )
+        .bind(user)
+        .fetch_all(&pool)
+        .await
+        .expect("backfill shape");
+        assert_eq!(backfilled, vec![0, 1, 2]);
+
+        sqlx::query("DELETE FROM users WHERE id = $1")
+            .bind(user)
             .execute(&pool)
             .await
             .expect("cleanup");

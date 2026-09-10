@@ -10,6 +10,7 @@ import type { SpawnRequest } from "@bindings/SpawnRequest";
 import type { SessionProfile } from "@bindings/SessionProfile";
 import type { CreateProfileRequest } from "@bindings/CreateProfileRequest";
 import type { UpdateProfileRequest } from "@bindings/UpdateProfileRequest";
+import type { ReorderProfilesRequest } from "@bindings/ReorderProfilesRequest";
 import type { SpawnResponse } from "@bindings/SpawnResponse";
 import type { ForkRequest } from "@bindings/ForkRequest";
 import type { ForkResponse } from "@bindings/ForkResponse";
@@ -162,6 +163,8 @@ export const endpoints = {
   updateProfile: (id: string, body: UpdateProfileRequest) =>
     api.patch<SessionProfile>(`/profiles/${id}`, body),
   deleteProfile: (id: string) => api.del<void>(`/profiles/${id}`),
+  reorderProfiles: (body: ReorderProfilesRequest) =>
+    api.put<SessionProfile[]>("/profiles/order", body),
   /** Token totals across rolling windows for the Overview. `tzOffset` is
    * `Date.getTimezoneOffset()` — only used to anchor "today" to local midnight. */
   tokenStats: (tzOffset: number) =>
