@@ -101,12 +101,12 @@
 			/>
 		</Field>
 		{#if err}<Text as="div" tone="danger" size="sm">{err}</Text>{/if}
-		<Button variant="primary" block type="submit" disabled={busy || !token.trim()}>
-			{#if busy}<span class="spin"></span>{:else}{m.login_sign_in()}{/if}
+		<Button variant="primary" block type="submit" loading={busy} disabled={busy || !token.trim()}>
+			{m.login_sign_in()}
 		</Button>
 		{#if offerPasskey}
-			<Button block type="button" disabled={passkeyBusy} onclick={signInWithPasskey}>
-				{#if passkeyBusy}<span class="spin"></span>{:else}{m.login_passkey_button()}{/if}
+			<Button block type="button" loading={passkeyBusy} disabled={passkeyBusy} onclick={signInWithPasskey}>
+				{m.login_passkey_button()}
 			</Button>
 		{/if}
 	</Card>

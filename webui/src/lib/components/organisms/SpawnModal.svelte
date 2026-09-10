@@ -734,6 +734,8 @@
 	const spawnLabel = $derived(
 		`${target !== 'machine' ? m.spawn_action_dispatch() : m.spawn_action_spawn()} (${submitChordLabel()})`
 	);
+	const noMachines = $derived(target === 'machine' && (machines.data ?? []).length === 0);
+	const disabledReason = $derived(noMachines ? m.spawn_no_machines_hint() : undefined);
 </script>
 
 <!-- The form body and the action row are snippets so the Modal and the docked
@@ -871,7 +873,12 @@
 	<span class="foot-secondary">
 		<Button onclick={clearForm}>{m.spawn_clear()}</Button>
 		{#if target === 'machine'}
-			<Button data-journey="draft" disabled={busy || !draftValid} onclick={submitDraft}>
+			<Button
+				data-journey="draft"
+				disabled={busy || !draftValid}
+				title={disabledReason}
+				onclick={submitDraft}
+			>
 				{m.spawn_draft()}
 			</Button>
 		{/if}
@@ -881,10 +888,12 @@
 			data-journey="submit"
 			variant="primary"
 			grow
+			loading={busy}
 			disabled={busy || !valid}
+			title={disabledReason}
 			onclick={submit}
 		>
-			{#if busy}<span class="spin"></span>{:else}{spawnLabel}{/if}
+			{spawnLabel}
 		</Button>
 	</span>
 {/snippet}

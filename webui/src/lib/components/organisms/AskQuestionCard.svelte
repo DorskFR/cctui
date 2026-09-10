@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { renderMarkdown } from '$lib/markdown';
-	import { Badge, Button, Heading, Text } from '@dorsk/tsumikit';
+	import { Badge, Button, Heading, Input, Text } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 
 	interface Opt {
@@ -147,15 +147,17 @@
 							</span>
 						</button>
 					{/each}
-					<label class="opt other" class:sel={other[qi].trim().length > 0}>
+					<div class="other">
 						<span class="mark">✎</span>
-						<input
-							class="other-in"
+						<Input
+							size="sm"
+							grow
+							aria-label={m.ask_other_placeholder()}
 							placeholder={m.ask_other_placeholder()}
 							bind:value={other[qi]}
 							disabled={!live}
 						/>
-					</label>
+					</div>
 				</div>
 				{#if hasPreview}
 					<div class="preview">
@@ -170,11 +172,11 @@
 		</div>
 	{/each}
 	{#if live}
-		<Button variant="primary" style="align-self:flex-start" disabled={!answeredAll} onclick={submit}>{m.ask_send_answer()}</Button>
+		<Button variant="primary" shrink={false} disabled={!answeredAll} onclick={submit}>{m.ask_send_answer()}</Button>
 	{:else if submitted && interactive}
-		<Text as="div" class="answered" tone="muted" size="xs">{m.ask_answering()}</Text>
+		<Text as="div" tone="muted" size="xs" italic>{m.ask_answering()}</Text>
 	{:else}
-		<Text as="div" class="answered" tone="muted" size="xs">{m.ask_answered()}</Text>
+		<Text as="div" tone="muted" size="xs" italic>{m.ask_answered()}</Text>
 	{/if}
 </div>
 
@@ -255,15 +257,11 @@
 		font-size: var(--fs-xs);
 		color: var(--text-muted);
 	}
-	.opt.other {
+	.other {
+		display: flex;
+		gap: var(--sp-2);
 		align-items: center;
-	}
-	.other-in {
-		flex: 1;
-		background: transparent;
-		border: none;
-		color: var(--text);
-		outline: none;
+		padding: 0 var(--sp-2);
 	}
 	.preview {
 		border: 1px solid var(--border);
@@ -274,8 +272,5 @@
 		overflow: auto;
 		font-family: var(--font-mono, monospace);
 		font-size: var(--fs-xs);
-	}
-	.ask :global(.answered) {
-		font-style: italic;
 	}
 </style>

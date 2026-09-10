@@ -166,7 +166,7 @@
 
 <div class="dhead">
 	<div class="hrow">
-		<IconButton class="tapbtn back" icon="back"  label={m.drawer_back()} onclick={onclose} />
+		<IconButton chip variant="default" glyphSize={28} icon="back" label={m.drawer_back()} onclick={onclose} />
 		{#if onTogglePin}
 			<span
 				class="star"
@@ -194,10 +194,10 @@
 				<Input
 					bind:value={newName}
 					aria-label={m.a11y_rename_session()}
-					onkeydown={(e: KeyboardEvent) => e.key === 'Enter' && doRename()}
+					onsubmit={doRename}
 				/>
 			{:else}
-				<Text class="name" weight="semibold" size="md" truncate>{headTitle}</Text>
+				<Text weight="semibold" size="md" truncate>{headTitle}</Text>
 				{#if session.labels.length === 0 && labelEditable}
 					<!-- No labels yet: the tag picker rides inline right after the title
 					     text rather than claiming an empty full-width row. Once labels
@@ -217,18 +217,19 @@
 		</div>
 		<!-- Text size: the same kit picker as the main header, writing the one
 		     global fontScale. It stays out of the ⋯ flyout on mobile. -->
-		<FontScalePicker class="tapbtn font-pick" />
+		<FontScalePicker class="font-pick" />
 		<!-- Secondary actions: inline on desktop, collapsed into the
 		     ⋯ flyout on mobile so a long title + many buttons no longer overflow.
 		     A single fork lives at the end of the group. -->
 		<div class="secondary" class:open={moreOpen || renaming}>
 		{#if renaming}
-			<IconButton class="tapbtn" icon="check"  label={m.common_save()} onclick={doRename} />
+			<IconButton chip variant="default" class="tapbtn" icon="check" label={m.common_save()} onclick={doRename} />
 		{:else}
 			<IconButton
+				chip
+				variant="default"
 				class="tapbtn"
 				icon="edit"
-
 				label={m.drawer_rename()}
 				onclick={() => {
 					renaming = true;
@@ -237,33 +238,37 @@
 			/>
 		{/if}
 		<IconButton
+			chip
+			variant="default"
 			class="tapbtn"
 			icon="link"
-
 			label={m.drawer_copy_link_label()}
 			title={m.drawer_copy_link_title()}
 			onclick={oncopylink}
 		/>
 		<IconButton
+			chip
+			variant="default"
 			class="tapbtn"
 			icon="markdown"
-
 			label={m.drawer_copy_markdown_label()}
 			title={m.drawer_copy_markdown_title()}
 			onclick={oncopymarkdown}
 		/>
 		<IconButton
+			chip
+			variant="default"
 			class="tapbtn"
 			icon="download"
-
 			label={m.drawer_export_label()}
 			title={m.drawer_export_title()}
 			onclick={onexport}
 		/>
 		<IconButton
+			chip
+			variant="default"
 			class="tapbtn fork-action"
 			icon="fork"
-
 			label={m.drawer_fork_label()}
 			title={onforkselect ? m.drawer_fork_select_title() : m.drawer_fork_title()}
 			aria-pressed={onforkselect ? forkSelectActive : undefined}
@@ -271,18 +276,37 @@
 		/>
 		</div>
 		<!-- Mobile-only overflow toggle; hidden on desktop. -->
-		<IconButton
-			class="tapbtn more"
-			icon="more"
-
-			label={m.drawer_more_actions()}
-			aria-expanded={moreOpen}
-			title={m.drawer_more_actions()}
-			onclick={() => (moreOpen = !moreOpen)}
-		/>
+		<span class="more">
+			<IconButton
+				chip
+				variant="default"
+				icon="more"
+				label={m.drawer_more_actions()}
+				aria-expanded={moreOpen}
+				title={m.drawer_more_actions()}
+				onclick={() => (moreOpen = !moreOpen)}
+			/>
+		</span>
 		{#if !archived}
-			<IconButton class="tapbtn interrupt" icon="stop"  label={m.drawer_interrupt_label()} title={m.drawer_interrupt_title()} onclick={oninterrupt} />
-			<IconButton class="tapbtn archive" icon="archive"  label={m.drawer_archive()} onclick={onarchive} />
+			<IconButton
+				chip
+				variant="default"
+				tone="warn"
+				style="background: color-mix(in srgb, var(--warn) 10%, var(--bg-elevated-2))"
+				icon="archive"
+				label={m.drawer_archive()}
+				onclick={onarchive}
+			/>
+			<IconButton
+				chip
+				variant="default"
+				tone="danger"
+				style="background: color-mix(in srgb, var(--danger) 10%, var(--bg-elevated-2))"
+				icon="stop"
+				label={m.drawer_interrupt_label()}
+				title={m.drawer_interrupt_title()}
+				onclick={oninterrupt}
+			/>
 		{/if}
 	</div>
 	{#if session.labels.length > 0}
@@ -319,18 +343,22 @@
 		<LangfuseChip id={session.id} />
 		{#if isCodexSession && !archived}
 			{#if modelEditing}
-				<!-- display:contents wrapper exists only to give the compact Selects a
-				     real scoped ancestor (.model-edit), so their width/fill reach-in
-				     isn't a document-wide :global leak. -->
 				<span class="model-edit">
 					<Badge class="row" style="gap:var(--sp-1);padding:0.05rem var(--sp-1)">
 						<ModelPicker id="drawer-model" compact bind:value={pendingModel} options={codexModelOptions} aria-label={m.drawer_model_aria()} />
 						<CodexModelsRefresh machineId={session.machine_id} size={14} />
-						<Select compact chevron={false} bind:value={pendingEffort} aria-label={m.drawer_effort_aria()}>
+						<Select
+							variant="embedded"
+							width="auto"
+							size="sm"
+							chevron={false}
+							bind:value={pendingEffort}
+							aria-label={m.drawer_effort_aria()}
+						>
 							{#each codexEffortOptions as e (e)}<option value={e}>{e || m.drawer_default_effort()}</option>{/each}
 						</Select>
-						<IconButton class="tapbtn" icon="check"  label={m.common_apply()} onclick={applyModelChange} />
-						<IconButton class="tapbtn" icon="x"  label={m.common_cancel()} onclick={() => (modelEditing = false)} />
+						<IconButton chip variant="default" icon="check" label={m.common_apply()} onclick={applyModelChange} />
+						<IconButton chip variant="default" icon="x" label={m.common_cancel()} onclick={() => (modelEditing = false)} />
 					</Badge>
 				</span>
 			{:else}
@@ -388,15 +416,11 @@
 	}
 	/* Desktop shows every action inline, so the ⋯ flyout toggle is pointless
 	   there — only surface it when actions actually collapse. */
-	/* NB: `.more` is rendered by the IconButton child component, so the rule
-	   MUST be `:global` — a plain `.more` selector is scoped to THIS
-	   component and never matches the child <button>, which is why the kebab
-	   would otherwise show on desktop. */
-	.dhead :global(.tapbtn.more) {
+	.more {
 		display: none;
 	}
 	@container drawer-head (max-width: 640px) {
-		.dhead :global(.tapbtn.more) {
+		.more {
 			display: inline-flex;
 		}
 		.secondary {
@@ -425,9 +449,9 @@
 		.secondary.open {
 			display: flex;
 		}
-		/* The `.dhead` prefix is required: it raises specificity above the base
-		   `.dhead :global(.tapbtn)` rule below (equal specificity, but that rule is
-		   later in source), so without it these flyout overrides never apply. */
+		/* TSU gap: IconButton's `showLabel="row"` is exactly this flyout form, but
+		   the icon-chip → labelled-row switch is a container query, and a prop
+		   cannot be driven from one. */
 		.dhead .secondary :global(.tapbtn) {
 			width: 100%;
 			min-width: 0;
@@ -470,45 +494,13 @@
 		align-items: center;
 		gap: var(--sp-1);
 	}
-	/* Title text shrink-wraps/ellipsises so the inline tag trigger sits right
-	   after it; the dtitle box keeps flex:1 so the action buttons stay pinned
-	   to the right edge. */
-	.dtitle :global(.name) {
-		flex: 0 1 auto;
-		min-width: 0;
-	}
-	/* Bigger, easy-to-tap icon buttons with a tinted, outlined chip look. */
-	.dhead :global(.tapbtn) {
-		flex: none;
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
+	/* TSU gap: FontScalePicker hardcodes its trigger at box="md" and exposes no
+	   size/box prop, so the header's 2.5rem chip scale is unreachable from props. */
+	.dhead :global(.font-pick) {
 		width: 2.5rem;
 		min-width: 2.5rem;
 		height: 2.5rem;
 		min-height: 2.5rem;
-		padding: 0;
-		font-size: 1.35rem;
-		line-height: 1;
-		border-radius: var(--r-md);
-		background: var(--bg-elevated-2);
-		border: 1px solid var(--border-strong);
-		color: var(--text);
-	}
-	.dhead :global(.tapbtn.back) {
-		font-size: 1.8rem;
-	}
-	.dhead :global(.tapbtn.archive) {
-		order: 10;
-		color: var(--warn);
-		border-color: color-mix(in srgb, var(--warn) 40%, var(--border-strong));
-		background: color-mix(in srgb, var(--warn) 10%, var(--bg-elevated-2));
-	}
-	.dhead :global(.tapbtn.interrupt) {
-		order: 11;
-		color: var(--danger);
-		border-color: color-mix(in srgb, var(--danger) 40%, var(--border-strong));
-		background: color-mix(in srgb, var(--danger) 10%, var(--bg-elevated-2));
 	}
 	.hmeta {
 		gap: var(--sp-2);
@@ -542,9 +534,9 @@
 	.model-edit {
 		display: contents;
 	}
-	/* tsumikit Select `compact` gives the dense padding/font and `chevron={false}`
-	   drops the chevron; only the inline auto-width + lighter fill remain, reached
-	   in scoped under .model-edit so the selectors can't leak. */
+	/* Reaches the Select that ModelPicker renders: the effort Select next to it
+	   takes variant="embedded" width="auto" directly, but ModelPicker forwards
+	   neither prop, so its own Select is only reachable from here. */
 	.model-edit :global(.select-wrap) {
 		width: auto;
 	}

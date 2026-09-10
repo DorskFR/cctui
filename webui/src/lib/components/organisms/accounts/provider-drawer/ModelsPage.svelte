@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Button, Input, Text } from '@dorsk/tsumikit';
+	import { Button, IconButton, Input, Text } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 	import type { AccountModel } from '$lib/queries';
 	import FireworksProviderEditor from '$lib/components/organisms/FireworksProviderEditor.svelte';
@@ -25,7 +25,7 @@
 	<FireworksProviderEditor section="models" bind:settings bind:models />
 {:else}
 	<div class="page">
-		<Text as="p" tone="muted" size="sm">{m.accounts_models_help()}</Text>
+		<Text as="p" tone="muted" size="sm" measure="60ch">{m.accounts_models_help()}</Text>
 		{#each models as row, i (i)}
 			<div class="row">
 				<Input
@@ -43,12 +43,13 @@
 					aria-label={m.a11y_model_label()}
 					oninput={(e: Event) => set(i, 'label', (e.currentTarget as HTMLInputElement).value)}
 				/>
-				<Button
-					size="sm"
+				<IconButton
+					box="sm"
+					icon="x"
 					variant="danger"
-					aria-label={m.accounts_model_remove_aria({ model: row.model })}
-					onclick={() => (models = models.filter((_, j) => j !== i))}>✕</Button
-				>
+					label={m.accounts_model_remove_aria({ model: row.model })}
+					onclick={() => (models = models.filter((_, j) => j !== i))}
+				/>
 			</div>
 		{/each}
 		<div>

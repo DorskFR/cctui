@@ -94,7 +94,9 @@
 				<Popover
 					label={m.sessions_edit_labels()}
 					placement="bottom-start"
-					triggerClass="tag-trigger"
+					variant="ghost"
+					box="xs"
+					hitArea="compact"
 					onopen={() => menu?.focusSearch()}
 				>
 					{#snippet trigger()}<Icon name="tag" />{/snippet}
@@ -160,16 +162,5 @@
 			flex: none;
 			flex-wrap: nowrap;
 		}
-	}
-	/* `tag` trigger: a small ghost icon-button reading clearly as "labels". */
-	.add :global(.tag-trigger) {
-		min-width: 1.5rem;
-		min-height: 1.5rem;
-		padding: var(--sp-1);
-		color: var(--text-muted);
-	}
-	.add :global(.tag-trigger:hover) {
-		color: var(--text);
-		background: var(--bg-elevated-2);
 	}
 </style>

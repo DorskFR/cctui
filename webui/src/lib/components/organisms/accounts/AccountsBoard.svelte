@@ -4,7 +4,7 @@
 	import { errMessage } from '$lib/api';
 	import { useAccountPoolActions, type OAuthAccount } from '$lib/queries';
 	import { toasts } from '$lib/toast.svelte';
-	import { Text } from '@dorsk/tsumikit';
+	import { EmptyState } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 	import NewPoolZone from './NewPoolZone.svelte';
 	import PoolEditorModal from './PoolEditorModal.svelte';
@@ -75,9 +75,9 @@
 
 <div class="board" data-journey="accounts">
 	{#if loading}
-		<div class="empty"><span class="spin"></span></div>
+		<EmptyState loading size="inline" />
 	{:else if accounts.length === 0 && !drafting}
-		<div class="empty"><Text tone="muted">{m.accounts_empty()}</Text></div>
+		<EmptyState size="inline" title={m.accounts_empty()} />
 	{:else}
 		{#if drafting}
 			<NewPoolZone {accounts} {busy} oncreate={createPool} ondiscard={() => (drafting = false)} />
@@ -110,10 +110,5 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--sp-4);
-	}
-	.empty {
-		display: flex;
-		justify-content: center;
-		padding: var(--sp-6) 0;
 	}
 </style>

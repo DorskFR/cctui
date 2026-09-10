@@ -63,7 +63,7 @@
 </script>
 
 <div class="shares">
-	<Text as="div" tone="muted" size="xs" class="shares-head">{m.providers_share_heading()}</Text>
+	<Text as="div" variant="eyebrow" tone="muted" size="xs">{m.providers_share_heading()}</Text>
 	{#if rows.length === 0}
 		<Text as="div" tone="faint" size="xs">{m.providers_share_empty()}</Text>
 	{:else}
@@ -71,7 +71,7 @@
 			{#each rows as s (s.user_id)}
 				<li class="share-row">
 					<span class="share-who">
-						<Text as="span" size="sm">{s.user_name}</Text>
+						<Text as="span" size="sm" wrap="anywhere">{s.user_name}</Text>
 						<Text as="span" tone="faint" size="xs">
 							{s.action} · <Timestamp value={s.granted_at} mode="relative" tone="inherit" />
 						</Text>
@@ -101,10 +101,6 @@
 		border-radius: var(--r-sm);
 		background: var(--bg-elevated-2);
 	}
-	.shares :global(.shares-head) {
-		text-transform: uppercase;
-		letter-spacing: 0.04em;
-	}
 	.share-list {
 		list-style: none;
 		margin: 0;
@@ -124,7 +120,6 @@
 		display: flex;
 		flex-direction: column;
 		min-width: 0;
-		overflow-wrap: anywhere;
 	}
 	.share-add {
 		display: grid;

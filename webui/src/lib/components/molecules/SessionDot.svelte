@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { SessionListItem } from '@bindings/SessionListItem';
-	import { Tooltip, copyToClipboard, Timestamp } from '@dorsk/tsumikit';
+	import { CopyButton, Timestamp, Tooltip } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 	import { sessionDebugRows } from '../../../routes/sessions/sessions.logic';
 	import { sessionEnd } from '$lib/sessionEnd';
@@ -28,14 +28,6 @@
 		return [...base, ...extra];
 	});
 
-	let copied = $state(false);
-	let timer: ReturnType<typeof setTimeout> | undefined;
-	async function copyId() {
-		const ok = await copyToClipboard(session.id);
-		copied = ok;
-		clearTimeout(timer);
-		timer = setTimeout(() => (copied = false), 1200);
-	}
 </script>
 
 <Tooltip>
@@ -52,9 +44,12 @@
 		<div class="dbg">
 			<div class="idrow">
 				<code class="id">{session.id}</code>
-				<button type="button" class="copy" onclick={copyId} title={m.sessions_copy_id_title()}>
-					{copied ? '✓' : '⧉'}
-				</button>
+				<CopyButton
+					text={session.id}
+					variant="ghost"
+					box="xs"
+					label={m.sessions_copy_id_title()}
+				/>
 			</div>
 			<dl class="grid">
 				{#each rows as r (r.label)}
@@ -81,19 +76,6 @@
 		font-family: var(--font-mono, monospace);
 		user-select: all;
 		word-break: break-all;
-		color: var(--text);
-	}
-	.copy {
-		flex: none;
-		background: none;
-		border: 1px solid var(--border-strong);
-		border-radius: var(--r-sm);
-		color: var(--text-muted);
-		cursor: pointer;
-		padding: 0 var(--sp-1);
-		line-height: 1.4;
-	}
-	.copy:hover {
 		color: var(--text);
 	}
 	.grid {

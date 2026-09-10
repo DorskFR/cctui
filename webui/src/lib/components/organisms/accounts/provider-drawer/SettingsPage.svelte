@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
-	import { Button, Input, SegmentedControl, Text } from '@dorsk/tsumikit';
+	import { Button, Input, SectionHeader, SegmentedControl, Text } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 	import type { Preset } from '@bindings/Preset';
 	import {
@@ -73,7 +73,7 @@
 
 	{#each groups as group (group.title)}
 		<div class="group">
-			<div class="group-title"><Text as="span" tone="faint" size="xs">{group.title}</Text></div>
+			<SectionHeader title={group.title} variant="group" size="xs" level={3} uppercase tone="neutral" />
 			{#each group.knobs as k (k.id)}
 				{@const value = getKnob(settings, k)}
 				<div class="row" class:overridden={value !== ''}>
@@ -82,7 +82,7 @@
 							{k.label}
 							{#if k.care}<span class="care" title={m.providers_care_title()}>{m.providers_care()}</span>{/if}
 						</Text>
-						<div class="key"><Text as="span" tone="faint" size="xs">{k.sub}</Text></div>
+						<div class="key"><Text as="span" tone="faint" size="xs" wrap="anywhere">{k.sub}</Text></div>
 					</div>
 					<div class="control">
 						{#if k.control === 'tristate' || k.control === 'toggle' || k.control === 'enum'}
@@ -133,10 +133,6 @@
 		flex-direction: column;
 		gap: var(--sp-1);
 	}
-	.group-title {
-		text-transform: uppercase;
-		letter-spacing: 0.04em;
-	}
 	.row {
 		display: grid;
 		grid-template-columns: minmax(0, 1fr) minmax(0, auto);
@@ -153,7 +149,6 @@
 	}
 	.key {
 		font-family: var(--font-mono, monospace);
-		overflow-wrap: anywhere;
 	}
 	.control {
 		justify-self: end;

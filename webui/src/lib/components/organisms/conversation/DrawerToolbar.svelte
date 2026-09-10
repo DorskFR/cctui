@@ -98,7 +98,8 @@
 	     groups render inline below. -->
 	<div class="mobile-tabs" role="group" aria-label={m.conversation_chat_controls_aria()}>
 		<Toggle
-			class="mtab"
+			size="md"
+			grow
 			data-journey="mobile-panel"
 			data-journey-key="filters"
 			pressed={mobilePanel === 'filters'}
@@ -106,7 +107,8 @@
 			onclick={() => togglePanel('filters')}>{m.conversation_filters()}</Toggle
 		>
 		<Toggle
-			class="mtab"
+			size="md"
+			grow
 			data-journey="mobile-panel"
 			data-journey-key="format"
 			pressed={mobilePanel === 'format'}
@@ -114,7 +116,8 @@
 			onclick={() => togglePanel('format')}>{m.conversation_format()}</Toggle
 		>
 		<Toggle
-			class="mtab"
+			size="md"
+			grow
 			data-journey="mobile-panel"
 			data-journey-key="auto"
 			pressed={mobilePanel === 'auto' || autoApprove}
@@ -273,18 +276,9 @@
 		padding-left: var(--sp-3);
 		border-left: 1px solid var(--border);
 	}
-	/* The filter chips, formatting + behavior toggles, and mobile tabs are all
-	   <Toggle> chips now; their base/on-state styling lives in Toggle.svelte.
-	   Per-use tint (role color / warm auto-approve) is set via --toggle-accent
-	   inline. Only the mobile tabs need a layout override (full-width, larger). */
 	/* Mobile-tab triggers: hidden on desktop where the groups inline. */
 	.mobile-tabs {
 		display: none;
-	}
-	.mobile-tabs :global(.toggle.mtab) {
-		flex: 1;
-		padding: 0.3rem var(--sp-2);
-		font-size: var(--fs-sm);
 	}
 	@media (max-width: 959px) {
 		.toolbar {

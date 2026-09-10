@@ -36,6 +36,7 @@
 		as="button"
 		tone="info"
 		size="sm"
+		numeric
 		active={open}
 		class={`badge-toggle${running > 0 ? ' running' : ''}`}
 		{title}
@@ -51,29 +52,15 @@
 </span>
 
 <style>
-	/* Colour/fill/hover/pill are tsumikit Badge's: tone="info" tints it, `active`
-	   (open) fills it, size="sm" is the compact form. Only the count-chip sizing,
-	   tabular digits, focus ring, and the running emphasis are reached in here —
-	   scoped under the wrapper so the selectors can't leak. */
+	/* TSU gap: Badge has no prop for a count chip that reads a step larger and
+	   bolder than its tone/size scale. */
 	.subagent-badge :global(.badge-toggle) {
-		justify-content: center;
 		min-width: 1.5rem;
 		height: 1.5rem;
-		/* Resolve the digit size through a --fs-* token so the global
-		   font-scale picker grows the counter in step with surrounding session
-		   text. min-width/height stay rem-pinned chrome, so the chip keeps its
-		   compact footprint while only the glyph scales; tsumikit's size="sm"
-		   font-size (not a --fs-* token) is what left it frozen before. */
 		font-size: var(--fs-sm);
 		font-weight: var(--fw-semibold);
-		font-variant-numeric: tabular-nums;
 	}
-	.subagent-badge :global(.badge-toggle):focus-visible {
-		outline: 2px solid var(--info);
-		outline-offset: 2px;
-	}
-	/* Running (and not expanded): a deeper tint than the idle pill, short of the
-	   full active fill. */
+	/* TSU gap: no Badge emphasis step between the idle tint and the `active` fill. */
 	.subagent-badge :global(.badge-toggle.running:not(.active)) {
 		border-color: color-mix(in srgb, var(--info) 68%, transparent);
 		background: color-mix(in srgb, var(--info) 24%, transparent);

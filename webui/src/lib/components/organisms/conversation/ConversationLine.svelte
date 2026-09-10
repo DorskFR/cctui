@@ -119,35 +119,37 @@
 		{/if}
 		<Timestamp value={ln.ts} mode="time" tone="faint" size="xs" />
 		{#if ln.failed}
-			<Text class="not-delivered" tone="danger" size="xs" title={ln.failed}>{m.conversation_not_delivered()}</Text>
+			<span class="meta-end">
+				<Text tone="danger" size="xs" nowrap title={ln.failed}>{m.conversation_not_delivered()}</Text>
+			</span>
 			{#if !archived}
 				<Button
-					variant="ghost"
-					class="retry-failed"
+					variant="link"
+					tone="danger"
 					title={m.conversation_resend_title({ reason: ln.failed })}
 					onclick={() => onretry(ln.ts)}>↻ {m.common_retry()}</Button>
 				<IconButton
-					class="edit-pending"
+					inline
 					icon="edit"
-
 					label={m.conversation_edit_message_label()}
 					title={m.conversation_edit_message_title()}
 					onclick={() => onedit(ln.text ?? '', ln.ts)}
 				/>
 			{/if}
 		{:else if ln.pending}
-			{#if ln.retrying}
-				<Text class="sending" tone="inherit" size="xs" title={m.conversation_retrying_title()}
-					>{m.conversation_retrying({ attempt: ln.retrying.attempt, max: ln.retrying.max })}</Text
-				>
-			{:else}
-				<Text class="sending" tone="inherit" size="xs">{m.conversation_sending()}</Text>
-			{/if}
+			<span class="meta-end">
+				{#if ln.retrying}
+					<Text tone="warn" size="xs" title={m.conversation_retrying_title()}
+						>{m.conversation_retrying({ attempt: ln.retrying.attempt, max: ln.retrying.max })}</Text
+					>
+				{:else}
+					<Text tone="warn" size="xs">{m.conversation_sending()}</Text>
+				{/if}
+			</span>
 			{#if !archived}
 				<IconButton
-					class="edit-pending"
+					inline
 					icon="edit"
-
 					label={m.conversation_edit_pending_label()}
 					title={m.conversation_edit_pending_title()}
 					onclick={() => onedit(ln.text ?? '', ln.ts)}
@@ -170,17 +172,17 @@
 			     conversation-level copy; save-as-image uses a
 			     plain image icon and sits right next to it. -->
 			<IconButton
-				class="copy"
+				inline
+				glyphSize={16}
 				icon="image"
-
 				label={m.conversation_save_image_label()}
 				title={m.conversation_save_image_title()}
 				onclick={(e) => onsaveimage(e, ln)}
 			/>
 			<IconButton
-				class="copy"
+				inline
+				glyphSize={16}
 				icon="markdown"
-
 				label={m.conversation_copy_markdown_label()}
 				title={m.conversation_copy_markdown_title()}
 				onclick={() => oncopymarkdown(ln)}
@@ -188,7 +190,7 @@
 			{#if onbookmark}
 				<button
 					type="button"
-					class="copy bookmark"
+					class="bookmark"
 					class:saved={bookmarked}
 					aria-label={m.bookmarks_line_label()}
 					title={bookmarked ? m.bookmarks_line_saved_title() : m.bookmarks_line_title()}
@@ -207,14 +209,16 @@
 			{@html ln.html}
 		</div>
 		{#if thinkingOverflows}
-			<button
-				type="button"
-				class="think-toggle"
+			<Button
+				variant="link"
+				size="sm"
+				shrink={false}
+				style="margin-top:2px;color:var(--role-thinking)"
 				aria-expanded={thinkingExpanded}
 				onclick={() => (thinkingExpanded = !thinkingExpanded)}
 			>
 				{thinkingExpanded ? m.conversation_show_less() : m.conversation_show_more()}
-			</button>
+			</Button>
 		{/if}
 	{:else if ln.html}
 		<div class="bubble">{@html ln.html}</div>
@@ -324,31 +328,22 @@
 		padding-left: var(--sp-2);
 		margin-left: calc(-1 * var(--sp-2));
 	}
-	.line-actions :global(.copy) {
+	.line-actions .bookmark {
 		display: inline-flex;
 		align-items: center;
-		justify-content: center;
 		padding: var(--sp-1);
-		min-width: auto;
-		min-height: auto;
-		line-height: 1;
-		color: var(--text-muted);
-	}
-	.line-actions :global(.copy:hover) {
-		color: var(--text);
-	}
-	.line-actions .bookmark {
 		background: none;
 		border: 0;
+		line-height: 1;
 		cursor: pointer;
 		font-size: var(--fs-sm);
+		color: var(--text-muted);
+	}
+	.line-actions .bookmark:hover {
+		color: var(--text);
 	}
 	.line-actions .bookmark.saved {
 		color: var(--role-assistant);
-	}
-	.line-actions :global(.copy svg) {
-		width: 1rem;
-		height: 1rem;
 	}
 	/* Layout only; typography (faint xs) is the Text atom's. */
 	.line .line-foot {
@@ -385,44 +380,14 @@
 		border-color: color-mix(in srgb, var(--warn) 35%, transparent);
 		opacity: 0.85;
 	}
-	/* Amber tint + push-right; rides on a Text child, so :global. */
-	.lmeta :global(.sending) {
-		color: var(--warn);
+	/* Pushes the send-status text (and the controls after it) to the right. */
+	.lmeta .meta-end {
 		margin-left: auto;
-	}
-	/* Edit-pending button: sits next to "sending…" on a pending line. */
-	.lmeta :global(.edit-pending) {
-		padding: 0 var(--sp-1);
-		min-width: auto;
-		min-height: auto;
-		font-size: var(--fs-sm);
-		line-height: 1;
-		color: var(--text-faint);
-	}
-	.lmeta :global(.edit-pending:hover) {
-		color: var(--accent);
 	}
 	/* Failed send: the bubble goes red and a Retry control appears. */
 	.line.user.failed .bubble {
 		background: color-mix(in srgb, var(--danger) 12%, var(--bg-elevated));
 		border-color: color-mix(in srgb, var(--danger) 50%, transparent);
-	}
-	/* Push-right + nowrap; colour (danger) is the Text atom's. Rides on a Text
-	   child, so :global. */
-	.lmeta :global(.not-delivered) {
-		margin-left: auto;
-		white-space: nowrap;
-	}
-	.lmeta :global(.retry-failed) {
-		padding: 0 var(--sp-1);
-		min-height: auto;
-		font-size: var(--fs-sm);
-		line-height: 1;
-		color: var(--danger);
-		font-weight: 600;
-	}
-	.lmeta :global(.retry-failed:hover) {
-		color: color-mix(in srgb, var(--danger) 70%, var(--text));
 	}
 	.line.tool .bubble,
 	.line.result .bubble {
@@ -449,20 +414,6 @@
 	.line.thinking .bubble.think.redacted {
 		font-style: italic;
 		opacity: 0.7;
-	}
-	.think-toggle {
-		align-self: flex-start;
-		margin-top: 2px;
-		padding: 0 var(--sp-1);
-		background: none;
-		border: none;
-		color: var(--role-thinking);
-		font-size: var(--fs-xs);
-		font-weight: var(--fw-medium);
-		cursor: pointer;
-	}
-	.think-toggle:hover {
-		text-decoration: underline;
 	}
 	.code {
 		white-space: pre-wrap;

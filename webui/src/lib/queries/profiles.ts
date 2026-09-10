@@ -14,7 +14,7 @@ export const useProfiles = (enabled: () => boolean = () => true) =>
     enabled: enabled(),
   }));
 
-/** Create / adjust / delete profiles; each invalidates the list. */
+/** Create / adjust / delete / reorder profiles; each refreshes the list. */
 export function useProfileActions() {
   const qc = useQueryClient();
   const invalidate = () => qc.invalidateQueries({ queryKey: PROFILES_KEY });
@@ -35,6 +35,11 @@ export function useProfileActions() {
     remove: async (id: string): Promise<void> => {
       await endpoints.deleteProfile(id);
       await invalidate();
+    },
+    reorder: async (ids: string[]): Promise<SessionProfile[]> => {
+      const rows = await endpoints.reorderProfiles({ ids });
+      qc.setQueryData(PROFILES_KEY, rows);
+      return rows;
     },
   };
 }

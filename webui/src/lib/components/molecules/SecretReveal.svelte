@@ -15,7 +15,7 @@
 	{#snippet body()}
 		<div class="stack">
 			<Text as="p" tone="muted">{m.users_secret_warning()}</Text>
-			<Text variant="code" size="sm" tone="accent" class="secret-val">{secret}</Text>
+			<div class="secret-box"><Text variant="code" size="sm" tone="accent" wrap="anywhere" block>{secret}</Text></div>
 		</div>
 	{/snippet}
 	{#snippet footer()}
@@ -25,14 +25,10 @@
 </Modal>
 
 <style>
-	/* .secret is rendered by the Text atom (which owns its size/tone/mono), so
-	   the residual box chrome must be :global to reach that element. */
-	.stack :global(.secret-val) {
-		display: block;
+	.secret-box {
 		padding: var(--sp-3);
 		background: var(--bg);
 		border: 1px solid var(--border-strong);
 		border-radius: var(--r-md);
-		word-break: break-all;
 	}
 </style>

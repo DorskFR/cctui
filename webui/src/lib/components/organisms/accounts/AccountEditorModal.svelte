@@ -21,7 +21,7 @@
 	import FireworksProviderEditor from '$lib/components/organisms/FireworksProviderEditor.svelte';
 	import FreeFormEnvEditor from '$lib/components/organisms/FreeFormEnvEditor.svelte';
 	import ProviderDrawer from './provider-drawer/ProviderDrawer.svelte';
-	import { Button, Field, Input, Link, Modal, Select, Text } from '@dorsk/tsumikit';
+	import { Button, Field, IconButton, Input, Link, Modal, Select, Text } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 	import {
 		aliasObject,
@@ -523,11 +523,13 @@
 										placeholder={m.accounts_placeholder_model_label()}
 										aria-label={m.a11y_model_label()}
 									/>
-									<Button
+									<IconButton
+										icon="x"
 										variant="danger"
+										label={m.accounts_model_remove_aria({ model: row.model })}
 										onclick={() => (modelRows = modelRows.filter((_, j) => j !== i))}
-										disabled={modelRows.length === 1}>✕</Button
-									>
+										disabled={modelRows.length === 1}
+									/>
 								</div>
 							{/each}
 							<Button
@@ -575,13 +577,15 @@
 						{#if editor?.mode !== 'reauth'}
 							<details bind:open={showAdvanced} class="adv">
 								<summary><Text tone="muted" size="sm">{m.accounts_adv_refresh_summary()}</Text></summary>
-								<Field label={m.accounts_refresh_token_label()} class="adv-fld">
+								<div class="adv-fld">
+								<Field label={m.accounts_refresh_token_label()}>
 									<Input
 										type="password"
 										bind:value={refreshToken}
 										placeholder={m.accounts_refresh_token_placeholder()}
 									/>
 								</Field>
+								</div>
 							</details>
 						{/if}
 					{/if}
@@ -606,10 +610,12 @@
 										placeholder={m.accounts_placeholder_alias_model()}
 										aria-label={m.a11y_alias_model()}
 									/>
-									<Button
+									<IconButton
+										icon="x"
 										variant="danger"
-										onclick={() => (aliasRows = aliasRows.filter((_, j) => j !== i))}>✕</Button
-									>
+										label={m.accounts_alias_remove_aria({ alias: row.alias })}
+										onclick={() => (aliasRows = aliasRows.filter((_, j) => j !== i))}
+									/>
 								</div>
 							{/each}
 							<Button onclick={() => (aliasRows = [...aliasRows, { alias: '', model: '' }])}
@@ -716,7 +722,7 @@
 		gap: var(--sp-2);
 		margin-top: var(--sp-1);
 	}
-	.adv :global(.adv-fld) {
+	.adv-fld {
 		margin-top: var(--sp-2);
 	}
 </style>

@@ -2,7 +2,7 @@
 	import PermissionCard from '$lib/components/organisms/PermissionCard.svelte';
 	import AskQuestionCard from '$lib/components/organisms/AskQuestionCard.svelte';
 	import PlanCard from '$lib/components/organisms/PlanCard.svelte';
-	import { Button, Text } from '@dorsk/tsumikit';
+	import { Button, EmptyState, Text } from '@dorsk/tsumikit';
 	import ConversationLine from './ConversationLine.svelte';
 	import TurnSummaryFooter from './TurnSummaryFooter.svelte';
 	import { copyLineMarkdown, saveLineImage } from './lineActions';
@@ -188,22 +188,24 @@
 		onkeydown={scroll.markScrollGesture}
 	>
 		{#if isLoading}
-			<div class="placeholder"><span class="spin"></span></div>
+			<EmptyState loading />
 		{:else if lines.length === 0 && stream.perms.length === 0 && !stream.ask && !stream.plan}
-			<div class="placeholder"><Text>{m.conversation_no_events()}</Text></div>
+			<EmptyState size="inline" title={m.conversation_no_events()} />
 		{/if}
 
 		{#if hiddenOlder > 0 || canFetchOlder}
 			<!-- Lazy render: older lines are mounted on demand so a
 			     long transcript opens fast. -->
-			<Button class="load-older" disabled={fetchingOlder} onclick={loadOlder}>
-				{m.conversation_load_older({
-					count: hiddenOlder > 0 ? Math.min(RENDER_CHUNK, hiddenOlder) : RENDER_CHUNK
-				})}
-				{#if hiddenOlder > 0}
-					<Text tone="faint">{m.conversation_hidden_count({ count: hiddenOlder })}</Text>
-				{/if}
-			</Button>
+			<div class="older-row">
+				<Button pill size="sm" loading={fetchingOlder} onclick={loadOlder}>
+					{m.conversation_load_older({
+						count: hiddenOlder > 0 ? Math.min(RENDER_CHUNK, hiddenOlder) : RENDER_CHUNK
+					})}
+					{#if hiddenOlder > 0}
+						<Text tone="faint">{m.conversation_hidden_count({ count: hiddenOlder })}</Text>
+					{/if}
+				</Button>
+			</div>
 		{/if}
 		{#each visibleLines as ln, i (ln.key)}
 			{#if ln.ask && stream.isDupeOfLiveAsk(ln.ask)}
@@ -322,9 +324,11 @@
 	</div>
 
 	{#if !scroll.stuck}
-		<Button class="jump-pill" onclick={scroll.jumpToBottom} aria-label={m.conversation_jump_to_bottom()}>
-			{m.conversation_jump_to_latest()}
-		</Button>
+		<div class="jump-anchor">
+			<Button pill size="sm" onclick={scroll.jumpToBottom} aria-label={m.conversation_jump_to_bottom()}>
+				{m.conversation_jump_to_latest()}
+			</Button>
+		</div>
 	{/if}
 </div>
 
@@ -481,44 +485,19 @@
 			transition: none;
 		}
 	}
-	/* Lazy-render "load older" control. */
-	.conv :global(.load-older) {
-		align-self: center;
-		padding: var(--sp-1) var(--sp-3);
-		min-height: auto;
-		border-radius: var(--r-pill);
-		border: 1px solid var(--border-strong);
-		background: var(--bg-elevated-2);
-		color: var(--text-muted);
-		font-size: var(--fs-xs);
-		font-weight: var(--fw-medium);
-		cursor: pointer;
+	.older-row {
+		display: flex;
+		justify-content: center;
 	}
-	.conv :global(.load-older:hover) {
-		border-color: var(--accent);
-		color: var(--accent);
-	}
-	/* Jump-to-bottom pill — anchored to the bottom of the chat
-	   display area (inside .conv-wrap), so it never collides with the composer as
-	   the textarea grows when typing a long message. */
-	.conv-wrap :global(.jump-pill) {
+	/* Anchored to the bottom of the chat display area (inside .conv-wrap), so the
+	   pill never collides with the composer as the textarea grows. */
+	.jump-anchor {
 		position: absolute;
 		left: 50%;
 		transform: translateX(-50%);
 		bottom: var(--sp-3);
 		z-index: 3;
-		padding: var(--sp-1) var(--sp-3);
 		border-radius: var(--r-pill);
-		border: 1px solid var(--border-strong);
-		background: var(--bg-elevated-2);
-		color: var(--text);
-		font-size: var(--fs-xs);
-		font-weight: var(--fw-medium);
 		box-shadow: var(--shadow-md);
-		cursor: pointer;
-	}
-	.conv-wrap :global(.jump-pill:hover) {
-		border-color: var(--accent);
-		color: var(--accent);
 	}
 </style>

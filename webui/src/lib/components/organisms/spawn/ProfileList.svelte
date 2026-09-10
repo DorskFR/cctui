@@ -7,7 +7,17 @@
 	import ProfileAdjust from './ProfileAdjust.svelte';
 	import KitFields from './KitFields.svelte';
 	import { claudeModels } from './options';
-	import { EMPTY_SPEC, specChain, specOf, type ProfileSpec } from './profiles';
+	import {
+		EMPTY_SPEC,
+		moveProfile,
+		moveProfileOnto,
+		specChain,
+		specOf,
+		type ProfileSpec
+	} from './profiles';
+	import { useProfileActions } from '$lib/queries';
+	import { toasts } from '$lib/toast.svelte';
+	import { errMessage } from '$lib/api';
 	import { profileUsage } from '$lib/spawnMemory';
 	import { m } from '$lib/paraglide/messages';
 
@@ -40,6 +50,35 @@
 	} = $props();
 
 	let openId = $state<string | null>(null);
+	let pending = $state<SessionProfile[] | null>(null);
+	let dragId = $state('');
+	let overId = $state('');
+	const actions = useProfileActions();
+
+	const ordered = $derived(pending ?? profiles);
+
+	async function persist(next: SessionProfile[]) {
+		const ids = next.map((p) => p.id);
+		if (ids.join() === profiles.map((p) => p.id).join()) return;
+		pending = next;
+		try {
+			await actions.reorder(ids);
+		} catch (e) {
+			toasts.error(m.spawn_profile_reorder_failed({ error: errMessage(e) }));
+		} finally {
+			pending = null;
+		}
+	}
+
+	const move = (id: string, delta: -1 | 1) => {
+		const from = ordered.findIndex((p) => p.id === id);
+		if (from < 0) return;
+		void persist(moveProfile(ordered, id, from + delta));
+	};
+	const drop = (targetId: string) => {
+		if (!dragId) return;
+		void persist(moveProfileOnto(ordered, dragId, targetId));
+	};
 
 	// With no profile the kit IS the one-off spec the spawn will use, so the
 	// editor binds straight to it. Seed it once — mirroring it into a second
@@ -93,7 +132,7 @@
 	{#if profiles.length === 0 && oneOff}
 		<KitFields bind:draft={oneOff} {accounts} {pools} {usage} {machineId} />
 	{/if}
-	{#each profiles as p (p.id)}
+	{#each ordered as p, i (p.id)}
 		{@const spec = selectedId === p.id && oneOff ? oneOff : specOf(p)}
 		<ProfileRow
 			id={p.id}
@@ -102,8 +141,16 @@
 			usage={usageText(p.id)}
 			selected={selectedId === p.id}
 			open={openId === p.id}
+			first={i === 0}
+			last={i === ordered.length - 1}
+			dragging={dragId === p.id}
+			dropTarget={overId === p.id && dragId !== p.id}
 			onselect={() => select(p.id)}
 			ontoggle={() => toggle(p.id)}
+			onmove={ordered.length > 1 ? (delta) => move(p.id, delta) : undefined}
+			ondropped={drop}
+			onsourcechange={(sourceId) => (dragId = sourceId)}
+			onover={(id) => (overId = id)}
 		>
 			<ProfileAdjust
 				profile={p}

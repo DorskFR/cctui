@@ -12,6 +12,10 @@ import {
 	specFromForm,
 	specOf,
 	uniqueProfileName,
+	draggedProfile,
+	moveProfile,
+	moveProfileOnto,
+	setDraggedProfile,
 	type ProfileSpec
 } from './profiles';
 
@@ -53,6 +57,7 @@ const profile = (over: Partial<SessionProfile> = {}): SessionProfile => ({
 	id: 'p1',
 	user_id: 'u1',
 	name: 'Orchestrator',
+	sort_order: 0,
 	harness: 'claude-code',
 	account_id: 'a1',
 	pool_id: null,
@@ -196,5 +201,37 @@ describe('uniqueProfileName / initialProfile', () => {
 		expect(initialProfile(list, 'p2')?.id).toBe('p2');
 		expect(initialProfile(list, 'zz')?.id).toBe('p1');
 		expect(initialProfile([], 'p1')).toBeNull();
+	});
+});
+
+describe('reordering helpers', () => {
+	const rows = [{ id: 'a' }, { id: 'b' }, { id: 'c' }];
+
+	it('moves a row to an index and clamps at the ends', () => {
+		expect(moveProfile(rows, 'c', 0).map((r) => r.id)).toEqual(['c', 'a', 'b']);
+		expect(moveProfile(rows, 'a', 2).map((r) => r.id)).toEqual(['b', 'c', 'a']);
+		expect(moveProfile(rows, 'a', -5).map((r) => r.id)).toEqual(['a', 'b', 'c']);
+		expect(moveProfile(rows, 'c', 99).map((r) => r.id)).toEqual(['a', 'b', 'c']);
+	});
+
+	it('leaves the list alone for an unknown id and never mutates the input', () => {
+		expect(moveProfile(rows, 'zz', 0).map((r) => r.id)).toEqual(['a', 'b', 'c']);
+		moveProfile(rows, 'a', 2);
+		expect(rows.map((r) => r.id)).toEqual(['a', 'b', 'c']);
+	});
+
+	it('drops a row onto a target in both directions', () => {
+		expect(moveProfileOnto(rows, 'a', 'c').map((r) => r.id)).toEqual(['b', 'c', 'a']);
+		expect(moveProfileOnto(rows, 'c', 'a').map((r) => r.id)).toEqual(['c', 'a', 'b']);
+		expect(moveProfileOnto(rows, 'b', 'b').map((r) => r.id)).toEqual(['a', 'b', 'c']);
+		expect(moveProfileOnto(rows, 'b', 'zz').map((r) => r.id)).toEqual(['a', 'b', 'c']);
+	});
+
+	it('keeps the dragged id in a module variable dragover can read', () => {
+		expect(draggedProfile()).toBe('');
+		setDraggedProfile('b');
+		expect(draggedProfile()).toBe('b');
+		setDraggedProfile('');
+		expect(draggedProfile()).toBe('');
 	});
 });

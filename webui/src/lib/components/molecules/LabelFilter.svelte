@@ -41,10 +41,12 @@
 {#if labels.length > 0}
 	<div class="label-filter" class:menu-row={menu} use:clickOutside={() => (open = false)}>
 		{#if menu}
-			<button
-				type="button"
-				class="menu-trigger"
-				class:active={selected.size > 0}
+			<Button
+				variant="ghost"
+				size="sm"
+				block
+				style="justify-content:flex-start"
+				tone={selected.size > 0 ? 'accent' : 'none'}
 				title={selected.size > 0 ? m.sessions_filtering_by_labels({ count: selected.size }) : m.sessions_filter_by_label()}
 				aria-haspopup="true"
 				aria-expanded={open}
@@ -52,9 +54,9 @@
 				onclick={() => (open = !open)}
 			>
 				<Icon name="tag" size={18} />
-				<span class="menu-label">{m.sessions_filter_by_label()}</span>
+				<span>{m.sessions_filter_by_label()}</span>
 				{#if selected.size > 0}<span class="menu-count" aria-hidden="true">{selected.size}</span>{/if}
-			</button>
+			</Button>
 		{:else}
 			<Button
 				square
@@ -107,28 +109,6 @@
 	.label-filter.menu-row {
 		display: flex;
 		width: 100%;
-	}
-	.menu-trigger {
-		display: flex;
-		align-items: center;
-		gap: var(--sp-2);
-		width: 100%;
-		min-height: 2.25rem;
-		padding: var(--sp-1) var(--sp-2);
-		border: none;
-		background: none;
-		border-radius: var(--r-sm);
-		color: var(--text);
-		font-size: var(--fs-sm);
-		font-weight: var(--fw-medium);
-		text-align: left;
-		cursor: pointer;
-	}
-	.menu-trigger:hover {
-		background: var(--bg-elevated-3, var(--bg-elevated-2));
-	}
-	.menu-trigger.active {
-		color: var(--accent);
 	}
 	.menu-count {
 		margin-left: auto;
