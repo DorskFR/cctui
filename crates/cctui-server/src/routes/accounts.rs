@@ -15,7 +15,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::{Extension, Json};
 use base64::Engine;
@@ -802,11 +802,25 @@ pub struct SettingsCatalogResponse {
     pub preset: crate::settings_catalog::Preset,
 }
 
-/// `GET /accounts/settings-catalog` — serve the per-account settings catalog.
+/// Which family's catalog to serve. Absent = anthropic (Claude Code).
+#[derive(serde::Deserialize)]
+pub struct SettingsCatalogQuery {
+    pub family: Option<String>,
+}
+
+/// `GET /accounts/settings-catalog` — serve the per-account settings catalog
+/// for `?family=` (anthropic | openai).
 /// Read-only, embedded data; no tenant scoping needed (the catalog
 /// is the same for everyone and contains no secrets).
-pub async fn settings_catalog() -> Json<SettingsCatalogResponse> {
-    let c = crate::settings_catalog::catalog();
+pub async fn settings_catalog(
+    Query(q): Query<SettingsCatalogQuery>,
+) -> Json<SettingsCatalogResponse> {
+    let family = q
+        .family
+        .as_deref()
+        .and_then(crate::routes::gateway::Family::from_label)
+        .unwrap_or(crate::routes::gateway::Family::Anthropic);
+    let c = crate::settings_catalog::for_family(family);
     let mut preset = c.quiet_defaults().clone();
     preset.settings.retain(|name, _| {
         c.key(name).is_some_and(crate::settings_catalog::SettingKey::account_exposable)
@@ -896,9 +910,10 @@ fn emoji_field(raw: Option<&str>) -> Result<Option<String>, (StatusCode, Json<se
 /// per-provider; unknown, MANAGED, and SYSTEM keys are rejected. Fail-closed —
 /// any violation aborts the whole write.
 fn validate_settings_json(
+    provider: &str,
     value: &serde_json::Value,
 ) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
-    let report = crate::settings_catalog::catalog().validate_settings(value);
+    let report = crate::settings_catalog::for_provider(provider).validate_settings(value);
     if report.ok() {
         return Ok(());
     }
@@ -1070,7 +1085,7 @@ fn prepare_provider_write(
         .filter(|m| !m.is_empty())
         .map(|m| serde_json::to_value(m).unwrap_or(serde_json::Value::Null));
     if let Some(s) = spec.settings_json.as_ref().filter(|v| !v.is_null()) {
-        validate_settings_json(s)?;
+        validate_settings_json(provider, s)?;
     }
     let settings_json = spec.settings_json.as_ref().filter(|v| !v.is_null()).cloned();
     let provider_settings = match spec.provider_settings.as_ref().filter(|v| !v.is_null()) {
@@ -1594,7 +1609,7 @@ pub async fn update_provider(
     // validated against the catalog allowlist before persist.
     let settings_provided = req.settings_json.is_some();
     if let Some(s) = req.settings_json.as_ref().filter(|v| !v.is_null()) {
-        validate_settings_json(s)?;
+        validate_settings_json(&provider, s)?;
     }
     let settings_json = req.settings_json.as_ref().filter(|v| !v.is_null()).cloned();
     let gateway_settings_provided = req.provider_settings.is_some();

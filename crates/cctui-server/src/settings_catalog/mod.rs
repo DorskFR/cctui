@@ -1,4 +1,8 @@
-//! Per-account Claude Code settings catalog.
+//! Per-account harness settings catalogs.
+//!
+//! Two catalogs share these types, one per provider family: the Claude Code
+//! catalog below (anthropic) and the Codex one in [`codex`] (openai). Pick one
+//! with [`for_family`].
 //!
 //! This module is the single source of truth for which Claude Code `settings.json`
 //! keys and environment variables cctui may expose as per-account defaults, and how
@@ -26,6 +30,8 @@
 //! The public API is intentionally small and read-only: [`catalog`] returns the parsed
 //! singleton, and [`Catalog`] exposes lookups plus [`Catalog::validate_settings`] /
 //! [`Catalog::validate_free_env`] for the server-side allowlist check.
+
+pub mod codex;
 
 use std::collections::BTreeMap;
 use std::sync::LazyLock;
@@ -232,6 +238,7 @@ impl ValidationReport {
 /// The parsed, enriched settings catalog. Access the singleton via [`catalog`].
 #[derive(Debug)]
 pub struct Catalog {
+    label: &'static str,
     keys: Vec<SettingKey>,
     keys_by_name: BTreeMap<String, usize>,
     env: Vec<EnvVar>,
@@ -301,7 +308,7 @@ impl Catalog {
             match self.key(name) {
                 None => violations.push(Violation {
                     key: name.clone(),
-                    reason: "unknown settings key (not in the Claude Code catalog)".to_string(),
+                    reason: format!("unknown settings key (not in the {} catalog)", self.label),
                 }),
                 Some(k) if !k.account_exposable() => violations.push(Violation {
                     key: name.clone(),
@@ -477,8 +484,15 @@ fn enrich_from_schema(
 /// Parse both embedded artifacts into a [`Catalog`]. Panics on malformed embedded data
 /// (a build-time invariant — the files are checked into the repo and covered by tests).
 fn build() -> Catalog {
-    let raw: RawCatalog = toml::from_str(RAW_CATALOG).expect("catalog.toml parses");
-    let schema: Value = serde_json::from_str(RAW_SCHEMA).expect("vendored schema parses");
+    build_from("Claude Code", RAW_CATALOG, Some(RAW_SCHEMA))
+}
+
+/// Parse one catalog TOML, enriching `source = "schema"` keys from `schema` when a
+/// vendored JSON Schema backs this family (the Codex catalog has none yet).
+fn build_from(label: &'static str, raw_toml: &str, raw_schema: Option<&str>) -> Catalog {
+    let raw: RawCatalog = toml::from_str(raw_toml).expect("catalog.toml parses");
+    let schema: Value = raw_schema
+        .map_or(Value::Null, |s| serde_json::from_str(s).expect("vendored schema parses"));
     let props = schema.get("properties");
 
     let mut keys = Vec::with_capacity(raw.keys.len());
@@ -538,7 +552,7 @@ fn build() -> Catalog {
         "catalog.toml must define the `{QUIET_DEFAULTS_ID}` preset"
     );
 
-    Catalog { keys, keys_by_name, env, env_by_name, presets }
+    Catalog { label, keys, keys_by_name, env, env_by_name, presets }
 }
 
 static CATALOG: LazyLock<Catalog> = LazyLock::new(build);
@@ -547,6 +561,22 @@ static CATALOG: LazyLock<Catalog> = LazyLock::new(build);
 #[must_use]
 pub fn catalog() -> &'static Catalog {
     &CATALOG
+}
+
+/// The catalog governing a provider family's `settings_json`. `fireworks` has no
+/// harness settings of its own and shares the Claude one.
+#[must_use]
+pub fn for_family(family: crate::routes::gateway::Family) -> &'static Catalog {
+    match family {
+        crate::routes::gateway::Family::Openai => codex::catalog(),
+        _ => catalog(),
+    }
+}
+
+/// The catalog governing a stored `provider` value's `settings_json`.
+#[must_use]
+pub fn for_provider(provider: &str) -> &'static Catalog {
+    for_family(crate::routes::gateway::Family::from_provider(provider))
 }
 
 #[cfg(test)]
