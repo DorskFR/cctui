@@ -25,6 +25,7 @@
 
 pub(crate) mod app_server;
 mod contract;
+pub mod daemon;
 mod log_tail;
 mod model_list;
 mod persist;
@@ -150,13 +151,15 @@ async fn run_default(ctx: AdapterCtx) -> anyhow::Result<()> {
     // in-flight `appServer`-source threads unrevivable. Seeding the durable
     // registry from `thread/list` lets the next reply/rename/set-model resume
     // them via `thread/resume`, mirroring the claude-code backfill/reconnect.
+    let shared = daemon::SharedDaemon::new(app_cfg.bin.clone(), ctx.shutdown.clone());
+
     let restored = persist::load(&registry).await;
     if restored > 0 {
         tracing::info!(restored, "codex: session registry restored from state file");
     }
     if thread_list::ThreadListConfig::enabled(&ctx.config) {
         let cfg = thread_list::ThreadListConfig::from_value(&ctx.config);
-        thread_list::rediscover_owned(&cfg, &registry).await;
+        thread_list::rediscover_owned(&cfg, Some(&shared), &registry).await;
     }
     persist::save(&registry).await;
 
@@ -172,6 +175,7 @@ async fn run_default(ctx: AdapterCtx) -> anyhow::Result<()> {
             registry.clone(),
             seen,
             served,
+            Some(shared.clone()),
         );
         Some(tokio::spawn(inv.run()))
     } else {
@@ -190,6 +194,7 @@ async fn run_default(ctx: AdapterCtx) -> anyhow::Result<()> {
         ctx.server,
         ctx.machine_key,
         marks,
+        shared,
     );
     pump.await;
     log_handle.abort();
@@ -213,6 +218,7 @@ async fn command_pump(
     server: Option<ServerClient>,
     machine_key: Option<String>,
     marks: log_tail::ResumeMarks,
+    shared: daemon::SharedDaemon,
 ) {
     loop {
         tokio::select! {
@@ -555,9 +561,11 @@ async fn command_pump(
                                registry.lock().await.remove(&local_id);
                                persist::save(&registry).await;
                                let cfg = app_cfg.clone();
+                               let shared_for_op = shared.clone();
                                tokio::spawn(async move {
                                    if let Err(err) = app_server::run_thread_lifecycle(
                                        &cfg,
+                                       Some(&shared_for_op),
                                        &local_id,
                                        app_server::LifecycleOp::Archive,
                                    )
@@ -574,9 +582,11 @@ async fn command_pump(
                                // cctui-side revival stays lazy: the next message resumes
                                // the hibernated app-server via the registry.
                                let cfg = app_cfg.clone();
+                               let shared_for_op = shared.clone();
                                tokio::spawn(async move {
                                    if let Err(err) = app_server::run_thread_lifecycle(
                                        &cfg,
+                                       Some(&shared_for_op),
                                        &local_id,
                                        app_server::LifecycleOp::Unarchive,
                                    )
