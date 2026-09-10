@@ -2,8 +2,8 @@ import { defineJourney } from '@dorsk/journey';
 
 export default defineJourney({
 	id: 'spawn-session',
-	title: 'Start a new agent',
-	description: 'Describe the work, pick where it runs, and keep it as a draft until you are ready.',
+	title: { en: 'Start a new agent', fr: 'Lancer un nouvel agent' },
+	description: { en: 'Describe the work, pick where it runs, and keep it as a draft until you are ready.', fr: 'Décrivez le travail, choisissez où il s’exécute, et gardez-le en brouillon jusqu’à ce que vous soyez prêt.' },
 	route: '/sessions',
 	variants: { viewport: ['desktop', 'mobile'], theme: ['dark'] },
 	level: 'checked',
@@ -72,8 +72,8 @@ export default defineJourney({
 			target: 'sections/toggle',
 			do: { kind: 'click' },
 			say: {
-				title: 'Choose what the list shows',
-				body: 'The list is split into sections you can switch on and off; drafts are hidden until you ask for them.'
+				title: { en: 'Choose what the list shows', fr: 'Choisir ce qu’affiche la liste' },
+				body: { en: 'The list is split into sections you can switch on and off; drafts are hidden until you ask for them.', fr: 'La liste est découpée en sections que vous pouvez activer ou désactiver ; les brouillons restent masqués jusqu’à ce que vous les demandiez.' }
 			},
 			expect: [{ visible: 'sections/option[drafts]' }]
 		},
