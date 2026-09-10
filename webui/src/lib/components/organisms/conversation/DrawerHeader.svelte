@@ -350,7 +350,7 @@
 						<Select
 							variant="embedded"
 							width="auto"
-							compact
+							size="sm"
 							chevron={false}
 							bind:value={pendingEffort}
 							aria-label={m.drawer_effort_aria()}
