@@ -6,6 +6,8 @@ on:
       - "deploy/worker.Dockerfile"
       - "scripts/check-claude-version-drift.sh"
       - "scripts/check-claude-version-drift.test.sh"
+      - "scripts/check-worker-image-harness.sh"
+      - "scripts/check-worker-image-harness.test.sh"
       - ".github/workflows/claude-version-drift.yml"
   push:
     branches: [main]
@@ -25,5 +27,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Drift check self-test
         run: bash scripts/check-claude-version-drift.test.sh
+      - name: Worker-image harness check self-test
+        run: bash scripts/check-worker-image-harness.test.sh
       - name: Check Claude Code version floor
         run: bash scripts/check-claude-version-drift.sh
