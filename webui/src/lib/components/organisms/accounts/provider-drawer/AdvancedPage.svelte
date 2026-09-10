@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Button, Field, IconButton, Input, Select, Text } from '@dorsk/tsumikit';
+	import { Button, Field, IconButton, Input, Kbd, Select, Text, Textarea } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 	import Error from '$lib/components/atoms/Error.svelte';
 	import { looseSettings } from './pages.logic';
@@ -114,16 +114,20 @@
 					<IconButton box="sm" icon="x" label={m.providers_remove_key_aria({ key: k })} onclick={() => clearLoose(k)} />
 				</div>
 			{/each}
-			<Input
+			<Textarea
 				bind:value={raw}
 				placeholder={'{ "editorMode": "vim" }'}
 				aria-label={m.a11y_advanced_json()}
 				mono
-				onkeydown={(e: KeyboardEvent) => e.key === 'Enter' && applyRaw()}
+				autoresize
+				maxHeight="40vh"
+				submitOn="mod-enter"
+				onsubmit={applyRaw}
 			/>
 			{#if rawError}<Error>{rawError}</Error>{/if}
-			<div>
+			<div class="merge">
 				<Button size="sm" onclick={applyRaw} disabled={!raw.trim()}>{m.providers_merge_json()}</Button>
+				<Kbd keys="mod+enter" />
 			</div>
 		</div>
 	{/if}
@@ -162,6 +166,11 @@
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
+		gap: var(--sp-2);
+	}
+	.merge {
+		display: flex;
+		align-items: center;
 		gap: var(--sp-2);
 	}
 	.move {

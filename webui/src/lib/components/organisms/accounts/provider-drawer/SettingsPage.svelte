@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
-	import { Button, Input, SegmentedControl, Text } from '@dorsk/tsumikit';
+	import { Button, Input, SectionHeader, SegmentedControl, Text } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 	import type { Preset } from '@bindings/Preset';
 	import {
@@ -73,7 +73,7 @@
 
 	{#each groups as group (group.title)}
 		<div class="group">
-			<Text as="div" variant="eyebrow" tone="faint" size="xs">{group.title}</Text>
+			<SectionHeader title={group.title} variant="group" size="xs" level={3} uppercase tone="neutral" />
 			{#each group.knobs as k (k.id)}
 				{@const value = getKnob(settings, k)}
 				<div class="row" class:overridden={value !== ''}>

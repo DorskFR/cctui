@@ -104,7 +104,7 @@
 	}
 </script>
 
-<Modal title={pool ? pool.name : m.pools_new()} {onclose} size="md">
+<Modal title={pool ? pool.name : m.pools_new()} {onclose} size="md" busy={saving}>
 	{#snippet body()}
 		<div class="editor">
 			{#if owners.length > 0 && !pool}
@@ -191,7 +191,7 @@
 			{:else}
 				<span></span>
 			{/if}
-			<Button control variant="primary" disabled={!name.trim() || saving} onclick={save}>
+			<Button control variant="primary" loading={saving} disabled={!name.trim() || saving} onclick={save}>
 				{m.pools_save()}
 			</Button>
 		</Cluster>
