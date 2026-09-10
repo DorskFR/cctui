@@ -19,8 +19,10 @@
 		Callout,
 		Cluster,
 		ConfirmModal,
+		Container,
 		Dot,
 		Modal,
+		Spinner,
 		Text
 	} from '@dorsk/tsumikit';
 	import MachineBadge from '$lib/components/molecules/MachineBadge.svelte';
@@ -730,10 +732,10 @@
 			<div class="spacer"></div>
 			<Button
 				variant="danger"
+				loading={archiving}
 				disabled={list.selected.size === 0 || archiving}
 				onclick={archiveSelected}
 			>
-				{#if archiving}<span class="spin"></span>{/if}
 				{m.sessions_archive_count({ count: list.selected.size || '' })}
 			</Button>
 		</div>
@@ -822,13 +824,12 @@
 <!-- Shared section wrapper: card-detailed breaks out of the centered container
      to the full window width MINUS whatever the docked panels reserve on each
      edge (the layout's --dock-left-w / --dock-right-w); every other view stays
-     centered. tsumikit's Container fullWidth bleeds to 100vw regardless, which
-     slid the outer cards under an open panel. -->
+     centered. -->
 {#snippet sectionsWrap(body: Snippet)}
 	{#if cardView}
-		<div class="bleed">
+		<Container fullWidth inset="var(--dock-left-w, 0px) var(--dock-right-w, 0px)">
 			<div class="sections">{@render body()}</div>
-		</div>
+		</Container>
 	{:else}
 		<div class="sections tight">{@render body()}</div>
 	{/if}
@@ -917,7 +918,7 @@
 	{#if pageError}
 		<Callout tone="danger">{m.sessions_search_failed({ error: pageError })}</Callout>
 	{:else if pageLoading}
-		<div class="loadmore"><span class="spin"></span></div>
+		<div class="loadmore"><Spinner label={m.common_loading()} /></div>
 		{:else if !pageDone && pageRows.length > 0}
 			<div class="loadmore">
 				<Button onclick={() => loadPage(false)}>{m.sessions_load_more()}</Button>
@@ -932,7 +933,7 @@
 	{#if searching}
 		<!-- Search results, scoped by the Archived checkbox; split Live / Archived. -->
 		{#if pageLoading && pageRows.length === 0}
-			<div class="placeholder"><span class="spin"></span></div>
+			<div class="placeholder"><Spinner label={m.common_loading()} /></div>
 		{:else if pageRows.length === 0}
 			<div class="placeholder"><Text tone="muted">{m.sessions_search_no_match({ query: serverQuery })}{showArchived ? '.' : ' ' + m.sessions_search_live_only_hint()}</Text></div>
 		{:else}
@@ -1019,7 +1020,7 @@
 
 {#snippet liveSections()}
 		{#if sessions.isLoading}
-			<div class="placeholder"><span class="spin"></span></div>
+			<div class="placeholder"><Spinner label={m.common_loading()} /></div>
 		{:else if !list.hasLiveRows && !showArchived && !sections.has('drafts')}
 			<div class="placeholder">
 				<Text tone="muted">{m.sessions_empty_sections()}</Text>
@@ -1191,18 +1192,6 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--sp-6);
-	}
-	/* Card-detailed breakout: the same "pull each edge out to the viewport"
-	   trick as tsumikit's Container fullWidth, but the span stops at the docked
-	   panels. The centered parent sits in the middle of the free strip, so the
-	   negative margin is half the difference between the parent and the strip. */
-	.bleed {
-		--bleed-w: calc(100vw - var(--dock-left-w, 0px) - var(--dock-right-w, 0px));
-		width: var(--bleed-w);
-		max-width: none;
-		margin-inline: calc(50% - var(--bleed-w) / 2);
-		padding-left: max(var(--sp-4), var(--safe-left));
-		padding-right: max(var(--sp-4), var(--safe-right));
 	}
 	.section {
 		display: flex;

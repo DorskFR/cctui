@@ -6,7 +6,7 @@
 	// model/effort sets follow it.
 	import EffortSlider from './EffortSlider.svelte';
 	import ModelPicker from '$lib/components/molecules/ModelPicker.svelte';
-	import { Button, Field, Input, Select, Text, Textarea } from '@dorsk/tsumikit';
+	import { Button, Field, Input, Kbd, Select, Text, Textarea } from '@dorsk/tsumikit';
 	import { useMergedCodexModels, useSessions } from '$lib/queries';
 	import SessionMention from '$lib/components/molecules/SessionMention.svelte';
 	import {
@@ -24,7 +24,6 @@
 		adapterLabel,
 		type Adapter
 	} from './options';
-	import { submitChordLabel, isSubmitChord } from '$lib/platform';
 	import type { OAuthAccount } from '$lib/queries';
 	import type { Form } from './types';
 	import { m } from '$lib/paraglide/messages';
@@ -143,6 +142,10 @@
 </Field>
 
 <Field label={m.dispatch_prompt_label()} for="sp-prompt-d">
+	{#snippet hint()}
+		<Kbd keys="mod+enter" />
+		{m.spawn_submit_hint_dispatch()}
+	{/snippet}
 	<div class="prompt-bar">
 		<PromptHistoryMenu
 			onpick={(v) => {
@@ -159,16 +162,13 @@
 			bind:value={form.prompt}
 			bind:el={promptEl}
 			autoresize
+			submitOn="mod-enter"
+			onsubmit={() => onsubmit?.()}
 			onkeydown={(e: KeyboardEvent) => {
-				if (nav.handleKey(e)) return;
-				if (onsubmit && isSubmitChord(e)) {
-					e.preventDefault();
-					onsubmit();
-				}
+				nav.handleKey(e);
 			}}
 		/>
 	</SessionMention>
-	<Text size="xs" tone="faint" style="display:block;margin-top:var(--sp-1)">{m.dispatch_prompt_submit_hint({ chord: submitChordLabel() })}</Text>
 </Field>
 
 <Field label={m.dispatch_prompt_file_label()} for="sp-prompt-file">

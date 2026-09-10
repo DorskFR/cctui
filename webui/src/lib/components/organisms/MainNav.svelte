@@ -31,17 +31,15 @@
 	<div class="nav-inner">
 		{#each items as it (it.href)}
 			{@const active = isNavActive(it.href, page.url.pathname)}
-			<NavLink
-				href={it.href}
-				class="nav-btn {active ? 'active' : ''}"
-				aria-current={active ? 'page' : undefined}
-			>
-				<span class="ico"
-					>{it.icon}{#if it.href === '/sessions' && unread > 0}<span class="unread-badge"
-							>{unread > 99 ? '99+' : unread}</span
-						>{/if}</span
-				>
-				<span class="lbl">{it.label}</span>
+			<NavLink href={it.href} aria-current={active ? 'page' : undefined}>
+				<span class="cell" class:active>
+					<span class="ico"
+						>{it.icon}{#if it.href === '/sessions' && unread > 0}<span class="unread-badge"
+								>{unread > 99 ? '99+' : unread}</span
+							>{/if}</span
+					>
+					<span class="lbl">{it.label}</span>
+				</span>
 			</NavLink>
 		{/each}
 	</div>
@@ -64,11 +62,16 @@
 			display: none;
 		}
 	}
+	/* Equal columns instead of `flex: 1` on each anchor: the grid sizes the
+	   NavLink roots from the outside, so no rule has to reach into the atom. */
 	.nav-inner {
 		height: var(--nav-h);
 		max-width: var(--content-wide);
 		margin-inline: auto;
-		display: flex;
+		display: grid;
+		grid-auto-flow: column;
+		grid-auto-columns: 1fr;
+		min-width: 0;
 	}
 	.nav.inline {
 		align-self: stretch;
@@ -85,14 +88,14 @@
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
-	/* nav-btn is the class on the NavLink atom, so reach it via :global. In the
-	   header the nav takes what the brand and the account cluster leave, so a
-	   label gives way inside its own button rather than running over whatever
+	/* In the header the nav takes what the brand and the account cluster leave,
+	   so a label gives way inside its own cell rather than running over whatever
 	   sits beside it. */
-	.nav-inner :global(.nav-btn) {
-		flex: 1;
-		min-width: 0;
+	.cell {
 		display: flex;
+		width: 100%;
+		height: 100%;
+		min-width: 0;
 		flex-direction: column;
 		align-items: center;
 		justify-content: center;
@@ -124,10 +127,10 @@
 		text-align: center;
 		pointer-events: none;
 	}
-	.nav-inner :global(.nav-btn.active) {
+	.cell.active {
 		color: var(--accent);
 	}
-	.nav-inner :global(.nav-btn:active) {
+	.cell:active {
 		background: var(--bg-elevated-2);
 	}
 </style>

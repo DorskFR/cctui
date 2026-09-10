@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import type { Label } from '@bindings/Label';
-	import { Badge, Button, Field, Icon, Input, Modal } from '@dorsk/tsumikit';
+	import { Badge, Button, EmptyState, Field, Icon, Input, Modal } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 	import Swatch from '$lib/components/atoms/Swatch.svelte';
 	import { LABEL_HUES, labelTint, storedHue, hueToColor } from '$lib/labels';
@@ -166,6 +166,7 @@
 	<!-- svelte-ignore a11y_autofocus -->
 	<Input
 		bind:el={searchInput}
+		grow
 		size="sm"
 		placeholder={ph}
 		aria-label={ph}
@@ -184,7 +185,7 @@
 			<span class="create-label">{m.sessions_label_create()}</span>
 			<Badge
 				size="sm"
-				class="label"
+				truncate
 				style="{labelTint({ name: query, color: '' })};border-radius:var(--r-sm)"
 			>
 				<span class="opt-name">{query}</span>
@@ -204,7 +205,7 @@
 				<!-- The filter's checkbox: a solid-surfaced box that fills with accent +
 				     a ✓ when checked (reads on any row, tinted or not). -->
 				<span class="check" aria-hidden="true">{selectedIds.has(l.id) ? '✓' : ''}</span>
-				<Badge size="sm" class="label" style="{labelTint(l)};border-radius:var(--r-sm)">
+				<Badge size="sm" truncate style="{labelTint(l)};border-radius:var(--r-sm)">
 					<span class="opt-name">{l.name}</span>
 				</Badge>
 			</button>
@@ -223,9 +224,10 @@
 	{/each}
 
 	{#if filtered.length === 0 && !showCreate}
-		<p class="empty">
-			{onCreate ? m.sessions_labels_empty_create() : m.sessions_labels_no_match()}
-		</p>
+		<EmptyState
+			size="inline"
+			description={onCreate ? m.sessions_labels_empty_create() : m.sessions_labels_no_match()}
+		/>
 	{/if}
 
 	{#if onClear && selectedIds.size > 0}
@@ -298,8 +300,14 @@
 				{#if onDelete}
 					<Button variant="danger" disabled={editBusy} onclick={deleteEditing}>{m.common_delete()}</Button>
 				{/if}
-				<Button variant="primary" block disabled={editBusy || !editName.trim()} onclick={saveEdit}>
-					{#if editBusy}<span class="spin"></span>{:else}{m.common_save()}{/if}
+				<Button
+					variant="primary"
+					block
+					loading={editBusy}
+					disabled={editBusy || !editName.trim()}
+					onclick={saveEdit}
+				>
+					{m.common_save()}
 				</Button>
 			{/snippet}
 		</Modal>
@@ -320,11 +328,6 @@
 		align-items: center;
 		padding: var(--sp-1) var(--sp-2);
 	}
-	.filter :global(input) {
-		flex: 1;
-		min-width: 0;
-	}
-
 	.list {
 		display: flex;
 		flex-direction: column;
@@ -390,12 +393,6 @@
 	.check-action {
 		color: var(--text-muted);
 	}
-	/* The menu row shows the real (tinted) label Badge — same chip the card
-	   renders. Let it shrink so long names ellipsis inside the fixed-width panel. */
-	.opt :global(.label) {
-		min-width: 0;
-		overflow: hidden;
-	}
 	.create {
 		color: var(--text-muted);
 	}
@@ -429,12 +426,6 @@
 		cursor: pointer;
 		border-radius: var(--r-sm);
 	}
-	.empty {
-		margin: 0;
-		padding: var(--sp-2);
-		color: var(--text-muted);
-		font-size: var(--fs-sm);
-	}
 
 	/* No box of its own — purely an event boundary so the dialog's clicks don't
 	   bubble to a clickable ancestor. Events still follow the DOM tree under
@@ -467,19 +458,5 @@
 		margin: 0;
 		color: var(--danger, var(--text));
 		font-size: var(--fs-sm);
-	}
-	.spin {
-		display: inline-block;
-		width: 0.9em;
-		height: 0.9em;
-		border: 2px solid currentColor;
-		border-right-color: transparent;
-		border-radius: 50%;
-		animation: spin 0.6s linear infinite;
-	}
-	@keyframes spin {
-		to {
-			transform: rotate(360deg);
-		}
 	}
 </style>

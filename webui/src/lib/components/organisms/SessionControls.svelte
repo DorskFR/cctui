@@ -56,6 +56,10 @@
 
 	const searchId = $props.id();
 
+	// Button centres its content; a full-width flyout row reads left-aligned like
+	// the picker rows beside it. No `align` prop on Button yet (OptionButton has one).
+	const MENU_ROW = 'justify-content:flex-start';
+
 	// Overflow menu: the toolbar grew too many buttons and squeezed the
 	// search bar. A ⋯ flyout collapses the secondary controls. On desktop it holds
 	// the two DimensionPickers (color-by · group-by) so the search bar reclaims
@@ -97,18 +101,18 @@
 	{#if selecting}
 		<!-- Cancel selection. -->
 		{#if menu}
-			<button type="button" class="menu-trigger" onclick={onCancelSelect}>
+			<Button variant="ghost" size="sm" block style={MENU_ROW} onclick={onCancelSelect}>
 				<Icon name="x" size={18} /><span>{m.sessions_cancel_selection()}</span>
-			</button>
+			</Button>
 		{:else}
 			<Button class="ctl" square title={m.sessions_cancel_selection()} aria-label={m.sessions_cancel_selection()} onclick={onCancelSelect}>
 				<Icon name="x" size={18} />
 			</Button>
 		{/if}
 	{:else if menu}
-		<button type="button" class="menu-trigger" disabled={searching} onclick={onStartSelect}>
+		<Button variant="ghost" size="sm" block style={MENU_ROW} disabled={searching} onclick={onStartSelect}>
 			{@render listChecks()}<span>{m.sessions_select_multiple()}</span>
-		</button>
+		</Button>
 	{:else}
 		<!-- "Select multiple" wants a checklist/multi-select glyph the registry
 		     doesn't ship; feed Icon a raw list-checks svg via its children. -->
@@ -119,7 +123,9 @@
 {/snippet}
 
 <div class="bar row">
-	<Heading level={1} size="xl" class="sess-title" style="align-self:center">{m.sessions_title()}</Heading>
+	<span class="title-wrap">
+		<Heading level={1} size="xl">{m.sessions_title()}</Heading>
+	</span>
 	<!-- FilterSearchBar forwards no id/aria-label, so the name reaches its input
 	     through the Field context; the label itself is screen-reader only. -->
 	<div class="search-box" data-journey="search">
@@ -132,7 +138,7 @@
 			/>
 		</Field>
 	</div>
-	<SectionFilter bind:sections />
+	<span class="ctl-item"><SectionFilter bind:sections /></span>
 	<!-- Inline copy of the foldable controls: visible on desktop, hidden by the
 	     container query below (where the flyout copy takes over). display:contents
 	     so each control stays a direct flex item of the bar. -->
@@ -161,7 +167,9 @@
 		</div>
 	</div>
 	{#if onNew}
-		<Button class="toolbar-new" data-journey="new" variant="primary" title={m.sessions_new_session()} aria-label={m.sessions_new_session()} onclick={onNew}>+<span class="new-label"> {m.sessions_new()}</span></Button>
+		<span class="new-wrap">
+			<Button data-journey="new" variant="primary" shrink={false} title={m.sessions_new_session()} aria-label={m.sessions_new_session()} onclick={onNew}>+<span class="new-label"> {m.sessions_new()}</span></Button>
+		</span>
 	{/if}
 	<!-- Mobile-only flex row-break: basis:100% forces row 2 (search +
 	     tools) onto a fresh line below title+New. Hidden on desktop where everything
@@ -232,34 +240,6 @@
 	.menu-fold {
 		display: none;
 	}
-	/* Local action rows (select-multiple / cancel) inside the flyout: plain icon +
-	   label, matching the picker rows' menu-row look. */
-	.menu-trigger {
-		display: flex;
-		align-items: center;
-		gap: var(--sp-2);
-		width: 100%;
-		min-height: 2.25rem;
-		padding: var(--sp-1) var(--sp-2);
-		border: none;
-		background: none;
-		border-radius: var(--r-sm);
-		color: var(--text);
-		font-size: var(--fs-sm);
-		font-weight: var(--fw-medium);
-		text-align: left;
-		cursor: pointer;
-	}
-	.menu-trigger:hover {
-		background: var(--bg-elevated-3, var(--bg-elevated-2));
-	}
-	.menu-trigger:disabled {
-		opacity: 0.5;
-		cursor: default;
-	}
-	.menu-trigger:disabled:hover {
-		background: none;
-	}
 	@container sess-bar (max-width: 640px) {
 		.inline-fold {
 			display: none;
@@ -268,9 +248,6 @@
 			display: contents;
 		}
 	}
-	/* The title is the Heading atom; target it via :global. Pinned to a fixed px
-	   size (it's toolbar chrome, not content) so the UI font scale doesn't push
-	   the action buttons out of frame. */
 	/* Search fills the gap between the title and the right-hand controls. Our
 	   own wrapper is the flex item and is sized directly, so the FilterSearchBar
 	   root fills it (block, width:100%) and its below-bar chips stack onto their
@@ -281,7 +258,16 @@
 		flex: 1 1 0;
 		min-width: 0;
 	}
-	.bar :global(.toolbar-new) {
+	.title-wrap {
+		display: flex;
+		align-self: center;
+		min-width: 0;
+	}
+	/* Each bar child is a local element so the narrow-width `order` reshuffle
+	   below never has to reach into a child component's root. */
+	.ctl-item,
+	.new-wrap {
+		display: flex;
 		flex: none;
 	}
 	.new-label {
@@ -301,16 +287,17 @@
 	   the tools onto a lonely row while search stayed cramped on row 1. */
 	@container sess-bar (max-width: 640px) {
 		/* Default everyone to row 2… */
-		.bar > :global(*) {
+		.search-box,
+		.ctl-item,
+		.more-wrap {
 			order: 2;
 		}
 		/* Row 1: title (grows to push New flush right) then the New button. */
-		.bar > :global(.sess-title) {
+		.title-wrap {
 			order: 0;
 			flex: 1 1 auto;
-			min-width: 0;
 		}
-		.bar :global(.toolbar-new) {
+		.new-wrap {
 			order: 1;
 		}
 		/* Break after row 1: forces search + tools onto row 2. height:0 + negative
