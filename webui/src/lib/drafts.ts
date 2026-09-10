@@ -19,33 +19,49 @@ export const drafts = {
 export const composerKey = (sessionId: string) => `cctui_draft_${sessionId}`;
 export const historyKey = (sessionId: string) => `cctui_history_${sessionId}`;
 
+export const PROMPT_HISTORY = 'cctui_prompt_history';
+
 const HISTORY_MAX = 5;
+/** Spawns are rarer and more varied than replies, so a deeper recall pays off. */
+const PROMPT_HISTORY_MAX = 15;
+
+function readHistory(key: string): string[] {
+	if (!browser) return [];
+	try {
+		const raw = localStorage.getItem(key);
+		const arr = raw ? JSON.parse(raw) : [];
+		return Array.isArray(arr) ? arr.filter((x): x is string => typeof x === 'string') : [];
+	} catch {
+		return [];
+	}
+}
+
+function pushHistory(key: string, value: string, max: number) {
+	if (!browser) return;
+	const v = value.trim();
+	if (!v) return;
+	const list = readHistory(key).filter((x) => x !== v);
+	list.push(v);
+	localStorage.setItem(key, JSON.stringify(list.slice(-max)));
+}
 
 /** localStorage-backed per-session sent-message history (most-recent-last,
  * capped at HISTORY_MAX). Used for ArrowUp/ArrowDown recall in the composer. */
 export const history = {
-	get(sessionId: string): string[] {
-		if (!browser) return [];
-		try {
-			const raw = localStorage.getItem(historyKey(sessionId));
-			const arr = raw ? JSON.parse(raw) : [];
-			return Array.isArray(arr) ? arr.filter((x): x is string => typeof x === 'string') : [];
-		} catch {
-			return [];
-		}
-	},
-	push(sessionId: string, value: string) {
-		if (!browser) return;
-		const v = value.trim();
-		if (!v) return;
-		// De-dupe a repeat of the most recent entry, append, cap to last N.
-		const list = this.get(sessionId).filter((x) => x !== v);
-		list.push(v);
-		const capped = list.slice(-HISTORY_MAX);
-		localStorage.setItem(historyKey(sessionId), JSON.stringify(capped));
-	},
+	get: (sessionId: string) => readHistory(historyKey(sessionId)),
+	push: (sessionId: string, value: string) => pushHistory(historyKey(sessionId), value, HISTORY_MAX),
 	clear(sessionId: string) {
 		if (browser) localStorage.removeItem(historyKey(sessionId));
+	}
+};
+
+/** Global (not per-session) history of prompts used to spawn, sharing the
+ * composer history's shape: most-recent-last, de-duped, capped. */
+export const promptHistory = {
+	get: () => readHistory(PROMPT_HISTORY),
+	push: (value: string) => pushHistory(PROMPT_HISTORY, value, PROMPT_HISTORY_MAX),
+	clear() {
+		if (browser) localStorage.removeItem(PROMPT_HISTORY);
 	}
 };
 

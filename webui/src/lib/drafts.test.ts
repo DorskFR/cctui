@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { attachmentStore } from './attachmentStore';
-import { clearSpawnSlot, drafts, SPAWN_SLOT, spawnSlotKey } from './drafts';
+import { clearSpawnSlot, drafts, promptHistory, SPAWN_SLOT, spawnSlotKey } from './drafts';
 
 const file = (name: string) => new File(['xxx'], name, { type: 'text/plain' });
 
@@ -36,5 +36,47 @@ describe('clearSpawnSlot', () => {
 		expect(drafts.get(other)).toBe('{"prompt":"keep"}');
 		expect(drafts.get(SPAWN_SLOT)).toBe(other);
 		expect((await attachmentStore.get(other)).files.length).toBe(1);
+	});
+});
+
+describe('promptHistory', () => {
+	it('stores most-recent-last and ignores empty or whitespace prompts', () => {
+		promptHistory.push('first');
+		promptHistory.push('  ');
+		promptHistory.push('');
+		promptHistory.push('  second  ');
+
+		expect(promptHistory.get()).toEqual(['first', 'second']);
+	});
+
+	it('moves a repeated prompt to the end instead of duplicating it', () => {
+		promptHistory.push('a');
+		promptHistory.push('b');
+		promptHistory.push('c');
+		promptHistory.push('a');
+
+		expect(promptHistory.get()).toEqual(['b', 'c', 'a']);
+	});
+
+	it('caps the list, dropping the oldest entries', () => {
+		for (let i = 0; i < 20; i++) promptHistory.push(`p${i}`);
+
+		const list = promptHistory.get();
+		expect(list.length).toBe(15);
+		expect(list[0]).toBe('p5');
+		expect(list.at(-1)).toBe('p19');
+	});
+
+	it('is global, not per session, and clears', () => {
+		promptHistory.push('shared');
+		expect(localStorage.getItem('cctui_prompt_history')).toBe('["shared"]');
+
+		promptHistory.clear();
+		expect(promptHistory.get()).toEqual([]);
+	});
+
+	it('survives a corrupt payload', () => {
+		localStorage.setItem('cctui_prompt_history', 'not json');
+		expect(promptHistory.get()).toEqual([]);
 	});
 });

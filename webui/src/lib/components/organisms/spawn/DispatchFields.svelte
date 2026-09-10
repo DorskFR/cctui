@@ -28,6 +28,9 @@
 	import type { OAuthAccount } from '$lib/queries';
 	import type { Form } from './types';
 	import { m } from '$lib/paraglide/messages';
+	import { promptHistory } from '$lib/drafts';
+	import { HistoryNav } from '$lib/historyNav';
+	import PromptHistoryMenu from '$lib/components/molecules/PromptHistoryMenu.svelte';
 
 	let {
 		form = $bindable(),
@@ -47,6 +50,13 @@
 	const sessionsQuery = useSessions(() => false);
 	const mentionSessions = $derived(sessionsQuery.data?.sessions ?? []);
 	let promptEl = $state<HTMLTextAreaElement | null>(null);
+
+	const nav = new HistoryNav({
+		list: () => promptHistory.get(),
+		value: () => form.prompt,
+		setValue: (v) => (form.prompt = v),
+		el: () => promptEl
+	});
 
 	const adapter = $derived(form.dispatch_adapter || 'claude-code');
 	const isCodex = $derived(adapter === 'codex');
@@ -133,6 +143,14 @@
 </Field>
 
 <Field label={m.dispatch_prompt_label()} for="sp-prompt-d">
+	<div class="prompt-bar">
+		<PromptHistoryMenu
+			onpick={(v) => {
+				nav.recall(v);
+				promptEl?.focus();
+			}}
+		/>
+	</div>
 	<SessionMention bind:value={form.prompt} el={promptEl} sessions={mentionSessions}>
 		<Textarea
 			id="sp-prompt-d"
@@ -142,6 +160,7 @@
 			bind:el={promptEl}
 			autoresize
 			onkeydown={(e: KeyboardEvent) => {
+				if (nav.handleKey(e)) return;
 				if (onsubmit && isSubmitChord(e)) {
 					e.preventDefault();
 					onsubmit();
@@ -256,6 +275,11 @@
 {/if}
 
 <style>
+	.prompt-bar {
+		display: flex;
+		justify-content: flex-end;
+		margin-bottom: var(--sp-1);
+	}
 	.row.gap {
 		display: flex;
 		gap: var(--sp-2);

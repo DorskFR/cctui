@@ -20,6 +20,7 @@
 	import { isSubmitChord, submitChordLabel } from '$lib/platform';
 	import {
 		drafts,
+		promptHistory,
 		SPAWN_SLOT,
 		spawnSlotKey,
 		currentSpawnSlot,
@@ -693,6 +694,7 @@
 	async function submit() {
 		if (!valid || busy) return;
 		busy = true;
+		promptHistory.push(form.prompt);
 		try {
 			if (target === 'machine') await spawnOnMachine();
 			else await dispatchToK8s();
