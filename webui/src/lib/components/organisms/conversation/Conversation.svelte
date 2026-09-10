@@ -30,7 +30,9 @@
 		selected = new Set<string>(),
 		onforkfrom,
 		onforkafter,
-		ontoggleselect
+		ontoggleselect,
+		onbookmark,
+		isBookmarked
 	}: {
 		/** Live-stream controller. Passed whole rather than as a dozen
 		 * pass-through props; its `$state` fields stay reactive when read through it. */
@@ -55,6 +57,8 @@
 		onforkfrom?: (messageId: string) => void;
 		onforkafter?: (messageId: string) => void;
 		ontoggleselect?: (messageId: string) => void;
+		onbookmark?: (ln: Line) => void;
+		isBookmarked?: (ln: Line) => boolean;
 	} = $props();
 
 	// ── Lazy render of large transcripts ───────────────────
@@ -163,6 +167,8 @@
 					{onforkfrom}
 					{onforkafter}
 					{ontoggleselect}
+					{onbookmark}
+					bookmarked={isBookmarked?.(ln) ?? false}
 				/>
 			{/if}
 		{/each}

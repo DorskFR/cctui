@@ -852,6 +852,23 @@ fn build_api_routes() -> Routes {
             Authn::Bearer,
             Authenticated,
         )
+        .add(
+            &[GET, Method::POST],
+            "/bookmarks",
+            "List your saved messages, or save one.",
+            get(routes::bookmarks::list_bookmarks).post(routes::bookmarks::create_bookmark),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[Method::PATCH, Method::DELETE],
+            "/bookmarks/{id}",
+            "Edit a bookmark's title/note, or delete it.",
+            patch(routes::bookmarks::update_bookmark)
+                .delete(routes::bookmarks::delete_bookmark),
+            Authn::Bearer,
+            Authenticated,
+        )
         // Prompts: owner_filter() filter in the handler.
         .add(
             &[GET, Method::POST],

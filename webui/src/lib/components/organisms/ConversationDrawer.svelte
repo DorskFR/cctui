@@ -29,7 +29,8 @@
 	import Conversation from './conversation/Conversation.svelte';
 	import AccountSwitchModal from './conversation/AccountSwitchModal.svelte';
 	import ConversationComposer from './conversation/ConversationComposer.svelte';
-	import type { MsgCategory, ViewOpts } from './conversation/types';
+	import BookmarkSaveModal from './bookmarks/BookmarkSaveModal.svelte';
+	import type { Line, MsgCategory, ViewOpts } from './conversation/types';
 	import { parseViewOpts } from './conversation/filters';
 	import { eventSig, orderEvents } from './conversation/format';
 	import { buildLines, type LineBuildCtx } from './conversation/lines';
@@ -37,6 +38,15 @@
 	import { ScrollController } from './conversation/scroll.svelte';
 	import { ForkController } from './conversation/fork.svelte';
 	import { SessionActions } from './conversation/sessionActions.svelte';
+	import {
+		draftFromLine,
+		isLineBookmarked,
+		lastAssistantLine
+	} from '$lib/bookmarks';
+	import type { CreateBookmark } from '@bindings/CreateBookmark';
+	import { useBookmarkActions, useBookmarks } from '$lib/queries';
+	import { toasts } from '$lib/toast.svelte';
+	import { errMessage } from '$lib/api';
 	import { m } from '$lib/paraglide/messages';
 
 	let {
@@ -364,6 +374,35 @@
 		composer?.loadDraft(text);
 	}
 
+	// ── Bookmarks (CCT-992) ────────────────────────────────
+	const savedBookmarks = useBookmarks();
+	const bookmarkActions = useBookmarkActions();
+	let bookmarkDraft = $state<CreateBookmark | null>(null);
+
+	const isBookmarked = (ln: Line) =>
+		isLineBookmarked(savedBookmarks.data ?? [], id, ln) !== null;
+
+	function bookmarkWrapUp() {
+		const ln = lastAssistantLine(lines);
+		if (!ln) {
+			toasts.error(m.bookmarks_no_wrapup());
+			return;
+		}
+		bookmarkDraft = draftFromLine(ln, id, session.name ?? null);
+	}
+
+	async function saveBookmark(title: string, note: string | null) {
+		const draft = bookmarkDraft;
+		bookmarkDraft = null;
+		if (!draft) return;
+		try {
+			await bookmarkActions.create({ ...draft, title, note });
+			toasts.ok(m.bookmarks_saved());
+		} catch (e) {
+			toasts.error(m.bookmarks_save_failed({ message: errMessage(e) }));
+		}
+	}
+
 	// Mobile chat controls collapse behind text buttons that open popovers
 	//; null = no panel open. Desktop shows the controls inline.
 	let mobilePanel = $state<'filters' | 'format' | 'auto' | null>(null);
@@ -452,6 +491,7 @@
 				ondiagnose={() => (diagnoseOpen = true)}
 				onterminal={isCodexSession ? undefined : () => (terminalOpen = !terminalOpen)}
 				{terminalOpen}
+				onbookmarkwrapup={bookmarkWrapUp}
 			/>
 
 			{#if diagnoseOpen}
@@ -505,6 +545,8 @@
 				{selectMode}
 				{selected}
 				ontoggleselect={toggleSelect}
+				onbookmark={(ln) => (bookmarkDraft = draftFromLine(ln, id, session.name ?? null))}
+				{isBookmarked}
 			/>
 
 			<ConversationComposer
@@ -553,6 +595,16 @@
 		{/if}
 	{/snippet}
 </ResizablePanel>
+
+{#if bookmarkDraft}
+	<BookmarkSaveModal
+		heading={m.bookmarks_save_title()}
+		saveLabel={m.bookmarks_save_action()}
+		title={bookmarkDraft.title}
+		onsave={saveBookmark}
+		onclose={() => (bookmarkDraft = null)}
+	/>
+{/if}
 </div>
 
 <style>

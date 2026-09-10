@@ -23,7 +23,8 @@
 		ontoggleAuto,
 		ondiagnose,
 		onterminal,
-		terminalOpen = false
+		terminalOpen = false,
+		onbookmarkwrapup
 	}: {
 		view: ViewOpts;
 		autoApprove: boolean;
@@ -34,6 +35,9 @@
 		/** Toggles the read-only live terminal; omit to hide (codex). */
 		onterminal?: () => void;
 		terminalOpen?: boolean;
+		/** One-click save of the session's newest assistant message (the wrap-up)
+		 * to bookmarks; omit to hide the button. */
+		onbookmarkwrapup?: () => void;
 	} = $props();
 
 	const QUICK_TINT: Record<QuickFilterId, string> = {
@@ -143,6 +147,14 @@
 			aria-label={m.conversation_auto_approve_aria()}
 			onclick={ontoggleAuto}
 		>{m.conversation_auto_approve_btn()}</Toggle>
+		{#if onbookmarkwrapup}
+			<Toggle
+				pressed={false}
+				title={m.bookmarks_toolbar_title()}
+				aria-label={m.bookmarks_toolbar_label()}
+				onclick={onbookmarkwrapup}
+			>◈ {m.bookmarks_toolbar_title()}</Toggle>
+		{/if}
 		{#if ondiagnose}
 			<Toggle
 				pressed={false}

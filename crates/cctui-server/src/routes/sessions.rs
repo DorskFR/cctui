@@ -966,7 +966,7 @@ const SEARCH_MAX_LIMIT: i64 = 500;
 /// Escape LIKE/ILIKE wildcards so a user's literal `%`/`_` aren't treated as
 /// pattern metacharacters, then wrap in `%…%` for a substring match. `\` is
 /// the default ILIKE escape char.
-fn ilike_contains(q: &str) -> String {
+pub(crate) fn ilike_contains(q: &str) -> String {
     let escaped = q.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
     format!("%{escaped}%")
 }

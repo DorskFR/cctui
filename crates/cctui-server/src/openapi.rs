@@ -64,6 +64,7 @@ fn group_of(path: &str) -> &'static str {
         "keys" => "credentials",
         "labels" => "labels",
         "prompts" => "prompts",
+        "bookmarks" => "bookmarks",
         "settings" | "me" | "capabilities" | "version" => "meta",
         "skills" => "skills",
         "admin" | "users" => "admin",
