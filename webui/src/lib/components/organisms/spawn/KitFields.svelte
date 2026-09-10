@@ -14,6 +14,7 @@
 	import { declaredModelOptions, preferCatalog, withDeclaredModels } from '$lib/harnessModels';
 	import {
 		accountBacksAdapter,
+		accountPickOptions,
 		adapterLabel,
 		allAdapters,
 		claudeEfforts,
@@ -64,26 +65,14 @@
 		draft.pool_id = v.startsWith(POOL_PREFIX) ? v.slice(POOL_PREFIX.length) : null;
 		draft.account_id = v && v !== NO_ACCOUNT && !v.startsWith(POOL_PREFIX) ? v : null;
 	}
-	const accountOptions = $derived<SelectOption[]>([
-		{ value: '', label: m.spawn_account_auto() },
-		{ value: NO_ACCOUNT, label: m.spawn_account_none() },
-		...pools.map((p) => ({
-			value: `${POOL_PREFIX}${p.id}`,
-			label: p.name,
-			hint: m.spawn_account_pool_group()
-		})),
-		...accounts
-			.filter((a) => accountBacksAdapter(a, draft.harness))
-			.map((a) => {
-				const pct = accountUsedPct(usage, a.id);
-				return {
-					value: a.id,
-					label: a.name,
-					emoji: a.emoji ?? undefined,
-					hint: pct === null ? undefined : `${pct}%`
-				};
-			})
-	]);
+	const accountOptions = $derived<SelectOption[]>(
+		accountPickOptions({
+			accounts,
+			pools,
+			harness: draft.harness,
+			usedPct: (id) => accountUsedPct(usage, id)
+		})
+	);
 
 	const machineCodex = useCodexModels(() => (draft.harness === 'codex' ? machineId : ''));
 	const mergedCodex = useMergedCodexModels(() => draft.harness === 'codex');
