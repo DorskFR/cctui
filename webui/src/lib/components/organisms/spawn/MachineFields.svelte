@@ -7,8 +7,18 @@
 	import SessionMention from '$lib/components/molecules/SessionMention.svelte';
 	import type { GitInfo } from '@bindings/GitInfo';
 	import MachinePicker from '$lib/components/molecules/MachinePicker.svelte';
-	import { Callout, Field, Icon, Input, Kbd, Link, Textarea } from '@dorsk/tsumikit';
-	import { cwdSuggestions } from './cwdComplete';
+	import {
+		Callout,
+		Field,
+		FilterInput,
+		Icon,
+		Input,
+		Kbd,
+		Link,
+		Textarea,
+		type Query
+	} from '@dorsk/tsumikit';
+	import { makeCwdSchema, cwdToQuery, dirFromQuery } from './cwdSchema';
 	import { gitBadge, makeGitInfoWatcher } from './cwdGitInfo';
 	import { makeClipboardFiles } from '$lib/attachments';
 	import type { Form } from './types';
@@ -54,15 +64,32 @@
 		onfiles(files);
 	}
 
-	let cwdOptions = $state<string[]>([]);
-	let cwdToken = 0;
-	async function loadCwdOptions(query: string) {
-		const token = ++cwdToken;
-		const opts = await cwdSuggestions(form.machine_id, query, recentDirs);
-		if (token === cwdToken) cwdOptions = opts;
+	// The machine picker and the path share one control; `form.working_dir` is
+	// the source of truth and the raw query mirrors it both ways, `lastDir`
+	// tracking what the query represents so the two syncs never loop.
+	const cwdSchema = makeCwdSchema(
+		() => form.machine_id,
+		() => recentDirs,
+		m.spawn_cwd_label()
+	);
+	// svelte-ignore state_referenced_locally
+	let cwdRaw = $state(cwdToQuery(form.working_dir));
+	// svelte-ignore state_referenced_locally
+	let lastDir = form.working_dir;
+	function onCwdChange(q: Query) {
+		const dir = dirFromQuery(q);
+		// The input re-emits its unchanged query on mount and on rerenders; only
+		// a real move away from what the field held is a user edit.
+		if (dir === lastDir) return;
+		lastDir = dir;
+		form.working_dir = dir;
 	}
 	$effect(() => {
-		void loadCwdOptions(form.working_dir);
+		const dir = form.working_dir;
+		if (dir !== lastDir) {
+			lastDir = dir;
+			cwdRaw = cwdToQuery(dir);
+		}
 	});
 
 	const fetchGitInfo = useGitInfo();
@@ -90,24 +117,19 @@
 
 <div class="where" data-journey="where">
 	<Field label={m.spawn_cwd_label()} for="sp-cwd">
-		<div class="cwd-row">
-			<MachinePicker bind:value={form.machine_id} {machines} label={m.spawn_machine_label()} />
-			<span class="cwd-in">
-				<Input
-					id="sp-cwd"
-					grow
-					mono
-					list="sp-cwd-options"
-					autocomplete="off"
-					spellcheck={false}
-					placeholder="/home/user/project"
-					bind:value={form.working_dir}
-				/>
-			</span>
-			<datalist id="sp-cwd-options" aria-label={m.spawn_cwd_suggestions_aria()}>
-				{#each cwdOptions as d (d)}<option value={d}></option>{/each}
-			</datalist>
-		</div>
+		<FilterInput
+			id="sp-cwd"
+			schema={cwdSchema}
+			bind:value={cwdRaw}
+			icon={null}
+			showClear={false}
+			placeholder="/home/user/project"
+			onchange={onCwdChange}
+		>
+			{#snippet inline()}
+				<MachinePicker bind:value={form.machine_id} {machines} label={m.spawn_machine_label()} />
+			{/snippet}
+		</FilterInput>
 	</Field>
 	<!-- Always one line tall so the form doesn't jump when a branch resolves. -->
 	<span class="branch" title={cwdBadge ? cwdBadgeTitle : undefined}>
@@ -163,20 +185,6 @@
 		display: flex;
 		justify-content: flex-end;
 		margin-bottom: var(--sp-1);
-	}
-	.cwd-row {
-		display: flex;
-		flex-wrap: wrap;
-		align-items: center;
-		gap: var(--sp-2);
-		min-width: 0;
-	}
-	/* Below ~12rem of room the path drops to its own full-width line rather
-	   than being squeezed to a few characters beside the machine picker. */
-	.cwd-in {
-		display: flex;
-		flex: 1 1 12rem;
-		min-width: 0;
 	}
 	.where {
 		display: flex;

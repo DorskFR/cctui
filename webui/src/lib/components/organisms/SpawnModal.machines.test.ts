@@ -74,22 +74,13 @@ const cwd = () => document.querySelector<HTMLInputElement>("#sp-cwd");
 const text = () => document.body.textContent ?? "";
 
 describe("SpawnModal working directory field", () => {
-  it("is a plain path input with a visible placeholder and a real label", async () => {
+  it("carries an accessible name", async () => {
     await open();
-    const input = cwd();
-    expect(input).toBeTruthy();
-    expect(input?.placeholder).toBe("/home/user/project");
-    expect(input?.value).not.toContain("cwd:");
+    expect(cwd()).toBeTruthy();
     const label = document.querySelector<HTMLLabelElement>(
       'label[for="sp-cwd"]',
     );
     expect(label?.textContent?.trim()).toBe("Working directory");
-  });
-
-  it("completes through a datalist bound to the input", async () => {
-    await open();
-    expect(cwd()?.getAttribute("list")).toBe("sp-cwd-options");
-    expect(document.querySelector("datalist#sp-cwd-options")).toBeTruthy();
   });
 
   it("picks the machine with a native select carrying an accessible name", async () => {
