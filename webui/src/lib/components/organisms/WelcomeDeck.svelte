@@ -32,10 +32,12 @@
 </script>
 
 {#snippet card(entry: DeckCard)}
-	<Stack gap="sm" class="deck-card">
-		<Heading level={2} size="lg">{entry.title}</Heading>
-		<Text tone="muted">{entry.body}</Text>
-	</Stack>
+	<div class="deck-card">
+		<Stack gap="sm">
+			<Heading level={2} size="lg">{entry.title}</Heading>
+			<Text tone="muted">{entry.body}</Text>
+		</Stack>
+	</div>
 {/snippet}
 
 {#snippet body()}
@@ -60,7 +62,7 @@
 <Modal title="Welcome to cctui" size="lg" onclose={ondismiss} {body} {footer} />
 
 <style>
-	:global(.deck-card) {
+	.deck-card {
 		min-height: 9rem;
 		padding-block: var(--space-sm);
 	}
