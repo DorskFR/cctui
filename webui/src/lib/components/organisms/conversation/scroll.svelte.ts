@@ -26,8 +26,17 @@ export class ScrollController {
 	// visualViewport resize) and must never clear the pin.
 	#lastUserScroll = 0;
 
+	// Counts wheel/touchmove/keyboard gestures only — deliberately not
+	// pointerdown, so a click inside a message is not a "the user moved" signal.
+	gestures = $state(0);
+
 	markUserScroll = () => {
 		this.#lastUserScroll = performance.now();
+	};
+
+	markScrollGesture = () => {
+		this.gestures++;
+		this.markUserScroll();
 	};
 
 	#atBottom(): boolean {
@@ -86,6 +95,14 @@ export class ScrollController {
 	// down even if the user had scrolled up.
 	stickToBottom = () => {
 		this.stuck = true;
+	};
+
+	// Open mid-transcript (search focus) instead of tailing: unpinned, so the
+	// jump-to-bottom pill shows and `followIfStuck` cannot steal the viewport
+	// when a live event lands while the user is reading.
+	startUnstuck = () => {
+		this.stuck = false;
+		this.#lastClientHeight = this.scroller?.clientHeight ?? 0;
 	};
 
 	// Reset to bottom + sticky when switching sessions.
