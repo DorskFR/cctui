@@ -24,7 +24,9 @@
 		selectedForFork = false,
 		ontoggleselect,
 		pinned = false,
-		onpin
+		onpin,
+		onbookmark,
+		bookmarked = false
 	}: {
 		ln: Line;
 		archived: boolean;
@@ -43,6 +45,10 @@
 		pinned?: boolean;
 		/** Toggle the pin on this line; omit to hide the action. */
 		onpin?: (ln: Line) => void;
+		/** Save this message to the cross-session bookmarks collection (CCT-992);
+		 * omit to hide the action. */
+		onbookmark?: (ln: Line) => void;
+		bookmarked?: boolean;
 	} = $props();
 
 	// An optimistic user echo carries a synthetic `maxSeq + 1` seq that no server
@@ -179,6 +185,16 @@
 				title={m.conversation_copy_markdown_title()}
 				onclick={() => oncopymarkdown(ln)}
 			/>
+			{#if onbookmark}
+				<button
+					type="button"
+					class="copy bookmark"
+					class:saved={bookmarked}
+					aria-label={m.bookmarks_line_label()}
+					title={bookmarked ? m.bookmarks_line_saved_title() : m.bookmarks_line_title()}
+					onclick={() => onbookmark?.(ln)}>◈</button
+				>
+			{/if}
 		</span>
 	</div>
 	{#if ln.role === 'thinking'}
@@ -320,6 +336,15 @@
 	}
 	.line-actions :global(.copy:hover) {
 		color: var(--text);
+	}
+	.line-actions .bookmark {
+		background: none;
+		border: 0;
+		cursor: pointer;
+		font-size: var(--fs-sm);
+	}
+	.line-actions .bookmark.saved {
+		color: var(--role-assistant);
 	}
 	.line-actions :global(.copy svg) {
 		width: 1rem;

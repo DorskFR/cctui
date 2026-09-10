@@ -55,6 +55,9 @@ import type { CreatePoolRequest } from "@bindings/CreatePoolRequest";
 import type { UpdatePoolRequest } from "@bindings/UpdatePoolRequest";
 import type { SessionRebind } from "@bindings/SessionRebind";
 import type { PutRedirectRequest } from "@bindings/PutRedirectRequest";
+import type { Bookmark } from "@bindings/Bookmark";
+import type { CreateBookmark } from "@bindings/CreateBookmark";
+import type { UpdateBookmark } from "@bindings/UpdateBookmark";
 import { SYSTEM_MACHINE_KINDS } from "./keys";
 import type {
   AccountProvider,
@@ -140,6 +143,18 @@ export const endpoints = {
   sessionStats: () => api.get<SessionStats>("/sessions/stats"),
   /** Every label known to the server — feeds the picker + filter. */
   labels: () => api.get<LabelListResponse>("/labels"),
+  /** Saved messages, newest first. `q` filters over title/body/note. */
+  bookmarks: (q?: string, limit?: number, before?: string) =>
+    api.get<Bookmark[]>("/bookmarks", {
+      q: q && q.trim() !== "" ? q : undefined,
+      limit,
+      before,
+    }),
+  createBookmark: (body: CreateBookmark) =>
+    api.post<Bookmark>("/bookmarks", body),
+  updateBookmark: (id: string, body: UpdateBookmark) =>
+    api.patch<Bookmark>(`/bookmarks/${id}`, body),
+  deleteBookmark: (id: string) => api.del<void>(`/bookmarks/${id}`),
   /** The caller's spawn profiles, oldest first. */
   profiles: () => api.get<SessionProfile[]>("/profiles"),
   createProfile: (body: CreateProfileRequest) =>

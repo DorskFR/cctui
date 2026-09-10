@@ -36,7 +36,9 @@
 		pinnedSeqs = new Set<number>(),
 		onpin,
 		jumper = $bindable(),
-		focusTs = null
+		focusTs = null,
+		onbookmark,
+		isBookmarked
 	}: {
 		/** Live-stream controller. Passed whole rather than as a dozen
 		 * pass-through props; its `$state` fields stay reactive when read through it. */
@@ -69,6 +71,8 @@
 		/** `ts` of the searched-for message, when opened from a search hit; gets
 		 *  the persistent focus ring and is scrolled to on open. */
 		focusTs?: number | null;
+		onbookmark?: (ln: Line) => void;
+		isBookmarked?: (ln: Line) => boolean;
 	} = $props();
 
 	// ── Lazy render of large transcripts ───────────────────
@@ -239,6 +243,22 @@
 				</div>
 			{:else}
 				{@render convLine(ln)}
+				<ConversationLine
+					{ln}
+					{archived}
+					onretry={(ts) => stream.retryFailed(ts)}
+					onedit={onedit}
+					onsaveimage={saveLineImage}
+					oncopymarkdown={copyLineMarkdown}
+					{forkable}
+					{selectMode}
+					selectedForFork={ln.messageId ? selected.has(ln.messageId) : false}
+					{onforkfrom}
+					{onforkafter}
+					{ontoggleselect}
+					{onbookmark}
+					bookmarked={isBookmarked?.(ln) ?? false}
+				/>
 			{/if}
 		{/each}
 
