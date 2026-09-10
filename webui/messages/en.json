@@ -1661,5 +1661,9 @@
 	"users_user_deleted": "User deleted",
 	"users_user_disabled": "{name} disabled",
 	"users_user_enabled": "{name} enabled",
-	"users_user_name_placeholder": "e.g. alice"
+	"users_user_name_placeholder": "e.g. alice",
+	"provider_page_speed": "Speed & cost",
+	"provider_page_reasoning": "Reasoning",
+	"spawn_fast_label": "Fast mode",
+	"spawn_fast_hint": "1.5x speed, increased usage. Same model, same quality."
 }

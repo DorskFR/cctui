@@ -20,10 +20,10 @@ export const useCapabilities = () =>
 
 /** The settings catalog. Embedded server data — effectively
  * immutable per server version, so cache it for the whole session. */
-export const useSettingsCatalog = () =>
+export const useSettingsCatalog = (family: () => string = () => "anthropic") =>
   createQuery(() => ({
-    queryKey: qk.settingsCatalog,
-    queryFn: endpoints.settingsCatalog,
+    queryKey: qk.settingsCatalog(family()),
+    queryFn: () => endpoints.settingsCatalog(family()),
     staleTime: Infinity,
   }));
 

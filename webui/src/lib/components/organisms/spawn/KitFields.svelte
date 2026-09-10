@@ -5,7 +5,7 @@
 	import type { AccountPoolView } from '@bindings/AccountPoolView';
 	import type { AccountUsageEntry, OAuthAccount } from '$lib/queries';
 	import { useCodexModels, useMergedCodexModels } from '$lib/queries';
-	import { AutoGrid, Field, OptionButton, Select, Text } from '@dorsk/tsumikit';
+	import { AutoGrid, Field, OptionButton, Select, Switch, Text } from '@dorsk/tsumikit';
 	import type { SelectOption } from '@dorsk/tsumikit';
 	import BrandLogo from '$lib/components/atoms/BrandLogo.svelte';
 	import CodexModelsRefresh from '$lib/components/molecules/CodexModelsRefresh.svelte';
@@ -101,6 +101,7 @@
 		draft.harness = harness;
 		draft.model_alias = null;
 		draft.effort = null;
+		draft.service_tier = null;
 		if (account && !accountBacksAdapter(account, harness)) draft.account_id = null;
 	}
 </script>
@@ -157,6 +158,20 @@
 		onset={(v) => (draft.effort = v || null)}
 	/>
 
+	{#if draft.harness === 'codex'}
+		<div class="fast">
+			<Switch
+				id="sp-kit-fast-{idSuffix}"
+				bind:checked={() => draft.service_tier === 'fast',
+				(v: boolean) => (draft.service_tier = v ? 'fast' : null)}
+				label={m.spawn_fast_label()}
+				labelVisible
+				size="sm"
+			/>
+			<Text as="div" size="xs" tone="faint">{m.spawn_fast_hint()}</Text>
+		</div>
+	{/if}
+
 	<PermissionModes
 		value={draft.permission_mode ?? null}
 		onpick={(v) => (draft.permission_mode = v)}
@@ -168,6 +183,11 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--sp-3);
+	}
+	.fast {
+		display: flex;
+		flex-direction: column;
+		gap: var(--sp-1);
 	}
 	.model {
 		display: flex;

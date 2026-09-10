@@ -1777,6 +1777,7 @@ impl Driver {
                 .and_then(serde_json::Value::as_str)
                 .map(ToOwned::to_owned),
             model: payload.get("model").and_then(serde_json::Value::as_str).map(ToOwned::to_owned),
+            service_tier: None,
             env,
             bootstrap: serde_json::Value::Null,
             parent_local_id: None,

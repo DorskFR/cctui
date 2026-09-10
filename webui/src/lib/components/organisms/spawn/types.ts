@@ -46,6 +46,9 @@ export interface Form {
 	// switch. Dispatch (k8s) runs a claude worker → uses effort_claude.
 	effort_claude: string;
 	effort_codex: string;
+	// Codex service tier: '' leaves it to the account default, 'fast' opts this
+	// one session into the priority tier. Codex-only.
+	service_tier: string;
 	timeout: string;
 	// Context pack: a git repo the worker clones at boot, delivered as
 	// CONTEXT_PACK_* env vars on the opaque dispatch payload. The URL accepts the

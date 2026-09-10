@@ -1133,6 +1133,7 @@ mod tests {
             permission_mode: None,
             effort: None,
             model: None,
+            service_tier: None,
             env: std::collections::BTreeMap::new(),
             bootstrap: serde_json::Value::Null,
             parent_local_id: None,

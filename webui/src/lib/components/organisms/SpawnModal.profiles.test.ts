@@ -33,6 +33,7 @@ const orchestrator: SessionProfile = {
   model_alias: "fable",
   effort: "medium",
   permission_mode: "yolo",
+  service_tier: null,
   sort_order: 0,
   created_at: "",
   updated_at: "",

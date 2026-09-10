@@ -1,4 +1,5 @@
 import type { EnvVar } from '@bindings/EnvVar';
+import type { SettingKey } from '@bindings/SettingKey';
 import type { Preset } from '@bindings/Preset';
 import type { SettingsCatalogResponse } from '@bindings/SettingsCatalogResponse';
 import { groupPage, type PageId } from './pages.logic';
@@ -27,16 +28,20 @@ export interface KnobGroup {
 	knobs: Knob[];
 }
 
-function boolKnob(name: string, label: string, care: boolean, note: string, twin?: EnvVar): Knob {
+/** A grouped settings key. Booleans render tri-state (unset / on / off); a
+ *  string key with an enum renders as a picker whose blank option is unset. */
+function settingKnob(k: SettingKey, twin?: EnvVar): Knob {
+	const values = k.enum ? k.enum.split(',').map((v) => v.trim()) : undefined;
 	return {
-		id: `s:${name}`,
-		label,
-		sub: twin ? `${name} · ${twin.name}` : name,
-		care,
-		control: 'tristate',
+		id: `s:${k.name}`,
+		label: k.label ?? k.name,
+		sub: twin ? `${k.name} · ${twin.name}` : k.name,
+		care: k.tag === 'care',
+		control: k.type === 'string' ? (values ? 'enum' : 'string') : 'tristate',
 		loc: 'setting',
-		name,
-		note
+		name: k.name,
+		values,
+		note: k.notes ?? ''
 	};
 }
 
@@ -71,7 +76,7 @@ export function knobGroups(catalog: SettingsCatalogResponse | undefined): KnobGr
 	if (!catalog) return [];
 	const keys = catalog.keys ?? [];
 	const env: EnvVar[] = catalog.env ?? [];
-	const boolKeys = keys.filter((k) => k.group !== null);
+	const grouped = keys.filter((k) => k.group !== null);
 	const twins = new Map(
 		env.filter((e) => e.settings_equiv).map((e) => [e.settings_equiv as string, e])
 	);
@@ -81,20 +86,18 @@ export function knobGroups(catalog: SettingsCatalogResponse | undefined): KnobGr
 	};
 
 	const out: KnobGroup[] = [];
-	for (const title of [...new Set(boolKeys.map((k) => k.group as string))]) {
+	for (const title of [...new Set(grouped.map((k) => k.group as string))]) {
 		out.push({
 			title,
 			page: groupPage(title),
-			knobs: boolKeys
+			knobs: grouped
 				.filter((k) => k.group === title)
-				.map((k) =>
-					boolKnob(k.name, k.label ?? k.name, k.tag === 'care', k.notes ?? '', twins.get(k.name))
-				)
+				.map((k) => settingKnob(k, twins.get(k.name)))
 		});
 	}
-	const boolNames = new Set(boolKeys.map((k) => k.name));
+	const groupedNames = new Set(grouped.map((k) => k.name));
 	const rest = env.filter(
-		(e) => !e.env_alias_of && !(e.settings_equiv && boolNames.has(e.settings_equiv))
+		(e) => !e.env_alias_of && !(e.settings_equiv && groupedNames.has(e.settings_equiv))
 	);
 	for (const title of [...new Set(rest.map((e) => e.group))]) {
 		out.push({

@@ -685,11 +685,7 @@ pub async fn account_env_json(
 /// safe/care keys that `--settings` honors.
 /// Whether a session has an account of `family` bound, by the same token-then-
 /// `sessions.account_id` resolution [`resolve_session_accounts`] uses.
-pub async fn session_has_family(
-    state: &AppState,
-    session_id: &str,
-    family: super::Family,
-) -> bool {
+pub async fn session_has_family(state: &AppState, session_id: &str, family: super::Family) -> bool {
     for account_id in resolve_session_accounts(state, session_id).await {
         let label: Option<String> =
             sqlx::query_scalar("SELECT family FROM account_providers WHERE id = $1")
