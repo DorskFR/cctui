@@ -1,6 +1,6 @@
 {
 	"id": "accounts-pools",
-	"title": "Group accounts into a pool",
+	"title": "Connect a provider account",
 	"version": 1,
 	"variants": {
 		"desktop-dark": {
@@ -10,28 +10,7 @@
 					"name": "board",
 					"file": "01-board.png",
 					"title": "Every account you can run on",
-					"body": "One card per account, each showing the providers it carries. Pools sit alongside them as drop zones."
-				},
-				{
-					"index": 1,
-					"name": "pool",
-					"file": "02-pool.png",
-					"title": "A pool is a set of interchangeable accounts",
-					"body": "Launches aimed at the pool elect a member by headroom, so a spent weekly budget on one account does not stop the work."
-				},
-				{
-					"index": 2,
-					"name": "handle",
-					"file": "03-handle.png",
-					"title": "Drag an account into a pool",
-					"body": "The grip on a card lifts it; dropping it on a pool adds it to the membership."
-				},
-				{
-					"index": 3,
-					"name": "menu",
-					"file": "04-menu.png",
-					"title": "Or add it from the card menu",
-					"body": "The same membership change without a mouse drag, which is also how it is done on a phone."
+					"body": "Accounts are the provider credentials your agents run on. This board is empty until you add one."
 				}
 			],
 			"storyboard": "storyboard.png"

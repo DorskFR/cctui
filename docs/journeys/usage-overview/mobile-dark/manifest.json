@@ -10,7 +10,7 @@
 					"name": "tiles",
 					"file": "01-tiles.png",
 					"title": "The fleet in four numbers",
-					"body": "Sessions running now, sessions waiting on you, machines online, and the all-time total."
+					"body": "Four numbers: sessions running now, sessions waiting on you, machines online, and the all-time total. They read zero until your first run."
 				},
 				{
 					"index": 1,

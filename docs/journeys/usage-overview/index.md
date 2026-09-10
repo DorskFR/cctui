@@ -6,7 +6,7 @@
 
 **The fleet in four numbers**
 
-Sessions running now, sessions waiting on you, machines online, and the all-time total.
+Four numbers: sessions running now, sessions waiting on you, machines online, and the all-time total. They read zero until your first run.
 
 ![windows](desktop-dark/02-windows.png)
 
@@ -26,7 +26,7 @@ Daily volume and a per-model breakdown, so an expensive habit shows up before th
 
 **The fleet in four numbers**
 
-Sessions running now, sessions waiting on you, machines online, and the all-time total.
+Four numbers: sessions running now, sessions waiting on you, machines online, and the all-time total. They read zero until your first run.
 
 ![windows](mobile-dark/02-windows.png)
 

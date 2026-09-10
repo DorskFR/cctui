@@ -1,3 +1,3 @@
-# Find a session again
+# Welcome to cctui
 
 ## viewport=mobile theme=dark
