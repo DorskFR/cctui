@@ -237,8 +237,11 @@
 			<span class="exhausted">
 				<span class="dot"></span>
 				<Text as="span" size="xs" tone="danger">
-					{exhaustedLabel}{#if exhausted.window.resets_at}
-						· <Timestamp value={exhausted.window.resets_at} mode="relative" tone="inherit" />{/if}
+					{exhaustedLabel}{#if exhausted.window.resets_at}{' · '}<Timestamp
+							value={exhausted.window.resets_at}
+							mode="relative"
+							tone="inherit"
+						/>{/if}
 				</Text>
 			</span>
 		{/if}

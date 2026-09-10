@@ -821,13 +821,13 @@
 	{/if}
 {/snippet}
 
-<!-- Shared section wrapper: card-detailed breaks out of the centered container
-     to the full window width MINUS whatever the docked panels reserve on each
-     edge (the layout's --dock-left-w / --dock-right-w); every other view stays
-     centered. -->
+<!-- Shared section wrapper: card-detailed fills the content column, which the
+     layout has already narrowed by whatever the docked panels reserve; every
+     other view stays centered. `fullWidth` would break out to the viewport and
+     reserve the docks a second time. -->
 {#snippet sectionsWrap(body: Snippet)}
 	{#if cardView}
-		<Container fullWidth inset="var(--dock-left-w, 0px) var(--dock-right-w, 0px)">
+		<Container size="none">
 			<div class="sections">{@render body()}</div>
 		</Container>
 	{:else}

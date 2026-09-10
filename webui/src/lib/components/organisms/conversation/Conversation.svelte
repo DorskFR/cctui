@@ -173,6 +173,8 @@
 		{onforkfrom}
 		{onforkafter}
 		{ontoggleselect}
+		{onbookmark}
+		bookmarked={isBookmarked?.(ln) ?? false}
 	/>
 {/snippet}
 
@@ -245,22 +247,6 @@
 				</div>
 			{:else}
 				{@render convLine(ln)}
-				<ConversationLine
-					{ln}
-					{archived}
-					onretry={(ts) => stream.retryFailed(ts)}
-					onedit={onedit}
-					onsaveimage={saveLineImage}
-					oncopymarkdown={copyLineMarkdown}
-					{forkable}
-					{selectMode}
-					selectedForFork={ln.messageId ? selected.has(ln.messageId) : false}
-					{onforkfrom}
-					{onforkafter}
-					{ontoggleselect}
-					{onbookmark}
-					bookmarked={isBookmarked?.(ln) ?? false}
-				/>
 			{/if}
 		{/each}
 

@@ -93,7 +93,7 @@
 		<label class="body" for="sp-profile-{id}">
 			<span class="name">
 				<span class="truncate">{name}</span>
-				{#if usage}<span class="use">{usage}</span>{/if}
+				{#if usage}<span class="use" title={usage}>{usage}</span>{/if}
 			</span>
 			<span class="chain truncate" title={chain}>{chain}</span>
 		</label>
@@ -174,8 +174,17 @@
 		font-size: var(--fs-sm);
 		font-weight: var(--fw-semibold);
 	}
+	/* The name outranks the usage chip: the chip absorbs the squeeze first and
+	   ellipsises, and the name only shrinks once it is down to its floor. */
+	.name > .truncate {
+		flex: 1 1 auto;
+		min-width: 10ch;
+	}
 	.use {
-		flex: none;
+		flex: 0 1 auto;
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
 		font-size: var(--fs-xs);
 		font-weight: var(--fw-normal);
 		color: var(--text-faint);
