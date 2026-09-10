@@ -31,12 +31,15 @@
 		account,
 		provider,
 		accounts = [],
+		initialPage,
 		onclose
 	}: {
 		account: OAuthAccount;
 		provider: AccountProvider;
 		/** Same-owner move targets are picked from here. */
 		accounts?: OAuthAccount[];
+		/** Deep-link target; ignored when this provider has no such page. */
+		initialPage?: PageId;
 		onclose: () => void;
 	} = $props();
 
@@ -44,6 +47,8 @@
 	const kind = p.provider;
 	const edit = new ProviderEdit(p);
 	const pages = pagesFor(kind);
+	const landing = untrack(() => initialPage);
+	if (landing && pages.includes(landing)) edit.page = landing;
 
 	const actions = useAccountActions();
 	const qc = useQueryClient();

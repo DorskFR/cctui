@@ -1,17 +1,20 @@
 import type { SoftEdit } from '../account-editor.logic';
 import { providerFamily } from '$lib/providers';
 
-export type PageId =
-	| 'aliases'
-	| 'limits'
-	| 'ui'
-	| 'privacy'
-	| 'tools'
-	| 'speed'
-	| 'reasoning'
-	| 'gateway'
-	| 'models'
-	| 'advanced';
+export const PAGE_IDS = [
+	'aliases',
+	'limits',
+	'ui',
+	'privacy',
+	'tools',
+	'speed',
+	'reasoning',
+	'gateway',
+	'models',
+	'advanced'
+] as const;
+
+export type PageId = (typeof PAGE_IDS)[number];
 
 /** Catalog group titles (settings keys are Title Case, env vars lowercase)
  *  routed to a drawer page; anything unmapped lands on Advanced. */
@@ -35,6 +38,10 @@ const GROUP_PAGE: Record<string, PageId> = {
 	model: 'gateway',
 	sessions: 'gateway'
 };
+
+export function isPageId(v: string): v is PageId {
+	return (PAGE_IDS as readonly string[]).includes(v);
+}
 
 export function groupPage(title: string): PageId {
 	return GROUP_PAGE[title] ?? 'advanced';

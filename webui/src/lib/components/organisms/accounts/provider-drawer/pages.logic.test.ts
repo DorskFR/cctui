@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { diffCount, groupPage, looseSettings, pagesFor, settingsSlice, softFlat } from './pages.logic';
+import {
+	diffCount,
+	groupPage,
+	isPageId,
+	looseSettings,
+	pagesFor,
+	settingsSlice,
+	softFlat
+} from './pages.logic';
 
 describe('pagesFor', () => {
 	it('gives an anthropic credential the settings pages and its model list', () => {
@@ -90,6 +98,19 @@ describe('settingsSlice', () => {
 
 	it('ignores a non-object env blob', () => {
 		expect(settingsSlice({ env: 'nope' }, [], ['FOO'])).toEqual({});
+	});
+});
+
+describe('isPageId', () => {
+	it('accepts every page a provider can land on', () => {
+		for (const id of pagesFor('anthropic')) expect(isPageId(id)).toBe(true);
+		for (const id of pagesFor('fireworks')) expect(isPageId(id)).toBe(true);
+	});
+
+	it('rejects a deep link pointing at nothing', () => {
+		expect(isPageId('credential')).toBe(false);
+		expect(isPageId('')).toBe(false);
+		expect(isPageId('__proto__')).toBe(false);
 	});
 });
 

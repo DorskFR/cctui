@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { goto } from '$app/navigation';
 	import {
 		useAccounts,
 		useAccountActions,
@@ -133,10 +134,10 @@
 								setRedirect(a, targetId, untilHours, families)}
 							onclearredirect={clearRedirect}
 							{onmovepool}
-							onedit={() => editor?.openEditAccount(a)}
+							onedit={() => goto(`/accounts/${a.id}`)}
 							onremove={() => removeAccount(a)}
 							onaddprovider={() => editor?.openAddProvider(a)}
-							oneditprovider={(p) => editor?.openEditProvider(a, p)}
+							oneditprovider={(p) => goto(`/accounts/${a.id}?provider=${p.id}`)}
 							onreauthprovider={(p) => editor?.reauth(a, p)}
 							onremoveprovider={(p) => removeProvider(a, p)}
 						/>
