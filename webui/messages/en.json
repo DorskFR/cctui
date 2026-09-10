@@ -1665,5 +1665,11 @@
 	"provider_page_speed": "Speed & cost",
 	"provider_page_reasoning": "Reasoning",
 	"spawn_fast_label": "Fast mode",
-	"spawn_fast_hint": "1.5x speed, increased usage. Same model, same quality."
+	"spawn_fast_hint": "1.5x speed, increased usage. Same model, same quality.",
+	"home_sessions_periods_title": "Sessions started",
+	"home_sessions_today": "Today",
+	"home_sessions_yesterday": "Yesterday",
+	"home_sessions_week": "This week",
+	"home_sessions_month": "This month",
+	"home_sessions_periods_hint": "Local time · week starts Monday · archived sessions included"
 }

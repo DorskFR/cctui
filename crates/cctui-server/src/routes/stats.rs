@@ -80,6 +80,34 @@ pub async fn recent_dirs(
     Ok(Json(rows.into_iter().map(|(d,)| d).collect()))
 }
 
+/// IANA timezone from the browser; unknown or missing zones fall back to UTC.
+#[derive(Debug, Default, Deserialize)]
+pub struct SessionStatsParams {
+    pub timezone: Option<String>,
+}
+
+// Calendar arithmetic happens before conversion to UTC, preserving DST boundaries.
+const SESSION_COUNTS_SQL: &str = "
+    WITH zone AS (
+        SELECT COALESCE((SELECT name FROM pg_timezone_names WHERE name = $2), 'UTC') AS tz
+    ), boundaries AS (
+        SELECT
+            date_trunc('day', $3::timestamptz AT TIME ZONE tz) AT TIME ZONE tz AS today,
+            (date_trunc('day', $3::timestamptz AT TIME ZONE tz) - interval '1 day') AT TIME ZONE tz AS yesterday,
+            date_trunc('week', $3::timestamptz AT TIME ZONE tz) AT TIME ZONE tz AS week,
+            date_trunc('month', $3::timestamptz AT TIME ZONE tz) AT TIME ZONE tz AS month
+        FROM zone
+    )
+    SELECT COUNT(*), COUNT(*) FILTER (WHERE s.status = 'archived'),
+        COUNT(*) FILTER (WHERE s.registered_at >= b.today AND s.registered_at <= $3),
+        COUNT(*) FILTER (WHERE s.registered_at >= b.yesterday AND s.registered_at < b.today),
+        COUNT(*) FILTER (WHERE s.registered_at >= b.week AND s.registered_at <= $3),
+        COUNT(*) FILTER (WHERE s.registered_at >= b.month AND s.registered_at <= $3)
+    FROM sessions s LEFT JOIN machines m ON m.id = s.machine_uuid
+    CROSS JOIN boundaries b
+    WHERE ($1::uuid IS NULL OR m.user_id = $1)
+";
+
 /// `GET /sessions/stats` — aggregate session counts for the Overview page.
 ///
 /// The session list is capped (`LIMIT 25`), so counting client-side over it
@@ -90,6 +118,7 @@ pub async fn recent_dirs(
 pub async fn session_stats(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
+    Query(params): Query<SessionStatsParams>,
 ) -> Result<Json<SessionStats>, (StatusCode, Json<ApiError>)> {
     let db_err = |e: sqlx::Error| {
         tracing::error!("db error (session stats): {e}");
@@ -99,15 +128,14 @@ pub async fn session_stats(
 
     // All counts scoped to the caller (NULL = admin sees all) via the
     // machine_uuid -> machines.user_id join.
-    let (total, archived): (i64, i64) = sqlx::query_as(
-        "SELECT COUNT(*), COUNT(*) FILTER (WHERE s.status = 'archived') \
-         FROM sessions s LEFT JOIN machines m ON m.id = s.machine_uuid \
-         WHERE ($1::uuid IS NULL OR m.user_id = $1)",
-    )
-    .bind(uid)
-    .fetch_one(&state.pool)
-    .await
-    .map_err(db_err)?;
+    let (total, archived, today, yesterday, week, month): (i64, i64, i64, i64, i64, i64) =
+        sqlx::query_as(SESSION_COUNTS_SQL)
+            .bind(uid)
+            .bind(params.timezone.as_deref().unwrap_or("UTC"))
+            .bind(Utc::now())
+            .fetch_one(&state.pool)
+            .await
+            .map_err(db_err)?;
 
     // Live = sessions currently in the registry whose derived status is
     // active/new (matches how the list surfaces "live"). Scope to the caller's
@@ -176,7 +204,7 @@ pub async fn session_stats(
         .try_into()
         .unwrap_or(i64::MAX);
 
-    Ok(Json(SessionStats { total, live, needs_input, archived }))
+    Ok(Json(SessionStats { total, live, needs_input, archived, today, yesterday, week, month }))
 }
 
 /// Query params for `GET /sessions/stats/tokens`. `tz_offset` is the caller's
@@ -457,6 +485,72 @@ fn usage_db_err(e: &sqlx::Error) -> (StatusCode, Json<ApiError>) {
 mod tests {
     use super::{day_start_for_offset, granularity_for_days};
     use chrono::{DateTime, Duration, TimeZone, Utc};
+
+    #[tokio::test]
+    async fn session_calendar_counts_over_db() {
+        let Some(url) = crate::routes::gateway::test_db_url("session_calendar_counts_over_db")
+        else {
+            return;
+        };
+        let pool = sqlx::PgPool::connect(&url).await.expect("test database");
+        let mut tx = pool.begin().await.unwrap();
+        // Temporary tables isolate the exact production query from shared fixtures.
+        sqlx::raw_sql(
+            "CREATE TEMP TABLE machines (id uuid, user_id uuid) ON COMMIT DROP;
+             CREATE TEMP TABLE sessions (machine_uuid uuid, status text, registered_at timestamptz) ON COMMIT DROP;
+             INSERT INTO machines VALUES
+                ('00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000011'),
+                ('00000000-0000-0000-0000-000000000002', '00000000-0000-0000-0000-000000000022');
+             INSERT INTO sessions
+                SELECT '00000000-0000-0000-0000-000000000001'::uuid, 'archived', '2026-10-26 00:00Z'::timestamptz
+                FROM generate_series(1, 30);
+             INSERT INTO sessions VALUES
+                ('00000000-0000-0000-0000-000000000001', 'active', '2026-10-24 22:00Z'),
+                ('00000000-0000-0000-0000-000000000001', 'active', '2026-10-25 22:59:59Z'),
+                ('00000000-0000-0000-0000-000000000001', 'active', '2026-09-30 22:00Z'),
+                ('00000000-0000-0000-0000-000000000001', 'active', '2026-09-30 21:59:59Z'),
+                ('00000000-0000-0000-0000-000000000002', 'active', '2026-10-26 01:00Z');"
+        ).execute(&mut *tx).await.unwrap();
+        let owner = uuid::Uuid::from_u128(17);
+        let now = Utc.with_ymd_and_hms(2026, 10, 26, 12, 0, 0).unwrap();
+        for (uid, timezone, expected) in [
+            // Monday following the DST change: yesterday lasted 25 hours.
+            (Some(owner), "Europe/Paris", (34, 30, 30, 2, 30, 33)),
+            (None, "Europe/Paris", (35, 30, 31, 2, 31, 34)),
+            (Some(owner), "UTC", (34, 30, 30, 1, 30, 32)),
+            (Some(owner), "unknown/timezone", (34, 30, 30, 1, 30, 32)),
+            (Some(uuid::Uuid::from_u128(99)), "Europe/Paris", (0, 0, 0, 0, 0, 0)),
+        ] {
+            let counts: (i64, i64, i64, i64, i64, i64) = sqlx::query_as(super::SESSION_COUNTS_SQL)
+                .bind(uid)
+                .bind(timezone)
+                .bind(now)
+                .fetch_one(&mut *tx)
+                .await
+                .unwrap();
+            assert_eq!(counts, expected, "timezone={timezone}, owner={uid:?}");
+        }
+        // New year, month and week boundaries are independent calendar periods.
+        sqlx::raw_sql(
+            "TRUNCATE sessions; INSERT INTO sessions VALUES
+            (NULL, 'archived', '2026-12-31 23:00Z'),
+            (NULL, 'active', '2026-12-31 22:59:59Z'),
+            (NULL, 'active', '2026-12-27 23:00Z'),
+            (NULL, 'active', '2026-12-27 22:59:59Z');",
+        )
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+        let counts: (i64, i64, i64, i64, i64, i64) = sqlx::query_as(super::SESSION_COUNTS_SQL)
+            .bind(None::<uuid::Uuid>)
+            .bind("Europe/Paris")
+            .bind(Utc.with_ymd_and_hms(2027, 1, 1, 12, 0, 0).unwrap())
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+        assert_eq!(counts, (4, 1, 1, 1, 3, 1));
+        tx.rollback().await.unwrap();
+    }
 
     #[test]
     fn granularity_hourly_for_short_ranges() {

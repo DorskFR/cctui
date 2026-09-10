@@ -1665,5 +1665,11 @@
 	"provider_page_speed": "Vitesse & coût",
 	"provider_page_reasoning": "Raisonnement",
 	"spawn_fast_label": "Mode rapide",
-	"spawn_fast_hint": "1,5x plus rapide, consommation accrue. Même modèle, même qualité."
+	"spawn_fast_hint": "1,5x plus rapide, consommation accrue. Même modèle, même qualité.",
+	"home_sessions_periods_title": "Sessions démarrées",
+	"home_sessions_today": "Aujourd’hui",
+	"home_sessions_yesterday": "Hier",
+	"home_sessions_week": "Cette semaine",
+	"home_sessions_month": "Ce mois-ci",
+	"home_sessions_periods_hint": "Heure locale · depuis lundi pour la semaine · sessions archivées incluses"
 }

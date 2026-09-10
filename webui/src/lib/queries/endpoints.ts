@@ -141,7 +141,8 @@ export const endpoints = {
     }),
   /** Aggregate session counts for the Overview — correct past the list's
    * 25-row display cap (the list-derived counts are not). */
-  sessionStats: () => api.get<SessionStats>("/sessions/stats"),
+  sessionStats: (timezone = "UTC") =>
+    api.get<SessionStats>(`/sessions/stats?timezone=${encodeURIComponent(timezone)}`),
   /** Every label known to the server — feeds the picker + filter. */
   labels: () => api.get<LabelListResponse>("/labels"),
   /** Saved messages, newest first. `q` filters over title/body/note. */

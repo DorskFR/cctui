@@ -18,7 +18,7 @@ export const useSessions = (
 export const useSessionStats = () =>
   createQuery(() => ({
     queryKey: qk.sessionStats,
-    queryFn: endpoints.sessionStats,
+    queryFn: () => endpoints.sessionStats(Intl.DateTimeFormat().resolvedOptions().timeZone),
     refetchInterval: 15_000,
   }));
 
