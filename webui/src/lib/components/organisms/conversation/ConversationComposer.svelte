@@ -242,15 +242,11 @@
 		typeof window.matchMedia === 'function' &&
 		window.matchMedia('(pointer: coarse)').matches;
 
+	// Plain Enter is the Textarea's `submitOn`; only history nav and the
+	// always-available mod+Enter chord are handled here.
 	function onKey(e: KeyboardEvent) {
 		if (nav.handleKey(e)) return;
-		if (e.key !== 'Enter') return;
-		if (e.ctrlKey || e.metaKey) {
-			e.preventDefault();
-			send();
-			return;
-		}
-		if (!coarsePointer && !e.shiftKey) {
+		if (e.key === 'Enter' && !coarsePointer && (e.ctrlKey || e.metaKey)) {
 			e.preventDefault();
 			send();
 		}
@@ -280,7 +276,7 @@
 				<!-- File picker. Drag-and-drop onto the conversation pane also
 				     adds attachments. Icon-only: the label is hidden (a11y-only) so the
 				     control stays a compact square matching the textarea/Send height. -->
-				<FileButton label={m.composer_attach_files()} multiple iconOnly onfiles={addFiles} />
+				<FileButton label={m.composer_attach_files()} multiple iconOnly control onfiles={addFiles} />
 			{/if}
 			<!-- Starts at one row (Textarea's baked-in min-height) and grows with
 			     content (autoresize). The top handle drags a min-height floor so
@@ -300,6 +296,9 @@
 						rows={1}
 						autoresize
 						resize="top"
+						maxHeight="40vh"
+						submitOn={coarsePointer ? 'mod-enter' : 'enter'}
+						onsubmit={send}
 						data-journey="message"
 						aria-label={m.a11y_composer_message()}
 						placeholder={dragActive
@@ -323,7 +322,8 @@
 			     keeps its expected high-contrast primary colors. -->
 			<Button
 				variant="primary"
-				class="send"
+				control
+				shrink={false}
 				disabled={uploading || (!input.trim() && attachments.length === 0)}
 				onclick={send}
 				title={cacheCold
@@ -372,14 +372,13 @@
 		/* Never let the row exceed the composer width — nowrap + min-width:0 on the
 		   textarea keeps it contained. */
 		min-width: 0;
-		/* Single-row control height, tracking the Textarea's font-scaled single line
-		   so Send + the attach FileButton stay the same height as a rows=1 input at
-		   every font scale. The buttons' own floors are a fixed 2.5rem, but
-		   the textarea grows with --fs-base (form-control font is max(16px,--fs-base))
-		   while a 0.8125rem-label button does not — leaving Send shorter at the largest
+		/* Retune the shared control height the `control` prop reads so Send and the
+		   attach FileButton track the Textarea's font-scaled single line. The kit's
+		   own 2.75rem is fixed, but the textarea grows with --fs-base (form-control
+		   font is max(16px,--fs-base)) — leaving the buttons shorter at the largest
 		   scale. Mirror the Textarea's metrics: line-box (max(16px,--fs-base) ×
 		   --lh-tight) + 2×--sp-2 vertical padding + 2px border, floored at 2.5rem. */
-		--composer-ctl-h: max(
+		--control-height: max(
 			2.5rem,
 			calc(max(16px, var(--fs-base)) * var(--lh-tight) + 2 * var(--sp-2) + 2px)
 		);
@@ -389,17 +388,6 @@
 	.composer-input {
 		flex: 1;
 		min-width: 0;
-	}
-	/* Cap the autoresizing textarea's growth so a long message can't push the
-	   composer controls (textarea bottom + Send) off the bottom of the viewport
-	   with no way to reach Send. The autoresize action grows the
-	   element's inline `height`; `max-height` clamps it and the textarea scrolls
-	   internally past the cap. 40vh keeps the conversation + composer visible at
-	   any message length; the composer itself stays pinned as the last flex child
-	   of the column-flex drawer. */
-	.composer-input :global(.textarea) {
-		max-height: 40vh;
-		overflow-y: auto;
 	}
 	.attachments {
 		width: 100%;
@@ -416,18 +404,6 @@
 		align-items: center;
 		gap: var(--sp-2);
 		margin-left: auto;
-	}
-	/* Send button is a child Button; keep it from shrinking in the flex row. Its
-	   height comes from the Button atom's md size (2.5rem), matching the attach
-	   FileButton and the collapsed Textarea. The cold + final-minute cost states
-	   are conveyed by the button LABEL (countdown/❄️/burst) — not a `tone` recolor,
-	   which clashed with the primary fill. */
-	.composer-row :global(.send),
-	.composer-row :global(.file-btn) {
-		flex: none;
-		/* Track the font-scaled single-row height so all three composer controls
-		   (attach · textarea · Send) stay level at every scale. */
-		min-height: var(--composer-ctl-h);
 	}
 	/* Fixed-width, tabular digits so "59s"→"0s" doesn't jitter the button. The
 	   countdown <span> is in this component's markup, so a scoped rule reaches it. */

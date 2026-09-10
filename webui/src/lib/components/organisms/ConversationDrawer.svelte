@@ -602,9 +602,9 @@
 				     keeps an obvious way back to the switcher. -->
 				<div class="attn-banner soft-limit-notice">
 					<span>{m.conversation_soft_limit_reached({ account: stream.softLimit.account_name })}</span>
-					<button type="button" class="soft-limit-switch" onclick={() => (acctModalOpen = true)}>
+					<Button size="sm" tone="warn" onclick={() => (acctModalOpen = true)}>
 						{m.conversation_switch_account()}
-					</button>
+					</Button>
 				</div>
 			{/if}
 
@@ -752,19 +752,5 @@
 		align-items: center;
 		justify-content: space-between;
 		gap: var(--sp-2);
-	}
-	.soft-limit-switch {
-		flex: none;
-		cursor: pointer;
-		padding: var(--sp-1) var(--sp-2);
-		font-size: var(--fs-sm);
-		font-weight: var(--fw-medium);
-		color: var(--warn);
-		background: none;
-		border: 1px solid color-mix(in srgb, var(--warn) 40%, var(--border-strong));
-		border-radius: var(--r-sm);
-	}
-	.soft-limit-switch:hover {
-		background: color-mix(in srgb, var(--warn) 12%, transparent);
 	}
 </style>
