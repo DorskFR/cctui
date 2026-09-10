@@ -7,10 +7,9 @@
 	import SessionMention from '$lib/components/molecules/SessionMention.svelte';
 	import type { GitInfo } from '@bindings/GitInfo';
 	import MachinePicker from '$lib/components/molecules/MachinePicker.svelte';
-	import { FilterInput, Icon, Input, Textarea, type Query } from '@dorsk/tsumikit';
-	import { makeCwdSchema, cwdToQuery, dirFromQuery } from './cwdSchema';
+	import { Callout, Field, Icon, Input, Kbd, Link, Textarea } from '@dorsk/tsumikit';
+	import { cwdSuggestions } from './cwdComplete';
 	import { gitBadge, makeGitInfoWatcher } from './cwdGitInfo';
-	import { submitChordLabel, isSubmitChord } from '$lib/platform';
 	import { makeClipboardFiles } from '$lib/attachments';
 	import type { Form } from './types';
 	import { m } from '$lib/paraglide/messages';
@@ -46,14 +45,6 @@
 		el: () => promptEl
 	});
 
-	// The machine picker + working dir share one FilterInput; `form.working_dir`
-	// is the source of truth and the raw query mirrors it both ways, `lastDir`
-	// tracking what the query represents so the two syncs never loop.
-	const cwdSchema = makeCwdSchema(
-		() => form.machine_id,
-		() => recentDirs,
-		m.spawn_cwd_label()
-	);
 	const clipboardFiles = makeClipboardFiles();
 	function onPromptPaste(e: ClipboardEvent) {
 		if (!onfiles || !e.clipboardData) return;
@@ -63,24 +54,15 @@
 		onfiles(files);
 	}
 
-	// svelte-ignore state_referenced_locally
-	let cwdRaw = $state(cwdToQuery(form.working_dir));
-	// svelte-ignore state_referenced_locally
-	let lastDir = form.working_dir;
-	function onCwdChange(q: Query) {
-		const dir = dirFromQuery(q);
-		// The input re-emits its unchanged query on mount and on rerenders; only
-		// a real move away from what the field held is a user edit.
-		if (dir === lastDir) return;
-		lastDir = dir;
-		form.working_dir = dir;
+	let cwdOptions = $state<string[]>([]);
+	let cwdToken = 0;
+	async function loadCwdOptions(query: string) {
+		const token = ++cwdToken;
+		const opts = await cwdSuggestions(form.machine_id, query, recentDirs);
+		if (token === cwdToken) cwdOptions = opts;
 	}
 	$effect(() => {
-		const dir = form.working_dir;
-		if (dir !== lastDir) {
-			lastDir = dir;
-			cwdRaw = cwdToQuery(dir);
-		}
+		void loadCwdOptions(form.working_dir);
 	});
 
 	const fetchGitInfo = useGitInfo();
@@ -99,19 +81,32 @@
 	});
 </script>
 
+{#if machines.length === 0}
+	<Callout tone="warn" icon="info">
+		{m.spawn_no_machines_hint()}
+		<Link href="/">{m.nav_overview()}</Link>
+	</Callout>
+{/if}
+
 <div class="where" data-journey="where">
-	<FilterInput
-		schema={cwdSchema}
-		bind:value={cwdRaw}
-		icon={null}
-		showClear={false}
-		placeholder="/home/user/project"
-		onchange={onCwdChange}
-	>
-		{#snippet inline()}
+	<Field label={m.spawn_cwd_label()} for="sp-cwd">
+		<div class="cwd-row">
 			<MachinePicker bind:value={form.machine_id} {machines} label={m.spawn_machine_label()} />
-		{/snippet}
-	</FilterInput>
+			<Input
+				id="sp-cwd"
+				grow
+				mono
+				list="sp-cwd-options"
+				autocomplete="off"
+				spellcheck={false}
+				placeholder="/home/user/project"
+				bind:value={form.working_dir}
+			/>
+			<datalist id="sp-cwd-options" aria-label={m.spawn_cwd_suggestions_aria()}>
+				{#each cwdOptions as d (d)}<option value={d}></option>{/each}
+			</datalist>
+		</div>
+	</Field>
 	<!-- Always one line tall so the form doesn't jump when a branch resolves. -->
 	<span class="branch" title={cwdBadge ? cwdBadgeTitle : undefined}>
 		{#if cwdBadge}
@@ -129,40 +124,49 @@
 	bind:value={form.name}
 />
 
-<div class="prompt-bar">
-	<PromptHistoryMenu
-		onpick={(v) => {
-			nav.recall(v);
-			promptEl?.focus();
-		}}
-	/>
-</div>
-
-<SessionMention bind:value={form.prompt} el={promptEl} sessions={mentionSessions}>
-	<Textarea
-		data-journey="prompt"
-		id="sp-prompt"
-		rows={10}
-		aria-label={m.spawn_prompt_label()}
-		placeholder={m.spawn_prompt_placeholder_chord({ chord: submitChordLabel() })}
-		bind:value={form.prompt}
-		bind:el={promptEl}
-		resize="bottom"
-		onpaste={onPromptPaste}
-		onkeydown={(e: KeyboardEvent) => {
-			if (nav.handleKey(e)) return;
-			if (onsubmit && isSubmitChord(e)) {
-				e.preventDefault();
-				onsubmit();
-			}
-		}}
-	/>
-</SessionMention>
+<Field label={m.spawn_prompt_label()} for="sp-prompt">
+	{#snippet hint()}
+		<Kbd keys="mod+enter" />
+		{m.spawn_submit_hint_spawn()}
+	{/snippet}
+	<div class="prompt-bar">
+		<PromptHistoryMenu
+			onpick={(v) => {
+				nav.recall(v);
+				promptEl?.focus();
+			}}
+		/>
+	</div>
+	<SessionMention bind:value={form.prompt} el={promptEl} sessions={mentionSessions}>
+		<Textarea
+			data-journey="prompt"
+			id="sp-prompt"
+			rows={10}
+			placeholder={m.spawn_prompt_placeholder()}
+			bind:value={form.prompt}
+			bind:el={promptEl}
+			resize="bottom"
+			submitOn="mod-enter"
+			onsubmit={() => onsubmit?.()}
+			onpaste={onPromptPaste}
+			onkeydown={(e: KeyboardEvent) => {
+				nav.handleKey(e);
+			}}
+		/>
+	</SessionMention>
+</Field>
 
 <style>
 	.prompt-bar {
 		display: flex;
 		justify-content: flex-end;
+		margin-bottom: var(--sp-1);
+	}
+	.cwd-row {
+		display: flex;
+		align-items: center;
+		gap: var(--sp-2);
+		min-width: 0;
 	}
 	.where {
 		display: flex;
