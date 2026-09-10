@@ -1,5 +1,5 @@
 import { defineConfig } from '@dorsk/journey';
-import { isLive } from './src/lib/journeys/live';
+import { isLive } from './src/lib/journeys/live.ts';
 
 const url = process.env.JOURNEY_APP_URL ?? 'http://localhost:5273';
 const api = process.env.CCTUI_PROXY ?? 'http://localhost:8700';
