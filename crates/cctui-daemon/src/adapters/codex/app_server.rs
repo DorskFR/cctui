@@ -732,16 +732,69 @@ pub(super) fn record_codex_version(response: &Value) -> Option<String> {
     version
 }
 
-fn thread_start_req(cwd: &str) -> Value {
-    json!({"jsonrpc": "2.0", "id": ID_THREAD_START, "method": "thread/start", "params": {"cwd": cwd}})
+/// The gateway routing block as a per-thread `ThreadStart`/`ThreadResumeParams`
+/// input rather than a process-level `-c` flag, so one app-server can host
+/// threads for several accounts at once.
+///
+/// The bearer is a literal `authorization` header instead of the `env_key`
+/// indirection, which resolves against the *process* env and so cannot differ
+/// per thread. Codex persists only `model_provider = "cctui"` in the rollout —
+/// never the definition or the secret — so this must be re-supplied on every
+/// resume or the thread fails config load.
+#[must_use]
+pub fn gateway_thread_config(
+    env: &std::collections::BTreeMap<String, String>,
+) -> Option<(String, Value)> {
+    let base_url = env.get("OPENAI_BASE_URL")?;
+    let mut headers = json!({"x-openai-actor-authorization": "cctui-gateway"});
+    let mut provider = json!({
+        "name": "cctui-gateway",
+        "base_url": base_url,
+        "wire_api": "responses",
+    });
+    match env.get("OPENAI_API_KEY").filter(|k| !k.is_empty()) {
+        Some(key) => headers["authorization"] = json!(format!("Bearer {key}")),
+        None => provider["env_key"] = json!("OPENAI_API_KEY"),
+    }
+    provider["http_headers"] = headers;
+    Some(("cctui".to_owned(), json!({"model_providers": {"cctui": provider}})))
 }
 
-fn thread_resume_req(thread_id: &str, cwd: &str) -> Value {
+/// Attach the per-thread provider + credential to a `thread/{start,resume,fork}`
+/// params object. A session with no gateway binding keeps codex's default
+/// provider.
+fn with_thread_config(
+    mut params: Value,
+    env: &std::collections::BTreeMap<String, String>,
+) -> Value {
+    if let Some((provider, config)) = gateway_thread_config(env)
+        && let Some(map) = params.as_object_mut()
+    {
+        map.insert("modelProvider".to_owned(), json!(provider));
+        map.insert("config".to_owned(), config);
+    }
+    params
+}
+
+fn thread_start_req(cwd: &str, env: &std::collections::BTreeMap<String, String>) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "id": ID_THREAD_START,
+        "method": "thread/start",
+        "params": with_thread_config(json!({"cwd": cwd}), env),
+    })
+}
+
+fn thread_resume_req(
+    thread_id: &str,
+    cwd: &str,
+    env: &std::collections::BTreeMap<String, String>,
+) -> Value {
     json!({
         "jsonrpc": "2.0",
         "id": ID_THREAD_START,
         "method": "thread/resume",
-        "params": {"threadId": thread_id, "cwd": cwd},
+        "params": with_thread_config(json!({"threadId": thread_id, "cwd": cwd}), env),
     })
 }
 
@@ -750,12 +803,16 @@ fn thread_resume_req(thread_id: &str, cwd: &str) -> Value {
 /// `thread/start`, so the response is parsed through the same `ID_THREAD_START`
 /// path. Model/effort overrides ride on the subprocess `-c` flags (set in the
 /// command pump), mirroring the spawn path, so they apply to the forked thread.
-fn thread_fork_req(parent_thread_id: &str, cwd: &str) -> Value {
+fn thread_fork_req(
+    parent_thread_id: &str,
+    cwd: &str,
+    env: &std::collections::BTreeMap<String, String>,
+) -> Value {
     json!({
         "jsonrpc": "2.0",
         "id": ID_THREAD_START,
         "method": "thread/fork",
-        "params": {"threadId": parent_thread_id, "cwd": cwd},
+        "params": with_thread_config(json!({"threadId": parent_thread_id, "cwd": cwd}), env),
     })
 }
 
@@ -1813,12 +1870,12 @@ impl CodexSession {
 
     fn thread_request(&self) -> (Value, &'static str) {
         match &self.launch {
-            SessionLaunch::Fresh { .. } => (thread_start_req(&self.cwd), "thread/start"),
+            SessionLaunch::Fresh { .. } => (thread_start_req(&self.cwd, &self.env), "thread/start"),
             SessionLaunch::Resume { thread_id, .. } => {
-                (thread_resume_req(thread_id, &self.cwd), "thread/resume")
+                (thread_resume_req(thread_id, &self.cwd, &self.env), "thread/resume")
             }
             SessionLaunch::Fork { parent_thread_id, .. } => {
-                (thread_fork_req(parent_thread_id, &self.cwd), "thread/fork")
+                (thread_fork_req(parent_thread_id, &self.cwd, &self.env), "thread/fork")
             }
         }
     }
@@ -3661,12 +3718,15 @@ mod tests {
     #[test]
     fn request_builders_shape() {
         assert_eq!(initialize_req()["method"], "initialize");
-        assert_eq!(thread_start_req("/tmp")["params"]["cwd"], "/tmp");
-        let resume = thread_resume_req("tid", "/repo");
+        assert_eq!(
+            thread_start_req("/tmp", &std::collections::BTreeMap::default())["params"]["cwd"],
+            "/tmp"
+        );
+        let resume = thread_resume_req("tid", "/repo", &std::collections::BTreeMap::default());
         assert_eq!(resume["method"], "thread/resume");
         assert_eq!(resume["params"]["threadId"], "tid");
         assert_eq!(resume["params"]["cwd"], "/repo");
-        let fork = thread_fork_req("parent-tid", "/repo");
+        let fork = thread_fork_req("parent-tid", "/repo", &std::collections::BTreeMap::default());
         assert_eq!(fork["method"], "thread/fork");
         assert_eq!(fork["params"]["threadId"], "parent-tid");
         assert_eq!(fork["params"]["cwd"], "/repo");
@@ -4581,9 +4641,9 @@ done
                 .expect("retained schema bundle is valid JSON");
         let reqs = [
             initialize_req(),
-            thread_start_req("/cwd"),
-            thread_resume_req("tid", "/cwd"),
-            thread_fork_req("tid", "/cwd"),
+            thread_start_req("/cwd", &std::collections::BTreeMap::default()),
+            thread_resume_req("tid", "/cwd", &std::collections::BTreeMap::default()),
+            thread_fork_req("tid", "/cwd", &std::collections::BTreeMap::default()),
             thread_name_set_req(1, "tid", "name"),
             thread_lifecycle_req(2, LifecycleOp::Archive, "tid"),
             thread_lifecycle_req(3, LifecycleOp::Unarchive, "tid"),
@@ -4830,5 +4890,69 @@ done
             .expect("child survived SIGTERM")
             .unwrap();
         assert!(!status.success());
+    }
+
+    #[test]
+    fn per_thread_config_carries_a_literal_bearer_not_an_env_key() {
+        let env: std::collections::BTreeMap<String, String> = [
+            ("OPENAI_BASE_URL".to_owned(), "https://gw.example/v1".to_owned()),
+            ("OPENAI_API_KEY".to_owned(), "SECRET-A".to_owned()),
+        ]
+        .into_iter()
+        .collect();
+        let (provider, config) = gateway_thread_config(&env).expect("gateway-bound session");
+        assert_eq!(provider, "cctui");
+        let p = &config["model_providers"]["cctui"];
+        assert_eq!(p["base_url"], "https://gw.example/v1");
+        assert_eq!(p["wire_api"], "responses");
+        assert_eq!(p["http_headers"]["authorization"], "Bearer SECRET-A");
+        assert_eq!(p["http_headers"]["x-openai-actor-authorization"], "cctui-gateway");
+        assert!(p.get("env_key").is_none(), "a literal bearer must not also indirect via env");
+    }
+
+    /// Without a credential the definition must still be emitted, or codex
+    /// fails config load on a rollout that persisted `model_provider`.
+    #[test]
+    fn per_thread_config_falls_back_to_env_key_without_a_credential() {
+        let env: std::collections::BTreeMap<String, String> =
+            [("OPENAI_BASE_URL".to_owned(), "https://gw.example/v1".to_owned())]
+                .into_iter()
+                .collect();
+        let (_, config) = gateway_thread_config(&env).expect("gateway-bound session");
+        let p = &config["model_providers"]["cctui"];
+        assert_eq!(p["env_key"], "OPENAI_API_KEY");
+        assert!(p["http_headers"].get("authorization").is_none());
+    }
+
+    #[test]
+    fn an_unbound_session_keeps_the_default_provider() {
+        assert!(gateway_thread_config(&std::collections::BTreeMap::new()).is_none());
+        let req = thread_start_req("/tmp", &std::collections::BTreeMap::new());
+        assert!(req["params"].get("config").is_none());
+        assert!(req["params"].get("modelProvider").is_none());
+    }
+
+    #[test]
+    fn start_resume_and_fork_all_carry_the_per_thread_credential() {
+        let env: std::collections::BTreeMap<String, String> = [
+            ("OPENAI_BASE_URL".to_owned(), "https://gw.example/v1".to_owned()),
+            ("OPENAI_API_KEY".to_owned(), "SECRET-B".to_owned()),
+        ]
+        .into_iter()
+        .collect();
+        for req in [
+            thread_start_req("/repo", &env),
+            thread_resume_req("tid", "/repo", &env),
+            thread_fork_req("tid", "/repo", &env),
+        ] {
+            let params = &req["params"];
+            assert_eq!(params["modelProvider"], "cctui", "{}", req["method"]);
+            assert_eq!(
+                params["config"]["model_providers"]["cctui"]["http_headers"]["authorization"],
+                "Bearer SECRET-B",
+                "{}",
+                req["method"]
+            );
+        }
     }
 }
