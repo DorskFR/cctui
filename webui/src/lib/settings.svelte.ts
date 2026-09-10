@@ -460,6 +460,12 @@ class Settings {
 			} catch {
 				this.state = mergeDefaults(null);
 			}
+			const flush = () => this.flush();
+			window.addEventListener('pagehide', flush);
+			// Mobile browsers may never fire `pagehide` before killing the tab.
+			document.addEventListener('visibilitychange', () => {
+				if (document.visibilityState === 'hidden') flush();
+			});
 		}
 	}
 
@@ -495,29 +501,42 @@ class Settings {
 		}
 	}
 
+	private sendSave(keepalive = false) {
+		const body: SettingsPayload = {
+			version: CURRENT_VERSION,
+			data: this.state as unknown as SettingsPayload['data']
+		};
+		// Fire-and-forget; the cache already holds the value if the PUT drops.
+		void api
+			.put('/settings', body, keepalive ? { keepalive: true } : undefined)
+			.then(() => {
+				// A later mutation re-armed the timer: stay pending for that one.
+				if (this.saveTimer) return;
+				this.saveStatus = 'saved';
+				this.savedAt = Date.now();
+			})
+			.catch(() => {
+				if (!this.saveTimer) this.saveStatus = 'error';
+			});
+	}
+
 	private scheduleSave() {
 		if (!browser || !auth.isAuthed) return;
 		if (this.saveTimer) clearTimeout(this.saveTimer);
 		this.saveStatus = 'pending';
 		this.saveTimer = setTimeout(() => {
 			this.saveTimer = null;
-			const body: SettingsPayload = {
-				version: CURRENT_VERSION,
-				data: this.state as unknown as SettingsPayload['data']
-			};
-			// Fire-and-forget; the cache already holds the value if the PUT drops.
-			void api
-				.put('/settings', body)
-				.then(() => {
-					// A later mutation re-armed the timer: stay pending for that one.
-					if (this.saveTimer) return;
-					this.saveStatus = 'saved';
-					this.savedAt = Date.now();
-				})
-				.catch(() => {
-					if (!this.saveTimer) this.saveStatus = 'error';
-				});
+			this.sendSave();
 		}, SAVE_DEBOUNCE_MS);
+	}
+
+	/** Sends a queued PUT immediately. Without this, a reload inside the debounce
+	 *  window leaves the value cache-only and the next server fetch overwrites it. */
+	flush() {
+		if (!this.saveTimer) return;
+		clearTimeout(this.saveTimer);
+		this.saveTimer = null;
+		this.sendSave(true);
 	}
 
 	/** Persist after a mutation: cache immediately, debounce the server PUT. */
