@@ -2,6 +2,7 @@
 	import type { Snippet } from 'svelte';
 	import { IconButton } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
+	import { draggedProfile, setDraggedProfile } from './profiles';
 
 	let {
 		id,
@@ -10,8 +11,16 @@
 		usage = '',
 		selected,
 		open,
+		first = false,
+		last = false,
+		dragging = false,
+		dropTarget = false,
 		onselect,
 		ontoggle,
+		onmove,
+		ondropped,
+		onsourcechange,
+		onover,
 		children
 	}: {
 		id: string;
@@ -20,13 +29,57 @@
 		usage?: string;
 		selected: boolean;
 		open: boolean;
+		first?: boolean;
+		last?: boolean;
+		dragging?: boolean;
+		dropTarget?: boolean;
 		onselect: () => void;
 		ontoggle: () => void;
+		onmove?: (delta: -1 | 1) => void;
+		ondropped?: (targetId: string) => void;
+		onsourcechange?: (sourceId: string) => void;
+		onover?: (overId: string) => void;
 		children?: Snippet;
 	} = $props();
+
+	const reorderable = $derived(Boolean(onmove));
 </script>
 
-<div class="profile" class:selected>
+<div
+	class="profile"
+	class:selected
+	class:dragging
+	class:drop-target={dropTarget}
+	role="group"
+	aria-label={name}
+	draggable={reorderable}
+	ondragstart={(e) => {
+		setDraggedProfile(id);
+		onsourcechange?.(id);
+		e.dataTransfer?.setData('text/plain', id);
+		if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
+	}}
+	ondragend={() => {
+		setDraggedProfile('');
+		onsourcechange?.('');
+		onover?.('');
+	}}
+	ondragover={(e) => {
+		if (!reorderable || !draggedProfile() || draggedProfile() === id) return;
+		e.preventDefault();
+		if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+		onover?.(id);
+	}}
+	ondrop={(e) => {
+		const from = draggedProfile() || e.dataTransfer?.getData('text/plain') || '';
+		if (!reorderable || !from || from === id) return;
+		e.preventDefault();
+		setDraggedProfile('');
+		onsourcechange?.('');
+		onover?.('');
+		ondropped?.(id);
+	}}
+>
 	<div class="head">
 		<input
 			class="radio"
@@ -44,6 +97,24 @@
 			</span>
 			<span class="chain truncate" title={chain}>{chain}</span>
 		</label>
+		{#if reorderable}
+			<IconButton
+				icon="chevron-up"
+				label={m.spawn_profile_move_up({ name })}
+				inline
+				size={14}
+				disabled={first}
+				onclick={() => onmove?.(-1)}
+			/>
+			<IconButton
+				icon="chevron-down"
+				label={m.spawn_profile_move_down({ name })}
+				inline
+				size={14}
+				disabled={last}
+				onclick={() => onmove?.(1)}
+			/>
+		{/if}
 		<IconButton
 			icon="settings"
 			label={m.spawn_profile_adjust()}
@@ -66,6 +137,12 @@
 	}
 	.profile.selected {
 		border-color: var(--accent-dim);
+	}
+	.profile.dragging {
+		opacity: 0.5;
+	}
+	.profile.drop-target {
+		border-color: var(--accent);
 	}
 	.head {
 		display: flex;
