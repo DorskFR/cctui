@@ -2,8 +2,8 @@ import { defineJourney } from '@dorsk/journey';
 
 export default defineJourney({
 	id: 'follow-session',
-	title: 'Follow a session while it works',
-	description: 'Open a running agent, read what it did, and reply without leaving the list.',
+	title: { en: 'Follow a session while it works', fr: 'Suivre une session pendant son travail' },
+	description: { en: 'Open a running agent, read what it did, and reply without leaving the list.', fr: 'Ouvrez un agent en cours, lisez ce qu’il a fait et répondez sans quitter la liste.' },
 	route: '/sessions',
 	variants: { viewport: ['desktop', 'mobile'], theme: ['dark'] },
 	level: 'checked',
@@ -24,8 +24,8 @@ export default defineJourney({
 			id: 'timeline',
 			target: 'conversation',
 			say: {
-				title: 'Read the whole transcript',
-				body: 'Every prompt, reply, tool call and tool result is kept, so you can see exactly what the agent did.'
+				title: { en: 'Read the whole transcript', fr: 'Lire toute la transcription' },
+				body: { en: 'Every prompt, reply, tool call and tool result is kept, so you can see exactly what the agent did.', fr: 'Chaque prompt, réponse, appel d’outil et résultat d’outil est conservé, pour voir exactement ce qu’a fait l’agent.' }
 			},
 			expect: [{ visible: 'conversation' }],
 			capture: 'timeline'

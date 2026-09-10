@@ -7,13 +7,37 @@ import {
 	type JourneyStorage,
 	mount,
 	PROGRESS_KEY,
-	type RunResult
+	type RunResult,
+	type Strings
 } from '@dorsk/journey/runtime';
 import journeys from './journeys.generated.json';
 import { createProbes, isLive, type Probes } from './journeys/probes';
+import { m } from './paraglide/messages';
 import { endpoints } from './queries/endpoints';
 import { qk } from './queries/keys';
 import { settings } from './settings.svelte';
+
+/** A spec may name a message id instead of carrying the copy. An id with no
+ *  message resolves to the id itself upstream, which is ugly but readable —
+ *  better than a blank card. */
+export function translate(id: string): string | undefined {
+	const message = (m as Record<string, unknown>)[id];
+	return typeof message === 'function' ? (message() as string) : undefined;
+}
+
+/** The runtime interpolates `{i}`/`{n}`/`{route}` itself, so paraglide has to
+ *  hand back the braces rather than fill them in. */
+export function strings(): Partial<Strings> {
+	return {
+		next: m.journey_next(),
+		exit: m.journey_exit(),
+		step: m.journey_step({ i: '{i}', n: '{n}' }),
+		goToPage: m.journey_go_to_page(),
+		goToPageBody: m.journey_go_to_page_body({ route: '{route}' }),
+		goToPageAction: m.journey_go_to_page_action(),
+		press: m.journey_press()
+	};
+}
 
 /** Progress and the autostart-once marker live in the user's settings blob so a
  *  tour resumes from any browser the user signs in from. */
@@ -137,6 +161,7 @@ export type StartOutcome =
 	| { ok: false; reason: 'missing'; params: string[] };
 
 let host: { api: JourneyApi; qc: QueryClient; probes: Probes } | null = null;
+let lastParams: GuideParams = {};
 let mounted: Promise<void> | null = null;
 
 /** Mount the runtime once and register the public journeys. Waits for the
@@ -149,10 +174,13 @@ export function mountJourneys(qc: QueryClient): Promise<void> {
 		const api = mount({
 			storage: settingsStorage,
 			navigate: (route) => goto(route),
-			probes
+			probes,
+			translate,
+			strings
 		});
 		host = { api, qc, probes };
 		await api.register(publicJourneys);
+		watchLocale(api);
 	})();
 	return mounted;
 }
@@ -171,6 +199,7 @@ export async function startGuide(id: string): Promise<StartOutcome> {
 	const params = await guideParams(host.qc);
 	const missing = requiredParams(ir).filter((p) => !(p in params));
 	if (missing.length) return { ok: false, reason: 'missing', params: missing };
+	lastParams = params;
 	const result = await host.api.start(id, { mode: 'guide', params, variant: viewportVariant() });
 	if (result.ok && !(id in DONE_PROBES)) {
 		await settingsStorage.set(`${DONE_PREFIX}${id}@${ir.version}`, '1');
@@ -186,4 +215,26 @@ export async function guideDone(id: string): Promise<boolean> {
 	}
 	const ir = publicJourneys.find((j) => j.id === id);
 	return ir !== undefined && settings.onboarding.seenVersion[id] === ir.version;
+}
+
+/** Copy and chrome are resolved when a card is drawn, so a language switch only
+ *  reaches an open guide by drawing it again at the same step. `lang` is the
+ *  locale the runtime itself reads, so it is the signal worth following. The
+ *  re-draw has to carry the params and variant the run started with, or the
+ *  real-instance names its targets address vanish mid-guide. */
+function watchLocale(api: JourneyApi): void {
+	const root = document.documentElement;
+	let lang = root.lang;
+	new MutationObserver(() => {
+		if (root.lang === lang) return;
+		lang = root.lang;
+		const current = api.current();
+		if (!current) return;
+		void api.start(current.id, {
+			mode: 'guide',
+			from: current.index,
+			params: lastParams,
+			variant: viewportVariant()
+		});
+	}).observe(root, { attributeFilter: ['lang'] });
 }
