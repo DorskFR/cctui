@@ -683,6 +683,28 @@ pub async fn account_env_json(
 /// settings catalog and rejected by `Catalog::validate_settings`, so no
 /// per-account `settings_json` can carry them yet — whatever arrives here is
 /// safe/care keys that `--settings` honors.
+/// Whether a session has an account of `family` bound, by the same token-then-
+/// `sessions.account_id` resolution [`resolve_session_accounts`] uses.
+pub async fn session_has_family(
+    state: &AppState,
+    session_id: &str,
+    family: super::Family,
+) -> bool {
+    for account_id in resolve_session_accounts(state, session_id).await {
+        let label: Option<String> =
+            sqlx::query_scalar("SELECT family FROM account_providers WHERE id = $1")
+                .bind(account_id)
+                .fetch_optional(&state.pool)
+                .await
+                .ok()
+                .flatten();
+        if label.as_deref().and_then(super::Family::from_label) == Some(family) {
+            return true;
+        }
+    }
+    false
+}
+
 pub async fn resolve_session_settings(
     state: &AppState,
     session_id: &str,

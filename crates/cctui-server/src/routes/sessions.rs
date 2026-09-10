@@ -2269,6 +2269,15 @@ pub async fn fork_session(
     // don't claim one for it.
     let is_claude = adapter_id == "claude-code";
     let child_session_id = is_claude.then(|| uuid::Uuid::new_v4().to_string());
+    let service_tier = if crate::routes::gateway::Family::from_adapter(&adapter_id)
+        == crate::routes::gateway::Family::Openai
+    {
+        let account_settings =
+            crate::routes::gateway::resolve_session_settings(&state, &session_id).await;
+        Some(crate::settings_catalog::codex::resolve_service_tier(None, account_settings.as_ref()))
+    } else {
+        None
+    };
     let spec = cctui_proto::adapter::SessionSpec {
         adapter_id: cctui_proto::adapter::AdapterId::new(&adapter_id),
         working_dir: Some(working_dir),
@@ -2277,6 +2286,7 @@ pub async fn fork_session(
         permission_mode: None,
         effort: norm(req.effort),
         model: norm(req.model),
+        service_tier,
         env: std::collections::BTreeMap::new(),
         bootstrap: serde_json::Value::Null,
         parent_local_id: None,
