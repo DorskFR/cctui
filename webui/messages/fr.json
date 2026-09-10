@@ -420,6 +420,8 @@
 	"diagnose_codex_silence_no_turn": "Aucun tour en cours, codex n'a rien à répondre.",
 	"diagnose_codex_silence_none": "Rien d'anormal : la session semble inactive volontairement.",
 	"diagnose_codex_silence_not_live": "Aucun processus app-server vivant ne porte cette session.",
+	"diagnose_codex_silence_shared_dropped": "La connexion partagée à l'app-server a abandonné {count} requête(s) en vol, la dernière il y a {age}.",
+	"diagnose_codex_silence_shared_no_frames": "Aucune trame JSON-RPC sur la connexion partagée à l'app-server : l'inventaire, l'historique et le cycle de vie ne circulent plus.",
 	"diagnose_codex_silence_stalled_rpc": "{count} requête(s) JSON-RPC en attente et aucune trame depuis {age}.",
 	"diagnose_codex_stderr_empty": "Aucune sortie stderr capturée.",
 	"diagnose_codex_stderr_tail": "stderr ({count} dernières)",

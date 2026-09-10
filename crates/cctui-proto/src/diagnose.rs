@@ -245,6 +245,14 @@ pub struct CodexRpcFrame {
     /// The frame's `method`, else its `id`, else `frame`.
     pub label: String,
     pub json: String,
+    /// Which transport carried the frame: `stdio` (the per-session app-server
+    /// child) or `shared` (the process-wide `codex app-server daemon` socket).
+    #[serde(default = "transport_stdio")]
+    pub transport: String,
+}
+
+fn transport_stdio() -> String {
+    "stdio".to_owned()
 }
 
 /// One JSON-RPC protocol error (`<method>: <error>`), secret-redacted.
@@ -253,6 +261,9 @@ pub struct CodexRpcFrame {
 pub struct CodexProtocolError {
     pub ts_ms: i64,
     pub message: String,
+    /// Which transport the error was observed on: `stdio` or `shared`.
+    #[serde(default = "transport_stdio")]
+    pub transport: String,
 }
 
 /// an optional tagged section so the claude wire shape stays unchanged
@@ -547,6 +558,7 @@ mod tests {
             protocol_errors: vec![CodexProtocolError {
                 ts_ms: 1_700_000_000_000,
                 message: "turn/start: boom".into(),
+                transport: "stdio".into(),
             }],
             stderr_tail: vec![CodexStderrLine {
                 ts_ms: 1_700_000_000_001,
@@ -557,6 +569,7 @@ mod tests {
                 direction: "out".into(),
                 label: "turn/start".into(),
                 json: "{\"method\":\"turn/start\"}".into(),
+                transport: "shared".into(),
             }],
             rollout_path: Some("/home/u/.codex/sessions/x/019e6628.jsonl".into()),
             rollout_size_bytes: Some(2048),

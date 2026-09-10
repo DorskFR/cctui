@@ -29,6 +29,7 @@ pub mod daemon;
 mod log_tail;
 mod model_list;
 mod persist;
+mod pty_view;
 mod thread_list;
 pub mod thread_read;
 
@@ -220,6 +221,7 @@ async fn command_pump(
     marks: log_tail::ResumeMarks,
     shared: daemon::SharedDaemon,
 ) {
+    let pty_views = pty_view::RingViewManager::default();
     loop {
         tokio::select! {
                    () = shutdown.cancelled() => return,
@@ -635,6 +637,18 @@ async fn command_pump(
                                    store.extend(session_marks.iter().cloned());
                                }
                                announce_resume_marks(&registry, &events, &session_marks).await;
+                           }
+                           AdapterCommand::WatchPty { local_id, watch } => {
+                               if watch {
+                                   pty_views.watch(
+                                       local_id,
+                                       live.clone(),
+                                       events.clone(),
+                                       &shutdown,
+                                   );
+                               } else {
+                                   pty_views.unwatch(&local_id);
+                               }
                            }
                            _ => tracing::warn!("codex: unhandled AdapterCommand variant"),
                        }

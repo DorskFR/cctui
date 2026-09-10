@@ -885,6 +885,7 @@ fn stage_files_result(
 fn compile_scrub(cfg: &SecretScrubConfig) -> CompiledPatterns {
     let user: Vec<(String, String)> =
         cfg.patterns.iter().map(|p| (p.name.clone(), p.regex.clone())).collect();
+    crate::adapters::codex::app_server::set_ring_scrub(&user);
     redact::compile(cfg.enabled, &user, &cctui_crypto::vault_key())
 }
 
