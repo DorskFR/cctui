@@ -26,6 +26,7 @@
 	} from './options';
 	import type { OAuthAccount } from '$lib/queries';
 	import type { Form } from './types';
+	import InlineCode, { SLOT } from '$lib/components/atoms/InlineCode.svelte';
 	import { m } from '$lib/paraglide/messages';
 	import { promptHistory } from '$lib/drafts';
 	import { HistoryNav } from '$lib/historyNav';
@@ -123,7 +124,7 @@
 
 <Field label={m.dispatch_name_label()} for="sp-name-d">
 	<Input id="sp-name-d" placeholder={m.spawn_session_label_placeholder()} bind:value={form.name} />
-	<Text tone="faint" size="xs">{m.dispatch_name_hint_pre()}<Text variant="code">--name</Text>{m.dispatch_name_hint_post()}</Text>
+	<Text tone="faint" size="xs"><InlineCode text={m.dispatch_name_hint({ flag: SLOT })} code="--name" /></Text>
 </Field>
 
 <Field label={m.dispatch_identity_label()} for="sp-identity">

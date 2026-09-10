@@ -18,6 +18,7 @@
 	import { Badge, Button, DataTable, Field, Heading, Input, Modal, Select, Text, Timestamp } from '@dorsk/tsumikit';
 	import type { Column } from '@dorsk/tsumikit';
 	import { livenessLabel, livenessTone } from '$lib/dispatchers.logic';
+	import InlineCode, { SLOT } from '$lib/components/atoms/InlineCode.svelte';
 	import { m } from '$lib/paraglide/messages';
 
 	// When embedded under Accounts the page already shows an <h1>, so the panel's
@@ -166,7 +167,7 @@
 
 <div class="intro">
 	<Text as="p" tone="muted" size="sm">
-		{m.dispatch_intro_pre()}<Text variant="code">/dispatch</Text>{m.dispatch_intro_post()}
+		<InlineCode text={m.dispatch_intro({ command: SLOT })} code="/dispatch" />
 	</Text>
 </div>
 
@@ -241,7 +242,7 @@
 		{#snippet footer()}
 			<div class="spacer"></div>
 			<Button onclick={copyKey}>{m.common_copy()}</Button>
-			<Button variant="primary" onclick={() => (newKey = null)}>{m.dispatch_done()}</Button>
+			<Button variant="primary" onclick={() => (newKey = null)}>{m.common_close()}</Button>
 		{/snippet}
 	</Modal>
 {/if}

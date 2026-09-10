@@ -2,6 +2,7 @@
 	import { apiOrigin } from '$lib/config';
 	import { copyText } from '$lib/clipboard';
 	import { m } from '$lib/paraglide/messages';
+	import InlineCode, { SLOT } from '$lib/components/atoms/InlineCode.svelte';
 	import { Button, Card, Cluster, Stack, Text } from '@dorsk/tsumikit';
 
 	let { dashed = false }: { dashed?: boolean } = $props();
@@ -24,8 +25,7 @@
 	<Stack data-journey="enroll">
 		<Text weight="bold">{m.home_enroll_title()}</Text>
 		<Text as="p" tone="muted" size="sm">
-			{m.home_enroll_install_before()} <Text variant="code">cctui-daemon</Text>
-			{m.home_enroll_install_after()}
+			<InlineCode text={m.home_enroll_install({ daemon: SLOT })} code="cctui-daemon" />
 		</Text>
 		<Cluster wrap={false} align="center">
 			<!-- as="div": truncate needs a block element — text-overflow:ellipsis is

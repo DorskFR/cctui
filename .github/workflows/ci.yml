@@ -385,6 +385,15 @@ jobs:
           fi
           bash scripts/no-css-global.sh "$base...$head"
 
+  i18n-messages:
+    name: i18n-messages
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Reject i18n sentence fragments and locale key drift
+        run: bash scripts/check-i18n.test.sh
+
   actionlint:
     name: actionlint
     runs-on: ubuntu-latest

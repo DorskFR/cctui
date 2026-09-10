@@ -42,6 +42,13 @@ pre-commit:
     no-css-global:
       glob: "webui/**/*.svelte"
       run: bash scripts/no-css-global.sh --staged
+    # A key ending in _pre/_post/_before/_after/_prefix/_suffix is half a sentence
+    # glued together in markup, so no translator can fix word order. Also holds
+    # every locale to the same key set. Shares its implementation with the
+    # i18n-messages CI job.
+    i18n-messages:
+      glob: "webui/messages/*.json"
+      run: bash scripts/check-i18n.sh
 
 pre-push:
   commands:

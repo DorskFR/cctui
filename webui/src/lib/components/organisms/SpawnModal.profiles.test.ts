@@ -147,7 +147,7 @@ const button = (text: string | RegExp) => {
   if (!b) throw new Error(`button ${text} not found`);
   return b;
 };
-const spawnButton = () => button(/^Spawn/);
+const spawnButton = () => button(/^Launch/);
 // The button's text minus the Kbd chord hint that follows the label.
 const mode = (v: string) => {
   const el = document.querySelector<HTMLButtonElement>(
@@ -170,7 +170,7 @@ async function submit() {
 }
 
 describe("SpawnModal profiles", () => {
-  it("lists the profiles, selects the first and names it on the Spawn button", async () => {
+  it("lists the profiles, selects the first and names it on the Launch button", async () => {
     await open();
     expect(radio("p1").checked).toBe(true);
     expect(radio("p2").checked).toBe(false);
@@ -236,7 +236,7 @@ describe("SpawnModal profiles", () => {
     expect(mode("yolo").getAttribute("aria-checked")).toBe("true");
   });
 
-  it('"Use once" adjusts this run only and marks the Spawn button', async () => {
+  it('"Use once" adjusts this run only and marks the Launch button', async () => {
     await open();
     button("Adjust profile").click();
     await tick();

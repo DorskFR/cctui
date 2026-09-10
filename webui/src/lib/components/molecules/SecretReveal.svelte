@@ -19,7 +19,7 @@
 		</div>
 	{/snippet}
 	{#snippet footer()}
-		<Button block onclick={onclose}>{m.users_secret_done()}</Button>
+		<Button block onclick={onclose}>{m.common_close()}</Button>
 		<Button block variant="primary" onclick={copy}>{m.common_copy()}</Button>
 	{/snippet}
 </Modal>
