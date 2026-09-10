@@ -29,9 +29,13 @@
 					sessionStorage.setItem('journey:driver', '1');
 				}
 				if (sessionStorage.getItem('journey:driver') !== '1') return;
-				var mounted = new Promise(function (resolve) {
+				var mounted = new Promise(function (resolve, reject) {
 					window.__journeyReady = resolve;
+					setTimeout(function () {
+						reject(new Error('journey: the app runtime never mounted'));
+					}, 60000);
 				});
+				mounted.catch(function () {});
 				var on = function (use) {
 					return mounted.then(use);
 				};
