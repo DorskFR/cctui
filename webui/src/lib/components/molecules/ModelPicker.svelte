@@ -2,6 +2,7 @@
 	// Model select with a trailing "Other model…" entry that opens a free-text
 	// id field. A value the option list doesn't know (typed or remembered) stays
 	// selectable as its own option, so the picker never silently drops it.
+	import type { ComponentProps } from 'svelte';
 	import { Input, Select } from '@dorsk/tsumikit';
 	import { OTHER_MODEL, customModelValue, withCurrentModel, type ModelOption } from '$lib/harnessModels';
 	import { m } from '$lib/paraglide/messages';
@@ -11,12 +12,16 @@
 		value = $bindable(''),
 		options,
 		compact = false,
+		variant,
+		width,
 		'aria-label': ariaLabel
 	}: {
 		id: string;
 		value: string;
 		options: ModelOption[];
 		compact?: boolean;
+		variant?: ComponentProps<typeof Select>['variant'];
+		width?: ComponentProps<typeof Select>['width'];
 		'aria-label'?: string;
 	} = $props();
 
@@ -40,7 +45,7 @@
 	}
 </script>
 
-<Select {id} {compact} chevron={compact ? false : undefined} bind:value={selected} aria-label={ariaLabel} onchange={() => pick(selected)}>
+<Select {id} {compact} {variant} {width} chevron={compact ? false : undefined} bind:value={selected} aria-label={ariaLabel} onchange={() => pick(selected)}>
 	{#each listed as opt (opt.v)}<option value={opt.v}>{opt.label}</option>{/each}
 	<option value={OTHER_MODEL}>{m.model_picker_other()}</option>
 </Select>

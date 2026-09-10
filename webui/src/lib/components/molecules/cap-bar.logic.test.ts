@@ -9,6 +9,11 @@ describe('cap ↔ bar', () => {
 		expect(capToBar(80)).toBe(80);
 		expect(capToBar(140)).toBe(100);
 	});
+
+	it('passes CapBar’s own uncapped null straight through', () => {
+		expect(capFromBar(null)).toBeNull();
+		expect(capFromBar(capToBar(capFromBar(null)))).toBeNull();
+	});
 });
 
 describe('resetIn', () => {
