@@ -19,6 +19,8 @@ interface RequestOpts {
 	body?: unknown;
 	/** when set, send as `?key=value`; undefined values are dropped */
 	query?: Record<string, string | number | boolean | undefined>;
+	/** let the request outlive the document (unload-time flushes) */
+	keepalive?: boolean;
 }
 
 function buildUrl(path: string, query?: RequestOpts['query']): string {
@@ -81,7 +83,7 @@ export function errMessage(e: unknown): string {
 	return typeof e === 'string' ? e : String(e);
 }
 
-async function request<T>({ method = 'GET', path, body, query }: RequestOpts): Promise<T> {
+async function request<T>({ method = 'GET', path, body, query, keepalive }: RequestOpts): Promise<T> {
 	const headers = new Headers();
 	if (body !== undefined) headers.set('Content-Type', 'application/json');
 	const url = buildUrl(path, query);
@@ -94,6 +96,7 @@ async function request<T>({ method = 'GET', path, body, query }: RequestOpts): P
 		method,
 		headers,
 		credentials: 'include',
+		keepalive,
 		body: body !== undefined ? JSON.stringify(body) : undefined
 	});
 
@@ -118,6 +121,7 @@ export const api = {
 	post: <T>(path: string, body?: unknown) => request<T>({ method: 'POST', path, body }),
 	postForm,
 	patch: <T>(path: string, body?: unknown) => request<T>({ method: 'PATCH', path, body }),
-	put: <T>(path: string, body?: unknown) => request<T>({ method: 'PUT', path, body }),
+	put: <T>(path: string, body?: unknown, opts?: { keepalive?: boolean }) =>
+		request<T>({ method: 'PUT', path, body, keepalive: opts?.keepalive }),
 	del: <T>(path: string) => request<T>({ method: 'DELETE', path })
 };

@@ -11,42 +11,48 @@ export default defineJourney({
 		{
 			id: 'access',
 			route: '/access',
-			target: 'user[admin]',
+			target: 'enroll',
 			say: {
-				title: 'People, keys and machines',
-				body: 'Everything that can act on this instance is listed here, one user at a time.'
+				title: 'Start here: enroll a machine',
+				body: 'Access lists everyone and everything that can act on this instance. Until a machine has enrolled, this card is the only thing here that matters.'
 			},
-			expect: [{ visible: 'user[admin]' }, { visible: 'enroll' }],
+			expect: [{ visible: 'enroll' }],
 			capture: 'access'
 		},
 		{
 			id: 'enroll',
 			target: 'enroll',
+			// A probe wait is bounded only by the step timeout, and enrolling a
+			// machine takes far longer than the 10 s default.
+			timeout: 600000,
 			say: {
-				title: 'One command per machine',
-				body: 'A machine joins by running the daemon with a user token; from then on it can host sessions.'
+				title: 'Run this on the machine',
+				body: 'Copy this command and run it on the computer that will host your agents. Replace the token with one from your user. The guide moves on by itself when the machine reports in.'
 			},
-			expect: [{ visible: 'enroll' }],
+			expect: [{ visible: 'enroll' }, { probe: 'machines.online' }],
 			capture: 'enroll'
 		},
 		{
 			id: 'user',
-			target: 'user[admin]',
+			target: 'user[{me}]',
 			do: { kind: 'click' },
 			say: {
 				title: 'Open a user',
-				body: 'Each user carries their own API keys, machines, tokens and AI accounts.'
+				body: 'Open your own user. Keys, machines, tokens and AI accounts each have a tab.'
 			},
 			expect: [{ visible: 'tab[keys]' }],
 			capture: 'user'
 		},
 		{
 			id: 'machines',
+			// The tab name embeds the fixture's machine count and tsumikit's Tabs
+			// forwards no anchor to its triggers, so the step stays in the book.
+			qaOnly: true,
 			target: { role: 'tab', name: 'Machines 2' },
 			do: { kind: 'click' },
 			say: {
 				title: 'The machines that answered',
-				body: 'Enrolled machines report in with a heartbeat, so you know which are online.'
+				body: 'The machine you just enrolled is listed here with its heartbeat. Online means it can host a session right now.'
 			},
 			expect: [{ visible: 'tab[machines]' }],
 			capture: 'machines'

@@ -1,8 +1,30 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { QueryClient } from '@tanstack/svelte-query';
 import { DONE_PREFIX, PROGRESS_KEY } from '@dorsk/journey/runtime';
-import { parseDoneKey, settingsStorage } from './journey';
+import type { Journey } from '@dorsk/journey';
+import { resolveText } from '@dorsk/journey/runtime';
+import journeys from './journeys.generated.json';
+import { locale } from './locale.svelte';
+import {
+	guideParams,
+	MOBILE_QUERY,
+	parseDoneKey,
+	requiredParams,
+	settingsStorage,
+	strings,
+	translate,
+	viewportVariant
+} from './journey';
 import { auth } from './auth.svelte';
 import { mergeDefaults, settings } from './settings.svelte';
+
+const api = vi.hoisted(() => ({
+	me: vi.fn(),
+	accounts: vi.fn(),
+	accountPools: vi.fn(),
+	sessions: vi.fn()
+}));
+vi.mock('$lib/queries/endpoints', () => ({ endpoints: api }));
 
 const KEY = 'cctui_settings';
 
@@ -54,5 +76,105 @@ describe('settingsStorage', () => {
 		await settingsStorage.set('journey:other', 'x');
 		expect(await settingsStorage.get('journey:other')).toBeNull();
 		expect(blob()).toEqual({ seenVersion: {}, progress: null });
+	});
+});
+
+describe('requiredParams', () => {
+	it('lists every {param} key a journey addresses', () => {
+		expect(
+			requiredParams({
+				id: 'x',
+				steps: [
+					{ id: 'a', target: 'user[{me}]', expect: [{ visible: 'tab[keys]' }] },
+					{ id: 'b', target: { role: 'tab', within: 'account[{account}]' } },
+					{ id: 'c', expect: [{ count: ['pool[{pool}]/member', { min: 1 }] }, { probe: 'accounts' }] }
+				]
+			})
+		).toEqual(['me', 'account', 'pool']);
+	});
+	it('ignores literal keys', () => {
+		expect(requiredParams({ id: 'x', steps: [{ id: 'a', target: 'tab[machines]' }] })).toEqual([]);
+	});
+});
+
+describe('viewportVariant', () => {
+	it('maps the toolbar breakpoint to the mobile variant', () => {
+		expect(viewportVariant((q) => q === MOBILE_QUERY)).toEqual({ viewport: 'mobile' });
+		expect(viewportVariant(() => false)).toEqual({ viewport: 'desktop' });
+	});
+});
+
+describe('guideParams', () => {
+	beforeEach(() => {
+		for (const fn of Object.values(api)) fn.mockReset();
+		api.me.mockResolvedValue({ role: 'admin', user_id: 'u1', user_name: 'root' });
+		api.accounts.mockResolvedValue([]);
+		api.accountPools.mockResolvedValue([]);
+		api.sessions.mockResolvedValue({ sessions: [] });
+	});
+	const qc = () => new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+	it('leaves absent names out so the guide that needs them is refused', async () => {
+		expect(await guideParams(qc())).toEqual({ 'var.label': '', 'var.prompt': '', me: 'root' });
+	});
+
+	it('names the first account, pool and live session', async () => {
+		api.accounts.mockResolvedValue([{ name: 'main' }, { name: 'other' }]);
+		api.accountPools.mockResolvedValue([{ name: 'prod' }]);
+		api.sessions.mockResolvedValue({
+			sessions: [
+				{ id: 'd', status: 'draft', liveness: 'dead' },
+				{ id: 'l', status: 'active', liveness: 'active' }
+			]
+		});
+		expect(await guideParams(qc())).toMatchObject({ me: 'root', account: 'main', pool: 'prod', session: 'l' });
+	});
+});
+
+describe('journey copy and chrome follow the active locale', () => {
+	const ir = journeys as unknown as Journey[];
+	const texts = (loc: string) =>
+		ir.flatMap((journey) => {
+			const step = (t: unknown) => resolveText(t as never, translate, loc);
+			return [
+				step(journey.title),
+				step(journey.description),
+				...(journey.steps ?? []).flatMap((s) => [step(s.say?.title), step(s.say?.body)])
+			];
+		});
+
+	it('renders a message id that has no message as the id, never a blank card', () => {
+		expect(translate('journey_next')).toBe('Next');
+		expect(translate('no_such_message_at_all')).toBeUndefined();
+		expect(resolveText({ $msg: 'no_such_message_at_all' }, translate, 'en')).toBe(
+			'no_such_message_at_all'
+		);
+	});
+
+	it('hands the runtime its own placeholders back rather than filling them in', () => {
+		const s = strings();
+		expect(s.step).toContain('{i}');
+		expect(s.step).toContain('{n}');
+		expect(s.goToPageBody).toContain('{route}');
+	});
+
+	it('localises the library chrome', () => {
+		locale.set('en');
+		expect(strings().next).toBe('Next');
+		locale.set('fr');
+		expect(strings().next).toBe('Suivant');
+		expect(strings().step).toContain('{i}');
+		locale.set('en');
+	});
+
+	it('leaves no card blank in either locale', () => {
+		for (const loc of ['en', 'fr'])
+			for (const t of texts(loc)) expect(t === undefined || t.length > 0).toBe(true);
+	});
+
+	it('says something different in French', () => {
+		const en = texts('en');
+		const fr = texts('fr');
+		expect(fr.filter((t, i) => t !== en[i]).length).toBeGreaterThan(0);
 	});
 });

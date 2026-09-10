@@ -14,6 +14,12 @@ export default defineConfig({
 		timeout: 120000
 	},
 	journeys: 'journeys/*.journey.ts',
+	// The guided fills take any text; the book types these so the spawn-session
+	// screenshots keep their captions.
+	vars: {
+		label: 'Add pagination to the orders endpoint',
+		prompt: 'Add cursor pagination to GET /orders. Keep the response shape and cover it with a test.'
+	},
 	out: '../docs/journeys',
 	storageState: 'journeys/.auth/state.json',
 	// The captions ship as markdown beside each image; drawn onto the frame they

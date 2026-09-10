@@ -126,7 +126,7 @@
 	// The guided tours spotlight elements behind the login, so they mount once
 	// a session exists; `mountJourneys` is idempotent across auth flips.
 	$effect(() => {
-		if (auth.isAuthed) void mountJourneys();
+		if (auth.isAuthed) void mountJourneys(queryClient);
 	});
 </script>
 

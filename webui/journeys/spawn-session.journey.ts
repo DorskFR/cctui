@@ -1,9 +1,9 @@
-import { defineJourney } from '@dorsk/journey';
+import { defineJourney, param } from '@dorsk/journey';
 
 export default defineJourney({
 	id: 'spawn-session',
-	title: 'Start a new agent',
-	description: 'Describe the work, pick where it runs, and keep it as a draft until you are ready.',
+	title: { en: 'Start a new agent', fr: 'Lancer un nouvel agent' },
+	description: { en: 'Describe the work, pick where it runs, and keep it as a draft until you are ready.', fr: 'Décrivez le travail, choisissez où il s’exécute, et gardez-le en brouillon jusqu’à ce que vous soyez prêt.' },
 	route: '/sessions',
 	variants: { viewport: ['desktop', 'mobile'], theme: ['dark'] },
 	level: 'checked',
@@ -15,45 +15,38 @@ export default defineJourney({
 			do: { kind: 'click' },
 			say: {
 				title: 'Open the new-session dialog',
-				body: 'One dialog covers everything a run needs: the machine, the folder, the prompt and the profile. It opens on the folder you used last.'
+				body: 'Everything a run needs is in this one dialog: the machine, the folder, the prompt and the profile.'
 			},
-			expect: [
-				{ visible: 'spawn' },
-				{ visible: 'spawn/prompt' },
-				{ enabled: 'draft' }
-			],
+			expect: [{ visible: 'spawn' }, { visible: 'spawn/prompt' }],
 			capture: 'dialog'
+		},
+		{
+			id: 'where',
+			target: 'where',
+			say: {
+				title: 'Pick where it runs',
+				body: 'Pick the machine you enrolled and type the folder the agent should work in. The draft button lights up once both are set.'
+			},
+			expect: [{ enabled: 'draft' }]
 		},
 		{
 			id: 'name',
 			target: 'spawn/label',
-			do: { kind: 'fill', value: 'Add pagination to the orders endpoint' },
+			do: { kind: 'fill', value: param('var.label') },
 			say: {
 				title: 'Name the run',
-				body: 'The label is what you will look for in the list later, so give it the shape of the task.'
-			},
-			expect: [{ value: ['spawn/label', 'Add pagination to the orders endpoint'] }]
+				body: 'Give the run a name you will recognise in the list.'
+			}
 		},
 		{
 			id: 'prompt',
 			target: 'spawn/prompt',
-			do: {
-				kind: 'fill',
-				value: 'Add cursor pagination to GET /orders. Keep the response shape and cover it with a test.'
-			},
+			do: { kind: 'fill', value: param('var.prompt') },
 			say: {
 				title: 'Say what you want done',
-				body: 'The prompt is the whole brief; the profile below it decides which harness, model and folder carry it out.'
+				body: 'Say what you want done. The profile below decides which harness and model carry it out.'
 			},
-			expect: [
-				{
-					value: [
-						'spawn/prompt',
-						'Add cursor pagination to GET /orders. Keep the response shape and cover it with a test.'
-					]
-				},
-				{ enabled: 'draft' }
-			],
+			expect: [{ enabled: 'draft' }],
 			capture: 'filled'
 		},
 		{
@@ -61,31 +54,37 @@ export default defineJourney({
 			target: 'draft',
 			do: { kind: 'click' },
 			say: {
-				title: 'Keep it for later',
-				body: 'Saving a draft parks the whole configuration in the list, ready to launch when you are.'
+				title: 'Save it as a draft',
+				body: 'This saves a draft on your instance. Nothing runs until you launch it, and you can delete it from the list.'
 			},
-			expect: [{ hidden: 'spawn' }],
+			expect: [{ hidden: 'spawn' }, { probe: 'sessions.drafts' }],
 			capture: 'saved'
 		},
 		{
 			id: 'sections',
+			optional: true,
 			target: 'sections/toggle',
 			do: { kind: 'click' },
 			say: {
-				title: 'Choose what the list shows',
-				body: 'The list is split into sections you can switch on and off; drafts are hidden until you ask for them.'
+				title: { en: 'Choose what the list shows', fr: 'Choisir ce qu’affiche la liste' },
+				body: { en: 'The list is split into sections you can switch on and off; drafts are hidden until you ask for them.', fr: 'La liste est découpée en sections que vous pouvez activer ou désactiver ; les brouillons restent masqués jusqu’à ce que vous les demandiez.' }
 			},
 			expect: [{ visible: 'sections/option[drafts]' }]
 		},
 		{
 			id: 'show-drafts',
+			optional: true,
 			target: 'sections/option[drafts]',
 			do: { kind: 'click' },
 			say: {
 				title: 'The draft is waiting',
-				body: 'Drafts sit in their own section, holding the machine, folder, profile and prompt until you launch them.'
+				body: 'Your draft is here, holding the machine, folder, profile and prompt until you launch it.'
 			},
-			expect: [{ visible: 'section[drafts]' }, { count: ['section[drafts]/session', { min: 1 }] }],
+			expect: [
+				{ visible: 'section[drafts]' },
+				{ count: ['section[drafts]/session', { min: 1 }] },
+				{ probe: 'sessions.drafts' }
+			],
 			capture: 'draft'
 		}
 	]

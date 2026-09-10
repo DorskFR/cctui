@@ -266,3 +266,32 @@ body.dock-resizing * {
   cursor: ew-resize !important;
   user-select: none;
 }
+
+/* The guided-tour overlay (@dorsk/journey) renders in a shadow root and reads
+   these on its host; custom properties inherit across the boundary, so the
+   palette drives every theme without a stylesheet inside the root. */
+journey-overlay {
+  --journey-accent: var(--accent);
+  --journey-accent-ink: var(--text-on-accent);
+  --journey-surface: var(--bg-elevated);
+  --journey-surface-muted: var(--bg-elevated-2);
+  --journey-text: var(--text);
+  --journey-text-muted: var(--text-muted);
+  --journey-text-faint: var(--text-faint);
+  --journey-border: var(--border);
+  --journey-inverse-surface: var(--text);
+  --journey-inverse-surface-raised: var(--text-muted);
+  --journey-inverse-text: var(--bg);
+  --journey-inverse-border: var(--text-faint);
+  --journey-scrim: color-mix(in srgb, var(--bg) 60%, transparent);
+  --journey-shadow: var(--shadow-lg);
+  --journey-shadow-sm: var(--shadow-md);
+  --journey-radius: var(--r-md);
+  --journey-radius-sm: var(--r-sm);
+  --journey-font: var(--fs-sm) / 1.4 var(--font-sans);
+  --journey-banner-surface: color-mix(in srgb, var(--bg-elevated) 72%, transparent);
+  --journey-banner-text: var(--text);
+  --journey-banner-padding: var(--sp-4) var(--sp-6);
+  --journey-banner-inset: var(--sp-0);
+  --journey-banner-align: center;
+}
