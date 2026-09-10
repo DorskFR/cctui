@@ -14,12 +14,12 @@
 //! exec`, app-server — with real metadata, which is exactly the 1:1-with-claude
 //! inventory parity the ticket asks for.
 //!
-//! This module owns a short-lived stdio `codex app-server` per poll: spawn,
-//! `initialize` → `thread/list`, read the one response, exit. That keeps the
-//! blast radius tiny (no long-lived singleton, no control socket) and sidesteps
-//! the experimental daemon/remote-control preconditions that are flagged as
-//! risky in — those (managed standalone install + multiplexed driver)
-//! are deliberately left to a follow-up. The poll shares the app-server
+//! Requests go over the shared [`super::daemon`] connection, which also pushes
+//! the `thread/*` notifications that make a refresh immediate instead of up to
+//! one interval stale; the interval survives as a safety net. Hosts without a
+//! reachable daemon fall back to a short-lived stdio `codex app-server` per
+//! poll: spawn, `initialize` → `thread/list`, read the one response, exit. The
+//! poll shares the app-server
 //! driver's [`SessionRegistry`] so cctui-owned threads (which the driver
 //! already streams live) are not re-emitted here, and the log-tail's `owned`
 //! set is likewise extended to cover everything this inventory has surfaced.
@@ -173,18 +173,26 @@ const SOURCE_KINDS: &[&str] = &[
 /// keeps handing back a non-null cursor.
 const MAX_PAGES: usize = 100;
 
-fn thread_list_req(id: i64, limit: u32, cursor: Option<&str>) -> Value {
+/// Omitting `archived` returns exactly the `archived: false` set, so stating
+/// it is a no-op today; it is the knob an archived view flips.
+#[must_use]
+pub fn thread_list_params(limit: u32, cursor: Option<&str>, archived: bool) -> Value {
     let mut params = serde_json::Map::new();
     params.insert("limit".to_owned(), json!(limit));
     params.insert("sourceKinds".to_owned(), json!(SOURCE_KINDS));
+    params.insert("archived".to_owned(), json!(archived));
     if let Some(cursor) = cursor {
         params.insert("cursor".to_owned(), json!(cursor));
     }
+    Value::Object(params)
+}
+
+fn thread_list_req(id: i64, limit: u32, cursor: Option<&str>) -> Value {
     json!({
         "jsonrpc": "2.0",
         "id": id,
         "method": "thread/list",
-        "params": Value::Object(params),
+        "params": thread_list_params(limit, cursor, false),
     })
 }
 
@@ -265,7 +273,23 @@ pub struct ThreadListInventory {
     /// Threads whose structured history has been emitted; shared with the
     /// log-tail so it does not re-ingest them from the rollout JSONL.
     served: super::thread_read::ServedIds,
+    daemon: Option<super::daemon::SharedDaemon>,
 }
+
+/// Notifications that can change what `thread/list` would return.
+fn changes_inventory(method: &str) -> bool {
+    matches!(
+        method,
+        "thread/started"
+            | "thread/status/changed"
+            | "thread/archived"
+            | "thread/unarchived"
+            | "thread/name/updated"
+            | "thread/deleted"
+    )
+}
+
+const PUSH_DEBOUNCE: Duration = Duration::from_millis(250);
 
 impl ThreadListInventory {
     pub const fn new(
@@ -275,35 +299,67 @@ impl ThreadListInventory {
         owned: SessionRegistry,
         seen: SeenIds,
         served: super::thread_read::ServedIds,
+        daemon: Option<super::daemon::SharedDaemon>,
     ) -> Self {
-        Self { cfg, events, shutdown, owned, seen, served }
+        Self { cfg, events, shutdown, owned, seen, served, daemon }
     }
 
     pub async fn run(self) {
         let mut tick = tokio::time::interval(self.cfg.poll_interval);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut events = match self.daemon.as_ref() {
+            Some(shared) => shared.handle().await.map(|h| h.subscribe()),
+            None => None,
+        };
         loop {
+            let mut pushed = false;
             tokio::select! {
                 () = self.shutdown.cancelled() => return,
-                _ = tick.tick() => {
-                    match self.poll_once().await {
-                        Ok(entries) => self.reconcile(entries).await,
-                        Err(err) => {
-                            // Probe failures (codex missing, sandbox/userns,
-                            // auth) are expected on some hosts — the log-tail
-                            // fallback still runs. Log at debug, keep ticking.
-                            tracing::debug!(%err, "codex thread/list inventory poll failed");
-                        }
+                _ = tick.tick() => {}
+                notice = async {
+                    match events.as_mut() {
+                        Some(rx) => rx.recv().await.ok(),
+                        // No daemon: park so the tick arm drives the loop.
+                        None => std::future::pending().await,
                     }
+                } => {
+                    match notice {
+                        Some(super::daemon::DaemonEvent::Notification { method, .. }) => {
+                            if !changes_inventory(&method) {
+                                continue;
+                            }
+                            pushed = true;
+                        }
+                        Some(super::daemon::DaemonEvent::Disconnected { .. }) => continue,
+                        // A reconnect (or a lagged/closed receiver) delivered
+                        // nothing while it was down; only a fresh snapshot can
+                        // close the gap.
+                        Some(super::daemon::DaemonEvent::Connected { .. }) | None => pushed = true,
+                    }
+                }
+            }
+            if pushed {
+                tokio::time::sleep(PUSH_DEBOUNCE).await;
+                if let Some(rx) = events.as_mut() {
+                    while rx.try_recv().is_ok() {}
+                }
+            }
+            match self.poll_once().await {
+                Ok(entries) => self.reconcile(entries).await,
+                Err(err) => {
+                    // Probe failures (codex missing, sandbox/userns,
+                    // auth) are expected on some hosts — the log-tail
+                    // fallback still runs. Log at debug, keep ticking.
+                    tracing::debug!(%err, "codex thread/list inventory poll failed");
                 }
             }
         }
     }
 
-    /// Spawn a short-lived stdio app-server, run initialize → thread/list, and
-    /// return the parsed entries. The process is reaped before returning.
+    /// One `thread/list` over the shared connection, or a short-lived stdio
+    /// app-server when no daemon is reachable.
     async fn poll_once(&self) -> anyhow::Result<Vec<ThreadEntry>> {
-        poll_threads(&self.cfg.app, self.cfg.page_size).await
+        poll_threads_any(&self.cfg.app, self.daemon.as_ref(), self.cfg.page_size).await
     }
 
     async fn reconcile(&self, entries: Vec<ThreadEntry>) {
@@ -394,6 +450,42 @@ impl ThreadListInventory {
             let _ = self.events.send(evt).await;
         }
     }
+}
+
+/// Paginate `thread/list` over the shared daemon connection, falling back to a
+/// short-lived stdio child when no daemon is reachable.
+pub async fn poll_threads_any(
+    app: &AppServerConfig,
+    daemon: Option<&super::daemon::SharedDaemon>,
+    limit: u32,
+) -> anyhow::Result<Vec<ThreadEntry>> {
+    if let Some(shared) = daemon
+        && let Some(handle) = shared.handle().await
+    {
+        match poll_threads_shared(&handle, limit).await {
+            Ok(entries) => return Ok(entries),
+            Err(err) => tracing::debug!(%err, "codex: shared thread/list failed, using stdio"),
+        }
+    }
+    poll_threads(app, limit).await
+}
+
+async fn poll_threads_shared(
+    handle: &super::daemon::DaemonHandle,
+    limit: u32,
+) -> anyhow::Result<Vec<ThreadEntry>> {
+    let mut entries = Vec::new();
+    let mut cursor: Option<String> = None;
+    for _ in 0..MAX_PAGES {
+        let params = thread_list_params(limit, cursor.as_deref(), false);
+        let result = handle.request("thread/list", params).await?;
+        entries.extend(parse_thread_list(&result));
+        match next_cursor(&result) {
+            Some(next) => cursor = Some(next),
+            None => break,
+        }
+    }
+    Ok(entries)
 }
 
 /// Spawn a short-lived stdio `codex app-server`, run initialize →
@@ -518,8 +610,12 @@ pub fn owned_records(
 /// drivable across a daemon restart / self-update. Best-effort: a
 /// probe failure (codex missing, sandbox/userns, auth) just leaves the registry
 /// empty, exactly as before this change.
-pub async fn rediscover_owned(cfg: &ThreadListConfig, registry: &SessionRegistry) {
-    let entries = match poll_threads(&cfg.app, cfg.page_size).await {
+pub async fn rediscover_owned(
+    cfg: &ThreadListConfig,
+    daemon: Option<&super::daemon::SharedDaemon>,
+    registry: &SessionRegistry,
+) {
+    let entries = match poll_threads_any(&cfg.app, daemon, cfg.page_size).await {
         Ok(entries) => entries,
         Err(err) => {
             tracing::warn!(%err, "codex: startup thread rediscovery probe failed — hibernated threads stay unresumable until a poll succeeds");
@@ -984,6 +1080,7 @@ mod tests {
             owned,
             SeenIds::default(),
             crate::adapters::codex::thread_read::ServedIds::default(),
+            None,
         );
         let entry = ThreadEntry {
             id: "t1".into(),
@@ -1032,6 +1129,7 @@ mod tests {
             SessionRegistry::default(),
             SeenIds::default(),
             crate::adapters::codex::thread_read::ServedIds::default(),
+            None,
         );
         let entry = ThreadEntry {
             id: "child".into(),
@@ -1196,6 +1294,7 @@ mod tests {
             owned,
             SeenIds::default(),
             crate::adapters::codex::thread_read::ServedIds::default(),
+            None,
         );
         inv.reconcile(vec![ThreadEntry {
             id: "owned1".into(),
@@ -1209,5 +1308,36 @@ mod tests {
         }])
         .await;
         assert!(rx.try_recv().is_err(), "owned thread must not be re-emitted");
+    }
+
+    #[test]
+    fn stating_archived_false_matches_the_omitted_default() {
+        let p = thread_list_params(10, None, false);
+        assert_eq!(p["archived"], json!(false));
+        assert_eq!(p["limit"], json!(10));
+        assert!(p.get("cursor").is_none());
+    }
+
+    #[test]
+    fn archived_params_flip_for_an_archived_view() {
+        assert_eq!(thread_list_params(10, Some("c1"), true)["archived"], json!(true));
+        assert_eq!(thread_list_params(10, Some("c1"), true)["cursor"], json!("c1"));
+    }
+
+    #[test]
+    fn only_thread_notifications_trigger_a_refresh() {
+        for m in [
+            "thread/started",
+            "thread/status/changed",
+            "thread/archived",
+            "thread/unarchived",
+            "thread/name/updated",
+            "thread/deleted",
+        ] {
+            assert!(changes_inventory(m), "{m} should refresh the inventory");
+        }
+        for m in ["remoteControl/status/changed", "item/completed", "thread/tokenUsage/updated"] {
+            assert!(!changes_inventory(m), "{m} must not refresh the inventory");
+        }
     }
 }

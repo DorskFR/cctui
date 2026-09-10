@@ -834,9 +834,29 @@ pub fn is_idempotent_lifecycle_error(op: LifecycleOp, err: &str) -> bool {
 /// needed — no turn is started.
 pub async fn run_thread_lifecycle(
     app: &AppServerConfig,
+    daemon: Option<&super::daemon::SharedDaemon>,
     thread_id: &str,
     op: LifecycleOp,
 ) -> Result<()> {
+    if let Some(shared) = daemon
+        && let Some(handle) = shared.handle().await
+    {
+        match handle.request(op.method(), json!({"threadId": thread_id})).await {
+            Ok(_) => return Ok(()),
+            Err(err) => {
+                let msg = err.to_string();
+                if is_idempotent_lifecycle_error(op, &msg) {
+                    tracing::info!(
+                        %thread_id,
+                        op = op.method(),
+                        "codex lifecycle op idempotent no-op: {msg}"
+                    );
+                    return Ok(());
+                }
+                tracing::debug!(%err, op = op.method(), "codex: shared lifecycle op failed, using stdio");
+            }
+        }
+    }
     let mut cmd = Command::new(&app.bin);
     cmd.arg("app-server")
         // No turn is started, so sandbox mode only matters because codex
