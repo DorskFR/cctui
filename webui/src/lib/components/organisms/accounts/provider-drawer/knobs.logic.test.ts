@@ -185,3 +185,38 @@ describe('string-enum settings keys', () => {
 		expect(setKnob(on, knob, '')).toEqual({});
 	});
 });
+
+describe('numeric settings keys', () => {
+	const numKnob = () =>
+		knobGroups(
+			catalog({
+				keys: [
+					key({
+						name: 'model_context_window',
+						group: 'Context',
+						label: 'Context window',
+						tag: 'care',
+						type: 'number'
+					})
+				]
+			})
+		)[0].knobs[0];
+
+	it('renders a number input, not a tri-state boolean', () => {
+		expect(numKnob()).toMatchObject({ control: 'number', loc: 'setting' });
+	});
+
+	it('persists a JSON number so the config renderer does not drop it', () => {
+		const k = numKnob();
+		const set = setKnob({}, k, '272000');
+		expect(set).toEqual({ model_context_window: 272000 });
+		expect(typeof set.model_context_window).toBe('number');
+		expect(getKnob(set, k)).toBe('272000');
+	});
+
+	it('clears on blank and refuses a non-numeric value', () => {
+		const k = numKnob();
+		expect(setKnob({ model_context_window: 1 }, k, '')).toEqual({});
+		expect(setKnob({ model_context_window: 1 }, k, 'abc')).toEqual({});
+	});
+});

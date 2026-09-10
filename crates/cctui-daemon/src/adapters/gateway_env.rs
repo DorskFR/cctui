@@ -80,18 +80,43 @@ pub async fn resolve_env(
     hint: &BTreeMap<String, String>,
     required_keys: &[&str],
 ) -> anyhow::Result<BTreeMap<String, String>> {
+    resolve_launch(adapter, server, machine_key, local_id, hint, required_keys).await.map(|l| l.env)
+}
+
+/// `settings` and `spawn_capability` are `None` whenever the env came from
+/// `hint` rather than a successful pull.
+#[derive(Debug, Default, Clone)]
+pub struct LaunchEnv {
+    pub env: BTreeMap<String, String>,
+    pub settings: Option<serde_json::Value>,
+    pub spawn_capability: Option<cctui_proto::api::SpawnCapability>,
+}
+
+pub async fn resolve_launch(
+    adapter: &str,
+    server: Option<&ServerClient>,
+    machine_key: Option<&String>,
+    local_id: &str,
+    hint: &BTreeMap<String, String>,
+    required_keys: &[&str],
+) -> anyhow::Result<LaunchEnv> {
     let (Some(server), Some(mk)) = (server, machine_key) else {
-        return Ok(hint.clone());
+        return Ok(LaunchEnv { env: hint.clone(), ..LaunchEnv::default() });
     };
     match server.gateway_env(mk, local_id).await {
-        Ok(resp) => launch_env_decision(adapter, local_id, &resp, hint, required_keys),
+        Ok(resp) => {
+            let settings = resp.settings.clone();
+            let spawn_capability = resp.spawn_capability.clone();
+            let env = launch_env_decision(adapter, local_id, &resp, hint, required_keys)?;
+            Ok(LaunchEnv { env, settings, spawn_capability })
+        }
         Err(e) => {
             tracing::warn!(
                 %local_id,
                 adapter,
                 "gateway-env pull failed; falling back to pushed env: {e}"
             );
-            Ok(hint.clone())
+            Ok(LaunchEnv { env: hint.clone(), ..LaunchEnv::default() })
         }
     }
 }

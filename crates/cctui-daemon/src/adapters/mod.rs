@@ -1,5 +1,6 @@
 //! Compiled-in adapter registry.
 
+pub mod agent_mcp;
 pub mod claude_code;
 pub mod codex;
 pub mod gateway_env;

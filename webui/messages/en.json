@@ -420,6 +420,8 @@
 	"diagnose_codex_silence_no_turn": "No turn is in flight, so codex has nothing to answer.",
 	"diagnose_codex_silence_none": "Nothing obviously wrong: the session looks idle by choice.",
 	"diagnose_codex_silence_not_live": "No live app-server child owns this session.",
+	"diagnose_codex_silence_shared_dropped": "The shared app-server connection dropped {count} in-flight request(s), last {age} ago.",
+	"diagnose_codex_silence_shared_no_frames": "No JSON-RPC frames on the shared app-server connection: inventory, history and lifecycle traffic is not flowing.",
 	"diagnose_codex_silence_stalled_rpc": "{count} JSON-RPC request(s) outstanding and no frame for {age}.",
 	"diagnose_codex_stderr_empty": "No stderr captured.",
 	"diagnose_codex_stderr_tail": "stderr (last {count})",

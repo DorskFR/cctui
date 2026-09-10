@@ -29,6 +29,7 @@ pub mod daemon;
 mod log_tail;
 mod model_list;
 mod persist;
+mod pty_view;
 mod thread_list;
 pub mod thread_read;
 
@@ -49,15 +50,16 @@ use cctui_proto::diagnose::{
     CodexDiagnose, DiagnoseFact, EffectiveState, GatewayStatus, SessionDiagnose,
 };
 
-/// Pull + decide the codex launch env: fail-closed on a missing/partial gateway
-/// env for an account-bound session (see [`crate::adapters::gateway_env`]).
-async fn resolve_launch_env(
+/// Served settings are the `service_tier` source when the spawn spec carries
+/// none. Fail-closed on a missing/partial gateway env for an account-bound
+/// session (see [`crate::adapters::gateway_env`]).
+async fn resolve_launch(
     server: Option<&ServerClient>,
     machine_key: Option<&String>,
     local_id: &str,
     hint: &std::collections::BTreeMap<String, String>,
-) -> anyhow::Result<std::collections::BTreeMap<String, String>> {
-    crate::adapters::gateway_env::resolve_env(
+) -> anyhow::Result<crate::adapters::gateway_env::LaunchEnv> {
+    crate::adapters::gateway_env::resolve_launch(
         "codex",
         server,
         machine_key,
@@ -66,6 +68,16 @@ async fn resolve_launch_env(
         crate::adapters::gateway_env::OPENAI_GATEWAY_KEYS,
     )
     .await
+}
+
+/// The tier for a codex launch: the spawn spec's resolved value, else the one
+/// the gateway-env pull served. `None` on both leaves codex's own default.
+fn spec_service_tier(
+    spec_tier: Option<&str>,
+    settings: Option<&serde_json::Value>,
+) -> Option<String> {
+    app_server::normalize_service_tier(spec_tier)
+        .or_else(|| app_server::service_tier_from_settings(settings))
 }
 
 fn uses_uds_mode(config: &serde_json::Value) -> bool {
@@ -220,6 +232,7 @@ async fn command_pump(
     marks: log_tail::ResumeMarks,
     shared: daemon::SharedDaemon,
 ) {
+    let pty_views = pty_view::RingViewManager::default();
     loop {
         tokio::select! {
                    () = shutdown.cancelled() => return,
@@ -254,17 +267,18 @@ async fn command_pump(
                                // account-bound
                                // session with empty gateway env refuses to launch
                                // rather than starting env-less and 401ing.
-                               let env = match resolve_launch_env(
+                               let launch_key = session_id
+                                   .or(command_id)
+                                   .map_or_else(String::new, |id| id.to_string());
+                               let launch = match resolve_launch(
                                    server.as_ref(),
                                    machine_key.as_ref(),
-                                   &session_id
-                                       .or(command_id)
-                                       .map_or_else(String::new, |id| id.to_string()),
+                                   &launch_key,
                                    &spec.env,
                                )
                                .await
                                {
-                                   Ok(env) => env,
+                                   Ok(launch) => launch,
                                    Err(err) => {
                                        tracing::error!(%err, "codex spawn: refusing env-less launch");
                                        if let Some(command_id) = command_id {
@@ -279,6 +293,8 @@ async fn command_pump(
                                        continue;
                                    }
                                };
+                               let served_settings = launch.settings.clone();
+                               let env = launch.env.clone();
                                // The CommandResult for `command_id` is deferred to the
                                // session driver: it reports ok only after
                                // `thread/start` succeeds.
@@ -305,16 +321,17 @@ async fn command_pump(
                                {
                                    cfg.model = Some(model.to_owned());
                                }
+                               cfg.service_tier = spec_service_tier(
+                                   spec.service_tier.as_deref(),
+                                   served_settings.as_ref(),
+                               );
                                // Stage spawn attachments. A staging failure is
                                // fatal to the spawn — silently dropping a file the user
                                // expects the session to read is the P0 bug this fixes.
                                // Keyed by the same id the gateway env used so the staging
                                // dir is stable across the session lifetime.
-                               let stage_id = session_id
-                                   .or(command_id)
-                                   .map_or_else(String::new, |id| id.to_string());
                                let attachments = match crate::adapters::uploads::stage_bootstrap(
-                                   &stage_id,
+                                   &launch_key,
                                    &spec.bootstrap,
                                ) {
                                    Ok(paths) => paths,
@@ -346,6 +363,12 @@ async fn command_pump(
                                    live.clone(),
                                    registry.clone(),
                                    shutdown.clone(),
+                               )
+                               .with_agent_mcp(
+                                   crate::adapters::agent_mcp::AgentMcp::for_capability(
+                                       &launch_key,
+                                       launch.spawn_capability.as_ref(),
+                                   ),
                                );
                                tokio::spawn(async move {
                                    if let Err(err) = session.run().await {
@@ -366,7 +389,7 @@ async fn command_pump(
                                // token to (falling back to the parent thread id when
                                // absent), and fail closed on an account-bound fork with
                                // empty env — same contract as Spawn.
-                               let env = match resolve_launch_env(
+                               let (env, served_settings) = match resolve_launch(
                                    server.as_ref(),
                                    machine_key.as_ref(),
                                    &session_id.clone().unwrap_or_else(|| parent_local_id.clone()),
@@ -374,7 +397,7 @@ async fn command_pump(
                                )
                                .await
                                {
-                                   Ok(env) => env,
+                                   Ok(launch) => (launch.env, launch.settings),
                                    Err(err) => {
                                        tracing::error!(%err, "codex fork: refusing env-less launch");
                                        if let Some(command_id) = command_id {
@@ -405,6 +428,10 @@ async fn command_pump(
                                {
                                    cfg.model = Some(model.to_owned());
                                }
+                               cfg.service_tier = spec_service_tier(
+                                   spec.service_tier.as_deref(),
+                                   served_settings.as_ref(),
+                               );
                                // Stage fork attachments, fatal on failure — same
                                // contract as spawn.
                                let stage_id = session_id
@@ -636,6 +663,18 @@ async fn command_pump(
                                }
                                announce_resume_marks(&registry, &events, &session_marks).await;
                            }
+                           AdapterCommand::WatchPty { local_id, watch } => {
+                               if watch {
+                                   pty_views.watch(
+                                       local_id,
+                                       live.clone(),
+                                       events.clone(),
+                                       &shutdown,
+                                   );
+                               } else {
+                                   pty_views.unwatch(&local_id);
+                               }
+                           }
                            _ => tracing::warn!("codex: unhandled AdapterCommand variant"),
                        }
                    }
@@ -841,8 +880,17 @@ async fn dispatch(
             // restored record keeps its gateway base URL, so emptiness alone no
             // longer says whether the credential is there.
             if !record.env.contains_key("OPENAI_API_KEY") {
-                match resolve_launch_env(server, machine_key, local_id, &record.env).await {
-                    Ok(env) => record.env = env,
+                match resolve_launch(server, machine_key, local_id, &record.env).await {
+                    Ok(launch) => {
+                        let settings = launch.settings;
+                        record.env = launch.env;
+                        // A rediscovered thread has no cached tier; adopt the
+                        // served one rather than resuming on codex's default.
+                        record.cfg.service_tier =
+                            record.cfg.service_tier.take().or_else(|| {
+                                app_server::service_tier_from_settings(settings.as_ref())
+                            });
+                    }
                     Err(err) => {
                         tracing::error!(%local_id, %err, "codex resume: refusing env-less launch");
                         let _ = events.send(failed_status(local_id, &err.to_string())).await;
@@ -853,7 +901,7 @@ async fn dispatch(
             }
             spawn_resumed_session(
                 record,
-                local_id.to_owned(),
+                local_id,
                 vec![command],
                 events.clone(),
                 live.clone(),
@@ -1057,6 +1105,16 @@ mod tests {
             .await
             .expect("event before timeout")
             .expect("event channel open")
+    }
+
+    #[test]
+    fn spawn_tier_prefers_the_spec_then_the_served_settings() {
+        let served = serde_json::json!({"service_tier": "fast"});
+        assert_eq!(spec_service_tier(Some("default"), Some(&served)).as_deref(), Some("default"));
+        assert_eq!(spec_service_tier(None, Some(&served)).as_deref(), Some("fast"));
+        assert_eq!(spec_service_tier(Some("bogus"), Some(&served)).as_deref(), Some("fast"));
+        assert_eq!(spec_service_tier(None, None), None);
+        assert_eq!(spec_service_tier(None, Some(&serde_json::json!({}))), None);
     }
 
     #[tokio::test]

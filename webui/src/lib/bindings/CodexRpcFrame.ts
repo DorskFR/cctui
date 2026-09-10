@@ -11,4 +11,9 @@ direction: string,
 /**
  * The frame's `method`, else its `id`, else `frame`.
  */
-label: string, json: string, };
+label: string, json: string, 
+/**
+ * Which transport carried the frame: `stdio` (the per-session app-server
+ * child) or `shared` (the process-wide `codex app-server daemon` socket).
+ */
+transport: string, };

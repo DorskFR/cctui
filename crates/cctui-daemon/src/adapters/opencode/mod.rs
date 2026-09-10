@@ -19,15 +19,16 @@ pub const ADAPTER_ID: &str = "opencode";
 /// Dispatch-payload env key naming the opencode agent profile to run under.
 pub const AGENT_ENV: &str = "CCTUI_OPENCODE_AGENT";
 
-/// Pull + decide the opencode launch env: fail-closed on a missing/partial
-/// gateway env for an account-bound session (see [`crate::adapters::gateway_env`]).
-async fn resolve_launch_env(
+/// Pull + decide the opencode launch env, keeping the `CctuiAgent` capability
+/// the same pull serves: fail-closed on a missing/partial gateway env for an
+/// account-bound session (see [`crate::adapters::gateway_env`]).
+async fn resolve_launch(
     server: Option<&ServerClient>,
     machine_key: Option<&String>,
     local_id: &str,
     hint: &std::collections::BTreeMap<String, String>,
-) -> anyhow::Result<std::collections::BTreeMap<String, String>> {
-    crate::adapters::gateway_env::resolve_env(
+) -> anyhow::Result<crate::adapters::gateway_env::LaunchEnv> {
+    crate::adapters::gateway_env::resolve_launch(
         "opencode",
         server,
         machine_key,
@@ -99,7 +100,7 @@ async fn pump(cfg: OpenCodeConfig, ctx: AdapterCtx, live: LiveRegistry) {
                         let key = session_id
                             .or(command_id)
                             .map_or_else(String::new, |id| id.to_string());
-                        let env = match resolve_launch_env(
+                        let launch = match resolve_launch(
                             server.as_ref(),
                             machine_key.as_ref(),
                             &key,
@@ -107,12 +108,17 @@ async fn pump(cfg: OpenCodeConfig, ctx: AdapterCtx, live: LiveRegistry) {
                         )
                         .await
                         {
-                            Ok(env) => env,
+                            Ok(launch) => launch,
                             Err(err) => {
                                 fail(&events, command_id, &err.to_string()).await;
                                 continue;
                             }
                         };
+                        let env = launch.env;
+                        let agent_mcp = crate::adapters::agent_mcp::AgentMcp::for_capability(
+                            &key,
+                            launch.spawn_capability.as_ref(),
+                        );
                         let attachments = match crate::adapters::uploads::stage_bootstrap(
                             &key,
                             &spec.bootstrap,
@@ -140,6 +146,7 @@ async fn pump(cfg: OpenCodeConfig, ctx: AdapterCtx, live: LiveRegistry) {
                             attachments,
                             command_id,
                             parent_local_id: spec.parent_local_id.clone(),
+                            agent_mcp,
                         };
                         let session = OpenCodeSession::new(
                             params,

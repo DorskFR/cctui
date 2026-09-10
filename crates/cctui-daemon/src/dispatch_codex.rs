@@ -107,6 +107,9 @@ pub struct CodexDispatch {
     pub model: Option<String>,
     /// Optional reasoning effort (`payload.effort`); `None` → config.toml's pin.
     pub effort: Option<String>,
+    /// Service tier (`payload.service_tier`): `"default"` or `"fast"`. `None`
+    /// inherits config.toml, and failing that codex's own `priority` default.
+    pub service_tier: Option<String>,
     /// Absolute path `codex exec -o` writes the final agent message to; also the
     /// runtime fallback when the JSONL stream carried no `agent_message`.
     pub last_message_file: String,
@@ -147,6 +150,9 @@ impl CodexDispatch {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .map(ToOwned::to_owned);
+        let service_tier = crate::adapters::codex::app_server::normalize_service_tier(
+            payload.get("service_tier").and_then(Value::as_str),
+        );
         let result_file =
             std::env::var("RESULT_FILE").unwrap_or_else(|_| DEFAULT_RESULT_FILE.to_owned());
         let timeout_secs = std::env::var("CODEX_TIMEOUT")
@@ -160,6 +166,7 @@ impl CodexDispatch {
             workdir,
             model,
             effort,
+            service_tier,
             last_message_file: "/tmp/cctui-codex-last-message.txt".to_owned(),
             result_file,
             timeout_secs,
@@ -192,6 +199,10 @@ impl CodexDispatch {
         if let Some(effort) = &self.effort {
             argv.push("-c".to_owned());
             argv.push(format!("model_reasoning_effort=\"{effort}\""));
+        }
+        if let Some(tier) = &self.service_tier {
+            argv.push("-c".to_owned());
+            argv.push(format!("service_tier=\"{tier}\""));
         }
         // Prompt last, as a positional arg (stdin is closed at spawn).
         argv.push(self.prompt.clone());
@@ -483,6 +494,7 @@ mod tests {
             workdir: "/workspace".to_owned(),
             model: None,
             effort: None,
+            service_tier: None,
             last_message_file: "/tmp/last.txt".to_owned(),
             result_file: "/tmp/cctui-result.json".to_owned(),
             timeout_secs: 500,
@@ -505,6 +517,38 @@ mod tests {
         assert_eq!(payload_adapter(&json!({"adapter": ""})), "claude-code");
         assert_eq!(payload_adapter(&json!({"adapter": "codex"})), "codex");
         assert_eq!(payload_adapter(&json!({"adapter": " codex "})), "codex");
+    }
+
+    #[test]
+    fn build_argv_carries_the_service_tier() {
+        let mut d = dispatch("go");
+        d.service_tier = Some("fast".to_owned());
+        let argv = d.build_argv();
+        assert!(
+            argv.windows(2).any(|w| w[0] == "-c" && w[1] == "service_tier=\"fast\""),
+            "{argv:?}"
+        );
+    }
+
+    #[test]
+    fn payload_service_tier_is_normalized() {
+        assert_eq!(
+            CodexDispatch::from_payload(&json!({"prompt": "p", "service_tier": " FAST "}))
+                .expect("payload")
+                .service_tier
+                .as_deref(),
+            Some("fast")
+        );
+        assert_eq!(
+            CodexDispatch::from_payload(&json!({"prompt": "p", "service_tier": "priority"}))
+                .expect("payload")
+                .service_tier,
+            None
+        );
+        assert_eq!(
+            CodexDispatch::from_payload(&json!({"prompt": "p"})).expect("payload").service_tier,
+            None
+        );
     }
 
     #[test]

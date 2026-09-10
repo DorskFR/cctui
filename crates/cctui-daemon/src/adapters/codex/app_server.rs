@@ -760,28 +760,63 @@ pub fn gateway_thread_config(
     Some(("cctui".to_owned(), json!({"model_providers": {"cctui": provider}})))
 }
 
-/// Attach the per-thread provider + credential to a `thread/{start,resume,fork}`
-/// params object. A session with no gateway binding keeps codex's default
-/// provider.
+/// `"default"` or `"fast"` (codex maps `fast` → request tier `priority`).
+/// Anything else resolves to `None`: supplying no tier beats guessing one.
+#[must_use]
+pub fn normalize_service_tier(raw: Option<&str>) -> Option<String> {
+    match raw?.trim().to_ascii_lowercase().as_str() {
+        "default" => Some("default".to_owned()),
+        "fast" => Some("fast".to_owned()),
+        _ => None,
+    }
+}
+
+#[must_use]
+pub fn service_tier_from_settings(settings: Option<&Value>) -> Option<String> {
+    normalize_service_tier(settings?.get("service_tier").and_then(Value::as_str))
+}
+
+/// Attach the per-thread provider + credential and the per-thread service tier
+/// to a `thread/{start,resume,fork}` params object. A session with no gateway
+/// binding keeps codex's default provider.
+///
+/// The tier rides both the native `serviceTier` param and the per-thread
+/// `config` overlay, because codex persists NEITHER in the rollout — only
+/// `model_provider` survives — so every resume and fork must re-supply it or
+/// the thread silently falls back to codex's own `priority` default.
 fn with_thread_config(
     mut params: Value,
     env: &std::collections::BTreeMap<String, String>,
+    service_tier: Option<&str>,
 ) -> Value {
-    if let Some((provider, config)) = gateway_thread_config(env)
-        && let Some(map) = params.as_object_mut()
-    {
-        map.insert("modelProvider".to_owned(), json!(provider));
+    let Some(map) = params.as_object_mut() else { return params };
+    let mut config = match gateway_thread_config(env) {
+        Some((provider, config)) => {
+            map.insert("modelProvider".to_owned(), json!(provider));
+            config
+        }
+        None => json!({}),
+    };
+    if let Some(tier) = normalize_service_tier(service_tier) {
+        map.insert("serviceTier".to_owned(), json!(tier));
+        config["service_tier"] = json!(tier);
+    }
+    if config.as_object().is_some_and(|c| !c.is_empty()) {
         map.insert("config".to_owned(), config);
     }
     params
 }
 
-fn thread_start_req(cwd: &str, env: &std::collections::BTreeMap<String, String>) -> Value {
+fn thread_start_req(
+    cwd: &str,
+    env: &std::collections::BTreeMap<String, String>,
+    service_tier: Option<&str>,
+) -> Value {
     json!({
         "jsonrpc": "2.0",
         "id": ID_THREAD_START,
         "method": "thread/start",
-        "params": with_thread_config(json!({"cwd": cwd}), env),
+        "params": with_thread_config(json!({"cwd": cwd}), env, service_tier),
     })
 }
 
@@ -789,12 +824,17 @@ fn thread_resume_req(
     thread_id: &str,
     cwd: &str,
     env: &std::collections::BTreeMap<String, String>,
+    service_tier: Option<&str>,
 ) -> Value {
     json!({
         "jsonrpc": "2.0",
         "id": ID_THREAD_START,
         "method": "thread/resume",
-        "params": with_thread_config(json!({"threadId": thread_id, "cwd": cwd}), env),
+        "params": with_thread_config(
+            json!({"threadId": thread_id, "cwd": cwd}),
+            env,
+            service_tier,
+        ),
     })
 }
 
@@ -807,12 +847,17 @@ fn thread_fork_req(
     parent_thread_id: &str,
     cwd: &str,
     env: &std::collections::BTreeMap<String, String>,
+    service_tier: Option<&str>,
 ) -> Value {
     json!({
         "jsonrpc": "2.0",
         "id": ID_THREAD_START,
         "method": "thread/fork",
-        "params": with_thread_config(json!({"threadId": parent_thread_id, "cwd": cwd}), env),
+        "params": with_thread_config(
+            json!({"threadId": parent_thread_id, "cwd": cwd}),
+            env,
+            service_tier,
+        ),
     })
 }
 
@@ -1578,6 +1623,12 @@ pub struct AppServerConfig {
     /// Model passed via `-c model="…"`. `None` keeps the codex
     /// default. Set per-spawn from the spawn request.
     pub model: Option<String>,
+    /// Per-session service tier, `"default"` or `"fast"`. NOT a
+    /// `config_overrides()` key: it is per-thread, and lives here only because
+    /// this struct is the durable per-session cache (persisted in
+    /// [`SessionRecord::cfg`]) that lets `thread/{resume,fork}` re-supply it.
+    /// `None` keeps codex's own (expensive `priority`) default.
+    pub service_tier: Option<String>,
     /// Whether to refresh the codex model catalog on session start
     /// by issuing `model/list` over this session's authenticated app-server
     /// connection. `false` (`model_catalog = false`) disables the refresh.
@@ -1592,6 +1643,7 @@ impl Default for AppServerConfig {
             sandbox_mode: "workspace-write".to_string(),
             reasoning_effort: None,
             model: None,
+            service_tier: None,
             model_catalog: true,
         }
     }
@@ -1645,6 +1697,7 @@ impl AppServerConfig {
         if let Some(m) = v.get("model").and_then(Value::as_str) {
             cfg.model = Some(m.to_string());
         }
+        cfg.service_tier = normalize_service_tier(v.get("service_tier").and_then(Value::as_str));
         cfg.model_catalog = model_list::catalog_enabled(v);
         cfg
     }
@@ -1687,6 +1740,38 @@ pub fn gateway_provider_overrides(
             "cctui-gateway".to_owned(),
         ),
     ]
+}
+
+/// Quote a value that is always a TOML string (`config_overrides` and the
+/// gateway provider block are string-valued by construction).
+fn quoted(pairs: Vec<(String, String)>) -> Vec<(String, String)> {
+    pairs.into_iter().map(|(k, v)| (k, format!("\"{v}\""))).collect()
+}
+
+/// The full, ordered `-c key=value` list for an app-server launch, with values
+/// already rendered as TOML literals.
+///
+/// Per-account settings go FIRST and cctui's managed overrides LAST, and a
+/// managed key drops any account entry of the same name outright: the ladder
+/// must not depend on codex's own last-wins behaviour for `-c` duplicates, and
+/// an account must never be able to move gateway routing, the permission
+/// posture, or the session's model.
+fn launch_overrides(
+    cfg: &AppServerConfig,
+    env: &std::collections::BTreeMap<String, String>,
+) -> Vec<(String, String)> {
+    let managed: Vec<(String, String)> =
+        [quoted(cfg.config_overrides()), quoted(gateway_provider_overrides(env))].concat();
+    let account = env
+        .get(cctui_proto::codex_config::CONFIG_TOML_ENV)
+        .map(|b| cctui_proto::codex_config::overrides_from_block(b))
+        .unwrap_or_default();
+    let owned: std::collections::BTreeSet<&str> = managed.iter().map(|(k, _)| k.as_str()).collect();
+    account
+        .into_iter()
+        .filter(|(k, _)| !owned.contains(k.as_str()))
+        .chain(managed.iter().cloned())
+        .collect()
 }
 
 #[derive(Debug, Clone)]
@@ -1732,6 +1817,10 @@ pub struct CodexSession {
     /// The spawning parent session for a `CctuiAgent` child, carried onto
     /// `SessionStarted` so the server nests it under its caller.
     parent_local_id: Option<String>,
+    /// `CctuiAgent` relay to declare to this app-server, when the server granted
+    /// the session spawn rights. `None` means the tool is absent — a session
+    /// without a capability must not be able to see it.
+    agent_mcp: Option<crate::adapters::agent_mcp::AgentMcp>,
     events: mpsc::Sender<AdapterEvent>,
     live: LiveSessionRegistry,
     registry: SessionRegistry,
@@ -1739,6 +1828,15 @@ pub struct CodexSession {
 }
 
 impl CodexSession {
+    #[must_use]
+    pub fn with_agent_mcp(
+        mut self,
+        agent_mcp: Option<crate::adapters::agent_mcp::AgentMcp>,
+    ) -> Self {
+        self.agent_mcp = agent_mcp;
+        self
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub const fn new_fresh(
         cfg: AppServerConfig,
@@ -1763,6 +1861,7 @@ impl CodexSession {
             command_id,
             spawn_key,
             parent_local_id,
+            agent_mcp: None,
             events,
             live,
             registry,
@@ -1793,6 +1892,7 @@ impl CodexSession {
             command_id,
             spawn_key: None,
             parent_local_id: None,
+            agent_mcp: None,
             events,
             live,
             registry,
@@ -1820,6 +1920,7 @@ impl CodexSession {
             command_id: None,
             spawn_key: None,
             parent_local_id: None,
+            agent_mcp: None,
             events,
             live,
             registry,
@@ -1876,13 +1977,16 @@ impl CodexSession {
     }
 
     fn thread_request(&self) -> (Value, &'static str) {
+        let tier = self.cfg.service_tier.as_deref();
         match &self.launch {
-            SessionLaunch::Fresh { .. } => (thread_start_req(&self.cwd, &self.env), "thread/start"),
+            SessionLaunch::Fresh { .. } => {
+                (thread_start_req(&self.cwd, &self.env, tier), "thread/start")
+            }
             SessionLaunch::Resume { thread_id, .. } => {
-                (thread_resume_req(thread_id, &self.cwd, &self.env), "thread/resume")
+                (thread_resume_req(thread_id, &self.cwd, &self.env, tier), "thread/resume")
             }
             SessionLaunch::Fork { parent_thread_id, .. } => {
-                (thread_fork_req(parent_thread_id, &self.cwd, &self.env), "thread/fork")
+                (thread_fork_req(parent_thread_id, &self.cwd, &self.env, tier), "thread/fork")
             }
         }
     }
@@ -1896,11 +2000,15 @@ impl CodexSession {
 
         let mut cmd = Command::new(&self.cfg.bin);
         cmd.arg("app-server");
-        for (key, value) in self.cfg.config_overrides() {
-            cmd.arg("-c").arg(format!("{key}=\"{value}\""));
+        for (key, value) in launch_overrides(&self.cfg, &self.env) {
+            cmd.arg("-c").arg(format!("{key}={value}"));
         }
-        for (key, value) in gateway_provider_overrides(&self.env) {
-            cmd.arg("-c").arg(format!("{key}=\"{value}\""));
+        // Already TOML literals (quoted scalar / array), unlike the scalar knobs
+        // above which are quoted here.
+        if let Some(agent_mcp) = &self.agent_mcp {
+            for (key, value) in agent_mcp.codex_config_overrides() {
+                cmd.arg("-c").arg(format!("{key}={value}"));
+            }
         }
         // Forward the resolved launch env — chiefly the gateway
         // credential pulled from the server's `sessions.account_id` binding —
@@ -2176,9 +2284,9 @@ impl CodexSession {
                                 pid: child.id(),
                                 active_turn_id: active_turn.id().map(str::to_owned),
                                 pending_rpc_methods: pending_rpcs.pending_methods(),
-                                protocol_errors: rings.protocol_errors(),
+                                protocol_errors: rings.protocol_errors_with_shared(),
                                 stderr_tail: rings.stderr_tail(),
-                                rpc_tail: rings.rpc_tail(),
+                                rpc_tail: rings.rpc_tail_with_shared(),
                                 rollout_path: rollout_path.clone(),
                                 rollout_size_bytes: rollout_path
                                     .as_ref()
@@ -2279,19 +2387,18 @@ impl CodexSession {
                             };
                             local_id.clone_from(&info.thread_id);
                             rollout_path.clone_from(&info.rollout_path);
-                            // Link a forked thread to its parent thread, and a
-                            // `CctuiAgent` child to its spawning session, so
-                            // the server resolves `parent_id`. Relation
-                            // "subagent" (not "fork") is what the webui nests.
-                            let (parent_local_id, relation) = match &self.launch {
-                                SessionLaunch::Fork { parent_thread_id, .. } => {
-                                    (Some(parent_thread_id.clone()), Some("fork"))
-                                }
-                                _ => (
-                                    self.parent_local_id.clone(),
-                                    self.parent_local_id.as_ref().map(|_| "subagent"),
-                                ),
-                            };
+                            let (parent_local_id, relation) =
+                                child_linkage(&self.launch, self.parent_local_id.as_deref());
+                            // A `CctuiAgent` call from this session arrives keyed
+                            // by the launch key baked into the relay argv; the
+                            // thread id it really is only exists now.
+                            if let Some(agent_mcp) = &self.agent_mcp {
+                                crate::agenttool::bind_session_alias(
+                                    agent_mcp.session_key(),
+                                    &local_id,
+                                );
+                                crate::adapters::agent_mcp::remember(&local_id, agent_mcp);
+                            }
                             self.events
                                 .send(AdapterEvent::SessionStarted {
                                     local_id: local_id.clone(),
@@ -2842,7 +2949,7 @@ impl CodexSession {
             {
                 spawn_resumed_session(
                     record,
-                    local_id.clone(),
+                    &local_id,
                     retry,
                     self.events.clone(),
                     self.live.clone(),
@@ -3008,9 +3115,25 @@ async fn record_model_override(
     }
 }
 
+/// The `(parent_local_id, relation)` a freshly started thread reports, so the
+/// server resolves `parent_id`. Relation `"subagent"` — not `"fork"` — is what
+/// the webui nests, so a `CctuiAgent` child must not be labelled a fork.
+#[must_use]
+fn child_linkage(
+    launch: &SessionLaunch,
+    parent_local_id: Option<&str>,
+) -> (Option<String>, Option<&'static str>) {
+    match launch {
+        SessionLaunch::Fork { parent_thread_id, .. } => {
+            (Some(parent_thread_id.clone()), Some("fork"))
+        }
+        _ => (parent_local_id.map(str::to_owned), parent_local_id.map(|_| "subagent")),
+    }
+}
+
 pub fn spawn_resumed_session(
     record: SessionRecord,
-    thread_id: String,
+    thread_id: &str,
     commands: Vec<SessionCommand>,
     events: mpsc::Sender<AdapterEvent>,
     live: LiveSessionRegistry,
@@ -3031,8 +3154,17 @@ pub fn spawn_resumed_session(
         return;
     }
     let session = CodexSession::new_resume(
-        record.cfg, record.cwd, record.env, thread_id, commands, events, live, registry, shutdown,
-    );
+        record.cfg,
+        record.cwd,
+        record.env,
+        thread_id.to_owned(),
+        commands,
+        events,
+        live,
+        registry,
+        shutdown,
+    )
+    .with_agent_mcp(crate::adapters::agent_mcp::recall(thread_id));
     tokio::spawn(async move {
         if let Err(err) = session.run().await {
             tracing::error!(%err, "codex resumed app-server session ended in error");
@@ -3066,17 +3198,41 @@ fn stderr_tail(rings: &DiagnoseRings) -> String {
     if lines.is_empty() { String::new() } else { format!("; last stderr:\n{}", lines.join("\n")) }
 }
 
-/// The always-on builtin detector set. The daemon's synced user patterns live
-/// in the supervisor and are not reachable from the driver, so the rings scrub
-/// with the builtins alone rather than not scrubbing at all.
-fn ring_scrub() -> &'static CompiledPatterns {
-    static SCRUB: OnceLock<CompiledPatterns> = OnceLock::new();
-    SCRUB.get_or_init(|| redact::compile(true, &[], &cctui_crypto::vault_key()))
+/// The per-session app-server child's stdio pipes.
+pub const TRANSPORT_STDIO: &str = "stdio";
+/// The process-wide `codex app-server daemon` control socket.
+pub const TRANSPORT_SHARED: &str = "shared";
+
+type RingScrub = std::sync::RwLock<Arc<CompiledPatterns>>;
+
+/// The effective detector set for the rings: the builtins, plus whatever custom
+/// patterns the server last synced (see [`set_ring_scrub`]). Builtins stay on
+/// unconditionally — a session's tool output is echoed into these rings, so
+/// "scrubbing disabled" must not mean "tokens in the diagnose report".
+fn ring_scrub_cell() -> &'static RingScrub {
+    static SCRUB: OnceLock<RingScrub> = OnceLock::new();
+    SCRUB.get_or_init(|| {
+        std::sync::RwLock::new(Arc::new(redact::compile(true, &[], &cctui_crypto::vault_key())))
+    })
+}
+
+/// Install the user-configured scrub patterns on the rings. Called by the
+/// supervisor whenever the server syncs a `SecretScrubConfig`; the rings live
+/// in the driver and have no other route to them.
+pub fn set_ring_scrub(user: &[(String, String)]) {
+    let compiled = Arc::new(redact::compile(true, user, &cctui_crypto::vault_key()));
+    if let Ok(mut guard) = ring_scrub_cell().write() {
+        *guard = compiled;
+    }
+}
+
+fn ring_scrub() -> Arc<CompiledPatterns> {
+    ring_scrub_cell().read().map_or_else(|e| Arc::clone(&e.into_inner()), |g| Arc::clone(&g))
 }
 
 fn redact_text(text: &str) -> String {
     let mut value = Value::String(text.to_owned());
-    redact::redact_json(&mut value, ring_scrub());
+    redact::redact_json(&mut value, &ring_scrub());
     match value {
         Value::String(s) => s,
         _ => text.to_owned(),
@@ -3109,14 +3265,51 @@ fn now_ms() -> i64 {
 /// Every producer sits on the JSON-RPC write path or the stdout read loop, so
 /// the locks are `try_lock` only: a contended ring drops the entry rather than
 /// stalling the session.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct DiagnoseRings {
+    /// Stamped onto every entry so a reader can tell "no frames on the shared
+    /// connection" from "no frames at all".
+    transport: &'static str,
     stderr: StdMutex<VecDeque<CodexStderrLine>>,
     rpc: StdMutex<VecDeque<CodexRpcFrame>>,
     errors: StdMutex<VecDeque<CodexProtocolError>>,
 }
 
+impl Default for DiagnoseRings {
+    fn default() -> Self {
+        Self::new(TRANSPORT_STDIO)
+    }
+}
+
+/// The rings for the shared `codex app-server daemon` connection. That socket
+/// is process-wide, not per-session, so its frames are collected once here and
+/// merged into every session's diagnose snapshot.
+pub fn shared_rings() -> &'static Arc<DiagnoseRings> {
+    static RINGS: OnceLock<Arc<DiagnoseRings>> = OnceLock::new();
+    RINGS.get_or_init(|| Arc::new(DiagnoseRings::new(TRANSPORT_SHARED)))
+}
+
+/// Merge a session's stdio tail with the shared connection's, oldest first.
+/// Neither side is truncated against the other: the whole point of the tagging
+/// is that a flood on one transport must not hide the silence of the other.
+fn merge_by_ts<T: Clone, F: Fn(&T) -> i64>(a: Vec<T>, b: Vec<T>, ts: F) -> Vec<T> {
+    let mut out = a;
+    out.extend(b);
+    out.sort_by_key(|e| ts(e));
+    out
+}
+
 impl DiagnoseRings {
+    #[must_use]
+    pub fn new(transport: &'static str) -> Self {
+        Self {
+            transport,
+            stderr: StdMutex::default(),
+            rpc: StdMutex::default(),
+            errors: StdMutex::default(),
+        }
+    }
+
     fn push<T>(ring: &StdMutex<VecDeque<T>>, cap: usize, item: T) {
         let Ok(mut guard) = ring.try_lock() else { return };
         while guard.len() >= cap {
@@ -3137,7 +3330,7 @@ impl DiagnoseRings {
         );
     }
 
-    fn note_rpc(&self, direction: &'static str, value: &Value) {
+    pub fn note_rpc(&self, direction: &'static str, value: &Value) {
         let label = value
             .get("method")
             .and_then(Value::as_str)
@@ -3154,15 +3347,20 @@ impl DiagnoseRings {
                 direction: direction.to_owned(),
                 label: redact_text(&label),
                 json,
+                transport: self.transport.to_owned(),
             },
         );
     }
 
-    fn note_protocol_error(&self, message: &str) {
+    pub fn note_protocol_error(&self, message: &str) {
         Self::push(
             &self.errors,
             PROTOCOL_ERROR_RING,
-            CodexProtocolError { ts_ms: now_ms(), message: redact_text(message) },
+            CodexProtocolError {
+                ts_ms: now_ms(),
+                message: redact_text(message),
+                transport: self.transport.to_owned(),
+            },
         );
     }
 
@@ -3170,12 +3368,21 @@ impl DiagnoseRings {
         Self::snapshot(&self.stderr)
     }
 
-    fn rpc_tail(&self) -> Vec<CodexRpcFrame> {
+    pub fn rpc_tail(&self) -> Vec<CodexRpcFrame> {
         Self::snapshot(&self.rpc)
     }
 
-    fn protocol_errors(&self) -> Vec<CodexProtocolError> {
+    pub fn protocol_errors(&self) -> Vec<CodexProtocolError> {
         Self::snapshot(&self.errors)
+    }
+
+    /// This ring's frames plus the shared connection's, oldest first.
+    fn rpc_tail_with_shared(&self) -> Vec<CodexRpcFrame> {
+        merge_by_ts(self.rpc_tail(), shared_rings().rpc_tail(), |f| f.ts_ms)
+    }
+
+    fn protocol_errors_with_shared(&self) -> Vec<CodexProtocolError> {
+        merge_by_ts(self.protocol_errors(), shared_rings().protocol_errors(), |e| e.ts_ms)
     }
 }
 
@@ -3222,6 +3429,60 @@ async fn write_json<W: AsyncWriteExt + Unpin>(w: &mut W, v: &Value) -> Result<()
 mod tests {
     use super::*;
 
+    fn fresh_launch() -> SessionLaunch {
+        SessionLaunch::Fresh { prompt: None, name: None, attachments: Vec::new() }
+    }
+
+    #[test]
+    fn a_cctui_agent_child_reports_its_spawning_parent_as_a_subagent() {
+        let (parent, relation) = child_linkage(&fresh_launch(), Some("parent-thread-1"));
+        assert_eq!(parent.as_deref(), Some("parent-thread-1"));
+        assert_eq!(
+            relation,
+            Some("subagent"),
+            "the webui nests on \"subagent\"; anything else orphans the child"
+        );
+    }
+
+    #[test]
+    fn a_parentless_thread_reports_no_linkage() {
+        assert_eq!(child_linkage(&fresh_launch(), None), (None, None));
+    }
+
+    #[test]
+    fn a_fork_links_to_its_parent_thread_as_a_fork() {
+        let launch = SessionLaunch::Fork {
+            parent_thread_id: "thread-7".to_owned(),
+            prompt: None,
+            name: None,
+            attachments: Vec::new(),
+        };
+        assert_eq!(
+            child_linkage(&launch, Some("ignored")),
+            (Some("thread-7".to_owned()), Some("fork"))
+        );
+    }
+
+    #[test]
+    fn a_codex_session_with_a_capability_launches_the_agent_relay() {
+        let cap = cctui_proto::api::SpawnCapability {
+            adapters: vec!["codex".to_owned()],
+            ..Default::default()
+        };
+        let with = crate::adapters::agent_mcp::AgentMcp::for_capability("key-1", Some(&cap));
+        assert!(with.is_some(), "a granted capability must register the MCP tool");
+        let keys: Vec<String> =
+            with.unwrap().codex_config_overrides().into_iter().map(|(k, _)| k).collect();
+        assert!(
+            keys.iter().any(|k| k.starts_with("mcp_servers.")),
+            "the relay must ride codex `-c mcp_servers.…`; got {keys:?}"
+        );
+        assert!(
+            crate::adapters::agent_mcp::AgentMcp::for_capability("key-1", None).is_none(),
+            "a session with no capability must not see the tool at all"
+        );
+    }
+
     #[test]
     fn diagnose_rings_redact_tool_output_secrets() {
         let token = "ghp_0123456789abcdefghijABCDEFGHIJ0123";
@@ -3244,6 +3505,55 @@ mod tests {
         assert_eq!(rpc[0].label, "item/completed");
         assert!(!stderr[0].line.contains(token), "{}", stderr[0].line);
         assert!(!errors[0].message.contains(token), "{}", errors[0].message);
+    }
+
+    /// Without the tag a flood of stdio frames makes an entirely dead shared
+    /// connection look healthy — the blind spot CCT-966 opened.
+    #[test]
+    fn ring_entries_carry_the_transport_that_produced_them() {
+        let stdio = DiagnoseRings::default();
+        let shared = DiagnoseRings::new(TRANSPORT_SHARED);
+        stdio.note_rpc("out", &json!({"method": "turn/start"}));
+        shared.note_rpc("out", &json!({"method": "thread/list"}));
+        stdio.note_protocol_error("turn/start: boom");
+        shared.note_protocol_error("connection dropped before request 4 was answered");
+
+        assert_eq!(stdio.rpc_tail()[0].transport, "stdio");
+        assert_eq!(shared.rpc_tail()[0].transport, "shared");
+        assert_eq!(stdio.protocol_errors()[0].transport, "stdio");
+        assert_eq!(shared.protocol_errors()[0].transport, "shared");
+    }
+
+    #[test]
+    fn a_session_snapshot_merges_the_shared_connection_tail_oldest_first() {
+        let stdio = DiagnoseRings::default();
+        shared_rings().note_rpc("in", &json!({"method": "thread/list"}));
+        stdio.note_rpc("out", &json!({"method": "turn/start"}));
+
+        let merged = stdio.rpc_tail_with_shared();
+        assert!(merged.iter().any(|f| f.transport == "shared"), "{merged:?}");
+        assert!(merged.iter().any(|f| f.transport == "stdio"), "{merged:?}");
+        assert!(merged.windows(2).all(|w| w[0].ts_ms <= w[1].ts_ms), "{merged:?}");
+    }
+
+    /// The builtins alone would let a user-configured secret through; the
+    /// rings echo tool output, so this is a live leak path.
+    #[test]
+    fn diagnose_rings_apply_user_configured_scrub_patterns() {
+        set_ring_scrub(&[("acme_key".to_owned(), "ACME-[0-9]{6}".to_owned())]);
+        let rings = DiagnoseRings::default();
+        rings.note_rpc(
+            "in",
+            &json!({"method": "item/completed", "params": {"output": "token ACME-424242 ok"}}),
+        );
+        rings.note_stderr("leaked ACME-424242 to stderr");
+
+        let frame = &rings.rpc_tail()[0];
+        assert!(!frame.json.contains("ACME-424242"), "{}", frame.json);
+        assert!(frame.json.contains("[REDACTED:acme_key"), "{}", frame.json);
+        assert!(!rings.stderr_tail()[0].line.contains("ACME-424242"));
+
+        set_ring_scrub(&[]);
     }
 
     #[test]
@@ -3726,14 +4036,16 @@ mod tests {
     fn request_builders_shape() {
         assert_eq!(initialize_req()["method"], "initialize");
         assert_eq!(
-            thread_start_req("/tmp", &std::collections::BTreeMap::default())["params"]["cwd"],
+            thread_start_req("/tmp", &std::collections::BTreeMap::default(), None)["params"]["cwd"],
             "/tmp"
         );
-        let resume = thread_resume_req("tid", "/repo", &std::collections::BTreeMap::default());
+        let resume =
+            thread_resume_req("tid", "/repo", &std::collections::BTreeMap::default(), None);
         assert_eq!(resume["method"], "thread/resume");
         assert_eq!(resume["params"]["threadId"], "tid");
         assert_eq!(resume["params"]["cwd"], "/repo");
-        let fork = thread_fork_req("parent-tid", "/repo", &std::collections::BTreeMap::default());
+        let fork =
+            thread_fork_req("parent-tid", "/repo", &std::collections::BTreeMap::default(), None);
         assert_eq!(fork["method"], "thread/fork");
         assert_eq!(fork["params"]["threadId"], "parent-tid");
         assert_eq!(fork["params"]["cwd"], "/repo");
@@ -4252,6 +4564,69 @@ done
         assert!(with.contains(&("model".to_owned(), "gpt-5-codex".to_owned())));
     }
 
+    fn env_with_block(block: &str) -> std::collections::BTreeMap<String, String> {
+        let mut env = std::collections::BTreeMap::new();
+        env.insert("OPENAI_BASE_URL".to_owned(), "https://gw/openai".to_owned());
+        env.insert(cctui_proto::codex_config::CONFIG_TOML_ENV.to_owned(), block.to_owned());
+        env
+    }
+
+    /// A curated setting stored on `account_providers.settings_json` must reach
+    /// the launched process — as a `-c` flag with a correctly typed value.
+    #[test]
+    fn account_settings_reach_the_launch_command_line() {
+        let block = cctui_proto::codex_config::render_block(&json!({
+            "web_search": true,
+            "model_verbosity": "low",
+            "model_context_window": 272_000,
+        }))
+        .expect("rendered");
+        let got = launch_overrides(&AppServerConfig::default(), &env_with_block(&block));
+        let flags: Vec<String> = got.iter().map(|(k, v)| format!("{k}={v}")).collect();
+        assert!(flags.contains(&"web_search=true".to_owned()), "{flags:?}");
+        assert!(flags.contains(&"model_verbosity=\"low\"".to_owned()), "{flags:?}");
+        assert!(flags.contains(&"model_context_window=272000".to_owned()), "{flags:?}");
+        // The managed knobs still ride along, still quoted.
+        assert!(flags.contains(&"approval_policy=\"untrusted\"".to_owned()), "{flags:?}");
+        assert!(flags.contains(&"model_provider=\"cctui\"".to_owned()), "{flags:?}");
+    }
+
+    /// Anything outside the curated set is dropped rather than forwarded — an
+    /// unknown key fails app-server startup, and a managed one would move
+    /// gateway routing or the permission posture.
+    #[test]
+    fn uncurated_and_managed_keys_never_reach_the_command_line() {
+        let hostile = "model_provider = \"evil\"\napproval_policy = \"never\"\n\
+                       sandbox_mode = \"danger-full-access\"\nservice_tier = \"fast\"\n\
+                       disableBundledSkills = true\ntotallyNotAKey = 1";
+        let got = launch_overrides(&AppServerConfig::default(), &env_with_block(hostile));
+        assert!(!got.iter().any(|(k, _)| k == "service_tier" || k == "disableBundledSkills"));
+        assert!(!got.iter().any(|(k, _)| k == "totallyNotAKey"));
+        // The keys that collide with managed ones survive only with cctui's values.
+        for (key, want) in [
+            ("model_provider", "\"cctui\""),
+            ("approval_policy", "\"untrusted\""),
+            ("sandbox_mode", "\"workspace-write\""),
+        ] {
+            let vals: Vec<&str> =
+                got.iter().filter(|(k, _)| k == key).map(|(_, v)| v.as_str()).collect();
+            assert_eq!(vals, vec![want], "{key} must be cctui's alone");
+        }
+    }
+
+    #[test]
+    fn launch_overrides_are_unchanged_without_an_account_block() {
+        let env = std::collections::BTreeMap::new();
+        let got = launch_overrides(&AppServerConfig::default(), &env);
+        assert_eq!(
+            got,
+            vec![
+                ("approval_policy".to_owned(), "\"untrusted\"".to_owned()),
+                ("sandbox_mode".to_owned(), "\"workspace-write\"".to_owned()),
+            ]
+        );
+    }
+
     // --- v2 notification mapping (codex-cli 0.135 wire payloads) ----------
 
     #[test]
@@ -4646,9 +5021,9 @@ done
                 .expect("retained schema bundle is valid JSON");
         let reqs = [
             initialize_req(),
-            thread_start_req("/cwd", &std::collections::BTreeMap::default()),
-            thread_resume_req("tid", "/cwd", &std::collections::BTreeMap::default()),
-            thread_fork_req("tid", "/cwd", &std::collections::BTreeMap::default()),
+            thread_start_req("/cwd", &std::collections::BTreeMap::default(), None),
+            thread_resume_req("tid", "/cwd", &std::collections::BTreeMap::default(), None),
+            thread_fork_req("tid", "/cwd", &std::collections::BTreeMap::default(), None),
             thread_name_set_req(1, "tid", "name"),
             thread_lifecycle_req(2, LifecycleOp::Archive, "tid"),
             thread_lifecycle_req(3, LifecycleOp::Unarchive, "tid"),
@@ -4931,7 +5306,7 @@ done
     #[test]
     fn an_unbound_session_keeps_the_default_provider() {
         assert!(gateway_thread_config(&std::collections::BTreeMap::new()).is_none());
-        let req = thread_start_req("/tmp", &std::collections::BTreeMap::new());
+        let req = thread_start_req("/tmp", &std::collections::BTreeMap::new(), None);
         assert!(req["params"].get("config").is_none());
         assert!(req["params"].get("modelProvider").is_none());
     }
@@ -4945,9 +5320,9 @@ done
         .into_iter()
         .collect();
         for req in [
-            thread_start_req("/repo", &env),
-            thread_resume_req("tid", "/repo", &env),
-            thread_fork_req("tid", "/repo", &env),
+            thread_start_req("/repo", &env, None),
+            thread_resume_req("tid", "/repo", &env, None),
+            thread_fork_req("tid", "/repo", &env, None),
         ] {
             let params = &req["params"];
             assert_eq!(params["modelProvider"], "cctui", "{}", req["method"]);
@@ -4958,6 +5333,195 @@ done
                 req["method"]
             );
         }
+    }
+
+    #[test]
+    fn service_tier_normalization_accepts_only_the_two_codex_tiers() {
+        assert_eq!(normalize_service_tier(Some("fast")).as_deref(), Some("fast"));
+        assert_eq!(normalize_service_tier(Some(" FAST ")).as_deref(), Some("fast"));
+        assert_eq!(normalize_service_tier(Some("default")).as_deref(), Some("default"));
+        assert_eq!(normalize_service_tier(Some("priority")), None);
+        assert_eq!(normalize_service_tier(Some("")), None);
+        assert_eq!(normalize_service_tier(None), None);
+    }
+
+    #[test]
+    fn service_tier_reads_out_of_the_served_gateway_settings() {
+        assert_eq!(
+            service_tier_from_settings(Some(&json!({"service_tier": "fast"}))).as_deref(),
+            Some("fast")
+        );
+        assert_eq!(
+            service_tier_from_settings(Some(&json!({"service_tier": "default"}))).as_deref(),
+            Some("default")
+        );
+        assert_eq!(service_tier_from_settings(Some(&json!({}))), None);
+        assert_eq!(service_tier_from_settings(None), None);
+    }
+
+    #[test]
+    fn start_resume_and_fork_all_carry_the_per_session_service_tier() {
+        let env = std::collections::BTreeMap::default();
+        for tier in ["fast", "default"] {
+            for req in [
+                thread_start_req("/repo", &env, Some(tier)),
+                thread_resume_req("tid", "/repo", &env, Some(tier)),
+                thread_fork_req("tid", "/repo", &env, Some(tier)),
+            ] {
+                let params = &req["params"];
+                assert_eq!(params["config"]["service_tier"], tier, "{}", req["method"]);
+                assert_eq!(params["serviceTier"], tier, "{}", req["method"]);
+            }
+        }
+    }
+
+    #[test]
+    fn a_session_with_no_tier_supplies_none_on_any_thread_op() {
+        let env = std::collections::BTreeMap::default();
+        for req in [
+            thread_start_req("/repo", &env, None),
+            thread_resume_req("tid", "/repo", &env, None),
+            thread_fork_req("tid", "/repo", &env, None),
+        ] {
+            let params = &req["params"];
+            assert!(params.get("serviceTier").is_none(), "{}", req["method"]);
+            assert!(
+                params.get("config").and_then(|c| c.get("service_tier")).is_none(),
+                "{}",
+                req["method"]
+            );
+        }
+    }
+
+    #[test]
+    fn the_gateway_config_block_and_the_tier_coexist() {
+        let env: std::collections::BTreeMap<String, String> = [
+            ("OPENAI_BASE_URL".to_owned(), "https://gw.example/v1".to_owned()),
+            ("OPENAI_API_KEY".to_owned(), "SECRET-C".to_owned()),
+        ]
+        .into_iter()
+        .collect();
+        let params = &thread_resume_req("tid", "/repo", &env, Some("fast"))["params"];
+        assert_eq!(params["config"]["service_tier"], "fast");
+        assert_eq!(
+            params["config"]["model_providers"]["cctui"]["http_headers"]["authorization"],
+            "Bearer SECRET-C"
+        );
+    }
+
+    fn session_with_tier(launch: SessionLaunch, tier: Option<&str>) -> CodexSession {
+        let (events, _rx) = mpsc::channel(8);
+        CodexSession {
+            cfg: AppServerConfig {
+                service_tier: tier.map(str::to_owned),
+                ..AppServerConfig::default()
+            },
+            cwd: "/repo".to_owned(),
+            env: std::collections::BTreeMap::default(),
+            launch,
+            command_id: None,
+            spawn_key: None,
+            parent_local_id: None,
+            agent_mcp: None,
+            events,
+            live: LiveSessionRegistry::default(),
+            registry: SessionRegistry::default(),
+            shutdown: CancellationToken::new(),
+        }
+    }
+
+    /// The resume trap: a `thread/resume` does not re-pull the gateway env, and
+    /// codex persists no tier in the rollout, so the tier cached on the record
+    /// must ride every resume or Fast lapses silently after the first one.
+    #[test]
+    fn a_resumed_session_re_supplies_the_cached_tier() {
+        let (req, method) = session_with_tier(
+            SessionLaunch::Resume { thread_id: "tid".to_owned(), initial_commands: Vec::new() },
+            Some("fast"),
+        )
+        .thread_request();
+        assert_eq!(method, "thread/resume");
+        assert_eq!(req["params"]["config"]["service_tier"], "fast");
+        assert_eq!(req["params"]["serviceTier"], "fast");
+    }
+
+    #[test]
+    fn a_resumed_session_without_a_cached_tier_supplies_none() {
+        let (req, _) = session_with_tier(
+            SessionLaunch::Resume { thread_id: "tid".to_owned(), initial_commands: Vec::new() },
+            None,
+        )
+        .thread_request();
+        assert!(req["params"].get("serviceTier").is_none());
+    }
+
+    #[test]
+    fn a_forked_session_re_supplies_the_cached_tier() {
+        let (req, method) = session_with_tier(
+            SessionLaunch::Fork {
+                parent_thread_id: "parent".to_owned(),
+                prompt: None,
+                name: None,
+                attachments: Vec::new(),
+            },
+            Some("fast"),
+        )
+        .thread_request();
+        assert_eq!(method, "thread/fork");
+        assert_eq!(req["params"]["config"]["service_tier"], "fast");
+    }
+
+    #[test]
+    fn a_fresh_session_carries_the_tier_on_thread_start() {
+        let (req, method) = session_with_tier(
+            SessionLaunch::Fresh { prompt: None, name: None, attachments: Vec::new() },
+            Some("default"),
+        )
+        .thread_request();
+        assert_eq!(method, "thread/start");
+        assert_eq!(req["params"]["config"]["service_tier"], "default");
+        assert_eq!(req["params"]["serviceTier"], "default");
+    }
+
+    /// The record the registry stores after a launch is what a later resume
+    /// relaunches from, so the tier must survive that round-trip.
+    #[tokio::test]
+    async fn a_hibernated_record_hands_its_tier_to_the_resume() {
+        let registry = SessionRegistry::default();
+        registry.lock().await.insert(
+            "tid".to_owned(),
+            SessionRecord {
+                cfg: AppServerConfig {
+                    service_tier: Some("fast".to_owned()),
+                    ..AppServerConfig::default()
+                },
+                cwd: "/repo".to_owned(),
+                name: None,
+                env: std::collections::BTreeMap::default(),
+            },
+        );
+        let action = route_or_prepare_resume(
+            &LiveSessionRegistry::default(),
+            &registry,
+            "tid",
+            SessionCommand::Send { text: "hi".to_owned(), command_id: None },
+        )
+        .await;
+        let RouteAction::Resume { record, .. } = action else { panic!("expected a resume") };
+        let (req, _) = session_with_tier(
+            SessionLaunch::Resume { thread_id: "tid".to_owned(), initial_commands: Vec::new() },
+            record.cfg.service_tier.as_deref(),
+        )
+        .thread_request();
+        assert_eq!(req["params"]["config"]["service_tier"], "fast");
+    }
+
+    /// The per-thread tier must never leak into the process-level `-c` flags.
+    #[test]
+    fn config_overrides_stay_free_of_the_tier_even_when_one_is_set() {
+        let cfg =
+            AppServerConfig { service_tier: Some("fast".to_owned()), ..AppServerConfig::default() };
+        assert!(cfg.config_overrides().iter().all(|(k, _)| k != "service_tier"));
     }
 
     /// The per-op lifecycle child is gone: archive/unarchive are answered over

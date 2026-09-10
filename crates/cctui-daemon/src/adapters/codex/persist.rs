@@ -182,6 +182,22 @@ mod tests {
         );
     }
 
+    /// A daemon restart must not drop a session back onto codex's expensive
+    /// default tier: the resolved tier is only re-served on a gateway pull,
+    /// which a warm resume never makes.
+    #[test]
+    fn round_trip_preserves_the_service_tier() {
+        let mut rec = record("/repo", None);
+        rec.cfg.service_tier = Some("fast".to_owned());
+        let mut map = HashMap::new();
+        map.insert("tid".to_owned(), rec);
+        let back = from_json(&to_json(&map));
+        assert_eq!(
+            back.get("tid").expect("record survives").cfg.service_tier.as_deref(),
+            Some("fast")
+        );
+    }
+
     #[test]
     fn from_json_tolerates_garbage() {
         assert!(from_json("not json").is_empty());
