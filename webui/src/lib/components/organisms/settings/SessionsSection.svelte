@@ -166,5 +166,11 @@
 				label={m.settings_archive_done_button_label()}
 			/>
 		</SettingRow>
+		<SettingRow label={m.settings_pin_first_message_label()} help={m.settings_pin_first_message_help()}>
+			<Switch
+				bind:checked={() => settings.pinFirstMessage, (v) => settings.setPinFirstMessage(v)}
+				label={m.settings_pin_first_message_label()}
+			/>
+		</SettingRow>
 	</SettingGroup>
 </SettingSection>

@@ -8,6 +8,7 @@
 	import { copyLineMarkdown, saveLineImage } from './lineActions';
 	import type { ScrollController } from './scroll.svelte';
 	import type { ConversationStream } from './stream.svelte';
+	import type { RenderWindow } from './jump';
 	import type { Line } from './types';
 	import { m } from '$lib/paraglide/messages';
 
@@ -30,7 +31,10 @@
 		selected = new Set<string>(),
 		onforkfrom,
 		onforkafter,
-		ontoggleselect
+		ontoggleselect,
+		pinnedSeqs = new Set<number>(),
+		onpin,
+		jumper = $bindable()
 	}: {
 		/** Live-stream controller. Passed whole rather than as a dozen
 		 * pass-through props; its `$state` fields stay reactive when read through it. */
@@ -55,6 +59,11 @@
 		onforkfrom?: (messageId: string) => void;
 		onforkafter?: (messageId: string) => void;
 		ontoggleselect?: (messageId: string) => void;
+		pinnedSeqs?: Set<number>;
+		onpin?: (ln: Line) => void;
+		/** Bound out: the render-window half of `ensureSeqVisible` lives here,
+		 *  since `renderLimit` is component state. */
+		jumper?: RenderWindow;
 	} = $props();
 
 	// ── Lazy render of large transcripts ───────────────────
@@ -71,6 +80,13 @@
 		renderLimit = RENDER_CHUNK;
 	});
 	const hiddenOlder = $derived(Math.max(0, lines.length - renderLimit));
+	jumper = {
+		isRendered: (seq: number) => {
+			const i = lines.findIndex((l) => l.seq === seq);
+			return i >= 0 && i >= lines.length - renderLimit;
+		},
+		grow: () => scroll.holdForPrepend(() => (renderLimit += RENDER_CHUNK))
+	};
 	const visibleLines = $derived(hiddenOlder > 0 ? lines.slice(hiddenOlder) : lines);
 	async function loadOlder() {
 		if (hiddenOlder === 0 && canFetchOlder && onfetcholder) await onfetcholder();
@@ -153,6 +169,8 @@
 				<ConversationLine
 					{ln}
 					{archived}
+					pinned={ln.seq !== undefined && pinnedSeqs.has(ln.seq)}
+					{onpin}
 					onretry={(ts) => stream.retryFailed(ts)}
 					onedit={onedit}
 					onsaveimage={saveLineImage}

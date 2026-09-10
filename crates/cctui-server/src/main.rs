@@ -673,6 +673,30 @@ fn build_api_routes() -> Routes {
             sess_write(),
         )
         .add(
+            &[GET],
+            "/sessions/{id}/pins",
+            "List the caller's pinned messages in a session.",
+            get(routes::message_pins::list_pins),
+            Authn::Bearer,
+            sess_read(),
+        )
+        .add(
+            &[Method::POST],
+            "/sessions/{id}/pins",
+            "Pin a message (by stream seq) in a session.",
+            post(routes::message_pins::create_pin),
+            Authn::Bearer,
+            sess_write(),
+        )
+        .add(
+            &[Method::DELETE],
+            "/sessions/{id}/pins/{seq}",
+            "Unpin a message in a session.",
+            axum::routing::delete(routes::message_pins::delete_pin),
+            Authn::Bearer,
+            sess_write(),
+        )
+        .add(
             &[Method::POST],
             "/sessions/{id}/seen",
             "Mark this session's messages seen for the caller.",
