@@ -2731,11 +2731,8 @@ mod tests {
     #[test]
     fn transcript_hits_attach_seq_and_leave_id_only_matches_none() {
         let mut sessions = vec![bare_session("s-transcript"), bare_session("s-id-only")];
-        let rows = vec![(
-            "s-transcript".to_owned(),
-            "the quick brown fox jumps".to_owned(),
-            4242_i64,
-        )];
+        let rows =
+            vec![("s-transcript".to_owned(), "the quick brown fox jumps".to_owned(), 4242_i64)];
 
         super::attach_transcript_hits(&mut sessions, rows, &["brown".to_owned()]);
 

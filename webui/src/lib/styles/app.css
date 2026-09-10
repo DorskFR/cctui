@@ -114,6 +114,12 @@
   padding: 0 1px;
 }
 
+/* The hit that prev/next stepping currently sits on. */
+.search-hit.hit-current {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
 /* Jump-target flash (`ensureSeqVisible`): the class is added to a line node
    imperatively by ScrollController, so it must be global. Same warm token as
    `.search-hit` above. */

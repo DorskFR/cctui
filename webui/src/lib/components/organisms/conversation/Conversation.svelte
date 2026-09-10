@@ -481,12 +481,6 @@
 			transition: none;
 		}
 	}
-	/* The hit prev/next stepping currently sits on. */
-	.conv :global(mark.search-hit.hit-current) {
-		outline: 2px solid var(--accent);
-		outline-offset: 1px;
-	}
-
 	/* Lazy-render "load older" control. */
 	.conv :global(.load-older) {
 		align-self: center;

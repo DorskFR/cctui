@@ -213,21 +213,7 @@
 <style>
 	/* The trigger reads like the Toggles beside it. `.bare` in the selector:
 	   the kit's `.pop-trigger.bare` ties on specificity and loads later. */
-	:global(.filters-trigger.bare) {
-		display: inline-flex;
-		align-items: center;
-		padding: 0.15rem var(--sp-2);
-		border: 1px solid var(--border);
-		border-radius: var(--r-pill);
-		background: var(--bg-elevated-2);
-		color: var(--text-muted);
-		font-size: var(--fs-xs);
-		font-weight: var(--fw-medium);
-		line-height: 1.4;
-		white-space: nowrap;
-	}
-
-	:global(.pins-trigger.bare) {
+	:global(.filters-trigger.bare, .pins-trigger.bare) {
 		display: inline-flex;
 		align-items: center;
 		gap: var(--sp-1);

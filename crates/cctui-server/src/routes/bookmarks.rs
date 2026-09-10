@@ -329,11 +329,7 @@ mod tests {
         .await
         .unwrap();
 
-        sqlx::query("DELETE FROM sessions WHERE id = $1")
-            .bind(&sid)
-            .execute(&pool)
-            .await
-            .unwrap();
+        sqlx::query("DELETE FROM sessions WHERE id = $1").bind(&sid).execute(&pool).await.unwrap();
 
         let row: Option<(Option<String>, String, String, Option<String>)> = sqlx::query_as(
             "SELECT session_id, title, body, session_name FROM bookmarks WHERE id = $1",

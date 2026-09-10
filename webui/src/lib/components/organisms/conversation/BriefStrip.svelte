@@ -41,7 +41,10 @@
 		</button>
 		{#if onjump && line.seq !== undefined}
 			<IconButton
-				class="brief-act"
+				box="xs"
+				hitArea="compact"
+				variant="ghost"
+				glyphSize="0.9rem"
 				icon="link"
 				label={m.conversation_brief_jump()}
 				title={m.conversation_brief_jump()}
@@ -49,7 +52,10 @@
 			/>
 		{/if}
 		<IconButton
-			class="brief-act"
+			box="xs"
+			hitArea="compact"
+			variant="ghost"
+			glyphSize="0.9rem"
 			icon="markdown"
 			label={m.conversation_copy_markdown_label()}
 			title={m.conversation_copy_markdown_title()}
@@ -117,20 +123,5 @@
 		font-size: var(--fs-sm);
 		background: color-mix(in srgb, var(--role-user) 10%, var(--bg-elevated));
 		border-color: color-mix(in srgb, var(--role-user) 40%, transparent);
-	}
-	.brief :global(.brief-act) {
-		flex: none;
-		padding: var(--sp-1);
-		min-width: auto;
-		min-height: auto;
-		line-height: 1;
-		color: var(--text-muted);
-	}
-	.brief :global(.brief-act:hover) {
-		color: var(--text);
-	}
-	.brief :global(.brief-act svg) {
-		width: 0.9rem;
-		height: 0.9rem;
 	}
 </style>
