@@ -90,8 +90,10 @@
 			{expanded ? m.bookmarks_collapse() : m.bookmarks_expand()}
 		</Button>
 		{#if dead}
-			<Tooltip text={m.bookmarks_open_session_dead()}>
-				<Button size="sm" disabled>{m.bookmarks_open_session()}</Button>
+			<Tooltip text={m.bookmarks_open_session_dead()} inline>
+				{#snippet trigger()}
+					<Button size="sm" disabled>{m.bookmarks_open_session()}</Button>
+				{/snippet}
 			</Tooltip>
 		{:else}
 			<Button size="sm" onclick={() => onopen(bookmark)} title={href ?? undefined}>

@@ -79,6 +79,7 @@ export type * from './MachineResources';
 export type * from './MachineRow';
 export type * from './MarkViewedRequest';
 export type * from './MeResponse';
+export type * from './MessagePin';
 export type * from './MessageRequest';
 export type * from './MintKeyRequest';
 export type * from './MintKeyResponse';

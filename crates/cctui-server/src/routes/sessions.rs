@@ -1595,7 +1595,7 @@ pub enum ConversationOrder {
     Asc,
 }
 
-fn conversation_sql(order: ConversationOrder) -> &'static str {
+const fn conversation_sql(order: ConversationOrder) -> &'static str {
     match order {
         ConversationOrder::Desc => {
             "SELECT id, event_type, payload, created_at FROM stream_events \
