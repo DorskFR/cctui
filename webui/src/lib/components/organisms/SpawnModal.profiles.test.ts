@@ -305,8 +305,8 @@ describe("SpawnModal profiles", () => {
     );
     if (!select) throw new Error("account select not found");
     const values = [...select.options].map((o) => o.value);
-    expect(values).toEqual(["", "\x00no-account", "\x00pool:pool1", "a1"]);
-    const pick = select.options[2];
+    expect(values).toEqual(["\x00pool:pool1", "a1", "", "\x00no-account"]);
+    const pick = select.options[0];
     pick.selected = true;
     // jsdom cannot match `option:checked`, which Svelte's select binding reads.
     const nativeQuery = select.querySelector.bind(select);

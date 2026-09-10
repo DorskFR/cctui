@@ -17,8 +17,7 @@ use std::time::Duration;
 
 use cctui_proto::adapter::AdapterEvent;
 use serde_json::{Value, json};
-use tokio::io::AsyncBufReadExt as _;
-use tokio::io::BufReader;
+use tokio::io::{AsyncBufReadExt as _, BufReader};
 use tokio::process::Command;
 
 use super::app_server::AppServerConfig;
@@ -90,10 +89,7 @@ pub fn items_from_turns(pages: &[Value]) -> Vec<Value> {
 /// and a live turn render identically.
 #[must_use]
 pub fn history_events(local_id: &str, items: &[Value]) -> Vec<AdapterEvent> {
-    items
-        .iter()
-        .map(|item| super::app_server::item_event(local_id, item))
-        .collect()
+    items.iter().map(|item| super::app_server::item_event(local_id, item)).collect()
 }
 
 /// Read one thread's structured history. `Ok(vec![])` means the server served

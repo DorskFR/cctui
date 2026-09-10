@@ -26,10 +26,10 @@
 pub(crate) mod app_server;
 mod contract;
 mod log_tail;
-pub mod thread_read;
 mod model_list;
 mod persist;
 mod thread_list;
+pub mod thread_read;
 
 use std::path::PathBuf;
 

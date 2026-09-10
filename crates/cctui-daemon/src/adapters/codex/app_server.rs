@@ -282,17 +282,29 @@ const NOTIFICATION_DISPOSITIONS: &[(&str, Disposition)] = &[
     ("item/reasoning/textDelta", Disposition::Stream("delta coalesced into item/completed")),
     ("item/reasoning/summaryTextDelta", Disposition::Stream("delta coalesced into item/completed")),
     ("item/reasoning/summaryPartAdded", Disposition::Stream("delta coalesced into item/completed")),
-    ("item/commandExecution/outputDelta", Disposition::Stream("delta coalesced into item/completed")),
+    (
+        "item/commandExecution/outputDelta",
+        Disposition::Stream("delta coalesced into item/completed"),
+    ),
     ("command/exec/outputDelta", Disposition::Stream("delta coalesced into item/completed")),
     ("item/fileChange/outputDelta", Disposition::Stream("delta coalesced into item/completed")),
     ("process/outputDelta", Disposition::Stream("delta coalesced into item/completed")),
-    ("item/commandExecution/terminalInteraction", Disposition::Stream("superseded by the completed item")),
+    (
+        "item/commandExecution/terminalInteraction",
+        Disposition::Stream("superseded by the completed item"),
+    ),
     ("item/fileChange/patchUpdated", Disposition::Stream("superseded by the completed item")),
     ("item/mcpToolCall/progress", Disposition::Stream("superseded by the completed item")),
     ("turn/diff/updated", Disposition::Stream("superseded by the completed item")),
     ("serverRequest/resolved", Disposition::Stream("approval bookkeeping")),
-    ("fuzzyFileSearch/sessionUpdated", Disposition::Stream("file-picker session cctui does not drive")),
-    ("fuzzyFileSearch/sessionCompleted", Disposition::Stream("file-picker session cctui does not drive")),
+    (
+        "fuzzyFileSearch/sessionUpdated",
+        Disposition::Stream("file-picker session cctui does not drive"),
+    ),
+    (
+        "fuzzyFileSearch/sessionCompleted",
+        Disposition::Stream("file-picker session cctui does not drive"),
+    ),
     ("thread/realtime/started", Disposition::Stream("realtime voice session")),
     ("thread/realtime/itemAdded", Disposition::Stream("realtime voice session")),
     ("thread/realtime/item/started", Disposition::Stream("realtime voice session")),
@@ -547,7 +559,10 @@ pub fn item_event(local_id: &str, item: &Value) -> AdapterEvent {
 /// `tempo = "blocked"` (the ✋ "needs input" signal).
 fn map_status(local_id: &str, v: &Value) -> Incoming {
     let Some(status) = v.pointer("/params/status") else {
-        return Incoming::Traced { method: "thread/status/changed".to_owned(), reason: "no status" };
+        return Incoming::Traced {
+            method: "thread/status/changed".to_owned(),
+            reason: "no status",
+        };
     };
     let ty = status.get("type").and_then(Value::as_str).unwrap_or("");
     let waiting = status.get("activeFlags").and_then(Value::as_array).is_some_and(|flags| {

@@ -938,13 +938,10 @@ mod tests {
             "type": "codexNotice", "level": "warning",
             "method": "guardianWarning", "text": "guardianWarning: careful",
         });
-        match for_client("codex", "message", p) {
-            Some(AgentEvent::Text { content, kind, .. }) => {
-                assert_eq!(content, "· codex warning: guardianWarning: careful");
-                assert_eq!(kind.as_deref(), Some("system_marker"));
-            }
-            other => panic!("expected a marker Text, got {other:?}"),
-        }
+        let n = for_client("codex", "message", p).expect("expected a marker Text");
+        assert_eq!(n["type"], "text");
+        assert_eq!(n["content"], "· codex warning: guardianWarning: careful");
+        assert_eq!(n["kind"], "system_marker");
     }
 
     #[test]
@@ -953,12 +950,9 @@ mod tests {
             "type": "codexNotice", "level": "unhandled",
             "method": "future/thing", "text": "future/thing",
         });
-        match for_client("codex", "message", p) {
-            Some(AgentEvent::Text { content, .. }) => {
-                assert_eq!(content, "· unhandled codex notification: future/thing");
-            }
-            other => panic!("expected a marker Text, got {other:?}"),
-        }
+        let n = for_client("codex", "message", p).expect("expected a marker Text");
+        assert_eq!(n["type"], "text");
+        assert_eq!(n["content"], "· unhandled codex notification: future/thing");
     }
 
     // --- expanded item fidelity ------------------------------------
