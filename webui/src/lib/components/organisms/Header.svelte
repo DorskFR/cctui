@@ -9,7 +9,7 @@
 	import { notify } from '$lib/notify.svelte';
 	import { settings } from '$lib/settings.svelte';
 	import { toasts } from '$lib/toast.svelte';
-	import { FontScalePicker, IconButton, Menu, Text } from '@dorsk/tsumikit';
+	import { Button, FontScalePicker, IconButton, Menu, Text } from '@dorsk/tsumikit';
 	import ThemeModePicker from '$lib/components/molecules/ThemeModePicker.svelte';
 	import type { MenuItem } from '@dorsk/tsumikit';
 	import NavLink from '$lib/components/atoms/NavLink.svelte';
@@ -144,15 +144,15 @@ import ResourceBattery from '$lib/components/molecules/ResourceBattery.svelte';
 					</NavLink>
 				{/if}
 				{#if latest}
-					<button
-						class="upd"
-						type="button"
+					<Button
+						variant="link"
+						tone="danger"
 						title={m.nav_update_available({ version: latest })}
 						onclick={() => (updateOpen = true)}
 					>
 						<span class="upd-dot" aria-hidden="true"></span>
 						<Text size="xs" tone="danger" variant="code">v{latest}</Text>
-					</button>
+					</Button>
 				{/if}
 			</span>
 		</div>
@@ -314,15 +314,6 @@ import ResourceBattery from '$lib/components/molecules/ResourceBattery.svelte';
 		flex: none;
 		line-height: 1;
 		white-space: nowrap;
-	}
-	.upd {
-		display: inline-flex;
-		align-items: center;
-		gap: var(--sp-1);
-		padding: 0;
-		border: 0;
-		background: none;
-		cursor: pointer;
 	}
 	.upd-dot {
 		width: 6px;
