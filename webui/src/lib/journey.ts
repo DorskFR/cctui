@@ -2,13 +2,18 @@ import { goto } from '$app/navigation';
 import type { QueryClient } from '@tanstack/svelte-query';
 import type { IR, Journey } from '@dorsk/journey';
 import {
+	docPresenter,
 	DONE_PREFIX,
+	guidePresenter,
+	nonePresenter,
 	type JourneyApi,
 	type JourneyStorage,
 	mount,
+	type Presenter,
 	PROGRESS_KEY,
 	type RunResult,
-	type Strings
+	type Strings,
+	translator
 } from '@dorsk/journey/runtime';
 import journeys from './journeys.generated.json';
 import { createProbes, isLive, type Probes } from './journeys/probes';
@@ -16,6 +21,7 @@ import { m } from './paraglide/messages';
 import { endpoints } from './queries/endpoints';
 import { qk } from './queries/keys';
 import { settings } from './settings.svelte';
+import { type DeckCard, deckPresenter } from './welcomeDeck.svelte';
 
 /** A spec may name a message id instead of carrying the copy. An id with no
  *  message resolves to the id itself upstream, which is ugly but readable —
@@ -162,6 +168,24 @@ export type StartOutcome =
 
 let host: { api: JourneyApi; qc: QueryClient; probes: Probes } | null = null;
 let lastParams: GuideParams = {};
+
+/** The running journey's steps as deck cards. The presenter is handed one step at
+ *  a time, but a carousel needs the whole deck up front. */
+function deckCards(api: JourneyApi): DeckCard[] {
+	const engine = api.engine();
+	if (!engine) return [];
+	return engine.ir.steps.map((step) => ({
+		title: engine.text(step.say?.title) ?? '',
+		body: engine.text(step.say?.body) ?? ''
+	}));
+}
+
+function markSeen(api: JourneyApi): void {
+	const ir = api.engine()?.ir;
+	if (!ir) return;
+	settingsStorage.set(`${DONE_PREFIX}${ir.id}@${ir.version}`, '1');
+}
+
 let mounted: Promise<void> | null = null;
 
 /** Mount the runtime once and register the public journeys. Waits for the
@@ -171,12 +195,27 @@ export function mountJourneys(qc: QueryClient): Promise<void> {
 	mounted ??= (async () => {
 		await settings.load();
 		const probes = createProbes(qc);
-		const api = mount({
+		let api: JourneyApi | null = null;
+		let overlay: Presenter | null = null;
+		const self = () => {
+			if (!api) throw new Error('journey runtime is not mounted yet');
+			return api;
+		};
+		const fallback = () =>
+			(overlay ??= guidePresenter(self().overlay, translator(() => self().strings())));
+		const deck = deckPresenter({
+			cards: () => deckCards(self()),
+			markSeen: () => markSeen(self()),
+			fallback
+		});
+		api = mount({
 			storage: settingsStorage,
 			navigate: (route) => goto(route),
 			probes,
 			translate,
-			strings
+			strings,
+			presenter: (name) =>
+				name === 'guide' ? deck : name === 'doc' ? docPresenter(self().overlay) : nonePresenter
 		});
 		host = { api, qc, probes };
 		await api.register(publicJourneys);
