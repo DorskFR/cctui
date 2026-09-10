@@ -192,6 +192,7 @@ pub async fn launch(
         permission_mode: Some(PermissionMode::Yolo),
         effort: Some(effort.to_owned()),
         model: model.map(str::to_owned),
+        service_tier: None,
         env: std::collections::BTreeMap::default(),
         account: None,
         provider: None,

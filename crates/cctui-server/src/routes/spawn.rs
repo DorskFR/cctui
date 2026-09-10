@@ -297,6 +297,21 @@ pub async fn dispatch_spawn(
             )
         })?
     };
+    // Codex's own default tier is `priority`, so an unset tier is the expensive
+    // one: resolve to a concrete value here rather than letting the worker
+    // inherit whatever the machine's config.toml happens to say.
+    let service_tier = if crate::routes::gateway::Family::from_adapter(&adapter_id)
+        == crate::routes::gateway::Family::Openai
+    {
+        let account_settings =
+            crate::routes::gateway::resolve_session_settings(state, &token_session_id).await;
+        Some(crate::settings_catalog::codex::resolve_service_tier(
+            req.service_tier.as_deref(),
+            account_settings.as_ref(),
+        ))
+    } else {
+        None
+    };
     let spec_model = model.clone();
     let spec_effort = effort.clone();
     let spec = SessionSpec {
@@ -307,6 +322,7 @@ pub async fn dispatch_spawn(
         permission_mode,
         effort,
         model,
+        service_tier,
         env,
         bootstrap,
         parent_local_id: None,

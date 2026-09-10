@@ -1,0 +1,239 @@
+# Codex config.toml settings catalog — hand-maintained, no vendored schema yet.
+#
+# Reference: https://learn.chatgpt.com/docs/config-file/config-reference
+# Verified against codex-cli 0.153.4.
+#
+# Policy tags:
+#   safe    — good per-account default, low blast radius
+#   care    — exposable but has caveats (cost / privacy / footgun)
+#   managed — cctui owns this key per session; a per-account value must never
+#             clobber the gateway wiring or the permission posture
+#   system  — not exposable: booleans/numbers cannot round-trip through the
+#             daemon's `-c key="value"` emitter (a quoted boolean is a hard
+#             app-server startup failure). Typed emission is CCT-709.
+#
+# Only `type = "string"` keys carry a `group` (and so render as an editable row);
+# a test enforces that every exposable key is string-typed.
+
+reference_url = "https://learn.chatgpt.com/docs/config-file/config-reference"
+captured = "2026-09-10"
+
+# ---- speed / cost ---------------------------------------------------------
+
+[[keys]]
+name = "service_tier"
+group = "Speed & cost"
+label = "Fast mode"
+tag = "care"
+source = "docs"
+type = "string"
+enum = "default, fast"
+default = "default"
+notes = "`fast` maps to the request tier `priority` — 1.5x speed, increased usage, same model and same quality. Codex's own default is `priority` for every gpt-5.x model, so cctui pins `default` unless asked. A per-session toggle overrides this account default."
+
+# ---- reasoning / output ---------------------------------------------------
+
+[[keys]]
+name = "model_reasoning_summary"
+group = "Reasoning"
+label = "Reasoning summary"
+tag = "safe"
+source = "docs"
+type = "string"
+enum = "auto, concise, detailed, none"
+notes = "how much of the model's reasoning is summarised back into the transcript"
+
+[[keys]]
+name = "model_verbosity"
+group = "Reasoning"
+label = "Verbosity"
+tag = "safe"
+source = "docs"
+type = "string"
+enum = "low, medium, high"
+notes = "GPT-5 text verbosity"
+
+[[keys]]
+name = "plan_mode_reasoning_effort"
+group = "Reasoning"
+label = "Plan-mode effort"
+tag = "safe"
+source = "docs"
+type = "string"
+enum = "minimal, low, medium, high"
+notes = "reasoning effort while planning; the session's own effort still applies to the work"
+
+[[keys]]
+name = "personality"
+group = "Reasoning"
+label = "Personality"
+tag = "safe"
+source = "docs"
+type = "string"
+notes = "named response personality; unset = the codex default"
+
+# ---- privacy --------------------------------------------------------------
+
+[[keys]]
+name = "history.persistence"
+group = "Privacy"
+label = "History persistence"
+tag = "care"
+source = "docs"
+type = "string"
+enum = "save-all, none"
+default = "save-all"
+notes = "`none` stops codex writing the local ~/.codex history file; cctui's own transcript is unaffected"
+
+# ---- cctui-managed --------------------------------------------------------
+# Set per session by the daemon (config_overrides / gateway_provider_overrides)
+# or by the k8s worker entrypoint. A per-account value here would either break
+# gateway routing or silently override the session's permission posture.
+
+[[keys]]
+name = "model"
+tag = "managed"
+source = "docs"
+notes = "per-session; account-level lives in default_model / the alias map"
+
+[[keys]]
+name = "model_reasoning_effort"
+tag = "managed"
+source = "docs"
+notes = "per-session; account-level lives in default_effort"
+
+[[keys]]
+name = "approval_policy"
+tag = "managed"
+source = "docs"
+notes = "encodes PermissionMode — cctui owns it"
+
+[[keys]]
+name = "sandbox_mode"
+tag = "managed"
+source = "docs"
+notes = "encodes PermissionMode — cctui owns it"
+
+[[keys]]
+name = "sandbox_workspace_write"
+tag = "managed"
+source = "docs"
+notes = "sandbox escape hatches; rides sandbox_mode"
+
+[[keys]]
+name = "model_provider"
+tag = "managed"
+source = "docs"
+notes = "gateway routing — overriding this bypasses metering and soft limits"
+
+[[keys]]
+name = "model_providers"
+tag = "managed"
+source = "docs"
+notes = "gateway routing — the `cctui` provider block is written per session"
+
+[[keys]]
+name = "openai_base_url"
+tag = "managed"
+source = "docs"
+notes = "gateway routing"
+
+[[keys]]
+name = "chatgpt_base_url"
+tag = "managed"
+source = "docs"
+notes = "gateway routing"
+
+[[keys]]
+name = "forced_login_method"
+tag = "managed"
+source = "docs"
+notes = "account identity — cctui mints the credential"
+
+[[keys]]
+name = "forced_chatgpt_workspace_id"
+tag = "managed"
+source = "docs"
+notes = "account identity — cctui mints the credential"
+
+[[keys]]
+name = "oss_provider"
+tag = "managed"
+source = "docs"
+notes = "routes off the gateway entirely"
+
+# ---- blocked on typed `-c` emission (CCT-709) -----------------------------
+# Catalogued so the curation is on record and so a pasted blob fails closed with
+# a named key rather than "unknown". Each would brick the app-server spawn today.
+
+[[keys]]
+name = "features.fast_mode"
+tag = "system"
+source = "docs"
+type = "boolean"
+default = "true"
+notes = "gates whether the tier selector is offered; NOT the tier itself. Boolean — needs typed `-c` emission or `app-server --enable/--disable`"
+
+[[keys]]
+name = "hide_agent_reasoning"
+tag = "system"
+source = "docs"
+type = "boolean"
+notes = "boolean — blocked on typed `-c` emission"
+
+[[keys]]
+name = "show_raw_agent_reasoning"
+tag = "system"
+source = "docs"
+type = "boolean"
+notes = "boolean — blocked on typed `-c` emission"
+
+[[keys]]
+name = "web_search"
+tag = "system"
+source = "docs"
+type = "boolean"
+notes = "boolean — blocked on typed `-c` emission"
+
+[[keys]]
+name = "tools.web_search"
+tag = "system"
+source = "docs"
+type = "boolean"
+notes = "boolean — blocked on typed `-c` emission"
+
+[[keys]]
+name = "tools.view_image"
+tag = "system"
+source = "docs"
+type = "boolean"
+notes = "boolean — blocked on typed `-c` emission"
+
+[[keys]]
+name = "check_for_update_on_startup"
+tag = "system"
+source = "docs"
+type = "boolean"
+notes = "boolean — blocked on typed `-c` emission; a quiet-defaults candidate once it can be emitted"
+
+[[keys]]
+name = "model_context_window"
+tag = "system"
+source = "docs"
+type = "number"
+notes = "number — blocked on typed `-c` emission"
+
+[[keys]]
+name = "model_auto_compact_token_limit"
+tag = "system"
+source = "docs"
+type = "number"
+notes = "number — blocked on typed `-c` emission"
+
+[[presets]]
+id = "quiet-defaults"
+name = "Quiet defaults"
+description = "Stop codex writing its own local history file. The telemetry/updater half of the claude preset (check_for_update_on_startup, analytics, feedback) is all boolean and cannot be emitted through `-c key=\"value\"` yet — see CCT-709."
+
+[presets.settings]
+"history.persistence" = "none"

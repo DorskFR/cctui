@@ -7,6 +7,8 @@ export type PageId =
 	| 'ui'
 	| 'privacy'
 	| 'tools'
+	| 'speed'
+	| 'reasoning'
 	| 'gateway'
 	| 'models'
 	| 'advanced';
@@ -18,6 +20,9 @@ const GROUP_PAGE: Record<string, PageId> = {
 	Notifications: 'ui',
 	thinking: 'ui',
 	'Privacy & memory': 'privacy',
+	'Speed & cost': 'speed',
+	Reasoning: 'reasoning',
+	Privacy: 'privacy',
 	telemetry: 'privacy',
 	'Skills & workflows': 'tools',
 	'Editing & safety': 'tools',
@@ -39,6 +44,7 @@ export function pagesFor(kind: string): PageId[] {
 	const family = providerFamily(kind);
 	const out: PageId[] = ['aliases', 'limits'];
 	if (family === 'anthropic') out.push('ui', 'privacy', 'tools');
+	if (family === 'openai') out.push('speed', 'reasoning', 'privacy');
 	out.push('models', 'gateway', 'advanced');
 	return out;
 }

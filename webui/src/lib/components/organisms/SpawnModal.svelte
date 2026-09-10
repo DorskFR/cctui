@@ -141,6 +141,7 @@
 		account_provider: '',
 		effort_claude: '',
 		effort_codex: '',
+		service_tier: '',
 		timeout: '',
 		context_pack_url: '',
 		context_pack_ref: '',
@@ -587,6 +588,7 @@
 			// null lets the server resolve the account default permission mode.
 			permission_mode: f.permission_mode || null,
 			effort: (adapter === 'codex' ? f.effort_codex : f.effort_claude) || null,
+			service_tier: (adapter === 'codex' && f.service_tier) || null,
 			model,
 			env: envMap(),
 			account: noAccount || pool ? null : f.account.trim() || null,

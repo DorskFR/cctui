@@ -186,7 +186,18 @@ pub async fn session_gateway_env(
     // (re)launch, it survives a daemon / claude-daemon restart; the daemon
     // deep-merges it UNDER its managed hook settings when writing the worker's
     // `--settings` file (that daemon-side merge is).
-    let settings = crate::routes::gateway::resolve_session_settings(&state, &session_id).await;
+    let mut settings = crate::routes::gateway::resolve_session_settings(&state, &session_id).await;
+    // Codex defaults to the `priority` tier, so a relaunch with no opinion is the
+    // expensive one. Serve a concrete tier whenever an openai account is bound.
+    if crate::routes::gateway::session_has_family(
+        &state,
+        &session_id,
+        crate::routes::gateway::Family::Openai,
+    )
+    .await
+    {
+        settings = crate::settings_catalog::codex::overlay_service_tier(settings);
+    }
     // This pull only happens when the daemon is actually (re)launching the
     // worker — a session marked `ended` (possibly by a spurious end)
     // is provably coming back to life, so un-stick the terminal status here.

@@ -35,6 +35,7 @@ pub struct SessionProfile {
     pub model_alias: Option<String>,
     pub effort: Option<String>,
     pub permission_mode: Option<String>,
+    pub service_tier: Option<String>,
     pub sort_order: i32,
     #[ts(type = "string")]
     pub created_at: DateTime<Utc>,
@@ -67,6 +68,9 @@ pub struct ProfileSpec {
     #[serde(default)]
     #[ts(type = "string | null", optional)]
     pub permission_mode: Option<String>,
+    #[serde(default)]
+    #[ts(type = "string | null", optional)]
+    pub service_tier: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, ts_rs::TS)]
@@ -91,7 +95,7 @@ pub struct UpdateProfileRequest {
 }
 
 const COLS: &str = "id, user_id, name, harness, account_id, pool_id, no_account, model_alias, \
-                    effort, permission_mode, sort_order, created_at, updated_at";
+                    effort, permission_mode, service_tier, sort_order, created_at, updated_at";
 
 fn db_err(e: &sqlx::Error) -> ApiErr {
     if let sqlx::Error::Database(dbe) = e
@@ -140,6 +144,9 @@ fn clean_spec(spec: ProfileSpec) -> Result<ProfileSpec, ApiErr> {
         model_alias: opt(spec.model_alias),
         effort: opt(spec.effort),
         permission_mode,
+        service_tier: crate::settings_catalog::codex::normalize_service_tier(
+            opt(spec.service_tier).as_deref(),
+        ),
     })
 }
 
@@ -220,8 +227,8 @@ pub async fn insert(
     sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "INSERT INTO session_profiles \
             (user_id, name, harness, account_id, pool_id, no_account, model_alias, effort, \
-             permission_mode, sort_order) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, \
+             permission_mode, service_tier, sort_order) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, \
                  (SELECT COALESCE(MAX(sort_order) + 1, 0) FROM session_profiles WHERE user_id = $1)) \
          RETURNING {COLS}"
     )))
@@ -234,6 +241,7 @@ pub async fn insert(
     .bind(spec.model_alias.as_deref())
     .bind(spec.effort.as_deref())
     .bind(spec.permission_mode.as_deref())
+    .bind(spec.service_tier.as_deref())
     .fetch_one(pool)
     .await
 }
@@ -255,6 +263,7 @@ pub async fn update(
             model_alias = CASE WHEN $4 THEN $9 ELSE model_alias END, \
             effort = CASE WHEN $4 THEN $10 ELSE effort END, \
             permission_mode = CASE WHEN $4 THEN $11 ELSE permission_mode END, \
+            service_tier = CASE WHEN $4 THEN $12 ELSE service_tier END, \
             updated_at = now() \
          WHERE id = $1 AND user_id = $2 RETURNING {COLS}"
     )))
@@ -269,6 +278,7 @@ pub async fn update(
     .bind(spec.and_then(|s| s.model_alias.as_deref()))
     .bind(spec.and_then(|s| s.effort.as_deref()))
     .bind(spec.and_then(|s| s.permission_mode.as_deref()))
+    .bind(spec.and_then(|s| s.service_tier.as_deref()))
     .fetch_optional(pool)
     .await
 }
@@ -411,8 +421,24 @@ mod tests {
             no_account: false,
             model_alias: Some(" fable ".into()),
             effort: Some(String::new()),
+            service_tier: None,
             permission_mode: mode.map(str::to_string),
         }
+    }
+
+    #[test]
+    fn clean_spec_keeps_only_known_service_tiers() {
+        let tier = |v: Option<&str>| {
+            let mut sp = spec("codex", None);
+            sp.service_tier = v.map(str::to_string);
+            clean_spec(sp).expect("valid").service_tier
+        };
+        assert_eq!(tier(Some("fast")).as_deref(), Some("fast"));
+        assert_eq!(tier(Some(" FAST ")).as_deref(), Some("fast"));
+        assert_eq!(tier(Some("default")).as_deref(), Some("default"));
+        assert_eq!(tier(Some("priority")), None);
+        assert_eq!(tier(Some("")), None);
+        assert_eq!(tier(None), None);
     }
 
     #[test]
@@ -493,6 +519,7 @@ mod tests {
             pool_id: None,
             no_account: false,
             model_alias: Some("fable".into()),
+            service_tier: None,
             effort: Some("medium".into()),
             permission_mode: Some("yolo".into()),
         };

@@ -50,7 +50,8 @@ const form = {
 	model_account: 'llama',
 	effort_claude: 'medium',
 	effort_codex: 'high',
-	permission_mode: 'yolo' as const
+	permission_mode: 'yolo' as const,
+	service_tier: ''
 };
 
 const profile = (over: Partial<SessionProfile> = {}): SessionProfile => ({
@@ -65,6 +66,7 @@ const profile = (over: Partial<SessionProfile> = {}): SessionProfile => ({
 	model_alias: 'fable',
 	effort: 'medium',
 	permission_mode: 'yolo',
+	service_tier: null,
 	created_at: '',
 	updated_at: '',
 	...over
@@ -96,7 +98,8 @@ describe('specFromForm / applySpec', () => {
 			no_account: false,
 			model_alias: 'fable',
 			effort: 'medium',
-			permission_mode: 'yolo'
+			permission_mode: 'yolo',
+			service_tier: null
 		});
 		expect(applySpec({ ...form, account: '', model_claude: '' }, spec, accounts)).toMatchObject({
 			adapter_id: 'claude-code',
@@ -116,7 +119,8 @@ describe('specFromForm / applySpec', () => {
 			no_account: false,
 			model_alias: null,
 			effort: 'xhigh',
-			permission_mode: null
+			permission_mode: null,
+			service_tier: null
 		};
 		const out = applySpec(form, spec, accounts);
 		expect(out.adapter_id).toBe('codex');
@@ -174,7 +178,8 @@ describe('specChanges / specChain', () => {
 					no_account: false,
 					model_alias: null,
 					effort: null,
-					permission_mode: null
+					permission_mode: null,
+					service_tier: null
 				},
 				accounts,
 				pools,

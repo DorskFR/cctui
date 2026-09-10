@@ -5,4 +5,4 @@
  * `account_id` / `pool_id` / `no_account`; none = Auto (the server elects one).
  * `None` model / effort / permission mode = the harness or account default.
  */
-export type ProfileSpec = { harness: string, account_id?: string | null, pool_id?: string | null, no_account?: boolean, model_alias?: string | null, effort?: string | null, permission_mode?: string | null, };
+export type ProfileSpec = { harness: string, account_id?: string | null, pool_id?: string | null, no_account?: boolean, model_alias?: string | null, effort?: string | null, permission_mode?: string | null, service_tier?: string | null, };

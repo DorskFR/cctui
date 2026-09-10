@@ -23,6 +23,7 @@ export interface ProfileSpec {
 	model_alias: string | null;
 	effort: string | null;
 	permission_mode: string | null;
+	service_tier: string | null;
 }
 
 export const SPEC_FIELDS = [
@@ -32,7 +33,8 @@ export const SPEC_FIELDS = [
 	'no_account',
 	'model_alias',
 	'effort',
-	'permission_mode'
+	'permission_mode',
+	'service_tier'
 ] as const;
 
 type SpecForm = Pick<
@@ -46,6 +48,7 @@ type SpecForm = Pick<
 	| 'effort_claude'
 	| 'effort_codex'
 	| 'permission_mode'
+	| 'service_tier'
 >;
 
 const blank = (v: string | null | undefined): string | null => (v?.trim() ? v.trim() : null);
@@ -58,7 +61,8 @@ export const EMPTY_SPEC: ProfileSpec = {
 	no_account: false,
 	model_alias: null,
 	effort: null,
-	permission_mode: null
+	permission_mode: null,
+	service_tier: null
 };
 
 export function specOf(p: SessionProfile): ProfileSpec {
@@ -69,7 +73,8 @@ export function specOf(p: SessionProfile): ProfileSpec {
 		no_account: p.no_account,
 		model_alias: blank(p.model_alias),
 		effort: blank(p.effort),
-		permission_mode: blank(p.permission_mode)
+		permission_mode: blank(p.permission_mode),
+		service_tier: blank(p.service_tier)
 	};
 }
 
@@ -127,7 +132,8 @@ export function specFromForm(
 		no_account: form.account === NO_ACCOUNT,
 		model_alias: blank(form[modelField(harness, account)]),
 		effort: blank(harness === 'codex' ? form.effort_codex : form.effort_claude),
-		permission_mode: blank(form.permission_mode)
+		permission_mode: blank(form.permission_mode),
+		service_tier: harness === 'codex' ? blank(form.service_tier) : null
 	};
 }
 
@@ -145,7 +151,8 @@ export function applySpec<T extends SpecForm>(
 		adapter_id: spec.harness,
 		account: accountPick(spec, accounts, pools),
 		account_provider: providerForAdapter(account, spec.harness)?.provider ?? '',
-		permission_mode: (spec.permission_mode ?? '') as T['permission_mode']
+		permission_mode: (spec.permission_mode ?? '') as T['permission_mode'],
+		service_tier: (spec.service_tier ?? '') as T['service_tier']
 	};
 	out[modelField(spec.harness, account)] = spec.model_alias ?? '';
 	if (spec.harness === 'codex') out.effort_codex = spec.effort ?? '';

@@ -47,7 +47,7 @@
 
 	const actions = useAccountActions();
 	const qc = useQueryClient();
-	const catalog = useSettingsCatalog();
+	const catalog = useSettingsCatalog(() => p.family ?? 'anthropic');
 	const usage = useAccountUsage(
 		() => p.id,
 		() => kind === 'anthropic' || kind === 'openai' || kind === 'fireworks'
@@ -63,11 +63,11 @@
 	$effect(() => edit.seedWindows(softRows.map((r) => r.key)));
 
 	const groups = $derived(knobGroups(catalog.data));
-	const groupsOn = (id: PageId) => (edit.isAnthropic ? groups.filter((g) => g.page === id) : []);
+	const groupsOn = (id: PageId) => (edit.hasCatalog ? groups.filter((g) => g.page === id) : []);
 	const claimed = $derived(new Set(groups.flatMap((g) => knobKeyNames(g.knobs)).concat(['env'])));
 	const settableKeys = $derived(new Set((catalog.data?.keys ?? []).map((k) => k.name)));
-	const catalogLoading = $derived(edit.isAnthropic && !catalog.data && !catalog.error);
-	const catalogFailed = $derived(edit.isAnthropic && !!catalog.error);
+	const catalogLoading = $derived(edit.hasCatalog && !catalog.data && !catalog.error);
+	const catalogFailed = $derived(edit.hasCatalog && !!catalog.error);
 	const changes = $derived(edit.changes(groupsOn(edit.page)));
 
 	const LABELS: Record<PageId, () => string> = {
@@ -76,6 +76,8 @@
 		ui: m.provider_page_ui,
 		privacy: m.provider_page_privacy,
 		tools: m.provider_page_tools,
+		speed: m.provider_page_speed,
+		reasoning: m.provider_page_reasoning,
 		gateway: m.provider_page_gateway,
 		models: m.provider_page_models,
 		advanced: m.provider_page_advanced
