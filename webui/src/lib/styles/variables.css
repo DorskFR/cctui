@@ -13,6 +13,10 @@
   --role-thinking: color-mix(in srgb, var(--c-brown) 70%, var(--c-text-muted) 30%);
   --role-summary: var(--c-text-muted);
 
+  /* Peer-agent turns. Magenta: must not collide with user green, system
+     violet, or the teal --role-mcp already in the log. */
+  --role-peer: color-mix(in srgb, var(--c-red) 45%, var(--c-violet) 55%);
+
   /* xterm canvas backdrop. Deliberately theme-independent: the terminal renders
      the agent's own ANSI colors, which assume a dark ground. */
   --term-bg: #0b0e14;

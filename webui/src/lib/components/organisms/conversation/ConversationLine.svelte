@@ -7,7 +7,6 @@
 	import { Badge, Button, IconButton, Text, Timestamp, Tooltip } from '@dorsk/tsumikit';
 	import TurnSummaryFooter from './TurnSummaryFooter.svelte';
 	import UserAttachments from './UserAttachments.svelte';
-	import { parseUserUploadRefs } from './lines';
 	import type { Line } from './types';
 	import { m } from '$lib/paraglide/messages';
 	import './bubble.css';
@@ -15,6 +14,7 @@
 	let {
 		ln,
 		archived,
+		sessionId = null,
 		onretry,
 		onedit,
 		onsaveimage,
@@ -30,6 +30,10 @@
 	}: {
 		ln: Line;
 		archived: boolean;
+		/** Fallback owner of this line's uploads: Claude's own copy of the turn
+		 * carries the filenames but not the staged path the session id is scraped
+		 * from, so without this the thumbnail can never resolve. */
+		sessionId?: string | null;
 		onretry: (ts: number) => void;
 		onedit: (text: string, ts: number) => void;
 		onsaveimage: (e: MouseEvent, ln: Line) => void;
@@ -57,7 +61,9 @@
 		!!onpin && typeof ln.seq === 'number' && !ln.pending && !ln.failed
 	);
 
-	const uploadRefs = $derived(ln.role === 'user' ? parseUserUploadRefs(ln.text) : null);
+	const uploadRefs = $derived(
+		ln.uploads ? { ...ln.uploads, sessionId: ln.uploads.sessionId ?? sessionId } : null
+	);
 
 	const forkAnchor = $derived(
 		forkable && ln.role === 'assistant' && ln.messageId ? ln.messageId : null
@@ -116,6 +122,9 @@
 		{/if}
 		{#if ln.role === 'tool' || ln.role === 'result'}
 			<span class="who tool-name">{ln.role === 'result' ? '↳ ' : ''}{ln.tool ?? 'tool'}</span>
+		{/if}
+		{#if ln.role === 'peer' && ln.peerFrom}
+			<span class="who peer-from" title={ln.peerFrom}>· {ln.peerFrom}</span>
 		{/if}
 		<Timestamp value={ln.ts} mode="time" tone="faint" size="xs" />
 		{#if ln.failed}
@@ -224,7 +233,7 @@
 		<div class="bubble">{@html ln.html}</div>
 	{:else if ln.htmlCode}
 		<pre class="bubble mono code">{@html ln.htmlCode}</pre>
-	{:else}
+	{:else if ln.text}
 		<pre class="bubble mono code">{ln.text}</pre>
 	{/if}
 	{#if uploadRefs && uploadRefs.names.length}
@@ -266,6 +275,9 @@
 	.line.system {
 		--bc: var(--role-system);
 	}
+	.line.peer {
+		--bc: var(--role-peer);
+	}
 	.line.marker {
 		--bc: var(--text-faint);
 	}
@@ -285,6 +297,16 @@
 		text-transform: uppercase;
 		letter-spacing: 0.04em;
 		font-weight: var(--fw-medium);
+	}
+	.peer-from {
+		font-family: var(--font-mono);
+		color: var(--role-peer);
+		text-transform: none;
+		letter-spacing: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		max-width: 40%;
 	}
 	.tool-name {
 		font-family: var(--font-mono);
@@ -364,6 +386,10 @@
 	.line.system .bubble {
 		background: color-mix(in srgb, var(--role-system) 12%, var(--bg-elevated));
 		border-color: color-mix(in srgb, var(--role-system) 40%, transparent);
+	}
+	.line.peer .bubble {
+		background: color-mix(in srgb, var(--role-peer) 12%, var(--bg-elevated));
+		border-color: color-mix(in srgb, var(--role-peer) 40%, transparent);
 	}
 	/* Harness bookkeeping (permission-mode flips, worktree/title updates) —
 	   deliberately the quietest bubble in the log. */

@@ -1,5 +1,6 @@
 import type { TokenUsage as TokenUsageT } from '@bindings/TokenUsage';
 import { m } from '$lib/paraglide/messages';
+import type { UserUploadRefs } from './lines';
 
 export type MsgCategory =
 	| 'assistant'
@@ -7,6 +8,7 @@ export type MsgCategory =
 	| 'redacted'
 	| 'attachment'
 	| 'user'
+	| 'peer'
 	| 'system'
 	| 'tool'
 	| 'mcp'
@@ -38,6 +40,8 @@ export function msgCategoryLabel(id: MsgCategory): string {
 			return m.conversation_filter_attachment();
 		case 'user':
 			return m.conversation_filter_user();
+		case 'peer':
+			return m.conversation_filter_peer();
 		case 'system':
 			return m.conversation_filter_system();
 		case 'tool':
@@ -117,6 +121,7 @@ export interface Line {
 		| 'assistant'
 		| 'thinking'
 		| 'user'
+		| 'peer'
 		| 'system'
 		| 'marker'
 		| 'tool'
@@ -157,6 +162,10 @@ export interface Line {
 	seq?: number;
 	// 1-based conversation turn; stamped only on assistant lines.
 	turn?: number;
+	peerFrom?: string;
+	// Uploads this turn carried, parsed from the raw text before the harness's
+	// attachment encodings were stripped out of the displayed prose.
+	uploads?: UserUploadRefs;
 	messageId?: string;
 	usage?: TokenUsageT;
 }

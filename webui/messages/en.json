@@ -351,6 +351,7 @@
 	"conversation_filter_thinking": "Thinking",
 	"conversation_filter_tool": "Tool calls",
 	"conversation_filter_user": "User messages",
+	"conversation_filter_peer": "Peer agent messages",
 	"conversation_filters": "Filters",
 	"conversation_filters_off_count": "Filters · {count} off",
 	"conversation_fmt_diff": "Diff",
