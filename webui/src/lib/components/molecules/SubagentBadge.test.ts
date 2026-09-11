@@ -61,18 +61,15 @@ describe('SubagentBadge', () => {
 		expect(stopped).toHaveBeenCalled();
 	});
 
-	it('does not let a press on the badge start the row swipe', () => {
-		// Pointer events are not delegated, so the row wrapper's
-		// onpointerdown={swipe.start} really is an ancestor listener.
-		const onrow = vi.fn();
-		const row = document.createElement('div');
-		row.addEventListener('pointerdown', onrow);
-		document.body.append(row);
-		comp = mount(SubagentBadge, {
-			target: row,
-			props: { count: 5, running: 2, open: false, label: 'subagents', ontoggle: () => {} }
-		});
-		badge().dispatchEvent(new Event('pointerdown', { bubbles: true, cancelable: true }));
-		expect(onrow).not.toHaveBeenCalled();
+	it('stops a press on the badge from arming the row swipe', () => {
+		// pointerdown is on Svelte's delegated list, so this handler and the
+		// row wrapper's onpointerdown={swipe.start} share one root listener
+		// that honours stopPropagation. Asserted on the event for the same
+		// reason as the click above.
+		open({ type: 'Explore' });
+		const press = new Event('pointerdown', { bubbles: true, cancelable: true });
+		const stopped = vi.spyOn(press, 'stopPropagation');
+		badge().dispatchEvent(press);
+		expect(stopped).toHaveBeenCalled();
 	});
 });
