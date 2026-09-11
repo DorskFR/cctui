@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { SessionListItem } from '@bindings/SessionListItem';
+import type { JsonValue } from '@bindings/serde_json/JsonValue';
 import {
 	accountTrafficWarning,
 	agentTypeOf,
@@ -816,7 +817,7 @@ describe('sectionsOf / inEnabledSections', () => {
 });
 
 describe('groupChildren', () => {
-	const kid = (id: string, metadata: Record<string, unknown>) =>
+	const kid = (id: string, metadata: Record<string, JsonValue>) =>
 		session({ id, metadata, status: 'active', liveness: 'active' });
 
 	it('reads agent_type off the sidecar metadata', () => {

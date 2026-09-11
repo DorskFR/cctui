@@ -47,14 +47,32 @@ describe('SubagentBadge', () => {
 		expect(badge().getAttribute('aria-expanded')).toBe('false');
 	});
 
-	it('toggles the group without letting the click reach the row beneath', () => {
+	it('toggles the group and stops the click reaching the row handler', () => {
+		// Asserted on the event, not via a listener on an ancestor: the row's
+		// handler is a Svelte `onclick` sharing one delegated root listener
+		// with this one, and a native ancestor listener fires earlier still,
+		// during the real bubble — neither can observe stopPropagation here.
 		const ontoggle = vi.fn();
-		const onrow = vi.fn();
-		document.body.addEventListener('click', onrow);
 		open({ type: 'Explore', ontoggle });
-		badge().click();
-		document.body.removeEventListener('click', onrow);
+		const click = new MouseEvent('click', { bubbles: true, cancelable: true });
+		const stopped = vi.spyOn(click, 'stopPropagation');
+		badge().dispatchEvent(click);
 		expect(ontoggle).toHaveBeenCalledTimes(1);
+		expect(stopped).toHaveBeenCalled();
+	});
+
+	it('does not let a press on the badge start the row swipe', () => {
+		// Pointer events are not delegated, so the row wrapper's
+		// onpointerdown={swipe.start} really is an ancestor listener.
+		const onrow = vi.fn();
+		const row = document.createElement('div');
+		row.addEventListener('pointerdown', onrow);
+		document.body.append(row);
+		comp = mount(SubagentBadge, {
+			target: row,
+			props: { count: 5, running: 2, open: false, label: 'subagents', ontoggle: () => {} }
+		});
+		badge().dispatchEvent(new Event('pointerdown', { bubbles: true, cancelable: true }));
 		expect(onrow).not.toHaveBeenCalled();
 	});
 });

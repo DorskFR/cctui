@@ -54,11 +54,12 @@
 		{title}
 		aria-label={ariaLabel}
 		aria-expanded={open}
+		onpointerdown={(e: PointerEvent) => e.stopPropagation()}
 		onclick={(e: MouseEvent) => {
 			e.stopPropagation();
 			ontoggle();
 		}}
 	>
-		{#if type}<span class="type">{type}</span>{/if}{count}
+		{#if type}<span class="type">{type}</span>{' '}{/if}{count}
 	</Badge>
 </span>
