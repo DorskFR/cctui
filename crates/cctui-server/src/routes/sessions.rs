@@ -1054,12 +1054,17 @@ fn leaf_predicate(field: &str, value: &str, params: &mut Vec<SqlParam>) -> Strin
 const SEARCH_TEXT_CAP: u32 = 8192;
 
 /// The residual free-text path: id / name / dir / trgm-accelerated transcript.
+///
+/// `(SELECT s.id)` must not be simplified to `s.id`: the wrapper keeps the
+/// correlation as a Param, and a plain `s.id` lets the planner hoist the
+/// sublink into a hashed subplan that rechecks every matching event in the
+/// table rather than probing one session (13 s vs 0.35 s on 600k events).
 fn free_text_predicate(p: usize) -> String {
     format!(
         "(s.id ILIKE ${p} OR COALESCE(s.session_name, '') ILIKE ${p} \
           OR s.working_dir ILIKE ${p} \
           OR EXISTS (SELECT 1 FROM stream_events e \
-                     WHERE e.session_id = s.id \
+                     WHERE e.session_id = (SELECT s.id) \
                      AND left(e.search_text, {SEARCH_TEXT_CAP}) ILIKE ${p}))"
     )
 }
@@ -1103,24 +1108,44 @@ fn join_children(children: &[cctui_query::Node], sep: &str, params: &mut Vec<Sql
     }
 }
 
+/// Newest event matching any term, at most one row per session.
+/// `$1` is the session-id array, `$2…` the ILIKE patterns.
+fn snippet_sql(n_patterns: usize) -> String {
+    let or = (2..=n_patterns + 1)
+        .map(|i| format!("left(e.search_text, {SEARCH_TEXT_CAP}) ILIKE ${i}"))
+        .collect::<Vec<_>>()
+        .join(" OR ");
+    format!(
+        "SELECT sid, hit.text, hit.id FROM unnest($1::text[]) AS sid \
+         CROSS JOIN LATERAL ( \
+           SELECT left(e.search_text, {SEARCH_TEXT_CAP}) AS text, e.id \
+           FROM stream_events e \
+           WHERE e.session_id = sid AND ({or}) \
+           ORDER BY e.created_at DESC LIMIT 1 \
+         ) hit"
+    )
+}
+
 /// Build a ~200-char snippet of `text` centered on the earliest case-insensitive
 /// occurrence of any `needle`, so the UI can show why a session matched.
 fn make_snippet(text: &str, needles: &[String]) -> String {
     const WINDOW: usize = 200;
     let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
     let hay = collapsed.to_lowercase();
-    let chars: Vec<char> = collapsed.chars().collect();
     // Earliest byte hit among all needles → char offset to center on.
     let match_byte = needles.iter().filter_map(|n| hay.find(&n.to_lowercase())).min().unwrap_or(0);
     let match_char = collapsed[..match_byte].chars().count();
     let start = match_char.saturating_sub(WINDOW / 2);
-    let end = (start + WINDOW).min(chars.len());
+
+    let mut offsets = collapsed.char_indices().map(|(i, _)| i).skip(start);
+    let start_byte = offsets.next().unwrap_or(collapsed.len());
+    let end_byte = offsets.nth(WINDOW - 1).unwrap_or(collapsed.len());
     let mut out = String::new();
     if start > 0 {
         out.push('…');
     }
-    out.extend(&chars[start..end]);
-    if end < chars.len() {
+    out.push_str(&collapsed[start_byte..end_byte]);
+    if end_byte < collapsed.len() {
         out.push('…');
     }
     out
@@ -1277,20 +1302,8 @@ pub async fn search_sessions(
     // id/name/dir have no transcript hit and keep `match_snippet = None`.
     let ids: Vec<String> = sessions.iter().map(|s| s.id.clone()).collect();
     if !browse && !ids.is_empty() && !text_terms.is_empty() {
-        // Snippet from the most recent event matching ANY free-text term
-        // ($1 = ids, $2.. = patterns); windowed around the earliest term.
         let patterns: Vec<String> = text_terms.iter().map(|t| ilike_contains(t)).collect();
-        let or = (2..=patterns.len() + 1)
-            .map(|i| format!("left(search_text, {SEARCH_TEXT_CAP}) ILIKE ${i}"))
-            .collect::<Vec<_>>()
-            .join(" OR ");
-        let sql = format!(
-            "SELECT DISTINCT ON (session_id) session_id, \
-             left(search_text, {SEARCH_TEXT_CAP}), id \
-             FROM stream_events \
-             WHERE session_id = ANY($1) AND ({or}) \
-             ORDER BY session_id, created_at DESC"
-        );
+        let sql = snippet_sql(patterns.len());
         let mut query =
             sqlx::query_as::<_, (String, String, i64)>(sqlx::AssertSqlSafe(sql)).bind(&ids);
         for p in &patterns {
@@ -2722,7 +2735,8 @@ impl<'a> DraftRowFields<'a> {
 mod tests {
     use super::{
         Bucket, SessionChild, SqlParam, attention_from_bucket, bucket_from_signals, cap_unread,
-        compile_node, derive_liveness, field_values_sql, normalize_last_message,
+        compile_node, derive_liveness, field_values_sql, make_snippet, normalize_last_message,
+        snippet_sql,
     };
     use cctui_proto::models::{Attention, Liveness};
     use chrono::{Duration, Utc};
@@ -3124,5 +3138,93 @@ mod tests {
         let out = normalize_last_message(&raw);
         assert_eq!(out.chars().count(), 201);
         assert!(out.ends_with('…'));
+    }
+
+    /// The pre-CCT-1006 `make_snippet`, kept verbatim as the oracle: the
+    /// optimisation may not change a single byte of user-visible snippet.
+    fn make_snippet_reference(text: &str, needles: &[String]) -> String {
+        const WINDOW: usize = 200;
+        let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        let hay = collapsed.to_lowercase();
+        let chars: Vec<char> = collapsed.chars().collect();
+        let match_byte =
+            needles.iter().filter_map(|n| hay.find(&n.to_lowercase())).min().unwrap_or(0);
+        let match_char = collapsed[..match_byte].chars().count();
+        let start = match_char.saturating_sub(WINDOW / 2);
+        let end = (start + WINDOW).min(chars.len());
+        let mut out = String::new();
+        if start > 0 {
+            out.push('\u{2026}');
+        }
+        out.extend(&chars[start..end]);
+        if end < chars.len() {
+            out.push('\u{2026}');
+        }
+        out
+    }
+
+    #[test]
+    fn snippet_output_is_byte_identical_to_the_reference() {
+        let long = "lorem ipsum dolor sit amet ".repeat(60);
+        let unicode = "\u{3053}\u{3093}\u{306b}\u{3061}\u{306f} caf\u{e9} na\u{ef}ve \u{1f980} crab ".repeat(40);
+        let cases: Vec<(&str, Vec<String>)> = vec![
+            ("", vec!["x".into()]),
+            ("short text", vec![]),
+            ("short text", vec!["nomatch".into()]),
+            ("the quick brown fox", vec!["brown".into()]),
+            ("The Quick BROWN Fox", vec!["brown".into()]),
+            ("  collapse   all \n\t whitespace  runs ", vec!["all".into()]),
+            (long.as_str(), vec!["dolor".into()]),
+            (long.as_str(), vec!["nomatch".into()]),
+            (unicode.as_str(), vec!["crab".into()]),
+            (unicode.as_str(), vec!["caf\u{e9}".into()]),
+            (unicode.as_str(), vec!["\u{1f980}".into()]),
+            // Multi-needle: the window centres on the earliest hit, not the first listed.
+            (long.as_str(), vec!["amet".into(), "lorem".into()]),
+            ("exactly at the boundary", vec!["boundary".into()]),
+        ];
+        for (text, needles) in cases {
+            assert_eq!(
+                make_snippet(text, &needles),
+                make_snippet_reference(text, &needles),
+                "snippet drifted for {text:?} / {needles:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn snippet_never_exceeds_the_window() {
+        let long = "abcdefghij ".repeat(200);
+        let out = make_snippet(&long, &["abcdefghij".to_string()]);
+        // 200 chars plus at most one ellipsis on each side.
+        assert!(out.chars().count() <= 202, "{}", out.chars().count());
+    }
+
+    #[test]
+    fn snippet_sql_returns_one_row_per_session() {
+        let sql = snippet_sql(1);
+        assert!(sql.contains("CROSS JOIN LATERAL"), "{sql}");
+        assert!(sql.contains("ORDER BY e.created_at DESC LIMIT 1"), "{sql}");
+        assert!(sql.contains("unnest($1::text[])"), "{sql}");
+        // A per-session LATERAL replaces the whole-table DISTINCT ON: bringing
+        // that back re-scans every matching event of every session.
+        assert!(!sql.contains("DISTINCT ON"), "{sql}");
+    }
+
+    #[test]
+    fn snippet_sql_binds_every_pattern_and_keeps_the_indexed_cap() {
+        let sql = snippet_sql(3);
+        for i in 2..=4 {
+            assert!(sql.contains(&format!("left(e.search_text, 8192) ILIKE ${i}")), "{sql}");
+        }
+        assert!(!sql.contains("$5"), "{sql}");
+    }
+
+    #[test]
+    fn free_text_exists_keeps_the_correlation_barrier() {
+        let (sql, _) = compile("hello");
+        // `(SELECT s.id)` is what stops the planner hoisting the sublink into a
+        // hashed subplan that rechecks every matching event in the table.
+        assert!(sql.contains("e.session_id = (SELECT s.id)"), "{sql}");
     }
 }
