@@ -2,7 +2,7 @@ import { expect, test, type Locator, type Page } from '@playwright/test';
 
 const APP = process.env.SPAWN_E2E_URL ?? 'http://localhost:5311';
 const TOKEN = process.env.SPAWN_E2E_TOKEN ?? 'dev-admin';
-const SHOTS = process.env.SPAWN_E2E_SHOTS ?? '/home/dorsk/.claude/artifacts/hotfix-spawn';
+const SHOTS = process.env.SPAWN_E2E_SHOTS ?? 'test-results/spawn-prompt-history';
 
 const WIDTHS = [
 	{ name: 'desktop', width: 1280, height: 800 },
