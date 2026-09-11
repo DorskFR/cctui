@@ -1,7 +1,7 @@
 <script lang="ts">
 	// Conversation drawer header. Owns the title + rename, the secondary-action group
-	// (font size · rename · copy link · copy markdown · export · fork) which
-	// collapses into a ⋯ flyout on mobile, the interrupt/archive controls, and the
+	// (rename · copy link · copy markdown · export · fork) which the kit Toolbar
+	// collapses into a ⋯ menu on narrow bars, the interrupt/archive controls, and the
 	// meta row (status badge, in-place codex model editor or the claude "fork to
 	// change model" chip, machine badge, cwd, token usage). Action side-effects
 	// are delegated to callbacks; the editing UI state lives here.
@@ -21,7 +21,18 @@
 	import LabelBadge from '$lib/components/molecules/LabelBadge.svelte';
 	import TokenUsage from '$lib/components/molecules/TokenUsage.svelte';
 	import LangfuseChip from '$lib/components/molecules/LangfuseChip.svelte';
-	import { Badge, Icon, IconButton, Input, Select, Text, WorkingDir, FontScalePicker } from '@dorsk/tsumikit';
+	import {
+		Badge,
+		Icon,
+		IconButton,
+		Input,
+		Select,
+		Text,
+		Toolbar,
+		WorkingDir,
+		FontScalePicker,
+		type MenuItem
+	} from '@dorsk/tsumikit';
 	import { codexModelsFor, codexEffortsFor, preferCatalog } from '$lib/harnessModels';
 	import { useCodexModels, useMergedCodexModels } from '$lib/queries';
 	import ModelPicker from '$lib/components/molecules/ModelPicker.svelte';
@@ -100,10 +111,6 @@
 	let renaming = $state(false);
 	// svelte-ignore state_referenced_locally
 	let newName = $state(session.name ?? '');
-	// Mobile header overflow menu: on narrow screens only Stop +
-	// Archive stay inline; the rest collapse into a "⋯" flyout. Kept open while
-	// renaming so the ✓ save button is reachable.
-	let moreOpen = $state(false);
 	// In-place model/effort editor, codex only.
 	let modelEditing = $state(false);
 	let pendingModel = $state('');
@@ -119,6 +126,10 @@
 	const codexModelOptions = $derived(codexModelsFor(codexCatalog));
 	const codexEffortOptions = $derived(codexEffortsFor(codexCatalog, pendingModel));
 
+	function startRename() {
+		renaming = true;
+		newName = session.name ?? '';
+	}
 	function doRename() {
 		const n = newName.trim();
 		renaming = false;
@@ -138,13 +149,22 @@
 		onsetmodel(model, effort);
 	}
 
+	// Stand-ins for the `data-overflow` actions once the bar collapses.
+	const overflowItems = $derived<MenuItem[]>([
+		renaming
+			? { label: m.common_save(), icon: 'check' as const, onselect: doRename }
+			: { label: m.drawer_rename(), icon: 'edit' as const, onselect: startRename },
+		{ label: m.drawer_copy_link_label(), icon: 'link' as const, onselect: oncopylink },
+		{ label: m.drawer_copy_markdown_label(), icon: 'markdown' as const, onselect: oncopymarkdown },
+		{ label: m.drawer_export_label(), icon: 'download' as const, onselect: onexport },
+		{
+			label: m.drawer_fork_label(),
+			icon: 'fork' as const,
+			pressed: onforkselect ? forkSelectActive : undefined,
+			onselect: onforkselect ?? onfork
+		}
+	]);
 
-	function closeMoreFromOutside(e: PointerEvent) {
-		if (!moreOpen) return;
-		const t = e.target as HTMLElement | null;
-		if (t?.closest('.secondary') || t?.closest('.more')) return;
-		moreOpen = false;
-	}
 	function onWinKey(e: KeyboardEvent) {
 		// Archive chord (⌘ E / Ctrl+E): interrupt any running turn and archive the
 		// session, which then dismisses the drawer. Opt-out via Settings. Skipped
@@ -157,15 +177,14 @@
 			return;
 		}
 		if (e.key !== 'Escape' || renaming) return;
-		if (moreOpen) moreOpen = false;
-		else onclose();
+		onclose();
 	}
 </script>
 
-<svelte:window onkeydown={onWinKey} onpointerdown={closeMoreFromOutside} />
+<svelte:window onkeydown={onWinKey} />
 
 <div class="dhead">
-	<div class="hrow">
+	<Toolbar collapseBelow="640px" items={overflowItems} overflowLabel={m.drawer_more_actions()}>
 		<IconButton chip variant="default" glyphSize={28} icon="back" label={m.drawer_back()} onclick={onclose} />
 		{#if onTogglePin}
 			<span
@@ -217,76 +236,59 @@
 		</div>
 		<!-- Text size: the same kit picker as the main header, writing the one
 		     global fontScale. It stays out of the ⋯ flyout on mobile. -->
-		<FontScalePicker class="font-pick" />
+		<FontScalePicker box="lg" />
 		<!-- Secondary actions: inline on desktop, collapsed into the
 		     ⋯ flyout on mobile so a long title + many buttons no longer overflow.
 		     A single fork lives at the end of the group. -->
-		<div class="secondary" class:open={moreOpen || renaming}>
 		{#if renaming}
-			<IconButton chip variant="default" class="tapbtn" icon="check" label={m.common_save()} onclick={doRename} />
+			<IconButton data-overflow chip variant="default" icon="check" label={m.common_save()} onclick={doRename} />
 		{:else}
 			<IconButton
+				data-overflow
 				chip
 				variant="default"
-				class="tapbtn"
 				icon="edit"
 				label={m.drawer_rename()}
-				onclick={() => {
-					renaming = true;
-					newName = session.name ?? '';
-				}}
+				onclick={startRename}
 			/>
 		{/if}
 		<IconButton
+			data-overflow
 			chip
 			variant="default"
-			class="tapbtn"
 			icon="link"
 			label={m.drawer_copy_link_label()}
 			title={m.drawer_copy_link_title()}
 			onclick={oncopylink}
 		/>
 		<IconButton
+			data-overflow
 			chip
 			variant="default"
-			class="tapbtn"
 			icon="markdown"
 			label={m.drawer_copy_markdown_label()}
 			title={m.drawer_copy_markdown_title()}
 			onclick={oncopymarkdown}
 		/>
 		<IconButton
+			data-overflow
 			chip
 			variant="default"
-			class="tapbtn"
 			icon="download"
 			label={m.drawer_export_label()}
 			title={m.drawer_export_title()}
 			onclick={onexport}
 		/>
 		<IconButton
+			data-overflow
 			chip
 			variant="default"
-			class="tapbtn fork-action"
 			icon="fork"
 			label={m.drawer_fork_label()}
 			title={onforkselect ? m.drawer_fork_select_title() : m.drawer_fork_title()}
 			aria-pressed={onforkselect ? forkSelectActive : undefined}
 			onclick={onforkselect ?? onfork}
 		/>
-		</div>
-		<!-- Mobile-only overflow toggle; hidden on desktop. -->
-		<span class="more">
-			<IconButton
-				chip
-				variant="default"
-				icon="more"
-				label={m.drawer_more_actions()}
-				aria-expanded={moreOpen}
-				title={m.drawer_more_actions()}
-				onclick={() => (moreOpen = !moreOpen)}
-			/>
-		</span>
 		{#if !archived}
 			<IconButton
 				chip
@@ -308,7 +310,7 @@
 				onclick={oninterrupt}
 			/>
 		{/if}
-	</div>
+	</Toolbar>
 	{#if session.labels.length > 0}
 		<!-- Labels get their own full-width row in the header's column stack, so the
 		     strip can spread edge-to-edge and wrap freely instead of being boxed
@@ -345,7 +347,15 @@
 			{#if modelEditing}
 				<span class="model-edit">
 					<Badge class="row" style="gap:var(--sp-1);padding:0.05rem var(--sp-1)">
-						<ModelPicker id="drawer-model" compact bind:value={pendingModel} options={codexModelOptions} aria-label={m.drawer_model_aria()} />
+						<ModelPicker
+							id="drawer-model"
+							compact
+							variant="embedded"
+							width="auto"
+							bind:value={pendingModel}
+							options={codexModelOptions}
+							aria-label={m.drawer_model_aria()}
+						/>
 						<CodexModelsRefresh machineId={session.machine_id} size={14} />
 						<Select
 							variant="embedded"
@@ -393,99 +403,13 @@
 		padding: var(--sp-2) var(--sp-3);
 		border-bottom: 1px solid var(--border);
 		background: var(--bg-elevated);
-		/* Collapse the secondary actions based on the DRAWER's own width, not the
-		   viewport: a narrow-but-on-desktop drawer should fold its
-		   buttons into the ⋯ flyout so the title stays visible. The header is the
-		   size container the rules below query against. */
+		/* TokenUsage degrades its readout against this container. */
 		container: drawer-head / inline-size;
-	}
-	.hrow {
-		display: flex;
-		align-items: center;
-		gap: var(--sp-2);
-		position: relative;
 	}
 	/* Labels on their own row so the strip spans the full header width. */
 	.hlabels {
 		display: flex;
 		min-width: 0;
-	}
-	/* Secondary actions: inline on desktop, ⋯ flyout on mobile. */
-	.secondary {
-		display: contents;
-	}
-	/* Desktop shows every action inline, so the ⋯ flyout toggle is pointless
-	   there — only surface it when actions actually collapse. */
-	.more {
-		display: none;
-	}
-	@container drawer-head (max-width: 640px) {
-		.more {
-			display: inline-flex;
-		}
-		.secondary {
-			display: none;
-			position: absolute;
-			top: calc(100% + var(--sp-1));
-			right: 0;
-			/* Stack above the message list + composer so chat content can't sit on
-			   top of the flyout. */
-			z-index: 60;
-			flex-direction: column;
-			align-items: stretch;
-			/* Fixed, content-comfortable width: the rows are width:100%, so a
-			   max-content panel width would be circular and collapse to min-width,
-			   overflowing the long labels off the right edge. Pin a width that fits
-			   the labels and never exceeds the viewport. */
-			width: 17rem;
-			max-width: calc(100vw - 1.5rem);
-			gap: var(--sp-1);
-			padding: var(--sp-2);
-			background: var(--bg-elevated-2);
-			border: 1px solid var(--border-strong);
-			border-radius: var(--r-md);
-			box-shadow: var(--shadow-lg, 0 8px 24px rgba(0, 0, 0, 0.5));
-		}
-		.secondary.open {
-			display: flex;
-		}
-		/* TSU gap: IconButton's `showLabel="row"` is exactly this flyout form, but
-		   the icon-chip → labelled-row switch is a container query, and a prop
-		   cannot be driven from one. */
-		.dhead .secondary :global(.tapbtn) {
-			width: 100%;
-			min-width: 0;
-			height: auto;
-			min-height: 2.25rem;
-			justify-content: flex-start;
-			gap: var(--sp-2);
-			padding: var(--sp-1) var(--sp-2);
-			font-size: var(--fs-sm);
-			background: none;
-			border: none;
-			border-radius: var(--r-sm);
-		}
-		.dhead .secondary :global(.tapbtn):hover {
-			background: var(--bg-elevated-3, var(--bg-elevated-2));
-		}
-		/* Plain inline icon glyph inside a row — no chip box. */
-		.dhead .secondary :global(.tapbtn svg) {
-			flex: none;
-		}
-		/* The kit stretches an invisible ::after into a touch hit-slab on
-		   coarse pointers; here that pseudo IS the label, so keep it in flow. */
-		.dhead .secondary :global(.tapbtn)::after {
-			content: attr(aria-label);
-			position: static;
-			inset: auto;
-			font-size: var(--fs-sm);
-			font-weight: var(--fw-medium);
-			/* Let a long label wrap inside the panel instead of clipping at the
-			   viewport edge. */
-			white-space: normal;
-			text-align: left;
-			line-height: 1.2;
-		}
 	}
 	.dtitle {
 		flex: 1;
@@ -493,14 +417,6 @@
 		display: flex;
 		align-items: center;
 		gap: var(--sp-1);
-	}
-	/* TSU gap: FontScalePicker hardcodes its trigger at box="md" and exposes no
-	   size/box prop, so the header's 2.5rem chip scale is unreachable from props. */
-	.dhead :global(.font-pick) {
-		width: 2.5rem;
-		min-width: 2.5rem;
-		height: 2.5rem;
-		min-height: 2.5rem;
 	}
 	.hmeta {
 		gap: var(--sp-2);
@@ -533,17 +449,5 @@
 	}
 	.model-edit {
 		display: contents;
-	}
-	/* Reaches the Select that ModelPicker renders: the effort Select next to it
-	   takes variant="embedded" width="auto" directly, but ModelPicker forwards
-	   neither prop, so its own Select is only reachable from here. */
-	.model-edit :global(.select-wrap) {
-		width: auto;
-	}
-	.model-edit :global(.select) {
-		width: auto;
-		background: var(--bg-elevated-2);
-		border-color: var(--border);
-		border-radius: var(--r-sm, 4px);
 	}
 </style>

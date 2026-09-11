@@ -2,7 +2,8 @@ import type { SoftLimitConfig } from '$lib/queries';
 import { countdown } from './usage-battery.logic';
 
 /** A cap parked at 100% is no cap: the stored config drops the window's `cap_pct`. */
-export function capFromBar(cap: number): number | null {
+export function capFromBar(cap: number | null): number | null {
+	if (cap === null) return null;
 	return cap >= 100 ? null : Math.max(0, Math.round(cap));
 }
 

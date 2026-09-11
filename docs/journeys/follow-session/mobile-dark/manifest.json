@@ -10,7 +10,7 @@
 					"name": "drawer",
 					"file": "01-drawer.png",
 					"title": "Open a session",
-					"body": "Tapping a session by name opens its conversation — beside the list on a desktop, over it on a phone."
+					"body": "Open your running session by its name. The conversation opens beside the list on a desktop, over it on a phone."
 				},
 				{
 					"index": 1,
@@ -20,18 +20,18 @@
 					"body": "Every prompt, reply, tool call and tool result is kept, so you can see exactly what the agent did."
 				},
 				{
-					"index": 3,
+					"index": 4,
 					"name": "tools",
 					"file": "03-tools.png",
 					"title": "Filter the noise",
 					"body": "Hiding the assistant messages leaves the tool calls — the fastest way to audit what an agent touched."
 				},
 				{
-					"index": 4,
+					"index": 5,
 					"name": "reply",
 					"file": "04-reply.png",
-					"title": "Steer it mid-run",
-					"body": "A reply goes to the running agent, so you can redirect the work without restarting it."
+					"title": "Steer it from here",
+					"body": "Anything you type here goes to the running agent, so you can redirect it without restarting."
 				}
 			],
 			"storyboard": "storyboard.png"

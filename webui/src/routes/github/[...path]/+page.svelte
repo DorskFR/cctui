@@ -16,6 +16,7 @@
 	import { ghreviewUrl } from '$lib/config';
 	import { ensureGhreviewToken } from '$lib/ghreview';
 	import { Card, Container, Field, Heading, Link, Select, Stack, Text } from '@dorsk/tsumikit';
+	import InlineCode, { SLOT } from '$lib/components/atoms/InlineCode.svelte';
 	import { m } from '$lib/paraglide/messages';
 
 	const url = ghreviewUrl();
@@ -61,7 +62,7 @@
 			<Stack gap="var(--sp-2)">
 				<Heading level={2}>{m.review_center_not_configured()}</Heading>
 				<Text tone="faint">
-					{m.review_config_hint_prefix()} <code>ghreviewUrl</code> {m.review_config_hint_suffix()}
+					<InlineCode text={m.review_config_hint({ setting: SLOT })} code="ghreviewUrl" />
 				</Text>
 			</Stack>
 		</Card>

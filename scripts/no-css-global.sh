@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
-# Shrinking budget on `:global(` overrides in webui Svelte files (webui/DESIGN.md
-# rule 4). The total may never exceed BUDGET; lower BUDGET whenever it drops.
+# No `:global(` overrides in webui Svelte files (webui/DESIGN.md rule 4).
 set -euo pipefail
 
-BUDGET=10
+BUDGET=0
 
 case "${1:-}" in
   --staged) grep_args=(--cached) ;;

@@ -73,8 +73,9 @@
 	let width = $state(0);
 	const dense = $derived(width > 0 && width < DENSE_BELOW_PX);
 
-	let barCap = $derived(capToBar(cap));
-	function commit(next: number) {
+	let barCap: number | null = $derived(capToBar(cap));
+	const tooltipPct = $derived(capToBar(cap));
+	function commit(next: number | null) {
 		const value = capFromBar(next);
 		cap = value;
 		oncapchange?.(value);
@@ -125,7 +126,9 @@
 		readoutWidth={reported ? (dense ? 'max-content' : READOUT_W) : 'auto'}
 		readout={showReset || paceKind === 'flame' ? readoutSnippet : readoutText}
 		{readonly}
-		tooltip={readonly ? m.capbar_tooltip_readonly({ pct: barCap }) : m.capbar_tooltip({ pct: barCap })}
+		tooltip={readonly
+			? m.capbar_tooltip_readonly({ pct: tooltipPct })
+			: m.capbar_tooltip({ pct: tooltipPct })}
 		onchange={commit}
 	/>
 

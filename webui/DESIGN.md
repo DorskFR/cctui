@@ -114,7 +114,20 @@ app-specific concerns live in this repo.
    they belong in `app.css` under a namespaced parent selector, not in a
    component's `:global()`.
 
-5. **Props flow down, including a11y.** Tsumikit components spread `...rest` onto
+5. **Big forms are pages, not modals.** A modal is for one short, self-contained
+   decision. Once a form carries more than ~8 fields, or covers more than one
+   concern, it belongs on a route (or a drawer with a nav rail) where each
+   concern is its own section with its own save button and its own dirty state.
+   The Accounts editor is the worked example: creating an account is a modal
+   (identity + provider kind + credential — one decision, then you are done),
+   while models, aliases, limits, the settings catalog and env each live as a
+   section under `/accounts/[id]` and the provider drawer. Sectioning is what
+   keeps a screen shorter than one viewport; a `size="lg"` modal that scrolls is
+   the smell this rule exists to catch. Corollaries: never open a dialog from
+   inside a dialog, and any section a link can point at needs an addressable
+   target (a route param or a `?page=` the host narrows).
+
+6. **Props flow down, including a11y.** Tsumikit components spread `...rest` onto
    their primitive, so `aria-*`, `title`, `disabled`, `onclick`, native attributes
    all pass through. Add an accessibility attribute once upstream and every
    component built on it inherits the capability.

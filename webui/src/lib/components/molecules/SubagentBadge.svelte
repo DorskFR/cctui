@@ -29,6 +29,13 @@
 			(open ? m.sessions_subagent_collapse() : m.sessions_subagent_expand())
 	);
 	const ariaLabel = $derived(`${open ? m.sessions_collapse() : m.sessions_expand()} ${title}`);
+
+	const chip = '--badge-fs: var(--fs-sm); --badge-fw: var(--fw-semibold); --badge-min-size: 1.5rem;';
+	// `.active` fills from `--badge-tone` and ignores these, so the open state still wins.
+	const runningTint =
+		' --badge-border: color-mix(in srgb, var(--info) 68%, transparent);' +
+		' --badge-bg: color-mix(in srgb, var(--info) 24%, transparent);';
+	const badgeStyle = $derived(running > 0 ? chip + runningTint : chip);
 </script>
 
 <span class="subagent-badge">
@@ -38,7 +45,7 @@
 		size="sm"
 		numeric
 		active={open}
-		class={`badge-toggle${running > 0 ? ' running' : ''}`}
+		style={badgeStyle}
 		{title}
 		aria-label={ariaLabel}
 		aria-expanded={open}
@@ -50,19 +57,3 @@
 		{count}
 	</Badge>
 </span>
-
-<style>
-	/* TSU gap: Badge has no prop for a count chip that reads a step larger and
-	   bolder than its tone/size scale. */
-	.subagent-badge :global(.badge-toggle) {
-		min-width: 1.5rem;
-		height: 1.5rem;
-		font-size: var(--fs-sm);
-		font-weight: var(--fw-semibold);
-	}
-	/* TSU gap: no Badge emphasis step between the idle tint and the `active` fill. */
-	.subagent-badge :global(.badge-toggle.running:not(.active)) {
-		border-color: color-mix(in srgb, var(--info) 68%, transparent);
-		background: color-mix(in srgb, var(--info) 24%, transparent);
-	}
-</style>

@@ -111,7 +111,7 @@ export class ForkController {
 		const x = this.extract;
 		if (!x) return null;
 		if (x.mode === 'up_to') return m.fork_extract_up_to();
-		if (x.mode === 'after') return m.fork_extract_after();
+		if (x.mode === 'after') return m.fork_extract_below();
 		return m.fork_extract_selected({ count: (x.selected_message_ids ?? []).length });
 	}
 

@@ -61,6 +61,16 @@
 		onbookmarkwrapup?: () => void;
 	} = $props();
 
+	// Popover trigger chrome, so the two chips read like the Toggles beside them.
+	// `--pop-box: auto` clears the kit's 2rem square floor.
+	const chipTrigger =
+		'--pop-box: auto;' +
+		' --pop-trigger-pad: 0.15rem var(--sp-2);' +
+		' --pop-trigger-border: var(--border);' +
+		' --pop-trigger-bg: var(--bg-elevated-2);' +
+		' --pop-trigger-fg: var(--text-muted);' +
+		' --pop-trigger-size: var(--fs-xs);';
+
 	const QUICK_TINT: Record<QuickFilterId, string> = {
 		assistant: 'var(--role-assistant)',
 		user: 'var(--role-user)',
@@ -143,11 +153,13 @@
 				{quickFilterLabel(q.id)}
 			</Toggle>
 		{/each}
-		<Popover label={m.conversation_filter_menu_aria()} placement="bottom-start" bare triggerClass="filters-trigger">
+		<Popover label={m.conversation_filter_menu_aria()} placement="bottom-start" pill style={chipTrigger}>
 			{#snippet trigger()}
-				{offCount > 0
-					? m.conversation_filters_off_count({ count: offCount })
-					: m.conversation_filters()}
+				<span class="chip-label">
+					{offCount > 0
+						? m.conversation_filters_off_count({ count: offCount })
+						: m.conversation_filters()}
+				</span>
 			{/snippet}
 			<FilterMenu
 				filter={view.msgFilter}
@@ -196,9 +208,9 @@
 			>{m.conversation_diagnose_btn()}</Toggle>
 		{/if}
 		{#if onjumpseq && onunpin}
-			<Popover label={m.conversation_pins_aria()} placement="bottom-end" bare triggerClass="pins-trigger">
+			<Popover label={m.conversation_pins_aria()} placement="bottom-end" pill style={chipTrigger}>
 				{#snippet trigger()}
-					★ {m.conversation_pins()}{pins.length ? ` ${pins.length}` : ''}
+					<span class="chip-label">★ {m.conversation_pins()}{pins.length ? ` ${pins.length}` : ''}</span>
 				{/snippet}
 				<PinsPanel {pins} {lines} onjump={onjumpseq} {onunpin} />
 			</Popover>
@@ -214,18 +226,15 @@
 </div>
 
 <style>
-	/* The trigger reads like the Toggles beside it. `.bare` in the selector:
-	   the kit's `.pop-trigger.bare` ties on specificity and loads later. */
-	:global(.filters-trigger.bare, .pins-trigger.bare) {
+	/* Text metrics the trigger's own published hooks do not cover; this span is
+	   ours, so scoped CSS reaches it. */
+	.chip-label {
 		display: inline-flex;
 		align-items: center;
 		gap: var(--sp-1);
-		padding: 0.15rem var(--sp-2);
-		border: 1px solid var(--border);
-		border-radius: var(--r-pill);
-		background: var(--bg-elevated-2);
+		/* The kit's `--pop-trigger-fg` lands in a `:where()` rule a global button
+		   colour outranks; on our own span it sticks. */
 		color: var(--text-muted);
-		font-size: var(--fs-xs);
 		font-weight: var(--fw-medium);
 		line-height: 1.4;
 		white-space: nowrap;
