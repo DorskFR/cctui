@@ -53,6 +53,7 @@
 	let pending = $state<SessionProfile[] | null>(null);
 	let dragId = $state('');
 	let overId = $state('');
+	let announcement = $state('');
 	const actions = useProfileActions();
 
 	const ordered = $derived(pending ?? profiles);
@@ -70,15 +71,43 @@
 		}
 	}
 
+	function apply(id: string, next: SessionProfile[]) {
+		const to = next.findIndex((p) => p.id === id);
+		if (to >= 0) {
+			announcement = m.spawn_profile_moved({
+				name: next[to].name,
+				position: to + 1,
+				total: next.length
+			});
+		}
+		void persist(next);
+	}
+
 	const move = (id: string, delta: -1 | 1) => {
 		const from = ordered.findIndex((p) => p.id === id);
 		if (from < 0) return;
-		void persist(moveProfile(ordered, id, from + delta));
+		apply(id, moveProfile(ordered, id, from + delta));
 	};
-	const drop = (targetId: string) => {
-		if (!dragId) return;
-		void persist(moveProfileOnto(ordered, dragId, targetId));
-	};
+
+	// Pointer-driven drag: one gesture handled for mouse, pen and touch alike.
+	// The grip releases the implicit touch capture, so the row under the finger
+	// gets the `pointermove` and publishes itself as the drop target.
+	function grab(id: string) {
+		if (ordered.length < 2) return;
+		dragId = id;
+		overId = '';
+		const end = () => {
+			window.removeEventListener('pointerup', end);
+			window.removeEventListener('pointercancel', end);
+			const from = dragId;
+			const target = overId;
+			dragId = '';
+			overId = '';
+			if (from && target && target !== from) apply(from, moveProfileOnto(ordered, from, target));
+		};
+		window.addEventListener('pointerup', end);
+		window.addEventListener('pointercancel', end);
+	}
 
 	// With no profile the kit IS the one-off spec the spawn will use, so the
 	// editor binds straight to it. Seed it once — mirroring it into a second
@@ -141,16 +170,17 @@
 			usage={usageText(p.id)}
 			selected={selectedId === p.id}
 			open={openId === p.id}
-			first={i === 0}
-			last={i === ordered.length - 1}
+			position={i + 1}
+			total={ordered.length}
 			dragging={dragId === p.id}
 			dropTarget={overId === p.id && dragId !== p.id}
 			onselect={() => select(p.id)}
 			ontoggle={() => toggle(p.id)}
 			onmove={ordered.length > 1 ? (delta) => move(p.id, delta) : undefined}
-			ondropped={drop}
-			onsourcechange={(sourceId) => (dragId = sourceId)}
-			onover={(id) => (overId = id)}
+			ongrab={() => grab(p.id)}
+			onover={() => {
+				if (dragId && dragId !== p.id) overId = p.id;
+			}}
 		>
 			<ProfileAdjust
 				profile={p}
@@ -169,6 +199,7 @@
 			/>
 		</ProfileRow>
 	{/each}
+	<div class="sr-only" role="status" aria-live="polite">{announcement}</div>
 	<div class="new">
 		<Button variant="link" size="sm" disabled={busy} onclick={oncreate}>{m.spawn_profile_new()}</Button>
 	</div>
