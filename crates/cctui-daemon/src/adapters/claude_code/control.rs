@@ -2958,7 +2958,11 @@ impl Driver {
                         meta: SessionMeta {
                             working_dir: Some(cwd.clone()),
                             parent_local_id: Some(parent_id.clone()),
-                            extra: Self::subagent_extra(&agent_id, workflow.as_ref(), meta.as_ref()),
+                            extra: Self::subagent_extra(
+                                &agent_id,
+                                workflow.as_ref(),
+                                meta.as_ref(),
+                            ),
                         },
                     })
                     .await;
@@ -4756,7 +4760,8 @@ mod tests {
     #[test]
     fn subagent_name_status_sets_only_the_name() {
         let evt = Driver::subagent_name_status("a1e5bd", "Global competitors research".to_owned());
-        let AdapterEvent::Status { local_id, name, tempo, state, activity, model, effort, .. } = evt
+        let AdapterEvent::Status { local_id, name, tempo, state, activity, model, effort, .. } =
+            evt
         else {
             panic!("expected a Status event");
         };
@@ -4781,7 +4786,8 @@ mod tests {
                 r#"{"type":"assistant","isSidechain":true,"agentId":"a1e5bd0f2c3d4e5f6","message":{"content":[{"type":"text","text":"sub work"}]}}"#,
             ],
         );
-        let parent_path = transcript::transcript_path(&d.cfg.projects_root, "/tmp", "abcd1234-uuid");
+        let parent_path =
+            transcript::transcript_path(&d.cfg.projects_root, "/tmp", "abcd1234-uuid");
         std::fs::write(
             transcript::subagents_dir(&parent_path).join("agent-a1e5bd0f2c3d4e5f6.meta.json"),
             br#"{"agentType":"general-purpose","description":"Global competitors research",
@@ -4844,9 +4850,7 @@ mod tests {
                 {
                     extra = Some(meta.extra);
                 }
-                AdapterEvent::Status { local_id, name, .. }
-                    if local_id == "f00dcafe12345678a" =>
-                {
+                AdapterEvent::Status { local_id, name, .. } if local_id == "f00dcafe12345678a" => {
                     named |= name.is_some();
                 }
                 _ => {}

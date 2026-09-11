@@ -3166,7 +3166,9 @@ mod tests {
     #[test]
     fn snippet_output_is_byte_identical_to_the_reference() {
         let long = "lorem ipsum dolor sit amet ".repeat(60);
-        let unicode = "\u{3053}\u{3093}\u{306b}\u{3061}\u{306f} caf\u{e9} na\u{ef}ve \u{1f980} crab ".repeat(40);
+        let unicode =
+            "\u{3053}\u{3093}\u{306b}\u{3061}\u{306f} caf\u{e9} na\u{ef}ve \u{1f980} crab "
+                .repeat(40);
         let cases: Vec<(&str, Vec<String>)> = vec![
             ("", vec!["x".into()]),
             ("short text", vec![]),

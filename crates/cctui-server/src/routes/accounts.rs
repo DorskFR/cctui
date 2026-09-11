@@ -2798,10 +2798,8 @@ mod tests {
         });
         let row = AccountUsage::build(Uuid::nil(), "anthropic".into(), Some(usage), 0, &[]);
         let payload = serde_json::to_value(&row).expect("row serializes");
-        let event = cctui_proto::ws::ServerEvent::AccountUsage {
-            account_id: Uuid::nil(),
-            usage: payload,
-        };
+        let event =
+            cctui_proto::ws::ServerEvent::AccountUsage { account_id: Uuid::nil(), usage: payload };
         let json = serde_json::to_value(&event).expect("event serializes");
         assert_eq!(json["type"], "account_usage");
         assert_eq!(json["account_id"], serde_json::json!(Uuid::nil()));
