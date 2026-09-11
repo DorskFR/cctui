@@ -29,6 +29,7 @@ import {
   escapeHtml,
 } from "$lib/markdown";
 import { USER_PREFIX } from "$lib/ws.svelte";
+import { parsePeerMessage } from "$lib/components/organisms/conversation/format";
 import { getLocale } from "$lib/paraglide/runtime";
 
 /** The subset of the drawer's ViewOpts the export honors. Typed from the
@@ -48,6 +49,7 @@ interface Block {
     | "assistant"
     | "thinking"
     | "user"
+    | "peer"
     | "system"
     | "marker"
     | "tool"
@@ -163,6 +165,16 @@ function toBlock(e: AgentEvent, opts: ExportOpts): Block | null {
       }
       if (e.content.startsWith(USER_PREFIX)) {
         const content = e.content.slice(USER_PREFIX.length).trimStart();
+        const peer = parsePeerMessage(content);
+        if (peer) {
+          if (!visible(opts, "peer")) return null;
+          return {
+            role: "peer",
+            ts: Number(e.ts),
+            label: peer.from ?? undefined,
+            html: md(peer.body, opts),
+          };
+        }
         const system = e.meta || looksMeta(content);
         if (!visible(opts, system ? "system" : "user")) return null;
         return {
@@ -240,6 +252,7 @@ const ROLE_LABEL: Record<Block["role"], string> = {
   assistant: "Assistant",
   thinking: "Thinking",
   user: "User",
+  peer: "Peer",
   system: "System",
   marker: "Marker",
   tool: "Tool",
@@ -278,6 +291,7 @@ const TOKEN_FALLBACKS: Record<string, string> = {
   "--role-user": "#5ad6a0",
   "--role-assistant": "#5aa9ff",
   "--role-system": "#b48ef0",
+  "--role-peer": "#cc7fb0",
   "--role-tool": "#f0b454",
   "--role-mcp": "#4fd6cf",
   "--role-thinking": "#d69d76",
@@ -328,6 +342,7 @@ header h1{font-size:18px;margin:0 0 8px;word-break:break-word}
 .msg .body{color:var(--md-text);word-break:break-word;overflow-wrap:anywhere;white-space:normal}
 .user{border-color:color-mix(in srgb,var(--role-user) 45%,transparent);border-left-color:var(--role-user);background:color-mix(in srgb,var(--role-user) 14%,var(--c-bg-elev))}.user .who .r{color:var(--role-user)}
 .assistant{border-color:color-mix(in srgb,var(--role-assistant) 28%,var(--c-border));border-left-color:var(--role-assistant);background:color-mix(in srgb,var(--role-assistant) 7%,var(--c-bg-elev))}.assistant .who .r{color:var(--role-assistant)}
+.peer{border-color:color-mix(in srgb,var(--role-peer) 40%,transparent);border-left-color:var(--role-peer);background:color-mix(in srgb,var(--role-peer) 12%,var(--c-bg-elev))}.peer .who .r{color:var(--role-peer)}
 .system{border-color:color-mix(in srgb,var(--role-system) 24%,var(--c-border));border-left-color:var(--role-system);background:color-mix(in srgb,var(--role-system) 7%,var(--c-bg-elev));opacity:.9}.system .who .r{color:var(--role-system)}
 .tool{border-color:color-mix(in srgb,var(--role-tool) 26%,var(--c-border));border-left-color:var(--role-tool);background:color-mix(in srgb,var(--role-tool) 6%,var(--c-bg-elev))}.tool .who .r{color:var(--role-tool)}
 .result{border-color:color-mix(in srgb,var(--c-amber) 26%,var(--c-border));border-left-color:var(--c-amber);background:color-mix(in srgb,var(--c-amber) 6%,var(--c-bg-elev))}.result .who .r{color:var(--c-amber)}
@@ -447,6 +462,12 @@ function toMarkdownBlock(e: AgentEvent, opts: ExportOpts): string | null {
       }
       if (e.content.startsWith(USER_PREFIX)) {
         const content = e.content.slice(USER_PREFIX.length).trimStart();
+        const peer = parsePeerMessage(content);
+        if (peer) {
+          if (!visible(opts, "peer")) return null;
+          const who = peer.from ? `Peer · ${peer.from}` : "Peer";
+          return `**${who}:**\n\n${peer.body}`;
+        }
         const system = e.meta || looksMeta(content);
         if (!visible(opts, system ? "system" : "user")) return null;
         return `**${system ? "System" : "User"}:**\n\n${content}`;

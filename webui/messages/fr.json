@@ -351,6 +351,7 @@
 	"conversation_filter_thinking": "Raisonnement",
 	"conversation_filter_tool": "Appels d'outils",
 	"conversation_filter_user": "Messages utilisateur",
+	"conversation_filter_peer": "Messages d'agents pairs",
 	"conversation_filters": "Filtres",
 	"conversation_filters_off_count": "Filtres · {count} masquée(s)",
 	"conversation_fmt_diff": "Diff",
@@ -777,7 +778,6 @@
 	"nav_font_size": "Taille de police",
 	"nav_getting_started": "Prise en main",
 	"nav_github": "GitHub",
-	"nav_guides_label": "Guides",
 	"nav_harness_mode_tooltip": "Mode d'exécution Claude : {mode} — modifiable dans les Réglages (les sessions Codex l'ignorent)",
 	"nav_instance_name": "Nom de l'instance",
 	"nav_log_out": "Se déconnecter",
@@ -792,8 +792,6 @@
 	"nav_review": "Revue",
 	"nav_sessions": "Sessions",
 	"nav_settings": "Réglages",
-	"nav_sound_off": "Son désactivé",
-	"nav_sound_on": "Son activé",
 	"nav_theme": "Thème",
 	"nav_theme_auto": "Auto (système)",
 	"nav_theme_dark": "— sombre",
@@ -837,8 +835,26 @@
 	"pools_failover": "Déplacer les sessions en cours",
 	"pools_failover_hint": "Quand le compte lié est refusé en cours de route, relie la session à un autre membre au lieu de la laisser bloquée. Désactivé par défaut ; le déplacement est toujours consigné sur la session.",
 	"pools_leave": "Retirer du pool",
-	"pools_legend": "pool · {n} comptes",
-	"pools_legend_failover": "pool · {n} comptes · basculement armé",
+	"pools_legend": [
+		{
+			"declarations": ["input n", "local nPlural = n: plural"],
+			"selectors": ["nPlural"],
+			"match": {
+				"nPlural=one": "pool · {n} compte",
+				"nPlural=other": "pool · {n} comptes"
+			}
+		}
+	],
+	"pools_legend_failover": [
+		{
+			"declarations": ["input n", "local nPlural = n: plural"],
+			"selectors": ["nPlural"],
+			"match": {
+				"nPlural=one": "pool · {n} compte · basculement armé",
+				"nPlural=other": "pool · {n} comptes · basculement armé"
+			}
+		}
+	],
 	"pools_member_shared": "partagé avec vous",
 	"pools_member_withheld": "son propriétaire le tient hors des pools",
 	"pools_members": "Membres",

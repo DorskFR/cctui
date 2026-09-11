@@ -37,6 +37,71 @@ export function looksMeta(text: string): boolean {
 	return META_TAGS.some((m) => t.startsWith(m));
 }
 
+// The harness wraps a peer agent's message in this tag but prefixes its own
+// "Another Claude session sent a message:" line, so the tag is never at the
+// start of the turn — this must scan, not test the prefix like `looksMeta`.
+const PEER_TAG_RE =
+	/<(cross-session-message|agent-message)\b([^>]*)>([\s\S]*?)<\/\1>/;
+const PEER_ATTR_RE = /([a-z-]+)="([^"]*)"/g;
+
+export interface PeerMessage {
+	/** `from-name` when the sender supplied one, else the raw `from` address. */
+	from: string | null;
+	body: string;
+}
+
+export function parsePeerMessage(text: string): PeerMessage | null {
+	const tag = PEER_TAG_RE.exec(text);
+	if (!tag) return null;
+	const attrs = new Map<string, string>();
+	for (const a of tag[2].matchAll(PEER_ATTR_RE)) attrs.set(a[1], a[2]);
+	const name = attrs.get('from-name')?.trim();
+	const addr = attrs.get('from')?.trim();
+	return { from: name || addr || null, body: tag[3].trim() };
+}
+
+// Claude stores an attachment-carrying user turn as three separate
+// `stream_events` rows in three different encodings (composer prose + staged
+// paths, Claude's `[Image #N][name]`-prefixed copy, a synthetic `[Image: …]`
+// line), so no content hash collapses them. Reducing all three to the human
+// prose is what makes one turn render as one bubble.
+const ATTACHED_HEADER_RE = /^Attached files?(\s*\(\d+\))?:$/i;
+const STAGED_BULLET_RE = /^-\s*\S*\/?cctui-uploads\/\S+/;
+const SYNTH_IMAGE_LINE_RE = /^\[Image:[^\]]*\]$/;
+export const IMAGE_TOKEN_RUN_RE = /^(?:\s*\[(?:Image #\d+|[^[\]\n]*\.[A-Za-z0-9]{1,8})\])+\s*/;
+
+export function isSyntheticImageNotice(text: string): boolean {
+	const lines = text
+		.split('\n')
+		.map((l) => l.trim())
+		.filter(Boolean);
+	return lines.length > 0 && lines.every((l) => SYNTH_IMAGE_LINE_RE.test(l));
+}
+
+export function stripAttachmentDecorations(text: string): string {
+	const out: string[] = [];
+	let inAttachedBlock = false;
+	let first = true;
+	for (const raw of text.split('\n')) {
+		const line = raw.trimEnd();
+		const t = line.trim();
+		if (ATTACHED_HEADER_RE.test(t)) {
+			inAttachedBlock = true;
+			continue;
+		}
+		if (inAttachedBlock) {
+			if (!t || t.startsWith('-')) continue;
+			inAttachedBlock = false;
+		}
+		if (SYNTH_IMAGE_LINE_RE.test(t) || STAGED_BULLET_RE.test(t)) continue;
+		// The token run is only ever prefixed to the turn's opening line; a later
+		// `[file.txt]` is the human's own prose and must survive.
+		out.push(first ? line.replace(IMAGE_TOKEN_RUN_RE, '') : line);
+		if (t) first = false;
+	}
+	return out.join('\n').trim();
+}
+
 // Pull a well-formed questions[] out of an AskUserQuestion tool input.
 export function parseAsk(input: unknown): AskQuestion[] | null {
 	const qs = (input as { questions?: unknown })?.questions;

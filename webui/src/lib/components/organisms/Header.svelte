@@ -9,7 +9,7 @@
 	import { notify } from '$lib/notify.svelte';
 	import { settings } from '$lib/settings.svelte';
 	import { toasts } from '$lib/toast.svelte';
-	import { Button, FontScalePicker, IconButton, Menu, Text } from '@dorsk/tsumikit';
+	import { FontScalePicker, Icon, Menu, Text } from '@dorsk/tsumikit';
 	import ThemeModePicker from '$lib/components/molecules/ThemeModePicker.svelte';
 	import type { MenuItem } from '@dorsk/tsumikit';
 	import NavLink from '$lib/components/atoms/NavLink.svelte';
@@ -17,10 +17,14 @@
 	import UsageBattery from '$lib/components/molecules/UsageBattery.svelte';
 import ResourceBattery from '$lib/components/molecules/ResourceBattery.svelte';
 	import UpdateModal from '$lib/components/organisms/UpdateModal.svelte';
-	import { settingsHref } from '$lib/components/organisms/settings/settings.logic';
+	import {
+		DEFAULT_SETTINGS_PAGE,
+		settingsHref
+	} from '$lib/components/organisms/settings/settings.logic';
 	import { m } from '$lib/paraglide/messages';
 
 	const GUIDES_HREF = settingsHref('guides');
+	const SETTINGS_HREF = settingsHref(DEFAULT_SETTINGS_PAGE);
 
 	const version = useVersion();
 	const me = useMe();
@@ -59,11 +63,12 @@ import ResourceBattery from '$lib/components/molecules/ResourceBattery.svelte';
 		})
 	);
 
+	const needsInput = $derived(
+		(sessions.data?.sessions ?? []).filter((s) => s.attention === 'needs_input')
+	);
+
 	// Drive notifications + title badge off the list's attention flags.
-	$effect(() => {
-		const items = sessions.data?.sessions ?? [];
-		notify.reconcile(items.filter((s) => s.attention === 'needs_input'));
-	});
+	$effect(() => notify.reconcile(needsInput));
 
 	async function toggleNotify() {
 		if (notify.enabled) {
@@ -89,6 +94,9 @@ import ResourceBattery from '$lib/components/molecules/ResourceBattery.svelte';
 		userRole && userRole.toLowerCase() !== userName.toLowerCase() ? userRole : ''
 	);
 	const latest = $derived(version.data?.latest_version ?? null);
+	const notifyLabel = $derived(
+		notify.enabled ? m.nav_notify_on_label() : m.nav_notify_off_label()
+	);
 
 	// The kit font picker writes the kit store; the blob follows so the choice
 	// round-trips across devices like it did through the old header select.
@@ -112,11 +120,17 @@ import ResourceBattery from '$lib/components/molecules/ResourceBattery.svelte';
 				]
 			: []),
 		{
+			label: notifyLabel,
+			icon: 'bell' as const,
+			pressed: notify.enabled,
+			onselect: () => void toggleNotify()
+		},
+		{
 			label: m.nav_getting_started(),
 			icon: 'life-buoy' as const,
 			onselect: () => void goto(GUIDES_HREF)
 		},
-		{ label: m.nav_settings(), onselect: () => void goto('/settings') },
+		{ label: m.nav_settings(), icon: 'settings' as const, onselect: () => void goto(SETTINGS_HREF) },
 		{ label: m.nav_log_out(), icon: 'log-out' as const, danger: true, onselect: () => void auth.logout() }
 	]);
 </script>
@@ -143,17 +157,6 @@ import ResourceBattery from '$lib/components/molecules/ResourceBattery.svelte';
 						<Text size="xs" tone="faint" variant="code">srv v{version.data.version}</Text>
 					</NavLink>
 				{/if}
-				{#if latest}
-					<Button
-						variant="link"
-						tone="danger"
-						title={m.nav_update_available({ version: latest })}
-						onclick={() => (updateOpen = true)}
-					>
-						<span class="upd-dot" aria-hidden="true"></span>
-						<Text size="xs" tone="danger" variant="code">v{latest}</Text>
-					</Button>
-				{/if}
 			</span>
 		</div>
 		<div class="tabs">
@@ -164,29 +167,6 @@ import ResourceBattery from '$lib/components/molecules/ResourceBattery.svelte';
 		<div class="tail">
 			<span class="batt"><ResourceBattery /><UsageBattery /></span>
 			<span class="divider" aria-hidden="true"></span>
-			<IconButton
-				emoji="?"
-				size={12}
-				box="md"
-				shrink={false}
-				label={m.nav_guides_label()}
-				as="a"
-				href={GUIDES_HREF}
-			/>
-			<IconButton
-				emoji={notify.enabled ? '🔔' : '🔕'}
-				size={12}
-				box="md"
-				shrink={false}
-				label={notify.enabled ? m.nav_notify_on_label() : m.nav_notify_off_label()}
-				pressed={notify.enabled}
-				onclick={toggleNotify}
-				oncontextmenu={(e: MouseEvent) => {
-					e.preventDefault();
-					settings.setNotifySound(!notify.sound);
-					toasts.info(notify.sound ? m.nav_sound_on() : m.nav_sound_off());
-				}}
-			/>
 			<span class="prefs">
 				<ThemeModePicker />
 				<FontScalePicker />
@@ -195,6 +175,16 @@ import ResourceBattery from '$lib/components/molecules/ResourceBattery.svelte';
 				{#snippet trigger()}
 					<span class="pill">
 						<span class="avatar" class:alert={!!latest} aria-hidden="true">{userInitial}</span>
+						<span
+							class="bell"
+							class:off={!notify.enabled}
+							class:unread={needsInput.length > 0}
+							data-notify={notify.enabled ? 'on' : 'off'}
+							title={notifyLabel}
+							aria-label={notifyLabel}
+						>
+							<Icon name="bell" size={12} />
+						</span>
 						<span class="who">
 							{#if userName}<span class="who-name">{userName}</span>{/if}
 							{#if userName && roleSuffix}<span class="who-sep">·</span>{/if}
@@ -305,21 +295,22 @@ import ResourceBattery from '$lib/components/molecules/ResourceBattery.svelte';
 	.conn.mid {
 		background: var(--warn);
 	}
-	/* ui / srv / update stacked in one column: three lines cost no more width
-	   than two, so the block never has to compete with the nav for room. */
+	/* ui / srv stacked in one column: two lines cost no more width than one, so
+	   the block never has to compete with the nav for room. It cannot wrap, so
+	   below the nav breakpoint it goes away entirely rather than run under the
+	   account cluster — both versions stay readable in Settings › Instance. */
 	.vers {
-		display: flex;
+		display: none;
 		flex-direction: column;
 		align-items: flex-start;
 		flex: none;
 		line-height: 1;
 		white-space: nowrap;
 	}
-	.upd-dot {
-		width: 6px;
-		height: 6px;
-		border-radius: 50%;
-		background: var(--danger);
+	@media (min-width: 48rem) {
+		.vers {
+			display: flex;
+		}
 	}
 	.prefs {
 		display: inline-flex;
@@ -384,6 +375,20 @@ import ResourceBattery from '$lib/components/molecules/ResourceBattery.svelte';
 		border-radius: 50%;
 		background: var(--danger);
 		border: 2px solid var(--bg-elevated);
+	}
+	/* The bell left the bar; its state has to stay readable on the collapsed pill. */
+	.bell {
+		display: inline-flex;
+		align-items: center;
+		color: var(--text-muted);
+		flex: none;
+	}
+	.bell.off {
+		opacity: 0.4;
+	}
+	.bell.unread {
+		color: var(--danger);
+		opacity: 1;
 	}
 	.who {
 		display: inline-flex;

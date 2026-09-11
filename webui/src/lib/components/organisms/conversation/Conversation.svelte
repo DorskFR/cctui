@@ -161,6 +161,7 @@
 	<ConversationLine
 		{ln}
 		{archived}
+		{sessionId}
 		pinned={ln.seq !== undefined && pinnedSeqs.has(ln.seq)}
 		{onpin}
 		onretry={(ts) => stream.retryFailed(ts)}

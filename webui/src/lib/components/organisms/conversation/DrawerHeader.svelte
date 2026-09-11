@@ -185,7 +185,7 @@
 
 <div class="dhead">
 	<Toolbar collapseBelow="640px" items={overflowItems} overflowLabel={m.drawer_more_actions()}>
-		<IconButton chip variant="default" glyphSize={28} icon="back" label={m.drawer_back()} onclick={onclose} />
+		<IconButton icon="chevron-left" label={m.drawer_back()} onclick={onclose} />
 		{#if onTogglePin}
 			<span
 				class="star"
