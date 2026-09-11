@@ -309,6 +309,9 @@ pub struct AccountInfo {
     /// may enrol this account in an account pool. Grantees can still launch on
     /// it by name — they just cannot make it a silent overflow target.
     pub pool_eligible: bool,
+    /// Relative plan size inside a pool aggregate (upstream reports percent,
+    /// never the plan behind it). `1` = same as the other members.
+    pub pool_weight: f32,
     /// Names (only) of the account's free-form extra env vars, sorted.
     /// Values stay WRITE-ONLY (encrypted, never returned) — the names let the UI
     /// show what is currently set with a replace-on-save affordance.
@@ -332,6 +335,7 @@ struct AccountRow {
     /// Encrypted extra-env blob; decrypted to NAMES only for the API.
     env_json: Option<String>,
     pool_eligible: bool,
+    pool_weight: f32,
 }
 
 impl AccountRow {
@@ -344,6 +348,7 @@ impl AccountRow {
             user_id: self.user_id,
             user_name: self.user_name,
             pool_eligible: self.pool_eligible,
+            pool_weight: self.pool_weight,
             created_at: self.created_at,
             updated_at: self.updated_at,
             providers,
@@ -408,7 +413,7 @@ const PROVIDER_SELECT: &str = "SELECT p.id, p.account_id, p.provider, p.family, 
 
 /// Identity SELECT for [`AccountRow`]. Append a `WHERE`/`ORDER BY` before use.
 const ACCOUNT_SELECT: &str = "SELECT a.id, a.name, a.emoji, a.user_id, u.name AS user_name, a.created_at, a.updated_at, \
-     a.env_json, a.pool_eligible \
+     a.env_json, a.pool_eligible, a.pool_weight \
      FROM accounts a JOIN users u ON u.id = a.user_id";
 
 /// Fetch one account (owner-scoped: `owner` NULL = admin sees all) with its
@@ -563,6 +568,10 @@ pub struct UpdateAccount {
     /// Owner-only: whether grantees may enrol this account in their pools.
     #[serde(default)]
     pub pool_eligible: Option<bool>,
+    /// Owner-only: the account's relative plan size in pool aggregates. Must
+    /// be a finite positive number.
+    #[serde(default)]
+    pub pool_weight: Option<f32>,
     // Legacy provider fields (any shape): presence ⇒ 400 pointing at
     // PATCH /accounts/{id}/providers/{provider_id}.
     #[serde(default)]
@@ -1309,6 +1318,11 @@ pub async fn update_account(
         return Err(err(StatusCode::BAD_REQUEST, "name required"));
     }
     let name = req.name.as_deref().map(str::trim).map(str::to_owned);
+    if let Some(w) = req.pool_weight
+        && !(w.is_finite() && w > 0.0)
+    {
+        return Err(err(StatusCode::BAD_REQUEST, "pool_weight must be a positive number"));
+    }
     // emoji: provided → set (a blank string clears it); absent → unchanged.
     let emoji_provided = req.emoji.is_some();
     let emoji = emoji_field(req.emoji.as_deref())?;
@@ -1341,8 +1355,14 @@ pub async fn update_account(
     // account (which the identity update below refuses to touch).
     if let Some(eligible) = req.pool_eligible {
         set_pool_eligible(&state, id, ctx.owner_filter(), eligible).await?;
+    }
+    // Same for the pool weight: a statement about the plan, not the credential.
+    if let Some(weight) = req.pool_weight {
+        set_pool_weight(&state, id, ctx.owner_filter(), weight).await?;
+    }
+    if req.pool_eligible.is_some() || req.pool_weight.is_some() {
         // Nothing else to change: don't run the identity update, whose managed
-        // guard would 404 an account the veto just applied to cleanly.
+        // guard would 404 an account the pool fields just applied to cleanly.
         if name.is_none() && !env_provided && !emoji_provided {
             let info = fetch_account_info(&state.pool, id, None)
                 .await
@@ -1386,6 +1406,30 @@ pub async fn update_account(
         .map_err(|e| db_err(&e))?
         .ok_or_else(|| err(StatusCode::NOT_FOUND, "no such account"))?;
     Ok(Json(info))
+}
+
+/// Set an account's relative plan size for pool aggregates (owner-scoped, like
+/// the veto). Validated by the caller: finite and positive.
+async fn set_pool_weight(
+    state: &AppState,
+    id: Uuid,
+    owner: Option<Uuid>,
+    weight: f32,
+) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+    let touched = sqlx::query(
+        "UPDATE accounts SET pool_weight = $3, updated_at = now() \
+          WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2)",
+    )
+    .bind(id)
+    .bind(owner)
+    .bind(weight)
+    .execute(&state.pool)
+    .await
+    .map_err(|e| db_err(&e))?;
+    if touched.rows_affected() == 0 {
+        return Err(err(StatusCode::NOT_FOUND, "no such account"));
+    }
+    Ok(())
 }
 
 /// Set an account's pool veto, and prune the memberships it withdraws.
@@ -2289,25 +2333,59 @@ pub struct UsageWindowView {
 }
 
 impl UsageWindowView {
-    fn now(window: crate::soft_limit::UsageWindow) -> Self {
-        let pace = crate::pace::for_window(Utc::now(), &window, None);
+    /// Rate `window` now, on the slope from `previous` when there is one and
+    /// on the window average otherwise.
+    fn now(window: crate::soft_limit::UsageWindow, previous: Option<crate::pace::Sample>) -> Self {
+        let pace = crate::pace::for_window(Utc::now(), &window, previous);
         Self { window, pace }
     }
 }
 
+/// The earlier readings a provider's windows are rated against, or none when
+/// the lookup fails: a slope refines the pace, it is never a precondition for
+/// serving the gauge.
+async fn previous_samples(
+    state: &AppState,
+    provider_id: Uuid,
+    usage: Option<&serde_json::Value>,
+) -> Vec<crate::store::usage_samples::PreviousSample> {
+    let Some(usage) = usage else {
+        return Vec::new();
+    };
+    let windows = crate::soft_limit::normalize_usage_windows(usage);
+    match crate::store::usage_samples::previous_for(&state.pool, provider_id, &windows, Utc::now())
+        .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::warn!(provider_id = %provider_id, error = %e, "reading usage samples failed");
+            Vec::new()
+        }
+    }
+}
+
 impl AccountUsage {
+    /// Assemble the view; `previous` carries at most one earlier sample per
+    /// window key (see [`previous_samples`]).
     fn build(
         account_id: Uuid,
         provider: String,
         usage: Option<serde_json::Value>,
         age_secs: u64,
+        previous: &[crate::store::usage_samples::PreviousSample],
     ) -> Self {
         let windows = usage
             .as_ref()
             .map(crate::soft_limit::normalize_usage_windows)
             .unwrap_or_default()
             .into_iter()
-            .map(UsageWindowView::now)
+            .map(|w| {
+                let prev = previous
+                    .iter()
+                    .find(|p| p.window_key == w.key)
+                    .map(crate::store::usage_samples::PreviousSample::sample);
+                UsageWindowView::now(w, prev)
+            })
             .collect();
         let limit_reset = usage
             .as_ref()
@@ -2351,18 +2429,27 @@ pub async fn account_usage(
         && hit.fetched_at.elapsed() < USAGE_CACHE_TTL.to_std().unwrap_or_default()
     {
         let age_secs = hit.fetched_at.elapsed().as_secs();
-        return Ok(Json(AccountUsage::build(id, provider, hit.usage.clone(), age_secs)));
+        let usage = hit.usage.clone();
+        drop(hit);
+        let previous = previous_samples(&state, id, usage.as_ref()).await;
+        return Ok(Json(AccountUsage::build(id, provider, usage, age_secs, &previous)));
     }
 
     // Stale or absent → fetch upstream (anthropic only; Codex returns None).
-    let usage = if let Ok(u) = gateway::fetch_account_usage(&state, id).await {
+    let fetched = gateway::fetch_account_usage(&state, id).await;
+    let usage = if let Ok(u) = fetched {
+        gateway::record_usage_samples(&state, id, u.as_ref());
         u
     } else {
         // Upstream hiccup (e.g. 429/refresh fail): fall back to the last
         // cached value if we have one rather than erroring the whole row.
-        if let Some(hit) = state.account_usage_cache.get(&id) {
-            let age_secs = hit.fetched_at.elapsed().as_secs();
-            return Ok(Json(AccountUsage::build(id, provider, hit.usage.clone(), age_secs)));
+        let cached = state
+            .account_usage_cache
+            .get(&id)
+            .map(|hit| (hit.usage.clone(), hit.fetched_at.elapsed().as_secs()));
+        if let Some((usage, age_secs)) = cached {
+            let previous = previous_samples(&state, id, usage.as_ref()).await;
+            return Ok(Json(AccountUsage::build(id, provider, usage, age_secs, &previous)));
         }
         // No prior value — surface as "no usage" so the UI just hides the chip.
         None
@@ -2371,7 +2458,8 @@ pub async fn account_usage(
         id,
         crate::state::CachedUsage { fetched_at: std::time::Instant::now(), usage: usage.clone() },
     );
-    Ok(Json(AccountUsage::build(id, provider, usage, 0)))
+    let previous = previous_samples(&state, id, usage.as_ref()).await;
+    Ok(Json(AccountUsage::build(id, provider, usage, 0, &previous)))
 }
 
 /// One row of `GET /api/v1/accounts/usage`: a provider credential's usage plus
@@ -2418,16 +2506,21 @@ pub async fn all_accounts_usage(
 
     let fetches = rows.iter().map(|r| gateway::usage_for_soft_limit(&state, r.id));
     let usages = futures_util::future::join_all(fetches).await;
+    let previous = futures_util::future::join_all(
+        rows.iter().zip(&usages).map(|(r, usage)| previous_samples(&state, r.id, usage.as_ref())),
+    )
+    .await;
     let out = rows
         .into_iter()
         .zip(usages)
-        .map(|(r, usage)| {
+        .zip(previous)
+        .map(|((r, usage), previous)| {
             let age_secs = state
                 .account_usage_cache
                 .get(&r.id)
                 .map_or(0, |hit| hit.fetched_at.elapsed().as_secs());
             AccountUsageEntry {
-                usage: AccountUsage::build(r.id, r.provider, usage, age_secs),
+                usage: AccountUsage::build(r.id, r.provider, usage, age_secs, &previous),
                 account: r.account_id,
                 account_name: r.account_name,
                 account_emoji: r.account_emoji,
@@ -2656,7 +2749,7 @@ mod tests {
         let usage = serde_json::json!({
             "five_hour": { "utilization": 60.0, "resets_at": resets },
         });
-        let built = AccountUsage::build(Uuid::nil(), "anthropic".into(), Some(usage), 7);
+        let built = AccountUsage::build(Uuid::nil(), "anthropic".into(), Some(usage), 7, &[]);
         let json = serde_json::to_value(&built).unwrap();
         let w = &json["windows"][0];
         assert_eq!(w["key"], "session");

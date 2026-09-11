@@ -21,6 +21,7 @@ mod ntfy;
 mod openapi;
 mod pace;
 mod policy;
+mod pool_usage;
 mod presence;
 mod registry;
 mod routes;
@@ -1041,6 +1042,14 @@ fn build_api_routes() -> Routes {
             "/account-pools",
             "List the caller's account pools, or create one.",
             get(routes::account_pools::list_pools).post(routes::account_pools::create_pool),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[GET],
+            "/account-pools/usage",
+            "Every pool's quota windows aggregated per provider family: level, pace, projection.",
+            get(routes::account_pools::pools_usage),
             Authn::Bearer,
             Authenticated,
         )

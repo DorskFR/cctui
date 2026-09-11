@@ -103,6 +103,9 @@ export interface OAuthAccount {
   /** The owner's pool veto: with this false, only the owner may enrol the
    *  account in a pool. Grantees can still launch on it by name. */
   pool_eligible: boolean;
+  /** Relative plan size for the pool gauge (1 = one unit of budget). The
+   *  provider only reports percentages, so the operator states the ratio. */
+  pool_weight: number;
   /** Names (only) of the account's free-form extra env vars, sorted.
    *  Values stay write-only (never returned); the names drive the "currently
    *  set" display + replace-on-save affordance in the account editor. */
@@ -170,6 +173,9 @@ export interface UsagePace {
   expected_pct: number;
   ratio: number;
   projected_wall_at?: string | null;
+  /** Hours between the earlier sample and now when the rate is a measured
+   *  slope; absent when it is the window average. */
+  slope_hours?: number | null;
 }
 
 /** Per-account subscription usage. `windows` is the normalized
@@ -301,6 +307,8 @@ export interface UpdateAccount {
    *  Applied on its own statement server-side, so it also works on a managed
    *  account (whose identity is otherwise read-only). */
   pool_eligible?: boolean;
+  /** Owner-only: relative plan size for the pool gauge; positive, 1 by default. */
+  pool_weight?: number;
 }
 
 /** Provider-credential edit payload. Every field optional; an absent field leaves that

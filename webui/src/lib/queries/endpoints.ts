@@ -1,5 +1,6 @@
 import { api } from "../api";
 import type { SessionListResponse } from "@bindings/SessionListResponse";
+import type { PoolUsageView } from "@bindings/PoolUsageView";
 import type { SessionStats } from "@bindings/SessionStats";
 import type { TokenUsageWindows } from "@bindings/TokenUsageWindows";
 import type { UsageAnalytics } from "@bindings/UsageAnalytics";
@@ -341,6 +342,8 @@ export const endpoints = {
   deleteRedirect: (id: string) => api.del<void>(`/redirects/${id}`),
   /** The caller's account pools with their membership. */
   accountPools: () => api.get<AccountPoolView[]>("/account-pools"),
+  /** Every pool's usage, aggregated per provider family (level, pace, wall). */
+  accountPoolsUsage: () => api.get<PoolUsageView[]>("/account-pools/usage"),
   createAccountPool: (body: CreatePoolRequest) =>
     api.post<AccountPoolView>("/account-pools", body),
   updateAccountPool: (id: string, body: UpdatePoolRequest) =>

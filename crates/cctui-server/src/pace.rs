@@ -23,6 +23,10 @@ pub struct Pace {
     /// When utilization reaches 100% at the current rate; `None` when idle.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub projected_wall_at: Option<DateTime<Utc>>,
+    /// Length, in hours, of the base the rate was measured over when it came
+    /// from an earlier sample; `None` when the rate is the window average.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub slope_hours: Option<f64>,
 }
 
 /// An earlier utilization reading of the same window, for a two-point rate.
@@ -70,13 +74,17 @@ pub fn compute(
     let expected_pct = elapsed_fraction * 100.0;
     let ratio = utilization.max(0.0) / expected_pct.max(MIN_EXPECTED_PCT);
 
-    let rate_per_sec = previous
+    // (rate per second, hours of base) when the earlier sample gives a slope.
+    let slope = previous
         .filter(|p| p.at < now && p.utilization <= utilization && p.utilization >= 0.0)
         .and_then(|p| {
             let dt = (now - p.at).num_seconds() as f64;
             let rate = (utilization - p.utilization) / dt;
-            (rate > 0.0).then_some(rate)
-        })
+            (rate > 0.0).then_some((rate, dt / 3600.0))
+        });
+    let slope_hours = slope.map(|(_, hours)| hours);
+    let rate_per_sec = slope
+        .map(|(rate, _)| rate)
         .or_else(|| (elapsed_secs > 0.0 && utilization > 0.0).then(|| utilization / elapsed_secs));
 
     let projected_wall_at = if utilization >= 100.0 {
@@ -89,7 +97,7 @@ pub fn compute(
         })
     };
 
-    Some(Pace { elapsed_fraction, expected_pct, ratio, projected_wall_at })
+    Some(Pace { elapsed_fraction, expected_pct, ratio, projected_wall_at, slope_hours })
 }
 
 /// [`compute`] for a normalized window, keyed off its canonical key.
@@ -158,6 +166,15 @@ mod tests {
         let prev = Sample { at: t("2026-01-01T01:50:00Z"), utilization: 40.0 };
         let p = compute(now, 50.0, Some(resets), Some(Duration::hours(5)), Some(prev)).unwrap();
         assert_eq!(p.projected_wall_at, Some(t("2026-01-01T02:50:00Z")));
+        assert!((p.slope_hours.unwrap() - (10.0 / 60.0)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn window_average_reports_no_slope_base() {
+        let now = t("2026-01-01T02:00:00Z");
+        let resets = t("2026-01-01T05:00:00Z");
+        let p = compute(now, 50.0, Some(resets), Some(Duration::hours(5)), None).unwrap();
+        assert_eq!(p.slope_hours, None);
     }
 
     #[test]

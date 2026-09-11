@@ -102,6 +102,8 @@
 	"accounts_field_name": "Name",
 	"accounts_field_name_placeholder": "personal",
 	"accounts_field_owner": "Owner",
+	"accounts_field_pool_weight": "Pool weight",
+	"accounts_field_pool_weight_help": "Relative plan size for the pool gauge: 1 by default, 4 for a plan four times bigger.",
 	"accounts_field_provider": "Provider",
 	"accounts_intro": "Credentials sessions run through. Pooled accounts are interchangeable; failover only moves inside a pool.",
 	"accounts_manage_sharing": "Manage sharing",
@@ -874,6 +876,23 @@
 	"pools_strategy_ordered": "In order, first with room",
 	"pools_strategy_ordered_hint": "A ladder: spend the first member, spill to the next only when it is out.",
 	"pools_updated": "Pool saved",
+	"pools_usage_failover_off": "Failover off: the projection only holds for new sessions",
+	"pools_usage_family": [
+		{
+			"declarations": ["input family", "input n", "local nPlural = n: plural"],
+			"selectors": ["nPlural"],
+			"match": {
+				"nPlural=one": "{family} · {n} account",
+				"nPlural=other": "{family} · {n} accounts"
+			}
+		}
+	],
+	"pools_usage_projection_detail": "demand {demand} pt/h over a {hours} h base",
+	"pools_usage_projection_holds": "holds until reset",
+	"pools_usage_projection_insufficient": "insufficient history",
+	"pools_usage_projection_wall": "pool wall in ~{time}",
+	"pools_usage_unknown": "usage unknown",
+	"pools_usage_weights": "weights {weights}",
 	"provider_drawer_changes": "{n} change(s) on this page",
 	"provider_drawer_no_changes": "No changes on this page",
 	"provider_drawer_overridden": "{n} overridden",
@@ -1530,6 +1549,8 @@
 	"spawn_toast_unconfirmed": "Launch dispatched but not confirmed yet — check the list before retrying (a retry starts a second session)",
 	"stats_dock_accounts": "Accounts",
 	"stats_dock_no_accounts": "No account with usage data.",
+	"stats_dock_no_pools": "No account pool.",
+	"stats_dock_pools": "Pools",
 	"stats_dock_title": "Stats",
 	"theme_auto_help": "Follows the system, with your last light and dark themes",
 	"theme_auto_label": "Auto (system)",

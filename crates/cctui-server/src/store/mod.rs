@@ -9,3 +9,4 @@ pub mod account_redirects;
 pub mod sessions;
 pub mod spawn_capabilities;
 pub mod tokens;
+pub mod usage_samples;
