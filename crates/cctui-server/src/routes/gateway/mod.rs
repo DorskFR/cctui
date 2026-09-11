@@ -304,7 +304,7 @@ mod tests {
                 "an entry {age}s old must be served from cache, broadcasting nothing"
             );
         }
-        assert!(usage_cache_stale(Some(Duration::from_secs(180)), ttl));
+        assert!(usage_cache_stale(Some(Duration::from_mins(3)), ttl));
     }
 
     #[test]

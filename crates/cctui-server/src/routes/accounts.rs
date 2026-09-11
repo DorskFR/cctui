@@ -2800,7 +2800,7 @@ mod tests {
         let payload = serde_json::to_value(&row).expect("row serializes");
         let event = cctui_proto::ws::ServerEvent::AccountUsage {
             account_id: Uuid::nil(),
-            usage: payload.clone(),
+            usage: payload,
         };
         let json = serde_json::to_value(&event).expect("event serializes");
         assert_eq!(json["type"], "account_usage");
