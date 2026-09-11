@@ -45,7 +45,15 @@ describe('variables.css is a kit import, not a fork', () => {
 	it('keeps only the app-specific tokens', () => {
 		const root = block(variables, ':root');
 		expect([...root.keys()].sort()).toEqual(
-			['--attention-bg-solid', '--c-brown', '--content-wide', '--role-summary', '--role-thinking', '--term-bg']
+			[
+				'--attention-bg-solid',
+				'--c-brown',
+				'--content-wide',
+				'--role-peer',
+				'--role-summary',
+				'--role-thinking',
+				'--term-bg'
+			]
 		);
 	});
 
