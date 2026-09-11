@@ -1,5 +1,44 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const { ghreviewUrl } = vi.hoisted(() => ({ ghreviewUrl: vi.fn<() => string | null>() }));
+vi.mock('./config', () => ({ ghreviewUrl }));
+
 import { isNavActive, navItems } from './navItems';
+
+beforeEach(() => {
+	ghreviewUrl.mockReturnValue(null);
+});
+
+describe('navItems github gate', () => {
+	const hasGithub = (gates?: Parameters<typeof navItems>[0]) =>
+		navItems(gates).some((i) => i.href === '/github');
+
+	it('hides github when ghreview is undeployed and there is no connector', () => {
+		expect(hasGithub({ hasGithubConnector: false })).toBe(false);
+	});
+
+	it('hides github when ghreview is undeployed even if a connector is claimed', () => {
+		expect(hasGithub({ hasGithubConnector: true })).toBe(false);
+	});
+
+	it('hides github when ghreview is deployed but no connector exists', () => {
+		ghreviewUrl.mockReturnValue('https://ghreview.example');
+		expect(hasGithub({ hasGithubConnector: false })).toBe(false);
+	});
+
+	it('shows github only when ghreview is deployed and a connector exists', () => {
+		ghreviewUrl.mockReturnValue('https://ghreview.example');
+		expect(hasGithub({ hasGithubConnector: true })).toBe(true);
+		expect(navItems({ hasGithubConnector: true }).find((i) => i.href === '/github')?.href).toBe(
+			'/github'
+		);
+	});
+
+	it('defaults to hidden when no gate is passed', () => {
+		ghreviewUrl.mockReturnValue('https://ghreview.example');
+		expect(hasGithub()).toBe(false);
+	});
+});
 
 describe('navItems', () => {
 	it('lists the route tabs with sessions second and settings last', () => {

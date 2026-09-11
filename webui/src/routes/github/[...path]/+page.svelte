@@ -15,18 +15,18 @@
 <script lang="ts">
 	import { ghreviewUrl } from '$lib/config';
 	import { ensureGhreviewToken } from '$lib/ghreview';
+	import {
+		connectorStatus,
+		ghreviewAccounts,
+		loadGhreviewConnectors
+	} from '$lib/ghreviewConnectors.svelte';
 	import { Card, Container, Field, Heading, Link, Select, Stack, Text } from '@dorsk/tsumikit';
 	import InlineCode, { SLOT } from '$lib/components/atoms/InlineCode.svelte';
 	import { m } from '$lib/paraglide/messages';
 
 	const url = ghreviewUrl();
 
-	interface GhAccount {
-		id: string;
-		login: string;
-	}
-
-	let accounts = $state<GhAccount[]>([]);
+	const accounts = $derived(ghreviewAccounts());
 	let account = $state<string | null>(null);
 
 	async function boot(base: string) {
@@ -34,15 +34,12 @@
 			import('$ghreview/Review.svelte'),
 			ensureGhreviewToken()
 		]);
+		await loadGhreviewConnectors();
 		// A failed lookup must not fall through to the unlock screen: "the backend
 		// is down" and "you have no connector" are different answers.
-		const res = await fetch(`${base}/v1/accounts`, {
-			headers: { authorization: `Bearer ${token}` }
-		});
-		if (!res.ok) throw new Error(`gh-review responded ${res.status}`);
-		const body = (await res.json()) as { items?: GhAccount[] };
-		accounts = body.items ?? [];
-		if (accounts.length > 0) account = accounts[0].login;
+		if (connectorStatus() === 'error') throw new Error('gh-review accounts lookup failed');
+		const items = ghreviewAccounts();
+		if (items.length > 0) account = items[0].login;
 		return { Review: mod.default, token, base };
 	}
 

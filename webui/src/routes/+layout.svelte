@@ -22,6 +22,7 @@
 	import { Container, Toaster } from '@dorsk/tsumikit';
 	import { dockLayout } from '$lib/spawnDock.svelte';
 	import { mountJourneys } from '$lib/journey';
+	import { loadGhreviewConnectors } from '$lib/ghreviewConnectors.svelte';
 
 	let { children } = $props();
 
@@ -127,6 +128,12 @@
 	// a session exists; `mountJourneys` is idempotent across auth flips.
 	$effect(() => {
 		if (auth.isAuthed) void mountJourneys(queryClient);
+	});
+
+	// Resolves the GitHub nav gate before the nav paints; minting the ghreview
+	// token needs a session, so it waits for auth.
+	$effect(() => {
+		if (auth.isAuthed) void loadGhreviewConnectors();
 	});
 </script>
 
