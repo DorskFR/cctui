@@ -1327,6 +1327,8 @@
 	"settings_passkeys_unavailable": "Les clés d’accès ne sont pas disponibles ici. Elles demandent un navigateur compatible et un serveur joignable en https.",
 	"settings_pin_first_message_help": "Garder le message d'ouverture en haut de chaque conversation.",
 	"settings_pin_first_message_label": "Épingler le premier message",
+	"settings_role_tinted_background_help": "Colore légèrement le fond des bulles selon le rôle (assistant, outil, utilisateur…) pour scanner la conversation plus vite.",
+	"settings_role_tinted_background_label": "Fond teinté par type de message",
 	"settings_redaction_builtins_count": "{count} détecteurs intégrés",
 	"settings_redaction_detector_filter_empty": "Aucun détecteur ne correspond à ce filtre.",
 	"settings_redaction_detector_filter_label": "Filtrer les détecteurs",

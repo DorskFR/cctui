@@ -9,6 +9,7 @@
 	import UserAttachments from './UserAttachments.svelte';
 	import type { Line } from './types';
 	import { m } from '$lib/paraglide/messages';
+	import { settings } from '$lib/settings.svelte';
 	import './bubble.css';
 
 	let {
@@ -92,6 +93,7 @@
 
 <div
 	class="line {ln.role}"
+	class:tinted={settings.roleTintedBackground}
 	class:pinned
 	data-seq={ln.seq}
 	data-journey="line"
@@ -371,6 +373,29 @@
 	.line .line-foot {
 		align-self: flex-end;
 		padding-inline: var(--sp-1);
+	}
+	/* Opt-in (Settings › Sessions): the whole bubble background takes the
+	   role colour, on top of the rails below. Mixed into --bg-elevated so it
+	   follows light and dark themes alike; user/system go a step stronger
+	   than their always-on tint so they still stand apart. */
+	.line.tinted.assistant .bubble {
+		background: color-mix(in srgb, var(--role-assistant) 11%, var(--bg-elevated));
+	}
+	.line.tinted.tool .bubble,
+	.line.tinted.result .bubble {
+		background: color-mix(in srgb, var(--role-tool) 11%, var(--bg-elevated));
+	}
+	.line.tinted.mcp .bubble {
+		background: color-mix(in srgb, var(--role-mcp) 11%, var(--bg-elevated));
+	}
+	.line.tinted.user .bubble {
+		background: color-mix(in srgb, var(--role-user) 22%, var(--bg-elevated));
+	}
+	.line.tinted.system .bubble {
+		background: color-mix(in srgb, var(--role-system) 20%, var(--bg-elevated));
+	}
+	.line.tinted.thinking .bubble {
+		background: color-mix(in srgb, var(--role-thinking) 16%, var(--bg-elevated));
 	}
 	/* Uniform role tints — all via --role-* tokens. */
 	.line.user .bubble {

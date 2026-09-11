@@ -129,6 +129,18 @@ describe("Settings save → load round-trip through the blob", () => {
     expect(merged.display.archiveDoneButton).toBe(true);
   });
 
+  it("the role-tinted background defaults off, survives a reload, and only true turns it on", () => {
+    expect(mergeDefaults(null).display.roleTintedBackground).toBe(false);
+    settings.setRoleTintedBackground(true);
+    expect(loadFromCache().display.roleTintedBackground).toBe(true);
+    settings.setRoleTintedBackground(false);
+    expect(loadFromCache().display.roleTintedBackground).toBe(false);
+    const merged = mergeDefaults({
+      display: { roleTintedBackground: "yes" },
+    } as unknown as Record<string, unknown>);
+    expect(merged.display.roleTintedBackground).toBe(false);
+  });
+
   it("list width and account-name toggle survive a persist then reload", () => {
     settings.setSessionList({ width: "full", accountNames: true });
 

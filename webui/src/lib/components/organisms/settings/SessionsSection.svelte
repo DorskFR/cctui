@@ -172,5 +172,11 @@
 				label={m.settings_pin_first_message_label()}
 			/>
 		</SettingRow>
+		<SettingRow label={m.settings_role_tinted_background_label()} help={m.settings_role_tinted_background_help()}>
+			<Switch
+				bind:checked={() => settings.roleTintedBackground, (v) => settings.setRoleTintedBackground(v)}
+				label={m.settings_role_tinted_background_label()}
+			/>
+		</SettingRow>
 	</SettingGroup>
 </SettingSection>

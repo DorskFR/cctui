@@ -186,6 +186,10 @@ export interface DisplaySettings {
 	// Sticky strip at the top of a conversation showing its first user message
 	// (the brief). Off hides the strip entirely.
 	pinFirstMessage: boolean;
+	// Tint each conversation bubble's background with its role colour (assistant,
+	// tool, user…) on top of the existing left rail, so a fast scroll reads
+	// the flow by colour block rather than by badge. Off by default.
+	roleTintedBackground: boolean;
 	notifyEnabled: boolean;
 	notifySound: boolean;
 	// Where the route navigation lives on a wide screen: tabs inline in the
@@ -332,6 +336,7 @@ const DEFAULTS: SettingsState = {
 		archiveShortcut: true,
 		archiveDoneButton: true,
 		pinFirstMessage: true,
+		roleTintedBackground: false,
 		notifyEnabled: false,
 		notifySound: true,
 		nav: DEFAULT_NAV_POSITION
@@ -376,6 +381,7 @@ export function mergeDefaults(partial: Partial<SettingsState> | null | undefined
 			...(p.display ?? {}),
 			archiveDoneButton: p.display?.archiveDoneButton !== false,
 			pinFirstMessage: p.display?.pinFirstMessage !== false,
+			roleTintedBackground: p.display?.roleTintedBackground === true,
 			nav: clampNavPosition(p.display?.nav)
 		},
 		spawnDock: {
@@ -812,6 +818,14 @@ class Settings {
 
 	setPinFirstMessage(on: boolean) {
 		this.setDisplay({ pinFirstMessage: on });
+	}
+
+	get roleTintedBackground(): boolean {
+		return this.state.display.roleTintedBackground;
+	}
+
+	setRoleTintedBackground(on: boolean) {
+		this.setDisplay({ roleTintedBackground: on });
 	}
 }
 
