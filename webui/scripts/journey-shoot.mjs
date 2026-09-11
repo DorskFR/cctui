@@ -11,6 +11,7 @@ import { execFileSync } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { changedFiles, journeysForChanges, knownJourneys } from './journeys-for-changes.mjs';
+import { previewStaleness } from './preview-freshness.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const webui = resolve(here, '..');
@@ -52,6 +53,17 @@ for (const id of ids) {
 // Unconditional: `vite preview` serves whatever is on disk, so a server left
 // running from an earlier build would otherwise capture stale UI.
 run('npm', ['run', 'build']);
+
+const appUrl = process.env.JOURNEY_APP_URL ?? 'http://localhost:5273';
+const stale = await previewStaleness(appUrl);
+if (stale) {
+	console.error(`journey:shoot: the preview server at ${stale.url} cannot serve this build —`);
+	console.error(`  ${stale.reason}.`);
+	for (const m of stale.missing) console.error(`    ${m}`);
+	console.error('  Stop it and re-run: a journey must document the build it was shot against.');
+	process.exit(1);
+}
+
 run('node', [resolve(here, 'journey-auth.mjs')]);
 for (const [theme, themeIds] of byTheme) {
 	console.log(`\njourney:shoot: ${theme} — ${themeIds.join(', ')}`);

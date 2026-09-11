@@ -1,6 +1,9 @@
 import { paraglideVitePlugin } from '@inlang/paraglide-js';
 import { sveltekit } from '@sveltejs/kit/vite';
-import { defineConfig } from 'vite';
+import { createReadStream, statSync } from 'node:fs';
+import { extname, join, resolve as resolvePath, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { defineConfig, type Plugin } from 'vite';
 
 // Node global (no @types/node in this project); only used at build time.
 declare const process: { env: Record<string, string | undefined> };
@@ -54,8 +57,74 @@ export function stripSecure(cookie: string): string {
 		.replace(/;\s*SameSite=None\b/gi, '; SameSite=Lax');
 }
 
+const MIME: Record<string, string> = {
+	'.js': 'text/javascript',
+	'.mjs': 'text/javascript',
+	'.css': 'text/css',
+	'.html': 'text/html;charset=utf-8',
+	'.json': 'application/json',
+	'.svg': 'image/svg+xml',
+	'.png': 'image/png',
+	'.jpg': 'image/jpeg',
+	'.webp': 'image/webp',
+	'.ico': 'image/x-icon',
+	'.woff': 'font/woff',
+	'.woff2': 'font/woff2',
+	'.map': 'application/json',
+	'.txt': 'text/plain;charset=utf-8'
+};
+
+/** `vite preview` 404s every asset a later build produced: SvelteKit's preview
+ *  plugin registers a `sirv` without `dev`, which snapshots the file list at
+ *  startup, and it registers it ahead of Vite's own disk-reading middleware. The
+ *  HTML is re-read per request, so a rebuilt SPA serves fresh markup pointing at
+ *  hashes the server refuses — a blank page until preview is restarted.
+ *
+ *  Registering first, from `configurePreviewServer`, puts a disk-backed lookup
+ *  ahead of the snapshot. Unknown extensions and non-files fall through, so the
+ *  SPA fallback and every other middleware behave as before.
+ */
+function previewServesCurrentBuild(clientDir: string): Plugin {
+	const root = resolvePath(clientDir);
+	return {
+		name: 'cctui:preview-serves-current-build',
+		enforce: 'pre',
+		configurePreviewServer(server) {
+			server.middlewares.use((req, res, next) => {
+				if (req.method !== 'GET' && req.method !== 'HEAD') return next();
+				const pathname = new URL(req.url ?? '/', 'http://x').pathname;
+				const file = resolvePath(join(root, decodeURIComponent(pathname)));
+				if (file !== root && !file.startsWith(root + sep)) return next();
+				const type = MIME[extname(file).toLowerCase()];
+				if (!type) return next();
+				// Under /immutable/ the build on disk is authoritative: falling through
+				// lets the stale snapshot stream a file the rebuild deleted, which
+				// takes the whole preview process down with an unhandled ENOENT.
+				const immutable = pathname.includes('/immutable/');
+				let stats;
+				try {
+					stats = statSync(file);
+				} catch {
+					if (!immutable) return next();
+					res.statusCode = 404;
+					return res.end('Not found');
+				}
+				if (!stats.isFile()) return next();
+				res.setHeader('Content-Type', type);
+				res.setHeader('Content-Length', stats.size);
+				res.setHeader('Cache-Control', immutable ? 'public,max-age=31536000,immutable' : 'no-cache');
+				if (req.method === 'HEAD') return res.end();
+				createReadStream(file).pipe(res);
+			});
+		}
+	};
+}
+
 export default defineConfig({
 	plugins: [
+		previewServesCurrentBuild(
+			fileURLToPath(new URL('./.svelte-kit/output/client', import.meta.url))
+		),
 		// No URL/cookie strategy: this SPA drives locale imperatively via setLocale
 		// from the settings store, so the runtime must not auto-resolve from a path.
 		paraglideVitePlugin({
