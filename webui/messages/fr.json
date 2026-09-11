@@ -777,7 +777,6 @@
 	"nav_font_size": "Taille de police",
 	"nav_getting_started": "Prise en main",
 	"nav_github": "GitHub",
-	"nav_guides_label": "Guides",
 	"nav_harness_mode_tooltip": "Mode d'exécution Claude : {mode} — modifiable dans les Réglages (les sessions Codex l'ignorent)",
 	"nav_instance_name": "Nom de l'instance",
 	"nav_log_out": "Se déconnecter",
