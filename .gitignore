@@ -25,3 +25,4 @@ tmp/
 
 # Journey replay scratch, written next to the generated tour.
 docs/journeys/.test-results/
+webui/src/lib/.bindings.staging.*/
