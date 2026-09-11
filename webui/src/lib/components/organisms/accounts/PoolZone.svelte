@@ -1,15 +1,18 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
 	import type { AccountPoolView } from '@bindings/AccountPoolView';
+	import type { PoolUsageView } from '@bindings/PoolUsageView';
 	import type { OAuthAccount } from '$lib/queries';
 	import { Fieldset, IconButton, Text } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 	import { ACCOUNT_DRAG_MIME, acceptsDrop } from './pools.logic';
 	import { accountDrag } from './drag.svelte';
+	import PoolUsageGauges from './PoolUsageGauges.svelte';
 
 	let {
 		pool,
 		accounts,
+		usage = null,
 		ownerName = null,
 		onedit,
 		ondrop,
@@ -18,6 +21,9 @@
 		pool: AccountPoolView;
 		/** Every account on the page, to judge a dropped id. */
 		accounts: OAuthAccount[];
+		/** The pool's aggregate usage, fetched once by the board; null while
+		 *  loading or when the server has nothing for this pool. */
+		usage?: PoolUsageView | null;
 		/** Shown to admins, who see everyone's pools. */
 		ownerName?: string | null;
 		onedit?: () => void;
@@ -81,6 +87,11 @@
 			<IconButton icon="edit" label={m.pools_edit()} inline size={13} onclick={onedit} />
 		{/if}
 	{/snippet}
+	{#if usage}
+		<div class="gauges">
+			<PoolUsageGauges {usage} />
+		</div>
+	{/if}
 	<div class="members">
 		{@render children?.()}
 		{#if pool.members.length === 0}
@@ -127,5 +138,12 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--sp-3);
+	}
+	/* The pool's own gauges sit above its cards, set off by a hairline so the
+	   aggregate never reads as one more account. */
+	.gauges {
+		margin-bottom: var(--sp-3);
+		padding-bottom: var(--sp-2);
+		border-bottom: 1px dashed var(--border);
 	}
 </style>

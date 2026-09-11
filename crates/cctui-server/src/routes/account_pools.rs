@@ -13,6 +13,8 @@
 //! grants, so a revoked share or a cleared `pool_eligible` takes effect
 //! immediately rather than at the next edit.
 
+use std::collections::BTreeMap;
+
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::{Extension, Json};
@@ -20,8 +22,11 @@ use uuid::Uuid;
 
 use super::accounts::{err, require_human, resolve_owner};
 use crate::auth::AuthContext;
+use crate::pool_usage::{self, MemberWindow, PoolUsageWindow, WindowIdentity};
+use crate::routes::gateway;
 use crate::state::AppState;
 use crate::store::account_pools::{self, AccountPool, AccountPoolMember, SessionRebind};
+use crate::store::usage_samples;
 
 type ApiErr = (StatusCode, Json<serde_json::Value>);
 
@@ -32,6 +37,207 @@ pub struct AccountPoolView {
     #[serde(flatten)]
     pub pool: AccountPool,
     pub members: Vec<AccountPoolMember>,
+}
+
+/// A pool's quota, aggregated per provider family — what the pool zone and
+/// the stats panel render. See [`crate::pool_usage`] for the arithmetic.
+#[derive(serde::Serialize, ts_rs::TS)]
+#[ts(export)]
+pub struct PoolUsageView {
+    #[ts(type = "string")]
+    pub pool_id: Uuid,
+    pub name: String,
+    pub strategy: String,
+    /// Off means a projection only speaks for launches: a live session stays
+    /// on its member and hits that member's wall.
+    pub failover: bool,
+    pub families: Vec<PoolFamilyUsage>,
+}
+
+/// One provider family inside a pool: only its members are interchangeable
+/// (a claude-code spawn elects among the anthropic credentials, a codex spawn
+/// among the openai ones), so only they are aggregated together.
+#[derive(serde::Serialize, ts_rs::TS)]
+#[ts(export)]
+pub struct PoolFamilyUsage {
+    /// `anthropic` | `openai` | `fireworks`.
+    pub family: String,
+    pub members: Vec<PoolUsageMember>,
+    pub windows: Vec<PoolUsageWindow>,
+}
+
+#[derive(serde::Serialize, ts_rs::TS)]
+#[ts(export)]
+pub struct PoolUsageMember {
+    #[ts(type = "string")]
+    pub account_id: Uuid,
+    pub name: String,
+    pub emoji: Option<String>,
+    /// `accounts.pool_weight`.
+    pub weight: f64,
+    /// False when the credential's usage could not be read: absent from the
+    /// aggregate rather than counted as empty or as full.
+    pub usage_known: bool,
+}
+
+/// A pool member's credential in one family, with the account fields the
+/// aggregate needs.
+#[derive(sqlx::FromRow)]
+struct MemberProviderRow {
+    provider_id: Uuid,
+    account_id: Uuid,
+    family: String,
+    name: String,
+    emoji: Option<String>,
+    pool_weight: f32,
+}
+
+/// `GET /account-pools/usage` — every pool of the caller with its members'
+/// quota windows aggregated per family. Usage comes from the same per-provider
+/// cache as `GET /accounts/usage`, so reading both costs one upstream fetch.
+pub async fn pools_usage(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+) -> Result<Json<Vec<PoolUsageView>>, ApiErr> {
+    require_human(&ctx)?;
+    let pools =
+        account_pools::list_for_owner(&state.pool, ctx.owner_filter()).await.map_err(|e| {
+            tracing::error!("listing account pools: {e}");
+            err(StatusCode::INTERNAL_SERVER_ERROR, "could not list pools")
+        })?;
+    let mut views = Vec::with_capacity(pools.len());
+    for pool in pools {
+        let members = account_pools::members(&state.pool, pool.id).await.map_err(|e| {
+            tracing::error!("listing pool members: {e}");
+            err(StatusCode::INTERNAL_SERVER_ERROR, "could not list pool members")
+        })?;
+        // A vetoed member is never elected, so it must not count either.
+        let ids: Vec<Uuid> =
+            members.iter().filter(|m| m.pool_eligible).map(|m| m.account_id).collect();
+        let rows: Vec<MemberProviderRow> = sqlx::query_as(
+            "SELECT p.id AS provider_id, p.account_id, p.family, a.name, a.emoji, a.pool_weight \
+               FROM account_providers p JOIN accounts a ON a.id = p.account_id \
+              WHERE p.account_id = ANY($1) \
+                AND p.provider IN ('anthropic', 'openai', 'fireworks') \
+              ORDER BY p.family, lower(a.name)",
+        )
+        .bind(&ids)
+        .fetch_all(&state.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!("listing pool member providers: {e}");
+            err(StatusCode::INTERNAL_SERVER_ERROR, "could not read pool members")
+        })?;
+        let families = aggregate_families(&state, rows).await;
+        views.push(PoolUsageView {
+            pool_id: pool.id,
+            name: pool.name,
+            strategy: pool.strategy,
+            failover: pool.failover,
+            families,
+        });
+    }
+    Ok(Json(views))
+}
+
+/// A family's members and, per window key, the identity of the window plus
+/// every member's reading of it.
+type FamilyReadings = (Vec<PoolUsageMember>, BTreeMap<String, (WindowIdentity, Vec<MemberWindow>)>);
+
+/// Fetch each credential's usage and fold the readings into one aggregate per
+/// family and window.
+async fn aggregate_families(
+    state: &AppState,
+    rows: Vec<MemberProviderRow>,
+) -> Vec<PoolFamilyUsage> {
+    let now = chrono::Utc::now();
+    let usages = futures_util::future::join_all(
+        rows.iter().map(|r| gateway::usage_for_soft_limit(state, r.provider_id)),
+    )
+    .await;
+
+    // family → (members, window key → (identity, readings)); BTreeMap keeps
+    // families and windows in a stable order for the UI.
+    let mut families: BTreeMap<String, FamilyReadings> = BTreeMap::default();
+    for (row, usage) in rows.into_iter().zip(usages) {
+        let windows: Vec<crate::soft_limit::UsageWindow> = usage
+            .as_ref()
+            .map(crate::soft_limit::normalize_usage_windows)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|w| w.kind != "usd" && !w.key.starts_with("usd_"))
+            .collect();
+        let previous = match usage_samples::previous_for(
+            &state.pool,
+            row.provider_id,
+            &windows,
+            now,
+        )
+        .await
+        {
+            Ok(rows) => rows,
+            Err(e) => {
+                tracing::warn!(provider_id = %row.provider_id, error = %e, "reading usage samples failed");
+                Vec::new()
+            }
+        };
+        let entry = families.entry(row.family.clone()).or_default();
+        entry.0.push(PoolUsageMember {
+            account_id: row.account_id,
+            name: row.name,
+            emoji: row.emoji,
+            weight: f64::from(row.pool_weight),
+            usage_known: usage.is_some(),
+        });
+        for w in windows {
+            let prev = previous
+                .iter()
+                .find(|p| p.window_key == w.key)
+                .map(usage_samples::PreviousSample::sample);
+            let slot = entry.1.entry(w.key.clone()).or_insert_with(|| {
+                (
+                    WindowIdentity {
+                        key: w.key.clone(),
+                        kind: w.kind.clone(),
+                        label: w.label.clone(),
+                        model_display_name: w.model_display_name.clone(),
+                    },
+                    Vec::new(),
+                )
+            });
+            slot.1.push(MemberWindow {
+                account_id: row.account_id,
+                weight: f64::from(row.pool_weight),
+                utilization: w.utilization,
+                resets_at: w.resets_at,
+                duration: crate::pace::window_duration(&w.key),
+                previous: prev,
+            });
+        }
+    }
+
+    families
+        .into_iter()
+        .map(|(family, (members, windows))| {
+            let mut windows: Vec<PoolUsageWindow> = windows
+                .into_values()
+                .map(|(id, readings)| pool_usage::aggregate_window(id, &readings, now))
+                .collect();
+            windows.sort_by_key(|w| window_rank(&w.key));
+            PoolFamilyUsage { family, members, windows }
+        })
+        .collect()
+}
+
+/// Display order: the session window, then the all-models week, then the
+/// model-scoped weeks — the order the account cards use.
+fn window_rank(key: &str) -> (u8, String) {
+    let rank = match key {
+        crate::soft_limit::KEY_SESSION => 0,
+        crate::soft_limit::KEY_WEEKLY_ALL => 1,
+        _ => 2,
+    };
+    (rank, key.to_owned())
 }
 
 #[derive(serde::Deserialize, ts_rs::TS)]

@@ -461,3 +461,145 @@ async fn admin_creates_and_lists_a_pool_for_a_user() {
         .unwrap();
     assert_eq!(resp.status(), 204);
 }
+
+/// The pool usage aggregate: a pool with no credentialed members still lists
+/// (with no families), and the route is not shadowed by `/account-pools/{id}`.
+#[tokio::test]
+#[ignore = "requires running server"]
+async fn pool_usage_lists_every_pool() {
+    let client = Client::new();
+    let base = server_url();
+
+    let u: serde_json::Value = client
+        .post(format!("{base}/api/v1/admin/users"))
+        .bearer_auth(admin_token())
+        .json(&json!({"name": format!("pool-usage-{}", uuid_like())}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let user_key = u["key"].as_str().unwrap().to_string();
+
+    let account: serde_json::Value = client
+        .post(format!("{base}/api/v1/accounts"))
+        .bearer_auth(&user_key)
+        .json(&json!({"name": format!("member-{}", uuid_like())}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let account_id = account["id"].as_str().unwrap().to_string();
+    assert_eq!(account["pool_weight"].as_f64(), Some(1.0), "{account}");
+
+    let name = format!("pool-{}", uuid_like());
+    let pool: serde_json::Value = client
+        .post(format!("{base}/api/v1/account-pools"))
+        .bearer_auth(&user_key)
+        .json(&json!({"name": name, "accounts": [account_id]}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let pool_id = pool["id"].as_str().unwrap().to_string();
+
+    let resp = client
+        .get(format!("{base}/api/v1/account-pools/usage"))
+        .bearer_auth(&user_key)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let usage: serde_json::Value = resp.json().await.unwrap();
+    let mine = usage
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["pool_id"].as_str() == Some(pool_id.as_str()))
+        .unwrap_or_else(|| panic!("pool missing from usage: {usage}"));
+    assert_eq!(mine["name"].as_str(), Some(name.as_str()));
+    assert_eq!(mine["failover"].as_bool(), Some(false));
+    // An account with no provider credential contributes to no family.
+    assert_eq!(mine["families"].as_array().map(Vec::len), Some(0), "{mine}");
+
+    let resp = client
+        .delete(format!("{base}/api/v1/account-pools/{pool_id}"))
+        .bearer_auth(&user_key)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 204);
+}
+
+/// `pool_weight` is owner-editable on its own, and refused when it is not a
+/// positive number.
+#[tokio::test]
+#[ignore = "requires running server"]
+async fn pool_weight_is_validated_and_persisted() {
+    let client = Client::new();
+    let base = server_url();
+
+    let u: serde_json::Value = client
+        .post(format!("{base}/api/v1/admin/users"))
+        .bearer_auth(admin_token())
+        .json(&json!({"name": format!("pool-weight-{}", uuid_like())}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let user_key = u["key"].as_str().unwrap().to_string();
+
+    let account: serde_json::Value = client
+        .post(format!("{base}/api/v1/accounts"))
+        .bearer_auth(&user_key)
+        .json(&json!({"name": format!("weighted-{}", uuid_like())}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let account_id = account["id"].as_str().unwrap().to_string();
+
+    // A non-positive number is refused by the handler (400); a non-number never
+    // reaches it (axum's JSON rejection, 422).
+    for (bad, status) in [(json!(0), 400), (json!(-2.5), 400), (json!("four"), 422)] {
+        let resp = client
+            .patch(format!("{base}/api/v1/accounts/{account_id}"))
+            .bearer_auth(&user_key)
+            .json(&json!({"pool_weight": bad}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), status, "pool_weight {bad} should be refused");
+    }
+
+    let resp = client
+        .patch(format!("{base}/api/v1/accounts/{account_id}"))
+        .bearer_auth(&user_key)
+        .json(&json!({"pool_weight": 4}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let updated: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(updated["pool_weight"].as_f64(), Some(4.0), "{updated}");
+
+    let fetched: serde_json::Value = client
+        .get(format!("{base}/api/v1/accounts/{account_id}"))
+        .bearer_auth(&user_key)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(fetched["pool_weight"].as_f64(), Some(4.0), "{fetched}");
+}

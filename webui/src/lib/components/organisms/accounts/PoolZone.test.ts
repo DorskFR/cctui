@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { mount, unmount } from 'svelte';
 import type { AccountPoolView } from '@bindings/AccountPoolView';
+import type { PoolUsageView } from '@bindings/PoolUsageView';
 import PoolZone from './PoolZone.svelte';
 
 let comp: ReturnType<typeof mount> | null = null;
@@ -47,5 +48,51 @@ describe('PoolZone legend counts its members', () => {
 
 	it('pluralises the failover variant for two members', () => {
 		expect(legend(2, true)).toContain('pool · 2 accounts · failover armed');
+	});
+});
+
+describe('PoolZone gauges', () => {
+	const usage = (failover: boolean): PoolUsageView => ({
+		pool_id: 'p1',
+		name: 'production',
+		strategy: 'headroom',
+		failover,
+		families: [
+			{
+				family: 'anthropic',
+				members: [{ account_id: 'a0', name: 'one', emoji: null, weight: 1, usage_known: true }],
+				windows: [
+					{
+						key: 'weekly_all',
+						kind: 'weekly_all',
+						label: 'Weekly (all models)',
+						model_display_name: null,
+						level_pct: 43,
+						expected_pct: 31,
+						ratio: 1.38,
+						next_reset_at: new Date(Date.now() + 86_400_000).toISOString(),
+						members: [],
+						projection: null,
+						projection_unavailable: 'insufficient_history'
+					}
+				]
+			}
+		]
+	});
+
+	it('renders no gauge block without usage', () => {
+		comp = mount(PoolZone, { target: document.body, props: { pool: pool(1), accounts: [] } });
+		expect(document.querySelector('[data-journey="pool-usage"]')).toBeNull();
+	});
+
+	it('renders the aggregate above the members when usage is known', () => {
+		comp = mount(PoolZone, {
+			target: document.body,
+			props: { pool: pool(1), accounts: [], usage: usage(false) }
+		});
+		const block = document.querySelector('[data-journey="pool-usage"]');
+		expect(block).not.toBeNull();
+		expect(block?.textContent).toContain('43%');
+		expect(block?.textContent).toContain('Failover off');
 	});
 });

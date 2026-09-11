@@ -15,10 +15,19 @@
 	// Seeded once: a refetch must not overwrite what the operator is typing.
 	let name = $state(untrack(() => account.name));
 	let emoji = $state(untrack(() => account.emoji ?? ''));
+	// Relative plan size for the pool gauge; the provider only reports
+	// percentages, so the operator states the ratio. Kept as a string so a
+	// half-typed "0." never snaps back to a number under the cursor.
+	let weight = $state(untrack(() => String(account.pool_weight ?? 1)));
 	let saving = $state(false);
 
 	const emojiOk = $derived(isValidAccountEmoji(emoji));
-	const dirty = $derived(name !== account.name || emoji !== (account.emoji ?? ''));
+	const weightValue = $derived(Number.parseFloat(weight));
+	const weightOk = $derived(Number.isFinite(weightValue) && weightValue > 0);
+	const weightChanged = $derived(weightOk && weightValue !== (account.pool_weight ?? 1));
+	const dirty = $derived(
+		name !== account.name || emoji !== (account.emoji ?? '') || weightChanged
+	);
 
 	async function save() {
 		if (!name.trim()) {
@@ -32,6 +41,7 @@
 		saving = true;
 		try {
 			const body: UpdateAccount = { name: name.trim(), emoji: emoji.trim() };
+			if (weightChanged) body.pool_weight = weightValue;
 			await actions.update(account.id, body);
 			toasts.ok(m.accounts_account_updated());
 		} catch (e) {
@@ -74,6 +84,18 @@
 			{:else}
 				<Text tone="faint" size="xs">{m.account_emoji_hint()}</Text>
 			{/if}
+		</Field>
+
+		<Field label={m.accounts_field_pool_weight()} hint={m.accounts_field_pool_weight_help()}>
+			<Input
+				type="number"
+				min="0.1"
+				step="0.1"
+				mono
+				width="6rem"
+				bind:value={weight}
+				aria-label={m.accounts_field_pool_weight()}
+			/>
 		</Field>
 
 		{#if owner}

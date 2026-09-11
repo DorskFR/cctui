@@ -20,6 +20,7 @@
 		editable = false,
 		usd = false,
 		pace = null,
+		note = null,
 		oncapchange
 	}: {
 		label: string;
@@ -36,6 +37,8 @@
 		/** Dollar window: spend against a $ cap instead of % of a quota. */
 		usd?: boolean;
 		pace?: UsagePace | null;
+		/** Extra reading appended to the row's tooltip (a pool's projection). */
+		note?: string | null;
 		/** Commits a dragged cap; absent (and not `editable`) ⇒ the bar is read-only. */
 		oncapchange?: (cap: number | null) => void;
 	} = $props();
@@ -101,6 +104,7 @@
 			);
 			if (wallMs !== null) parts.push(m.usage_battery_pace_wall({ time: countdown(wallMs) }));
 		}
+		if (note) parts.push(note);
 		return parts.join(' · ');
 	});
 </script>

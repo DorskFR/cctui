@@ -7,6 +7,7 @@
 	import { Button, Text } from '@dorsk/tsumikit';
 	import { resizeHandle } from '@dorsk/tsumikit';
 	import AccountUsageList from './AccountUsageList.svelte';
+	import PoolUsageList from './PoolUsageList.svelte';
 	import TokenWindows from './TokenWindows.svelte';
 	import OverviewTiles from './OverviewTiles.svelte';
 	import UsageCharts from './UsageCharts.svelte';
@@ -42,6 +43,7 @@
 	let updateOpen = $state(false);
 
 	const sections = [
+		{ key: 'pools', title: () => m.stats_dock_pools(), open: true },
 		{ key: 'accounts', title: () => m.stats_dock_accounts(), open: true },
 		{ key: 'tokens', title: () => m.home_token_usage(), open: true },
 		{ key: 'overview', title: () => m.home_overview_title(), open: true },
@@ -88,7 +90,9 @@
 			<details class="section" open={s.open}>
 				<summary>{s.title()}</summary>
 				<div class="section-body">
-					{#if s.key === 'accounts'}
+					{#if s.key === 'pools'}
+						<PoolUsageList />
+					{:else if s.key === 'accounts'}
 						<AccountUsageList />
 					{:else if s.key === 'tokens'}
 						<TokenWindows />

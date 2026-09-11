@@ -2,7 +2,7 @@
 	import type { Snippet } from 'svelte';
 	import type { AccountPoolView } from '@bindings/AccountPoolView';
 	import { errMessage } from '$lib/api';
-	import { useAccountPoolActions, type OAuthAccount } from '$lib/queries';
+	import { useAccountPoolActions, useAccountPoolsUsage, type OAuthAccount } from '$lib/queries';
 	import { toasts } from '$lib/toast.svelte';
 	import { EmptyState } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
@@ -31,6 +31,10 @@
 
 	const actions = useAccountPoolActions();
 	const groups = $derived(groupAccounts(accounts, pools));
+	// One request for every pool's aggregate, handed to each zone by id.
+	const poolsUsage = useAccountPoolsUsage(() => pools.length > 0);
+	const usageOf = (poolId: string) =>
+		poolsUsage.data?.find((u) => u.pool_id === poolId) ?? null;
 	const ownerName = (id: string) => owners.find((u) => u.id === id)?.name ?? null;
 
 	let editing = $state<AccountPoolView | null | undefined>(undefined);
@@ -86,6 +90,7 @@
 			<PoolZone
 				pool={g.pool}
 				{accounts}
+				usage={usageOf(g.pool.id)}
 				ownerName={ownerName(g.pool.user_id)}
 				onedit={() => (editing = g.pool)}
 				ondrop={(id) => move(id, g.pool)}

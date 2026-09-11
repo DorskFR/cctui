@@ -90,10 +90,28 @@ export const useAccountPools = (enabled: () => boolean = () => true) =>
     enabled: enabled(),
   }));
 
-/** Create / edit / delete pools; every call invalidates the pools query. */
+/** Every pool's usage windows aggregated per provider family, for the pool
+ *  zones and the stats panel. Same slow cadence as `useAllAccountsUsage`:
+ *  server-side the rows come from the same per-provider cache. */
+export const useAccountPoolsUsage = (enabled: () => boolean = () => true) =>
+  createQuery(() => ({
+    queryKey: ["account-pools-usage"],
+    queryFn: endpoints.accountPoolsUsage,
+    enabled: enabled(),
+    staleTime: 180_000,
+    refetchInterval: 180_000,
+    refetchOnWindowFocus: false,
+    retry: false,
+  }));
+
+/** Create / edit / delete pools; every call invalidates the pools query and
+ *  the pool usage aggregate, whose membership just changed. */
 export function useAccountPoolActions() {
   const qc = useQueryClient();
-  const invalidate = () => qc.invalidateQueries({ queryKey: ["account-pools"] });
+  const invalidate = () => {
+    qc.invalidateQueries({ queryKey: ["account-pools"] });
+    qc.invalidateQueries({ queryKey: ["account-pools-usage"] });
+  };
   return {
     /** Replace several pools' memberships in order (an account leaving one
      *  pool before joining another), invalidating once at the end. */
@@ -244,6 +262,10 @@ export function useAccountActions() {
     update: async (id: string, body: UpdateAccount) => {
       const r = await endpoints.updateAccount(id, body);
       inval();
+      // The pool weight feeds the pool aggregate.
+      if (body.pool_weight !== undefined) {
+        qc.invalidateQueries({ queryKey: ["account-pools-usage"] });
+      }
       return r;
     },
     updateProvider: async (accountId: string, providerId: string, body: UpdateProvider) => {

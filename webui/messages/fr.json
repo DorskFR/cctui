@@ -102,6 +102,8 @@
 	"accounts_field_name": "Nom",
 	"accounts_field_name_placeholder": "personnel",
 	"accounts_field_owner": "Propriétaire",
+	"accounts_field_pool_weight": "Poids dans le pool",
+	"accounts_field_pool_weight_help": "Taille relative du forfait pour la jauge du pool : 1 par défaut, 4 pour un forfait quatre fois plus gros.",
 	"accounts_field_provider": "Fournisseur",
 	"accounts_intro": "Les identifiants par lesquels passent les sessions. Les comptes d’un pool sont interchangeables ; le basculement ne sort jamais du pool.",
 	"accounts_manage_sharing": "Gérer le partage",
@@ -874,6 +876,23 @@
 	"pools_strategy_ordered": "Dans l'ordre, le premier disponible",
 	"pools_strategy_ordered_hint": "Une échelle : on épuise le premier membre, on passe au suivant seulement quand il est vide.",
 	"pools_updated": "Pool enregistré",
+	"pools_usage_failover_off": "Failover désactivé : la projection ne vaut que pour les sessions neuves",
+	"pools_usage_family": [
+		{
+			"declarations": ["input family", "input n", "local nPlural = n: plural"],
+			"selectors": ["nPlural"],
+			"match": {
+				"nPlural=one": "{family} · {n} compte",
+				"nPlural=other": "{family} · {n} comptes"
+			}
+		}
+	],
+	"pools_usage_projection_detail": "demande {demand} pt/h sur une base de {hours} h",
+	"pools_usage_projection_holds": "tient jusqu'au reset",
+	"pools_usage_projection_insufficient": "historique insuffisant",
+	"pools_usage_projection_wall": "mur du pool dans ~{time}",
+	"pools_usage_unknown": "usage inconnu",
+	"pools_usage_weights": "poids {weights}",
 	"provider_drawer_changes": "{n} modification(s) sur cette page",
 	"provider_drawer_no_changes": "Aucune modification sur cette page",
 	"provider_drawer_overridden": "{n} surchargé(s)",
@@ -1530,6 +1549,8 @@
 	"spawn_toast_unconfirmed": "Lancement envoyé mais pas encore confirmé — vérifiez la liste avant de réessayer (un nouvel essai démarre une deuxième session)",
 	"stats_dock_accounts": "Comptes",
 	"stats_dock_no_accounts": "Aucun compte avec des données d’utilisation.",
+	"stats_dock_no_pools": "Aucun pool de comptes.",
+	"stats_dock_pools": "Pools",
 	"stats_dock_title": "Statistiques",
 	"theme_auto_help": "Suit le système, avec tes derniers thèmes clair et sombre",
 	"theme_auto_label": "Auto (système)",
