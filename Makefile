@@ -207,7 +207,10 @@ UI_IMAGE ?= $(IMAGE_REGISTRY)/cctui-ui
 bindings:  ## Regenerate webui TypeScript bindings from Rust structs
 	bash webui/scripts/gen-bindings.sh
 
-webui/install:  ## Install web UI dependencies (npm)
+# webui aliases $ghreview to ../ghreview-ui/src, so both must be installed —
+# each with its own package manager (see AGENTS.md).
+webui/install:  ## Install web UI dependencies (ghreview-ui via bun, webui via npm)
+	cd ghreview-ui && bun install --frozen-lockfile
 	cd webui && npm ci
 
 webui/dev:  ## Run the web UI dev server (Vite)

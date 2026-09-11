@@ -118,7 +118,7 @@ The machine and its sessions then show up in the UI.
 
 ## Local development
 
-Prerequisites: Rust (nightly for fmt), Docker, PostgreSQL.
+Prerequisites: Rust (nightly for fmt), Docker, PostgreSQL, Node.js and bun.
 
 ```sh
 make setup          # start postgres, migrate, build
@@ -126,7 +126,7 @@ make run/server     # server on :8700
 ```
 
 ```sh
-make webui/install  # bun install
+make webui/install  # ghreview-ui (bun) + webui (npm)
 make webui/dev      # Vite dev server
 ```
 

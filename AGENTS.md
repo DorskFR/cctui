@@ -14,6 +14,34 @@ Tsumikit, atomic design).
 - `webui/` — the web UI (Svelte 5 + Tsumikit). See DESIGN.md.
 - `migrations/` — sqlx Postgres migrations, applied on server start.
 
+## Package managers: webui is npm, ghreview-ui and ghreview are bun
+
+This split is deliberate, not drift. `webui` is a SvelteKit app whose toolchain
+(adapter-static, paraglide, Playwright) is exercised on npm and is pinned by
+`webui/package-lock.json`; `ghreview`/`ghreview-ui` are bun projects that use the
+bun runtime and test runner, and are pinned by `bun.lock`. Neither lockfile has a
+counterpart for the other tool, so using the wrong one silently resolves a
+different dependency tree — or, in npm's case, dies with an opaque
+`edgesOut` error.
+
+Each `package.json` therefore declares `packageManager` and a `preinstall` guard
+that refuses the wrong tool with a readable message. Two subtleties, if you touch
+those guards:
+
+- `ghreview-ui/.npmrc` sets `legacy-peer-deps` and `package-lock=false`. npm
+  otherwise crashes in peer resolution (`edgesOut`) *before* it runs any
+  lifecycle script, so the guard would never get to speak, and it would drop a
+  stray `package-lock.json` that shadows `bun.lock`.
+- The ghreview-ui guard only fires when `INIT_CWD` is its own directory. webui
+  depends on it as `file:../ghreview-ui`, so npm runs its `preinstall` during a
+  perfectly legitimate `npm ci` in webui; without that check the guard breaks
+  both `make webui/install` and CI.
+
+`webui/vite.config.ts` aliases `$ghreview` to `../ghreview-ui/src`, so the webui
+build needs *both* installed: `make webui/install` does both, in the right order,
+with the right tool. Converging on a single package manager is a bigger decision;
+until then, respect the split.
+
 ## Versioning
 
 **Bump the version alongside the change that needs it.** Don't leave version
