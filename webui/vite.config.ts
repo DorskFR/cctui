@@ -1,8 +1,7 @@
 import { paraglideVitePlugin } from '@inlang/paraglide-js';
 import { sveltekit } from '@sveltejs/kit/vite';
 import { createReadStream, statSync } from 'node:fs';
-import { extname, join, resolve as resolvePath, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { dirname, extname, join, resolve as resolvePath, sep } from 'node:path';
 import { defineConfig, type Plugin } from 'vite';
 
 // Node global (no @types/node in this project); only used at build time.
@@ -84,12 +83,18 @@ const MIME: Record<string, string> = {
  *  ahead of the snapshot. Unknown extensions and non-files fall through, so the
  *  SPA fallback and every other middleware behave as before.
  */
-function previewServesCurrentBuild(clientDir: string): Plugin {
-	const root = resolvePath(clientDir);
+function previewServesCurrentBuild(): Plugin {
 	return {
 		name: 'cctui:preview-serves-current-build',
 		enforce: 'pre',
+		// Everything is resolved here rather than at construction: this module is
+		// imported directly by devproxy.test.ts, where work at module scope runs
+		// under vitest's loader and there is no file: URL to resolve against.
 		configurePreviewServer(server) {
+			const base = server.config.configFile
+				? dirname(server.config.configFile)
+				: server.config.root;
+			const root = resolvePath(base, '.svelte-kit/output/client');
 			server.middlewares.use((req, res, next) => {
 				if (req.method !== 'GET' && req.method !== 'HEAD') return next();
 				const pathname = new URL(req.url ?? '/', 'http://x').pathname;
@@ -122,9 +127,7 @@ function previewServesCurrentBuild(clientDir: string): Plugin {
 
 export default defineConfig({
 	plugins: [
-		previewServesCurrentBuild(
-			fileURLToPath(new URL('./.svelte-kit/output/client', import.meta.url))
-		),
+		previewServesCurrentBuild(),
 		// No URL/cookie strategy: this SPA drives locale imperatively via setLocale
 		// from the settings store, so the runtime must not auto-resolve from a path.
 		paraglideVitePlugin({
