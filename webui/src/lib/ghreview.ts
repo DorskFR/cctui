@@ -94,6 +94,32 @@ export async function listGhreviewAccounts(): Promise<GhreviewAccount[]> {
 	return body.items ?? [];
 }
 
+export interface GhreviewPullPayload {
+	number?: number;
+	html_url?: string;
+	state?: string;
+	draft?: boolean;
+	head?: { ref?: string };
+}
+
+export async function listGhreviewPulls(
+	owner: string,
+	repo: string,
+	account?: string
+): Promise<GhreviewPullPayload[]> {
+	const base = ghreviewUrl();
+	if (!base) return [];
+	const token = await ensureGhreviewToken();
+	const seg = encodeURIComponent;
+	const query = account ? `?account=${seg(account)}&limit=100` : '?limit=100';
+	const res = await fetch(`${base}/v1/repos/${seg(owner)}/${seg(repo)}/pulls${query}`, {
+		headers: { authorization: `Bearer ${token}` }
+	});
+	if (!res.ok) throw new Error(await ghreviewError(res));
+	const body = (await res.json()) as { items?: { payload?: GhreviewPullPayload }[] };
+	return (body.items ?? []).map((i) => i.payload ?? {});
+}
+
 export async function addGhreviewAccount(pat: string, login?: string): Promise<GhreviewAccount> {
 	const base = ghreviewUrl();
 	if (!base) throw new Error('review backend not configured');

@@ -8,6 +8,7 @@ import {
 	type ToolActivity,
 	branchOf,
 	isStaleWorking,
+	remoteOf,
 	toolActivity
 } from '../../../../routes/sessions/sessions.logic';
 
@@ -37,6 +38,7 @@ export interface SessionView {
 	end: SessionEnd | null;
 	showStatusBadge: boolean;
 	branch: string | null;
+	remote: string | null;
 	prLinks: PrLink[];
 	rollup: { tokens: number; count: number } | null;
 	pendingCount: number;
@@ -138,6 +140,7 @@ export function buildView(
 		end: sessionEnd(s),
 		showStatusBadge: s.status === 'new' || s.status === 'archived',
 		branch: branchOf(s),
+		remote: remoteOf(s),
 		prLinks: prLinksOf(s),
 		rollup: opts.subagentCost && opts.subagentCost.count > 0 ? opts.subagentCost : null,
 		pendingCount: opts.pendingCount,
