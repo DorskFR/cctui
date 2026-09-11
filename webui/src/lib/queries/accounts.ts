@@ -151,20 +151,30 @@ export const useSessionRebinds = (
     retry: false,
   }));
 
-/** Per-account subscription usage. Lazy + slow-refresh: only fetched
- *  while the accounts view is mounted (caller gates `enabled`), and re-polled on
- *  a slow 3-minute interval that matches the server-side cache TTL so Anthropic's
- *  rate-limited usage endpoint is never spammed. Codex accounts return `null`. */
+/** Safety net, not the primary refresh: freshness comes from the server's
+ *  `account_usage` push. Matches the server-side cache TTL, because Anthropic's
+ *  usage endpoint rate-limits per access token — do not shorten it. */
+export const USAGE_POLL_MS = 180_000;
+
+/** The caches a pushed usage row patches. Both are fed by one server-side
+ *  per-account cache entry, so they must never be invalidated independently. */
+export const usageKeys = {
+  one: (accountId: string) => ["account-usage", accountId],
+  all: () => ["accounts-usage"],
+};
+
+/** Per-account subscription usage. Lazy: only fetched while the accounts view
+ *  is mounted (caller gates `enabled`). Codex accounts return `null`. */
 export const useAccountUsage = (
   accountId: () => string,
   enabled: () => boolean = () => true,
 ) =>
   createQuery(() => ({
-    queryKey: ["account-usage", accountId()],
+    queryKey: usageKeys.one(accountId()),
     queryFn: () => endpoints.accountUsage(accountId()),
     enabled: enabled(),
-    staleTime: 180_000,
-    refetchInterval: 180_000,
+    staleTime: USAGE_POLL_MS,
+    refetchInterval: USAGE_POLL_MS,
     refetchOnWindowFocus: false,
     retry: false,
   }));
@@ -174,11 +184,11 @@ export const useAccountUsage = (
  *  served by the same per-provider cache, so the two never double-hit upstream. */
 export const useAllAccountsUsage = (enabled: () => boolean = () => true) =>
   createQuery(() => ({
-    queryKey: ["accounts-usage"],
+    queryKey: usageKeys.all(),
     queryFn: () => api.get<AccountUsageEntry[]>("/accounts/usage"),
     enabled: enabled(),
-    staleTime: 180_000,
-    refetchInterval: 180_000,
+    staleTime: USAGE_POLL_MS,
+    refetchInterval: USAGE_POLL_MS,
     refetchOnWindowFocus: false,
     retry: false,
   }));
@@ -189,7 +199,10 @@ export function useLimitReset() {
   const qc = useQueryClient();
   return async (accountId: string, creditId?: string | null) => {
     const r = await endpoints.accountLimitReset(accountId, creditId);
-    qc.invalidateQueries({ queryKey: ["account-usage", accountId] });
+    // The header strip reads `accounts-usage`; invalidating only the per-account
+    // key leaves it showing the pre-claim figure until its next poll.
+    qc.invalidateQueries({ queryKey: usageKeys.one(accountId) });
+    qc.invalidateQueries({ queryKey: usageKeys.all() });
     return r;
   };
 }

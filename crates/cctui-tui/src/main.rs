@@ -638,6 +638,7 @@ fn handle_server_event(app: &mut App, event: ServerEvent) {
         | ServerEvent::MessageAck { .. }
         | ServerEvent::MachineLiveness { .. }
         | ServerEvent::MachineResources { .. }
+        | ServerEvent::AccountUsage { .. }
         | ServerEvent::DispatcherLiveness { .. }
         | ServerEvent::PlanRequest { .. }
         | ServerEvent::PlanResolved { .. }

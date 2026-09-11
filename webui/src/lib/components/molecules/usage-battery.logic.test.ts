@@ -8,6 +8,7 @@ import {
 	countdown,
 	headroomTone,
 	paceState,
+	patchUsageEntries,
 	wallInMs,
 	worstPace
 } from './usage-battery.logic';
@@ -142,5 +143,44 @@ describe('batteryEntries / aggregateBars', () => {
 		const agg = aggregateBars([]);
 		expect(agg.fiveHour).toBeNull();
 		expect(agg.weekly).toBeNull();
+	});
+});
+
+
+describe('patchUsageEntries', () => {
+	const pushed = (id: string, utilization: number) => ({
+		account_id: id,
+		provider: 'anthropic',
+		usage: null,
+		windows: [win('five_hour', utilization)],
+		age_secs: 0,
+		limit_reset: null
+	});
+
+	it('replaces the usage half of the matching row without a refetch', () => {
+		const old = [entry('a1', 'acct', [win('five_hour', 10)])];
+		const next = patchUsageEntries(old, 'a1', pushed('a1', 72));
+		expect(next?.[0].windows[0].utilization).toBe(72);
+	});
+
+	it('keeps the identity fields the push does not carry', () => {
+		const old = [entry('a1', 'acct', [win('five_hour', 10)])];
+		const next = patchUsageEntries(old, 'a1', pushed('a1', 72));
+		expect(next?.[0].account_name).toBe('acct');
+		expect(next?.[0].header_pin).toBe(true);
+	});
+
+	it('leaves other accounts untouched', () => {
+		const old = [entry('a1', 'one', [win('five_hour', 10)]), entry('a2', 'two', [win('five_hour', 20)])];
+		const next = patchUsageEntries(old, 'a1', pushed('a1', 72));
+		expect(next?.[1].windows[0].utilization).toBe(20);
+	});
+
+	/** An unrelated account's push must not churn the cache, or every gateway
+	 *  refresh on the machine would re-render the strip. */
+	it('returns the same array when the account is not in the strip', () => {
+		const old = [entry('a1', 'one', [win('five_hour', 10)])];
+		expect(patchUsageEntries(old, 'other', pushed('other', 5))).toBe(old);
+		expect(patchUsageEntries(undefined, 'a1', pushed('a1', 5))).toBeUndefined();
 	});
 });

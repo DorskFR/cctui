@@ -2394,6 +2394,37 @@ impl AccountUsage {
     }
 }
 
+/// Cache a fresh usage fetch and push it to every client.
+///
+/// Only ever reached after an upstream fetch that already happened, so the push
+/// adds no upstream calls: a caller served from a fresh cache returns before
+/// this and broadcasts nothing, which is what bounds pushes to one per account
+/// per [`USAGE_CACHE_TTL`] and keeps the event from becoming a refresh storm.
+/// An empty `provider` means the account no longer resolves: still cached, but
+/// not published, since there is no row shape to patch a client cache with.
+pub async fn store_and_broadcast_usage(
+    state: &AppState,
+    id: Uuid,
+    provider: String,
+    usage: Option<serde_json::Value>,
+) -> AccountUsage {
+    state.account_usage_cache.insert(
+        id,
+        crate::state::CachedUsage { fetched_at: std::time::Instant::now(), usage: usage.clone() },
+    );
+    let previous = previous_samples(state, id, usage.as_ref()).await;
+    let row = AccountUsage::build(id, provider, usage, 0, &previous);
+    if row.provider.is_empty() {
+        return row;
+    }
+    if let Ok(usage) = serde_json::to_value(&row) {
+        state
+            .bus
+            .publish_server(cctui_proto::ws::ServerEvent::AccountUsage { account_id: id, usage });
+    }
+    row
+}
+
 /// `GET /api/v1/accounts/{id}/usage` — current subscription usage for a
 /// provider credential. `{id}` is the provider-row id (the pre-
 /// account id — migrated rows share the uuid, so old callers keep working).
@@ -2454,12 +2485,7 @@ pub async fn account_usage(
         // No prior value — surface as "no usage" so the UI just hides the chip.
         None
     };
-    state.account_usage_cache.insert(
-        id,
-        crate::state::CachedUsage { fetched_at: std::time::Instant::now(), usage: usage.clone() },
-    );
-    let previous = previous_samples(&state, id, usage.as_ref()).await;
-    Ok(Json(AccountUsage::build(id, provider, usage, 0, &previous)))
+    Ok(Json(store_and_broadcast_usage(&state, id, provider, usage).await))
 }
 
 /// One row of `GET /api/v1/accounts/usage`: a provider credential's usage plus
@@ -2759,6 +2785,31 @@ mod tests {
         assert!(pace["expected_pct"].as_f64().unwrap() > 50.0);
         assert!(pace["projected_wall_at"].is_string());
         assert_eq!(json["age_secs"], 7);
+    }
+
+    /// The push has to be interchangeable with a poll response: the client
+    /// patches its query cache with it instead of refetching, so any field the
+    /// route carries and the event drops would silently blank in the UI.
+    #[test]
+    fn a_usage_push_carries_the_same_row_shape_as_the_route() {
+        let resets = (Utc::now() + Duration::hours(2)).to_rfc3339();
+        let usage = serde_json::json!({
+            "five_hour": { "utilization": 60.0, "resets_at": resets },
+        });
+        let row = AccountUsage::build(Uuid::nil(), "anthropic".into(), Some(usage), 0, &[]);
+        let payload = serde_json::to_value(&row).expect("row serializes");
+        let event = cctui_proto::ws::ServerEvent::AccountUsage {
+            account_id: Uuid::nil(),
+            usage: payload.clone(),
+        };
+        let json = serde_json::to_value(&event).expect("event serializes");
+        assert_eq!(json["type"], "account_usage");
+        assert_eq!(json["account_id"], serde_json::json!(Uuid::nil()));
+        for field in ["account_id", "provider", "usage", "windows", "age_secs"] {
+            assert!(json["usage"].get(field).is_some(), "push must carry {field}");
+        }
+        assert_eq!(json["usage"]["windows"][0]["utilization"], 60.0);
+        assert_eq!(json["usage"]["age_secs"], 0, "a push is by definition just-fetched");
     }
 
     #[test]

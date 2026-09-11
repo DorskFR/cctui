@@ -2,7 +2,10 @@
 	import { Popover, Text } from '@dorsk/tsumikit';
 	import AdapterIcon from '$lib/components/atoms/AdapterIcon.svelte';
 	import AccountCard from '$lib/components/organisms/AccountCard.svelte';
-	import { useAccounts, useAllAccountsUsage, useRedirectChips } from '$lib/queries';
+	import { useQueryClient } from '@tanstack/svelte-query';
+	import { ws } from '$lib/ws.svelte';
+	import { useAccounts, useAllAccountsUsage, useRedirectChips, usageKeys } from '$lib/queries';
+	import type { AccountUsageEntry } from '$lib/queries';
 	import type { UsageWindow } from '$lib/queries';
 	import { providerLabel } from '$lib/providers';
 	import { m } from '$lib/paraglide/messages';
@@ -14,12 +17,25 @@
 		headroomTone,
 		paceState,
 		wallInMs,
+		patchUsageEntries,
 		worstPace,
 		type BatteryBars,
 		type BatteryEntry
 	} from '$lib/components/molecules/usage-battery.logic';
 
 	const q = useAllAccountsUsage(() => true);
+	// Live: the server pushes each usage refresh it already made, so the bars
+	// follow real consumption instead of this query's slow safety-net poll.
+	// Patched in place — invalidating here would refetch and undo the saving.
+	const qc = useQueryClient();
+	$effect(() =>
+		ws.onAccountUsage((ev) => {
+			qc.setQueryData<AccountUsageEntry[]>(usageKeys.all(), (old) =>
+				patchUsageEntries(old, ev.account_id, ev.usage)
+			);
+			qc.setQueryData(usageKeys.one(ev.account_id), ev.usage);
+		})
+	);
 	// The popovers show the same read-only AccountCard the stats dock shows.
 	const accounts = useAccounts();
 	// Only the pinned providers: that is what the strip shows.
