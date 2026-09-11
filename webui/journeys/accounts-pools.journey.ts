@@ -19,7 +19,12 @@ export default defineJourney({
 				title: 'Every account you can run on',
 				body: 'Accounts are the provider credentials your agents run on. This board is empty until you add one.'
 			},
-			expect: [{ visible: { role: 'heading', name: 'Accounts' } }, { visible: 'accounts' }],
+			expect: [
+				{ visible: { role: 'heading', name: 'Accounts' } },
+				{ visible: 'accounts' },
+				// The board renders while the query loads; the pool proves data arrived.
+				{ visible: 'pool[production]' }
+			],
 			capture: 'board'
 		},
 		{
