@@ -6,9 +6,12 @@ import {
 	formatToolInput,
 	looksMeta,
 	parseAsk,
+	IMAGE_TOKEN_RUN_RE,
+	isSyntheticImageNotice,
 	parsePeerMessage,
 	parsePlan,
-	stampTurns
+	stampTurns,
+	stripAttachmentDecorations
 } from './format';
 import type { Line, MsgCategory } from './types';
 
@@ -43,7 +46,18 @@ function userOrSystem(content: string, ts: number, meta: boolean, ctx: LineBuild
 	}
 	const role = meta ? 'system' : 'user';
 	if (!ctx.visible(role)) return null;
-	return { role, ts, html: ctx.renderMarkdown(content), text: content };
+	// Claude's synthetic `[Image: source: …]` turn carries no human content; it
+	// exists only to echo what it ingested, and rendering it duplicates the turn.
+	if (isSyntheticImageNotice(content)) return null;
+	const uploads = parseUserUploadRefs(content);
+	const prose = stripAttachmentDecorations(content);
+	return {
+		role,
+		ts,
+		html: prose ? ctx.renderMarkdown(prose) : '',
+		text: prose,
+		uploads: uploads.names.length ? uploads : undefined
+	};
 }
 
 // Errors win so one toggle isolates every failed result, server or client.
@@ -220,6 +234,13 @@ export function parseUserUploadRefs(text: string | undefined): UserUploadRefs {
 	for (const m of text.matchAll(BRACKET_TOKEN_RE)) {
 		if (isPasteName(m[1])) push(m[1]);
 	}
+	// Claude's own copy of the turn carries no staged paths, only a leading run
+	// of `[Image #N][name]` tokens. Names are taken from that run alone: a
+	// `[name.ext]` later in the prose is the human's own text, not an upload.
+	const run = IMAGE_TOKEN_RUN_RE.exec(text);
+	if (run) {
+		for (const m of run[0].matchAll(BRACKET_TOKEN_RE)) push(m[1]);
+	}
 	return { sessionId, names };
 }
 
@@ -249,7 +270,7 @@ export function buildLines(
 		const key =
 			ln.role === 'reset' || ln.role === 'compact'
 				? `${ln.role}|${ln.ts}`
-				: `${ln.role}|${ln.tool ?? ''}|${ln.text ?? ln.html ?? ''}`;
+				: `${ln.role}|${ln.tool ?? ''}|${(ln.uploads?.names ?? []).join(',')}|${ln.text ?? ln.html ?? ''}`;
 		if (key === prevKey) continue;
 		prevKey = key;
 		if (ln.role === 'user' && delivery) {

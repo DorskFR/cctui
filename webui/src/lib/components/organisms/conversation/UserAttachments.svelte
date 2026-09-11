@@ -34,6 +34,11 @@
 	const isImage = (a: SessionAttachment) => (a.content_type ?? '').startsWith('image/');
 	const isPaste = (a: SessionAttachment) => isPasteName(a.name);
 
+	// A blob that 404s must not fall through to the browser's broken-image glyph:
+	// the alt text then draws over it inside a line-height:0 box, which is the
+	// unreadable overlapping chip users see.
+	let brokenThumb = $state<Record<string, boolean>>({});
+
 	let expanded = $state<Record<string, boolean>>({});
 	let texts = $state<Record<string, string>>({});
 
@@ -103,14 +108,19 @@
 						<pre class="paste-body mono">{texts[a.id]}</pre>
 					{/if}
 				</div>
-			{:else if isImage(a)}
+			{:else if isImage(a) && !brokenThumb[a.id]}
 				<button
 					type="button"
 					class="thumb"
 					title={m.conversation_attachment_open({ name: a.name })}
 					onclick={() => openLocalFile(url(a), a.name)}
 				>
-					<img src={url(a)} alt={a.name} loading="lazy" />
+					<img
+						src={url(a)}
+						alt=""
+						loading="lazy"
+						onerror={() => (brokenThumb[a.id] = true)}
+					/>
 				</button>
 			{:else}
 				<FileChip
@@ -156,13 +166,17 @@
 		border-radius: var(--r-sm);
 	}
 	.thumb {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		min-width: 2rem;
+		min-height: 2rem;
 		padding: 0;
 		background: none;
 		border: 1px solid var(--border);
 		border-radius: var(--r-sm);
 		cursor: zoom-in;
 		overflow: hidden;
-		line-height: 0;
 	}
 	.thumb img {
 		display: block;

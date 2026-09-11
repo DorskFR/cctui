@@ -7,7 +7,6 @@
 	import { Badge, Button, IconButton, Text, Timestamp, Tooltip } from '@dorsk/tsumikit';
 	import TurnSummaryFooter from './TurnSummaryFooter.svelte';
 	import UserAttachments from './UserAttachments.svelte';
-	import { parseUserUploadRefs } from './lines';
 	import type { Line } from './types';
 	import { m } from '$lib/paraglide/messages';
 	import './bubble.css';
@@ -15,6 +14,7 @@
 	let {
 		ln,
 		archived,
+		sessionId = null,
 		onretry,
 		onedit,
 		onsaveimage,
@@ -30,6 +30,10 @@
 	}: {
 		ln: Line;
 		archived: boolean;
+		/** Fallback owner of this line's uploads: Claude's own copy of the turn
+		 * carries the filenames but not the staged path the session id is scraped
+		 * from, so without this the thumbnail can never resolve. */
+		sessionId?: string | null;
 		onretry: (ts: number) => void;
 		onedit: (text: string, ts: number) => void;
 		onsaveimage: (e: MouseEvent, ln: Line) => void;
@@ -57,7 +61,9 @@
 		!!onpin && typeof ln.seq === 'number' && !ln.pending && !ln.failed
 	);
 
-	const uploadRefs = $derived(ln.role === 'user' ? parseUserUploadRefs(ln.text) : null);
+	const uploadRefs = $derived(
+		ln.uploads ? { ...ln.uploads, sessionId: ln.uploads.sessionId ?? sessionId } : null
+	);
 
 	const forkAnchor = $derived(
 		forkable && ln.role === 'assistant' && ln.messageId ? ln.messageId : null
@@ -227,7 +233,7 @@
 		<div class="bubble">{@html ln.html}</div>
 	{:else if ln.htmlCode}
 		<pre class="bubble mono code">{@html ln.htmlCode}</pre>
-	{:else}
+	{:else if ln.text}
 		<pre class="bubble mono code">{ln.text}</pre>
 	{/if}
 	{#if uploadRefs && uploadRefs.names.length}

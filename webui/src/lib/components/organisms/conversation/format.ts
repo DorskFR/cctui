@@ -60,6 +60,48 @@ export function parsePeerMessage(text: string): PeerMessage | null {
 	return { from: name || addr || null, body: tag[3].trim() };
 }
 
+// Claude stores an attachment-carrying user turn as three separate
+// `stream_events` rows in three different encodings (composer prose + staged
+// paths, Claude's `[Image #N][name]`-prefixed copy, a synthetic `[Image: …]`
+// line), so no content hash collapses them. Reducing all three to the human
+// prose is what makes one turn render as one bubble.
+const ATTACHED_HEADER_RE = /^Attached files?(\s*\(\d+\))?:$/i;
+const STAGED_BULLET_RE = /^-\s*\S*\/?cctui-uploads\/\S+/;
+const SYNTH_IMAGE_LINE_RE = /^\[Image:[^\]]*\]$/;
+export const IMAGE_TOKEN_RUN_RE = /^(?:\s*\[(?:Image #\d+|[^[\]\n]*\.[A-Za-z0-9]{1,8})\])+\s*/;
+
+export function isSyntheticImageNotice(text: string): boolean {
+	const lines = text
+		.split('\n')
+		.map((l) => l.trim())
+		.filter(Boolean);
+	return lines.length > 0 && lines.every((l) => SYNTH_IMAGE_LINE_RE.test(l));
+}
+
+export function stripAttachmentDecorations(text: string): string {
+	const out: string[] = [];
+	let inAttachedBlock = false;
+	let first = true;
+	for (const raw of text.split('\n')) {
+		const line = raw.trimEnd();
+		const t = line.trim();
+		if (ATTACHED_HEADER_RE.test(t)) {
+			inAttachedBlock = true;
+			continue;
+		}
+		if (inAttachedBlock) {
+			if (!t || t.startsWith('-')) continue;
+			inAttachedBlock = false;
+		}
+		if (SYNTH_IMAGE_LINE_RE.test(t) || STAGED_BULLET_RE.test(t)) continue;
+		// The token run is only ever prefixed to the turn's opening line; a later
+		// `[file.txt]` is the human's own prose and must survive.
+		out.push(first ? line.replace(IMAGE_TOKEN_RUN_RE, '') : line);
+		if (t) first = false;
+	}
+	return out.join('\n').trim();
+}
+
 // Pull a well-formed questions[] out of an AskUserQuestion tool input.
 export function parseAsk(input: unknown): AskQuestion[] | null {
 	const qs = (input as { questions?: unknown })?.questions;
