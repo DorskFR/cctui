@@ -33,7 +33,18 @@ describe('AccessAccountsTab renders a stacked kit DataTable', () => {
 		expect(roles).toEqual(['title', 'detail', 'meta']);
 		expect(rows[0].querySelector('td[data-role="title"]')?.textContent).toContain('acct-a');
 		expect(rows[1].querySelector('td[data-role="detail"]')?.textContent).toContain('no providers');
-		expect(rows[0].querySelector('td.dt-actions a')?.getAttribute('href')).toBe('/accounts');
+		expect(rows[0].querySelector('td.dt-actions a')?.getAttribute('href')).toBe('/accounts/a');
+		expect(rows[1].querySelector('td.dt-actions a')?.getAttribute('href')).toBe('/accounts/b');
+	});
+
+	it('never sends a row that knows its account id to the bare list', () => {
+		comp = mount(AccessAccountsTab, {
+			target: document.body,
+			props: { accounts: [account('a', ['github']), account('b', [])] }
+		});
+		const hrefs = [...document.querySelectorAll('a[href]')].map((a) => a.getAttribute('href'));
+		expect(hrefs.length).toBeGreaterThan(0);
+		expect(hrefs).not.toContain('/accounts');
 	});
 
 	it('shows the empty copy when there are no accounts', () => {
