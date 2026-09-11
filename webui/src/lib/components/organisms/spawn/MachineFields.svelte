@@ -148,18 +148,19 @@
 	bind:value={form.name}
 />
 
-<Field label={m.spawn_prompt_label()} for="sp-prompt">
+<Field for="sp-prompt">
 	{#snippet hint()}
 		<Kbd keys="mod+enter" />
 		{m.spawn_submit_hint_spawn()}
 	{/snippet}
-	<div class="prompt-bar">
+	<div class="prompt-head">
 		<PromptHistoryMenu
 			onpick={(v) => {
 				nav.recall(v);
 				promptEl?.focus();
 			}}
 		/>
+		<label class="prompt-label" for="sp-prompt">{m.spawn_prompt_label()}</label>
 	</div>
 	<SessionMention bind:value={form.prompt} el={promptEl} sessions={mentionSessions}>
 		<Textarea
@@ -181,10 +182,16 @@
 </Field>
 
 <style>
-	.prompt-bar {
+	.prompt-head {
 		display: flex;
-		justify-content: flex-end;
-		margin-bottom: var(--sp-1);
+		align-items: center;
+		gap: var(--sp-2);
+		min-height: var(--box-sm);
+	}
+	.prompt-label {
+		font-size: var(--fs-sm);
+		font-weight: var(--fw-medium);
+		color: var(--text-muted);
 	}
 	.where {
 		display: flex;
