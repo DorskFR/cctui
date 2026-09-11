@@ -34,9 +34,9 @@
 {#snippet colCreated(a: OAuthAccount)}
 	<Timestamp value={a.created_at} mode="short-iso" mono size="xs" tone="faint" />
 {/snippet}
-{#snippet colActions(_a: OAuthAccount)}
+{#snippet colActions(a: OAuthAccount)}
 	<RowActions>
-		<Button variant="link" size="sm" as="a" href="/accounts">{m.access_open()}</Button>
+		<Button variant="link" size="sm" as="a" href="/accounts/{a.id}">{m.access_open()}</Button>
 	</RowActions>
 {/snippet}
 

@@ -835,8 +835,26 @@
 	"pools_failover": "Déplacer les sessions en cours",
 	"pools_failover_hint": "Quand le compte lié est refusé en cours de route, relie la session à un autre membre au lieu de la laisser bloquée. Désactivé par défaut ; le déplacement est toujours consigné sur la session.",
 	"pools_leave": "Retirer du pool",
-	"pools_legend": "pool · {n} comptes",
-	"pools_legend_failover": "pool · {n} comptes · basculement armé",
+	"pools_legend": [
+		{
+			"declarations": ["input n", "local nPlural = n: plural"],
+			"selectors": ["nPlural"],
+			"match": {
+				"nPlural=one": "pool · {n} compte",
+				"nPlural=other": "pool · {n} comptes"
+			}
+		}
+	],
+	"pools_legend_failover": [
+		{
+			"declarations": ["input n", "local nPlural = n: plural"],
+			"selectors": ["nPlural"],
+			"match": {
+				"nPlural=one": "pool · {n} compte · basculement armé",
+				"nPlural=other": "pool · {n} comptes · basculement armé"
+			}
+		}
+	],
 	"pools_member_shared": "partagé avec vous",
 	"pools_member_withheld": "son propriétaire le tient hors des pools",
 	"pools_members": "Membres",
