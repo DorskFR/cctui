@@ -209,21 +209,23 @@ fn workflow_name(subagents_workflows_dir: &Path, run_id: &str) -> Option<String>
         .map(str::to_owned)
 }
 
-/// Read an agent's `.meta.json` sidecar (`<dir>/agent-<id>.meta.json`). A
-/// missing, unreadable or malformed sidecar yields `None`, and a sidecar
-/// missing a field (or holding the wrong type for it) leaves that field
-/// `None` — discovery never fails on it.
+/// Read an agent's `.meta.json` sidecar (`<dir>/agent-<id>.meta.json`).
+/// `Some` means the sidecar told us something usable; everything else —
+/// missing, unreadable, malformed, not an object, or an object holding none
+/// of these fields at a type we can use — is `None`. Discovery never fails
+/// on a bad sidecar.
 fn subagent_meta(dir: &Path, agent_id: &str) -> Option<SubagentMeta> {
     let bytes = std::fs::read(dir.join(format!("agent-{agent_id}.meta.json"))).ok()?;
     let value: Value = serde_json::from_slice(&bytes).ok()?;
     let text = |key: &str| value.get(key).and_then(Value::as_str).map(str::to_owned);
-    Some(SubagentMeta {
+    let meta = SubagentMeta {
         agent_type: text("agentType"),
         description: text("description"),
         tool_use_id: text("toolUseId"),
         parent_agent_id: text("parentAgentId"),
         spawn_depth: value.get("spawnDepth").and_then(Value::as_u64),
-    })
+    };
+    (meta != SubagentMeta::default()).then_some(meta)
 }
 
 /// Read new lines from `path` starting at `offset`. Returns the parsed
@@ -1060,13 +1062,33 @@ mod tests {
         let meta_of = |id: &str| {
             found.iter().find(|e| e.agent_id == id).unwrap_or_else(|| panic!("{id}")).meta.clone()
         };
-        // Every transcript is still discovered, and nothing panics.
-        assert_eq!(meta_of("none"), None);
-        assert_eq!(meta_of("broken"), None);
-        assert_eq!(meta_of("array"), None);
-        // A readable object with unusable fields yields an all-empty meta,
-        // which reads exactly like today's nameless subagent downstream.
-        assert_eq!(meta_of("typed"), Some(SubagentMeta::default()));
+        // Every transcript is still discovered, and nothing panics. A sidecar
+        // that parses but yields no usable field is `None` like the rest: an
+        // all-empty `Some` would claim the sidecar said something.
+        for id in ["none", "broken", "array", "typed"] {
+            assert_eq!(meta_of(id), None, "{id} must degrade to no meta");
+        }
+    }
+
+    #[test]
+    fn one_usable_sidecar_field_is_enough_to_be_some() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        std::fs::write(dir.join("agent-partialmeta.jsonl"), b"{}\n").unwrap();
+        // Unknown keys alongside, and every field we read but one unusable.
+        std::fs::write(
+            dir.join("agent-partialmeta.meta.json"),
+            br#"{"description":"Research vendors","agentType":null,"spawnDepth":"deep","extra":1}"#,
+        )
+        .unwrap();
+        let found = discover_subagents(dir);
+        assert_eq!(
+            found[0].meta,
+            Some(SubagentMeta {
+                description: Some("Research vendors".to_owned()),
+                ..SubagentMeta::default()
+            })
+        );
     }
 
     #[test]
