@@ -2,7 +2,7 @@ import type { MsgCategory, MsgFilter, MsgGroup, QuickFilterId, ViewOpts } from '
 
 export const MSG_GROUPS: { id: MsgGroup; categories: MsgCategory[] }[] = [
 	{ id: 'assistant', categories: ['assistant', 'thinking', 'redacted', 'attachment'] },
-	{ id: 'user', categories: ['user', 'system'] },
+	{ id: 'user', categories: ['user', 'peer', 'system'] },
 	{ id: 'tools', categories: ['tool', 'mcp', 'server_tool', 'result', 'server_result', 'error'] },
 	{ id: 'session', categories: ['marker', 'summary', 'compact', 'reset'] }
 ];

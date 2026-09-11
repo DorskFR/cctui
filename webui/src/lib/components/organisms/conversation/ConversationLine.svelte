@@ -117,6 +117,9 @@
 		{#if ln.role === 'tool' || ln.role === 'result'}
 			<span class="who tool-name">{ln.role === 'result' ? '↳ ' : ''}{ln.tool ?? 'tool'}</span>
 		{/if}
+		{#if ln.role === 'peer' && ln.peerFrom}
+			<span class="who peer-from" title={ln.peerFrom}>· {ln.peerFrom}</span>
+		{/if}
 		<Timestamp value={ln.ts} mode="time" tone="faint" size="xs" />
 		{#if ln.failed}
 			<span class="meta-end">
@@ -266,6 +269,9 @@
 	.line.system {
 		--bc: var(--role-system);
 	}
+	.line.peer {
+		--bc: var(--role-peer);
+	}
 	.line.marker {
 		--bc: var(--text-faint);
 	}
@@ -285,6 +291,16 @@
 		text-transform: uppercase;
 		letter-spacing: 0.04em;
 		font-weight: var(--fw-medium);
+	}
+	.peer-from {
+		font-family: var(--font-mono);
+		color: var(--role-peer);
+		text-transform: none;
+		letter-spacing: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		max-width: 40%;
 	}
 	.tool-name {
 		font-family: var(--font-mono);
@@ -364,6 +380,10 @@
 	.line.system .bubble {
 		background: color-mix(in srgb, var(--role-system) 12%, var(--bg-elevated));
 		border-color: color-mix(in srgb, var(--role-system) 40%, transparent);
+	}
+	.line.peer .bubble {
+		background: color-mix(in srgb, var(--role-peer) 12%, var(--bg-elevated));
+		border-color: color-mix(in srgb, var(--role-peer) 40%, transparent);
 	}
 	/* Harness bookkeeping (permission-mode flips, worktree/title updates) —
 	   deliberately the quietest bubble in the log. */

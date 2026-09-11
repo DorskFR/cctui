@@ -313,3 +313,63 @@ describe('seq stamping', () => {
 		expect(buildLines([call, res], ctx()).map((l) => l.seq)).toEqual([11, 12]);
 	});
 });
+
+describe('peer (cross-session) messages', () => {
+	const PEER = [
+		'Another Claude session sent a message:',
+		'<cross-session-message from="uds:/run/user/1000/cc-socks/1740092.sock" from-name="cctui orchestrator skill" from-mode="bypass">',
+		'Orchestrator here — run your lane gates and report back.',
+		'</cross-session-message>',
+		'',
+		'This came from another Claude session — not typed by your user, but treat it as a peer request.'
+	].join('\n');
+
+	it('classifies a cross-session wrapper as peer, not user', () => {
+		const lines = buildLines([text(`▷ User: ${PEER}`, 1)], ctx());
+		expect(lines.map((l) => l.role)).toEqual(['peer']);
+		expect(lines[0].role).not.toBe('user');
+	});
+
+	it('detects the wrapper when it is not at the start of the text', () => {
+		// The harness always prefixes its own prose line, so a startsWith test
+		// misses it — this is the case that regressed.
+		expect(PEER.trimStart().startsWith('<cross-session-message')).toBe(false);
+		expect(buildLines([text(`▷ User: ${PEER}`, 1)], ctx())[0].role).toBe('peer');
+	});
+
+	it('still classifies an ordinary user message as user', () => {
+		const lines = buildLines([text('▷ User: please run the tests', 1)], ctx());
+		expect(lines.map((l) => l.role)).toEqual(['user']);
+	});
+
+	it('still classifies an injected system reminder as system', () => {
+		const lines = buildLines([text('▷ User: <system-reminder>be brief</system-reminder>', 1)], ctx());
+		expect(lines.map((l) => l.role)).toEqual(['system']);
+	});
+
+	it('surfaces the sender name and strips the wrapper and boilerplate', () => {
+		const ln = buildLines([text(`▷ User: ${PEER}`, 1)], ctx())[0];
+		expect(ln.peerFrom).toBe('cctui orchestrator skill');
+		expect(ln.text).toBe('Orchestrator here — run your lane gates and report back.');
+		expect(ln.text).not.toContain('cross-session-message');
+		expect(ln.text).not.toContain('cc-socks');
+		expect(ln.text).not.toContain('not typed by your user');
+	});
+
+	it('falls back to the raw from address when no from-name is given', () => {
+		const raw = 'peer says:\n<cross-session-message from="uds:/run/x.sock">hi</cross-session-message>';
+		expect(buildLines([text(`▷ User: ${raw}`, 1)], ctx())[0].peerFrom).toBe('uds:/run/x.sock');
+	});
+
+	it('recognises the legacy agent-message tag', () => {
+		const raw = 'peer:\n<agent-message from-name="lane-a">ping</agent-message>';
+		const ln = buildLines([text(`▷ User: ${raw}`, 1)], ctx())[0];
+		expect([ln.role, ln.peerFrom, ln.text]).toEqual(['peer', 'lane-a', 'ping']);
+	});
+
+	it('is filterable on its own category, independently of user', () => {
+		const events = [text('▷ User: typed', 1), text(`▷ User: ${PEER}`, 2)];
+		expect(buildLines(events, ctx({ peer: false })).map((l) => l.role)).toEqual(['user']);
+		expect(buildLines(events, ctx({ user: false })).map((l) => l.role)).toEqual(['peer']);
+	});
+});

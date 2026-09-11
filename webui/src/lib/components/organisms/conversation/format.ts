@@ -37,6 +37,29 @@ export function looksMeta(text: string): boolean {
 	return META_TAGS.some((m) => t.startsWith(m));
 }
 
+// The harness wraps a peer agent's message in this tag but prefixes its own
+// "Another Claude session sent a message:" line, so the tag is never at the
+// start of the turn — this must scan, not test the prefix like `looksMeta`.
+const PEER_TAG_RE =
+	/<(cross-session-message|agent-message)\b([^>]*)>([\s\S]*?)<\/\1>/;
+const PEER_ATTR_RE = /([a-z-]+)="([^"]*)"/g;
+
+export interface PeerMessage {
+	/** `from-name` when the sender supplied one, else the raw `from` address. */
+	from: string | null;
+	body: string;
+}
+
+export function parsePeerMessage(text: string): PeerMessage | null {
+	const tag = PEER_TAG_RE.exec(text);
+	if (!tag) return null;
+	const attrs = new Map<string, string>();
+	for (const a of tag[2].matchAll(PEER_ATTR_RE)) attrs.set(a[1], a[2]);
+	const name = attrs.get('from-name')?.trim();
+	const addr = attrs.get('from')?.trim();
+	return { from: name || addr || null, body: tag[3].trim() };
+}
+
 // Pull a well-formed questions[] out of an AskUserQuestion tool input.
 export function parseAsk(input: unknown): AskQuestion[] | null {
 	const qs = (input as { questions?: unknown })?.questions;

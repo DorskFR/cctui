@@ -7,6 +7,7 @@ export type MsgCategory =
 	| 'redacted'
 	| 'attachment'
 	| 'user'
+	| 'peer'
 	| 'system'
 	| 'tool'
 	| 'mcp'
@@ -38,6 +39,8 @@ export function msgCategoryLabel(id: MsgCategory): string {
 			return m.conversation_filter_attachment();
 		case 'user':
 			return m.conversation_filter_user();
+		case 'peer':
+			return m.conversation_filter_peer();
 		case 'system':
 			return m.conversation_filter_system();
 		case 'tool':
@@ -117,6 +120,7 @@ export interface Line {
 		| 'assistant'
 		| 'thinking'
 		| 'user'
+		| 'peer'
 		| 'system'
 		| 'marker'
 		| 'tool'
@@ -157,6 +161,7 @@ export interface Line {
 	seq?: number;
 	// 1-based conversation turn; stamped only on assistant lines.
 	turn?: number;
+	peerFrom?: string;
 	messageId?: string;
 	usage?: TokenUsageT;
 }

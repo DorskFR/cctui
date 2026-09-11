@@ -6,6 +6,7 @@ import {
 	formatToolInput,
 	looksMeta,
 	parseAsk,
+	parsePeerMessage,
 	parsePlan,
 	stampTurns
 } from './format';
@@ -29,6 +30,17 @@ export interface DeliveryState {
 // "user" turns are really harness/system messages (detected structurally via
 // `looksMeta`) and render in a distinct hue.
 function userOrSystem(content: string, ts: number, meta: boolean, ctx: LineBuildCtx): Line | null {
+	const peer = parsePeerMessage(content);
+	if (peer) {
+		if (!ctx.visible('peer')) return null;
+		return {
+			role: 'peer',
+			ts,
+			html: ctx.renderMarkdown(peer.body),
+			text: peer.body,
+			peerFrom: peer.from ?? undefined
+		};
+	}
 	const role = meta ? 'system' : 'user';
 	if (!ctx.visible(role)) return null;
 	return { role, ts, html: ctx.renderMarkdown(content), text: content };
@@ -176,7 +188,7 @@ function attachSummary(out: Line[], e: AgentEvent & { type: 'turn_summary' }): L
 // it through. Mirrors the composer's naming in `$lib/attachments`.
 export const PASTE_NAME_RE = /^paste-\d+\.txt$/;
 const STAGED_PATH_RE = /^- \/tmp\/cctui-uploads\/([^/\s]+)\/(\S.*?)\s*$/;
-const BRACKET_TOKEN_RE = /\[([^\[\]\n]+\.[A-Za-z0-9]{1,8})\]/g;
+const BRACKET_TOKEN_RE = /\[([^[\]\n]+\.[A-Za-z0-9]{1,8})\]/g;
 
 export interface UserUploadRefs {
 	sessionId: string | null;
