@@ -777,7 +777,6 @@
 	"nav_font_size": "UI font size",
 	"nav_getting_started": "Getting started",
 	"nav_github": "GitHub",
-	"nav_guides_label": "Guides",
 	"nav_harness_mode_tooltip": "Claude harness mode: {mode} — change in Settings (Codex sessions ignore this)",
 	"nav_instance_name": "Instance name",
 	"nav_log_out": "Log out",
