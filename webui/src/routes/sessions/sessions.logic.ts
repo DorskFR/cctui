@@ -82,6 +82,9 @@ export type SubGroup = {
 	runId: string | null;
 	// Tooltip label, e.g. "Workflow: deploy" or "subagents".
 	label: string;
+	// The `.meta.json` agent type this group folds, for the badge text. Null
+	// for the anonymous and workflow groups, which have no single type.
+	agentType: string | null;
 	agents: SessionListItem[];
 	running: number;
 };
@@ -129,6 +132,7 @@ export function groupChildren(kids: SessionListItem[]): SubGroup[] {
 			key: 'plain',
 			runId: null,
 			label: m.sessions_subagents(),
+			agentType: null,
 			agents: plain,
 			running: runningCount(plain)
 		});
@@ -138,6 +142,7 @@ export function groupChildren(kids: SessionListItem[]): SubGroup[] {
 			key: `type:${agentType}`,
 			runId: null,
 			label: m.sessions_subagents_of_type({ type: agentType }),
+			agentType,
 			agents,
 			running: runningCount(agents)
 		});
@@ -147,6 +152,7 @@ export function groupChildren(kids: SessionListItem[]): SubGroup[] {
 			key: `wf:${runId}`,
 			runId,
 			label: g.name ? m.sessions_workflow_named({ name: g.name }) : m.sessions_workflow(),
+			agentType: null,
 			agents: g.agents,
 			running: runningCount(g.agents)
 		});

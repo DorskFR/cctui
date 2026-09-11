@@ -780,6 +780,7 @@
 				running: g.running,
 				open: list.expanded.has(groupId(s.id, g.key)),
 				label: g.label,
+				type: g.agentType,
 				ontoggle: () => list.toggleGroup(s.id, g.key)
 			}))}
 			{allLabels}
@@ -872,6 +873,7 @@
 					running: g.running,
 					open: list.expanded.has(groupId(s.id, g.key)),
 					label: g.label,
+					type: g.agentType,
 					ontoggle: () => list.toggleGroup(s.id, g.key)
 				}))}
 				{allLabels}

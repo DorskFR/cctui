@@ -563,8 +563,14 @@ describe('idsForSection', () => {
 		const kidB = session({ id: 'b', parent_id: 'p' });
 		const grand = session({ id: 'g', parent_id: 'a' });
 		const childGroups = new Map([
-			['p', [{ key: 'plain', runId: null, label: '', agents: [kidA, kidB], running: 0 }]],
-			['a', [{ key: 'plain', runId: null, label: '', agents: [grand, kidB], running: 0 }]]
+			[
+				'p',
+				[{ key: 'plain', runId: null, label: '', agentType: null, agents: [kidA, kidB], running: 0 }]
+			],
+			[
+				'a',
+				[{ key: 'plain', runId: null, label: '', agentType: null, agents: [grand, kidB], running: 0 }]
+			]
 		]);
 		expect(idsForSection([parent, session({ id: 'q' })], childGroups)).toEqual([
 			'p',
@@ -828,8 +834,10 @@ describe('groupChildren', () => {
 		expect(groups.map((g) => g.key)).toEqual(['type:general-purpose', 'type:Explore']);
 		expect(groups[0].agents.map((s) => s.id)).toEqual(['a', 'c']);
 		expect(groups[0].label).toBe('general-purpose subagents');
+		expect(groups[0].agentType).toBe('general-purpose');
 		expect(groups[0].running).toBe(2);
 		expect(groups[1].agents.map((s) => s.id)).toEqual(['b']);
+		expect(groups[1].agentType).toBe('Explore');
 	});
 
 	it('keeps sidecar-less children in the anonymous group and workflows in theirs', () => {
@@ -850,6 +858,10 @@ describe('groupChildren', () => {
 		expect(groups[0].label).toBe('subagents');
 		expect(groups[2].agents.map((s) => s.id)).toEqual(['c', 'd']);
 		expect(groups[2].runId).toBe('wf_1');
+		// Only a single-type group names itself on the badge; the anonymous
+		// and workflow groups stay bare count chips.
+		expect(groups[0].agentType).toBeNull();
+		expect(groups[2].agentType).toBeNull();
 	});
 
 	it('has no groups for a parent with no children', () => {
