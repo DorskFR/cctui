@@ -2888,7 +2888,7 @@ impl Driver {
         for (parent_id, parent_path, cwd) in parents {
             let dir = transcript::subagents_dir(&parent_path);
             for entry in transcript::discover_subagents(&dir) {
-                let transcript::SubagentEntry { agent_id, path, workflow } = entry;
+                let transcript::SubagentEntry { agent_id, path, workflow, meta } = entry;
                 if self.ended_subagents.contains(&agent_id) {
                     continue;
                 }
@@ -2897,20 +2897,36 @@ impl Driver {
                         agent_id.clone(),
                         SubagentState { parent_local_id: parent_id.clone(), idle_ticks: 0 },
                     );
-                    // Base subagent meta; Workflow-tool agents add
-                    // workflow run context so the UI can group them under a
-                    // named "Workflow: <name> (<runId>)" node.
+                    // Base subagent meta; the `.meta.json` sidecar adds the
+                    // agent type and the exact parent `Task` tool call, and
+                    // Workflow-tool agents add workflow run context so the UI
+                    // can group them under a named
+                    // "Workflow: <name> (<runId>)" node.
                     let mut extra = json!({ "subagent": true, "agent_id": agent_id });
+                    let obj = extra.as_object_mut().expect("json object literal");
                     if let Some(wf) = &workflow {
-                        let obj = extra.as_object_mut().expect("json object literal");
                         obj.insert("workflow_run_id".into(), json!(wf.run_id));
                         if let Some(name) = &wf.name {
                             obj.insert("workflow_name".into(), json!(name));
                         }
-                        obj.insert(
-                            "agent_type".into(),
-                            json!(wf.agent_type.as_deref().unwrap_or("workflow-subagent")),
-                        );
+                    }
+                    let agent_type = meta
+                        .as_ref()
+                        .and_then(|m| m.agent_type.clone())
+                        .or_else(|| workflow.is_some().then(|| "workflow-subagent".to_owned()));
+                    if let Some(agent_type) = &agent_type {
+                        obj.insert("agent_type".into(), json!(agent_type));
+                    }
+                    if let Some(m) = &meta {
+                        if let Some(tool_use_id) = &m.tool_use_id {
+                            obj.insert("tool_use_id".into(), json!(tool_use_id));
+                        }
+                        if let Some(parent_agent_id) = &m.parent_agent_id {
+                            obj.insert("parent_agent_id".into(), json!(parent_agent_id));
+                        }
+                        if let Some(depth) = m.spawn_depth {
+                            obj.insert("spawn_depth".into(), json!(depth));
+                        }
                     }
                     self.emit(AdapterEvent::SessionStarted {
                         local_id: agent_id.clone(),
@@ -2921,6 +2937,25 @@ impl Driver {
                         },
                     })
                     .await;
+                    // The sidecar's `description` is the human label the Task
+                    // call carried. Ride the ordinary session-name path so a
+                    // nameless subagent keeps today's 6-char-id fallback.
+                    let description = meta.as_ref().and_then(|m| m.description.clone());
+                    if description.is_some() {
+                        self.emit(AdapterEvent::Status {
+                            local_id: agent_id.clone(),
+                            tempo: None,
+                            state: None,
+                            detail: None,
+                            activity: None,
+                            name: description,
+                            intent: None,
+                            model: None,
+                            effort: None,
+                            children: Vec::new(),
+                        })
+                        .await;
+                    }
                 }
 
                 let off = self.offsets.get(&agent_id);
@@ -4646,6 +4681,97 @@ mod tests {
         assert_eq!(extra.get("workflow_run_id").and_then(|v| v.as_str()), Some("wf_test123"));
         assert_eq!(extra.get("workflow_name").and_then(|v| v.as_str()), Some("deep-research"));
         assert_eq!(extra.get("agent_type").and_then(|v| v.as_str()), Some("workflow-subagent"));
+    }
+
+    #[tokio::test]
+    async fn flat_task_subagent_is_named_from_its_sidecar() {
+        // A Task-tool subagent used to reach the UI as a bare 6-char id hash.
+        // Its sidecar names it, and the name rides the ordinary Status path.
+        let (mut d, mut rx) = driver();
+        write_subagent(
+            &d,
+            "abcd1234",
+            "a1e5bd0f2c3d4e5f6",
+            &[
+                r#"{"type":"assistant","isSidechain":true,"agentId":"a1e5bd0f2c3d4e5f6","message":{"content":[{"type":"text","text":"sub work"}]}}"#,
+            ],
+        );
+        let parent_path = transcript::transcript_path(&d.cfg.projects_root, "/tmp", "abcd1234-uuid");
+        std::fs::write(
+            transcript::subagents_dir(&parent_path).join("agent-a1e5bd0f2c3d4e5f6.meta.json"),
+            br#"{"agentType":"general-purpose","description":"Global competitors research",
+                 "toolUseId":"toolu_018vjjY9mx2Dfmjwv1mQs6nX","spawnDepth":1}"#,
+        )
+        .unwrap();
+        d.apply_snapshot(vec![snap("abcd1234", "working", None)]).await;
+
+        let mut extra = None;
+        let mut name = None;
+        while let Ok(evt) = rx.try_recv() {
+            match evt {
+                AdapterEvent::SessionStarted { local_id, meta }
+                    if local_id == "a1e5bd0f2c3d4e5f6" =>
+                {
+                    extra = Some(meta.extra);
+                }
+                AdapterEvent::Status { local_id, name: n, .. }
+                    if local_id == "a1e5bd0f2c3d4e5f6" =>
+                {
+                    name = n;
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(name.as_deref(), Some("Global competitors research"));
+        let extra = extra.expect("task subagent SessionStarted expected");
+        assert_eq!(extra.get("subagent").and_then(serde_json::Value::as_bool), Some(true));
+        assert_eq!(extra.get("agent_type").and_then(|v| v.as_str()), Some("general-purpose"));
+        assert_eq!(
+            extra.get("tool_use_id").and_then(|v| v.as_str()),
+            Some("toolu_018vjjY9mx2Dfmjwv1mQs6nX")
+        );
+        assert_eq!(extra.get("spawn_depth").and_then(serde_json::Value::as_u64), Some(1));
+        // No workflow run: this is the flat Task layout.
+        assert_eq!(extra.get("workflow_run_id"), None);
+    }
+
+    #[tokio::test]
+    async fn a_sidecarless_subagent_is_announced_unnamed() {
+        // The pre-CCT-941 behaviour, preserved: no sidecar means no name and
+        // no agent_type, and the UI falls back to the 6-char id.
+        let (mut d, mut rx) = driver();
+        write_subagent(
+            &d,
+            "abcd1234",
+            "f00dcafe12345678a",
+            &[
+                r#"{"type":"assistant","isSidechain":true,"agentId":"f00dcafe12345678a","message":{"content":[{"type":"text","text":"anon"}]}}"#,
+            ],
+        );
+        d.apply_snapshot(vec![snap("abcd1234", "working", None)]).await;
+
+        let mut extra = None;
+        let mut named = false;
+        while let Ok(evt) = rx.try_recv() {
+            match evt {
+                AdapterEvent::SessionStarted { local_id, meta }
+                    if local_id == "f00dcafe12345678a" =>
+                {
+                    extra = Some(meta.extra);
+                }
+                AdapterEvent::Status { local_id, name, .. }
+                    if local_id == "f00dcafe12345678a" =>
+                {
+                    named |= name.is_some();
+                }
+                _ => {}
+            }
+        }
+        let extra = extra.expect("subagent SessionStarted expected");
+        assert!(!named, "a sidecarless subagent must not be given a name");
+        assert_eq!(extra.get("subagent").and_then(serde_json::Value::as_bool), Some(true));
+        assert_eq!(extra.get("agent_type"), None);
+        assert_eq!(extra.get("tool_use_id"), None);
     }
 
     #[tokio::test]

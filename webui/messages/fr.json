@@ -1182,6 +1182,7 @@
 	"sessions_subagent_running": ", {count} en cours",
 	"sessions_subagent_total": "{label} - {count} au total",
 	"sessions_subagents": "sous-agents",
+	"sessions_subagents_of_type": "sous-agents {type}",
 	"sessions_swipe_release": "Relâcher pour {action}",
 	"sessions_title": "Sessions",
 	"sessions_toast_archived": "{count} archivée(s)",

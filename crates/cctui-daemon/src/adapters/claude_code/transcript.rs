@@ -88,8 +88,19 @@ pub struct WorkflowContext {
     /// Human workflow name (e.g. `deep-research`) from `workflows/<runId>.json`,
     /// if resolvable.
     pub name: Option<String>,
-    /// `agentType` from the agent's `.meta.json` (e.g. `workflow-subagent`).
+}
+
+/// The `.meta.json` sidecar Claude writes next to every subagent transcript —
+/// flat Task-tool agents included. `description` is the human label the Task
+/// call was given; `tool_use_id` correlates the agent back to the parent's
+/// `Task` tool call exactly, with no positional guesswork.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SubagentMeta {
     pub agent_type: Option<String>,
+    pub description: Option<String>,
+    pub tool_use_id: Option<String>,
+    pub parent_agent_id: Option<String>,
+    pub spawn_depth: Option<u64>,
 }
 
 /// A discovered subagent transcript: its agent id, transcript path, and (for
@@ -99,6 +110,8 @@ pub struct SubagentEntry {
     pub agent_id: String,
     pub path: PathBuf,
     pub workflow: Option<WorkflowContext>,
+    /// Sidecar meta, when the agent has a readable `.meta.json`.
+    pub meta: Option<SubagentMeta>,
 }
 
 /// Discover every subagent transcript reachable from a parent session's
@@ -126,7 +139,8 @@ pub fn discover_subagents(dir: &Path) -> Vec<SubagentEntry> {
             continue;
         };
         if let Some(agent_id) = name.strip_prefix("agent-").and_then(strip_jsonl) {
-            out.push(SubagentEntry { agent_id: agent_id.to_owned(), path, workflow: None });
+            let meta = subagent_meta(dir, agent_id);
+            out.push(SubagentEntry { agent_id: agent_id.to_owned(), path, workflow: None, meta });
         } else if name == "workflows" && path.is_dir() {
             discover_workflow_subagents(&path, &mut out);
         }
@@ -164,15 +178,12 @@ fn discover_workflow_subagents(workflows_dir: &Path, out: &mut Vec<SubagentEntry
             let Some(agent_id) = fname.strip_prefix("agent-").and_then(strip_jsonl) else {
                 continue;
             };
-            let agent_type = agent_type_from_meta(&run_dir, agent_id);
+            let meta = subagent_meta(&run_dir, agent_id);
             out.push(SubagentEntry {
                 agent_id: agent_id.to_owned(),
                 path: path.clone(),
-                workflow: Some(WorkflowContext {
-                    run_id: run_id.clone(),
-                    name: name.clone(),
-                    agent_type,
-                }),
+                workflow: Some(WorkflowContext { run_id: run_id.clone(), name: name.clone() }),
+                meta,
             });
         }
     }
@@ -198,13 +209,21 @@ fn workflow_name(subagents_workflows_dir: &Path, run_id: &str) -> Option<String>
         .map(str::to_owned)
 }
 
-/// Read `agentType` from a workflow agent's `.meta.json` sidecar
-/// (`<runId>/agent-<id>.meta.json`).
-fn agent_type_from_meta(run_dir: &Path, agent_id: &str) -> Option<String> {
-    let meta_path = run_dir.join(format!("agent-{agent_id}.meta.json"));
-    let bytes = std::fs::read(meta_path).ok()?;
+/// Read an agent's `.meta.json` sidecar (`<dir>/agent-<id>.meta.json`). A
+/// missing, unreadable or malformed sidecar yields `None`, and a sidecar
+/// missing a field (or holding the wrong type for it) leaves that field
+/// `None` — discovery never fails on it.
+fn subagent_meta(dir: &Path, agent_id: &str) -> Option<SubagentMeta> {
+    let bytes = std::fs::read(dir.join(format!("agent-{agent_id}.meta.json"))).ok()?;
     let value: Value = serde_json::from_slice(&bytes).ok()?;
-    value.get("agentType").and_then(Value::as_str).map(str::to_owned)
+    let text = |key: &str| value.get(key).and_then(Value::as_str).map(str::to_owned);
+    Some(SubagentMeta {
+        agent_type: text("agentType"),
+        description: text("description"),
+        tool_use_id: text("toolUseId"),
+        parent_agent_id: text("parentAgentId"),
+        spawn_depth: value.get("spawnDepth").and_then(Value::as_u64),
+    })
 }
 
 /// Read new lines from `path` starting at `offset`. Returns the parsed
@@ -884,11 +903,13 @@ mod tests {
                     agent_id: "a8412884de5cc5396".to_owned(),
                     path: dir.join("agent-a8412884de5cc5396.jsonl"),
                     workflow: None,
+                    meta: None,
                 },
                 SubagentEntry {
                     agent_id: "b0c27d990208c793".to_owned(),
                     path: dir.join("agent-b0c27d990208c793.jsonl"),
                     workflow: None,
+                    meta: None,
                 },
             ]
         );
@@ -929,8 +950,11 @@ mod tests {
             Some(WorkflowContext {
                 run_id: "wf_fab6efd5-4bf".to_owned(),
                 name: Some("deep-research".to_owned()),
-                agent_type: Some("workflow-subagent".to_owned()),
             })
+        );
+        assert_eq!(
+            aaa.meta.as_ref().and_then(|m| m.agent_type.as_deref()),
+            Some("workflow-subagent")
         );
         let bbb = found.iter().find(|e| e.agent_id == "bbb").unwrap();
         assert_eq!(
@@ -938,9 +962,9 @@ mod tests {
             Some(WorkflowContext {
                 run_id: "wf_fab6efd5-4bf".to_owned(),
                 name: Some("deep-research".to_owned()),
-                agent_type: None, // no meta sidecar
             })
         );
+        assert_eq!(bbb.meta, None); // no meta sidecar
         let flat = found.iter().find(|e| e.agent_id == "flat").unwrap();
         assert_eq!(flat.workflow, None);
     }
@@ -960,6 +984,89 @@ mod tests {
         let found = discover_subagents(&session.join("subagents"));
         let z = found.iter().find(|e| e.agent_id == "z").unwrap();
         assert_eq!(z.workflow.as_ref().unwrap().name.as_deref(), Some("scripted"));
+    }
+
+    #[test]
+    fn flat_task_subagents_carry_their_sidecar_meta() {
+        // The shape Claude writes next to a flat Task-tool transcript.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        std::fs::write(dir.join("agent-a1e5bd0f2c3d4e5f6.jsonl"), b"{}\n").unwrap();
+        std::fs::write(
+            dir.join("agent-a1e5bd0f2c3d4e5f6.meta.json"),
+            br#"{"agentType":"general-purpose","description":"Global competitors research",
+                 "toolUseId":"toolu_018vjjY9mx2Dfmjwv1mQs6nX","spawnDepth":1}"#,
+        )
+        .unwrap();
+        // A depth-2 spawn also names its parent agent.
+        std::fs::write(dir.join("agent-bb.jsonl"), b"{}\n").unwrap();
+        std::fs::write(
+            dir.join("agent-bb.meta.json"),
+            br#"{"agentType":"Explore","description":"Research site-selection vendors",
+                 "toolUseId":"toolu_01BXjN1arwk6Zzu6pbPN7kth",
+                 "parentAgentId":"af547156cb073af1e","spawnDepth":2}"#,
+        )
+        .unwrap();
+
+        let found = discover_subagents(dir);
+        let first = found.iter().find(|e| e.agent_id == "a1e5bd0f2c3d4e5f6").unwrap();
+        assert_eq!(first.workflow, None);
+        assert_eq!(
+            first.meta,
+            Some(SubagentMeta {
+                agent_type: Some("general-purpose".to_owned()),
+                description: Some("Global competitors research".to_owned()),
+                tool_use_id: Some("toolu_018vjjY9mx2Dfmjwv1mQs6nX".to_owned()),
+                parent_agent_id: None,
+                spawn_depth: Some(1),
+            })
+        );
+        let nested = found.iter().find(|e| e.agent_id == "bb").unwrap();
+        assert_eq!(
+            nested.meta,
+            Some(SubagentMeta {
+                agent_type: Some("Explore".to_owned()),
+                description: Some("Research site-selection vendors".to_owned()),
+                tool_use_id: Some("toolu_01BXjN1arwk6Zzu6pbPN7kth".to_owned()),
+                parent_agent_id: Some("af547156cb073af1e".to_owned()),
+                spawn_depth: Some(2),
+            })
+        );
+    }
+
+    #[test]
+    fn a_missing_or_malformed_sidecar_degrades_to_no_meta() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        // No sidecar at all.
+        std::fs::write(dir.join("agent-none.jsonl"), b"{}\n").unwrap();
+        // Truncated JSON.
+        std::fs::write(dir.join("agent-broken.jsonl"), b"{}\n").unwrap();
+        std::fs::write(dir.join("agent-broken.meta.json"), b"{\"agentType\": ").unwrap();
+        // Valid JSON, but not an object.
+        std::fs::write(dir.join("agent-array.jsonl"), b"{}\n").unwrap();
+        std::fs::write(dir.join("agent-array.meta.json"), b"[1,2,3]").unwrap();
+        // An object whose fields are the wrong types, and one with none of
+        // the fields we read.
+        std::fs::write(dir.join("agent-typed.jsonl"), b"{}\n").unwrap();
+        std::fs::write(
+            dir.join("agent-typed.meta.json"),
+            br#"{"agentType":7,"description":null,"toolUseId":{},"spawnDepth":"deep"}"#,
+        )
+        .unwrap();
+
+        let found = discover_subagents(dir);
+        assert_eq!(found.len(), 4);
+        let meta_of = |id: &str| {
+            found.iter().find(|e| e.agent_id == id).unwrap_or_else(|| panic!("{id}")).meta.clone()
+        };
+        // Every transcript is still discovered, and nothing panics.
+        assert_eq!(meta_of("none"), None);
+        assert_eq!(meta_of("broken"), None);
+        assert_eq!(meta_of("array"), None);
+        // A readable object with unusable fields yields an all-empty meta,
+        // which reads exactly like today's nameless subagent downstream.
+        assert_eq!(meta_of("typed"), Some(SubagentMeta::default()));
     }
 
     #[test]

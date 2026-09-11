@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { SessionListItem } from '@bindings/SessionListItem';
 import {
 	accountTrafficWarning,
+	agentTypeOf,
 	branchOf,
 	bucketInSection,
 	colorHueOf,
@@ -15,6 +16,7 @@ import {
 	editDraftNeedsConfirm,
 	fmtWhen,
 	formatAgo,
+	groupChildren,
 	groupRows,
 	inEnabledSections,
 	isDimension,
@@ -804,5 +806,53 @@ describe('sectionsOf / inEnabledSections', () => {
 		expect(
 			inEnabledSections(session({ status: 'archived', pinned: true }), new Set<Section>(['archived']))
 		).toBe(false);
+	});
+});
+
+describe('groupChildren', () => {
+	const kid = (id: string, metadata: Record<string, unknown>) =>
+		session({ id, metadata, status: 'active', liveness: 'active' });
+
+	it('reads agent_type off the sidecar metadata', () => {
+		expect(agentTypeOf(kid('a', { agent_type: 'Explore' }))).toBe('Explore');
+		expect(agentTypeOf(kid('a', { agent_type: 7 }))).toBeNull();
+		expect(agentTypeOf(kid('a', {}))).toBeNull();
+	});
+
+	it('folds Task children into one group per agent type', () => {
+		const groups = groupChildren([
+			kid('a', { subagent: true, agent_type: 'general-purpose' }),
+			kid('b', { subagent: true, agent_type: 'Explore' }),
+			kid('c', { subagent: true, agent_type: 'general-purpose' })
+		]);
+		expect(groups.map((g) => g.key)).toEqual(['type:general-purpose', 'type:Explore']);
+		expect(groups[0].agents.map((s) => s.id)).toEqual(['a', 'c']);
+		expect(groups[0].label).toBe('general-purpose subagents');
+		expect(groups[0].running).toBe(2);
+		expect(groups[1].agents.map((s) => s.id)).toEqual(['b']);
+	});
+
+	it('keeps sidecar-less children in the anonymous group and workflows in theirs', () => {
+		const groups = groupChildren([
+			kid('a', { subagent: true }),
+			kid('b', { subagent: true, agent_type: 'Explore' }),
+			kid('c', { subagent: true, workflow_run_id: 'wf_1', workflow_name: 'deploy' }),
+			// A workflow agent's own agent_type never splits it out of its run.
+			kid('d', {
+				subagent: true,
+				workflow_run_id: 'wf_1',
+				workflow_name: 'deploy',
+				agent_type: 'workflow-subagent'
+			})
+		]);
+		expect(groups.map((g) => g.key)).toEqual(['plain', 'type:Explore', 'wf:wf_1']);
+		expect(groups[0].agents.map((s) => s.id)).toEqual(['a']);
+		expect(groups[0].label).toBe('subagents');
+		expect(groups[2].agents.map((s) => s.id)).toEqual(['c', 'd']);
+		expect(groups[2].runId).toBe('wf_1');
+	});
+
+	it('has no groups for a parent with no children', () => {
+		expect(groupChildren([])).toEqual([]);
 	});
 });
