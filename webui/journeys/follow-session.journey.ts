@@ -18,7 +18,13 @@ export default defineJourney({
 				title: 'Open a session',
 				body: 'Open your running session by its name. The conversation opens beside the list on a desktop, over it on a phone.'
 			},
-			expect: [{ visible: 'conversation' }, { visible: 'composer' }],
+			// A rendered line, not just the shell: the capture must outlast the
+			// slide-in and the history fetch.
+			expect: [
+				{ visible: 'conversation' },
+				{ visible: 'conversation/line[assistant]' },
+				{ visible: 'composer' }
+			],
 			capture: 'drawer'
 		},
 		{
