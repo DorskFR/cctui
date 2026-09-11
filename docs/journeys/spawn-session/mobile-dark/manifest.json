@@ -10,28 +10,28 @@
 					"name": "dialog",
 					"file": "01-dialog.png",
 					"title": "Open the new-session dialog",
-					"body": "One dialog covers everything a run needs: the machine, the folder, the prompt and the profile. It opens on the folder you used last."
-				},
-				{
-					"index": 2,
-					"name": "filled",
-					"file": "02-filled.png",
-					"title": "Say what you want done",
-					"body": "The prompt is the whole brief; the profile below it decides which harness, model and folder carry it out."
+					"body": "Everything a run needs is in this one dialog: the machine, the folder, the prompt and the profile."
 				},
 				{
 					"index": 3,
-					"name": "saved",
-					"file": "03-saved.png",
-					"title": "Keep it for later",
-					"body": "Saving a draft parks the whole configuration in the list, ready to launch when you are."
+					"name": "filled",
+					"file": "02-filled.png",
+					"title": "Say what you want done",
+					"body": "Say what you want done. The profile below decides which harness and model carry it out."
 				},
 				{
-					"index": 5,
+					"index": 4,
+					"name": "saved",
+					"file": "03-saved.png",
+					"title": "Save it as a draft",
+					"body": "This saves a draft on your instance. Nothing runs until you launch it, and you can delete it from the list."
+				},
+				{
+					"index": 6,
 					"name": "draft",
 					"file": "04-draft.png",
 					"title": "The draft is waiting",
-					"body": "Drafts sit in their own section, holding the machine, folder, profile and prompt until you launch them."
+					"body": "Your draft is here, holding the machine, folder, profile and prompt until you launch it."
 				}
 			],
 			"storyboard": "storyboard.png"

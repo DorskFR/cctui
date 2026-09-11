@@ -6,7 +6,7 @@
 
 **Open a session**
 
-Tapping a session by name opens its conversation — beside the list on a desktop, over it on a phone.
+Open your running session by its name. The conversation opens beside the list on a desktop, over it on a phone.
 
 ![timeline](02-timeline.png)
 
@@ -22,6 +22,6 @@ Hiding the assistant messages leaves the tool calls — the fastest way to audit
 
 ![reply](04-reply.png)
 
-**Steer it mid-run**
+**Steer it from here**
 
-A reply goes to the running agent, so you can redirect the work without restarting it.
+Anything you type here goes to the running agent, so you can redirect it without restarting.

@@ -4,10 +4,6 @@
 
 ![list](01-list.png)
 
-**Every session, grouped**
-
-Sessions group by what they need — pinned first, then anything waiting on you.
-
 ![themes](02-themes.png)
 
 **Every screen, in your palette**
