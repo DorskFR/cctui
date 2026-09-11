@@ -22,6 +22,8 @@ struct PersistedRecord {
     cfg: AppServerConfig,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     gateway_base_url: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    spawn_relay: bool,
 }
 
 const GATEWAY_BASE_URL: &str = "OPENAI_BASE_URL";
@@ -43,6 +45,7 @@ pub fn to_json(records: &HashMap<String, SessionRecord>) -> String {
                     name: r.name.clone(),
                     cfg: r.cfg.clone(),
                     gateway_base_url: r.env.get(GATEWAY_BASE_URL).cloned(),
+                    spawn_relay: r.spawn_relay,
                 },
             )
         })
@@ -70,6 +73,7 @@ pub fn from_json(text: &str) -> HashMap<String, SessionRecord> {
                                     std::iter::once((GATEWAY_BASE_URL.to_owned(), url)).collect()
                                 })
                                 .unwrap_or_default(),
+                            spawn_relay: r.spawn_relay,
                         },
                     )
                 })
@@ -143,6 +147,7 @@ mod tests {
             cwd: cwd.to_owned(),
             name: name.map(str::to_owned),
             env: std::iter::once(("OPENAI_API_KEY".to_owned(), "secret".to_owned())).collect(),
+            spawn_relay: false,
         }
     }
 
@@ -180,6 +185,30 @@ mod tests {
             !super::super::app_server::gateway_provider_overrides(env).is_empty(),
             "a restored gateway session must still define its provider"
         );
+    }
+
+    /// The relay decision is process-local and a resume has no capability to
+    /// re-derive it from, so the snapshot is the only thing that can carry it
+    /// across a restart.
+    #[test]
+    fn round_trip_preserves_the_spawn_relay_decision() {
+        let mut rec = record("/repo", None);
+        rec.spawn_relay = true;
+        let mut map = HashMap::new();
+        map.insert("tid".to_owned(), rec);
+        map.insert("plain".to_owned(), record("/other", None));
+        let back = from_json(&to_json(&map));
+        assert!(back.get("tid").expect("record survives").spawn_relay);
+        assert!(
+            !back.get("plain").expect("record survives").spawn_relay,
+            "a session that never had the relay must not gain it"
+        );
+    }
+
+    #[test]
+    fn a_snapshot_written_before_the_relay_field_restores_without_it() {
+        let back = from_json(r#"{"tid":{"cwd":"/repo"}}"#);
+        assert!(!back.get("tid").expect("record survives").spawn_relay);
     }
 
     /// A daemon restart must not drop a session back onto codex's expensive

@@ -719,6 +719,14 @@ pub enum ServerEvent {
         machine_id: uuid::Uuid,
         resources: crate::resources::MachineResources,
     },
+    /// An account's usage windows were just refreshed upstream. Broadcast from
+    /// the refresh itself, so pushing costs no extra upstream call and a header
+    /// battery follows real consumption instead of its own poll. `usage` is the
+    /// serialized row the accounts usage routes return.
+    AccountUsage {
+        account_id: uuid::Uuid,
+        usage: serde_json::Value,
+    },
     /// An enrolled dispatcher's liveness tier just changed. Peer of
     /// [`Self::MachineLiveness`], derived from `dispatchers.last_seen_at`.
     DispatcherLiveness {

@@ -1,8 +1,8 @@
 <script lang="ts">
 	import type { Snippet } from 'svelte';
 	import { IconButton } from '@dorsk/tsumikit';
+	import DragGrip from '$lib/components/atoms/DragGrip.svelte';
 	import { m } from '$lib/paraglide/messages';
-	import { draggedProfile, setDraggedProfile } from './profiles';
 
 	let {
 		id,
@@ -11,15 +11,14 @@
 		usage = '',
 		selected,
 		open,
-		first = false,
-		last = false,
+		position,
+		total,
 		dragging = false,
 		dropTarget = false,
 		onselect,
 		ontoggle,
 		onmove,
-		ondropped,
-		onsourcechange,
+		ongrab,
 		onover,
 		children
 	}: {
@@ -29,20 +28,17 @@
 		usage?: string;
 		selected: boolean;
 		open: boolean;
-		first?: boolean;
-		last?: boolean;
+		position: number;
+		total: number;
 		dragging?: boolean;
 		dropTarget?: boolean;
 		onselect: () => void;
 		ontoggle: () => void;
 		onmove?: (delta: -1 | 1) => void;
-		ondropped?: (targetId: string) => void;
-		onsourcechange?: (sourceId: string) => void;
-		onover?: (overId: string) => void;
+		ongrab?: (e: PointerEvent) => void;
+		onover?: () => void;
 		children?: Snippet;
 	} = $props();
-
-	const reorderable = $derived(Boolean(onmove));
 </script>
 
 <div
@@ -52,33 +48,8 @@
 	class:drop-target={dropTarget}
 	role="group"
 	aria-label={name}
-	draggable={reorderable}
-	ondragstart={(e) => {
-		setDraggedProfile(id);
-		onsourcechange?.(id);
-		e.dataTransfer?.setData('text/plain', id);
-		if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
-	}}
-	ondragend={() => {
-		setDraggedProfile('');
-		onsourcechange?.('');
-		onover?.('');
-	}}
-	ondragover={(e) => {
-		if (!reorderable || !draggedProfile() || draggedProfile() === id) return;
-		e.preventDefault();
-		if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
-		onover?.(id);
-	}}
-	ondrop={(e) => {
-		const from = draggedProfile() || e.dataTransfer?.getData('text/plain') || '';
-		if (!reorderable || !from || from === id) return;
-		e.preventDefault();
-		setDraggedProfile('');
-		onsourcechange?.('');
-		onover?.('');
-		ondropped?.(id);
-	}}
+	data-profile-id={id}
+	onpointermove={() => onover?.()}
 >
 	<div class="head">
 		<input
@@ -97,22 +68,12 @@
 			</span>
 			<span class="chain truncate" title={chain}>{chain}</span>
 		</label>
-		{#if reorderable}
-			<IconButton
-				icon="chevron-up"
-				label={m.spawn_profile_move_up({ name })}
-				inline
-				size={14}
-				disabled={first}
-				onclick={() => onmove?.(-1)}
-			/>
-			<IconButton
-				icon="chevron-down"
-				label={m.spawn_profile_move_down({ name })}
-				inline
-				size={14}
-				disabled={last}
-				onclick={() => onmove?.(1)}
+		{#if onmove}
+			<DragGrip
+				label={m.spawn_profile_reorder({ name, position, total })}
+				hint={m.spawn_profile_reorder_hint()}
+				onmove={(delta) => onmove?.(delta)}
+				{ongrab}
 			/>
 		{/if}
 		<IconButton
@@ -145,10 +106,15 @@
 		border-color: var(--accent);
 	}
 	.head {
+		--grip-opacity: 0.4;
 		display: flex;
 		align-items: center;
 		gap: var(--sp-2);
 		padding: var(--sp-2);
+	}
+	.head:hover,
+	.head:focus-within {
+		--grip-opacity: 1;
 	}
 	.radio {
 		flex: none;

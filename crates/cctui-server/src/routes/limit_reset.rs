@@ -233,6 +233,12 @@ pub async fn limit_reset(
     record(&state, id, &out, ctx.user_id).await;
     if invalidates_usage(&out.outcome) {
         state.account_usage_cache.remove(&id);
+        // Net-zero upstream: the eviction above already forced the next reader
+        // to fetch; doing it here just leaves the cache warm and pushes once.
+        if let Ok((p, usage)) = crate::routes::gateway::fetch_usage_with_provider(&state, id).await
+        {
+            crate::routes::accounts::store_and_broadcast_usage(&state, id, p, usage).await;
+        }
     }
     Ok(Json(LimitResetResponse { account_id: id, provider, ..out }))
 }

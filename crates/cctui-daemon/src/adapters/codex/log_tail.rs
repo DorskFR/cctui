@@ -950,6 +950,7 @@ mod tests {
                 cwd: "/w".into(),
                 name: None,
                 env: std::collections::BTreeMap::new(),
+                spawn_relay: false,
             },
         );
         tail.set_owned(registry);

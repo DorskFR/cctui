@@ -5,12 +5,13 @@
 -->
 <script lang="ts">
 	import { ghreviewUrl } from '$lib/config';
+	import { addGhreviewAccount, removeGhreviewAccount, type GhreviewAccount } from '$lib/ghreview';
 	import {
-		addGhreviewAccount,
-		listGhreviewAccounts,
-		removeGhreviewAccount,
-		type GhreviewAccount
-	} from '$lib/ghreview';
+		connectorStatus,
+		ghreviewAccounts,
+		invalidateGhreviewConnectors,
+		loadGhreviewConnectors
+	} from '$lib/ghreviewConnectors.svelte';
 	import { toasts } from '$lib/toast.svelte';
 	import {
 		Button,
@@ -28,23 +29,15 @@
 
 	const configured = $derived(ghreviewUrl() !== null);
 
-	let accounts = $state<GhreviewAccount[]>([]);
-	let loading = $state(false);
-
-	async function load() {
-		if (!configured) return;
-		loading = true;
-		try {
-			accounts = await listGhreviewAccounts();
-		} catch (e) {
-			toasts.error(e instanceof Error ? e.message : m.github_save_failed());
-		} finally {
-			loading = false;
-		}
-	}
+	const accounts = $derived(ghreviewAccounts());
+	const loading = $derived(connectorStatus() === 'loading' || connectorStatus() === 'unknown');
 
 	$effect(() => {
-		void load();
+		void loadGhreviewConnectors();
+	});
+
+	$effect(() => {
+		if (connectorStatus() === 'error') toasts.error(m.github_save_failed());
 	});
 
 	let showModal = $state(false);
@@ -68,7 +61,7 @@
 			const account = await addGhreviewAccount(pat.trim(), login.trim() || undefined);
 			toasts.ok(m.github_connector_added({ name: account.login }));
 			showModal = false;
-			await load();
+			await invalidateGhreviewConnectors();
 		} catch (e) {
 			toasts.error(e instanceof Error ? e.message : m.github_save_failed());
 		} finally {
@@ -81,7 +74,7 @@
 		try {
 			await removeGhreviewAccount(account.id);
 			toasts.ok(m.github_connector_removed());
-			await load();
+			await invalidateGhreviewConnectors();
 		} catch (e) {
 			toasts.error(e instanceof Error ? e.message : m.github_remove_failed());
 		}

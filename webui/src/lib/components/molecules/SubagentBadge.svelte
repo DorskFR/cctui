@@ -11,6 +11,7 @@
 		running,
 		open,
 		label,
+		type = null,
 		ontoggle
 	}: {
 		count: number;
@@ -18,6 +19,10 @@
 		open: boolean;
 		// Tooltip context — e.g. "Workflow: deploy" or "subagents".
 		label: string;
+		// The group's agent type (`general-purpose`, `Explore`, …), shown
+		// ahead of the count so a fan-out reads as what it is. Null for the
+		// anonymous and workflow groups, which stay bare count chips.
+		type?: string | null;
 		ontoggle: () => void;
 	} = $props();
 
@@ -43,17 +48,18 @@
 		as="button"
 		tone="info"
 		size="sm"
-		numeric
+		numeric={!type}
 		active={open}
 		style={badgeStyle}
 		{title}
 		aria-label={ariaLabel}
 		aria-expanded={open}
+		onpointerdown={(e: PointerEvent) => e.stopPropagation()}
 		onclick={(e: MouseEvent) => {
 			e.stopPropagation();
 			ontoggle();
 		}}
 	>
-		{count}
+		{#if type}<span class="type">{type}</span>{' '}{/if}{count}
 	</Badge>
 </span>

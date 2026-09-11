@@ -128,3 +128,24 @@ export function aggregateBars(entries: BatteryEntry[]): BatteryBars {
 	};
 	return { fiveHour: fullest((b) => b.fiveHour), weekly: fullest((b) => b.weekly) };
 }
+
+/** Merge a pushed usage row into the batch cache, keeping each entry's identity
+ *  fields (the push carries only the usage half of the row). Returns `old`
+ *  unchanged when the account is not in the strip, so an unrelated push cannot
+ *  churn the query cache. */
+export function patchUsageEntries(
+	old: AccountUsageEntry[] | undefined,
+	accountId: string,
+	usage: PushedUsage
+): AccountUsageEntry[] | undefined {
+	if (!old?.some((e) => e.account_id === accountId)) return old;
+	return old.map((e) =>
+		e.account_id === accountId ? { ...e, ...usage, account_id: e.account_id } : e
+	);
+}
+
+/** The usage half of a row, as the `account_usage` push carries it. */
+export type PushedUsage = Pick<
+	AccountUsageEntry,
+	'account_id' | 'provider' | 'usage' | 'windows' | 'age_secs' | 'limit_reset'
+>;

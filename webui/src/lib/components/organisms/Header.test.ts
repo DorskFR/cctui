@@ -34,7 +34,8 @@ vi.mock('$lib/ws.svelte', () => ({
 		status: 'open',
 		changeTick: 0,
 		onListPatch: () => () => {},
-		onMachineResources: () => () => {}
+		onMachineResources: () => () => {},
+		onAccountUsage: () => () => {}
 	}
 }));
 vi.mock('$lib/toast.svelte', () => ({

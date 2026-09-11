@@ -3,7 +3,9 @@
   "private": true,
   "version": "0.0.1",
   "type": "module",
+  "packageManager": "bun@1.3.14",
   "scripts": {
+    "preinstall": "case \"$npm_config_user_agent\" in bun*) exit 0 ;; esac; [ \"$INIT_CWD\" = \"$PWD\" ] || exit 0; echo '' >&2; echo 'ghreview-ui is a bun project (bun.lock, no package-lock.json).' >&2; echo 'Run: bun install' >&2; echo '' >&2; exit 1",
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview --host",

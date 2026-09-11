@@ -292,6 +292,21 @@ mod tests {
         assert!(usage_cache_stale(Some(Duration::from_mins(10)), Duration::from_mins(3)));
     }
 
+    /// No refresh storm: the push rides the same staleness gate as the fetch, so
+    /// however hot the gateway path gets, an account can emit at most one
+    /// upstream call — and therefore one push — per TTL.
+    #[test]
+    fn a_fresh_usage_cache_neither_fetches_nor_pushes() {
+        let ttl = Duration::from_mins(3);
+        for age in [0_u64, 1, 30, 179] {
+            assert!(
+                !usage_cache_stale(Some(Duration::from_secs(age)), ttl),
+                "an entry {age}s old must be served from cache, broadcasting nothing"
+            );
+        }
+        assert!(usage_cache_stale(Some(Duration::from_mins(3)), ttl));
+    }
+
     #[test]
     fn family_from_provider_maps_native_and_compatible() {
         // both native and `-compatible` providers collapse to a family.

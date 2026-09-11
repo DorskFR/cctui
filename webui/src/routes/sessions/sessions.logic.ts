@@ -69,17 +69,22 @@ export const PAGE = 50;
 
 // ── Subagent grouping ───────────────────────────────────
 // A subagent group folded under a parent. Workflow-tool subagents
-// carry a `workflow_run_id`; plain (Task-tool) children share the synthetic
-// "plain" group. Each group renders inline (always expanded) when it has
+// carry a `workflow_run_id`; Task-tool children group by the `agent_type`
+// their `.meta.json` sidecar named, and the ones with no sidecar share the
+// synthetic "plain" group. Each group renders inline (always expanded) when it has
 // fewer than 3 agents; larger groups collapse behind a count badge on the
 // parent row that toggles expand/collapse.
 export type SubGroup = {
-	// Stable key, unique within a parent: "plain" or "wf:<runId>".
+	// Stable key, unique within a parent: "plain", "type:<agentType>" or
+	// "wf:<runId>".
 	key: string;
 	// Run id for workflow groups; null for the plain group.
 	runId: string | null;
 	// Tooltip label, e.g. "Workflow: deploy" or "subagents".
 	label: string;
+	// The `.meta.json` agent type this group folds, for the badge text. Null
+	// for the anonymous and workflow groups, which have no single type.
+	agentType: string | null;
 	agents: SessionListItem[];
 	running: number;
 };
@@ -94,6 +99,8 @@ export function metaBool(s: SessionListItem, key: string): boolean {
 	return m?.[key] === true;
 }
 export const branchOf = (s: SessionListItem) => metaStr(s, 'git_branch');
+export const remoteOf = (s: SessionListItem) => metaStr(s, 'git_remote');
+export const agentTypeOf = (s: SessionListItem) => metaStr(s, 'agent_type');
 export const relationOf = (s: SessionListItem) =>
 	metaStr(s, 'relation') ?? (metaBool(s, 'subagent') ? 'subagent' : 'root');
 export const runningCount = (agents: SessionListItem[]) =>
@@ -101,9 +108,11 @@ export const runningCount = (agents: SessionListItem[]) =>
 // Fold a parent's children into plain + per-workflow groups.
 export function groupChildren(kids: SessionListItem[]): SubGroup[] {
 	const plain: SessionListItem[] = [];
+	const byType = new Map<string, SessionListItem[]>();
 	const byRun = new Map<string, { name: string | null; agents: SessionListItem[] }>();
 	for (const k of kids) {
 		const runId = metaStr(k, 'workflow_run_id');
+		const agentType = agentTypeOf(k);
 		if (runId) {
 			let g = byRun.get(runId);
 			if (!g) {
@@ -111,6 +120,8 @@ export function groupChildren(kids: SessionListItem[]): SubGroup[] {
 				byRun.set(runId, g);
 			}
 			g.agents.push(k);
+		} else if (agentType) {
+			byType.set(agentType, [...(byType.get(agentType) ?? []), k]);
 		} else {
 			plain.push(k);
 		}
@@ -121,8 +132,19 @@ export function groupChildren(kids: SessionListItem[]): SubGroup[] {
 			key: 'plain',
 			runId: null,
 			label: m.sessions_subagents(),
+			agentType: null,
 			agents: plain,
 			running: runningCount(plain)
+		});
+	}
+	for (const [agentType, agents] of byType) {
+		groups.push({
+			key: `type:${agentType}`,
+			runId: null,
+			label: m.sessions_subagents_of_type({ type: agentType }),
+			agentType,
+			agents,
+			running: runningCount(agents)
 		});
 	}
 	for (const [runId, g] of byRun) {
@@ -130,6 +152,7 @@ export function groupChildren(kids: SessionListItem[]): SubGroup[] {
 			key: `wf:${runId}`,
 			runId,
 			label: g.name ? m.sessions_workflow_named({ name: g.name }) : m.sessions_workflow(),
+			agentType: null,
 			agents: g.agents,
 			running: runningCount(g.agents)
 		});

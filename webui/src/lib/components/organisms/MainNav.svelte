@@ -7,6 +7,7 @@
 	import { useSessions } from '$lib/queries';
 	import { settings } from '$lib/settings.svelte';
 	import { isNavActive, navItems } from '$lib/navItems';
+	import { hasGithubConnector } from '$lib/ghreviewConnectors.svelte';
 	import { m } from '$lib/paraglide/messages';
 
 	let { placement = 'bottom' }: { placement?: 'bottom' | 'top' } = $props();
@@ -18,7 +19,7 @@
 		(sessions.data?.sessions ?? []).filter((s) => s.parent_id === null && (s.unread_count ?? 0) > 0)
 			.length
 	);
-	const items = $derived(navItems());
+	const items = $derived(navItems({ hasGithubConnector: hasGithubConnector() }));
 </script>
 
 <nav

@@ -340,7 +340,30 @@ describe("SpawnModal profiles", () => {
       n.textContent?.trim(),
     );
 
-  it("moves a profile with the keyboard and persists the new order", async () => {
+  const grip = (name: string) => {
+    const b = buttons().find((x) =>
+      (x.getAttribute("aria-label") ?? "").startsWith(`Reorder ${name},`),
+    );
+    if (!b) throw new Error(`grip for ${name} not found`);
+    return b;
+  };
+  const live = () =>
+    document
+      .querySelector('[role="status"][aria-live="polite"]')
+      ?.textContent?.trim() ?? "";
+  const row = (id: string) => {
+    const el = document.querySelector<HTMLElement>(`[data-profile-id="${id}"]`);
+    if (!el) throw new Error(`row ${id} not found`);
+    return el;
+  };
+  const pointer = (type: string, extra: Record<string, unknown> = {}) =>
+    Object.assign(new Event(type, { bubbles: true, cancelable: true }), {
+      pointerId: 1,
+      pointerType: "touch",
+      ...extra,
+    });
+
+  it("moves a profile with the arrow keys on the grip and persists the new order", async () => {
     await open();
     expect(rowNames()).toEqual(["Orchestrator", "Codex quick"]);
 
@@ -352,25 +375,95 @@ describe("SpawnModal profiles", () => {
         }),
     );
 
-    const up = button("Move Codex quick up");
-    expect(up.disabled).toBe(false);
-    up.click();
+    const handle = grip("Codex quick");
+    handle.focus();
+    expect(document.activeElement).toBe(handle);
+    handle.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "ArrowUp",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
     await tick();
 
     expect(reorder).toHaveBeenCalledWith(["p2", "p1"]);
     expect(rowNames()).toEqual(["Codex quick", "Orchestrator"]);
+    expect(live()).toBe("Codex quick moved to position 1 of 2");
 
     release?.();
     await tick();
     expect(reorder).toHaveBeenCalledTimes(1);
   });
 
-  it("names every reorder control and disables the ends", async () => {
+  it("moves a profile by dragging its grip onto another row", async () => {
     await open();
-    expect(button("Move Orchestrator up").disabled).toBe(true);
-    expect(button("Move Orchestrator down").disabled).toBe(false);
-    expect(button("Move Codex quick up").disabled).toBe(false);
-    expect(button("Move Codex quick down").disabled).toBe(true);
+    expect(rowNames()).toEqual(["Orchestrator", "Codex quick"]);
+
+    let release: (() => void) | undefined;
+    reorder.mockImplementationOnce(
+      () =>
+        new Promise((ok) => {
+          release = () => ok([codexQuick, orchestrator]);
+        }),
+    );
+
+    grip("Codex quick").dispatchEvent(pointer("pointerdown"));
+    await tick(10);
+    expect(row("p2").className).toContain("dragging");
+
+    row("p1").dispatchEvent(pointer("pointermove"));
+    await tick(10);
+    expect(row("p1").className).toContain("drop-target");
+
+    window.dispatchEvent(pointer("pointerup"));
+    await tick();
+
+    expect(reorder).toHaveBeenCalledWith(["p2", "p1"]);
+    expect(rowNames()).toEqual(["Codex quick", "Orchestrator"]);
+    expect(live()).toBe("Codex quick moved to position 1 of 2");
+
+    release?.();
+    await tick();
+    expect(reorder).toHaveBeenCalledTimes(1);
+  });
+
+  it("a drag that ends on its own row leaves the order alone", async () => {
+    await open();
+    grip("Orchestrator").dispatchEvent(pointer("pointerdown"));
+    await tick(10);
+    row("p1").dispatchEvent(pointer("pointermove"));
+    window.dispatchEvent(pointer("pointerup"));
+    await tick();
+    expect(reorder).not.toHaveBeenCalled();
+    expect(rowNames()).toEqual(["Orchestrator", "Codex quick"]);
+  });
+
+  it("offers one keyboard-reachable grip per row and no chevron buttons", async () => {
+    await open();
+    const grips = buttons().filter((b) =>
+      (b.getAttribute("aria-label") ?? "").startsWith("Reorder "),
+    );
+    expect(grips.map((g) => g.getAttribute("aria-label"))).toEqual([
+      "Reorder Orchestrator, position 1 of 2",
+      "Reorder Codex quick, position 2 of 2",
+    ]);
+    // Focusable without a mouse: real buttons, never disabled, never removed
+    // from the tab order — the arrow keys are the only reorder path a
+    // keyboard user has now that the chevrons are gone.
+    for (const g of grips) {
+      expect(g.tagName).toBe("BUTTON");
+      expect(g.disabled).toBe(false);
+      expect(g.getAttribute("tabindex")).toBeNull();
+      expect(g.getAttribute("title")).toBe(
+        "Drag to reorder, or press the up and down arrow keys",
+      );
+    }
+    expect(
+      buttons().some((b) =>
+        /^Move .* (up|down)$/.test(b.getAttribute("aria-label") ?? ""),
+      ),
+    ).toBe(false);
   });
 
   it("reverts the optimistic order when the reorder call fails", async () => {
@@ -383,7 +476,9 @@ describe("SpawnModal profiles", () => {
         }),
     );
 
-    button("Move Codex quick up").click();
+    grip("Codex quick").dispatchEvent(
+      new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true }),
+    );
     await tick();
     expect(rowNames()).toEqual(["Codex quick", "Orchestrator"]);
 

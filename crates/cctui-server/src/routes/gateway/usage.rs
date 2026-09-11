@@ -203,21 +203,21 @@ pub async fn usage_for_soft_limit(state: &AppState, account_id: Uuid) -> Option<
     if !usage_cache_stale(entry_age, ttl) {
         return state.account_usage_cache.get(&account_id).and_then(|h| h.usage.clone());
     }
-    fetch_account_usage(state, account_id).await.map_or_else(
-        // Upstream hiccup (429/refresh fail): fall back to the last cached value.
-        |_| state.account_usage_cache.get(&account_id).and_then(|h| h.usage.clone()),
-        |usage| {
-            state.account_usage_cache.insert(
+    match fetch_usage_with_provider(state, account_id).await {
+        Ok((provider, usage)) => {
+            crate::routes::accounts::store_and_broadcast_usage(
+                state,
                 account_id,
-                crate::state::CachedUsage {
-                    fetched_at: std::time::Instant::now(),
-                    usage: usage.clone(),
-                },
-            );
+                provider,
+                usage.clone(),
+            )
+            .await;
             record_usage_samples(state, account_id, usage.as_ref());
             usage
-        },
-    )
+        }
+        // Upstream hiccup (429/refresh fail): fall back to the last cached value.
+        Err(_) => state.account_usage_cache.get(&account_id).and_then(|h| h.usage.clone()),
+    }
 }
 
 /// Append a fresh upstream reading to the credential's usage history, off the
@@ -258,7 +258,27 @@ pub async fn fetch_account_usage(
     state: &AppState,
     account_id: Uuid,
 ) -> Result<Option<serde_json::Value>, StatusCode> {
-    let Some(acct) = reload_account(state, account_id).await else { return Ok(None) };
+    fetch_usage_with_provider(state, account_id).await.map(|(_, usage)| usage)
+}
+
+/// [`fetch_account_usage`] plus the provider it resolved, which the broadcast
+/// needs to normalize the windows without decrypting the account a second time.
+pub async fn fetch_usage_with_provider(
+    state: &AppState,
+    account_id: Uuid,
+) -> Result<(String, Option<serde_json::Value>), StatusCode> {
+    let Some(acct) = reload_account(state, account_id).await else {
+        return Ok((String::new(), None));
+    };
+    let provider = acct.provider.clone();
+    usage_for_account(state, acct).await.map(|usage| (provider, usage))
+}
+
+async fn usage_for_account(
+    state: &AppState,
+    acct: Account,
+) -> Result<Option<serde_json::Value>, StatusCode> {
+    let account_id = acct.id;
     // Pay-per-token: dollars, not percent of a subscription window. Metered
     // locally, then reconciled upward against the provider's billing API.
     if Family::from_provider(&acct.provider) == Family::Fireworks {

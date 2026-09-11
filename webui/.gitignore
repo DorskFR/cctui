@@ -1,4 +1,6 @@
 node_modules
+# bun is refused here by the preinstall guard, but it writes this before failing.
+bun.lock
 /build
 /.svelte-kit
 /package

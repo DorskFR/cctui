@@ -224,14 +224,6 @@ export function initialProfile(
 	return profiles.find((p) => p.id === lastUsedId) ?? profiles[0] ?? null;
 }
 
-/** `dataTransfer` payloads are unreadable while a drag hovers, so the dragged
- *  row publishes its id here for the zone under the pointer (CCT-929). */
-let draggedId = '';
-export const setDraggedProfile = (id: string) => {
-	draggedId = id;
-};
-export const draggedProfile = (): string => draggedId;
-
 /** Move `id` to `index` (clamped). An id the list lacks changes nothing. */
 export function moveProfile<T extends { id: string }>(
 	list: readonly T[],

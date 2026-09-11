@@ -12,10 +12,8 @@ import {
 	specFromForm,
 	specOf,
 	uniqueProfileName,
-	draggedProfile,
 	moveProfile,
 	moveProfileOnto,
-	setDraggedProfile,
 	type ProfileSpec
 } from './profiles';
 
@@ -232,11 +230,4 @@ describe('reordering helpers', () => {
 		expect(moveProfileOnto(rows, 'b', 'zz').map((r) => r.id)).toEqual(['a', 'b', 'c']);
 	});
 
-	it('keeps the dragged id in a module variable dragover can read', () => {
-		expect(draggedProfile()).toBe('');
-		setDraggedProfile('b');
-		expect(draggedProfile()).toBe('b');
-		setDraggedProfile('');
-		expect(draggedProfile()).toBe('');
-	});
 });

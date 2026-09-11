@@ -6,6 +6,7 @@
 	import DraftActions from './DraftActions.svelte';
 	import Readout from './Readout.svelte';
 	import type { SessionActions, SessionView } from './view';
+	import { resolveBranchPull, type BranchPull } from '$lib/branchPull';
 
 	// Two lines: cwd chip · branch chip · PR links (wrapping) / Σ ↑ ↓ ⚡ $ ·
 	// model · effort · logo. The path and the branch keep their text; only the
@@ -20,6 +21,20 @@
 	const shownPrs = $derived(view.prLinks.slice(0, PR_SHOWN));
 	const hiddenPrs = $derived(Math.max(0, view.prLinks.length - PR_SHOWN));
 	const allPrLabels = $derived(view.prLinks.map((p) => p.label).join('\n'));
+
+	// Only when the session has harvested no PR of its own: this is the
+	// branch lookup, and it must never duplicate a link already shown.
+	let branchPull = $state<BranchPull | null>(null);
+	$effect(() => {
+		const remote = view.remote;
+		const branch = view.branch;
+		const already = view.prLinks.length > 0;
+		branchPull = null;
+		if (already) return;
+		void resolveBranchPull(remote, branch).then((pr) => {
+			branchPull = pr;
+		});
+	});
 </script>
 
 <Stack gap="var(--sp-1)" style="min-width:0">
@@ -39,6 +54,21 @@
 					<Icon name="fork" size={12} label={m.sessions_branch_label()} />
 					<span class="branch-name">{view.branch}</span>
 				</Badge>
+			</span>
+		{/if}
+		{#if branchPull}
+			<span class="prs">
+				<a
+					class="pr-link"
+					href={safeHref(branchPull.url)}
+					target="_blank"
+					rel="noopener noreferrer"
+					title={m.sessions_pr_title({ label: `#${branchPull.number}` })}
+					onclick={(e) => e.stopPropagation()}
+				>
+					<PrIcon />
+					<span class="pr-label">#{branchPull.number}</span>
+				</a>
 			</span>
 		{/if}
 		{#if view.prLinks.length > 0}

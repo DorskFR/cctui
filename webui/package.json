@@ -1,9 +1,11 @@
 {
   "name": "cctui-webui",
   "private": true,
-  "version": "0.11.3",
+  "version": "0.12.0",
   "type": "module",
+  "packageManager": "npm@10.9.8",
   "scripts": {
+    "preinstall": "case \"$npm_config_user_agent\" in npm/*) exit 0 ;; esac; echo '' >&2; echo 'webui is an npm project (package-lock.json).' >&2; echo 'Run: npm ci' >&2; echo '' >&2; exit 1",
     "dev": "vite dev",
     "build": "npm run journey:compile && vite build",
     "preview": "vite preview --host",

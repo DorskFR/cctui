@@ -7,6 +7,7 @@ import type { MachineResources } from '@bindings/MachineResources';
 import type { GithubEventKind } from '@bindings/GithubEventKind';
 import type { GithubEventPayload } from '@bindings/GithubEventPayload';
 import type { SessionEndReason } from '@bindings/SessionEndReason';
+import type { AccountUsage } from './queries/types';
 
 /** Daemon handshake budget (45 s) plus dispatch and relay slack. */
 export const SPAWN_ACK_TIMEOUT_MS = 75_000;
@@ -148,6 +149,14 @@ type SoftLimitCb = (sl: SoftLimit | null) => void;
 export interface MachineResourcesEvent {
 	machine_id: string;
 	resources: MachineResources;
+}
+
+/** An account's usage windows, pushed by the server refresh that already
+ *  fetched them. Patched into the query cache in place: invalidating instead
+ *  would refetch and defeat the point of the push. */
+export interface AccountUsageEvent {
+	account_id: string;
+	usage: AccountUsage;
 }
 
 export interface SessionListPatch {
@@ -601,6 +610,11 @@ export class WsClient {
 				for (const cb of this.machineResourcesCbs) cb(p);
 				break;
 			}
+			case 'account_usage': {
+				const p = msg as unknown as AccountUsageEvent;
+				for (const cb of this.accountUsageCbs) cb(p);
+				break;
+			}
 		}
 	}
 
@@ -610,6 +624,12 @@ export class WsClient {
 	onMachineResources(cb: (ev: MachineResourcesEvent) => void): () => void {
 		this.machineResourcesCbs.add(cb);
 		return () => this.machineResourcesCbs.delete(cb);
+	}
+
+	private accountUsageCbs = new Set<(ev: AccountUsageEvent) => void>();
+	onAccountUsage(cb: (ev: AccountUsageEvent) => void): () => void {
+		this.accountUsageCbs.add(cb);
+		return () => this.accountUsageCbs.delete(cb);
 	}
 
 	private sessionEndedCbs = new Set<(ev: SessionEndedEvent) => void>();
