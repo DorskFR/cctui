@@ -37,6 +37,14 @@ impl AgentMcp {
         if capability.is_none_or(SpawnCapability::is_empty) {
             return None;
         }
+        Self::for_session(session_key)
+    }
+
+    /// The relay for a session whose grant is already established. Takes no
+    /// capability: every call it makes is authorized server-side against the
+    /// durable grant, so declaring it cannot widen what the session may do.
+    #[must_use]
+    pub fn for_session(session_key: &str) -> Option<Self> {
         if session_key.trim().is_empty() {
             tracing::warn!("CctuiAgent: no session key for the launch; not offering the tool");
             return None;

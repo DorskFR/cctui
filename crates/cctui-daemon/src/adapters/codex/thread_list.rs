@@ -605,6 +605,7 @@ pub fn owned_records(
                     // first resume can still be env-less for the narrow
                     // restart-then-resume window. See.
                     env: std::collections::BTreeMap::new(),
+                    spawn_relay: false,
                 },
             )
         })
@@ -659,6 +660,7 @@ pub fn record_for(
         cwd: entry.cwd.clone().unwrap_or_default(),
         name: entry.name.clone(),
         env: std::collections::BTreeMap::new(),
+        spawn_relay: false,
     })
 }
 
@@ -1236,6 +1238,7 @@ mod tests {
                 cwd: "/live".into(),
                 name: Some("keep-me".into()),
                 env: std::collections::BTreeMap::new(),
+                spawn_relay: false,
             },
         );
         let entries = vec![
@@ -1291,6 +1294,7 @@ mod tests {
                 cwd: "/w".into(),
                 name: None,
                 env: std::collections::BTreeMap::new(),
+                spawn_relay: false,
             },
         );
         let inv = ThreadListInventory::new(

@@ -854,6 +854,13 @@ enum DispatchOutcome {
     Missing,
 }
 
+/// Whether a resume must re-pull the gateway env. A stored credential means the
+/// launch already resolved one, so pulling again would be redundant; a restored
+/// record keeps its base URL, so emptiness alone does not answer this.
+fn resume_needs_env_pull(env: &std::collections::BTreeMap<String, String>) -> bool {
+    !env.contains_key("OPENAI_API_KEY")
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn dispatch(
     live: &LiveSessionRegistry,
@@ -869,21 +876,16 @@ async fn dispatch(
         RouteAction::Delivered => DispatchOutcome::Handled(true),
         RouteAction::Resume { mut record, command } if command.is_resumable() => {
             tracing::info!(%local_id, ?command, "codex: resuming hibernated app-server session");
-            // a thread REDISCOVERED from `thread/list` after a daemon
-            // restart was seeded with an empty env (it was not spawned/forked in
-            // this daemon lifetime), so its first resume would launch env-less
-            // and 401 for an account-bound session. Re-pull the gateway env from
-            // the server's durable `sessions.account_id` binding — same
-            // fail-closed contract as spawn/fork — but ONLY when the stored env
-            // carries no credential, so we don't double-pull (and regress)
-            // spawn/fork which already resolved a fresh env at launch. A
-            // restored record keeps its gateway base URL, so emptiness alone no
-            // longer says whether the credential is there.
-            if !record.env.contains_key("OPENAI_API_KEY") {
+            // A thread rediscovered from `thread/list` is seeded env-less, so its
+            // first resume would 401 for an account-bound session; re-pull under
+            // the same fail-closed contract as spawn/fork.
+            if resume_needs_env_pull(&record.env) {
                 match resolve_launch(server, machine_key, local_id, &record.env).await {
                     Ok(launch) => {
                         let settings = launch.settings;
                         record.env = launch.env;
+                        record.spawn_relay = record.spawn_relay
+                            || launch.spawn_capability.as_ref().is_some_and(|c| !c.is_empty());
                         // A rediscovered thread has no cached tier; adopt the
                         // served one rather than resuming on codex's default.
                         record.cfg.service_tier =
@@ -1117,6 +1119,27 @@ mod tests {
         assert_eq!(spec_service_tier(None, Some(&serde_json::json!({}))), None);
     }
 
+    /// The relay fix must not have widened the resume into an unconditional
+    /// capability pull: a record that already carries a credential still makes
+    /// no gateway call.
+    #[test]
+    fn a_resume_with_a_stored_credential_still_does_not_re_pull_the_env() {
+        let mut env = std::collections::BTreeMap::new();
+        env.insert("OPENAI_API_KEY".to_owned(), "sk-live".to_owned());
+        assert!(!resume_needs_env_pull(&env), "the double-pull guard must still hold");
+        env.insert("OPENAI_BASE_URL".to_owned(), "https://cctui/gw".to_owned());
+        assert!(!resume_needs_env_pull(&env));
+
+        assert!(resume_needs_env_pull(&std::collections::BTreeMap::new()));
+        let restored: std::collections::BTreeMap<String, String> =
+            std::iter::once(("OPENAI_BASE_URL".to_owned(), "https://cctui/gw".to_owned()))
+                .collect();
+        assert!(
+            resume_needs_env_pull(&restored),
+            "a restored record keeps its base URL but has no credential, so it must pull"
+        );
+    }
+
     #[tokio::test]
     async fn resume_marks_re_announce_owned_threads_only() {
         let registry = SessionRegistry::default();
@@ -1127,6 +1150,7 @@ mod tests {
                 cwd: "/tmp/work".to_owned(),
                 name: None,
                 env: std::collections::BTreeMap::new(),
+                spawn_relay: false,
             },
         );
         let (tx, mut rx) = mpsc::channel(8);

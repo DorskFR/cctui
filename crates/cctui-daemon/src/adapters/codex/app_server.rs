@@ -1558,6 +1558,10 @@ pub struct SessionRecord {
     /// same gateway env instead of starting env-less and 401ing (the codex
     /// analogue of the claude cold-launch bug).
     pub env: std::collections::BTreeMap<String, String>,
+    /// Whether this thread's launch declared the `CctuiAgent` relay. Persisted
+    /// because the relay map is process-local and a resume carries no
+    /// capability to re-derive the decision from.
+    pub spawn_relay: bool,
 }
 
 /// `local_id` → cctui-owned Codex thread metadata.
@@ -2433,6 +2437,7 @@ impl CodexSession {
                                     cwd: self.cwd.clone(),
                                     name: remembered_name.clone(),
                                     env: self.env.clone(),
+                                    spawn_relay: self.agent_mcp.is_some(),
                                 },
                             );
                             super::persist::save(&self.registry).await;
@@ -3131,6 +3136,21 @@ fn child_linkage(
     }
 }
 
+/// The `CctuiAgent` relay a resume re-declares: this daemon's remembered launch
+/// decision, else the persisted one, which is all a rediscovered thread has.
+#[must_use]
+pub fn resume_relay(
+    thread_id: &str,
+    record: &SessionRecord,
+) -> Option<crate::adapters::agent_mcp::AgentMcp> {
+    crate::adapters::agent_mcp::recall(thread_id).or_else(|| {
+        record
+            .spawn_relay
+            .then(|| crate::adapters::agent_mcp::AgentMcp::for_session(thread_id))
+            .flatten()
+    })
+}
+
 pub fn spawn_resumed_session(
     record: SessionRecord,
     thread_id: &str,
@@ -3153,6 +3173,7 @@ pub fn spawn_resumed_session(
     if commands.is_empty() {
         return;
     }
+    let relay = resume_relay(thread_id, &record);
     let session = CodexSession::new_resume(
         record.cfg,
         record.cwd,
@@ -3164,7 +3185,7 @@ pub fn spawn_resumed_session(
         registry,
         shutdown,
     )
-    .with_agent_mcp(crate::adapters::agent_mcp::recall(thread_id));
+    .with_agent_mcp(relay);
     tokio::spawn(async move {
         if let Err(err) = session.run().await {
             tracing::error!(%err, "codex resumed app-server session ended in error");
@@ -3480,6 +3501,80 @@ mod tests {
         assert!(
             crate::adapters::agent_mcp::AgentMcp::for_capability("key-1", None).is_none(),
             "a session with no capability must not see the tool at all"
+        );
+    }
+
+    fn relay_record(spawn_relay: bool) -> SessionRecord {
+        SessionRecord {
+            cfg: AppServerConfig::default(),
+            cwd: "/repo".to_owned(),
+            name: Some("worker".to_owned()),
+            env: std::iter::once(("OPENAI_API_KEY".to_owned(), "sk-live".to_owned())).collect(),
+            spawn_relay,
+        }
+    }
+
+    /// The restart path: a relay session's record goes through the real on-disk
+    /// snapshot, a fresh daemon merges it into an empty registry with nothing
+    /// remembered in-process, and the resume must still declare the tool.
+    #[tokio::test]
+    async fn a_rediscovered_thread_keeps_the_spawn_tool_across_a_daemon_restart() {
+        let thread_id = "thread_0199restartrelay";
+        let cap = cctui_proto::api::SpawnCapability {
+            adapters: vec!["codex".to_owned()],
+            ..Default::default()
+        };
+        let launched =
+            crate::adapters::agent_mcp::AgentMcp::for_capability("launch-key-r", Some(&cap));
+        assert!(
+            launched.is_some(),
+            "the launch must have had the relay for this test to mean anything"
+        );
+
+        let mut before = std::collections::HashMap::new();
+        before.insert(thread_id.to_owned(), relay_record(launched.is_some()));
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("codex-sessions.json");
+        super::super::persist::save_to(&path, &before).expect("snapshot written");
+
+        let restarted = SessionRegistry::default();
+        let restored =
+            super::super::persist::merge(&restarted, super::super::persist::load_from(&path)).await;
+        assert_eq!(restored, 1, "the thread is rediscovered from the snapshot");
+        assert!(
+            crate::adapters::agent_mcp::recall(thread_id).is_none(),
+            "a restart must leave nothing remembered in-process, or this proves nothing"
+        );
+
+        let record = restarted.lock().await.get(thread_id).cloned().expect("record restored");
+        let relay = resume_relay(thread_id, &record)
+            .expect("a rediscovered thread that had the relay must still get it");
+        assert_eq!(relay.session_key(), thread_id, "the relay keys onto the real thread id");
+        let keys: Vec<String> =
+            relay.codex_config_overrides().into_iter().map(|(k, _)| k).collect();
+        assert!(
+            keys.iter().any(|k| k.starts_with("mcp_servers.")),
+            "the resumed thread must re-declare the relay; got {keys:?}"
+        );
+        assert!(
+            !record.env.contains_key("OPENAI_API_KEY"),
+            "the credential still must not survive the restart"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_thread_that_never_had_the_relay_does_not_gain_it_on_resume() {
+        let mut before = std::collections::HashMap::new();
+        before.insert("thread_0199norelay".to_owned(), relay_record(false));
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("codex-sessions.json");
+        super::super::persist::save_to(&path, &before).expect("snapshot written");
+        let record = super::super::persist::load_from(&path)
+            .remove("thread_0199norelay")
+            .expect("record restored");
+        assert!(
+            resume_relay("thread_0199norelay", &record).is_none(),
+            "fail-closed: a session the server never granted spawn rights must not see the tool"
         );
     }
 
@@ -4120,6 +4215,7 @@ mod tests {
                 cwd: "/tmp".to_owned(),
                 name: None,
                 env: std::collections::BTreeMap::new(),
+                spawn_relay: false,
             },
         );
         let (tx, mut rx) = mpsc::channel(8);
@@ -4176,6 +4272,7 @@ mod tests {
                 cwd: "/tmp".to_owned(),
                 name: Some("n".to_owned()),
                 env: std::collections::BTreeMap::new(),
+                spawn_relay: false,
             },
         );
 
@@ -4204,6 +4301,7 @@ mod tests {
                 cwd: "/repo".to_owned(),
                 name: Some("stale".to_owned()),
                 env: std::collections::BTreeMap::new(),
+                spawn_relay: false,
             },
         );
 
@@ -5498,6 +5596,7 @@ done
                 cwd: "/repo".to_owned(),
                 name: None,
                 env: std::collections::BTreeMap::default(),
+                spawn_relay: false,
             },
         );
         let action = route_or_prepare_resume(
