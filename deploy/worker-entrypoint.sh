@@ -544,7 +544,8 @@ pack_dir_src() {
 # reference pulled by path (@~/.claude/docs/<x>.md), not auto-loaded; hooks/ =
 # PreToolUse scripts (chmod +x here, registered in phase_permissions). prompts/
 # and scripts/ stay in /opt/context (TASK_PROMPT_FILE / absolute paths resolve
-# there). Unknown keys land under ~/.claude/<key> — a per-pod emptyDir, so a new
+# there); projects/ is consumed by pack_wire_instructions, not copied to the
+# home. Unknown keys land under ~/.claude/<key> — a per-pod emptyDir, so a new
 # pack dir never writes to the NFS-shared home root.
 pack_dir_target() {
     case "$1" in
@@ -553,10 +554,52 @@ pack_dir_target() {
         docs)            printf '.claude/docs' ;;
         hooks)           printf '.claude/hooks' ;;
         style)           printf 'style' ;;
-        projects)        printf 'projects' ;;
-        prompts|scripts) ;;
+        prompts|scripts|projects) ;;
         *)               printf '.claude/%s' "$1" ;;
     esac
+}
+
+# Stage the pack's always-on instructions into /workspace, the PARENT of the
+# checkout at /workspace/${TASK_REPO}. Both harnesses resolve instructions by
+# walking UP from the cwd, and $HOME is not on that path — ~/CLAUDE.md and
+# ~/projects/<repo>/CLAUDE.md are never read. Do not "restore" this to $HOME.
+#
+# One level above the checkout is also the nearest read slot OUTSIDE the repo:
+# the repo's own committed AGENTS.md/CLAUDE.md stays deeper in the ancestry, so
+# it still loads and wins on conflict, and nothing lands in `git status`.
+#
+# AGENTS.md is the source (Codex reads it natively); CLAUDE.md beside it is the
+# pack's one-line @AGENTS.md import. A pack predating the split ships only
+# CLAUDE.md — use it for both.
+pack_wire_instructions() {
+    _ws="${PACK_WORKSPACE_DIR:-/workspace}"
+    [ -d "$_ws" ] || return 0
+    _src=""
+    [ -f "$CONTEXT_DIR/AGENTS.md" ] && _src="$CONTEXT_DIR/AGENTS.md"
+    [ -z "$_src" ] && [ -f "$CONTEXT_DIR/CLAUDE.md" ] && _src="$CONTEXT_DIR/CLAUDE.md"
+    [ -n "$_src" ] || return 0
+
+    cp -f "$_src" "$_ws/AGENTS.md" || return 0
+
+    _proj=$(pack_dir_src projects)
+    if [ -n "${TASK_REPO:-}" ] && [ -n "$_proj" ] \
+            && [ -d "$CONTEXT_DIR/$_proj/$TASK_REPO" ]; then
+        for _pf in "$CONTEXT_DIR/$_proj/$TASK_REPO"/*.md; do
+            [ -f "$_pf" ] || continue
+            printf '\n' >> "$_ws/AGENTS.md"
+            cat "$_pf" >> "$_ws/AGENTS.md"
+        done
+        log "context pack: appended ${_proj}/${TASK_REPO} to ${_ws}/AGENTS.md"
+    fi
+
+    if [ -f "$CONTEXT_DIR/CLAUDE.md" ] && [ "$_src" != "$CONTEXT_DIR/CLAUDE.md" ]; then
+        cp -f "$CONTEXT_DIR/CLAUDE.md" "$_ws/CLAUDE.md"
+    else
+        printf '@AGENTS.md\n' > "$_ws/CLAUDE.md"
+    fi
+
+    chown "${WORKER_UID}:${WORKER_UID}" "$_ws/AGENTS.md" "$_ws/CLAUDE.md" 2>/dev/null || true
+    log "context pack: wired AGENTS.md + CLAUDE.md -> ${_ws}/"
 }
 
 phase_context_pack() {
@@ -730,34 +773,25 @@ projects projects"
 
     # Per-pod isolation of the home paths the pack overwrites. /home/worker is a
     # ReadWriteMany NFS volume shared across concurrent workers, so writing the
-    # pack's CLAUDE.md / projects / style straight onto it would race-corrupt
-    # other in-flight dispatches. When a pack is active we bind an empty per-pod
-    # dir (under the /overlay emptyDir) over each, so the pack's writes are
-    # private to this pod and the shared NFS copy is untouched. (~/.claude is
-    # already a per-pod emptyDir, so skills/rules/docs need no isolation.) Best-
-    # effort: if /overlay or mount is unavailable we fall through to direct copy.
+    # pack's style dir straight onto it would race-corrupt other in-flight
+    # dispatches. When a pack is active we bind an empty per-pod dir (under the
+    # /overlay emptyDir) over it, so the pack's writes are private to this pod
+    # and the shared NFS copy is untouched. (~/.claude is already a per-pod
+    # emptyDir, so skills/rules/docs need no isolation.) Best-effort: if /overlay
+    # or mount is unavailable we fall through to direct copy.
     if [ -d /overlay ]; then
         _iso="/overlay/pack-home"
         mkdir -p "$_iso"
-        for _p in projects style; do
+        for _p in style; do
             _s=$(pack_dir_src "$_p")
             if [ -n "$_s" ] && [ -d "$CONTEXT_DIR/$_s" ]; then
                 mkdir -p "$_iso/$_p" "${_home}/$_p"
                 mount --bind "$_iso/$_p" "${_home}/$_p" 2>/dev/null || true
             fi
         done
-        if [ -f "$CONTEXT_DIR/CLAUDE.md" ]; then
-            : > "$_iso/CLAUDE.md"
-            [ -e "${_home}/CLAUDE.md" ] || : > "${_home}/CLAUDE.md"
-            mount --bind "$_iso/CLAUDE.md" "${_home}/CLAUDE.md" 2>/dev/null || true
-        fi
     fi
 
-    [ -f "$CONTEXT_DIR/CLAUDE.md" ] && cp -f "$CONTEXT_DIR/CLAUDE.md" "${_home}/CLAUDE.md"
-    # chown ONLY the paths we copy in — NOT the whole (NFS-backed) home, which
-    # would hang in NFS RPC like the credentials chown.
-    [ -e "${_home}/CLAUDE.md" ] \
-        && chown "${WORKER_UID}:${WORKER_UID}" "${_home}/CLAUDE.md" 2>/dev/null || true
+    pack_wire_instructions
     printf '%s\n' "$_dirs" | while read -r _key _srcd; do
         [ -n "$_key" ] || continue
         [ -n "$_srcd" ] || _srcd="$_key"
@@ -970,16 +1004,17 @@ phase_codex_pack() {
     _home="/home/${WORKER_USER}"
     _cfgdir="${CODEX_HOME:-${_home}/.codex}"
 
+    # /workspace/AGENTS.md is already staged by pack_wire_instructions and is in
+    # the cwd ancestry, so codex reads it without a copy here. Staging into
+    # CCTUI_DISPATCH_WORKDIR would write INSIDE the checkout (it resolves to
+    # /workspace/${TASK_REPO}) and clobber a repo that commits its own AGENTS.md.
     _instr=""
     [ -f "$CONTEXT_DIR/AGENTS.md" ] && _instr="$CONTEXT_DIR/AGENTS.md"
     [ -z "$_instr" ] && [ -f "$CONTEXT_DIR/CLAUDE.md" ] && _instr="$CONTEXT_DIR/CLAUDE.md"
     if [ -n "$_instr" ]; then
-        _wroot="${CCTUI_DISPATCH_WORKDIR:-/workspace}"
-        mkdir -p "$_wroot" "$_cfgdir"
-        cp -f "$_instr" "$_wroot/AGENTS.md" 2>/dev/null \
-            && chown "${WORKER_UID}:${WORKER_UID}" "$_wroot/AGENTS.md" 2>/dev/null || true
+        mkdir -p "$_cfgdir"
         cp -f "$_instr" "$_cfgdir/AGENTS.md" 2>/dev/null || true
-        log "codex: staged AGENTS.md (<- $(basename "$_instr")) into $_wroot and $_cfgdir"
+        log "codex: staged AGENTS.md (<- $(basename "$_instr")) into $_cfgdir"
     fi
 
     if [ -d "$CONTEXT_DIR/prompts" ]; then
