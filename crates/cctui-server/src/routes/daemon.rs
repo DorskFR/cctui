@@ -2358,9 +2358,7 @@ mod tests {
 
         let parent_id = Uuid::new_v4().to_string();
         let child_id = Uuid::new_v4().to_string();
-        for (id, parent) in
-            [(&parent_id, None::<&str>), (&child_id, Some(parent_id.as_str()))]
-        {
+        for (id, parent) in [(&parent_id, None::<&str>), (&child_id, Some(parent_id.as_str()))] {
             sqlx::query(
                 "INSERT INTO sessions (id, parent_id, machine_id, working_dir, user_id, \
                  machine_uuid, adapter_id) VALUES ($1, $2, $3, '/w', $4, $5, 'claude-code')",

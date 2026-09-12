@@ -1468,8 +1468,7 @@ pub async fn search_field_values(
     Ok(Json(rows.into_iter().map(|(v,)| v).collect()))
 }
 
-type EndRow =
-    (Option<String>, Option<String>, Option<DateTime<Utc>>, Option<serde_json::Value>);
+type EndRow = (Option<String>, Option<String>, Option<DateTime<Utc>>, Option<serde_json::Value>);
 
 #[allow(clippy::too_many_lines)]
 pub async fn get_session(
@@ -1594,18 +1593,16 @@ pub async fn get_session(
         end_detail: None,
         ended_at: None,
     };
-    let end: Option<EndRow> =
-        sqlx::query_as("SELECT end_reason, end_detail, ended_at, todos FROM sessions WHERE id = $1")
-            .bind(&item.id)
-            .fetch_optional(&state.pool)
-            .await
-            .map_err(|e| {
-                tracing::error!("db error: {e}");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ApiError { error: "database error".into() }),
-                )
-            })?;
+    let end: Option<EndRow> = sqlx::query_as(
+        "SELECT end_reason, end_detail, ended_at, todos FROM sessions WHERE id = $1",
+    )
+    .bind(&item.id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| {
+        tracing::error!("db error: {e}");
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
+    })?;
     if let Some((end_reason, end_detail, ended_at, todos)) = end {
         item.end_reason = end_reason.as_deref().map(SessionEndReason::parse);
         item.end_detail = end_detail;

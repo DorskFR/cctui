@@ -51,9 +51,19 @@ describe('ActivityBanner', () => {
 
 	it('stays idle while the agent is blocked on the user', () => {
 		const blocked = [
-			{ ask: { question: 'which?' } },
+			{ ask: { question: 'which?', questions: null } },
 			{ plan: { plan: '# plan' } },
-			{ perms: [{ request_id: 'r1' }] }
+			{
+				perms: [
+					{
+						session_id: 's1',
+						request_id: 'r1',
+						tool_name: 'Bash',
+						description: 'run a command',
+						input_preview: 'ls'
+					}
+				]
+			}
 		];
 		for (const b of blocked) {
 			render(stream({ working: true, lastAssistantLine: 'thinking', ...b }));

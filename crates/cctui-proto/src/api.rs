@@ -418,12 +418,13 @@ pub struct SessionListItem {
     pub ended_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-/// One entry of a session's agent task list, normalized across harnesses:
-/// claude's `TodoWrite` (`{content, status, activeForm}`) and codex's
+/// One entry of a session's agent task list, normalized across harnesses.
+///
+/// Claude's `TodoWrite` (`{content, status, activeForm}`) and codex's
 /// `update_plan` (`{step, status}`) both land here. `status` is always one of
 /// `pending` / `in_progress` / `completed`; anything unrecognized degrades to
 /// `pending`. `active_form` is claude-only.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct TodoEntry {
     pub content: String,
