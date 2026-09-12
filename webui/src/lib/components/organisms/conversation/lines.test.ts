@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { AgentEvent } from '@bindings/AgentEvent';
-import { allFilter } from './filters';
+import { allFilter, defaultFilter } from './filters';
 import { buildLines, type LineBuildCtx } from './lines';
 import type { MsgCategory } from './types';
 
@@ -371,5 +371,72 @@ describe('peer (cross-session) messages', () => {
 		const events = [text('▷ User: typed', 1), text(`▷ User: ${PEER}`, 2)];
 		expect(buildLines(events, ctx({ peer: false })).map((l) => l.role)).toEqual(['user']);
 		expect(buildLines(events, ctx({ user: false })).map((l) => l.role)).toEqual(['peer']);
+	});
+});
+
+describe('poll re-injection classification', () => {
+	const POLL = 'Check the queue depth and report anything above 100. Do not stop.';
+
+	it('keeps the first occurrence user and tints every repeat', () => {
+		const events = [text(`▷ User: ${POLL}`, 1), text(`▷ User: ${POLL}`, 2)];
+		expect(roles(events)).toEqual(['user', 'poll']);
+	});
+
+	it('catches a repeat separated by an assistant turn', () => {
+		const events = [
+			text(`▷ User: ${POLL}`, 1),
+			text('nothing above 100', 2),
+			text(`▷ User: ${POLL}`, 3),
+			text('still nothing', 4),
+			text(`▷ User: ${POLL}`, 5)
+		];
+		expect(roles(events)).toEqual(['user', 'assistant', 'poll', 'assistant', 'poll']);
+	});
+
+	it('ignores whitespace differences when matching a repeat', () => {
+		const events = [text('▷ User: run  the\nsweep', 1), text('▷ User: run the sweep', 2)];
+		expect(roles(events)).toEqual(['user', 'poll']);
+	});
+
+	it('does not tint near-identical but different prose', () => {
+		const events = [
+			text('▷ User: check the queue depth', 1),
+			text('▷ User: check the queue depths', 2)
+		];
+		expect(roles(events)).toEqual(['user', 'user']);
+	});
+
+	it('tints a marker-tagged injection on its first occurrence', () => {
+		expect(roles([text('▷ User: # Autonomous loop\n\ndo the thing', 1)])).toEqual(['poll']);
+	});
+
+	it('tints the scheduler wake-up sentinels', () => {
+		expect(roles([text('▷ User: <<autonomous-loop-dynamic>>', 1)])).toEqual(['poll']);
+	});
+
+	it('hides poll noise without hiding the human turn it repeats', () => {
+		const events = [text(`▷ User: ${POLL}`, 1), text(`▷ User: ${POLL}`, 2)];
+		expect(buildLines(events, ctx({ poll: false })).map((l) => l.role)).toEqual(['user']);
+	});
+
+	it('still classifies a repeat when the first occurrence is filtered out', () => {
+		const events = [text(`▷ User: ${POLL}`, 1), text(`▷ User: ${POLL}`, 2)];
+		expect(buildLines(events, ctx({ user: false })).map((l) => l.role)).toEqual(['poll']);
+	});
+
+	it('keeps delivery state on a repeat of a still-sending turn', () => {
+		const events = [text(`▷ User: ${POLL}`, 1), text(`▷ User: ${POLL}`, 2)];
+		const delivery = {
+			pending: new Set([2]),
+			failed: new Map<number, string>(),
+			retrying: new Map<number, { attempt: number; max: number }>()
+		};
+		const lines = buildLines(events, ctx(), delivery);
+		expect(lines[1].role).toBe('poll');
+		expect(lines[1].pending).toBe(true);
+	});
+
+	it('is visible by default', () => {
+		expect(defaultFilter().poll).toBe(true);
 	});
 });

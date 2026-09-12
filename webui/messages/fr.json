@@ -353,6 +353,7 @@
 	"conversation_filter_thinking": "Raisonnement",
 	"conversation_filter_tool": "Appels d'outils",
 	"conversation_filter_user": "Messages utilisateur",
+	"conversation_filter_poll": "Relances de boucle / sondage",
 	"conversation_filter_peer": "Messages d'agents pairs",
 	"conversation_filters": "Filtres",
 	"conversation_filters_off_count": "Filtres · {count} masquée(s)",

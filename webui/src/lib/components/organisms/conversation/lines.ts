@@ -29,10 +29,36 @@ export interface DeliveryState {
 	retrying: Map<number, { attempt: number; max: number }>;
 }
 
+// `# Autonomous loop` is also in `META_TAGS` and the daemon's `META_MARKERS`;
+// keep the three in sync.
+const POLL_PREFIXES = ['# Autonomous loop'];
+const POLL_SENTINELS = ['<<autonomous-loop>>', '<<autonomous-loop-dynamic>>'];
+
+export function looksPoll(text: string): boolean {
+	const t = text.trimStart();
+	return (
+		POLL_PREFIXES.some((mk) => t.startsWith(mk)) || POLL_SENTINELS.some((mk) => t.includes(mk))
+	);
+}
+
+export function normalizePollText(text: string): string {
+	return text.trim().replace(/\s+/g, ' ');
+}
+
+export interface PollSeen {
+	seen: Set<string>;
+}
+
 // History stores user turns as a `text` event prefixed with USER_PREFIX; some
 // "user" turns are really harness/system messages (detected structurally via
 // `looksMeta`) and render in a distinct hue.
-function userOrSystem(content: string, ts: number, meta: boolean, ctx: LineBuildCtx): Line | null {
+function userOrSystem(
+	content: string,
+	ts: number,
+	meta: boolean,
+	ctx: LineBuildCtx,
+	poll?: PollSeen
+): Line | null {
 	const peer = parsePeerMessage(content);
 	if (peer) {
 		if (!ctx.visible('peer')) return null;
@@ -44,7 +70,16 @@ function userOrSystem(content: string, ts: number, meta: boolean, ctx: LineBuild
 			peerFrom: peer.from ?? undefined
 		};
 	}
-	const role = meta ? 'system' : 'user';
+	let role: Line['role'] = meta ? 'system' : 'user';
+	if (looksPoll(content)) {
+		role = 'poll';
+	} else if (role === 'user' && poll) {
+		const norm = normalizePollText(content);
+		if (norm) {
+			if (poll.seen.has(norm)) role = 'poll';
+			else poll.seen.add(norm);
+		}
+	}
 	if (!ctx.visible(role)) return null;
 	// Claude's synthetic `[Image: source: …]` turn carries no human content; it
 	// exists only to echo what it ingested, and rendering it duplicates the turn.
@@ -65,13 +100,13 @@ export function resultCategory(e: AgentEvent & { type: 'tool_result' }): MsgCate
 	return e.error ? 'error' : e.kind === 'server_tool_result' ? 'server_result' : 'result';
 }
 
-export function toLine(e: AgentEvent, ctx: LineBuildCtx): Line | null {
-	const ln = buildLine(e, ctx);
+export function toLine(e: AgentEvent, ctx: LineBuildCtx, poll?: PollSeen): Line | null {
+	const ln = buildLine(e, ctx, poll);
 	if (ln && typeof e.seq === 'number') ln.seq = e.seq;
 	return ln;
 }
 
-function buildLine(e: AgentEvent, ctx: LineBuildCtx): Line | null {
+function buildLine(e: AgentEvent, ctx: LineBuildCtx, poll?: PollSeen): Line | null {
 	switch (e.type) {
 		case 'text': {
 			// Streaming emits an empty text event before the populated one — skip
@@ -104,7 +139,7 @@ function buildLine(e: AgentEvent, ctx: LineBuildCtx): Line | null {
 				// Classify structurally from content, not the stored `meta` bit —
 				// cctui-injected human replies carry a spurious `isMeta:true` and
 				// must stay `user` on reload.
-				return userOrSystem(content, Number(e.ts), looksMeta(content), ctx);
+				return userOrSystem(content, Number(e.ts), looksMeta(content), ctx, poll);
 			}
 			if (!ctx.visible(e.kind === 'attachment' ? 'attachment' : 'assistant')) return null;
 			return {
@@ -119,7 +154,7 @@ function buildLine(e: AgentEvent, ctx: LineBuildCtx): Line | null {
 		case 'reply':
 			// `reply` is only ever our own optimistic echo of typed input.
 			if (!e.content.trim()) return null;
-			return userOrSystem(e.content, Number(e.ts), false, ctx);
+			return userOrSystem(e.content, Number(e.ts), false, ctx, poll);
 		case 'tool_call': {
 			if (e.tool === 'AskUserQuestion') {
 				const ask = parseAsk(e.input);
@@ -250,6 +285,7 @@ export function buildLines(
 	delivery?: DeliveryState
 ): Line[] {
 	const out: Line[] = [];
+	const poll: PollSeen = { seen: new Set() };
 	let prevKey = '';
 	for (const e of events) {
 		if (e.type === 'turn_summary') {
@@ -263,7 +299,7 @@ export function buildLines(
 			}
 			continue;
 		}
-		const ln = toLine(e, ctx);
+		const ln = toLine(e, ctx, poll);
 		if (!ln) continue;
 		// Reset/compact markers are keyed by ts so two back-to-back ones aren't
 		// collapsed by the consecutive-duplicate guard.
@@ -273,7 +309,7 @@ export function buildLines(
 				: `${ln.role}|${ln.tool ?? ''}|${(ln.uploads?.names ?? []).join(',')}|${ln.text ?? ln.html ?? ''}`;
 		if (key === prevKey) continue;
 		prevKey = key;
-		if (ln.role === 'user' && delivery) {
+		if ((ln.role === 'user' || ln.role === 'poll') && delivery) {
 			if (delivery.pending.has(ln.ts)) ln.pending = true;
 			const retry = delivery.retrying.get(ln.ts);
 			if (retry !== undefined) ln.retrying = retry;

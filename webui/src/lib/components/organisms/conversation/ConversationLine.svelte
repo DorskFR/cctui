@@ -280,6 +280,9 @@
 	.line.peer {
 		--bc: var(--role-peer);
 	}
+	.line.poll {
+		--bc: var(--role-poll);
+	}
 	.line.marker {
 		--bc: var(--text-faint);
 	}
@@ -415,6 +418,10 @@
 	.line.peer .bubble {
 		background: color-mix(in srgb, var(--role-peer) 12%, var(--bg-elevated));
 		border-color: color-mix(in srgb, var(--role-peer) 40%, transparent);
+	}
+	.line.poll .bubble {
+		background: color-mix(in srgb, var(--role-poll) 12%, var(--bg-elevated));
+		border-color: color-mix(in srgb, var(--role-poll) 40%, transparent);
 	}
 	/* Harness bookkeeping (permission-mode flips, worktree/title updates) —
 	   deliberately the quietest bubble in the log. */
