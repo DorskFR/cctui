@@ -33,7 +33,6 @@
 				running={t.running}
 				open={t.open}
 				label={t.label}
-				type={t.type}
 				ontoggle={t.ontoggle}
 			/>
 		{/each}
