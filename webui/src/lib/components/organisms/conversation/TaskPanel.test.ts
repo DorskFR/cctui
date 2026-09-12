@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mount, unmount } from 'svelte';
+import { mount, tick, unmount } from 'svelte';
 import TaskPanel from './TaskPanel.svelte';
 import { taskPanelKey } from './taskPanel';
 import type { TodoItem, TodoProgress } from './types';
@@ -48,9 +48,10 @@ describe('TaskPanel', () => {
 		expect(text()).toContain('1/3');
 	});
 
-	it('expands to the full list with subject, status and blocked-by relations', () => {
+	it('expands to the full list with subject, status and blocked-by relations', async () => {
 		render(sample);
 		strip()?.click();
+		await tick();
 		expect(strip()?.getAttribute('aria-expanded')).toBe('true');
 		expect(document.querySelectorAll('.task')).toHaveLength(3);
 		expect(text()).toContain('Parse the payload');
@@ -58,15 +59,18 @@ describe('TaskPanel', () => {
 		expect(text()).toContain('blocked by Render the panel');
 	});
 
-	it('omits the blocked-by chip when a task has no relations', () => {
+	it('omits the blocked-by chip when a task has no relations', async () => {
 		render(progressOf([{ content: 'lonely', status: 'pending' }]));
 		strip()?.click();
+		await tick();
+		expect(document.querySelector('.task')).not.toBeNull();
 		expect(document.querySelector('.blocked')).toBeNull();
 	});
 
-	it('remembers the expanded state per session', () => {
+	it('remembers the expanded state per session', async () => {
 		render(sample, 'sA');
 		strip()?.click();
+		await tick();
 		expect(localStorage.getItem(taskPanelKey('sA'))).toBe('1');
 
 		unmount(comp!);
@@ -83,18 +87,22 @@ describe('TaskPanel', () => {
 		expect(strip()?.getAttribute('aria-expanded')).toBe('false');
 	});
 
-	it('collapsing clears the persisted flag rather than storing a falsy value', () => {
+	it('collapsing clears the persisted flag rather than storing a falsy value', async () => {
 		render(sample, 'sA');
 		strip()?.click();
+		await tick();
+		expect(strip()?.getAttribute('aria-expanded')).toBe('true');
 		strip()?.click();
+		await tick();
 		expect(strip()?.getAttribute('aria-expanded')).toBe('false');
 		expect(localStorage.getItem(taskPanelKey('sA'))).toBeNull();
 	});
 
-	it('keeps a very long subject on one truncated line with the full text as a tooltip', () => {
+	it('keeps a very long subject on one truncated line with the full text as a tooltip', async () => {
 		const long = 'x'.repeat(400);
 		render(progressOf([{ content: long, status: 'pending' }]));
 		strip()?.click();
+		await tick();
 		const subject = document.querySelector('.task .subject') as HTMLElement;
 		expect(subject.getAttribute('title')).toBe(long);
 		expect(document.querySelectorAll('.task')).toHaveLength(1);

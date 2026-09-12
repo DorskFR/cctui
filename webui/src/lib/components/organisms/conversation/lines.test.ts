@@ -495,6 +495,20 @@ describe('task lists', () => {
 		]);
 	});
 
+	it('renders the NEWEST list, not the stalest, across successive updates', () => {
+		const lines = buildLines(
+			[todoWrite(1, ['a', 'pending']), todoWrite(2, ['a', 'in_progress']), todoWrite(3, ['a', 'completed'])],
+			ctx()
+		);
+		const rendered = lines.filter((l) => l.todos).find((l) => l.key === latestTodoLineKey(lines));
+		expect(rendered?.todos?.[0].status).toBe('completed');
+	});
+
+	it('still collapses two IDENTICAL consecutive task lists, as the dupe guard intends', () => {
+		const lines = buildLines([todoWrite(1, ['a', 'pending']), todoWrite(2, ['a', 'pending'])], ctx());
+		expect(lines.filter((l) => l.todos)).toHaveLength(1);
+	});
+
 	it('leaves a malformed TodoWrite as an ordinary tool bubble', () => {
 		const ev: AgentEvent = { type: 'tool_call', tool: 'TodoWrite', input: { todos: [] }, kind: null, ts: 1, seq: 1 };
 		const [ln] = buildLines([ev], ctx());
