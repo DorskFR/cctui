@@ -227,8 +227,6 @@
 	"bookmarks_subtitle": "Les messages que vous avez sauvegardés, du plus récent au plus ancien.",
 	"bookmarks_title": "Favoris",
 	"bookmarks_title_placeholder": "Première ligne du message",
-	"bookmarks_toolbar_label": "Sauvegarder le dernier message de l'assistant dans les favoris",
-	"bookmarks_toolbar_title": "Mettre le récapitulatif en favori",
 	"bookmarks_updated": "Favori mis à jour",
 	"capbar_caption_resets": "réinitialisation {time}",
 	"capbar_tooltip": "plafond {pct} % — glissez la barre",
