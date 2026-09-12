@@ -52,6 +52,14 @@
 	onpointermove={() => onover?.()}
 >
 	<div class="head">
+		{#if onmove}
+			<DragGrip
+				label={m.spawn_profile_reorder({ name, position, total })}
+				hint={m.spawn_profile_reorder_hint()}
+				onmove={(delta) => onmove?.(delta)}
+				{ongrab}
+			/>
+		{/if}
 		<input
 			class="radio"
 			type="radio"
@@ -68,14 +76,6 @@
 			</span>
 			<span class="chain truncate" title={chain}>{chain}</span>
 		</label>
-		{#if onmove}
-			<DragGrip
-				label={m.spawn_profile_reorder({ name, position, total })}
-				hint={m.spawn_profile_reorder_hint()}
-				onmove={(delta) => onmove?.(delta)}
-				{ongrab}
-			/>
-		{/if}
 		<IconButton
 			icon="settings"
 			label={m.spawn_profile_adjust()}
@@ -109,8 +109,10 @@
 		--grip-opacity: 0.4;
 		display: flex;
 		align-items: center;
-		gap: var(--sp-2);
+		gap: var(--sp-1);
 		padding: var(--sp-2);
+		/* The grip is the row's leading gutter, so it supplies the inset itself. */
+		padding-inline-start: var(--sp-1);
 	}
 	.head:hover,
 	.head:focus-within {
