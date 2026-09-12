@@ -384,6 +384,12 @@ pub struct SessionListItem {
     /// a parent's rolled-up child activity shows via `last_tool_at`, not this.
     #[serde(default)]
     pub tool_use_count: u32,
+    /// The session's own agent task list, as of its newest `TodoWrite` (claude)
+    /// or `update_plan` (codex) call. Empty when the session never wrote one —
+    /// clients must render nothing at all rather than a zero state. Never
+    /// inherited from a parent or child: each subagent owns its own list.
+    #[serde(default)]
+    pub todos: Vec<TodoEntry>,
     /// Live token↔account credential binding: a non-revoked
     /// `session_tokens` row with a present `encrypted_token`. Distinct from
     /// `account_name`, which is `None` when the token's `accounts` row was
@@ -410,6 +416,20 @@ pub struct SessionListItem {
     pub end_detail: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ended_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// One entry of a session's agent task list, normalized across harnesses:
+/// claude's `TodoWrite` (`{content, status, activeForm}`) and codex's
+/// `update_plan` (`{step, status}`) both land here. `status` is always one of
+/// `pending` / `in_progress` / `completed`; anything unrecognized degrades to
+/// `pending`. `active_form` is claude-only.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct TodoEntry {
+    pub content: String,
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_form: Option<String>,
 }
 
 /// A reusable, user-defined colored label.

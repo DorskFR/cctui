@@ -159,6 +159,7 @@ export type * from './Source';
 export type * from './SpawnRequest';
 export type * from './SpawnResponse';
 export type * from './StageFilesResponse';
+export type * from './TodoEntry';
 export type * from './TokenUsage';
 export type * from './TokenUsageWindows';
 export type * from './TranscriptStatus';
