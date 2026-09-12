@@ -305,6 +305,13 @@ export type ToolActivity = {
 	detail: string | null;
 	// Working but no tool call for longer than TOOL_ASLEEP_AFTER_MS → wedged.
 	asleep: boolean;
+	// Agent task list (claude TodoWrite / codex update_plan). `todoTotal === 0`
+	// means the session never wrote one — render nothing, not a zero state.
+	todoDone: number;
+	todoTotal: number;
+	// The single in_progress entry's activeForm, falling back to its content.
+	// Arbitrary-length agent prose: every renderer must bound and truncate it.
+	todoActive: string | null;
 };
 
 export function toolActivity(s: SessionListItem, now: number): ToolActivity {
@@ -313,8 +320,13 @@ export function toolActivity(s: SessionListItem, now: number): ToolActivity {
 	const count = s.tool_use_count ?? 0;
 	const detail = s.activity_detail ?? null;
 	const asleep = working && ageMs !== null && ageMs > TOOL_ASLEEP_AFTER_MS;
-	const show = working && (ageMs !== null || !!detail);
-	return { show, count, ageMs, detail, asleep };
+	const todos = s.todos ?? [];
+	const todoTotal = todos.length;
+	const todoDone = todos.filter((t) => t.status === 'completed').length;
+	const running = todos.find((t) => t.status === 'in_progress');
+	const todoActive = running ? (running.active_form ?? running.content) || null : null;
+	const show = (working && (ageMs !== null || !!detail)) || todoTotal > 0;
+	return { show, count, ageMs, detail, asleep, todoDone, todoTotal, todoActive };
 }
 
 // Compact "12s" / "3m" / "1h" age label for the tool-cadence indicator.

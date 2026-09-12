@@ -174,6 +174,70 @@ describe('tool activity — asleep vs. grinding', () => {
 		expect(a.show).toBe(true);
 	});
 
+	it('derives done/total and the in_progress activeForm from the task list', () => {
+		const a = toolActivity(
+			working({
+				todos: [
+					{ content: 'parse it', status: 'completed', active_form: 'Parsing it' },
+					{ content: 'wire it', status: 'completed', active_form: 'Wiring it' },
+					{ content: 'ship it', status: 'in_progress', active_form: 'Wiring the parser' },
+					{ content: 'test it', status: 'pending', active_form: 'Testing it' }
+				]
+			}),
+			NOW
+		);
+		expect(a.todoDone).toBe(2);
+		expect(a.todoTotal).toBe(4);
+		expect(a.todoActive).toBe('Wiring the parser');
+		expect(a.show).toBe(true);
+	});
+
+	it('falls back to the entry content when the harness sent no activeForm', () => {
+		const a = toolActivity(
+			working({ todos: [{ content: 'change the code', status: 'in_progress' }] }),
+			NOW
+		);
+		expect(a.todoActive).toBe('change the code');
+		expect(a.todoDone).toBe(0);
+		expect(a.todoTotal).toBe(1);
+	});
+
+	it('reports no in_progress step when every task is pending or done', () => {
+		const a = toolActivity(
+			working({
+				todos: [
+					{ content: 'a', status: 'completed' },
+					{ content: 'b', status: 'pending' }
+				]
+			}),
+			NOW
+		);
+		expect(a.todoActive).toBeNull();
+		expect(a.todoDone).toBe(1);
+		expect(a.todoTotal).toBe(2);
+	});
+
+	it('renders no badge at all for a session that never wrote a task list', () => {
+		const a = toolActivity(working({ todos: [] }), NOW);
+		expect(a.todoTotal).toBe(0);
+		expect(a.todoActive).toBeNull();
+		expect(a.show).toBe(false);
+	});
+
+	it('surfaces the task list even outside the working bucket', () => {
+		const a = toolActivity(
+			session({
+				bucket: 'done',
+				status: 'active',
+				todos: [{ content: 'a', status: 'completed' }]
+			}),
+			NOW
+		);
+		expect(a.show).toBe(true);
+		expect(a.todoDone).toBe(1);
+		expect(a.count).toBe(0);
+	});
+
 	it('is never asleep for a non-working bucket', () => {
 		const a = toolActivity(
 			session({

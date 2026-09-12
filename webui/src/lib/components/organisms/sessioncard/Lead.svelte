@@ -25,6 +25,9 @@
 
 	const s = $derived(view.s);
 	const act = $derived(view.act);
+	// The in-progress task's activeForm is the more specific version of the
+	// daemon's spinner text, so it wins the single bounded headline slot.
+	const headline = $derived(act.todoActive ?? act.detail);
 </script>
 
 <Gutter
@@ -69,18 +72,26 @@
 	<span
 		class="activity"
 		class:asleep={act.asleep}
-		title={act.detail ??
+		title={act.todoActive ??
+			act.detail ??
 			(act.asleep ? m.sessions_activity_asleep_title() : m.sessions_activity_live_title())}
 	>
-		<span class="act-cadence"
-			>⚙{act.count}{#if act.ageMs !== null && s.last_tool_at}&nbsp;·&nbsp;<Timestamp
-					value={s.last_tool_at}
-					mode="relative"
-					size="xs"
-					tone="inherit"
-				/>{/if}</span
-		>
-		{#if act.detail && !row}<span class="act-detail">{act.detail}</span>{/if}
+		{#if act.count > 0 || act.ageMs !== null}
+			<span class="act-cadence"
+				>⚙{act.count}{#if act.ageMs !== null && s.last_tool_at}&nbsp;·&nbsp;<Timestamp
+						value={s.last_tool_at}
+						mode="relative"
+						size="xs"
+						tone="inherit"
+					/>{/if}</span
+			>
+		{/if}
+		{#if act.todoTotal > 0}
+			<span class="act-todos" class:running={act.todoActive !== null}
+				>{act.todoDone}/{act.todoTotal}</span
+			>
+		{/if}
+		{#if headline && !row}<span class="act-detail">{headline}</span>{/if}
 	</span>
 {/if}
 
@@ -125,6 +136,19 @@
 		flex: none;
 		font-variant-numeric: tabular-nums;
 	}
+	/* Faint = every task pending/done, accent = one is in_progress, so the row
+	   distinguishes "has a list" from "actively working a step" at a glance. */
+	.act-todos {
+		flex: none;
+		font-variant-numeric: tabular-nums;
+	}
+	.act-todos.running {
+		color: var(--accent);
+		font-weight: 600;
+	}
+	/* `act-detail` carries arbitrary-length agent prose (the in_progress
+	   activeForm). It must stay capped and ellipsized: an unbounded string here
+	   grows the lead row and wraps the session emoji onto a second line. */
 	.act-detail {
 		min-width: 0;
 		overflow: hidden;
