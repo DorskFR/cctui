@@ -84,6 +84,20 @@ describe('parseTodos', () => {
 		expect(parseTodos({ todos: [{ content: 'x', status: 'banana' }] })?.[0].status).toBe('pending');
 	});
 
+	it('captures blocked-by relations in either casing when present', () => {
+		expect(parseTodos({ todos: [{ content: 'a', status: 'pending', blockedBy: ['x', 'y'] }] })?.[0].blockedBy).toEqual([
+			'x',
+			'y'
+		]);
+		expect(parseTodos({ todos: [{ content: 'a', status: 'pending', blocked_by: ['x'] }] })?.[0].blockedBy).toEqual(['x']);
+	});
+
+	it('leaves blockedBy undefined when absent or unusable', () => {
+		expect(parseTodos({ todos: [{ content: 'a', status: 'pending' }] })?.[0].blockedBy).toBeUndefined();
+		expect(parseTodos({ todos: [{ content: 'a', status: 'pending', blockedBy: 'nope' }] })?.[0].blockedBy).toBeUndefined();
+		expect(parseTodos({ todos: [{ content: 'a', status: 'pending', blockedBy: [1, ''] }] })?.[0].blockedBy).toBeUndefined();
+	});
+
 	it('degrades to null on malformed or empty input without throwing', () => {
 		for (const bad of [undefined, null, {}, { todos: [] }, { todos: 'nope' }, { plan: [] }, 42, 'str']) {
 			expect(parseTodos(bad)).toBeNull();

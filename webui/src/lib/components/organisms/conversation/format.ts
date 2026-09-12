@@ -128,6 +128,12 @@ export function parsePlan(input: unknown): string | null {
 	return plan;
 }
 
+function blockedBy(raw: unknown): string[] | undefined {
+	if (!Array.isArray(raw)) return undefined;
+	const out = raw.filter((v): v is string => typeof v === 'string' && v.trim().length > 0);
+	return out.length ? out : undefined;
+}
+
 function todoStatus(raw: unknown): TodoStatus {
 	switch (raw) {
 		case 'in_progress':
@@ -147,13 +153,21 @@ export function parseTodos(input: unknown): TodoItem[] | null {
 	const out: TodoItem[] = [];
 	for (const e of raw) {
 		if (!e || typeof e !== 'object') continue;
-		const r = e as { content?: unknown; step?: unknown; status?: unknown; activeForm?: unknown };
+		const r = e as {
+			content?: unknown;
+			step?: unknown;
+			status?: unknown;
+			activeForm?: unknown;
+			blockedBy?: unknown;
+			blocked_by?: unknown;
+		};
 		const content = typeof r.content === 'string' ? r.content : typeof r.step === 'string' ? r.step : '';
 		if (!content.trim()) continue;
 		out.push({
 			content,
 			status: todoStatus(r.status),
-			activeForm: typeof r.activeForm === 'string' && r.activeForm.trim() ? r.activeForm : undefined
+			activeForm: typeof r.activeForm === 'string' && r.activeForm.trim() ? r.activeForm : undefined,
+			blockedBy: blockedBy(r.blockedBy ?? r.blocked_by)
 		});
 	}
 	return out.length ? out : null;

@@ -115,6 +115,7 @@ export interface TodoItem {
 	content: string;
 	status: TodoStatus;
 	activeForm?: string;
+	blockedBy?: string[];
 }
 
 export interface TodoProgress {
