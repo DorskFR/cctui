@@ -274,6 +274,7 @@
 	"composer_resume": "Reprendre",
 	"composer_send": "Envoyer",
 	"composer_uploading": "Envoi…",
+	"conversation_activity_idle": "Inactif",
 	"conversation_acct_bindings_desc": "Chaque fournisseur porté par cette conversation est lié à un compte. Changez-en un — la conversation conserve son historique ; seul le compte en amont change.",
 	"conversation_acct_close_aria": "Fermer le sélecteur de compte",
 	"conversation_acct_field_label": "Compte",

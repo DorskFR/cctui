@@ -27,6 +27,7 @@
 	import DrawerHeader from './conversation/DrawerHeader.svelte';
 	import DrawerToolbar from './conversation/DrawerToolbar.svelte';
 	import DiagnosePanel from './conversation/DiagnosePanel.svelte';
+	import ActivityBanner from './conversation/ActivityBanner.svelte';
 	import TerminalPane from './conversation/TerminalPane.svelte';
 	import Conversation from './conversation/Conversation.svelte';
 	import AccountSwitchModal from './conversation/AccountSwitchModal.svelte';
@@ -644,6 +645,8 @@
 				onbookmark={(ln) => (bookmarkDraft = draftFromLine(ln, id, session.name ?? null))}
 				{isBookmarked}
 			/>
+
+			<ActivityBanner {stream} {archived} />
 
 			<ConversationComposer
 				bind:this={composer}

@@ -17,6 +17,7 @@ import {
 	type SoftLimit
 } from '$lib/ws.svelte';
 import { parseAsk, parseTodos, todoProgress as deriveTodoProgress } from './format';
+import { lastProseLine, toolInvocationSummary, type ActivityTool } from './activity';
 import type { AskQuestion, TodoItem, TodoProgress } from './types';
 import { endpoints } from '$lib/queries';
 
@@ -56,6 +57,14 @@ export class ConversationStream {
 	// Folded last-write-wins: the list mutates many times per turn and only its
 	// latest state is meaningful.
 	todos = $state<TodoItem[] | null>(null);
+	// Activity-banner state. Stamped with the browser clock at receipt rather
+	// than the event's daemon `ts`, which is a different clock and would skew
+	// every elapsed reading.
+	currentTool = $state<ActivityTool | null>(null);
+	turnStartedAt = $state<number | null>(null);
+	turnTokensIn = $state(0);
+	turnTokensOut = $state(0);
+	lastAssistantLine = $state<string | null>(null);
 	// Per-message delivery state, mirrored from the ws singleton so a
 	// failed/in-flight send survives the drawer being reopened.
 	pendingReplies = $state<Set<number>>(new Set());
@@ -87,6 +96,7 @@ export class ConversationStream {
 		this.answering = false;
 		this.working = false;
 		this.todos = null;
+		this.#resetActivity();
 		ws.subscribe(sid);
 		const offStream = ws.onStream(sid, (ev) => {
 			// Skip a server-echoed user message that duplicates our optimistic one.
@@ -119,6 +129,7 @@ export class ConversationStream {
 				const t = parseTodos(ev.input);
 				if (t) this.todos = t;
 			}
+			this.#trackActivity(ev);
 			if (ev.type === 'turn_end') this.working = false;
 			else if (ev.type !== 'heartbeat') this.working = true;
 		});
@@ -188,6 +199,62 @@ export class ConversationStream {
 			document.removeEventListener('visibilitychange', onVis);
 			window.removeEventListener('focus', refresh);
 		};
+	}
+
+	#resetActivity() {
+		this.currentTool = null;
+		this.turnStartedAt = null;
+		this.turnTokensIn = 0;
+		this.turnTokensOut = 0;
+		this.lastAssistantLine = null;
+	}
+
+	#trackActivity(ev: AgentEvent) {
+		if (ev.type === 'turn_end') {
+			this.currentTool = null;
+			this.turnStartedAt = null;
+			return;
+		}
+		if (ev.type === 'heartbeat') return;
+		if (this.turnStartedAt === null) {
+			this.turnStartedAt = Date.now();
+			this.turnTokensIn = 0;
+			this.turnTokensOut = 0;
+		}
+		switch (ev.type) {
+			case 'tool_call':
+				this.currentTool = {
+					tool: ev.tool,
+					summary: toolInvocationSummary(ev.tool, ev.input),
+					startedAt: Date.now()
+				};
+				break;
+			case 'tool_result':
+				// Only the matching tool clears the banner: a late result for an
+				// earlier call must not blank a tool that has already started.
+				if (this.currentTool?.tool === ev.tool) this.currentTool = null;
+				break;
+			case 'text': {
+				if (ev.usage) {
+					this.turnTokensIn += ev.usage.tokens_in;
+					this.turnTokensOut += ev.usage.tokens_out;
+				}
+				if (ev.kind) break;
+				const line = lastProseLine(ev.content);
+				if (line) {
+					this.lastAssistantLine = line;
+					this.currentTool = null;
+				}
+				break;
+			}
+			case 'reply':
+				this.lastAssistantLine = null;
+				this.currentTool = null;
+				break;
+			case 'context_reset':
+				this.#resetActivity();
+				break;
+		}
 	}
 
 	// Null when the session never produced a task list — callers render nothing
