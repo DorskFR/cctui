@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { AgentEvent } from '@bindings/AgentEvent';
 import { allFilter, defaultFilter } from './filters';
+import { latestTodoLineKey } from './format';
 import { buildLines, type LineBuildCtx } from './lines';
 import type { MsgCategory } from './types';
 
@@ -438,5 +439,66 @@ describe('poll re-injection classification', () => {
 
 	it('is visible by default', () => {
 		expect(defaultFilter().poll).toBe(true);
+	});
+});
+
+describe('task lists', () => {
+	const todoWrite = (ts: number, ...contents: [string, string][]): AgentEvent => ({
+		type: 'tool_call',
+		tool: 'TodoWrite',
+		input: { todos: contents.map(([content, status]) => ({ content, status, activeForm: `Doing ${content}` })) },
+		kind: null,
+		ts,
+		seq: ts
+	});
+
+	it('parses a TodoWrite tool_call into a todo line instead of a JSON bubble', () => {
+		const [ln] = buildLines([todoWrite(1, ['a', 'pending'])], ctx());
+		expect(ln.todos).toEqual([{ content: 'a', status: 'pending', activeForm: 'Doing a' }]);
+		expect(ln.htmlCode).toBeUndefined();
+	});
+
+	it('parses a codex update_plan tool_call the same way', () => {
+		const ev: AgentEvent = {
+			type: 'tool_call',
+			tool: 'update_plan',
+			input: { plan: [{ step: 'read code', status: 'in_progress' }] },
+			kind: null,
+			ts: 1,
+			seq: 1
+		};
+		expect(buildLines([ev], ctx())[0].todos?.[0]).toEqual({
+			content: 'read code',
+			status: 'in_progress',
+			activeForm: undefined
+		});
+	});
+
+	it('folds three successive TodoWrite calls to exactly one rendered card carrying the newest array', () => {
+		const lines = buildLines(
+			[
+				todoWrite(1, ['a', 'pending'], ['b', 'pending']),
+				todoWrite(2, ['a', 'completed'], ['b', 'pending']),
+				todoWrite(3, ['a', 'completed'], ['b', 'in_progress'])
+			],
+			ctx()
+		);
+		const todoLines = lines.filter((l) => l.todos);
+		expect(todoLines).toHaveLength(3);
+
+		const latest = latestTodoLineKey(lines);
+		const rendered = todoLines.filter((l) => l.key === latest);
+		expect(rendered).toHaveLength(1);
+		expect(rendered[0].todos).toEqual([
+			{ content: 'a', status: 'completed', activeForm: 'Doing a' },
+			{ content: 'b', status: 'in_progress', activeForm: 'Doing b' }
+		]);
+	});
+
+	it('leaves a malformed TodoWrite as an ordinary tool bubble', () => {
+		const ev: AgentEvent = { type: 'tool_call', tool: 'TodoWrite', input: { todos: [] }, kind: null, ts: 1, seq: 1 };
+		const [ln] = buildLines([ev], ctx());
+		expect(ln.todos).toBeUndefined();
+		expect(ln.role).toBe('tool');
 	});
 });

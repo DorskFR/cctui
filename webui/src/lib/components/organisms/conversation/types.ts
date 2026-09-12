@@ -111,6 +111,23 @@ export interface AskQuestion {
 	options: { label: string; description?: string; preview?: string }[];
 }
 
+export type TodoStatus = 'pending' | 'in_progress' | 'completed';
+
+// Codex's `update_plan` steps carry no gerund form, hence optional `activeForm`.
+export interface TodoItem {
+	content: string;
+	status: TodoStatus;
+	activeForm?: string;
+	blockedBy?: string[];
+}
+
+export interface TodoProgress {
+	items: TodoItem[];
+	done: number;
+	total: number;
+	inProgress: TodoItem | null;
+}
+
 // Post-turn summary emitted by the server at turn end. Rendered as a footer on
 // the turn's last assistant bubble, never as a bubble of its own.
 export interface TurnSummary {
@@ -157,6 +174,8 @@ export interface Line {
 	ask?: AskQuestion[];
 	// Parsed ExitPlanMode plan markdown — rendered as a Plan card.
 	plan?: string;
+	// Parsed TodoWrite / update_plan task list — rendered as a Todo card.
+	todos?: TodoItem[];
 	// Turn summary attached to this (assistant) line, rendered under its bubble.
 	summary?: TurnSummary;
 	durationMs?: number;

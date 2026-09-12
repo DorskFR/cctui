@@ -27,6 +27,8 @@
 	import DrawerHeader from './conversation/DrawerHeader.svelte';
 	import DrawerToolbar from './conversation/DrawerToolbar.svelte';
 	import DiagnosePanel from './conversation/DiagnosePanel.svelte';
+	import ActivityBanner from './conversation/ActivityBanner.svelte';
+	import TaskPanel from './conversation/TaskPanel.svelte';
 	import TerminalPane from './conversation/TerminalPane.svelte';
 	import Conversation from './conversation/Conversation.svelte';
 	import AccountSwitchModal from './conversation/AccountSwitchModal.svelte';
@@ -571,6 +573,8 @@
 				onunpin={(seq) => void pinActions.unpin(id, seq)}
 			/>
 
+			<TaskPanel sessionId={id} progress={stream.todoProgress} />
+
 			{#if diagnoseOpen}
 				<DiagnosePanel sessionId={id} {session} onclose={closeDiagnose} />
 			{/if}
@@ -630,6 +634,8 @@
 				onbookmark={(ln) => (bookmarkDraft = draftFromLine(ln, id, session.name ?? null))}
 				{isBookmarked}
 			/>
+
+			<ActivityBanner {stream} {archived} />
 
 			<ConversationComposer
 				bind:this={composer}

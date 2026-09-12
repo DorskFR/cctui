@@ -10,6 +10,7 @@ import {
 	isSyntheticImageNotice,
 	parsePeerMessage,
 	parsePlan,
+	parseTodos,
 	stampTurns,
 	stripAttachmentDecorations
 } from './format';
@@ -163,6 +164,10 @@ function buildLine(e: AgentEvent, ctx: LineBuildCtx, poll?: PollSeen): Line | nu
 			if (e.tool === 'ExitPlanMode') {
 				const plan = parsePlan(e.input);
 				if (plan) return { role: 'tool', ts: Number(e.ts), tool: e.tool, plan };
+			}
+			if (e.tool === 'TodoWrite' || e.tool === 'update_plan') {
+				const todos = parseTodos(e.input);
+				if (todos) return { role: 'tool', ts: Number(e.ts), tool: e.tool, todos };
 			}
 			const isMcp = e.tool.startsWith('mcp__');
 			const cat = e.kind === 'server_tool_use' ? 'server_tool' : isMcp ? 'mcp' : 'tool';

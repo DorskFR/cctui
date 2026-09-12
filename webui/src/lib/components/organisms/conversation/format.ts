@@ -6,7 +6,7 @@ import type { AgentEvent } from '@bindings/AgentEvent';
 import { userMsgKey } from '$lib/ws.svelte';
 import { prettyJson } from '$lib/markdown';
 import { m } from '$lib/paraglide/messages';
-import type { AskQuestion, Line } from './types';
+import type { AskQuestion, Line, TodoItem, TodoProgress, TodoStatus } from './types';
 
 // Some "user" turns are really harness/system messages directed at the agent
 // (timer wake-ups, task-completion notifications, injected reminders, skill
@@ -126,6 +126,69 @@ export function parsePlan(input: unknown): string | null {
 	const plan = (input as { plan?: unknown })?.plan;
 	if (typeof plan !== 'string' || plan.trim().length === 0) return null;
 	return plan;
+}
+
+function blockedBy(raw: unknown): string[] | undefined {
+	if (!Array.isArray(raw)) return undefined;
+	const out = raw.filter((v): v is string => typeof v === 'string' && v.trim().length > 0);
+	return out.length ? out : undefined;
+}
+
+function todoStatus(raw: unknown): TodoStatus {
+	switch (raw) {
+		case 'in_progress':
+		case 'completed':
+			return raw;
+		default:
+			return 'pending';
+	}
+}
+
+// Null for malformed/empty input so the caller degrades to the generic JSON
+// bubble rather than rendering an empty card.
+export function parseTodos(input: unknown): TodoItem[] | null {
+	const src = input as { todos?: unknown; plan?: unknown } | null | undefined;
+	const raw = Array.isArray(src?.todos) ? src.todos : Array.isArray(src?.plan) ? src.plan : null;
+	if (!raw || raw.length === 0) return null;
+	const out: TodoItem[] = [];
+	for (const e of raw) {
+		if (!e || typeof e !== 'object') continue;
+		const r = e as {
+			content?: unknown;
+			step?: unknown;
+			status?: unknown;
+			activeForm?: unknown;
+			blockedBy?: unknown;
+			blocked_by?: unknown;
+		};
+		const content = typeof r.content === 'string' ? r.content : typeof r.step === 'string' ? r.step : '';
+		if (!content.trim()) continue;
+		out.push({
+			content,
+			status: todoStatus(r.status),
+			activeForm: typeof r.activeForm === 'string' && r.activeForm.trim() ? r.activeForm : undefined,
+			blockedBy: blockedBy(r.blockedBy ?? r.blocked_by)
+		});
+	}
+	return out.length ? out : null;
+}
+
+export function todoProgress(items: TodoItem[] | null | undefined): TodoProgress | null {
+	if (!items?.length) return null;
+	return {
+		items,
+		done: items.filter((t) => t.status === 'completed').length,
+		total: items.length,
+		inProgress: items.find((t) => t.status === 'in_progress') ?? null
+	};
+}
+
+// Key of the only task-list line that may render a card. Must be computed over
+// the FULL transcript, never the render window, or paging older lines in would
+// promote a stale list to "newest".
+export function latestTodoLineKey(lines: Line[]): string | undefined {
+	for (let i = lines.length - 1; i >= 0; i--) if (lines[i].todos) return lines[i].key;
+	return undefined;
 }
 
 // Content signature of an event, used to dedup the live stream against fetched

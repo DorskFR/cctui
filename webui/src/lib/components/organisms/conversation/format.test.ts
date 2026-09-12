@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { parseTodos, todoProgress } from './format';
 import type { AskQuestion, Line } from './types';
 
 // The Conversation Drawer must render the combined message list in strict
@@ -46,5 +47,80 @@ describe('conversation render ordering', () => {
 		const out = renderOrder([a, b]);
 		expect(out[0]).toBe(a);
 		expect(out[1]).toBe(b);
+	});
+});
+
+describe('parseTodos', () => {
+	it('parses a claude TodoWrite input', () => {
+		const todos = parseTodos({
+			todos: [
+				{ content: 'Wire the parser', status: 'completed', activeForm: 'Wiring the parser' },
+				{ content: 'Render the card', status: 'in_progress', activeForm: 'Rendering the card' },
+				{ content: 'Write the tests', status: 'pending', activeForm: 'Writing the tests' }
+			]
+		});
+		expect(todos).toEqual([
+			{ content: 'Wire the parser', status: 'completed', activeForm: 'Wiring the parser' },
+			{ content: 'Render the card', status: 'in_progress', activeForm: 'Rendering the card' },
+			{ content: 'Write the tests', status: 'pending', activeForm: 'Writing the tests' }
+		]);
+	});
+
+	it('normalizes a codex update_plan step array into the same shape', () => {
+		expect(
+			parseTodos({
+				plan: [
+					{ step: 'Read the code', status: 'completed' },
+					{ step: 'Patch it', status: 'in_progress' }
+				]
+			})
+		).toEqual([
+			{ content: 'Read the code', status: 'completed', activeForm: undefined },
+			{ content: 'Patch it', status: 'in_progress', activeForm: undefined }
+		]);
+	});
+
+	it('defaults an unknown status to pending', () => {
+		expect(parseTodos({ todos: [{ content: 'x', status: 'banana' }] })?.[0].status).toBe('pending');
+	});
+
+	it('captures blocked-by relations in either casing when present', () => {
+		expect(parseTodos({ todos: [{ content: 'a', status: 'pending', blockedBy: ['x', 'y'] }] })?.[0].blockedBy).toEqual([
+			'x',
+			'y'
+		]);
+		expect(parseTodos({ todos: [{ content: 'a', status: 'pending', blocked_by: ['x'] }] })?.[0].blockedBy).toEqual(['x']);
+	});
+
+	it('leaves blockedBy undefined when absent or unusable', () => {
+		expect(parseTodos({ todos: [{ content: 'a', status: 'pending' }] })?.[0].blockedBy).toBeUndefined();
+		expect(parseTodos({ todos: [{ content: 'a', status: 'pending', blockedBy: 'nope' }] })?.[0].blockedBy).toBeUndefined();
+		expect(parseTodos({ todos: [{ content: 'a', status: 'pending', blockedBy: [1, ''] }] })?.[0].blockedBy).toBeUndefined();
+	});
+
+	it('degrades to null on malformed or empty input without throwing', () => {
+		for (const bad of [undefined, null, {}, { todos: [] }, { todos: 'nope' }, { plan: [] }, 42, 'str']) {
+			expect(parseTodos(bad)).toBeNull();
+		}
+		expect(parseTodos({ todos: [null, 7, { status: 'pending' }, { content: '   ' }] })).toBeNull();
+	});
+});
+
+describe('todoProgress', () => {
+	it('counts done/total and surfaces the in_progress item', () => {
+		const p = todoProgress([
+			{ content: 'a', status: 'completed' },
+			{ content: 'b', status: 'in_progress', activeForm: 'Doing b' },
+			{ content: 'c', status: 'pending' }
+		]);
+		expect(p).not.toBeNull();
+		expect(p?.done).toBe(1);
+		expect(p?.total).toBe(3);
+		expect(p?.inProgress?.activeForm).toBe('Doing b');
+	});
+
+	it('is null for an absent or empty list', () => {
+		expect(todoProgress(null)).toBeNull();
+		expect(todoProgress([])).toBeNull();
 	});
 });
