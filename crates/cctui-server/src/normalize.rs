@@ -248,8 +248,28 @@ fn codex(_event_type: &str, payload: &Value) -> Option<Value> {
         // them by source is what prevents every message rendering twice.
         "event_msg" => payload.get("payload").and_then(codex_event_msg),
         "response_item" => payload.get("payload").and_then(codex_response_item),
-        // Final assistant answer + plan updates → assistant text.
-        "agentMessage" | "plan" => {
+        // Final assistant answer → assistant text.
+        "agentMessage" => {
+            let text = payload.get("text").and_then(Value::as_str).unwrap_or_default();
+            if text.is_empty() {
+                return None;
+            }
+            Some(json!({ "type": "text", "content": text, "role": "Assistant" }))
+        }
+        // Codex's half of the agent task list, as a synthetic `update_plan` tool
+        // call so it lands in the same card path and `sessions.todos` projection
+        // as claude's `TodoWrite`. The `{step, status}` array goes through
+        // verbatim — clients parse both shapes, so do not reshape it. A plan
+        // with no step array degrades to an assistant-text line.
+        "plan" => {
+            let steps = payload.get("plan").filter(|v| v.is_array());
+            if let Some(steps) = steps {
+                return Some(json!({
+                    "type": "tool_call",
+                    "tool": "update_plan",
+                    "input": { "plan": steps },
+                }));
+            }
             let text = payload.get("text").and_then(Value::as_str).unwrap_or_default();
             if text.is_empty() {
                 return None;
@@ -861,6 +881,35 @@ mod tests {
     }
 
     #[test]
+    fn codex_plan_maps_to_an_update_plan_tool_call_carrying_the_steps() {
+        let p = json!({
+            "type": "plan",
+            "text": "why\n\n- [x] read the code\n- [~] change the code",
+            "plan": [
+                { "step": "read the code", "status": "completed" },
+                { "step": "change the code", "status": "in_progress" },
+                { "step": "test the code", "status": "pending" },
+            ],
+        });
+        let n = for_client("codex", "message", p).unwrap();
+        assert_eq!(n["type"], "tool_call");
+        assert_eq!(n["tool"], "update_plan");
+        let steps = n["input"]["plan"].as_array().expect("step array survives");
+        assert_eq!(steps.len(), 3);
+        assert_eq!(steps[1]["step"], "change the code");
+        assert_eq!(steps[1]["status"], "in_progress");
+    }
+
+    #[test]
+    fn codex_plan_without_steps_still_renders_as_text() {
+        let p = json!({ "type": "plan", "text": "just prose" });
+        let n = for_client("codex", "message", p).unwrap();
+        assert_eq!(n["type"], "text");
+        assert_eq!(n["content"], "just prose");
+        assert_eq!(for_client("codex", "message", json!({ "type": "plan" })), None);
+    }
+
+    #[test]
     fn codex_user_message_joins_content_and_prefixes() {
         let p = json!({ "type": "userMessage", "content": [
             { "type": "text", "text": "do a thing", "text_elements": [] }
@@ -1125,6 +1174,25 @@ mod tests {
         match to_agent_event("codex", "message", &p) {
             Some(AgentEvent::Text { content, .. }) => assert_eq!(content, "hi"),
             other => panic!("expected Text, got {other:?}"),
+        }
+    }
+
+    /// The live path is what feeds `daemon::extract_todos`, so the plan has to
+    /// broadcast as a `ToolCall` named `update_plan` — a `Text` event here means
+    /// the codex task list silently never reaches `sessions.todos`.
+    #[test]
+    fn codex_live_plan_broadcasts_an_update_plan_tool_call() {
+        let p = json!({
+            "type": "plan",
+            "text": "- [~] change the code",
+            "plan": [{ "step": "change the code", "status": "in_progress" }],
+        });
+        match to_agent_event("codex", "message", &p) {
+            Some(AgentEvent::ToolCall { tool, input, .. }) => {
+                assert_eq!(tool, "update_plan");
+                assert_eq!(input["plan"][0]["status"], "in_progress");
+            }
+            other => panic!("expected ToolCall, got {other:?}"),
         }
     }
 
