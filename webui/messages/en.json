@@ -1561,6 +1561,7 @@
 	"theme_group_dark": "Dark",
 	"theme_group_light": "Light",
 	"toast_undo": "Undo",
+	"todo_heading": "📋 Tasks",
 	"turn_result_label": "Result",
 	"turn_tool_label": "Tool",
 	"update_agent_badge": "Agent fallback",

@@ -16,8 +16,8 @@ import {
 	type LivePlan,
 	type SoftLimit
 } from '$lib/ws.svelte';
-import { parseAsk } from './format';
-import type { AskQuestion } from './types';
+import { parseAsk, parseTodos, todoProgress as deriveTodoProgress } from './format';
+import type { AskQuestion, TodoItem, TodoProgress } from './types';
 import { endpoints } from '$lib/queries';
 
 export interface StreamOpts {
@@ -53,6 +53,9 @@ export class ConversationStream {
 	// per-chat "soft limit reached → continue on another account" banner. Null
 	// when no block is active.
 	softLimit = $state<SoftLimit | null>(null);
+	// Folded last-write-wins: the list mutates many times per turn and only its
+	// latest state is meaningful.
+	todos = $state<TodoItem[] | null>(null);
 	// Per-message delivery state, mirrored from the ws singleton so a
 	// failed/in-flight send survives the drawer being reopened.
 	pendingReplies = $state<Set<number>>(new Set());
@@ -83,6 +86,7 @@ export class ConversationStream {
 		this.live = ws.bufferedEvents(sid);
 		this.answering = false;
 		this.working = false;
+		this.todos = null;
 		ws.subscribe(sid);
 		const offStream = ws.onStream(sid, (ev) => {
 			// Skip a server-echoed user message that duplicates our optimistic one.
@@ -111,6 +115,10 @@ export class ConversationStream {
 			}
 			// Drive the activity indicator: a turn ends on `turn_end`; any
 			// substantive agent/tool/user event means work is in progress.
+			if (ev.type === 'tool_call' && (ev.tool === 'TodoWrite' || ev.tool === 'update_plan')) {
+				const t = parseTodos(ev.input);
+				if (t) this.todos = t;
+			}
 			if (ev.type === 'turn_end') this.working = false;
 			else if (ev.type !== 'heartbeat') this.working = true;
 		});
@@ -180,6 +188,12 @@ export class ConversationStream {
 			document.removeEventListener('visibilitychange', onVis);
 			window.removeEventListener('focus', refresh);
 		};
+	}
+
+	// Null when the session never produced a task list — callers render nothing
+	// rather than a zero state.
+	get todoProgress(): TodoProgress | null {
+		return deriveTodoProgress(this.todos);
 	}
 
 	// Parsed structured questions for the live prompt, or null → text fallback.

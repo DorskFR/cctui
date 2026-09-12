@@ -2,9 +2,11 @@
 	import PermissionCard from '$lib/components/organisms/PermissionCard.svelte';
 	import AskQuestionCard from '$lib/components/organisms/AskQuestionCard.svelte';
 	import PlanCard from '$lib/components/organisms/PlanCard.svelte';
+	import TodoCard from '$lib/components/organisms/TodoCard.svelte';
 	import { Button, EmptyState, Text } from '@dorsk/tsumikit';
 	import ConversationLine from './ConversationLine.svelte';
 	import TurnSummaryFooter from './TurnSummaryFooter.svelte';
+	import { latestTodoLineKey } from './format';
 	import { copyLineMarkdown, saveLineImage } from './lineActions';
 	import type { ScrollController } from './scroll.svelte';
 	import type { ConversationStream } from './stream.svelte';
@@ -97,6 +99,7 @@
 		grow: () => scroll.holdForPrepend(() => (renderLimit += RENDER_CHUNK))
 	};
 	const visibleLines = $derived(hiddenOlder > 0 ? lines.slice(hiddenOlder) : lines);
+	const latestTodoKey = $derived(latestTodoLineKey(lines));
 	export async function loadOlder() {
 		if (hiddenOlder === 0 && canFetchOlder && onfetcholder) await onfetcholder();
 		scroll.holdForPrepend(() => (renderLimit += RENDER_CHUNK));
@@ -227,6 +230,11 @@
 					interactive={i === visibleLines.length - 1 && !archived && !stream.answering && !stream.plan}
 					onsubmit={(t, p) => stream.answerPlan(t, p)}
 				/>
+			{:else if ln.todos && (stream.todos || ln.key !== latestTodoKey)}
+				<!-- Superseded: only the newest task list renders, so a 20-update
+				     turn produces one card and not twenty. -->
+			{:else if ln.todos}
+				<TodoCard todos={ln.todos} />
 			{:else if ln.role === 'reset'}
 				<div class="reset-divider" role="separator">
 					<span class="reset-chip">⟳ {ln.text}</span>
@@ -294,6 +302,10 @@
 					onsubmit={(t, p) => stream.answerPlan(t, p)}
 				/>
 			{/key}
+		{/if}
+
+		{#if stream.todos}
+			<TodoCard todos={stream.todos} />
 		{/if}
 
 		{#each stream.perms as p (p.request_id)}
