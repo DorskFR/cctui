@@ -2,7 +2,7 @@ import type { MsgCategory, MsgFilter, MsgGroup, QuickFilterId, ViewOpts } from '
 
 export const MSG_GROUPS: { id: MsgGroup; categories: MsgCategory[] }[] = [
 	{ id: 'assistant', categories: ['assistant', 'thinking', 'redacted', 'attachment'] },
-	{ id: 'user', categories: ['user', 'peer', 'system'] },
+	{ id: 'user', categories: ['user', 'poll', 'peer', 'system'] },
 	{ id: 'tools', categories: ['tool', 'mcp', 'server_tool', 'result', 'server_result', 'error'] },
 	{ id: 'session', categories: ['marker', 'summary', 'compact', 'reset'] }
 ];
@@ -51,7 +51,7 @@ export function withQuick(f: MsgFilter, id: QuickFilterId, on: boolean): MsgFilt
 const LEGACY_HEIRS: Record<string, MsgCategory[]> = {
 	assistant: ['assistant'],
 	thinking: ['thinking', 'redacted'],
-	user: ['user'],
+	user: ['user', 'poll'],
 	system: ['system'],
 	tool: ['tool'],
 	mcp: ['mcp'],

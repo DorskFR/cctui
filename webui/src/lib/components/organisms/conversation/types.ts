@@ -8,6 +8,7 @@ export type MsgCategory =
 	| 'redacted'
 	| 'attachment'
 	| 'user'
+	| 'poll'
 	| 'peer'
 	| 'system'
 	| 'tool'
@@ -40,6 +41,8 @@ export function msgCategoryLabel(id: MsgCategory): string {
 			return m.conversation_filter_attachment();
 		case 'user':
 			return m.conversation_filter_user();
+		case 'poll':
+			return m.conversation_filter_poll();
 		case 'peer':
 			return m.conversation_filter_peer();
 		case 'system':
@@ -121,6 +124,7 @@ export interface Line {
 		| 'assistant'
 		| 'thinking'
 		| 'user'
+		| 'poll'
 		| 'peer'
 		| 'system'
 		| 'marker'

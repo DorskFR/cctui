@@ -191,3 +191,26 @@ describe('parseViewOpts', () => {
 		expect(parseViewOpts('{"paneWidth":null}').paneWidth).toBeNull();
 	});
 });
+
+describe('poll category', () => {
+	it('lives in the user group and is a known category', () => {
+		const user = MSG_GROUPS.find((g) => g.id === 'user');
+		expect(user?.categories).toContain('poll');
+		expect(MSG_CATEGORIES).toContain('poll');
+	});
+
+	it('is on by default, so a session never looks like it lost turns', () => {
+		expect(defaultFilter().poll).toBe(true);
+	});
+
+	it('is not swept by the USER quick filter, so it can be hidden alone', () => {
+		expect(QUICK_FILTERS.find((q) => q.id === 'user')?.categories).not.toContain('poll');
+		const off = withQuick(defaultFilter(), 'user', false);
+		expect(off.poll).toBe(true);
+		expect(off.user).toBe(false);
+	});
+
+	it('inherits the legacy user toggle', () => {
+		expect(normalizeFilter({ user: 'exclude' }).poll).toBe(false);
+	});
+});
