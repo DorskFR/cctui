@@ -3,7 +3,6 @@ import type { SessionListItem } from '@bindings/SessionListItem';
 import type { JsonValue } from '@bindings/serde_json/JsonValue';
 import {
 	accountTrafficWarning,
-	agentTypeOf,
 	branchOf,
 	bucketInSection,
 	colorHueOf,
@@ -566,11 +565,11 @@ describe('idsForSection', () => {
 		const childGroups = new Map([
 			[
 				'p',
-				[{ key: 'plain', runId: null, label: '', agentType: null, agents: [kidA, kidB], running: 0 }]
+				[{ key: 'plain', runId: null, label: '', agents: [kidA, kidB], running: 0 }]
 			],
 			[
 				'a',
-				[{ key: 'plain', runId: null, label: '', agentType: null, agents: [grand, kidB], running: 0 }]
+				[{ key: 'plain', runId: null, label: '', agents: [grand, kidB], running: 0 }]
 			]
 		]);
 		expect(idsForSection([parent, session({ id: 'q' })], childGroups)).toEqual([
@@ -820,33 +819,23 @@ describe('groupChildren', () => {
 	const kid = (id: string, metadata: Record<string, JsonValue>) =>
 		session({ id, metadata, status: 'active', liveness: 'active' });
 
-	it('reads agent_type off the sidecar metadata', () => {
-		expect(agentTypeOf(kid('a', { agent_type: 'Explore' }))).toBe('Explore');
-		expect(agentTypeOf(kid('a', { agent_type: 7 }))).toBeNull();
-		expect(agentTypeOf(kid('a', {}))).toBeNull();
-	});
-
-	it('folds Task children into one group per agent type', () => {
+	it('folds every non-workflow child into the single plain group', () => {
 		const groups = groupChildren([
 			kid('a', { subagent: true, agent_type: 'general-purpose' }),
 			kid('b', { subagent: true, agent_type: 'Explore' }),
-			kid('c', { subagent: true, agent_type: 'general-purpose' })
+			kid('c', { subagent: true })
 		]);
-		expect(groups.map((g) => g.key)).toEqual(['type:general-purpose', 'type:Explore']);
-		expect(groups[0].agents.map((s) => s.id)).toEqual(['a', 'c']);
-		expect(groups[0].label).toBe('general-purpose subagents');
-		expect(groups[0].agentType).toBe('general-purpose');
-		expect(groups[0].running).toBe(2);
-		expect(groups[1].agents.map((s) => s.id)).toEqual(['b']);
-		expect(groups[1].agentType).toBe('Explore');
+		expect(groups.map((g) => g.key)).toEqual(['plain']);
+		expect(groups[0].agents.map((s) => s.id)).toEqual(['a', 'b', 'c']);
+		expect(groups[0].label).toBe('subagents');
+		expect(groups[0].running).toBe(3);
 	});
 
-	it('keeps sidecar-less children in the anonymous group and workflows in theirs', () => {
+	it('keeps workflow children in their run group and never splits by agent type', () => {
 		const groups = groupChildren([
 			kid('a', { subagent: true }),
 			kid('b', { subagent: true, agent_type: 'Explore' }),
 			kid('c', { subagent: true, workflow_run_id: 'wf_1', workflow_name: 'deploy' }),
-			// A workflow agent's own agent_type never splits it out of its run.
 			kid('d', {
 				subagent: true,
 				workflow_run_id: 'wf_1',
@@ -854,15 +843,10 @@ describe('groupChildren', () => {
 				agent_type: 'workflow-subagent'
 			})
 		]);
-		expect(groups.map((g) => g.key)).toEqual(['plain', 'type:Explore', 'wf:wf_1']);
-		expect(groups[0].agents.map((s) => s.id)).toEqual(['a']);
-		expect(groups[0].label).toBe('subagents');
-		expect(groups[2].agents.map((s) => s.id)).toEqual(['c', 'd']);
-		expect(groups[2].runId).toBe('wf_1');
-		// Only a single-type group names itself on the badge; the anonymous
-		// and workflow groups stay bare count chips.
-		expect(groups[0].agentType).toBeNull();
-		expect(groups[2].agentType).toBeNull();
+		expect(groups.map((g) => g.key)).toEqual(['plain', 'wf:wf_1']);
+		expect(groups[0].agents.map((s) => s.id)).toEqual(['a', 'b']);
+		expect(groups[1].agents.map((s) => s.id)).toEqual(['c', 'd']);
+		expect(groups[1].runId).toBe('wf_1');
 	});
 
 	it('has no groups for a parent with no children', () => {

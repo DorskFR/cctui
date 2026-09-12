@@ -466,6 +466,25 @@ describe("SpawnModal profiles", () => {
     ).toBe(false);
   });
 
+  it("lays the row out grip → radio → name → gear, grip outermost", async () => {
+    await open();
+    const head = row("p1").querySelector(".head");
+    if (!head) throw new Error("row head not found");
+    const kind = (el: Element) => {
+      const aria = el.getAttribute("aria-label") ?? "";
+      if (aria.startsWith("Reorder ")) return "grip";
+      if (el.tagName === "INPUT") return "radio";
+      if (el.tagName === "LABEL") return "body";
+      return "gear";
+    };
+    expect([...head.children].map(kind)).toEqual([
+      "grip",
+      "radio",
+      "body",
+      "gear",
+    ]);
+  });
+
   it("reverts the optimistic order when the reorder call fails", async () => {
     await open();
     let release: (() => void) | undefined;

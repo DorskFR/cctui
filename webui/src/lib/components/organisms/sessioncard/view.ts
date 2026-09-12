@@ -18,8 +18,6 @@ export type SubagentToggle = {
 	running: number;
 	open: boolean;
 	label: string;
-	// Agent type shown as the badge text, when the group folds exactly one.
-	type?: string | null;
 	ontoggle: () => void;
 };
 
