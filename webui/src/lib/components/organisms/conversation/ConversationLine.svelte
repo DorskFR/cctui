@@ -4,7 +4,7 @@
 	// row (role badge, tool name, time, delivery state), the bubble, and the
 	// per-message action buttons, delegating retry/edit/save/copy to callbacks.
 	import TokenUsage from '$lib/components/molecules/TokenUsage.svelte';
-	import { Badge, Button, IconButton, Text, Timestamp, Tooltip } from '@dorsk/tsumikit';
+	import { Badge, Button, Icon, IconButton, Text, Timestamp, Tooltip } from '@dorsk/tsumikit';
 	import TurnSummaryFooter from './TurnSummaryFooter.svelte';
 	import UserAttachments from './UserAttachments.svelte';
 	import type { Line } from './types';
@@ -176,7 +176,7 @@
 					aria-pressed={pinned}
 					aria-label={pinned ? m.conversation_unpin_label() : m.conversation_pin_label()}
 					title={pinned ? m.conversation_unpin_title() : m.conversation_pin_title()}
-					onclick={() => onpin?.(ln)}>{pinned ? '★' : '☆'}</button
+					onclick={() => onpin?.(ln)}><Icon name="pin" size={16} filled={pinned} /></button
 				>
 			{/if}
 			<!-- Copy-as-Markdown uses the same markdown glyph as the
@@ -334,11 +334,12 @@
 	/* The pin stays visible once set — it marks the line in the flow, so it
 	   cannot be a hover-only affordance like the copy buttons. */
 	.pin-btn {
+		display: inline-flex;
+		align-items: center;
 		padding: 0 var(--sp-1);
 		background: none;
 		border: none;
 		line-height: 1;
-		font-size: var(--fs-sm);
 		color: var(--text-faint);
 		cursor: pointer;
 	}

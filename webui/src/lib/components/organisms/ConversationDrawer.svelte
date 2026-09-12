@@ -42,11 +42,7 @@
 	import { SearchHitStepper } from './conversation/searchHits.svelte';
 	import { ForkController } from './conversation/fork.svelte';
 	import { SessionActions } from './conversation/sessionActions.svelte';
-	import {
-		draftFromLine,
-		isLineBookmarked,
-		lastAssistantLine
-	} from '$lib/bookmarks';
+	import { draftFromLine, isLineBookmarked } from '$lib/bookmarks';
 	import type { CreateBookmark } from '@bindings/CreateBookmark';
 	import { useBookmarkActions, useBookmarks } from '$lib/queries';
 	import { toasts } from '$lib/toast.svelte';
@@ -465,15 +461,6 @@
 	const isBookmarked = (ln: Line) =>
 		isLineBookmarked(savedBookmarks.data ?? [], id, ln) !== null;
 
-	function bookmarkWrapUp() {
-		const ln = lastAssistantLine(lines);
-		if (!ln) {
-			toasts.error(m.bookmarks_no_wrapup());
-			return;
-		}
-		bookmarkDraft = draftFromLine(ln, id, session.name ?? null);
-	}
-
 	async function saveBookmark(title: string, note: string | null) {
 		const draft = bookmarkDraft;
 		bookmarkDraft = null;
@@ -582,7 +569,6 @@
 				{lines}
 				onjumpseq={(seq) => void ensureSeqVisible(seq)}
 				onunpin={(seq) => void pinActions.unpin(id, seq)}
-				onbookmarkwrapup={bookmarkWrapUp}
 			/>
 
 			{#if diagnoseOpen}
