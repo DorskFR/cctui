@@ -183,6 +183,13 @@ export function todoProgress(items: TodoItem[] | null | undefined): TodoProgress
 	};
 }
 
+// The consecutive-duplicate guard keys on `text`/`html`, which a todo line does
+// not carry: without this discriminator successive TodoWrites collapse into the
+// FIRST one and the drawer renders the stalest list forever.
+export function todoSignature(items: TodoItem[]): string {
+	return items.map((t) => `${t.status}:${t.content}`).join('|');
+}
+
 // Key of the only task-list line that may render a card. Must be computed over
 // the FULL transcript, never the render window, or paging older lines in would
 // promote a stale list to "newest".

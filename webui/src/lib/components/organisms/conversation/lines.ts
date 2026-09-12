@@ -12,6 +12,7 @@ import {
 	parsePlan,
 	parseTodos,
 	stampTurns,
+	todoSignature,
 	stripAttachmentDecorations
 } from './format';
 import type { Line, MsgCategory } from './types';
@@ -275,7 +276,9 @@ export function buildLines(
 		const key =
 			ln.role === 'reset' || ln.role === 'compact'
 				? `${ln.role}|${ln.ts}`
-				: `${ln.role}|${ln.tool ?? ''}|${(ln.uploads?.names ?? []).join(',')}|${ln.text ?? ln.html ?? ''}`;
+				: `${ln.role}|${ln.tool ?? ''}|${(ln.uploads?.names ?? []).join(',')}|${ln.text ?? ln.html ?? ''}|${
+						ln.todos ? todoSignature(ln.todos) : ''
+					}`;
 		if (key === prevKey) continue;
 		prevKey = key;
 		if (ln.role === 'user' && delivery) {
