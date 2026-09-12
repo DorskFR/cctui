@@ -143,12 +143,14 @@
 			label={m.conversation_filter_menu_aria()}
 			placement="bottom-start"
 			bare
-			triggerClass="toolbar-chip toolbar-chip-pill"
+			triggerClass="toolbar-chip"
 		>
 			{#snippet trigger()}
-				{offCount > 0
-					? m.conversation_filters_off_count({ count: offCount })
-					: m.conversation_filters()}
+				<span class="chip pill">
+					{offCount > 0
+						? m.conversation_filters_off_count({ count: offCount })
+						: m.conversation_filters()}
+				</span>
 			{/snippet}
 			<FilterMenu
 				filter={view.msgFilter}
@@ -196,8 +198,10 @@
 				triggerClass="toolbar-chip"
 			>
 				{#snippet trigger()}
-					<Icon name="pin" filled={pins.length > 0} />
-					{m.conversation_pins()}{pins.length ? ` ${pins.length}` : ''}
+					<span class="chip">
+						<Icon name="pin" filled={pins.length > 0} />
+						{m.conversation_pins()}{pins.length ? ` ${pins.length}` : ''}
+					</span>
 				{/snippet}
 				<PinsPanel {pins} {lines} onjump={onjumpseq} {onunpin} />
 			</Popover>
@@ -215,11 +219,10 @@
 <style>
 	/* The Filters and Pins popover triggers must be indistinguishable from the
 	   Toggle chips beside them. `bare` strips the kit's own trigger chrome (its
-	   square floor included) and this rule restates Toggle's base chrome from the
-	   same tokens; the element is rendered by Popover, so it carries Popover's
-	   scope hash and only `:global` reaches it. Keep in step with
-	   tsumikit Toggle's `.toggle` + `.pill`. */
-	:global(.pop-trigger.toolbar-chip) {
+	   square floor included) and this local span — authored here, so scoped CSS
+	   reaches it — carries the whole chip restated from Toggle's own tokens.
+	   Keep in step with tsumikit Toggle's `.toggle` + `.pill`. */
+	.chip {
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;
@@ -241,10 +244,10 @@
 			color 0.12s var(--ease);
 	}
 	/* Filters sits among the pill quick-filter chips; Pins among the square ones. */
-	:global(.pop-trigger.toolbar-chip-pill) {
+	.chip.pill {
 		border-radius: var(--r-pill);
 	}
-	:global(.pop-trigger.toolbar-chip:hover:not(:disabled)) {
+	.chip:hover {
 		border-color: var(--border-strong);
 	}
 
