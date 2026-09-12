@@ -58,14 +58,20 @@ describe('wrap-up bookmark shortcut', () => {
 });
 
 describe('popover triggers match their sibling toggles', () => {
-	it('renders both chips as bare triggers carrying the shared chip class', async () => {
+	it('renders both triggers bare, with a local chip span carrying the chrome', async () => {
 		const bar = await render();
-		const chips = bar.querySelectorAll('.pop-trigger.toolbar-chip');
-		expect(chips.length).toBe(2);
-		for (const c of chips) expect(c.classList.contains('bare')).toBe(true);
+		const triggers = bar.querySelectorAll('.pop-trigger.toolbar-chip');
+		expect(triggers.length).toBe(2);
+		for (const t of triggers) expect(t.classList.contains('bare')).toBe(true);
+		const chips = [...triggers].map((t) => t.querySelector('.chip'));
+		expect(chips.every(Boolean)).toBe(true);
 		// Filters rides with the pill quick chips; Pins with the square toggles.
-		expect(chips[0].classList.contains('toolbar-chip-pill')).toBe(true);
-		expect(chips[1].classList.contains('toolbar-chip-pill')).toBe(false);
+		expect(chips[0]!.classList.contains('pill')).toBe(true);
+		expect(chips[1]!.classList.contains('pill')).toBe(false);
+	});
+
+	it('styles the chip with scoped CSS, never :global', () => {
+		expect(toolbarSource).not.toContain(':global(');
 	});
 
 	it('drops the ad-hoc override string and the local label span', () => {
@@ -77,7 +83,7 @@ describe('popover triggers match their sibling toggles', () => {
 
 	it('restates every chrome declaration a Toggle sets', () => {
 		const chrome = toolbarSource.slice(
-			toolbarSource.indexOf(':global(.pop-trigger.toolbar-chip)'),
+			toolbarSource.indexOf('\t.chip {'),
 			toolbarSource.indexOf('/* Filters sits among')
 		);
 		for (const decl of [
