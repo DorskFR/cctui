@@ -137,7 +137,7 @@ describe('book fidelity', () => {
 		expect(captures(book('follow-session'))).toEqual(['drawer', 'timeline', 'tools', 'reply']);
 		expect(captures(book('sessions-list'))).toEqual(['list', 'themes']);
 		expect(captures(book('search-sessions'))).toEqual(['before', 'text', 'facet']);
-		expect(captures(book('usage-overview'))).toEqual(['tiles', 'windows', 'analytics']);
+		expect(captures(book('usage-overview'))).toEqual(['tiles', 'periods', 'windows', 'analytics']);
 		expect(captures(book('settings-tour'))).toEqual(['appearance', 'sessions', 'execution', 'privacy']);
 	});
 
