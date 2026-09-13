@@ -2426,7 +2426,7 @@ pub async fn dispatch_remove(state: &AppState, session_id: &str) {
 /// Archive a single session (+ its subagents) — the reusable core shared by the
 /// single-session route and the batch route. Dispatches `Remove`, marks the row
 /// `archived`, clears classifier signals, and drops it from the live registry.
-async fn archive_one(state: &AppState, session_id: &str) -> Result<(), sqlx::Error> {
+pub async fn archive_one(state: &AppState, session_id: &str) -> Result<(), sqlx::Error> {
     dispatch_remove(state, session_id).await;
     // Archive the session AND any Task-tool subagents nested under it:
     // a parent's children should never outlive it in the list.

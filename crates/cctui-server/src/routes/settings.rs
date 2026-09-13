@@ -311,6 +311,73 @@ fn clamp_session_emoji_prefix(data: &mut Value) {
 /// Clamp `data.autoResumeOnConnectionLoss` in place on write, like
 /// [`clamp_session_emoji_prefix`]. Read back in SQL by `crate::auto_resume`,
 /// which joins `user_settings` while it looks for stuck sessions.
+const MAX_MACROS: usize = 100;
+const MAX_MACRO_TITLE_CHARS: usize = 120;
+const MAX_MACRO_PROMPT_CHARS: usize = 20_000;
+const MAX_MACRO_FIELD_CHARS: usize = 400;
+
+fn macro_str(entry: &Value, key: &str, max: usize) -> String {
+    entry.get(key).and_then(Value::as_str).unwrap_or_default().trim().chars().take(max).collect()
+}
+
+/// Normalize the `macros` block (`{ enabled, items }`) the webui stores:
+/// coerce `enabled` to a bool, keep only well-formed items (a title and a
+/// prompt), cap lengths and count, and drop the key when nothing is left and
+/// the feature is off. The server never runs a macro itself — the webui
+/// turns one into a spawn — so this only guards the blob's size and shape.
+fn clamp_macros(data: &mut Value) {
+    let Some(obj) = data.as_object_mut() else { return };
+    let Some(raw) = obj.get("macros") else { return };
+    let enabled = raw.get("enabled").and_then(Value::as_bool).unwrap_or(false);
+    let items: Vec<Value> = raw
+        .get("items")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            arr.iter()
+                .filter(|e| e.is_object())
+                .filter_map(|e| {
+                    let title = macro_str(e, "title", MAX_MACRO_TITLE_CHARS);
+                    let prompt = macro_str(e, "prompt", MAX_MACRO_PROMPT_CHARS);
+                    if title.is_empty() || prompt.is_empty() {
+                        return None;
+                    }
+                    let mut id = macro_str(e, "id", MAX_MACRO_FIELD_CHARS);
+                    if id.is_empty() {
+                        id = uuid::Uuid::new_v4().to_string();
+                    }
+                    let opt = |k: &str| {
+                        let v = macro_str(e, k, MAX_MACRO_FIELD_CHARS);
+                        if v.is_empty() { Value::Null } else { Value::String(v) }
+                    };
+                    let adapter = {
+                        let a = macro_str(e, "adapter", MAX_MACRO_FIELD_CHARS);
+                        if a.is_empty() { "claude-code".to_owned() } else { a }
+                    };
+                    Some(serde_json::json!({
+                        "id": id,
+                        "title": title,
+                        "prompt": prompt,
+                        "adapter": adapter,
+                        "machine_id": opt("machine_id"),
+                        "working_dir": opt("working_dir"),
+                        "model": opt("model"),
+                        "effort": opt("effort"),
+                        "pool_id": opt("pool_id"),
+                        "permission_mode": opt("permission_mode"),
+                        "confirm": e.get("confirm").and_then(Value::as_bool).unwrap_or(true),
+                    }))
+                })
+                .take(MAX_MACROS)
+                .collect()
+        })
+        .unwrap_or_default();
+    if !enabled && items.is_empty() {
+        obj.remove("macros");
+    } else {
+        obj.insert("macros".to_owned(), serde_json::json!({ "enabled": enabled, "items": items }));
+    }
+}
+
 fn clamp_auto_resume(data: &mut Value) {
     let Some(obj) = data.as_object_mut() else { return };
     if obj.contains_key("autoResumeOnConnectionLoss") {
@@ -366,6 +433,7 @@ pub async fn put_settings(
     clamp_locale(&mut data);
     clamp_session_emoji_prefix(&mut data);
     clamp_auto_resume(&mut data);
+    clamp_macros(&mut data);
     let new_mode = harness_mode_of(&data);
     let new_scrub = serde_json::to_value(secret_scrub_of(&data)).unwrap_or(Value::Null);
 
@@ -542,7 +610,7 @@ pub async fn rescrub_settings(
 #[cfg(test)]
 mod tests {
     use super::{
-        clamp_auto_resume, clamp_harness_mode, clamp_locale, clamp_secret_scrub,
+        clamp_auto_resume, clamp_harness_mode, clamp_locale, clamp_macros, clamp_secret_scrub,
         clamp_session_emoji_prefix, clamp_whip_stop_phrases, harness_mode_of,
         harness_mode_to_adapter_token, secret_scrub_of, whip_stop_phrases_of,
     };
@@ -742,5 +810,40 @@ mod tests {
         assert_eq!(harness_mode_to_adapter_token(Some("typo")), "claude-daemon");
         assert_eq!(harness_mode_to_adapter_token(Some("sdk")), "sdk");
         assert_eq!(harness_mode_to_adapter_token(Some("oneshot")), "oneshot");
+    }
+
+    #[test]
+    fn clamp_macros_keeps_well_formed_items_and_drops_an_empty_off_block() {
+        let mut data = serde_json::json!({
+            "macros": {
+                "enabled": "yes",
+                "items": [
+                    { "title": "  Nettoyage ", "prompt": "range le dépôt", "model": "opus",
+                      "effort": "high", "pool_id": "p1", "confirm": false, "adapter": "" },
+                    { "title": "sans prompt", "prompt": "   " },
+                    "garbage"
+                ]
+            }
+        });
+        clamp_macros(&mut data);
+        let block = &data["macros"];
+        assert_eq!(block["enabled"], serde_json::json!(false));
+        let items = block["items"].as_array().unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["title"], "Nettoyage");
+        assert_eq!(items[0]["adapter"], "claude-code");
+        assert_eq!(items[0]["confirm"], serde_json::json!(false));
+        assert_eq!(items[0]["pool_id"], "p1");
+        assert!(items[0]["machine_id"].is_null());
+        assert!(items[0]["id"].as_str().is_some_and(|id| !id.is_empty()));
+
+        let mut off = serde_json::json!({ "macros": { "enabled": false, "items": [] } });
+        clamp_macros(&mut off);
+        assert!(off.get("macros").is_none());
+
+        let mut on = serde_json::json!({ "macros": { "enabled": true } });
+        clamp_macros(&mut on);
+        assert_eq!(on["macros"]["enabled"], serde_json::json!(true));
+        assert_eq!(on["macros"]["items"], serde_json::json!([]));
     }
 }

@@ -5,6 +5,7 @@
 	// is no second catalogue to search.
 	import AppearanceSection from './AppearanceSection.svelte';
 	import SessionsSection from './SessionsSection.svelte';
+	import MacrosSection from './MacrosSection.svelte';
 	import ExecutionSection from './ExecutionSection.svelte';
 	import PrivacySection from './PrivacySection.svelte';
 	import NotificationsSection from './NotificationsSection.svelte';
@@ -22,6 +23,9 @@ import SecuritySection from './SecuritySection.svelte';
 </div>
 <div class="pg" class:on={current === 'sessions'} data-settings-page="sessions" data-journey="page" data-journey-key="sessions">
 	<SessionsSection />
+</div>
+<div class="pg" class:on={current === 'macros'} data-settings-page="macros" data-journey="page" data-journey-key="macros">
+	<MacrosSection />
 </div>
 <div class="pg" class:on={current === 'execution'} data-settings-page="execution" data-journey="page" data-journey-key="execution">
 	<ExecutionSection />

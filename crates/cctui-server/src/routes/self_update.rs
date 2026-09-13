@@ -202,6 +202,7 @@ pub async fn launch(
         // account set, since it must run whatever the state of any one of them.
         pool: None,
         save_draft: false,
+        auto_archive: false,
         env_keys: Vec::new(),
         attachment_names: Vec::new(),
         spawn_capability: None,
