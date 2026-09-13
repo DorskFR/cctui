@@ -17,6 +17,7 @@ import {
 	type Strings,
 	translator
 } from '@dorsk/journey/runtime';
+import { withActionHint } from './guideHint';
 import { showConclusion } from './guideConclusion.svelte';
 import journeys from './journeys.generated.json';
 import { isLive } from './journeys/live';
@@ -208,6 +209,8 @@ export interface StartGuideOptions {
 	blockedBy?: readonly string[];
 	/** Closing card copy. Omitted, the tour ends where its last step left off. */
 	conclusion?: { title: string; xp: number };
+	/** Where to hand the user back on any ending, including Esc. */
+	returnTo?: string;
 }
 
 const PARAM_NEEDS: Record<string, () => string> = {
@@ -298,7 +301,10 @@ export function mountJourneys(qc: QueryClient): Promise<void> {
 			return api;
 		};
 		const fallback = () =>
-			(overlay ??= guidePresenter(self().overlay, translator(() => self().strings())));
+			(overlay ??= withActionHint(
+				guidePresenter(self().overlay, translator(() => self().strings())),
+				self().overlay
+			));
 		const deck = deckPresenter({
 			cards: () => deckCards(self()),
 			markSeen: () => markSeen(self()),
@@ -362,11 +368,19 @@ export async function startGuide(id: string, opts: StartGuideOptions = {}): Prom
 	if (entry && location.pathname !== entry) await goto(entry);
 	const result = await host.api.start(id, { mode: 'guide', params, variant: viewportVariant() });
 	if (!result.ok) {
+		await returnTo(opts);
 		return { ok: false, reason: result.aborted ? 'aborted' : 'failed', result };
 	}
 	await settingsStorage.set(`${DONE_PREFIX}${id}@${ir.version}`, '1');
+	clearProbeOptOut(id);
 	if (opts.conclusion) await concludeGuide(ir, opts.conclusion);
+	else await returnTo(opts);
 	return { ok: true, result };
+}
+
+async function returnTo(opts: StartGuideOptions): Promise<void> {
+	const route = opts.returnTo;
+	if (route && location.pathname !== route) await goto(route);
 }
 
 /** A deck closes on its own last card, so a conclusion would stack a second
@@ -379,10 +393,17 @@ async function concludeGuide(ir: IR, conclusion: { title: string; xp: number }):
 /** A guide with a `DONE_PROBES` entry produces something observable, so the
  *  state counts as done even for a user who never took the tour — and losing it
  *  does not undo a tour they did take. */
+function clearProbeOptOut(id: string): void {
+	const optOut = settings.onboarding.probeOptOut;
+	if (!optOut.includes(id)) return;
+	settings.setOnboarding({ probeOptOut: optOut.filter((other) => other !== id) });
+}
+
 export async function guideDone(id: string): Promise<boolean> {
 	const ir = publicJourneys.find((j) => j.id === id);
 	if (!ir) return false;
 	if (settings.onboarding.seenVersion[id] === ir.version) return true;
+	if (settings.onboarding.probeOptOut.includes(id)) return false;
 	const probe = DONE_PROBES[id];
 	if (probe === undefined || !host) return false;
 	return Boolean(await host.probes[probe]());

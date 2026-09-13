@@ -171,10 +171,10 @@ describe('public journey set', () => {
 		}
 	});
 
-	it('leaves a guide that anchors nothing on the page it was started from', () => {
-		const deck = pub('welcome');
-		expect(deck.steps.every((s) => s.target === undefined)).toBe(true);
-		expect(entryRoute(deck)).toBeUndefined();
+	it('opens the welcome tour on the landing route it anchors', () => {
+		const tour = pub('welcome');
+		expect(tour.steps.every((s) => s.target !== undefined)).toBe(true);
+		expect(entryRoute(tour)).toBe('/');
 	});
 
 	it('never asks the user to type a prescribed string', () => {
@@ -300,9 +300,13 @@ describe('public journey set', () => {
 
 describe('book fidelity', () => {
 	it('keeps every screenshot capture the docs are built from', () => {
-		// Doc mode never mounts the carousel, so a capture here photographs the
-		// page underneath rather than the deck.
-		expect(captures(book('welcome'))).toEqual([]);
+		expect(captures(book('welcome'))).toEqual([
+			'overview',
+			'sessions',
+			'accounts',
+			'access',
+			'guides'
+		]);
 		expect(captures(book('enroll-machine'))).toEqual([
 			'access',
 			'command',
@@ -351,5 +355,17 @@ describe('book fidelity', () => {
 		const machines = book('enroll-machine').steps.find((s) => s.id === 'machines')!;
 		expect(machines.target).toEqual({ role: 'tab', name: 'Machines 2' });
 		expect(book('search-sessions').steps).toHaveLength(6);
+	});
+	/** Guide mode runs `humanActor`. The engine offers a Next affordance only when
+	 *  `step.guide === 'next'`; otherwise the step advances by the user performing
+	 *  `step.do`. A step with neither awaits a promise nothing resolves, so the
+	 *  tour dead-ends on it and Esc is the only way out. */
+	it('leaves no step a user cannot advance past', () => {
+		const stuck = PUBLIC_JOURNEYS.flatMap((id) =>
+			pub(id)
+				.steps.filter((s) => s.guide !== 'next' && s.do === undefined)
+				.map((s) => `${id}/${s.id}`)
+		);
+		expect(stuck).toEqual([]);
 	});
 });

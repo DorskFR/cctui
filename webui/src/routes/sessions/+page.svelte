@@ -828,10 +828,10 @@
 {#snippet sectionsWrap(body: Snippet)}
 	{#if cardView}
 		<Container size="none">
-			<div class="sections">{@render body()}</div>
+			<div class="sections" data-journey="session-list">{@render body()}</div>
 		</Container>
 	{:else}
-		<div class="sections tight">{@render body()}</div>
+		<div class="sections tight" data-journey="session-list">{@render body()}</div>
 	{/if}
 {/snippet}
 

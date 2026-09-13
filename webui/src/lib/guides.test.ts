@@ -14,7 +14,7 @@ import {
 	resetGuides
 } from './guides';
 import type { GuideSectionId } from './guides';
-import { startGuide } from './journey';
+import { DONE_PROBES, GUIDES_ROUTE, startGuide } from './journey';
 import { settings } from './settings.svelte';
 import type { OnboardingSettings } from './settings.svelte';
 
@@ -36,7 +36,7 @@ const fullCatalogue = CURRICULUM.map(
 );
 
 function onboarding(patch: Partial<OnboardingSettings> = {}): OnboardingSettings {
-	return { seenVersion: {}, progress: null, stepProgress: {}, ...patch };
+	return { seenVersion: {}, progress: null, stepProgress: {}, probeOptOut: [], ...patch };
 }
 
 /** Every id of every section up to and including `section`. */
@@ -219,7 +219,8 @@ describe('buildCurriculum', () => {
 		const [guide] = buildCurriculum(entries, onboarding()).sections[0].guides;
 		expect(guideOptions(guide)).toEqual({
 			blockedBy: [],
-			conclusion: { title: 'WELCOME', xp: 10 }
+			conclusion: { title: 'WELCOME', xp: 10 },
+			returnTo: GUIDES_ROUTE
 		});
 	});
 
@@ -241,7 +242,7 @@ describe('clearGuide / resetGuides', () => {
 		const progress = JSON.stringify({ id: 'b' });
 		settings.setOnboarding({ seenVersion: { a: 2, b: 1 }, progress, stepProgress: {} });
 		clearGuide('a');
-		expect(settings.onboarding).toEqual({ seenVersion: { b: 1 }, progress, stepProgress: {} });
+		expect(settings.onboarding).toEqual({ seenVersion: { b: 1 }, progress, stepProgress: {}, probeOptOut: [] });
 	});
 
 	it('drops the resume record when it belongs to the cleared guide', () => {
@@ -251,7 +252,12 @@ describe('clearGuide / resetGuides', () => {
 			stepProgress: {}
 		});
 		clearGuide('a');
-		expect(settings.onboarding).toEqual({ seenVersion: {}, progress: null, stepProgress: {} });
+		expect(settings.onboarding).toEqual({
+			seenVersion: {},
+			progress: null,
+			stepProgress: {},
+			probeOptOut: []
+		});
 	});
 
 	it('drops the furthest-step record of the cleared guide only', () => {
@@ -269,7 +275,17 @@ describe('clearGuide / resetGuides', () => {
 			stepProgress: { a: { index: 2, total: 5, version: 1 } }
 		});
 		resetGuides();
-		expect(settings.onboarding).toEqual({ seenVersion: {}, progress: null, stepProgress: {} });
+		expect(settings.onboarding.seenVersion).toEqual({});
+		expect(settings.onboarding.progress).toBeNull();
+		expect(settings.onboarding.stepProgress).toEqual({});
+	});
+
+	/** The probe-backed guides read their completion from live instance state,
+	 *  which a reset cannot undo; without the opt-out they report done again at
+	 *  once and the curriculum bar never moves. */
+	it('suppresses probe-derived completion so the progress bar actually drops', () => {
+		resetGuides();
+		expect(settings.onboarding.probeOptOut.sort()).toEqual(Object.keys(DONE_PROBES).sort());
 	});
 });
 
@@ -311,7 +327,8 @@ describe('replayGuide', () => {
 		await replayGuide(guide.id, guideOptions(guide));
 		expect(started).toHaveBeenCalledWith(guide.id, {
 			blockedBy: ['WELCOME', 'SESSIONS-LIST'],
-			conclusion: { title: guide.title, xp: guide.xp }
+			conclusion: { title: guide.title, xp: guide.xp },
+			returnTo: GUIDES_ROUTE
 		});
 	});
 
