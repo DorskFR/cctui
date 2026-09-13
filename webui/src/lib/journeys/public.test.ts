@@ -129,9 +129,25 @@ describe('public journey set', () => {
 
 	it('walks spawn-session through the machine and folder before the fills', () => {
 		const ids = pub('spawn-session').steps.map((s) => s.id);
-		expect(ids).toEqual(['open', 'where', 'name', 'prompt', 'save', 'sections', 'show-drafts']);
+		expect(ids).toEqual([
+			'open',
+			'where',
+			'name',
+			'prompt',
+			'profiles',
+			'profile-new',
+			'save',
+			'sections',
+			'show-drafts',
+			'done'
+		]);
 		const open = pub('spawn-session').steps[0];
 		expect(open.expect).not.toContainEqual({ enabled: 'draft' });
+		// The draft button only enables once machine+folder are set, so no step
+		// may block on it.
+		for (const step of pub('spawn-session').steps) {
+			expect(step.expect ?? [], step.id).not.toContainEqual({ enabled: 'draft' });
+		}
 	});
 });
 
@@ -145,7 +161,13 @@ describe('book fidelity', () => {
 			'machines'
 		]);
 		expect(captures(book('accounts-pools'))).toEqual(['board', 'pool', 'handle', 'menu']);
-		expect(captures(book('spawn-session'))).toEqual(['dialog', 'filled', 'saved', 'draft']);
+		expect(captures(book('spawn-session'))).toEqual([
+			'dialog',
+			'filled',
+			'profiles',
+			'saved',
+			'draft'
+		]);
 		expect(captures(book('follow-session'))).toEqual(['drawer', 'timeline', 'tools', 'reply']);
 		expect(captures(book('sessions-list'))).toEqual(['list', 'themes']);
 		expect(captures(book('search-sessions'))).toEqual(['before', 'text', 'facet']);

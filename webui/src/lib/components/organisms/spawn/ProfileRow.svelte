@@ -49,6 +49,8 @@
 	role="group"
 	aria-label={name}
 	data-profile-id={id}
+	data-journey="profile"
+	data-journey-key={id}
 	onpointermove={() => onover?.()}
 >
 	<div class="head">
