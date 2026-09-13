@@ -237,15 +237,35 @@ describe('public journey set', () => {
 		}
 	});
 
-	it('indexes the per-section group anchors, which render once per group', () => {
+	it('lets the group steps skip on an instance that has no groups yet', () => {
 		for (const id of ['group-sort', 'group-actions']) {
 			const step = pub('sessions-list').steps.find((s) => s.id === id)!;
-			expect(step.target, id).toMatchObject({ nth: 0 });
 			expect(step.optional, id).toBe(true);
 			for (const e of step.expect ?? []) {
 				expect(e, id).toMatchObject({ visible: { nth: 0 } });
 			}
 		}
+	});
+
+	it('indexes every anchor whose component repeats, in both lane specs', () => {
+		const indexed: Record<string, string[]> = {
+			'sessions-list': ['view', 'group-sort', 'group-actions'],
+			'follow-session': ['open', 'kinds', 'line-actions']
+		};
+		for (const [id, stepIds] of Object.entries(indexed)) {
+			for (const stepId of stepIds) {
+				const step = pub(id).steps.find((s) => s.id === stepId)!;
+				expect(step.target, `${id}/${stepId}`).toMatchObject({ nth: 0 });
+			}
+		}
+	});
+
+	it('counts rather than indexes when an expectation means "all of them"', () => {
+		const tools = book('follow-session').steps.find((s) => s.id === 'tools-only')!;
+		for (const e of tools.expect ?? []) {
+			expect(JSON.stringify(e), 'tools-only').not.toMatch(/nth/);
+		}
+		expect(tools.expect).toContainEqual({ hidden: 'conversation/line[assistant]' });
 	});
 
 	it('adds an account only after the book has captured the board', () => {
