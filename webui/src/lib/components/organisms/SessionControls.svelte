@@ -150,6 +150,7 @@
 	<div class="more-wrap">
 		<Button
 			class="more"
+			data-journey="options"
 			square
 			aria-label={m.drawer_more_actions()}
 			title={m.drawer_more_actions()}
@@ -160,7 +161,7 @@
 		</Button>
 		<!-- The two DimensionPickers live here at all widths; narrow widths also
 		     receive the foldable controls (menu-only copy). -->
-		<div class="secondary" class:open={moreOpen}>
+		<div class="secondary" class:open={moreOpen} data-journey="display-options">
 			<div class="menu-fold">{@render foldControls(true)}</div>
 			<DimensionPicker menu kind="group" value={groupBy} onchange={onGroupBy} />
 			<DimensionPicker menu kind="color" value={colorBy} onchange={onColorBy} />

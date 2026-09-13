@@ -75,6 +75,7 @@
 	<Menu label={m.sessions_sort_menu_label()} items={sortItems} bare placement="bottom-end">
 		{#snippet trigger()}
 			<Text
+				data-journey="group-sort"
 				size="xs"
 				tone="faint"
 				style="white-space:nowrap; display:inline-flex; align-items:center; gap: var(--sp-1)"
@@ -84,6 +85,7 @@
 	</Menu>
 	<IconButton
 		inline
+		data-journey="group-hide"
 		icon={hidden ? 'eye' : 'eye-off'}
 		size={14}
 		label={eyeLabel}
@@ -93,6 +95,7 @@
 	{#if onarchive}
 		<IconButton
 			inline
+			data-journey="group-archive"
 			icon="archive"
 			size={14}
 			label={archiveLabel}
