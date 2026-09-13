@@ -137,7 +137,13 @@ describe('public journey set', () => {
 
 describe('book fidelity', () => {
 	it('keeps every screenshot capture the docs are built from', () => {
-		expect(captures(book('enroll-machine'))).toEqual(['access', 'enroll', 'user', 'machines']);
+		expect(captures(book('enroll-machine'))).toEqual([
+			'access',
+			'command',
+			'enroll',
+			'user',
+			'machines'
+		]);
 		expect(captures(book('accounts-pools'))).toEqual(['board', 'pool', 'handle', 'menu']);
 		expect(captures(book('spawn-session'))).toEqual(['dialog', 'filled', 'saved', 'draft']);
 		expect(captures(book('follow-session'))).toEqual(['drawer', 'timeline', 'tools', 'reply']);
