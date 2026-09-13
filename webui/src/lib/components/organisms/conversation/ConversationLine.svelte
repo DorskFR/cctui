@@ -167,7 +167,7 @@
 				/>
 			{/if}
 		{/if}
-		<span class="line-actions" class:has-pin={pinned}>
+		<span class="line-actions" class:has-pin={pinned} data-journey="line-actions">
 			{#if pinnable}
 				<button
 					type="button"

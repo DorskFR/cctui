@@ -12,47 +12,121 @@ export default defineJourney({
 		{
 			id: 'open',
 			route: '/sessions',
-			target: 'session[{fixture.session}]/title',
+			// Not a session id snapshotted at start: it is gone the moment that
+			// session ends, is archived, or scrolls out of view.
+			target: 'session/title',
 			do: { kind: 'click' },
 			say: {
-				title: 'Open a session',
-				body: 'Open your running session by its name. The conversation opens beside the list on a desktop, over it on a phone.'
+				title: { en: 'Open a session', fr: 'Ouvrir une session' },
+				body: {
+					en: 'Open one by its name. The conversation slides in beside the list on a desktop and over it on a phone, so you never lose your place in the fleet.',
+					fr: 'Ouvrez-en une par son nom. La conversation s’ouvre à côté de la liste sur un ordinateur, par-dessus sur un téléphone : vous ne perdez jamais votre place dans la flotte.'
+				}
 			},
-			// A rendered line, not just the shell: the capture must outlast the
-			// slide-in and the history fetch.
-			expect: [
-				{ visible: 'conversation' },
-				{ visible: 'conversation/line[assistant]' },
-				{ visible: 'composer' }
-			],
+			expect: [{ visible: 'conversation' }, { visible: 'composer' }],
 			capture: 'drawer'
 		},
 		{
-			id: 'timeline',
-			target: 'conversation',
+			id: 'header',
+			target: 'conversation/header',
 			say: {
-				title: { en: 'Read the whole transcript', fr: 'Lire toute la transcription' },
-				body: { en: 'Every prompt, reply, tool call and tool result is kept, so you can see exactly what the agent did.', fr: 'Chaque prompt, réponse, appel d’outil et résultat d’outil est conservé, pour voir exactement ce qu’a fait l’agent.' }
+				title: { en: 'Who is running this, and where', fr: 'Qui exécute ceci, et où' },
+				body: {
+					en: 'The top row answers the questions you ask first: is it alive, which machine is it on, which account is paying for it, and what is it called.',
+					fr: 'La première ligne répond aux questions qu’on se pose d’abord : est-elle vivante, sur quelle machine tourne-t-elle, quel compte la paie, et comment s’appelle-t-elle.'
+				}
 			},
-			expect: [{ visible: 'conversation' }],
+			expect: [{ visible: 'conversation/header' }],
+			capture: 'header'
+		},
+		{
+			id: 'meta',
+			target: 'conversation/head-meta',
+			say: {
+				title: { en: 'What it is working on, and what it has spent', fr: 'Sur quoi elle travaille, et ce qu’elle a dépensé' },
+				body: {
+					en: 'The second row is the run’s cost and context: working directory, git branch, model, and the token usage so far. Watch it when a session starts feeling slow or expensive.',
+					fr: 'La seconde ligne donne le coût et le contexte : répertoire de travail, branche git, modèle et jetons consommés. Surveillez-la quand une session devient lente ou coûteuse.'
+				}
+			},
+			expect: [{ visible: 'conversation/head-meta' }]
+		},
+		{
+			id: 'actions',
+			when: { viewport: 'desktop' },
+			target: 'conversation/fork',
+			say: {
+				title: { en: 'Branch instead of starting over', fr: 'Bifurquer plutôt que tout recommencer' },
+				body: {
+					en: 'Forking copies the history up to a message and continues from there — how you try a second approach without losing the first. Rename, copy a link, export and the stop and archive controls sit alongside it, folding into a ⋯ menu on a narrow window.',
+					fr: 'Bifurquer copie l’historique jusqu’à un message et repart de là — pour tenter une seconde approche sans perdre la première. Renommer, copier un lien, exporter, interrompre et archiver l’accompagnent, repliés dans un menu ⋯ sur une fenêtre étroite.'
+				}
+			},
+			expect: [{ visible: 'conversation/fork' }]
+		},
+		{
+			id: 'kinds',
+			target: 'conversation/line',
+			say: {
+				title: { en: 'Everything it did is on the record', fr: 'Tout ce qu’elle a fait est consigné' },
+				body: {
+					en: 'Each message is badged with its kind: your prompts, the agent’s replies, its reasoning, every tool call and the result that came back. Nothing is summarised away.',
+					fr: 'Chaque message porte son type : vos prompts, les réponses de l’agent, son raisonnement, chaque appel d’outil et le résultat renvoyé. Rien n’est résumé ni masqué.'
+				}
+			},
+			expect: [{ visible: 'conversation/line' }],
 			capture: 'timeline'
+		},
+		{
+			id: 'line-actions',
+			target: 'conversation/line/line-actions',
+			say: {
+				title: { en: 'Lift one message out', fr: 'Extraire un message' },
+				body: {
+					en: 'Any single message can be pinned to find again, copied as Markdown for a ticket, or saved as an image to paste into a review.',
+					fr: 'N’importe quel message peut être épinglé pour le retrouver, copié en Markdown pour un ticket, ou enregistré en image à coller dans une revue.'
+				}
+			},
+			expect: [{ visible: 'conversation/line/line-actions' }],
+			capture: 'line'
 		},
 		{
 			id: 'mobile-filters',
 			when: { viewport: 'mobile' },
 			target: 'mobile-panel[filters]',
 			do: { kind: 'click' },
-			say: { title: 'Open the filters' },
+			say: {
+				title: { en: 'Open the filters', fr: 'Ouvrir les filtres' },
+				body: {
+					en: 'On a phone the controls collapse into three tabs; this one holds the message filters.',
+					fr: 'Sur téléphone les contrôles se replient en trois onglets ; celui-ci contient les filtres de messages.'
+				}
+			},
 			expect: [{ visible: 'filters/quick[assistant]' }]
 		},
 		{
 			id: 'filters',
 			target: 'filters',
 			say: {
-				title: 'Filter the noise',
-				body: 'These pills hide message kinds. Turning off assistant messages leaves the tool calls, the quickest way to see what an agent touched.'
+				title: { en: 'Hide the noise', fr: 'Masquer le bruit' },
+				body: {
+					en: 'These pills hide whole kinds of message. Turning the assistant off leaves only the tool calls — the quickest way to see what an agent actually touched.',
+					fr: 'Ces pastilles masquent des types entiers de messages. Désactiver l’assistant ne laisse que les appels d’outils — le moyen le plus rapide de voir ce que l’agent a réellement touché.'
+				}
 			},
 			expect: [{ visible: 'filters/quick[assistant]' }]
+		},
+		{
+			id: 'filter-menu',
+			target: 'filters/filter-menu',
+			say: {
+				title: { en: 'Or pick the categories yourself', fr: 'Ou choisir les catégories vous-même' },
+				body: {
+					en: 'The pills are shortcuts over a finer list. Open it when you want one tool kind and nothing else — reading only the file writes, for instance.',
+					fr: 'Les pastilles sont des raccourcis sur une liste plus fine. Ouvrez-la pour ne garder qu’un seul type d’outil — les écritures de fichiers, par exemple.'
+				}
+			},
+			expect: [{ visible: 'filters/filter-menu' }]
 		},
 		{
 			id: 'tools-only',
@@ -60,8 +134,11 @@ export default defineJourney({
 			target: 'filters/quick[assistant]',
 			do: { kind: 'click' },
 			say: {
-				title: 'Filter the noise',
-				body: 'Hiding the assistant messages leaves the tool calls — the fastest way to audit what an agent touched.'
+				title: { en: 'Hide the noise', fr: 'Masquer le bruit' },
+				body: {
+					en: 'Hiding the assistant messages leaves the tool calls — the fastest way to audit what an agent touched.',
+					fr: 'Masquer les messages de l’assistant ne laisse que les appels d’outils — le moyen le plus rapide d’auditer ce que l’agent a touché.'
+				}
 			},
 			expect: [{ visible: 'conversation/line[tool]' }, { hidden: 'conversation/line[assistant]' }],
 			capture: 'tools'
@@ -70,11 +147,27 @@ export default defineJourney({
 			id: 'reply',
 			target: 'composer/message',
 			say: {
-				title: 'Steer it from here',
-				body: 'Anything you type here goes to the running agent, so you can redirect it without restarting.'
+				title: { en: 'Steer it from here', fr: 'La piloter d’ici' },
+				body: {
+					en: 'Anything you type goes to the running agent, so you can redirect it mid-task instead of stopping it and starting again.',
+					fr: 'Ce que vous tapez part vers l’agent en cours : vous pouvez le réorienter en pleine tâche au lieu de l’arrêter et de recommencer.'
+				}
 			},
 			expect: [{ visible: 'composer/message' }],
 			capture: 'reply'
+		},
+		{
+			id: 'done',
+			route: '/settings/guides',
+			target: 'page[guides]',
+			say: {
+				title: { en: 'You can follow a run end to end', fr: 'Vous savez suivre une exécution de bout en bout' },
+				body: {
+					en: 'Header for the facts, filters for the noise, the transcript for the detail, and the composer to steer. Your next guide is here.',
+					fr: 'L’en-tête pour les faits, les filtres pour le bruit, la transcription pour le détail, et le composeur pour piloter. Votre prochain guide est ici.'
+				}
+			},
+			expect: [{ visible: 'page[guides]' }]
 		}
 	]
 });
