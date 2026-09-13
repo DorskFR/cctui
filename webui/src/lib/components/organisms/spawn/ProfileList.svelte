@@ -15,6 +15,7 @@
 		specOf,
 		type ProfileSpec
 	} from './profiles';
+	import { nextRadioIndex } from './radioNav';
 	import { useProfileActions } from '$lib/queries';
 	import { toasts } from '$lib/toast.svelte';
 	import { errMessage } from '$lib/api';
@@ -54,9 +55,24 @@
 	let dragId = $state('');
 	let overId = $state('');
 	let announcement = $state('');
+	let listEl = $state<HTMLElement | null>(null);
 	const actions = useProfileActions();
 
 	const ordered = $derived(pending ?? profiles);
+	// One tab stop for the whole radiogroup; with nothing selected it is the first
+	// row, so the group stays reachable.
+	const tabbableId = $derived(
+		(ordered.some((p) => p.id === selectedId) ? selectedId : ordered[0]?.id) ?? null
+	);
+
+	function nav(from: number, key: string): boolean {
+		const to = nextRadioIndex(key, from, ordered.length);
+		if (to === null) return false;
+		const p = ordered[to];
+		select(p.id);
+		listEl?.querySelector<HTMLElement>(`[data-profile-id="${p.id}"]`)?.focus();
+		return true;
+	}
 
 	async function persist(next: SessionProfile[]) {
 		const ids = next.map((p) => p.id);
@@ -154,7 +170,7 @@
 	}
 </script>
 
-<div class="list" role="radiogroup" aria-label={m.spawn_profiles_aria()}>
+<div class="list" role="radiogroup" aria-label={m.spawn_profiles_aria()} bind:this={listEl}>
 	<!-- No saved profile yet: the bare kit stands in for the profile rows, so
 	     harness / account / model / effort / permissions are always reachable
 	     and a session can be started without creating a profile first. -->
@@ -174,7 +190,9 @@
 			total={ordered.length}
 			dragging={dragId === p.id}
 			dropTarget={overId === p.id && dragId !== p.id}
+			tabbable={tabbableId === p.id}
 			onselect={() => select(p.id)}
+			onnav={(key) => nav(i, key)}
 			ontoggle={() => toggle(p.id)}
 			onmove={ordered.length > 1 ? (delta) => move(p.id, delta) : undefined}
 			ongrab={() => grab(p.id)}

@@ -156,10 +156,19 @@ const mode = (v: string) => {
   if (!el) throw new Error(`permission mode ${v} not found`);
   return el;
 };
-const radio = (id: string) => {
-  const el = document.querySelector<HTMLInputElement>(`#sp-profile-${id}`);
-  if (!el) throw new Error(`profile radio ${id} not found`);
+const profileRow = (id: string) => {
+  const el = document.querySelector<HTMLElement>(
+    `[role="radio"][data-profile-id="${id}"]`,
+  );
+  if (!el) throw new Error(`profile row ${id} not found`);
   return el;
+};
+const checked = (id: string) =>
+  profileRow(id).getAttribute("aria-checked") === "true";
+const pickProfile = (id: string) => {
+  const body = profileRow(id).querySelector<HTMLElement>(".body");
+  if (!body) throw new Error(`profile label ${id} not found`);
+  body.dispatchEvent(new MouseEvent("click", { bubbles: true }));
 };
 
 async function submit() {
@@ -172,8 +181,8 @@ async function submit() {
 describe("SpawnModal profiles", () => {
   it("lists the profiles, selects the first and names it on the Launch button", async () => {
     await open();
-    expect(radio("p1").checked).toBe(true);
-    expect(radio("p2").checked).toBe(false);
+    expect(checked("p1")).toBe(true);
+    expect(checked("p2")).toBe(false);
     expect(document.body.textContent).toContain(
       "Claude Code · 🐼 personal · Fable · medium · Yolo",
     );
@@ -202,13 +211,14 @@ describe("SpawnModal profiles", () => {
     ).toHaveLength(1);
   });
 
-  it("opens on the machine's last-used profile and switches on radio pick", async () => {
+  it("opens on the machine's last-used profile and switches on row pick", async () => {
     lastEntry = { profile_id: "p2" };
     await open();
-    expect(radio("p2").checked).toBe(true);
-    radio("p1").click();
+    expect(checked("p2")).toBe(true);
+    pickProfile("p1");
     await tick();
-    radio("p2").click();
+    expect(checked("p1")).toBe(true);
+    pickProfile("p2");
     await tick();
     const body = await submit();
     expect(body).toMatchObject({
@@ -336,7 +346,7 @@ describe("SpawnModal profiles", () => {
   });
 
   const rowNames = () =>
-    [...document.querySelectorAll('label[for^="sp-profile-"] .name .truncate')].map((n) =>
+    [...document.querySelectorAll('[role="radio"] .body .name .truncate')].map((n) =>
       n.textContent?.trim(),
     );
 
@@ -351,11 +361,6 @@ describe("SpawnModal profiles", () => {
     document
       .querySelector('[role="status"][aria-live="polite"]')
       ?.textContent?.trim() ?? "";
-  const row = (id: string) => {
-    const el = document.querySelector<HTMLElement>(`[data-profile-id="${id}"]`);
-    if (!el) throw new Error(`row ${id} not found`);
-    return el;
-  };
   const pointer = (type: string, extra: Record<string, unknown> = {}) =>
     Object.assign(new Event(type, { bubbles: true, cancelable: true }), {
       pointerId: 1,
@@ -410,11 +415,11 @@ describe("SpawnModal profiles", () => {
 
     grip("Codex quick").dispatchEvent(pointer("pointerdown"));
     await tick(10);
-    expect(row("p2").className).toContain("dragging");
+    expect(profileRow("p2").className).toContain("dragging");
 
-    row("p1").dispatchEvent(pointer("pointermove"));
+    profileRow("p1").dispatchEvent(pointer("pointermove"));
     await tick(10);
-    expect(row("p1").className).toContain("drop-target");
+    expect(profileRow("p1").className).toContain("drop-target");
 
     window.dispatchEvent(pointer("pointerup"));
     await tick();
@@ -432,7 +437,7 @@ describe("SpawnModal profiles", () => {
     await open();
     grip("Orchestrator").dispatchEvent(pointer("pointerdown"));
     await tick(10);
-    row("p1").dispatchEvent(pointer("pointermove"));
+    profileRow("p1").dispatchEvent(pointer("pointermove"));
     window.dispatchEvent(pointer("pointerup"));
     await tick();
     expect(reorder).not.toHaveBeenCalled();
@@ -466,23 +471,96 @@ describe("SpawnModal profiles", () => {
     ).toBe(false);
   });
 
-  it("lays the row out grip → radio → name → gear, grip outermost", async () => {
+  it("lays the row out grip → name → gear, grip outermost, with no radio input", async () => {
     await open();
-    const head = row("p1").querySelector(".head");
+    const head = profileRow("p1").querySelector(".head");
     if (!head) throw new Error("row head not found");
     const kind = (el: Element) => {
       const aria = el.getAttribute("aria-label") ?? "";
       if (aria.startsWith("Reorder ")) return "grip";
-      if (el.tagName === "INPUT") return "radio";
-      if (el.tagName === "LABEL") return "body";
+      if (el.classList.contains("body")) return "body";
       return "gear";
     };
-    expect([...head.children].map(kind)).toEqual([
-      "grip",
-      "radio",
-      "body",
-      "gear",
-    ]);
+    expect([...head.children].map(kind)).toEqual(["grip", "body", "gear"]);
+    expect(profileRow("p1").querySelector('input[type="radio"]')).toBeNull();
+  });
+
+  it("carries selection on the row itself, inside a radiogroup", async () => {
+    await open();
+    const group = document.querySelector('[role="radiogroup"][aria-label="Launch profiles"]');
+    expect(group).not.toBeNull();
+    expect(group?.contains(profileRow("p1"))).toBe(true);
+    expect(profileRow("p1").getAttribute("aria-label")).toBe("Orchestrator");
+    const describedBy = profileRow("p1").getAttribute("aria-describedby");
+    expect(document.getElementById(describedBy ?? "")?.textContent).toContain(
+      "Claude Code",
+    );
+  });
+
+  it("keeps one tab stop on the group and moves it with the selection", async () => {
+    await open();
+    const tabIndexes = () =>
+      [...document.querySelectorAll<HTMLElement>('[role="radio"][data-profile-id]')].map(
+        (el) => el.getAttribute("tabindex"),
+      );
+    expect(tabIndexes()).toEqual(["0", "-1"]);
+    pickProfile("p2");
+    await tick();
+    expect(tabIndexes()).toEqual(["-1", "0"]);
+  });
+
+  it("moves the selection with the arrow keys and selects on Space", async () => {
+    await open();
+    const key = (el: HTMLElement, k: string) => {
+      const ev = new KeyboardEvent("keydown", {
+        key: k,
+        bubbles: true,
+        cancelable: true,
+      });
+      el.dispatchEvent(ev);
+      return ev;
+    };
+
+    const down = key(profileRow("p1"), "ArrowDown");
+    await tick();
+    expect(down.defaultPrevented).toBe(true);
+    expect(checked("p2")).toBe(true);
+    expect(document.activeElement).toBe(profileRow("p2"));
+
+    key(profileRow("p2"), "ArrowDown");
+    await tick();
+    expect(checked("p1")).toBe(true);
+
+    key(profileRow("p1"), "End");
+    await tick();
+    expect(checked("p2")).toBe(true);
+
+    key(profileRow("p2"), "Home");
+    await tick();
+    expect(checked("p1")).toBe(true);
+
+    const space = key(profileRow("p1"), " ");
+    await tick();
+    expect(space.defaultPrevented).toBe(true);
+    expect(checked("p1")).toBe(true);
+
+    expect(key(profileRow("p1"), "Tab").defaultPrevented).toBe(false);
+  });
+
+  it("the gear and the grip never change the selection", async () => {
+    await open();
+    expect(checked("p1")).toBe(true);
+    const gear = [...profileRow("p2").querySelectorAll<HTMLButtonElement>("button")].find(
+      (b) => b.getAttribute("aria-label") === "Adjust profile",
+    );
+    if (!gear) throw new Error("gear not found");
+    gear.click();
+    await tick();
+    expect(checked("p1")).toBe(true);
+
+    grip("Codex quick").dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await tick();
+    expect(checked("p1")).toBe(true);
   });
 
   it("reverts the optimistic order when the reorder call fails", async () => {
