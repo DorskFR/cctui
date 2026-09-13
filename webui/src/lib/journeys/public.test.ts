@@ -9,7 +9,7 @@ import sessionsList from '../../../journeys/sessions-list.journey';
 import settingsTour from '../../../journeys/settings-tour.journey';
 import spawnSession from '../../../journeys/spawn-session.journey';
 import usageOverview from '../../../journeys/usage-overview.journey';
-import { GATES, DONE_PROBES, PUBLIC_JOURNEYS, requiredParams } from '../journey';
+import { DONE_PROBES, PUBLIC_JOURNEYS, READINESS, readinessHint, requiredParams } from '../journey';
 import { createProbes } from './probes';
 
 const SPECS: Journey[] = [
@@ -67,9 +67,20 @@ describe('public journey set', () => {
 				}
 			}
 		}
-		for (const g of Object.values(GATES)) expect(PROBES).toContain(g.probe);
+		for (const p of Object.values(READINESS)) expect(PROBES).toContain(p);
 		for (const p of Object.values(DONE_PROBES)) expect(PROBES).toContain(p);
-		for (const g of Object.values(GATES)) expect(PUBLIC_JOURNEYS).toContain(g.prerequisite);
+	});
+
+	it('states what a guide is waiting for in words, for every guide that waits', () => {
+		for (const id of Object.keys(READINESS)) {
+			expect(PUBLIC_JOURNEYS, id).toContain(id);
+			const hint = readinessHint(id);
+			expect(hint, id).toBeTruthy();
+			expect(hint, id).not.toContain(id);
+		}
+		for (const id of PUBLIC_JOURNEYS) {
+			if (!(id in READINESS)) expect(readinessHint(id), id).toBeUndefined();
+		}
 	});
 
 	it('addresses real-instance names only through params the host supplies', () => {
@@ -77,10 +88,22 @@ describe('public journey set', () => {
 			const ir = pub(id);
 			for (const p of requiredParams(ir)) expect(HOST_PARAMS, `${id} {${p}}`).toContain(p);
 			for (const step of ir.steps) {
-				const target = JSON.stringify(step.target ?? '');
-				expect(target, `${id}/${step.id}`).not.toMatch(/admin|acme-research|production|a0000000/);
-				expect(target, `${id}/${step.id}`).not.toMatch(/Machines \d/);
+				for (const [what, json] of [
+					['target', JSON.stringify(step.target ?? '')],
+					['expect', JSON.stringify(step.expect ?? [])]
+				] as const) {
+					const where = `${id}/${step.id} ${what}`;
+					expect(json, where).not.toMatch(/admin|acme-research|production|a0000000/);
+					expect(json, where).not.toMatch(/Machines \d/);
+				}
 			}
+		}
+	});
+
+	it('can open every public guide from the guides page', () => {
+		for (const id of PUBLIC_JOURNEYS) {
+			const ir = pub(id);
+			expect(ir.steps[0]?.route ?? ir.route, id).toBeTruthy();
 		}
 	});
 
