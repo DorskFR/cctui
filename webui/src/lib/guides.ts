@@ -1,5 +1,10 @@
 import type { Journey, Text } from '@dorsk/journey';
-import { guideDone, publicJourneys, type StartOutcome, startGuide } from './journey';
+import {
+	publicJourneys,
+	type StartGuideOptions,
+	type StartOutcome,
+	startGuide
+} from './journey';
 import type { OnboardingSettings } from './settings.svelte';
 import { settings } from './settings.svelte';
 
@@ -15,7 +20,6 @@ export interface GuideEntry {
 }
 
 export interface CurriculumEntry {
-	/** journey id, or 'intro' for the carousel which is not an anchored journey */
 	id: string;
 	section: GuideSectionId;
 	/** position within the section */
@@ -108,21 +112,6 @@ export function guideStatus(
 	return 'not-started';
 }
 
-/** Live-state completion for every guide that writes no done marker. */
-export async function guideDoneMap(ids: string[]): Promise<Record<string, boolean>> {
-	const out: Record<string, boolean> = {};
-	await Promise.all(
-		ids.map(async (id) => {
-			try {
-				out[id] = await guideDone(id);
-			} catch {
-				out[id] = false;
-			}
-		})
-	);
-	return out;
-}
-
 function sectionRank(id: GuideSectionId): number {
 	return GUIDE_SECTIONS.indexOf(id);
 }
@@ -207,12 +196,21 @@ export function resetGuides() {
 	settings.setOnboarding({ seenVersion: {}, progress: null, stepProgress: {} });
 }
 
+/** What the runtime needs to refuse a locked guide with the same words the page
+ *  already shows, and to close the tour on its XP. */
+export function guideOptions(guide: GuideView): StartGuideOptions {
+	return {
+		blockedBy: guide.locked ? guide.lockedBy : [],
+		conclusion: { title: guide.title, xp: guide.xp }
+	};
+}
+
 /** Replaying drops the done marker so the guide reads as unfinished while it
- *  runs, but a refused start must leave the marker where it was. */
-export async function replayGuide(id: string): Promise<StartOutcome> {
+ *  runs; a run that never reached the end must leave the marker where it was. */
+export async function replayGuide(id: string, opts: StartGuideOptions = {}): Promise<StartOutcome> {
 	const previous = settings.onboarding.seenVersion[id];
 	clearGuide(id);
-	const outcome = await startGuide(id);
+	const outcome = await startGuide(id, opts);
 	if (!outcome.ok && previous !== undefined) {
 		settings.setOnboarding({ seenVersion: { ...settings.onboarding.seenVersion, [id]: previous } });
 	}

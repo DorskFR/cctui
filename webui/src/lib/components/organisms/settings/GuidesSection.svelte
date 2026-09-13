@@ -4,19 +4,29 @@
 	import SettingRow from '$lib/components/molecules/SettingRow.svelte';
 	import SettingSection from '$lib/components/molecules/SettingSection.svelte';
 	import GuideRow from './GuideRow.svelte';
-	import { buildCurriculum, guideDoneMap, guideEntries, replayGuide, resetGuides } from '$lib/guides';
-	import type { GuideSectionId } from '$lib/guides';
+	import {
+		buildCurriculum,
+		guideEntries,
+		guideOptions,
+		replayGuide,
+		resetGuides
+	} from '$lib/guides';
+	import type { GuideSectionId, GuideView } from '$lib/guides';
+	import {
+		guideReady,
+		guidesDone,
+		READINESS,
+		readinessHint,
+		startFailureMessage
+	} from '$lib/journey';
 	import { settings } from '$lib/settings.svelte';
 	import { toasts } from '$lib/toast.svelte';
 	import { m } from '$lib/paraglide/messages';
 
-	/** The Replay button reports "starting", not the whole tour: `startGuide`
-	 *  only settles when the run ends, and a refusal always beats this. */
-	const START_SETTLE_MS = 600;
-
 	let busy = $state<string | null>(null);
 	let confirming = $state(false);
 	let doneMap = $state<Record<string, boolean>>({});
+	let readyMap = $state<Record<string, boolean>>({});
 	let runtimeTick = $state(0);
 
 	$effect(() => {
@@ -46,13 +56,28 @@
 		const ids = entries.map((e) => e.id);
 		void settings.onboarding;
 		let alive = true;
-		void guideDoneMap(ids).then((map) => {
-			if (alive) doneMap = map;
-		});
+		void guidesDone(ids)
+			.then((map) => {
+				if (alive) doneMap = map;
+			})
+			.catch(() => undefined);
+		void Promise.all(ids.filter((id) => id in READINESS).map(readiness))
+			.then((pairs) => {
+				if (alive) readyMap = Object.fromEntries(pairs);
+			})
+			.catch(() => undefined);
 		return () => {
 			alive = false;
 		};
 	});
+
+	async function readiness(id: string): Promise<[string, boolean]> {
+		try {
+			return [id, await guideReady(id)];
+		} catch {
+			return [id, false];
+		}
+	}
 
 	const curriculum = $derived(buildCurriculum(entries, settings.onboarding, doneMap));
 
@@ -63,25 +88,16 @@
 		master: () => m.settings_guides_section_master()
 	};
 
-	async function launch(id: string) {
-		busy = id;
-		const run = replayGuide(id);
-		void run.then(
-			(outcome) => {
-				if (outcome.ok) return;
-				if (outcome.reason === 'gated') {
-					toasts.info(m.settings_guides_gated({ prerequisite: outcome.prerequisite }));
-				} else {
-					toasts.error(m.settings_guides_unavailable());
-				}
-			},
-			() => toasts.error(m.settings_guides_unavailable())
-		);
-		await Promise.race([
-			run.catch(() => undefined),
-			new Promise((resolve) => setTimeout(resolve, START_SETTLE_MS))
-		]);
-		busy = null;
+	async function launch(guide: GuideView) {
+		busy = guide.id;
+		try {
+			const say = startFailureMessage(await replayGuide(guide.id, guideOptions(guide)));
+			if (say) toasts.info(say);
+		} catch {
+			toasts.error(m.journey_unavailable());
+		} finally {
+			busy = null;
+		}
 	}
 
 	function reset() {
@@ -135,7 +151,12 @@
 				/>
 			{/if}
 			{#each section.guides as guide (guide.id)}
-				<GuideRow {guide} busy={busy === guide.id} onlaunch={launch} />
+				<GuideRow
+					{guide}
+					busy={busy === guide.id}
+					hint={readyMap[guide.id] === false ? readinessHint(guide.id) : undefined}
+					onlaunch={launch}
+				/>
 			{/each}
 		</SettingGroup>
 	{:else}

@@ -7,8 +7,15 @@
 	let {
 		guide,
 		busy = false,
+		hint,
 		onlaunch
-	}: { guide: GuideView; busy?: boolean; onlaunch: (id: string) => void } = $props();
+	}: {
+		guide: GuideView;
+		busy?: boolean;
+		/** Live instance state the guide needs, stated before it is started. */
+		hint?: string;
+		onlaunch: (guide: GuideView) => void;
+	} = $props();
 
 	const STATUS_TONE = { done: 'ok', 'in-progress': 'warn', 'not-started': 'muted' } as const;
 
@@ -21,7 +28,9 @@
 	const help = $derived(
 		guide.locked
 			? m.settings_guides_locked_by({ guides: guide.lockedBy.join(', ') })
-			: guide.description
+			: hint
+				? [guide.description, hint].filter(Boolean).join(' ')
+				: guide.description
 	);
 	const stepLabel = $derived(
 		guide.step === null
@@ -54,7 +63,7 @@
 				size="sm"
 				loading={busy}
 				disabled={guide.locked}
-				onclick={() => onlaunch(guide.id)}
+				onclick={() => onlaunch(guide)}
 			>
 				{actionLabel}
 			</Button>

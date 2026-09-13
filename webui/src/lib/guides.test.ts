@@ -4,6 +4,7 @@ import { auth } from './auth.svelte';
 import {
 	buildCurriculum,
 	clearGuide,
+	guideOptions,
 	CURRICULUM,
 	GUIDE_SECTIONS,
 	guideEntries,
@@ -19,8 +20,7 @@ import type { OnboardingSettings } from './settings.svelte';
 
 vi.mock('./journey', async (original) => ({
 	...(await original<typeof import('./journey')>()),
-	startGuide: vi.fn(),
-	guideDone: vi.fn(async () => false)
+	startGuide: vi.fn()
 }));
 
 const started = vi.mocked(startGuide);
@@ -215,6 +215,14 @@ describe('buildCurriculum', () => {
 		expect(view.sections[0].guides[0].step).toBeNull();
 	});
 
+	it('hands the runtime an empty lock for a guide the curriculum allows', () => {
+		const [guide] = buildCurriculum(entries, onboarding()).sections[0].guides;
+		expect(guideOptions(guide)).toEqual({
+			blockedBy: [],
+			conclusion: { title: 'WELCOME', xp: 10 }
+		});
+	});
+
 	it('reads live-state completion for the guides that write no marker', () => {
 		const view = buildCurriculum(entries, onboarding(), { welcome: true });
 		expect(view.sections[0].guides[0].status).toBe('done');
@@ -280,14 +288,31 @@ describe('replayGuide', () => {
 			return { ok: true, result: { ok: true } } as never;
 		});
 		await replayGuide('a');
-		expect(started).toHaveBeenCalledWith('a');
+		expect(started).toHaveBeenCalledWith('a', {});
 	});
 
 	it('puts the done marker back when the start is refused', async () => {
 		settings.setOnboarding({ seenVersion: { a: 2 } });
-		started.mockResolvedValue({ ok: false, reason: 'gated', prerequisite: 'b' });
+		started.mockResolvedValue({ ok: false, reason: 'locked', blockedBy: ['Beta'] });
 		await replayGuide('a');
 		expect(settings.onboarding.seenVersion).toEqual({ a: 2 });
+	});
+
+	it('keeps the done marker when a replay is abandoned part way', async () => {
+		settings.setOnboarding({ seenVersion: { a: 2 } });
+		started.mockResolvedValue({ ok: false, reason: 'aborted', result: { ok: false } as never });
+		await replayGuide('a');
+		expect(settings.onboarding.seenVersion).toEqual({ a: 2 });
+	});
+
+	it('forwards the curriculum lock and the closing card to the runtime', async () => {
+		started.mockResolvedValue({ ok: false, reason: 'unknown' });
+		const [guide] = buildCurriculum(guideEntries(fullCatalogue), onboarding()).sections[1].guides;
+		await replayGuide(guide.id, guideOptions(guide));
+		expect(started).toHaveBeenCalledWith(guide.id, {
+			blockedBy: ['WELCOME', 'SESSIONS-LIST'],
+			conclusion: { title: guide.title, xp: guide.xp }
+		});
 	});
 
 	it('leaves a never-completed guide unmarked when the start is refused', async () => {
