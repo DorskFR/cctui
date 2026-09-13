@@ -17,6 +17,7 @@ import {
 	type Strings,
 	translator
 } from '@dorsk/journey/runtime';
+import { showConclusion } from './guideConclusion.svelte';
 import journeys from './journeys.generated.json';
 import { isLive } from './journeys/live';
 import { createProbes, type Probes } from './journeys/probes';
@@ -100,14 +101,35 @@ export const ONBOARDING_JOURNEYS = [
 export const REFERENCE_JOURNEYS = ['usage-overview', 'sessions-list', 'settings-tour'] as const;
 export const PUBLIC_JOURNEYS: readonly string[] = [...ONBOARDING_JOURNEYS, ...REFERENCE_JOURNEYS];
 
-/** A guide that cannot start until a probe holds, and the guide that makes it hold. */
-export const GATES: Record<string, { probe: string; prerequisite: string }> = {
-	'spawn-session': { probe: 'machines.online', prerequisite: 'enroll-machine' },
-	'follow-session': { probe: 'sessions.live', prerequisite: 'spawn-session' }
+/** Live instance state a guide needs before it can teach anything. This is a
+ *  readiness signal the page states up front, never a refusal after the fact:
+ *  what a guide is allowed to start is the curriculum's call, not a probe's. */
+export const READINESS: Record<string, string> = {
+	'spawn-session': 'machines.online',
+	'follow-session': 'sessions.live'
 };
 
-/** Done is read from live state for the guides that produce something, so
- *  losing the last machine or account reopens the guide. */
+const READINESS_HINTS: Record<string, () => string> = {
+	'machines.online': () => m.journey_not_ready_machines_online(),
+	'sessions.live': () => m.journey_not_ready_sessions_live()
+};
+
+export function readinessHint(id: string): string | undefined {
+	const probe = READINESS[id];
+	return probe === undefined ? undefined : READINESS_HINTS[probe]?.();
+}
+
+export async function guideReady(id: string): Promise<boolean> {
+	const probe = READINESS[id];
+	if (probe === undefined) return true;
+	if (!host) return false;
+	return Boolean(await host.probes[probe]());
+}
+
+export const GUIDES_ROUTE = '/settings/guides';
+
+/** The guides whose lesson leaves something observable behind: a user who
+ *  already has the result counts as done without taking the tour. */
 export const DONE_PROBES: Record<string, string> = {
 	'enroll-machine': 'machines.online',
 	'accounts-pools': 'accounts',
@@ -163,11 +185,60 @@ export function viewportVariant(
 	return { viewport: matches(MOBILE_QUERY) ? 'mobile' : 'desktop' };
 }
 
+/** `ok` means the run reached its last step. A run the user exited is `aborted`
+ *  and says nothing; a run that died on an expectation is `failed` and must. */
 export type StartOutcome =
 	| { ok: true; result: RunResult }
 	| { ok: false; reason: 'unknown' }
-	| { ok: false; reason: 'gated'; prerequisite: string }
-	| { ok: false; reason: 'missing'; params: string[] };
+	| { ok: false; reason: 'locked'; blockedBy: string[] }
+	| { ok: false; reason: 'not-ready'; hint: string }
+	| { ok: false; reason: 'missing'; params: string[] }
+	| { ok: false; reason: 'aborted'; result: RunResult }
+	| { ok: false; reason: 'failed'; result: RunResult };
+
+export interface StartGuideOptions {
+	/** Titles of the curriculum prerequisites that are not done yet. A non-empty
+	 *  list refuses the guide; the caller has already said so on the page. */
+	blockedBy?: readonly string[];
+	/** Closing card copy. Omitted, the tour ends where its last step left off. */
+	conclusion?: { title: string; xp: number };
+}
+
+const PARAM_NEEDS: Record<string, () => string> = {
+	'fixture.me': () => m.journey_need_user(),
+	account: () => m.journey_need_account(),
+	pool: () => m.journey_need_pool(),
+	'fixture.session': () => m.journey_need_session()
+};
+
+/** The one line a caller shows for a refused or broken run, or `undefined` when
+ *  the user themselves ended it and has nothing to be told. */
+export function startFailureMessage(outcome: StartOutcome): string | undefined {
+	if (outcome.ok) return undefined;
+	switch (outcome.reason) {
+		case 'aborted':
+			return undefined;
+		case 'locked':
+			return m.journey_locked({ guides: list(outcome.blockedBy) });
+		case 'not-ready':
+			return outcome.hint;
+		case 'failed':
+			return m.journey_failed();
+		case 'missing': {
+			const needs = outcome.params.flatMap((p) => {
+				const need = PARAM_NEEDS[p];
+				return need ? [need()] : [];
+			});
+			return needs.length ? m.journey_missing({ needs: list(needs) }) : m.journey_unavailable();
+		}
+		default:
+			return m.journey_unavailable();
+	}
+}
+
+function list(parts: readonly string[]): string {
+	return parts.join(m.journey_list_separator());
+}
 
 let host: { api: JourneyApi; qc: QueryClient; probes: Probes } | null = null;
 let lastParams: GuideParams = {};
@@ -212,7 +283,6 @@ let mounted: Promise<void> | null = null;
 export function mountJourneys(qc: QueryClient): Promise<void> {
 	mounted ??= (async () => {
 		const driver = browser && driverRun();
-		if (driver) delete window.__journey;
 		await settings.load();
 		const probes = createProbes(qc);
 		let api: JourneyApi | null = null;
@@ -228,6 +298,10 @@ export function mountJourneys(qc: QueryClient): Promise<void> {
 			markSeen: () => markSeen(self()),
 			fallback
 		});
+		// `mount` hands back whatever already holds `window.__journey`, so the
+		// driver's forwarder has to go — but with no await before `mount` claims
+		// the slot: a page.evaluate landing in that gap throws on undefined.
+		if (driver) delete window.__journey;
 		api = mount({
 			storage: settingsStorage,
 			navigate: (route) => goto(route),
@@ -252,36 +326,55 @@ export function mountJourneys(qc: QueryClient): Promise<void> {
 	return mounted;
 }
 
-/** Refuse a guide whose gate does not hold or whose real-instance names are
- *  missing; otherwise run it in guide mode and record the finish for the
- *  guides that have no probe to read it from. */
-export async function startGuide(id: string): Promise<StartOutcome> {
+/** The runtime navigates on `step.route` only, so a journey that carries its
+ *  opening route at the top level never leaves the page Replay was pressed on. */
+function entryRoute(ir: IR): string | undefined {
+	return ir.steps[0]?.route ?? ir.route;
+}
+
+export async function startGuide(id: string, opts: StartGuideOptions = {}): Promise<StartOutcome> {
 	if (!host) throw new Error('journeys are not mounted');
 	const ir = publicJourneys.find((j) => j.id === id);
 	if (!ir) return { ok: false, reason: 'unknown' };
-	const gate = GATES[id];
-	if (gate && !(await host.probes[gate.probe]())) {
-		return { ok: false, reason: 'gated', prerequisite: gate.prerequisite };
+	if (opts.blockedBy?.length) return { ok: false, reason: 'locked', blockedBy: [...opts.blockedBy] };
+	if (!(await guideReady(id))) {
+		return { ok: false, reason: 'not-ready', hint: readinessHint(id) ?? m.journey_unavailable() };
 	}
 	const params = await guideParams(host.qc);
 	const missing = requiredParams(ir).filter((p) => !(p in params));
 	if (missing.length) return { ok: false, reason: 'missing', params: missing };
 	lastParams = params;
+	const entry = entryRoute(ir);
+	if (entry && location.pathname !== entry) await goto(entry);
 	const result = await host.api.start(id, { mode: 'guide', params, variant: viewportVariant() });
-	if (result.ok && !(id in DONE_PROBES)) {
-		await settingsStorage.set(`${DONE_PREFIX}${id}@${ir.version}`, '1');
+	if (!result.ok) {
+		return { ok: false, reason: result.aborted ? 'aborted' : 'failed', result };
 	}
+	await settingsStorage.set(`${DONE_PREFIX}${id}@${ir.version}`, '1');
+	if (opts.conclusion) await concludeGuide(opts.conclusion);
 	return { ok: true, result };
 }
 
+async function concludeGuide(conclusion: { title: string; xp: number }): Promise<void> {
+	await showConclusion(conclusion);
+	if (location.pathname !== GUIDES_ROUTE) await goto(GUIDES_ROUTE);
+}
+
+/** A guide with a `DONE_PROBES` entry produces something observable, so the
+ *  state counts as done even for a user who never took the tour — and losing it
+ *  does not undo a tour they did take. */
 export async function guideDone(id: string): Promise<boolean> {
-	const probe = DONE_PROBES[id];
-	if (probe) {
-		if (!host) return false;
-		return Boolean(await host.probes[probe]());
-	}
 	const ir = publicJourneys.find((j) => j.id === id);
-	return ir !== undefined && settings.onboarding.seenVersion[id] === ir.version;
+	if (!ir) return false;
+	if (settings.onboarding.seenVersion[id] === ir.version) return true;
+	const probe = DONE_PROBES[id];
+	if (probe === undefined || !host) return false;
+	return Boolean(await host.probes[probe]());
+}
+
+export async function guidesDone(ids: readonly string[]): Promise<Record<string, boolean>> {
+	const done = await Promise.all(ids.map((id) => guideDone(id)));
+	return Object.fromEntries(ids.map((id, i) => [id, done[i]]));
 }
 
 /** Copy and chrome are resolved when a card is drawn, so a language switch only
