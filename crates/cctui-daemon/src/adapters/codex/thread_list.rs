@@ -82,7 +82,9 @@ pub fn parse_source(v: &Value) -> Option<String> {
         Value::String(s) => Some(s.clone()),
         Value::Object(map) => map.get("custom").and_then(Value::as_str).map_or_else(
             || {
-                if map.contains_key("subAgent") {
+                // codex >= 0.153 writes the snake_case `subagent` key in rollout
+                // `session_meta`; older builds and `thread/list` use `subAgent`.
+                if map.contains_key("subAgent") || map.contains_key("subagent") {
                     Some("subAgent".to_owned())
                 } else {
                     map.keys().next().cloned()
@@ -95,18 +97,21 @@ pub fn parse_source(v: &Value) -> Option<String> {
 }
 
 /// Extract the parent thread id of a codex subagent thread, preferring the
-/// top-level `parentThreadId` and falling back to the structured
-/// `source.subAgent.thread_spawn.parent_thread_id`. Canonicalized so it matches
-/// the parent's `local_id`. `None` for plain cli/vscode/exec/appServer threads.
+/// top-level `parentThreadId` / `parent_thread_id` and falling back to the
+/// structured `source.subAgent.thread_spawn.parent_thread_id` (or its `snake_case`
+/// `source.subagent` spelling, which codex >= 0.153 writes into rollouts).
+/// Canonicalized so it matches the parent's `local_id`. `None` for plain
+/// cli/vscode/exec/appServer threads.
 #[must_use]
 pub fn parse_parent(v: &Value) -> Option<String> {
-    let raw = v.get("parentThreadId").and_then(Value::as_str).filter(|s| !s.is_empty()).or_else(
-        || {
-            v.pointer("/source/subAgent/thread_spawn/parent_thread_id")
-                .and_then(Value::as_str)
-                .filter(|s| !s.is_empty())
-        },
-    )?;
+    let raw = [
+        "/parentThreadId",
+        "/parent_thread_id",
+        "/source/subAgent/thread_spawn/parent_thread_id",
+        "/source/subagent/thread_spawn/parent_thread_id",
+    ]
+    .into_iter()
+    .find_map(|p| v.pointer(p).and_then(Value::as_str).filter(|s| !s.is_empty()))?;
     Some(canonical_id(raw))
 }
 
@@ -945,6 +950,32 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(entry.parent_id.as_deref(), Some("019ea66a-cf6e-73b1-8000-000000000abc"));
+    }
+
+    #[test]
+    fn parse_parent_reads_snake_case_subagent_source() {
+        // codex 0.153 rollout `session_meta`: `source.subagent` + top-level
+        // `parent_thread_id`, no camelCase anywhere.
+        let entry = parse_thread(&json!({
+            "id": "01A09A80-8A73-7051-82D5-68E3C0B97770",
+            "parent_thread_id": "01A09A6A-A692-72E1-BDEF-BE54A77174B2",
+            "source": {"subagent": {"thread_spawn": {
+                "parent_thread_id": "01A09A6A-A692-72E1-BDEF-BE54A77174B2",
+                "depth": 1,
+                "agent_nickname": "Ohm",
+            }}},
+        }))
+        .unwrap();
+        assert_eq!(entry.source.as_deref(), Some("subAgent"));
+        assert_eq!(entry.parent_id.as_deref(), Some("01a09a6a-a692-72e1-bdef-be54a77174b2"));
+        assert!(!is_orphan_subagent(&entry));
+        // Structured-only (no top-level field) still resolves.
+        let entry = parse_thread(&json!({
+            "id": "c",
+            "source": {"subagent": {"thread_spawn": {"parent_thread_id": "p", "depth": 1}}},
+        }))
+        .unwrap();
+        assert_eq!(entry.parent_id.as_deref(), Some("p"));
     }
 
     #[test]
