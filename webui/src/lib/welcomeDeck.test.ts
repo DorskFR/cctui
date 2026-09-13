@@ -31,8 +31,8 @@ function stubPresenter(): Presenter & { show: ReturnType<typeof vi.fn> } {
 	return { show: vi.fn(), settle: vi.fn(), hide: vi.fn() } as never;
 }
 
-function deps(fallback: Presenter) {
-	return { cards: () => CARDS, markSeen: vi.fn(), fallback: () => fallback };
+function deps(fallback: Presenter, cards: DeckCard[] = CARDS) {
+	return { cards: () => cards, markSeen: vi.fn(), fallback: () => fallback };
 }
 
 function text() {
@@ -91,6 +91,33 @@ describe('deckPresenter', () => {
 		flushSync();
 		expect(d.markSeen).toHaveBeenCalled();
 		expect(exit).toHaveBeenCalled();
+	});
+
+	it('hands the last card to the engine instead of finishing the run itself', () => {
+		const d = deps(stubPresenter());
+		const presenter = deckPresenter(d);
+		const next = vi.fn();
+		const exit = vi.fn();
+		presenter.show(step('guides'), null, ctx(CARDS.length - 1, { next, exit }));
+		flushSync();
+		const finish = [...document.body.querySelectorAll('button')].find(
+			(b) => b.textContent?.trim() === 'Get started'
+		);
+		expect(finish).toBeDefined();
+		finish?.click();
+		flushSync();
+		expect(next).toHaveBeenCalled();
+		expect(exit).not.toHaveBeenCalled();
+		expect(d.markSeen).not.toHaveBeenCalled();
+	});
+
+	it('drops the dot strip once the deck is too long for it', () => {
+		const long = Array.from({ length: 9 }, (_, i) => ({ title: `Card ${i}`, body: `Body ${i}` }));
+		const presenter = deckPresenter(deps(stubPresenter(), long));
+		presenter.show(step('what'), null, ctx(0));
+		flushSync();
+		expect(document.body.querySelector('[aria-label="Slide 1"]')).toBeNull();
+		expect(text()).toContain(`1 / ${long.length}`);
 	});
 
 	it('tears the deck down on hide', () => {

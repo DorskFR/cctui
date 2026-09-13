@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { Button, Carousel, Heading, Modal, Stack, Text } from '@dorsk/tsumikit';
+	import { m } from '$lib/paraglide/messages';
 	import type { DeckCard } from '$lib/welcomeDeck.svelte';
 
 	let {
@@ -46,24 +47,25 @@
 		slide={card}
 		bind:index
 		onchange={change}
-		label={cards[0]?.title ?? 'Welcome'}
+		label={m.guide_welcome_carousel_label()}
+		dots={cards.length <= 8}
 		counter
 	/>
 {/snippet}
 
 {#snippet footer()}
 	{#if last}
-		<Button variant="primary" onclick={onfinish}>Get started</Button>
+		<Button variant="primary" onclick={onfinish}>{m.guide_welcome_finish()}</Button>
 	{:else}
-		<Button variant="ghost" onclick={ondismiss}>Skip</Button>
+		<Button variant="ghost" onclick={ondismiss}>{m.guide_welcome_skip()}</Button>
 	{/if}
 {/snippet}
 
-<Modal title="Welcome to cctui" size="lg" onclose={ondismiss} {body} {footer} />
+<Modal title={m.guide_welcome_title()} size="lg" onclose={ondismiss} {body} {footer} />
 
 <style>
 	.deck-card {
-		min-height: 9rem;
-		padding-block: var(--space-sm);
+		min-height: 11rem;
+		padding-block: var(--sp-2);
 	}
 </style>
