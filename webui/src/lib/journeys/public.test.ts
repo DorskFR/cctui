@@ -115,8 +115,7 @@ describe('public journey set', () => {
 			'mobile-filters',
 			'filters',
 			'filter-menu',
-			'reply',
-			'done'
+			'reply'
 		]);
 	});
 
@@ -138,8 +137,7 @@ describe('public journey set', () => {
 			'grouping',
 			'view',
 			'group-sort',
-			'group-actions',
-			'done'
+			'group-actions'
 		]);
 		for (const step of pub('sessions-list').steps) {
 			expect(JSON.stringify(step.target ?? ''), step.id).not.toMatch(/data-tsu|theme/i);

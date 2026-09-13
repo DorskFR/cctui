@@ -131,19 +131,6 @@ export default defineJourney({
 			},
 			expect: [{ visible: 'group-hide' }],
 			capture: 'group'
-		},
-		{
-			id: 'done',
-			route: '/settings/guides',
-			target: 'page[guides]',
-			say: {
-				title: { en: 'You can read the fleet', fr: 'Vous savez lire la flotte' },
-				body: {
-					en: 'Search, groups, display and the per-group actions are all there is to the list. Pick your next guide here whenever you want more.',
-					fr: 'Recherche, groupes, affichage et actions par groupe : la liste ne contient rien d’autre. Choisissez ici votre prochain guide quand vous le souhaitez.'
-				}
-			},
-			expect: [{ visible: 'page[guides]' }]
 		}
 	]
 });

@@ -155,19 +155,6 @@ export default defineJourney({
 			},
 			expect: [{ visible: 'composer/message' }],
 			capture: 'reply'
-		},
-		{
-			id: 'done',
-			route: '/settings/guides',
-			target: 'page[guides]',
-			say: {
-				title: { en: 'You can follow a run end to end', fr: 'Vous savez suivre une exécution de bout en bout' },
-				body: {
-					en: 'Header for the facts, filters for the noise, the transcript for the detail, and the composer to steer. Your next guide is here.',
-					fr: 'L’en-tête pour les faits, les filtres pour le bruit, la transcription pour le détail, et le composeur pour piloter. Votre prochain guide est ici.'
-				}
-			},
-			expect: [{ visible: 'page[guides]' }]
 		}
 	]
 });
