@@ -89,7 +89,7 @@ describe('settingsStorage', () => {
 	it('ignores keys it does not own', async () => {
 		await settingsStorage.set('journey:other', 'x');
 		expect(await settingsStorage.get('journey:other')).toBeNull();
-		expect(blob()).toEqual({ seenVersion: {}, progress: null });
+		expect(blob()).toEqual({ seenVersion: {}, progress: null, stepProgress: {} });
 	});
 });
 

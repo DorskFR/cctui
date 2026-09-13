@@ -251,11 +251,38 @@ export interface SecretScrubPattern {
 
 // Guided-tour state. Serializes as `data.onboarding` so a tour resumes on any
 // device the user signs in from; the server stores the blob untouched.
+export interface GuideStepProgress {
+	/** Furthest step reached, 0-based. */
+	index: number;
+	/** Step count of that run, 0 when unknown. */
+	total: number;
+	version: number;
+}
+
 export interface OnboardingSettings {
 	/** Journey id -> the version of it the user completed. */
 	seenVersion: Record<string, number>;
 	/** The runtime's serialized resume record for the tour in progress. */
 	progress: string | null;
+	/** Journey id -> how far a run ever got. The runtime drops `progress` when a
+	 *  run ends for any reason, so this is the only record of a half-finished
+	 *  tour. Absent in blobs written before it existed. */
+	stepProgress: Record<string, GuideStepProgress>;
+}
+
+function mergeStepProgress(v: unknown): Record<string, GuideStepProgress> {
+	const out: Record<string, GuideStepProgress> = {};
+	if (!v || typeof v !== 'object') return out;
+	for (const [id, raw] of Object.entries(v as Record<string, unknown>)) {
+		const r = raw as Partial<GuideStepProgress> | null;
+		if (!r || typeof r.index !== 'number' || !Number.isFinite(r.index)) continue;
+		out[id] = {
+			index: Math.max(0, Math.floor(r.index)),
+			total: typeof r.total === 'number' && Number.isFinite(r.total) ? Math.max(0, Math.floor(r.total)) : 0,
+			version: typeof r.version === 'number' && Number.isFinite(r.version) ? r.version : 1
+		};
+	}
+	return out;
 }
 
 export function mergeOnboarding(v: unknown): OnboardingSettings {
@@ -266,7 +293,48 @@ export function mergeOnboarding(v: unknown): OnboardingSettings {
 			if (typeof ver === 'number' && Number.isFinite(ver)) seenVersion[id] = ver;
 		}
 	}
-	return { seenVersion, progress: typeof raw.progress === 'string' ? raw.progress : null };
+	return {
+		seenVersion,
+		progress: typeof raw.progress === 'string' ? raw.progress : null,
+		stepProgress: mergeStepProgress(raw.stepProgress)
+	};
+}
+
+/** Ratchet the furthest-reached step out of a resume record. The record carries
+ *  the whole IR, so it also yields the run's step count. Never moves backwards
+ *  within a version; a version bump restarts the count. */
+export function ratchetStepProgress(
+	prev: Record<string, GuideStepProgress>,
+	progress: string | null
+): Record<string, GuideStepProgress> {
+	if (!progress) return prev;
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(progress);
+	} catch {
+		return prev;
+	}
+	const rec = parsed as
+		| { id?: unknown; index?: unknown; version?: unknown; ir?: { steps?: unknown } }
+		| null
+		| undefined;
+	const id = rec?.id;
+	if (typeof id !== 'string' || !id) return prev;
+	const index = typeof rec?.index === 'number' && Number.isFinite(rec.index) ? Math.max(0, Math.floor(rec.index)) : 0;
+	const version = typeof rec?.version === 'number' && Number.isFinite(rec.version) ? rec.version : 1;
+	const steps = rec?.ir?.steps;
+	const total = Array.isArray(steps) ? steps.length : 0;
+	const seen = prev[id];
+	const fresh = !seen || seen.version !== version;
+	if (!fresh && seen.index >= index && (total === 0 || seen.total === total)) return prev;
+	return {
+		...prev,
+		[id]: {
+			index: fresh ? index : Math.max(seen.index, index),
+			total: total || (fresh ? 0 : seen.total),
+			version
+		}
+	};
 }
 
 export interface SettingsState {
@@ -355,7 +423,7 @@ const DEFAULTS: SettingsState = {
 	shortcutsEnabled: false,
 	keymap: {},
 	locale: null,
-	onboarding: { seenVersion: {}, progress: null }
+	onboarding: { seenVersion: {}, progress: null, stepProgress: {} }
 };
 
 // Deep-merge a partial saved blob over DEFAULTS so a value missing from an older
@@ -791,7 +859,12 @@ class Settings {
 	}
 
 	setOnboarding(patch: Partial<OnboardingSettings>) {
-		this.state.onboarding = { ...this.onboarding, ...patch };
+		const current = this.onboarding;
+		const next = { ...current, ...patch };
+		if (patch.progress !== undefined && patch.stepProgress === undefined) {
+			next.stepProgress = ratchetStepProgress(current.stepProgress, patch.progress);
+		}
+		this.state.onboarding = next;
 		this.persist();
 	}
 
