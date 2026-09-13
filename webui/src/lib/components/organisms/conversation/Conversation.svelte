@@ -2,9 +2,11 @@
 	import PermissionCard from '$lib/components/organisms/PermissionCard.svelte';
 	import AskQuestionCard from '$lib/components/organisms/AskQuestionCard.svelte';
 	import PlanCard from '$lib/components/organisms/PlanCard.svelte';
+	import TodoCard from '$lib/components/organisms/TodoCard.svelte';
 	import { Button, EmptyState, Text } from '@dorsk/tsumikit';
 	import ConversationLine from './ConversationLine.svelte';
 	import TurnSummaryFooter from './TurnSummaryFooter.svelte';
+	import { latestTodoLineKey } from './format';
 	import { copyLineMarkdown, saveLineImage } from './lineActions';
 	import type { ScrollController } from './scroll.svelte';
 	import type { ConversationStream } from './stream.svelte';
@@ -97,6 +99,7 @@
 		grow: () => scroll.holdForPrepend(() => (renderLimit += RENDER_CHUNK))
 	};
 	const visibleLines = $derived(hiddenOlder > 0 ? lines.slice(hiddenOlder) : lines);
+	const latestTodoKey = $derived(latestTodoLineKey(lines));
 	export async function loadOlder() {
 		if (hiddenOlder === 0 && canFetchOlder && onfetcholder) await onfetcholder();
 		scroll.holdForPrepend(() => (renderLimit += RENDER_CHUNK));
@@ -227,6 +230,11 @@
 					interactive={i === visibleLines.length - 1 && !archived && !stream.answering && !stream.plan}
 					onsubmit={(t, p) => stream.answerPlan(t, p)}
 				/>
+			{:else if ln.todos && (stream.todos || ln.key !== latestTodoKey)}
+				<!-- Superseded: only the newest task list renders, so a 20-update
+				     turn produces one card and not twenty. -->
+			{:else if ln.todos}
+				<TodoCard todos={ln.todos} />
 			{:else if ln.role === 'reset'}
 				<div class="reset-divider" role="separator">
 					<span class="reset-chip">⟳ {ln.text}</span>
@@ -296,18 +304,14 @@
 			{/key}
 		{/if}
 
+		{#if stream.todos}
+			<TodoCard todos={stream.todos} />
+		{/if}
+
 		{#each stream.perms as p (p.request_id)}
 			<PermissionCard req={p} onrespond={(rid, allow) => onrespondperm(rid, allow)} />
 		{/each}
 
-		{#if stream.working && !archived && !stream.ask && !stream.plan && stream.perms.length === 0}
-			<!-- Activity indicator: proves the request is being processed,
-			     the equivalent of the TUI's "Running…" spinner. -->
-			<div class="working" role="status" aria-live="polite">
-				<span class="working-dots" aria-hidden="true"><span></span><span></span><span></span></span>
-				<span class="working-label">{m.conversation_working()}</span>
-			</div>
-		{/if}
 	</div>
 
 	{#if !scroll.stuck}
@@ -354,55 +358,6 @@
 	}
 	.line.assistant .bubble {
 		border-left: 2px solid color-mix(in srgb, var(--role-assistant) 55%, transparent);
-	}
-	/* Working indicator — animated dots + label proving claude is
-	   processing the turn, styled like a muted assistant-side status line. */
-	.working {
-		display: inline-flex;
-		align-items: center;
-		gap: var(--sp-2);
-		padding: var(--sp-1) var(--sp-3);
-		color: var(--text-muted);
-		font-size: var(--fs-xs);
-		font-weight: var(--fw-medium);
-	}
-	.working-label {
-		letter-spacing: 0.02em;
-	}
-	.working-dots {
-		display: inline-flex;
-		gap: 3px;
-	}
-	.working-dots span {
-		width: 5px;
-		height: 5px;
-		border-radius: 50%;
-		background: var(--role-assistant, var(--accent));
-		animation: working-bounce 1.2s var(--ease) infinite;
-	}
-	.working-dots span:nth-child(2) {
-		animation-delay: 0.18s;
-	}
-	.working-dots span:nth-child(3) {
-		animation-delay: 0.36s;
-	}
-	@keyframes working-bounce {
-		0%,
-		60%,
-		100% {
-			opacity: 0.3;
-			transform: translateY(0);
-		}
-		30% {
-			opacity: 1;
-			transform: translateY(-3px);
-		}
-	}
-	@media (prefers-reduced-motion: reduce) {
-		.working-dots span {
-			animation: none;
-			opacity: 0.6;
-		}
 	}
 	/* Context-reset boundary (/clear or /compact) — a full-width rule with
 	   a centered chip in its own blue hue. */

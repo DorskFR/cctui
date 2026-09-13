@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { AgentEvent } from '@bindings/AgentEvent';
-import { allFilter } from './filters';
+import { allFilter, defaultFilter } from './filters';
+import { latestTodoLineKey } from './format';
 import { buildLines, type LineBuildCtx } from './lines';
 import type { MsgCategory } from './types';
 
@@ -371,5 +372,147 @@ describe('peer (cross-session) messages', () => {
 		const events = [text('▷ User: typed', 1), text(`▷ User: ${PEER}`, 2)];
 		expect(buildLines(events, ctx({ peer: false })).map((l) => l.role)).toEqual(['user']);
 		expect(buildLines(events, ctx({ user: false })).map((l) => l.role)).toEqual(['peer']);
+	});
+});
+
+describe('poll re-injection classification', () => {
+	const POLL = 'Check the queue depth and report anything above 100. Do not stop.';
+
+	it('keeps the first occurrence user and tints every repeat', () => {
+		const events = [text(`▷ User: ${POLL}`, 1), text(`▷ User: ${POLL}`, 2)];
+		expect(roles(events)).toEqual(['user', 'poll']);
+	});
+
+	it('catches a repeat separated by an assistant turn', () => {
+		const events = [
+			text(`▷ User: ${POLL}`, 1),
+			text('nothing above 100', 2),
+			text(`▷ User: ${POLL}`, 3),
+			text('still nothing', 4),
+			text(`▷ User: ${POLL}`, 5)
+		];
+		expect(roles(events)).toEqual(['user', 'assistant', 'poll', 'assistant', 'poll']);
+	});
+
+	it('ignores whitespace differences when matching a repeat', () => {
+		const events = [text('▷ User: run  the\nsweep', 1), text('▷ User: run the sweep', 2)];
+		expect(roles(events)).toEqual(['user', 'poll']);
+	});
+
+	it('does not tint near-identical but different prose', () => {
+		const events = [
+			text('▷ User: check the queue depth', 1),
+			text('▷ User: check the queue depths', 2)
+		];
+		expect(roles(events)).toEqual(['user', 'user']);
+	});
+
+	it('tints a marker-tagged injection on its first occurrence', () => {
+		expect(roles([text('▷ User: # Autonomous loop\n\ndo the thing', 1)])).toEqual(['poll']);
+	});
+
+	it('tints the scheduler wake-up sentinels', () => {
+		expect(roles([text('▷ User: <<autonomous-loop-dynamic>>', 1)])).toEqual(['poll']);
+	});
+
+	it('hides poll noise without hiding the human turn it repeats', () => {
+		const events = [text(`▷ User: ${POLL}`, 1), text(`▷ User: ${POLL}`, 2)];
+		expect(buildLines(events, ctx({ poll: false })).map((l) => l.role)).toEqual(['user']);
+	});
+
+	it('still classifies a repeat when the first occurrence is filtered out', () => {
+		const events = [text(`▷ User: ${POLL}`, 1), text(`▷ User: ${POLL}`, 2)];
+		expect(buildLines(events, ctx({ user: false })).map((l) => l.role)).toEqual(['poll']);
+	});
+
+	it('keeps delivery state on a repeat of a still-sending turn', () => {
+		const events = [text(`▷ User: ${POLL}`, 1), text(`▷ User: ${POLL}`, 2)];
+		const delivery = {
+			pending: new Set([2]),
+			failed: new Map<number, string>(),
+			retrying: new Map<number, { attempt: number; max: number }>()
+		};
+		const lines = buildLines(events, ctx(), delivery);
+		expect(lines[1].role).toBe('poll');
+		expect(lines[1].pending).toBe(true);
+	});
+
+	it('is visible by default', () => {
+		expect(defaultFilter().poll).toBe(true);
+	});
+});
+
+describe('task lists', () => {
+	const todoWrite = (ts: number, ...contents: [string, string][]): AgentEvent => ({
+		type: 'tool_call',
+		tool: 'TodoWrite',
+		input: { todos: contents.map(([content, status]) => ({ content, status, activeForm: `Doing ${content}` })) },
+		kind: null,
+		ts,
+		seq: ts
+	});
+
+	it('parses a TodoWrite tool_call into a todo line instead of a JSON bubble', () => {
+		const [ln] = buildLines([todoWrite(1, ['a', 'pending'])], ctx());
+		expect(ln.todos).toEqual([{ content: 'a', status: 'pending', activeForm: 'Doing a' }]);
+		expect(ln.htmlCode).toBeUndefined();
+	});
+
+	it('parses a codex update_plan tool_call the same way', () => {
+		const ev: AgentEvent = {
+			type: 'tool_call',
+			tool: 'update_plan',
+			input: { plan: [{ step: 'read code', status: 'in_progress' }] },
+			kind: null,
+			ts: 1,
+			seq: 1
+		};
+		expect(buildLines([ev], ctx())[0].todos?.[0]).toEqual({
+			content: 'read code',
+			status: 'in_progress',
+			activeForm: undefined
+		});
+	});
+
+	it('folds three successive TodoWrite calls to exactly one rendered card carrying the newest array', () => {
+		const lines = buildLines(
+			[
+				todoWrite(1, ['a', 'pending'], ['b', 'pending']),
+				todoWrite(2, ['a', 'completed'], ['b', 'pending']),
+				todoWrite(3, ['a', 'completed'], ['b', 'in_progress'])
+			],
+			ctx()
+		);
+		const todoLines = lines.filter((l) => l.todos);
+		expect(todoLines).toHaveLength(3);
+
+		const latest = latestTodoLineKey(lines);
+		const rendered = todoLines.filter((l) => l.key === latest);
+		expect(rendered).toHaveLength(1);
+		expect(rendered[0].todos).toEqual([
+			{ content: 'a', status: 'completed', activeForm: 'Doing a' },
+			{ content: 'b', status: 'in_progress', activeForm: 'Doing b' }
+		]);
+	});
+
+	it('renders the NEWEST list, not the stalest, across successive updates', () => {
+		const lines = buildLines(
+			[todoWrite(1, ['a', 'pending']), todoWrite(2, ['a', 'in_progress']), todoWrite(3, ['a', 'completed'])],
+			ctx()
+		);
+		const rendered = lines.filter((l) => l.todos).find((l) => l.key === latestTodoLineKey(lines));
+		expect(rendered?.todos?.[0].status).toBe('completed');
+	});
+
+	it('still collapses two IDENTICAL consecutive task lists, as the dupe guard intends', () => {
+		const lines = buildLines([todoWrite(1, ['a', 'pending']), todoWrite(2, ['a', 'pending'])], ctx());
+		expect(lines.filter((l) => l.todos)).toHaveLength(1);
+	});
+
+	it('leaves a malformed TodoWrite as an ordinary tool bubble', () => {
+		const ev: AgentEvent = { type: 'tool_call', tool: 'TodoWrite', input: { todos: [] }, kind: null, ts: 1, seq: 1 };
+		const [ln] = buildLines([ev], ctx());
+		expect(ln.todos).toBeUndefined();
+		expect(ln.role).toBe('tool');
 	});
 });

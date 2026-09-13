@@ -701,6 +701,7 @@ fn register_session(app: &mut App, session: cctui_proto::models::Session) {
         last_tool_at: None,
         last_tool_name: None,
         tool_use_count: 0,
+        todos: Vec::new(),
         has_token_credentials: false,
         account_traffic_observed: false,
         last_message_text: None,

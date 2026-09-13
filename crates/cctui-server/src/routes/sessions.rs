@@ -363,6 +363,7 @@ pub async fn list_sessions(
                         last_tool_at: None,
                         last_tool_name: None,
                         tool_use_count: 0,
+                        todos: Vec::new(),
                         has_token_credentials: false,
                         account_traffic_observed: false,
                         pr_links: Vec::new(),
@@ -464,6 +465,7 @@ pub async fn list_sessions(
                 last_tool_at: None,
                 last_tool_name: None,
                 tool_use_count: 0,
+                todos: Vec::new(),
                 has_token_credentials: false,
                 account_traffic_observed: false,
                 pr_links: Vec::new(),
@@ -670,6 +672,28 @@ async fn enrich_and_sort(
             rows.into_iter().map(|(sid, n)| (sid, cap_unread(n))).collect();
         for (_, s) in &mut with_ts {
             s.unread_count = by_session.remove(&s.id).unwrap_or(0);
+        }
+    }
+
+    // Agent task lists. A separate round-trip rather than another `SignalRow`
+    // column: that tuple is already at sqlx's 16-element `FromRow` ceiling.
+    if !session_ids.is_empty() {
+        let rows: Vec<(String, serde_json::Value)> = sqlx::query_as(
+            "SELECT id, todos FROM sessions WHERE id = ANY($1) AND todos IS NOT NULL",
+        )
+        .bind(&session_ids)
+        .fetch_all(&state.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!("db error (todos lookup): {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
+        })?;
+        let mut by_session: std::collections::HashMap<String, serde_json::Value> =
+            rows.into_iter().collect();
+        for (_, s) in &mut with_ts {
+            if let Some(v) = by_session.remove(&s.id) {
+                s.todos = serde_json::from_value(v).unwrap_or_default();
+            }
         }
     }
 
@@ -1284,6 +1308,7 @@ pub async fn search_sessions(
                     last_tool_at: None,
                     last_tool_name: None,
                     tool_use_count: 0,
+                    todos: Vec::new(),
                     has_token_credentials: false,
                     account_traffic_observed: false,
                     pr_links: Vec::new(),
@@ -1443,7 +1468,7 @@ pub async fn search_field_values(
     Ok(Json(rows.into_iter().map(|(v,)| v).collect()))
 }
 
-type EndRow = (Option<String>, Option<String>, Option<DateTime<Utc>>);
+type EndRow = (Option<String>, Option<String>, Option<DateTime<Utc>>, Option<serde_json::Value>);
 
 #[allow(clippy::too_many_lines)]
 pub async fn get_session(
@@ -1495,6 +1520,7 @@ pub async fn get_session(
                 last_tool_at: None,
                 last_tool_name: None,
                 tool_use_count: 0,
+                todos: Vec::new(),
                 has_token_credentials: false,
                 account_traffic_observed: false,
                 pr_links: Vec::new(),
@@ -1559,6 +1585,7 @@ pub async fn get_session(
         last_tool_at: None,
         last_tool_name: None,
         tool_use_count: 0,
+        todos: Vec::new(),
         has_token_credentials: false,
         account_traffic_observed: false,
         pr_links: Vec::new(),
@@ -1566,22 +1593,21 @@ pub async fn get_session(
         end_detail: None,
         ended_at: None,
     };
-    let end: Option<EndRow> =
-        sqlx::query_as("SELECT end_reason, end_detail, ended_at FROM sessions WHERE id = $1")
-            .bind(&item.id)
-            .fetch_optional(&state.pool)
-            .await
-            .map_err(|e| {
-                tracing::error!("db error: {e}");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ApiError { error: "database error".into() }),
-                )
-            })?;
-    if let Some((end_reason, end_detail, ended_at)) = end {
+    let end: Option<EndRow> = sqlx::query_as(
+        "SELECT end_reason, end_detail, ended_at, todos FROM sessions WHERE id = $1",
+    )
+    .bind(&item.id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| {
+        tracing::error!("db error: {e}");
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
+    })?;
+    if let Some((end_reason, end_detail, ended_at, todos)) = end {
         item.end_reason = end_reason.as_deref().map(SessionEndReason::parse);
         item.end_detail = end_detail;
         item.ended_at = ended_at;
+        item.todos = todos.and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
     }
     Ok(Json(item))
 }

@@ -17,6 +17,10 @@
      violet, or the teal --role-mcp already in the log. */
   --role-peer: color-mix(in srgb, var(--c-red) 45%, var(--c-violet) 55%);
 
+  /* Re-injected poll/monitor prompts. Vermillion: reads as "machine repeat"
+     next to the user green without colliding with the amber attention fill. */
+  --role-poll: color-mix(in srgb, var(--c-amber) 62%, var(--c-red) 38%);
+
   /* xterm canvas backdrop. Deliberately theme-independent: the terminal renders
      the agent's own ANSI colors, which assume a dark ground. */
   --term-bg: #0b0e14;

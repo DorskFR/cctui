@@ -27,6 +27,8 @@
 	import DrawerHeader from './conversation/DrawerHeader.svelte';
 	import DrawerToolbar from './conversation/DrawerToolbar.svelte';
 	import DiagnosePanel from './conversation/DiagnosePanel.svelte';
+	import ActivityBanner from './conversation/ActivityBanner.svelte';
+	import TaskPanel from './conversation/TaskPanel.svelte';
 	import TerminalPane from './conversation/TerminalPane.svelte';
 	import Conversation from './conversation/Conversation.svelte';
 	import AccountSwitchModal from './conversation/AccountSwitchModal.svelte';
@@ -42,11 +44,7 @@
 	import { SearchHitStepper } from './conversation/searchHits.svelte';
 	import { ForkController } from './conversation/fork.svelte';
 	import { SessionActions } from './conversation/sessionActions.svelte';
-	import {
-		draftFromLine,
-		isLineBookmarked,
-		lastAssistantLine
-	} from '$lib/bookmarks';
+	import { draftFromLine, isLineBookmarked } from '$lib/bookmarks';
 	import type { CreateBookmark } from '@bindings/CreateBookmark';
 	import { useBookmarkActions, useBookmarks } from '$lib/queries';
 	import { toasts } from '$lib/toast.svelte';
@@ -465,15 +463,6 @@
 	const isBookmarked = (ln: Line) =>
 		isLineBookmarked(savedBookmarks.data ?? [], id, ln) !== null;
 
-	function bookmarkWrapUp() {
-		const ln = lastAssistantLine(lines);
-		if (!ln) {
-			toasts.error(m.bookmarks_no_wrapup());
-			return;
-		}
-		bookmarkDraft = draftFromLine(ln, id, session.name ?? null);
-	}
-
 	async function saveBookmark(title: string, note: string | null) {
 		const draft = bookmarkDraft;
 		bookmarkDraft = null;
@@ -582,8 +571,9 @@
 				{lines}
 				onjumpseq={(seq) => void ensureSeqVisible(seq)}
 				onunpin={(seq) => void pinActions.unpin(id, seq)}
-				onbookmarkwrapup={bookmarkWrapUp}
 			/>
+
+			<TaskPanel sessionId={id} progress={stream.todoProgress} />
 
 			{#if diagnoseOpen}
 				<DiagnosePanel sessionId={id} {session} onclose={closeDiagnose} />
@@ -644,6 +634,8 @@
 				onbookmark={(ln) => (bookmarkDraft = draftFromLine(ln, id, session.name ?? null))}
 				{isBookmarked}
 			/>
+
+			<ActivityBanner {stream} {archived} />
 
 			<ConversationComposer
 				bind:this={composer}

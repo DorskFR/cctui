@@ -3,39 +3,39 @@
 	"title": "Read the fleet at a glance",
 	"version": 1,
 	"variants": {
-		"desktop-dark": {
+		"desktop-gruvbox": {
 			"captures": [
 				{
 					"index": 1,
 					"name": "list",
-					"file": "desktop-dark/01-list.png"
+					"file": "desktop-gruvbox/01-list.png"
 				},
 				{
 					"index": 2,
 					"name": "themes",
-					"file": "desktop-dark/02-themes.png",
+					"file": "desktop-gruvbox/02-themes.png",
 					"title": "Every screen, in your palette",
 					"body": "Twenty-one built-in themes, light and dark; the whole interface follows the swatch you pick."
 				}
 			],
-			"storyboard": "desktop-dark/storyboard.png"
+			"storyboard": "desktop-gruvbox/storyboard.png"
 		},
-		"mobile-dark": {
+		"mobile-gruvbox": {
 			"captures": [
 				{
 					"index": 1,
 					"name": "list",
-					"file": "mobile-dark/01-list.png"
+					"file": "mobile-gruvbox/01-list.png"
 				},
 				{
 					"index": 2,
 					"name": "themes",
-					"file": "mobile-dark/02-themes.png",
+					"file": "mobile-gruvbox/02-themes.png",
 					"title": "Every screen, in your palette",
 					"body": "Twenty-one built-in themes, light and dark; the whole interface follows the swatch you pick."
 				}
 			],
-			"storyboard": "mobile-dark/storyboard.png"
+			"storyboard": "mobile-gruvbox/storyboard.png"
 		}
 	}
 }

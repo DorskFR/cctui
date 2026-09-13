@@ -6,6 +6,7 @@ import type { Label } from "./Label";
 import type { Liveness } from "./Liveness";
 import type { SessionEndReason } from "./SessionEndReason";
 import type { SessionStatus } from "./SessionStatus";
+import type { TodoEntry } from "./TodoEntry";
 import type { TokenUsage } from "./TokenUsage";
 import type { JsonValue } from "./serde_json/JsonValue";
 
@@ -182,6 +183,13 @@ last_tool_name?: string | null,
  * a parent's rolled-up child activity shows via `last_tool_at`, not this.
  */
 tool_use_count: number, 
+/**
+ * The session's own agent task list, as of its newest `TodoWrite` (claude)
+ * or `update_plan` (codex) call. Empty when the session never wrote one —
+ * clients must render nothing at all rather than a zero state. Never
+ * inherited from a parent or child: each subagent owns its own list.
+ */
+todos: Array<TodoEntry>, 
 /**
  * Live token↔account credential binding: a non-revoked
  * `session_tokens` row with a present `encrypted_token`. Distinct from

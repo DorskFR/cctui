@@ -3,7 +3,6 @@ import type { SessionListItem } from '@bindings/SessionListItem';
 import type { JsonValue } from '@bindings/serde_json/JsonValue';
 import {
 	accountTrafficWarning,
-	agentTypeOf,
 	branchOf,
 	bucketInSection,
 	colorHueOf,
@@ -172,6 +171,70 @@ describe('tool activity — asleep vs. grinding', () => {
 		);
 		expect(a.asleep).toBe(true);
 		expect(a.show).toBe(true);
+	});
+
+	it('derives done/total and the in_progress activeForm from the task list', () => {
+		const a = toolActivity(
+			working({
+				todos: [
+					{ content: 'parse it', status: 'completed', active_form: 'Parsing it' },
+					{ content: 'wire it', status: 'completed', active_form: 'Wiring it' },
+					{ content: 'ship it', status: 'in_progress', active_form: 'Wiring the parser' },
+					{ content: 'test it', status: 'pending', active_form: 'Testing it' }
+				]
+			}),
+			NOW
+		);
+		expect(a.todoDone).toBe(2);
+		expect(a.todoTotal).toBe(4);
+		expect(a.todoActive).toBe('Wiring the parser');
+		expect(a.show).toBe(true);
+	});
+
+	it('falls back to the entry content when the harness sent no activeForm', () => {
+		const a = toolActivity(
+			working({ todos: [{ content: 'change the code', status: 'in_progress' }] }),
+			NOW
+		);
+		expect(a.todoActive).toBe('change the code');
+		expect(a.todoDone).toBe(0);
+		expect(a.todoTotal).toBe(1);
+	});
+
+	it('reports no in_progress step when every task is pending or done', () => {
+		const a = toolActivity(
+			working({
+				todos: [
+					{ content: 'a', status: 'completed' },
+					{ content: 'b', status: 'pending' }
+				]
+			}),
+			NOW
+		);
+		expect(a.todoActive).toBeNull();
+		expect(a.todoDone).toBe(1);
+		expect(a.todoTotal).toBe(2);
+	});
+
+	it('renders no badge at all for a session that never wrote a task list', () => {
+		const a = toolActivity(working({ todos: [] }), NOW);
+		expect(a.todoTotal).toBe(0);
+		expect(a.todoActive).toBeNull();
+		expect(a.show).toBe(false);
+	});
+
+	it('surfaces the task list even outside the working bucket', () => {
+		const a = toolActivity(
+			session({
+				bucket: 'done',
+				status: 'active',
+				todos: [{ content: 'a', status: 'completed' }]
+			}),
+			NOW
+		);
+		expect(a.show).toBe(true);
+		expect(a.todoDone).toBe(1);
+		expect(a.count).toBe(0);
 	});
 
 	it('is never asleep for a non-working bucket', () => {
@@ -566,11 +629,11 @@ describe('idsForSection', () => {
 		const childGroups = new Map([
 			[
 				'p',
-				[{ key: 'plain', runId: null, label: '', agentType: null, agents: [kidA, kidB], running: 0 }]
+				[{ key: 'plain', runId: null, label: '', agents: [kidA, kidB], running: 0 }]
 			],
 			[
 				'a',
-				[{ key: 'plain', runId: null, label: '', agentType: null, agents: [grand, kidB], running: 0 }]
+				[{ key: 'plain', runId: null, label: '', agents: [grand, kidB], running: 0 }]
 			]
 		]);
 		expect(idsForSection([parent, session({ id: 'q' })], childGroups)).toEqual([
@@ -820,33 +883,23 @@ describe('groupChildren', () => {
 	const kid = (id: string, metadata: Record<string, JsonValue>) =>
 		session({ id, metadata, status: 'active', liveness: 'active' });
 
-	it('reads agent_type off the sidecar metadata', () => {
-		expect(agentTypeOf(kid('a', { agent_type: 'Explore' }))).toBe('Explore');
-		expect(agentTypeOf(kid('a', { agent_type: 7 }))).toBeNull();
-		expect(agentTypeOf(kid('a', {}))).toBeNull();
-	});
-
-	it('folds Task children into one group per agent type', () => {
+	it('folds every non-workflow child into the single plain group', () => {
 		const groups = groupChildren([
 			kid('a', { subagent: true, agent_type: 'general-purpose' }),
 			kid('b', { subagent: true, agent_type: 'Explore' }),
-			kid('c', { subagent: true, agent_type: 'general-purpose' })
+			kid('c', { subagent: true })
 		]);
-		expect(groups.map((g) => g.key)).toEqual(['type:general-purpose', 'type:Explore']);
-		expect(groups[0].agents.map((s) => s.id)).toEqual(['a', 'c']);
-		expect(groups[0].label).toBe('general-purpose subagents');
-		expect(groups[0].agentType).toBe('general-purpose');
-		expect(groups[0].running).toBe(2);
-		expect(groups[1].agents.map((s) => s.id)).toEqual(['b']);
-		expect(groups[1].agentType).toBe('Explore');
+		expect(groups.map((g) => g.key)).toEqual(['plain']);
+		expect(groups[0].agents.map((s) => s.id)).toEqual(['a', 'b', 'c']);
+		expect(groups[0].label).toBe('subagents');
+		expect(groups[0].running).toBe(3);
 	});
 
-	it('keeps sidecar-less children in the anonymous group and workflows in theirs', () => {
+	it('keeps workflow children in their run group and never splits by agent type', () => {
 		const groups = groupChildren([
 			kid('a', { subagent: true }),
 			kid('b', { subagent: true, agent_type: 'Explore' }),
 			kid('c', { subagent: true, workflow_run_id: 'wf_1', workflow_name: 'deploy' }),
-			// A workflow agent's own agent_type never splits it out of its run.
 			kid('d', {
 				subagent: true,
 				workflow_run_id: 'wf_1',
@@ -854,15 +907,10 @@ describe('groupChildren', () => {
 				agent_type: 'workflow-subagent'
 			})
 		]);
-		expect(groups.map((g) => g.key)).toEqual(['plain', 'type:Explore', 'wf:wf_1']);
-		expect(groups[0].agents.map((s) => s.id)).toEqual(['a']);
-		expect(groups[0].label).toBe('subagents');
-		expect(groups[2].agents.map((s) => s.id)).toEqual(['c', 'd']);
-		expect(groups[2].runId).toBe('wf_1');
-		// Only a single-type group names itself on the badge; the anonymous
-		// and workflow groups stay bare count chips.
-		expect(groups[0].agentType).toBeNull();
-		expect(groups[2].agentType).toBeNull();
+		expect(groups.map((g) => g.key)).toEqual(['plain', 'wf:wf_1']);
+		expect(groups[0].agents.map((s) => s.id)).toEqual(['a', 'b']);
+		expect(groups[1].agents.map((s) => s.id)).toEqual(['c', 'd']);
+		expect(groups[1].runId).toBe('wf_1');
 	});
 
 	it('has no groups for a parent with no children', () => {

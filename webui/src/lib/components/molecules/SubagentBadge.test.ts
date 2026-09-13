@@ -22,26 +22,13 @@ const open = (props: Record<string, unknown>) => {
 };
 
 describe('SubagentBadge', () => {
-	it('shows the agent type ahead of the count for a typed group', () => {
-		open({ type: 'general-purpose', label: 'general-purpose subagents' });
-		expect(badge().textContent?.replace(/\s+/g, ' ').trim()).toBe('general-purpose 5');
-		expect(document.querySelector('.type')?.textContent).toBe('general-purpose');
-	});
-
-	it('stays a bare count chip when the group has no single agent type', () => {
-		open({ type: null });
-		expect(badge().textContent?.trim()).toBe('5');
-		expect(document.querySelector('.type')).toBeNull();
-	});
-
-	it('defaults to the bare count chip when no type is passed at all', () => {
+	it('renders one bare numeric count chip and no other text', () => {
 		open({});
-		expect(badge().textContent?.trim()).toBe('5');
-		expect(document.querySelector('.type')).toBeNull();
+		expect(badge().textContent?.replace(/\s+/g, ' ').trim()).toBe('5');
 	});
 
 	it('keeps the group label and expand state on the accessible name', () => {
-		open({ type: 'Explore', label: 'Explore subagents' });
+		open({ label: 'Explore subagents' });
 		const name = badge().getAttribute('aria-label') ?? '';
 		expect(name).toContain('Explore subagents');
 		expect(badge().getAttribute('aria-expanded')).toBe('false');
@@ -53,7 +40,7 @@ describe('SubagentBadge', () => {
 		// with this one, and a native ancestor listener fires earlier still,
 		// during the real bubble — neither can observe stopPropagation here.
 		const ontoggle = vi.fn();
-		open({ type: 'Explore', ontoggle });
+		open({ ontoggle });
 		const click = new MouseEvent('click', { bubbles: true, cancelable: true });
 		const stopped = vi.spyOn(click, 'stopPropagation');
 		badge().dispatchEvent(click);
@@ -66,7 +53,7 @@ describe('SubagentBadge', () => {
 		// row wrapper's onpointerdown={swipe.start} share one root listener
 		// that honours stopPropagation. Asserted on the event for the same
 		// reason as the click above.
-		open({ type: 'Explore' });
+		open({});
 		const press = new Event('pointerdown', { bubbles: true, cancelable: true });
 		const stopped = vi.spyOn(press, 'stopPropagation');
 		badge().dispatchEvent(press);

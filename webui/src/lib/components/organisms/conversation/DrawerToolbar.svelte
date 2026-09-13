@@ -13,7 +13,7 @@
 	} from './filters';
 	import FilterMenu from './FilterMenu.svelte';
 	import { quickFilterLabel, type MsgCategory, type QuickFilterId, type ViewOpts } from './types';
-	import { Popover, Toggle } from '@dorsk/tsumikit';
+	import { Icon, Popover, Toggle } from '@dorsk/tsumikit';
 	import PinsPanel from './PinsPanel.svelte';
 	import type { MessagePin } from '@bindings/MessagePin';
 	import type { Line } from './types';
@@ -34,8 +34,7 @@
 		hitCount = 0,
 		hitIndex = -1,
 		onprevhit,
-		onnexthit,
-		onbookmarkwrapup
+		onnexthit
 	}: {
 		view: ViewOpts;
 		autoApprove: boolean;
@@ -56,20 +55,7 @@
 		hitIndex?: number;
 		onprevhit?: () => void;
 		onnexthit?: () => void;
-		/** One-click save of the session's newest assistant message (the wrap-up)
-		 * to bookmarks; omit to hide the button. */
-		onbookmarkwrapup?: () => void;
 	} = $props();
-
-	// Popover trigger chrome, so the two chips read like the Toggles beside them.
-	// `--pop-box: auto` clears the kit's 2rem square floor.
-	const chipTrigger =
-		'--pop-box: auto;' +
-		' --pop-trigger-pad: 0.15rem var(--sp-2);' +
-		' --pop-trigger-border: var(--border);' +
-		' --pop-trigger-bg: var(--bg-elevated-2);' +
-		' --pop-trigger-fg: var(--text-muted);' +
-		' --pop-trigger-size: var(--fs-xs);';
 
 	const QUICK_TINT: Record<QuickFilterId, string> = {
 		assistant: 'var(--role-assistant)',
@@ -153,9 +139,14 @@
 				{quickFilterLabel(q.id)}
 			</Toggle>
 		{/each}
-		<Popover label={m.conversation_filter_menu_aria()} placement="bottom-start" pill style={chipTrigger}>
+		<Popover
+			label={m.conversation_filter_menu_aria()}
+			placement="bottom-start"
+			bare
+			triggerClass="toolbar-chip"
+		>
 			{#snippet trigger()}
-				<span class="chip-label">
+				<span class="chip pill">
 					{offCount > 0
 						? m.conversation_filters_off_count({ count: offCount })
 						: m.conversation_filters()}
@@ -192,14 +183,6 @@
 			aria-label={m.conversation_auto_approve_aria()}
 			onclick={ontoggleAuto}
 		>{m.conversation_auto_approve_btn()}</Toggle>
-		{#if onbookmarkwrapup}
-			<Toggle
-				pressed={false}
-				title={m.bookmarks_toolbar_title()}
-				aria-label={m.bookmarks_toolbar_label()}
-				onclick={onbookmarkwrapup}
-			>◈ {m.bookmarks_toolbar_title()}</Toggle>
-		{/if}
 		{#if ondiagnose}
 			<Toggle
 				pressed={false}
@@ -208,9 +191,17 @@
 			>{m.conversation_diagnose_btn()}</Toggle>
 		{/if}
 		{#if onjumpseq && onunpin}
-			<Popover label={m.conversation_pins_aria()} placement="bottom-end" pill style={chipTrigger}>
+			<Popover
+				label={m.conversation_pins_aria()}
+				placement="bottom-end"
+				bare
+				triggerClass="toolbar-chip"
+			>
 				{#snippet trigger()}
-					<span class="chip-label">★ {m.conversation_pins()}{pins.length ? ` ${pins.length}` : ''}</span>
+					<span class="chip">
+						<Icon name="pin" filled={pins.length > 0} />
+						{m.conversation_pins()}{pins.length ? ` ${pins.length}` : ''}
+					</span>
 				{/snippet}
 				<PinsPanel {pins} {lines} onjump={onjumpseq} {onunpin} />
 			</Popover>
@@ -226,18 +217,38 @@
 </div>
 
 <style>
-	/* Text metrics the trigger's own published hooks do not cover; this span is
-	   ours, so scoped CSS reaches it. */
-	.chip-label {
+	/* The Filters and Pins popover triggers must be indistinguishable from the
+	   Toggle chips beside them. `bare` strips the kit's own trigger chrome (its
+	   square floor included) and this local span — authored here, so scoped CSS
+	   reaches it — carries the whole chip restated from Toggle's own tokens.
+	   Keep in step with tsumikit Toggle's `.toggle` + `.pill`. */
+	.chip {
 		display: inline-flex;
 		align-items: center;
-		gap: var(--sp-1);
-		/* The kit's `--pop-trigger-fg` lands in a `:where()` rule a global button
-		   colour outranks; on our own span it sticks. */
+		justify-content: center;
+		gap: 4px;
+		padding: 0.15rem var(--sp-2);
+		border: 1px solid var(--border);
+		border-radius: var(--r-sm);
+		background: var(--bg-elevated-2);
 		color: var(--text-muted);
+		font-size: var(--fs-xs);
 		font-weight: var(--fw-medium);
 		line-height: 1.4;
 		white-space: nowrap;
+		user-select: none;
+		cursor: pointer;
+		transition:
+			background 0.12s var(--ease),
+			border-color 0.12s var(--ease),
+			color 0.12s var(--ease);
+	}
+	/* Filters sits among the pill quick-filter chips; Pins among the square ones. */
+	.chip.pill {
+		border-radius: var(--r-pill);
+	}
+	.chip:hover {
+		border-color: var(--border-strong);
 	}
 
 	/* Toolbar: three visually-separated groups — message-category
