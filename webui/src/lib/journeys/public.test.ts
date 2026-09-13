@@ -237,6 +237,17 @@ describe('public journey set', () => {
 		}
 	});
 
+	it('indexes the per-section group anchors, which render once per group', () => {
+		for (const id of ['group-sort', 'group-actions']) {
+			const step = pub('sessions-list').steps.find((s) => s.id === id)!;
+			expect(step.target, id).toMatchObject({ nth: 0 });
+			expect(step.optional, id).toBe(true);
+			for (const e of step.expect ?? []) {
+				expect(e, id).toMatchObject({ visible: { nth: 0 } });
+			}
+		}
+	});
+
 	it('adds an account only after the book has captured the board', () => {
 		expect(pub('accounts-pools').steps.map((s) => s.id)).toEqual(['board', 'card', 'pools', 'add']);
 		const ids = book('accounts-pools').steps.map((s) => s.id);
