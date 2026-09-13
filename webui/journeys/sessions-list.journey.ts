@@ -1,5 +1,11 @@
 import { defineJourney } from '@dorsk/journey';
 
+// A section header renders per group, so a bare path is ambiguous and throws.
+// `nth` indexes the visible matches and exists only on the locator form.
+const firstGroup = (name: string) => ({ css: `[data-journey="${name}"]`, nth: 0 }) as const;
+const GROUP_SORT = firstGroup('group-sort');
+const GROUP_HIDE = firstGroup('group-hide');
+
 export default defineJourney({
 	id: 'sessions-list',
 	title: { en: 'Read the fleet at a glance', fr: 'Lire la flotte d’un coup d’œil' },
@@ -108,7 +114,7 @@ export default defineJourney({
 		{
 			id: 'group-sort',
 			optional: true,
-			target: 'group-sort',
+			target: GROUP_SORT,
 			say: {
 				title: { en: 'Each group sorts on its own', fr: 'Chaque groupe se trie séparément' },
 				body: {
@@ -116,12 +122,12 @@ export default defineJourney({
 					fr: 'Triez par dernière activité pour voir ce qui vient de bouger, par nom quand vous cherchez une session que vous connaissez déjà. L’ordre s’applique à tous les groupes.'
 				}
 			},
-			expect: [{ visible: 'group-sort' }]
+			expect: [{ visible: GROUP_SORT }]
 		},
 		{
 			id: 'group-actions',
 			optional: true,
-			target: 'group-hide',
+			target: GROUP_HIDE,
 			say: {
 				title: { en: 'Collapse or clear a whole group', fr: 'Replier ou vider un groupe entier' },
 				body: {
@@ -129,7 +135,7 @@ export default defineJourney({
 					fr: 'L’œil replie un groupe sans le perdre. À côté, l’archivage retire toutes les sessions du groupe d’un seul geste — c’est ainsi qu’un lot terminé quitte la liste définitivement.'
 				}
 			},
-			expect: [{ visible: 'group-hide' }],
+			expect: [{ visible: GROUP_HIDE }],
 			capture: 'group'
 		}
 	]
