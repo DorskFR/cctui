@@ -115,9 +115,15 @@ describe('public journey set', () => {
 	});
 
 	it('adds an account only after the book has captured the board', () => {
-		expect(pub('accounts-pools').steps.map((s) => s.id)).toEqual(['board', 'add']);
+		expect(pub('accounts-pools').steps.map((s) => s.id)).toEqual([
+			'board',
+			'card',
+			'pools',
+			'add',
+			'done'
+		]);
 		const ids = book('accounts-pools').steps.map((s) => s.id);
-		expect(ids).toEqual(['board', 'pool', 'handle', 'menu', 'add']);
+		expect(ids).toEqual(['board', 'card', 'pool', 'handle', 'menu', 'pools', 'add', 'done']);
 		expect(ids.indexOf('add')).toBeGreaterThan(ids.lastIndexOf('menu'));
 	});
 
