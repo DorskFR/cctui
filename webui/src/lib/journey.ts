@@ -91,15 +91,21 @@ export function parseDoneKey(key: string): { id: string; version: number } | nul
 	return { id: key.slice(DONE_PREFIX.length, at), version };
 }
 
-/** Offered to a new user in this order; the rest of the book never reaches the app. */
-export const ONBOARDING_JOURNEYS = [
-	'enroll-machine',
+/** The journeys that reach the app, in curriculum order — basics, setup, run,
+ *  master. Which section a guide sits in, what unlocks it and what it is worth
+ *  is the curriculum's to say; this list only decides what exists. The rest of
+ *  the book never leaves the docs. */
+export const PUBLIC_JOURNEYS: readonly string[] = [
+	'welcome',
+	'sessions-list',
 	'accounts-pools',
+	'enroll-machine',
 	'spawn-session',
-	'follow-session'
-] as const;
-export const REFERENCE_JOURNEYS = ['usage-overview', 'sessions-list', 'settings-tour'] as const;
-export const PUBLIC_JOURNEYS: readonly string[] = [...ONBOARDING_JOURNEYS, ...REFERENCE_JOURNEYS];
+	'follow-session',
+	'search-sessions',
+	'usage-overview',
+	'settings-tour'
+];
 
 /** Live instance state a guide needs before it can teach anything. This is a
  *  readiness signal the page states up front, never a refusal after the fact:
@@ -327,9 +333,13 @@ export function mountJourneys(qc: QueryClient): Promise<void> {
 }
 
 /** The runtime navigates on `step.route` only, so a journey that carries its
- *  opening route at the top level never leaves the page Replay was pressed on. */
-function entryRoute(ir: IR): string | undefined {
-	return ir.steps[0]?.route ?? ir.route;
+ *  opening route at the top level never leaves the page Replay was pressed on.
+ *  A journey that anchors nothing anywhere — a carousel deck — is at home on
+ *  whatever page it was started from, and moving it there is pure churn. */
+export function entryRoute(ir: IR): string | undefined {
+	const declared = ir.steps[0]?.route;
+	if (declared) return declared;
+	return ir.steps.some((step) => step.target !== undefined) ? ir.route : undefined;
 }
 
 export async function startGuide(id: string, opts: StartGuideOptions = {}): Promise<StartOutcome> {

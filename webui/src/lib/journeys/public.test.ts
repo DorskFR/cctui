@@ -10,10 +10,19 @@ import sessionsList from '../../../journeys/sessions-list.journey';
 import settingsTour from '../../../journeys/settings-tour.journey';
 import spawnSession from '../../../journeys/spawn-session.journey';
 import usageOverview from '../../../journeys/usage-overview.journey';
-import { DONE_PROBES, PUBLIC_JOURNEYS, READINESS, readinessHint, requiredParams } from '../journey';
+import welcome from '../../../journeys/welcome.journey';
+import {
+	DONE_PROBES,
+	entryRoute,
+	PUBLIC_JOURNEYS,
+	READINESS,
+	readinessHint,
+	requiredParams
+} from '../journey';
 import { createProbes } from './probes';
 
 const SPECS: Journey[] = [
+	welcome,
 	enrollMachine,
 	accountsPools,
 	spawnSession,
@@ -61,18 +70,25 @@ function anchorNames(step: { target?: unknown; expect?: unknown[] }): string[] {
 }
 
 describe('public journey set', () => {
-	it('offers the onboarding guides first, in the spec order, and never search-sessions', () => {
+	it('registers every curriculum guide, in curriculum order', () => {
 		expect(PUBLIC_JOURNEYS).toEqual([
-			'enroll-machine',
+			'welcome',
+			'sessions-list',
 			'accounts-pools',
+			'enroll-machine',
 			'spawn-session',
 			'follow-session',
+			'search-sessions',
 			'usage-overview',
-			'sessions-list',
 			'settings-tour'
 		]);
-		expect(PUBLIC_JOURNEYS).not.toContain('search-sessions');
-		expect(pub('search-sessions').steps).toEqual([]);
+	});
+
+	it('has a public tour behind every guide it registers', () => {
+		for (const id of PUBLIC_JOURNEYS) {
+			expect(byId(id), id).toBeDefined();
+			expect(pub(id).steps.length, id).toBeGreaterThan(0);
+		}
 	});
 
 	it('strips every qaOnly step and qa.* probe from the public IR', () => {
@@ -146,11 +162,18 @@ describe('public journey set', () => {
 		}
 	});
 
-	it('can open every public guide from the guides page', () => {
+	it('can open every anchored guide from the guides page', () => {
 		for (const id of PUBLIC_JOURNEYS) {
 			const ir = pub(id);
-			expect(ir.steps[0]?.route ?? ir.route, id).toBeTruthy();
+			if (!ir.steps.some((s) => s.target !== undefined)) continue;
+			expect(entryRoute(ir), id).toBeTruthy();
 		}
+	});
+
+	it('leaves a guide that anchors nothing on the page it was started from', () => {
+		const deck = pub('welcome');
+		expect(deck.steps.every((s) => s.target === undefined)).toBe(true);
+		expect(entryRoute(deck)).toBeUndefined();
 	});
 
 	it('never asks the user to type a prescribed string', () => {

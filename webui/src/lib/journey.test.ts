@@ -9,6 +9,7 @@ import journeys from './journeys.generated.json';
 import { locale } from './locale.svelte';
 import {
 	driverRun,
+	entryRoute,
 	guideDone,
 	guideParams,
 	guidesDone,
@@ -216,11 +217,18 @@ describe('the guides page is where a tour hands back', () => {
 		expect(GUIDES_ROUTE).toBe('/settings/guides');
 	});
 
-	it('opens every public guide on a route, whether the step or the journey carries it', () => {
+	it('opens an anchored guide on a route, whether the step or the journey carries it', () => {
 		for (const j of publicJourneys) {
-			if (j.steps.length === 0) continue;
-			expect(j.steps[0]?.route ?? j.route, j.id).toBeTruthy();
+			if (!j.steps.some((s) => s.target !== undefined)) continue;
+			expect(entryRoute(j), j.id).toBeTruthy();
 		}
+	});
+
+	it('sends a carousel deck nowhere, so a replay does not leave the guides page', () => {
+		const deck = publicJourneys.find((j) => j.steps.every((s) => s.target === undefined));
+		expect(deck, 'no target-less journey is registered').toBeDefined();
+		expect(deck!.route, 'the deck still declares a route of its own').toBeTruthy();
+		expect(entryRoute(deck!)).toBeUndefined();
 	});
 });
 
