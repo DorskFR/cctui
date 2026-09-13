@@ -89,16 +89,6 @@ export default defineJourney({
 				title: { en: 'Add your first account', fr: 'Ajoutez votre premier compte' },
 				body: { en: 'Add the credential your agents will run on. Once it is saved you can launch a session; pools are for when you have more than one.', fr: 'Ajoutez l’identifiant sur lequel vos agents s’exécuteront. Une fois enregistré, vous pouvez lancer une session ; les pools servent quand vous en avez plusieurs.' }
 			}
-		},
-		{
-			id: 'done',
-			route: '/settings/guides',
-			target: 'page[guides]',
-			say: {
-				title: { en: 'Your agents have something to run on', fr: 'Vos agents ont de quoi s’exécuter' },
-				body: { en: 'You know where credentials live, what a card is telling you, and why pools exist. Next, bring a machine into the fleet so there is somewhere for the work to happen.', fr: 'Vous savez où vivent les identifiants, ce que dit une carte et à quoi servent les pools. Ensuite, enrôlez une machine pour que le travail ait un endroit où s’exécuter.' }
-			},
-			expect: [{ visible: 'page[guides]' }]
 		}
 	]
 });

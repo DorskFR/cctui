@@ -43,8 +43,7 @@ describe('public journey set', () => {
 			'sessions-list',
 			'settings-tour'
 		]);
-		expect(PUBLIC_JOURNEYS).not.toContain('search-sessions');
-		expect(pub('search-sessions').steps).toEqual([]);
+		expect(pub('search-sessions').steps.map((s) => s.id)).toEqual(['box', 'facets', 'combine']);
 	});
 
 	it('strips every qaOnly step and qa.* probe from the public IR', () => {
@@ -115,15 +114,9 @@ describe('public journey set', () => {
 	});
 
 	it('adds an account only after the book has captured the board', () => {
-		expect(pub('accounts-pools').steps.map((s) => s.id)).toEqual([
-			'board',
-			'card',
-			'pools',
-			'add',
-			'done'
-		]);
+		expect(pub('accounts-pools').steps.map((s) => s.id)).toEqual(['board', 'card', 'pools', 'add']);
 		const ids = book('accounts-pools').steps.map((s) => s.id);
-		expect(ids).toEqual(['board', 'card', 'pool', 'handle', 'menu', 'pools', 'add', 'done']);
+		expect(ids).toEqual(['board', 'card', 'pool', 'handle', 'menu', 'pools', 'add']);
 		expect(ids.indexOf('add')).toBeGreaterThan(ids.lastIndexOf('menu'));
 	});
 
@@ -138,8 +131,7 @@ describe('public journey set', () => {
 			'profile-new',
 			'save',
 			'sections',
-			'show-drafts',
-			'done'
+			'show-drafts'
 		]);
 		const open = pub('spawn-session').steps[0];
 		expect(open.expect).not.toContainEqual({ enabled: 'draft' });
@@ -170,7 +162,7 @@ describe('book fidelity', () => {
 		]);
 		expect(captures(book('follow-session'))).toEqual(['drawer', 'timeline', 'tools', 'reply']);
 		expect(captures(book('sessions-list'))).toEqual(['list', 'themes']);
-		expect(captures(book('search-sessions'))).toEqual(['before', 'text', 'facet']);
+		expect(captures(book('search-sessions'))).toEqual(['box', 'before', 'text', 'facet']);
 		expect(captures(book('usage-overview'))).toEqual(['tiles', 'periods', 'windows', 'analytics']);
 		expect(captures(book('settings-tour'))).toEqual([
 			'appearance',
@@ -187,6 +179,6 @@ describe('book fidelity', () => {
 		expect(list.expect).toContainEqual({ count: ['session', { min: 4 }] });
 		const machines = book('enroll-machine').steps.find((s) => s.id === 'machines')!;
 		expect(machines.target).toEqual({ role: 'tab', name: 'Machines 2' });
-		expect(book('search-sessions').steps).toHaveLength(3);
+		expect(book('search-sessions').steps).toHaveLength(6);
 	});
 });

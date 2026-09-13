@@ -93,16 +93,6 @@ export default defineJourney({
 			},
 			expect: [{ visible: 'tab[machines]' }],
 			capture: 'machines'
-		},
-		{
-			id: 'done',
-			route: '/settings/guides',
-			target: 'page[guides]',
-			say: {
-				title: { en: 'The fleet has somewhere to run', fr: 'La flotte a où s’exécuter' },
-				body: { en: 'A machine that reports in can host sessions, and you know where to revoke its access if it ever leaves your hands. Next, start an agent on it.', fr: 'Une machine qui se signale peut héberger des sessions, et vous savez où révoquer son accès si elle vous échappe. Ensuite, lancez-y un agent.' }
-			},
-			expect: [{ visible: 'page[guides]' }]
 		}
 	]
 });

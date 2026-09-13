@@ -92,16 +92,6 @@ export default defineJourney({
 				body: { en: 'The built-in detectors know the common credential shapes. Your own internal ticket or key formats are not among them — add a pattern per line and they are redacted too.', fr: 'Les détecteurs intégrés connaissent les formats d’identifiants courants. Vos formats internes de tickets ou de clés n’en font pas partie : ajoutez un motif par ligne et ils seront masqués aussi.' }
 			},
 			expect: [{ visible: 'page[privacy]/redact-patterns' }]
-		},
-		{
-			id: 'done',
-			route: '/settings/guides',
-			target: 'page[guides]',
-			say: {
-				title: { en: 'The app behaves the way you want', fr: 'L’application se comporte comme vous le voulez' },
-				body: { en: 'You know where the look, the run defaults and the privacy rules live. Every guide can be replayed from this page whenever you want a refresher.', fr: 'Vous savez où vivent l’apparence, les réglages de run et les règles de confidentialité. Chaque guide peut être rejoué depuis cette page quand vous le souhaitez.' }
-			},
-			expect: [{ visible: 'page[guides]' }]
 		}
 	]
 });

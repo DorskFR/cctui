@@ -112,16 +112,6 @@ export default defineJourney({
 			},
 			expect: [{ count: ['section[drafts]/session', { min: 1 }] }, { probe: 'sessions.drafts' }],
 			capture: 'draft'
-		},
-		{
-			id: 'done',
-			route: '/settings/guides',
-			target: 'page[guides]',
-			say: {
-				title: { en: 'You can put an agent to work', fr: 'Vous savez mettre un agent au travail' },
-				body: { en: 'You know what a run needs, what a profile carries, and that a draft costs nothing until you launch it. Next, learn to follow one while it works.', fr: 'Vous savez ce qu’exige un run, ce que porte un profil, et qu’un brouillon ne coûte rien tant qu’il n’est pas lancé. Ensuite, apprenez à suivre un run en cours.' }
-			},
-			expect: [{ visible: 'page[guides]' }]
 		}
 	]
 });

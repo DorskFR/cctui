@@ -87,16 +87,6 @@ export default defineJourney({
 			},
 			expect: [{ visible: 'analytics' }],
 			capture: 'analytics'
-		},
-		{
-			id: 'done',
-			route: '/settings/guides',
-			target: 'page[guides]',
-			say: {
-				title: { en: 'You can read the fleet', fr: 'Vous savez lire la flotte' },
-				body: { en: 'You know which number means work is stuck, which means you are out of capacity, and where to look when usage climbs. The other guides are here whenever you want them.', fr: 'Vous savez quel chiffre signale un travail bloqué, lequel signale un manque de capacité, et où regarder quand la consommation grimpe. Les autres guides restent disponibles ici.' }
-			},
-			expect: [{ visible: 'page[guides]' }]
 		}
 	]
 });
