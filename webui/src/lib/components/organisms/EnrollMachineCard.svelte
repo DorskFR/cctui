@@ -30,8 +30,8 @@
 		<Cluster wrap={false} align="center">
 			<!-- as="div": truncate needs a block element — text-overflow:ellipsis is
 			     ignored on an inline <span>, so the long command would spill. -->
-			<div class="cmd"><Text as="div" variant="code" truncate>{enrollCmd}</Text></div>
-			<Button onclick={copyEnroll}>{m.common_copy()}</Button>
+			<div class="cmd" data-journey="enroll-cmd"><Text as="div" variant="code" truncate>{enrollCmd}</Text></div>
+			<Button data-journey="enroll-copy" onclick={copyEnroll}>{m.common_copy()}</Button>
 		</Cluster>
 		<Text as="p" tone="muted" size="sm">
 			{m.home_enroll_run_as_service()} <Text variant="code">cctui-daemon service install</Text>

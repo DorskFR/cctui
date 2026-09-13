@@ -82,6 +82,7 @@ describe('public journey set', () => {
 			'usage-overview',
 			'settings-tour'
 		]);
+		expect(pub('search-sessions').steps.map((s) => s.id)).toEqual(['box', 'facets', 'combine']);
 	});
 
 	it('has a public tour behind every guide it registers', () => {
@@ -237,25 +238,52 @@ describe('public journey set', () => {
 	});
 
 	it('adds an account only after the book has captured the board', () => {
-		expect(pub('accounts-pools').steps.map((s) => s.id)).toEqual(['board', 'add']);
+		expect(pub('accounts-pools').steps.map((s) => s.id)).toEqual(['board', 'card', 'pools', 'add']);
 		const ids = book('accounts-pools').steps.map((s) => s.id);
-		expect(ids).toEqual(['board', 'pool', 'handle', 'menu', 'add']);
+		expect(ids).toEqual(['board', 'card', 'pool', 'handle', 'menu', 'pools', 'add']);
 		expect(ids.indexOf('add')).toBeGreaterThan(ids.lastIndexOf('menu'));
 	});
 
 	it('walks spawn-session through the machine and folder before the fills', () => {
 		const ids = pub('spawn-session').steps.map((s) => s.id);
-		expect(ids).toEqual(['open', 'where', 'name', 'prompt', 'save', 'sections', 'show-drafts']);
+		expect(ids).toEqual([
+			'open',
+			'where',
+			'name',
+			'prompt',
+			'profiles',
+			'profile-new',
+			'save',
+			'sections',
+			'show-drafts'
+		]);
 		const open = pub('spawn-session').steps[0];
 		expect(open.expect).not.toContainEqual({ enabled: 'draft' });
+		// The draft button only enables once machine+folder are set, so no step
+		// may block on it.
+		for (const step of pub('spawn-session').steps) {
+			expect(step.expect ?? [], step.id).not.toContainEqual({ enabled: 'draft' });
+		}
 	});
 });
 
 describe('book fidelity', () => {
 	it('keeps every screenshot capture the docs are built from', () => {
-		expect(captures(book('enroll-machine'))).toEqual(['access', 'enroll', 'user', 'machines']);
+		expect(captures(book('enroll-machine'))).toEqual([
+			'access',
+			'command',
+			'enroll',
+			'user',
+			'machines'
+		]);
 		expect(captures(book('accounts-pools'))).toEqual(['board', 'pool', 'handle', 'menu']);
-		expect(captures(book('spawn-session'))).toEqual(['dialog', 'filled', 'saved', 'draft']);
+		expect(captures(book('spawn-session'))).toEqual([
+			'dialog',
+			'filled',
+			'profiles',
+			'saved',
+			'draft'
+		]);
 		expect(captures(book('follow-session'))).toEqual([
 			'drawer',
 			'header',
@@ -271,9 +299,15 @@ describe('book fidelity', () => {
 			'options',
 			'group'
 		]);
-		expect(captures(book('search-sessions'))).toEqual(['before', 'text', 'facet']);
-		expect(captures(book('usage-overview'))).toEqual(['tiles', 'windows', 'analytics']);
-		expect(captures(book('settings-tour'))).toEqual(['appearance', 'sessions', 'execution', 'privacy']);
+		expect(captures(book('search-sessions'))).toEqual(['box', 'before', 'text', 'facet']);
+		expect(captures(book('usage-overview'))).toEqual(['tiles', 'periods', 'windows', 'analytics']);
+		expect(captures(book('settings-tour'))).toEqual([
+			'appearance',
+			'theme',
+			'sessions',
+			'execution',
+			'privacy'
+		]);
 	});
 
 	it('keeps the fixture assertions in the book compile', () => {
@@ -282,6 +316,6 @@ describe('book fidelity', () => {
 		expect(list.expect).toContainEqual({ count: ['session', { min: 4 }] });
 		const machines = book('enroll-machine').steps.find((s) => s.id === 'machines')!;
 		expect(machines.target).toEqual({ role: 'tab', name: 'Machines 2' });
-		expect(book('search-sessions').steps).toHaveLength(3);
+		expect(book('search-sessions').steps).toHaveLength(6);
 	});
 });

@@ -154,7 +154,7 @@
 	}
 </script>
 
-<div class="list" role="radiogroup" aria-label={m.spawn_profiles_aria()}>
+<div class="list" role="radiogroup" aria-label={m.spawn_profiles_aria()} data-journey="profiles">
 	<!-- No saved profile yet: the bare kit stands in for the profile rows, so
 	     harness / account / model / effort / permissions are always reachable
 	     and a session can be started without creating a profile first. -->
@@ -201,7 +201,7 @@
 	{/each}
 	<div class="sr-only" role="status" aria-live="polite">{announcement}</div>
 	<div class="new">
-		<Button variant="link" size="sm" disabled={busy} onclick={oncreate}>{m.spawn_profile_new()}</Button>
+		<Button data-journey="new-profile" variant="link" size="sm" disabled={busy} onclick={oncreate}>{m.spawn_profile_new()}</Button>
 	</div>
 </div>
 
