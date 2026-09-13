@@ -300,13 +300,9 @@ describe('public journey set', () => {
 
 describe('book fidelity', () => {
 	it('keeps every screenshot capture the docs are built from', () => {
-		expect(captures(book('welcome'))).toEqual([
-			'welcome',
-			'shape',
-			'sessions',
-			'accounts',
-			'guides'
-		]);
+		// Doc mode never mounts the carousel, so a capture here photographs the
+		// page underneath rather than the deck.
+		expect(captures(book('welcome'))).toEqual([]);
 		expect(captures(book('enroll-machine'))).toEqual([
 			'access',
 			'command',
