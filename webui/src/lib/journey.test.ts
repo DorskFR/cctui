@@ -49,7 +49,7 @@ function blob() {
 beforeEach(() => {
 	auth.isAuthed = false;
 	localStorage.clear();
-	settings.setOnboarding({ seenVersion: {}, progress: null });
+	settings.setOnboarding({ seenVersion: {}, progress: null, stepProgress: {} });
 });
 
 describe('parseDoneKey', () => {
