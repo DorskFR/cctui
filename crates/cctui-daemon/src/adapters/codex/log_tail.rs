@@ -472,13 +472,7 @@ fn rollout_link(path: &Path) -> RolloutLink {
         return RolloutLink { source: None, subagent_parent: None, launcher_parent: None };
     };
     let source = payload.get("source").and_then(super::thread_list::parse_source);
-    let subagent_parent = payload
-        .pointer("/source/subAgent/thread_spawn/parent_thread_id")
-        .or_else(|| payload.get("parent_thread_id"))
-        .or_else(|| payload.get("parentThreadId"))
-        .and_then(Value::as_str)
-        .filter(|s| !s.is_empty())
-        .map(super::thread_list::canonical_id);
+    let subagent_parent = super::thread_list::parse_parent(&payload);
     let launcher_parent = payload
         .get("originator")
         .and_then(Value::as_str)
@@ -992,6 +986,43 @@ mod tests {
         };
         assert_eq!(local_id, child);
         assert_eq!(meta.parent_local_id.as_deref(), Some("DISPATCH-LT-1"));
+        assert_eq!(meta.extra["subagent"], json!(true));
+    }
+
+    #[tokio::test]
+    async fn snake_case_subagent_rollout_nests_under_its_parent() {
+        // codex 0.153 writes `source.subagent` (snake_case) + top-level
+        // `parent_thread_id`; the parent is a plain app-server session, so the
+        // child must nest under it directly.
+        let tmp = tempfile::tempdir().unwrap();
+        let sessions = tmp.path().to_path_buf();
+        let (tx, mut rx) = mpsc::channel(64);
+        let mut tail = LogTail::new(
+            LogTailConfig {
+                sessions_root: sessions.clone(),
+                poll_interval: Duration::from_millis(10),
+                quiesce: Duration::from_hours(1),
+                offsets_path: None,
+            },
+            tx,
+            CancellationToken::new(),
+        );
+        let parent = "01a09a6a-a692-72e1-bdef-be54a77174b2";
+        let child = "01a09a80-8a73-7051-82d5-68e3c0b97770";
+        let path = sessions.join(format!("rollout-2026-09-13T13-21-50-{child}.jsonl"));
+        std::fs::write(
+            &path,
+            format!(
+                r#"{{"timestamp":"2026-09-13T11:21:50.456Z","type":"session_meta","payload":{{"session_id":"{parent}","id":"{child}","forked_from_id":"{parent}","parent_thread_id":"{parent}","cwd":"/workspace","originator":"cctui","source":{{"subagent":{{"thread_spawn":{{"parent_thread_id":"{parent}","depth":1,"agent_path":"/root/noms_fondateur","agent_nickname":"Ohm","agent_role":null}}}}}},"thread_source":"subagent","agent_nickname":"Ohm"}}}}"#
+            ),
+        )
+        .unwrap();
+        tail.scan_once().await;
+        let AdapterEvent::SessionStarted { local_id, meta } = rx.recv().await.unwrap() else {
+            panic!("expected SessionStarted")
+        };
+        assert_eq!(local_id, child);
+        assert_eq!(meta.parent_local_id.as_deref(), Some(parent));
         assert_eq!(meta.extra["subagent"], json!(true));
     }
 
