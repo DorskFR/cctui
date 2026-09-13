@@ -21,15 +21,22 @@
 				},
 				{
 					"index": 4,
-					"name": "saved",
-					"file": "03-saved.png",
-					"title": "Save it as a draft",
-					"body": "This saves a draft on your instance. Nothing runs until you launch it, and you can delete it from the list."
+					"name": "profiles",
+					"file": "03-profiles.png",
+					"title": "The profile decides how it thinks",
+					"body": "A profile bundles the harness, model, reasoning effort and permission mode. Pick one here rather than setting four things every time you launch."
 				},
 				{
 					"index": 6,
+					"name": "saved",
+					"file": "04-saved.png",
+					"title": "Save it as a draft",
+					"body": "The Draft button lights up once the machine and folder are set. This saves the run on your instance without starting it — nothing executes until you launch it."
+				},
+				{
+					"index": 8,
 					"name": "draft",
-					"file": "04-draft.png",
+					"file": "05-draft.png",
 					"title": "The draft is waiting",
 					"body": "Your draft is here, holding the machine, folder, profile and prompt until you launch it."
 				}

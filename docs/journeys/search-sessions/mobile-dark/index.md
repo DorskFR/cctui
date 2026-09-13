@@ -1,20 +1,26 @@
-# Find a session again
+# Find anything across sessions
 
 ## viewport=mobile theme=dark
 
-![before](01-before.png)
+![box](01-box.png)
+
+**One box over every session**
+
+This searches what the agents actually said and did, not just the names you gave the runs. A session you never labelled is still findable by what it touched.
+
+![before](02-before.png)
 
 **Start from the whole list**
 
 Every session you have run is searchable, live ones and finished ones alike.
 
-![text](02-text.png)
+![text](03-text.png)
 
 **Search the transcripts, not just the titles**
 
 A plain word is matched against what the agents actually said and did, so you can find a run by what it touched.
 
-![facet](03-facet.png)
+![facet](04-facet.png)
 
 **Narrow by label, machine or status**
 

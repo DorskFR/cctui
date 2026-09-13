@@ -8,19 +8,25 @@
 
 Access lists everyone and everything that can act on this instance. Until a machine has enrolled, this card is the only thing here that matters.
 
-![enroll](02-enroll.png)
+![command](02-command.png)
 
-**Run this on the machine**
+**What this command does**
 
-Copy this command and run it on the computer that will host your agents. Replace the token with one from your user. The guide moves on by itself when the machine reports in.
+It points the daemon at this server and registers the machine under your user. Swap the token placeholder for one of your own keys — that token is what ties the machine to you.
 
-![user](03-user.png)
+![enroll](03-enroll.png)
 
-**Open a user**
+**Waiting for the machine to report in**
 
-Open your own user. Keys, machines, tokens and AI accounts each have a tab.
+The guide moves on by itself the moment the machine checks in. If you would rather finish setting it up later, leave this step and come back — nothing is lost.
 
-![machines](04-machines.png)
+![user](04-user.png)
+
+**Open your own user**
+
+Everything attached to an identity is here: the keys it signs in with, the machines it enrolled, its tokens and its AI accounts.
+
+![machines](05-machines.png)
 
 **The machines that answered**
 

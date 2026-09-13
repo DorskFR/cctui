@@ -183,7 +183,7 @@
 
 <svelte:window onkeydown={onWinKey} />
 
-<div class="dhead">
+<div class="dhead" data-journey="header">
 	<Toolbar collapseBelow="640px" items={overflowItems} overflowLabel={m.drawer_more_actions()}>
 		<IconButton icon="chevron-left" label={m.drawer_back()} onclick={onclose} />
 		{#if onTogglePin}
@@ -281,6 +281,7 @@
 		/>
 		<IconButton
 			data-overflow
+			data-journey="fork"
 			chip
 			variant="default"
 			icon="fork"
@@ -330,7 +331,7 @@
 			/>
 		</div>
 	{/if}
-	<div class="hmeta row row-wrap">
+	<div class="hmeta row row-wrap" data-journey="head-meta">
 		{#if showStatusBadge}<Badge tone={statusBadgeTone(session.status)}>{session.status}</Badge>{/if}
 		{#if end}<Badge tone={end.tone} title={sessionEndTitle(end)} style={end.muted ? 'opacity:0.6' : undefined}>{end.label}</Badge>{/if}
 		<WorkingDir path={session.working_dir} copy title={m.sessions_workdir_copy_title({ path: session.working_dir })} />

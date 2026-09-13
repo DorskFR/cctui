@@ -1,3 +1,3 @@
-# Welcome to cctui
+# What cctui is
 
 ## viewport=mobile theme=dark

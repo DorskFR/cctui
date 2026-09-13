@@ -1,4 +1,4 @@
-# Welcome to cctui
+# What cctui is
 
 ## viewport=desktop theme=dark
 

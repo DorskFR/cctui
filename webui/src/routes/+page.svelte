@@ -35,7 +35,9 @@
 
 <Stack gap="var(--sp-5)">
 	<PageHead title={m.home_usage_page_title()}>
-		<SegmentedControl bind:value={rangeKey} options={rangeOptions} label={m.home_usage_range_label()} />
+		<span data-journey="range">
+			<SegmentedControl bind:value={rangeKey} options={rangeOptions} label={m.home_usage_range_label()} />
+		</span>
 	</PageHead>
 
 	<div class="tiles" data-journey="tiles">

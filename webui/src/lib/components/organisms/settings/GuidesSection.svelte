@@ -1,37 +1,100 @@
 <script lang="ts">
-	import { Badge, Button } from '@dorsk/tsumikit';
+	import { Button, ConfirmModal, Progress, Text } from '@dorsk/tsumikit';
 	import SettingGroup from '$lib/components/molecules/SettingGroup.svelte';
 	import SettingRow from '$lib/components/molecules/SettingRow.svelte';
 	import SettingSection from '$lib/components/molecules/SettingSection.svelte';
-	import { guideEntries, guideStatus, replayGuide, resetGuides } from '$lib/guides';
-	import type { GuideStatus } from '$lib/guides';
+	import GuideRow from './GuideRow.svelte';
+	import {
+		buildCurriculum,
+		guideEntries,
+		guideOptions,
+		replayGuide,
+		resetGuides
+	} from '$lib/guides';
+	import type { GuideSectionId, GuideView } from '$lib/guides';
+	import {
+		guideReady,
+		guidesDone,
+		READINESS,
+		readinessHint,
+		startFailureMessage
+	} from '$lib/journey';
 	import { settings } from '$lib/settings.svelte';
 	import { toasts } from '$lib/toast.svelte';
 	import { m } from '$lib/paraglide/messages';
 
-	const entries = guideEntries();
-	const statuses = $derived(
-		new Map(entries.map((e) => [e.id, guideStatus(e, settings.onboarding)] as const))
-	);
 	let busy = $state<string | null>(null);
+	let confirming = $state(false);
+	let doneMap = $state<Record<string, boolean>>({});
+	let readyMap = $state<Record<string, boolean>>({});
+	let runtimeTick = $state(0);
 
-	const STATUS_TONE = { done: 'ok', 'in-progress': 'warn', 'not-started': 'muted' } as const;
+	$effect(() => {
+		const bump = () => runtimeTick++;
+		const observer = new MutationObserver(bump);
+		observer.observe(document.documentElement, { attributes: true, attributeFilter: ['lang'] });
+		let poll: ReturnType<typeof setInterval> | undefined;
+		if (typeof window.__journey?.translate !== 'function') {
+			poll = setInterval(() => {
+				if (typeof window.__journey?.translate !== 'function') return;
+				clearInterval(poll);
+				bump();
+			}, 200);
+		}
+		return () => {
+			observer.disconnect();
+			clearInterval(poll);
+		};
+	});
 
-	function statusLabel(s: GuideStatus): string {
-		if (s === 'done') return m.settings_guides_status_done();
-		if (s === 'in-progress') return m.settings_guides_status_in_progress();
-		return m.settings_guides_status_not_started();
+	const entries = $derived.by(() => {
+		void runtimeTick;
+		return guideEntries();
+	});
+
+	$effect(() => {
+		const ids = entries.map((e) => e.id);
+		void settings.onboarding;
+		let alive = true;
+		void guidesDone(ids)
+			.then((map) => {
+				if (alive) doneMap = map;
+			})
+			.catch(() => undefined);
+		void Promise.all(ids.filter((id) => id in READINESS).map(readiness))
+			.then((pairs) => {
+				if (alive) readyMap = Object.fromEntries(pairs);
+			})
+			.catch(() => undefined);
+		return () => {
+			alive = false;
+		};
+	});
+
+	async function readiness(id: string): Promise<[string, boolean]> {
+		try {
+			return [id, await guideReady(id)];
+		} catch {
+			return [id, false];
+		}
 	}
 
-	async function replay(id: string) {
-		busy = id;
+	const curriculum = $derived(buildCurriculum(entries, settings.onboarding, doneMap));
+
+	const SECTION_TITLE: Record<GuideSectionId, () => string> = {
+		basics: () => m.settings_guides_section_basics(),
+		setup: () => m.settings_guides_section_setup(),
+		run: () => m.settings_guides_section_run(),
+		master: () => m.settings_guides_section_master()
+	};
+
+	async function launch(guide: GuideView) {
+		busy = guide.id;
 		try {
-			const outcome = await replayGuide(id);
-			if (!outcome.ok && outcome.reason === 'gated') {
-				toasts.info(m.settings_guides_gated({ prerequisite: outcome.prerequisite }));
-			} else if (!outcome.ok) {
-				toasts.error(m.settings_guides_unavailable());
-			}
+			const say = startFailureMessage(await replayGuide(guide.id, guideOptions(guide)));
+			if (say) toasts.info(say);
+		} catch {
+			toasts.error(m.journey_unavailable());
 		} finally {
 			busy = null;
 		}
@@ -50,24 +113,57 @@
 	description={m.settings_guides_description()}
 >
 	<SettingGroup>
-		{#each entries as e (e.id)}
-			{@const status = statuses.get(e.id) ?? 'not-started'}
-			<SettingRow label={e.title} help={e.description} selfLabelled>
-				<span class="row">
-					<Badge tone={STATUS_TONE[status]} size="sm" border>{statusLabel(status)}</Badge>
-					<Button
-						size="sm"
-						loading={busy === e.id}
-						onclick={() => replay(e.id)}
-					>
-						{status === 'in-progress' ? m.settings_guides_resume() : m.settings_guides_replay()}
-					</Button>
+		<SettingRow label={m.settings_guides_progress_label()} selfLabelled wide>
+			<span class="overall">
+				<Progress
+					block
+					value={curriculum.earnedXp}
+					max={curriculum.totalXp || 1}
+					label={m.settings_guides_progress_label()}
+				/>
+				<span class="totals">
+					<Text size="sm" weight="semibold" as="span">
+						{m.settings_guides_xp_earned({
+							earned: curriculum.earnedXp,
+							total: curriculum.totalXp
+						})}
+					</Text>
+					<Text size="sm" tone="faint" as="span">
+						{m.settings_guides_progress_count({
+							done: curriculum.doneCount,
+							total: curriculum.totalCount
+						})}
+					</Text>
 				</span>
-			</SettingRow>
-		{:else}
-			<SettingRow label={m.settings_guides_empty()} selfLabelled wide />
-		{/each}
+			</span>
+		</SettingRow>
 	</SettingGroup>
+
+	{#each curriculum.sections as section (section.id)}
+		<SettingGroup title={SECTION_TITLE[section.id]()}>
+			{#if section.locked}
+				<SettingRow
+					label={m.settings_guides_locked()}
+					help={m.settings_guides_section_locked_by({ guides: section.lockedBy.join(', ') })}
+					selfLabelled
+					wide
+					disabled
+				/>
+			{/if}
+			{#each section.guides as guide (guide.id)}
+				<GuideRow
+					{guide}
+					busy={busy === guide.id}
+					hint={readyMap[guide.id] === false ? readinessHint(guide.id) : undefined}
+					onlaunch={launch}
+				/>
+			{/each}
+		</SettingGroup>
+	{:else}
+		<SettingGroup>
+			<SettingRow label={m.settings_guides_empty()} selfLabelled wide />
+		</SettingGroup>
+	{/each}
 
 	<SettingGroup>
 		<SettingRow
@@ -75,17 +171,34 @@
 			help={m.settings_guides_reset_help()}
 			selfLabelled
 		>
-			<Button size="sm" variant="danger" onclick={reset}>{m.settings_guides_reset()}</Button>
+			<Button size="sm" variant="danger" onclick={() => (confirming = true)}>
+				{m.settings_guides_reset()}
+			</Button>
 		</SettingRow>
 	</SettingGroup>
 </SettingSection>
 
+<ConfirmModal
+	bind:open={confirming}
+	tone="danger"
+	title={m.settings_guides_reset_confirm_title()}
+	message={m.settings_guides_reset_confirm_message()}
+	confirmLabel={m.settings_guides_reset_confirm()}
+	cancelLabel={m.settings_guides_cancel()}
+	onconfirm={reset}
+/>
+
 <style>
-	.row {
-		display: inline-flex;
-		align-items: center;
+	.overall {
+		display: flex;
+		flex-direction: column;
 		gap: var(--sp-2);
-		justify-content: flex-end;
 		width: 100%;
+	}
+	.totals {
+		display: flex;
+		align-items: baseline;
+		justify-content: space-between;
+		gap: var(--sp-2);
 	}
 </style>

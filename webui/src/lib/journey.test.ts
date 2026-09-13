@@ -9,12 +9,22 @@ import journeys from './journeys.generated.json';
 import { locale } from './locale.svelte';
 import {
 	driverRun,
+	entryRoute,
+	guideDone,
 	guideParams,
+	guidesDone,
+	GUIDES_ROUTE,
+	isDeck,
 	MOBILE_QUERY,
 	parseDoneKey,
+	publicJourneys,
+	READINESS,
+	readinessHint,
 	requiredParams,
 	resolveRuntime,
 	settingsStorage,
+	type StartOutcome,
+	startFailureMessage,
 	strings,
 	translate,
 	viewportVariant
@@ -39,7 +49,7 @@ function blob() {
 beforeEach(() => {
 	auth.isAuthed = false;
 	localStorage.clear();
-	settings.setOnboarding({ seenVersion: {}, progress: null });
+	settings.setOnboarding({ seenVersion: {}, progress: null, stepProgress: {} });
 });
 
 describe('parseDoneKey', () => {
@@ -79,7 +89,7 @@ describe('settingsStorage', () => {
 	it('ignores keys it does not own', async () => {
 		await settingsStorage.set('journey:other', 'x');
 		expect(await settingsStorage.get('journey:other')).toBeNull();
-		expect(blob()).toEqual({ seenVersion: {}, progress: null });
+		expect(blob()).toEqual({ seenVersion: {}, progress: null, stepProgress: {} });
 	});
 });
 
@@ -132,6 +142,100 @@ describe('guideParams', () => {
 			]
 		});
 		expect(await guideParams(qc())).toMatchObject({ 'fixture.me': 'root', account: 'main', pool: 'prod', 'fixture.session': 'l' });
+	});
+});
+
+describe('refusing and failing a guide', () => {
+	const failed = { ok: false, completed: 1, failures: [{ stepId: 'where', error: 'timeout' }] };
+
+	it('names the prerequisite guides the caller resolved, never a journey id', () => {
+		const message = startFailureMessage({
+			ok: false,
+			reason: 'locked',
+			blockedBy: ['Bring a machine into the fleet']
+		});
+		expect(message).toContain('Bring a machine into the fleet');
+		expect(message).not.toContain('enroll-machine');
+	});
+
+	it('says which instance state a guide is waiting for', () => {
+		expect(READINESS['spawn-session']).toBe('machines.online');
+		const hint = readinessHint('spawn-session')!;
+		expect(hint).toBeTruthy();
+		expect(startFailureMessage({ ok: false, reason: 'not-ready', hint })).toBe(hint);
+		expect(readinessHint('usage-overview')).toBeUndefined();
+	});
+
+	it('tells the user a run died rather than letting it vanish', () => {
+		const outcome: StartOutcome = { ok: false, reason: 'failed', result: failed };
+		expect(startFailureMessage(outcome)).toBeTruthy();
+	});
+
+	it('says nothing when the user exited the tour themselves', () => {
+		expect(
+			startFailureMessage({ ok: false, reason: 'aborted', result: { ...failed, aborted: true } })
+		).toBeUndefined();
+	});
+
+	it('names what a missing param stands for, and falls back when it names nothing', () => {
+		expect(startFailureMessage({ ok: false, reason: 'missing', params: ['account'] })).toContain(
+			'account'
+		);
+		expect(
+			startFailureMessage({ ok: false, reason: 'missing', params: ['var.nothing'] })
+		).toBe(startFailureMessage({ ok: false, reason: 'unknown' }));
+	});
+
+	it('has nothing to say about a run that finished', () => {
+		expect(startFailureMessage({ ok: true, result: { ok: true, completed: 3, failures: [] } })).toBeUndefined();
+	});
+});
+
+describe('guideDone', () => {
+	const ir = () => publicJourneys[0]!;
+
+	it('is done once the marker matches the version that ran', async () => {
+		expect(await guideDone(ir().id)).toBe(false);
+		await settingsStorage.set(`${DONE_PREFIX}${ir().id}@${ir().version}`, '1');
+		expect(await guideDone(ir().id)).toBe(true);
+	});
+
+	it('is not done when the guide moved on, and never for an id it does not know', async () => {
+		await settingsStorage.set(`${DONE_PREFIX}${ir().id}@${ir().version + 1}`, '1');
+		expect(await guideDone(ir().id)).toBe(false);
+		expect(await guideDone('no-such-guide')).toBe(false);
+	});
+
+	it('answers for a whole list at once, which is what the guides page asks', async () => {
+		await settingsStorage.set(`${DONE_PREFIX}${ir().id}@${ir().version}`, '1');
+		const done = await guidesDone([ir().id, 'no-such-guide']);
+		expect(done).toEqual({ [ir().id]: true, 'no-such-guide': false });
+	});
+});
+
+describe('the guides page is where a tour hands back', () => {
+	it('points at the page the guides are launched from', () => {
+		expect(GUIDES_ROUTE).toBe('/settings/guides');
+	});
+
+	it('opens an anchored guide on a route, whether the step or the journey carries it', () => {
+		for (const j of publicJourneys) {
+			if (!j.steps.some((s) => s.target !== undefined)) continue;
+			expect(entryRoute(j), j.id).toBeTruthy();
+		}
+	});
+
+	it('sends a carousel deck nowhere, so a replay does not leave the guides page', () => {
+		const deck = publicJourneys.find(isDeck);
+		expect(deck, 'no target-less journey is registered').toBeDefined();
+		expect(deck!.route, 'the deck still declares a route of its own').toBeTruthy();
+		expect(entryRoute(deck!)).toBeUndefined();
+	});
+
+	it('tells a deck apart from a tour that anchors even one step', () => {
+		const anchored = publicJourneys.filter((j) => !isDeck(j));
+		expect(anchored.length).toBeGreaterThan(0);
+		for (const j of anchored) expect(j.steps.some((s) => s.target !== undefined), j.id).toBe(true);
 	});
 });
 
@@ -218,6 +322,16 @@ describe('book driver slot', () => {
 		runShim('?journey=run');
 		expect(window.__journey).toBeDefined();
 		expect(sessionStorage.getItem('journey:driver')).toBe('1');
+	});
+
+	it('keeps the slot filled for the driver right up to the real mount', () => {
+		const source = readFileSync('src/lib/journey.ts', 'utf8');
+		const handover = source.slice(
+			source.indexOf('delete window.__journey'),
+			source.indexOf('api = mount(')
+		);
+		expect(handover).not.toBe('');
+		expect(handover).not.toMatch(/\bawait\b/);
 	});
 
 	it('forwards the calls it parked to the app runtime once that mounts', async () => {

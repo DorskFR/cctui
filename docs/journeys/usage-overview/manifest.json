@@ -10,21 +10,28 @@
 					"name": "tiles",
 					"file": "desktop-dark/01-tiles.png",
 					"title": "The fleet in four numbers",
-					"body": "Four numbers: sessions running now, sessions waiting on you, machines online, and the all-time total. They read zero until your first run."
+					"body": "Sessions running now, sessions waiting on you, machines online, and the all-time total. They read zero until your first run."
 				},
 				{
-					"index": 1,
+					"index": 3,
+					"name": "periods",
+					"file": "desktop-dark/02-periods.png",
+					"title": "Is today busier than usual?",
+					"body": "The same count over today, yesterday, this week and this month. One day on its own means little; next to the others it tells you whether the fleet is speeding up."
+				},
+				{
+					"index": 4,
 					"name": "windows",
-					"file": "desktop-dark/02-windows.png",
+					"file": "desktop-dark/03-windows.png",
 					"title": "Tokens by time window",
-					"body": "The same usage read over the last hour, day, week and month, split into input, output and cached tokens."
+					"body": "The same usage read over the last hour, day, week and month, split into input, output and cached tokens. Cached tokens are re-read context and cost a fraction of fresh input."
 				},
 				{
-					"index": 2,
+					"index": 6,
 					"name": "analytics",
-					"file": "desktop-dark/03-analytics.png",
+					"file": "desktop-dark/04-analytics.png",
 					"title": "Where the tokens went",
-					"body": "Daily volume and a per-model breakdown, so an expensive habit shows up before the bill does."
+					"body": "Daily volume and a per-model breakdown, so an expensive habit shows up before the bill does. A model you did not mean to use is usually visible here first."
 				}
 			],
 			"storyboard": "desktop-dark/storyboard.png"
@@ -36,21 +43,28 @@
 					"name": "tiles",
 					"file": "mobile-dark/01-tiles.png",
 					"title": "The fleet in four numbers",
-					"body": "Four numbers: sessions running now, sessions waiting on you, machines online, and the all-time total. They read zero until your first run."
+					"body": "Sessions running now, sessions waiting on you, machines online, and the all-time total. They read zero until your first run."
 				},
 				{
-					"index": 1,
+					"index": 3,
+					"name": "periods",
+					"file": "mobile-dark/02-periods.png",
+					"title": "Is today busier than usual?",
+					"body": "The same count over today, yesterday, this week and this month. One day on its own means little; next to the others it tells you whether the fleet is speeding up."
+				},
+				{
+					"index": 4,
 					"name": "windows",
-					"file": "mobile-dark/02-windows.png",
+					"file": "mobile-dark/03-windows.png",
 					"title": "Tokens by time window",
-					"body": "The same usage read over the last hour, day, week and month, split into input, output and cached tokens."
+					"body": "The same usage read over the last hour, day, week and month, split into input, output and cached tokens. Cached tokens are re-read context and cost a fraction of fresh input."
 				},
 				{
-					"index": 2,
+					"index": 6,
 					"name": "analytics",
-					"file": "mobile-dark/03-analytics.png",
+					"file": "mobile-dark/04-analytics.png",
 					"title": "Where the tokens went",
-					"body": "Daily volume and a per-model breakdown, so an expensive habit shows up before the bill does."
+					"body": "Daily volume and a per-model breakdown, so an expensive habit shows up before the bill does. A model you did not mean to use is usually visible here first."
 				}
 			],
 			"storyboard": "mobile-dark/storyboard.png"

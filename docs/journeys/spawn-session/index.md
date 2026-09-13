@@ -14,13 +14,19 @@ Everything a run needs is in this one dialog: the machine, the folder, the promp
 
 Say what you want done. The profile below decides which harness and model carry it out.
 
-![saved](desktop-dark/03-saved.png)
+![profiles](desktop-dark/03-profiles.png)
+
+**The profile decides how it thinks**
+
+A profile bundles the harness, model, reasoning effort and permission mode. Pick one here rather than setting four things every time you launch.
+
+![saved](desktop-dark/04-saved.png)
 
 **Save it as a draft**
 
-This saves a draft on your instance. Nothing runs until you launch it, and you can delete it from the list.
+The Draft button lights up once the machine and folder are set. This saves the run on your instance without starting it — nothing executes until you launch it.
 
-![draft](desktop-dark/04-draft.png)
+![draft](desktop-dark/05-draft.png)
 
 **The draft is waiting**
 
@@ -40,13 +46,19 @@ Everything a run needs is in this one dialog: the machine, the folder, the promp
 
 Say what you want done. The profile below decides which harness and model carry it out.
 
-![saved](mobile-dark/03-saved.png)
+![profiles](mobile-dark/03-profiles.png)
+
+**The profile decides how it thinks**
+
+A profile bundles the harness, model, reasoning effort and permission mode. Pick one here rather than setting four things every time you launch.
+
+![saved](mobile-dark/04-saved.png)
 
 **Save it as a draft**
 
-This saves a draft on your instance. Nothing runs until you launch it, and you can delete it from the list.
+The Draft button lights up once the machine and folder are set. This saves the run on your instance without starting it — nothing executes until you launch it.
 
-![draft](mobile-dark/04-draft.png)
+![draft](mobile-dark/05-draft.png)
 
 **The draft is waiting**
 

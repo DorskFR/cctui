@@ -6,7 +6,7 @@
 
 **Every account you can run on**
 
-Accounts are the provider credentials your agents run on. This board is empty until you add one.
+Accounts are the provider credentials your agents run on. This board is empty until you add one, and nothing can be launched before it has one.
 
 ![pool](desktop-dark/02-pool.png)
 
@@ -32,7 +32,7 @@ The same membership change without a mouse drag, which is also how it is done on
 
 **Every account you can run on**
 
-Accounts are the provider credentials your agents run on. This board is empty until you add one.
+Accounts are the provider credentials your agents run on. This board is empty until you add one, and nothing can be launched before it has one.
 
 ![pool](mobile-dark/02-pool.png)
 

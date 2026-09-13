@@ -1,7 +1,7 @@
 {
 	"id": "welcome",
-	"title": "Welcome to cctui",
-	"version": 1,
+	"title": "What cctui is",
+	"version": 2,
 	"variants": {
 		"mobile-dark": {
 			"captures": []

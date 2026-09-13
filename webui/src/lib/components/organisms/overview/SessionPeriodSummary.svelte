@@ -18,7 +18,7 @@
 		<Text size="sm" weight="semibold">{m.home_sessions_periods_title()}</Text>
 		<div class="periods">
 			{#each periods as period (period.key)}
-				<div class="period" data-journey-key={period.key}>
+				<div class="period" data-journey="period" data-journey-key={period.key}>
 					<Text size="2xl" weight="semibold" numeric leading="none" tone={period.key === 'today' ? 'accent' : 'default'}>
 						{period.value == null ? '…' : period.value.toLocaleString(getLocale())}
 					</Text>

@@ -1,28 +1,35 @@
 {
 	"id": "search-sessions",
-	"title": "Find a session again",
+	"title": "Find anything across sessions",
 	"version": 1,
 	"variants": {
 		"mobile-dark": {
 			"captures": [
 				{
 					"index": 0,
+					"name": "box",
+					"file": "01-box.png",
+					"title": "One box over every session",
+					"body": "This searches what the agents actually said and did, not just the names you gave the runs. A session you never labelled is still findable by what it touched."
+				},
+				{
+					"index": 1,
 					"name": "before",
-					"file": "01-before.png",
+					"file": "02-before.png",
 					"title": "Start from the whole list",
 					"body": "Every session you have run is searchable, live ones and finished ones alike."
 				},
 				{
-					"index": 1,
+					"index": 2,
 					"name": "text",
-					"file": "02-text.png",
+					"file": "03-text.png",
 					"title": "Search the transcripts, not just the titles",
 					"body": "A plain word is matched against what the agents actually said and did, so you can find a run by what it touched."
 				},
 				{
-					"index": 2,
+					"index": 3,
 					"name": "facet",
-					"file": "03-facet.png",
+					"file": "04-facet.png",
 					"title": "Narrow by label, machine or status",
 					"body": "Typed filters like label:, machine: and status: combine with the free text to cut a large fleet down fast."
 				}

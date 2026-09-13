@@ -14,22 +14,29 @@
 				},
 				{
 					"index": 1,
-					"name": "enroll",
-					"file": "02-enroll.png",
-					"title": "Run this on the machine",
-					"body": "Copy this command and run it on the computer that will host your agents. Replace the token with one from your user. The guide moves on by itself when the machine reports in."
-				},
-				{
-					"index": 2,
-					"name": "user",
-					"file": "03-user.png",
-					"title": "Open a user",
-					"body": "Open your own user. Keys, machines, tokens and AI accounts each have a tab."
+					"name": "command",
+					"file": "02-command.png",
+					"title": "What this command does",
+					"body": "It points the daemon at this server and registers the machine under your user. Swap the token placeholder for one of your own keys — that token is what ties the machine to you."
 				},
 				{
 					"index": 3,
+					"name": "enroll",
+					"file": "03-enroll.png",
+					"title": "Waiting for the machine to report in",
+					"body": "The guide moves on by itself the moment the machine checks in. If you would rather finish setting it up later, leave this step and come back — nothing is lost."
+				},
+				{
+					"index": 4,
+					"name": "user",
+					"file": "04-user.png",
+					"title": "Open your own user",
+					"body": "Everything attached to an identity is here: the keys it signs in with, the machines it enrolled, its tokens and its AI accounts."
+				},
+				{
+					"index": 6,
 					"name": "machines",
-					"file": "04-machines.png",
+					"file": "05-machines.png",
 					"title": "The machines that answered",
 					"body": "The machine you just enrolled is listed here with its heartbeat. Online means it can host a session right now."
 				}
