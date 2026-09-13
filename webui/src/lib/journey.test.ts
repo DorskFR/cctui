@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { QueryClient } from '@tanstack/svelte-query';
 import { DONE_PREFIX, PROGRESS_KEY } from '@dorsk/journey/runtime';
-import type { Journey } from '@dorsk/journey';
+import type { IR, Journey } from '@dorsk/journey';
 import type { JourneyApi } from '@dorsk/journey/runtime';
 import { resolveText } from '@dorsk/journey/runtime';
 import journeys from './journeys.generated.json';
@@ -89,7 +89,7 @@ describe('settingsStorage', () => {
 	it('ignores keys it does not own', async () => {
 		await settingsStorage.set('journey:other', 'x');
 		expect(await settingsStorage.get('journey:other')).toBeNull();
-		expect(blob()).toEqual({ seenVersion: {}, progress: null, stepProgress: {} });
+		expect(blob()).toEqual({ seenVersion: {}, progress: null, stepProgress: {}, probeOptOut: [] });
 	});
 });
 
@@ -225,11 +225,15 @@ describe('the guides page is where a tour hands back', () => {
 		}
 	});
 
-	it('sends a carousel deck nowhere, so a replay does not leave the guides page', () => {
-		const deck = publicJourneys.find(isDeck);
-		expect(deck, 'no target-less journey is registered').toBeDefined();
-		expect(deck!.route, 'the deck still declares a route of its own').toBeTruthy();
-		expect(entryRoute(deck!)).toBeUndefined();
+	it('sends a target-less journey nowhere, so a replay does not leave the guides page', () => {
+		const deck = { id: 'deck', route: '/', steps: [{ id: 'card' }] } as unknown as IR;
+		expect(isDeck(deck)).toBe(true);
+		expect(deck.route, 'the deck still declares a route of its own').toBeTruthy();
+		expect(entryRoute(deck)).toBeUndefined();
+	});
+
+	it('anchors every guide the curriculum ships', () => {
+		expect(publicJourneys.filter(isDeck).map((j) => j.id)).toEqual([]);
 	});
 
 	it('tells a deck apart from a tour that anchors even one step', () => {

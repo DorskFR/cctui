@@ -11,8 +11,14 @@ describe('mergeOnboarding', () => {
 		expect(mergeOnboarding({ seenVersion: { a: 2 }, progress: null })).toEqual({
 			seenVersion: { a: 2 },
 			progress: null,
-			stepProgress: {}
+			stepProgress: {},
+			probeOptOut: []
 		});
+	});
+
+	it('keeps the probe opt-out list, dropping duplicates and non-strings', () => {
+		expect(mergeOnboarding({ probeOptOut: ['a', 'a', 7, 'b'] }).probeOptOut).toEqual(['a', 'b']);
+		expect(mergeOnboarding({ probeOptOut: 'nope' }).probeOptOut).toEqual([]);
 	});
 
 	it('keeps a well-formed step record', () => {

@@ -5,48 +5,70 @@ import welcome from '../../../journeys/welcome.journey';
 const pub = compile(welcome, { public: true });
 const book = compile(welcome);
 
-describe('welcome deck spec', () => {
-	it('names no target, which is what routes it to the carousel presenter', () => {
+describe('welcome spec', () => {
+	it('anchors every step, so the tour points at the app instead of describing it', () => {
 		for (const ir of [pub, book]) {
 			for (const step of ir.steps) {
-				expect(step.target, step.id).toBeUndefined();
-				expect(step.expect ?? [], step.id).toEqual([]);
+				expect(step.target, step.id).toBeDefined();
 			}
 		}
 	});
 
-	it('survives --public intact so the deck is the same on an empty instance', () => {
+	it('survives --public intact so it is the same tour on an empty instance', () => {
 		expect(pub.steps.map((s) => s.id)).toEqual(book.steps.map((s) => s.id));
 		expect(pub.steps.length).toBeGreaterThan(0);
 	});
 
-	it('gives every card a title and a body to draw', () => {
+	it('gives every step a title and a body to draw', () => {
 		for (const step of pub.steps) {
 			expect(step.say?.title, step.id).toBeTruthy();
 			expect(step.say?.body, step.id).toBeTruthy();
 		}
 	});
 
-	it('walks every navigable surface of the app', () => {
+	it('walks the real screens in order', () => {
 		expect(pub.steps.map((s) => s.id)).toEqual([
-			'what',
-			'shape',
 			'overview',
+			'attention',
 			'sessions',
-			'spawn',
-			'follow',
+			'start',
 			'accounts',
 			'access',
-			'bookmarks',
-			'review',
 			'usage',
-			'settings',
 			'guides'
 		]);
+		expect(pub.steps.map((s) => s.route)).toEqual([
+			'/',
+			'/',
+			'/sessions',
+			'/sessions',
+			'/accounts',
+			'/access',
+			'/',
+			'/settings/guides'
+		]);
+	});
+
+	it('captures each route once, since doc mode shoots the page and not the spotlight', () => {
+		const shot = book.steps.filter((s) => s.capture);
+		expect(shot.length).toBeGreaterThan(0);
+		const routes = shot.map((s) => s.route);
+		expect(routes).toEqual([...new Set(routes)]);
+		expect(new Set(book.steps.map((s) => s.route)).size).toBe(routes.length);
+	});
+
+	it('keeps the data-dependent step optional', () => {
+		const attention = pub.steps.find((s) => s.id === 'attention');
+		expect(attention?.optional).toBe(true);
+		expect(attention?.expect ?? []).toEqual([]);
 	});
 
 	it('autostarts once on the landing route', () => {
 		expect(welcome.autostart).toEqual({ route: '/', once: true });
 		expect(welcome.route).toBe('/');
+	});
+
+	it('bumps the version so the rewritten tour re-shows once', () => {
+		expect(welcome.version).toBeGreaterThan(2);
 	});
 });

@@ -18,7 +18,7 @@ export default defineJourney({
 		{
 			id: 'list',
 			route: '/sessions',
-			target: 'sections',
+			target: 'session-list',
 			say: {
 				title: { en: 'Every session, grouped', fr: 'Chaque session, regroupée' },
 				body: {
@@ -26,7 +26,7 @@ export default defineJourney({
 					fr: 'Les agents sont regroupés selon ce qu’ils attendent de vous — ceux en attente de réponse remontent en tête, pour qu’une longue flotte se lise d’un seul coup d’œil.'
 				}
 			},
-			expect: [{ visible: 'sections' }, { visible: 'search' }]
+			expect: [{ visible: 'session-list' }, { visible: 'search' }]
 		},
 		{
 			id: 'list-fixture',

@@ -1,13 +1,87 @@
 {
 	"id": "welcome",
 	"title": "What cctui is",
-	"version": 2,
+	"version": 3,
 	"variants": {
 		"desktop-dark": {
-			"captures": []
+			"captures": [
+				{
+					"index": 0,
+					"name": "overview",
+					"file": "desktop-dark/01-overview.png",
+					"title": "Start here: is the fleet healthy?",
+					"body": "One control room for every Claude Code session you run. These tiles answer the first question before you touch anything — what is live, what is stuck, which machines are up."
+				},
+				{
+					"index": 2,
+					"name": "sessions",
+					"file": "desktop-dark/02-sessions.png",
+					"title": "Sessions — where the work happens",
+					"body": "Every run you have started, grouped by what it needs from you. The ones blocked on an answer rise to the top, so a long fleet still reads in one glance."
+				},
+				{
+					"index": 4,
+					"name": "accounts",
+					"file": "desktop-dark/03-accounts.png",
+					"title": "Accounts — where the quota comes from",
+					"body": "Provider accounts are grouped into pools, and a session draws from a pool rather than a fixed account, so one hitting a rate limit steps aside instead of stalling the queue."
+				},
+				{
+					"index": 5,
+					"name": "access",
+					"file": "desktop-dark/04-access.png",
+					"title": "Access — what may run work",
+					"body": "Machines supply the compute, and they join the fleet from here with a single enrolment command. If a session cannot find anywhere to run, this is the page to open."
+				},
+				{
+					"index": 7,
+					"name": "guides",
+					"file": "desktop-dark/05-guides.png",
+					"title": "Now walk it for real",
+					"body": "That is every screen. The remaining guides run inside the app, pointing at the real controls in order — connect an account, enrol a machine, start a session, follow it. They all live on this page."
+				}
+			],
+			"storyboard": "desktop-dark/storyboard.png"
 		},
 		"mobile-dark": {
-			"captures": []
+			"captures": [
+				{
+					"index": 0,
+					"name": "overview",
+					"file": "mobile-dark/01-overview.png",
+					"title": "Start here: is the fleet healthy?",
+					"body": "One control room for every Claude Code session you run. These tiles answer the first question before you touch anything — what is live, what is stuck, which machines are up."
+				},
+				{
+					"index": 2,
+					"name": "sessions",
+					"file": "mobile-dark/02-sessions.png",
+					"title": "Sessions — where the work happens",
+					"body": "Every run you have started, grouped by what it needs from you. The ones blocked on an answer rise to the top, so a long fleet still reads in one glance."
+				},
+				{
+					"index": 4,
+					"name": "accounts",
+					"file": "mobile-dark/03-accounts.png",
+					"title": "Accounts — where the quota comes from",
+					"body": "Provider accounts are grouped into pools, and a session draws from a pool rather than a fixed account, so one hitting a rate limit steps aside instead of stalling the queue."
+				},
+				{
+					"index": 5,
+					"name": "access",
+					"file": "mobile-dark/04-access.png",
+					"title": "Access — what may run work",
+					"body": "Machines supply the compute, and they join the fleet from here with a single enrolment command. If a session cannot find anywhere to run, this is the page to open."
+				},
+				{
+					"index": 7,
+					"name": "guides",
+					"file": "mobile-dark/05-guides.png",
+					"title": "Now walk it for real",
+					"body": "That is every screen. The remaining guides run inside the app, pointing at the real controls in order — connect an account, enrol a machine, start a session, follow it. They all live on this page."
+				}
+			],
+			"storyboard": "mobile-dark/storyboard.png"
 		}
 	}
 }

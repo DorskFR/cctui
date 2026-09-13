@@ -1,5 +1,7 @@
 import type { Journey, Text } from '@dorsk/journey';
 import {
+	DONE_PROBES,
+	GUIDES_ROUTE,
 	publicJourneys,
 	type StartGuideOptions,
 	type StartOutcome,
@@ -193,7 +195,12 @@ export function clearGuide(id: string) {
 }
 
 export function resetGuides() {
-	settings.setOnboarding({ seenVersion: {}, progress: null, stepProgress: {} });
+	settings.setOnboarding({
+		seenVersion: {},
+		progress: null,
+		stepProgress: {},
+		probeOptOut: Object.keys(DONE_PROBES)
+	});
 }
 
 /** What the runtime needs to refuse a locked guide with the same words the page
@@ -201,7 +208,8 @@ export function resetGuides() {
 export function guideOptions(guide: GuideView): StartGuideOptions {
 	return {
 		blockedBy: guide.locked ? guide.lockedBy : [],
-		conclusion: { title: guide.title, xp: guide.xp }
+		conclusion: { title: guide.title, xp: guide.xp },
+		returnTo: GUIDES_ROUTE
 	};
 }
 

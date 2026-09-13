@@ -268,6 +268,10 @@ export interface OnboardingSettings {
 	 *  run ends for any reason, so this is the only record of a half-finished
 	 *  tour. Absent in blobs written before it existed. */
 	stepProgress: Record<string, GuideStepProgress>;
+	/** Guides whose `DONE_PROBES` completion is ignored. A reset lists them all:
+	 *  the probes read live instance state, which a reset cannot undo, so without
+	 *  this they report done again immediately and the reset reads as a no-op. */
+	probeOptOut: string[];
 }
 
 function mergeStepProgress(v: unknown): Record<string, GuideStepProgress> {
@@ -296,7 +300,10 @@ export function mergeOnboarding(v: unknown): OnboardingSettings {
 	return {
 		seenVersion,
 		progress: typeof raw.progress === 'string' ? raw.progress : null,
-		stepProgress: mergeStepProgress(raw.stepProgress)
+		stepProgress: mergeStepProgress(raw.stepProgress),
+		probeOptOut: Array.isArray(raw.probeOptOut)
+			? [...new Set(raw.probeOptOut.filter((id): id is string => typeof id === 'string'))]
+			: []
 	};
 }
 
@@ -423,7 +430,7 @@ const DEFAULTS: SettingsState = {
 	shortcutsEnabled: false,
 	keymap: {},
 	locale: null,
-	onboarding: { seenVersion: {}, progress: null, stepProgress: {} }
+	onboarding: { seenVersion: {}, progress: null, stepProgress: {}, probeOptOut: [] }
 };
 
 // Deep-merge a partial saved blob over DEFAULTS so a value missing from an older
