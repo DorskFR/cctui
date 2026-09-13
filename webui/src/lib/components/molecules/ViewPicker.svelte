@@ -25,21 +25,26 @@
 </script>
 
 {#if menu}
-	<button type="button" class="menu-row" title={target} onclick={() => (cardView = !cardView)}>
+	<button type="button" class="menu-row" data-journey="view" title={target} onclick={() => (cardView = !cardView)}>
 		<Icon name={cardView ? 'list' : 'grid'} size={18} />
 		<span>{target}</span>
 	</button>
 {:else}
-	<SegmentedControl
-		variant="icon"
-		box
-		label={m.sessions_view_label()}
-		{options}
-		bind:value={() => (cardView ? 'card' : 'list'), (v) => (cardView = v === 'card')}
-	/>
+	<span class="vp" data-journey="view">
+		<SegmentedControl
+			variant="icon"
+			box
+			label={m.sessions_view_label()}
+			{options}
+			bind:value={() => (cardView ? 'card' : 'list'), (v) => (cardView = v === 'card')}
+		/>
+	</span>
 {/if}
 
 <style>
+	.vp {
+		display: inline-flex;
+	}
 	.menu-row {
 		display: flex;
 		align-items: center;

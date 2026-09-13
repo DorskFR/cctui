@@ -199,11 +199,41 @@ describe('public journey set', () => {
 		}
 		expect(pub('follow-session').steps.map((s) => s.id)).toEqual([
 			'open',
-			'timeline',
+			'header',
+			'meta',
+			'actions',
+			'kinds',
+			'line-actions',
 			'mobile-filters',
 			'filters',
+			'filter-menu',
 			'reply'
 		]);
+	});
+
+	it('teaches the drawer without depending on a session that may end mid-tour', () => {
+		const ids = pub('follow-session').steps.map((s) => s.id);
+		expect(requiredParams(pub('follow-session'))).toEqual([]);
+		expect(ids.indexOf('mobile-filters')).toBeLessThan(ids.indexOf('filters'));
+		const open = pub('follow-session').steps[0];
+		expect(open.expect).not.toContainEqual({ visible: 'conversation/line[assistant]' });
+	});
+
+	it('keeps sessions-list on its own surface and off the theme picker', () => {
+		expect(pub('sessions-list').steps.map((s) => s.id)).toEqual([
+			'list',
+			'search',
+			'sections',
+			'starred',
+			'options',
+			'grouping',
+			'view',
+			'group-sort',
+			'group-actions'
+		]);
+		for (const step of pub('sessions-list').steps) {
+			expect(JSON.stringify(step.target ?? ''), step.id).not.toMatch(/data-tsu|theme/i);
+		}
 	});
 
 	it('adds an account only after the book has captured the board', () => {
@@ -226,8 +256,21 @@ describe('book fidelity', () => {
 		expect(captures(book('enroll-machine'))).toEqual(['access', 'enroll', 'user', 'machines']);
 		expect(captures(book('accounts-pools'))).toEqual(['board', 'pool', 'handle', 'menu']);
 		expect(captures(book('spawn-session'))).toEqual(['dialog', 'filled', 'saved', 'draft']);
-		expect(captures(book('follow-session'))).toEqual(['drawer', 'timeline', 'tools', 'reply']);
-		expect(captures(book('sessions-list'))).toEqual(['list', 'themes']);
+		expect(captures(book('follow-session'))).toEqual([
+			'drawer',
+			'header',
+			'timeline',
+			'line',
+			'tools',
+			'reply'
+		]);
+		expect(captures(book('sessions-list'))).toEqual([
+			'list',
+			'search',
+			'sections',
+			'options',
+			'group'
+		]);
 		expect(captures(book('search-sessions'))).toEqual(['before', 'text', 'facet']);
 		expect(captures(book('usage-overview'))).toEqual(['tiles', 'windows', 'analytics']);
 		expect(captures(book('settings-tour'))).toEqual(['appearance', 'sessions', 'execution', 'privacy']);

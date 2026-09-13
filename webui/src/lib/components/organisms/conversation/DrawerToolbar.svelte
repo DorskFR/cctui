@@ -146,7 +146,7 @@
 			triggerClass="toolbar-chip"
 		>
 			{#snippet trigger()}
-				<span class="chip pill">
+				<span class="chip pill" data-journey="filter-menu">
 					{offCount > 0
 						? m.conversation_filters_off_count({ count: offCount })
 						: m.conversation_filters()}

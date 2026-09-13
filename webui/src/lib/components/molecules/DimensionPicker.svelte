@@ -60,11 +60,11 @@
 {/snippet}
 
 {#if menu}
-	<div class="dim-picker menu-row" class:active {title} aria-label={title}>
+	<div class="dim-picker menu-row" class:active {title} aria-label={title} data-journey="dimension" data-journey-key={kind}>
 		{@render content()}
 	</div>
 {:else}
-	<span class="dim-picker">
+	<span class="dim-picker" data-journey="dimension" data-journey-key={kind}>
 		<Button square style={active ? 'color: var(--accent)' : undefined} {title} aria-label={title}>
 			{@render content()}
 		</Button>
