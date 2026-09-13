@@ -2,6 +2,7 @@ mod account_pick;
 mod account_resolve;
 mod auth;
 mod authz;
+mod auto_archive;
 mod auto_resume;
 mod bandwidth_watch;
 mod bus;
@@ -1601,6 +1602,7 @@ async fn reaper_task(state: AppState) {
         }
 
         auto_archive_stale(&state).await;
+        auto_archive::sweep(&state).await;
 
         // Soft-delete ephemeral (dispatch/worker) machines that have gone
         // quiet past the TTL — pods that died before self-deenroll.

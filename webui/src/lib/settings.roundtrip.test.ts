@@ -59,6 +59,24 @@ describe("Settings save → load round-trip through the blob", () => {
       secretScrubPatterns: [{ name: "tok", regex: "sk-\\w+", enabled: true }],
       sessionEmojiPrefix: true,
       autoResumeOnConnectionLoss: true,
+      macros: {
+        enabled: true,
+        items: [
+          {
+            id: "m1",
+            title: "Nettoyage",
+            prompt: "range le dépôt",
+            adapter: "claude-code",
+            machine_id: null,
+            working_dir: "/srv/app",
+            model: "opus",
+            effort: "high",
+            pool_id: "p1",
+            permission_mode: "yolo",
+            confirm: false,
+          },
+        ],
+      },
       shortcutsEnabled: true,
       locale: "en",
     } as Record<string, unknown>);
@@ -265,5 +283,33 @@ describe("resource monitor (header gauge machines)", () => {
       resourceMonitor: { machines: ["x", 3, "", "x", null] },
     });
     expect(merged.resourceMonitor.machines).toEqual(["x"]);
+  });
+
+  it("macros default to off and empty, and drop malformed entries", () => {
+    const d = mergeDefaults(null).macros;
+    expect(d).toEqual({ enabled: false, items: [] });
+    const merged = mergeDefaults({
+      macros: {
+        enabled: "yes",
+        items: [
+          { id: "a", title: " Ménage ", prompt: "go", confirm: true },
+          { id: "", title: "sans id", prompt: "go" },
+          { id: "b", title: "sans prompt", prompt: "  " },
+          "garbage",
+        ],
+      },
+    } as unknown as Record<string, unknown>).macros;
+    expect(merged.enabled).toBe(false);
+    expect(merged.items.map((m) => m.id)).toEqual(["a"]);
+    expect(merged.items[0]).toMatchObject({
+      title: "Ménage",
+      adapter: "claude-code",
+      pool_id: null,
+      confirm: true,
+    });
+    settings.setMacrosEnabled(true);
+    settings.setMacros(merged.items);
+    expect(loadFromCache().macros.enabled).toBe(true);
+    expect(loadFromCache().macros.items).toHaveLength(1);
   });
 });

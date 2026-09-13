@@ -92,6 +92,7 @@ export function applySettingsFilter(root: ParentNode, query: string): number {
 export const SETTINGS_PAGES = [
 	'appearance',
 	'sessions',
+	'macros',
 	'execution',
 	'privacy',
 	'notifications',

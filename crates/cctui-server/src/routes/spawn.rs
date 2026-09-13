@@ -134,6 +134,9 @@ pub async fn dispatch_spawn(
     // The id the gateway session token is bound to: the pre-minted real session
     // id for claude, else the command_id (legacy behaviour).
     let token_session_id = pre_session_id.unwrap_or(command_id).to_string();
+    if req.auto_archive {
+        crate::auto_archive::remember_intent(state, &token_session_id).await;
+    }
     let mut env = req.env.clone();
     // The session's model before any per-account remapping. When a
     // named account is selected below, its alias map can rewrite this to a

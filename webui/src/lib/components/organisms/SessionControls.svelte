@@ -8,6 +8,8 @@
 	import LabelFilter from '../molecules/LabelFilter.svelte';
 	import ViewPicker from '../molecules/ViewPicker.svelte';
 	import DimensionPicker from '../molecules/DimensionPicker.svelte';
+	import MacrosMenu from './MacrosMenu.svelte';
+	import { settings } from '$lib/settings.svelte';
 	import type { Dimension } from '../../../routes/sessions/sessions.logic';
 
 	// The sessions list toolbar: title + search + section/label filters +
@@ -167,6 +169,11 @@
 			<DimensionPicker menu kind="color" value={colorBy} onchange={onColorBy} />
 		</div>
 	</div>
+	{#if settings.macrosEnabled}
+		<span class="new-wrap">
+			<MacrosMenu />
+		</span>
+	{/if}
 	{#if onNew}
 		<span class="new-wrap">
 			<Button data-journey="new" variant="primary" shrink={false} title={m.sessions_new_session()} aria-label={m.sessions_new_session()} onclick={onNew}>+<span class="new-label"> {m.sessions_new()}</span></Button>

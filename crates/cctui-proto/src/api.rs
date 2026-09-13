@@ -688,6 +688,9 @@ pub struct ApiError {
 
 #[derive(Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
+// `no_account` / `auto_account` / `save_draft` / `auto_archive` are independent
+// wire flags, each defaulting to false; an enum would change the JSON shape.
+#[allow(clippy::struct_excessive_bools)]
 pub struct SpawnRequest {
     pub machine_id: String,
     pub working_dir: String,
@@ -777,6 +780,13 @@ pub struct SpawnRequest {
     /// secrets at rest — re-entered at launch time).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub save_draft: bool,
+    /// Archive the session on its own once its first turn ends cleanly
+    /// (macro spawns): the server remembers the intent under the spawn key,
+    /// claims it when the session registers, and the reaper archives the
+    /// session the first time the classifier reads it as done without a
+    /// failure. A session that asks a question or fails stays listed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto_archive: bool,
     /// Draft bookkeeping: the env var names the form holds, so an edit can
     /// re-propose them (values are re-entered at launch, never stored).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -812,6 +822,7 @@ impl std::fmt::Debug for SpawnRequest {
             .field("pool", &self.pool)
             .field("env", &format_args!("<{} secret(s) redacted>", self.env.len()))
             .field("save_draft", &self.save_draft)
+            .field("auto_archive", &self.auto_archive)
             .field("env_keys", &self.env_keys)
             .field("attachment_names", &self.attachment_names)
             .field("spawn_capability", &self.spawn_capability)

@@ -100,6 +100,14 @@ pool?: string | null,
  */
 save_draft?: boolean, 
 /**
+ * Archive the session on its own once its first turn ends cleanly
+ * (macro spawns): the server remembers the intent under the spawn key,
+ * claims it when the session registers, and the reaper archives the
+ * session the first time the classifier reads it as done without a
+ * failure. A session that asks a question or fails stays listed.
+ */
+auto_archive?: boolean, 
+/**
  * Draft bookkeeping: the env var names the form holds, so an edit can
  * re-propose them (values are re-entered at launch, never stored).
  */
