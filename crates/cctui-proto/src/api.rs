@@ -688,6 +688,9 @@ pub struct ApiError {
 
 #[derive(Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
+// `no_account` / `auto_account` / `save_draft` / `auto_archive` are independent
+// wire flags, each defaulting to false; an enum would change the JSON shape.
+#[allow(clippy::struct_excessive_bools)]
 pub struct SpawnRequest {
     pub machine_id: String,
     pub working_dir: String,
@@ -819,6 +822,7 @@ impl std::fmt::Debug for SpawnRequest {
             .field("pool", &self.pool)
             .field("env", &format_args!("<{} secret(s) redacted>", self.env.len()))
             .field("save_draft", &self.save_draft)
+            .field("auto_archive", &self.auto_archive)
             .field("env_keys", &self.env_keys)
             .field("attachment_names", &self.attachment_names)
             .field("spawn_capability", &self.spawn_capability)
