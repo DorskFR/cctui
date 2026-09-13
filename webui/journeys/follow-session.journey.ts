@@ -1,5 +1,13 @@
 import { defineJourney } from '@dorsk/journey';
 
+// Cards and message lines repeat, so a bare path matches every one of them and
+// throws. `nth` indexes the visible matches and exists only on the locator form.
+const first = (path: string[]) =>
+	({ css: path.map((n) => `[data-journey="${n}"]`).join(' '), nth: 0 }) as const;
+const FIRST_SESSION_TITLE = first(['session', 'title']);
+const FIRST_LINE = first(['conversation', 'line']);
+const FIRST_LINE_ACTIONS = first(['conversation', 'line', 'line-actions']);
+
 export default defineJourney({
 	id: 'follow-session',
 	title: { en: 'Follow a session while it works', fr: 'Suivre une session pendant son travail' },
@@ -14,7 +22,7 @@ export default defineJourney({
 			route: '/sessions',
 			// Not a session id snapshotted at start: it is gone the moment that
 			// session ends, is archived, or scrolls out of view.
-			target: 'session/title',
+			target: FIRST_SESSION_TITLE,
 			do: { kind: 'click' },
 			say: {
 				title: { en: 'Open a session', fr: 'Ouvrir une session' },
@@ -66,7 +74,7 @@ export default defineJourney({
 		},
 		{
 			id: 'kinds',
-			target: 'conversation/line',
+			target: FIRST_LINE,
 			say: {
 				title: { en: 'Everything it did is on the record', fr: 'Tout ce qu’elle a fait est consigné' },
 				body: {
@@ -74,12 +82,12 @@ export default defineJourney({
 					fr: 'Chaque message porte son type : vos prompts, les réponses de l’agent, son raisonnement, chaque appel d’outil et le résultat renvoyé. Rien n’est résumé ni masqué.'
 				}
 			},
-			expect: [{ visible: 'conversation/line' }],
+			expect: [{ visible: FIRST_LINE }],
 			capture: 'timeline'
 		},
 		{
 			id: 'line-actions',
-			target: 'conversation/line/line-actions',
+			target: FIRST_LINE_ACTIONS,
 			say: {
 				title: { en: 'Lift one message out', fr: 'Extraire un message' },
 				body: {
@@ -87,7 +95,7 @@ export default defineJourney({
 					fr: 'N’importe quel message peut être épinglé pour le retrouver, copié en Markdown pour un ticket, ou enregistré en image à coller dans une revue.'
 				}
 			},
-			expect: [{ visible: 'conversation/line/line-actions' }],
+			expect: [{ visible: FIRST_LINE_ACTIONS }],
 			capture: 'line'
 		},
 		{

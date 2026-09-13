@@ -5,6 +5,7 @@ import { defineJourney } from '@dorsk/journey';
 const firstGroup = (name: string) => ({ css: `[data-journey="${name}"]`, nth: 0 }) as const;
 const GROUP_SORT = firstGroup('group-sort');
 const GROUP_HIDE = firstGroup('group-hide');
+const VIEW = firstGroup('view');
 
 export default defineJourney({
 	id: 'sessions-list',
@@ -101,7 +102,7 @@ export default defineJourney({
 		},
 		{
 			id: 'view',
-			target: 'view',
+			target: VIEW,
 			say: {
 				title: { en: 'Dense rows or roomy cards', fr: 'Lignes denses ou cartes aérées' },
 				body: {
@@ -109,7 +110,7 @@ export default defineJourney({
 					fr: 'Les lignes affichent plus de la flotte à l’écran ; les cartes laissent à chaque session la place de son prompt et de sa dernière activité. Le choix est conservé d’une visite à l’autre.'
 				}
 			},
-			expect: [{ visible: 'view' }]
+			expect: [{ visible: VIEW }]
 		},
 		{
 			id: 'group-sort',
