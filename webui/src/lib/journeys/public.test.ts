@@ -1,3 +1,4 @@
+import { readdirSync, readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { QueryClient } from '@tanstack/svelte-query';
 import { compile, type Journey } from '@dorsk/journey';
@@ -31,6 +32,33 @@ const captures = (ir: ReturnType<typeof compile>) =>
 const HOST_PARAMS = ['fixture.me', 'account', 'pool', 'fixture.session'];
 const FILL_PARAMS = ['var.label', 'var.prompt'];
 const PROBES = Object.keys(createProbes(new QueryClient()));
+
+/** The expectation keys whose value addresses the DOM; `url`, `probe` and
+ *  `event` carry strings that are not paths. */
+const TARGET_KEYS = ['visible', 'hidden', 'enabled', 'disabled', 'text', 'value', 'checked', 'count'];
+
+/** `a/b[key]` addresses `[data-journey="a"] [data-journey="b"][data-journey-key="key"]`,
+ *  so every segment name of every path a step walks has to exist in the markup. */
+function anchorNames(step: { target?: unknown; expect?: unknown[] }): string[] {
+	const out = new Set<string>();
+	const walk = (value: unknown) => {
+		const path =
+			typeof value === 'string' ? value : (value as { within?: string } | null)?.within;
+		if (typeof path !== 'string') return;
+		for (const segment of path.split('/')) {
+			const name = segment.split('[')[0]!.trim();
+			if (name && !name.includes('{')) out.add(name);
+		}
+	};
+	walk(step.target);
+	for (const e of step.expect ?? []) {
+		for (const [key, v] of Object.entries(e as Record<string, unknown>)) {
+			if (!TARGET_KEYS.includes(key)) continue;
+			walk(Array.isArray(v) ? v[0] : v);
+		}
+	}
+	return [...out];
+}
 
 describe('public journey set', () => {
 	it('offers the onboarding guides first, in the spec order, and never search-sessions', () => {
@@ -95,6 +123,24 @@ describe('public journey set', () => {
 					const where = `${id}/${step.id} ${what}`;
 					expect(json, where).not.toMatch(/admin|acme-research|production|a0000000/);
 					expect(json, where).not.toMatch(/Machines \d/);
+				}
+			}
+		}
+	});
+
+	it('anchors every public step to a data-journey name the app still renders', () => {
+		const anchors = new Set<string>();
+		for (const file of readdirSync('src', { recursive: true, encoding: 'utf8' })) {
+			if (!/\.(svelte|ts)$/.test(file) || file.endsWith('.test.ts')) continue;
+			for (const m of readFileSync(`src/${file}`, 'utf8').matchAll(/data-journey="([^"]+)"/g)) {
+				anchors.add(m[1]);
+			}
+		}
+		expect(anchors.size).toBeGreaterThan(0);
+		for (const id of PUBLIC_JOURNEYS) {
+			for (const step of pub(id).steps) {
+				for (const name of anchorNames(step)) {
+					expect(anchors, `${id}/${step.id} anchors "${name}"`).toContain(name);
 				}
 			}
 		}
