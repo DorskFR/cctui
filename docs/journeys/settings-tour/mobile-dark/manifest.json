@@ -10,28 +10,35 @@
 					"name": "appearance",
 					"file": "01-appearance.png",
 					"title": "Make it yours",
-					"body": "Theme, font size, language, and where the navigation sits — the whole interface follows the theme you pick."
+					"body": "Theme, text size, language and where the navigation sits. Every one of these is remembered per account, so the app looks the same on your phone as on your desk."
 				},
 				{
 					"index": 1,
-					"name": "sessions",
-					"file": "02-sessions.png",
-					"title": "Defaults for every run",
-					"body": "How the list sorts and groups, and what a new session starts with, so you set it once instead of every time."
+					"name": "theme",
+					"file": "02-theme.png",
+					"title": "Pick a theme, or let it follow the system",
+					"body": "Auto remembers one light and one dark theme and swaps between them as your system does. Pick a specific theme instead and it stays put at every hour of the day."
 				},
 				{
-					"index": 2,
+					"index": 3,
+					"name": "sessions",
+					"file": "03-sessions.png",
+					"title": "Defaults for every run",
+					"body": "How the list sorts and groups, and what a new session starts with, so you set it once instead of every time. The conversation options here also decide how much of a transcript you see at a glance."
+				},
+				{
+					"index": 4,
 					"name": "execution",
-					"file": "03-execution.png",
+					"file": "04-execution.png",
 					"title": "How much rope an agent gets",
 					"body": "Permission handling, auto-approval and the phrases that mean an agent has stopped early rather than finished."
 				},
 				{
-					"index": 3,
+					"index": 6,
 					"name": "privacy",
-					"file": "04-privacy.png",
+					"file": "05-privacy.png",
 					"title": "Secrets never reach the transcript",
-					"body": "Tokens and keys are detected and replaced before anything is stored, and you can add patterns of your own."
+					"body": "Tokens and keys are detected and replaced before anything is stored, so a leaked credential does not end up sitting in your history."
 				}
 			],
 			"storyboard": "storyboard.png"

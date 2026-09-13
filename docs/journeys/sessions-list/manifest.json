@@ -12,10 +12,31 @@
 				},
 				{
 					"index": 2,
-					"name": "themes",
-					"file": "desktop-gruvbox/02-themes.png",
-					"title": "Every screen, in your palette",
-					"body": "Twenty-one built-in themes, light and dark; the whole interface follows the swatch you pick."
+					"name": "search",
+					"file": "desktop-gruvbox/02-search.png",
+					"title": "Narrow the list as you type",
+					"body": "Plain words match titles and prompts. Add a field — machine, label, status — to cut straight to a slice of the fleet instead of scrolling it."
+				},
+				{
+					"index": 4,
+					"name": "sections",
+					"file": "desktop-gruvbox/03-sections.png",
+					"title": "Keep the ones that matter in reach",
+					"body": "Starred sessions get their own group above everything else — the fastest way to pin the two or three runs you actually care about today."
+				},
+				{
+					"index": 6,
+					"name": "options",
+					"file": "desktop-gruvbox/04-options.png",
+					"title": "Group by whatever you are debugging",
+					"body": "Group by machine when you suspect one box, by project when you are context-switching. Colour-by tints the cards on a second dimension, so you can read both at once."
+				},
+				{
+					"index": 9,
+					"name": "group",
+					"file": "desktop-gruvbox/05-group.png",
+					"title": "Collapse or clear a whole group",
+					"body": "The eye folds a group away without losing it. Beside it, archive retires every session in that group in one move — how a finished batch leaves the list for good."
 				}
 			],
 			"storyboard": "desktop-gruvbox/storyboard.png"
@@ -29,10 +50,31 @@
 				},
 				{
 					"index": 2,
-					"name": "themes",
-					"file": "mobile-gruvbox/02-themes.png",
-					"title": "Every screen, in your palette",
-					"body": "Twenty-one built-in themes, light and dark; the whole interface follows the swatch you pick."
+					"name": "search",
+					"file": "mobile-gruvbox/02-search.png",
+					"title": "Narrow the list as you type",
+					"body": "Plain words match titles and prompts. Add a field — machine, label, status — to cut straight to a slice of the fleet instead of scrolling it."
+				},
+				{
+					"index": 4,
+					"name": "sections",
+					"file": "mobile-gruvbox/03-sections.png",
+					"title": "Keep the ones that matter in reach",
+					"body": "Starred sessions get their own group above everything else — the fastest way to pin the two or three runs you actually care about today."
+				},
+				{
+					"index": 6,
+					"name": "options",
+					"file": "mobile-gruvbox/04-options.png",
+					"title": "Group by whatever you are debugging",
+					"body": "Group by machine when you suspect one box, by project when you are context-switching. Colour-by tints the cards on a second dimension, so you can read both at once."
+				},
+				{
+					"index": 9,
+					"name": "group",
+					"file": "mobile-gruvbox/05-group.png",
+					"title": "Collapse or clear a whole group",
+					"body": "The eye folds a group away without losing it. Beside it, archive retires every session in that group in one move — how a finished batch leaves the list for good."
 				}
 			],
 			"storyboard": "mobile-gruvbox/storyboard.png"

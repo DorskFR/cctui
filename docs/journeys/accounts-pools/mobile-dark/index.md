@@ -6,7 +6,7 @@
 
 **Every account you can run on**
 
-Accounts are the provider credentials your agents run on. This board is empty until you add one.
+Accounts are the provider credentials your agents run on. This board is empty until you add one, and nothing can be launched before it has one.
 
 ![pool](02-pool.png)
 
