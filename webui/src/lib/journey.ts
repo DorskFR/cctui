@@ -336,10 +336,14 @@ export function mountJourneys(qc: QueryClient): Promise<void> {
  *  opening route at the top level never leaves the page Replay was pressed on.
  *  A journey that anchors nothing anywhere — a carousel deck — is at home on
  *  whatever page it was started from, and moving it there is pure churn. */
+export function isDeck(ir: IR): boolean {
+	return ir.steps.every((step) => step.target === undefined);
+}
+
 export function entryRoute(ir: IR): string | undefined {
 	const declared = ir.steps[0]?.route;
 	if (declared) return declared;
-	return ir.steps.some((step) => step.target !== undefined) ? ir.route : undefined;
+	return isDeck(ir) ? undefined : ir.route;
 }
 
 export async function startGuide(id: string, opts: StartGuideOptions = {}): Promise<StartOutcome> {
@@ -361,12 +365,14 @@ export async function startGuide(id: string, opts: StartGuideOptions = {}): Prom
 		return { ok: false, reason: result.aborted ? 'aborted' : 'failed', result };
 	}
 	await settingsStorage.set(`${DONE_PREFIX}${id}@${ir.version}`, '1');
-	if (opts.conclusion) await concludeGuide(opts.conclusion);
+	if (opts.conclusion) await concludeGuide(ir, opts.conclusion);
 	return { ok: true, result };
 }
 
-async function concludeGuide(conclusion: { title: string; xp: number }): Promise<void> {
-	await showConclusion(conclusion);
+/** A deck closes on its own last card, so a conclusion would stack a second
+ *  one on top of it; it still hands the user back to the guides. */
+async function concludeGuide(ir: IR, conclusion: { title: string; xp: number }): Promise<void> {
+	if (!isDeck(ir)) await showConclusion(conclusion);
 	if (location.pathname !== GUIDES_ROUTE) await goto(GUIDES_ROUTE);
 }
 

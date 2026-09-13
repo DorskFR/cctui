@@ -14,6 +14,7 @@ import {
 	guideParams,
 	guidesDone,
 	GUIDES_ROUTE,
+	isDeck,
 	MOBILE_QUERY,
 	parseDoneKey,
 	publicJourneys,
@@ -225,10 +226,16 @@ describe('the guides page is where a tour hands back', () => {
 	});
 
 	it('sends a carousel deck nowhere, so a replay does not leave the guides page', () => {
-		const deck = publicJourneys.find((j) => j.steps.every((s) => s.target === undefined));
+		const deck = publicJourneys.find(isDeck);
 		expect(deck, 'no target-less journey is registered').toBeDefined();
 		expect(deck!.route, 'the deck still declares a route of its own').toBeTruthy();
 		expect(entryRoute(deck!)).toBeUndefined();
+	});
+
+	it('tells a deck apart from a tour that anchors even one step', () => {
+		const anchored = publicJourneys.filter((j) => !isDeck(j));
+		expect(anchored.length).toBeGreaterThan(0);
+		for (const j of anchored) expect(j.steps.some((s) => s.target !== undefined), j.id).toBe(true);
 	});
 });
 
