@@ -27,7 +27,8 @@ export default defineJourney({
 			say: {
 				title: 'Welcome to cctui',
 				body: 'One control room for every Claude Code session you run. Start work, watch it progress, answer it when it asks, and see what it cost — from any browser, without opening a terminal on the machine doing the work.'
-			}
+			},
+			capture: 'welcome'
 		},
 		{
 			id: 'shape',
@@ -35,7 +36,8 @@ export default defineJourney({
 			say: {
 				title: 'How the pieces fit',
 				body: 'Machines you enrol supply the compute. Provider accounts supply the quota. A session borrows one of each and runs a prompt to completion. Everything else in the app exists to set those up, watch them, or pay for them.'
-			}
+			},
+			capture: 'shape'
 		},
 		{
 			id: 'overview',
@@ -51,7 +53,8 @@ export default defineJourney({
 			say: {
 				title: 'Sessions — where the work actually happens',
 				body: 'Every run you have started, grouped by what it needs from you. Sessions blocked on an answer surface first, because they are the only ones that stop making progress without you. Search, filters and display options narrow the rest once the list outgrows a screen.'
-			}
+			},
+			capture: 'sessions'
 		},
 		{
 			id: 'spawn',
@@ -75,7 +78,8 @@ export default defineJourney({
 			say: {
 				title: 'Accounts — where the quota comes from',
 				body: 'Provider accounts are grouped into pools, and a session draws from a pool rather than a fixed account, so one hitting a rate limit steps aside instead of stalling the queue. This page is also where GitHub connectors and dispatchers are wired up.'
-			}
+			},
+			capture: 'accounts'
 		},
 		{
 			id: 'access',
@@ -123,7 +127,8 @@ export default defineJourney({
 			say: {
 				title: 'Now walk it in place',
 				body: 'That is every screen. The rest of the guides run inside the app itself, pointing at the real controls in order — connect an account, enrol a machine, start a session, follow it. They are listed under Settings > Guides whenever you want one.'
-			}
+			},
+			capture: 'guides'
 		}
 	]
 });

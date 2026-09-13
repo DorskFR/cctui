@@ -9,10 +9,12 @@ import sessionsList from '../../../journeys/sessions-list.journey';
 import settingsTour from '../../../journeys/settings-tour.journey';
 import spawnSession from '../../../journeys/spawn-session.journey';
 import usageOverview from '../../../journeys/usage-overview.journey';
+import welcome from '../../../journeys/welcome.journey';
 import { GATES, DONE_PROBES, PUBLIC_JOURNEYS, requiredParams } from '../journey';
 import { createProbes } from './probes';
 
 const SPECS: Journey[] = [
+	welcome,
 	enrollMachine,
 	accountsPools,
 	spawnSession,
@@ -131,6 +133,13 @@ describe('public journey set', () => {
 
 describe('book fidelity', () => {
 	it('keeps every screenshot capture the docs are built from', () => {
+		expect(captures(book('welcome'))).toEqual([
+			'welcome',
+			'shape',
+			'sessions',
+			'accounts',
+			'guides'
+		]);
 		expect(captures(book('enroll-machine'))).toEqual(['access', 'enroll', 'user', 'machines']);
 		expect(captures(book('accounts-pools'))).toEqual(['board', 'pool', 'handle', 'menu']);
 		expect(captures(book('spawn-session'))).toEqual(['dialog', 'filled', 'saved', 'draft']);
