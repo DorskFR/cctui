@@ -172,7 +172,13 @@ describe('book fidelity', () => {
 		expect(captures(book('sessions-list'))).toEqual(['list', 'themes']);
 		expect(captures(book('search-sessions'))).toEqual(['before', 'text', 'facet']);
 		expect(captures(book('usage-overview'))).toEqual(['tiles', 'periods', 'windows', 'analytics']);
-		expect(captures(book('settings-tour'))).toEqual(['appearance', 'sessions', 'execution', 'privacy']);
+		expect(captures(book('settings-tour'))).toEqual([
+			'appearance',
+			'theme',
+			'sessions',
+			'execution',
+			'privacy'
+		]);
 	});
 
 	it('keeps the fixture assertions in the book compile', () => {

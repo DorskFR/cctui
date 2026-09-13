@@ -72,6 +72,7 @@
 			help={m.settings_interface_language_help()}
 		>
 			<Select
+				data-journey="language"
 				value={settings.locale ?? 'auto'}
 				style="width:100%"
 				onchange={(e) => {

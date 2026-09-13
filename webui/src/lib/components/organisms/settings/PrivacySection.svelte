@@ -52,6 +52,7 @@
 			wide
 		>
 			<Textarea
+				data-journey="redact-patterns"
 				mono
 				autoresize
 				rows={6}
