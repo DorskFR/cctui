@@ -1,4 +1,9 @@
 <script lang="ts">
+	import { onDestroy } from 'svelte';
+	import { imageAttachments } from '$lib/imageAttachments.svelte';
+	import ImageCompressionStatus from '$lib/components/molecules/ImageCompressionStatus.svelte';
+	const images = imageAttachments();
+	onDestroy(() => images.reset());
 	import { errMessage } from '$lib/api';
 	import type { SessionListItem } from '@bindings/SessionListItem';
 	import AttachmentList from '$lib/components/molecules/AttachmentList.svelte';
@@ -74,6 +79,7 @@
 	});
 	$effect(() => {
 		const key = composerKey(session.id);
+		images.reset();
 		attachmentsKey = null;
 		let live = true;
 		(async () => {
@@ -95,8 +101,10 @@
 	let dragActive = $state(false);
 	const attachError = $derived(fileCapError(attachments));
 	export function addFiles(incoming: File[]) {
-		if (!supportsAttachments || archived) return;
-		({ files: attachments, text: input } = attachFiles(attachments, input, incoming));
+		if (!supportsAttachments || archived || uploading) return;
+		images.add(incoming, (file) => {
+			({ files: attachments, text: input } = attachFiles(attachments, input, [file]));
+		}, (file) => toasts.error(m.attachments_compression_failed({ name: file.name })));
 	}
 	export function setDragActive(active: boolean) {
 		dragActive = active;
@@ -121,11 +129,6 @@
 		if (files.length > 0) {
 			e.preventDefault();
 			addFiles(files);
-			toasts.ok(
-				files.length === 1
-					? m.composer_attached_file({ name: files[0].name })
-					: m.composer_attached_files_clipboard({ count: files.length })
-			);
 			return;
 		}
 		const text = cd.getData('text/plain');
@@ -196,7 +199,7 @@
 		const text = input.trim();
 		// Allow sending attachments with no text (the staged paths become the
 		// message), but require at least one of text/attachments.
-		if ((!text && attachments.length === 0) || archived || uploading) return;
+		if ((!text && attachments.length === 0) || archived || uploading || images.pending.length) return;
 		if (attachError) {
 			toasts.error(attachError);
 			return;
@@ -266,6 +269,7 @@
 	{:else}
 		<!-- Failed sends surface inline on the message bubble itself (red +
 		     Retry), so there's no separate composer banner. -->
+		<ImageCompressionStatus pending={images.pending} />
 		{#if supportsAttachments && attachments.length}
 			<div class="attachments">
 				<AttachmentList files={attachments} onremove={removeAttachment} compact />
@@ -324,7 +328,7 @@
 				variant="primary"
 				control
 				shrink={false}
-				disabled={uploading || (!input.trim() && attachments.length === 0)}
+				disabled={uploading || images.pending.length > 0 || (!input.trim() && attachments.length === 0)}
 				onclick={send}
 				title={cacheCold
 					? burstTokens

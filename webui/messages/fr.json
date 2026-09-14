@@ -1790,5 +1790,7 @@
 	"home_sessions_yesterday": "Hier",
 	"home_sessions_week": "Cette semaine",
 	"home_sessions_month": "Ce mois-ci",
-	"home_sessions_periods_hint": "Heure locale · depuis lundi pour la semaine · sessions archivées incluses"
+	"home_sessions_periods_hint": "Heure locale · depuis lundi pour la semaine · sessions archivées incluses",
+	"attachments_compressing": "Compression en cours…",
+	"attachments_compression_failed": "Impossible de compresser « {name} ». Le format est peut-être incompatible avec ce navigateur. Essayez une autre image."
 }
