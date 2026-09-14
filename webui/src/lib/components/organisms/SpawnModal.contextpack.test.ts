@@ -116,7 +116,7 @@ async function expandAdvanced() {
 }
 async function addEnvRow(key: string, value: string) {
   const add = [...document.querySelectorAll<HTMLButtonElement>("button")].find(
-    (b) => b.textContent?.includes("env var"),
+    (b) => /env vars/i.test(b.textContent ?? ""),
   );
   if (!add) throw new Error("add env var button not found");
   add.click();
