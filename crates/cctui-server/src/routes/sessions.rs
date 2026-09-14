@@ -2381,15 +2381,44 @@ pub async fn set_auto_approve(
 /// marks the row `archived` and drops it from the live registry. The
 /// conversation transcript is preserved. Reversible (cctui-side) via
 /// `unarchive_session`, though the underlying claude job is gone by then.
+///
+/// A pinned session is the human's "do not lose this" mark: it is refused
+/// with `409 Conflict` unless the caller passes `?force=true`, which only the
+/// webui's deliberate single-row gesture does. Scripts, macros and sweeps
+/// never force, so a pin is never undone by an automation.
 pub async fn archive_session(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
+    Query(q): Query<ArchiveQuery>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
-    archive_one(&state, &session_id).await.map_err(|e| {
+    let outcome = archive_one(&state, &session_id, q.force).await.map_err(|e| {
         tracing::error!("db error: {e}");
         (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
     })?;
-    Ok(StatusCode::NO_CONTENT)
+    match outcome {
+        ArchiveOutcome::Archived => Ok(StatusCode::NO_CONTENT),
+        ArchiveOutcome::SkippedPinned => Err((
+            StatusCode::CONFLICT,
+            Json(ApiError { error: "session is pinned; unpin it or pass ?force=true".into() }),
+        )),
+    }
+}
+
+/// Query string of `POST /sessions/{id}/archive`.
+#[derive(Debug, Default, Deserialize)]
+pub struct ArchiveQuery {
+    /// Archive even when the session is pinned. Reserved for an explicit human
+    /// gesture on that one session; never set by automations.
+    #[serde(default)]
+    pub force: bool,
+}
+
+/// What [`archive_one`] did with a session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArchiveOutcome {
+    Archived,
+    /// The session is pinned and `force` was not set: nothing was touched.
+    SkippedPinned,
 }
 
 /// Ask the owning daemon to remove `session_id`'s underlying job. Tracked so a
@@ -2426,26 +2455,50 @@ pub async fn dispatch_remove(state: &AppState, session_id: &str) {
 /// Archive a single session (+ its subagents) — the reusable core shared by the
 /// single-session route and the batch route. Dispatches `Remove`, marks the row
 /// `archived`, clears classifier signals, and drops it from the live registry.
-pub async fn archive_one(state: &AppState, session_id: &str) -> Result<(), sqlx::Error> {
+///
+/// Pinned sessions are protected: without `force` a pinned session (or a
+/// pinned child of the session) is left untouched and the call reports
+/// [`ArchiveOutcome::SkippedPinned`]. `force` is the human's explicit
+/// single-session gesture; every automation passes `false`.
+pub async fn archive_one(
+    state: &AppState,
+    session_id: &str,
+    force: bool,
+) -> Result<ArchiveOutcome, sqlx::Error> {
+    if !force {
+        let pinned: Option<bool> =
+            sqlx::query_scalar("SELECT pinned FROM sessions WHERE id = $1")
+                .bind(session_id)
+                .fetch_optional(&state.pool)
+                .await?;
+        if pinned == Some(true) {
+            tracing::info!(session_id = %session_id, "archive skipped: session is pinned");
+            return Ok(ArchiveOutcome::SkippedPinned);
+        }
+    }
     dispatch_remove(state, session_id).await;
     // Archive the session AND any Task-tool subagents nested under it:
     // a parent's children should never outlive it in the list.
     // Subagents are observe-only (no worker), so they need no `claude rm` —
     // only the parent does, handled by the dispatch above. Archiving a
     // *child* does not touch the parent (no `parent_id` cascade upward).
+    // A pinned child is never swept along with its parent unless forced.
     let children: Vec<String> =
         crate::store::sessions::child_ids(&state.pool, session_id).await.unwrap_or_default();
     // Clear the classifier signals on archive so a session that was waiting on
     // input doesn't keep its ✋ "needs input" glyph in the archived view — an
     // archived session is, by definition, no longer waiting on anyone.
-    sqlx::query(
+    let archived: Vec<String> = sqlx::query_scalar(
         "UPDATE sessions SET status = 'archived', tempo = NULL, agent_state = NULL, \
                 activity = NULL, soft_limit_reason = NULL \
-         WHERE id = $1 OR parent_id = $1",
+         WHERE (id = $1 OR parent_id = $1) AND (pinned = false OR $2) \
+         RETURNING id",
     )
     .bind(session_id)
-    .execute(&state.pool)
+    .bind(force)
+    .fetch_all(&state.pool)
     .await?;
+    let children: Vec<String> = children.into_iter().filter(|c| archived.contains(c)).collect();
     {
         let mut registry = state.registry.write().await;
         registry.deregister(session_id);
@@ -2460,7 +2513,7 @@ pub async fn archive_one(state: &AppState, session_id: &str) -> Result<(), sqlx:
         crate::state::drop_usage_notice_buckets(&state.usage_notice_buckets, child);
     }
     tracing::info!(session_id = %session_id, children = children.len(), "session archived");
-    Ok(())
+    Ok(ArchiveOutcome::Archived)
 }
 
 /// Un-archive a session: clear the sticky `archived` state back to
@@ -2612,14 +2665,18 @@ pub async fn archive_sessions(
             return StatusCode::INTERNAL_SERVER_ERROR;
         }
     };
+    // A batch never touches a pinned session: a star means "do not lose this",
+    // and a multi-select or a section sweep is exactly where one slips in.
     let mut ok = 0usize;
+    let mut pinned = 0usize;
     for id in &ids {
-        match archive_one(&state, id).await {
-            Ok(()) => ok += 1,
+        match archive_one(&state, id, false).await {
+            Ok(ArchiveOutcome::Archived) => ok += 1,
+            Ok(ArchiveOutcome::SkippedPinned) => pinned += 1,
             Err(e) => tracing::error!(session_id = %id, "batch archive db error: {e}"),
         }
     }
-    tracing::info!(archived = ok, requested = req.ids.len(), "batch archive");
+    tracing::info!(archived = ok, skipped_pinned = pinned, requested = req.ids.len(), "batch archive");
     StatusCode::NO_CONTENT
 }
 
