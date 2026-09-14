@@ -1,4 +1,8 @@
 <script lang="ts">
+	import { onDestroy } from 'svelte';
+	import { imageAttachments } from '$lib/imageAttachments.svelte';
+	const images = imageAttachments();
+	onDestroy(() => images.reset());
 	import { ApiError, errMessage } from '$lib/api';
 	import type { SpawnRequest } from '@bindings/SpawnRequest';
 	import type { SessionProfile } from '@bindings/SessionProfile';
@@ -46,7 +50,7 @@
 		DISPATCH_MEMORY_FIELDS,
 		type MemoryPatch
 	} from '$lib/spawnMemory';
-	import { appendFileTokens, mergeFiles, removeFileByName, fileCapError } from '$lib/attachments';
+	import { attachFiles, removeFileByName, fileCapError } from '$lib/attachments';
 	import { attachmentStore, dropMissingTokens } from '$lib/attachmentStore';
 	import { AutoGrid, Button, Callout, Dropzone, Modal, OptionButton, resizeHandle, Text } from '@dorsk/tsumikit';
 	import { dialogBackdropGuard } from '$lib/dialogBackdropGuard';
@@ -531,6 +535,7 @@
 		form = { ...blank, machine_id: form.machine_id, dispatcher: form.dispatcher };
 		envRows = [];
 		files = [];
+		images.reset();
 		oneOff = null;
 	}
 	function discardMirror() {
@@ -545,11 +550,13 @@
 		envRows.filter((r) => r.key.trim() && !ENV_KEY_RE.test(r.key.trim()))
 	);
 	const fileError = $derived(fileCapError(files));
-	const secretsValid = $derived(badEnvKeys.length === 0 && !fileError);
+	const secretsValid = $derived(badEnvKeys.length === 0 && !fileError && images.pending.length === 0);
 
 	const addFiles = (incoming: File[]) => {
-		files = mergeFiles(files, incoming);
-		form.prompt = appendFileTokens(form.prompt, incoming);
+		if (busy) return;
+		images.add(incoming, (file) => {
+			({ files, text: form.prompt } = attachFiles(files, form.prompt, [file]));
+		}, (file) => toasts.error(m.attachments_compression_failed({ name: file.name })));
 	};
 	/** Complete rows only (both key and value set). */
 	function envMap(): Record<string, string> {
@@ -714,7 +721,7 @@
 
 	// Drafts are a machine-spawn concept: valid whenever the spawn form is;
 	// secrets needn't be valid yet (entered at launch).
-	const draftValid = $derived(target === 'machine' && spawnValid);
+	const draftValid = $derived(target === 'machine' && spawnValid && images.pending.length === 0);
 	async function submitDraft() {
 		if (!draftValid || busy) return;
 		busy = true;
@@ -853,6 +860,7 @@
 				/>
 			{/if}
 			<SpawnAddons
+				pending={images.pending}
 				bind:labelIds={form.labels}
 				bind:envRows
 				{files}

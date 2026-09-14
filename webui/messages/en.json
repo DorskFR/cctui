@@ -1790,5 +1790,7 @@
 	"home_sessions_yesterday": "Yesterday",
 	"home_sessions_week": "This week",
 	"home_sessions_month": "This month",
-	"home_sessions_periods_hint": "Local time · week starts Monday · archived sessions included"
+	"home_sessions_periods_hint": "Local time · week starts Monday · archived sessions included",
+	"attachments_compressing": "Compressing…",
+	"attachments_compression_failed": "Could not compress “{name}”. This browser may not support the format. Try another image."
 }

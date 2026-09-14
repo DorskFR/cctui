@@ -1,4 +1,5 @@
 <script lang="ts">
+	import ImageCompressionStatus from '$lib/components/molecules/ImageCompressionStatus.svelte';
 	import type { Label } from '@bindings/Label';
 	import { AutoGrid, Badge, Button, FileButton, Icon } from '@dorsk/tsumikit';
 	import { clickOutside } from '$lib/clickOutside';
@@ -12,6 +13,7 @@
 	let {
 		labelIds = $bindable(),
 		envRows = $bindable(),
+		pending = [],
 		files,
 		allLabels,
 		envInvalid,
@@ -22,6 +24,7 @@
 	}: {
 		labelIds: string[];
 		envRows: EnvRow[];
+		pending?: { file: File }[];
 		files: File[];
 		allLabels: Label[];
 		envInvalid: boolean;
@@ -137,6 +140,7 @@
 		</div>
 	{/if}
 	{#if attachments}
+		<ImageCompressionStatus {pending} />
 		<AttachmentList {files} onremove={onremovefile} />
 	{/if}
 	<EnvSecretsField bind:envRows invalid={envInvalid} />
