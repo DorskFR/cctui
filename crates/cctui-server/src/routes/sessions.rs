@@ -2466,11 +2466,10 @@ pub async fn archive_one(
     force: bool,
 ) -> Result<ArchiveOutcome, sqlx::Error> {
     if !force {
-        let pinned: Option<bool> =
-            sqlx::query_scalar("SELECT pinned FROM sessions WHERE id = $1")
-                .bind(session_id)
-                .fetch_optional(&state.pool)
-                .await?;
+        let pinned: Option<bool> = sqlx::query_scalar("SELECT pinned FROM sessions WHERE id = $1")
+            .bind(session_id)
+            .fetch_optional(&state.pool)
+            .await?;
         if pinned == Some(true) {
             tracing::info!(session_id = %session_id, "archive skipped: session is pinned");
             return Ok(ArchiveOutcome::SkippedPinned);
@@ -2676,7 +2675,12 @@ pub async fn archive_sessions(
             Err(e) => tracing::error!(session_id = %id, "batch archive db error: {e}"),
         }
     }
-    tracing::info!(archived = ok, skipped_pinned = pinned, requested = req.ids.len(), "batch archive");
+    tracing::info!(
+        archived = ok,
+        skipped_pinned = pinned,
+        requested = req.ids.len(),
+        "batch archive"
+    );
     StatusCode::NO_CONTENT
 }
 
