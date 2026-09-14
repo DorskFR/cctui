@@ -88,8 +88,10 @@ export function useSessionActions() {
     markSeen: async (id: string) => {
       await endpoints.markSeen(id);
     },
+    // Single-row archive is a deliberate gesture on that one session, so it
+    // may archive a pinned session; batches and automations never can.
     archive: async (id: string) => {
-      await api.post<void>(`/sessions/${id}/archive`);
+      await api.post<void>(`/sessions/${id}/archive?force=true`);
       inval();
     },
     unarchive: async (id: string) => {

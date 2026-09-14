@@ -15,6 +15,7 @@ use std::collections::HashMap;
 
 use cctui_proto::classifier::Bucket;
 
+use crate::routes::sessions::ArchiveOutcome;
 use crate::state::AppState;
 
 /// Unclaimed intents older than this are dropped: the spawn never registered.
@@ -147,8 +148,14 @@ pub async fn sweep(state: &AppState) {
             tracing::warn!(session_id = %id, error = %e, "could not clear the auto-archive flag");
             continue;
         }
-        match crate::routes::sessions::archive_one(state, &id).await {
-            Ok(()) => tracing::info!(session_id = %id, "auto-archived a finished macro session"),
+        // Never forced: a session the human pinned since the spawn stays.
+        match crate::routes::sessions::archive_one(state, &id, false).await {
+            Ok(ArchiveOutcome::Archived) => {
+                tracing::info!(session_id = %id, "auto-archived a finished macro session");
+            }
+            Ok(ArchiveOutcome::SkippedPinned) => {
+                tracing::info!(session_id = %id, "auto-archive skipped: session is pinned");
+            }
             Err(e) => tracing::warn!(session_id = %id, error = %e, "auto-archive failed"),
         }
     }
