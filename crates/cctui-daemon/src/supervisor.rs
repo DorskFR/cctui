@@ -91,6 +91,11 @@ pub struct Supervisor {
     resources: std::sync::Mutex<crate::resources::ResourceSampler>,
     /// Broadcast of connect edges; every adapter ctx holds a subscription.
     connected: tokio::sync::broadcast::Sender<()>,
+    /// WS keepalive cadence; [`PING_INTERVAL`] outside tests.
+    ping_interval: Duration,
+    /// The in-flight purge of leaked claude jobs (see `purge_leaked_jobs`),
+    /// aborted and restarted whenever a fresh `ResumeMarks` arrives.
+    purge: std::sync::Mutex<Option<tokio::task::AbortHandle>>,
 }
 
 impl Supervisor {
@@ -110,7 +115,15 @@ impl Supervisor {
             counters,
             resources: std::sync::Mutex::new(crate::resources::ResourceSampler::new()),
             connected: tokio::sync::broadcast::Sender::new(CONNECT_SIGNAL_BUFFER),
+            ping_interval: PING_INTERVAL,
+            purge: std::sync::Mutex::new(None),
         }
+    }
+
+    #[cfg(test)]
+    const fn with_ping_interval(mut self, interval: Duration) -> Self {
+        self.ping_interval = interval;
+        self
     }
 
     /// Run the connect/reconnect loop until `shutdown` fires.
@@ -187,7 +200,7 @@ impl Supervisor {
 
         let mut announced = false;
 
-        let mut ping = tokio::time::interval(PING_INTERVAL);
+        let mut ping = tokio::time::interval(self.ping_interval);
         ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         // Discard the immediate first tick — we just connected.
         ping.tick().await;
@@ -418,36 +431,52 @@ impl Supervisor {
                 self.reconcile(adapters, running, event_tx, shutdown);
             }
             DaemonFrameDown::Command { adapter_id, command } => {
-                if let Some(running) = running.get(&adapter_id) {
-                    let _ = running.commands_tx.send(*command).await;
-                } else {
-                    tracing::warn!(%adapter_id, "command for unknown adapter; rejecting");
-                    // Silent drop would leave the server-side waiter hanging.
-                    if let Some(command_id) = command.command_id() {
-                        let _ = event_tx
-                            .send((
-                                adapter_id.clone(),
-                                AdapterEvent::CommandResult {
-                                    command_id,
-                                    ok: false,
-                                    error: Some(format!(
-                                        "adapter {adapter_id} is not running on this machine"
-                                    )),
-                                },
-                            ))
-                            .await;
+                // `try_send`, never `send().await`: this runs inside the
+                // transport `select!`, alongside the keepalive ping and the
+                // socket read. Awaiting a full adapter channel here stalls
+                // both, and the server evicts the daemon as dead.
+                #[allow(clippy::option_if_let_else)] // `command` moves into one arm only
+                let outcome = match running.get(&adapter_id) {
+                    None => Err(("is not running on this machine", *command)),
+                    Some(running) => {
+                        running.commands_tx.try_send(*command).map_err(|err| match err {
+                            mpsc::error::TrySendError::Full(command) => {
+                                ("command queue is full", command)
+                            }
+                            mpsc::error::TrySendError::Closed(command) => {
+                                ("is shutting down", command)
+                            }
+                        })
                     }
+                };
+                let error = outcome.err().and_then(|(reason, command)| {
+                    tracing::warn!(%adapter_id, reason, "rejecting command");
+                    command.command_id().map(|id| (id, format!("adapter {adapter_id} {reason}")))
+                });
+                // Silent drop would leave the server-side waiter hanging.
+                // Best-effort for the same reason as above: the event channel
+                // is drained by this very loop.
+                if let Some((command_id, error)) = error {
+                    let _ = event_tx.try_send((
+                        adapter_id,
+                        AdapterEvent::CommandResult { command_id, ok: false, error: Some(error) },
+                    ));
                 }
             }
             DaemonFrameDown::ResumeMarks { session_marks, archived } => {
                 crate::configsweep::note_server_sessions(session_marks.iter().map(|(id, _)| id));
                 // Fan the marks to every running adapter; each clamps the
-                // sessions it owns and ignores ids it doesn't know.
-                for running in running.values() {
-                    let _ = running
+                // sessions it owns and ignores ids it doesn't know. Best-effort
+                // (`try_send`): the next connect resends them, and blocking the
+                // transport loop on a busy adapter is never acceptable.
+                for (adapter_id, running) in running.iter() {
+                    if running
                         .commands_tx
-                        .send(AdapterCommand::ResumeMarks { marks: session_marks.clone() })
-                        .await;
+                        .try_send(AdapterCommand::ResumeMarks { marks: session_marks.clone() })
+                        .is_err()
+                    {
+                        tracing::warn!(%adapter_id, "adapter busy; resume marks dropped until next connect");
+                    }
                 }
                 if let Some(claude) = running.get(CLAUDE_ADAPTER_ID) {
                     let jobs_root = claude
@@ -459,17 +488,24 @@ impl Supervisor {
                             std::path::PathBuf::from,
                         );
                     let leaked = leaked_jobs(&jobs_root, &archived);
+                    let mut purge = self.purge.lock().unwrap();
+                    // One purge at a time: the fresh list supersedes whatever
+                    // the previous connection was still working through.
+                    if let Some(previous) = purge.take() {
+                        previous.abort();
+                    }
                     if !leaked.is_empty() {
                         tracing::info!(
                             count = leaked.len(),
                             "removing claude jobs of archived sessions"
                         );
-                    }
-                    for local_id in leaked {
-                        let _ = claude
-                            .commands_tx
-                            .send(AdapterCommand::Remove { local_id, command_id: None })
-                            .await;
+                        let task = tokio::spawn(purge_leaked_jobs(
+                            claude.commands_tx.clone(),
+                            claude.shutdown.clone(),
+                            jobs_root,
+                            leaked,
+                        ));
+                        *purge = Some(task.abort_handle());
                     }
                 }
             }
@@ -1030,6 +1066,44 @@ fn classify(bytes: Vec<u8>, codec: Option<String>) -> anyhow::Result<Prepared> {
 
 const CLAUDE_ADAPTER_ID: &str = "claude-code";
 
+/// Feed one `Remove` per leaked job into the claude adapter, at the adapter's
+/// own pace. Each removal is slow (kill the worker, wait for it to exit, then
+/// `claude rm`), so a backlog of hundreds (a daemon updated after weeks of
+/// archives) takes minutes to hours: this must never run on the transport
+/// loop, which has to keep pinging the server meanwhile. Skips jobs that
+/// vanished in the meantime, so an overlapping purge can't double-remove.
+async fn purge_leaked_jobs(
+    commands_tx: mpsc::Sender<AdapterCommand>,
+    shutdown: CancellationToken,
+    jobs_root: std::path::PathBuf,
+    leaked: Vec<String>,
+) {
+    let total = leaked.len();
+    let mut sent = 0usize;
+    for local_id in leaked {
+        let still_there = crate::configsweep::short_of(&local_id)
+            .is_some_and(|short| jobs_root.join(short).is_dir());
+        if !still_there {
+            continue;
+        }
+        let command = AdapterCommand::Remove { local_id, command_id: None };
+        tokio::select! {
+            () = shutdown.cancelled() => {
+                tracing::info!(sent, total, "adapter stopped; leaked job purge interrupted");
+                return;
+            }
+            res = commands_tx.send(command) => {
+                if res.is_err() {
+                    tracing::info!(sent, total, "adapter command channel closed; leaked job purge interrupted");
+                    return;
+                }
+                sent += 1;
+            }
+        }
+    }
+    tracing::info!(sent, total, "queued removal of claude jobs of archived sessions");
+}
+
 /// Archived session ids whose claude job directory is still on disk.
 fn leaked_jobs(jobs_root: &std::path::Path, archived: &[String]) -> Vec<String> {
     archived
@@ -1063,7 +1137,7 @@ mod tests {
     use cctui_proto::ws::DaemonFrameUp;
 
     use super::{
-        AdapterRunning, LIVENESS_TIMEOUT, PING_INTERVAL, PendingTransfer, Supervisor,
+        AdapterRunning, Duration, LIVENESS_TIMEOUT, PING_INTERVAL, PendingTransfer, Supervisor,
         compile_scrub, is_textless_thinking, scrub_event,
     };
     use crate::adapter_runtime::{Adapter, AdapterCtx, AdapterFactory};
@@ -1256,6 +1330,67 @@ mod tests {
         }
     }
 
+    /// A `Command` for an adapter whose queue is full must neither block the
+    /// transport loop nor vanish: the server-side waiter gets a failed result.
+    #[tokio::test]
+    async fn command_for_a_full_adapter_queue_is_rejected_not_awaited() {
+        let supervisor = Supervisor::new(
+            ServerClient::new("http://localhost"),
+            "machine-key".to_string(),
+            vec![],
+        );
+        let shutdown = CancellationToken::new();
+        let (event_tx, mut event_rx) = mpsc::channel(8);
+        let (frame_up_tx, _frame_up_rx) = mpsc::channel(8);
+        let (commands_tx, _commands_rx) = mpsc::channel(1);
+        // Fill the (never drained) queue.
+        commands_tx
+            .try_send(cctui_proto::adapter::AdapterCommand::ResumeMarks { marks: vec![] })
+            .unwrap();
+        let mut running: std::collections::HashMap<String, AdapterRunning> =
+            std::collections::HashMap::new();
+        running.insert(
+            "claude-code".to_owned(),
+            AdapterRunning {
+                shutdown: CancellationToken::new(),
+                config: serde_json::json!({}),
+                commands_tx,
+                tasks: Vec::new(),
+            },
+        );
+        let mut scrub = cctui_crypto::redact::CompiledPatterns::disabled();
+        let command_id = uuid::Uuid::new_v4();
+        let frame = cctui_proto::ws::DaemonFrameDown::Command {
+            adapter_id: "claude-code".to_owned(),
+            command: Box::new(cctui_proto::adapter::AdapterCommand::Remove {
+                local_id: "deadbeef-0000-0000-0000-000000000000".to_owned(),
+                command_id: Some(command_id),
+            }),
+        };
+        let handled = supervisor.handle_frame(
+            frame,
+            &mut running,
+            &event_tx,
+            &frame_up_tx,
+            &mut scrub,
+            &shutdown,
+        );
+        tokio::time::timeout(Duration::from_secs(5), handled)
+            .await
+            .expect("handle_frame must not block on a full adapter queue");
+        match event_rx.try_recv() {
+            Ok((
+                _,
+                cctui_proto::adapter::AdapterEvent::CommandResult { command_id: got, ok, error },
+            )) => {
+                assert_eq!(got, command_id);
+                assert!(!ok);
+                assert!(error.unwrap().contains("queue is full"));
+            }
+            other => panic!("expected a failed CommandResult, got {other:?}"),
+        }
+    }
+
     #[tokio::test]
     async fn resume_marks_removes_leaked_jobs_of_archived_sessions() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1300,11 +1435,21 @@ mod tests {
                 &CancellationToken::new(),
             )
             .await;
+        // The purge runs on its own task, so the commands arrive asynchronously.
         let mut removed = Vec::new();
-        while let Ok(cmd) = commands_rx.try_recv() {
-            if let cctui_proto::adapter::AdapterCommand::Remove { local_id, command_id } = cmd {
-                assert!(command_id.is_none());
-                removed.push(local_id);
+        while removed.len() < 2 {
+            let cmd = tokio::time::timeout(Duration::from_secs(5), commands_rx.recv())
+                .await
+                .expect("purge must queue the leaked removals")
+                .expect("command channel open");
+            match cmd {
+                cctui_proto::adapter::AdapterCommand::Remove { local_id, command_id } => {
+                    assert!(command_id.is_none());
+                    removed.push(local_id);
+                }
+                // The marks fan-out precedes the purge.
+                cctui_proto::adapter::AdapterCommand::ResumeMarks { .. } => {}
+                other => panic!("expected Remove, got {other:?}"),
             }
         }
         assert_eq!(
@@ -1314,6 +1459,126 @@ mod tests {
                 "cafebabe-0000-0000-0000-000000000000".to_owned(),
             ]
         );
+        tokio::task::yield_now().await;
+        assert!(commands_rx.try_recv().is_err(), "a session without a job dir must not be removed");
+    }
+
+    /// A claude-code stand-in that never drains its command channel, the way
+    /// the real adapter looks while it serialises `Remove`s (kill, wait for the
+    /// worker, `claude rm`: tens of seconds each).
+    struct StuckAdapter;
+
+    #[async_trait::async_trait]
+    impl Adapter for StuckAdapter {
+        fn id(&self) -> &'static str {
+            "claude-code"
+        }
+        async fn start(&self, ctx: AdapterCtx) -> anyhow::Result<()> {
+            // Hold `ctx.commands` open without ever receiving from it.
+            ctx.shutdown.cancelled().await;
+            Ok(())
+        }
+    }
+
+    struct StuckFactory;
+
+    impl AdapterFactory for StuckFactory {
+        fn id(&self) -> &'static str {
+            "claude-code"
+        }
+        fn build(&self, _config: serde_json::Value) -> Box<dyn Adapter> {
+            Box::new(StuckAdapter)
+        }
+    }
+
+    /// Regression for the connect-time freeze: a daemon that has never purged
+    /// (updated after many archives) receives a `ResumeMarks` whose `archived`
+    /// list matches hundreds of job dirs on disk. Every matching job used to be
+    /// pushed into the adapter's 64-deep command channel with `send().await`
+    /// from inside the transport `select!`, so the 65th blocked the loop: no
+    /// more pings, the server evicted the daemon after its 60s read timeout,
+    /// and the daemon never even read the Close. The invariant: pings keep
+    /// flowing during the whole purge, whatever the backlog.
+    #[tokio::test]
+    async fn resume_marks_backlog_does_not_starve_pings() {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::tungstenite::Message;
+
+        const BACKLOG: usize = 500; // load_archived's LIMIT
+        const PING: Duration = Duration::from_millis(50);
+
+        let tmp = tempfile::tempdir().unwrap();
+        let jobs = tmp.path().join("jobs");
+        let archived: Vec<String> =
+            (0..BACKLOG).map(|i| format!("{i:08x}-0000-0000-0000-000000000000")).collect();
+        for id in &archived {
+            std::fs::create_dir_all(jobs.join(&id[..8])).unwrap();
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let supervisor = Supervisor::new(
+            ServerClient::new(format!("http://{addr}")),
+            "machine-key".to_string(),
+            vec![Box::new(StuckFactory)],
+        )
+        .with_ping_interval(PING);
+        let shutdown = CancellationToken::new();
+        let (event_tx, mut event_rx) = mpsc::channel(8);
+        let mut running: std::collections::HashMap<String, AdapterRunning> =
+            std::collections::HashMap::new();
+
+        let jobs_root = jobs.to_str().unwrap().to_owned();
+        let server = tokio::spawn(async move {
+            let (sock, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(sock).await.unwrap();
+            let reconcile = serde_json::json!({
+                "type": "reconcile",
+                "adapters": [{
+                    "adapter_id": "claude-code",
+                    "config": { "jobs_root": jobs_root },
+                    "enabled": true,
+                }],
+                "secret_scrub": [],
+            });
+            ws.send(Message::Text(reconcile.to_string().into())).await.unwrap();
+            let marks =
+                cctui_proto::ws::DaemonFrameDown::ResumeMarks { session_marks: vec![], archived };
+            ws.send(Message::Text(serde_json::to_string(&marks).unwrap().into())).await.unwrap();
+
+            // Count keepalives over a window worth forty ping intervals; the
+            // bar below is a quarter of that, to ride out a loaded test host.
+            let window = PING * 40;
+            let deadline = tokio::time::Instant::now() + window;
+            let mut pings = 0usize;
+            loop {
+                let Ok(next) = tokio::time::timeout_at(deadline, ws.next()).await else { break };
+                match next {
+                    Some(Ok(Message::Ping(_))) => pings += 1,
+                    Some(Ok(_)) => {}
+                    _ => break,
+                }
+            }
+            // Finish the close handshake so the daemon sees a clean Close
+            // rather than a connection reset.
+            ws.close(None).await.ok();
+            while let Some(Ok(_)) = ws.next().await {}
+            pings
+        });
+
+        // A frozen loop never reads the server's Close either, so bound the
+        // wait: a timeout here is the freeze, not a slow test.
+        let run = supervisor.run_once(shutdown.clone(), &mut running, &event_tx, &mut event_rx);
+        // Only the return matters: a loop that answers the Close is alive.
+        let _ = tokio::time::timeout(PING * 600, run)
+            .await
+            .expect("transport loop froze: it never read the server's Close");
+        let pings = server.await.unwrap();
+        assert!(
+            pings >= 10,
+            "expected keepalive pings throughout the purge of {BACKLOG} jobs, got {pings}"
+        );
+        super::stop_adapters(&mut running).await;
     }
 
     fn chunk_parts(frame: DaemonFrameUp) -> (String, u32, u32, String) {
