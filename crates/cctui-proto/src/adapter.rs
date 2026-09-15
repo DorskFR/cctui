@@ -628,7 +628,8 @@ impl AdapterCommand {
             | Self::Diagnose { local_id, .. }
             | Self::WatchPty { local_id, .. } => Some(local_id),
             Self::Fork { parent_local_id, .. } => Some(parent_local_id),
-            Self::Spawn { .. } | Self::ResumeMarks { .. } => None,
+            Self::Spawn { spec, .. } => spec.parent_local_id.as_deref(),
+            Self::ResumeMarks { .. } => None,
         }
     }
 
@@ -855,6 +856,38 @@ mod tests {
         let back: AdapterCommand =
             serde_json::from_str(&serde_json::to_string(&cmd).unwrap()).unwrap();
         assert_eq!(back.command_id(), Some(id));
+    }
+
+    fn spec(parent: Option<&str>) -> SessionSpec {
+        SessionSpec {
+            adapter_id: AdapterId::new("codex"),
+            working_dir: Some("/workspace".into()),
+            prompt: Some("review".into()),
+            name: None,
+            permission_mode: None,
+            effort: None,
+            model: None,
+            service_tier: None,
+            env: std::collections::BTreeMap::new(),
+            bootstrap: serde_json::Value::Null,
+            parent_local_id: parent.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn a_child_spawn_belongs_to_its_parent_session() {
+        let cmd = AdapterCommand::Spawn {
+            spec: spec(Some("parent-1")),
+            command_id: None,
+            session_id: Some(Uuid::new_v4()),
+        };
+        assert_eq!(cmd.local_id(), Some("parent-1"));
+    }
+
+    #[test]
+    fn a_top_level_spawn_has_no_session() {
+        let cmd = AdapterCommand::Spawn { spec: spec(None), command_id: None, session_id: None };
+        assert_eq!(cmd.local_id(), None);
     }
 
     #[test]

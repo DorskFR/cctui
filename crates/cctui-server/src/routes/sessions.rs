@@ -2340,16 +2340,18 @@ pub async fn fork_session(
             extract: req.extract,
         }),
     };
-    state.bus.command_daemon(machine_uuid, frame).await.map_err(|err| match err {
-        crate::bus::BusError::NoDaemon(_) => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(ApiError { error: "daemon for that machine is offline".into() }),
-        ),
-        _ => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(ApiError { error: "daemon disconnected mid-dispatch".into() }),
-        ),
-    })?;
+    state.bus.command_daemon_for_session(machine_uuid, &session_id, frame).await.map_err(
+        |err| match err {
+            crate::bus::BusError::NoDaemon(_) => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ApiError { error: "daemon for that machine is offline".into() }),
+            ),
+            _ => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(ApiError { error: "daemon disconnected mid-dispatch".into() }),
+            ),
+        },
+    )?;
     tracing::info!(parent = %session_id, %command_id, %adapter_id, child = ?child_session_id, "fork dispatched");
     Ok((
         StatusCode::ACCEPTED,

@@ -355,9 +355,13 @@ pub async fn spawn_child(
             session_id: Some(child_id),
         }),
     };
-    state.bus.command_daemon(parent.machine_uuid, frame).await.map_err(|err| {
-        deny(StatusCode::SERVICE_UNAVAILABLE, format!("could not reach the daemon: {err}"))
-    })?;
+    state
+        .bus
+        .command_daemon_for_session(parent.machine_uuid, &parent.session_id, frame)
+        .await
+        .map_err(|err| {
+            deny(StatusCode::SERVICE_UNAVAILABLE, format!("could not reach the daemon: {err}"))
+        })?;
 
     // The child's dollar budget is session-scoped, so it rides the in-memory
     // per-session map the gateway overlays onto the account's soft limits.
@@ -401,9 +405,9 @@ pub async fn message_child(
             text: req.prompt.clone(),
         }),
     };
-    state.bus.command_daemon(parent.machine_uuid, frame).await.map_err(|err| {
-        deny(StatusCode::SERVICE_UNAVAILABLE, format!("could not reach the daemon: {err}"))
-    })?;
+    state.bus.command_daemon_for_session(parent.machine_uuid, child, frame).await.map_err(
+        |err| deny(StatusCode::SERVICE_UNAVAILABLE, format!("could not reach the daemon: {err}")),
+    )?;
     tracing::info!(parent = %session_id, %child, "CctuiAgent follow-up relayed");
     Ok(Json(serde_json::json!({})))
 }

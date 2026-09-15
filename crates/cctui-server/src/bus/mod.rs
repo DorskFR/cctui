@@ -1220,6 +1220,50 @@ mod tests {
         assert!(rx_b.try_recv().is_err());
     }
 
+    fn child_spawn(parent: &str) -> DaemonFrameDown {
+        DaemonFrameDown::Command {
+            adapter_id: "codex".into(),
+            command: Box::new(AdapterCommand::Spawn {
+                spec: cctui_proto::adapter::SessionSpec {
+                    adapter_id: cctui_proto::adapter::AdapterId::new("codex"),
+                    working_dir: Some("/workspace".into()),
+                    prompt: Some("review".into()),
+                    name: None,
+                    permission_mode: None,
+                    effort: None,
+                    model: None,
+                    service_tier: None,
+                    env: std::collections::BTreeMap::new(),
+                    bootstrap: serde_json::Value::Null,
+                    parent_local_id: Some(parent.to_owned()),
+                },
+                command_id: Some(Uuid::new_v4()),
+                session_id: Some(Uuid::new_v4()),
+            }),
+        }
+    }
+
+    /// A `CctuiAgent` child must boot next to its parent: the spawn frame
+    /// follows the parent's announcing connection, not the pod that connected
+    /// last under the shared `dispatch` identity.
+    #[tokio::test]
+    async fn a_child_spawn_lands_on_the_parents_connection() {
+        let bus = bus();
+        let machine = Uuid::new_v4();
+        let (tx_parent, mut rx_parent) = mpsc::channel(8);
+        let (tx_newest, mut rx_newest) = mpsc::channel(8);
+        let conn_parent = Uuid::new_v4();
+        bus.register_daemon(machine, conn_parent, tx_parent);
+        bus.bind_session_conn("parent", conn_parent);
+        bus.register_daemon(machine, Uuid::new_v4(), tx_newest);
+
+        let frame = child_spawn("parent");
+        assert_eq!(crate::bus::peer::frame_session(&frame), Some("parent"));
+        bus.command_daemon_for_session(machine, "parent", frame).await.unwrap();
+        assert!(matches!(rx_parent.recv().await, Some(DaemonFrameDown::Command { .. })));
+        assert!(rx_newest.try_recv().is_err());
+    }
+
     /// One pod's exit must not unbind its neighbour's sessions, and the
     /// surviving connection becomes the machine's sole — hence unambiguous —
     /// daemon again.
