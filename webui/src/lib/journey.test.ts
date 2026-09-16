@@ -10,6 +10,7 @@ import { locale } from './locale.svelte';
 import {
 	driverRun,
 	entryRoute,
+	forgetProgress,
 	guideDone,
 	guideParams,
 	guidesDone,
@@ -210,6 +211,18 @@ describe('guideDone', () => {
 		await settingsStorage.set(`${DONE_PREFIX}${ir().id}@${ir().version}`, '1');
 		const done = await guidesDone([ir().id, 'no-such-guide']);
 		expect(done).toEqual({ [ir().id]: true, 'no-such-guide': false });
+	});
+});
+
+describe('a guide starts only from a click', () => {
+	it('declares no autostart on any public journey', () => {
+		for (const j of publicJourneys) expect(j.autostart, j.id).toBeUndefined();
+	});
+
+	it('drops the progress the runtime would replay on register', () => {
+		const storage = { removeItem: vi.fn() } as unknown as Storage;
+		forgetProgress(storage);
+		expect(storage.removeItem).toHaveBeenCalledWith(PROGRESS_KEY);
 	});
 });
 
