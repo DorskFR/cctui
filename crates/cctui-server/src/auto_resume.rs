@@ -131,6 +131,37 @@ pub fn backoff_after(attempt: i32) -> i64 {
     BACKOFF_SECS.get(idx).copied().unwrap_or_else(|| *BACKOFF_SECS.last().unwrap_or(&600))
 }
 
+/// The `event_type`/`role`/`text` triple in `last_err` is also the predicate of
+/// the partial index `idx_stream_events_api_error`: reword one side and the
+/// planner stops using the index.
+const STUCK_SELECT: &str = "WITH last_err AS ( \
+        SELECT DISTINCT ON (e.session_id) \
+               e.session_id, e.id, e.created_at, e.payload->>'text' AS text \
+        FROM stream_events e \
+        WHERE e.event_type = 'message' \
+          AND e.payload->>'role' = 'assistant' \
+          AND e.payload->>'text' LIKE 'API Error:%' \
+          AND e.created_at >= now() - ($1 || ' seconds')::interval \
+        ORDER BY e.session_id, e.created_at DESC, e.id DESC \
+     ) \
+     SELECT le.session_id, s.session_name, le.id AS event_id, le.created_at AS error_at, \
+            le.text, \
+            r.error_event_id AS tracked_event_id, r.attempts AS tracked_attempts, \
+            r.next_attempt_at AS tracked_next_at, r.state AS tracked_state \
+     FROM last_err le \
+     JOIN sessions s ON s.id = le.session_id \
+     LEFT JOIN session_auto_resume r ON r.session_id = le.session_id \
+     WHERE s.status NOT IN ('archived', 'ended', 'failed', 'draft') \
+       AND COALESCE((SELECT us.data->'autoResumeOnConnectionLoss' = 'true'::jsonb \
+                     FROM user_settings us WHERE us.user_id = s.user_id), false) \
+       AND NOT EXISTS ( \
+           SELECT 1 FROM stream_events n \
+           WHERE n.session_id = le.session_id AND n.id > le.id \
+             AND (n.event_type = 'tool_use' \
+                  OR (n.event_type = 'message' \
+                      AND n.payload->>'role' IN ('assistant', 'user')))) \
+     LIMIT $2";
+
 #[derive(sqlx::FromRow)]
 struct StuckRow {
     session_id: String,
@@ -153,35 +184,7 @@ struct StuckRow {
 /// draft sessions are never touched, nor are sessions of users who did not opt
 /// in. Best-effort: every failure is logged and retried on the next tick.
 pub async fn sweep(state: &AppState) {
-    let rows: Vec<StuckRow> = match sqlx::query_as(
-        "WITH last_err AS ( \
-            SELECT DISTINCT ON (e.session_id) \
-                   e.session_id, e.id, e.created_at, e.payload->>'text' AS text \
-            FROM stream_events e \
-            WHERE e.event_type = 'message' \
-              AND e.payload->>'role' = 'assistant' \
-              AND e.payload->>'text' LIKE 'API Error:%' \
-              AND e.created_at >= now() - ($1 || ' seconds')::interval \
-            ORDER BY e.session_id, e.created_at DESC, e.id DESC \
-         ) \
-         SELECT le.session_id, s.session_name, le.id AS event_id, le.created_at AS error_at, \
-                le.text, \
-                r.error_event_id AS tracked_event_id, r.attempts AS tracked_attempts, \
-                r.next_attempt_at AS tracked_next_at, r.state AS tracked_state \
-         FROM last_err le \
-         JOIN sessions s ON s.id = le.session_id \
-         LEFT JOIN session_auto_resume r ON r.session_id = le.session_id \
-         WHERE s.status NOT IN ('archived', 'ended', 'failed', 'draft') \
-           AND COALESCE((SELECT us.data->'autoResumeOnConnectionLoss' = 'true'::jsonb \
-                         FROM user_settings us WHERE us.user_id = s.user_id), false) \
-           AND NOT EXISTS ( \
-               SELECT 1 FROM stream_events n \
-               WHERE n.session_id = le.session_id AND n.id > le.id \
-                 AND (n.event_type = 'tool_use' \
-                      OR (n.event_type = 'message' \
-                          AND n.payload->>'role' IN ('assistant', 'user')))) \
-         LIMIT $2",
-    )
+    let rows: Vec<StuckRow> = match sqlx::query_as(STUCK_SELECT)
     .bind(LOOKBACK_SECS.to_string())
     .bind(BATCH)
     .fetch_all(&state.pool)
@@ -298,7 +301,38 @@ async fn exhaust(state: &AppState, row: &StuckRow) {
 mod tests {
     use chrono::{Duration, TimeZone, Utc};
 
-    use super::{Action, BACKOFF_SECS, MAX_ATTEMPTS, backoff_after, is_connection_loss, plan};
+    use super::{
+        Action, BACKOFF_SECS, MAX_ATTEMPTS, STUCK_SELECT, backoff_after, is_connection_loss, plan,
+    };
+
+    const MIGRATION_115: &str =
+        include_str!("../../../migrations/115_stream_events_api_error.up.sql");
+
+    #[test]
+    fn the_api_error_predicate_still_matches_the_partial_index() {
+        for condition in [
+            "event_type = 'message'",
+            "payload->>'role' = 'assistant'",
+            "payload->>'text' LIKE 'API Error:%'",
+        ] {
+            assert!(
+                STUCK_SELECT.contains(&format!("e.{condition}")),
+                "auto-resume query no longer contains `e.{condition}`; idx_stream_events_api_error \
+                 is now orphaned — update migration 115 with it"
+            );
+            assert!(
+                MIGRATION_115.contains(condition),
+                "migration 115 no longer contains `{condition}`"
+            );
+        }
+        assert!(
+            STUCK_SELECT.contains(
+                "WHERE e.event_type = 'message' AND e.payload->>'role' = 'assistant' AND \
+                 e.payload->>'text' LIKE 'API Error:%'"
+            ),
+            "the three predicates must stay adjacent and in the index's order"
+        );
+    }
 
     #[test]
     fn recognises_every_transport_error_and_nothing_else() {
