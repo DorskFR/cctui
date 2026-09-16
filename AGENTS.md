@@ -12,7 +12,9 @@ Tsumikit, atomic design).
 - `crates/cctui-admin`, `crates/cctui-proto` — share the workspace version.
 - `crates/cctui-tui` — is unmaintained for now.
 - `webui/` — the web UI (Svelte 5 + Tsumikit). See DESIGN.md.
-- `migrations/` — sqlx Postgres migrations, applied on server start.
+- `migrations/` — sqlx Postgres migrations, applied on server start. See
+  [docs/database-performance.md](docs/database-performance.md) for reading
+  `pg_stat_statements` and index usage before adding or dropping an index.
 
 ## Package managers: webui is npm, ghreview-ui and ghreview are bun
 
