@@ -87,10 +87,12 @@ pub struct SessionStatsParams {
 }
 
 // Calendar arithmetic happens before conversion to UTC, preserving DST boundaries.
+// MATERIALIZED is load-bearing: inlined, the planner re-scans pg_timezone_names
+// once per reference (eight times, 23-65 ms each).
 const SESSION_COUNTS_SQL: &str = "
-    WITH zone AS (
+    WITH zone AS MATERIALIZED (
         SELECT COALESCE((SELECT name FROM pg_timezone_names WHERE name = $2), 'UTC') AS tz
-    ), boundaries AS (
+    ), boundaries AS MATERIALIZED (
         SELECT
             date_trunc('day', $3::timestamptz AT TIME ZONE tz) AT TIME ZONE tz AS today,
             (date_trunc('day', $3::timestamptz AT TIME ZONE tz) - interval '1 day') AT TIME ZONE tz AS yesterday,
@@ -485,6 +487,17 @@ fn usage_db_err(e: &sqlx::Error) -> (StatusCode, Json<ApiError>) {
 mod tests {
     use super::{day_start_for_offset, granularity_for_days};
     use chrono::{DateTime, Duration, TimeZone, Utc};
+
+    #[test]
+    fn the_timezone_ctes_stay_materialized() {
+        for cte in ["WITH zone AS MATERIALIZED (", "), boundaries AS MATERIALIZED ("] {
+            assert!(
+                super::SESSION_COUNTS_SQL.contains(cte),
+                "`{cte}` was dropped: pg_timezone_names goes back to eight scans per call, which \
+                 no correctness test can see"
+            );
+        }
+    }
 
     #[tokio::test]
     async fn session_calendar_counts_over_db() {

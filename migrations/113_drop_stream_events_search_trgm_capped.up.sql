@@ -1,0 +1,11 @@
+-- no-transaction
+--
+-- The unscoped trgm index (migration 065) has had no possible consumer since
+-- migration 108: every free-text predicate is prefixed by session_id and is
+-- served by the composite `(session_id, left(search_text, 8192))` GIN, so the
+-- planner cannot choose this one. It is the largest index in the database
+-- (781 MB) and its GIN pending list sits at the 4 MB flush limit, which is what
+-- makes an inserting backend pay a multi-second synchronous flush.
+--
+-- CONCURRENTLY, and alone in its file, for the reasons in migration 108.
+DROP INDEX CONCURRENTLY IF EXISTS idx_stream_events_search_trgm_capped;

@@ -363,7 +363,9 @@ impl AccountRow {
 /// row it ran under. `SUM()` over bigint returns NUMERIC, so cast back to bigint
 /// for the i64 columns. Cost uses a per-provider blended per-million rate
 /// (input/output/cache weighted) — an estimate, not a meter. Append a
-/// `WHERE`/`ORDER BY` clause before use.
+/// `WHERE`/`ORDER BY` clause before use. The token totals are a correlated
+/// LATERAL rather than a grouped subquery so that selecting one provider
+/// aggregates one provider's rows instead of the whole table.
 const PROVIDER_SELECT: &str = "SELECT p.id, p.account_id, p.provider, p.family, p.models, p.model_aliases, p.managed, \
             p.base_url, p.auth_scheme, p.provider_account_id, \
             p.expires_at, p.created_at, p.last_used_at, \
@@ -384,16 +386,15 @@ const PROVIDER_SELECT: &str = "SELECT p.id, p.account_id, p.provider, p.family, 
                  + COALESCE(t.cache_read_tokens,0)*0.3 + COALESCE(t.cache_creation_tokens,0)*3.75 \
              END / 1000000.0)::double precision AS est_cost_usd \
      FROM account_providers p \
-     LEFT JOIN ( \
-         SELECT st.account_id, \
-                SUM(stu.input_tokens)          AS input_tokens, \
+     LEFT JOIN LATERAL ( \
+         SELECT SUM(stu.input_tokens)          AS input_tokens, \
                 SUM(stu.output_tokens)         AS output_tokens, \
                 SUM(stu.cache_read_tokens)     AS cache_read_tokens, \
                 SUM(stu.cache_creation_tokens) AS cache_creation_tokens \
          FROM session_tokens st \
          JOIN session_token_usage stu ON stu.session_id = st.session_id \
-         GROUP BY st.account_id \
-     ) t ON t.account_id = p.id \
+         WHERE st.account_id = p.id \
+     ) t ON true \
      LEFT JOIN LATERAL ( \
          SELECT SUM(( \
                   (stu.input_tokens + stu.cache_creation_tokens) \
@@ -2735,6 +2736,18 @@ pub async fn revoke_share(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provider_token_totals_stay_correlated_to_one_provider() {
+        assert!(
+            PROVIDER_SELECT.contains("WHERE st.account_id = p.id ) t ON true"),
+            "the token-total subquery must stay correlated to p.id"
+        );
+        assert!(
+            !PROVIDER_SELECT.contains("GROUP BY st.account_id"),
+            "a grouped subquery aggregates every provider's rows on a single-id lookup"
+        );
+    }
 
     fn soft_now() -> DateTime<Utc> {
         DateTime::parse_from_rfc3339("2026-06-19T12:00:00Z").unwrap().with_timezone(&Utc)
