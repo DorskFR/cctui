@@ -185,10 +185,10 @@ struct StuckRow {
 /// in. Best-effort: every failure is logged and retried on the next tick.
 pub async fn sweep(state: &AppState) {
     let rows: Vec<StuckRow> = match sqlx::query_as(STUCK_SELECT)
-    .bind(LOOKBACK_SECS.to_string())
-    .bind(BATCH)
-    .fetch_all(&state.pool)
-    .await
+        .bind(LOOKBACK_SECS.to_string())
+        .bind(BATCH)
+        .fetch_all(&state.pool)
+        .await
     {
         Ok(r) => r,
         Err(e) => {
