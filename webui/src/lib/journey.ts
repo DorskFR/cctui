@@ -286,8 +286,16 @@ export function resolveRuntime(api: JourneyApi, w: Window = window): void {
 
 let mounted: Promise<void> | null = null;
 
+/** A guide runs only when the user starts it. The runtime replays whatever
+ *  progress it finds in the tab on register, so a tour cut short by a reload
+ *  would otherwise come back over the next page; the driver keeps its own
+ *  record for the book. */
+export function forgetProgress(storage: Storage = sessionStorage): void {
+	storage.removeItem(PROGRESS_KEY);
+}
+
 /** Mount the runtime once and register the public journeys. Waits for the
- *  server copy of the settings first, so a resumed tour reads the blob rather
+ *  server copy of the settings first, so the done markers read the blob rather
  *  than the local cache. */
 export function mountJourneys(qc: QueryClient): Promise<void> {
 	mounted ??= (async () => {
@@ -330,9 +338,11 @@ export function mountJourneys(qc: QueryClient): Promise<void> {
 		});
 		host = { api, qc, probes };
 		if (driver) resolveRuntime(api);
-		// Registering arms `autostart`, which would draw the welcome deck over
-		// whatever screen the driver is capturing; the driver hands it the IR.
-		if (!driver) await api.register(publicJourneys);
+		// The driver hands the runtime its IR itself.
+		if (!driver) {
+			forgetProgress();
+			await api.register(publicJourneys);
+		}
 		watchLocale(api);
 	})();
 	return mounted;

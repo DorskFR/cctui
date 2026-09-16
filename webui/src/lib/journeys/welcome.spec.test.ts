@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { compile } from '@dorsk/journey';
+import { compile, type Journey } from '@dorsk/journey';
 import welcome from '../../../journeys/welcome.journey';
 
 const pub = compile(welcome, { public: true });
@@ -63,8 +63,8 @@ describe('welcome spec', () => {
 		expect(attention?.expect ?? []).toEqual([]);
 	});
 
-	it('autostarts once on the landing route', () => {
-		expect(welcome.autostart).toEqual({ route: '/', once: true });
+	it('never autostarts: the user opens it from the Guides page', () => {
+		expect((welcome as Journey).autostart).toBeUndefined();
 		expect(welcome.route).toBe('/');
 	});
 

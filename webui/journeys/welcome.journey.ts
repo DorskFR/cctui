@@ -3,8 +3,11 @@ import { defineJourney } from '@dorsk/journey';
 /**
  * WHAT'S-NEW CONTRACT: shipping a notable feature means bumping `version` here
  * and rewriting the closing step. The done marker is keyed `id@version`, so a
- * bump re-shows the tour exactly once to everyone who saw the previous one;
- * leaving the version alone means nobody ever sees the new copy.
+ * bump marks the tour as new again on the Guides page for everyone who saw the
+ * previous one; leaving the version alone means nobody is told about the new copy.
+ *
+ * No journey autostarts: a guide runs only when the user starts it from the
+ * Guides page.
  *
  * Every target here must resolve on an instance with no session, no account and
  * no machine — this is the one tour that runs before the user has anything.
@@ -23,7 +26,6 @@ export default defineJourney({
 		fr: 'Un parcours de chaque écran, en désignant sur chacun l’élément réel.'
 	},
 	route: HOME,
-	autostart: { route: HOME, once: true },
 	level: 'checked',
 	variants: { viewport: ['desktop', 'mobile'], theme: ['dark'] },
 	steps: [
