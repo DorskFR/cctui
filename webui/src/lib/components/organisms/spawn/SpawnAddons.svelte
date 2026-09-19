@@ -52,10 +52,30 @@
 	// The panel uses the native popover API so it renders in the top layer,
 	// above the Modal's <dialog> and outside its scrolling body; placed from the
 	// trigger rect, flipped above when it would overflow the viewport.
+	//
+	// The placement is redone while the menu is open on every viewport change:
+	// on phones the soft keyboard shrinks the viewport (interactive-widget=
+	// resizes-content in app.html) AFTER the search box takes focus, and a
+	// fixed panel placed once would keep its search box under the keyboard.
+	// The panel is then pushed up until its bottom edge is back on screen, and
+	// capped to the visible height so the search box always stays reachable.
 	let menuOpen = $state(false);
 	let triggerEl = $state<HTMLElement | null>(null);
 	let menuEl = $state<HTMLElement | null>(null);
 	let menuPos = $state({ top: 0, left: 0 });
+	let menuMaxHeight = $state<number | null>(null);
+	$effect(() => {
+		if (!menuOpen) return;
+		const vv = window.visualViewport;
+		window.addEventListener('resize', placeMenu);
+		vv?.addEventListener('resize', placeMenu);
+		vv?.addEventListener('scroll', placeMenu);
+		return () => {
+			window.removeEventListener('resize', placeMenu);
+			vv?.removeEventListener('resize', placeMenu);
+			vv?.removeEventListener('scroll', placeMenu);
+		};
+	});
 	function openMenu() {
 		if (!triggerEl) return;
 		const r = triggerEl.getBoundingClientRect();
@@ -67,12 +87,23 @@
 	function placeMenu() {
 		if (!triggerEl || !menuEl) return;
 		const gap = 4;
+		const vv = window.visualViewport;
+		const vTop = vv?.offsetTop ?? 0;
+		const vLeft = vv?.offsetLeft ?? 0;
+		const vHeight = vv?.height ?? window.innerHeight;
+		const vWidth = vv?.width ?? window.innerWidth;
 		const t = triggerEl.getBoundingClientRect();
+		menuMaxHeight = Math.max(0, vHeight - 2 * gap);
 		const p = menuEl.getBoundingClientRect();
-		const spaceBelow = window.innerHeight - t.bottom;
-		const flipUp = spaceBelow < p.height + gap && t.top > spaceBelow;
-		const top = flipUp ? Math.max(gap, t.top - p.height - gap) : t.bottom + gap;
-		const left = Math.max(gap, Math.min(t.left, window.innerWidth - p.width - gap));
+		const height = Math.min(p.height, menuMaxHeight);
+		const spaceBelow = vTop + vHeight - t.bottom;
+		const flipUp = spaceBelow < height + gap && t.top - vTop > spaceBelow;
+		let top = flipUp ? t.top - height - gap : t.bottom + gap;
+		// Keep the whole panel inside the visible area: pushed up when its
+		// bottom would fall under the keyboard, never above the top edge.
+		top = Math.min(top, vTop + vHeight - height - gap);
+		top = Math.max(vTop + gap, top);
+		const left = Math.max(vLeft + gap, Math.min(t.left, vLeft + vWidth - p.width - gap));
 		menuPos = { top, left };
 	}
 	function closeMenu() {
@@ -102,6 +133,7 @@
 				tabindex="-1"
 				style:top="{menuPos.top}px"
 				style:left="{menuPos.left}px"
+				style:max-height={menuMaxHeight === null ? null : `${menuMaxHeight}px`}
 				onkeydown={(e) => {
 					if (e.key === 'Escape') closeMenu();
 				}}
@@ -177,6 +209,7 @@
 		border-radius: var(--r-md);
 		background: var(--bg-elevated);
 		box-shadow: var(--shadow-lg, 0 8px 24px rgba(0, 0, 0, 0.4));
+		overflow-y: auto;
 	}
 	.label-menu:not(:popover-open) {
 		display: none;
