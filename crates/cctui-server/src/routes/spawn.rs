@@ -67,7 +67,7 @@ pub async fn spawn_session(
         return save_draft(&state, &ctx, &req).await;
     }
 
-    dispatch_spawn(&state, &ctx, req, uploads).await
+    dispatch_spawn(&state, &ctx, req, uploads, parsed.raw).await
 }
 
 /// Dispatch a spawn to the targeted daemon. Shared by the immediate spawn path
@@ -80,6 +80,7 @@ pub async fn dispatch_spawn(
     ctx: &AuthContext,
     req: SpawnRequest,
     uploads: Vec<cctui_proto::adapter::BootstrapFile>,
+    raw_uploads: Vec<crate::uploads::RawUpload>,
 ) -> Result<(StatusCode, Json<SpawnResponse>), (StatusCode, Json<ApiError>)> {
     // Validate env keys: shell-style `^[A-Z_][A-Z0-9_]*$`.
     for key in req.env.keys() {
@@ -300,6 +301,30 @@ pub async fn dispatch_spawn(
             )
         })?
     };
+    // Must precede dispatch: nothing is staged yet, so a blob-store failure can
+    // still fail the request instead of producing a session whose first message
+    // references files the conversation can never re-read. Staged names are the
+    // sanitized upload names — the daemon stages into a fresh per-session dir.
+    let recorded = if raw_uploads.is_empty() {
+        Vec::new()
+    } else {
+        crate::routes::attachments::record_uploads(
+            &state.pool,
+            &token_session_id,
+            &raw_uploads,
+            &[],
+        )
+        .await
+        .map_err(|e| {
+            tracing::error!(session = %token_session_id, "recording bootstrap uploads: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError { error: "could not store the attachments".into() }),
+            )
+        })?
+    };
+    let recorded_ids: Vec<Uuid> = recorded.iter().map(|a| a.id).collect();
+
     // Codex's own default tier is `priority`, so an unset tier is the expensive
     // one: resolve to a concrete value here rather than letting the worker
     // inherit whatever the machine's config.toml happens to say.
@@ -378,6 +403,11 @@ pub async fn dispatch_spawn(
     );
     if let Err(err) = state.bus.command_daemon(machine_uuid, frame).await {
         state.pending_commands.remove(&command_id);
+        if let Err(e) =
+            crate::routes::attachments::delete_attachments(&state.pool, &recorded_ids).await
+        {
+            tracing::warn!(session = %token_session_id, "undoing bootstrap attachments: {e}");
+        }
         return Err(match err {
             crate::bus::BusError::NoDaemon(_) => (
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -753,7 +783,7 @@ pub async fn launch_draft(
     req.env = launch.env;
     req.save_draft = false;
 
-    let outcome = dispatch_spawn(&state, &ctx, req, Vec::new()).await?;
+    let outcome = dispatch_spawn(&state, &ctx, req, Vec::new(), Vec::new()).await?;
 
     // Drop the draft only after a successful dispatch; the live session is born
     // from the daemon's registration with its own id.
@@ -806,20 +836,37 @@ pub async fn stage_session_files(
         return Err(bad_request("no files in upload"));
     }
     let count = parsed.files.len();
-    match crate::bus::stage_files(&state, &session_id, parsed.files).await {
+    // Same ordering as the spawn path: store the blobs first so a blob-store
+    // failure fails the request before any file reaches the machine.
+    let recorded =
+        crate::routes::attachments::record_uploads(&state.pool, &session_id, &parsed.raw, &[])
+            .await
+            .map_err(|e| {
+                tracing::error!(%session_id, "recording attachments: {e}");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ApiError { error: "could not store the attachments".into() }),
+                )
+            })?;
+    let recorded_ids: Vec<Uuid> = recorded.iter().map(|a| a.id).collect();
+
+    let staged = crate::bus::stage_files(&state, &session_id, parsed.files).await;
+    if staged.is_err()
+        && let Err(e) =
+            crate::routes::attachments::delete_attachments(&state.pool, &recorded_ids).await
+    {
+        tracing::warn!(%session_id, "undoing mid-chat attachments: {e}");
+    }
+    match staged {
         Ok(paths) => {
             tracing::info!(%session_id, count, "staged mid-chat files");
             let names: Vec<String> =
                 paths.iter().map(|p| p.rsplit('/').next().unwrap_or(p).to_owned()).collect();
-            if let Err(e) = crate::routes::attachments::record_uploads(
-                &state.pool,
-                &session_id,
-                &parsed.raw,
-                &names,
-            )
-            .await
+            if let Err(e) =
+                crate::routes::attachments::set_attachment_names(&state.pool, &recorded, &names)
+                    .await
             {
-                tracing::error!(%session_id, "recording attachments: {e}");
+                tracing::error!(%session_id, "adopting staged attachment names: {e}");
             }
             Ok(Json(cctui_proto::api::StageFilesResponse { paths }))
         }

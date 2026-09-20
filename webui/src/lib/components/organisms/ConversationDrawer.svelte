@@ -36,7 +36,7 @@
 	import BookmarkSaveModal from './bookmarks/BookmarkSaveModal.svelte';
 	import type { Line, MsgCategory, ViewOpts } from './conversation/types';
 	import { parseViewOpts } from './conversation/filters';
-	import { eventSig, orderEvents } from './conversation/format';
+	import { mergeEventSources } from './conversation/format';
 	import { buildLines, type LineBuildCtx } from './conversation/lines';
 	import { ConversationStream, mergeLiveEvent } from './conversation/stream.svelte';
 	import { ScrollController } from './conversation/scroll.svelte';
@@ -206,14 +206,7 @@
 			((history.data?.length ?? 0) >= CONVERSATION_FETCH_LIMIT || earlier.length > 0)
 	);
 
-	const events = $derived.by(() => {
-		const hist = history.data ?? [];
-		const seen = new Set(hist.map(eventSig));
-		const front = earlier.filter((e) => !seen.has(eventSig(e)));
-		for (const e of front) seen.add(eventSig(e));
-		const tail = stream.live.filter((e) => !seen.has(eventSig(e)));
-		return orderEvents([...front, ...hist, ...tail]);
-	});
+	const events = $derived(mergeEventSources(history.data ?? [], earlier, stream.live));
 
 	async function fetchEarlier() {
 		if (fetchingEarlier || earlierExhausted) return;
