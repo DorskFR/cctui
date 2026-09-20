@@ -86,15 +86,13 @@ async fn mark_block_row(
     reason: &str,
     key: &str,
 ) -> Result<bool, sqlx::Error> {
-    let res = sqlx::query(
-        concat!(
-            "UPDATE sessions SET soft_limit_reason = $2, soft_limit_key = $3 \
+    let res = sqlx::query(concat!(
+        "UPDATE sessions SET soft_limit_reason = $2, soft_limit_key = $3 \
              WHERE id = $1 AND ",
-            live_sessions_predicate!(),
-            " AND (soft_limit_reason IS DISTINCT FROM $2 \
+        live_sessions_predicate!(),
+        " AND (soft_limit_reason IS DISTINCT FROM $2 \
                    OR soft_limit_key IS DISTINCT FROM $3)"
-        ),
-    )
+    ))
     .bind(session_id)
     .bind(reason)
     .bind(key)

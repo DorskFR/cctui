@@ -110,16 +110,14 @@ pub async fn sweep(state: &AppState) {
         tracing::warn!(error = %e, "auto-archive intent prune failed");
     }
 
-    let rows = match sqlx::query_as::<_, SignalRow>(
-        concat!(
-            "SELECT id, tempo, agent_state, activity, soft_limit_reason FROM sessions \
+    let rows = match sqlx::query_as::<_, SignalRow>(concat!(
+        "SELECT id, tempo, agent_state, activity, soft_limit_reason FROM sessions \
              WHERE ",
-            live_sessions_predicate!(),
-            " AND metadata->>'auto_archive' = 'true' \
+        live_sessions_predicate!(),
+        " AND metadata->>'auto_archive' = 'true' \
                AND status NOT IN ('archived', 'draft') \
              LIMIT $1"
-        ),
-    )
+    ))
     .bind(BATCH)
     .fetch_all(&state.pool)
     .await

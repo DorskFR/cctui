@@ -1535,13 +1535,11 @@ async fn sweep_usage_notice_buckets(state: &AppState) {
         return;
     }
     let ids: Vec<String> = sessions.into_iter().collect();
-    let live = match sqlx::query_scalar::<_, String>(
-        concat!(
-            "SELECT id FROM sessions WHERE id = ANY($1) AND ",
-            live_sessions_predicate!(),
-            " AND status NOT IN ('archived', 'ended')"
-        ),
-    )
+    let live = match sqlx::query_scalar::<_, String>(concat!(
+        "SELECT id FROM sessions WHERE id = ANY($1) AND ",
+        live_sessions_predicate!(),
+        " AND status NOT IN ('archived', 'ended')"
+    ))
     .bind(&ids)
     .fetch_all(&state.pool)
     .await

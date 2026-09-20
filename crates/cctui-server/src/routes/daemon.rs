@@ -2100,14 +2100,12 @@ async fn persist_session_end(
     // is honoured as terminal by the list/search read paths regardless of
     // heartbeat age. We do not delete the row — archival remains the
     // persistence story; un-archive/resume can revive it.
-    sqlx::query(
-        concat!(
-            "UPDATE sessions SET status = 'ended', ended_at = now(), end_reason = $2, \
+    sqlx::query(concat!(
+        "UPDATE sessions SET status = 'ended', ended_at = now(), end_reason = $2, \
                  end_detail = $3 \
              WHERE id = $1 AND ",
-            live_sessions_predicate!()
-        ),
-    )
+        live_sessions_predicate!()
+    ))
     .bind(local_id)
     .bind(reason.kind().as_str())
     .bind(reason.detail().map(truncate_end_detail))
