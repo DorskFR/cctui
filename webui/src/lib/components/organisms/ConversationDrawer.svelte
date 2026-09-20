@@ -38,7 +38,7 @@
 	import { parseViewOpts } from './conversation/filters';
 	import { eventSig, orderEvents } from './conversation/format';
 	import { buildLines, type LineBuildCtx } from './conversation/lines';
-	import { ConversationStream } from './conversation/stream.svelte';
+	import { ConversationStream, mergeLiveEvent } from './conversation/stream.svelte';
 	import { ScrollController } from './conversation/scroll.svelte';
 	import { createSeqJumper, type RenderWindow } from './conversation/jump';
 	import { SearchHitStepper } from './conversation/searchHits.svelte';
@@ -150,7 +150,9 @@
 		historyData: () => history.data,
 		pin: scroll.stickToBottom,
 		invalidateConversation: () => qc.invalidateQueries({ queryKey: qk.conversation(id) }),
-		invalidateSessions: () => qc.invalidateQueries({ queryKey: ['sessions'] })
+		invalidateSessions: () => qc.invalidateQueries({ queryKey: ['sessions'] }),
+		mergeIntoCache: (sid, ev) =>
+			qc.setQueryData<AgentEvent[]>(qk.conversation(sid), (prev) => mergeLiveEvent(prev, ev))
 	});
 	// (Re)subscribe when the open session changes or a forced resubscribe is
 	// requested; tear down listeners on switch/unmount.
