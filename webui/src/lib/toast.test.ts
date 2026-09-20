@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { toasts } from './toast.svelte';
 
-describe('toasts (kit store re-exported for the webui)', () => {
+describe('toasts (the kit store, wrapped to dedupe errors)', () => {
 	beforeEach(() => {
 		vi.useFakeTimers();
-		for (const t of [...toasts.items]) toasts.dismiss(t.id);
+		toasts.reset();
 	});
 	afterEach(() => vi.useRealTimers());
 
@@ -38,8 +38,6 @@ describe('toasts (kit store re-exported for the webui)', () => {
 	});
 
 	it('lets the same error through again once the window has passed', () => {
-		// Past whatever the previous test recorded: the window is module state.
-		vi.advanceTimersByTime(2500);
 		toasts.error('file not found');
 		expect(toasts.items).toHaveLength(1);
 
