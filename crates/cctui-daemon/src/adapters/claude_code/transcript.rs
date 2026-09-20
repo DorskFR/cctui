@@ -609,8 +609,7 @@ fn system_marker_payload(marker: &str, line: &Value) -> Value {
             let body = first_str(line, &["prompt", "text", "content", "value"])
                 .map(excerpt)
                 .unwrap_or_default();
-            let text =
-                if body.is_empty() { verb.to_owned() } else { format!("{verb}: {body}") };
+            let text = if body.is_empty() { verb.to_owned() } else { format!("{verb}: {body}") };
             json!({
                 "role": "system_marker",
                 "marker": marker,
@@ -1853,7 +1852,10 @@ mod tests {
             by_marker("agent-setting").get("agent_setting").and_then(Value::as_str),
             Some("claude")
         );
-        assert_eq!(by_marker("custom-title").get("title").and_then(Value::as_str), Some("my session"));
+        assert_eq!(
+            by_marker("custom-title").get("title").and_then(Value::as_str),
+            Some("my session")
+        );
         assert_eq!(
             by_marker("queue-operation").get("text").and_then(Value::as_str),
             Some("queued: <task-notification>go")
@@ -1894,20 +1896,29 @@ mod tests {
     }
 
     fn tally_for(label: &str) -> u64 {
-        transcript_drop_tally()
-            .into_iter()
-            .find(|(k, _)| k == label)
-            .map_or(0, |(_, v)| v)
+        transcript_drop_tally().into_iter().find(|(k, _)| k == label).map_or(0, |(_, v)| v)
     }
 
     #[test]
     fn system_subtypes_map_to_timeline_markers() {
         let lines = [
-            (json!({"type":"system","subtype":"away_summary","summary":"stepped out"}), "away summary: stepped out"),
-            (json!({"type":"system","subtype":"scheduled_task_fire","content":"nightly"}), "scheduled task fired: nightly"),
-            (json!({"type":"system","subtype":"model_refusal_fallback","message":"downgraded"}), "model refusal fallback: downgraded"),
+            (
+                json!({"type":"system","subtype":"away_summary","summary":"stepped out"}),
+                "away summary: stepped out",
+            ),
+            (
+                json!({"type":"system","subtype":"scheduled_task_fire","content":"nightly"}),
+                "scheduled task fired: nightly",
+            ),
+            (
+                json!({"type":"system","subtype":"model_refusal_fallback","message":"downgraded"}),
+                "model refusal fallback: downgraded",
+            ),
             (json!({"type":"system","subtype":"informational","content":"heads up"}), "heads up"),
-            (json!({"type":"system","subtype":"local_command","command":"/clear"}), "local command: /clear"),
+            (
+                json!({"type":"system","subtype":"local_command","command":"/clear"}),
+                "local command: /clear",
+            ),
         ];
         for (line, want) in &lines {
             let mut out = Vec::new();

@@ -113,11 +113,9 @@ fn origin_url(config: &str) -> Option<String> {
         }
         if let Some(rest) = line.strip_prefix('[') {
             let header = rest.split(']').next().unwrap_or_default().trim();
-            in_origin = header
-                .split_once(char::is_whitespace)
-                .is_some_and(|(kind, name)| {
-                    kind == "remote" && name.trim().trim_matches('"') == "origin"
-                });
+            in_origin = header.split_once(char::is_whitespace).is_some_and(|(kind, name)| {
+                kind == "remote" && name.trim().trim_matches('"') == "origin"
+            });
             continue;
         }
         if !in_origin {

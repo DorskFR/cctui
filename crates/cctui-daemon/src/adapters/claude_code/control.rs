@@ -2445,11 +2445,7 @@ impl Driver {
                 }
                 self.emit(AdapterEvent::SessionStarted {
                     local_id: session_id,
-                    meta: SessionMeta {
-                        working_dir: job.cwd.clone(),
-                        parent_local_id,
-                        extra,
-                    },
+                    meta: SessionMeta { working_dir: job.cwd.clone(), parent_local_id, extra },
                 })
                 .await;
             }

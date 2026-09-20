@@ -838,26 +838,22 @@ pub async fn stage_session_files(
     let count = parsed.files.len();
     // Same ordering as the spawn path: store the blobs first so a blob-store
     // failure fails the request before any file reaches the machine.
-    let recorded = crate::routes::attachments::record_uploads(
-        &state.pool,
-        &session_id,
-        &parsed.raw,
-        &[],
-    )
-    .await
-    .map_err(|e| {
-        tracing::error!(%session_id, "recording attachments: {e}");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiError { error: "could not store the attachments".into() }),
-        )
-    })?;
+    let recorded =
+        crate::routes::attachments::record_uploads(&state.pool, &session_id, &parsed.raw, &[])
+            .await
+            .map_err(|e| {
+                tracing::error!(%session_id, "recording attachments: {e}");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ApiError { error: "could not store the attachments".into() }),
+                )
+            })?;
     let recorded_ids: Vec<Uuid> = recorded.iter().map(|a| a.id).collect();
 
     let staged = crate::bus::stage_files(&state, &session_id, parsed.files).await;
     if staged.is_err()
-        && let Err(e) = crate::routes::attachments::delete_attachments(&state.pool, &recorded_ids)
-            .await
+        && let Err(e) =
+            crate::routes::attachments::delete_attachments(&state.pool, &recorded_ids).await
     {
         tracing::warn!(%session_id, "undoing mid-chat attachments: {e}");
     }
@@ -866,12 +862,9 @@ pub async fn stage_session_files(
             tracing::info!(%session_id, count, "staged mid-chat files");
             let names: Vec<String> =
                 paths.iter().map(|p| p.rsplit('/').next().unwrap_or(p).to_owned()).collect();
-            if let Err(e) = crate::routes::attachments::set_attachment_names(
-                &state.pool,
-                &recorded,
-                &names,
-            )
-            .await
+            if let Err(e) =
+                crate::routes::attachments::set_attachment_names(&state.pool, &recorded, &names)
+                    .await
             {
                 tracing::error!(%session_id, "adopting staged attachment names: {e}");
             }
