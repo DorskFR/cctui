@@ -817,12 +817,39 @@ const META_MARKERS: [&str; 12] = [
     "# Autonomous loop",
 ];
 
+/// Claude echoes an ingested image back as a *user* turn of pure bookkeeping.
+/// The wording changes between releases (`[Image: source: …]`,
+/// `[Image: original 1440x3120, displayed at 923x2000. …]`, `[Image #2]`), so
+/// match the family by its bracket shape rather than any one literal.
+fn is_image_notice_line(line: &str) -> bool {
+    let t = line.trim();
+    let Some(rest) = t.strip_prefix("[Image") else { return false };
+    rest.ends_with(']') && rest.starts_with([']', ':', ' ', '#'])
+}
+
+/// A turn made of nothing but image-notice lines carries no human content.
+fn is_image_notice_turn(text: &str) -> bool {
+    let mut lines = text.lines().map(str::trim).filter(|l| !l.is_empty()).peekable();
+    lines.peek().is_some() && lines.all(is_image_notice_line)
+}
+
 /// Whether a user-role transcript message is really a system/agent-directed
 /// message rather than human input, decided solely from the message body
 /// (`text`). See [`META_MARKERS`] for why Claude's `isMeta` flag is ignored.
+///
+/// Markers are matched at the start of ANY line, not only the start of the
+/// turn: the harness routinely prefixes its own sentence before the wrapper it
+/// injects, which a prefix-only test never sees. Line-anchored rather than a
+/// bare substring scan so a human quoting `<system-reminder>` inside a sentence
+/// stays a human turn.
 fn user_text_is_meta(text: &str) -> bool {
-    let t = text.trim_start();
-    META_MARKERS.iter().any(|m| t.starts_with(m))
+    if is_image_notice_turn(text) {
+        return true;
+    }
+    text.lines().any(|line| {
+        let t = line.trim_start();
+        META_MARKERS.iter().any(|m| t.starts_with(m))
+    })
 }
 
 /// Extract the summary text from a `/compact` line. The content lives under
@@ -1831,6 +1858,39 @@ mod tests {
             by_marker("queue-operation").get("text").and_then(Value::as_str),
             Some("queued: <task-notification>go")
         );
+    }
+
+    #[test]
+    fn meta_markers_match_mid_text_not_only_at_the_start() {
+        // The case that fails a prefix-only test: the harness prefixes its own
+        // sentence before the wrapper it injects.
+        assert!(user_text_is_meta(
+            "Another session sent a message:\n<task-notification>done</task-notification>"
+        ));
+        assert!(user_text_is_meta("preamble\n  <system-reminder>hi</system-reminder>"));
+        assert!(user_text_is_meta("<system-reminder>hi</system-reminder>"));
+    }
+
+    #[test]
+    fn human_prose_quoting_a_marker_inline_stays_human() {
+        assert!(!user_text_is_meta("the <system-reminder> tag keeps firing, can we mute it?"));
+        assert!(!user_text_is_meta("ship it"));
+    }
+
+    #[test]
+    fn image_bookkeeping_turns_are_meta_whatever_the_wording() {
+        for text in [
+            "[Image: source: /tmp/a.png]",
+            "[Image: original 1440x3120, displayed at 923x2000. Multiply coordinates by 1.56 to map to original image.]",
+            "[Image #2]",
+            "[Image]",
+            "[Image #1]\n[Image #2]",
+        ] {
+            assert!(user_text_is_meta(text), "must be meta: {text}");
+        }
+        // A human turn that merely mentions an image is not bookkeeping.
+        assert!(!user_text_is_meta("[Image #1]\nwhat is in this screenshot?"));
+        assert!(!user_text_is_meta("look at [Image #1] please"));
     }
 
     fn tally_for(label: &str) -> u64 {
