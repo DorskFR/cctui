@@ -256,6 +256,9 @@ pub async fn session_token_stats(
 
     // 15 conditional sums (5 windows × 3 metrics) in one pass. COALESCE keeps
     // every column a non-null bigint even when no rows match the window.
+    // The columns read here are the INCLUDE list of
+    // `idx_session_token_usage_created_covering`: reading one more drops the
+    // scan off index-only and back onto ~92,000 buffers of heap.
     let r: Row = sqlx::query_as(
         "SELECT \
             COALESCE(SUM(input_tokens)       FILTER (WHERE created_at >= $1), 0)::bigint, \
