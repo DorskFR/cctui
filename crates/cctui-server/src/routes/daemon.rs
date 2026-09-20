@@ -893,24 +893,7 @@ async fn process_frame(
 ) -> anyhow::Result<()> {
     match frame {
         DaemonFrameUp::SessionRegistered { adapter_id, local_id } => {
-            // Only a first registration is news: the codex inventory poll
-            // re-announces every known thread every ~15 s.
-            if upsert_session(
-                state,
-                machine_id,
-                user_id,
-                &adapter_id,
-                &local_id,
-                None,
-                None,
-                None,
-                None,
-            )
-            .await?
-            {
-                publish_session_registered(state, &local_id).await;
-            }
-            Ok(())
+            register_announced_session(state, machine_id, user_id, &adapter_id, &local_id).await
         }
         DaemonFrameUp::Event { adapter_id, event } => {
             // Machine-scoped codex model catalog: cache it by
@@ -1845,6 +1828,24 @@ async fn upsert_session(
     .execute(&state.pool)
     .await?;
     Ok(inserted.unwrap_or(false))
+}
+
+/// Register a session the daemon announced, announcing it to browser clients
+/// only on a first insert: the codex inventory poll re-announces every known
+/// thread every ~15 s.
+async fn register_announced_session(
+    state: &AppState,
+    machine_id: Uuid,
+    user_id: Uuid,
+    adapter_id: &str,
+    local_id: &str,
+) -> anyhow::Result<()> {
+    if upsert_session(state, machine_id, user_id, adapter_id, local_id, None, None, None, None)
+        .await?
+    {
+        publish_session_registered(state, local_id).await;
+    }
+    Ok(())
 }
 
 /// Tell browser clients a session exists as soon as it is registered, instead
