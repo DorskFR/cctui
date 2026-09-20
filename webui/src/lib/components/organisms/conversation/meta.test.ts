@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
 import type { AgentEvent } from '@bindings/AgentEvent';
 import { META_TAGS, isSyntheticImageNotice, looksMeta, mergeEventSources } from './format';
 
@@ -73,25 +73,31 @@ describe('mergeEventSources', () => {
 // The daemon and the webui each need their own copy of the marker list, so the
 // only thing that can keep them honest is asserting they are equal.
 describe('marker list parity with the daemon', () => {
-	const rustPath = fileURLToPath(
-		new URL(
-			'../../../../../../crates/cctui-daemon/src/adapters/claude_code/transcript.rs',
-			import.meta.url
-		)
-	);
+	// `import.meta.url` is an http: URL under Vite, so the Rust file is located
+	// by walking up from the working directory instead.
+	const REL = 'crates/cctui-daemon/src/adapters/claude_code/transcript.rs';
+
+	function findRepoFile(rel: string): string {
+		let dir = process.cwd();
+		for (;;) {
+			const candidate = resolve(dir, rel);
+			if (existsSync(candidate)) return candidate;
+			const parent = dirname(dir);
+			if (parent === dir) throw new Error(`cannot locate ${rel} upward from ${process.cwd()}`);
+			dir = parent;
+		}
+	}
 
 	it('matches META_MARKERS in transcript.rs', () => {
-		let src: string;
-		try {
-			src = readFileSync(rustPath, 'utf8');
-		} catch {
-			return;
-		}
+		const src = readFileSync(findRepoFile(REL), 'utf8');
 		const block = /const META_MARKERS: \[&str; \d+\] = \[([\s\S]*?)\];/.exec(src);
-		expect(block, 'META_MARKERS not found in transcript.rs').not.toBeNull();
-		const markers = [...(block?.[1] ?? '').matchAll(/"((?:[^"\\]|\\.)*)"/g)].map((m) =>
+		if (!block) throw new Error('META_MARKERS declaration not found in transcript.rs');
+		const markers = [...block[1].matchAll(/"((?:[^"\\]|\\.)*)"/g)].map((m) =>
 			m[1].replace(/\\"/g, '"')
 		);
+		// Guard against a vacuous pass: two empty lists must not compare equal.
+		expect(markers.length).toBeGreaterThan(0);
+		expect(META_TAGS.length).toBeGreaterThan(0);
 		expect(markers).toEqual(META_TAGS);
 	});
 });
