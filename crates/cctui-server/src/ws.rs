@@ -64,21 +64,41 @@ fn origin_permitted(config: &crate::config::Config, headers: &axum::http::Header
         .is_none_or(|value| value.to_str().is_ok_and(|o| config.origin_allowed(o)))
 }
 
+/// Mirrors the daemon socket's cadence (`routes/daemon.rs`) and stays well
+/// under the gateway's idle timeout.
+const TUI_KEEPALIVE: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// Besides forwarding events, the outbound pump sends a periodic `Ping`: a
+/// browser that slept leaves a half-open socket that never errors on read, so
+/// only a write failure retires this task and releases its relays.
 fn spawn_send_task(
     mut sink: futures_util::stream::SplitSink<WebSocket, Message>,
     mut rx: mpsc::Receiver<ServerEvent>,
 ) {
     tokio::spawn(async move {
-        while let Some(event) = rx.recv().await {
-            let text = match serde_json::to_string(&event) {
-                Ok(t) => t,
-                Err(err) => {
-                    tracing::warn!(%err, "failed to serialize ServerEvent");
-                    continue;
+        let mut keepalive = tokio::time::interval(TUI_KEEPALIVE);
+        keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        keepalive.tick().await;
+        loop {
+            tokio::select! {
+                event = rx.recv() => {
+                    let Some(event) = event else { break };
+                    let text = match serde_json::to_string(&event) {
+                        Ok(t) => t,
+                        Err(err) => {
+                            tracing::warn!(%err, "failed to serialize ServerEvent");
+                            continue;
+                        }
+                    };
+                    if sink.send(Message::Text(text.into())).await.is_err() {
+                        break;
+                    }
                 }
-            };
-            if sink.send(Message::Text(text.into())).await.is_err() {
-                break;
+                _ = keepalive.tick() => {
+                    if sink.send(Message::Ping(Vec::new().into())).await.is_err() {
+                        break;
+                    }
+                }
             }
         }
     });
