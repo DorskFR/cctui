@@ -461,10 +461,8 @@ fn event_session_id(event: &ServerEvent) -> Option<&str> {
         | ServerEvent::PtyChunk { session_id, .. }
         | ServerEvent::SessionEnded { session_id, .. }
         | ServerEvent::MessageAck { session_id, .. } => Some(session_id),
+        ServerEvent::SessionRegistered { session } => Some(&session.id),
         ServerEvent::CommandResult { session_id, .. } => session_id.as_deref(),
-        // `SessionRegistered` carries a whole Session; resolving its owner from
-        // the broadcast path is heavier and it is list-metadata, not the
-        // conversation surface this ticket scopes — left as-is.
         _ => None,
     }
 }
@@ -517,7 +515,10 @@ async fn handle_tui_ws(socket: WebSocket, state: AppState, ctx: AuthContext) {
 mod tests {
     use axum::http::{HeaderMap, HeaderValue, header};
 
-    use super::origin_permitted;
+    use cctui_proto::models::{Session, SessionStatus};
+    use cctui_proto::ws::ServerEvent;
+
+    use super::{event_session_id, origin_permitted};
     use crate::config::Config;
 
     fn cfg() -> Config {
@@ -541,5 +542,35 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(header::ORIGIN, HeaderValue::from_static("https://evil.example.com"));
         assert!(!origin_permitted(&cfg(), &headers));
+    }
+
+    fn session(id: &str) -> Session {
+        let now = chrono::Utc::now();
+        Session {
+            id: id.to_owned(),
+            parent_id: None,
+            account_id: None,
+            machine_id: "m1".to_owned(),
+            working_dir: "/tmp".to_owned(),
+            status: SessionStatus::Active,
+            registered_at: now,
+            last_heartbeat: now,
+            metadata: serde_json::json!({}),
+            adapter_id: None,
+        }
+    }
+
+    /// The relay drops session-scoped events for non-owners, so a registration
+    /// that reported no session id would fan out to every connected principal.
+    #[test]
+    fn session_registered_is_owner_scoped() {
+        let event = ServerEvent::SessionRegistered { session: session("sess-1") };
+        assert_eq!(event_session_id(&event), Some("sess-1"));
+    }
+
+    #[test]
+    fn session_deregistered_is_owner_scoped() {
+        let event = ServerEvent::SessionDeregistered { session_id: "sess-2".to_owned() };
+        assert_eq!(event_session_id(&event), Some("sess-2"));
     }
 }
