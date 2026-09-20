@@ -29,6 +29,9 @@ pub struct SessionAttachment {
     pub content_type: Option<String>,
     #[sqlx(rename = "created_at_ms")]
     pub created_at: i64,
+    /// The session's machine, once it has registered: what the webui needs to
+    /// fall back to the staged copy through `/machines/{id}/fs/file`.
+    pub machine_id: Option<String>,
 }
 
 fn media_type_for(upload: &RawUpload) -> String {
@@ -58,7 +61,8 @@ pub async fn record_uploads(
             "INSERT INTO session_attachments (session_id, name, hash, size, content_type) \
              VALUES ($1, $2, $3, $4, $5) \
              RETURNING id, session_id, message_id, name, hash, size, content_type, \
-                       (extract(epoch FROM created_at) * 1000)::bigint AS created_at_ms",
+                       (extract(epoch FROM created_at) * 1000)::bigint AS created_at_ms, \
+                       (SELECT s.machine_id FROM sessions s WHERE s.id = $1) AS machine_id",
         )
         .bind(session_id)
         .bind(name)
@@ -114,9 +118,11 @@ pub async fn list_session_attachments(
     session_id: &str,
 ) -> Result<Vec<SessionAttachment>, sqlx::Error> {
     sqlx::query_as(
-        "SELECT id, session_id, message_id, name, hash, size, content_type, \
-                (extract(epoch FROM created_at) * 1000)::bigint AS created_at_ms \
-         FROM session_attachments WHERE session_id = $1 ORDER BY created_at, id",
+        "SELECT a.id, a.session_id, a.message_id, a.name, a.hash, a.size, a.content_type, \
+                (extract(epoch FROM a.created_at) * 1000)::bigint AS created_at_ms, \
+                s.machine_id \
+         FROM session_attachments a LEFT JOIN sessions s ON s.id = a.session_id \
+         WHERE a.session_id = $1 ORDER BY a.created_at, a.id",
     )
     .bind(session_id)
     .fetch_all(pool)
