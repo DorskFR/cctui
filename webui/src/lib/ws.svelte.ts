@@ -240,6 +240,10 @@ export function decodeBase64(b64: string): Uint8Array {
 	return out;
 }
 
+/** Re-dispatch delay for a send parked on a missing socket. Off the backoff
+ *  ladder: it is waiting for a transport, not backing off a server. */
+const RECONNECT_PARK_MS = 1000;
+
 const BACKOFF_BASE_MS = 1000;
 const BACKOFF_CAP_MS = 30000;
 export function backoffDelay(attempt: number): number {
@@ -1004,7 +1008,10 @@ export class WsClient {
 					failed.set(s.ts, s.reason ?? 'not delivered');
 				} else {
 					pending.add(s.ts);
-					if (s.phase === 'backoff') retrying.set(s.ts, { attempt: s.attempt, max: MAX_ATTEMPTS });
+					if (s.phase === 'backoff')
+						// A send parked before its first successful write sits at
+						// attempt 0; the hint counts from 1.
+						retrying.set(s.ts, { attempt: Math.max(1, s.attempt), max: MAX_ATTEMPTS });
 				}
 			}
 		}
@@ -1041,10 +1048,13 @@ export class WsClient {
 		this.ackIndex.set(cid, { sid: send.sid, ts: send.ts });
 		const ok = this.sendMessage(send.sid, send.text, cid, send.askPicks);
 		if (!ok) {
-			// Socket wasn't OPEN — nudge a reconnect and park in backoff (onopen
-			// re-dispatches) rather than burning straight to a hard failure.
+			// A frame that never left the client is not a delivery attempt: the
+			// budget measures sends the server ignored. Counting failed writes
+			// would spend MAX_ATTEMPTS on a slow reconnect and turn "offline"
+			// into a permanently red message.
+			send.attempt -= 1;
 			this.connect();
-			this.onAttemptFailed(send, 'not connected — reconnecting');
+			this.parkForReconnect(send);
 			return false;
 		}
 		send.phase = 'pending';
@@ -1056,10 +1066,22 @@ export class WsClient {
 
 	/** A frame that left an `OPEN` socket and drew no ack is the signature of a
 	 * half-open connection, so the retry needs a new socket — every further
-	 * attempt on this one would time out identically. */
+	 * attempt on this one would time out identically. Park the send first, so
+	 * the new socket's `onopen` finds it and re-dispatches. */
 	private onAckTimeout(send: TrackedSend) {
-		this.forceReconnect();
 		this.onAttemptFailed(send, 'no response from server');
+		this.forceReconnect();
+	}
+
+	/** Hold a send until the socket is back without spending retry budget.
+	 *  `onopen` re-dispatches it; the timer is only a backstop for a reconnect
+	 *  that never completes. */
+	private parkForReconnect(send: TrackedSend) {
+		this.clearTimer(send);
+		send.phase = 'backoff';
+		send.reason = 'not connected — reconnecting';
+		send.timer = setTimeout(() => this.dispatch(send), RECONNECT_PARK_MS);
+		this.notifyDelivery(send.sid);
 	}
 
 	/** An attempt failed (bad ack, ack timeout, or dropped frame): schedule a
