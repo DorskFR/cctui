@@ -17,6 +17,12 @@ export const toasts = {
 	get items() {
 		return kit.items;
 	},
+	/** Drop every toast *and* the dedupe window. Clearing one without the other
+	 *  leaves a later identical error silently swallowed. */
+	reset() {
+		for (const t of [...kit.items]) kit.dismiss(t.id);
+		lastShown.clear();
+	},
 	ok: kit.ok.bind(kit),
 	info: kit.info.bind(kit),
 	dismiss: kit.dismiss.bind(kit),
