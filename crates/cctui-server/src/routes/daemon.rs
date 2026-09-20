@@ -38,6 +38,7 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::auth::{AuthContext, mint_secret, sha256_hex, user_token};
+use crate::live_sessions::live_sessions_predicate;
 use crate::state::AppState;
 
 /// Evict a daemon whose WS yields no frame of any kind — data, ping, or pong —
@@ -2035,8 +2036,12 @@ async fn persist_session_end(
     // heartbeat age. We do not delete the row — archival remains the
     // persistence story; un-archive/resume can revive it.
     sqlx::query(
-        "UPDATE sessions SET status = 'ended', ended_at = now(), end_reason = $2, end_detail = $3 \
-         WHERE id = $1 AND status <> 'archived'",
+        concat!(
+            "UPDATE sessions SET status = 'ended', ended_at = now(), end_reason = $2, \
+                 end_detail = $3 \
+             WHERE id = $1 AND ",
+            live_sessions_predicate!()
+        ),
     )
     .bind(local_id)
     .bind(reason.kind().as_str())

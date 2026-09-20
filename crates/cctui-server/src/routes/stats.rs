@@ -13,6 +13,7 @@ use cctui_proto::api::{
 use cctui_proto::models::SessionStatus;
 
 use crate::auth::AuthContext;
+use crate::live_sessions::live_sessions_predicate;
 use crate::routes::sessions::{attention_from_bucket, bucket_from_signals, derive_status};
 use crate::state::AppState;
 
@@ -181,9 +182,13 @@ pub async fn session_stats(
     // needs_input: classify every non-archived session from its persisted
     // signals and count the Blocked bucket — scoped to the caller.
     let signal_rows: Vec<SignalRow> = sqlx::query_as(
-        "SELECT s.tempo, s.agent_state, s.activity, s.soft_limit_reason \
-             FROM sessions s LEFT JOIN machines m ON m.id = s.machine_uuid \
-             WHERE s.status != 'archived' AND ($1::uuid IS NULL OR m.user_id = $1)",
+        concat!(
+            "SELECT s.tempo, s.agent_state, s.activity, s.soft_limit_reason \
+                 FROM sessions s LEFT JOIN machines m ON m.id = s.machine_uuid \
+                 WHERE ",
+            live_sessions_predicate!("s"),
+            " AND ($1::uuid IS NULL OR m.user_id = $1)"
+        ),
     )
     .bind(uid)
     .fetch_all(&state.pool)
