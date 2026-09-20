@@ -613,6 +613,9 @@ async fn enrich_and_sort(
     }
 
     // Last message text + timestamp per session, from stream_events.
+    // `event_type = 'message'` is also the predicate of the partial index
+    // `idx_stream_events_latest_message`; narrowing it here (a role filter,
+    // say) without narrowing the index costs the per-session single probe.
     if !session_ids.is_empty() {
         let rows: Vec<(String, serde_json::Value, DateTime<Utc>)> = sqlx::query_as(
             "SELECT DISTINCT ON (session_id) session_id, payload, created_at \
