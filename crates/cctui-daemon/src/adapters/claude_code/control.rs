@@ -4491,10 +4491,10 @@ mod tests {
     fn a_turn_id_older_than_the_window_is_not_reused() {
         let (d, _rx) = driver();
         let id = uuid::Uuid::new_v4();
-        d.pending_turns.lock().unwrap().insert(
-            "sess-1".into(),
-            PendingTurn { id, at: Instant::now() - TURN_ID_WINDOW - Duration::from_secs(1) },
-        );
+        let stale = Instant::now()
+            .checked_sub(TURN_ID_WINDOW + Duration::from_secs(1))
+            .expect("monotonic clock must already be older than the window");
+        d.pending_turns.lock().unwrap().insert("sess-1".into(), PendingTurn { id, at: stale });
         assert_eq!(d.turn_for("sess-1"), None);
         assert!(!d.pending_turns.lock().unwrap().contains_key("sess-1"));
     }
