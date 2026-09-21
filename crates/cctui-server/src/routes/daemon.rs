@@ -1076,6 +1076,10 @@ async fn handle_event(
         | AdapterEvent::Status { local_id, .. } => Some(local_id.clone()),
         _ => None,
     };
+    let event_turn_id = match &event {
+        AdapterEvent::Message { turn_id, .. } => *turn_id,
+        _ => None,
+    };
     let broadcast_pair: Option<(String, cctui_proto::ws::AgentEvent)> = match &event {
         AdapterEvent::Message { local_id, payload, .. } => {
             crate::normalize::to_agent_event(adapter_id, "message", payload)
@@ -1137,13 +1141,13 @@ async fn handle_event(
             }
             crate::auto_archive::claim_intent(state, &local_id, spawn_key_hint.as_deref()).await;
         }
-        AdapterEvent::Message { local_id, payload, .. } => {
-            inserted_seq = insert_event(state, &local_id, "message", payload).await?;
+        AdapterEvent::Message { local_id, payload, turn_id } => {
+            inserted_seq = insert_event(state, &local_id, "message", payload, turn_id).await?;
             newly_inserted = inserted_seq.is_some();
             note_insert(state, machine_id, newly_inserted);
         }
         AdapterEvent::ToolUse { local_id, payload } => {
-            inserted_seq = insert_event(state, &local_id, "tool_use", payload).await?;
+            inserted_seq = insert_event(state, &local_id, "tool_use", payload, None).await?;
             newly_inserted = inserted_seq.is_some();
             note_insert(state, machine_id, newly_inserted);
         }
@@ -1434,6 +1438,9 @@ async fn handle_event(
     if newly_inserted && let Some((session_id, mut data)) = broadcast_pair {
         if let Some(seq) = inserted_seq {
             data.set_seq(seq);
+        }
+        if let Some(turn_id) = event_turn_id {
+            data.set_turn_id(turn_id);
         }
         state.bus.publish_server(cctui_proto::ws::ServerEvent::Stream { session_id, data });
     }
@@ -1916,6 +1923,7 @@ async fn insert_event(
     local_id: &str,
     event_type: &str,
     mut payload: serde_json::Value,
+    turn_id: Option<uuid::Uuid>,
 ) -> anyhow::Result<Option<i64>> {
     // Postgres jsonb/text cannot store the NUL code point (`\0`); a
     // payload carrying one (e.g. binary-ish tool output) fails the INSERT and
@@ -1930,15 +1938,20 @@ async fn insert_event(
     // `WHERE EXISTS` makes that case a clean no-op (0 rows) instead — when the
     // session is present this is identical to the old insert.
     let links = crate::routes::fs::extract_links(&payload);
+    // The ON CONFLICT target must stay character-identical to migration 121's
+    // `stream_events_dedup_turn_idx` expression list or inference fails.
     let id: Option<i64> = sqlx::query_scalar(
-        "INSERT INTO stream_events (session_id, event_type, payload) \
-         SELECT $1, $2, $3 WHERE EXISTS (SELECT 1 FROM sessions WHERE id = $1) \
-         ON CONFLICT (session_id, event_type, content_hash) DO NOTHING \
+        "INSERT INTO stream_events (session_id, event_type, payload, turn_id) \
+         SELECT $1, $2, $3, $4 WHERE EXISTS (SELECT 1 FROM sessions WHERE id = $1) \
+         ON CONFLICT (session_id, event_type, content_hash, \
+                      COALESCE(turn_id, '00000000-0000-0000-0000-000000000000'::uuid)) \
+         DO NOTHING \
          RETURNING id",
     )
     .bind(local_id)
     .bind(event_type)
     .bind(payload)
+    .bind(turn_id)
     .fetch_optional(&state.pool)
     .await?;
     if id.is_some() {
@@ -2661,6 +2674,83 @@ mod tests {
             }
             _ => panic!("expected ResumeMarks"),
         }
+    }
+
+    #[tokio::test]
+    async fn turn_id_persists_and_widens_the_dedup_key() {
+        let name = "turn_id_persists_and_widens_the_dedup_key";
+        let Some(url) = crate::routes::gateway::test_db_url(name) else { return };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let uid = Uuid::new_v4();
+        let machine = Uuid::new_v4();
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+            .bind(uid)
+            .bind(format!("{name}-{uid}"))
+            .bind(format!("h-{uid}"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO machines (id, user_id, name, key_hash) VALUES ($1, $2, 'm', $3)")
+            .bind(machine)
+            .bind(uid)
+            .bind(format!("mk-{machine}"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        let sid = format!("{name}-{uid}");
+        sqlx::query(
+            "INSERT INTO sessions (id, machine_id, machine_uuid, user_id, working_dir, status, \
+             adapter_id) VALUES ($1, $2, $2, $3, '/w', 'active', 'claude-code')",
+        )
+        .bind(&sid)
+        .bind(machine)
+        .bind(uid)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let sql = "INSERT INTO stream_events (session_id, event_type, payload, turn_id) \
+                   SELECT $1, $2, $3, $4 WHERE EXISTS (SELECT 1 FROM sessions WHERE id = $1) \
+                   ON CONFLICT (session_id, event_type, content_hash, \
+                                COALESCE(turn_id, '00000000-0000-0000-0000-000000000000'::uuid)) \
+                   DO NOTHING \
+                   RETURNING id";
+        let payload = serde_json::json!({"role": "user", "text": "continue"});
+        let first = Uuid::new_v4();
+        let second = Uuid::new_v4();
+        let mut inserted = Vec::new();
+        for turn_id in [Some(first), Some(first), Some(second), None, None] {
+            let id: Option<i64> = sqlx::query_scalar(sql)
+                .bind(&sid)
+                .bind("message")
+                .bind(&payload)
+                .bind(turn_id)
+                .fetch_optional(&pool)
+                .await
+                .unwrap();
+            inserted.push(id.is_some());
+        }
+        assert_eq!(
+            inserted,
+            vec![true, false, true, true, false],
+            "a replayed turn dedups, two distinct turns with the same text both persist, \
+             and a turn-less row keys on content alone"
+        );
+
+        let stored: Vec<Option<Uuid>> = sqlx::query_scalar(
+            "SELECT turn_id FROM stream_events WHERE session_id = $1 ORDER BY id",
+        )
+        .bind(&sid)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(stored, vec![Some(first), Some(second), None]);
+
+        sqlx::query("DELETE FROM sessions WHERE id = $1").bind(&sid).execute(&pool).await.unwrap();
     }
 
     #[tokio::test]
