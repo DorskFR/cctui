@@ -84,6 +84,7 @@ pub fn to_agent_event(adapter_id: &str, event_type: &str, payload: &Value) -> Op
                     message_id: None,
                     usage: None,
                     seq: None,
+                    turn_id: None,
                 }),
                 "system_marker" => Some(AgentEvent::Text {
                     content: format!("· {text}"),
