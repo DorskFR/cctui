@@ -101,10 +101,7 @@ fn message_event(payload: &Value, ts: i64) -> Option<AgentEvent> {
             meta: false,
             kind: text_kind(role),
             ts,
-            message_id: payload
-                .get("message_id")
-                .and_then(Value::as_str)
-                .map(str::to_owned),
+            message_id: payload.get("message_id").and_then(Value::as_str).map(str::to_owned),
             usage: None,
             seq: None,
             turn_id: None,
