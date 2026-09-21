@@ -85,6 +85,13 @@ export function canonUserBody(body: string): string {
  * `reply`, server `reply` echo, persisted `▷ User:` text), or null if `ev`
  * isn't a user message. Used to reconcile optimistic echoes and to dedup the
  * live stream against fetched history. */
+/** The client-minted identity of the human turn `ev` belongs to, when it has
+ * one. Present only on turns cctui itself sent; everything else falls back to
+ * `userMsgKey`. */
+export function turnIdOf(ev: AgentEvent): string | null {
+	return 'turn_id' in ev && ev.turn_id ? ev.turn_id : null;
+}
+
 export function userMsgKey(ev: AgentEvent): string | null {
 	if (ev.type === 'reply') return canonUserBody(ev.content);
 	if (ev.type === 'text' && ev.content.startsWith(USER_PREFIX))
@@ -206,6 +213,9 @@ interface TrackedSend {
 	 * Carried on every retry so the daemon can drive the real form
 	 * natively instead of dismissing it (which claude records as declined). */
 	askPicks?: number[][];
+	/** the turn's identity, re-sent on every retry so a retried frame the
+	 * server did receive produces the same turn id as the first attempt */
+	turnId?: string;
 	/** correlation id of the CURRENT attempt (rotates each retry) */
 	clientMsgId: string;
 	/** attempts dispatched so far (0 before the first dispatch) */
@@ -737,11 +747,18 @@ export class WsClient {
 		// An incoming user-message event (server reply echo or the persisted
 		// `▷ User:` text form) confirms an optimistic reply — drop it from the
 		// pending store so it isn't re-seeded as a stale duplicate on resub.
+		const turnId = turnIdOf(ev);
 		const key = userMsgKey(ev);
-		if (key !== null) {
+		if (turnId !== null || key !== null) {
 			const opt = this.optimistic.get(id);
 			if (opt) {
-				const next = opt.filter((o) => userMsgKey(o) !== key);
+				// Identity first; the content filter still runs when the echo
+				// matched no optimistic entry by id, so an echo that lost the
+				// turn id on the way back is reconciled exactly as before.
+				let next = turnId !== null ? opt.filter((o) => turnIdOf(o) !== turnId) : opt;
+				if (next.length === opt.length && key !== null) {
+					next = opt.filter((o) => userMsgKey(o) !== key);
+				}
 				if (next.length !== opt.length) this.optimistic.set(id, next);
 			}
 		}
@@ -941,13 +958,20 @@ export class WsClient {
 	 * socket wasn't OPEN (caller should keep the draft + surface a notice).
 	 * `clientMsgId` opts into a server `message_ack` so the caller can
 	 * track delivery (sending → delivered / failed). */
-	sendMessage(id: string, content: string, clientMsgId?: string, askPicks?: number[][]): boolean {
+	sendMessage(
+		id: string,
+		content: string,
+		clientMsgId?: string,
+		askPicks?: number[][],
+		turnId?: string
+	): boolean {
 		return this.send({
 			type: 'message',
 			session_id: id,
 			content,
 			...(clientMsgId ? { client_msg_id: clientMsgId } : {}),
-			...(askPicks ? { ask_picks: askPicks } : {})
+			...(askPicks ? { ask_picks: askPicks } : {}),
+			...(turnId ? { turn_id: turnId } : {})
 		});
 	}
 
@@ -958,13 +982,28 @@ export class WsClient {
 	/** Begin tracking + dispatching a send. Returns whether the first frame
 	 * actually left the socket (the caller uses this only for its optimistic
 	 * working/ask UX — delivery itself is driven by acks + retries). */
-	trackedSend(sid: string, text: string, ts: number, askPicks?: number[][]): boolean {
+	trackedSend(
+		sid: string,
+		text: string,
+		ts: number,
+		askPicks?: number[][],
+		turnId?: string
+	): boolean {
 		let m = this.sends.get(sid);
 		if (!m) {
 			m = new Map();
 			this.sends.set(sid, m);
 		}
-		const send: TrackedSend = { sid, ts, text, askPicks, clientMsgId: '', attempt: 0, phase: 'pending' };
+		const send: TrackedSend = {
+			sid,
+			ts,
+			text,
+			askPicks,
+			turnId,
+			clientMsgId: '',
+			attempt: 0,
+			phase: 'pending'
+		};
 		m.set(ts, send);
 		return this.dispatch(send);
 	}
@@ -1046,7 +1085,7 @@ export class WsClient {
 		if (send.clientMsgId) this.ackIndex.delete(send.clientMsgId);
 		send.clientMsgId = cid;
 		this.ackIndex.set(cid, { sid: send.sid, ts: send.ts });
-		const ok = this.sendMessage(send.sid, send.text, cid, send.askPicks);
+		const ok = this.sendMessage(send.sid, send.text, cid, send.askPicks, send.turnId);
 		if (!ok) {
 			// A frame that never left the client is not a delivery attempt: the
 			// budget measures sends the server ignored. Counting failed writes
