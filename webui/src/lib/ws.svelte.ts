@@ -224,9 +224,10 @@ const MAX_ATTEMPTS = 5;
 
 /**
  * Silence after which the socket is presumed half-open. A browser cannot
- * observe the server's `Ping`/`Pong`, so liveness is inferred from real frames;
- * `machine_resources` arrives roughly every 20 s while any daemon is online.
- * A half-open connection never fires `onclose`, so nothing else detects it.
+ * observe the server's `Ping`/`Pong`, so liveness is inferred from frames; the
+ * server's `heartbeat` arrives every ~20 s on every socket, independently of
+ * whether any daemon is online. A half-open connection never fires `onclose`,
+ * so nothing else detects it.
  */
 export const WATCHDOG_MS = 60_000;
 /** Silence after which a tab-visible / network-online socket is presumed dead
