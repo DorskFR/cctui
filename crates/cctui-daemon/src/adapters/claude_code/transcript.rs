@@ -485,7 +485,7 @@ pub(super) fn parse_line(local_id: &str, line: &Value, out: &mut Vec<AdapterEven
         }
         "attachment" => attachment_annotation(local_id, line, out),
         "file-history-snapshot" | "file-history-delta" => {
-            out.push(turn_annotation(local_id, "file_history", file_history_detail(kind, line)));
+            out.push(turn_annotation(local_id, "file_history", &file_history_detail(kind, line)));
         }
         "worktree-state" | "agent-setting" | "mode" | "bridge-session" | "cost-state"
         | "queue-operation" => {
@@ -571,7 +571,7 @@ fn session_fact(local_id: &str, kind: &str, line: &Value, out: &mut Vec<AdapterE
 /// Bookkeeping that belongs on the turn it annotates rather than in the
 /// timeline. The detail rides in `text` as `<kind>:<detail>`; the webui
 /// re-anchors it onto the owning line and never renders a bubble for it.
-fn turn_annotation(local_id: &str, annotation: &str, detail: String) -> AdapterEvent {
+fn turn_annotation(local_id: &str, annotation: &str, detail: &str) -> AdapterEvent {
     let text =
         if detail.is_empty() { annotation.to_owned() } else { format!("{annotation}:{detail}") };
     AdapterEvent::Message {
@@ -595,15 +595,13 @@ fn attachment_annotation(local_id: &str, line: &Value, out: &mut Vec<AdapterEven
         record_ignored(&format!("attachment/{att}"));
         return;
     }
-    out.push(turn_annotation(local_id, "attachment", att.to_owned()));
+    out.push(turn_annotation(local_id, "attachment", att));
 }
 
 fn file_history_detail(kind: &str, line: &Value) -> String {
     let verb = if kind.ends_with("delta") { "delta" } else { "snapshot" };
-    match first_str(line, &["filePath", "path", "file"]) {
-        Some(path) => format!("{verb}:{path}"),
-        None => verb.to_owned(),
-    }
+    first_str(line, &["filePath", "path", "file"])
+        .map_or_else(|| verb.to_owned(), |path| format!("{verb}:{path}"))
 }
 
 /// `type:"system"` covers both genuine timeline events and per-turn bookkeeping
@@ -624,11 +622,11 @@ fn parse_system(local_id: &str, line: &Value, out: &mut Vec<AdapterEvent>) {
         "local_command" => format!("local command: {}", body()),
         "turn_duration" => {
             let ms = first_num(line, &["durationMs", "duration_ms", "duration"]).unwrap_or(0);
-            out.push(turn_annotation(local_id, "turn_duration", ms.to_string()));
+            out.push(turn_annotation(local_id, "turn_duration", &ms.to_string()));
             return;
         }
         "stop_hook_summary" => {
-            out.push(turn_annotation(local_id, "stop_hook_summary", body()));
+            out.push(turn_annotation(local_id, "stop_hook_summary", &body()));
             return;
         }
         other => {
@@ -650,8 +648,15 @@ fn parse_system(local_id: &str, line: &Value, out: &mut Vec<AdapterEvent>) {
 /// Never embeds the raw line — attachment bodies can be huge; only the marker,
 /// a few useful fields, and a short `text` survive.
 fn system_marker_payload(marker: &str, line: &Value) -> Value {
-    let str_field = |k: &str| line.get(k).and_then(Value::as_str).unwrap_or_default();
-    match marker {
+    session_state_marker(marker, line)
+        .or_else(|| identity_marker(marker, line))
+        .unwrap_or_else(|| json!({ "role": "system_marker", "marker": marker, "text": marker }))
+}
+
+/// Session posture and accounting: the records that describe how the session is
+/// running rather than who it is.
+fn session_state_marker(marker: &str, line: &Value) -> Option<Value> {
+    let payload = match marker {
         "mode" => {
             let mode = first_str(line, &["mode", "value"]).unwrap_or("unknown");
             json!({
@@ -688,7 +693,7 @@ fn system_marker_payload(marker: &str, line: &Value) -> Value {
             })
         }
         "permission-mode" => {
-            let mode = str_field("permissionMode");
+            let mode = line.get("permissionMode").and_then(Value::as_str).unwrap_or_default();
             json!({
                 "role": "system_marker",
                 "marker": marker,
@@ -709,6 +714,35 @@ fn system_marker_payload(marker: &str, line: &Value) -> Value {
                 "text": text,
             })
         }
+        "queue-operation" => {
+            let op = first_str(line, &["operation", "op", "action"]).unwrap_or("queue");
+            let verb = match op {
+                "enqueue" | "add" | "queued" => "queued",
+                "dequeue" | "remove" | "dequeued" => "dequeued",
+                other => other,
+            };
+            let body = first_str(line, &["prompt", "text", "content", "value"])
+                .map(excerpt)
+                .unwrap_or_default();
+            let text = if body.is_empty() { verb.to_owned() } else { format!("{verb}: {body}") };
+            json!({
+                "role": "system_marker",
+                "marker": marker,
+                "operation": verb,
+                "text": text,
+            })
+        }
+        _ => return None,
+    };
+    Some(payload)
+}
+
+/// Titles and agent identity — the fallback shape for the records that normally
+/// reach [`AdapterEvent::Status`] and only become markers when their value is
+/// missing or unmappable.
+fn identity_marker(marker: &str, line: &Value) -> Option<Value> {
+    let str_field = |k: &str| line.get(k).and_then(Value::as_str).unwrap_or_default();
+    let payload = match marker {
         "ai-title" => {
             let title = str_field("aiTitle");
             json!({
@@ -745,26 +779,9 @@ fn system_marker_payload(marker: &str, line: &Value) -> Value {
                 "text": format!("title: {title}"),
             })
         }
-        "queue-operation" => {
-            let op = first_str(line, &["operation", "op", "action"]).unwrap_or("queue");
-            let verb = match op {
-                "enqueue" | "add" | "queued" => "queued",
-                "dequeue" | "remove" | "dequeued" => "dequeued",
-                other => other,
-            };
-            let body = first_str(line, &["prompt", "text", "content", "value"])
-                .map(excerpt)
-                .unwrap_or_default();
-            let text = if body.is_empty() { verb.to_owned() } else { format!("{verb}: {body}") };
-            json!({
-                "role": "system_marker",
-                "marker": marker,
-                "operation": verb,
-                "text": text,
-            })
-        }
-        _ => json!({ "role": "system_marker", "marker": marker, "text": marker }),
-    }
+        _ => return None,
+    };
+    Some(payload)
 }
 
 /// Extract a linked-PR [`SessionChild`] from a transcript `pr-link` line. The
