@@ -82,6 +82,12 @@ pub enum DaemonFrameUp {
         /// omits it and the server keeps the last stored snapshot.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         resources: Option<crate::resources::MachineResources>,
+        /// Shorts of the claude jobs present under the daemon's jobs root.
+        /// The server answers with [`DaemonFrameDown::ArchivedJobs`] for the
+        /// ones whose session it has archived. Optional: a daemon that omits
+        /// it cannot parse that reply and must never receive one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        claude_jobs: Option<Vec<String>>,
     },
     /// Reply to a [`DaemonFrameDown::StageFiles`] request (mid-chat
     /// attachments). `request_id` correlates with the originating
@@ -237,13 +243,17 @@ pub enum DaemonFrameDown {
     /// cursor forward and resumes instead of replaying the transcript from zero.
     ResumeMarks {
         session_marks: Vec<(String, u64)>,
-        /// Sessions the server has archived on this machine. The daemon
-        /// removes any claude job still on disk for one of them, so a removal
-        /// that was lost (daemon offline, `claude rm` refused) converges on
-        /// reconnect. Defaulted so older servers' frames keep parsing.
+        /// Sessions the server has archived on this machine; the daemon
+        /// removes any claude job still on disk for one of them. Superseded by
+        /// [`Self::ArchivedJobs`]; kept so frames from older servers parse.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         archived: Vec<String>,
     },
+    /// Sessions the server has archived among the `claude_jobs` a
+    /// [`DaemonFrameUp::Heartbeat`] reported. The daemon removes their jobs so
+    /// `claude agents` converges on the archive state without a reconnect.
+    /// Only ever sent to a daemon that reported `claude_jobs`.
+    ArchivedJobs { session_ids: Vec<String> },
     /// Re-run codex `model/list` over a one-shot app-server (no session
     /// spawned) and ship the result as an
     /// [`AdapterEvent::CodexModels`](crate::adapter::AdapterEvent::CodexModels).
@@ -1021,9 +1031,11 @@ mod tests {
                 cpu_pct: 12.5,
                 ..Default::default()
             }),
+            claude_jobs: Some(vec!["deadbeef".into()]),
         };
         let json = serde_json::to_string(&hb).unwrap();
         assert!(json.contains(r#""forward":900"#), "{json}");
+        assert!(json.contains(r#""claude_jobs":["deadbeef"]"#), "{json}");
         assert!(json.contains(r#""cpu_pct":12.5"#), "{json}");
         assert!(json.contains(r#""blob_put":42"#), "{json}");
         assert!(json.contains(r#""update_hook":true"#), "{json}");
@@ -1033,10 +1045,11 @@ mod tests {
         match back {
             // A daemon that predates either field says nothing about both; the
             // server must not read that silence as "no hook".
-            DaemonFrameUp::Heartbeat { bandwidth, update_hook, resources, .. } => {
+            DaemonFrameUp::Heartbeat { bandwidth, update_hook, resources, claude_jobs, .. } => {
                 assert!(bandwidth.is_none());
                 assert!(update_hook.is_none());
                 assert!(resources.is_none());
+                assert!(claude_jobs.is_none());
             }
             _ => panic!("expected Heartbeat"),
         }
@@ -1095,6 +1108,19 @@ mod tests {
                 assert_eq!(archived, vec!["sess-3".to_string()]);
             }
             _ => panic!("expected ResumeMarks"),
+        }
+    }
+
+    #[test]
+    fn daemon_frame_down_archived_jobs_roundtrips() {
+        let f = DaemonFrameDown::ArchivedJobs { session_ids: vec!["sess-3".into()] };
+        let json = serde_json::to_string(&f).unwrap();
+        assert!(json.contains(r#""type":"archived_jobs""#));
+        match serde_json::from_str::<DaemonFrameDown>(&json).unwrap() {
+            DaemonFrameDown::ArchivedJobs { session_ids } => {
+                assert_eq!(session_ids, vec!["sess-3".to_string()]);
+            }
+            _ => panic!("expected ArchivedJobs"),
         }
     }
 
