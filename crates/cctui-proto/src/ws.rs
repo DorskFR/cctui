@@ -1158,6 +1158,7 @@ mod tests {
             content: "hello".into(),
             client_msg_id: None,
             ask_picks: None,
+            turn_id: None,
         };
         let json = serde_json::to_string(&cmd).unwrap();
         assert!(json.contains(r#""type":"message""#));
@@ -1178,6 +1179,7 @@ mod tests {
             content: "hi".into(),
             client_msg_id: None,
             ask_picks: None,
+            turn_id: None,
         };
         let json = serde_json::to_string(&cmd).unwrap();
         assert!(!json.contains("client_msg_id"), "None must be skipped: {json}");
@@ -1201,6 +1203,7 @@ mod tests {
             content: "hi".into(),
             client_msg_id: Some("abc-123".into()),
             ask_picks: None,
+            turn_id: None,
         };
         let json = serde_json::to_string(&cmd).unwrap();
         assert!(json.contains(r#""client_msg_id":"abc-123""#));
