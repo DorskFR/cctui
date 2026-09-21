@@ -126,9 +126,11 @@ describe("SpawnModal cwd display", () => {
         ?.closest(".fi")
         ?.querySelector(".fi__display");
 
-    const blurred = overlay();
-    expect(blurred).not.toBeNull();
-    expect(blurred?.textContent ?? "").toMatch(/cctui$/);
+    // `.text` is the chosen candidate; WorkingDir's sibling width probe is not.
+    const shown = () => overlay()?.querySelector(".text")?.textContent ?? "";
+
+    expect(overlay()).not.toBeNull();
+    expect(shown()).toMatch(/(^|\/)cctui$/);
     expect(cwdInput().value).toBe("/home/dorsk/Documents/cctui");
 
     cwdInput().focus();
