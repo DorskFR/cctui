@@ -422,9 +422,9 @@ fn first_str<'a>(line: &'a Value, keys: &[&str]) -> Option<&'a str> {
 /// First numeric value among `keys`, tolerating the string encodings Claude
 /// has used for the same field across releases.
 fn first_num(line: &Value, keys: &[&str]) -> Option<u64> {
-    keys.iter().filter_map(|k| line.get(*k)).find_map(|v| {
-        v.as_u64().or_else(|| v.as_str().and_then(|s| s.trim().parse::<u64>().ok()))
-    })
+    keys.iter()
+        .filter_map(|k| line.get(*k))
+        .find_map(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.trim().parse::<u64>().ok())))
 }
 
 const EXCERPT_CHARS: usize = 120;
@@ -2145,8 +2145,14 @@ mod tests {
     #[test]
     fn turn_bookkeeping_becomes_annotations_on_the_owning_turn() {
         let cases = [
-            (json!({"type":"attachment","attachment":{"type":"prompt_snapshot"}}), "attachment:prompt_snapshot"),
-            (json!({"type":"system","subtype":"turn_duration","durationMs":1200}), "turn_duration:1200"),
+            (
+                json!({"type":"attachment","attachment":{"type":"prompt_snapshot"}}),
+                "attachment:prompt_snapshot",
+            ),
+            (
+                json!({"type":"system","subtype":"turn_duration","durationMs":1200}),
+                "turn_duration:1200",
+            ),
             (
                 json!({"type":"system","subtype":"stop_hook_summary","summary":"ok"}),
                 "stop_hook_summary:ok",
@@ -2206,7 +2212,11 @@ mod tests {
             parse_line("s", line, &mut out);
             let msgs = message_payloads(&out);
             assert_eq!(msgs.len(), 1, "one marker per line: {line}");
-            assert_eq!(msgs[0].get("role").and_then(Value::as_str), Some("system_marker"), "{line}");
+            assert_eq!(
+                msgs[0].get("role").and_then(Value::as_str),
+                Some("system_marker"),
+                "{line}"
+            );
             assert_eq!(msgs[0].get("text").and_then(Value::as_str), Some(*want), "{line}");
         }
     }

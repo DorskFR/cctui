@@ -47,7 +47,9 @@ enum CallKind {
     Message(MessageChildRequest),
     /// `CctuiUsage`: ask the server what limits apply to the calling session.
     /// Neither spawns nor follows anything, so it never touches the watch.
-    Usage { model: Option<String> },
+    Usage {
+        model: Option<String>,
+    },
 }
 
 struct Call {

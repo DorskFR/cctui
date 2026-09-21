@@ -229,9 +229,7 @@ fn handle_request(session_id: &str, sock: &Path, req: &Value, outbox: &Outbox) -
                 "serverInfo": { "name": "cctui", "version": env!("CARGO_PKG_VERSION") },
             }),
         )),
-        "tools/list" => {
-            Some(reply(id, &json!({ "tools": [tool_schema(), usage_tool_schema()] })))
-        }
+        "tools/list" => Some(reply(id, &json!({ "tools": [tool_schema(), usage_tool_schema()] }))),
         "tools/call" => {
             let params = req.get("params");
             let name = params.and_then(|p| p.get("name")).and_then(Value::as_str).unwrap_or("");
@@ -432,8 +430,7 @@ mod tests {
             assert_eq!(req["kind"], json!("usage"));
             assert_eq!(req["session_id"], json!("s1"));
             assert_eq!(req["args"]["model"], json!("claude-opus-5"));
-            writeln!(stream, "{}", json!({ "ok": true, "result": "5h 46% · weekly 71%" }))
-                .unwrap();
+            writeln!(stream, "{}", json!({ "ok": true, "result": "5h 46% · weekly 71%" })).unwrap();
         });
         let (text, is_error) = call_daemon(
             "s1",

@@ -347,16 +347,12 @@ mod tests {
     #[test]
     fn unknown_system_subtypes_are_counted_by_namespaced_label() {
         let mut out = Vec::new();
-        for line in [
-            r#"{"type":"system","subtype":"tachyon_burst"}"#,
-            r#"{"type":"system"}"#,
-        ] {
+        for line in [r#"{"type":"system","subtype":"tachyon_burst"}"#, r#"{"type":"system"}"#] {
             let outcome = parse_stream_line("s", line, &mut out);
             assert_eq!(outcome, StreamOutcome::default());
         }
         assert!(out.is_empty(), "unknown system subtypes must not fabricate events");
-        for label in
-            ["unknown-streamjson-system:tachyon_burst", "unknown-streamjson-system:<none>"]
+        for label in ["unknown-streamjson-system:tachyon_burst", "unknown-streamjson-system:<none>"]
         {
             let count = transcript::transcript_drop_tally()
                 .into_iter()

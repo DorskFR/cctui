@@ -597,7 +597,11 @@ fn parse_line(local_id: &str, line: &str) -> AdapterEvent {
         {
             return AdapterEvent::ToolUse { local_id: local_id.to_owned(), payload: value };
         }
-        return AdapterEvent::Message { local_id: local_id.to_owned(), payload: value, turn_id: None };
+        return AdapterEvent::Message {
+            local_id: local_id.to_owned(),
+            payload: value,
+            turn_id: None,
+        };
     }
     AdapterEvent::Message {
         local_id: local_id.to_owned(),

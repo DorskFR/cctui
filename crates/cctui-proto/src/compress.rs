@@ -95,7 +95,11 @@ mod tests {
         });
         DaemonFrameUp::Event {
             adapter_id: "claude-code".into(),
-            event: AdapterEvent::Message { local_id: format!("sess-{}", i % 4), payload, turn_id: None },
+            event: AdapterEvent::Message {
+                local_id: format!("sess-{}", i % 4),
+                payload,
+                turn_id: None,
+            },
         }
     }
 

@@ -201,10 +201,7 @@ pub async fn session_limits(
         .map_or(0, |hit| hit.fetched_at.elapsed().as_secs());
     let stale = usage.is_none()
         || gateway::usage_cache_stale(
-            state
-                .account_usage_cache
-                .get(&binding.provider_id)
-                .map(|hit| hit.fetched_at.elapsed()),
+            state.account_usage_cache.get(&binding.provider_id).map(|hit| hit.fetched_at.elapsed()),
             crate::routes::accounts::USAGE_CACHE_TTL.to_std().unwrap_or_default(),
         );
 
@@ -424,16 +421,12 @@ mod tests {
         let found: Option<(Uuid,)> =
             sqlx::query_as("SELECT st.account_id FROM session_tokens st WHERE st.session_id = $1")
                 .bind(&session)
-        .fetch_optional(&pool)
-        .await
-        .expect("query");
+                .fetch_optional(&pool)
+                .await
+                .expect("query");
         assert!(found.is_none(), "an unbound session resolves to no account — the route 404s");
 
-        sqlx::query("DELETE FROM sessions WHERE id = $1")
-            .bind(&session)
-            .execute(&pool)
-            .await
-            .ok();
+        sqlx::query("DELETE FROM sessions WHERE id = $1").bind(&session).execute(&pool).await.ok();
         sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
     }
 
@@ -528,11 +521,7 @@ mod tests {
             .execute(&pool)
             .await
             .ok();
-        sqlx::query("DELETE FROM sessions WHERE id = $1")
-            .bind(&session)
-            .execute(&pool)
-            .await
-            .ok();
+        sqlx::query("DELETE FROM sessions WHERE id = $1").bind(&session).execute(&pool).await.ok();
         for (_, acct, prov) in providers {
             sqlx::query("DELETE FROM account_providers WHERE id = $1")
                 .bind(prov)

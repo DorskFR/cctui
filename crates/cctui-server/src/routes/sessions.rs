@@ -629,17 +629,18 @@ async fn enrich_and_sort(
     }
 
     if !session_ids.is_empty() {
-        let rows: Vec<(String, serde_json::Value, DateTime<Utc>)> = sqlx::query_as(LAST_MESSAGE_SQL)
-            .bind(&session_ids)
-            .fetch_all(&state.pool)
-            .await
-            .map_err(|e| {
-                tracing::error!("db error (last message lookup): {e}");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ApiError { error: "database error".into() }),
-                )
-            })?;
+        let rows: Vec<(String, serde_json::Value, DateTime<Utc>)> =
+            sqlx::query_as(LAST_MESSAGE_SQL)
+                .bind(&session_ids)
+                .fetch_all(&state.pool)
+                .await
+                .map_err(|e| {
+                    tracing::error!("db error (last message lookup): {e}");
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ApiError { error: "database error".into() }),
+                    )
+                })?;
         let mut by_session: std::collections::HashMap<String, (Option<String>, DateTime<Utc>)> =
             std::collections::HashMap::new();
         for (sid, payload, ts) in rows {

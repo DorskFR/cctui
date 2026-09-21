@@ -920,7 +920,8 @@ mod tests {
 
     #[test]
     fn agent_event_reply_serialization() {
-        let event = AgentEvent::Reply { content: "acknowledged".into(), ts: 100, seq: None, turn_id: None };
+        let event =
+            AgentEvent::Reply { content: "acknowledged".into(), ts: 100, seq: None, turn_id: None };
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains(r#""type":"reply""#));
         assert!(json.contains(r#""content":"acknowledged""#));
