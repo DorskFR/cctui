@@ -369,7 +369,8 @@ pub fn reconcile_tail(
 
 /// Process-local tally of transcript shapes that produce no event, keyed by a
 /// namespaced label (`unknown:<type>`, `unknown-assistant-block:<t>`,
-/// `unknown-user-block:<t>`, `ignored:<kind>`). The daemon has no metrics
+/// `unknown-user-block:<t>`, `unknown-streamjson-system:<subtype>`,
+/// `ignored:<kind>`). The daemon has no metrics
 /// exporter, so counts live here rather than in a registry.
 static DROP_TALLY: LazyLock<Mutex<BTreeMap<String, u64>>> =
     LazyLock::new(|| Mutex::new(BTreeMap::new()));
@@ -384,7 +385,7 @@ fn tally(label: &str) -> u64 {
 }
 
 /// A shape we do not handle and did not expect: count it, and warn once.
-fn record_unknown(namespace: &str, kind: &str) {
+pub(super) fn record_unknown(namespace: &str, kind: &str) {
     let label = format!("{namespace}:{kind}");
     if tally(&label) == 1 {
         tracing::warn!(
