@@ -2499,6 +2499,7 @@ impl Driver {
                             intent: None,
                             model: None,
                             effort: None,
+                            permission_mode: None,
                             children: Vec::new(),
                         })
                         .await;
@@ -2701,6 +2702,7 @@ impl Driver {
                     intent,
                     model,
                     effort,
+                    permission_mode: None,
                     children,
                 })
                 .await;
@@ -2791,6 +2793,7 @@ impl Driver {
                         intent: None,
                         model: None,
                         effort: None,
+                        permission_mode: None,
                         children: Vec::new(),
                     })
                     .await;
@@ -2875,6 +2878,7 @@ impl Driver {
             intent: None,
             model: None,
             effort: None,
+            permission_mode: None,
             children: Vec::new(),
         }
     }

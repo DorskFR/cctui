@@ -631,6 +631,7 @@ fn turn_context_status(local_id: &str, value: &Value) -> Option<AdapterEvent> {
         intent: None,
         model,
         effort,
+        permission_mode: None,
         children: vec![],
     })
 }
