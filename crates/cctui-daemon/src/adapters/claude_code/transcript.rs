@@ -567,6 +567,7 @@ fn session_fact(local_id: &str, kind: &str, line: &Value, out: &mut Vec<AdapterE
         None => out.push(AdapterEvent::Message {
             local_id: local_id.to_owned(),
             payload: system_marker_payload(kind, line),
+            turn_id: None,
         }),
     }
 }
@@ -580,6 +581,7 @@ fn turn_annotation(local_id: &str, annotation: &str, detail: String) -> AdapterE
     AdapterEvent::Message {
         local_id: local_id.to_owned(),
         payload: json!({ "role": "turn_annotation", "annotation": annotation, "text": text }),
+        turn_id: None,
     }
 }
 
