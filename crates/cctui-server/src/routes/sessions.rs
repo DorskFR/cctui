@@ -1667,6 +1667,10 @@ const fn conversation_sql(order: ConversationOrder) -> &'static str {
     }
 }
 
+/// `(id, event_type, payload, created_at, turn_id)` — the column list of
+/// [`conversation_sql`], in order.
+type ConversationRow = (i64, String, serde_json::Value, DateTime<Utc>, Option<uuid::Uuid>);
+
 pub async fn get_conversation(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
@@ -1683,21 +1687,17 @@ pub async fn get_conversation(
     // the causal `seq` and is a strict total order, so a late-flushed
     // AskUserQuestion card+preamble keep their insert position even when their
     // `created_at` ties or lands after the user's answer.
-    let mut rows: Vec<(i64, String, serde_json::Value, DateTime<Utc>, Option<uuid::Uuid>)> =
-        sqlx::query_as(conversation_sql(params.order))
-            .bind(&session_id)
-            .bind(params.before)
-            .bind(params.limit.map(|l| l.clamp(1, 10_000)))
-            .bind(params.after)
-            .fetch_all(&state.pool)
-            .await
-            .map_err(|e| {
-                tracing::error!("db error: {e}");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ApiError { error: "database error".into() }),
-                )
-            })?;
+    let mut rows: Vec<ConversationRow> = sqlx::query_as(conversation_sql(params.order))
+        .bind(&session_id)
+        .bind(params.before)
+        .bind(params.limit.map(|l| l.clamp(1, 10_000)))
+        .bind(params.after)
+        .fetch_all(&state.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!("db error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
+        })?;
     if params.order == ConversationOrder::Desc {
         rows.reverse();
     }
