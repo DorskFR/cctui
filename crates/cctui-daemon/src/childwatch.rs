@@ -282,7 +282,7 @@ impl ChildWatch {
             AdapterEvent::SessionStarted { local_id, meta } => {
                 bind(watches, local_id, &meta.extra);
             }
-            AdapterEvent::Message { local_id, payload } => {
+            AdapterEvent::Message { local_id, payload, .. } => {
                 if let Some(w) = find_mut(watches, local_id) {
                     apply_message(w, payload);
                 }
@@ -610,6 +610,7 @@ mod tests {
         AdapterEvent::Message {
             local_id: local_id.to_owned(),
             payload: json!({ "role": role, "text": text }),
+            turn_id: None,
         }
     }
 

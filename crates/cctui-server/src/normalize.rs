@@ -33,6 +33,7 @@ pub fn to_agent_event(adapter_id: &str, event_type: &str, payload: &Value) -> Op
             message_id: None,
             usage: None,
             seq: None,
+            turn_id: None,
         });
     }
     if adapter_id == "codex" {
@@ -56,6 +57,7 @@ pub fn to_agent_event(adapter_id: &str, event_type: &str, payload: &Value) -> Op
                         message_id: None,
                         usage: None,
                         seq: None,
+                        turn_id: None,
                     })
                 }
                 "assistant"
@@ -72,6 +74,7 @@ pub fn to_agent_event(adapter_id: &str, event_type: &str, payload: &Value) -> Op
                         .map(str::to_owned),
                     usage: None,
                     seq: None,
+                    turn_id: None,
                 }),
                 "system_marker" => Some(AgentEvent::Text {
                     content: format!("· {text}"),
@@ -81,6 +84,7 @@ pub fn to_agent_event(adapter_id: &str, event_type: &str, payload: &Value) -> Op
                     message_id: None,
                     usage: None,
                     seq: None,
+                    turn_id: None,
                 }),
                 "summary" => turn_summary_parts(payload).map(|(detail, category, needs_action)| {
                     AgentEvent::TurnSummary {
@@ -202,6 +206,7 @@ fn agent_event_from_canonical(v: &Value, ts: i64) -> Option<AgentEvent> {
             message_id: v.get("message_id").and_then(Value::as_str).map(str::to_owned),
             usage: serde_json::from_value(v.get("usage").cloned().unwrap_or(Value::Null)).ok(),
             seq: None,
+            turn_id: None,
         }),
         "turn_summary" => Some(AgentEvent::TurnSummary {
             detail: v.get("detail").and_then(Value::as_str).unwrap_or_default().to_owned(),

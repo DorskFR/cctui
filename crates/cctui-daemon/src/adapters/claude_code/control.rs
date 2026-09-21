@@ -2643,6 +2643,7 @@ impl Driver {
                             // same).
                             "session_id": sess,
                         }),
+                        turn_id: None,
                     })
                     .await;
                 }
@@ -4590,7 +4591,7 @@ mod tests {
                 AdapterEvent::SessionStarted { .. } | AdapterEvent::SessionEnded { .. } => {
                     panic!("a reset must not start or end a session");
                 }
-                AdapterEvent::Message { local_id, payload }
+                AdapterEvent::Message { local_id, payload, .. }
                     if payload.get("role").and_then(|r| r.as_str()) == Some("context_reset") =>
                 {
                     assert_eq!(local_id, "sess-1", "marker rides the original session");

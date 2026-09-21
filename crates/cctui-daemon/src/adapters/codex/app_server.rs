@@ -414,6 +414,7 @@ fn notice_event(local_id: &str, method: &str, level: &str, params: Option<&Value
             "text": notice_text(method, params),
             "params": params.cloned().unwrap_or(Value::Null),
         }),
+        turn_id: None,
     }
 }
 
@@ -457,6 +458,7 @@ fn map_plan_updated(local_id: &str, v: &Value) -> Incoming {
     Incoming::Event(AdapterEvent::Message {
         local_id: local_id.to_owned(),
         payload: json!({"type": "plan", "text": text, "plan": steps}),
+        turn_id: None,
     })
 }
 
@@ -472,6 +474,7 @@ fn map_compacted(local_id: &str, v: &Value) -> Incoming {
                 .and_then(Value::as_str)
                 .unwrap_or("context compacted"),
         }),
+        turn_id: None,
     })
 }
 
@@ -548,7 +551,7 @@ pub fn item_event(local_id: &str, item: &Value) -> AdapterEvent {
         | "webSearch"
         | "imageView"
         | "imageGeneration" => AdapterEvent::ToolUse { local_id: local_id.to_owned(), payload },
-        _ => AdapterEvent::Message { local_id: local_id.to_owned(), payload },
+        _ => AdapterEvent::Message { local_id: local_id.to_owned(), payload, turn_id: None },
     }
 }
 

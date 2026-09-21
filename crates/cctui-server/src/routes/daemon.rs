@@ -1077,7 +1077,7 @@ async fn handle_event(
         _ => None,
     };
     let broadcast_pair: Option<(String, cctui_proto::ws::AgentEvent)> = match &event {
-        AdapterEvent::Message { local_id, payload } => {
+        AdapterEvent::Message { local_id, payload, .. } => {
             crate::normalize::to_agent_event(adapter_id, "message", payload)
                 .map(|ae| (local_id.clone(), ae))
         }
@@ -1137,7 +1137,7 @@ async fn handle_event(
             }
             crate::auto_archive::claim_intent(state, &local_id, spawn_key_hint.as_deref()).await;
         }
-        AdapterEvent::Message { local_id, payload } => {
+        AdapterEvent::Message { local_id, payload, .. } => {
             inserted_seq = insert_event(state, &local_id, "message", payload).await?;
             newly_inserted = inserted_seq.is_some();
             note_insert(state, machine_id, newly_inserted);
@@ -2736,6 +2736,7 @@ mod tests {
             event: cctui_proto::adapter::AdapterEvent::Message {
                 local_id: local_id.into(),
                 payload: json!({ "text": filler.to_string().repeat(600 * 1024) }),
+                turn_id: None,
             },
         };
         let bytes = serde_json::to_vec(&event).unwrap();
@@ -2842,6 +2843,7 @@ mod tests {
             event: cctui_proto::adapter::AdapterEvent::Message {
                 local_id: local_id.into(),
                 payload: json!({ "text": "x".repeat(8 * 1024) }),
+                turn_id: None,
             },
         }
     }
@@ -2905,6 +2907,7 @@ mod tests {
                 event: cctui_proto::adapter::AdapterEvent::Message {
                     local_id: format!("s{i}"),
                     payload: json!({ "n": i, "blob": blob(4000) }),
+                    turn_id: None,
                 },
             })
             .collect();
