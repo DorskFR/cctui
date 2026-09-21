@@ -1,4 +1,4 @@
-//! Daemon side of the `CctuiAgent` tool.
+//! Daemon side of the `CctuiAgent` and `CctuiUsage` tools.
 //!
 //! Listens on a local Unix socket for the `cctui-daemon mcp-agent` relay.
 //! A call spawns a child through the server (the server owns the capability
@@ -45,6 +45,9 @@ pub fn socket_path() -> PathBuf {
 enum CallKind {
     Spawn(SpawnChildRequest),
     Message(MessageChildRequest),
+    /// `CctuiUsage`: ask the server what limits apply to the calling session.
+    /// Neither spawns nor follows anything, so it never touches the watch.
+    Usage { model: Option<String> },
 }
 
 struct Call {
@@ -100,14 +103,15 @@ fn parse_call(line: &str) -> Result<Call, String> {
         .to_owned();
     let session_id = resolve_session_alias(&session_id);
     let args = v.get("args").cloned().unwrap_or_else(|| json!({}));
-    let prompt = args.get("prompt").and_then(Value::as_str).unwrap_or("").to_owned();
-    if prompt.trim().is_empty() {
-        return Err("prompt is required".to_owned());
-    }
     let timeout = crate::mcp::resolve_timeout(v.get("timeout_secs").and_then(Value::as_u64));
     let proto = v.get("proto").and_then(Value::as_u64).unwrap_or(1);
     let kind = match v.get("kind").and_then(Value::as_str) {
+        Some("usage") => CallKind::Usage { model: string_arg(&args, "model") },
         Some("spawn_agent") => {
+            let prompt = args.get("prompt").and_then(Value::as_str).unwrap_or("").to_owned();
+            if prompt.trim().is_empty() {
+                return Err("prompt is required".to_owned());
+            }
             if let Some(child) = string_arg(&args, "session_id") {
                 CallKind::Message(MessageChildRequest { session_id: child, prompt })
             } else {
@@ -190,6 +194,7 @@ fn dispatch_note(kind: &CallKind, timeout: Duration) -> String {
             req.session_id,
             timeout.as_secs(),
         ),
+        CallKind::Usage { .. } => String::new(),
     }
 }
 
@@ -327,12 +332,105 @@ async fn write_line(out: &mut (impl AsyncWriteExt + Unpin), frame: &Value) -> st
     out.flush().await
 }
 
+/// `h`m / `m`m / `s`s, in the compact spelling the one-line rendering uses.
+fn human_duration(secs: i64) -> String {
+    match secs {
+        s if s <= 0 => "now".to_owned(),
+        s if s >= 3600 => format!("{}h{:02}", s / 3600, (s % 3600) / 60),
+        s if s >= 60 => format!("{}m", s / 60),
+        s => format!("{s}s"),
+    }
+}
+
+fn secs_until(iso: &str) -> Option<i64> {
+    let at = chrono::DateTime::parse_from_rfc3339(iso).ok()?;
+    Some((at.with_timezone(&chrono::Utc) - chrono::Utc::now()).num_seconds())
+}
+
+#[allow(clippy::cast_possible_truncation)]
+fn round_pct(v: f64) -> String {
+    format!("{}%", v.round() as i64)
+}
+
+/// Condense a limits payload into the single line a model reads first.
+fn render_usage(v: &Value) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(name) = v.pointer("/account/name").and_then(Value::as_str) {
+        let emoji = v.pointer("/account/emoji").and_then(Value::as_str).unwrap_or("");
+        parts.push(format!("{emoji}{name}").trim().to_owned());
+    }
+    for w in v.get("windows").and_then(Value::as_array).into_iter().flatten() {
+        let label = w
+            .get("label")
+            .and_then(Value::as_str)
+            .or_else(|| w.get("key").and_then(Value::as_str))
+            .unwrap_or("window");
+        let Some(util) = w.get("utilization").and_then(Value::as_f64) else { continue };
+        let resets = w
+            .get("resets_at")
+            .and_then(Value::as_str)
+            .and_then(secs_until)
+            .map(|s| format!(" resets in {}", human_duration(s)))
+            .unwrap_or_default();
+        parts.push(format!("{label} {}{resets}", round_pct(util)));
+    }
+    if let Some(cap) = v.pointer("/caps/session_usd/cap_usd").and_then(Value::as_f64) {
+        let spent = v.pointer("/spend/session_usd").and_then(Value::as_f64).unwrap_or(0.0);
+        parts.push(format!("budget ${spent:.2}/${cap:g}"));
+    }
+    if let Some(models) = v.get("per_model").and_then(Value::as_object) {
+        let mut names: Vec<&String> = models.keys().collect();
+        names.sort();
+        for name in names {
+            let d = &models[name];
+            if d.get("allow").and_then(Value::as_bool).unwrap_or(true) {
+                parts.push(format!("{name} ok"));
+            } else {
+                let key = d.get("key").and_then(Value::as_str).unwrap_or("limit");
+                let retry = d
+                    .get("retry_after_secs")
+                    .and_then(Value::as_i64)
+                    .map(|s| format!(" for {}", human_duration(s)))
+                    .unwrap_or_default();
+                parts.push(format!("{name} {key} BLOCKED{retry}"));
+            }
+        }
+    }
+    if v.get("stale").and_then(Value::as_bool).unwrap_or(false) {
+        parts.push("usage cache stale — numbers may be out of date".to_owned());
+    }
+    if parts.is_empty() {
+        return "no usage information is available for this session".to_owned();
+    }
+    parts.join(" · ")
+}
+
+async fn run_usage(
+    server: &ServerClient,
+    machine_key: &str,
+    session_id: &str,
+    model: Option<&str>,
+) -> Value {
+    match server.session_limits(machine_key, session_id, model).await {
+        Ok(limits) => {
+            let line = render_usage(&limits);
+            let detail =
+                serde_json::to_string_pretty(&limits).unwrap_or_else(|_| limits.to_string());
+            json!({ "ok": true, "result": format!("{line}\n\n{detail}") })
+        }
+        Err(err) => json!({ "ok": false, "error": err.to_string() }),
+    }
+}
+
 async fn run_call(
     server: &ServerClient,
     machine_key: &str,
     call: Call,
     out: &mut (impl AsyncWriteExt + Unpin),
 ) -> Value {
+    if let CallKind::Usage { model } = &call.kind {
+        return run_usage(server, machine_key, &call.session_id, model.as_deref()).await;
+    }
     let note = dispatch_note(&call.kind, call.timeout);
     let watch = crate::childwatch::global();
     let (handle, child_id) = match &call.kind {
@@ -1006,6 +1104,99 @@ mod tests {
             !should_nudge(&outcome),
             "a killed child must never be nudged even on truncated text"
         );
+    }
+
+    #[test]
+    fn a_usage_call_parses_without_a_prompt_and_carries_the_optional_model() {
+        let bare = json!({ "kind": "usage", "session_id": "p", "args": {} }).to_string();
+        let call = parse_call(&bare).unwrap();
+        assert_eq!(call.session_id, "p");
+        let CallKind::Usage { model } = call.kind else { panic!("expected usage") };
+        assert!(model.is_none());
+
+        let with_model =
+            json!({ "kind": "usage", "session_id": "p", "args": { "model": " claude-opus-5 " } })
+                .to_string();
+        let CallKind::Usage { model } = parse_call(&with_model).unwrap().kind else {
+            panic!("expected usage")
+        };
+        assert_eq!(model.as_deref(), Some("claude-opus-5"));
+
+        let blank =
+            json!({ "kind": "usage", "session_id": "p", "args": { "model": "  " } }).to_string();
+        let CallKind::Usage { model } = parse_call(&blank).unwrap().kind else {
+            panic!("expected usage")
+        };
+        assert!(model.is_none(), "a blank model must not be forwarded");
+    }
+
+    #[test]
+    fn a_usage_call_still_needs_a_session_and_carries_no_dispatch_note() {
+        assert!(parse_call(&json!({ "kind": "usage", "args": {} }).to_string()).is_err());
+        assert_eq!(
+            dispatch_note(&CallKind::Usage { model: None }, Duration::from_secs(30)),
+            "",
+            "a usage call spawns nothing, so there is no model or follow window to echo"
+        );
+    }
+
+    #[test]
+    fn a_spawn_call_still_requires_its_prompt() {
+        let no_prompt = json!({ "kind": "spawn_agent", "session_id": "p", "args": {} });
+        assert_eq!(parse_call(&no_prompt.to_string()).unwrap_err(), "prompt is required");
+    }
+
+    #[test]
+    fn the_usage_line_names_the_account_windows_budget_and_blocked_models() {
+        let resets = (chrono::Utc::now() + chrono::Duration::minutes(130)).to_rfc3339();
+        let line = render_usage(&json!({
+            "account": { "name": "dorsk-main", "emoji": "🐧" },
+            "windows": [
+                { "key": "session", "label": "5h", "utilization": 46.0, "resets_at": resets },
+                { "key": "weekly_all", "label": "weekly", "utilization": 71.0 },
+            ],
+            "caps": { "session_usd": { "cap_usd": 20.0 } },
+            "spend": { "session_usd": 3.42 },
+            "per_model": {
+                "claude-fable-5-1": {
+                    "allow": false, "retry_after_secs": 5400, "key": "weekly_model:fable",
+                },
+                "claude-opus-5": { "allow": true },
+            },
+            "stale": false,
+        }));
+        assert!(line.contains("🐧dorsk-main"), "{line}");
+        assert!(line.contains("5h 46%"), "{line}");
+        assert!(line.contains("resets in 2h"), "{line}");
+        assert!(line.contains("weekly 71%"), "{line}");
+        assert!(line.contains("budget $3.42/$20"), "{line}");
+        assert!(line.contains("claude-fable-5-1 weekly_model:fable BLOCKED for 1h30"), "{line}");
+        assert!(line.contains("claude-opus-5 ok"), "{line}");
+        assert!(!line.contains("stale"), "{line}");
+    }
+
+    #[test]
+    fn a_stale_or_empty_limits_payload_still_renders_something_readable() {
+        let stale = render_usage(&json!({
+            "account": { "name": "shared", "provider": "anthropic" },
+            "windows": [],
+            "decision": { "allow": true },
+            "stale": true,
+        }));
+        assert!(stale.contains("shared"), "{stale}");
+        assert!(stale.contains("usage cache stale"), "{stale}");
+        assert_eq!(render_usage(&json!({})), "no usage information is available for this session");
+    }
+
+    #[test]
+    fn durations_render_compactly() {
+        assert_eq!(human_duration(7830), "2h10");
+        assert_eq!(human_duration(5400), "1h30");
+        assert_eq!(human_duration(3600), "1h00");
+        assert_eq!(human_duration(90), "1m");
+        assert_eq!(human_duration(30), "30s");
+        assert_eq!(human_duration(0), "now");
+        assert_eq!(human_duration(-5), "now");
     }
 
     #[test]
