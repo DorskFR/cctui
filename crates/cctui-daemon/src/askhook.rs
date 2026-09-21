@@ -566,6 +566,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::literal_string_with_formatting_args)]
     fn bypass_denies_dangerous_rm_with_guidance() {
         let payload = bash_payload(
             "bypassPermissions",
@@ -583,6 +584,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::literal_string_with_formatting_args)]
     fn bypass_defers_ordinary_commands() {
         let payload = bash_payload("bypassPermissions", "cargo test -p cctui-daemon");
         assert!(bypass_rm_decision(&payload, "Bash").is_none());
