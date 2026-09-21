@@ -1652,13 +1652,13 @@ pub enum ConversationOrder {
 const fn conversation_sql(order: ConversationOrder) -> &'static str {
     match order {
         ConversationOrder::Desc => {
-            "SELECT id, event_type, payload, created_at FROM stream_events \
+            "SELECT id, event_type, payload, created_at, turn_id FROM stream_events \
              WHERE session_id = $1 AND ($2::bigint IS NULL OR id < $2) \
                AND ($4::bigint IS NULL OR id > $4) \
              ORDER BY id DESC LIMIT $3"
         }
         ConversationOrder::Asc => {
-            "SELECT id, event_type, payload, created_at FROM stream_events \
+            "SELECT id, event_type, payload, created_at, turn_id FROM stream_events \
              WHERE session_id = $1 AND ($2::bigint IS NULL OR id < $2) \
                AND ($4::bigint IS NULL OR id > $4) \
              ORDER BY id ASC LIMIT $3"
@@ -1682,7 +1682,7 @@ pub async fn get_conversation(
     // the causal `seq` and is a strict total order, so a late-flushed
     // AskUserQuestion card+preamble keep their insert position even when their
     // `created_at` ties or lands after the user's answer.
-    let mut rows: Vec<(i64, String, serde_json::Value, DateTime<Utc>)> =
+    let mut rows: Vec<(i64, String, serde_json::Value, DateTime<Utc>, Option<uuid::Uuid>)> =
         sqlx::query_as(conversation_sql(params.order))
             .bind(&session_id)
             .bind(params.before)
@@ -1744,12 +1744,15 @@ pub async fn get_conversation(
     // their own value.
     let normalized: Vec<serde_json::Value> = rows
         .into_iter()
-        .filter_map(|(id, event_type, payload, created_at)| {
+        .filter_map(|(id, event_type, payload, created_at, turn_id)| {
             crate::normalize::for_client(adapter_id, &event_type, payload).map(|mut v| {
                 if let Some(obj) = v.as_object_mut() {
                     obj.entry("ts")
                         .or_insert_with(|| serde_json::json!(created_at.timestamp_millis()));
                     obj.insert("seq".to_owned(), serde_json::json!(id));
+                    if let Some(turn_id) = turn_id {
+                        obj.insert("turn_id".to_owned(), serde_json::json!(turn_id));
+                    }
                     if let Some(message_id) =
                         obj.get("message_id").and_then(serde_json::Value::as_str)
                         && let Some(usage) = usage_by_message.get(message_id)
@@ -1788,6 +1791,7 @@ pub async fn send_message(
             ask_picks: None,
             env,
             command_id: Some(command_id),
+            turn_id: req.turn_id,
         },
     )
     .await;

@@ -147,6 +147,7 @@ async fn handle_message(
     content: String,
     client_msg_id: Option<String>,
     ask_picks: Option<Vec<Vec<usize>>>,
+    turn_id: Option<uuid::Uuid>,
 ) {
     // NoDaemon / NoAdapter are expected for sessions whose daemon is momentarily
     // offline — that is exactly the case the ack lets the client recover from.
@@ -172,6 +173,7 @@ async fn handle_message(
             ask_picks,
             env,
             command_id: Some(command_id),
+            turn_id,
         },
     )
     .await;
@@ -319,7 +321,7 @@ async fn run_tui_socket(
                 }
                 handle_watch_terminal(&state, &session_id, watch, &mut pty_watches).await;
             }
-            TuiCommand::Message { session_id, content, client_msg_id, ask_picks } => {
+            TuiCommand::Message { session_id, content, client_msg_id, ask_picks, turn_id } => {
                 if !ws_owns_session(&state, &ctx, &session_id).await {
                     tracing::debug!(session_id = %session_id, user_id = %ctx.user_id, "tui_ws: message denied (not owner)");
                     // Ack the failure when the client opted in, so it doesn't
@@ -337,8 +339,16 @@ async fn run_tui_socket(
                     }
                     continue;
                 }
-                handle_message(&state, &event_tx, session_id, content, client_msg_id, ask_picks)
-                    .await;
+                handle_message(
+                    &state,
+                    &event_tx,
+                    session_id,
+                    content,
+                    client_msg_id,
+                    ask_picks,
+                    turn_id,
+                )
+                .await;
             }
             TuiCommand::PermissionResponse { session_id, request_id, behavior } => {
                 // Authorize against the session id the client supplied. The

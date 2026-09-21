@@ -567,6 +567,7 @@ async fn handle_input_mode(app: &mut App, key: KeyEvent, cmd_tx: &mpsc::Sender<T
                         content,
                         client_msg_id: None,
                         ask_picks: None,
+                        turn_id: None,
                     })
                     .await;
             }

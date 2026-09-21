@@ -455,6 +455,7 @@ pub(super) fn parse_line(local_id: &str, line: &Value, out: &mut Vec<AdapterEven
         out.push(AdapterEvent::Message {
             local_id: local_id.to_owned(),
             payload: json!({ "role": "compact_summary", "text": compact_summary_text(line) }),
+            turn_id: None,
         });
         return;
     }
@@ -470,6 +471,7 @@ pub(super) fn parse_line(local_id: &str, line: &Value, out: &mut Vec<AdapterEven
                     "status_detail": line.get("status_detail"),
                     "needs_action": line.get("needs_action"),
                 }),
+                turn_id: None,
             });
         }
         "pr-link" => {
@@ -492,6 +494,7 @@ pub(super) fn parse_line(local_id: &str, line: &Value, out: &mut Vec<AdapterEven
             out.push(AdapterEvent::Message {
                 local_id: local_id.to_owned(),
                 payload: system_marker_payload(kind, line),
+                turn_id: None,
             });
         }
         "system" => parse_system(local_id, line, out),
@@ -644,6 +647,7 @@ fn parse_system(local_id: &str, line: &Value, out: &mut Vec<AdapterEvent>) {
             "marker": format!("system/{subtype}"),
             "text": text,
         }),
+        turn_id: None,
     });
 }
 
@@ -852,6 +856,7 @@ fn parse_assistant_block(
                     "text": block.get("text"),
                     "message_id": message_id,
                 }),
+                turn_id: None,
             });
         }
         Some("thinking") => {
@@ -862,6 +867,7 @@ fn parse_assistant_block(
                     "text": block.get("thinking").or_else(|| block.get("text")),
                     "message_id": message_id,
                 }),
+                turn_id: None,
             });
         }
         Some("tool_use") => {
@@ -882,6 +888,7 @@ fn parse_assistant_block(
                     "text": "[redacted thinking]",
                     "message_id": message_id,
                 }),
+                turn_id: None,
             });
         }
         Some("image") => {
@@ -892,6 +899,7 @@ fn parse_assistant_block(
                     "text": "[image attachment]",
                     "message_id": message_id,
                 }),
+                turn_id: None,
             });
         }
         Some("server_tool_use") => {
@@ -1057,6 +1065,7 @@ fn parse_user(local_id: &str, line: &Value, out: &mut Vec<AdapterEvent>) {
         out.push(AdapterEvent::Message {
             local_id: local_id.to_owned(),
             payload: with_line_id(payload, line),
+            turn_id: None,
         });
         return;
     }
@@ -1106,6 +1115,7 @@ fn parse_user(local_id: &str, line: &Value, out: &mut Vec<AdapterEvent>) {
         out.push(AdapterEvent::Message {
             local_id: local_id.to_owned(),
             payload: with_line_id(payload, line),
+            turn_id: None,
         });
     }
     out.extend(tool_results);

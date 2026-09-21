@@ -848,6 +848,7 @@ mod tests {
             observer.observe(&cctui_proto::adapter::AdapterEvent::Message {
                 local_id: "child-1".into(),
                 payload: json!({ "role": "assistant", "text": "all done" }),
+                turn_id: None,
             });
             observer.observe(&cctui_proto::adapter::AdapterEvent::SessionEnded {
                 local_id: "child-1".into(),
@@ -1046,10 +1047,12 @@ mod tests {
         watch.observe(&cctui_proto::adapter::AdapterEvent::Message {
             local_id: "child-1".into(),
             payload: json!({ "role": "assistant", "text": "Checked the diff, looks clean." }),
+            turn_id: None,
         });
         watch.observe(&cctui_proto::adapter::AdapterEvent::Message {
             local_id: "child-1".into(),
             payload: json!({ "role": "assistant_thinking", "text": "now let me verify" }),
+            turn_id: None,
         });
         watch.observe(&cctui_proto::adapter::AdapterEvent::SessionEnded {
             local_id: "child-1".into(),
@@ -1066,10 +1069,12 @@ mod tests {
         watch.observe(&cctui_proto::adapter::AdapterEvent::Message {
             local_id: "child-2".into(),
             payload: json!({ "role": "assistant_thinking", "text": "planning" }),
+            turn_id: None,
         });
         watch.observe(&cctui_proto::adapter::AdapterEvent::Message {
             local_id: "child-2".into(),
             payload: json!({ "role": "assistant", "text": "VERDICT: approve" }),
+            turn_id: None,
         });
         watch.observe(&cctui_proto::adapter::AdapterEvent::SessionEnded {
             local_id: "child-2".into(),
@@ -1090,6 +1095,7 @@ mod tests {
         watch.observe(&cctui_proto::adapter::AdapterEvent::Message {
             local_id: "child-1".into(),
             payload: json!({ "role": "assistant", "text": "Now I need to verify key claims:" }),
+            turn_id: None,
         });
         watch.observe(&cctui_proto::adapter::AdapterEvent::SessionEnded {
             local_id: "child-1".into(),

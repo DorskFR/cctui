@@ -421,6 +421,7 @@ impl ThreadListInventory {
                         "type": "userMessage",
                         "content": [{"type": "text", "text": preview}],
                     }),
+                    turn_id: None,
                 })
                 .await;
         }

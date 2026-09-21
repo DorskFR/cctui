@@ -1197,6 +1197,7 @@ mod tests {
         let msg = |payload| cctui_proto::adapter::AdapterEvent::Message {
             local_id: "s".to_owned(),
             payload,
+            turn_id: None,
         };
         let thinking = |text| serde_json::json!({ "role": "assistant_thinking", "text": text });
 
@@ -1245,6 +1246,7 @@ mod tests {
         let event = cctui_proto::adapter::AdapterEvent::Message {
             local_id: "s".to_owned(),
             payload: serde_json::json!({ "text": "ghp_ABCDEFGHIJKLMNOPQRSTUVWX0123" }),
+            turn_id: None,
         };
         let out = scrub_event(event, &scrub);
         assert!(serde_json::to_string(&out).unwrap().contains("ghp_ABCDEFGHIJKLMNOPQRSTUVWX0123"));
@@ -1810,6 +1812,7 @@ mod tests {
             event: cctui_proto::adapter::AdapterEvent::Message {
                 local_id: format!("sess-{}", i % 4),
                 payload: serde_json::json!({ "text": format!("event number {i}"), "n": i }),
+                turn_id: None,
             },
         }
     }
@@ -1829,6 +1832,7 @@ mod tests {
             event: cctui_proto::adapter::AdapterEvent::Message {
                 local_id: format!("s{i}"),
                 payload: serde_json::json!({ "n": i, "blob": blob }),
+                turn_id: None,
             },
         }
     }
@@ -2012,6 +2016,7 @@ mod tests {
         cctui_proto::adapter::AdapterEvent::Message {
             local_id: local_id.to_owned(),
             payload: serde_json::json!({ "text": "tail" }),
+            turn_id: None,
         }
     }
 
