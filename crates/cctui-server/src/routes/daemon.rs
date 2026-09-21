@@ -2109,7 +2109,9 @@ async fn persist_session_end(
     sqlx::query(
         "INSERT INTO stream_events (session_id, event_type, payload) \
          SELECT $1, 'session_ended', $2 WHERE EXISTS (SELECT 1 FROM sessions WHERE id = $1) \
-         ON CONFLICT (session_id, event_type, content_hash) DO NOTHING",
+         ON CONFLICT (session_id, event_type, content_hash, \
+                      COALESCE(turn_id, '00000000-0000-0000-0000-000000000000'::uuid)) \
+         DO NOTHING",
     )
     .bind(local_id)
     .bind(&payload)
