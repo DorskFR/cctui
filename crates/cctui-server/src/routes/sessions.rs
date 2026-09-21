@@ -274,6 +274,22 @@ pub const fn attention_from_bucket(bucket: Bucket) -> Option<Attention> {
     }
 }
 
+/// Newest `message` event per listed session.
+///
+/// `event_type = 'message'` must stay character-identical to the predicate of
+/// `idx_stream_events_latest_message` (migration 118); narrowing it here (a
+/// role filter, say) without narrowing the index costs the single probe. The
+/// per-session `LIMIT 1` is the other half: any shape that groups or sorts the
+/// whole fan-out instead reads every message row of every listed session.
+const LAST_MESSAGE_SQL: &str = "SELECT s.session_id, e.payload, e.created_at \
+     FROM unnest($1::text[]) AS s(session_id) \
+     JOIN LATERAL ( \
+         SELECT se.payload, se.created_at FROM stream_events se \
+         WHERE se.session_id = s.session_id AND se.event_type = 'message' \
+         ORDER BY se.created_at DESC \
+         LIMIT 1 \
+     ) e ON true";
+
 #[allow(clippy::too_many_lines, clippy::cognitive_complexity)]
 pub async fn list_sessions(
     State(state): State<AppState>,
@@ -612,24 +628,19 @@ async fn enrich_and_sort(
         }
     }
 
-    // Last message text + timestamp per session, from stream_events.
-    // `event_type = 'message'` is also the predicate of the partial index
-    // `idx_stream_events_latest_message`; narrowing it here (a role filter,
-    // say) without narrowing the index costs the per-session single probe.
     if !session_ids.is_empty() {
-        let rows: Vec<(String, serde_json::Value, DateTime<Utc>)> = sqlx::query_as(
-            "SELECT DISTINCT ON (session_id) session_id, payload, created_at \
-             FROM stream_events \
-             WHERE session_id = ANY($1) AND event_type = 'message' \
-             ORDER BY session_id, created_at DESC",
-        )
-        .bind(&session_ids)
-        .fetch_all(&state.pool)
-        .await
-        .map_err(|e| {
-            tracing::error!("db error (last message lookup): {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-        })?;
+        let rows: Vec<(String, serde_json::Value, DateTime<Utc>)> =
+            sqlx::query_as(LAST_MESSAGE_SQL)
+                .bind(&session_ids)
+                .fetch_all(&state.pool)
+                .await
+                .map_err(|e| {
+                    tracing::error!("db error (last message lookup): {e}");
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(ApiError { error: "database error".into() }),
+                    )
+                })?;
         let mut by_session: std::collections::HashMap<String, (Option<String>, DateTime<Utc>)> =
             std::collections::HashMap::new();
         for (sid, payload, ts) in rows {
@@ -1642,19 +1653,23 @@ pub enum ConversationOrder {
 const fn conversation_sql(order: ConversationOrder) -> &'static str {
     match order {
         ConversationOrder::Desc => {
-            "SELECT id, event_type, payload, created_at FROM stream_events \
+            "SELECT id, event_type, payload, created_at, turn_id FROM stream_events \
              WHERE session_id = $1 AND ($2::bigint IS NULL OR id < $2) \
                AND ($4::bigint IS NULL OR id > $4) \
              ORDER BY id DESC LIMIT $3"
         }
         ConversationOrder::Asc => {
-            "SELECT id, event_type, payload, created_at FROM stream_events \
+            "SELECT id, event_type, payload, created_at, turn_id FROM stream_events \
              WHERE session_id = $1 AND ($2::bigint IS NULL OR id < $2) \
                AND ($4::bigint IS NULL OR id > $4) \
              ORDER BY id ASC LIMIT $3"
         }
     }
 }
+
+/// `(id, event_type, payload, created_at, turn_id)` — the column list of
+/// [`conversation_sql`], in order.
+type ConversationRow = (i64, String, serde_json::Value, DateTime<Utc>, Option<uuid::Uuid>);
 
 pub async fn get_conversation(
     State(state): State<AppState>,
@@ -1672,21 +1687,17 @@ pub async fn get_conversation(
     // the causal `seq` and is a strict total order, so a late-flushed
     // AskUserQuestion card+preamble keep their insert position even when their
     // `created_at` ties or lands after the user's answer.
-    let mut rows: Vec<(i64, String, serde_json::Value, DateTime<Utc>)> =
-        sqlx::query_as(conversation_sql(params.order))
-            .bind(&session_id)
-            .bind(params.before)
-            .bind(params.limit.map(|l| l.clamp(1, 10_000)))
-            .bind(params.after)
-            .fetch_all(&state.pool)
-            .await
-            .map_err(|e| {
-                tracing::error!("db error: {e}");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ApiError { error: "database error".into() }),
-                )
-            })?;
+    let mut rows: Vec<ConversationRow> = sqlx::query_as(conversation_sql(params.order))
+        .bind(&session_id)
+        .bind(params.before)
+        .bind(params.limit.map(|l| l.clamp(1, 10_000)))
+        .bind(params.after)
+        .fetch_all(&state.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!("db error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
+        })?;
     if params.order == ConversationOrder::Desc {
         rows.reverse();
     }
@@ -1734,12 +1745,15 @@ pub async fn get_conversation(
     // their own value.
     let normalized: Vec<serde_json::Value> = rows
         .into_iter()
-        .filter_map(|(id, event_type, payload, created_at)| {
+        .filter_map(|(id, event_type, payload, created_at, turn_id)| {
             crate::normalize::for_client(adapter_id, &event_type, payload).map(|mut v| {
                 if let Some(obj) = v.as_object_mut() {
                     obj.entry("ts")
                         .or_insert_with(|| serde_json::json!(created_at.timestamp_millis()));
                     obj.insert("seq".to_owned(), serde_json::json!(id));
+                    if let Some(turn_id) = turn_id {
+                        obj.insert("turn_id".to_owned(), serde_json::json!(turn_id));
+                    }
                     if let Some(message_id) =
                         obj.get("message_id").and_then(serde_json::Value::as_str)
                         && let Some(usage) = usage_by_message.get(message_id)
@@ -1778,6 +1792,7 @@ pub async fn send_message(
             ask_picks: None,
             env,
             command_id: Some(command_id),
+            turn_id: req.turn_id,
         },
     )
     .await;
@@ -2849,6 +2864,34 @@ mod tests {
             ).unwrap(),
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn last_message_sql_probes_once_per_session_under_the_partial_index() {
+        let sql = super::LAST_MESSAGE_SQL;
+        let migration =
+            include_str!("../../../../migrations/118_stream_events_latest_message.up.sql");
+
+        assert!(
+            migration.contains("WHERE event_type = 'message'"),
+            "migration 118 no longer carries the predicate this query is written against"
+        );
+        assert!(
+            sql.contains("event_type = 'message'"),
+            "the query must repeat the index predicate character for character"
+        );
+        assert!(
+            sql.contains("JOIN LATERAL") && sql.contains("LIMIT 1"),
+            "the per-session LIMIT 1 is what makes each session one index probe"
+        );
+        assert!(
+            !sql.contains("DISTINCT ON"),
+            "DISTINCT ON reads every message row of every listed session"
+        );
+        assert!(
+            !sql.contains("role"),
+            "a role filter here without the same filter in migration 118 loses the index"
+        );
     }
 
     #[test]

@@ -420,7 +420,8 @@ pub enum AgentEvent {
         content: String,
         #[serde(default)]
         meta: bool,
-        /// `thinking` | `redacted_thinking` | `attachment` | `system_marker`;
+        /// `thinking` | `redacted_thinking` | `attachment` | `system_marker` |
+        /// `turn_annotation`;
         /// `None` is ordinary visible prose. Free string so an unknown adapter
         /// kind still decodes.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -432,6 +433,11 @@ pub enum AgentEvent {
         usage: Option<crate::models::TokenUsage>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         seq: Option<i64>,
+        /// Identity of the human turn this text belongs to. `None` for
+        /// assistant text, for turns cctui did not originate, and for rows
+        /// stored before the column existed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        turn_id: Option<uuid::Uuid>,
     },
     ToolCall {
         tool: String,
@@ -470,6 +476,8 @@ pub enum AgentEvent {
         ts: i64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         seq: Option<i64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        turn_id: Option<uuid::Uuid>,
     },
     /// A context reset boundary (`/clear` or `/compact`). The session id rotates
     /// in place under the same worker; rather than splitting into a second
@@ -547,6 +555,15 @@ impl AgentEvent {
         };
         *slot = Some(value);
     }
+
+    /// Stamp the originating human turn's identity. Only the variants that can
+    /// carry a user turn (`Text`, `Reply`) have a slot; the rest ignore it.
+    pub const fn set_turn_id(&mut self, value: uuid::Uuid) {
+        match self {
+            Self::Text { turn_id, .. } | Self::Reply { turn_id, .. } => *turn_id = Some(value),
+            _ => {}
+        }
+    }
 }
 
 // --- TUI → Server ---
@@ -590,6 +607,11 @@ pub enum TuiCommand {
         /// flattened text so older daemons (and the fallback path) work.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         ask_picks: Option<Vec<Vec<usize>>>,
+        /// `UUIDv7` minted by the client when the human hit send, carried through
+        /// the daemon onto every event this turn produces so clients dedup by
+        /// identity. Absent from older clients, which fall back to content.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        turn_id: Option<uuid::Uuid>,
     },
     PermissionResponse {
         session_id: String,
@@ -793,6 +815,10 @@ pub enum ServerEvent {
         session_id: String,
         data: String,
     },
+    /// Liveness tick for the browser socket, on the same interval as the
+    /// WebSocket `Ping`. The JS `WebSocket` API exposes no ping/pong event, so a
+    /// client watchdog can only be fed by an application frame.
+    Heartbeat {},
 }
 
 #[cfg(test)]
@@ -809,6 +835,7 @@ mod tests {
             message_id: None,
             usage: None,
             seq: None,
+            turn_id: None,
         };
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains(r#""type":"text""#));
@@ -831,6 +858,7 @@ mod tests {
             message_id: None,
             usage: None,
             seq: None,
+            turn_id: None,
         };
         ev.set_seq(42);
         assert_eq!(ev.seq(), Some(42));
@@ -854,6 +882,7 @@ mod tests {
             message_id: None,
             usage: None,
             seq: Some(1),
+            turn_id: None,
         };
         let card = AgentEvent::ToolCall {
             tool: "AskUserQuestion".into(),
@@ -870,6 +899,7 @@ mod tests {
             message_id: None,
             usage: None,
             seq: Some(3),
+            turn_id: None,
         };
         // Deliberately shuffled so a stable ts-only sort would leave the answer
         // ahead of its own question.
@@ -890,7 +920,8 @@ mod tests {
 
     #[test]
     fn agent_event_reply_serialization() {
-        let event = AgentEvent::Reply { content: "acknowledged".into(), ts: 100, seq: None };
+        let event =
+            AgentEvent::Reply { content: "acknowledged".into(), ts: 100, seq: None, turn_id: None };
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains(r#""type":"reply""#));
         assert!(json.contains(r#""content":"acknowledged""#));
@@ -950,6 +981,7 @@ mod tests {
                 message_id: None,
                 usage: None,
                 seq: None,
+                turn_id: None,
             },
             AgentEvent::ToolCall {
                 tool: "Read".into(),
@@ -973,7 +1005,7 @@ mod tests {
                 ts: 4,
                 seq: None,
             },
-            AgentEvent::Reply { content: "done".into(), ts: 5, seq: None },
+            AgentEvent::Reply { content: "done".into(), ts: 5, seq: None, turn_id: None },
             AgentEvent::TurnEnd { ts: 6, seq: None },
         ];
         for event in variants {
@@ -996,6 +1028,7 @@ mod tests {
                 message_id: None,
                 usage: None,
                 seq: None,
+                turn_id: None,
             },
         };
         let json = serde_json::to_string(&event).unwrap();
@@ -1131,6 +1164,7 @@ mod tests {
             content: "hello".into(),
             client_msg_id: None,
             ask_picks: None,
+            turn_id: None,
         };
         let json = serde_json::to_string(&cmd).unwrap();
         assert!(json.contains(r#""type":"message""#));
@@ -1151,6 +1185,7 @@ mod tests {
             content: "hi".into(),
             client_msg_id: None,
             ask_picks: None,
+            turn_id: None,
         };
         let json = serde_json::to_string(&cmd).unwrap();
         assert!(!json.contains("client_msg_id"), "None must be skipped: {json}");
@@ -1174,6 +1209,7 @@ mod tests {
             content: "hi".into(),
             client_msg_id: Some("abc-123".into()),
             ask_picks: None,
+            turn_id: None,
         };
         let json = serde_json::to_string(&cmd).unwrap();
         assert!(json.contains(r#""client_msg_id":"abc-123""#));
@@ -1386,5 +1422,13 @@ mod tests {
         };
         let json = serde_json::to_string(&ev).unwrap();
         assert!(!json.contains("error"), "None error must be skipped: {json}");
+    }
+
+    #[test]
+    fn server_event_heartbeat_serializes_with_type_tag() {
+        let json = serde_json::to_string(&ServerEvent::Heartbeat {}).unwrap();
+        assert_eq!(json, r#"{"type":"heartbeat"}"#);
+        let back: ServerEvent = serde_json::from_str(&json).unwrap();
+        assert!(matches!(back, ServerEvent::Heartbeat {}));
     }
 }
