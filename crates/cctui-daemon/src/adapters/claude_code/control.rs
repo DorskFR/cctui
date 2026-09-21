@@ -223,7 +223,7 @@ type SpawnModelEffort = (Option<String>, Option<String>);
 /// How long after a reply op its turn id keeps landing on the session's user
 /// events. Claude emits the re-encodings within seconds; anything later is a
 /// different turn, most likely typed into the native TUI.
-const TURN_ID_WINDOW: Duration = Duration::from_secs(60);
+const TURN_ID_WINDOW: Duration = Duration::from_mins(1);
 
 #[derive(Clone, Copy)]
 struct PendingTurn {
@@ -3344,11 +3344,12 @@ impl Driver {
     fn turn_for(&self, local_id: &str) -> Option<uuid::Uuid> {
         let mut map = self.pending_turns.lock().ok()?;
         let pending = *map.get(local_id)?;
-        if pending.at.elapsed() > TURN_ID_WINDOW {
+        let live = pending.at.elapsed() <= TURN_ID_WINDOW;
+        if !live {
             map.remove(local_id);
-            return None;
         }
-        Some(pending.id)
+        drop(map);
+        live.then_some(pending.id)
     }
 }
 
