@@ -406,6 +406,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::literal_string_with_formatting_args)]
     fn safe_forms_are_not_refused() {
         assert_eq!(risk("rm -f /home/dorsk/Documents/repo/tmp/out.json"), None);
         assert_eq!(risk(r#"rm -f -- "${D:?}"/*.json"#), None);
