@@ -58,7 +58,6 @@ pub fn to_agent_event(adapter_id: &str, event_type: &str, payload: &Value) -> Op
                     error: payload.get("is_error").and_then(Value::as_bool).unwrap_or(false),
                     ts,
                     seq: None,
-                    turn_id: None,
                 });
             }
             let tool = payload.get("tool")?.as_str()?.to_owned();
@@ -69,7 +68,6 @@ pub fn to_agent_event(adapter_id: &str, event_type: &str, payload: &Value) -> Op
                 kind: kind.filter(|k| *k == "server_tool_use").map(str::to_owned),
                 ts,
                 seq: None,
-                turn_id: None,
             })
         }
         _ => None,
@@ -138,7 +136,6 @@ fn message_event(payload: &Value, ts: i64) -> Option<AgentEvent> {
                 needs_action,
                 ts,
                 seq: None,
-                turn_id: None,
             }
         }),
         "context_reset" => Some(AgentEvent::ContextReset { ts, seq: None }),
@@ -232,7 +229,6 @@ fn agent_event_from_canonical(v: &Value, ts: i64) -> Option<AgentEvent> {
             needs_action: v.get("needs_action").and_then(Value::as_bool).unwrap_or(false),
             ts,
             seq: None,
-            turn_id: None,
         }),
         "tool_call" => Some(AgentEvent::ToolCall {
             tool: v.get("tool").and_then(Value::as_str).unwrap_or_default().to_owned(),
@@ -240,7 +236,6 @@ fn agent_event_from_canonical(v: &Value, ts: i64) -> Option<AgentEvent> {
             kind: v.get("kind").and_then(Value::as_str).map(str::to_owned),
             ts,
             seq: None,
-            turn_id: None,
         }),
         "tool_result" => Some(AgentEvent::ToolResult {
             tool: String::new(),
@@ -253,7 +248,6 @@ fn agent_event_from_canonical(v: &Value, ts: i64) -> Option<AgentEvent> {
             error: v.get("error").and_then(Value::as_bool).unwrap_or(false),
             ts,
             seq: None,
-            turn_id: None,
         }),
         "context_reset" => Some(AgentEvent::ContextReset { ts, seq: None }),
         _ => None,
