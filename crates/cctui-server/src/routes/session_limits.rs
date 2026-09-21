@@ -54,7 +54,7 @@ pub struct WindowView {
     pub pace: Option<crate::pace::Pace>,
 }
 
-#[derive(Debug, PartialEq, serde::Serialize)]
+#[derive(Debug, PartialEq, Eq, serde::Serialize)]
 pub struct DecisionView {
     pub allow: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -110,6 +110,16 @@ fn deny(code: StatusCode, msg: impl Into<String>) -> (StatusCode, Json<ApiError>
     (code, Json(ApiError { error: msg.into() }))
 }
 
+/// The calling session's own row: who owns it, what it runs on, and any
+/// durable soft-limit block a previous refusal wrote onto it.
+#[derive(Debug, sqlx::FromRow)]
+struct SessionRow {
+    user_id: Option<Uuid>,
+    model: Option<String>,
+    soft_limit_reason: Option<String>,
+    soft_limit_key: Option<String>,
+}
+
 /// The account the session's live token is pinned to. Ordered so a live token
 /// wins over a revoked one, matching how the spawn path resolves the same row.
 #[derive(Debug, sqlx::FromRow)]
@@ -163,23 +173,23 @@ pub async fn session_limits(
     Query(q): Query<LimitsQuery>,
 ) -> Result<Json<SessionLimits>, (StatusCode, Json<ApiError>)> {
     let caller = crate::routes::spawn_child::machine_user(&state, &headers).await?;
-    let row: Option<(Option<Uuid>, Option<String>, Option<String>, Option<String>)> =
-        sqlx::query_as(
-            "SELECT user_id, model, soft_limit_reason, soft_limit_key FROM sessions WHERE id = $1",
-        )
-        .bind(&session_id)
-        .fetch_optional(&state.pool)
-        .await
-        .map_err(|e| {
-            tracing::error!(%session_id, "db error (session limits): {e}");
-            deny(StatusCode::INTERNAL_SERVER_ERROR, "database error")
-        })?;
-    let Some((user_id, session_model, block_reason, block_key)) = row else {
+    let row: Option<SessionRow> = sqlx::query_as(
+        "SELECT user_id, model, soft_limit_reason, soft_limit_key FROM sessions WHERE id = $1",
+    )
+    .bind(&session_id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| {
+        tracing::error!(%session_id, "db error (session limits): {e}");
+        deny(StatusCode::INTERNAL_SERVER_ERROR, "database error")
+    })?;
+    let Some(session) = row else {
         return Err(deny(StatusCode::NOT_FOUND, "calling session not found"));
     };
-    if user_id != Some(caller) {
+    if session.user_id != Some(caller) {
         return Err(deny(StatusCode::FORBIDDEN, "session belongs to another user"));
     }
+    let SessionRow { model: current_model, soft_limit_reason, soft_limit_key, .. } = session;
 
     let binding = binding_for(&state, &session_id).await.map_err(|e| {
         tracing::error!(%session_id, "db error (session limits binding): {e}");
@@ -228,7 +238,7 @@ pub async fn session_limits(
         .map(str::trim)
         .filter(|m| !m.is_empty())
         .map(str::to_owned)
-        .or(session_model);
+        .or(current_model);
     let decision = soft_limit::evaluate_soft_limit(&windows, &caps, model.as_deref(), now).into();
     let per_model = models_in_play(&windows, model.as_deref())
         .into_iter()
@@ -261,7 +271,7 @@ pub async fn session_limits(
         spend,
         decision,
         per_model,
-        block: block_reason.map(|reason| BlockView { reason, key: block_key }),
+        block: soft_limit_reason.map(|reason| BlockView { reason, key: soft_limit_key }),
         age_secs,
         stale: cache_stale,
     }))
