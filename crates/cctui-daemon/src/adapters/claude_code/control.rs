@@ -1658,8 +1658,9 @@ impl Driver {
             .output()
             .await
             .with_context(|| format!("spawning `{} rm {short}`", self.cfg.claude_bin))?;
+        let stdout = String::from_utf8_lossy(&out.stdout);
         let stderr = String::from_utf8_lossy(&out.stderr);
-        match classify_claude_rm(out.status.code(), out.status.success(), &stderr) {
+        match classify_claude_rm(out.status.code(), out.status.success(), &stdout, &stderr) {
             ClaudeRmOutcome::Removed => {
                 tracing::info!(%short, "removed claude job via `claude rm`");
                 Ok(())
@@ -3862,17 +3863,29 @@ enum ClaudeRmOutcome {
     Refused(String),
 }
 
-fn classify_claude_rm(code: Option<i32>, success: bool, stderr: &str) -> ClaudeRmOutcome {
+/// The CLI explains a refusal on **stdout** (`kept <short> — worktree is the
+/// working directory of a live session (pid …)`, then what to do about it)
+/// and reserves stderr for errors (`No job matching`, `couldn't remove …
+/// EACCES`). Both go into the detail, whitespace collapsed, so the operator
+/// reads the same message in the daemon log as at the prompt: a bare
+/// `exit 1` cost hours of guesswork on a worktree held by a live session.
+fn classify_claude_rm(
+    code: Option<i32>,
+    success: bool,
+    stdout: &str,
+    stderr: &str,
+) -> ClaudeRmOutcome {
     if success {
         return ClaudeRmOutcome::Removed;
     }
-    let stderr = stderr.trim();
     if stderr.contains("No job matching") {
         return ClaudeRmOutcome::AlreadyGone;
     }
     let code = code.map_or_else(|| "signal".to_owned(), |c| c.to_string());
+    let output =
+        [stderr, stdout].iter().flat_map(|s| s.split_whitespace()).collect::<Vec<_>>().join(" ");
     let detail =
-        if stderr.is_empty() { format!("exit {code}") } else { format!("exit {code}: {stderr}") };
+        if output.is_empty() { format!("exit {code}") } else { format!("exit {code}: {output}") };
     ClaudeRmOutcome::Refused(detail)
 }
 
@@ -4403,18 +4416,36 @@ mod tests {
     #[test]
     fn claude_rm_outcome_distinguishes_gone_from_refused() {
         use super::{ClaudeRmOutcome, classify_claude_rm};
-        assert_eq!(classify_claude_rm(Some(0), true, ""), ClaudeRmOutcome::Removed);
+        assert_eq!(classify_claude_rm(Some(0), true, "", ""), ClaudeRmOutcome::Removed);
         assert_eq!(
-            classify_claude_rm(Some(1), false, "No job matching 'ad162ca8'\n"),
+            classify_claude_rm(Some(1), false, "", "No job matching 'ad162ca8'\n"),
             ClaudeRmOutcome::AlreadyGone
         );
         assert_eq!(
-            classify_claude_rm(Some(1), false, "worktree has uncommitted changes: /w\n"),
+            classify_claude_rm(Some(1), false, "", "worktree has uncommitted changes: /w\n"),
             ClaudeRmOutcome::Refused("exit 1: worktree has uncommitted changes: /w".into())
         );
         assert_eq!(
-            classify_claude_rm(None, false, ""),
+            classify_claude_rm(None, false, "", ""),
             ClaudeRmOutcome::Refused("exit signal".into())
+        );
+        // The CLI's own explanation of a refusal is on stdout: it must reach
+        // the log, not be dropped for a bare exit code.
+        assert_eq!(
+            classify_claude_rm(
+                Some(1),
+                false,
+                "kept 229a5a4f — worktree is the working directory of a live session (pid 42)\n  worktree kept at /w\n  exit that session, then run 'claude rm 229a5a4f' again\n",
+                ""
+            ),
+            ClaudeRmOutcome::Refused(
+                "exit 1: kept 229a5a4f — worktree is the working directory of a live session (pid 42) worktree kept at /w exit that session, then run 'claude rm 229a5a4f' again".into()
+            )
+        );
+        // stderr first when both speak: the error before the narration.
+        assert_eq!(
+            classify_claude_rm(Some(1), false, "kept x\n", "EACCES: permission denied\n"),
+            ClaudeRmOutcome::Refused("exit 1: EACCES: permission denied kept x".into())
         );
     }
 

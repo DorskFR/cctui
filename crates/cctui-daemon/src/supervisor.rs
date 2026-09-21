@@ -26,8 +26,14 @@ use crate::sendguard::{MAX_ATTEMPTS, MAX_PAYLOAD_BYTES, SendGuard};
 
 /// Backoff schedule. Capped at the last entry on subsequent failures.
 const BACKOFF_SECS: &[u64] = &[5, 10, 20, 60];
-/// Minimum gap between two removal attempts of the same archived job.
+/// Gap before the first retry of a refused job removal. It doubles on
+/// every further refusal (see [`purge_gap`]).
 const PURGE_RETRY: Duration = Duration::from_mins(10);
+/// Ceiling of the doubling gap. A removal that can never succeed (an
+/// `EACCES` on a root-owned file, a worktree that is the cwd of a live
+/// session) is still retried, once a day, instead of every ten minutes
+/// forever: a 14-job backlog at ten minutes is ~2000 log lines a day.
+const PURGE_RETRY_MAX: Duration = Duration::from_hours(24);
 
 /// WS keepalive ping interval. Must be shorter than any idle timeout on
 /// the path (ingress, NAT, load balancer). 20s is comfortably below the
@@ -98,9 +104,61 @@ pub struct Supervisor {
     /// The in-flight purge of leaked claude jobs (see `purge_leaked_jobs`),
     /// aborted and restarted whenever a fresh archived list arrives.
     purge: std::sync::Mutex<Option<tokio::task::AbortHandle>>,
-    /// When each session's job removal was last queued, so a refused
-    /// `claude rm` is retried once per [`PURGE_RETRY`], not every heartbeat.
-    purge_attempts: std::sync::Mutex<HashMap<String, tokio::time::Instant>>,
+    /// When each session's job removal was last queued and how many times
+    /// it was found still on disk afterwards, so a refused `claude rm` is
+    /// retried on a doubling gap (see [`purge_gap`]), not every heartbeat.
+    purge_attempts: std::sync::Mutex<HashMap<String, PurgeAttempt>>,
+}
+
+/// One archived session's removal history, kept while its job dir is
+/// still on disk and dropped as soon as it is gone.
+#[derive(Debug, Clone, Copy)]
+struct PurgeAttempt {
+    /// When the last `Remove` was queued.
+    at: tokio::time::Instant,
+    /// How many earlier attempts left the job dir in place.
+    failures: u32,
+}
+
+/// Gap to wait after `failures` unsuccessful attempts: [`PURGE_RETRY`]
+/// doubled per failure, capped at [`PURGE_RETRY_MAX`].
+fn purge_gap(failures: u32) -> Duration {
+    let doubled = PURGE_RETRY.saturating_mul(1u32 << failures.min(16));
+    doubled.min(PURGE_RETRY_MAX)
+}
+
+/// Split `ids` (the archived sessions whose job dir is still on disk) into
+/// the ones due for a removal attempt now, recording that attempt. Ids no
+/// longer listed have been removed: their history is forgotten, so a job
+/// that leaks again starts from the first gap.
+fn purge_due(
+    attempts: &mut HashMap<String, PurgeAttempt>,
+    ids: Vec<String>,
+    now: tokio::time::Instant,
+) -> Vec<String> {
+    attempts.retain(|id, _| ids.contains(id));
+    let mut due = Vec::new();
+    for id in ids {
+        match attempts.get_mut(&id) {
+            None => {
+                attempts.insert(id.clone(), PurgeAttempt { at: now, failures: 0 });
+                due.push(id);
+            }
+            Some(attempt) if now.duration_since(attempt.at) >= purge_gap(attempt.failures) => {
+                attempt.failures += 1;
+                attempt.at = now;
+                tracing::info!(
+                    id = %id,
+                    failures = attempt.failures,
+                    next_gap_secs = purge_gap(attempt.failures).as_secs(),
+                    "claude job still on disk after removal; retrying"
+                );
+                due.push(id);
+            }
+            Some(_) => {}
+        }
+    }
+    due
 }
 
 impl Supervisor {
@@ -871,21 +929,12 @@ impl Supervisor {
 }
 
 impl Supervisor {
-    /// Drop the ids attempted within [`PURGE_RETRY`] and record the rest as
-    /// attempted now.
+    /// Drop the ids whose retry gap has not elapsed and record the rest as
+    /// attempted now (see [`purge_due`]).
     fn not_yet_attempted(&self, ids: Vec<String>) -> Vec<String> {
         let now = tokio::time::Instant::now();
         let mut attempts = self.purge_attempts.lock().unwrap();
-        attempts.retain(|_, at| now.duration_since(*at) < PURGE_RETRY);
-        let mut fresh = Vec::new();
-        for id in ids {
-            if !attempts.contains_key(&id) {
-                attempts.insert(id.clone(), now);
-                fresh.push(id);
-            }
-        }
-        drop(attempts);
-        fresh
+        purge_due(&mut attempts, ids, now)
     }
 }
 
@@ -1609,6 +1658,39 @@ mod tests {
             .await;
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert!(commands_rx.try_recv().is_err(), "removal must not repeat every heartbeat");
+    }
+
+    #[test]
+    fn purge_gap_doubles_and_caps() {
+        assert_eq!(super::purge_gap(0), Duration::from_mins(10));
+        assert_eq!(super::purge_gap(1), Duration::from_mins(20));
+        assert_eq!(super::purge_gap(3), Duration::from_mins(80));
+        assert_eq!(super::purge_gap(8), Duration::from_hours(24));
+        assert_eq!(super::purge_gap(40), Duration::from_hours(24));
+    }
+
+    /// A job that stays on disk after each attempt (a root-owned file, a
+    /// worktree occupied by a live session) is retried on a doubling gap,
+    /// and its history is forgotten once the dir is gone.
+    #[test]
+    fn purge_due_backs_off_while_the_job_stays_on_disk() {
+        let mut attempts = std::collections::HashMap::new();
+        let job = || vec!["deadbeef".to_owned()];
+        let t0 = tokio::time::Instant::from_std(std::time::Instant::now());
+        assert_eq!(super::purge_due(&mut attempts, job(), t0), job(), "first sighting is due");
+        assert!(super::purge_due(&mut attempts, job(), t0 + Duration::from_mins(9)).is_empty());
+        assert_eq!(super::purge_due(&mut attempts, job(), t0 + Duration::from_mins(10)), job());
+        // Second failure: the gap is now 20 minutes.
+        let t1 = t0 + Duration::from_mins(10);
+        assert!(super::purge_due(&mut attempts, job(), t1 + Duration::from_mins(19)).is_empty());
+        assert_eq!(super::purge_due(&mut attempts, job(), t1 + Duration::from_mins(20)), job());
+        assert_eq!(attempts["deadbeef"].failures, 2);
+        // The dir is gone (or the session is no longer archived): forgotten,
+        // so a fresh leak of the same id starts over at the first gap.
+        assert!(super::purge_due(&mut attempts, vec![], t1 + Duration::from_mins(21)).is_empty());
+        assert!(attempts.is_empty());
+        assert_eq!(super::purge_due(&mut attempts, job(), t1 + Duration::from_mins(22)), job());
+        assert_eq!(attempts["deadbeef"].failures, 0);
     }
 
     #[test]
