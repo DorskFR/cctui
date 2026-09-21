@@ -354,6 +354,11 @@ fn round_pct(v: f64) -> String {
     format!("{}%", v.round() as i64)
 }
 
+/// A dollar cap as a human writes it: `$20`, not `$20.00`, but `$7.50` intact.
+fn money(v: f64) -> String {
+    if (v - v.round()).abs() < 0.005 { format!("{:.0}", v.round()) } else { format!("{v:.2}") }
+}
+
 /// Condense a limits payload into the single line a model reads first.
 fn render_usage(v: &Value) -> String {
     let mut parts: Vec<String> = Vec::new();
@@ -378,7 +383,7 @@ fn render_usage(v: &Value) -> String {
     }
     if let Some(cap) = v.pointer("/caps/session_usd/cap_usd").and_then(Value::as_f64) {
         let spent = v.pointer("/spend/session_usd").and_then(Value::as_f64).unwrap_or(0.0);
-        parts.push(format!("budget ${spent:.2}/${cap:g}"));
+        parts.push(format!("budget ${spent:.2}/${}", money(cap)));
     }
     if let Some(models) = v.get("per_model").and_then(Value::as_object) {
         let mut names: Vec<&String> = models.keys().collect();
@@ -466,6 +471,9 @@ async fn run_call(
                 "CctuiAgent following child after follow-up",
             );
             (handle, req.session_id.clone())
+        }
+        CallKind::Usage { .. } => {
+            unreachable!("a usage call returns above; it has no child to spawn or follow")
         }
     };
     let result =
@@ -1194,6 +1202,25 @@ mod tests {
         assert!(stale.contains("shared"), "{stale}");
         assert!(stale.contains("usage cache stale"), "{stale}");
         assert_eq!(render_usage(&json!({})), "no usage information is available for this session");
+    }
+
+    #[test]
+    fn a_whole_dollar_cap_drops_its_cents_and_a_fractional_one_keeps_them() {
+        assert_eq!(money(20.0), "20");
+        assert_eq!(money(5.0), "5");
+        assert_eq!(money(0.0), "0");
+        assert_eq!(money(7.5), "7.50");
+        assert_eq!(money(0.25), "0.25");
+        assert_eq!(money(3.42), "3.42");
+    }
+
+    #[test]
+    fn a_fractional_budget_cap_renders_with_cents() {
+        let line = render_usage(&json!({
+            "caps": { "session_usd": { "cap_usd": 0.5 } },
+            "spend": { "session_usd": 0.13 },
+        }));
+        assert!(line.contains("budget $0.13/$0.50"), "{line}");
     }
 
     #[test]
