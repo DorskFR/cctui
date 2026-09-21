@@ -387,6 +387,7 @@ fn hibernated_status(local_id: String) -> AdapterEvent {
         intent: None,
         model: None,
         effort: None,
+        permission_mode: None,
         children: Vec::new(),
     }
 }

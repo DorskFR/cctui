@@ -1360,6 +1360,7 @@ async fn handle_event(
             intent,
             model,
             effort,
+            permission_mode,
             children,
         } => {
             // Persist the classifier signals + display metadata so
@@ -1377,6 +1378,9 @@ async fn handle_event(
                     intent: intent.as_deref(),
                     model: model.as_deref(),
                     effort: effort.as_deref(),
+                    permission_mode: permission_mode
+                        .and_then(|m| serde_json::to_value(m).ok())
+                        .and_then(|v| v.as_str().map(str::to_owned)),
                     children: &children,
                 },
             )
@@ -1460,6 +1464,7 @@ struct StatusSignals<'a> {
     intent: Option<&'a str>,
     model: Option<&'a str>,
     effort: Option<&'a str>,
+    permission_mode: Option<String>,
     children: &'a [cctui_proto::adapter::SessionChild],
 }
 
@@ -1529,6 +1534,7 @@ async fn update_status_signals(
             intent = COALESCE($6, sessions.intent), \
             model = COALESCE(sessions.model, $7), \
             effort = COALESCE($8, sessions.effort), \
+            permission_mode = COALESCE($11, sessions.permission_mode), \
             children = CASE WHEN jsonb_array_length($9) > 0 THEN $9 ELSE sessions.children END \
          FROM prev \
          WHERE sessions.id = prev.id \
@@ -1544,6 +1550,7 @@ async fn update_status_signals(
     .bind(s.effort)
     .bind(children)
     .bind(decorated.as_deref())
+    .bind(s.permission_mode.as_deref())
     .fetch_optional(&state.pool)
     .await?;
 

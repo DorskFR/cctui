@@ -216,6 +216,10 @@ pub enum AdapterEvent {
         /// Reasoning/effort level (e.g. `"low"`, `"high"`), when set.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         effort: Option<String>,
+        /// Permission posture the session is actually running under, as
+        /// observed (claude reports it in the transcript, not in `state.json`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        permission_mode: Option<PermissionMode>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         children: Vec<SessionChild>,
     },
@@ -1006,6 +1010,7 @@ mod tests {
             intent: None,
             model: Some("opus[1m]".into()),
             effort: Some("low".into()),
+            permission_mode: None,
             children: vec![SessionChild {
                 id: "1972".into(),
                 href: "https://github.com/o/r/pull/1972".into(),
@@ -1030,6 +1035,7 @@ mod tests {
             intent: None,
             model: None,
             effort: None,
+            permission_mode: None,
             children: vec![],
         };
         let json = serde_json::to_string(&evt).unwrap();

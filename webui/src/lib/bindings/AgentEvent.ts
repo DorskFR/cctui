@@ -4,7 +4,8 @@ import type { JsonValue } from "./serde_json/JsonValue";
 
 export type AgentEvent = { "type": "text", content: string, meta: boolean, 
 /**
- * `thinking` | `redacted_thinking` | `attachment` | `system_marker`;
+ * `thinking` | `redacted_thinking` | `attachment` | `system_marker` |
+ * `turn_annotation`;
  * `None` is ordinary visible prose. Free string so an unknown adapter
  * kind still decodes.
  */
