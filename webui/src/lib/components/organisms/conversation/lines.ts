@@ -278,7 +278,10 @@ function attachAnnotation(out: Line[], content: string, pending: { attachments: 
 		}
 		case 'file_history': {
 			const owner = ownerLine(out, ['tool'], ['user', 'poll', 'peer', 'reset']);
-			if (owner && detail) (owner.fileHistory ??= []).push(detail);
+			if (owner && detail) {
+				owner.fileHistory ??= [];
+				owner.fileHistory.push(detail);
+			}
 			return;
 		}
 	}
