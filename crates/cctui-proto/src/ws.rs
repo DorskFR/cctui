@@ -607,7 +607,7 @@ pub enum TuiCommand {
         /// flattened text so older daemons (and the fallback path) work.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         ask_picks: Option<Vec<Vec<usize>>>,
-        /// UUIDv7 minted by the client when the human hit send, carried through
+        /// `UUIDv7` minted by the client when the human hit send, carried through
         /// the daemon onto every event this turn produces so clients dedup by
         /// identity. Absent from older clients, which fall back to content.
         #[serde(default, skip_serializing_if = "Option::is_none")]
