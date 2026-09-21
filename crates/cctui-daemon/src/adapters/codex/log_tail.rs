@@ -108,7 +108,7 @@ pub type ResumeMarks = Arc<Mutex<HashMap<String, u64>>>;
 
 /// How far behind the persisted offset the reconcile pass backs up before
 /// re-reading, mirroring the claude-code transcript tailer. The server's
-/// `(session_id, event_type, content_hash)` dedup drops every replayed
+/// `(session_id, event_type, content_hash, turn_id)` dedup drops every replayed
 /// duplicate, so the window can be generous.
 pub const RECONCILE_BACKUP_BYTES: u64 = 64 * 1024;
 
