@@ -629,6 +629,7 @@ mod tests {
             intent: None,
             model: None,
             effort: None,
+            permission_mode: None,
             children: Vec::new(),
         }
     }

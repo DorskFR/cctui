@@ -73,6 +73,15 @@ pub fn to_agent_event(adapter_id: &str, event_type: &str, payload: &Value) -> Op
                     usage: None,
                     seq: None,
                 }),
+                "turn_annotation" => Some(AgentEvent::Text {
+                    content: text.to_owned(),
+                    meta: true,
+                    kind: text_kind(role),
+                    ts,
+                    message_id: None,
+                    usage: None,
+                    seq: None,
+                }),
                 "system_marker" => Some(AgentEvent::Text {
                     content: format!("· {text}"),
                     meta: true,
@@ -134,6 +143,7 @@ fn text_kind(role: &str) -> Option<String> {
         "assistant_redacted_thinking" => "redacted_thinking",
         "assistant_attachment" => "attachment",
         "system_marker" => "system_marker",
+        "turn_annotation" => "turn_annotation",
         _ => return None,
     };
     Some(kind.to_owned())

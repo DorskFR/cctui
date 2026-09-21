@@ -420,7 +420,8 @@ pub enum AgentEvent {
         content: String,
         #[serde(default)]
         meta: bool,
-        /// `thinking` | `redacted_thinking` | `attachment` | `system_marker`;
+        /// `thinking` | `redacted_thinking` | `attachment` | `system_marker` |
+        /// `turn_annotation`;
         /// `None` is ordinary visible prose. Free string so an unknown adapter
         /// kind still decodes.
         #[serde(default, skip_serializing_if = "Option::is_none")]
