@@ -504,7 +504,7 @@ pub enum AdapterCommand {
         /// `None` for non-client callers.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         command_id: Option<Uuid>,
-        /// Client-minted identity of this human turn (UUIDv7). The adapter
+        /// Client-minted identity of this human turn (`UUIDv7`). The adapter
         /// stamps it onto every [`AdapterEvent::Message`] the injected turn
         /// produces, so the several encodings Claude stores one turn in share
         /// one key. `None` for callers that mint none.
