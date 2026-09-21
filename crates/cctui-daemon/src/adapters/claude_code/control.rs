@@ -3391,6 +3391,13 @@ fn agent_tool_context(cap: &cctui_proto::api::SpawnCapability) -> String {
         "  example: mcp__cctui__CctuiAgent({{\"adapter\": \"{adapter}\", \"prompt\": \
          \"Review the diff on branch X and list real defects\", \"cwd\": \"/path/to/repo\"}})"
     );
+    b.push_str(
+        "CctuiUsage: `mcp__cctui__CctuiUsage` reports the rate limits and budget that apply to \
+         THIS session — the account it is pinned to (possibly shared or pool-elected, not \
+         necessarily your own), its usage windows, this session's spend, and whether each model \
+         is currently allowed or soft-limit blocked. Check it before a fan-out and when picking \
+         a child's model: a blocked model burns the whole batch on 429s. Takes no arguments.\n",
+    );
     b
 }
 
@@ -4274,11 +4281,14 @@ mod tests {
         assert!(block.contains("adapters you may spawn: claude-code, codex, opencode"));
         assert!(block.contains("per-child budget ceiling: $20"));
         assert!(block.contains("example: mcp__cctui__CctuiAgent({\"adapter\": \"claude-code\""));
+        assert!(block.contains("mcp__cctui__CctuiUsage"), "the limits tool is announced too");
+        assert!(block.contains("blocked model burns the whole batch"), "{block}");
         assert!(block.ends_with("</session-context>"));
 
         let empty = cctui_proto::api::SpawnCapability::default();
         let block = build_session_context(&spec, "/work/cctui", &[], Some(&empty));
         assert!(!block.contains("CctuiAgent"), "an empty capability advertises nothing");
+        assert!(!block.contains("CctuiUsage"), "the relay is absent, so neither tool exists");
     }
 
     #[test]
