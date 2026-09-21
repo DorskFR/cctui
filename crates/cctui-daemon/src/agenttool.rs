@@ -42,6 +42,7 @@ pub fn socket_path() -> PathBuf {
         .unwrap_or_else(|| std::env::temp_dir().join("cctui-agent.sock"))
 }
 
+#[derive(Debug)]
 enum CallKind {
     Spawn(SpawnChildRequest),
     Message(MessageChildRequest),
@@ -52,6 +53,7 @@ enum CallKind {
     },
 }
 
+#[derive(Debug)]
 struct Call {
     session_id: String,
     kind: CallKind,
