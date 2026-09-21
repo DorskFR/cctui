@@ -24,7 +24,8 @@ pub struct DangerousRm {
 }
 
 impl RmRisk {
-    pub fn description(self) -> &'static str {
+    #[must_use]
+    pub const fn description(self) -> &'static str {
         match self {
             Self::UnexpandedVariable => "an unexpanded shell variable that may expand to nothing",
             Self::RelativeGlobAfterCd => "a relative glob in a command that also changes directory",
@@ -41,6 +42,7 @@ const CRITICAL_PATHS: &[&str] = &[
 
 /// Classify `command`, returning the first `rm`/`rmdir` target that would trip
 /// the bypass-immune check. `cwd` is the session working directory when known.
+#[must_use]
 pub fn dangerous_removal(command: &str, cwd: Option<&str>) -> Option<DangerousRm> {
     let mut changes_dir = false;
     for segment in lex(command) {
@@ -139,7 +141,7 @@ enum Expansion {
     Unprotected,
 }
 
-fn merge(a: Expansion, b: Expansion) -> Expansion {
+const fn merge(a: Expansion, b: Expansion) -> Expansion {
     match (a, b) {
         (Expansion::Unprotected, _) | (_, Expansion::Unprotected) => Expansion::Unprotected,
         (Expansion::Protected, _) | (_, Expansion::Protected) => Expansion::Protected,
@@ -162,8 +164,47 @@ struct Builder {
 }
 
 impl Builder {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self { text: String::new(), expansion: Expansion::None, glob: false, started: false }
+    }
+
+    /// Returns the next index.
+    fn push_expansion(&mut self, chars: &[char], at: usize) -> usize {
+        let (literal, kind, consumed) = read_expansion(chars, at);
+        self.text.push_str(&literal);
+        self.expansion = merge(self.expansion, kind);
+        at + consumed
+    }
+
+    /// Returns the next index. Nothing inside a single-quoted run expands.
+    fn read_single_quoted(&mut self, chars: &[char], at: usize) -> usize {
+        self.started = true;
+        let mut i = at + 1;
+        while i < chars.len() && chars[i] != '\'' {
+            self.text.push(chars[i]);
+            i += 1;
+        }
+        i + usize::from(i < chars.len())
+    }
+
+    /// Returns the next index. Expansions inside double quotes still count.
+    fn read_double_quoted(&mut self, chars: &[char], at: usize) -> usize {
+        self.started = true;
+        let mut i = at + 1;
+        while i < chars.len() && chars[i] != '"' {
+            if chars[i] == '\\' && i + 1 < chars.len() {
+                self.text.push(chars[i + 1]);
+                i += 2;
+                continue;
+            }
+            if chars[i] == '$' {
+                i = self.push_expansion(chars, i);
+                continue;
+            }
+            self.text.push(chars[i]);
+            i += 1;
+        }
+        i + usize::from(i < chars.len())
     }
 
     fn flush(&mut self, segment: &mut Vec<Token>) {
@@ -194,7 +235,7 @@ fn lex(command: &str) -> Vec<Vec<Token>> {
                 tok.flush(&mut segment);
                 i += 1;
             }
-            '\n' | ';' => {
+            '\n' | ';' | '(' | ')' | '{' | '}' => {
                 tok.flush(&mut segment);
                 if !segment.is_empty() {
                     segments.push(std::mem::take(&mut segment));
@@ -211,43 +252,8 @@ fn lex(command: &str) -> Vec<Vec<Token>> {
                     i += 1;
                 }
             }
-            '(' | ')' | '{' | '}' => {
-                tok.flush(&mut segment);
-                if !segment.is_empty() {
-                    segments.push(std::mem::take(&mut segment));
-                }
-                i += 1;
-            }
-            '\'' => {
-                tok.started = true;
-                i += 1;
-                while i < len && chars[i] != '\'' {
-                    tok.text.push(chars[i]);
-                    i += 1;
-                }
-                i += usize::from(i < len);
-            }
-            '"' => {
-                tok.started = true;
-                i += 1;
-                while i < len && chars[i] != '"' {
-                    if chars[i] == '\\' && i + 1 < len {
-                        tok.text.push(chars[i + 1]);
-                        i += 2;
-                        continue;
-                    }
-                    if chars[i] == '$' {
-                        let (literal, kind, consumed) = read_expansion(&chars, i);
-                        tok.text.push_str(&literal);
-                        tok.expansion = merge(tok.expansion, kind);
-                        i += consumed;
-                        continue;
-                    }
-                    tok.text.push(chars[i]);
-                    i += 1;
-                }
-                i += usize::from(i < len);
-            }
+            '\'' => i = tok.read_single_quoted(&chars, i),
+            '"' => i = tok.read_double_quoted(&chars, i),
             '\\' => {
                 tok.started = true;
                 if i + 1 < len {
@@ -259,10 +265,7 @@ fn lex(command: &str) -> Vec<Vec<Token>> {
             }
             '$' => {
                 tok.started = true;
-                let (literal, kind, consumed) = read_expansion(&chars, i);
-                tok.text.push_str(&literal);
-                tok.expansion = merge(tok.expansion, kind);
-                i += consumed;
+                i = tok.push_expansion(&chars, i);
             }
             '*' | '?' | '[' => {
                 tok.started = true;
