@@ -794,6 +794,10 @@ pub enum ServerEvent {
         session_id: String,
         data: String,
     },
+    /// Liveness tick for the browser socket, on the same interval as the
+    /// WebSocket `Ping`. The JS `WebSocket` API exposes no ping/pong event, so a
+    /// client watchdog can only be fed by an application frame.
+    Heartbeat {},
 }
 
 #[cfg(test)]
@@ -1387,5 +1391,13 @@ mod tests {
         };
         let json = serde_json::to_string(&ev).unwrap();
         assert!(!json.contains("error"), "None error must be skipped: {json}");
+    }
+
+    #[test]
+    fn server_event_heartbeat_serializes_with_type_tag() {
+        let json = serde_json::to_string(&ServerEvent::Heartbeat {}).unwrap();
+        assert_eq!(json, r#"{"type":"heartbeat"}"#);
+        let back: ServerEvent = serde_json::from_str(&json).unwrap();
+        assert!(matches!(back, ServerEvent::Heartbeat {}));
     }
 }

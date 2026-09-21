@@ -70,7 +70,10 @@ const TUI_KEEPALIVE: std::time::Duration = std::time::Duration::from_secs(20);
 
 /// Besides forwarding events, the outbound pump sends a periodic `Ping`: a
 /// browser that slept leaves a half-open socket that never errors on read, so
-/// only a write failure retires this task and releases its relays.
+/// only a write failure retires this task and releases its relays. The paired
+/// [`ServerEvent::Heartbeat`] carries the same tick to the browser, which cannot
+/// observe a `Ping`; it is written per-socket here rather than broadcast, so it
+/// reaches every client whether or not any daemon is online.
 fn spawn_send_task(
     mut sink: futures_util::stream::SplitSink<WebSocket, Message>,
     mut rx: mpsc::Receiver<ServerEvent>,
@@ -96,6 +99,11 @@ fn spawn_send_task(
                 }
                 _ = keepalive.tick() => {
                     if sink.send(Message::Ping(Vec::new().into())).await.is_err() {
+                        break;
+                    }
+                    let beat = serde_json::to_string(&ServerEvent::Heartbeat {})
+                        .expect("Heartbeat serializes");
+                    if sink.send(Message::Text(beat.into())).await.is_err() {
                         break;
                     }
                 }
