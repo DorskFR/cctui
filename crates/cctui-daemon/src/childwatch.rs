@@ -24,11 +24,13 @@ use tokio::sync::Notify;
 /// assistant text to land (claude's transcript tail can lag the status poll).
 pub const DONE_TEXT_GRACE: Duration = Duration::from_secs(20);
 /// How long assistant text must stand as a child's last output before the turn
-/// counts as over on that evidence alone. The claude driver emits a `Status`
-/// only when the polled snapshot *changes*, so a follow-up turn running between
-/// two identical idle readings produces no done status and the text is the only
-/// turn-end evidence there is. Text and the tool call that follows it belong to
-/// one assistant response and arrive together, so a gap this long is real.
+/// counts as over.
+///
+/// The claude driver emits a `Status` only when the polled snapshot *changes*,
+/// so a follow-up turn running between two identical idle readings produces no
+/// done status and the text is the only turn-end evidence there is. Text and
+/// the tool call that follows it belong to one assistant response and arrive
+/// together, so a gap this long is real.
 pub const TEXT_QUIET_GRACE: Duration = Duration::from_secs(10);
 /// Trust window for early done readings.
 ///

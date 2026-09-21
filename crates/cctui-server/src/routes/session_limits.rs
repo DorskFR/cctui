@@ -199,7 +199,7 @@ pub async fn session_limits(
         .account_usage_cache
         .get(&binding.provider_id)
         .map_or(0, |hit| hit.fetched_at.elapsed().as_secs());
-    let stale = usage.is_none()
+    let cache_stale = usage.is_none()
         || gateway::usage_cache_stale(
             state.account_usage_cache.get(&binding.provider_id).map(|hit| hit.fetched_at.elapsed()),
             crate::routes::accounts::USAGE_CACHE_TTL.to_std().unwrap_or_default(),
@@ -263,7 +263,7 @@ pub async fn session_limits(
         per_model,
         block: block_reason.map(|reason| BlockView { reason, key: block_key }),
         age_secs,
-        stale,
+        stale: cache_stale,
     }))
 }
 
