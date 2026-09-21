@@ -26,6 +26,8 @@ use crate::sendguard::{MAX_ATTEMPTS, MAX_PAYLOAD_BYTES, SendGuard};
 
 /// Backoff schedule. Capped at the last entry on subsequent failures.
 const BACKOFF_SECS: &[u64] = &[5, 10, 20, 60];
+/// Minimum gap between two removal attempts of the same archived job.
+const PURGE_RETRY: Duration = Duration::from_mins(10);
 
 /// WS keepalive ping interval. Must be shorter than any idle timeout on
 /// the path (ingress, NAT, load balancer). 20s is comfortably below the
@@ -94,8 +96,11 @@ pub struct Supervisor {
     /// WS keepalive cadence; [`PING_INTERVAL`] outside tests.
     ping_interval: Duration,
     /// The in-flight purge of leaked claude jobs (see `purge_leaked_jobs`),
-    /// aborted and restarted whenever a fresh `ResumeMarks` arrives.
+    /// aborted and restarted whenever a fresh archived list arrives.
     purge: std::sync::Mutex<Option<tokio::task::AbortHandle>>,
+    /// When each session's job removal was last queued, so a refused
+    /// `claude rm` is retried once per [`PURGE_RETRY`], not every heartbeat.
+    purge_attempts: std::sync::Mutex<HashMap<String, tokio::time::Instant>>,
 }
 
 impl Supervisor {
@@ -117,6 +122,7 @@ impl Supervisor {
             connected: tokio::sync::broadcast::Sender::new(CONNECT_SIGNAL_BUFFER),
             ping_interval: PING_INTERVAL,
             purge: std::sync::Mutex::new(None),
+            purge_attempts: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -377,6 +383,7 @@ impl Supervisor {
                                 .resources
                                 .lock()
                                 .map_or(None, |mut s| s.sample()),
+                            claude_jobs: claude_jobs_root(running).map(|root| jobs_on_disk(&root)),
                         };
                         let payload = serde_json::to_string(&hb)?;
                         self.counters.add(Subsystem::Heartbeat, payload.len() as u64);
@@ -478,36 +485,10 @@ impl Supervisor {
                         tracing::warn!(%adapter_id, "adapter busy; resume marks dropped until next connect");
                     }
                 }
-                if let Some(claude) = running.get(CLAUDE_ADAPTER_ID) {
-                    let jobs_root = claude
-                        .config
-                        .get("jobs_root")
-                        .and_then(serde_json::Value::as_str)
-                        .map_or_else(
-                            crate::adapters::claude_code::state::default_jobs_root,
-                            std::path::PathBuf::from,
-                        );
-                    let leaked = leaked_jobs(&jobs_root, &archived);
-                    let mut purge = self.purge.lock().unwrap();
-                    // One purge at a time: the fresh list supersedes whatever
-                    // the previous connection was still working through.
-                    if let Some(previous) = purge.take() {
-                        previous.abort();
-                    }
-                    if !leaked.is_empty() {
-                        tracing::info!(
-                            count = leaked.len(),
-                            "removing claude jobs of archived sessions"
-                        );
-                        let task = tokio::spawn(purge_leaked_jobs(
-                            claude.commands_tx.clone(),
-                            claude.shutdown.clone(),
-                            jobs_root,
-                            leaked,
-                        ));
-                        *purge = Some(task.abort_handle());
-                    }
-                }
+                self.purge_archived_jobs(running, &archived);
+            }
+            DaemonFrameDown::ArchivedJobs { session_ids } => {
+                self.purge_archived_jobs(running, &session_ids);
             }
             DaemonFrameDown::StageFiles { request_id, adapter_id, local_id, uploads } => {
                 let up = stage_files_result(request_id, &adapter_id, &local_id, &uploads);
@@ -862,6 +843,73 @@ impl AdapterRunning {
     }
 }
 
+impl Supervisor {
+    /// Queue a `Remove` for every archived session whose claude job is still
+    /// on disk and was not already attempted within [`PURGE_RETRY`].
+    fn purge_archived_jobs(&self, running: &HashMap<String, AdapterRunning>, archived: &[String]) {
+        let Some(claude) = running.get(CLAUDE_ADAPTER_ID) else { return };
+        let Some(jobs_root) = claude_jobs_root(running) else { return };
+        let leaked = self.not_yet_attempted(leaked_jobs(&jobs_root, archived));
+        if leaked.is_empty() {
+            return;
+        }
+        let mut purge = self.purge.lock().unwrap();
+        // One purge at a time: the fresh list supersedes whatever the
+        // previous one was still working through.
+        if let Some(previous) = purge.take() {
+            previous.abort();
+        }
+        tracing::info!(count = leaked.len(), "removing claude jobs of archived sessions");
+        let task = tokio::spawn(purge_leaked_jobs(
+            claude.commands_tx.clone(),
+            claude.shutdown.clone(),
+            jobs_root,
+            leaked,
+        ));
+        *purge = Some(task.abort_handle());
+    }
+}
+
+impl Supervisor {
+    /// Drop the ids attempted within [`PURGE_RETRY`] and record the rest as
+    /// attempted now.
+    fn not_yet_attempted(&self, ids: Vec<String>) -> Vec<String> {
+        let now = tokio::time::Instant::now();
+        let mut attempts = self.purge_attempts.lock().unwrap();
+        attempts.retain(|_, at| now.duration_since(*at) < PURGE_RETRY);
+        let mut fresh = Vec::new();
+        for id in ids {
+            if !attempts.contains_key(&id) {
+                attempts.insert(id.clone(), now);
+                fresh.push(id);
+            }
+        }
+        drop(attempts);
+        fresh
+    }
+}
+
+/// The claude adapter's jobs root, when the adapter is running.
+fn claude_jobs_root(running: &HashMap<String, AdapterRunning>) -> Option<std::path::PathBuf> {
+    let claude = running.get(CLAUDE_ADAPTER_ID)?;
+    Some(claude.config.get("jobs_root").and_then(serde_json::Value::as_str).map_or_else(
+        crate::adapters::claude_code::state::default_jobs_root,
+        std::path::PathBuf::from,
+    ))
+}
+
+/// Shorts of the job directories under `jobs_root`, sorted.
+fn jobs_on_disk(jobs_root: &std::path::Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(jobs_root) else { return Vec::new() };
+    let mut shorts: Vec<String> = entries
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .filter_map(|e| crate::configsweep::short_of(&e.file_name().to_string_lossy()))
+        .collect();
+    shorts.sort();
+    shorts
+}
+
 async fn stop_adapters(running: &mut HashMap<String, AdapterRunning>) {
     let ids: Vec<String> = running.keys().cloned().collect();
     for id in ids {
@@ -1133,6 +1181,7 @@ mod tests {
     use tokio::sync::mpsc;
     use tokio_util::sync::CancellationToken;
 
+    use cctui_proto::adapter::AdapterCommand;
     use cctui_proto::chunk::{Accept, Reassembler};
     use cctui_proto::ws::DaemonFrameUp;
 
@@ -1463,6 +1512,116 @@ mod tests {
         assert!(commands_rx.try_recv().is_err(), "a session without a job dir must not be removed");
     }
 
+    fn claude_running(
+        jobs: &std::path::Path,
+        commands_tx: mpsc::Sender<AdapterCommand>,
+    ) -> std::collections::HashMap<String, AdapterRunning> {
+        let mut running = std::collections::HashMap::new();
+        running.insert(
+            "claude-code".to_owned(),
+            AdapterRunning {
+                shutdown: CancellationToken::new(),
+                config: serde_json::json!({ "jobs_root": jobs.to_str().unwrap() }),
+                commands_tx,
+                tasks: Vec::new(),
+            },
+        );
+        running
+    }
+
+    async fn expect_removals(
+        commands_rx: &mut mpsc::Receiver<AdapterCommand>,
+        count: usize,
+    ) -> Vec<String> {
+        let mut removed = Vec::new();
+        while removed.len() < count {
+            let cmd = tokio::time::timeout(Duration::from_secs(5), commands_rx.recv())
+                .await
+                .expect("purge must queue the leaked removals")
+                .expect("command channel open");
+            match cmd {
+                AdapterCommand::Remove { local_id, command_id } => {
+                    assert!(command_id.is_none());
+                    removed.push(local_id);
+                }
+                other => panic!("expected Remove, got {other:?}"),
+            }
+        }
+        removed
+    }
+
+    #[tokio::test]
+    async fn archived_jobs_frame_removes_leaked_jobs_once_per_retry_window() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jobs = tmp.path().join("jobs");
+        std::fs::create_dir_all(jobs.join("deadbeef")).unwrap();
+        std::fs::create_dir_all(jobs.join("cafebabe")).unwrap();
+        let (commands_tx, mut commands_rx) = mpsc::channel(8);
+        let mut running = claude_running(&jobs, commands_tx);
+        let (event_tx, _event_rx) = mpsc::channel(8);
+        let (frame_up_tx, _frame_up_rx) = mpsc::channel(8);
+        let mut scrub = cctui_crypto::redact::CompiledPatterns::disabled();
+        let supervisor = Supervisor::new(
+            ServerClient::new("http://localhost"),
+            "machine-key".to_string(),
+            vec![],
+        );
+        let frame = || cctui_proto::ws::DaemonFrameDown::ArchivedJobs {
+            session_ids: vec![
+                "deadbeef-0000-0000-0000-000000000000".to_owned(),
+                "12345678-0000-0000-0000-000000000000".to_owned(),
+                "cafebabe-0000-0000-0000-000000000000".to_owned(),
+            ],
+        };
+        supervisor
+            .handle_frame(
+                frame(),
+                &mut running,
+                &event_tx,
+                &frame_up_tx,
+                &mut scrub,
+                &CancellationToken::new(),
+            )
+            .await;
+        assert_eq!(
+            expect_removals(&mut commands_rx, 2).await,
+            vec![
+                "deadbeef-0000-0000-0000-000000000000".to_owned(),
+                "cafebabe-0000-0000-0000-000000000000".to_owned(),
+            ]
+        );
+        tokio::task::yield_now().await;
+        assert!(commands_rx.try_recv().is_err(), "a session without a job dir must not be removed");
+
+        // The next heartbeat's answer names the same jobs (`claude rm` may
+        // have refused); they are not re-queued inside the retry window.
+        supervisor
+            .handle_frame(
+                frame(),
+                &mut running,
+                &event_tx,
+                &frame_up_tx,
+                &mut scrub,
+                &CancellationToken::new(),
+            )
+            .await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(commands_rx.try_recv().is_err(), "removal must not repeat every heartbeat");
+    }
+
+    #[test]
+    fn jobs_on_disk_lists_job_dirs_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let jobs = tmp.path().join("jobs");
+        std::fs::create_dir_all(jobs.join("deadbeef")).unwrap();
+        std::fs::create_dir_all(jobs.join("cafebabe")).unwrap();
+        std::fs::create_dir_all(jobs.join("not-a-short")).unwrap();
+        std::fs::write(jobs.join("pins.json"), "{}").unwrap();
+        std::fs::write(jobs.join("0badf00d"), "").unwrap();
+        assert_eq!(super::jobs_on_disk(&jobs), vec!["cafebabe".to_owned(), "deadbeef".to_owned()]);
+        assert!(super::jobs_on_disk(&tmp.path().join("missing")).is_empty());
+    }
+
     /// A claude-code stand-in that never drains its command channel, the way
     /// the real adapter looks while it serialises `Remove`s (kill, wait for the
     /// worker, `claude rm`: tens of seconds each).
@@ -1725,6 +1884,7 @@ mod tests {
             bandwidth: None,
             update_hook: None,
             resources: None,
+            claude_jobs: None,
         };
         let super::Prepared::Frame(text) = super::prepare_send(&hb).unwrap() else {
             panic!("heartbeat must not chunk")

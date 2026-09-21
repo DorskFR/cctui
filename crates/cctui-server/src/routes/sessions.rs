@@ -2483,14 +2483,12 @@ pub async fn archive_one(
         }
     }
     dispatch_remove(state, session_id).await;
-    // Archive the session AND any Task-tool subagents nested under it:
-    // a parent's children should never outlive it in the list.
-    // Subagents are observe-only (no worker), so they need no `claude rm` —
-    // only the parent does, handled by the dispatch above. Archiving a
-    // *child* does not touch the parent (no `parent_id` cascade upward).
-    // A pinned child is never swept along with its parent unless forced.
-    let children: Vec<String> =
-        crate::store::sessions::child_ids(&state.pool, session_id).await.unwrap_or_default();
+    // Archive the session AND every child nested under it: a parent's
+    // children should never outlive it in the list. Archiving a *child* does
+    // not touch the parent (no `parent_id` cascade upward), and a pinned child
+    // is never swept along with its parent unless forced.
+    let children =
+        crate::store::sessions::children(&state.pool, session_id).await.unwrap_or_default();
     // Clear the classifier signals on archive so a session that was waiting on
     // input doesn't keep its ✋ "needs input" glyph in the archived view — an
     // archived session is, by definition, no longer waiting on anyone.
@@ -2504,7 +2502,14 @@ pub async fn archive_one(
     .bind(force)
     .fetch_all(&state.pool)
     .await?;
-    let children: Vec<String> = children.into_iter().filter(|c| archived.contains(c)).collect();
+    // Task-tool subagents are observe-only and covered by the parent's
+    // `Remove`; CctuiAgent children and forks own a claude job each, which
+    // stays in `claude agents` until removed.
+    for child in crate::store::sessions::job_children(&children, &archived) {
+        dispatch_remove(state, child).await;
+    }
+    let children: Vec<String> =
+        children.into_iter().map(|c| c.id).filter(|c| archived.contains(c)).collect();
     {
         let mut registry = state.registry.write().await;
         registry.deregister(session_id);
