@@ -5,7 +5,8 @@ vi.mock('$lib/queries', async (importOriginal) => ({
 	useAccounts: () => ({ data: undefined })
 }));
 import type { SessionListItem } from '@bindings/SessionListItem';
-import { mount, unmount } from 'svelte';
+import { settings } from '$lib/settings.svelte';
+import { flushSync, mount, unmount } from 'svelte';
 import SessionCard from './SessionCard.svelte';
 
 let comp: ReturnType<typeof mount> | null = null;
@@ -13,6 +14,7 @@ let comp: ReturnType<typeof mount> | null = null;
 afterEach(() => {
 	if (comp) unmount(comp);
 	comp = null;
+	settings.setSessionList({ machineLabel: 'full', accountLabel: 'full' });
 	document.body.innerHTML = '';
 });
 
@@ -97,5 +99,28 @@ describe('SessionCard modes', () => {
 	it('is the sess-card size container every readout degrades against', () => {
 		const el = render({ variant: 'card' });
 		expect(el.querySelector('.sc-wrap')).not.toBeNull();
+	});
+});
+
+describe('session label preferences', () => {
+	it.each(['row', 'card'])('updates labels reactively in %s mode', (variant) => {
+		const el = render({ variant, session: session({ machine_name: 'agents', account_name: 'Claudo' }) });
+		expect(el.querySelector('.acct')?.textContent?.trim()).toBe('Claudo');
+		flushSync(() => settings.setSessionList({ machineLabel: 'initial', accountLabel: '2' }));
+		const machine = el.querySelector('.badge[style*="--mh"]');
+		expect(machine?.textContent?.trim()).toBe('a');
+		expect(machine?.getAttribute('title')).toBe('agents');
+		expect(el.querySelector('.acct')?.textContent?.trim()).toBe('Cl');
+		expect(el.querySelector('.acct')?.getAttribute('aria-label')).toContain('Claudo');
+		for (const length of ['1', '3'] as const) {
+			flushSync(() => settings.setSessionList({ accountLabel: length }));
+			expect(el.querySelector('.acct')?.textContent?.trim()).toBe('Claudo'.slice(0, Number(length)));
+		}
+		flushSync(() => settings.setSessionList({ machineLabel: 'hidden', accountLabel: 'hidden' }));
+		expect(el.querySelector('.badge[style*="--mh"]')).toBeNull();
+		expect(el.querySelector('.acct')).toBeNull();
+		flushSync(() => settings.setSessionList({ machineLabel: 'full', accountLabel: 'full' }));
+		expect(el.querySelector('.full')?.textContent).toBe('agents');
+		expect(el.querySelector('.acct')?.textContent?.trim()).toBe('Claudo');
 	});
 });

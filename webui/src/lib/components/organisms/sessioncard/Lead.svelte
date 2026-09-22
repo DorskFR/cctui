@@ -41,11 +41,11 @@
 <SessionDot session={s} livenessClass={view.livenessClass} now={view.now} />
 {#if view.child}
 	<Badge tone="info" size="xs">{m.sessions_subagent_badge()}</Badge>
-{:else if view.showMachine}
-	<MachineBadge name={s.machine_name} id={s.machine_id} hue={s.machine_hue} mono dense />
+{:else if view.showMachine && settings.state.sessionList.machineLabel !== "hidden"}
+	<MachineBadge name={s.machine_name} id={s.machine_id} hue={s.machine_hue} mono dense initialOnly={settings.state.sessionList.machineLabel === "initial"} />
 {/if}
-{#if !view.child}
-	<AccountBadge name={s.account_name} warn={accountTrafficWarning(s)} showName={settings.accountNames} />
+{#if !view.child && settings.state.sessionList.accountLabel !== "hidden"}
+	<AccountBadge name={s.account_name} warn={accountTrafficWarning(s)} showName={settings.state.sessionList.accountLabel !== "icon"} nameLength={Number(settings.state.sessionList.accountLabel) || undefined} />
 {/if}
 <span class="title" class:capped={row}>
 	<Text

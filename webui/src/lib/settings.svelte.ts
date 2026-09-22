@@ -51,10 +51,27 @@ export interface SessionListSettings {
   // screens wider than the chosen cap, so it is a desktop-only knob in practice:
   // a phone viewport is already narrower than the default.
   width: SessionListWidth;
-  // Show the account NAME next to each row instead of the key glyph. Off by
-  // default (the glyph keeps the row terse); worth turning on when several
-  // accounts of the same provider are in play, where every glyph looks alike.
+  // Legacy name/icon preference, retained for the conversation drawer and
+  // migration of existing session-list preferences.
   accountNames: boolean;
+  machineLabel: "full" | "initial" | "hidden";
+  accountLabel: "full" | "icon" | "hidden" | "1" | "2" | "3";
+}
+
+export function clampMachineLabel(v: unknown): SessionListSettings["machineLabel"] {
+  return v === "initial" || v === "hidden" ? v : "full";
+}
+
+export function clampAccountLabel(
+  v: unknown,
+  legacyAccountNames?: boolean,
+): SessionListSettings["accountLabel"] {
+  if (
+    v === "full" || v === "icon" || v === "hidden" ||
+    v === "1" || v === "2" || v === "3"
+  ) return v;
+  // Preserve an explicit legacy choice; new users see the full name.
+  return legacyAccountNames === false ? "icon" : "full";
 }
 
 export const SORT_DIRS = ["asc", "desc"] as const;
@@ -474,6 +491,8 @@ const DEFAULTS: SettingsState = {
     groupBy: "status",
     width: DEFAULT_SESSION_LIST_WIDTH,
     accountNames: false,
+    machineLabel: "full",
+    accountLabel: "full",
   },
   display: {
     theme: "dark",
@@ -528,6 +547,11 @@ export function mergeDefaults(
       sortDir: clampSortDir(p.sessionList?.sortDir),
       groupBy: clampGroupBy(p.sessionList?.groupBy),
       accountNames: p.sessionList?.accountNames === true,
+      machineLabel: clampMachineLabel(p.sessionList?.machineLabel),
+      accountLabel: clampAccountLabel(
+        p.sessionList?.accountLabel,
+        p.sessionList?.accountNames,
+      ),
     },
     display: {
       ...DEFAULTS.display,

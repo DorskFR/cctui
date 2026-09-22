@@ -8,7 +8,7 @@
 	import SettingGroup from '$lib/components/molecules/SettingGroup.svelte';
 	import SettingRow from '$lib/components/molecules/SettingRow.svelte';
 	import SettingSection from '$lib/components/molecules/SettingSection.svelte';
-	import { settings } from '$lib/settings.svelte';
+	import { clampAccountLabel, clampMachineLabel, settings } from '$lib/settings.svelte';
 	import { m } from '$lib/paraglide/messages';
 	import { GROUP_DIMENSIONS, nextSort } from '../../../../routes/sessions/sessions.logic';
 
@@ -95,11 +95,24 @@
 				<option value="full">{m.settings_list_width_full()}</option>
 			</Select>
 		</SettingRow>
-		<SettingRow label={m.settings_account_names_label()} help={m.settings_account_names_help()}>
-			<Switch
-				bind:checked={() => sl.accountNames, (v) => settings.setSessionList({ accountNames: v })}
-				label={m.settings_account_names_label()}
-			/>
+		<SettingRow label={m.settings_machine_label()} help={m.settings_machine_label_help()}>
+			<Select value={sl.machineLabel} style="width:100%"
+				onchange={(e) => settings.setSessionList({ machineLabel: clampMachineLabel(e.currentTarget.value) })}>
+				<option value="full">{m.settings_label_full()}</option>
+				<option value="initial">{m.settings_label_initial()}</option>
+				<option value="hidden">{m.settings_label_hidden()}</option>
+			</Select>
+		</SettingRow>
+		<SettingRow label={m.settings_account_names_label()} help={m.settings_account_label_help()}>
+			<Select value={sl.accountLabel} style="width:100%"
+				onchange={(e) => settings.setSessionList({ accountLabel: clampAccountLabel(e.currentTarget.value) })}>
+				<option value="full">{m.settings_label_full()}</option>
+				<option value="hidden">{m.settings_label_hidden()}</option>
+				<option value="icon">{m.settings_label_icon()}</option>
+				{#each ["1", "2", "3"] as length}
+					<option value={length}>{m.settings_label_characters({ count: length })}</option>
+				{/each}
+			</Select>
 		</SettingRow>
 		<SettingRow label={m.settings_session_emoji_label()} help={m.settings_session_emoji_help()} server>
 			<Switch
