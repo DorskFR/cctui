@@ -36,7 +36,7 @@ use super::dispatch_done::{self, DispatchDoneTracker};
 use super::kickstart::Kickstarter;
 use super::state::{StateJson, default_jobs_root};
 use super::transcript::{self, OffsetStore, default_projects_root};
-use super::{SessionMap, socket};
+use super::{SessionMap, session_registry, socket};
 use crate::git::{read_git_branch, read_git_remote};
 
 /// Config knobs read from `adapters_enabled.config`.
@@ -113,6 +113,14 @@ impl DriverConfig {
     }
 }
 
+/// The `source` every cctui dispatch stamps on its jobs. An absent source is
+/// treated as ours (older claude builds omit the field).
+const FLEET_SOURCE: &str = "fleet";
+
+/// How many times one `claude rm` target may be retried while clearing the
+/// occupants of its worktree.
+const MAX_REMOVE_ATTEMPTS: u8 = 3;
+
 /// The `list` op returns `{ok: true, op: "list", jobs: [LiveSnapshot]}`.
 #[derive(Debug, Deserialize)]
 struct ListResponse {
@@ -175,9 +183,17 @@ impl LiveSnapshot {
         self.session_id.as_deref().or(self.session_id_camel.as_deref())
     }
 
-    /// §7.2 of the protocol doc: skip spares and dying workers.
+    /// Skip dying workers and every job cctui did not dispatch: adopting a
+    /// human's own `claude --bg` worker holds an attach on it and lets the TTL
+    /// archive kill it, which Claude Code's supervisor answers with a
+    /// full-context revive turn.
     fn is_user_visible(&self) -> bool {
-        !self.dying && self.source.as_deref() != Some("spare")
+        !self.dying && !self.is_foreign()
+    }
+
+    /// Dispatched by someone other than cctui (spares included).
+    fn is_foreign(&self) -> bool {
+        self.source.as_deref().is_some_and(|s| s != FLEET_SOURCE)
     }
 
     /// Whether claude reports this still-listed session as dead / "process
@@ -240,6 +256,96 @@ pub struct DeferredDispatch {
     short: String,
     what: String,
     session_id: String,
+    gate: Option<LaunchGate>,
+}
+
+/// Everything the launch needs to ask the server whether the job's model may
+/// run yet, and to report the wait on the session card.
+pub struct LaunchGate {
+    server: crate::client::ServerClient,
+    machine_key: String,
+    session_id: String,
+    short: String,
+    model: Option<String>,
+    events: mpsc::Sender<AdapterEvent>,
+}
+
+impl LaunchGate {
+    /// Block until the job's model is allowed, the hold outlives
+    /// [`crate::launchgate::MAX_HOLD`], or the limits call fails.
+    async fn hold(&self) {
+        let began = Instant::now();
+        let mut waiting = false;
+        loop {
+            let limits = match self
+                .server
+                .session_limits(&self.machine_key, &self.session_id, self.model.as_deref())
+                .await
+            {
+                Ok(limits) => limits,
+                // Fail open: a limits endpoint having a bad day must not stop
+                // launches.
+                Err(err) => {
+                    tracing::warn!(session = %self.session_id, %err, "launch limits check failed; launching anyway");
+                    return;
+                }
+            };
+            let Some(hold) = crate::launchgate::hold_from_limits(&limits, self.model.as_deref())
+            else {
+                if waiting {
+                    tracing::info!(
+                        session = %self.session_id,
+                        waited_secs = %began.elapsed().as_secs(),
+                        "launch limit cleared; dispatching"
+                    );
+                    self.report(None).await;
+                }
+                return;
+            };
+            if crate::launchgate::expired(began) {
+                tracing::warn!(
+                    session = %self.session_id,
+                    reason = %hold.reason,
+                    "launch held too long; dispatching anyway"
+                );
+                self.report(None).await;
+                return;
+            }
+            if !waiting {
+                tracing::info!(
+                    session = %self.session_id,
+                    model = ?self.model,
+                    reason = %hold.reason,
+                    retry_after_secs = %hold.retry_after.as_secs(),
+                    "holding launch: the model is limit blocked"
+                );
+            }
+            waiting = true;
+            self.report(Some(&hold)).await;
+            tokio::time::sleep(crate::launchgate::backoff(&hold)).await;
+        }
+    }
+
+    /// Put the wait (or its end) on the session card.
+    async fn report(&self, hold: Option<&crate::launchgate::Hold>) {
+        let state = if hold.is_some() { "held" } else { "starting" };
+        let _ = self
+            .events
+            .send(AdapterEvent::Status {
+                local_id: self.short.clone(),
+                tempo: None,
+                state: Some(state.to_owned()),
+                detail: hold.map(crate::launchgate::Hold::card_detail),
+                activity: None,
+                name: None,
+                intent: None,
+                model: self.model.clone(),
+                effort: None,
+                permission_mode: None,
+                children: Vec::new(),
+            })
+            .await;
+    }
 }
 
 impl DeferredDispatch {
@@ -247,6 +353,9 @@ impl DeferredDispatch {
     /// a silent daemon (see [`socket::ONE_SHOT_TIMEOUT`]) is an error, and the
     /// worker's managed config files are swept so nothing dangles.
     pub async fn send(self) -> anyhow::Result<()> {
+        if let Some(gate) = &self.gate {
+            gate.hold().await;
+        }
         let resp: serde_json::Value = socket::call(&self.sock, &self.req)
             .await
             .inspect_err(|_| crate::configsweep::remove_session_files(&self.short))
@@ -284,6 +393,9 @@ pub struct Driver {
     /// Cleared when the worker revives (reports alive again) or drops
     /// off the roster.
     dead_shorts: HashSet<String>,
+    /// Shorts the last `list` reported with a non-fleet `source`. cctui must
+    /// never attach to, kill, or `claude rm` one of these.
+    foreign_shorts: HashSet<String>,
     /// Shared `session_id → stable local_id` map. Populated as transcripts are
     /// pinned (incl. across `/clear` rotations) and read by the ask-hook
     /// listener so a hook's live `session_id` resolves to the `local_id` the
@@ -494,27 +606,49 @@ pub(super) async fn resolve_launch_env_for(
     hint: &std::collections::BTreeMap<String, String>,
 ) -> anyhow::Result<LaunchEnv> {
     let (Some(server), Some(mk)) = (server, machine_key) else {
-        return Ok(LaunchEnv { env: hint.clone(), ..Default::default() });
+        return Ok(LaunchEnv { env: with_resume_guard(hint.clone()), ..Default::default() });
     };
     match server.gateway_env(mk, local_id).await {
         Ok(resp) => Ok(LaunchEnv {
-            env: crate::adapters::gateway_env::launch_env_decision(
+            env: with_resume_guard(crate::adapters::gateway_env::launch_env_decision(
                 "claude",
                 local_id,
                 &resp,
                 hint,
                 crate::adapters::gateway_env::CLAUDE_GATEWAY_KEYS,
-            )?,
+            )?),
             settings: resp.settings,
             whip_phrases: resp.whip_phrases,
             spawn_capability: resp.spawn_capability,
         }),
         Err(e) => {
             tracing::warn!(%local_id, "gateway-env pull failed; falling back to pushed env: {e}");
-            Ok(LaunchEnv { env: hint.clone(), ..Default::default() })
+            Ok(LaunchEnv { env: with_resume_guard(hint.clone()), ..Default::default() })
         }
     }
 }
+
+/// Bound what Claude Code's own supervisor may do when it respawns one of our
+/// workers: no auto-continue, and a max age so the injected
+/// `CLAUDE_CODE_RESUME_PROMPT` continuation is skipped too — unset or `0` there
+/// means *no* bound, which is why it must be written explicitly. Caller-supplied
+/// values win.
+fn with_resume_guard(
+    mut env: std::collections::BTreeMap<String, String>,
+) -> std::collections::BTreeMap<String, String> {
+    for (key, value) in [
+        ("CLAUDE_CODE_RESUME_INTERRUPTED_TURN", "0"),
+        ("CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS", RESUME_INTERRUPTED_TURN_MAX_AGE_MS),
+    ] {
+        env.entry(key.to_owned()).or_insert_with(|| value.to_owned());
+    }
+    env
+}
+
+/// One minute: long enough that a worker restarted while a human watches can
+/// still pick its turn up, short enough that a supervisor revive hours later
+/// never re-sends a whole context.
+const RESUME_INTERRUPTED_TURN_MAX_AGE_MS: &str = "60000";
 
 /// Parse `CCTUI_GATEWAY_RESEED_SECS` (positive integer seconds) or fall back to
 /// one hour — comfortably under the server's default 12h token TTL.
@@ -565,6 +699,7 @@ impl Driver {
             roster: HashSet::new(),
             last_status: HashMap::new(),
             dead_shorts: HashSet::new(),
+            foreign_shorts: HashSet::new(),
             session_to_local: Arc::new(Mutex::new(HashMap::new())),
             offsets,
             transcript_locations: HashMap::new(),
@@ -1042,16 +1177,7 @@ impl Driver {
             }
             AdapterCommand::Remove { local_id, .. } => {
                 let short = self.resolve_short_for_removal(&local_id)?;
-                // Imitate the agent-view Ctrl+X: there is no
-                // control-socket removal op, so (1) stop the worker if it is
-                // still live, (2) wait for it to actually exit, then (3) let
-                // `claude rm` delete the on-disk job metadata + worktree. This
-                // clears the session from Claude Code's own `claude agents`
-                // view as well as our discovery; the transcript is preserved.
-                let _ =
-                    socket::one_shot(&sock, &json!({"proto":1,"op":"kill","short":short})).await;
-                Self::await_worker_exit(&sock, &short).await;
-                let rm = self.claude_rm(&short).await;
+                let rm = self.remove_job(&sock, &short, &local_id).await;
                 crate::configsweep::remove_session_files(&short);
                 rm?;
             }
@@ -1402,22 +1528,27 @@ impl Driver {
     /// `claude rm` is documented to work on already-exited sessions; racing it
     /// against a still-live worker is undefined, so we drain the kill first.
     /// Best-effort: a socket error or timeout just falls through to `claude rm`.
-    async fn await_worker_exit(sock: &std::path::Path, short: &str) {
+    /// `false` when the daemon could not confirm the exit: a socket error, or a
+    /// worker still alive after the wait. `alive:false` from a daemon that does
+    /// not host the job is not proof of death either, so the caller re-checks
+    /// against the CLI's session registry.
+    async fn await_worker_exit(sock: &std::path::Path, short: &str) -> bool {
         for _ in 0..20 {
             match socket::one_shot(sock, &json!({"proto":1,"op":"has","short":short})).await {
                 Ok(resp) => {
                     let alive =
                         resp.get("alive").and_then(serde_json::Value::as_bool).unwrap_or(false);
                     if !alive {
-                        return;
+                        return true;
                     }
                 }
                 // Socket gone / op failed — nothing more to wait on.
-                Err(_) => return,
+                Err(_) => return false,
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
         tracing::warn!(%short, "worker still live 2s after kill; proceeding to `claude rm`");
+        false
     }
 
     /// Resume-on-reply: if `short` has no live worker, revive it
@@ -1542,6 +1673,7 @@ impl Driver {
             st.as_ref().and_then(|s| s.model.as_deref()),
             st.as_ref().and_then(|s| s.effort.as_deref()),
             launch.whip_phrases.as_ref(),
+            None,
         )
         .map(|p| p.to_string_lossy().into_owned());
 
@@ -1598,7 +1730,7 @@ impl Driver {
                 "nonce": nonce,
                 "sessionId": session_id,
                 "createdAt": created_at,
-                "source": "fleet",
+                "source": FLEET_SOURCE,
                 "cwd": cwd,
                 "launch": { "mode": "prompt", "args": args },
                 // Re-inject the gateway env resolved for this session's bound
@@ -1646,7 +1778,7 @@ impl Driver {
     /// worktree. A job the CLI no longer knows is already gone and counts as
     /// success; any other non-zero exit (typically a worktree with
     /// uncommitted changes) is a real failure the archive must report.
-    async fn claude_rm(&self, short: &str) -> anyhow::Result<()> {
+    async fn claude_rm(&self, short: &str) -> anyhow::Result<ClaudeRmOutcome> {
         let mut cmd = tokio::process::Command::new(&self.cfg.claude_bin);
         cmd.arg("rm")
             .arg(short)
@@ -1660,20 +1792,137 @@ impl Driver {
             .with_context(|| format!("spawning `{} rm {short}`", self.cfg.claude_bin))?;
         let stdout = String::from_utf8_lossy(&out.stdout);
         let stderr = String::from_utf8_lossy(&out.stderr);
-        match classify_claude_rm(out.status.code(), out.status.success(), &stdout, &stderr) {
+        let outcome = classify_claude_rm(out.status.code(), out.status.success(), &stdout, &stderr);
+        match &outcome {
             ClaudeRmOutcome::Removed => {
                 tracing::info!(%short, "removed claude job via `claude rm`");
-                Ok(())
             }
             ClaudeRmOutcome::AlreadyGone => {
                 tracing::info!(%short, "claude job already gone; nothing to remove");
-                Ok(())
+            }
+            ClaudeRmOutcome::Occupied { pid, kind, job, detail } => {
+                tracing::warn!(
+                    %short, ?pid, ?kind, ?job, %detail,
+                    "`claude rm` kept the job: its worktree holds a live session"
+                );
             }
             ClaudeRmOutcome::Refused(detail) => {
                 tracing::warn!(%short, %detail, "`claude rm` refused");
-                anyhow::bail!("claude rm {short} failed: {detail}")
             }
         }
+        Ok(outcome)
+    }
+
+    /// Stop the worker behind `short` and delete its job metadata.
+    ///
+    /// The connected `claude daemon` is not authoritative: it answers `ENOJOB`
+    /// for a worker it does not host (a survivor of a daemon cycle), and
+    /// `claude rm` then refuses because the process is still running. So an
+    /// unacknowledged kill falls back to the CLI's own session registry and
+    /// signals the pid directly.
+    ///
+    /// An occupancy is resolved in-band — the occupant is removed, or its pid
+    /// signalled, and the removal retried at once — rather than reported as a
+    /// failure for the purge to re-attempt on a timer, which cannot help.
+    async fn remove_job(
+        &self,
+        sock: &std::path::Path,
+        short: &str,
+        local_id: &str,
+    ) -> anyhow::Result<()> {
+        let mut stack = vec![short.to_owned()];
+        let mut attempts: HashMap<String, u8> = HashMap::new();
+        while let Some(target) = stack.last().cloned() {
+            let tries = attempts.entry(target.clone()).or_default();
+            *tries += 1;
+            if *tries > MAX_REMOVE_ATTEMPTS {
+                anyhow::bail!("claude rm {target}: still occupied after {tries} attempts");
+            }
+            if self.foreign_shorts.contains(&target) {
+                anyhow::bail!(
+                    "refusing to remove claude job {target}: cctui did not start it (its source \
+                     is not `{FLEET_SOURCE}`)"
+                );
+            }
+            self.stop_worker(sock, &target).await;
+            match self.claude_rm(&target).await? {
+                ClaudeRmOutcome::Removed | ClaudeRmOutcome::AlreadyGone => {
+                    stack.pop();
+                }
+                ClaudeRmOutcome::Occupied { pid, kind, job, detail } => {
+                    self.report_occupied(local_id, &detail).await;
+                    let occupant = job.filter(|j| {
+                        j != &target && !stack.contains(j) && !self.foreign_shorts.contains(j)
+                    });
+                    if let Some(occupant) = occupant {
+                        tracing::info!(%target, %occupant, "removing the occupant first");
+                        stack.push(occupant);
+                    } else if let Some(pid) =
+                        pid.filter(|p| session_registry::proc_start_of(*p).is_some())
+                    {
+                        tracing::info!(%target, pid, ?kind, "terminating the occupant pid");
+                        session_registry::terminate(pid).await;
+                    } else {
+                        anyhow::bail!("claude rm {target} kept the job: {detail}");
+                    }
+                }
+                ClaudeRmOutcome::Refused(detail) => {
+                    anyhow::bail!("claude rm {target} failed: {detail}")
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Stop the worker behind `short`, falling back to the CLI's own session
+    /// registry when the connected daemon does not confirm the kill.
+    async fn stop_worker(&self, sock: &std::path::Path, short: &str) {
+        let kill = socket::one_shot(sock, &json!({"proto":1,"op":"kill","short":short})).await;
+        let acked = kill
+            .as_ref()
+            .is_ok_and(|r| r.get("ok").and_then(serde_json::Value::as_bool).unwrap_or(false));
+        let exited = Self::await_worker_exit(sock, short).await;
+        if !acked || !exited {
+            tracing::info!(
+                %short, acked, exited,
+                "claude daemon did not confirm the kill; falling back to the session registry"
+            );
+            self.terminate_registered_worker(short).await;
+        }
+    }
+
+    /// SIGTERM the worker the CLI's session registry records for `short`, when
+    /// one is there and its start time still matches.
+    async fn terminate_registered_worker(&self, short: &str) {
+        let Some(dir) = session_registry::default_dir() else { return };
+        let Some(pid) = session_registry::live_pid_for_job(&dir, short) else {
+            tracing::debug!(%short, "no verifiable live pid in the claude session registry");
+            return;
+        };
+        if session_registry::terminate(pid).await {
+            tracing::info!(%short, pid, "terminated the orphaned worker directly");
+        } else {
+            tracing::warn!(%short, pid, "orphaned worker survived SIGTERM");
+        }
+    }
+
+    /// Surface a `claude rm` occupancy on the session itself, so the UI can
+    /// explain why an archived session still owns a job.
+    async fn report_occupied(&self, local_id: &str, detail: &str) {
+        self.emit(AdapterEvent::Status {
+            local_id: local_id.to_owned(),
+            tempo: None,
+            state: None,
+            detail: Some(format!("job kept: {detail}")),
+            activity: None,
+            name: None,
+            intent: None,
+            model: None,
+            effort: None,
+            permission_mode: None,
+            children: Vec::new(),
+        })
+        .await;
     }
 
     /// Dispatched-worker bring-up.
@@ -1926,6 +2175,13 @@ impl Driver {
         // Fail-closed inside `resolve_launch_env` (account-bound but
         // unmintable → abort rather than launch a worker that will 401).
         let launch = self.resolve_launch_env(&session_id, &spec.env).await?;
+        // Resolved before the settings file: the `SessionStart` hook that holds
+        // the first turn is only registered when there is a relay to wait for.
+        let agent_tool =
+            ensure_agent_mcp_config(short, &session_id, launch.spawn_capability.as_ref());
+        if agent_tool.is_some() {
+            crate::mcpready::note_launch(&session_id);
+        }
         if let Some(settings) = ensure_hook_settings(
             &self.cfg.hook_socket_path,
             whip,
@@ -1935,6 +2191,7 @@ impl Driver {
             spec.model.as_deref(),
             spec.effort.as_deref(),
             launch.whip_phrases.as_ref(),
+            agent_tool.is_some().then_some(session_id.as_str()),
         ) {
             let settings = settings.to_string_lossy().into_owned();
             args.push("--settings".to_owned());
@@ -1942,8 +2199,6 @@ impl Driver {
             respawn_flags.push("--settings".to_owned());
             respawn_flags.push(settings);
         }
-        let agent_tool =
-            ensure_agent_mcp_config(short, &session_id, launch.spawn_capability.as_ref());
         if let Some(mcp) = &agent_tool {
             let mcp = mcp.to_string_lossy().into_owned();
             args.push("--mcp-config".to_owned());
@@ -2017,7 +2272,7 @@ impl Driver {
                 "nonce": nonce,
                 "sessionId": session_id,
                 "createdAt": created_at,
-                "source": "fleet",
+                "source": FLEET_SOURCE,
                 "cwd": cwd,
                 "launch": { "mode": "prompt", "args": args },
                 "env": env_json,
@@ -2031,12 +2286,33 @@ impl Driver {
             }
         });
 
+        let gate = self.launch_gate(&session_id, short, spec.model.as_deref());
         Ok(DeferredDispatch {
             sock: sock.to_path_buf(),
             req,
             short: short.to_owned(),
             what: format!("spawn in {cwd}"),
             session_id,
+            gate,
+        })
+    }
+
+    /// The limits gate for a launch, or `None` when no server is configured to
+    /// ask — an unattached daemon launches unconditionally.
+    fn launch_gate(
+        &self,
+        session_id: &str,
+        short: &str,
+        model: Option<&str>,
+    ) -> Option<LaunchGate> {
+        let (server, machine_key) = (self.server.as_ref()?, self.machine_key.as_ref()?);
+        Some(LaunchGate {
+            server: server.clone(),
+            machine_key: machine_key.clone(),
+            session_id: session_id.to_owned(),
+            short: short.to_owned(),
+            model: model.map(str::to_owned),
+            events: self.events.clone(),
         })
     }
 
@@ -2236,6 +2512,7 @@ impl Driver {
             None,
             None,
             launch.whip_phrases.as_ref(),
+            None,
         ) {
             let settings = settings.to_string_lossy().into_owned();
             args.push("--settings".to_owned());
@@ -2277,7 +2554,7 @@ impl Driver {
                 "nonce": nonce,
                 "sessionId": session_id,
                 "createdAt": created_at,
-                "source": "fleet",
+                "source": FLEET_SOURCE,
                 "cwd": cwd,
                 "launch": { "mode": "prompt", "args": args },
                 "env": env_json,
@@ -2297,6 +2574,7 @@ impl Driver {
             short: short.clone(),
             what: format!("fork of {parent_local_id} in {cwd}"),
             session_id,
+            gate: None,
         })
     }
 
@@ -2423,8 +2701,17 @@ impl Driver {
 
     #[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
     async fn apply_snapshot(&mut self, jobs: Vec<LiveSnapshot>) {
-        let visible: Vec<LiveSnapshot> =
-            jobs.into_iter().filter(LiveSnapshot::is_user_visible).collect();
+        let (foreign, visible): (Vec<LiveSnapshot>, Vec<LiveSnapshot>) =
+            jobs.into_iter().filter(|j| !j.dying).partition(|j| !j.is_user_visible());
+        self.foreign_shorts = foreign.iter().map(|j| j.short.clone()).collect();
+        let released: Vec<&String> =
+            self.foreign_shorts.iter().filter(|s| self.roster.contains(*s)).collect();
+        if !released.is_empty() {
+            tracing::info!(
+                count = released.len(),
+                "releasing claude jobs cctui did not dispatch; they keep running untouched"
+            );
+        }
         if visible.iter().any(|j| {
             !j.is_dead() && DispatchDoneTracker::is_busy(j.tempo.as_deref(), j.state.as_deref())
         }) {
@@ -2794,6 +3081,7 @@ impl Driver {
         // Ended sessions.
         let gone: Vec<String> = self.roster.difference(&now_shorts).cloned().collect();
         for short in &gone {
+            let foreign = self.foreign_shorts.contains(short);
             self.last_status.remove(short);
             let was_dead = self.dead_shorts.remove(short);
             self.clear_permission(short).await;
@@ -2810,7 +3098,7 @@ impl Driver {
                 // Skip if we already emitted this short's dead transition while
                 // it was still listed (`dead_shorts`) — the hibernated
                 // Status already went out; re-emitting it here is redundant.
-                if !was_dead && StateJson::read(&self.cfg.jobs_root, short).is_some() {
+                if !foreign && !was_dead && StateJson::read(&self.cfg.jobs_root, short).is_some() {
                     self.emit(AdapterEvent::Status {
                         local_id: loc.local_id.clone(),
                         tempo: Some("hibernated".to_owned()),
@@ -2838,11 +3126,14 @@ impl Driver {
             // server side are indexed by (machine_id, adapter_id,
             // local_id), and the prior SessionStarted carried the real
             // session_id; the server reconciles on the running row.
-            self.emit(AdapterEvent::SessionEnded {
-                local_id: short.clone(),
-                reason: EndReason::Completed,
-            })
-            .await;
+            let reason = if foreign {
+                EndReason::Other {
+                    detail: "released: this claude job was not started by cctui".to_owned(),
+                }
+            } else {
+                EndReason::Completed
+            };
+            self.emit(AdapterEvent::SessionEnded { local_id: short.clone(), reason }).await;
         }
 
         // Keep a headless `attach` open for every live session so the worker
@@ -3468,6 +3759,11 @@ fn agent_tool_context(cap: &cctui_proto::api::SpawnCapability) -> String {
          is currently allowed or soft-limit blocked. Check it before a fan-out and when picking \
          a child's model: a blocked model burns the whole batch on 429s. Takes no arguments.\n",
     );
+    b.push_str(
+        "Both tools are served by an MCP server that connects as this session starts. If either \
+         reports \"No such tool available\" on your first turn, it lost that race: wait a few \
+         seconds and retry the call once before concluding the tool is missing.\n",
+    );
     b
 }
 
@@ -3614,6 +3910,7 @@ pub(super) fn ensure_hook_settings(
     model: Option<&str>,
     effort: Option<&str>,
     whip_phrases: Option<&serde_json::Value>,
+    agent_relay_session: Option<&str>,
 ) -> Option<PathBuf> {
     let path = hook_settings_path(&format!("hook-settings-{short}.json"))?;
     let exe = std::env::current_exe()
@@ -3688,7 +3985,7 @@ pub(super) fn ensure_hook_settings(
     } else {
         String::new()
     };
-    let hooks = if whip {
+    let mut hooks = if whip {
         json!({
             "PreToolUse": pre_hooks,
             "PostToolUse": [hook("post")],
@@ -3703,6 +4000,14 @@ pub(super) fn ensure_hook_settings(
     } else {
         json!({ "PreToolUse": pre_hooks, "PostToolUse": [hook("post")] })
     };
+    // Claude Code connects its MCP servers while the session starts, so a turn-1
+    // `CctuiAgent` call can beat the relay's `initialize`.
+    if let Some(block) = agent_relay_session.and_then(|session| {
+        let sock = crate::agenttool::socket_for_launch().to_string_lossy().into_owned();
+        mcp_ready_hook(&exe, session, &sock, mcp_ready_wait_secs())
+    }) {
+        hooks["SessionStart"] = block;
+    }
     let managed = managed_settings(hooks, gateway_env, model, effort);
     // Layer the server-provided per-account settings UNDERNEATH the managed
     // settings: account keys are merged in, but the managed keys
@@ -3727,6 +4032,41 @@ pub(super) fn ensure_hook_settings(
         }
     }
     Some(path)
+}
+
+/// The `SessionStart` block that holds the first turn until `session`'s MCP
+/// relay is up. `None` for a zero wait, which disables the gate.
+///
+/// The hook's own timeout is the wait plus a margin: a hook that overruns its
+/// timeout is treated by Claude Code as a failure, so the wait must always be
+/// the thing that expires first.
+fn mcp_ready_hook(
+    exe: &str,
+    session: &str,
+    sock: &str,
+    wait_secs: u64,
+) -> Option<serde_json::Value> {
+    (wait_secs > 0).then(|| {
+        json!([{
+            "hooks": [{
+                "type": "command",
+                "command": format!(
+                    "{exe} mcp-wait --session {session} --sock {sock} --timeout {wait_secs}"
+                ),
+                "timeout": wait_secs + 5,
+            }],
+        }])
+    })
+}
+
+/// Seconds the `SessionStart` hook may hold the first turn waiting for the MCP
+/// relay. `CCTUI_MCP_READY_WAIT_SECS=0` disables the gate entirely.
+fn mcp_ready_wait_secs() -> u64 {
+    std::env::var("CCTUI_MCP_READY_WAIT_SECS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(8)
+        .min(60)
 }
 
 /// Write the per-session MCP config registering the `CctuiAgent` tool, and
@@ -3860,6 +4200,15 @@ fn ask_keystrokes(questions: &serde_json::Value, picks: &[Vec<usize>]) -> Option
 enum ClaudeRmOutcome {
     Removed,
     AlreadyGone,
+    /// The CLI kept the job because its worktree is the working directory of a
+    /// live session. Retrying on a timer cannot help — the occupant has to go
+    /// first.
+    Occupied {
+        pid: Option<i32>,
+        kind: Option<String>,
+        job: Option<String>,
+        detail: String,
+    },
     Refused(String),
 }
 
@@ -3886,7 +4235,46 @@ fn classify_claude_rm(
         [stderr, stdout].iter().flat_map(|s| s.split_whitespace()).collect::<Vec<_>>().join(" ");
     let detail =
         if output.is_empty() { format!("exit {code}") } else { format!("exit {code}: {output}") };
+    if let Some(Occupant { pid, kind, job }) = parse_occupant(&output) {
+        return ClaudeRmOutcome::Occupied { pid, kind, job, detail };
+    }
     ClaudeRmOutcome::Refused(detail)
+}
+
+struct Occupant {
+    pid: Option<i32>,
+    kind: Option<String>,
+    job: Option<String>,
+}
+
+/// Pull the occupant out of the CLI's refusal line, in either of the two shapes
+/// it prints: `… live session (pid 42, agent)` and
+/// `… background session deadbeef, pid 42`.
+fn parse_occupant(output: &str) -> Option<Occupant> {
+    if !output.contains("working directory of a live session")
+        && !output.contains("working directory of a background session")
+    {
+        return None;
+    }
+    let pid = output.split("pid ").nth(1).and_then(|rest| {
+        let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+        digits.parse().ok()
+    });
+    let kind = output
+        .split("(pid ")
+        .nth(1)
+        .and_then(|rest| rest.split(')').next())
+        .and_then(|inside| inside.split(',').nth(1))
+        .map(|k| k.trim().to_owned())
+        .filter(|k| !k.is_empty());
+    let job = output
+        .split("background session ")
+        .nth(1)
+        .map(|rest| {
+            rest.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '-').collect::<String>()
+        })
+        .filter(|j| !j.is_empty());
+    Some(Occupant { pid, kind, job })
 }
 
 #[cfg(test)]
@@ -3904,6 +4292,7 @@ mod tests {
             short: format!("t-{}", uuid::Uuid::new_v4()),
             what: "spawn in /tmp".to_owned(),
             session_id: uuid::Uuid::new_v4().to_string(),
+            gate: None,
         }
     }
 
@@ -4258,7 +4647,7 @@ mod tests {
             needs: None,
             name: name.map(String::from),
             intent: None,
-            source: Some("shell".into()),
+            source: Some(FLEET_SOURCE.into()),
             dying: false,
             gone: false,
             dead: false,
@@ -4266,6 +4655,109 @@ mod tests {
             status: None,
             cli_version: Some("2.1.145".into()),
         }
+    }
+
+    #[test]
+    fn only_fleet_jobs_are_user_visible() {
+        let fleet = snap("aaaaaaaa", "working", None);
+        assert!(fleet.is_user_visible());
+
+        for foreign in ["shell", "spare", "cli", "bg"] {
+            let mut s = snap("bbbbbbbb", "working", None);
+            s.source = Some(foreign.into());
+            assert!(!s.is_user_visible(), "{foreign} must not be adopted");
+            assert!(s.is_foreign());
+        }
+
+        // Older claude builds omit `source`; those are ours.
+        let mut no_source = snap("cccccccc", "working", None);
+        no_source.source = None;
+        assert!(no_source.is_user_visible());
+        assert!(!no_source.is_foreign());
+
+        let mut dying = snap("dddddddd", "working", None);
+        dying.dying = true;
+        assert!(!dying.is_user_visible());
+    }
+
+    #[tokio::test]
+    async fn foreign_jobs_are_never_registered_or_attached() {
+        let (mut d, mut rx) = driver();
+        let mut human = snap("beefbeef", "working", None);
+        human.source = Some("shell".into());
+        d.apply_snapshot(vec![human, snap("f1eetf1e", "working", None)]).await;
+
+        assert!(d.roster.contains("f1eetf1e"));
+        assert!(!d.roster.contains("beefbeef"));
+        assert!(d.foreign_shorts.contains("beefbeef"));
+
+        let mut started: Vec<String> = Vec::new();
+        while let Ok(evt) = rx.try_recv() {
+            if let AdapterEvent::SessionStarted { local_id, .. } = evt {
+                started.push(local_id);
+            }
+        }
+        assert_eq!(started, ["f1eetf1e-uuid"]);
+    }
+
+    #[tokio::test]
+    async fn already_adopted_foreign_job_is_released_not_ended_as_completed() {
+        let (mut d, mut rx) = driver();
+        let mut human = snap("beefbeef", "working", None);
+        human.source = None;
+        d.apply_snapshot(vec![human.clone()]).await;
+        assert!(d.roster.contains("beefbeef"));
+        while rx.try_recv().is_ok() {}
+
+        human.source = Some("shell".into());
+        d.apply_snapshot(vec![human]).await;
+        assert!(!d.roster.contains("beefbeef"));
+
+        let mut ends: Vec<EndReason> = Vec::new();
+        while let Ok(evt) = rx.try_recv() {
+            if let AdapterEvent::SessionEnded { reason, .. } = evt {
+                ends.push(reason);
+            }
+        }
+        let [EndReason::Other { detail }] = ends.as_slice() else {
+            panic!("expected exactly one release, got {ends:?}")
+        };
+        assert!(detail.contains("not started by cctui"), "{detail}");
+    }
+
+    #[tokio::test]
+    async fn remove_refuses_a_job_cctui_did_not_create() {
+        let (mut d, _rx) = driver();
+        let mut human = snap("beefbeef", "working", None);
+        human.source = Some("shell".into());
+        d.apply_snapshot(vec![human]).await;
+
+        // No socket exists here: the guard must refuse before any `kill`.
+        let err = d
+            .remove_job(std::path::Path::new("/nonexistent/control.sock"), "beefbeef", "sess-1")
+            .await
+            .expect_err("a foreign job must never be removed");
+        assert!(err.to_string().contains("cctui did not start it"), "{err}");
+    }
+
+    #[test]
+    fn resume_guard_bounds_supervisor_revives_but_yields_to_the_caller() {
+        let guarded = with_resume_guard(std::collections::BTreeMap::new());
+        assert_eq!(guarded.get("CLAUDE_CODE_RESUME_INTERRUPTED_TURN").unwrap(), "0");
+        assert_eq!(
+            guarded.get("CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS").unwrap(),
+            RESUME_INTERRUPTED_TURN_MAX_AGE_MS
+        );
+        // A bound of 0 would mean "no bound" — never emit that as the default.
+        assert_ne!(RESUME_INTERRUPTED_TURN_MAX_AGE_MS, "0");
+
+        let explicit = with_resume_guard(env_of(&[
+            ("CLAUDE_CODE_RESUME_INTERRUPTED_TURN", "1"),
+            ("ANTHROPIC_BASE_URL", "http://gw"),
+        ]));
+        assert_eq!(explicit.get("CLAUDE_CODE_RESUME_INTERRUPTED_TURN").unwrap(), "1");
+        assert_eq!(explicit.get("ANTHROPIC_BASE_URL").unwrap(), "http://gw");
+        assert!(explicit.contains_key("CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS"));
     }
 
     #[test]
@@ -4365,12 +4857,35 @@ mod tests {
         assert!(block.contains("example: mcp__cctui__CctuiAgent({\"adapter\": \"claude-code\""));
         assert!(block.contains("mcp__cctui__CctuiUsage"), "the limits tool is announced too");
         assert!(block.contains("blocked model burns the whole batch"), "{block}");
+        assert!(
+            block.contains("retry the call once"),
+            "turn 1 can beat the relay, so the model is told to retry: {block}"
+        );
         assert!(block.ends_with("</session-context>"));
 
         let empty = cctui_proto::api::SpawnCapability::default();
         let block = build_session_context(&spec, "/work/cctui", &[], Some(&empty));
         assert!(!block.contains("CctuiAgent"), "an empty capability advertises nothing");
         assert!(!block.contains("CctuiUsage"), "the relay is absent, so neither tool exists");
+    }
+
+    #[test]
+    fn the_session_start_hook_waits_for_the_relay_and_outlives_its_own_wait() {
+        let block = mcp_ready_hook("/usr/bin/cctui-daemon", "sess-1", "/run/a.sock", 8)
+            .expect("a positive wait registers the gate");
+        let hook = &block[0]["hooks"][0];
+        assert_eq!(
+            hook["command"],
+            "/usr/bin/cctui-daemon mcp-wait --session sess-1 --sock /run/a.sock --timeout 8"
+        );
+        assert_eq!(
+            hook["timeout"], 13,
+            "the hook timeout must exceed the wait, or Claude Code kills it as a failure"
+        );
+        assert!(
+            mcp_ready_hook("/usr/bin/cctui-daemon", "sess-1", "/run/a.sock", 0).is_none(),
+            "a zero wait disables the gate"
+        );
     }
 
     #[test]
@@ -4429,23 +4944,54 @@ mod tests {
             classify_claude_rm(None, false, "", ""),
             ClaudeRmOutcome::Refused("exit signal".into())
         );
-        // The CLI's own explanation of a refusal is on stdout: it must reach
-        // the log, not be dropped for a bare exit code.
-        assert_eq!(
-            classify_claude_rm(
-                Some(1),
-                false,
-                "kept 229a5a4f — worktree is the working directory of a live session (pid 42)\n  worktree kept at /w\n  exit that session, then run 'claude rm 229a5a4f' again\n",
-                ""
-            ),
-            ClaudeRmOutcome::Refused(
-                "exit 1: kept 229a5a4f — worktree is the working directory of a live session (pid 42) worktree kept at /w exit that session, then run 'claude rm 229a5a4f' again".into()
-            )
-        );
         // stderr first when both speak: the error before the narration.
         assert_eq!(
             classify_claude_rm(Some(1), false, "kept x\n", "EACCES: permission denied\n"),
             ClaudeRmOutcome::Refused("exit 1: EACCES: permission denied kept x".into())
+        );
+    }
+
+    #[test]
+    fn claude_rm_occupancy_is_classified_with_its_occupant() {
+        use super::{ClaudeRmOutcome, classify_claude_rm};
+
+        // The CLI's own explanation of a refusal is on stdout: it must reach
+        // the log, not be dropped for a bare exit code.
+        let with_kind = classify_claude_rm(
+            Some(1),
+            false,
+            "kept 229a5a4f — worktree is the working directory of a live session (pid 42, agent)\n  worktree kept at /w\n  exit that session, then run 'claude rm 229a5a4f' again\n",
+            "",
+        );
+        match with_kind {
+            ClaudeRmOutcome::Occupied { pid, kind, job, detail } => {
+                assert_eq!(pid, Some(42));
+                assert_eq!(kind.as_deref(), Some("agent"));
+                assert_eq!(job, None);
+                assert!(detail.contains("worktree kept at /w"), "{detail}");
+            }
+            other => panic!("expected Occupied, got {other:?}"),
+        }
+
+        let with_job = classify_claude_rm(
+            Some(1),
+            false,
+            "kept 229a5a4f — worktree is the working directory of a background session d6df7150, pid 4242\n",
+            "",
+        );
+        match with_job {
+            ClaudeRmOutcome::Occupied { pid, job, .. } => {
+                assert_eq!(pid, Some(4242));
+                assert_eq!(job.as_deref(), Some("d6df7150"));
+            }
+            other => panic!("expected Occupied, got {other:?}"),
+        }
+
+        // A refusal that is not an occupancy stays a plain Refused, so the
+        // caller still backs off on it.
+        assert_eq!(
+            classify_claude_rm(Some(1), false, "", "worktree has uncommitted changes: /w\n"),
+            ClaudeRmOutcome::Refused("exit 1: worktree has uncommitted changes: /w".into())
         );
     }
 

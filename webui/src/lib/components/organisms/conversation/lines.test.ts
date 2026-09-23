@@ -53,6 +53,16 @@ const summary = (
 
 const roles = (es: AgentEvent[], c = ctx()) => buildLines(es, c).map((l) => l.role);
 
+const queueOp = (
+	operation: 'queued' | 'dequeued' | 'removed' | 'cleared',
+	body: string,
+	ts: number,
+	seq: number | null = null
+): AgentEvent => ({
+	...(text(body, ts, 'queue_op', seq) as AgentEvent & { type: 'text' }),
+	operation
+});
+
 const toolCall = (tool: string, ts: number, kind: string | null = null): AgentEvent => ({
 	type: 'tool_call',
 	tool,
@@ -316,8 +326,9 @@ describe('seq stamping', () => {
 });
 
 describe('peer (cross-session) messages', () => {
+	const PREAMBLE = 'Another Claude session sent a message:';
 	const PEER = [
-		'Another Claude session sent a message:',
+		PREAMBLE,
 		'<cross-session-message from="uds:/run/user/1000/cc-socks/1740092.sock" from-name="cctui orchestrator skill" from-mode="bypass">',
 		'Orchestrator here — run your lane gates and report back.',
 		'</cross-session-message>',
@@ -358,14 +369,35 @@ describe('peer (cross-session) messages', () => {
 	});
 
 	it('falls back to the raw from address when no from-name is given', () => {
-		const raw = 'peer says:\n<cross-session-message from="uds:/run/x.sock">hi</cross-session-message>';
+		const raw = `${PREAMBLE}\n<cross-session-message from="uds:/run/x.sock">hi</cross-session-message>`;
 		expect(buildLines([text(`▷ User: ${raw}`, 1)], ctx())[0].peerFrom).toBe('uds:/run/x.sock');
 	});
 
 	it('recognises the legacy agent-message tag', () => {
-		const raw = 'peer:\n<agent-message from-name="lane-a">ping</agent-message>';
+		const raw = `${PREAMBLE}\n<agent-message from-name="lane-a">ping</agent-message>`;
 		const ln = buildLines([text(`▷ User: ${raw}`, 1)], ctx())[0];
 		expect([ln.role, ln.peerFrom, ln.text]).toEqual(['peer', 'lane-a', 'ping']);
+	});
+
+	it('keeps a human relaying a wrapper as a user turn, with the prose intact', () => {
+		const raw = 'forward this: <cross-session-message from="x">hi</cross-session-message>';
+		const ln = buildLines([text(`▷ User: ${raw}`, 1)], ctx())[0];
+		expect(ln.role).toBe('user');
+		expect(ln.text).toBe(raw);
+		expect(ln.peerFrom).toBeUndefined();
+	});
+
+	it('keeps a human turn whose prose precedes a wrapper on its own line as user', () => {
+		const raw = 'peer says:\n<cross-session-message from="uds:/run/x.sock">hi</cross-session-message>';
+		const ln = buildLines([text(`▷ User: ${raw}`, 1)], ctx())[0];
+		expect(ln.role).toBe('user');
+		expect(ln.text).toBe(raw);
+	});
+
+	it('accepts the wrapper when only the harness preamble precedes it', () => {
+		const raw = `${PREAMBLE}\n<cross-session-message from-name="lane-a">hi</cross-session-message>`;
+		const ln = buildLines([text(`▷ User: ${raw}`, 1)], ctx())[0];
+		expect([ln.role, ln.peerFrom, ln.text]).toEqual(['peer', 'lane-a', 'hi']);
 	});
 
 	it('is filterable on its own category, independently of user', () => {
@@ -377,13 +409,17 @@ describe('peer (cross-session) messages', () => {
 
 describe('poll re-injection classification', () => {
 	const POLL = 'Check the queue depth and report anything above 100. Do not stop.';
+	const typed = (body: string, ts: number, turnId: string): AgentEvent => ({
+		...(text(`▷ User: ${body}`, ts) as AgentEvent & { type: 'text' }),
+		turn_id: turnId
+	});
 
 	it('keeps the first occurrence user and tints every repeat', () => {
 		const events = [text(`▷ User: ${POLL}`, 1), text(`▷ User: ${POLL}`, 2)];
 		expect(roles(events)).toEqual(['user', 'poll']);
 	});
 
-	it('catches a repeat separated by an assistant turn', () => {
+	it('leaves a repeat separated by an assistant turn alone', () => {
 		const events = [
 			text(`▷ User: ${POLL}`, 1),
 			text('nothing above 100', 2),
@@ -391,7 +427,44 @@ describe('poll re-injection classification', () => {
 			text('still nothing', 4),
 			text(`▷ User: ${POLL}`, 5)
 		];
-		expect(roles(events)).toEqual(['user', 'assistant', 'poll', 'assistant', 'poll']);
+		expect(roles(events)).toEqual(['user', 'assistant', 'user', 'assistant', 'user']);
+	});
+
+	it('never demotes a human repeating themselves: a composer send carries a turn_id', () => {
+		const events = [typed('continue', 1, 'a'), text('working', 2), typed('continue', 3, 'b')];
+		expect(roles(events)).toEqual(['user', 'assistant', 'user']);
+	});
+
+	it('does not demote two consecutive composer sends of the same text', () => {
+		expect(roles([typed('continue', 1, 'a'), typed('continue', 2, 'b')])).toEqual([
+			'user',
+			'user'
+		]);
+	});
+
+	it('renders two consecutive composer sends of the same text as two bubbles', () => {
+		const lines = buildLines([typed('continue', 1, 'a'), typed('continue', 2, 'b')], ctx());
+		expect(lines).toHaveLength(2);
+		expect(lines.map((l) => l.ts)).toEqual([1, 2]);
+	});
+
+	it('still collapses the encodings of ONE turn, which share its turn_id', () => {
+		const lines = buildLines([typed('continue', 1, 'a'), typed('continue', 2, 'a')], ctx());
+		expect(lines).toHaveLength(1);
+	});
+
+	it('still tints a consecutive re-injection that carries no turn_id', () => {
+		const events = [text(`▷ User: ${POLL}`, 1), text(`▷ User: ${POLL}`, 2)];
+		expect(roles(events)).toEqual(['user', 'poll']);
+	});
+
+	it('closes the run on a tool call, so a repeat after real work stays user', () => {
+		const events = [
+			text(`▷ User: ${POLL}`, 1),
+			toolCall('Bash', 2),
+			text(`▷ User: ${POLL}`, 3)
+		];
+		expect(roles(events)).toEqual(['user', 'tool', 'user']);
 	});
 
 	it('ignores whitespace differences when matching a repeat', () => {
@@ -522,17 +595,17 @@ describe('CCT-1055 system record reclassification', () => {
 	const marker = (body: string, ts: number) => text(`· ${body}`, ts, 'system_marker');
 	const user = (body: string, ts: number) => text(`▷ User: ${body}`, ts);
 
-	it('collapses attachments to a count on the user turn they precede, with no bubble', () => {
+	it('never counts harness attachment records on the user turn they precede', () => {
 		const lines = buildLines(
 			[
-				annotation('attachment:prompt_snapshot', 1),
-				annotation('attachment:queued_command', 2),
+				annotation('attachment:environment', 1),
+				annotation('attachment:prompt_snapshot', 2),
 				user('do the thing', 3)
 			],
 			ctx()
 		);
 		expect(lines.map((l) => l.role)).toEqual(['user']);
-		expect(lines[0].attachmentCount).toBe(2);
+		expect(lines[0]).not.toHaveProperty('attachmentCount');
 	});
 
 	it('drops attachment annotations that never reach a user turn', () => {
@@ -540,10 +613,10 @@ describe('CCT-1055 system record reclassification', () => {
 		expect(lines).toHaveLength(0);
 	});
 
-	it('renders queue-operation as a timeline line', () => {
-		const [ln] = buildLines([marker('queued: deploy the thing', 1)], ctx());
-		expect(ln.role).toBe('marker');
-		expect(ln.text).toBe('· queued: deploy the thing');
+	it('never renders a queue operation as a marker row', () => {
+		const lines = buildLines([queueOp('queued', 'deploy the thing', 1)], ctx());
+		expect(lines.map((l) => l.role)).toEqual(['user']);
+		expect(lines[0].text).toBe('deploy the thing');
 	});
 
 	it('groups consecutive markers into one row, keeping every text', () => {
@@ -587,5 +660,123 @@ describe('CCT-1055 system record reclassification', () => {
 		const lines = buildLines([tool, annotation('file_history:snapshot:src/a.rs', 2)], ctx());
 		expect(lines.map((l) => l.role)).toEqual(['tool']);
 		expect(lines[0].fileHistory).toEqual(['snapshot:src/a.rs']);
+	});
+});
+
+describe('CCT-1083 queued messages carry their own queue state', () => {
+	const user = (body: string, ts: number, seq: number | null = null) =>
+		text(`▷ User: ${body}`, ts, null, seq);
+
+	it('renders a queued prompt with no matching user event as a waiting user bubble', () => {
+		const lines = buildLines([queueOp('queued', 'ship the thing', 1, 5)], ctx());
+		expect(lines).toHaveLength(1);
+		expect(lines[0].role).toBe('user');
+		expect(lines[0].queued).toBe(true);
+		expect(lines[0].queuedAt).toBeUndefined();
+		expect(lines[0].cancelled).toBeUndefined();
+	});
+
+	it('collapses a queued prompt and its delivered turn into one bubble', () => {
+		const lines = buildLines(
+			[queueOp('queued', 'ship the thing', 1, 5), user('ship the thing', 3, 9)],
+			ctx()
+		);
+		expect(lines).toHaveLength(1);
+		expect(lines[0].queued).toBe(true);
+		expect(lines[0].queuedAt).toBe(1);
+	});
+
+	it('gives the delivered bubble the real user event seq, never the enqueue row id', () => {
+		const lines = buildLines(
+			[queueOp('queued', 'ship the thing', 1, 5), user('ship the thing', 3, 9)],
+			ctx()
+		);
+		expect(lines[0].seq).toBe(9);
+	});
+
+	it('keeps the delivered bubble when the dequeue op sits between the pair', () => {
+		const lines = buildLines(
+			[
+				queueOp('queued', 'ship the thing', 1, 5),
+				queueOp('dequeued', '', 2, 6),
+				user('ship the thing', 3, 9)
+			],
+			ctx()
+		);
+		expect(lines).toHaveLength(1);
+		expect(lines[0].seq).toBe(9);
+		expect(lines[0].queued).toBe(true);
+		expect(lines[0].cancelled).toBeUndefined();
+	});
+
+	it('marks a queued prompt cancelled when it is dequeued with no user event', () => {
+		const lines = buildLines(
+			[queueOp('queued', 'ship the thing', 1, 5), queueOp('dequeued', '', 2, 6)],
+			ctx()
+		);
+		expect(lines).toHaveLength(1);
+		expect(lines[0].cancelled).toBe(true);
+		expect(lines[0].text).toBe('ship the thing');
+	});
+
+	it('marks a queued prompt cancelled when a remove op names it', () => {
+		const lines = buildLines(
+			[queueOp('queued', 'ship the thing', 1, 5), queueOp('removed', 'ship the thing', 2, 6)],
+			ctx()
+		);
+		expect(lines[0].cancelled).toBe(true);
+	});
+
+	it('correlates a long multi-line prompt through its truncated first line', () => {
+		const first = 'a'.repeat(200);
+		const full = `${first}\nsecond line`;
+		const truncated = `${first.slice(0, 120)}…`;
+		const lines = buildLines([queueOp('queued', truncated, 1, 5), user(full, 3, 9)], ctx());
+		expect(lines).toHaveLength(1);
+		expect(lines[0].seq).toBe(9);
+		expect(lines[0].queuedAt).toBe(1);
+	});
+
+	it('does not attach a queued prompt to a different message', () => {
+		const lines = buildLines(
+			[queueOp('queued', 'ship the thing', 1, 5), user('something else entirely', 3, 9)],
+			ctx()
+		);
+		expect(lines).toHaveLength(2);
+		expect(lines[0].queued).toBe(true);
+		expect(lines[1].queued).toBeUndefined();
+	});
+
+	it('resolves two queued prompts to their own delivered turns', () => {
+		const lines = buildLines(
+			[
+				queueOp('queued', 'first', 1, 5),
+				queueOp('queued', 'second', 2, 6),
+				user('first', 3, 9),
+				text('done', 4, null, 10),
+				user('second', 5, 11)
+			],
+			ctx()
+		);
+		expect(lines.map((l) => [l.text, l.seq, l.queued])).toEqual([
+			['first', 9, true],
+			['done', 10, undefined],
+			['second', 11, true]
+		]);
+	});
+
+	it('follows the user filter, not the marker filter', () => {
+		const events = [queueOp('queued', 'ship the thing', 1, 5)];
+		expect(buildLines(events, ctx({ marker: false }))).toHaveLength(1);
+		expect(buildLines(events, ctx({ user: false }))).toHaveLength(0);
+	});
+
+	it('does not let the duplicate guard swallow the delivered turn', () => {
+		const lines = buildLines(
+			[queueOp('queued', 'same text', 1, 5), user('same text', 2, 6)],
+			ctx()
+		);
+		expect(lines).toHaveLength(1);
+		expect(lines[0].seq).toBe(6);
 	});
 });

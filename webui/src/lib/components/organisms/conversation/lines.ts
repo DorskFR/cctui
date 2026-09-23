@@ -47,7 +47,43 @@ export function normalizePollText(text: string): string {
 }
 
 export interface PollSeen {
-	seen: Set<string>;
+	/** Normalised text of the immediately preceding user turn. */
+	last: string | null;
+}
+
+export function newPollSeen(): PollSeen {
+	return { last: null };
+}
+
+// Only a *consecutive* repeat with no `turn_id` demotes: cctui stamps a
+// `turn_id` on everything a human sends, a monitor re-injection never carries
+// one, and anything looser demotes a human typing `continue` twice.
+export function pollDuplicate(
+	content: string,
+	turnId: string | null | undefined,
+	state: PollSeen
+): boolean {
+	const norm = normalizePollText(content);
+	if (!norm) return false;
+	const dup = !turnId && state.last === norm;
+	state.last = norm;
+	return dup;
+}
+
+export function breaksPollRun(e: AgentEvent): boolean {
+	switch (e.type) {
+		case 'text':
+			if (e.kind === 'turn_annotation' || e.kind === 'system_marker') return false;
+			if (e.kind === 'queue_op') return false;
+			return !e.content.startsWith(USER_PREFIX);
+		case 'tool_call':
+		case 'tool_result':
+		case 'context_reset':
+		case 'compact_summary':
+			return true;
+		default:
+			return false;
+	}
 }
 
 // History stores user turns as a `text` event prefixed with USER_PREFIX; some
@@ -58,7 +94,8 @@ function userOrSystem(
 	ts: number,
 	meta: boolean,
 	ctx: LineBuildCtx,
-	poll?: PollSeen
+	poll?: PollSeen,
+	turnId?: string | null
 ): Line | null {
 	const peer = parsePeerMessage(content);
 	if (peer) {
@@ -74,12 +111,8 @@ function userOrSystem(
 	let role: Line['role'] = meta ? 'system' : 'user';
 	if (looksPoll(content)) {
 		role = 'poll';
-	} else if (role === 'user' && poll) {
-		const norm = normalizePollText(content);
-		if (norm) {
-			if (poll.seen.has(norm)) role = 'poll';
-			else poll.seen.add(norm);
-		}
+	} else if (role === 'user' && poll && pollDuplicate(content, turnId, poll)) {
+		role = 'poll';
 	}
 	if (!ctx.visible(role)) return null;
 	// Claude's synthetic `[Image: source: …]` turn carries no human content; it
@@ -143,7 +176,7 @@ function buildLine(e: AgentEvent, ctx: LineBuildCtx, poll?: PollSeen): Line | nu
 				// Classify structurally from content, not the stored `meta` bit —
 				// cctui-injected human replies carry a spurious `isMeta:true` and
 				// must stay `user` on reload.
-				return userOrSystem(content, Number(e.ts), looksMeta(content), ctx, poll);
+				return userOrSystem(content, Number(e.ts), looksMeta(content), ctx, poll, e.turn_id);
 			}
 			if (!ctx.visible(e.kind === 'attachment' ? 'attachment' : 'assistant')) return null;
 			return {
@@ -158,7 +191,7 @@ function buildLine(e: AgentEvent, ctx: LineBuildCtx, poll?: PollSeen): Line | nu
 		case 'reply':
 			// `reply` is only ever our own optimistic echo of typed input.
 			if (!e.content.trim()) return null;
-			return userOrSystem(e.content, Number(e.ts), false, ctx, poll);
+			return userOrSystem(e.content, Number(e.ts), false, ctx, poll, e.turn_id);
 		case 'tool_call': {
 			if (e.tool === 'AskUserQuestion') {
 				const ask = parseAsk(e.input);
@@ -257,14 +290,9 @@ function ownerLine(out: Line[], roles: Line['role'][], stopAt: Line['role'][]): 
 	return null;
 }
 
-// Claude writes `attachment` records *before* the user turn they belong to, so
-// they are counted forward onto the next user line rather than scanned back.
-function attachAnnotation(out: Line[], content: string, pending: { attachments: number }): void {
+function attachAnnotation(out: Line[], content: string): void {
 	const { kind, detail } = parseAnnotation(content);
 	switch (kind) {
-		case 'attachment':
-			pending.attachments += 1;
-			return;
 		case 'turn_duration': {
 			const ms = Number(detail);
 			const owner = ownerLine(out, ['assistant'], ['user', 'poll', 'peer', 'reset']);
@@ -336,18 +364,90 @@ export function parseUserUploadRefs(text: string | undefined): UserUploadRefs {
 	return { sessionId, names };
 }
 
+// Claude's `queue-operation` records carry no queue id, so a queued prompt is
+// correlated with its delivered turn by text. `excerpt` keeps only the first
+// line (120 chars on rows written before `queue_text`), hence first-line prefix
+// matching on normalised text rather than equality.
+export function queueKey(text: string | undefined): string {
+	return normalizePollText((text ?? '').split('\n')[0] ?? '').replace(/…$/, '');
+}
+
+// A real user line absorbs the placeholder it matches: the real event's `seq`
+// wins, because pins, forks and jump-to-seq address user messages by `seq` and
+// the enqueue row's id must never leak into them.
+function reconcileQueued(out: Line[], placeholders: Line[], closes: string[]): Line[] {
+	if (!placeholders.length) return out;
+	const open = [...placeholders];
+	const absorbed = new Set<Line>();
+	for (const ln of out) {
+		if (ln.queued || ln.role !== 'user') continue;
+		const first = queueKey(ln.text);
+		if (!first) continue;
+		const at = open.findIndex((p) => {
+			const key = queueKey(p.text);
+			return key.length > 0 && first.startsWith(key);
+		});
+		if (at === -1) continue;
+		const [ph] = open.splice(at, 1);
+		ln.queued = true;
+		ln.queuedAt = ph.ts;
+		absorbed.add(ph);
+	}
+	// A `dequeue` record never carries its content, so a bodiless close is only
+	// consumed once no texted close claims the placeholder.
+	const texted = closes.filter(Boolean);
+	let bodiless = closes.length - texted.length;
+	for (const ph of open) {
+		const key = queueKey(ph.text);
+		const at = texted.findIndex((c) => key && (c.startsWith(key) || key.startsWith(c)));
+		if (at !== -1) {
+			texted.splice(at, 1);
+			ph.cancelled = true;
+		} else if (bodiless > 0) {
+			bodiless -= 1;
+			ph.cancelled = true;
+		}
+	}
+	return out.filter((l) => !absorbed.has(l));
+}
+
 export function buildLines(
 	events: AgentEvent[],
 	ctx: LineBuildCtx,
 	delivery?: DeliveryState
 ): Line[] {
 	const out: Line[] = [];
-	const poll: PollSeen = { seen: new Set() };
-	const pending = { attachments: 0 };
+	const poll = newPollSeen();
+	const placeholders: Line[] = [];
+	const closes: string[] = [];
 	let prevKey = '';
 	for (const e of events) {
+		if (breaksPollRun(e)) poll.last = null;
+		if (e.type === 'text' && e.kind === 'queue_op') {
+			const body = e.content.trim();
+			if ((e.operation ?? 'queued') !== 'queued') {
+				closes.push(queueKey(body));
+				continue;
+			}
+			if (!body || !ctx.visible('user')) continue;
+			const ln: Line = {
+				role: 'user',
+				ts: Number(e.ts),
+				text: body,
+				html: ctx.renderMarkdown(body),
+				queued: true
+			};
+			if (typeof e.seq === 'number') ln.seq = e.seq;
+			placeholders.push(ln);
+			out.push(ln);
+			// A placeholder must stay invisible to the consecutive-duplicate guard:
+			// it keeps the FIRST line, which would hand the real user bubble the
+			// enqueue row's `seq`.
+			prevKey = '';
+			continue;
+		}
 		if (e.type === 'text' && e.kind === 'turn_annotation') {
-			attachAnnotation(out, e.content, pending);
+			attachAnnotation(out, e.content);
 			continue;
 		}
 		if (e.type === 'turn_summary') {
@@ -363,6 +463,10 @@ export function buildLines(
 		}
 		const ln = toLine(e, ctx, poll);
 		if (!ln) continue;
+		// The three encodings Claude stores ONE human turn in share its `turn_id`,
+		// so keying on it still collapses them while two composer sends of the same
+		// text — always distinct ids — stay two messages.
+		const turnId = (e.type === 'text' || e.type === 'reply' ? e.turn_id : null) ?? '';
 		// Reset/compact markers are keyed by ts so two back-to-back ones aren't
 		// collapsed by the consecutive-duplicate guard.
 		const key =
@@ -370,7 +474,7 @@ export function buildLines(
 				? `${ln.role}|${ln.ts}`
 				: `${ln.role}|${ln.tool ?? ''}|${(ln.uploads?.names ?? []).join(',')}|${ln.text ?? ln.html ?? ''}|${
 						ln.todos ? todoSignature(ln.todos) : ''
-					}`;
+					}|${turnId}`;
 		if (key === prevKey) continue;
 		prevKey = key;
 		// Consecutive markers collapse into one row: they arrive in bursts at the
@@ -381,12 +485,6 @@ export function buildLines(
 			prevLine.text = prevLine.markerTexts.join(' · ');
 			continue;
 		}
-		if (ln.role === 'user' || ln.role === 'poll') {
-			if (pending.attachments > 0) {
-				ln.attachmentCount = pending.attachments;
-				pending.attachments = 0;
-			}
-		}
 		if ((ln.role === 'user' || ln.role === 'poll') && delivery) {
 			if (delivery.pending.has(ln.ts)) ln.pending = true;
 			const retry = delivery.retrying.get(ln.ts);
@@ -396,18 +494,19 @@ export function buildLines(
 		}
 		out.push(ln);
 	}
+	const lines = reconcileQueued(out, placeholders, closes);
 	// `events` is already ordered causally by `orderEvents` (server insert
 	// `seq`), so `out` is built in causal order and rendered as-is — no role
 	// grouping, no structural re-anchoring. Ordering by `seq` is what keeps
 	// a reloaded AskUserQuestion in [preamble, card, answer] order.
-	for (let i = 0; i < out.length; i++) {
-		if (out[i].role !== 'assistant') continue;
-		const prev = [...out.slice(0, i)]
+	for (let i = 0; i < lines.length; i++) {
+		if (lines[i].role !== 'assistant') continue;
+		const prev = [...lines.slice(0, i)]
 			.reverse()
 			.find((l) => l.role === 'user' || l.role === 'assistant');
 		// A `system/turn_duration` annotation is exact; only estimate without one.
-		if (out[i].durationMs !== undefined) continue;
-		if (prev && out[i].ts > prev.ts) out[i].durationMs = out[i].ts - prev.ts;
+		if (lines[i].durationMs !== undefined) continue;
+		if (prev && lines[i].ts > prev.ts) lines[i].durationMs = lines[i].ts - prev.ts;
 	}
-	return assignLineKeys(stampTurns(out));
+	return assignLineKeys(stampTurns(lines));
 }

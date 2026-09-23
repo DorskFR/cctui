@@ -75,6 +75,11 @@ model?: string | null,
  */
 effort?: string | null, 
 /**
+ * Permission posture the session runs under (e.g. `"yolo"`,
+ * `"plan"`), when known.
+ */
+permission_mode?: string | null, 
+/**
  * Whether cctui-side auto-approve is on for this session.
  * In-memory server state, reflected so clients can show the toggle.
  */
