@@ -5,6 +5,8 @@
 //! chunks of one speaker collapse into one turn. The oldest turns are elided
 //! behind one line once the turn or byte cap is hit.
 
+use std::fmt::Write as _;
+
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
@@ -104,7 +106,7 @@ pub fn collect_turns<'a>(
     turns
 }
 
-fn turn_len(turn: &Turn) -> usize {
+const fn turn_len(turn: &Turn) -> usize {
     turn.role.heading().len() + 2 + turn.text.len() + 2
 }
 
@@ -141,7 +143,7 @@ pub fn render(turns: &[Turn], caps: Caps) -> BriefResponse {
     }
     let mut markdown = String::new();
     if omitted > 0 {
-        markdown.push_str(&format!("… {omitted} earlier turns omitted\n\n"));
+        let _ = write!(markdown, "… {omitted} earlier turns omitted\n\n");
     }
     for turn in &kept {
         markdown.push_str(turn.role.heading());
@@ -283,8 +285,7 @@ mod tests {
             ("message", json!({"type": "agentMessage", "text": "a"})),
         ];
         let turns = collect_turns("codex", rows);
-        let roles: Vec<Role> = turns.iter().map(|t| t.role).collect();
-        assert!(roles.contains(&Role::Assistant), "{turns:?}");
+        assert!(turns.iter().any(|t| t.role == Role::Assistant), "{turns:?}");
     }
 
     #[test]

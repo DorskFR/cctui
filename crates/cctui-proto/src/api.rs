@@ -448,7 +448,9 @@ pub struct SessionListItem {
     pub last_keepalive_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-/// Per-session cache keep-alive schedule. The reaper sends a small tick every
+/// Per-session cache keep-alive schedule.
+///
+/// The reaper sends a small tick every
 /// `interval_secs` while the session is idle so the provider's prompt cache
 /// stays warm, and stops after `max_ticks` ticks without human activity
 /// (`0` = indefinitely). A human message resets `ticks_sent`.
