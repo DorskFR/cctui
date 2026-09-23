@@ -1082,6 +1082,7 @@ mod tests {
                 message_id: Some("gw-cap-1".to_owned()),
                 usage: crate::cost::TokenUsage { input: 2_000_000, cached_input: 0, output: 0 },
             },
+            false,
         )
         .await;
 

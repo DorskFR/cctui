@@ -3112,6 +3112,7 @@ mod tests {
                 message_id: Some("gw-1".to_owned()),
                 usage: crate::cost::TokenUsage { input: 100, cached_input: 0, output: 10 },
             },
+            false,
         )
         .await;
 

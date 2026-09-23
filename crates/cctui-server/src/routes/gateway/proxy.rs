@@ -412,6 +412,7 @@ pub async fn passthrough(
     // falls through to the original bytes, so non-`/v1/messages` calls are
     // untouched either way.
     let mut request_model: Option<String> = None;
+    let mut rewrote_body = false;
     let (upstream_body, traced_request) = if langfuse.is_some()
         || fireworks.is_some()
         || model_gate.is_some()
@@ -456,12 +457,13 @@ pub async fn passthrough(
             )
             .await;
         }
-        let (payload, _rewrote) = upstream_payload(
+        let (payload, rewritten) = upstream_payload(
             &bytes,
             parsed.as_ref(),
             fireworks.as_ref(),
             affinity_session.as_deref(),
         );
+        rewrote_body = rewritten;
         (reqwest::Body::from(payload), parsed.filter(|_| langfuse.is_some()))
     } else {
         let body_stream = req.into_body().into_data_stream();
@@ -604,6 +606,7 @@ pub async fn passthrough(
     // Fireworks speaks the OpenAI wire protocol, so it reconstructs as openai.
     let is_openai = Family::from_provider(&acct.provider) != Family::Anthropic;
     let pool = state.pool.clone();
+    let bust_pool = state.pool.clone();
     // TPM accounting rides the same per-response usage the metering path captures
     // (Fireworks): the running window total the next request gates against.
     let rate_windows = acct.rate_limits.tpm.is_some().then(|| state.gateway_rate_windows.clone());
@@ -628,7 +631,8 @@ pub async fn passthrough(
                     + u64::try_from(u.output).unwrap_or(0);
                 super::note_tokens(windows, rate_provider, total);
             }
-            record_fireworks_usage(pool, session_id, request_model, captured).await;
+            record_fireworks_usage(pool, session_id, request_model, captured, rewrote_body)
+                .await;
         }
         if let Some(langfuse) = langfuse {
             let (output, usage) = if is_openai {
@@ -636,11 +640,40 @@ pub async fn passthrough(
             } else {
                 crate::langfuse::reconstruct_anthropic(&buf)
             };
+            let (level, status_message) =
+                match (&ctx.session_id, usage.as_ref()) {
+                    (Some(sid), Some(u)) => {
+                        let n = |k: &str| {
+                            i64::try_from(u.get(k).and_then(serde_json::Value::as_u64).unwrap_or(0))
+                                .unwrap_or(0)
+                        };
+                        let cache_read = n("cache_read_input_tokens");
+                        let turn = crate::cache_bust::Turn {
+                            message_id: String::new(),
+                            model: ctx.model.clone(),
+                            input: n("input"),
+                            cache_read,
+                            cache_creation: n("cache_creation_input_tokens"),
+                            created_at: Utc::now(),
+                            gateway_rewrote_body: rewrote_body,
+                        };
+                        match crate::cache_bust::judge_latest(&bust_pool, sid, turn).await {
+                            Some(bust) => (
+                                Some("WARNING"),
+                                Some(crate::cache_bust::status_message(cache_read, &bust)),
+                            ),
+                            None => (None, None),
+                        }
+                    }
+                    _ => (None, None),
+                };
             langfuse.trace(crate::langfuse::TracePayload {
                 ctx,
                 request: traced_request,
                 output,
                 usage,
+                level,
+                status_message,
             });
         }
     });
@@ -681,7 +714,7 @@ mod tests {
     fn anthropic_forwards_the_client_bytes_verbatim() {
         let original = unsorted_body();
         let parsed = serde_json::from_slice::<serde_json::Value>(&original).unwrap();
-        let (payload, _rewrote) = upstream_payload(&original, Some(&parsed), None, None);
+        let (payload, rewritten) = upstream_payload(&original, Some(&parsed), None, None);
         assert!(!rewritten);
         assert_eq!(payload, original);
         // The trace may read the parsed copy; it is never what is forwarded.
@@ -697,7 +730,7 @@ mod tests {
         let original = axum::body::Bytes::from_static(br#"{"model":"kimi","messages":[]}"#);
         let parsed = serde_json::from_slice::<serde_json::Value>(&original).unwrap();
         let fw = FireworksSettings::resolve(None);
-        let (payload, _rewrote) = upstream_payload(&original, Some(&parsed), Some(&fw), Some("s1"));
+        let (payload, rewritten) = upstream_payload(&original, Some(&parsed), Some(&fw), Some("s1"));
         assert!(rewritten);
         let out = serde_json::from_slice::<serde_json::Value>(&payload).unwrap();
         assert_eq!(out["context_length_exceeded_behavior"], "error");
@@ -708,7 +741,7 @@ mod tests {
     fn a_non_json_body_is_forwarded_untouched() {
         let original = axum::body::Bytes::from_static(b"not json");
         let fw = FireworksSettings::resolve(None);
-        let (payload, _rewrote) = upstream_payload(&original, None, Some(&fw), None);
+        let (payload, rewritten) = upstream_payload(&original, None, Some(&fw), None);
         assert!(!rewritten);
         assert_eq!(payload, original);
     }

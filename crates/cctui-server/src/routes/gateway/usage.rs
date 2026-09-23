@@ -670,14 +670,16 @@ pub async fn record_fireworks_usage(
     session_id: String,
     model: Option<String>,
     captured: crate::cost::CapturedUsage,
+    gateway_rewrote_body: bool,
 ) {
     let message_id =
         captured.message_id.unwrap_or_else(|| format!("fw-{}", uuid::Uuid::new_v4().simple()));
     let u = captured.usage;
     if let Err(e) = sqlx::query(
         "INSERT INTO session_token_usage \
-             (session_id, message_id, input_tokens, output_tokens, cache_read_tokens, model) \
-         VALUES ($1, $2, $3, $4, $5, $6) \
+             (session_id, message_id, input_tokens, output_tokens, cache_read_tokens, model, \
+              gateway_rewrote_body) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7) \
          ON CONFLICT (session_id, message_id) DO NOTHING",
     )
     .bind(&session_id)
@@ -686,6 +688,7 @@ pub async fn record_fireworks_usage(
     .bind(u.output)
     .bind(u.cached_input)
     .bind(model)
+    .bind(gateway_rewrote_body)
     .execute(&pool)
     .await
     {

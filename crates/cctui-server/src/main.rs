@@ -6,6 +6,7 @@ mod auto_archive;
 mod auto_resume;
 mod bandwidth_watch;
 mod bus;
+mod cache_bust;
 mod config;
 mod cost;
 mod crypto;
