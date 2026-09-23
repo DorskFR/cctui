@@ -33,6 +33,7 @@
 	import Conversation from './conversation/Conversation.svelte';
 	import AccountSwitchModal from './conversation/AccountSwitchModal.svelte';
 	import ConversationComposer from './conversation/ConversationComposer.svelte';
+	import { scheduledTurns, useScheduledMessages } from '$lib/queries/scheduled';
 	import BookmarkSaveModal from './bookmarks/BookmarkSaveModal.svelte';
 	import type { Line, MsgCategory, ViewOpts } from './conversation/types';
 	import { parseViewOpts } from './conversation/filters';
@@ -279,6 +280,8 @@
 		);
 	// Getters, not snapshots: the toggles are read at build time so the derived
 	// below re-runs when they flip.
+	const scheduledQuery = useScheduledMessages(() => id);
+	const scheduledTurnMap = $derived(scheduledTurns(scheduledQuery.data));
 	const lineCtx: LineBuildCtx = {
 		visible,
 		renderMarkdown: mdRender,
@@ -288,6 +291,9 @@
 		},
 		get prettyDiff() {
 			return view.prettyDiff;
+		},
+		get scheduledTurns() {
+			return scheduledTurnMap;
 		}
 	};
 	const lines = $derived.by(() =>

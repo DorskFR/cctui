@@ -853,3 +853,36 @@ describe('CCT-1101 queued means waiting, absorbed means delivered', () => {
 		expect(lines[0].queuedAt).toBe(1);
 	});
 });
+
+describe('scheduled turns', () => {
+	const LOOP = '# Autonomous loop\nCheck the queue depth.';
+	const scheduled = (body: string, ts: number, turnId: string, at?: string): AgentEvent =>
+		({
+			...(text(`▷ User: ${body}`, ts) as AgentEvent & { type: 'text' }),
+			turn_id: turnId,
+			...(at ? { metadata: { scheduled_at: at } } : {})
+		}) as AgentEvent;
+
+	it('is never classified as poll, even when its text looks like one', () => {
+		const at = '2026-09-25T09:00:00Z';
+		const events = [scheduled(LOOP, 1, 'a', at), scheduled(LOOP, 2, 'b', at)];
+		expect(roles(events)).toEqual(['user', 'user']);
+	});
+
+	it('carries the scheduled time from the event metadata', () => {
+		const [line] = buildLines([scheduled('ping', 1, 'a', '2026-09-25T09:00:00Z')], ctx());
+		expect(line.role).toBe('user');
+		expect(line.scheduledAt).toBe(Date.parse('2026-09-25T09:00:00Z'));
+	});
+
+	it('recognises a live scheduled turn by its turn_id', () => {
+		const c = { ...ctx(), scheduledTurns: new Map([['a', '2026-09-25T09:00:00Z']]) };
+		const [line] = buildLines([scheduled(LOOP, 1, 'a')], c);
+		expect(line.role).toBe('user');
+		expect(line.scheduledAt).toBe(Date.parse('2026-09-25T09:00:00Z'));
+	});
+
+	it('leaves an unscheduled look-alike as poll', () => {
+		expect(roles([scheduled(LOOP, 1, 'a')])).toEqual(['poll']);
+	});
+});

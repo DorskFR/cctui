@@ -23,6 +23,8 @@ export interface LineBuildCtx {
 	renderCode: (text: string, lang: string) => string;
 	prettyJson: boolean;
 	prettyDiff: boolean;
+	/** turn_id → deliver_at of delivered scheduled messages. */
+	scheduledTurns?: ReadonlyMap<string, string>;
 }
 
 export interface DeliveryState {
@@ -95,7 +97,8 @@ function userOrSystem(
 	meta: boolean,
 	ctx: LineBuildCtx,
 	poll?: PollSeen,
-	turnId?: string | null
+	turnId?: string | null,
+	scheduledAt?: string | null
 ): Line | null {
 	const peer = parsePeerMessage(content);
 	if (peer) {
@@ -109,7 +112,9 @@ function userOrSystem(
 		};
 	}
 	let role: Line['role'] = meta ? 'system' : 'user';
-	if (looksPoll(content)) {
+	if (scheduledAt) {
+		role = 'user';
+	} else if (looksPoll(content)) {
 		role = 'poll';
 	} else if (role === 'user' && poll && pollDuplicate(content, turnId, poll)) {
 		role = 'poll';
@@ -125,8 +130,16 @@ function userOrSystem(
 		ts,
 		html: prose ? ctx.renderMarkdown(prose) : '',
 		text: prose,
-		uploads: uploads.names.length ? uploads : undefined
+		uploads: uploads.names.length ? uploads : undefined,
+		scheduledAt: scheduledAt ? Date.parse(scheduledAt) : undefined
 	};
+}
+
+export function scheduledAtOf(e: AgentEvent, ctx: LineBuildCtx): string | null {
+	const meta = (e as { metadata?: { scheduled_at?: unknown } }).metadata;
+	if (typeof meta?.scheduled_at === 'string') return meta.scheduled_at;
+	const turnId = 'turn_id' in e ? e.turn_id : null;
+	return (turnId && ctx.scheduledTurns?.get(turnId)) || null;
 }
 
 // Errors win so one toggle isolates every failed result, server or client.
@@ -176,7 +189,16 @@ function buildLine(e: AgentEvent, ctx: LineBuildCtx, poll?: PollSeen): Line | nu
 				// Classify structurally from content, not the stored `meta` bit —
 				// cctui-injected human replies carry a spurious `isMeta:true` and
 				// must stay `user` on reload.
-				return userOrSystem(content, Number(e.ts), looksMeta(content), ctx, poll, e.turn_id);
+				const scheduledAt = scheduledAtOf(e, ctx);
+				return userOrSystem(
+					content,
+					Number(e.ts),
+					!scheduledAt && looksMeta(content),
+					ctx,
+					poll,
+					e.turn_id,
+					scheduledAt
+				);
 			}
 			if (!ctx.visible(e.kind === 'attachment' ? 'attachment' : 'assistant')) return null;
 			return {

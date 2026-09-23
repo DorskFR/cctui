@@ -176,6 +176,8 @@ export interface Line {
 	queuedAt?: number;
 	// Queued and dropped before delivery.
 	cancelled?: boolean;
+	// Delivered from the schedule queue: the time it was scheduled for.
+	scheduledAt?: number;
 	// Parsed AskUserQuestion payload — rendered as interactive cards.
 	ask?: AskQuestion[];
 	// Parsed ExitPlanMode plan markdown — rendered as a Plan card.
