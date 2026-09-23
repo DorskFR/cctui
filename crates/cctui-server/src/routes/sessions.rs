@@ -975,14 +975,11 @@ async fn enrich_and_sort(
         for (_, s) in &mut with_ts {
             if let Some((cr, cc, ts, prev_context)) = by_session.remove(&s.id) {
                 s.last_activity_at = Some(ts);
-                #[allow(clippy::cast_precision_loss)]
-                {
-                    s.cache_cold = if prev_context > 0 {
-                        (cr.max(0) as f64) < (prev_context as f64 * 0.5)
-                    } else {
-                        cc > 0 && cr == 0
-                    };
-                }
+                s.cache_cold = if prev_context > 0 {
+                    (cr.max(0) as f64) < (prev_context as f64 * 0.5)
+                } else {
+                    cc > 0 && cr == 0
+                };
                 // Context size that would be re-written to cache on the next
                 // send (≈ the full cached prefix from the last turn).
                 let burst_tokens = u64::try_from(cr.saturating_add(cc)).unwrap_or(0);
@@ -1750,6 +1747,72 @@ async fn fetch_renderable_rows(
     }
 }
 
+/// Per-message token usage for one session, each turn carrying the cache bust it
+/// suffered (if any) against the previous turn of its own agent stream.
+async fn message_usage(
+    state: &AppState,
+    session_id: &str,
+) -> Result<HashMap<String, cctui_proto::models::TokenUsage>, (StatusCode, Json<ApiError>)> {
+    type UsageRow = (String, Option<String>, i64, i64, i64, i64, bool, DateTime<Utc>);
+    let usage_rows: Vec<UsageRow> = sqlx::query_as(
+        "SELECT message_id, model, \
+                input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, \
+                gateway_rewrote_body, created_at \
+         FROM session_token_usage WHERE session_id = $1",
+    )
+    .bind(session_id)
+    .fetch_all(&state.pool)
+    .await
+    .map_err(|e| {
+        tracing::error!("db error (message usage): {e}");
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
+    })?;
+    let owned_id = session_id.to_owned();
+    let catalog =
+        session_catalogs(state, std::slice::from_ref(&owned_id)).await.remove(session_id);
+    let turns: Vec<crate::cache_bust::Turn> = usage_rows
+        .iter()
+        .map(|(message_id, model, input, _, cache_read, cache_creation, rewrote, at)| {
+            crate::cache_bust::Turn {
+                message_id: message_id.clone(),
+                model: model.clone(),
+                input: *input,
+                cache_read: *cache_read,
+                cache_creation: *cache_creation,
+                created_at: *at,
+                gateway_rewrote_body: *rewrote,
+            }
+        })
+        .collect();
+    let mut busts = crate::cache_bust::compute(&turns, catalog.as_ref());
+    Ok(usage_rows
+        .into_iter()
+        .map(|(message_id, model, input, output, cache_read, cache_creation, _, _)| {
+            let to_u64 = |v: i64| u64::try_from(v).unwrap_or(0);
+            let cost = crate::cost::tallies_cost_usd(
+                catalog.as_ref(),
+                &[(model, crate::cost::TokenUsage { input, cached_input: cache_read, output })],
+            );
+            let cache_bust = busts.remove(&message_id).map(|b| cctui_proto::models::CacheBust {
+                lost_tokens: b.lost_tokens,
+                lost_usd: b.lost_usd,
+                reason: b.reason.as_str().to_owned(),
+            });
+            (
+                message_id,
+                cctui_proto::models::TokenUsage {
+                    tokens_in: to_u64(input),
+                    tokens_out: to_u64(output),
+                    cost_usd: cost,
+                    cache_read_tokens: to_u64(cache_read),
+                    cache_creation_tokens: to_u64(cache_creation),
+                    cache_bust,
+                },
+            )
+        })
+        .collect())
+}
+
 pub async fn get_conversation(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
@@ -1773,65 +1836,7 @@ pub async fn get_conversation(
         rows.reverse();
     }
 
-    type UsageRow = (String, Option<String>, i64, i64, i64, i64, bool, DateTime<Utc>);
-    let usage_rows: Vec<UsageRow> = sqlx::query_as(
-        "SELECT message_id, model, \
-                input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, \
-                gateway_rewrote_body, created_at \
-         FROM session_token_usage WHERE session_id = $1",
-    )
-    .bind(&session_id)
-    .fetch_all(&state.pool)
-    .await
-    .map_err(|e| {
-        tracing::error!("db error (message usage): {e}");
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-    })?;
-    let catalog = session_catalogs(&state, std::slice::from_ref(&session_id))
-        .await
-        .remove(session_id.as_str());
-    let turns: Vec<crate::cache_bust::Turn> = usage_rows
-        .iter()
-        .map(|(message_id, model, input, _, cache_read, cache_creation, rewrote, at)| {
-            crate::cache_bust::Turn {
-                message_id: message_id.clone(),
-                model: model.clone(),
-                input: *input,
-                cache_read: *cache_read,
-                cache_creation: *cache_creation,
-                created_at: *at,
-                gateway_rewrote_body: *rewrote,
-            }
-        })
-        .collect();
-    let mut busts = crate::cache_bust::compute(&turns, catalog.as_ref());
-    let usage_by_message: HashMap<String, cctui_proto::models::TokenUsage> = usage_rows
-        .into_iter()
-        .map(|(message_id, model, input, output, cache_read, cache_creation, _, _)| {
-            let to_u64 = |v: i64| u64::try_from(v).unwrap_or(0);
-            let cost = crate::cost::tallies_cost_usd(
-                catalog.as_ref(),
-                &[(model, crate::cost::TokenUsage { input, cached_input: cache_read, output })],
-            );
-            let cache_bust =
-                busts.remove(&message_id).map(|b| cctui_proto::models::CacheBust {
-                    lost_tokens: b.lost_tokens,
-                    lost_usd: b.lost_usd,
-                    reason: b.reason.as_str().to_owned(),
-                });
-            (
-                message_id,
-                cctui_proto::models::TokenUsage {
-                    tokens_in: to_u64(input),
-                    tokens_out: to_u64(output),
-                    cost_usd: cost,
-                    cache_read_tokens: to_u64(cache_read),
-                    cache_creation_tokens: to_u64(cache_creation),
-                    cache_bust,
-                },
-            )
-        })
-        .collect();
+    let usage_by_message = message_usage(&state, &session_id).await?;
 
     // Stamp each event with `ts` (unix millis, matching the live `AgentEvent`
     // shape) derived from `created_at`, so the client renders real timestamps

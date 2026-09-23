@@ -85,9 +85,7 @@ fn judge(prev: &Turn, turn: &Turn) -> Option<(u64, Reason)> {
     if expected <= 0 {
         return None;
     }
-    #[allow(clippy::cast_precision_loss)]
     let threshold = expected as f64 * HIT_FRACTION;
-    #[allow(clippy::cast_precision_loss)]
     if turn.cache_read.max(0) as f64 >= threshold {
         return None;
     }
@@ -109,20 +107,13 @@ fn judge(prev: &Turn, turn: &Turn) -> Option<(u64, Reason)> {
 /// into `cache_creation`), so context size separates an interleaved parent and
 /// subagent even when one of them just lost its cache.
 fn pick_stream(heads: &[usize], turns: &[Turn], i: usize) -> Option<usize> {
-    #[allow(clippy::cast_precision_loss)]
     let ceiling = turns[i].context() as f64 * LINEAGE_SLACK;
     heads
         .iter()
         .copied()
         .enumerate()
-        .filter(|&(_, h)| {
-            #[allow(clippy::cast_precision_loss)]
-            let c = turns[h].context() as f64;
-            c <= ceiling
-        })
-        .max_by(|&(_, a), &(_, b)| {
-            turns[a].context().cmp(&turns[b].context()).then(a.cmp(&b))
-        })
+        .filter(|&(_, h)| turns[h].context() as f64 <= ceiling)
+        .max_by(|&(_, a), &(_, b)| turns[a].context().cmp(&turns[b].context()).then(a.cmp(&b)))
         .map(|(slot, _)| slot)
 }
 
@@ -141,22 +132,21 @@ pub fn compute(
     let mut heads: Vec<usize> = Vec::new();
     let mut out = std::collections::HashMap::new();
     for i in order {
-        match pick_stream(&heads, turns, i) {
-            Some(slot) => {
-                if let Some((lost, reason)) = judge(&turns[heads[slot]], &turns[i]) {
-                    out.insert(
-                        turns[i].message_id.clone(),
-                        Bust {
-                            lost_tokens: lost,
-                            lost_usd: lost_usd(catalog, turns[i].model.as_deref(), lost),
-                            reason,
-                        },
-                    );
-                }
-                heads[slot] = i;
-            }
-            None => heads.push(i),
+        let Some(slot) = pick_stream(&heads, turns, i) else {
+            heads.push(i);
+            continue;
+        };
+        if let Some((lost, reason)) = judge(&turns[heads[slot]], &turns[i]) {
+            out.insert(
+                turns[i].message_id.clone(),
+                Bust {
+                    lost_tokens: lost,
+                    lost_usd: lost_usd(catalog, turns[i].model.as_deref(), lost),
+                    reason,
+                },
+            );
         }
+        heads[slot] = i;
     }
     out
 }
@@ -172,8 +162,8 @@ pub async fn judge_latest(
     session_id: &str,
     mut turn: Turn,
 ) -> Option<Bust> {
-    turn.message_id = format!("live-{}", uuid::Uuid::new_v4().simple());
     type Row = (String, Option<String>, i64, i64, i64, bool, DateTime<Utc>);
+    turn.message_id = format!("live-{}", uuid::Uuid::new_v4().simple());
     let rows: Vec<Row> = sqlx::query_as(
         "SELECT message_id, model, input_tokens, cache_read_tokens, cache_creation_tokens, \
                 gateway_rewrote_body, created_at \
@@ -207,13 +197,39 @@ pub async fn judge_latest(
 
 /// `cache bust: read X of expected Y (reason)` for a trace's status message.
 pub fn status_message(cache_read: i64, bust: &Bust) -> String {
-    let expected = u64::try_from(cache_read.max(0)).unwrap_or(0) + bust.lost_tokens;
-    format!(
-        "cache bust: read {} of expected {} ({})",
-        cache_read.max(0),
-        expected,
-        bust.reason.as_str()
-    )
+    let read = cache_read.max(0);
+    let expected = u64::try_from(read).unwrap_or(0) + bust.lost_tokens;
+    let reason = bust.reason.as_str();
+    format!("cache bust: read {read} of expected {expected} ({reason})")
+}
+
+/// Langfuse `(level, statusMessage)` for a just-completed gateway call, so a
+/// bust reads red in the trace view. `(None, None)` when nothing was lost.
+pub async fn trace_annotation(
+    pool: &sqlx::PgPool,
+    session_id: Option<&str>,
+    model: Option<&str>,
+    usage: Option<&serde_json::Value>,
+    gateway_rewrote_body: bool,
+) -> (Option<&'static str>, Option<String>) {
+    let (Some(session_id), Some(usage)) = (session_id, usage) else { return (None, None) };
+    let field = |key: &str| {
+        i64::try_from(usage.get(key).and_then(serde_json::Value::as_u64).unwrap_or(0))
+            .unwrap_or(i64::MAX)
+    };
+    let cache_read = field("cache_read_input_tokens");
+    let turn = Turn {
+        message_id: String::new(),
+        model: model.map(str::to_owned),
+        input: field("input"),
+        cache_read,
+        cache_creation: field("cache_creation_input_tokens"),
+        created_at: Utc::now(),
+        gateway_rewrote_body,
+    };
+    judge_latest(pool, session_id, turn)
+        .await
+        .map_or((None, None), |bust| (Some("WARNING"), Some(status_message(cache_read, &bust))))
 }
 
 #[cfg(test)]

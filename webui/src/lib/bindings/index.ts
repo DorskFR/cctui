@@ -15,6 +15,7 @@ export type * from './Attention';
 export type * from './AutoApproveRequest';
 export type * from './Bookmark';
 export type * from './Bucket';
+export type * from './CacheBust';
 export type * from './CapabilitiesResponse';
 export type * from './ChangelogResponse';
 export type * from './CheckSummary';

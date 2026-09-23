@@ -189,6 +189,14 @@ async fn claim_step(pool: &sqlx::PgPool, session_id: &str, window_key: &str, ste
     .is_some()
 }
 
+async fn forget_step(pool: &sqlx::PgPool, session_id: &str, window_key: &str) {
+    let _ = sqlx::query("DELETE FROM usage_notice_steps WHERE session_id = $1 AND window_key = $2")
+        .bind(session_id)
+        .bind(window_key)
+        .execute(pool)
+        .await;
+}
+
 async fn record_step(pool: &sqlx::PgPool, session_id: &str, window_key: &str, step: u32) {
     let _ = sqlx::query(
         "INSERT INTO usage_notice_steps (session_id, window_key, step) VALUES ($1, $2, $3) \
@@ -212,7 +220,7 @@ async fn deliver(state: &AppState, session_id: &str, text: String) -> bool {
             .ok()
             .flatten();
     let Some((Some(machine), adapter_id)) = row else { return false };
-    let frame = cctui_proto::adapter::DaemonFrameDown::Command {
+    let frame = cctui_proto::ws::DaemonFrameDown::Command {
         adapter_id: adapter_id.unwrap_or_else(|| "claude-code".to_owned()),
         command: Box::new(cctui_proto::adapter::AdapterCommand::SendMessage {
             local_id: session_id.to_owned(),
@@ -257,17 +265,10 @@ pub async fn deliver_if_due(state: &AppState, acct: &Account, session_token: &st
     // Undelivered: give the step back so the next turn tries again rather than
     // swallowing the notice for this bucket forever.
     for (key, prev) in claimed {
-        match prev {
-            Some(step) => record_step(&state.pool, &session_id, &key, step).await,
-            None => {
-                let _ = sqlx::query(
-                    "DELETE FROM usage_notice_steps WHERE session_id = $1 AND window_key = $2",
-                )
-                .bind(&session_id)
-                .bind(&key)
-                .execute(&state.pool)
-                .await;
-            }
+        if let Some(step) = prev {
+            record_step(&state.pool, &session_id, &key, step).await;
+        } else {
+            forget_step(&state.pool, &session_id, &key).await;
         }
     }
 }
