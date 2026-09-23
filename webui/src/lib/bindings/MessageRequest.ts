@@ -6,4 +6,9 @@ export type MessageRequest = { content: string,
  * onto every event the turn produces. Optional: a client that mints none
  * falls back to content matching.
  */
-turn_id?: string | null, };
+turn_id?: string | null, 
+/**
+ * RFC3339 instant to deliver at instead of now: future, at most 30 days
+ * ahead. The message is queued server-side and the response is 202.
+ */
+deliver_at?: string | null, };

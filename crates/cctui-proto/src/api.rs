@@ -649,6 +649,10 @@ pub struct MessageRequest {
     /// falls back to content matching.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_id: Option<uuid::Uuid>,
+    /// RFC3339 instant to deliver at instead of now: future, at most 30 days
+    /// ahead. The message is queued server-side and the response is 202.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deliver_at: Option<String>,
 }
 
 /// Body for `PATCH /api/v1/sessions/{id}` — rename a session after creation.

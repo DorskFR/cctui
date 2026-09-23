@@ -1875,6 +1875,12 @@ pub async fn get_conversation(
     }
 
     let usage_by_message = message_usage(&state, &session_id).await?;
+    let scheduled_turns = crate::scheduled_messages::scheduled_turns(&state.pool, &session_id)
+        .await
+        .map_err(|e| {
+            tracing::error!("db error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
+        })?;
 
     // Stamp each event with `ts` (unix millis, matching the live `AgentEvent`
     // shape) derived from `created_at`, so the client renders real timestamps
@@ -1888,6 +1894,12 @@ pub async fn get_conversation(
                 obj.insert("seq".to_owned(), serde_json::json!(id));
                 if let Some(turn_id) = turn_id {
                     obj.insert("turn_id".to_owned(), serde_json::json!(turn_id));
+                    if let Some(at) = scheduled_turns.get(&turn_id) {
+                        obj.insert(
+                            "metadata".to_owned(),
+                            serde_json::json!({ "scheduled_at": at.to_rfc3339() }),
+                        );
+                    }
                 }
                 if let Some(message_id) = obj.get("message_id").and_then(serde_json::Value::as_str)
                     && let Some(usage) = usage_by_message.get(message_id)
@@ -1903,9 +1915,20 @@ pub async fn get_conversation(
 
 pub async fn send_message(
     State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
     Path(session_id): Path<String>,
     Json(req): Json<MessageRequest>,
 ) -> Result<(StatusCode, Json<cctui_proto::api::SpawnResponse>), (StatusCode, Json<ApiError>)> {
+    if let Some(raw) = req.deliver_at.as_deref() {
+        return crate::routes::scheduled_messages::schedule(
+            &state,
+            &ctx,
+            &session_id,
+            &req.content,
+            raw,
+        )
+        .await;
+    }
     // Carry re-minted gateway env so a reply-driven cold-resume revives the
     // worker with a fresh valid token rather than empty env.
     let env = crate::routes::gateway::resume_env_for_session(&state, &session_id).await;

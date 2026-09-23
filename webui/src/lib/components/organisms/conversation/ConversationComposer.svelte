@@ -8,8 +8,17 @@
 	import type { SessionListItem } from '@bindings/SessionListItem';
 	import AttachmentList from '$lib/components/molecules/AttachmentList.svelte';
 	import SessionMention from '$lib/components/molecules/SessionMention.svelte';
-	import { useSessionAttachments, useSessions } from '$lib/queries';
-	import { Button, FileButton, Text, Textarea } from '@dorsk/tsumikit';
+	import {
+		pendingScheduled,
+		useScheduledActions,
+		useScheduledMessages,
+		useSessionAttachments,
+		useSessions
+	} from '$lib/queries';
+	import { Button, FileButton, Input, Menu, Modal, Text, Textarea } from '@dorsk/tsumikit';
+	import type { MenuItem } from '@dorsk/tsumikit';
+	import ScheduledMessages from './ScheduledMessages.svelte';
+	import { customBounds, parseCustom, schedulePresets, toLocalInput } from './scheduleTimes';
 	import { drafts, composerKey, history as msgHistory } from '$lib/drafts';
 	import { HistoryNav } from '$lib/historyNav';
 	import {
@@ -185,6 +194,82 @@
 		return () => clearInterval(t);
 	});
 
+	// ── Scheduled send ───────────────────────────────────────────
+	const scheduled = useScheduledMessages(() => session.id);
+	const scheduledActions = useScheduledActions(() => session.id);
+	const scheduledCount = $derived(pendingScheduled(scheduled.data).length);
+	let scheduledEl = $state<HTMLElement>();
+	let customOpen = $state(false);
+	let customValue = $state('');
+	const canSchedule = $derived(
+		!!input.trim() && attachments.length === 0 && !uploading && images.pending.length === 0
+	);
+
+	const hhmm = (d: Date) => d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+	const scheduleItems = $derived.by<MenuItem[]>(() => {
+		const presets: MenuItem[] = schedulePresets(new Date(now)).map((p) => ({
+			label:
+				p.id === 'later'
+					? m.composer_schedule_later_today({ time: hhmm(p.at) })
+					: p.id === 'tomorrow'
+						? m.composer_schedule_tomorrow({ time: hhmm(p.at) })
+						: m.composer_schedule_monday({ time: hhmm(p.at) }),
+			icon: 'clock',
+			disabled: !canSchedule,
+			onselect: () => void scheduleAt(p.at)
+		}));
+		return [
+			...presets,
+			{
+				label: m.composer_schedule_custom(),
+				disabled: !canSchedule,
+				onselect: () => {
+					customValue = toLocalInput(new Date(Date.now() + 3_600_000));
+					customOpen = true;
+				}
+			},
+			{
+				label: m.composer_schedule_list({ count: String(scheduledCount) }),
+				disabled: scheduledCount === 0,
+				onselect: () => scheduledEl?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+			}
+		];
+	});
+
+	async function scheduleAt(at: Date) {
+		const text = input.trim();
+		if (!text || archived || attachments.length) return;
+		try {
+			await scheduledActions.schedule(text, at);
+		} catch (e) {
+			toasts.error(m.composer_schedule_failed({ message: errMessage(e) }));
+			return;
+		}
+		toasts.info(
+			m.composer_schedule_toast({
+				when: at.toLocaleString([], {
+					weekday: 'short',
+					hour: '2-digit',
+					minute: '2-digit'
+				})
+			})
+		);
+		msgHistory.push(session.id, text);
+		input = '';
+		resetHistoryNav();
+		drafts.clear(composerKey(session.id));
+	}
+
+	function scheduleCustom() {
+		const at = parseCustom(customValue, new Date());
+		if (!at) {
+			toasts.error(m.composer_schedule_custom_invalid());
+			return;
+		}
+		customOpen = false;
+		void scheduleAt(at);
+	}
+
 	const nav = new HistoryNav({
 		list: () => msgHistory.get(session.id),
 		value: () => input,
@@ -283,6 +368,7 @@
 	{:else}
 		<!-- Failed sends surface inline on the message bubble itself (red +
 		     Retry), so there's no separate composer banner. -->
+		<div bind:this={scheduledEl}><ScheduledMessages sessionId={session.id} {archived} /></div>
 		<ImageCompressionStatus pending={images.pending} />
 		{#if supportsAttachments && attachments.length}
 			<div class="attachments">
@@ -339,30 +425,63 @@
 			     The cold/imminent state is signalled by the label itself
 			     (countdown · ❄️ · burst estimate) + the title tooltip, so the button
 			     keeps its expected high-contrast primary colors. -->
-			<Button
-				variant="primary"
-				control
-				shrink={false}
-				disabled={uploading || images.pending.length > 0 || (!input.trim() && attachments.length === 0)}
-				onclick={send}
-				title={cacheCold
-					? burstTokens
-						? m.composer_cache_cold_burst({ tokens: compact(burstTokens) })
-						: m.composer_cache_cold()
-					: coldImminent
-						? m.composer_cache_imminent()
-						: undefined}
-			>
-				{#if uploading}{m.composer_uploading()}{:else if coldImminent}{m.composer_send()} (<span
-						class="countdown">{coldCountdownSecs}s</span
-					>){:else if cacheCold && burstTokens}{m.composer_send()} ❄️ ~{compact(
-						burstTokens
-					)}{:else if cacheCold}{m.composer_send()}
-					❄️{:else}{m.composer_send()}{/if}
-			</Button>
+			<span class="send-split">
+				<Button
+					variant="primary"
+					control
+					shrink={false}
+					disabled={uploading || images.pending.length > 0 || (!input.trim() && attachments.length === 0)}
+					onclick={send}
+					title={cacheCold
+						? burstTokens
+							? m.composer_cache_cold_burst({ tokens: compact(burstTokens) })
+							: m.composer_cache_cold()
+						: coldImminent
+							? m.composer_cache_imminent()
+							: undefined}
+				>
+					{#if uploading}{m.composer_uploading()}{:else if coldImminent}{m.composer_send()} (<span
+							class="countdown">{coldCountdownSecs}s</span
+						>){:else if cacheCold && burstTokens}{m.composer_send()} ❄️ ~{compact(
+							burstTokens
+						)}{:else if cacheCold}{m.composer_send()}
+						❄️{:else}{m.composer_send()}{/if}
+				</Button>
+				<Menu
+					label={m.composer_schedule_menu()}
+					items={scheduleItems}
+					placement="top-end"
+					variant="primary"
+					control
+				>
+					{#snippet trigger()}<span aria-hidden="true">▾</span>{/snippet}
+				</Menu>
+			</span>
 		</div>
 	{/if}
 </div>
+
+{#if customOpen}
+	{@const bounds = customBounds(new Date(now))}
+	<Modal title={m.composer_schedule_custom_title()} onclose={() => (customOpen = false)} size="sm">
+		{#snippet body()}
+			<label class="custom-at">
+				<Text size="sm">{m.composer_schedule_custom_label()}</Text>
+				<Input
+					type="datetime-local"
+					min={bounds.min}
+					max={bounds.max}
+					bind:value={customValue}
+					onenter={scheduleCustom}
+				/>
+			</label>
+		{/snippet}
+		{#snippet footer()}
+			<Button onclick={() => (customOpen = false)}>{m.common_cancel()}</Button>
+			<Button variant="primary" onclick={scheduleCustom}>{m.composer_schedule_confirm()}</Button>
+		{/snippet}
+	</Modal>
+{/if}
 
 <style>
 	.composer {
@@ -451,6 +570,16 @@
 		min-width: 2.4ch;
 		text-align: right;
 		font-variant-numeric: tabular-nums;
+	}
+	.send-split {
+		display: inline-flex;
+		flex: none;
+		gap: 1px;
+	}
+	.custom-at {
+		display: flex;
+		flex-direction: column;
+		gap: var(--sp-1);
 	}
 	.hint {
 		text-align: center;
