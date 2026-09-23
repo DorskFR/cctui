@@ -609,11 +609,7 @@ fn attachment_annotation(local_id: &str, line: &Value, out: &mut Vec<AdapterEven
         if let (Some(id), Some(obj)) = (id, payload.as_object_mut()) {
             obj.insert("line_id".to_owned(), Value::String(id.to_owned()));
         }
-        out.push(AdapterEvent::Message {
-            local_id: local_id.to_owned(),
-            payload,
-            turn_id: None,
-        });
+        out.push(AdapterEvent::Message { local_id: local_id.to_owned(), payload, turn_id: None });
         return;
     }
     record_ignored(&format!("attachment/{kind}"));
