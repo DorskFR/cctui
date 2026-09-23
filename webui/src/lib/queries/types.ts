@@ -233,6 +233,16 @@ export interface UsageWindowClose {
   source: string;
 }
 
+/** Dollars lost to prompt-cache busts on one local day, by reason. */
+export interface DailyCacheLoss {
+  day: string;
+  ttl_expired: number;
+  gateway_rewrote_body: number;
+  unknown: number;
+  total: number;
+  busts: number;
+}
+
 export interface WastedSummary {
   window_key: string;
   windows: number;

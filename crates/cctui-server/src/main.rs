@@ -572,6 +572,14 @@ fn build_api_routes() -> Routes {
         )
         .add(
             &[GET],
+            "/sessions/stats/cache-busts",
+            "Dollars lost to prompt-cache busts per day, by reason.",
+            get(routes::cache_loss::cache_loss),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[GET],
             "/sessions/search",
             "Full-text search across your sessions.",
             get(routes::sessions::search_sessions),

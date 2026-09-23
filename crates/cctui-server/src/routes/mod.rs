@@ -6,6 +6,7 @@ pub mod attachments;
 pub mod auth;
 pub mod blobs;
 pub mod bookmarks;
+pub mod cache_loss;
 pub mod capabilities;
 pub mod codex_models;
 pub mod credentials;
