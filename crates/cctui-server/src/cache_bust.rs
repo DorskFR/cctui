@@ -265,7 +265,7 @@ mod tests {
         assert!(compute(&turns, None).is_empty());
     }
 
-    /// The production signature: cache_read pinned at tools+system while the
+    /// The production signature: `cache_read` pinned at tools+system while the
     /// rest of the context is re-written.
     #[test]
     fn a_collapsed_cache_read_is_a_bust() {
@@ -342,7 +342,7 @@ mod tests {
         let turns = [turn("a", 266, 200_968, 266, 0), turn("bust", 100, 28_977, 172_992, 2)];
         let b = &compute(&turns, None)["bust"];
         assert!(b.lost_tokens > 0);
-        assert_eq!(b.lost_usd, 0.0);
+        assert!(b.lost_usd.abs() < f64::EPSILON);
     }
 
     #[test]
