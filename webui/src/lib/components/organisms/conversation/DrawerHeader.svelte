@@ -22,6 +22,8 @@
 	import TokenUsage from '$lib/components/molecules/TokenUsage.svelte';
 	import PermissionModeBadge from '$lib/components/molecules/PermissionModeBadge.svelte';
 	import LangfuseChip from '$lib/components/molecules/LangfuseChip.svelte';
+	import CacheWarmChip from '$lib/components/molecules/CacheWarmChip.svelte';
+	import KeepaliveModal from '$lib/components/molecules/KeepaliveModal.svelte';
 	import {
 		Badge,
 		Icon,
@@ -54,6 +56,7 @@
 		oncopymarkdown,
 		onexport,
 		onfork,
+		onfollowup,
 		onforkselect,
 		forkSelectActive = false,
 		onterminal,
@@ -86,6 +89,7 @@
 		oncopymarkdown: () => void;
 		onexport: () => void;
 		onfork: () => void;
+		onfollowup?: () => void;
 		// Toggle multi-select-to-fork mode; omitted → button hidden
 		// (codex sessions have no partial-fork primitive).
 		onforkselect?: () => void;
@@ -156,6 +160,12 @@
 		onsetmodel(model, effort);
 	}
 
+	let keepaliveOpen = $state(false);
+
+	const followupItem = $derived<MenuItem | null>(
+		onfollowup ? { label: m.drawer_followup_label(), icon: 'arrow-right', onselect: onfollowup } : null
+	);
+
 	// Mirrors the Toolbar's `collapseBelow`: the rename stand-in joins the menu
 	// only while its inline button is hidden.
 	const COLLAPSE_BELOW = 640;
@@ -188,6 +198,7 @@
 			attrs: { title: m.drawer_export_title() },
 			onselect: onexport
 		},
+		...(followupItem && settings.preferFollowupOverFork ? [followupItem] : []),
 		{
 			label: m.drawer_fork_label(),
 			icon: 'fork' as const,
@@ -205,7 +216,14 @@
 						onselect: onterminal
 					}
 				]
-			: [])
+			: []),
+		{
+			label: m.drawer_keepalive_label(),
+			icon: 'bell' as const,
+			pressed: !!session.keepalive,
+			onselect: () => (keepaliveOpen = true)
+		},
+		...(followupItem && !settings.preferFollowupOverFork ? [followupItem] : [])
 	]);
 
 	function onWinKey(e: KeyboardEvent) {
@@ -354,6 +372,7 @@
 		<PermissionModeBadge mode={session.permission_mode} />
 		<TokenUsage usage={session.token_usage} />
 		<LangfuseChip id={session.id} />
+		<CacheWarmChip {session} />
 		{#if isCodexSession && !archived}
 			{#if modelEditing}
 				<span class="model-edit">
@@ -402,6 +421,10 @@
 		</div>
 	</div>
 </div>
+
+{#if keepaliveOpen}
+	<KeepaliveModal {session} onclose={() => (keepaliveOpen = false)} />
+{/if}
 
 <style>
 	.dhead {

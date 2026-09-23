@@ -196,6 +196,8 @@ export interface Line {
 	// Consecutive markers collapse into one row; every marker's text is kept
 	// here so nothing is lost to the grouping.
 	markerTexts?: string[];
+	/** A cache keep-alive tick and its reply, folded into one marker row. */
+	keepalive?: boolean;
 	// `system/stop_hook_summary` for the turn this assistant line closes.
 	stopHook?: string;
 	// `file-history-snapshot|delta` provenance for this tool call.

@@ -886,3 +886,34 @@ describe('scheduled turns', () => {
 		expect(roles([scheduled(LOOP, 1, 'a')])).toEqual(['poll']);
 	});
 });
+
+describe('keep-alive ticks', () => {
+	const tick = '▷ User: [cctui keep-alive 2026-09-24T12:00:00Z] Cache keep-alive tick. Reply with a single word.';
+
+	it('collapses the tick and its reply into one hidden-by-default marker', () => {
+		const events = [text('▷ User: go', 1), text('hello', 2), text(tick, 3), text('warm', 4)];
+		const lines = buildLines(events, ctx());
+		expect(lines.map((l) => l.role)).toEqual(['user', 'assistant', 'marker']);
+		const marker = lines[2];
+		expect(marker.keepalive).toBe(true);
+		expect(marker.markerTexts?.at(-1)).toBe('warm');
+		expect(buildLines(events, ctx({ marker: false })).map((l) => l.role)).toEqual([
+			'user',
+			'assistant'
+		]);
+		const dflt = defaultFilter();
+		expect(buildLines(events, { ...ctx(), visible: (c) => dflt[c] }).map((l) => l.role)).toEqual([
+			'user',
+			'assistant'
+		]);
+	});
+
+	it('leaves the next human turn and its reply untouched', () => {
+		const lines = buildLines(
+			[text(tick, 1), text('warm', 2), text('▷ User: continue', 3), text('working', 4)],
+			ctx()
+		);
+		expect(lines.map((l) => l.role)).toEqual(['marker', 'user', 'assistant']);
+		expect(lines[2].text).toBe('working');
+	});
+});

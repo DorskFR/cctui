@@ -2,6 +2,7 @@
 import type { AdapterId } from "./AdapterId";
 import type { Attention } from "./Attention";
 import type { Bucket } from "./Bucket";
+import type { KeepaliveState } from "./KeepaliveState";
 import type { Label } from "./Label";
 import type { Liveness } from "./Liveness";
 import type { RemoveInitiator } from "./RemoveInitiator";
@@ -233,4 +234,13 @@ auto_archive_at?: string | null,
 /**
  * Who archived the session; `None` while live or when unrecorded.
  */
-archived_by?: RemoveInitiator | null, };
+archived_by?: RemoveInitiator | null, 
+/**
+ * Cache keep-alive schedule while enabled (`sessions.keepalive_json`);
+ * `None` when off.
+ */
+keepalive?: KeepaliveState | null, 
+/**
+ * When the reaper last claimed a keep-alive tick for this session.
+ */
+last_keepalive_at?: string | null, };

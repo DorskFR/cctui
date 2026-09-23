@@ -1,5 +1,6 @@
 import type { AgentEvent } from '@bindings/AgentEvent';
 import { USER_PREFIX } from '$lib/ws.svelte';
+import { looksKeepaliveTick } from './keepalive';
 import { m } from '$lib/paraglide/messages';
 import {
 	assignLineKeys,
@@ -110,6 +111,11 @@ function userOrSystem(
 			text: peer.body,
 			peerFrom: peer.from ?? undefined
 		};
+	}
+	if (looksKeepaliveTick(content)) {
+		if (!ctx.visible('marker')) return null;
+		const label = m.conversation_keepalive_tick();
+		return { role: 'marker', ts, text: label, markerTexts: [label], keepalive: true };
 	}
 	let role: Line['role'] = meta ? 'system' : 'user';
 	if (scheduledAt) {
@@ -511,7 +517,15 @@ export function buildLines(
 		// Consecutive markers collapse into one row: they arrive in bursts at the
 		// same second and each is a single line of bookkeeping.
 		const prevLine = out[out.length - 1];
+		if (prevLine?.keepalive && (ln.role === 'assistant' || ln.role === 'thinking')) {
+			if (ln.role === 'assistant' && ln.text?.trim()) {
+				prevLine.markerTexts = [...(prevLine.markerTexts ?? []), ln.text.trim()];
+				prevLine.text = prevLine.markerTexts.join(' · ');
+			}
+			continue;
+		}
 		if (ln.role === 'marker' && prevLine?.role === 'marker') {
+			prevLine.keepalive = prevLine.keepalive || ln.keepalive;
 			prevLine.markerTexts = [...(prevLine.markerTexts ?? []), ...(ln.markerTexts ?? [])];
 			prevLine.text = prevLine.markerTexts.join(' · ');
 			continue;

@@ -5,6 +5,7 @@ mod authz;
 mod auto_archive;
 mod auto_resume;
 mod bandwidth_watch;
+mod brief;
 mod bus;
 mod cache_bust;
 mod config;
@@ -14,7 +15,9 @@ mod db;
 mod dispatchers;
 mod error;
 mod fireworks_billing;
+mod followup;
 mod http_cache;
+mod keepalive;
 mod langfuse;
 mod live_sessions;
 mod machine_liveness;
@@ -812,6 +815,14 @@ fn build_api_routes() -> Routes {
             sess_read(),
         )
         .add(
+            &[Method::GET],
+            "/sessions/{id}/brief",
+            "Render a session's user/assistant transcript as a capped markdown brief.",
+            get(brief::session_brief),
+            Authn::Bearer,
+            sess_read(),
+        )
+        .add(
             &[Method::POST],
             "/sessions/{id}/fork",
             "Fork a session into a new one.",
@@ -856,6 +867,14 @@ fn build_api_routes() -> Routes {
             "/sessions/{id}/unpin",
             "Unpin a single session.",
             post(routes::sessions::unpin_session),
+            Authn::Bearer,
+            sess_write(),
+        )
+        .add(
+            &[Method::POST],
+            "/sessions/{id}/keepalive",
+            "Set or clear the session's prompt-cache keep-alive schedule.",
+            post(routes::sessions::set_keepalive),
             Authn::Bearer,
             sess_write(),
         )
@@ -1664,6 +1683,7 @@ async fn reaper_task(state: AppState) {
         auto_archive::sweep(&state).await;
         spawn_labels::sweep(&state.pool).await;
         usage_history::sweep(&state);
+        followup::sweep(&state.pool).await;
 
         // Soft-delete ephemeral (dispatch/worker) machines that have gone
         // quiet past the TTL — pods that died before self-deenroll.
@@ -1744,6 +1764,7 @@ async fn reaper_task(state: AppState) {
         webhook::sweep(&state).await;
         auto_resume::sweep(&state).await;
         scheduled_messages::sweep(&state).await;
+        keepalive::sweep(&state).await;
 
         state.permission_store.write().await.reap_stale(300); // seconds
     }
