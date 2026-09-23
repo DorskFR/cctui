@@ -348,9 +348,9 @@ pub async fn fetch_account_catalog(
         &codex_client_version(state),
     )
     .send()
-        .await
-        .map_err(|e| tracing::warn!(account = %provider_id, "codex models transport error: {e}"))
-        .ok()?;
+    .await
+    .map_err(|e| tracing::warn!(account = %provider_id, "codex models transport error: {e}"))
+    .ok()?;
     if !resp.status().is_success() {
         tracing::warn!(account = %provider_id, status = %resp.status(), "codex models rejected");
         return None;
@@ -594,7 +594,8 @@ mod tests {
         assert!(is_downgrade(&stored, &fallback));
         assert!(!is_downgrade(&fallback, &stored));
         assert!(!is_downgrade(&stored, &stored.clone()));
-        let sideways = CodexModelCatalog { models: vec![model("gpt-7", "New")], client_version: None };
+        let sideways =
+            CodexModelCatalog { models: vec![model("gpt-7", "New")], client_version: None };
         assert!(!is_downgrade(&stored, &sideways));
     }
 
@@ -722,7 +723,9 @@ mod tests {
         assert_eq!(parse_remote_catalog(&resp).models[0].id, "gpt-6-astra");
         let req = served.await.unwrap().remove(0);
         assert!(req.contains("client_version=0.156.1"), "{req}");
-        assert!(req.contains("authorization: Bearer tok") || req.contains("Authorization: Bearer tok"));
+        assert!(
+            req.contains("authorization: Bearer tok") || req.contains("Authorization: Bearer tok")
+        );
         assert!(req.contains("chatgpt-account-id: acct-1"));
     }
 

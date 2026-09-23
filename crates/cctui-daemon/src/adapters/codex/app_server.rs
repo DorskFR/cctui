@@ -4614,7 +4614,10 @@ done
             unknown_model(Some("x"), &catalog).as_deref(),
             Some("unknown model x; available: a")
         );
-        assert_eq!(unknown_model(Some("x"), &CodexModelCatalog { models: vec![], client_version: None }), None);
+        assert_eq!(
+            unknown_model(Some("x"), &CodexModelCatalog { models: vec![], client_version: None }),
+            None
+        );
     }
 
     #[test]
