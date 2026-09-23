@@ -17,6 +17,7 @@ pub mod dispatchers;
 pub mod enroll;
 pub mod fs;
 pub mod gateway;
+pub mod harness_update;
 pub mod images;
 pub mod instance;
 pub mod internal;
