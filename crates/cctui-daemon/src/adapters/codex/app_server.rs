@@ -390,7 +390,10 @@ fn map_notification(local_id: &str, method: &str, v: &Value) -> Incoming {
             "thread/compacted" => map_compacted(local_id, v),
             "account/rateLimits/updated" => super::rate_limits::from_notification(local_id, v)
                 .map_or_else(
-                    || Incoming::Traced { method: method.to_owned(), reason: "no rate-limit windows" },
+                    || Incoming::Traced {
+                        method: method.to_owned(),
+                        reason: "no rate-limit windows",
+                    },
                     Incoming::Event,
                 ),
             _ => unreachable!("Disposition::Mapped without a mapper: {method}"),
