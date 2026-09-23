@@ -100,7 +100,7 @@ pub fn job_children<'a>(children: &'a [Child], archived: &[String]) -> Vec<&'a s
         .iter()
         .filter(|c| !c.observe_only && archived.iter().any(|id| id == &c.id))
         .collect();
-    jobs.sort_by(|a, b| b.depth.cmp(&a.depth));
+    jobs.sort_by_key(|c| std::cmp::Reverse(c.depth));
     jobs.into_iter().map(|c| c.id.as_str()).collect()
 }
 
@@ -118,24 +118,24 @@ mod tests {
 
     #[test]
     fn job_children_skips_observe_only_and_unarchived() {
-        let kids = vec![child("job-a", false), child("task-b", true), child("pinned-c", false)];
-        let archived = vec!["job-a".to_owned(), "task-b".to_owned(), "parent".to_owned()];
-        assert_eq!(job_children(&kids, &archived), vec!["job-a"]);
+        let kids = [child("job-a", false), child("task-b", true), child("pinned-c", false)];
+        let archived = ["job-a".to_owned(), "task-b".to_owned(), "parent".to_owned()];
+        assert_eq!(job_children(&kids, &archived), ["job-a"]);
     }
 
     #[test]
     fn job_children_orders_the_deepest_descendant_first() {
-        let kids = vec![
+        let kids = [
             at_depth("child", false, 1),
             at_depth("great-grandchild", false, 3),
             at_depth("grandchild", false, 2),
             at_depth("grandchild-task", true, 2),
         ];
         let archived: Vec<String> = ["child", "grandchild", "great-grandchild", "grandchild-task"]
-            .iter()
-            .map(|s| (*s).to_owned())
+            .into_iter()
+            .map(String::from)
             .collect();
-        assert_eq!(job_children(&kids, &archived), vec!["great-grandchild", "grandchild", "child"]);
+        assert_eq!(job_children(&kids, &archived), ["great-grandchild", "grandchild", "child"]);
     }
 
     #[tokio::test]
@@ -197,7 +197,7 @@ mod tests {
         // Deepest first; ties broken by id.
         assert_eq!(
             got,
-            vec![
+            [
                 at_depth(&format!("{parent}-grandchild"), false, 2),
                 child(&format!("{parent}-bare"), false),
                 child(&format!("{parent}-job"), false),
@@ -207,7 +207,7 @@ mod tests {
 
         let archived: Vec<String> = got.iter().map(|c| c.id.clone()).collect();
         let order = job_children(&got, &archived);
-        let position = |id: &str| order.iter().position(|got| *got == id).unwrap();
+        let position = |id: &str| order.iter().position(|seen| *seen == id).unwrap();
         assert!(
             position(&format!("{parent}-grandchild")) < position(&format!("{parent}-job")),
             "a grandchild must be removed before the child that owns its worktree"
