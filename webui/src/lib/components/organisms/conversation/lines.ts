@@ -463,6 +463,10 @@ export function buildLines(
 		}
 		const ln = toLine(e, ctx, poll);
 		if (!ln) continue;
+		// The three encodings Claude stores ONE human turn in share its `turn_id`,
+		// so keying on it still collapses them while two composer sends of the same
+		// text — always distinct ids — stay two messages.
+		const turnId = (e.type === 'text' || e.type === 'reply' ? e.turn_id : null) ?? '';
 		// Reset/compact markers are keyed by ts so two back-to-back ones aren't
 		// collapsed by the consecutive-duplicate guard.
 		const key =
@@ -470,7 +474,7 @@ export function buildLines(
 				? `${ln.role}|${ln.ts}`
 				: `${ln.role}|${ln.tool ?? ''}|${(ln.uploads?.names ?? []).join(',')}|${ln.text ?? ln.html ?? ''}|${
 						ln.todos ? todoSignature(ln.todos) : ''
-					}`;
+					}|${turnId}`;
 		if (key === prevKey) continue;
 		prevKey = key;
 		// Consecutive markers collapse into one row: they arrive in bursts at the

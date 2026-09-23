@@ -442,6 +442,17 @@ describe('poll re-injection classification', () => {
 		]);
 	});
 
+	it('renders two consecutive composer sends of the same text as two bubbles', () => {
+		const lines = buildLines([typed('continue', 1, 'a'), typed('continue', 2, 'b')], ctx());
+		expect(lines).toHaveLength(2);
+		expect(lines.map((l) => l.ts)).toEqual([1, 2]);
+	});
+
+	it('still collapses the encodings of ONE turn, which share its turn_id', () => {
+		const lines = buildLines([typed('continue', 1, 'a'), typed('continue', 2, 'a')], ctx());
+		expect(lines).toHaveLength(1);
+	});
+
 	it('still tints a consecutive re-injection that carries no turn_id', () => {
 		const events = [text(`▷ User: ${POLL}`, 1), text(`▷ User: ${POLL}`, 2)];
 		expect(roles(events)).toEqual(['user', 'poll']);
