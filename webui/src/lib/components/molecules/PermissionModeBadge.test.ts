@@ -12,9 +12,14 @@ afterEach(() => {
 	document.body.innerHTML = '';
 });
 
+// Each render replaces the previous mount: querying the document with a stale
+// instance still attached returns the earlier badge, not the one under test.
 function render(mode?: string | null) {
-	comp = mount(PermissionModeBadge, { target: document.body, props: { mode } });
-	return document.body.querySelector('[data-testid="permission-mode"]');
+	if (comp) unmount(comp);
+	const container = document.createElement('div');
+	document.body.replaceChildren(container);
+	comp = mount(PermissionModeBadge, { target: container, props: { mode } });
+	return container.querySelector('[data-testid="permission-mode"]');
 }
 
 describe('permission posture badge', () => {

@@ -719,25 +719,28 @@ async fn enrich_and_sort(
     // uniformly to live + historical items: the ✋ attention glyph (from the
     // classifier) and the name/model/effort columns.
     if !session_ids.is_empty() {
-        type SignalRow = (
-            String,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-            bool,
-            Option<String>,
-            Option<DateTime<Utc>>,
-            Option<String>,
-            i32,
-            serde_json::Value,
-            Option<String>,
-            Option<String>,
-            Option<DateTime<Utc>>,
-            Option<String>,
-        );
+        // A struct, not a tuple: sqlx only implements `FromRow` for tuples up
+        // to 16 columns and this select is past that.
+        #[derive(sqlx::FromRow)]
+        struct SignalRow {
+            id: String,
+            tempo: Option<String>,
+            agent_state: Option<String>,
+            activity: Option<String>,
+            session_name: Option<String>,
+            model: Option<String>,
+            effort: Option<String>,
+            pinned: bool,
+            soft_limit_reason: Option<String>,
+            last_tool_at: Option<DateTime<Utc>>,
+            last_tool_name: Option<String>,
+            tool_use_count: i32,
+            children: serde_json::Value,
+            end_reason: Option<String>,
+            end_detail: Option<String>,
+            ended_at: Option<DateTime<Utc>>,
+            permission_mode: Option<String>,
+        }
         let rows: Vec<SignalRow> = sqlx::query_as(
             "SELECT id, tempo, agent_state, activity, session_name, model, effort, pinned, \
                     soft_limit_reason, last_tool_at, last_tool_name, tool_use_count, \
@@ -754,41 +757,22 @@ async fn enrich_and_sort(
         let mut by_session: std::collections::HashMap<String, SignalRow> =
             std::collections::HashMap::new();
         for row in rows {
-            by_session.insert(row.0.clone(), row);
+            by_session.insert(row.id.clone(), row);
         }
         let pr_snapshot = state.pr_status_cache.snapshot();
         let pr_cache = PrStatusCache::borrow_map(&pr_snapshot);
         for (_, s) in &mut with_ts {
-            if let Some((
-                _,
-                tempo,
-                agent_state,
-                activity,
-                name,
-                model,
-                effort,
-                pinned,
-                soft_limit_reason,
-                last_tool_at,
-                last_tool_name,
-                tool_use_count,
-                children,
-                end_reason,
-                end_detail,
-                ended_at,
-                permission_mode,
-            )) = by_session.remove(&s.id)
-            {
-                s.end_reason = end_reason.as_deref().map(SessionEndReason::parse);
-                s.end_detail = end_detail;
-                s.ended_at = ended_at;
+            if let Some(row) = by_session.remove(&s.id) {
+                s.end_reason = row.end_reason.as_deref().map(SessionEndReason::parse);
+                s.end_detail = row.end_detail;
+                s.ended_at = row.ended_at;
                 let children: Vec<SessionChild> =
-                    serde_json::from_value(children).unwrap_or_default();
+                    serde_json::from_value(row.children).unwrap_or_default();
                 let bucket = bucket_from_signals(
-                    tempo.as_deref(),
-                    agent_state.as_deref(),
-                    activity.as_deref(),
-                    soft_limit_reason.as_deref(),
+                    row.tempo.as_deref(),
+                    row.agent_state.as_deref(),
+                    row.activity.as_deref(),
+                    row.soft_limit_reason.as_deref(),
                     &children,
                     &pr_cache,
                 );
@@ -799,16 +783,16 @@ async fn enrich_and_sort(
                 // Worker exited but resumable on reply. The adapter
                 // parks the marker in `tempo`; the next live snapshot after a
                 // resume overwrites it.
-                s.hibernated = tempo.as_deref() == Some("hibernated");
-                s.name = name;
-                s.model = model;
-                s.effort = effort;
-                s.permission_mode = permission_mode;
-                s.pinned = pinned;
-                s.activity_detail = activity;
-                s.last_tool_at = last_tool_at;
-                s.last_tool_name = last_tool_name;
-                s.tool_use_count = tool_use_count.clamp(0, i32::MAX) as u32;
+                s.hibernated = row.tempo.as_deref() == Some("hibernated");
+                s.name = row.session_name;
+                s.model = row.model;
+                s.effort = row.effort;
+                s.permission_mode = row.permission_mode;
+                s.pinned = row.pinned;
+                s.activity_detail = row.activity;
+                s.last_tool_at = row.last_tool_at;
+                s.last_tool_name = row.last_tool_name;
+                s.tool_use_count = row.tool_use_count.clamp(0, i32::MAX) as u32;
             }
         }
     }
@@ -1529,7 +1513,16 @@ pub async fn get_session(
     {
         let registry = state.registry.read().await;
         if let Some(handle) = registry.get(&session_id) {
-            let mut item = SessionListItem {
+            let permission_mode: Option<String> = sqlx::query_as::<_, (Option<String>,)>(
+                "SELECT permission_mode FROM sessions WHERE id = $1",
+            )
+            .bind(&session_id)
+            .fetch_optional(&state.pool)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|(m,)| m);
+            let item = SessionListItem {
                 id: handle.session.id.clone(),
                 parent_id: handle.session.parent_id.clone(),
                 machine_id: handle.session.machine_id.clone(),
@@ -1550,7 +1543,7 @@ pub async fn get_session(
                 name: None,
                 model: None,
                 effort: None,
-                permission_mode: None,
+                permission_mode,
                 auto_approve: state
                     .permission_store
                     .read()
@@ -1579,15 +1572,6 @@ pub async fn get_session(
                 end_detail: None,
                 ended_at: None,
             };
-            item.permission_mode = sqlx::query_as::<_, (Option<String>,)>(
-                "SELECT permission_mode FROM sessions WHERE id = $1",
-            )
-            .bind(&item.id)
-            .fetch_optional(&state.pool)
-            .await
-            .ok()
-            .flatten()
-            .and_then(|(m,)| m);
             return Ok(Json(item));
         }
     }
