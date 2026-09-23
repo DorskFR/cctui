@@ -588,7 +588,6 @@
 			display: block;
 			flex: 1;
 		}
-		}
 	}
 	.cold-offer {
 		display: flex;
