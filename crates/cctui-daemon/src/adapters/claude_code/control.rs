@@ -113,6 +113,10 @@ impl DriverConfig {
     }
 }
 
+/// The `source` every cctui dispatch stamps on its jobs. An absent source is
+/// treated as ours (older claude builds omit the field).
+const FLEET_SOURCE: &str = "fleet";
+
 /// The `list` op returns `{ok: true, op: "list", jobs: [LiveSnapshot]}`.
 #[derive(Debug, Deserialize)]
 struct ListResponse {
@@ -175,9 +179,17 @@ impl LiveSnapshot {
         self.session_id.as_deref().or(self.session_id_camel.as_deref())
     }
 
-    /// §7.2 of the protocol doc: skip spares and dying workers.
+    /// Skip dying workers and every job cctui did not dispatch: adopting a
+    /// human's own `claude --bg` worker holds an attach on it and lets the TTL
+    /// archive kill it, which Claude Code's supervisor answers with a
+    /// full-context revive turn.
     fn is_user_visible(&self) -> bool {
-        !self.dying && self.source.as_deref() != Some("spare")
+        !self.dying && !self.is_foreign()
+    }
+
+    /// Dispatched by someone other than cctui (spares included).
+    fn is_foreign(&self) -> bool {
+        self.source.as_deref().is_some_and(|s| s != FLEET_SOURCE)
     }
 
     /// Whether claude reports this still-listed session as dead / "process
@@ -284,6 +296,9 @@ pub struct Driver {
     /// Cleared when the worker revives (reports alive again) or drops
     /// off the roster.
     dead_shorts: HashSet<String>,
+    /// Shorts the last `list` reported with a non-fleet `source`. cctui must
+    /// never attach to, kill, or `claude rm` one of these.
+    foreign_shorts: HashSet<String>,
     /// Shared `session_id → stable local_id` map. Populated as transcripts are
     /// pinned (incl. across `/clear` rotations) and read by the ask-hook
     /// listener so a hook's live `session_id` resolves to the `local_id` the
@@ -494,27 +509,49 @@ pub(super) async fn resolve_launch_env_for(
     hint: &std::collections::BTreeMap<String, String>,
 ) -> anyhow::Result<LaunchEnv> {
     let (Some(server), Some(mk)) = (server, machine_key) else {
-        return Ok(LaunchEnv { env: hint.clone(), ..Default::default() });
+        return Ok(LaunchEnv { env: with_resume_guard(hint.clone()), ..Default::default() });
     };
     match server.gateway_env(mk, local_id).await {
         Ok(resp) => Ok(LaunchEnv {
-            env: crate::adapters::gateway_env::launch_env_decision(
+            env: with_resume_guard(crate::adapters::gateway_env::launch_env_decision(
                 "claude",
                 local_id,
                 &resp,
                 hint,
                 crate::adapters::gateway_env::CLAUDE_GATEWAY_KEYS,
-            )?,
+            )?),
             settings: resp.settings,
             whip_phrases: resp.whip_phrases,
             spawn_capability: resp.spawn_capability,
         }),
         Err(e) => {
             tracing::warn!(%local_id, "gateway-env pull failed; falling back to pushed env: {e}");
-            Ok(LaunchEnv { env: hint.clone(), ..Default::default() })
+            Ok(LaunchEnv { env: with_resume_guard(hint.clone()), ..Default::default() })
         }
     }
 }
+
+/// Bound what Claude Code's own supervisor may do when it respawns one of our
+/// workers: no auto-continue, and a max age so the injected
+/// `CLAUDE_CODE_RESUME_PROMPT` continuation is skipped too — unset or `0` there
+/// means *no* bound, which is why it must be written explicitly. Caller-supplied
+/// values win.
+fn with_resume_guard(
+    mut env: std::collections::BTreeMap<String, String>,
+) -> std::collections::BTreeMap<String, String> {
+    for (key, value) in [
+        ("CLAUDE_CODE_RESUME_INTERRUPTED_TURN", "0"),
+        ("CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS", RESUME_INTERRUPTED_TURN_MAX_AGE_MS),
+    ] {
+        env.entry(key.to_owned()).or_insert_with(|| value.to_owned());
+    }
+    env
+}
+
+/// One minute: long enough that a worker restarted while a human watches can
+/// still pick its turn up, short enough that a supervisor revive hours later
+/// never re-sends a whole context.
+const RESUME_INTERRUPTED_TURN_MAX_AGE_MS: &str = "60000";
 
 /// Parse `CCTUI_GATEWAY_RESEED_SECS` (positive integer seconds) or fall back to
 /// one hour — comfortably under the server's default 12h token TTL.
@@ -565,6 +602,7 @@ impl Driver {
             roster: HashSet::new(),
             last_status: HashMap::new(),
             dead_shorts: HashSet::new(),
+            foreign_shorts: HashSet::new(),
             session_to_local: Arc::new(Mutex::new(HashMap::new())),
             offsets,
             transcript_locations: HashMap::new(),
@@ -1598,7 +1636,7 @@ impl Driver {
                 "nonce": nonce,
                 "sessionId": session_id,
                 "createdAt": created_at,
-                "source": "fleet",
+                "source": FLEET_SOURCE,
                 "cwd": cwd,
                 "launch": { "mode": "prompt", "args": args },
                 // Re-inject the gateway env resolved for this session's bound
@@ -2017,7 +2055,7 @@ impl Driver {
                 "nonce": nonce,
                 "sessionId": session_id,
                 "createdAt": created_at,
-                "source": "fleet",
+                "source": FLEET_SOURCE,
                 "cwd": cwd,
                 "launch": { "mode": "prompt", "args": args },
                 "env": env_json,
@@ -2277,7 +2315,7 @@ impl Driver {
                 "nonce": nonce,
                 "sessionId": session_id,
                 "createdAt": created_at,
-                "source": "fleet",
+                "source": FLEET_SOURCE,
                 "cwd": cwd,
                 "launch": { "mode": "prompt", "args": args },
                 "env": env_json,
@@ -2423,8 +2461,17 @@ impl Driver {
 
     #[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
     async fn apply_snapshot(&mut self, jobs: Vec<LiveSnapshot>) {
-        let visible: Vec<LiveSnapshot> =
-            jobs.into_iter().filter(LiveSnapshot::is_user_visible).collect();
+        let (foreign, visible): (Vec<LiveSnapshot>, Vec<LiveSnapshot>) =
+            jobs.into_iter().filter(|j| !j.dying).partition(LiveSnapshot::is_foreign);
+        self.foreign_shorts = foreign.iter().map(|j| j.short.clone()).collect();
+        let released: Vec<&String> =
+            self.foreign_shorts.iter().filter(|s| self.roster.contains(*s)).collect();
+        if !released.is_empty() {
+            tracing::info!(
+                count = released.len(),
+                "releasing claude jobs cctui did not dispatch; they keep running untouched"
+            );
+        }
         if visible.iter().any(|j| {
             !j.is_dead() && DispatchDoneTracker::is_busy(j.tempo.as_deref(), j.state.as_deref())
         }) {
@@ -2794,6 +2841,7 @@ impl Driver {
         // Ended sessions.
         let gone: Vec<String> = self.roster.difference(&now_shorts).cloned().collect();
         for short in &gone {
+            let foreign = self.foreign_shorts.contains(short);
             self.last_status.remove(short);
             let was_dead = self.dead_shorts.remove(short);
             self.clear_permission(short).await;
@@ -2810,7 +2858,7 @@ impl Driver {
                 // Skip if we already emitted this short's dead transition while
                 // it was still listed (`dead_shorts`) — the hibernated
                 // Status already went out; re-emitting it here is redundant.
-                if !was_dead && StateJson::read(&self.cfg.jobs_root, short).is_some() {
+                if !foreign && !was_dead && StateJson::read(&self.cfg.jobs_root, short).is_some() {
                     self.emit(AdapterEvent::Status {
                         local_id: loc.local_id.clone(),
                         tempo: Some("hibernated".to_owned()),
@@ -2838,11 +2886,14 @@ impl Driver {
             // server side are indexed by (machine_id, adapter_id,
             // local_id), and the prior SessionStarted carried the real
             // session_id; the server reconciles on the running row.
-            self.emit(AdapterEvent::SessionEnded {
-                local_id: short.clone(),
-                reason: EndReason::Completed,
-            })
-            .await;
+            let reason = if foreign {
+                EndReason::Other {
+                    detail: "released: this claude job was not started by cctui".to_owned(),
+                }
+            } else {
+                EndReason::Completed
+            };
+            self.emit(AdapterEvent::SessionEnded { local_id: short.clone(), reason }).await;
         }
 
         // Keep a headless `attach` open for every live session so the worker
@@ -4258,7 +4309,7 @@ mod tests {
             needs: None,
             name: name.map(String::from),
             intent: None,
-            source: Some("shell".into()),
+            source: Some(FLEET_SOURCE.into()),
             dying: false,
             gone: false,
             dead: false,
@@ -4266,6 +4317,94 @@ mod tests {
             status: None,
             cli_version: Some("2.1.145".into()),
         }
+    }
+
+    #[test]
+    fn only_fleet_jobs_are_user_visible() {
+        let fleet = snap("aaaaaaaa", "working", None);
+        assert!(fleet.is_user_visible());
+
+        for foreign in ["shell", "spare", "cli", "bg"] {
+            let mut s = snap("bbbbbbbb", "working", None);
+            s.source = Some(foreign.into());
+            assert!(!s.is_user_visible(), "{foreign} must not be adopted");
+            assert!(s.is_foreign());
+        }
+
+        // Older claude builds omit `source`; those are ours.
+        let mut no_source = snap("cccccccc", "working", None);
+        no_source.source = None;
+        assert!(no_source.is_user_visible());
+        assert!(!no_source.is_foreign());
+
+        let mut dying = snap("dddddddd", "working", None);
+        dying.dying = true;
+        assert!(!dying.is_user_visible());
+    }
+
+    #[tokio::test]
+    async fn foreign_jobs_are_never_registered_or_attached() {
+        let (mut d, mut rx) = driver();
+        let mut human = snap("beefbeef", "working", None);
+        human.source = Some("shell".into());
+        d.apply_snapshot(vec![human, snap("f1eetf1e", "working", None)]).await;
+
+        assert!(d.roster.contains("f1eetf1e"));
+        assert!(!d.roster.contains("beefbeef"));
+        assert!(d.foreign_shorts.contains("beefbeef"));
+
+        let mut started: Vec<String> = Vec::new();
+        while let Ok(evt) = rx.try_recv() {
+            if let AdapterEvent::SessionStarted { local_id, .. } = evt {
+                started.push(local_id);
+            }
+        }
+        assert_eq!(started, vec!["f1eetf1e-uuid".to_owned()]);
+    }
+
+    #[tokio::test]
+    async fn already_adopted_foreign_job_is_released_not_ended_as_completed() {
+        let (mut d, mut rx) = driver();
+        let mut human = snap("beefbeef", "working", None);
+        human.source = None;
+        d.apply_snapshot(vec![human.clone()]).await;
+        assert!(d.roster.contains("beefbeef"));
+        while rx.try_recv().is_ok() {}
+
+        human.source = Some("shell".into());
+        d.apply_snapshot(vec![human]).await;
+        assert!(!d.roster.contains("beefbeef"));
+
+        let mut ends: Vec<EndReason> = Vec::new();
+        while let Ok(evt) = rx.try_recv() {
+            if let AdapterEvent::SessionEnded { reason, .. } = evt {
+                ends.push(reason);
+            }
+        }
+        assert!(
+            matches!(ends.as_slice(), [EndReason::Other { detail }] if detail.contains("not started by cctui")),
+            "{ends:?}"
+        );
+    }
+
+    #[test]
+    fn resume_guard_bounds_supervisor_revives_but_yields_to_the_caller() {
+        let guarded = with_resume_guard(std::collections::BTreeMap::new());
+        assert_eq!(guarded.get("CLAUDE_CODE_RESUME_INTERRUPTED_TURN").unwrap(), "0");
+        assert_eq!(
+            guarded.get("CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS").unwrap(),
+            RESUME_INTERRUPTED_TURN_MAX_AGE_MS
+        );
+        // A bound of 0 would mean "no bound" — never emit that as the default.
+        assert_ne!(RESUME_INTERRUPTED_TURN_MAX_AGE_MS, "0");
+
+        let explicit = with_resume_guard(env_of(&[
+            ("CLAUDE_CODE_RESUME_INTERRUPTED_TURN", "1"),
+            ("ANTHROPIC_BASE_URL", "http://gw"),
+        ]));
+        assert_eq!(explicit.get("CLAUDE_CODE_RESUME_INTERRUPTED_TURN").unwrap(), "1");
+        assert_eq!(explicit.get("ANTHROPIC_BASE_URL").unwrap(), "http://gw");
+        assert!(explicit.contains_key("CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS"));
     }
 
     #[test]
