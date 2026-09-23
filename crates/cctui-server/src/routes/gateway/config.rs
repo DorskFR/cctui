@@ -93,6 +93,7 @@ pub const fn tees_response(langfuse: bool, fireworks: bool) -> bool {
 /// because any re-serialization sorts JSON object keys and destroys the prompt
 /// cache. `thinking_display` is parsed and persisted for the accounts UI but is
 /// inert until it is handed to Claude Code as spawn configuration.
+#[allow(dead_code)]
 pub struct AnthropicSettings {
     /// Claude Code hardcodes `"omitted"`, which strips the reasoning text
     /// upstream of every client — the block arrives as a bare replay signature.
@@ -101,6 +102,7 @@ pub struct AnthropicSettings {
     pub thinking_display: Option<String>,
 }
 
+#[allow(dead_code)]
 impl AnthropicSettings {
     /// Read the stored blob. Anything outside the API's
     /// `'summarized' | 'omitted'` enum is discarded rather than forwarded, so a

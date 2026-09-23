@@ -457,13 +457,13 @@ pub async fn passthrough(
             )
             .await;
         }
-        let (payload, rewritten) = upstream_payload(
+        let (payload, changed) = upstream_payload(
             &bytes,
             parsed.as_ref(),
             fireworks.as_ref(),
             affinity_session.as_deref(),
         );
-        rewrote_body = rewritten;
+        rewrote_body = changed;
         (reqwest::Body::from(payload), parsed.filter(|_| langfuse.is_some()))
     } else {
         let body_stream = req.into_body().into_data_stream();
@@ -640,33 +640,14 @@ pub async fn passthrough(
             } else {
                 crate::langfuse::reconstruct_anthropic(&buf)
             };
-            let (level, status_message) =
-                match (&ctx.session_id, usage.as_ref()) {
-                    (Some(sid), Some(u)) => {
-                        let n = |k: &str| {
-                            i64::try_from(u.get(k).and_then(serde_json::Value::as_u64).unwrap_or(0))
-                                .unwrap_or(0)
-                        };
-                        let cache_read = n("cache_read_input_tokens");
-                        let turn = crate::cache_bust::Turn {
-                            message_id: String::new(),
-                            model: ctx.model.clone(),
-                            input: n("input"),
-                            cache_read,
-                            cache_creation: n("cache_creation_input_tokens"),
-                            created_at: Utc::now(),
-                            gateway_rewrote_body: rewrote_body,
-                        };
-                        match crate::cache_bust::judge_latest(&bust_pool, sid, turn).await {
-                            Some(bust) => (
-                                Some("WARNING"),
-                                Some(crate::cache_bust::status_message(cache_read, &bust)),
-                            ),
-                            None => (None, None),
-                        }
-                    }
-                    _ => (None, None),
-                };
+            let (level, status_message) = crate::cache_bust::trace_annotation(
+                &bust_pool,
+                ctx.session_id.as_deref(),
+                ctx.model.as_deref(),
+                usage.as_ref(),
+                rewrote_body,
+            )
+            .await;
             langfuse.trace(crate::langfuse::TracePayload {
                 ctx,
                 request: traced_request,

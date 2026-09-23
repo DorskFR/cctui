@@ -162,8 +162,8 @@ pub struct TokenUsage {
     pub cache_read_tokens: u64,
     #[serde(default)]
     pub cache_creation_tokens: u64,
-    /// Set when this turn re-billed a prefix it should have read from cache.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub cache_bust: Option<CacheBust>,
 }
 
