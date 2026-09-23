@@ -783,35 +783,83 @@ pub fn service_tier_from_settings(settings: Option<&Value>) -> Option<String> {
     normalize_service_tier(settings?.get("service_tier").and_then(Value::as_str))
 }
 
-/// Attach the per-thread provider + credential and the per-thread service tier
-/// to a `thread/{start,resume,fork}` params object. A session with no gateway
-/// binding keeps codex's default provider.
+/// Everything codex does not persist per thread, so every
+/// `thread/{start,resume,fork}` — including a rejoin after a shared-connection
+/// drop — must re-supply it. The only place those params are built.
 ///
-/// The tier rides both the native `serviceTier` param and the per-thread
-/// `config` overlay, because codex persists NEITHER in the rollout — only
-/// `model_provider` survives — so every resume and fork must re-supply it or
-/// the thread silently falls back to codex's own `priority` default.
-fn with_thread_config(
-    mut params: Value,
-    env: &std::collections::BTreeMap<String, String>,
-    service_tier: Option<&str>,
-) -> Value {
-    let Some(map) = params.as_object_mut() else { return params };
-    let mut config = match gateway_thread_config(env) {
-        Some((provider, config)) => {
-            map.insert("modelProvider".to_owned(), json!(provider));
-            config
+/// The tier rides both the native `serviceTier` param and the `config`
+/// overlay: codex persists neither, only `model_provider`, so a resume that
+/// omits it silently falls back to codex's own `priority` default.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ThreadConfig {
+    pub env: std::collections::BTreeMap<String, String>,
+    pub service_tier: Option<String>,
+    /// `-c`-style overrides (TOML literals) that a stdio child would take on
+    /// its command line. Empty on stdio; on a shared app-server there is no
+    /// per-session process, so they ride the per-thread overlay instead.
+    pub overlay: Vec<(String, String)>,
+}
+
+impl ThreadConfig {
+    #[must_use]
+    pub fn new(env: &std::collections::BTreeMap<String, String>, service_tier: Option<&str>) -> Self {
+        Self {
+            env: env.clone(),
+            service_tier: normalize_service_tier(service_tier),
+            overlay: Vec::new(),
         }
-        None => json!({}),
-    };
-    if let Some(tier) = normalize_service_tier(service_tier) {
-        map.insert("serviceTier".to_owned(), json!(tier));
-        config["service_tier"] = json!(tier);
     }
-    if config.as_object().is_some_and(|c| !c.is_empty()) {
-        map.insert("config".to_owned(), config);
+
+    #[must_use]
+    pub fn with_overlay(mut self, overlay: Vec<(String, String)>) -> Self {
+        self.overlay = overlay;
+        self
     }
-    params
+
+    #[must_use]
+    pub fn apply(&self, mut params: Value) -> Value {
+        let Some(map) = params.as_object_mut() else { return params };
+        let mut config = json!({});
+        for (key, literal) in &self.overlay {
+            if let Some(value) = toml_literal_to_json(literal) {
+                config[key.as_str()] = value;
+            }
+        }
+        if let Some((provider, block)) = gateway_thread_config(&self.env) {
+            map.insert("modelProvider".to_owned(), json!(provider));
+            if let (Some(dst), Some(src)) = (config.as_object_mut(), block.as_object()) {
+                dst.extend(src.clone());
+            }
+        }
+        if let Some(tier) = &self.service_tier {
+            map.insert("serviceTier".to_owned(), json!(tier));
+            config["service_tier"] = json!(tier);
+        }
+        if config.as_object().is_some_and(|c| !c.is_empty()) {
+            map.insert("config".to_owned(), config);
+        }
+        params
+    }
+
+    #[must_use]
+    pub fn start_params(&self, cwd: &str) -> Value {
+        self.apply(json!({"cwd": cwd}))
+    }
+
+    #[must_use]
+    pub fn resume_params(&self, thread_id: &str, cwd: &str) -> Value {
+        self.apply(json!({"threadId": thread_id, "cwd": cwd}))
+    }
+
+    #[must_use]
+    pub fn fork_params(&self, parent_thread_id: &str, cwd: &str) -> Value {
+        self.apply(json!({"threadId": parent_thread_id, "cwd": cwd}))
+    }
+}
+
+fn toml_literal_to_json(literal: &str) -> Option<Value> {
+    let table: toml::Table = toml::from_str(&format!("v = {literal}")).ok()?;
+    serde_json::to_value(table.get("v")?).ok()
 }
 
 fn thread_start_req(
@@ -823,7 +871,7 @@ fn thread_start_req(
         "jsonrpc": "2.0",
         "id": ID_THREAD_START,
         "method": "thread/start",
-        "params": with_thread_config(json!({"cwd": cwd}), env, service_tier),
+        "params": ThreadConfig::new(env, service_tier).start_params(cwd),
     })
 }
 
@@ -837,11 +885,7 @@ fn thread_resume_req(
         "jsonrpc": "2.0",
         "id": ID_THREAD_START,
         "method": "thread/resume",
-        "params": with_thread_config(
-            json!({"threadId": thread_id, "cwd": cwd}),
-            env,
-            service_tier,
-        ),
+        "params": ThreadConfig::new(env, service_tier).resume_params(thread_id, cwd),
     })
 }
 
@@ -860,11 +904,7 @@ fn thread_fork_req(
         "jsonrpc": "2.0",
         "id": ID_THREAD_START,
         "method": "thread/fork",
-        "params": with_thread_config(
-            json!({"threadId": parent_thread_id, "cwd": cwd}),
-            env,
-            service_tier,
-        ),
+        "params": ThreadConfig::new(env, service_tier).fork_params(parent_thread_id, cwd),
     })
 }
 
@@ -1669,7 +1709,7 @@ impl AppServerConfig {
     /// Fast mode (`service_tier = "fast"`) is deliberately absent. It is a
     /// speed/price tier — 1.5x speed and increased usage on the SAME model at
     /// the SAME quality, not a quality downgrade — and it is per-thread, so it
-    /// rides `with_thread_config()` on `thread/{start,resume,fork}` instead.
+    /// rides [`ThreadConfig`] on `thread/{start,resume,fork}` instead.
     ///
     /// Omitting it here is NOT the safe branch: codex's own default tier is
     /// `priority` (every gpt-5.x entry in `models_cache.json` carries
@@ -5529,6 +5569,51 @@ done
             params["config"]["model_providers"]["cctui"]["http_headers"]["authorization"],
             "Bearer SECRET-C"
         );
+    }
+
+    #[test]
+    fn one_thread_config_resupplies_the_same_block_on_start_resume_and_fork() {
+        let env: std::collections::BTreeMap<String, String> =
+            [("OPENAI_BASE_URL".to_owned(), "https://gw.example/v1".to_owned())].into_iter().collect();
+        let tc = ThreadConfig::new(&env, Some("fast"));
+        let start = tc.start_params("/repo");
+        let resume = tc.resume_params("tid", "/repo");
+        let fork = tc.fork_params("tid", "/repo");
+        assert_eq!(start["config"], resume["config"]);
+        assert_eq!(resume["config"], fork["config"]);
+        assert_eq!(resume["serviceTier"], "fast");
+        assert_eq!(resume["modelProvider"], "cctui");
+        assert_eq!(resume["threadId"], "tid");
+    }
+
+    #[test]
+    fn thread_config_drops_an_unknown_tier() {
+        let tc = ThreadConfig::new(&std::collections::BTreeMap::new(), Some("priority"));
+        assert_eq!(tc.service_tier, None);
+        assert!(tc.resume_params("tid", "/repo").get("serviceTier").is_none());
+    }
+
+    #[test]
+    fn the_overlay_carries_process_knobs_as_typed_config_values() {
+        let tc = ThreadConfig::new(&std::collections::BTreeMap::new(), None).with_overlay(vec![
+            ("approval_policy".to_owned(), "\"never\"".to_owned()),
+            ("mcp_servers.cctui.args".to_owned(), "[\"a\", \"b\"]".to_owned()),
+            ("broken".to_owned(), "not toml [".to_owned()),
+        ]);
+        let params = tc.resume_params("tid", "/repo");
+        assert_eq!(params["config"]["approval_policy"], "never");
+        assert_eq!(params["config"]["mcp_servers.cctui.args"], json!(["a", "b"]));
+        assert!(params["config"].get("broken").is_none());
+    }
+
+    #[test]
+    fn the_gateway_block_wins_over_an_overlay_key_of_the_same_name() {
+        let env: std::collections::BTreeMap<String, String> =
+            [("OPENAI_BASE_URL".to_owned(), "https://gw.example/v1".to_owned())].into_iter().collect();
+        let tc = ThreadConfig::new(&env, None)
+            .with_overlay(vec![("model_providers".to_owned(), "\"hijack\"".to_owned())]);
+        let params = tc.start_params("/repo");
+        assert_eq!(params["config"]["model_providers"]["cctui"]["name"], "cctui-gateway");
     }
 
     fn session_with_tier(launch: SessionLaunch, tier: Option<&str>) -> CodexSession {
