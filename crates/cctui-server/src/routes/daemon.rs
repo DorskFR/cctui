@@ -3601,65 +3601,61 @@ mod tests {
         assert_eq!(status(&neighbour).await, ("active".into(), None));
     }
 
-    /// CCT-1081: an agent title fills an empty name and replaces a previous
-    /// agent title, but never overwrites a name the user typed.
-    #[tokio::test]
-    async fn agent_titles_never_overwrite_a_user_set_name() {
-        let Some(url) = crate::routes::gateway::test_db_url("agent_title_precedence") else {
-            return;
-        };
-        let pool = sqlx::postgres::PgPoolOptions::new()
-            .max_connections(2)
-            .connect(&url)
-            .await
-            .expect("connect test db");
+    /// Fixture for the agent-title precedence tests: an isolated user, machine
+    /// and session per case, driving the real `write_status_signals` path.
+    struct TitleFixture {
+        pool: sqlx::PgPool,
+        user: Uuid,
+        machine: Uuid,
+    }
 
-        let uid = Uuid::new_v4();
-        let machine = Uuid::new_v4();
-        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, 'title-test', $2)")
-            .bind(uid)
-            .bind(format!("kh-{uid}"))
-            .execute(&pool)
-            .await
-            .expect("seed user");
-        sqlx::query("INSERT INTO machines (id, user_id, name, key_hash) VALUES ($1, $2, $3, $4)")
+    impl TitleFixture {
+        async fn new(test_name: &str) -> Option<Self> {
+            let url = crate::routes::gateway::test_db_url(test_name)?;
+            let pool = sqlx::postgres::PgPoolOptions::new()
+                .max_connections(2)
+                .connect(&url)
+                .await
+                .expect("connect test db");
+            let (user, machine) = (Uuid::new_v4(), Uuid::new_v4());
+            sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+                .bind(user)
+                .bind(format!("title-{user}"))
+                .bind(format!("kh-{user}"))
+                .execute(&pool)
+                .await
+                .expect("seed user");
+            sqlx::query(
+                "INSERT INTO machines (id, user_id, name, key_hash) VALUES ($1, $2, $3, $4)",
+            )
             .bind(machine)
-            .bind(uid)
+            .bind(user)
             .bind(machine.to_string())
             .bind(format!("kh-{machine}"))
             .execute(&pool)
             .await
             .expect("seed machine");
+            Some(Self { pool, user, machine })
+        }
 
-        let seed = |id: String| {
-            let pool = pool.clone();
-            async move {
-                sqlx::query(
-                    "INSERT INTO sessions (id, machine_id, working_dir, user_id, \
-                     machine_uuid, adapter_id) VALUES ($1, $2, '/w', $3, $4, 'claude-code')",
-                )
-                .bind(&id)
-                .bind(machine.to_string())
-                .bind(uid)
-                .bind(machine)
-                .execute(&pool)
-                .await
-                .expect("seed session");
-            }
-        };
-        let name_of = |id: String| {
-            let pool = pool.clone();
-            async move {
-                let (n,): (Option<String>,) =
-                    sqlx::query_as("SELECT session_name FROM sessions WHERE id = $1")
-                        .bind(&id)
-                        .fetch_one(&pool)
-                        .await
-                        .expect("read name");
-                n
-            }
-        };
-        let title = |pool: sqlx::PgPool, id: String, name: &'static str| async move {
+        async fn session(&self) -> String {
+            let id = Uuid::new_v4().to_string();
+            sqlx::query(
+                "INSERT INTO sessions (id, machine_id, working_dir, user_id, \
+                 machine_uuid, adapter_id) VALUES ($1, $2, '/w', $3, $4, 'claude-code')",
+            )
+            .bind(&id)
+            .bind(self.machine.to_string())
+            .bind(self.user)
+            .bind(self.machine)
+            .execute(&self.pool)
+            .await
+            .expect("seed session");
+            id
+        }
+
+        /// One Status event carrying an agent-generated title.
+        async fn agent_title(&self, id: &str, name: &str) {
             let signals = StatusSignals {
                 tempo: None,
                 agent_state: None,
@@ -3671,61 +3667,99 @@ mod tests {
                 permission_mode: None,
                 children: &[],
             };
-            write_status_signals(&pool, &id, &signals, None).await.expect("status write");
-        };
+            write_status_signals(&self.pool, id, &signals, None).await.expect("status write");
+        }
 
-        let agent_owned = Uuid::new_v4().to_string();
-        seed(agent_owned.clone()).await;
-        title(pool.clone(), agent_owned.clone(), "first agent title").await;
+        /// What `rename_session` does: a bare name write, no provenance marker.
+        async fn rename(&self, id: &str, name: &str) {
+            sqlx::query("UPDATE sessions SET session_name = $2 WHERE id = $1")
+                .bind(id)
+                .bind(name)
+                .execute(&self.pool)
+                .await
+                .expect("rename");
+        }
+
+        async fn name_of(&self, id: &str) -> Option<String> {
+            let (name,): (Option<String>,) =
+                sqlx::query_as("SELECT session_name FROM sessions WHERE id = $1")
+                    .bind(id)
+                    .fetch_one(&self.pool)
+                    .await
+                    .expect("read name");
+            name
+        }
+
+        async fn cleanup(self) {
+            sqlx::query("DELETE FROM sessions WHERE machine_uuid = $1")
+                .bind(self.machine)
+                .execute(&self.pool)
+                .await
+                .expect("cleanup sessions");
+            let _ = sqlx::query("DELETE FROM machines WHERE id = $1")
+                .bind(self.machine)
+                .execute(&self.pool)
+                .await;
+            let _ = sqlx::query("DELETE FROM users WHERE id = $1")
+                .bind(self.user)
+                .execute(&self.pool)
+                .await;
+        }
+    }
+
+    /// CCT-1081: an agent title owns a name it wrote — it fills an empty one and
+    /// replaces its own earlier title.
+    #[tokio::test]
+    async fn an_agent_title_fills_an_empty_name_and_replaces_an_agent_title() {
+        let Some(fx) = TitleFixture::new("agent_title_claims_agent_owned_name").await else {
+            return;
+        };
+        let id = fx.session().await;
+
+        fx.agent_title(&id, "first agent title").await;
         assert_eq!(
-            name_of(agent_owned.clone()).await.as_deref(),
+            fx.name_of(&id).await.as_deref(),
             Some("first agent title"),
             "an agent title fills an empty name"
         );
-        title(pool.clone(), agent_owned.clone(), "second agent title").await;
+
+        fx.agent_title(&id, "second agent title").await;
         assert_eq!(
-            name_of(agent_owned.clone()).await.as_deref(),
+            fx.name_of(&id).await.as_deref(),
             Some("second agent title"),
             "an agent title replaces a previous agent title"
         );
 
-        let user_owned = Uuid::new_v4().to_string();
-        seed(user_owned.clone()).await;
-        sqlx::query("UPDATE sessions SET session_name = $2 WHERE id = $1")
-            .bind(&user_owned)
-            .bind("name the human typed")
-            .execute(&pool)
-            .await
-            .expect("rename");
-        title(pool.clone(), user_owned.clone(), "agent title").await;
+        fx.cleanup().await;
+    }
+
+    /// CCT-1081: the other direction — a name the user typed outranks any agent
+    /// title, whether it was typed at spawn or renamed over an agent title.
+    #[tokio::test]
+    async fn an_agent_title_never_overwrites_a_user_set_name() {
+        let Some(fx) = TitleFixture::new("agent_title_yields_to_user_name").await else {
+            return;
+        };
+
+        let typed = fx.session().await;
+        fx.rename(&typed, "name the human typed").await;
+        fx.agent_title(&typed, "agent title").await;
         assert_eq!(
-            name_of(user_owned.clone()).await.as_deref(),
+            fx.name_of(&typed).await.as_deref(),
             Some("name the human typed"),
             "a user-set name outranks any agent title"
         );
 
-        title(pool.clone(), agent_owned.clone(), "third agent title").await;
-        sqlx::query("UPDATE sessions SET session_name = $2 WHERE id = $1")
-            .bind(&agent_owned)
-            .bind("renamed by hand")
-            .execute(&pool)
-            .await
-            .expect("rename");
-        title(pool.clone(), agent_owned.clone(), "fourth agent title").await;
+        let renamed = fx.session().await;
+        fx.agent_title(&renamed, "third agent title").await;
+        fx.rename(&renamed, "renamed by hand").await;
+        fx.agent_title(&renamed, "fourth agent title").await;
         assert_eq!(
-            name_of(agent_owned.clone()).await.as_deref(),
+            fx.name_of(&renamed).await.as_deref(),
             Some("renamed by hand"),
             "a rename over an agent title makes the name user-owned"
         );
 
-        for id in [&agent_owned, &user_owned] {
-            sqlx::query("DELETE FROM sessions WHERE id = $1")
-                .bind(id)
-                .execute(&pool)
-                .await
-                .expect("cleanup");
-        }
-        sqlx::query("DELETE FROM machines WHERE id = $1").bind(machine).execute(&pool).await.ok();
-        sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
+        fx.cleanup().await;
     }
 }
