@@ -110,18 +110,30 @@ pub async fn refresh_client_version(state: &AppState) -> String {
     version
 }
 
-/// Re-resolve and cache; the flag says whether the resolved version moved.
 async fn resolve_latest(state: &AppState) -> (String, bool) {
-    let before = codex_client_version(state);
+    resolve_latest_into(&state.http_client, &codex_latest_url(), &state.codex_latest_version).await
+}
+
+/// Re-resolve and cache; the flag says whether the resolved version moved, which
+/// is what makes a catalog refetch due.
+async fn resolve_latest_into(
+    client: &reqwest::Client,
+    url: &str,
+    cache: &std::sync::Mutex<Option<CachedVersion>>,
+) -> (String, bool) {
+    let read = |cache: &std::sync::Mutex<Option<CachedVersion>>| {
+        let latest = cache.lock().ok().and_then(|c| c.clone()).map(|c| c.version);
+        resolve_client_version(codex_version_pin().as_deref(), latest.as_deref())
+    };
+    let before = read(cache);
     if codex_version_pin().is_some() {
         return (before, false);
     }
-    if let Some(version) = fetch_latest_codex_version(&state.http_client, &codex_latest_url()).await
-    {
-        if let Ok(mut slot) = state.codex_latest_version.lock() {
+    if let Some(version) = fetch_latest_codex_version(client, url).await {
+        if let Ok(mut slot) = cache.lock() {
             *slot = Some(CachedVersion { version, fetched_at: Utc::now() });
         }
-    } else if let Ok(mut slot) = state.codex_latest_version.lock() {
+    } else if let Ok(mut slot) = cache.lock() {
         // Stamp even on failure, so an unreachable npm is retried once per TTL
         // rather than on every request.
         let version = slot
@@ -129,7 +141,7 @@ async fn resolve_latest(state: &AppState) -> (String, bool) {
             .map_or_else(|| BUNDLED_CODEX_CLIENT_VERSION.to_owned(), |c| c.version.clone());
         *slot = Some(CachedVersion { version, fetched_at: Utc::now() });
     }
-    let after = codex_client_version(state);
+    let after = read(cache);
     let moved = after != before;
     if moved {
         tracing::info!(%before, %after, "codex client_version moved, refetching account catalogs");
@@ -651,26 +663,33 @@ mod tests {
         assert_eq!(models[3].minimal_client_version, None);
     }
 
-    /// One-shot HTTP server: answers exactly one request with `body` and hands
-    /// back the request line it saw.
-    async fn one_shot(body: &'static str) -> (String, tokio::task::JoinHandle<String>) {
+    /// Answers one request per entry of `bodies`, in order, and hands back the
+    /// raw requests it saw.
+    async fn mock_http(bodies: Vec<String>) -> (String, tokio::task::JoinHandle<Vec<String>>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let handle = tokio::spawn(async move {
             use tokio::io::{AsyncReadExt, AsyncWriteExt};
-            let (mut sock, _) = listener.accept().await.unwrap();
-            let mut buf = vec![0u8; 4096];
-            let n = sock.read(&mut buf).await.unwrap();
-            let req = String::from_utf8_lossy(&buf[..n]).to_string();
-            let resp = format!(
-                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
-                body.len()
-            );
-            sock.write_all(resp.as_bytes()).await.unwrap();
-            sock.flush().await.unwrap();
-            req
+            let mut seen = Vec::new();
+            for body in bodies {
+                let (mut sock, _) = listener.accept().await.unwrap();
+                let mut buf = vec![0u8; 4096];
+                let n = sock.read(&mut buf).await.unwrap();
+                seen.push(String::from_utf8_lossy(&buf[..n]).to_string());
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                sock.write_all(resp.as_bytes()).await.unwrap();
+                sock.flush().await.unwrap();
+            }
+            seen
         });
         (format!("http://{addr}/"), handle)
+    }
+
+    async fn one_shot(body: &'static str) -> (String, tokio::task::JoinHandle<Vec<String>>) {
+        mock_http(vec![body.to_owned()]).await
     }
 
     #[tokio::test]
@@ -678,7 +697,7 @@ mod tests {
         let (url, served) = one_shot(r#"{"name":"@openai/codex","version":"0.156.1"}"#).await;
         let client = reqwest::Client::new();
         assert_eq!(fetch_latest_codex_version(&client, &url).await.as_deref(), Some("0.156.1"));
-        assert!(served.await.unwrap().starts_with("GET /"));
+        assert!(served.await.unwrap()[0].starts_with("GET /"));
     }
 
     #[tokio::test]
@@ -701,10 +720,52 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(parse_remote_catalog(&resp).models[0].id, "gpt-6-astra");
-        let req = served.await.unwrap();
+        let req = served.await.unwrap().remove(0);
         assert!(req.contains("client_version=0.156.1"), "{req}");
         assert!(req.contains("authorization: Bearer tok") || req.contains("Authorization: Bearer tok"));
         assert!(req.contains("chatgpt-account-id: acct-1"));
+    }
+
+    #[tokio::test]
+    async fn a_moved_version_is_reported_once_and_is_cached_after() {
+        if codex_version_pin().is_some() {
+            return;
+        }
+        let (url, served) = mock_http(vec![
+            r#"{"version":"0.157.0"}"#.to_owned(),
+            r#"{"version":"0.157.0"}"#.to_owned(),
+        ])
+        .await;
+        let client = reqwest::Client::new();
+        let cache = std::sync::Mutex::new(None);
+
+        let (version, moved) = resolve_latest_into(&client, &url, &cache).await;
+        assert_eq!(version, "0.157.0");
+        assert!(moved, "moving off the bundled {BUNDLED_CODEX_CLIENT_VERSION} is a refetch");
+        assert_eq!(cache.lock().unwrap().as_ref().unwrap().version, "0.157.0");
+
+        let (version, moved) = resolve_latest_into(&client, &url, &cache).await;
+        assert_eq!(version, "0.157.0");
+        assert!(!moved, "an unchanged version must not refetch the catalogs");
+        assert_eq!(served.await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_npm_keeps_the_last_good_version_and_never_moves() {
+        if codex_version_pin().is_some() {
+            return;
+        }
+        let (url, served) = one_shot(r#"{"version":"0.157.0"}"#).await;
+        let client = reqwest::Client::new();
+        let cache = std::sync::Mutex::new(None);
+        assert!(resolve_latest_into(&client, &url, &cache).await.1);
+        served.await.unwrap();
+
+        let (version, moved) = resolve_latest_into(&client, "http://127.0.0.1:1/", &cache).await;
+        assert_eq!(version, "0.157.0");
+        assert!(!moved);
+        let stamped = cache.lock().unwrap().as_ref().unwrap().fetched_at;
+        assert!(Utc::now() - stamped < LATEST_VERSION_TTL);
     }
 
     #[test]
