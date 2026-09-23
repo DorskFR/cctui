@@ -121,16 +121,19 @@ async fn resolve_latest(state: &AppState) -> (String, bool) {
         if let Ok(mut slot) = state.codex_latest_version.lock() {
             *slot = Some(CachedVersion { version, fetched_at: Utc::now() });
         }
-    } else if let Ok(mut slot) = state.codex_latest_version.lock()
-        && let Some(cached) = slot.as_mut()
-    {
-        cached.fetched_at = Utc::now();
+    } else if let Ok(mut slot) = state.codex_latest_version.lock() {
+        // Stamp even on failure, so an unreachable npm is retried once per TTL
+        // rather than on every request.
+        let version = slot
+            .as_ref()
+            .map_or_else(|| BUNDLED_CODEX_CLIENT_VERSION.to_owned(), |c| c.version.clone());
+        *slot = Some(CachedVersion { version, fetched_at: Utc::now() });
     }
     let after = codex_client_version(state);
-    if after != before {
+    let moved = after != before;
+    if moved {
         tracing::info!(%before, %after, "codex client_version moved, refetching account catalogs");
     }
-    let moved = after != before;
     (after, moved)
 }
 
