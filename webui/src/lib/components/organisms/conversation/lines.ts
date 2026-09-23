@@ -351,6 +351,10 @@ export function parseUserUploadRefs(text: string | undefined): UserUploadRefs {
 			push(st[2]);
 		}
 	}
+	// The staged block is authoritative: staging renames a colliding name, and a
+	// `[paste-1.txt]` token the composer left on the old one resolves by name to
+	// another message's upload.
+	if (names.length) return { sessionId, names };
 	for (const m of text.matchAll(BRACKET_TOKEN_RE)) {
 		if (isPasteName(m[1])) push(m[1]);
 	}
@@ -368,14 +372,22 @@ export function parseUserUploadRefs(text: string | undefined): UserUploadRefs {
 // correlated with its delivered turn by text. `excerpt` keeps only the first
 // line (120 chars on rows written before `queue_text`), hence first-line prefix
 // matching on normalised text rather than equality.
+// The prose is keyed, not the decorations: a user line has already had its
+// `[name]` token run stripped while the enqueue row still carries it.
 export function queueKey(text: string | undefined): string {
-	return normalizePollText((text ?? '').split('\n')[0] ?? '').replace(/…$/, '');
+	const first = stripAttachmentDecorations(text ?? '').split('\n')[0] ?? '';
+	return normalizePollText(first).replace(/…$/, '');
+}
+
+interface QueueClose {
+	key: string;
+	absorbed: boolean;
 }
 
 // A real user line absorbs the placeholder it matches: the real event's `seq`
 // wins, because pins, forks and jump-to-seq address user messages by `seq` and
 // the enqueue row's id must never leak into them.
-function reconcileQueued(out: Line[], placeholders: Line[], closes: string[]): Line[] {
+function reconcileQueued(out: Line[], placeholders: Line[], closes: QueueClose[]): Line[] {
 	if (!placeholders.length) return out;
 	const open = [...placeholders];
 	const absorbed = new Set<Line>();
@@ -389,24 +401,20 @@ function reconcileQueued(out: Line[], placeholders: Line[], closes: string[]): L
 		});
 		if (at === -1) continue;
 		const [ph] = open.splice(at, 1);
-		ln.queued = true;
 		ln.queuedAt = ph.ts;
 		absorbed.add(ph);
 	}
 	// A `dequeue` record never carries its content, so a bodiless close is only
 	// consumed once no texted close claims the placeholder.
-	const texted = closes.filter(Boolean);
-	let bodiless = closes.length - texted.length;
+	const texted = closes.filter((c) => c.key);
+	const bodiless = closes.filter((c) => !c.key);
 	for (const ph of open) {
 		const key = queueKey(ph.text);
-		const at = texted.findIndex((c) => key && (c.startsWith(key) || key.startsWith(c)));
-		if (at !== -1) {
-			texted.splice(at, 1);
-			ph.cancelled = true;
-		} else if (bodiless > 0) {
-			bodiless -= 1;
-			ph.cancelled = true;
-		}
+		const at = texted.findIndex((c) => key && (c.key.startsWith(key) || key.startsWith(c.key)));
+		const close = at !== -1 ? texted.splice(at, 1)[0] : bodiless.shift();
+		if (!close) continue;
+		if (close.absorbed) ph.queuedAt = ph.ts;
+		else ph.cancelled = true;
 	}
 	return out.filter((l) => !absorbed.has(l));
 }
@@ -419,14 +427,15 @@ export function buildLines(
 	const out: Line[] = [];
 	const poll = newPollSeen();
 	const placeholders: Line[] = [];
-	const closes: string[] = [];
+	const closes: QueueClose[] = [];
 	let prevKey = '';
 	for (const e of events) {
 		if (breaksPollRun(e)) poll.last = null;
 		if (e.type === 'text' && e.kind === 'queue_op') {
 			const body = e.content.trim();
-			if ((e.operation ?? 'queued') !== 'queued') {
-				closes.push(queueKey(body));
+			const op = e.operation ?? 'queued';
+			if (op !== 'queued') {
+				closes.push({ key: queueKey(body), absorbed: op === 'absorbed' });
 				continue;
 			}
 			if (!body || !ctx.visible('user')) continue;

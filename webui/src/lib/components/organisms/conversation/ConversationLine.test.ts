@@ -83,15 +83,11 @@ describe('CCT-1083 queue state on the message itself', () => {
 		expect(el.textContent).toContain('queued');
 	});
 
-	it('drops the tint once delivered but keeps the chip, titled with the enqueue time', async () => {
+	it('shows neither tint nor chip once delivered', async () => {
 		const el = await render(line({ queued: true, queuedAt: 1_699_999_000_000 }));
 		expect(el.classList.contains('queued')).toBe(false);
-		const chip = el.querySelector('.meta-end') as HTMLElement;
-		expect(chip.textContent).toContain('queued');
-		const titled = chip.matches('[title]') ? chip : chip.querySelector('[title]');
-		expect(titled?.getAttribute('title')).toContain(
-			new Date(1_699_999_000_000).toLocaleTimeString()
-		);
+		expect(el.querySelector('.meta-end')).toBeNull();
+		expect(el.textContent).not.toContain('queued');
 	});
 
 	it('strikes through a prompt removed from the queue', async () => {
