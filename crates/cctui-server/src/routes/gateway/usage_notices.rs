@@ -107,9 +107,7 @@ pub fn window_actions<'a>(
     windows
         .iter()
         .filter(|w| w.amount_usd.is_none())
-        .map(|w| {
-            (w, step_action(last_steps.get(&w.key).copied(), bucket(w.utilization, step_pct)))
-        })
+        .map(|w| (w, step_action(last_steps.get(&w.key).copied(), bucket(w.utilization, step_pct))))
         .collect()
 }
 

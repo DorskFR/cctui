@@ -1526,7 +1526,6 @@ fn init_dispatchers(config: &Config) -> Arc<dispatchers::Registry> {
     Arc::new(registry)
 }
 
-
 /// Auto-archive sessions silent past the TTL so the default list stays
 /// self-cleaning, asking the daemon to remove each underlying job. `0` disables.
 async fn auto_archive_stale(state: &AppState) {

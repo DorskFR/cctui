@@ -1,10 +1,10 @@
 use super::{
-    Family, FireworksSettings, anthropic_upstream, clear_account_reauth,
-    clear_soft_limit_block, clear_soft_limit_block_for_token, current_access_token,
-    durable_block_key, fireworks_upstream, flag_account_reauth, mark_soft_limit_block,
-    note_orphan_401, note_token_used, openai_upstream, orphan_is_blocked, record_fireworks_usage,
-    resolve_account, session_and_account_name_for_token, session_budget_limits,
-    session_id_for_token, session_spend_usd, tees_response, usage_for_soft_limit,
+    Family, FireworksSettings, anthropic_upstream, clear_account_reauth, clear_soft_limit_block,
+    clear_soft_limit_block_for_token, current_access_token, durable_block_key, fireworks_upstream,
+    flag_account_reauth, mark_soft_limit_block, note_orphan_401, note_token_used, openai_upstream,
+    orphan_is_blocked, record_fireworks_usage, resolve_account, session_and_account_name_for_token,
+    session_budget_limits, session_id_for_token, session_spend_usd, tees_response,
+    usage_for_soft_limit,
 };
 
 use axum::body::Body;
@@ -413,62 +413,60 @@ pub async fn passthrough(
     // untouched either way.
     let mut request_model: Option<String> = None;
     let mut rewrote_body = false;
-    let (upstream_body, traced_request) = if langfuse.is_some()
-        || fireworks.is_some()
-        || model_gate.is_some()
-    {
-        let bytes = axum::body::to_bytes(req.into_body(), usize::MAX)
-            .await
-            .map_err(|_| StatusCode::BAD_REQUEST)?;
-        let parsed = serde_json::from_slice::<serde_json::Value>(&bytes).ok();
-        request_model = parsed
-            .as_ref()
-            .and_then(|r| r.get("model"))
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_owned);
-        // The deferred half of the soft limit: a `weekly_model:` cap gates only
-        // the model it names, so a spent weekly Fable budget must let an Opus
-        // request through. Same `window_applies` the account election uses, so
-        // the two can never disagree.
-        if let Some(windows) = model_gate
-            && let crate::soft_limit::Decision::Block { retry_after_secs, reason, key } =
-                crate::soft_limit::evaluate_soft_limit(
-                    &windows,
-                    &effective_limits,
+    let (upstream_body, traced_request) =
+        if langfuse.is_some() || fireworks.is_some() || model_gate.is_some() {
+            let bytes = axum::body::to_bytes(req.into_body(), usize::MAX)
+                .await
+                .map_err(|_| StatusCode::BAD_REQUEST)?;
+            let parsed = serde_json::from_slice::<serde_json::Value>(&bytes).ok();
+            request_model = parsed
+                .as_ref()
+                .and_then(|r| r.get("model"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned);
+            // The deferred half of the soft limit: a `weekly_model:` cap gates only
+            // the model it names, so a spent weekly Fable budget must let an Opus
+            // request through. Same `window_applies` the account election uses, so
+            // the two can never disagree.
+            if let Some(windows) = model_gate
+                && let crate::soft_limit::Decision::Block { retry_after_secs, reason, key } =
+                    crate::soft_limit::evaluate_soft_limit(
+                        &windows,
+                        &effective_limits,
+                        request_model.as_deref(),
+                        Utc::now(),
+                    )
+            {
+                tracing::info!(
+                    account = %acct.id,
+                    model = request_model.as_deref().unwrap_or("unknown"),
+                    retry_after_secs,
+                    "soft limit hit: {reason}"
+                );
+                return soft_limit_refusal(
+                    &state,
+                    &session_token,
+                    &acct,
+                    is_anthropic,
                     request_model.as_deref(),
-                    Utc::now(),
+                    retry_after_secs,
+                    reason,
+                    durable_block_key(&acct.soft_limits, &effective_limits, &key),
                 )
-        {
-            tracing::info!(
-                account = %acct.id,
-                model = request_model.as_deref().unwrap_or("unknown"),
-                retry_after_secs,
-                "soft limit hit: {reason}"
+                .await;
+            }
+            let (payload, changed) = upstream_payload(
+                &bytes,
+                parsed.as_ref(),
+                fireworks.as_ref(),
+                affinity_session.as_deref(),
             );
-            return soft_limit_refusal(
-                &state,
-                &session_token,
-                &acct,
-                is_anthropic,
-                request_model.as_deref(),
-                retry_after_secs,
-                reason,
-                durable_block_key(&acct.soft_limits, &effective_limits, &key),
-            )
-            .await;
-        }
-        let (payload, changed) = upstream_payload(
-            &bytes,
-            parsed.as_ref(),
-            fireworks.as_ref(),
-            affinity_session.as_deref(),
-        );
-        rewrote_body = changed;
-        (reqwest::Body::from(payload), parsed.filter(|_| langfuse.is_some()))
-    } else {
-        let body_stream = req.into_body().into_data_stream();
-        (reqwest::Body::wrap_stream(body_stream), None)
-    };
+            rewrote_body = changed;
+            (reqwest::Body::from(payload), parsed.filter(|_| langfuse.is_some()))
+        } else {
+            let body_stream = req.into_body().into_data_stream();
+            (reqwest::Body::wrap_stream(body_stream), None)
+        };
 
     let upstream = state
         .http_client
@@ -631,8 +629,7 @@ pub async fn passthrough(
                     + u64::try_from(u.output).unwrap_or(0);
                 super::note_tokens(windows, rate_provider, total);
             }
-            record_fireworks_usage(pool, session_id, request_model, captured, rewrote_body)
-                .await;
+            record_fireworks_usage(pool, session_id, request_model, captured, rewrote_body).await;
         }
         if let Some(langfuse) = langfuse {
             let (output, usage) = if is_openai {
@@ -711,7 +708,8 @@ mod tests {
         let original = axum::body::Bytes::from_static(br#"{"model":"kimi","messages":[]}"#);
         let parsed = serde_json::from_slice::<serde_json::Value>(&original).unwrap();
         let fw = FireworksSettings::resolve(None);
-        let (payload, rewritten) = upstream_payload(&original, Some(&parsed), Some(&fw), Some("s1"));
+        let (payload, rewritten) =
+            upstream_payload(&original, Some(&parsed), Some(&fw), Some("s1"));
         assert!(rewritten);
         let out = serde_json::from_slice::<serde_json::Value>(&payload).unwrap();
         assert_eq!(out["context_length_exceeded_behavior"], "error");

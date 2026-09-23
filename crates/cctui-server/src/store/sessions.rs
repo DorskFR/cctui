@@ -72,10 +72,7 @@ const MAX_DESCENDANT_DEPTH: i32 = 32;
 ///
 /// Depth order is what the caller needs: a live grandchild holds its parent's
 /// worktree, so it must be removed before that parent is.
-pub async fn descendants(
-    exec: impl PgExecutor<'_>,
-    root: &str,
-) -> Result<Vec<Child>, sqlx::Error> {
+pub async fn descendants(exec: impl PgExecutor<'_>, root: &str) -> Result<Vec<Child>, sqlx::Error> {
     sqlx::query_as(
         "WITH RECURSIVE tree AS ( \
              SELECT id, 1 AS depth FROM sessions WHERE parent_id = $1 \
@@ -134,15 +131,11 @@ mod tests {
             at_depth("grandchild", false, 2),
             at_depth("grandchild-task", true, 2),
         ];
-        let archived: Vec<String> =
-            ["child", "grandchild", "great-grandchild", "grandchild-task"]
-                .iter()
-                .map(|s| (*s).to_owned())
-                .collect();
-        assert_eq!(
-            job_children(&kids, &archived),
-            vec!["great-grandchild", "grandchild", "child"]
-        );
+        let archived: Vec<String> = ["child", "grandchild", "great-grandchild", "grandchild-task"]
+            .iter()
+            .map(|s| (*s).to_owned())
+            .collect();
+        assert_eq!(job_children(&kids, &archived), vec!["great-grandchild", "grandchild", "child"]);
     }
 
     #[tokio::test]

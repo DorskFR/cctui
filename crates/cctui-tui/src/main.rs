@@ -868,8 +868,10 @@ fn clean_user_message(text: &str) -> Option<String> {
 fn agent_event_to_line(event: &AgentEvent) -> ConversationLine {
     match event {
         AgentEvent::Text { content, meta, ts, kind: text_kind, .. } => {
-            let marker =
-                matches!(text_kind.as_deref(), Some("system_marker" | "turn_annotation" | "queue_op"));
+            let marker = matches!(
+                text_kind.as_deref(),
+                Some("system_marker" | "turn_annotation" | "queue_op")
+            );
             let (kind, text) = if marker {
                 (LineKind::System, content.clone())
             } else if content.starts_with("▷ User:") {

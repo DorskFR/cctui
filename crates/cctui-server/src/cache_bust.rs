@@ -124,9 +124,10 @@ pub fn compute(
 ) -> std::collections::HashMap<String, Bust> {
     let mut order: Vec<usize> = (0..turns.len()).collect();
     order.sort_by(|&a, &b| {
-        turns[a].created_at.cmp(&turns[b].created_at).then_with(|| {
-            turns[a].message_id.cmp(&turns[b].message_id)
-        })
+        turns[a]
+            .created_at
+            .cmp(&turns[b].created_at)
+            .then_with(|| turns[a].message_id.cmp(&turns[b].message_id))
     });
 
     let mut heads: Vec<usize> = Vec::new();
@@ -157,11 +158,7 @@ const LIVE_LOOKBACK: i64 = 40;
 
 /// Judge a just-completed turn against the session's recent history. `turn` is
 /// not yet in `session_token_usage`, so it is appended to what is.
-pub async fn judge_latest(
-    pool: &sqlx::PgPool,
-    session_id: &str,
-    mut turn: Turn,
-) -> Option<Bust> {
+pub async fn judge_latest(pool: &sqlx::PgPool, session_id: &str, mut turn: Turn) -> Option<Bust> {
     type Row = (String, Option<String>, i64, i64, i64, bool, DateTime<Utc>);
     turn.message_id = format!("live-{}", uuid::Uuid::new_v4().simple());
     let rows: Vec<Row> = sqlx::query_as(
@@ -264,8 +261,7 @@ mod tests {
 
     #[test]
     fn a_clean_stream_busts_nothing() {
-        let turns =
-            [turn("a", 266, 200_968, 266, 0), turn("b", 300, 201_234, 1154, 2)];
+        let turns = [turn("a", 266, 200_968, 266, 0), turn("b", 300, 201_234, 1154, 2)];
         assert!(compute(&turns, None).is_empty());
     }
 
@@ -273,8 +269,7 @@ mod tests {
     /// rest of the context is re-written.
     #[test]
     fn a_collapsed_cache_read_is_a_bust() {
-        let turns =
-            [turn("a", 266, 200_968, 266, 0), turn("bust", 100, 28_977, 172_992, 2)];
+        let turns = [turn("a", 266, 200_968, 266, 0), turn("bust", 100, 28_977, 172_992, 2)];
         let busts = compute(&turns, Some(&catalog()));
         let b = busts.get("bust").expect("bust detected");
         assert_eq!(b.reason, Reason::Unknown);
@@ -344,8 +339,7 @@ mod tests {
 
     #[test]
     fn an_unpriced_model_still_reports_lost_tokens() {
-        let turns =
-            [turn("a", 266, 200_968, 266, 0), turn("bust", 100, 28_977, 172_992, 2)];
+        let turns = [turn("a", 266, 200_968, 266, 0), turn("bust", 100, 28_977, 172_992, 2)];
         let b = &compute(&turns, None)["bust"];
         assert!(b.lost_tokens > 0);
         assert_eq!(b.lost_usd, 0.0);
@@ -353,8 +347,7 @@ mod tests {
 
     #[test]
     fn unsorted_input_is_ordered_before_judging() {
-        let forward =
-            [turn("a", 266, 200_968, 266, 0), turn("bust", 100, 28_977, 172_992, 2)];
+        let forward = [turn("a", 266, 200_968, 266, 0), turn("bust", 100, 28_977, 172_992, 2)];
         let reversed = [forward[1].clone(), forward[0].clone()];
         assert_eq!(compute(&forward, None), compute(&reversed, None));
     }

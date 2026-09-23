@@ -2065,7 +2065,8 @@ mod tests {
 
     #[test]
     fn attachment_records_are_dropped_and_counted() {
-        for subtype in ["skill_listing", "prompt_snapshot", "environment", "total_tokens_reminder"] {
+        for subtype in ["skill_listing", "prompt_snapshot", "environment", "total_tokens_reminder"]
+        {
             let mut out = Vec::new();
             parse_line(
                 "s",

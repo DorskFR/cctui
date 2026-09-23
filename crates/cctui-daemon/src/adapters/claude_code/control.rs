@@ -2299,7 +2299,12 @@ impl Driver {
 
     /// The limits gate for a launch, or `None` when no server is configured to
     /// ask — an unattached daemon launches unconditionally.
-    fn launch_gate(&self, session_id: &str, short: &str, model: Option<&str>) -> Option<LaunchGate> {
+    fn launch_gate(
+        &self,
+        session_id: &str,
+        short: &str,
+        model: Option<&str>,
+    ) -> Option<LaunchGate> {
         let (server, machine_key) = (self.server.as_ref()?, self.machine_key.as_ref()?);
         Some(LaunchGate {
             server: server.clone(),
@@ -4035,7 +4040,12 @@ pub(super) fn ensure_hook_settings(
 /// The hook's own timeout is the wait plus a margin: a hook that overruns its
 /// timeout is treated by Claude Code as a failure, so the wait must always be
 /// the thing that expires first.
-fn mcp_ready_hook(exe: &str, session: &str, sock: &str, wait_secs: u64) -> Option<serde_json::Value> {
+fn mcp_ready_hook(
+    exe: &str,
+    session: &str,
+    sock: &str,
+    wait_secs: u64,
+) -> Option<serde_json::Value> {
     (wait_secs > 0).then(|| {
         json!([{
             "hooks": [{

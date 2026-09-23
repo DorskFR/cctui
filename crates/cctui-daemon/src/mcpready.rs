@@ -19,9 +19,8 @@ struct State {
     ready: HashMap<String, Instant>,
 }
 
-static STATE: LazyLock<Mutex<State>> = LazyLock::new(|| {
-    Mutex::new(State { launched: HashMap::new(), ready: HashMap::new() })
-});
+static STATE: LazyLock<Mutex<State>> =
+    LazyLock::new(|| Mutex::new(State { launched: HashMap::new(), ready: HashMap::new() }));
 
 /// Record that `session_id` is being launched with a relay, so the announce can
 /// report how long the connect took.

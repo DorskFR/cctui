@@ -1777,8 +1777,7 @@ async fn message_usage(
         (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
     })?;
     let owned_id = session_id.to_owned();
-    let catalog =
-        session_catalogs(state, std::slice::from_ref(&owned_id)).await.remove(session_id);
+    let catalog = session_catalogs(state, std::slice::from_ref(&owned_id)).await.remove(session_id);
     let turns: Vec<crate::cache_bust::Turn> = usage_rows
         .iter()
         .map(|(message_id, model, input, _, cache_read, cache_creation, rewrote, at)| {
@@ -3589,10 +3588,7 @@ mod tests {
         let mut item = bare_session("perm-1");
         assert!(item.permission_mode.is_none());
         let bare = serde_json::to_value(&item).unwrap();
-        assert!(
-            bare.get("permission_mode").is_none(),
-            "an unknown posture must not be serialized"
-        );
+        assert!(bare.get("permission_mode").is_none(), "an unknown posture must not be serialized");
 
         item.permission_mode = Some("yolo".into());
         let wire = serde_json::to_value(&item).unwrap();
