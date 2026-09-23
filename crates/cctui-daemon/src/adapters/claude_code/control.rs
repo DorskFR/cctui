@@ -2207,11 +2207,13 @@ impl Driver {
         let launch = self.resolve_launch_env(&session_id, &spec.env).await?;
         // Resolved before the settings file: the `SessionStart` hook that holds
         // the first turn is only registered when there is a relay to wait for.
-        let agent_tool =
-            ensure_agent_mcp_config(short, &session_id, launch.spawn_capability.as_ref());
-        if agent_tool.is_some() {
-            crate::mcpready::note_launch(&session_id);
-        }
+        let agent_tool = attach_agent_relay(
+            &mut args,
+            &mut respawn_flags,
+            short,
+            &session_id,
+            launch.spawn_capability.as_ref(),
+        );
         if let Some(settings) = ensure_hook_settings(
             &self.cfg.hook_socket_path,
             whip,
@@ -2221,20 +2223,13 @@ impl Driver {
             spec.model.as_deref(),
             spec.effort.as_deref(),
             launch.whip_phrases.as_ref(),
-            agent_tool.is_some().then_some(session_id.as_str()),
+            agent_tool.then_some(session_id.as_str()),
         ) {
             let settings = settings.to_string_lossy().into_owned();
             args.push("--settings".to_owned());
             args.push(settings.clone());
             respawn_flags.push("--settings".to_owned());
             respawn_flags.push(settings);
-        }
-        if let Some(mcp) = &agent_tool {
-            let mcp = mcp.to_string_lossy().into_owned();
-            args.push("--mcp-config".to_owned());
-            args.push(mcp.clone());
-            respawn_flags.push("--mcp-config".to_owned());
-            respawn_flags.push(mcp);
         }
         // Stage any uploaded files under /tmp/cctui-uploads/<session-id>/ and
         // prepend their absolute paths to the prompt so the worker reads them.
@@ -2253,7 +2248,7 @@ impl Driver {
             spec,
             cwd,
             &staged,
-            launch.spawn_capability.as_ref().filter(|_| agent_tool.is_some()),
+            launch.spawn_capability.as_ref().filter(|_| agent_tool),
         );
         let launch_prompt = match spec.prompt.as_deref().map(str::trim) {
             Some(b) if !b.is_empty() => Some(format!("{session_context}\n\n{b}")),
@@ -2533,6 +2528,13 @@ impl Driver {
                 .resolve_launch_env(parent_local_id, &std::collections::BTreeMap::default())
                 .await?;
         }
+        let agent_tool = attach_agent_relay(
+            &mut args,
+            &mut respawn_flags,
+            &short,
+            &session_id,
+            launch.spawn_capability.as_ref(),
+        );
         if let Some(settings) = ensure_hook_settings(
             &self.cfg.hook_socket_path,
             whip,
@@ -2542,7 +2544,7 @@ impl Driver {
             None,
             None,
             launch.whip_phrases.as_ref(),
-            None,
+            agent_tool.then_some(session_id.as_str()),
         ) {
             let settings = settings.to_string_lossy().into_owned();
             args.push("--settings".to_owned());
@@ -4130,6 +4132,29 @@ pub(super) fn ensure_agent_mcp_config(
     Some(path)
 }
 
+/// Mount the agent relay on a worker launch. The `--mcp-config` goes into the
+/// respawn flags too or the daemon's `/clear` relaunch drops it. Returns whether
+/// a relay was mounted: the `SessionStart` readiness hook is only registered
+/// when there is one to wait for.
+pub(super) fn attach_agent_relay(
+    args: &mut Vec<String>,
+    respawn_flags: &mut Vec<String>,
+    short: &str,
+    session_id: &str,
+    capability: Option<&cctui_proto::api::SpawnCapability>,
+) -> bool {
+    let Some(mcp) = ensure_agent_mcp_config(short, session_id, capability) else {
+        return false;
+    };
+    crate::mcpready::note_launch(session_id);
+    let mcp = mcp.to_string_lossy().into_owned();
+    args.push("--mcp-config".to_owned());
+    args.push(mcp.clone());
+    respawn_flags.push("--mcp-config".to_owned());
+    respawn_flags.push(mcp);
+    true
+}
+
 /// Build the managed `--settings` document: the ask/permission/Stop
 /// `hooks`, the gateway routing `env`, and the session `model`/`effortLevel`,
 /// all in one file. The claude daemon applies a session's `--settings` to a
@@ -4435,6 +4460,59 @@ mod tests {
         assert!(args.contains(&json!("sess-42")), "the session id is fixed in argv");
         assert!(path.to_string_lossy().contains(&short), "config must be per-session");
         std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn attach_agent_relay_mounts_into_launch_and_respawn_argv() {
+        let cap = cctui_proto::api::SpawnCapability {
+            adapters: vec!["claude-code".to_owned()],
+            max_budget_usd: Some(1.0),
+            max_children: Some(2),
+        };
+        let short = format!("{:08x}", std::process::id() ^ 0x5eed);
+
+        let mut args = vec!["--resume".to_owned(), "parent".to_owned()];
+        let mut respawn = vec!["--agent".to_owned(), "claude".to_owned()];
+        assert!(!attach_agent_relay(&mut args, &mut respawn, &short, "sess-1", None));
+        assert!(!args.iter().any(|a| a == "--mcp-config"), "no capability means no relay");
+        assert!(!respawn.iter().any(|a| a == "--mcp-config"));
+
+        if !attach_agent_relay(&mut args, &mut respawn, &short, "sess-1", Some(&cap)) {
+            return; // no writable config dir in this environment
+        }
+        let idx = args.iter().position(|a| a == "--mcp-config").expect("launch argv gets the relay");
+        let path = args[idx + 1].clone();
+        assert!(path.contains(&short), "the config is session-scoped");
+        let ridx =
+            respawn.iter().position(|a| a == "--mcp-config").expect("respawn flags get it too");
+        assert_eq!(respawn[ridx + 1], path);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn fork_and_spawn_mount_the_relay_identically() {
+        let cap = cctui_proto::api::SpawnCapability {
+            adapters: vec!["opencode".to_owned()],
+            max_budget_usd: None,
+            max_children: None,
+        };
+        let short = format!("{:08x}", std::process::id() ^ 0xf0f0);
+
+        let mut spawn_args = vec!["--session-id".to_owned(), "child".to_owned()];
+        let mut spawn_respawn = Vec::new();
+        let mut fork_args =
+            vec!["--resume".to_owned(), "parent".to_owned(), "--fork-session".to_owned()];
+        let mut fork_respawn = Vec::new();
+
+        if !attach_agent_relay(&mut spawn_args, &mut spawn_respawn, &short, "sess-9", Some(&cap)) {
+            return; // no writable config dir in this environment
+        }
+        assert!(attach_agent_relay(&mut fork_args, &mut fork_respawn, &short, "sess-9", Some(&cap)));
+
+        let tail = |v: &[String]| v[v.len() - 2..].to_vec();
+        assert_eq!(tail(&spawn_args), tail(&fork_args));
+        assert_eq!(spawn_respawn, fork_respawn);
+        std::fs::remove_file(&spawn_args[spawn_args.len() - 1]).ok();
     }
 
     #[test]
