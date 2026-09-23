@@ -27,6 +27,7 @@ mod kickstart;
 mod mode;
 mod oneshot;
 mod pty_view;
+mod session_registry;
 mod socket;
 pub(crate) mod state;
 mod streamjson;

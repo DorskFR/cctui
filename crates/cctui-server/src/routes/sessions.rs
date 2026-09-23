@@ -2538,32 +2538,36 @@ pub async fn archive_one(
             return Ok(ArchiveOutcome::SkippedPinned);
         }
     }
-    dispatch_remove(state, session_id).await;
-    // Archive the session AND every child nested under it: a parent's
-    // children should never outlive it in the list. Archiving a *child* does
-    // not touch the parent (no `parent_id` cascade upward), and a pinned child
-    // is never swept along with its parent unless forced.
+    // Archive the session AND every descendant nested under it, at any depth: a
+    // parent's children should never outlive it in the list. Archiving a
+    // *child* does not touch the parent (no `parent_id` cascade upward), and a
+    // pinned descendant is never swept along unless forced.
     let children =
-        crate::store::sessions::children(&state.pool, session_id).await.unwrap_or_default();
+        crate::store::sessions::descendants(&state.pool, session_id).await.unwrap_or_default();
+    let descendant_ids: Vec<String> = children.iter().map(|c| c.id.clone()).collect();
     // Clear the classifier signals on archive so a session that was waiting on
     // input doesn't keep its ✋ "needs input" glyph in the archived view — an
     // archived session is, by definition, no longer waiting on anyone.
     let archived: Vec<String> = sqlx::query_scalar(
         "UPDATE sessions SET status = 'archived', tempo = NULL, agent_state = NULL, \
                 activity = NULL, soft_limit_reason = NULL \
-         WHERE (id = $1 OR parent_id = $1) AND (pinned = false OR $2) \
+         WHERE (id = $1 OR id = ANY($3)) AND (pinned = false OR $2) \
          RETURNING id",
     )
     .bind(session_id)
     .bind(force)
+    .bind(&descendant_ids)
     .fetch_all(&state.pool)
     .await?;
-    // Task-tool subagents are observe-only and covered by the parent's
-    // `Remove`; CctuiAgent children and forks own a claude job each, which
-    // stays in `claude agents` until removed.
+    // Deepest first, and always before the parent: a live descendant holds its
+    // parent's worktree, and `claude rm` refuses a job whose worktree is the
+    // working directory of a live session. Task-tool subagents are observe-only
+    // and covered by their parent's `Remove`; CctuiAgent children and forks own
+    // a claude job each, which stays in `claude agents` until removed.
     for child in crate::store::sessions::job_children(&children, &archived) {
         dispatch_remove(state, child).await;
     }
+    dispatch_remove(state, session_id).await;
     let children: Vec<String> =
         children.into_iter().map(|c| c.id).filter(|c| archived.contains(c)).collect();
     {
