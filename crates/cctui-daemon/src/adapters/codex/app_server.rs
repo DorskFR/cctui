@@ -807,7 +807,10 @@ pub struct ThreadConfig {
 
 impl ThreadConfig {
     #[must_use]
-    pub fn new(env: &std::collections::BTreeMap<String, String>, service_tier: Option<&str>) -> Self {
+    pub fn new(
+        env: &std::collections::BTreeMap<String, String>,
+        service_tier: Option<&str>,
+    ) -> Self {
         Self {
             env: env.clone(),
             service_tier: normalize_service_tier(service_tier),
@@ -2051,7 +2054,10 @@ impl CodexSession {
                 ("thread/fork", config.fork_params(parent_thread_id, &self.cwd))
             }
         };
-        (json!({"jsonrpc": "2.0", "id": ID_THREAD_START, "method": method, "params": params}), method)
+        (
+            json!({"jsonrpc": "2.0", "id": ID_THREAD_START, "method": method, "params": params}),
+            method,
+        )
     }
 
     #[cfg(test)]
@@ -3000,7 +3006,9 @@ impl CodexSession {
                 return Ok(());
             }
             let Some(status) = status else {
-                anyhow::bail!("shared codex app-server closed the route before the thread was started");
+                anyhow::bail!(
+                    "shared codex app-server closed the route before the thread was started"
+                );
             };
             let exit = status.map_or_else(|e| e.to_string(), |s| s.to_string());
             anyhow::bail!("codex app-server exited ({exit}) before the thread was started");
@@ -3244,7 +3252,8 @@ async fn record_model_override(
 /// (`/agents`, `spawn_agent`), announced as a real child session nested under
 /// it, the way a `CctuiAgent` child is.
 fn subagent_started_event(local_id: &str, value: &Value) -> Option<AdapterEvent> {
-    if local_id.is_empty() || value.get("method").and_then(Value::as_str) != Some("thread/started") {
+    if local_id.is_empty() || value.get("method").and_then(Value::as_str) != Some("thread/started")
+    {
         return None;
     }
     let params = value.get("params")?;
@@ -5731,7 +5740,9 @@ done
     #[test]
     fn one_thread_config_resupplies_the_same_block_on_start_resume_and_fork() {
         let env: std::collections::BTreeMap<String, String> =
-            [("OPENAI_BASE_URL".to_owned(), "https://gw.example/v1".to_owned())].into_iter().collect();
+            [("OPENAI_BASE_URL".to_owned(), "https://gw.example/v1".to_owned())]
+                .into_iter()
+                .collect();
         let tc = ThreadConfig::new(&env, Some("fast"));
         let start = tc.start_params("/repo");
         let resume = tc.resume_params("tid", "/repo");
@@ -5766,7 +5777,9 @@ done
     #[test]
     fn the_gateway_block_wins_over_an_overlay_key_of_the_same_name() {
         let env: std::collections::BTreeMap<String, String> =
-            [("OPENAI_BASE_URL".to_owned(), "https://gw.example/v1".to_owned())].into_iter().collect();
+            [("OPENAI_BASE_URL".to_owned(), "https://gw.example/v1".to_owned())]
+                .into_iter()
+                .collect();
         let tc = ThreadConfig::new(&env, None)
             .with_overlay(vec![("model_providers".to_owned(), "\"hijack\"".to_owned())]);
         let params = tc.start_params("/repo");

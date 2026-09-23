@@ -5,9 +5,9 @@
 //! chunks of one speaker collapse into one turn. The oldest turns are elided
 //! behind one line once the turn or byte cap is hit.
 
+use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use axum::Json;
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -53,8 +53,7 @@ impl Default for Caps {
 }
 
 fn is_keepalive(payload: &Value) -> bool {
-    payload.get("metadata").and_then(|m| m.get("keepalive")).and_then(Value::as_bool)
-        == Some(true)
+    payload.get("metadata").and_then(|m| m.get("keepalive")).and_then(Value::as_bool) == Some(true)
 }
 
 /// The speaker and prose of one stored row, or `None` for anything the brief
@@ -202,8 +201,7 @@ pub async fn session_brief(
     .fetch_all(&state.pool)
     .await
     .map_err(db_err)?;
-    let turns =
-        collect_turns(&adapter_id, rows.iter().map(|(t, p)| (t.as_str(), p.clone())));
+    let turns = collect_turns(&adapter_id, rows.iter().map(|(t, p)| (t.as_str(), p.clone())));
     Ok(Json(render(&turns, q.caps())))
 }
 
@@ -229,7 +227,10 @@ mod tests {
             ("tool_use", json!({"tool": "Bash", "input": {"command": "ls"}})),
             ("tool_use", json!({"kind": "tool_result", "content": "a b c"})),
             ("message", json!({"role": "system_marker", "text": "compacted"})),
-            ("message", json!({"role": "user", "text": "<task-notification>x</task-notification>", "meta": true})),
+            (
+                "message",
+                json!({"role": "user", "text": "<task-notification>x</task-notification>", "meta": true}),
+            ),
             assistant("hi there"),
         ];
         let turns = collect_turns("claude-code", rows);
@@ -246,14 +247,16 @@ mod tests {
     fn keepalive_ticks_are_dropped() {
         let mut tick = json!({"role": "user", "text": "tick"});
         assert!(crate::keepalive::stamp_tick(&mut tick));
-        let turns = collect_turns("claude-code", vec![user("q"), ("message", tick), assistant("a")]);
+        let turns =
+            collect_turns("claude-code", vec![user("q"), ("message", tick), assistant("a")]);
         assert_eq!(turns.len(), 2);
         assert!(turns.iter().all(|t| t.text != "tick"));
     }
 
     #[test]
     fn consecutive_chunks_of_one_speaker_fold_into_one_turn() {
-        let turns = collect_turns("claude-code", vec![user("q"), assistant("part 1"), assistant("part 2")]);
+        let turns =
+            collect_turns("claude-code", vec![user("q"), assistant("part 1"), assistant("part 2")]);
         assert_eq!(turns.len(), 2);
         assert_eq!(turns[1].text, "part 1\n\npart 2");
     }
@@ -262,7 +265,10 @@ mod tests {
     fn images_stay_as_their_reference() {
         let rows = vec![
             user("[Image: source: shot.png]\nwhat is this"),
-            ("message", json!({"role": "assistant_attachment", "text": "[image attachment]", "message_id": "m"})),
+            (
+                "message",
+                json!({"role": "assistant_attachment", "text": "[image attachment]", "message_id": "m"}),
+            ),
             assistant("a chart"),
         ];
         let turns = collect_turns("claude-code", rows);
@@ -291,7 +297,11 @@ mod tests {
 
     #[test]
     fn turn_cap_elides_the_oldest_turns() {
-        let rows: Vec<_> = (0..10).flat_map(|i| [("message", json!({"role": "user", "text": format!("q{i}")})), assistant("a")]).collect();
+        let rows: Vec<_> = (0..10)
+            .flat_map(|i| {
+                [("message", json!({"role": "user", "text": format!("q{i}")})), assistant("a")]
+            })
+            .collect();
         let turns = collect_turns("claude-code", rows);
         let out = render(&turns, Caps { max_turns: 4, max_bytes: 1 << 20 });
         assert!(out.markdown.starts_with("… 16 earlier turns omitted\n\n**User:**\n\nq8"));
@@ -300,9 +310,8 @@ mod tests {
 
     #[test]
     fn byte_cap_elides_oldest_turns_and_flags_truncation() {
-        let turns: Vec<Turn> = (0..5)
-            .map(|i| Turn { role: Role::User, text: format!("{i}").repeat(100) })
-            .collect();
+        let turns: Vec<Turn> =
+            (0..5).map(|i| Turn { role: Role::User, text: format!("{i}").repeat(100) }).collect();
         let out = render(&turns, Caps { max_turns: 60, max_bytes: 250 });
         assert_eq!(out.omitted, 3);
         assert_eq!(out.turns, 2);
@@ -314,7 +323,10 @@ mod tests {
 
     #[test]
     fn a_single_oversized_turn_keeps_its_tail() {
-        let turns = vec![Turn { role: Role::Assistant, text: format!("{}é{}", "x".repeat(300), "y".repeat(100)) }];
+        let turns = vec![Turn {
+            role: Role::Assistant,
+            text: format!("{}é{}", "x".repeat(300), "y".repeat(100)),
+        }];
         let out = render(&turns, Caps { max_turns: 60, max_bytes: 128 });
         assert!(out.truncated);
         assert_eq!(out.omitted, 0);

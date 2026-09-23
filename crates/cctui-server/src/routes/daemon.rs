@@ -966,7 +966,12 @@ async fn process_frame(
             Ok(())
         }
         DaemonFrameUp::Heartbeat {
-            bandwidth, update_hook, resources, claude_jobs, harness, ..
+            bandwidth,
+            update_hook,
+            resources,
+            claude_jobs,
+            harness,
+            ..
         } => {
             // A daemon too old to advertise omits the field; leave the stored
             // flag alone rather than reading silence as "no hook".

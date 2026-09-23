@@ -212,7 +212,8 @@ pub fn connect(endpoint: DaemonEndpoint, shutdown: CancellationToken) -> DaemonH
     let (ops_tx, ops_rx) = mpsc::channel(256);
     let (events_tx, _) = broadcast::channel(NOTIFY_BUFFER);
     let connected = Arc::new(AtomicBool::new(false));
-    let handle = DaemonHandle { ops: ops_tx, events: events_tx.clone(), connected: connected.clone() };
+    let handle =
+        DaemonHandle { ops: ops_tx, events: events_tx.clone(), connected: connected.clone() };
     tokio::spawn(supervise(endpoint, ops_rx, events_tx, connected, shutdown));
     handle
 }
@@ -534,7 +535,9 @@ impl Routes {
     fn close(&mut self, route: u64) {
         self.routes.remove(&route);
         self.pending.retain(|_, p| match p {
-            RoutePending::Session { route: r, .. } | RoutePending::Rejoin { route: r } => *r != route,
+            RoutePending::Session { route: r, .. } | RoutePending::Rejoin { route: r } => {
+                *r != route
+            }
         });
     }
 
@@ -566,7 +569,8 @@ impl Routes {
         let wire = next_id();
         let original = frame.clone();
         frame["id"] = json!(wire);
-        self.pending.insert(wire, RoutePending::Session { route, local_id, method, frame: original });
+        self.pending
+            .insert(wire, RoutePending::Session { route, local_id, method, frame: original });
         frame
     }
 
@@ -599,9 +603,8 @@ impl Routes {
     fn incoming(&mut self, method: &str, v: &Value) {
         let params = v.get("params").unwrap_or(&Value::Null);
         let thread = frame_thread(params).map(str::to_owned);
-        let parent = (method == "thread/started")
-            .then(|| subagent_parent(params).map(|(_, p)| p))
-            .flatten();
+        let parent =
+            (method == "thread/started").then(|| subagent_parent(params).map(|(_, p)| p)).flatten();
         for r in self.routes.values_mut() {
             let Some(tid) = r.thread_id.as_deref() else { continue };
             if thread.as_deref() == Some(tid) {
@@ -665,7 +668,8 @@ impl Routes {
         };
         let Some(r) = self.routes.get_mut(&route) else { return Vec::new() };
         let tid = r.thread_id.clone().unwrap_or_default();
-        let turns = result.pointer("/thread/turns").and_then(Value::as_array).cloned().unwrap_or_default();
+        let turns =
+            result.pointer("/thread/turns").and_then(Value::as_array).cloned().unwrap_or_default();
         let latest = turns.last();
         let latest_id = latest.and_then(|t| t.get("id")).and_then(Value::as_str);
         let latest_running =
@@ -928,7 +932,10 @@ mod tests {
     fn rejoin(routes: &mut Routes, turns: Value) -> Vec<Value> {
         let frames = routes.on_connect();
         let wire = frames[0]["id"].as_i64().unwrap();
-        routes.response(wire, &json!({"id": wire, "result": {"thread": {"id": "t1", "turns": turns}}}))
+        routes.response(
+            wire,
+            &json!({"id": wire, "result": {"thread": {"id": "t1", "turns": turns}}}),
+        )
     }
 
     #[test]
@@ -946,10 +953,13 @@ mod tests {
 
     #[test]
     fn the_session_handshake_is_answered_from_the_shared_connection() {
-        let mut routes = Routes { init: Some(json!({"userAgent": "codex/9"})), ..Routes::default() };
+        let mut routes =
+            Routes { init: Some(json!({"userAgent": "codex/9"})), ..Routes::default() };
         let (tx, mut rx) = mpsc::unbounded_channel();
         routes.open(1, tx, tiered(), "/repo".to_owned());
-        assert!(routes.outbound(1, json!({"id": 1, "method": "initialize", "params": {}})).is_empty());
+        assert!(
+            routes.outbound(1, json!({"id": 1, "method": "initialize", "params": {}})).is_empty()
+        );
         assert!(routes.outbound(1, json!({"method": "initialized"})).is_empty());
         let got = drain(&mut rx);
         assert_eq!(got.len(), 1);
@@ -970,7 +980,10 @@ mod tests {
         let mut routes = Routes::default();
         let mut a = bound(&mut routes, 1, "t1");
         let mut b = bound(&mut routes, 2, "t2");
-        routes.incoming("item/started", &json!({"method": "item/started", "params": {"threadId": "t1"}}));
+        routes.incoming(
+            "item/started",
+            &json!({"method": "item/started", "params": {"threadId": "t1"}}),
+        );
         assert_eq!(drain(&mut a).len(), 1);
         assert!(drain(&mut b).is_empty());
     }
@@ -1011,7 +1024,8 @@ mod tests {
         let mut rx = bound(&mut routes, 1, "t1");
         send_turn(&mut routes, 1, 6);
         routes.on_drop();
-        let writes = rejoin(&mut routes, json!([{"id": "turn-new", "status": "inProgress", "items": []}]));
+        let writes =
+            rejoin(&mut routes, json!([{"id": "turn-new", "status": "inProgress", "items": []}]));
         assert!(writes.is_empty(), "no duplicate turn/start: {writes:?}");
         let got = drain(&mut rx);
         assert_eq!(got[0]["id"], 6);
@@ -1032,7 +1046,8 @@ mod tests {
         drain(&mut rx);
         send_turn(&mut routes, 1, 6);
         routes.on_drop();
-        let writes = rejoin(&mut routes, json!([{"id": "turn-old", "status": "completed", "items": []}]));
+        let writes =
+            rejoin(&mut routes, json!([{"id": "turn-old", "status": "completed", "items": []}]));
         assert_eq!(writes.len(), 1);
         assert_eq!(writes[0]["method"], "turn/start");
         assert!(drain(&mut rx).is_empty());
@@ -1104,10 +1119,17 @@ mod tests {
         let _rx = bound(&mut routes, 1, "t1");
         routes.on_drop();
         let frames = routes.on_connect();
-        assert!(routes.outbound(1, json!({"id": 9, "method": "turn/interrupt", "params": {}})).is_empty());
-        assert!(routes.outbound(1, json!({"id": 10, "method": "turn/start", "params": {}})).is_empty());
+        assert!(
+            routes
+                .outbound(1, json!({"id": 9, "method": "turn/interrupt", "params": {}}))
+                .is_empty()
+        );
+        assert!(
+            routes.outbound(1, json!({"id": 10, "method": "turn/start", "params": {}})).is_empty()
+        );
         let wire = frames[0]["id"].as_i64().unwrap();
-        let writes = routes.response(wire, &json!({"id": wire, "result": {"thread": {"turns": []}}}));
+        let writes =
+            routes.response(wire, &json!({"id": wire, "result": {"thread": {"turns": []}}}));
         let methods: Vec<_> = writes.iter().map(|w| w["method"].clone()).collect();
         assert_eq!(methods, vec![json!("turn/interrupt"), json!("turn/start")]);
         assert!(!routes.routes[&1].rejoining);
@@ -1165,13 +1187,15 @@ mod tests {
         let shutdown = CancellationToken::new();
         let handle = connect(DaemonEndpoint { socket: sock }, shutdown.clone());
         let mut wire = handle.open_thread(tiered(), "/repo".to_owned()).await.expect("open");
-        wire.sink.send(&json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}))
+        wire.sink
+            .send(&json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}))
             .await
             .unwrap();
         let init = wire.frames.recv().await.unwrap();
         assert_eq!(init["id"], 1);
         assert_eq!(init["result"]["userAgent"], "codex/0.153.4");
-        wire.sink.send(&json!({"jsonrpc": "2.0", "id": 2, "method": "thread/start", "params": {}}))
+        wire.sink
+            .send(&json!({"jsonrpc": "2.0", "id": 2, "method": "thread/start", "params": {}}))
             .await
             .unwrap();
         let started = wire.frames.recv().await.unwrap();

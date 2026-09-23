@@ -87,7 +87,8 @@ pub enum DaemonFrameUp {
         /// ones whose session it has archived. Optional: a daemon that omits
         /// it cannot parse that reply and must never receive one.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        claude_jobs: Option<Vec<String>>,        /// Harness versions and auto-update outcomes. Optional: the server
+        claude_jobs: Option<Vec<String>>,
+        /// Harness versions and auto-update outcomes. Optional: the server
         /// sends [`DaemonFrameDown::HarnessUpdatePolicy`] only to a daemon that
         /// reports it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1097,7 +1098,12 @@ mod tests {
             // A daemon that predates either field says nothing about both; the
             // server must not read that silence as "no hook".
             DaemonFrameUp::Heartbeat {
-                bandwidth, update_hook, resources, claude_jobs, harness, ..
+                bandwidth,
+                update_hook,
+                resources,
+                claude_jobs,
+                harness,
+                ..
             } => {
                 assert!(harness.is_none());
                 assert!(bandwidth.is_none());

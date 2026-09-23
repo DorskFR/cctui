@@ -35,7 +35,8 @@ pub const SERVICE_TIER_FAST: &str = "fast";
 /// The `settings_json` key carrying the account-level tier default.
 pub const SERVICE_TIER_KEY: &str = "service_tier";
 
-static CATALOG: LazyLock<Catalog> = LazyLock::new(|| build_from("Codex", RAW_CATALOG, Some(RAW_SCHEMA)));
+static CATALOG: LazyLock<Catalog> =
+    LazyLock::new(|| build_from("Codex", RAW_CATALOG, Some(RAW_SCHEMA)));
 
 /// The process-wide Codex settings catalog singleton.
 #[must_use]

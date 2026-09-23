@@ -2815,7 +2815,10 @@ pub async fn set_keepalive(
         }
         Err(e) => {
             tracing::error!("db error: {e}");
-            Err((StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() })))
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError { error: "database error".into() }),
+            ))
         }
     }
 }

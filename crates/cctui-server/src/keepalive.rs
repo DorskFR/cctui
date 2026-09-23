@@ -4,8 +4,8 @@
 //! Claims go through one guarded `UPDATE … RETURNING`, so replicas cannot
 //! double-send.
 
-use chrono::{DateTime, Duration, Utc};
 use cctui_proto::api::{KeepaliveState, SessionKeepaliveRequest};
+use chrono::{DateTime, Duration, Utc};
 
 use crate::soft_limit::UsageWindow;
 use crate::state::AppState;
@@ -360,13 +360,13 @@ async fn fire(state: &AppState, session_id: &str, tick: u32, max_ticks: u32) {
 
 #[cfg(test)]
 mod tests {
-    use chrono::{TimeZone, Utc};
     use cctui_proto::api::SessionKeepaliveRequest;
+    use chrono::{TimeZone, Utc};
 
     use super::{
-        CLAIM_SQL, DEFAULT_MAX_TICKS, MIN_INTERVAL_SECS, Skip, Snapshot, cache_ttl_secs,
-        decide, default_interval_secs, is_human_message, is_tick, schedule_from_request,
-        skip_reason, stamp_tick, tick_prompt, usage_too_high,
+        CLAIM_SQL, DEFAULT_MAX_TICKS, MIN_INTERVAL_SECS, Skip, Snapshot, cache_ttl_secs, decide,
+        default_interval_secs, is_human_message, is_tick, schedule_from_request, skip_reason,
+        stamp_tick, tick_prompt, usage_too_high,
     };
     use crate::soft_limit::UsageWindow;
 
