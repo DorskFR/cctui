@@ -28,6 +28,7 @@
 	import DrawerToolbar from './conversation/DrawerToolbar.svelte';
 	import DiagnosePanel from './conversation/DiagnosePanel.svelte';
 	import ActivityBanner from './conversation/ActivityBanner.svelte';
+	import AutoArchiveNotice from './conversation/AutoArchiveNotice.svelte';
 	import TaskPanel from './conversation/TaskPanel.svelte';
 	import TerminalPane from './conversation/TerminalPane.svelte';
 	import Conversation from './conversation/Conversation.svelte';
@@ -634,6 +635,7 @@
 			/>
 
 			<ActivityBanner {stream} {archived} />
+			<AutoArchiveNotice {session} onpin={() => togglePin(session)} />
 
 			<ConversationComposer
 				bind:this={composer}

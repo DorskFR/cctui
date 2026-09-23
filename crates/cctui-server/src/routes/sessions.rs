@@ -388,6 +388,8 @@ pub async fn list_sessions(
                         end_reason: None,
                         end_detail: None,
                         ended_at: None,
+                        auto_archive_at: None,
+                        archived_by: None,
                     },
                 )
             })
@@ -492,6 +494,8 @@ pub async fn list_sessions(
                 end_reason: None,
                 end_detail: None,
                 ended_at: None,
+                auto_archive_at: None,
+                archived_by: None,
             },
         ));
     }
@@ -740,11 +744,12 @@ async fn enrich_and_sort(
             end_detail: Option<String>,
             ended_at: Option<DateTime<Utc>>,
             permission_mode: Option<String>,
+            archived_by: Option<String>,
         }
         let rows: Vec<SignalRow> = sqlx::query_as(
             "SELECT id, tempo, agent_state, activity, session_name, model, effort, pinned, \
                     soft_limit_reason, last_tool_at, last_tool_name, tool_use_count, \
-                    children, end_reason, end_detail, ended_at, permission_mode \
+                    children, end_reason, end_detail, ended_at, permission_mode, archived_by \
              FROM sessions WHERE id = ANY($1)",
         )
         .bind(&session_ids)
@@ -789,6 +794,13 @@ async fn enrich_and_sort(
                 s.effort = row.effort;
                 s.permission_mode = row.permission_mode;
                 s.pinned = row.pinned;
+                s.archived_by = row.archived_by.as_deref().and_then(RemoveInitiator::parse);
+                s.auto_archive_at = crate::auto_archive::stale_archive_due(
+                    s.status,
+                    s.pinned,
+                    s.last_heartbeat,
+                    state.config.archive_after_secs,
+                );
                 s.activity_detail = row.activity;
                 s.last_tool_at = row.last_tool_at;
                 s.last_tool_name = row.last_tool_name;
@@ -1343,6 +1355,8 @@ pub async fn search_sessions(
                     end_reason: None,
                     end_detail: None,
                     ended_at: None,
+                    auto_archive_at: None,
+                    archived_by: None,
                 },
             )
         })
@@ -1502,6 +1516,8 @@ type EndRow = (
     Option<DateTime<Utc>>,
     Option<serde_json::Value>,
     Option<String>,
+    bool,
+    Option<String>,
 );
 
 #[allow(clippy::too_many_lines)]
@@ -1571,6 +1587,8 @@ pub async fn get_session(
                 end_reason: None,
                 end_detail: None,
                 ended_at: None,
+                auto_archive_at: None,
+                archived_by: None,
             };
             return Ok(Json(item));
         }
@@ -1637,9 +1655,11 @@ pub async fn get_session(
         end_reason: None,
         end_detail: None,
         ended_at: None,
+        auto_archive_at: None,
+        archived_by: None,
     };
     let end: Option<EndRow> = sqlx::query_as(
-        "SELECT end_reason, end_detail, ended_at, todos, permission_mode \
+        "SELECT end_reason, end_detail, ended_at, todos, permission_mode, pinned, archived_by \
          FROM sessions WHERE id = $1",
     )
     .bind(&item.id)
@@ -1649,12 +1669,22 @@ pub async fn get_session(
         tracing::error!("db error: {e}");
         (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
     })?;
-    if let Some((end_reason, end_detail, ended_at, todos, permission_mode)) = end {
+    if let Some((end_reason, end_detail, ended_at, todos, permission_mode, pinned, archived_by)) =
+        end
+    {
         item.end_reason = end_reason.as_deref().map(SessionEndReason::parse);
         item.end_detail = end_detail;
         item.ended_at = ended_at;
         item.todos = todos.and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
         item.permission_mode = permission_mode;
+        item.pinned = pinned;
+        item.archived_by = archived_by.as_deref().and_then(RemoveInitiator::parse);
+        item.auto_archive_at = crate::auto_archive::stale_archive_due(
+            item.status,
+            pinned,
+            item.last_heartbeat,
+            state.config.archive_after_secs,
+        );
     }
     Ok(Json(item))
 }
@@ -2624,13 +2654,14 @@ pub async fn archive_one(
     // archived session is, by definition, no longer waiting on anyone.
     let archived: Vec<String> = sqlx::query_scalar(
         "UPDATE sessions SET status = 'archived', tempo = NULL, agent_state = NULL, \
-                activity = NULL, soft_limit_reason = NULL \
+                activity = NULL, soft_limit_reason = NULL, archived_by = $4 \
          WHERE (id = $1 OR id = ANY($3)) AND (pinned = false OR $2) \
          RETURNING id",
     )
     .bind(session_id)
     .bind(force)
     .bind(&descendant_ids)
+    .bind(initiator.as_str())
     .fetch_all(&state.pool)
     .await?;
     // Deepest first, and always before the parent: a live descendant holds its
@@ -3624,7 +3655,7 @@ mod tests {
             .expect("set posture");
 
         let row: Option<EndRow> = sqlx::query_as(
-            "SELECT end_reason, end_detail, ended_at, todos, permission_mode \
+            "SELECT end_reason, end_detail, ended_at, todos, permission_mode, pinned, archived_by \
              FROM sessions WHERE id = $1",
         )
         .bind(&sid)
