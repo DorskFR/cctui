@@ -359,7 +359,8 @@ async fn main() -> anyhow::Result<()> {
         Cmd::AskHook { event, sock, deny } => cctui_daemon::askhook::run(&event, &sock, deny),
         Cmd::McpAgent { session, sock } => cctui_daemon::mcp::run(&session, &sock),
         Cmd::McpWait { session, sock, timeout } => {
-            cctui_daemon::mcp::wait_ready(&session, &sock, std::time::Duration::from_secs(timeout))
+            cctui_daemon::mcp::wait_ready(&session, &sock, std::time::Duration::from_secs(timeout));
+            Ok(())
         }
         Cmd::WhipStopHook { phrases } => {
             std::process::exit(cctui_daemon::whipstop::run(phrases.as_deref()))

@@ -16,14 +16,14 @@ use serde_json::Value;
 /// Longest a launch is ever held. Past this the launch proceeds and eats
 /// whatever the upstream says, which is strictly better than a job that never
 /// starts.
-pub const MAX_HOLD: Duration = Duration::from_secs(30 * 60);
+pub const MAX_HOLD: Duration = Duration::from_mins(30);
 
 /// Wait applied when the server blocks without naming a `retry_after`.
-const DEFAULT_RETRY: Duration = Duration::from_secs(60);
+const DEFAULT_RETRY: Duration = Duration::from_mins(1);
 
 /// Longest single sleep between re-checks, so a long `retry_after` still
 /// re-reads the decision periodically and resumes early when it clears.
-const MAX_SLEEP: Duration = Duration::from_secs(60);
+const MAX_SLEEP: Duration = Duration::from_mins(1);
 
 /// A refusal to launch right now.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,7 +103,7 @@ mod tests {
             "decision": { "allow": false, "retry_after_secs": 180, "reason": "weekly cap" }
         });
         let hold = hold_from_limits(&limits, None).expect("a blocked model holds the launch");
-        assert_eq!(hold.retry_after, Duration::from_secs(180));
+        assert_eq!(hold.retry_after, Duration::from_mins(3));
         assert_eq!(hold.reason, "weekly cap");
         assert!(hold.card_detail().contains("3m00s"), "{}", hold.card_detail());
         assert!(hold.card_detail().contains("weekly cap"));

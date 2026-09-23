@@ -36,11 +36,10 @@ pub fn note_launch(session_id: &str) {
 pub fn announce(session_id: &str) {
     let Ok(mut st) = STATE.lock() else { return };
     let latency_ms = st.launched.get(session_id).map(|t| t.elapsed().as_millis());
-    if st.ready.insert(session_id.to_owned(), Instant::now()).is_none() {
-        match latency_ms {
-            Some(ms) => tracing::info!(session = %session_id, latency_ms = %ms, "MCP relay connected"),
-            None => tracing::info!(session = %session_id, "MCP relay connected (launch not seen)"),
-        }
+    let first = st.ready.insert(session_id.to_owned(), Instant::now()).is_none();
+    drop(st);
+    if first {
+        tracing::info!(session = %session_id, latency_ms = ?latency_ms, "MCP relay connected");
     }
 }
 
@@ -55,6 +54,7 @@ pub fn is_ready(session_id: &str) -> bool {
 /// Returns whether it became ready. A timeout is NOT an error: the caller
 /// releases the turn anyway, because a relay that never connects must not cost
 /// the session its launch.
+#[must_use]
 pub async fn wait_until_ready(session_id: &str, timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
     loop {
@@ -91,9 +91,7 @@ mod tests {
         forget(session);
         note_launch(session);
         assert!(!is_ready(session));
-        let waiter = tokio::spawn(async move {
-            wait_until_ready("ready-1", Duration::from_secs(5)).await
-        });
+        let waiter = tokio::spawn(wait_until_ready("ready-1", Duration::from_secs(5)));
         tokio::time::sleep(Duration::from_millis(20)).await;
         announce(session);
         assert!(waiter.await.unwrap(), "the announce must release the wait");
