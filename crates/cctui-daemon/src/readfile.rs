@@ -351,7 +351,7 @@ mod tests {
     }
 
     #[test]
-    fn the_session_users_home_gives_the_job_dir_when_it_is_not_the_daemons() {
+    fn home_of_identifies_the_user_a_path_belongs_to() {
         assert_eq!(home_of(Path::new("/home/gtax/Documents/repo")), Some("/home/gtax".into()));
         assert_eq!(home_of(Path::new("/home/gtax")), Some("/home/gtax".into()));
         assert_eq!(home_of(Path::new("/Users/gtax/src/a")), Some("/Users/gtax".into()));
