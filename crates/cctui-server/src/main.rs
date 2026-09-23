@@ -1540,7 +1540,7 @@ async fn auto_archive_stale(state: &AppState) {
     match sqlx::query_scalar::<_, String>(
         // Drafts are staged-not-running — never auto-archive them.
         concat!(
-            "UPDATE sessions SET status = 'archived', \
+            "UPDATE sessions SET status = 'archived', archived_by = 'automatic', \
                  ended_at = COALESCE(ended_at, now()), \
                  end_reason = COALESCE(end_reason, 'reaped_inactive') \
              WHERE ",

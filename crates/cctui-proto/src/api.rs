@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
-use crate::adapter::AdapterId;
+use crate::adapter::{AdapterId, RemoveInitiator};
 use crate::classifier::Bucket;
 use crate::models::{Attention, Liveness, SessionEndReason, SessionStatus, TokenUsage};
 
@@ -432,6 +432,13 @@ pub struct SessionListItem {
     pub end_detail: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ended_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// When the idle-TTL sweep will archive this session (and remove its
+    /// worker). `None` when pinned, archived, a draft, or the sweep is off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_archive_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Who archived the session; `None` while live or when unrecorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archived_by: Option<RemoveInitiator>,
 }
 
 /// One entry of a session's agent task list, normalized across harnesses.

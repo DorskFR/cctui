@@ -671,13 +671,32 @@ impl AdapterCommand {
 ///
 /// Defaults to [`Self::Automatic`] so a peer that predates the field, or any
 /// path that forgets to say, gets the conservative reading.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
 #[serde(rename_all = "snake_case")]
 pub enum RemoveInitiator {
     User,
     /// A TTL sweep, a spawn-intent auto-archive, or the reconcile purge.
     #[default]
     Automatic,
+}
+
+impl RemoveInitiator {
+    /// The persisted `sessions.archived_by` value.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Automatic => "automatic",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "user" => Some(Self::User),
+            "automatic" => Some(Self::Automatic),
+            _ => None,
+        }
+    }
 }
 
 /// Which slice of a parent conversation a subset fork keeps.
@@ -1238,6 +1257,15 @@ mod tests {
             }
             other => panic!("expected Diagnose, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn remove_initiator_persists_as_its_wire_name() {
+        for i in [RemoveInitiator::User, RemoveInitiator::Automatic] {
+            assert_eq!(serde_json::to_value(i).unwrap(), serde_json::json!(i.as_str()));
+            assert_eq!(RemoveInitiator::parse(i.as_str()), Some(i));
+        }
+        assert_eq!(RemoveInitiator::parse("reaper"), None);
     }
 
     #[test]
