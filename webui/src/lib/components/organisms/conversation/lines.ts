@@ -47,7 +47,42 @@ export function normalizePollText(text: string): string {
 }
 
 export interface PollSeen {
-	seen: Set<string>;
+	/** Normalised text of the immediately preceding user turn. */
+	last: string | null;
+}
+
+export function newPollSeen(): PollSeen {
+	return { last: null };
+}
+
+// Only a *consecutive* repeat with no `turn_id` demotes: cctui stamps a
+// `turn_id` on everything a human sends, a monitor re-injection never carries
+// one, and anything looser demotes a human typing `continue` twice.
+export function pollDuplicate(
+	content: string,
+	turnId: string | null | undefined,
+	state: PollSeen
+): boolean {
+	const norm = normalizePollText(content);
+	if (!norm) return false;
+	const dup = !turnId && state.last === norm;
+	state.last = norm;
+	return dup;
+}
+
+export function breaksPollRun(e: AgentEvent): boolean {
+	switch (e.type) {
+		case 'text':
+			if (e.kind === 'turn_annotation' || e.kind === 'system_marker') return false;
+			return !e.content.startsWith(USER_PREFIX);
+		case 'tool_call':
+		case 'tool_result':
+		case 'context_reset':
+		case 'compact_summary':
+			return true;
+		default:
+			return false;
+	}
 }
 
 // History stores user turns as a `text` event prefixed with USER_PREFIX; some
@@ -58,7 +93,8 @@ function userOrSystem(
 	ts: number,
 	meta: boolean,
 	ctx: LineBuildCtx,
-	poll?: PollSeen
+	poll?: PollSeen,
+	turnId?: string | null
 ): Line | null {
 	const peer = parsePeerMessage(content);
 	if (peer) {
@@ -74,12 +110,8 @@ function userOrSystem(
 	let role: Line['role'] = meta ? 'system' : 'user';
 	if (looksPoll(content)) {
 		role = 'poll';
-	} else if (role === 'user' && poll) {
-		const norm = normalizePollText(content);
-		if (norm) {
-			if (poll.seen.has(norm)) role = 'poll';
-			else poll.seen.add(norm);
-		}
+	} else if (role === 'user' && poll && pollDuplicate(content, turnId, poll)) {
+		role = 'poll';
 	}
 	if (!ctx.visible(role)) return null;
 	// Claude's synthetic `[Image: source: …]` turn carries no human content; it
@@ -143,7 +175,7 @@ function buildLine(e: AgentEvent, ctx: LineBuildCtx, poll?: PollSeen): Line | nu
 				// Classify structurally from content, not the stored `meta` bit —
 				// cctui-injected human replies carry a spurious `isMeta:true` and
 				// must stay `user` on reload.
-				return userOrSystem(content, Number(e.ts), looksMeta(content), ctx, poll);
+				return userOrSystem(content, Number(e.ts), looksMeta(content), ctx, poll, e.turn_id);
 			}
 			if (!ctx.visible(e.kind === 'attachment' ? 'attachment' : 'assistant')) return null;
 			return {
@@ -158,7 +190,7 @@ function buildLine(e: AgentEvent, ctx: LineBuildCtx, poll?: PollSeen): Line | nu
 		case 'reply':
 			// `reply` is only ever our own optimistic echo of typed input.
 			if (!e.content.trim()) return null;
-			return userOrSystem(e.content, Number(e.ts), false, ctx, poll);
+			return userOrSystem(e.content, Number(e.ts), false, ctx, poll, e.turn_id);
 		case 'tool_call': {
 			if (e.tool === 'AskUserQuestion') {
 				const ask = parseAsk(e.input);
@@ -342,10 +374,11 @@ export function buildLines(
 	delivery?: DeliveryState
 ): Line[] {
 	const out: Line[] = [];
-	const poll: PollSeen = { seen: new Set() };
+	const poll = newPollSeen();
 	const pending = { attachments: 0 };
 	let prevKey = '';
 	for (const e of events) {
+		if (breaksPollRun(e)) poll.last = null;
 		if (e.type === 'text' && e.kind === 'turn_annotation') {
 			attachAnnotation(out, e.content, pending);
 			continue;

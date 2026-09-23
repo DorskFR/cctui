@@ -49,9 +49,14 @@ export function looksMeta(text: string): boolean {
 
 // The harness wraps a peer agent's message in this tag but prefixes its own
 // "Another Claude session sent a message:" line, so the tag is never at the
-// start of the turn — this must scan, not test the prefix like `looksMeta`.
-const PEER_TAG_RE =
-	/<(cross-session-message|agent-message)\b([^>]*)>([\s\S]*?)<\/\1>/;
+// start of the turn — the preamble is what identifies the shape.
+export const PEER_PREAMBLES = [
+	'Another Claude session sent a message:',
+	'Another session sent a message:',
+	'Received a message from agent'
+];
+// Line-anchored so a human quoting or relaying a wrapper stays a human turn.
+const PEER_TAG_RE = /^<(cross-session-message|agent-message)\b([^>]*)>([\s\S]*?)<\/\1>/m;
 const PEER_ATTR_RE = /([a-z-]+)="([^"]*)"/g;
 
 export interface PeerMessage {
@@ -60,9 +65,16 @@ export interface PeerMessage {
 	body: string;
 }
 
+function isPeerPreamble(line: string): boolean {
+	const t = line.trim();
+	return PEER_PREAMBLES.some((p) => t.startsWith(p));
+}
+
 export function parsePeerMessage(text: string): PeerMessage | null {
 	const tag = PEER_TAG_RE.exec(text);
 	if (!tag) return null;
+	const before = text.slice(0, tag.index);
+	if (before.split('\n').some((l) => l.trim() && !isPeerPreamble(l))) return null;
 	const attrs = new Map<string, string>();
 	for (const a of tag[2].matchAll(PEER_ATTR_RE)) attrs.set(a[1], a[2]);
 	const name = attrs.get('from-name')?.trim();

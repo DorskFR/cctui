@@ -316,8 +316,9 @@ describe('seq stamping', () => {
 });
 
 describe('peer (cross-session) messages', () => {
+	const PREAMBLE = 'Another Claude session sent a message:';
 	const PEER = [
-		'Another Claude session sent a message:',
+		PREAMBLE,
 		'<cross-session-message from="uds:/run/user/1000/cc-socks/1740092.sock" from-name="cctui orchestrator skill" from-mode="bypass">',
 		'Orchestrator here — run your lane gates and report back.',
 		'</cross-session-message>',
@@ -358,14 +359,35 @@ describe('peer (cross-session) messages', () => {
 	});
 
 	it('falls back to the raw from address when no from-name is given', () => {
-		const raw = 'peer says:\n<cross-session-message from="uds:/run/x.sock">hi</cross-session-message>';
+		const raw = `${PREAMBLE}\n<cross-session-message from="uds:/run/x.sock">hi</cross-session-message>`;
 		expect(buildLines([text(`▷ User: ${raw}`, 1)], ctx())[0].peerFrom).toBe('uds:/run/x.sock');
 	});
 
 	it('recognises the legacy agent-message tag', () => {
-		const raw = 'peer:\n<agent-message from-name="lane-a">ping</agent-message>';
+		const raw = `${PREAMBLE}\n<agent-message from-name="lane-a">ping</agent-message>`;
 		const ln = buildLines([text(`▷ User: ${raw}`, 1)], ctx())[0];
 		expect([ln.role, ln.peerFrom, ln.text]).toEqual(['peer', 'lane-a', 'ping']);
+	});
+
+	it('keeps a human relaying a wrapper as a user turn, with the prose intact', () => {
+		const raw = 'forward this: <cross-session-message from="x">hi</cross-session-message>';
+		const ln = buildLines([text(`▷ User: ${raw}`, 1)], ctx())[0];
+		expect(ln.role).toBe('user');
+		expect(ln.text).toBe(raw);
+		expect(ln.peerFrom).toBeUndefined();
+	});
+
+	it('keeps a human turn whose prose precedes a wrapper on its own line as user', () => {
+		const raw = 'peer says:\n<cross-session-message from="uds:/run/x.sock">hi</cross-session-message>';
+		const ln = buildLines([text(`▷ User: ${raw}`, 1)], ctx())[0];
+		expect(ln.role).toBe('user');
+		expect(ln.text).toBe(raw);
+	});
+
+	it('accepts the wrapper when only the harness preamble precedes it', () => {
+		const raw = `${PREAMBLE}\n<cross-session-message from-name="lane-a">hi</cross-session-message>`;
+		const ln = buildLines([text(`▷ User: ${raw}`, 1)], ctx())[0];
+		expect([ln.role, ln.peerFrom, ln.text]).toEqual(['peer', 'lane-a', 'hi']);
 	});
 
 	it('is filterable on its own category, independently of user', () => {
@@ -377,13 +399,17 @@ describe('peer (cross-session) messages', () => {
 
 describe('poll re-injection classification', () => {
 	const POLL = 'Check the queue depth and report anything above 100. Do not stop.';
+	const typed = (body: string, ts: number, turnId: string): AgentEvent => ({
+		...(text(`▷ User: ${body}`, ts) as AgentEvent & { type: 'text' }),
+		turn_id: turnId
+	});
 
 	it('keeps the first occurrence user and tints every repeat', () => {
 		const events = [text(`▷ User: ${POLL}`, 1), text(`▷ User: ${POLL}`, 2)];
 		expect(roles(events)).toEqual(['user', 'poll']);
 	});
 
-	it('catches a repeat separated by an assistant turn', () => {
+	it('leaves a repeat separated by an assistant turn alone', () => {
 		const events = [
 			text(`▷ User: ${POLL}`, 1),
 			text('nothing above 100', 2),
@@ -391,7 +417,33 @@ describe('poll re-injection classification', () => {
 			text('still nothing', 4),
 			text(`▷ User: ${POLL}`, 5)
 		];
-		expect(roles(events)).toEqual(['user', 'assistant', 'poll', 'assistant', 'poll']);
+		expect(roles(events)).toEqual(['user', 'assistant', 'user', 'assistant', 'user']);
+	});
+
+	it('never demotes a human repeating themselves: a composer send carries a turn_id', () => {
+		const events = [typed('continue', 1, 'a'), text('working', 2), typed('continue', 3, 'b')];
+		expect(roles(events)).toEqual(['user', 'assistant', 'user']);
+	});
+
+	it('does not demote two consecutive composer sends of the same text', () => {
+		expect(roles([typed('continue', 1, 'a'), typed('continue', 2, 'b')])).toEqual([
+			'user',
+			'user'
+		]);
+	});
+
+	it('still tints a consecutive re-injection that carries no turn_id', () => {
+		const events = [text(`▷ User: ${POLL}`, 1), text(`▷ User: ${POLL}`, 2)];
+		expect(roles(events)).toEqual(['user', 'poll']);
+	});
+
+	it('closes the run on a tool call, so a repeat after real work stays user', () => {
+		const events = [
+			text(`▷ User: ${POLL}`, 1),
+			toolCall('Bash', 2),
+			text(`▷ User: ${POLL}`, 3)
+		];
+		expect(roles(events)).toEqual(['user', 'tool', 'user']);
 	});
 
 	it('ignores whitespace differences when matching a repeat', () => {

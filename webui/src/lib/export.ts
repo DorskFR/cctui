@@ -22,9 +22,12 @@ import type {
   MsgFilter,
 } from "$lib/components/organisms/conversation/types";
 import {
+  breaksPollRun,
   looksPoll,
-  normalizePollText,
+  newPollSeen,
+  pollDuplicate,
   resultCategory,
+  type PollSeen,
 } from "$lib/components/organisms/conversation/lines";
 import { looksMeta } from "$lib/components/organisms/conversation/format";
 import {
@@ -52,15 +55,12 @@ const visible = (opts: ExportOpts, c: MsgCategory): boolean =>
 const pollRole = (
   content: string,
   system: boolean,
-  seen: Set<string>,
+  seen: PollSeen,
+  turnId?: string | null,
 ): "poll" | "system" | "user" => {
   if (looksPoll(content)) return "poll";
   if (system) return "system";
-  const norm = normalizePollText(content);
-  if (!norm) return "user";
-  if (seen.has(norm)) return "poll";
-  seen.add(norm);
-  return "user";
+  return pollDuplicate(content, turnId, seen) ? "poll" : "user";
 };
 
 interface Block {
@@ -160,8 +160,9 @@ const md = (s: string, opts: ExportOpts) =>
 function toBlock(
   e: AgentEvent,
   opts: ExportOpts,
-  seen: Set<string>,
+  seen: PollSeen,
 ): Block | null {
+  if (breaksPollRun(e)) seen.last = null;
   switch (e.type) {
     case "text": {
       if (!e.content.trim()) return null;
@@ -188,7 +189,7 @@ function toBlock(
             html: md(peer.body, opts),
           };
         }
-        const role = pollRole(content, e.meta || looksMeta(content), seen);
+        const role = pollRole(content, e.meta || looksMeta(content), seen, e.turn_id);
         if (!visible(opts, role)) return null;
         return { role, ts: Number(e.ts), html: md(content, opts) };
       }
@@ -199,7 +200,7 @@ function toBlock(
     case "reply":
       if (!e.content.trim()) return null;
       {
-        const role = pollRole(e.content, false, seen);
+        const role = pollRole(e.content, false, seen, e.turn_id);
         if (!visible(opts, role)) return null;
         return { role, ts: Number(e.ts), html: md(e.content, opts) };
       }
@@ -398,7 +399,7 @@ export function buildConversationHtml(
   events: AgentEvent[],
   opts: ExportOpts,
 ): string {
-  const seen = new Set<string>();
+  const seen = newPollSeen();
   const blocks = events
     .map((e) => toBlock(e, opts, seen))
     .filter((b): b is Block => b !== null);
@@ -465,8 +466,9 @@ function fenced(body: string, lang = ""): string {
 function toMarkdownBlock(
   e: AgentEvent,
   opts: ExportOpts,
-  seen: Set<string>,
+  seen: PollSeen,
 ): string | null {
+  if (breaksPollRun(e)) seen.last = null;
   const obj = (input: unknown) => input as Record<string, unknown> | null;
   switch (e.type) {
     case "text": {
@@ -489,7 +491,7 @@ function toMarkdownBlock(
           const who = peer.from ? `Peer · ${peer.from}` : "Peer";
           return `**${who}:**\n\n${peer.body}`;
         }
-        const role = pollRole(content, e.meta || looksMeta(content), seen);
+        const role = pollRole(content, e.meta || looksMeta(content), seen, e.turn_id);
         if (!visible(opts, role)) return null;
         const who =
           role === "poll" ? "Poll" : role === "system" ? "System" : "User";
@@ -502,7 +504,7 @@ function toMarkdownBlock(
     case "reply":
       if (!e.content.trim()) return null;
       {
-        const role = pollRole(e.content, false, seen);
+        const role = pollRole(e.content, false, seen, e.turn_id);
         if (!visible(opts, role)) return null;
         return `**${role === "poll" ? "Poll" : "User"}:**\n\n${e.content}`;
       }
@@ -572,7 +574,7 @@ export function conversationToMarkdown(
     session.working_dir ? `cwd: \`${session.working_dir}\`` : "",
   ].filter(Boolean);
   if (metaBits.length) head.push(metaBits.join(" · "), "");
-  const mdSeen = new Set<string>();
+  const mdSeen = newPollSeen();
   const body = events
     .map((e) => toMarkdownBlock(e, opts, mdSeen))
     .filter((b): b is string => b !== null)
