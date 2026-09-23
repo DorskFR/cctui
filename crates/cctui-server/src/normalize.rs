@@ -844,7 +844,7 @@ mod tests {
             "operation": "dequeued",
             "text": "dequeued: deploy the thing: now",
         });
-        let n = for_client("claude-code", "message", p.clone()).unwrap();
+        let n = for_client("claude-code", "message", p).unwrap();
         assert_eq!(n["kind"], "queue_op");
         assert_eq!(n["operation"], "dequeued");
         assert_eq!(n["content"], "deploy the thing: now");
