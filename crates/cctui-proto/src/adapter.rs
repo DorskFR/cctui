@@ -969,7 +969,9 @@ mod tests {
                     default_effort: "medium".into(),
                     input_modalities: vec!["text".into()],
                     upgrade: None,
+                    minimal_client_version: None,
                 }],
+                client_version: None,
             },
         };
         let json = serde_json::to_string(&evt).unwrap();

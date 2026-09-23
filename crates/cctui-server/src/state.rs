@@ -106,6 +106,11 @@ pub struct AppState {
     /// the provider credential that holds it. Outranks every machine catalog:
     /// a gateway-only machine's codex can only report its compiled-in list.
     pub codex_account_catalogs: Arc<DashMap<Uuid, crate::routes::codex_models::CachedCatalog>>,
+    /// Latest `@openai/codex` release resolved from npm, with its own 1h TTL.
+    /// The catalog upstream serves is gated by the `client_version` we send, so
+    /// a stale value silently hides newly launched models.
+    pub codex_latest_version:
+        Arc<std::sync::Mutex<Option<crate::routes::codex_models::CachedVersion>>>,
     /// Rolling per-machine daemon-WS eviction counts; an escalation to
     /// ERROR when a machine flaps past the threshold is the eviction-loop alert.
     pub eviction_tracker: Arc<crate::bandwidth_watch::EvictionTracker>,
