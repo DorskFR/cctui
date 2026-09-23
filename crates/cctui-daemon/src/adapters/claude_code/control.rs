@@ -4745,7 +4745,7 @@ mod tests {
 
     #[test]
     fn only_a_user_remove_may_touch_a_foreign_job() {
-        let foreign: HashSet<String> = ["beefbeef".to_owned()].into_iter().collect();
+        let foreign: HashSet<String> = std::iter::once("beefbeef".to_owned()).collect();
 
         assert!(!Driver::removal_allowed(&foreign, "beefbeef", RemoveInitiator::Automatic));
         assert!(Driver::removal_allowed(&foreign, "beefbeef", RemoveInitiator::User));

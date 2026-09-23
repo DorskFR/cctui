@@ -3183,6 +3183,11 @@ mod tests {
         assert_eq!(rows, 1, "opencode must be single-metered by the gateway capture");
         assert_eq!(nulls, 0, "the surviving row must carry the gateway-stamped model");
 
+        sqlx::query("DELETE FROM machines WHERE id = $1")
+            .bind(machine_id)
+            .execute(&pool)
+            .await
+            .ok();
         sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
     }
 
@@ -3215,6 +3220,11 @@ mod tests {
                 .expect("count rows");
         assert_eq!(rows, 1, "a non-opencode session keeps its single daemon-metered row");
 
+        sqlx::query("DELETE FROM machines WHERE id = $1")
+            .bind(machine_id)
+            .execute(&pool)
+            .await
+            .ok();
         sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
     }
 
@@ -3313,10 +3323,22 @@ mod tests {
             .await
             .expect("seed user");
         let machine_id = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO machines (id, user_id, name, key_hash) VALUES ($1, $2, $3, $4)")
+            .bind(machine_id)
+            .bind(uid)
+            .bind(format!("m-{machine_id}"))
+            .bind(format!("mk-{machine_id}"))
+            .execute(&pool)
+            .await
+            .expect("seed machine");
 
         let released = format!("rel-{}", uuid::Uuid::new_v4().simple());
         sqlx::query(
-            "INSERT INTO sessions                  (id, machine_id, machine_uuid, working_dir, user_id, adapter_id,                   status, ended_at, end_reason, end_detail)              VALUES ($1, $2, $3, '/w', $4, 'claude-code', 'ended', now(), 'other',                      'released: this claude job was not started by cctui')",
+            "INSERT INTO sessions \
+                 (id, machine_id, machine_uuid, working_dir, user_id, adapter_id, \
+                  status, ended_at, end_reason, end_detail) \
+             VALUES ($1, $2, $3, '/w', $4, 'claude-code', 'ended', now(), 'other', \
+                     'released: this claude job was not started by cctui')",
         )
         .bind(&released)
         .bind(machine_id.to_string())
@@ -3328,7 +3350,9 @@ mod tests {
 
         let archived = format!("arc-{}", uuid::Uuid::new_v4().simple());
         sqlx::query(
-            "INSERT INTO sessions                  (id, machine_id, machine_uuid, working_dir, user_id, adapter_id, status)              VALUES ($1, $2, $3, '/w', $4, 'claude-code', 'archived')",
+            "INSERT INTO sessions \
+                 (id, machine_id, machine_uuid, working_dir, user_id, adapter_id, status) \
+             VALUES ($1, $2, $3, '/w', $4, 'claude-code', 'archived')",
         )
         .bind(&archived)
         .bind(machine_id.to_string())
@@ -3375,6 +3399,11 @@ mod tests {
             .execute(&pool)
             .await
             .expect("cleanup");
+        sqlx::query("DELETE FROM machines WHERE id = $1")
+            .bind(machine_id)
+            .execute(&pool)
+            .await
+            .ok();
         sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
     }
 
