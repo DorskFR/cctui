@@ -137,6 +137,7 @@ async fn main() -> anyhow::Result<()> {
         account_reauth: Arc::new(dashmap::DashMap::new()),
         codex_catalogs: Arc::new(dashmap::DashMap::new()),
         codex_account_catalogs: Arc::new(dashmap::DashMap::new()),
+        codex_latest_version: Arc::new(std::sync::Mutex::new(None)),
         eviction_tracker: Arc::new(bandwidth_watch::EvictionTracker::default()),
         connect_tracker: Arc::new(bandwidth_watch::ConnectTracker::default()),
         divergence_tracker: Arc::new(bandwidth_watch::DivergenceTracker::default()),

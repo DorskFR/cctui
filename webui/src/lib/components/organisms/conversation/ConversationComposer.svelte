@@ -8,13 +8,14 @@
 	import type { SessionListItem } from '@bindings/SessionListItem';
 	import AttachmentList from '$lib/components/molecules/AttachmentList.svelte';
 	import SessionMention from '$lib/components/molecules/SessionMention.svelte';
-	import { useSessions } from '$lib/queries';
+	import { useSessionAttachments, useSessions } from '$lib/queries';
 	import { Button, FileButton, Text, Textarea } from '@dorsk/tsumikit';
 	import { drafts, composerKey, history as msgHistory } from '$lib/drafts';
 	import { HistoryNav } from '$lib/historyNav';
 	import {
 		attachFiles,
 		nextPasteIndex,
+		rewriteFileTokens,
 		removeFileByName,
 		fileCapError,
 		makeClipboardFiles
@@ -114,10 +115,18 @@
 	// Mask a large pasted block: instead of dumping thousands of
 	// characters into the composer, collapse it into a `paste-N.txt` attachment
 	// (the Claude Code trick), keeping the textarea readable. The index is derived
-	// from current attachments + draft tokens: the composer remounts on drawer
-	// close while the draft (and its `[paste-N.txt]`) persists per session.
+	// from current attachments, draft tokens and the session's staged names: the
+	// composer remounts on drawer close while the draft (and its `[paste-N.txt]`)
+	// persists per session.
 	const PASTE_MASK_CHARS = 2000;
 	const clipboardBinaryFiles = makeClipboardFiles();
+	// A new draft starts with no tokens of its own, so the names the session has
+	// already staged are the only thing keeping the next paste off `paste-1.txt`.
+	const stagedQuery = useSessionAttachments(
+		() => session.id,
+		() => supportsAttachments && !archived
+	);
+	const stagedNames = $derived((stagedQuery.data ?? []).map((a) => a.name));
 
 	function onPaste(e: ClipboardEvent) {
 		if (!supportsAttachments || archived) return;
@@ -134,7 +143,7 @@
 		const text = cd.getData('text/plain');
 		if (!text || text.length < PASTE_MASK_CHARS) return; // small → normal paste
 		e.preventDefault();
-		const name = `paste-${nextPasteIndex(attachments, input)}.txt`;
+		const name = `paste-${nextPasteIndex(attachments, input, stagedNames)}.txt`;
 		addFiles([new File([text], name, { type: 'text/plain' })]);
 		const lines = text.split('\n').length;
 		toasts.ok(m.composer_large_paste({ name, lines }));
@@ -212,9 +221,10 @@
 			uploading = true;
 			try {
 				const { paths } = await stageFiles(attachments);
+				const prose = rewriteFileTokens(text, attachments, paths);
 				const list = paths.map((p) => `- ${p}`).join('\n');
 				const header = paths.length === 1 ? 'Attached file:' : `Attached files (${paths.length}):`;
-				body = text ? `${text}\n\n${header}\n${list}` : `${header}\n${list}`;
+				body = prose ? `${prose}\n\n${header}\n${list}` : `${header}\n${list}`;
 				attachments = [];
 			} catch (e) {
 				toasts.error(m.composer_attachment_upload_failed({ message: errMessage(e) }));

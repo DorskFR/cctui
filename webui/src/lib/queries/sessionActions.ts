@@ -209,7 +209,13 @@ export function useSessionActions() {
     },
     // Mid-chat attachments: stage files for a running session and
     // return the staged paths the composer references under the reply.
-    stageFiles: (id: string, files: File[]) => endpoints.stageFiles(id, files),
+    // The recorded names are what keeps the next paste off a colliding
+    // `paste-N.txt`, so they must not stay stale for the query's staleTime.
+    stageFiles: async (id: string, files: File[]) => {
+      const res = await endpoints.stageFiles(id, files);
+      await qc.invalidateQueries({ queryKey: qk.sessionAttachments(id) });
+      return res;
+    },
     // Dispatch returns synchronously (no daemon ACK / command_id), so unlike
     // spawn there's nothing to await on the ws — the worker pod registers the
     // pre-minted session_id later. We optimistically insert a placeholder card

@@ -485,7 +485,7 @@ pub(super) fn parse_line(local_id: &str, line: &Value, out: &mut Vec<AdapterEven
         "permission-mode" | "ai-title" | "custom-title" | "agent-name" => {
             session_fact(local_id, kind, line, out);
         }
-        "attachment" => attachment_annotation(line),
+        "attachment" => attachment_annotation(local_id, line, out),
         "file-history-snapshot" | "file-history-delta" => {
             out.push(turn_annotation(local_id, "file_history", &file_history_detail(kind, line)));
         }
@@ -589,13 +589,30 @@ fn turn_annotation(local_id: &str, annotation: &str, detail: &str) -> AdapterEve
 /// rehydration, prompt snapshots, hook errors), never a user upload: a real
 /// upload arrives as an `image` block or an `Attached file(s):` prose block.
 /// Counted so the diagnose report still shows what the transcript carried.
-fn attachment_annotation(line: &Value) {
-    let att = line
-        .get("attachment")
-        .and_then(|a| a.get("type"))
-        .and_then(Value::as_str)
-        .unwrap_or("unknown");
-    record_ignored(&format!("attachment/{att}"));
+/// `queued_command` is the exception: a prompt absorbed into a running turn gets
+/// no `type:"user"` record at all, so this is the only copy of its body.
+fn attachment_annotation(local_id: &str, line: &Value, out: &mut Vec<AdapterEvent>) {
+    let att = line.get("attachment");
+    let kind =
+        att.and_then(|a| a.get("type")).and_then(Value::as_str).unwrap_or("unknown").to_owned();
+    if kind == "queued_command"
+        && let Some(att) = att
+        && let Some(prompt) =
+            first_str(att, &["prompt", "command", "text", "content"]).map(str::trim)
+        && !prompt.is_empty()
+    {
+        let mut payload =
+            json!({"role": "user", "text": prompt, "meta": user_text_is_meta(prompt)});
+        let id = first_str(att, &["source_uuid", "sourceUuid", "uuid"])
+            .or_else(|| first_str(line, &["uuid", "timestamp"]))
+            .filter(|s| !s.is_empty());
+        if let (Some(id), Some(obj)) = (id, payload.as_object_mut()) {
+            obj.insert("line_id".to_owned(), Value::String(id.to_owned()));
+        }
+        out.push(AdapterEvent::Message { local_id: local_id.to_owned(), payload, turn_id: None });
+        return;
+    }
+    record_ignored(&format!("attachment/{kind}"));
 }
 
 fn file_history_detail(kind: &str, line: &Value) -> String {
@@ -717,9 +734,11 @@ fn session_state_marker(marker: &str, line: &Value) -> Option<Value> {
         }
         "queue-operation" => {
             let op = first_str(line, &["operation", "op", "action"]).unwrap_or("queue");
+            let reason = first_str(line, &["reason"]).unwrap_or_default();
             let verb = match op {
                 "enqueue" | "add" | "queued" => "queued",
                 "dequeue" | "dequeued" => "dequeued",
+                "remove" | "removed" if reason == "absorbed_mid_turn" => "absorbed",
                 "remove" | "removed" => "removed",
                 "popAll" | "clear" => "cleared",
                 other => other,
@@ -734,6 +753,7 @@ fn session_state_marker(marker: &str, line: &Value) -> Option<Value> {
                 "role": "system_marker",
                 "marker": marker,
                 "operation": verb,
+                "reason": reason,
                 "queue_text": queue_text,
                 "text": text,
             })
@@ -2035,6 +2055,62 @@ mod tests {
             assert_eq!(msgs.len(), 1, "{op}");
             assert_eq!(msgs[0].get("operation").and_then(Value::as_str), Some(want), "{op}");
         }
+    }
+
+    #[test]
+    fn a_remove_keeps_its_reason_and_absorbed_mid_turn_is_not_a_cancel() {
+        let mut out = Vec::new();
+        parse_line(
+            "s",
+            &json!({"type":"queue-operation","operation":"remove","reason":"absorbed_mid_turn","prompt":"ship it"}),
+            &mut out,
+        );
+        let msgs = message_payloads(&out);
+        assert_eq!(msgs[0].get("operation").and_then(Value::as_str), Some("absorbed"));
+        assert_eq!(msgs[0].get("reason").and_then(Value::as_str), Some("absorbed_mid_turn"));
+
+        let mut out = Vec::new();
+        parse_line(
+            "s",
+            &json!({"type":"queue-operation","operation":"remove","reason":"user_cancelled","prompt":"ship it"}),
+            &mut out,
+        );
+        let msgs = message_payloads(&out);
+        assert_eq!(msgs[0].get("operation").and_then(Value::as_str), Some("removed"));
+        assert_eq!(msgs[0].get("reason").and_then(Value::as_str), Some("user_cancelled"));
+    }
+
+    #[test]
+    fn a_queued_command_attachment_becomes_a_user_event() {
+        let mut out = Vec::new();
+        parse_line(
+            "s",
+            &json!({"type":"attachment","attachment":{
+                "type":"queued_command",
+                "source_uuid":"6cf018f9",
+                "prompt":"just testing\n\nAttached file:\n- /tmp/cctui-uploads/s/paste-1-2.txt"
+            }}),
+            &mut out,
+        );
+        let msgs = message_payloads(&out);
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].get("role").and_then(Value::as_str), Some("user"));
+        assert_eq!(msgs[0].get("line_id").and_then(Value::as_str), Some("6cf018f9"));
+        let text = msgs[0].get("text").and_then(Value::as_str).unwrap();
+        assert!(text.starts_with("just testing"));
+        assert!(text.contains("paste-1-2.txt"), "the staged-path block survives: {text}");
+    }
+
+    #[test]
+    fn a_bodiless_queued_command_attachment_is_still_dropped() {
+        let mut out = Vec::new();
+        parse_line(
+            "s",
+            &json!({"type":"attachment","attachment":{"type":"queued_command","prompt":"  "}}),
+            &mut out,
+        );
+        assert!(out.is_empty());
+        assert!(tally_for("ignored:attachment/queued_command") >= 1);
     }
 
     #[test]

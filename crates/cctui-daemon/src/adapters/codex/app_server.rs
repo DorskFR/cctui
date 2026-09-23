@@ -2658,7 +2658,10 @@ impl CodexSession {
                             }
                             validating_model = false;
                             let catalog =
-                                CodexModelCatalog { models: std::mem::take(&mut model_catalog) };
+                                CodexModelCatalog {
+                                    models: std::mem::take(&mut model_catalog),
+                                    client_version: None,
+                                };
                             if let Some(warning) = unknown_model(self.cfg.model.as_deref(), &catalog)
                             {
                                 tracing::warn!(%warning, "codex: spawning anyway");
@@ -2693,6 +2696,7 @@ impl CodexSession {
                                 model_list::PageStep::Done => {
                                     let catalog = CodexModelCatalog {
                                         models: std::mem::take(&mut model_catalog),
+                                        client_version: None,
                                     };
                                     self.events
                                         .send(AdapterEvent::CodexModels { catalog })
@@ -4601,6 +4605,7 @@ done
             models: model_list::parse_model_list(&json!({"data": [
                 {"id": "a", "hidden": false}, {"id": "b", "hidden": true}
             ]})),
+            client_version: None,
         };
         assert_eq!(unknown_model(Some("a"), &catalog), None);
         assert_eq!(unknown_model(Some("b"), &catalog), None);
@@ -4609,7 +4614,10 @@ done
             unknown_model(Some("x"), &catalog).as_deref(),
             Some("unknown model x; available: a")
         );
-        assert_eq!(unknown_model(Some("x"), &CodexModelCatalog { models: vec![] }), None);
+        assert_eq!(
+            unknown_model(Some("x"), &CodexModelCatalog { models: vec![], client_version: None }),
+            None
+        );
     }
 
     #[test]
