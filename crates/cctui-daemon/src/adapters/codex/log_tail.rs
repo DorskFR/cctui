@@ -453,8 +453,8 @@ fn session_meta_payload(path: &Path) -> Option<Value> {
     None
 }
 
-/// Set by `deploy/codex-run.sh` through `CODEX_INTERNAL_ORIGINATOR_OVERRIDE`, which
-/// codex copies verbatim into `session_meta.originator`.
+/// Stamped by a launcher through `CODEX_INTERNAL_ORIGINATOR_OVERRIDE`, which codex
+/// copies verbatim into `session_meta.originator`.
 const LAUNCHER_ORIGINATOR_PREFIX: &str = "cctui-parent.";
 
 struct RolloutLink {
