@@ -65,9 +65,6 @@
 	// A prompt still sitting in Claude's queue has no delivered turn to absorb
 	// it yet, which is what `queuedAt` marks.
 	const queueWaiting = $derived(!!ln.queued && ln.queuedAt === undefined && !ln.cancelled);
-	const queuedAtLabel = $derived(
-		ln.queuedAt === undefined ? '' : new Date(ln.queuedAt).toLocaleTimeString()
-	);
 
 	const uploadRefs = $derived(
 		ln.uploads ? { ...ln.uploads, sessionId: ln.uploads.sessionId ?? sessionId } : null
@@ -183,15 +180,9 @@
 			<span class="meta-end">
 				<Text tone="faint" size="xs" nowrap>{m.conversation_queue_removed()}</Text>
 			</span>
-		{:else if ln.queued}
+		{:else if queueWaiting}
 			<span class="meta-end">
-				<Text
-					tone="faint"
-					size="xs"
-					nowrap
-					title={queuedAtLabel ? m.conversation_queued_title({ at: queuedAtLabel }) : undefined}
-					>{m.conversation_queued()}</Text
-				>
+				<Text tone="faint" size="xs" nowrap>{m.conversation_queued()}</Text>
 			</span>
 		{/if}
 		<span class="line-actions" class:has-pin={pinned} data-journey="line-actions">

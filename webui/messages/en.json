@@ -384,7 +384,6 @@
 	"conversation_no_events": "No events yet.",
 	"conversation_not_delivered": "⚠ Not delivered",
 	"conversation_queued": "queued",
-	"conversation_queued_title": "Queued at {at}, delivered when the turn ended",
 	"conversation_queue_removed": "removed from queue",
 	"conversation_pin_label": "Pin message",
 	"conversation_pin_title": "Pin this message and jump back to it later",

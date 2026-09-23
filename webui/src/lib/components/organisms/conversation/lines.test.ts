@@ -54,7 +54,7 @@ const summary = (
 const roles = (es: AgentEvent[], c = ctx()) => buildLines(es, c).map((l) => l.role);
 
 const queueOp = (
-	operation: 'queued' | 'dequeued' | 'removed' | 'cleared',
+	operation: 'queued' | 'dequeued' | 'removed' | 'cleared' | 'absorbed',
 	body: string,
 	ts: number,
 	seq: number | null = null
@@ -682,7 +682,7 @@ describe('CCT-1083 queued messages carry their own queue state', () => {
 			ctx()
 		);
 		expect(lines).toHaveLength(1);
-		expect(lines[0].queued).toBe(true);
+		expect(lines[0].queued).toBeUndefined();
 		expect(lines[0].queuedAt).toBe(1);
 	});
 
@@ -705,7 +705,8 @@ describe('CCT-1083 queued messages carry their own queue state', () => {
 		);
 		expect(lines).toHaveLength(1);
 		expect(lines[0].seq).toBe(9);
-		expect(lines[0].queued).toBe(true);
+		expect(lines[0].queued).toBeUndefined();
+		expect(lines[0].queuedAt).toBe(1);
 		expect(lines[0].cancelled).toBeUndefined();
 	});
 
@@ -758,10 +759,10 @@ describe('CCT-1083 queued messages carry their own queue state', () => {
 			],
 			ctx()
 		);
-		expect(lines.map((l) => [l.text, l.seq, l.queued])).toEqual([
-			['first', 9, true],
+		expect(lines.map((l) => [l.text, l.seq, l.queuedAt])).toEqual([
+			['first', 9, 1],
 			['done', 10, undefined],
-			['second', 11, true]
+			['second', 11, 2]
 		]);
 	});
 
@@ -778,5 +779,77 @@ describe('CCT-1083 queued messages carry their own queue state', () => {
 		);
 		expect(lines).toHaveLength(1);
 		expect(lines[0].seq).toBe(6);
+	});
+});
+
+describe('CCT-1101 queued means waiting, absorbed means delivered', () => {
+	const user = (body: string, ts: number, seq: number | null = null) =>
+		text(`▷ User: ${body}`, ts, null, seq);
+
+	it('leaves a dequeued-then-delivered message unlabelled', () => {
+		const lines = buildLines(
+			[
+				queueOp('queued', 'what is using the GPU?', 1, 5),
+				queueOp('dequeued', '', 2, 6),
+				user('what is using the GPU?', 3, 9)
+			],
+			ctx()
+		);
+		expect(lines).toHaveLength(1);
+		expect(lines[0].queued).toBeUndefined();
+		expect(lines[0].cancelled).toBeUndefined();
+		expect(lines[0].queuedAt).toBe(1);
+	});
+
+	it('keeps a queued prompt with no close labelled queued', () => {
+		const lines = buildLines([queueOp('queued', 'ship the thing', 1, 5)], ctx());
+		expect(lines[0].queued).toBe(true);
+		expect(lines[0].queuedAt).toBeUndefined();
+		expect(lines[0].cancelled).toBeUndefined();
+	});
+
+	it('turns an absorbed mid-turn prompt into one delivered line with body and chips', () => {
+		const body = [
+			'just testing the paste feature',
+			'',
+			'Attached file:',
+			'- /tmp/cctui-uploads/sess/paste-1-2.txt'
+		].join('\n');
+		const lines = buildLines(
+			[
+				queueOp('queued', 'just testing the paste feature', 1, 5),
+				queueOp('absorbed', 'just testing the paste feature', 2, 6),
+				user(body, 3, 9)
+			],
+			ctx()
+		);
+		expect(lines).toHaveLength(1);
+		expect(lines[0].cancelled).toBeUndefined();
+		expect(lines[0].queued).toBeUndefined();
+		expect(lines[0].text).toBe('just testing the paste feature');
+		expect(lines[0].uploads).toEqual({ sessionId: 'sess', names: ['paste-1-2.txt'] });
+	});
+
+	it('does not cancel an absorbed placeholder that has no user event', () => {
+		const lines = buildLines(
+			[queueOp('queued', 'ship the thing', 1, 5), queueOp('absorbed', 'ship the thing', 2, 6)],
+			ctx()
+		);
+		expect(lines).toHaveLength(1);
+		expect(lines[0].cancelled).toBeUndefined();
+		expect(lines[0].queuedAt).toBe(1);
+	});
+
+	it('matches a placeholder whose first line still carries the paste token', () => {
+		const lines = buildLines(
+			[
+				queueOp('queued', '[paste-1.txt] look at this', 1, 5),
+				user('[paste-1.txt] look at this\n\nAttached file:\n- /tmp/cctui-uploads/s/paste-1.txt', 3, 9)
+			],
+			ctx()
+		);
+		expect(lines).toHaveLength(1);
+		expect(lines[0].seq).toBe(9);
+		expect(lines[0].queuedAt).toBe(1);
 	});
 });
