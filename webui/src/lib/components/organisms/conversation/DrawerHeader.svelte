@@ -55,6 +55,7 @@
 		oncopymarkdown,
 		onexport,
 		onfork,
+		onfollowup,
 		onforkselect,
 		forkSelectActive = false,
 		oninterrupt,
@@ -85,6 +86,7 @@
 		oncopymarkdown: () => void;
 		onexport: () => void;
 		onfork: () => void;
+		onfollowup?: () => void;
 		// Toggle multi-select-to-fork mode; omitted → button hidden
 		// (codex sessions have no partial-fork primitive).
 		onforkselect?: () => void;
@@ -154,6 +156,10 @@
 
 	let keepaliveOpen = $state(false);
 
+	const followupItem = $derived<MenuItem | null>(
+		onfollowup ? { label: m.drawer_followup_label(), icon: 'arrow-right', onselect: onfollowup } : null
+	);
+
 	// Stand-ins for the `data-overflow` actions once the bar collapses.
 	const overflowItems = $derived<MenuItem[]>([
 		renaming
@@ -162,6 +168,7 @@
 		{ label: m.drawer_copy_link_label(), icon: 'link' as const, onselect: oncopylink },
 		{ label: m.drawer_copy_markdown_label(), icon: 'markdown' as const, onselect: oncopymarkdown },
 		{ label: m.drawer_export_label(), icon: 'download' as const, onselect: onexport },
+		...(followupItem && settings.preferFollowupOverFork ? [followupItem] : []),
 		{
 			label: m.drawer_fork_label(),
 			icon: 'fork' as const,
@@ -173,7 +180,8 @@
 			icon: 'bell' as const,
 			pressed: !!session.keepalive,
 			onselect: () => (keepaliveOpen = true)
-		}
+		},
+		...(followupItem && !settings.preferFollowupOverFork ? [followupItem] : [])
 	]);
 
 	function onWinKey(e: KeyboardEvent) {

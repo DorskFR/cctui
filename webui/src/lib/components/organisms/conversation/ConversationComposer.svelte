@@ -26,6 +26,8 @@
 	import type { ScrollController } from './scroll.svelte';
 	import { cacheTtlMs } from './cacheTtl';
 	import { m } from '$lib/paraglide/messages';
+	import { settings } from '$lib/settings.svelte';
+	import { routeEnter, showColdOffer } from '$lib/followup';
 
 	let {
 		session,
@@ -37,7 +39,8 @@
 		stageFiles,
 		onNewFromScript,
 		onFork,
-		onResume
+		onResume,
+		onFollowup
 	}: {
 		session: SessionListItem;
 		archived: boolean;
@@ -51,6 +54,7 @@
 		onNewFromScript: () => void;
 		onFork: () => void;
 		onResume: () => void;
+		onFollowup?: (instruction?: string) => void;
 	} = $props();
 
 	// `#` mention popover source: the shared (cached) session list.
@@ -183,6 +187,22 @@
 		return () => clearInterval(t);
 	});
 
+	let coldOfferDismissed = $state<string | null>(null);
+	const coldOffer = $derived(
+		!!onFollowup &&
+			showColdOffer(settings.followupWhenCold, cacheCold, coldOfferDismissed === session.id)
+	);
+	function followup() {
+		onFollowup?.(input.trim() || undefined);
+	}
+	function submit() {
+		if (onFollowup && routeEnter(settings.followupWhenCold, cacheCold, false) === 'followup') {
+			followup();
+			return;
+		}
+		send();
+	}
+
 	const nav = new HistoryNav({
 		list: () => msgHistory.get(session.id),
 		value: () => input,
@@ -262,6 +282,17 @@
 		if (e.key === 'Enter' && !coarsePointer && (e.ctrlKey || e.metaKey)) {
 			e.preventDefault();
 			send();
+			return;
+		}
+		if (
+			e.key === 'Enter' &&
+			e.shiftKey &&
+			!coarsePointer &&
+			onFollowup &&
+			routeEnter(settings.followupWhenCold, cacheCold, false) === 'followup'
+		) {
+			e.preventDefault();
+			send();
 		}
 	}
 </script>
@@ -283,6 +314,17 @@
 		{#if supportsAttachments && attachments.length}
 			<div class="attachments">
 				<AttachmentList files={attachments} onremove={removeAttachment} compact />
+			</div>
+		{/if}
+		{#if coldOffer}
+			<div class="cold-offer">
+				<Text tone="muted" size="sm">{m.composer_followup_offer()}</Text>
+				<span class="cold-offer-btns">
+					<Button size="sm" variant="primary" onclick={followup}>{m.drawer_followup_label()}</Button>
+					<Button size="sm" onclick={() => (coldOfferDismissed = session.id)}
+						>{m.composer_followup_dismiss()}</Button
+					>
+				</span>
 			</div>
 		{/if}
 		<div class="composer-row">
@@ -312,7 +354,7 @@
 						resize="top"
 						maxHeight="40vh"
 						submitOn={coarsePointer ? 'mod-enter' : 'enter'}
-						onsubmit={send}
+						onsubmit={submit}
 						data-journey="message"
 						aria-label={m.a11y_composer_message()}
 						placeholder={dragActive
@@ -402,6 +444,17 @@
 	.composer-input {
 		flex: 1;
 		min-width: 0;
+	}
+	.cold-offer {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		justify-content: space-between;
+		gap: var(--sp-2);
+	}
+	.cold-offer-btns {
+		display: flex;
+		gap: var(--sp-2);
 	}
 	.attachments {
 		width: 100%;

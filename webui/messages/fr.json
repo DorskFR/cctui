@@ -1818,5 +1818,19 @@
 	"keepalive_progress": "{sent} tick(s) sur {max} envoyés depuis le dernier message humain",
 	"keepalive_ticks_indefinite": "jamais (indéfiniment)",
 	"keepalive_ticks_n": "{n} ticks sans réponse",
-	"keepalive_title": "Garder le cache de prompt chaud"
+	"keepalive_title": "Garder le cache de prompt chaud",
+	"drawer_followup_label": "Session de suite…",
+	"followup_archive_source": "Archiver la session source après le lancement",
+	"followup_brief_failed": "Impossible de charger le résumé de la conversation : {error}",
+	"composer_followup_offer": "Le cache est froid. Démarrer plutôt une session de suite ?",
+	"composer_followup_dismiss": "Envoyer quand même",
+	"fork_prompt": "Premier message",
+	"fork_prompt_placeholder": "Facultatif : envoyé comme premier tour du fork",
+	"settings_followup_when_cold_label": "Suite sur cache froid",
+	"settings_followup_when_cold_help": "Quand le cache de prompt a expiré, proposer une session de suite qui ne reprend que la transcription utilisateur/assistant. Par défaut, Entrée l'ouvre (Maj+Entrée envoie toujours sur place).",
+	"settings_followup_when_cold_off": "Désactivé",
+	"settings_followup_when_cold_offer": "Proposer",
+	"settings_followup_when_cold_default": "Par défaut",
+	"settings_prefer_followup_label": "Préférer la suite au fork",
+	"settings_prefer_followup_help": "Placer Suite avant Fork dans le menu de la conversation."
 }

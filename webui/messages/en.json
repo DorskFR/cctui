@@ -1818,5 +1818,19 @@
 	"keepalive_progress": "{sent} of {max} ticks sent since the last human message",
 	"keepalive_ticks_indefinite": "never (indefinitely)",
 	"keepalive_ticks_n": "{n} ticks without a reply",
-	"keepalive_title": "Keep prompt cache warm"
+	"keepalive_title": "Keep prompt cache warm",
+	"drawer_followup_label": "Follow-up session…",
+	"followup_archive_source": "Archive the source session after launch",
+	"followup_brief_failed": "Could not load the conversation brief: {error}",
+	"composer_followup_offer": "Cache is cold. Start a follow-up session instead?",
+	"composer_followup_dismiss": "Send anyway",
+	"fork_prompt": "First message",
+	"fork_prompt_placeholder": "Optional: sent as the fork's first turn",
+	"settings_followup_when_cold_label": "Follow-up on a cold cache",
+	"settings_followup_when_cold_help": "When the prompt cache has expired, offer a follow-up session that carries only the user/assistant transcript. Default makes Enter open it (Shift+Enter still sends in place).",
+	"settings_followup_when_cold_off": "Off",
+	"settings_followup_when_cold_offer": "Offer",
+	"settings_followup_when_cold_default": "Default",
+	"settings_prefer_followup_label": "Prefer follow-up over fork",
+	"settings_prefer_followup_help": "List Follow-up before Fork in the conversation menu."
 }

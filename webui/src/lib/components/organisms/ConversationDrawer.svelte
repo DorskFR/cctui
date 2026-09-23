@@ -57,6 +57,7 @@
 		highlight = [],
 		focusSeq = null,
 		onNewFromScript,
+		onFollowup,
 		onNavigate
 	}: {
 		session: SessionListItem;
@@ -67,6 +68,7 @@
 		focusSeq?: number | null;
 		// "New session from same script" for archived sessions.
 		onNewFromScript?: (s: SessionListItem) => void;
+		onFollowup?: (s: SessionListItem, instruction?: string) => void;
 		// Open another session in place by id — used to jump straight to a
 		// freshly forked conversation without a manual refresh.
 		onNavigate?: (sessionId: string) => void;
@@ -481,6 +483,9 @@
 	function newFromScript() {
 		onNewFromScript?.(session);
 	}
+	function followup(instruction?: string) {
+		onFollowup?.(session, instruction);
+	}
 
 	// Nested dialogs and the rename input take Escape for themselves; keep it
 	// from reaching the panel's document-level close handler.
@@ -536,6 +541,7 @@
 				oncopymarkdown={sa.copyMarkdown}
 				onexport={sa.export}
 				onfork={fork.openDialog}
+				onfollowup={onFollowup ? () => followup() : undefined}
 				onforkselect={forkable
 					? () => (selectMode ? exitSelect() : (selectMode = true))
 					: undefined}
@@ -646,6 +652,7 @@
 				stageFiles={(files) => actions.stageFiles(id, files)}
 				onNewFromScript={newFromScript}
 				onFork={fork.openDialog}
+				onFollowup={onFollowup ? followup : undefined}
 				onResume={sa.resume}
 			/>
 			</Dropzone>
@@ -675,6 +682,7 @@
 				extractLabel={fork.extractLabel}
 				bind:model={fork.model}
 				bind:effort={fork.effort}
+				bind:prompt={fork.prompt}
 				oncancel={fork.cancel}
 				onsubmit={fork.submit}
 			/>

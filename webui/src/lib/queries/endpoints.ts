@@ -15,6 +15,7 @@ import type { ReorderProfilesRequest } from "@bindings/ReorderProfilesRequest";
 import type { SpawnResponse } from "@bindings/SpawnResponse";
 import type { ForkRequest } from "@bindings/ForkRequest";
 import type { ForkResponse } from "@bindings/ForkResponse";
+import type { BriefResponse } from "@bindings/BriefResponse";
 import type { StageFilesResponse } from "@bindings/StageFilesResponse";
 import type { DispatchRequest } from "@bindings/DispatchRequest";
 import type { DispatchResponse } from "@bindings/DispatchResponse";
@@ -299,6 +300,10 @@ export const endpoints = {
    *  Returns a `command_id` to await on the ws like spawn. */
   fork: (sessionId: string, body: ForkRequest) =>
     api.post<ForkResponse>(`/sessions/${sessionId}/fork`, body),
+  brief: (sessionId: string, maxBytes?: number) =>
+    api.get<BriefResponse>(
+      `/sessions/${sessionId}/brief${maxBytes ? `?max_bytes=${maxBytes}` : ""}`,
+    ),
   resume: (sessionId: string) =>
     api.post<void>(`/sessions/${sessionId}/resume`, {}),
   /** Rebind one of a session's per-family gateway bindings.
