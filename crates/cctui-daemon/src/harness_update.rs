@@ -1,5 +1,7 @@
 //! Opt-in periodic `claude update` / `codex update`, then cycle the harness
-//! process when idle. Claude's cycle is left to the adapter's `version_gate`,
+//! process when idle.
+//!
+//! Claude's cycle is left to the adapter's `version_gate`,
 //! which already cycles a `claude daemon` older than the CLI; codex goes
 //! through `codex_version_gate`.
 //!

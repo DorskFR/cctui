@@ -50,7 +50,7 @@ pub struct HarnessPolicyRequest {
 
 type ApiResult<T> = Result<Json<T>, (StatusCode, Json<ApiError>)>;
 
-fn db_err(e: sqlx::Error) -> (StatusCode, Json<ApiError>) {
+fn db_err(e: &sqlx::Error) -> (StatusCode, Json<ApiError>) {
     tracing::error!("harness auto-update settings failed: {e}");
     (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
 }
@@ -163,7 +163,7 @@ pub async fn read(
     Extension(ctx): Extension<AuthContext>,
 ) -> ApiResult<HarnessAutoupdateInfo> {
     admin(&ctx)?;
-    Ok(Json(read_info(&state.pool).await.map_err(db_err)?))
+    Ok(Json(read_info(&state.pool).await.map_err(|e| db_err(&e))?))
 }
 
 pub async fn set_instance(
@@ -182,17 +182,17 @@ pub async fn set_instance(
             .bind(serde_json::to_value(&policy).expect("serializable"))
             .execute(&state.pool)
             .await
-            .map_err(db_err)?;
+            .map_err(|e| db_err(&e))?;
         }
         None => {
             sqlx::query("DELETE FROM instance_settings WHERE key = $1")
                 .bind(KEY)
                 .execute(&state.pool)
                 .await
-                .map_err(db_err)?;
+                .map_err(|e| db_err(&e))?;
         }
     }
-    Ok(Json(read_info(&state.pool).await.map_err(db_err)?))
+    Ok(Json(read_info(&state.pool).await.map_err(|e| db_err(&e))?))
 }
 
 pub async fn set_machine(
@@ -210,9 +210,9 @@ pub async fn set_machine(
     .bind(value)
     .execute(&state.pool)
     .await
-    .map_err(db_err)?;
+    .map_err(|e| db_err(&e))?;
     if res.rows_affected() == 0 {
         return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "machine not found".into() })));
     }
-    Ok(Json(read_info(&state.pool).await.map_err(db_err)?))
+    Ok(Json(read_info(&state.pool).await.map_err(|e| db_err(&e))?))
 }
