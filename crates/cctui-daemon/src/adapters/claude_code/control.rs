@@ -256,6 +256,95 @@ pub struct DeferredDispatch {
     short: String,
     what: String,
     session_id: String,
+    gate: Option<LaunchGate>,
+}
+
+/// Everything the launch needs to ask the server whether the job's model may
+/// run yet, and to report the wait on the session card.
+pub struct LaunchGate {
+    server: crate::client::ServerClient,
+    machine_key: String,
+    session_id: String,
+    short: String,
+    model: Option<String>,
+    events: mpsc::Sender<AdapterEvent>,
+}
+
+impl LaunchGate {
+    /// Block until the job's model is allowed, the hold outlives
+    /// [`crate::launchgate::MAX_HOLD`], or the limits call fails.
+    async fn hold(&self) {
+        let began = Instant::now();
+        let mut held = false;
+        loop {
+            let limits = match self
+                .server
+                .session_limits(&self.machine_key, &self.session_id, self.model.as_deref())
+                .await
+            {
+                Ok(limits) => limits,
+                // Fail open: a limits endpoint having a bad day must not stop
+                // launches.
+                Err(err) => {
+                    tracing::warn!(session = %self.session_id, %err, "launch limits check failed; launching anyway");
+                    return;
+                }
+            };
+            let Some(hold) = crate::launchgate::hold_from_limits(&limits, self.model.as_deref())
+            else {
+                if held {
+                    tracing::info!(
+                        session = %self.session_id,
+                        waited_secs = %began.elapsed().as_secs(),
+                        "launch limit cleared; dispatching"
+                    );
+                    self.report(None).await;
+                }
+                return;
+            };
+            if crate::launchgate::expired(began) {
+                tracing::warn!(
+                    session = %self.session_id,
+                    reason = %hold.reason,
+                    "launch held too long; dispatching anyway"
+                );
+                self.report(None).await;
+                return;
+            }
+            if !held {
+                tracing::info!(
+                    session = %self.session_id,
+                    model = ?self.model,
+                    reason = %hold.reason,
+                    retry_after_secs = %hold.retry_after.as_secs(),
+                    "holding launch: the model is limit blocked"
+                );
+            }
+            held = true;
+            self.report(Some(&hold)).await;
+            tokio::time::sleep(crate::launchgate::backoff(&hold)).await;
+        }
+    }
+
+    /// Put the wait (or its end) on the session card.
+    async fn report(&self, hold: Option<&crate::launchgate::Hold>) {
+        let _ = self
+            .events
+            .send(AdapterEvent::Status {
+                local_id: self.short.clone(),
+                tempo: None,
+                state: Some(if hold.is_some() { "held" } else { "starting" }.to_owned()),
+                detail: hold.map(crate::launchgate::Hold::card_detail),
+                activity: None,
+                name: None,
+                intent: None,
+                model: self.model.clone(),
+                effort: None,
+                permission_mode: None,
+                children: Vec::new(),
+            })
+            .await;
+    }
 }
 
 impl DeferredDispatch {
@@ -263,6 +352,9 @@ impl DeferredDispatch {
     /// a silent daemon (see [`socket::ONE_SHOT_TIMEOUT`]) is an error, and the
     /// worker's managed config files are swept so nothing dangles.
     pub async fn send(self) -> anyhow::Result<()> {
+        if let Some(gate) = &self.gate {
+            gate.hold().await;
+        }
         let resp: serde_json::Value = socket::call(&self.sock, &self.req)
             .await
             .inspect_err(|_| crate::configsweep::remove_session_files(&self.short))
@@ -1580,6 +1672,7 @@ impl Driver {
             st.as_ref().and_then(|s| s.model.as_deref()),
             st.as_ref().and_then(|s| s.effort.as_deref()),
             launch.whip_phrases.as_ref(),
+            None,
         )
         .map(|p| p.to_string_lossy().into_owned());
 
@@ -2081,6 +2174,13 @@ impl Driver {
         // Fail-closed inside `resolve_launch_env` (account-bound but
         // unmintable → abort rather than launch a worker that will 401).
         let launch = self.resolve_launch_env(&session_id, &spec.env).await?;
+        // Resolved before the settings file: the `SessionStart` hook that holds
+        // the first turn is only registered when there is a relay to wait for.
+        let agent_tool =
+            ensure_agent_mcp_config(short, &session_id, launch.spawn_capability.as_ref());
+        if agent_tool.is_some() {
+            crate::mcpready::note_launch(&session_id);
+        }
         if let Some(settings) = ensure_hook_settings(
             &self.cfg.hook_socket_path,
             whip,
@@ -2090,6 +2190,7 @@ impl Driver {
             spec.model.as_deref(),
             spec.effort.as_deref(),
             launch.whip_phrases.as_ref(),
+            agent_tool.is_some().then_some(session_id.as_str()),
         ) {
             let settings = settings.to_string_lossy().into_owned();
             args.push("--settings".to_owned());
@@ -2097,8 +2198,6 @@ impl Driver {
             respawn_flags.push("--settings".to_owned());
             respawn_flags.push(settings);
         }
-        let agent_tool =
-            ensure_agent_mcp_config(short, &session_id, launch.spawn_capability.as_ref());
         if let Some(mcp) = &agent_tool {
             let mcp = mcp.to_string_lossy().into_owned();
             args.push("--mcp-config".to_owned());
@@ -2186,12 +2285,28 @@ impl Driver {
             }
         });
 
+        let gate = self.launch_gate(&session_id, short, spec.model.as_deref());
         Ok(DeferredDispatch {
             sock: sock.to_path_buf(),
             req,
             short: short.to_owned(),
             what: format!("spawn in {cwd}"),
             session_id,
+            gate,
+        })
+    }
+
+    /// The limits gate for a launch, or `None` when no server is configured to
+    /// ask — an unattached daemon launches unconditionally.
+    fn launch_gate(&self, session_id: &str, short: &str, model: Option<&str>) -> Option<LaunchGate> {
+        let (server, machine_key) = (self.server.as_ref()?, self.machine_key.as_ref()?);
+        Some(LaunchGate {
+            server: server.clone(),
+            machine_key: machine_key.clone(),
+            session_id: session_id.to_owned(),
+            short: short.to_owned(),
+            model: model.map(str::to_owned),
+            events: self.events.clone(),
         })
     }
 
@@ -2391,6 +2506,7 @@ impl Driver {
             None,
             None,
             launch.whip_phrases.as_ref(),
+            None,
         ) {
             let settings = settings.to_string_lossy().into_owned();
             args.push("--settings".to_owned());
@@ -2452,6 +2568,7 @@ impl Driver {
             short: short.clone(),
             what: format!("fork of {parent_local_id} in {cwd}"),
             session_id,
+            gate: None,
         })
     }
 
@@ -3636,6 +3753,11 @@ fn agent_tool_context(cap: &cctui_proto::api::SpawnCapability) -> String {
          is currently allowed or soft-limit blocked. Check it before a fan-out and when picking \
          a child's model: a blocked model burns the whole batch on 429s. Takes no arguments.\n",
     );
+    b.push_str(
+        "Both tools are served by an MCP server that connects as this session starts. If either \
+         reports \"No such tool available\" on your first turn, it lost that race: wait a few \
+         seconds and retry the call once before concluding the tool is missing.\n",
+    );
     b
 }
 
@@ -3782,6 +3904,7 @@ pub(super) fn ensure_hook_settings(
     model: Option<&str>,
     effort: Option<&str>,
     whip_phrases: Option<&serde_json::Value>,
+    agent_relay_session: Option<&str>,
 ) -> Option<PathBuf> {
     let path = hook_settings_path(&format!("hook-settings-{short}.json"))?;
     let exe = std::env::current_exe()
@@ -3856,7 +3979,7 @@ pub(super) fn ensure_hook_settings(
     } else {
         String::new()
     };
-    let hooks = if whip {
+    let mut hooks = if whip {
         json!({
             "PreToolUse": pre_hooks,
             "PostToolUse": [hook("post")],
@@ -3871,6 +3994,14 @@ pub(super) fn ensure_hook_settings(
     } else {
         json!({ "PreToolUse": pre_hooks, "PostToolUse": [hook("post")] })
     };
+    // Claude Code connects its MCP servers while the session starts, so a turn-1
+    // `CctuiAgent` call can beat the relay's `initialize`.
+    if let Some(block) = agent_relay_session.and_then(|session| {
+        let sock = crate::agenttool::socket_for_launch().to_string_lossy().into_owned();
+        mcp_ready_hook(&exe, session, &sock, mcp_ready_wait_secs())
+    }) {
+        hooks["SessionStart"] = block;
+    }
     let managed = managed_settings(hooks, gateway_env, model, effort);
     // Layer the server-provided per-account settings UNDERNEATH the managed
     // settings: account keys are merged in, but the managed keys
@@ -3895,6 +4026,36 @@ pub(super) fn ensure_hook_settings(
         }
     }
     Some(path)
+}
+
+/// The `SessionStart` block that holds the first turn until `session`'s MCP
+/// relay is up. `None` for a zero wait, which disables the gate.
+///
+/// The hook's own timeout is the wait plus a margin: a hook that overruns its
+/// timeout is treated by Claude Code as a failure, so the wait must always be
+/// the thing that expires first.
+fn mcp_ready_hook(exe: &str, session: &str, sock: &str, wait_secs: u64) -> Option<serde_json::Value> {
+    (wait_secs > 0).then(|| {
+        json!([{
+            "hooks": [{
+                "type": "command",
+                "command": format!(
+                    "{exe} mcp-wait --session {session} --sock {sock} --timeout {wait_secs}"
+                ),
+                "timeout": wait_secs + 5,
+            }],
+        }])
+    })
+}
+
+/// Seconds the `SessionStart` hook may hold the first turn waiting for the MCP
+/// relay. `CCTUI_MCP_READY_WAIT_SECS=0` disables the gate entirely.
+fn mcp_ready_wait_secs() -> u64 {
+    std::env::var("CCTUI_MCP_READY_WAIT_SECS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(8)
+        .min(60)
 }
 
 /// Write the per-session MCP config registering the `CctuiAgent` tool, and
@@ -4114,6 +4275,7 @@ mod tests {
             short: format!("t-{}", uuid::Uuid::new_v4()),
             what: "spawn in /tmp".to_owned(),
             session_id: uuid::Uuid::new_v4().to_string(),
+            gate: None,
         }
     }
 
@@ -4678,12 +4840,35 @@ mod tests {
         assert!(block.contains("example: mcp__cctui__CctuiAgent({\"adapter\": \"claude-code\""));
         assert!(block.contains("mcp__cctui__CctuiUsage"), "the limits tool is announced too");
         assert!(block.contains("blocked model burns the whole batch"), "{block}");
+        assert!(
+            block.contains("retry the call once"),
+            "turn 1 can beat the relay, so the model is told to retry: {block}"
+        );
         assert!(block.ends_with("</session-context>"));
 
         let empty = cctui_proto::api::SpawnCapability::default();
         let block = build_session_context(&spec, "/work/cctui", &[], Some(&empty));
         assert!(!block.contains("CctuiAgent"), "an empty capability advertises nothing");
         assert!(!block.contains("CctuiUsage"), "the relay is absent, so neither tool exists");
+    }
+
+    #[test]
+    fn the_session_start_hook_waits_for_the_relay_and_outlives_its_own_wait() {
+        let block = mcp_ready_hook("/usr/bin/cctui-daemon", "sess-1", "/run/a.sock", 8)
+            .expect("a positive wait registers the gate");
+        let hook = &block[0]["hooks"][0];
+        assert_eq!(
+            hook["command"],
+            "/usr/bin/cctui-daemon mcp-wait --session sess-1 --sock /run/a.sock --timeout 8"
+        );
+        assert_eq!(
+            hook["timeout"], 13,
+            "the hook timeout must exceed the wait, or Claude Code kills it as a failure"
+        );
+        assert!(
+            mcp_ready_hook("/usr/bin/cctui-daemon", "sess-1", "/run/a.sock", 0).is_none(),
+            "a zero wait disables the gate"
+        );
     }
 
     #[test]

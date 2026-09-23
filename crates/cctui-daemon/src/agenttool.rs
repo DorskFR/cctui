@@ -51,6 +51,11 @@ enum CallKind {
     Usage {
         model: Option<String>,
     },
+    /// The relay announcing that it answered `initialize`.
+    RelayReady,
+    /// The session's `SessionStart` hook holding the first turn until the relay
+    /// is ready.
+    RelayWait,
 }
 
 #[derive(Debug)]
@@ -111,6 +116,8 @@ fn parse_call(line: &str) -> Result<Call, String> {
     let proto = v.get("proto").and_then(Value::as_u64).unwrap_or(1);
     let kind = match v.get("kind").and_then(Value::as_str) {
         Some("usage") => CallKind::Usage { model: string_arg(&args, "model") },
+        Some("relay_ready") => CallKind::RelayReady,
+        Some("relay_wait") => CallKind::RelayWait,
         Some("spawn_agent") => {
             let prompt = args.get("prompt").and_then(Value::as_str).unwrap_or("").to_owned();
             if prompt.trim().is_empty() {
@@ -198,7 +205,7 @@ fn dispatch_note(kind: &CallKind, timeout: Duration) -> String {
             req.session_id,
             timeout.as_secs(),
         ),
-        CallKind::Usage { .. } => String::new(),
+        CallKind::Usage { .. } | CallKind::RelayReady | CallKind::RelayWait => String::new(),
     }
 }
 
@@ -437,8 +444,20 @@ async fn run_call(
     call: Call,
     out: &mut (impl AsyncWriteExt + Unpin),
 ) -> Value {
-    if let CallKind::Usage { model } = &call.kind {
-        return run_usage(server, machine_key, &call.session_id, model.as_deref()).await;
+    match &call.kind {
+        CallKind::Usage { model } => {
+            return run_usage(server, machine_key, &call.session_id, model.as_deref()).await;
+        }
+        CallKind::RelayReady => {
+            crate::mcpready::announce(&call.session_id);
+            return json!({ "ok": true, "result": "ready" });
+        }
+        // Never `ok: false`: the hook releases the first turn either way.
+        CallKind::RelayWait => {
+            let ready = crate::mcpready::wait_until_ready(&call.session_id, call.timeout).await;
+            return json!({ "ok": true, "result": if ready { "ready" } else { "timeout" } });
+        }
+        CallKind::Spawn(_) | CallKind::Message(_) => {}
     }
     let note = dispatch_note(&call.kind, call.timeout);
     let watch = crate::childwatch::global();
@@ -474,8 +493,8 @@ async fn run_call(
             );
             (handle, req.session_id.clone())
         }
-        CallKind::Usage { .. } => {
-            unreachable!("a usage call returns above; it has no child to spawn or follow")
+        CallKind::Usage { .. } | CallKind::RelayReady | CallKind::RelayWait => {
+            unreachable!("these return above; they have no child to spawn or follow")
         }
     };
     let result =
@@ -671,6 +690,16 @@ mod tests {
         assert_eq!(req.cwd.as_deref(), Some("/workspace"));
         assert_eq!(req.permission_mode, Some(cctui_proto::adapter::PermissionMode::Auto));
         assert_eq!(req.name.as_deref(), Some("reviewer"));
+    }
+
+    #[test]
+    fn the_relay_readiness_ops_parse_without_any_args() {
+        let ready = json!({ "kind": "relay_ready", "session_id": "s1" }).to_string();
+        assert!(matches!(parse_call(&ready).unwrap().kind, CallKind::RelayReady));
+        let wait = json!({ "kind": "relay_wait", "session_id": "s1", "timeout_secs": 8 });
+        let call = parse_call(&wait.to_string()).unwrap();
+        assert!(matches!(call.kind, CallKind::RelayWait));
+        assert_eq!(call.timeout, Duration::from_secs(8));
     }
 
     #[test]
