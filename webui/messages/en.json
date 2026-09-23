@@ -320,6 +320,7 @@
 	"conversation_edit_pending_title": "Pull this still-pending message back into the composer to edit and resend",
 	"conversation_file_daemon_offline": "Cannot open {name}: the machine is offline",
 	"conversation_file_denied": "Cannot open {name}: the path is outside what the machine allows",
+	"conversation_file_denied_roots": "Cannot open {name}: the path is outside the roots the machine allows ({roots})",
 	"conversation_file_download": "Download",
 	"conversation_file_not_found": "Cannot open {name}: the file is no longer on the machine",
 	"conversation_file_open_failed": "Could not open {name} ({status})",
