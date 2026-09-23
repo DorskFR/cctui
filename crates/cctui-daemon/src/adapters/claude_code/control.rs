@@ -240,6 +240,95 @@ pub struct DeferredDispatch {
     short: String,
     what: String,
     session_id: String,
+    gate: Option<LaunchGate>,
+}
+
+/// Everything the launch needs to ask the server whether the job's model may
+/// run yet, and to report the wait on the session card.
+pub struct LaunchGate {
+    server: crate::client::ServerClient,
+    machine_key: String,
+    session_id: String,
+    short: String,
+    model: Option<String>,
+    events: mpsc::Sender<AdapterEvent>,
+}
+
+impl LaunchGate {
+    /// Block until the job's model is allowed, the hold outlives
+    /// [`crate::launchgate::MAX_HOLD`], or the limits call fails.
+    async fn hold(&self) {
+        let began = Instant::now();
+        let mut held = false;
+        loop {
+            let limits = match self
+                .server
+                .session_limits(&self.machine_key, &self.session_id, self.model.as_deref())
+                .await
+            {
+                Ok(limits) => limits,
+                // Fail open: a limits endpoint having a bad day must not stop
+                // launches.
+                Err(err) => {
+                    tracing::warn!(session = %self.session_id, %err, "launch limits check failed; launching anyway");
+                    return;
+                }
+            };
+            let Some(hold) = crate::launchgate::hold_from_limits(&limits, self.model.as_deref())
+            else {
+                if held {
+                    tracing::info!(
+                        session = %self.session_id,
+                        waited_secs = %began.elapsed().as_secs(),
+                        "launch limit cleared; dispatching"
+                    );
+                    self.report(None).await;
+                }
+                return;
+            };
+            if crate::launchgate::expired(began) {
+                tracing::warn!(
+                    session = %self.session_id,
+                    reason = %hold.reason,
+                    "launch held too long; dispatching anyway"
+                );
+                self.report(None).await;
+                return;
+            }
+            if !held {
+                tracing::info!(
+                    session = %self.session_id,
+                    model = ?self.model,
+                    reason = %hold.reason,
+                    retry_after_secs = %hold.retry_after.as_secs(),
+                    "holding launch: the model is limit blocked"
+                );
+            }
+            held = true;
+            self.report(Some(&hold)).await;
+            tokio::time::sleep(crate::launchgate::backoff(&hold)).await;
+        }
+    }
+
+    /// Put the wait (or its end) on the session card.
+    async fn report(&self, hold: Option<&crate::launchgate::Hold>) {
+        let _ = self
+            .events
+            .send(AdapterEvent::Status {
+                local_id: self.short.clone(),
+                tempo: None,
+                state: Some(if hold.is_some() { "held" } else { "starting" }.to_owned()),
+                detail: hold.map(crate::launchgate::Hold::card_detail),
+                activity: None,
+                name: None,
+                intent: None,
+                model: self.model.clone(),
+                effort: None,
+                permission_mode: None,
+                children: Vec::new(),
+            })
+            .await;
+    }
 }
 
 impl DeferredDispatch {
@@ -247,6 +336,9 @@ impl DeferredDispatch {
     /// a silent daemon (see [`socket::ONE_SHOT_TIMEOUT`]) is an error, and the
     /// worker's managed config files are swept so nothing dangles.
     pub async fn send(self) -> anyhow::Result<()> {
+        if let Some(gate) = &self.gate {
+            gate.hold().await;
+        }
         let resp: serde_json::Value = socket::call(&self.sock, &self.req)
             .await
             .inspect_err(|_| crate::configsweep::remove_session_files(&self.short))
@@ -2038,12 +2130,28 @@ impl Driver {
             }
         });
 
+        let gate = self.launch_gate(&session_id, short, spec.model.as_deref());
         Ok(DeferredDispatch {
             sock: sock.to_path_buf(),
             req,
             short: short.to_owned(),
             what: format!("spawn in {cwd}"),
             session_id,
+            gate,
+        })
+    }
+
+    /// The limits gate for a launch, or `None` when no server is configured to
+    /// ask — an unattached daemon launches unconditionally.
+    fn launch_gate(&self, session_id: &str, short: &str, model: Option<&str>) -> Option<LaunchGate> {
+        let (server, machine_key) = (self.server.as_ref()?, self.machine_key.as_ref()?);
+        Some(LaunchGate {
+            server: server.clone(),
+            machine_key: machine_key.clone(),
+            session_id: session_id.to_owned(),
+            short: short.to_owned(),
+            model: model.map(str::to_owned),
+            events: self.events.clone(),
         })
     }
 
@@ -2305,6 +2413,7 @@ impl Driver {
             short: short.clone(),
             what: format!("fork of {parent_local_id} in {cwd}"),
             session_id,
+            gate: None,
         })
     }
 
@@ -3956,6 +4065,7 @@ mod tests {
             short: format!("t-{}", uuid::Uuid::new_v4()),
             what: "spawn in /tmp".to_owned(),
             session_id: uuid::Uuid::new_v4().to_string(),
+            gate: None,
         }
     }
 

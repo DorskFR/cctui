@@ -24,6 +24,7 @@ pub mod enroll;
 pub mod fatal;
 pub mod git;
 pub mod imagepost;
+pub mod launchgate;
 pub mod listdirs;
 pub mod mcp;
 pub mod mcpready;
