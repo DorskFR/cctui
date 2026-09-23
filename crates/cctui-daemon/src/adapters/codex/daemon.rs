@@ -503,7 +503,7 @@ enum RoutePending {
 /// reconnects; the socket-free half of the turn transport.
 #[derive(Default)]
 struct Routes {
-    routes: HashMap<u64, Route>,
+    by_route: HashMap<u64, Route>,
     pending: HashMap<i64, RoutePending>,
     init: Option<Value>,
 }
@@ -516,7 +516,7 @@ impl Routes {
         config: ThreadConfig,
         cwd: String,
     ) {
-        self.routes.insert(
+        self.by_route.insert(
             route,
             Route {
                 frames,
@@ -533,7 +533,7 @@ impl Routes {
     }
 
     fn close(&mut self, route: u64) {
-        self.routes.remove(&route);
+        self.by_route.remove(&route);
         self.pending.retain(|_, p| match p {
             RoutePending::Session { route: r, .. } | RoutePending::Rejoin { route: r } => {
                 *r != route
@@ -544,7 +544,7 @@ impl Routes {
     /// A session's frame, rewritten for the wire. Request ids are remapped
     /// because every session numbers its own from the same base.
     fn outbound(&mut self, route: u64, frame: Value) -> Vec<Value> {
-        let Some(r) = self.routes.get_mut(&route) else { return Vec::new() };
+        let Some(r) = self.by_route.get_mut(&route) else { return Vec::new() };
         match (frame.get("method").and_then(Value::as_str), frame.get("id")) {
             (Some("initialize"), Some(id)) => {
                 let result = self.init.clone().unwrap_or_else(|| json!({}));
@@ -577,7 +577,7 @@ impl Routes {
     fn response(&mut self, wire: i64, v: &Value) -> Vec<Value> {
         match self.pending.remove(&wire) {
             Some(RoutePending::Session { route, local_id, method, .. }) => {
-                let Some(r) = self.routes.get_mut(&route) else { return Vec::new() };
+                let Some(r) = self.by_route.get_mut(&route) else { return Vec::new() };
                 if let Some(result) = v.get("result") {
                     if matches!(method.as_str(), "thread/start" | "thread/resume" | "thread/fork")
                         && let Some(tid) = result.pointer("/thread/id").and_then(Value::as_str)
@@ -605,7 +605,7 @@ impl Routes {
         let thread = frame_thread(params).map(str::to_owned);
         let parent =
             (method == "thread/started").then(|| subagent_parent(params).map(|(_, p)| p)).flatten();
-        for r in self.routes.values_mut() {
+        for r in self.by_route.values_mut() {
             let Some(tid) = r.thread_id.as_deref() else { continue };
             if thread.as_deref() == Some(tid) {
                 r.note_turn(method, params);
@@ -623,7 +623,7 @@ impl Routes {
             let RoutePending::Session { route, local_id, method, frame } = pending else {
                 continue;
             };
-            let Some(r) = self.routes.get_mut(&route) else { continue };
+            let Some(r) = self.by_route.get_mut(&route) else { continue };
             if method == "turn/start" && r.thread_id.is_some() {
                 r.orphaned_starts.push((local_id, frame));
                 continue;
@@ -634,14 +634,14 @@ impl Routes {
                 "error": {"code": -32000, "message": format!("codex daemon connection dropped before {method} was answered")},
             }));
         }
-        for r in self.routes.values_mut() {
+        for r in self.by_route.values_mut() {
             r.rejoining = r.thread_id.is_some();
         }
     }
 
     fn on_connect(&mut self) -> Vec<Value> {
         let mut frames = Vec::new();
-        for (route, r) in &mut self.routes {
+        for (route, r) in &mut self.by_route {
             let Some(tid) = r.thread_id.as_deref() else { continue };
             r.rejoining = true;
             let wire = next_id();
@@ -666,7 +666,7 @@ impl Routes {
             self.close(route);
             return Vec::new();
         };
-        let Some(r) = self.routes.get_mut(&route) else { return Vec::new() };
+        let Some(r) = self.by_route.get_mut(&route) else { return Vec::new() };
         let tid = r.thread_id.clone().unwrap_or_default();
         let turns =
             result.pointer("/thread/turns").and_then(Value::as_array).cloned().unwrap_or_default();
@@ -929,7 +929,7 @@ mod tests {
         out[0]["id"].as_i64().unwrap()
     }
 
-    fn rejoin(routes: &mut Routes, turns: Value) -> Vec<Value> {
+    fn rejoin(routes: &mut Routes, turns: &Value) -> Vec<Value> {
         let frames = routes.on_connect();
         let wire = frames[0]["id"].as_i64().unwrap();
         routes.response(
@@ -948,7 +948,7 @@ mod tests {
         assert_ne!(wire, 2);
         routes.response(wire, &json!({"id": wire, "result": {"thread": {"id": "t1"}}}));
         assert_eq!(drain(&mut rx)[0]["id"], 2);
-        assert_eq!(routes.routes[&1].thread_id.as_deref(), Some("t1"));
+        assert_eq!(routes.by_route[&1].thread_id.as_deref(), Some("t1"));
     }
 
     #[test]
@@ -999,8 +999,8 @@ mod tests {
         assert_eq!(got.len(), 1, "{got:?}");
         assert_eq!(got[0]["id"], 5);
         assert!(got[0]["error"]["message"].as_str().unwrap().contains("thread/name/set"));
-        assert_eq!(routes.routes[&1].orphaned_starts.len(), 1);
-        assert!(routes.routes[&1].rejoining);
+        assert_eq!(routes.by_route[&1].orphaned_starts.len(), 1);
+        assert!(routes.by_route[&1].rejoining);
     }
 
     #[test]
@@ -1025,14 +1025,14 @@ mod tests {
         send_turn(&mut routes, 1, 6);
         routes.on_drop();
         let writes =
-            rejoin(&mut routes, json!([{"id": "turn-new", "status": "inProgress", "items": []}]));
+            rejoin(&mut routes, &json!([{"id": "turn-new", "status": "inProgress", "items": []}]));
         assert!(writes.is_empty(), "no duplicate turn/start: {writes:?}");
         let got = drain(&mut rx);
         assert_eq!(got[0]["id"], 6);
         assert_eq!(got[0]["result"]["turn"]["id"], "turn-new");
         assert_eq!(got[1]["method"], "turn/started");
         assert_eq!(got.len(), 2, "a still-running turn is not completed: {got:?}");
-        assert_eq!(routes.routes[&1].active_turn.as_deref(), Some("turn-new"));
+        assert_eq!(routes.by_route[&1].active_turn.as_deref(), Some("turn-new"));
     }
 
     #[test]
@@ -1047,7 +1047,7 @@ mod tests {
         send_turn(&mut routes, 1, 6);
         routes.on_drop();
         let writes =
-            rejoin(&mut routes, json!([{"id": "turn-old", "status": "completed", "items": []}]));
+            rejoin(&mut routes, &json!([{"id": "turn-old", "status": "completed", "items": []}]));
         assert_eq!(writes.len(), 1);
         assert_eq!(writes[0]["method"], "turn/start");
         assert!(drain(&mut rx).is_empty());
@@ -1066,12 +1066,12 @@ mod tests {
         );
         drain(&mut rx);
         routes.on_drop();
-        rejoin(&mut routes, json!([{"id": "turn-a", "status": "completed", "items": []}]));
+        rejoin(&mut routes, &json!([{"id": "turn-a", "status": "completed", "items": []}]));
         let got = drain(&mut rx);
         assert_eq!(got.len(), 1);
         assert_eq!(got[0]["method"], "turn/completed");
         assert_eq!(got[0]["params"]["turn"]["status"], "completed");
-        assert_eq!(routes.routes[&1].active_turn, None);
+        assert_eq!(routes.by_route[&1].active_turn, None);
     }
 
     #[test]
@@ -1084,9 +1084,9 @@ mod tests {
         );
         drain(&mut rx);
         routes.on_drop();
-        rejoin(&mut routes, json!([{"id": "turn-a", "status": "inProgress", "items": []}]));
+        rejoin(&mut routes, &json!([{"id": "turn-a", "status": "inProgress", "items": []}]));
         assert!(drain(&mut rx).is_empty());
-        assert_eq!(routes.routes[&1].active_turn.as_deref(), Some("turn-a"));
+        assert_eq!(routes.by_route[&1].active_turn.as_deref(), Some("turn-a"));
         routes.incoming(
             "item/completed",
             &json!({"method": "item/completed", "params": {"threadId": "t1"}}),
@@ -1106,7 +1106,7 @@ mod tests {
         );
         drain(&mut rx);
         routes.on_drop();
-        rejoin(&mut routes, json!([]));
+        rejoin(&mut routes, &json!([]));
         let got = drain(&mut rx);
         assert_eq!(got[0]["method"], "turn/completed");
         assert_eq!(got[0]["params"]["turn"]["id"], "turn-a");
@@ -1132,7 +1132,7 @@ mod tests {
             routes.response(wire, &json!({"id": wire, "result": {"thread": {"turns": []}}}));
         let methods: Vec<_> = writes.iter().map(|w| w["method"].clone()).collect();
         assert_eq!(methods, vec![json!("turn/interrupt"), json!("turn/start")]);
-        assert!(!routes.routes[&1].rejoining);
+        assert!(!routes.by_route[&1].rejoining);
     }
 
     #[test]
@@ -1143,7 +1143,7 @@ mod tests {
         let frames = routes.on_connect();
         let wire = frames[0]["id"].as_i64().unwrap();
         routes.response(wire, &json!({"id": wire, "error": {"message": "no such thread"}}));
-        assert!(routes.routes.is_empty());
+        assert!(routes.by_route.is_empty());
         assert!(matches!(rx.try_recv(), Err(mpsc::error::TryRecvError::Disconnected)));
     }
 

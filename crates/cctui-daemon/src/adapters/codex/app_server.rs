@@ -5740,8 +5740,7 @@ done
     #[test]
     fn one_thread_config_resupplies_the_same_block_on_start_resume_and_fork() {
         let env: std::collections::BTreeMap<String, String> =
-            [("OPENAI_BASE_URL".to_owned(), "https://gw.example/v1".to_owned())]
-                .into_iter()
+            std::iter::once(("OPENAI_BASE_URL".to_owned(), "https://gw.example/v1".to_owned()))
                 .collect();
         let tc = ThreadConfig::new(&env, Some("fast"));
         let start = tc.start_params("/repo");
@@ -5777,8 +5776,7 @@ done
     #[test]
     fn the_gateway_block_wins_over_an_overlay_key_of_the_same_name() {
         let env: std::collections::BTreeMap<String, String> =
-            [("OPENAI_BASE_URL".to_owned(), "https://gw.example/v1".to_owned())]
-                .into_iter()
+            std::iter::once(("OPENAI_BASE_URL".to_owned(), "https://gw.example/v1".to_owned()))
                 .collect();
         let tc = ThreadConfig::new(&env, None)
             .with_overlay(vec![("model_providers".to_owned(), "\"hijack\"".to_owned())]);
@@ -5882,11 +5880,10 @@ done
     #[test]
     fn the_shared_overlay_lets_no_account_key_move_managed_or_gateway_settings() {
         let cfg = AppServerConfig { model: Some("m".to_owned()), ..AppServerConfig::default() };
-        let env: std::collections::BTreeMap<String, String> = [(
+        let env: std::collections::BTreeMap<String, String> = std::iter::once((
             cctui_proto::codex_config::CONFIG_TOML_ENV.to_owned(),
             "model = \"evil\"\nmodel_provider = \"x\"\nmodel_verbosity = \"low\"\n".to_owned(),
-        )]
-        .into_iter()
+        ))
         .collect();
         let overlay = shared_overlay(&cfg, &env);
         let models: Vec<_> = overlay.iter().filter(|(k, _)| k == "model").collect();
