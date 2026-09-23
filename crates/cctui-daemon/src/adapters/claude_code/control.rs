@@ -275,7 +275,7 @@ impl LaunchGate {
     /// [`crate::launchgate::MAX_HOLD`], or the limits call fails.
     async fn hold(&self) {
         let began = Instant::now();
-        let mut held = false;
+        let mut waiting = false;
         loop {
             let limits = match self
                 .server
@@ -292,7 +292,7 @@ impl LaunchGate {
             };
             let Some(hold) = crate::launchgate::hold_from_limits(&limits, self.model.as_deref())
             else {
-                if held {
+                if waiting {
                     tracing::info!(
                         session = %self.session_id,
                         waited_secs = %began.elapsed().as_secs(),
@@ -311,7 +311,7 @@ impl LaunchGate {
                 self.report(None).await;
                 return;
             }
-            if !held {
+            if !waiting {
                 tracing::info!(
                     session = %self.session_id,
                     model = ?self.model,
@@ -320,7 +320,7 @@ impl LaunchGate {
                     "holding launch: the model is limit blocked"
                 );
             }
-            held = true;
+            waiting = true;
             self.report(Some(&hold)).await;
             tokio::time::sleep(crate::launchgate::backoff(&hold)).await;
         }
@@ -328,12 +328,13 @@ impl LaunchGate {
 
     /// Put the wait (or its end) on the session card.
     async fn report(&self, hold: Option<&crate::launchgate::Hold>) {
+        let state = if hold.is_some() { "held" } else { "starting" };
         let _ = self
             .events
             .send(AdapterEvent::Status {
                 local_id: self.short.clone(),
                 tempo: None,
-                state: Some(if hold.is_some() { "held" } else { "starting" }.to_owned()),
+                state: Some(state.to_owned()),
                 detail: hold.map(crate::launchgate::Hold::card_detail),
                 activity: None,
                 name: None,

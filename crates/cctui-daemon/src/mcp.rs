@@ -346,24 +346,23 @@ fn announce_ready(session_id: &str, sock: &Path) {
 
 /// Block until this session's relay has announced itself, or `timeout` elapses.
 ///
-/// Always `Ok`: the hook that calls this releases the first turn either way, so
-/// a daemon that is unreachable costs the launch nothing.
-pub fn wait_ready(session_id: &str, sock: &Path, timeout: Duration) -> anyhow::Result<()> {
+/// Infallible on purpose: the hook that calls this releases the first turn
+/// either way, so a daemon that is unreachable costs the launch nothing.
+pub fn wait_ready(session_id: &str, sock: &Path, timeout: Duration) {
     let request = json!({
         "kind": "relay_wait",
         "session_id": session_id,
         "timeout_secs": timeout.as_secs().max(1),
         "proto": SOCKET_PROTO,
     });
-    let Ok(stream) = UnixStream::connect(sock) else { return Ok(()) };
+    let Ok(stream) = UnixStream::connect(sock) else { return };
     let _ = stream.set_read_timeout(Some(timeout + Duration::from_secs(5)));
     let mut writer = &stream;
     if writeln!(writer, "{request}").and_then(|()| writer.flush()).is_err() {
-        return Ok(());
+        return;
     }
     let mut line = String::new();
     let _ = BufReader::new(&stream).read_line(&mut line);
-    Ok(())
 }
 
 /// Serve MCP on stdio until the client closes it.

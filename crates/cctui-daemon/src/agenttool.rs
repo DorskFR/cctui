@@ -455,7 +455,8 @@ async fn run_call(
         // Never `ok: false`: the hook releases the first turn either way.
         CallKind::RelayWait => {
             let ready = crate::mcpready::wait_until_ready(&call.session_id, call.timeout).await;
-            return json!({ "ok": true, "result": if ready { "ready" } else { "timeout" } });
+            let result = if ready { "ready" } else { "timeout" };
+            return json!({ "ok": true, "result": result });
         }
         CallKind::Spawn(_) | CallKind::Message(_) => {}
     }
