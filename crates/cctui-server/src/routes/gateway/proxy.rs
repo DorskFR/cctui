@@ -682,7 +682,7 @@ mod tests {
     /// A body whose `tool_use.input` keys are not alphabetical, carried through
     /// the buffered anthropic path with tracing on. Re-serializing would sort
     /// them and invalidate the cached prefix from the first tool call onward.
-    fn unsorted_body() -> axum::body::Bytes {
+    const fn unsorted_body() -> axum::body::Bytes {
         axum::body::Bytes::from_static(
             br#"{"model":"claude-opus-5","messages":[{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Edit","input":{"file_path":"/a","old_string":"x","new_string":"y"}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}],"thinking":{"type":"adaptive","display":"omitted"}}"#,
         )

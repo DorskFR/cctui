@@ -22,7 +22,7 @@ const LINEAGE_SLACK: f64 = 1.25;
 const CACHE_WRITE_MULTIPLIER: f64 = 1.25;
 
 /// Beyond this gap the 1h cache TTL has expired and a miss is expected.
-pub fn ttl_window() -> Duration {
+pub const fn ttl_window() -> Duration {
     Duration::hours(1)
 }
 
