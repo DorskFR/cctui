@@ -28,7 +28,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -139,17 +139,23 @@ static NEXT_ROUTE: AtomicU64 = AtomicU64::new(1);
 pub struct DaemonHandle {
     ops: mpsc::Sender<Op>,
     events: broadcast::Sender<DaemonEvent>,
+    connected: Arc<AtomicBool>,
 }
 
 /// One session's JSON-RPC pipe over the shared connection. Frames are what the
 /// stdio child would have printed; `frames` closing is that child's EOF.
 pub struct ThreadWire {
-    route: u64,
-    ops: mpsc::Sender<Op>,
+    pub sink: ThreadSink,
     pub frames: mpsc::UnboundedReceiver<Value>,
 }
 
-impl ThreadWire {
+/// Dropping it closes the route.
+pub struct ThreadSink {
+    route: u64,
+    ops: mpsc::Sender<Op>,
+}
+
+impl ThreadSink {
     pub async fn send(&self, frame: &Value) -> Result<()> {
         self.ops
             .send(Op::Frame { route: self.route, frame: frame.clone() })
@@ -158,7 +164,7 @@ impl ThreadWire {
     }
 }
 
-impl Drop for ThreadWire {
+impl Drop for ThreadSink {
     fn drop(&mut self) {
         let _ = self.ops.try_send(Op::Close { route: self.route });
     }
@@ -181,6 +187,11 @@ impl DaemonHandle {
         self.events.subscribe()
     }
 
+    #[must_use]
+    pub fn is_connected(&self) -> bool {
+        self.connected.load(Ordering::Relaxed)
+    }
+
     /// `config` and `cwd` are what a rejoin re-sends in its `thread/resume`.
     pub async fn open_thread(&self, config: ThreadConfig, cwd: String) -> Result<ThreadWire> {
         let route = NEXT_ROUTE.fetch_add(1, Ordering::Relaxed);
@@ -189,7 +200,7 @@ impl DaemonHandle {
             .send(Op::Open { route, frames: frames_tx, config, cwd })
             .await
             .map_err(|_| anyhow::anyhow!("codex daemon connection closed"))?;
-        Ok(ThreadWire { route, ops: self.ops.clone(), frames })
+        Ok(ThreadWire { sink: ThreadSink { route, ops: self.ops.clone() }, frames })
     }
 }
 
@@ -200,8 +211,9 @@ impl DaemonHandle {
 pub fn connect(endpoint: DaemonEndpoint, shutdown: CancellationToken) -> DaemonHandle {
     let (ops_tx, ops_rx) = mpsc::channel(256);
     let (events_tx, _) = broadcast::channel(NOTIFY_BUFFER);
-    let handle = DaemonHandle { ops: ops_tx, events: events_tx.clone() };
-    tokio::spawn(supervise(endpoint, ops_rx, events_tx, shutdown));
+    let connected = Arc::new(AtomicBool::new(false));
+    let handle = DaemonHandle { ops: ops_tx, events: events_tx.clone(), connected: connected.clone() };
+    tokio::spawn(supervise(endpoint, ops_rx, events_tx, connected, shutdown));
     handle
 }
 
@@ -209,6 +221,7 @@ async fn supervise(
     endpoint: DaemonEndpoint,
     mut ops: mpsc::Receiver<Op>,
     events: broadcast::Sender<DaemonEvent>,
+    connected: Arc<AtomicBool>,
     shutdown: CancellationToken,
 ) {
     let mut backoff = BACKOFF_MIN;
@@ -223,6 +236,7 @@ async fn supervise(
                 routes.init = Some(init);
                 generation += 1;
                 backoff = BACKOFF_MIN;
+                connected.store(true, Ordering::Relaxed);
                 let _ = events.send(DaemonEvent::Connected { generation });
                 tracing::info!(
                     socket = %endpoint.socket.display(),
@@ -230,6 +244,7 @@ async fn supervise(
                     "codex: shared app-server connection established"
                 );
                 pump(stream, &mut ops, &mut routes, &events, &shutdown).await;
+                connected.store(false, Ordering::Relaxed);
                 let _ = events.send(DaemonEvent::Disconnected { generation });
                 if shutdown.is_cancelled() {
                     return;
@@ -544,12 +559,10 @@ impl Routes {
     }
 
     fn rewrite(&mut self, route: u64, mut frame: Value) -> Value {
-        let (Some(method), Some(local_id)) =
-            (frame.get("method").and_then(Value::as_str), frame.get("id").cloned())
-        else {
+        let method = frame.get("method").and_then(Value::as_str).map(str::to_owned);
+        let (Some(method), Some(local_id)) = (method, frame.get("id").cloned()) else {
             return frame;
         };
-        let method = method.to_owned();
         let wire = next_id();
         let original = frame.clone();
         frame["id"] = json!(wire);
@@ -745,6 +758,34 @@ impl SharedDaemon {
     }
 }
 
+/// Turns ride the shared connection only when this machine opts in; stdio
+/// stays the default because one app-server crash would otherwise take every
+/// live codex session on the machine with it.
+pub const SHARED_TURNS_ENV: &str = "CCTUI_CODEX_SHARED_TURNS";
+
+#[must_use]
+pub fn shared_turns_enabled(raw: Option<&str>) -> bool {
+    matches!(raw.map(str::trim), Some("1" | "true" | "yes" | "on"))
+}
+
+static TURN_TRANSPORT: std::sync::OnceLock<SharedDaemon> = std::sync::OnceLock::new();
+
+/// Called once by the adapter; a no-op unless [`SHARED_TURNS_ENV`] is set.
+pub fn register_turn_transport(shared: &SharedDaemon) {
+    if shared_turns_enabled(std::env::var(SHARED_TURNS_ENV).ok().as_deref()) {
+        let _ = TURN_TRANSPORT.set(shared.clone());
+        tracing::info!("codex: turns ride the shared app-server when it is up");
+    }
+}
+
+/// `None` means use stdio: opted out, no daemon, or the connection is down
+/// right now. A route is only opened on a live connection so a session never
+/// starts by waiting out a reconnect backoff.
+pub async fn turn_transport() -> Option<DaemonHandle> {
+    let handle = TURN_TRANSPORT.get()?.handle().await?;
+    handle.is_connected().then_some(handle)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -841,6 +882,16 @@ mod tests {
             tail.iter().any(|f| f.direction == "in" && f.transport == "shared"),
             "the receive loop feeds the ring too: {tail:?}"
         );
+    }
+
+    #[test]
+    fn shared_turns_are_opt_in() {
+        assert!(!shared_turns_enabled(None));
+        assert!(!shared_turns_enabled(Some("")));
+        assert!(!shared_turns_enabled(Some("0")));
+        assert!(!shared_turns_enabled(Some("false")));
+        assert!(shared_turns_enabled(Some("1")));
+        assert!(shared_turns_enabled(Some(" true ")));
     }
 
     fn drain(rx: &mut mpsc::UnboundedReceiver<Value>) -> Vec<Value> {
@@ -1114,13 +1165,13 @@ mod tests {
         let shutdown = CancellationToken::new();
         let handle = connect(DaemonEndpoint { socket: sock }, shutdown.clone());
         let mut wire = handle.open_thread(tiered(), "/repo".to_owned()).await.expect("open");
-        wire.send(&json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}))
+        wire.sink.send(&json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}))
             .await
             .unwrap();
         let init = wire.frames.recv().await.unwrap();
         assert_eq!(init["id"], 1);
         assert_eq!(init["result"]["userAgent"], "codex/0.153.4");
-        wire.send(&json!({"jsonrpc": "2.0", "id": 2, "method": "thread/start", "params": {}}))
+        wire.sink.send(&json!({"jsonrpc": "2.0", "id": 2, "method": "thread/start", "params": {}}))
             .await
             .unwrap();
         let started = wire.frames.recv().await.unwrap();

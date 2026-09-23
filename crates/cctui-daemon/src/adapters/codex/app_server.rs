@@ -862,6 +862,7 @@ fn toml_literal_to_json(literal: &str) -> Option<Value> {
     serde_json::to_value(table.get("v")?).ok()
 }
 
+#[cfg(test)]
 fn thread_start_req(
     cwd: &str,
     env: &std::collections::BTreeMap<String, String>,
@@ -875,6 +876,7 @@ fn thread_start_req(
     })
 }
 
+#[cfg(test)]
 fn thread_resume_req(
     thread_id: &str,
     cwd: &str,
@@ -889,6 +891,7 @@ fn thread_resume_req(
     })
 }
 
+#[cfg(test)]
 /// Fork an existing thread into a brand-new one seeded from its history.
 /// The app-server returns a fresh `thread` (its own id) just like
 /// `thread/start`, so the response is parsed through the same `ID_THREAD_START`
@@ -2028,17 +2031,42 @@ impl CodexSession {
             .ok();
     }
 
-    fn thread_request(&self) -> (Value, &'static str) {
-        let tier = self.cfg.service_tier.as_deref();
-        match &self.launch {
-            SessionLaunch::Fresh { .. } => {
-                (thread_start_req(&self.cwd, &self.env, tier), "thread/start")
-            }
+    fn thread_config(&self, shared: bool) -> ThreadConfig {
+        let config = ThreadConfig::new(&self.env, self.cfg.service_tier.as_deref());
+        if shared { config.with_overlay(shared_overlay(&self.cfg, &self.env)) } else { config }
+    }
+
+    fn thread_request(&self, config: &ThreadConfig) -> (Value, &'static str) {
+        let (method, params) = match &self.launch {
+            SessionLaunch::Fresh { .. } => ("thread/start", config.start_params(&self.cwd)),
             SessionLaunch::Resume { thread_id, .. } => {
-                (thread_resume_req(thread_id, &self.cwd, &self.env, tier), "thread/resume")
+                ("thread/resume", config.resume_params(thread_id, &self.cwd))
             }
             SessionLaunch::Fork { parent_thread_id, .. } => {
-                (thread_fork_req(parent_thread_id, &self.cwd, &self.env, tier), "thread/fork")
+                ("thread/fork", config.fork_params(parent_thread_id, &self.cwd))
+            }
+        };
+        (json!({"jsonrpc": "2.0", "id": ID_THREAD_START, "method": method, "params": params}), method)
+    }
+
+    #[cfg(test)]
+    fn stdio_thread_request(&self) -> (Value, &'static str) {
+        self.thread_request(&self.thread_config(false))
+    }
+
+    /// A route on the shared app-server when this machine opted in and the
+    /// session qualifies; `None` keeps the private stdio child.
+    async fn open_shared(&self) -> Option<(super::daemon::ThreadWire, ThreadConfig)> {
+        if !shared_eligible(&self.env, self.agent_mcp.is_some()) {
+            return None;
+        }
+        let handle = super::daemon::turn_transport().await?;
+        let config = self.thread_config(true);
+        match handle.open_thread(config.clone(), self.cwd.clone()).await {
+            Ok(wire) => Some((wire, config)),
+            Err(err) => {
+                tracing::info!(%err, "codex: shared turn transport unavailable; using stdio");
+                None
             }
         }
     }
@@ -2050,64 +2078,71 @@ impl CodexSession {
             anyhow::bail!("spawn: working_dir does not exist or is not a directory: {}", self.cwd);
         }
 
-        let mut cmd = Command::new(&self.cfg.bin);
-        cmd.arg("app-server");
-        for (key, value) in launch_overrides(&self.cfg, &self.env) {
-            cmd.arg("-c").arg(format!("{key}={value}"));
-        }
-        // Already TOML literals (quoted scalar / array), unlike the scalar knobs
-        // above which are quoted here.
-        if let Some(agent_mcp) = &self.agent_mcp {
-            for (key, value) in agent_mcp.codex_config_overrides() {
-                cmd.arg("-c").arg(format!("{key}={value}"));
-            }
-        }
-        // Forward the resolved launch env — chiefly the gateway
-        // credential pulled from the server's `sessions.account_id` binding —
-        // onto the app-server child, so a session bound to a named gateway
-        // account routes through it instead of hitting the default upstream and
-        // 401ing. Applied before `PATH` below so the launchd PATH fix wins even
-        // if the resolved env carried a `PATH` of its own. The fail-closed
-        // contract (refuse an account-bound launch with empty gateway env) is
-        // enforced upstream in the adapter command pump;.
-        for (key, value) in &self.env {
-            cmd.env(key, value);
-        }
-        crate::childenv::ScrubChildEnv::scrub_child_env(&mut cmd);
-        let mut child = cmd
-            .current_dir(cwd_path)
-            // launchd strips `PATH` down to a minimal set that omits
-            // `/opt/homebrew/bin`, so a bare `codex` fails ENOENT.
-            .env("PATH", crate::childenv::child_path())
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            // Capture stderr (the app-server's log stream) rather than
-            // discarding it — it is the only diagnostic when codex dies
-            // unexpectedly (CCT macOS "randomly dies" report).
-            .stderr(Stdio::piped())
-            .spawn()
-            .with_context(|| format!("spawn `{} app-server`", self.cfg.bin))?;
-
-        let mut stdin = RpcStdin {
-            inner: child.stdin.take().context("child stdin missing")?,
-            rings: rings.clone(),
-        };
-        let stdout = child.stdout.take().context("child stdout missing")?;
-        let mut lines = BufReader::new(stdout).lines();
-
-        // Drain stderr into the bounded ring in the background. Each line
-        // is also logged at info under its own target; the retained tail is
-        // surfaced in every failure detail (handshake and crash).
-        let stderr_drain = child.stderr.take().map(|stderr| {
-            let rings = rings.clone();
-            tokio::spawn(async move {
-                let mut err_lines = BufReader::new(stderr).lines();
-                while let Ok(Some(line)) = err_lines.next_line().await {
-                    tracing::info!(target: "codex_app_server_stderr", "{line}");
-                    rings.note_stderr(&line);
+        let (mut child, mut stdin, mut lines, stderr_drain, thread_config) =
+            if let Some((wire, config)) = self.open_shared().await {
+                let stdin = RpcStdin { inner: RpcSink::Shared(wire.sink), rings: rings.clone() };
+                (None, stdin, RpcSource::Shared(wire.frames), None, config)
+            } else {
+                let mut cmd = Command::new(&self.cfg.bin);
+                cmd.arg("app-server");
+                for (key, value) in launch_overrides(&self.cfg, &self.env) {
+                    cmd.arg("-c").arg(format!("{key}={value}"));
                 }
-            })
-        });
+                // Already TOML literals (quoted scalar / array), unlike the scalar knobs
+                // above which are quoted here.
+                if let Some(agent_mcp) = &self.agent_mcp {
+                    for (key, value) in agent_mcp.codex_config_overrides() {
+                        cmd.arg("-c").arg(format!("{key}={value}"));
+                    }
+                }
+                // Forward the resolved launch env — chiefly the gateway
+                // credential pulled from the server's `sessions.account_id` binding —
+                // onto the app-server child, so a session bound to a named gateway
+                // account routes through it instead of hitting the default upstream and
+                // 401ing. Applied before `PATH` below so the launchd PATH fix wins even
+                // if the resolved env carried a `PATH` of its own. The fail-closed
+                // contract (refuse an account-bound launch with empty gateway env) is
+                // enforced upstream in the adapter command pump;.
+                for (key, value) in &self.env {
+                    cmd.env(key, value);
+                }
+                crate::childenv::ScrubChildEnv::scrub_child_env(&mut cmd);
+                let mut spawned = cmd
+                    .current_dir(cwd_path)
+                    // launchd strips `PATH` down to a minimal set that omits
+                    // `/opt/homebrew/bin`, so a bare `codex` fails ENOENT.
+                    .env("PATH", crate::childenv::child_path())
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    // Capture stderr (the app-server's log stream) rather than
+                    // discarding it — it is the only diagnostic when codex dies
+                    // unexpectedly (CCT macOS "randomly dies" report).
+                    .stderr(Stdio::piped())
+                    .spawn()
+                    .with_context(|| format!("spawn `{} app-server`", self.cfg.bin))?;
+
+                let stdin = RpcStdin {
+                    inner: RpcSink::Stdio(spawned.stdin.take().context("child stdin missing")?),
+                    rings: rings.clone(),
+                };
+                let stdout = spawned.stdout.take().context("child stdout missing")?;
+                let lines = RpcSource::Stdio(BufReader::new(stdout).lines());
+
+                // Drain stderr into the bounded ring in the background. Each line
+                // is also logged at info under its own target; the retained tail is
+                // surfaced in every failure detail (handshake and crash).
+                let stderr_drain = spawned.stderr.take().map(|stderr| {
+                    let rings = rings.clone();
+                    tokio::spawn(async move {
+                        let mut err_lines = BufReader::new(stderr).lines();
+                        while let Ok(Some(line)) = err_lines.next_line().await {
+                            tracing::info!(target: "codex_app_server_stderr", "{line}");
+                            rings.note_stderr(&line);
+                        }
+                    })
+                });
+                (Some(spawned), stdin, lines, stderr_drain, self.thread_config(false))
+            };
 
         // Handshake: initialize → thread/start or thread/resume.
         let mut pending_rpcs = PendingRpcs::default();
@@ -2162,14 +2197,16 @@ impl CodexSession {
         loop {
             tokio::select! {
                 () = self.shutdown.cancelled() => {
-                    let _ = child.start_kill();
+                    kill_child(&mut child);
                     killed = true;
                     break;
                 }
                 // SIGTERM (not kill) so codex flushes its rollout before the
                 // re-exec; the record stays so the new daemon can resume.
                 () = reexec.cancelled() => {
-                    terminate_child(&mut child, Some(SIGTERM));
+                    if let Some(child) = child.as_mut() {
+                        terminate_child(child, Some(SIGTERM));
+                    }
                     reexec_exit = true;
                     break;
                 }
@@ -2199,7 +2236,7 @@ impl CodexSession {
                     }
                     if handshake_dead {
                         handshake_failed = true;
-                        let _ = child.start_kill();
+                        kill_child(&mut child);
                         break;
                     }
                 }
@@ -2289,7 +2326,9 @@ impl CodexSession {
                                 let req = turn_interrupt_req(next_id, &local_id, turn_id);
                                 let _ = stdin.send(&req).await;
                             }
-                            terminate_child(&mut child, signal);
+                            if let Some(child) = child.as_mut() {
+                                terminate_child(child, signal);
+                            }
                             killed = true;
                             break;
                         }
@@ -2333,7 +2372,7 @@ impl CodexSession {
                         Some(SessionCommand::Diagnose { reply }) => {
                             let snapshot = CodexLiveSnapshot {
                                 codex_version: codex_version.clone(),
-                                pid: child.id(),
+                                pid: child.as_ref().and_then(tokio::process::Child::id),
                                 active_turn_id: active_turn.id().map(str::to_owned),
                                 pending_rpc_methods: pending_rpcs.pending_methods(),
                                 protocol_errors: rings.protocol_errors_with_shared(),
@@ -2370,6 +2409,12 @@ impl CodexSession {
                         continue;
                     };
                     rings.note_rpc("in", &value);
+                    if child.is_none()
+                        && let Some(event) = subagent_started_event(&local_id, &value)
+                    {
+                        self.events.send(event).await.ok();
+                        continue;
+                    }
                     if let Some(ev) = turn_lifecycle(&value) {
                         active_turn.apply(&ev);
                         // A spawned child's caller is parked on turn
@@ -2429,7 +2474,7 @@ impl CodexSession {
                                     .await?;
                                 next_id += 1;
                             } else {
-                                let (req, method) = self.thread_request();
+                                let (req, method) = self.thread_request(&thread_config);
                                 pending_rpcs.insert(ID_THREAD_START, method, None, handshake_deadline);
                                 stdin.send(&req).await?;
                             }
@@ -2669,7 +2714,7 @@ impl CodexSession {
                             let detail = format!("codex {method}: {err}{}", stderr_tail(rings));
                             self.fail_handshake(ack, &detail).await;
                             handshake_failed = true;
-                            let _ = child.start_kill();
+                            kill_child(&mut child);
                             break;
                         }
                         ("model/list", Err(err)) if validating_model => {
@@ -2678,7 +2723,7 @@ impl CodexSession {
                             tracing::debug!(%err, "codex: pre-start model/list failed; skipping model check");
                             validating_model = false;
                             model_catalog.clear();
-                            let (req, method) = self.thread_request();
+                            let (req, method) = self.thread_request(&thread_config);
                             pending_rpcs.insert(ID_THREAD_START, method, None, handshake_deadline);
                             stdin.send(&req).await?;
                         }
@@ -2708,7 +2753,7 @@ impl CodexSession {
                             }
                             catalog_sent = true;
                             self.events.send(AdapterEvent::CodexModels { catalog }).await.ok();
-                            let (req, method) = self.thread_request();
+                            let (req, method) = self.thread_request(&thread_config);
                             pending_rpcs.insert(ID_THREAD_START, method, None, handshake_deadline);
                             stdin.send(&req).await?;
                         }
@@ -2937,7 +2982,10 @@ impl CodexSession {
         // Reap the child and classify why the session ended. An abnormal exit
         // that we did not request is surfaced as `Crashed` with the captured
         // stderr tail — the diagnostic for the macOS "randomly dies" report.
-        let status = child.wait().await;
+        let status = match child.as_mut() {
+            Some(child) => Some(child.wait().await),
+            None => None,
+        };
         // Let the drain catch codex's final lines before any tail is read.
         if let Some(drain) = stderr_drain {
             let _ = tokio::time::timeout(Duration::from_secs(1), drain).await;
@@ -2946,6 +2994,9 @@ impl CodexSession {
             if reexec_exit || handshake_failed {
                 return Ok(());
             }
+            let Some(status) = status else {
+                anyhow::bail!("shared codex app-server closed the route before the thread was started");
+            };
             let exit = status.map_or_else(|e| e.to_string(), |s| s.to_string());
             anyhow::bail!("codex app-server exited ({exit}) before the thread was started");
         }
@@ -2957,11 +3008,15 @@ impl CodexSession {
             Some(EndReason::Killed)
         } else {
             match status {
-                Ok(s) if s.success() => None,
-                Ok(s) => Some(EndReason::Crashed {
+                None => Some(EndReason::Crashed {
+                    detail: "shared codex app-server lost the thread and could not rejoin it"
+                        .to_owned(),
+                }),
+                Some(Ok(s)) if s.success() => None,
+                Some(Ok(s)) => Some(EndReason::Crashed {
                     detail: format!("codex app-server exited ({s}){}", stderr_tail(rings)),
                 }),
-                Err(e) => Some(EndReason::Crashed {
+                Some(Err(e)) => Some(EndReason::Crashed {
                     detail: format!("codex app-server wait failed: {e}"),
                 }),
             }
@@ -3178,6 +3233,35 @@ async fn record_model_override(
     if let Some(command_id) = command_id {
         events.send(AdapterEvent::CommandResult { command_id, ok: true, error: None }).await.ok();
     }
+}
+
+/// A subagent the session's own thread spawned on the shared app-server
+/// (`/agents`, `spawn_agent`), announced as a real child session nested under
+/// it, the way a `CctuiAgent` child is.
+fn subagent_started_event(local_id: &str, value: &Value) -> Option<AdapterEvent> {
+    if local_id.is_empty() || value.get("method").and_then(Value::as_str) != Some("thread/started") {
+        return None;
+    }
+    let params = value.get("params")?;
+    let (child, parent) = super::daemon::subagent_parent(params)?;
+    if parent != local_id {
+        return None;
+    }
+    let thread = &params["thread"];
+    Some(AdapterEvent::SessionStarted {
+        local_id: child,
+        meta: SessionMeta {
+            working_dir: thread.get("cwd").and_then(Value::as_str).map(str::to_owned),
+            parent_local_id: Some(parent),
+            extra: json!({
+                "source": "codex-app-server",
+                "rollout_path": thread.get("path"),
+                "relation": "subagent",
+                "agent_nickname": thread.get("agentNickname"),
+                "agent_role": thread.get("agentRole"),
+            }),
+        },
+    })
 }
 
 /// The `(parent_local_id, relation)` a freshly started thread reports, so the
@@ -3468,15 +3552,83 @@ impl DiagnoseRings {
 }
 
 struct RpcStdin {
-    inner: tokio::process::ChildStdin,
+    inner: RpcSink,
     rings: Arc<DiagnoseRings>,
+}
+
+enum RpcSink {
+    Stdio(tokio::process::ChildStdin),
+    Shared(super::daemon::ThreadSink),
 }
 
 impl RpcStdin {
     async fn send(&mut self, v: &Value) -> Result<()> {
         self.rings.note_rpc("out", v);
-        write_json(&mut self.inner, v).await
+        match &mut self.inner {
+            RpcSink::Stdio(stdin) => write_json(stdin, v).await,
+            RpcSink::Shared(sink) => sink.send(v).await,
+        }
     }
+}
+
+/// What the session reads codex's frames from; `Ok(None)` is EOF either way.
+enum RpcSource {
+    Stdio(tokio::io::Lines<BufReader<tokio::process::ChildStdout>>),
+    Shared(mpsc::UnboundedReceiver<Value>),
+}
+
+impl RpcSource {
+    async fn next_line(&mut self) -> std::io::Result<Option<String>> {
+        match self {
+            Self::Stdio(lines) => lines.next_line().await,
+            Self::Shared(frames) => Ok(frames.recv().await.map(|v| v.to_string())),
+        }
+    }
+}
+
+fn kill_child(child: &mut Option<tokio::process::Child>) {
+    if let Some(child) = child.as_mut() {
+        let _ = child.start_kill();
+    }
+}
+
+/// Whether a session can run on the shared app-server without losing what a
+/// private process would have given it: the `CctuiAgent` relay is declared per
+/// process, and launch env beyond the gateway credential has no per-thread
+/// equivalent.
+#[must_use]
+fn shared_eligible(env: &std::collections::BTreeMap<String, String>, has_agent_mcp: bool) -> bool {
+    if has_agent_mcp {
+        return false;
+    }
+    let keyed = env.get("OPENAI_API_KEY").is_some_and(|k| !k.is_empty());
+    if env.contains_key("OPENAI_BASE_URL") && !keyed {
+        return false;
+    }
+    env.keys().all(|k| {
+        matches!(k.as_str(), "OPENAI_BASE_URL" | "OPENAI_API_KEY")
+            || k == cctui_proto::codex_config::CONFIG_TOML_ENV
+    })
+}
+
+/// The `-c` overrides a stdio child would take on its command line, as a
+/// per-thread overlay. The gateway block is left out: [`ThreadConfig`] already
+/// supplies it per thread, with the bearer inline.
+fn shared_overlay(
+    cfg: &AppServerConfig,
+    env: &std::collections::BTreeMap<String, String>,
+) -> Vec<(String, String)> {
+    let managed = quoted(cfg.config_overrides());
+    let account = env
+        .get(cctui_proto::codex_config::CONFIG_TOML_ENV)
+        .map(|b| cctui_proto::codex_config::overrides_from_block(b))
+        .unwrap_or_default();
+    let owned: std::collections::BTreeSet<&str> = managed.iter().map(|(k, _)| k.as_str()).collect();
+    account
+        .into_iter()
+        .filter(|(k, _)| !owned.contains(k.as_str()) && !k.starts_with("model_provider"))
+        .chain(managed.iter().cloned())
+        .collect()
 }
 
 /// SIGTERM, per POSIX. The control-plane `Kill { signal }` uses raw signal
@@ -5646,7 +5798,7 @@ done
             SessionLaunch::Resume { thread_id: "tid".to_owned(), initial_commands: Vec::new() },
             Some("fast"),
         )
-        .thread_request();
+        .stdio_thread_request();
         assert_eq!(method, "thread/resume");
         assert_eq!(req["params"]["config"]["service_tier"], "fast");
         assert_eq!(req["params"]["serviceTier"], "fast");
@@ -5658,7 +5810,7 @@ done
             SessionLaunch::Resume { thread_id: "tid".to_owned(), initial_commands: Vec::new() },
             None,
         )
-        .thread_request();
+        .stdio_thread_request();
         assert!(req["params"].get("serviceTier").is_none());
     }
 
@@ -5673,7 +5825,7 @@ done
             },
             Some("fast"),
         )
-        .thread_request();
+        .stdio_thread_request();
         assert_eq!(method, "thread/fork");
         assert_eq!(req["params"]["config"]["service_tier"], "fast");
     }
@@ -5684,10 +5836,79 @@ done
             SessionLaunch::Fresh { prompt: None, name: None, attachments: Vec::new() },
             Some("default"),
         )
-        .thread_request();
+        .stdio_thread_request();
         assert_eq!(method, "thread/start");
         assert_eq!(req["params"]["config"]["service_tier"], "default");
         assert_eq!(req["params"]["serviceTier"], "default");
+    }
+
+    #[test]
+    fn a_shared_resume_carries_the_process_knobs_a_stdio_child_took_as_flags() {
+        let mut session = session_with_tier(
+            SessionLaunch::Resume { thread_id: "tid".to_owned(), initial_commands: Vec::new() },
+            Some("fast"),
+        );
+        session.cfg.model = Some("gpt-5.5".to_owned());
+        session.cfg.approval_policy = "never".to_owned();
+        let (req, method) = session.thread_request(&session.thread_config(true));
+        assert_eq!(method, "thread/resume");
+        let config = &req["params"]["config"];
+        assert_eq!(config["model"], "gpt-5.5");
+        assert_eq!(config["approval_policy"], "never");
+        assert_eq!(config["sandbox_mode"], "workspace-write");
+        assert_eq!(config["service_tier"], "fast");
+        let (stdio, _) = session.stdio_thread_request();
+        assert!(stdio["params"]["config"].get("model").is_none(), "stdio keeps them on -c");
+    }
+
+    #[test]
+    fn the_shared_overlay_lets_no_account_key_move_managed_or_gateway_settings() {
+        let cfg = AppServerConfig { model: Some("m".to_owned()), ..AppServerConfig::default() };
+        let env: std::collections::BTreeMap<String, String> = [(
+            cctui_proto::codex_config::CONFIG_TOML_ENV.to_owned(),
+            "model = \"evil\"\nmodel_provider = \"x\"\nmodel_verbosity = \"low\"\n".to_owned(),
+        )]
+        .into_iter()
+        .collect();
+        let overlay = shared_overlay(&cfg, &env);
+        let models: Vec<_> = overlay.iter().filter(|(k, _)| k == "model").collect();
+        assert_eq!(models, vec![&("model".to_owned(), "\"m\"".to_owned())]);
+        assert!(overlay.iter().all(|(k, _)| k != "model_provider"));
+    }
+
+    #[test]
+    fn only_sessions_a_shared_app_server_can_fully_serve_are_eligible() {
+        let env = |pairs: &[(&str, &str)]| -> std::collections::BTreeMap<String, String> {
+            pairs.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect()
+        };
+        assert!(shared_eligible(&env(&[]), false));
+        assert!(shared_eligible(&env(&[("OPENAI_BASE_URL", "u"), ("OPENAI_API_KEY", "k")]), false));
+        assert!(!shared_eligible(&env(&[]), true), "the CctuiAgent relay is per process");
+        assert!(
+            !shared_eligible(&env(&[("OPENAI_BASE_URL", "u")]), false),
+            "an env_key bearer would resolve against the shared daemon's env"
+        );
+        assert!(!shared_eligible(&env(&[("HTTPS_PROXY", "p")]), false));
+    }
+
+    #[test]
+    fn a_subagent_of_this_thread_nests_as_a_child_session() {
+        let started = json!({"method": "thread/started", "params": {"thread": {
+            "id": "kid", "parentThreadId": "me", "cwd": "/repo", "agentNickname": "Ohm",
+        }}});
+        let Some(AdapterEvent::SessionStarted { local_id, meta }) =
+            subagent_started_event("me", &started)
+        else {
+            panic!("expected a child SessionStarted");
+        };
+        assert_eq!(local_id, "kid");
+        assert_eq!(meta.parent_local_id.as_deref(), Some("me"));
+        assert_eq!(meta.extra["relation"], "subagent");
+        assert_eq!(meta.extra["agent_nickname"], "Ohm");
+        assert!(subagent_started_event("other", &started).is_none());
+        assert!(subagent_started_event("", &started).is_none());
+        let own = json!({"method": "thread/started", "params": {"thread": {"id": "me"}}});
+        assert!(subagent_started_event("me", &own).is_none());
     }
 
     /// The record the registry stores after a launch is what a later resume
@@ -5720,7 +5941,7 @@ done
             SessionLaunch::Resume { thread_id: "tid".to_owned(), initial_commands: Vec::new() },
             record.cfg.service_tier.as_deref(),
         )
-        .thread_request();
+        .stdio_thread_request();
         assert_eq!(req["params"]["config"]["service_tier"], "fast");
     }
 
