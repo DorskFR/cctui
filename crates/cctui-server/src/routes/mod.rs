@@ -32,6 +32,7 @@ pub mod profiles;
 pub mod prompts;
 pub mod self_update;
 pub mod session_limits;
+pub mod scheduled_messages;
 pub mod sessions;
 pub mod settings;
 pub mod shares;

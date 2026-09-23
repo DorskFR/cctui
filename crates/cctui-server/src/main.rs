@@ -28,6 +28,7 @@ mod pool_usage;
 mod presence;
 mod registry;
 mod routes;
+mod scheduled_messages;
 mod session_emoji;
 mod settings_catalog;
 mod skill_store;
@@ -668,6 +669,30 @@ fn build_api_routes() -> Routes {
             "/sessions/{id}/message",
             "Send a message to a live session.",
             post(routes::sessions::send_message),
+            Authn::Bearer,
+            sess_write(),
+        )
+        .add(
+            &[GET],
+            "/sessions/{id}/messages/scheduled",
+            "List a session's scheduled messages.",
+            get(routes::scheduled_messages::list),
+            Authn::Bearer,
+            sess_read(),
+        )
+        .add(
+            &[Method::PATCH, Method::DELETE],
+            "/sessions/{id}/messages/scheduled/{queue_id}",
+            "Edit/reschedule or cancel a scheduled message.",
+            patch(routes::scheduled_messages::update).delete(routes::scheduled_messages::cancel),
+            Authn::Bearer,
+            sess_write(),
+        )
+        .add(
+            &[Method::POST],
+            "/sessions/{id}/messages/scheduled/{queue_id}/send-now",
+            "Deliver a scheduled message immediately.",
+            post(routes::scheduled_messages::send_now),
             Authn::Bearer,
             sess_write(),
         )
@@ -1668,6 +1693,7 @@ async fn reaper_task(state: AppState) {
         // crash-coverage path the worker's REPLY_URL exit trap can miss.
         webhook::sweep(&state).await;
         auto_resume::sweep(&state).await;
+        scheduled_messages::sweep(&state).await;
 
         state.permission_store.write().await.reap_stale(300); // seconds
     }
