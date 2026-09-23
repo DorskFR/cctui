@@ -3183,11 +3183,6 @@ mod tests {
         assert_eq!(rows, 1, "opencode must be single-metered by the gateway capture");
         assert_eq!(nulls, 0, "the surviving row must carry the gateway-stamped model");
 
-        sqlx::query("DELETE FROM machines WHERE id = $1")
-            .bind(machine_id)
-            .execute(&pool)
-            .await
-            .ok();
         sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
     }
 
@@ -3220,11 +3215,6 @@ mod tests {
                 .expect("count rows");
         assert_eq!(rows, 1, "a non-opencode session keeps its single daemon-metered row");
 
-        sqlx::query("DELETE FROM machines WHERE id = $1")
-            .bind(machine_id)
-            .execute(&pool)
-            .await
-            .ok();
         sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
     }
 
