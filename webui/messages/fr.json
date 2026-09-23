@@ -231,6 +231,8 @@
 	"capbar_caption_resets": "réinitialisation {time}",
 	"capbar_tooltip": "plafond {pct} % — glissez la barre",
 	"capbar_tooltip_readonly": "plafond {pct} %",
+	"codex_model_gated": "nécessite codex ≥ {version}, le catalogue est en {current}",
+	"codex_model_needs_version": "nécessite codex ≥ {version}",
 	"codex_models_refresh": "Rafraîchir les modèles codex",
 	"codex_models_refresh_sent": "Rafraîchissement de la liste des modèles codex…",
 	"common_actions": "Actions",

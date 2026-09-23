@@ -231,6 +231,8 @@
 	"capbar_caption_resets": "resets {time}",
 	"capbar_tooltip": "cap {pct}% — drag the bar",
 	"capbar_tooltip_readonly": "cap {pct}%",
+	"codex_model_gated": "needs codex ≥ {version}, catalog is {current}",
+	"codex_model_needs_version": "needs codex ≥ {version}",
 	"codex_models_refresh": "Refresh codex models",
 	"codex_models_refresh_sent": "Refreshing the codex model list…",
 	"common_actions": "Actions",
