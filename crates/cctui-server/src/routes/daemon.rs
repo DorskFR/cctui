@@ -848,7 +848,8 @@ fn event_local_id(event: &AdapterEvent) -> &str {
         | AdapterEvent::PermissionRequest { local_id, .. }
         | AdapterEvent::PermissionResolved { local_id, .. }
         | AdapterEvent::TokenUsage { local_id, .. }
-        | AdapterEvent::TranscriptMark { local_id, .. } => local_id,
+        | AdapterEvent::TranscriptMark { local_id, .. }
+        | AdapterEvent::RateLimits { local_id, .. } => local_id,
         _ => "",
     }
 }
@@ -1406,6 +1407,9 @@ async fn handle_event(
         }
         AdapterEvent::PrLink { local_id, children } => {
             persist_pr_link_children(state, &local_id, &children).await?;
+        }
+        AdapterEvent::RateLimits { local_id, windows, observed_at } => {
+            crate::usage_history::record_agent_limits(state, local_id, &windows, observed_at);
         }
         AdapterEvent::SessionModel { local_id, model } => {
             // Overwrite with the transcript/init-frame ground truth — the model

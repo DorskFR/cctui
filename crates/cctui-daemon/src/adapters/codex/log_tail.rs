@@ -530,6 +530,13 @@ fn read_new_lines(
             continue;
         }
         out.push(parse_line(local_id, trimmed));
+        if trimmed.contains("\"rate_limits\"")
+            && let Some(limits) = serde_json::from_str::<Value>(trimmed)
+                .ok()
+                .and_then(|v| super::rate_limits::from_rollout_line(local_id, &v))
+        {
+            out.push(limits);
+        }
     }
     Ok((out, new_offset))
 }

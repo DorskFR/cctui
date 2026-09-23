@@ -512,7 +512,7 @@ fn cap_unread(n: i64) -> u32 {
 
 /// The model catalog each session's usage is priced against, from the provider
 /// row its newest session token binds to. Ungatewayed sessions are absent.
-async fn session_catalogs(
+pub async fn session_catalogs(
     state: &AppState,
     session_ids: &[String],
 ) -> std::collections::HashMap<String, serde_json::Value> {
