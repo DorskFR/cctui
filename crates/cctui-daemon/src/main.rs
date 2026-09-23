@@ -307,6 +307,9 @@ async fn main() -> anyhow::Result<()> {
                 server_url,
                 machine_key: resp.machine_key,
                 machine_id: Some(resp.machine_id),
+                read_file_roots: Config::load_from(&path)
+                    .map(|old| old.read_file_roots)
+                    .unwrap_or_default(),
             };
             cfg.save_to(&path)?;
             println!("enrolled as {} → {}", resp.machine_id, path.display());

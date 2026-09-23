@@ -1,12 +1,13 @@
 //! Serve one file off this machine for the webui (`DaemonFrameDown::ReadFile`).
 //!
 //! The path is one an agent linked in a message, and the server has already
-//! checked that grant. The allow-list here is defense in depth: the temp dirs
-//! plus the session's working directory and its enclosing git repo — never a
-//! blanket `$HOME`. A secret deny-list applies inside every root. The path is
-//! canonicalised so a symlink pointing outside every root is refused. Small
-//! files ride back inline, larger ones are PUT to the blob store and answered
-//! by hash.
+//! checked that grant. The allow-list here is defense in depth: the temp dirs,
+//! the session's working directory and its enclosing git repo, the Claude job
+//! dirs of the session's own user and of the daemon's, and whatever extra
+//! roots the daemon is configured with — never a blanket `$HOME`. A secret
+//! deny-list applies inside every root. The path is canonicalised so a symlink
+//! pointing outside every root is refused. Small files ride back inline,
+//! larger ones are PUT to the blob store and answered by hash.
 
 use std::path::{Path, PathBuf};
 
@@ -29,24 +30,73 @@ fn refused(kind: ReadFileErrorKind, message: impl Into<String>) -> Refused {
     Refused { kind, message: message.into() }
 }
 
-/// Temp dirs plus the session's working directory and its enclosing git repo.
+/// Roots for a read made on behalf of the session whose cwd is `cwd`, using
+/// the daemon's configured [`extra_roots`].
 ///
 /// Each is canonicalised so `starts_with` compares real paths. Deliberately no
 /// `$HOME` root: without a session there is nothing to serve but temp files.
 #[must_use]
 pub fn allowed_roots(cwd: Option<&str>) -> Vec<PathBuf> {
+    roots_from(cwd, &extra_roots())
+}
+
+/// Temp dirs, the session's working directory and its enclosing git repo, the
+/// Claude job dirs of the session's user and of the daemon's user (they differ
+/// whenever the daemon runs as another user, as in a worker pod), and `extra`.
+#[must_use]
+pub fn roots_from(cwd: Option<&str>, extra: &[String]) -> Vec<PathBuf> {
     let mut roots: Vec<PathBuf> =
         [std::env::temp_dir(), PathBuf::from("/tmp"), PathBuf::from("/private/tmp")]
             .into_iter()
             .filter_map(|r| r.canonicalize().ok())
             .collect();
-    if let Some(cwd) = cwd
-        && let Ok(real) = crate::git::expand_tilde(cwd).canonicalize()
-    {
-        if let Some(root) = git_root(&real) {
+    let real_cwd = cwd.and_then(|c| crate::git::expand_tilde(c).canonicalize().ok());
+    if let Some(real) = &real_cwd {
+        if let Some(root) = git_root(real) {
             roots.push(root);
         }
-        roots.push(real);
+        roots.push(real.clone());
+    }
+    for home in [real_cwd.as_deref().and_then(home_of), dirs::home_dir()].into_iter().flatten() {
+        if let Ok(jobs) = home.join(".claude").join("jobs").canonicalize() {
+            roots.push(jobs);
+        }
+    }
+    for root in extra {
+        if let Ok(real) = crate::git::expand_tilde(root).canonicalize() {
+            roots.push(real);
+        }
+    }
+    roots.sort();
+    roots.dedup();
+    roots
+}
+
+/// Home of the user `dir` belongs to: the ancestor sitting directly under a
+/// home container (`/home`, `/Users`), or `/root` itself. Inferred from the
+/// path because the daemon's own `$HOME` names the wrong user whenever it runs
+/// as someone else than the session.
+fn home_of(dir: &Path) -> Option<PathBuf> {
+    dir.ancestors()
+        .find(|a| {
+            *a == Path::new("/root")
+                || a.parent().is_some_and(|p| p == Path::new("/home") || p == Path::new("/Users"))
+        })
+        .map(Path::to_path_buf)
+}
+
+/// Operator-supplied roots for the cases the defaults cannot infer, from
+/// `CCTUI_READ_FILE_ROOTS` (`:`-separated, for dispatched worker pods that
+/// never run `enroll`) then `read_file_roots` in `daemon.toml`.
+fn extra_roots() -> Vec<String> {
+    let mut roots: Vec<String> = std::env::var("CCTUI_READ_FILE_ROOTS")
+        .unwrap_or_default()
+        .split(':')
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+        .collect();
+    if let Ok(cfg) = crate::config::Config::load_from(&crate::config::Config::default_path()) {
+        roots.extend(cfg.read_file_roots);
     }
     roots
 }
@@ -96,9 +146,10 @@ pub fn resolve(path: &str, roots: &[PathBuf]) -> Result<PathBuf, Refused> {
         }
     };
     if !roots.iter().any(|root| real.starts_with(root)) {
+        let checked: Vec<String> = roots.iter().map(|r| r.display().to_string()).collect();
         return Err(refused(
             ReadFileErrorKind::Denied,
-            format!("{path} is outside the allowed roots"),
+            format!("{path} is outside the allowed roots: {}", checked.join(", ")),
         ));
     }
     if is_denied(&real) {
@@ -264,18 +315,103 @@ mod tests {
     }
 
     #[test]
+    fn the_session_cwd_is_a_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("out.txt");
+        std::fs::write(&f, "x").unwrap();
+        let roots = roots_from(Some(dir.path().to_str().unwrap()), &[]);
+        assert!(roots.contains(&dir.path().canonicalize().unwrap()));
+        assert!(resolve(f.to_str().unwrap(), &roots).is_ok());
+    }
+
+    #[test]
+    fn the_daemon_users_claude_job_dir_is_a_root_including_its_tmp() {
+        let Some(jobs) = dirs::home_dir()
+            .map(|h| h.join(".claude").join("jobs"))
+            .and_then(|j| j.canonicalize().ok())
+        else {
+            return;
+        };
+        assert!(
+            roots_from(None, &[]).contains(&jobs),
+            "the daemon user's job dir must be a root"
+        );
+        let tmp = jobs.join("cdfadc1d").join("tmp").join("new-ticket.md");
+        assert!(tmp.starts_with(&jobs), "a job's tmp is covered by the jobs root");
+    }
+
+    #[test]
+    fn the_session_users_home_gives_the_job_dir_when_it_is_not_the_daemons() {
+        assert_eq!(home_of(Path::new("/home/gtax/Documents/repo")), Some("/home/gtax".into()));
+        assert_eq!(home_of(Path::new("/home/gtax")), Some("/home/gtax".into()));
+        assert_eq!(home_of(Path::new("/Users/gtax/src/a")), Some("/Users/gtax".into()));
+        assert_eq!(home_of(Path::new("/root/src")), Some("/root".into()));
+        assert_eq!(home_of(Path::new("/srv/app")), None);
+        assert_eq!(home_of(Path::new("/home")), None);
+    }
+
+    #[test]
+    fn configured_extra_roots_widen_and_nothing_else_does() {
+        let extra = tempfile::tempdir().unwrap();
+        let f = extra.path().join("notes.md");
+        std::fs::write(&f, "x").unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let outside = elsewhere.path().join("secret.md");
+        std::fs::write(&outside, "x").unwrap();
+
+        let without = roots_from(None, &[]);
+        assert_eq!(
+            resolve(f.to_str().unwrap(), &without).unwrap_err().kind,
+            ReadFileErrorKind::Denied
+        );
+        let with = roots_from(None, &[extra.path().to_str().unwrap().to_owned()]);
+        assert!(resolve(f.to_str().unwrap(), &with).is_ok());
+        assert_eq!(
+            resolve(outside.to_str().unwrap(), &with).unwrap_err().kind,
+            ReadFileErrorKind::Denied,
+            "an extra root widens only itself"
+        );
+    }
+
+    #[test]
+    fn a_denial_names_the_roots_it_was_checked_against() {
+        let dir = tempfile::tempdir().unwrap();
+        let roots = vec![dir.path().canonicalize().unwrap()];
+        let err = resolve("/etc/passwd", &roots).unwrap_err();
+        assert_eq!(err.kind, ReadFileErrorKind::Denied);
+        assert!(
+            err.message.contains(dir.path().canonicalize().unwrap().to_str().unwrap()),
+            "message must list the roots: {}",
+            err.message
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_out_of_an_extra_root_is_still_denied() {
+        let extra = tempfile::tempdir().unwrap();
+        let link = extra.path().join("escape.txt");
+        std::os::unix::fs::symlink("/etc/passwd", &link).unwrap();
+        let roots = roots_from(None, &[extra.path().to_str().unwrap().to_owned()]);
+        assert_eq!(
+            resolve(link.to_str().unwrap(), &roots).unwrap_err().kind,
+            ReadFileErrorKind::Denied
+        );
+    }
+
+    #[test]
     fn cwd_is_the_only_widening_and_home_is_never_a_root() {
         let dir = tempfile::tempdir().unwrap();
         let f = dir.path().join("out.txt");
         std::fs::write(&f, "x").unwrap();
-        let roots = allowed_roots(Some(dir.path().to_str().unwrap()));
+        let roots = roots_from(Some(dir.path().to_str().unwrap()), &[]);
         assert!(roots.contains(&dir.path().canonicalize().unwrap()));
         assert!(resolve(f.to_str().unwrap(), &roots).is_ok());
 
         let home = PathBuf::from(std::env::var("HOME").unwrap()).canonicalize().unwrap();
         for cwd in [None, Some("/definitely/not/a/dir")] {
             assert!(
-                !allowed_roots(cwd).contains(&home),
+                !roots_from(cwd, &[]).contains(&home),
                 "$HOME must never be a root (cwd {cwd:?})"
             );
         }
@@ -288,7 +424,7 @@ mod tests {
         std::fs::create_dir_all(repo.path().join("sub")).unwrap();
         let top = repo.path().join("README.md");
         std::fs::write(&top, "x").unwrap();
-        let roots = allowed_roots(Some(repo.path().join("sub").to_str().unwrap()));
+        let roots = roots_from(Some(repo.path().join("sub").to_str().unwrap()), &[]);
         assert!(resolve(top.to_str().unwrap(), &roots).is_ok());
         assert_eq!(
             resolve("/etc/passwd", &roots).unwrap_err().kind,
@@ -336,7 +472,7 @@ mod tests {
         let key = home.path().join(".ssh/id_ed25519");
         std::fs::create_dir_all(key.parent().unwrap()).unwrap();
         std::fs::write(&key, "PRIVATE KEY").unwrap();
-        let roots = allowed_roots(Some(home.path().to_str().unwrap()));
+        let roots = roots_from(Some(home.path().to_str().unwrap()), &[]);
         assert!(roots.contains(&home.path().canonicalize().unwrap()), "cwd is a root");
         assert_eq!(
             resolve(key.to_str().unwrap(), &roots).unwrap_err().kind,
