@@ -6,7 +6,7 @@ use axum::{Extension, Json};
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
-use cctui_proto::adapter::SessionChild;
+use cctui_proto::adapter::{RemoveInitiator, SessionChild};
 use cctui_proto::api::{
     ApiError, Label, MessageRequest, RegisterRequest, RegisterResponse, RenameRequest,
     SessionListItem, SessionListResponse, SpawnRequest, SpawnResponse,
@@ -2516,10 +2516,12 @@ pub async fn archive_session(
     Path(session_id): Path<String>,
     Query(q): Query<ArchiveQuery>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
-    let outcome = archive_one(&state, &session_id, q.force).await.map_err(|e| {
-        tracing::error!("db error: {e}");
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-    })?;
+    let outcome = archive_one(&state, &session_id, q.force, RemoveInitiator::User)
+        .await
+        .map_err(|e| {
+            tracing::error!("db error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
+        })?;
     match outcome {
         ArchiveOutcome::Archived => Ok(StatusCode::NO_CONTENT),
         ArchiveOutcome::SkippedPinned => Err((
@@ -2550,7 +2552,10 @@ pub enum ArchiveOutcome {
 /// refusal surfaces as a `ServerEvent::CommandResult` rather than reading as a
 /// clean archive; an undeliverable dispatch leaves the job for the daemon's
 /// `ResumeMarks` reconcile to remove on reconnect.
-pub async fn dispatch_remove(state: &AppState, session_id: &str) {
+///
+/// `initiator` decides whether a claude job cctui did not start is removed at
+/// all: only a human's archive may, an automatic sweep leaves it running.
+pub async fn dispatch_remove(state: &AppState, session_id: &str, initiator: RemoveInitiator) {
     let command_id = uuid::Uuid::new_v4();
     crate::state::track_command(
         &state.pending_commands,
@@ -2558,15 +2563,9 @@ pub async fn dispatch_remove(state: &AppState, session_id: &str) {
         Some(session_id.to_owned()),
         None,
     );
-    if let Err(err) = crate::bus::dispatch(
-        state,
-        session_id,
-        cctui_proto::adapter::AdapterCommand::Remove {
-            local_id: session_id.to_owned(),
-            command_id: Some(command_id),
-        },
-    )
-    .await
+    if let Err(err) =
+        crate::bus::dispatch(state, session_id, remove_command(session_id, command_id, initiator))
+            .await
     {
         state.pending_commands.remove(&command_id);
         tracing::warn!(
@@ -2574,6 +2573,19 @@ pub async fn dispatch_remove(state: &AppState, session_id: &str) {
             %err,
             "archive could not reach the owning daemon; job removal deferred to reconcile"
         );
+    }
+}
+
+/// The `Remove` a [`dispatch_remove`] puts on the wire.
+fn remove_command(
+    session_id: &str,
+    command_id: uuid::Uuid,
+    initiator: RemoveInitiator,
+) -> cctui_proto::adapter::AdapterCommand {
+    cctui_proto::adapter::AdapterCommand::Remove {
+        local_id: session_id.to_owned(),
+        command_id: Some(command_id),
+        initiator,
     }
 }
 
@@ -2589,6 +2601,7 @@ pub async fn archive_one(
     state: &AppState,
     session_id: &str,
     force: bool,
+    initiator: RemoveInitiator,
 ) -> Result<ArchiveOutcome, sqlx::Error> {
     if !force {
         let pinned: Option<bool> = sqlx::query_scalar("SELECT pinned FROM sessions WHERE id = $1")
@@ -2627,9 +2640,9 @@ pub async fn archive_one(
     // and covered by their parent's `Remove`; CctuiAgent children and forks own
     // a claude job each, which stays in `claude agents` until removed.
     for child in crate::store::sessions::job_children(&children, &archived) {
-        dispatch_remove(state, child).await;
+        dispatch_remove(state, child, initiator).await;
     }
-    dispatch_remove(state, session_id).await;
+    dispatch_remove(state, session_id, initiator).await;
     let children: Vec<String> =
         children.into_iter().map(|c| c.id).filter(|c| archived.contains(c)).collect();
     {
@@ -2801,7 +2814,7 @@ pub async fn archive_sessions(
     let mut ok = 0usize;
     let mut pinned = 0usize;
     for id in &ids {
-        match archive_one(&state, id, false).await {
+        match archive_one(&state, id, false, RemoveInitiator::User).await {
             Ok(ArchiveOutcome::Archived) => ok += 1,
             Ok(ArchiveOutcome::SkippedPinned) => pinned += 1,
             Err(e) => tracing::error!(session_id = %id, "batch archive db error: {e}"),
@@ -2954,9 +2967,9 @@ impl<'a> DraftRowFields<'a> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Bucket, EndRow, SessionChild, SqlParam, attention_from_bucket, bucket_from_signals,
-        cap_unread, compile_node, derive_liveness, field_values_sql, make_snippet,
-        normalize_last_message, snippet_sql,
+        Bucket, EndRow, RemoveInitiator, SessionChild, SqlParam, attention_from_bucket,
+        bucket_from_signals, cap_unread, compile_node, derive_liveness, field_values_sql,
+        make_snippet, normalize_last_message, remove_command, snippet_sql,
     };
     use cctui_proto::models::{Attention, Liveness};
     use chrono::{Duration, Utc};
@@ -3626,5 +3639,23 @@ mod tests {
             .execute(&pool)
             .await
             .expect("cleanup");
+    }
+
+    #[test]
+    fn the_remove_command_carries_who_asked() {
+        let id = uuid::Uuid::new_v4();
+        for initiator in [RemoveInitiator::User, RemoveInitiator::Automatic] {
+            let cctui_proto::adapter::AdapterCommand::Remove {
+                local_id,
+                command_id,
+                initiator: got,
+            } = remove_command("sess-1", id, initiator)
+            else {
+                panic!("remove_command must build a Remove")
+            };
+            assert_eq!(local_id, "sess-1");
+            assert_eq!(command_id, Some(id));
+            assert_eq!(got, initiator);
+        }
     }
 }

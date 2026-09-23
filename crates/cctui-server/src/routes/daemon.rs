@@ -1137,7 +1137,7 @@ async fn handle_event(
                 .await;
             }
             let first_registration = upsert_session(
-                state,
+                &state.pool,
                 machine_id,
                 user_id,
                 adapter_id,
@@ -1808,7 +1808,7 @@ async fn reset_tool_count(state: &AppState, local_id: &str) {
 
 #[allow(clippy::too_many_arguments)]
 async fn upsert_session(
-    state: &AppState,
+    pool: &sqlx::PgPool,
     machine_id: Uuid,
     user_id: Uuid,
     adapter_id: &str,
@@ -1857,16 +1857,19 @@ async fn upsert_session(
     .bind(parent_local_id)
     .bind(observed_at)
     .bind(extra)
-    .fetch_optional(&state.pool)
+    .fetch_optional(pool)
     .await?;
     // A daemon that re-registers the session after a reconnect proves the
-    // `daemon_lost` / `machine_offline` end was spurious.
+    // `daemon_lost` / `machine_offline` end was spurious. So is a "released"
+    // end: 0.17.0 ended every claude job cctui had not started, and those jobs
+    // are alive and registered again.
     sqlx::query(
         "UPDATE sessions SET status = 'active', ended_at = NULL, end_reason = NULL, end_detail = NULL \
-         WHERE id = $1 AND status = 'ended' AND end_reason IN ('daemon_lost', 'machine_offline')",
+         WHERE id = $1 AND status = 'ended' \
+           AND (end_reason IN ('daemon_lost', 'machine_offline') OR end_detail LIKE 'released:%')",
     )
     .bind(local_id)
-    .execute(&state.pool)
+    .execute(pool)
     .await?;
     // Repair the durable account binding: the dispatch path mints the
     // gateway token BEFORE the daemon registers the session, so mint-time's
@@ -1882,7 +1885,7 @@ async fn upsert_session(
          WHERE id = $1 AND account_id IS NULL",
     )
     .bind(local_id)
-    .execute(&state.pool)
+    .execute(pool)
     .await?;
     Ok(inserted.unwrap_or(false))
 }
@@ -1897,8 +1900,18 @@ async fn register_announced_session(
     adapter_id: &str,
     local_id: &str,
 ) -> anyhow::Result<()> {
-    if upsert_session(state, machine_id, user_id, adapter_id, local_id, None, None, None, None)
-        .await?
+    if upsert_session(
+        &state.pool,
+        machine_id,
+        user_id,
+        adapter_id,
+        local_id,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await?
     {
         publish_session_registered(state, local_id).await;
     }
@@ -3279,6 +3292,90 @@ mod tests {
         assert_eq!(end_detail.as_deref(), Some("unknown model gpt-nope; available: gpt-5-codex"));
         assert_eq!(model.as_deref(), Some("gpt-nope"));
         assert_eq!(name.as_deref(), Some("nope"));
+    }
+
+    #[tokio::test]
+    async fn a_released_session_re_registers_while_an_archived_one_stays_archived() {
+        let Some(url) = crate::routes::gateway::test_db_url("released_reregister") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let uid = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+            .bind(uid)
+            .bind(format!("rel-{uid}"))
+            .bind(format!("kh-{uid}"))
+            .execute(&pool)
+            .await
+            .expect("seed user");
+        let machine_id = uuid::Uuid::new_v4();
+
+        let released = format!("rel-{}", uuid::Uuid::new_v4().simple());
+        sqlx::query(
+            "INSERT INTO sessions                  (id, machine_id, machine_uuid, working_dir, user_id, adapter_id,                   status, ended_at, end_reason, end_detail)              VALUES ($1, $2, $3, '/w', $4, 'claude-code', 'ended', now(), 'other',                      'released: this claude job was not started by cctui')",
+        )
+        .bind(&released)
+        .bind(machine_id.to_string())
+        .bind(machine_id)
+        .bind(uid)
+        .execute(&pool)
+        .await
+        .expect("seed released session");
+
+        let archived = format!("arc-{}", uuid::Uuid::new_v4().simple());
+        sqlx::query(
+            "INSERT INTO sessions                  (id, machine_id, machine_uuid, working_dir, user_id, adapter_id, status)              VALUES ($1, $2, $3, '/w', $4, 'claude-code', 'archived')",
+        )
+        .bind(&archived)
+        .bind(machine_id.to_string())
+        .bind(machine_id)
+        .bind(uid)
+        .execute(&pool)
+        .await
+        .expect("seed archived session");
+
+        for id in [&released, &archived] {
+            super::upsert_session(
+                &pool,
+                machine_id,
+                uid,
+                "claude-code",
+                id,
+                Some("/w".to_owned()),
+                None,
+                None,
+                None,
+            )
+            .await
+            .expect("upsert");
+        }
+
+        let (status, end_detail): (String, Option<String>) =
+            sqlx::query_as("SELECT status, end_detail FROM sessions WHERE id = $1")
+                .bind(&released)
+                .fetch_one(&pool)
+                .await
+                .expect("read released");
+        assert_eq!(status, "active", "a released job is live again and must come back");
+        assert_eq!(end_detail, None);
+
+        let status: String = sqlx::query_scalar("SELECT status FROM sessions WHERE id = $1")
+            .bind(&archived)
+            .fetch_one(&pool)
+            .await
+            .expect("read archived");
+        assert_eq!(status, "archived", "a roster snapshot must not un-archive a session");
+
+        sqlx::query("DELETE FROM sessions WHERE id = ANY($1)")
+            .bind(&[released, archived][..])
+            .execute(&pool)
+            .await
+            .expect("cleanup");
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
     }
 
     #[tokio::test]

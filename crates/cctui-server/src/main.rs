@@ -1556,7 +1556,12 @@ async fn auto_archive_stale(state: &AppState) {
         Ok(ids) if !ids.is_empty() => {
             tracing::info!(count = ids.len(), "auto-archived stale sessions");
             for id in &ids {
-                crate::routes::sessions::dispatch_remove(state, id).await;
+                crate::routes::sessions::dispatch_remove(
+                    state,
+                    id,
+                    cctui_proto::adapter::RemoveInitiator::Automatic,
+                )
+                .await;
             }
         }
         Ok(_) => {}
