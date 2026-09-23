@@ -15,7 +15,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::Context;
-use cctui_proto::adapter::{AdapterCommand, AdapterEvent, EndReason, JobShort, SessionMeta};
+use cctui_proto::adapter::{
+    AdapterCommand, AdapterEvent, EndReason, JobShort, RemoveInitiator, SessionMeta,
+};
 use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::mpsc;
@@ -116,6 +118,7 @@ impl DriverConfig {
 /// The `source` every cctui dispatch stamps on its jobs. An absent source is
 /// treated as ours (older claude builds omit the field).
 const FLEET_SOURCE: &str = "fleet";
+const SPARE_SOURCE: &str = "spare";
 
 /// How many times one `claude rm` target may be retried while clearing the
 /// occupants of its worktree.
@@ -183,17 +186,21 @@ impl LiveSnapshot {
         self.session_id.as_deref().or(self.session_id_camel.as_deref())
     }
 
-    /// Skip dying workers and every job cctui did not dispatch: adopting a
-    /// human's own `claude --bg` worker holds an attach on it and lets the TTL
-    /// archive kill it, which Claude Code's supervisor answers with a
-    /// full-context revive turn.
+    /// Skip dying workers and the daemon's pre-warmed spares, which are not
+    /// sessions anyone drives.
     fn is_user_visible(&self) -> bool {
-        !self.dying && !self.is_foreign()
+        !self.dying && !self.is_spare()
     }
 
-    /// Dispatched by someone other than cctui (spares included).
+    /// Dispatched by someone other than cctui — a human's `claude --bg`, a
+    /// spare, a shell session. Registered and driveable like any other, but no
+    /// automatic path of ours may attach to, kill or `claude rm` it.
     fn is_foreign(&self) -> bool {
         self.source.as_deref().is_some_and(|s| s != FLEET_SOURCE)
+    }
+
+    fn is_spare(&self) -> bool {
+        self.source.as_deref() == Some(SPARE_SOURCE)
     }
 
     /// Whether claude reports this still-listed session as dead / "process
@@ -393,9 +400,12 @@ pub struct Driver {
     /// Cleared when the worker revives (reports alive again) or drops
     /// off the roster.
     dead_shorts: HashSet<String>,
-    /// Shorts the last `list` reported with a non-fleet `source`. cctui must
-    /// never attach to, kill, or `claude rm` one of these.
+    /// Shorts the last `list` reported with a non-fleet `source`. No automatic
+    /// path may attach to, kill or `claude rm` one of these.
     foreign_shorts: HashSet<String>,
+    /// Whether any of those is a session a human drives (a spare is not), which
+    /// vetoes the version gate's `daemon stop --any`.
+    native_live: bool,
     /// Shared `session_id → stable local_id` map. Populated as transcripts are
     /// pinned (incl. across `/clear` rotations) and read by the ask-hook
     /// listener so a hook's live `session_id` resolves to the `local_id` the
@@ -700,6 +710,7 @@ impl Driver {
             last_status: HashMap::new(),
             dead_shorts: HashSet::new(),
             foreign_shorts: HashSet::new(),
+            native_live: false,
             session_to_local: Arc::new(Mutex::new(HashMap::new())),
             offsets,
             transcript_locations: HashMap::new(),
@@ -1175,9 +1186,16 @@ impl Driver {
                 socket::attach_permission_response(&sock, &short, allow).await?;
                 tracing::info!(%short, %request_id, allow, "answered permission prompt via attach (fallback)");
             }
-            AdapterCommand::Remove { local_id, .. } => {
+            AdapterCommand::Remove { local_id, initiator, .. } => {
                 let short = self.resolve_short_for_removal(&local_id)?;
-                let rm = self.remove_job(&sock, &short, &local_id).await;
+                if !Self::removal_allowed(&self.foreign_shorts, &short, initiator) {
+                    tracing::info!(
+                        %short, %local_id,
+                        "skipping automatic removal of a claude job cctui did not start"
+                    );
+                    return Ok(None);
+                }
+                let rm = self.remove_job(&sock, &short, &local_id, initiator).await;
                 crate::configsweep::remove_session_files(&short);
                 rm?;
             }
@@ -1813,6 +1831,13 @@ impl Driver {
         Ok(outcome)
     }
 
+    /// Whether this `Remove` may touch `short`. A claude job cctui did not
+    /// start is removed only when a human asked; no automatic path may kill it
+    /// or `claude rm` it.
+    fn removal_allowed(foreign: &HashSet<String>, short: &str, initiator: RemoveInitiator) -> bool {
+        initiator == RemoveInitiator::User || !foreign.contains(short)
+    }
+
     /// Stop the worker behind `short` and delete its job metadata.
     ///
     /// The connected `claude daemon` is not authoritative: it answers `ENOJOB`
@@ -1829,6 +1854,7 @@ impl Driver {
         sock: &std::path::Path,
         short: &str,
         local_id: &str,
+        initiator: RemoveInitiator,
     ) -> anyhow::Result<()> {
         let mut stack = vec![short.to_owned()];
         let mut attempts: HashMap<String, u8> = HashMap::new();
@@ -1838,11 +1864,13 @@ impl Driver {
             if *tries > MAX_REMOVE_ATTEMPTS {
                 anyhow::bail!("claude rm {target}: still occupied after {tries} attempts");
             }
-            if self.foreign_shorts.contains(&target) {
-                anyhow::bail!(
-                    "refusing to remove claude job {target}: cctui did not start it (its source \
-                     is not `{FLEET_SOURCE}`)"
+            if !Self::removal_allowed(&self.foreign_shorts, &target, initiator) {
+                tracing::info!(
+                    %target,
+                    "skipping automatic removal of a claude job cctui did not start"
                 );
+                stack.pop();
+                continue;
             }
             self.stop_worker(sock, &target).await;
             match self.claude_rm(&target).await? {
@@ -1852,7 +1880,9 @@ impl Driver {
                 ClaudeRmOutcome::Occupied { pid, kind, job, detail } => {
                     self.report_occupied(local_id, &detail).await;
                     let occupant = job.filter(|j| {
-                        j != &target && !stack.contains(j) && !self.foreign_shorts.contains(j)
+                        j != &target
+                            && !stack.contains(j)
+                            && Self::removal_allowed(&self.foreign_shorts, j, initiator)
                     });
                     if let Some(occupant) = occupant {
                         tracing::info!(%target, %occupant, "removing the occupant first");
@@ -2610,7 +2640,7 @@ impl Driver {
             return;
         }
         if let Some(Decision::Cycle { running, local, escalated: _ }) =
-            self.version_gate.check(self.roster.len()).await
+            self.version_gate.check(self.roster.len(), self.native_live).await
         {
             let method = if tokio::task::spawn_blocking(super::claude_service::service_active)
                 .await
@@ -2701,17 +2731,11 @@ impl Driver {
 
     #[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
     async fn apply_snapshot(&mut self, jobs: Vec<LiveSnapshot>) {
-        let (foreign, visible): (Vec<LiveSnapshot>, Vec<LiveSnapshot>) =
-            jobs.into_iter().filter(|j| !j.dying).partition(|j| !j.is_user_visible());
-        self.foreign_shorts = foreign.iter().map(|j| j.short.clone()).collect();
-        let released: Vec<&String> =
-            self.foreign_shorts.iter().filter(|s| self.roster.contains(*s)).collect();
-        if !released.is_empty() {
-            tracing::info!(
-                count = released.len(),
-                "releasing claude jobs cctui did not dispatch; they keep running untouched"
-            );
-        }
+        self.foreign_shorts =
+            jobs.iter().filter(|j| j.is_foreign()).map(|j| j.short.clone()).collect();
+        let visible: Vec<LiveSnapshot> =
+            jobs.into_iter().filter(LiveSnapshot::is_user_visible).collect();
+        self.native_live = visible.iter().any(LiveSnapshot::is_foreign);
         if visible.iter().any(|j| {
             !j.is_dead() && DispatchDoneTracker::is_busy(j.tempo.as_deref(), j.state.as_deref())
         }) {
@@ -3081,7 +3105,6 @@ impl Driver {
         // Ended sessions.
         let gone: Vec<String> = self.roster.difference(&now_shorts).cloned().collect();
         for short in &gone {
-            let foreign = self.foreign_shorts.contains(short);
             self.last_status.remove(short);
             let was_dead = self.dead_shorts.remove(short);
             self.clear_permission(short).await;
@@ -3098,7 +3121,7 @@ impl Driver {
                 // Skip if we already emitted this short's dead transition while
                 // it was still listed (`dead_shorts`) — the hibernated
                 // Status already went out; re-emitting it here is redundant.
-                if !foreign && !was_dead && StateJson::read(&self.cfg.jobs_root, short).is_some() {
+                if !was_dead && StateJson::read(&self.cfg.jobs_root, short).is_some() {
                     self.emit(AdapterEvent::Status {
                         local_id: loc.local_id.clone(),
                         tempo: Some("hibernated".to_owned()),
@@ -3126,19 +3149,23 @@ impl Driver {
             // server side are indexed by (machine_id, adapter_id,
             // local_id), and the prior SessionStarted carried the real
             // session_id; the server reconciles on the running row.
-            let reason = if foreign {
-                EndReason::Other {
-                    detail: "released: this claude job was not started by cctui".to_owned(),
-                }
-            } else {
-                EndReason::Completed
-            };
-            self.emit(AdapterEvent::SessionEnded { local_id: short.clone(), reason }).await;
+            self.emit(AdapterEvent::SessionEnded {
+                local_id: short.clone(),
+                reason: EndReason::Completed,
+            })
+            .await;
         }
 
         // Keep a headless `attach` open for every live session so the worker
-        // stays focused/awake and `reply` actually drives its PTY.
-        self.attach.reconcile(now_shorts.iter().map(String::as_str));
+        // stays focused/awake and `reply` actually drives its PTY. Jobs cctui
+        // did not start are excluded: a held attach forces our geometry on
+        // someone's terminal and drives their PTY.
+        self.attach.reconcile(
+            now_shorts
+                .iter()
+                .map(String::as_str)
+                .filter(|short| !self.foreign_shorts.contains(*short)),
+        );
 
         self.tick_dispatch_done(&visible);
 
@@ -4658,16 +4685,23 @@ mod tests {
     }
 
     #[test]
-    fn only_fleet_jobs_are_user_visible() {
+    fn only_spares_and_dying_jobs_are_hidden() {
         let fleet = snap("aaaaaaaa", "working", None);
         assert!(fleet.is_user_visible());
+        assert!(!fleet.is_foreign());
 
-        for foreign in ["shell", "spare", "cli", "bg"] {
+        // A human's own job is visible — it is just never touched automatically.
+        for foreign in ["shell", "cli", "bg", "interactive"] {
             let mut s = snap("bbbbbbbb", "working", None);
             s.source = Some(foreign.into());
-            assert!(!s.is_user_visible(), "{foreign} must not be adopted");
+            assert!(s.is_user_visible(), "{foreign} must stay visible");
             assert!(s.is_foreign());
         }
+
+        let mut spare = snap("eeeeeeee", "working", None);
+        spare.source = Some(SPARE_SOURCE.into());
+        assert!(!spare.is_user_visible());
+        assert!(spare.is_foreign());
 
         // Older claude builds omit `source`; those are ours.
         let mut no_source = snap("cccccccc", "working", None);
@@ -4681,15 +4715,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn foreign_jobs_are_never_registered_or_attached() {
+    async fn foreign_jobs_are_registered_but_never_attached() {
         let (mut d, mut rx) = driver();
         let mut human = snap("beefbeef", "working", None);
-        human.source = Some("shell".into());
+        human.source = Some("bg".into());
         d.apply_snapshot(vec![human, snap("f1eetf1e", "working", None)]).await;
 
         assert!(d.roster.contains("f1eetf1e"));
-        assert!(!d.roster.contains("beefbeef"));
+        assert!(d.roster.contains("beefbeef"), "a human's own claude job must be registered");
         assert!(d.foreign_shorts.contains("beefbeef"));
+        assert!(!d.foreign_shorts.contains("f1eetf1e"));
 
         let mut started: Vec<String> = Vec::new();
         while let Ok(evt) = rx.try_recv() {
@@ -4697,47 +4732,84 @@ mod tests {
                 started.push(local_id);
             }
         }
-        assert_eq!(started, ["f1eetf1e-uuid"]);
+        started.sort();
+        assert_eq!(started, ["beefbeef-uuid", "f1eetf1e-uuid"]);
+
+        // `reconcile` holds an attach only for the fleet short.
+        assert!(d.attach.snapshot("f1eetf1e").is_some());
+        assert!(
+            d.attach.snapshot("beefbeef").is_none(),
+            "no attach may be held on a job cctui did not start"
+        );
+    }
+
+    #[test]
+    fn only_a_user_remove_may_touch_a_foreign_job() {
+        let foreign: HashSet<String> = std::iter::once("beefbeef".to_owned()).collect();
+
+        assert!(!Driver::removal_allowed(&foreign, "beefbeef", RemoveInitiator::Automatic));
+        assert!(Driver::removal_allowed(&foreign, "beefbeef", RemoveInitiator::User));
+        // A fleet job is removed by either.
+        assert!(Driver::removal_allowed(&foreign, "f1eetf1e", RemoveInitiator::Automatic));
+        assert!(Driver::removal_allowed(&foreign, "f1eetf1e", RemoveInitiator::User));
     }
 
     #[tokio::test]
-    async fn already_adopted_foreign_job_is_released_not_ended_as_completed() {
+    async fn an_automatic_remove_leaves_a_foreign_job_alone() {
+        let (mut d, _rx) = driver();
+        d.cfg.claude_bin = "/nonexistent/claude-bin".to_owned();
+        let mut human = snap("beefbeef", "working", None);
+        human.source = Some("bg".into());
+        d.apply_snapshot(vec![human]).await;
+
+        // No socket and no `claude` binary: reaching either the kill or
+        // `claude rm` would surface as an error.
+        d.remove_job(
+            std::path::Path::new("/nonexistent/control.sock"),
+            "beefbeef",
+            "sess-1",
+            RemoveInitiator::Automatic,
+        )
+        .await
+        .expect("an automatic remove must report success without acting");
+    }
+
+    #[tokio::test]
+    async fn a_user_remove_still_removes_a_foreign_job() {
+        let (mut d, _rx) = driver();
+        d.cfg.claude_bin = "/nonexistent/claude-bin".to_owned();
+        let mut human = snap("beefbeef", "working", None);
+        human.source = Some("bg".into());
+        d.apply_snapshot(vec![human]).await;
+
+        let err = d
+            .remove_job(
+                std::path::Path::new("/nonexistent/control.sock"),
+                "beefbeef",
+                "sess-1",
+                RemoveInitiator::User,
+            )
+            .await
+            .expect_err("a user remove must reach `claude rm`");
+        assert!(err.to_string().contains("/nonexistent/claude-bin"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_foreign_job_that_leaves_the_roster_ends_as_completed() {
         let (mut d, mut rx) = driver();
         let mut human = snap("beefbeef", "working", None);
-        human.source = None;
-        d.apply_snapshot(vec![human.clone()]).await;
-        assert!(d.roster.contains("beefbeef"));
+        human.source = Some("bg".into());
+        d.apply_snapshot(vec![human]).await;
         while rx.try_recv().is_ok() {}
 
-        human.source = Some("shell".into());
-        d.apply_snapshot(vec![human]).await;
-        assert!(!d.roster.contains("beefbeef"));
-
+        d.apply_snapshot(vec![]).await;
         let mut ends: Vec<EndReason> = Vec::new();
         while let Ok(evt) = rx.try_recv() {
             if let AdapterEvent::SessionEnded { reason, .. } = evt {
                 ends.push(reason);
             }
         }
-        let [EndReason::Other { detail }] = ends.as_slice() else {
-            panic!("expected exactly one release, got {ends:?}")
-        };
-        assert!(detail.contains("not started by cctui"), "{detail}");
-    }
-
-    #[tokio::test]
-    async fn remove_refuses_a_job_cctui_did_not_create() {
-        let (mut d, _rx) = driver();
-        let mut human = snap("beefbeef", "working", None);
-        human.source = Some("shell".into());
-        d.apply_snapshot(vec![human]).await;
-
-        // No socket exists here: the guard must refuse before any `kill`.
-        let err = d
-            .remove_job(std::path::Path::new("/nonexistent/control.sock"), "beefbeef", "sess-1")
-            .await
-            .expect_err("a foreign job must never be removed");
-        assert!(err.to_string().contains("cctui did not start it"), "{err}");
+        assert_eq!(ends, vec![EndReason::Completed]);
     }
 
     #[test]

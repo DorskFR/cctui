@@ -152,7 +152,14 @@ pub async fn sweep(state: &AppState) {
             continue;
         }
         // Never forced: a session the human pinned since the spawn stays.
-        match crate::routes::sessions::archive_one(state, &id, false).await {
+        match crate::routes::sessions::archive_one(
+            state,
+            &id,
+            false,
+            cctui_proto::adapter::RemoveInitiator::Automatic,
+        )
+        .await
+        {
             Ok(ArchiveOutcome::Archived) => {
                 tracing::info!(session_id = %id, "auto-archived a finished macro session");
             }
