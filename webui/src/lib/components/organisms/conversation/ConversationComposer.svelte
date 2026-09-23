@@ -332,6 +332,7 @@
 					/>
 				</SessionMention>
 			</div>
+			<span class="row-push" aria-hidden="true"></span>
 			<!-- Stays a plain primary button across all cost states: layering a `tone`
 			     (info/warn) on `primary` recolored the LABEL to the tone hue over the
 			     accent fill (e.g. light-blue text on the green accent → unreadable).
@@ -372,6 +373,7 @@
 		padding-bottom: calc(var(--sp-3) + var(--safe-bottom));
 		border-top: 1px solid var(--border);
 		background: var(--bg-elevated);
+		container: composer / inline-size;
 	}
 	/* Highlight the composer while a file drag hovers the conversation pane
 	  . */
@@ -406,6 +408,25 @@
 	.composer-input {
 		flex: 1;
 		min-width: 0;
+	}
+	.row-push {
+		display: none;
+	}
+	/* Narrow: the textarea takes a full-width line (a narrow field makes mobile
+	   browsers zoom on focus); the controls wrap onto the line below, attach on
+	   the left and the send slot on the right. */
+	@container composer (max-width: 480px) {
+		.composer-row {
+			flex-wrap: wrap;
+		}
+		.composer-input {
+			order: -1;
+			flex: 1 1 100%;
+		}
+		.row-push {
+			display: block;
+			flex: 1;
+		}
 	}
 	.attachments {
 		width: 100%;
