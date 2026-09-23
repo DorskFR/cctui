@@ -94,7 +94,7 @@
 	// Session diagnose panel, opened from the toolbar or a failure toast's
 	// Diagnose action (`?diagnose=1`).
 	let diagnoseOpen = $state(false);
-	// Read-only live terminal pane, toggled from the toolbar.
+	// Read-only live terminal pane, toggled from the header menu.
 	let terminalOpen = $state(false);
 	// A navigation to another session must not leave a stale panel open.
 	$effect(() => {
@@ -540,6 +540,8 @@
 					? () => (selectMode ? exitSelect() : (selectMode = true))
 					: undefined}
 				forkSelectActive={selectMode}
+				onterminal={() => (terminalOpen = !terminalOpen)}
+				{terminalOpen}
 				oninterrupt={sa.interrupt}
 				onarchive={sa.archive}
 				onstoparchive={sa.stopAndArchive}
@@ -563,8 +565,6 @@
 				bind:mobilePanel
 				ontoggleAuto={sa.toggleAutoApprove}
 				ondiagnose={() => (diagnoseOpen = true)}
-				onterminal={() => (terminalOpen = !terminalOpen)}
-				{terminalOpen}
 				{pins}
 				{lines}
 				onjumpseq={(seq) => void ensureSeqVisible(seq)}
