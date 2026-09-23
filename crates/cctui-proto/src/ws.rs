@@ -421,11 +421,15 @@ pub enum AgentEvent {
         #[serde(default)]
         meta: bool,
         /// `thinking` | `redacted_thinking` | `attachment` | `system_marker` |
-        /// `turn_annotation`;
+        /// `turn_annotation` | `queue_op`;
         /// `None` is ordinary visible prose. Free string so an unknown adapter
         /// kind still decodes.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         kind: Option<String>,
+        /// Queue verb for a `queue_op`: `queued` | `dequeued` | `removed` |
+        /// `cleared`. `None` for every other kind.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        operation: Option<String>,
         ts: i64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         message_id: Option<String>,
@@ -831,6 +835,7 @@ mod tests {
             content: "hello".into(),
             meta: false,
             kind: None,
+            operation: None,
             ts: 1_234_567_890,
             message_id: None,
             usage: None,
@@ -854,6 +859,7 @@ mod tests {
             content: "hi".into(),
             meta: false,
             kind: None,
+            operation: None,
             ts: 10,
             message_id: None,
             usage: None,
@@ -878,6 +884,7 @@ mod tests {
             content: "Here is my analysis.".into(),
             meta: false,
             kind: None,
+            operation: None,
             ts: 100, // ties the answer's ts
             message_id: None,
             usage: None,
@@ -895,6 +902,7 @@ mod tests {
             content: "▷ User: option A".into(),
             meta: false,
             kind: None,
+            operation: None,
             ts: 100,
             message_id: None,
             usage: None,
@@ -977,6 +985,7 @@ mod tests {
                 content: "hello".into(),
                 meta: false,
                 kind: None,
+                operation: None,
                 ts: 1,
                 message_id: None,
                 usage: None,
@@ -1024,6 +1033,7 @@ mod tests {
                 content: "hi".into(),
                 meta: false,
                 kind: None,
+                operation: None,
                 ts: 1,
                 message_id: None,
                 usage: None,
