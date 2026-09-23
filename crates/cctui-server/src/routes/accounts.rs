@@ -1132,13 +1132,14 @@ fn prepare_provider_write(
 fn validate_provider_settings(
     v: &serde_json::Value,
 ) -> Result<serde_json::Value, (StatusCode, Json<serde_json::Value>)> {
-    if let Some(obj) = v.as_object() {
-        let mut obj = obj.clone();
-        obj.remove("thinking_display");
-        Ok(serde_json::Value::Object(obj))
-    } else {
-        Err(err(StatusCode::BAD_REQUEST, "provider_settings must be a JSON object"))
-    }
+    v.as_object().map_or_else(
+        || Err(err(StatusCode::BAD_REQUEST, "provider_settings must be a JSON object")),
+        |obj| {
+            let mut obj = obj.clone();
+            obj.remove("thinking_display");
+            Ok(serde_json::Value::Object(obj))
+        },
+    )
 }
 
 /// INSERT one provider row under an account. Bubbles the raw `sqlx::Error` so

@@ -707,6 +707,7 @@ pub enum RemoveInitiator {
 
 impl RemoveInitiator {
     /// The persisted `sessions.archived_by` value.
+    #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::User => "user",
@@ -714,6 +715,7 @@ impl RemoveInitiator {
         }
     }
 
+    #[must_use]
     pub fn parse(s: &str) -> Option<Self> {
         match s {
             "user" => Some(Self::User),
