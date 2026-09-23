@@ -351,6 +351,10 @@ export function parseUserUploadRefs(text: string | undefined): UserUploadRefs {
 			push(st[2]);
 		}
 	}
+	// The staged block is authoritative: staging renames a colliding name, and a
+	// `[paste-1.txt]` token the composer left on the old one resolves by name to
+	// another message's upload.
+	if (names.length) return { sessionId, names };
 	for (const m of text.matchAll(BRACKET_TOKEN_RE)) {
 		if (isPasteName(m[1])) push(m[1]);
 	}
