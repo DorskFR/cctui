@@ -4063,16 +4063,22 @@ fn classify_claude_rm(
         [stderr, stdout].iter().flat_map(|s| s.split_whitespace()).collect::<Vec<_>>().join(" ");
     let detail =
         if output.is_empty() { format!("exit {code}") } else { format!("exit {code}: {output}") };
-    if let Some((pid, kind, job)) = parse_occupant(&output) {
+    if let Some(Occupant { pid, kind, job }) = parse_occupant(&output) {
         return ClaudeRmOutcome::Occupied { pid, kind, job, detail };
     }
     ClaudeRmOutcome::Refused(detail)
 }
 
+struct Occupant {
+    pid: Option<i32>,
+    kind: Option<String>,
+    job: Option<String>,
+}
+
 /// Pull the occupant out of the CLI's refusal line, in either of the two shapes
 /// it prints: `… live session (pid 42, agent)` and
 /// `… background session deadbeef, pid 42`.
-fn parse_occupant(output: &str) -> Option<(Option<i32>, Option<String>, Option<String>)> {
+fn parse_occupant(output: &str) -> Option<Occupant> {
     if !output.contains("working directory of a live session")
         && !output.contains("working directory of a background session")
     {
@@ -4096,7 +4102,7 @@ fn parse_occupant(output: &str) -> Option<(Option<i32>, Option<String>, Option<S
             rest.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '-').collect::<String>()
         })
         .filter(|j| !j.is_empty());
-    Some((pid, kind, job))
+    Some(Occupant { pid, kind, job })
 }
 
 #[cfg(test)]
@@ -4518,7 +4524,7 @@ mod tests {
                 started.push(local_id);
             }
         }
-        assert_eq!(started, vec!["f1eetf1e-uuid".to_owned()]);
+        assert_eq!(started, ["f1eetf1e-uuid"]);
     }
 
     #[tokio::test]
@@ -4540,10 +4546,10 @@ mod tests {
                 ends.push(reason);
             }
         }
-        assert!(
-            matches!(ends.as_slice(), [EndReason::Other { detail }] if detail.contains("not started by cctui")),
-            "{ends:?}"
-        );
+        let [EndReason::Other { detail }] = ends.as_slice() else {
+            panic!("expected exactly one release, got {ends:?}")
+        };
+        assert!(detail.contains("not started by cctui"), "{detail}");
     }
 
     #[tokio::test]
