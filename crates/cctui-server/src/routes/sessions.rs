@@ -388,6 +388,8 @@ pub async fn list_sessions(
                         end_reason: None,
                         end_detail: None,
                         ended_at: None,
+                        keepalive: None,
+                        last_keepalive_at: None,
                     },
                 )
             })
@@ -492,6 +494,8 @@ pub async fn list_sessions(
                 end_reason: None,
                 end_detail: None,
                 ended_at: None,
+                keepalive: None,
+                last_keepalive_at: None,
             },
         ));
     }
@@ -740,11 +744,14 @@ async fn enrich_and_sort(
             end_detail: Option<String>,
             ended_at: Option<DateTime<Utc>>,
             permission_mode: Option<String>,
+            keepalive_json: Option<serde_json::Value>,
+            last_keepalive_at: Option<DateTime<Utc>>,
         }
         let rows: Vec<SignalRow> = sqlx::query_as(
             "SELECT id, tempo, agent_state, activity, session_name, model, effort, pinned, \
                     soft_limit_reason, last_tool_at, last_tool_name, tool_use_count, \
-                    children, end_reason, end_detail, ended_at, permission_mode \
+                    children, end_reason, end_detail, ended_at, permission_mode, \
+                    keepalive_json, last_keepalive_at \
              FROM sessions WHERE id = ANY($1)",
         )
         .bind(&session_ids)
@@ -789,6 +796,8 @@ async fn enrich_and_sort(
                 s.effort = row.effort;
                 s.permission_mode = row.permission_mode;
                 s.pinned = row.pinned;
+                s.keepalive = row.keepalive_json.and_then(|v| serde_json::from_value(v).ok());
+                s.last_keepalive_at = row.last_keepalive_at;
                 s.activity_detail = row.activity;
                 s.last_tool_at = row.last_tool_at;
                 s.last_tool_name = row.last_tool_name;
@@ -1343,6 +1352,8 @@ pub async fn search_sessions(
                     end_reason: None,
                     end_detail: None,
                     ended_at: None,
+                    keepalive: None,
+                    last_keepalive_at: None,
                 },
             )
         })
@@ -1571,6 +1582,8 @@ pub async fn get_session(
                 end_reason: None,
                 end_detail: None,
                 ended_at: None,
+                keepalive: None,
+                last_keepalive_at: None,
             };
             return Ok(Json(item));
         }
@@ -1637,6 +1650,8 @@ pub async fn get_session(
         end_reason: None,
         end_detail: None,
         ended_at: None,
+        keepalive: None,
+        last_keepalive_at: None,
     };
     let end: Option<EndRow> = sqlx::query_as(
         "SELECT end_reason, end_detail, ended_at, todos, permission_mode \
@@ -2729,6 +2744,26 @@ async fn unpin_one(state: &AppState, session_id: &str) -> Result<(), sqlx::Error
         .await?;
     tracing::info!(session_id = %session_id, "session unpinned");
     Ok(())
+}
+
+/// `POST /api/v1/sessions/{id}/keepalive` — set or clear the prompt-cache
+/// keep-alive schedule; answers with the stored schedule (`null` when off).
+pub async fn set_keepalive(
+    State(state): State<AppState>,
+    Path(session_id): Path<String>,
+    Json(req): Json<cctui_proto::api::SessionKeepaliveRequest>,
+) -> Result<Json<Option<cctui_proto::api::KeepaliveState>>, (StatusCode, Json<ApiError>)> {
+    match crate::keepalive::apply(&state, &session_id, &req).await {
+        Ok(Some(Ok(schedule))) => Ok(Json(schedule)),
+        Ok(Some(Err(msg))) => Err((StatusCode::BAD_REQUEST, Json(ApiError { error: msg }))),
+        Ok(None) => {
+            Err((StatusCode::NOT_FOUND, Json(ApiError { error: "session not found".into() })))
+        }
+        Err(e) => {
+            tracing::error!("db error: {e}");
+            Err((StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() })))
+        }
+    }
 }
 
 /// `POST /api/v1/sessions/pin` — pin many sessions in one request. Mirrors the

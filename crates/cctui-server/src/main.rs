@@ -15,6 +15,7 @@ mod dispatchers;
 mod error;
 mod fireworks_billing;
 mod http_cache;
+mod keepalive;
 mod langfuse;
 mod live_sessions;
 mod machine_liveness;
@@ -822,6 +823,14 @@ fn build_api_routes() -> Routes {
             "/sessions/{id}/unpin",
             "Unpin a single session.",
             post(routes::sessions::unpin_session),
+            Authn::Bearer,
+            sess_write(),
+        )
+        .add(
+            &[Method::POST],
+            "/sessions/{id}/keepalive",
+            "Set or clear the session's prompt-cache keep-alive schedule.",
+            post(routes::sessions::set_keepalive),
             Authn::Bearer,
             sess_write(),
         )
@@ -1668,6 +1677,7 @@ async fn reaper_task(state: AppState) {
         // crash-coverage path the worker's REPLY_URL exit trap can miss.
         webhook::sweep(&state).await;
         auto_resume::sweep(&state).await;
+        keepalive::sweep(&state).await;
 
         state.permission_store.write().await.reap_stale(300); // seconds
     }

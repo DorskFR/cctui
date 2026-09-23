@@ -22,6 +22,8 @@
 	import TokenUsage from '$lib/components/molecules/TokenUsage.svelte';
 	import PermissionModeBadge from '$lib/components/molecules/PermissionModeBadge.svelte';
 	import LangfuseChip from '$lib/components/molecules/LangfuseChip.svelte';
+	import CacheWarmChip from '$lib/components/molecules/CacheWarmChip.svelte';
+	import KeepaliveModal from '$lib/components/molecules/KeepaliveModal.svelte';
 	import {
 		Badge,
 		Icon,
@@ -150,6 +152,8 @@
 		onsetmodel(model, effort);
 	}
 
+	let keepaliveOpen = $state(false);
+
 	// Stand-ins for the `data-overflow` actions once the bar collapses.
 	const overflowItems = $derived<MenuItem[]>([
 		renaming
@@ -163,6 +167,12 @@
 			icon: 'fork' as const,
 			pressed: onforkselect ? forkSelectActive : undefined,
 			onselect: onforkselect ?? onfork
+		},
+		{
+			label: m.drawer_keepalive_label(),
+			icon: 'bell' as const,
+			pressed: !!session.keepalive,
+			onselect: () => (keepaliveOpen = true)
 		}
 	]);
 
@@ -346,6 +356,7 @@
 		<PermissionModeBadge mode={session.permission_mode} />
 		<TokenUsage usage={session.token_usage} />
 		<LangfuseChip id={session.id} />
+		<CacheWarmChip {session} />
 		{#if isCodexSession && !archived}
 			{#if modelEditing}
 				<span class="model-edit">
@@ -394,6 +405,10 @@
 		</div>
 	</div>
 </div>
+
+{#if keepaliveOpen}
+	<KeepaliveModal {session} onclose={() => (keepaliveOpen = false)} />
+{/if}
 
 <style>
 	.dhead {

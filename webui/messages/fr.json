@@ -1803,5 +1803,20 @@
 	"home_sessions_month": "Ce mois-ci",
 	"home_sessions_periods_hint": "Heure locale · depuis lundi pour la semaine · sessions archivées incluses",
 	"attachments_compressing": "Compression en cours…",
-	"attachments_compression_failed": "Impossible de compresser « {name} ». Le format est peut-être incompatible avec ce navigateur. Essayez une autre image."
+	"attachments_compression_failed": "Impossible de compresser « {name} ». Le format est peut-être incompatible avec ce navigateur. Essayez une autre image.",
+	"conversation_keepalive_tick": "Tick de maintien du cache",
+	"drawer_keepalive_label": "Garder le cache chaud…",
+	"keepalive_chip_cold": "cache froid",
+	"keepalive_chip_kept_warm": "cache maintenu chaud",
+	"keepalive_chip_ticking_title": "Le maintien envoie des ticks pour garder le cache de prompt chaud",
+	"keepalive_chip_title": "Expiration prévue du cache de prompt du fournisseur",
+	"keepalive_chip_warm_until": "cache chaud jusqu'à",
+	"keepalive_enable": "Envoyer des ticks de maintien",
+	"keepalive_help": "Envoie un petit message à chaque intervalle tant que la session est inactive, pour que le prochain vrai prompt tombe sur un cache chaud. Chaque tick est un vrai tour (peu coûteux) ; il est suspendu si la session attend une réponse, est bloquée, ou si son compte approche d'une limite d'usage.",
+	"keepalive_interval": "Intervalle",
+	"keepalive_max_ticks": "Arrêter après",
+	"keepalive_progress": "{sent} tick(s) sur {max} envoyés depuis le dernier message humain",
+	"keepalive_ticks_indefinite": "jamais (indéfiniment)",
+	"keepalive_ticks_n": "{n} ticks sans réponse",
+	"keepalive_title": "Garder le cache de prompt chaud"
 }

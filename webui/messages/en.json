@@ -1803,5 +1803,20 @@
 	"home_sessions_month": "This month",
 	"home_sessions_periods_hint": "Local time · week starts Monday · archived sessions included",
 	"attachments_compressing": "Compressing…",
-	"attachments_compression_failed": "Could not compress “{name}”. This browser may not support the format. Try another image."
+	"attachments_compression_failed": "Could not compress “{name}”. This browser may not support the format. Try another image.",
+	"conversation_keepalive_tick": "Cache keep-alive tick",
+	"drawer_keepalive_label": "Keep cache warm…",
+	"keepalive_chip_cold": "cache cold",
+	"keepalive_chip_kept_warm": "cache kept warm",
+	"keepalive_chip_ticking_title": "Keep-alive is sending ticks so the prompt cache stays warm",
+	"keepalive_chip_title": "When the provider's prompt cache is expected to expire",
+	"keepalive_chip_warm_until": "cache warm until",
+	"keepalive_enable": "Send keep-alive ticks",
+	"keepalive_help": "Sends a tiny message at each interval while the session is idle so the next real prompt hits a warm cache. Every tick is a real (cheap) turn; it pauses while the session needs input, is blocked, or its account is near a usage limit.",
+	"keepalive_interval": "Interval",
+	"keepalive_max_ticks": "Stop after",
+	"keepalive_progress": "{sent} of {max} ticks sent since the last human message",
+	"keepalive_ticks_indefinite": "never (indefinitely)",
+	"keepalive_ticks_n": "{n} ticks without a reply",
+	"keepalive_title": "Keep prompt cache warm"
 }

@@ -432,6 +432,42 @@ pub struct SessionListItem {
     pub end_detail: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ended_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Cache keep-alive schedule while enabled (`sessions.keepalive_json`);
+    /// `None` when off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keepalive: Option<KeepaliveState>,
+    /// When the reaper last claimed a keep-alive tick for this session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_keepalive_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// Per-session cache keep-alive schedule. The reaper sends a small tick every
+/// `interval_secs` while the session is idle so the provider's prompt cache
+/// stays warm, and stops after `max_ticks` ticks without human activity
+/// (`0` = indefinitely). A human message resets `ticks_sent`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct KeepaliveState {
+    pub interval_secs: u32,
+    pub max_ticks: u32,
+    #[serde(default)]
+    pub ticks_sent: u32,
+    /// Projected end of the schedule (`max_ticks * interval_secs` from the
+    /// last human activity); `None` when indefinite.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// `POST /sessions/{id}/keepalive` body. `enabled: false` clears the schedule;
+/// omitted fields fall back to the provider default interval and 6 ticks.
+#[derive(Debug, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SessionKeepaliveRequest {
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval_secs: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_ticks: Option<u32>,
 }
 
 /// One entry of a session's agent task list, normalized across harnesses.

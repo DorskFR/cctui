@@ -2,6 +2,7 @@
 import type { AdapterId } from "./AdapterId";
 import type { Attention } from "./Attention";
 import type { Bucket } from "./Bucket";
+import type { KeepaliveState } from "./KeepaliveState";
 import type { Label } from "./Label";
 import type { Liveness } from "./Liveness";
 import type { SessionEndReason } from "./SessionEndReason";
@@ -223,4 +224,13 @@ end_reason?: SessionEndReason | null,
 /**
  * Adapter/server diagnostic for the end (exit status, stderr tail).
  */
-end_detail?: string | null, ended_at?: string | null, };
+end_detail?: string | null, ended_at?: string | null, 
+/**
+ * Cache keep-alive schedule while enabled (`sessions.keepalive_json`);
+ * `None` when off.
+ */
+keepalive?: KeepaliveState | null, 
+/**
+ * When the reaper last claimed a keep-alive tick for this session.
+ */
+last_keepalive_at?: string | null, };

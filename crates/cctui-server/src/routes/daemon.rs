@@ -1155,7 +1155,8 @@ async fn handle_event(
             crate::spawn_labels::claim_intent(&state.pool, &local_id, spawn_key_hint.as_deref())
                 .await;
         }
-        AdapterEvent::Message { local_id, payload, turn_id } => {
+        AdapterEvent::Message { local_id, mut payload, turn_id } => {
+            crate::keepalive::observe_message(state, &local_id, &mut payload).await;
             inserted_seq = insert_event(state, &local_id, "message", payload, turn_id).await?;
             newly_inserted = inserted_seq.is_some();
             note_insert(state, machine_id, newly_inserted);
