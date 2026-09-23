@@ -364,6 +364,7 @@ pub async fn list_sessions(
                         name: None,
                         model: None,
                         effort: None,
+                        permission_mode: None,
                         auto_approve: false,
                         match_snippet: None,
                         match_seq: None,
@@ -467,6 +468,7 @@ pub async fn list_sessions(
                 name: None,
                 model: None,
                 effort: None,
+                permission_mode: None,
                 auto_approve: false,
                 match_snippet: None,
                 match_seq: None,
@@ -734,11 +736,12 @@ async fn enrich_and_sort(
             Option<String>,
             Option<String>,
             Option<DateTime<Utc>>,
+            Option<String>,
         );
         let rows: Vec<SignalRow> = sqlx::query_as(
             "SELECT id, tempo, agent_state, activity, session_name, model, effort, pinned, \
                     soft_limit_reason, last_tool_at, last_tool_name, tool_use_count, \
-                    children, end_reason, end_detail, ended_at \
+                    children, end_reason, end_detail, ended_at, permission_mode \
              FROM sessions WHERE id = ANY($1)",
         )
         .bind(&session_ids)
@@ -773,6 +776,7 @@ async fn enrich_and_sort(
                 end_reason,
                 end_detail,
                 ended_at,
+                permission_mode,
             )) = by_session.remove(&s.id)
             {
                 s.end_reason = end_reason.as_deref().map(SessionEndReason::parse);
@@ -799,6 +803,7 @@ async fn enrich_and_sort(
                 s.name = name;
                 s.model = model;
                 s.effort = effort;
+                s.permission_mode = permission_mode;
                 s.pinned = pinned;
                 s.activity_detail = activity;
                 s.last_tool_at = last_tool_at;
@@ -1308,6 +1313,7 @@ pub async fn search_sessions(
                     name: None,
                     model: None,
                     effort: None,
+                    permission_mode: None,
                     auto_approve: false,
                     match_snippet: None,
                     match_seq: None,
@@ -1484,7 +1490,13 @@ pub async fn search_field_values(
     Ok(Json(rows.into_iter().map(|(v,)| v).collect()))
 }
 
-type EndRow = (Option<String>, Option<String>, Option<DateTime<Utc>>, Option<serde_json::Value>);
+type EndRow = (
+    Option<String>,
+    Option<String>,
+    Option<DateTime<Utc>>,
+    Option<serde_json::Value>,
+    Option<String>,
+);
 
 #[allow(clippy::too_many_lines)]
 pub async fn get_session(
@@ -1495,7 +1507,7 @@ pub async fn get_session(
     {
         let registry = state.registry.read().await;
         if let Some(handle) = registry.get(&session_id) {
-            let item = SessionListItem {
+            let mut item = SessionListItem {
                 id: handle.session.id.clone(),
                 parent_id: handle.session.parent_id.clone(),
                 machine_id: handle.session.machine_id.clone(),
@@ -1516,6 +1528,7 @@ pub async fn get_session(
                 name: None,
                 model: None,
                 effort: None,
+                permission_mode: None,
                 auto_approve: state
                     .permission_store
                     .read()
@@ -1544,6 +1557,15 @@ pub async fn get_session(
                 end_detail: None,
                 ended_at: None,
             };
+            item.permission_mode = sqlx::query_as::<_, (Option<String>,)>(
+                "SELECT permission_mode FROM sessions WHERE id = $1",
+            )
+            .bind(&item.id)
+            .fetch_optional(&state.pool)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|(m,)| m);
             return Ok(Json(item));
         }
     }
@@ -1585,6 +1607,7 @@ pub async fn get_session(
         name: None,
         model: None,
         effort: None,
+        permission_mode: None,
         auto_approve: state.permission_store.read().await.is_auto_approve(&row.id),
         match_snippet: None,
         match_seq: None,
@@ -1610,7 +1633,8 @@ pub async fn get_session(
         ended_at: None,
     };
     let end: Option<EndRow> = sqlx::query_as(
-        "SELECT end_reason, end_detail, ended_at, todos FROM sessions WHERE id = $1",
+        "SELECT end_reason, end_detail, ended_at, todos, permission_mode \
+         FROM sessions WHERE id = $1",
     )
     .bind(&item.id)
     .fetch_optional(&state.pool)
@@ -1619,11 +1643,12 @@ pub async fn get_session(
         tracing::error!("db error: {e}");
         (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
     })?;
-    if let Some((end_reason, end_detail, ended_at, todos)) = end {
+    if let Some((end_reason, end_detail, ended_at, todos, permission_mode)) = end {
         item.end_reason = end_reason.as_deref().map(SessionEndReason::parse);
         item.end_detail = end_detail;
         item.ended_at = ended_at;
         item.todos = todos.and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
+        item.permission_mode = permission_mode;
     }
     Ok(Json(item))
 }
@@ -2890,9 +2915,9 @@ impl<'a> DraftRowFields<'a> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Bucket, SessionChild, SqlParam, attention_from_bucket, bucket_from_signals, cap_unread,
-        compile_node, derive_liveness, field_values_sql, make_snippet, normalize_last_message,
-        snippet_sql,
+        Bucket, EndRow, SessionChild, SqlParam, attention_from_bucket, bucket_from_signals,
+        cap_unread, compile_node, derive_liveness, field_values_sql, make_snippet,
+        normalize_last_message, snippet_sql,
     };
     use cctui_proto::models::{Attention, Liveness};
     use chrono::{Duration, Utc};
@@ -3515,5 +3540,55 @@ mod tests {
         // `(SELECT s.id)` is what stops the planner hoisting the sublink into a
         // hashed subplan that rechecks every matching event in the table.
         assert!(sql.contains("e.session_id = (SELECT s.id)"), "{sql}");
+    }
+
+    /// CCT-1080: the persisted posture reaches the sessions payload and the
+    /// wire shape only carries the key when it is known.
+    #[test]
+    fn permission_mode_rides_the_session_payload() {
+        let mut item = bare_session("perm-1");
+        assert!(item.permission_mode.is_none());
+        let bare = serde_json::to_value(&item).unwrap();
+        assert!(
+            bare.get("permission_mode").is_none(),
+            "an unknown posture must not be serialized"
+        );
+
+        item.permission_mode = Some("yolo".into());
+        let wire = serde_json::to_value(&item).unwrap();
+        assert_eq!(wire["permission_mode"], serde_json::json!("yolo"));
+
+        let back: cctui_proto::api::SessionListItem = serde_json::from_value(wire).unwrap();
+        assert_eq!(back.permission_mode.as_deref(), Some("yolo"));
+    }
+
+    /// The get-one fallback selects the column, so an archived session still
+    /// reports the posture it ran under.
+    #[tokio::test]
+    async fn get_session_selects_the_persisted_permission_mode() {
+        let Some((pool, sid)) = seeded_session("get_session_permission_mode").await else {
+            return;
+        };
+        sqlx::query("UPDATE sessions SET permission_mode = 'plan' WHERE id = $1")
+            .bind(&sid)
+            .execute(&pool)
+            .await
+            .expect("set posture");
+
+        let row: Option<EndRow> = sqlx::query_as(
+            "SELECT end_reason, end_detail, ended_at, todos, permission_mode \
+             FROM sessions WHERE id = $1",
+        )
+        .bind(&sid)
+        .fetch_optional(&pool)
+        .await
+        .expect("read session");
+        assert_eq!(row.expect("session row").4.as_deref(), Some("plan"));
+
+        sqlx::query("DELETE FROM sessions WHERE id = $1")
+            .bind(&sid)
+            .execute(&pool)
+            .await
+            .expect("cleanup");
     }
 }
