@@ -289,14 +289,9 @@ function ownerLine(out: Line[], roles: Line['role'][], stopAt: Line['role'][]): 
 	return null;
 }
 
-// Claude writes `attachment` records *before* the user turn they belong to, so
-// they are counted forward onto the next user line rather than scanned back.
-function attachAnnotation(out: Line[], content: string, pending: { attachments: number }): void {
+function attachAnnotation(out: Line[], content: string): void {
 	const { kind, detail } = parseAnnotation(content);
 	switch (kind) {
-		case 'attachment':
-			pending.attachments += 1;
-			return;
 		case 'turn_duration': {
 			const ms = Number(detail);
 			const owner = ownerLine(out, ['assistant'], ['user', 'poll', 'peer', 'reset']);
@@ -375,12 +370,11 @@ export function buildLines(
 ): Line[] {
 	const out: Line[] = [];
 	const poll = newPollSeen();
-	const pending = { attachments: 0 };
 	let prevKey = '';
 	for (const e of events) {
 		if (breaksPollRun(e)) poll.last = null;
 		if (e.type === 'text' && e.kind === 'turn_annotation') {
-			attachAnnotation(out, e.content, pending);
+			attachAnnotation(out, e.content);
 			continue;
 		}
 		if (e.type === 'turn_summary') {
@@ -413,12 +407,6 @@ export function buildLines(
 			prevLine.markerTexts = [...(prevLine.markerTexts ?? []), ...(ln.markerTexts ?? [])];
 			prevLine.text = prevLine.markerTexts.join(' · ');
 			continue;
-		}
-		if (ln.role === 'user' || ln.role === 'poll') {
-			if (pending.attachments > 0) {
-				ln.attachmentCount = pending.attachments;
-				pending.attachments = 0;
-			}
 		}
 		if ((ln.role === 'user' || ln.role === 'poll') && delivery) {
 			if (delivery.pending.has(ln.ts)) ln.pending = true;

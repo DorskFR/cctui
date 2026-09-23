@@ -188,9 +188,6 @@ export interface Line {
 	// Consecutive markers collapse into one row; every marker's text is kept
 	// here so nothing is lost to the grouping.
 	markerTexts?: string[];
-	// Harness attachments this user turn carried, counted rather than rendered
-	// as a bubble each.
-	attachmentCount?: number;
 	// `system/stop_hook_summary` for the turn this assistant line closes.
 	stopHook?: string;
 	// `file-history-snapshot|delta` provenance for this tool call.

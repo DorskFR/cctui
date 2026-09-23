@@ -574,17 +574,17 @@ describe('CCT-1055 system record reclassification', () => {
 	const marker = (body: string, ts: number) => text(`· ${body}`, ts, 'system_marker');
 	const user = (body: string, ts: number) => text(`▷ User: ${body}`, ts);
 
-	it('collapses attachments to a count on the user turn they precede, with no bubble', () => {
+	it('never counts harness attachment records on the user turn they precede', () => {
 		const lines = buildLines(
 			[
-				annotation('attachment:prompt_snapshot', 1),
-				annotation('attachment:queued_command', 2),
+				annotation('attachment:environment', 1),
+				annotation('attachment:prompt_snapshot', 2),
 				user('do the thing', 3)
 			],
 			ctx()
 		);
 		expect(lines.map((l) => l.role)).toEqual(['user']);
-		expect(lines[0].attachmentCount).toBe(2);
+		expect(lines[0]).not.toHaveProperty('attachmentCount');
 	});
 
 	it('drops attachment annotations that never reach a user turn', () => {

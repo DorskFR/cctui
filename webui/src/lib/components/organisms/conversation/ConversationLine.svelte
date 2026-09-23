@@ -248,13 +248,6 @@
 	{:else if ln.text}
 		<pre class="bubble mono code">{ln.text}</pre>
 	{/if}
-	{#if ln.attachmentCount}
-		<div class="line-foot row">
-			<Text tone="faint" size="xs"
-				>{m.conversation_attachment_count({ count: ln.attachmentCount })}</Text
-			>
-		</div>
-	{/if}
 	{#if uploadRefs && uploadRefs.names.length}
 		<UserAttachments refs={uploadRefs} ts={ln.ts} {archived} />
 	{/if}
