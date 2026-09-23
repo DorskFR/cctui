@@ -86,7 +86,7 @@
 						? codexModelsFor(codexCatalog)
 						: withAliasTargets(claudeModels, provider?.model_aliases)
 				);
-		const out = list.map((o) => ({
+		const out: SelectOption[] = list.map((o) => ({
 			value: o.v,
 			label: o.v ? o.label : m.spawn_model_default(),
 			hint: o.hint,
