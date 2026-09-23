@@ -2516,9 +2516,8 @@ pub async fn archive_session(
     Path(session_id): Path<String>,
     Query(q): Query<ArchiveQuery>,
 ) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
-    let outcome = archive_one(&state, &session_id, q.force, RemoveInitiator::User)
-        .await
-        .map_err(|e| {
+    let outcome =
+        archive_one(&state, &session_id, q.force, RemoveInitiator::User).await.map_err(|e| {
             tracing::error!("db error: {e}");
             (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
         })?;

@@ -158,7 +158,8 @@ pub async fn sweep(state: &AppState) {
             false,
             cctui_proto::adapter::RemoveInitiator::Automatic,
         )
-        .await {
+        .await
+        {
             Ok(ArchiveOutcome::Archived) => {
                 tracing::info!(session_id = %id, "auto-archived a finished macro session");
             }
