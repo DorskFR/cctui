@@ -1504,7 +1504,36 @@ async fn update_status_signals(
     local_id: &str,
     s: StatusSignals<'_>,
 ) -> anyhow::Result<()> {
+    let decorated = s.name.and_then(crate::session_emoji::decorate);
+    let row = write_status_signals(&state.pool, local_id, &s, decorated.as_deref()).await?;
+
+    // Hand the freshly-changed name to the picker model, if one is configured.
+    // Only a name we just decorated qualifies, and only when it is genuinely
+    // new: comparing against the stored name with its emoji stripped means the
+    // same title re-reported on every Status costs no second call.
+    if let Some((old_name, true)) = row
+        && let (Some(name), Some(decorated)) = (s.name, decorated.as_deref())
+        && state.config.emoji_picker().is_some()
+    {
+        let already = old_name.as_deref().map(crate::session_emoji::strip_emoji);
+        if already != Some(name) {
+            spawn_emoji_refine(state, local_id, name, decorated);
+        }
+    }
+    Ok(())
+}
+
+async fn write_status_signals(
+    pool: &sqlx::PgPool,
+    local_id: &str,
+    s: &StatusSignals<'_>,
+    decorated: Option<&str>,
+) -> anyhow::Result<Option<(Option<String>, bool)>> {
     let children = serde_json::to_value(s.children).unwrap_or_else(|_| serde_json::json!([]));
+    // `metadata.agent_title` is the exact name cctui last wrote from an agent
+    // title: a stored name still equal to it is agent-owned and claimable, any
+    // other name was typed by the user and an agent title must not touch it.
+    //
     // Opt-in emoji prefix on the agent-supplied display name. cctui never
     // generates a title itself (see `crate::session_emoji`), so the decoration
     // has to happen here, where the agent's name lands. The keyword table's
@@ -1512,9 +1541,7 @@ async fn update_status_signals(
     // model is configured; a configured model then refines it below.
     //
     // The SQL takes the decorated form only when the owning user enabled
-    // `sessionEmojiPrefix` and the incoming name differs from the stored one:
-    // an unchanged name is the echo of a name the user typed (spawn or
-    // rename), which stays exactly as they wrote it.
+    // `sessionEmojiPrefix` and the incoming name differs from the stored one.
     //
     // A stored name that is the incoming one behind a decoration — a run of
     // symbols and one space, i.e. an emoji prefix — is left alone too. Without
@@ -1528,32 +1555,43 @@ async fn update_status_signals(
     //
     // Both guards hang off `emoji_on`, so switching the setting off drops
     // through to the plain name on the next Status.
-    let decorated = s.name.and_then(crate::session_emoji::decorate);
     let row: Option<(Option<String>, bool)> = sqlx::query_as(
-        "WITH prev AS ( \
+        "WITH claim AS ( \
             SELECT s.id, \
                    s.session_name AS old_name, \
                    COALESCE((SELECT us.data->'sessionEmojiPrefix' = 'true'::jsonb \
                              FROM user_settings us WHERE us.user_id = s.user_id), false) \
-                     AS emoji_on \
+                     AS emoji_on, \
+                   (COALESCE(s.session_name, '') = '' \
+                    OR s.session_name IS NOT DISTINCT FROM s.metadata->>'agent_title') \
+                     AS claimable \
             FROM sessions s WHERE s.id = $1 \
+         ), \
+         prev AS ( \
+            SELECT c.id, c.old_name, c.emoji_on, \
+                   CASE \
+                       WHEN $5::text IS NULL OR NOT c.claimable THEN NULL \
+                       WHEN c.old_name IS NOT DISTINCT FROM $5::text THEN NULL \
+                       WHEN c.emoji_on \
+                            AND right(c.old_name, length($5::text)) = $5::text \
+                            AND left(c.old_name, \
+                                     length(c.old_name) - length($5::text)) \
+                                ~ '^[^[:alnum:][:space:]]+ $' \
+                           THEN NULL \
+                       WHEN c.emoji_on AND $10::text IS NOT NULL THEN $10::text \
+                       ELSE $5::text \
+                   END AS new_name \
+            FROM claim c \
          ) \
          UPDATE sessions SET \
             tempo = COALESCE($2, sessions.tempo), \
             agent_state = COALESCE($3, sessions.agent_state), \
             activity = COALESCE($4, sessions.activity), \
-            session_name = CASE \
-                WHEN $5::text IS NULL THEN sessions.session_name \
-                WHEN sessions.session_name IS NOT DISTINCT FROM $5::text \
-                    THEN sessions.session_name \
-                WHEN prev.emoji_on \
-                     AND right(sessions.session_name, length($5::text)) = $5::text \
-                     AND left(sessions.session_name, \
-                              length(sessions.session_name) - length($5::text)) \
-                         ~ '^[^[:alnum:][:space:]]+ $' \
-                    THEN sessions.session_name \
-                WHEN prev.emoji_on AND $10::text IS NOT NULL THEN $10::text \
-                ELSE $5::text \
+            session_name = COALESCE(prev.new_name, sessions.session_name), \
+            metadata = CASE \
+                WHEN prev.new_name IS NULL THEN sessions.metadata \
+                ELSE COALESCE(sessions.metadata, '{}'::jsonb) \
+                     || jsonb_build_object('agent_title', prev.new_name) \
             END, \
             intent = COALESCE($6, sessions.intent), \
             model = COALESCE(sessions.model, $7), \
@@ -1573,25 +1611,11 @@ async fn update_status_signals(
     .bind(s.model)
     .bind(s.effort)
     .bind(children)
-    .bind(decorated.as_deref())
+    .bind(decorated)
     .bind(s.permission_mode.as_deref())
-    .fetch_optional(&state.pool)
+    .fetch_optional(pool)
     .await?;
-
-    // Hand the freshly-changed name to the picker model, if one is configured.
-    // Only a name we just decorated qualifies, and only when it is genuinely
-    // new: comparing against the stored name with its emoji stripped means the
-    // same title re-reported on every Status costs no second call.
-    if let Some((old_name, true)) = row
-        && let (Some(name), Some(decorated)) = (s.name, decorated.as_deref())
-        && state.config.emoji_picker().is_some()
-    {
-        let already = old_name.as_deref().map(crate::session_emoji::strip_emoji);
-        if already != Some(name) {
-            spawn_emoji_refine(state, local_id, name, decorated);
-        }
-    }
-    Ok(())
+    Ok(row)
 }
 
 /// Ask the configured picker model for a better emoji than the table's, in the
@@ -1624,7 +1648,10 @@ fn spawn_emoji_refine(state: &AppState, local_id: &str, name: &str, decorated: &
             return;
         }
         let _ = sqlx::query(
-            "UPDATE sessions SET session_name = $2 WHERE id = $1 AND session_name = $3",
+            "UPDATE sessions SET session_name = $2, \
+                metadata = COALESCE(metadata, '{}'::jsonb) \
+                           || jsonb_build_object('agent_title', $2::text) \
+             WHERE id = $1 AND session_name = $3",
         )
         .bind(&id)
         .bind(&refined)
@@ -2411,10 +2438,10 @@ mod tests {
 
     use super::{
         Arc, DAEMON_LOST_GRACE, DAEMON_SEEN_FRESH, EndReason, Future, Inbound, MAX_TRANSFER_BYTES,
-        Ordering, PendingDaemonLost, TodoEntry, Utc, Uuid, bearer_token, decode_compressed_frame,
-        event_kind, event_local_id, expand_batch, extract_todos, handle_chunk,
-        merge_known_adapters, next_inbound, record_todos, seen_within, should_auto_approve,
-        strip_nul,
+        Ordering, PendingDaemonLost, StatusSignals, TodoEntry, Utc, Uuid, bearer_token,
+        decode_compressed_frame, event_kind, event_local_id, expand_batch, extract_todos,
+        handle_chunk, merge_known_adapters, next_inbound, record_todos, seen_within,
+        should_auto_approve, strip_nul, write_status_signals,
     };
 
     #[test]
@@ -3587,5 +3614,133 @@ mod tests {
         };
         assert_eq!(status(&mine).await, ("ended".into(), Some("daemon_lost".into())));
         assert_eq!(status(&neighbour).await, ("active".into(), None));
+    }
+
+    /// CCT-1081: an agent title fills an empty name and replaces a previous
+    /// agent title, but never overwrites a name the user typed.
+    #[tokio::test]
+    async fn agent_titles_never_overwrite_a_user_set_name() {
+        let Some(url) = crate::routes::gateway::test_db_url("agent_title_precedence") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+
+        let uid = Uuid::new_v4();
+        let machine = Uuid::new_v4();
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, 'title-test', $2)")
+            .bind(uid)
+            .bind(format!("kh-{uid}"))
+            .execute(&pool)
+            .await
+            .expect("seed user");
+        sqlx::query("INSERT INTO machines (id, user_id, name, key_hash) VALUES ($1, $2, $3, $4)")
+            .bind(machine)
+            .bind(uid)
+            .bind(machine.to_string())
+            .bind(format!("kh-{machine}"))
+            .execute(&pool)
+            .await
+            .expect("seed machine");
+
+        let seed = |id: String| {
+            let pool = pool.clone();
+            async move {
+                sqlx::query(
+                    "INSERT INTO sessions (id, machine_id, working_dir, user_id, \
+                     machine_uuid, adapter_id) VALUES ($1, $2, '/w', $3, $4, 'claude-code')",
+                )
+                .bind(&id)
+                .bind(machine.to_string())
+                .bind(uid)
+                .bind(machine)
+                .execute(&pool)
+                .await
+                .expect("seed session");
+            }
+        };
+        let name_of = |id: String| {
+            let pool = pool.clone();
+            async move {
+                let (n,): (Option<String>,) =
+                    sqlx::query_as("SELECT session_name FROM sessions WHERE id = $1")
+                        .bind(&id)
+                        .fetch_one(&pool)
+                        .await
+                        .expect("read name");
+                n
+            }
+        };
+        let title = |pool: sqlx::PgPool, id: String, name: &'static str| async move {
+            let signals = StatusSignals {
+                tempo: None,
+                agent_state: None,
+                activity: None,
+                name: Some(name),
+                intent: None,
+                model: None,
+                effort: None,
+                permission_mode: None,
+                children: &[],
+            };
+            write_status_signals(&pool, &id, &signals, None).await.expect("status write");
+        };
+
+        let agent_owned = Uuid::new_v4().to_string();
+        seed(agent_owned.clone()).await;
+        title(pool.clone(), agent_owned.clone(), "first agent title").await;
+        assert_eq!(
+            name_of(agent_owned.clone()).await.as_deref(),
+            Some("first agent title"),
+            "an agent title fills an empty name"
+        );
+        title(pool.clone(), agent_owned.clone(), "second agent title").await;
+        assert_eq!(
+            name_of(agent_owned.clone()).await.as_deref(),
+            Some("second agent title"),
+            "an agent title replaces a previous agent title"
+        );
+
+        let user_owned = Uuid::new_v4().to_string();
+        seed(user_owned.clone()).await;
+        sqlx::query("UPDATE sessions SET session_name = $2 WHERE id = $1")
+            .bind(&user_owned)
+            .bind("name the human typed")
+            .execute(&pool)
+            .await
+            .expect("rename");
+        title(pool.clone(), user_owned.clone(), "agent title").await;
+        assert_eq!(
+            name_of(user_owned.clone()).await.as_deref(),
+            Some("name the human typed"),
+            "a user-set name outranks any agent title"
+        );
+
+        title(pool.clone(), agent_owned.clone(), "third agent title").await;
+        sqlx::query("UPDATE sessions SET session_name = $2 WHERE id = $1")
+            .bind(&agent_owned)
+            .bind("renamed by hand")
+            .execute(&pool)
+            .await
+            .expect("rename");
+        title(pool.clone(), agent_owned.clone(), "fourth agent title").await;
+        assert_eq!(
+            name_of(agent_owned.clone()).await.as_deref(),
+            Some("renamed by hand"),
+            "a rename over an agent title makes the name user-owned"
+        );
+
+        for id in [&agent_owned, &user_owned] {
+            sqlx::query("DELETE FROM sessions WHERE id = $1")
+                .bind(id)
+                .execute(&pool)
+                .await
+                .expect("cleanup");
+        }
+        sqlx::query("DELETE FROM machines WHERE id = $1").bind(machine).execute(&pool).await.ok();
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
     }
 }

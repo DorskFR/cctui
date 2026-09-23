@@ -712,6 +712,7 @@ fn register_session(app: &mut App, session: cctui_proto::models::Session) {
         name: None,
         model: None,
         effort: None,
+        permission_mode: None,
         auto_approve: false,
         match_snippet: None,
         match_seq: None,

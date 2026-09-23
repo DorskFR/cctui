@@ -20,6 +20,7 @@
 	import SessionDot from '$lib/components/molecules/SessionDot.svelte';
 	import LabelBadge from '$lib/components/molecules/LabelBadge.svelte';
 	import TokenUsage from '$lib/components/molecules/TokenUsage.svelte';
+	import PermissionModeBadge from '$lib/components/molecules/PermissionModeBadge.svelte';
 	import LangfuseChip from '$lib/components/molecules/LangfuseChip.svelte';
 	import {
 		Badge,
@@ -342,6 +343,7 @@
 			</Badge>
 		{/if}
 		<div class="meta-trail">
+		<PermissionModeBadge mode={session.permission_mode} />
 		<TokenUsage usage={session.token_usage} />
 		<LangfuseChip id={session.id} />
 		{#if isCodexSession && !archived}

@@ -303,6 +303,10 @@ pub struct SessionListItem {
     /// Reasoning/effort level (e.g. `"low"`, `"high"`), when set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
+    /// Permission posture the session runs under (e.g. `"yolo"`,
+    /// `"plan"`), when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_mode: Option<String>,
     /// Whether cctui-side auto-approve is on for this session.
     /// In-memory server state, reflected so clients can show the toggle.
     #[serde(default)]
