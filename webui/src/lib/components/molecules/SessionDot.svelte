@@ -4,6 +4,8 @@
 	import { m } from '$lib/paraglide/messages';
 	import { sessionDebugRows } from '../../../routes/sessions/sessions.logic';
 	import { sessionEnd } from '$lib/sessionEnd';
+	import { diagnoseBlocks, diagnoseRows, statusDotClass } from '$lib/diagnoseRows';
+	import { diagnoseHref } from '$lib/sessionFailureToast';
 
 	// Activity dot: the liveness dot carries a rich debug tooltip —
 	// session id (surfaced nowhere else, click-to-copy) plus account, created,
@@ -28,6 +30,7 @@
 		return [...base, ...extra];
 	});
 
+	const blocks = $derived(diagnoseBlocks(diagnoseRows(session, null, now)));
 </script>
 
 <Tooltip>
@@ -51,12 +54,22 @@
 					label={m.sessions_copy_id_title()}
 				/>
 			</div>
+			<ul class="blocks">
+				{#each blocks as b (b.block)}
+					<li data-block={b.block} data-status={b.status}>
+						<span class="dot {statusDotClass(b.status)}"></span>
+						<span class="btitle">{b.title}</span>
+						<span class="bshort">{b.short}</span>
+					</li>
+				{/each}
+			</ul>
 			<dl class="grid">
 				{#each rows as r (r.label)}
 					<dt>{r.label}</dt>
 					<dd>{#if r.at}<Timestamp value={r.at} size="xs" tone="inherit" />{:else}{r.value}{/if}</dd>
 				{/each}
 			</dl>
+			<a class="open-diag" href={diagnoseHref(session.id)}>{m.sessions_dot_open_diagnose()}</a>
 		</div>
 	{/snippet}
 </Tooltip>
@@ -77,6 +90,29 @@
 		user-select: all;
 		word-break: break-all;
 		color: var(--text);
+	}
+	.blocks {
+		list-style: none;
+		margin: 0 0 var(--sp-2);
+		padding: 0;
+	}
+	.blocks li {
+		display: flex;
+		align-items: center;
+		gap: var(--sp-2);
+	}
+	.btitle {
+		color: var(--text);
+		font-weight: 600;
+		white-space: nowrap;
+	}
+	.bshort {
+		color: var(--text-muted);
+		overflow-wrap: anywhere;
+	}
+	.open-diag {
+		display: inline-block;
+		margin-top: var(--sp-2);
 	}
 	.grid {
 		display: grid;

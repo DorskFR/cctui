@@ -127,3 +127,14 @@ describe('pin glyph', () => {
 		expect(lineSource).toContain('<Icon name="pin" size={16} filled={pinned} />');
 	});
 });
+
+describe('terminal toggle', () => {
+	it('is not in the behavior group or its mobile popover', async () => {
+		const bar = await render({ mobilePanel: 'auto', ondiagnose: vi.fn() });
+		const beh = bar.querySelector('.behbar.panel-open') as HTMLElement;
+		expect(beh).toBeTruthy();
+		expect(beh.textContent).not.toMatch(/terminal/i);
+		expect(bar.textContent).not.toMatch(/terminal/i);
+		expect(toolbarSource).not.toContain('onterminal');
+	});
+});

@@ -25,8 +25,6 @@
 		mobilePanel = $bindable(),
 		ontoggleAuto,
 		ondiagnose,
-		onterminal,
-		terminalOpen = false,
 		pins = [],
 		lines = [],
 		onjumpseq,
@@ -42,9 +40,6 @@
 		ontoggleAuto: () => void;
 		/** Opens the session diagnose panel; omit to hide the button. */
 		ondiagnose?: () => void;
-		/** Toggles the read-only live terminal; omit to hide (codex). */
-		onterminal?: () => void;
-		terminalOpen?: boolean;
 		pins?: MessagePin[];
 		lines?: Line[];
 		/** Omit both to hide the pins button (e.g. no session context). */
@@ -205,13 +200,6 @@
 				{/snippet}
 				<PinsPanel {pins} {lines} onjump={onjumpseq} {onunpin} />
 			</Popover>
-		{/if}
-		{#if onterminal}
-			<Toggle
-				pressed={terminalOpen}
-				title={m.conversation_terminal_title()}
-				onclick={onterminal}
-			>{m.conversation_terminal_btn()}</Toggle>
 		{/if}
 	</div>
 </div>
