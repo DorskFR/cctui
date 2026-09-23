@@ -238,7 +238,14 @@ pub fn record_usage_samples(
     }
     let pool = state.pool.clone();
     tokio::spawn(async move {
-        crate::store::usage_samples::record(&pool, provider_id, &windows, chrono::Utc::now()).await;
+        crate::store::usage_samples::record(
+            &pool,
+            provider_id,
+            &windows,
+            chrono::Utc::now(),
+            "poll",
+        )
+        .await;
     });
 }
 

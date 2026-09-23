@@ -30,6 +30,7 @@ mod log_tail;
 mod model_list;
 mod persist;
 mod pty_view;
+mod rate_limits;
 mod thread_list;
 pub mod thread_read;
 

@@ -37,6 +37,7 @@ mod state;
 mod store;
 mod update_check;
 mod uploads;
+mod usage_history;
 mod webauthn;
 mod webhook;
 mod ws;
@@ -1119,6 +1120,30 @@ fn build_api_routes() -> Routes {
             Authenticated,
         )
         .add(
+            &[GET],
+            "/accounts/{id}/usage/history",
+            "Sampled usage of one provider credential over time.",
+            get(routes::usage_history::account_usage_history),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[GET],
+            "/accounts/{id}/usage/closes",
+            "Closed usage windows of one provider credential, with unused share.",
+            get(routes::usage_history::account_usage_closes),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[GET],
+            "/accounts/usage/closes",
+            "Closed usage windows of every owned credential, with unused share.",
+            get(routes::usage_history::all_usage_closes),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
             &[Method::POST],
             "/accounts/{id}/limit-reset",
             "Claim a usage-limit reset on a provider credential.",
@@ -1589,6 +1614,7 @@ async fn reaper_task(state: AppState) {
         auto_archive_stale(&state).await;
         auto_archive::sweep(&state).await;
         spawn_labels::sweep(&state.pool).await;
+        usage_history::sweep(&state);
 
         // Soft-delete ephemeral (dispatch/worker) machines that have gone
         // quiet past the TTL — pods that died before self-deenroll.

@@ -386,6 +386,30 @@ pub enum AdapterEvent {
         local_id: String,
         offset: u64,
     },
+    /// Account rate-limit windows the agent itself reported (codex sends them
+    /// with every token count), recorded as usage samples of the credential
+    /// the session is bound to.
+    RateLimits {
+        local_id: String,
+        windows: Vec<RateLimitWindow>,
+        /// Unix seconds the agent observed them at; `None` means just now.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        observed_at: Option<i64>,
+    },
+}
+
+/// One rate-limit window as reported by the agent.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RateLimitWindow {
+    pub used_percent: f64,
+    /// Window length; `None` when the agent did not say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_minutes: Option<i64>,
+    /// Unix seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resets_at: Option<i64>,
+    /// `primary` or `secondary`, the agent's own naming.
+    pub slot: String,
 }
 
 /// Child reference attached to a session — typically a linked PR. Drives the

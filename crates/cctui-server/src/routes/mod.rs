@@ -41,4 +41,5 @@ pub mod spawn_child;
 pub mod stats;
 pub mod triggers;
 pub mod update_hook;
+pub mod usage_history;
 pub mod web;
