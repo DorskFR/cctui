@@ -1154,6 +1154,7 @@ async fn handle_event(
             crate::auto_archive::claim_intent(state, &local_id, spawn_key_hint.as_deref()).await;
             crate::spawn_labels::claim_intent(&state.pool, &local_id, spawn_key_hint.as_deref())
                 .await;
+            crate::followup::claim_intent(&state.pool, &local_id, spawn_key_hint.as_deref()).await;
         }
         AdapterEvent::Message { local_id, mut payload, turn_id } => {
             crate::keepalive::observe_message(state, &local_id, &mut payload).await;

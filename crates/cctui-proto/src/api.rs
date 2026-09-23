@@ -863,6 +863,15 @@ pub struct SpawnRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(skip)]
     pub spawn_capability: Option<SpawnCapability>,
+    /// How this session relates to `parent_session_id`: `followup` marks a
+    /// session whose first prompt embeds the parent's transcript brief. It
+    /// nests under the parent like a fork. `None` → a root session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relation: Option<String>,
+    /// The session this one continues (see `relation`). Set on the child's
+    /// `parent_id` when the worker registers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_session_id: Option<String>,
 }
 
 impl std::fmt::Debug for SpawnRequest {
@@ -890,6 +899,8 @@ impl std::fmt::Debug for SpawnRequest {
             .field("attachment_names", &self.attachment_names)
             .field("label_ids", &self.label_ids)
             .field("spawn_capability", &self.spawn_capability)
+            .field("relation", &self.relation)
+            .field("parent_session_id", &self.parent_session_id)
             .finish()
     }
 }
@@ -940,6 +951,21 @@ pub struct ForkResponse {
     pub status: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+}
+
+/// Response to `GET /api/v1/sessions/{id}/brief`: the user/assistant
+/// transcript as markdown, tool calls and thinking dropped, the oldest turns
+/// elided past the caps.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct BriefResponse {
+    pub markdown: String,
+    /// Turns rendered.
+    pub turns: u32,
+    /// Earlier turns elided by the turn or byte cap.
+    pub omitted: u32,
+    /// Whether the byte cap cut anything (elided turns or a cut turn).
+    pub truncated: bool,
 }
 
 /// Response to `POST /api/v1/sessions/{id}/files` (mid-chat

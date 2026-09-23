@@ -5,6 +5,7 @@ mod authz;
 mod auto_archive;
 mod auto_resume;
 mod bandwidth_watch;
+mod brief;
 mod bus;
 mod cache_bust;
 mod config;
@@ -14,6 +15,7 @@ mod db;
 mod dispatchers;
 mod error;
 mod fireworks_billing;
+mod followup;
 mod http_cache;
 mod keepalive;
 mod langfuse;
@@ -775,6 +777,14 @@ fn build_api_routes() -> Routes {
             "/sessions/{id}/bindings",
             "List a session's per-family account bindings.",
             get(routes::sessions::session_bindings),
+            Authn::Bearer,
+            sess_read(),
+        )
+        .add(
+            &[Method::GET],
+            "/sessions/{id}/brief",
+            "Render a session's user/assistant transcript as a capped markdown brief.",
+            get(brief::session_brief),
             Authn::Bearer,
             sess_read(),
         )
@@ -1598,6 +1608,7 @@ async fn reaper_task(state: AppState) {
         auto_archive_stale(&state).await;
         auto_archive::sweep(&state).await;
         spawn_labels::sweep(&state.pool).await;
+        followup::sweep(&state.pool).await;
 
         // Soft-delete ephemeral (dispatch/worker) machines that have gone
         // quiet past the TTL — pods that died before self-deenroll.
