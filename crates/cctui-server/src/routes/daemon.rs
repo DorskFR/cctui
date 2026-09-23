@@ -222,9 +222,10 @@ pub async fn session_gateway_env(
 }
 
 /// The session's `CctuiAgent` capability, as recorded by the spawn/dispatch that
-/// launched it. `None` means the daemon exposes no spawn tool to that session.
-/// Falls back to the durable table so a server restart does not disarm a live
-/// session's spawn tool.
+/// launched it. Falls back to the durable table so a server restart does not
+/// disarm a live session's spawn tool, and to the machine default so a session
+/// nobody granted anything — an adopted native session, an undeclared dispatch —
+/// still gets the relay. Only a lookup failure yields `None`.
 async fn spawn_capability_for(
     state: &AppState,
     session_id: &str,
@@ -237,7 +238,7 @@ async fn spawn_capability_for(
             state.spawn_capabilities.insert(session_id.to_owned(), cap.clone());
             Some(cap)
         }
-        Ok(None) => None,
+        Ok(None) => Some(grant_default(state, session_id).await),
         Err(e) => {
             tracing::error!(
                 %session_id,
@@ -247,6 +248,20 @@ async fn spawn_capability_for(
             None
         }
     }
+}
+
+/// The default grant for a session launched without one. A persist failure
+/// still serves the grant for this launch.
+async fn grant_default(
+    state: &AppState,
+    session_id: &str,
+) -> cctui_proto::api::SpawnCapability {
+    let cap = cctui_proto::api::SpawnCapability::machine_default();
+    if let Err(e) = crate::store::spawn_capabilities::upsert(&state.pool, session_id, &cap).await {
+        tracing::error!(%session_id, error = %e, "default spawn-capability persist failed");
+    }
+    state.spawn_capabilities.insert(session_id.to_owned(), cap.clone());
+    cap
 }
 
 /// The machine user's clamped `whipStopPhrases` block from

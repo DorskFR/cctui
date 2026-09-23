@@ -67,6 +67,18 @@ impl SpawnCapability {
             max_children: None,
         }
     }
+
+    /// The capability a child granted `child_budget` receives. The ceiling can
+    /// only shrink, so a spawn tree stays inside the root's ceiling.
+    #[must_use]
+    pub fn inherited(&self, child_budget: Option<f64>) -> Self {
+        let max_budget_usd = match (self.max_budget_usd, child_budget) {
+            (Some(mine), Some(granted)) => Some(mine.min(granted)),
+            (Some(mine), None) => Some(mine),
+            (None, granted) => granted,
+        };
+        Self { adapters: self.adapters.clone(), max_budget_usd, max_children: self.max_children }
+    }
 }
 
 /// Per-child spend ceiling applied by [`SpawnCapability::machine_default`], and
