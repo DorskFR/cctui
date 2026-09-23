@@ -2,12 +2,14 @@
 //!
 //! The path is one an agent linked in a message, and the server has already
 //! checked that grant. The allow-list here is defense in depth: the temp dirs,
-//! the session's working directory and its enclosing git repo, the Claude job
-//! dirs of the session's own user and of the daemon's, and whatever extra
-//! roots the daemon is configured with — never a blanket `$HOME`. A secret
-//! deny-list applies inside every root. The path is canonicalised so a symlink
-//! pointing outside every root is refused. Small files ride back inline,
-//! larger ones are PUT to the blob store and answered by hash.
+//! the session's working directory, its enclosing git repo and the home of the
+//! user it runs as, the Claude job dirs of that user and of the daemon's, and
+//! whatever extra roots the daemon is configured with. A home is a root only
+//! when a session names it — the daemon's own `$HOME` never widens an
+//! unattributed read. A secret deny-list applies inside every root. The path is
+//! canonicalised so a symlink pointing outside every root is refused. Small
+//! files ride back inline, larger ones are PUT to the blob store and answered
+//! by hash.
 
 use std::path::{Path, PathBuf};
 
@@ -33,16 +35,22 @@ fn refused(kind: ReadFileErrorKind, message: impl Into<String>) -> Refused {
 /// Roots for a read made on behalf of the session whose cwd is `cwd`, using
 /// the daemon's configured [`extra_roots`].
 ///
-/// Each is canonicalised so `starts_with` compares real paths. Deliberately no
-/// `$HOME` root: without a session there is nothing to serve but temp files.
+/// Each is canonicalised so `starts_with` compares real paths.
 #[must_use]
 pub fn allowed_roots(cwd: Option<&str>) -> Vec<PathBuf> {
     roots_from(cwd, &extra_roots())
 }
 
-/// Temp dirs, the session's working directory and its enclosing git repo, the
-/// Claude job dirs of the session's user and of the daemon's user (they differ
-/// whenever the daemon runs as another user, as in a worker pod), and `extra`.
+/// The roots a session may be served from.
+///
+/// Temp dirs, the session's working directory, its enclosing git repo and the
+/// home of the user it runs as, the Claude job dir of that user and of the
+/// daemon's (they differ whenever the daemon runs as another user, as in a
+/// worker pod), and `extra`.
+///
+/// Only a session widens past the temp dirs: with `cwd` `None` the daemon's
+/// own `$HOME` still contributes nothing but its job dir, so an unattributed
+/// read can never walk a home.
 #[must_use]
 pub fn roots_from(cwd: Option<&str>, extra: &[String]) -> Vec<PathBuf> {
     let mut roots: Vec<PathBuf> =
@@ -51,13 +59,17 @@ pub fn roots_from(cwd: Option<&str>, extra: &[String]) -> Vec<PathBuf> {
             .filter_map(|r| r.canonicalize().ok())
             .collect();
     let real_cwd = cwd.and_then(|c| crate::git::expand_tilde(c).canonicalize().ok());
+    let session_home = real_cwd.as_deref().and_then(home_of);
     if let Some(real) = &real_cwd {
         if let Some(root) = git_root(real) {
             roots.push(root);
         }
         roots.push(real.clone());
     }
-    for home in [real_cwd.as_deref().and_then(home_of), dirs::home_dir()].into_iter().flatten() {
+    if let Some(home) = session_home.as_ref().and_then(|h| h.canonicalize().ok()) {
+        roots.push(home);
+    }
+    for home in [session_home, dirs::home_dir()].into_iter().flatten() {
         if let Ok(jobs) = home.join(".claude").join("jobs").canonicalize() {
             roots.push(jobs);
         }
@@ -72,10 +84,11 @@ pub fn roots_from(cwd: Option<&str>, extra: &[String]) -> Vec<PathBuf> {
     roots
 }
 
-/// Home of the user `dir` belongs to: the ancestor sitting directly under a
-/// home container (`/home`, `/Users`), or `/root` itself. Inferred from the
-/// path because the daemon's own `$HOME` names the wrong user whenever it runs
-/// as someone else than the session.
+/// Home of the user `dir` belongs to.
+///
+/// The ancestor sitting directly under a home container (`/home`, `/Users`),
+/// or `/root` itself. Inferred from the path because the daemon's own `$HOME`
+/// names the wrong user whenever it runs as someone else than the session.
 fn home_of(dir: &Path) -> Option<PathBuf> {
     dir.ancestors()
         .find(|a| {
@@ -85,7 +98,8 @@ fn home_of(dir: &Path) -> Option<PathBuf> {
         .map(Path::to_path_buf)
 }
 
-/// Operator-supplied roots for the cases the defaults cannot infer, from
+/// Operator-supplied roots for the cases the defaults cannot infer.
+///
 /// `CCTUI_READ_FILE_ROOTS` (`:`-separated, for dispatched worker pods that
 /// never run `enroll`) then `read_file_roots` in `daemon.toml`.
 fn extra_roots() -> Vec<String> {
@@ -332,16 +346,13 @@ mod tests {
         else {
             return;
         };
-        assert!(
-            roots_from(None, &[]).contains(&jobs),
-            "the daemon user's job dir must be a root"
-        );
+        assert!(roots_from(None, &[]).contains(&jobs), "the daemon user's job dir must be a root");
         let tmp = jobs.join("cdfadc1d").join("tmp").join("new-ticket.md");
         assert!(tmp.starts_with(&jobs), "a job's tmp is covered by the jobs root");
     }
 
     #[test]
-    fn the_session_users_home_gives_the_job_dir_when_it_is_not_the_daemons() {
+    fn home_of_identifies_the_user_a_path_belongs_to() {
         assert_eq!(home_of(Path::new("/home/gtax/Documents/repo")), Some("/home/gtax".into()));
         assert_eq!(home_of(Path::new("/home/gtax")), Some("/home/gtax".into()));
         assert_eq!(home_of(Path::new("/Users/gtax/src/a")), Some("/Users/gtax".into()));
@@ -350,24 +361,25 @@ mod tests {
         assert_eq!(home_of(Path::new("/home")), None);
     }
 
+    /// A tempdir cannot stand in for "outside every root" — the temp dirs are
+    /// always roots. `/etc` is the nearest thing to a directory that exists,
+    /// holds a readable regular file and is never a default root.
     #[test]
     fn configured_extra_roots_widen_and_nothing_else_does() {
-        let extra = tempfile::tempdir().unwrap();
-        let f = extra.path().join("notes.md");
-        std::fs::write(&f, "x").unwrap();
-        let elsewhere = tempfile::tempdir().unwrap();
-        let outside = elsewhere.path().join("secret.md");
-        std::fs::write(&outside, "x").unwrap();
+        let Ok(etc) = Path::new("/etc").canonicalize() else { return };
+        let Ok(hosts) = Path::new("/etc/hosts").canonicalize() else { return };
+        let Ok(elsewhere) = Path::new("/bin/sh").canonicalize() else { return };
+        if !hosts.starts_with(&etc) || !hosts.is_file() || elsewhere.starts_with(&etc) {
+            return;
+        }
 
         let without = roots_from(None, &[]);
+        assert_eq!(resolve("/etc/hosts", &without).unwrap_err().kind, ReadFileErrorKind::Denied);
+
+        let with = roots_from(None, &["/etc".to_owned()]);
+        assert!(resolve("/etc/hosts", &with).is_ok());
         assert_eq!(
-            resolve(f.to_str().unwrap(), &without).unwrap_err().kind,
-            ReadFileErrorKind::Denied
-        );
-        let with = roots_from(None, &[extra.path().to_str().unwrap().to_owned()]);
-        assert!(resolve(f.to_str().unwrap(), &with).is_ok());
-        assert_eq!(
-            resolve(outside.to_str().unwrap(), &with).unwrap_err().kind,
+            resolve(elsewhere.to_str().unwrap(), &with).unwrap_err().kind,
             ReadFileErrorKind::Denied,
             "an extra root widens only itself"
         );
@@ -400,7 +412,7 @@ mod tests {
     }
 
     #[test]
-    fn cwd_is_the_only_widening_and_home_is_never_a_root() {
+    fn without_a_session_the_daemons_home_is_never_a_root() {
         let dir = tempfile::tempdir().unwrap();
         let f = dir.path().join("out.txt");
         std::fs::write(&f, "x").unwrap();
@@ -412,9 +424,26 @@ mod tests {
         for cwd in [None, Some("/definitely/not/a/dir")] {
             assert!(
                 !roots_from(cwd, &[]).contains(&home),
-                "$HOME must never be a root (cwd {cwd:?})"
+                "an unattributed read must not walk a home (cwd {cwd:?})"
             );
         }
+    }
+
+    #[test]
+    fn the_home_of_the_session_user_is_a_root_but_other_users_homes_are_not() {
+        let cwd = Path::new("/home/gtax/Documents/repo");
+        assert_eq!(home_of(cwd), Some(PathBuf::from("/home/gtax")));
+        assert_eq!(home_of(Path::new("/home/someone-else/x")), Some("/home/someone-else".into()));
+        assert_ne!(home_of(cwd), home_of(Path::new("/home/someone-else/x")));
+
+        let Some(home) = dirs::home_dir().and_then(|h| h.canonicalize().ok()) else { return };
+        if home_of(&home).as_ref() != Some(&home) {
+            return;
+        }
+        assert!(
+            roots_from(Some(home.to_str().unwrap()), &[]).contains(&home),
+            "the home the session's cwd sits in is a root"
+        );
     }
 
     #[test]
