@@ -4560,7 +4560,8 @@ mod tests {
         if !attach_agent_relay(&mut args, &mut respawn, &short, "sess-1", Some(&cap)) {
             return; // no writable config dir in this environment
         }
-        let idx = args.iter().position(|a| a == "--mcp-config").expect("launch argv gets the relay");
+        let idx =
+            args.iter().position(|a| a == "--mcp-config").expect("launch argv gets the relay");
         let path = args[idx + 1].clone();
         assert!(path.contains(&short), "the config is session-scoped");
         let ridx =
@@ -4587,7 +4588,13 @@ mod tests {
         if !attach_agent_relay(&mut spawn_args, &mut spawn_respawn, &short, "sess-9", Some(&cap)) {
             return; // no writable config dir in this environment
         }
-        assert!(attach_agent_relay(&mut fork_args, &mut fork_respawn, &short, "sess-9", Some(&cap)));
+        assert!(attach_agent_relay(
+            &mut fork_args,
+            &mut fork_respawn,
+            &short,
+            "sess-9",
+            Some(&cap)
+        ));
 
         let tail = |v: &[String]| v[v.len() - 2..].to_vec();
         assert_eq!(tail(&spawn_args), tail(&fork_args));

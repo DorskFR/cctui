@@ -388,7 +388,7 @@ impl OpenCodeSession {
     /// The execve does not kill `opencode serve`: it leads its own process
     /// group, so an unhandled re-exec leaves it running — and spending — with
     /// no daemon reading its output. No `abort_owned` here; the server it would
-    /// be told about is about to be SIGTERMed anyway, and the round trip does
+    /// be told about is about to be `SIGTERMed` anyway, and the round trip does
     /// not fit in the re-exec grace.
     async fn on_reexec(
         &mut self,
