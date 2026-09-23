@@ -170,6 +170,13 @@ export interface Line {
 	// Set on a user line whose send failed: the error reason, shown
 	// red with a Retry control.
 	failed?: string;
+	// This prompt went through Claude's queue. Still waiting while no real user
+	// event has matched it, delivered once one has.
+	queued?: boolean;
+	// When the prompt was enqueued, on a line that has since been delivered.
+	queuedAt?: number;
+	// Queued and dropped before delivery.
+	cancelled?: boolean;
 	// Parsed AskUserQuestion payload — rendered as interactive cards.
 	ask?: AskQuestion[];
 	// Parsed ExitPlanMode plan markdown — rendered as a Plan card.

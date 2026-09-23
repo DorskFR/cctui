@@ -233,6 +233,11 @@ export function latestTodoLineKey(lines: Line[]): string | undefined {
 // shapes via `userMsgKey`. Markers (reset/turn_end/heartbeat) key on ts so
 // distinct ones aren't over-collapsed.
 export function eventSig(e: AgentEvent): string {
+	// A queue op shares its text with the prompt it brackets (and its sibling
+	// close op), so it needs a signature of its own or the pair collapses.
+	if (e.type === 'text' && e.kind === 'queue_op') {
+		return `q:${e.operation ?? 'queued'}:${e.seq ?? e.ts}:${e.content.trim()}`;
+	}
 	if ('turn_id' in e && e.turn_id) return `t:${e.turn_id}`;
 	const u = userMsgKey(e);
 	if (u !== null) return `u:${u}`;

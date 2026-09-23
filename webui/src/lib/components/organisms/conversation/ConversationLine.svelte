@@ -62,6 +62,13 @@
 		!!onpin && typeof ln.seq === 'number' && !ln.pending && !ln.failed
 	);
 
+	// A prompt still sitting in Claude's queue has no delivered turn to absorb
+	// it yet, which is what `queuedAt` marks.
+	const queueWaiting = $derived(!!ln.queued && ln.queuedAt === undefined && !ln.cancelled);
+	const queuedAtLabel = $derived(
+		ln.queuedAt === undefined ? '' : new Date(ln.queuedAt).toLocaleTimeString()
+	);
+
 	const uploadRefs = $derived(
 		ln.uploads ? { ...ln.uploads, sessionId: ln.uploads.sessionId ?? sessionId } : null
 	);
@@ -101,6 +108,8 @@
 	class:mcp={ln.mcp}
 	class:pending={ln.pending}
 	class:failed={!!ln.failed}
+	class:queued={queueWaiting}
+	class:cancelled={ln.cancelled}
 >
 	<div class="lmeta row">
 		{#if selectMode && forkAnchor}
@@ -170,6 +179,20 @@
 					onclick={() => onedit(ln.text ?? '', ln.ts)}
 				/>
 			{/if}
+		{:else if ln.cancelled}
+			<span class="meta-end">
+				<Text tone="faint" size="xs" nowrap>{m.conversation_queue_removed()}</Text>
+			</span>
+		{:else if ln.queued}
+			<span class="meta-end">
+				<Text
+					tone="faint"
+					size="xs"
+					nowrap
+					title={queuedAtLabel ? m.conversation_queued_title({ at: queuedAtLabel }) : undefined}
+					>{m.conversation_queued()}</Text
+				>
+			</span>
 		{/if}
 		<span class="line-actions" class:has-pin={pinned} data-journey="line-actions">
 			{#if pinnable}
@@ -482,6 +505,16 @@
 	/* Pushes the send-status text (and the controls after it) to the right. */
 	.lmeta .meta-end {
 		margin-left: auto;
+	}
+	/* Waiting in Claude's queue: a distinct hue from the amber `sending…` tint,
+	   so a prompt in line does not read as one mid-flight. */
+	.line.user.queued .bubble {
+		background: color-mix(in srgb, var(--role-queued) 12%, var(--bg-elevated));
+		border-color: color-mix(in srgb, var(--role-queued) 40%, transparent);
+	}
+	.line.user.cancelled .bubble {
+		opacity: 0.6;
+		text-decoration: line-through;
 	}
 	/* Failed send: the bubble goes red and a Retry control appears. */
 	.line.user.failed .bubble {

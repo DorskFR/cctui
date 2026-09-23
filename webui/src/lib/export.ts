@@ -177,6 +177,13 @@ function toBlock(
         if (!visible(opts, "marker")) return null;
         return { role: "marker", ts: Number(e.ts), html: md(e.content, opts) };
       }
+      // A queued prompt is the user's own message; the drawer renders it as a
+      // user bubble carrying the queue state, so the export follows suit.
+      if (e.kind === "queue_op") {
+        if ((e.operation ?? "queued") !== "queued") return null;
+        if (!visible(opts, "user") || !e.content.trim()) return null;
+        return { role: "user", ts: Number(e.ts), html: md(e.content, opts) };
+      }
       if (e.content.startsWith(USER_PREFIX)) {
         const content = e.content.slice(USER_PREFIX.length).trimStart();
         const peer = parsePeerMessage(content);
@@ -482,6 +489,11 @@ function toMarkdownBlock(
       if (e.kind === "system_marker") {
         if (!visible(opts, "marker")) return null;
         return `_${e.content}_`;
+      }
+      if (e.kind === "queue_op") {
+        if ((e.operation ?? "queued") !== "queued") return null;
+        if (!visible(opts, "user") || !e.content.trim()) return null;
+        return `**User:**\n\n${e.content}`;
       }
       if (e.content.startsWith(USER_PREFIX)) {
         const content = e.content.slice(USER_PREFIX.length).trimStart();

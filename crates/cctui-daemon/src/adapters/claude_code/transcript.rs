@@ -719,17 +719,22 @@ fn session_state_marker(marker: &str, line: &Value) -> Option<Value> {
             let op = first_str(line, &["operation", "op", "action"]).unwrap_or("queue");
             let verb = match op {
                 "enqueue" | "add" | "queued" => "queued",
-                "dequeue" | "remove" | "dequeued" => "dequeued",
+                "dequeue" | "dequeued" => "dequeued",
+                "remove" | "removed" => "removed",
+                "popAll" | "clear" => "cleared",
                 other => other,
             };
-            let body = first_str(line, &["prompt", "text", "content", "value"])
-                .map(excerpt)
-                .unwrap_or_default();
+            let raw = first_str(line, &["prompt", "text", "content", "value"]).unwrap_or_default();
+            let body = excerpt(raw);
             let text = if body.is_empty() { verb.to_owned() } else { format!("{verb}: {body}") };
+            // The client correlates a queued prompt with its delivered user turn
+            // by first line, which `excerpt` truncates; carry it untruncated.
+            let queue_text = raw.trim().lines().next().unwrap_or_default().trim();
             json!({
                 "role": "system_marker",
                 "marker": marker,
                 "operation": verb,
+                "queue_text": queue_text,
                 "text": text,
             })
         }
@@ -2008,6 +2013,54 @@ mod tests {
             by_marker("queue-operation").get("text").and_then(Value::as_str),
             Some("queued: <task-notification>go")
         );
+    }
+
+    #[test]
+    fn queue_verbs_distinguish_remove_from_dequeue() {
+        let cases = [
+            ("enqueue", "queued"),
+            ("add", "queued"),
+            ("dequeue", "dequeued"),
+            ("remove", "removed"),
+            ("popAll", "cleared"),
+        ];
+        for (op, want) in cases {
+            let mut out = Vec::new();
+            parse_line(
+                "s",
+                &json!({"type":"queue-operation","operation":op,"prompt":"deploy the thing"}),
+                &mut out,
+            );
+            let msgs = message_payloads(&out);
+            assert_eq!(msgs.len(), 1, "{op}");
+            assert_eq!(msgs[0].get("operation").and_then(Value::as_str), Some(want), "{op}");
+        }
+    }
+
+    #[test]
+    fn queue_operations_carry_the_untruncated_first_line() {
+        let first = "x".repeat(200);
+        let mut out = Vec::new();
+        parse_line(
+            "s",
+            &json!({"type":"queue-operation","operation":"enqueue","prompt":format!("{first}\nsecond line")}),
+            &mut out,
+        );
+        let msgs = message_payloads(&out);
+        let queue_text = msgs[0].get("queue_text").and_then(Value::as_str).unwrap();
+        assert_eq!(queue_text, first, "queue_text keeps the whole first line");
+        let text = msgs[0].get("text").and_then(Value::as_str).unwrap();
+        assert!(text.starts_with("queued: "), "the legacy excerpt stays: {text}");
+        assert!(text.chars().count() < queue_text.chars().count(), "excerpt is still truncated");
+    }
+
+    #[test]
+    fn a_bodiless_queue_operation_carries_an_empty_queue_text() {
+        let mut out = Vec::new();
+        parse_line("s", &json!({"type":"queue-operation","operation":"dequeue"}), &mut out);
+        let msgs = message_payloads(&out);
+        assert_eq!(msgs[0].get("queue_text").and_then(Value::as_str), Some(""));
+        assert_eq!(msgs[0].get("text").and_then(Value::as_str), Some("dequeued"));
     }
 
     #[test]

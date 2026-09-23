@@ -74,6 +74,7 @@ export function breaksPollRun(e: AgentEvent): boolean {
 	switch (e.type) {
 		case 'text':
 			if (e.kind === 'turn_annotation' || e.kind === 'system_marker') return false;
+			if (e.kind === 'queue_op') return false;
 			return !e.content.startsWith(USER_PREFIX);
 		case 'tool_call':
 		case 'tool_result':
@@ -363,6 +364,53 @@ export function parseUserUploadRefs(text: string | undefined): UserUploadRefs {
 	return { sessionId, names };
 }
 
+// Claude's `queue-operation` records carry no queue id, so a queued prompt is
+// correlated with its delivered turn by text. `excerpt` keeps only the first
+// line (120 chars on rows written before `queue_text`), hence first-line prefix
+// matching on normalised text rather than equality.
+export function queueKey(text: string | undefined): string {
+	return normalizePollText((text ?? '').split('\n')[0] ?? '').replace(/…$/, '');
+}
+
+// A real user line absorbs the placeholder it matches: the real event's `seq`
+// wins, because pins, forks and jump-to-seq address user messages by `seq` and
+// the enqueue row's id must never leak into them.
+function reconcileQueued(out: Line[], placeholders: Line[], closes: string[]): Line[] {
+	if (!placeholders.length) return out;
+	const open = [...placeholders];
+	const absorbed = new Set<Line>();
+	for (const ln of out) {
+		if (ln.queued || ln.role !== 'user') continue;
+		const first = queueKey(ln.text);
+		if (!first) continue;
+		const at = open.findIndex((p) => {
+			const key = queueKey(p.text);
+			return key.length > 0 && first.startsWith(key);
+		});
+		if (at === -1) continue;
+		const [ph] = open.splice(at, 1);
+		ln.queued = true;
+		ln.queuedAt = ph.ts;
+		absorbed.add(ph);
+	}
+	// A `dequeue` record never carries its content, so a bodiless close is only
+	// consumed once no texted close claims the placeholder.
+	const texted = closes.filter(Boolean);
+	let bodiless = closes.length - texted.length;
+	for (const ph of open) {
+		const key = queueKey(ph.text);
+		const at = texted.findIndex((c) => key && (c.startsWith(key) || key.startsWith(c)));
+		if (at !== -1) {
+			texted.splice(at, 1);
+			ph.cancelled = true;
+		} else if (bodiless > 0) {
+			bodiless -= 1;
+			ph.cancelled = true;
+		}
+	}
+	return out.filter((l) => !absorbed.has(l));
+}
+
 export function buildLines(
 	events: AgentEvent[],
 	ctx: LineBuildCtx,
@@ -370,9 +418,34 @@ export function buildLines(
 ): Line[] {
 	const out: Line[] = [];
 	const poll = newPollSeen();
+	const placeholders: Line[] = [];
+	const closes: string[] = [];
 	let prevKey = '';
 	for (const e of events) {
 		if (breaksPollRun(e)) poll.last = null;
+		if (e.type === 'text' && e.kind === 'queue_op') {
+			const body = e.content.trim();
+			if ((e.operation ?? 'queued') !== 'queued') {
+				closes.push(queueKey(body));
+				continue;
+			}
+			if (!body || !ctx.visible('user')) continue;
+			const ln: Line = {
+				role: 'user',
+				ts: Number(e.ts),
+				text: body,
+				html: ctx.renderMarkdown(body),
+				queued: true
+			};
+			if (typeof e.seq === 'number') ln.seq = e.seq;
+			placeholders.push(ln);
+			out.push(ln);
+			// A placeholder must stay invisible to the consecutive-duplicate guard:
+			// it keeps the FIRST line, which would hand the real user bubble the
+			// enqueue row's `seq`.
+			prevKey = '';
+			continue;
+		}
 		if (e.type === 'text' && e.kind === 'turn_annotation') {
 			attachAnnotation(out, e.content);
 			continue;
@@ -417,18 +490,19 @@ export function buildLines(
 		}
 		out.push(ln);
 	}
+	const lines = reconcileQueued(out, placeholders, closes);
 	// `events` is already ordered causally by `orderEvents` (server insert
 	// `seq`), so `out` is built in causal order and rendered as-is — no role
 	// grouping, no structural re-anchoring. Ordering by `seq` is what keeps
 	// a reloaded AskUserQuestion in [preamble, card, answer] order.
-	for (let i = 0; i < out.length; i++) {
-		if (out[i].role !== 'assistant') continue;
-		const prev = [...out.slice(0, i)]
+	for (let i = 0; i < lines.length; i++) {
+		if (lines[i].role !== 'assistant') continue;
+		const prev = [...lines.slice(0, i)]
 			.reverse()
 			.find((l) => l.role === 'user' || l.role === 'assistant');
 		// A `system/turn_duration` annotation is exact; only estimate without one.
-		if (out[i].durationMs !== undefined) continue;
-		if (prev && out[i].ts > prev.ts) out[i].durationMs = out[i].ts - prev.ts;
+		if (lines[i].durationMs !== undefined) continue;
+		if (prev && lines[i].ts > prev.ts) lines[i].durationMs = lines[i].ts - prev.ts;
 	}
-	return assignLineKeys(stampTurns(out));
+	return assignLineKeys(stampTurns(lines));
 }
