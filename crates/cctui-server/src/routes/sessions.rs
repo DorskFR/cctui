@@ -924,9 +924,12 @@ async fn enrich_and_sort(
 
     // Cold-cache surfacing. The per-message cache split lives in
     // `session_token_usage`; the SUM() aggregate above flattens it, so here we
-    // pull only the *most recent* row per session to derive:
-    //   - `cache_cold`     — that turn re-billed the full context
-    //                        (cache_creation > 0 && cache_read == 0).
+    // pull the two most recent rows per session to derive:
+    //   - `cache_cold`     — that turn re-billed a prefix it should have read
+    //                        back (`cache_read < 0.5 * previous context`).
+    //                        `cache_creation > 0 && cache_read == 0` misses the
+    //                        common case: tools+system always match, so
+    //                        `cache_read` is never actually 0.
     //   - `last_activity_at` — its timestamp, so the client can predict cache
     //                        expiry (Anthropic's ~5-min sliding window) before
     //                        the next send.
@@ -934,13 +937,17 @@ async fn enrich_and_sort(
     //                        turn (≈ cache_read + cache_creation), i.e. how
     //                        many tokens get re-written on the next send.
     if !session_ids.is_empty() {
-        type LastRow = (String, i64, i64, DateTime<Utc>);
+        type LastRow = (String, i64, i64, i64, DateTime<Utc>, i64);
         let rows: Vec<LastRow> = sqlx::query_as(
-            "SELECT DISTINCT ON (session_id) session_id, \
-                    cache_read_tokens, cache_creation_tokens, created_at \
-             FROM session_token_usage \
-             WHERE session_id = ANY($1) \
-             ORDER BY session_id, created_at DESC",
+            "SELECT session_id, input_tokens, cache_read_tokens, cache_creation_tokens, \
+                    created_at, rn \
+             FROM (SELECT session_id, input_tokens, cache_read_tokens, cache_creation_tokens, \
+                          created_at, \
+                          row_number() OVER ( \
+                              PARTITION BY session_id ORDER BY created_at DESC) AS rn \
+                   FROM session_token_usage WHERE session_id = ANY($1)) t \
+             WHERE rn <= 2 \
+             ORDER BY session_id, rn",
         )
         .bind(&session_ids)
         .fetch_all(&state.pool)
@@ -949,15 +956,33 @@ async fn enrich_and_sort(
             tracing::error!("db error (last token usage lookup): {e}");
             (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
         })?;
-        let mut by_session: std::collections::HashMap<String, (i64, i64, DateTime<Utc>)> =
+        // The last turn, plus the previous one's context to judge it against.
+        let mut by_session: std::collections::HashMap<String, (i64, i64, DateTime<Utc>, i64)> =
             std::collections::HashMap::new();
-        for (sid, cr, cc, ts) in rows {
-            by_session.insert(sid, (cr, cc, ts));
+        for (sid, input, cr, cc, ts, rn) in rows {
+            match rn {
+                1 => {
+                    by_session.entry(sid).or_insert((cr, cc, ts, 0));
+                }
+                2 => {
+                    if let Some(entry) = by_session.get_mut(&sid) {
+                        entry.3 = input.max(0) + cr.max(0) + cc.max(0);
+                    }
+                }
+                _ => {}
+            }
         }
         for (_, s) in &mut with_ts {
-            if let Some((cr, cc, ts)) = by_session.remove(&s.id) {
+            if let Some((cr, cc, ts, prev_context)) = by_session.remove(&s.id) {
                 s.last_activity_at = Some(ts);
-                s.cache_cold = cc > 0 && cr == 0;
+                #[allow(clippy::cast_precision_loss)]
+                {
+                    s.cache_cold = if prev_context > 0 {
+                        (cr.max(0) as f64) < (prev_context as f64 * 0.5)
+                    } else {
+                        cc > 0 && cr == 0
+                    };
+                }
                 // Context size that would be re-written to cache on the next
                 // send (≈ the full cached prefix from the last turn).
                 let burst_tokens = u64::try_from(cr.saturating_add(cc)).unwrap_or(0);
@@ -1748,9 +1773,11 @@ pub async fn get_conversation(
         rows.reverse();
     }
 
-    let usage_rows: Vec<(String, Option<String>, i64, i64, i64, i64)> = sqlx::query_as(
+    type UsageRow = (String, Option<String>, i64, i64, i64, i64, bool, DateTime<Utc>);
+    let usage_rows: Vec<UsageRow> = sqlx::query_as(
         "SELECT message_id, model, \
-                input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens \
+                input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, \
+                gateway_rewrote_body, created_at \
          FROM session_token_usage WHERE session_id = $1",
     )
     .bind(&session_id)
@@ -1763,14 +1790,35 @@ pub async fn get_conversation(
     let catalog = session_catalogs(&state, std::slice::from_ref(&session_id))
         .await
         .remove(session_id.as_str());
+    let turns: Vec<crate::cache_bust::Turn> = usage_rows
+        .iter()
+        .map(|(message_id, model, input, _, cache_read, cache_creation, rewrote, at)| {
+            crate::cache_bust::Turn {
+                message_id: message_id.clone(),
+                model: model.clone(),
+                input: *input,
+                cache_read: *cache_read,
+                cache_creation: *cache_creation,
+                created_at: *at,
+                gateway_rewrote_body: *rewrote,
+            }
+        })
+        .collect();
+    let mut busts = crate::cache_bust::compute(&turns, catalog.as_ref());
     let usage_by_message: HashMap<String, cctui_proto::models::TokenUsage> = usage_rows
         .into_iter()
-        .map(|(message_id, model, input, output, cache_read, cache_creation)| {
+        .map(|(message_id, model, input, output, cache_read, cache_creation, _, _)| {
             let to_u64 = |v: i64| u64::try_from(v).unwrap_or(0);
             let cost = crate::cost::tallies_cost_usd(
                 catalog.as_ref(),
                 &[(model, crate::cost::TokenUsage { input, cached_input: cache_read, output })],
             );
+            let cache_bust =
+                busts.remove(&message_id).map(|b| cctui_proto::models::CacheBust {
+                    lost_tokens: b.lost_tokens,
+                    lost_usd: b.lost_usd,
+                    reason: b.reason.as_str().to_owned(),
+                });
             (
                 message_id,
                 cctui_proto::models::TokenUsage {
@@ -1779,6 +1827,7 @@ pub async fn get_conversation(
                     cost_usd: cost,
                     cache_read_tokens: to_u64(cache_read),
                     cache_creation_tokens: to_u64(cache_creation),
+                    cache_bust,
                 },
             )
         })
@@ -2574,10 +2623,8 @@ pub async fn archive_one(
         }
     }
     state.bus.deregister_session_stream(session_id);
-    crate::state::drop_usage_notice_buckets(&state.usage_notice_buckets, session_id);
     for child in &children {
         state.bus.deregister_session_stream(child);
-        crate::state::drop_usage_notice_buckets(&state.usage_notice_buckets, child);
     }
     tracing::info!(session_id = %session_id, children = children.len(), "session archived");
     Ok(ArchiveOutcome::Archived)

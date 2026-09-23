@@ -6,6 +6,7 @@ mod auto_archive;
 mod auto_resume;
 mod bandwidth_watch;
 mod bus;
+mod cache_bust;
 mod config;
 mod cost;
 mod crypto;
@@ -132,7 +133,6 @@ async fn main() -> anyhow::Result<()> {
         pending_oauth_logins: Arc::new(dashmap::DashMap::new()),
         account_usage_cache: Arc::new(dashmap::DashMap::new()),
         pr_status_cache: cctui_proto::classifier::PrStatusCache::new(),
-        usage_notice_buckets: Arc::new(dashmap::DashMap::new()),
         gateway_orphan_spam: Arc::new(dashmap::DashMap::new()),
         account_reauth: Arc::new(dashmap::DashMap::new()),
         codex_catalogs: Arc::new(dashmap::DashMap::new()),
@@ -1526,37 +1526,6 @@ fn init_dispatchers(config: &Config) -> Arc<dispatchers::Registry> {
     Arc::new(registry)
 }
 
-#[allow(clippy::cognitive_complexity)]
-/// Backstop for the usage-notice buckets the per-session drop can't reach: the
-/// auto-archive UPDATE above, a row deleted out from under us, or an entry this
-/// replica recorded for a session another replica ended.
-async fn sweep_usage_notice_buckets(state: &AppState) {
-    let sessions: std::collections::HashSet<String> =
-        state.usage_notice_buckets.iter().map(|e| e.key().0.clone()).collect();
-    if sessions.is_empty() {
-        return;
-    }
-    let ids: Vec<String> = sessions.into_iter().collect();
-    let live = match sqlx::query_scalar::<_, String>(concat!(
-        "SELECT id FROM sessions WHERE id = ANY($1) AND ",
-        live_sessions_predicate!(),
-        " AND status NOT IN ('archived', 'ended')"
-    ))
-    .bind(&ids)
-    .fetch_all(&state.pool)
-    .await
-    {
-        Ok(live) => live.into_iter().collect(),
-        Err(err) => {
-            tracing::warn!(%err, "usage notice bucket sweep failed");
-            return;
-        }
-    };
-    let dropped = state::sweep_usage_notice_buckets(&state.usage_notice_buckets, &live);
-    if dropped > 0 {
-        tracing::debug!(dropped, "swept usage notice buckets for dead sessions");
-    }
-}
 
 /// Auto-archive sessions silent past the TTL so the default list stays
 /// self-cleaning, asking the daemon to remove each underlying job. `0` disables.
@@ -1694,8 +1663,6 @@ async fn reaper_task(state: AppState) {
         // crash-coverage path the worker's REPLY_URL exit trap can miss.
         webhook::sweep(&state).await;
         auto_resume::sweep(&state).await;
-
-        sweep_usage_notice_buckets(&state).await;
 
         state.permission_store.write().await.reap_stale(300); // seconds
     }

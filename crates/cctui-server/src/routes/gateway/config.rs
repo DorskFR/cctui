@@ -87,17 +87,17 @@ pub const fn tees_response(langfuse: bool, fireworks: bool) -> bool {
     langfuse || fireworks
 }
 
-/// Per-provider request shaping for the `anthropic` family, applied by the
-/// gateway on the way upstream. Unlike Fireworks there are no defaults: an
-/// unset blob leaves every request untouched so the proxy keeps its zero-copy
-/// streaming path.
+/// Per-provider settings stored for the `anthropic` family.
+///
+/// The gateway no longer applies these: it forwards a request's bytes verbatim,
+/// because any re-serialization sorts JSON object keys and destroys the prompt
+/// cache. `thinking_display` is parsed and persisted for the accounts UI but is
+/// inert until it is handed to Claude Code as spawn configuration.
 pub struct AnthropicSettings {
-    /// Overrides `thinking.display` on adaptive-thinking requests.
-    ///
     /// Claude Code hardcodes `"omitted"`, which strips the reasoning text
-    /// upstream of every client — the block arrives as a bare replay signature
-    /// (CCT-828). `"summarized"` is the only value that returns readable text;
-    /// the API accepts nothing else. `None` disables the rewrite entirely.
+    /// upstream of every client — the block arrives as a bare replay signature.
+    /// `"summarized"` is the only value that returns readable text; the API
+    /// accepts nothing else.
     pub thinking_display: Option<String>,
 }
 
@@ -114,32 +114,6 @@ impl AnthropicSettings {
             .filter(|s| matches!(*s, "summarized" | "omitted"))
             .map(str::to_owned);
         Self { thinking_display }
-    }
-
-    /// Whether this account needs the request body buffered and re-serialized.
-    /// False keeps the gateway a pure passthrough.
-    #[must_use]
-    pub const fn rewrites_body(&self) -> bool {
-        self.thinking_display.is_some()
-    }
-
-    /// Override `thinking.display`.
-    ///
-    /// This overwrites rather than filling a gap (the Fireworks convention):
-    /// Claude Code always sends the field, so "only if absent" would never
-    /// fire. Scoped to `type: "adaptive"` — a request with thinking disabled,
-    /// or the classic `type: "enabled"` budget form where `display` is not a
-    /// valid key, is left alone.
-    pub fn apply_body(&self, body: &mut serde_json::Value) {
-        let Some(display) = self.thinking_display.as_ref() else { return };
-        let Some(thinking) = body.get_mut("thinking").and_then(serde_json::Value::as_object_mut)
-        else {
-            return;
-        };
-        if thinking.get("type").and_then(serde_json::Value::as_str) != Some("adaptive") {
-            return;
-        }
-        thinking.insert("display".to_owned(), serde_json::Value::String(display.clone()));
     }
 }
 
