@@ -23,6 +23,7 @@ pub mod dispatch_codex;
 pub mod enroll;
 pub mod fatal;
 pub mod git;
+pub mod harness_update;
 pub mod imagepost;
 pub mod launchgate;
 pub mod listdirs;

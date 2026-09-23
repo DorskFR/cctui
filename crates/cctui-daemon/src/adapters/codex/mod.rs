@@ -24,6 +24,7 @@
 //! `$XDG_RUNTIME_DIR/cctui-codex.sock`.
 
 pub(crate) mod app_server;
+pub mod codex_version_gate;
 mod contract;
 pub mod daemon;
 mod log_tail;
@@ -50,6 +51,23 @@ use app_server::{
 use cctui_proto::diagnose::{
     CodexDiagnose, DiagnoseFact, EffectiveState, GatewayStatus, SessionDiagnose,
 };
+
+static LIVE: std::sync::Mutex<Option<LiveSessionRegistry>> = std::sync::Mutex::new(None);
+
+/// Whether any live cctui codex session has a turn in flight, for the
+/// app-server auto-cycle. `None` when a session does not answer its snapshot.
+pub async fn turns_in_flight() -> Option<bool> {
+    let live = LIVE.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+    let Some(live) = live else { return Some(false) };
+    let ids: Vec<String> = live.lock().await.keys().cloned().collect();
+    for id in ids {
+        let snapshot = request_live_snapshot(&live, &id).await?;
+        if snapshot.active_turn_id.is_some() {
+            return Some(true);
+        }
+    }
+    Some(false)
+}
 
 /// Served settings are the `service_tier` source when the spawn spec carries
 /// none. Fail-closed on a missing/partial gateway env for an account-bound
@@ -139,6 +157,7 @@ async fn run_default(ctx: AdapterCtx) -> anyhow::Result<()> {
     let app_cfg = AppServerConfig::from_value(&ctx.config);
     let registry: SessionRegistry = SessionRegistry::default();
     let live: LiveSessionRegistry = LiveSessionRegistry::default();
+    *LIVE.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(live.clone());
 
     let mut log = log_tail::LogTail::new(
         log_tail::LogTailConfig::from_value(&ctx.config),

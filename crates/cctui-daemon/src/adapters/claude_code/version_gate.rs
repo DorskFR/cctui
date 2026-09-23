@@ -50,21 +50,21 @@ pub(super) enum CycleMethod {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub(super) struct DaemonStatus {
+pub(crate) struct DaemonStatus {
     pub version: Option<String>,
     /// `None` when the count was not reported — treated as busy.
     pub running_workers: Option<usize>,
 }
 
 /// Parse `claude --version`, whose output is `2.1.218 (Claude Code)`.
-pub(super) fn parse_cli_version(stdout: &str) -> Option<String> {
+pub(crate) fn parse_cli_version(stdout: &str) -> Option<String> {
     let tok = stdout.split_whitespace().next()?;
     tok.starts_with(|c: char| c.is_ascii_digit()).then(|| tok.to_string())
 }
 
 /// Parse the header of `claude daemon status`. Tolerant by construction: an
 /// unrecognised line leaves that fact `None`, which steers away from cycling.
-pub(super) fn parse_daemon_status(stdout: &str) -> DaemonStatus {
+pub(crate) fn parse_daemon_status(stdout: &str) -> DaemonStatus {
     let mut out = DaemonStatus::default();
     for line in stdout.lines() {
         let line = line.trim();

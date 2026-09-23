@@ -965,7 +965,9 @@ async fn process_frame(
             resolve_read_file_result(state, request_id, ok, file, error_kind, error);
             Ok(())
         }
-        DaemonFrameUp::Heartbeat { bandwidth, update_hook, resources, claude_jobs, .. } => {
+        DaemonFrameUp::Heartbeat {
+            bandwidth, update_hook, resources, claude_jobs, harness, ..
+        } => {
             // A daemon too old to advertise omits the field; leave the stored
             // flag alone rather than reading silence as "no hook".
             if let Some(has_hook) = update_hook {
@@ -999,6 +1001,9 @@ async fn process_frame(
             // Only a daemon that reports its jobs can parse the reply.
             if let Some(shorts) = claude_jobs {
                 reconcile_claude_jobs(state, machine_id, &shorts).await;
+            }
+            if let Some(report) = harness {
+                crate::routes::harness_update::on_heartbeat(state, machine_id, &report).await;
             }
             Ok(())
         }

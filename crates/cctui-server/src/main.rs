@@ -1378,6 +1378,22 @@ fn build_api_routes() -> Routes {
             ScopeAz(auth::Scope::Admin),
         )
         .add(
+            &[GET, Method::PUT],
+            "/admin/harness-autoupdate",
+            "Read the harness auto-update settings of every machine, or set the instance default (admin).",
+            get(routes::harness_update::read).put(routes::harness_update::set_instance),
+            Authn::Bearer,
+            ScopeAz(auth::Scope::Admin),
+        )
+        .add(
+            &[Method::PUT],
+            "/admin/harness-autoupdate/{machine_id}",
+            "Set or clear one machine's harness auto-update override (admin).",
+            put(routes::harness_update::set_machine),
+            Authn::Bearer,
+            ScopeAz(auth::Scope::Admin),
+        )
+        .add(
             &[Method::DELETE, Method::PATCH],
             "/admin/users/{id}",
             "Revoke or update a user (admin).",
