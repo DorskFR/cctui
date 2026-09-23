@@ -1,4 +1,12 @@
 {
+	"settings_machine_label": "Machine label",
+	"settings_machine_label_help": "Choose how the machine name appears in session rows and cards.",
+	"settings_account_label_help": "Choose how the account appears in session rows and cards. Abbreviated names keep the full name in the tooltip.",
+	"settings_label_full": "Full name",
+	"settings_label_initial": "First letter",
+	"settings_label_hidden": "Hidden",
+	"settings_label_icon": "Icon",
+	"settings_label_characters": "{count} character(s)",
 	"$schema": "https://inlang.com/schema/inlang-message-format",
 	"a11y_advanced_json": "Advanced settings JSON",
 	"a11y_alias_model": "Alias target model",

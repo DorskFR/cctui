@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { labelPrefix } from '$lib/labelPrefix';
 	import { hashHue, machineInitial } from '$lib/format';
 	import { Badge } from '@dorsk/tsumikit';
 
@@ -10,7 +11,8 @@
 		id,
 		hue,
 		mono = false,
-		dense = false
+		dense = false,
+		initialOnly = false
 	}: {
 		name?: string | null;
 		id: string;
@@ -20,6 +22,7 @@
 		/** Collapse to the initial once the row is too narrow to seat the name.
 		 *  Only the session row and card name a container to measure against. */
 		dense?: boolean;
+		initialOnly?: boolean;
 	} = $props();
 
 	const label = $derived(name || id.slice(0, 8));
@@ -35,8 +38,10 @@
 	);
 </script>
 
-<Badge class={mono ? 'mono' : ''} style={tint} title={dense ? label : undefined}>
-	{#if dense}
+<Badge class={mono ? 'mono' : ''} style={tint} title={dense || initialOnly ? label : undefined}>
+	{#if initialOnly}
+		{labelPrefix(label, 1)}
+	{:else if dense}
 		<span class="full">{label}</span><span class="initial">{machineInitial(label)}</span>
 	{:else}
 		{label}

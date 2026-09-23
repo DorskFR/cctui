@@ -313,3 +313,18 @@ describe("resource monitor (header gauge machines)", () => {
     expect(loadFromCache().macros.items).toHaveLength(1);
   });
 });
+
+describe("session label preferences", () => {
+  it("defaults to full names and preserves explicit legacy account preferences", () => {
+    expect(mergeDefaults(null).sessionList).toMatchObject({ machineLabel: "full", accountLabel: "full" });
+    for (const [accountNames, expected] of [[true, "full"], [false, "icon"]] as const) {
+      expect(mergeDefaults({ sessionList: { accountNames } } as Parameters<typeof mergeDefaults>[0]).sessionList.accountLabel).toBe(expected);
+    }
+  });
+  it("persists display choices and normalizes invalid values", () => {
+    settings.setSessionList({ machineLabel: "initial", accountLabel: "3" });
+    expect(loadFromCache().sessionList).toMatchObject({ machineLabel: "initial", accountLabel: "3" });
+    const loaded = mergeDefaults({ sessionList: { machineLabel: "bad", accountLabel: 42 } } as unknown as Parameters<typeof mergeDefaults>[0]);
+    expect(loaded.sessionList).toMatchObject({ machineLabel: "full", accountLabel: "full" });
+  });
+});

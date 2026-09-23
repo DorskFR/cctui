@@ -1,4 +1,12 @@
 {
+	"settings_machine_label": "Étiquette de la machine",
+	"settings_machine_label_help": "Choisissez comment afficher le nom de la machine dans les lignes et les cartes de session.",
+	"settings_account_label_help": "Choisissez comment afficher le compte dans les lignes et les cartes de session. Le nom complet reste accessible au survol des abréviations.",
+	"settings_label_full": "Nom complet",
+	"settings_label_initial": "Première lettre",
+	"settings_label_hidden": "Masqué",
+	"settings_label_icon": "Icône",
+	"settings_label_characters": "{count} caractère(s)",
 	"$schema": "https://inlang.com/schema/inlang-message-format",
 	"a11y_advanced_json": "JSON des réglages avancés",
 	"a11y_alias_model": "Modèle cible de l'alias",

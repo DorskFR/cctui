@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { labelPrefix } from '$lib/labelPrefix';
 	import { Tooltip } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 	import AccountAvatar from './AccountAvatar.svelte';
@@ -30,6 +31,7 @@
 		onclick,
 		warn = false,
 		showName = false,
+		nameLength,
 	}: {
 		name?: string | null;
 		emoji?: string | null;
@@ -37,6 +39,7 @@
 		onclick?: () => void;
 		warn?: boolean;
 		showName?: boolean;
+		nameLength?: number;
 	} = $props();
 
 	const accounts = useAccounts();
@@ -83,7 +86,7 @@
 					: undefined}
 			>
 				{#if showName}
-					{name}
+					{nameLength ? labelPrefix(name, nameLength) : name}
 				{:else}
 					<AccountAvatar emoji={resolved.emoji} id={resolved.id} name={name ?? ''} size={14} decorative />
 				{/if}
