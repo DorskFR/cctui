@@ -1183,7 +1183,11 @@ async fn purge_leaked_jobs(
         if !still_there {
             continue;
         }
-        let command = AdapterCommand::Remove { local_id, command_id: None };
+        let command = AdapterCommand::Remove {
+            local_id,
+            command_id: None,
+            initiator: cctui_proto::adapter::RemoveInitiator::Automatic,
+        };
         tokio::select! {
             () = shutdown.cancelled() => {
                 tracing::info!(sent, total, "adapter stopped; leaked job purge interrupted");
@@ -1465,6 +1469,7 @@ mod tests {
             command: Box::new(cctui_proto::adapter::AdapterCommand::Remove {
                 local_id: "deadbeef-0000-0000-0000-000000000000".to_owned(),
                 command_id: Some(command_id),
+                initiator: cctui_proto::adapter::RemoveInitiator::User,
             }),
         };
         let handled = supervisor.handle_frame(
@@ -1543,8 +1548,13 @@ mod tests {
                 .expect("purge must queue the leaked removals")
                 .expect("command channel open");
             match cmd {
-                cctui_proto::adapter::AdapterCommand::Remove { local_id, command_id } => {
+                cctui_proto::adapter::AdapterCommand::Remove {
+                    local_id,
+                    command_id,
+                    initiator,
+                } => {
                     assert!(command_id.is_none());
+                    assert_eq!(initiator, cctui_proto::adapter::RemoveInitiator::Automatic);
                     removed.push(local_id);
                 }
                 // The marks fan-out precedes the purge.
@@ -1591,8 +1601,9 @@ mod tests {
                 .expect("purge must queue the leaked removals")
                 .expect("command channel open");
             match cmd {
-                AdapterCommand::Remove { local_id, command_id } => {
+                AdapterCommand::Remove { local_id, command_id, initiator } => {
                     assert!(command_id.is_none());
+                    assert_eq!(initiator, cctui_proto::adapter::RemoveInitiator::Automatic);
                     removed.push(local_id);
                 }
                 other => panic!("expected Remove, got {other:?}"),

@@ -583,6 +583,10 @@ pub enum AdapterCommand {
         /// job was actually removed. `None` for the reconcile path.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         command_id: Option<Uuid>,
+        /// Who asked. A claude job cctui did not start is removed only on
+        /// [`RemoveInitiator::User`]; an automatic sweep leaves it alone.
+        #[serde(default)]
+        initiator: RemoveInitiator,
     },
     /// Change the model and/or reasoning effort of an already-running session
     /// **in place**, without spawning a new conversation. Applies to
@@ -661,6 +665,19 @@ impl AdapterCommand {
             _ => None,
         }
     }
+}
+
+/// Who asked for an [`AdapterCommand::Remove`].
+///
+/// Defaults to [`Self::Automatic`] so a peer that predates the field, or any
+/// path that forgets to say, gets the conservative reading.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RemoveInitiator {
+    User,
+    /// A TTL sweep, a spawn-intent auto-archive, or the reconcile purge.
+    #[default]
+    Automatic,
 }
 
 /// Which slice of a parent conversation a subset fork keeps.
@@ -866,12 +883,27 @@ mod tests {
     #[test]
     fn remove_carries_its_correlation_id() {
         let id = Uuid::new_v4();
-        let cmd = AdapterCommand::Remove { local_id: "sess-1".into(), command_id: Some(id) };
+        let cmd = AdapterCommand::Remove {
+            local_id: "sess-1".into(),
+            command_id: Some(id),
+            initiator: RemoveInitiator::User,
+        };
         assert_eq!(cmd.command_id(), Some(id));
         assert_eq!(cmd.local_id(), Some("sess-1"));
         let back: AdapterCommand =
             serde_json::from_str(&serde_json::to_string(&cmd).unwrap()).unwrap();
         assert_eq!(back.command_id(), Some(id));
+        assert!(matches!(back, AdapterCommand::Remove { initiator: RemoveInitiator::User, .. }));
+    }
+
+    #[test]
+    fn remove_without_an_initiator_deserializes_as_automatic() {
+        let cmd: AdapterCommand =
+            serde_json::from_str(r#"{"kind":"remove","local_id":"sess-1"}"#).unwrap();
+        assert!(matches!(
+            cmd,
+            AdapterCommand::Remove { initiator: RemoveInitiator::Automatic, .. }
+        ));
     }
 
     fn spec(parent: Option<&str>) -> SessionSpec {
