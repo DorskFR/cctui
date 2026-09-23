@@ -18,9 +18,11 @@
 //!      session is rebound to it and the worker's own 429 retry lands there
 //!      ([`failover`], opt-in via `CCTUI_GATEWAY_FAILOVER`).
 //!
-//! Request bodies stream through unread unless an account opts into shaping
-//! ([`FireworksSettings`], [`AnthropicSettings`]) or Langfuse samples the call;
-//! those buffer and re-serialize. Response bodies are never rewritten.
+//! Request bodies stream through unread unless Langfuse samples the call or a
+//! Fireworks account opts into shaping ([`FireworksSettings`]); those buffer,
+//! and only Fireworks re-serializes. The anthropic path forwards the client's
+//! bytes verbatim under every feature — re-serializing sorts JSON keys and
+//! destroys the prompt cache. Response bodies are never rewritten.
 //!
 //! Stats are opportunistic: request count + byte count, never buffered parsing.
 //! Raw OAuth tokens never enter worker env, logs, or session records.
@@ -401,7 +403,6 @@ mod tests {
         ] {
             let s = AnthropicSettings::resolve(stored.as_ref());
             assert!(s.thinking_display.is_none());
-            assert!(!s.rewrites_body(), "must keep the zero-copy path: {stored:?}");
         }
     }
 
@@ -419,43 +420,6 @@ mod tests {
                 Some(good)
             );
         }
-    }
-
-    #[test]
-    fn anthropic_overrides_the_display_claude_code_hardcodes() {
-        let settings = AnthropicSettings::resolve(Some(
-            &serde_json::json!({ "thinking_display": "summarized" }),
-        ));
-        let mut body = serde_json::json!({
-            "model": "claude-opus-5",
-            "thinking": { "type": "adaptive", "display": "omitted" },
-        });
-        settings.apply_body(&mut body);
-        assert_eq!(body["thinking"]["display"], serde_json::json!("summarized"));
-        assert_eq!(body["thinking"]["type"], serde_json::json!("adaptive"));
-    }
-
-    #[test]
-    fn anthropic_leaves_non_adaptive_thinking_alone() {
-        let settings = AnthropicSettings::resolve(Some(
-            &serde_json::json!({ "thinking_display": "summarized" }),
-        ));
-
-        // Thinking off entirely (CLAUDE_CODE_DISABLE_THINKING) must not gain a param.
-        let mut disabled = serde_json::json!({ "model": "claude-opus-5", "thinking": null });
-        settings.apply_body(&mut disabled);
-        assert_eq!(disabled["thinking"], serde_json::Value::Null);
-
-        let mut absent = serde_json::json!({ "model": "claude-opus-5" });
-        settings.apply_body(&mut absent);
-        assert!(absent.get("thinking").is_none());
-
-        // `display` is not a valid key on the classic budget form.
-        let mut classic = serde_json::json!({
-            "thinking": { "type": "enabled", "budget_tokens": 4000 },
-        });
-        settings.apply_body(&mut classic);
-        assert!(classic["thinking"].get("display").is_none());
     }
 
     #[test]
