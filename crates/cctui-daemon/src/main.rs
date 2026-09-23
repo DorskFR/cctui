@@ -241,6 +241,7 @@ async fn run_daemon(path: &std::path::Path, no_auto_update: bool) -> anyhow::Res
     } else {
         tracing::info!("auto-update disabled");
     }
+    cctui_daemon::harness_update::spawn_loop(shutdown.clone());
     supervisor.run(shutdown).await;
     Ok(())
 }

@@ -442,6 +442,7 @@ impl Supervisor {
                                 .lock()
                                 .map_or(None, |mut s| s.sample()),
                             claude_jobs: claude_jobs_root(running).map(|root| jobs_on_disk(&root)),
+                            harness: Some(crate::harness_update::report()),
                         };
                         let payload = serde_json::to_string(&hb)?;
                         self.counters.add(Subsystem::Heartbeat, payload.len() as u64);
@@ -595,6 +596,9 @@ impl Supervisor {
             }
             DaemonFrameDown::RunUpdateHook { run_id, version, release_url } => {
                 self.spawn_update_hook(run_id, version, release_url);
+            }
+            DaemonFrameDown::HarnessUpdatePolicy { policy } => {
+                crate::harness_update::set_policy(policy);
             }
             _ => {}
         }
@@ -1982,6 +1986,7 @@ mod tests {
             update_hook: None,
             resources: None,
             claude_jobs: None,
+            harness: None,
         };
         let super::Prepared::Frame(text) = super::prepare_send(&hb).unwrap() else {
             panic!("heartbeat must not chunk")
