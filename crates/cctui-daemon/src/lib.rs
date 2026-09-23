@@ -26,6 +26,7 @@ pub mod git;
 pub mod imagepost;
 pub mod listdirs;
 pub mod mcp;
+pub mod mcpready;
 pub mod offsets;
 pub mod readfile;
 pub mod resources;

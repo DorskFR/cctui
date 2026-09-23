@@ -1542,6 +1542,7 @@ impl Driver {
             st.as_ref().and_then(|s| s.model.as_deref()),
             st.as_ref().and_then(|s| s.effort.as_deref()),
             launch.whip_phrases.as_ref(),
+            None,
         )
         .map(|p| p.to_string_lossy().into_owned());
 
@@ -1926,6 +1927,13 @@ impl Driver {
         // Fail-closed inside `resolve_launch_env` (account-bound but
         // unmintable → abort rather than launch a worker that will 401).
         let launch = self.resolve_launch_env(&session_id, &spec.env).await?;
+        // Resolved before the settings file: the `SessionStart` hook that holds
+        // the first turn is only registered when there is a relay to wait for.
+        let agent_tool =
+            ensure_agent_mcp_config(short, &session_id, launch.spawn_capability.as_ref());
+        if agent_tool.is_some() {
+            crate::mcpready::note_launch(&session_id);
+        }
         if let Some(settings) = ensure_hook_settings(
             &self.cfg.hook_socket_path,
             whip,
@@ -1935,6 +1943,7 @@ impl Driver {
             spec.model.as_deref(),
             spec.effort.as_deref(),
             launch.whip_phrases.as_ref(),
+            agent_tool.is_some().then_some(session_id.as_str()),
         ) {
             let settings = settings.to_string_lossy().into_owned();
             args.push("--settings".to_owned());
@@ -1942,8 +1951,6 @@ impl Driver {
             respawn_flags.push("--settings".to_owned());
             respawn_flags.push(settings);
         }
-        let agent_tool =
-            ensure_agent_mcp_config(short, &session_id, launch.spawn_capability.as_ref());
         if let Some(mcp) = &agent_tool {
             let mcp = mcp.to_string_lossy().into_owned();
             args.push("--mcp-config".to_owned());
@@ -2236,6 +2243,7 @@ impl Driver {
             None,
             None,
             launch.whip_phrases.as_ref(),
+            None,
         ) {
             let settings = settings.to_string_lossy().into_owned();
             args.push("--settings".to_owned());
@@ -3468,6 +3476,11 @@ fn agent_tool_context(cap: &cctui_proto::api::SpawnCapability) -> String {
          is currently allowed or soft-limit blocked. Check it before a fan-out and when picking \
          a child's model: a blocked model burns the whole batch on 429s. Takes no arguments.\n",
     );
+    b.push_str(
+        "Both tools are served by an MCP server that connects as this session starts. If either \
+         reports \"No such tool available\" on your first turn, it lost that race: wait a few \
+         seconds and retry the call once before concluding the tool is missing.\n",
+    );
     b
 }
 
@@ -3614,6 +3627,7 @@ pub(super) fn ensure_hook_settings(
     model: Option<&str>,
     effort: Option<&str>,
     whip_phrases: Option<&serde_json::Value>,
+    agent_relay_session: Option<&str>,
 ) -> Option<PathBuf> {
     let path = hook_settings_path(&format!("hook-settings-{short}.json"))?;
     let exe = std::env::current_exe()
@@ -3688,7 +3702,7 @@ pub(super) fn ensure_hook_settings(
     } else {
         String::new()
     };
-    let hooks = if whip {
+    let mut hooks = if whip {
         json!({
             "PreToolUse": pre_hooks,
             "PostToolUse": [hook("post")],
@@ -3703,6 +3717,14 @@ pub(super) fn ensure_hook_settings(
     } else {
         json!({ "PreToolUse": pre_hooks, "PostToolUse": [hook("post")] })
     };
+    // Claude Code connects its MCP servers while the session starts, so a turn-1
+    // `CctuiAgent` call can beat the relay's `initialize`.
+    if let Some(block) = agent_relay_session.and_then(|session| {
+        let sock = crate::agenttool::socket_for_launch().to_string_lossy().into_owned();
+        mcp_ready_hook(&exe, session, &sock, mcp_ready_wait_secs())
+    }) {
+        hooks["SessionStart"] = block;
+    }
     let managed = managed_settings(hooks, gateway_env, model, effort);
     // Layer the server-provided per-account settings UNDERNEATH the managed
     // settings: account keys are merged in, but the managed keys
@@ -3727,6 +3749,36 @@ pub(super) fn ensure_hook_settings(
         }
     }
     Some(path)
+}
+
+/// The `SessionStart` block that holds the first turn until `session`'s MCP
+/// relay is up. `None` for a zero wait, which disables the gate.
+///
+/// The hook's own timeout is the wait plus a margin: a hook that overruns its
+/// timeout is treated by Claude Code as a failure, so the wait must always be
+/// the thing that expires first.
+fn mcp_ready_hook(exe: &str, session: &str, sock: &str, wait_secs: u64) -> Option<serde_json::Value> {
+    (wait_secs > 0).then(|| {
+        json!([{
+            "hooks": [{
+                "type": "command",
+                "command": format!(
+                    "{exe} mcp-wait --session {session} --sock {sock} --timeout {wait_secs}"
+                ),
+                "timeout": wait_secs + 5,
+            }],
+        }])
+    })
+}
+
+/// Seconds the `SessionStart` hook may hold the first turn waiting for the MCP
+/// relay. `CCTUI_MCP_READY_WAIT_SECS=0` disables the gate entirely.
+fn mcp_ready_wait_secs() -> u64 {
+    std::env::var("CCTUI_MCP_READY_WAIT_SECS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(8)
+        .min(60)
 }
 
 /// Write the per-session MCP config registering the `CctuiAgent` tool, and
@@ -4365,12 +4417,35 @@ mod tests {
         assert!(block.contains("example: mcp__cctui__CctuiAgent({\"adapter\": \"claude-code\""));
         assert!(block.contains("mcp__cctui__CctuiUsage"), "the limits tool is announced too");
         assert!(block.contains("blocked model burns the whole batch"), "{block}");
+        assert!(
+            block.contains("retry the call once"),
+            "turn 1 can beat the relay, so the model is told to retry: {block}"
+        );
         assert!(block.ends_with("</session-context>"));
 
         let empty = cctui_proto::api::SpawnCapability::default();
         let block = build_session_context(&spec, "/work/cctui", &[], Some(&empty));
         assert!(!block.contains("CctuiAgent"), "an empty capability advertises nothing");
         assert!(!block.contains("CctuiUsage"), "the relay is absent, so neither tool exists");
+    }
+
+    #[test]
+    fn the_session_start_hook_waits_for_the_relay_and_outlives_its_own_wait() {
+        let block = mcp_ready_hook("/usr/bin/cctui-daemon", "sess-1", "/run/a.sock", 8)
+            .expect("a positive wait registers the gate");
+        let hook = &block[0]["hooks"][0];
+        assert_eq!(
+            hook["command"],
+            "/usr/bin/cctui-daemon mcp-wait --session sess-1 --sock /run/a.sock --timeout 8"
+        );
+        assert_eq!(
+            hook["timeout"], 13,
+            "the hook timeout must exceed the wait, or Claude Code kills it as a failure"
+        );
+        assert!(
+            mcp_ready_hook("/usr/bin/cctui-daemon", "sess-1", "/run/a.sock", 0).is_none(),
+            "a zero wait disables the gate"
+        );
     }
 
     #[test]
