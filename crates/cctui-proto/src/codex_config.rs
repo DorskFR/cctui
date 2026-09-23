@@ -49,7 +49,7 @@ const fn k(name: &'static str, ty: TomlType) -> Curated {
 /// codex settings catalog, which a server test holds to exact agreement.
 ///
 /// `service_tier` is deliberately ABSENT. It is a per-session choice supplied
-/// per thread via `with_thread_config()`, and emitting it here would pin it
+/// per thread via the daemon's `ThreadConfig`, and emitting it here would pin it
 /// process-wide for every session the app-server serves.
 pub const CURATED: &[Curated] = &[
     k("check_for_update_on_startup", TomlType::Bool),

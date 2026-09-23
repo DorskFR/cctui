@@ -164,6 +164,7 @@ async fn run_default(ctx: AdapterCtx) -> anyhow::Result<()> {
     // registry from `thread/list` lets the next reply/rename/set-model resume
     // them via `thread/resume`, mirroring the claude-code backfill/reconnect.
     let shared = daemon::SharedDaemon::new(app_cfg.bin.clone(), ctx.shutdown.clone());
+    daemon::register_turn_transport(&shared);
 
     let restored = persist::load(&registry).await;
     if restored > 0 {
