@@ -17,8 +17,8 @@ use crate::state::AppState;
 /// An agent reading older than this is a replay, not the current state.
 const AGENT_READING_MAX_AGE: chrono::Duration = chrono::Duration::minutes(10);
 
-const SAMPLE_EVERY: Duration = Duration::from_secs(5 * 60);
-const PRUNE_EVERY: Duration = Duration::from_secs(60 * 60);
+const SAMPLE_EVERY: Duration = Duration::from_mins(5);
+const PRUNE_EVERY: Duration = Duration::from_hours(1);
 
 static LAST_SAMPLE: Mutex<Option<Instant>> = Mutex::new(None);
 static LAST_PRUNE: Mutex<Option<Instant>> = Mutex::new(None);
@@ -189,7 +189,7 @@ mod tests {
         let slot = Mutex::new(None);
         let t0 = Instant::now();
         assert!(claim(&slot, SAMPLE_EVERY, t0));
-        assert!(!claim(&slot, SAMPLE_EVERY, t0 + Duration::from_secs(60)));
+        assert!(!claim(&slot, SAMPLE_EVERY, t0 + Duration::from_mins(1)));
         assert!(claim(&slot, SAMPLE_EVERY, t0 + SAMPLE_EVERY));
     }
 }

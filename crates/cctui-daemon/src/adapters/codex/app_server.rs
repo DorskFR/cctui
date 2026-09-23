@@ -389,8 +389,8 @@ fn map_notification(local_id: &str, method: &str, v: &Value) -> Incoming {
             "turn/plan/updated" => map_plan_updated(local_id, v),
             "thread/compacted" => map_compacted(local_id, v),
             "account/rateLimits/updated" => super::rate_limits::from_notification(local_id, v)
-                .map_or(
-                    Incoming::Traced { method: method.to_owned(), reason: "no rate-limit windows" },
+                .map_or_else(
+                    || Incoming::Traced { method: method.to_owned(), reason: "no rate-limit windows" },
                     Incoming::Event,
                 ),
             _ => unreachable!("Disposition::Mapped without a mapper: {method}"),

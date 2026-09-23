@@ -1,5 +1,5 @@
 //! Codex account rate-limit windows, from either carrier: the rollout's
-//! `token_count` line (`rate_limits`, snake_case) or the app-server's
+//! `token_count` line (`rate_limits`, `snake_case`) or the app-server's
 //! `account/rateLimits/updated` notification (`rateLimits`, camelCase).
 
 use cctui_proto::adapter::{AdapterEvent, RateLimitWindow};
