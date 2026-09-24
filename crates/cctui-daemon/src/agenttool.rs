@@ -470,9 +470,6 @@ async fn run_call(
                     return annotate(json!({ "ok": false, "error": err.to_string() }), &note);
                 }
             };
-            // Register BEFORE the spawn frame can produce events; the server
-            // has already dispatched the spawn at this point, but the child
-            // takes seconds to boot, so this stays ahead of its first event.
             let handle = watch.register(&child.session_id);
             tracing::info!(
                 parent = %call.session_id,
