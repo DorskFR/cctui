@@ -1093,8 +1093,8 @@ mod tests {
         // same rule a name that denotes both an account and a pool follows.
         let pool = uuid::Uuid::new_v4();
         assert_eq!(
-            default_binding(Some("hirobot".into()), Some(pool)),
-            Some(DefaultBinding::Account("hirobot".into()))
+            default_binding(Some("alpha".into()), Some(pool)),
+            Some(DefaultBinding::Account("alpha".into()))
         );
     }
 
