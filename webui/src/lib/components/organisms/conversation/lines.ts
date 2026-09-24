@@ -1,5 +1,6 @@
 import type { AgentEvent } from '@bindings/AgentEvent';
 import { USER_PREFIX } from '$lib/ws.svelte';
+import { looksKeepaliveTick } from './keepalive';
 import { m } from '$lib/paraglide/messages';
 import {
 	assignLineKeys,
@@ -23,6 +24,8 @@ export interface LineBuildCtx {
 	renderCode: (text: string, lang: string) => string;
 	prettyJson: boolean;
 	prettyDiff: boolean;
+	/** turn_id → deliver_at of delivered scheduled messages. */
+	scheduledTurns?: ReadonlyMap<string, string>;
 }
 
 export interface DeliveryState {
@@ -95,7 +98,8 @@ function userOrSystem(
 	meta: boolean,
 	ctx: LineBuildCtx,
 	poll?: PollSeen,
-	turnId?: string | null
+	turnId?: string | null,
+	scheduledAt?: string | null
 ): Line | null {
 	const peer = parsePeerMessage(content);
 	if (peer) {
@@ -108,8 +112,15 @@ function userOrSystem(
 			peerFrom: peer.from ?? undefined
 		};
 	}
+	if (looksKeepaliveTick(content)) {
+		if (!ctx.visible('marker')) return null;
+		const label = m.conversation_keepalive_tick();
+		return { role: 'marker', ts, text: label, markerTexts: [label], keepalive: true };
+	}
 	let role: Line['role'] = meta ? 'system' : 'user';
-	if (looksPoll(content)) {
+	if (scheduledAt) {
+		role = 'user';
+	} else if (looksPoll(content)) {
 		role = 'poll';
 	} else if (role === 'user' && poll && pollDuplicate(content, turnId, poll)) {
 		role = 'poll';
@@ -125,8 +136,16 @@ function userOrSystem(
 		ts,
 		html: prose ? ctx.renderMarkdown(prose) : '',
 		text: prose,
-		uploads: uploads.names.length ? uploads : undefined
+		uploads: uploads.names.length ? uploads : undefined,
+		scheduledAt: scheduledAt ? Date.parse(scheduledAt) : undefined
 	};
+}
+
+export function scheduledAtOf(e: AgentEvent, ctx: LineBuildCtx): string | null {
+	const meta = (e as { metadata?: { scheduled_at?: unknown } }).metadata;
+	if (typeof meta?.scheduled_at === 'string') return meta.scheduled_at;
+	const turnId = 'turn_id' in e ? e.turn_id : null;
+	return (turnId && ctx.scheduledTurns?.get(turnId)) || null;
 }
 
 // Errors win so one toggle isolates every failed result, server or client.
@@ -176,7 +195,16 @@ function buildLine(e: AgentEvent, ctx: LineBuildCtx, poll?: PollSeen): Line | nu
 				// Classify structurally from content, not the stored `meta` bit —
 				// cctui-injected human replies carry a spurious `isMeta:true` and
 				// must stay `user` on reload.
-				return userOrSystem(content, Number(e.ts), looksMeta(content), ctx, poll, e.turn_id);
+				const scheduledAt = scheduledAtOf(e, ctx);
+				return userOrSystem(
+					content,
+					Number(e.ts),
+					!scheduledAt && looksMeta(content),
+					ctx,
+					poll,
+					e.turn_id,
+					scheduledAt
+				);
 			}
 			if (!ctx.visible(e.kind === 'attachment' ? 'attachment' : 'assistant')) return null;
 			return {
@@ -429,8 +457,18 @@ export function buildLines(
 	const placeholders: Line[] = [];
 	const closes: QueueClose[] = [];
 	let prevKey = '';
+	let hiddenTick = false;
 	for (const e of events) {
 		if (breaksPollRun(e)) poll.last = null;
+		if (
+			e.type === 'text' &&
+			e.content.startsWith(USER_PREFIX) &&
+			looksKeepaliveTick(e.content.slice(USER_PREFIX.length)) &&
+			!ctx.visible('marker')
+		) {
+			hiddenTick = true;
+			continue;
+		}
 		if (e.type === 'text' && e.kind === 'queue_op') {
 			const body = e.content.trim();
 			const op = e.operation ?? 'queued';
@@ -472,6 +510,8 @@ export function buildLines(
 		}
 		const ln = toLine(e, ctx, poll);
 		if (!ln) continue;
+		if (hiddenTick && (ln.role === 'assistant' || ln.role === 'thinking')) continue;
+		hiddenTick = false;
 		// The three encodings Claude stores ONE human turn in share its `turn_id`,
 		// so keying on it still collapses them while two composer sends of the same
 		// text — always distinct ids — stay two messages.
@@ -489,7 +529,15 @@ export function buildLines(
 		// Consecutive markers collapse into one row: they arrive in bursts at the
 		// same second and each is a single line of bookkeeping.
 		const prevLine = out[out.length - 1];
+		if (prevLine?.keepalive && (ln.role === 'assistant' || ln.role === 'thinking')) {
+			if (ln.role === 'assistant' && ln.text?.trim()) {
+				prevLine.markerTexts = [...(prevLine.markerTexts ?? []), ln.text.trim()];
+				prevLine.text = prevLine.markerTexts.join(' · ');
+			}
+			continue;
+		}
 		if (ln.role === 'marker' && prevLine?.role === 'marker') {
+			prevLine.keepalive = prevLine.keepalive || ln.keepalive;
 			prevLine.markerTexts = [...(prevLine.markerTexts ?? []), ...(ln.markerTexts ?? [])];
 			prevLine.text = prevLine.markerTexts.join(' · ');
 			continue;

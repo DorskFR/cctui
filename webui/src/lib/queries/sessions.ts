@@ -1,8 +1,10 @@
 import { createQuery, useQueryClient } from "@tanstack/svelte-query";
 import type { AgentEvent } from "@bindings/AgentEvent";
 import type { MessagePin } from "@bindings/MessagePin";
+import { api } from "../api";
 import { endpoints } from "./endpoints";
 import { qk } from "./keys";
+import type { DailyCacheLoss } from "./types";
 
 export const useSessions = (
   archived: () => boolean,
@@ -45,6 +47,17 @@ export const useUsageAnalytics = (days: () => number) =>
     queryFn: () =>
       endpoints.usageAnalytics(days(), new Date().getTimezoneOffset()),
     refetchInterval: 60_000,
+  }));
+
+export const useCacheLoss = (days: () => number) =>
+  createQuery(() => ({
+    queryKey: ["cache-loss", { days: days() }],
+    queryFn: () =>
+      api.get<DailyCacheLoss[]>("/sessions/stats/cache-busts", {
+        days: days(),
+        tz_offset: new Date().getTimezoneOffset(),
+      }),
+    refetchInterval: 300_000,
   }));
 
 /** Older pages (`before` cursor) deliberately bypass the query cache. */

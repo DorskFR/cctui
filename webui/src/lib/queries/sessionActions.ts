@@ -9,6 +9,8 @@ import type { SpawnRequest } from "@bindings/SpawnRequest";
 import type { SpawnResponse } from "@bindings/SpawnResponse";
 import type { ForkRequest } from "@bindings/ForkRequest";
 import type { Label } from "@bindings/Label";
+import type { KeepaliveState } from "@bindings/KeepaliveState";
+import type { SessionKeepaliveRequest } from "@bindings/SessionKeepaliveRequest";
 
 /** Build a placeholder card for an in-flight dispatch. Mirrors the
  * fields the worker will report once its daemon registers, so the optimistic
@@ -107,6 +109,17 @@ export function useSessionActions() {
     unpin: async (id: string) => {
       await api.post<void>(`/sessions/${id}/unpin`);
       inval();
+    },
+    setKeepalive: async (
+      id: string,
+      body: SessionKeepaliveRequest,
+    ): Promise<KeepaliveState | null> => {
+      const state = await api.post<KeepaliveState | null>(
+        `/sessions/${id}/keepalive`,
+        body,
+      );
+      inval();
+      return state;
     },
     // Labels. `createLabel` is get-or-create by name (and recolors an
     // existing one); attach/detach wire a label to a session. Each mutation

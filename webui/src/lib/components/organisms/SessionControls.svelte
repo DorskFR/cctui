@@ -322,4 +322,15 @@
 		   the tools follow on the right, all on one row. It picks up order:2 from
 		   the `.bar > *` reset above as a real (non-contents) flex item. */
 	}
+	/* Very narrow: search gets a full-width row of its own (a narrow field makes
+	   mobile browsers zoom on focus); the tools move to the row below it. */
+	@container sess-bar (max-width: 480px) {
+		.search-box {
+			flex: 1 1 100%;
+		}
+		.ctl-item,
+		.more-wrap {
+			order: 3;
+		}
+	}
 </style>

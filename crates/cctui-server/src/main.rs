@@ -5,6 +5,7 @@ mod authz;
 mod auto_archive;
 mod auto_resume;
 mod bandwidth_watch;
+mod brief;
 mod bus;
 mod cache_bust;
 mod config;
@@ -14,7 +15,9 @@ mod db;
 mod dispatchers;
 mod error;
 mod fireworks_billing;
+mod followup;
 mod http_cache;
+mod keepalive;
 mod langfuse;
 mod live_sessions;
 mod machine_liveness;
@@ -28,6 +31,7 @@ mod pool_usage;
 mod presence;
 mod registry;
 mod routes;
+mod scheduled_messages;
 mod session_emoji;
 mod settings_catalog;
 mod skill_store;
@@ -37,6 +41,7 @@ mod state;
 mod store;
 mod update_check;
 mod uploads;
+mod usage_history;
 mod webauthn;
 mod webhook;
 mod ws;
@@ -571,6 +576,14 @@ fn build_api_routes() -> Routes {
         )
         .add(
             &[GET],
+            "/sessions/stats/cache-busts",
+            "Dollars lost to prompt-cache busts per day, by reason.",
+            get(routes::cache_loss::cache_loss),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[GET],
             "/sessions/search",
             "Full-text search across your sessions.",
             get(routes::sessions::search_sessions),
@@ -668,6 +681,30 @@ fn build_api_routes() -> Routes {
             "/sessions/{id}/message",
             "Send a message to a live session.",
             post(routes::sessions::send_message),
+            Authn::Bearer,
+            sess_write(),
+        )
+        .add(
+            &[GET],
+            "/sessions/{id}/messages/scheduled",
+            "List a session's scheduled messages.",
+            get(routes::scheduled_messages::list),
+            Authn::Bearer,
+            sess_read(),
+        )
+        .add(
+            &[Method::PATCH, Method::DELETE],
+            "/sessions/{id}/messages/scheduled/{queue_id}",
+            "Edit/reschedule or cancel a scheduled message.",
+            patch(routes::scheduled_messages::update).delete(routes::scheduled_messages::cancel),
+            Authn::Bearer,
+            sess_write(),
+        )
+        .add(
+            &[Method::POST],
+            "/sessions/{id}/messages/scheduled/{queue_id}/send-now",
+            "Deliver a scheduled message immediately.",
+            post(routes::scheduled_messages::send_now),
             Authn::Bearer,
             sess_write(),
         )
@@ -778,6 +815,14 @@ fn build_api_routes() -> Routes {
             sess_read(),
         )
         .add(
+            &[Method::GET],
+            "/sessions/{id}/brief",
+            "Render a session's user/assistant transcript as a capped markdown brief.",
+            get(brief::session_brief),
+            Authn::Bearer,
+            sess_read(),
+        )
+        .add(
             &[Method::POST],
             "/sessions/{id}/fork",
             "Fork a session into a new one.",
@@ -822,6 +867,14 @@ fn build_api_routes() -> Routes {
             "/sessions/{id}/unpin",
             "Unpin a single session.",
             post(routes::sessions::unpin_session),
+            Authn::Bearer,
+            sess_write(),
+        )
+        .add(
+            &[Method::POST],
+            "/sessions/{id}/keepalive",
+            "Set or clear the session's prompt-cache keep-alive schedule.",
+            post(routes::sessions::set_keepalive),
             Authn::Bearer,
             sess_write(),
         )
@@ -1119,6 +1172,30 @@ fn build_api_routes() -> Routes {
             Authenticated,
         )
         .add(
+            &[GET],
+            "/accounts/{id}/usage/history",
+            "Sampled usage of one provider credential over time.",
+            get(routes::usage_history::account_usage_history),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[GET],
+            "/accounts/{id}/usage/closes",
+            "Closed usage windows of one provider credential, with unused share.",
+            get(routes::usage_history::account_usage_closes),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
+            &[GET],
+            "/accounts/usage/closes",
+            "Closed usage windows of every owned credential, with unused share.",
+            get(routes::usage_history::all_usage_closes),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
             &[Method::POST],
             "/accounts/{id}/limit-reset",
             "Claim a usage-limit reset on a provider credential.",
@@ -1316,6 +1393,22 @@ fn build_api_routes() -> Routes {
             "/admin/instance/self-update",
             "Read or set the machine + directory the self-update agent runs on (admin).",
             get(routes::instance::get_self_update_target).put(routes::instance::update_self_update_target),
+            Authn::Bearer,
+            ScopeAz(auth::Scope::Admin),
+        )
+        .add(
+            &[GET, Method::PUT],
+            "/admin/harness-autoupdate",
+            "Read the harness auto-update settings of every machine, or set the instance default (admin).",
+            get(routes::harness_update::read).put(routes::harness_update::set_instance),
+            Authn::Bearer,
+            ScopeAz(auth::Scope::Admin),
+        )
+        .add(
+            &[Method::PUT],
+            "/admin/harness-autoupdate/{machine_id}",
+            "Set or clear one machine's harness auto-update override (admin).",
+            put(routes::harness_update::set_machine),
             Authn::Bearer,
             ScopeAz(auth::Scope::Admin),
         )
@@ -1540,7 +1633,7 @@ async fn auto_archive_stale(state: &AppState) {
     match sqlx::query_scalar::<_, String>(
         // Drafts are staged-not-running — never auto-archive them.
         concat!(
-            "UPDATE sessions SET status = 'archived', \
+            "UPDATE sessions SET status = 'archived', archived_by = 'automatic', \
                  ended_at = COALESCE(ended_at, now()), \
                  end_reason = COALESCE(end_reason, 'reaped_inactive') \
              WHERE ",
@@ -1589,6 +1682,8 @@ async fn reaper_task(state: AppState) {
         auto_archive_stale(&state).await;
         auto_archive::sweep(&state).await;
         spawn_labels::sweep(&state.pool).await;
+        usage_history::sweep(&state);
+        followup::sweep(&state.pool).await;
 
         // Soft-delete ephemeral (dispatch/worker) machines that have gone
         // quiet past the TTL — pods that died before self-deenroll.
@@ -1668,6 +1763,8 @@ async fn reaper_task(state: AppState) {
         // crash-coverage path the worker's REPLY_URL exit trap can miss.
         webhook::sweep(&state).await;
         auto_resume::sweep(&state).await;
+        scheduled_messages::sweep(&state).await;
+        keepalive::sweep(&state).await;
 
         state.permission_store.write().await.reap_stale(300); // seconds
     }

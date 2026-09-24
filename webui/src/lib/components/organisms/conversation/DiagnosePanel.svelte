@@ -1,15 +1,15 @@
 <script lang="ts">
-	// Session diagnose panel: one call that renders everything the
-	// daemon knows about this session — each fact dated + sourced, plus the
-	// arbitration verdict — and the server-side gateway/account binding facts.
-	// Read-only observability; the only action is an explicit refresh (the
-	// call round-trips server → daemon → adapter, so no background polling).
+	// Session diagnose panel: status-first blocks up top, every raw fact the
+	// daemon and server know folded underneath. The call round-trips server →
+	// daemon → adapter, so it refreshes only on demand, never by polling.
 	import { useSessionDiagnose } from '$lib/queries';
 	import type { CodexDiagnose } from '@bindings/CodexDiagnose';
 	import type { DiagnoseFact } from '@bindings/DiagnoseFact';
 	import type { SessionListItem } from '@bindings/SessionListItem';
 	import { sessionEnd } from '$lib/sessionEnd';
 	import { fmtAge, silenceReasons } from '$lib/diagnoseSilence';
+	import { diagnoseBlocks, diagnoseRows } from '$lib/diagnoseRows';
+	import DiagnoseBlocks from '$lib/components/molecules/DiagnoseBlocks.svelte';
 	import { Button, Heading, Modal, Text, Timestamp } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 
@@ -25,6 +25,7 @@
 
 	const query = useSessionDiagnose(() => sessionId);
 	const end = $derived(session ? sessionEnd(session) : null);
+	const blocks = $derived(diagnoseBlocks(diagnoseRows(session, query.data ?? null)));
 
 	// Compact one-line rendering of a fact value: strings as-is, objects as
 	// `key: value` pairs with nulls dropped (the reason a field is absent is
@@ -112,129 +113,138 @@
 		<div class="diag-body">
 			<Text size="xs" tone="muted">{sessionId}</Text>
 
-			{#if session}
-				<Heading level={4}>{m.diagnose_end_of_life()}</Heading>
-				{#if end}
-					<div class="facts" role="table" aria-label={m.diagnose_end_of_life()}>
-						<div class="fact codex-fact" role="row">
-							<span class="name">{m.diagnose_end_reason()}</span>
-							<span class="val">{end.label} ({end.reason})</span>
-						</div>
-						<div class="fact codex-fact" role="row">
-							<span class="name">{m.diagnose_end_at()}</span>
-							<span class="val">{#if end.endedAt}<Timestamp value={end.endedAt} tone="inherit" />{:else}—{/if}</span>
-						</div>
-						{#if end.detail}
-							<div class="fact codex-fact" role="row">
-								<span class="name">{m.diagnose_end_detail()}</span>
-								<pre class="val end-detail">{end.detail}</pre>
-							</div>
-						{/if}
-					</div>
-				{:else}
-					<Text size="sm" tone="muted">{m.diagnose_end_none()}</Text>
-				{/if}
-			{/if}
-
 			{#if query.isLoading}
 				<Text size="sm" tone="muted">{m.diagnose_asking()}</Text>
 			{:else if query.error}
 				<Text size="sm" tone="danger">
 					{query.error instanceof Error ? query.error.message : m.diagnose_failed()}
 				</Text>
-			{:else if query.data}
-				{@const resp = query.data}
-				<div class="server-facts">
-					<span class="src">{m.diagnose_src_server()}</span>
-					<span>
-						status: {resp.server.status ?? '?'} · adapter: {resp.server.adapter_id ?? '?'} ·
-						account: {resp.server.account_bound ? resp.server.accounts.join(', ') : m.diagnose_not_bound()}
-						{#if resp.server.machine_last_seen_ms != null}
-							· {m.diagnose_daemon_heartbeat({ age: fmtAge(Date.now() - (resp.server.machine_last_seen_ms ?? 0)) })}
-						{/if}
-					</span>
-				</div>
+			{/if}
 
-				{#if resp.daemon_error}
-					<div class="daemon-error">
-						<Text size="sm" tone="danger">{m.diagnose_daemon_unavailable({ error: resp.daemon_error })}</Text>
-					</div>
-				{/if}
+			<DiagnoseBlocks {blocks} />
 
-				{#if resp.daemon}
-					<Text size="xs" tone="muted">
-						{m.diagnose_report_from({ adapter: resp.daemon.adapter, worker: resp.daemon.short ?? '?' })}
-					</Text>
-					<div class="facts" role="table" aria-label={m.diagnose_facts_aria()}>
-						{#each visibleRows as row (row.name)}
-							<div class="fact" role="row">
-								<span class="name">{row.name}</span>
-								<span class="meta">
-									<span class="src">{row.fact.source}</span>
-									<span class="age">{fmtAge(row.fact.age_ms ?? null)}</span>
-								</span>
-								{#if row.fact.value !== null}
-									<span class="val">{fmtValue(row.fact.value)}</span>
-								{:else}
-									<span class="val missing">— {row.fact.missing_reason ?? m.diagnose_missing()}</span>
+			<details class="all">
+				<summary>{m.diagnose_all_facts()}</summary>
+				<div class="all-body">
+					{#if session}
+						<Heading level={4}>{m.diagnose_end_of_life()}</Heading>
+						{#if end}
+							<div class="facts" role="table" aria-label={m.diagnose_end_of_life()}>
+								<div class="fact codex-fact" role="row">
+									<span class="name">{m.diagnose_end_reason()}</span>
+									<span class="val">{end.label} ({end.reason})</span>
+								</div>
+								<div class="fact codex-fact" role="row">
+									<span class="name">{m.diagnose_end_at()}</span>
+									<span class="val">{#if end.endedAt}<Timestamp value={end.endedAt} tone="inherit" />{:else}—{/if}</span>
+								</div>
+								{#if end.detail}
+									<div class="fact codex-fact" role="row">
+										<span class="name">{m.diagnose_end_detail()}</span>
+										<pre class="val end-detail">{end.detail}</pre>
+									</div>
 								{/if}
 							</div>
-						{/each}
-					</div>
-
-					{#if resp.daemon.codex}
-						{@const cx = resp.daemon.codex}
-						<Heading level={4}>Codex</Heading>
-						<div class="facts" role="table" aria-label={m.diagnose_codex_facts_aria()}>
-							{#each codexRows(cx) as row (row.name)}
-								<div class="fact codex-fact" role="row">
-									<span class="name">{row.name}</span>
-									<span class="val">{row.value}</span>
-								</div>
-							{/each}
-						</div>
-
-						{@const reasons = silenceReasons(cx, resp.daemon.generated_at_ms)}
-						<Heading level={4}>{m.diagnose_codex_silence()}</Heading>
-						{#if reasons.length}
-							<ul class="silence">
-								{#each reasons as reason (reason)}
-									<li>{reason}</li>
-								{/each}
-							</ul>
 						{:else}
-							<Text size="sm" tone="muted">{m.diagnose_codex_silence_none()}</Text>
-						{/if}
-
-						{#if cx.protocol_errors?.length}
-							<Heading level={4}>{m.diagnose_codex_protocol_errors()}</Heading>
-							<ul class="silence">
-								{#each cx.protocol_errors ?? [] as err (err.ts_ms + err.message)}
-									<li>
-										<span class="age">{fmtAge(resp.daemon.generated_at_ms - err.ts_ms)}</span>
-										<span class="age">[{err.transport}]</span>
-										{err.message}
-									</li>
-								{/each}
-							</ul>
-						{/if}
-
-						<Heading level={4}>{m.diagnose_codex_stderr_tail({ count: cx.stderr_tail?.length ?? 0 })}</Heading>
-						{#if cx.stderr_tail?.length}
-							<pre class="tail">{stderrText(cx, resp.daemon.generated_at_ms)}</pre>
-						{:else}
-							<Text size="sm" tone="muted">{m.diagnose_codex_stderr_empty()}</Text>
-						{/if}
-
-						<Heading level={4}>{m.diagnose_codex_rpc_tail({ count: cx.rpc_tail?.length ?? 0 })}</Heading>
-						{#if cx.rpc_tail?.length}
-							<pre class="tail">{rpcText(cx, resp.daemon.generated_at_ms)}</pre>
-						{:else}
-							<Text size="sm" tone="muted">{m.diagnose_codex_rpc_empty()}</Text>
+							<Text size="sm" tone="muted">{m.diagnose_end_none()}</Text>
 						{/if}
 					{/if}
-				{/if}
-			{/if}
+
+					{#if query.data}
+						{@const resp = query.data}
+						<div class="server-facts">
+							<span class="src">{m.diagnose_src_server()}</span>
+							<span>
+								status: {resp.server.status ?? '?'} · adapter: {resp.server.adapter_id ?? '?'} ·
+								account: {resp.server.account_bound ? resp.server.accounts.join(', ') : m.diagnose_not_bound()}
+								{#if resp.server.machine_last_seen_ms != null}
+									· {m.diagnose_daemon_heartbeat({ age: fmtAge(Date.now() - (resp.server.machine_last_seen_ms ?? 0)) })}
+								{/if}
+							</span>
+						</div>
+
+						{#if resp.daemon_error}
+							<div class="daemon-error">
+								<Text size="sm" tone="danger">{m.diagnose_daemon_unavailable({ error: resp.daemon_error })}</Text>
+							</div>
+						{/if}
+
+						{#if resp.daemon}
+							<Text size="xs" tone="muted">
+								{m.diagnose_report_from({ adapter: resp.daemon.adapter, worker: resp.daemon.short ?? '?' })}
+							</Text>
+							<div class="facts" role="table" aria-label={m.diagnose_facts_aria()}>
+								{#each visibleRows as row (row.name)}
+									<div class="fact" role="row">
+										<span class="name">{row.name}</span>
+										<span class="meta">
+											<span class="src">{row.fact.source}</span>
+											<span class="age">{fmtAge(row.fact.age_ms ?? null)}</span>
+										</span>
+										{#if row.fact.value !== null}
+											<span class="val">{fmtValue(row.fact.value)}</span>
+										{:else}
+											<span class="val missing">— {row.fact.missing_reason ?? m.diagnose_missing()}</span>
+										{/if}
+									</div>
+								{/each}
+							</div>
+
+							{#if resp.daemon.codex}
+								{@const cx = resp.daemon.codex}
+								<Heading level={4}>Codex</Heading>
+								<div class="facts" role="table" aria-label={m.diagnose_codex_facts_aria()}>
+									{#each codexRows(cx) as row (row.name)}
+										<div class="fact codex-fact" role="row">
+											<span class="name">{row.name}</span>
+											<span class="val">{row.value}</span>
+										</div>
+									{/each}
+								</div>
+
+								{@const reasons = silenceReasons(cx, resp.daemon.generated_at_ms)}
+								<Heading level={4}>{m.diagnose_codex_silence()}</Heading>
+								{#if reasons.length}
+									<ul class="silence">
+										{#each reasons as reason (reason)}
+											<li>{reason}</li>
+										{/each}
+									</ul>
+								{:else}
+									<Text size="sm" tone="muted">{m.diagnose_codex_silence_none()}</Text>
+								{/if}
+
+								{#if cx.protocol_errors?.length}
+									<Heading level={4}>{m.diagnose_codex_protocol_errors()}</Heading>
+									<ul class="silence">
+										{#each cx.protocol_errors ?? [] as err (err.ts_ms + err.message)}
+											<li>
+												<span class="age">{fmtAge(resp.daemon.generated_at_ms - err.ts_ms)}</span>
+												<span class="age">[{err.transport}]</span>
+												{err.message}
+											</li>
+										{/each}
+									</ul>
+								{/if}
+
+								<Heading level={4}>{m.diagnose_codex_stderr_tail({ count: cx.stderr_tail?.length ?? 0 })}</Heading>
+								{#if cx.stderr_tail?.length}
+									<pre class="tail">{stderrText(cx, resp.daemon.generated_at_ms)}</pre>
+								{:else}
+									<Text size="sm" tone="muted">{m.diagnose_codex_stderr_empty()}</Text>
+								{/if}
+
+								<Heading level={4}>{m.diagnose_codex_rpc_tail({ count: cx.rpc_tail?.length ?? 0 })}</Heading>
+								{#if cx.rpc_tail?.length}
+									<pre class="tail">{rpcText(cx, resp.daemon.generated_at_ms)}</pre>
+								{:else}
+									<Text size="sm" tone="muted">{m.diagnose_codex_rpc_empty()}</Text>
+								{/if}
+							{/if}
+						{/if}
+					{/if}
+				</div>
+			</details>
 		</div>
 	{/snippet}
 	{#snippet footer()}
@@ -270,6 +280,16 @@
 		font-size: var(--fs-xs);
 		max-height: 12rem;
 		overflow: auto;
+	}
+	.all-body {
+		display: flex;
+		margin-top: var(--sp-2);
+		flex-direction: column;
+		gap: var(--sp-2);
+	}
+	.all > summary {
+		cursor: pointer;
+		color: var(--text-muted);
 	}
 	.diag-body {
 		display: flex;

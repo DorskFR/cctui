@@ -1,7 +1,7 @@
 <script lang="ts">
-	// Conversation drawer header. Owns the title + rename, the secondary-action group
-	// (rename · copy link · copy markdown · export · fork) which the kit Toolbar
-	// collapses into a ⋯ menu on narrow bars, the interrupt/archive controls, and the
+	// Conversation drawer header. Owns the title + rename (collapsed into the ⋯
+	// menu on narrow bars), the always-present ⋯ menu of less-used actions (copy
+	// link, copy markdown, export, fork, terminal), the interrupt/archive controls, and the
 	// meta row (status badge, in-place codex model editor or the claude "fork to
 	// change model" chip, machine badge, cwd, token usage). Action side-effects
 	// are delegated to callbacks; the editing UI state lives here.
@@ -22,11 +22,14 @@
 	import TokenUsage from '$lib/components/molecules/TokenUsage.svelte';
 	import PermissionModeBadge from '$lib/components/molecules/PermissionModeBadge.svelte';
 	import LangfuseChip from '$lib/components/molecules/LangfuseChip.svelte';
+	import CacheWarmChip from '$lib/components/molecules/CacheWarmChip.svelte';
+	import KeepaliveModal from '$lib/components/molecules/KeepaliveModal.svelte';
 	import {
 		Badge,
 		Icon,
 		IconButton,
 		Input,
+		Menu,
 		Select,
 		Text,
 		Toolbar,
@@ -53,8 +56,11 @@
 		oncopymarkdown,
 		onexport,
 		onfork,
+		onfollowup,
 		onforkselect,
 		forkSelectActive = false,
+		onterminal,
+		terminalOpen = false,
 		oninterrupt,
 		onarchive,
 		onstoparchive,
@@ -83,10 +89,14 @@
 		oncopymarkdown: () => void;
 		onexport: () => void;
 		onfork: () => void;
+		onfollowup?: () => void;
 		// Toggle multi-select-to-fork mode; omitted → button hidden
 		// (codex sessions have no partial-fork primitive).
 		onforkselect?: () => void;
 		forkSelectActive?: boolean;
+		/** Toggles the read-only live terminal; omit to hide the entry. */
+		onterminal?: () => void;
+		terminalOpen?: boolean;
 		oninterrupt: () => void;
 		onarchive: () => void;
 		// Stop-then-archive, fired by the ⌘/Ctrl+E keyboard chord.
@@ -150,20 +160,70 @@
 		onsetmodel(model, effort);
 	}
 
-	// Stand-ins for the `data-overflow` actions once the bar collapses.
+	let keepaliveOpen = $state(false);
+
+	const followupItem = $derived<MenuItem | null>(
+		onfollowup ? { label: m.drawer_followup_label(), icon: 'arrow-right', onselect: onfollowup } : null
+	);
+
+	// Mirrors the Toolbar's `collapseBelow`: the rename stand-in joins the menu
+	// only while its inline button is hidden.
+	const COLLAPSE_BELOW = 640;
+	let barWidth = $state(Infinity);
+	const collapsed = $derived(barWidth < COLLAPSE_BELOW);
+
 	const overflowItems = $derived<MenuItem[]>([
-		renaming
-			? { label: m.common_save(), icon: 'check' as const, onselect: doRename }
-			: { label: m.drawer_rename(), icon: 'edit' as const, onselect: startRename },
-		{ label: m.drawer_copy_link_label(), icon: 'link' as const, onselect: oncopylink },
-		{ label: m.drawer_copy_markdown_label(), icon: 'markdown' as const, onselect: oncopymarkdown },
-		{ label: m.drawer_export_label(), icon: 'download' as const, onselect: onexport },
+		...(collapsed
+			? [
+					renaming
+						? { label: m.common_save(), icon: 'check' as const, onselect: doRename }
+						: { label: m.drawer_rename(), icon: 'edit' as const, onselect: startRename }
+				]
+			: []),
+		{
+			label: m.drawer_copy_link_label(),
+			icon: 'link' as const,
+			attrs: { title: m.drawer_copy_link_title() },
+			onselect: oncopylink
+		},
+		{
+			label: m.drawer_copy_markdown_label(),
+			icon: 'markdown' as const,
+			attrs: { title: m.drawer_copy_markdown_title() },
+			onselect: oncopymarkdown
+		},
+		{
+			label: m.drawer_export_label(),
+			icon: 'download' as const,
+			attrs: { title: m.drawer_export_title() },
+			onselect: onexport
+		},
+		...(followupItem && settings.preferFollowupOverFork ? [followupItem] : []),
 		{
 			label: m.drawer_fork_label(),
 			icon: 'fork' as const,
 			pressed: onforkselect ? forkSelectActive : undefined,
+			attrs: { title: onforkselect ? m.drawer_fork_select_title() : m.drawer_fork_title() },
 			onselect: onforkselect ?? onfork
-		}
+		},
+		...(onterminal
+			? [
+					{
+						label: m.drawer_terminal_label(),
+						icon: 'tv' as const,
+						pressed: terminalOpen,
+						attrs: { title: m.conversation_terminal_title(), 'data-journey': 'terminal' },
+						onselect: onterminal
+					}
+				]
+			: []),
+		{
+			label: m.drawer_keepalive_label(),
+			icon: 'bell' as const,
+			pressed: !!session.keepalive,
+			onselect: () => (keepaliveOpen = true)
+		},
+		...(followupItem && !settings.preferFollowupOverFork ? [followupItem] : [])
 	]);
 
 	function onWinKey(e: KeyboardEvent) {
@@ -185,7 +245,8 @@
 <svelte:window onkeydown={onWinKey} />
 
 <div class="dhead" data-journey="header">
-	<Toolbar collapseBelow="640px" items={overflowItems} overflowLabel={m.drawer_more_actions()}>
+	<div class="dbar" bind:clientWidth={barWidth}>
+	<Toolbar collapseBelow="{COLLAPSE_BELOW}px">
 		<IconButton icon="chevron-left" label={m.drawer_back()} onclick={onclose} />
 		{#if onTogglePin}
 			<span
@@ -238,9 +299,6 @@
 		<!-- Text size: the same kit picker as the main header, writing the one
 		     global fontScale. It stays out of the ⋯ flyout on mobile. -->
 		<FontScalePicker box="lg" />
-		<!-- Secondary actions: inline on desktop, collapsed into the
-		     ⋯ flyout on mobile so a long title + many buttons no longer overflow.
-		     A single fork lives at the end of the group. -->
 		{#if renaming}
 			<IconButton data-overflow chip variant="default" icon="check" label={m.common_save()} onclick={doRename} />
 		{:else}
@@ -253,44 +311,6 @@
 				onclick={startRename}
 			/>
 		{/if}
-		<IconButton
-			data-overflow
-			chip
-			variant="default"
-			icon="link"
-			label={m.drawer_copy_link_label()}
-			title={m.drawer_copy_link_title()}
-			onclick={oncopylink}
-		/>
-		<IconButton
-			data-overflow
-			chip
-			variant="default"
-			icon="markdown"
-			label={m.drawer_copy_markdown_label()}
-			title={m.drawer_copy_markdown_title()}
-			onclick={oncopymarkdown}
-		/>
-		<IconButton
-			data-overflow
-			chip
-			variant="default"
-			icon="download"
-			label={m.drawer_export_label()}
-			title={m.drawer_export_title()}
-			onclick={onexport}
-		/>
-		<IconButton
-			data-overflow
-			data-journey="fork"
-			chip
-			variant="default"
-			icon="fork"
-			label={m.drawer_fork_label()}
-			title={onforkselect ? m.drawer_fork_select_title() : m.drawer_fork_title()}
-			aria-pressed={onforkselect ? forkSelectActive : undefined}
-			onclick={onforkselect ?? onfork}
-		/>
 		{#if !archived}
 			<IconButton
 				chip
@@ -312,7 +332,13 @@
 				onclick={oninterrupt}
 			/>
 		{/if}
+		<Menu label={m.drawer_more_actions()} items={overflowItems} placement="bottom-end" box="sm">
+			{#snippet trigger()}
+				<IconButton data-journey="actions" icon="more" label={m.drawer_more_actions()} box="sm" />
+			{/snippet}
+		</Menu>
 	</Toolbar>
+	</div>
 	{#if session.labels.length > 0}
 		<!-- Labels get their own full-width row in the header's column stack, so the
 		     strip can spread edge-to-edge and wrap freely instead of being boxed
@@ -346,6 +372,7 @@
 		<PermissionModeBadge mode={session.permission_mode} />
 		<TokenUsage usage={session.token_usage} />
 		<LangfuseChip id={session.id} />
+		<CacheWarmChip {session} />
 		{#if isCodexSession && !archived}
 			{#if modelEditing}
 				<span class="model-edit">
@@ -395,6 +422,10 @@
 	</div>
 </div>
 
+{#if keepaliveOpen}
+	<KeepaliveModal {session} onclose={() => (keepaliveOpen = false)} />
+{/if}
+
 <style>
 	.dhead {
 		position: sticky;
@@ -408,6 +439,9 @@
 		background: var(--bg-elevated);
 		/* TokenUsage degrades its readout against this container. */
 		container: drawer-head / inline-size;
+	}
+	.dbar {
+		min-width: 0;
 	}
 	/* Labels on their own row so the strip spans the full header width. */
 	.hlabels {

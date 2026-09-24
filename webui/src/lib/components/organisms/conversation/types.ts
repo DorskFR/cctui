@@ -176,6 +176,8 @@ export interface Line {
 	queuedAt?: number;
 	// Queued and dropped before delivery.
 	cancelled?: boolean;
+	// Delivered from the schedule queue: the time it was scheduled for.
+	scheduledAt?: number;
 	// Parsed AskUserQuestion payload — rendered as interactive cards.
 	ask?: AskQuestion[];
 	// Parsed ExitPlanMode plan markdown — rendered as a Plan card.
@@ -194,6 +196,8 @@ export interface Line {
 	// Consecutive markers collapse into one row; every marker's text is kept
 	// here so nothing is lost to the grouping.
 	markerTexts?: string[];
+	/** A cache keep-alive tick and its reply, folded into one marker row. */
+	keepalive?: boolean;
 	// `system/stop_hook_summary` for the turn this assistant line closes.
 	stopHook?: string;
 	// `file-history-snapshot|delta` provenance for this tool call.

@@ -386,6 +386,30 @@ pub enum AdapterEvent {
         local_id: String,
         offset: u64,
     },
+    /// Account rate-limit windows the agent itself reported (codex sends them
+    /// with every token count), recorded as usage samples of the credential
+    /// the session is bound to.
+    RateLimits {
+        local_id: String,
+        windows: Vec<RateLimitWindow>,
+        /// Unix seconds the agent observed them at; `None` means just now.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        observed_at: Option<i64>,
+    },
+}
+
+/// One rate-limit window as reported by the agent.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RateLimitWindow {
+    pub used_percent: f64,
+    /// Window length; `None` when the agent did not say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_minutes: Option<i64>,
+    /// Unix seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resets_at: Option<i64>,
+    /// `primary` or `secondary`, the agent's own naming.
+    pub slot: String,
 }
 
 /// Child reference attached to a session — typically a linked PR. Drives the
@@ -671,13 +695,34 @@ impl AdapterCommand {
 ///
 /// Defaults to [`Self::Automatic`] so a peer that predates the field, or any
 /// path that forgets to say, gets the conservative reading.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
 #[serde(rename_all = "snake_case")]
 pub enum RemoveInitiator {
     User,
     /// A TTL sweep, a spawn-intent auto-archive, or the reconcile purge.
     #[default]
     Automatic,
+}
+
+impl RemoveInitiator {
+    /// The persisted `sessions.archived_by` value.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Automatic => "automatic",
+        }
+    }
+
+    #[must_use]
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "user" => Some(Self::User),
+            "automatic" => Some(Self::Automatic),
+            _ => None,
+        }
+    }
 }
 
 /// Which slice of a parent conversation a subset fork keeps.
@@ -1238,6 +1283,15 @@ mod tests {
             }
             other => panic!("expected Diagnose, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn remove_initiator_persists_as_its_wire_name() {
+        for i in [RemoveInitiator::User, RemoveInitiator::Automatic] {
+            assert_eq!(serde_json::to_value(i).unwrap(), serde_json::json!(i.as_str()));
+            assert_eq!(RemoveInitiator::parse(i.as_str()), Some(i));
+        }
+        assert_eq!(RemoveInitiator::parse("reaper"), None);
     }
 
     #[test]

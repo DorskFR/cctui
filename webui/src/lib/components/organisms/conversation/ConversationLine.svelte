@@ -184,6 +184,18 @@
 			<span class="meta-end">
 				<Text tone="faint" size="xs" nowrap>{m.conversation_queued()}</Text>
 			</span>
+		{:else if ln.scheduledAt !== undefined}
+			{@const time = new Date(ln.scheduledAt).toLocaleTimeString([], {
+				hour: '2-digit',
+				minute: '2-digit'
+			})}
+			<span
+				class="meta-end scheduled-mark"
+				title={m.conversation_scheduled_for({ time })}
+				aria-label={m.conversation_scheduled_for({ time })}
+			>
+				<Icon name="clock" size={12} />
+			</span>
 		{/if}
 		<span class="line-actions" class:has-pin={pinned} data-journey="line-actions">
 			{#if pinnable}
@@ -499,6 +511,10 @@
 	}
 	/* Waiting in Claude's queue: a distinct hue from the amber `sending…` tint,
 	   so a prompt in line does not read as one mid-flight. */
+	.scheduled-mark {
+		color: var(--text-faint);
+		display: inline-flex;
+	}
 	.line.user.queued .bubble {
 		background: color-mix(in srgb, var(--role-queued) 12%, var(--bg-elevated));
 		border-color: color-mix(in srgb, var(--role-queued) 40%, transparent);

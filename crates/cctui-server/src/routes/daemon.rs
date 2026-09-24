@@ -848,7 +848,8 @@ fn event_local_id(event: &AdapterEvent) -> &str {
         | AdapterEvent::PermissionRequest { local_id, .. }
         | AdapterEvent::PermissionResolved { local_id, .. }
         | AdapterEvent::TokenUsage { local_id, .. }
-        | AdapterEvent::TranscriptMark { local_id, .. } => local_id,
+        | AdapterEvent::TranscriptMark { local_id, .. }
+        | AdapterEvent::RateLimits { local_id, .. } => local_id,
         _ => "",
     }
 }
@@ -964,7 +965,14 @@ async fn process_frame(
             resolve_read_file_result(state, request_id, ok, file, error_kind, error);
             Ok(())
         }
-        DaemonFrameUp::Heartbeat { bandwidth, update_hook, resources, claude_jobs, .. } => {
+        DaemonFrameUp::Heartbeat {
+            bandwidth,
+            update_hook,
+            resources,
+            claude_jobs,
+            harness,
+            ..
+        } => {
             // A daemon too old to advertise omits the field; leave the stored
             // flag alone rather than reading silence as "no hook".
             if let Some(has_hook) = update_hook {
@@ -998,6 +1006,9 @@ async fn process_frame(
             // Only a daemon that reports its jobs can parse the reply.
             if let Some(shorts) = claude_jobs {
                 reconcile_claude_jobs(state, machine_id, &shorts).await;
+            }
+            if let Some(report) = harness {
+                crate::routes::harness_update::on_heartbeat(state, machine_id, &report).await;
             }
             Ok(())
         }
@@ -1154,8 +1165,10 @@ async fn handle_event(
             crate::auto_archive::claim_intent(state, &local_id, spawn_key_hint.as_deref()).await;
             crate::spawn_labels::claim_intent(&state.pool, &local_id, spawn_key_hint.as_deref())
                 .await;
+            crate::followup::claim_intent(&state.pool, &local_id, spawn_key_hint.as_deref()).await;
         }
-        AdapterEvent::Message { local_id, payload, turn_id } => {
+        AdapterEvent::Message { local_id, mut payload, turn_id } => {
+            crate::keepalive::observe_message(state, &local_id, &mut payload).await;
             inserted_seq = insert_event(state, &local_id, "message", payload, turn_id).await?;
             newly_inserted = inserted_seq.is_some();
             note_insert(state, machine_id, newly_inserted);
@@ -1406,6 +1419,9 @@ async fn handle_event(
         }
         AdapterEvent::PrLink { local_id, children } => {
             persist_pr_link_children(state, &local_id, &children).await?;
+        }
+        AdapterEvent::RateLimits { local_id, windows, observed_at } => {
+            crate::usage_history::record_agent_limits(state, local_id, &windows, observed_at);
         }
         AdapterEvent::SessionModel { local_id, model } => {
             // Overwrite with the transcript/init-frame ground truth — the model

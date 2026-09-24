@@ -28,11 +28,13 @@
 	import DrawerToolbar from './conversation/DrawerToolbar.svelte';
 	import DiagnosePanel from './conversation/DiagnosePanel.svelte';
 	import ActivityBanner from './conversation/ActivityBanner.svelte';
+	import AutoArchiveNotice from './conversation/AutoArchiveNotice.svelte';
 	import TaskPanel from './conversation/TaskPanel.svelte';
 	import TerminalPane from './conversation/TerminalPane.svelte';
 	import Conversation from './conversation/Conversation.svelte';
 	import AccountSwitchModal from './conversation/AccountSwitchModal.svelte';
 	import ConversationComposer from './conversation/ConversationComposer.svelte';
+	import { scheduledTurns, useScheduledMessages } from '$lib/queries/scheduled';
 	import BookmarkSaveModal from './bookmarks/BookmarkSaveModal.svelte';
 	import type { Line, MsgCategory, ViewOpts } from './conversation/types';
 	import { parseViewOpts } from './conversation/filters';
@@ -57,6 +59,7 @@
 		highlight = [],
 		focusSeq = null,
 		onNewFromScript,
+		onFollowup,
 		onNavigate
 	}: {
 		session: SessionListItem;
@@ -67,6 +70,7 @@
 		focusSeq?: number | null;
 		// "New session from same script" for archived sessions.
 		onNewFromScript?: (s: SessionListItem) => void;
+		onFollowup?: (s: SessionListItem, instruction?: string) => void;
 		// Open another session in place by id — used to jump straight to a
 		// freshly forked conversation without a manual refresh.
 		onNavigate?: (sessionId: string) => void;
@@ -94,7 +98,7 @@
 	// Session diagnose panel, opened from the toolbar or a failure toast's
 	// Diagnose action (`?diagnose=1`).
 	let diagnoseOpen = $state(false);
-	// Read-only live terminal pane, toggled from the toolbar.
+	// Read-only live terminal pane, toggled from the header menu.
 	let terminalOpen = $state(false);
 	// A navigation to another session must not leave a stale panel open.
 	$effect(() => {
@@ -279,6 +283,8 @@
 		);
 	// Getters, not snapshots: the toggles are read at build time so the derived
 	// below re-runs when they flip.
+	const scheduledQuery = useScheduledMessages(() => id);
+	const scheduledTurnMap = $derived(scheduledTurns(scheduledQuery.data));
 	const lineCtx: LineBuildCtx = {
 		visible,
 		renderMarkdown: mdRender,
@@ -288,6 +294,9 @@
 		},
 		get prettyDiff() {
 			return view.prettyDiff;
+		},
+		get scheduledTurns() {
+			return scheduledTurnMap;
 		}
 	};
 	const lines = $derived.by(() =>
@@ -481,6 +490,9 @@
 	function newFromScript() {
 		onNewFromScript?.(session);
 	}
+	function followup(instruction?: string) {
+		onFollowup?.(session, instruction);
+	}
 
 	// Nested dialogs and the rename input take Escape for themselves; keep it
 	// from reaching the panel's document-level close handler.
@@ -536,10 +548,13 @@
 				oncopymarkdown={sa.copyMarkdown}
 				onexport={sa.export}
 				onfork={fork.openDialog}
+				onfollowup={onFollowup ? () => followup() : undefined}
 				onforkselect={forkable
 					? () => (selectMode ? exitSelect() : (selectMode = true))
 					: undefined}
 				forkSelectActive={selectMode}
+				onterminal={() => (terminalOpen = !terminalOpen)}
+				{terminalOpen}
 				oninterrupt={sa.interrupt}
 				onarchive={sa.archive}
 				onstoparchive={sa.stopAndArchive}
@@ -563,8 +578,6 @@
 				bind:mobilePanel
 				ontoggleAuto={sa.toggleAutoApprove}
 				ondiagnose={() => (diagnoseOpen = true)}
-				onterminal={() => (terminalOpen = !terminalOpen)}
-				{terminalOpen}
 				{pins}
 				{lines}
 				onjumpseq={(seq) => void ensureSeqVisible(seq)}
@@ -634,6 +647,7 @@
 			/>
 
 			<ActivityBanner {stream} {archived} />
+			<AutoArchiveNotice {session} onpin={() => togglePin(session)} />
 
 			<ConversationComposer
 				bind:this={composer}
@@ -646,6 +660,7 @@
 				stageFiles={(files) => actions.stageFiles(id, files)}
 				onNewFromScript={newFromScript}
 				onFork={fork.openDialog}
+				onFollowup={onFollowup ? followup : undefined}
 				onResume={sa.resume}
 			/>
 			</Dropzone>
@@ -675,6 +690,7 @@
 				extractLabel={fork.extractLabel}
 				bind:model={fork.model}
 				bind:effort={fork.effort}
+				bind:prompt={fork.prompt}
 				oncancel={fork.cancel}
 				onsubmit={fork.submit}
 			/>

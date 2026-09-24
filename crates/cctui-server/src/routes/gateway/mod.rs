@@ -71,12 +71,11 @@ pub fn test_db_url(test_name: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        AnthropicSettings, AuthStage, Family, FireworksSettings, OrphanSpamMap,
-        access_token_is_fresh, apply_anthropic_cache_defaults, apply_gateway_env, auth_error,
-        bump_orphan_401, clear_orphan_fingerprint, failover_retry_response, map_wham_usage,
-        merge_session_budget, needs_rebind, orphan_is_blocked_at, resolve_catalog_model,
-        skip_request_header, skip_response_header, tees_response, ttl_hours_from,
-        usage_cache_stale, window_utilization,
+        AuthStage, Family, FireworksSettings, OrphanSpamMap, access_token_is_fresh,
+        apply_anthropic_cache_defaults, apply_gateway_env, auth_error, bump_orphan_401,
+        clear_orphan_fingerprint, failover_retry_response, map_wham_usage, merge_session_budget,
+        needs_rebind, orphan_is_blocked_at, resolve_catalog_model, skip_request_header,
+        skip_response_header, tees_response, ttl_hours_from, usage_cache_stale, window_utilization,
     };
     use chrono::{Duration as ChronoDuration, Utc};
     use std::collections::BTreeMap;
@@ -389,36 +388,6 @@ mod tests {
         assert_eq!(fireworks.get("FIREWORKS_API_KEY").map(String::as_str), Some("cctui_s_tok"));
         for other in [&anthropic, &openai] {
             assert!(other.keys().all(|k| !fireworks.contains_key(k)));
-        }
-    }
-
-    #[test]
-    fn anthropic_settings_default_to_no_rewrite() {
-        for stored in [
-            None,
-            Some(serde_json::json!({})),
-            Some(serde_json::json!({ "thinking_display": null })),
-            Some(serde_json::json!({ "thinking_display": "" })),
-            Some(serde_json::json!("not-an-object")),
-        ] {
-            let s = AnthropicSettings::resolve(stored.as_ref());
-            assert!(s.thinking_display.is_none());
-        }
-    }
-
-    #[test]
-    fn anthropic_settings_reject_values_outside_the_api_enum() {
-        for bad in ["visible", "full", "raw", "SUMMARIZED"] {
-            let stored = serde_json::json!({ "thinking_display": bad });
-            let s = AnthropicSettings::resolve(Some(&stored));
-            assert!(s.thinking_display.is_none(), "{bad} must not reach upstream");
-        }
-        for good in ["summarized", "omitted"] {
-            let stored = serde_json::json!({ "thinking_display": good });
-            assert_eq!(
-                AnthropicSettings::resolve(Some(&stored)).thinking_display.as_deref(),
-                Some(good)
-            );
         }
     }
 

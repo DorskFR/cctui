@@ -33,6 +33,7 @@
 		LAST_MACHINE,
 		LAST_SPAWN_NAME,
 		LAST_SPAWN_LABELS,
+		FOLLOWUP_ARCHIVE_SOURCE,
 		nextSessionName,
 		normalizeDir
 	} from '$lib/drafts';
@@ -52,7 +53,8 @@
 	} from '$lib/spawnMemory';
 	import { attachFiles, removeFileByName, fileCapError } from '$lib/attachments';
 	import { attachmentStore, dropMissingTokens } from '$lib/attachmentStore';
-	import { AutoGrid, Button, Callout, Dropzone, Modal, OptionButton, resizeHandle, Text } from '@dorsk/tsumikit';
+	import { AutoGrid, Button, Callout, Checkbox, Dropzone, Modal, OptionButton, resizeHandle, Text } from '@dorsk/tsumikit';
+	import { BRIEF_FILE_NAME, FOLLOWUP_RELATION } from '$lib/followup';
 	import { dialogBackdropGuard } from '$lib/dialogBackdropGuard';
 	import MachineFields from './spawn/MachineFields.svelte';
 	import DispatchFields from './spawn/DispatchFields.svelte';
@@ -179,7 +181,16 @@
 		try {
 			const saved: SpawnSlotPayload = readSpawnSlot(slotKey) ?? {};
 			const raw = Object.keys(saved).length > 0;
-			const { draft_id, env_keys, label_ids, ...prefillForm } = prefill ?? {};
+			const {
+				draft_id,
+				env_keys,
+				label_ids,
+				relation: _r,
+				parent_session_id: _p,
+				archive_source: _a,
+				followup_file: _f,
+				...prefillForm
+			} = prefill ?? {};
 			draftId = draft_id ?? saved.draftId ?? null;
 			loadedDraft = (raw || !!draft_id) && !(prefill && !draft_id);
 			// Values never come back from disk: only the keys are re-proposed.
@@ -209,7 +220,16 @@
 			}
 			return seeded;
 		} catch {
-			const { draft_id: _d, env_keys: _k, label_ids: _l, ...rest } = prefill ?? {};
+			const {
+				draft_id: _d,
+				env_keys: _k,
+				label_ids: _l,
+				relation: _r,
+				parent_session_id: _p,
+				archive_source: _a,
+				followup_file: _f,
+				...rest
+			} = prefill ?? {};
 			return { ...blank, ...rest } as Form;
 		}
 	}
@@ -413,6 +433,15 @@
 	// never reach disk; only env keys go into the draft. Files live in
 	// IndexedDB (attachmentStore), keyed like the draft.
 	let envRows = $state<EnvRow[]>(restoredEnvRows);
+	// svelte-ignore state_referenced_locally
+	const followupParent =
+		prefill?.relation === FOLLOWUP_RELATION ? (prefill.parent_session_id ?? null) : null;
+	// svelte-ignore state_referenced_locally
+	const followupFile = followupParent ? (prefill?.followup_file ?? '') : '';
+	let archiveSource = $state(
+		// svelte-ignore state_referenced_locally
+		prefill?.archive_source === '1' || drafts.get(FOLLOWUP_ARCHIVE_SOURCE) === '1'
+	);
 	let files = $state<File[]>([]);
 	let filesRestored = $state(false);
 	$effect(() => {
@@ -440,6 +469,9 @@
 			const restored = await attachmentStore.get(loadKey);
 			if (!live) return;
 			files = restored.files;
+			if (followupFile && !files.some((f) => f.name === BRIEF_FILE_NAME)) {
+				files = [...files, new File([followupFile], BRIEF_FILE_NAME, { type: 'text/markdown' })];
+			}
 			const { text, dropped } = dropMissingTokens(form.prompt, restored.missing);
 			if (dropped) {
 				form.prompt = text;
@@ -608,7 +640,9 @@
 			save_draft: false,
 			// Attached by the server once the session registers, so a draft
 			// launched later keeps them too.
-			label_ids: [...f.labels]
+			label_ids: [...f.labels],
+			relation: followupParent ? FOLLOWUP_RELATION : null,
+			parent_session_id: followupParent
 		};
 	}
 
@@ -660,8 +694,10 @@
 		const result = await ws.awaitSpawn(res.command_id, sessionId, {
 			probe: sessionId ? () => spawnProbe(sessionId) : undefined
 		});
+		if (followupParent) drafts.set(FOLLOWUP_ARCHIVE_SOURCE, archiveSource ? '1' : '');
 		if (result.ok) {
 			toasts.ok(m.spawn_toast_spawned());
+			if (followupParent && archiveSource) void actions.archive(followupParent);
 			discardMirror();
 			resetForm();
 			onspawned();
@@ -872,6 +908,9 @@
 				onfiles={addFiles}
 				onremovefile={removeFile}
 			/>
+			{#if followupParent}
+				<Checkbox bind:checked={archiveSource} label={m.followup_archive_source()} />
+			{/if}
 		</div>
 	</Dropzone>
 {/snippet}

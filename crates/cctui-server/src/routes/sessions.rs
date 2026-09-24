@@ -388,6 +388,10 @@ pub async fn list_sessions(
                         end_reason: None,
                         end_detail: None,
                         ended_at: None,
+                        auto_archive_at: None,
+                        archived_by: None,
+                        keepalive: None,
+                        last_keepalive_at: None,
                     },
                 )
             })
@@ -492,6 +496,10 @@ pub async fn list_sessions(
                 end_reason: None,
                 end_detail: None,
                 ended_at: None,
+                auto_archive_at: None,
+                archived_by: None,
+                keepalive: None,
+                last_keepalive_at: None,
             },
         ));
     }
@@ -508,7 +516,7 @@ fn cap_unread(n: i64) -> u32 {
 
 /// The model catalog each session's usage is priced against, from the provider
 /// row its newest session token binds to. Ungatewayed sessions are absent.
-async fn session_catalogs(
+pub async fn session_catalogs(
     state: &AppState,
     session_ids: &[String],
 ) -> std::collections::HashMap<String, serde_json::Value> {
@@ -740,11 +748,15 @@ async fn enrich_and_sort(
             end_detail: Option<String>,
             ended_at: Option<DateTime<Utc>>,
             permission_mode: Option<String>,
+            archived_by: Option<String>,
+            keepalive_json: Option<serde_json::Value>,
+            last_keepalive_at: Option<DateTime<Utc>>,
         }
         let rows: Vec<SignalRow> = sqlx::query_as(
             "SELECT id, tempo, agent_state, activity, session_name, model, effort, pinned, \
                     soft_limit_reason, last_tool_at, last_tool_name, tool_use_count, \
-                    children, end_reason, end_detail, ended_at, permission_mode \
+                    children, end_reason, end_detail, ended_at, permission_mode, archived_by, \
+                    keepalive_json, last_keepalive_at \
              FROM sessions WHERE id = ANY($1)",
         )
         .bind(&session_ids)
@@ -789,6 +801,15 @@ async fn enrich_and_sort(
                 s.effort = row.effort;
                 s.permission_mode = row.permission_mode;
                 s.pinned = row.pinned;
+                s.archived_by = row.archived_by.as_deref().and_then(RemoveInitiator::parse);
+                s.auto_archive_at = crate::auto_archive::stale_archive_due(
+                    s.status,
+                    s.pinned,
+                    s.last_heartbeat,
+                    state.config.archive_after_secs,
+                );
+                s.keepalive = row.keepalive_json.and_then(|v| serde_json::from_value(v).ok());
+                s.last_keepalive_at = row.last_keepalive_at;
                 s.activity_detail = row.activity;
                 s.last_tool_at = row.last_tool_at;
                 s.last_tool_name = row.last_tool_name;
@@ -1343,6 +1364,10 @@ pub async fn search_sessions(
                     end_reason: None,
                     end_detail: None,
                     ended_at: None,
+                    auto_archive_at: None,
+                    archived_by: None,
+                    keepalive: None,
+                    last_keepalive_at: None,
                 },
             )
         })
@@ -1502,6 +1527,8 @@ type EndRow = (
     Option<DateTime<Utc>>,
     Option<serde_json::Value>,
     Option<String>,
+    bool,
+    Option<String>,
 );
 
 #[allow(clippy::too_many_lines)]
@@ -1571,6 +1598,10 @@ pub async fn get_session(
                 end_reason: None,
                 end_detail: None,
                 ended_at: None,
+                auto_archive_at: None,
+                archived_by: None,
+                keepalive: None,
+                last_keepalive_at: None,
             };
             return Ok(Json(item));
         }
@@ -1637,9 +1668,13 @@ pub async fn get_session(
         end_reason: None,
         end_detail: None,
         ended_at: None,
+        auto_archive_at: None,
+        archived_by: None,
+        keepalive: None,
+        last_keepalive_at: None,
     };
     let end: Option<EndRow> = sqlx::query_as(
-        "SELECT end_reason, end_detail, ended_at, todos, permission_mode \
+        "SELECT end_reason, end_detail, ended_at, todos, permission_mode, pinned, archived_by \
          FROM sessions WHERE id = $1",
     )
     .bind(&item.id)
@@ -1649,12 +1684,22 @@ pub async fn get_session(
         tracing::error!("db error: {e}");
         (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
     })?;
-    if let Some((end_reason, end_detail, ended_at, todos, permission_mode)) = end {
+    if let Some((end_reason, end_detail, ended_at, todos, permission_mode, pinned, archived_by)) =
+        end
+    {
         item.end_reason = end_reason.as_deref().map(SessionEndReason::parse);
         item.end_detail = end_detail;
         item.ended_at = ended_at;
         item.todos = todos.and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
         item.permission_mode = permission_mode;
+        item.pinned = pinned;
+        item.archived_by = archived_by.as_deref().and_then(RemoveInitiator::parse);
+        item.auto_archive_at = crate::auto_archive::stale_archive_due(
+            item.status,
+            pinned,
+            item.last_heartbeat,
+            state.config.archive_after_secs,
+        );
     }
     Ok(Json(item))
 }
@@ -1845,6 +1890,12 @@ pub async fn get_conversation(
     }
 
     let usage_by_message = message_usage(&state, &session_id).await?;
+    let scheduled_turns = crate::scheduled_messages::scheduled_turns(&state.pool, &session_id)
+        .await
+        .map_err(|e| {
+            tracing::error!("db error: {e}");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
+        })?;
 
     // Stamp each event with `ts` (unix millis, matching the live `AgentEvent`
     // shape) derived from `created_at`, so the client renders real timestamps
@@ -1858,6 +1909,12 @@ pub async fn get_conversation(
                 obj.insert("seq".to_owned(), serde_json::json!(id));
                 if let Some(turn_id) = turn_id {
                     obj.insert("turn_id".to_owned(), serde_json::json!(turn_id));
+                    if let Some(at) = scheduled_turns.get(&turn_id) {
+                        obj.insert(
+                            "metadata".to_owned(),
+                            serde_json::json!({ "scheduled_at": at.to_rfc3339() }),
+                        );
+                    }
                 }
                 if let Some(message_id) = obj.get("message_id").and_then(serde_json::Value::as_str)
                     && let Some(usage) = usage_by_message.get(message_id)
@@ -1873,9 +1930,20 @@ pub async fn get_conversation(
 
 pub async fn send_message(
     State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
     Path(session_id): Path<String>,
     Json(req): Json<MessageRequest>,
 ) -> Result<(StatusCode, Json<cctui_proto::api::SpawnResponse>), (StatusCode, Json<ApiError>)> {
+    if let Some(raw) = req.deliver_at.as_deref() {
+        return crate::routes::scheduled_messages::schedule(
+            &state,
+            &ctx,
+            &session_id,
+            &req.content,
+            raw,
+        )
+        .await;
+    }
     // Carry re-minted gateway env so a reply-driven cold-resume revives the
     // worker with a fresh valid token rather than empty env.
     let env = crate::routes::gateway::resume_env_for_session(&state, &session_id).await;
@@ -2624,13 +2692,14 @@ pub async fn archive_one(
     // archived session is, by definition, no longer waiting on anyone.
     let archived: Vec<String> = sqlx::query_scalar(
         "UPDATE sessions SET status = 'archived', tempo = NULL, agent_state = NULL, \
-                activity = NULL, soft_limit_reason = NULL \
+                activity = NULL, soft_limit_reason = NULL, archived_by = $4 \
          WHERE (id = $1 OR id = ANY($3)) AND (pinned = false OR $2) \
          RETURNING id",
     )
     .bind(session_id)
     .bind(force)
     .bind(&descendant_ids)
+    .bind(initiator.as_str())
     .fetch_all(&state.pool)
     .await?;
     // Deepest first, and always before the parent: a live descendant holds its
@@ -2729,6 +2798,29 @@ async fn unpin_one(state: &AppState, session_id: &str) -> Result<(), sqlx::Error
         .await?;
     tracing::info!(session_id = %session_id, "session unpinned");
     Ok(())
+}
+
+/// `POST /api/v1/sessions/{id}/keepalive` — set or clear the prompt-cache
+/// keep-alive schedule; answers with the stored schedule (`null` when off).
+pub async fn set_keepalive(
+    State(state): State<AppState>,
+    Path(session_id): Path<String>,
+    Json(req): Json<cctui_proto::api::SessionKeepaliveRequest>,
+) -> Result<Json<Option<cctui_proto::api::KeepaliveState>>, (StatusCode, Json<ApiError>)> {
+    match crate::keepalive::apply(&state, &session_id, &req).await {
+        Ok(Some(Ok(schedule))) => Ok(Json(schedule)),
+        Ok(Some(Err(msg))) => Err((StatusCode::BAD_REQUEST, Json(ApiError { error: msg }))),
+        Ok(None) => {
+            Err((StatusCode::NOT_FOUND, Json(ApiError { error: "session not found".into() })))
+        }
+        Err(e) => {
+            tracing::error!("db error: {e}");
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError { error: "database error".into() }),
+            ))
+        }
+    }
 }
 
 /// `POST /api/v1/sessions/pin` — pin many sessions in one request. Mirrors the
@@ -3624,7 +3716,7 @@ mod tests {
             .expect("set posture");
 
         let row: Option<EndRow> = sqlx::query_as(
-            "SELECT end_reason, end_detail, ended_at, todos, permission_mode \
+            "SELECT end_reason, end_detail, ended_at, todos, permission_mode, pinned, archived_by \
              FROM sessions WHERE id = $1",
         )
         .bind(&sid)

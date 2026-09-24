@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
-use crate::adapter::AdapterId;
+use crate::adapter::{AdapterId, RemoveInitiator};
 use crate::classifier::Bucket;
 use crate::models::{Attention, Liveness, SessionEndReason, SessionStatus, TokenUsage};
 
@@ -432,6 +432,51 @@ pub struct SessionListItem {
     pub end_detail: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ended_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// When the idle-TTL sweep will archive this session (and remove its
+    /// worker). `None` when pinned, archived, a draft, or the sweep is off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auto_archive_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Who archived the session; `None` while live or when unrecorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archived_by: Option<RemoveInitiator>,
+    /// Cache keep-alive schedule while enabled (`sessions.keepalive_json`);
+    /// `None` when off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keepalive: Option<KeepaliveState>,
+    /// When the reaper last claimed a keep-alive tick for this session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_keepalive_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// Per-session cache keep-alive schedule.
+///
+/// The reaper sends a small tick every
+/// `interval_secs` while the session is idle so the provider's prompt cache
+/// stays warm, and stops after `max_ticks` ticks without human activity
+/// (`0` = indefinitely). A human message resets `ticks_sent`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct KeepaliveState {
+    pub interval_secs: u32,
+    pub max_ticks: u32,
+    #[serde(default)]
+    pub ticks_sent: u32,
+    /// Projected end of the schedule (`max_ticks * interval_secs` from the
+    /// last human activity); `None` when indefinite.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// `POST /sessions/{id}/keepalive` body. `enabled: false` clears the schedule;
+/// omitted fields fall back to the provider default interval and 6 ticks.
+#[derive(Debug, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SessionKeepaliveRequest {
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval_secs: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_ticks: Option<u32>,
 }
 
 /// One entry of a session's agent task list, normalized across harnesses.
@@ -642,6 +687,10 @@ pub struct MessageRequest {
     /// falls back to content matching.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_id: Option<uuid::Uuid>,
+    /// RFC3339 instant to deliver at instead of now: future, at most 30 days
+    /// ahead. The message is queued server-side and the response is 202.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deliver_at: Option<String>,
 }
 
 /// Body for `PATCH /api/v1/sessions/{id}` — rename a session after creation.
@@ -827,6 +876,15 @@ pub struct SpawnRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(skip)]
     pub spawn_capability: Option<SpawnCapability>,
+    /// How this session relates to `parent_session_id`: `followup` marks a
+    /// session whose first prompt embeds the parent's transcript brief. It
+    /// nests under the parent like a fork. `None` → a root session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relation: Option<String>,
+    /// The session this one continues (see `relation`). Set on the child's
+    /// `parent_id` when the worker registers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_session_id: Option<String>,
 }
 
 impl std::fmt::Debug for SpawnRequest {
@@ -854,6 +912,8 @@ impl std::fmt::Debug for SpawnRequest {
             .field("attachment_names", &self.attachment_names)
             .field("label_ids", &self.label_ids)
             .field("spawn_capability", &self.spawn_capability)
+            .field("relation", &self.relation)
+            .field("parent_session_id", &self.parent_session_id)
             .finish()
     }
 }
@@ -904,6 +964,21 @@ pub struct ForkResponse {
     pub status: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+}
+
+/// Response to `GET /api/v1/sessions/{id}/brief`: the user/assistant
+/// transcript as markdown, tool calls and thinking dropped, the oldest turns
+/// elided past the caps.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct BriefResponse {
+    pub markdown: String,
+    /// Turns rendered.
+    pub turns: u32,
+    /// Earlier turns elided by the turn or byte cap.
+    pub omitted: u32,
+    /// Whether the byte cap cut anything (elided turns or a cut turn).
+    pub truncated: bool,
 }
 
 /// Response to `POST /api/v1/sessions/{id}/files` (mid-chat
