@@ -1671,9 +1671,10 @@ pub async fn route_or_prepare_resume(
 pub struct AppServerConfig {
     /// Binary to invoke (default `"codex"`).
     pub bin: String,
-    /// Approval policy passed via `-c approval_policy=...`. `"untrusted"`
-    /// (the default) makes Codex ask for approval on commands so the relay
-    /// has something to forward; `"never"` disables prompts.
+    /// Approval policy passed via `-c approval_policy=...`. `"on-request"`
+    /// (the default) lets Codex ask for approval so the relay has something
+    /// to forward; `"never"` disables prompts. Codex 0.153 refuses to start on
+    /// `"untrusted"`.
     pub approval_policy: String,
     /// Sandbox mode passed via `-c sandbox_mode=...`. `"read-only"`
     /// and `"workspace-write"` wrap commands in bubblewrap; on a host whose
@@ -1704,7 +1705,7 @@ impl Default for AppServerConfig {
     fn default() -> Self {
         Self {
             bin: "codex".to_string(),
-            approval_policy: "untrusted".to_string(),
+            approval_policy: "on-request".to_string(),
             sandbox_mode: "workspace-write".to_string(),
             reasoning_effort: None,
             model: None,
@@ -4882,7 +4883,7 @@ done
     fn config_overrides_default_and_with_quality_knobs() {
         let base = AppServerConfig::default().config_overrides();
         assert_eq!(base.len(), 2);
-        assert!(base.contains(&("approval_policy".to_owned(), "untrusted".to_owned())));
+        assert!(base.contains(&("approval_policy".to_owned(), "on-request".to_owned())));
         assert!(base.contains(&("sandbox_mode".to_owned(), "workspace-write".to_owned())));
 
         let with = AppServerConfig {
@@ -4918,7 +4919,7 @@ done
         assert!(flags.contains(&"model_verbosity=\"low\"".to_owned()), "{flags:?}");
         assert!(flags.contains(&"model_context_window=272000".to_owned()), "{flags:?}");
         // The managed knobs still ride along, still quoted.
-        assert!(flags.contains(&"approval_policy=\"untrusted\"".to_owned()), "{flags:?}");
+        assert!(flags.contains(&"approval_policy=\"on-request\"".to_owned()), "{flags:?}");
         assert!(flags.contains(&"model_provider=\"cctui\"".to_owned()), "{flags:?}");
     }
 
@@ -4936,7 +4937,7 @@ done
         // The keys that collide with managed ones survive only with cctui's values.
         for (key, want) in [
             ("model_provider", "\"cctui\""),
-            ("approval_policy", "\"untrusted\""),
+            ("approval_policy", "\"on-request\""),
             ("sandbox_mode", "\"workspace-write\""),
         ] {
             let vals: Vec<&str> =
@@ -4952,7 +4953,7 @@ done
         assert_eq!(
             got,
             vec![
-                ("approval_policy".to_owned(), "\"untrusted\"".to_owned()),
+                ("approval_policy".to_owned(), "\"on-request\"".to_owned()),
                 ("sandbox_mode".to_owned(), "\"workspace-write\"".to_owned()),
             ]
         );
