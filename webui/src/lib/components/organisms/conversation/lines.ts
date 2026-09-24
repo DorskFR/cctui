@@ -457,8 +457,18 @@ export function buildLines(
 	const placeholders: Line[] = [];
 	const closes: QueueClose[] = [];
 	let prevKey = '';
+	let hiddenTick = false;
 	for (const e of events) {
 		if (breaksPollRun(e)) poll.last = null;
+		if (
+			e.type === 'text' &&
+			e.content.startsWith(USER_PREFIX) &&
+			looksKeepaliveTick(e.content.slice(USER_PREFIX.length)) &&
+			!ctx.visible('marker')
+		) {
+			hiddenTick = true;
+			continue;
+		}
 		if (e.type === 'text' && e.kind === 'queue_op') {
 			const body = e.content.trim();
 			const op = e.operation ?? 'queued';
@@ -500,6 +510,8 @@ export function buildLines(
 		}
 		const ln = toLine(e, ctx, poll);
 		if (!ln) continue;
+		if (hiddenTick && (ln.role === 'assistant' || ln.role === 'thinking')) continue;
+		hiddenTick = false;
 		// The three encodings Claude stores ONE human turn in share its `turn_id`,
 		// so keying on it still collapses them while two composer sends of the same
 		// text — always distinct ids — stay two messages.

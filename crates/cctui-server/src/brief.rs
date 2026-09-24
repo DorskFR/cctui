@@ -61,9 +61,6 @@ fn is_keepalive(payload: &Value) -> bool {
 /// The speaker and prose of one stored row, or `None` for anything the brief
 /// drops.
 fn classify(adapter_id: &str, event_type: &str, payload: Value) -> Option<(Role, String)> {
-    if is_keepalive(&payload) {
-        return None;
-    }
     let v = crate::normalize::for_client(adapter_id, event_type, payload)?;
     if v.get("type").and_then(Value::as_str) != Some("text")
         || v.get("meta").and_then(Value::as_bool).unwrap_or(false)
@@ -89,8 +86,17 @@ pub fn collect_turns<'a>(
     rows: impl IntoIterator<Item = (&'a str, Value)>,
 ) -> Vec<Turn> {
     let mut turns: Vec<Turn> = Vec::new();
+    let mut in_tick = false;
     for (event_type, payload) in rows {
+        if is_keepalive(&payload) {
+            in_tick = true;
+            continue;
+        }
         let Some((role, text)) = classify(adapter_id, event_type, payload) else { continue };
+        if in_tick && role == Role::Assistant {
+            continue;
+        }
+        in_tick = false;
         let text = text.trim();
         if text.is_empty() {
             continue;
@@ -247,12 +253,21 @@ mod tests {
 
     #[test]
     fn keepalive_ticks_are_dropped() {
-        let mut tick = json!({"role": "user", "text": "tick"});
+        let prompt = crate::keepalive::tick_prompt(chrono::Utc::now());
+        let mut tick = json!({"role": "user", "text": prompt});
         assert!(crate::keepalive::stamp_tick(&mut tick));
-        let turns =
-            collect_turns("claude-code", vec![user("q"), ("message", tick), assistant("a")]);
-        assert_eq!(turns.len(), 2);
-        assert!(turns.iter().all(|t| t.text != "tick"));
+        let turns = collect_turns(
+            "claude-code",
+            vec![user("q"), assistant("a"), ("message", tick), assistant("warm"), user("next")],
+        );
+        assert_eq!(
+            turns,
+            vec![
+                Turn { role: Role::User, text: "q".into() },
+                Turn { role: Role::Assistant, text: "a".into() },
+                Turn { role: Role::User, text: "next".into() },
+            ]
+        );
     }
 
     #[test]
