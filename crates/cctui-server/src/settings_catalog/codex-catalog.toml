@@ -175,26 +175,9 @@ group = "Tools"
 label = "Web search"
 tag = "care"
 source = "schema"
-type = "boolean"
+type = "string"
+enum = "disabled, cached, indexed, live"
 notes = "lets the model search the web mid-turn; egress + cost"
-
-[[keys]]
-name = "tools.web_search"
-group = "Tools"
-label = "Web search tool"
-tag = "care"
-source = "schema"
-type = "boolean"
-notes = "the newer `[tools]` spelling of `web_search`; set one or the other"
-
-[[keys]]
-name = "tools.view_image"
-group = "Tools"
-label = "View image"
-tag = "safe"
-source = "docs"
-type = "boolean"
-notes = "lets the model attach a local image file to its context"
 
 [[keys]]
 name = "hide_agent_reasoning"

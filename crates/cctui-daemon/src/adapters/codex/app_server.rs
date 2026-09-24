@@ -4907,14 +4907,14 @@ done
     #[test]
     fn account_settings_reach_the_launch_command_line() {
         let block = cctui_proto::codex_config::render_block(&json!({
-            "web_search": true,
+            "hide_agent_reasoning": true,
             "model_verbosity": "low",
             "model_context_window": 272_000,
         }))
         .expect("rendered");
         let got = launch_overrides(&AppServerConfig::default(), &env_with_block(&block));
         let flags: Vec<String> = got.iter().map(|(k, v)| format!("{k}={v}")).collect();
-        assert!(flags.contains(&"web_search=true".to_owned()), "{flags:?}");
+        assert!(flags.contains(&"hide_agent_reasoning=true".to_owned()), "{flags:?}");
         assert!(flags.contains(&"model_verbosity=\"low\"".to_owned()), "{flags:?}");
         assert!(flags.contains(&"model_context_window=272000".to_owned()), "{flags:?}");
         // The managed knobs still ride along, still quoted.
