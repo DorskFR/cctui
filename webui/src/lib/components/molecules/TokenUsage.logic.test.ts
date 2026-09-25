@@ -113,6 +113,10 @@ describe('cramped-container degradation', () => {
 		expect(block).toMatch(/\.sum-compact-only \{\s*display: contents;/);
 	});
 
+	it('keeps only Σ inside a cramped drawer-head', () => {
+		expect(containerBlock(svelte, 'drawer-head')).toMatch(/\.cost \{\s*display: none;/);
+	});
+
 	it('drops the $ cost as the last step, keeping only Σ', () => {
 		const block = svelte.match(/@container sess-card \(max-width: 16rem\) \{[\s\S]*?\n\t\}/)?.[0] ?? '';
 		expect(block).toMatch(/\.cost \{\s*display: none;/);
