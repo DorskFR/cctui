@@ -5,8 +5,8 @@
 	import AccountAvatar from '$lib/components/molecules/AccountAvatar.svelte';
 	import ResourceShares from '$lib/components/molecules/ResourceShares.svelte';
 	import ProviderColumn from '$lib/components/organisms/accounts/ProviderColumn.svelte';
-	import { ACCOUNT_DRAG_MIME, exhaustedWindow } from '$lib/components/organisms/accounts/pools.logic';
-	import { accountDrag, isTouchPointer, poolZoneAt } from '$lib/components/organisms/accounts/drag.svelte';
+	import { exhaustedWindow } from '$lib/components/organisms/accounts/pools.logic';
+	import { accountHandleDrag } from '$lib/components/organisms/accounts/handleDrag.svelte';
 	import { providerLabel } from '$lib/providers';
 	import { Button, Checkbox, Icon, IconButton, Menu, Select, Text, Timestamp, type MenuItem } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
@@ -88,69 +88,12 @@
 			.join(' · ')
 	);
 
-	function dragStart(e: DragEvent) {
-		if (!e.dataTransfer) return;
-		e.dataTransfer.setData(ACCOUNT_DRAG_MIME, a.id);
-		e.dataTransfer.effectAllowed = 'move';
-		accountDrag.accountId = a.id;
-	}
-	function dragEnd() {
-		accountDrag.accountId = '';
-	}
-	// Touch / pen: no HTML5 drag. A short hold on the handle arms the drag (a
-	// quick swipe still scrolls), then the finger carries the card and drops it
-	// on whichever pool zone is under it on release.
-	const HOLD_MS = 120;
-	const SLOP_PX = 8;
-	let touchDragging = $state(false);
-	let holdTimer: ReturnType<typeof setTimeout> | undefined;
-	let origin = { x: 0, y: 0 };
-	function endTouchDrag() {
-		clearTimeout(holdTimer);
-		holdTimer = undefined;
-		touchDragging = false;
-		accountDrag.accountId = '';
-		accountDrag.overId = '';
-	}
-	function pointerDown(e: PointerEvent) {
-		if (!isTouchPointer(e)) return;
-		e.preventDefault();
-		try {
-			(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-		} catch {
-			/* synthetic pointer: nothing to capture */
-		}
-		origin = { x: e.clientX, y: e.clientY };
-		holdTimer = setTimeout(() => {
-			touchDragging = true;
-			accountDrag.accountId = a.id;
-			navigator.vibrate?.(10);
-		}, HOLD_MS);
-	}
-	function pointerMove(e: PointerEvent) {
-		if (!isTouchPointer(e)) return;
-		if (touchDragging) {
-			accountDrag.overId = poolZoneAt(e.clientX, e.clientY);
-			return;
-		}
-		if (holdTimer && Math.hypot(e.clientX - origin.x, e.clientY - origin.y) > SLOP_PX) {
-			clearTimeout(holdTimer);
-			holdTimer = undefined;
-		}
-	}
-	function pointerUp(e: PointerEvent) {
-		if (!isTouchPointer(e)) return;
-		const was = touchDragging;
-		const target = was ? poolZoneAt(e.clientX, e.clientY) : '';
-		endTouchDrag();
-		if (!was) return;
-		const to = pools.find((p) => p.id === target);
-		if (to && to.id !== pool?.id) onmovepool?.(to);
-	}
-	function pointerCancel(e: PointerEvent) {
-		if (!isTouchPointer(e)) return;
-		endTouchDrag();
-	}
+	const drag = accountHandleDrag({
+		accountId: () => a.id,
+		pool: () => pool,
+		pools: () => pools,
+		onmovepool: () => onmovepool
+	});
 
 	let redirectOpen = $state(false);
 	let redirectTarget = $state('');
@@ -208,7 +151,7 @@
 	}
 </script>
 
-<article class="acct" class:lifted={touchDragging} id={a.id} data-journey="account" data-journey-key={a.name}>
+<article class="acct" class:lifted={drag.touchDragging} id={a.id} data-journey="account" data-journey-key={a.name}>
 	<header class="head">
 		{#if onmovepool && !managed && !compact}
 			<span
@@ -218,12 +161,12 @@
 				role="img"
 				aria-label={m.pools_drag_handle()}
 				title={m.pools_drag_handle()}
-				ondragstart={dragStart}
-				ondragend={dragEnd}
-				onpointerdown={pointerDown}
-				onpointermove={pointerMove}
-				onpointerup={pointerUp}
-				onpointercancel={pointerCancel}>⋮⋮</span
+				ondragstart={drag.dragStart}
+				ondragend={drag.dragEnd}
+				onpointerdown={drag.pointerDown}
+				onpointermove={drag.pointerMove}
+				onpointerup={drag.pointerUp}
+				onpointercancel={drag.pointerCancel}>⋮⋮</span
 			>
 		{/if}
 		<AccountAvatar emoji={a.emoji} name={a.name} id={a.id} size={28} decorative />
