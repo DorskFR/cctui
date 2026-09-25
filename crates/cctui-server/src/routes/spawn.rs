@@ -93,7 +93,7 @@ pub async fn dispatch_spawn(
         }
     }
 
-    let machine_uuid = resolve_owned_machine(state, ctx, &req.machine_id).await?;
+    let (machine_uuid, owner) = resolve_owned_machine(state, ctx, &req.machine_id).await?;
 
     // Replica-aware forwarding: if a live peer replica holds this
     // machine's daemon WS, hand the request over before any command/env
@@ -424,8 +424,6 @@ pub async fn dispatch_spawn(
     ))
 }
 
-/// Resolve `req.machine_id` (a UUID) to the owning user, enforcing
-/// `admin || caller == owner`. Returns the machine UUID on success.
 /// Pick the account to bind when a spawn names none.
 ///
 /// Sessions used to launch UNBOUND in this case — their traffic skipped the
@@ -655,11 +653,13 @@ fn resolve_default_account(
     }
 }
 
+/// Resolve `machine_id` (a UUID) to `(machine_uuid, owner)`, enforcing
+/// `admin || caller == owner`.
 pub async fn resolve_owned_machine(
     state: &AppState,
     ctx: &AuthContext,
     machine_id: &str,
-) -> Result<Uuid, (StatusCode, Json<ApiError>)> {
+) -> Result<(Uuid, Uuid), (StatusCode, Json<ApiError>)> {
     let machine_uuid =
         Uuid::parse_str(machine_id).map_err(|_| bad_request("machine_id must be a uuid"))?;
     let owner =
@@ -673,7 +673,7 @@ pub async fn resolve_owned_machine(
     if !(ctx.is_admin() || ctx.user_id == owner) {
         return Err((StatusCode::FORBIDDEN, Json(ApiError { error: "not your machine".into() })));
     }
-    Ok(machine_uuid)
+    Ok((machine_uuid, owner))
 }
 
 /// Persist a spawn payload as a `draft` session row. No env is stored
@@ -685,7 +685,7 @@ async fn save_draft(
     ctx: &AuthContext,
     req: &SpawnRequest,
 ) -> Result<(StatusCode, Json<SpawnResponse>), (StatusCode, Json<ApiError>)> {
-    let machine_uuid = resolve_owned_machine(state, ctx, &req.machine_id).await?;
+    let (machine_uuid, _) = resolve_owned_machine(state, ctx, &req.machine_id).await?;
     let adapter_id = req.adapter_id.clone().unwrap_or_else(|| "claude-code".to_owned());
 
     // Store the spawn config (NOT env — secrets never persisted) under
