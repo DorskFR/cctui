@@ -784,14 +784,16 @@ pub fn invalidate_policy_cache() {
     POLICY_CACHE.clear();
 }
 
+/// `Err` only when the lookup failed and nothing is cached: the caller must not
+/// forward unguarded.
 async fn policy_for_provider(
     state: &AppState,
     provider_id: Uuid,
-) -> Option<(Uuid, Arc<CompiledPolicy>)> {
+) -> Result<Option<(Uuid, Arc<CompiledPolicy>)>, sqlx::Error> {
     if let Some(entry) = POLICY_CACHE.get(&provider_id)
         && entry.0.elapsed() < POLICY_TTL
     {
-        return entry.1.clone();
+        return Ok(entry.1.clone());
     }
     let row: Result<Option<(Uuid, Vec<String>, Vec<String>, Vec<String>, Vec<String>)>, _> =
         sqlx::query_as(
@@ -809,11 +811,11 @@ async fn policy_for_provider(
         }),
         Err(e) => {
             tracing::warn!(provider = %provider_id, error = %e, "tool policy lookup failed");
-            return POLICY_CACHE.get(&provider_id).and_then(|e| e.1.clone());
+            return POLICY_CACHE.get(&provider_id).map(|c| c.1.clone()).ok_or(e);
         }
     };
     POLICY_CACHE.insert(provider_id, (Instant::now(), compiled.clone()));
-    compiled
+    Ok(compiled)
 }
 
 /// What the proxy needs to guard one response.
@@ -824,13 +826,16 @@ pub struct ActiveGuard {
     session_id: Option<String>,
 }
 
-/// `None` when the account has no effective policy or the session is exempt.
+/// `Ok(None)` when the account has no effective policy or the session is
+/// exempt; `Err` when the policy could not be read at all.
 pub async fn guard_for(
     state: &AppState,
     provider_id: Uuid,
     session_token: &str,
-) -> Option<ActiveGuard> {
-    let (account_id, policy) = policy_for_provider(state, provider_id).await?;
+) -> Result<Option<ActiveGuard>, sqlx::Error> {
+    let Some((account_id, policy)) = policy_for_provider(state, provider_id).await? else {
+        return Ok(None);
+    };
     let hash = crate::auth::sha256_hex(session_token);
     let session: Option<(String, Option<String>)> = sqlx::query_as(
         "SELECT t.session_id, s.working_dir FROM session_tokens t \
@@ -843,9 +848,9 @@ pub async fn guard_for(
     .flatten();
     let (session_id, cwd) = session.map_or((None, None), |(s, c)| (Some(s), c));
     if policy.exempts(cwd.as_deref()) {
-        return None;
+        return Ok(None);
     }
-    Some(ActiveGuard { policy, account_id, session_id })
+    Ok(Some(ActiveGuard { policy, account_id, session_id }))
 }
 
 async fn record_block(state: &AppState, guard: &ActiveGuard, block: Block) {

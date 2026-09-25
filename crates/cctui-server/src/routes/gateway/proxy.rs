@@ -404,7 +404,10 @@ pub async fn passthrough(
     let trace_session_id =
         if langfuse.is_some() { session_id_for_token(&state, &session_token).await } else { None };
 
-    let tool_guard = super::guard_for(&state, acct.id, &session_token).await;
+    let tool_guard = super::guard_for(&state, acct.id, &session_token).await.map_err(|e| {
+        tracing::warn!(account = %acct.id, error = %e, "tool policy unavailable, refusing unguarded");
+        StatusCode::SERVICE_UNAVAILABLE
+    })?;
     if tees_response(langfuse.is_some(), fireworks.is_some()) || tool_guard.is_some() {
         headers.remove(reqwest::header::ACCEPT_ENCODING);
     }
