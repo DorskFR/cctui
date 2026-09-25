@@ -1,5 +1,5 @@
 <script lang="ts">
-	// The "Dispatch (k8s)" branch of the spawn form, extracted from SpawnModal:
+	// The "Dispatch (k8s)" branch of the spawn form:
 	// dispatcher + adapter selection and the fields forwarded to the dispatcher as
 	// `payload` (name, identity, repo, ticket, prompt, prompt file, model, timeout,
 	// effort). The adapter picker chooses the claude or codex worker; the

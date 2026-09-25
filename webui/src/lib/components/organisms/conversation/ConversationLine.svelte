@@ -53,7 +53,7 @@
 		pinned?: boolean;
 		/** Toggle the pin on this line; omit to hide the action. */
 		onpin?: (ln: Line) => void;
-		/** Save this message to the cross-session bookmarks collection (CCT-992);
+		/** Save this message to the cross-session bookmarks collection;
 		 * omit to hide the action. */
 		onbookmark?: (ln: Line) => void;
 		bookmarked?: boolean;

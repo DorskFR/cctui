@@ -1,8 +1,7 @@
 /*
- * Design tokens. gh-review no longer ships its own palette: the
- * `--gh-*` names are now a thin alias layer over @dorsk/tsumikit's semantic
- * tokens (`--bg`, `--text`, `--accent`, `--ok`, `--danger`, …), which webui
- * already applies via `[data-theme]` on <html> across its 24 themes.
+ * Design tokens: the `--gh-*` names are a thin alias layer over
+ * @dorsk/tsumikit's semantic tokens (`--bg`, `--text`, `--accent`, `--ok`,
+ * `--danger`, …), which webui applies via `[data-theme]` on <html>.
  *
  * Standalone imports tsumikit's variables.css (app.css) so these vars resolve;
  * embedded, webui's <html> provides them and the review subtree inherits the

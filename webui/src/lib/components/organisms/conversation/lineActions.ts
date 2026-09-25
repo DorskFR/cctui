@@ -1,5 +1,5 @@
 // Per-message line actions (copy-as-Markdown, save-as-PNG) for the conversation
-// drawer, extracted from ConversationDrawer with no behavior change.
+// drawer.
 import { errMessage } from '$lib/api';
 import { toasts } from '$lib/toast.svelte';
 import { copyText } from '$lib/clipboard';

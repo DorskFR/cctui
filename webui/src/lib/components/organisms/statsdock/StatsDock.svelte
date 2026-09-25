@@ -37,9 +37,7 @@
 	const maxPx = $derived(maxDockWidth(viewportWidth));
 
 	// Server + client versions, with the red ↑ chip when the server's release
-	// probe found something newer. They used to live in the header; the redesign
-	// gave that room away, and this panel is the one piece of always-on chrome
-	// left where a build number belongs.
+	// probe found something newer.
 	const version = useVersion();
 	let updateOpen = $state(false);
 

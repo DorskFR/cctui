@@ -1,4 +1,3 @@
-// Shared spawn-form types, extracted from SpawnModal (no behavior change).
 import type { PermissionMode } from '@bindings/PermissionMode';
 
 // "machine" = spawn on an enrolled daemon; "dispatch" = hand off to a k8s

@@ -99,7 +99,7 @@ import ResourceBattery from '$lib/components/molecules/ResourceBattery.svelte';
 	);
 
 	// The kit font picker writes the kit store; the blob follows so the choice
-	// round-trips across devices like it did through the old header select.
+	// round-trips across devices.
 	// (The theme picker is app-owned and persists through `settings.setTheme`.)
 	$effect(() => {
 		const f = fontScale.current;

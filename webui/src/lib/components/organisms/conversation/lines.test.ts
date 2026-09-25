@@ -590,7 +590,7 @@ describe('task lists', () => {
 	});
 });
 
-describe('CCT-1055 system record reclassification', () => {
+describe('system record reclassification', () => {
 	const annotation = (detail: string, ts: number) => text(detail, ts, 'turn_annotation');
 	const marker = (body: string, ts: number) => text(`· ${body}`, ts, 'system_marker');
 	const user = (body: string, ts: number) => text(`▷ User: ${body}`, ts);
@@ -663,7 +663,7 @@ describe('CCT-1055 system record reclassification', () => {
 	});
 });
 
-describe('CCT-1083 queued messages carry their own queue state', () => {
+describe('queued messages carry their own queue state', () => {
 	const user = (body: string, ts: number, seq: number | null = null) =>
 		text(`▷ User: ${body}`, ts, null, seq);
 
@@ -782,7 +782,7 @@ describe('CCT-1083 queued messages carry their own queue state', () => {
 	});
 });
 
-describe('CCT-1101 queued means waiting, absorbed means delivered', () => {
+describe('queued means waiting, absorbed means delivered', () => {
 	const user = (body: string, ts: number, seq: number | null = null) =>
 		text(`▷ User: ${body}`, ts, null, seq);
 

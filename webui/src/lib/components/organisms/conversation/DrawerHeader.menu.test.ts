@@ -36,7 +36,7 @@ describe('drawer header ⋯ menu', () => {
 		expect(header).toContain('collapseBelow="{COLLAPSE_BELOW}px"');
 	});
 
-	it('no longer renders the moved actions inline', () => {
+	it('does not render the menu actions inline', () => {
 		for (const icon of ['link', 'markdown', 'download', 'fork']) {
 			expect(markup(), icon).not.toMatch(new RegExp(`<IconButton[^>]*icon="${icon}"`));
 		}
