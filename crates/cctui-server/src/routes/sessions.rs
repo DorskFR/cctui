@@ -289,114 +289,73 @@ const LAST_TWO_TURNS_SQL: &str = "SELECT s.session_id, u.input_tokens, u.cache_r
 /// `(session_id, preview, cut, created_at)` from [`LAST_MESSAGE_SQL`].
 type LastMessageRow = (String, Option<String>, Option<bool>, DateTime<Utc>);
 
-#[allow(clippy::too_many_lines, clippy::cognitive_complexity)]
 pub async fn list_sessions(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Query(params): Query<ListParams>,
     req_headers: axum::http::HeaderMap,
 ) -> Result<axum::response::Response, AppError> {
-    let uid = ctx.owner_filter();
-    // Live sessions from in-memory registry — keep registered_at for sorting.
-    // Non-admins only see registry entries they own. The registry's
-    // `machine_id` is freeform (UUID or hostname), so ownership can't be read
-    // off the handle directly — resolve it from the DB: which of the live ids
-    // are owned by this caller. A live session with no resolvable owner is
-    // EXCLUDED for non-admins rather than leaked.
-    let owned_live_ids: Option<HashSet<String>> = if ctx.is_admin() {
-        None
-    } else {
-        let live_ids: Vec<String> = {
-            let registry = state.registry.read().await;
-            registry.list().into_iter().map(|h| h.session.id.clone()).collect()
-        };
-        let owned =
-            crate::store::sessions::visible_session_ids(&state.pool, &live_ids, ctx.user_id)
-                .await?;
-        Some(owned.into_iter().collect())
-    };
-
+    let owned_live = owned_live_ids(&state, &ctx).await?;
     let mut with_ts: Vec<(DateTime<Utc>, SessionListItem)> = {
         let registry = state.registry.read().await;
         registry
             .list()
             .into_iter()
             .filter(|handle| {
-                owned_live_ids.as_ref().is_none_or(|owned| owned.contains(&handle.session.id))
+                owned_live.as_ref().is_none_or(|owned| owned.contains(&handle.session.id))
             })
-            .map(|handle| {
-                (
-                    handle.session.registered_at,
-                    SessionListItem {
-                        id: handle.session.id.clone(),
-                        parent_id: handle.session.parent_id.clone(),
-                        machine_id: handle.session.machine_id.clone(),
-                        working_dir: handle.session.working_dir.clone(),
-                        status: derive_status(
-                            handle.session.registered_at,
-                            handle.session.last_heartbeat,
-                        ),
-                        liveness: derive_liveness(handle.session.last_heartbeat),
-                        attention: None,
-                        bucket: Bucket::Working,
-                        token_usage: handle.token_usage.clone(),
-                        metadata: handle.session.metadata.clone(),
-                        adapter_id: handle.session.adapter_id.clone(),
-                        machine_name: None,
-                        machine_hue: None,
-                        machine_kind: None,
-                        last_message_text: None,
-                        last_message_at: None,
-                        registered_at: Some(handle.session.registered_at),
-                        name: None,
-                        model: None,
-                        effort: None,
-                        permission_mode: None,
-                        auto_approve: false,
-                        match_snippet: None,
-                        match_seq: None,
-                        last_activity_at: None,
-                        cache_cold: false,
-                        estimated_burst_tokens: None,
-                        hibernated: false,
-                        pinned: false,
-                        labels: Vec::new(),
-                        last_heartbeat: Some(handle.session.last_heartbeat),
-                        account_name: None,
-                        unread_count: 0,
-                        activity_detail: None,
-                        last_tool_at: None,
-                        last_tool_name: None,
-                        tool_use_count: 0,
-                        todos: Vec::new(),
-                        has_token_credentials: false,
-                        account_traffic_observed: false,
-                        pr_links: Vec::new(),
-                        end_reason: None,
-                        end_detail: None,
-                        ended_at: None,
-                        auto_archive_at: None,
-                        archived_by: None,
-                        keepalive: None,
-                        last_keepalive_at: None,
-                    },
-                )
-            })
+            .map(|handle| (handle.session.registered_at, live_list_item(handle)))
             .collect()
     };
 
     // Historical inactive sessions from DB (not currently in the live registry).
-    // Archived sessions are hidden unless explicitly requested.
     let live_ids: HashSet<String> = with_ts.iter().map(|(_, s)| s.id.clone()).collect();
+    let rows = fetch_listed_rows(&state, ctx.owner_filter(), params.include_archived).await?;
+    with_ts.extend(
+        rows.into_iter()
+            .filter(|row| !live_ids.contains(&row.id))
+            .map(|row| (row.registered_at, db_list_item(row))),
+    );
+
+    let sessions = enrich_and_sort(&state, Some(ctx.user_id), with_ts).await?;
+    Ok(crate::http_cache::json_with_etag(&req_headers, &SessionListResponse { sessions }))
+}
+
+/// Which live registry entries the caller may see: `None` for admins (all of
+/// them). The registry's `machine_id` is freeform (UUID or hostname), so
+/// ownership can't be read off the handle directly — resolve it from the DB. A
+/// live session with no resolvable owner is EXCLUDED for non-admins rather
+/// than leaked.
+async fn owned_live_ids(
+    state: &AppState,
+    ctx: &AuthContext,
+) -> Result<Option<HashSet<String>>, AppError> {
+    if ctx.is_admin() {
+        return Ok(None);
+    }
+    let live_ids: Vec<String> = {
+        let registry = state.registry.read().await;
+        registry.list().into_iter().map(|h| h.session.id.clone()).collect()
+    };
+    let owned =
+        crate::store::sessions::visible_session_ids(&state.pool, &live_ids, ctx.user_id).await?;
+    Ok(Some(owned.into_iter().collect()))
+}
+
+/// Session rows for the list, scoped to `uid` (NULL for admin) via
+/// `$1::uuid IS NULL OR m.user_id = $1`. ALL non-archived sessions are always
+/// returned (no cap) so live/working sessions are never silently truncated.
+/// The LIMIT 25 cap applies only to the archived tail, and only when archived
+/// history is requested (the webui paginates the archive list separately).
+async fn fetch_listed_rows(
+    state: &AppState,
+    uid: Option<uuid::Uuid>,
+    include_archived: bool,
+) -> Result<Vec<DbSession>, AppError> {
     let cols = "s.id, s.parent_id, s.machine_id, s.working_dir, s.status, \
                 s.registered_at, s.last_heartbeat, s.metadata, s.adapter_id, \
                 COALESCE(m.display_name, m.name) AS resolved_machine_name, \
                 m.hue AS resolved_machine_hue, m.kind AS resolved_machine_kind";
-    // ALL non-archived sessions are always returned (no cap) so live/working
-    // sessions are never silently truncated. The LIMIT 25 cap applies only to
-    // the archived tail, and only when archived history is requested (the
-    // webui paginates the archive list separately). The `$1::uuid IS NULL OR
-    // m.user_id = $1` predicate scopes rows to the caller (NULL for admin).
     let non_archived_query = format!(
         "SELECT {cols} \
          FROM sessions s \
@@ -410,7 +369,7 @@ pub async fn list_sessions(
         .bind(uid)
         .fetch_all(&state.pool)
         .await?;
-    if params.include_archived {
+    if include_archived {
         let archived_query = format!(
             "SELECT {cols} \
              FROM sessions s \
@@ -425,73 +384,120 @@ pub async fn list_sessions(
             .await?;
         rows.extend(archived);
     }
-
-    for row in rows {
-        if live_ids.contains(&row.id) {
-            continue;
-        }
-        // Sticky terminal states (archived/ended/failed) are NOT re-derived
-        // from heartbeat; everything else is time-based.
-        let (status, liveness) =
-            resolve_status_liveness(&row.status, row.registered_at, row.last_heartbeat);
-        with_ts.push((
-            row.registered_at,
-            SessionListItem {
-                id: row.id,
-                parent_id: row.parent_id,
-                machine_id: row.machine_id,
-                working_dir: row.working_dir,
-                status,
-                liveness,
-                attention: None,
-                bucket: Bucket::Working,
-                token_usage: cctui_proto::models::TokenUsage::default(),
-                metadata: row.metadata,
-                adapter_id: row.adapter_id.map(cctui_proto::adapter::AdapterId::new),
-                machine_name: row.resolved_machine_name,
-                machine_hue: row.resolved_machine_hue,
-                machine_kind: row.resolved_machine_kind,
-                last_message_text: None,
-                last_message_at: None,
-                registered_at: Some(row.registered_at),
-                name: None,
-                model: None,
-                effort: None,
-                permission_mode: None,
-                auto_approve: false,
-                match_snippet: None,
-                match_seq: None,
-                last_activity_at: None,
-                cache_cold: false,
-                estimated_burst_tokens: None,
-                hibernated: false,
-                pinned: false,
-                labels: Vec::new(),
-                last_heartbeat: Some(row.last_heartbeat),
-                account_name: None,
-                unread_count: 0,
-                activity_detail: None,
-                last_tool_at: None,
-                last_tool_name: None,
-                tool_use_count: 0,
-                todos: Vec::new(),
-                has_token_credentials: false,
-                account_traffic_observed: false,
-                pr_links: Vec::new(),
-                end_reason: None,
-                end_detail: None,
-                ended_at: None,
-                auto_archive_at: None,
-                archived_by: None,
-                keepalive: None,
-                last_keepalive_at: None,
-            },
-        ));
-    }
-
-    let sessions = enrich_and_sort(&state, Some(ctx.user_id), with_ts).await?;
-    Ok(crate::http_cache::json_with_etag(&req_headers, &SessionListResponse { sessions }))
+    Ok(rows)
 }
+
+/// A list item with only the identity, status and machine columns filled in;
+/// everything else waits for [`enrich`].
+#[allow(clippy::too_many_arguments)]
+fn skeleton_list_item(
+    id: String,
+    parent_id: Option<String>,
+    machine_id: String,
+    working_dir: String,
+    status: SessionStatus,
+    liveness: Liveness,
+    registered_at: DateTime<Utc>,
+    last_heartbeat: DateTime<Utc>,
+    metadata: serde_json::Value,
+    adapter_id: Option<cctui_proto::adapter::AdapterId>,
+) -> SessionListItem {
+    SessionListItem {
+        id,
+        parent_id,
+        machine_id,
+        working_dir,
+        status,
+        liveness,
+        attention: None,
+        bucket: Bucket::Working,
+        token_usage: cctui_proto::models::TokenUsage::default(),
+        metadata,
+        adapter_id,
+        machine_name: None,
+        machine_hue: None,
+        machine_kind: None,
+        last_message_text: None,
+        last_message_at: None,
+        registered_at: Some(registered_at),
+        name: None,
+        model: None,
+        effort: None,
+        permission_mode: None,
+        auto_approve: false,
+        match_snippet: None,
+        match_seq: None,
+        last_activity_at: None,
+        cache_cold: false,
+        estimated_burst_tokens: None,
+        hibernated: false,
+        pinned: false,
+        labels: Vec::new(),
+        last_heartbeat: Some(last_heartbeat),
+        account_name: None,
+        unread_count: 0,
+        activity_detail: None,
+        last_tool_at: None,
+        last_tool_name: None,
+        tool_use_count: 0,
+        todos: Vec::new(),
+        has_token_credentials: false,
+        account_traffic_observed: false,
+        pr_links: Vec::new(),
+        end_reason: None,
+        end_detail: None,
+        ended_at: None,
+        auto_archive_at: None,
+        archived_by: None,
+        keepalive: None,
+        last_keepalive_at: None,
+    }
+}
+
+/// A live registry entry: time-derived status, the registry's running token
+/// usage, no machine label yet.
+fn live_list_item(handle: &crate::registry::SessionHandle) -> SessionListItem {
+    let session = &handle.session;
+    let mut item = skeleton_list_item(
+        session.id.clone(),
+        session.parent_id.clone(),
+        session.machine_id.clone(),
+        session.working_dir.clone(),
+        derive_status(session.registered_at, session.last_heartbeat),
+        derive_liveness(session.last_heartbeat),
+        session.registered_at,
+        session.last_heartbeat,
+        session.metadata.clone(),
+        session.adapter_id.clone(),
+    );
+    item.token_usage = handle.token_usage.clone();
+    item
+}
+
+/// A historical DB row: sticky terminal states (archived/ended/failed) are NOT
+/// re-derived from heartbeat, everything else is time-based; the machine label
+/// comes from the row's join.
+fn db_list_item(row: DbSession) -> SessionListItem {
+    let (status, liveness) =
+        resolve_status_liveness(&row.status, row.registered_at, row.last_heartbeat);
+    let mut item = skeleton_list_item(
+        row.id,
+        row.parent_id,
+        row.machine_id,
+        row.working_dir,
+        status,
+        liveness,
+        row.registered_at,
+        row.last_heartbeat,
+        row.metadata,
+        row.adapter_id.map(cctui_proto::adapter::AdapterId::new),
+    );
+    item.machine_name = row.resolved_machine_name;
+    item.machine_hue = row.resolved_machine_hue;
+    item.machine_kind = row.resolved_machine_kind;
+    item
+}
+
 
 /// Cap a raw unread `COUNT(*)` to the badge's display ceiling (99). Negative or
 /// overflowing DB values clamp into `0..=99`.
@@ -1348,66 +1354,8 @@ pub async fn search_sessions(
         query.bind(limit).bind(offset).bind(uid).fetch_all(&state.pool).await
     }?;
 
-    let with_ts: Vec<(DateTime<Utc>, SessionListItem)> = rows
-        .into_iter()
-        .map(|row| {
-            let (status, liveness) =
-                resolve_status_liveness(&row.status, row.registered_at, row.last_heartbeat);
-            (
-                row.registered_at,
-                SessionListItem {
-                    id: row.id,
-                    parent_id: row.parent_id,
-                    machine_id: row.machine_id,
-                    working_dir: row.working_dir,
-                    status,
-                    liveness,
-                    attention: None,
-                    bucket: Bucket::Working,
-                    token_usage: cctui_proto::models::TokenUsage::default(),
-                    metadata: row.metadata,
-                    adapter_id: row.adapter_id.map(cctui_proto::adapter::AdapterId::new),
-                    machine_name: row.resolved_machine_name,
-                    machine_hue: row.resolved_machine_hue,
-                    machine_kind: row.resolved_machine_kind,
-                    last_message_text: None,
-                    last_message_at: None,
-                    registered_at: Some(row.registered_at),
-                    name: None,
-                    model: None,
-                    effort: None,
-                    permission_mode: None,
-                    auto_approve: false,
-                    match_snippet: None,
-                    match_seq: None,
-                    last_activity_at: None,
-                    cache_cold: false,
-                    estimated_burst_tokens: None,
-                    hibernated: false,
-                    pinned: false,
-                    labels: Vec::new(),
-                    last_heartbeat: Some(row.last_heartbeat),
-                    account_name: None,
-                    unread_count: 0,
-                    activity_detail: None,
-                    last_tool_at: None,
-                    last_tool_name: None,
-                    tool_use_count: 0,
-                    todos: Vec::new(),
-                    has_token_credentials: false,
-                    account_traffic_observed: false,
-                    pr_links: Vec::new(),
-                    end_reason: None,
-                    end_detail: None,
-                    ended_at: None,
-                    auto_archive_at: None,
-                    archived_by: None,
-                    keepalive: None,
-                    last_keepalive_at: None,
-                },
-            )
-        })
-        .collect();
+    let with_ts: Vec<(DateTime<Utc>, SessionListItem)> =
+        rows.into_iter().map(|row| (row.registered_at, db_list_item(row))).collect();
 
     let mut sessions = enrich_and_sort(&state, Some(ctx.user_id), with_ts).await?;
 
