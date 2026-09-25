@@ -68,6 +68,7 @@
 			queries: { retry: 1, staleTime: 5_000, refetchOnWindowFocus: false }
 		}
 	});
+	ws.bindQueryClient(queryClient);
 
 	// Persist the heavyweight caches to IndexedDB so a reload paints from disk
 	// and revalidates as a delta/304 instead of re-downloading everything.

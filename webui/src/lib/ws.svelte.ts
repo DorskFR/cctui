@@ -8,6 +8,8 @@ import type { GithubEventKind } from '@bindings/GithubEventKind';
 import type { GithubEventPayload } from '@bindings/GithubEventPayload';
 import type { SessionEndReason } from '@bindings/SessionEndReason';
 import type { AccountUsage } from './queries/types';
+import { qk } from './queries/keys';
+import type { QueryClient } from '@tanstack/svelte-query';
 
 /** Daemon handshake budget (45 s) plus dispatch and relay slack. */
 export const SPAWN_ACK_TIMEOUT_MS = 75_000;
@@ -423,6 +425,12 @@ export class WsClient {
 	private watchdogTimer: ReturnType<typeof setTimeout> | null = null;
 	private lastFrameAt = 0;
 	private lifecycleBound = false;
+	private queryClient: QueryClient | null = null;
+
+	/** Lets a `resync` frame refetch the views whose live events were dropped. */
+	bindQueryClient(qc: QueryClient) {
+		this.queryClient = qc;
+	}
 
 	connect() {
 		if (!browser || !auth.isAuthed) return;
@@ -699,6 +707,17 @@ export class WsClient {
 			case 'account_usage': {
 				const p = msg as unknown as AccountUsageEvent;
 				for (const cb of this.accountUsageCbs) cb(p);
+				break;
+			}
+			case 'resync': {
+				const sid = msg.session_id as string | undefined;
+				void this.queryClient?.invalidateQueries({
+					queryKey: sid ? qk.conversation(sid) : ['conversation']
+				});
+				if (!sid) {
+					void this.queryClient?.invalidateQueries({ queryKey: ['sessions'] });
+					this.markListDirty();
+				}
 				break;
 			}
 		}

@@ -1411,7 +1411,9 @@ async fn handle_event(
                 tracing::warn!(%command_id, ?error, "command failed on daemon");
             }
             let pending = state.pending_commands.remove(&command_id).map(|(_, c)| c);
-            let mut session_id = pending.as_ref().and_then(|c| c.session_id.clone());
+            let mut session_id = pending.as_ref().and_then(|c| {
+                c.session_id.clone().or_else(|| c.spawn.as_ref().map(|row| row.session_id.clone()))
+            });
             // A spawn that never started has no row of its own: write one so
             // the failure shows up on the list with its detail.
             if !ok && let Some(row) = pending.and_then(|c| c.spawn) {

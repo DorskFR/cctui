@@ -2,9 +2,12 @@ use axum::extract::ws::{Message, WebSocket};
 use axum::extract::{State, WebSocketUpgrade};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
+use std::sync::Arc;
+
 use cctui_proto::ws::{AgentEvent, ServerEvent, TuiCommand};
 use futures_util::{SinkExt, StreamExt};
-use tokio::sync::mpsc;
+use tokio::sync::broadcast::error::RecvError;
+use tokio::sync::{broadcast, mpsc};
 
 use crate::auth::{AuthContext, Scope};
 use crate::state::AppState;
@@ -29,6 +32,21 @@ async fn ws_owns_session(state: &AppState, ctx: &AuthContext, session_id: &str) 
 }
 
 // --- TUI WebSocket ---
+
+/// A JSON-encoded [`ServerEvent`] queued on one socket's outbound channel.
+type Frame = Arc<str>;
+type FrameTx = mpsc::Sender<Frame>;
+
+/// Encode and queue a socket-local event. `false` once the socket is gone.
+async fn send_event(tx: &FrameTx, event: &ServerEvent) -> bool {
+    match serde_json::to_string(event) {
+        Ok(json) => tx.send(json.into()).await.is_ok(),
+        Err(err) => {
+            tracing::warn!(%err, "failed to serialize ServerEvent");
+            true
+        }
+    }
+}
 
 pub async fn tui_ws(
     ws: WebSocketUpgrade,
@@ -76,7 +94,7 @@ const TUI_KEEPALIVE: std::time::Duration = std::time::Duration::from_secs(20);
 /// reaches every client whether or not any daemon is online.
 fn spawn_send_task(
     mut sink: futures_util::stream::SplitSink<WebSocket, Message>,
-    mut rx: mpsc::Receiver<ServerEvent>,
+    mut rx: mpsc::Receiver<Frame>,
 ) {
     tokio::spawn(async move {
         let mut keepalive = tokio::time::interval(TUI_KEEPALIVE);
@@ -84,16 +102,9 @@ fn spawn_send_task(
         keepalive.tick().await;
         loop {
             tokio::select! {
-                event = rx.recv() => {
-                    let Some(event) = event else { break };
-                    let text = match serde_json::to_string(&event) {
-                        Ok(t) => t,
-                        Err(err) => {
-                            tracing::warn!(%err, "failed to serialize ServerEvent");
-                            continue;
-                        }
-                    };
-                    if sink.send(Message::Text(text.into())).await.is_err() {
+                frame = rx.recv() => {
+                    let Some(frame) = frame else { break };
+                    if sink.send(Message::Text((&*frame).into())).await.is_err() {
                         break;
                     }
                 }
@@ -113,24 +124,22 @@ fn spawn_send_task(
 }
 
 fn spawn_relay_task(
-    mut receiver: tokio::sync::broadcast::Receiver<AgentEvent>,
+    mut receiver: broadcast::Receiver<AgentEvent>,
     session_id: String,
-    event_tx: mpsc::Sender<ServerEvent>,
+    event_tx: FrameTx,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         loop {
-            match receiver.recv().await {
-                Ok(agent_event) => {
-                    let server_event =
-                        ServerEvent::Stream { session_id: session_id.clone(), data: agent_event };
-                    if event_tx.send(server_event).await.is_err() {
-                        break;
-                    }
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+            let event = match receiver.recv().await {
+                Ok(data) => ServerEvent::Stream { session_id: session_id.clone(), data },
+                Err(RecvError::Closed) => break,
+                Err(RecvError::Lagged(n)) => {
                     tracing::warn!(session_id = %session_id, skipped = n, "TUI receiver lagged");
+                    ServerEvent::Resync { session_id: Some(session_id.clone()) }
                 }
+            };
+            if !send_event(&event_tx, &event).await {
+                break;
             }
         }
     })
@@ -142,7 +151,7 @@ fn spawn_relay_task(
 /// of optimistically assuming a sent frame was delivered.
 async fn handle_message(
     state: &AppState,
-    event_tx: &mpsc::Sender<ServerEvent>,
+    event_tx: &FrameTx,
     session_id: String,
     content: String,
     client_msg_id: Option<String>,
@@ -188,67 +197,28 @@ async fn handle_message(
         err.to_string()
     });
     if let Some(client_msg_id) = client_msg_id {
-        let _ = event_tx
-            .send(ServerEvent::MessageAck {
-                session_id,
-                client_msg_id,
-                ok: err_reason.is_none(),
-                error: err_reason,
-                command_id: Some(command_id),
-            })
-            .await;
+        let ack = ServerEvent::MessageAck {
+            session_id,
+            client_msg_id,
+            ok: err_reason.is_none(),
+            error: err_reason,
+            command_id: Some(command_id),
+        };
+        send_event(event_tx, &ack).await;
     }
 }
 
 async fn handle_subscribe(
     session_id: String,
     state: &AppState,
-    event_tx: &mpsc::Sender<ServerEvent>,
+    event_tx: &FrameTx,
     sub_handles: &mut std::collections::HashMap<String, tokio::task::JoinHandle<()>>,
 ) {
     let receiver = state.bus.subscribe_session(&session_id);
 
-    // Replay any prompt the session is currently blocked on. Asks and
-    // permission requests were originally fire-and-forget broadcasts: a client
-    // that wasn't subscribed at the instant one went out never learned about it,
-    // and the client re-subscribes on every tab focus/visibility change
-    // — so a backgrounded tab routinely missed them. The store now
-    // holds them authoritatively; re-send them to *this* socket so a (re)subscribe
-    // always re-surfaces the live prompt. Deduped client-side by request_id /
-    // overwrite, so a replay that races the live broadcast is harmless.
-    {
-        let store = state.permission_store.read().await;
-        for p in store.list_pending().into_iter().filter(|p| p.session_id == session_id) {
-            let _ = event_tx
-                .send(ServerEvent::PermissionRequest {
-                    session_id: p.session_id,
-                    request_id: p.request_id,
-                    tool_name: p.tool_name,
-                    description: p.description,
-                    input_preview: p.input_preview,
-                })
-                .await;
-        }
-        if let Some(ask) = store.pending_ask(&session_id) {
-            let _ = event_tx
-                .send(ServerEvent::AskQuestion {
-                    session_id: ask.session_id,
-                    question: ask.question,
-                    questions: ask.questions,
-                    preamble: ask.preamble,
-                })
-                .await;
-        }
-        if let Some(plan) = store.pending_plan(&session_id) {
-            let _ = event_tx
-                .send(ServerEvent::PlanRequest {
-                    session_id: plan.session_id,
-                    plan: plan.plan,
-                    preamble: plan.preamble,
-                })
-                .await;
-        }
-    }
+    // Re-surface any prompt the session is blocked on: the client resubscribes
+    // on every focus change and dedups the replay by request_id / overwrite.
+    replay_pending(&state.permission_store, &session_id, event_tx).await;
 
     if let Some(receiver) = receiver {
         let handle = spawn_relay_task(receiver, session_id.clone(), event_tx.clone());
@@ -265,12 +235,57 @@ async fn handle_subscribe(
     }
 }
 
+/// Copies the session's open prompts out of the store, then sends them with
+/// the guard released: a full per-socket channel must not hold the store.
+async fn replay_pending(
+    store: &crate::routes::permissions::SharedPermissionStore,
+    session_id: &str,
+    event_tx: &FrameTx,
+) {
+    let prompts = {
+        let store = store.read().await;
+        let mut prompts: Vec<ServerEvent> = store
+            .list_pending()
+            .into_iter()
+            .filter(|p| p.session_id == session_id)
+            .map(|p| ServerEvent::PermissionRequest {
+                session_id: p.session_id,
+                request_id: p.request_id,
+                tool_name: p.tool_name,
+                description: p.description,
+                input_preview: p.input_preview,
+            })
+            .collect();
+        if let Some(ask) = store.pending_ask(session_id) {
+            prompts.push(ServerEvent::AskQuestion {
+                session_id: ask.session_id,
+                question: ask.question,
+                questions: ask.questions,
+                preamble: ask.preamble,
+            });
+        }
+        if let Some(plan) = store.pending_plan(session_id) {
+            prompts.push(ServerEvent::PlanRequest {
+                session_id: plan.session_id,
+                plan: plan.plan,
+                preamble: plan.preamble,
+            });
+        }
+        prompts
+    };
+    for event in &prompts {
+        if !send_event(event_tx, event).await {
+            return;
+        }
+    }
+}
+
 #[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
 async fn run_tui_socket(
     mut stream: futures_util::stream::SplitStream<WebSocket>,
     state: AppState,
     ctx: AuthContext,
-    event_tx: mpsc::Sender<ServerEvent>,
+    event_tx: FrameTx,
 ) {
     // Relay tasks keyed by session id, so a resubscribe replaces (not stacks)
     // the per-session relay and an unsubscribe can tear it down.
@@ -327,15 +342,14 @@ async fn run_tui_socket(
                     // Ack the failure when the client opted in, so it doesn't
                     // hang waiting on a delivery state for a denied send.
                     if let Some(client_msg_id) = client_msg_id {
-                        let _ = event_tx
-                            .send(ServerEvent::MessageAck {
-                                session_id,
-                                client_msg_id,
-                                ok: false,
-                                error: Some("forbidden".into()),
-                                command_id: None,
-                            })
-                            .await;
+                        let ack = ServerEvent::MessageAck {
+                            session_id,
+                            client_msg_id,
+                            ok: false,
+                            error: Some("forbidden".into()),
+                            command_id: None,
+                        };
+                        send_event(&event_tx, &ack).await;
                     }
                     continue;
                 }
@@ -351,9 +365,6 @@ async fn run_tui_socket(
                 .await;
             }
             TuiCommand::PermissionResponse { session_id, request_id, behavior } => {
-                // Authorize against the session id the client supplied. The
-                // store's record_decision may re-resolve to a stored session id
-                // below, but the principal must own the one they're acting on.
                 if !ws_owns_session(&state, &ctx, &session_id).await {
                     tracing::debug!(session_id = %session_id, user_id = %ctx.user_id, "tui_ws: permission-response denied (not owner)");
                     continue;
@@ -368,12 +379,13 @@ async fn run_tui_socket(
                     let b = behavior.to_ascii_lowercase();
                     b.starts_with("allow") || b == "accept" || b == "approved"
                 };
-                let stored_session_id =
-                    state.permission_store.write().await.record_decision(&request_id, behavior);
-                // Prefer the id attached at submission; fall back to the one
-                // the client sent (stale / unknown request_id cases).
-                let resolved_session_id =
-                    if stored_session_id.is_empty() { session_id } else { stored_session_id };
+                let Some(resolved_session_id) =
+                    permission_target(&state.permission_store, session_id, &request_id, behavior)
+                        .await
+                else {
+                    tracing::warn!(%request_id, user_id = %ctx.user_id, "tui_ws: permission-response for another session's request");
+                    continue;
+                };
                 // Push the decision down to the adapter so blocking agents
                 // (e.g. the codex app-server, which holds the turn open until
                 // it gets a reply) are unblocked.
@@ -418,6 +430,22 @@ async fn run_tui_socket(
     }
 }
 
+/// The session a client's permission decision is forwarded to, or `None` when
+/// `request_id` is pending for a session other than the (authorized)
+/// `session_id` the client named.
+async fn permission_target(
+    store: &crate::routes::permissions::SharedPermissionStore,
+    session_id: String,
+    request_id: &str,
+    behavior: String,
+) -> Option<String> {
+    use crate::routes::permissions::SessionDecision;
+    match store.write().await.record_session_decision(&session_id, request_id, behavior) {
+        SessionDecision::Foreign => None,
+        SessionDecision::Recorded | SessionDecision::Unknown => Some(session_id),
+    }
+}
+
 /// Toggle this socket's live-terminal watch of `session_id`. Ref-count
 /// per session is on the bus; only the 0↔1 edge tells the daemon to start/stop
 /// its viewer PTY attach. Idempotent per socket via `pty_watches`.
@@ -459,13 +487,27 @@ async fn set_daemon_pty_watch(state: &AppState, session_id: &str, watch: bool) {
     }
 }
 
-/// The `session_id` a server-initiated event pertains to, if any. Events with a
-/// session id are owner-scoped on the relay; the rest
-/// (`CommandResult`, machine-level/manifest events) are not session-scoped and
-/// pass through. `MessageAck` is already point-to-point (sent only to the
-/// originating socket via `event_tx`, not broadcast), but we still scope it
-/// defensively.
-fn event_session_id(event: &ServerEvent) -> Option<&str> {
+/// The resource whose owner may receive an event.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum Owned {
+    Session(String),
+    Machine(uuid::Uuid),
+    Account(uuid::Uuid),
+    Dispatcher(uuid::Uuid),
+}
+
+/// Who a broadcast event reaches besides admins.
+#[derive(Debug, PartialEq, Eq)]
+enum Audience {
+    Everyone,
+    OwnerOf(Owned),
+    AdminsOnly,
+}
+
+/// Exhaustive on purpose: a new variant must declare who may see it.
+fn audience(event: &ServerEvent) -> Audience {
+    use Audience::{AdminsOnly, Everyone, OwnerOf};
+    let session = |id: &str| OwnerOf(Owned::Session(id.to_owned()));
     match event {
         ServerEvent::Stream { session_id, .. }
         | ServerEvent::Status { session_id, .. }
@@ -478,50 +520,172 @@ fn event_session_id(event: &ServerEvent) -> Option<&str> {
         | ServerEvent::PlanResolved { session_id }
         | ServerEvent::PtyChunk { session_id, .. }
         | ServerEvent::SessionEnded { session_id, .. }
-        | ServerEvent::MessageAck { session_id, .. } => Some(session_id),
-        ServerEvent::SessionRegistered { session } => Some(&session.id),
-        ServerEvent::CommandResult { session_id, .. } => session_id.as_deref(),
-        _ => None,
+        | ServerEvent::MessageAck { session_id, .. }
+        | ServerEvent::SoftLimitReached { session_id, .. }
+        | ServerEvent::SoftLimitCleared { session_id } => session(session_id),
+        ServerEvent::SessionRegistered { session: s } => session(&s.id),
+        ServerEvent::CommandResult { session_id, .. } => {
+            session_id.as_deref().map_or(AdminsOnly, session)
+        }
+        ServerEvent::ArchiveManifest { machine_id, .. }
+        | ServerEvent::ArchiveUploaded { machine_id, .. }
+        | ServerEvent::MachineLiveness { machine_id, .. }
+        | ServerEvent::MachineResources { machine_id, .. } => OwnerOf(Owned::Machine(*machine_id)),
+        ServerEvent::AccountUsage { account_id, .. } => OwnerOf(Owned::Account(*account_id)),
+        ServerEvent::DispatcherLiveness { dispatcher_id, .. } => {
+            OwnerOf(Owned::Dispatcher(*dispatcher_id))
+        }
+        ServerEvent::GithubEvent { .. } => AdminsOnly,
+        ServerEvent::Heartbeat {} | ServerEvent::Resync { .. } => Everyone,
     }
 }
 
-fn spawn_server_event_relay(
-    mut receiver: tokio::sync::broadcast::Receiver<ServerEvent>,
-    state: AppState,
-    ctx: AuthContext,
-    event_tx: mpsc::Sender<ServerEvent>,
-) {
-    tokio::spawn(async move {
-        loop {
-            match receiver.recv().await {
-                Ok(event) => {
-                    // Drop session-scoped events for sessions this principal
-                    // doesn't own (admin bypasses). Non-session events pass.
-                    if let Some(session_id) = event_session_id(&event)
-                        && !ws_owns_session(&state, &ctx, session_id).await
-                    {
-                        continue;
-                    }
-                    if event_tx.send(event).await.is_err() {
-                        break;
-                    }
+/// Resolves the owning user of a resource; `None` when unknown.
+trait OwnerLookup {
+    async fn owner(&self, owned: &Owned) -> Option<uuid::Uuid>;
+}
+
+impl OwnerLookup for sqlx::PgPool {
+    async fn owner(&self, owned: &Owned) -> Option<uuid::Uuid> {
+        let found = match owned {
+            Owned::Session(id) => crate::authz::session_owner(id, self).await,
+            Owned::Machine(id) => {
+                sqlx::query_scalar("SELECT user_id FROM machines WHERE id = $1")
+                    .bind(id)
+                    .fetch_optional(self)
+                    .await
+            }
+            Owned::Account(id) => {
+                sqlx::query_scalar("SELECT user_id FROM accounts WHERE id = $1")
+                    .bind(id)
+                    .fetch_optional(self)
+                    .await
+            }
+            Owned::Dispatcher(id) => {
+                sqlx::query_scalar(
+                    "SELECT user_id FROM dispatchers WHERE id = $1 AND deleted_at IS NULL",
+                )
+                .bind(id)
+                .fetch_optional(self)
+                .await
+            }
+        };
+        found.unwrap_or_else(|e| {
+            tracing::error!(?owned, "db error (ws event authz): {e}");
+            None
+        })
+    }
+}
+
+const OWNER_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+const UNKNOWN_OWNER_TTL: std::time::Duration = std::time::Duration::from_secs(5);
+const OWNER_CACHE_MAX: usize = 4096;
+
+/// Per-socket memo of resource owners, so a busy session costs one lookup per
+/// socket per TTL instead of one per event.
+#[derive(Default)]
+struct OwnerCache {
+    entries: std::collections::HashMap<Owned, (Option<uuid::Uuid>, tokio::time::Instant)>,
+}
+
+impl OwnerCache {
+    async fn owner(&mut self, owned: &Owned, lookup: &impl OwnerLookup) -> Option<uuid::Uuid> {
+        let now = tokio::time::Instant::now();
+        if let Some(&(owner, expires)) = self.entries.get(owned)
+            && expires > now
+        {
+            return owner;
+        }
+        let owner = lookup.owner(owned).await;
+        if self.entries.len() >= OWNER_CACHE_MAX {
+            self.entries.retain(|_, (_, expires)| *expires > now);
+            if self.entries.len() >= OWNER_CACHE_MAX {
+                self.entries.clear();
+            }
+        }
+        let ttl = if owner.is_some() { OWNER_TTL } else { UNKNOWN_OWNER_TTL };
+        self.entries.insert(owned.clone(), (owner, now + ttl));
+        owner
+    }
+
+    fn forget(&mut self, owned: &Owned) {
+        self.entries.remove(owned);
+    }
+}
+
+/// Decides whether a server-wide event may reach one socket's principal.
+trait EventFilter {
+    async fn allows(&mut self, event: &ServerEvent) -> bool;
+}
+
+/// Admins see everything; everyone else only events whose resource they own.
+/// An event without a resolvable owner is denied.
+struct OwnerFilter<L> {
+    is_admin: bool,
+    user_id: uuid::Uuid,
+    lookup: L,
+    cache: OwnerCache,
+}
+
+impl<L: OwnerLookup> EventFilter for OwnerFilter<L> {
+    async fn allows(&mut self, event: &ServerEvent) -> bool {
+        if self.is_admin {
+            return true;
+        }
+        match audience(event) {
+            Audience::Everyone => true,
+            Audience::AdminsOnly => false,
+            Audience::OwnerOf(owned) => {
+                // A (re)registration may have moved the session to another machine.
+                if matches!(event, ServerEvent::SessionRegistered { .. }) {
+                    self.cache.forget(&owned);
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                    tracing::warn!(skipped = n, "TUI server-event relay lagged");
+                let owner = self.cache.owner(&owned, &self.lookup).await;
+                if matches!(event, ServerEvent::SessionDeregistered { .. }) {
+                    self.cache.forget(&owned);
+                }
+                owner == Some(self.user_id)
+            }
+        }
+    }
+}
+
+/// Forward every permitted frame to the socket as-is. Events lost to lag are
+/// unrecoverable, so the client is told to refetch instead.
+async fn relay_server_frames(
+    mut receiver: broadcast::Receiver<crate::bus::ServerFrame>,
+    mut filter: impl EventFilter,
+    event_tx: FrameTx,
+) {
+    loop {
+        match receiver.recv().await {
+            Ok(frame) => {
+                if filter.allows(&frame.event).await && event_tx.send(frame.json).await.is_err() {
+                    break;
+                }
+            }
+            Err(RecvError::Closed) => break,
+            Err(RecvError::Lagged(n)) => {
+                tracing::warn!(skipped = n, "TUI server-event relay lagged");
+                if !send_event(&event_tx, &ServerEvent::Resync { session_id: None }).await {
+                    break;
                 }
             }
         }
-    });
+    }
 }
 
 async fn handle_tui_ws(socket: WebSocket, state: AppState, ctx: AuthContext) {
     let (sink, stream) = socket.split();
-    let (tx, rx) = mpsc::channel::<ServerEvent>(256);
+    let (tx, rx) = mpsc::channel::<Frame>(256);
 
-    // Relay server-initiated events (e.g. permission requests) to this TUI
-    // client, scoped to sessions the principal owns (admin sees all).
-    spawn_server_event_relay(state.bus.subscribe_server(), state.clone(), ctx.clone(), tx.clone());
+    let filter = OwnerFilter {
+        is_admin: ctx.is_admin(),
+        user_id: ctx.user_id,
+        lookup: state.pool.clone(),
+        cache: OwnerCache::default(),
+    };
+    tokio::spawn(relay_server_frames(state.bus.subscribe_server(), filter, tx.clone()));
 
     spawn_send_task(sink, rx);
     run_tui_socket(stream, state, ctx, tx).await;
@@ -536,8 +700,18 @@ mod tests {
     use cctui_proto::models::{Session, SessionStatus};
     use cctui_proto::ws::ServerEvent;
 
-    use super::{event_session_id, origin_permitted};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use uuid::Uuid;
+
+    use super::{
+        Audience, EventFilter, OWNER_TTL, Owned, OwnerCache, OwnerFilter, OwnerLookup, audience,
+        origin_permitted, permission_target, relay_server_frames, replay_pending, spawn_relay_task,
+    };
+    use crate::bus::ServerFrame;
     use crate::config::Config;
+    use crate::routes::permissions::{PendingPermission, PermissionStore};
 
     fn cfg() -> Config {
         Config::for_test(vec!["https://cctui.example.com".to_owned()])
@@ -578,17 +752,249 @@ mod tests {
         }
     }
 
-    /// The relay drops session-scoped events for non-owners, so a registration
-    /// that reported no session id would fan out to every connected principal.
     #[test]
     fn session_registered_is_owner_scoped() {
         let event = ServerEvent::SessionRegistered { session: session("sess-1") };
-        assert_eq!(event_session_id(&event), Some("sess-1"));
+        assert_eq!(audience(&event), Audience::OwnerOf(Owned::Session("sess-1".into())));
+    }
+
+    #[test]
+    fn unowned_command_result_is_admin_only() {
+        let event = ServerEvent::CommandResult {
+            command_id: "c".into(),
+            ok: true,
+            error: None,
+            session_id: None,
+        };
+        assert_eq!(audience(&event), Audience::AdminsOnly);
+    }
+
+    const ALICE: Uuid = Uuid::from_u128(1);
+    const BOB: Uuid = Uuid::from_u128(2);
+    const BOB_MACHINE: Uuid = Uuid::from_u128(20);
+    const ALICE_MACHINE: Uuid = Uuid::from_u128(10);
+
+    /// Every resource named `*bob*` / `BOB_*` belongs to Bob, the rest to Alice.
+    #[derive(Default, Clone)]
+    struct FakeOwners {
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl OwnerLookup for FakeOwners {
+        async fn owner(&self, owned: &Owned) -> Option<Uuid> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            match owned {
+                Owned::Session(id) if id.contains("ghost") => None,
+                Owned::Session(id) if id.contains("bob") => Some(BOB),
+                Owned::Machine(id) if *id == BOB_MACHINE => Some(BOB),
+                _ => Some(ALICE),
+            }
+        }
+    }
+
+    fn filter_for(user_id: Uuid, lookup: FakeOwners) -> OwnerFilter<FakeOwners> {
+        OwnerFilter { is_admin: false, user_id, lookup, cache: OwnerCache::default() }
+    }
+
+    fn foreign_events() -> Vec<ServerEvent> {
+        vec![
+            ServerEvent::SoftLimitReached {
+                session_id: "sess-bob".into(),
+                account_id: Uuid::from_u128(30),
+                account_name: "bob-max".into(),
+                reason: "cap".into(),
+                retry_after_secs: 60,
+            },
+            ServerEvent::MachineResources {
+                machine_id: BOB_MACHINE,
+                resources: Default::default(),
+            },
+            ServerEvent::ArchiveUploaded {
+                machine_id: BOB_MACHINE,
+                project_dir: "/home/bob/secret".into(),
+                session_id: "sess-bob".into(),
+                size_bytes: 1,
+                sha256: String::new(),
+            },
+            ServerEvent::MachineLiveness {
+                machine_id: BOB_MACHINE,
+                liveness: cctui_proto::models::MachineLiveness::Online,
+            },
+        ]
+    }
+
+    #[tokio::test]
+    async fn non_admin_does_not_receive_another_users_events() {
+        let mut alice = filter_for(ALICE, FakeOwners::default());
+        for event in foreign_events() {
+            assert!(!alice.allows(&event).await, "leaked to a non-owner: {event:?}");
+        }
+        let github = ServerEvent::GithubEvent {
+            kind: serde_json::from_value(serde_json::json!("pull")).unwrap(),
+            payload: serde_json::from_value(serde_json::json!({
+                "connector_id": Uuid::nil(),
+                "repo": "o/r",
+            }))
+            .unwrap(),
+        };
+        assert!(!alice.allows(&github).await);
+        let ghost = ServerEvent::SessionDeregistered { session_id: "sess-ghost".into() };
+        assert!(!alice.allows(&ghost).await);
+    }
+
+    fn bob_stream() -> ServerEvent {
+        ServerEvent::PtyChunk { session_id: "sess-bob".into(), data: String::new() }
+    }
+
+    #[tokio::test]
+    async fn many_events_for_one_foreign_session_cost_one_lookup() {
+        let owners = FakeOwners::default();
+        let mut alice = filter_for(ALICE, owners.clone());
+        for _ in 0..100 {
+            assert!(!alice.allows(&bob_stream()).await);
+        }
+        assert_eq!(owners.calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cached_owner_expires_and_registration_refreshes_it() {
+        let owners = FakeOwners::default();
+        let mut alice = filter_for(ALICE, owners.clone());
+        alice.allows(&bob_stream()).await;
+        tokio::time::advance(OWNER_TTL + std::time::Duration::from_secs(1)).await;
+        alice.allows(&bob_stream()).await;
+        assert_eq!(owners.calls.load(Ordering::SeqCst), 2);
+
+        let mut moved = session("sess-bob");
+        moved.machine_id = "m2".into();
+        alice.allows(&ServerEvent::SessionRegistered { session: moved }).await;
+        assert_eq!(owners.calls.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn owner_and_admin_receive_the_events() {
+        let mut bob = filter_for(BOB, FakeOwners::default());
+        for event in foreign_events() {
+            assert!(bob.allows(&event).await, "withheld from its owner: {event:?}");
+        }
+        let mine = ServerEvent::MachineResources {
+            machine_id: ALICE_MACHINE,
+            resources: Default::default(),
+        };
+        assert!(filter_for(ALICE, FakeOwners::default()).allows(&mine).await);
+
+        let mut admin = filter_for(ALICE, FakeOwners::default());
+        admin.is_admin = true;
+        for event in foreign_events() {
+            assert!(admin.allows(&event).await);
+        }
+    }
+
+    fn pending(session_id: &str, request_id: &str) -> PendingPermission {
+        PendingPermission {
+            session_id: session_id.into(),
+            request_id: request_id.into(),
+            tool_name: "Bash".into(),
+            description: String::new(),
+            input_preview: String::new(),
+            received_at: chrono::Utc::now(),
+        }
+    }
+
+    #[tokio::test]
+    async fn permission_response_for_foreign_request_is_not_dispatched() {
+        let store = PermissionStore::shared();
+        store.write().await.insert_request(pending("sess-b", "req-b"));
+
+        let target = permission_target(&store, "sess-a".into(), "req-b", "allow".into()).await;
+        assert_eq!(target, None);
+        let kept = store.read().await.list_pending();
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].session_id, "sess-b");
+    }
+
+    #[tokio::test]
+    async fn permission_response_for_own_request_is_dispatched() {
+        let store = PermissionStore::shared();
+        store.write().await.insert_request(pending("sess-a", "req-a"));
+
+        let target = permission_target(&store, "sess-a".into(), "req-a", "allow".into()).await;
+        assert_eq!(target.as_deref(), Some("sess-a"));
+        assert!(store.read().await.list_pending().is_empty());
+
+        let stale = permission_target(&store, "sess-a".into(), "req-a", "allow".into()).await;
+        assert_eq!(stale.as_deref(), Some("sess-a"));
+    }
+
+    #[tokio::test]
+    async fn replay_to_a_full_socket_does_not_hold_the_permission_store() {
+        let store = PermissionStore::shared();
+        store.write().await.insert_request(pending("sess-a", "req-a"));
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        tx.send(r#"{"type":"heartbeat"}"#.into()).await.unwrap();
+
+        let replay = {
+            let store = store.clone();
+            let tx = tx.clone();
+            tokio::spawn(async move { replay_pending(&store, "sess-a", &tx).await })
+        };
+        tokio::task::yield_now().await;
+
+        let write = tokio::time::timeout(std::time::Duration::from_secs(2), store.write()).await;
+        assert!(write.is_ok(), "permission_store.write() blocked behind a stalled replay");
+        drop(write);
+        assert!(!replay.is_finished());
+        replay.abort();
+    }
+
+    struct AllowAll;
+    impl EventFilter for AllowAll {
+        async fn allows(&mut self, _event: &ServerEvent) -> bool {
+            true
+        }
+    }
+
+    #[tokio::test]
+    async fn lagged_server_relay_sends_resync() {
+        let (bus_tx, bus_rx) = tokio::sync::broadcast::channel(1);
+        for id in ["a", "b", "c"] {
+            let event = ServerEvent::SessionDeregistered { session_id: id.into() };
+            bus_tx.send(ServerFrame::encode(event).unwrap()).unwrap();
+        }
+        drop(bus_tx);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        relay_server_frames(bus_rx, AllowAll, tx).await;
+
+        assert_eq!(&*rx.recv().await.unwrap(), r#"{"type":"resync"}"#);
+        assert_eq!(
+            &*rx.recv().await.unwrap(),
+            r#"{"type":"session_deregistered","session_id":"c"}"#
+        );
+    }
+
+    #[tokio::test]
+    async fn lagged_session_relay_sends_resync_for_that_session() {
+        let (stream_tx, stream_rx) = tokio::sync::broadcast::channel(1);
+        for _ in 0..3 {
+            let beat = cctui_proto::ws::AgentEvent::Heartbeat {
+                tokens_in: 0,
+                tokens_out: 0,
+                cost_usd: 0.0,
+                ts: 0,
+                seq: None,
+            };
+            stream_tx.send(beat).ok();
+        }
+        drop(stream_tx);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        spawn_relay_task(stream_rx, "sess-1".into(), tx).await.unwrap();
+
+        assert_eq!(&*rx.recv().await.unwrap(), r#"{"type":"resync","session_id":"sess-1"}"#);
     }
 
     #[test]
     fn session_deregistered_is_owner_scoped() {
         let event = ServerEvent::SessionDeregistered { session_id: "sess-2".to_owned() };
-        assert_eq!(event_session_id(&event), Some("sess-2"));
+        assert_eq!(audience(&event), Audience::OwnerOf(Owned::Session("sess-2".into())));
     }
 }
