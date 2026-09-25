@@ -70,6 +70,11 @@ use serde_json::{Value, json};
 const LABEL_ORIGIN: &str = "cctui.dev/origin";
 const LABEL_SESSION_ID: &str = "cctui.dev/session-id";
 const ANNOTATION_SESSION_ID: &str = "cctui.dev/session-id";
+const LABEL_JOB_NAME: &str = "cctui.dev/job-name";
+
+/// An unowned dispatcher env Secret no Job references is swept once older
+/// than this — past any create-then-adopt window.
+const ORPHAN_SECRET_GRACE_SECS: i64 = 600;
 
 /// Env-value prefixes reserved for secret references. A dispatch carrying one in
 /// `payload.env` is rejected: secrets flow through the guard-proxy sidecar, and
@@ -242,36 +247,33 @@ impl Spawner {
         Ok(RunEnv { literal, secret, identity })
     }
 
-    /// The per-dispatch env Secret name: unique per session, so a redispatch
-    /// under the same Job name never reuses a previous run's Secret.
-    fn env_secret_name(job_name: &str, spec: &WireDispatchSpec) -> String {
-        let session = worker_name(&spec.session_id);
-        cctui_orchestrator::env_secret_name(
-            job_name,
-            session.strip_prefix("cctui-worker-").unwrap_or(&session),
-        )
+    /// A fresh env Secret name for one dispatch attempt: never shared with
+    /// another attempt, even of the same session under the same Job name.
+    fn env_secret_name(job_name: &str) -> String {
+        let nonce = uuid::Uuid::new_v4().simple().to_string();
+        cctui_orchestrator::env_secret_name(job_name, &nonce[..12])
     }
 
-    /// The Secret holding this dispatch's secret env, or `None` when it has
-    /// none. Created unowned; [`Self::set_env_secret_owner`] binds it to the Job.
+    /// The Secret holding the secret env of `job` (built by [`Self::build_job`]
+    /// for this `spec`), or `None` when it has none. Created unowned;
+    /// [`Self::set_env_secret_owner`] binds it to the Job.
     fn job_secret(
         cctui_url: &str,
         profile: &WorkerProfileSpec,
         spec: &WireDispatchSpec,
-        job_name: &str,
+        job: &Job,
     ) -> anyhow::Result<Option<Secret>> {
+        let Some(secret_name) = Self::env_secret_of(job) else { return Ok(None) };
         let run = Self::run_env(cctui_url, profile, spec)?;
-        if run.secret.is_empty() {
-            return Ok(None);
-        }
         Ok(Some(serde_json::from_value(json!({
             "apiVersion": "v1",
             "kind": "Secret",
             "metadata": {
-                "name": Self::env_secret_name(job_name, spec),
+                "name": secret_name,
                 "labels": {
                     LABEL_ORIGIN: "cctui-kube-dispatcher",
                     LABEL_SESSION_ID: label_safe(&spec.session_id),
+                    LABEL_JOB_NAME: job.metadata.name.as_deref().unwrap_or_default(),
                 },
             },
             "type": "Opaque",
@@ -294,7 +296,7 @@ impl Spawner {
         suspend: bool,
     ) -> anyhow::Result<Job> {
         let RunEnv { literal, secret, identity } = Self::run_env(cctui_url, profile, spec)?;
-        let env_secret = (!secret.is_empty()).then(|| Self::env_secret_name(name, spec));
+        let env_secret = (!secret.is_empty()).then(|| Self::env_secret_name(name));
         let mut overrides: Vec<(String, EnvSource)> =
             literal.into_iter().map(|(k, v)| (k, EnvSource::Literal(v))).collect();
         if let Some(s) = &env_secret {
@@ -509,27 +511,15 @@ impl Spawner {
         Ok(json!({ "apiVersion": "batch/v1", "kind": "Job", "name": name, "uid": uid }))
     }
 
-    /// Create the env Secret, or refresh a leftover one and drop its owner so
-    /// deleting an earlier Job cannot collect it.
+    /// Create the env Secret. Its name is fresh per dispatch, so an existing
+    /// Secret of that name is never ours to overwrite.
     async fn stage_env_secret(&self, secret: &Secret) -> anyhow::Result<()> {
         let name = secret.metadata.name.as_deref().unwrap_or_default();
-        for _ in 0..2 {
-            match self.secrets().create(&PostParams::default(), secret).await {
-                Ok(_) => return Ok(()),
-                Err(KubeError::Api(e)) if e.code == 409 => {}
-                Err(e) => anyhow::bail!("creating env Secret `{name}`: {e}"),
-            }
-            let patch = Patch::Merge(json!({
-                "metadata": { "ownerReferences": null },
-                "stringData": secret.string_data,
-            }));
-            match self.secrets().patch(name, &PatchParams::default(), &patch).await {
-                Ok(_) => return Ok(()),
-                Err(KubeError::Api(e)) if e.code == 404 => {}
-                Err(e) => anyhow::bail!("refreshing env Secret `{name}`: {e}"),
-            }
-        }
-        anyhow::bail!("env Secret `{name}` was deleted while staging it")
+        self.secrets()
+            .create(&PostParams::default(), secret)
+            .await
+            .map_err(|e| anyhow::anyhow!("creating env Secret `{name}`: {e}"))?;
+        Ok(())
     }
 
     /// Point the Secret's ownerReference at `owner`, or clear it with `None`.
@@ -556,8 +546,9 @@ impl Spawner {
     }
 
     /// Spawn a worker Job for the session, with its env Secret staged first so
-    /// the pod never starts without it, then bound to whichever Job holds the
-    /// name (or deleted if that Job belongs to another dispatch).
+    /// the pod never starts without it. The Secret is bound to the Job this
+    /// dispatch created, or deleted when another dispatch's Job holds the name —
+    /// that Job references its own Secret, never this one.
     async fn dispatch_worker(&self, spec: &WireDispatchSpec) -> anyhow::Result<SpawnOutcome> {
         if spec.session_id.is_empty() {
             anyhow::bail!("session_id is required");
@@ -586,7 +577,7 @@ impl Spawner {
             self.default_deadline_secs,
             suspend,
         )?;
-        let Some(secret) = Self::job_secret(&self.cctui_url, &profile.spec, spec, &name)? else {
+        let Some(secret) = Self::job_secret(&self.cctui_url, &profile.spec, spec, &job)? else {
             return self.place_job(&job, suspend, &name).await.map(|(outcome, _)| outcome);
         };
         let secret_name = secret.metadata.name.clone().unwrap_or_default();
@@ -744,6 +735,7 @@ impl Spawner {
     async fn reconcile_queues(&self) -> anyhow::Result<()> {
         let lp = ListParams::default().labels(&format!("{LABEL_ORIGIN}=cctui-kube-dispatcher"));
         let jobs = self.jobs().list(&lp).await?;
+        self.sweep_orphan_env_secrets(&jobs.items).await;
 
         let mut by_profile: std::collections::BTreeMap<String, (Vec<&Job>, Vec<&Job>)> =
             std::collections::BTreeMap::new();
@@ -797,6 +789,26 @@ impl Spawner {
             }
         }
         Ok(())
+    }
+
+    /// Delete dispatcher env Secrets left unowned and unreferenced by any Job
+    /// (a crash between staging the Secret and adopting it). Best effort.
+    async fn sweep_orphan_env_secrets(&self, jobs: &[Job]) {
+        let lp = ListParams::default().labels(&format!("{LABEL_ORIGIN}=cctui-kube-dispatcher"));
+        let secrets = match self.secrets().list(&lp).await {
+            Ok(s) => s.items,
+            Err(e) => {
+                tracing::warn!(error = %e, "listing env Secrets for the orphan sweep failed");
+                return;
+            }
+        };
+        let referenced: std::collections::BTreeSet<&str> =
+            jobs.iter().filter_map(Self::env_secret_of).collect();
+        let now = k8s_openapi::jiff::Timestamp::now();
+        for name in orphan_env_secrets(&secrets, &referenced, now) {
+            tracing::info!(secret = %name, "deleting orphaned env Secret");
+            self.delete_env_secret(&name).await;
+        }
     }
 
     /// A Job's `spec.template` is immutable, so editing a `WorkerProfile` leaves
@@ -1134,6 +1146,27 @@ impl Dispatcher for Spawner {
     }
 }
 
+/// Names of env Secrets with no owner, no referencing Job, and older than
+/// [`ORPHAN_SECRET_GRACE_SECS`].
+fn orphan_env_secrets(
+    secrets: &[Secret],
+    referenced: &std::collections::BTreeSet<&str>,
+    now: k8s_openapi::jiff::Timestamp,
+) -> Vec<String> {
+    secrets
+        .iter()
+        .filter(|s| s.metadata.owner_references.as_ref().is_none_or(Vec::is_empty))
+        .filter(|s| {
+            s.metadata
+                .creation_timestamp
+                .as_ref()
+                .is_some_and(|t| now.duration_since(t.0).as_secs() >= ORPHAN_SECRET_GRACE_SECS)
+        })
+        .filter_map(|s| s.metadata.name.clone())
+        .filter(|n| !referenced.contains(n.as_str()))
+        .collect()
+}
+
 /// What to do with a Job whose pod template no longer matches its profile.
 #[derive(Debug, PartialEq, Eq)]
 enum Disposition {
@@ -1250,8 +1283,10 @@ mod tests {
         e.pointer("/valueFrom/secretKeyRef/name").and_then(Value::as_str).map(ToOwned::to_owned)
     }
 
-    fn env_secret_name(s: &WireDispatchSpec) -> String {
-        Spawner::env_secret_name(&worker_name(&s.session_id), s)
+    fn annotated_secret(v: &Value) -> Option<String> {
+        v.pointer("/metadata/annotations/cctui.dev~1env-secret")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
     }
 
     fn env_value(v: &Value, key: &str) -> Option<String> {
@@ -1327,7 +1362,7 @@ mod tests {
         assert_eq!(env_value(&v, "SESSION_ID").as_deref(), Some("sess-123"));
         assert_eq!(env_value(&v, "TASK_ID").as_deref(), Some("sess-123"));
         assert_eq!(env_value(&v, "TASK_NAME").as_deref(), Some("Review #5697"));
-        assert_eq!(secret_ref(&v, "CCTUI_MACHINE_KEY"), Some(env_secret_name(&s)));
+        assert_eq!(secret_ref(&v, "CCTUI_MACHINE_KEY"), annotated_secret(&v));
         assert_eq!(env_value(&v, "REPLY_URL").as_deref(), Some("https://cb"));
         assert_eq!(env_value(&v, "LOG_LEVEL").as_deref(), Some("info"));
         assert_eq!(
@@ -1470,8 +1505,8 @@ mod tests {
         });
         let s = spec("sess-9", payload);
         let v = build("lean", &lean_profile(), &s);
-        assert_eq!(secret_ref(&v, "CONTEXT_PACK_URL"), Some(env_secret_name(&s)));
-        assert_eq!(secret_ref(&v, "FEATURE_FLAG"), Some(env_secret_name(&s)));
+        assert_eq!(secret_ref(&v, "CONTEXT_PACK_URL"), annotated_secret(&v));
+        assert_eq!(secret_ref(&v, "FEATURE_FLAG"), annotated_secret(&v));
         let tp = env_value(&v, "TASK_PAYLOAD_JSON").unwrap();
         assert!(!tp.contains("CONTEXT_PACK_URL"), "env lifted out of payload: {tp}");
         assert!(tp.contains("pr-review"));
@@ -1600,12 +1635,10 @@ mod tests {
         assert_eq!(env_value(&v, "SESSION_ID").as_deref(), Some("sess-drift"));
         assert_eq!(env_value(&v, "TASK_NAME").as_deref(), Some("triage"));
         assert_eq!(env_value(&v, "REPLY_URL").as_deref(), Some("https://cb"));
-        assert_eq!(secret_ref(&v, "EXTRA"), Some(env_secret_name(&s)));
-        assert_eq!(
-            v.pointer("/metadata/annotations/cctui.dev~1env-secret"),
-            Some(&json!(env_secret_name(&s))),
-            "the rebuilt Job keeps its env Secret"
-        );
+        let old_secret = Spawner::env_secret_of(&old).map(ToOwned::to_owned);
+        assert!(old_secret.is_some());
+        assert_eq!(annotated_secret(&v), old_secret, "the rebuilt Job keeps its env Secret");
+        assert_eq!(secret_ref(&v, "EXTRA"), old_secret);
         assert_eq!(env_value(&v, "CCTUI_URL").as_deref(), Some("http://cctui:8700"));
         assert!(env_value(&v, "TASK_PAYLOAD_JSON").is_some());
 
@@ -1860,13 +1893,13 @@ mod tests {
         let raw = serde_json::to_string(&v).unwrap();
         assert!(!raw.contains("SECRET"), "a secret value leaked into the Job: {raw}");
         for key in ["CCTUI_MACHINE_KEY", "ANTHROPIC_AUTH_TOKEN", "FEATURE_FLAG"] {
-            assert_eq!(secret_ref(&v, key), Some(env_secret_name(&s)), "{key}");
+            assert_eq!(secret_ref(&v, key), annotated_secret(&v), "{key}");
         }
         for p in [
             "/metadata/annotations/cctui.dev~1env-secret",
             "/spec/template/metadata/annotations/cctui.dev~1env-secret",
         ] {
-            assert_eq!(v.pointer(p), Some(&json!(env_secret_name(&s))), "{p}");
+            assert_eq!(v.pointer(p).and_then(Value::as_str), annotated_secret(&v).as_deref(), "{p}");
         }
     }
 
@@ -1878,10 +1911,14 @@ mod tests {
         });
         let s = spec("sess-secret", payload);
         let name = worker_name(&s.session_id);
-        let secret = Spawner::job_secret("http://cctui:8700", &lean_profile(), &s, &name)
+        let job = queued_job("lean", &lean_profile(), &s);
+        let secret = Spawner::job_secret("http://cctui:8700", &lean_profile(), &s, &job)
             .unwrap()
             .expect("a dispatch with a machine key has an env Secret");
-        assert_eq!(secret.metadata.name, Some(env_secret_name(&s)));
+        assert_eq!(secret.metadata.name.as_deref(), Spawner::env_secret_of(&job));
+        let labels = secret.metadata.labels.as_ref().unwrap();
+        assert_eq!(labels.get(LABEL_ORIGIN).map(String::as_str), Some("cctui-kube-dispatcher"));
+        assert_eq!(labels.get(LABEL_JOB_NAME), Some(&name));
         assert!(secret.metadata.name.as_deref().unwrap().starts_with(&format!("{name}-env-")));
         let data = secret.string_data.unwrap();
         assert_eq!(data.get("CCTUI_MACHINE_KEY").map(String::as_str), Some("SECRET-MACHINE-KEY"));
@@ -1896,24 +1933,51 @@ mod tests {
     #[test]
     fn dispatch_without_secrets_has_no_env_secret() {
         let s = spec("sess-plain", json!({ "flow": "review" }));
-        let name = worker_name(&s.session_id);
+        let job = queued_job("lean", &lean_profile(), &s);
         assert!(
-            Spawner::job_secret("http://cctui:8700", &lean_profile(), &s, &name)
-                .unwrap()
-                .is_none()
+            Spawner::job_secret("http://cctui:8700", &lean_profile(), &s, &job).unwrap().is_none()
         );
         let v = build("lean", &lean_profile(), &s);
         assert!(v.pointer("/metadata/annotations/cctui.dev~1env-secret").is_none());
     }
 
     #[test]
-    fn env_secret_name_is_unique_per_dispatch_of_the_same_job() {
-        let mut a = spec("11111111-1111-4111-8111-111111111111", json!({}));
-        a.dedup_key = Some("triage-PROJ-1".to_owned());
-        let mut b = spec("22222222-2222-4222-8222-222222222222", json!({}));
-        b.dedup_key = Some("triage-PROJ-1".to_owned());
-        let job = worker_name(dedup_source(&a));
-        assert_ne!(Spawner::env_secret_name(&job, &a), Spawner::env_secret_name(&job, &b));
+    fn env_secret_name_is_unique_per_dispatch_even_of_the_same_session() {
+        let s = spec("sess-twice", json!({ "cctui_machine_key": "k" }));
+        let a = build("lean", &lean_profile(), &s);
+        let b = build("lean", &lean_profile(), &s);
+        assert_eq!(a.pointer("/metadata/name"), b.pointer("/metadata/name"));
+        assert!(annotated_secret(&a).is_some());
+        assert_ne!(annotated_secret(&a), annotated_secret(&b));
+    }
+
+    fn env_secret_obj(name: &str, age_secs: i64, owned: bool) -> Secret {
+        let created = k8s_openapi::jiff::Timestamp::now()
+            .checked_sub(k8s_openapi::jiff::SignedDuration::from_secs(age_secs))
+            .unwrap();
+        let mut v = json!({
+            "metadata": { "name": name, "creationTimestamp": created.to_string() }
+        });
+        if owned {
+            v["metadata"]["ownerReferences"] = json!([
+                { "apiVersion": "batch/v1", "kind": "Job", "name": "j", "uid": "u" }
+            ]);
+        }
+        serde_json::from_value(v).unwrap()
+    }
+
+    #[test]
+    fn orphan_sweep_only_takes_old_unowned_unreferenced_secrets() {
+        let secrets = vec![
+            env_secret_obj("orphan", 3600, false),
+            env_secret_obj("fresh", 10, false),
+            env_secret_obj("owned", 3600, true),
+            env_secret_obj("referenced", 3600, false),
+        ];
+        let referenced = std::collections::BTreeSet::from(["referenced"]);
+        let swept =
+            orphan_env_secrets(&secrets, &referenced, k8s_openapi::jiff::Timestamp::now());
+        assert_eq!(swept, vec!["orphan".to_owned()]);
     }
 
     #[test]
@@ -1927,7 +1991,7 @@ mod tests {
         assert_eq!(owner["kind"], json!("Job"));
         assert_eq!(owner["name"], json!(worker_name(&s.session_id)));
         assert_eq!(owner["uid"], json!("0000-uid"));
-        assert_eq!(Spawner::env_secret_of(&job), Some(env_secret_name(&s).as_str()));
+        assert!(Spawner::env_secret_of(&job).is_some());
     }
 
     #[test]

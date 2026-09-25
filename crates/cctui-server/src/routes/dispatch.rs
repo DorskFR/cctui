@@ -536,6 +536,11 @@ pub async fn dispatch(
         })?;
     }
 
+    cctui_proto::worker_env::check_payload_env(&req.payload).map_err(|e| {
+        tracing::warn!(uid = %ctx.user_id, "dispatch rejected: {e}");
+        (StatusCode::BAD_REQUEST, Json(ApiError { error: e }))
+    })?;
+
     let mut forwarded_payload = req.payload.clone();
     // Carry the caller's logical id as the session display name (the session id
     // itself is now a derived UUID) so the UI still shows e.g.
