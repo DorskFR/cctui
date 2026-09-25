@@ -74,7 +74,7 @@ async fn main() -> anyhow::Result<()> {
         anyhow::bail!("refusing to start: {e}");
     }
 
-    let config = Config::from_env();
+    let config = Config::from_env()?;
     let pool = db::connect(&config.database_url).await?;
     // One-release back-compat shim: if the retired
     // CCTUI_CLAUDE_LITELLM_* env vars are set, synthesize a managed (read-only)
