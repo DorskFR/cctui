@@ -519,6 +519,7 @@ fn audience(event: &ServerEvent) -> Audience {
         | ServerEvent::PlanRequest { session_id, .. }
         | ServerEvent::PlanResolved { session_id }
         | ServerEvent::PtyChunk { session_id, .. }
+        | ServerEvent::ToolCallBlocked { session_id, .. }
         | ServerEvent::SessionEnded { session_id, .. }
         | ServerEvent::MessageAck { session_id, .. }
         | ServerEvent::SoftLimitReached { session_id, .. }

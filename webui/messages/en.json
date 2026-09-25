@@ -1843,5 +1843,20 @@
 	"settings_followup_when_cold_offer": "Offer",
 	"settings_followup_when_cold_default": "Default",
 	"settings_prefer_followup_label": "Prefer follow-up over fork",
-	"settings_prefer_followup_help": "List Follow-up before Fork in the conversation menu."
+	"settings_prefer_followup_help": "List Follow-up before Fork in the conversation menu.",
+	"tool_policy_title": "Tool-call guard",
+	"tool_policy_help": "The gateway refuses to forward a model tool call whose input matches these rules; the turn ends with an explanation instead. Applies to every session on this account. Never sent to agents or machines.",
+	"tool_policy_on": "On",
+	"tool_policy_off": "Off",
+	"tool_policy_terms": "Forbidden terms",
+	"tool_policy_terms_help": "One per line, case-insensitive.",
+	"tool_policy_patterns": "Forbidden patterns",
+	"tool_policy_patterns_help": "One regular expression per line, case-insensitive.",
+	"tool_policy_owners": "Protected GitHub owners",
+	"tool_policy_owners_help": "Blocks owner/repo#123 references and PR, issue, commit or file links to repositories of these owners.",
+	"tool_policy_exempt": "Exempt roots",
+	"tool_policy_exempt_help": "Absolute paths, one per line. Sessions whose working directory is under one of them are not scanned.",
+	"tool_policy_saved": "Tool-call guard saved",
+	"conversation_tool_call_blocked": "cctui blocked a {tool} tool call in this session ({rule}).",
+	"conversation_tool_block_dismiss": "Dismiss"
 }

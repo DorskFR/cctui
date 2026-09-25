@@ -1,18 +1,19 @@
 use super::{
     Family, FireworksSettings, anthropic_upstream, clear_account_reauth, clear_soft_limit_block,
     clear_soft_limit_block_for_token, current_access_token, durable_block_key, fireworks_upstream,
-    flag_account_reauth, mark_soft_limit_block, note_orphan_401, note_token_used, openai_upstream,
-    orphan_is_blocked, record_fireworks_usage, resolve_account, session_and_account_name_for_token,
-    session_budget_limits, session_id_for_token, session_spend_usd_cached, tees_response,
-    usage_for_soft_limit,
+    flag_account_reauth, guard_stream, guardable, mark_soft_limit_block, note_orphan_401,
+    note_token_used, openai_upstream, orphan_is_blocked, record_fireworks_usage, resolve_account,
+    session_and_account_name_for_token, session_budget_limits, session_id_for_token,
+    session_spend_usd_cached, tees_response, usage_for_soft_limit,
 };
 
-use axum::body::Body;
+use axum::body::{Body, Bytes};
 use axum::extract::{Request, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use chrono::Utc;
 use futures_util::StreamExt;
+use futures_util::stream::BoxStream;
 
 use crate::state::AppState;
 
@@ -414,7 +415,8 @@ pub async fn passthrough(
     let trace_session_id =
         if langfuse.is_some() { session_id_for_token(&state, &session_token).await } else { None };
 
-    if tees_response(langfuse.is_some(), fireworks.is_some()) {
+    let tool_guard = super::guard_for(&state, acct.id, &session_token).await;
+    if tees_response(langfuse.is_some(), fireworks.is_some()) || tool_guard.is_some() {
         headers.remove(reqwest::header::ACCEPT_ENCODING);
     }
 
@@ -591,9 +593,25 @@ pub async fn passthrough(
         (header("fireworks-prompt-tokens"), header("fireworks-cached-prompt-tokens"))
     });
 
+    let header = |name: http::header::HeaderName| {
+        upstream.headers().get(name).and_then(|v| v.to_str().ok()).map(str::to_owned)
+    };
+    let (content_type, content_encoding) =
+        (header(http::header::CONTENT_TYPE), header(http::header::CONTENT_ENCODING));
+    let guarded = tool_guard.filter(|_| status.is_success()).and_then(|g| {
+        let sse = guardable(content_type.as_deref(), content_encoding.as_deref());
+        if sse.is_none() && content_encoding.is_some() {
+            tracing::warn!(account = %acct.id, "encoded upstream response cannot be tool-guarded");
+        }
+        sse.map(|sse| (g, sse))
+    });
+    let resp_stream: BoxStream<'static, Result<Bytes, reqwest::Error>> = match guarded {
+        Some((g, sse)) => guard_stream(upstream.bytes_stream(), g, sse, state.clone()).boxed(),
+        None => upstream.bytes_stream().boxed(),
+    };
+
     // Fast path (nothing to observe): stream the response straight through.
     if langfuse.is_none() && usage_session.is_none() {
-        let resp_stream = upstream.bytes_stream();
         return builder.body(Body::from_stream(resp_stream)).map_err(|e| {
             tracing::error!("gateway response build error: {e}");
             StatusCode::INTERNAL_SERVER_ERROR
@@ -666,7 +684,7 @@ pub async fn passthrough(
         }
     });
 
-    let resp_stream = upstream.bytes_stream().map(move |chunk| {
+    let resp_stream = resp_stream.map(move |chunk| {
         if let Ok(bytes) = &chunk {
             // Drop on backpressure rather than block the proxied response.
             let _ = tx.try_send(bytes.to_vec());

@@ -1843,5 +1843,20 @@
 	"settings_followup_when_cold_offer": "Proposer",
 	"settings_followup_when_cold_default": "Par défaut",
 	"settings_prefer_followup_label": "Préférer la suite au fork",
-	"settings_prefer_followup_help": "Placer Suite avant Fork dans le menu de la conversation."
+	"settings_prefer_followup_help": "Placer Suite avant Fork dans le menu de la conversation.",
+	"tool_policy_title": "Garde des appels d’outils",
+	"tool_policy_help": "La passerelle refuse de transmettre un appel d’outil du modèle dont l’entrée correspond à ces règles ; le tour se termine avec une explication. S’applique à toutes les sessions de ce compte. Jamais envoyé aux agents ni aux machines.",
+	"tool_policy_on": "Activée",
+	"tool_policy_off": "Désactivée",
+	"tool_policy_terms": "Termes interdits",
+	"tool_policy_terms_help": "Un par ligne, sans distinction de casse.",
+	"tool_policy_patterns": "Motifs interdits",
+	"tool_policy_patterns_help": "Une expression régulière par ligne, sans distinction de casse.",
+	"tool_policy_owners": "Propriétaires GitHub protégés",
+	"tool_policy_owners_help": "Bloque les références owner/repo#123 et les liens de PR, issue, commit ou fichier vers les dépôts de ces propriétaires.",
+	"tool_policy_exempt": "Racines exemptées",
+	"tool_policy_exempt_help": "Chemins absolus, un par ligne. Les sessions dont le répertoire de travail s’y trouve ne sont pas analysées.",
+	"tool_policy_saved": "Garde des appels d’outils enregistrée",
+	"conversation_tool_call_blocked": "cctui a bloqué un appel d’outil {tool} dans cette session ({rule}).",
+	"conversation_tool_block_dismiss": "Ignorer"
 }

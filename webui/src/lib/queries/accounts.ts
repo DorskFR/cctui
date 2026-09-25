@@ -1,6 +1,7 @@
 import { createQuery, useQueryClient } from "@tanstack/svelte-query";
 import type { AccountRedirect } from "@bindings/AccountRedirect";
 import type { PutRedirectRequest } from "@bindings/PutRedirectRequest";
+import type { ToolPolicy } from "@bindings/ToolPolicy";
 import type { CreatePoolRequest } from "@bindings/CreatePoolRequest";
 import type { UpdatePoolRequest } from "@bindings/UpdatePoolRequest";
 import { api } from "../api";
@@ -78,6 +79,24 @@ export function useRedirectActions() {
     remove: async (id: string) => {
       await endpoints.deleteRedirect(id);
       invalidate();
+    },
+  };
+}
+
+export const useToolPolicy = (accountId: () => string) =>
+  createQuery(() => ({
+    queryKey: ["tool-policy", accountId()],
+    queryFn: () => endpoints.toolPolicy(accountId()),
+    enabled: !!accountId(),
+  }));
+
+export function useToolPolicyActions() {
+  const qc = useQueryClient();
+  return {
+    put: async (accountId: string, body: ToolPolicy) => {
+      const r = await endpoints.putToolPolicy(accountId, body);
+      qc.setQueryData(["tool-policy", accountId], r);
+      return r;
     },
   };
 }

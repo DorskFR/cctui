@@ -818,6 +818,15 @@ pub enum ServerEvent {
     SoftLimitCleared {
         session_id: String,
     },
+    /// The gateway refused to forward a model tool call in this session because
+    /// its input matched the account's tool-call policy. The turn ended with an
+    /// explanation instead. `rule` names the rule and a masked form of the
+    /// match; the raw input is never carried.
+    ToolCallBlocked {
+        session_id: String,
+        tool_name: String,
+        rule: String,
+    },
     /// A coalesced slice of a session's live PTY byte stream, relayed to the
     /// browsers watching its read-only terminal. `data` is
     /// standard-base64 of the raw terminal bytes; the client base64-decodes and

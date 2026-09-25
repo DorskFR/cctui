@@ -1,5 +1,6 @@
 import { api } from "../api";
 import type { SessionListResponse } from "@bindings/SessionListResponse";
+import type { ToolPolicy } from "@bindings/ToolPolicy";
 import type { PoolUsageView } from "@bindings/PoolUsageView";
 import type { SessionStats } from "@bindings/SessionStats";
 import type { TokenUsageWindows } from "@bindings/TokenUsageWindows";
@@ -360,6 +361,10 @@ export const endpoints = {
   putRedirect: (accountId: string, body: PutRedirectRequest) =>
     api.put<AccountRedirect>(`/accounts/${accountId}/redirect`, body),
   deleteRedirect: (id: string) => api.del<void>(`/redirects/${id}`),
+  toolPolicy: (accountId: string) =>
+    api.get<ToolPolicy>(`/accounts/${accountId}/tool-policy`),
+  putToolPolicy: (accountId: string, body: ToolPolicy) =>
+    api.put<ToolPolicy>(`/accounts/${accountId}/tool-policy`, body),
   /** The caller's account pools with their membership. */
   accountPools: () => api.get<AccountPoolView[]>("/account-pools"),
   /** Every pool's usage, aggregated per provider family (level, pace, wall). */

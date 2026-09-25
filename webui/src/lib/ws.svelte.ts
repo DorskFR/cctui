@@ -152,6 +152,13 @@ export interface SoftLimit {
 }
 /** Live soft-limit block for a session, or null when none is active. */
 type SoftLimitCb = (sl: SoftLimit | null) => void;
+/** The gateway refused to forward a tool call in this session because it
+ * matched the account's tool-call policy; the turn ended with an explanation. */
+export interface ToolBlock {
+	tool_name: string;
+	rule: string;
+}
+type ToolBlockCb = (b: ToolBlock | null) => void;
 /** Server ack for a client-sent message. `ok=false` means the server
  * could not dispatch the reply to the session's daemon, so the client should
  * mark the message failed and offer a retry. */
@@ -388,6 +395,7 @@ export class WsClient {
 	private asks = new Map<string, LiveAsk>();
 	private plans = new Map<string, LivePlan>();
 	private softLimits = new Map<string, SoftLimit>();
+	private toolBlocks = new Map<string, ToolBlock>();
 	private streamCbs = new KeyedListeners<AgentEvent>();
 	/** Live PTY-view listeners keyed by session id; not reactive. The
 	 * bytes are never buffered — a terminal that mounts late relies on the fresh
@@ -400,6 +408,7 @@ export class WsClient {
 	private askCbs = new KeyedListeners<LiveAsk | null>();
 	private planCbs = new KeyedListeners<LivePlan | null>();
 	private softLimitCbs = new KeyedListeners<SoftLimit | null>();
+	private toolBlockCbs = new KeyedListeners<ToolBlock | null>();
 	/** GitHub inbox listeners (GH-CONN-5 / GH-UI-1); not session-keyed — one
 	 * broadcast channel the mounted inbox subscribes to. Not reactive. */
 	private githubCbs = new Set<GithubCb>();
@@ -644,6 +653,13 @@ export class WsClient {
 				});
 				break;
 			}
+			case 'tool_call_blocked': {
+				this.setToolBlock(msg.session_id as string, {
+					tool_name: msg.tool_name as string,
+					rule: msg.rule as string
+				});
+				break;
+			}
 			case 'soft_limit_cleared': {
 				const sid = msg.session_id as string;
 				this.setSoftLimit(sid, null);
@@ -850,6 +866,12 @@ export class WsClient {
 		this.softLimitCbs.emit(id, sl);
 	}
 
+	private setToolBlock(id: string, b: ToolBlock | null) {
+		if (b === null) this.toolBlocks.delete(id);
+		else this.toolBlocks.set(id, b);
+		this.toolBlockCbs.emit(id, b);
+	}
+
 	subscribe(id: string) {
 		if (!this.subscribed.has(id)) {
 			this.subscribed.add(id);
@@ -966,6 +988,18 @@ export class WsClient {
 		const off = this.softLimitCbs.add(id, cb);
 		cb(this.softLimits.get(id) ?? null);
 		return off;
+	}
+
+	/** Latest tool-call block for a session, until dismissed. Fires with the
+	 * current one immediately. */
+	onToolBlock(id: string, cb: ToolBlockCb): () => void {
+		const off = this.toolBlockCbs.add(id, cb);
+		cb(this.toolBlocks.get(id) ?? null);
+		return off;
+	}
+
+	dismissToolBlock(id: string) {
+		if (this.toolBlocks.has(id)) this.setToolBlock(id, null);
 	}
 
 	/** Clear any live soft-limit block for a session (e.g. immediately after the
