@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 pub struct Config {
     pub server_url: String,
     /// The enrollment key minted by the server (`sha256` stored server-side);
-    /// presented on `dispatcher/auth` + as the `dispatcher/ws` token.
+    /// presented on `dispatcher/auth` + as the `dispatcher/ws` Bearer credential.
     pub dispatcher_key: String,
     pub dispatcher_id: Option<uuid::Uuid>,
     /// Worker image to spawn on dispatch.
