@@ -186,11 +186,11 @@ fn install_staged(staging: &Path, current: &Path, backup: &Path) -> Result<()> {
     Ok(())
 }
 
-fn maybe_reapply_settings(server_url: &str, fallback_token: &str, bin_path: &Path) {
+fn maybe_reapply_settings(server_url: &str, bin_path: &Path) {
     if install::SETTINGS_SCHEMA_VERSION <= install::read_schema_marker() {
         return;
     }
-    if let Err(e) = install::apply_settings(server_url, fallback_token, bin_path) {
+    if let Err(e) = install::apply_settings(server_url, bin_path) {
         eprintln!("[cctui] settings re-apply failed: {e}");
         return;
     }
@@ -220,9 +220,7 @@ fn exec_new(_: &Path) -> ! {
 
 async fn update_inner(server_url: &str, target_tag: Option<&str>) -> Result<()> {
     let new_exe = swap_binary(target_tag).await?;
-    let fallback_token =
-        cctui_proto::identity::load_machine().map(|m| m.machine_key).unwrap_or_default();
-    maybe_reapply_settings(server_url, &fallback_token, &new_exe);
+    maybe_reapply_settings(server_url, &new_exe);
     exec_new(&new_exe);
 }
 
@@ -251,9 +249,7 @@ pub async fn maybe_update(server_url: &str) {
         if install::SETTINGS_SCHEMA_VERSION > install::read_schema_marker()
             && let Ok(exe) = std::env::current_exe()
         {
-            let fallback_token =
-                cctui_proto::identity::load_machine().map(|m| m.machine_key).unwrap_or_default();
-            maybe_reapply_settings(server_url, &fallback_token, &exe);
+            maybe_reapply_settings(server_url, &exe);
         }
         return;
     }
@@ -270,9 +266,7 @@ pub async fn force_update(server_url: &str) -> Result<()> {
     clear_updated_flag();
     eprintln!("[cctui] forcing update from {}", repo());
     let new_exe = swap_binary(tag_override().as_deref()).await?;
-    let fallback_token =
-        cctui_proto::identity::load_machine().map(|m| m.machine_key).unwrap_or_default();
-    if let Err(e) = install::apply_settings(server_url, &fallback_token, &new_exe) {
+    if let Err(e) = install::apply_settings(server_url, &new_exe) {
         eprintln!("[cctui] settings re-apply failed: {e}");
     } else {
         let _ = install::write_schema_marker(install::SETTINGS_SCHEMA_VERSION);
