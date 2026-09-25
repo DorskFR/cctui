@@ -29,7 +29,6 @@
 //! per-target `secret` is registered, the body is signed HMAC-SHA256 and the
 //! hex digest is sent in `X-CCTUI-Signature: sha256=<hex>`.
 
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::OnceLock;
 
 use hmac::{Hmac, Mac};
@@ -53,85 +52,12 @@ const MAX_ATTEMPTS: i32 = 8;
 /// last entry for any attempt beyond the table.
 const BACKOFF_SECS: &[i64] = &[10, 30, 120, 300, 900, 1800, 3600];
 
-#[derive(Debug)]
-pub enum NotifyUrlError {
-    Malformed,
-    NotHttps,
-    NoHost,
-    Unresolvable,
-    Internal,
-}
+pub use crate::outbound::OutboundUrlError as NotifyUrlError;
 
-impl std::fmt::Display for NotifyUrlError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::Malformed => "must be a valid absolute URL",
-            Self::NotHttps => "must use the https scheme",
-            Self::NoHost => "must include a host",
-            Self::Unresolvable => "host does not resolve",
-            Self::Internal => "resolves to a private or loopback address",
-        })
-    }
-}
-
-fn ipv4_is_internal(ip: Ipv4Addr) -> bool {
-    let [a, b, ..] = ip.octets();
-    ip.is_loopback()
-        || ip.is_private()
-        || ip.is_link_local()
-        || ip.is_unspecified()
-        || ip.is_broadcast()
-        // CGNAT 100.64.0.0/10; `Ipv4Addr::is_shared` is still unstable.
-        || (a == 100 && (64..=127).contains(&b))
-}
-
-fn ipv6_is_internal(ip: Ipv6Addr) -> bool {
-    if ip.is_loopback() || ip.is_unspecified() {
-        return true;
-    }
-    // `to_ipv4` also maps `::`/`::1`, but those return above, so any remaining
-    // embedded IPv4 (v4-mapped or deprecated v4-compatible) is a real target.
-    if let Some(v4) = ip.to_ipv4() {
-        return ipv4_is_internal(v4);
-    }
-    let seg0 = ip.segments()[0];
-    (seg0 & 0xfe00) == 0xfc00 || (seg0 & 0xffc0) == 0xfe80
-}
-
-fn ip_is_internal(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(v4) => ipv4_is_internal(v4),
-        IpAddr::V6(v6) => ipv6_is_internal(v6),
-    }
-}
-
-/// Fail-closed SSRF guard: requires `https` and refuses a host that resolves to
-/// an internal address or does not resolve. DNS rebinding at delivery is out of
-/// scope — pinning the resolved IP is left for a follow-up.
+/// Fail-closed SSRF guard: requires `https` and refuses a host that is
+/// cluster-local, resolves to an internal address, or does not resolve.
 pub async fn validate_notify_url(raw: &str) -> Result<(), NotifyUrlError> {
-    let url = reqwest::Url::parse(raw).map_err(|_| NotifyUrlError::Malformed)?;
-    if url.scheme() != "https" {
-        return Err(NotifyUrlError::NotHttps);
-    }
-    let host = url.host_str().ok_or(NotifyUrlError::NoHost)?;
-    let bare = host.strip_prefix('[').and_then(|h| h.strip_suffix(']')).unwrap_or(host);
-    if let Ok(ip) = bare.parse::<IpAddr>() {
-        return if ip_is_internal(ip) { Err(NotifyUrlError::Internal) } else { Ok(()) };
-    }
-    let port = url.port_or_known_default().unwrap_or(443);
-    let mut addrs = tokio::net::lookup_host((host, port))
-        .await
-        .map_err(|_| NotifyUrlError::Unresolvable)?
-        .peekable();
-    if addrs.peek().is_none() {
-        return Err(NotifyUrlError::Unresolvable);
-    }
-    for addr in addrs {
-        if ip_is_internal(addr.ip()) {
-            return Err(NotifyUrlError::Internal);
-        }
-    }
-    Ok(())
+    crate::outbound::validate_outbound_url(raw, &[]).await
 }
 
 /// Redirects are disabled so a target can't 3xx-bounce the POST onto an internal
@@ -463,30 +389,7 @@ async fn schedule_retry(state: &AppState, id: uuid::Uuid, attempts: i32, err: &s
 
 #[cfg(test)]
 mod tests {
-    use super::{NotifyUrlError, build_payload, ip_is_internal, sign, validate_notify_url};
-
-    #[test]
-    fn ip_classifier_flags_internal_and_passes_public() {
-        for ip in [
-            "127.0.0.1",
-            "10.1.2.3",
-            "172.31.0.1",
-            "192.168.0.1",
-            "169.254.169.254",
-            "100.64.0.1",
-            "0.0.0.0",
-            "255.255.255.255",
-            "::1",
-            "fe80::1",
-            "fc00::1",
-            "::ffff:169.254.169.254",
-        ] {
-            assert!(ip_is_internal(ip.parse().unwrap()), "{ip} must be internal");
-        }
-        for ip in ["1.1.1.1", "8.8.8.8", "93.184.216.34", "2606:4700:4700::1111"] {
-            assert!(!ip_is_internal(ip.parse().unwrap()), "{ip} must be public");
-        }
-    }
+    use super::{NotifyUrlError, build_payload, sign, validate_notify_url};
 
     #[tokio::test]
     async fn notify_url_accepts_public_https() {

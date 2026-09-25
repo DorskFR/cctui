@@ -387,9 +387,9 @@ pub async fn local_window(
         "SELECT COALESCE(SUM(stu.input_tokens + stu.output_tokens \
                 + stu.cache_read_tokens + stu.cache_creation_tokens), 0)::bigint AS tokens, \
                 MIN(stu.created_at) AS oldest \
-         FROM session_tokens st \
+         FROM (SELECT DISTINCT session_id FROM session_tokens WHERE account_id = $1) st \
          JOIN session_token_usage stu ON stu.session_id = st.session_id \
-         WHERE st.account_id = $1 AND stu.created_at >= now() - $2::interval",
+         WHERE stu.created_at >= now() - $2::interval",
     )
     .bind(account_id)
     .bind(interval)
@@ -433,9 +433,9 @@ pub type TallyRow = (Option<String>, i64, i64, i64, Option<chrono::DateTime<Utc>
 pub type ModelTally = (Option<String>, crate::cost::TokenUsage, Option<chrono::DateTime<Utc>>);
 
 /// Per-model token tallies for one account, restricted by an SQL predicate on
-/// `stu`/`st` bound to `$2`.
+/// `stu` bound to `$2`.
 pub async fn model_tallies(
-    state: &AppState,
+    pool: &sqlx::PgPool,
     account_id: Uuid,
     filter: &str,
     bind: &str,
@@ -446,15 +446,15 @@ pub async fn model_tallies(
                 COALESCE(SUM(stu.cache_read_tokens), 0)::bigint, \
                 COALESCE(SUM(stu.output_tokens), 0)::bigint, \
                 MIN(stu.created_at) \
-         FROM session_tokens st \
+         FROM (SELECT DISTINCT session_id FROM session_tokens WHERE account_id = $1) st \
          JOIN session_token_usage stu ON stu.session_id = st.session_id \
-         WHERE st.account_id = $1 AND {filter} \
+         WHERE {filter} \
          GROUP BY stu.model"
     );
     let rows: Vec<TallyRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
         .bind(account_id)
         .bind(bind)
-        .fetch_all(&state.pool)
+        .fetch_all(pool)
         .await
         .unwrap_or_else(|e| {
             tracing::warn!(account = %account_id, "usd usage query error: {e}");
@@ -489,9 +489,9 @@ pub async fn max_session_spend_usd(
                 COALESCE(SUM(stu.input_tokens + stu.cache_creation_tokens), 0)::bigint, \
                 COALESCE(SUM(stu.cache_read_tokens), 0)::bigint, \
                 COALESCE(SUM(stu.output_tokens), 0)::bigint \
-         FROM session_tokens st \
+         FROM (SELECT DISTINCT session_id FROM session_tokens WHERE account_id = $1) st \
          JOIN session_token_usage stu ON stu.session_id = st.session_id \
-         WHERE st.account_id = $1 AND stu.created_at >= now() - $2::interval \
+         WHERE stu.created_at >= now() - $2::interval \
          GROUP BY st.session_id, stu.model",
     )
     .bind(account_id)
@@ -526,8 +526,37 @@ pub async fn session_spend_usd(
     session_id: &str,
 ) -> Option<f64> {
     let catalog = account_catalog(state, account_id).await;
-    let rows = model_tallies(state, account_id, "st.session_id = $2", session_id).await;
+    let rows = model_tallies(&state.pool, account_id, "stu.session_id = $2", session_id).await;
     Some(priced(catalog.as_ref(), &rows))
+}
+
+const SPEND_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(5);
+const SPEND_CACHE_SWEEP_AT: usize = 4096;
+
+type SpendCache = dashmap::DashMap<(Uuid, String), (std::time::Instant, f64)>;
+
+static SESSION_SPEND_CACHE: std::sync::LazyLock<SpendCache> =
+    std::sync::LazyLock::new(SpendCache::new);
+
+/// [`session_spend_usd`] behind a short TTL, for the per-request soft-limit gate.
+pub async fn session_spend_usd_cached(
+    state: &AppState,
+    account_id: Uuid,
+    session_id: &str,
+) -> Option<f64> {
+    let key = (account_id, session_id.to_owned());
+    let now = std::time::Instant::now();
+    if let Some(hit) = SESSION_SPEND_CACHE.get(&key)
+        && now.duration_since(hit.0) < SPEND_CACHE_TTL
+    {
+        return Some(hit.1);
+    }
+    let spent = session_spend_usd(state, account_id, session_id).await?;
+    if SESSION_SPEND_CACHE.len() >= SPEND_CACHE_SWEEP_AT {
+        SESSION_SPEND_CACHE.retain(|_, (at, _)| now.duration_since(*at) < SPEND_CACHE_TTL);
+    }
+    SESSION_SPEND_CACHE.insert(key, (now, spent));
+    Some(spent)
 }
 
 /// cctui's own 7d spend as Fireworks billed it, priced through the account
@@ -632,7 +661,7 @@ pub async fn fireworks_usd_windows(
         (crate::soft_limit::KEY_USD_7D, "7 days", 7 * 86400),
     ] {
         let rows =
-            model_tallies(state, account_id, "stu.created_at >= now() - $2::interval", interval)
+            model_tallies(&state.pool, account_id, "stu.created_at >= now() - $2::interval", interval)
                 .await;
         let resets_at = rows
             .iter()

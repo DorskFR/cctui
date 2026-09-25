@@ -771,6 +771,13 @@ fn build_rate_limits_json(
     Ok((!out.is_empty()).then_some(serde_json::Value::Object(out)))
 }
 
+/// A compatible endpoint's `base_url` must not reach internal addresses.
+async fn check_base_url(raw: &str) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+    crate::outbound::validate_upstream_url(raw)
+        .await
+        .map_err(|e| err(StatusCode::BAD_REQUEST, &format!("base_url {e}")))
+}
+
 fn db_err(e: &sqlx::Error) -> (StatusCode, Json<serde_json::Value>) {
     tracing::error!("db error: {e}");
     err(StatusCode::INTERNAL_SERVER_ERROR, "database error")
@@ -988,7 +995,7 @@ struct ProviderWrite {
 /// `encrypted_access_token`, no refresh token, `auth_scheme` = `bearer|api_key`.
 // Linear validator: one branch per optional field, no nesting.
 #[allow(clippy::too_many_lines)]
-fn prepare_provider_write(
+async fn prepare_provider_write(
     spec: &ProviderSpec,
 ) -> Result<ProviderWrite, (StatusCode, Json<serde_json::Value>)> {
     let Some(provider) = spec.provider.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
@@ -1027,12 +1034,8 @@ fn prepare_provider_write(
                 ));
             }
         };
-        // SSRF is explicitly out of scope for this single-operator, self-hosted
-        // deployment; a light scheme check only. Prefer https.
-        if let Some(b) = base
-            && !(b.starts_with("http://") || b.starts_with("https://"))
-        {
-            return Err(err(StatusCode::BAD_REQUEST, "base_url must be an http(s) URL"));
+        if let Some(b) = base {
+            check_base_url(b).await?;
         }
         let scheme = spec.auth_scheme.as_deref().map(str::trim).filter(|s| !s.is_empty());
         let scheme = scheme.unwrap_or("bearer");
@@ -1234,7 +1237,7 @@ pub async fn create_account(
     // Validate the optional provider payload BEFORE creating the identity so a
     // bad credential body doesn't leave an empty account behind.
     let provider_write = if req.provider.provider.is_some() {
-        Some(prepare_provider_write(&req.provider)?)
+        Some(prepare_provider_write(&req.provider).await?)
     } else {
         None
     };
@@ -1499,7 +1502,7 @@ pub async fn add_provider(
     Json(req): Json<ProviderSpec>,
 ) -> Result<(StatusCode, Json<ProviderInfo>), (StatusCode, Json<serde_json::Value>)> {
     let owner = require_account_owner(&state, &ctx, id).await?;
-    let w = prepare_provider_write(&req)?;
+    let w = prepare_provider_write(&req).await?;
 
     let mut conn = state.pool.acquire().await.map_err(|e| db_err(&e))?;
     let pid = match insert_provider(&mut conn, owner, id, &w).await {
@@ -1591,9 +1594,7 @@ pub async fn update_provider(
     // COALESCE no-op in SQL). models replaces the list wholesale when provided.
     let base_url = match req.base_url.as_deref().map(str::trim) {
         Some(b) if !b.is_empty() => {
-            if !(b.starts_with("http://") || b.starts_with("https://")) {
-                return Err(err(StatusCode::BAD_REQUEST, "base_url must be an http(s) URL"));
-            }
+            check_base_url(b).await?;
             Some(b.to_owned())
         }
         _ => None,
@@ -3274,15 +3275,40 @@ mod tests {
         assert!(decrypted.is_empty(), "removing every name clears the blob");
     }
 
-    #[test]
-    fn provider_write_validates_provider() {
+    #[tokio::test]
+    async fn provider_write_validates_provider() {
         let spec = ProviderSpec { provider: Some("bogus".into()), ..Default::default() };
-        assert!(prepare_provider_write(&spec).is_err());
+        assert!(prepare_provider_write(&spec).await.is_err());
         let spec = ProviderSpec::default();
-        assert!(prepare_provider_write(&spec).is_err());
+        assert!(prepare_provider_write(&spec).await.is_err());
         // native without refresh token → 400.
         let spec = ProviderSpec { provider: Some("anthropic".into()), ..Default::default() };
-        assert!(prepare_provider_write(&spec).is_err());
+        assert!(prepare_provider_write(&spec).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn provider_write_rejects_an_internal_base_url() {
+        for base in [
+            "http://127.0.0.1:9000",
+            "https://10.0.0.5",
+            "https://169.254.169.254",
+            "https://minio.storage.svc:9000",
+            "https://localhost",
+        ] {
+            let spec = ProviderSpec {
+                provider: Some("openai-compatible".into()),
+                base_url: Some(base.into()),
+                ..Default::default()
+            };
+            assert!(prepare_provider_write(&spec).await.is_err(), "{base}");
+        }
+        let spec = ProviderSpec {
+            provider: Some("openai-compatible".into()),
+            base_url: Some("https://1.1.1.1/v1".into()),
+            ..Default::default()
+        };
+        assert!(prepare_provider_write(&spec).await.is_ok());
+        assert!(check_base_url("https://192.168.1.10").await.is_err());
     }
 
     #[test]

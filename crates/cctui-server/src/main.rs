@@ -25,6 +25,7 @@ mod machine_resources;
 mod normalize;
 mod ntfy;
 mod openapi;
+mod outbound;
 mod pace;
 mod policy;
 mod pool_usage;

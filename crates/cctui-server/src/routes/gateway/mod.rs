@@ -1090,4 +1090,96 @@ mod tests {
         assert_eq!(resp.headers().get("x-cctui-failover").unwrap(), "Secours");
         assert_eq!(resp.headers().get(http::header::CONTENT_TYPE).unwrap(), "application/json");
     }
+
+    #[tokio::test]
+    async fn a_reminted_session_is_not_double_counted() {
+        let Some(url) = super::test_db_url("a_reminted_session_is_not_double_counted") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+
+        let uid = uuid::Uuid::new_v4();
+        let acct = uuid::Uuid::new_v4();
+        let prov = uuid::Uuid::new_v4();
+        let sid = format!("ses_remint_{uid}");
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+            .bind(uid)
+            .bind(format!("remint-{uid}"))
+            .bind(format!("kh-{uid}"))
+            .execute(&pool)
+            .await
+            .expect("seed user");
+        sqlx::query("INSERT INTO accounts (id, user_id, name) VALUES ($1, $2, $3)")
+            .bind(acct)
+            .bind(uid)
+            .bind("remint-acct")
+            .execute(&pool)
+            .await
+            .expect("seed account");
+        sqlx::query(
+            "INSERT INTO account_providers \
+                 (id, user_id, provider, encrypted_refresh_token, account_id) \
+             VALUES ($1, $2, 'fireworks', 'x', $3)",
+        )
+        .bind(prov)
+        .bind(uid)
+        .bind(acct)
+        .execute(&pool)
+        .await
+        .expect("seed provider");
+        sqlx::query(
+            "INSERT INTO sessions (id, machine_id, working_dir, user_id, adapter_id) \
+             VALUES ($1, 'm1', '/w', $2, 'opencode')",
+        )
+        .bind(&sid)
+        .bind(uid)
+        .execute(&pool)
+        .await
+        .expect("seed session");
+        sqlx::query(
+            "INSERT INTO session_token_usage \
+                 (session_id, message_id, input_tokens, output_tokens, model) \
+             VALUES ($1, 'm-remint', 1000000, 0, 'accounts/fireworks/models/kimi-k3')",
+        )
+        .bind(&sid)
+        .execute(&pool)
+        .await
+        .expect("seed usage");
+
+        let catalog = serde_json::json!([
+            { "model": "accounts/fireworks/models/kimi-k3", "price_input_per_mtok": 3.0 }
+        ]);
+        let mut seen = Vec::new();
+        for n in 0..2 {
+            sqlx::query(
+                "INSERT INTO session_tokens (token_hash, session_id, account_id) \
+                 VALUES ($1, $2, $3)",
+            )
+            .bind(format!("th-remint-{uid}-{n}"))
+            .bind(&sid)
+            .bind(prov)
+            .execute(&pool)
+            .await
+            .expect("seed token");
+            let rows = super::model_tallies(&pool, prov, "stu.session_id = $2", &sid).await;
+            let session = super::priced(Some(&catalog), &rows);
+            let window = super::priced(
+                Some(&catalog),
+                &super::model_tallies(&pool, prov, "stu.created_at >= now() - $2::interval", "5 hours")
+                    .await,
+            );
+            let top = super::max_session_spend_usd(&pool, prov, Some(&catalog), "5 hours")
+                .await
+                .expect("metered");
+            seen.push((session, window, top));
+        }
+        assert_eq!(seen[0], seen[1], "a second token row must not change spend");
+        assert!((seen[1].0 - 3.0).abs() < 1e-6, "got {:?}", seen[1]);
+
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
+    }
 }
