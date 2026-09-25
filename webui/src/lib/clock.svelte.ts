@@ -52,7 +52,10 @@ const clocks = new Map<number, Clock>();
  * cadence shares one interval, which only runs while something reads it. */
 export function now(periodMs = TICK_MS): number {
 	let c = clocks.get(periodMs);
-	if (!c) clocks.set(periodMs, (c = new Clock(periodMs)));
+	if (!c) {
+		c = new Clock(periodMs);
+		clocks.set(periodMs, c);
+	}
 	return c.now;
 }
 
