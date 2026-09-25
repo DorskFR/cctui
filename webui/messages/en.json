@@ -707,7 +707,7 @@
 	"guide_welcome_title": "Welcome to cctui",
 	"home_cache_loss_gateway_rewrote_body": "Gateway rewrote body",
 	"home_cache_loss_none": "No cache bust in this range.",
-	"home_cache_loss_title": "Lost to cache busts",
+	"home_cache_loss_title_7d": "Lost to cache busts · last 7 days",
 	"home_cache_loss_ttl_expired": "TTL expired",
 	"home_cache_loss_unknown": "Unknown",
 	"home_enroll_install": "Install {daemon} on the target machine (from GitHub Releases), then enroll it with a user token (create one on the Access page):",

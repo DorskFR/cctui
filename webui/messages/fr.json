@@ -707,7 +707,7 @@
 	"guide_welcome_title": "Bienvenue dans cctui",
 	"home_cache_loss_gateway_rewrote_body": "Corps réécrit par la passerelle",
 	"home_cache_loss_none": "Aucun cache invalidé sur cette période.",
-	"home_cache_loss_title": "Perdu en caches invalidés",
+	"home_cache_loss_title_7d": "Perdu en caches invalidés · 7 derniers jours",
 	"home_cache_loss_ttl_expired": "TTL expiré",
 	"home_cache_loss_unknown": "Inconnu",
 	"home_enroll_install": "Installez {daemon} sur la machine cible (depuis GitHub Releases), puis enrôlez-la avec un jeton utilisateur (créez-en un sur la page Accès) :",
