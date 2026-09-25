@@ -918,7 +918,7 @@ async fn persist_spawn_capability(
         .and_then(|obj| obj.remove("spawn_capability"))
         .and_then(|raw| serde_json::from_value::<cctui_proto::api::SpawnCapability>(raw).ok())
         .filter(|cap| !cap.is_empty());
-    let mut cap = declared.unwrap_or_else(cctui_proto::api::SpawnCapability::machine_default);
+    let mut cap = declared.unwrap_or_else(|| state.config.spawn_default_capability());
     if cap.max_permission_mode.is_none() {
         cap.max_permission_mode = Some(
             forwarded_payload

@@ -492,7 +492,7 @@ async fn persist_spawn_capability(
         .spawn_capability
         .clone()
         .filter(|c| !c.is_empty())
-        .unwrap_or_else(cctui_proto::api::SpawnCapability::machine_default);
+        .unwrap_or_else(|| state.config.spawn_default_capability());
     let launched = permission_mode.unwrap_or(cctui_proto::adapter::PermissionMode::Ask);
     cap.max_permission_mode = Some(
         cap.max_permission_mode
