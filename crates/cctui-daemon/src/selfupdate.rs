@@ -132,6 +132,14 @@ pub fn sha256sums_url(server_url: &str) -> String {
     format!("{}/api/v1/daemon/binary/SHA256SUMS", server_url.trim_end_matches('/'))
 }
 
+/// Binary (and, with `.minisig` appended, signature) URL on the configured
+/// server; the manifest's own host is ignored so a daemon reaching the server
+/// by another name still authenticates.
+#[must_use]
+pub fn binary_url(server_url: &str, target: &str) -> String {
+    format!("{}/api/v1/daemon/binary/{target}", server_url.trim_end_matches('/'))
+}
+
 pub fn client() -> Result<reqwest::Client> {
     Ok(reqwest::Client::builder()
         .user_agent(concat!("cctui-daemon/", env!("CARGO_PKG_VERSION")))
@@ -335,11 +343,11 @@ pub async fn check_and_apply_with(
     }
     tracing::info!(running, %latest, "cctui-daemon release available");
 
-    let entry = manifest
-        .assets
-        .iter()
-        .find(|a| a.target == target)
-        .ok_or_else(|| anyhow!("manifest {latest} has no asset for target {target}"))?;
+    if !manifest.assets.iter().any(|a| a.target == target) {
+        bail!("manifest {latest} has no asset for target {target}");
+    }
+    let bin_url = binary_url(server_url, target);
+    let sig_url = format!("{bin_url}{}", cctui_proto::release_sig::SIG_SUFFIX);
 
     let sums_bytes = download(client, server_url, &sha256sums_url(server_url), machine_key)
         .await
@@ -347,13 +355,13 @@ pub async fn check_and_apply_with(
     counters.add(Subsystem::SelfUpdate, sums_bytes.len() as u64);
     let sums_text = std::str::from_utf8(&sums_bytes).context("SHA256SUMS not UTF-8")?;
 
-    let sig_bytes = download(client, server_url, &entry.signature_url(), machine_key)
+    let sig_bytes = download(client, server_url, &sig_url, machine_key)
         .await
         .context("download signature")?;
     counters.add(Subsystem::SelfUpdate, sig_bytes.len() as u64);
 
     let bin_bytes =
-        download(client, server_url, &entry.url, machine_key).await.context("download binary")?;
+        download(client, server_url, &bin_url, machine_key).await.context("download binary")?;
     counters.add(Subsystem::SelfUpdate, bin_bytes.len() as u64);
     verify_release(asset, &bin_bytes, sums_text, &sig_bytes)?;
 
@@ -649,6 +657,14 @@ mod tests {
         assert!(!same_origin(server, "http://cctui.example.com/x"));
         assert!(!same_origin(server, "https://cctui.example.com.evil.io/x"));
         assert!(!same_origin(server, "not a url"));
+    }
+
+    #[test]
+    fn binary_url_uses_the_configured_server() {
+        assert_eq!(
+            binary_url("http://cctui.dev.svc:8700/", "linux-amd64"),
+            "http://cctui.dev.svc:8700/api/v1/daemon/binary/linux-amd64"
+        );
     }
 
     #[test]
