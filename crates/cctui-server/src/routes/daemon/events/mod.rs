@@ -13,7 +13,6 @@ mod status;
 mod stream;
 mod todos;
 
-pub use session::truncate_end_detail;
 use todos::{extract_todos, is_user_turn, record_todos};
 
 pub(super) async fn handle_event(

@@ -498,7 +498,6 @@ fn db_list_item(row: DbSession) -> SessionListItem {
     item
 }
 
-
 /// Cap a raw unread `COUNT(*)` to the badge's display ceiling (99). Negative or
 /// overflowing DB values clamp into `0..=99`.
 fn cap_unread(n: i64) -> u32 {
@@ -577,8 +576,7 @@ struct SignalRow {
     last_keepalive_at: Option<DateTime<Utc>>,
 }
 
-const SIGNAL_SQL: &str =
-    "SELECT id, tempo, agent_state, activity, session_name, model, effort, pinned, \
+const SIGNAL_SQL: &str = "SELECT id, tempo, agent_state, activity, session_name, model, effort, pinned, \
             soft_limit_reason, last_tool_at, last_tool_name, tool_use_count, \
             children, end_reason, end_detail, ended_at, permission_mode, archived_by, \
             keepalive_json, last_keepalive_at \
@@ -3726,10 +3724,8 @@ mod tests {
         );
         ctx.last_messages.insert("s".into(), (Some("hello".into()), ts(5)));
         ctx.unread = Some([("s".to_string(), 4)].into_iter().collect());
-        ctx.todos.insert(
-            "s".into(),
-            serde_json::json!([{"content": "do it", "status": "pending"}]),
-        );
+        ctx.todos
+            .insert("s".into(), serde_json::json!([{"content": "do it", "status": "pending"}]));
         ctx.signals.insert(
             "s".into(),
             super::SignalRow {
