@@ -13,7 +13,7 @@
 //! `auth_middleware` resolves it to `TokenRole::Machine` with
 //! `machine_id` + `user_id` populated.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
@@ -63,6 +63,7 @@ const DAEMON_LOST_GRACE: Duration = Duration::from_secs(45);
 /// at *some* replica. Two of the daemon's 20s heartbeat cadences, so one missed
 /// heartbeat does not read as death, and under [`DAEMON_LOST_GRACE`] so a
 /// machine that is genuinely gone is never held alive by its own last beat.
+const BUMP_FLUSH: Duration = Duration::from_secs(1);
 const DAEMON_SEEN_FRESH: Duration = Duration::from_secs(40);
 
 // ---- /api/v1/daemon/auth ----
@@ -642,6 +643,18 @@ async fn handle(socket: WebSocket, state: AppState, machine_id: Uuid, user_id: U
     liveness.tick().await;
     let mut reasm = Reassembler::new(MAX_TRANSFER_BYTES);
     let mut owners = SessionOwners::new(machine_id, user_id);
+    let bumps = Arc::new(Bumps::default());
+    let flusher = {
+        let (bumps, pool) = (Arc::clone(&bumps), state.pool.clone());
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(BUMP_FLUSH);
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tick.tick().await;
+                bumps.flush(&pool).await;
+            }
+        })
+    };
     loop {
         reasm.evict_older_than(STALE_TRANSFER);
         let inbound =
@@ -721,13 +734,13 @@ async fn handle(socket: WebSocket, state: AppState, machine_id: Uuid, user_id: U
                 }
                 Err(frame) => frame,
             };
-            ingest_run(&state, machine_id, user_id, &mut run).await;
+            ingest_run(&state, &bumps, machine_id, user_id, &mut run).await;
             let announce = announced_session(&frame).map(str::to_owned);
             if let Some(local_id) = &announce {
                 state.bus.bind_session_conn(local_id, conn_id);
             }
             let trace = frame_trace(&frame);
-            if let Err(err) = process_frame(&state, machine_id, user_id, frame).await {
+            if let Err(err) = process_frame(&state, &bumps, machine_id, user_id, frame).await {
                 tracing::warn!(%err, %trace, "process_frame error");
             }
             if let Some(local_id) = announce
@@ -742,7 +755,7 @@ async fn handle(socket: WebSocket, state: AppState, machine_id: Uuid, user_id: U
                 }
             }
         }
-        ingest_run(&state, machine_id, user_id, &mut run).await;
+        ingest_run(&state, &bumps, machine_id, user_id, &mut run).await;
     }
 
     // Cleanup. Only drop the entry if it is STILL OURS. During a reconnect
@@ -766,6 +779,8 @@ async fn handle(socket: WebSocket, state: AppState, machine_id: Uuid, user_id: U
         schedule_daemon_lost(&state, machine_id, sessions);
     }
     outbound.abort();
+    flusher.abort();
+    bumps.flush(&state.pool).await;
 }
 
 /// The session a daemon frame announces as live on this connection, if any.
@@ -1087,6 +1102,7 @@ fn resolve_read_file_result(
 
 async fn process_frame(
     state: &AppState,
+    bumps: &Bumps,
     machine_id: Uuid,
     user_id: Uuid,
     frame: DaemonFrameUp,
@@ -1109,7 +1125,7 @@ async fn process_frame(
                 local_id = event_local_id(&event),
                 "received event",
             );
-            handle_event(state, machine_id, user_id, &adapter_id, event, None).await
+            handle_event(state, bumps, machine_id, user_id, &adapter_id, event, None).await
         }
         DaemonFrameUp::StageFilesResult { request_id, ok, paths, error } => {
             // Mid-chat attachment reply: fire the oneshot the
@@ -1244,7 +1260,13 @@ impl Ingest {
 
 /// Insert a run of held-back events in one statement, then run each event's
 /// side effects in order with its outcome.
-async fn ingest_run(state: &AppState, machine_id: Uuid, user_id: Uuid, run: &mut Vec<Ingest>) {
+async fn ingest_run(
+    state: &AppState,
+    bumps: &Bumps,
+    machine_id: Uuid,
+    user_id: Uuid,
+    run: &mut Vec<Ingest>,
+) {
     if run.is_empty() {
         return;
     }
@@ -1266,7 +1288,7 @@ async fn ingest_run(state: &AppState, machine_id: Uuid, user_id: Uuid, run: &mut
     };
     for ((adapter_id, event), seq) in events.into_iter().zip(seqs) {
         if let Err(err) =
-            handle_event(state, machine_id, user_id, &adapter_id, event, Some(seq)).await
+            handle_event(state, bumps, machine_id, user_id, &adapter_id, event, Some(seq)).await
         {
             tracing::warn!(%err, "handle_event error");
         }
@@ -1342,6 +1364,7 @@ fn should_auto_approve(tool: &str, auto_approve_enabled: bool) -> bool {
 #[allow(clippy::cognitive_complexity)]
 async fn handle_event(
     state: &AppState,
+    bumps: &Bumps,
     machine_id: Uuid,
     user_id: Uuid,
     adapter_id: &str,
@@ -1573,7 +1596,7 @@ async fn handle_event(
                     },
                 )
                 .await;
-                bump_heartbeat(state, &local_id).await;
+                bumps.heartbeat(&local_id);
                 return Ok(());
             }
             state.permission_store.write().await.insert_request(
@@ -1593,7 +1616,7 @@ async fn handle_event(
                 description: tool,
                 input_preview,
             });
-            bump_heartbeat(state, &local_id).await;
+            bumps.heartbeat(&local_id);
         }
         AdapterEvent::PermissionResolved { local_id, request_id } => {
             // The adapter observed the agent's permission prompt clear (answered
@@ -1617,7 +1640,7 @@ async fn handle_event(
                 session_id: local_id.clone(),
                 request_id,
             });
-            bump_heartbeat(state, &local_id).await;
+            bumps.heartbeat(&local_id);
         }
         AdapterEvent::AskQuestion { local_id, question, questions, preamble } => {
             // Live AskUserQuestion: broadcast the pending question so
@@ -1644,14 +1667,14 @@ async fn handle_event(
                 questions,
                 preamble,
             });
-            bump_heartbeat(state, &local_id).await;
+            bumps.heartbeat(&local_id);
         }
         AdapterEvent::AskResolved { local_id } => {
             state.permission_store.write().await.remove_ask(&local_id);
             state.bus.publish_server(cctui_proto::ws::ServerEvent::AskResolved {
                 session_id: local_id.clone(),
             });
-            bump_heartbeat(state, &local_id).await;
+            bumps.heartbeat(&local_id);
         }
         AdapterEvent::PlanRequest { local_id, plan, preamble } => {
             // Live ExitPlanMode plan-approval prompt: park it
@@ -1671,14 +1694,14 @@ async fn handle_event(
                 plan,
                 preamble,
             });
-            bump_heartbeat(state, &local_id).await;
+            bumps.heartbeat(&local_id);
         }
         AdapterEvent::PlanResolved { local_id } => {
             state.permission_store.write().await.remove_plan(&local_id);
             state.bus.publish_server(cctui_proto::ws::ServerEvent::PlanResolved {
                 session_id: local_id.clone(),
             });
-            bump_heartbeat(state, &local_id).await;
+            bumps.heartbeat(&local_id);
         }
         AdapterEvent::Status {
             local_id,
@@ -1751,21 +1774,13 @@ async fn handle_event(
     };
     let tool_name = tool_call.map(|(tool, _)| tool);
     if let Some(id) = local_id_for_bump {
-        // Only a *newly-inserted* tool call advances the counters: a daemon
-        // replaying history on reconnect must bump the heartbeat (as it always
-        // did) without re-inflating `tool_use_count` or churning `last_tool_at`.
-        match tool_name {
-            Some(tool) if newly_inserted => bump_tool_activity(state, &id, tool).await,
-            _ => bump_heartbeat(state, &id).await,
-        }
+        let user_turn = is_user_turn(broadcast_pair.as_ref().map(|(_, e)| e));
+        bumps.note_activity(&id, newly_inserted, tool_name, user_turn);
         if newly_inserted
             && let Some((tool, input)) = tool_call
             && let Some(todos) = extract_todos(tool, input)
         {
             record_todos(&state.pool, &id, &todos).await;
-        }
-        if newly_inserted && is_user_turn(broadcast_pair.as_ref().map(|(_, e)| e)) {
-            reset_tool_count(state, &id).await;
         }
     }
     if newly_inserted && let Some((session_id, mut data)) = broadcast_pair {
@@ -1912,6 +1927,15 @@ async fn write_status_signals(
             children = CASE WHEN jsonb_array_length($9) > 0 THEN $9 ELSE sessions.children END \
          FROM prev \
          WHERE sessions.id = prev.id \
+           AND (prev.new_name IS NOT NULL \
+                OR (sessions.tempo, sessions.agent_state, sessions.activity, sessions.intent, \
+                    sessions.model, sessions.effort, sessions.permission_mode, sessions.children) \
+                   IS DISTINCT FROM \
+                   (COALESCE($2, sessions.tempo), COALESCE($3, sessions.agent_state), \
+                    COALESCE($4, sessions.activity), COALESCE($6, sessions.intent), \
+                    COALESCE(sessions.model, $7), COALESCE($8, sessions.effort), \
+                    COALESCE($11, sessions.permission_mode), \
+                    CASE WHEN jsonb_array_length($9) > 0 THEN $9 ELSE sessions.children END)) \
          RETURNING prev.old_name, prev.emoji_on",
     )
     .bind(local_id)
@@ -1997,56 +2021,113 @@ async fn persist_pr_link_children(
     Ok(())
 }
 
-/// Bump `last_heartbeat` for a session and, when it is a subagent, the whole
-/// `parent_id` chain up to the root. A subagent's work should keep
-/// its parent(s) "alive" so the parent card doesn't read idle/stale
-/// while a child churns. Done as a single recursive CTE UPDATE — one round-trip
-/// regardless of nesting depth, since subagents are chatty. Heartbeat only: no
-/// token/usage aggregates touched, so there's no double-counting.
-async fn bump_heartbeat(state: &AppState, local_id: &str) {
-    if let Err(err) = sqlx::query(
-        r"WITH RECURSIVE chain AS (
-            SELECT id, parent_id FROM sessions WHERE id = $1
-            UNION ALL
-            SELECT s.id, s.parent_id FROM sessions s JOIN chain c ON s.id = c.parent_id
-        )
-        UPDATE sessions SET last_heartbeat = now()
-        WHERE id IN (SELECT id FROM chain)",
-    )
-    .bind(local_id)
-    .execute(&state.pool)
-    .await
-    {
-        tracing::warn!(%err, %local_id, "heartbeat bump failed");
-    }
+/// Session activity waiting for the next [`Bumps::flush`].
+#[derive(Default)]
+struct PendingBump {
+    tool: Option<String>,
+    tool_calls: i32,
+    reset: bool,
 }
 
-/// Heartbeat bump plus the live tool-activity projection: sets
-/// `last_tool_at`/`last_tool_name` for the whole `parent_id` chain (rolled up so
-/// a grinding subagent freshens the parent row), and increments `tool_use_count`
-/// on the leaf only (each session tracks its own per-turn count). One recursive
-/// CTE round-trip — the heartbeat write, augmented, so there is no extra UPDATE
-/// per tool call beyond what `bump_heartbeat` already cost.
-async fn bump_tool_activity(state: &AppState, local_id: &str, tool: &str) {
-    if let Err(err) = sqlx::query(
-        r"WITH RECURSIVE chain AS (
-            SELECT id, parent_id FROM sessions WHERE id = $1
-            UNION ALL
-            SELECT s.id, s.parent_id FROM sessions s JOIN chain c ON s.id = c.parent_id
+/// Heartbeat and tool-activity writes of one daemon connection, coalesced per
+/// session so a busy session costs one `sessions` UPDATE per flush instead of
+/// one per event.
+#[derive(Default)]
+struct Bumps(Mutex<HashMap<String, PendingBump>>);
+
+impl Bumps {
+    fn with(&self, local_id: &str, f: impl FnOnce(&mut PendingBump)) {
+        if let Ok(mut pending) = self.0.lock() {
+            f(pending.entry(local_id.to_owned()).or_default());
+        }
+    }
+
+    fn heartbeat(&self, local_id: &str) {
+        self.with(local_id, |_| {});
+    }
+
+    /// Record the activity of an ingested event. A replayed event (not newly
+    /// inserted) is history the row already reflects, so it bumps nothing.
+    fn note_activity(
+        &self,
+        local_id: &str,
+        newly_inserted: bool,
+        tool: Option<&str>,
+        user_turn: bool,
+    ) {
+        if !newly_inserted {
+            return;
+        }
+        self.with(local_id, |b| {
+            if let Some(tool) = tool {
+                b.tool = Some(tool.to_owned());
+                b.tool_calls += 1;
+            }
+            if user_turn {
+                b.reset = true;
+                b.tool_calls = 0;
+            }
+        });
+    }
+
+    fn take(&self) -> HashMap<String, PendingBump> {
+        self.0.lock().map(|mut pending| std::mem::take(&mut *pending)).unwrap_or_default()
+    }
+
+    /// Write every pending bump in one statement. Each session and its whole
+    /// `parent_id` chain get `last_heartbeat` (so a grinding subagent keeps its
+    /// parent fresh) and, after a tool call, `last_tool_at`/`last_tool_name`;
+    /// `tool_use_count` is the leaf's own per-turn count. Returns rows updated.
+    async fn flush(&self, pool: &sqlx::PgPool) -> u64 {
+        let pending = self.take();
+        if pending.is_empty() {
+            return 0;
+        }
+        let mut ids = Vec::with_capacity(pending.len());
+        let mut tools = Vec::with_capacity(pending.len());
+        let mut calls = Vec::with_capacity(pending.len());
+        let mut resets = Vec::with_capacity(pending.len());
+        for (id, bump) in pending {
+            ids.push(id);
+            tools.push(bump.tool);
+            calls.push(bump.tool_calls);
+            resets.push(bump.reset);
+        }
+        let done = sqlx::query(
+            r"WITH RECURSIVE b AS (
+                SELECT * FROM unnest($1::text[], $2::text[], $3::int4[], $4::bool[])
+                    AS b(id, tool, calls, reset)
+            ), chain AS (
+                SELECT s.id, s.parent_id, b.tool FROM sessions s JOIN b ON s.id = b.id
+                UNION ALL
+                SELECT s.id, s.parent_id, c.tool FROM sessions s JOIN chain c ON s.id = c.parent_id
+            ), agg AS (
+                SELECT id, max(tool) AS tool FROM chain GROUP BY id
+            )
+            UPDATE sessions SET
+                last_heartbeat = now(),
+                last_tool_at = CASE WHEN agg.tool IS NULL THEN sessions.last_tool_at ELSE now() END,
+                last_tool_name = COALESCE(agg.tool, sessions.last_tool_name),
+                tool_use_count = COALESCE(
+                    (SELECT CASE WHEN b.reset THEN 0 ELSE sessions.tool_use_count END + b.calls
+                     FROM b WHERE b.id = sessions.id),
+                    sessions.tool_use_count)
+            FROM agg
+            WHERE sessions.id = agg.id",
         )
-        UPDATE sessions SET
-            last_heartbeat = now(),
-            last_tool_at = now(),
-            last_tool_name = $2,
-            tool_use_count = CASE WHEN id = $1 THEN tool_use_count + 1 ELSE tool_use_count END
-        WHERE id IN (SELECT id FROM chain)",
-    )
-    .bind(local_id)
-    .bind(tool)
-    .execute(&state.pool)
-    .await
-    {
-        tracing::warn!(%err, %local_id, "tool-activity bump failed");
+        .bind(&ids)
+        .bind(&tools)
+        .bind(&calls)
+        .bind(&resets)
+        .execute(pool)
+        .await;
+        match done {
+            Ok(done) => done.rows_affected(),
+            Err(err) => {
+                tracing::warn!(%err, sessions = ids.len(), "activity bump failed");
+                0
+            }
+        }
     }
 }
 
@@ -2088,7 +2169,7 @@ fn extract_todos(tool: &str, input: &serde_json::Value) -> Option<Vec<TodoEntry>
 }
 
 /// Persist the session's task list. **Leaf only, deliberately unlike
-/// [`bump_tool_activity`]**: each subagent owns its own list, so rolling up the
+/// [`Bumps::flush`]**: each subagent owns its own list, so rolling up the
 /// `parent_id` chain would make a child's todos masquerade as the parent's.
 async fn record_todos(pool: &sqlx::PgPool, local_id: &str, todos: &[TodoEntry]) {
     let payload = match serde_json::to_value(todos) {
@@ -2106,18 +2187,6 @@ async fn record_todos(pool: &sqlx::PgPool, local_id: &str, todos: &[TodoEntry]) 
             .await
     {
         tracing::warn!(%err, %local_id, "todo write failed");
-    }
-}
-
-/// Reset the leaf session's per-turn tool count on a new user prompt.
-/// Leaf only: ancestors keep their own per-turn counts.
-async fn reset_tool_count(state: &AppState, local_id: &str) {
-    if let Err(err) = sqlx::query("UPDATE sessions SET tool_use_count = 0 WHERE id = $1")
-        .bind(local_id)
-        .execute(&state.pool)
-        .await
-    {
-        tracing::warn!(%err, %local_id, "tool-count reset failed");
     }
 }
 
@@ -2163,6 +2232,15 @@ async fn upsert_session(
             metadata = COALESCE(sessions.metadata, '{}'::jsonb) || COALESCE(EXCLUDED.metadata, '{}'::jsonb)
           WHERE sessions.machine_uuid = EXCLUDED.machine_uuid
             AND sessions.user_id = EXCLUDED.user_id
+            AND (sessions.last_heartbeat, sessions.status, sessions.adapter_id,
+                 sessions.parent_id, sessions.metadata)
+                IS DISTINCT FROM
+                (GREATEST(sessions.last_heartbeat,
+                          COALESCE(to_timestamp($8::double precision), now())),
+                 CASE WHEN sessions.status IN ('inactive', 'archived', 'ended') THEN sessions.status ELSE 'active' END,
+                 EXCLUDED.adapter_id,
+                 COALESCE(sessions.parent_id, EXCLUDED.parent_id),
+                 COALESCE(sessions.metadata, '{}'::jsonb) || COALESCE(EXCLUDED.metadata, '{}'::jsonb))
           RETURNING (xmax = 0)",
     )
     .bind(local_id)
@@ -2176,9 +2254,13 @@ async fn upsert_session(
     .bind(extra)
     .fetch_optional(pool)
     .await?;
-    let Some(inserted) = inserted else {
-        tracing::warn!(%machine_id, %local_id, "refusing to register a session another machine owns");
-        return Ok(None);
+    let inserted = match inserted {
+        Some(inserted) => inserted,
+        None if session_owned(pool, machine_id, user_id, local_id).await? => false,
+        None => {
+            tracing::warn!(%machine_id, %local_id, "refusing to register a session another machine owns");
+            return Ok(None);
+        }
     };
     // A daemon that re-registers the session after a reconnect proves the
     // `daemon_lost` / `machine_offline` end was spurious. So is a "released"
@@ -2199,16 +2281,35 @@ async fn upsert_session(
     // nothing to re-mint from. Backfill it here from the newest token row
     // (live preferred). No-op for already-bound or never-bound sessions.
     sqlx::query(
-        "UPDATE sessions SET account_id = ( \
-            SELECT st.account_id::text FROM session_tokens st \
-             WHERE st.session_id = $1 \
-             ORDER BY (st.revoked_at IS NULL) DESC, st.created_at DESC LIMIT 1) \
-         WHERE id = $1 AND account_id IS NULL",
+        "UPDATE sessions SET account_id = t.account_id \
+         FROM (SELECT st.account_id::text AS account_id FROM session_tokens st \
+                WHERE st.session_id = $1 \
+                ORDER BY (st.revoked_at IS NULL) DESC, st.created_at DESC LIMIT 1) t \
+         WHERE sessions.id = $1 AND sessions.account_id IS NULL",
     )
     .bind(local_id)
     .execute(pool)
     .await?;
     Ok(Some(inserted))
+}
+
+/// Whether `machine_id`/`user_id` own the session row: an upsert that changed
+/// nothing returns no row, the same as one refused for ownership.
+async fn session_owned(
+    pool: &sqlx::PgPool,
+    machine_id: Uuid,
+    user_id: Uuid,
+    local_id: &str,
+) -> sqlx::Result<bool> {
+    sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM sessions \
+                        WHERE id = $1 AND machine_uuid = $2 AND user_id = $3)",
+    )
+    .bind(local_id)
+    .bind(machine_id)
+    .bind(user_id)
+    .fetch_one(pool)
+    .await
 }
 
 /// Register a session the daemon announced, announcing it to browser clients
@@ -2620,7 +2721,7 @@ async fn update_transcript_mark(
 ) -> anyhow::Result<()> {
     let offset = i64::try_from(offset).unwrap_or(i64::MAX);
     sqlx::query(
-        "UPDATE sessions SET transcript_offset = GREATEST(transcript_offset, $2) WHERE id = $1",
+        "UPDATE sessions SET transcript_offset = $2 WHERE id = $1 AND transcript_offset < $2",
     )
     .bind(local_id)
     .bind(offset)
@@ -2939,7 +3040,8 @@ mod tests {
         Arc, DAEMON_LOST_GRACE, DAEMON_SEEN_FRESH, EndReason, Future, Inbound, MAX_TRANSFER_BYTES,
         Ordering, PendingDaemonLost, SessionOwners, StatusSignals, TodoEntry, Utc, Uuid, admit,
         bearer_token, claim_announced, decode_binary_frame, decode_compressed_frame, event_kind,
-        event_local_id, expand_batch, extract_todos, handle_chunk, insert_event, insert_events,
+        Bumps, event_local_id, expand_batch, extract_todos, handle_chunk, insert_event,
+        insert_events,
         INSERT_BATCH, NewEvent,
         merge_known_adapters, next_inbound, persist_session_end, record_todos, seen_within,
         session_scope, should_auto_approve, strip_nul, upsert_session, write_status_signals,
@@ -2990,7 +3092,7 @@ mod tests {
         assert_eq!(got[0].content, "x");
     }
 
-    /// DB-gated regression for CCT-940: unlike `bump_tool_activity`, a todos
+    /// DB-gated: unlike the activity bump, a todos
     /// write must NOT roll up the `parent_id` chain. A subagent writing its own
     /// list must leave the parent's list untouched, or every parent row shows
     /// whatever its newest child happened to be doing.
@@ -4262,6 +4364,161 @@ mod tests {
             .await
             .ok();
         drop_machines(&pool, &[own, foreign], &[(ua, ma), (ub, mb)]).await;
+    }
+
+    async fn row_version(pool: &sqlx::PgPool, sid: &str) -> String {
+        sqlx::query_scalar("SELECT xmin::text FROM sessions WHERE id = $1")
+            .bind(sid)
+            .fetch_one(pool)
+            .await
+            .expect("row version")
+    }
+
+    #[tokio::test]
+    async fn replaying_stored_events_leaves_the_session_row_alone() {
+        let Some(url) = crate::routes::gateway::test_db_url("replay_no_bump") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let (uid, mid) = seed_machine(&pool, "replay").await;
+        let sid = seed_owned_session(&pool, uid, mid).await;
+        let n = 500;
+        insert_events(&pool, mid, uid, backfill(&sid, n)).await.expect("insert");
+        let before = row_version(&pool, &sid).await;
+
+        let bumps = Bumps::default();
+        let replay = insert_events(&pool, mid, uid, backfill(&sid, n)).await.expect("replay");
+        for seq in replay {
+            bumps.note_activity(&sid, seq.is_some(), Some("Bash"), false);
+        }
+        assert_eq!(bumps.flush(&pool).await, 0, "a replay issues no sessions UPDATE");
+        assert_eq!(row_version(&pool, &sid).await, before);
+
+        drop_machines(&pool, &[sid], &[(uid, mid)]).await;
+    }
+
+    #[tokio::test]
+    async fn live_activity_is_coalesced_into_one_update_per_flush() {
+        let Some(url) = crate::routes::gateway::test_db_url("coalesced_bumps") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let (uid, mid) = seed_machine(&pool, "bumps").await;
+        let parent = seed_owned_session(&pool, uid, mid).await;
+        let child = seed_owned_session(&pool, uid, mid).await;
+        sqlx::query("UPDATE sessions SET parent_id = $2, tool_use_count = 9 WHERE id = $1")
+            .bind(&child)
+            .bind(&parent)
+            .execute(&pool)
+            .await
+            .expect("link child");
+
+        let bumps = Bumps::default();
+        for _ in 0..100 {
+            bumps.heartbeat(&child);
+        }
+        for _ in 0..3 {
+            bumps.note_activity(&child, true, Some("Bash"), false);
+        }
+        bumps.note_activity(&child, true, None, true);
+        bumps.note_activity(&child, true, Some("Read"), false);
+        assert_eq!(bumps.flush(&pool).await, 2, "one statement updates the leaf and its parent");
+        assert_eq!(bumps.flush(&pool).await, 0, "nothing left to write");
+
+        let (count, tool): (i32, Option<String>) = sqlx::query_as(
+            "SELECT tool_use_count, last_tool_name FROM sessions WHERE id = $1",
+        )
+        .bind(&child)
+        .fetch_one(&pool)
+        .await
+        .expect("child row");
+        assert_eq!(count, 1, "the user turn reset the count before the last tool");
+        assert_eq!(tool.as_deref(), Some("Read"));
+        let (parent_count, parent_tool): (i32, Option<String>) = sqlx::query_as(
+            "SELECT tool_use_count, last_tool_name FROM sessions WHERE id = $1",
+        )
+        .bind(&parent)
+        .fetch_one(&pool)
+        .await
+        .expect("parent row");
+        assert_eq!(parent_count, 0, "the parent keeps its own count");
+        assert_eq!(parent_tool.as_deref(), Some("Read"));
+
+        drop_machines(&pool, &[child, parent], &[(uid, mid)]).await;
+    }
+
+    #[tokio::test]
+    async fn an_unchanged_codex_inventory_tick_writes_nothing() {
+        let Some(url) = crate::routes::gateway::test_db_url("unchanged_inventory") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let (uid, mid) = seed_machine(&pool, "inventory").await;
+        let sid = Uuid::new_v4().to_string();
+        let tick = || {
+            upsert_session(
+                &pool,
+                mid,
+                uid,
+                "codex",
+                &sid,
+                Some("/w".into()),
+                None,
+                Some(1_762_000_000),
+                Some(json!({ "source": "codex-thread-list", "observed_at": 1_762_000_000 })),
+            )
+        };
+        assert_eq!(tick().await.expect("first"), Some(true));
+        let before = row_version(&pool, &sid).await;
+        assert_eq!(tick().await.expect("second"), Some(false), "still owned, not new");
+        assert_eq!(row_version(&pool, &sid).await, before, "the row was not rewritten");
+
+        drop_machines(&pool, &[sid], &[(uid, mid)]).await;
+    }
+
+    #[tokio::test]
+    async fn a_repeated_status_writes_nothing() {
+        let Some(url) = crate::routes::gateway::test_db_url("unchanged_status") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let (uid, mid) = seed_machine(&pool, "status").await;
+        let sid = seed_owned_session(&pool, uid, mid).await;
+        let signals = StatusSignals {
+            tempo: Some("active"),
+            agent_state: Some("working"),
+            activity: None,
+            name: None,
+            intent: None,
+            model: Some("m"),
+            effort: None,
+            permission_mode: None,
+            children: &[],
+        };
+        let first = write_status_signals(&pool, &sid, &signals, None).await.expect("first");
+        assert!(first.is_some());
+        let before = row_version(&pool, &sid).await;
+        let again = write_status_signals(&pool, &sid, &signals, None).await.expect("again");
+        assert!(again.is_none());
+        assert_eq!(row_version(&pool, &sid).await, before);
+
+        drop_machines(&pool, &[sid], &[(uid, mid)]).await;
     }
 
     #[tokio::test]
