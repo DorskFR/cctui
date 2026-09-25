@@ -228,7 +228,9 @@ async fn resolve_spawn_account(
         }
         AccountDecision::Unbound => None,
         AccountDecision::ResolveDefault => default_account_name(state, uid, adapter_id).await?,
-        AccountDecision::Auto => auto_account_name(state, uid, adapter_id, model.as_deref()).await?,
+        AccountDecision::Auto => {
+            auto_account_name(state, uid, adapter_id, model.as_deref()).await?
+        }
         AccountDecision::Pool(name) => {
             let (account, pool_id) = crate::account_resolve::resolve_pool(
                 state,
