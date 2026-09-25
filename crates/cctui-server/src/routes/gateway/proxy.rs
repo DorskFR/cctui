@@ -337,8 +337,19 @@ pub async fn passthrough(
     // Per-account upstream: a compatible endpoint overrides the
     // built-in upstream with its stored `base_url`; native subscription accounts
     // fall back to the built-in `api.anthropic.com`/`chatgpt.com`.
-    let upstream =
-        acct.base_url.as_deref().filter(|u| !u.trim().is_empty()).unwrap_or(upstream_base);
+    let custom = acct.base_url.as_deref().filter(|u| !u.trim().is_empty());
+    if let Some(base) = custom
+        && let Err(e) = crate::outbound::upstream_url_permitted(base)
+    {
+        tracing::warn!(account = %acct.id, "gateway refused account base_url: {e}");
+        return Err(StatusCode::BAD_GATEWAY);
+    }
+    let upstream = custom.unwrap_or(upstream_base);
+    let client = if custom.is_some() {
+        crate::outbound::upstream_client().clone()
+    } else {
+        state.http_client.clone()
+    };
 
     // Build the upstream URL: strip the gateway prefix, keep path + query.
     let path = req.uri().path();
@@ -468,8 +479,7 @@ pub async fn passthrough(
             (reqwest::Body::wrap_stream(body_stream), None)
         };
 
-    let upstream = state
-        .http_client
+    let upstream = client
         .request(method, &url)
         .headers(headers)
         .body(upstream_body)

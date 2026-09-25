@@ -303,7 +303,7 @@ async fn account_redirect_flow() {
         .bearer_auth(&user_key)
         .json(&json!({
             "provider": "anthropic-compatible",
-            "base_url": "http://localhost:9",
+            "base_url": "https://1.1.1.1",
             "access_token": "test-cred"
         }))
         .send()
