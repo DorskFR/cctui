@@ -527,345 +527,428 @@ pub async fn session_catalogs(
 /// names, aggregate token usage, attach last-message text, apply classifier
 /// signals + display metadata + the in-memory auto-approve flag, then sort
 /// most-recent-first. Returns the finished items ready to serialize.
-#[allow(clippy::too_many_lines, clippy::cognitive_complexity)]
 async fn enrich_and_sort(
     state: &AppState,
     viewer: Option<uuid::Uuid>,
-    mut with_ts: Vec<(DateTime<Utc>, SessionListItem)>,
+    with_ts: Vec<(DateTime<Utc>, SessionListItem)>,
 ) -> Result<Vec<SessionListItem>, AppError> {
-    // Resolve machine names in one query. Historical sessions for purged
-    // machines simply get `None`.
-    let machine_ids: Vec<String> = with_ts
-        .iter()
-        .map(|(_, s)| s.machine_id.clone())
-        .collect::<HashSet<_>>()
+    let ctx = EnrichContext::fetch(state, viewer, &with_ts).await?;
+    Ok(sort_sessions(enrich(with_ts, ctx)))
+}
+
+/// A machine's resolved label: `display_name` (operator override) over
+/// `name`, plus its hue and kind.
+type MachineLabel = (String, Option<i16>, String);
+
+/// `(session_id, model, input, output, cache_read, cache_creation)` from
+/// [`SESSION_TOTALS_SQL`].
+type TokenTotalsRow = (String, Option<String>, Option<i64>, Option<i64>, Option<i64>, Option<i64>);
+
+/// Status signals + display metadata from the session row. A struct, not a
+/// tuple: sqlx only implements `FromRow` for tuples up to 16 columns and this
+/// select is past that.
+#[derive(Debug, Default, sqlx::FromRow)]
+struct SignalRow {
+    id: String,
+    tempo: Option<String>,
+    agent_state: Option<String>,
+    activity: Option<String>,
+    session_name: Option<String>,
+    model: Option<String>,
+    effort: Option<String>,
+    pinned: bool,
+    soft_limit_reason: Option<String>,
+    last_tool_at: Option<DateTime<Utc>>,
+    last_tool_name: Option<String>,
+    tool_use_count: i32,
+    children: serde_json::Value,
+    end_reason: Option<String>,
+    end_detail: Option<String>,
+    ended_at: Option<DateTime<Utc>>,
+    permission_mode: Option<String>,
+    archived_by: Option<String>,
+    keepalive_json: Option<serde_json::Value>,
+    last_keepalive_at: Option<DateTime<Utc>>,
+}
+
+const SIGNAL_SQL: &str =
+    "SELECT id, tempo, agent_state, activity, session_name, model, effort, pinned, \
+            soft_limit_reason, last_tool_at, last_tool_name, tool_use_count, \
+            children, end_reason, end_detail, ended_at, permission_mode, archived_by, \
+            keepalive_json, last_keepalive_at \
+     FROM sessions WHERE id = ANY($1)";
+
+/// Everything [`enrich`] merges into the listed items, keyed by session id
+/// (machines by `machines.id` or `machines.name`), fetched up front so the
+/// merge itself is pure. Sessions absent from a map keep the item's default.
+#[derive(Debug, Default)]
+struct EnrichContext {
+    machines: HashMap<String, MachineLabel>,
+    token_usage: HashMap<String, cctui_proto::models::TokenUsage>,
+    last_messages: HashMap<String, (Option<String>, DateTime<Utc>)>,
+    /// `None` when there is no viewer to count unread messages for.
+    unread: Option<HashMap<String, u32>>,
+    todos: HashMap<String, serde_json::Value>,
+    signals: HashMap<String, SignalRow>,
+    pr_snapshot: HashMap<String, cctui_proto::classifier::OwnedPrStatus>,
+    labels: HashMap<String, Vec<Label>>,
+    account_names: HashMap<String, String>,
+    with_credentials: HashSet<String>,
+    traffic_observed: HashSet<String>,
+    auto_approve: HashSet<String>,
+    last_turns: HashMap<String, LastTurn>,
+    archive_after_secs: u64,
+}
+
+impl EnrichContext {
+    /// One batched query per signal over the listed sessions; nothing is
+    /// queried for an empty list.
+    async fn fetch(
+        state: &AppState,
+        viewer: Option<uuid::Uuid>,
+        with_ts: &[(DateTime<Utc>, SessionListItem)],
+    ) -> Result<Self, AppError> {
+        let session_ids: Vec<String> = with_ts.iter().map(|(_, s)| s.id.clone()).collect();
+        let machine_ids: Vec<String> = with_ts
+            .iter()
+            .map(|(_, s)| s.machine_id.clone())
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+        let mut ctx =
+            Self { archive_after_secs: state.config.archive_after_secs, ..Self::default() };
+        if !machine_ids.is_empty() {
+            ctx.machines = fetch_machine_labels(state, &machine_ids).await?;
+        }
+        if session_ids.is_empty() {
+            return Ok(ctx);
+        }
+        ctx.token_usage = fetch_token_usage(state, &session_ids).await?;
+        ctx.last_messages = fetch_last_messages(state, &session_ids).await?;
+        if let Some(uid) = viewer {
+            ctx.unread = Some(fetch_unread_counts(state, &session_ids, uid).await?);
+        }
+        ctx.todos = fetch_todos(state, &session_ids).await?;
+        ctx.signals = fetch_signals(state, &session_ids).await?;
+        ctx.pr_snapshot = state.pr_status_cache.snapshot();
+        ctx.labels = fetch_labels(state, &session_ids).await?;
+        ctx.account_names = fetch_account_names(state, &session_ids).await?;
+        ctx.with_credentials = fetch_token_holders(state, &session_ids).await?;
+        ctx.traffic_observed = fetch_traffic_observed(state, &session_ids).await?;
+        ctx.auto_approve = {
+            let store = state.permission_store.read().await;
+            session_ids.iter().filter(|id| store.is_auto_approve(id)).cloned().collect()
+        };
+        ctx.last_turns = fetch_last_turns(state, &session_ids).await?;
+        Ok(ctx)
+    }
+}
+
+/// `sessions.machine_id` is freeform: daemon-spawned sessions carry the
+/// machine UUID, but legacy `/register` callers carry the OS hostname. Match
+/// on either `id` or `name`; historical sessions for purged machines simply
+/// stay unresolved.
+async fn fetch_machine_labels(
+    state: &AppState,
+    machine_ids: &[String],
+) -> Result<HashMap<String, MachineLabel>, AppError> {
+    #[allow(clippy::type_complexity)]
+    let rows: Vec<(String, String, Option<String>, Option<i16>, String)> = sqlx::query_as(
+        "SELECT id::text, name, display_name, hue, kind FROM machines \
+         WHERE id::text = ANY($1) OR name = ANY($1)",
+    )
+    .bind(machine_ids)
+    .fetch_all(&state.pool)
+    .await?;
+    let mut by_key: HashMap<String, MachineLabel> = HashMap::with_capacity(rows.len() * 2);
+    for (id, name, display_name, hue, kind) in rows {
+        let resolved = display_name.unwrap_or_else(|| name.clone());
+        by_key.insert(id, (resolved.clone(), hue, kind.clone()));
+        by_key.insert(name, (resolved, hue, kind));
+    }
+    Ok(by_key)
+}
+
+/// Token usage per session, from the running per-model totals the
+/// `session_token_usage` trigger keeps, priced against each session's catalog.
+async fn fetch_token_usage(
+    state: &AppState,
+    session_ids: &[String],
+) -> Result<HashMap<String, cctui_proto::models::TokenUsage>, AppError> {
+    let rows: Vec<TokenTotalsRow> =
+        sqlx::query_as(SESSION_TOTALS_SQL).bind(session_ids).fetch_all(&state.pool).await?;
+    let catalogs = session_catalogs(state, session_ids).await;
+    Ok(fold_token_totals(rows, &catalogs))
+}
+
+/// Sum the per-model totals into one usage per session, pricing each model
+/// row against the session's catalog. NULL counters read as 0.
+fn fold_token_totals(
+    rows: Vec<TokenTotalsRow>,
+    catalogs: &HashMap<String, serde_json::Value>,
+) -> HashMap<String, cctui_proto::models::TokenUsage> {
+    let mut by_session: HashMap<String, cctui_proto::models::TokenUsage> = HashMap::new();
+    for (sid, model, ti, to, cr, cc) in rows {
+        let (input, cached_input, output, cache_creation) =
+            (ti.unwrap_or(0), cr.unwrap_or(0), to.unwrap_or(0), cc.unwrap_or(0));
+        let cost = crate::cost::tallies_cost_usd(
+            catalogs.get(&sid),
+            &[(model, crate::cost::TokenUsage { input, cached_input, output })],
+        );
+        let to_u64 = |v: i64| u64::try_from(v).unwrap_or(0);
+        let e = by_session.entry(sid).or_default();
+        e.tokens_in += to_u64(input);
+        e.tokens_out += to_u64(output);
+        e.cache_read_tokens += to_u64(cached_input);
+        e.cache_creation_tokens += to_u64(cache_creation);
+        e.cost_usd += cost;
+    }
+    by_session
+}
+
+async fn fetch_last_messages(
+    state: &AppState,
+    session_ids: &[String],
+) -> Result<HashMap<String, (Option<String>, DateTime<Utc>)>, AppError> {
+    let rows: Vec<LastMessageRow> =
+        sqlx::query_as(LAST_MESSAGE_SQL).bind(session_ids).fetch_all(&state.pool).await?;
+    Ok(rows
         .into_iter()
-        .collect();
-    if !machine_ids.is_empty() {
-        // `sessions.machine_id` is freeform: daemon-spawned sessions carry the
-        // machine UUID, but legacy `/register` callers carry the OS hostname.
-        // Match on either `id` or `name`, and prefer `display_name` (operator
-        // override) over `name` for the resolved label.
-        #[allow(clippy::type_complexity)]
-        let rows: Vec<(String, String, Option<String>, Option<i16>, String)> = sqlx::query_as(
-            "SELECT id::text, name, display_name, hue, kind FROM machines \
-             WHERE id::text = ANY($1) OR name = ANY($1)",
-        )
-        .bind(&machine_ids)
+        .map(|(sid, body, cut, ts)| {
+            (sid, (body.map(|b| preview_last_message(&b, cut.unwrap_or(false))), ts))
+        })
+        .collect())
+}
+
+/// Unread `message` count per session for the viewer: messages newer than
+/// their `session_reads.last_seen_at`, all of them when they have never seen
+/// the session. Capped at 99 for the badge.
+async fn fetch_unread_counts(
+    state: &AppState,
+    session_ids: &[String],
+    viewer: uuid::Uuid,
+) -> Result<HashMap<String, u32>, AppError> {
+    let rows: Vec<(String, i64)> = sqlx::query_as(UNREAD_COUNT_SQL)
+        .bind(session_ids)
+        .bind(viewer)
         .fetch_all(&state.pool)
         .await?;
-        let mut by_key: std::collections::HashMap<String, (String, Option<i16>, String)> =
-            std::collections::HashMap::with_capacity(rows.len() * 2);
-        for (id, name, display_name, hue, kind) in rows {
-            let resolved = display_name.unwrap_or_else(|| name.clone());
-            by_key.insert(id, (resolved.clone(), hue, kind.clone()));
-            by_key.insert(name, (resolved, hue, kind));
-        }
-        for (_, s) in &mut with_ts {
-            if s.machine_name.is_none()
-                && let Some((name, hue, kind)) = by_key.get(&s.machine_id)
-            {
-                s.machine_name = Some(name.clone());
-                s.machine_hue = *hue;
-                s.machine_kind = Some(kind.clone());
-            }
-        }
-    }
+    Ok(rows.into_iter().map(|(sid, n)| (sid, cap_unread(n))).collect())
+}
 
-    // Token usage per session, from the running per-model totals the
-    // `session_token_usage` trigger keeps.
-    let session_ids: Vec<String> = with_ts.iter().map(|(_, s)| s.id.clone()).collect();
-    if !session_ids.is_empty() {
-        type TokenRow =
-            (String, Option<String>, Option<i64>, Option<i64>, Option<i64>, Option<i64>);
-        let rows: Vec<TokenRow> =
-            sqlx::query_as(SESSION_TOTALS_SQL).bind(&session_ids).fetch_all(&state.pool).await?;
-        let catalogs = session_catalogs(state, &session_ids).await;
-        let mut by_session: std::collections::HashMap<String, cctui_proto::models::TokenUsage> =
-            std::collections::HashMap::new();
-        for (sid, model, ti, to, cr, cc) in rows {
-            let (input, cached_input, output, cache_creation) =
-                (ti.unwrap_or(0), cr.unwrap_or(0), to.unwrap_or(0), cc.unwrap_or(0));
-            let cost = crate::cost::tallies_cost_usd(
-                catalogs.get(&sid),
-                &[(model, crate::cost::TokenUsage { input, cached_input, output })],
-            );
-            let to_u64 = |v: i64| u64::try_from(v).unwrap_or(0);
-            let e = by_session.entry(sid).or_default();
-            e.tokens_in += to_u64(input);
-            e.tokens_out += to_u64(output);
-            e.cache_read_tokens += to_u64(cached_input);
-            e.cache_creation_tokens += to_u64(cache_creation);
-            e.cost_usd += cost;
-        }
-        for (_, s) in &mut with_ts {
-            if let Some(usage) = by_session.remove(&s.id) {
-                s.token_usage = usage;
-            }
-        }
-    }
-
-    if !session_ids.is_empty() {
-        let rows: Vec<LastMessageRow> =
-            sqlx::query_as(LAST_MESSAGE_SQL).bind(&session_ids).fetch_all(&state.pool).await?;
-        let mut by_session: std::collections::HashMap<String, (Option<String>, DateTime<Utc>)> =
-            std::collections::HashMap::new();
-        for (sid, body, cut, ts) in rows {
-            let text = body.map(|b| preview_last_message(&b, cut.unwrap_or(false)));
-            by_session.insert(sid, (text, ts));
-        }
-        for (_, s) in &mut with_ts {
-            if let Some((text, ts)) = by_session.remove(&s.id) {
-                s.last_message_text = text;
-                s.last_message_at = Some(ts);
-            }
-        }
-    }
-
-    // Unread `message` count per session for the calling user: messages newer
-    // than the viewer's `session_reads.last_seen_at`, all of them when the user
-    // has never seen the session. Capped at 99 for the badge.
-    if let Some(uid) = viewer
-        && !session_ids.is_empty()
-    {
-        let rows: Vec<(String, i64)> = sqlx::query_as(UNREAD_COUNT_SQL)
-            .bind(&session_ids)
-            .bind(uid)
+/// Agent task lists. A separate round-trip rather than another [`SignalRow`]
+/// column: that struct's select is already past sqlx's tuple ceiling.
+async fn fetch_todos(
+    state: &AppState,
+    session_ids: &[String],
+) -> Result<HashMap<String, serde_json::Value>, AppError> {
+    let rows: Vec<(String, serde_json::Value)> =
+        sqlx::query_as("SELECT id, todos FROM sessions WHERE id = ANY($1) AND todos IS NOT NULL")
+            .bind(session_ids)
             .fetch_all(&state.pool)
             .await?;
-        let mut by_session: std::collections::HashMap<String, u32> =
-            rows.into_iter().map(|(sid, n)| (sid, cap_unread(n))).collect();
-        for (_, s) in &mut with_ts {
-            s.unread_count = by_session.remove(&s.id).unwrap_or(0);
+    Ok(rows.into_iter().collect())
+}
+
+async fn fetch_signals(
+    state: &AppState,
+    session_ids: &[String],
+) -> Result<HashMap<String, SignalRow>, AppError> {
+    let rows: Vec<SignalRow> =
+        sqlx::query_as(SIGNAL_SQL).bind(session_ids).fetch_all(&state.pool).await?;
+    Ok(rows.into_iter().map(|row| (row.id.clone(), row)).collect())
+}
+
+/// Session labels: one batched join over the junction table, bucketed per
+/// session, name-sorted.
+async fn fetch_labels(
+    state: &AppState,
+    session_ids: &[String],
+) -> Result<HashMap<String, Vec<Label>>, AppError> {
+    type LabelRow = (String, uuid::Uuid, String, String);
+    let rows: Vec<LabelRow> = sqlx::query_as(
+        "SELECT sl.session_id, l.id, l.name, l.color \
+         FROM session_labels sl JOIN labels l ON l.id = sl.label_id \
+         WHERE sl.session_id = ANY($1) \
+         ORDER BY lower(l.name)",
+    )
+    .bind(session_ids)
+    .fetch_all(&state.pool)
+    .await?;
+    let mut by_session: HashMap<String, Vec<Label>> = HashMap::new();
+    for (sid, id, name, color) in rows {
+        by_session.entry(sid).or_default().push(Label { id: id.to_string(), name, color });
+    }
+    Ok(by_session)
+}
+
+/// Account each session runs under. `sessions.account_id` is unused legacy;
+/// the real binding lives in `session_tokens` (minted at dispatch/gateway).
+/// Resolve the most recent non-revoked token per session to its identity's
+/// `accounts.name` (via `account_providers`). Absent for sessions that never
+/// routed through the gateway (e.g. plain local sessions).
+async fn fetch_account_names(
+    state: &AppState,
+    session_ids: &[String],
+) -> Result<HashMap<String, String>, AppError> {
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT DISTINCT ON (st.session_id) st.session_id, a.name \
+         FROM session_tokens st \
+         JOIN account_providers ap ON ap.id = st.account_id \
+         JOIN accounts a ON a.id = ap.account_id \
+         WHERE st.session_id = ANY($1) AND st.revoked_at IS NULL \
+         ORDER BY st.session_id, st.created_at DESC",
+    )
+    .bind(session_ids)
+    .fetch_all(&state.pool)
+    .await?;
+    Ok(rows.into_iter().collect())
+}
+
+/// Sessions holding live token↔account credentials. Independent of the
+/// account-name join: a token whose `accounts` row was deleted (or that never
+/// resolved a name) still counts. Present iff a non-revoked `session_tokens`
+/// row with a present `encrypted_token` exists.
+async fn fetch_token_holders(
+    state: &AppState,
+    session_ids: &[String],
+) -> Result<HashSet<String>, AppError> {
+    let rows: Vec<(String,)> = sqlx::query_as(
+        "SELECT DISTINCT session_id FROM session_tokens \
+         WHERE session_id = ANY($1) AND revoked_at IS NULL AND encrypted_token IS NOT NULL",
+    )
+    .bind(session_ids)
+    .fetch_all(&state.pool)
+    .await?;
+    Ok(rows.into_iter().map(|(id,)| id).collect())
+}
+
+/// Sessions whose live token has actually been presented at the gateway
+/// (`last_used_at` stamped). An account-bound session missing here is bound
+/// in the DB but never routed through the gateway — the webui's "no gateway
+/// traffic observed" warning.
+async fn fetch_traffic_observed(
+    state: &AppState,
+    session_ids: &[String],
+) -> Result<HashSet<String>, AppError> {
+    let rows: Vec<(String,)> = sqlx::query_as(
+        "SELECT DISTINCT session_id FROM session_tokens \
+         WHERE session_id = ANY($1) AND revoked_at IS NULL AND last_used_at IS NOT NULL",
+    )
+    .bind(session_ids)
+    .fetch_all(&state.pool)
+    .await?;
+    Ok(rows.into_iter().map(|(id,)| id).collect())
+}
+
+/// Cold-cache surfacing. The per-message cache split lives in
+/// `session_token_usage`; the running totals flatten it, so the two most
+/// recent rows per session derive `cache_cold`, `last_activity_at` (lets the
+/// client predict cache expiry, Anthropic's ~5-min sliding window, before the
+/// next send) and `estimated_burst_tokens`.
+async fn fetch_last_turns(
+    state: &AppState,
+    session_ids: &[String],
+) -> Result<HashMap<String, LastTurn>, AppError> {
+    let rows: Vec<LastTurnRow> =
+        sqlx::query_as(LAST_TWO_TURNS_SQL).bind(session_ids).fetch_all(&state.pool).await?;
+    Ok(fold_last_turns(rows))
+}
+
+/// Merge the fetched context into the items. Pure: the only inputs are the
+/// items and `ctx`.
+fn enrich(
+    mut with_ts: Vec<(DateTime<Utc>, SessionListItem)>,
+    mut ctx: EnrichContext,
+) -> Vec<(DateTime<Utc>, SessionListItem)> {
+    let pr_cache = PrStatusCache::borrow_map(&ctx.pr_snapshot);
+    for (_, s) in &mut with_ts {
+        if s.machine_name.is_none()
+            && let Some((name, hue, kind)) = ctx.machines.get(&s.machine_id)
+        {
+            s.machine_name = Some(name.clone());
+            s.machine_hue = *hue;
+            s.machine_kind = Some(kind.clone());
+        }
+        if let Some(usage) = ctx.token_usage.remove(&s.id) {
+            s.token_usage = usage;
+        }
+        if let Some((text, ts)) = ctx.last_messages.remove(&s.id) {
+            s.last_message_text = text;
+            s.last_message_at = Some(ts);
+        }
+        if let Some(unread) = ctx.unread.as_mut() {
+            s.unread_count = unread.remove(&s.id).unwrap_or(0);
+        }
+        if let Some(v) = ctx.todos.remove(&s.id) {
+            s.todos = serde_json::from_value(v).unwrap_or_default();
+        }
+        if let Some(row) = ctx.signals.remove(&s.id) {
+            apply_signals(s, row, &pr_cache, ctx.archive_after_secs);
+        }
+        if let Some(labels) = ctx.labels.remove(&s.id) {
+            s.labels = labels;
+        }
+        if let Some(name) = ctx.account_names.remove(&s.id) {
+            s.account_name = Some(name);
+        }
+        s.has_token_credentials = ctx.with_credentials.contains(&s.id);
+        s.account_traffic_observed = ctx.traffic_observed.contains(&s.id);
+        s.auto_approve = ctx.auto_approve.contains(&s.id);
+        if let Some(turn) = ctx.last_turns.remove(&s.id) {
+            s.last_activity_at = Some(turn.at);
+            s.cache_cold = turn.cache_cold();
+            s.estimated_burst_tokens = turn.estimated_burst_tokens();
         }
     }
+    with_ts
+}
 
-    // Agent task lists. A separate round-trip rather than another `SignalRow`
-    // column: that tuple is already at sqlx's 16-element `FromRow` ceiling.
-    if !session_ids.is_empty() {
-        let rows: Vec<(String, serde_json::Value)> = sqlx::query_as(
-            "SELECT id, todos FROM sessions WHERE id = ANY($1) AND todos IS NOT NULL",
-        )
-        .bind(&session_ids)
-        .fetch_all(&state.pool)
-        .await?;
-        let mut by_session: std::collections::HashMap<String, serde_json::Value> =
-            rows.into_iter().collect();
-        for (_, s) in &mut with_ts {
-            if let Some(v) = by_session.remove(&s.id) {
-                s.todos = serde_json::from_value(v).unwrap_or_default();
-            }
-        }
-    }
-
-    // Status signals + display metadata from the session row, applied
-    // uniformly to live + historical items: the ✋ attention glyph (from the
-    // classifier) and the name/model/effort columns.
-    if !session_ids.is_empty() {
-        // A struct, not a tuple: sqlx only implements `FromRow` for tuples up
-        // to 16 columns and this select is past that.
-        #[derive(sqlx::FromRow)]
-        struct SignalRow {
-            id: String,
-            tempo: Option<String>,
-            agent_state: Option<String>,
-            activity: Option<String>,
-            session_name: Option<String>,
-            model: Option<String>,
-            effort: Option<String>,
-            pinned: bool,
-            soft_limit_reason: Option<String>,
-            last_tool_at: Option<DateTime<Utc>>,
-            last_tool_name: Option<String>,
-            tool_use_count: i32,
-            children: serde_json::Value,
-            end_reason: Option<String>,
-            end_detail: Option<String>,
-            ended_at: Option<DateTime<Utc>>,
-            permission_mode: Option<String>,
-            archived_by: Option<String>,
-            keepalive_json: Option<serde_json::Value>,
-            last_keepalive_at: Option<DateTime<Utc>>,
-        }
-        let rows: Vec<SignalRow> = sqlx::query_as(
-            "SELECT id, tempo, agent_state, activity, session_name, model, effort, pinned, \
-                    soft_limit_reason, last_tool_at, last_tool_name, tool_use_count, \
-                    children, end_reason, end_detail, ended_at, permission_mode, archived_by, \
-                    keepalive_json, last_keepalive_at \
-             FROM sessions WHERE id = ANY($1)",
-        )
-        .bind(&session_ids)
-        .fetch_all(&state.pool)
-        .await?;
-        let mut by_session: std::collections::HashMap<String, SignalRow> =
-            std::collections::HashMap::new();
-        for row in rows {
-            by_session.insert(row.id.clone(), row);
-        }
-        let pr_snapshot = state.pr_status_cache.snapshot();
-        let pr_cache = PrStatusCache::borrow_map(&pr_snapshot);
-        for (_, s) in &mut with_ts {
-            if let Some(row) = by_session.remove(&s.id) {
-                s.end_reason = row.end_reason.as_deref().map(SessionEndReason::parse);
-                s.end_detail = row.end_detail;
-                s.ended_at = row.ended_at;
-                let children: Vec<SessionChild> =
-                    serde_json::from_value(row.children).unwrap_or_default();
-                let bucket = bucket_from_signals(
-                    row.tempo.as_deref(),
-                    row.agent_state.as_deref(),
-                    row.activity.as_deref(),
-                    row.soft_limit_reason.as_deref(),
-                    &children,
-                    &pr_cache,
-                );
-                s.pr_links =
-                    children.iter().filter(|c| c.kind == "pr").map(|c| c.href.clone()).collect();
-                s.bucket = bucket;
-                s.attention = attention_from_bucket(bucket);
-                // Worker exited but resumable on reply. The adapter
-                // parks the marker in `tempo`; the next live snapshot after a
-                // resume overwrites it.
-                s.hibernated = row.tempo.as_deref() == Some("hibernated");
-                s.name = row.session_name;
-                s.model = row.model;
-                s.effort = row.effort;
-                s.permission_mode = row.permission_mode;
-                s.pinned = row.pinned;
-                s.archived_by = row.archived_by.as_deref().and_then(RemoveInitiator::parse);
-                s.auto_archive_at = crate::auto_archive::stale_archive_due(
-                    s.status,
-                    s.pinned,
-                    s.last_heartbeat,
-                    state.config.archive_after_secs,
-                );
-                s.keepalive = row.keepalive_json.and_then(|v| serde_json::from_value(v).ok());
-                s.last_keepalive_at = row.last_keepalive_at;
-                s.activity_detail = row.activity;
-                s.last_tool_at = row.last_tool_at;
-                s.last_tool_name = row.last_tool_name;
-                s.tool_use_count = row.tool_use_count.clamp(0, i32::MAX) as u32;
-            }
-        }
-    }
-
-    // Session labels: one batched join over the junction table, then
-    // bucket the rows per session so each item carries its colored labels.
-    if !session_ids.is_empty() {
-        type LabelRow = (String, uuid::Uuid, String, String);
-        let rows: Vec<LabelRow> = sqlx::query_as(
-            "SELECT sl.session_id, l.id, l.name, l.color \
-             FROM session_labels sl JOIN labels l ON l.id = sl.label_id \
-             WHERE sl.session_id = ANY($1) \
-             ORDER BY lower(l.name)",
-        )
-        .bind(&session_ids)
-        .fetch_all(&state.pool)
-        .await?;
-        let mut by_session: std::collections::HashMap<String, Vec<Label>> =
-            std::collections::HashMap::new();
-        for (sid, id, name, color) in rows {
-            by_session.entry(sid).or_default().push(Label { id: id.to_string(), name, color });
-        }
-        for (_, s) in &mut with_ts {
-            if let Some(labels) = by_session.remove(&s.id) {
-                s.labels = labels;
-            }
-        }
-    }
-
-    // Account each session runs under. `sessions.account_id` is
-    // unused legacy; the real binding lives in `session_tokens` (minted at
-    // dispatch/gateway). Resolve the most recent non-revoked token per session
-    // to its identity's `accounts.name` (via `account_providers`) in one batched
-    // query. `None` for sessions that never routed through the gateway (e.g.
-    // plain local sessions).
-    if !session_ids.is_empty() {
-        let rows: Vec<(String, String)> = sqlx::query_as(
-            "SELECT DISTINCT ON (st.session_id) st.session_id, a.name \
-             FROM session_tokens st \
-             JOIN account_providers ap ON ap.id = st.account_id \
-             JOIN accounts a ON a.id = ap.account_id \
-             WHERE st.session_id = ANY($1) AND st.revoked_at IS NULL \
-             ORDER BY st.session_id, st.created_at DESC",
-        )
-        .bind(&session_ids)
-        .fetch_all(&state.pool)
-        .await?;
-        let mut by_session: std::collections::HashMap<String, String> = rows.into_iter().collect();
-        for (_, s) in &mut with_ts {
-            if let Some(name) = by_session.remove(&s.id) {
-                s.account_name = Some(name);
-            }
-        }
-    }
-
-    // Live token↔account credential binding. Independent of the
-    // account-name join above: a token whose `accounts` row was deleted (or that
-    // never resolved a name) still counts as holding credentials. `true` iff a
-    // non-revoked `session_tokens` row with a present `encrypted_token` exists.
-    if !session_ids.is_empty() {
-        let rows: Vec<(String,)> = sqlx::query_as(
-            "SELECT DISTINCT session_id FROM session_tokens \
-             WHERE session_id = ANY($1) AND revoked_at IS NULL AND encrypted_token IS NOT NULL",
-        )
-        .bind(&session_ids)
-        .fetch_all(&state.pool)
-        .await?;
-        let with_creds: std::collections::HashSet<String> =
-            rows.into_iter().map(|(id,)| id).collect();
-        for (_, s) in &mut with_ts {
-            s.has_token_credentials = with_creds.contains(&s.id);
-        }
-    }
-
-    // Observed gateway traffic per session: a live token that has actually been
-    // presented at the gateway (`last_used_at` stamped). An account-bound
-    // session missing from this set is bound in the DB but never routed through
-    // the gateway — the webui's "no gateway traffic observed" warning.
-    if !session_ids.is_empty() {
-        let rows: Vec<(String,)> = sqlx::query_as(
-            "SELECT DISTINCT session_id FROM session_tokens \
-             WHERE session_id = ANY($1) AND revoked_at IS NULL AND last_used_at IS NOT NULL",
-        )
-        .bind(&session_ids)
-        .fetch_all(&state.pool)
-        .await?;
-        let observed: std::collections::HashSet<String> =
-            rows.into_iter().map(|(id,)| id).collect();
-        for (_, s) in &mut with_ts {
-            s.account_traffic_observed = observed.contains(&s.id);
-        }
-    }
-
-    // Reflect the in-memory auto-approve flag per session so clients
-    // can render the toggle in its current state.
-    {
-        let store = state.permission_store.read().await;
-        for (_, s) in &mut with_ts {
-            s.auto_approve = store.is_auto_approve(&s.id);
-        }
-    }
-
-    // Cold-cache surfacing. The per-message cache split lives in
-    // `session_token_usage`; the running totals above flatten it, so the two
-    // most recent rows per session derive `cache_cold`, `last_activity_at`
-    // (lets the client predict cache expiry, Anthropic's ~5-min sliding
-    // window, before the next send) and `estimated_burst_tokens`.
-    if !session_ids.is_empty() {
-        let rows: Vec<LastTurnRow> =
-            sqlx::query_as(LAST_TWO_TURNS_SQL).bind(&session_ids).fetch_all(&state.pool).await?;
-        let mut by_session = fold_last_turns(rows);
-        for (_, s) in &mut with_ts {
-            if let Some(turn) = by_session.remove(&s.id) {
-                s.last_activity_at = Some(turn.at);
-                s.cache_cold = turn.cache_cold();
-                s.estimated_burst_tokens = turn.estimated_burst_tokens();
-            }
-        }
-    }
-
-    Ok(sort_sessions(with_ts))
+/// Apply the session row's status signals + display metadata: the bucket and
+/// its ✋ attention glyph (from the classifier), name/model/effort, and the
+/// end/archive/keepalive bookkeeping.
+fn apply_signals(
+    s: &mut SessionListItem,
+    row: SignalRow,
+    pr_cache: &HashMap<String, PrStatus<'_>>,
+    archive_after_secs: u64,
+) {
+    s.end_reason = row.end_reason.as_deref().map(SessionEndReason::parse);
+    s.end_detail = row.end_detail;
+    s.ended_at = row.ended_at;
+    let children: Vec<SessionChild> = serde_json::from_value(row.children).unwrap_or_default();
+    let bucket = bucket_from_signals(
+        row.tempo.as_deref(),
+        row.agent_state.as_deref(),
+        row.activity.as_deref(),
+        row.soft_limit_reason.as_deref(),
+        &children,
+        pr_cache,
+    );
+    s.pr_links = children.iter().filter(|c| c.kind == "pr").map(|c| c.href.clone()).collect();
+    s.bucket = bucket;
+    s.attention = attention_from_bucket(bucket);
+    // Worker exited but resumable on reply. The adapter parks the marker in
+    // `tempo`; the next live snapshot after a resume overwrites it.
+    s.hibernated = row.tempo.as_deref() == Some("hibernated");
+    s.name = row.session_name;
+    s.model = row.model;
+    s.effort = row.effort;
+    s.permission_mode = row.permission_mode;
+    s.pinned = row.pinned;
+    s.archived_by = row.archived_by.as_deref().and_then(RemoveInitiator::parse);
+    s.auto_archive_at = crate::auto_archive::stale_archive_due(
+        s.status,
+        s.pinned,
+        s.last_heartbeat,
+        archive_after_secs,
+    );
+    s.keepalive = row.keepalive_json.and_then(|v| serde_json::from_value(v).ok());
+    s.last_keepalive_at = row.last_keepalive_at;
+    s.activity_detail = row.activity;
+    s.last_tool_at = row.last_tool_at;
+    s.last_tool_name = row.last_tool_name;
+    s.tool_use_count = row.tool_use_count.clamp(0, i32::MAX) as u32;
 }
 
 /// `(session_id, input, cache_read, cache_creation, created_at, rn)` from
@@ -3667,6 +3750,159 @@ mod tests {
         );
         assert!(!folded.contains_key("orphan"));
         assert_eq!(folded["neg"].prev_context, 7);
+    }
+
+    #[test]
+    fn enrich_with_an_empty_context_leaves_items_untouched() {
+        let mut item = bare_session("s");
+        item.machine_name = Some("kept".into());
+        let before = serde_json::to_value(&item).unwrap();
+        let out = super::enrich(vec![(ts(0), item)], super::EnrichContext::default());
+        assert_eq!(out.len(), 1);
+        assert_eq!(serde_json::to_value(&out[0].1).unwrap(), before);
+    }
+
+    #[test]
+    fn enrich_merges_every_signal_by_session_id() {
+        let mut item = bare_session("s");
+        item.machine_id = "host-a".into();
+        item.last_heartbeat = Some(ts(0));
+        let mut other = bare_session("other");
+        other.machine_id = "unknown".into();
+
+        let mut ctx = super::EnrichContext { archive_after_secs: 60, ..Default::default() };
+        ctx.machines.insert("host-a".into(), ("Alpha".into(), Some(7), "vm".into()));
+        ctx.token_usage.insert(
+            "s".into(),
+            cctui_proto::models::TokenUsage { tokens_in: 11, tokens_out: 3, ..Default::default() },
+        );
+        ctx.last_messages.insert("s".into(), (Some("hello".into()), ts(5)));
+        ctx.unread = Some([("s".to_string(), 4)].into_iter().collect());
+        ctx.todos.insert(
+            "s".into(),
+            serde_json::json!([{"content": "do it", "status": "pending"}]),
+        );
+        ctx.signals.insert(
+            "s".into(),
+            super::SignalRow {
+                id: "s".into(),
+                tempo: Some("hibernated".into()),
+                activity: Some("editing".into()),
+                session_name: Some("named".into()),
+                model: Some("m".into()),
+                effort: Some("high".into()),
+                soft_limit_reason: None,
+                last_tool_name: Some("Bash".into()),
+                tool_use_count: -3,
+                children: serde_json::json!([
+                    {"id": "1", "href": "https://x/pr/1", "kind": "pr"},
+                    {"id": "2", "href": "https://x/issue/2", "kind": "issue"}
+                ]),
+                end_reason: Some("completed".into()),
+                end_detail: Some("done".into()),
+                ended_at: Some(ts(9)),
+                permission_mode: Some("yolo".into()),
+                archived_by: Some("user".into()),
+                keepalive_json: Some(serde_json::json!({"interval_secs": 5, "max_ticks": 2})),
+                last_keepalive_at: Some(ts(8)),
+                ..Default::default()
+            },
+        );
+        ctx.labels.insert(
+            "s".into(),
+            vec![super::Label { id: "l1".into(), name: "bug".into(), color: "#f00".into() }],
+        );
+        ctx.account_names.insert("s".into(), "acct".into());
+        ctx.with_credentials.insert("s".into());
+        ctx.traffic_observed.insert("s".into());
+        ctx.auto_approve.insert("s".into());
+        ctx.last_turns.insert(
+            "s".into(),
+            super::LastTurn { cache_read: 100, cache_creation: 900, at: ts(7), prev_context: 1000 },
+        );
+
+        let out = super::enrich(vec![(ts(0), item), (ts(1), other)], ctx);
+        let s = &out[0].1;
+        assert_eq!(s.machine_name.as_deref(), Some("Alpha"));
+        assert_eq!(s.machine_hue, Some(7));
+        assert_eq!(s.machine_kind.as_deref(), Some("vm"));
+        assert_eq!((s.token_usage.tokens_in, s.token_usage.tokens_out), (11, 3));
+        assert_eq!(s.last_message_text.as_deref(), Some("hello"));
+        assert_eq!(s.last_message_at, Some(ts(5)));
+        assert_eq!(s.unread_count, 4);
+        assert_eq!(s.todos.len(), 1);
+        assert_eq!(s.todos[0].content, "do it");
+        assert!(s.hibernated);
+        assert_eq!(s.name.as_deref(), Some("named"));
+        assert_eq!(s.model.as_deref(), Some("m"));
+        assert_eq!(s.effort.as_deref(), Some("high"));
+        assert_eq!(s.permission_mode.as_deref(), Some("yolo"));
+        assert!(!s.pinned);
+        assert_eq!(s.activity_detail.as_deref(), Some("editing"));
+        assert_eq!(s.last_tool_name.as_deref(), Some("Bash"));
+        assert_eq!(s.tool_use_count, 0);
+        assert_eq!(s.pr_links, ["https://x/pr/1"]);
+        assert_eq!(s.end_reason, Some(cctui_proto::models::SessionEndReason::Completed));
+        assert_eq!(s.end_detail.as_deref(), Some("done"));
+        assert_eq!(s.ended_at, Some(ts(9)));
+        assert_eq!(s.archived_by, Some(RemoveInitiator::User));
+        assert_eq!(s.auto_archive_at, Some(ts(60)));
+        assert_eq!(s.keepalive.as_ref().map(|k| k.max_ticks), Some(2));
+        assert_eq!(s.last_keepalive_at, Some(ts(8)));
+        assert_eq!(s.labels.len(), 1);
+        assert_eq!(s.labels[0].name, "bug");
+        assert_eq!(s.account_name.as_deref(), Some("acct"));
+        assert!(s.has_token_credentials);
+        assert!(s.account_traffic_observed);
+        assert!(s.auto_approve);
+        assert_eq!(s.last_activity_at, Some(ts(7)));
+        assert!(s.cache_cold);
+        assert_eq!(s.estimated_burst_tokens, Some(1000));
+
+        let o = &out[1].1;
+        assert_eq!(o.machine_name, None);
+        assert_eq!(o.unread_count, 0);
+        assert!(!o.has_token_credentials && !o.account_traffic_observed && !o.auto_approve);
+        assert_eq!(o.account_name, None);
+        assert!(o.labels.is_empty());
+    }
+
+    #[test]
+    fn enrich_keeps_a_machine_name_the_row_already_resolved() {
+        let mut item = bare_session("s");
+        item.machine_id = "host-a".into();
+        item.machine_name = Some("from-join".into());
+        let mut ctx = super::EnrichContext::default();
+        ctx.machines.insert("host-a".into(), ("Alpha".into(), Some(7), "vm".into()));
+        let out = super::enrich(vec![(ts(0), item)], ctx);
+        assert_eq!(out[0].1.machine_name.as_deref(), Some("from-join"));
+        assert_eq!(out[0].1.machine_hue, None);
+    }
+
+    #[test]
+    fn enrich_without_a_viewer_leaves_unread_at_zero() {
+        let item = bare_session("s");
+        let ctx = super::EnrichContext { unread: None, ..Default::default() };
+        let out = super::enrich(vec![(ts(0), item)], ctx);
+        assert_eq!(out[0].1.unread_count, 0);
+    }
+
+    #[test]
+    fn fold_token_totals_sums_models_and_reads_null_as_zero() {
+        let rows = vec![
+            ("s".to_string(), Some("m1".to_string()), Some(10), Some(2), Some(5), Some(1)),
+            ("s".to_string(), None, Some(1), None, None, Some(-4)),
+            ("t".to_string(), Some("m1".to_string()), None, None, None, None),
+        ];
+        let folded = super::fold_token_totals(rows, &std::collections::HashMap::new());
+        let s = &folded["s"];
+        assert_eq!(
+            (s.tokens_in, s.tokens_out, s.cache_read_tokens, s.cache_creation_tokens),
+            (11, 2, 5, 1)
+        );
+        assert!(s.cost_usd.abs() < f64::EPSILON);
+        let t = &folded["t"];
+        assert_eq!((t.tokens_in, t.tokens_out), (0, 0));
     }
 
     #[test]
