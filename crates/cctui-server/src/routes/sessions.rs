@@ -2950,7 +2950,7 @@ pub async fn update_draft(
 ) -> Result<Json<SpawnResponse>, (StatusCode, Json<ApiError>)> {
     let draft_id =
         uuid::Uuid::parse_str(&session_id).map_err(|_| bad_request("session id must be a uuid"))?;
-    let machine_uuid = resolve_owned_machine(&state, &ctx, &req.machine_id).await?;
+    let (machine_uuid, _) = resolve_owned_machine(&state, &ctx, &req.machine_id).await?;
     let fields = DraftRowFields::from_request(&req);
     let draft_json = serde_json::to_value(fields.payload).map_err(|e| {
         tracing::error!("serializing draft payload: {e}");
