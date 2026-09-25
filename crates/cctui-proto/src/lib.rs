@@ -18,4 +18,5 @@ pub mod models;
 pub mod resources;
 pub mod updatehook;
 pub mod util;
+pub mod worker_env;
 pub mod ws;

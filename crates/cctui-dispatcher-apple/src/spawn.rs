@@ -19,6 +19,7 @@ use std::path::PathBuf;
 use cctui_dispatcher_core::{
     Dispatcher, HandleState, SpawnOutcome, build_env, dedup_source, worker_name,
 };
+use cctui_proto::worker_env::check_payload_env;
 use cctui_proto::ws::WireDispatchSpec;
 
 use crate::cli::ContainerCli;
@@ -78,6 +79,7 @@ impl<C: ContainerCli> Spawner<C> {
     /// a mounted file unless `secret_via_env`). Returns `(env, machine_key)`; the
     /// key is `None` when the payload carried none.
     fn worker_env(&self, spec: &WireDispatchSpec) -> anyhow::Result<(Vec<String>, Option<String>)> {
+        check_payload_env(&spec.payload).map_err(anyhow::Error::msg)?;
         let base = build_env(spec, &self.cctui_url)?;
         let mut env = base.env;
         if let Some(guest) = self.repo_mount.as_deref().and_then(Self::mount_guest_path) {
@@ -480,5 +482,15 @@ mod tests {
         let calls = sp.cli.calls();
         assert_eq!(calls[0][0], "stop");
         assert_eq!(calls[1][0], "delete");
+    }
+
+    #[test]
+    fn build_run_args_rejects_reserved_payload_env() {
+        let sp = spawner(MockCli::default());
+        for key in ["CCTUI_URL", "CCTUI_MACHINE_KEY", "DYLD_INSERT_LIBRARIES", "PATH"] {
+            let s = spec("sess-r", json!({ "env": { key: "x" } }));
+            let err = sp.build_run_args(&s, "n", None).unwrap_err();
+            assert!(err.to_string().contains(key), "{err}");
+        }
     }
 }

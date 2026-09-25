@@ -42,6 +42,7 @@ use cctui_orchestrator::{
     ANNOTATION_GPG_SIGNING, ANNOTATION_GUARD_IDENTITY, ANNOTATION_WORKER_CONTAINER,
     DEFAULT_WORKER_CONTAINER, LABEL_WORKER_PROFILE, WorkerProfile, WorkerProfileSpec,
 };
+use cctui_proto::worker_env::is_reserved_env_key;
 use cctui_proto::ws::WireDispatchSpec;
 use k8s_openapi::api::batch::v1::Job;
 use k8s_openapi::api::core::v1::Pod;
@@ -210,6 +211,14 @@ impl Spawner {
         // rejected — secrets flow through the guard-proxy sidecar, never here.
         if let Some(Value::Object(m)) = env_map {
             for (k, v) in m {
+                if is_reserved_env_key(&k) {
+                    anyhow::bail!("payload env `{k}` is reserved by the dispatcher and cannot be set");
+                }
+                if profile.env.iter().flatten().any(|e| e.name == k && e.value_from.is_some()) {
+                    anyhow::bail!(
+                        "payload env `{k}` would replace a profile `valueFrom` entry and cannot be set"
+                    );
+                }
                 let Some(val) = v.as_str() else { continue };
                 if let Some(prefix) = SECRET_REF_PREFIXES.iter().find(|p| val.starts_with(**p)) {
                     anyhow::bail!(
@@ -1577,5 +1586,35 @@ mod tests {
         let sid = worker_env(&v).into_iter().find(|e| e["name"] == "SESSION_ID").unwrap();
         assert_eq!(sid["value"], json!("sess-override"), "per-run override wins");
         assert!(sid.get("valueFrom").is_none(), "override clears a stale valueFrom");
+    }
+
+    fn build_err(profile: &WorkerProfileSpec, payload: Value) -> String {
+        let s = spec("sess-err", payload);
+        let name = worker_name("sess-err");
+        Spawner::build_job("http://cctui:8700", "lean", profile, &s, &name, 3600, false)
+            .expect_err("dispatch must be rejected")
+            .to_string()
+    }
+
+    #[test]
+    fn reserved_payload_env_is_rejected() {
+        for key in ["CCTUI_URL", "CCTUI_MACHINE_KEY", "SESSION_ID", "LD_PRELOAD", "HTTPS_PROXY"] {
+            let msg = build_err(&lean_profile(), json!({ "env": { key: "https://attacker.example" } }));
+            assert!(msg.contains(key) && msg.contains("reserved"), "unexpected error: {msg}");
+        }
+    }
+
+    #[test]
+    fn payload_env_cannot_replace_a_profile_valuefrom() {
+        let profile: WorkerProfileSpec = serde_json::from_value(json!({
+            "image": "example.com/worker:latest",
+            "env": [
+                { "name": "GH_TOKEN", "valueFrom": {
+                    "secretKeyRef": { "name": "gh", "key": "token" } } }
+            ]
+        }))
+        .unwrap();
+        let msg = build_err(&profile, json!({ "env": { "GH_TOKEN": "attacker" } }));
+        assert!(msg.contains("GH_TOKEN") && msg.contains("valueFrom"), "unexpected error: {msg}");
     }
 }
