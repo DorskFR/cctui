@@ -85,18 +85,7 @@ pub async fn resolve_account(
     session_token: &str,
 ) -> Result<Option<Account>, sqlx::Error> {
     let hash = crate::auth::sha256_hex(session_token);
-    let row: Option<AccountRow> = sqlx::query_as(
-        "SELECT a.id, a.provider, a.encrypted_access_token, a.encrypted_refresh_token, \
-                    a.expires_at, a.provider_account_id, a.base_url, a.auth_scheme, \
-                    a.soft_limits_json, a.provider_settings, a.rate_limits_json, \
-                    a.usage_notices \
-             FROM session_tokens t JOIN account_providers a ON a.id = t.account_id \
-             WHERE t.token_hash = $1 AND t.revoked_at IS NULL \
-               AND (t.expires_at IS NULL OR t.expires_at > now())",
-    )
-    .bind(&hash)
-    .fetch_optional(&state.pool)
-    .await?;
+    let row = account_row(&state.pool, &hash).await?;
     let Some((
         id,
         provider,
@@ -131,6 +120,29 @@ pub async fn resolve_account(
         provider_settings,
         rate_limits: crate::routes::gateway::RateLimits::from_json(rate_limits_json.as_ref()),
     }))
+}
+
+/// A live session token's account, unless the session's owner is revoked or
+/// disabled.
+async fn account_row(pool: &sqlx::PgPool, hash: &str) -> Result<Option<AccountRow>, sqlx::Error> {
+    sqlx::query_as(
+        "SELECT a.id, a.provider, a.encrypted_access_token, a.encrypted_refresh_token, \
+                    a.expires_at, a.provider_account_id, a.base_url, a.auth_scheme, \
+                    a.soft_limits_json, a.provider_settings, a.rate_limits_json, \
+                    a.usage_notices \
+             FROM session_tokens t JOIN account_providers a ON a.id = t.account_id \
+             WHERE t.token_hash = $1 AND t.revoked_at IS NULL \
+               AND (t.expires_at IS NULL OR t.expires_at > now()) \
+               AND NOT EXISTS ( \
+                 SELECT 1 FROM sessions s \
+                 LEFT JOIN machines m ON m.id = s.machine_uuid \
+                 JOIN users u ON u.id = COALESCE(s.user_id, m.user_id) \
+                 WHERE s.id = t.session_id \
+                   AND (u.revoked_at IS NOT NULL OR u.disabled_at IS NOT NULL))",
+    )
+    .bind(hash)
+    .fetch_optional(pool)
+    .await
 }
 
 #[derive(serde::Deserialize)]
@@ -335,4 +347,100 @@ pub async fn reload_account(state: &AppState, id: Uuid) -> Option<Account> {
         provider_settings: None,
         rate_limits: crate::routes::gateway::RateLimits::default(),
     })
+}
+
+#[cfg(test)]
+mod owner_revocation_tests {
+    use uuid::Uuid;
+
+    use super::account_row;
+
+    #[tokio::test]
+    async fn revoked_owner_session_token_is_not_resolved() {
+        let Some(url) =
+            crate::routes::gateway::test_db_url("revoked_owner_session_token_is_not_resolved")
+        else {
+            return;
+        };
+        let pool = sqlx::PgPool::connect(&url).await.expect("connect test db");
+        let uid = Uuid::new_v4();
+        let acct = Uuid::new_v4();
+        let prov = Uuid::new_v4();
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+            .bind(uid)
+            .bind(format!("revoke-gw-{uid}"))
+            .bind(format!("kh-{uid}"))
+            .execute(&pool)
+            .await
+            .expect("seed user");
+        sqlx::query("INSERT INTO accounts (id, user_id, name) VALUES ($1, $2, 'revoke-gw')")
+            .bind(acct)
+            .bind(uid)
+            .execute(&pool)
+            .await
+            .expect("seed account");
+        sqlx::query(
+            "INSERT INTO account_providers \
+                 (id, user_id, provider, encrypted_refresh_token, account_id) \
+             VALUES ($1, $2, 'anthropic', 'x', $3)",
+        )
+        .bind(prov)
+        .bind(uid)
+        .bind(acct)
+        .execute(&pool)
+        .await
+        .expect("seed provider");
+        let session = format!("revoke-gw-{uid}");
+        sqlx::query(
+            "INSERT INTO sessions (id, machine_id, working_dir, user_id, adapter_id) \
+             VALUES ($1, 'm1', '/w', $2, 'opencode')",
+        )
+        .bind(&session)
+        .bind(uid)
+        .execute(&pool)
+        .await
+        .expect("seed session");
+        let hash = format!("revoke-gw-tok-{uid}");
+        sqlx::query(
+            "INSERT INTO session_tokens (token_hash, session_id, account_id) VALUES ($1, $2, $3)",
+        )
+        .bind(&hash)
+        .bind(&session)
+        .bind(prov)
+        .execute(&pool)
+        .await
+        .expect("seed token");
+
+        assert!(account_row(&pool, &hash).await.unwrap().is_some(), "live owner resolves");
+
+        sqlx::query("UPDATE users SET disabled_at = now() WHERE id = $1")
+            .bind(uid)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(account_row(&pool, &hash).await.unwrap().is_none(), "disabled owner is refused");
+
+        sqlx::query("UPDATE users SET disabled_at = NULL, revoked_at = now() WHERE id = $1")
+            .bind(uid)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(account_row(&pool, &hash).await.unwrap().is_none(), "revoked owner is refused");
+
+        sqlx::query("UPDATE users SET revoked_at = NULL WHERE id = $1")
+            .bind(uid)
+            .execute(&pool)
+            .await
+            .unwrap();
+        crate::store::tokens::revoke_by_user(&pool, uid).await.unwrap();
+        assert!(account_row(&pool, &hash).await.unwrap().is_none(), "revoked token is refused");
+
+        sqlx::query("DELETE FROM session_tokens WHERE token_hash = $1")
+            .bind(&hash)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM sessions WHERE id = $1").bind(&session).execute(&pool).await.ok();
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
+    }
 }

@@ -181,6 +181,8 @@ pub async fn create_user(
             kind: "user",
             machine_id: None,
             dispatcher_id: None,
+            expires_at: None,
+            passkey_id: None,
         },
         default_ceiling,
     )
@@ -223,7 +225,8 @@ pub async fn revoke_user(
     if res.rows_affected() == 0 {
         return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "user not found".into() })));
     }
-    purge_user_cache(&state.auth_config, id, &state.pool).await;
+    crate::store::tokens::revoke_by_user(&state.pool, id).await.map_err(|e| db_err(&e))?;
+    state.auth_config.purge_all();
     tracing::info!(user_id = %id, "user revoked");
     Ok(StatusCode::NO_CONTENT)
 }
@@ -627,7 +630,9 @@ pub async fn rotate_machine(
                 .await
                 .map_err(|e| db_err(&e))?;
         if let Some((user_id, name)) = owner {
-            let grant = crate::auth::ceiling_of(&state.pool, user_id).await;
+            let grant = crate::store::acls::user_ceiling(&state.pool, user_id)
+                .await
+                .map_err(|e| db_err(&e))?;
             if let Err(e) = crate::auth::register_key(
                 &state.pool,
                 crate::auth::NewKey {
@@ -638,6 +643,8 @@ pub async fn rotate_machine(
                     kind: "machine",
                     machine_id: Some(id),
                     dispatcher_id: None,
+                    expires_at: None,
+                    passkey_id: None,
                 },
                 grant,
             )
@@ -691,14 +698,6 @@ fn self_or_admin(ctx: &AuthContext, target: Uuid) -> Result<(), (StatusCode, Jso
     }
 }
 
-async fn load_user_acls(pool: &sqlx::PgPool, user_id: Uuid) -> Result<Vec<Scope>, sqlx::Error> {
-    let rows: Vec<(String,)> = sqlx::query_as("SELECT scope FROM user_acls WHERE user_id = $1")
-        .bind(user_id)
-        .fetch_all(pool)
-        .await?;
-    Ok(rows.iter().filter_map(|(s,)| Scope::parse(s)).collect())
-}
-
 #[derive(Serialize, TS)]
 #[ts(export)]
 pub struct UserAclsResponse {
@@ -714,7 +713,8 @@ pub async fn get_user_acls(
     Path(user_id): Path<Uuid>,
 ) -> Result<Json<UserAclsResponse>, (StatusCode, Json<ApiError>)> {
     self_or_admin(&ctx, user_id)?;
-    let scopes = load_user_acls(&state.pool, user_id).await.map_err(|e| db_err(&e))?;
+    let scopes =
+        crate::store::acls::user_ceiling(&state.pool, user_id).await.map_err(|e| db_err(&e))?;
     Ok(Json(UserAclsResponse { user_id, scopes: scopes.iter().map(ToString::to_string).collect() }))
 }
 
@@ -749,19 +749,9 @@ pub async fn set_user_acls(
     forbid_or(&ctx)?; // admin only
     let scopes = parse_scopes(&req.scopes)?;
     let mut tx = state.pool.begin().await.map_err(|e| db_err(&e))?;
-    sqlx::query("DELETE FROM user_acls WHERE user_id = $1")
-        .bind(user_id)
-        .execute(&mut *tx)
+    crate::store::acls::set_user_ceiling(&mut tx, user_id, &scopes)
         .await
         .map_err(|e| db_err(&e))?;
-    for scope in &scopes {
-        sqlx::query("INSERT INTO user_acls (user_id, scope) VALUES ($1, $2)")
-            .bind(user_id)
-            .bind(scope.as_str())
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| db_err(&e))?;
-    }
     // Keep the legacy can_dispatch flag in sync: the dispatch scope
     // supersedes it, but other code paths / older clients may still read it.
     let can_dispatch = scopes.contains(&Scope::Dispatch);
@@ -850,9 +840,17 @@ pub async fn mint_user_key(
     Json(req): Json<MintKeyRequest>,
 ) -> Result<Json<MintKeyResponse>, (StatusCode, Json<ApiError>)> {
     self_or_admin(&ctx, user_id)?;
+    if ctx.machine_id.is_some() {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(ApiError { error: "machine keys cannot mint user keys".into() }),
+        ));
+    }
     let requested = parse_scopes(&req.scopes)?;
-    let ceiling = load_user_acls(&state.pool, user_id).await.map_err(|e| db_err(&e))?;
-    let granted: Vec<Scope> = requested.into_iter().filter(|s| ceiling.contains(s)).collect();
+    let ceiling =
+        crate::store::acls::user_ceiling(&state.pool, user_id).await.map_err(|e| db_err(&e))?;
+    let granted: Vec<Scope> =
+        requested.into_iter().filter(|s| ceiling.contains(s) && ctx.scopes.contains(s)).collect();
 
     let token = user_token(&mint_secret());
     let hash = sha256_hex(&token);
@@ -882,18 +880,13 @@ pub async fn mint_user_key(
             kind: "user",
             machine_id: None,
             dispatcher_id: None,
+            expires_at: req.expires_at,
+            passkey_id: None,
         },
         granted.clone(),
     )
     .await
     .map_err(|e| db_err(&e))?;
-    if let Some(exp) = req.expires_at {
-        let _ = sqlx::query("UPDATE auth_keys SET expires_at = $1 WHERE id = $2")
-            .bind(exp)
-            .bind(key_id)
-            .execute(&state.pool)
-            .await;
-    }
     tracing::info!(%user_id, %key_id, ?granted, "key minted");
     Ok(Json(MintKeyResponse {
         id: key_id,
@@ -924,7 +917,8 @@ pub async fn set_key_acls(
         return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "key not found".into() })));
     }
     let requested = parse_scopes(&req.scopes)?;
-    let ceiling = load_user_acls(&state.pool, user_id).await.map_err(|e| db_err(&e))?;
+    let ceiling =
+        crate::store::acls::user_ceiling(&state.pool, user_id).await.map_err(|e| db_err(&e))?;
     let granted: Vec<Scope> = requested.into_iter().filter(|s| ceiling.contains(s)).collect();
 
     let mut tx = state.pool.begin().await.map_err(|e| db_err(&e))?;
@@ -933,14 +927,9 @@ pub async fn set_key_acls(
         .execute(&mut *tx)
         .await
         .map_err(|e| db_err(&e))?;
-    for scope in &granted {
-        sqlx::query("INSERT INTO key_acls (key_id, scope) VALUES ($1, $2)")
-            .bind(key_id)
-            .bind(scope.as_str())
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| db_err(&e))?;
-    }
+    crate::store::acls::grant_key(&mut *tx, key_id, granted.iter().copied())
+        .await
+        .map_err(|e| db_err(&e))?;
     tx.commit().await.map_err(|e| db_err(&e))?;
     state.auth_config.purge_all();
     tracing::info!(%user_id, %key_id, ?granted, "key scopes edited");

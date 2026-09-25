@@ -118,13 +118,15 @@ struct CacheEntry {
 #[derive(Clone)]
 pub struct AuthConfig {
     pub admin_tokens: Vec<String>,
+    admin_token_hashes: Vec<String>,
     pub pool: PgPool,
     cache: Arc<Mutex<HashMap<String, CacheEntry>>>,
 }
 
 impl AuthConfig {
     pub fn new(admin_tokens: Vec<String>, pool: PgPool) -> Self {
-        Self { admin_tokens, pool, cache: Arc::new(Mutex::new(HashMap::new())) }
+        let admin_token_hashes = admin_tokens.iter().map(|t| sha256_hex(t)).collect();
+        Self { admin_tokens, admin_token_hashes, pool, cache: Arc::new(Mutex::new(HashMap::new())) }
     }
 
     /// Resolve `CCTUI_ADMIN_TOKENS` to a seeded admin **user** with `{admin}`
@@ -174,16 +176,10 @@ impl AuthConfig {
             .fetch_optional(&self.pool)
             .await
             .unwrap_or(None);
-            if let Some((kid,)) = key_id {
-                for scope in Scope::all() {
-                    let _ = sqlx::query(
-                        "INSERT INTO key_acls (key_id, scope) VALUES ($1, $2) ON CONFLICT DO NOTHING",
-                    )
-                    .bind(kid)
-                    .bind(scope.as_str())
-                    .execute(&self.pool)
-                    .await;
-                }
+            if let Some((kid,)) = key_id
+                && let Err(e) = crate::store::acls::grant_key(&self.pool, kid, Scope::all()).await
+            {
+                tracing::warn!("seed_admin: grant env key failed: {e}");
             }
         }
         tracing::info!(count = self.admin_tokens.len(), "seeded admin user + env keys");
@@ -226,20 +222,14 @@ impl AuthConfig {
     /// Load the effective scopes for a (`key_id`, `user_id`) pair = `key_acls` ∩
     /// `user_acls`. Re-intersected on every (cache-miss) auth so a demotion of
     /// the user's ceiling immediately limits the key (the drift-killer).
-    async fn effective_scopes(&self, key_id: Uuid, user_id: Uuid) -> BTreeSet<Scope> {
-        let grant: Vec<(String,)> = sqlx::query_as("SELECT scope FROM key_acls WHERE key_id = $1")
-            .bind(key_id)
-            .fetch_all(&self.pool)
-            .await
-            .unwrap_or_default();
-        let ceiling: Vec<(String,)> =
-            sqlx::query_as("SELECT scope FROM user_acls WHERE user_id = $1")
-                .bind(user_id)
-                .fetch_all(&self.pool)
-                .await
-                .unwrap_or_default();
-        let ceiling: BTreeSet<Scope> = ceiling.iter().filter_map(|(s,)| Scope::parse(s)).collect();
-        grant.iter().filter_map(|(s,)| Scope::parse(s)).filter(|s| ceiling.contains(s)).collect()
+    async fn effective_scopes(
+        &self,
+        key_id: Uuid,
+        user_id: Uuid,
+    ) -> Result<BTreeSet<Scope>, sqlx::Error> {
+        let grant = crate::store::acls::key_grant(&self.pool, key_id).await?;
+        let ceiling = crate::store::acls::user_ceiling(&self.pool, user_id).await?;
+        Ok(grant.intersection(&ceiling).copied().collect())
     }
 
     pub async fn validate(&self, token: &str) -> Option<AuthContext> {
@@ -248,24 +238,18 @@ impl AuthConfig {
             return Some(ctx);
         }
 
-        // --- New unified path: auth_keys + ACLs. Tried first. ---
-        if let Some(ctx) = self.validate_api_key(&hash).await {
-            self.cache_put(hash, ctx.clone());
-            return Some(ctx);
-        }
-
-        // --- Dual-read fallback to the legacy tables (transparency window). ---
-        // No token is invalidated mid-cutover: a credential that hasn't been
-        // backfilled (or a freshly-rotated legacy hash) still resolves here,
-        // with scopes synthesized from its owner's ceiling.
-        if let Some(ctx) = self.validate_legacy(&hash).await {
-            self.cache_put(hash, ctx.clone());
-            return Some(ctx);
+        match self.resolve(&hash).await {
+            Ok(Some(ctx)) => {
+                self.cache_put(hash, ctx.clone());
+                return Some(ctx);
+            }
+            Ok(None) => {}
+            Err(e) => tracing::warn!("auth lookup failed: {e}"),
         }
 
         // Last resort: an env admin token whose seeded auth_keys row hasn't
         // landed yet (DB hiccup at startup). Resolve to the seeded admin user.
-        if self.admin_tokens.iter().any(|t| t == token) {
+        if self.admin_token_hashes.contains(&hash) {
             return Some(AuthContext {
                 user_id: Uuid::nil(),
                 key_id: Uuid::nil(),
@@ -277,10 +261,19 @@ impl AuthConfig {
         None
     }
 
+    /// The unified `auth_keys` table first, then the legacy tables so a
+    /// credential that hasn't been backfilled still resolves.
+    async fn resolve(&self, hash: &str) -> Result<Option<AuthContext>, sqlx::Error> {
+        if let Some(ctx) = self.validate_api_key(hash).await? {
+            return Ok(Some(ctx));
+        }
+        self.validate_legacy(hash).await
+    }
+
     /// Resolve a token hash against the unified `auth_keys` table, gating on the
     /// owning user being live (revoked/disabled cascades) and the key itself
     /// being live (not revoked/expired). Scopes = `key_acls` ∩ `user_acls`.
-    async fn validate_api_key(&self, hash: &str) -> Option<AuthContext> {
+    async fn validate_api_key(&self, hash: &str) -> Result<Option<AuthContext>, sqlx::Error> {
         #[derive(sqlx::FromRow)]
         struct KeyRow {
             id: Uuid,
@@ -297,21 +290,22 @@ impl AuthConfig {
         )
         .bind(hash)
         .fetch_optional(&self.pool)
-        .await
-        .unwrap_or(None)?;
-        let KeyRow { id: key_id, user_id, machine_id } = row;
-        let scopes = self.effective_scopes(key_id, user_id).await;
+        .await?;
+        let Some(KeyRow { id: key_id, user_id, machine_id }) = row else {
+            return Ok(None);
+        };
+        let scopes = self.effective_scopes(key_id, user_id).await?;
         self.touch_key(key_id);
         if let Some(mid) = machine_id {
             self.touch_machine(mid);
         }
-        Some(AuthContext { user_id, key_id, machine_id, scopes })
+        Ok(Some(AuthContext { user_id, key_id, machine_id, scopes }))
     }
 
     /// Legacy resolution (`machines.key_hash`, `users.key_hash`, `user_tokens`).
     /// Synthesizes a key identity from the legacy row and scopes from the
     /// owner's ceiling so a not-yet-backfilled token behaves identically.
-    async fn validate_legacy(&self, hash: &str) -> Option<AuthContext> {
+    async fn validate_legacy(&self, hash: &str) -> Result<Option<AuthContext>, sqlx::Error> {
         // Machine key.
         let row: Option<(Uuid, Uuid)> = sqlx::query_as(
             "SELECT m.id, m.user_id FROM machines m \
@@ -321,17 +315,16 @@ impl AuthConfig {
         )
         .bind(hash)
         .fetch_optional(&self.pool)
-        .await
-        .unwrap_or(None);
+        .await?;
         if let Some((machine_id, user_id)) = row {
-            let scopes = self.ceiling_scopes(user_id).await;
+            let scopes = crate::store::acls::user_ceiling(&self.pool, user_id).await?;
             self.touch_machine(machine_id);
-            return Some(AuthContext {
+            return Ok(Some(AuthContext {
                 user_id,
                 key_id: machine_id,
                 machine_id: Some(machine_id),
                 scopes,
-            });
+            }));
         }
 
         // Legacy users.key_hash.
@@ -341,11 +334,10 @@ impl AuthConfig {
         )
         .bind(hash)
         .fetch_optional(&self.pool)
-        .await
-        .unwrap_or(None);
+        .await?;
         if let Some((user_id,)) = row {
-            let scopes = self.ceiling_scopes(user_id).await;
-            return Some(AuthContext { user_id, key_id: user_id, machine_id: None, scopes });
+            let scopes = crate::store::acls::user_ceiling(&self.pool, user_id).await?;
+            return Ok(Some(AuthContext { user_id, key_id: user_id, machine_id: None, scopes }));
         }
 
         // user_tokens.
@@ -359,26 +351,13 @@ impl AuthConfig {
         )
         .bind(hash)
         .fetch_optional(&self.pool)
-        .await
-        .unwrap_or(None);
+        .await?;
         if let Some((token_id, user_id)) = row {
-            let scopes = self.ceiling_scopes(user_id).await;
-            return Some(AuthContext { user_id, key_id: token_id, machine_id: None, scopes });
+            let scopes = crate::store::acls::user_ceiling(&self.pool, user_id).await?;
+            return Ok(Some(AuthContext { user_id, key_id: token_id, machine_id: None, scopes }));
         }
 
-        None
-    }
-
-    /// A legacy token's effective scopes = the owner's full ceiling (a legacy
-    /// key carries no narrowing grant of its own, matching behavior
-    /// where any of a user's tokens did everything the user could do).
-    async fn ceiling_scopes(&self, user_id: Uuid) -> BTreeSet<Scope> {
-        let rows: Vec<(String,)> = sqlx::query_as("SELECT scope FROM user_acls WHERE user_id = $1")
-            .bind(user_id)
-            .fetch_all(&self.pool)
-            .await
-            .unwrap_or_default();
-        rows.iter().filter_map(|(s,)| Scope::parse(s)).collect()
+        Ok(None)
     }
 
     /// Coarse to the minute so a chatty client is one write, not one per request.
@@ -421,6 +400,8 @@ pub struct NewKey<'a> {
     pub kind: &'a str,
     pub machine_id: Option<Uuid>,
     pub dispatcher_id: Option<Uuid>,
+    pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub passkey_id: Option<Uuid>,
 }
 
 pub async fn register_key(
@@ -429,8 +410,10 @@ pub async fn register_key(
     scopes: impl IntoIterator<Item = Scope>,
 ) -> Result<Uuid, sqlx::Error> {
     let key_id: (Uuid,) = sqlx::query_as(
-        "INSERT INTO auth_keys (user_id, key_hash, key_preview, label, kind, machine_id, dispatcher_id) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7) \
+        "INSERT INTO auth_keys \
+           (user_id, key_hash, key_preview, label, kind, machine_id, dispatcher_id, expires_at, \
+            passkey_id) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
          ON CONFLICT (key_hash) DO UPDATE SET label = EXCLUDED.label \
          RETURNING id",
     )
@@ -441,27 +424,12 @@ pub async fn register_key(
     .bind(key.kind)
     .bind(key.machine_id)
     .bind(key.dispatcher_id)
+    .bind(key.expires_at)
+    .bind(key.passkey_id)
     .fetch_one(pool)
     .await?;
-    for scope in scopes {
-        sqlx::query("INSERT INTO key_acls (key_id, scope) VALUES ($1, $2) ON CONFLICT DO NOTHING")
-            .bind(key_id.0)
-            .bind(scope.as_str())
-            .execute(pool)
-            .await?;
-    }
+    crate::store::acls::grant_key(pool, key_id.0, scopes).await?;
     Ok(key_id.0)
-}
-
-/// The owner's current ceiling scopes — the default grant for a new machine /
-/// dispatcher / primary key so it behaves like the owner (transparency).
-pub async fn ceiling_of(pool: &PgPool, user_id: Uuid) -> BTreeSet<Scope> {
-    let rows: Vec<(String,)> = sqlx::query_as("SELECT scope FROM user_acls WHERE user_id = $1")
-        .bind(user_id)
-        .fetch_all(pool)
-        .await
-        .unwrap_or_default();
-    rows.iter().filter_map(|(s,)| Scope::parse(s)).collect()
 }
 
 pub async fn auth_middleware(request: Request, next: Next) -> Result<Response, StatusCode> {
@@ -701,6 +669,21 @@ mod tests {
         assert!(p.ends_with("1234"));
         assert!(p.contains('•'));
         assert!(!p.contains("secret"));
+    }
+
+    #[tokio::test]
+    async fn db_failure_is_not_cached_and_env_admin_still_resolves() {
+        let pool = PgPool::connect_lazy("postgres://invalid").unwrap();
+        pool.close().await;
+        let cfg = AuthConfig::new(vec!["admin-secret".into()], pool);
+
+        assert!(cfg.validate("some-user-token").await.is_none());
+        assert!(cfg.cache_get(&sha256_hex("some-user-token")).is_none());
+
+        let admin = cfg.validate("admin-secret").await.expect("env admin fallback");
+        assert!(admin.is_admin());
+        assert!(cfg.cache_get(&sha256_hex("admin-secret")).is_none());
+        assert!(cfg.validate("admin-secre").await.is_none());
     }
 
     #[tokio::test]

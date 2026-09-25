@@ -2609,21 +2609,40 @@ pub struct MintTokenResponse {
     pub expires_at: Option<chrono::DateTime<Utc>>,
 }
 
+/// Only a human credential may mint a human token: a machine key would
+/// otherwise escalate itself. Admin may mint for anyone, a user only for itself.
+fn authorize_token_mint(ctx: &AuthContext, user_id: Uuid) -> Result<(), &'static str> {
+    if ctx.machine_id.is_some() {
+        return Err("machine keys cannot mint user tokens");
+    }
+    if !ctx.is_admin() && ctx.user_id != user_id {
+        return Err("cannot mint tokens for another user");
+    }
+    Ok(())
+}
+
+/// The minted token never carries more than the caller holds.
+fn token_grant(
+    ctx: &AuthContext,
+    ceiling: &std::collections::BTreeSet<crate::auth::Scope>,
+) -> std::collections::BTreeSet<crate::auth::Scope> {
+    ceiling.intersection(&ctx.scopes).copied().collect()
+}
+
 pub async fn mint_user_token(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Path(user_id): Path<Uuid>,
     Json(req): Json<MintTokenRequest>,
 ) -> Result<Json<MintTokenResponse>, (StatusCode, Json<ApiError>)> {
-    // Admin may mint for anyone; a user only for itself.
-    let allowed = ctx.is_admin() || ctx.user_id == user_id;
-    if !allowed {
-        return Err((
-            StatusCode::FORBIDDEN,
-            Json(ApiError { error: "cannot mint tokens for another user".into() }),
-        ));
-    }
+    authorize_token_mint(&ctx, user_id)
+        .map_err(|msg| (StatusCode::FORBIDDEN, Json(ApiError { error: msg.into() })))?;
 
+    let ceiling = crate::store::acls::user_ceiling(&state.pool, user_id).await.map_err(|e| {
+        tracing::error!("db error: {e}");
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
+    })?;
+    let grant = token_grant(&ctx, &ceiling);
     let token = user_token(&mint_secret());
     let hash = sha256_hex(&token);
     let preview = crate::auth::token_preview(&token);
@@ -2643,9 +2662,8 @@ pub async fn mint_user_token(
         (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
     })?;
 
-    // Mirror into the unified api_keys table with grant = owner's
-    // ceiling, so the token behaves identically through the new auth path.
-    let grant = crate::auth::ceiling_of(&state.pool, user_id).await;
+    // Mirror into the unified api_keys table so the token resolves through the
+    // new auth path with the clamped grant.
     if let Err(e) = crate::auth::register_key(
         &state.pool,
         crate::auth::NewKey {
@@ -2656,6 +2674,8 @@ pub async fn mint_user_token(
             kind: "user",
             machine_id: None,
             dispatcher_id: None,
+            expires_at: req.expires_at,
+            passkey_id: None,
         },
         grant,
     )
@@ -2665,6 +2685,52 @@ pub async fn mint_user_token(
     }
 
     Ok(Json(MintTokenResponse { token, label: req.label, expires_at: req.expires_at }))
+}
+
+#[cfg(test)]
+mod mint_token_tests {
+    use std::collections::BTreeSet;
+
+    use super::{AuthContext, Uuid, authorize_token_mint, token_grant};
+    use crate::auth::Scope;
+
+    fn ctx(user_id: Uuid, machine: bool, scopes: &[Scope]) -> AuthContext {
+        AuthContext {
+            user_id,
+            key_id: Uuid::new_v4(),
+            machine_id: machine.then(Uuid::new_v4),
+            scopes: scopes.iter().copied().collect(),
+        }
+    }
+
+    #[test]
+    fn machine_key_cannot_mint_for_its_own_user() {
+        let uid = Uuid::new_v4();
+        assert!(authorize_token_mint(&ctx(uid, true, &Scope::all()), uid).is_err());
+        assert!(authorize_token_mint(&ctx(uid, false, &[Scope::Read]), uid).is_ok());
+    }
+
+    #[test]
+    fn only_admin_mints_for_another_user() {
+        let target = Uuid::new_v4();
+        let other = Uuid::new_v4();
+        assert!(authorize_token_mint(&ctx(other, false, &[Scope::Read]), target).is_err());
+        assert!(authorize_token_mint(&ctx(other, false, &Scope::all()), target).is_ok());
+    }
+
+    #[test]
+    fn minted_grant_is_within_the_callers_scopes() {
+        let uid = Uuid::new_v4();
+        let ceiling: BTreeSet<Scope> = Scope::all().into_iter().collect();
+        let caller = ctx(uid, false, &[Scope::Read, Scope::Dispatch]);
+        let grant = token_grant(&caller, &ceiling);
+        assert!(grant.is_subset(&caller.scopes));
+        assert_eq!(grant, [Scope::Read, Scope::Dispatch].into_iter().collect());
+
+        let narrow: BTreeSet<Scope> = std::iter::once(Scope::Read).collect();
+        let admin = ctx(Uuid::new_v4(), false, &Scope::all());
+        assert_eq!(token_grant(&admin, &narrow), narrow);
+    }
 }
 
 #[cfg(test)]

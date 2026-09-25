@@ -437,17 +437,48 @@ pub async fn revoke(
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
-    let done = sqlx::query("DELETE FROM webauthn_credentials WHERE id = $1 AND user_id = $2")
-        .bind(id)
-        .bind(ctx.user_id)
-        .execute(&state.pool)
-        .await
-        .map_err(|e| db_error(&e))?;
-    if done.rows_affected() == 0 {
+    let Some(hashes) =
+        revoke_passkey(&state.pool, ctx.user_id, id).await.map_err(|e| db_error(&e))?
+    else {
         return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "no such passkey".into() })));
+    };
+    for hash in &hashes {
+        state.auth_config.purge(hash);
     }
-    tracing::info!(user_id = %ctx.user_id, passkey_id = %id, "passkey revoked");
+    tracing::info!(user_id = %ctx.user_id, passkey_id = %id, sessions = hashes.len(), "passkey revoked");
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Delete the passkey and revoke the login keys it minted, returning their
+/// hashes for the auth cache. Login keys minted before keys recorded their
+/// passkey are revoked too. `None` when the user has no such passkey.
+async fn revoke_passkey(
+    pool: &PgPool,
+    user_id: Uuid,
+    passkey_id: Uuid,
+) -> Result<Option<Vec<String>>, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    let done = sqlx::query("DELETE FROM webauthn_credentials WHERE id = $1 AND user_id = $2")
+        .bind(passkey_id)
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+    if done.rows_affected() == 0 {
+        return Ok(None);
+    }
+    let hashes: Vec<String> = sqlx::query_scalar(
+        "UPDATE auth_keys SET revoked_at = now() \
+         WHERE user_id = $1 AND kind = $2 AND revoked_at IS NULL \
+           AND (passkey_id = $3 OR passkey_id IS NULL) \
+         RETURNING key_hash",
+    )
+    .bind(user_id)
+    .bind(SESSION_KIND)
+    .bind(passkey_id)
+    .fetch_all(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(Some(hashes))
 }
 
 // ---------------------------------------------------------------------------
@@ -605,7 +636,10 @@ pub async fn login_finish(
     let token = auth::user_token(&auth::mint_secret());
     let hash = auth::sha256_hex(&token);
     let preview = auth::token_preview(&token);
-    let scopes = auth::ceiling_of(&state.pool, asserted.user_id).await;
+    let scopes = crate::store::acls::user_ceiling(&state.pool, asserted.user_id)
+        .await
+        .map_err(|e| db_error(&e))?;
+    let expires = Utc::now() + Duration::days(SESSION_DAYS);
     let label = format!("passkey: {}", asserted.label);
     let key_id = auth::register_key(
         &state.pool,
@@ -617,19 +651,13 @@ pub async fn login_finish(
             kind: SESSION_KIND,
             machine_id: None,
             dispatcher_id: None,
+            expires_at: Some(expires),
+            passkey_id: Some(asserted.passkey_id),
         },
         scopes,
     )
     .await
     .map_err(|e| db_error(&e))?;
-
-    let expires = Utc::now() + Duration::days(SESSION_DAYS);
-    sqlx::query("UPDATE auth_keys SET expires_at = $1 WHERE id = $2")
-        .bind(expires)
-        .bind(key_id)
-        .execute(&state.pool)
-        .await
-        .map_err(|e| db_error(&e))?;
 
     // Expired session keys are dead rows; drop the ones long past their date so
     // the admin key list stays about keys a human made.
@@ -709,6 +737,76 @@ mod tests {
         assert_eq!(normalize_label(Some("   ")).unwrap(), "Passkey");
         assert_eq!(normalize_label(Some("  iPhone  de  David ")).unwrap(), "iPhone de David");
         assert_eq!(normalize_label(Some("Clé Yubico")).unwrap(), "Clé Yubico");
+    }
+
+    #[tokio::test]
+    async fn passkey_revoke_kills_its_login_keys() {
+        let Some(url) = crate::routes::gateway::test_db_url("passkey_revoke_kills_its_login_keys")
+        else {
+            return;
+        };
+        let pool = PgPool::connect(&url).await.expect("connect test db");
+        let uid: Uuid = sqlx::query_scalar(
+            "INSERT INTO users (id, name, key_hash) \
+             VALUES (gen_random_uuid(), $1, gen_random_uuid()::text) RETURNING id",
+        )
+        .bind(format!("passkey-revoke-{}", Uuid::new_v4()))
+        .fetch_one(&pool)
+        .await
+        .expect("insert user");
+        sqlx::query("INSERT INTO user_acls (user_id, scope) VALUES ($1, 'read')")
+            .bind(uid)
+            .execute(&pool)
+            .await
+            .expect("insert ceiling");
+        let passkey_id: Uuid = sqlx::query_scalar(
+            "INSERT INTO webauthn_credentials (user_id, credential_id, passkey, label) \
+             VALUES ($1, gen_random_uuid()::text::bytea, '{}', 'test') RETURNING id",
+        )
+        .bind(uid)
+        .fetch_one(&pool)
+        .await
+        .expect("insert passkey");
+
+        let token = auth::user_token(&auth::mint_secret());
+        let hash = auth::sha256_hex(&token);
+        let key_id = auth::register_key(
+            &pool,
+            auth::NewKey {
+                user_id: uid,
+                key_hash: &hash,
+                key_preview: None,
+                label: Some("passkey: test"),
+                kind: SESSION_KIND,
+                machine_id: None,
+                dispatcher_id: None,
+                expires_at: Some(Utc::now() + Duration::days(SESSION_DAYS)),
+                passkey_id: Some(passkey_id),
+            },
+            [Scope::Read],
+        )
+        .await
+        .expect("register key");
+        let expires: Option<DateTime<Utc>> =
+            sqlx::query_scalar("SELECT expires_at FROM auth_keys WHERE id = $1")
+                .bind(key_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(expires.is_some(), "login key is inserted with its expiry");
+
+        let cfg = auth::AuthConfig::new(vec![], pool.clone());
+        assert!(cfg.validate(&token).await.is_some(), "cookie works before revoke");
+
+        let hashes = revoke_passkey(&pool, uid, passkey_id).await.unwrap().expect("found");
+        assert_eq!(hashes, vec![hash.clone()]);
+        for h in &hashes {
+            cfg.purge(h);
+        }
+        assert!(cfg.validate(&token).await.is_none(), "cookie is dead after revoke");
+        assert!(revoke_passkey(&pool, uid, passkey_id).await.unwrap().is_none());
+
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
     }
 
     #[test]

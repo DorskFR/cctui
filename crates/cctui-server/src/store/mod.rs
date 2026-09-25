@@ -6,6 +6,7 @@
 pub mod account_pools;
 pub mod account_providers;
 pub mod account_redirects;
+pub mod acls;
 pub mod sessions;
 pub mod spawn_capabilities;
 pub mod tokens;

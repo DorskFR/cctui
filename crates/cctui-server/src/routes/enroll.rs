@@ -46,54 +46,13 @@ pub async fn enroll(
         return Err(AppError::new(StatusCode::BAD_REQUEST, "hostname required"));
     }
 
-    let machine_id = Uuid::new_v4();
-    let secret = mint_secret();
-    let token = machine_token(&secret);
-    let key_hash = sha256_hex(&token);
-
     // Only `ephemeral` is honoured as a non-default; anything else (including a
     // missing field, for older daemons) stays `persistent`.
     let kind = match req.kind.as_deref() {
         Some("ephemeral") => "ephemeral",
         _ => "persistent",
     };
-
-    sqlx::query(
-        "INSERT INTO machines (id, user_id, name, key_hash, kind, key_preview) \
-         VALUES ($1, $2, $3, $4, $5, $6)",
-    )
-    .bind(machine_id)
-    .bind(user_id)
-    .bind(&req.hostname)
-    .bind(&key_hash)
-    .bind(kind)
-    .bind(crate::auth::token_preview(&token))
-    .execute(&state.pool)
-    .await?;
-
-    // Register the machine key in the unified api_keys table with a
-    // grant = the owner's full ceiling, so it behaves exactly like the owner
-    // (matching the legacy machine-key semantics). The legacy machines.key_hash
-    // is still written above for the dual-read cutover window.
-    let grant = crate::auth::ceiling_of(&state.pool, user_id).await;
-    let preview = crate::auth::token_preview(&token);
-    if let Err(e) = crate::auth::register_key(
-        &state.pool,
-        crate::auth::NewKey {
-            user_id,
-            key_hash: &key_hash,
-            key_preview: Some(&preview),
-            label: Some(&req.hostname),
-            kind: "machine",
-            machine_id: Some(machine_id),
-            dispatcher_id: None,
-        },
-        grant,
-    )
-    .await
-    {
-        tracing::warn!("failed to register machine key in api_keys: {e}");
-    }
+    let (machine_id, token) = enroll_machine(&state.pool, user_id, &req.hostname, kind).await?;
 
     tracing::info!(
         user_id = %user_id,
@@ -108,6 +67,53 @@ pub async fn enroll(
         machine_key: token,
         server_version: env!("CARGO_PKG_VERSION"),
     }))
+}
+
+/// Create the machine row and its key, granted the owner's full ceiling so it
+/// behaves exactly like the owner. The ceiling is read before anything is
+/// written: a DB error fails the enroll instead of minting a scopeless key.
+async fn enroll_machine(
+    pool: &sqlx::PgPool,
+    user_id: Uuid,
+    hostname: &str,
+    kind: &str,
+) -> Result<(Uuid, String), sqlx::Error> {
+    let grant = crate::store::acls::user_ceiling(pool, user_id).await?;
+    let machine_id = Uuid::new_v4();
+    let token = machine_token(&mint_secret());
+    let key_hash = sha256_hex(&token);
+    let preview = crate::auth::token_preview(&token);
+
+    sqlx::query(
+        "INSERT INTO machines (id, user_id, name, key_hash, kind, key_preview) \
+         VALUES ($1, $2, $3, $4, $5, $6)",
+    )
+    .bind(machine_id)
+    .bind(user_id)
+    .bind(hostname)
+    .bind(&key_hash)
+    .bind(kind)
+    .bind(&preview)
+    .execute(pool)
+    .await?;
+
+    crate::auth::register_key(
+        pool,
+        crate::auth::NewKey {
+            user_id,
+            key_hash: &key_hash,
+            key_preview: Some(&preview),
+            label: Some(hostname),
+            kind: "machine",
+            machine_id: Some(machine_id),
+            dispatcher_id: None,
+            expires_at: None,
+            passkey_id: None,
+        },
+        grant,
+    )
+    .await?;
+    Ok((machine_id, token))
 }
 
 /// `POST /api/v1/deenroll` — a machine removes itself, authenticated by its
@@ -232,4 +238,18 @@ pub async fn machine_status(
         revoked: revoked_at.is_some(),
         bandwidth,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn enroll_fails_on_db_error_instead_of_minting_a_scopeless_key() {
+        let pool = sqlx::PgPool::connect_lazy("postgres://invalid").unwrap();
+        pool.close().await;
+        let err = enroll_machine(&pool, Uuid::new_v4(), "host", "persistent").await.unwrap_err();
+        let status = axum::response::IntoResponse::into_response(AppError::from(err)).status();
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    }
 }
