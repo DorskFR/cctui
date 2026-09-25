@@ -112,7 +112,7 @@
 	// Account switcher: opened from the header key glyph or by a soft-limit block.
 	let acctModalOpen = $state(false);
 
-	const earlier = new EarlierPages({
+	const earlier: EarlierPages = new EarlierPages({
 		id: () => id,
 		historyLength: () => history.data?.length ?? 0,
 		events: () => events
@@ -121,7 +121,7 @@
 	// `seq` (falling back to `ts`); live events already present in history are
 	// dropped so a refetch and an optimistic reply's persisted form never
 	// render twice.
-	const events = $derived(mergeEventSources(history.data ?? [], earlier.pages, stream.live));
+	const events: AgentEvent[] = $derived(mergeEventSources(history.data ?? [], earlier.pages, stream.live));
 
 	// Opened from a search hit: land centred on it instead of the tail.
 	$effect(() => {

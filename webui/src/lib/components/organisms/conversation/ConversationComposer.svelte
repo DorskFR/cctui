@@ -92,7 +92,7 @@
 	const cache = new CacheColdClock({
 		adapterId: () => session.adapter_id,
 		model: () => session.model ?? null,
-		lastActivityAt: () => session.last_activity_at,
+		lastActivityAt: () => session.last_activity_at ?? null,
 		working: () => working
 	});
 	const burstTokens = $derived(session.estimated_burst_tokens ?? null);
