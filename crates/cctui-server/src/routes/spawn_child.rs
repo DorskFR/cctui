@@ -141,7 +141,7 @@ pub fn authorize(
     }
     let ceiling = match (cap.max_permission_mode, usage.parent_mode) {
         (Some(c), Some(p)) => PermissionMode::stricter(p, c),
-        (c, p) => p.or(c).unwrap_or(PermissionMode::Yolo),
+        (c, p) => p.or(c).unwrap_or(PermissionMode::Ask),
     };
     let permission_mode = match req.permission_mode {
         Some(m) if !m.within(ceiling) => {
@@ -257,8 +257,22 @@ async fn parent_account_name(state: &AppState, session_id: &str) -> Option<Strin
     .flatten()
 }
 
-async fn child_count(state: &AppState, parent_id: &str) -> u32 {
-    live_child_count(&state.pool, parent_id).await
+/// Reservations for `parent_id` whose child has not registered yet: its
+/// capability is still keyed by the spawn key and no session row exists.
+async fn pending_child_count(
+    exec: impl sqlx::PgExecutor<'_>,
+    parent_id: &str,
+) -> Result<u32, sqlx::Error> {
+    let n: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM spawn_tree_grants g \
+         WHERE g.parent_id = $1 \
+         AND EXISTS (SELECT 1 FROM session_spawn_capabilities c WHERE c.session_id = g.child_id) \
+         AND NOT EXISTS (SELECT 1 FROM sessions s WHERE s.id = g.child_id)",
+    )
+    .bind(parent_id)
+    .fetch_one(exec)
+    .await?;
+    Ok(u32::try_from(n).unwrap_or(u32::MAX))
 }
 
 /// Sum of the budgets ever granted to descendants of `root`.
@@ -286,9 +300,9 @@ async fn release_child(pool: &sqlx::PgPool, child_key: &str) {
     }
 }
 
-/// Authorize `req` and persist the child's capability in one transaction under
-/// a per-tree advisory lock, so concurrent spawns cannot both claim the same
-/// slice of the tree budget.
+/// Count children, authorize `req` and persist the child's capability in one
+/// transaction under a per-tree advisory lock, so concurrent spawns cannot both
+/// claim the same child slot or slice of the tree budget.
 async fn reserve_child(
     pool: &sqlx::PgPool,
     parent_id: &str,
@@ -309,6 +323,9 @@ async fn reserve_child(
         .await
         .map_err(db_err)?;
     usage.tree_granted_usd = tree_granted_usd(&mut *tx, &root).await.map_err(db_err)?;
+    usage.live_children = live_child_count(&mut *tx, parent_id)
+        .await
+        .saturating_add(pending_child_count(&mut *tx, parent_id).await.map_err(db_err)?);
     let authorized = authorize(cap, req, &usage).map_err(|d| match d {
         Denied::BadRequest(_) => deny(StatusCode::BAD_REQUEST, d.to_string()),
         _ => deny(StatusCode::FORBIDDEN, d.to_string()),
@@ -320,9 +337,11 @@ async fn reserve_child(
         .await
         .map_err(db_err)?;
     sqlx::query(
-        "INSERT INTO spawn_tree_grants (root_id, child_id, budget_usd) VALUES ($1, $2, $3)",
+        "INSERT INTO spawn_tree_grants (root_id, parent_id, child_id, budget_usd) \
+         VALUES ($1, $2, $3, $4)",
     )
     .bind(&root)
+    .bind(parent_id)
     .bind(child_key)
     .bind(authorized.budget_usd.unwrap_or(0.0))
     .execute(&mut *tx)
@@ -337,7 +356,7 @@ async fn reserve_child(
 /// reason is anything but `Completed` (crashed, killed, adapter error) has freed
 /// its slot, so the parent can respawn a replacement. Still-running and
 /// completed-successful children both count.
-async fn live_child_count(pool: &sqlx::PgPool, parent_id: &str) -> u32 {
+async fn live_child_count(exec: impl sqlx::PgExecutor<'_>, parent_id: &str) -> u32 {
     let n: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM sessions s \
          WHERE s.parent_id = $1 \
@@ -348,7 +367,7 @@ async fn live_child_count(pool: &sqlx::PgPool, parent_id: &str) -> u32 {
          )",
     )
     .bind(parent_id)
-    .fetch_one(pool)
+    .fetch_one(exec)
     .await
     .unwrap_or(0);
     u32::try_from(n).unwrap_or(u32::MAX)
@@ -442,11 +461,7 @@ pub async fn spawn_child(
     let parent = load_parent(&state, &session_id, caller).await?;
 
     let cap = capability_for(&state, &session_id).await;
-    let usage = Usage {
-        live_children: child_count(&state, &session_id).await,
-        tree_granted_usd: 0.0,
-        parent_mode: parent.permission_mode,
-    };
+    let usage = Usage { parent_mode: parent.permission_mode, ..Usage::default() };
     let child_id = Uuid::new_v4();
     let child_key = child_id.to_string();
     // Persisted before the frame: the child pulls its gateway env the moment it
@@ -666,7 +681,7 @@ mod tests {
             Authorized {
                 adapter: "opencode".into(),
                 budget_usd: Some(2.5),
-                permission_mode: PermissionMode::Yolo,
+                permission_mode: PermissionMode::Ask,
             }
         );
     }
@@ -731,7 +746,7 @@ mod tests {
                 Authorized {
                     adapter: (*adapter).to_owned(),
                     budget_usd: Some(cctui_proto::api::DEFAULT_CHILD_BUDGET_USD),
-                    permission_mode: PermissionMode::Yolo,
+                    permission_mode: PermissionMode::Ask,
                 }
             );
         }
@@ -1064,23 +1079,68 @@ mod tests {
     }
 
     #[test]
-    fn machine_default_is_finite_and_still_allows_grandchildren() {
+    fn machine_default_is_finite() {
         let root = SpawnCapability::machine_default();
         assert_eq!(root.max_depth, Some(cctui_proto::api::DEFAULT_MAX_DEPTH));
         assert_eq!(root.max_children, Some(cctui_proto::api::DEFAULT_MAX_CHILDREN));
         assert!(root.max_tree_budget_usd.is_some_and(f64::is_finite));
         assert!(cctui_proto::api::DEFAULT_MAX_DEPTH >= 2);
+    }
 
-        let yolo = Usage { parent_mode: Some(PermissionMode::Yolo), ..Usage::default() };
+    #[test]
+    fn with_no_mode_information_the_ceiling_is_ask() {
+        let root = SpawnCapability::machine_default();
         let mut r = req("claude-code", None);
+        assert_eq!(
+            authorize(Some(&root), &r, &usage(0)).unwrap().permission_mode,
+            PermissionMode::Ask
+        );
         r.permission_mode = Some(PermissionMode::Yolo);
-        let granted = authorize(Some(&root), &r, &yolo).unwrap();
-        let child = root.inherited("root", granted.budget_usd, Some(granted.permission_mode));
-        let granted = authorize(Some(&child), &r, &yolo).unwrap();
-        assert_eq!(granted.permission_mode, PermissionMode::Yolo);
-        let grandchild =
-            child.inherited("child", granted.budget_usd, Some(granted.permission_mode));
-        assert!(authorize(Some(&grandchild), &r, &yolo).is_ok(), "depth 3 still spawns");
+        assert!(matches!(
+            authorize(Some(&root), &r, &usage(0)),
+            Err(Denied::PermissionMode { max: PermissionMode::Ask, .. })
+        ));
+    }
+
+    /// A session launched in yolo is stamped with a yolo ceiling at spawn time,
+    /// and its tree keeps spawning yolo descendants even when no session row
+    /// ever reports a live mode.
+    #[test]
+    fn a_yolo_launched_tree_spawns_yolo_children_and_grandchildren() {
+        let root = SpawnCapability {
+            max_permission_mode: Some(PermissionMode::Yolo),
+            ..SpawnCapability::machine_default()
+        };
+        let unknown = usage(0);
+        let mut explicit = req("claude-code", None);
+        explicit.permission_mode = Some(PermissionMode::Yolo);
+        let implicit = req("codex", None);
+
+        let mut node = root;
+        let mut id = "root".to_owned();
+        for generation in 1..=cctui_proto::api::DEFAULT_MAX_DEPTH {
+            let a = authorize(Some(&node), &explicit, &unknown).unwrap();
+            assert_eq!(a.permission_mode, PermissionMode::Yolo, "generation {generation}");
+            let b = authorize(Some(&node), &implicit, &unknown).unwrap();
+            assert_eq!(b.permission_mode, PermissionMode::Yolo, "an omitted mode inherits yolo");
+            node = node.inherited(&id, a.budget_usd, Some(a.permission_mode));
+            assert_eq!(node.max_permission_mode, Some(PermissionMode::Yolo));
+            id = format!("gen-{generation}");
+        }
+        assert_eq!(authorize(Some(&node), &explicit, &unknown), Err(Denied::Depth));
+
+        let reported_yolo = Usage { parent_mode: Some(PermissionMode::Yolo), ..Usage::default() };
+        let child =
+            SpawnCapability::machine_default().inherited("r", None, Some(PermissionMode::Yolo));
+        assert_eq!(
+            authorize(Some(&child), &explicit, &reported_yolo).unwrap().permission_mode,
+            PermissionMode::Yolo
+        );
+        let toggled_to_ask = Usage { parent_mode: Some(PermissionMode::Ask), ..Usage::default() };
+        assert!(
+            authorize(Some(&child), &explicit, &toggled_to_ask).is_err(),
+            "a yolo tree whose parent was switched to ask stops minting yolo children"
+        );
     }
 
     #[test]
@@ -1190,6 +1250,46 @@ mod tests {
             .ok();
         sqlx::query("DELETE FROM spawn_tree_grants WHERE root_id = $1")
             .bind(&root_id)
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
+    /// DB-gated: a reserved child that has not registered yet still occupies
+    /// its slot, so back-to-back spawns cannot overshoot `max_children`.
+    #[tokio::test]
+    async fn unregistered_reservations_count_against_max_children() {
+        let Some(url) = crate::routes::gateway::test_db_url("spawn_child_pending_slots") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let parent_id = Uuid::new_v4().to_string();
+        let parent = cap(&["codex"], Some(1.0), Some(2));
+        for _ in 0..2 {
+            let key = Uuid::new_v4().to_string();
+            reserve_child(&pool, &parent_id, Some(&parent), &req("codex", None), usage(0), &key)
+                .await
+                .expect("within the child cap");
+        }
+        let key = Uuid::new_v4().to_string();
+        let err =
+            reserve_child(&pool, &parent_id, Some(&parent), &req("codex", None), usage(0), &key)
+                .await
+                .unwrap_err();
+        assert_eq!(err.0, StatusCode::FORBIDDEN);
+        assert!(err.1.error.contains("maximum of 2"), "{}", err.1.error);
+
+        sqlx::query("DELETE FROM session_spawn_capabilities WHERE capability->>'tree_root' = $1")
+            .bind(&parent_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM spawn_tree_grants WHERE root_id = $1")
+            .bind(&parent_id)
             .execute(&pool)
             .await
             .ok();

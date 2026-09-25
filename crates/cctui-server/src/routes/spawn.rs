@@ -365,10 +365,10 @@ pub async fn dispatch_spawn(
             .clone()
             .filter(|c| !c.is_empty())
             .unwrap_or_else(cctui_proto::api::SpawnCapability::machine_default);
-        cap.max_permission_mode = match (cap.max_permission_mode, permission_mode) {
-            (Some(c), Some(m)) => Some(cctui_proto::adapter::PermissionMode::stricter(c, m)),
-            (c, m) => c.or(m),
-        };
+        let launched = permission_mode.unwrap_or(cctui_proto::adapter::PermissionMode::Ask);
+        cap.max_permission_mode = Some(cap.max_permission_mode.map_or(launched, |c| {
+            cctui_proto::adapter::PermissionMode::stricter(c, launched)
+        }));
         if let Err(e) =
             crate::store::spawn_capabilities::upsert(&state.pool, &token_session_id, &cap).await
         {
