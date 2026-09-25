@@ -33,6 +33,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
+use cctui_proto::backoff::Backoff;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
@@ -268,7 +269,7 @@ impl AttachTask {
     }
 
     async fn run(self) {
-        let mut backoff = BACKOFF_MIN;
+        let mut backoff = Backoff::new(BACKOFF_MIN, BACKOFF_MAX);
         loop {
             if self.cancel.is_cancelled() {
                 return;
@@ -277,7 +278,7 @@ impl AttachTask {
                 AttachOutcome::Detached => {
                     // Clean detach (settle / kick / respawn): reconnect quickly
                     // in case the worker came back under the same short.
-                    backoff = BACKOFF_MIN;
+                    backoff.reset();
                 }
                 AttachOutcome::HeldDead => {
                     // Keep-alive FAILED: the liveness probe found the
@@ -288,14 +289,14 @@ impl AttachTask {
                     // is truly gone the reject will downgrade us to Gone and the
                     // next poll drops us from the roster (where `resume_worker`
                     // can revive a still-revivable session).
-                    backoff = BACKOFF_MIN;
+                    backoff.reset();
                 }
                 AttachOutcome::Gone => {
                     // ENOJOB / EUNVERIFIED: the worker is unrecoverable under
                     // this short. The next poll will drop us from the roster
                     // and cancel this task; back off hard meanwhile so we don't
                     // hammer the socket.
-                    backoff = BACKOFF_MAX;
+                    backoff.saturate();
                 }
                 AttachOutcome::Unauthorized => {
                     // EAUTH: the control key is missing/rotated/wrong, so every
@@ -303,19 +304,16 @@ impl AttachTask {
                     // hard like `Gone` so we don't hammer the socket, but unlike
                     // `Gone` the roster won't drop us — keep retrying so a
                     // regenerated key (re-read fresh each cycle) is picked up.
-                    backoff = BACKOFF_MAX;
+                    backoff.saturate();
                 }
-                AttachOutcome::Retry => {
-                    backoff = (backoff * 2).min(BACKOFF_MAX);
-                }
+                AttachOutcome::Retry => {}
             }
             self.note(|s| {
                 "reconnecting".clone_into(&mut s.phase);
-                s.backoff = Some(backoff);
+                s.backoff = Some(backoff.peek());
             });
-            tokio::select! {
-                () = self.cancel.cancelled() => return,
-                () = tokio::time::sleep(backoff) => {}
+            if !backoff.sleep(&self.cancel).await {
+                return;
             }
         }
     }

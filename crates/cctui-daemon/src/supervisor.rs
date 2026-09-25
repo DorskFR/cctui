@@ -12,6 +12,7 @@ use std::time::Duration;
 use cctui_crypto::redact::{self, CompiledPatterns};
 use cctui_proto::adapter::{AdapterCommand, AdapterEvent};
 use cctui_proto::api::DaemonAdapterConfig;
+use cctui_proto::backoff::Backoff;
 use cctui_proto::ws::{DaemonFrameDown, DaemonFrameUp, SecretScrubConfig};
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
@@ -24,8 +25,6 @@ use crate::client::ServerClient;
 use crate::counters::{BandwidthCounters, Subsystem};
 use crate::sendguard::{MAX_ATTEMPTS, MAX_PAYLOAD_BYTES, SendGuard};
 
-/// Backoff schedule. Capped at the last entry on subsequent failures.
-const BACKOFF_SECS: &[u64] = &[5, 10, 20, 60];
 /// Gap before the first retry of a refused job removal. It doubles on
 /// every further refusal (see [`purge_gap`]).
 const PURGE_RETRY: Duration = Duration::from_mins(10);
@@ -216,7 +215,7 @@ impl Supervisor {
         let mut running: HashMap<String, AdapterRunning> = HashMap::new();
         let (event_tx, mut event_rx) = mpsc::channel::<(String, AdapterEvent)>(256);
 
-        let mut attempt = 0usize;
+        let mut backoff = Backoff::reconnect();
         loop {
             if shutdown.is_cancelled() {
                 break;
@@ -224,15 +223,13 @@ impl Supervisor {
             match self.run_once(shutdown.clone(), &mut running, &event_tx, &mut event_rx).await {
                 Ok(()) => {
                     tracing::info!("daemon WS closed cleanly, reconnecting");
-                    attempt = 0;
+                    backoff.reset();
                 }
                 Err(err) => {
-                    let delay = BACKOFF_SECS[attempt.min(BACKOFF_SECS.len() - 1)];
-                    tracing::warn!(%err, attempt, "daemon connection failed; retry in {delay}s");
-                    attempt = attempt.saturating_add(1);
-                    tokio::select! {
-                        () = tokio::time::sleep(Duration::from_secs(delay)) => {}
-                        () = shutdown.cancelled() => break,
+                    let attempt = backoff.attempt();
+                    tracing::warn!(%err, attempt, "daemon connection failed; retry in ~{:?}", backoff.peek());
+                    if !backoff.sleep(&shutdown).await {
+                        break;
                     }
                 }
             }

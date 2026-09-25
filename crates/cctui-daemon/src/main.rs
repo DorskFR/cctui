@@ -182,10 +182,34 @@ fn auto_update_enabled(flag: bool) -> bool {
     !matches!(std::env::var("CCTUI_DAEMON_AUTOUPDATE").as_deref(), Ok("0" | "false"))
 }
 
-/// Same escalating schedule as the supervisor's WS reconnect loop, applied to
-/// the pre-supervisor auth so a server outage / no-network boot never exits
-/// the service into a launchd/systemd respawn loop.
-const AUTH_BACKOFF_SECS: &[u64] = &[5, 10, 20, 60];
+/// Retries transient auth failures so a server outage / no-network boot never
+/// exits the service into a launchd/systemd respawn loop. `None` on shutdown.
+async fn auth_with_retry<T, F, Fut>(
+    mut auth: F,
+    shutdown: &CancellationToken,
+) -> Option<anyhow::Result<T>>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<T>>,
+{
+    let mut backoff = cctui_proto::backoff::Backoff::reconnect();
+    loop {
+        let result = tokio::select! {
+            r = auth() => r,
+            () = shutdown.cancelled() => return None,
+        };
+        match result {
+            Ok(v) => return Some(Ok(v)),
+            Err(err) if err.downcast_ref::<AuthRejected>().is_some() => return Some(Err(err)),
+            Err(err) => {
+                tracing::warn!(%err, retry_in = ?backoff.peek(), "daemon_auth failed; retrying");
+                if !backoff.sleep(shutdown).await {
+                    return None;
+                }
+            }
+        }
+    }
+}
 
 /// Run the long-lived daemon: authenticate, wire up the optional self-update
 /// loop, then run the supervisor until shutdown (`Cmd::Run`).
@@ -198,27 +222,6 @@ async fn run_daemon(path: &std::path::Path, no_auto_update: bool) -> anyhow::Res
     let counters = cctui_daemon::counters::BandwidthCounters::new();
     counters.persist();
     let client = ServerClient::new(&cfg.server_url).with_counters(counters.clone());
-    let mut attempt = 0usize;
-    let auth = loop {
-        match client.daemon_auth(&cfg.machine_key).await {
-            Ok(auth) => break auth,
-            Err(err) if err.downcast_ref::<AuthRejected>().is_some() => {
-                return Err(fatal::mark(err));
-            }
-            Err(err) => {
-                let delay = AUTH_BACKOFF_SECS[attempt.min(AUTH_BACKOFF_SECS.len() - 1)];
-                tracing::warn!(%err, retry_in_secs = delay, "daemon_auth failed; retrying");
-                attempt += 1;
-                tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
-            }
-        }
-    };
-    tracing::info!(machine_id = %auth.machine_id, user_id = %auth.user_id, "authenticated");
-    // Captured for the self-update loop before `machine_key` is moved
-    // into the supervisor; both flow to the server-routed updater.
-    let update_server_url = cfg.server_url.clone();
-    let update_machine_key = cfg.machine_key.clone();
-    let supervisor = Supervisor::new(client, cfg.machine_key, adapters::registry());
     let shutdown = CancellationToken::new();
     // SIGTERM must reach the graceful path, not just Ctrl-C: a dispatched worker
     // is torn down with `kill`, and the default SIGTERM disposition would kill the
@@ -228,6 +231,17 @@ async fn run_daemon(path: &std::path::Path, no_auto_update: bool) -> anyhow::Res
         wait_for_termination().await;
         signal_token.cancel();
     });
+    let auth = match auth_with_retry(|| client.daemon_auth(&cfg.machine_key), &shutdown).await {
+        Some(Ok(auth)) => auth,
+        Some(Err(err)) => return Err(fatal::mark(err)),
+        None => return Ok(()),
+    };
+    tracing::info!(machine_id = %auth.machine_id, user_id = %auth.user_id, "authenticated");
+    // Captured for the self-update loop before `machine_key` is moved
+    // into the supervisor; both flow to the server-routed updater.
+    let update_server_url = cfg.server_url.clone();
+    let update_machine_key = cfg.machine_key.clone();
+    let supervisor = Supervisor::new(client, cfg.machine_key, adapters::registry());
     if auto_update_enabled(no_auto_update) {
         let interval = selfupdate::poll_interval();
         tracing::info!(interval_secs = interval.as_secs(), "auto-update enabled");
@@ -369,5 +383,35 @@ async fn main() -> anyhow::Result<()> {
         Cmd::WhipStopHook { phrases } => {
             std::process::exit(cctui_daemon::whipstop::run(phrases.as_deref()))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, Instant};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn auth_retry_returns_promptly_on_shutdown() {
+        let shutdown = CancellationToken::new();
+        let cancel = shutdown.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            cancel.cancel();
+        });
+        let started = Instant::now();
+        let out = auth_with_retry(|| async { Err::<(), _>(anyhow::anyhow!("offline")) }, &shutdown)
+            .await;
+        assert!(out.is_none());
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[tokio::test]
+    async fn auth_retry_skips_auth_when_already_cancelled() {
+        let shutdown = CancellationToken::new();
+        shutdown.cancel();
+        let out = auth_with_retry(|| std::future::pending::<anyhow::Result<()>>(), &shutdown).await;
+        assert!(out.is_none());
     }
 }

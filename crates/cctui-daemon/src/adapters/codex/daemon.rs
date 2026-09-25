@@ -32,6 +32,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use cctui_proto::backoff::Backoff;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use tokio::net::UnixStream;
@@ -225,7 +226,7 @@ async fn supervise(
     connected: Arc<AtomicBool>,
     shutdown: CancellationToken,
 ) {
-    let mut backoff = BACKOFF_MIN;
+    let mut backoff = Backoff::new(BACKOFF_MIN, BACKOFF_MAX);
     let mut generation = 0_u64;
     let mut routes = Routes::default();
     loop {
@@ -236,7 +237,7 @@ async fn supervise(
             Ok((stream, init)) => {
                 routes.init = Some(init);
                 generation += 1;
-                backoff = BACKOFF_MIN;
+                backoff.reset();
                 connected.store(true, Ordering::Relaxed);
                 let _ = events.send(DaemonEvent::Connected { generation });
                 tracing::info!(
@@ -254,11 +255,9 @@ async fn supervise(
             }
             Err(err) => tracing::debug!(%err, "codex: shared app-server connect failed"),
         }
-        tokio::select! {
-            () = shutdown.cancelled() => return,
-            () = tokio::time::sleep(backoff) => {}
+        if !backoff.sleep(&shutdown).await {
+            return;
         }
-        backoff = (backoff * 2).min(BACKOFF_MAX);
     }
 }
 
