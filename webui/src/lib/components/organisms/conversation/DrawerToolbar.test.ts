@@ -159,3 +159,41 @@ describe('single-row toolbar', () => {
 		expect(trigger.querySelector('.narrow')?.textContent).toBe('2');
 	});
 });
+
+describe('drawer toolbar sizing', () => {
+	const css = toolbarSource.slice(toolbarSource.indexOf('<style>'));
+
+	it('switches form on the bar width, not the viewport', () => {
+		expect(css).toContain('container: drawer-toolbar / inline-size');
+		expect(css).toContain('@container drawer-toolbar (max-width: 1000px)');
+		expect(css).not.toContain('@media');
+	});
+
+	it('drops the labels and floats the behaviour group in the compact form', () => {
+		const q = css.slice(css.indexOf('@container drawer-toolbar'));
+		const body = q.slice(0, q.indexOf('\n\t}'));
+		expect(body).toContain('.wide {');
+		expect(body).toContain('.narrow {');
+		expect(body).toContain('margin-left: auto');
+	});
+
+	it('never lets auto-approve or pins be the group that clips', () => {
+		expect(css).toMatch(/\.behbar,\n\t\.hitbar \{\n\t\tflex: none;/);
+		const tag = css.slice(css.indexOf('.tagbar {'));
+		const body = tag.slice(0, tag.indexOf('}'));
+		expect(body).toContain('min-width: 0');
+		expect(body).toContain('overflow: hidden');
+	});
+
+	it('keeps the compact ⚡ and 📌 named and right-aligned', () => {
+		expect(toolbarSource).toContain('aria-label={m.conversation_auto_approve_aria()}');
+		expect(toolbarSource).toContain('title={m.conversation_auto_approve_title()}');
+		expect(toolbarSource).toContain('label={m.conversation_pins_aria()}');
+		const q = css.slice(css.indexOf('@container drawer-toolbar'));
+		expect(q.slice(0, q.indexOf('\n\t}'))).toContain('margin-left: auto');
+	});
+
+	it('adds no :global override', () => {
+		expect(toolbarSource).not.toContain(':global(');
+	});
+});

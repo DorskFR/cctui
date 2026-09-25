@@ -193,6 +193,7 @@
 		padding: var(--sp-2) var(--sp-3);
 		border-bottom: 1px solid var(--border);
 		font-size: var(--fs-xs);
+		container: drawer-toolbar / inline-size;
 		/* Px, not rem: the text-size control rescales the root, and the bar must
 		   not shift under the cursor while it moves. */
 		--fs-xs: 12px;
@@ -206,6 +207,18 @@
 	.hitbar {
 		gap: var(--sp-1);
 		flex-wrap: nowrap;
+	}
+	/* Auto-approve and Pins sit at the right edge, where an overflow clips them
+	   out of reach entirely. Any residual overflow is absorbed by the filters
+	   group instead, which can still be reopened from its own popover. */
+	.tagbar {
+		min-width: 0;
+		flex: 0 1 auto;
+		overflow: hidden;
+	}
+	.behbar,
+	.hitbar {
+		flex: none;
 	}
 	.hitbar {
 		align-items: center;
@@ -223,7 +236,12 @@
 	.narrow {
 		display: none;
 	}
-	@media (max-width: 959px) {
+	/* The drawer is a resizable panel, so the form is chosen by the bar's own
+	   width, never the viewport. The full form needs, at 12px: role pills
+	   83+97+61, the filters chip 192, the hit stepper 155, auto-approve 154,
+	   pins 118, plus group gaps, rules and padding — about 940px in the longest
+	   locale with a search active. Below 1000px it cannot be trusted to fit. */
+	@container drawer-toolbar (max-width: 1000px) {
 		.wide {
 			display: none;
 		}

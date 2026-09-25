@@ -5,6 +5,7 @@ import fr from '../../../../../messages/fr.json?raw';
 
 const markup = header.slice(header.indexOf('</script>'));
 const script = header.slice(0, header.indexOf('</script>'));
+const css = header.slice(header.indexOf('<style>'));
 const trail = markup.slice(markup.indexOf('<div class="meta-trail">'), markup.indexOf('{#if keepaliveOpen}'));
 const popover = markup.slice(markup.indexOf('<Popover'), markup.indexOf('</Popover>'));
 
@@ -15,28 +16,38 @@ describe('drawer header meta row', () => {
 		for (const s of ['<WorkingDir', 'class="branch"']) expect(popover, s).not.toContain(s);
 	});
 
-	it('drops langfuse below 40rem and the model badge below 26rem', () => {
-		expect(script).toContain('const LANGFUSE_BELOW_REM = 40;');
-		expect(script).toContain('const MODEL_BELOW_REM = 26;');
-		expect(script).toContain('headWidth < LANGFUSE_BELOW_REM * rootFontPx');
-		expect(script).toContain('headWidth < MODEL_BELOW_REM * rootFontPx');
-		expect(markup).toContain('bind:clientWidth={headWidth}');
-		expect(trail).toContain('{#if !hideLangfuse}');
-		expect(trail).toContain("{#if !hideModel}{@render modelMeta('drawer')}{/if}");
+	it('decides every width from the drawer container, never the viewport or JS', () => {
+		expect(css).toContain('container: drawer-head / inline-size');
+		expect(css).toContain('@container drawer-head (max-width: 40rem)');
+		expect(css).toContain('@container drawer-head (max-width: 26rem)');
+		expect(css).not.toContain('@media');
+		expect(header).not.toContain('clientWidth={headWidth}');
+		expect(script).not.toContain('getComputedStyle');
 	});
 
-	it('measures the width in root font units rather than assuming 16px', () => {
-		expect(script).toContain('getComputedStyle(document.documentElement).fontSize');
+	it('drops langfuse below 40rem and the model badge and its editor below 26rem', () => {
+		const wide = css.slice(css.indexOf('@container drawer-head (max-width: 40rem)'));
+		expect(wide.slice(0, wide.indexOf('\n\t}'))).toContain('.langfuse,');
+		const narrow = css.slice(css.indexOf('@container drawer-head (max-width: 26rem)'));
+		const body = narrow.slice(0, narrow.indexOf('\n\t}'));
+		expect(body).toContain('.model,');
+		expect(body).toContain('.model-edit');
 	});
 
-	it('shows the ⓘ trigger only once something is hidden', () => {
-		expect(script).toMatch(/showDetails = \$derived\(\(hideLangfuse \|\| hideModel\) && hasModelMeta\)/);
-		expect(trail).toContain('{#if showDetails}');
-		expect(script).toContain('let headWidth = $state(Infinity);');
+	it('declares the model-edit base rule before the query that hides it', () => {
+		expect(css.indexOf('.model-edit {')).toBeLessThan(css.indexOf('@container drawer-head (max-width: 26rem)'));
 	});
 
-	it('puts the hidden items behind the trigger, model editor included', () => {
-		expect(popover).toContain('{#if hideLangfuse}<span class="langfuse"><LangfuseChip');
+	it('reveals the ⓘ trigger exactly when the first item goes', () => {
+		expect(css).toMatch(/\n\t\.meta-details \{\n\t\tdisplay: none;/);
+		const wide = css.slice(css.indexOf('@container drawer-head (max-width: 40rem)'));
+		expect(wide.slice(0, wide.indexOf('\n\t}'))).toContain('.meta-details {');
+		expect(trail).toContain('{#if hasModelMeta}');
+		expect(script).toContain('const hasModelMeta = $derived(');
+	});
+
+	it('puts the droppable items behind the trigger, model editor included', () => {
+		expect(popover).toContain('<span class="langfuse"><LangfuseChip');
 		expect(popover).toContain("{@render modelMeta('drawer-details')}");
 		const snippet = markup.slice(markup.indexOf('{#snippet modelMeta'), markup.indexOf('{#snippet modelMeta') + 2000);
 		expect(snippet).toContain('<ModelPicker');
@@ -53,17 +64,17 @@ describe('drawer header meta row', () => {
 
 	it('names the trigger and lets the kit own aria-expanded and Escape', () => {
 		expect(popover).toContain('label={m.drawer_meta_details()}');
-		expect(popover).toContain("{#snippet trigger()}<Icon name=\"info\"");
+		expect(popover).toContain('{#snippet trigger()}<Icon name="info"');
 		expect(header).toContain('Popover,');
 		for (const msgs of [en, fr]) expect(JSON.parse(msgs).drawer_meta_details).toBeTruthy();
 	});
 
-	it('restores the full model text inside the popover', () => {
-		const css = header.slice(header.indexOf('<style>'));
+	it('un-hides everything the row dropped once it is inside the popover', () => {
 		expect(css).toContain('.metapop .m-full');
 		expect(css).toContain('.metapop .m-short');
-		expect(css).not.toMatch(/@container drawer-head \(max-width: 26rem\)/);
-		expect(css).not.toMatch(/\.langfuse,\n\s*\.m-effort/);
+		expect(css).toContain('.metapop .langfuse,');
+		expect(css).toContain('.metapop .model-edit');
+		expect(css).toContain('.metapop .model {');
 	});
 
 	it('adds no horizontal overflow escape hatch', () => {
