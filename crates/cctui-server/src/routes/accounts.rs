@@ -287,7 +287,7 @@ pub struct ProviderInfo {
     pub provider_settings: Option<serde_json::Value>,
     /// Per-(account, provider) gateway rate limits `{ rpm?, tpm? }`, enforced in
     /// the proxy path. NULL ⇒ no throttling.
-    #[ts(as = "Option<crate::routes::gateway::ratelimit::RateLimits>")]
+    #[ts(as = "Option<crate::routes::gateway::RateLimits>")]
     pub rate_limits: Option<serde_json::Value>,
 }
 
@@ -542,7 +542,7 @@ pub struct ProviderSpec {
     /// Per-(account, provider) gateway rate limits `{ rpm?, tpm? }`. Absent ⇒
     /// NULL (no throttling). Validated before persist.
     #[serde(default)]
-    #[ts(as = "Option<crate::routes::gateway::ratelimit::RateLimits>", optional)]
+    #[ts(as = "Option<crate::routes::gateway::RateLimits>", optional)]
     pub rate_limits: Option<serde_json::Value>,
 }
 
@@ -695,7 +695,7 @@ pub struct UpdateProvider {
     /// Replacement rate-limit object `{ rpm?, tpm? }`. Provided → replaces the
     /// stored value (an empty object / zeros clear it); absent → unchanged.
     #[serde(default)]
-    #[ts(as = "Option<crate::routes::gateway::ratelimit::RateLimits>", optional)]
+    #[ts(as = "Option<crate::routes::gateway::RateLimits>", optional)]
     pub rate_limits: Option<serde_json::Value>,
 }
 
