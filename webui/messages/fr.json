@@ -1009,6 +1009,8 @@
 	"pull_no_file_changes": "Cette pull request ne modifie aucun fichier.",
 	"pull_review_diff": "Relire le diff",
 	"pull_review_with_agent": "Relire avec l'agent",
+	"release_channel_beta": "bêta",
+	"release_channel_beta_title": "Canal bêta : une pré-version",
 	"resource_gauge_aria": "{machine} : CPU {cpu}, mémoire {mem}, disque {disk}",
 	"resource_gauge_cpu": "CPU",
 	"resource_gauge_disk": "Disque",
