@@ -563,7 +563,7 @@ pub async fn rotate_machine(
         .bind(id)
         .execute(&state.pool)
         .await?;
-    // Auth resolves against auth_keys first; without this the old key keeps
+    // Auth resolves against auth_keys first; without this the replaced key keeps
     // authenticating and the new one only works via the legacy dual-read.
     let mirrored = sqlx::query(
         "UPDATE auth_keys SET key_hash = $1, key_preview = $2 \

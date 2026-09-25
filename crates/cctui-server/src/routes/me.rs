@@ -1,9 +1,6 @@
 //! `GET /api/v1/me` — who the presented token resolves to.
 //!
-//! The webui stores a single opaque bearer and previously had no way to tell
-//! whether it was the admin token, a user token, or something else — which made
-//! "user token required" errors (e.g. on the OAuth account endpoints) baffling.
-//! This returns the resolved role + identity plus a non-secret preview of the
+//! Returns the resolved role + identity plus a non-secret preview of the
 //! presented token (same shape as `token_preview`, never the full secret).
 
 use axum::extract::State;

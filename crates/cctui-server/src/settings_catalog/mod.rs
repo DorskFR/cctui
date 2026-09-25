@@ -352,8 +352,7 @@ impl Catalog {
 
     /// Validate a FREE-FORM per-account env map: each name must be a
     /// well-formed env var name and NOT denylisted. Values are arbitrary (they may
-    /// be secrets). This replaces the old curated-allowlist gate for the
-    /// account-level encrypted env blob.
+    /// be secrets). Gates the account-level encrypted env blob.
     #[must_use]
     pub fn validate_free_env(&self, env: &BTreeMap<String, String>) -> ValidationReport {
         let mut violations = Vec::new();

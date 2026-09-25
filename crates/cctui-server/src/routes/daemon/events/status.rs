@@ -59,7 +59,7 @@ async fn write_status_signals(
     // incoming name differs from the stored one. A stored name that is the
     // incoming one behind an emoji prefix is left alone, or every Status would
     // paste the table's emoji back over the model's. The whole prefix is
-    // matched, so a new title that merely ends the old name still lands.
+    // matched, so a new title that merely ends the stored name still lands.
     let row: Option<(Option<String>, bool)> = sqlx::query_as(
         "WITH claim AS ( \
             SELECT s.id, \

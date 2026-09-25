@@ -105,13 +105,9 @@ pub(in crate::routes::daemon) async fn persist_session_end(
     .bind(user_id)
     .execute(pool)
     .await?;
-    // Flip to the sticky terminal status `ended` so clients render the
-    // terminal state IMMEDIATELY. Plain `inactive` was re-derived back to
-    // Active for ~5 min from the still-recent heartbeat (admin::derive_status
-    // is time-based) — masking the end of unattended/dispatched jobs. `ended`
-    // is honoured as terminal by the list/search read paths regardless of
-    // heartbeat age. We do not delete the row — archival remains the
-    // persistence story; un-archive/resume can revive it.
+    // `ended` is sticky: read paths treat it as terminal regardless of
+    // heartbeat age, whereas `inactive` would be re-derived to Active from a
+    // still-recent heartbeat. Resume can revive the row.
     sqlx::query(concat!(
         "UPDATE sessions SET status = 'ended', ended_at = now(), end_reason = $2, \
                  end_detail = $3 \

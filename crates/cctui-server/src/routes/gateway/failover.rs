@@ -539,8 +539,7 @@ mod tests {
 
     #[test]
     fn an_unstamped_session_is_not_eligible_for_an_in_pool_move() {
-        // The dispatch path used to leave `session_tokens.pool_id` null, which
-        // is what made `pool.failover` inert for every dispatched session.
+        // A null `session_tokens.pool_id` makes `pool.failover` inert.
         assert!(!in_pool_failover_armed(None));
         assert!(!in_pool_failover_armed(Some(&pool(
             crate::store::account_pools::STRATEGY_HEADROOM,

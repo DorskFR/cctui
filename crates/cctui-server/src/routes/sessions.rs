@@ -2348,8 +2348,7 @@ pub async fn resume_session(
 ///
 /// Mints a `command_id` so the adapter echoes back an
 /// `AdapterEvent::CommandResult` → `ServerEvent::CommandResult`; the webui
-/// awaits it before confirming the change, rather than the old fire-and-forget
-/// 204 that reported success even when the app-server rejected the change.
+/// awaits it before confirming the change.
 /// Returns the id in the response body, mirroring interrupt.
 pub async fn set_model(
     State(state): State<AppState>,

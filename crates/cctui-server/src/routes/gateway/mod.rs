@@ -223,7 +223,7 @@ mod tests {
         assert!(orphan_is_blocked_at(&map, fp, now), "precondition: fp is blocked");
 
         clear_orphan_fingerprint(&map, fp);
-        // No longer blocked — the next gateway request goes back to the DB
+        // Unblocked — the next gateway request goes back to the DB
         // lookup instead of being dropped.
         assert!(!orphan_is_blocked_at(&map, fp, now));
         // And the window restarts from scratch: one fresh 401 doesn't re-block.

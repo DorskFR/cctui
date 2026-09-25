@@ -1450,7 +1450,7 @@ mod tests {
     }
 
     /// disconnect cleanup only removes the entry when it is still the
-    /// same channel — a reconnect's newer channel must survive the old WS
+    /// same channel — a reconnect's newer channel must survive the stale WS
     /// task's cleanup.
     #[tokio::test]
     async fn unregister_daemon_guards_reconnect_race() {

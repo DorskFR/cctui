@@ -1778,8 +1778,7 @@ async fn soft_limit_blocked_sessions(
 ///
 /// Each candidate is judged against the limit that blocked it, so a session over
 /// its own `session_usd` budget stays blocked however high the account cap goes.
-/// A row from before the key column carries `None` and keeps the old
-/// whole-config reading. Clear-only (no re-block); pure so it is unit-testable.
+/// A `None` key is judged against the whole config. Clear-only (no re-block); pure so it is unit-testable.
 fn soft_limit_blocks_to_clear(
     candidates: &[(String, Option<String>)],
     windows: &[crate::soft_limit::UsageWindow],
@@ -2679,7 +2678,7 @@ pub async fn list_shares(
 }
 
 /// `POST /api/v1/accounts/{id}/shares` — grant `use` to another user (owner-
-/// scoped). `user` is a UUID or login. Idempotent: re-granting a previously
+/// scoped). `user` is a UUID or login. Idempotent: re-granting a
 /// revoked share un-revokes it in place rather than 409ing on the primary key.
 pub async fn grant_share(
     State(state): State<AppState>,
