@@ -23,5 +23,8 @@ FROM debian:bookworm-slim@sha256:63a496b5d3b99214b39f5ed70eb71a61e590a77979c79cb
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libssl3 \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /app/target/release/cctui-server /usr/local/bin/cctui-server
+RUN useradd --system --uid 10001 --user-group --create-home --home-dir /home/cctui cctui \
+    && mkdir -p /skills /archive && chown 10001:10001 /skills /archive
+USER 10001
 EXPOSE 8700
 CMD ["cctui-server"]

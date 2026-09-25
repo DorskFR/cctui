@@ -23,4 +23,6 @@ RUN cargo build --release -p cctui-orchestrator
 FROM debian:bookworm-slim@sha256:63a496b5d3b99214b39f5ed70eb71a61e590a77979c79cbee4faf991f8c0783e
 RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /app/target/release/cctui-orchestrator /usr/local/bin/cctui-orchestrator
+RUN useradd --system --uid 10001 --user-group --create-home --home-dir /home/cctui cctui
+USER 10001
 ENTRYPOINT ["/usr/local/bin/cctui-orchestrator"]
