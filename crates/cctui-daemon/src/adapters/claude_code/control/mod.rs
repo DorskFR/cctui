@@ -30,6 +30,7 @@ use super::launch::{self, JobIds, LaunchArgs};
 use super::state::{StateJson, default_jobs_root};
 use super::transcript::{self, OffsetStore, default_projects_root};
 use super::{SessionMap, socket};
+use crate::adapter_runtime::{CommandOutcome, Handled, SessionDriver};
 
 mod diagnose;
 mod removal;
@@ -788,6 +789,7 @@ impl Driver {
         self.maybe_dispatch_on_start().await;
         let mut tick = tokio::time::interval(self.cfg.poll_interval);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let events = self.events.clone();
         loop {
             tokio::select! {
                 () = self.shutdown.cancelled() => {
@@ -808,27 +810,7 @@ impl Driver {
                     }
                 }
                 Some(cmd) = self.commands.recv() => {
-                    if let AdapterCommand::ResumeMarks { marks } = cmd {
-                        // Clamping cursors needs &mut self, so it can't ride the
-                        // &self handle_command dispatch below.
-                        self.apply_resume_marks(marks).await;
-                    } else {
-                    // Capture the correlation id before `cmd` is moved so we can
-                    // report the outcome back to the originating client.
-                    let command_id = cmd.command_id();
-                    match self.handle_command(cmd).await {
-                        Ok(Some(dispatch)) => {
-                            dispatch.run_detached(self.events.clone(), command_id);
-                        }
-                        Ok(None) => {
-                            Self::report_command(&self.events, command_id, Ok(())).await;
-                        }
-                        Err(err) => {
-                            tracing::warn!(%err, "command dispatch failed");
-                            Self::report_command(&self.events, command_id, Err(err)).await;
-                        }
-                    }
-                    }
+                    crate::adapter_runtime::dispatch_command(&mut self, &events, cmd).await;
                 }
             }
         }
@@ -875,129 +857,6 @@ impl Driver {
             Ok(_) => tracing::debug!("no historical sessions to backfill"),
             Err(err) => tracing::warn!(%err, "backfill pass failed"),
         }
-    }
-
-    /// Handles `cmd` inline, except for the control-socket dispatch of a
-    /// spawn/fork: that reply can take as long as a cold worker bring-up (or
-    /// never come), so it is returned as a [`DeferredDispatch`] for the run
-    /// loop to await off the poll path.
-    async fn handle_command(
-        &self,
-        cmd: AdapterCommand,
-    ) -> anyhow::Result<Option<DeferredDispatch>> {
-        // Diagnose is read-only aggregation and must answer even
-        // when the claude daemon is down (the report *says* the socket is
-        // gone), so it is handled before the socket requirement below.
-        if let AdapterCommand::Diagnose { local_id, request_id } = cmd {
-            return self.handle_diagnose(&local_id, request_id).await.map(|()| None);
-        }
-        // Live-view watch toggle only needs the in-memory short map, and
-        // stopping a viewer must work even when the claude daemon has gone away —
-        // so it is handled before the socket requirement below.
-        if let AdapterCommand::WatchPty { local_id, watch } = cmd {
-            match self.resolve_short(&local_id) {
-                Ok(short) if watch => self.pty_view.watch(local_id, short),
-                Ok(short) => self.pty_view.unwatch(&short),
-                Err(err) => tracing::debug!(%err, watch, "watch_pty for unknown session; ignoring"),
-            }
-            return Ok(None);
-        }
-        // A command (spawn/reply/kill/…) needs a live control socket. If the
-        // on-demand claude daemon has shut down, boot it and wait briefly for
-        // the socket rather than failing the command outright.
-        let sock = self.ensure_socket().await?;
-        match cmd {
-            AdapterCommand::SendMessage { local_id, text } => {
-                self.deliver_reply(
-                    &sock,
-                    &local_id,
-                    &text,
-                    None,
-                    &std::collections::BTreeMap::default(),
-                    None,
-                )
-                .await?;
-            }
-            AdapterCommand::Reply { local_id, text, ask_picks, env, turn_id, .. } => {
-                self.deliver_reply(&sock, &local_id, &text, ask_picks, &env, turn_id).await?;
-            }
-            AdapterCommand::Kill { local_id, signal } => {
-                self.kill_session(&sock, &local_id, signal).await?;
-            }
-            AdapterCommand::Interrupt { local_id, .. } => {
-                // Keep-alive turn interrupt: the control socket has
-                // no turn-interrupt op, so attach to the worker PTY and inject
-                // an ESC keystroke — the same key that aborts a turn in the
-                // TUI. Unlike `Kill`, the worker stays live and resumable.
-                let short = self.resolve_short(&local_id)?;
-                socket::attach_interrupt(&sock, &short).await?;
-                tracing::info!(%short, "interrupted in-flight turn via attach+ESC");
-            }
-            AdapterCommand::Resume { local_id, working_dir, env } => {
-                let short = self
-                    .resolve_short(&local_id)
-                    .or_else(|_| self.resolve_short_for_removal(&local_id))?;
-                // Fall back to (local_id, working_dir) when the on-disk job state
-                // is gone — archiving runs `claude rm`, which deletes state.json
-                // but keeps the conversation transcript, so an explicit Resume of
-                // an archived session must not depend on it.
-                self.resume_worker(
-                    &sock,
-                    &short,
-                    &local_id,
-                    Some(&local_id),
-                    working_dir.as_deref(),
-                    &env,
-                )
-                .await?;
-                tracing::info!(%short, %local_id, "resumed session via explicit command");
-            }
-            AdapterCommand::PermissionResponse { local_id, request_id, allow } => {
-                self.answer_permission(&sock, &local_id, &request_id, allow).await?;
-            }
-            AdapterCommand::Remove { local_id, initiator, .. } => {
-                self.remove_session(&sock, &local_id, initiator).await?;
-            }
-            AdapterCommand::Spawn { spec, session_id, .. } => {
-                let dispatch =
-                    self.spawn(&sock, &spec, session_id.map(|id| id.to_string())).await?;
-                return Ok(Some(dispatch));
-            }
-            AdapterCommand::Fork { parent_local_id, spec, session_id, extract, .. } => {
-                let dispatch = self
-                    .fork(&sock, &parent_local_id, &spec, session_id.as_deref(), extract.as_ref())
-                    .await?;
-                return Ok(Some(dispatch));
-            }
-            AdapterCommand::Rename { local_id, name } => {
-                let short = self.resolve_short(&local_id)?;
-                // No control-socket rename op exists; persist to the on-disk
-                // state.json the status poll reads from. The next poll re-emits
-                // Status with the new name (the server also updates its DB row
-                // synchronously in the PATCH route).
-                StateJson::write_name(&self.cfg.jobs_root, &short, &name)
-                    .with_context(|| format!("rename session {short} -> {name}"))?;
-                tracing::info!(%short, %name, "renamed session via state.json");
-            }
-            AdapterCommand::SetModel { local_id, .. } => {
-                // In-place model/effort switch is not supported on claude via
-                // cctui's path: the `claude daemon` control socket has
-                // no set-model op, and the Agent SDK's `setModel()` is only
-                // reachable in streaming-input mode, not through this socket.
-                // The supported substitute is fork-with-`--model`, so
-                // surface a clear error the webui can route to the fork flow.
-                tracing::warn!(%local_id, "claude: in-place model/effort switch not supported; fork to change model");
-                anyhow::bail!(
-                    "in-place model/effort switch is not supported for claude sessions — fork to change model"
-                );
-            }
-            _ => {
-                // AdapterCommand is #[non_exhaustive]; tolerate unknown
-                // future variants by logging.
-                tracing::warn!("unhandled AdapterCommand variant");
-            }
-        }
-        Ok(None)
     }
 
     async fn kill_session(
@@ -1287,4 +1146,178 @@ impl Driver {
 /// interrupt route's `15`) maps to the graceful `SIGTERM`.
 const fn kill_signal_name(signal: i32) -> &'static str {
     if signal == 9 { "SIGKILL" } else { "SIGTERM" }
+}
+
+/// Every command but diagnose, the live-view toggle and resume marks needs a
+/// live control socket: if the on-demand claude daemon has shut down it is
+/// booted and awaited rather than failing the command outright.
+#[async_trait::async_trait]
+impl SessionDriver for Driver {
+    fn adapter_id(&self) -> &'static str {
+        "claude-code"
+    }
+
+    async fn resume_marks(&mut self, marks: Vec<(String, u64)>) -> CommandOutcome {
+        self.apply_resume_marks(marks).await;
+        Ok(Handled::Done)
+    }
+
+    async fn diagnose(&mut self, local_id: String, request_id: uuid::Uuid) -> CommandOutcome {
+        self.handle_diagnose(&local_id, request_id).await?;
+        Ok(Handled::Done)
+    }
+
+    async fn watch_pty(&mut self, local_id: String, watch: bool) -> CommandOutcome {
+        match self.resolve_short(&local_id) {
+            Ok(short) if watch => self.pty_view.watch(local_id, short),
+            Ok(short) => self.pty_view.unwatch(&short),
+            Err(err) => tracing::debug!(%err, watch, "watch_pty for unknown session; ignoring"),
+        }
+        Ok(Handled::Done)
+    }
+
+    async fn send_message(&mut self, local_id: String, text: String) -> CommandOutcome {
+        let sock = self.ensure_socket().await?;
+        self.deliver_reply(
+            &sock,
+            &local_id,
+            &text,
+            None,
+            &std::collections::BTreeMap::default(),
+            None,
+        )
+        .await?;
+        Ok(Handled::Done)
+    }
+
+    async fn reply(
+        &mut self,
+        local_id: String,
+        text: String,
+        ask_picks: Option<Vec<Vec<usize>>>,
+        env: std::collections::BTreeMap<String, String>,
+        _command_id: Option<uuid::Uuid>,
+        turn_id: Option<uuid::Uuid>,
+    ) -> CommandOutcome {
+        let sock = self.ensure_socket().await?;
+        self.deliver_reply(&sock, &local_id, &text, ask_picks, &env, turn_id).await?;
+        Ok(Handled::Done)
+    }
+
+    async fn kill(&mut self, local_id: String, signal: Option<i32>) -> CommandOutcome {
+        let sock = self.ensure_socket().await?;
+        self.kill_session(&sock, &local_id, signal).await?;
+        Ok(Handled::Done)
+    }
+
+    async fn interrupt(
+        &mut self,
+        local_id: String,
+        _command_id: Option<uuid::Uuid>,
+    ) -> CommandOutcome {
+        let sock = self.ensure_socket().await?;
+        // The control socket has no turn-interrupt op: attach to the worker
+        // PTY and inject the ESC that aborts a turn in the TUI.
+        let short = self.resolve_short(&local_id)?;
+        socket::attach_interrupt(&sock, &short).await?;
+        tracing::info!(%short, "interrupted in-flight turn via attach+ESC");
+        Ok(Handled::Done)
+    }
+
+    async fn resume(
+        &mut self,
+        local_id: String,
+        working_dir: Option<String>,
+        env: std::collections::BTreeMap<String, String>,
+    ) -> CommandOutcome {
+        let sock = self.ensure_socket().await?;
+        let short =
+            self.resolve_short(&local_id).or_else(|_| self.resolve_short_for_removal(&local_id))?;
+        // `claude rm` deletes state.json but keeps the transcript, so an
+        // archived session resumes from (local_id, working_dir) alone.
+        self.resume_worker(&sock, &short, &local_id, Some(&local_id), working_dir.as_deref(), &env)
+            .await?;
+        tracing::info!(%short, %local_id, "resumed session via explicit command");
+        Ok(Handled::Done)
+    }
+
+    async fn permission_response(
+        &mut self,
+        local_id: String,
+        request_id: String,
+        allow: bool,
+    ) -> CommandOutcome {
+        let sock = self.ensure_socket().await?;
+        self.answer_permission(&sock, &local_id, &request_id, allow).await?;
+        Ok(Handled::Done)
+    }
+
+    async fn remove(
+        &mut self,
+        local_id: String,
+        _command_id: Option<uuid::Uuid>,
+        initiator: RemoveInitiator,
+    ) -> CommandOutcome {
+        let sock = self.ensure_socket().await?;
+        self.remove_session(&sock, &local_id, initiator).await?;
+        Ok(Handled::Done)
+    }
+
+    /// The control-socket reply can take as long as a cold worker bring-up
+    /// (or never come), so it is awaited off the poll path.
+    async fn spawn(
+        &mut self,
+        spec: cctui_proto::adapter::SessionSpec,
+        command_id: Option<uuid::Uuid>,
+        session_id: Option<uuid::Uuid>,
+    ) -> CommandOutcome {
+        let sock = self.ensure_socket().await?;
+        let dispatch =
+            self.prepare_spawn(&sock, &spec, session_id.map(|id| id.to_string())).await?;
+        dispatch.run_detached(self.events.clone(), command_id);
+        Ok(Handled::Deferred)
+    }
+
+    async fn fork(
+        &mut self,
+        parent_local_id: String,
+        spec: cctui_proto::adapter::SessionSpec,
+        command_id: Option<uuid::Uuid>,
+        session_id: Option<String>,
+        extract: Option<cctui_proto::adapter::ForkExtract>,
+    ) -> CommandOutcome {
+        let sock = self.ensure_socket().await?;
+        let dispatch = self
+            .prepare_fork(&sock, &parent_local_id, &spec, session_id.as_deref(), extract.as_ref())
+            .await?;
+        dispatch.run_detached(self.events.clone(), command_id);
+        Ok(Handled::Deferred)
+    }
+
+    async fn rename(&mut self, local_id: String, name: String) -> CommandOutcome {
+        self.ensure_socket().await?;
+        let short = self.resolve_short(&local_id)?;
+        // No control-socket rename op exists; the status poll reads the name
+        // back from state.json.
+        StateJson::write_name(&self.cfg.jobs_root, &short, &name)
+            .with_context(|| format!("rename session {short} -> {name}"))?;
+        tracing::info!(%short, %name, "renamed session via state.json");
+        Ok(Handled::Done)
+    }
+
+    async fn set_model(
+        &mut self,
+        local_id: String,
+        _model: Option<String>,
+        _effort: Option<String>,
+        _command_id: Option<uuid::Uuid>,
+    ) -> CommandOutcome {
+        self.ensure_socket().await?;
+        // Neither the control socket nor this path reaches the Agent SDK's
+        // `setModel()`; fork-with-`--model` is the supported substitute.
+        tracing::warn!(%local_id, "claude: in-place model/effort switch not supported; fork to change model");
+        anyhow::bail!(
+            "in-place model/effort switch is not supported for claude sessions — fork to change model"
+        );
+    }
 }

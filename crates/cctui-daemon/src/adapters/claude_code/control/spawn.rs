@@ -196,7 +196,7 @@ impl Driver {
     /// and can't be addressed individually. So when the dispatcher-injected env
     /// (`SESSION_ID` + `TASK_PAYLOAD_JSON`) is present, we self-issue the exact
     /// control-socket `dispatch` a server-driven spawn would, reusing
-    /// [`Self::spawn`] and forcing the pre-minted `session_id` so the
+    /// [`Self::prepare_spawn`] and forcing the pre-minted `session_id` so the
     /// gateway token resolves and the registered id matches the dispatch.
     ///
     /// Best-effort: any failure logs and lets the daemon keep observing — it
@@ -265,7 +265,7 @@ impl Driver {
             }
         };
         tracing::info!(session_id = %session_id, "dispatch-on-start: launching dispatched session");
-        let dispatched = match self.spawn(&sock, &spec, Some(session_id.clone())).await {
+        let dispatched = match self.prepare_spawn(&sock, &spec, Some(session_id.clone())).await {
             Ok(dispatch) => dispatch.send().await,
             Err(err) => Err(err),
         };
@@ -348,7 +348,7 @@ impl Driver {
     /// producing a silent no-op. We mint the session id / short /
     /// nonce client-side exactly as claude does and hand the worker its
     /// launch argv.
-    pub(super) async fn spawn(
+    pub(super) async fn prepare_spawn(
         &self,
         sock: &std::path::Path,
         spec: &cctui_proto::adapter::SessionSpec,
@@ -528,7 +528,7 @@ impl Driver {
         Ok(())
     }
 
-    pub(super) async fn fork(
+    pub(super) async fn prepare_fork(
         &self,
         sock: &std::path::Path,
         parent_local_id: &str,
