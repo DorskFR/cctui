@@ -430,16 +430,41 @@ pub async fn list_dispatchers(
     Json(ids)
 }
 
-// Linear dispatch pipeline (auth → resolve account/dispatcher → mint key → resolve
-// session id → forward); complexity is the breadth of validation/error branches,
-// not nesting. Splitting risks the 522 session-id/dedup invariants.
-#[allow(clippy::too_many_lines, clippy::cognitive_complexity)]
-pub async fn dispatch(
-    State(state): State<AppState>,
-    Extension(ctx): Extension<AuthContext>,
-    Json(req): Json<DispatchRequest>,
-) -> Result<(StatusCode, Json<DispatchResponse>), (StatusCode, Json<ApiError>)> {
-    let dispatcher = match resolve_dispatcher(&state, ctx.owner_filter(), &req.dispatcher).await {
+type DispatchResult<T> = Result<T, (StatusCode, Json<ApiError>)>;
+
+/// A dispatch that passed every pre-flight check: the dispatcher it targets,
+/// the session identity it will run under, and the payload to forward (with the
+/// display name carried over, no credentials injected yet).
+struct ValidatedDispatch {
+    dispatcher: std::sync::Arc<dyn Dispatcher>,
+    session_id: String,
+    dedup_key: Option<String>,
+    caller: String,
+    forwarded_payload: serde_json::Value,
+}
+
+/// The gateway routing a dispatch resolved to: the provider rows to mint
+/// session tokens for and the pool (if any) the session is stamped with.
+struct AccountRouting {
+    mints: Vec<crate::routes::gateway::ProviderRow>,
+    bound_pool: Option<uuid::Uuid>,
+}
+
+fn provision_err() -> (StatusCode, Json<ApiError>) {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(ApiError { error: "could not provision account session".into() }),
+    )
+}
+
+/// Resolve the dispatcher, mint the session identity, alert that a dispatch
+/// arrived, then run the caller/payload checks.
+async fn validate_dispatch(
+    state: &AppState,
+    ctx: &AuthContext,
+    req: &DispatchRequest,
+) -> DispatchResult<ValidatedDispatch> {
+    let dispatcher = match resolve_dispatcher(state, ctx.owner_filter(), &req.dispatcher).await {
         Ok(Some(d)) => d,
         Ok(None) => {
             let known = state.dispatchers.ids().join(", ");
@@ -471,18 +496,17 @@ pub async fn dispatch(
     // Claude's daemon derives `short = session_id[..8]` and rejects a dispatch
     // unless `short` matches /^[a-f0-9]{8}$/ — so the worker's session id must be
     // UUID-shaped. Callers may pass a human-readable logical id (e.g.
-    // an automation dedup key like `triage-PROJ-2026…`); we now mint a FRESH UUID
+    // an automation dedup key like `triage-PROJ-2026…`); we mint a FRESH UUID
     // session for it and carry the original as both the display name and the
     // `dedup_key`. The dispatcher hashes `dedup_key` into the Job name,
     // so a duplicate webhook still coalesces while each round keeps an isolated
-    // session — the server no longer chains every round's logs onto one id.
+    // session — the server never chains every round's logs onto one id.
     let (session_id, display_name, dedup_key) =
         resolve_dispatch_session_id(req.session_id.as_deref());
-    let origin = dispatcher.id();
 
     // Alert that a dispatch arrived. Built from the *original* payload
     // (before the machine key is injected) and no-ops unless ntfy is configured.
-    let caller = caller_label(&state, ctx.owner_filter()).await;
+    let caller = caller_label(state, ctx.owner_filter()).await;
     let summary = summarize(&req.payload);
     ntfy::notify(
         &state.config,
@@ -507,25 +531,16 @@ pub async fn dispatch(
     // still idempotent: the dispatcher derives the k8s Job name from
     // `sha(dedup_key)` (the caller's logical key), so a repeat of the
     // same key maps to the same Job (409 → same handle) even though each
-    // dispatch now mints a fresh `session_id`.
+    // dispatch mints a fresh `session_id`.
 
-    // Resolve the caller's stable dispatch machine and forward its key to the
-    // pod via a reserved payload key. The dispatcher lifts it into
-    // `CCTUI_MACHINE_KEY` and keeps it OUT of TASK_PAYLOAD_JSON, so the worker's
-    // daemon runs AS this one machine without a per-pod enroll. The web UI and
-    // automation dispatch with a user token (user_id present); the admin token (no
-    // owning user) dispatches without the shared identity.
-    // Dispatch permission is now the `dispatch` scope, enforced
-    // uniformly for every caller. The migration backfilled `dispatch` into
-    // user_acls only where the legacy `can_dispatch` flag was set, so this is
-    // transparent: a user previously toggled off has no `dispatch` scope and is
-    // still denied. Admin holds the scope by ceiling.
+    // Dispatch permission is the `dispatch` scope, enforced uniformly for every
+    // caller. Admin holds the scope by ceiling.
     ctx.requires(crate::auth::Scope::Dispatch).map_err(|s| {
         tracing::warn!(uid = %ctx.user_id, "dispatch denied: caller lacks dispatch scope");
         (s, Json(ApiError { error: "dispatch is not permitted for this token".into() }))
     })?;
 
-    // Gated on `owner_filter()` to match registration below: an admin-token
+    // Gated on `owner_filter()` to match webhook registration: an admin-token
     // dispatch has no owning user and never registers a webhook.
     if let (Some(_), Some(notify_url)) =
         (ctx.owner_filter(), req.notify_url.as_deref().filter(|u| !u.trim().is_empty()))
@@ -543,281 +558,321 @@ pub async fn dispatch(
 
     let mut forwarded_payload = req.payload.clone();
     // Carry the caller's logical id as the session display name (the session id
-    // itself is now a derived UUID) so the UI still shows e.g.
+    // itself is a derived UUID) so the UI still shows e.g.
     // `triage-PROJ-2026…`. Only when the caller didn't already name the session.
     if let Some(name) = &display_name
         && let Some(obj) = forwarded_payload.as_object_mut()
     {
         obj.entry("name").or_insert_with(|| serde_json::Value::String(name.clone()));
     }
-    // The shared dispatch-machine identity + account routing key on the
-    // AUTHENTICATED USER — `ctx.user_id`, NOT `owner_filter()`.
-    // `owner_filter()` is a query-result scoping switch (it returns `None` for
-    // admins so list views see every row) and has nothing to do with who owns a
-    // dispatched session. Keying on it meant an RBAC-admin user (a real user
-    // with the Admin scope — e.g. the web UI operator) dispatched with NO shared
-    // identity, so `CCTUI_MACHINE_KEY` was never injected and the worker
-    // hard-exited. Only the env admin token has no real user (`user_id` is nil);
-    // it still dispatches without the shared identity.
-    if let Some(uid) = (ctx.user_id != uuid::Uuid::nil()).then_some(ctx.user_id) {
-        // The shared `dispatch` machine still groups every dispatched session
-        // under one logical machine (UI grouping unchanged) — but the
-        // credential handed to the pod is now a PER-SESSION ephemeral key,
-        // so a leaked worker key only impersonates its own session
-        // and expires with it. `ensure_dispatch_machine` is kept for the row
-        // (and `dispatch_key` rotation) it owns.
-        let (machine_id, _shared_key) =
-            ensure_dispatch_machine(&state, uid).await.map_err(|e| {
-                tracing::error!("ensure_dispatch_machine failed: {e}");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ApiError { error: "could not resolve dispatch machine".into() }),
-                )
-            })?;
-        let key = mint_ephemeral_dispatch_key(&state, uid, machine_id, &session_id, req.timeout)
-            .await
-            .map_err(|e| {
-                tracing::error!("mint_ephemeral_dispatch_key failed: {e}");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ApiError { error: "could not mint dispatch credential".into() }),
-                )
-            })?;
-        if let Some(obj) = forwarded_payload.as_object_mut() {
-            obj.insert("cctui_machine_key".into(), serde_json::Value::String(key));
-        }
 
-        // Account-scoped routing on the dispatch path: mint session-scoped
-        // gateway tokens and merge the gateway base-url + token env into
-        // `payload.env` so the worker pod routes through the passthrough
-        // gateway. An explicit `req.accounts` list wins — it's the
-        // cross-account mix form, each entry optionally family-constrained by
-        // its provider hint. Otherwise the singular `req.account` (or the
-        // dispatcher's bound default identity) is used. A bare account name mints EVERY provider the
-        // identity carries — one worker gets claude + codex creds
-        // from `account: "acme"` alone, no accounts[] boilerplate. With no
-        // account either way, no gateway env is injected (unchanged).
-        let requested_model = req
-            .payload
-            .get("model")
-            .and_then(serde_json::Value::as_str)
-            .filter(|s| !s.is_empty())
-            .map(str::to_owned);
-        let payload_adapter = req
-            .payload
-            .get("adapter_id")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("claude-code")
-            .to_owned();
-        let mut bound_pool: Option<uuid::Uuid> = None;
-        let accounts: Vec<(String, Option<String>)> = if !req.accounts.is_empty() {
-            req.accounts.iter().map(|a| (a.account.clone(), a.provider.clone())).collect()
-        } else if let Some(explicit) =
-            resolve_dispatch_account(req.account.as_deref(), req.provider.as_deref(), None)
-        {
-            vec![explicit]
-        } else {
-            // Nothing named: the dispatcher's own binding decides. A bound pool
-            // elects here, per dispatch — the whole point of binding one.
-            match dispatcher_default_binding(&state, &req.dispatcher, uid).await {
-                Some(DefaultBinding::Account(name)) => vec![(name, None)],
-                Some(DefaultBinding::Pool(pool_id)) => {
-                    let (account, pool_id) = crate::account_resolve::resolve_pool_by_id(
-                        &state,
-                        uid,
-                        binding_family(None, &payload_adapter),
-                        requested_model.as_deref(),
-                        pool_id,
-                    )
-                    .await
-                    .map_err(dispatch_resolve_err)?;
-                    bound_pool = Some(pool_id);
-                    vec![(account, None)]
-                }
-                None => Vec::new(),
-            }
-        };
+    Ok(ValidatedDispatch { dispatcher, session_id, dedup_key, caller, forwarded_payload })
+}
 
-        // Every name accepted here may be a pool: elect a member now, by the
-        // pool's own strategy, and keep the pool so the minted token can be
-        // stamped with it. An account of the caller's answering to the same
-        // name always wins.
-        let mut resolved: Vec<(String, Option<String>)> = Vec::with_capacity(accounts.len());
-        for (name, hint) in accounts {
-            let family = binding_family(hint.as_deref(), &payload_adapter);
-            let bound = crate::account_resolve::resolve_account_or_pool(
-                &state,
-                uid,
-                family,
-                requested_model.as_deref(),
-                &name,
+/// Resolve the caller's stable dispatch machine and forward a per-session
+/// ephemeral key for it to the pod via a reserved payload key. The dispatcher
+/// lifts it into `CCTUI_MACHINE_KEY` and keeps it OUT of TASK_PAYLOAD_JSON, so
+/// the worker's daemon runs AS this one machine without a per-pod enroll. The
+/// shared `dispatch` machine still groups every dispatched session under one
+/// logical machine, but a leaked worker key only impersonates its own session
+/// and expires with it. `ensure_dispatch_machine` is kept for the row (and
+/// `dispatch_key` rotation) it owns.
+async fn inject_worker_credential(
+    state: &AppState,
+    uid: uuid::Uuid,
+    session_id: &str,
+    timeout_minutes: Option<u32>,
+    forwarded_payload: &mut serde_json::Value,
+) -> DispatchResult<()> {
+    let (machine_id, _shared_key) = ensure_dispatch_machine(state, uid).await.map_err(|e| {
+        tracing::error!("ensure_dispatch_machine failed: {e}");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ApiError { error: "could not resolve dispatch machine".into() }),
+        )
+    })?;
+    let key = mint_ephemeral_dispatch_key(state, uid, machine_id, session_id, timeout_minutes)
+        .await
+        .map_err(|e| {
+            tracing::error!("mint_ephemeral_dispatch_key failed: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError { error: "could not mint dispatch credential".into() }),
             )
-            .await
-            .map_err(dispatch_resolve_err)?;
-            if bound.pool_id.is_some() {
-                // One column, one pool: the first pool named owns the session's
-                // failover boundary. A second pool in the same cross-family list
-                // still elects, it just cannot also claim the stamp.
-                bound_pool = bound_pool.or(bound.pool_id);
-            }
-            resolved.push((bound.account, hint));
-        }
-        let accounts = resolved;
+        })?;
+    if let Some(obj) = forwarded_payload.as_object_mut() {
+        obj.insert("cctui_machine_key".into(), serde_json::Value::String(key));
+    }
+    Ok(())
+}
 
-        // Map `payload.model` through the resolved account(s) `model_aliases`,
-        // mirroring the spawn path. Try Anthropic then Openai per
-        // account; first rewrite wins. `resolve_account_model` fails soft
-        // (returns input unchanged on any miss), so a non-alias model or an
-        // unresolved account passes through untouched; `effort` is never touched.
-        if let Some(raw_model) = forwarded_payload
-            .get("model")
-            .and_then(serde_json::Value::as_str)
-            .filter(|s| !s.is_empty())
-            .map(str::to_owned)
-        {
-            'resolve: for (account_name, _hint) in &accounts {
-                for family in [
-                    crate::routes::gateway::Family::Anthropic,
-                    crate::routes::gateway::Family::Openai,
-                    crate::routes::gateway::Family::Fireworks,
-                ] {
-                    let mapped = crate::routes::gateway::resolve_account_model(
-                        &state,
-                        uid,
-                        account_name,
-                        family,
-                        &raw_model,
-                    )
-                    .await;
-                    if rewrite_model_if_aliased(&mut forwarded_payload, &raw_model, &mapped) {
-                        break 'resolve;
-                    }
-                }
-            }
-        }
-
-        // Expand each named account into the provider rows to mint: the hinted
-        // family's row only, or every row for a bare name.
-        let mut mints: Vec<crate::routes::gateway::ProviderRow> = Vec::new();
-        for (account_name, provider_hint) in accounts {
-            let rows =
-                match crate::routes::gateway::account_provider_rows(&state, uid, &account_name)
-                    .await
-                {
-                    Ok(Some(rows)) if !rows.is_empty() => rows,
-                    Ok(_) => {
-                        return Err((
-                            StatusCode::NOT_FOUND,
-                            Json(ApiError {
-                                error: format!(
-                                    "no account named {account_name:?} with a connected provider"
-                                ),
-                            }),
-                        ));
-                    }
-                    Err(e) => {
-                        tracing::error!("resolving dispatch account {account_name:?}: {e}");
-                        return Err((
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            Json(ApiError { error: "could not provision account session".into() }),
-                        ));
-                    }
-                };
-            match provider_hint.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
-                Some(p) => {
-                    let family = crate::routes::gateway::Family::from_provider(p);
-                    let before = mints.len();
-                    mints.extend(rows.into_iter().filter(|r| r.family() == family));
-                    if mints.len() == before {
-                        return Err((
-                            StatusCode::NOT_FOUND,
-                            Json(ApiError {
-                                error: format!(
-                                    "account {account_name:?} has no {} provider",
-                                    family.label()
-                                ),
-                            }),
-                        ));
-                    }
-                }
-                None => mints.extend(rows),
-            }
-        }
-
-        // Two same-family provider rows would mint the same env keys (e.g.
-        // ANTHROPIC_AUTH_TOKEN) and silently repoint the session's family
-        // token; reject rather than clobber.
-        if let Some(family) =
-            colliding_family(mints.iter().map(crate::routes::gateway::ProviderRow::family))
-        {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                Json(ApiError {
-                    error: format!(
-                        "multiple dispatch accounts resolve to the {} provider family; \
-                         specify at most one account per family",
-                        family.label()
-                    ),
-                }),
-            ));
-        }
-
-        for row in mints {
-            match crate::routes::gateway::mint_session_env_for_account(&state, row.id, &session_id)
+/// The `(account, provider hint)` pairs a dispatch routes through, every pool
+/// name already elected to a member, plus the pool that owns the session's
+/// failover boundary. An explicit `req.accounts` list wins — it's the
+/// cross-account mix form, each entry optionally family-constrained by its
+/// provider hint. Otherwise the singular `req.account` (or the dispatcher's
+/// bound default identity) is used. A bare account name mints EVERY provider
+/// the identity carries. With no account either way, nothing is returned.
+async fn resolve_routed_accounts(
+    state: &AppState,
+    req: &DispatchRequest,
+    uid: uuid::Uuid,
+    requested_model: Option<&str>,
+    payload_adapter: &str,
+) -> DispatchResult<(Vec<(String, Option<String>)>, Option<uuid::Uuid>)> {
+    let mut bound_pool: Option<uuid::Uuid> = None;
+    let accounts: Vec<(String, Option<String>)> = if !req.accounts.is_empty() {
+        req.accounts.iter().map(|a| (a.account.clone(), a.provider.clone())).collect()
+    } else if let Some(explicit) =
+        resolve_dispatch_account(req.account.as_deref(), req.provider.as_deref(), None)
+    {
+        vec![explicit]
+    } else {
+        // Nothing named: the dispatcher's own binding decides. A bound pool
+        // elects here, per dispatch — the whole point of binding one.
+        match dispatcher_default_binding(state, &req.dispatcher, uid).await {
+            Some(DefaultBinding::Account(name)) => vec![(name, None)],
+            Some(DefaultBinding::Pool(pool_id)) => {
+                let (account, pool_id) = crate::account_resolve::resolve_pool_by_id(
+                    state,
+                    uid,
+                    binding_family(None, payload_adapter),
+                    requested_model,
+                    pool_id,
+                )
                 .await
-            {
-                Ok(Some(gateway_env)) => {
-                    if let Some(obj) = forwarded_payload.as_object_mut() {
-                        let env = obj
-                            .entry("env")
-                            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
-                        if let Some(env_obj) = env.as_object_mut() {
-                            for (k, v) in gateway_env {
-                                env_obj.insert(k, serde_json::Value::String(v));
-                            }
-                        }
-                    }
-                }
-                Ok(None) => {
-                    tracing::error!(
-                        provider_id = %row.id,
-                        "mint_session_env_for_account (dispatch): provider row vanished mid-dispatch"
-                    );
+                .map_err(dispatch_resolve_err)?;
+                bound_pool = Some(pool_id);
+                vec![(account, None)]
+            }
+            None => Vec::new(),
+        }
+    };
+
+    // Every name accepted here may be a pool: elect a member now, by the
+    // pool's own strategy, and keep the pool so the minted token can be
+    // stamped with it. An account of the caller's answering to the same
+    // name always wins.
+    let mut resolved: Vec<(String, Option<String>)> = Vec::with_capacity(accounts.len());
+    for (name, hint) in accounts {
+        let family = binding_family(hint.as_deref(), payload_adapter);
+        let bound = crate::account_resolve::resolve_account_or_pool(
+            state,
+            uid,
+            family,
+            requested_model,
+            &name,
+        )
+        .await
+        .map_err(dispatch_resolve_err)?;
+        if bound.pool_id.is_some() {
+            // One column, one pool: the first pool named owns the session's
+            // failover boundary. A second pool in the same cross-family list
+            // still elects, it just cannot also claim the stamp.
+            bound_pool = bound_pool.or(bound.pool_id);
+        }
+        resolved.push((bound.account, hint));
+    }
+    Ok((resolved, bound_pool))
+}
+
+/// Map `payload.model` through the resolved account(s) `model_aliases`,
+/// mirroring the spawn path. Try Anthropic then Openai per account; first
+/// rewrite wins. `resolve_account_model` fails soft (returns input unchanged
+/// on any miss), so a non-alias model or an unresolved account passes through
+/// untouched; `effort` is never touched.
+async fn apply_model_aliases(
+    state: &AppState,
+    uid: uuid::Uuid,
+    accounts: &[(String, Option<String>)],
+    forwarded_payload: &mut serde_json::Value,
+) {
+    let Some(raw_model) = forwarded_payload
+        .get("model")
+        .and_then(serde_json::Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+    else {
+        return;
+    };
+    for (account_name, _hint) in accounts {
+        for family in [
+            crate::routes::gateway::Family::Anthropic,
+            crate::routes::gateway::Family::Openai,
+            crate::routes::gateway::Family::Fireworks,
+        ] {
+            let mapped = crate::routes::gateway::resolve_account_model(
+                state,
+                uid,
+                account_name,
+                family,
+                &raw_model,
+            )
+            .await;
+            if rewrite_model_if_aliased(forwarded_payload, &raw_model, &mapped) {
+                return;
+            }
+        }
+    }
+}
+
+/// Expand each named account into the provider rows to mint: the hinted
+/// family's row only, or every row for a bare name. Two same-family rows would
+/// mint the same env keys (e.g. ANTHROPIC_AUTH_TOKEN) and silently repoint the
+/// session's family token; reject rather than clobber.
+async fn expand_provider_rows(
+    state: &AppState,
+    uid: uuid::Uuid,
+    accounts: Vec<(String, Option<String>)>,
+) -> DispatchResult<Vec<crate::routes::gateway::ProviderRow>> {
+    let mut mints: Vec<crate::routes::gateway::ProviderRow> = Vec::new();
+    for (account_name, provider_hint) in accounts {
+        let rows =
+            match crate::routes::gateway::account_provider_rows(state, uid, &account_name).await {
+                Ok(Some(rows)) if !rows.is_empty() => rows,
+                Ok(_) => {
                     return Err((
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(ApiError { error: "could not provision account session".into() }),
+                        StatusCode::NOT_FOUND,
+                        Json(ApiError {
+                            error: format!(
+                                "no account named {account_name:?} with a connected provider"
+                            ),
+                        }),
                     ));
                 }
                 Err(e) => {
-                    tracing::error!(provider_id = %row.id, "mint_session_env_for_account (dispatch) failed: {e}");
+                    tracing::error!("resolving dispatch account {account_name:?}: {e}");
+                    return Err(provision_err());
+                }
+            };
+        match provider_hint.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
+            Some(p) => {
+                let family = crate::routes::gateway::Family::from_provider(p);
+                let before = mints.len();
+                mints.extend(rows.into_iter().filter(|r| r.family() == family));
+                if mints.len() == before {
                     return Err((
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(ApiError { error: "could not provision account session".into() }),
+                        StatusCode::NOT_FOUND,
+                        Json(ApiError {
+                            error: format!(
+                                "account {account_name:?} has no {} provider",
+                                family.label()
+                            ),
+                        }),
                     ));
                 }
             }
-        }
-
-        if let Some(pool_id) = bound_pool {
-            crate::account_resolve::stamp_pool(&state, &session_id, pool_id).await;
+            None => mints.extend(rows),
         }
     }
 
-    // Register a server-emitted completion webhook when the caller
-    // supplied `notify_url`. The server fires it once the dispatched session
-    // reaches a terminal state — covering crash cases the worker's REPLY_URL
-    // exit trap can miss. Scoped to a real owning user (admin-token dispatches
-    // carry no owner, so they keep the REPLY_URL trap only). Best-effort: a
-    // registration failure never blocks the dispatch. The `task_id` echoed back
-    // is the dispatch payload's `task_id` if present, else the session id.
+    if let Some(family) =
+        colliding_family(mints.iter().map(crate::routes::gateway::ProviderRow::family))
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ApiError {
+                error: format!(
+                    "multiple dispatch accounts resolve to the {} provider family; \
+                     specify at most one account per family",
+                    family.label()
+                ),
+            }),
+        ));
+    }
+    Ok(mints)
+}
+
+/// Mint a session-scoped gateway token per provider row and merge the gateway
+/// base-url + token env into `payload.env` so the worker pod routes through
+/// the passthrough gateway.
+async fn mint_gateway_env(
+    state: &AppState,
+    mints: Vec<crate::routes::gateway::ProviderRow>,
+    session_id: &str,
+    forwarded_payload: &mut serde_json::Value,
+) -> DispatchResult<()> {
+    for row in mints {
+        match crate::routes::gateway::mint_session_env_for_account(state, row.id, session_id).await
+        {
+            Ok(Some(gateway_env)) => {
+                if let Some(obj) = forwarded_payload.as_object_mut() {
+                    let env = obj
+                        .entry("env")
+                        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+                    if let Some(env_obj) = env.as_object_mut() {
+                        for (k, v) in gateway_env {
+                            env_obj.insert(k, serde_json::Value::String(v));
+                        }
+                    }
+                }
+            }
+            Ok(None) => {
+                tracing::error!(
+                    provider_id = %row.id,
+                    "mint_session_env_for_account (dispatch): provider row vanished mid-dispatch"
+                );
+                return Err(provision_err());
+            }
+            Err(e) => {
+                tracing::error!(provider_id = %row.id, "mint_session_env_for_account (dispatch) failed: {e}");
+                return Err(provision_err());
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Account-scoped routing on the dispatch path: resolve which accounts the
+/// dispatch runs through, map the model through their aliases, and expand them
+/// into the provider rows to mint.
+async fn resolve_account_routing(
+    state: &AppState,
+    req: &DispatchRequest,
+    uid: uuid::Uuid,
+    forwarded_payload: &mut serde_json::Value,
+) -> DispatchResult<AccountRouting> {
+    let requested_model = req
+        .payload
+        .get("model")
+        .and_then(serde_json::Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned);
+    let payload_adapter = req
+        .payload
+        .get("adapter_id")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("claude-code")
+        .to_owned();
+    let (accounts, bound_pool) =
+        resolve_routed_accounts(state, req, uid, requested_model.as_deref(), &payload_adapter)
+            .await?;
+    apply_model_aliases(state, uid, &accounts, forwarded_payload).await;
+    let mints = expand_provider_rows(state, uid, accounts).await?;
+    Ok(AccountRouting { mints, bound_pool })
+}
+
+/// Register a server-emitted completion webhook when the caller supplied
+/// `notify_url`. The server fires it once the dispatched session reaches a
+/// terminal state — covering crash cases the worker's REPLY_URL exit trap can
+/// miss. Scoped to a real owning user (admin-token dispatches carry no owner,
+/// so they keep the REPLY_URL trap only). Best-effort: a registration failure
+/// never blocks the dispatch. The `task_id` echoed back is the dispatch
+/// payload's `task_id` if present, else the session id.
+async fn register_completion_webhook(
+    state: &AppState,
+    ctx: &AuthContext,
+    req: &DispatchRequest,
+    session_id: &str,
+) {
     if let (Some(uid), Some(notify_url)) =
         (ctx.owner_filter(), req.notify_url.as_deref().filter(|u| !u.trim().is_empty()))
     {
         let task_id =
-            req.payload.get("task_id").and_then(serde_json::Value::as_str).unwrap_or(&session_id);
+            req.payload.get("task_id").and_then(serde_json::Value::as_str).unwrap_or(session_id);
         crate::webhook::register(
-            &state,
-            &session_id,
+            state,
+            session_id,
             uid,
             notify_url,
             req.notify_secret.as_deref().filter(|s| !s.trim().is_empty()),
@@ -825,44 +880,56 @@ pub async fn dispatch(
         )
         .await;
     }
+}
 
-    // `payload.spawn_capability` declares what the dispatched worker may spawn
-    // through `CctuiAgent`. It is read here, server-side, and never forwarded —
-    // the worker must not be able to read or restate its own capability.
-    {
-        let declared = forwarded_payload
-            .as_object_mut()
-            .and_then(|obj| obj.remove("spawn_capability"))
-            .and_then(|raw| serde_json::from_value::<cctui_proto::api::SpawnCapability>(raw).ok())
-            .filter(|cap| !cap.is_empty());
-        let mut cap = declared.unwrap_or_else(cctui_proto::api::SpawnCapability::machine_default);
-        if cap.max_permission_mode.is_none() {
-            cap.max_permission_mode = Some(
-                forwarded_payload
-                    .get("permission_mode")
-                    .and_then(serde_json::Value::as_str)
-                    .and_then(cctui_proto::adapter::PermissionMode::from_session_label)
-                    .unwrap_or(cctui_proto::adapter::PermissionMode::Ask),
-            );
-        }
-        if let Err(e) =
-            crate::store::spawn_capabilities::upsert(&state.pool, &session_id, &cap).await
-        {
-            tracing::error!(
-                session = %session_id,
-                error = %e,
-                "spawn-capability persist failed — CctuiAgent will be lost on server restart"
-            );
-        }
-        state.spawn_capabilities.insert(session_id.clone(), cap);
+/// `payload.spawn_capability` declares what the dispatched worker may spawn
+/// through `CctuiAgent`. It is read here, server-side, and never forwarded —
+/// the worker must not be able to read or restate its own capability.
+async fn persist_spawn_capability(
+    state: &AppState,
+    session_id: &str,
+    forwarded_payload: &mut serde_json::Value,
+) {
+    let declared = forwarded_payload
+        .as_object_mut()
+        .and_then(|obj| obj.remove("spawn_capability"))
+        .and_then(|raw| serde_json::from_value::<cctui_proto::api::SpawnCapability>(raw).ok())
+        .filter(|cap| !cap.is_empty());
+    let mut cap = declared.unwrap_or_else(cctui_proto::api::SpawnCapability::machine_default);
+    if cap.max_permission_mode.is_none() {
+        cap.max_permission_mode = Some(
+            forwarded_payload
+                .get("permission_mode")
+                .and_then(serde_json::Value::as_str)
+                .and_then(cctui_proto::adapter::PermissionMode::from_session_label)
+                .unwrap_or(cctui_proto::adapter::PermissionMode::Ask),
+        );
     }
+    if let Err(e) = crate::store::spawn_capabilities::upsert(&state.pool, session_id, &cap).await {
+        tracing::error!(
+            session = %session_id,
+            error = %e,
+            "spawn-capability persist failed — CctuiAgent will be lost on server restart"
+        );
+    }
+    state.spawn_capabilities.insert(session_id.to_owned(), cap);
+}
 
+/// Forward the prepared dispatch, persist the returned handle and map a
+/// placement failure onto the error surface.
+async fn forward_dispatch(
+    state: &AppState,
+    req: &DispatchRequest,
+    v: &ValidatedDispatch,
+) -> DispatchResult<(StatusCode, Json<DispatchResponse>)> {
+    let ValidatedDispatch { dispatcher, session_id, dedup_key, caller, forwarded_payload } = v;
+    let origin = dispatcher.id();
     let spec = DispatchSpec {
-        session_id: &session_id,
+        session_id,
         timeout_minutes: req.timeout,
         reply_url: req.reply_url.as_deref(),
         dedup_key: dedup_key.as_deref(),
-        payload: &forwarded_payload,
+        payload: forwarded_payload,
     };
 
     let handle = match dispatcher.dispatch(&spec).await {
@@ -896,7 +963,7 @@ pub async fn dispatch(
                    namespace = EXCLUDED.namespace, \
                    created_at = now()",
             )
-            .bind(&session_id)
+            .bind(session_id)
             .bind(origin)
             .bind(&h.handle)
             .bind(h.namespace.as_deref())
@@ -937,7 +1004,7 @@ pub async fn dispatch(
     Ok((
         StatusCode::ACCEPTED,
         Json(DispatchResponse {
-            session_id,
+            session_id: session_id.clone(),
             dispatcher: origin.to_string(),
             handle: handle.handle,
             namespace: handle.namespace,
@@ -948,6 +1015,33 @@ pub async fn dispatch(
             status: handle.status.unwrap_or_else(|| "dispatched".into()),
         }),
     ))
+}
+
+/// validate → resolve identity/accounts → execute. The shared dispatch-machine
+/// identity + account routing key on the AUTHENTICATED USER — `ctx.user_id`,
+/// NOT `owner_filter()`, which is a query-result scoping switch that returns
+/// `None` for admins. Only the env admin token has no real user (`user_id` is
+/// nil); it dispatches without the shared identity.
+pub async fn dispatch(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Json(req): Json<DispatchRequest>,
+) -> Result<(StatusCode, Json<DispatchResponse>), (StatusCode, Json<ApiError>)> {
+    let mut v = validate_dispatch(&state, &ctx, &req).await?;
+
+    if let Some(uid) = (ctx.user_id != uuid::Uuid::nil()).then_some(ctx.user_id) {
+        inject_worker_credential(&state, uid, &v.session_id, req.timeout, &mut v.forwarded_payload)
+            .await?;
+        let routing = resolve_account_routing(&state, &req, uid, &mut v.forwarded_payload).await?;
+        mint_gateway_env(&state, routing.mints, &v.session_id, &mut v.forwarded_payload).await?;
+        if let Some(pool_id) = routing.bound_pool {
+            crate::account_resolve::stamp_pool(&state, &v.session_id, pool_id).await;
+        }
+    }
+
+    register_completion_webhook(&state, &ctx, &req, &v.session_id).await;
+    persist_spawn_capability(&state, &v.session_id, &mut v.forwarded_payload).await;
+    forward_dispatch(&state, &req, &v).await
 }
 
 #[cfg(test)]
