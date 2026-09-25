@@ -20,6 +20,7 @@ impl AppError {
         Self::Status(code, msg.into())
     }
 
+    #[cfg(test)]
     #[must_use]
     pub const fn status(&self) -> StatusCode {
         match self {
@@ -28,6 +29,7 @@ impl AppError {
         }
     }
 
+    #[cfg(test)]
     #[must_use]
     pub fn message(&self) -> &str {
         match self {
