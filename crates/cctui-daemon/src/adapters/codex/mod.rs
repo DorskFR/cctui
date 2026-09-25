@@ -322,7 +322,6 @@ impl CommandPump {
                     self.pty_views.unwatch(&local_id);
                 }
             }
-            _ => tracing::warn!("codex: unhandled AdapterCommand variant"),
         }
     }
 

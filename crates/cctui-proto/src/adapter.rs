@@ -426,7 +426,6 @@ pub struct SessionChild {
 /// implemented incrementally per adapter.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-#[non_exhaustive]
 pub enum AdapterCommand {
     /// Per-session transcript resume marks the server pushes on connect.
     /// `marks` maps `local_id` → the server's stored transcript byte
