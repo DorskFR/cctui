@@ -63,15 +63,26 @@ use state::AppState;
 use store::sessions::SessionRowStatus;
 
 #[tokio::main]
-#[allow(clippy::too_many_lines)]
 async fn main() -> anyhow::Result<()> {
+    init_tracing();
+    let (config, pool, auth_config) = bootstrap().await?;
+    let state = build_state(&config, pool, auth_config.clone()).await?;
+    start_background_tasks(&state).await;
+    let app = build_app(&state, &config, &auth_config);
+    spawn_sweeps(state);
+    serve(&config, app).await
+}
+
+fn init_tracing() {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| "cctui_server=info,sqlx::query=warn".into()),
         )
         .init();
+}
 
+async fn bootstrap() -> anyhow::Result<(Config, sqlx::PgPool, auth::AuthConfig)> {
     if let Err(e) = cctui_crypto::vault_key_checked() {
         anyhow::bail!("refusing to start: {e}");
     }
@@ -88,41 +99,31 @@ async fn main() -> anyhow::Result<()> {
     // with {admin} ceiling/grant, so the break-glass token is a real identity
     // rather than a user_id=None ghost. Idempotent, best-effort.
     auth_config.seed_admin().await;
+    Ok((config, pool, auth_config))
+}
 
+async fn build_state(
+    config: &Config,
+    pool: sqlx::PgPool,
+    auth_config: auth::AuthConfig,
+) -> anyhow::Result<AppState> {
     let skills = init_skill_store().await;
-    let dispatchers = init_dispatchers(&config);
+    let dispatchers = init_dispatchers(config);
 
     let presence = Arc::new(presence::PodIdentity::from_env());
     let http_client = reqwest::Client::new();
 
-    // Bus transport selection: with a routable pod IP this replica
-    // participates in the peer mesh — mint/load the internal shared secret and
-    // route/relay through `PeerHttpTransport`. Without one (local dev, single
-    // replica) the bus stays local-only (`NoopTransport`) and writes nothing.
-    let (transport, internal_secret): (Box<dyn bus::Transport>, Option<Arc<str>>) =
-        if presence.ip.is_some() {
-            let secret = routes::internal::ensure_secret(&pool).await?;
-            let transport = bus::peer::PeerHttpTransport::new(
-                pool.clone(),
-                http_client.clone(),
-                presence.pod.clone(),
-                config.port,
-                secret.clone(),
-            );
-            (Box::new(transport), Some(Arc::from(secret.as_str())))
-        } else {
-            (Box::new(bus::NoopTransport), None)
-        };
+    let (transport, internal_secret) = init_bus(&pool, config, &presence, &http_client).await?;
 
-    let state = AppState {
+    Ok(AppState {
         pool,
         config: config.clone(),
         registry: Registry::shared(),
         permission_store: routes::permissions::PermissionStore::shared(),
         // The single routing seam for daemon/dispatcher WS traffic;
-        // the transport behind it is chosen above.
+        // the transport behind it is chosen by `init_bus`.
         bus: bus::Bus::new(transport),
-        auth_config: auth_config.clone(),
+        auth_config,
         // Passkeys ride the deployment's own public URL: a server already
         // configured with an https `CCTUI_EXTERNAL_URL` needs no new env.
         webauthn: webauthn::build(&config.external_url, config.rp_id.as_deref()).map(Arc::new),
@@ -156,8 +157,36 @@ async fn main() -> anyhow::Result<()> {
         update_check: update_check::UpdateCheck::shared(),
         self_update: Arc::new(routes::self_update::SelfUpdateGuard::default()),
         pending_commands: Arc::new(dashmap::DashMap::new()),
-    };
+    })
+}
 
+/// Bus transport selection: with a routable pod IP this replica
+/// participates in the peer mesh — mint/load the internal shared secret and
+/// route/relay through `PeerHttpTransport`. Without one (local dev, single
+/// replica) the bus stays local-only (`NoopTransport`) and writes nothing.
+async fn init_bus(
+    pool: &sqlx::PgPool,
+    config: &Config,
+    presence: &presence::PodIdentity,
+    http_client: &reqwest::Client,
+) -> anyhow::Result<(Box<dyn bus::Transport>, Option<Arc<str>>)> {
+    let selected: (Box<dyn bus::Transport>, Option<Arc<str>>) = if presence.ip.is_some() {
+        let secret = routes::internal::ensure_secret(pool).await?;
+        let transport = bus::peer::PeerHttpTransport::new(
+            pool.clone(),
+            http_client.clone(),
+            presence.pod.clone(),
+            config.port,
+            secret.clone(),
+        );
+        (Box::new(transport), Some(Arc::from(secret.as_str())))
+    } else {
+        (Box::new(bus::NoopTransport), None)
+    };
+    Ok(selected)
+}
+
+async fn start_background_tasks(state: &AppState) {
     // Slow upstream release probe feeding `/version.latest_version`;
     // `CCTUI_UPDATE_CHECK=0` keeps air-gapped deployments quiet.
     if update_check::enabled_from_env() {
@@ -177,7 +206,7 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    routes::codex_models::warm_cache(&state).await;
+    routes::codex_models::warm_cache(state).await;
 
     // Replica-aware WS presence: registered only when the pod knows
     // its routable IP; the heartbeat task keeps this pod's rows trusted and
@@ -185,7 +214,9 @@ async fn main() -> anyhow::Result<()> {
     if state.presence.ip.is_some() {
         tokio::spawn(presence::heartbeat_task(state.clone()));
     }
+}
 
+fn build_app(state: &AppState, config: &Config, auth_config: &auth::AuthConfig) -> Router {
     let (api_router, api_descriptors) = build_api_routes().into_parts();
 
     // The descriptor list is the route table / source of truth, consumed by
@@ -200,10 +231,19 @@ async fn main() -> anyhow::Result<()> {
         // `AuthContext` it inserts is already present when the policy evaluates.
         .layer(middleware::from_fn(auth::auth_middleware))
         .layer(Extension(auth_config.clone()));
+    outer_routes()
+        .nest("/api/v1", api_router)
+        // Credentialed CORS bound to an explicit origin allowlist (same-origin
+        // webui + dev Vite, extendable via CCTUI_ALLOWED_ORIGINS). A wildcard
+        // origin is invalid once credentials are allowed.
+        .layer(cors_layer(&config.allowed_origins))
+        .with_state(state.clone())
+}
 
-    // `{id}` etc. in route paths are axum path-param syntax, not format args.
-    #[allow(clippy::literal_string_with_formatting_args)]
-    let app = Router::new()
+// `{id}` etc. in route paths are axum path-param syntax, not format args.
+#[allow(clippy::literal_string_with_formatting_args)]
+fn outer_routes() -> Router<AppState> {
+    Router::new()
         .route("/health", get(|| async { "ok" }))
         // Self-describing API surface. Both are unauthenticated meta
         // routes — like `/health` — because they expose ONLY the public shape of
@@ -292,13 +332,9 @@ async fn main() -> anyhow::Result<()> {
             post(routes::internal::bus_route).layer(DefaultBodyLimit::max(32 * 1024 * 1024)),
         )
         .route("/internal/bus/publish", post(routes::internal::bus_publish))
-        .nest("/api/v1", api_router)
-        // Credentialed CORS bound to an explicit origin allowlist (same-origin
-        // webui + dev Vite, extendable via CCTUI_ALLOWED_ORIGINS). A wildcard
-        // origin is invalid once credentials are allowed.
-        .layer(cors_layer(&config.allowed_origins))
-        .with_state(state.clone());
+}
 
+fn spawn_sweeps(state: AppState) {
     spawn_periodic(REAPER_PERIOD, {
         let state = state.clone();
         move || webhook_sweep(state.clone())
@@ -308,7 +344,9 @@ async fn main() -> anyhow::Result<()> {
         move || keepalive_sweep(state.clone())
     });
     tokio::spawn(reaper_task(state));
+}
 
+async fn serve(config: &Config, app: Router) -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(config.bind_addr()).await?;
     tracing::info!("listening on {}", config.bind_addr());
     axum::serve(listener, app).await?;
