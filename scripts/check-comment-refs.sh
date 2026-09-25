@@ -26,7 +26,7 @@ hits=$(git diff -U0 --no-color --diff-filter=AMR "${diff_args[@]}" -- \
       }
       bad = 0
       if (comment && (trimmed ~ /CCT-[0-9]+/ || tolower(trimmed) ~ /wave [0-9]+/ || tolower(trimmed) ~ /lane w[0-9]+/)) bad = 1
-      if (text ~ /(^|[^A-Za-z0-9_.])(describe|it|test)(\.[a-z]+)?\([ \t]*["\047`][^"\047`]*CCT-[0-9]+/) bad = 1
+      if (text ~ /(^|[^A-Za-z0-9_.])(describe|it|test)(\.[a-z]+)?(\([^)]*\))?\([ \t]*["\047`][^"\047`]*CCT-[0-9]+/) bad = 1
       if (bad) printf "%s:%d: %s\n", file, line, trimmed
       line++
     }
