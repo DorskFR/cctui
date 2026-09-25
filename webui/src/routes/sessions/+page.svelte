@@ -15,7 +15,6 @@
 	import { pushState, replaceState } from '$app/navigation';
 	import { toasts } from '$lib/toast.svelte';
 	import { ws } from '$lib/ws.svelte';
-	import SessionCard from '$lib/components/organisms/SessionCard.svelte';
 	import ConversationDrawer from '$lib/components/organisms/ConversationDrawer.svelte';
 	import SpawnModal from '$lib/components/organisms/SpawnModal.svelte';
 	import { dockLayout } from '$lib/spawnDock.svelte';
@@ -32,20 +31,17 @@
 		Text
 	} from '@dorsk/tsumikit';
 	import SessionGroupHeader from './SessionGroupHeader.svelte';
+	import SessionRows from './SessionRows.svelte';
+	import DraftRows from './DraftRows.svelte';
 	import { drafts, clearSpawnSlot, currentSpawnSlot, readSpawnSlot } from '$lib/drafts';
 	import { notify } from '$lib/notify.svelte';
 	import { settings } from '$lib/settings.svelte';
 	import { m } from '$lib/paraglide/messages';
 	import {
-		INLINE_THRESHOLD,
 		nest,
 		idsForSection,
-		costRollup,
-		groupId,
 		sessionIdFromLocation,
 		sessionHrefFor,
-		draftPreview,
-		type SubGroup,
 		toGroupDimension
 	} from './sessions.logic';
 	import { SessionsPage } from './sessionsPage.svelte';
@@ -252,86 +248,6 @@
 		</div>
 {/if}
 
-<!-- Nested list of top-level rows with subagent count badges + inline children,
-     shared by the live buckets, search results, and the archive browse so they
-     all render the same nesting. `allowSelect` gates the
-     multi-select checkboxes (live buckets only); `hl` carries search terms. -->
-<!-- Card (grid) view of the main list: top-level sessions laid
-     out as detailed cards in a responsive grid. Subagents are omitted here (the
-     list view + the drawer still show them); the point is at-a-glance status. -->
-{#snippet cardItems(
-	rows: SessionListItem[],
-	childGroups: Map<string, SubGroup[]>,
-	hl: string[] = [],
-	depth = 0
-)}
-	{#each rows as s (s.id)}
-		{@const subGroups = childGroups.get(s.id) ?? []}
-		<SessionCard
-			session={s}
-			child={depth > 0}
-			showMachine={sp.showMachine}
-			accentHue={sp.accentOf(s)}
-			stacked={subGroups.length > 0}
-			pendingCount={pending(s.id)}
-			unreadCount={sp.openSession?.id === s.id ? 0 : (s.unread_count ?? 0)}
-			onopen={sp.openFromCard}
-			selectable={sp.list.selecting}
-			selected={sp.list.selected.has(s.id)}
-			onToggleSelect={sp.list.toggleSelect}
-			swipeable
-			swipeLabel={m.sessions_archive()}
-			onSwipe={sp.swipeArchive}
-			onTogglePin={depth > 0 ? undefined : sp.togglePin}
-			highlight={hl}
-			subagentCost={costRollup(s, subGroups)}
-			subagentToggles={subGroups.map((g) => ({
-				key: g.key,
-				count: g.agents.length,
-				running: g.running,
-				open: sp.list.expanded.has(groupId(s.id, g.key)),
-				label: g.label,
-				ontoggle: () => sp.list.toggleGroup(s.id, g.key)
-			}))}
-			allLabels={sp.allLabels}
-			onCreateLabel={sp.createLabel}
-			onAttachLabel={depth > 0 ? undefined : sp.attachLabel}
-			onDetachLabel={depth > 0 ? undefined : sp.detachLabel}
-			onUpdateLabel={sp.updateLabel}
-			onDeleteLabel={sp.deleteLabel}
-		/>
-		<!-- Clicking a count badge expands that subagent group as cards inserted
-		     right after the parent card in the grid flow. -->
-		{#if depth < 5}
-			{#each subGroups as g (g.key)}
-				{#if sp.list.expanded.has(groupId(s.id, g.key))}
-					{@render cardItems(g.agents, childGroups, hl, depth + 1)}
-				{/if}
-			{/each}
-		{/if}
-	{/each}
-{/snippet}
-
-{#snippet cardGrid(rows: SessionListItem[], childGroups: Map<string, SubGroup[]>, hl: string[] = [])}
-	<div class="card-grid">{@render cardItems(rows, childGroups, hl)}</div>
-{/snippet}
-
-<!-- Every row set — live buckets, search results, archive browse — renders
-     through this one card-vs-list dispatch so no branch can drift from the
-     view picker. -->
-{#snippet rowsView(
-	rows: SessionListItem[],
-	childGroups: Map<string, SubGroup[]>,
-	allowSelect: boolean,
-	hl: string[]
-)}
-	{#if sp.cardView}
-		{@render cardGrid(rows, childGroups, hl)}
-	{:else}
-		{@render nestedRows(rows, childGroups, allowSelect, hl)}
-	{/if}
-{/snippet}
-
 <!-- Shared section wrapper: card-detailed fills the content column, which the
      layout has already narrowed by whatever the docked panels reserve; every
      other view stays centered. `fullWidth` would break out to the viewport and
@@ -344,85 +260,6 @@
 	{:else}
 		<div class="sections tight" data-journey="session-list">{@render body()}</div>
 	{/if}
-{/snippet}
-
-{#snippet nestedRows(
-	rows: SessionListItem[],
-	childGroups: Map<string, SubGroup[]>,
-	allowSelect: boolean,
-	hl: string[],
-	depth = 0
-)}
-	{#each rows as s (s.id)}
-		{@const subGroups = childGroups.get(s.id) ?? []}
-		{@const collapsibleGroups = subGroups.filter((g) => g.agents.length >= INLINE_THRESHOLD)}
-		<!-- Collapsible (>=3) groups surface as count badges outside the parent
-		     row layout; smaller groups render inline below. -->
-		<div class="parent-row">
-			<SessionCard
-				session={s}
-				variant="row"
-				child={depth > 0}
-				showMachine={sp.showMachine}
-				accentHue={sp.accentOf(s)}
-				pendingCount={pending(s.id)}
-				unreadCount={sp.openSession?.id === s.id ? 0 : (s.unread_count ?? 0)}
-				onopen={sp.openFromCard}
-				selectable={allowSelect && sp.list.selecting}
-				selected={sp.list.selected.has(s.id)}
-				onToggleSelect={sp.list.toggleSelect}
-				swipeable
-				swipeLabel={s.status === 'archived' ? m.sessions_unarchive() : m.sessions_archive()}
-				onSwipe={sp.swipeArchive}
-				onTogglePin={depth > 0 ? undefined : sp.togglePin}
-				highlight={hl}
-				subagentCost={costRollup(s, subGroups)}
-				subagentToggles={collapsibleGroups.map((g) => ({
-					key: g.key,
-					count: g.agents.length,
-					running: g.running,
-					open: sp.list.expanded.has(groupId(s.id, g.key)),
-					label: g.label,
-					ontoggle: () => sp.list.toggleGroup(s.id, g.key)
-				}))}
-				allLabels={sp.allLabels}
-				onCreateLabel={sp.createLabel}
-				onAttachLabel={depth > 0 ? undefined : sp.attachLabel}
-				onDetachLabel={depth > 0 ? undefined : sp.detachLabel}
-				onUpdateLabel={sp.updateLabel}
-				onDeleteLabel={sp.deleteLabel}
-			/>
-		</div>
-		{#if depth < 5}
-			{#each subGroups as g (g.key)}
-				{#if g.agents.length < INLINE_THRESHOLD || sp.list.expanded.has(groupId(s.id, g.key))}
-					<div class="agent-children" style="--agent-depth: {Math.min(depth + 1, 5)}">
-						{@render nestedRows(g.agents, childGroups, allowSelect, hl, depth + 1)}
-					</div>
-				{/if}
-			{/each}
-		{/if}
-	{/each}
-{/snippet}
-
-{#snippet draftItems(rows: SessionListItem[], grid: boolean)}
-	{#each rows as s (s.id)}
-		<div class="parent-row">
-			<SessionCard
-				session={s}
-				variant={grid ? 'card' : 'row'}
-				showMachine={sp.showMachine}
-				accentHue={sp.accentOf(s)}
-				draft
-				draftLaunching={sp.launchingDraft === s.id}
-				preview={draftPreview(s)}
-				onLaunch={sp.launchDraft}
-				onEdit={sp.editDraft}
-				onDiscard={sp.discardDraft}
-				onopen={() => {}}
-			/>
-		</div>
-	{/each}
 {/snippet}
 
 {#snippet loadMore()}
@@ -468,14 +305,14 @@
 			archiveIds: idsForSection(liveTop, ns.childGroups)
 		})}
 		{#if !sp.hiddenSections.has('live')}
-			{@render rowsView(liveTop, ns.childGroups, false, sp.searchTerms)}
+			<SessionRows {sp} rows={liveTop} childGroups={ns.childGroups} allowSelect={false} hl={sp.searchTerms} {pending} />
 		{/if}
 	</div>
 	{#if sp.showArchived}
 		<div class="section">
 			{@render groupHeader('archived', m.sessions_section_archived(), archTop.length, {})}
 			{#if !sp.hiddenSections.has('archived')}
-				{@render rowsView(archTop, ns.childGroups, false, sp.searchTerms)}
+				<SessionRows {sp} rows={archTop} childGroups={ns.childGroups} allowSelect={false} hl={sp.searchTerms} {pending} />
 			{/if}
 		</div>
 	{/if}
@@ -521,7 +358,7 @@
 						archiveIds: idsForSection(g.sessions, sp.childGroupsOf)
 					})}
 					{#if !sp.hiddenSections.has(key)}
-						{@render rowsView(g.sessions, sp.childGroupsOf, true, [])}
+						<SessionRows {sp} rows={g.sessions} childGroups={sp.childGroupsOf} allowSelect={true} hl={[]} {pending} />
 					{/if}
 				</div>
 			{/each}
@@ -536,25 +373,17 @@
 								: undefined
 					})}
 					{#if !sp.hiddenSections.has(g.key)}
-						{@render rowsView(g.sessions, sp.childGroupsOf, true, [])}
+						<SessionRows {sp} rows={g.sessions} childGroups={sp.childGroupsOf} allowSelect={true} hl={[]} {pending} />
 					{/if}
 				</div>
 			{/each}
 		{/if}
 
 		{#if sp.sections.has('drafts')}
-			<!-- Drafts render through the SAME SessionCard path as every other
-			     section, so they honor the card-view / compact toggles
-			     identically; the card surfaces Launch/Edit/Discard in place of the
-			     live-session affordances. -->
 			<div class="section" data-journey="section" data-journey-key="drafts">
 				{@render groupHeader('drafts', m.sessions_section_drafts(), sp.list.draftRows.length, {})}
 				{#if !sp.hiddenSections.has('drafts')}
-					{#if sp.cardView}
-						<div class="card-grid">{@render draftItems(sp.list.draftRows, true)}</div>
-					{:else}
-						{@render draftItems(sp.list.draftRows, false)}
-					{/if}
+					<DraftRows {sp} rows={sp.list.draftRows} />
 				{/if}
 			</div>
 		{/if}
@@ -570,7 +399,7 @@
 					{#if sp.pageRows.length === 0 && !sp.pageLoading}
 						<div class="placeholder"><Text tone="muted">{m.sessions_no_archived()}</Text></div>
 					{:else}
-						{@render rowsView(archTop, ns.childGroups, false, sp.searchTerms)}
+						<SessionRows {sp} rows={archTop} childGroups={ns.childGroups} allowSelect={false} hl={sp.searchTerms} {pending} />
 						{@render loadMore()}
 					{/if}
 				{/if}
@@ -688,43 +517,10 @@
 	.sections.tight .section {
 		gap: var(--sp-1);
 	}
-	/* Parent row: a normal full-width row. The collapse toggle badge(s)
-	   now live inside the card's leading gutter slot (SessionCard), so there's no
-	   external rail and no reserved left gutter to keep aligned across sections. */
-	.parent-row {
-		position: relative;
-	}
-	.agent-children {
-		margin-left: min(calc(var(--agent-depth) * var(--sp-2)), 2.5rem);
-		display: flex;
-		flex-direction: column;
-		gap: var(--sp-1);
-	}
-	@media (max-width: 639px) {
-		.agent-children {
-			margin-left: min(calc(var(--agent-depth) * var(--sp-1)), 1.25rem);
-		}
-	}
 	.loadmore {
 		display: flex;
 		justify-content: center;
 		padding: var(--sp-3) 0;
-	}
-	/* Detailed cards auto-fill the strip: never narrower than a compact card,
-	   capped so a wide window packs more columns instead of stretching them,
-	   and each row takes its tallest card's natural height. */
-	.card-grid {
-		display: grid;
-		grid-template-columns: repeat(auto-fill, minmax(min(100%, 20rem), 26.75rem));
-		justify-content: start;
-		align-items: stretch;
-		gap: var(--sp-3);
-	}
-	/* One column takes the whole strip: a capped track leaves a gutter on phones. */
-	@container (max-width: 40rem) {
-		.card-grid {
-			grid-template-columns: minmax(0, 1fr);
-		}
 	}
 	.sections {
 		container-type: inline-size;
