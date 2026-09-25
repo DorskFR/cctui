@@ -15,7 +15,7 @@ import {
 	type PermReq,
 	type LiveAsk,
 	type LivePlan,
-	type SoftLimit,
+	type SoftLimitBlock,
 	type ToolBlock
 } from '$lib/ws.svelte';
 import { eventSig, parseAsk, parseTodos, todoProgress as deriveTodoProgress } from './format';
@@ -81,7 +81,7 @@ export class ConversationStream {
 	// request because cctui's share of the account window is at cap. Drives the
 	// per-chat "soft limit reached → continue on another account" banner. Null
 	// when no block is active.
-	softLimit = $state<SoftLimit | null>(null);
+	softLimit = $state<SoftLimitBlock | null>(null);
 	toolBlock = $state<ToolBlock | null>(null);
 	// Folded last-write-wins: the list mutates many times per turn and only its
 	// latest state is meaningful.

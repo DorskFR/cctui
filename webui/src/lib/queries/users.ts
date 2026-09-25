@@ -31,7 +31,7 @@ export const useUserKeys = (userId: () => string) =>
 
 export const useAllMachines = (enabled: () => boolean) =>
   createQuery(() => ({
-    queryKey: ["machines", "all"],
+    queryKey: qk.machinesAll,
     queryFn: endpoints.allMachines,
     enabled: enabled(),
   }));
@@ -54,7 +54,7 @@ export function useUserActions() {
   const qc = useQueryClient();
   const invalUsers = () => qc.invalidateQueries({ queryKey: qk.users });
   const invalUser = (userId: string) =>
-    qc.invalidateQueries({ queryKey: ["users", userId] });
+    qc.invalidateQueries({ queryKey: qk.user(userId) });
   return {
     create: async (name: string): Promise<CreateUserResponse> => {
       const r = await api.post<CreateUserResponse>("/admin/users", { name });

@@ -36,9 +36,11 @@ pub fn anthropic_reset_url(organization_uuid: &str) -> String {
 
 /// What the account's latest usage payload says about a limit reset, normalized
 /// across providers for the button in the usage row.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, ts_rs::TS)]
+#[ts(export)]
 pub struct LimitResetStatus {
     /// `codex` (reset credits) or `claude` (`juniper_tide`).
+    #[ts(type = "\"codex\" | \"claude\"")]
     pub kind: &'static str,
     /// Whether a claim would do anything right now.
     pub available: bool,
@@ -175,7 +177,8 @@ pub struct LimitResetRequest {
     pub credit_id: Option<String>,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, ts_rs::TS)]
+#[ts(export)]
 pub struct LimitResetResponse {
     pub account_id: Uuid,
     pub provider: String,

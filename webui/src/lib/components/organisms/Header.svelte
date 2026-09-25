@@ -40,7 +40,7 @@ import ResourceBattery from '$lib/components/molecules/ResourceBattery.svelte';
 	// Live ws changes → refetch the list even on routes other than /sessions.
 	$effect(() => {
 		void ws.changeTick;
-		qc.invalidateQueries({ queryKey: ['sessions'] });
+		qc.invalidateQueries({ queryKey: qk.sessionsAll });
 	});
 
 	// Cheap per-session ws patches applied to both list caches in place —

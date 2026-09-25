@@ -15,7 +15,7 @@ import type { Form } from './types';
 /** The knobs a profile carries. The account pick is at most one of
  *  `account_id` / `pool_id` / `no_account`; none = Auto. `null` model /
  *  effort / permission mode = the harness or account default. */
-export interface ProfileSpec {
+export interface ProfileSpecForm {
 	harness: string;
 	account_id: string | null;
 	pool_id: string | null;
@@ -54,7 +54,7 @@ type SpecForm = Pick<
 const blank = (v: string | null | undefined): string | null => (v?.trim() ? v.trim() : null);
 
 /** An unsaved kit: the harness default, everything else left to the server. */
-export const EMPTY_SPEC: ProfileSpec = {
+export const EMPTY_SPEC: ProfileSpecForm = {
 	harness: 'claude-code',
 	account_id: null,
 	pool_id: null,
@@ -65,7 +65,7 @@ export const EMPTY_SPEC: ProfileSpec = {
 	service_tier: null
 };
 
-export function specOf(p: SessionProfile): ProfileSpec {
+export function specOf(p: SessionProfile): ProfileSpecForm {
 	return {
 		harness: p.harness,
 		account_id: p.account_id,
@@ -100,7 +100,7 @@ const poolById = (pools: readonly AccountPoolView[], id: string | null) =>
  *  sentinel, a pool value, or the account name. A pool or account that no
  *  longer exists falls back to Auto. */
 export function accountPick(
-	spec: ProfileSpec,
+	spec: ProfileSpecForm,
 	accounts: readonly OAuthAccount[],
 	pools: readonly AccountPoolView[]
 ): string {
@@ -121,7 +121,7 @@ export function specFromForm(
 	form: SpecForm,
 	accounts: readonly OAuthAccount[],
 	pools: readonly AccountPoolView[] = []
-): ProfileSpec {
+): ProfileSpecForm {
 	const harness = form.adapter_id || 'claude-code';
 	const pool = poolName(form.account);
 	const account = pool === undefined ? accountByName(accounts, form.account) : undefined;
@@ -141,7 +141,7 @@ export function specFromForm(
  *  labels, env…) stays the caller's. */
 export function applySpec<T extends SpecForm>(
 	form: T,
-	spec: ProfileSpec,
+	spec: ProfileSpecForm,
 	accounts: readonly OAuthAccount[],
 	pools: readonly AccountPoolView[] = []
 ): T {
@@ -161,18 +161,18 @@ export function applySpec<T extends SpecForm>(
 }
 
 /** How many knobs differ between two specs (the adjust panel's "N changes"). */
-export function specChanges(a: ProfileSpec, b: ProfileSpec): number {
+export function specChanges(a: ProfileSpecForm, b: ProfileSpecForm): number {
 	return SPEC_FIELDS.filter((f) => (a[f] ?? null) !== (b[f] ?? null)).length;
 }
 
-export function sameSpec(a: ProfileSpec, b: ProfileSpec): boolean {
+export function sameSpec(a: ProfileSpecForm, b: ProfileSpecForm): boolean {
 	return specChanges(a, b) === 0;
 }
 
 /** The one-line summary under a profile name:
  *  "Claude Code · 🐼 personal · Fable · medium · Yolo". */
 export function specChain(
-	spec: ProfileSpec,
+	spec: ProfileSpecForm,
 	accounts: readonly OAuthAccount[],
 	pools: readonly AccountPoolView[],
 	labels: {

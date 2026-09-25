@@ -6,7 +6,7 @@
 	// soft-limit block (the limited binding is highlighted and preselected).
 	// Switching is a pure server-side rebind: the worker keeps running.
 	import { Button, Field, Modal, Select, Spinner, Text } from '@dorsk/tsumikit';
-	import type { SoftLimit } from '$lib/ws.svelte';
+	import type { SoftLimitBlock } from '$lib/ws.svelte';
 	import {
 		useSessionBindings,
 		type AccountProvider,
@@ -28,7 +28,7 @@
 		/** The owner's accounts (already scoped server-side to allowed ones). */
 		accounts: OAuthAccount[];
 		/** Set when a soft limit triggered the open — names the limited credential. */
-		softLimit: SoftLimit | null;
+		softLimit: SoftLimitBlock | null;
 		/** Rebind one binding to `account` (a credential id). Rejects async on
 		 *  failure, which we surface inline. */
 		onswitch: (account: string) => Promise<void>;

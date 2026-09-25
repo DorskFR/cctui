@@ -25,11 +25,14 @@ pub const RATE_WINDOW: Duration = Duration::from_mins(1);
 
 /// Per-(account, provider) rate limits. Both optional; `None` ⇒ that dimension is
 /// unlimited. Persisted as `{ "rpm": int?, "tpm": int? }` on the provider row.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ts_rs::TS)]
+#[ts(export)]
 pub struct RateLimits {
     /// Max requests admitted per rolling 60s window.
+    #[ts(type = "number | null", optional)]
     pub rpm: Option<u32>,
     /// Max tokens counted per rolling 60s window.
+    #[ts(type = "number | null", optional)]
     pub tpm: Option<u64>,
 }
 

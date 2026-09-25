@@ -4,7 +4,7 @@
 	// after a short grace period rather than on the POST's reply.
 	import { IconButton } from '@dorsk/tsumikit';
 	import { useQueryClient } from '@tanstack/svelte-query';
-	import { endpoints } from '$lib/queries';
+	import { endpoints, qk } from '$lib/queries';
 	import { errMessage } from '$lib/api';
 	import { toasts } from '$lib/toast.svelte';
 	import { m } from '$lib/paraglide/messages';
@@ -28,7 +28,7 @@
 			await endpoints.refreshCodexModels(machineId);
 			toasts.ok(m.codex_models_refresh_sent());
 			setTimeout(() => {
-				qc?.invalidateQueries({ queryKey: ['codex-models'] });
+				qc?.invalidateQueries({ queryKey: qk.codexModels });
 				busy = false;
 			}, 4000);
 		} catch (e) {

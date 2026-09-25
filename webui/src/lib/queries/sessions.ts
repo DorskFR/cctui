@@ -53,7 +53,7 @@ export const useUsageAnalytics = (days: () => number) =>
 
 export const useCacheLoss = (days: () => number) =>
   createQuery(() => ({
-    queryKey: ["cache-loss", { days: days() }],
+    queryKey: qk.cacheLoss(days()),
     queryFn: () =>
       api.get<DailyCacheLoss[]>("/sessions/stats/cache-busts", {
         days: days(),
@@ -185,7 +185,7 @@ export const useSessionDiagnose = (
   enabled: () => boolean = () => true,
 ) =>
   createQuery(() => ({
-    queryKey: ["session-diagnose", id()],
+    queryKey: qk.sessionDiagnose(id()),
     queryFn: () => endpoints.sessionDiagnose(id()),
     enabled: enabled() && !!id(),
     staleTime: 30_000,
@@ -201,7 +201,7 @@ export const useSessionLangfuse = (
   enabled: () => boolean = () => true,
 ) =>
   createQuery(() => ({
-    queryKey: ["session-langfuse", id()],
+    queryKey: qk.sessionLangfuse(id()),
     queryFn: () => endpoints.sessionLangfuse(id()),
     enabled: enabled() && !!id(),
     staleTime: 60_000,
@@ -224,7 +224,7 @@ export const useSessionAttachments = (
 
 export const useRecentDirs = (machineId: () => string) =>
   createQuery(() => ({
-    queryKey: ["recent-dirs", machineId()],
+    queryKey: qk.recentDirs(machineId()),
     queryFn: () => endpoints.recentDirs(machineId()),
     enabled: !!machineId(),
     staleTime: 30_000,
@@ -232,7 +232,7 @@ export const useRecentDirs = (machineId: () => string) =>
 
 export const useMachineDirs = (machineId: () => string, path: () => string) =>
   createQuery(() => ({
-    queryKey: ["machine-dirs", machineId(), path()],
+    queryKey: qk.machineDirs(machineId(), path()),
     queryFn: () => endpoints.machineDirs(machineId(), path()),
     enabled: !!machineId() && !!path(),
     staleTime: 10_000,
@@ -241,7 +241,7 @@ export const useMachineDirs = (machineId: () => string, path: () => string) =>
 
 export const useCodexModels = (machineId: () => string) =>
   createQuery(() => ({
-    queryKey: ["codex-models", machineId()],
+    queryKey: qk.codexModelsFor(machineId()),
     queryFn: () => endpoints.codexModels(machineId()),
     enabled: !!machineId(),
     staleTime: 60_000,
@@ -250,7 +250,7 @@ export const useCodexModels = (machineId: () => string) =>
 
 export const useMergedCodexModels = (enabled: () => boolean = () => true) =>
   createQuery(() => ({
-    queryKey: ["codex-models", "merged"],
+    queryKey: qk.codexModelsMerged,
     queryFn: () => endpoints.codexModelsMerged(),
     enabled: enabled(),
     staleTime: 60_000,
@@ -259,7 +259,7 @@ export const useMergedCodexModels = (enabled: () => boolean = () => true) =>
 
 export const useSessionBindings = (sessionId: () => string, enabled: () => boolean = () => true) =>
   createQuery(() => ({
-    queryKey: ["session-bindings", sessionId()],
+    queryKey: qk.sessionBindings(sessionId()),
     queryFn: () => endpoints.sessionBindings(sessionId()),
     enabled: enabled(),
   }));

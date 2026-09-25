@@ -3,10 +3,8 @@ import { wsBase } from './config';
 import { auth } from './auth.svelte';
 import { net } from './netstats.svelte';
 import type { AgentEvent } from '@bindings/AgentEvent';
-import type { MachineResources } from '@bindings/MachineResources';
-import type { GithubEventKind } from '@bindings/GithubEventKind';
-import type { GithubEventPayload } from '@bindings/GithubEventPayload';
 import type { SessionEndReason } from '@bindings/SessionEndReason';
+import type { ServerEvent } from '@bindings/ServerEvent';
 import type { AccountUsage } from './queries/types';
 import { qk } from './queries/keys';
 import type { QueryClient } from '@tanstack/svelte-query';
@@ -29,19 +27,11 @@ export interface SpawnProbeHit {
 	end_detail?: string | null;
 }
 
-export interface SessionEndedEvent {
-	session_id: string;
-	reason: SessionEndReason;
-	detail: string | null;
-}
+type EventOf<T extends ServerEvent['type']> = Omit<Extract<ServerEvent, { type: T }>, 'type'>;
 
-export interface PermReq {
-	session_id: string;
-	request_id: string;
-	tool_name: string;
-	description: string;
-	input_preview: string;
-}
+export type SessionEndedEvent = EventOf<'session_ended'>;
+
+export type PermReq = EventOf<'permission_request'>;
 
 /** History stores the user's own turns as a `text` event prefixed with this
  * marker (there is no `reply` row on read); live optimistic echoes are `reply`
@@ -105,67 +95,29 @@ type Status = 'connecting' | 'open' | 'closed';
 type StreamCb = (ev: AgentEvent) => void;
 type PtyCb = (data: Uint8Array) => void;
 type PermCb = (list: PermReq[]) => void;
-/** A live GitHub inbox nudge (GH-CONN-5): "something about a tracked PR
- * changed" — the `/github` inbox refetches the affected rows in response. */
-export interface GithubEvent {
-	kind: GithubEventKind;
-	payload: GithubEventPayload;
-}
+/** A live GitHub inbox nudge: "something about a tracked PR changed" — the
+ * `/github` inbox refetches the affected rows in response. */
+export type GithubEvent = EventOf<'github_event'>;
 type GithubCb = (ev: GithubEvent) => void;
-/**
- * A live AskUserQuestion. `question` is the flattened text (always present);
- * `questions` is the raw `tool_input.questions` array (header/options/
- * multiSelect) when the daemon's hook forwarded it, letting the
- * client render the interactive option-card form live instead of plain text.
- */
-export interface LiveAsk {
-	question: string;
-	questions: unknown | null;
-	/** Assistant prose preceding the question in the same turn, rendered above
-	 * the card so the user has context instead of answering blind. */
-	preamble?: string | null;
-}
+/** A live AskUserQuestion. `questions` is the raw `tool_input.questions` array
+ * when the daemon's hook forwarded it, for the interactive option-card form. */
+export type LiveAsk = Omit<EventOf<'ask_question'>, 'session_id'>;
 /** Live AskUserQuestion for a session, or null when none is pending. */
 type AskCb = (ask: LiveAsk | null) => void;
-/**
- * A live ExitPlanMode plan-approval prompt. `plan` is the plan
- * markdown the agent presented; `preamble` is the prose preceding the
- * `ExitPlanMode` call, rendered above the Plan card for context.
- */
-export interface LivePlan {
-	plan: string;
-	preamble?: string | null;
-}
+/** A live ExitPlanMode plan-approval prompt. */
+export type LivePlan = Omit<EventOf<'plan_request'>, 'session_id'>;
 /** Live plan prompt for a session, or null when none is pending. */
 type PlanCb = (plan: LivePlan | null) => void;
-/**
- * A session's per-account soft-limit block. The gateway refused a
- * request because cctui's own share of `account_name`'s usage window is at cap;
- * the conversation stalled with a 429. The webui surfaces a per-chat banner
- * offering to continue on another same-provider account.
- */
-export interface SoftLimit {
-	account_id: string;
-	account_name: string;
-	reason: string;
-	retry_after_secs: number;
-}
+/** The gateway refused a request because cctui's share of `account_name`'s
+ * usage window is at cap; the webui offers to continue on another account. */
+export type SoftLimitBlock = Omit<EventOf<'soft_limit_reached'>, 'session_id'>;
 /** Live soft-limit block for a session, or null when none is active. */
-type SoftLimitCb = (sl: SoftLimit | null) => void;
+type SoftLimitCb = (sl: SoftLimitBlock | null) => void;
 /** The gateway refused to forward a tool call in this session because it
  * matched the account's tool-call policy; the turn ended with an explanation. */
-export interface ToolBlock {
-	tool_name: string;
-	rule: string;
-}
+export type ToolBlock = Omit<EventOf<'tool_call_blocked'>, 'session_id'>;
 type ToolBlockCb = (b: ToolBlock | null) => void;
-/** Server ack for a client-sent message. `ok=false` means the server
- * could not dispatch the reply to the session's daemon, so the client should
- * mark the message failed and offer a retry. */
-export interface MachineResourcesEvent {
-	machine_id: string;
-	resources: MachineResources;
-}
+export type MachineResourcesEvent = EventOf<'machine_resources'>;
 
 /** An account's usage windows, pushed by the server refresh that already
  *  fetched them. Patched into the query cache in place: invalidating instead
@@ -183,12 +135,7 @@ export interface SessionListPatch {
 	bucket?: 'blocked';
 }
 
-export interface MessageAck {
-	client_msg_id: string;
-	ok: boolean;
-	error?: string;
-	command_id?: string;
-}
+export type MessageAck = EventOf<'message_ack'>;
 
 /** How long to wait for the adapter's delivery result after the server acked
  *  the dispatch. Adapters that never report one leave the send unconfirmed
@@ -394,7 +341,7 @@ export class WsClient {
 	/** pending AskUserQuestion, keyed by session id; not reactive */
 	private asks = new Map<string, LiveAsk>();
 	private plans = new Map<string, LivePlan>();
-	private softLimits = new Map<string, SoftLimit>();
+	private softLimits = new Map<string, SoftLimitBlock>();
 	private toolBlocks = new Map<string, ToolBlock>();
 	private streamCbs = new KeyedListeners<AgentEvent>();
 	/** Live PTY-view listeners keyed by session id; not reactive. The
@@ -407,7 +354,7 @@ export class WsClient {
 	private permCbs = new KeyedListeners<PermReq[]>();
 	private askCbs = new KeyedListeners<LiveAsk | null>();
 	private planCbs = new KeyedListeners<LivePlan | null>();
-	private softLimitCbs = new KeyedListeners<SoftLimit | null>();
+	private softLimitCbs = new KeyedListeners<SoftLimitBlock | null>();
 	private toolBlockCbs = new KeyedListeners<ToolBlock | null>();
 	/** GitHub inbox listeners (GH-CONN-5 / GH-UI-1); not session-keyed — one
 	 * broadcast channel the mounted inbox subscribes to. Not reactive. */
@@ -571,7 +518,7 @@ export class WsClient {
 	}
 
 	private onFrame(raw: string) {
-		let msg: Record<string, unknown>;
+		let msg: ServerEvent;
 		try {
 			msg = JSON.parse(raw);
 		} catch {
@@ -579,8 +526,7 @@ export class WsClient {
 		}
 		switch (msg.type) {
 			case 'stream': {
-				const sid = msg.session_id as string;
-				const data = msg.data as AgentEvent;
+				const { session_id: sid, data } = msg;
 				this.settleSpawn(sid, { ok: true });
 				this.appendEvent(sid, data);
 				// The list's last-message column tracks USER messages only
@@ -595,12 +541,11 @@ export class WsClient {
 				break;
 			}
 			case 'pty_chunk': {
-				const sid = msg.session_id as string;
-				if (this.ptyCbs.has(sid)) this.ptyCbs.emit(sid, decodeBase64(msg.data as string));
+				if (this.ptyCbs.has(msg.session_id)) this.ptyCbs.emit(msg.session_id, decodeBase64(msg.data));
 				break;
 			}
 			case 'permission_request': {
-				const p = msg as unknown as PermReq;
+				const { type: _, ...p } = msg;
 				const list = this.perms.get(p.session_id) ?? [];
 				if (!list.some((x) => x.request_id === p.request_id)) {
 					this.setPerms(p.session_id, [...list, p]);
@@ -608,130 +553,99 @@ export class WsClient {
 				break;
 			}
 			case 'permission_resolved': {
-				const sid = msg.session_id as string;
-				const rid = msg.request_id as string;
+				const sid = msg.session_id;
 				this.setPerms(
 					sid,
-					(this.perms.get(sid) ?? []).filter((x) => x.request_id !== rid)
+					(this.perms.get(sid) ?? []).filter((x) => x.request_id !== msg.request_id)
 				);
 				break;
 			}
 			case 'ask_question': {
-				const sid = msg.session_id as string;
-				this.setAsk(sid, {
-					question: msg.question as string,
-					questions: (msg.questions as unknown) ?? null,
-					preamble: (msg.preamble as string | undefined) ?? null
+				this.setAsk(msg.session_id, {
+					question: msg.question,
+					questions: msg.questions ?? null,
+					preamble: msg.preamble ?? null
 				});
 				break;
 			}
-			case 'ask_resolved': {
-				const sid = msg.session_id as string;
-				this.setAsk(sid, null);
+			case 'ask_resolved':
+				this.setAsk(msg.session_id, null);
 				break;
-			}
 			case 'plan_request': {
-				const sid = msg.session_id as string;
-				this.setPlan(sid, {
-					plan: msg.plan as string,
-					preamble: (msg.preamble as string | undefined) ?? null
-				});
+				this.setPlan(msg.session_id, { plan: msg.plan, preamble: msg.preamble ?? null });
 				break;
 			}
-			case 'plan_resolved': {
-				const sid = msg.session_id as string;
-				this.setPlan(sid, null);
+			case 'plan_resolved':
+				this.setPlan(msg.session_id, null);
 				break;
-			}
 			case 'soft_limit_reached': {
-				const sid = msg.session_id as string;
-				this.setSoftLimit(sid, {
-					account_id: msg.account_id as string,
-					account_name: msg.account_name as string,
-					reason: msg.reason as string,
-					retry_after_secs: msg.retry_after_secs as number
-				});
+				const { type: _, session_id, ...sl } = msg;
+				this.setSoftLimit(session_id, sl);
 				break;
 			}
 			case 'tool_call_blocked': {
-				this.setToolBlock(msg.session_id as string, {
-					tool_name: msg.tool_name as string,
-					rule: msg.rule as string
-				});
+				this.setToolBlock(msg.session_id, { tool_name: msg.tool_name, rule: msg.rule });
 				break;
 			}
-			case 'soft_limit_cleared': {
-				const sid = msg.session_id as string;
-				this.setSoftLimit(sid, null);
+			case 'soft_limit_cleared':
+				this.setSoftLimit(msg.session_id, null);
 				break;
-			}
 			case 'message_ack': {
-				const ack: MessageAck = {
-					client_msg_id: msg.client_msg_id as string,
-					ok: msg.ok as boolean,
-					error: msg.error as string | undefined,
-					command_id: msg.command_id as string | undefined
-				};
 				// Resolve the tracked send (delivered / failed → auto-retry).
-				this.resolveAck(ack);
+				this.resolveAck(msg);
 				break;
 			}
 			case 'command_result': {
-				const cid = msg.command_id as string;
-				const w = this.waiters.get(cid);
+				const w = this.waiters.get(msg.command_id);
 				if (w) {
-					w({ ok: msg.ok as boolean, error: msg.error as string | undefined });
-					this.waiters.delete(cid);
+					w({ ok: msg.ok, error: msg.error ?? undefined });
+					this.waiters.delete(msg.command_id);
 				}
 				break;
 			}
 			case 'github_event': {
-				const ev: GithubEvent = {
-					kind: msg.kind as GithubEventKind,
-					payload: msg.payload as GithubEventPayload
-				};
+				const ev: GithubEvent = { kind: msg.kind, payload: msg.payload };
 				for (const cb of this.githubCbs) cb(ev);
 				break;
 			}
 			case 'session_ended': {
-				const ev: SessionEndedEvent = {
-					session_id: msg.session_id as string,
-					reason: msg.reason as SessionEndReason,
-					detail: (msg.detail as string | undefined) ?? null
-				};
-				this.settleSpawn(ev.session_id, spawnOutcomeFromEnd(ev.reason, ev.detail));
+				const { type: _, ...ev } = msg;
+				this.settleSpawn(ev.session_id, spawnOutcomeFromEnd(ev.reason, ev.detail ?? null));
 				for (const cb of this.sessionEndedCbs) cb(ev);
 				this.markListDirty();
 				break;
 			}
 			case 'status':
-				this.settleSpawn(msg.session_id as string, { ok: true });
+				this.settleSpawn(msg.session_id, { ok: true });
 				this.markListDirty();
 				break;
 			case 'session_registered':
-				this.settleSpawn((msg.session as { id: string } | undefined)?.id, { ok: true });
+				this.settleSpawn(msg.session.id, { ok: true });
 				this.markListDirty();
 				break;
 			case 'session_deregistered':
 				this.markListDirty();
 				break;
 			case 'machine_resources': {
-				const p = msg as unknown as MachineResourcesEvent;
+				const { type: _, ...p } = msg;
 				for (const cb of this.machineResourcesCbs) cb(p);
 				break;
 			}
 			case 'account_usage': {
-				const p = msg as unknown as AccountUsageEvent;
+				const p: AccountUsageEvent = {
+					account_id: msg.account_id,
+					usage: msg.usage as unknown as AccountUsage
+				};
 				for (const cb of this.accountUsageCbs) cb(p);
 				break;
 			}
 			case 'resync': {
-				const sid = msg.session_id as string | undefined;
+				const sid = msg.session_id;
 				void this.queryClient?.invalidateQueries({
-					queryKey: sid ? qk.conversation(sid) : ['conversation']
+					queryKey: sid ? qk.conversation(sid) : qk.conversationAll
 				});
 				if (!sid) {
-					void this.queryClient?.invalidateQueries({ queryKey: ['sessions'] });
+					void this.queryClient?.invalidateQueries({ queryKey: qk.sessionsAll });
 					this.markListDirty();
 				}
 				break;
@@ -859,7 +773,7 @@ export class WsClient {
 		this.planCbs.emit(id, plan);
 	}
 
-	private setSoftLimit(id: string, sl: SoftLimit | null) {
+	private setSoftLimit(id: string, sl: SoftLimitBlock | null) {
 		if (sl === null) this.softLimits.delete(id);
 		else this.softLimits.set(id, sl);
 		this.markListDirty();

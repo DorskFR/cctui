@@ -16,7 +16,7 @@ const versionData = {
 const sessionsData = { sessions: [] as SessionListItem[] };
 
 vi.mock('$lib/queries', () => ({
-	qk: { sessions: (a: boolean) => ['sessions', a] },
+	qk: { sessions: (a: boolean) => ['sessions', a], sessionsAll: ['sessions'] },
 	useMe: () => ({ data: { user_name: 'dorsk', role: 'admin' } }),
 	useVersion: () => ({ data: versionData }),
 	useSessions: () => ({ data: sessionsData }),

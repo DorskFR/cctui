@@ -12,16 +12,16 @@ export type Probes = Record<string, Probe>;
 /** The tours and the first-run checklist read app state through the same
  *  query cache the pages use, so a guide never disagrees with the screen. */
 export function createProbes(qc: QueryClient): Probes {
-	const me = () => qc.fetchQuery({ queryKey: ['me'], queryFn: endpoints.me, staleTime: 5 * 60_000 });
-	const accounts = () => qc.fetchQuery({ queryKey: ['accounts'], queryFn: endpoints.accounts });
-	const pools = () => qc.fetchQuery({ queryKey: ['account-pools'], queryFn: endpoints.accountPools });
+	const me = () => qc.fetchQuery({ queryKey: qk.me, queryFn: endpoints.me, staleTime: 5 * 60_000 });
+	const accounts = () => qc.fetchQuery({ queryKey: qk.accounts, queryFn: endpoints.accounts });
+	const pools = () => qc.fetchQuery({ queryKey: qk.accountPools, queryFn: endpoints.accountPools });
 	const sessions = () =>
 		qc.fetchQuery({ queryKey: qk.sessions(false), queryFn: () => endpoints.sessions(false) });
 	const stats = () => qc.fetchQuery({ queryKey: qk.sessionStats, queryFn: () => endpoints.sessionStats(Intl.DateTimeFormat().resolvedOptions().timeZone) });
 	const machines = async (): Promise<MachineRow[]> => {
 		const who = await me();
 		if (who.role === 'admin') {
-			return qc.fetchQuery({ queryKey: ['machines', 'all'], queryFn: endpoints.allMachines });
+			return qc.fetchQuery({ queryKey: qk.machinesAll, queryFn: endpoints.allMachines });
 		}
 		const userId = who.user_id;
 		if (!userId) return [];

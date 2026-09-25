@@ -172,11 +172,11 @@ export type GuideParams = Record<string, string>;
  *  that does not exist stays absent, and the guide that needs it is refused. */
 export async function guideParams(qc: QueryClient): Promise<GuideParams> {
 	const out: GuideParams = { 'var.label': '', 'var.prompt': '' };
-	const me = await qc.fetchQuery({ queryKey: ['me'], queryFn: endpoints.me, staleTime: 5 * 60_000 });
+	const me = await qc.fetchQuery({ queryKey: qk.me, queryFn: endpoints.me, staleTime: 5 * 60_000 });
 	if (me.user_name) out['fixture.me'] = me.user_name;
 	const [accounts, pools, sessions] = await Promise.all([
-		qc.fetchQuery({ queryKey: ['accounts'], queryFn: endpoints.accounts }),
-		qc.fetchQuery({ queryKey: ['account-pools'], queryFn: endpoints.accountPools }),
+		qc.fetchQuery({ queryKey: qk.accounts, queryFn: endpoints.accounts }),
+		qc.fetchQuery({ queryKey: qk.accountPools, queryFn: endpoints.accountPools }),
 		qc.fetchQuery({ queryKey: qk.sessions(false), queryFn: () => endpoints.sessions(false) })
 	]);
 	if (accounts[0]) out.account = accounts[0].name;
