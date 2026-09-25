@@ -811,11 +811,17 @@ struct SessionOwners {
     machine_id: Uuid,
     user_id: Uuid,
     known: std::collections::HashMap<String, bool>,
+    warned: HashSet<String>,
 }
 
 impl SessionOwners {
     fn new(machine_id: Uuid, user_id: Uuid) -> Self {
-        Self { machine_id, user_id, known: std::collections::HashMap::new() }
+        Self {
+            machine_id,
+            user_id,
+            known: std::collections::HashMap::new(),
+            warned: HashSet::new(),
+        }
     }
 
     async fn resolve(
@@ -835,6 +841,7 @@ impl SessionOwners {
         let mine = machine == Some(self.machine_id) && user == Some(self.user_id);
         if self.known.len() >= MAX_CACHED_OWNERS {
             self.known.clear();
+            self.warned.clear();
         }
         self.known.insert(local_id.to_owned(), mine);
         Ok(if mine { Ownership::Mine } else { Ownership::Foreign })
@@ -847,11 +854,15 @@ async fn admit(owners: &mut SessionOwners, pool: &sqlx::PgPool, local_id: &str) 
     match owners.resolve(pool, local_id).await {
         Ok(Ownership::Mine | Ownership::Absent) => true,
         Ok(Ownership::Foreign) => {
-            tracing::warn!(
-                machine_id = %owners.machine_id,
-                %local_id,
-                "dropping daemon frame for a session another machine owns",
-            );
+            if owners.warned.insert(local_id.to_owned()) {
+                tracing::warn!(
+                    machine_id = %owners.machine_id,
+                    %local_id,
+                    "dropping daemon frames for a session another machine owns",
+                );
+            } else {
+                tracing::debug!(%local_id, "dropping daemon frame for a foreign session");
+            }
             false
         }
         Err(err) => {

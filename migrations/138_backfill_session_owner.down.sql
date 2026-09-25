@@ -1,0 +1,1 @@
+-- Irreversible data backfill: the NULL owners it replaced are not recorded.
