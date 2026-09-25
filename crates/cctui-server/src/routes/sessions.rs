@@ -3723,7 +3723,7 @@ mod tests {
             cctui_proto::models::TokenUsage { tokens_in: 11, tokens_out: 3, ..Default::default() },
         );
         ctx.last_messages.insert("s".into(), (Some("hello".into()), ts(5)));
-        ctx.unread = Some([("s".to_string(), 4)].into_iter().collect());
+        ctx.unread = Some(std::iter::once(("s".to_string(), 4)).collect());
         ctx.todos
             .insert("s".into(), serde_json::json!([{"content": "do it", "status": "pending"}]));
         ctx.signals.insert(

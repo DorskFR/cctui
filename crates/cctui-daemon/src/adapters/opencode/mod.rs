@@ -114,26 +114,7 @@ impl Pump {
                 self.spawn(spec, command_id, session_id).await;
             }
             AdapterCommand::Fork { parent_local_id, spec, command_id, .. } => {
-                let delivered = route(
-                    &self.live,
-                    &parent_local_id,
-                    SessionCommand::Fork {
-                        parent: parent_local_id.clone(),
-                        prompt: spec.prompt.clone(),
-                        name: spec.name.clone(),
-                        command_id,
-                    },
-                )
-                .await;
-                if !delivered {
-                    fail(
-                        &self.events,
-                        command_id,
-                        "opencode fork requires the parent session to be live on this \
-                         daemon",
-                    )
-                    .await;
-                }
+                self.fork(&parent_local_id, &spec, command_id).await;
             }
             AdapterCommand::SendMessage { local_id, text }
             | AdapterCommand::Reply { local_id, text, .. } => {
@@ -206,6 +187,34 @@ impl Pump {
             }
             AdapterCommand::ResumeMarks { .. } | AdapterCommand::Resume { .. } => {}
             _ => tracing::warn!("opencode: unhandled AdapterCommand variant"),
+        }
+    }
+
+    async fn fork(
+        &self,
+        parent_local_id: &str,
+        spec: &cctui_proto::adapter::SessionSpec,
+        command_id: Option<Uuid>,
+    ) {
+        let delivered = route(
+            &self.live,
+            parent_local_id,
+            SessionCommand::Fork {
+                parent: parent_local_id.to_owned(),
+                prompt: spec.prompt.clone(),
+                name: spec.name.clone(),
+                command_id,
+            },
+        )
+        .await;
+        if !delivered {
+            fail(
+                &self.events,
+                command_id,
+                "opencode fork requires the parent session to be live on this \
+                 daemon",
+            )
+            .await;
         }
     }
 

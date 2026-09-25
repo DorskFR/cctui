@@ -104,13 +104,13 @@ struct SpawnTarget {
     /// For claude-code the session id is pre-minted here and handed to the
     /// worker as `--session-id` (mirroring the fork path), so the gateway token
     /// can be bound to the *real* session id the worker registers as — rather
-    /// than the command_id, which the worker never knows and so never
+    /// than the `command_id`, which the worker never knows and so never
     /// reconciles (leaving `account_name` perpetually null + the key icon
     /// dead). codex mints its own thread id and ignores the pre-minted id, so
-    /// its tokens still fall back to command_id keying.
+    /// its tokens still fall back to `command_id` keying.
     pre_session_id: Option<Uuid>,
     /// The id the gateway session token is bound to: the pre-minted real
-    /// session id for claude, else the command_id (legacy behaviour).
+    /// session id for claude, else the `command_id` (legacy behaviour).
     token_session_id: String,
 }
 
@@ -258,6 +258,65 @@ async fn resolve_spawn_account(
     }
     Ok(BoundAccount { env, model, effort, permission_mode, account_choice })
 }
+async fn stage_uploads(
+    state: &AppState,
+    token_session_id: &str,
+    uploads: Vec<cctui_proto::adapter::BootstrapFile>,
+    raw_uploads: Vec<crate::uploads::RawUpload>,
+) -> Result<(serde_json::Value, Vec<Uuid>), (StatusCode, Json<ApiError>)> {
+    let bootstrap = if uploads.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::to_value(BootstrapUploads { uploads }).map_err(|e| {
+            tracing::error!("serializing bootstrap uploads: {e}");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError { error: "could not encode uploads".into() }),
+            )
+        })?
+    };
+    // Must precede dispatch: nothing is staged yet, so a blob-store failure can
+    // still fail the request instead of producing a session whose first message
+    // references files the conversation can never re-read. Staged names are the
+    // sanitized upload names — the daemon stages into a fresh per-session dir.
+    let recorded = if raw_uploads.is_empty() {
+        Vec::new()
+    } else {
+        crate::routes::attachments::record_uploads(&state.pool, token_session_id, &raw_uploads, &[])
+            .await
+            .map_err(|e| {
+                tracing::error!(session = %token_session_id, "recording bootstrap uploads: {e}");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ApiError { error: "could not store the attachments".into() }),
+                )
+            })?
+    };
+    Ok((bootstrap, recorded.iter().map(|a| a.id).collect()))
+}
+
+async fn spawn_service_tier(
+    state: &AppState,
+    adapter_id: &str,
+    req: &SpawnRequest,
+    token_session_id: &str,
+) -> Option<String> {
+    // Codex's own default tier is `priority`, so an unset tier is the expensive
+    // one: resolve to a concrete value here rather than letting the worker
+    // inherit whatever the machine's config.toml happens to say.
+    if crate::routes::gateway::Family::from_adapter(adapter_id)
+        == crate::routes::gateway::Family::Openai
+    {
+        let account_settings =
+            crate::routes::gateway::resolve_session_settings(state, token_session_id).await;
+        Some(crate::settings_catalog::codex::resolve_service_tier(
+            req.service_tier.as_deref(),
+            account_settings.as_ref(),
+        ))
+    } else {
+        None
+    }
+}
 
 /// Resolve `model` through the account's alias map and mint the gateway env
 /// for the session. Resolution is by (account identity, harness family): the
@@ -349,56 +408,10 @@ async fn execute_spawn(
         ..
     } = target;
     let BoundAccount { env, model, effort, permission_mode, account_choice } = bound;
-    let bootstrap = if uploads.is_empty() {
-        serde_json::Value::Null
-    } else {
-        serde_json::to_value(BootstrapUploads { uploads }).map_err(|e| {
-            tracing::error!("serializing bootstrap uploads: {e}");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiError { error: "could not encode uploads".into() }),
-            )
-        })?
-    };
-    // Must precede dispatch: nothing is staged yet, so a blob-store failure can
-    // still fail the request instead of producing a session whose first message
-    // references files the conversation can never re-read. Staged names are the
-    // sanitized upload names — the daemon stages into a fresh per-session dir.
-    let recorded = if raw_uploads.is_empty() {
-        Vec::new()
-    } else {
-        crate::routes::attachments::record_uploads(
-            &state.pool,
-            &token_session_id,
-            &raw_uploads,
-            &[],
-        )
-        .await
-        .map_err(|e| {
-            tracing::error!(session = %token_session_id, "recording bootstrap uploads: {e}");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiError { error: "could not store the attachments".into() }),
-            )
-        })?
-    };
-    let recorded_ids: Vec<Uuid> = recorded.iter().map(|a| a.id).collect();
+    let (bootstrap, recorded_ids) =
+        stage_uploads(state, &token_session_id, uploads, raw_uploads).await?;
 
-    // Codex's own default tier is `priority`, so an unset tier is the expensive
-    // one: resolve to a concrete value here rather than letting the worker
-    // inherit whatever the machine's config.toml happens to say.
-    let service_tier = if crate::routes::gateway::Family::from_adapter(&adapter_id)
-        == crate::routes::gateway::Family::Openai
-    {
-        let account_settings =
-            crate::routes::gateway::resolve_session_settings(state, &token_session_id).await;
-        Some(crate::settings_catalog::codex::resolve_service_tier(
-            req.service_tier.as_deref(),
-            account_settings.as_ref(),
-        ))
-    } else {
-        None
-    };
+    let service_tier = spawn_service_tier(state, &adapter_id, req, &token_session_id).await;
     let spec_model = model.clone();
     let spec_effort = effort.clone();
     let spec = SessionSpec {

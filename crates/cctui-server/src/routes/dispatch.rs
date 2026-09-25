@@ -571,7 +571,7 @@ async fn validate_dispatch(
 
 /// Resolve the caller's stable dispatch machine and forward a per-session
 /// ephemeral key for it to the pod via a reserved payload key. The dispatcher
-/// lifts it into `CCTUI_MACHINE_KEY` and keeps it OUT of TASK_PAYLOAD_JSON, so
+/// lifts it into `CCTUI_MACHINE_KEY` and keeps it OUT of `TASK_PAYLOAD_JSON`, so
 /// the worker's daemon runs AS this one machine without a per-pod enroll. The
 /// shared `dispatch` machine still groups every dispatched session under one
 /// logical machine, but a leaked worker key only impersonates its own session
@@ -718,7 +718,7 @@ async fn apply_model_aliases(
 
 /// Expand each named account into the provider rows to mint: the hinted
 /// family's row only, or every row for a bare name. Two same-family rows would
-/// mint the same env keys (e.g. ANTHROPIC_AUTH_TOKEN) and silently repoint the
+/// mint the same env keys (e.g. `ANTHROPIC_AUTH_TOKEN`) and silently repoint the
 /// session's family token; reject rather than clobber.
 async fn expand_provider_rows(
     state: &AppState,
@@ -854,9 +854,9 @@ async fn resolve_account_routing(
 
 /// Register a server-emitted completion webhook when the caller supplied
 /// `notify_url`. The server fires it once the dispatched session reaches a
-/// terminal state — covering crash cases the worker's REPLY_URL exit trap can
+/// terminal state — covering crash cases the worker's `REPLY_URL` exit trap can
 /// miss. Scoped to a real owning user (admin-token dispatches carry no owner,
-/// so they keep the REPLY_URL trap only). Best-effort: a registration failure
+/// so they keep the `REPLY_URL` trap only). Best-effort: a registration failure
 /// never blocks the dispatch. The `task_id` echoed back is the dispatch
 /// payload's `task_id` if present, else the session id.
 async fn register_completion_webhook(

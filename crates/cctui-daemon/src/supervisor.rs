@@ -87,7 +87,7 @@ type WsSink = futures_util::stream::SplitSink<
 >;
 
 /// Micro-batch buffer: adapter events accumulate here for up to
-/// BATCH_WINDOW, then flush as one compress+chunk frame.
+/// `BATCH_WINDOW`, then flush as one compress+chunk frame.
 struct EventBatch {
     frames: Vec<Vec<u8>>,
     bytes: usize,
@@ -474,7 +474,7 @@ impl Supervisor {
     }
 
     /// Ping tick: detect a half-open connection (no server traffic, not even
-    /// a Pong, within LIVENESS_TIMEOUT) and bail so the reconnect loop takes
+    /// a Pong, within `LIVENESS_TIMEOUT`) and bail so the reconnect loop takes
     /// over; otherwise send the WS Ping plus the app-level heartbeat.
     async fn send_heartbeat(
         &self,
@@ -514,7 +514,7 @@ impl Supervisor {
     }
 
     /// An unfinished transfer resumes next connection, unless it has burned
-    /// MAX_ATTEMPTS without progress: then tombstone + drop it.
+    /// `MAX_ATTEMPTS` without progress: then tombstone + drop it.
     fn park_transfer(&self, active: Option<PendingTransfer>) {
         if let Some(t) = active
             && !t.is_complete()
