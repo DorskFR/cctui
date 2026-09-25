@@ -1,5 +1,3 @@
-use cctui_proto::adapter::RemoveInitiator;
-
 use super::super::session_registry;
 use super::*;
 

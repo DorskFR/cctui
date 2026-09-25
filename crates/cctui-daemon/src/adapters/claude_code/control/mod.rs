@@ -14,7 +14,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::Context;
-use cctui_proto::adapter::{AdapterCommand, AdapterEvent, EndReason, JobShort, SessionMeta};
+use cctui_proto::adapter::{
+    AdapterCommand, AdapterEvent, EndReason, JobShort, RemoveInitiator, SessionMeta,
+};
 use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::mpsc;
@@ -875,7 +877,6 @@ impl Driver {
         }
     }
 
-    #[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
     /// Handles `cmd` inline, except for the control-socket dispatch of a
     /// spawn/fork: that reply can take as long as a cold worker bring-up (or
     /// never come), so it is returned as a [`DeferredDispatch`] for the run
@@ -921,20 +922,7 @@ impl Driver {
                 self.deliver_reply(&sock, &local_id, &text, ask_picks, &env, turn_id).await?;
             }
             AdapterCommand::Kill { local_id, signal } => {
-                let short = self.resolve_short(&local_id)?;
-                let mut req = json!({"proto":1,"op":"kill","short":short});
-                if let Some(s) = signal {
-                    // Claude's control-socket `kill` op validates `signal`
-                    // against the string enum ["SIGTERM","SIGKILL"] (zod). A
-                    // numeric signal (e.g. the interrupt route's `15`) fails
-                    // that validation and the whole op is rejected silently. The
-                    // control socket exposes no in-place turn-interrupt op, so
-                    // the best we can do for a headless worker is terminate it;
-                    // map to the enum name the daemon accepts.
-                    req["signal"] = serde_json::Value::String(kill_signal_name(s).to_owned());
-                }
-                let resp = socket::one_shot(&sock, &req).await?;
-                tracing::debug!(?resp, %short, "kill ack");
+                self.kill_session(&sock, &local_id, signal).await?;
             }
             AdapterCommand::Interrupt { local_id, .. } => {
                 // Keep-alive turn interrupt: the control socket has
@@ -965,45 +953,10 @@ impl Driver {
                 tracing::info!(%short, %local_id, "resumed session via explicit command");
             }
             AdapterCommand::PermissionResponse { local_id, request_id, allow } => {
-                // Preferred path: a bidirectional `PreToolUse` hook is
-                // blocked in the listener long-polling for this decision. Hand
-                // it the human's allow/deny straight back — the hook returns the
-                // decision to Claude Code, so the tool runs/skips with no attach
-                // and no keystroke at all. `take`n so a duplicate response can't
-                // double-fire on an already-resolved (and dropped) channel.
-                let hook =
-                    self.pending_perm_hooks.lock().ok().and_then(|mut map| map.remove(&local_id));
-                if let Some(tx) = hook {
-                    if tx.send(allow).is_ok() {
-                        tracing::info!(%local_id, %request_id, allow, "answered permission prompt via PreToolUse hook");
-                        return Ok(None);
-                    }
-                    // The hook already gave up (its wait timed out and the
-                    // receiver was dropped). Fall through to the keystroke path,
-                    // which handles the now-rendered native prompt.
-                    tracing::debug!(%local_id, %request_id, "perm hook receiver gone; falling back to keystroke");
-                }
-                // Fallback: no hook registered (timed out, or the
-                // prompt surfaced only via the legacy `tempo:"blocked"`/`needs`
-                // signal). The control socket's `permission-response` op is a
-                // no-op stub, so answer the way a human does — attach to the PTY
-                // and inject `1`+Enter (approve) or ESC (deny).
-                let short = self.resolve_short(&local_id)?;
-                socket::attach_permission_response(&sock, &short, allow).await?;
-                tracing::info!(%short, %request_id, allow, "answered permission prompt via attach (fallback)");
+                self.answer_permission(&sock, &local_id, &request_id, allow).await?;
             }
             AdapterCommand::Remove { local_id, initiator, .. } => {
-                let short = self.resolve_short_for_removal(&local_id)?;
-                if !Self::removal_allowed(&self.foreign_shorts, &short, initiator) {
-                    tracing::info!(
-                        %short, %local_id,
-                        "skipping automatic removal of a claude job cctui did not start"
-                    );
-                    return Ok(None);
-                }
-                let rm = self.remove_job(&sock, &short, &local_id, initiator).await;
-                crate::configsweep::remove_session_files(&short);
-                rm?;
+                self.remove_session(&sock, &local_id, initiator).await?;
             }
             AdapterCommand::Spawn { spec, session_id, .. } => {
                 let dispatch =
@@ -1045,6 +998,83 @@ impl Driver {
             }
         }
         Ok(None)
+    }
+
+    async fn kill_session(
+        &self,
+        sock: &Path,
+        local_id: &str,
+        signal: Option<i32>,
+    ) -> anyhow::Result<()> {
+        let short = self.resolve_short(local_id)?;
+        let mut req = json!({"proto":1,"op":"kill","short":short});
+        if let Some(s) = signal {
+            // Claude's control-socket `kill` op validates `signal`
+            // against the string enum ["SIGTERM","SIGKILL"] (zod). A
+            // numeric signal (e.g. the interrupt route's `15`) fails
+            // that validation and the whole op is rejected silently. The
+            // control socket exposes no in-place turn-interrupt op, so
+            // the best we can do for a headless worker is terminate it;
+            // map to the enum name the daemon accepts.
+            req["signal"] = serde_json::Value::String(kill_signal_name(s).to_owned());
+        }
+        let resp = socket::one_shot(sock, &req).await?;
+        tracing::debug!(?resp, %short, "kill ack");
+        Ok(())
+    }
+
+    async fn answer_permission(
+        &self,
+        sock: &Path,
+        local_id: &str,
+        request_id: &str,
+        allow: bool,
+    ) -> anyhow::Result<()> {
+        // Preferred path: a bidirectional `PreToolUse` hook is
+        // blocked in the listener long-polling for this decision. Hand
+        // it the human's allow/deny straight back — the hook returns the
+        // decision to Claude Code, so the tool runs/skips with no attach
+        // and no keystroke at all. `take`n so a duplicate response can't
+        // double-fire on an already-resolved (and dropped) channel.
+        let hook = self.pending_perm_hooks.lock().ok().and_then(|mut map| map.remove(local_id));
+        if let Some(tx) = hook {
+            if tx.send(allow).is_ok() {
+                tracing::info!(%local_id, %request_id, allow, "answered permission prompt via PreToolUse hook");
+                return Ok(());
+            }
+            // The hook already gave up (its wait timed out and the
+            // receiver was dropped). Fall through to the keystroke path,
+            // which handles the now-rendered native prompt.
+            tracing::debug!(%local_id, %request_id, "perm hook receiver gone; falling back to keystroke");
+        }
+        // Fallback: no hook registered (timed out, or the
+        // prompt surfaced only via the legacy `tempo:"blocked"`/`needs`
+        // signal). The control socket's `permission-response` op is a
+        // no-op stub, so answer the way a human does — attach to the PTY
+        // and inject `1`+Enter (approve) or ESC (deny).
+        let short = self.resolve_short(local_id)?;
+        socket::attach_permission_response(sock, &short, allow).await?;
+        tracing::info!(%short, %request_id, allow, "answered permission prompt via attach (fallback)");
+        Ok(())
+    }
+
+    async fn remove_session(
+        &self,
+        sock: &Path,
+        local_id: &str,
+        initiator: RemoveInitiator,
+    ) -> anyhow::Result<()> {
+        let short = self.resolve_short_for_removal(local_id)?;
+        if !Self::removal_allowed(&self.foreign_shorts, &short, initiator) {
+            tracing::info!(
+                %short, %local_id,
+                "skipping automatic removal of a claude job cctui did not start"
+            );
+            return Ok(());
+        }
+        let rm = self.remove_job(sock, &short, local_id, initiator).await;
+        crate::configsweep::remove_session_files(&short);
+        rm
     }
 
     async fn report_command(
