@@ -114,7 +114,7 @@ Explore; do not modify anything.
   assertion of completion. Omitting `[gate]` leaves the transition trusted, as
   before. `Exit` bypasses the gate — bail-out must always work; the agent reports
   the blocked outcome via the result callback rather than finalizing.
-- **`[llmjudge]`** — an optional semantic acceptance gate (CCT-516), parallel to
+- **`[llmjudge]`** — an optional semantic acceptance gate, parallel to
   `[gate]` and enforced independently *after* it. The bare annotation is
   immediately followed by one `- <question>` line per binary acceptance question
   (optionally `- <question> :: <violation example>`), max 12 per step:
@@ -192,7 +192,7 @@ explicitly asks to trim.
 Step `0` or an unknown current step means "no guard" (everything allowed). The
 engine starts on the lowest-numbered step.
 
-## Compiled IR + JSON schema (CCT-619)
+## Compiled IR + JSON schema
 
 Markdown is the authoring frontend; both frontends **compile** into one canonical
 typed model, the IR, defined by the serde structs in `src/ir.rs`:
