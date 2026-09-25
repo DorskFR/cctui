@@ -956,7 +956,7 @@ fn is_guard_curl(cmd: &str) -> bool {
     let mut args = argv.iter().skip(1);
     while let Some(arg) = args.next() {
         if VALUE_FLAGS.contains(&arg.as_str()) {
-            if args.next().is_none() {
+            if args.next().is_none_or(|value| value.starts_with('@')) {
                 return false;
             }
         } else if is_guard_url(arg) {
@@ -1008,6 +1008,8 @@ mod tests {
         assert!(!is_guard_curl("curl http://127.0.0.1:9999.evil.example/"));
         assert!(!is_guard_curl("curl http://127.0.0.1:9999/state > ~/.bashrc"));
         assert!(!is_guard_curl("curl http://127.0.0.1:9999/state & rm x"));
+        assert!(!is_guard_curl("curl -d @/home/u/.ssh/id_rsa http://127.0.0.1:9999/transition"));
+        assert!(!is_guard_curl("curl -H @headers.txt http://127.0.0.1:9999/state"));
     }
 
     #[test]

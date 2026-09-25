@@ -20,6 +20,10 @@ pub const CHUNK_SIZE: usize = 256 * 1024;
 /// Hard ceiling on `total_chunks`, independent of the byte bound.
 pub const MAX_CHUNKS: u32 = 64 * 1024;
 
+/// Partial transfers one [`Reassembler`] buffers at once; a new transfer
+/// beyond this evicts the oldest.
+pub const MAX_CONCURRENT_TRANSFERS: usize = 8;
+
 /// Content-hash transfer id (hex sha256) for a serialized payload.
 #[must_use]
 pub fn transfer_id(payload: &[u8]) -> String {
@@ -109,8 +113,10 @@ impl Partial {
     }
 }
 
-/// Per-connection chunk reassembly with a per-transfer byte bound and age-based
-/// eviction. Bounds memory against a stalled or malicious daemon.
+/// Per-connection chunk reassembly with a per-transfer byte bound, a cap on
+/// concurrent transfers and on their combined bytes (twice the per-transfer
+/// bound), and age-based eviction. Bounds memory against a stalled or
+/// malicious daemon.
 pub struct Reassembler {
     max_bytes: usize,
     transfers: HashMap<String, Partial>,
@@ -149,6 +155,9 @@ impl Reassembler {
             self.transfers.remove(id);
             return Accept::Restart;
         }
+        if !self.transfers.contains_key(id) && self.transfers.len() >= MAX_CONCURRENT_TRANSFERS {
+            self.evict_oldest();
+        }
         let entry = self.transfers.entry(id.to_owned()).or_insert_with(|| Partial {
             total,
             chunks: vec![None; total as usize],
@@ -167,12 +176,25 @@ impl Reassembler {
             self.transfers.remove(id);
             return Accept::Restart;
         }
+        let buffered: usize = self.transfers.values().map(|p| p.bytes).sum();
+        if buffered > max_bytes.saturating_mul(2) {
+            self.transfers.remove(id);
+            return Accept::Restart;
+        }
+        let entry = self.transfers.get_mut(id).expect("entry inserted above");
         if entry.is_complete() {
             let payload = entry.assemble();
             self.transfers.remove(id);
             return Accept::Complete(payload);
         }
         Accept::Pending(entry.highest_contiguous())
+    }
+
+    fn evict_oldest(&mut self) {
+        let oldest = self.transfers.iter().min_by_key(|(_, p)| p.created).map(|(k, _)| k.clone());
+        if let Some(id) = oldest {
+            self.transfers.remove(&id);
+        }
     }
 
     /// Drop partial transfers older than `max_age`.
@@ -297,6 +319,28 @@ mod tests {
         let fits = u32::try_from((64 * 1024 * 1024) / CHUNK_SIZE).unwrap();
         assert!(matches!(r.accept("y", 0, fits + 1, "AAAA"), Accept::Restart));
         assert!(matches!(r.accept("y", 0, fits, "AAAA"), Accept::Pending(Some(0))));
+    }
+
+    #[test]
+    fn concurrent_transfers_are_capped() {
+        let mut r = Reassembler::new(usize::MAX);
+        for i in 0..MAX_CONCURRENT_TRANSFERS * 4 {
+            let _ = r.accept(&format!("t{i}"), 0, 2, "AAAA");
+            assert!(r.len() <= MAX_CONCURRENT_TRANSFERS);
+        }
+        assert_eq!(r.len(), MAX_CONCURRENT_TRANSFERS);
+    }
+
+    #[test]
+    fn combined_buffered_bytes_are_capped() {
+        let chunk = BASE64.encode(pattern(CHUNK_SIZE));
+        let mut r = Reassembler::new(CHUNK_SIZE * 2);
+        assert!(matches!(r.accept("a", 0, 2, &chunk), Accept::Pending(Some(0))));
+        assert!(matches!(r.accept("b", 0, 2, &chunk), Accept::Pending(Some(0))));
+        assert!(matches!(r.accept("c", 0, 2, &chunk), Accept::Pending(Some(0))));
+        assert!(matches!(r.accept("d", 0, 2, &chunk), Accept::Pending(Some(0))));
+        assert!(matches!(r.accept("e", 0, 2, &chunk), Accept::Restart));
+        assert_eq!(r.len(), 4);
     }
 
     #[test]
