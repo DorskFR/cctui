@@ -530,7 +530,7 @@ fn spawn_peer_relay(
     tx
 }
 
-/// Drain one peer's queue in batches, POSTing each as a JSON array.
+/// Drain one peer's queue in batches, `POSTing` each as a JSON array.
 async fn peer_relay(
     client: reqwest::Client,
     base: String,
@@ -541,13 +541,14 @@ async fn peer_relay(
     let mut batch = Vec::with_capacity(RELAY_BATCH);
     while rx.recv_many(&mut batch, RELAY_BATCH).await > 0 {
         let mut body = String::from("[");
-        for (i, event) in batch.drain(..).enumerate() {
+        for (i, event) in batch.iter().enumerate() {
             if i > 0 {
                 body.push(',');
             }
-            body.push_str(&event);
+            body.push_str(event);
         }
         body.push(']');
+        batch.clear();
         let sent = client
             .post(&url)
             .bearer_auth(&secret)
@@ -559,7 +560,7 @@ async fn peer_relay(
         match sent {
             Ok(r) if r.status().is_success() => {}
             Ok(r) => {
-                tracing::warn!(peer = %base, status = %r.status(), "peer bus publish rejected")
+                tracing::warn!(peer = %base, status = %r.status(), "peer bus publish rejected");
             }
             Err(err) => tracing::warn!(peer = %base, %err, "peer bus publish failed"),
         }
@@ -620,7 +621,7 @@ mod tests {
         assert!(fast_rx.load(Ordering::SeqCst) > 0, "healthy peer received nothing");
         assert_eq!(slow_rx.load(Ordering::SeqCst), 0);
 
-        fanout.sync_peers(&[fast.clone()], |_| unreachable!());
+        fanout.sync_peers(std::slice::from_ref(&fast), |_| unreachable!());
         assert!(!fanout.peers.contains_key(&slow));
     }
 

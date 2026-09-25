@@ -1144,58 +1144,58 @@ async fn process_frame(
             resolve_read_file_result(state, request_id, ok, file, error_kind, error);
             Ok(())
         }
-        DaemonFrameUp::Heartbeat {
-            bandwidth,
-            update_hook,
-            resources,
-            claude_jobs,
-            harness,
-            ..
-        } => {
-            crate::machine_liveness::record_and_broadcast(
-                state,
-                machine_id,
-                cctui_proto::models::MachineLiveness::Online,
-            );
-            if let Some(bandwidth) = &bandwidth {
-                detect_divergence(state, machine_id, bandwidth.event_bytes());
-            }
-            let state = state.clone();
-            tokio::spawn(async move {
-                // A daemon too old to advertise omits the field; leave the stored
-                // flag alone rather than reading silence as "no hook".
-                if let Some(has_hook) = update_hook {
-                    crate::routes::update_hook::record_hook_flag(&state.pool, machine_id, has_hook)
-                        .await;
-                }
-                if let Err(err) =
-                    sqlx::query("UPDATE machines SET last_seen_at = now() WHERE id = $1")
-                        .bind(machine_id)
-                        .execute(&state.pool)
-                        .await
-                {
-                    tracing::warn!(%err, %machine_id, "heartbeat last_seen_at bump failed");
-                }
-                if let Some(bandwidth) = bandwidth {
-                    persist_bandwidth(&state, machine_id, &bandwidth).await;
-                }
-                if let Some(resources) = resources {
-                    crate::machine_resources::record_and_broadcast(&state, machine_id, resources)
-                        .await;
-                }
-                // Only a daemon that reports its jobs can parse the reply.
-                if let Some(shorts) = claude_jobs {
-                    reconcile_claude_jobs(&state, machine_id, &shorts).await;
-                }
-                if let Some(report) = harness {
-                    crate::routes::harness_update::on_heartbeat(&state, machine_id, &report).await;
-                }
-            });
+        frame @ DaemonFrameUp::Heartbeat { .. } => {
+            on_heartbeat(state, machine_id, frame);
             Ok(())
         }
         // Any future #[non_exhaustive] variants are no-ops.
         _ => Ok(()),
     }
+}
+
+fn on_heartbeat(state: &AppState, machine_id: Uuid, frame: DaemonFrameUp) {
+    let DaemonFrameUp::Heartbeat {
+        bandwidth, update_hook, resources, claude_jobs, harness, ..
+    } = frame
+    else {
+        return;
+    };
+    crate::machine_liveness::record_and_broadcast(
+        state,
+        machine_id,
+        cctui_proto::models::MachineLiveness::Online,
+    );
+    if let Some(bandwidth) = &bandwidth {
+        detect_divergence(state, machine_id, bandwidth.event_bytes());
+    }
+    let state = state.clone();
+    tokio::spawn(async move {
+        // A daemon too old to advertise omits the field; leave the stored
+        // flag alone rather than reading silence as "no hook".
+        if let Some(has_hook) = update_hook {
+            crate::routes::update_hook::record_hook_flag(&state.pool, machine_id, has_hook).await;
+        }
+        if let Err(err) = sqlx::query("UPDATE machines SET last_seen_at = now() WHERE id = $1")
+            .bind(machine_id)
+            .execute(&state.pool)
+            .await
+        {
+            tracing::warn!(%err, %machine_id, "heartbeat last_seen_at bump failed");
+        }
+        if let Some(bandwidth) = bandwidth {
+            persist_bandwidth(&state, machine_id, &bandwidth).await;
+        }
+        if let Some(resources) = resources {
+            crate::machine_resources::record_and_broadcast(&state, machine_id, resources).await;
+        }
+        // Only a daemon that reports its jobs can parse the reply.
+        if let Some(shorts) = claude_jobs {
+            reconcile_claude_jobs(&state, machine_id, &shorts).await;
+        }
+        if let Some(report) = harness {
+            crate::routes::harness_update::on_heartbeat(&state, machine_id, &report).await;
+        }
+    });
 }
 
 /// Bump the per-machine persisted-insert counter feeding divergence detection,
