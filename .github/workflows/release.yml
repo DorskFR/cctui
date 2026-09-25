@@ -121,10 +121,12 @@ jobs:
         env:
           SQLX_OFFLINE: "true"
         run: |
-          bins="cctui-daemon cctui-guard-proxy cctui-supervisor cctui-guard cctui-dispatcher-kube cctui-orchestrator"
-          cargo zigbuild --release --target ${{ matrix.target }} $(printf -- '-p %s ' $bins)
+          bins=(cctui-daemon cctui-guard-proxy cctui-supervisor cctui-guard cctui-dispatcher-kube cctui-orchestrator)
+          pkgs=()
+          for b in "${bins[@]}"; do pkgs+=(-p "$b"); done
+          cargo zigbuild --release --target "${{ matrix.target }}" "${pkgs[@]}"
           mkdir -p image-bins
-          for b in $bins; do cp "target/${{ matrix.target }}/release/$b" image-bins/; done
+          for b in "${bins[@]}"; do cp "target/${{ matrix.target }}/release/$b" image-bins/; done
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: matrix.os == 'linux' && matrix.arch == 'amd64'
