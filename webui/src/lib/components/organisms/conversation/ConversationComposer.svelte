@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { now as clockNow } from '$lib/clock.svelte';
 	import { onDestroy } from 'svelte';
 	import { imageAttachments } from '$lib/imageAttachments.svelte';
 	import ImageCompressionStatus from '$lib/components/molecules/ImageCompressionStatus.svelte';
@@ -182,10 +183,17 @@
 	const CACHE_TTL_MS = $derived(cacheTtlMs(session.adapter_id, session.model ?? null));
 	// Final-minute countdown window.
 	const COLD_WARN_MS = 60 * 1000;
-	let now = $state(Date.now());
 	const lastActivityMs = $derived(
 		session.last_activity_at ? new Date(session.last_activity_at).getTime() : null
 	);
+	// A lazy 15s tick flips the button cold; 1s only around the countdown.
+	const slowNow = $derived(clockNow(15_000));
+	const nearCold = $derived.by(() => {
+		if (working || lastActivityMs === null) return false;
+		const left = CACHE_TTL_MS - (slowNow - lastActivityMs);
+		return left > -15_000 && left <= COLD_WARN_MS + 15_000;
+	});
+	const now = $derived(nearCold ? clockNow(1_000) : slowNow);
 	// The cache window is anchored to the last FINISHED turn.
 	// While a turn is in flight (`working`) suppress the cold/countdown UI so it
 	// can't flip "cold" mid-turn; it re-anchors off the new reply once the turn ends.
@@ -200,13 +208,6 @@
 		!working && msUntilCold !== null && msUntilCold > 0 && msUntilCold <= COLD_WARN_MS
 	);
 	const coldCountdownSecs = $derived(coldImminent ? Math.ceil(msUntilCold! / 1000) : null);
-	// Tick fast (1s) only while counting down; otherwise a lazy 15s tick is enough
-	// to flip the button cold.
-	$effect(() => {
-		const fast = coldImminent;
-		const t = setInterval(() => (now = Date.now()), fast ? 1_000 : 15_000);
-		return () => clearInterval(t);
-	});
 
 	// ── Scheduled send ───────────────────────────────────────────
 	const scheduled = useScheduledMessages(() => session.id);
