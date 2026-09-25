@@ -281,10 +281,20 @@ pub const fn attention_from_bucket(bucket: Bucket) -> Option<Attention> {
 /// role filter, say) without narrowing the index costs the single probe. The
 /// per-session `LIMIT 1` is the other half: any shape that groups or sorts the
 /// whole fan-out instead reads every message row of every listed session.
-const LAST_MESSAGE_SQL: &str = "SELECT s.session_id, e.payload, e.created_at \
+///
+/// Ships only the first [`LAST_MESSAGE_PREVIEW_CHARS`] of the string `text`
+/// (else `content`), plus whether it was cut, never the payload.
+const LAST_MESSAGE_SQL: &str = "SELECT s.session_id, left(e.body, 400), length(e.body) > 400, \
+            e.created_at \
      FROM unnest($1::text[]) AS s(session_id) \
      JOIN LATERAL ( \
-         SELECT se.payload, se.created_at FROM stream_events se \
+         SELECT COALESCE( \
+                    CASE jsonb_typeof(se.payload->'text') \
+                        WHEN 'string' THEN se.payload->>'text' END, \
+                    CASE jsonb_typeof(se.payload->'content') \
+                        WHEN 'string' THEN se.payload->>'content' END) AS body, \
+                se.created_at \
+         FROM stream_events se \
          WHERE se.session_id = s.session_id AND se.event_type = 'message' \
          ORDER BY se.created_at DESC \
          LIMIT 1 \
@@ -310,6 +320,10 @@ const UNREAD_COUNT_SQL: &str = "SELECT s.session_id, u.n \
              LIMIT 100 \
          ) capped \
      ) u";
+
+/// Characters of the last message [`LAST_MESSAGE_SQL`] returns: twice what
+/// [`normalize_last_message`] keeps, so whitespace collapsing has slack.
+const LAST_MESSAGE_PREVIEW_CHARS: usize = 400;
 
 #[allow(clippy::too_many_lines, clippy::cognitive_complexity)]
 pub async fn list_sessions(
@@ -652,7 +666,7 @@ async fn enrich_and_sort(
     }
 
     if !session_ids.is_empty() {
-        let rows: Vec<(String, serde_json::Value, DateTime<Utc>)> =
+        let rows: Vec<(String, Option<String>, Option<bool>, DateTime<Utc>)> =
             sqlx::query_as(LAST_MESSAGE_SQL)
                 .bind(&session_ids)
                 .fetch_all(&state.pool)
@@ -666,12 +680,8 @@ async fn enrich_and_sort(
                 })?;
         let mut by_session: std::collections::HashMap<String, (Option<String>, DateTime<Utc>)> =
             std::collections::HashMap::new();
-        for (sid, payload, ts) in rows {
-            let text = payload
-                .get("text")
-                .and_then(|v| v.as_str())
-                .or_else(|| payload.get("content").and_then(|v| v.as_str()))
-                .map(normalize_last_message);
+        for (sid, body, cut, ts) in rows {
+            let text = body.map(|b| preview_last_message(&b, cut.unwrap_or(false)));
             by_session.insert(sid, (text, ts));
         }
         for (_, s) in &mut with_ts {
@@ -3006,6 +3016,14 @@ pub async fn set_session_policy(
 /// up row height when CSS doesn't fully suppress wrapping, and caps at
 /// 200 chars + ellipsis as a backstop. CSS handles the *visual* truncation
 /// to the column's actual rendered width (`text-overflow: ellipsis`).
+/// [`normalize_last_message`] over a SQL-truncated prefix: `cut` says the
+/// stored text ran past it, so the preview is elided even when collapsing
+/// whitespace left it under the limit.
+fn preview_last_message(prefix: &str, cut: bool) -> String {
+    let preview = normalize_last_message(prefix);
+    if cut && !preview.ends_with('…') { format!("{preview}…") } else { preview }
+}
+
 fn normalize_last_message(s: &str) -> String {
     const MAX_CHARS: usize = 200;
     let collapsed = s.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -3247,6 +3265,79 @@ mod tests {
             !sql.contains("role"),
             "a role filter here without the same filter in migration 118 loses the index"
         );
+    }
+
+    #[test]
+    fn sql_prefix_preview_matches_the_full_text_preview() {
+        let n = super::LAST_MESSAGE_PREVIEW_CHARS;
+        assert!(super::LAST_MESSAGE_SQL.contains(&format!("left(e.body, {n})")));
+        assert!(super::LAST_MESSAGE_SQL.contains(&format!("length(e.body) > {n}")));
+        let inputs = [
+            String::new(),
+            "short message".to_owned(),
+            "line one\n\n  line two".to_owned(),
+            "x".repeat(200),
+            "x".repeat(201),
+            "é".repeat(400),
+            "word ".repeat(80),
+            "y".repeat(50_000),
+            format!("{}\n{}", "a".repeat(399), "b".repeat(10_000)),
+        ];
+        for full in inputs {
+            let prefix: String = full.chars().take(n).collect();
+            let cut = full.chars().count() > n;
+            assert_eq!(
+                super::preview_last_message(&prefix, cut),
+                normalize_last_message(&full),
+                "{} chars",
+                full.len()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn last_message_sql_returns_a_bounded_preview_not_the_payload() {
+        let Some((pool, sid)) = seeded_session("last_message_sql_bounded_preview").await else {
+            return;
+        };
+        let rows: Vec<(String, Option<String>, Option<bool>, chrono::DateTime<Utc>)> =
+            sqlx::query_as(super::LAST_MESSAGE_SQL)
+                .bind(vec![sid.clone()])
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(rows[0].1.as_deref(), Some("hidden c"));
+        assert_eq!(rows[0].2, Some(false));
+
+        for (payload, want) in [
+            (serde_json::json!({"role": "user", "text": 5, "content": "fallback"}), "fallback"),
+            (serde_json::json!({"role": "assistant", "text": "z".repeat(90_000)}), ""),
+        ] {
+            sqlx::query(
+                "INSERT INTO stream_events (session_id, event_type, payload) \
+                 VALUES ($1, 'message', $2)",
+            )
+            .bind(&sid)
+            .bind(&payload)
+            .execute(&pool)
+            .await
+            .unwrap();
+            let rows: Vec<(String, Option<String>, Option<bool>, chrono::DateTime<Utc>)> =
+                sqlx::query_as(super::LAST_MESSAGE_SQL)
+                    .bind(vec![sid.clone()])
+                    .fetch_all(&pool)
+                    .await
+                    .unwrap();
+            let body = rows[0].1.clone().unwrap();
+            if want.is_empty() {
+                assert_eq!(body.chars().count(), super::LAST_MESSAGE_PREVIEW_CHARS);
+                assert_eq!(rows[0].2, Some(true));
+            } else {
+                assert_eq!(body, want);
+            }
+        }
+
+        sqlx::query("DELETE FROM sessions WHERE id = $1").bind(&sid).execute(&pool).await.unwrap();
     }
 
     #[test]
