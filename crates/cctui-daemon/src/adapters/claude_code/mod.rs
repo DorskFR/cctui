@@ -110,7 +110,10 @@ impl Adapter for ClaudeCodeAdapter {
             }
             // SDK driver: stream-json over the Claude Agent SDK, mapped onto the
             // AdapterCommand/AdapterEvent surface.
-            Mode::Sdk => headless::SdkDriver::new(ctx).run().await,
+            Mode::Sdk => {
+                let (driver, commands) = headless::SdkDriver::new(ctx);
+                driver.run(commands).await
+            }
             Mode::Legacy => run_legacy_uds(ctx).await,
         }
     }
