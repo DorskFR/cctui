@@ -12,6 +12,7 @@ use crate::auth::AuthContext;
 use crate::error::err;
 use crate::state::AppState;
 
+type PolicyRow = (Vec<String>, Vec<String>, Vec<String>, Vec<String>);
 type ApiErr = (StatusCode, Json<serde_json::Value>);
 
 fn db_err(e: &sqlx::Error) -> ApiErr {
@@ -37,7 +38,7 @@ pub async fn get_tool_policy(
     Path(id): Path<Uuid>,
 ) -> Result<Json<ToolPolicy>, ApiErr> {
     owned(&state, &ctx, id).await?;
-    let row: Option<(Vec<String>, Vec<String>, Vec<String>, Vec<String>)> = sqlx::query_as(
+    let row: Option<PolicyRow> = sqlx::query_as(
         "SELECT terms, patterns, protected_owners, exempt_roots \
          FROM account_tool_policies WHERE account_id = $1",
     )

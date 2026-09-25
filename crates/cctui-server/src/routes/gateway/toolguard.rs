@@ -75,10 +75,7 @@ impl ToolPolicy {
             protected_owners: clean(self.protected_owners, "protected owners")?,
             exempt_roots: clean(self.exempt_roots, "exempt roots")?
                 .into_iter()
-                .map(|r| match path_components(&r) {
-                    Some(c) => format!("/{}", c.join("/")),
-                    None => r,
-                })
+                .map(|r| normalize_root(&r))
                 .filter(|r| r != "/")
                 .collect(),
         };
@@ -94,7 +91,7 @@ impl ToolPolicy {
         Ok(policy)
     }
 
-    pub fn is_inert(&self) -> bool {
+    pub const fn is_inert(&self) -> bool {
         self.terms.is_empty() && self.patterns.is_empty() && self.protected_owners.is_empty()
     }
 }
@@ -203,6 +200,10 @@ fn path_components(path: &str) -> Option<Vec<&str>> {
         }
     }
     Some(out)
+}
+
+fn normalize_root(root: &str) -> String {
+    path_components(root).map_or_else(|| root.to_owned(), |c| format!("/{}", c.join("/")))
 }
 
 pub fn mask(s: &str) -> String {
@@ -382,7 +383,7 @@ enum Step {
 }
 
 impl SseGuard {
-    pub fn new(policy: Arc<CompiledPolicy>) -> Self {
+    pub const fn new(policy: Arc<CompiledPolicy>) -> Self {
         Self {
             policy,
             pending: Vec::new(),
@@ -397,7 +398,7 @@ impl SseGuard {
         std::mem::take(&mut self.blocks)
     }
 
-    fn holding(&self) -> bool {
+    const fn holding(&self) -> bool {
         !self.held.is_empty()
     }
 
@@ -453,44 +454,7 @@ impl SseGuard {
         let ty = v.get("type").and_then(Value::as_str).unwrap_or("");
 
         if let Some(choices) = v.get("choices").and_then(Value::as_array) {
-            let mut started = false;
-            let mut finished = false;
-            for choice in choices {
-                let ci = choice.get("index").and_then(Value::as_i64).unwrap_or(0);
-                if let Some(tcs) = choice.pointer("/delta/tool_calls").and_then(Value::as_array) {
-                    for tc in tcs {
-                        let ti = tc.get("index").and_then(Value::as_i64).unwrap_or(0);
-                        let key = format!("{ci}:{ti}");
-                        let name = tc.pointer("/function/name").and_then(Value::as_str);
-                        let frag = tc.pointer("/function/arguments").and_then(Value::as_str);
-                        self.start_call(
-                            Wire::Chat,
-                            Call {
-                                key: key.clone(),
-                                position: ci * 10_000 + ti,
-                                ..Call::default()
-                            },
-                        );
-                        if let Some(c) = self.call_mut(&key) {
-                            if let Some(n) = name.filter(|n| !n.is_empty()) {
-                                c.name = n.to_owned();
-                            }
-                            if let Some(f) = frag {
-                                c.input.push_str(f);
-                            }
-                        }
-                        started = true;
-                    }
-                }
-                if choice.get("finish_reason").is_some_and(|f| !f.is_null()) {
-                    finished = true;
-                }
-            }
-            return match (started || holding, finished) {
-                (true, true) => Step::End,
-                (true, false) => Step::Hold,
-                (false, _) => Step::Pass,
-            };
+            return self.classify_chat(choices, holding);
         }
 
         match ty {
@@ -569,6 +533,43 @@ impl SseGuard {
         if holding { Step::Hold } else { Step::Pass }
     }
 
+    fn classify_chat(&mut self, choices: &[Value], holding: bool) -> Step {
+        let mut started = false;
+        let mut finished = false;
+        for choice in choices {
+            let ci = choice.get("index").and_then(Value::as_i64).unwrap_or(0);
+            if let Some(tcs) = choice.pointer("/delta/tool_calls").and_then(Value::as_array) {
+                for tc in tcs {
+                    let ti = tc.get("index").and_then(Value::as_i64).unwrap_or(0);
+                    let key = format!("{ci}:{ti}");
+                    let name = tc.pointer("/function/name").and_then(Value::as_str);
+                    let frag = tc.pointer("/function/arguments").and_then(Value::as_str);
+                    self.start_call(
+                        Wire::Chat,
+                        Call { key: key.clone(), position: ci * 10_000 + ti, ..Call::default() },
+                    );
+                    if let Some(c) = self.call_mut(&key) {
+                        if let Some(n) = name.filter(|n| !n.is_empty()) {
+                            n.clone_into(&mut c.name);
+                        }
+                        if let Some(f) = frag {
+                            c.input.push_str(f);
+                        }
+                    }
+                    started = true;
+                }
+            }
+            if choice.get("finish_reason").is_some_and(|f| !f.is_null()) {
+                finished = true;
+            }
+        }
+        match (started || holding, finished) {
+            (true, true) => Step::End,
+            (true, false) => Step::Hold,
+            (false, _) => Step::Pass,
+        }
+    }
+
     fn resolve(&mut self, end: Option<SseEvent>, out: &mut Vec<u8>) {
         let mut calls = std::mem::take(&mut self.calls);
         calls.sort_by_key(|c| c.position);
@@ -599,7 +600,7 @@ impl SseGuard {
             }
             Some(Wire::Chat) => {
                 let template = held.first().and_then(SseEvent::json);
-                chat_rewrite(out, template, &text, end.as_ref(), end_json);
+                chat_rewrite(out, template.as_ref(), &text, end.as_ref(), end_json);
             }
         }
     }
@@ -721,13 +722,13 @@ fn responses_rewrite(
 
 fn chat_rewrite(
     out: &mut Vec<u8>,
-    template: Option<Value>,
+    template: Option<&Value>,
     text: &str,
     end: Option<&SseEvent>,
     end_json: Option<Value>,
 ) {
     let mut base = serde_json::Map::new();
-    if let Some(Value::Object(t)) = &template {
+    if let Some(Value::Object(t)) = template {
         for k in ["id", "object", "created", "model", "system_fingerprint"] {
             if let Some(v) = t.get(k) {
                 base.insert(k.into(), v.clone());
@@ -814,7 +815,8 @@ pub fn rewrite_json(policy: &CompiledPolicy, body: &[u8]) -> Option<(Vec<u8>, Bl
         kept.push(blocked_message_item(&text, "completed"));
         block = Block::new(&name, &hit, &input);
         v["output"] = Value::Array(kept);
-    } else if let Some(choices) = v.get("choices").and_then(Value::as_array) {
+    } else {
+        let choices = v.get("choices").and_then(Value::as_array)?;
         let (name, hit, input) = choices.iter().find_map(|c| {
             c.pointer("/message/tool_calls").and_then(Value::as_array)?.iter().find_map(|tc| {
                 let hit = policy.scan_value(tc.get("function").unwrap_or(tc))?;
@@ -834,13 +836,14 @@ pub fn rewrite_json(policy: &CompiledPolicy, body: &[u8]) -> Option<(Vec<u8>, Bl
                 }
             }
         }
-    } else {
-        return None;
     }
     Some((serde_json::to_vec(&v).ok()?, block))
 }
 
 // ---- policy lookup ----
+
+type PolicyRow =
+    (Uuid, Option<Vec<String>>, Option<Vec<String>>, Option<Vec<String>>, Option<Vec<String>>);
 
 struct CachedPolicy {
     at: Instant,
@@ -872,9 +875,7 @@ async fn policy_for_provider(
     {
         return Ok(entry.policy.clone());
     }
-    type Row =
-        (Uuid, Option<Vec<String>>, Option<Vec<String>>, Option<Vec<String>>, Option<Vec<String>>);
-    let row: Result<Option<Row>, _> = sqlx::query_as(
+    let row: Result<Option<PolicyRow>, _> = sqlx::query_as(
         "SELECT ap.account_id, p.terms, p.patterns, p.protected_owners, p.exempt_roots \
          FROM account_providers ap \
          LEFT JOIN account_tool_policies p ON p.account_id = ap.account_id \
@@ -1378,7 +1379,7 @@ mod tests {
         e(
             json!({"type":"response.output_text.delta","item_id":"msg_1","output_index":0,"content_index":0,"delta":text}),
         );
-        e(json!({"type":"response.output_item.done","output_index":0,"item":msg.clone()}));
+        e(json!({"type":"response.output_item.done","output_index":0,"item":msg}));
         let mut output = vec![msg];
         for (i, (name, frags)) in tools.iter().enumerate() {
             let idx = i + 1;
@@ -1535,7 +1536,7 @@ mod tests {
     }
 
     /// The openai SDK's chunk accumulator: content concatenated, tool calls
-    /// merged by index, one finish_reason, `[DONE]` last.
+    /// merged by index, one `finish_reason`, `[DONE]` last.
     fn parse_chat(body: &[u8]) -> (String, Vec<(String, String)>, String, Value) {
         let mut content = String::new();
         let mut calls: Vec<(String, String)> = Vec::new();
