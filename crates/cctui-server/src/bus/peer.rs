@@ -4,7 +4,7 @@
 //! * **route**: a local registry miss looks up the live owning peer in
 //!   `ws_presence` and POSTs the frame to its `/internal/bus/route`; no live
 //!   owner yields the same `NoDaemon`/`NoDispatcher` miss as locally.
-//! * **relay**: every locally-published [`BusEvent`] is batched and POSTed to
+//! * **relay**: every locally-published [`BusEvent`] is batched and sent to
 //!   every live pod's `/internal/bus/publish`, best-effort; the DB stays the
 //!   source of truth for refetch.
 //!
