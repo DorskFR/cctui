@@ -13,6 +13,16 @@ export default defineConfig({
 	},
 	test: {
 		environment: 'node',
+		environmentOptions: {
+			happyDOM: {
+				settings: {
+					disableJavaScriptFileLoading: true,
+					disableCSSFileLoading: true,
+					disableIframePageLoading: true
+				}
+			}
+		},
+		setupFiles: ['./vitest.setup.ts'],
 		include: ['src/**/*.test.ts', 'scripts/**/*.test.mjs']
 	}
 });
