@@ -10,7 +10,7 @@ const ALLOWED = new Set([
 	// A fixed preview swatch of one named theme, deliberately theme-independent.
 	'src/lib/components/molecules/ThemeModePicker.svelte',
 	// A mask gradient: the colour is an alpha channel, not a surface.
-	'src/lib/components/organisms/conversation/ConversationLine.svelte'
+	'src/lib/components/organisms/conversation/ThinkingBubble.svelte'
 ]);
 
 function walk(dir: string, out: string[] = []): string[] {

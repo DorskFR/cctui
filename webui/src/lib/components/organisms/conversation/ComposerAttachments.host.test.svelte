@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import { ComposerAttachments, type ComposerAttachmentsOpts } from './composerAttachments.svelte';
 
 	let {
@@ -6,5 +7,5 @@
 		onready
 	}: { opts: ComposerAttachmentsOpts; onready: (a: ComposerAttachments) => void } = $props();
 
-	onready(new ComposerAttachments(opts));
+	untrack(() => onready(new ComposerAttachments(opts)));
 </script>
