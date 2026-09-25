@@ -113,7 +113,7 @@ impl OneshotDriver {
         // bind the local socket the injected `--settings` file targets and route
         // deliveries through the shared maps. Spawned as a sibling task; it
         // exits on the shared shutdown token.
-        self.spawn_hook_listener();
+        self.spawn_hook_listener()?;
 
         loop {
             tokio::select! {
@@ -150,8 +150,11 @@ impl OneshotDriver {
 
     /// Bind the shared ask/permission hook socket and route deliveries through
     /// the same handler the bg driver uses.
-    fn spawn_hook_listener(&self) {
+    fn spawn_hook_listener(&self) -> anyhow::Result<()> {
         let sock = self.cfg.hook_socket_path.clone();
+        let listener = crate::runtime::bind_private_socket(&sock).inspect_err(
+            |err| tracing::error!(%err, "claude-code oneshot ask-hook socket unavailable"),
+        )?;
         let events = self.events.clone();
         let shutdown = self.shutdown.clone();
         let session_map = self.session_map.clone();
@@ -160,6 +163,7 @@ impl OneshotDriver {
         tokio::spawn(async move {
             if let Err(err) = super::run_hook_listener(
                 sock,
+                listener,
                 events,
                 shutdown,
                 session_map,
@@ -174,6 +178,7 @@ impl OneshotDriver {
                 tracing::warn!(%err, "claude-code oneshot ask-hook listener exited");
             }
         });
+        Ok(())
     }
 
     // Dispatch over every `AdapterCommand` variant; complexity is the breadth of
