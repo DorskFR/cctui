@@ -386,7 +386,7 @@ pub fn bump_orphan_401(
     window: std::time::Duration,
     block: std::time::Duration,
 ) -> (u32, bool) {
-    if map.len() >= ORPHAN_SWEEP_AT {
+    if map.len() >= ORPHAN_SWEEP_AT && orphan_sweep_due(now) {
         sweep_orphan_spam(map, now, window);
     }
     let mut entry = map.entry(token_fp.to_string()).or_insert_with(|| crate::state::OrphanSpam {
@@ -413,6 +413,17 @@ pub fn bump_orphan_401(
 }
 
 const ORPHAN_SWEEP_AT: usize = 1024;
+const ORPHAN_SWEEP_EVERY: std::time::Duration = std::time::Duration::from_secs(10);
+
+fn orphan_sweep_due(now: std::time::Instant) -> bool {
+    static LAST: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+    let mut last = LAST.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if last.is_some_and(|t| now.saturating_duration_since(t) < ORPHAN_SWEEP_EVERY) {
+        return false;
+    }
+    *last = Some(now);
+    true
+}
 
 /// Evict fingerprints whose window and block have both lapsed.
 pub fn sweep_orphan_spam(map: &OrphanSpamMap, now: std::time::Instant, window: std::time::Duration) {
