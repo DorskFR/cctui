@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { now as clockNow } from '$lib/clock.svelte';
 	// Header resource strip: one cell per machine ticked in Settings › Resource
 	// monitoring, three battery-style bars (CPU, memory, disk) toned green /
 	// orange / red at a glance. On a narrow screen each machine collapses to a
@@ -38,11 +39,7 @@
 		})
 	);
 
-	let now = $state(Date.now());
-	$effect(() => {
-		const id = setInterval(() => (now = Date.now()), 30_000);
-		return () => clearInterval(id);
-	});
+	const now = $derived(clockNow(30_000));
 
 	const hueOf = (r: MachineResourcesRow) => r.hue ?? hashHue(r.name);
 	const pctText = (v: number | null | undefined) => {

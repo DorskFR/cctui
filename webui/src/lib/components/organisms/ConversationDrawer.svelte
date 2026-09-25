@@ -35,8 +35,9 @@
 	import type { Line, MsgCategory, ViewOpts } from './conversation/types';
 	import { parseViewOpts } from './conversation/filters';
 	import { mergeEventSources } from './conversation/format';
-	import { buildLines, type LineBuildCtx } from './conversation/lines';
+	import { createLineBuilder, type LineBuildCtx } from './conversation/lines';
 	import { ConversationStream, mergeLiveEvent } from './conversation/stream.svelte';
+	import { freezeWidthDuringResize } from './conversation/resizeFreeze';
 	import { ScrollController } from './conversation/scroll.svelte';
 	import { createSeqJumper, type RenderWindow } from './conversation/jump';
 	import { SearchHitStepper } from './conversation/searchHits.svelte';
@@ -283,8 +284,12 @@
 		},
 		get scheduledTurns() {
 			return scheduledTurnMap;
+		},
+		get renderKey() {
+			return `${view.prettyTables}|${id}|${session.machine_id}`;
 		}
 	};
+	const buildLines = createLineBuilder();
 	const lines = $derived.by(() =>
 		buildLines(events, lineCtx, {
 			pending: stream.pendingReplies,
@@ -508,7 +513,12 @@
 >
 	{#snippet panel()}
 		<!-- svelte-ignore a11y_no_static_element_interactions -->
-		<div class="drawer" data-journey="conversation" onkeydown={guardEscape}>
+		<div
+			class="drawer"
+			data-journey="conversation"
+			onkeydown={guardEscape}
+			use:freezeWidthDuringResize
+		>
 			<!-- The whole drawer is a file drop area: dragging files over it
 			     shows the tsumikit Dropzone overlay; on drop they're staged as composer
 			     attachments. overlay mode wraps the content without hijacking clicks. -->

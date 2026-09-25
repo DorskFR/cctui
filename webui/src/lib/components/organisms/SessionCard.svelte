@@ -1,9 +1,9 @@
 <script lang="ts">
+	import { now as clockNow } from '$lib/clock.svelte';
 	import type { Label } from '@bindings/Label';
 	import type { SessionListItem } from '@bindings/SessionListItem';
 	import { m } from '$lib/paraglide/messages';
 	import { Card } from '@dorsk/tsumikit';
-	import { onMount } from 'svelte';
 	import CompactRow from './sessioncard/CompactRow.svelte';
 	import DetailedCard from './sessioncard/DetailedCard.svelte';
 	import { SwipeGesture } from './sessioncard/swipe.svelte';
@@ -88,11 +88,7 @@
 
 	// 5s tick: the tool cadence needs second-ish freshness; the 30-min stale
 	// signal rides the same clock.
-	let now = $state(Date.now());
-	onMount(() => {
-		const t = setInterval(() => (now = Date.now()), 5_000);
-		return () => clearInterval(t);
-	});
+	const now = $derived(clockNow(5_000));
 
 	const view = $derived(
 		buildView(session, {

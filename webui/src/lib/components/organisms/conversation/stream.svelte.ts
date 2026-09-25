@@ -41,6 +41,8 @@ export function mergeLiveEvent(
 	if (seq === null || seq === undefined) return prev;
 	const sig = eventSig(ev);
 	if (prev.some((e) => e.seq === seq || eventSig(e) === sig)) return prev;
+	const tail = prev[prev.length - 1].seq;
+	if (tail != null && Number(seq) > Number(tail)) return [...prev, ev];
 	const at = prev.findIndex((e) => e.seq != null && Number(e.seq) > Number(seq));
 	return at < 0 ? [...prev, ev] : [...prev.slice(0, at), ev, ...prev.slice(at)];
 }
