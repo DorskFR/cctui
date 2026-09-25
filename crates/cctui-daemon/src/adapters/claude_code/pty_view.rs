@@ -12,8 +12,6 @@
 //! is strictly read-only. Closing the view (`watch: false`) cancels the task,
 //! dropping the extra attacher so it can't block the worker's idle-retire.
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use base64::Engine as _;
@@ -26,6 +24,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::attach::attach_request;
 use super::discovery::Discovery;
+use crate::adapters::pty_watch::PtyWatchSet;
 
 /// Bytes buffered before a coalesced frame is flushed regardless of the timer.
 /// Bounds per-frame size so one repaint burst can't produce a huge base64
@@ -73,15 +72,14 @@ impl Coalescer {
     }
 }
 
-/// Owns one viewer-attach task per watched `short`, started/stopped by the
-/// `WatchPty` command. Cloneable + interior-mutable so the `&self`
-/// `handle_command` path can drive it.
+/// One viewer-attach task per watched `short`, started/stopped by the
+/// `WatchPty` command.
 #[derive(Clone)]
 pub(super) struct PtyViewManager {
     events: mpsc::Sender<AdapterEvent>,
     discovery: Discovery,
     shutdown: CancellationToken,
-    tasks: Arc<Mutex<HashMap<String, CancellationToken>>>,
+    watches: PtyWatchSet,
 }
 
 impl PtyViewManager {
@@ -90,36 +88,25 @@ impl PtyViewManager {
         discovery: Discovery,
         shutdown: CancellationToken,
     ) -> Self {
-        Self { events, discovery, shutdown, tasks: Arc::new(Mutex::new(HashMap::new())) }
+        Self { events, discovery, shutdown, watches: PtyWatchSet::default() }
     }
 
     /// Begin forwarding `short`'s PTY as `PtyChunk` events tagged `local_id`.
     /// Idempotent — a watch for a short already streaming is a no-op.
     pub(super) fn watch(&self, local_id: String, short: String) {
-        let Ok(mut tasks) = self.tasks.lock() else { return };
-        if tasks.contains_key(&short) {
-            return;
+        let (events, discovery) = (self.events.clone(), self.discovery.clone());
+        let task_short = short.clone();
+        let started = self.watches.watch(short, &self.shutdown, move |cancel| {
+            PtyViewTask { events, discovery, short: task_short, local_id, cancel }.run()
+        });
+        if started {
+            tracing::debug!(watching = self.watches.watching(), "pty view started");
         }
-        let cancel = self.shutdown.child_token();
-        let task = PtyViewTask {
-            events: self.events.clone(),
-            discovery: self.discovery.clone(),
-            short: short.clone(),
-            local_id,
-            cancel: cancel.clone(),
-        };
-        tokio::spawn(task.run());
-        tasks.insert(short, cancel);
-        tracing::debug!(watching = tasks.len(), "pty view started");
     }
 
     /// Stop forwarding `short` and drop the viewer attach.
     pub(super) fn unwatch(&self, short: &str) {
-        if let Ok(mut tasks) = self.tasks.lock()
-            && let Some(cancel) = tasks.remove(short)
-        {
-            cancel.cancel();
-        }
+        self.watches.unwatch(short);
     }
 }
 
@@ -270,11 +257,11 @@ mod tests {
 
         mgr.watch("sess-1".to_owned(), "aaaaaaaa".to_owned());
         mgr.watch("sess-1".to_owned(), "aaaaaaaa".to_owned());
-        assert_eq!(mgr.tasks.lock().unwrap().len(), 1, "same short must not stack tasks");
+        assert_eq!(mgr.watches.watching(), 1, "same short must not stack tasks");
 
-        let token = mgr.tasks.lock().unwrap()["aaaaaaaa"].clone();
+        let token = mgr.watches.token("aaaaaaaa").unwrap();
         mgr.unwatch("aaaaaaaa");
         assert!(token.is_cancelled(), "unwatch must cancel the task");
-        assert!(mgr.tasks.lock().unwrap().is_empty());
+        assert_eq!(mgr.watches.watching(), 0);
     }
 }
