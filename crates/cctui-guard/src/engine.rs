@@ -471,10 +471,9 @@ impl WorkflowEngine {
             return allow();
         }
 
-        // Always allow curl to the guard daemon itself.
         if tool == "Bash"
             && let Some(cmd) = tool_input.get("command").and_then(Value::as_str)
-            && (cmd.contains("127.0.0.1:9999") || cmd.contains("localhost:9999"))
+            && is_guard_curl(cmd)
         {
             return allow();
         }
@@ -911,6 +910,64 @@ fn check_target(tool: &str, tool_input: &Value) -> String {
     }
 }
 
+const GUARD_ADDRS: &[&str] = &["127.0.0.1:9999", "localhost:9999"];
+
+fn is_guard_url(arg: &str) -> bool {
+    let rest = arg.strip_prefix("http://").unwrap_or(arg);
+    GUARD_ADDRS.iter().any(|addr| {
+        rest.strip_prefix(addr).is_some_and(|tail| tail.is_empty() || tail.starts_with(['/', '?']))
+    })
+}
+
+fn is_plain_curl_flag(arg: &str, long: &[&str]) -> bool {
+    long.contains(&arg)
+        || arg.strip_prefix('-').is_some_and(|short| {
+            !short.is_empty() && short.chars().all(|c| matches!(c, 's' | 'S' | 'f'))
+        })
+}
+
+/// A plain `curl` talking only to the guard daemon, which every step may do.
+/// Any shell operator, redirection, substitution, unknown curl option or
+/// non-guard URL disqualifies it, so the command goes through the step rules.
+fn is_guard_curl(cmd: &str) -> bool {
+    const VALUE_FLAGS: &[&str] = &[
+        "-X",
+        "--request",
+        "-d",
+        "--data",
+        "--data-raw",
+        "-H",
+        "--header",
+        "--json",
+        "-m",
+        "--max-time",
+    ];
+    const PLAIN_FLAGS: &[&str] = &["--silent", "--show-error", "--fail"];
+    if cmd.contains(['$', '`', '>', '<', ';', '&', '|', '\n', '\r']) {
+        return false;
+    }
+    let Some(argv) = shlex::split(cmd) else {
+        return false;
+    };
+    if argv.first().map(String::as_str) != Some("curl") {
+        return false;
+    }
+    let mut saw_guard = false;
+    let mut args = argv.iter().skip(1);
+    while let Some(arg) = args.next() {
+        if VALUE_FLAGS.contains(&arg.as_str()) {
+            if args.next().is_none() {
+                return false;
+            }
+        } else if is_guard_url(arg) {
+            saw_guard = true;
+        } else if !is_plain_curl_flag(arg, PLAIN_FLAGS) {
+            return false;
+        }
+    }
+    saw_guard
+}
+
 /// Build an `allow` `PreToolUse` decision.
 fn allow() -> HookResponse {
     json!({
@@ -936,6 +993,22 @@ fn deny(reason: &str) -> HookResponse {
 mod tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn guard_curl_is_recognised_strictly() {
+        assert!(is_guard_curl("curl -s http://127.0.0.1:9999/state"));
+        assert!(is_guard_curl(
+            "curl -sS -X POST http://localhost:9999/transition -H 'Content-Type: application/json' -d '{\"to\": 2}'"
+        ));
+        assert!(!is_guard_curl("rm -rf x; echo 127.0.0.1:9999"));
+        assert!(!is_guard_curl("echo 127.0.0.1:9999"));
+        assert!(!is_guard_curl("curl http://127.0.0.1:9999/state https://evil.example/x"));
+        assert!(!is_guard_curl("curl http://127.0.0.1:9999/state -o /tmp/x"));
+        assert!(!is_guard_curl("curl http://127.0.0.1:99990/state"));
+        assert!(!is_guard_curl("curl http://127.0.0.1:9999.evil.example/"));
+        assert!(!is_guard_curl("curl http://127.0.0.1:9999/state > ~/.bashrc"));
+        assert!(!is_guard_curl("curl http://127.0.0.1:9999/state & rm x"));
+    }
 
     #[test]
     fn bounded_command_captures_output_and_status() {
