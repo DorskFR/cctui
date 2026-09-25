@@ -2753,10 +2753,9 @@ impl Driver {
         }
         let now_shorts: HashSet<String> = visible.iter().map(|j| j.short.clone()).collect();
 
-        // Ground-truth effort for every live worker in one `/proc` pass,
-        // reused across the per-job Status build below so a busy roster doesn't
-        // rescan `/proc` per session.
-        let observed_efforts = super::envcheck::worker_efforts(&now_shorts);
+        // Ground-truth effort for every live worker, reused across the per-job
+        // Status build below.
+        let observed_efforts = super::envcheck::worker_efforts(&now_shorts).await;
 
         // Newly started.
         for job in &visible {
