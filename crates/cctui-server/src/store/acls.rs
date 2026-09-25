@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 use crate::auth::Scope;
 
-fn parse(rows: Vec<String>) -> BTreeSet<Scope> {
+fn parse(rows: &[String]) -> BTreeSet<Scope> {
     rows.iter().filter_map(|s| Scope::parse(s)).collect()
 }
 
@@ -14,11 +14,11 @@ pub async fn user_ceiling(
     exec: impl PgExecutor<'_>,
     user_id: Uuid,
 ) -> Result<BTreeSet<Scope>, sqlx::Error> {
-    let rows = sqlx::query_scalar("SELECT scope FROM user_acls WHERE user_id = $1")
+    let rows: Vec<String> = sqlx::query_scalar("SELECT scope FROM user_acls WHERE user_id = $1")
         .bind(user_id)
         .fetch_all(exec)
         .await?;
-    Ok(parse(rows))
+    Ok(parse(&rows))
 }
 
 /// Replace a user's ceiling. Run inside the caller's transaction.
@@ -45,11 +45,11 @@ pub async fn key_grant(
     exec: impl PgExecutor<'_>,
     key_id: Uuid,
 ) -> Result<BTreeSet<Scope>, sqlx::Error> {
-    let rows = sqlx::query_scalar("SELECT scope FROM key_acls WHERE key_id = $1")
+    let rows: Vec<String> = sqlx::query_scalar("SELECT scope FROM key_acls WHERE key_id = $1")
         .bind(key_id)
         .fetch_all(exec)
         .await?;
-    Ok(parse(rows))
+    Ok(parse(&rows))
 }
 
 /// Add `scopes` to a key's grant in one round-trip. Idempotent.
