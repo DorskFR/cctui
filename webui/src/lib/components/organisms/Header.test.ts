@@ -141,11 +141,21 @@ describe('the version block sheds its third line (CCT-1013)', () => {
 		expect(vers.textContent).toContain('ui v');
 		expect(vers.textContent).toContain('srv v0.11.0');
 		expect(vers.textContent).not.toContain('v0.12.0');
-		expect(document.querySelector('.avatar.alert')).not.toBeNull();
+		expect(document.querySelector('.pill [data-tsu="Avatar"] [data-tsu="Dot"]')).not.toBeNull();
 	});
 
 	it('drops the alert dot when there is no update', () => {
 		render();
-		expect(document.querySelector('.avatar.alert')).toBeNull();
+		expect(document.querySelector('.pill [data-tsu="Avatar"] [data-tsu="Dot"]')).toBeNull();
+	});
+});
+
+describe('the user pill avatar', () => {
+	it('carries the user initial and stays out of the accessibility tree', () => {
+		render();
+		const av = document.querySelector('.pill [data-tsu="Avatar"]') as HTMLElement;
+		expect(av.textContent?.trim()).toBe('D');
+		expect(av.getAttribute('aria-hidden')).toBe('true');
+		expect(av.getAttribute('role')).toBeNull();
 	});
 });
