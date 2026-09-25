@@ -70,6 +70,7 @@ fn jitter(base: Duration, unit: f64) -> Duration {
 }
 
 /// Cheap splitmix64 over time + a counter; jitter needs spread, not quality.
+#[allow(clippy::cast_precision_loss)]
 fn unit_random() -> f64 {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.subsec_nanos());
@@ -78,9 +79,7 @@ fn unit_random() -> f64 {
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
     z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
     z ^= z >> 31;
-    #[allow(clippy::cast_precision_loss)]
-    let unit = (z >> 11) as f64 / (1u64 << 53) as f64;
-    unit
+    (z >> 11) as f64 / (1u64 << 53) as f64
 }
 
 #[cfg(test)]
