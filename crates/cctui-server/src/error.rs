@@ -19,6 +19,23 @@ impl AppError {
     pub fn new(code: StatusCode, msg: impl Into<String>) -> Self {
         Self::Status(code, msg.into())
     }
+
+    #[must_use]
+    pub const fn status(&self) -> StatusCode {
+        match self {
+            Self::Status(code, _) => *code,
+            Self::Db(_) | Self::Json(_) => StatusCode::INTERNAL_SERVER_ERROR,
+        }
+    }
+
+    #[must_use]
+    pub fn message(&self) -> &str {
+        match self {
+            Self::Status(_, msg) => msg,
+            Self::Db(_) => DB_ERROR,
+            Self::Json(_) => "internal error",
+        }
+    }
 }
 
 impl std::fmt::Display for AppError {

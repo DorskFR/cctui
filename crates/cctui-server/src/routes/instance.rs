@@ -258,19 +258,19 @@ mod tests {
             working_dir: "/x".into(),
             adapter_id: None,
         });
-        assert_eq!(bad_id.unwrap_err().0, StatusCode::BAD_REQUEST);
+        assert_eq!(bad_id.unwrap_err().status(), StatusCode::BAD_REQUEST);
         let bad_dir = normalize_target(SelfUpdateTarget {
             machine_id: Uuid::nil().to_string(),
             working_dir: " ".into(),
             adapter_id: None,
         });
-        assert_eq!(bad_dir.unwrap_err().0, StatusCode::BAD_REQUEST);
+        assert_eq!(bad_dir.unwrap_err().status(), StatusCode::BAD_REQUEST);
         let bad_adapter = normalize_target(SelfUpdateTarget {
             machine_id: Uuid::nil().to_string(),
             working_dir: "/x".into(),
             adapter_id: Some("opencode".into()),
         });
-        assert_eq!(bad_adapter.unwrap_err().0, StatusCode::BAD_REQUEST);
+        assert_eq!(bad_adapter.unwrap_err().status(), StatusCode::BAD_REQUEST);
     }
 
     #[test]
@@ -284,7 +284,7 @@ mod tests {
     #[test]
     fn normalize_rejects_too_long() {
         let long = "x".repeat(NAME_MAX_CHARS + 1);
-        assert_eq!(normalize(Some(&long)).unwrap_err().0, StatusCode::BAD_REQUEST);
+        assert_eq!(normalize(Some(&long)).unwrap_err().status(), StatusCode::BAD_REQUEST);
         let ok = "x".repeat(NAME_MAX_CHARS);
         assert!(normalize(Some(&ok)).is_ok());
     }

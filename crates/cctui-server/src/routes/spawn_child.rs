@@ -820,22 +820,25 @@ mod tests {
             "claude-code"
         );
         assert_eq!(
-            resolve_child_adapter(&pool, uid, &parent, &orphan_id).await.unwrap_err().0,
+            resolve_child_adapter(&pool, uid, &parent, &orphan_id).await.unwrap_err().status(),
             StatusCode::FORBIDDEN,
             "a non-child of the caller must refuse"
         );
         assert_eq!(
-            resolve_child_adapter(&pool, uid, &parent, &elsewhere_id).await.unwrap_err().0,
+            resolve_child_adapter(&pool, uid, &parent, &elsewhere_id).await.unwrap_err().status(),
             StatusCode::CONFLICT,
             "a child on another machine must refuse"
         );
         assert_eq!(
-            resolve_child_adapter(&pool, stranger, &parent, &child_id).await.unwrap_err().0,
+            resolve_child_adapter(&pool, stranger, &parent, &child_id).await.unwrap_err().status(),
             StatusCode::NOT_FOUND,
             "another user's lookup must not even see the session"
         );
         assert_eq!(
-            resolve_child_adapter(&pool, uid, &parent, "no-such-session").await.unwrap_err().0,
+            resolve_child_adapter(&pool, uid, &parent, "no-such-session")
+                .await
+                .unwrap_err()
+                .status(),
             StatusCode::NOT_FOUND,
         );
 
@@ -1223,7 +1226,7 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert_eq!(err.0, StatusCode::FORBIDDEN, "the tree is spent");
+        assert_eq!(err.status(), StatusCode::FORBIDDEN, "the tree is spent");
 
         release_child(&pool, &grandchild_key).await;
         assert!((tree_granted_usd(&pool, &root_id).await.unwrap() - 3.0).abs() < 1e-9);
@@ -1265,8 +1268,8 @@ mod tests {
             reserve_child(&pool, &parent_id, Some(&parent), &req("codex", None), usage(0), &key)
                 .await
                 .unwrap_err();
-        assert_eq!(err.0, StatusCode::FORBIDDEN);
-        assert!(err.1.error.contains("maximum of 2"), "{}", err.1.error);
+        assert_eq!(err.status(), StatusCode::FORBIDDEN);
+        assert!(err.message().contains("maximum of 2"), "{}", err.message());
 
         sqlx::query("DELETE FROM session_spawn_capabilities WHERE capability->>'tree_root' = $1")
             .bind(&parent_id)

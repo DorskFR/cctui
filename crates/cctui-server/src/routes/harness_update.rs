@@ -15,6 +15,7 @@ use ts_rs::TS;
 use uuid::Uuid;
 
 use crate::auth::{AuthContext, Scope};
+use crate::error::AppError;
 use crate::state::AppState;
 
 const KEY: &str = "harness_autoupdate";
