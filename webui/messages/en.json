@@ -1845,7 +1845,7 @@
 	"settings_prefer_followup_label": "Prefer follow-up over fork",
 	"settings_prefer_followup_help": "List Follow-up before Fork in the conversation menu.",
 	"tool_policy_title": "Tool-call guard",
-	"tool_policy_help": "The gateway refuses to forward a model tool call whose input matches these rules; the turn ends with an explanation instead. Applies to every session on this account. Never sent to agents or machines.",
+	"tool_policy_help": "The gateway refuses to forward a model tool call whose input matches these rules; the turn ends with an explanation instead. Applies to every session on this account. Never sent to agents or machines. It catches accidental mentions, not a model deliberately obfuscating one or content already in files.",
 	"tool_policy_on": "On",
 	"tool_policy_off": "Off",
 	"tool_policy_terms": "Forbidden terms",

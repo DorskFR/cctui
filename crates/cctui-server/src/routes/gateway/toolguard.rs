@@ -4,6 +4,10 @@
 //! scanned; clean bytes are released verbatim. A match becomes an explanation
 //! text block and a normal end of turn, never an HTTP error: harnesses retry
 //! errors and would regenerate the same call.
+//!
+//! Only text the model generates in the tool input is seen. Content read from
+//! files at run time, or deliberately obfuscated (split strings, base64, shell
+//! concatenation), passes: this stops accidents, not an evasive model.
 
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};

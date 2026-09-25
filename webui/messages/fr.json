@@ -1845,7 +1845,7 @@
 	"settings_prefer_followup_label": "Préférer la suite au fork",
 	"settings_prefer_followup_help": "Placer Suite avant Fork dans le menu de la conversation.",
 	"tool_policy_title": "Garde des appels d’outils",
-	"tool_policy_help": "La passerelle refuse de transmettre un appel d’outil du modèle dont l’entrée correspond à ces règles ; le tour se termine avec une explication. S’applique à toutes les sessions de ce compte. Jamais envoyé aux agents ni aux machines.",
+	"tool_policy_help": "La passerelle refuse de transmettre un appel d’outil du modèle dont l’entrée correspond à ces règles ; le tour se termine avec une explication. S’applique à toutes les sessions de ce compte. Jamais envoyé aux agents ni aux machines. Elle intercepte les mentions accidentelles, pas un modèle qui en masque une délibérément ni le contenu déjà présent dans des fichiers.",
 	"tool_policy_on": "Activée",
 	"tool_policy_off": "Désactivée",
 	"tool_policy_terms": "Termes interdits",
