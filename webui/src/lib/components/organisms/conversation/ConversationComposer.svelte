@@ -409,7 +409,7 @@
 	{:else}
 		<!-- Failed sends surface inline on the message bubble itself (red +
 		     Retry), so there's no separate composer banner. -->
-		<div bind:this={scheduledEl}><ScheduledMessages sessionId={session.id} {archived} /></div>
+		<div class="scheduled" bind:this={scheduledEl}><ScheduledMessages sessionId={session.id} {archived} /></div>
 		<ImageCompressionStatus pending={images.pending} />
 		{#if supportsAttachments && attachments.length}
 			<div class="attachments">
@@ -531,10 +531,13 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--sp-2);
-		padding: var(--sp-3);
+		padding: var(--sp-2) var(--sp-3);
 		padding-bottom: calc(var(--sp-3) + var(--safe-bottom));
 		border-top: 1px solid var(--border);
 		background: var(--bg-elevated);
+	}
+	.scheduled:empty {
+		display: none;
 	}
 	/* Highlight the composer while a file drag hovers the conversation pane
 	  . */

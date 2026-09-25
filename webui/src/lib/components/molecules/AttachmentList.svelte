@@ -3,7 +3,7 @@
 	// the mid-chat composer. Renders one chip per file with a remove button and,
 	// when present, the cap error.
 	import { fmtSize, fileCapError } from '$lib/attachments';
-	import { IconButton, Text } from '@dorsk/tsumikit';
+	import { Button, Icon, IconButton, Popover, Text } from '@dorsk/tsumikit';
 	import Error from '$lib/components/atoms/Error.svelte';
 	import { m } from '$lib/paraglide/messages';
 
@@ -17,19 +17,66 @@
 </script>
 
 {#if files.length}
-	<ul class="files" class:compact>
-		{#each files as f (f.name)}
-			<li>
-				<Text variant="code" truncate grow class="fname">{f.name}</Text>
-				<Text size="xs" tone="faint">{fmtSize(f.size)}</Text>
-				<IconButton inline class="hover-danger" icon="x"  label={m.common_remove()} title={m.common_remove()} onclick={() => onremove(f.name)} />
-			</li>
-		{/each}
-	</ul>
+	<div class="wrap" class:compact>
+		<ul class="files" class:compact>
+			{#each files as f (f.name)}
+				<li class="full">
+					<Text variant="code" truncate grow class="fname">{f.name}</Text>
+					<Text size="xs" tone="faint">{fmtSize(f.size)}</Text>
+					<IconButton inline class="hover-danger" icon="x" label={m.common_remove()} title={m.common_remove()} onclick={() => onremove(f.name)} />
+				</li>
+				{#if compact}
+					<li class="tile">
+						<Popover label={f.name} box="sm" placement="top-start">
+							{#snippet trigger()}<Icon name="file-text" size={16} />{/snippet}
+							{#snippet children({ close })}
+								<div class="tile-detail">
+									<Text variant="code" size="sm" style="overflow-wrap:anywhere">{f.name}</Text>
+									<Text size="xs" tone="faint">{fmtSize(f.size)}</Text>
+									<Button
+										size="sm"
+										tone="danger"
+										onclick={() => {
+											close();
+											onremove(f.name);
+										}}>{m.common_remove()}</Button
+									>
+								</div>
+							{/snippet}
+						</Popover>
+					</li>
+				{/if}
+			{/each}
+		</ul>
+	</div>
 {/if}
 {#if error}<Error>{error}</Error>{/if}
 
 <style>
+	.wrap.compact {
+		container: attachments / inline-size;
+	}
+	.tile {
+		display: none;
+	}
+	@container attachments (max-width: 30rem) {
+		.files.compact li.full {
+			display: none;
+		}
+		.files.compact li.tile {
+			display: flex;
+			padding: 0;
+			border: none;
+			background: none;
+		}
+	}
+	.tile-detail {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+		gap: var(--sp-1);
+		max-width: 16rem;
+	}
 	.files {
 		list-style: none;
 		margin: var(--sp-1) 0 0;
