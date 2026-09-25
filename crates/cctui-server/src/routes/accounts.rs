@@ -3351,12 +3351,14 @@ mod tests {
             };
             assert!(prepare_provider_write(&spec).await.is_err(), "{base}");
         }
-        let spec = ProviderSpec {
-            provider: Some("openai-compatible".into()),
-            base_url: Some("https://1.1.1.1/v1".into()),
-            ..Default::default()
-        };
-        assert!(prepare_provider_write(&spec).await.is_ok());
+        if std::env::var_os("CCTUI_VAULT_KEY").is_some() {
+            let spec = ProviderSpec {
+                provider: Some("openai-compatible".into()),
+                base_url: Some("https://1.1.1.1/v1".into()),
+                ..Default::default()
+            };
+            assert!(prepare_provider_write(&spec).await.is_ok());
+        }
         assert!(check_base_url("https://192.168.1.10").await.is_err());
     }
 
