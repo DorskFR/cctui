@@ -1,25 +1,14 @@
-//! Daemon-binary manifest + download-proxy endpoints.
+//! Daemon-binary manifest + download-proxy endpoints — the single channel for
+//! daemon distribution.
 //!
-//! `GET /api/v1/manifest/daemon` returns the server-known daemon version +
-//! per-arch download and minisign-signature URLs, always on this server's own
-//! origin so clients never send their credentials anywhere else. The daemon
-//! ships in the same release as the TUI/server, so the version is simply the
-//! server's own, and so is its release channel (a `-beta.N` version is beta).
-//! A beta server answers `204 No Content` unless the caller opts in with
-//! `?channel=beta`, so daemons that predate channels never see a beta.
+//! `GET /api/v1/manifest/daemon` returns the server's own version (the daemon
+//! ships in the same release) with per-arch binary and minisign URLs on this
+//! server's origin, so clients never send credentials elsewhere. A beta server
+//! answers `204` unless the caller passes `?channel=beta`.
 //!
-//! `GET /api/v1/daemon/binary/{target}` proxies the actual binary, and
-//! `{target}.minisig` its detached signature. When the
-//! releases repo is private its assets aren't publicly downloadable, so if
-//! the server is configured with a GitHub PAT
-//! (`CCTUI_GITHUB_TOKEN`/`GH_TOKEN`) it streams the asset itself — clients
-//! never need a token and a private releases repo stays private. Without a
-//! PAT it falls back to a 302 to the raw GitHub URL (which fails for a
-//! private repo — the intended graceful no-op for selfupdate until a token
-//! is provided).
-//!
-//! Routing every version-check / selfupdate / download through these
-//! endpoints makes the server the single channel for daemon distribution.
+//! `GET /api/v1/daemon/binary/{target}` (and `{target}.minisig`) streams the
+//! asset using `CCTUI_GITHUB_TOKEN`/`GH_TOKEN` when set, so a private releases
+//! repo stays private; without a PAT it 302s to the raw GitHub URL.
 
 use axum::body::Body;
 use axum::extract::{Path, Query, State};

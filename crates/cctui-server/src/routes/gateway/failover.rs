@@ -1,44 +1,16 @@
-//! Gateway account failover — when the bound account runs out of allocation,
-//! move the session to another account it is allowed to run on instead of
-//! letting it die against a window that resets hours later.
+//! Gateway account failover: move a session whose bound account is out of
+//! allocation to another account it may run on.
 //!
-//! Two mechanisms, deliberately distinct, and neither one implicit:
+//! Only two sources elect a target: the session's pool (with `failover` armed,
+//! elected by the pool's strategy) or an explicit `account_redirects` rule
+//! under `CCTUI_GATEWAY_FAILOVER=1`. A session with neither stays put and sees
+//! the refusal. Every move is recorded in `session_account_rebinds`.
 //!
-//!   * **the session's pool** — its user declared a set of interchangeable
-//!     accounts and armed `failover` on it. The election happens *inside that
-//!     set and nowhere else*, by the pool's own strategy. This is the durable
-//!     policy: "these accounts are the same to me".
-//!   * **an explicit redirect rule** — `CCTUI_GATEWAY_FAILOVER=1` plus an
-//!     unexpired `account_redirects` row for the exhausted account, the same
-//!     rule that moves launches ([`super::mint`]). This is the incident knob:
-//!     dated, one-off, "A is spent, send it to B today".
-//!
-//! What is gone, and stays gone, is the third thing that used to sit between
-//! them: an implicit election over *every* account the user could reach. That
-//! is how personal sessions silently ended up on work credentials — nothing had
-//! ever said those accounts were interchangeable. A session with no pool and no
-//! rule stays put and sees the honest refusal.
-//!
-//! Every move is recorded in `session_account_rebinds`, so a session that
-//! changed accounts can say so afterwards. Discovering a rebind weeks later in
-//! a bill was the real complaint; the movement itself was only the symptom.
-//!
-//! Deliberately NOT an in-gateway replay: request bodies stream through
-//! unbuffered on the hot path, so the refused request cannot be re-sent by the
-//! server. Instead the gateway repoints the session's token row (the same
-//! statement the explicit switch-account endpoint uses — the token string the
-//! worker holds never changes) and answers 429 `Retry-After: 1`. Every
-//! supported harness retries a 429, and the retry resolves to the new account.
-//!
-//! Two callers in `passthrough`:
-//!
-//!   * the soft-limit gate, instead of refusing with the account's own reset
-//!     horizon;
-//!   * an upstream 429, which is otherwise mirrored verbatim and strands the
-//!     session until its window resets.
-//!
-//! A per-session cooldown keeps a burst-429 (RPM, not quota) from ping-ponging
-//! a session between accounts.
+//! Request bodies stream unbuffered, so the refused request is not replayed:
+//! the session's token row is repointed and the gateway answers 429
+//! `Retry-After: 1`, which every supported harness retries. Callers are the
+//! soft-limit gate and an upstream 429 in `passthrough`; a per-session cooldown
+//! keeps a burst-429 from ping-ponging a session between accounts.
 
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};

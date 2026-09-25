@@ -1,29 +1,16 @@
-//! `PeerHttpTransport` (phase 2 of the message-bus architecture):
-//! cross-replica routing + event fan-out over plain pod-to-pod HTTP.
+//! `PeerHttpTransport`: cross-replica routing and event fan-out over
+//! pod-to-pod HTTP.
 //!
-//! With multiple server replicas, a daemon/dispatcher WS is terminated by
-//! exactly one pod while browser/API traffic load-balances across all of them.
-//! This transport fills the [`super::Transport`] seam:
+//! * **route**: a local registry miss looks up the live owning peer in
+//!   `ws_presence` and POSTs the frame to its `/internal/bus/route`; no live
+//!   owner yields the same `NoDaemon`/`NoDispatcher` miss as locally.
+//! * **relay**: every locally-published [`BusEvent`] is batched and POSTed to
+//!   every live pod's `/internal/bus/publish`, best-effort; the DB stays the
+//!   source of truth for refetch.
 //!
-//!   * **route** (commands + correlated round-trips): a local registry miss
-//!     consults `ws_presence` for a live peer owning the WS and POSTs the frame
-//!     to that pod's `/internal/bus/route`, returning the peer's outcome. No
-//!     live owner ⇒ the same `NoDaemon`/`NoDispatcher` miss the caller would
-//!     have seen locally, so the webui ack goes red honestly.
-//!   * **relay** (publish fan-out): every locally-published [`BusEvent`] is
-//!     queued to a background worker that batches and POSTs it to every live
-//!     peer pod (from the `pods` table) at `/internal/bus/publish`. Best-effort
-//!     with a short timeout — DB persistence remains the source of truth for
-//!     refetch, exactly as today.
-//!
-//! The receiving pod's internal endpoints (`crate::routes::internal`) deliver
-//! LOCALLY only (`Bus::*_local` / [`super::Bus::deliver_local`]) — the loop
-//! guard: a forwarded frame or relayed event can never be re-forwarded.
-//!
-//! Auth is an internal shared secret minted once into `cluster_secrets` at
-//! first boot and read by every replica; requests carry it as a Bearer token
-//! and ingest compares it in constant time. It is never a user-facing
-//! credential and no user/machine token can reach these endpoints.
+//! Receiving endpoints deliver locally only, so nothing is re-forwarded. Auth is
+//! a shared secret minted once into `cluster_secrets`, compared in constant
+//! time; no user or machine token can reach these endpoints.
 
 use cctui_proto::adapter::BootstrapFile;
 use cctui_proto::git::GitInfo;

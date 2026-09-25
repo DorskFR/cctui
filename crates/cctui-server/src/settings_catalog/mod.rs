@@ -1,35 +1,14 @@
-//! Per-account harness settings catalogs.
+//! Per-account harness settings catalogs: the Claude Code catalog (anthropic)
+//! and [`codex`] (openai), selected with [`for_family`].
 //!
-//! Two catalogs share these types, one per provider family: the Claude Code
-//! catalog below (anthropic) and the Codex one in [`codex`] (openai). Pick one
-//! with [`for_family`].
+//! The source of truth for which settings keys and env vars cctui exposes as
+//! per-account defaults and how dangerous each is; used by the server's
+//! allowlist validation and the webui settings editor.
 //!
-//! This module is the single source of truth for which Claude Code `settings.json`
-//! keys and environment variables cctui may expose as per-account defaults, and how
-//! dangerous each one is. It is consumed by:
-//!
-//! - the server's allowlist validation — reject a pasted settings/env blob
-//!   that touches managed-only or unknown keys before persisting it, and
-//! - the webui account settings editor — render the toggle list, grouped by
-//!   policy, with types/enums/defaults.
-//!
-//! ## Two sources, one catalog
-//!
-//! - `claude-code-settings.schema.json` — the vendored `SchemaStore` JSON Schema
-//!   (draft-07, `https://json.schemastore.org/claude-code-settings.json`). It is the
-//!   authority for the **types / enums / defaults** of the 84 keys it covers, so those
-//!   stay in sync when we re-vendor it. A CI job (`.github/workflows/schema-drift.yml`)
-//!   re-fetches it and diffs to flag drift.
-//! - `catalog.toml` — the hand-maintained delta the schema lacks: per-key **policy tags**
-//!   (`safe`/`care`/`managed`/`system`), the docs-only keys the schema still lags on,
-//!   a curated **env-var allowlist** (we do NOT expose all 284 documented vars), and the
-//!   named **"Quiet defaults"** preset.
-//!
-//! Both files are embedded at compile time; there is no runtime fetch or file I/O.
-//!
-//! The public API is intentionally small and read-only: [`catalog`] returns the parsed
-//! singleton, and [`Catalog`] exposes lookups plus [`Catalog::validate_settings`] /
-//! [`Catalog::validate_free_env`] for the server-side allowlist check.
+//! `claude-code-settings.schema.json` (vendored `SchemaStore` schema, checked
+//! for drift by `.github/workflows/schema-drift.yml`) supplies types, enums and
+//! defaults; `catalog.toml` adds policy tags, docs-only keys, the env-var
+//! allowlist and the "Quiet defaults" preset. Both are embedded at compile time.
 
 pub mod codex;
 

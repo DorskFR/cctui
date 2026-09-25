@@ -1,33 +1,16 @@
-//! Server-emitted completion webhooks.
+//! Server-emitted completion webhooks: a death-detector for the cases the
+//! worker's `REPLY_URL` exit-trap cannot cover (OOM/SIGKILL, never registered,
+//! connection lost past grace). The worker's own payload stays the verdict; the
+//! server only ever sends `status:"failed"` with a reason.
 //!
-//! A lifecycle-only **death-detector**, complementing — not replacing — the
-//! worker's `REPLY_URL` exit-trap. The worker owns the verdict: on any orderly
-//! exit (clean, killed, or crashed) its trap POSTs the real `RESULT_FILE` to
-//! `REPLY_URL`, and that payload (opaque to the server) is the source of truth.
-//! The server fires only for the cases the worker's trap CANNOT cover — a pod
-//! OOM/SIGKILL that never runs the trap, a worker that never registered
-//! (`CrashLoopBackOff` / unschedulable), or a connection lost past grace — and
-//! then the callback is uniformly `status:"failed"` with a reason. The verdict
-//! never transits or is stored on the server.
+//! At dispatch, [`register`] writes a `pending` row keyed on the pre-minted
+//! `session_id`. The reaper's [`sweep`] resolves each row via [`decide`]: a
+//! clean `SessionEnded` supersedes it; a never-registered session is probed
+//! through its dispatcher, and only `Failed`/`Gone` (plus the never-launched and
+//! archive backstops) fire, with backoff and dead-lettering after `MAX_ATTEMPTS`.
 //!
-//! Flow:
-//!   1. At dispatch (see `routes::dispatch`), if the request carries
-//!      `notify_url`, [`register`] writes a `pending` row to `session_webhooks`
-//!      keyed on the (pre-minted) `session_id`; the dispatch handle is persisted
-//!      to `dispatch_handles`.
-//!   2. The reaper sweep ([`sweep`], called from `main::reaper_task`) resolves
-//!      each `pending` row via [`decide`]: a clean `SessionEnded` is superseded
-//!      (the worker's trap owned the callback); a session that never registered
-//!      is probed by asking the owning **dispatcher** whether its workload is
-//!      `Running` / `Complete` / `Failed` / `Gone`. Only `Failed`/`Gone` (and
-//!      the dispatch-never-launched / time-archive backstops) fire the death
-//!      payload, with exponential-backoff delivery and dead-lettering after
-//!      `MAX_ATTEMPTS`.
-//!
-//! Wire shape: `{ task_id, status:"failed", error }` — preserving the
-//! `REPLY_URL` contract so automation flows migrate by swapping the URL. When a
-//! per-target `secret` is registered, the body is signed HMAC-SHA256 and the
-//! hex digest is sent in `X-CCTUI-Signature: sha256=<hex>`.
+//! Wire shape: `{ task_id, status:"failed", error }`. With a per-target
+//! `secret` the body is signed HMAC-SHA256 in `X-CCTUI-Signature: sha256=<hex>`.
 
 use std::sync::OnceLock;
 
