@@ -73,8 +73,6 @@ pub struct EnrollResponse {
 /// `POST /api/v1/dispatcher/enroll` — user token mints a dispatcher identity.
 /// The key is returned ONCE and only its hash + a preview are persisted (same
 /// discipline as the machine enroll).
-// Linear handler: validate, mint key, persist identity, build response.
-#[allow(clippy::too_many_lines)]
 pub async fn enroll(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
@@ -89,28 +87,7 @@ pub async fn enroll(
     if name.is_empty() {
         return Err(AppError::new(StatusCode::BAD_REQUEST, "name required"));
     }
-
-    // dispatcher names are globally unique among live (non-deleted)
-    // dispatchers. Reject a name already in use up-front with a clear message,
-    // rather than letting a re-enrollment under a DIFFERENT principal create a
-    // shadow row — owner-scoped resolution then routes the caller to one row
-    // while the live WS connection is on the other → "dispatcher offline" 502 on
-    // every dispatch (the 2026-06-21 outage). Matches the dispatchers_name_live
-    // unique index; the INSERT below still catches the race via 23505.
-    let name_taken: Option<(Uuid,)> = sqlx::query_as(
-        "SELECT user_id FROM dispatchers WHERE name = $1 AND deleted_at IS NULL LIMIT 1",
-    )
-    .bind(name)
-    .fetch_optional(&state.pool)
-    .await?;
-    if name_taken.is_some() {
-        return Err(AppError::new(
-            StatusCode::CONFLICT,
-            format!(
-                "a dispatcher named {name:?} is already enrolled; revoke or delete it before re-enrolling"
-            ),
-        ));
-    }
+    reject_live_name(&state.pool, name).await?;
 
     let dispatcher_id = Uuid::new_v4();
     let secret = mint_secret();
@@ -118,67 +95,23 @@ pub async fn enroll(
     let key_hash = sha256_hex(&token);
     let kind = req.kind.as_deref().filter(|k| !k.trim().is_empty()).unwrap_or("http");
 
-    // resolve an optional default-account binding to an account id the
-    // caller owns. The provider hint (when given) disambiguates a name shared
-    // across providers; absent it, we take the single matching row and 409 on
-    // ambiguity so the binding is never silently wrong. A named account that
-    // doesn't resolve is a 404 — the operator typo'd it.
     let account = req.account.as_deref().map(str::trim).filter(|a| !a.is_empty());
     let provider = req.provider.as_deref().map(str::trim).filter(|p| !p.is_empty());
-    let default_account_id: Option<Uuid> = if let Some(name) = account {
-        // The binding points at the identity (`accounts.id`); the
-        // provider hint filters via the identity's provider rows. DISTINCT
-        // because a multi-provider identity is still ONE binding target.
-        let rows: Vec<(Uuid,)> = sqlx::query_as(
-            "SELECT DISTINCT a.id \
-             FROM accounts a JOIN account_providers ap ON ap.account_id = a.id \
-             WHERE a.user_id = $1 AND a.name = $2 \
-               AND ($3::text IS NULL OR ap.provider = $3)",
-        )
-        .bind(user_id)
-        .bind(name)
-        .bind(provider)
-        .fetch_all(&state.pool)
-        .await?;
-        match rows.as_slice() {
-            [] => {
-                return Err(AppError::new(
-                    StatusCode::NOT_FOUND,
-                    format!("no account named {name:?}"),
-                ));
-            }
-            [(id,)] => Some(*id),
-            _ => {
-                return Err(AppError::new(
-                    StatusCode::CONFLICT,
-                    format!("account {name:?} exists for multiple providers; pass --provider"),
-                ));
-            }
-        }
-    } else {
-        None
+    let default_account_id = match account {
+        Some(name) => Some(resolve_default_account(&state.pool, user_id, name, provider).await?),
+        None => None,
     };
 
     // Only consulted when no account was named — the account is the more
     // specific instruction, so binding both is not an error, just a no-op here.
-    let default_pool_id: Option<Uuid> = match req
+    let default_pool_id = match req
         .pool
         .as_deref()
         .map(str::trim)
         .filter(|p| !p.is_empty())
         .filter(|_| default_account_id.is_none())
     {
-        Some(pool_name) => Some(
-            crate::store::account_pools::by_name(&state.pool, user_id, pool_name)
-                .await?
-                .ok_or_else(|| {
-                    AppError::new(
-                        StatusCode::NOT_FOUND,
-                        format!("no account pool named {pool_name:?}"),
-                    )
-                })?
-                .id,
-        ),
+        Some(pool_name) => Some(resolve_default_pool(&state.pool, user_id, pool_name).await?),
         None => None,
     };
 
@@ -187,34 +120,21 @@ pub async fn enroll(
     let mut grant = crate::store::acls::user_ceiling(&state.pool, user_id).await?;
     grant.retain(|s| matches!(s, Scope::Read | Scope::Dispatch));
 
-    sqlx::query(
-        "INSERT INTO dispatchers \
-           (id, user_id, name, kind, key_hash, key_preview, \
-            default_account_id, default_account_provider, default_pool_id) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+    insert_dispatcher(
+        &state.pool,
+        NewDispatcher {
+            id: dispatcher_id,
+            user_id,
+            name,
+            kind,
+            key_hash: &key_hash,
+            key_preview: token_preview(&token),
+            default_account_id,
+            default_account_provider: provider,
+            default_pool_id,
+        },
     )
-    .bind(dispatcher_id)
-    .bind(user_id)
-    .bind(name)
-    .bind(kind)
-    .bind(&key_hash)
-    .bind(token_preview(&token))
-    .bind(default_account_id)
-    .bind(provider)
-    .bind(default_pool_id)
-    .execute(&state.pool)
-    .await
-    .map_err(|e| {
-        if let sqlx::Error::Database(dbe) = &e
-            && dbe.code().as_deref() == Some("23505")
-        {
-            return AppError::new(
-                StatusCode::CONFLICT,
-                "a dispatcher with that name already exists",
-            );
-        }
-        AppError::from(e)
-    })?;
+    .await?;
 
     // Mirror the enrollment key into the unified api_keys table. The
     // dispatcher WS still authenticates via the dispatchers.key_hash path, so
@@ -247,6 +167,123 @@ pub async fn enroll(
         dispatcher_key: token,
         server_version: env!("CARGO_PKG_VERSION"),
     }))
+}
+
+/// Dispatcher names are globally unique among live (non-deleted)
+/// dispatchers. Reject a name already in use up-front with a clear message,
+/// rather than letting a re-enrollment under a DIFFERENT principal create a
+/// shadow row — owner-scoped resolution then routes the caller to one row
+/// while the live WS connection is on the other → "dispatcher offline" 502 on
+/// every dispatch. Matches the dispatchers_name_live unique index; the INSERT
+/// still catches the race via 23505.
+async fn reject_live_name(pool: &sqlx::PgPool, name: &str) -> Result<(), AppError> {
+    let name_taken: Option<(Uuid,)> = sqlx::query_as(
+        "SELECT user_id FROM dispatchers WHERE name = $1 AND deleted_at IS NULL LIMIT 1",
+    )
+    .bind(name)
+    .fetch_optional(pool)
+    .await?;
+    if name_taken.is_some() {
+        return Err(AppError::new(
+            StatusCode::CONFLICT,
+            format!(
+                "a dispatcher named {name:?} is already enrolled; revoke or delete it before re-enrolling"
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// Resolve a default-account binding to an account id the caller owns. The
+/// provider hint (when given) disambiguates a name shared across providers;
+/// absent it, we take the single matching row and 409 on ambiguity so the
+/// binding is never silently wrong. A named account that doesn't resolve is
+/// a 404 — the operator typo'd it.
+async fn resolve_default_account(
+    pool: &sqlx::PgPool,
+    user_id: Uuid,
+    name: &str,
+    provider: Option<&str>,
+) -> Result<Uuid, AppError> {
+    // The binding points at the identity (`accounts.id`); the
+    // provider hint filters via the identity's provider rows. DISTINCT
+    // because a multi-provider identity is still ONE binding target.
+    let rows: Vec<(Uuid,)> = sqlx::query_as(
+        "SELECT DISTINCT a.id \
+         FROM accounts a JOIN account_providers ap ON ap.account_id = a.id \
+         WHERE a.user_id = $1 AND a.name = $2 \
+           AND ($3::text IS NULL OR ap.provider = $3)",
+    )
+    .bind(user_id)
+    .bind(name)
+    .bind(provider)
+    .fetch_all(pool)
+    .await?;
+    match rows.as_slice() {
+        [] => Err(AppError::new(StatusCode::NOT_FOUND, format!("no account named {name:?}"))),
+        [(id,)] => Ok(*id),
+        _ => Err(AppError::new(
+            StatusCode::CONFLICT,
+            format!("account {name:?} exists for multiple providers; pass --provider"),
+        )),
+    }
+}
+
+async fn resolve_default_pool(
+    pool: &sqlx::PgPool,
+    user_id: Uuid,
+    pool_name: &str,
+) -> Result<Uuid, AppError> {
+    Ok(crate::store::account_pools::by_name(pool, user_id, pool_name)
+        .await?
+        .ok_or_else(|| {
+            AppError::new(StatusCode::NOT_FOUND, format!("no account pool named {pool_name:?}"))
+        })?
+        .id)
+}
+
+struct NewDispatcher<'a> {
+    id: Uuid,
+    user_id: Uuid,
+    name: &'a str,
+    kind: &'a str,
+    key_hash: &'a str,
+    key_preview: String,
+    default_account_id: Option<Uuid>,
+    default_account_provider: Option<&'a str>,
+    default_pool_id: Option<Uuid>,
+}
+
+async fn insert_dispatcher(pool: &sqlx::PgPool, row: NewDispatcher<'_>) -> Result<(), AppError> {
+    sqlx::query(
+        "INSERT INTO dispatchers \
+           (id, user_id, name, kind, key_hash, key_preview, \
+            default_account_id, default_account_provider, default_pool_id) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+    )
+    .bind(row.id)
+    .bind(row.user_id)
+    .bind(row.name)
+    .bind(row.kind)
+    .bind(row.key_hash)
+    .bind(row.key_preview)
+    .bind(row.default_account_id)
+    .bind(row.default_account_provider)
+    .bind(row.default_pool_id)
+    .execute(pool)
+    .await
+    .map_err(|e| {
+        if let sqlx::Error::Database(dbe) = &e
+            && dbe.code().as_deref() == Some("23505")
+        {
+            return AppError::new(
+                StatusCode::CONFLICT,
+                "a dispatcher with that name already exists",
+            );
+        }
+        AppError::from(e)
+    })?;
+    Ok(())
 }
 
 // ---- /api/v1/dispatcher/auth ----
