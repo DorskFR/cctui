@@ -242,37 +242,36 @@ async fn replay_pending(
     session_id: &str,
     event_tx: &FrameTx,
 ) {
-    let prompts = {
+    let (pending, ask, plan) = {
         let store = store.read().await;
-        let mut prompts: Vec<ServerEvent> = store
-            .list_pending()
-            .into_iter()
-            .filter(|p| p.session_id == session_id)
-            .map(|p| ServerEvent::PermissionRequest {
-                session_id: p.session_id,
-                request_id: p.request_id,
-                tool_name: p.tool_name,
-                description: p.description,
-                input_preview: p.input_preview,
-            })
-            .collect();
-        if let Some(ask) = store.pending_ask(session_id) {
-            prompts.push(ServerEvent::AskQuestion {
-                session_id: ask.session_id,
-                question: ask.question,
-                questions: ask.questions,
-                preamble: ask.preamble,
-            });
-        }
-        if let Some(plan) = store.pending_plan(session_id) {
-            prompts.push(ServerEvent::PlanRequest {
-                session_id: plan.session_id,
-                plan: plan.plan,
-                preamble: plan.preamble,
-            });
-        }
-        prompts
+        (store.list_pending(), store.pending_ask(session_id), store.pending_plan(session_id))
     };
+    let mut prompts: Vec<ServerEvent> = pending
+        .into_iter()
+        .filter(|p| p.session_id == session_id)
+        .map(|p| ServerEvent::PermissionRequest {
+            session_id: p.session_id,
+            request_id: p.request_id,
+            tool_name: p.tool_name,
+            description: p.description,
+            input_preview: p.input_preview,
+        })
+        .collect();
+    if let Some(ask) = ask {
+        prompts.push(ServerEvent::AskQuestion {
+            session_id: ask.session_id,
+            question: ask.question,
+            questions: ask.questions,
+            preamble: ask.preamble,
+        });
+    }
+    if let Some(plan) = plan {
+        prompts.push(ServerEvent::PlanRequest {
+            session_id: plan.session_id,
+            plan: plan.plan,
+            preamble: plan.preamble,
+        });
+    }
     for event in &prompts {
         if !send_event(event_tx, event).await {
             return;
@@ -440,7 +439,8 @@ async fn permission_target(
     behavior: String,
 ) -> Option<String> {
     use crate::routes::permissions::SessionDecision;
-    match store.write().await.record_session_decision(&session_id, request_id, behavior) {
+    let decision = store.write().await.record_session_decision(&session_id, request_id, behavior);
+    match decision {
         SessionDecision::Foreign => None,
         SessionDecision::Recorded | SessionDecision::Unknown => Some(session_id),
     }
@@ -542,8 +542,8 @@ fn audience(event: &ServerEvent) -> Audience {
 }
 
 /// Resolves the owning user of a resource; `None` when unknown.
-trait OwnerLookup {
-    async fn owner(&self, owned: &Owned) -> Option<uuid::Uuid>;
+trait OwnerLookup: Sync {
+    fn owner(&self, owned: &Owned) -> impl Future<Output = Option<uuid::Uuid>> + Send;
 }
 
 impl OwnerLookup for sqlx::PgPool {
@@ -578,7 +578,7 @@ impl OwnerLookup for sqlx::PgPool {
     }
 }
 
-const OWNER_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+const OWNER_TTL: std::time::Duration = std::time::Duration::from_mins(1);
 const UNKNOWN_OWNER_TTL: std::time::Duration = std::time::Duration::from_secs(5);
 const OWNER_CACHE_MAX: usize = 4096;
 
@@ -592,21 +592,21 @@ struct OwnerCache {
 impl OwnerCache {
     async fn owner(&mut self, owned: &Owned, lookup: &impl OwnerLookup) -> Option<uuid::Uuid> {
         let now = tokio::time::Instant::now();
-        if let Some(&(owner, expires)) = self.entries.get(owned)
+        if let Some(&(cached, expires)) = self.entries.get(owned)
             && expires > now
         {
-            return owner;
+            return cached;
         }
-        let owner = lookup.owner(owned).await;
+        let resolved = lookup.owner(owned).await;
         if self.entries.len() >= OWNER_CACHE_MAX {
             self.entries.retain(|_, (_, expires)| *expires > now);
             if self.entries.len() >= OWNER_CACHE_MAX {
                 self.entries.clear();
             }
         }
-        let ttl = if owner.is_some() { OWNER_TTL } else { UNKNOWN_OWNER_TTL };
-        self.entries.insert(owned.clone(), (owner, now + ttl));
-        owner
+        let ttl = if resolved.is_some() { OWNER_TTL } else { UNKNOWN_OWNER_TTL };
+        self.entries.insert(owned.clone(), (resolved, now + ttl));
+        resolved
     }
 
     fn forget(&mut self, owned: &Owned) {
@@ -615,8 +615,8 @@ impl OwnerCache {
 }
 
 /// Decides whether a server-wide event may reach one socket's principal.
-trait EventFilter {
-    async fn allows(&mut self, event: &ServerEvent) -> bool;
+trait EventFilter: Send {
+    fn allows(&mut self, event: &ServerEvent) -> impl Future<Output = bool> + Send;
 }
 
 /// Admins see everything; everyone else only events whose resource they own.
@@ -628,7 +628,7 @@ struct OwnerFilter<L> {
     cache: OwnerCache,
 }
 
-impl<L: OwnerLookup> EventFilter for OwnerFilter<L> {
+impl<L: OwnerLookup + Send> EventFilter for OwnerFilter<L> {
     async fn allows(&mut self, event: &ServerEvent) -> bool {
         if self.is_admin {
             return true;
@@ -641,11 +641,11 @@ impl<L: OwnerLookup> EventFilter for OwnerFilter<L> {
                 if matches!(event, ServerEvent::SessionRegistered { .. }) {
                     self.cache.forget(&owned);
                 }
-                let owner = self.cache.owner(&owned, &self.lookup).await;
+                let resolved = self.cache.owner(&owned, &self.lookup).await;
                 if matches!(event, ServerEvent::SessionDeregistered { .. }) {
                     self.cache.forget(&owned);
                 }
-                owner == Some(self.user_id)
+                resolved == Some(self.user_id)
             }
         }
     }
@@ -808,7 +808,7 @@ mod tests {
             },
             ServerEvent::MachineResources {
                 machine_id: BOB_MACHINE,
-                resources: Default::default(),
+                resources: cctui_proto::resources::MachineResources::default(),
             },
             ServerEvent::ArchiveUploaded {
                 machine_id: BOB_MACHINE,
@@ -880,7 +880,7 @@ mod tests {
         }
         let mine = ServerEvent::MachineResources {
             machine_id: ALICE_MACHINE,
-            resources: Default::default(),
+            resources: cctui_proto::resources::MachineResources::default(),
         };
         assert!(filter_for(ALICE, FakeOwners::default()).allows(&mine).await);
 
