@@ -26,6 +26,7 @@ use cctui_proto::ws::DaemonFrameDown;
 use uuid::Uuid;
 
 use crate::auth::AuthContext;
+use crate::authz::{Shareable, shareable_owner};
 use crate::registry::MachineCommand;
 use crate::state::AppState;
 use crate::uploads::parse_upload_multipart;
@@ -92,24 +93,7 @@ pub async fn dispatch_spawn(
         }
     }
 
-    let machine_uuid = Uuid::parse_str(&req.machine_id).map_err(|_| {
-        (StatusCode::BAD_REQUEST, Json(ApiError { error: "machine_id must be a uuid".into() }))
-    })?;
-    let row: Option<(Uuid,)> = sqlx::query_as("SELECT user_id FROM machines WHERE id = $1")
-        .bind(machine_uuid)
-        .fetch_optional(&state.pool)
-        .await
-        .map_err(|e| {
-            tracing::error!("db error: {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-        })?;
-    let Some((owner,)) = row else {
-        return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "machine not found".into() })));
-    };
-    let permitted = ctx.is_admin() || ctx.user_id == owner;
-    if !permitted {
-        return Err((StatusCode::FORBIDDEN, Json(ApiError { error: "not your machine".into() })));
-    }
+    let machine_uuid = resolve_owned_machine(state, ctx, &req.machine_id).await?;
 
     // Replica-aware forwarding: if a live peer replica holds this
     // machine's daemon WS, hand the request over before any command/env
@@ -674,15 +658,12 @@ pub async fn resolve_owned_machine(
 ) -> Result<Uuid, (StatusCode, Json<ApiError>)> {
     let machine_uuid =
         Uuid::parse_str(machine_id).map_err(|_| bad_request("machine_id must be a uuid"))?;
-    let row: Option<(Uuid,)> = sqlx::query_as("SELECT user_id FROM machines WHERE id = $1")
-        .bind(machine_uuid)
-        .fetch_optional(&state.pool)
-        .await
-        .map_err(|e| {
+    let owner =
+        shareable_owner(Shareable::Machine, machine_uuid, &state.pool).await.map_err(|e| {
             tracing::error!("db error: {e}");
             (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
         })?;
-    let Some((owner,)) = row else {
+    let Some(owner) = owner else {
         return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "machine not found".into() })));
     };
     if !(ctx.is_admin() || ctx.user_id == owner) {

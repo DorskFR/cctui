@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::auth::AuthContext;
-use crate::routes::accounts::{err, require_human};
+use crate::error::err;
 use crate::state::AppState;
 use crate::store::usage_samples::{self, CloseRow, HistoryRow, RETENTION_DAYS};
 
@@ -139,7 +139,6 @@ pub async fn account_usage_history(
     Path(id): Path<Uuid>,
     Query(q): Query<HistoryQuery>,
 ) -> Result<Json<UsageHistory>, ApiErr> {
-    require_human(&ctx)?;
     if owned_provider_ids(&state, &ctx, Some(id)).await?.is_empty() {
         return Err(err(StatusCode::NOT_FOUND, "no such account"));
     }
@@ -174,7 +173,6 @@ pub async fn account_usage_closes(
     Path(id): Path<Uuid>,
     Query(q): Query<HistoryQuery>,
 ) -> Result<Json<WindowCloses>, ApiErr> {
-    require_human(&ctx)?;
     let ids = owned_provider_ids(&state, &ctx, Some(id)).await?;
     if ids.is_empty() {
         return Err(err(StatusCode::NOT_FOUND, "no such account"));
@@ -188,7 +186,6 @@ pub async fn all_usage_closes(
     Extension(ctx): Extension<AuthContext>,
     Query(q): Query<HistoryQuery>,
 ) -> Result<Json<WindowCloses>, ApiErr> {
-    require_human(&ctx)?;
     let ids = owned_provider_ids(&state, &ctx, None).await?;
     closes_for(&state, &ids, &q).await
 }

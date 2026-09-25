@@ -46,7 +46,7 @@
 //!     `None` is `/health` only; everything else proves a principal. `Bearer`
 //!     resolves from the `Authorization` header or the `HttpOnly` auth cookie.
 //!   * **Authz** — what the principal may do: [`Authz`] `{Public, Authenticated,
-//!     Scope, Resource, Custom}`.
+//!     Human, Scope, Resource, Custom}`.
 //!
 //! For an [`Authz::Resource(kind, action, id)`] route the guard
 //! ([`authorize_resource`]) evaluates THREE composable steps, all in one place so
@@ -210,6 +210,9 @@ pub enum Authz {
     /// `auth_middleware`; the layer then re-asserts a principal is present.
     /// Self-scoped list/filter endpoints use this and keep their SQL filter.
     Authenticated,
+    /// A human principal: a user or admin token with `Read`, never a machine key.
+    /// Self-scoped routes use this and keep their SQL owner filter.
+    Human,
     /// A capability gate, no object: `ctx.requires(scope)`.
     Scope(Scope),
     /// A per-object gate. The id is resolved from the request via [`IdFrom`]
@@ -224,6 +227,7 @@ impl std::fmt::Debug for Authz {
         match self {
             Self::Public => write!(f, "Public"),
             Self::Authenticated => write!(f, "Authenticated"),
+            Self::Human => write!(f, "Human"),
             Self::Scope(s) => write!(f, "Scope({s:?})"),
             Self::Resource(k, a, i) => write!(f, "Resource({k:?}, {a:?}, {i:?})"),
             Self::Custom(_) => write!(f, "Custom(..)"),
@@ -248,6 +252,13 @@ impl Authz {
             // `auth_middleware` guaranteed. (The genuinely public `/health`
             // lives outside this layer entirely.)
             Self::Public | Self::Authenticated => Ok(()),
+            Self::Human => {
+                if ctx.machine_id.is_none() && ctx.has(Scope::Read) {
+                    Ok(())
+                } else {
+                    Err(StatusCode::FORBIDDEN)
+                }
+            }
             Self::Scope(s) => ctx.requires(*s),
             Self::Resource(kind, action, _id_from) => {
                 // The caller supplies the pool for every `Resource` policy; its
@@ -276,6 +287,11 @@ impl Authz {
     /// that is what the generated `OpenAPI`/`llms.txt` advertise as the minimum
     /// scope. (Per-object routes ADDITIONALLY require ownership, documented
     /// separately in `llms.txt`.)
+    #[must_use]
+    pub const fn human_only(&self) -> bool {
+        matches!(self, Self::Human)
+    }
+
     #[must_use]
     pub const fn doc_scope(&self) -> Scope {
         match self {
@@ -394,34 +410,87 @@ impl Resource for SessionResource {
     }
 }
 
+/// A resource kind that can be shared via `resource_shares`, keyed by its
+/// `resource_type` string.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Shareable {
+    Account,
+    Machine,
+    Dispatcher,
+    /// Accepted so the share table/routes are ready; it has no backing table
+    /// yet, so its owner is always unknown.
+    ContextPack,
+}
+
+impl Shareable {
+    #[must_use]
+    pub const fn as_share_type(self) -> &'static str {
+        match self {
+            Self::Account => "account",
+            Self::Machine => "machine",
+            Self::Dispatcher => "dispatcher",
+            Self::ContextPack => "context_pack",
+        }
+    }
+}
+
+impl std::str::FromStr for Shareable {
+    type Err = ();
+    fn from_str(s: &str) -> Result<Self, ()> {
+        match s {
+            "account" => Ok(Self::Account),
+            "machine" => Ok(Self::Machine),
+            "dispatcher" => Ok(Self::Dispatcher),
+            "context_pack" => Ok(Self::ContextPack),
+            _ => Err(()),
+        }
+    }
+}
+
+/// The owning user of a directly-owned resource, or `None` when it does not
+/// exist. The only place these owner lookups are written.
+pub async fn shareable_owner(
+    kind: Shareable,
+    id: Uuid,
+    pool: &PgPool,
+) -> Result<Option<Uuid>, sqlx::Error> {
+    let sql = match kind {
+        Shareable::Account => "SELECT user_id FROM accounts WHERE id = $1",
+        Shareable::Machine => "SELECT user_id FROM machines WHERE id = $1",
+        Shareable::Dispatcher => {
+            "SELECT user_id FROM dispatchers WHERE id = $1 AND deleted_at IS NULL"
+        }
+        Shareable::ContextPack => return Ok(None),
+    };
+    sqlx::query_scalar(sql).bind(id).fetch_optional(pool).await
+}
+
+async fn shareable_owner_str(
+    kind: Shareable,
+    id: &str,
+    pool: &PgPool,
+) -> Result<Option<Uuid>, sqlx::Error> {
+    // A non-UUID id can never name a real row → absent (404).
+    let Ok(uuid) = Uuid::parse_str(id) else { return Ok(None) };
+    shareable_owner(kind, uuid, pool).await
+}
+
 /// Machines are owned directly (`machines.user_id`). Used by the machine-scoped
 /// filesystem route (`fs::list_dirs`). The id is the machine UUID as text.
 struct MachineResource;
 impl Resource for MachineResource {
-    const SHARE_TYPE: Option<&'static str> = Some("machine");
+    const SHARE_TYPE: Option<&'static str> = Some(Shareable::Machine.as_share_type());
     async fn owner_of(id: &str, pool: &PgPool) -> Result<Option<Uuid>, sqlx::Error> {
-        let Ok(uuid) = Uuid::parse_str(id) else {
-            // A non-UUID id can never name a real machine → treat as absent
-            // (404), matching the in-handler `Uuid::parse_str` + not-found path.
-            return Ok(None);
-        };
-        sqlx::query_scalar("SELECT user_id FROM machines WHERE id = $1")
-            .bind(uuid)
-            .fetch_optional(pool)
-            .await
+        shareable_owner_str(Shareable::Machine, id, pool).await
     }
 }
 
 /// Dispatchers are owned directly (`dispatchers.user_id`).
 struct DispatcherResource;
 impl Resource for DispatcherResource {
-    const SHARE_TYPE: Option<&'static str> = Some("dispatcher");
+    const SHARE_TYPE: Option<&'static str> = Some(Shareable::Dispatcher.as_share_type());
     async fn owner_of(id: &str, pool: &PgPool) -> Result<Option<Uuid>, sqlx::Error> {
-        let Ok(uuid) = Uuid::parse_str(id) else { return Ok(None) };
-        sqlx::query_scalar("SELECT user_id FROM dispatchers WHERE id = $1 AND deleted_at IS NULL")
-            .bind(uuid)
-            .fetch_optional(pool)
-            .await
+        shareable_owner_str(Shareable::Dispatcher, id, pool).await
     }
 }
 
@@ -441,13 +510,9 @@ impl Resource for UserResource {
 /// confers use/read.
 struct AccountResource;
 impl Resource for AccountResource {
-    const SHARE_TYPE: Option<&'static str> = Some("account");
+    const SHARE_TYPE: Option<&'static str> = Some(Shareable::Account.as_share_type());
     async fn owner_of(id: &str, pool: &PgPool) -> Result<Option<Uuid>, sqlx::Error> {
-        let Ok(uuid) = Uuid::parse_str(id) else { return Ok(None) };
-        sqlx::query_scalar("SELECT user_id FROM accounts WHERE id = $1")
-            .bind(uuid)
-            .fetch_optional(pool)
-            .await
+        shareable_owner_str(Shareable::Account, id, pool).await
     }
 }
 
@@ -761,6 +826,55 @@ mod tests {
     }
 
     #[test]
+    fn single_session_routes_use_session_guard() {
+        for d in descriptors() {
+            if d.path.starts_with("/sessions/{id}") {
+                assert!(
+                    matches!(
+                        d.authz,
+                        Authz::Resource(ResourceKind::Session, _, IdFrom::Path("id"))
+                    ),
+                    "{} {} must declare a Session resource policy, found {:?}",
+                    d.method.as_str(),
+                    d.path,
+                    d.authz
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn account_family_routes_are_human_only() {
+        const HUMAN_PREFIXES: &[&str] =
+            &["/accounts", "/account-pools", "/profiles", "/redirects", "/{resource_type}"];
+        const EXEMPT: &[&str] = &["/accounts/settings-catalog"];
+        for d in descriptors() {
+            if HUMAN_PREFIXES.iter().any(|p| d.path.starts_with(p)) && !EXEMPT.contains(&d.path) {
+                assert!(
+                    d.authz.human_only(),
+                    "{} {} must declare Authz::Human, found {:?}",
+                    d.method.as_str(),
+                    d.path,
+                    d.authz
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn human_gate_rejects_machine_keys() {
+        let mut machine = user(Uuid::new_v4());
+        machine.machine_id = Some(Uuid::new_v4());
+        let denied = one_route_app(Authz::Human, Some(machine));
+        assert_eq!(status_of(denied, "/r").await, StatusCode::FORBIDDEN);
+
+        let allowed = one_route_app(Authz::Human, Some(user(Uuid::new_v4())));
+        assert_eq!(status_of(allowed, "/r").await, StatusCode::OK);
+        let admin = one_route_app(Authz::Human, Some(admin()));
+        assert_eq!(status_of(admin, "/r").await, StatusCode::OK);
+    }
+
+    #[test]
     fn custom_and_scope_routes_are_enumerated() {
         // Enumerate the non-`Authenticated` policies so any change to who-can-do
         // -what is visible in this test's expectations. `Custom` routes (none
@@ -1026,6 +1140,28 @@ mod tests {
     /// account/machine/dispatcher and stay off for the rest, on one path. Each
     /// shareable type must also be a type the shares CRUD/table recognize.
     #[test]
+    fn shareable_parses_its_own_share_type_only() {
+        for kind in
+            [Shareable::Account, Shareable::Machine, Shareable::Dispatcher, Shareable::ContextPack]
+        {
+            assert_eq!(kind.as_share_type().parse::<Shareable>(), Ok(kind));
+        }
+        for t in ["", "session", "user", "prompt", "api_key", "Account"] {
+            assert!(t.parse::<Shareable>().is_err(), "{t} must not be shareable");
+        }
+    }
+
+    /// `context_pack` has no table: unknown, and the invalid pool is never touched.
+    #[tokio::test]
+    async fn shareable_owner_context_pack_is_unknown_without_db() {
+        let pool = sqlx::PgPool::connect_lazy("postgres://invalid").unwrap();
+        assert_eq!(
+            shareable_owner(Shareable::ContextPack, Uuid::new_v4(), &pool).await.unwrap(),
+            None
+        );
+    }
+
+    #[test]
     fn shareable_kinds_declare_share_type() {
         assert_eq!(AccountResource::SHARE_TYPE, Some("account"));
         assert_eq!(MachineResource::SHARE_TYPE, Some("machine"));
@@ -1043,7 +1179,7 @@ mod tests {
         .flatten()
         {
             assert!(
-                crate::routes::shares::is_shareable(st),
+                st.parse::<Shareable>().is_ok(),
                 "authz SHARE_TYPE {st:?} must be a shares CRUD/table shareable type"
             );
         }

@@ -10,7 +10,7 @@
 //! `api_keys`/`dispatchers`) and are **never** returned over the API —
 //! list/get only ever surface provider/expiry/last-used + lightweight stats.
 //! Accounts belong to the registering user and are visible/usable only by that
-//! user (`require_human` + `owner_filter`).
+//! user (the `Human` route policy + `owner_filter`).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -24,7 +24,9 @@ use dashmap::DashMap;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::auth::{AuthContext, Scope};
+use crate::auth::AuthContext;
+use crate::authz::{Shareable, shareable_owner};
+use crate::error::err;
 use crate::routes::gateway;
 use crate::state::AppState;
 
@@ -57,12 +59,6 @@ pub fn resolve_owner(
     ctx: &AuthContext,
     explicit: Option<Uuid>,
 ) -> Result<Uuid, (StatusCode, Json<serde_json::Value>)> {
-    // A machine key has no business creating accounts: require a
-    // human identity (read scope, no machine id). An admin acts cross-user by
-    // naming the owner explicitly; a user acts as itself.
-    if ctx.machine_id.is_some() || !ctx.has(Scope::Read) {
-        return Err(err(StatusCode::FORBIDDEN, "user or admin token required"));
-    }
     if ctx.is_admin() {
         explicit.ok_or_else(|| {
             err(StatusCode::BAD_REQUEST, "user_id required when using the admin token")
@@ -70,16 +66,6 @@ pub fn resolve_owner(
     } else {
         Ok(ctx.user_id)
     }
-}
-
-/// Gate the account read/mutation routes to a human identity (a user or admin
-/// token, never a machine key). Admin then sees/acts across all owners via
-/// `owner_filter`.
-pub fn require_human(ctx: &AuthContext) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
-    if ctx.machine_id.is_some() || !ctx.has(Scope::Read) {
-        return Err(err(StatusCode::FORBIDDEN, "user or admin token required"));
-    }
-    Ok(())
 }
 
 /// Back-compat shim: if `CCTUI_CLAUDE_LITELLM_*` is set,
@@ -785,10 +771,6 @@ fn build_rate_limits_json(
     Ok((!out.is_empty()).then_some(serde_json::Value::Object(out)))
 }
 
-pub fn err(code: StatusCode, msg: &str) -> (StatusCode, Json<serde_json::Value>) {
-    (code, Json(serde_json::json!({ "error": msg })))
-}
-
 fn db_err(e: &sqlx::Error) -> (StatusCode, Json<serde_json::Value>) {
     tracing::error!("db error: {e}");
     err(StatusCode::INTERNAL_SERVER_ERROR, "database error")
@@ -1183,7 +1165,6 @@ pub async fn list_accounts(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
 ) -> Result<Json<Vec<AccountInfo>>, (StatusCode, Json<serde_json::Value>)> {
-    require_human(&ctx)?;
     let accounts: Vec<AccountRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "{ACCOUNT_SELECT} WHERE $1::uuid IS NULL OR a.user_id = $1 \
            OR EXISTS (SELECT 1 FROM resource_shares s \
@@ -1229,7 +1210,6 @@ pub async fn get_account(
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<AccountInfo>, (StatusCode, Json<serde_json::Value>)> {
-    require_human(&ctx)?;
     fetch_account_info(&state.pool, id, ctx.owner_filter())
         .await
         .map_err(|e| db_err(&e))?
@@ -1302,7 +1282,6 @@ pub async fn update_account(
     Path(id): Path<Uuid>,
     Json(req): Json<UpdateAccount>,
 ) -> Result<Json<AccountInfo>, (StatusCode, Json<serde_json::Value>)> {
-    require_human(&ctx)?;
     if req.base_url.is_some()
         || req.auth_scheme.is_some()
         || req.models.is_some()
@@ -1486,7 +1465,6 @@ pub async fn delete_account(
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, (StatusCode, Json<serde_json::Value>)> {
-    require_human(&ctx)?;
     // Admin (`ctx.user_id` = NULL) may delete any account; a user only its own.
     // Accounts holding a managed provider (litellm shim) are read-only.
     let res = sqlx::query(
@@ -1520,7 +1498,6 @@ pub async fn add_provider(
     Path(id): Path<Uuid>,
     Json(req): Json<ProviderSpec>,
 ) -> Result<(StatusCode, Json<ProviderInfo>), (StatusCode, Json<serde_json::Value>)> {
-    require_human(&ctx)?;
     let owner = require_account_owner(&state, &ctx, id).await?;
     let w = prepare_provider_write(&req)?;
 
@@ -1583,7 +1560,6 @@ pub async fn update_provider(
     Path((id, provider_id)): Path<(Uuid, Uuid)>,
     Json(req): Json<UpdateProvider>,
 ) -> Result<Json<ProviderInfo>, (StatusCode, Json<serde_json::Value>)> {
-    require_human(&ctx)?;
     // Resolve the target (scoped to the caller; admin sees all) so we can tell a
     // compatible endpoint from a native one and reject editing managed rows.
     let provider = crate::store::account_providers::provider_owner_scoped(
@@ -1788,7 +1764,6 @@ pub async fn delete_provider(
     Extension(ctx): Extension<AuthContext>,
     Path((id, provider_id)): Path<(Uuid, Uuid)>,
 ) -> Result<StatusCode, (StatusCode, Json<serde_json::Value>)> {
-    require_human(&ctx)?;
     let removed = crate::store::account_providers::delete_owner_scoped(
         &state.pool,
         provider_id,
@@ -1813,7 +1788,6 @@ pub async fn move_provider(
     Path((id, provider_id)): Path<(Uuid, Uuid)>,
     Json(req): Json<MoveProvider>,
 ) -> Result<Json<ProviderInfo>, (StatusCode, Json<serde_json::Value>)> {
-    require_human(&ctx)?;
     let src_owner = require_account_owner(&state, &ctx, id).await?;
     let tgt_owner = require_account_owner(&state, &ctx, req.target_account_id)
         .await
@@ -2025,16 +1999,12 @@ pub async fn oauth_start(
 ) -> Result<Json<OAuthStartResponse>, (StatusCode, Json<serde_json::Value>)> {
     // The attach target names its owner; otherwise the caller does.
     let uid = if let Some(account_id) = req.account_id {
-        require_human(&ctx)?;
-        let owner: Option<Uuid> = sqlx::query_scalar(
-            "SELECT user_id FROM accounts WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2)",
-        )
-        .bind(account_id)
-        .bind(ctx.owner_filter())
-        .fetch_optional(&state.pool)
-        .await
-        .map_err(|e| db_err(&e))?;
-        owner.ok_or_else(|| err(StatusCode::NOT_FOUND, "no such account"))?
+        let owner = shareable_owner(Shareable::Account, account_id, &state.pool)
+            .await
+            .map_err(|e| db_err(&e))?;
+        owner
+            .filter(|o| ctx.owner_filter().is_none_or(|f| f == *o))
+            .ok_or_else(|| err(StatusCode::NOT_FOUND, "no such account"))?
     } else {
         resolve_owner(&ctx, req.user_id)?
     };
@@ -2107,8 +2077,6 @@ pub async fn oauth_finish(
     Extension(ctx): Extension<AuthContext>,
     Json(req): Json<OAuthFinish>,
 ) -> Result<(StatusCode, Json<AccountInfo>), (StatusCode, Json<serde_json::Value>)> {
-    require_human(&ctx)?;
-
     sweep_expired(&state.pending_oauth_logins);
 
     // Consume the pending record (single-use), but only if it belongs to the
@@ -2126,14 +2094,10 @@ pub async fn oauth_finish(
     // fails fast: an attach target must still exist and belong to the pending
     // owner; otherwise `name` finds-or-creates an identity after the exchange.
     let attach_target = if let Some(account_id) = pending.account_id {
-        let owner: Option<Uuid> =
-            sqlx::query_scalar("SELECT user_id FROM accounts WHERE id = $1 AND user_id = $2")
-                .bind(account_id)
-                .bind(uid)
-                .fetch_optional(&state.pool)
-                .await
-                .map_err(|e| db_err(&e))?;
-        if owner.is_none() {
+        let owner = shareable_owner(Shareable::Account, account_id, &state.pool)
+            .await
+            .map_err(|e| db_err(&e))?;
+        if owner != Some(uid) {
             return Err(err(StatusCode::NOT_FOUND, "no such account"));
         }
         Some(account_id)
@@ -2444,7 +2408,6 @@ pub async fn account_usage(
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<AccountUsage>, (StatusCode, Json<serde_json::Value>)> {
-    require_human(&ctx)?;
     // Authorize + resolve provider in one go. Admin (`ctx.user_id` = NULL) may
     // read any provider; a user only its own.
     let provider: Option<String> = sqlx::query_scalar(
@@ -2526,7 +2489,6 @@ pub async fn all_accounts_usage(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
 ) -> Result<Json<Vec<AccountUsageEntry>>, (StatusCode, Json<serde_json::Value>)> {
-    require_human(&ctx)?;
     let rows: Vec<UsageProviderRow> = sqlx::query_as(
         "SELECT p.id, p.provider, p.account_id, p.header_pin, a.name AS account_name, a.emoji AS account_emoji          FROM account_providers p JOIN accounts a ON a.id = p.account_id          WHERE ($1::uuid IS NULL OR p.user_id = $1)            AND p.provider IN ('anthropic', 'openai', 'fireworks')          ORDER BY a.name, p.family",
     )
@@ -2624,7 +2586,6 @@ pub async fn list_shares(
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Vec<ShareInfo>>, (StatusCode, Json<serde_json::Value>)> {
-    require_human(&ctx)?;
     require_account_owner(&state, &ctx, id).await?;
     let rows: Vec<ShareInfo> = sqlx::query_as(
         "SELECT s.resource_id AS account_id, s.grantee_id AS user_id, u.name AS user_name, \
@@ -2649,7 +2610,6 @@ pub async fn grant_share(
     Path(id): Path<Uuid>,
     Json(req): Json<GrantShare>,
 ) -> Result<(StatusCode, Json<ShareInfo>), (StatusCode, Json<serde_json::Value>)> {
-    require_human(&ctx)?;
     require_account_owner(&state, &ctx, id).await?;
 
     // Only `use` today (schema default); reject anything else so a typo doesn't
@@ -2719,7 +2679,6 @@ pub async fn revoke_share(
     Extension(ctx): Extension<AuthContext>,
     Path((id, user_id)): Path<(Uuid, Uuid)>,
 ) -> Result<StatusCode, (StatusCode, Json<serde_json::Value>)> {
-    require_human(&ctx)?;
     require_account_owner(&state, &ctx, id).await?;
     let res = sqlx::query(
         "UPDATE resource_shares SET revoked_at = now() \

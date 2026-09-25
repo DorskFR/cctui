@@ -316,7 +316,7 @@ async fn main() -> anyhow::Result<()> {
 /// coverage test.
 #[allow(clippy::too_many_lines)]
 fn build_api_routes() -> Routes {
-    use Authz::{Authenticated, Scope as ScopeAz};
+    use Authz::{Authenticated, Human, Scope as ScopeAz};
     const GET: Method = Method::GET;
     // Per-session ownership guard: `machine_uuid -> machines.user_id`,
     // id sourced from the `{id}` path param. `read`/`write` differ only in the
@@ -428,6 +428,7 @@ fn build_api_routes() -> Routes {
             "Register a session the daemon just launched.",
             post(routes::sessions::register),
             Authn::Bearer,
+            // In-handler: machine key only; binds to that machine and its owner.
             Authenticated,
         )
         .add(
@@ -436,7 +437,7 @@ fn build_api_routes() -> Routes {
             "Deregister a session (mark it gone).",
             post(routes::sessions::deregister),
             Authn::Bearer,
-            Authenticated,
+            sess_write(),
         )
         .add(
             &[Method::POST],
@@ -458,7 +459,7 @@ fn build_api_routes() -> Routes {
             "Attach files to a live session mid-conversation.",
             post(routes::spawn::stage_session_files).layer(DefaultBodyLimit::max(24 * 1024 * 1024)),
             Authn::Bearer,
-            Authenticated,
+            sess_write(),
         )
         .add(
             &[Method::POST],
@@ -1003,7 +1004,7 @@ fn build_api_routes() -> Routes {
             Authn::Bearer,
             Authenticated,
         )
-        // Accounts: require_human() + owner_filter()/resolve_owner in handler.
+        // Accounts: `Human` route policy + owner_filter()/resolve_owner in handler.
         .add(
             &[GET],
             "/accounts/settings-catalog",
@@ -1018,7 +1019,7 @@ fn build_api_routes() -> Routes {
             "List your accounts (identities + provider credentials), or create one.",
             get(routes::accounts::list_accounts).post(routes::accounts::create_account),
             Authn::Bearer,
-            Authenticated,
+            Human,
         )
         .add(
             &[Method::POST],
@@ -1026,7 +1027,7 @@ fn build_api_routes() -> Routes {
             "Begin an OAuth account authorization flow.",
             post(routes::accounts::oauth_start),
             Authn::Bearer,
-            Authenticated,
+            Human,
         )
         .add(
             &[Method::POST],
@@ -1034,7 +1035,7 @@ fn build_api_routes() -> Routes {
             "Complete an OAuth account authorization flow.",
             post(routes::accounts::oauth_finish),
             Authn::Bearer,
-            Authenticated,
+            Human,
         )
         .add(
             &[GET, Method::PATCH, Method::DELETE],
@@ -1044,7 +1045,7 @@ fn build_api_routes() -> Routes {
                 .patch(routes::accounts::update_account)
                 .delete(routes::accounts::delete_account),
             Authn::Bearer,
-            Authenticated,
+            Human,
         )
         .add(
             &[Method::PUT],
@@ -1052,7 +1053,7 @@ fn build_api_routes() -> Routes {
             "Create/overwrite a launch-time redirect rule for this account.",
             axum::routing::put(routes::account_redirects::put_redirect),
             Authn::Bearer,
-            Authenticated,
+            Human,
         )
         .add(
             &[GET],
@@ -1060,7 +1061,7 @@ fn build_api_routes() -> Routes {
             "The caller's live account/model redirect rules.",
             get(routes::account_redirects::list_redirects),
             Authn::Bearer,
-            Authenticated,
+            Human,
         )
         .add(
             &[Method::DELETE],
@@ -1068,7 +1069,7 @@ fn build_api_routes() -> Routes {
             "Delete a redirect rule.",
             axum::routing::delete(routes::account_redirects::delete_redirect),
             Authn::Bearer,
-            Authenticated,
+            Human,
         )
         .add(
             &[GET, Method::POST],
@@ -1076,7 +1077,7 @@ fn build_api_routes() -> Routes {
             "List the caller's spawn profiles, or create one.",
             get(routes::profiles::list_profiles).post(routes::profiles::create_profile),
             Authn::Bearer,
-            Authenticated,
+            Human,
         )
         .add(
             &[Method::PUT],
@@ -1084,7 +1085,7 @@ fn build_api_routes() -> Routes {
             "Persist the caller's profile order.",
             axum::routing::put(routes::profiles::reorder_profiles),
             Authn::Bearer,
-            Authenticated,
+            Human,
         )
         .add(
             &[Method::PATCH, Method::DELETE],
@@ -1092,7 +1093,7 @@ fn build_api_routes() -> Routes {
             "Rename, adjust or delete a spawn profile.",
             patch(routes::profiles::update_profile).delete(routes::profiles::delete_profile),
             Authn::Bearer,
-            Authenticated,
+            Human,
         )
         // Account pools: the durable "these accounts are interchangeable"
         // statement that bounds both auto-binding and mid-session failover.
@@ -1102,7 +1103,7 @@ fn build_api_routes() -> Routes {
             "List the caller's account pools, or create one.",
             get(routes::account_pools::list_pools).post(routes::account_pools::create_pool),
             Authn::Bearer,
-            Authenticated,
+            Human,
         )
         .add(
             &[GET],
@@ -1110,7 +1111,7 @@ fn build_api_routes() -> Routes {
             "Every pool's quota windows aggregated per provider family: level, pace, projection.",
             get(routes::account_pools::pools_usage),
             Authn::Bearer,
-            Authenticated,
+            Human,
         )
         .add(
             &[Method::PATCH, Method::DELETE],
@@ -1119,7 +1120,7 @@ fn build_api_routes() -> Routes {
             patch(routes::account_pools::update_pool)
                 .delete(routes::account_pools::delete_pool),
             Authn::Bearer,
-            Authenticated,
+            Human,
         )
         .add(
             &[GET],
@@ -1127,7 +1128,7 @@ fn build_api_routes() -> Routes {
             "Every mid-run account move this session made, newest first.",
             get(routes::account_pools::list_session_rebinds),
             Authn::Bearer,
-            Authenticated,
+            sess_read(),
         )
         // Provider credentials under an account identity: owner-scoped
         // in the handlers like the other account routes.
@@ -1137,7 +1138,7 @@ fn build_api_routes() -> Routes {
             "Attach a provider credential to an account.",
             post(routes::accounts::add_provider),
             Authn::Bearer,
-            Authenticated,
+            Human,
         )
         .add(
             &[Method::PATCH, Method::DELETE],
@@ -1145,7 +1146,7 @@ fn build_api_routes() -> Routes {
             "Edit or remove one of an account's provider credentials.",
             patch(routes::accounts::update_provider).delete(routes::accounts::delete_provider),
             Authn::Bearer,
-            Authenticated,
+            Human,
         )
         .add(
             &[Method::POST],
@@ -1153,7 +1154,7 @@ fn build_api_routes() -> Routes {
             "Move a provider credential to another account of the same owner.",
             post(routes::accounts::move_provider),
             Authn::Bearer,
-            Authenticated,
+            Human,
         )
         .add(
             &[GET],
@@ -1161,7 +1162,7 @@ fn build_api_routes() -> Routes {
             "Usage windows of every provider credential the caller owns, in one call.",
             get(routes::accounts::all_accounts_usage),
             Authn::Bearer,
-            Authenticated,
+            Human,
         )
         .add(
             &[GET],
@@ -1169,7 +1170,7 @@ fn build_api_routes() -> Routes {
             "Get an account's usage/limits.",
             get(routes::accounts::account_usage),
             Authn::Bearer,
-            Authenticated,
+            Human,
         )
         .add(
             &[GET],
@@ -1177,7 +1178,7 @@ fn build_api_routes() -> Routes {
             "Sampled usage of one provider credential over time.",
             get(routes::usage_history::account_usage_history),
             Authn::Bearer,
-            Authenticated,
+            Human,
         )
         .add(
             &[GET],
@@ -1185,7 +1186,7 @@ fn build_api_routes() -> Routes {
             "Closed usage windows of one provider credential, with unused share.",
             get(routes::usage_history::account_usage_closes),
             Authn::Bearer,
-            Authenticated,
+            Human,
         )
         .add(
             &[GET],
@@ -1193,7 +1194,7 @@ fn build_api_routes() -> Routes {
             "Closed usage windows of every owned credential, with unused share.",
             get(routes::usage_history::all_usage_closes),
             Authn::Bearer,
-            Authenticated,
+            Human,
         )
         .add(
             &[Method::POST],
@@ -1201,7 +1202,7 @@ fn build_api_routes() -> Routes {
             "Claim a usage-limit reset on a provider credential.",
             post(routes::limit_reset::limit_reset),
             Authn::Bearer,
-            Authenticated,
+            Human,
         )
         // Account sharing management: owner-scoped in the handler
         // (require_account_owner) just like the other account routes.
@@ -1211,7 +1212,7 @@ fn build_api_routes() -> Routes {
             "List or grant shares of an account to other users.",
             get(routes::accounts::list_shares).post(routes::accounts::grant_share),
             Authn::Bearer,
-            Authenticated,
+            Human,
         )
         .add(
             &[Method::DELETE],
@@ -1219,7 +1220,7 @@ fn build_api_routes() -> Routes {
             "Revoke a user's share of an account.",
             delete(routes::accounts::revoke_share),
             Authn::Bearer,
-            Authenticated,
+            Human,
         )
         // Generic resource-sharing CRUD: owner-scoped in the handler
         // (require_owner) for any shareable kind. The account routes above are
@@ -1230,7 +1231,7 @@ fn build_api_routes() -> Routes {
             "List or grant shares of a resource to other users.",
             get(routes::shares::list_shares).post(routes::shares::grant_share),
             Authn::Bearer,
-            Authenticated,
+            Human,
         )
         .add(
             &[Method::DELETE],
@@ -1238,7 +1239,7 @@ fn build_api_routes() -> Routes {
             "Revoke a user's share of a resource.",
             delete(routes::shares::revoke_share),
             Authn::Bearer,
-            Authenticated,
+            Human,
         )
         .add(
             &[GET],

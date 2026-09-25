@@ -21,8 +21,15 @@ use crate::state::AppState;
 
 pub async fn register(
     State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
     Json(req): Json<RegisterRequest>,
 ) -> Result<Json<RegisterResponse>, (StatusCode, Json<ApiError>)> {
+    let Some(machine_uuid) = ctx.machine_id else {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(ApiError { error: "a machine key is required".into() }),
+        ));
+    };
     // Use Claude's session_id directly — it's our primary key now
     let session_id = req.claude_session_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let now = Utc::now();
@@ -39,49 +46,37 @@ pub async fn register(
         adapter_id: None,
     };
 
-    // Best-effort resolve `req.machine_id` (freeform: UUID, friendly name,
-    // or OS hostname) into `machines.id` so the admin UI can join sessions
-    // to machine names without string heuristics. Historical sessions
-    // pre-dating this code remain orphaned, but new registrations land
-    // with the right link.
-    let machine_uuid: Option<uuid::Uuid> =
-        sqlx::query_scalar("SELECT id FROM machines WHERE id::text = $1 OR name = $1 LIMIT 1")
-            .bind(&session.machine_id)
-            .fetch_optional(&state.pool)
-            .await
-            .map_err(|e| {
-                tracing::error!("db error (machine_uuid lookup): {e}");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ApiError { error: "database error".into() }),
-                )
-            })?;
-
     // A fresh registration is `new` — it becomes `active` on the first
     // transcript line / turn. Re-registration of an already-known session
     // (e.g. Claude restart) is treated the same way: status=new, let the
-    // first activity promote it.
-    sqlx::query(
-        r"INSERT INTO sessions (id, parent_id, account_id, machine_id, machine_uuid, working_dir, status, registered_at, last_heartbeat, metadata, model)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NULLIF($10->>'model', ''))
-           ON CONFLICT (id) DO UPDATE SET status = 'new', last_heartbeat = $9, metadata = $10, machine_uuid = COALESCE(sessions.machine_uuid, EXCLUDED.machine_uuid), model = COALESCE(sessions.model, EXCLUDED.model)",
+    // first activity promote it. A row owned by another user is left alone.
+    let written: Option<String> = sqlx::query_scalar(
+        r"INSERT INTO sessions (id, parent_id, account_id, machine_id, machine_uuid, user_id, working_dir, status, registered_at, last_heartbeat, metadata, model)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NULLIF($11->>'model', ''))
+           ON CONFLICT (id) DO UPDATE SET status = 'new', last_heartbeat = $10, metadata = $11, machine_uuid = COALESCE(sessions.machine_uuid, EXCLUDED.machine_uuid), user_id = COALESCE(sessions.user_id, EXCLUDED.user_id), model = COALESCE(sessions.model, EXCLUDED.model)
+           WHERE COALESCE((SELECT m.user_id FROM machines m WHERE m.id = sessions.machine_uuid), sessions.user_id, EXCLUDED.user_id) = EXCLUDED.user_id
+           RETURNING id",
     )
     .bind(&session.id)
     .bind(&session.parent_id)
     .bind(&session.account_id)
     .bind(&session.machine_id)
     .bind(machine_uuid)
+    .bind(ctx.user_id)
     .bind(&session.working_dir)
     .bind("new")
     .bind(session.registered_at)
     .bind(session.last_heartbeat)
     .bind(&session.metadata)
-    .execute(&state.pool)
+    .fetch_optional(&state.pool)
     .await
     .map_err(|e| {
         tracing::error!("db error: {e}");
         (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
     })?;
+    if written.is_none() {
+        return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "session not found".into() })));
+    }
 
     let ws_url = format!(
         "{}/api/v1/stream/{}",
@@ -137,16 +132,7 @@ async fn filter_owned_ids(
     if ctx.is_admin() {
         return Ok(ids.to_vec());
     }
-    let owned: Vec<String> = sqlx::query_scalar(
-        "SELECT s.id \
-         FROM sessions s LEFT JOIN machines m ON m.id = s.machine_uuid \
-         WHERE s.id = ANY($1) AND m.user_id = $2",
-    )
-    .bind(ids)
-    .bind(ctx.user_id)
-    .fetch_all(&state.pool)
-    .await?;
-    Ok(owned)
+    crate::store::sessions::visible_session_ids(&state.pool, ids, ctx.user_id).await
 }
 
 /// Derived-status thresholds. A session is considered:
@@ -316,17 +302,11 @@ pub async fn list_sessions(
             let registry = state.registry.read().await;
             registry.list().into_iter().map(|h| h.session.id.clone()).collect()
         };
-        let rows: Vec<(String,)> = sqlx::query_as(
-            "SELECT s.id FROM sessions s \
-             LEFT JOIN machines m ON m.id = s.machine_uuid \
-             WHERE s.id = ANY($1) AND m.user_id = $2",
-        )
-        .bind(&live_ids)
-        .bind(ctx.user_id)
-        .fetch_all(&state.pool)
-        .await
-        .map_err(db_err)?;
-        Some(rows.into_iter().map(|(id,)| id).collect())
+        let owned =
+            crate::store::sessions::visible_session_ids(&state.pool, &live_ids, ctx.user_id)
+                .await
+                .map_err(db_err)?;
+        Some(owned.into_iter().collect())
     };
 
     let mut with_ts: Vec<(DateTime<Utc>, SessionListItem)> = {

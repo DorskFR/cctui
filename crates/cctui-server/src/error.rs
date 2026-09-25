@@ -73,3 +73,8 @@ impl IntoResponse for AppError {
         (code, Json(ApiError { error: msg })).into_response()
     }
 }
+
+/// The `{ "error": msg }` tuple the account-family handlers return.
+pub fn err(code: StatusCode, msg: &str) -> (StatusCode, Json<serde_json::Value>) {
+    (code, Json(serde_json::json!({ "error": msg })))
+}

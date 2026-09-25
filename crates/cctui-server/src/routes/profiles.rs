@@ -9,8 +9,8 @@ use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use super::accounts::{err, require_human};
 use crate::auth::AuthContext;
+use crate::error::err;
 use crate::state::AppState;
 
 type ApiErr = (StatusCode, Json<serde_json::Value>);
@@ -338,7 +338,6 @@ pub async fn list_profiles(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
 ) -> Result<Json<Vec<SessionProfile>>, ApiErr> {
-    require_human(&ctx)?;
     let rows = list_for_user(&state.pool, ctx.user_id).await.map_err(|e| db_err(&e))?;
     Ok(Json(rows))
 }
@@ -349,7 +348,6 @@ pub async fn create_profile(
     Extension(ctx): Extension<AuthContext>,
     Json(req): Json<CreateProfileRequest>,
 ) -> Result<(StatusCode, Json<SessionProfile>), ApiErr> {
-    require_human(&ctx)?;
     let name = clean_name(&req.name)?;
     let spec = clean_spec(req.spec)?;
     check_account(&state.pool, ctx.owner_filter(), &spec).await?;
@@ -364,7 +362,6 @@ pub async fn update_profile(
     Path(id): Path<Uuid>,
     Json(req): Json<UpdateProfileRequest>,
 ) -> Result<Json<SessionProfile>, ApiErr> {
-    require_human(&ctx)?;
     let name = req.name.as_deref().map(clean_name).transpose()?;
     let spec = req.spec.map(clean_spec).transpose()?;
     if let Some(spec) = &spec {
@@ -383,7 +380,6 @@ pub async fn reorder_profiles(
     Extension(ctx): Extension<AuthContext>,
     Json(req): Json<ReorderProfilesRequest>,
 ) -> Result<Json<Vec<SessionProfile>>, ApiErr> {
-    require_human(&ctx)?;
     if !reorder(&state.pool, ctx.user_id, &req.ids).await.map_err(|e| db_err(&e))? {
         return Err(err(
             StatusCode::BAD_REQUEST,
@@ -401,7 +397,6 @@ pub async fn delete_profile(
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, ApiErr> {
-    require_human(&ctx)?;
     if delete(&state.pool, ctx.user_id, id).await.map_err(|e| db_err(&e))? {
         Ok(StatusCode::NO_CONTENT)
     } else {

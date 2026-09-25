@@ -104,6 +104,7 @@ pub fn build_openapi() -> Value {
             "tags": [group_of(d.path)],
             "security": [{ "bearerAuth": [] }],
             "x-required-scope": scope,
+            "x-human-only": d.authz.human_only(),
             "responses": {
                 "200": { "description": "OK" },
                 "401": { "description": "Unauthenticated" },
@@ -190,7 +191,8 @@ pub fn build_llms_txt() -> String {
          - Effective scope = key ACL ∩ user ACL: a key can only ever exercise scopes its \
          owning user also holds.\n\
          - Per-object routes (e.g. `/sessions/{id}`) additionally require you to own (or \
-         be granted/admin over) that object — otherwise 404 (unknown) or 403.\n\n",
+         be granted/admin over) that object — otherwise 404 (unknown) or 403.\n\
+         - Operations marked `x-human-only` reject machine keys with 403.\n\n",
     );
 
     out.push_str("## Endpoints\n\n");
@@ -248,6 +250,9 @@ mod tests {
         assert!(paths["/api/v1/sessions"]["get"].is_object());
         // The Langfuse read proxy is session-read scoped.
         assert_eq!(paths["/api/v1/sessions/{id}/langfuse"]["get"]["x-required-scope"], "read");
+        assert_eq!(paths["/api/v1/accounts"]["get"]["x-human-only"], true);
+        assert_eq!(paths["/api/v1/profiles"]["get"]["x-human-only"], true);
+        assert_eq!(kill["x-human-only"], false);
     }
 
     #[test]
