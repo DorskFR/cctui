@@ -13,7 +13,7 @@
 //! `auth_middleware` resolves it to `TokenRole::Machine` with
 //! `machine_id` + `user_id` populated.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
@@ -64,6 +64,7 @@ const DAEMON_LOST_GRACE: Duration = Duration::from_secs(45);
 /// at *some* replica. Two of the daemon's 20s heartbeat cadences, so one missed
 /// heartbeat does not read as death, and under [`DAEMON_LOST_GRACE`] so a
 /// machine that is genuinely gone is never held alive by its own last beat.
+const BUMP_FLUSH: Duration = Duration::from_secs(1);
 const DAEMON_SEEN_FRESH: Duration = Duration::from_secs(40);
 
 // ---- /api/v1/daemon/auth ----
@@ -643,6 +644,18 @@ async fn handle(socket: WebSocket, state: AppState, machine_id: Uuid, user_id: U
     liveness.tick().await;
     let mut reasm = Reassembler::new(MAX_TRANSFER_BYTES);
     let mut owners = SessionOwners::new(machine_id, user_id);
+    let bumps = Arc::new(Bumps::default());
+    let flusher = {
+        let (bumps, pool) = (Arc::clone(&bumps), state.pool.clone());
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(BUMP_FLUSH);
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tick.tick().await;
+                bumps.flush(&pool).await;
+            }
+        })
+    };
     loop {
         reasm.evict_older_than(STALE_TRANSFER);
         let inbound =
@@ -708,18 +721,27 @@ async fn handle(socket: WebSocket, state: AppState, machine_id: Uuid, user_id: U
             DaemonFrameUp::Batch { frames } => frames,
             other => vec![other],
         };
+        let mut run: Vec<Ingest> = Vec::new();
         for frame in leaves {
             if let Some(local_id) = session_scope(&frame)
                 && !admit(&mut owners, &state.pool, local_id).await
             {
                 continue;
             }
+            let frame = match Ingest::take(frame) {
+                Ok(ingest) => {
+                    run.push(ingest);
+                    continue;
+                }
+                Err(frame) => frame,
+            };
+            ingest_run(&state, &bumps, machine_id, user_id, &mut run).await;
             let announce = announced_session(&frame).map(str::to_owned);
             if let Some(local_id) = &announce {
                 state.bus.bind_session_conn(local_id, conn_id);
             }
             let trace = frame_trace(&frame);
-            if let Err(err) = process_frame(&state, machine_id, user_id, frame).await {
+            if let Err(err) = process_frame(&state, &bumps, machine_id, user_id, frame).await {
                 tracing::warn!(%err, %trace, "process_frame error");
             }
             if let Some(local_id) = announce
@@ -734,6 +756,7 @@ async fn handle(socket: WebSocket, state: AppState, machine_id: Uuid, user_id: U
                 }
             }
         }
+        ingest_run(&state, &bumps, machine_id, user_id, &mut run).await;
     }
 
     // Cleanup. Only drop the entry if it is STILL OURS. During a reconnect
@@ -757,6 +780,8 @@ async fn handle(socket: WebSocket, state: AppState, machine_id: Uuid, user_id: U
         schedule_daemon_lost(&state, machine_id, sessions);
     }
     outbound.abort();
+    flusher.abort();
+    bumps.flush(&state.pool).await;
 }
 
 /// The session a daemon frame announces as live on this connection, if any.
@@ -1078,6 +1103,7 @@ fn resolve_read_file_result(
 
 async fn process_frame(
     state: &AppState,
+    bumps: &Bumps,
     machine_id: Uuid,
     user_id: Uuid,
     frame: DaemonFrameUp,
@@ -1100,7 +1126,7 @@ async fn process_frame(
                 local_id = event_local_id(&event),
                 "received event",
             );
-            handle_event(state, machine_id, user_id, &adapter_id, event).await
+            handle_event(state, bumps, machine_id, user_id, &adapter_id, event, None).await
         }
         DaemonFrameUp::StageFilesResult { request_id, ok, paths, error } => {
             // Mid-chat attachment reply: fire the oneshot the
@@ -1201,6 +1227,75 @@ fn on_heartbeat(state: &AppState, machine_id: Uuid, frame: DaemonFrameUp) {
 
 /// Bump the per-machine persisted-insert counter feeding divergence detection,
 /// only when a `stream_events` row was actually written.
+/// A persistable event held back so consecutive ones from one frame share a
+/// single `stream_events` insert.
+struct Ingest {
+    adapter_id: String,
+    event: AdapterEvent,
+    row: NewEvent,
+}
+
+impl Ingest {
+    fn take(frame: DaemonFrameUp) -> Result<Self, DaemonFrameUp> {
+        let DaemonFrameUp::Event { adapter_id, event } = frame else {
+            return Err(frame);
+        };
+        let row = match &event {
+            AdapterEvent::Message { local_id, payload, turn_id } => NewEvent {
+                local_id: local_id.clone(),
+                event_type: "message",
+                payload: payload.clone(),
+                turn_id: *turn_id,
+            },
+            AdapterEvent::ToolUse { local_id, payload } => NewEvent {
+                local_id: local_id.clone(),
+                event_type: "tool_use",
+                payload: payload.clone(),
+                turn_id: None,
+            },
+            _ => return Err(DaemonFrameUp::Event { adapter_id, event }),
+        };
+        Ok(Self { adapter_id, event, row })
+    }
+}
+
+/// Insert a run of held-back events in one statement, then run each event's
+/// side effects in order with its outcome.
+async fn ingest_run(
+    state: &AppState,
+    bumps: &Bumps,
+    machine_id: Uuid,
+    user_id: Uuid,
+    run: &mut Vec<Ingest>,
+) {
+    if run.is_empty() {
+        return;
+    }
+    let mut events = Vec::with_capacity(run.len());
+    let mut rows = Vec::with_capacity(run.len());
+    for Ingest { adapter_id, event, mut row } in run.drain(..) {
+        if row.event_type == "message" {
+            crate::keepalive::observe_message(state, &row.local_id, &mut row.payload).await;
+        }
+        events.push((adapter_id, event));
+        rows.push(row);
+    }
+    let seqs = match insert_events(&state.pool, machine_id, user_id, rows).await {
+        Ok(seqs) => seqs,
+        Err(err) => {
+            tracing::warn!(%err, %machine_id, events = events.len(), "batched event insert failed");
+            return;
+        }
+    };
+    for ((adapter_id, event), seq) in events.into_iter().zip(seqs) {
+        if let Err(err) =
+            handle_event(state, bumps, machine_id, user_id, &adapter_id, event, Some(seq)).await
+        {
+            tracing::warn!(%err, "handle_event error");
+        }
+    }
+}
+
 fn note_insert(state: &AppState, machine_id: Uuid, newly_inserted: bool) {
     if newly_inserted {
         *state.machine_event_inserts.entry(machine_id).or_insert(0) += 1;
@@ -1270,10 +1365,12 @@ fn should_auto_approve(tool: &str, auto_approve_enabled: bool) -> bool {
 #[allow(clippy::cognitive_complexity)]
 async fn handle_event(
     state: &AppState,
+    bumps: &Bumps,
     machine_id: Uuid,
     user_id: Uuid,
     adapter_id: &str,
     event: AdapterEvent,
+    stored: Option<Option<i64>>,
 ) -> anyhow::Result<()> {
     let local_id_for_bump = match &event {
         AdapterEvent::Message { local_id, .. }
@@ -1353,31 +1450,41 @@ async fn handle_event(
             crate::followup::claim_intent(&state.pool, &local_id, spawn_key_hint.as_deref()).await;
         }
         AdapterEvent::Message { local_id, mut payload, turn_id } => {
-            crate::keepalive::observe_message(state, &local_id, &mut payload).await;
-            inserted_seq = insert_event(
-                &state.pool,
-                machine_id,
-                user_id,
-                &local_id,
-                "message",
-                payload,
-                turn_id,
-            )
-            .await?;
+            inserted_seq = match stored {
+                Some(seq) => seq,
+                None => {
+                    crate::keepalive::observe_message(state, &local_id, &mut payload).await;
+                    insert_event(
+                        &state.pool,
+                        machine_id,
+                        user_id,
+                        &local_id,
+                        "message",
+                        payload,
+                        turn_id,
+                    )
+                    .await?
+                }
+            };
             newly_inserted = inserted_seq.is_some();
             note_insert(state, machine_id, newly_inserted);
         }
         AdapterEvent::ToolUse { local_id, payload } => {
-            inserted_seq = insert_event(
-                &state.pool,
-                machine_id,
-                user_id,
-                &local_id,
-                "tool_use",
-                payload,
-                None,
-            )
-            .await?;
+            inserted_seq = match stored {
+                Some(seq) => seq,
+                None => {
+                    insert_event(
+                        &state.pool,
+                        machine_id,
+                        user_id,
+                        &local_id,
+                        "tool_use",
+                        payload,
+                        None,
+                    )
+                    .await?
+                }
+            };
             newly_inserted = inserted_seq.is_some();
             note_insert(state, machine_id, newly_inserted);
         }
@@ -1490,7 +1597,7 @@ async fn handle_event(
                     },
                 )
                 .await;
-                bump_heartbeat(state, &local_id).await;
+                bumps.heartbeat(&local_id);
                 return Ok(());
             }
             state.permission_store.write().await.insert_request(
@@ -1510,7 +1617,7 @@ async fn handle_event(
                 description: tool,
                 input_preview,
             });
-            bump_heartbeat(state, &local_id).await;
+            bumps.heartbeat(&local_id);
         }
         AdapterEvent::PermissionResolved { local_id, request_id } => {
             // The adapter observed the agent's permission prompt clear (answered
@@ -1534,7 +1641,7 @@ async fn handle_event(
                 session_id: local_id.clone(),
                 request_id,
             });
-            bump_heartbeat(state, &local_id).await;
+            bumps.heartbeat(&local_id);
         }
         AdapterEvent::AskQuestion { local_id, question, questions, preamble } => {
             // Live AskUserQuestion: broadcast the pending question so
@@ -1561,14 +1668,14 @@ async fn handle_event(
                 questions,
                 preamble,
             });
-            bump_heartbeat(state, &local_id).await;
+            bumps.heartbeat(&local_id);
         }
         AdapterEvent::AskResolved { local_id } => {
             state.permission_store.write().await.remove_ask(&local_id);
             state.bus.publish_server(cctui_proto::ws::ServerEvent::AskResolved {
                 session_id: local_id.clone(),
             });
-            bump_heartbeat(state, &local_id).await;
+            bumps.heartbeat(&local_id);
         }
         AdapterEvent::PlanRequest { local_id, plan, preamble } => {
             // Live ExitPlanMode plan-approval prompt: park it
@@ -1588,14 +1695,14 @@ async fn handle_event(
                 plan,
                 preamble,
             });
-            bump_heartbeat(state, &local_id).await;
+            bumps.heartbeat(&local_id);
         }
         AdapterEvent::PlanResolved { local_id } => {
             state.permission_store.write().await.remove_plan(&local_id);
             state.bus.publish_server(cctui_proto::ws::ServerEvent::PlanResolved {
                 session_id: local_id.clone(),
             });
-            bump_heartbeat(state, &local_id).await;
+            bumps.heartbeat(&local_id);
         }
         AdapterEvent::Status {
             local_id,
@@ -1668,21 +1775,13 @@ async fn handle_event(
     };
     let tool_name = tool_call.map(|(tool, _)| tool);
     if let Some(id) = local_id_for_bump {
-        // Only a *newly-inserted* tool call advances the counters: a daemon
-        // replaying history on reconnect must bump the heartbeat (as it always
-        // did) without re-inflating `tool_use_count` or churning `last_tool_at`.
-        match tool_name {
-            Some(tool) if newly_inserted => bump_tool_activity(state, &id, tool).await,
-            _ => bump_heartbeat(state, &id).await,
-        }
+        let user_turn = is_user_turn(broadcast_pair.as_ref().map(|(_, e)| e));
+        bumps.note_activity(&id, newly_inserted, tool_name, user_turn);
         if newly_inserted
             && let Some((tool, input)) = tool_call
             && let Some(todos) = extract_todos(tool, input)
         {
             record_todos(&state.pool, &id, &todos).await;
-        }
-        if newly_inserted && is_user_turn(broadcast_pair.as_ref().map(|(_, e)| e)) {
-            reset_tool_count(state, &id).await;
         }
     }
     if newly_inserted && let Some((session_id, mut data)) = broadcast_pair {
@@ -1829,6 +1928,15 @@ async fn write_status_signals(
             children = CASE WHEN jsonb_array_length($9) > 0 THEN $9 ELSE sessions.children END \
          FROM prev \
          WHERE sessions.id = prev.id \
+           AND (prev.new_name IS NOT NULL \
+                OR (sessions.tempo, sessions.agent_state, sessions.activity, sessions.intent, \
+                    sessions.model, sessions.effort, sessions.permission_mode, sessions.children) \
+                   IS DISTINCT FROM \
+                   (COALESCE($2, sessions.tempo), COALESCE($3, sessions.agent_state), \
+                    COALESCE($4, sessions.activity), COALESCE($6, sessions.intent), \
+                    COALESCE(sessions.model, $7), COALESCE($8, sessions.effort), \
+                    COALESCE($11, sessions.permission_mode), \
+                    CASE WHEN jsonb_array_length($9) > 0 THEN $9 ELSE sessions.children END)) \
          RETURNING prev.old_name, prev.emoji_on",
     )
     .bind(local_id)
@@ -1914,56 +2022,113 @@ async fn persist_pr_link_children(
     Ok(())
 }
 
-/// Bump `last_heartbeat` for a session and, when it is a subagent, the whole
-/// `parent_id` chain up to the root. A subagent's work should keep
-/// its parent(s) "alive" so the parent card doesn't read idle/stale
-/// while a child churns. Done as a single recursive CTE UPDATE — one round-trip
-/// regardless of nesting depth, since subagents are chatty. Heartbeat only: no
-/// token/usage aggregates touched, so there's no double-counting.
-async fn bump_heartbeat(state: &AppState, local_id: &str) {
-    if let Err(err) = sqlx::query(
-        r"WITH RECURSIVE chain AS (
-            SELECT id, parent_id FROM sessions WHERE id = $1
-            UNION ALL
-            SELECT s.id, s.parent_id FROM sessions s JOIN chain c ON s.id = c.parent_id
-        )
-        UPDATE sessions SET last_heartbeat = now()
-        WHERE id IN (SELECT id FROM chain)",
-    )
-    .bind(local_id)
-    .execute(&state.pool)
-    .await
-    {
-        tracing::warn!(%err, %local_id, "heartbeat bump failed");
-    }
+/// Session activity waiting for the next [`Bumps::flush`].
+#[derive(Default)]
+struct PendingBump {
+    tool: Option<String>,
+    tool_calls: i32,
+    reset: bool,
 }
 
-/// Heartbeat bump plus the live tool-activity projection: sets
-/// `last_tool_at`/`last_tool_name` for the whole `parent_id` chain (rolled up so
-/// a grinding subagent freshens the parent row), and increments `tool_use_count`
-/// on the leaf only (each session tracks its own per-turn count). One recursive
-/// CTE round-trip — the heartbeat write, augmented, so there is no extra UPDATE
-/// per tool call beyond what `bump_heartbeat` already cost.
-async fn bump_tool_activity(state: &AppState, local_id: &str, tool: &str) {
-    if let Err(err) = sqlx::query(
-        r"WITH RECURSIVE chain AS (
-            SELECT id, parent_id FROM sessions WHERE id = $1
-            UNION ALL
-            SELECT s.id, s.parent_id FROM sessions s JOIN chain c ON s.id = c.parent_id
+/// Heartbeat and tool-activity writes of one daemon connection, coalesced per
+/// session so a busy session costs one `sessions` UPDATE per flush instead of
+/// one per event.
+#[derive(Default)]
+struct Bumps(Mutex<HashMap<String, PendingBump>>);
+
+impl Bumps {
+    fn with(&self, local_id: &str, f: impl FnOnce(&mut PendingBump)) {
+        if let Ok(mut pending) = self.0.lock() {
+            f(pending.entry(local_id.to_owned()).or_default());
+        }
+    }
+
+    fn heartbeat(&self, local_id: &str) {
+        self.with(local_id, |_| {});
+    }
+
+    /// Record the activity of an ingested event. A replayed event (not newly
+    /// inserted) is history the row already reflects, so it bumps nothing.
+    fn note_activity(
+        &self,
+        local_id: &str,
+        newly_inserted: bool,
+        tool: Option<&str>,
+        user_turn: bool,
+    ) {
+        if !newly_inserted {
+            return;
+        }
+        self.with(local_id, |b| {
+            if let Some(tool) = tool {
+                b.tool = Some(tool.to_owned());
+                b.tool_calls += 1;
+            }
+            if user_turn {
+                b.reset = true;
+                b.tool_calls = 0;
+            }
+        });
+    }
+
+    fn take(&self) -> HashMap<String, PendingBump> {
+        self.0.lock().map(|mut pending| std::mem::take(&mut *pending)).unwrap_or_default()
+    }
+
+    /// Write every pending bump in one statement. Each session and its whole
+    /// `parent_id` chain get `last_heartbeat` (so a grinding subagent keeps its
+    /// parent fresh) and, after a tool call, `last_tool_at`/`last_tool_name`;
+    /// `tool_use_count` is the leaf's own per-turn count. Returns rows updated.
+    async fn flush(&self, pool: &sqlx::PgPool) -> u64 {
+        let pending = self.take();
+        if pending.is_empty() {
+            return 0;
+        }
+        let mut ids = Vec::with_capacity(pending.len());
+        let mut tools = Vec::with_capacity(pending.len());
+        let mut calls = Vec::with_capacity(pending.len());
+        let mut resets = Vec::with_capacity(pending.len());
+        for (id, bump) in pending {
+            ids.push(id);
+            tools.push(bump.tool);
+            calls.push(bump.tool_calls);
+            resets.push(bump.reset);
+        }
+        let done = sqlx::query(
+            r"WITH RECURSIVE b AS (
+                SELECT * FROM unnest($1::text[], $2::text[], $3::int4[], $4::bool[])
+                    AS b(id, tool, calls, reset)
+            ), chain AS (
+                SELECT s.id, s.parent_id, b.tool FROM sessions s JOIN b ON s.id = b.id
+                UNION ALL
+                SELECT s.id, s.parent_id, c.tool FROM sessions s JOIN chain c ON s.id = c.parent_id
+            ), agg AS (
+                SELECT id, max(tool) AS tool FROM chain GROUP BY id
+            )
+            UPDATE sessions SET
+                last_heartbeat = now(),
+                last_tool_at = CASE WHEN agg.tool IS NULL THEN sessions.last_tool_at ELSE now() END,
+                last_tool_name = COALESCE(agg.tool, sessions.last_tool_name),
+                tool_use_count = COALESCE(
+                    (SELECT CASE WHEN b.reset THEN 0 ELSE sessions.tool_use_count END + b.calls
+                     FROM b WHERE b.id = sessions.id),
+                    sessions.tool_use_count)
+            FROM agg
+            WHERE sessions.id = agg.id",
         )
-        UPDATE sessions SET
-            last_heartbeat = now(),
-            last_tool_at = now(),
-            last_tool_name = $2,
-            tool_use_count = CASE WHEN id = $1 THEN tool_use_count + 1 ELSE tool_use_count END
-        WHERE id IN (SELECT id FROM chain)",
-    )
-    .bind(local_id)
-    .bind(tool)
-    .execute(&state.pool)
-    .await
-    {
-        tracing::warn!(%err, %local_id, "tool-activity bump failed");
+        .bind(&ids)
+        .bind(&tools)
+        .bind(&calls)
+        .bind(&resets)
+        .execute(pool)
+        .await;
+        match done {
+            Ok(done) => done.rows_affected(),
+            Err(err) => {
+                tracing::warn!(%err, sessions = ids.len(), "activity bump failed");
+                0
+            }
+        }
     }
 }
 
@@ -2005,7 +2170,7 @@ fn extract_todos(tool: &str, input: &serde_json::Value) -> Option<Vec<TodoEntry>
 }
 
 /// Persist the session's task list. **Leaf only, deliberately unlike
-/// [`bump_tool_activity`]**: each subagent owns its own list, so rolling up the
+/// [`Bumps::flush`]**: each subagent owns its own list, so rolling up the
 /// `parent_id` chain would make a child's todos masquerade as the parent's.
 async fn record_todos(pool: &sqlx::PgPool, local_id: &str, todos: &[TodoEntry]) {
     let payload = match serde_json::to_value(todos) {
@@ -2023,18 +2188,6 @@ async fn record_todos(pool: &sqlx::PgPool, local_id: &str, todos: &[TodoEntry]) 
             .await
     {
         tracing::warn!(%err, %local_id, "todo write failed");
-    }
-}
-
-/// Reset the leaf session's per-turn tool count on a new user prompt.
-/// Leaf only: ancestors keep their own per-turn counts.
-async fn reset_tool_count(state: &AppState, local_id: &str) {
-    if let Err(err) = sqlx::query("UPDATE sessions SET tool_use_count = 0 WHERE id = $1")
-        .bind(local_id)
-        .execute(&state.pool)
-        .await
-    {
-        tracing::warn!(%err, %local_id, "tool-count reset failed");
     }
 }
 
@@ -2080,6 +2233,15 @@ async fn upsert_session(
             metadata = COALESCE(sessions.metadata, '{}'::jsonb) || COALESCE(EXCLUDED.metadata, '{}'::jsonb)
           WHERE sessions.machine_uuid = EXCLUDED.machine_uuid
             AND sessions.user_id = EXCLUDED.user_id
+            AND (sessions.last_heartbeat, sessions.status, sessions.adapter_id,
+                 sessions.parent_id, sessions.metadata)
+                IS DISTINCT FROM
+                (GREATEST(sessions.last_heartbeat,
+                          COALESCE(to_timestamp($8::double precision), now())),
+                 CASE WHEN sessions.status IN ('inactive', 'archived', 'ended') THEN sessions.status ELSE 'active' END,
+                 EXCLUDED.adapter_id,
+                 COALESCE(sessions.parent_id, EXCLUDED.parent_id),
+                 COALESCE(sessions.metadata, '{}'::jsonb) || COALESCE(EXCLUDED.metadata, '{}'::jsonb))
           RETURNING (xmax = 0)",
     )
     .bind(local_id)
@@ -2093,9 +2255,13 @@ async fn upsert_session(
     .bind(extra)
     .fetch_optional(pool)
     .await?;
-    let Some(inserted) = inserted else {
-        tracing::warn!(%machine_id, %local_id, "refusing to register a session another machine owns");
-        return Ok(None);
+    let inserted = match inserted {
+        Some(inserted) => inserted,
+        None if session_owned(pool, machine_id, user_id, local_id).await? => false,
+        None => {
+            tracing::warn!(%machine_id, %local_id, "refusing to register a session another machine owns");
+            return Ok(None);
+        }
     };
     // A daemon that re-registers the session after a reconnect proves the
     // `daemon_lost` / `machine_offline` end was spurious. So is a "released"
@@ -2116,16 +2282,35 @@ async fn upsert_session(
     // nothing to re-mint from. Backfill it here from the newest token row
     // (live preferred). No-op for already-bound or never-bound sessions.
     sqlx::query(
-        "UPDATE sessions SET account_id = ( \
-            SELECT st.account_id::text FROM session_tokens st \
-             WHERE st.session_id = $1 \
-             ORDER BY (st.revoked_at IS NULL) DESC, st.created_at DESC LIMIT 1) \
-         WHERE id = $1 AND account_id IS NULL",
+        "UPDATE sessions SET account_id = t.account_id \
+         FROM (SELECT st.account_id::text AS account_id FROM session_tokens st \
+                WHERE st.session_id = $1 \
+                ORDER BY (st.revoked_at IS NULL) DESC, st.created_at DESC LIMIT 1) t \
+         WHERE sessions.id = $1 AND sessions.account_id IS NULL",
     )
     .bind(local_id)
     .execute(pool)
     .await?;
     Ok(Some(inserted))
+}
+
+/// Whether `machine_id`/`user_id` own the session row: an upsert that changed
+/// nothing returns no row, the same as one refused for ownership.
+async fn session_owned(
+    pool: &sqlx::PgPool,
+    machine_id: Uuid,
+    user_id: Uuid,
+    local_id: &str,
+) -> sqlx::Result<bool> {
+    sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM sessions \
+                        WHERE id = $1 AND machine_uuid = $2 AND user_id = $3)",
+    )
+    .bind(local_id)
+    .bind(machine_id)
+    .bind(user_id)
+    .fetch_one(pool)
+    .await
 }
 
 /// Register a session the daemon announced, announcing it to browser clients
@@ -2263,6 +2448,89 @@ async fn insert_event(
         crate::routes::fs::record_links(pool, local_id, &links).await?;
     }
     Ok(id)
+}
+
+/// One `stream_events` row for [`insert_events`].
+struct NewEvent {
+    local_id: String,
+    event_type: &'static str,
+    payload: serde_json::Value,
+    turn_id: Option<Uuid>,
+}
+
+/// Rows per `stream_events` statement: bounds one statement's bind size.
+const INSERT_BATCH: usize = 1000;
+
+/// Batched [`insert_event`]: the same ownership guard and dedup, one statement
+/// per [`INSERT_BATCH`] rows. Returns each row's outcome in input order. Ids are
+/// drawn in input order, so the `seq`s of one batch keep the frame's order.
+async fn insert_events(
+    pool: &sqlx::PgPool,
+    machine_id: Uuid,
+    user_id: Uuid,
+    mut rows: Vec<NewEvent>,
+) -> anyhow::Result<Vec<Option<i64>>> {
+    let mut out = Vec::with_capacity(rows.len());
+    for chunk in rows.chunks_mut(INSERT_BATCH) {
+        let mut ids = Vec::with_capacity(chunk.len());
+        let mut types = Vec::with_capacity(chunk.len());
+        let mut payloads = Vec::with_capacity(chunk.len());
+        let mut turns = Vec::with_capacity(chunk.len());
+        let mut links = Vec::with_capacity(chunk.len());
+        for row in chunk.iter_mut() {
+            strip_nul(&mut row.payload);
+            links.push(crate::routes::fs::extract_links(&row.payload));
+            ids.push(row.local_id.clone());
+            types.push(row.event_type);
+            payloads.push(std::mem::take(&mut row.payload));
+            turns.push(row.turn_id);
+        }
+        // The ON CONFLICT target must stay character-identical to migration 121's
+        // `stream_events_dedup_turn_idx` expression list or inference fails.
+        let inserted: Vec<(i64, i64)> = sqlx::query_as(
+            "WITH src AS ( \
+                 SELECT nextval(pg_get_serial_sequence('stream_events', 'id')) AS id, r.* \
+                 FROM ( \
+                     SELECT u.* \
+                     FROM unnest($1::text[], $2::text[], $3::jsonb[], $4::uuid[]) \
+                          WITH ORDINALITY AS u(session_id, event_type, payload, turn_id, ord) \
+                     WHERE EXISTS ( \
+                         SELECT 1 FROM sessions s \
+                         WHERE s.id = u.session_id AND s.machine_uuid = $5 AND s.user_id = $6) \
+                     ORDER BY u.ord \
+                 ) r \
+             ), ins AS ( \
+                 INSERT INTO stream_events (id, session_id, event_type, payload, turn_id) \
+                 SELECT id, session_id, event_type, payload, turn_id FROM src ORDER BY ord \
+                 ON CONFLICT (session_id, event_type, content_hash, \
+                              COALESCE(turn_id, '00000000-0000-0000-0000-000000000000'::uuid)) \
+                 DO NOTHING \
+                 RETURNING id \
+             ) \
+             SELECT src.ord, ins.id FROM ins JOIN src USING (id)",
+        )
+        .bind(&ids)
+        .bind(&types)
+        .bind(&payloads)
+        .bind(&turns)
+        .bind(machine_id)
+        .bind(user_id)
+        .fetch_all(pool)
+        .await?;
+        let mut seqs = vec![None; chunk.len()];
+        for (ord, id) in inserted {
+            if let Some(slot) = usize::try_from(ord - 1).ok().and_then(|i| seqs.get_mut(i)) {
+                *slot = Some(id);
+            }
+        }
+        for ((seq, local_id), links) in seqs.iter().zip(&ids).zip(&links) {
+            if seq.is_some() {
+                crate::routes::fs::record_links(pool, local_id, links).await?;
+            }
+        }
+        out.extend(seqs);
+    }
+    Ok(out)
 }
 
 /// Recursively strip NUL (`\0`) from every string in a JSON value.
@@ -2454,7 +2722,7 @@ async fn update_transcript_mark(
 ) -> anyhow::Result<()> {
     let offset = i64::try_from(offset).unwrap_or(i64::MAX);
     sqlx::query(
-        "UPDATE sessions SET transcript_offset = GREATEST(transcript_offset, $2) WHERE id = $1",
+        "UPDATE sessions SET transcript_offset = $2 WHERE id = $1 AND transcript_offset < $2",
     )
     .bind(local_id)
     .bind(offset)
@@ -2767,7 +3035,9 @@ mod tests {
         Arc, DAEMON_LOST_GRACE, DAEMON_SEEN_FRESH, EndReason, Future, Inbound, MAX_TRANSFER_BYTES,
         Ordering, PendingDaemonLost, SessionOwners, StatusSignals, TodoEntry, Utc, Uuid, admit,
         bearer_token, claim_announced, decode_binary_frame, decode_compressed_frame, event_kind,
-        event_local_id, expand_batch, extract_todos, handle_chunk, insert_event,
+        Bumps, event_local_id, expand_batch, extract_todos, handle_chunk, insert_event,
+        insert_events,
+        INSERT_BATCH, NewEvent,
         merge_known_adapters, next_inbound, persist_session_end, record_todos, seen_within,
         session_scope, should_auto_approve, strip_nul, upsert_session, write_status_signals,
     };
@@ -2817,7 +3087,7 @@ mod tests {
         assert_eq!(got[0].content, "x");
     }
 
-    /// DB-gated regression for CCT-940: unlike `bump_tool_activity`, a todos
+    /// DB-gated: unlike the activity bump, a todos
     /// write must NOT roll up the `parent_id` chain. A subagent writing its own
     /// list must leave the parent's list untouched, or every parent row shows
     /// whatever its newest child happened to be doing.
@@ -3994,6 +4264,256 @@ mod tests {
         assert!(admit(&mut owner, &pool, &sid).await);
 
         drop_machines(&pool, &[sid], &[(ua, ma), (ub, mb)]).await;
+    }
+
+    fn backfill(local_id: &str, n: usize) -> Vec<NewEvent> {
+        (0..n)
+            .map(|i| NewEvent {
+                local_id: local_id.to_owned(),
+                event_type: "message",
+                payload: json!({ "type": "assistant", "text": format!("line {i}") }),
+                turn_id: None,
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_backfill_lands_in_a_handful_of_statements_in_order() {
+        let Some(url) = crate::routes::gateway::test_db_url("batched_backfill") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let (uid, mid) = seed_machine(&pool, "backfill").await;
+        let sid = seed_owned_session(&pool, uid, mid).await;
+
+        let n = 5000;
+        assert!(n.div_ceil(INSERT_BATCH) <= 5, "a 5k backfill is at most five statements");
+        let mut rows = backfill(&sid, n);
+        rows.push(NewEvent {
+            local_id: sid.clone(),
+            event_type: "message",
+            payload: json!({ "type": "assistant", "text": "line 7" }),
+            turn_id: None,
+        });
+        let seqs = insert_events(&pool, mid, uid, rows).await.expect("insert");
+        assert_eq!(seqs.len(), n + 1);
+        assert_eq!(seqs[n], None, "a duplicate inside the batch is deduped");
+        let ids: Vec<i64> = seqs[..n].iter().map(|s| s.expect("fresh row")).collect();
+        assert!(ids.windows(2).all(|w| w[0] < w[1]), "seqs follow the frame's order");
+
+        let replay = insert_events(&pool, mid, uid, backfill(&sid, n)).await.expect("replay");
+        assert!(replay.iter().all(Option::is_none), "a replay inserts nothing");
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM stream_events WHERE session_id = $1")
+                .bind(&sid)
+                .fetch_one(&pool)
+                .await
+                .expect("count events");
+        assert_eq!(count, i64::try_from(n).expect("fits"));
+
+        sqlx::query("DELETE FROM stream_events WHERE session_id = $1")
+            .bind(&sid)
+            .execute(&pool)
+            .await
+            .ok();
+        drop_machines(&pool, &[sid], &[(uid, mid)]).await;
+    }
+
+    #[tokio::test]
+    async fn a_batch_refuses_the_rows_of_a_foreign_session() {
+        let Some(url) = crate::routes::gateway::test_db_url("batched_foreign") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let (ua, ma) = seed_machine(&pool, "owner").await;
+        let (ub, mb) = seed_machine(&pool, "intruder").await;
+        let own = seed_owned_session(&pool, ub, mb).await;
+        let foreign = seed_owned_session(&pool, ua, ma).await;
+
+        let mut rows = backfill(&own, 2);
+        rows.insert(1, backfill(&foreign, 1).remove(0));
+        let seqs = insert_events(&pool, mb, ub, rows).await.expect("insert");
+        assert!(seqs[0].is_some());
+        assert_eq!(seqs[1], None, "the foreign row is refused");
+        assert!(seqs[2].is_some());
+
+        let foreign_rows: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM stream_events WHERE session_id = $1")
+                .bind(&foreign)
+                .fetch_one(&pool)
+                .await
+                .expect("count events");
+        assert_eq!(foreign_rows, 0);
+
+        sqlx::query("DELETE FROM stream_events WHERE session_id = ANY($1)")
+            .bind(vec![own.clone(), foreign.clone()])
+            .execute(&pool)
+            .await
+            .ok();
+        drop_machines(&pool, &[own, foreign], &[(ua, ma), (ub, mb)]).await;
+    }
+
+    async fn row_version(pool: &sqlx::PgPool, sid: &str) -> String {
+        sqlx::query_scalar("SELECT xmin::text FROM sessions WHERE id = $1")
+            .bind(sid)
+            .fetch_one(pool)
+            .await
+            .expect("row version")
+    }
+
+    #[tokio::test]
+    async fn replaying_stored_events_leaves_the_session_row_alone() {
+        let Some(url) = crate::routes::gateway::test_db_url("replay_no_bump") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let (uid, mid) = seed_machine(&pool, "replay").await;
+        let sid = seed_owned_session(&pool, uid, mid).await;
+        let n = 500;
+        insert_events(&pool, mid, uid, backfill(&sid, n)).await.expect("insert");
+        let before = row_version(&pool, &sid).await;
+
+        let bumps = Bumps::default();
+        let replay = insert_events(&pool, mid, uid, backfill(&sid, n)).await.expect("replay");
+        for seq in replay {
+            bumps.note_activity(&sid, seq.is_some(), Some("Bash"), false);
+        }
+        assert_eq!(bumps.flush(&pool).await, 0, "a replay issues no sessions UPDATE");
+        assert_eq!(row_version(&pool, &sid).await, before);
+
+        drop_machines(&pool, &[sid], &[(uid, mid)]).await;
+    }
+
+    #[tokio::test]
+    async fn live_activity_is_coalesced_into_one_update_per_flush() {
+        let Some(url) = crate::routes::gateway::test_db_url("coalesced_bumps") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let (uid, mid) = seed_machine(&pool, "bumps").await;
+        let parent = seed_owned_session(&pool, uid, mid).await;
+        let child = seed_owned_session(&pool, uid, mid).await;
+        sqlx::query("UPDATE sessions SET parent_id = $2, tool_use_count = 9 WHERE id = $1")
+            .bind(&child)
+            .bind(&parent)
+            .execute(&pool)
+            .await
+            .expect("link child");
+
+        let bumps = Bumps::default();
+        for _ in 0..100 {
+            bumps.heartbeat(&child);
+        }
+        for _ in 0..3 {
+            bumps.note_activity(&child, true, Some("Bash"), false);
+        }
+        bumps.note_activity(&child, true, None, true);
+        bumps.note_activity(&child, true, Some("Read"), false);
+        assert_eq!(bumps.flush(&pool).await, 2, "one statement updates the leaf and its parent");
+        assert_eq!(bumps.flush(&pool).await, 0, "nothing left to write");
+
+        let (count, tool): (i32, Option<String>) = sqlx::query_as(
+            "SELECT tool_use_count, last_tool_name FROM sessions WHERE id = $1",
+        )
+        .bind(&child)
+        .fetch_one(&pool)
+        .await
+        .expect("child row");
+        assert_eq!(count, 1, "the user turn reset the count before the last tool");
+        assert_eq!(tool.as_deref(), Some("Read"));
+        let (parent_count, parent_tool): (i32, Option<String>) = sqlx::query_as(
+            "SELECT tool_use_count, last_tool_name FROM sessions WHERE id = $1",
+        )
+        .bind(&parent)
+        .fetch_one(&pool)
+        .await
+        .expect("parent row");
+        assert_eq!(parent_count, 0, "the parent keeps its own count");
+        assert_eq!(parent_tool.as_deref(), Some("Read"));
+
+        drop_machines(&pool, &[child, parent], &[(uid, mid)]).await;
+    }
+
+    #[tokio::test]
+    async fn an_unchanged_codex_inventory_tick_writes_nothing() {
+        let Some(url) = crate::routes::gateway::test_db_url("unchanged_inventory") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let (uid, mid) = seed_machine(&pool, "inventory").await;
+        let sid = Uuid::new_v4().to_string();
+        let tick = || {
+            upsert_session(
+                &pool,
+                mid,
+                uid,
+                "codex",
+                &sid,
+                Some("/w".into()),
+                None,
+                Some(1_762_000_000),
+                Some(json!({ "source": "codex-thread-list", "observed_at": 1_762_000_000 })),
+            )
+        };
+        assert_eq!(tick().await.expect("first"), Some(true));
+        let before = row_version(&pool, &sid).await;
+        assert_eq!(tick().await.expect("second"), Some(false), "still owned, not new");
+        assert_eq!(row_version(&pool, &sid).await, before, "the row was not rewritten");
+
+        drop_machines(&pool, &[sid], &[(uid, mid)]).await;
+    }
+
+    #[tokio::test]
+    async fn a_repeated_status_writes_nothing() {
+        let Some(url) = crate::routes::gateway::test_db_url("unchanged_status") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let (uid, mid) = seed_machine(&pool, "status").await;
+        let sid = seed_owned_session(&pool, uid, mid).await;
+        let signals = StatusSignals {
+            tempo: Some("active"),
+            agent_state: Some("working"),
+            activity: None,
+            name: None,
+            intent: None,
+            model: Some("m"),
+            effort: None,
+            permission_mode: None,
+            children: &[],
+        };
+        let first = write_status_signals(&pool, &sid, &signals, None).await.expect("first");
+        assert!(first.is_some());
+        let before = row_version(&pool, &sid).await;
+        let again = write_status_signals(&pool, &sid, &signals, None).await.expect("again");
+        assert!(again.is_none());
+        assert_eq!(row_version(&pool, &sid).await, before);
+
+        drop_machines(&pool, &[sid], &[(uid, mid)]).await;
     }
 
     #[tokio::test]
