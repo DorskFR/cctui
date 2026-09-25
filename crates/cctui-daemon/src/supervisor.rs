@@ -2186,13 +2186,13 @@ mod tests {
         // A late teardown-flush event lands after the drain begins.
         tx.send(("claude-code".to_owned(), msg_event("late"))).await.unwrap();
         drop(tx);
-        let batch = vec![synth_event(0)];
+        let batch = vec![ser(&synth_event(0))];
         let frames = super::drain_for_shutdown(batch, &mut rx, &scrub).await;
         assert_eq!(frames.len(), 2, "the in-flight batch plus the drained tail must survive");
         let ids: Vec<String> = frames
             .iter()
-            .map(|f| match f {
-                DaemonFrameUp::Event { event, .. } => super::event_local_id(event).to_owned(),
+            .map(|f| match serde_json::from_slice::<DaemonFrameUp>(f).unwrap() {
+                DaemonFrameUp::Event { event, .. } => super::event_local_id(&event).to_owned(),
                 _ => panic!("drain must produce Event frames"),
             })
             .collect();
