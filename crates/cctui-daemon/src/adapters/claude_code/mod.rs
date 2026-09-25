@@ -37,7 +37,7 @@ pub(crate) mod version_gate;
 use mode::Mode;
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use cctui_proto::adapter::AdapterEvent;
@@ -136,7 +136,6 @@ async fn start_bg(ctx: AdapterCtx) -> anyhow::Result<()> {
     let hook_log = driver.hook_log();
     tokio::spawn(async move {
         if let Err(err) = run_hook_listener(
-            hook_sock,
             hook_listener,
             hook_events,
             hook_shutdown,
@@ -208,7 +207,6 @@ async fn handle_legacy_connection(
 /// `cctui-daemon ask-hook` command; we translate `session_id → local_id` via
 /// the shared map and emit the existing `AskQuestion` / `AskResolved` events.
 async fn run_hook_listener(
-    path: PathBuf,
     listener: UnixListener,
     events: tokio::sync::mpsc::Sender<AdapterEvent>,
     shutdown: CancellationToken,
@@ -217,6 +215,7 @@ async fn run_hook_listener(
     pending_perm_hooks: PendingPermHooks,
     hook_log: HookLog,
 ) -> anyhow::Result<()> {
+    let path = listener.local_addr()?.as_pathname().map(Path::to_path_buf).unwrap_or_default();
     tracing::info!(socket = %path.display(), "claude-code ask-hook listener ready");
 
     loop {

@@ -196,8 +196,8 @@ impl SdkDriver {
     }
 
     fn spawn_hook_listener(&self) -> anyhow::Result<()> {
-        let sock = self.cfg.hook_socket_path.clone();
-        let listener = crate::runtime::bind_private_socket(&sock).inspect_err(
+        let sock = &self.cfg.hook_socket_path;
+        let listener = crate::runtime::bind_private_socket(sock).inspect_err(
             |err| tracing::error!(%err, "claude-code sdk ask-hook socket unavailable"),
         )?;
         let events = self.events.clone();
@@ -207,7 +207,6 @@ impl SdkDriver {
         let pending_perm_hooks = self.pending_perm_hooks.clone();
         tokio::spawn(async move {
             if let Err(err) = super::run_hook_listener(
-                sock,
                 listener,
                 events,
                 shutdown,
