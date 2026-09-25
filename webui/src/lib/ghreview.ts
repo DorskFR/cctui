@@ -1,7 +1,7 @@
 import type { MeResponse } from '@bindings/MeResponse';
 import type { MintKeyRequest } from '@bindings/MintKeyRequest';
 import type { MintKeyResponse } from '@bindings/MintKeyResponse';
-import { api } from './api';
+import { api, ApiError, request } from './api';
 import { ghreviewUrl } from './config';
 
 const CACHE_KEY = 'cctui:ghreview-token';
@@ -72,25 +72,11 @@ export interface GhreviewAccount {
 	created_at: string | null;
 }
 
-async function ghreviewError(res: Response): Promise<string> {
-	try {
-		const body = (await res.json()) as { error?: { message?: string } };
-		if (body?.error?.message) return body.error.message;
-	} catch {
-		void 0;
-	}
-	return `gh-review responded ${res.status}`;
-}
-
 export async function listGhreviewAccounts(): Promise<GhreviewAccount[]> {
 	const base = ghreviewUrl();
 	if (!base) return [];
 	const token = await ensureGhreviewToken();
-	const res = await fetch(`${base}/v1/accounts`, {
-		headers: { authorization: `Bearer ${token}` }
-	});
-	if (!res.ok) throw new Error(await ghreviewError(res));
-	const body = (await res.json()) as { items?: GhreviewAccount[] };
+	const body = await request<{ items?: GhreviewAccount[] }>(base, '/v1/accounts', { token });
 	return body.items ?? [];
 }
 
@@ -111,12 +97,11 @@ export async function listGhreviewPulls(
 	if (!base) return [];
 	const token = await ensureGhreviewToken();
 	const seg = encodeURIComponent;
-	const query = account ? `?account=${seg(account)}&limit=100` : '?limit=100';
-	const res = await fetch(`${base}/v1/repos/${seg(owner)}/${seg(repo)}/pulls${query}`, {
-		headers: { authorization: `Bearer ${token}` }
-	});
-	if (!res.ok) throw new Error(await ghreviewError(res));
-	const body = (await res.json()) as { items?: { payload?: GhreviewPullPayload }[] };
+	const body = await request<{ items?: { payload?: GhreviewPullPayload }[] }>(
+		base,
+		`/v1/repos/${seg(owner)}/${seg(repo)}/pulls`,
+		{ token, query: { account, limit: 100 } }
+	);
 	return (body.items ?? []).map((i) => i.payload ?? {});
 }
 
@@ -124,22 +109,20 @@ export async function addGhreviewAccount(pat: string, login?: string): Promise<G
 	const base = ghreviewUrl();
 	if (!base) throw new Error('review backend not configured');
 	const token = await ensureGhreviewToken();
-	const res = await fetch(`${base}/v1/accounts`, {
+	return request<GhreviewAccount>(base, '/v1/accounts', {
 		method: 'POST',
-		headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-		body: JSON.stringify(login ? { token: pat, login } : { token: pat })
+		token,
+		body: login ? { token: pat, login } : { token: pat }
 	});
-	if (!res.ok) throw new Error(await ghreviewError(res));
-	return (await res.json()) as GhreviewAccount;
 }
 
 export async function removeGhreviewAccount(id: string): Promise<void> {
 	const base = ghreviewUrl();
 	if (!base) return;
 	const token = await ensureGhreviewToken();
-	const res = await fetch(`${base}/v1/accounts/${id}`, {
-		method: 'DELETE',
-		headers: { authorization: `Bearer ${token}` }
-	});
-	if (!res.ok && res.status !== 404) throw new Error(await ghreviewError(res));
+	try {
+		await request<void>(base, `/v1/accounts/${id}`, { method: 'DELETE', token });
+	} catch (e) {
+		if (!(e instanceof ApiError && e.status === 404)) throw e;
+	}
 }
