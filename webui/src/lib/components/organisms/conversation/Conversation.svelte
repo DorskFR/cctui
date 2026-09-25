@@ -1,10 +1,11 @@
 <script lang="ts">
-	import PermissionCard from '$lib/components/organisms/PermissionCard.svelte';
 	import AskQuestionCard from '$lib/components/organisms/AskQuestionCard.svelte';
 	import PlanCard from '$lib/components/organisms/PlanCard.svelte';
 	import TodoCard from '$lib/components/organisms/TodoCard.svelte';
 	import { Button, EmptyState, Text } from '@dorsk/tsumikit';
+	import BoundaryLine from './BoundaryLine.svelte';
 	import ConversationLine from './ConversationLine.svelte';
+	import LivePrompts from './LivePrompts.svelte';
 	import TurnSummaryFooter from './TurnSummaryFooter.svelte';
 	import { latestTodoLineKey } from './format';
 	import { copyLineMarkdown, saveLineImage } from './lineActions';
@@ -127,10 +128,8 @@
 	const showFocusRing = $derived(focusIdx >= 0 && scroll.gestures === ringDismissedAt);
 
 	let focusEl = $state<HTMLElement | undefined>(undefined);
-	// ── INTEGRATION NOTE (wave 8) ───────────────────────────────────────────
-	// Deliberately LOCAL and minimal: only handles the already-rendered-window
-	// case. Reconcile this call site onto lane w8-A's `ensureSeqVisible(seq)`,
-	// which also pages older history until the seq is in `lines`.
+	// Only handles the already-rendered-window case; the drawer's
+	// `ensureSeqVisible(seq)` pages older history until the seq is in `lines`.
 	function scrollFocusLineIntoViewLocal() {
 		const el = focusEl;
 		if (!el) return;
@@ -145,18 +144,6 @@
 		if (!focusEl || scrolledToTs === focusTs) return;
 		scrolledToTs = focusTs;
 		requestAnimationFrame(scrollFocusLineIntoViewLocal);
-	});
-
-	// Suppress the live preamble block when the same assistant prose has already
-	// streamed into the transcript.
-	const preambleInLines = $derived.by(() => {
-		const pre = stream.ask?.preamble?.trim();
-		return !!pre && lines.some((l) => l.role === 'assistant' && (l.text ?? '').trim() === pre);
-	});
-	// Same suppression for the live plan's preamble.
-	const planPreambleInLines = $derived.by(() => {
-		const pre = stream.plan?.preamble?.trim();
-		return !!pre && lines.some((l) => l.role === 'assistant' && (l.text ?? '').trim() === pre);
 	});
 </script>
 
@@ -235,15 +222,8 @@
 				     turn produces one card and not twenty. -->
 			{:else if ln.todos}
 				<TodoCard todos={ln.todos} />
-			{:else if ln.role === 'reset'}
-				<div class="reset-divider" role="separator">
-					<span class="reset-chip">⟳ {ln.text}</span>
-				</div>
-			{:else if ln.role === 'compact'}
-				<div class="compact-block">
-					<div class="compact-head">{m.conversation_context_compacted()}</div>
-					{#if ln.html}<div class="compact-body">{@html ln.html}</div>{/if}
-				</div>
+			{:else if ln.role === 'reset' || ln.role === 'compact'}
+				<BoundaryLine {ln} />
 			{:else if ln.role === 'summary' && ln.summary}
 				<!-- No assistant bubble to hang this turn summary on; it still shows,
 				     as a bare footer. -->
@@ -259,59 +239,14 @@
 			{/if}
 		{/each}
 
-		{#if stream.ask}
-			<!-- Live AskUserQuestion: the daemon's hook forwards the
-			     structured options, so render the interactive option-card form live.
-			     Older deliveries (no structured payload) fall back to the question
-			     text with a free-text answer. Answering sends a reply. -->
-			{#if askPreambleHtml && !preambleInLines}
-				<!-- The assistant prose preceding the question: the reasoning
-				     the choice depends on, so the user isn't blind. -->
-				<div class="line assistant ask-preamble">
-					<div class="bubble">{@html askPreambleHtml}</div>
-				</div>
-			{/if}
-			<!-- Re-key on the question text so a SUCCESSIVE ask gets a fresh card
-			     instance instead of reusing one whose per-question selection state
-			     (chosen/other/focused) was seeded from the PREVIOUS ask's prop and
-			     never re-seeded — which left the new answer un-submittable / stuck
-			    . -->
-			{#key stream.ask.question}
-				<AskQuestionCard
-					questions={stream.liveAskQuestions ?? [{ question: stream.ask.question, options: [] }]}
-					interactive={!archived && !stream.answering}
-					onsubmit={(t, p) => stream.answerQuestion(t, p, stream.liveAskQuestions)}
-				/>
-			{/key}
-		{/if}
-
-		{#if stream.plan}
-			<!-- Live ExitPlanMode plan-approval prompt: the daemon's hook
-			     forwards the plan markdown the instant the prompt renders, so render
-			     the interactive Plan card live. Answering sends a reply (digit pick
-			     1-3 natively, or free-text refine). -->
-			{#if planPreambleHtml && !planPreambleInLines}
-				<div class="line assistant ask-preamble">
-					<div class="bubble">{@html planPreambleHtml}</div>
-				</div>
-			{/if}
-			{#key stream.plan.plan}
-				<PlanCard
-					plan={stream.plan.plan}
-					interactive={!archived && !stream.answering}
-					onsubmit={(t, p) => stream.answerPlan(t, p)}
-				/>
-			{/key}
-		{/if}
-
-		{#if stream.todos}
-			<TodoCard todos={stream.todos} />
-		{/if}
-
-		{#each stream.perms as p (p.request_id)}
-			<PermissionCard req={p} onrespond={(rid, allow) => onrespondperm(rid, allow)} />
-		{/each}
-
+		<LivePrompts
+			{stream}
+			{lines}
+			{archived}
+			{askPreambleHtml}
+			{planPreambleHtml}
+			{onrespondperm}
+		/>
 	</div>
 
 	{#if !scroll.stuck}
@@ -346,67 +281,6 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--sp-3);
-	}
-	/* The ask-preamble reuses the `.line.assistant` bubble look; the full
-	   per-message line styling lives in ConversationLine.svelte and the bubble
-	   base/markdown in bubble.css. */
-	.line {
-		display: flex;
-		flex-direction: column;
-		gap: 2px;
-		max-width: 100%;
-	}
-	.line.assistant .bubble {
-		border-left: 2px solid color-mix(in srgb, var(--role-assistant) 55%, transparent);
-	}
-	/* Context-reset boundary (/clear or /compact) — a full-width rule with
-	   a centered chip in its own blue hue. */
-	.reset-divider {
-		display: flex;
-		align-items: center;
-		gap: var(--sp-3);
-		margin: var(--sp-3) 0;
-		color: var(--role-boundary);
-	}
-	.reset-divider::before,
-	.reset-divider::after {
-		content: '';
-		flex: 1;
-		height: 1px;
-		background: color-mix(in srgb, var(--role-boundary) 40%, transparent);
-	}
-	.reset-chip {
-		padding: 2px var(--sp-3);
-		border-radius: var(--r-pill, 999px);
-		border: 1px solid color-mix(in srgb, var(--role-boundary) 45%, transparent);
-		background: color-mix(in srgb, var(--role-boundary) 12%, var(--bg-elevated));
-		font-size: var(--fs-xs);
-		font-weight: var(--fw-medium);
-		text-transform: uppercase;
-		letter-spacing: 0.04em;
-		white-space: nowrap;
-	}
-	/* Compact-summary block (/compact) — its own blue hue, a filled
-	   left-bordered block (not the thin reset divider) so the two boundary kinds
-	   read differently. */
-	.compact-block {
-		margin: var(--sp-3) 0;
-		padding: var(--sp-2) var(--sp-3);
-		border-left: 3px solid var(--role-boundary);
-		border-radius: var(--r-2, 6px);
-		background: color-mix(in srgb, var(--role-boundary) 10%, var(--bg-elevated));
-	}
-	.compact-head {
-		color: var(--role-boundary);
-		font-size: var(--fs-xs);
-		font-weight: var(--fw-medium);
-		text-transform: uppercase;
-		letter-spacing: 0.04em;
-		margin-bottom: var(--sp-1);
-	}
-	.compact-body {
-		font-size: var(--fs-sm);
-		opacity: 0.9;
 	}
 	/* The searched-for message, opened from a search hit. A ring on a wrapper
 	   (ConversationLine is owned elsewhere) so the *message* is findable even
