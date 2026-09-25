@@ -248,7 +248,7 @@ fn test_git_global_flags_normalized() {
         &["git fetch"],
         &[]
     ));
-    assert!(ok(
+    assert!(!ok(
         "Bash",
         &json!({"command": "git -c core.pager=cat --no-pager log --oneline"}),
         &["git log"],

