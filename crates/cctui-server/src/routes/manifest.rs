@@ -1,10 +1,13 @@
 //! Daemon-binary manifest + download-proxy endpoints.
 //!
 //! `GET /api/v1/manifest/daemon` returns the server-known daemon version +
-//! per-arch download URLs. The daemon ships in the same release as the
-//! TUI/server, so the version is simply the server's own.
+//! per-arch download and minisign-signature URLs, always on this server's own
+//! origin so clients never send their credentials anywhere else. The daemon
+//! ships in the same release as the TUI/server, so the version is simply the
+//! server's own.
 //!
-//! `GET /api/v1/daemon/binary/{target}` proxies the actual binary. When the
+//! `GET /api/v1/daemon/binary/{target}` proxies the actual binary, and
+//! `{target}.minisig` its detached signature. When the
 //! releases repo is private its assets aren't publicly downloadable, so if
 //! the server is configured with a GitHub PAT
 //! (`CCTUI_GITHUB_TOKEN`/`GH_TOKEN`) it streams the asset itself — clients
@@ -45,6 +48,7 @@ pub struct DaemonManifest {
 pub struct DaemonAsset {
     pub target: &'static str,
     pub url: String,
+    pub sig_url: String,
 }
 
 fn github_asset_url(version: &str, asset: &str) -> String {
@@ -52,23 +56,20 @@ fn github_asset_url(version: &str, asset: &str) -> String {
 }
 
 fn build_manifest(state: &AppState) -> DaemonManifest {
-    let version = env!("CARGO_PKG_VERSION");
-    // With a PAT, point clients at our proxy so the private-repo binary is
-    // served by us; otherwise hand back the raw GitHub URLs.
-    let proxying = state.config.github_token.is_some();
-    let base = state.config.external_url.trim_end_matches('/');
+    build_manifest_for(&state.config.external_url)
+}
+
+fn build_manifest_for(external_url: &str) -> DaemonManifest {
+    let base = external_url.trim_end_matches('/');
     let assets = TARGETS
         .iter()
-        .map(|&target| {
-            let url = if proxying {
-                format!("{base}/api/v1/daemon/binary/{target}")
-            } else {
-                github_asset_url(version, &format!("cctui-daemon-{target}"))
-            };
-            DaemonAsset { target, url }
+        .map(|&target| DaemonAsset {
+            target,
+            url: format!("{base}/api/v1/daemon/binary/{target}"),
+            sig_url: format!("{base}/api/v1/daemon/binary/{target}.minisig"),
         })
         .collect();
-    DaemonManifest { version, assets }
+    DaemonManifest { version: env!("CARGO_PKG_VERSION"), assets }
 }
 
 fn manifest_etag(body: &[u8]) -> String {
@@ -95,12 +96,15 @@ pub async fn daemon_manifest(State(state): State<AppState>, headers: HeaderMap) 
     manifest_response(body, if_none_match)
 }
 
-/// Map a `{target}` path segment to its GitHub release asset name.
-/// Accepts the three arch targets plus `SHA256SUMS` (for selfupdate
-/// checksum verification).
+/// Map a `{target}` path segment to its GitHub release asset name: an arch
+/// target, its `.minisig`, or `SHA256SUMS`.
 fn asset_name_for(target: &str) -> Option<String> {
     if target == "SHA256SUMS" {
         Some("SHA256SUMS".to_string())
+    } else if let Some(arch) = target.strip_suffix(".minisig")
+        && TARGETS.contains(&arch)
+    {
+        Some(format!("cctui-daemon-{arch}.minisig"))
     } else if TARGETS.contains(&target) {
         Some(format!("cctui-daemon-{target}"))
     } else {
@@ -130,7 +134,8 @@ pub async fn download_daemon_binary(
         .ok_or_else(|| (StatusCode::NOT_FOUND, format!("unknown target: {target}")))?;
 
     let Some(token) = state.config.github_token.as_deref() else {
-        // No PAT: hand back the raw GitHub URL. Fails for a private repo,
+        // No PAT: redirect to the public GitHub asset. Clients drop their
+        // Authorization header on the cross-origin hop; a private repo fails,
         // which is the intended graceful degradation.
         return Ok(Redirect::temporary(&github_asset_url(version, &asset)).into_response());
     };
@@ -183,6 +188,28 @@ pub async fn download_daemon_binary(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn manifest_urls_stay_on_the_server_origin() {
+        let m = build_manifest_for("https://cctui.example.com/");
+        assert_eq!(m.assets.len(), TARGETS.len());
+        for a in &m.assets {
+            assert!(a.url.starts_with("https://cctui.example.com/api/v1/daemon/binary/"));
+            assert_eq!(a.sig_url, format!("{}.minisig", a.url));
+        }
+    }
+
+    #[test]
+    fn asset_names_cover_signatures() {
+        assert_eq!(asset_name_for("linux-amd64").as_deref(), Some("cctui-daemon-linux-amd64"));
+        assert_eq!(
+            asset_name_for("linux-amd64.minisig").as_deref(),
+            Some("cctui-daemon-linux-amd64.minisig")
+        );
+        assert_eq!(asset_name_for("SHA256SUMS").as_deref(), Some("SHA256SUMS"));
+        assert_eq!(asset_name_for("evil.minisig"), None);
+        assert_eq!(asset_name_for("../x"), None);
+    }
 
     #[test]
     fn etag_is_stable_and_body_sensitive() {

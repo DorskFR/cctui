@@ -76,3 +76,5 @@ rustls = { version = "0.23", default-features = false, features = ["ring"] }
 k8s-openapi = { version = "0.28", features = ["latest", "schemars"] }
 schemars = { version = "1.2", features = ["derive"] }
 ts-rs = { version = "12", features = ["chrono-impl", "serde-json-impl", "uuid-impl"] }
+minisign-verify = "0.2"
+semver = "1"

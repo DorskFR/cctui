@@ -15,6 +15,7 @@ pub mod identity;
 pub mod ids;
 pub mod media;
 pub mod models;
+pub mod release_sig;
 pub mod resources;
 pub mod updatehook;
 pub mod util;
