@@ -783,6 +783,41 @@ pub enum PermissionMode {
 }
 
 impl PermissionMode {
+    /// Permissiveness rank: ask < auto < yolo = whip.
+    #[must_use]
+    pub const fn rank(self) -> u8 {
+        match self {
+            Self::Ask => 0,
+            Self::Auto => 1,
+            Self::Yolo | Self::Whip => 2,
+        }
+    }
+
+    /// Whether `self` grants no more than `ceiling`.
+    #[must_use]
+    pub const fn within(self, ceiling: Self) -> bool {
+        self.rank() <= ceiling.rank()
+    }
+
+    /// The less permissive of `a` and `b`, `a` on a tie.
+    #[must_use]
+    pub const fn stricter(a: Self, b: Self) -> Self {
+        if b.rank() < a.rank() { b } else { a }
+    }
+
+    /// Parse a posture as stored on a session row: the lowercase serde names
+    /// or the claude `--permission-mode` values. `plan` counts as `ask`.
+    #[must_use]
+    pub fn from_session_label(s: &str) -> Option<Self> {
+        match s.trim() {
+            "ask" | "default" | "plan" => Some(Self::Ask),
+            "auto" | "acceptEdits" => Some(Self::Auto),
+            "yolo" | "bypassPermissions" => Some(Self::Yolo),
+            "whip" => Some(Self::Whip),
+            _ => None,
+        }
+    }
+
     /// The claude `--permission-mode` value for this posture.
     #[must_use]
     pub const fn claude_flag(self) -> &'static str {

@@ -88,8 +88,8 @@ pub fn tool_schema() -> Value {
                 "permission_mode": {
                     "type": "string",
                     "enum": ["yolo", "auto", "ask"],
-                    "description": "Child permission posture. Default \"yolo\" (no prompts — \
-    like a Task subagent, nobody is attached to answer them).",
+                    "description": "Child permission posture, never more permissive than this \
+    session's own (ask < auto < yolo). Default: this session's posture.",
                 },
                 "name": {
                     "type": "string",

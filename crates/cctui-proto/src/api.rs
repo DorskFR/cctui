@@ -41,6 +41,22 @@ pub struct SpawnCapability {
     /// Total children this session may spawn over its life. `None` = unlimited.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_children: Option<u32>,
+    /// Most permissive posture a child may run under (ask < auto < yolo).
+    /// `None` = no ceiling beyond the parent's live mode.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_permission_mode: Option<crate::adapter::PermissionMode>,
+    /// Further generations this session may spawn. `0` = may not spawn,
+    /// `None` = unlimited.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_depth: Option<u32>,
+    /// Ceiling on the sum of budgets granted to every descendant of the tree
+    /// root. `None` = no aggregate ceiling.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tree_budget_usd: Option<f64>,
+    /// Session id of the tree root whose aggregate budget this session draws
+    /// from. `None` = this session is the root.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tree_root: Option<String>,
 }
 
 impl SpawnCapability {
@@ -58,32 +74,69 @@ impl SpawnCapability {
     }
 
     /// The capability an interactive machine spawn gets when the request names
-    /// none: every known adapter, a per-child dollar ceiling, no child cap.
+    /// none: every known adapter, a per-child and a whole-tree dollar ceiling,
+    /// and finite child count and depth.
     #[must_use]
     pub fn machine_default() -> Self {
         Self {
             adapters: crate::adapter::KNOWN_ADAPTERS.iter().map(|a| (*a).to_owned()).collect(),
             max_budget_usd: Some(DEFAULT_CHILD_BUDGET_USD),
-            max_children: None,
+            max_children: Some(DEFAULT_MAX_CHILDREN),
+            max_permission_mode: None,
+            max_depth: Some(DEFAULT_MAX_DEPTH),
+            max_tree_budget_usd: Some(DEFAULT_TREE_BUDGET_USD),
+            tree_root: None,
         }
     }
 
-    /// The capability a child granted `child_budget` receives. The ceiling can
-    /// only shrink, so a spawn tree stays inside the root's ceiling.
+    /// The capability `self`'s session (`self_id`) hands a child granted
+    /// `child_budget` under `child_mode`. The per-child ceiling, the posture
+    /// ceiling and the remaining depth only shrink; the tree budget and root
+    /// carry over so every descendant draws from the root's aggregate.
     #[must_use]
-    pub fn inherited(&self, child_budget: Option<f64>) -> Self {
+    pub fn inherited(
+        &self,
+        self_id: &str,
+        child_budget: Option<f64>,
+        child_mode: Option<crate::adapter::PermissionMode>,
+    ) -> Self {
         let max_budget_usd = match (self.max_budget_usd, child_budget) {
             (Some(mine), Some(granted)) => Some(mine.min(granted)),
             (Some(mine), None) => Some(mine),
             (None, granted) => granted,
         };
-        Self { adapters: self.adapters.clone(), max_budget_usd, max_children: self.max_children }
+        let max_permission_mode = match (self.max_permission_mode, child_mode) {
+            (Some(mine), Some(child)) => {
+                Some(crate::adapter::PermissionMode::stricter(mine, child))
+            }
+            (mine, child) => mine.or(child),
+        };
+        Self {
+            adapters: self.adapters.clone(),
+            max_budget_usd,
+            max_children: self.max_children,
+            max_permission_mode,
+            max_depth: self.max_depth.map(|d| d.saturating_sub(1)),
+            max_tree_budget_usd: self.max_tree_budget_usd,
+            tree_root: Some(self.tree_root.clone().unwrap_or_else(|| self_id.to_owned())),
+        }
     }
 }
 
 /// Per-child spend ceiling applied by [`SpawnCapability::machine_default`], and
 /// the budget a child inherits when its call names none.
 pub const DEFAULT_CHILD_BUDGET_USD: f64 = 20.0;
+
+/// Children per session under [`SpawnCapability::machine_default`].
+pub const DEFAULT_MAX_CHILDREN: u32 = 16;
+
+/// Generations below the root under [`SpawnCapability::machine_default`]:
+/// root → child → grandchild → great-grandchild.
+pub const DEFAULT_MAX_DEPTH: u32 = 3;
+
+/// Aggregate budget of a whole spawn tree under
+/// [`SpawnCapability::machine_default`].
+pub const DEFAULT_TREE_BUDGET_USD: f64 = 400.0;
 
 /// Body for `POST /api/v1/daemon/sessions/{id}/spawn-child` — the server side of
 /// the `CctuiAgent` tool. `{id}` is the calling (parent) session.
@@ -99,9 +152,8 @@ pub struct SpawnChildRequest {
     pub budget_usd: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
-    /// Child permission posture. `None` → the server default for children
-    /// ([`crate::adapter::PermissionMode::Yolo`], the Task-subagent posture —
-    /// a child that prompts for approval can only stall, nobody is attached).
+    /// Child permission posture, never more permissive than the parent's.
+    /// `None` → the parent's own posture.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_mode: Option<crate::adapter::PermissionMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

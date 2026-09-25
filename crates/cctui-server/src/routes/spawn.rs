@@ -360,11 +360,15 @@ pub async fn dispatch_spawn(
     // Keyed by the id the worker will register as, and stored before dispatch so
     // the capability resolves the moment the worker asks.
     {
-        let cap = req
+        let mut cap = req
             .spawn_capability
             .clone()
             .filter(|c| !c.is_empty())
             .unwrap_or_else(cctui_proto::api::SpawnCapability::machine_default);
+        cap.max_permission_mode = match (cap.max_permission_mode, permission_mode) {
+            (Some(c), Some(m)) => Some(cctui_proto::adapter::PermissionMode::stricter(c, m)),
+            (c, m) => c.or(m),
+        };
         if let Err(e) =
             crate::store::spawn_capabilities::upsert(&state.pool, &token_session_id, &cap).await
         {

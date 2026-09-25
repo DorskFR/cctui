@@ -949,6 +949,7 @@ mod tests {
             adapters: vec!["opencode".to_owned()],
             max_budget_usd: None,
             max_children: Some(3),
+            ..Default::default()
         };
 
         crate::store::spawn_capabilities::upsert(&pool, &spawn_key, &cap).await.expect("upsert");

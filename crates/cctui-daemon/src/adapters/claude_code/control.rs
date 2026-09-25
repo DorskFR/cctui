@@ -3783,6 +3783,9 @@ fn agent_tool_context(cap: &cctui_proto::api::SpawnCapability) -> String {
     if let Some(max) = cap.max_children {
         let _ = writeln!(b, "  max children for this session: {max}");
     }
+    if let Some(depth) = cap.max_depth {
+        let _ = writeln!(b, "  spawn generations left below this session: {depth}");
+    }
     let adapter = cap.adapters.first().map_or("claude-code", String::as_str);
     let _ = writeln!(
         b,
@@ -4488,6 +4491,7 @@ mod tests {
             adapters: vec!["opencode".to_owned()],
             max_budget_usd: Some(1.0),
             max_children: Some(2),
+            ..Default::default()
         };
         let short = format!("{:08x}", std::process::id());
         let Some(path) = ensure_agent_mcp_config(&short, "sess-42", Some(&cap)) else {
@@ -4548,6 +4552,7 @@ mod tests {
             adapters: vec!["claude-code".to_owned()],
             max_budget_usd: Some(1.0),
             max_children: Some(2),
+            ..Default::default()
         };
         let short = format!("{:08x}", std::process::id() ^ 0x5eed);
 
@@ -4576,6 +4581,7 @@ mod tests {
             adapters: vec!["opencode".to_owned()],
             max_budget_usd: None,
             max_children: None,
+            ..Default::default()
         };
         let short = format!("{:08x}", std::process::id() ^ 0xf0f0);
 
