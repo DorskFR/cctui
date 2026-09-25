@@ -2,10 +2,12 @@
 	// A single rendered conversation message. Pure presentation: the meta row
 	// (role badge, tool name, time, delivery state, actions), the bubble and the
 	// footers, delegating retry/edit/save/copy to callbacks.
-	import { Badge, Button, Timestamp, Tooltip } from '@dorsk/tsumikit';
+	import { Badge, Timestamp, Tooltip } from '@dorsk/tsumikit';
 	import LineActions from './LineActions.svelte';
 	import LineDelivery from './LineDelivery.svelte';
 	import LineFooter from './LineFooter.svelte';
+	import MarkerBody from './MarkerBody.svelte';
+	import ThinkingBubble from './ThinkingBubble.svelte';
 	import TurnSummaryFooter from './TurnSummaryFooter.svelte';
 	import UserAttachments from './UserAttachments.svelte';
 	import type { Line } from './types';
@@ -74,18 +76,6 @@
 	const forkAnchor = $derived(
 		forkable && ln.role === 'assistant' && ln.messageId ? ln.messageId : null
 	);
-
-	// Thinking runs long; clamp it and offer a toggle, but only once the content
-	// actually overflows the clamp. Measuring while expanded would report no
-	// overflow and take the "show less" control away, so skip it then.
-	let thinkingEl = $state<HTMLElement>();
-	let thinkingExpanded = $state(false);
-	let thinkingOverflows = $state(false);
-	$effect(() => {
-		void ln.html;
-		if (thinkingExpanded || !thinkingEl) return;
-		thinkingOverflows = thinkingEl.scrollHeight > thinkingEl.clientHeight + 1;
-	});
 </script>
 
 <div
@@ -145,32 +135,9 @@
 		/>
 	</div>
 	{#if ln.role === 'thinking'}
-		<div
-			class="bubble think"
-			class:redacted={ln.redacted}
-			class:clamped={!thinkingExpanded}
-			bind:this={thinkingEl}
-		>
-			{@html ln.html}
-		</div>
-		{#if thinkingOverflows}
-			<Button
-				variant="link"
-				size="sm"
-				shrink={false}
-				style="margin-top:2px;color:var(--role-thinking)"
-				aria-expanded={thinkingExpanded}
-				onclick={() => (thinkingExpanded = !thinkingExpanded)}
-			>
-				{thinkingExpanded ? m.conversation_show_less() : m.conversation_show_more()}
-			</Button>
-		{/if}
+		<ThinkingBubble html={ln.html} redacted={ln.redacted} />
 	{:else if ln.role === 'marker'}
-		<div class="marker-body">
-			{#each ln.markerTexts ?? [ln.text ?? ''] as mt, i (i)}
-				<span class="marker-item">{mt}</span>
-			{/each}
-		</div>
+		<MarkerBody texts={ln.markerTexts ?? [ln.text ?? '']} />
 	{:else if ln.html}
 		<div class="bubble">{@html ln.html}</div>
 	{:else if ln.htmlCode}
@@ -281,9 +248,6 @@
 	.line.tinted.system .bubble {
 		background: color-mix(in srgb, var(--role-system) 20%, var(--bg-elevated));
 	}
-	.line.tinted.thinking .bubble {
-		background: color-mix(in srgb, var(--role-thinking) 16%, var(--bg-elevated));
-	}
 	/* Uniform role tints — all via --role-* tokens. */
 	.line.user .bubble {
 		background: color-mix(in srgb, var(--role-user) 14%, var(--bg-elevated));
@@ -315,19 +279,8 @@
 		color: var(--text-faint);
 		font-size: var(--fs-xs);
 	}
-	/* Markers are bookkeeping, not messages: one quiet line, no bubble, and the
-	   timestamp only on hover so a burst of them cannot dominate the log. */
-	.line.marker .marker-body {
-		display: flex;
-		flex-wrap: wrap;
-		gap: var(--sp-2);
-		color: var(--text-faint);
-		font-size: var(--fs-xs);
-		line-height: 1.4;
-	}
-	.line.marker .marker-item::before {
-		content: '· ';
-	}
+	/* The marker timestamp shows only on hover so a burst of them cannot
+	   dominate the log. */
 	.line.marker .marker-ts {
 		visibility: hidden;
 	}
@@ -362,24 +315,6 @@
 	}
 	.line.tool.mcp .bubble {
 		border-left-color: color-mix(in srgb, var(--role-mcp) 60%, transparent);
-	}
-	/* Reasoning — muted brown, visually behind the prose it produced. */
-	.line.thinking .bubble.think {
-		background: color-mix(in srgb, var(--role-thinking) 10%, var(--bg-elevated));
-		border-color: color-mix(in srgb, var(--role-thinking) 35%, transparent);
-		border-left: 2px solid color-mix(in srgb, var(--role-thinking) 60%, transparent);
-		color: color-mix(in srgb, var(--role-thinking) 45%, var(--md-text));
-	}
-	.line.thinking .bubble.think.clamped {
-		max-height: 12rem;
-		overflow: hidden;
-		/* Fade the cut edge so a clamped block reads as truncated, not as ended. */
-		mask-image: linear-gradient(to bottom, #000 8rem, transparent);
-	}
-	/* Provider withheld the content; only the placeholder remains. */
-	.line.thinking .bubble.think.redacted {
-		font-style: italic;
-		opacity: 0.7;
 	}
 	.code {
 		white-space: pre-wrap;
