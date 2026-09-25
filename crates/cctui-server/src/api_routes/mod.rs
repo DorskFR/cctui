@@ -42,7 +42,7 @@ const fn sess_write() -> Authz {
     Authz::Resource(ResourceKind::Session, Action::Write, IdFrom::Path("id"))
 }
 
-pub(crate) fn register(r: Routes) -> Routes {
+pub fn register(r: Routes) -> Routes {
     let r = passkeys::register(r);
     let r = version::register(r);
     let r = session_lifecycle::register(r);
@@ -66,6 +66,5 @@ pub(crate) fn register(r: Routes) -> Routes {
     let r = admin_instance::register(r);
     let r = admin_users::register(r);
     let r = skills::register(r);
-    let r = users::register(r);
-    r
+    users::register(r)
 }
