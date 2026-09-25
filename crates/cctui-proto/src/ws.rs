@@ -1483,8 +1483,8 @@ mod tests {
     fn server_event_resync_serializes_with_optional_session() {
         let all = serde_json::to_string(&ServerEvent::Resync { session_id: None }).unwrap();
         assert_eq!(all, r#"{"type":"resync"}"#);
-        let one = serde_json::to_string(&ServerEvent::Resync { session_id: Some("s".into()) })
-            .unwrap();
+        let one =
+            serde_json::to_string(&ServerEvent::Resync { session_id: Some("s".into()) }).unwrap();
         assert_eq!(one, r#"{"type":"resync","session_id":"s"}"#);
         let back: ServerEvent = serde_json::from_str(&one).unwrap();
         assert!(matches!(back, ServerEvent::Resync { session_id: Some(s) } if s == "s"));
