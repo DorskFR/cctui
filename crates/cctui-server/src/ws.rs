@@ -477,6 +477,7 @@ fn event_session_id(event: &ServerEvent) -> Option<&str> {
         | ServerEvent::PlanRequest { session_id, .. }
         | ServerEvent::PlanResolved { session_id }
         | ServerEvent::PtyChunk { session_id, .. }
+        | ServerEvent::ToolCallBlocked { session_id, .. }
         | ServerEvent::SessionEnded { session_id, .. }
         | ServerEvent::MessageAck { session_id, .. } => Some(session_id),
         ServerEvent::SessionRegistered { session } => Some(&session.id),
