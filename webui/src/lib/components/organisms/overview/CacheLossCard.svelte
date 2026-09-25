@@ -3,11 +3,18 @@
 	import { usd } from '$lib/format';
 	import { m } from '$lib/paraglide/messages';
 	import { Card, Cluster, Stack, Text } from '@dorsk/tsumikit';
-	import { CACHE_LOSS_REASONS, cacheLossRows, cacheLossTotals, type CacheLossReason } from './cache-loss';
+	import {
+		CACHE_LOSS_DAYS,
+		CACHE_LOSS_REASONS,
+		cacheLossRows,
+		cacheLossTotals,
+		type CacheLossReason
+	} from './cache-loss';
 
-	let { days }: { days: number } = $props();
+	let { days = CACHE_LOSS_DAYS }: { days?: number } = $props();
 
-	const q = useCacheLoss(() => days);
+	const windowDays = $derived(Math.min(days, CACHE_LOSS_DAYS));
+	const q = useCacheLoss(() => windowDays);
 	const rows = $derived(cacheLossRows(q.data ?? []));
 	const totals = $derived(cacheLossTotals(q.data ?? []));
 	const reasonLabel = (r: CacheLossReason) =>
@@ -21,7 +28,7 @@
 <Card>
 	<Stack gap="var(--sp-3)">
 		<Cluster gap="var(--sp-3)" align="baseline">
-			<Text size="sm" weight="semibold">{m.home_cache_loss_title()}</Text>
+			<Text size="sm" weight="semibold">{m.home_cache_loss_title_7d()}</Text>
 			<Text size="xs" tone="faint" numeric>{usd(totals.total)}</Text>
 		</Cluster>
 		{#if q.isLoading}
