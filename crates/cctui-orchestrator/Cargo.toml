@@ -34,5 +34,5 @@ anyhow.workspace = true
 async-trait.workspace = true
 
 [dev-dependencies]
-tower = { version = "0.5", features = ["util"] }
-http-body-util = "0.1"
+tower.workspace = true
+http-body-util.workspace = true

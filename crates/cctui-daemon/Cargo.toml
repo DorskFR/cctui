@@ -27,8 +27,8 @@ async-trait.workspace = true
 tokio-util.workspace = true
 reqwest.workspace = true
 clap.workspace = true
-toml = "1.1"
-dirs = "7"
+toml.workspace = true
+dirs.workspace = true
 rustix = { version = "1", features = ["process", "fs", "net"] }
 sha2.workspace = true
 hex.workspace = true

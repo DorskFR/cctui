@@ -16,10 +16,62 @@ concurrency:
 env:
   # Keep in lockstep with rust-toolchain.toml and deploy/*.Dockerfile.
   RUST_VERSION: "1.97.1"
+  CARGO_INCREMENTAL: "0"
 
 jobs:
+  changes:
+    name: changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      rust: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.rust == 'true' }}
+      webui: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.webui == 'true' }}
+      ghreview: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.ghreview == 'true' }}
+      ghreview-ui: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.ghreview-ui == 'true' }}
+      deps: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.deps == 'true' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        id: filter
+        if: github.event_name != 'workflow_dispatch'
+        with:
+          filters: |
+            ci: &ci
+              - .github/workflows/ci.yml
+            rust:
+              - *ci
+              - crates/**
+              - migrations/**
+              - Cargo.toml
+              - Cargo.lock
+              - rust-toolchain.toml
+              - rustfmt.toml
+              - .cargo/**
+            webui:
+              - *ci
+              - webui/**
+              - ghreview-ui/**
+            ghreview:
+              - *ci
+              - ghreview/**
+            ghreview-ui:
+              - *ci
+              - ghreview-ui/**
+            deps:
+              - *ci
+              - Cargo.lock
+              - .cargo/**
+              - webui/package-lock.json
+              - ghreview/bun.lock
+              - ghreview-ui/bun.lock
+
   fmt:
     name: cargo fmt
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -51,6 +103,8 @@ jobs:
 
   clippy:
     name: cargo clippy
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -68,46 +122,8 @@ jobs:
 
   test:
     name: cargo test
-    runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: pgautoupgrade/pgautoupgrade:18-debian@sha256:5994de3d344b9c9676b571d10ff8259e155013f4e5477c58ceee74a42f6d2d20
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: cctui_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
-    env:
-      DATABASE_URL: postgres://postgres:postgres@localhost:5432/cctui_test
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
-        with:
-          toolchain: ${{ env.RUST_VERSION }}
-
-      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
-
-      - name: Install sqlx-cli
-        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff # v2
-        with:
-          tool: sqlx-cli
-
-      - name: Apply migrations
-        run: sqlx migrate run --source migrations
-
-      - name: cargo test (workspace)
-        run: cargo test --workspace --locked
-
-  integration:
-    name: cargo test (ignored integration)
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -139,11 +155,27 @@ jobs:
 
       - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
 
-      - name: Build the server
-        run: cargo build --locked -p cctui-server
+      - name: Install sqlx-cli
+        uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff # v2
+        with:
+          tool: sqlx-cli
+
+      - name: Apply migrations
+        run: sqlx migrate run --source migrations
+
+      - name: cargo test (workspace)
+        run: cargo test --workspace --locked
+
+      # Ignored tests that only need the CI database or a throwaway runner. The
+      # rest need a live claude/codex/opencode binary and stay manual-only.
+      - name: cargo test --ignored (database, fake harness shims)
+        run: |
+          cargo test --locked -p cctui-server --lib -- --ignored routes::gateway::mint::db_tests
+          cargo test --locked -p cctui-daemon --lib -- --ignored harness_update::
 
       - name: Start the server
         run: |
+          cargo build --locked -p cctui-server --bin cctui-server
           ./target/debug/cctui-server > /tmp/cctui-server.log 2>&1 &
           for _ in $(seq 1 60); do
             if curl -fsS http://localhost:8700/health >/dev/null 2>&1; then
@@ -156,15 +188,17 @@ jobs:
           cat /tmp/cctui-server.log >&2
           exit 1
 
-      - name: cargo test --ignored
-        run: cargo test --locked -p cctui-server -- --ignored
+      - name: cargo test --ignored (against the running server)
+        run: cargo test --locked -p cctui-server --test integration -- --ignored
 
       - name: Server log
         if: always()
-        run: cat /tmp/cctui-server.log
+        run: cat /tmp/cctui-server.log 2>/dev/null || true
 
   webui:
     name: webui
+    needs: changes
+    if: needs.changes.outputs.webui == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -172,6 +206,8 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22"
+          cache: npm
+          cache-dependency-path: webui/package-lock.json
 
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
@@ -205,6 +241,8 @@ jobs:
 
   ghreview:
     name: ghreview
+    needs: changes
+    if: needs.changes.outputs.ghreview == 'true'
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -247,6 +285,8 @@ jobs:
 
   ghreview-ui:
     name: ghreview-ui
+    needs: changes
+    if: needs.changes.outputs.ghreview-ui == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -277,6 +317,8 @@ jobs:
 
   generated-artifacts:
     name: generated artifacts up to date
+    needs: changes
+    if: needs.changes.outputs.ghreview == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -302,6 +344,8 @@ jobs:
 
   audit:
     name: audit
+    needs: changes
+    if: needs.changes.outputs.deps == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -385,6 +429,18 @@ jobs:
           fi
           bash scripts/no-css-global.sh "$base...$head"
 
+  comment-refs:
+    name: comment-refs
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Reject ticket references in added comments
+        run: bash scripts/check-comment-refs.sh "origin/${{ github.base_ref }}"
+
   i18n-messages:
     name: i18n-messages
     runs-on: ubuntu-latest
@@ -406,3 +462,29 @@ jobs:
 
       - name: actionlint
         run: ./actionlint -color
+
+  # The single required check for branch protection: skipped jobs count as
+  # passing, failed or cancelled ones do not.
+  ci-ok:
+    name: ci-ok
+    if: always()
+    needs:
+      - changes
+      - fmt
+      - biome
+      - clippy
+      - test
+      - webui
+      - ghreview
+      - ghreview-ui
+      - generated-artifacts
+      - audit
+      - no-css-global
+      - comment-refs
+      - i18n-messages
+      - actionlint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every job passed or was skipped
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
