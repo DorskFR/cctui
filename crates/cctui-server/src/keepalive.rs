@@ -301,7 +301,23 @@ pub async fn sweep(state: &AppState) {
                 return;
             }
         };
-    for row in rows {
+    let accounts: Vec<Vec<uuid::Uuid>> = futures_util::future::join_all(
+        rows.iter().map(|row| crate::routes::gateway::resolve_session_accounts(state, &row.id)),
+    )
+    .await;
+    let unique = unique_accounts(&accounts);
+    let fetched = futures_util::future::join_all(unique.iter().map(|&account_id| async move {
+        let windows = crate::routes::gateway::usage_for_soft_limit(state, account_id)
+            .await
+            .as_ref()
+            .map(crate::soft_limit::normalize_usage_windows)
+            .unwrap_or_default();
+        (account_id, windows)
+    }))
+    .await;
+    let usage_by_account: std::collections::HashMap<uuid::Uuid, Vec<UsageWindow>> =
+        fetched.into_iter().collect();
+    for (row, row_accounts) in rows.into_iter().zip(accounts) {
         let schedule: KeepaliveState = match serde_json::from_value(row.keepalive_json.clone()) {
             Ok(s) => s,
             Err(e) => {
@@ -318,21 +334,21 @@ pub async fn sweep(state: &AppState) {
             ticks_sent: schedule.ticks_sent.saturating_sub(1),
             max_ticks: schedule.max_ticks,
         };
-        let mut usage = Vec::new();
-        for account_id in crate::routes::gateway::resolve_session_accounts(state, &row.id).await {
-            let windows = crate::routes::gateway::usage_for_soft_limit(state, account_id)
-                .await
-                .as_ref()
-                .map(crate::soft_limit::normalize_usage_windows)
-                .unwrap_or_default();
-            usage.push(windows);
-        }
+        let usage: Vec<Vec<UsageWindow>> = row_accounts
+            .iter()
+            .map(|id| usage_by_account.get(id).cloned().unwrap_or_default())
+            .collect();
         if let Some(reason) = decide(&snap, &usage) {
             tracing::info!(session_id = %row.id, ?reason, "keep-alive tick skipped");
             continue;
         }
         fire(state, &row.id, schedule.ticks_sent, schedule.max_ticks).await;
     }
+}
+
+fn unique_accounts(per_row: &[Vec<uuid::Uuid>]) -> Vec<uuid::Uuid> {
+    let mut seen = std::collections::HashSet::new();
+    per_row.iter().flatten().copied().filter(|id| seen.insert(*id)).collect()
 }
 
 async fn fire(state: &AppState, session_id: &str, tick: u32, max_ticks: u32) {
@@ -366,7 +382,7 @@ mod tests {
     use super::{
         CLAIM_SQL, DEFAULT_MAX_TICKS, MIN_INTERVAL_SECS, Skip, Snapshot, cache_ttl_secs, decide,
         default_interval_secs, is_human_message, is_tick, schedule_from_request, skip_reason,
-        stamp_tick, tick_prompt, usage_too_high,
+        stamp_tick, tick_prompt, unique_accounts, usage_too_high,
     };
     use crate::soft_limit::UsageWindow;
 
@@ -393,6 +409,13 @@ mod tests {
             model_id: None,
             model_display_name: None,
         }
+    }
+
+    #[test]
+    fn accounts_shared_by_sessions_are_fetched_once() {
+        let a = uuid::Uuid::from_u128(1);
+        let b = uuid::Uuid::from_u128(2);
+        assert_eq!(unique_accounts(&[vec![a], vec![a, b], vec![], vec![b, a]]), vec![a, b]);
     }
 
     #[test]
