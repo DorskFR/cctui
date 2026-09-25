@@ -707,12 +707,21 @@ async fn handle(socket: WebSocket, state: AppState, machine_id: Uuid, user_id: U
             DaemonFrameUp::Batch { frames } => frames,
             other => vec![other],
         };
+        let mut run: Vec<Ingest> = Vec::new();
         for frame in leaves {
             if let Some(local_id) = session_scope(&frame)
                 && !admit(&mut owners, &state.pool, local_id).await
             {
                 continue;
             }
+            let frame = match Ingest::take(frame) {
+                Ok(ingest) => {
+                    run.push(ingest);
+                    continue;
+                }
+                Err(frame) => frame,
+            };
+            ingest_run(&state, machine_id, user_id, &mut run).await;
             let announce = announced_session(&frame).map(str::to_owned);
             if let Some(local_id) = &announce {
                 state.bus.bind_session_conn(local_id, conn_id);
@@ -733,6 +742,7 @@ async fn handle(socket: WebSocket, state: AppState, machine_id: Uuid, user_id: U
                 }
             }
         }
+        ingest_run(&state, machine_id, user_id, &mut run).await;
     }
 
     // Cleanup. Only drop the entry if it is STILL OURS. During a reconnect
@@ -1099,7 +1109,7 @@ async fn process_frame(
                 local_id = event_local_id(&event),
                 "received event",
             );
-            handle_event(state, machine_id, user_id, &adapter_id, event).await
+            handle_event(state, machine_id, user_id, &adapter_id, event, None).await
         }
         DaemonFrameUp::StageFilesResult { request_id, ok, paths, error } => {
             // Mid-chat attachment reply: fire the oneshot the
@@ -1200,6 +1210,69 @@ fn on_heartbeat(state: &AppState, machine_id: Uuid, frame: DaemonFrameUp) {
 
 /// Bump the per-machine persisted-insert counter feeding divergence detection,
 /// only when a `stream_events` row was actually written.
+/// A persistable event held back so consecutive ones from one frame share a
+/// single `stream_events` insert.
+struct Ingest {
+    adapter_id: String,
+    event: AdapterEvent,
+    row: NewEvent,
+}
+
+impl Ingest {
+    fn take(frame: DaemonFrameUp) -> Result<Self, DaemonFrameUp> {
+        let DaemonFrameUp::Event { adapter_id, event } = frame else {
+            return Err(frame);
+        };
+        let row = match &event {
+            AdapterEvent::Message { local_id, payload, turn_id } => NewEvent {
+                local_id: local_id.clone(),
+                event_type: "message",
+                payload: payload.clone(),
+                turn_id: *turn_id,
+            },
+            AdapterEvent::ToolUse { local_id, payload } => NewEvent {
+                local_id: local_id.clone(),
+                event_type: "tool_use",
+                payload: payload.clone(),
+                turn_id: None,
+            },
+            _ => return Err(DaemonFrameUp::Event { adapter_id, event }),
+        };
+        Ok(Self { adapter_id, event, row })
+    }
+}
+
+/// Insert a run of held-back events in one statement, then run each event's
+/// side effects in order with its outcome.
+async fn ingest_run(state: &AppState, machine_id: Uuid, user_id: Uuid, run: &mut Vec<Ingest>) {
+    if run.is_empty() {
+        return;
+    }
+    let mut events = Vec::with_capacity(run.len());
+    let mut rows = Vec::with_capacity(run.len());
+    for Ingest { adapter_id, event, mut row } in run.drain(..) {
+        if row.event_type == "message" {
+            crate::keepalive::observe_message(state, &row.local_id, &mut row.payload).await;
+        }
+        events.push((adapter_id, event));
+        rows.push(row);
+    }
+    let seqs = match insert_events(&state.pool, machine_id, user_id, rows).await {
+        Ok(seqs) => seqs,
+        Err(err) => {
+            tracing::warn!(%err, %machine_id, events = events.len(), "batched event insert failed");
+            return;
+        }
+    };
+    for ((adapter_id, event), seq) in events.into_iter().zip(seqs) {
+        if let Err(err) =
+            handle_event(state, machine_id, user_id, &adapter_id, event, Some(seq)).await
+        {
+            tracing::warn!(%err, "handle_event error");
+        }
+    }
+}
+
 fn note_insert(state: &AppState, machine_id: Uuid, newly_inserted: bool) {
     if newly_inserted {
         *state.machine_event_inserts.entry(machine_id).or_insert(0) += 1;
@@ -1273,6 +1346,7 @@ async fn handle_event(
     user_id: Uuid,
     adapter_id: &str,
     event: AdapterEvent,
+    stored: Option<Option<i64>>,
 ) -> anyhow::Result<()> {
     let local_id_for_bump = match &event {
         AdapterEvent::Message { local_id, .. }
@@ -1352,31 +1426,41 @@ async fn handle_event(
             crate::followup::claim_intent(&state.pool, &local_id, spawn_key_hint.as_deref()).await;
         }
         AdapterEvent::Message { local_id, mut payload, turn_id } => {
-            crate::keepalive::observe_message(state, &local_id, &mut payload).await;
-            inserted_seq = insert_event(
-                &state.pool,
-                machine_id,
-                user_id,
-                &local_id,
-                "message",
-                payload,
-                turn_id,
-            )
-            .await?;
+            inserted_seq = match stored {
+                Some(seq) => seq,
+                None => {
+                    crate::keepalive::observe_message(state, &local_id, &mut payload).await;
+                    insert_event(
+                        &state.pool,
+                        machine_id,
+                        user_id,
+                        &local_id,
+                        "message",
+                        payload,
+                        turn_id,
+                    )
+                    .await?
+                }
+            };
             newly_inserted = inserted_seq.is_some();
             note_insert(state, machine_id, newly_inserted);
         }
         AdapterEvent::ToolUse { local_id, payload } => {
-            inserted_seq = insert_event(
-                &state.pool,
-                machine_id,
-                user_id,
-                &local_id,
-                "tool_use",
-                payload,
-                None,
-            )
-            .await?;
+            inserted_seq = match stored {
+                Some(seq) => seq,
+                None => {
+                    insert_event(
+                        &state.pool,
+                        machine_id,
+                        user_id,
+                        &local_id,
+                        "tool_use",
+                        payload,
+                        None,
+                    )
+                    .await?
+                }
+            };
             newly_inserted = inserted_seq.is_some();
             note_insert(state, machine_id, newly_inserted);
         }
@@ -2264,6 +2348,89 @@ async fn insert_event(
     Ok(id)
 }
 
+/// One `stream_events` row for [`insert_events`].
+struct NewEvent {
+    local_id: String,
+    event_type: &'static str,
+    payload: serde_json::Value,
+    turn_id: Option<Uuid>,
+}
+
+/// Rows per `stream_events` statement: bounds one statement's bind size.
+const INSERT_BATCH: usize = 1000;
+
+/// Batched [`insert_event`]: the same ownership guard and dedup, one statement
+/// per [`INSERT_BATCH`] rows. Returns each row's outcome in input order. Ids are
+/// drawn in input order, so the `seq`s of one batch keep the frame's order.
+async fn insert_events(
+    pool: &sqlx::PgPool,
+    machine_id: Uuid,
+    user_id: Uuid,
+    mut rows: Vec<NewEvent>,
+) -> anyhow::Result<Vec<Option<i64>>> {
+    let mut out = Vec::with_capacity(rows.len());
+    for chunk in rows.chunks_mut(INSERT_BATCH) {
+        let mut ids = Vec::with_capacity(chunk.len());
+        let mut types = Vec::with_capacity(chunk.len());
+        let mut payloads = Vec::with_capacity(chunk.len());
+        let mut turns = Vec::with_capacity(chunk.len());
+        let mut links = Vec::with_capacity(chunk.len());
+        for row in chunk.iter_mut() {
+            strip_nul(&mut row.payload);
+            links.push(crate::routes::fs::extract_links(&row.payload));
+            ids.push(row.local_id.clone());
+            types.push(row.event_type);
+            payloads.push(std::mem::take(&mut row.payload));
+            turns.push(row.turn_id);
+        }
+        // The ON CONFLICT target must stay character-identical to migration 121's
+        // `stream_events_dedup_turn_idx` expression list or inference fails.
+        let inserted: Vec<(i64, i64)> = sqlx::query_as(
+            "WITH src AS ( \
+                 SELECT nextval(pg_get_serial_sequence('stream_events', 'id')) AS id, r.* \
+                 FROM ( \
+                     SELECT u.* \
+                     FROM unnest($1::text[], $2::text[], $3::jsonb[], $4::uuid[]) \
+                          WITH ORDINALITY AS u(session_id, event_type, payload, turn_id, ord) \
+                     WHERE EXISTS ( \
+                         SELECT 1 FROM sessions s \
+                         WHERE s.id = u.session_id AND s.machine_uuid = $5 AND s.user_id = $6) \
+                     ORDER BY u.ord \
+                 ) r \
+             ), ins AS ( \
+                 INSERT INTO stream_events (id, session_id, event_type, payload, turn_id) \
+                 SELECT id, session_id, event_type, payload, turn_id FROM src ORDER BY ord \
+                 ON CONFLICT (session_id, event_type, content_hash, \
+                              COALESCE(turn_id, '00000000-0000-0000-0000-000000000000'::uuid)) \
+                 DO NOTHING \
+                 RETURNING id \
+             ) \
+             SELECT src.ord, ins.id FROM ins JOIN src USING (id)",
+        )
+        .bind(&ids)
+        .bind(&types)
+        .bind(&payloads)
+        .bind(&turns)
+        .bind(machine_id)
+        .bind(user_id)
+        .fetch_all(pool)
+        .await?;
+        let mut seqs = vec![None; chunk.len()];
+        for (ord, id) in inserted {
+            if let Some(slot) = usize::try_from(ord - 1).ok().and_then(|i| seqs.get_mut(i)) {
+                *slot = Some(id);
+            }
+        }
+        for ((seq, local_id), links) in seqs.iter().zip(&ids).zip(&links) {
+            if seq.is_some() {
+                crate::routes::fs::record_links(pool, local_id, links).await?;
+            }
+        }
+        out.extend(seqs);
+    }
+    Ok(out)
+}
+
 /// Recursively strip NUL (`\0`) from every string in a JSON value.
 /// Postgres rejects NUL in `jsonb`/`text`, so an event carrying one would be
 /// dropped on insert. Stripping keeps the event; the NUL has no
@@ -2772,7 +2939,8 @@ mod tests {
         Arc, DAEMON_LOST_GRACE, DAEMON_SEEN_FRESH, EndReason, Future, Inbound, MAX_TRANSFER_BYTES,
         Ordering, PendingDaemonLost, SessionOwners, StatusSignals, TodoEntry, Utc, Uuid, admit,
         bearer_token, claim_announced, decode_binary_frame, decode_compressed_frame, event_kind,
-        event_local_id, expand_batch, extract_todos, handle_chunk, insert_event,
+        event_local_id, expand_batch, extract_todos, handle_chunk, insert_event, insert_events,
+        INSERT_BATCH, NewEvent,
         merge_known_adapters, next_inbound, persist_session_end, record_todos, seen_within,
         session_scope, should_auto_approve, strip_nul, upsert_session, write_status_signals,
     };
@@ -3999,6 +4167,101 @@ mod tests {
         assert!(admit(&mut owner, &pool, &sid).await);
 
         drop_machines(&pool, &[sid], &[(ua, ma), (ub, mb)]).await;
+    }
+
+    fn backfill(local_id: &str, n: usize) -> Vec<NewEvent> {
+        (0..n)
+            .map(|i| NewEvent {
+                local_id: local_id.to_owned(),
+                event_type: "message",
+                payload: json!({ "type": "assistant", "text": format!("line {i}") }),
+                turn_id: None,
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_backfill_lands_in_a_handful_of_statements_in_order() {
+        let Some(url) = crate::routes::gateway::test_db_url("batched_backfill") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let (uid, mid) = seed_machine(&pool, "backfill").await;
+        let sid = seed_owned_session(&pool, uid, mid).await;
+
+        let n = 5000;
+        assert!(n.div_ceil(INSERT_BATCH) <= 5, "a 5k backfill is at most five statements");
+        let mut rows = backfill(&sid, n);
+        rows.push(NewEvent {
+            local_id: sid.clone(),
+            event_type: "message",
+            payload: json!({ "type": "assistant", "text": "line 7" }),
+            turn_id: None,
+        });
+        let seqs = insert_events(&pool, mid, uid, rows).await.expect("insert");
+        assert_eq!(seqs.len(), n + 1);
+        assert_eq!(seqs[n], None, "a duplicate inside the batch is deduped");
+        let ids: Vec<i64> = seqs[..n].iter().map(|s| s.expect("fresh row")).collect();
+        assert!(ids.windows(2).all(|w| w[0] < w[1]), "seqs follow the frame's order");
+
+        let replay = insert_events(&pool, mid, uid, backfill(&sid, n)).await.expect("replay");
+        assert!(replay.iter().all(Option::is_none), "a replay inserts nothing");
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM stream_events WHERE session_id = $1")
+                .bind(&sid)
+                .fetch_one(&pool)
+                .await
+                .expect("count events");
+        assert_eq!(count, i64::try_from(n).expect("fits"));
+
+        sqlx::query("DELETE FROM stream_events WHERE session_id = $1")
+            .bind(&sid)
+            .execute(&pool)
+            .await
+            .ok();
+        drop_machines(&pool, &[sid], &[(uid, mid)]).await;
+    }
+
+    #[tokio::test]
+    async fn a_batch_refuses_the_rows_of_a_foreign_session() {
+        let Some(url) = crate::routes::gateway::test_db_url("batched_foreign") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let (ua, ma) = seed_machine(&pool, "owner").await;
+        let (ub, mb) = seed_machine(&pool, "intruder").await;
+        let own = seed_owned_session(&pool, ub, mb).await;
+        let foreign = seed_owned_session(&pool, ua, ma).await;
+
+        let mut rows = backfill(&own, 2);
+        rows.insert(1, backfill(&foreign, 1).remove(0));
+        let seqs = insert_events(&pool, mb, ub, rows).await.expect("insert");
+        assert!(seqs[0].is_some());
+        assert_eq!(seqs[1], None, "the foreign row is refused");
+        assert!(seqs[2].is_some());
+
+        let foreign_rows: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM stream_events WHERE session_id = $1")
+                .bind(&foreign)
+                .fetch_one(&pool)
+                .await
+                .expect("count events");
+        assert_eq!(foreign_rows, 0);
+
+        sqlx::query("DELETE FROM stream_events WHERE session_id = ANY($1)")
+            .bind(vec![own.clone(), foreign.clone()])
+            .execute(&pool)
+            .await
+            .ok();
+        drop_machines(&pool, &[own, foreign], &[(ua, ma), (ub, mb)]).await;
     }
 
     #[tokio::test]
