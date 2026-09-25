@@ -23,9 +23,28 @@ pub fn zstd_compress(data: &[u8]) -> Vec<u8> {
     zstd::encode_all(data, ZSTD_LEVEL).expect("zstd encode of an in-memory buffer cannot fail")
 }
 
-/// Decompress a zstd buffer.
+/// Upper bound on decompressed output, so a zstd bomb errors instead of
+/// exhausting memory.
+pub const MAX_DECOMPRESSED_BYTES: usize = 256 * 1024 * 1024;
+
+/// Decompress a zstd buffer, erroring past [`MAX_DECOMPRESSED_BYTES`].
 pub fn zstd_decompress(data: &[u8]) -> std::io::Result<Vec<u8>> {
-    zstd::decode_all(data)
+    zstd_decompress_bounded(data, MAX_DECOMPRESSED_BYTES)
+}
+
+/// Decompress a zstd buffer, erroring once output would exceed `max` bytes.
+pub fn zstd_decompress_bounded(data: &[u8], max: usize) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    let limit = u64::try_from(max).unwrap_or(u64::MAX).saturating_add(1);
+    let mut out = Vec::with_capacity(data.len().saturating_mul(4).min(max));
+    zstd::stream::read::Decoder::new(data)?.take(limit).read_to_end(&mut out)?;
+    if out.len() > max {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("decompressed payload exceeds {max} bytes"),
+        ));
+    }
+    Ok(out)
 }
 
 /// Compress a serialized frame when it clears [`COMPRESS_MIN_BYTES`] and zstd
@@ -127,6 +146,35 @@ mod tests {
         let frame = compressed_frame(codec, &bytes);
         let DaemonFrameUp::Compressed { codec, data } = frame else { panic!("wrong variant") };
         assert_eq!(decode_compressed(&codec, &data).unwrap(), inner);
+    }
+
+    fn zero_bomb(len: usize) -> Vec<u8> {
+        use std::io::Write;
+        let block = vec![0u8; 1024 * 1024];
+        let mut enc = zstd::stream::write::Encoder::new(Vec::new(), ZSTD_LEVEL).unwrap();
+        let mut left = len;
+        while left > 0 {
+            let n = left.min(block.len());
+            enc.write_all(&block[..n]).unwrap();
+            left -= n;
+        }
+        enc.finish().unwrap()
+    }
+
+    #[test]
+    fn bomb_over_cap_errors() {
+        let bomb = zero_bomb(64 * 1024 * 1024);
+        assert!(bomb.len() < 64 * 1024, "bomb must be tiny on the wire");
+        assert!(zstd_decompress_bounded(&bomb, 1024 * 1024).is_err());
+        assert_eq!(zstd_decompress_bounded(&bomb, 64 * 1024 * 1024).unwrap().len(), 64 << 20);
+    }
+
+    #[test]
+    fn bomb_over_default_cap_is_rejected_by_every_decoder() {
+        let bomb = zero_bomb(MAX_DECOMPRESSED_BYTES + 1);
+        assert!(zstd_decompress(&bomb).is_err());
+        assert!(decompress_codec(CODEC_ZSTD, &bomb).is_err());
+        assert!(decode_compressed(CODEC_ZSTD, &BASE64.encode(&bomb)).is_err());
     }
 
     #[test]

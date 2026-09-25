@@ -17,6 +17,9 @@ pub const CHUNK_THRESHOLD: usize = 256 * 1024;
 /// Raw payload bytes per chunk.
 pub const CHUNK_SIZE: usize = 256 * 1024;
 
+/// Hard ceiling on `total_chunks`, independent of the byte bound.
+pub const MAX_CHUNKS: u32 = 64 * 1024;
+
 /// Content-hash transfer id (hex sha256) for a serialized payload.
 #[must_use]
 pub fn transfer_id(payload: &[u8]) -> String {
@@ -129,12 +132,17 @@ impl Reassembler {
         self.transfers.is_empty()
     }
 
+    fn max_chunks(&self) -> u32 {
+        let by_bytes = u32::try_from(self.max_bytes.div_ceil(CHUNK_SIZE)).unwrap_or(u32::MAX);
+        by_bytes.clamp(1, MAX_CHUNKS)
+    }
+
     pub fn accept(&mut self, id: &str, index: u32, total: u32, data: &str) -> Accept {
         let max_bytes = self.max_bytes;
         let Ok(bytes) = BASE64.decode(data) else {
             return Accept::Restart;
         };
-        if total == 0 || index >= total {
+        if total == 0 || index >= total || total > self.max_chunks() {
             return Accept::Restart;
         }
         if self.transfers.get(id).is_some_and(|p| p.total != total) {
@@ -277,6 +285,18 @@ mod tests {
         assert!(matches!(r.accept("x", 5, 3, "AAAA"), Accept::Restart), "index >= total");
         assert!(matches!(r.accept("x", 0, 0, "AAAA"), Accept::Restart), "zero total");
         assert!(matches!(r.accept("x", 0, 2, "!!not-base64!!"), Accept::Restart), "bad base64");
+    }
+
+    #[test]
+    fn huge_total_chunks_restarts_before_allocating() {
+        let mut r = Reassembler::new(usize::MAX);
+        assert!(matches!(r.accept("x", 0, u32::MAX, "AAAA"), Accept::Restart));
+        assert!(matches!(r.accept("x", 0, MAX_CHUNKS + 1, "AAAA"), Accept::Restart));
+        assert!(r.is_empty());
+        let mut r = Reassembler::new(64 * 1024 * 1024);
+        let fits = u32::try_from((64 * 1024 * 1024) / CHUNK_SIZE).unwrap();
+        assert!(matches!(r.accept("y", 0, fits + 1, "AAAA"), Accept::Restart));
+        assert!(matches!(r.accept("y", 0, fits, "AAAA"), Accept::Pending(Some(0))));
     }
 
     #[test]
