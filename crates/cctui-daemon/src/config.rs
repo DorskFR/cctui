@@ -73,7 +73,7 @@ impl Config {
         path.exists()
     }
 
-    pub fn save_to(&self, path: &PathBuf) -> anyhow::Result<()> {
+    pub fn save_to(&self, path: &Path) -> anyhow::Result<()> {
         write_private(path, toml::to_string_pretty(self)?.as_bytes())
     }
 }
