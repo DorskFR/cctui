@@ -321,6 +321,22 @@ const UNREAD_COUNT_SQL: &str = "SELECT s.session_id, u.n \
          ) capped \
      ) u";
 
+/// The two newest usage rows per listed session, `rn` 1 = newest: one short
+/// backwards walk of `(session_id, created_at DESC)` per session.
+const LAST_TWO_TURNS_SQL: &str = "SELECT s.session_id, u.input_tokens, u.cache_read_tokens, \
+            u.cache_creation_tokens, u.created_at, \
+            row_number() OVER (PARTITION BY s.session_id ORDER BY u.created_at DESC) AS rn \
+     FROM unnest($1::text[]) AS s(session_id) \
+     JOIN LATERAL ( \
+         SELECT stu.input_tokens, stu.cache_read_tokens, stu.cache_creation_tokens, \
+                stu.created_at \
+         FROM session_token_usage stu \
+         WHERE stu.session_id = s.session_id \
+         ORDER BY stu.created_at DESC \
+         LIMIT 2 \
+     ) u ON true \
+     ORDER BY s.session_id, rn";
+
 /// Characters of the last message [`LAST_MESSAGE_SQL`] returns: twice what
 /// [`normalize_last_message`] keeps, so whitespace collapsing has slack.
 const LAST_MESSAGE_PREVIEW_CHARS: usize = 400;
@@ -961,17 +977,7 @@ async fn enrich_and_sort(
     //                        many tokens get re-written on the next send.
     if !session_ids.is_empty() {
         type LastRow = (String, i64, i64, i64, DateTime<Utc>, i64);
-        let rows: Vec<LastRow> = sqlx::query_as(
-            "SELECT session_id, input_tokens, cache_read_tokens, cache_creation_tokens, \
-                    created_at, rn \
-             FROM (SELECT session_id, input_tokens, cache_read_tokens, cache_creation_tokens, \
-                          created_at, \
-                          row_number() OVER ( \
-                              PARTITION BY session_id ORDER BY created_at DESC) AS rn \
-                   FROM session_token_usage WHERE session_id = ANY($1)) t \
-             WHERE rn <= 2 \
-             ORDER BY session_id, rn",
-        )
+        let rows: Vec<LastRow> = sqlx::query_as(LAST_TWO_TURNS_SQL)
         .bind(&session_ids)
         .fetch_all(&state.pool)
         .await
@@ -3442,6 +3448,37 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(left, 0);
+    }
+
+    #[tokio::test]
+    async fn last_two_turns_are_the_newest_two_per_session() {
+        let Some((pool, sid)) = seeded_session("last_two_turns_newest_two").await else {
+            return;
+        };
+        let t0 = Utc::now() - Duration::hours(1);
+        for n in 0..5_i64 {
+            sqlx::query(
+                "INSERT INTO session_token_usage (session_id, message_id, input_tokens, created_at) \
+                 VALUES ($1, $2, $3, $4)",
+            )
+            .bind(&sid)
+            .bind(format!("t{n}"))
+            .bind(n)
+            .bind(t0 + Duration::seconds(n))
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        let rows: Vec<(String, i64, i64, i64, chrono::DateTime<Utc>, i64)> =
+            sqlx::query_as(super::LAST_TWO_TURNS_SQL)
+                .bind(vec![sid.clone(), "no-such-session".to_owned()])
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        let got: Vec<(i64, i64)> = rows.iter().map(|r| (r.1, r.5)).collect();
+        assert_eq!(got, [(4, 1), (3, 2)]);
+
+        sqlx::query("DELETE FROM sessions WHERE id = $1").bind(&sid).execute(&pool).await.unwrap();
     }
 
     #[tokio::test]

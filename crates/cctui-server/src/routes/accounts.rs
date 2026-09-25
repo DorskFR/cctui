@@ -363,7 +363,9 @@ impl AccountRow {
 /// row it ran under. `SUM()` over bigint returns NUMERIC, so cast back to bigint
 /// for the i64 columns. Cost uses a per-provider blended per-million rate
 /// (input/output/cache weighted) — an estimate, not a meter. Append a
-/// `WHERE`/`ORDER BY` clause before use. The token totals are a correlated
+/// `WHERE`/`ORDER BY` clause before use. Usage is read from the running
+/// per-(session, model) totals in `session_usage_totals`, one row per session
+/// and model rather than one per turn. The token totals are a correlated
 /// LATERAL rather than a grouped subquery so that selecting one provider
 /// aggregates one provider's rows instead of the whole table.
 const PROVIDER_SELECT: &str = "SELECT p.id, p.account_id, p.provider, p.family, p.models, p.model_aliases, p.managed, \
@@ -392,7 +394,7 @@ const PROVIDER_SELECT: &str = "SELECT p.id, p.account_id, p.provider, p.family, 
                 SUM(stu.cache_read_tokens)     AS cache_read_tokens, \
                 SUM(stu.cache_creation_tokens) AS cache_creation_tokens \
          FROM session_tokens st \
-         JOIN session_token_usage stu ON stu.session_id = st.session_id \
+         JOIN session_usage_totals stu ON stu.session_id = st.session_id \
          WHERE st.account_id = p.id \
      ) t ON true \
      LEFT JOIN LATERAL ( \
@@ -405,7 +407,7 @@ const PROVIDER_SELECT: &str = "SELECT p.id, p.account_id, p.provider, p.family, 
                     * COALESCE((m.value->>'price_output_per_mtok')::double precision, 0) \
                 ) / 1000000.0) AS usd \
          FROM session_tokens st \
-         JOIN session_token_usage stu ON stu.session_id = st.session_id \
+         JOIN session_usage_totals stu ON stu.session_id = st.session_id \
          JOIN jsonb_array_elements( \
                 CASE WHEN jsonb_typeof(p.models) = 'array' THEN p.models ELSE '[]'::jsonb END \
               ) m ON m.value->>'model' = stu.model \
@@ -2751,6 +2753,12 @@ mod tests {
             !PROVIDER_SELECT.contains("GROUP BY st.account_id"),
             "a grouped subquery aggregates every provider's rows on a single-id lookup"
         );
+    }
+
+    #[test]
+    fn provider_usage_reads_running_totals_not_every_turn() {
+        assert!(!PROVIDER_SELECT.contains("session_token_usage"));
+        assert_eq!(PROVIDER_SELECT.matches("JOIN session_usage_totals stu").count(), 2);
     }
 
     #[test]
