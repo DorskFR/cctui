@@ -61,8 +61,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::control::DriverConfig;
 use super::launch::LaunchArgs;
-use super::streamjson;
-use super::{PendingAsks, PendingPermHooks, SessionMap};
+use super::{PendingAsks, PendingPermHooks, SessionMap, streamjson};
 use crate::adapter_runtime::AdapterCtx;
 
 /// Launch posture captured at spawn so a later reply/resume/relaunch reuses the

@@ -510,7 +510,10 @@ pub struct ProviderSpec {
     /// `{ "session": {cap_pct?, bypass_minutes?, pace_cap?}, "weekly_all": {…}, … }`.
     /// Absent ⇒ NULL (no caps). Validated before persist.
     #[serde(default)]
-    #[ts(as = "Option<std::collections::BTreeMap<String, crate::soft_limit::SoftLimit>>", optional)]
+    #[ts(
+        as = "Option<std::collections::BTreeMap<String, crate::soft_limit::SoftLimit>>",
+        optional
+    )]
     pub soft_limits: Option<serde_json::Value>,
     /// Legacy scalar soft-limit fields, still accepted on create and
     /// folded into the `session` / `weekly_all` keys when `soft_limits` is absent.
@@ -670,7 +673,10 @@ pub struct UpdateProvider {
     /// stored map (an empty object clears it, an omitted key drops that window);
     /// absent → unchanged. Validated before persist.
     #[serde(default)]
-    #[ts(as = "Option<std::collections::BTreeMap<String, crate::soft_limit::SoftLimit>>", optional)]
+    #[ts(
+        as = "Option<std::collections::BTreeMap<String, crate::soft_limit::SoftLimit>>",
+        optional
+    )]
     pub soft_limits: Option<serde_json::Value>,
     /// Replacement usage ticker `{ enabled?, step_pct? }`. Provided → replaces
     /// (an empty object / `enabled: false` turns it off); absent → unchanged.
@@ -2343,7 +2349,9 @@ pub struct AccountUsage {
     pub account_id: Uuid,
     pub provider: String,
     /// Raw upstream usage JSON (passed through verbatim) or `null`.
-    #[ts(type = "Record<string, { utilization?: number | null, resets_at?: string | null } | null> | null")]
+    #[ts(
+        type = "Record<string, { utilization?: number | null, resets_at?: string | null } | null> | null"
+    )]
     pub usage: Option<serde_json::Value>,
     /// Normalized, provider-agnostic usage windows: the collection the
     /// UI renders and the soft-limit evaluator gates on. Empty ⇒ no supported

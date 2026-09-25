@@ -85,7 +85,9 @@ pub fn window_applies(window: &UsageWindow, model: Option<&str>) -> bool {
 /// no `cap_pct`/`cap_usd` ⇒ no cap on that window; `bypass_minutes` `None` ⇒ no
 /// bypass. `cap_usd` applies to the dollar windows, `cap_pct` to the percent
 /// ones; a window is evaluated against whichever its usage reports.
-#[derive(Debug, Clone, Copy, Default, PartialEq, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, serde::Serialize, serde::Deserialize, ts_rs::TS,
+)]
 #[ts(export, rename = "SoftLimitConfig")]
 pub struct SoftLimit {
     /// Max % of the window cctui will consume before refusing more inference.

@@ -87,8 +87,7 @@ impl JobState {
 
 impl JobState {
     fn is_terminal(&self) -> bool {
-        self.first_terminal_at.is_some()
-            || self.state.as_ref().is_some_and(JobPhase::is_terminal)
+        self.first_terminal_at.is_some() || self.state.as_ref().is_some_and(JobPhase::is_terminal)
     }
 
     fn end_reason(&self) -> EndReason {

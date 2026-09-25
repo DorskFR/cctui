@@ -102,8 +102,7 @@ pub struct ManifestQuery {
 /// Whether a caller asking with `requested` may be offered `version`. Absent or
 /// unrecognised channels count as stable.
 fn offered_to(version: &str, requested: Option<&str>) -> bool {
-    let requested =
-        requested.and_then(|c| c.parse::<Channel>().ok()).unwrap_or(Channel::Stable);
+    let requested = requested.and_then(|c| c.parse::<Channel>().ok()).unwrap_or(Channel::Stable);
     requested == Channel::Beta || Channel::of_version(version) == Channel::Stable
 }
 

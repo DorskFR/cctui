@@ -32,8 +32,8 @@ use uuid::Uuid;
 
 use crate::client::ServerClient;
 use crate::config::Config;
-use cctui_proto::release_sig::Channel;
 use crate::{selfupdate, service};
+use cctui_proto::release_sig::Channel;
 
 /// Remote paths, all under the target user's `$HOME` (expanded remotely).
 const REMOTE_BIN: &str = "$HOME/.local/bin/cctui-daemon";

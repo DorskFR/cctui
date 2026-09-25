@@ -364,7 +364,8 @@ pub async fn check_and_apply_with(
         return Ok(None);
     }
 
-    let Some(manifest) = fetch_manifest_conditional(client, server_url, machine_key, channel, etag).await?
+    let Some(manifest) =
+        fetch_manifest_conditional(client, server_url, machine_key, channel, etag).await?
     else {
         tracing::debug!("daemon manifest unchanged (304); skipping update");
         return Ok(None);

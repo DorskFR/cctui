@@ -147,7 +147,8 @@ mod tests {
         let cfg: Config = toml::from_str("server_url = \"s\"\nmachine_key = \"k\"\n").unwrap();
         assert_eq!(cfg.channel, Channel::Stable);
         let cfg: Config =
-            toml::from_str("server_url = \"s\"\nmachine_key = \"k\"\nchannel = \"beta\"\n").unwrap();
+            toml::from_str("server_url = \"s\"\nmachine_key = \"k\"\nchannel = \"beta\"\n")
+                .unwrap();
         assert_eq!(cfg.channel, Channel::Beta);
         assert_eq!(channel_override(None, Channel::Beta), Channel::Beta);
         assert_eq!(channel_override(Some(""), Channel::Beta), Channel::Beta);

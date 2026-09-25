@@ -3032,14 +3032,13 @@ mod tests {
     use cctui_proto::ws::{DaemonFrameDown, DaemonFrameUp};
 
     use super::{
-        Arc, DAEMON_LOST_GRACE, DAEMON_SEEN_FRESH, EndReason, Future, Inbound, MAX_TRANSFER_BYTES,
-        Ordering, PendingDaemonLost, SessionOwners, StatusSignals, TodoEntry, Utc, Uuid, admit,
-        bearer_token, claim_announced, decode_binary_frame, decode_compressed_frame, event_kind,
-        Bumps, event_local_id, expand_batch, extract_todos, handle_chunk, insert_event,
-        insert_events,
-        INSERT_BATCH, NewEvent,
-        merge_known_adapters, next_inbound, persist_session_end, record_todos, seen_within,
-        session_scope, should_auto_approve, strip_nul, upsert_session, write_status_signals,
+        Arc, Bumps, DAEMON_LOST_GRACE, DAEMON_SEEN_FRESH, EndReason, Future, INSERT_BATCH, Inbound,
+        MAX_TRANSFER_BYTES, NewEvent, Ordering, PendingDaemonLost, SessionOwners, StatusSignals,
+        TodoEntry, Utc, Uuid, admit, bearer_token, claim_announced, decode_binary_frame,
+        decode_compressed_frame, event_kind, event_local_id, expand_batch, extract_todos,
+        handle_chunk, insert_event, insert_events, merge_known_adapters, next_inbound,
+        persist_session_end, record_todos, seen_within, session_scope, should_auto_approve,
+        strip_nul, upsert_session, write_status_signals,
     };
 
     #[test]
@@ -4428,22 +4427,20 @@ mod tests {
         assert_eq!(bumps.flush(&pool).await, 2, "one statement updates the leaf and its parent");
         assert_eq!(bumps.flush(&pool).await, 0, "nothing left to write");
 
-        let (count, tool): (i32, Option<String>) = sqlx::query_as(
-            "SELECT tool_use_count, last_tool_name FROM sessions WHERE id = $1",
-        )
-        .bind(&child)
-        .fetch_one(&pool)
-        .await
-        .expect("child row");
+        let (count, tool): (i32, Option<String>) =
+            sqlx::query_as("SELECT tool_use_count, last_tool_name FROM sessions WHERE id = $1")
+                .bind(&child)
+                .fetch_one(&pool)
+                .await
+                .expect("child row");
         assert_eq!(count, 1, "the user turn reset the count before the last tool");
         assert_eq!(tool.as_deref(), Some("Read"));
-        let (parent_count, parent_tool): (i32, Option<String>) = sqlx::query_as(
-            "SELECT tool_use_count, last_tool_name FROM sessions WHERE id = $1",
-        )
-        .bind(&parent)
-        .fetch_one(&pool)
-        .await
-        .expect("parent row");
+        let (parent_count, parent_tool): (i32, Option<String>) =
+            sqlx::query_as("SELECT tool_use_count, last_tool_name FROM sessions WHERE id = $1")
+                .bind(&parent)
+                .fetch_one(&pool)
+                .await
+                .expect("parent row");
         assert_eq!(parent_count, 0, "the parent keeps its own count");
         assert_eq!(parent_tool.as_deref(), Some("Read"));
 

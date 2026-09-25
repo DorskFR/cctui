@@ -18,8 +18,8 @@ use crate::auth::AuthContext;
 use crate::error::AppError;
 use crate::live_sessions::live_sessions_predicate;
 use crate::routes::spawn::resolve_owned_machine;
-use crate::store::sessions::SessionRowStatus;
 use crate::state::AppState;
+use crate::store::sessions::SessionRowStatus;
 
 pub async fn register(
     State(state): State<AppState>,
