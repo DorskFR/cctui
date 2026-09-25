@@ -12,16 +12,14 @@
 //!
 //! Steps:
 //!   1. `GET {server}/api/v1/manifest/daemon` → the server's version + a
-//!      download URL per target.
-//!   2. Compare the manifest version against the running `CARGO_PKG_VERSION`.
-//!   3. Download the matching `{target}` asset and `SHA256SUMS` from the
-//!      server (`/api/v1/daemon/binary/{...}`), verify the checksum,
-//!      atomically rename into place, then re-exec.
+//!      download and signature URL per target.
+//!   2. Compare the manifest version against the running `CARGO_PKG_VERSION`;
+//!      older versions are skipped unless `CCTUI_DAEMON_ALLOW_DOWNGRADE=1`.
+//!   3. Download the matching `{target}` asset, its `.minisig` and
+//!      `SHA256SUMS`, verify checksum and release signature, atomically rename
+//!      into place, check `--version`, then re-exec.
 //!
-//! Every request authenticates with the daemon's machine key; the daemon no
-//! longer needs a GitHub token of its own. If the server has no PAT it hands
-//! back a raw (private, unreachable) GitHub URL for the binary, so the
-//! update degrades to a logged no-op until a token is configured server-side.
+//! The machine key is only ever sent to the server's own origin.
 
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -112,6 +110,17 @@ pub struct DaemonManifest {
 pub struct DaemonAsset {
     pub target: String,
     pub url: String,
+    #[serde(default)]
+    pub sig_url: Option<String>,
+}
+
+impl DaemonAsset {
+    #[must_use]
+    pub fn signature_url(&self) -> String {
+        self.sig_url
+            .clone()
+            .unwrap_or_else(|| format!("{}{}", self.url, cctui_proto::release_sig::SIG_SUFFIX))
+    }
 }
 
 fn manifest_url(server_url: &str) -> String {
@@ -177,16 +186,26 @@ pub async fn fetch_manifest_conditional(
     Ok(Some(manifest))
 }
 
-/// Download bytes from a server endpoint, authenticated with `bearer` (a
-/// machine key on the self-update path, a user token on remote enroll).
-pub async fn download(client: &reqwest::Client, url: &str, bearer: &str) -> Result<Vec<u8>> {
-    let res = client
-        .get(url)
-        .bearer_auth(bearer)
-        .header("Accept", "application/octet-stream")
-        .send()
-        .await?
-        .error_for_status()?;
+fn same_origin(a: &str, b: &str) -> bool {
+    match (reqwest::Url::parse(a), reqwest::Url::parse(b)) {
+        (Ok(a), Ok(b)) => a.origin() == b.origin(),
+        _ => false,
+    }
+}
+
+/// Download bytes, attaching `bearer` (a machine key on the self-update path,
+/// a user token on remote enroll) only when `url` is on `server_url`'s origin.
+pub async fn download(
+    client: &reqwest::Client,
+    server_url: &str,
+    url: &str,
+    bearer: &str,
+) -> Result<Vec<u8>> {
+    let mut req = client.get(url).header("Accept", "application/octet-stream");
+    if same_origin(server_url, url) {
+        req = req.bearer_auth(bearer);
+    }
+    let res = req.send().await?.error_for_status()?;
     let bytes = res.bytes().await?;
     Ok(bytes.to_vec())
 }
@@ -211,6 +230,22 @@ pub fn hex_sha256(bytes: &[u8]) -> String {
         write!(acc, "{b:02x}").expect("formatting to a String is infallible");
         acc
     })
+}
+
+/// Check `bin` against its `SHA256SUMS` entry and the release signature.
+pub fn verify_release(asset: &str, bin: &[u8], sums_text: &str, minisig: &[u8]) -> Result<()> {
+    let expected = parse_sha256sums(sums_text, asset)
+        .ok_or_else(|| anyhow!("{asset} missing from SHA256SUMS"))?;
+    let actual = hex_sha256(bin);
+    if actual != expected {
+        bail!("downloaded {asset} hash {actual} != expected {expected}");
+    }
+    let minisig = std::str::from_utf8(minisig).context("signature not UTF-8")?;
+    cctui_proto::release_sig::verify(bin, minisig).map_err(|e| anyhow!("{asset}: {e}"))
+}
+
+fn allow_downgrade() -> bool {
+    std::env::var("CCTUI_DAEMON_ALLOW_DOWNGRADE").is_ok_and(|v| v == "1")
 }
 
 fn install_dir() -> Result<PathBuf> {
@@ -241,7 +276,7 @@ const HEALTH_CHECK_TIMEOUT: Duration = Duration::from_secs(10);
 /// A binary that cannot even print `--version` would crashloop under
 /// launchd/systemd forever (the updater's first tick is skipped, so a broken
 /// image can never heal itself) — gate the re-exec on it.
-async fn verify_binary(path: &Path) -> Result<()> {
+async fn verify_binary(path: &Path) -> Result<String> {
     let out = tokio::time::timeout(
         HEALTH_CHECK_TIMEOUT,
         tokio::process::Command::new(path).arg("--version").kill_on_drop(true).output(),
@@ -252,7 +287,7 @@ async fn verify_binary(path: &Path) -> Result<()> {
     if !out.status.success() {
         bail!("`{} --version` exited {}", path.display(), out.status);
     }
-    Ok(())
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 /// Run one check-and-apply cycle against the cctui-server.
@@ -294,34 +329,45 @@ pub async fn check_and_apply_with(
         return Ok(None);
     }
     let latest = manifest.version.clone();
-    tracing::info!(running, %latest, "newer cctui-daemon release available");
+    if cctui_proto::release_sig::is_downgrade(running, &latest) && !allow_downgrade() {
+        tracing::warn!(running, %latest, "server offers an older cctui-daemon; not downgrading");
+        return Ok(None);
+    }
+    tracing::info!(running, %latest, "cctui-daemon release available");
 
-    let binary_url = manifest
+    let entry = manifest
         .assets
         .iter()
         .find(|a| a.target == target)
-        .map(|a| a.url.clone())
         .ok_or_else(|| anyhow!("manifest {latest} has no asset for target {target}"))?;
 
-    let sums_bytes = download(client, &sha256sums_url(server_url), machine_key)
+    let sums_bytes = download(client, server_url, &sha256sums_url(server_url), machine_key)
         .await
         .context("download SHA256SUMS")?;
     counters.add(Subsystem::SelfUpdate, sums_bytes.len() as u64);
     let sums_text = std::str::from_utf8(&sums_bytes).context("SHA256SUMS not UTF-8")?;
-    let expected = parse_sha256sums(sums_text, asset)
-        .ok_or_else(|| anyhow!("{asset} missing from SHA256SUMS"))?;
 
-    let bin_bytes = download(client, &binary_url, machine_key).await.context("download binary")?;
+    let sig_bytes = download(client, server_url, &entry.signature_url(), machine_key)
+        .await
+        .context("download signature")?;
+    counters.add(Subsystem::SelfUpdate, sig_bytes.len() as u64);
+
+    let bin_bytes =
+        download(client, server_url, &entry.url, machine_key).await.context("download binary")?;
     counters.add(Subsystem::SelfUpdate, bin_bytes.len() as u64);
-    let actual = hex_sha256(&bin_bytes);
-    if actual != expected {
-        bail!("downloaded {asset} hash {actual} != expected {expected}");
-    }
+    verify_release(asset, &bin_bytes, sums_text, &sig_bytes)?;
 
     let dir = install_dir()?;
     let target_path = dir.join("cctui-daemon");
     let backup = swap_in_place(&target_path, &bin_bytes)?;
-    if let Err(err) = verify_binary(&target_path).await {
+    let health = verify_binary(&target_path).await.and_then(|out| {
+        if out.split_whitespace().any(|w| w == latest) {
+            Ok(())
+        } else {
+            Err(anyhow!("new binary reports {:?}, expected {latest}", out.trim()))
+        }
+    });
+    if let Err(err) = health {
         match backup.map(|b| std::fs::rename(&b, &target_path)) {
             Some(Ok(())) => tracing::error!(
                 %err, version = %latest,
@@ -556,6 +602,61 @@ mod tests {
         let target = tmp.path().join("cctui-daemon");
         assert!(swap_in_place(&target, b"new").unwrap().is_none());
         assert_eq!(std::fs::read(&target).unwrap(), b"new");
+    }
+
+    #[test]
+    fn forged_binary_with_matching_sha256sums_is_rejected() {
+        let forged = b"#!/bin/sh\necho pwned\n";
+        let sums = format!("{}  cctui-daemon-linux-amd64\n", hex_sha256(forged));
+        let sig = b"untrusted comment: forged\nRWQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\ntrusted comment: x\nAAAA\n";
+        let err = verify_release("cctui-daemon-linux-amd64", forged, &sums, sig)
+            .expect_err("a checksum alone must not authenticate a binary");
+        assert!(err.to_string().contains("signature"), "got: {err}");
+        verify_release("cctui-daemon-linux-amd64", forged, &sums, b"")
+            .expect_err("a missing signature must be rejected");
+    }
+
+    #[test]
+    fn checksum_mismatch_is_rejected_before_signature() {
+        let err = verify_release("a", b"x", "deadbeef  a\n", b"").unwrap_err();
+        assert!(err.to_string().contains("hash"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn older_manifest_version_is_skipped_without_downloading() {
+        let response = concat!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n",
+            "Content-Length: 84\r\n\r\n",
+            "{\"version\":\"0.0.1\",\"assets\":[{\"target\":\"linux-amd64\",\"url\":\"http://x/linux-amd64\"}]}",
+        );
+        let (url, _req) = serve_once(response).await;
+        let out = check_and_apply_with(
+            &client().unwrap(),
+            &url,
+            "key",
+            &mut None,
+            &BandwidthCounters::new(),
+        )
+        .await;
+        assert!(matches!(out, Ok(None)), "got: {out:?}");
+    }
+
+    #[test]
+    fn bearer_is_only_attached_to_the_server_origin() {
+        let server = "https://cctui.example.com";
+        assert!(same_origin(server, "https://cctui.example.com/api/v1/daemon/binary/x"));
+        assert!(!same_origin(server, "https://github.com/DorskFR/cctui/releases/download/v1/x"));
+        assert!(!same_origin(server, "http://cctui.example.com/x"));
+        assert!(!same_origin(server, "https://cctui.example.com.evil.io/x"));
+        assert!(!same_origin(server, "not a url"));
+    }
+
+    #[test]
+    fn signature_url_defaults_next_to_the_binary() {
+        let a: DaemonAsset =
+            serde_json::from_str(r#"{"target":"linux-amd64","url":"https://s/b/linux-amd64"}"#)
+                .unwrap();
+        assert_eq!(a.signature_url(), "https://s/b/linux-amd64.minisig");
     }
 
     #[test]

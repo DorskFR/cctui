@@ -283,17 +283,17 @@ pub async fn run(opts: RemoteEnrollOpts) -> Result<()> {
         .await
         .context("fetching the daemon manifest (is the token valid?)")?;
     let asset = format!("cctui-daemon-{release_target}");
-    let binary_url = manifest
-        .assets
-        .iter()
-        .find(|a| a.target == release_target)
-        .map(|a| a.url.clone())
-        .with_context(|| {
-            format!("manifest {} has no asset for target {release_target}", manifest.version)
-        })?;
-    let sums = selfupdate::download(&http, &selfupdate::sha256sums_url(&server_url), &opts.token)
-        .await
-        .context("downloading SHA256SUMS")?;
+    let entry = manifest.assets.iter().find(|a| a.target == release_target).with_context(|| {
+        format!("manifest {} has no asset for target {release_target}", manifest.version)
+    })?;
+    let sums = selfupdate::download(
+        &http,
+        &server_url,
+        &selfupdate::sha256sums_url(&server_url),
+        &opts.token,
+    )
+    .await
+    .context("downloading SHA256SUMS")?;
     let sums = std::str::from_utf8(&sums).context("SHA256SUMS not UTF-8")?;
     let expected_sha = selfupdate::parse_sha256sums(sums, &asset)
         .with_context(|| format!("{asset} missing from SHA256SUMS"))?;
@@ -301,13 +301,13 @@ pub async fn run(opts: RemoteEnrollOpts) -> Result<()> {
     let install_binary = binary_needs_install(facts.bin_sha.as_deref(), &expected_sha);
     if install_binary {
         println!("[3/6] installing cctui-daemon {} → {REMOTE_BIN}", manifest.version);
-        let bytes = selfupdate::download(&http, &binary_url, &opts.token)
+        let bytes = selfupdate::download(&http, &server_url, &entry.url, &opts.token)
             .await
             .context("downloading the daemon binary")?;
-        let local_sha = selfupdate::hex_sha256(&bytes);
-        if local_sha != expected_sha {
-            bail!("downloaded {asset} hash {local_sha} != expected {expected_sha}");
-        }
+        let sig = selfupdate::download(&http, &server_url, &entry.signature_url(), &opts.token)
+            .await
+            .context("downloading the daemon binary signature")?;
+        selfupdate::verify_release(&asset, &bytes, sums, &sig)?;
         let remote_sha = ssh(target, INSTALL_BINARY_SCRIPT, Some(&bytes))
             .await
             .context("uploading the binary")?;
