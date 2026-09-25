@@ -1,3 +1,10 @@
+function ownSeparator(node: HTMLElement): Element | null {
+	for (let a = node.parentElement; a; a = a.parentElement) {
+		for (const c of a.children) if (c.getAttribute('role') === 'separator') return c;
+	}
+	return null;
+}
+
 // Pins `node` to its current pixel width while a pointer drags a resize
 // separator of an ancestor panel, so the content relayouts once on release
 // instead of at every intermediate width.
@@ -13,7 +20,7 @@ export function freezeWidthDuringResize(node: HTMLElement): { destroy: () => voi
 	};
 	const onDown = (e: PointerEvent) => {
 		const sep = (e.target as Element | null)?.closest?.('[role="separator"]');
-		if (!sep?.parentElement?.contains(node) || frozen) return;
+		if (!sep || sep !== ownSeparator(node) || frozen) return;
 		frozen = true;
 		node.style.width = `${node.getBoundingClientRect().width}px`;
 		node.style.flex = 'none';
