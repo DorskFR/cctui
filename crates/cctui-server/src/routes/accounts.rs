@@ -793,7 +793,15 @@ pub fn err(code: StatusCode, msg: &str) -> (StatusCode, Json<serde_json::Value>)
 async fn check_base_url(raw: &str) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
     crate::outbound::validate_upstream_url(raw)
         .await
-        .map_err(|e| err(StatusCode::BAD_REQUEST, &format!("base_url {e}")))
+        .map_err(|e| {
+            err(
+                StatusCode::BAD_REQUEST,
+                &format!(
+                    "base_url {e}; an operator can allow a trusted host with \
+                     CCTUI_UPSTREAM_ALLOWED_HOSTS"
+                ),
+            )
+        })
 }
 
 fn db_err(e: &sqlx::Error) -> (StatusCode, Json<serde_json::Value>) {

@@ -72,6 +72,25 @@ pub fn auth_error(stage: AuthStage, is_anthropic: bool) -> Response {
         .unwrap_or_else(|_| StatusCode::UNAUTHORIZED.into_response())
 }
 
+/// 502 for an account whose `base_url` the outbound guard refuses, in the
+/// family's native error envelope so the CLI shows the message.
+pub fn upstream_refused(reason: &crate::outbound::OutboundUrlError, is_anthropic: bool) -> Response {
+    let message = format!(
+        "cctui gateway refused this account's base_url: it {reason}. An operator can \
+         allow a trusted host by adding it to CCTUI_UPSTREAM_ALLOWED_HOSTS on the server."
+    );
+    let body = if is_anthropic {
+        serde_json::json!({ "type": "error", "error": { "type": "api_error", "message": message } })
+    } else {
+        serde_json::json!({ "error": { "message": message, "type": "upstream_refused" } })
+    };
+    Response::builder()
+        .status(StatusCode::BAD_GATEWAY)
+        .header(http::header::CONTENT_TYPE, "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap_or_else(|_| StatusCode::BAD_GATEWAY.into_response())
+}
+
 /// Refuse a request the soft limit blocks: fail it over to a sibling account
 /// with headroom if there is one, else flag the session and 429.
 ///
@@ -341,8 +360,13 @@ pub async fn passthrough(
     if let Some(base) = custom
         && let Err(e) = crate::outbound::upstream_url_permitted(base)
     {
-        tracing::warn!(account = %acct.id, "gateway refused account base_url: {e}");
-        return Err(StatusCode::BAD_GATEWAY);
+        tracing::warn!(
+            account = %acct.id,
+            base_url = %base,
+            "gateway refused account base_url ({e}); allow the host with \
+             CCTUI_UPSTREAM_ALLOWED_HOSTS if it is trusted"
+        );
+        return Ok(upstream_refused(&e, is_anthropic));
     }
     let upstream = custom.unwrap_or(upstream_base);
     let client = if custom.is_some() {

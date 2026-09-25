@@ -102,6 +102,10 @@ The server migrates its database on start; nothing else to set up. Other targets
 [`deploy/local/docker-compose.yaml`](deploy/local/docker-compose.yaml) — override
 via env vars (`CCTUI_ADMIN_TOKENS`, `CCTUI_UI_PORT`, …).
 
+A compatible-endpoint account whose `base_url` points at an internal or plain
+`http` host is refused unless that host is listed in
+`CCTUI_UPSTREAM_ALLOWED_HOSTS`; see [docs/gateway-upstreams.md](docs/gateway-upstreams.md).
+
 ### Connect a machine
 
 The **daemon is not containerised** — it runs on your host so it can see your real
