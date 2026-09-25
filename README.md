@@ -93,14 +93,19 @@ Works on Linux and macOS.
 make local/up      # pulls ghcr images + postgres, starts the stack
 ```
 
-- **Web UI** → http://localhost:8088 (log in with the admin token `dev-admin`)
+- **Web UI** → http://localhost:8088 (log in with the admin token `make local/up` prints)
 - **Server API** → http://localhost:8700
+
+The first `make local/up` writes `deploy/local/.env` with a random admin token
+(`CCTUI_ADMIN_TOKENS`) and vault key (`CCTUI_VAULT_KEY`); the stack refuses to
+start without them. Both ports are published on `127.0.0.1` only; set
+`CCTUI_BIND_ADDR` in that file to expose them on another interface.
 
 The server migrates its database on start; nothing else to set up. Other targets:
 `make local/pull` (update images), `make local/logs`, `make local/ps`,
 `make local/down`. Configuration (ports, tokens, image tags) lives in
 [`deploy/local/docker-compose.yaml`](deploy/local/docker-compose.yaml) — override
-via env vars (`CCTUI_ADMIN_TOKENS`, `CCTUI_UI_PORT`, …).
+via `deploy/local/.env` (`CCTUI_ADMIN_TOKENS`, `CCTUI_UI_PORT`, …).
 
 ### Connect a machine
 
@@ -110,7 +115,7 @@ The **daemon is not containerised** — it runs on your host so it can see your 
 local server (use the admin token, or a user token created from the UI's Users page):
 
 ```sh
-cctui-daemon enroll --server-url http://localhost:8700 --token dev-admin --name "$(hostname)"
+cctui-daemon enroll --server-url http://localhost:8700 --token <admin token> --name "$(hostname)"
 cctui-daemon service install   # run it as a systemd user service (Linux)
 ```
 
