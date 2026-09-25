@@ -3,9 +3,7 @@
 /**
  * Coarse liveness tier for a machine (its daemon's WS).
  *
- * Derived from the age
- * of `machines.last_seen_at`, which the server now advances on every daemon
- * `Heartbeat` frame. Mirrors the session [`Liveness`] tiers but
+ * Derived from the age of `machines.last_seen_at`. Mirrors the session [`Liveness`] tiers but
  * names them in machine terms:
  *
  * - `Online`: a heartbeat arrived within the active window.

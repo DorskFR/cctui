@@ -2,14 +2,10 @@
 import type { ReviewVerdict } from "./ReviewVerdict";
 
 /**
- * Request body for `POST /api/v1/github/pulls/{connector_id}/{owner}/{name}/{number}/drafts`
- * — open (or reuse) the caller's draft for a PR.
- *
- * The verdict defaults to `comment`; a user reusing their open draft keeps the
- * existing row (one open draft per user+pull). The PR ref is taken from the path.
+ * Opens the caller's draft for a PR, or returns the open one.
  */
 export type CreateReviewDraft = { 
 /**
- * The pending verdict; defaults to `comment` when omitted.
+ * Defaults to `comment`.
  */
 verdict: ReviewVerdict | null, };

@@ -12,13 +12,8 @@ import type { SocketStatus } from "./SocketStatus";
 import type { TranscriptStatus } from "./TranscriptStatus";
 
 /**
- * Everything the daemon knows about one session, dated. Assembled
- * by the adapter from state it already tracks — aggregation, not new sensing.
- *
- * The named facts below are the adapter-neutral / claude-code set. Adapters
- * with their own diagnostics attach an optional tagged section (currently
- * [`SessionDiagnose::codex`]); this keeps the claude wire shape stable while
- * letting each adapter carry its own payload.
+ * Everything the daemon knows about one session, dated. Adapter-specific
+ * diagnostics go in tagged sections such as [`SessionDiagnose::codex`].
  */
 export type SessionDiagnose = { 
 /**

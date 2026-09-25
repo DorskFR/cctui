@@ -2,37 +2,18 @@
 import type { DiffSide } from "./DiffSide";
 
 /**
- * A reviewer's selection in the rendered diff, before it is resolved to a
- * GitHub anchor.
- *
- * This is what the draft UI (GH-VIEW-4) persists per comment:
- * the file path, the side, and the (display) line — optionally a multi-line
- * range whose `start_line..=line` is inclusive. `head_sha` records the SHA the
- * selection was made against, so a later force-push (head SHA rotated) can
- * invalidate stale anchors (docs §11).
+ * A reviewer's diff selection. A different diff `head_sha` makes it stale.
  */
 export type DiffSelection = { 
 /**
- * The file's head-side path (the current path; for a rename this is the new
- * name — GitHub anchors comments on the new path).
+ * Head-side path.
  */
-path: string, 
+path: string, side: DiffSide, 
 /**
- * Which side the selected line is on.
- */
-side: DiffSide, 
-/**
- * 1-based line number on the selected side (old-side number when `side` is
- * `Old`, new-side number when `New`).
+ * 1-based, on `side`.
  */
 line: number, 
 /**
- * For a multi-line selection, the (inclusive) start line on the same side.
- * `None` for a single-line comment. Must be `<= line` and on the same side.
+ * Inclusive range start on the same side, `<= line`.
  */
-start_line?: number | null, 
-/**
- * The head SHA the selection was made against. A diff whose `head_sha`
- * differs (force-push) makes this selection stale — see [`anchor`] resolve.
- */
-head_sha: string, };
+start_line?: number | null, head_sha: string, };

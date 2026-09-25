@@ -2,29 +2,6 @@
 import type { WindowTokenUsage } from "./WindowTokenUsage";
 
 /**
- * Aggregate token usage across rolling time windows for the Overview page.
- *
- * `today` is calendar-day (since local midnight, derived from the caller's
- * timezone offset); the others are rolling intervals back from now.
+ * `today` is since local midnight; the rest are rolling.
  */
-export type TokenUsageWindows = { 
-/**
- * Last 60 minutes.
- */
-hour: WindowTokenUsage, 
-/**
- * Since local midnight.
- */
-today: WindowTokenUsage, 
-/**
- * Last 24 hours.
- */
-day: WindowTokenUsage, 
-/**
- * Last 7 days.
- */
-week: WindowTokenUsage, 
-/**
- * Last 30 days.
- */
-month: WindowTokenUsage, };
+export type TokenUsageWindows = { hour: WindowTokenUsage, today: WindowTokenUsage, day: WindowTokenUsage, week: WindowTokenUsage, month: WindowTokenUsage, };

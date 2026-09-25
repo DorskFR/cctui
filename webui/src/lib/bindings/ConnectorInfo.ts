@@ -2,42 +2,22 @@
 import type { GithubCredentialKind } from "./GithubCredentialKind";
 
 /**
- * API view of a connector.
- *
- * The credential and webhook secret are **never**
- * present — only a non-secret [`ConnectorInfo::credential_preview`] mask, so the
- * webui and agents can confirm a connector exists without ever seeing the token.
+ * A connector as read back; secrets are never included.
  */
 export type ConnectorInfo = { id: string, name: string, credential_kind: GithubCredentialKind, 
 /**
- * A masked, non-secret fragment of the stored credential (e.g.
- * `github_pat_ab…wxyz`). Enough to tell connectors apart; never the token.
+ * Masked fragment, e.g. `github_pat_ab…wxyz`.
  */
-credential_preview: string, 
+credential_preview: string, has_webhook_secret: boolean, repos: Array<string>, user_id: string, 
 /**
- * Whether a webhook secret is configured (the secret itself is never shown).
- */
-has_webhook_secret: boolean, 
-/**
- * `owner/name` slugs this connector tracks.
- */
-repos: Array<string>, 
-/**
- * Owning user — admins manage connectors across users, so the owner matters.
- */
-user_id: string, 
-/**
- * ISO-8601 creation timestamp.
+ * ISO-8601.
  */
 created_at: string, 
 /**
- * ISO-8601 time of the last reconcile-poll attempt, or `None` if the
- * connector has not been polled yet.
+ * ISO-8601. `None` until first polled.
  */
 last_polled_at: string | null, 
 /**
- * The last reconcile-poll error (e.g. a bad/insufficient-scope PAT), or
- * `None` when the last poll succeeded. Surfaced in the connector list so a
- * misconfigured credential is visible without reading the server log.
+ * `None` when the last poll succeeded.
  */
 last_error: string | null, };

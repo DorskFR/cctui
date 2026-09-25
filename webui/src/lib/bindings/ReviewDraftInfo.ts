@@ -4,20 +4,16 @@ import type { DraftCommentInfo } from "./DraftCommentInfo";
 import type { DraftStatus } from "./DraftStatus";
 import type { ReviewVerdict } from "./ReviewVerdict";
 
-/**
- * API view of a review draft plus its inline comments, returned by the draft
- * CRUD routes. The webui renders the comments inline in the diff viewer.
- */
 export type ReviewDraftInfo = { id: string, connector_id: string, repo: string, number: number, author_kind: DraftAuthorKind, 
 /**
- * The owning user, when `author_kind` is `user`.
+ * Set when `author_kind` is `user`.
  */
 author_user_id?: string | null, 
 /**
- * The authoring session, when `author_kind` is `agent`.
+ * Set when `author_kind` is `agent`.
  */
 author_session_id?: string | null, verdict: ReviewVerdict, status: DraftStatus, created_at: string, updated_at: string, 
 /**
- * The draft's inline comments, oldest first.
+ * Oldest first.
  */
 comments: Array<DraftCommentInfo>, };

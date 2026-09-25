@@ -2,21 +2,10 @@
 import type { ForkExtract } from "./ForkExtract";
 
 /**
- * Body for `POST /api/v1/sessions/{id}/fork`.
- *
- * Fork an existing conversation into a brand-new session. All fields are
- * optional overrides; omitted fields inherit from the parent (the working
- * directory is always inherited from the parent server-side, and the
- * adapter/account follow the parent too). `model`/`effort` default to the
- * parent's current values (the webui pre-fills them), so a plain fork
- * preserves the model; setting them is how "fork to change model" works for
- * claude (which has no in-place switch). `prompt` is an optional
- * first turn to send on the forked branch.
+ * Omitted fields inherit from the parent; working dir, adapter and account always do.
  */
 export type ForkRequest = { model?: string | null, effort?: string | null, prompt?: string | null, name?: string | null, 
 /**
- * Conversation-extract selector: fork only a slice of the
- * parent's history. `None` → full-history fork. Claude-only; the
- * server rejects it for codex sessions.
+ * Fork only a slice of history. Claude only.
  */
 extract?: ForkExtract | null, };

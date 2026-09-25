@@ -3,13 +3,8 @@
 /**
  * One `(account, provider)` entry in [`DispatchRequest::accounts`].
  */
-export type DispatchAccount = { 
+export type DispatchAccount = { account: string, 
 /**
- * Named account to mint a gateway token for.
- */
-account: string, 
-/**
- * Provider disambiguating a name shared across providers. `None` → the
- * anthropic family, matching the singular-account default.
+ * `None` = anthropic.
  */
 provider?: string | null, };

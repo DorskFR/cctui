@@ -2,14 +2,10 @@
 
 export type DispatchResponse = { session_id: string, dispatcher: string, 
 /**
- * Opaque per-dispatcher identifier (e.g. `"jobs/claude-worker-abc-…"`).
+ * Opaque dispatcher handle.
  */
 handle: string, namespace?: string | null, 
 /**
- * Dispatch outcome: `dispatched` (a fresh run was launched),
- * `deduplicated` (an in-flight Job already owns the one callback the caller
- * is waiting on), or `redispatched` (a *terminal* Job was deleted and a
- * fresh run launched — so the caller's wait resolves on the new callback
- * instead of parking on a Job that already ran and will never call back).
+ * `dispatched`, `deduplicated` or `redispatched`.
  */
 status: string, };

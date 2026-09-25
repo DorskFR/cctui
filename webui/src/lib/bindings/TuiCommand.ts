@@ -2,18 +2,10 @@
 
 export type TuiCommand = { "type": "subscribe", session_id: string, } | { "type": "unsubscribe", session_id: string, } | { "type": "watch_terminal", session_id: string, watch: boolean, } | { "type": "message", session_id: string, content: string, client_msg_id?: string | null, 
 /**
- * Structured `AskUserQuestion` answer: per-question 0-based option
- * indices, in question order. Present only when the client
- * is answering a live ask with pure option picks (no free text) —
- * lets the daemon drive the actual form via PTY keystrokes so claude
- * records a genuine `tool_result` instead of "User declined to answer
- * questions" (the ESC-dismiss fallback). `content` still carries the
- * flattened text so older daemons (and the fallback path) work.
+ * 0-based option picks per question; `content` stays the text fallback.
  */
 ask_picks?: Array<Array<number>> | null, 
 /**
- * `UUIDv7` minted by the client when the human hit send, carried through
- * the daemon onto every event this turn produces so clients dedup by
- * identity. Absent from older clients, which fall back to content.
+ * Client-minted `UUIDv7`.
  */
 turn_id?: string | null, } | { "type": "permission_response", session_id: string, request_id: string, behavior: string, };

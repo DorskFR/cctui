@@ -2,26 +2,18 @@
 import type { ReviewThreadCommentInfo } from "./ReviewThreadCommentInfo";
 
 /**
- * One pulled-down GitHub review thread (CONN-3 `github.review_threads`) plus its
- * comments, anchored on a diff line.
- *
- * Distinct from a local draft: it is already
- * posted on GitHub. The webui renders it inline, visually separate from drafts.
+ * A review thread already posted on GitHub.
  */
-export type ReviewThreadInfo = { thread_node_id: string, 
+export type ReviewThreadInfo = { thread_node_id: string, path?: string | null, 
 /**
- * Head-side path the thread is anchored on, when known.
- */
-path?: string | null, 
-/**
- * `LEFT` | `RIGHT` diff side, when anchored.
+ * `LEFT` | `RIGHT`, when anchored.
  */
 side?: string | null, 
 /**
- * 1-based line on `side`, when anchored.
+ * 1-based, on `side`.
  */
 line?: number | null, resolved: boolean, 
 /**
- * The thread's comments, oldest first.
+ * Oldest first.
  */
 comments: Array<ReviewThreadCommentInfo>, };

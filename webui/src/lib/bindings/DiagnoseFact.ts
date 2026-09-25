@@ -8,18 +8,15 @@
  */
 export type DiagnoseFact<T> = { value?: T | null, 
 /**
- * Unix epoch millis when the daemon last observed this fact. `None`
- * when the underlying signal carries no timestamp.
+ * Unix ms. `None` when the signal carries no timestamp.
  */
 observed_at_ms?: number | null, 
 /**
- * Staleness at report-build time: `generated_at_ms - observed_at_ms`,
- * clamped to `>= 0`.
+ * `generated_at_ms - observed_at_ms`, clamped to `>= 0`.
  */
 age_ms?: number | null, 
 /**
- * Which input/subsystem produced the fact (e.g. `hook`,
- * `control_socket`, `discovery`, `filesystem`).
+ * Producing subsystem, e.g. `hook`, `control_socket`, `discovery`.
  */
 source: string, 
 /**
