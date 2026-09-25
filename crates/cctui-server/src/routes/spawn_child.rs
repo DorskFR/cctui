@@ -211,7 +211,8 @@ async fn load_parent(
     session_id: &str,
     caller: Uuid,
 ) -> Result<Parent, (StatusCode, Json<ApiError>)> {
-    let row: Option<(Option<Uuid>, Option<String>, Option<Uuid>, Option<String>)> = sqlx::query_as(
+    type ParentRow = (Option<Uuid>, Option<String>, Option<Uuid>, Option<String>);
+    let row: Option<ParentRow> = sqlx::query_as(
         "SELECT machine_uuid, working_dir, user_id, permission_mode FROM sessions WHERE id = $1",
     )
     .bind(session_id)
@@ -1014,8 +1015,7 @@ mod tests {
         r.permission_mode = Some(PermissionMode::Whip);
         assert!(matches!(authorize(Some(&cap), &r, &ask), Err(Denied::PermissionMode { .. })));
 
-        let ceiling =
-            SpawnCapability { max_permission_mode: Some(PermissionMode::Auto), ..cap.clone() };
+        let ceiling = SpawnCapability { max_permission_mode: Some(PermissionMode::Auto), ..cap };
         r.permission_mode = Some(PermissionMode::Yolo);
         let yolo = Usage { parent_mode: Some(PermissionMode::Yolo), ..Usage::default() };
         assert!(
@@ -1084,7 +1084,7 @@ mod tests {
         assert_eq!(root.max_depth, Some(cctui_proto::api::DEFAULT_MAX_DEPTH));
         assert_eq!(root.max_children, Some(cctui_proto::api::DEFAULT_MAX_CHILDREN));
         assert!(root.max_tree_budget_usd.is_some_and(f64::is_finite));
-        assert!(cctui_proto::api::DEFAULT_MAX_DEPTH >= 2);
+        const { assert!(cctui_proto::api::DEFAULT_MAX_DEPTH >= 2) };
     }
 
     #[test]
@@ -1226,7 +1226,7 @@ mod tests {
         .await
         .expect("clamped to the remainder");
         assert_eq!(a.budget_usd, Some(1.0));
-        assert_eq!(tree_granted_usd(&pool, &root_id).await.unwrap(), 5.0);
+        assert!((tree_granted_usd(&pool, &root_id).await.unwrap() - 5.0).abs() < 1e-9);
 
         let err = reserve_child(
             &pool,
@@ -1241,7 +1241,7 @@ mod tests {
         assert_eq!(err.0, StatusCode::FORBIDDEN, "the tree is spent");
 
         release_child(&pool, &grandchild_key).await;
-        assert_eq!(tree_granted_usd(&pool, &root_id).await.unwrap(), 3.0);
+        assert!((tree_granted_usd(&pool, &root_id).await.unwrap() - 3.0).abs() < 1e-9);
 
         sqlx::query("DELETE FROM session_spawn_capabilities WHERE capability->>'tree_root' = $1")
             .bind(&root_id)
