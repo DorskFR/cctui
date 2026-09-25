@@ -98,9 +98,7 @@ mod tests {
     use super::*;
     use crate::adapter::AdapterEvent;
 
-    /// A synthetic transcript event of a realistic shape/size (§5). The
-    /// deliberately repetitive envelope (tool names, keys, boilerplate prose)
-    /// mirrors the cross-event redundancy that makes batch compression win.
+    /// Realistic transcript event with the cross-event redundancy batching exploits.
     fn synth_event(i: usize) -> DaemonFrameUp {
         let payload = serde_json::json!({
             "role": "assistant",
@@ -260,8 +258,7 @@ mod tests {
 
     #[test]
     fn batched_replay_hits_the_five_x_target() {
-        // 500 realistic events, replayed one-per-frame vs coalesced into one
-        // batch and zstd-compressed. Batch compression must beat 5x (§5).
+        // One batched zstd frame must be 5x smaller than 500 single frames.
         let events: Vec<DaemonFrameUp> = (0..500).map(synth_event).collect();
         let per_frame_bytes: usize =
             events.iter().map(|e| serde_json::to_vec(e).unwrap().len()).sum();

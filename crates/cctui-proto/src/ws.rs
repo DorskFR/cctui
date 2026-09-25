@@ -6,12 +6,8 @@ use crate::api::DaemonAdapterConfig;
 
 // --- Daemon → Server ---
 
-/// Successful [`DaemonFrameUp::ReadFileResult`] payload.
-///
-/// Exactly one of `data` (standard base64, files up to
-/// [`READ_FILE_INLINE_BYTES`]) or `blob_hash` (sha256 hex of the bytes the
-/// daemon PUT to the blob store) is set. `sha256` is always the content hash
-/// (the server's `ETag`).
+/// Exactly one of `data` (base64, up to [`READ_FILE_INLINE_BYTES`]) or
+/// `blob_hash` is set. `sha256` is the content hash.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReadFileOk {
     pub name: String,
@@ -25,8 +21,7 @@ pub struct ReadFileOk {
     pub blob_hash: Option<String>,
 }
 
-/// Why a [`DaemonFrameDown::ReadFile`] was refused; the server maps these
-/// onto HTTP statuses (403 / 413 / 404 / 500).
+/// Maps to HTTP 403 / 413 / 404 / 500.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReadFileErrorKind {
@@ -36,11 +31,9 @@ pub enum ReadFileErrorKind {
     Io,
 }
 
-/// Files up to this size ride inline in the `ReadFileResult`; larger ones go
-/// through the blob store.
+/// Larger files go through the blob store.
 pub const READ_FILE_INLINE_BYTES: u64 = 1024 * 1024;
 
-/// Hard cap on a `ReadFile` (the blob store's own limit).
 pub const READ_FILE_MAX_BYTES: u64 = 32 * 1024 * 1024;
 
 /// Frames sent by a daemon to the server over `/api/v1/daemon/ws`.
@@ -50,54 +43,38 @@ pub const READ_FILE_MAX_BYTES: u64 = 32 * 1024 * 1024;
 /// through every construct/match site for no real benefit on this
 /// non-hot-path wire enum.
 
+/// Daemon → server frames on `/api/v1/daemon/ws`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[non_exhaustive]
 #[allow(clippy::large_enum_variant)]
 pub enum DaemonFrameUp {
-    /// An adapter produced an event. The server maps `(machine_id, adapter_id,
-    /// local_id)` to a stable `server_session_id`, persisting a new row on
-    /// `SessionStarted` if one does not exist yet.
-    Event { adapter_id: String, event: AdapterEvent },
-    /// Optional explicit registration hint when the adapter cannot supply a
-    /// full `SessionStarted` yet (e.g. resumed session). Mostly redundant.
-    SessionRegistered { adapter_id: String, local_id: String },
-    /// Liveness ping. `bandwidth` carries the daemon's per-subsystem
-    /// byte counters so the server can persist per-machine bandwidth and detect
-    /// an upload/insert divergence. Optional so older daemons still parse and the
-    /// server tolerates its absence.
+    Event {
+        adapter_id: String,
+        event: AdapterEvent,
+    },
+    /// Registration hint for when `SessionStarted` is not available yet.
+    SessionRegistered {
+        adapter_id: String,
+        local_id: String,
+    },
+    /// Liveness ping. Optional fields are omitted by daemons that lack them.
     Heartbeat {
         sent_at: chrono::DateTime<chrono::Utc>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         bandwidth: Option<crate::bandwidth::BandwidthSummary>,
-        /// Whether this machine has a deterministic update hook configured
-        /// (`CCTUI_UPDATE_COMMAND`), so the server can offer the hook instead
-        /// of a YOLO agent. Optional: a daemon too old to know the field
-        /// omits it, and the server then leaves the stored flag alone rather
-        /// than reading the absence as "no hook".
+        /// `None` leaves the stored flag unchanged.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         update_hook: Option<bool>,
-        /// Host CPU / memory / disk snapshot for the header resource gauge.
-        /// Optional: a daemon too old (or on a platform without `/proc`)
-        /// omits it and the server keeps the last stored snapshot.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         resources: Option<crate::resources::MachineResources>,
-        /// Shorts of the claude jobs present under the daemon's jobs root.
-        /// The server answers with [`DaemonFrameDown::ArchivedJobs`] for the
-        /// ones whose session it has archived. Optional: a daemon that omits
-        /// it cannot parse that reply and must never receive one.
+        /// Job shorts on disk, answered by [`DaemonFrameDown::ArchivedJobs`].
         #[serde(default, skip_serializing_if = "Option::is_none")]
         claude_jobs: Option<Vec<String>>,
-        /// Harness versions and auto-update outcomes. Optional: the server
-        /// sends [`DaemonFrameDown::HarnessUpdatePolicy`] only to a daemon that
-        /// reports it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         harness: Option<crate::harness::HarnessReport>,
     },
-    /// Reply to a [`DaemonFrameDown::StageFiles`] request (mid-chat
-    /// attachments). `request_id` correlates with the originating
-    /// `POST /api/v1/sessions/{id}/files` so the server can return the staged
-    /// absolute paths (or the error) to the waiting HTTP client.
+    /// Reply to [`DaemonFrameDown::StageFiles`].
     StageFilesResult {
         request_id: uuid::Uuid,
         ok: bool,
@@ -106,10 +83,7 @@ pub enum DaemonFrameUp {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
-    /// Reply to a [`DaemonFrameDown::ListDirs`] request (working-directory
-    /// autocomplete in the spawn dialog). `request_id` correlates with the
-    /// originating `GET /api/v1/machines/{id}/fs/dirs` so the server can
-    /// return the directory names (or the error) to the waiting HTTP client.
+    /// Reply to [`DaemonFrameDown::ListDirs`].
     ListDirsResult {
         request_id: uuid::Uuid,
         ok: bool,
@@ -118,8 +92,7 @@ pub enum DaemonFrameUp {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
-    /// Reply to a [`DaemonFrameDown::GitInfo`] request; `request_id`
-    /// correlates with the originating `GET /api/v1/machines/{id}/fs/gitinfo`.
+    /// Reply to [`DaemonFrameDown::GitInfo`].
     GitInfoResult {
         request_id: uuid::Uuid,
         ok: bool,
@@ -128,8 +101,7 @@ pub enum DaemonFrameUp {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
-    /// Reply to a [`DaemonFrameDown::ReadFile`] request; `request_id`
-    /// correlates with the originating `GET /api/v1/machines/{id}/fs/file`.
+    /// Reply to [`DaemonFrameDown::ReadFile`].
     ReadFileResult {
         request_id: uuid::Uuid,
         ok: bool,
@@ -140,16 +112,9 @@ pub enum DaemonFrameUp {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
-    /// One chunk of a serialized up-frame split by [`crate::chunk`].
-    /// `transfer_id` is the content hash of the full payload (idempotent
-    /// retransmission); `data` is standard-base64 of the raw chunk bytes. The
-    /// server reassembles by `transfer_id`, parses the joined payload as a
-    /// `DaemonFrameUp`, and processes it as usual.
-    ///
-    /// `codec` tags the reassembled bytes: `Some("zstd")` means the
-    /// server must [`crate::compress::decompress_codec`] the joined payload
-    /// before parsing it. Omitted (`None`) for legacy daemons that
-    /// chunk uncompressed JSON.
+    /// One chunk of an up-frame split by [`crate::chunk`]. `transfer_id` is the
+    /// payload hash; `data` is base64. `codec: Some("zstd")` means the joined
+    /// payload must be decompressed before parsing.
     Chunk {
         transfer_id: String,
         chunk_index: u32,
@@ -158,73 +123,57 @@ pub enum DaemonFrameUp {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         codec: Option<String>,
     },
-    /// A single up-frame whose serialized body was compressed but is
-    /// small enough to skip chunking. `data` is standard-base64 of the codec
-    /// output; the server [`crate::compress::decode_compressed`]s it back to a
-    /// serialized inner `DaemonFrameUp` and processes that.
-    Compressed { codec: String, data: String },
-    /// Several up-frames coalesced over the daemon's micro-batch window
-    /// so cross-event redundancy compresses far better than one frame
-    /// at a time. The server processes `frames` in order, preserving per-event
-    /// semantics. Rides inside a `Compressed`/`Chunk` envelope when large.
-    Batch { frames: Vec<Self> },
+    /// A compressed up-frame small enough not to need chunking.
+    Compressed {
+        codec: String,
+        data: String,
+    },
+    /// Frames coalesced for better compression, processed in order.
+    Batch {
+        frames: Vec<Self>,
+    },
 }
 
-/// Frames sent by the server to a daemon over `/api/v1/daemon/ws`.
+/// Server → daemon frames on `/api/v1/daemon/ws`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum DaemonFrameDown {
-    /// Initial declarative state — sent on connect and again whenever the
-    /// server mutates `adapters_enabled` (or the owner's secret-scrub settings)
-    /// for this machine. `secret_scrub` is defaulted so older daemons/tests that
-    /// omit it keep parsing.
+    /// Declarative state, sent on connect and on every change.
     Reconcile {
         adapters: Vec<DaemonAdapterConfig>,
         #[serde(default)]
         secret_scrub: SecretScrubConfig,
     },
-    /// A command for a specific adapter (and ultimately a specific session).
-    /// `command` is boxed so this large variant (a `Spawn` carries a full
-    /// `SessionSpec` with env + bootstrap) doesn't bloat every `DaemonFrameDown`.
-    Command { adapter_id: String, command: Box<AdapterCommand> },
-    /// Acknowledge that an event with the given monotonic `seq` has been
-    /// durably stored. Lets the daemon trim its on-disk spool.
-    Ack { seq: u64 },
-    /// Stage mid-chat file attachments for a running session. The
-    /// daemon decodes + writes the files into the same per-session staging dir
-    /// used for spawn-time uploads, then replies with a
-    /// [`DaemonFrameUp::StageFilesResult`] carrying the staged absolute paths.
-    /// `local_id` is the adapter-local session id (the daemon's staging key);
-    /// `request_id` correlates the reply with the waiting HTTP request.
+    Command {
+        adapter_id: String,
+        command: Box<AdapterCommand>,
+    },
+    /// Event `seq` is durably stored; the daemon may trim its spool.
+    Ack {
+        seq: u64,
+    },
+    /// Stage mid-chat attachments; answered by [`DaemonFrameUp::StageFilesResult`].
     StageFiles {
         request_id: uuid::Uuid,
         adapter_id: String,
         local_id: String,
         uploads: Vec<BootstrapFile>,
     },
-    /// List the sub-directories of `path` on the daemon's machine (working-
-    /// directory autocomplete in the spawn dialog). The daemon expands a
-    /// leading `~`, reads one directory level, and replies with a
-    /// [`DaemonFrameUp::ListDirsResult`] carrying the sorted entry names.
-    ListDirs { request_id: uuid::Uuid, path: String },
-    /// Git facts for `path` (spawn dialog branch badge). The daemon expands
-    /// `~`, refuses paths outside its allowed roots, and replies with a
-    /// [`DaemonFrameUp::GitInfoResult`]. `include_dirty` opts into a
-    /// `git status` subprocess.
+    /// One level of sub-directories of `path` (`~` expanded).
+    ListDirs {
+        request_id: uuid::Uuid,
+        path: String,
+    },
+    /// Git facts for `path`. `include_dirty` runs `git status`.
     GitInfo {
         request_id: uuid::Uuid,
         path: String,
         #[serde(default)]
         include_dirty: bool,
     },
-    /// Read one file on the daemon's machine for the webui (a path an agent
-    /// linked in a message). The daemon expands `~`, canonicalises, refuses
-    /// anything outside its allow-list (temp dirs, `$HOME`, plus `cwd` — the
-    /// session's working directory), and replies with a
-    /// [`DaemonFrameUp::ReadFileResult`]: bytes inline when small, otherwise
-    /// the sha256 of the blob it PUT to the store. `max_bytes` is the server's
-    /// hard cap; larger files are refused with [`ReadFileErrorKind::TooLarge`].
+    /// Read one file within the daemon's allow-list (temp dirs, `$HOME`, `cwd`).
+    /// Files over `max_bytes` fail with [`ReadFileErrorKind::TooLarge`].
     ReadFile {
         request_id: uuid::Uuid,
         path: String,
@@ -232,58 +181,41 @@ pub enum DaemonFrameDown {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cwd: Option<String>,
     },
-    /// Acknowledge chunked-transfer progress: the highest contiguous
-    /// chunk index the server has reassembled for `transfer_id`, or `None` when
-    /// it holds no usable prefix (unknown/evicted transfer) so the daemon
-    /// restarts from chunk 0. The daemon resumes from the chunk after the
-    /// acked one on the next connection.
+    /// `None` means no usable prefix; restart from chunk 0.
     ChunkAck {
         transfer_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         highest_contiguous_chunk: Option<u32>,
     },
-    /// Per-session transcript high-water marks, sent right after
-    /// Reconcile on connect. `session_marks` maps each session's `local_id` to
-    /// the server's stored transcript byte offset, so the daemon clamps its tail
-    /// cursor forward and resumes instead of replaying the transcript from zero.
+    /// `local_id` → stored transcript byte offset, sent right after `Reconcile`.
     ResumeMarks {
         session_marks: Vec<(String, u64)>,
-        /// Sessions the server has archived on this machine; the daemon
-        /// removes any claude job still on disk for one of them. Superseded by
-        /// [`Self::ArchivedJobs`]; kept so frames from older servers parse.
+        /// Superseded by [`Self::ArchivedJobs`].
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         archived: Vec<String>,
     },
-    /// Sessions the server has archived among the `claude_jobs` a
-    /// [`DaemonFrameUp::Heartbeat`] reported. The daemon removes their jobs so
-    /// `claude agents` converges on the archive state without a reconnect.
-    /// Only ever sent to a daemon that reported `claude_jobs`.
-    ArchivedJobs { session_ids: Vec<String> },
-    /// Re-run codex `model/list` over a one-shot app-server (no session
-    /// spawned) and ship the result as an
+    /// Archived sessions among the reported `claude_jobs`; the daemon removes
+    /// their jobs. Sent only to daemons that report `claude_jobs`.
+    ArchivedJobs {
+        session_ids: Vec<String>,
+    },
+    /// Re-run codex `model/list`; the result arrives as
     /// [`AdapterEvent::CodexModels`](crate::adapter::AdapterEvent::CodexModels).
-    /// Fire-and-forget: the refreshed catalog arrives on the event stream like
-    /// a session-start refresh does.
     RefreshCodexModels {},
-    /// Run this machine's deterministic update hook to deploy cctui `version`.
-    ///
-    /// Fire-and-forget on purpose: the hook restarts the very server that sent
-    /// this frame, so there is no reply to wait for. Progress comes back out
-    /// of band over HTTP (`POST /api/v1/daemon/update-hook/{run_id}`), where it
-    /// reaches whichever server process is alive by then, and the run row in
-    /// Postgres outlives them both. A daemon with no hook configured reports
-    /// `failed` immediately rather than silently dropping the frame.
-    RunUpdateHook { run_id: uuid::Uuid, version: String, release_url: String },
-    /// Effective harness auto-update policy for this machine. Only ever sent
-    /// to a daemon whose heartbeat carried a `harness` report.
-    HarnessUpdatePolicy { policy: crate::harness::HarnessUpdatePolicy },
+    /// Run the update hook for `version`. No reply: the hook restarts the server,
+    /// so progress is posted to `/api/v1/daemon/update-hook/{run_id}`.
+    RunUpdateHook {
+        run_id: uuid::Uuid,
+        version: String,
+        release_url: String,
+    },
+    /// Sent only to daemons that report `harness`.
+    HarnessUpdatePolicy {
+        policy: crate::harness::HarnessUpdatePolicy,
+    },
 }
 
-/// Effective secret-scrub config synced to the daemon.
-///
-/// The enable
-/// flag plus the owner's enabled user patterns. The compiled defaults live in
-/// `cctui-crypto` on both sides; the daemon combines them at compile time.
+/// User patterns only; compiled defaults live in `cctui-crypto`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SecretScrubConfig {
     #[serde(default)]
@@ -292,89 +224,56 @@ pub struct SecretScrubConfig {
     pub patterns: Vec<ScrubPattern>,
 }
 
-/// A single user-supplied scrub pattern (name + regex source). Validated
-/// server-side before it ever reaches the wire.
+/// Validated server-side.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScrubPattern {
     pub name: String,
     pub regex: String,
 }
 
-// --- Dispatcher ↔ Server (247/248) ---
+// --- Dispatcher ↔ Server ---
 
-/// A dispatch intent relayed from the server to an enrolled dispatcher over the
-/// wire.
-///
-/// The dispatcher turns this into a worker container/pod on its
-/// host, injecting the dispatch info into the worker env. `payload` is opaque —
-/// the dispatcher forwards it verbatim (lifting `cctui_machine_key` /`name` out
-/// for env injection) without otherwise inspecting it.
-///
-/// This is the wire mirror of the server-internal `DispatchSpec`; the borrowed
-/// in-process form stays on the server, this owned form crosses the WS.
+/// Dispatch intent sent to an enrolled dispatcher. `payload` is forwarded verbatim.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WireDispatchSpec {
-    /// Pre-minted session id (also the runtime correlation id).
     pub session_id: String,
-    /// Per-flow timeout in minutes, if the caller set one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_minutes: Option<u32>,
-    /// Caller resume URL — a bearer capability; do not log.
+    /// Bearer capability; never logged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reply_url: Option<String>,
-    /// Idempotency / dedup key: the caller's logical request id (e.g.
-    /// an automation dedup key like `triage-PROJ-…`). The dispatcher derives the worker
-    /// Job name from THIS, not `session_id` — which is now a fresh UUID per
-    /// dispatch so isolated short-lived pods never get their logs chained into
-    /// one growing conversation. A duplicate webhook within a Job's lifetime
-    /// still coalesces (same key ⇒ same Job name); a genuinely new round gets its
-    /// own pod AND its own session. `None` ⇒ the dispatcher falls back to
-    /// `session_id` (each dispatch unique, no dedup).
+    /// Derives the worker job name. `None` = `session_id`, i.e. no dedup.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dedup_key: Option<String>,
-    /// `WorkerProfile` to instantiate, selected by name only. A dispatch may
-    /// only *pick* an operator-authored profile; it can never supply raw
-    /// pod-spec fields. `None` ⇒ the dispatcher falls back to a `profile` key in
-    /// `payload`, then to its configured `default_profile`.
+    /// Operator-authored profile name. `None` = `payload.profile`, then the default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile: Option<String>,
-    /// Free-form blob, forwarded verbatim to the worker.
     pub payload: serde_json::Value,
 }
 
-/// Frames sent by the server to an enrolled dispatcher over
-/// `/api/v1/dispatcher/ws`. Peer of [`DaemonFrameDown`]; the verb is
-/// Dispatch (spawn a container/pod) rather than a per-adapter command.
+/// Server → dispatcher frames on `/api/v1/dispatcher/ws`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum DispatcherFrameDown {
-    /// Spawn a worker for this session. The dispatcher replies with a
-    /// [`DispatcherFrameUp::DispatchResult`] carrying the opaque handle and the
-    /// idempotency outcome (`dispatched`/`deduplicated`/`redispatched`).
     Dispatch { request_id: uuid::Uuid, spec: WireDispatchSpec },
-    /// Inspect a previously returned handle. Replies with
-    /// [`DispatcherFrameUp::StatusResult`].
     Status { request_id: uuid::Uuid, handle: String },
-    /// Cancel/delete a previously returned handle. Replies with
-    /// [`DispatcherFrameUp::CancelResult`].
     Cancel { request_id: uuid::Uuid, handle: String },
 }
 
-/// Frames sent by an enrolled dispatcher to the server over
-/// `/api/v1/dispatcher/ws`. Peer of [`DaemonFrameUp`].
+/// Dispatcher → server frames on `/api/v1/dispatcher/ws`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum DispatcherFrameUp {
-    /// Sent once on connect: identifies the dispatcher kind + running version.
-    Hello { kind: String, version: String },
-    /// Liveness ping; drives the server's last-seen/online-stale-offline tier
-    /// (mirrors the daemon heartbeat).
-    Heartbeat { sent_at: chrono::DateTime<chrono::Utc> },
-    /// Outcome of a [`DispatcherFrameDown::Dispatch`]. `status` is the
-    /// idempotency outcome surfaced verbatim to the caller; `handle` is the
-    /// opaque per-dispatcher reference (e.g. `container/cctui-worker-…`).
+    Hello {
+        kind: String,
+        version: String,
+    },
+    Heartbeat {
+        sent_at: chrono::DateTime<chrono::Utc>,
+    },
+    /// `status` is `dispatched` / `deduplicated` / `redispatched`.
     DispatchResult {
         request_id: uuid::Uuid,
         session_id: String,
@@ -386,8 +285,7 @@ pub enum DispatcherFrameUp {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
-    /// Outcome of a [`DispatcherFrameDown::Status`]: the lifecycle state of a
-    /// handle (`running`/`complete`/`failed`/`gone`).
+    /// `state` is `running` / `complete` / `failed` / `gone`.
     StatusResult {
         request_id: uuid::Uuid,
         handle: String,
@@ -396,7 +294,6 @@ pub enum DispatcherFrameUp {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
-    /// Outcome of a [`DispatcherFrameDown::Cancel`].
     CancelResult {
         request_id: uuid::Uuid,
         handle: String,
@@ -412,30 +309,17 @@ pub enum DispatcherFrameUp {
 #[ts(export)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentEvent {
-    /// Free-form text. `meta` marks a message that was injected *to* the agent
-    /// rather than typed by the human (harness wake-ups, `<task-notification>`,
-    /// `<system-reminder>`, slash-command expansions). Set authoritatively at
-    /// the adapter layer (Claude's `isMeta` + known harness tags) so clients
-    /// can render it distinctly without re-sniffing strings. `#[serde(default)]`
-    /// keeps older stored payloads (no field) decoding as non-meta.
-    ///
-    /// `seq` is a monotonic per-session insert sequence
-    /// (`stream_events.id`) so clients order events causally rather than by
-    /// receive-time `ts`, which can tie or invert (a late-flushed
-    /// `AskUserQuestion` carries a `ts` after the user's answer). Optional so
-    /// payloads still decode.
+    /// `meta` marks text injected into the agent rather than typed by the human.
+    /// `seq` is the per-session insert order; use it, not `ts`, for ordering.
     Text {
         content: String,
         #[serde(default)]
         meta: bool,
         /// `thinking` | `redacted_thinking` | `attachment` | `system_marker` |
-        /// `turn_annotation` | `queue_op`;
-        /// `None` is ordinary visible prose. Free string so an unknown adapter
-        /// kind still decodes.
+        /// `turn_annotation` | `queue_op`. `None` is visible prose.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         kind: Option<String>,
-        /// Queue verb for a `queue_op`: `queued` | `dequeued` | `removed` |
-        /// `cleared`. `None` for every other kind.
+        /// For `queue_op`: `queued` | `dequeued` | `removed` | `cleared`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         operation: Option<String>,
         ts: i64,
@@ -445,17 +329,14 @@ pub enum AgentEvent {
         usage: Option<crate::models::TokenUsage>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         seq: Option<i64>,
-        /// Identity of the human turn this text belongs to. `None` for
-        /// assistant text, for turns cctui did not originate, and for rows
-        /// stored before the column existed.
+        /// `None` for assistant text and turns cctui did not originate.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         turn_id: Option<uuid::Uuid>,
     },
     ToolCall {
         tool: String,
         input: serde_json::Value,
-        /// `server_tool_use` marks a provider-executed tool (web search, code
-        /// execution); `None` is an ordinary client-side tool call.
+        /// `server_tool_use` for provider-executed tools.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         kind: Option<String>,
         ts: i64,
@@ -465,8 +346,7 @@ pub enum AgentEvent {
     ToolResult {
         tool: String,
         output_summary: String,
-        /// `server_tool_result` marks the output of a provider-executed tool;
-        /// `None` is an ordinary client-side tool result.
+        /// `server_tool_result` for provider-executed tools.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         kind: Option<String>,
         #[serde(default)]
@@ -491,29 +371,20 @@ pub enum AgentEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         turn_id: Option<uuid::Uuid>,
     },
-    /// A context reset boundary (`/clear` or `/compact`). The session id rotates
-    /// in place under the same worker; rather than splitting into a second
-    /// session (archive is worker-scoped, so one `claude rm` would wipe both),
-    /// we keep one session and emit this marker so clients can render the cut
-    /// distinctly.
+    /// `/clear` boundary; the session id rotates under the same worker.
     ContextReset {
         ts: i64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         seq: Option<i64>,
     },
-    /// A `/compact` boundary. Unlike `/clear`, `/compact` does NOT rotate the
-    /// session id — it appends an `isCompactSummary` line to the same
-    /// transcript — so it surfaces as its own event carrying the summary text,
-    /// rendered as a distinct "context compacted" block rather than a user
-    /// message.
+    /// `/compact` boundary with its summary text.
     CompactSummary {
         content: String,
         ts: i64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         seq: Option<i64>,
     },
-    /// A post-turn summary. Renders as subdued footer subtext on the turn's
-    /// last assistant message, not as its own bubble.
+    /// Post-turn summary, rendered as footer text on the last assistant message.
     TurnSummary {
         detail: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -532,9 +403,7 @@ pub enum AgentEvent {
 }
 
 impl AgentEvent {
-    /// The monotonic per-session insert sequence, when the server has
-    /// stamped one. `None` for freshly-normalized events before persistence and
-    /// for legacy payloads persisted before the field existed.
+    /// `None` before persistence.
     #[must_use]
     pub const fn seq(&self) -> Option<i64> {
         match self {
@@ -550,9 +419,6 @@ impl AgentEvent {
         }
     }
 
-    /// Stamp the causal insert sequence. Called by the server right
-    /// after a successful `stream_events` insert so the live broadcast carries
-    /// the same ordering key the reload path derives from `stream_events.id`.
     pub const fn set_seq(&mut self, value: i64) {
         let slot = match self {
             Self::Text { seq, .. }
@@ -568,8 +434,7 @@ impl AgentEvent {
         *slot = Some(value);
     }
 
-    /// Stamp the originating human turn's identity. Only the variants that can
-    /// carry a user turn (`Text`, `Reply`) have a slot; the rest ignore it.
+    /// No-op for variants other than `Text` and `Reply`.
     pub const fn set_turn_id(&mut self, value: uuid::Uuid) {
         match self {
             Self::Text { turn_id, .. } | Self::Reply { turn_id, .. } => *turn_id = Some(value),
@@ -590,38 +455,21 @@ pub enum TuiCommand {
     Unsubscribe {
         session_id: String,
     },
-    /// Start (`watch: true`) or stop (`watch: false`) the read-only live
-    /// terminal view for a session. The server ref-counts watchers
-    /// per session and only tells the daemon to open/close its viewer PTY
-    /// attach on the 0↔1 transition, so idle sessions carry no extra stream.
+    /// The daemon attaches its viewer PTY only while at least one client watches.
     WatchTerminal {
         session_id: String,
         watch: bool,
     },
-    /// A typed reply from a client. `client_msg_id` (when present) lets the
-    /// server ack the send back to the originating socket via
-    /// [`ServerEvent::MessageAck`], so the client can render a precise
-    /// per-message delivery state (sending → delivered / failed) instead of
-    /// optimistically assuming a frame that left the socket was delivered.
-    /// `#[serde(default)]` keeps older clients (no field) working —
-    /// they simply receive no ack.
+    /// `client_msg_id` requests a [`ServerEvent::MessageAck`].
     Message {
         session_id: String,
         content: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         client_msg_id: Option<String>,
-        /// Structured `AskUserQuestion` answer: per-question 0-based option
-        /// indices, in question order. Present only when the client
-        /// is answering a live ask with pure option picks (no free text) —
-        /// lets the daemon drive the actual form via PTY keystrokes so claude
-        /// records a genuine `tool_result` instead of "User declined to answer
-        /// questions" (the ESC-dismiss fallback). `content` still carries the
-        /// flattened text so older daemons (and the fallback path) work.
+        /// 0-based option picks per question; `content` stays the text fallback.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         ask_picks: Option<Vec<Vec<usize>>>,
-        /// `UUIDv7` minted by the client when the human hit send, carried through
-        /// the daemon onto every event this turn produces so clients dedup by
-        /// identity. Absent from older clients, which fall back to content.
+        /// Client-minted UUIDv7.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         turn_id: Option<uuid::Uuid>,
     },
@@ -659,125 +507,80 @@ pub enum ServerEvent {
         description: String,
         input_preview: String,
     },
-    /// A previously-broadcast permission request has been resolved (by TUI
-    /// or a web client). Clients should dismiss any inline prompt UI.
     PermissionResolved {
         session_id: String,
         request_id: String,
     },
-    /// The agent is blocked on an `AskUserQuestion`; carries the question text
-    /// so clients render a live prompt before the transcript flushes the full
-    /// tool call. `questions` carries the raw `tool_input.questions`
-    /// array so clients render the interactive option-card form live rather
-    /// than just the flattened text.
     AskQuestion {
         session_id: String,
         question: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         questions: Option<serde_json::Value>,
-        /// Assistant prose preceding the question in the same turn, so clients
-        /// render the reasoning above the live prompt instead of leaving the
-        /// user to answer blind. `None` when there was none.
+        /// Assistant text preceding the question in the same turn.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         preamble: Option<String>,
     },
-    /// A previously-broadcast `AskQuestion` is resolved; clients dismiss the
-    /// live prompt.
     AskResolved {
         session_id: String,
     },
-    /// The agent is blocked on an `ExitPlanMode` plan-approval prompt; carries
-    /// the plan markdown so clients render a live Plan card with the
-    /// continuation options before the transcript flushes the tool call.
     PlanRequest {
         session_id: String,
         plan: String,
-        /// Assistant prose preceding the plan in the same turn. `None` when
-        /// there was none.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         preamble: Option<String>,
     },
-    /// A previously-broadcast `PlanRequest` is resolved; clients dismiss the
-    /// live Plan card.
     PlanResolved {
         session_id: String,
     },
-    /// Outcome of a client-initiated command (currently `POST /sessions/spawn`).
-    /// `command_id` matches the value returned by the spawn route so the
-    /// originating client can surface success/failure instead of silently
-    /// polling.
+    /// Outcome of a client-initiated command.
     CommandResult {
         command_id: String,
         ok: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
-        /// Set when the command targeted a session the server knows (interrupt,
-        /// set-model, a failed spawn persisted as a row); scopes delivery to
-        /// that session's owner.
+        /// Scopes delivery to the session owner.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         session_id: Option<String>,
     },
-    /// A session reached its end of life: the `sessions` row now carries
-    /// `end_reason` / `end_detail`. List-level peer of the `session_ended`
-    /// stream event, so clients can toast a failure without subscribing.
     SessionEnded {
         session_id: String,
         reason: crate::models::SessionEndReason,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         detail: Option<String>,
     },
-    /// Outcome of a client-sent [`TuiCommand::Message`] carrying a
-    /// `client_msg_id`. Sent only to the originating socket. `ok=false` means
-    /// the server could not dispatch the reply to the session's daemon (e.g.
-    /// the daemon was momentarily offline — `NoDaemon`/`Closed`), so the client
-    /// should mark the message failed and offer a retry rather than leaving it
-    /// stuck "sending…" until it silently vanishes on the next resubscribe.
+    /// Sent only to the originating socket. `ok` means queued to a daemon, not delivered.
     MessageAck {
         session_id: String,
         client_msg_id: String,
         ok: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
-        /// Correlation id of the dispatched `Reply`. An `ok` ack only says the
-        /// frame was queued toward a daemon; the client awaits the adapter's
-        /// [`ServerEvent::CommandResult`] under this id for actual delivery.
+        /// Delivery is confirmed by [`ServerEvent::CommandResult`] under this id.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         command_id: Option<uuid::Uuid>,
     },
-    /// A machine has just reported a fresh expected-files manifest.
     ArchiveManifest {
         machine_id: uuid::Uuid,
         count: i64,
     },
-    /// A machine's liveness tier just changed. Derived from the age
-    /// of `machines.last_seen_at`, which the server advances on every daemon
-    /// `Heartbeat`. Broadcast on transition so webui/TUI can flip a machine to
-    /// offline within one liveness window without waiting for a failed dispatch.
+    /// Sent on tier transitions.
     MachineLiveness {
         machine_id: uuid::Uuid,
         liveness: crate::models::MachineLiveness,
     },
-    /// A daemon heartbeat carried a fresh host resource snapshot. Broadcast on
-    /// every heartbeat so a pinned header gauge follows the machine live.
     MachineResources {
         machine_id: uuid::Uuid,
         resources: crate::resources::MachineResources,
     },
-    /// An account's usage windows were just refreshed upstream. Broadcast from
-    /// the refresh itself, so pushing costs no extra upstream call and a header
-    /// battery follows real consumption instead of its own poll. `usage` is the
-    /// serialized row the accounts usage routes return.
+    /// `usage` is the row the accounts usage routes return.
     AccountUsage {
         account_id: uuid::Uuid,
         usage: serde_json::Value,
     },
-    /// An enrolled dispatcher's liveness tier just changed. Peer of
-    /// [`Self::MachineLiveness`], derived from `dispatchers.last_seen_at`.
     DispatcherLiveness {
         dispatcher_id: uuid::Uuid,
         liveness: crate::models::MachineLiveness,
     },
-    /// A single archive file has just finished uploading.
     ArchiveUploaded {
         machine_id: uuid::Uuid,
         project_dir: String,
@@ -785,25 +588,12 @@ pub enum ServerEvent {
         size_bytes: i64,
         sha256: String,
     },
-    /// A piece of synced GitHub state was just upserted by the `github`
-    /// connector (webhook or reconcile poll), so the `/github` inbox can
-    /// refresh the affected PR without a full poll (docs §6.1 "Live push").
-    ///
-    /// Carried as one envelope rather than a variant per object so new GitHub
-    /// object kinds don't churn the wire enum; `kind` tells the client what
-    /// changed and `payload` is a small, credential-free locator (repo +
-    /// stable ids — never tokens or raw webhook bodies). Clients refetch the
-    /// affected rows over HTTP; the event is only a "something changed" nudge.
+    /// Synced GitHub state changed; clients refetch the located rows over HTTP.
     GithubEvent {
         kind: crate::github::GithubEventKind,
         payload: crate::github::GithubEventPayload,
     },
-    /// A session's gateway request was just refused by the per-account soft
-    /// limit: cctui's own share of the account's usage window is at
-    /// cap, so the worker got a 429 and the conversation stalled. Broadcast on
-    /// the clear→blocked transition so the webui can show a per-chat banner
-    /// offering to continue on another same-provider account. `reason` is the
-    /// human-readable 429 body; `retry_after_secs` mirrors the `Retry-After`.
+    /// The per-account soft limit refused this session's request (429).
     SoftLimitReached {
         session_id: String,
         account_id: uuid::Uuid,
@@ -811,38 +601,25 @@ pub enum ServerEvent {
         reason: String,
         retry_after_secs: i64,
     },
-    /// A session's soft-limit block has cleared: either a later
-    /// passthrough succeeded, or the user rebound the session to another
-    /// account via `POST /sessions/{id}/switch-account`. Clients dismiss the
-    /// per-chat soft-limit banner.
     SoftLimitCleared {
         session_id: String,
     },
-    /// The gateway refused to forward a model tool call in this session because
-    /// its input matched the account's tool-call policy. The turn ended with an
-    /// explanation instead. `rule` names the rule and a masked form of the
-    /// match; the raw input is never carried.
+    /// The account's tool-call policy blocked a tool call. `rule` holds the rule
+    /// name and a masked match; raw input is never carried.
     ToolCallBlocked {
         session_id: String,
         tool_name: String,
         rule: String,
     },
-    /// A coalesced slice of a session's live PTY byte stream, relayed to the
-    /// browsers watching its read-only terminal. `data` is
-    /// standard-base64 of the raw terminal bytes; the client base64-decodes and
-    /// writes it straight into xterm.js. Not persisted — dropped by any client
-    /// not currently rendering the terminal.
+    /// Base64 PTY bytes. Not persisted.
     PtyChunk {
         session_id: String,
         data: String,
     },
-    /// Liveness tick for the browser socket, on the same interval as the
-    /// WebSocket `Ping`. The JS `WebSocket` API exposes no ping/pong event, so a
-    /// client watchdog can only be fed by an application frame.
+    /// Application-level liveness tick; browsers cannot observe WS pings.
     Heartbeat {},
-    /// This socket missed events to relay lag. The client refetches what it
-    /// renders: the named session's conversation, or every session view when
-    /// `None`. Written per-socket, never broadcast.
+    /// This socket lagged. Refetch the session, or everything when `None`.
+    /// Never broadcast.
     Resync {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         session_id: Option<String>,
@@ -939,7 +716,6 @@ mod tests {
         events.sort_by_key(super::AgentEvent::seq);
         let seqs: Vec<Option<i64>> = events.iter().map(AgentEvent::seq).collect();
         assert_eq!(seqs, vec![Some(1), Some(2), Some(3)]);
-        // The user answer now renders last, after its preamble + card.
         assert!(matches!(&events[2], AgentEvent::Text { content, .. } if content.contains("User")));
     }
 
