@@ -7,9 +7,9 @@ use axum::http::StatusCode;
 use axum::{Extension, Json};
 use uuid::Uuid;
 
-use super::accounts::{err, require_human};
 use super::gateway::toolguard::{ToolPolicy, invalidate_policy_cache};
 use crate::auth::AuthContext;
+use crate::error::err;
 use crate::state::AppState;
 
 type ApiErr = (StatusCode, Json<serde_json::Value>);
@@ -36,7 +36,6 @@ pub async fn get_tool_policy(
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<Uuid>,
 ) -> Result<Json<ToolPolicy>, ApiErr> {
-    require_human(&ctx)?;
     owned(&state, &ctx, id).await?;
     let row: Option<(Vec<String>, Vec<String>, Vec<String>, Vec<String>)> = sqlx::query_as(
         "SELECT terms, patterns, protected_owners, exempt_roots \
@@ -58,7 +57,6 @@ pub async fn put_tool_policy(
     Path(id): Path<Uuid>,
     Json(req): Json<ToolPolicy>,
 ) -> Result<Json<ToolPolicy>, ApiErr> {
-    require_human(&ctx)?;
     owned(&state, &ctx, id).await?;
     let policy = req.normalized().map_err(|e| err(StatusCode::BAD_REQUEST, &e))?;
     if policy == ToolPolicy::default() {

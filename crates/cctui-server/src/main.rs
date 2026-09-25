@@ -1070,7 +1070,7 @@ fn build_api_routes() -> Routes {
             "Get or replace the account's gateway tool-call policy.",
             get(routes::tool_policy::get_tool_policy).put(routes::tool_policy::put_tool_policy),
             Authn::Bearer,
-            Authenticated,
+            Human,
         )
         .add(
             &[GET],
