@@ -25,6 +25,7 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::auth::AuthContext;
+use crate::authz::{Shareable, shareable_owner};
 use crate::error::err;
 use crate::routes::gateway;
 use crate::state::AppState;
@@ -1998,15 +1999,12 @@ pub async fn oauth_start(
 ) -> Result<Json<OAuthStartResponse>, (StatusCode, Json<serde_json::Value>)> {
     // The attach target names its owner; otherwise the caller does.
     let uid = if let Some(account_id) = req.account_id {
-        let owner: Option<Uuid> = sqlx::query_scalar(
-            "SELECT user_id FROM accounts WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2)",
-        )
-        .bind(account_id)
-        .bind(ctx.owner_filter())
-        .fetch_optional(&state.pool)
-        .await
-        .map_err(|e| db_err(&e))?;
-        owner.ok_or_else(|| err(StatusCode::NOT_FOUND, "no such account"))?
+        let owner = shareable_owner(Shareable::Account, account_id, &state.pool)
+            .await
+            .map_err(|e| db_err(&e))?;
+        owner
+            .filter(|o| ctx.owner_filter().is_none_or(|f| f == *o))
+            .ok_or_else(|| err(StatusCode::NOT_FOUND, "no such account"))?
     } else {
         resolve_owner(&ctx, req.user_id)?
     };
@@ -2097,14 +2095,10 @@ pub async fn oauth_finish(
     // fails fast: an attach target must still exist and belong to the pending
     // owner; otherwise `name` finds-or-creates an identity after the exchange.
     let attach_target = if let Some(account_id) = pending.account_id {
-        let owner: Option<Uuid> =
-            sqlx::query_scalar("SELECT user_id FROM accounts WHERE id = $1 AND user_id = $2")
-                .bind(account_id)
-                .bind(uid)
-                .fetch_optional(&state.pool)
-                .await
-                .map_err(|e| db_err(&e))?;
-        if owner.is_none() {
+        let owner = shareable_owner(Shareable::Account, account_id, &state.pool)
+            .await
+            .map_err(|e| db_err(&e))?;
+        if owner != Some(uid) {
             return Err(err(StatusCode::NOT_FOUND, "no such account"));
         }
         Some(account_id)

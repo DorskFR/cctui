@@ -410,34 +410,87 @@ impl Resource for SessionResource {
     }
 }
 
+/// A resource kind that can be shared via `resource_shares`, keyed by its
+/// `resource_type` string.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Shareable {
+    Account,
+    Machine,
+    Dispatcher,
+    /// Accepted so the share table/routes are ready; it has no backing table
+    /// yet, so its owner is always unknown.
+    ContextPack,
+}
+
+impl Shareable {
+    #[must_use]
+    pub const fn as_share_type(self) -> &'static str {
+        match self {
+            Self::Account => "account",
+            Self::Machine => "machine",
+            Self::Dispatcher => "dispatcher",
+            Self::ContextPack => "context_pack",
+        }
+    }
+}
+
+impl std::str::FromStr for Shareable {
+    type Err = ();
+    fn from_str(s: &str) -> Result<Self, ()> {
+        match s {
+            "account" => Ok(Self::Account),
+            "machine" => Ok(Self::Machine),
+            "dispatcher" => Ok(Self::Dispatcher),
+            "context_pack" => Ok(Self::ContextPack),
+            _ => Err(()),
+        }
+    }
+}
+
+/// The owning user of a directly-owned resource, or `None` when it does not
+/// exist. The only place these owner lookups are written.
+pub async fn shareable_owner(
+    kind: Shareable,
+    id: Uuid,
+    pool: &PgPool,
+) -> Result<Option<Uuid>, sqlx::Error> {
+    let sql = match kind {
+        Shareable::Account => "SELECT user_id FROM accounts WHERE id = $1",
+        Shareable::Machine => "SELECT user_id FROM machines WHERE id = $1",
+        Shareable::Dispatcher => {
+            "SELECT user_id FROM dispatchers WHERE id = $1 AND deleted_at IS NULL"
+        }
+        Shareable::ContextPack => return Ok(None),
+    };
+    sqlx::query_scalar(sql).bind(id).fetch_optional(pool).await
+}
+
+async fn shareable_owner_str(
+    kind: Shareable,
+    id: &str,
+    pool: &PgPool,
+) -> Result<Option<Uuid>, sqlx::Error> {
+    // A non-UUID id can never name a real row → absent (404).
+    let Ok(uuid) = Uuid::parse_str(id) else { return Ok(None) };
+    shareable_owner(kind, uuid, pool).await
+}
+
 /// Machines are owned directly (`machines.user_id`). Used by the machine-scoped
 /// filesystem route (`fs::list_dirs`). The id is the machine UUID as text.
 struct MachineResource;
 impl Resource for MachineResource {
-    const SHARE_TYPE: Option<&'static str> = Some("machine");
+    const SHARE_TYPE: Option<&'static str> = Some(Shareable::Machine.as_share_type());
     async fn owner_of(id: &str, pool: &PgPool) -> Result<Option<Uuid>, sqlx::Error> {
-        let Ok(uuid) = Uuid::parse_str(id) else {
-            // A non-UUID id can never name a real machine → treat as absent
-            // (404), matching the in-handler `Uuid::parse_str` + not-found path.
-            return Ok(None);
-        };
-        sqlx::query_scalar("SELECT user_id FROM machines WHERE id = $1")
-            .bind(uuid)
-            .fetch_optional(pool)
-            .await
+        shareable_owner_str(Shareable::Machine, id, pool).await
     }
 }
 
 /// Dispatchers are owned directly (`dispatchers.user_id`).
 struct DispatcherResource;
 impl Resource for DispatcherResource {
-    const SHARE_TYPE: Option<&'static str> = Some("dispatcher");
+    const SHARE_TYPE: Option<&'static str> = Some(Shareable::Dispatcher.as_share_type());
     async fn owner_of(id: &str, pool: &PgPool) -> Result<Option<Uuid>, sqlx::Error> {
-        let Ok(uuid) = Uuid::parse_str(id) else { return Ok(None) };
-        sqlx::query_scalar("SELECT user_id FROM dispatchers WHERE id = $1 AND deleted_at IS NULL")
-            .bind(uuid)
-            .fetch_optional(pool)
-            .await
+        shareable_owner_str(Shareable::Dispatcher, id, pool).await
     }
 }
 
@@ -457,13 +510,9 @@ impl Resource for UserResource {
 /// confers use/read.
 struct AccountResource;
 impl Resource for AccountResource {
-    const SHARE_TYPE: Option<&'static str> = Some("account");
+    const SHARE_TYPE: Option<&'static str> = Some(Shareable::Account.as_share_type());
     async fn owner_of(id: &str, pool: &PgPool) -> Result<Option<Uuid>, sqlx::Error> {
-        let Ok(uuid) = Uuid::parse_str(id) else { return Ok(None) };
-        sqlx::query_scalar("SELECT user_id FROM accounts WHERE id = $1")
-            .bind(uuid)
-            .fetch_optional(pool)
-            .await
+        shareable_owner_str(Shareable::Account, id, pool).await
     }
 }
 
@@ -1091,6 +1140,28 @@ mod tests {
     /// account/machine/dispatcher and stay off for the rest, on one path. Each
     /// shareable type must also be a type the shares CRUD/table recognize.
     #[test]
+    fn shareable_parses_its_own_share_type_only() {
+        for kind in
+            [Shareable::Account, Shareable::Machine, Shareable::Dispatcher, Shareable::ContextPack]
+        {
+            assert_eq!(kind.as_share_type().parse::<Shareable>(), Ok(kind));
+        }
+        for t in ["", "session", "user", "prompt", "api_key", "Account"] {
+            assert!(t.parse::<Shareable>().is_err(), "{t} must not be shareable");
+        }
+    }
+
+    /// `context_pack` has no table: unknown, and the invalid pool is never touched.
+    #[tokio::test]
+    async fn shareable_owner_context_pack_is_unknown_without_db() {
+        let pool = sqlx::PgPool::connect_lazy("postgres://invalid").unwrap();
+        assert_eq!(
+            shareable_owner(Shareable::ContextPack, Uuid::new_v4(), &pool).await.unwrap(),
+            None
+        );
+    }
+
+    #[test]
     fn shareable_kinds_declare_share_type() {
         assert_eq!(AccountResource::SHARE_TYPE, Some("account"));
         assert_eq!(MachineResource::SHARE_TYPE, Some("machine"));
@@ -1108,7 +1179,7 @@ mod tests {
         .flatten()
         {
             assert!(
-                crate::routes::shares::is_shareable(st),
+                st.parse::<Shareable>().is_ok(),
                 "authz SHARE_TYPE {st:?} must be a shares CRUD/table shareable type"
             );
         }

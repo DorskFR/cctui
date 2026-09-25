@@ -209,21 +209,15 @@ pub async fn list_pending(
             .collect::<std::collections::HashSet<_>>()
             .into_iter()
             .collect();
-        let owned: std::collections::HashSet<String> = sqlx::query_scalar::<_, String>(
-            "SELECT s.id FROM sessions s \
-             LEFT JOIN machines m ON m.id = s.machine_uuid \
-             WHERE s.id = ANY($1) AND m.user_id = $2",
-        )
-        .bind(&session_ids)
-        .bind(ctx.user_id)
-        .fetch_all(&state.pool)
-        .await
-        .unwrap_or_else(|e| {
-            tracing::error!("db error (pending permissions authz): {e}");
-            Vec::new()
-        })
-        .into_iter()
-        .collect();
+        let owned: std::collections::HashSet<String> =
+            crate::store::sessions::visible_session_ids(&state.pool, &session_ids, ctx.user_id)
+                .await
+                .unwrap_or_else(|e| {
+                    tracing::error!("db error (pending permissions authz): {e}");
+                    Vec::new()
+                })
+                .into_iter()
+                .collect();
         pending.into_iter().filter(|p| owned.contains(&p.session_id)).collect()
     };
 

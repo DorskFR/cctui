@@ -16,6 +16,23 @@ pub async fn set_inactive(
     Ok(())
 }
 
+/// The subset of `ids` whose session runs on a machine owned by `user_id`.
+pub async fn visible_session_ids(
+    exec: impl PgExecutor<'_>,
+    ids: &[String],
+    user_id: uuid::Uuid,
+) -> Result<Vec<String>, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT s.id FROM sessions s \
+         LEFT JOIN machines m ON m.id = s.machine_uuid \
+         WHERE s.id = ANY($1) AND m.user_id = $2",
+    )
+    .bind(ids)
+    .bind(user_id)
+    .fetch_all(exec)
+    .await
+}
+
 pub async fn fetch_by_id(
     exec: impl PgExecutor<'_>,
     id: &str,

@@ -132,16 +132,7 @@ async fn filter_owned_ids(
     if ctx.is_admin() {
         return Ok(ids.to_vec());
     }
-    let owned: Vec<String> = sqlx::query_scalar(
-        "SELECT s.id \
-         FROM sessions s LEFT JOIN machines m ON m.id = s.machine_uuid \
-         WHERE s.id = ANY($1) AND m.user_id = $2",
-    )
-    .bind(ids)
-    .bind(ctx.user_id)
-    .fetch_all(&state.pool)
-    .await?;
-    Ok(owned)
+    crate::store::sessions::visible_session_ids(&state.pool, ids, ctx.user_id).await
 }
 
 /// Derived-status thresholds. A session is considered:
@@ -311,17 +302,11 @@ pub async fn list_sessions(
             let registry = state.registry.read().await;
             registry.list().into_iter().map(|h| h.session.id.clone()).collect()
         };
-        let rows: Vec<(String,)> = sqlx::query_as(
-            "SELECT s.id FROM sessions s \
-             LEFT JOIN machines m ON m.id = s.machine_uuid \
-             WHERE s.id = ANY($1) AND m.user_id = $2",
-        )
-        .bind(&live_ids)
-        .bind(ctx.user_id)
-        .fetch_all(&state.pool)
-        .await
-        .map_err(db_err)?;
-        Some(rows.into_iter().map(|(id,)| id).collect())
+        let owned =
+            crate::store::sessions::visible_session_ids(&state.pool, &live_ids, ctx.user_id)
+                .await
+                .map_err(db_err)?;
+        Some(owned.into_iter().collect())
     };
 
     let mut with_ts: Vec<(DateTime<Utc>, SessionListItem)> = {

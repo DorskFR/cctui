@@ -150,17 +150,11 @@ pub async fn session_stats(
             let registry = state.registry.read().await;
             registry.list().into_iter().map(|h| h.session.id.clone()).collect()
         };
-        let rows: Vec<(String,)> = sqlx::query_as(
-            "SELECT s.id FROM sessions s \
-             LEFT JOIN machines m ON m.id = s.machine_uuid \
-             WHERE s.id = ANY($1) AND m.user_id = $2",
-        )
-        .bind(&live_ids)
-        .bind(ctx.user_id)
-        .fetch_all(&state.pool)
-        .await
-        .map_err(db_err)?;
-        Some(rows.into_iter().map(|(id,)| id).collect())
+        let owned =
+            crate::store::sessions::visible_session_ids(&state.pool, &live_ids, ctx.user_id)
+                .await
+                .map_err(db_err)?;
+        Some(owned.into_iter().collect())
     };
     let live: i64 = {
         let registry = state.registry.read().await;
