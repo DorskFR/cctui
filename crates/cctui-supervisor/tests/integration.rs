@@ -161,12 +161,8 @@ fn landlock_ro_blocks_write_rw_allows_write() {
 
 #[test]
 fn make_runs_a_recipe_under_full_sandbox() {
-    // Regression for GNU Make's recipe-spawn child resets its
-    // effective uid (`setresuid(-1, <uid>, -1)`) before exec. The seccomp
-    // denylist used to turn that no-op into EPERM, so `make` aborted every
-    // recipe with `/bin/sh: Operation not permitted` (exit 127). With the
-    // conditional uid/gid guard, a no-op reset to the worker id is allowed, so
-    // a trivial Makefile target must run to completion under the full sandbox.
+    // Make's recipe child does a no-op `setresuid(-1, <uid>, -1)` before exec;
+    // the seccomp filter must allow that, or every recipe fails with EPERM.
     if Command::new("make").arg("--version").output().is_err() {
         eprintln!("SKIP make test: `make` not found on PATH");
         return;

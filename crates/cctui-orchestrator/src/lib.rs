@@ -2,45 +2,13 @@
 //! workload *shape* that the dispatcher instantiates and the injection webhook
 //! augments.
 //!
-//! # Trust model
-//!
-//! The profile author is **trusted** — the operator owns the cluster and manages
-//! these resources via GitOps/Argo. The schema exists for ergonomics and
-//! consistency, **not** for tenant isolation, so it is deliberately a thin,
-//! mostly-passthrough shape close to a `PodTemplateSpec` rather than an
-//! adversarial allowlist. The only adversary in the threat model is the agent
-//! running inside the worker container.
-//!
-//! # Field ownership contract
-//!
-//! - **Operator-owned** (set here, in the `WorkerProfile`): everything in
-//!   [`WorkerProfileSpec`]. In particular [`WorkerProfileSpec::service_account_name`]
-//!   pins the identity — and therefore the IAM / secret scope — the profile runs
-//!   as. A dispatch request may only select a profile *by name*; it never sets
-//!   the `ServiceAccount` or any other field here.
-//! - **Dispatcher-instantiated** (per run, at Job creation): the runtime env a
-//!   dispatch request carries (session id, reply URL, task payload, ...) is
-//!   layered onto the worker container's [`WorkerProfileSpec::env`] when the Job
-//!   is created. The profile supplies the shape; the dispatcher supplies the
-//!   run-specific values.
-//! - **Webhook-injected** (at pod admission): the mutating webhook
-//!   sandboxes **only** the worker container — the secretless credential
-//!   envelope, and, when [`WorkerProfileSpec::gpg_signing`] is set, the
-//!   gpg-agent socket. Every other container is passthrough.
-//!
-//! # Identifying the worker container
-//!
-//! Exactly one container is the worker; the webhook and dispatcher key on it.
-//! By convention it is the container named `worker`
-//! ([`DEFAULT_WORKER_CONTAINER`]); a profile may override the name via
-//! [`WorkerProfileSpec::worker_container`]. Use
-//! [`WorkerProfileSpec::worker_container_name`] to resolve the effective name.
-//! The worker container's shape comes from the first-class fields
-//! ([`image`](WorkerProfileSpec::image), `command`, `args`, `resources`, `env`,
-//! [`env_from`](WorkerProfileSpec::env_from),
-//! [`volume_mounts`](WorkerProfileSpec::volume_mounts)); the passthrough
-//! `containers` / `init_containers` carry the surrounding app stack (e.g. a
-//! database or auth sidecar), which the webhook leaves untouched.
+//! The profile author is trusted; the only adversary is the agent inside the
+//! worker container, so the schema is a thin passthrough close to a
+//! `PodTemplateSpec`, not an allowlist. A dispatch selects a profile *by name*
+//! and only layers run-specific env onto the worker container; the webhook
+//! sandboxes only that container. The worker container is the one named by
+//! [`WorkerProfileSpec::worker_container_name`]; passthrough `containers` /
+//! `init_containers` are left untouched. See `docs/worker-profile-crd.md`.
 
 use k8s_openapi::api::core::v1::{
     Container, EnvFromSource, EnvVar, LocalObjectReference, ResourceRequirements, Volume,

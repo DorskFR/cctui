@@ -1,24 +1,13 @@
-//! TLS-terminating credential injection: the strip-then-substitute
-//! (phantom-token) pattern.
+//! TLS-terminating credential injection (phantom-token pattern).
 //!
-//! For a host on the *injection* allow-list the proxy terminates TLS (presenting
-//! a leaf cert minted on the fly and signed by a per-pod CA), parses each
-//! HTTP/1.1 request, STRIPS whatever credential the agent supplied
-//! (`Authorization` / npm `_authToken` bearer / git Basic / session cookie),
-//! looks up the REAL credential by the rule's explicit [`SecretRef`] via the
-//! [`SecretSource`], substitutes it, and forwards upstream over real TLS
-//! (validating the upstream cert against the public roots). Hosts NOT on the
-//! allow-list keep the SNI-peek passthrough splice in `transparent.rs`, so the
-//! MITM surface stays minimal.
+//! For hosts on the injection allow-list the proxy terminates TLS with a leaf
+//! signed by the per-pod CA, strips the agent's credential, substitutes the real
+//! one looked up by the rule's [`SecretRef`] via [`SecretSource`], and forwards
+//! over verified TLS. Other hosts stay on the passthrough splice in
+//! `transparent.rs`.
 //!
-//! Fail-closed nuance (per the ticket): the agent never holds a real secret, so
-//! a lookup miss or backend error forwards the agent's ORIGINAL request head
-//! UNCHANGED (the upstream rejects the placeholder) — never a blank/wrong
-//! secret. Only a successful fetch triggers the strip-and-substitute.
-//!
-//! Cert-PINNING services must never be listed in the inject config: a CLI that
-//! pins its server cert would break under this MITM, so such hosts have to stay
-//! passthrough and get their credential another way.
+//! A lookup miss or backend error forwards the ORIGINAL request head unchanged,
+//! never a blank secret. Cert-pinning services must never be listed here.
 
 #![allow(clippy::large_futures)]
 
