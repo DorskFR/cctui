@@ -47,13 +47,44 @@ pub async fn persist(state: &AppState, machine_id: Uuid, r: &MachineResources) {
     }
 }
 
-/// Persist a heartbeat snapshot, then push it to every webui/TUI so a pinned
-/// header gauge follows the machine live rather than on the next poll.
+/// Persist a heartbeat snapshot, then push it to webui/TUI when it moved
+/// enough for a gauge to show the difference.
 pub async fn record_and_broadcast(state: &AppState, machine_id: Uuid, resources: MachineResources) {
     persist(state, machine_id, &resources).await;
+    if !changed_since_last_broadcast(machine_id, &resources) {
+        return;
+    }
     state
         .bus
         .publish_server(cctui_proto::ws::ServerEvent::MachineResources { machine_id, resources });
+}
+
+fn changed_since_last_broadcast(machine_id: Uuid, next: &MachineResources) -> bool {
+    static LAST: std::sync::OnceLock<dashmap::DashMap<Uuid, MachineResources>> =
+        std::sync::OnceLock::new();
+    let last = LAST.get_or_init(dashmap::DashMap::new);
+    if last.get(&machine_id).is_some_and(|prev| !materially_changed(&prev, next)) {
+        return false;
+    }
+    last.insert(machine_id, next.clone());
+    true
+}
+
+const PCT_THRESHOLD: f32 = 1.0;
+const LOAD_THRESHOLD: f32 = 0.1;
+
+fn materially_changed(prev: &MachineResources, next: &MachineResources) -> bool {
+    let moved = |a: f32, b: f32, by: f32| (a - b).abs() >= by;
+    moved(prev.cpu_pct, next.cpu_pct, PCT_THRESHOLD)
+        || moved(prev.mem_pct, next.mem_pct, PCT_THRESHOLD)
+        || moved(prev.disk_pct, next.disk_pct, PCT_THRESHOLD)
+        || prev.mem_total_bytes != next.mem_total_bytes
+        || prev.disk_total_bytes != next.disk_total_bytes
+        || prev.disk_path != next.disk_path
+        || match (prev.load1, next.load1) {
+            (Some(a), Some(b)) => moved(a, b, LOAD_THRESHOLD),
+            (a, b) => a.is_some() != b.is_some(),
+        }
 }
 
 /// One enrolled daemon machine and its last-known resource snapshot, for the
@@ -144,6 +175,47 @@ pub async fn list(
 
 #[cfg(test)]
 mod tests {
+    use cctui_proto::resources::MachineResources;
+    use uuid::Uuid;
+
+    use super::{changed_since_last_broadcast, materially_changed};
+
+    fn snapshot() -> MachineResources {
+        MachineResources {
+            cpu_pct: 12.0,
+            mem_pct: 40.0,
+            mem_used_bytes: 4 << 30,
+            mem_total_bytes: 16 << 30,
+            disk_pct: 55.0,
+            disk_used_bytes: 100 << 30,
+            disk_total_bytes: 500 << 30,
+            disk_path: "/".into(),
+            load1: Some(0.5),
+        }
+    }
+
+    #[test]
+    fn an_unchanged_snapshot_is_not_rebroadcast() {
+        let id = Uuid::new_v4();
+        assert!(changed_since_last_broadcast(id, &snapshot()));
+        assert!(!changed_since_last_broadcast(id, &snapshot()));
+        let jitter = MachineResources { cpu_pct: 12.4, mem_used_bytes: 5 << 30, ..snapshot() };
+        assert!(!changed_since_last_broadcast(id, &jitter));
+        let busy = MachineResources { cpu_pct: 80.0, ..snapshot() };
+        assert!(changed_since_last_broadcast(id, &busy));
+        assert!(!changed_since_last_broadcast(id, &busy));
+    }
+
+    #[test]
+    fn small_drift_is_ignored_and_real_moves_are_not() {
+        let base = snapshot();
+        assert!(!materially_changed(&base, &MachineResources { disk_pct: 55.5, ..snapshot() }));
+        assert!(materially_changed(&base, &MachineResources { mem_pct: 41.0, ..snapshot() }));
+        assert!(materially_changed(&base, &MachineResources { load1: Some(0.7), ..snapshot() }));
+        assert!(materially_changed(&base, &MachineResources { load1: None, ..snapshot() }));
+        assert!(materially_changed(&base, &MachineResources { disk_path: "/data".into(), ..snapshot() }));
+    }
+
     #[test]
     fn migration_pair_exists() {
         let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../migrations");

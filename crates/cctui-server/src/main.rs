@@ -1705,12 +1705,12 @@ async fn reaper_task(state: AppState) {
             let mut registry = state.registry.write().await;
             registry.mark_stale(state.config.inactive_after_secs)
         };
-        for session_id in &demoted {
-            let _ = sqlx::query("UPDATE sessions SET status = 'inactive' WHERE id = $1")
-                .bind(session_id.as_str())
+        if !demoted.is_empty() {
+            let _ = sqlx::query("UPDATE sessions SET status = 'inactive' WHERE id = ANY($1)")
+                .bind(&demoted)
                 .execute(&state.pool)
                 .await;
-            tracing::info!(session_id = %session_id, "session demoted to inactive");
+            tracing::info!(session_ids = ?demoted, "sessions demoted to inactive");
         }
 
         auto_archive_stale(&state).await;
