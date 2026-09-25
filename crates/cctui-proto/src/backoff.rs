@@ -32,13 +32,13 @@ impl Backoff {
         self.attempt
     }
 
-    /// Un-jittered delay the next [`Self::next`] is centred on.
+    /// Un-jittered delay the next [`Self::next_delay`] is centred on.
     #[must_use]
     pub const fn peek(&self) -> Duration {
         self.cur
     }
 
-    pub fn next(&mut self) -> Duration {
+    pub fn next_delay(&mut self) -> Duration {
         let base = self.cur;
         self.cur = base.saturating_mul(2).min(self.max);
         self.attempt = self.attempt.saturating_add(1);
@@ -55,9 +55,9 @@ impl Backoff {
         self.cur = self.max;
     }
 
-    /// Sleeps for [`Self::next`]; `false` if `cancel` fired first.
+    /// Sleeps for [`Self::next_delay`]; `false` if `cancel` fired first.
     pub async fn sleep(&mut self, cancel: &CancellationToken) -> bool {
-        let delay = self.next();
+        let delay = self.next_delay();
         tokio::select! {
             () = tokio::time::sleep(delay) => true,
             () = cancel.cancelled() => false,
@@ -66,7 +66,7 @@ impl Backoff {
 }
 
 fn jitter(base: Duration, unit: f64) -> Duration {
-    base.mul_f64(1.0 + JITTER * unit.mul_add(2.0, -1.0))
+    base.mul_f64(JITTER.mul_add(unit.mul_add(2.0, -1.0), 1.0))
 }
 
 /// Cheap splitmix64 over time + a counter; jitter needs spread, not quality.
@@ -95,7 +95,7 @@ mod tests {
         let expected = [5, 10, 20, 40, 60, 60, 60];
         for secs in expected {
             assert_eq!(b.peek(), Duration::from_secs(secs));
-            let d = b.next();
+            let d = b.next_delay();
             assert!(within(d, Duration::from_secs(secs)), "{d:?} vs {secs}s");
         }
         assert_eq!(b.attempt(), 7);

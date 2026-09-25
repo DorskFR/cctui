@@ -411,7 +411,7 @@ mod tests {
     async fn auth_retry_skips_auth_when_already_cancelled() {
         let shutdown = CancellationToken::new();
         shutdown.cancel();
-        let out = auth_with_retry(|| std::future::pending::<anyhow::Result<()>>(), &shutdown).await;
+        let out = auth_with_retry(std::future::pending::<anyhow::Result<()>>, &shutdown).await;
         assert!(out.is_none());
     }
 }

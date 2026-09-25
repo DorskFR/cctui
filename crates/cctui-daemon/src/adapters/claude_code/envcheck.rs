@@ -83,7 +83,7 @@ impl EffortScanner {
         }
         let missing = wanted.iter().any(|s| !self.pid_by_short.contains_key(s));
         if missing && self.walked_for != *wanted {
-            self.walked_for = wanted.clone();
+            self.walked_for.clone_from(wanted);
             self.walk(wanted, &mut out);
         }
         out
