@@ -617,6 +617,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)] // literal route-table snapshot
     fn api_route_table_is_unchanged() {
         let mut descs = super::build_api_routes().into_parts().1;
         descs.sort_by(|a, b| (a.path, a.method.as_str()).cmp(&(b.path, b.method.as_str())));
