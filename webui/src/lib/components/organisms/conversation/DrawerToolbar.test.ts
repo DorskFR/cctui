@@ -86,14 +86,14 @@ describe('popover triggers match their sibling toggles', () => {
 			toolbarSource.indexOf('/* Filters sits among')
 		);
 		for (const decl of [
-			'padding: 0.15rem var(--sp-2)',
+			'padding: 0 var(--sp-2)',
 			'border: 1px solid var(--border)',
 			'border-radius: var(--r-sm)',
 			'background: var(--bg-elevated-2)',
 			'color: var(--text-muted)',
 			'font-size: var(--fs-xs)',
 			'font-weight: var(--fw-medium)',
-			'line-height: 1.4'
+			'line-height: 1'
 		]) {
 			expect(chrome).toContain(decl);
 		}
@@ -183,6 +183,40 @@ describe('drawer toolbar sizing', () => {
 		const body = tag.slice(0, tag.indexOf('}'));
 		expect(body).toContain('min-width: 0');
 		expect(body).toContain('overflow: hidden');
+	});
+
+	it('pins every control in the bar to one height', () => {
+		expect(css).toContain('--bar-ctl-h: 24px');
+		expect(toolbarSource).toContain(
+			"const CTL = 'height:var(--bar-ctl-h);box-sizing:border-box;padding-block:0;line-height:1'"
+		);
+		expect(toolbarSource).toContain("const TRIG = 'display:flex;align-items:center;height:var(--bar-ctl-h)'");
+		const chip = toolbarSource.slice(toolbarSource.indexOf('\t.chip {'), toolbarSource.indexOf('/* Filters sits among'));
+		expect(chip).toContain('height: var(--bar-ctl-h)');
+		expect(chip).toContain('box-sizing: border-box');
+	});
+
+	it('gives auto-approve and pins the same box construction', () => {
+		const toggles = toolbarSource.match(/<Toggle\b[\s\S]*?>/g) ?? [];
+		expect(toggles.length).toBeGreaterThanOrEqual(3);
+		for (const t of toggles) expect(t, t.slice(0, 60)).toContain('style={');
+		for (const t of toggles) expect(t, t.slice(0, 60)).toMatch(/\$\{CTL\}|style=\{CTL\}/);
+		const triggers = toolbarSource.match(/<Popover[\s\S]*?>/g) ?? [];
+		expect(triggers.length).toBe(2);
+		for (const p of triggers) expect(p).toContain('style={TRIG}');
+	});
+
+	it('neutralises the emoji line box so it cannot set the height', () => {
+		expect(toolbarSource).toContain('<span class="glyph" aria-hidden="true">⚡</span>');
+		const glyph = toolbarSource.slice(toolbarSource.indexOf('\t.glyph {'));
+		const body = glyph.slice(0, glyph.indexOf('}'));
+		expect(body).toContain('line-height: 1');
+		expect(body).toContain('min-width: 1em');
+	});
+
+	it('matches the two chip icons in size', () => {
+		expect(toolbarSource).toContain('<Icon name="filter" size={12} />');
+		expect(toolbarSource).toContain('<Icon name="pin" size={12}');
 	});
 
 	it('keeps the compact ⚡ and 📌 named and right-aligned', () => {
