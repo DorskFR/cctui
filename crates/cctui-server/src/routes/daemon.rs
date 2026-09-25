@@ -773,27 +773,28 @@ fn announced_session(frame: &DaemonFrameUp) -> Option<&str> {
 fn session_scope(frame: &DaemonFrameUp) -> Option<&str> {
     match frame {
         DaemonFrameUp::SessionRegistered { local_id, .. } => Some(local_id),
-        DaemonFrameUp::Event { event, .. } => match event {
-            AdapterEvent::SessionStarted { local_id, .. }
-            | AdapterEvent::Message { local_id, .. }
-            | AdapterEvent::ToolUse { local_id, .. }
-            | AdapterEvent::SessionEnded { local_id, .. }
-            | AdapterEvent::Status { local_id, .. }
-            | AdapterEvent::PrLink { local_id, .. }
-            | AdapterEvent::TokenUsage { local_id, .. }
-            | AdapterEvent::SessionModel { local_id, .. }
-            | AdapterEvent::PermissionRequest { local_id, .. }
-            | AdapterEvent::PermissionResolved { local_id, .. }
-            | AdapterEvent::AskQuestion { local_id, .. }
-            | AdapterEvent::AskResolved { local_id }
-            | AdapterEvent::PlanRequest { local_id, .. }
-            | AdapterEvent::PlanResolved { local_id }
-            | AdapterEvent::Diagnose { local_id, .. }
-            | AdapterEvent::PtyChunk { local_id, .. }
-            | AdapterEvent::TranscriptMark { local_id, .. }
-            | AdapterEvent::RateLimits { local_id, .. } => Some(local_id),
-            _ => None,
-        },
+        DaemonFrameUp::Event {
+            event:
+                AdapterEvent::SessionStarted { local_id, .. }
+                | AdapterEvent::Message { local_id, .. }
+                | AdapterEvent::ToolUse { local_id, .. }
+                | AdapterEvent::SessionEnded { local_id, .. }
+                | AdapterEvent::Status { local_id, .. }
+                | AdapterEvent::PrLink { local_id, .. }
+                | AdapterEvent::TokenUsage { local_id, .. }
+                | AdapterEvent::SessionModel { local_id, .. }
+                | AdapterEvent::PermissionRequest { local_id, .. }
+                | AdapterEvent::PermissionResolved { local_id, .. }
+                | AdapterEvent::AskQuestion { local_id, .. }
+                | AdapterEvent::AskResolved { local_id }
+                | AdapterEvent::PlanRequest { local_id, .. }
+                | AdapterEvent::PlanResolved { local_id }
+                | AdapterEvent::Diagnose { local_id, .. }
+                | AdapterEvent::PtyChunk { local_id, .. }
+                | AdapterEvent::TranscriptMark { local_id, .. }
+                | AdapterEvent::RateLimits { local_id, .. },
+            ..
+        } => Some(local_id),
         _ => None,
     }
 }
@@ -3370,10 +3371,10 @@ mod tests {
             vec![1_u8, 2, 3].into(),
         ))]);
         let mut last = tokio::time::Instant::now();
-        let mut liveness = tokio::time::interval(Duration::from_secs(3600));
+        let mut liveness = tokio::time::interval(Duration::from_hours(1));
         liveness.tick().await;
         let out =
-            next_inbound(&mut stream, &mut last, &mut liveness, Duration::from_secs(3600)).await;
+            next_inbound(&mut stream, &mut last, &mut liveness, Duration::from_hours(1)).await;
         assert!(matches!(out, Inbound::Binary(ref b) if b == &[1, 2, 3]));
     }
 
