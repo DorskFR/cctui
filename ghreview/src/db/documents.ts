@@ -155,12 +155,12 @@ export interface Page<K extends string = string> {
 }
 
 interface CursorRow<K extends string> extends Envelope<K> {
-  cursor_updated_at: Date;
+  cursor_updated_at: string;
   cursor_key: string;
 }
 
-function encodeCursor(updatedAt: Date, key: string): string {
-  return Buffer.from(`${updatedAt.toISOString()}|${key}`).toString("base64url");
+function encodeCursor(updatedAt: string, key: string): string {
+  return Buffer.from(`${updatedAt}|${key}`).toString("base64url");
 }
 
 function decodeCursor(cursor: string): { updatedAt: string; key: string } | null {
@@ -191,7 +191,7 @@ export async function listDocuments<K extends string>(
   const decoded = opts.cursor ? decodeCursor(opts.cursor) : null;
   const rows = await sql<CursorRow<K>[]>`
     SELECT account, kind, to_char(synced_at, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS synced_at,
-           etag, payload, updated_at AS cursor_updated_at, key AS cursor_key
+           etag, payload, to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS cursor_updated_at, key AS cursor_key
     FROM documents
     WHERE kind = ${kind}
       ${opts.account ? sql`AND account = ${opts.account}` : sql``}

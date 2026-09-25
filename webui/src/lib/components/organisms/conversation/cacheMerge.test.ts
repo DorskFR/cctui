@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 import { describe, expect, it } from 'vitest';
 import { QueryClient } from '@tanstack/svelte-query';
 import type { AgentEvent } from '@bindings/AgentEvent';

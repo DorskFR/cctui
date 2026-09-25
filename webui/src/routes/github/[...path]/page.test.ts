@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 import { QueryClient } from '@tanstack/svelte-query';
 import { mount, unmount } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';

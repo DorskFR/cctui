@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 import { mount, unmount } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import SpawnModal from "./SpawnModal.svelte";

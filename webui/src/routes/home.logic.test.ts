@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 import { describe, it, expect } from 'vitest';
 import type { MachineRow } from '@bindings/MachineRow';
 import type { MachineLiveness } from '@bindings/MachineLiveness';

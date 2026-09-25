@@ -46,6 +46,11 @@ pre-commit:
     i18n-messages:
       glob: "webui/messages/*.json"
       run: bash scripts/check-i18n.sh
+    # Ticket ids and wave/lane notes belong in commits and PRs, not in comments
+    # or test names. Shares its implementation with the comment-refs CI job.
+    comment-refs:
+      glob: "{*.rs,*.ts,*.svelte,*.sh,*.yml,*.yaml,Makefile,**/Makefile}"
+      run: bash scripts/check-comment-refs.sh
 
 pre-push:
   commands:

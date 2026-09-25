@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 import { describe, expect, it } from 'vitest';
 import type { LimitResetStatus } from '$lib/queries';
 import { limitResetHint, limitResetLabel } from './limit-reset';

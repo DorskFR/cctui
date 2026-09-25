@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 import { describe, expect, it } from 'vitest';
 import type { PoolUsageMember } from '@bindings/PoolUsageMember';
 import type { PoolUsageWindow } from '@bindings/PoolUsageWindow';

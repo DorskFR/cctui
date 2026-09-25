@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { RESUME_STALE_MS, WATCHDOG_MS, WsClient } from './ws.svelte';
 import { auth } from './auth.svelte';

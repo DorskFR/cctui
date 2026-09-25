@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { compressImage, needsImageCompression } from './compressImage';
 import { MAX_FILE_BYTES } from './attachments';

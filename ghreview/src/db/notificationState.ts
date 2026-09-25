@@ -50,8 +50,8 @@ export interface StatePatch {
   archived?: boolean;
 }
 
-function encodeCursor(updatedAt: Date, key: string): string {
-  return Buffer.from(`${updatedAt.toISOString()}|${key}`).toString("base64url");
+function encodeCursor(updatedAt: string, key: string): string {
+  return Buffer.from(`${updatedAt}|${key}`).toString("base64url");
 }
 
 function decodeCursor(cursor: string): { updatedAt: string; key: string } | null {
@@ -70,7 +70,7 @@ interface InboxRow {
   synced_at: string;
   etag: string | null;
   payload: unknown;
-  cursor_updated_at: Date;
+  cursor_updated_at: string;
   cursor_key: string;
   s_read: boolean;
   s_done: boolean;
@@ -111,7 +111,7 @@ export async function listNotificationInbox(
       to_char(d.synced_at, 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS synced_at,
       d.etag,
       d.payload,
-      d.updated_at AS cursor_updated_at,
+      to_char(d.updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS cursor_updated_at,
       d.key AS cursor_key,
       COALESCE(ns.read, false) AS s_read,
       COALESCE(ns.done, false) AS s_done,

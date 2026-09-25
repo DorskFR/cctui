@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SPAWN_ACK_TIMEOUT_MS, WsClient, spawnOutcomeFromEnd } from './ws.svelte';
 import { auth } from './auth.svelte';
