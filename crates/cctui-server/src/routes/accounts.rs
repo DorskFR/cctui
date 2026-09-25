@@ -777,7 +777,15 @@ fn build_rate_limits_json(
 async fn check_base_url(raw: &str) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
     crate::outbound::validate_upstream_url(raw)
         .await
-        .map_err(|e| err(StatusCode::BAD_REQUEST, &format!("base_url {e}")))
+        .map_err(|e| {
+            err(
+                StatusCode::BAD_REQUEST,
+                &format!(
+                    "base_url {e}; an operator can allow a trusted host with \
+                     CCTUI_UPSTREAM_ALLOWED_HOSTS"
+                ),
+            )
+        })
 }
 
 fn db_err(e: &sqlx::Error) -> (StatusCode, Json<serde_json::Value>) {
@@ -3310,12 +3318,14 @@ mod tests {
             };
             assert!(prepare_provider_write(&spec).await.is_err(), "{base}");
         }
-        let spec = ProviderSpec {
-            provider: Some("openai-compatible".into()),
-            base_url: Some("https://1.1.1.1/v1".into()),
-            ..Default::default()
-        };
-        assert!(prepare_provider_write(&spec).await.is_ok());
+        if std::env::var_os("CCTUI_VAULT_KEY").is_some() {
+            let spec = ProviderSpec {
+                provider: Some("openai-compatible".into()),
+                base_url: Some("https://1.1.1.1/v1".into()),
+                ..Default::default()
+            };
+            assert!(prepare_provider_write(&spec).await.is_ok());
+        }
         assert!(check_base_url("https://192.168.1.10").await.is_err());
     }
 

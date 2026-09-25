@@ -69,42 +69,78 @@ fn bare_host(host: &str) -> &str {
     host.strip_prefix('[').and_then(|h| h.strip_suffix(']')).unwrap_or(host)
 }
 
+/// An allowlist entry; without a port it allows every port on the host.
+#[derive(Debug, PartialEq, Eq)]
+pub struct AllowedHost {
+    host: String,
+    port: Option<u16>,
+}
+
 /// Hosts an operator lets per-account upstreams reach regardless of the guard:
-/// `CCTUI_UPSTREAM_ALLOWED_HOSTS` (comma-separated) plus the host of
-/// `CCTUI_CLAUDE_LITELLM_ENDPOINT`, which the managed shim account points at.
-pub static UPSTREAM_ALLOWED_HOSTS: LazyLock<Vec<String>> = LazyLock::new(|| {
+/// `CCTUI_UPSTREAM_ALLOWED_HOSTS` (comma-separated `host[:port]`) plus the host
+/// and port of `CCTUI_CLAUDE_LITELLM_ENDPOINT`, which the managed shim account
+/// points at.
+pub static UPSTREAM_ALLOWED_HOSTS: LazyLock<Vec<AllowedHost>> = LazyLock::new(|| {
     let mut hosts =
         parse_allowlist(&std::env::var("CCTUI_UPSTREAM_ALLOWED_HOSTS").unwrap_or_default());
-    if let Some(host) = std::env::var("CCTUI_CLAUDE_LITELLM_ENDPOINT")
+    if let Some(url) = std::env::var("CCTUI_CLAUDE_LITELLM_ENDPOINT")
         .ok()
         .and_then(|e| reqwest::Url::parse(e.trim()).ok())
-        .and_then(|u| u.host_str().map(str::to_owned))
+        && let Some(host) = url.host_str()
     {
-        hosts.extend(parse_allowlist(bare_host(&host)));
+        hosts.push(AllowedHost { host: normalize_host(host), port: url.port_or_known_default() });
     }
     hosts
 });
 
-pub fn parse_allowlist(raw: &str) -> Vec<String> {
+fn normalize_host(host: &str) -> String {
+    bare_host(host).trim_end_matches('.').to_ascii_lowercase()
+}
+
+pub fn parse_allowlist(raw: &str) -> Vec<AllowedHost> {
     raw.split(',')
-        .map(|h| h.trim().trim_end_matches('.').to_ascii_lowercase())
-        .filter(|h| !h.is_empty())
+        .map(str::trim)
+        .filter(|e| !e.is_empty())
+        .map(|entry| {
+            let split = if let Some(rest) = entry.strip_prefix('[') {
+                rest.split_once(']').map(|(h, tail)| (h, tail.strip_prefix(':')))
+            } else {
+                match entry.rsplit_once(':') {
+                    Some((h, p)) if !h.contains(':') => Some((h, Some(p))),
+                    _ => None,
+                }
+            };
+            match split {
+                Some((h, Some(p))) => {
+                    AllowedHost { host: normalize_host(h), port: p.parse().ok().or(Some(0)) }
+                }
+                Some((h, None)) => AllowedHost { host: normalize_host(h), port: None },
+                None => AllowedHost { host: normalize_host(entry), port: None },
+            }
+        })
         .collect()
 }
 
-fn allowlisted(host: &str, allow: &[String]) -> bool {
-    let h = bare_host(host).trim_end_matches('.').to_ascii_lowercase();
-    allow.iter().any(|a| *a == h)
+fn host_allowlisted(host: &str, allow: &[AllowedHost]) -> bool {
+    let h = normalize_host(host);
+    allow.iter().any(|a| a.host == h)
+}
+
+fn allowlisted(url: &reqwest::Url, allow: &[AllowedHost]) -> bool {
+    let Some(host) = url.host_str() else { return false };
+    let h = normalize_host(host);
+    let port = url.port_or_known_default();
+    allow.iter().any(|a| a.host == h && a.port.is_none_or(|p| Some(p) == port))
 }
 
 /// DNS-free checks; `Ok(Some(url))` means the host name still needs resolving.
-fn precheck(raw: &str, allow: &[String]) -> Result<Option<reqwest::Url>, OutboundUrlError> {
+fn precheck(raw: &str, allow: &[AllowedHost]) -> Result<Option<reqwest::Url>, OutboundUrlError> {
     let url = reqwest::Url::parse(raw).map_err(|_| OutboundUrlError::Malformed)?;
     if !matches!(url.scheme(), "http" | "https") {
         return Err(OutboundUrlError::NotHttps);
     }
     let host = url.host_str().ok_or(OutboundUrlError::NoHost)?;
-    if allowlisted(host, allow) {
+    if allowlisted(&url, allow) {
         return Ok(None);
     }
     if url.scheme() != "https" {
@@ -121,7 +157,10 @@ fn precheck(raw: &str, allow: &[String]) -> Result<Option<reqwest::Url>, Outboun
 
 /// Fail-closed: requires `https` (unless allowlisted) and refuses a host that
 /// is cluster-local, resolves to an internal address, or does not resolve.
-pub async fn validate_outbound_url(raw: &str, allow: &[String]) -> Result<(), OutboundUrlError> {
+pub async fn validate_outbound_url(
+    raw: &str,
+    allow: &[AllowedHost],
+) -> Result<(), OutboundUrlError> {
     let Some(url) = precheck(raw, allow)? else { return Ok(()) };
     let host = url.host_str().ok_or(OutboundUrlError::NoHost)?;
     let port = url.port_or_known_default().unwrap_or(443);
@@ -153,14 +192,15 @@ pub fn upstream_url_permitted(raw: &str) -> Result<(), OutboundUrlError> {
 
 /// Drops internal addresses from every resolution, so a name that passed
 /// validation cannot later be rebound onto an internal address.
+/// Ports are not visible here; [`precheck`] enforces them on every request.
 struct GuardedResolver {
-    allow: &'static [String],
+    allow: &'static [AllowedHost],
 }
 
 impl reqwest::dns::Resolve for GuardedResolver {
     fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
         let host = name.as_str().to_owned();
-        let open = allowlisted(&host, self.allow);
+        let open = host_allowlisted(&host, self.allow);
         Box::pin(async move {
             let addrs: Vec<SocketAddr> = tokio::net::lookup_host((host.as_str(), 0))
                 .await?
@@ -174,16 +214,19 @@ impl reqwest::dns::Resolve for GuardedResolver {
     }
 }
 
-/// Client for user-supplied upstreams: no redirects, guarded DNS.
+/// A client that follows no redirects and resolves names through the guard.
+pub fn guarded_client(allow: &'static [AllowedHost]) -> reqwest::Client {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .dns_resolver(Arc::new(GuardedResolver { allow }))
+        .build()
+        .expect("build guarded client")
+}
+
+/// Client for user-supplied upstreams.
 pub fn upstream_client() -> &'static reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-    CLIENT.get_or_init(|| {
-        reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .dns_resolver(Arc::new(GuardedResolver { allow: &UPSTREAM_ALLOWED_HOSTS }))
-            .build()
-            .expect("build upstream client")
-    })
+    CLIENT.get_or_init(|| guarded_client(&UPSTREAM_ALLOWED_HOSTS))
 }
 
 #[cfg(test)]
@@ -245,6 +288,17 @@ mod tests {
         validate_outbound_url("http://10.0.0.5/v1", &allow).await.unwrap();
         assert!(validate_outbound_url("https://10.0.0.6/v1", &allow).await.is_err());
         assert!(validate_outbound_url("file://10.0.0.5/x", &allow).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn an_allowlisted_port_restricts_the_host_to_it() {
+        let allow = parse_allowlist("litellm.llm.svc:4000,[fd00::1]:8080,10.0.0.7");
+        validate_outbound_url("http://litellm.llm.svc:4000/v1", &allow).await.unwrap();
+        assert!(validate_outbound_url("http://litellm.llm.svc:9000/v1", &allow).await.is_err());
+        assert!(validate_outbound_url("http://litellm.llm.svc/v1", &allow).await.is_err());
+        validate_outbound_url("http://[fd00::1]:8080/", &allow).await.unwrap();
+        assert!(validate_outbound_url("http://[fd00::1]:8081/", &allow).await.is_err());
+        validate_outbound_url("http://10.0.0.7:1234/", &allow).await.unwrap();
     }
 
     #[tokio::test]

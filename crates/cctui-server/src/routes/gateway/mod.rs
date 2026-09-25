@@ -1186,4 +1186,19 @@ mod tests {
 
         sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
     }
+
+    #[tokio::test]
+    async fn a_refused_upstream_names_the_allowlist() {
+        for anthropic in [true, false] {
+            let resp = super::upstream_refused(
+                &crate::outbound::OutboundUrlError::Internal,
+                anthropic,
+            );
+            assert_eq!(resp.status(), axum::http::StatusCode::BAD_GATEWAY);
+            let body = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
+            let text = String::from_utf8(body.to_vec()).unwrap();
+            assert!(text.contains("CCTUI_UPSTREAM_ALLOWED_HOSTS"), "{text}");
+            assert!(text.contains("private or loopback"), "{text}");
+        }
+    }
 }
