@@ -192,7 +192,7 @@
 	"ask_send_answer": "Send answer",
 	"attachments_missing_dropped": "{count} attachment(s) could not be restored; their references were removed from the prompt",
 	"auto_archive_done": "Archived automatically after sitting idle.",
-	"auto_archive_due": "Idle: archived automatically on {at}, which stops its worker.",
+	"auto_archive_due": "cctui will archive this session {when} and stop its worker.",
 	"auto_archive_keep": "Pin to keep",
 	"bookmarks_collapse": "Show less",
 	"bookmarks_copy": "Copy as Markdown",
