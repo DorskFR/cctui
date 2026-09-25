@@ -54,18 +54,15 @@ pub(super) fn build_session_context(
     b
 }
 
+const AGENT_TOOL_CONTEXT: &str = include_str!("agent_tool_context.md");
+
 /// The `CctuiAgent` paragraph of the session context: the tool exists, which
 /// adapters this session may spawn, and one worked call.
 pub(super) fn agent_tool_context(cap: &cctui_proto::api::SpawnCapability) -> String {
-    let mut b = String::from(
-        "CctuiAgent: you can delegate work to cctui subagent sessions on this \
-         machine with the MCP tool `mcp__cctui__CctuiAgent`. Each child is a real \
-         cctui session — nested under this one in the UI, metered, killable. The \
-         call follows the child (progress streams back while it works) and \
-         returns its final message when its turn completes. Parallel calls run \
-         in parallel. To send a follow-up to a child, call again with its \
-         session_id (included in the reply) and a new prompt.\n",
-    );
+    let (intro, usage) = AGENT_TOOL_CONTEXT
+        .split_once("{capabilities}\n")
+        .expect("agent_tool_context.md has a {capabilities} line");
+    let mut b = String::from(intro);
     let _ = writeln!(b, "  adapters you may spawn: {}", cap.adapters.join(", "));
     if let Some(max) = cap.max_budget_usd {
         let _ = writeln!(b, "  per-child budget ceiling: ${max} (inherited when you name none)");
@@ -82,18 +79,7 @@ pub(super) fn agent_tool_context(cap: &cctui_proto::api::SpawnCapability) -> Str
         "  example: mcp__cctui__CctuiAgent({{\"adapter\": \"{adapter}\", \"prompt\": \
          \"Review the diff on branch X and list real defects\", \"cwd\": \"/path/to/repo\"}})"
     );
-    b.push_str(
-        "CctuiUsage: `mcp__cctui__CctuiUsage` reports the rate limits and budget that apply to \
-         THIS session — the account it is pinned to (possibly shared or pool-elected, not \
-         necessarily your own), its usage windows, this session's spend, and whether each model \
-         is currently allowed or soft-limit blocked. Check it before a fan-out and when picking \
-         a child's model: a blocked model burns the whole batch on 429s. Takes no arguments.\n",
-    );
-    b.push_str(
-        "Both tools are served by an MCP server that connects as this session starts. If either \
-         reports \"No such tool available\" on your first turn, it lost that race: wait a few \
-         seconds and retry the call once before concluding the tool is missing.\n",
-    );
+    b.push_str(usage);
     b
 }
 
@@ -833,5 +819,58 @@ mod tests {
         assert_eq!(std::fs::read_to_string(dir.join("report-2.pdf")).unwrap(), "three");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn agent_tool_context_renders_byte_identical_text() {
+        let full = cctui_proto::api::SpawnCapability {
+            adapters: vec!["codex".to_owned(), "claude-code".to_owned()],
+            max_budget_usd: Some(2.5),
+            max_children: Some(3),
+            max_depth: Some(1),
+            ..Default::default()
+        };
+        assert_eq!(
+            agent_tool_context(&full),
+            "CctuiAgent: you can delegate work to cctui subagent sessions on this machine with \
+             the MCP tool `mcp__cctui__CctuiAgent`. Each child is a real cctui session — nested \
+             under this one in the UI, metered, killable. The call follows the child (progress \
+             streams back while it works) and returns its final message when its turn completes. \
+             Parallel calls run in parallel. To send a follow-up to a child, call again with its \
+             session_id (included in the reply) and a new prompt.\n  adapters you may spawn: \
+             codex, claude-code\n  per-child budget ceiling: $2.5 (inherited when you name \
+             none)\n  max children for this session: 3\n  spawn generations left below this \
+             session: 1\n  example: mcp__cctui__CctuiAgent({\"adapter\": \"codex\", \"prompt\": \
+             \"Review the diff on branch X and list real defects\", \"cwd\": \
+             \"/path/to/repo\"})\nCctuiUsage: `mcp__cctui__CctuiUsage` reports the rate limits \
+             and budget that apply to THIS session — the account it is pinned to (possibly \
+             shared or pool-elected, not necessarily your own), its usage windows, this \
+             session's spend, and whether each model is currently allowed or soft-limit blocked. \
+             Check it before a fan-out and when picking a child's model: a blocked model burns \
+             the whole batch on 429s. Takes no arguments.\nBoth tools are served by an MCP \
+             server that connects as this session starts. If either reports \"No such tool \
+             available\" on your first turn, it lost that race: wait a few seconds and retry the \
+             call once before concluding the tool is missing.\n"
+        );
+        assert_eq!(
+            agent_tool_context(&cctui_proto::api::SpawnCapability::default()),
+            "CctuiAgent: you can delegate work to cctui subagent sessions on this machine with \
+             the MCP tool `mcp__cctui__CctuiAgent`. Each child is a real cctui session — nested \
+             under this one in the UI, metered, killable. The call follows the child (progress \
+             streams back while it works) and returns its final message when its turn completes. \
+             Parallel calls run in parallel. To send a follow-up to a child, call again with its \
+             session_id (included in the reply) and a new prompt.\n  adapters you may spawn: \n  \
+             example: mcp__cctui__CctuiAgent({\"adapter\": \"claude-code\", \"prompt\": \"Review \
+             the diff on branch X and list real defects\", \"cwd\": \
+             \"/path/to/repo\"})\nCctuiUsage: `mcp__cctui__CctuiUsage` reports the rate limits \
+             and budget that apply to THIS session — the account it is pinned to (possibly \
+             shared or pool-elected, not necessarily your own), its usage windows, this \
+             session's spend, and whether each model is currently allowed or soft-limit blocked. \
+             Check it before a fan-out and when picking a child's model: a blocked model burns \
+             the whole batch on 429s. Takes no arguments.\nBoth tools are served by an MCP \
+             server that connects as this session starts. If either reports \"No such tool \
+             available\" on your first turn, it lost that race: wait a few seconds and retry the \
+             call once before concluding the tool is missing.\n"
+        );
     }
 }
