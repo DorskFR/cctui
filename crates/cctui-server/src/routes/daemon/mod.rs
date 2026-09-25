@@ -38,10 +38,9 @@ mod test_support;
 mod tokens;
 
 pub use connection::ws;
-pub use events::truncate_end_detail;
-pub use gateway_env::{TokenValidQuery, session_gateway_env, session_token_valid};
-pub use reconcile::{archived_jobs, load_reconcile, load_resume_marks, load_scrub_config};
-pub use tokens::{MintTokenRequest, MintTokenResponse, mint_user_token};
+pub use gateway_env::{session_gateway_env, session_token_valid};
+pub use reconcile::{load_reconcile, load_scrub_config};
+pub use tokens::mint_user_token;
 
 // ---- /api/v1/daemon/auth ----
 

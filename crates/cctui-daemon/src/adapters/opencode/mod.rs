@@ -187,18 +187,18 @@ impl Pump {
                 route(
                     &self.live,
                     &local_id,
-                    SessionCommand::Permission {
-                        session_id: local_id.clone(),
-                        request_id,
-                        allow,
-                    },
+                    SessionCommand::Permission { session_id: local_id.clone(), request_id, allow },
                 )
                 .await;
             }
             AdapterCommand::Diagnose { local_id, request_id } => {
-                let report =
-                    diagnose(&self.live, &local_id, self.server.as_ref(), self.machine_key.as_ref())
-                        .await;
+                let report = diagnose(
+                    &self.live,
+                    &local_id,
+                    self.server.as_ref(),
+                    self.machine_key.as_ref(),
+                )
+                .await;
                 let _ = self
                     .events
                     .send(AdapterEvent::Diagnose { local_id, request_id, report: Box::new(report) })
@@ -220,20 +220,16 @@ impl Pump {
             return;
         };
         let key = session_id.or(command_id).map_or_else(String::new, |id| id.to_string());
-        let launch = match resolve_launch(
-            self.server.as_ref(),
-            self.machine_key.as_ref(),
-            &key,
-            &spec.env,
-        )
-        .await
-        {
-            Ok(launch) => launch,
-            Err(err) => {
-                fail(&self.events, command_id, &err.to_string()).await;
-                return;
-            }
-        };
+        let launch =
+            match resolve_launch(self.server.as_ref(), self.machine_key.as_ref(), &key, &spec.env)
+                .await
+            {
+                Ok(launch) => launch,
+                Err(err) => {
+                    fail(&self.events, command_id, &err.to_string()).await;
+                    return;
+                }
+            };
         let env = launch.env;
         let agent_mcp = crate::adapters::agent_mcp::AgentMcp::for_capability(
             &key,

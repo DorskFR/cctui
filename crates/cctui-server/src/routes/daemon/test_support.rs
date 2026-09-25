@@ -1,7 +1,11 @@
 use cctui_proto::ws::DaemonFrameDown;
 use uuid::Uuid;
 
-async fn seed_session(pool: &sqlx::PgPool, adapter: &str, provider: &str) -> (uuid::Uuid, String) {
+pub(super) async fn seed_session(
+    pool: &sqlx::PgPool,
+    adapter: &str,
+    provider: &str,
+) -> (uuid::Uuid, String) {
     let uid = uuid::Uuid::new_v4();
     let prov = uuid::Uuid::new_v4();
     let session_id = format!("ses_{}", uuid::Uuid::new_v4().simple());
@@ -54,7 +58,7 @@ async fn seed_session(pool: &sqlx::PgPool, adapter: &str, provider: &str) -> (uu
     (uid, session_id)
 }
 
-async fn seed_machine(pool: &sqlx::PgPool, tag: &str) -> (Uuid, Uuid) {
+pub(super) async fn seed_machine(pool: &sqlx::PgPool, tag: &str) -> (Uuid, Uuid) {
     let uid = Uuid::new_v4();
     sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
         .bind(uid)
@@ -75,7 +79,7 @@ async fn seed_machine(pool: &sqlx::PgPool, tag: &str) -> (Uuid, Uuid) {
     (uid, mid)
 }
 
-async fn seed_owned_session(pool: &sqlx::PgPool, uid: Uuid, mid: Uuid) -> String {
+pub(super) async fn seed_owned_session(pool: &sqlx::PgPool, uid: Uuid, mid: Uuid) -> String {
     let sid = Uuid::new_v4().to_string();
     sqlx::query(
         "INSERT INTO sessions (id, machine_id, machine_uuid, working_dir, status, user_id, adapter_id) \
@@ -91,7 +95,11 @@ async fn seed_owned_session(pool: &sqlx::PgPool, uid: Uuid, mid: Uuid) -> String
     sid
 }
 
-async fn drop_machines(pool: &sqlx::PgPool, sessions: &[String], owners: &[(Uuid, Uuid)]) {
+pub(super) async fn drop_machines(
+    pool: &sqlx::PgPool,
+    sessions: &[String],
+    owners: &[(Uuid, Uuid)],
+) {
     sqlx::query("DELETE FROM sessions WHERE id = ANY($1)").bind(sessions).execute(pool).await.ok();
     for (uid, mid) in owners {
         sqlx::query("DELETE FROM machines WHERE id = $1").bind(mid).execute(pool).await.ok();
@@ -99,7 +107,7 @@ async fn drop_machines(pool: &sqlx::PgPool, sessions: &[String], owners: &[(Uuid
     }
 }
 
-fn reply(local_id: &str) -> DaemonFrameDown {
+pub(super) fn reply(local_id: &str) -> DaemonFrameDown {
     DaemonFrameDown::Command {
         adapter_id: "claude-code".into(),
         command: Box::new(cctui_proto::adapter::AdapterCommand::Reply {
@@ -113,7 +121,7 @@ fn reply(local_id: &str) -> DaemonFrameDown {
     }
 }
 
-async fn row_version(pool: &sqlx::PgPool, sid: &str) -> String {
+pub(super) async fn row_version(pool: &sqlx::PgPool, sid: &str) -> String {
     sqlx::query_scalar("SELECT xmin::text FROM sessions WHERE id = $1")
         .bind(sid)
         .fetch_one(pool)
