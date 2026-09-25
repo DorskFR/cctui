@@ -3,7 +3,7 @@ use super::{
     clear_soft_limit_block_for_token, current_access_token, durable_block_key, fireworks_upstream,
     flag_account_reauth, mark_soft_limit_block, note_orphan_401, note_token_used, openai_upstream,
     orphan_is_blocked, record_fireworks_usage, resolve_account, session_and_account_name_for_token,
-    session_budget_limits, session_id_for_token, session_spend_usd, tees_response,
+    session_budget_limits, session_id_for_token, session_spend_usd_cached, tees_response,
     usage_for_soft_limit,
 };
 
@@ -267,7 +267,7 @@ pub async fn passthrough(
         // per-account usage cache — resolve it here, and only when one is set.
         if effective_limits.limits.contains_key(crate::soft_limit::KEY_SESSION_USD)
             && let Some(session_id) = session_id_for_token(&state, &session_token).await
-            && let Some(spent) = session_spend_usd(&state, acct.id, &session_id).await
+            && let Some(spent) = session_spend_usd_cached(&state, acct.id, &session_id).await
         {
             windows.push(crate::soft_limit::usd_window(
                 crate::soft_limit::KEY_SESSION_USD,
