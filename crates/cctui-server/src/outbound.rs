@@ -102,14 +102,13 @@ pub fn parse_allowlist(raw: &str) -> Vec<AllowedHost> {
         .map(str::trim)
         .filter(|e| !e.is_empty())
         .map(|entry| {
-            let split = if let Some(rest) = entry.strip_prefix('[') {
-                rest.split_once(']').map(|(h, tail)| (h, tail.strip_prefix(':')))
-            } else {
-                match entry.rsplit_once(':') {
+            let split = entry.strip_prefix('[').map_or_else(
+                || match entry.rsplit_once(':') {
                     Some((h, p)) if !h.contains(':') => Some((h, Some(p))),
                     _ => None,
-                }
-            };
+                },
+                |rest| rest.split_once(']').map(|(h, tail)| (h, tail.strip_prefix(':'))),
+            );
             match split {
                 Some((h, Some(p))) => {
                     AllowedHost { host: normalize_host(h), port: p.parse().ok().or(Some(0)) }
