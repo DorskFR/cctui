@@ -75,7 +75,10 @@ pub fn auth_error(stage: AuthStage, is_anthropic: bool) -> Response {
 
 /// 502 for an account whose `base_url` the outbound guard refuses, in the
 /// family's native error envelope so the CLI shows the message.
-pub fn upstream_refused(reason: &crate::outbound::OutboundUrlError, is_anthropic: bool) -> Response {
+pub fn upstream_refused(
+    reason: &crate::outbound::OutboundUrlError,
+    is_anthropic: bool,
+) -> Response {
     let message = format!(
         "cctui gateway refused this account's base_url: it {reason}. An operator can \
          allow a trusted host by adding it to CCTUI_UPSTREAM_ALLOWED_HOSTS on the server."
@@ -508,16 +511,13 @@ pub async fn passthrough(
             (reqwest::Body::wrap_stream(body_stream), None)
         };
 
-    let upstream = client
-        .request(method, &url)
-        .headers(headers)
-        .body(upstream_body)
-        .send()
-        .await
-        .map_err(|e| {
-            tracing::error!(account = %acct.id, "gateway upstream error: {e}");
-            StatusCode::BAD_GATEWAY
-        })?;
+    let upstream =
+        client.request(method, &url).headers(headers).body(upstream_body).send().await.map_err(
+            |e| {
+                tracing::error!(account = %acct.id, "gateway upstream error: {e}");
+                StatusCode::BAD_GATEWAY
+            },
+        )?;
 
     // Opportunistic stats: request count + response byte count (no buffering).
     let resp_len = i64::try_from(upstream.content_length().unwrap_or(0)).unwrap_or(i64::MAX);
@@ -625,9 +625,8 @@ pub async fn passthrough(
     };
     let (content_type, content_encoding) =
         (header(http::header::CONTENT_TYPE), header(http::header::CONTENT_ENCODING));
-    let encoded = content_encoding
-        .as_deref()
-        .is_some_and(|e| !e.trim().eq_ignore_ascii_case("identity"));
+    let encoded =
+        content_encoding.as_deref().is_some_and(|e| !e.trim().eq_ignore_ascii_case("identity"));
     let guarded = match tool_guard.filter(|_| status.is_success()) {
         None => None,
         Some(g) => match guardable(content_type.as_deref(), content_encoding.as_deref()) {

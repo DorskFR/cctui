@@ -286,22 +286,14 @@ async fn process(state: &AppState, row: PendingRow) {
                 .bind(&payload)
                 .execute(&state.pool)
                 .await;
-            deliver(
-                state,
-                row.id,
-                &row.notify_url,
-                row.secret.as_deref(),
-                &payload,
-                row.attempts,
-            )
-            .await;
+            deliver(state, row.id, &row.notify_url, row.secret.as_deref(), &payload, row.attempts)
+                .await;
         }
         Outcome::Supersede => {
-            let _ =
-                sqlx::query("UPDATE session_webhooks SET state = 'superseded' WHERE id = $1")
-                    .bind(row.id)
-                    .execute(&state.pool)
-                    .await;
+            let _ = sqlx::query("UPDATE session_webhooks SET state = 'superseded' WHERE id = $1")
+                .bind(row.id)
+                .execute(&state.pool)
+                .await;
             tracing::debug!(session_id = %row.session_id, "webhook superseded by worker callback");
         }
         Outcome::Wait => {

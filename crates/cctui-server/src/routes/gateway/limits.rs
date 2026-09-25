@@ -426,7 +426,11 @@ fn orphan_sweep_due(now: std::time::Instant) -> bool {
 }
 
 /// Evict fingerprints whose window and block have both lapsed.
-pub fn sweep_orphan_spam(map: &OrphanSpamMap, now: std::time::Instant, window: std::time::Duration) {
+pub fn sweep_orphan_spam(
+    map: &OrphanSpamMap,
+    now: std::time::Instant,
+    window: std::time::Duration,
+) {
     map.retain(|_, e| {
         now.duration_since(e.window_start) <= window
             || matches!(e.blocked_until, Some(until) if until > now)

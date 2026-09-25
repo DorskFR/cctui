@@ -213,7 +213,10 @@ mod tests {
         assert!(materially_changed(&base, &MachineResources { mem_pct: 41.0, ..snapshot() }));
         assert!(materially_changed(&base, &MachineResources { load1: Some(0.7), ..snapshot() }));
         assert!(materially_changed(&base, &MachineResources { load1: None, ..snapshot() }));
-        assert!(materially_changed(&base, &MachineResources { disk_path: "/data".into(), ..snapshot() }));
+        assert!(materially_changed(
+            &base,
+            &MachineResources { disk_path: "/data".into(), ..snapshot() }
+        ));
     }
 
     #[test]

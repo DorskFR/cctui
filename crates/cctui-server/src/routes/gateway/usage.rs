@@ -660,9 +660,13 @@ pub async fn fireworks_usd_windows(
         (crate::soft_limit::KEY_USD_5H, "5 hours", 5 * 3600_i64),
         (crate::soft_limit::KEY_USD_7D, "7 days", 7 * 86400),
     ] {
-        let rows =
-            model_tallies(&state.pool, account_id, "stu.created_at >= now() - $2::interval", interval)
-                .await;
+        let rows = model_tallies(
+            &state.pool,
+            account_id,
+            "stu.created_at >= now() - $2::interval",
+            interval,
+        )
+        .await;
         let resets_at = rows
             .iter()
             .filter_map(|(_, _, oldest)| *oldest)

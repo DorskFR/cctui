@@ -30,8 +30,7 @@ pub struct Config {
 }
 
 impl DispatcherConfig for Config {
-    const ENROLL_HINT: &'static str =
-        "cctui-dispatcher-docker enroll --server-url <url> --token <token> --name <name> --image <image>";
+    const ENROLL_HINT: &'static str = "cctui-dispatcher-docker enroll --server-url <url> --token <token> --name <name> --image <image>";
 
     fn server_url(&self) -> &str {
         &self.server_url

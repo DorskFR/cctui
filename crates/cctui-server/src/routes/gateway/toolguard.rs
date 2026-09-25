@@ -175,7 +175,9 @@ impl CompiledPolicy {
                 if depth >= MAX_DECODE_DEPTH || !(t.starts_with('{') || t.starts_with('[')) {
                     return None;
                 }
-                serde_json::from_str::<Value>(s).ok().and_then(|d| self.scan_value_at(&d, depth + 1))
+                serde_json::from_str::<Value>(s)
+                    .ok()
+                    .and_then(|d| self.scan_value_at(&d, depth + 1))
             }),
             Value::Array(a) => a.iter().find_map(|x| self.scan_value_at(x, depth)),
             Value::Object(o) => o.values().find_map(|x| self.scan_value_at(x, depth)),
@@ -333,10 +335,18 @@ impl Call {
             .as_ref()
             .and_then(|v| policy.scan_value(v))
             .or_else(|| decoded.as_ref().and_then(|v| policy.scan_value(v)))
-            .or_else(|| (decoded.is_none() && !self.input.is_empty()).then(|| policy.scan_str(&self.input)).flatten())
+            .or_else(|| {
+                (decoded.is_none() && !self.input.is_empty())
+                    .then(|| policy.scan_str(&self.input))
+                    .flatten()
+            })
             .or_else(|| self.initial.as_ref().and_then(|v| policy.scan_value(v)))?;
         let input = if self.input.is_empty() {
-            self.done_item.as_ref().or(self.initial.as_ref()).map(Value::to_string).unwrap_or_default()
+            self.done_item
+                .as_ref()
+                .or(self.initial.as_ref())
+                .map(Value::to_string)
+                .unwrap_or_default()
         } else {
             self.input.clone()
         };
@@ -373,7 +383,14 @@ enum Step {
 
 impl SseGuard {
     pub fn new(policy: Arc<CompiledPolicy>) -> Self {
-        Self { policy, pending: Vec::new(), held: Vec::new(), wire: None, calls: Vec::new(), blocks: Vec::new() }
+        Self {
+            policy,
+            pending: Vec::new(),
+            held: Vec::new(),
+            wire: None,
+            calls: Vec::new(),
+            blocks: Vec::new(),
+        }
     }
 
     pub fn take_blocks(&mut self) -> Vec<Block> {
@@ -446,11 +463,14 @@ impl SseGuard {
                         let key = format!("{ci}:{ti}");
                         let name = tc.pointer("/function/name").and_then(Value::as_str);
                         let frag = tc.pointer("/function/arguments").and_then(Value::as_str);
-                        self.start_call(Wire::Chat, Call {
-                            key: key.clone(),
-                            position: ci * 10_000 + ti,
-                            ..Call::default()
-                        });
+                        self.start_call(
+                            Wire::Chat,
+                            Call {
+                                key: key.clone(),
+                                position: ci * 10_000 + ti,
+                                ..Call::default()
+                            },
+                        );
                         if let Some(c) = self.call_mut(&key) {
                             if let Some(n) = name.filter(|n| !n.is_empty()) {
                                 c.name = n.to_owned();
@@ -479,17 +499,20 @@ impl SseGuard {
                 let bty = block.and_then(|b| b.get("type")).and_then(Value::as_str).unwrap_or("");
                 if ANTHROPIC_TOOL_BLOCKS.contains(&bty) {
                     let idx = v.get("index").and_then(Value::as_i64).unwrap_or(0);
-                    self.start_call(Wire::Anthropic, Call {
-                        key: idx.to_string(),
-                        position: idx,
-                        name: block
-                            .and_then(|b| b.get("name"))
-                            .and_then(Value::as_str)
-                            .unwrap_or(bty)
-                            .to_owned(),
-                        initial: block.and_then(|b| b.get("input")).cloned(),
-                        ..Call::default()
-                    });
+                    self.start_call(
+                        Wire::Anthropic,
+                        Call {
+                            key: idx.to_string(),
+                            position: idx,
+                            name: block
+                                .and_then(|b| b.get("name"))
+                                .and_then(Value::as_str)
+                                .unwrap_or(bty)
+                                .to_owned(),
+                            initial: block.and_then(|b| b.get("input")).cloned(),
+                            ..Call::default()
+                        },
+                    );
                     return Step::Hold;
                 }
             }
@@ -507,17 +530,20 @@ impl SseGuard {
                 let ity = item.and_then(|i| i.get("type")).and_then(Value::as_str).unwrap_or("");
                 if RESPONSES_TOOL_ITEMS.contains(&ity) {
                     let idx = v.get("output_index").and_then(Value::as_i64).unwrap_or(0);
-                    self.start_call(Wire::Responses, Call {
-                        key: idx.to_string(),
-                        position: idx,
-                        name: item
-                            .and_then(|i| i.get("name"))
-                            .and_then(Value::as_str)
-                            .unwrap_or(ity)
-                            .to_owned(),
-                        initial: item.cloned(),
-                        ..Call::default()
-                    });
+                    self.start_call(
+                        Wire::Responses,
+                        Call {
+                            key: idx.to_string(),
+                            position: idx,
+                            name: item
+                                .and_then(|i| i.get("name"))
+                                .and_then(Value::as_str)
+                                .unwrap_or(ity)
+                                .to_owned(),
+                            initial: item.cloned(),
+                            ..Call::default()
+                        },
+                    );
                     return Step::Hold;
                 }
             }
@@ -590,8 +616,14 @@ fn anthropic_rewrite(
         let name = v.get("type").and_then(Value::as_str).map(str::to_owned);
         out.extend(frame(name.as_deref(), &v));
     };
-    ev(out, json!({"type": "content_block_start", "index": index, "content_block": {"type": "text", "text": ""}}));
-    ev(out, json!({"type": "content_block_delta", "index": index, "delta": {"type": "text_delta", "text": text}}));
+    ev(
+        out,
+        json!({"type": "content_block_start", "index": index, "content_block": {"type": "text", "text": ""}}),
+    );
+    ev(
+        out,
+        json!({"type": "content_block_delta", "index": index, "delta": {"type": "text_delta", "text": text}}),
+    );
     ev(out, json!({"type": "content_block_stop", "index": index}));
     match end_json {
         Some(mut v) if v.get("type").and_then(Value::as_str) == Some("message_delta") => {
@@ -602,7 +634,10 @@ fn anthropic_rewrite(
             ev(out, v);
         }
         _ => {
-            ev(out, json!({"type": "message_delta", "delta": {"stop_reason": "end_turn", "stop_sequence": null}, "usage": {"output_tokens": 0}}));
+            ev(
+                out,
+                json!({"type": "message_delta", "delta": {"stop_reason": "end_turn", "stop_sequence": null}, "usage": {"output_tokens": 0}}),
+            );
             match end {
                 Some(e) => out.extend_from_slice(&e.raw),
                 None => ev(out, json!({"type": "message_stop"})),
@@ -635,17 +670,36 @@ fn responses_rewrite(
             v["sequence_number"] = json!(*n);
             *n += 1;
         }
-        let name = named.then(|| v.get("type").and_then(Value::as_str).map(str::to_owned)).flatten();
+        let name =
+            named.then(|| v.get("type").and_then(Value::as_str).map(str::to_owned)).flatten();
         out.extend(frame(name.as_deref(), &v));
     };
     let item_id = "msg_cctui_blocked";
     let part = json!({"type": "output_text", "text": text, "annotations": []});
-    ev(out, json!({"type": "response.output_item.added", "output_index": output_index, "item": blocked_message_item(text, "in_progress")}));
-    ev(out, json!({"type": "response.content_part.added", "item_id": item_id, "output_index": output_index, "content_index": 0, "part": {"type": "output_text", "text": "", "annotations": []}}));
-    ev(out, json!({"type": "response.output_text.delta", "item_id": item_id, "output_index": output_index, "content_index": 0, "delta": text}));
-    ev(out, json!({"type": "response.output_text.done", "item_id": item_id, "output_index": output_index, "content_index": 0, "text": text}));
-    ev(out, json!({"type": "response.content_part.done", "item_id": item_id, "output_index": output_index, "content_index": 0, "part": part}));
-    ev(out, json!({"type": "response.output_item.done", "output_index": output_index, "item": blocked_message_item(text, "completed")}));
+    ev(
+        out,
+        json!({"type": "response.output_item.added", "output_index": output_index, "item": blocked_message_item(text, "in_progress")}),
+    );
+    ev(
+        out,
+        json!({"type": "response.content_part.added", "item_id": item_id, "output_index": output_index, "content_index": 0, "part": {"type": "output_text", "text": "", "annotations": []}}),
+    );
+    ev(
+        out,
+        json!({"type": "response.output_text.delta", "item_id": item_id, "output_index": output_index, "content_index": 0, "delta": text}),
+    );
+    ev(
+        out,
+        json!({"type": "response.output_text.done", "item_id": item_id, "output_index": output_index, "content_index": 0, "text": text}),
+    );
+    ev(
+        out,
+        json!({"type": "response.content_part.done", "item_id": item_id, "output_index": output_index, "content_index": 0, "part": part}),
+    );
+    ev(
+        out,
+        json!({"type": "response.output_item.done", "output_index": output_index, "item": blocked_message_item(text, "completed")}),
+    );
     match end_json {
         Some(mut v) if v.get("response").is_some() => {
             if let Some(output) = v.pointer_mut("/response/output").and_then(Value::as_array_mut) {
@@ -726,7 +780,9 @@ pub fn rewrite_json(policy: &CompiledPolicy, body: &[u8]) -> Option<(Vec<u8>, Bl
         })?;
         let first_tool = content
             .iter()
-            .position(|b| ANTHROPIC_TOOL_BLOCKS.contains(&b.get("type").and_then(Value::as_str).unwrap_or("")))
+            .position(|b| {
+                ANTHROPIC_TOOL_BLOCKS.contains(&b.get("type").and_then(Value::as_str).unwrap_or(""))
+            })
             .unwrap_or(first);
         let mut kept: Vec<Value> = content[..first_tool].to_vec();
         kept.push(json!({"type": "text", "text": explanation(&name, &hit)}));
@@ -741,12 +797,18 @@ pub fn rewrite_json(policy: &CompiledPolicy, body: &[u8]) -> Option<(Vec<u8>, Bl
                 return None;
             }
             let hit = policy.scan_value(item)?;
-            Some((item.get("name").and_then(Value::as_str).unwrap_or(t).to_owned(), hit, item.to_string()))
+            Some((
+                item.get("name").and_then(Value::as_str).unwrap_or(t).to_owned(),
+                hit,
+                item.to_string(),
+            ))
         })?;
         let text = explanation(&name, &hit);
         let mut kept: Vec<Value> = output
             .iter()
-            .filter(|i| !RESPONSES_TOOL_ITEMS.contains(&i.get("type").and_then(Value::as_str).unwrap_or("")))
+            .filter(|i| {
+                !RESPONSES_TOOL_ITEMS.contains(&i.get("type").and_then(Value::as_str).unwrap_or(""))
+            })
             .cloned()
             .collect();
         kept.push(blocked_message_item(&text, "completed"));
@@ -810,13 +872,8 @@ async fn policy_for_provider(
     {
         return Ok(entry.policy.clone());
     }
-    type Row = (
-        Uuid,
-        Option<Vec<String>>,
-        Option<Vec<String>>,
-        Option<Vec<String>>,
-        Option<Vec<String>>,
-    );
+    type Row =
+        (Uuid, Option<Vec<String>>, Option<Vec<String>>, Option<Vec<String>>, Option<Vec<String>>);
     let row: Result<Option<Row>, _> = sqlx::query_as(
         "SELECT ap.account_id, p.terms, p.patterns, p.protected_owners, p.exempt_roots \
          FROM account_providers ap \
@@ -843,8 +900,10 @@ async fn policy_for_provider(
         };
         CompiledPolicy::compile(&p).map(|c| (account_id, Arc::new(c)))
     });
-    POLICY_CACHE
-        .insert(provider_id, CachedPolicy { at: Instant::now(), account_id, policy: policy.clone() });
+    POLICY_CACHE.insert(
+        provider_id,
+        CachedPolicy { at: Instant::now(), account_id, policy: policy.clone() },
+    );
     Ok(policy)
 }
 
@@ -1040,7 +1099,10 @@ where
                         let out = body.push(&chunk);
                         report(&state, &guard, body.take_blocks());
                         if !out.is_empty() {
-                            return Some((Ok(Bytes::from(out)), (inner, body, guard, state, false)));
+                            return Some((
+                                Ok(Bytes::from(out)),
+                                (inner, body, guard, state, false),
+                            ));
                         }
                     }
                     Some(Err(e)) => return Some((Err(e), (inner, body, guard, state, true))),
@@ -1057,7 +1119,6 @@ where
         },
     )
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -1116,21 +1177,33 @@ mod tests {
     fn anthropic(text: &str, tools: &[(&str, &[&str])]) -> Vec<u8> {
         let mut s = String::new();
         let mut e = |v: Value| s.push_str(&ev(v["type"].as_str(), &v));
-        e(json!({"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"claude-opus-5","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":1}}}));
-        e(json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}));
+        e(
+            json!({"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","content":[],"model":"claude-opus-5","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":1}}}),
+        );
+        e(
+            json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}),
+        );
         e(json!({"type":"ping"}));
-        e(json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":text}}));
+        e(
+            json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":text}}),
+        );
         e(json!({"type":"content_block_stop","index":0}));
         for (i, (name, frags)) in tools.iter().enumerate() {
             let idx = i + 1;
-            e(json!({"type":"content_block_start","index":idx,"content_block":{"type":"tool_use","id":format!("toolu_{idx}"),"name":name,"input":{}}}));
+            e(
+                json!({"type":"content_block_start","index":idx,"content_block":{"type":"tool_use","id":format!("toolu_{idx}"),"name":name,"input":{}}}),
+            );
             for f in *frags {
-                e(json!({"type":"content_block_delta","index":idx,"delta":{"type":"input_json_delta","partial_json":f}}));
+                e(
+                    json!({"type":"content_block_delta","index":idx,"delta":{"type":"input_json_delta","partial_json":f}}),
+                );
             }
             e(json!({"type":"content_block_stop","index":idx}));
         }
         let stop = if tools.is_empty() { "end_turn" } else { "tool_use" };
-        e(json!({"type":"message_delta","delta":{"stop_reason":stop,"stop_sequence":null},"usage":{"output_tokens":42}}));
+        e(
+            json!({"type":"message_delta","delta":{"stop_reason":stop,"stop_sequence":null},"usage":{"output_tokens":42}}),
+        );
         e(json!({"type":"message_stop"}));
         s.into_bytes()
     }
@@ -1296,25 +1369,39 @@ mod tests {
             s.push_str(&ev(v["type"].as_str(), &v));
         };
         let msg = json!({"id":"msg_1","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":text,"annotations":[]}]});
-        e(json!({"type":"response.created","response":{"id":"resp_1","status":"in_progress","output":[]}}));
-        e(json!({"type":"response.output_item.added","output_index":0,"item":{"id":"msg_1","type":"message","status":"in_progress","role":"assistant","content":[]}}));
-        e(json!({"type":"response.output_text.delta","item_id":"msg_1","output_index":0,"content_index":0,"delta":text}));
+        e(
+            json!({"type":"response.created","response":{"id":"resp_1","status":"in_progress","output":[]}}),
+        );
+        e(
+            json!({"type":"response.output_item.added","output_index":0,"item":{"id":"msg_1","type":"message","status":"in_progress","role":"assistant","content":[]}}),
+        );
+        e(
+            json!({"type":"response.output_text.delta","item_id":"msg_1","output_index":0,"content_index":0,"delta":text}),
+        );
         e(json!({"type":"response.output_item.done","output_index":0,"item":msg.clone()}));
         let mut output = vec![msg];
         for (i, (name, frags)) in tools.iter().enumerate() {
             let idx = i + 1;
             let id = format!("fc_{idx}");
-            e(json!({"type":"response.output_item.added","output_index":idx,"item":{"id":id,"type":"function_call","status":"in_progress","call_id":format!("call_{idx}"),"name":name,"arguments":""}}));
+            e(
+                json!({"type":"response.output_item.added","output_index":idx,"item":{"id":id,"type":"function_call","status":"in_progress","call_id":format!("call_{idx}"),"name":name,"arguments":""}}),
+            );
             for f in *frags {
-                e(json!({"type":"response.function_call_arguments.delta","item_id":id,"output_index":idx,"delta":f}));
+                e(
+                    json!({"type":"response.function_call_arguments.delta","item_id":id,"output_index":idx,"delta":f}),
+                );
             }
             let args = frags.concat();
-            e(json!({"type":"response.function_call_arguments.done","item_id":id,"output_index":idx,"arguments":args}));
+            e(
+                json!({"type":"response.function_call_arguments.done","item_id":id,"output_index":idx,"arguments":args}),
+            );
             let item = json!({"id":id,"type":"function_call","status":"completed","call_id":format!("call_{idx}"),"name":name,"arguments":args});
             e(json!({"type":"response.output_item.done","output_index":idx,"item":item.clone()}));
             output.push(item);
         }
-        e(json!({"type":"response.completed","response":{"id":"resp_1","status":"completed","output":output,"usage":{"input_tokens":10,"output_tokens":42,"total_tokens":52}}}));
+        e(
+            json!({"type":"response.completed","response":{"id":"resp_1","status":"completed","output":output,"usage":{"input_tokens":10,"output_tokens":42,"total_tokens":52}}}),
+        );
         s.into_bytes()
     }
 
@@ -1364,7 +1451,10 @@ mod tests {
 
     #[test]
     fn responses_match_is_rewritten_and_split_terms_are_caught() {
-        let body = responses("ok", &[("shell", &[r#"{"command":["gh","pr","create","--body","ac"#, r#"meCorp"]}"#])]);
+        let body = responses(
+            "ok",
+            &[("shell", &[r#"{"command":["gh","pr","create","--body","ac"#, r#"meCorp"]}"#])],
+        );
         let (out, blocks) = run_chunked(&body, 6);
         assert_blocked_responses(&out, "shell");
         assert_eq!(blocks.len(), 1);
@@ -1376,7 +1466,12 @@ mod tests {
             "ok",
             &[
                 ("shell", &[r#"{"command":["ls"]}"#]),
-                ("shell", &[r#"{"command":["gh","pr","edit","--body","https://github.com/Acme/secret/pull/7"]}"#]),
+                (
+                    "shell",
+                    &[
+                        r#"{"command":["gh","pr","edit","--body","https://github.com/Acme/secret/pull/7"]}"#,
+                    ],
+                ),
             ],
         );
         let (out, blocks) = run_chunked(&body, 17);
@@ -1388,10 +1483,18 @@ mod tests {
     fn responses_custom_tool_call_input_is_scanned() {
         let mut s = String::new();
         let mut e = |v: Value| s.push_str(&ev(v["type"].as_str(), &v));
-        e(json!({"type":"response.output_item.added","sequence_number":1,"output_index":0,"item":{"id":"ct_1","type":"custom_tool_call","call_id":"c1","name":"apply_patch","input":""}}));
-        e(json!({"type":"response.custom_tool_call_input.delta","sequence_number":2,"output_index":0,"item_id":"ct_1","delta":"*** Add File: notes.md\n+see acme/"}));
-        e(json!({"type":"response.custom_tool_call_input.delta","sequence_number":3,"output_index":0,"item_id":"ct_1","delta":"secret#44\n"}));
-        e(json!({"type":"response.completed","sequence_number":4,"response":{"status":"completed","output":[{"type":"custom_tool_call","name":"apply_patch"}]}}));
+        e(
+            json!({"type":"response.output_item.added","sequence_number":1,"output_index":0,"item":{"id":"ct_1","type":"custom_tool_call","call_id":"c1","name":"apply_patch","input":""}}),
+        );
+        e(
+            json!({"type":"response.custom_tool_call_input.delta","sequence_number":2,"output_index":0,"item_id":"ct_1","delta":"*** Add File: notes.md\n+see acme/"}),
+        );
+        e(
+            json!({"type":"response.custom_tool_call_input.delta","sequence_number":3,"output_index":0,"item_id":"ct_1","delta":"secret#44\n"}),
+        );
+        e(
+            json!({"type":"response.completed","sequence_number":4,"response":{"status":"completed","output":[{"type":"custom_tool_call","name":"apply_patch"}]}}),
+        );
         let (out, blocks) = run_chunked(s.as_bytes(), 8);
         assert_eq!(blocks.len(), 1);
         assert_eq!(blocks[0].tool_name, "apply_patch");
@@ -1403,7 +1506,8 @@ mod tests {
 
     fn chat(text: &str, tools: &[(&str, &[&str])]) -> Vec<u8> {
         let mut s = String::new();
-        let base = json!({"id":"chatcmpl-1","object":"chat.completion.chunk","created":1,"model":"kimi"});
+        let base =
+            json!({"id":"chatcmpl-1","object":"chat.completion.chunk","created":1,"model":"kimi"});
         let mut e = |choices: Value| {
             let mut v = base.clone();
             v["choices"] = choices;
@@ -1411,9 +1515,13 @@ mod tests {
         };
         e(json!([{"index":0,"delta":{"role":"assistant","content":text},"finish_reason":null}]));
         for (i, (name, frags)) in tools.iter().enumerate() {
-            e(json!([{"index":0,"delta":{"tool_calls":[{"index":i,"id":format!("call_{i}"),"type":"function","function":{"name":name,"arguments":""}}]},"finish_reason":null}]));
+            e(
+                json!([{"index":0,"delta":{"tool_calls":[{"index":i,"id":format!("call_{i}"),"type":"function","function":{"name":name,"arguments":""}}]},"finish_reason":null}]),
+            );
             for f in *frags {
-                e(json!([{"index":0,"delta":{"tool_calls":[{"index":i,"function":{"arguments":f}}]},"finish_reason":null}]));
+                e(
+                    json!([{"index":0,"delta":{"tool_calls":[{"index":i,"function":{"arguments":f}}]},"finish_reason":null}]),
+                );
             }
         }
         let finish = if tools.is_empty() { "stop" } else { "tool_calls" };
@@ -1498,7 +1606,10 @@ mod tests {
     fn chat_match_in_a_later_parallel_call_drops_them_all() {
         let body = chat(
             "",
-            &[("read", &[r#"{"path":"/tmp/a"}"#]), ("bash", &[r#"{"command":"cat <<EOF\nacme/x#1\nEOF"}"#])],
+            &[
+                ("read", &[r#"{"path":"/tmp/a"}"#]),
+                ("bash", &[r#"{"command":"cat <<EOF\nacme/x#1\nEOF"}"#]),
+            ],
         );
         let (out, blocks) = run_chunked(&body, 5);
         let (_, calls, finish, _) = parse_chat(&out);
@@ -1639,8 +1750,16 @@ mod tests {
         .unwrap();
         assert_eq!(p.terms, vec!["a"]);
         assert_eq!(p.exempt_roots, vec!["/w", "/x/z"]);
-        assert!(ToolPolicy { patterns: vec!["(".into()], ..ToolPolicy::default() }.normalized().is_err());
-        assert!(ToolPolicy { exempt_roots: vec!["rel".into()], ..ToolPolicy::default() }.normalized().is_err());
+        assert!(
+            ToolPolicy { patterns: vec!["(".into()], ..ToolPolicy::default() }
+                .normalized()
+                .is_err()
+        );
+        assert!(
+            ToolPolicy { exempt_roots: vec!["rel".into()], ..ToolPolicy::default() }
+                .normalized()
+                .is_err()
+        );
     }
 
     #[test]

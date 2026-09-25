@@ -899,7 +899,8 @@ fn legacy_state_file_without_visits_is_read() {
 
 #[test]
 fn test_guard_address_mention_is_not_a_bypass() {
-    let prompt = "### Step 1: Research\n[allowed]: git fetch\n[disallowed]: *\n[transition]: Exit\n";
+    let prompt =
+        "### Step 1: Research\n[allowed]: git fetch\n[disallowed]: *\n[transition]: Exit\n";
     let t = make_engine("", prompt);
     let check = |cmd: &str| decision(&t.engine.check("Bash", &json!({ "command": cmd })));
 

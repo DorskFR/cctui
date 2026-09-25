@@ -340,13 +340,12 @@ mod tests {
             };
             let written = upsert_registered(&pool, &session, mine, me).await.unwrap();
             assert_eq!(written, expect, "user {user:?} machine {machine:?}");
-            let (status, owner, uuid): (String, Option<Uuid>, Option<Uuid>) = sqlx::query_as(
-                "SELECT status, user_id, machine_uuid FROM sessions WHERE id = $1",
-            )
-            .bind(&sid)
-            .fetch_one(&pool)
-            .await
-            .unwrap();
+            let (status, owner, uuid): (String, Option<Uuid>, Option<Uuid>) =
+                sqlx::query_as("SELECT status, user_id, machine_uuid FROM sessions WHERE id = $1")
+                    .bind(&sid)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
             if expect {
                 assert_eq!(status, "new");
             } else {

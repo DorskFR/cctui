@@ -195,8 +195,8 @@ fn segment_needs_bash_grant(seg: &str) -> bool {
     if ["$(", "`", "<<", "<(", ">("].iter().any(|m| seg.contains(*m)) {
         return true;
     }
-    let toks = shlex::split(seg)
-        .unwrap_or_else(|| seg.split_whitespace().map(str::to_string).collect());
+    let toks =
+        shlex::split(seg).unwrap_or_else(|| seg.split_whitespace().map(str::to_string).collect());
     let mut leading = true;
     for (i, tok) in toks.iter().enumerate() {
         if leading {
@@ -212,9 +212,8 @@ fn segment_needs_bash_grant(seg: &str) -> bool {
             leading = false;
         }
         let flags = || toks[i + 1..].iter().take_while(|t| t.starts_with('-'));
-        let has_short = |letters: &[char]| {
-            flags().any(|f| !f.starts_with("--") && f.contains(letters))
-        };
+        let has_short =
+            |letters: &[char]| flags().any(|f| !f.starts_with("--") && f.contains(letters));
         if tok == "eval"
             || tok == "xargs"
             || (is_shell(tok) && has_short(&['c']))

@@ -108,11 +108,14 @@ impl<C: ContainerCli> Spawner<C> {
             args.push(net.clone());
         }
 
-        let secret = if machine_key.is_some() {
-            Some(secret.ok_or_else(|| anyhow::anyhow!("machine key present but no secret file staged"))?)
-        } else {
-            None
-        };
+        let secret =
+            if machine_key.is_some() {
+                Some(secret.ok_or_else(|| {
+                    anyhow::anyhow!("machine key present but no secret file staged")
+                })?)
+            } else {
+                None
+            };
         if let Some(secret) = secret.filter(|_| !self.secret_via_env) {
             env.push(format!("CCTUI_MACHINE_KEY_FILE={}", secret.guest_path));
         }
@@ -213,7 +216,11 @@ impl<C: ContainerCli> Spawner<C> {
 
 /// Write `path` as a 0600 file, never readable by others even briefly: the
 /// bytes go to a fresh 0600 temp file that is then renamed over `path`.
-fn write_private(dir: &std::path::Path, path: &std::path::Path, contents: &[u8]) -> anyhow::Result<()> {
+fn write_private(
+    dir: &std::path::Path,
+    path: &std::path::Path,
+    contents: &[u8],
+) -> anyhow::Result<()> {
     use std::io::Write;
 
     let mut builder = std::fs::DirBuilder::new();
@@ -228,9 +235,10 @@ fn write_private(dir: &std::path::Path, path: &std::path::Path, contents: &[u8])
     }
     builder.create(dir)?;
     let tmp = dir.join(format!(".{}.tmp", uuid::Uuid::new_v4()));
-    let written = opts.open(&tmp).and_then(|mut f| f.write_all(contents)).and_then(|()| {
-        std::fs::rename(&tmp, path)
-    });
+    let written = opts
+        .open(&tmp)
+        .and_then(|mut f| f.write_all(contents))
+        .and_then(|()| std::fs::rename(&tmp, path));
     if written.is_err() {
         std::fs::remove_file(&tmp).ok();
     }
@@ -262,7 +270,8 @@ impl<C: ContainerCli> Dispatcher for Spawner<C> {
         let out = self.cli.exec(args).await;
         // `--env-file` is read at spawn time; a mounted key must outlive the run.
         if let Some(s) = &secret
-            && (self.secret_via_env || !out.as_ref().is_ok_and(|o| o.ok() || Self::is_name_in_use(&o.stderr)))
+            && (self.secret_via_env
+                || !out.as_ref().is_ok_and(|o| o.ok() || Self::is_name_in_use(&o.stderr)))
         {
             std::fs::remove_file(&s.host_file).ok();
         }

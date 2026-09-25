@@ -18,8 +18,8 @@ use crate::envelope::{
     WORKER_ADDED_CAPS, WORKER_ENVELOPE_MOUNTS,
 };
 use crate::{
-    ANNOTATION_ENV_SECRET, ANNOTATION_ENVELOPE_INJECTED, ANNOTATION_WORKER_CONTAINER, DEFAULT_WORKER_CONTAINER,
-    LABEL_WORKER_PROFILE, WorkerProfileSpec,
+    ANNOTATION_ENV_SECRET, ANNOTATION_ENVELOPE_INJECTED, ANNOTATION_WORKER_CONTAINER,
+    DEFAULT_WORKER_CONTAINER, LABEL_WORKER_PROFILE, WorkerProfileSpec,
 };
 use k8s_openapi::api::core::v1::{Container, Pod, PodSpec, PodTemplateSpec};
 use std::collections::BTreeSet;
@@ -820,10 +820,10 @@ mod tests {
 
     fn with_dispatch_secret_ref(pod: &mut Pod, job: &str, secret: &str) {
         use k8s_openapi::api::core::v1::{EnvVar, EnvVarSource, SecretKeySelector};
-        pod.metadata.labels.get_or_insert_with(Default::default).insert(
-            "batch.kubernetes.io/job-name".to_owned(),
-            job.to_owned(),
-        );
+        pod.metadata
+            .labels
+            .get_or_insert_with(Default::default)
+            .insert("batch.kubernetes.io/job-name".to_owned(), job.to_owned());
         pod.metadata
             .annotations
             .get_or_insert_with(Default::default)

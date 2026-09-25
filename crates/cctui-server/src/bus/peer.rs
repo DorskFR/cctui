@@ -497,7 +497,11 @@ struct RelayFanout {
 impl RelayFanout {
     /// Keep a queue for exactly `live` peers. Dropping a departed peer's sender
     /// ends its task.
-    fn sync_peers(&mut self, live: &[String], mut spawn: impl FnMut(&str) -> mpsc::Sender<Arc<str>>) {
+    fn sync_peers(
+        &mut self,
+        live: &[String],
+        mut spawn: impl FnMut(&str) -> mpsc::Sender<Arc<str>>,
+    ) {
         self.peers.retain(|ip, _| live.contains(ip));
         for ip in live {
             if !self.peers.contains_key(ip) {
@@ -516,7 +520,11 @@ impl RelayFanout {
     }
 }
 
-fn spawn_peer_relay(client: reqwest::Client, base: String, secret: String) -> mpsc::Sender<Arc<str>> {
+fn spawn_peer_relay(
+    client: reqwest::Client,
+    base: String,
+    secret: String,
+) -> mpsc::Sender<Arc<str>> {
     let (tx, rx) = mpsc::channel(RELAY_QUEUE);
     tokio::spawn(peer_relay(client, base, secret, rx));
     tx
@@ -550,7 +558,9 @@ async fn peer_relay(
             .await;
         match sent {
             Ok(r) if r.status().is_success() => {}
-            Ok(r) => tracing::warn!(peer = %base, status = %r.status(), "peer bus publish rejected"),
+            Ok(r) => {
+                tracing::warn!(peer = %base, status = %r.status(), "peer bus publish rejected")
+            }
             Err(err) => tracing::warn!(peer = %base, %err, "peer bus publish failed"),
         }
     }

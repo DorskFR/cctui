@@ -25,8 +25,7 @@ pub struct Config {
 }
 
 impl DispatcherConfig for Config {
-    const ENROLL_HINT: &'static str =
-        "cctui-dispatcher-kube enroll --server-url <url> --token <token> --name <name> --namespace <ns> --default-profile <name>";
+    const ENROLL_HINT: &'static str = "cctui-dispatcher-kube enroll --server-url <url> --token <token> --name <name> --namespace <ns> --default-profile <name>";
 
     fn server_url(&self) -> &str {
         &self.server_url

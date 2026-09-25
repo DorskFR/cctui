@@ -355,9 +355,8 @@ pub async fn check_and_apply_with(
     counters.add(Subsystem::SelfUpdate, sums_bytes.len() as u64);
     let sums_text = std::str::from_utf8(&sums_bytes).context("SHA256SUMS not UTF-8")?;
 
-    let sig_bytes = download(client, server_url, &sig_url, machine_key)
-        .await
-        .context("download signature")?;
+    let sig_bytes =
+        download(client, server_url, &sig_url, machine_key).await.context("download signature")?;
     counters.add(Subsystem::SelfUpdate, sig_bytes.len() as u64);
 
     let bin_bytes =

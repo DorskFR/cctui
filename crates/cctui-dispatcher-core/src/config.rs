@@ -28,7 +28,10 @@ pub trait DispatcherConfig: Serialize + DeserializeOwned {
 
     #[must_use]
     fn default_path() -> PathBuf {
-        dirs::config_dir().unwrap_or_else(|| PathBuf::from(".")).join("cctui").join("dispatcher.toml")
+        dirs::config_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("cctui")
+            .join("dispatcher.toml")
     }
 
     #[must_use]

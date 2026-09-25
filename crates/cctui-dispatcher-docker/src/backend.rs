@@ -26,8 +26,7 @@ pub struct EnrollArgs {
 impl Backend for Docker {
     const NAME: &'static str = "cctui-dispatcher-docker";
     const KIND: &'static str = "docker";
-    const ABOUT: &'static str =
-        "Standalone docker dispatcher: enrolls to an account and spawns worker containers on dispatch";
+    const ABOUT: &'static str = "Standalone docker dispatcher: enrolls to an account and spawns worker containers on dispatch";
 
     type Config = Config;
     type EnrollArgs = EnrollArgs;

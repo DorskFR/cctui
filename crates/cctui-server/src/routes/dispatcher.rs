@@ -574,10 +574,8 @@ mod tests {
 
     fn headers_with(auth: &'static str) -> axum::http::HeaderMap {
         let mut headers = axum::http::HeaderMap::new();
-        headers.insert(
-            axum::http::header::AUTHORIZATION,
-            axum::http::HeaderValue::from_static(auth),
-        );
+        headers
+            .insert(axum::http::header::AUTHORIZATION, axum::http::HeaderValue::from_static(auth));
         headers
     }
 

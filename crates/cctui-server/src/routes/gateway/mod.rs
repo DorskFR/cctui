@@ -1173,8 +1173,13 @@ mod tests {
             let session = super::priced(Some(&catalog), &rows);
             let window = super::priced(
                 Some(&catalog),
-                &super::model_tallies(&pool, prov, "stu.created_at >= now() - $2::interval", "5 hours")
-                    .await,
+                &super::model_tallies(
+                    &pool,
+                    prov,
+                    "stu.created_at >= now() - $2::interval",
+                    "5 hours",
+                )
+                .await,
             );
             let top = super::max_session_spend_usd(&pool, prov, Some(&catalog), "5 hours")
                 .await
@@ -1190,10 +1195,8 @@ mod tests {
     #[tokio::test]
     async fn a_refused_upstream_names_the_allowlist() {
         for anthropic in [true, false] {
-            let resp = super::upstream_refused(
-                &crate::outbound::OutboundUrlError::Internal,
-                anthropic,
-            );
+            let resp =
+                super::upstream_refused(&crate::outbound::OutboundUrlError::Internal, anthropic);
             assert_eq!(resp.status(), axum::http::StatusCode::BAD_GATEWAY);
             let body = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
             let text = String::from_utf8(body.to_vec()).unwrap();

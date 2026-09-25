@@ -401,8 +401,8 @@ mod tests {
             cancel.cancel();
         });
         let started = Instant::now();
-        let out = auth_with_retry(|| async { Err::<(), _>(anyhow::anyhow!("offline")) }, &shutdown)
-            .await;
+        let out =
+            auth_with_retry(|| async { Err::<(), _>(anyhow::anyhow!("offline")) }, &shutdown).await;
         assert!(out.is_none());
         assert!(started.elapsed() < Duration::from_secs(2));
     }

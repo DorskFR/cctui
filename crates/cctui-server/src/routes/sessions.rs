@@ -613,13 +613,16 @@ async fn enrich_and_sort(
         type TokenRow =
             (String, Option<String>, Option<i64>, Option<i64>, Option<i64>, Option<i64>);
         let rows: Vec<TokenRow> = sqlx::query_as(SESSION_TOTALS_SQL)
-        .bind(&session_ids)
-        .fetch_all(&state.pool)
-        .await
-        .map_err(|e| {
-            tracing::error!("db error (token usage aggregate): {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-        })?;
+            .bind(&session_ids)
+            .fetch_all(&state.pool)
+            .await
+            .map_err(|e| {
+                tracing::error!("db error (token usage aggregate): {e}");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ApiError { error: "database error".into() }),
+                )
+            })?;
         let catalogs = session_catalogs(state, &session_ids).await;
         let mut by_session: std::collections::HashMap<String, cctui_proto::models::TokenUsage> =
             std::collections::HashMap::new();
@@ -679,14 +682,17 @@ async fn enrich_and_sort(
         && !session_ids.is_empty()
     {
         let rows: Vec<(String, i64)> = sqlx::query_as(UNREAD_COUNT_SQL)
-        .bind(&session_ids)
-        .bind(uid)
-        .fetch_all(&state.pool)
-        .await
-        .map_err(|e| {
-            tracing::error!("db error (unread count lookup): {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-        })?;
+            .bind(&session_ids)
+            .bind(uid)
+            .fetch_all(&state.pool)
+            .await
+            .map_err(|e| {
+                tracing::error!("db error (unread count lookup): {e}");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ApiError { error: "database error".into() }),
+                )
+            })?;
         let mut by_session: std::collections::HashMap<String, u32> =
             rows.into_iter().map(|(sid, n)| (sid, cap_unread(n))).collect();
         for (_, s) in &mut with_ts {
@@ -942,13 +948,16 @@ async fn enrich_and_sort(
     if !session_ids.is_empty() {
         type LastRow = (String, i64, i64, i64, DateTime<Utc>, i64);
         let rows: Vec<LastRow> = sqlx::query_as(LAST_TWO_TURNS_SQL)
-        .bind(&session_ids)
-        .fetch_all(&state.pool)
-        .await
-        .map_err(|e| {
-            tracing::error!("db error (last token usage lookup): {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-        })?;
+            .bind(&session_ids)
+            .fetch_all(&state.pool)
+            .await
+            .map_err(|e| {
+                tracing::error!("db error (last token usage lookup): {e}");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ApiError { error: "database error".into() }),
+                )
+            })?;
         // The last turn, plus the previous one's context to judge it against.
         let mut by_session: std::collections::HashMap<String, (i64, i64, DateTime<Utc>, i64)> =
             std::collections::HashMap::new();
@@ -3565,8 +3574,7 @@ mod tests {
 
     #[test]
     fn conversation_pages_seek_the_session_id_index() {
-        let migration =
-            include_str!("../../../../migrations/137_stream_events_session_id.up.sql");
+        let migration = include_str!("../../../../migrations/137_stream_events_session_id.up.sql");
         assert!(migration.contains("ON stream_events (session_id, id)"));
         for order in [super::ConversationOrder::Desc, super::ConversationOrder::Asc] {
             let sql = super::conversation_sql(order);

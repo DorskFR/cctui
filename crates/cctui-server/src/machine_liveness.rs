@@ -107,7 +107,11 @@ async fn mark_sessions_machine_offline(state: &AppState, machine_ids: &[Uuid]) {
     .await
     {
         Ok(res) if res.rows_affected() > 0 => {
-            tracing::info!(machines = machine_ids.len(), count = res.rows_affected(), "sessions marked machine_offline");
+            tracing::info!(
+                machines = machine_ids.len(),
+                count = res.rows_affected(),
+                "sessions marked machine_offline"
+            );
         }
         Ok(_) => {}
         Err(err) => tracing::warn!(%err, "machine_offline mark failed"),
@@ -161,7 +165,8 @@ mod tests {
     fn only_the_transition_to_offline_marks_sessions() {
         let tiers = dashmap::DashMap::new();
         let id = Uuid::from_u128(7);
-        let mut pass = |tier| newly_offline(std::iter::once((id, tier, record_tier(&tiers, id, tier))));
+        let mut pass =
+            |tier| newly_offline(std::iter::once((id, tier, record_tier(&tiers, id, tier))));
         assert!(pass(MachineLiveness::Online).is_empty());
         assert_eq!(pass(MachineLiveness::Offline), vec![id]);
         assert!(pass(MachineLiveness::Offline).is_empty());

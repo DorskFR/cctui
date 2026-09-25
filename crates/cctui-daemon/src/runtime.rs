@@ -173,8 +173,8 @@ pub(crate) fn bind_private_socket(path: &Path) -> anyhow::Result<tokio::net::Uni
         }
         std::fs::remove_file(path).with_context(|| format!("remove stale {}", path.display()))?;
     }
-    let listener = tokio::net::UnixListener::bind(path)
-        .with_context(|| format!("bind {}", path.display()))?;
+    let listener =
+        tokio::net::UnixListener::bind(path).with_context(|| format!("bind {}", path.display()))?;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
     Ok(listener)
 }

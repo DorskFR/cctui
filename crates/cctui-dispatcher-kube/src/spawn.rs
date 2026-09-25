@@ -40,8 +40,9 @@ use cctui_dispatcher_core::{
 };
 use cctui_orchestrator::validate::template_drift;
 use cctui_orchestrator::{
-    ANNOTATION_ENV_SECRET, ANNOTATION_GPG_SIGNING, ANNOTATION_GUARD_IDENTITY, ANNOTATION_WORKER_CONTAINER,
-    DEFAULT_WORKER_CONTAINER, LABEL_WORKER_PROFILE, WorkerProfile, WorkerProfileSpec,
+    ANNOTATION_ENV_SECRET, ANNOTATION_GPG_SIGNING, ANNOTATION_GUARD_IDENTITY,
+    ANNOTATION_WORKER_CONTAINER, DEFAULT_WORKER_CONTAINER, LABEL_WORKER_PROFILE, WorkerProfile,
+    WorkerProfileSpec,
 };
 use cctui_proto::worker_env::is_reserved_env_key;
 use cctui_proto::ws::WireDispatchSpec;
@@ -227,7 +228,9 @@ impl Spawner {
         if let Some(Value::Object(m)) = env_map {
             for (k, v) in m {
                 if is_reserved_env_key(&k) {
-                    anyhow::bail!("payload env `{k}` is reserved by the dispatcher and cannot be set");
+                    anyhow::bail!(
+                        "payload env `{k}` is reserved by the dispatcher and cannot be set"
+                    );
                 }
                 if profile.env.iter().flatten().any(|e| e.name == k && e.value_from.is_some()) {
                     anyhow::bail!(
@@ -432,9 +435,8 @@ impl Spawner {
             .as_array_mut()
             .ok_or_else(|| anyhow::anyhow!("worker profile `env` must be a list of env vars"))?;
         for (k, v) in overrides {
-            let existing = arr
-                .iter_mut()
-                .find(|e| e.get("name").and_then(Value::as_str) == Some(k.as_str()));
+            let existing =
+                arr.iter_mut().find(|e| e.get("name").and_then(Value::as_str) == Some(k.as_str()));
             let entry = match v {
                 EnvSource::Literal(v) => json!({ "name": k, "value": v }),
                 EnvSource::Secret(s) => json!({
@@ -506,7 +508,8 @@ impl Spawner {
 
     /// The ownerReference that makes deleting `job` garbage-collect its Secret.
     fn owner_reference(job: &Job) -> anyhow::Result<Value> {
-        let name = job.metadata.name.as_deref().ok_or_else(|| anyhow::anyhow!("Job has no name"))?;
+        let name =
+            job.metadata.name.as_deref().ok_or_else(|| anyhow::anyhow!("Job has no name"))?;
         let uid = job.metadata.uid.as_deref().ok_or_else(|| anyhow::anyhow!("Job has no uid"))?;
         Ok(json!({ "apiVersion": "batch/v1", "kind": "Job", "name": name, "uid": uid }))
     }
@@ -541,7 +544,9 @@ impl Spawner {
         match self.secrets().delete(name, &DeleteParams::default()).await {
             Ok(_) => {}
             Err(KubeError::Api(e)) if e.code == 404 => {}
-            Err(e) => tracing::warn!(secret = %name, error = %e, "deleting unused env Secret failed"),
+            Err(e) => {
+                tracing::warn!(secret = %name, error = %e, "deleting unused env Secret failed")
+            }
         }
     }
 
@@ -641,9 +646,13 @@ impl Spawner {
         // Terminal: delete + recreate so a fresh run fires the callback.
         self.delete_and_wait(name).await?;
         match self.create(job).await {
-            Ok(j) => Ok((self.outcome(name, if suspend { "queued" } else { "redispatched" }), Some(j))),
+            Ok(j) => {
+                Ok((self.outcome(name, if suspend { "queued" } else { "redispatched" }), Some(j)))
+            }
             // A concurrent re-dispatch beat us — its run owns the callback now.
-            Err(KubeError::Api(e)) if e.code == 409 => Ok((self.outcome(name, "deduplicated"), None)),
+            Err(KubeError::Api(e)) if e.code == 409 => {
+                Ok((self.outcome(name, "deduplicated"), None))
+            }
             Err(e) => anyhow::bail!("recreating Job: {e}"),
         }
     }
@@ -1848,7 +1857,8 @@ mod tests {
     #[test]
     fn reserved_payload_env_is_rejected() {
         for key in ["CCTUI_URL", "CCTUI_MACHINE_KEY", "SESSION_ID", "LD_PRELOAD", "HTTPS_PROXY"] {
-            let msg = build_err(&lean_profile(), json!({ "env": { key: "https://attacker.example" } }));
+            let msg =
+                build_err(&lean_profile(), json!({ "env": { key: "https://attacker.example" } }));
             assert!(msg.contains(key) && msg.contains("reserved"), "unexpected error: {msg}");
         }
     }
@@ -1871,8 +1881,11 @@ mod tests {
     fn map_shaped_env_is_an_error_not_a_panic() {
         let mut worker = serde_json::Map::new();
         worker.insert("env".into(), json!({ "LOG_LEVEL": "info" }));
-        let err = Spawner::merge_env(&mut worker, &[("SESSION_ID".into(), EnvSource::Literal("s".into()))])
-            .expect_err("a map-shaped env must be rejected");
+        let err = Spawner::merge_env(
+            &mut worker,
+            &[("SESSION_ID".into(), EnvSource::Literal("s".into()))],
+        )
+        .expect_err("a map-shaped env must be rejected");
         assert!(err.to_string().contains("env"), "unexpected error: {err}");
 
         let profile = serde_json::from_value::<WorkerProfileSpec>(json!({
@@ -1899,7 +1912,11 @@ mod tests {
             "/metadata/annotations/cctui.dev~1env-secret",
             "/spec/template/metadata/annotations/cctui.dev~1env-secret",
         ] {
-            assert_eq!(v.pointer(p).and_then(Value::as_str), annotated_secret(&v).as_deref(), "{p}");
+            assert_eq!(
+                v.pointer(p).and_then(Value::as_str),
+                annotated_secret(&v).as_deref(),
+                "{p}"
+            );
         }
     }
 
@@ -1975,8 +1992,7 @@ mod tests {
             env_secret_obj("referenced", 3600, false),
         ];
         let referenced = std::collections::BTreeSet::from(["referenced"]);
-        let swept =
-            orphan_env_secrets(&secrets, &referenced, k8s_openapi::jiff::Timestamp::now());
+        let swept = orphan_env_secrets(&secrets, &referenced, k8s_openapi::jiff::Timestamp::now());
         assert_eq!(swept, vec!["orphan".to_owned()]);
     }
 
@@ -2004,8 +2020,8 @@ mod tests {
             "valueFrom": { "secretKeyRef": { "name": "cluster-secret", "key": "STOLEN" } }
         }));
         let job: Job = serde_json::from_value(v).unwrap();
-        let rebuilt = serde_json::to_value(Spawner::rebuild_job(&job, &lean_profile()).unwrap())
-            .unwrap();
+        let rebuilt =
+            serde_json::to_value(Spawner::rebuild_job(&job, &lean_profile()).unwrap()).unwrap();
         assert!(worker_env(&rebuilt).iter().all(|e| e["name"] != "STOLEN"));
     }
 }

@@ -24,9 +24,8 @@ pub async fn worker_efforts(wanted: &HashSet<String>) -> HashMap<String, String>
         if wanted.is_empty() {
             return HashMap::new();
         }
-        let scanner = Arc::clone(
-            SCANNER.get_or_init(|| Arc::new(Mutex::new(EffortScanner::new("/proc")))),
-        );
+        let scanner =
+            Arc::clone(SCANNER.get_or_init(|| Arc::new(Mutex::new(EffortScanner::new("/proc")))));
         let wanted = wanted.clone();
         tokio::task::spawn_blocking(move || {
             scanner.lock().map(|mut s| s.scan(&wanted)).unwrap_or_default()
@@ -198,12 +197,18 @@ mod tests {
             assert_eq!(got.get("bbbb2222").map(String::as_str), Some("low"));
         }
 
-        fake_proc(tmp.path(), &[("11", &["CLAUDE_CODE_SESSION_NAME=bbbb2222", "CLAUDE_EFFORT=max"])]);
+        fake_proc(
+            tmp.path(),
+            &[("11", &["CLAUDE_CODE_SESSION_NAME=bbbb2222", "CLAUDE_EFFORT=max"])],
+        );
         assert_eq!(scanner.scan(&wanted).get("bbbb2222").map(String::as_str), Some("max"));
         assert!(scanner.reads <= 3);
 
         let grown = set(&["aaaa1111", "bbbb2222", "cccc3333", "gone0000", "dddd4444"]);
-        fake_proc(tmp.path(), &[("13", &["CLAUDE_CODE_SESSION_NAME=dddd4444", "CLAUDE_EFFORT=xhigh"])]);
+        fake_proc(
+            tmp.path(),
+            &[("13", &["CLAUDE_CODE_SESSION_NAME=dddd4444", "CLAUDE_EFFORT=xhigh"])],
+        );
         assert_eq!(scanner.scan(&grown).get("dddd4444").map(String::as_str), Some("xhigh"));
         scanner.scan(&grown);
         assert!(scanner.reads <= 4);
@@ -212,12 +217,18 @@ mod tests {
     #[test]
     fn respawned_worker_is_found_under_its_new_pid() {
         let tmp = tempfile::tempdir().unwrap();
-        fake_proc(tmp.path(), &[("20", &["CLAUDE_CODE_SESSION_NAME=aaaa1111", "CLAUDE_EFFORT=high"] as &[&str])]);
+        fake_proc(
+            tmp.path(),
+            &[("20", &["CLAUDE_CODE_SESSION_NAME=aaaa1111", "CLAUDE_EFFORT=high"] as &[&str])],
+        );
         let wanted = set(&["aaaa1111"]);
         let mut scanner = EffortScanner::new(tmp.path());
         assert_eq!(scanner.scan(&wanted).len(), 1);
         std::fs::remove_dir_all(tmp.path().join("20")).unwrap();
-        fake_proc(tmp.path(), &[("21", &["CLAUDE_CODE_SESSION_NAME=aaaa1111", "CLAUDE_EFFORT=low"] as &[&str])]);
+        fake_proc(
+            tmp.path(),
+            &[("21", &["CLAUDE_CODE_SESSION_NAME=aaaa1111", "CLAUDE_EFFORT=low"] as &[&str])],
+        );
         scanner.scan(&wanted);
         let got = scanner.scan(&wanted);
         assert_eq!(got.get("aaaa1111").map(String::as_str), Some("low"));
