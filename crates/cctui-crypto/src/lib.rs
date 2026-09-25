@@ -145,19 +145,23 @@ fn key_from_env(var: Result<String, std::env::VarError>) -> Result<Vec<u8>, KeyE
     Ok(key)
 }
 
+static WEAK_KEY_WARNED: std::sync::Once = std::sync::Once::new();
+
 fn weak_key_from_env(var: Result<String, std::env::VarError>) -> Vec<u8> {
     match key_from_env(var.clone()) {
         Ok(key) => key,
         Err(KeyError::Unset) => Vec::new(),
         Err(KeyError::InvalidHex(e)) => {
-            tracing::error!(
-                "CCTUI_VAULT_KEY is set but not valid hex ({e}); falling back to pass-through — \
-                 vault values will be stored UNENCRYPTED"
-            );
+            WEAK_KEY_WARNED.call_once(|| {
+                tracing::error!(
+                    "CCTUI_VAULT_KEY is set but not valid hex ({e}); falling back to pass-through \
+                     — vault values will be stored UNENCRYPTED"
+                );
+            });
             Vec::new()
         }
         Err(e @ KeyError::TooShort(_)) => {
-            tracing::error!("{e}");
+            WEAK_KEY_WARNED.call_once(|| tracing::error!("{e}"));
             var.ok().and_then(|raw| hex::decode(raw.trim()).ok()).unwrap_or_default()
         }
     }
