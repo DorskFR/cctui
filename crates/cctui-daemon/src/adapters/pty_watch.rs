@@ -8,14 +8,14 @@ use std::sync::{Arc, Mutex};
 use tokio_util::sync::CancellationToken;
 
 #[derive(Clone, Default)]
-pub(crate) struct PtyWatchSet {
+pub struct PtyWatchSet {
     tasks: Arc<Mutex<HashMap<String, CancellationToken>>>,
 }
 
 impl PtyWatchSet {
     /// Spawn `task` under a child of `shutdown` unless `key` is already
     /// watched. Returns whether a task was started.
-    pub(crate) fn watch<F, Fut>(&self, key: String, shutdown: &CancellationToken, task: F) -> bool
+    pub fn watch<F, Fut>(&self, key: String, shutdown: &CancellationToken, task: F) -> bool
     where
         F: FnOnce(CancellationToken) -> Fut,
         Fut: Future<Output = ()> + Send + 'static,
@@ -30,7 +30,7 @@ impl PtyWatchSet {
         true
     }
 
-    pub(crate) fn unwatch(&self, key: &str) {
+    pub fn unwatch(&self, key: &str) {
         if let Ok(mut tasks) = self.tasks.lock()
             && let Some(cancel) = tasks.remove(key)
         {
@@ -38,12 +38,12 @@ impl PtyWatchSet {
         }
     }
 
-    pub(crate) fn watching(&self) -> usize {
+    pub fn watching(&self) -> usize {
         self.tasks.lock().map_or(0, |tasks| tasks.len())
     }
 
     #[cfg(test)]
-    pub(crate) fn token(&self, key: &str) -> Option<CancellationToken> {
+    pub fn token(&self, key: &str) -> Option<CancellationToken> {
         self.tasks.lock().ok()?.get(key).cloned()
     }
 }
