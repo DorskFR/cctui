@@ -1,28 +1,15 @@
 //! Persistent connection to the shared `codex app-server` daemon.
 //!
 //! The control socket at `$CODEX_HOME/app-server-control/app-server-control.sock`
-//! speaks **WebSocket, not newline-delimited JSON**: a bare `connect()` +
-//! `write(json)` is dropped by the server with `failed to upgrade control
-//! socket websocket connection`. This is undocumented upstream and is the one
-//! thing that makes this module more than a socket swap — after the HTTP/1.1
-//! `Upgrade` the JSON-RPC is byte-identical to what [`super::app_server`]
-//! writes over stdio.
+//! speaks WebSocket, not newline-delimited JSON (undocumented upstream); after
+//! the `Upgrade` the JSON-RPC matches what [`super::app_server`] writes over
+//! stdio. Reads and archive/unarchive answer unauthenticated, so one
+//! connection serves every account's threads.
 //!
-//! Reads (`thread/list`, `thread/read`, `thread/turns/list`) and the
-//! `thread/{archive,unarchive}` lifecycle ops all answer unauthenticated,
-//! which is what lets one connection serve every session's inventory
-//! regardless of which account owns the thread.
-//!
-//! Responses and notifications interleave on the one socket, so requests are
-//! correlated by JSON-RPC id and everything else fans out to
-//! [`DaemonHandle::subscribe`].
-//!
-//! A session can also run its turns here through a [`ThreadWire`]: a raw
-//! JSON-RPC pipe scoped to one thread, byte-compatible with the stdio child.
-//! Unlike a read, a thread route outlives a drop: on reconnect it rejoins its
-//! thread with `thread/resume` (re-supplying its [`ThreadConfig`]) and
-//! reconciles a `turn/start` whose answer the drop swallowed, so a running
-//! turn is neither lost nor duplicated.
+//! Requests are correlated by JSON-RPC id; everything else fans out to
+//! [`DaemonHandle::subscribe`]. A [`ThreadWire`] runs one thread's turns over
+//! the socket and survives a drop: on reconnect it `thread/resume`s with its
+//! [`ThreadConfig`] and reconciles a `turn/start` whose answer was lost.
 
 use std::collections::HashMap;
 use std::path::PathBuf;

@@ -1,25 +1,13 @@
-//! Self-update routed through the cctui-server.
+//! Self-update routed through the cctui-server, the single channel for daemon
+//! distribution.
 //!
-//! Historically the daemon hit the GitHub API directly. It now
-//! goes entirely through the cctui-server, which is the single channel for
-//! daemon distribution (the server proxies private-repo release assets when
-//! it holds a GitHub PAT — see `cctui-server`'s `routes::manifest`).
-//!
-//! `cctui-daemon update` is the one-shot path. `cctui-daemon run` also
-//! spawns a background ticker that calls [`check_and_apply`] every
-//! [`poll_interval`] (default [`DEFAULT_POLL_INTERVAL`]) unless disabled via
-//! `--no-auto-update` or `CCTUI_DAEMON_AUTOUPDATE=0`.
-//!
-//! Steps:
-//!   1. `GET {server}/api/v1/manifest/daemon` → the server's version + a
-//!      download and signature URL per target.
-//!   2. Decide with [`cctui_proto::release_sig::update_decision`]: a stable
-//!      machine never takes a beta build, and an older version is skipped
-//!      unless `CCTUI_DAEMON_ALLOW_DOWNGRADE=1`. That override is how a beta
-//!      machine rolls back to an older stable release.
-//!   3. Download the matching `{target}` asset, its `.minisig` and
-//!      `SHA256SUMS`, verify checksum and release signature, atomically rename
-//!      into place, check `--version`, then re-exec.
+//! `cctui-daemon update` runs once; `cctui-daemon run` also calls
+//! [`check_and_apply`] every [`poll_interval`] unless `--no-auto-update` or
+//! `CCTUI_DAEMON_AUTOUPDATE=0`. Each check fetches the daemon manifest, decides
+//! with [`cctui_proto::release_sig::update_decision`] (stable never takes a
+//! beta; downgrades need `CCTUI_DAEMON_ALLOW_DOWNGRADE=1`), verifies the
+//! asset's SHA256 and minisign signature, renames it into place, checks
+//! `--version`, then re-execs.
 //!
 //! The machine key is only ever sent to the server's own origin.
 

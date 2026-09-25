@@ -1,27 +1,16 @@
-//! Codex adapter.
+//! Codex adapter, enabled on every machine by default
+//! ([`cctui_proto::adapter::KNOWN_ADAPTERS`]) unless an `adapters_enabled` row
+//! disables it.
 //!
-//! Two modes, picked at start by config or env:
+//! Two modes, picked by config or env:
 //!
-//! - **Log-tail (default)** — watches `~/.codex/sessions/` for
-//!   new log files, emits `SessionStarted`/`Message`/`ToolUse`/
-//!   `SessionEnded` based on file activity and a configurable quiesce
-//!   window. Sessions root and timing knobs are tunable via the
+//! - **Log-tail (default)** — watches `~/.codex/sessions/` and emits session
+//!   events from file activity and a quiesce window, tunable via the
 //!   `adapters_enabled.config` JSON.
-//! - **UDS injection (legacy v0)** — listens on
-//!   `$CCTUI_CODEX_SOCK` (or `$XDG_RUNTIME_DIR/cctui-codex.sock`) and
-//!   forwards line-delimited `AdapterEvent` JSON. Kept for tests and
-//!   for tools that want to push events directly. Enable with
-//!   `config.mode = "uds"`.
-//!
-//! Same shape as the claude-code adapter: listens on a dedicated Unix
-//! domain socket and forwards line-delimited [`AdapterEvent`] JSON to the
-//! daemon. Proves the `Adapter` trait holds for a second harness.
-//!
-//! Runs on every machine by default ([`cctui_proto::adapter::KNOWN_ADAPTERS`]);
-//! an `adapters_enabled` row can disable it per machine.
-//!
-//! Socket path: `$CCTUI_CODEX_SOCK`, defaulting to
-//! `$XDG_RUNTIME_DIR/cctui-codex.sock`, else a per-user private dir.
+//! - **UDS injection** (`config.mode = "uds"`) — forwards line-delimited
+//!   [`AdapterEvent`] JSON from `$CCTUI_CODEX_SOCK`, defaulting to
+//!   `$XDG_RUNTIME_DIR/cctui-codex.sock`, else a per-user private dir. Used by
+//!   tests and tools that push events directly.
 
 pub(crate) mod app_server;
 pub mod codex_version_gate;

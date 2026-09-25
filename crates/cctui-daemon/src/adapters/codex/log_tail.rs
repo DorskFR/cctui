@@ -1,24 +1,13 @@
 //! Codex log-tail adapter.
 //!
-//! Watches `~/.codex/sessions/` for new log files. For each new file:
+//! Watches `~/.codex/sessions/`. A new file emits `SessionStarted` (`local_id`
+//! is the basename, `working_dir` the first `cwd`/`working_dir` seen); each
+//! line becomes a `Message` (non-JSON is wrapped as assistant text, and a
+//! `"tool"`/`"function_call"` field marks a tool call). After `quiesce_secs`
+//! without growth the session is `hibernated`, not ended: it resumes when the
+//! file grows. `SessionEnded` is reserved for the file disappearing.
 //!
-//! 1. Emit `SessionStarted` with `local_id` = file basename (without
-//!    `.jsonl` / `.log` suffix) and `working_dir` from the
-//!    `cwd`/`working_dir` field in the first parseable JSON line that
-//!    carries one (if any).
-//! 2. Tail subsequent lines: if the line parses as JSON it becomes a
-//!    `Message` payload as-is; otherwise it's wrapped as
-//!    `{role: "assistant", text: <line>}`. Tool-call payloads are
-//!    recognised heuristically by the presence of a `"tool"` or
-//!    `"function_call"` field.
-//! 3. After `quiesce_secs` of no new bytes on a tracked file, emit a
-//!    `hibernated` `Status`: an idle rollout is not a finished one, so the
-//!    session stays tracked and resumes streaming when it grows again.
-//!    `SessionEnded` is reserved for the rollout file disappearing.
-//!
-//! The exact Codex log schema isn't documented here — this is an
-//! opt-in scaffold that will need refinement once we have concrete
-//! fixtures. The line parser is intentionally permissive.
+//! The Codex log schema is undocumented, so the line parser is permissive.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};

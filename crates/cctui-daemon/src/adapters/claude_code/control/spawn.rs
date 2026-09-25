@@ -343,11 +343,9 @@ impl Driver {
     /// ACK beyond the dispatch reply.
     ///
     /// The payload shape is the daemon's private, proto-gated dispatch
-    /// record. It is NOT `{op,cwd,prompt}` — that older guess was rejected
-    /// outright (`malformed request`) and the rejection was swallowed,
-    /// producing a silent no-op. We mint the session id / short /
-    /// nonce client-side exactly as claude does and hand the worker its
-    /// launch argv.
+    /// record; `{op,cwd,prompt}` is rejected as `malformed request`. We mint
+    /// the session id / short / nonce client-side exactly as claude does and
+    /// hand the worker its launch argv.
     pub(super) async fn prepare_spawn(
         &self,
         sock: &std::path::Path,

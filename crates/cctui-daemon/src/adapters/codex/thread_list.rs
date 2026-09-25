@@ -1,28 +1,15 @@
 //! Codex `thread/list` inventory.
 //!
-//! The legacy [`super::log_tail`] scrapes `~/.codex/sessions/**/*.jsonl`
-//! heuristically — it only learns a session's working dir if a line happens
-//! to carry one, never sees a human-readable preview/name, and guesses
-//! tool-vs-message from ad-hoc field probing.
+//! Polls the state-DB-backed `thread/list` to surface every codex session on
+//! the machine (CLI, VS Code, `codex exec`, app-server) with its preview,
+//! name, cwd, source and status. Thread ids are the rollout `UUIDv7`, shared
+//! with the log-tail and the app-server driver.
 //!
-//! `codex app-server` exposes a first-class, state-DB-backed inventory via the
-//! `thread/list` JSON-RPC method: each `Thread` carries `id`/`sessionId`
-//! (the rollout `UUIDv7`, identical to the log-tail's `local_id` and the
-//! app-server driver's thread id), plus `preview`, `name`, `cwd`, `source`
-//! (`cli|vscode|exec|appServer|subAgent…`) and a `status` object. Polling it
-//! surfaces **every** codex session on the machine — CLI, VS Code, `codex
-//! exec`, app-server — with real metadata, which is exactly the 1:1-with-claude
-//! inventory parity the ticket asks for.
-//!
-//! Requests go over the shared [`super::daemon`] connection, which also pushes
-//! the `thread/*` notifications that make a refresh immediate instead of up to
-//! one interval stale; the interval survives as a safety net. Hosts without a
-//! reachable daemon fall back to a short-lived stdio `codex app-server` per
-//! poll: spawn, `initialize` → `thread/list`, read the one response, exit. The
-//! poll shares the app-server
-//! driver's [`SessionRegistry`] so cctui-owned threads (which the driver
-//! already streams live) are not re-emitted here, and the log-tail's `owned`
-//! set is likewise extended to cover everything this inventory has surfaced.
+//! Requests go over the shared [`super::daemon`] connection, whose `thread/*`
+//! notifications trigger an immediate refresh; the interval is a safety net.
+//! Without a daemon each poll spawns a short-lived stdio `codex app-server`.
+//! Threads in the driver's [`SessionRegistry`] are not re-emitted, and the
+//! log-tail's `owned` set covers everything surfaced here.
 
 use std::collections::HashMap;
 use std::process::Stdio;

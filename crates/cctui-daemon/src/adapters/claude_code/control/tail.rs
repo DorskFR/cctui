@@ -76,8 +76,7 @@ impl Driver {
     /// Apply server-pushed transcript resume marks: record each mark,
     /// clamp the cursor of any session already ahead-clampable forward, and heal
     /// a session we already tail whose offset has run ahead of (or has no) mark
-    /// with a single bounded re-send window — the one-time heal that replaces the
-    /// old periodic re-tail.
+    /// with a single bounded re-send window.
     pub(super) async fn apply_resume_marks(&mut self, marks: Vec<(String, u64)>) {
         let mark_map: HashMap<String, u64> = marks.into_iter().collect();
         for (key, mark) in &mark_map {
@@ -234,8 +233,7 @@ mod tests {
         let resent = drain_messages(&mut rx);
         assert!(resent.contains(&"alpha".to_owned()) && resent.contains(&"beta".to_owned()));
 
-        // Now offsets and the recorded server mark agree: several periodic
-        // reconcile passes must emit ZERO frames (the whole point of the ticket).
+        // Offsets and the server mark agree: reconcile passes emit ZERO frames.
         for _ in 0..5 {
             d.reconcile_tail(false).await;
         }

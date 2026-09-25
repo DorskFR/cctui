@@ -104,7 +104,7 @@ pub struct SessionRecord {
 /// `local_id` → cctui-owned Codex thread metadata.
 pub type SessionRegistry = Arc<Mutex<HashMap<String, SessionRecord>>>;
 
-// `Resume` carries a full `SessionRecord` (now incl. the launch env);
+// `Resume` carries a full `SessionRecord` (including the launch env);
 // the size gap to the unit `Delivered`/`Missing` variants is intrinsic and the
 // value is short-lived (built, matched, dropped per command), so boxing it
 // would add an allocation for no real benefit.

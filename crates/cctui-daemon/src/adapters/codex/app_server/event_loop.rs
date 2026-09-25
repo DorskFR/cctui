@@ -140,9 +140,7 @@ impl CodexSession {
             .env("PATH", crate::childenv::child_path())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            // Capture stderr (the app-server's log stream) rather than
-            // discarding it — it is the only diagnostic when codex dies
-            // unexpectedly (CCT macOS "randomly dies" report).
+            // Stderr is the only diagnostic when codex dies unexpectedly.
             .stderr(Stdio::piped())
             .spawn()
             .with_context(|| format!("spawn `{} app-server`", self.cfg.bin))?;
@@ -984,9 +982,8 @@ impl<'a> EventLoop<'a> {
         }
         self.cancel_pending_rpcs().await;
 
-        // Reap the child and classify why the session ended. An abnormal exit
-        // that we did not request is surfaced as `Crashed` with the captured
-        // stderr tail — the diagnostic for the macOS "randomly dies" report.
+        // An abnormal exit we did not request is surfaced as `Crashed` with
+        // the captured stderr tail.
         let status = match self.child.as_mut() {
             Some(child) => Some(child.wait().await),
             None => None,
