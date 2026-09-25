@@ -778,7 +778,6 @@ mod tests {
         );
     }
 
-
     /// A role rule denying a capability yields `403` before any object lookup.
     #[tokio::test]
     async fn role_seam_denies_with_403_before_object_lookup() {
@@ -953,7 +952,6 @@ mod tests {
             );
         }
     }
-
 
     /// A one-route router wired exactly as [`Routes::add`] does, optionally under
     /// a layer that mimics `auth_middleware` by inserting an [`AuthContext`].
