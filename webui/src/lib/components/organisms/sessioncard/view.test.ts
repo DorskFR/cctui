@@ -8,7 +8,7 @@ const session = (over: Partial<SessionListItem>): SessionListItem =>
 describe('titleOf', () => {
 	it('names a Task subagent from its sidecar description', () => {
 		// The daemon persists the sidecar `description` as the session name, so
-		// the row reads as the task instead of a 6-char hash (CCT-941).
+		// the row reads as the task instead of a 6-char hash.
 		expect(titleOf(session({ name: 'Global competitors research' }), true)).toBe(
 			'Global competitors research'
 		);

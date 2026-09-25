@@ -81,7 +81,7 @@ const menuRows = () =>
 const rowByText = (text: string) =>
 	menuRows().find((r) => r.textContent?.includes(text)) ?? null;
 
-describe('the system bar no longer carries the ? or the bell (CCT-1012)', () => {
+describe('the system bar carries neither the ? nor the bell', () => {
 	it('has no standalone guides button in the tail', () => {
 		render();
 		const tail = document.querySelector('.tail') as HTMLElement;
@@ -134,7 +134,7 @@ describe('notifications', () => {
 	});
 });
 
-describe('the version block sheds its third line (CCT-1013)', () => {
+describe('the version block shows ui and srv only', () => {
 	it('renders ui and srv only, with the update state left to the avatar dot', () => {
 		versionData.latest_version = '0.12.0';
 		render();

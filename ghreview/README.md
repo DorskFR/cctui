@@ -1,15 +1,15 @@
 # gh-review
 
-Versioned HTTP + SSE contract for the cctui GitHub review center (epic CCT-600).
+Versioned HTTP + SSE contract for the cctui GitHub review center.
 
 It is a Bun + TypeScript service built on [Hono](https://hono.dev) +
 [`@hono/zod-openapi`](https://github.com/honojs/middleware/tree/main/packages/zod-openapi):
 the `/v1` routes and their zod schemas are the source of truth, and the OpenAPI
 document + TypeScript client are generated from them.
 
-The contract surface was frozen in CCT-604. CCT-601 adds the **sync daemon**: an
-ETag polling loop over octokit, a Postgres JSONB document store, and SSE push via
-`LISTEN/NOTIFY`. The read routes now serve real envelopes from the store; when
+A **sync daemon** backs the contract: an ETag polling loop over octokit, a
+Postgres JSONB document store, and SSE push via `LISTEN/NOTIFY`. The read routes
+serve envelopes from the store; when
 `DATABASE_URL` is unset the service still boots and serves the empty contract.
 
 ## Design
@@ -70,7 +70,7 @@ They are wired to Postgres `LISTEN/NOTIFY`: a document upsert that changes the
 payload fires `NOTIFY ghreview_events`; the SSE endpoint `LISTEN`s and re-broadcasts
 mapped events, so multiple replicas each see every write.
 
-## Sync daemon (CCT-601)
+## Sync daemon
 
 The daemon keeps a warm, GitHub-shaped cache so reads never touch GitHub.
 
@@ -86,20 +86,20 @@ The daemon keeps a warm, GitHub-shaped cache so reads never touch GitHub.
 | `GHREVIEW_RATE_LIMIT` | `5000` | Per-PAT hourly request budget. |
 | `GHREVIEW_WEBHOOK_SECRET` | — | Shared secret for `X-Hub-Signature-256` on `POST /v1/webhook`. |
 | `PORT` | `8790` | HTTP port. |
-| `GHREVIEW_SEAL_KEY` | — | 32-byte AES key (hex/base64/raw) that seals PATs at rest. Unset ⇒ accounts + poller disabled (store + auth only). Vault delivers it in prod (CCT-612). |
+| `GHREVIEW_SEAL_KEY` | — | 32-byte AES key (hex/base64/raw) that seals PATs at rest. Unset ⇒ accounts + poller disabled (store + auth only). Vault delivers it in prod. |
 | `GHREVIEW_AUTH_MODE` | `cctui` | `cctui` verifies bearer tokens against the shared cctui DB; `static` uses `GHREVIEW_AUTH_TOKENS`. |
 | `GHREVIEW_AUTH_TOKENS` | — | Static-mode `token:userId,token2:userId2` map (dev / standalone). |
 | `GHREVIEW_CCTUI_SCHEMA` | `public` | Schema holding cctui's `auth_keys`/`users` for `cctui` auth mode. |
 | `GHREVIEW_SYNC_VIEWED_GITHUB` | `false` | When `true`, each PR content change also pulls github.com's per-file viewed state in via GraphQL. Off by default to bound GraphQL spend. |
 | `GITHUB_ACCOUNT` + `GITHUB_TOKEN` | — | Optional single-account bootstrap: seeds one `gh_accounts` row (owner `env`) when a seal key is set. Managing accounts via `/v1/accounts` is the multi-account path. |
 
-## Multi-account, auth & isolation (CCT-603)
+## Multi-account, auth & isolation
 
 gh-review is a second backend beside the cctui Rust server. **AuthN reuses cctui's
 bearer tokens**: cctui hashes tokens with `sha256(token)` and resolves them in
 `auth_keys JOIN users`, and gh-review shares that Postgres, so the primary
 (`GHREVIEW_AUTH_MODE=cctui`) resolver verifies a token with one query and no
-network hop — the review UI mounted in cctui-ui (CCT-610) needs no second login.
+network hop — the review UI mounted in cctui-ui needs no second login.
 A deliberately thin `static` mode (`GHREVIEW_AUTH_TOKENS`) keeps the service
 standalone-capable and testable without a cctui DB. Auth is enforced on every
 `/v1` route except `/v1/health`, `/v1/status`, `/v1/webhook` (HMAC-signed) and the
@@ -143,7 +143,7 @@ sync every unchanged PR returns `304` and is free.
 Notifications polling honours `Last-Modified` / `If-Modified-Since` and the
 `X-Poll-Interval` hint that the notifications API is designed around.
 
-### Notification state (CCT-602)
+### Notification state
 
 GitHub's notifications API only models `unread`. On top of it we keep a
 server-managed state layer in `notification_state` (one row per `(account,
@@ -173,7 +173,7 @@ absent until first touched, so the inbox defaults everything to `false`.
   reads on every tick, so a push failure never loses the local flag. A re-polled
   notification upserts only the `documents` payload — it never clobbers state.
 
-### Viewed state (CCT-609)
+### Viewed state
 
 Per-file "viewed" state for a PR lives in `viewed_state` (one row per `(account,
 owner, repo, pull_number, path)`): a `viewed` boolean, the file `digest` (blob sha
@@ -215,7 +215,7 @@ directives GitHub ships that graphql-js rejects). `bun run gen:graphql` regenera
 `src/generated/github-graphql.ts` from the `src/graphql/*.graphql` operations. A thin
 `createGraphqlClient` wrapper (`src/graphql/client.ts`) exposes the review-threads
 query plus the viewed-state query and the `markFileAsViewed`/`unmarkFileAsViewed`
-mutations that back CCT-609's two-way file-viewed sync.
+mutations that back the two-way file-viewed sync.
 
 ## Development
 

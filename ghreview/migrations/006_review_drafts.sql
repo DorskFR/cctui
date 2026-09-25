@@ -1,4 +1,4 @@
--- CCT-664: per-line inline comments + batched review publish.
+-- Per-line inline comments + batched review publish.
 --
 -- A review draft accumulates per-line comments locally until the user publishes
 -- them as ONE batched GitHub review (POST .../pulls/{n}/reviews). Ownership is by

@@ -99,8 +99,8 @@ describe('bustReasonKey', () => {
 });
 
 // The degradation itself is CSS (a container query cannot be evaluated in a
-// layout-less DOM), so what a unit test CAN guard is the wiring that made
-// CCT-846 regress: the molecule querying host containers that nobody declared.
+// layout-less DOM), so the unit test guards the wiring: the molecule must only
+// query host containers that are declared.
 const src = (rel: string) => readFileSync(new URL(rel, import.meta.url), 'utf8');
 const containerBlock = (css: string, name: string) =>
 	css.match(new RegExp(`@container ${name} \\(max-width:[^)]+\\) \\{[\\s\\S]*?\\n\\t\\}`))?.[0] ?? '';

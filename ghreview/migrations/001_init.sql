@@ -1,4 +1,4 @@
--- CCT-601: sync daemon foundation.
+-- Sync daemon foundation.
 -- Everything lives in a dedicated schema so gh-review coexists with the cctui
 -- server's tables in the same database pod. The runner sets search_path before
 -- applying files; statements below are additionally IF NOT EXISTS so a partial

@@ -10,7 +10,7 @@ const reply = (content: string, ts: number): AgentEvent => ({
 	seq: null
 });
 
-describe('decodeBase64 (CCT-545 PTY chunks)', () => {
+describe('decodeBase64 (PTY chunks)', () => {
 	it('round-trips ASCII bytes', () => {
 		expect(Array.from(decodeBase64('aGk='))).toEqual([104, 105]);
 	});

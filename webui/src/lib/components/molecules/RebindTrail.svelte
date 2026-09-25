@@ -5,11 +5,8 @@
 
 	// A session that changed accounts mid-run says so, here, next to the account
 	// badge — a small arrow whose tooltip lists every move with its cause.
-	//
-	// This is the point of pools, not a decoration. Account movement used to be
-	// invisible: it was found out after the fact, in a bill, which is what made
-	// an otherwise useful feature feel like a betrayal. A session that never
-	// moved renders nothing at all, so the marker means exactly one thing.
+	// A session that never moved renders nothing, so the marker means exactly
+	// one thing.
 	let { sessionId, enabled = true }: { sessionId: string; enabled?: boolean } = $props();
 
 	const rebinds = useSessionRebinds(

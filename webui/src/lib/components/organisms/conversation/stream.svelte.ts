@@ -1,6 +1,5 @@
 // WS subscription + live-event/permission/ask/delivery state and the send
-// orchestration for the conversation drawer, extracted from ConversationDrawer
-// with no behavior change. This is the "event context": it owns the live buffer,
+// orchestration for the conversation drawer. This is the "event context": it owns the live buffer,
 // the optimistic-reply echoes, and the per-message delivery tracking, and drives
 // the activity ("Working…") indicator.
 //
@@ -143,8 +142,7 @@ export class ConversationStream {
 			// A pending live ask/plan is superseded the instant the agent streams a
 			// fresh substantive (non-user, non-heartbeat) event past it:
 			// the question was skipped/answered out-of-band and the turn moved on, so
-			// the daemon's AskResolved/onAsk(null) — which a half-open ws can miss —
-			// is no longer the only thing that clears the form. While a prompt is
+			// the daemon's AskResolved/onAsk(null) can be missed by a half-open ws. While a prompt is
 			// genuinely pending claude is blocked and emits nothing, so this can't
 			// race a still-open question. Remember it resolved so its late transcript
 			// line stays suppressed. User echoes (key !== null) never clear

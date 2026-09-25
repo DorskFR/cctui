@@ -115,7 +115,7 @@ const buildCtx: LineBuildCtx = {
 	prettyDiff: true
 };
 
-describe('one user message with an image renders as one bubble (CCT-1008)', () => {
+describe('one user message with an image renders as one bubble', () => {
 	const threeEncodings = [
 		userEvent(COMPOSER, 1, 1),
 		userEvent(CLAUDE_COPY, 2, 2),

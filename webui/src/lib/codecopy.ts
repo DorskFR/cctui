@@ -24,7 +24,7 @@ export function installCodeCopy(): void {
 }
 
 function flash(btn: HTMLButtonElement, label: string): void {
-	// The button now holds an SVG icon, so save/restore innerHTML
+	// The button holds an SVG icon, so save/restore innerHTML
 	// rather than textContent — otherwise the icon is lost after the flash.
 	const prev = btn.innerHTML;
 	btn.textContent = label;

@@ -1,6 +1,5 @@
 <!--
-  `/github` (+ sub-paths) — the unified GitHub review center. Replaces
-  the old Rust-backed GithubView; the review UI now lives here, backed by the
+  `/github` (+ sub-paths) — the unified GitHub review center, backed by the
   ghreview TS backend and mounted lazily so its chunk loads only on this route.
 
   Three states:

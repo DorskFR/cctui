@@ -1,4 +1,4 @@
--- CCT-711 #16: per-(account, pull request) snooze state.
+-- Per-(account, pull request) snooze state.
 --
 -- A snoozed PR is hidden from the default pull request list (the "All" view) and
 -- surfaced only in the dedicated "Snoozed" view. One row per (account, owner,

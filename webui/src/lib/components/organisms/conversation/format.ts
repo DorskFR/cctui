@@ -1,5 +1,5 @@
-// Pure formatting / parsing / dedup helpers for the conversation drawer,
-// extracted from ConversationDrawer.svelte (no behavior change). Everything
+// Pure formatting / parsing / dedup helpers for the conversation drawer.
+// Everything
 // here is side-effect free — view-dependent formatting takes its toggles as
 // explicit args so these stay testable and decoupled from component state.
 import type { AgentEvent } from '@bindings/AgentEvent';

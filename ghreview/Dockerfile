@@ -1,5 +1,5 @@
-# cctui gh-review backend (CCT-612): the versioned HTTP+SSE GitHub review API.
-# Bun runtime, backend-only — the review UI ships inside cctui-ui (CCT-610), so
+# cctui gh-review backend: the versioned HTTP+SSE GitHub review API.
+# Bun runtime, backend-only — the review UI ships inside cctui-ui, so
 # nothing static is served here.
 #
 # ⚠️ This repo is PUBLIC. No private hosts/registries/secrets in this file.

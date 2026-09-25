@@ -76,7 +76,7 @@ describe('role badge and tint', () => {
 	});
 });
 
-describe('CCT-1083 queue state on the message itself', () => {
+describe('queue state on the message itself', () => {
 	it('tints a waiting queued bubble and labels it', async () => {
 		const el = await render(line({ queued: true }));
 		expect(el.classList.contains('queued')).toBe(true);

@@ -47,7 +47,7 @@ describe("auth middleware", () => {
     expect(res.status).toBe(401);
   });
 
-  test("requires auth for /v1/status and scopes it (CCT-775)", async () => {
+  test("requires auth for /v1/status and scopes it", async () => {
     const app = createApp({ auth: resolver });
     expect((await app.request("/v1/status")).status).toBe(401);
     const ok = await app.request("/v1/status", { headers: { authorization: "Bearer tok-a" } });

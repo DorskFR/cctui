@@ -1,5 +1,4 @@
-/* Shared message-bubble + rendered-markdown styling, extracted from
-   ConversationDrawer (no behavior change). Imported as a global stylesheet by
+/* Shared message-bubble + rendered-markdown styling. Imported as a global stylesheet by
    the components that render a `.bubble` (ConversationLine, and the drawer's
    ask-preamble), so the base look + markdown/syntax-highlight token colors are
    defined once. Role tints (`.line.user .bubble`, …) stay scoped in
