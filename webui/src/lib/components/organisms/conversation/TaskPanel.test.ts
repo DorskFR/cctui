@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mount, tick, unmount } from 'svelte';
 import TaskPanel from './TaskPanel.svelte';

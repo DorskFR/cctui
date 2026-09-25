@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { toasts } from './toast.svelte';
 import { sessionFailureToast, sessionHref } from './sessionFailureToast';

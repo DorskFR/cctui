@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 import { describe, it, expect, afterEach } from 'vitest';
 import { mount, unmount } from 'svelte';
 import type { UsageBucket } from '@bindings/UsageBucket';

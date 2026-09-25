@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 import { describe, expect, it } from 'vitest';
 import header from './DrawerHeader.svelte?raw';
 import en from '../../../../../messages/en.json?raw';

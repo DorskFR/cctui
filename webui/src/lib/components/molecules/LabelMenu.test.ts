@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, expect, it, vi } from 'vitest';
 import type { Label } from '@bindings/Label';

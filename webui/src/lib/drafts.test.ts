@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 import { beforeEach, describe, expect, it } from 'vitest';
 import { attachmentStore } from './attachmentStore';
 import { clearSpawnSlot, drafts, promptHistory, SPAWN_SLOT, spawnSlotKey } from './drafts';

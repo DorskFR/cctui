@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 import { describe, expect, it, vi } from 'vitest';
 import { decodeBase64, KeyedListeners, BoundedEventBuffer } from './ws.svelte';
 import type { AgentEvent } from '@bindings/AgentEvent';

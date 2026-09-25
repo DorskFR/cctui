@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 import { describe, expect, it } from 'vitest';
 import type { AccountUsageEntry, UsagePace, UsageWindow } from '$lib/queries';
 import {

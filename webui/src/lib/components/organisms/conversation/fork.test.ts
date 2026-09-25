@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 import { describe, it, expect } from 'vitest';
 import { ForkController } from './fork.svelte';
 import type { SessionListItem } from '@bindings/SessionListItem';

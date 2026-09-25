@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 import { describe, it, expect } from 'vitest';
 import type { TokenUsageWindows } from '@bindings/TokenUsageWindows';
 import { buildWindowRows, WINDOW_KEYS } from './WindowsTable.logic';

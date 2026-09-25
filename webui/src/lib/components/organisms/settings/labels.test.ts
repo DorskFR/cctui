@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 import { flushSync, mount, unmount, type Component } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import AppearanceSection from './AppearanceSection.svelte';

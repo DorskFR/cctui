@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { flushSync, mount, tick, unmount, type ComponentProps } from 'svelte';
 import SessionSectionHeader from './SessionSectionHeader.svelte';

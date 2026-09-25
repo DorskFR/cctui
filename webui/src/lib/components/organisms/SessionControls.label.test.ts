@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it } from 'vitest';
 import SessionControls from './SessionControls.svelte';
