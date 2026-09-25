@@ -60,7 +60,8 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use super::control::DriverConfig;
-use super::streamjson::{self, LaunchArgs};
+use super::launch::LaunchArgs;
+use super::streamjson;
 use super::{PendingAsks, PendingPermHooks, SessionMap};
 use crate::adapter_runtime::AdapterCtx;
 

@@ -465,7 +465,7 @@ mod tests {
 
         let session_id = uuid::Uuid::new_v4().to_string();
         let short = &session_id[..8];
-        let nonce: String = uuid::Uuid::new_v4().simple().to_string().chars().take(8).collect();
+        let nonce = super::super::launch::nonce();
         let cwd = std::env::current_dir().unwrap().to_string_lossy().into_owned();
         let req = serde_json::json!({
             "proto": 1, "op": "dispatch", "timeoutMs": 15000,
@@ -506,7 +506,7 @@ mod tests {
 
         let session_id = uuid::Uuid::new_v4().to_string();
         let short = &session_id[..8];
-        let nonce: String = uuid::Uuid::new_v4().simple().to_string().chars().take(8).collect();
+        let nonce = super::super::launch::nonce();
         let cwd = std::env::current_dir().unwrap().to_string_lossy().into_owned();
         let want_name = "cct-135 seed name probe";
         let req = serde_json::json!({

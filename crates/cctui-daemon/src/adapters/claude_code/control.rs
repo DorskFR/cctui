@@ -36,6 +36,7 @@ use super::diagnose::{
 use super::discovery::Discovery;
 use super::dispatch_done::{self, DispatchDoneTracker};
 use super::kickstart::Kickstarter;
+use super::launch::{self, JobIds, LaunchArgs};
 use super::state::{StateJson, default_jobs_root};
 use super::transcript::{self, OffsetStore, default_projects_root};
 use super::{SessionMap, session_registry, socket};
@@ -117,7 +118,7 @@ impl DriverConfig {
 
 /// The `source` every cctui dispatch stamps on its jobs. An absent source is
 /// treated as ours (older claude builds omit the field).
-const FLEET_SOURCE: &str = "fleet";
+pub(super) const FLEET_SOURCE: &str = "fleet";
 const SPARE_SOURCE: &str = "spare";
 
 /// How many times one `claude rm` target may be retried while clearing the
@@ -1716,19 +1717,6 @@ impl Driver {
             .or_else(|| fallback_cwd.map(str::to_owned))
             .ok_or_else(|| anyhow::anyhow!("no cwd on disk or from caller to resume {short}"))?;
 
-        let agent = "claude";
-        let nonce: String = uuid::Uuid::new_v4().simple().to_string().chars().take(8).collect();
-        let created_at = u64::try_from(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |d| d.as_millis()),
-        )
-        .unwrap_or(0);
-        // Launch argv + respawn flags, appending the managed `--settings` file so
-        // the revived worker keeps its hooks + account settings.
-        let mut args =
-            vec!["--resume".to_owned(), session_id.clone(), "--agent".to_owned(), agent.to_owned()];
-        let mut respawn_flags = vec!["--agent".to_owned(), agent.to_owned()];
         // NB: resume deliberately does NOT pass `--model`/`--effort`.
         // Asserting `--model` on a `--resume` forces the claude
         // daemon down its spare-claim/cold relaunch, which does NOT reapply
@@ -1736,44 +1724,14 @@ impl Driver {
         // vars) — so the revived worker came up with no `ANTHROPIC_BASE_URL`/
         // token and 401ed/ConnectionRefused. The resumed session already carries
         // its model/effort in the transcript; only `spawn` seeds them as flags.
-        if let Some(settings) = &settings_arg {
-            args.push("--settings".to_owned());
-            args.push(settings.clone());
-            respawn_flags.push("--settings".to_owned());
-            respawn_flags.push(settings.clone());
-        }
-        let req = json!({
-            "proto": 1,
-            "op": "dispatch",
-            "timeoutMs": 15000,
-            "d": {
-                "proto": 1,
-                "short": short,
-                "nonce": nonce,
-                "sessionId": session_id,
-                "createdAt": created_at,
-                "source": FLEET_SOURCE,
-                "cwd": cwd,
-                "launch": { "mode": "prompt", "args": args },
-                // Re-inject the gateway env resolved for this session's bound
-                // OAuth account so the revived worker keeps routing through the
-                // gateway rather than hitting the default upstream with no
-                // credential and 401ing. Mirror into `reattachEnv` so
-                // claude's own daemon reapplies it on any internal respawn
-                // (`/clear`, `/compact`) while it's alive. Empty for sessions with
-                // no account binding.
-                "env": &env,
-                "reattachEnv": &env,
-                "isolation": "none",
-                "respawnFlags": respawn_flags,
-                "agent": agent,
-                // `state.json` already exists for this short; the daemon keeps
-                // its identity fields, so the seed is just protocol filler.
-                "seed": { "intent": st.as_ref().and_then(|s| s.intent.clone()).unwrap_or_default() },
-                "cols": 120,
-                "rows": 40,
-            }
-        });
+        let launch = LaunchArgs { settings_path: settings_arg, ..resume_launch(&session_id) };
+        let ids = JobIds::existing(short, session_id);
+        // `state.json` already exists for this short; the daemon keeps its
+        // identity fields, so the seed is just protocol filler.
+        let seed =
+            json!({ "intent": st.as_ref().and_then(|s| s.intent.clone()).unwrap_or_default() });
+        let req = launch::dispatch_request(&ids, &cwd, &launch, None, &env, seed);
+        let session_id = ids.session_id;
         let resp: serde_json::Value = socket::call(sock, &req)
             .await
             .with_context(|| format!("resume dispatch for hibernated session {short}"))?;
@@ -2121,86 +2079,16 @@ impl Driver {
     /// producing a silent no-op. We mint the session id / short /
     /// nonce client-side exactly as claude does and hand the worker its
     /// launch argv.
-    #[allow(clippy::too_many_lines)]
     async fn spawn(
         &self,
         sock: &std::path::Path,
         spec: &cctui_proto::adapter::SessionSpec,
         forced_session_id: Option<String>,
     ) -> anyhow::Result<DeferredDispatch> {
-        let cwd = spec
-            .working_dir
-            .as_deref()
-            .ok_or_else(|| anyhow::anyhow!("spawn: working_dir required"))?;
-        let cwd_path = std::path::Path::new(cwd);
-        if !cwd_path.is_dir() {
-            anyhow::bail!("spawn: working_dir does not exist or is not a directory: {cwd}");
-        }
-
-        let agent = "claude";
-        // Use the server-pre-minted session id when supplied so the
-        // id the server bound the gateway session token to matches the id the
-        // worker registers as (otherwise `account_name` never resolves). Falls
-        // back to a fresh uuid for non-account / non-HTTP spawns.
-        let session_id = forced_session_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-        // `short` is the first uuid group (8 hex chars); `nonce` is 8 fresh
-        // hex chars. Both satisfy the daemon's /^[a-f0-9]{8}$/ validator.
-        let short = &session_id[..8];
-        let nonce: String = uuid::Uuid::new_v4().simple().to_string().chars().take(8).collect();
-        let created_at = u64::try_from(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |d| d.as_millis()),
-        )
-        .unwrap_or(0);
-
-        // Worker launch argv, mirroring claude's own fleet dispatch:
-        // `--session-id <id> --agent claude [--name <name>] [-- <prompt>]`.
-        let mut args = vec![
-            "--session-id".to_owned(),
-            session_id.clone(),
-            "--agent".to_owned(),
-            agent.to_owned(),
-        ];
-        if let Some(name) = &spec.name {
-            args.push("--name".to_owned());
-            args.push(name.clone());
-        }
-        // Per-spawn permission posture. `None` inherits whatever
-        // the claude daemon was launched with (the user's global default).
-        if let Some(mode) = spec.permission_mode {
-            args.push("--permission-mode".to_owned());
-            args.push(mode.claude_flag().to_owned());
-        }
-        // Inject the managed `AskUserQuestion` hook settings, scoped
-        // to this fleet-spawned worker only — the user's hand-run `claude` is
-        // untouched. `--settings` merges over the resolved hierarchy, so it
-        // only ADDS the hook. Goes into `respawnFlags` too so it survives the
-        // `/clear`/`/compact` relaunch the claude daemon drives off them.
-        let mut respawn_flags = vec!["--agent".to_owned(), agent.to_owned()];
-        // NB: model/effort are NOT passed as `--model`/`--effort` CLI args.
-        // They ride the managed `--settings` file below (`model` /
-        // `effortLevel` / `CLAUDE_CODE_EFFORT_LEVEL`), which the claude daemon
-        // applies to a spare-claimed worker — whereas a `--model` CLI arg forces
-        // the spare-claim/cold relaunch that drops the dispatch gateway env.
-        // Remember the spawn-time model/effort keyed by `short` so the
-        // Status emit can fall back to it while `state.json` is still being
-        // written (or transiently gone across a `/clear`).
-        {
-            let model = spec.model.as_deref().map(str::trim).filter(|m| !m.is_empty());
-            let effort = spec.effort.as_deref().map(str::trim).filter(|e| !e.is_empty());
-            if (model.is_some() || effort.is_some())
-                && let Ok(mut map) = self.spawn_model_effort.lock()
-            {
-                map.insert(short.to_owned(), (model.map(str::to_owned), effort.map(str::to_owned)));
-            }
-        }
-        // Remember the launch posture for the diagnose report.
-        if let Some(mode) = spec.permission_mode
-            && let Ok(mut map) = self.spawn_permission_mode.lock()
-        {
-            map.insert(short.to_owned(), super::diagnose::permission_label(mode).to_owned());
-        }
+        let cwd = require_dir(spec.working_dir.as_deref(), "spawn")?;
+        let ids = launch::job_ids(forced_session_id.as_deref());
+        let (short, session_id) = (ids.short.as_str(), ids.session_id.as_str());
+        self.remember_launch_posture(short, spec);
         // A `CctuiAgent` child links to its caller through the same stash the
         // fork path uses: roster discovery emits the `SessionStarted` and has no
         // other way to know the spawn had a parent. Relation "subagent", not
@@ -2211,127 +2099,78 @@ impl Driver {
             map.insert(short.to_owned(), (parent.to_owned(), "subagent"));
         }
         let whip = spec.permission_mode.is_some_and(cctui_proto::adapter::PermissionMode::is_whip);
-        // Resolve the gateway env + per-account settings from the server's
-        // durable binding BEFORE writing the managed hook-settings file, so the
-        // account settings can be deep-merged under the managed hooks.
-        // Fail-closed inside `resolve_launch_env` (account-bound but
-        // unmintable → abort rather than launch a worker that will 401).
-        let launch = self.resolve_launch_env(&session_id, &spec.env).await?;
-        // Resolved before the settings file: the `SessionStart` hook that holds
-        // the first turn is only registered when there is a relay to wait for.
-        let agent_tool = attach_agent_relay(
-            &mut args,
-            &mut respawn_flags,
-            short,
-            &session_id,
-            launch.spawn_capability.as_ref(),
-        );
-        if let Some(settings) = ensure_hook_settings(
+        // Resolved before the managed settings file so the account settings are
+        // merged under the managed hooks. Fail-closed: account-bound but
+        // unmintable aborts rather than launching a worker that will 401.
+        let launch_env = self.resolve_launch_env(session_id, &spec.env).await?;
+        let mut launch = spawn_launch(spec, session_id);
+        launch.mcp_config =
+            agent_relay_config(short, session_id, launch_env.spawn_capability.as_ref());
+        // The `SessionStart` hook that holds the first turn is only registered
+        // when there is a relay to wait for.
+        let agent_tool = launch.mcp_config.is_some();
+        launch.settings_path = ensure_hook_settings(
             &self.cfg.hook_socket_path,
             whip,
             short,
-            launch.settings.as_ref(),
-            &launch.env,
+            launch_env.settings.as_ref(),
+            &launch_env.env,
             spec.model.as_deref(),
             spec.effort.as_deref(),
-            launch.whip_phrases.as_ref(),
-            agent_tool.then_some(session_id.as_str()),
-        ) {
-            let settings = settings.to_string_lossy().into_owned();
-            args.push("--settings".to_owned());
-            args.push(settings.clone());
-            respawn_flags.push("--settings".to_owned());
-            respawn_flags.push(settings);
-        }
-        // Stage any uploaded files under /tmp/cctui-uploads/<session-id>/ and
-        // prepend their absolute paths to the prompt so the worker reads them.
-        // A staging failure is fatal to the spawn — silently dropping
-        // an attachment the user expects the worker to read would be worse.
-        let staged = stage_uploads(&session_id, &spec.bootstrap).inspect_err(|_| {
+            launch_env.whip_phrases.as_ref(),
+            agent_tool.then_some(session_id),
+        )
+        .map(|p| p.to_string_lossy().into_owned());
+        // A staging failure is fatal: silently dropping an attachment the user
+        // expects the worker to read would be worse.
+        let staged = stage_uploads(session_id, &spec.bootstrap).inspect_err(|_| {
             crate::configsweep::remove_session_files(short);
         })?;
-        // Prepend a delimited `<session-context>` block to the SPAWN prompt only:
-        // give the agent the same at-a-glance context a human sees in
-        // the UI — name, model·effort, permission posture, env var NAMES (never
-        // values — those live only in `env_json` below), cwd, and the staged
-        // file list (folded in here from the old client-side `Attached files:`
-        // append). Subsequent messages are untouched.
         let session_context = build_session_context(
             spec,
             cwd,
             &staged,
-            launch.spawn_capability.as_ref().filter(|_| agent_tool),
+            launch_env.spawn_capability.as_ref().filter(|_| agent_tool),
         );
-        let launch_prompt = match spec.prompt.as_deref().map(str::trim) {
-            Some(b) if !b.is_empty() => Some(format!("{session_context}\n\n{b}")),
-            _ => Some(session_context),
+        let prompt = match spec.prompt.as_deref().map(str::trim) {
+            Some(b) if !b.is_empty() => format!("{session_context}\n\n{b}"),
+            _ => session_context,
         };
-        if let Some(prompt) = &launch_prompt {
-            args.push("--".to_owned());
-            args.push(prompt.clone());
-        }
-        // Keep the display intent the user's original prompt/name — the staged
-        // paths live in the launch arg, not the session label.
-        let intent = spec.prompt.clone().or_else(|| spec.name.clone()).unwrap_or_default();
-
-        // The daemon's seed schema is `{intent, name?, nameSource?, …}` and
-        // its state.json writer reads `name`/`intent` off the seeded roster
-        // entry. Seeding only `intent` (as we did before) left dispatched
-        // sessions with no display name. Seed `name` + `nameSource:"user"`
-        // when the caller provided one.
-        let mut seed = serde_json::Map::new();
-        seed.insert("intent".to_owned(), json!(intent));
-        if let Some(name) = &spec.name {
-            seed.insert("name".to_owned(), json!(name));
-            seed.insert("nameSource".to_owned(), json!("user"));
-        }
-
-        // Environment secrets: merged on top of the spare's baseline
-        // env in the worker process. Mirror into `reattachEnv` so they survive
-        // the respawn/reattach the claude daemon drives after a CLI upgrade.
-        // These values are NOT placed in `seed`/`intent`/`launch.args`, so they
-        // never reach the transcript, timeline, or `state.json`.
-        //
-        // Gateway env resolved above: a spawn whose server-side mint
-        // silently produced nothing already failed closed there rather than
-        // launching a worker that will 401.
-        let env = launch.env;
-        let env_json: serde_json::Map<String, serde_json::Value> =
-            env.iter().map(|(k, v)| (k.clone(), json!(v))).collect();
-
-        let req = json!({
-            "proto": 1,
-            "op": "dispatch",
-            "timeoutMs": 15000,
-            "d": {
-                "proto": 1,
-                "short": short,
-                "nonce": nonce,
-                "sessionId": session_id,
-                "createdAt": created_at,
-                "source": FLEET_SOURCE,
-                "cwd": cwd,
-                "launch": { "mode": "prompt", "args": args },
-                "env": env_json,
-                "reattachEnv": env_json,
-                "isolation": "none",
-                "respawnFlags": respawn_flags,
-                "agent": agent,
-                "seed": seed,
-                "cols": 120,
-                "rows": 40,
-            }
-        });
-
-        let gate = self.launch_gate(&session_id, short, spec.model.as_deref());
+        let req = launch::dispatch_request(
+            &ids,
+            cwd,
+            &launch,
+            Some(&prompt),
+            &launch_env.env,
+            dispatch_seed(spec),
+        );
+        let gate = self.launch_gate(session_id, short, spec.model.as_deref());
         Ok(DeferredDispatch {
             sock: sock.to_path_buf(),
             req,
-            short: short.to_owned(),
+            short: ids.short.clone(),
             what: format!("spawn in {cwd}"),
-            session_id,
+            session_id: ids.session_id.clone(),
             gate,
         })
+    }
+
+    /// Stash the launch model/effort and posture keyed by `short`: the Status
+    /// emit falls back to them while `state.json` is still being written (or is
+    /// transiently gone across a `/clear`), and the diagnose report reads them.
+    fn remember_launch_posture(&self, short: &str, spec: &cctui_proto::adapter::SessionSpec) {
+        let model = spec.model.as_deref().map(str::trim).filter(|m| !m.is_empty());
+        let effort = spec.effort.as_deref().map(str::trim).filter(|e| !e.is_empty());
+        if (model.is_some() || effort.is_some())
+            && let Ok(mut map) = self.spawn_model_effort.lock()
+        {
+            map.insert(short.to_owned(), (model.map(str::to_owned), effort.map(str::to_owned)));
+        }
+        if let Some(mode) = spec.permission_mode
+            && let Ok(mut map) = self.spawn_permission_mode.lock()
+        {
+            map.insert(short.to_owned(), super::diagnose::permission_label(mode).to_owned());
+        }
     }
 
     /// The limits gate for a launch, or `None` when no server is configured to
@@ -2416,7 +2255,6 @@ impl Driver {
         Ok(())
     }
 
-    #[allow(clippy::too_many_lines)]
     async fn fork(
         &self,
         sock: &std::path::Path,
@@ -2425,14 +2263,7 @@ impl Driver {
         forced_session_id: Option<&str>,
         extract: Option<&cctui_proto::adapter::ForkExtract>,
     ) -> anyhow::Result<DeferredDispatch> {
-        let cwd = spec
-            .working_dir
-            .as_deref()
-            .ok_or_else(|| anyhow::anyhow!("fork: working_dir required"))?;
-        let cwd_path = std::path::Path::new(cwd);
-        if !cwd_path.is_dir() {
-            anyhow::bail!("fork: working_dir does not exist or is not a directory: {cwd}");
-        }
+        let cwd = require_dir(spec.working_dir.as_deref(), "fork")?;
 
         // Resolve the id to resume+fork from. Prefer the parent's on-disk
         // `resumeSessionId` (the live conversation head after `/clear`/`/compact`),
@@ -2446,178 +2277,58 @@ impl Driver {
             .and_then(|st| st.resume_session_id.or(st.session_id))
             .unwrap_or_else(|| parent_local_id.to_owned());
 
-        let agent = "claude";
-        // Use the server-pre-minted child id when supplied so the id
-        // the webui navigated to matches the worker the daemon launches.
-        let session_id =
-            forced_session_id.map_or_else(|| uuid::Uuid::new_v4().to_string(), str::to_owned);
-        let short = session_id[..8].to_owned();
-        let nonce: String = uuid::Uuid::new_v4().simple().to_string().chars().take(8).collect();
-        let created_at = u64::try_from(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |d| d.as_millis()),
-        )
-        .unwrap_or(0);
-
-        // Subset fork: the child `<child>.jsonl` is a standalone
-        // sliced transcript, so it is resumed WITHOUT `--fork-session` (that
-        // flag branches off the parent's live history, which we don't want).
-        let sliced = if let Some(extract) = extract {
-            self.materialize_fork_slice(cwd, &resume_id, &session_id, extract)?;
-            true
-        } else {
-            false
-        };
-        let mut args = if sliced {
-            vec![
-                "--resume".to_owned(),
-                session_id.clone(),
-                "--session-id".to_owned(),
-                session_id.clone(),
-                "--agent".to_owned(),
-                agent.to_owned(),
-            ]
-        } else {
-            vec![
-                "--resume".to_owned(),
-                resume_id.clone(),
-                "--fork-session".to_owned(),
-                "--session-id".to_owned(),
-                session_id.clone(),
-                "--agent".to_owned(),
-                agent.to_owned(),
-            ]
-        };
-        if let Some(name) = &spec.name {
-            args.push("--name".to_owned());
-            args.push(name.clone());
+        let ids = launch::job_ids(forced_session_id);
+        let (short, session_id) = (ids.short.as_str(), ids.session_id.as_str());
+        if let Some(extract) = extract {
+            self.materialize_fork_slice(cwd, &resume_id, session_id, extract)?;
         }
-        if let Some(mode) = spec.permission_mode {
-            args.push("--permission-mode".to_owned());
-            args.push(mode.claude_flag().to_owned());
-        }
-        let mut respawn_flags = vec!["--agent".to_owned(), agent.to_owned()];
-        if let Some(effort) = spec.effort.as_deref().map(str::trim).filter(|e| !e.is_empty()) {
-            args.push("--effort".to_owned());
-            args.push(effort.to_owned());
-            respawn_flags.push("--effort".to_owned());
-            respawn_flags.push(effort.to_owned());
-        }
-        if let Some(model) = spec.model.as_deref().map(str::trim).filter(|m| !m.is_empty()) {
-            args.push("--model".to_owned());
-            args.push(model.to_owned());
-            respawn_flags.push("--model".to_owned());
-            respawn_flags.push(model.to_owned());
-        }
-        {
-            let model = spec.model.as_deref().map(str::trim).filter(|m| !m.is_empty());
-            let effort = spec.effort.as_deref().map(str::trim).filter(|e| !e.is_empty());
-            if (model.is_some() || effort.is_some())
-                && let Ok(mut map) = self.spawn_model_effort.lock()
-            {
-                map.insert(short.clone(), (model.map(str::to_owned), effort.map(str::to_owned)));
-            }
-        }
-        // Remember the launch posture for the diagnose report.
-        if let Some(mode) = spec.permission_mode
-            && let Ok(mut map) = self.spawn_permission_mode.lock()
-        {
-            map.insert(short.clone(), super::diagnose::permission_label(mode).to_owned());
-        }
+        let mut launch = fork_launch(spec, &resume_id, session_id, extract.is_some());
+        self.remember_launch_posture(short, spec);
         let whip = spec.permission_mode.is_some_and(cctui_proto::adapter::PermissionMode::is_whip);
-        // Gateway env + per-account settings for the fork child: the
-        // Resolve for the child id first; if the server
-        // hasn't bound it yet, inherit the parent's account env (and settings) so
-        // the child routes through the gateway from its first turn. Empty when
-        // neither is account-bound. Resolved BEFORE the hook-settings file is
-        // written so the account settings can be merged under the managed
-        // hooks.
-        let mut launch =
-            self.resolve_launch_env(&session_id, &std::collections::BTreeMap::default()).await?;
-        if launch.env.is_empty() {
-            launch = self
-                .resolve_launch_env(parent_local_id, &std::collections::BTreeMap::default())
-                .await?;
+        // If the server hasn't bound the child id yet, inherit the parent's
+        // account env so the child routes through the gateway from its first turn.
+        let no_env = std::collections::BTreeMap::default();
+        let mut launch_env = self.resolve_launch_env(session_id, &no_env).await?;
+        if launch_env.env.is_empty() {
+            launch_env = self.resolve_launch_env(parent_local_id, &no_env).await?;
         }
-        let agent_tool = attach_agent_relay(
-            &mut args,
-            &mut respawn_flags,
-            &short,
-            &session_id,
-            launch.spawn_capability.as_ref(),
-        );
-        if let Some(settings) = ensure_hook_settings(
+        launch.mcp_config =
+            agent_relay_config(short, session_id, launch_env.spawn_capability.as_ref());
+        launch.settings_path = ensure_hook_settings(
             &self.cfg.hook_socket_path,
             whip,
-            &short,
-            launch.settings.as_ref(),
-            &launch.env,
+            short,
+            launch_env.settings.as_ref(),
+            &launch_env.env,
             None,
             None,
-            launch.whip_phrases.as_ref(),
-            agent_tool.then_some(session_id.as_str()),
-        ) {
-            let settings = settings.to_string_lossy().into_owned();
-            args.push("--settings".to_owned());
-            args.push(settings.clone());
-            respawn_flags.push("--settings".to_owned());
-            respawn_flags.push(settings);
-        }
-        // Optional first turn on the forked branch.
-        if let Some(prompt) = spec.prompt.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
-            args.push("--".to_owned());
-            args.push(prompt.to_owned());
-        }
-        let intent = spec.prompt.clone().or_else(|| spec.name.clone()).unwrap_or_default();
-        let mut seed = serde_json::Map::new();
-        seed.insert("intent".to_owned(), json!(intent));
-        if let Some(name) = &spec.name {
-            seed.insert("name".to_owned(), json!(name));
-            seed.insert("nameSource".to_owned(), json!("user"));
-        }
+            launch_env.whip_phrases.as_ref(),
+            launch.mcp_config.is_some().then_some(session_id),
+        )
+        .map(|p| p.to_string_lossy().into_owned());
+        let prompt = spec.prompt.as_deref().map(str::trim).filter(|p| !p.is_empty());
 
         // Remember the parent BEFORE dispatching so the roster-discovery emit
         // (which can race in on the very next poll) finds the link.
         if let Ok(mut map) = self.fork_parent_by_short.lock() {
-            map.insert(short.clone(), (parent_local_id.to_owned(), "fork"));
+            map.insert(short.to_owned(), (parent_local_id.to_owned(), "fork"));
         }
 
-        // Gateway env resolved above.
-        let env = launch.env;
-        let env_json: serde_json::Map<String, serde_json::Value> =
-            env.iter().map(|(k, v)| (k.clone(), json!(v))).collect();
-
-        let req = json!({
-            "proto": 1,
-            "op": "dispatch",
-            "timeoutMs": 15000,
-            "d": {
-                "proto": 1,
-                "short": short,
-                "nonce": nonce,
-                "sessionId": session_id,
-                "createdAt": created_at,
-                "source": FLEET_SOURCE,
-                "cwd": cwd,
-                "launch": { "mode": "prompt", "args": args },
-                "env": env_json,
-                "reattachEnv": env_json,
-                "isolation": "none",
-                "respawnFlags": respawn_flags,
-                "agent": agent,
-                "seed": seed,
-                "cols": 120,
-                "rows": 40,
-            }
-        });
+        let req = launch::dispatch_request(
+            &ids,
+            cwd,
+            &launch,
+            prompt,
+            &launch_env.env,
+            dispatch_seed(spec),
+        );
         tracing::info!(%cwd, %session_id, %parent_local_id, %resume_id, "fork prepared for control socket");
         Ok(DeferredDispatch {
             sock: sock.to_path_buf(),
             req,
-            short: short.clone(),
+            short: ids.short.clone(),
             what: format!("fork of {parent_local_id} in {cwd}"),
-            session_id,
+            session_id: ids.session_id.clone(),
             gate: None,
         })
     }
@@ -4192,27 +3903,73 @@ fn note_dispatched(jobs_root: &Path, session_id: &str) {
     }
 }
 
-/// Mount the agent relay on a worker launch. The `--mcp-config` goes into the
-/// respawn flags too or the daemon's `/clear` relaunch drops it. Returns whether
-/// a relay was mounted: the `SessionStart` readiness hook is only registered
-/// when there is one to wait for.
-pub(super) fn attach_agent_relay(
-    args: &mut Vec<String>,
-    respawn_flags: &mut Vec<String>,
+/// The agent relay `--mcp-config` for a worker launch, or `None` when the
+/// session has no spawn capability.
+fn agent_relay_config(
     short: &str,
     session_id: &str,
     capability: Option<&cctui_proto::api::SpawnCapability>,
-) -> bool {
-    let Some(mcp) = ensure_agent_mcp_config(short, session_id, capability) else {
-        return false;
-    };
+) -> Option<String> {
+    let mcp = ensure_agent_mcp_config(short, session_id, capability)?;
     crate::mcpready::note_launch(session_id);
-    let mcp = mcp.to_string_lossy().into_owned();
-    args.push("--mcp-config".to_owned());
-    args.push(mcp.clone());
-    respawn_flags.push("--mcp-config".to_owned());
-    respawn_flags.push(mcp);
-    true
+    Some(mcp.to_string_lossy().into_owned())
+}
+
+fn require_dir<'a>(cwd: Option<&'a str>, what: &str) -> anyhow::Result<&'a str> {
+    let cwd = cwd.ok_or_else(|| anyhow::anyhow!("{what}: working_dir required"))?;
+    if !std::path::Path::new(cwd).is_dir() {
+        anyhow::bail!("{what}: working_dir does not exist or is not a directory: {cwd}");
+    }
+    Ok(cwd)
+}
+
+/// The daemon seeds `name`/`intent` into `state.json` from this; the staged
+/// upload paths live in the launch prompt, not the display intent.
+fn dispatch_seed(spec: &cctui_proto::adapter::SessionSpec) -> serde_json::Value {
+    let intent = spec.prompt.clone().or_else(|| spec.name.clone()).unwrap_or_default();
+    let mut seed = serde_json::Map::new();
+    seed.insert("intent".to_owned(), json!(intent));
+    if let Some(name) = &spec.name {
+        seed.insert("name".to_owned(), json!(name));
+        seed.insert("nameSource".to_owned(), json!("user"));
+    }
+    serde_json::Value::Object(seed)
+}
+
+/// `--session-id <id> --agent claude [--name] [--permission-mode]`, mirroring
+/// claude's own fleet dispatch. Model/effort ride the managed `--settings`
+/// file instead: the claude daemon applies it to a spare-claimed worker,
+/// whereas a `--model` CLI arg forces the cold relaunch that drops the
+/// dispatch gateway env.
+fn spawn_launch(spec: &cctui_proto::adapter::SessionSpec, session_id: &str) -> LaunchArgs {
+    LaunchArgs {
+        session_id: Some(session_id.to_owned()),
+        model: None,
+        effort: None,
+        ..LaunchArgs::for_dispatch(spec)
+    }
+}
+
+/// A subset fork's child transcript is a standalone slice, so it resumes
+/// itself WITHOUT `--fork-session` (that flag branches off the parent's live
+/// history). `--model`/`--effort` ride along: this is the supported "switch
+/// model mid-conversation" path.
+fn fork_launch(
+    spec: &cctui_proto::adapter::SessionSpec,
+    resume_id: &str,
+    session_id: &str,
+    sliced: bool,
+) -> LaunchArgs {
+    LaunchArgs {
+        session_id: Some(session_id.to_owned()),
+        resume_from: Some(if sliced { session_id } else { resume_id }.to_owned()),
+        fork: !sliced,
+        ..LaunchArgs::for_dispatch(spec)
+    }
+}
+
+fn resume_launch(session_id: &str) -> LaunchArgs {
+    LaunchArgs { resume_from: Some(session_id.to_owned()), ..LaunchArgs::default() }
 }
 
 /// Build the managed `--settings` document: the ask/permission/Stop
@@ -4564,7 +4321,7 @@ mod tests {
     }
 
     #[test]
-    fn attach_agent_relay_mounts_into_launch_and_respawn_argv() {
+    fn agent_relay_config_is_session_scoped_and_needs_a_capability() {
         let cap = cctui_proto::api::SpawnCapability {
             adapters: vec!["claude-code".to_owned()],
             max_budget_usd: Some(1.0),
@@ -4572,57 +4329,182 @@ mod tests {
             ..Default::default()
         };
         let short = format!("{:08x}", std::process::id() ^ 0x5eed);
-
-        let mut args = vec!["--resume".to_owned(), "parent".to_owned()];
-        let mut respawn = vec!["--agent".to_owned(), "claude".to_owned()];
-        assert!(!attach_agent_relay(&mut args, &mut respawn, &short, "sess-1", None));
-        assert!(!args.iter().any(|a| a == "--mcp-config"), "no capability means no relay");
-        assert!(!respawn.iter().any(|a| a == "--mcp-config"));
-
-        if !attach_agent_relay(&mut args, &mut respawn, &short, "sess-1", Some(&cap)) {
+        assert!(agent_relay_config(&short, "sess-1", None).is_none());
+        let Some(path) = agent_relay_config(&short, "sess-1", Some(&cap)) else {
             return; // no writable config dir in this environment
-        }
-        let idx =
-            args.iter().position(|a| a == "--mcp-config").expect("launch argv gets the relay");
-        let path = args[idx + 1].clone();
-        assert!(path.contains(&short), "the config is session-scoped");
-        let ridx =
-            respawn.iter().position(|a| a == "--mcp-config").expect("respawn flags get it too");
-        assert_eq!(respawn[ridx + 1], path);
+        };
+        assert!(path.contains(&short));
         std::fs::remove_file(&path).ok();
     }
 
-    #[test]
-    fn fork_and_spawn_mount_the_relay_identically() {
-        let cap = cctui_proto::api::SpawnCapability {
-            adapters: vec!["opencode".to_owned()],
-            max_budget_usd: None,
-            max_children: None,
-            ..Default::default()
-        };
-        let short = format!("{:08x}", std::process::id() ^ 0xf0f0);
-
-        let mut spawn_args = vec!["--session-id".to_owned(), "child".to_owned()];
-        let mut spawn_respawn = Vec::new();
-        let mut fork_args =
-            vec!["--resume".to_owned(), "parent".to_owned(), "--fork-session".to_owned()];
-        let mut fork_respawn = Vec::new();
-
-        if !attach_agent_relay(&mut spawn_args, &mut spawn_respawn, &short, "sess-9", Some(&cap)) {
-            return; // no writable config dir in this environment
+    fn launch_argv_spec() -> cctui_proto::adapter::SessionSpec {
+        cctui_proto::adapter::SessionSpec {
+            service_tier: None,
+            adapter_id: cctui_proto::adapter::AdapterId::new("claude-code"),
+            working_dir: Some("/w".into()),
+            prompt: Some("go".into()),
+            name: Some("task".into()),
+            permission_mode: Some(cctui_proto::adapter::PermissionMode::Auto),
+            effort: Some(" high ".into()),
+            model: Some("opus".into()),
+            env: std::collections::BTreeMap::new(),
+            bootstrap: serde_json::Value::Null,
+            parent_local_id: None,
         }
-        assert!(attach_agent_relay(
-            &mut fork_args,
-            &mut fork_respawn,
-            &short,
-            "sess-9",
-            Some(&cap)
-        ));
+    }
 
-        let tail = |v: &[String]| v[v.len() - 2..].to_vec();
-        assert_eq!(tail(&spawn_args), tail(&fork_args));
-        assert_eq!(spawn_respawn, fork_respawn);
-        std::fs::remove_file(&spawn_args[spawn_args.len() - 1]).ok();
+    fn dispatched_argv(
+        mut launch: LaunchArgs,
+        relay: bool,
+        prompt: Option<&str>,
+    ) -> (Vec<String>, Vec<String>) {
+        if relay {
+            launch.mcp_config = Some("/cfg/mcp.json".into());
+        }
+        launch.settings_path = Some("/cfg/settings.json".into());
+        let ids = JobIds {
+            session_id: "child".into(),
+            short: "c0ffee00".into(),
+            nonce: "0123abcd".into(),
+            created_at_ms: 1,
+        };
+        let req = launch::dispatch_request(
+            &ids,
+            "/w",
+            &launch,
+            prompt,
+            &std::collections::BTreeMap::new(),
+            json!({}),
+        );
+        let strings = |v: &serde_json::Value| -> Vec<String> {
+            v.as_array().unwrap().iter().map(|s| s.as_str().unwrap().to_owned()).collect()
+        };
+        (strings(&req["d"]["launch"]["args"]), strings(&req["d"]["respawnFlags"]))
+    }
+
+    #[test]
+    fn control_launch_argv_snapshot() {
+        let spec = launch_argv_spec();
+
+        let (args, respawn) =
+            dispatched_argv(spawn_launch(&spec, "child"), true, Some("ctx\n\ngo"));
+        assert_eq!(
+            args,
+            [
+                "--session-id",
+                "child",
+                "--agent",
+                "claude",
+                "--name",
+                "task",
+                "--permission-mode",
+                "acceptEdits",
+                "--mcp-config",
+                "/cfg/mcp.json",
+                "--settings",
+                "/cfg/settings.json",
+                "--",
+                "ctx\n\ngo",
+            ]
+        );
+        assert_eq!(
+            respawn,
+            [
+                "--agent",
+                "claude",
+                "--mcp-config",
+                "/cfg/mcp.json",
+                "--settings",
+                "/cfg/settings.json"
+            ]
+        );
+
+        let (args, respawn) =
+            dispatched_argv(fork_launch(&spec, "parent", "child", false), true, Some("go"));
+        assert_eq!(
+            args,
+            [
+                "--resume",
+                "parent",
+                "--fork-session",
+                "--session-id",
+                "child",
+                "--agent",
+                "claude",
+                "--name",
+                "task",
+                "--permission-mode",
+                "acceptEdits",
+                "--effort",
+                "high",
+                "--model",
+                "opus",
+                "--mcp-config",
+                "/cfg/mcp.json",
+                "--settings",
+                "/cfg/settings.json",
+                "--",
+                "go",
+            ]
+        );
+        let fork_respawn = [
+            "--agent",
+            "claude",
+            "--effort",
+            "high",
+            "--model",
+            "opus",
+            "--mcp-config",
+            "/cfg/mcp.json",
+            "--settings",
+            "/cfg/settings.json",
+        ];
+        assert_eq!(respawn, fork_respawn);
+
+        let (args, respawn) =
+            dispatched_argv(fork_launch(&spec, "parent", "child", true), true, None);
+        assert_eq!(
+            args,
+            [
+                "--resume",
+                "child",
+                "--session-id",
+                "child",
+                "--agent",
+                "claude",
+                "--name",
+                "task",
+                "--permission-mode",
+                "acceptEdits",
+                "--effort",
+                "high",
+                "--model",
+                "opus",
+                "--mcp-config",
+                "/cfg/mcp.json",
+                "--settings",
+                "/cfg/settings.json",
+            ]
+        );
+        assert_eq!(respawn, fork_respawn);
+
+        let (args, respawn) = dispatched_argv(resume_launch("child"), false, None);
+        assert_eq!(
+            args,
+            ["--resume", "child", "--agent", "claude", "--settings", "/cfg/settings.json"]
+        );
+        assert_eq!(respawn, ["--agent", "claude", "--settings", "/cfg/settings.json"]);
+    }
+
+    #[test]
+    fn dispatch_seed_names_the_session_when_given() {
+        let spec = launch_argv_spec();
+        assert_eq!(
+            dispatch_seed(&spec),
+            json!({"intent": "go", "name": "task", "nameSource": "user"})
+        );
+        let unnamed = cctui_proto::adapter::SessionSpec { name: None, prompt: None, ..spec };
+        assert_eq!(dispatch_seed(&unnamed), json!({"intent": ""}));
     }
 
     #[test]
