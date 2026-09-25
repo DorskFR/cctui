@@ -24,7 +24,7 @@ export CCTUI_TOKEN
 
 # CI publishes images on tag push (.github/workflows/release.yml → ghcr). These
 # `make image/*` targets are a local fallback; they default to the same ghcr
-# namespace so a manual push lands where the cluster pulls from. (CCT-199)
+# namespace so a manual push lands where the cluster pulls from.
 IMAGE_REGISTRY ?= ghcr.io/dorskfr
 IMAGE_REPO     ?= cctui
 IMAGE_VERSION  ?= $(shell awk -F'"' '/^\[workspace.package\]/{f=1} f && /^version/{print $$2; exit}' Cargo.toml)
@@ -187,7 +187,7 @@ image/push:  ## Push container image tag
 image/release: image/build image/push  ## Build + push container image
 
 # ── Worker image (claude code + codex + cctui-daemon, non-enrolled) ────────
-# The execution environment dispatchers spawn per session (CCT-245). CI builds
+# The execution environment dispatchers spawn per session. CI builds
 # + pushes it on tag (see .github/workflows/release.yml); these targets are the
 # same local fallback as image/*.
 WORKER_IMAGE ?= $(IMAGE_REGISTRY)/cctui-worker
@@ -202,7 +202,7 @@ worker/image/push:  ## Push the worker image tag
 worker/image/release: worker/image/build worker/image/push  ## Build + push the worker image
 
 # ── Kubernetes dispatcher image (standalone, enrolled) ─────────────────────
-# The dispatcher that spawns worker Jobs in-cluster (CCT-291). CI builds +
+# The dispatcher that spawns worker Jobs in-cluster. CI builds +
 # pushes it on tag (see .github/workflows/release.yml); these targets are the
 # same local fallback as image/*.
 DISPATCHER_KUBE_IMAGE ?= $(IMAGE_REGISTRY)/cctui-dispatcher-kube
