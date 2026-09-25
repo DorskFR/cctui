@@ -389,15 +389,6 @@ async fn attach_send_chunks(socket: &Path, short: &str, chunks: &[Vec<u8>]) -> R
     Ok(())
 }
 
-/// Health check — `{"op":"ping"}` (no `proto` field per §4.2 of the
-/// protocol doc). Currently used only in integration tests / manual
-/// probing; the `list` op double-serves as a liveness check.
-#[cfg(test)]
-#[allow(dead_code)]
-pub async fn ping(socket: &Path) -> Result<Value> {
-    one_shot(socket, &serde_json::json!({"op": "ping"})).await
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

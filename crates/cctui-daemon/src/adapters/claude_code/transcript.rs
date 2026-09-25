@@ -400,10 +400,8 @@ fn record_ignored(kind: &str) {
     tally(&format!("ignored:{kind}"));
 }
 
-/// Snapshot of [`DROP_TALLY`] for the session-diagnose report.
-// The diagnose aggregation that reads this lives in `control.rs` and is owned by
-// another change; without it nothing in the binary calls this yet.
-#[allow(dead_code)]
+/// Snapshot of [`DROP_TALLY`].
+#[cfg(test)]
 #[must_use]
 pub fn transcript_drop_tally() -> Vec<(String, u64)> {
     let Ok(counts) = DROP_TALLY.lock() else { return Vec::new() };
