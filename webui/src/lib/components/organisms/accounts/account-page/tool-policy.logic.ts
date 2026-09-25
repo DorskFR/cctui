@@ -1,8 +1,8 @@
 import type { ToolPolicy } from '@bindings/ToolPolicy';
 
-export type PolicyDraft = Record<keyof ToolPolicy, string>;
-
 export const POLICY_FIELDS = ['terms', 'patterns', 'protected_owners', 'exempt_roots'] as const;
+
+export type PolicyDraft = Record<(typeof POLICY_FIELDS)[number], string>;
 
 export function toDraft(p: ToolPolicy | undefined): PolicyDraft {
 	return {
