@@ -2,328 +2,390 @@ use crate::git::{read_git_branch, read_git_remote};
 
 use super::*;
 
+/// What one `list` poll means against the previously known roster, decided
+/// before any event is emitted.
+#[derive(Debug)]
+struct SnapshotPlan {
+    /// Every listed job cctui did not dispatch, visible or not.
+    foreign_shorts: HashSet<String>,
+    /// Jobs that are sessions: no spares, no dying workers.
+    visible: Vec<LiveSnapshot>,
+    now_shorts: HashSet<String>,
+    native_live: bool,
+    /// A live (not dead) visible worker reports busy.
+    roster_busy: bool,
+    /// Visible shorts absent from the previous roster, in listing order.
+    started: Vec<String>,
+    /// Previously known shorts no longer listed as visible.
+    gone: Vec<String>,
+}
+
+fn plan_snapshot(jobs: Vec<LiveSnapshot>, roster: &HashSet<String>) -> SnapshotPlan {
+    let foreign_shorts = jobs.iter().filter(|j| j.is_foreign()).map(|j| j.short.clone()).collect();
+    let visible: Vec<LiveSnapshot> =
+        jobs.into_iter().filter(LiveSnapshot::is_user_visible).collect();
+    let native_live = visible.iter().any(LiveSnapshot::is_foreign);
+    let roster_busy = visible.iter().any(|j| {
+        !j.is_dead() && DispatchDoneTracker::is_busy(j.tempo.as_deref(), j.state.as_deref())
+    });
+    let now_shorts: HashSet<String> = visible.iter().map(|j| j.short.clone()).collect();
+    let started =
+        visible.iter().filter(|j| !roster.contains(&j.short)).map(|j| j.short.clone()).collect();
+    let gone = roster.difference(&now_shorts).cloned().collect();
+    SnapshotPlan { foreign_shorts, visible, now_shorts, native_live, roster_busy, started, gone }
+}
+
 impl Driver {
-    #[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
     pub(super) async fn apply_snapshot(&mut self, jobs: Vec<LiveSnapshot>) {
-        self.foreign_shorts =
-            jobs.iter().filter(|j| j.is_foreign()).map(|j| j.short.clone()).collect();
-        let visible: Vec<LiveSnapshot> =
-            jobs.into_iter().filter(LiveSnapshot::is_user_visible).collect();
-        self.native_live = visible.iter().any(LiveSnapshot::is_foreign);
-        if visible.iter().any(|j| {
-            !j.is_dead() && DispatchDoneTracker::is_busy(j.tempo.as_deref(), j.state.as_deref())
-        }) {
+        let mut plan = plan_snapshot(jobs, &self.roster);
+        self.foreign_shorts = std::mem::take(&mut plan.foreign_shorts);
+        self.native_live = plan.native_live;
+        if plan.roster_busy {
             self.version_gate.note_roster_busy();
         }
-        let now_shorts: HashSet<String> = visible.iter().map(|j| j.short.clone()).collect();
 
         // Ground-truth effort for every live worker, reused across the per-job
         // Status build below.
-        let observed_efforts = super::super::envcheck::worker_efforts(&now_shorts).await;
+        let observed_efforts = super::super::envcheck::worker_efforts(&plan.now_shorts).await;
 
-        // Newly started.
-        for job in &visible {
-            if !self.roster.contains(&job.short) {
-                let session_id = job.session_id().map_or_else(|| job.short.clone(), str::to_owned);
-                self.short_by_session.insert(session_id.clone(), job.short.clone());
-                // If this short was just forked or spawned as a subagent,
-                // carry the parent link so the server resolves it into
-                // `parent_id`. Consumed once.
-                let parent =
-                    self.fork_parent_by_short.lock().ok().and_then(|mut m| m.remove(&job.short));
-                let (parent_local_id, relation) = match parent {
-                    Some((parent, relation)) => (Some(parent), relation),
-                    None => (None, "root"),
-                };
-                let on_disk = StateJson::read(&self.cfg.jobs_root, &job.short);
-                let created_at = on_disk.as_ref().and_then(|s| s.created_at.clone());
-                let mut extra = json!({
-                    "short": job.short,
-                    "relation": relation,
-                });
-                // The server merges metadata with jsonb `||`, where an explicit
-                // null overwrites. Omit what this poll could not read so a
-                // rediscovery never erases what an earlier one published.
-                for (key, value) in [
-                    ("cli_version", job.cli_version.clone()),
-                    ("created_at", created_at),
-                    ("git_branch", job.cwd.as_deref().and_then(read_git_branch)),
-                    ("git_remote", job.cwd.as_deref().and_then(read_git_remote)),
-                ] {
-                    if let Some(value) = value {
-                        extra[key] = json!(value);
-                    }
-                }
-                self.emit(AdapterEvent::SessionStarted {
-                    local_id: session_id,
-                    meta: SessionMeta { working_dir: job.cwd.clone(), parent_local_id, extra },
-                })
-                .await;
-            }
+        for job in plan.visible.iter().filter(|j| plan.started.contains(&j.short)) {
+            self.adopt_started(job).await;
         }
-
-        // Status updates (live snapshot + on-disk state.json reconciliation).
-        for job in &visible {
-            // The emitted `local_id` is STABLE for a worker's whole life. Once a
-            // transcript is pinned we keep reusing its `local_id` even when the
-            // session id rotates in place (`/clear`, `/compact`), so every
-            // message lands in the one session the server already knows. Only
-            // the very first pin derives the id from the live `session_id`.
-            let local_id = self
-                .transcript_locations
-                .get(&job.short)
-                .map(|loc| loc.local_id.clone())
-                .or_else(|| job.session_id().map(str::to_owned))
-                .unwrap_or_else(|| job.short.clone());
-            let on_disk = StateJson::read(&self.cfg.jobs_root, &job.short);
-
-            // Observation timestamp for the diagnose report: when
-            // this short was last seen on the control socket.
-            self.last_status_at.insert(job.short.clone(), std::time::SystemTime::now());
-
-            // Dead-but-still-listed. claude can keep a session in
-            // `daemon list` while its worker process is gone (e.g. it died
-            // while the supervisor was down — "process gone while supervisor
-            // down"). Previously cctui only transitioned a session to
-            // hibernated/ended when its `short` DROPPED OFF the roster
-            // (`gone` handling below), and liveness was otherwise purely
-            // time-derived (server `derive_liveness`), so such a session kept
-            // showing its last status with a green/stale dot for minutes. Here
-            // we surface the dead state within one poll instead.
-            if job.is_dead() {
-                // Emit the terminal transition exactly once, then mark the
-                // short sticky so the still-present roster entry can't re-emit
-                // a non-terminal Status and re-green it (daemon-side mirror of
-                // the server's sticky terminal status). Mirrors the
-                // roster-disappearance path: hibernated if job state survives
-                // on disk (revivable red dot), else SessionEnded.
-                if self.dead_shorts.insert(job.short.clone()) {
-                    self.clear_permission(&job.short).await;
-                    if on_disk.is_some() {
-                        self.emit(AdapterEvent::Status {
-                            local_id: local_id.clone(),
-                            tempo: Some("hibernated".to_owned()),
-                            state: None,
-                            detail: None,
-                            activity: None,
-                            name: None,
-                            intent: None,
-                            model: None,
-                            effort: None,
-                            permission_mode: None,
-                            children: Vec::new(),
-                        })
-                        .await;
-                    } else {
-                        self.emit(AdapterEvent::SessionEnded {
-                            local_id: local_id.clone(),
-                            reason: EndReason::Completed,
-                        })
-                        .await;
-                        // Truly gone — no job state left to cold resume from, so
-                        // the spawn flags and per-session config files are dead.
-                        if let Ok(mut m) = self.spawn_model_effort.lock() {
-                            m.remove(&job.short);
-                        }
-                        crate::configsweep::remove_session_files(&job.short);
-                    }
-                    // Drop the cached status so a later revive (worker reports
-                    // alive again) is detected as a change and re-emitted.
-                    self.last_status.remove(&job.short);
-                }
-                // Sticky: skip transcript re-pin + Status for this poll. The
-                // roster-disappearance branch still cleans up if it later
-                // drops off; a revive clears `dead_shorts` (below) so live
-                // status resumes.
-                continue;
-            }
-            // Revived: claude reports this short alive again after we marked it
-            // dead — clear the sticky flag so live status flows again.
-            self.dead_shorts.remove(&job.short);
-
-            // Gateway-env delivery is handled entirely at the launch chokepoint
-            // (`resolve_launch_env`): the resolved env rides the per-session
-            // `--settings` file + `reattachEnv`, both of which the claude daemon
-            // re-applies on its own autonomous respawns (`/clear`, `/compact`,
-            // spare-claim), so a revived worker keeps its routing without cctui
-            // killing it. The former proactive kill+cold-resume heal
-            // and the `/proc`-env delivery probe were removed: post
-            // they mis-fired on healthy spare-claimed workers (env
-            // delivered via `--settings`, not process env) and were a no-op on
-            // macOS (no `/proc`). A genuinely env-less launch now fails LOUD in
-            // `launch_env_decision` instead of being silently healed.
-
-            // Surface (or clear) a tool-permission prompt from the live
-            // `tempo`/`needs` signal, before the Status emit below.
-            self.reconcile_permission(
-                &job.short,
-                &local_id,
-                job.tempo.as_deref(),
-                job.needs.as_deref(),
-            )
-            .await;
-
-            // Pin (or re-pin) the transcript location. A resume or an in-process
-            // reset (`/clear`, `/compact`) changes the session's `sessionId` and
-            // starts a NEW transcript file (`<newId>.jsonl`); if we kept tailing
-            // the original file the message stream would silently stop while
-            // `list`/Status polls kept the heartbeat fresh. So re-pin
-            // whenever the live `session_id` differs from the one we cached,
-            // following the transcript to the new file.
-            //
-            // A reset keeps the same worker `short`, so the "Newly
-            // started" branch never fires for the new id. We deliberately keep
-            // emitting under the ORIGINAL `local_id` (set on the first pin, kept
-            // in `loc.local_id`) and only move `path`/`offset_key` to the new
-            // file — so the post-reset transcript appends to the one session the
-            // server already knows. Splitting it into a second session would be
-            // worse: archive is worker-scoped (`claude rm <short>`), so a single
-            // archive would wipe both conversations at once. Instead we inject a
-            // `context_reset` boundary marker so the cut is visible in the UI.
-            // `/clear` rotates the live session into a new transcript
-            // file but the control socket's `list` keeps reporting the stale
-            // spawn `sessionId` (it's the immutable `--session-id` launch arg in
-            // `roster.json`). The rotated id only surfaces in `state.json`'s
-            // `resumeSessionId`, so prefer that; fall back to the snapshot id
-            // when no reset has happened. Without this the rotation check below
-            // never fires for `/clear` and the message stream silently stops.
-            let live_session = on_disk
-                .as_ref()
-                .and_then(|s| s.resume_session_id.as_deref())
-                .or_else(|| job.session_id());
-            if let (Some(cwd), Some(sess)) = (job.cwd.as_deref(), live_session) {
-                let rotated = self
-                    .transcript_locations
-                    .get(&job.short)
-                    .is_some_and(|loc| loc.offset_key != sess);
-                let first_pin = !self.transcript_locations.contains_key(&job.short);
-                let path = self.resolve_live_transcript(cwd, sess);
-                let moved = !first_pin
-                    && !rotated
-                    && self
-                        .transcript_locations
-                        .get(&job.short)
-                        .is_some_and(|loc| loc.path != path);
-                if moved {
-                    // Same session id, new file: the session entered/left a git
-                    // worktree so claude relocated the transcript. The move is
-                    // content-continuous, so keep offset_key + offset and the
-                    // stable local_id — only follow the path.
-                    if let Some(loc) = self.transcript_locations.get_mut(&job.short) {
-                        tracing::info!(
-                            short = %job.short,
-                            from = %loc.path.display(),
-                            to = %path.display(),
-                            "transcript moved (worktree enter/exit); following"
-                        );
-                        loc.path.clone_from(&path);
-                    }
-                }
-                if first_pin {
-                    self.short_by_session.insert(sess.to_owned(), job.short.clone());
-                    self.map_session(sess, &local_id);
-                    self.transcript_locations.insert(
-                        job.short.clone(),
-                        TranscriptLocation {
-                            path,
-                            local_id: local_id.clone(),
-                            cwd: cwd.to_owned(),
-                            offset_key: sess.to_owned(),
-                        },
-                    );
-                } else if rotated {
-                    // Follow the file, keep the stable `local_id`. The new
-                    // `sess` is mapped to the same `short` too so command
-                    // dispatch keeps working if a snapshot ever reports the new
-                    // id directly. The rotated id maps to the unchanged stable
-                    // `local_id` so a hook firing post-`/clear` still resolves
-                    // to the session the server knows.
-                    self.short_by_session.insert(sess.to_owned(), job.short.clone());
-                    self.map_session(sess, &local_id);
-                    if let Some(loc) = self.transcript_locations.get_mut(&job.short) {
-                        loc.path = path;
-                        sess.clone_into(&mut loc.offset_key);
-                    }
-                    self.emit(AdapterEvent::Message {
-                        local_id: local_id.clone(),
-                        payload: json!({
-                            "role": "context_reset",
-                            "text": "context reset (/clear · /compact)",
-                            // The new session id keys this marker uniquely so a
-                            // second reset isn't collapsed by the server's
-                            // content-hash dedup (identical text would hash the
-                            // same).
-                            "session_id": sess,
-                        }),
-                        turn_id: None,
-                    })
-                    .await;
-                }
-            }
-
-            let name = on_disk.as_ref().and_then(|s| s.name.clone()).or_else(|| job.name.clone());
-            let intent =
-                on_disk.as_ref().and_then(|s| s.intent.clone()).or_else(|| job.intent.clone());
-            let activity = on_disk.as_ref().and_then(|s| s.activity.clone());
-            // Prefer the on-disk state.json; fall back to the spawn-time flags
-            // we remembered while state.json is absent/transient.
-            let spawned =
-                self.spawn_model_effort.lock().ok().and_then(|m| m.get(&job.short).cloned());
-            let model = on_disk
-                .as_ref()
-                .and_then(|s| s.model.clone())
-                .or_else(|| spawned.as_ref().and_then(|(m, _)| m.clone()));
-            // Prefer the GROUND-TRUTH effort the live worker actually booted at
-            // (read from its `CLAUDE_EFFORT` env), so the UI shows what the
-            // session is running rather than what we requested — a spare-claim or
-            // a silent background clamp can make them differ. Fall back
-            // to the requested value (state.json flags, then the spawn cache)
-            // while the worker is mid-exec / not yet found in `/proc`.
-            let effort = observed_efforts
-                .get(&job.short)
-                .cloned()
-                .or_else(|| on_disk.as_ref().and_then(|s| s.effort.clone()))
-                .or_else(|| spawned.as_ref().and_then(|(_, e)| e.clone()));
-            let children = on_disk.as_ref().map(StateJson::proto_children).unwrap_or_default();
-
-            // NB: live `AskUserQuestion` surfacing is NOT derived from status
-            // here. Real questions report `state:"done"`, not `blocked`, and a
-            // `blocked` state is a background status (e.g. "needs input"), not a
-            // question. The `AskUserQuestion` PreToolUse hook delivers the real
-            // prompt over the daemon socket.
-
-            let snap = StatusSnapshot {
-                tempo: job.tempo.clone(),
-                state: job.state.clone(),
-                detail: job.detail.clone(),
-                name: name.clone(),
-                activity: activity.clone(),
-                model: model.clone(),
-                effort: effort.clone(),
-            };
-            let changed = self.last_status.get(&job.short) != Some(&snap);
-            if changed {
-                self.last_status.insert(job.short.clone(), snap);
-                self.emit(AdapterEvent::Status {
-                    local_id,
-                    tempo: job.tempo.clone(),
-                    state: job.state.clone(),
-                    detail: job.detail.clone(),
-                    activity,
-                    name,
-                    intent,
-                    model,
-                    effort,
-                    permission_mode: None,
-                    children,
-                })
-                .await;
-            }
+        for job in &plan.visible {
+            self.reconcile_job(job, &observed_efforts).await;
         }
-
-        // Tail transcripts for every visible session and emit new events.
         // Done after Status updates so the UI's identity fields land
         // before the message stream they describe.
+        self.tail_transcripts().await;
+        for short in &plan.gone {
+            self.reap_gone(short).await;
+        }
+
+        // Keep a headless `attach` open for every live session so the worker
+        // stays focused/awake and `reply` actually drives its PTY. Jobs cctui
+        // did not start are excluded: a held attach forces our geometry on
+        // someone's terminal and drives their PTY.
+        self.attach.reconcile(
+            plan.now_shorts
+                .iter()
+                .map(String::as_str)
+                .filter(|short| !self.foreign_shorts.contains(*short)),
+        );
+
+        self.tick_dispatch_done(&plan.visible);
+
+        self.roster = plan.now_shorts;
+    }
+
+    async fn adopt_started(&mut self, job: &LiveSnapshot) {
+        let session_id = job.session_id().map_or_else(|| job.short.clone(), str::to_owned);
+        self.short_by_session.insert(session_id.clone(), job.short.clone());
+        // If this short was just forked or spawned as a subagent,
+        // carry the parent link so the server resolves it into
+        // `parent_id`. Consumed once.
+        let parent = self.fork_parent_by_short.lock().ok().and_then(|mut m| m.remove(&job.short));
+        let (parent_local_id, relation) = match parent {
+            Some((parent, relation)) => (Some(parent), relation),
+            None => (None, "root"),
+        };
+        let on_disk = StateJson::read(&self.cfg.jobs_root, &job.short);
+        let created_at = on_disk.as_ref().and_then(|s| s.created_at.clone());
+        let mut extra = json!({
+            "short": job.short,
+            "relation": relation,
+        });
+        // The server merges metadata with jsonb `||`, where an explicit
+        // null overwrites. Omit what this poll could not read so a
+        // rediscovery never erases what an earlier one published.
+        for (key, value) in [
+            ("cli_version", job.cli_version.clone()),
+            ("created_at", created_at),
+            ("git_branch", job.cwd.as_deref().and_then(read_git_branch)),
+            ("git_remote", job.cwd.as_deref().and_then(read_git_remote)),
+        ] {
+            if let Some(value) = value {
+                extra[key] = json!(value);
+            }
+        }
+        self.emit(AdapterEvent::SessionStarted {
+            local_id: session_id,
+            meta: SessionMeta { working_dir: job.cwd.clone(), parent_local_id, extra },
+        })
+        .await;
+    }
+
+    /// Status update for one listed job: live snapshot + on-disk state.json
+    /// reconciliation, dead-while-listed detection and transcript pinning.
+    async fn reconcile_job(
+        &mut self,
+        job: &LiveSnapshot,
+        observed_efforts: &HashMap<String, String>,
+    ) {
+        // The emitted `local_id` is STABLE for a worker's whole life. Once a
+        // transcript is pinned we keep reusing its `local_id` even when the
+        // session id rotates in place (`/clear`, `/compact`), so every
+        // message lands in the one session the server already knows. Only
+        // the very first pin derives the id from the live `session_id`.
+        let local_id = self
+            .transcript_locations
+            .get(&job.short)
+            .map(|loc| loc.local_id.clone())
+            .or_else(|| job.session_id().map(str::to_owned))
+            .unwrap_or_else(|| job.short.clone());
+        let on_disk = StateJson::read(&self.cfg.jobs_root, &job.short);
+
+        // Observation timestamp for the diagnose report: when
+        // this short was last seen on the control socket.
+        self.last_status_at.insert(job.short.clone(), std::time::SystemTime::now());
+
+        if job.is_dead() {
+            self.mark_dead(job, &local_id, on_disk.is_some()).await;
+            return;
+        }
+        // Revived: claude reports this short alive again after we marked it
+        // dead — clear the sticky flag so live status flows again.
+        self.dead_shorts.remove(&job.short);
+
+        // Gateway-env delivery is handled entirely at the launch chokepoint
+        // (`resolve_launch_env`): the resolved env rides the per-session
+        // `--settings` file + `reattachEnv`, both of which the claude daemon
+        // re-applies on its own autonomous respawns (`/clear`, `/compact`,
+        // spare-claim), so a revived worker keeps its routing without cctui
+        // killing it. A genuinely env-less launch fails LOUD in
+        // `launch_env_decision`.
+
+        // Surface (or clear) a tool-permission prompt from the live
+        // `tempo`/`needs` signal, before the Status emit below.
+        self.reconcile_permission(
+            &job.short,
+            &local_id,
+            job.tempo.as_deref(),
+            job.needs.as_deref(),
+        )
+        .await;
+
+        self.pin_transcript(job, &local_id, on_disk.as_ref()).await;
+        self.emit_status(job, local_id, on_disk.as_ref(), observed_efforts).await;
+    }
+
+    /// Dead-but-still-listed: claude can keep a session in `daemon list`
+    /// while its worker process is gone (e.g. it died while the supervisor was
+    /// down). Surface the dead state within one poll rather than waiting for
+    /// the short to drop off the roster.
+    async fn mark_dead(&mut self, job: &LiveSnapshot, local_id: &str, state_on_disk: bool) {
+        // Emit the terminal transition exactly once, then mark the
+        // short sticky so the still-present roster entry can't re-emit
+        // a non-terminal Status and re-green it (daemon-side mirror of
+        // the server's sticky terminal status). Mirrors the
+        // roster-disappearance path: hibernated if job state survives
+        // on disk (revivable red dot), else SessionEnded.
+        //
+        // Sticky: the caller skips transcript re-pin + Status for this poll.
+        // The roster-disappearance branch still cleans up if it later drops
+        // off; a revive clears `dead_shorts` so live status resumes.
+        if !self.dead_shorts.insert(job.short.clone()) {
+            return;
+        }
+        self.clear_permission(&job.short).await;
+        if state_on_disk {
+            self.emit(AdapterEvent::Status {
+                local_id: local_id.to_owned(),
+                tempo: Some("hibernated".to_owned()),
+                state: None,
+                detail: None,
+                activity: None,
+                name: None,
+                intent: None,
+                model: None,
+                effort: None,
+                permission_mode: None,
+                children: Vec::new(),
+            })
+            .await;
+        } else {
+            self.emit(AdapterEvent::SessionEnded {
+                local_id: local_id.to_owned(),
+                reason: EndReason::Completed,
+            })
+            .await;
+            // Truly gone — no job state left to cold resume from, so
+            // the spawn flags and per-session config files are dead.
+            if let Ok(mut m) = self.spawn_model_effort.lock() {
+                m.remove(&job.short);
+            }
+            crate::configsweep::remove_session_files(&job.short);
+        }
+        // Drop the cached status so a later revive (worker reports
+        // alive again) is detected as a change and re-emitted.
+        self.last_status.remove(&job.short);
+    }
+
+    /// Pin (or re-pin) the transcript location. A resume or an in-process
+    /// reset (`/clear`, `/compact`) changes the session's `sessionId` and
+    /// starts a NEW transcript file (`<newId>.jsonl`); if we kept tailing
+    /// the original file the message stream would silently stop while
+    /// `list`/Status polls kept the heartbeat fresh. So re-pin whenever the
+    /// live `session_id` differs from the one we cached, following the
+    /// transcript to the new file.
+    ///
+    /// A reset keeps the same worker `short`, so the "newly started" path
+    /// never fires for the new id. We deliberately keep emitting under the
+    /// ORIGINAL `local_id` (set on the first pin, kept in `loc.local_id`) and
+    /// only move `path`/`offset_key` to the new file — so the post-reset
+    /// transcript appends to the one session the server already knows.
+    /// Splitting it into a second session would be worse: archive is
+    /// worker-scoped (`claude rm <short>`), so a single archive would wipe
+    /// both conversations at once. Instead we inject a `context_reset`
+    /// boundary marker so the cut is visible in the UI.
+    async fn pin_transcript(
+        &mut self,
+        job: &LiveSnapshot,
+        local_id: &str,
+        on_disk: Option<&StateJson>,
+    ) {
+        // `/clear` rotates the live session into a new transcript
+        // file but the control socket's `list` keeps reporting the stale
+        // spawn `sessionId` (it's the immutable `--session-id` launch arg in
+        // `roster.json`). The rotated id only surfaces in `state.json`'s
+        // `resumeSessionId`, so prefer that; fall back to the snapshot id
+        // when no reset has happened. Without this the rotation check below
+        // never fires for `/clear` and the message stream silently stops.
+        let live_session =
+            on_disk.and_then(|s| s.resume_session_id.as_deref()).or_else(|| job.session_id());
+        let (Some(cwd), Some(sess)) = (job.cwd.as_deref(), live_session) else {
+            return;
+        };
+        let rotated =
+            self.transcript_locations.get(&job.short).is_some_and(|loc| loc.offset_key != sess);
+        let first_pin = !self.transcript_locations.contains_key(&job.short);
+        let path = self.resolve_live_transcript(cwd, sess);
+        let moved = !first_pin
+            && !rotated
+            && self.transcript_locations.get(&job.short).is_some_and(|loc| loc.path != path);
+        if moved {
+            // Same session id, new file: the session entered/left a git
+            // worktree so claude relocated the transcript. The move is
+            // content-continuous, so keep offset_key + offset and the
+            // stable local_id — only follow the path.
+            if let Some(loc) = self.transcript_locations.get_mut(&job.short) {
+                tracing::info!(
+                    short = %job.short,
+                    from = %loc.path.display(),
+                    to = %path.display(),
+                    "transcript moved (worktree enter/exit); following"
+                );
+                loc.path.clone_from(&path);
+            }
+        }
+        if first_pin {
+            self.short_by_session.insert(sess.to_owned(), job.short.clone());
+            self.map_session(sess, local_id);
+            self.transcript_locations.insert(
+                job.short.clone(),
+                TranscriptLocation {
+                    path,
+                    local_id: local_id.to_owned(),
+                    cwd: cwd.to_owned(),
+                    offset_key: sess.to_owned(),
+                },
+            );
+        } else if rotated {
+            // Follow the file, keep the stable `local_id`. The new
+            // `sess` is mapped to the same `short` too so command
+            // dispatch keeps working if a snapshot ever reports the new
+            // id directly. The rotated id maps to the unchanged stable
+            // `local_id` so a hook firing post-`/clear` still resolves
+            // to the session the server knows.
+            self.short_by_session.insert(sess.to_owned(), job.short.clone());
+            self.map_session(sess, local_id);
+            if let Some(loc) = self.transcript_locations.get_mut(&job.short) {
+                loc.path = path;
+                sess.clone_into(&mut loc.offset_key);
+            }
+            self.emit(AdapterEvent::Message {
+                local_id: local_id.to_owned(),
+                payload: json!({
+                    "role": "context_reset",
+                    "text": "context reset (/clear · /compact)",
+                    // The new session id keys this marker uniquely so a
+                    // second reset isn't collapsed by the server's
+                    // content-hash dedup (identical text would hash the
+                    // same).
+                    "session_id": sess,
+                }),
+                turn_id: None,
+            })
+            .await;
+        }
+    }
+
+    async fn emit_status(
+        &mut self,
+        job: &LiveSnapshot,
+        local_id: String,
+        on_disk: Option<&StateJson>,
+        observed_efforts: &HashMap<String, String>,
+    ) {
+        let name = on_disk.and_then(|s| s.name.clone()).or_else(|| job.name.clone());
+        let intent = on_disk.and_then(|s| s.intent.clone()).or_else(|| job.intent.clone());
+        let activity = on_disk.and_then(|s| s.activity.clone());
+        // Prefer the on-disk state.json; fall back to the spawn-time flags
+        // we remembered while state.json is absent/transient.
+        let spawned = self.spawn_model_effort.lock().ok().and_then(|m| m.get(&job.short).cloned());
+        let model = on_disk
+            .and_then(|s| s.model.clone())
+            .or_else(|| spawned.as_ref().and_then(|(m, _)| m.clone()));
+        // Prefer the GROUND-TRUTH effort the live worker actually booted at
+        // (read from its `CLAUDE_EFFORT` env), so the UI shows what the
+        // session is running rather than what we requested — a spare-claim or
+        // a silent background clamp can make them differ. Fall back
+        // to the requested value (state.json flags, then the spawn cache)
+        // while the worker is mid-exec / not yet found in `/proc`.
+        let effort = observed_efforts
+            .get(&job.short)
+            .cloned()
+            .or_else(|| on_disk.and_then(|s| s.effort.clone()))
+            .or_else(|| spawned.as_ref().and_then(|(_, e)| e.clone()));
+        let children = on_disk.map(StateJson::proto_children).unwrap_or_default();
+
+        // NB: live `AskUserQuestion` surfacing is NOT derived from status
+        // here. Real questions report `state:"done"`, not `blocked`, and a
+        // `blocked` state is a background status (e.g. "needs input"), not a
+        // question. The `AskUserQuestion` PreToolUse hook delivers the real
+        // prompt over the daemon socket.
+
+        let snap = StatusSnapshot {
+            tempo: job.tempo.clone(),
+            state: job.state.clone(),
+            detail: job.detail.clone(),
+            name: name.clone(),
+            activity: activity.clone(),
+            model: model.clone(),
+            effort: effort.clone(),
+        };
+        if self.last_status.get(&job.short) == Some(&snap) {
+            return;
+        }
+        self.last_status.insert(job.short.clone(), snap);
+        self.emit(AdapterEvent::Status {
+            local_id,
+            tempo: job.tempo.clone(),
+            state: job.state.clone(),
+            detail: job.detail.clone(),
+            activity,
+            name,
+            intent,
+            model,
+            effort,
+            permission_mode: None,
+            children,
+        })
+        .await;
+    }
+
+    /// Tail transcripts for every pinned session (and their subagents) and
+    /// emit new events.
+    async fn tail_transcripts(&mut self) {
         let mut dirty_offsets = false;
         let locations: Vec<TranscriptLocation> =
             self.transcript_locations.values().cloned().collect();
@@ -374,75 +436,58 @@ impl Driver {
         if dirty_offsets {
             self.offsets.flush();
         }
+    }
 
-        // Ended sessions.
-        let gone: Vec<String> = self.roster.difference(&now_shorts).cloned().collect();
-        for short in &gone {
-            self.last_status.remove(short);
-            let was_dead = self.dead_shorts.remove(short);
-            self.clear_permission(short).await;
-            if let Some(loc) = self.transcript_locations.remove(short) {
-                // Hibernated, not gone: the worker process exited but
-                // its job state survives on disk, so a reply will revive it
-                // (resume-on-reply above). Mark the session so the UI can show
-                // the claude-style "exited, will resume on reply" red dot
-                // instead of a plain dead one. Carried in `tempo` (not
-                // `agent_state`) so the bucket classifier still sees the final
-                // state (`done` → Completed); a revived worker's next live
-                // snapshot overwrites it.
-                //
-                // Skip if we already emitted this short's dead transition while
-                // it was still listed (`dead_shorts`) — the hibernated
-                // Status already went out; re-emitting it here is redundant.
-                if !was_dead && StateJson::read(&self.cfg.jobs_root, short).is_some() {
-                    self.emit(AdapterEvent::Status {
-                        local_id: loc.local_id.clone(),
-                        tempo: Some("hibernated".to_owned()),
-                        state: None,
-                        detail: None,
-                        activity: None,
-                        name: None,
-                        intent: None,
-                        model: None,
-                        effort: None,
-                        permission_mode: None,
-                        children: Vec::new(),
-                    })
-                    .await;
-                }
-                self.short_by_session.remove(&loc.local_id);
-                self.session_to_local
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .retain(|_, v| v != &loc.local_id);
-                self.end_subagents_of(&loc.local_id).await;
+    async fn reap_gone(&mut self, short: &str) {
+        self.last_status.remove(short);
+        let was_dead = self.dead_shorts.remove(short);
+        self.clear_permission(short).await;
+        if let Some(loc) = self.transcript_locations.remove(short) {
+            // Hibernated, not gone: the worker process exited but
+            // its job state survives on disk, so a reply will revive it
+            // (resume-on-reply above). Mark the session so the UI can show
+            // the claude-style "exited, will resume on reply" red dot
+            // instead of a plain dead one. Carried in `tempo` (not
+            // `agent_state`) so the bucket classifier still sees the final
+            // state (`done` → Completed); a revived worker's next live
+            // snapshot overwrites it.
+            //
+            // Skip if we already emitted this short's dead transition while
+            // it was still listed (`dead_shorts`) — the hibernated
+            // Status already went out; re-emitting it here is redundant.
+            if !was_dead && StateJson::read(&self.cfg.jobs_root, short).is_some() {
+                self.emit(AdapterEvent::Status {
+                    local_id: loc.local_id.clone(),
+                    tempo: Some("hibernated".to_owned()),
+                    state: None,
+                    detail: None,
+                    activity: None,
+                    name: None,
+                    intent: None,
+                    model: None,
+                    effort: None,
+                    permission_mode: None,
+                    children: Vec::new(),
+                })
+                .await;
             }
-            // We don't retain the session_id mapping after roster removal,
-            // so fall back to the short as the local_id. Sessions on the
-            // server side are indexed by (machine_id, adapter_id,
-            // local_id), and the prior SessionStarted carried the real
-            // session_id; the server reconciles on the running row.
-            self.emit(AdapterEvent::SessionEnded {
-                local_id: short.clone(),
-                reason: EndReason::Completed,
-            })
-            .await;
+            self.short_by_session.remove(&loc.local_id);
+            self.session_to_local
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .retain(|_, v| v != &loc.local_id);
+            self.end_subagents_of(&loc.local_id).await;
         }
-
-        // Keep a headless `attach` open for every live session so the worker
-        // stays focused/awake and `reply` actually drives its PTY. Jobs cctui
-        // did not start are excluded: a held attach forces our geometry on
-        // someone's terminal and drives their PTY.
-        self.attach.reconcile(
-            now_shorts
-                .iter()
-                .map(String::as_str)
-                .filter(|short| !self.foreign_shorts.contains(*short)),
-        );
-
-        self.tick_dispatch_done(&visible);
-
-        self.roster = now_shorts;
+        // We don't retain the session_id mapping after roster removal,
+        // so fall back to the short as the local_id. Sessions on the
+        // server side are indexed by (machine_id, adapter_id,
+        // local_id), and the prior SessionStarted carried the real
+        // session_id; the server reconciles on the running row.
+        self.emit(AdapterEvent::SessionEnded {
+            local_id: short.to_owned(),
+            reason: EndReason::Completed,
+        })
+        .await;
     }
 
     /// Feed the dispatch turn-complete watcher one roster snapshot
@@ -945,5 +990,119 @@ mod tests {
         rx.recv().await.unwrap(); // status
         d.apply_snapshot(vec![snap("c0ffee00", "working", Some("ours"))]).await;
         assert!(rx.try_recv().is_err(), "identical poll should emit nothing");
+    }
+
+    fn job(short: &str, edit: impl FnOnce(&mut LiveSnapshot)) -> LiveSnapshot {
+        let mut j = snap(short, "done", None);
+        j.tempo = Some("idle".into());
+        edit(&mut j);
+        j
+    }
+
+    fn set(shorts: &[&str]) -> HashSet<String> {
+        shorts.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    #[test]
+    fn plan_snapshot_diffs_the_listing_against_the_roster() {
+        struct Case {
+            name: &'static str,
+            roster: &'static [&'static str],
+            jobs: Vec<LiveSnapshot>,
+            visible: &'static [&'static str],
+            foreign: &'static [&'static str],
+            native_live: bool,
+            roster_busy: bool,
+            started: &'static [&'static str],
+            gone: &'static [&'static str],
+        }
+        let cases = [
+            Case {
+                name: "first poll adopts every fleet job in listing order",
+                roster: &[],
+                jobs: vec![job("bbbb0002", |_| {}), job("aaaa0001", |_| {})],
+                visible: &["bbbb0002", "aaaa0001"],
+                foreign: &[],
+                native_live: false,
+                roster_busy: false,
+                started: &["bbbb0002", "aaaa0001"],
+                gone: &[],
+            },
+            Case {
+                name: "spares and dying workers are not sessions",
+                roster: &[],
+                jobs: vec![
+                    job("5a5a0001", |j| j.source = Some(SPARE_SOURCE.into())),
+                    job("d1e00001", |j| j.dying = true),
+                    job("cccc0003", |_| {}),
+                ],
+                visible: &["cccc0003"],
+                foreign: &["5a5a0001"],
+                native_live: false,
+                roster_busy: false,
+                started: &["cccc0003"],
+                gone: &[],
+            },
+            Case {
+                name: "a listed foreign job marks native activity",
+                roster: &["eeee0005"],
+                jobs: vec![job("eeee0005", |j| j.source = Some("cli".into()))],
+                visible: &["eeee0005"],
+                foreign: &["eeee0005"],
+                native_live: true,
+                roster_busy: false,
+                started: &[],
+                gone: &[],
+            },
+            Case {
+                name: "known shorts missing from the listing are gone",
+                roster: &["aaaa0001", "ffff0006"],
+                jobs: vec![job("aaaa0001", |_| {})],
+                visible: &["aaaa0001"],
+                foreign: &[],
+                native_live: false,
+                roster_busy: false,
+                started: &[],
+                gone: &["ffff0006"],
+            },
+            Case {
+                name: "a busy live worker marks the roster busy",
+                roster: &["aaaa0001"],
+                jobs: vec![job("aaaa0001", |j| j.tempo = Some("active".into()))],
+                visible: &["aaaa0001"],
+                foreign: &[],
+                native_live: false,
+                roster_busy: true,
+                started: &[],
+                gone: &[],
+            },
+            Case {
+                name: "a dead worker never counts as busy",
+                roster: &["aaaa0001"],
+                jobs: vec![job("aaaa0001", |j| {
+                    j.state = Some("working".into());
+                    j.gone = true;
+                })],
+                visible: &["aaaa0001"],
+                foreign: &[],
+                native_live: false,
+                roster_busy: false,
+                started: &[],
+                gone: &[],
+            },
+        ];
+        for case in cases {
+            let plan = plan_snapshot(case.jobs, &set(case.roster));
+            let visible: Vec<&str> = plan.visible.iter().map(|j| j.short.as_str()).collect();
+            assert_eq!(visible, case.visible, "{}: visible", case.name);
+            assert_eq!(plan.now_shorts, set(case.visible), "{}: now_shorts", case.name);
+            assert_eq!(plan.foreign_shorts, set(case.foreign), "{}: foreign", case.name);
+            assert_eq!(plan.native_live, case.native_live, "{}: native_live", case.name);
+            assert_eq!(plan.roster_busy, case.roster_busy, "{}: roster_busy", case.name);
+            assert_eq!(plan.started, case.started, "{}: started", case.name);
+            let mut gone = plan.gone;
+            gone.sort();
+            assert_eq!(gone, case.gone, "{}: gone", case.name);
+        }
     }
 }
