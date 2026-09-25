@@ -17,7 +17,6 @@ use futures_util::stream::BoxStream;
 
 use crate::state::AppState;
 
-/// `/gateway/anthropic/*path` — passthrough to api.anthropic.com.
 /// Which side of the gateway rejected an authenticated request. The
 /// two are easy to confuse from a worker's point of view — both surface as a
 /// 401 — but they need opposite remedies, so we label every gateway 401 with
@@ -147,6 +146,7 @@ async fn soft_limit_refusal(
         .map_err(|_| StatusCode::TOO_MANY_REQUESTS)
 }
 
+/// `/gateway/anthropic/*path` — passthrough to api.anthropic.com.
 pub async fn anthropic(
     State(state): State<AppState>,
     req: Request,
@@ -211,48 +211,80 @@ fn upstream_payload(
     (axum::body::Bytes::from(reshaped.to_string()), true)
 }
 
-// Linear proxy pipeline (auth, account-resolve, refresh, forward, stream);
-// complexity/length are per-stage handling, not nesting.
-#[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
-pub async fn passthrough(
-    state: AppState,
-    req: Request,
-    prefix: &str,
-    upstream_base: &str,
-) -> Result<Response, StatusCode> {
-    let is_anthropic = prefix.contains("anthropic");
+type Reply = Result<Response, StatusCode>;
 
-    // The worker's bearer is the session token; map it to an account. A missing
-    // bearer or one that doesn't resolve is a *cctui* rejection — distinguish it
-    // from a provider rejection so the worker/operator knows which to fix.
-    let Some(session_token) = req
-        .headers()
+/// A worker request whose bearer resolved to an account.
+struct Authenticated {
+    session_token: String,
+    acct: super::Account,
+}
+
+/// What the soft-limit gate could not decide before reading the body: the
+/// usage windows to re-evaluate once the request's model is known.
+struct Admission {
+    effective_limits: crate::soft_limit::SoftLimits,
+    model_gate: Option<Vec<crate::soft_limit::UsageWindow>>,
+}
+
+/// Where the request goes and with which credentials.
+struct UpstreamTarget {
+    client: reqwest::Client,
+    url: String,
+    method: reqwest::Method,
+    access_token: String,
+}
+
+/// Everything that wants to read the request or response.
+struct Observers {
+    fireworks: Option<FireworksSettings>,
+    affinity_session: Option<String>,
+    langfuse: Option<std::sync::Arc<crate::langfuse::LangfuseClient>>,
+    trace_session_id: Option<String>,
+    tool_guard: Option<super::toolguard::ActiveGuard>,
+}
+
+/// What was learned from the request body while preparing it.
+struct RequestInfo {
+    traced_request: Option<serde_json::Value>,
+    request_model: Option<String>,
+    rewrote_body: bool,
+}
+
+/// Map the worker's bearer (the session token) to an account. A missing
+/// bearer or one that doesn't resolve is a *cctui* rejection — distinguished
+/// from a provider rejection so the worker/operator knows which to fix.
+async fn authenticate(
+    state: &AppState,
+    headers: &HeaderMap,
+    is_anthropic: bool,
+) -> Result<Authenticated, Reply> {
+    let Some(session_token) = headers
         .get(http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
         .map(str::to_string)
     else {
-        return Ok(auth_error(AuthStage::SessionToken, is_anthropic));
+        return Err(Ok(auth_error(AuthStage::SessionToken, is_anthropic)));
     };
 
     // Orphan-spam guard: an unbound worker retries `/gateway` forever; each retry
     // that reaches the DB starves the pool. Fingerprint the token and, if it is
     // already flagged as a spamming orphan, drop the request *before* the DB.
     let token_fp = crate::auth::sha256_hex(&session_token);
-    if orphan_is_blocked(&state, &token_fp) {
-        return Ok(auth_error(AuthStage::SessionToken, is_anthropic));
+    if orphan_is_blocked(state, &token_fp) {
+        return Err(Ok(auth_error(AuthStage::SessionToken, is_anthropic)));
     }
 
-    let acct = match resolve_account(&state, &session_token).await {
+    match resolve_account(state, &session_token).await {
         Ok(Some(acct)) => {
-            note_token_used(&state, &token_fp);
-            acct
+            note_token_used(state, &token_fp);
+            Ok(Authenticated { session_token, acct })
         }
         // Genuinely unknown/revoked/unbound token — a real orphan. Count it
         // toward the spam guard and reject as a cctui auth failure.
         Ok(None) => {
-            note_orphan_401(&state, &token_fp);
-            return Ok(auth_error(AuthStage::SessionToken, is_anthropic));
+            note_orphan_401(state, &token_fp);
+            Err(Ok(auth_error(AuthStage::SessionToken, is_anthropic)))
         }
         // The DB lookup itself failed (cold/starved pool during a server
         // restart, transient network). This is NOT an orphan — a valid bound
@@ -265,32 +297,43 @@ pub async fn passthrough(
                 error = %e,
                 "gateway token resolution failed transiently (DB) — returning 503, not orphaning"
             );
-            return Err(StatusCode::SERVICE_UNAVAILABLE);
+            Err(Err(StatusCode::SERVICE_UNAVAILABLE))
         }
-    };
+    }
+}
 
-    // Soft limit: cap cctui's own share of the account's usage windows
-    // so it leaves headroom for the human sharing the subscription. Only the
-    // configured windows gate; bypass near reset.
-    //
-    // The usage cache is warmed only by the accounts-page route, which headless
-    // dispatch never opens, so on the dispatch path we refresh it from upstream
-    // when cold/stale (throttled by the same TTL to avoid spamming Anthropic's
-    // rate-limited endpoint) before evaluating. Fetch errors fail open.
-    // A `CctuiAgent` child carries its own `session_usd` cap, which the account's
-    // stored limits know nothing about. Overlay it here; the map is empty on the
-    // ordinary path, so this costs a lock-free length check per request.
-    let effective_limits = session_budget_limits(&state, &acct, &session_token).await;
+/// Soft limit: cap cctui's own share of the account's usage windows so it
+/// leaves headroom for the human sharing the subscription. Only the
+/// configured windows gate; bypass near reset.
+///
+/// The usage cache is warmed only by the accounts-page route, which headless
+/// dispatch never opens, so on the dispatch path we refresh it from upstream
+/// when cold/stale (throttled by the same TTL to avoid spamming Anthropic's
+/// rate-limited endpoint) before evaluating. Fetch errors fail open.
+/// A `CctuiAgent` child carries its own `session_usd` cap, which the account's
+/// stored limits know nothing about. Overlay it here; the map is empty on the
+/// ordinary path, so this costs a lock-free length check per request.
+///
+/// Then the gateway rate limit: a pay-per-token provider's RPM/TPM tier is
+/// shared by every session on the account, so throttle at the proxy. Requests
+/// count on admission; tokens accrue when a response's usage lands. Unset ⇒ skip.
+async fn admit(
+    state: &AppState,
+    auth: &Authenticated,
+    is_anthropic: bool,
+) -> Result<Admission, Reply> {
+    let Authenticated { session_token, acct } = auth;
+    let effective_limits = session_budget_limits(state, acct, session_token).await;
     let mut model_gate: Option<Vec<crate::soft_limit::UsageWindow>> = None;
     if !effective_limits.is_unset() {
-        let cached = usage_for_soft_limit(&state, acct.id).await;
+        let cached = usage_for_soft_limit(state, acct.id).await;
         let mut windows =
             cached.as_ref().map(crate::soft_limit::normalize_usage_windows).unwrap_or_default();
         // The per-session budget is session-scoped, so it can't come from the
         // per-account usage cache — resolve it here, and only when one is set.
         if effective_limits.limits.contains_key(crate::soft_limit::KEY_SESSION_USD)
-            && let Some(session_id) = session_id_for_token(&state, &session_token).await
-            && let Some(spent) = session_spend_usd_cached(&state, acct.id, &session_id).await
+            && let Some(session_id) = session_id_for_token(state, session_token).await
+            && let Some(spent) = session_spend_usd_cached(state, acct.id, &session_id).await
         {
             windows.push(crate::soft_limit::usd_window(
                 crate::soft_limit::KEY_SESSION_USD,
@@ -301,7 +344,7 @@ pub async fn passthrough(
         // A `weekly_model:` cap can only be judged once the request's model is
         // known, which needs the body. Gate the model-blind windows here so the
         // zero-copy passthrough survives for every account without such a cap,
-        // and defer the scoped ones to `model_soft_limit_gate` below.
+        // and defer the scoped ones to `prepare_body`.
         let scoped_caps =
             effective_limits.limits.keys().any(|k| crate::soft_limit::is_model_scoped_key(k));
         let unscoped: Vec<crate::soft_limit::UsageWindow> = windows
@@ -313,28 +356,25 @@ pub async fn passthrough(
             crate::soft_limit::evaluate_soft_limit(&unscoped, &effective_limits, None, Utc::now())
         {
             tracing::info!(account = %acct.id, retry_after_secs, "soft limit hit: {reason}");
-            return soft_limit_refusal(
-                &state,
-                &session_token,
-                &acct,
+            return Err(soft_limit_refusal(
+                state,
+                session_token,
+                acct,
                 is_anthropic,
                 None,
                 retry_after_secs,
                 reason,
                 durable_block_key(&acct.soft_limits, &effective_limits, &key),
             )
-            .await;
+            .await);
         }
         if scoped_caps {
             model_gate = Some(windows);
         }
     }
 
-    // Gateway rate limit: a pay-per-token provider's RPM/TPM tier is shared by
-    // every session on the account, so throttle at the proxy. Requests count on
-    // admission; tokens accrue when a response's usage lands below. Unset ⇒ skip.
     if !acct.rate_limits.is_unset()
-        && let Err(retry_after_secs) = super::admit_request(&state, acct.id, &acct.rate_limits)
+        && let Err(retry_after_secs) = super::admit_request(state, acct.id, &acct.rate_limits)
     {
         tracing::info!(account = %acct.id, retry_after_secs, "gateway rate limit hit");
         let resp = Response::builder()
@@ -344,17 +384,29 @@ pub async fn passthrough(
             .body(Body::from(
                 serde_json::json!({ "error": "gateway rate limit exceeded" }).to_string(),
             ))
-            .map_err(|_| StatusCode::TOO_MANY_REQUESTS)?;
-        return Ok(resp);
+            .map_err(|_| StatusCode::TOO_MANY_REQUESTS);
+        return Err(resp);
     }
 
-    // The session token is valid (resolved above); a failure to obtain an
+    Ok(Admission { effective_limits, model_gate })
+}
+
+/// Pick the upstream credentials, host and client for this account.
+async fn resolve_upstream(
+    state: &AppState,
+    acct: &super::Account,
+    req: &Request,
+    prefix: &str,
+    upstream_base: &str,
+    is_anthropic: bool,
+) -> Result<UpstreamTarget, Reply> {
+    // The session token is valid (resolved already); a failure to obtain an
     // upstream access token here is a provider-credential problem (no/expired
     // refresh token, failed refresh) — label it as such.
-    let Ok(access_token) = current_access_token(&state, &acct).await else {
+    let Ok(access_token) = current_access_token(state, acct).await else {
         tracing::warn!(account = %acct.id, stage = "provider-oauth", "gateway 401: no upstream access token for account");
-        flag_account_reauth(&state, acct.id, "no upstream access token (refresh failed)");
-        return Ok(auth_error(AuthStage::ProviderOauth, is_anthropic));
+        flag_account_reauth(state, acct.id, "no upstream access token (refresh failed)");
+        return Err(Ok(auth_error(AuthStage::ProviderOauth, is_anthropic)));
     };
 
     // Per-account upstream: a compatible endpoint overrides the
@@ -370,7 +422,7 @@ pub async fn passthrough(
             "gateway refused account base_url ({e}); allow the host with \
              CCTUI_UPSTREAM_ALLOWED_HOSTS if it is trusted"
         );
-        return Ok(upstream_refused(&e, is_anthropic));
+        return Err(Ok(upstream_refused(&e, is_anthropic)));
     }
     let upstream = custom.unwrap_or(upstream_base);
     let client = if custom.is_some() {
@@ -386,12 +438,20 @@ pub async fn passthrough(
     let url = format!("{}{tail}{query}", upstream.trim_end_matches('/'));
 
     let method = reqwest::Method::from_bytes(req.method().as_str().as_bytes())
-        .map_err(|_| StatusCode::BAD_REQUEST)?;
+        .map_err(|_| Err(StatusCode::BAD_REQUEST))?;
 
-    // Preserve every client header verbatim except hop-by-hop + the bearer we
-    // are swapping and the Host (reqwest sets it from the upstream URL).
+    Ok(UpstreamTarget { client, url, method, access_token })
+}
+
+/// Preserve every client header verbatim except hop-by-hop + the bearer we
+/// are swapping and the Host (reqwest sets it from the upstream URL).
+fn forward_headers(
+    inbound: &HeaderMap,
+    acct: &super::Account,
+    access_token: &str,
+) -> Result<HeaderMap, StatusCode> {
     let mut headers = HeaderMap::new();
-    for (name, value) in req.headers() {
+    for (name, value) in inbound {
         let n = name.as_str().to_ascii_lowercase();
         if skip_request_header(&n) {
             continue;
@@ -417,13 +477,23 @@ pub async fn passthrough(
     {
         headers.insert("chatgpt-account-id", hv);
     }
+    Ok(headers)
+}
 
+/// Resolve the request/response observers and adjust the outbound headers
+/// for them.
+async fn observers(
+    state: &AppState,
+    auth: &Authenticated,
+    headers: &mut HeaderMap,
+) -> Result<Observers, StatusCode> {
+    let Authenticated { session_token, acct } = auth;
     // Fireworks: the account's settings shape the request here, where the real
     // key lives — a worker can neither supply nor defeat them.
     let fireworks = (Family::from_provider(&acct.provider) == Family::Fireworks)
         .then(|| FireworksSettings::resolve(acct.provider_settings.as_ref()));
     let affinity_session = match fireworks.as_ref() {
-        Some(fw) if fw.session_affinity => session_id_for_token(&state, &session_token).await,
+        Some(fw) if fw.session_affinity => session_id_for_token(state, session_token).await,
         _ => None,
     };
     if let Some(sid) = affinity_session.as_deref()
@@ -440,84 +510,110 @@ pub async fn passthrough(
     // reads a parsed copy and the original bytes still go upstream.
     let langfuse = state.langfuse.clone().filter(|lf| lf.should_sample());
     let trace_session_id =
-        if langfuse.is_some() { session_id_for_token(&state, &session_token).await } else { None };
+        if langfuse.is_some() { session_id_for_token(state, session_token).await } else { None };
 
-    let tool_guard = super::guard_for(&state, acct.id, &session_token).await.map_err(|e| {
+    let tool_guard = super::guard_for(state, acct.id, session_token).await.map_err(|e| {
         tracing::warn!(account = %acct.id, error = %e, "tool policy unavailable, refusing unguarded");
         StatusCode::SERVICE_UNAVAILABLE
     })?;
     if tees_response(langfuse.is_some(), fireworks.is_some()) || tool_guard.is_some() {
         headers.remove(reqwest::header::ACCEPT_ENCODING);
     }
+    Ok(Observers { fireworks, affinity_session, langfuse, trace_session_id, tool_guard })
+}
 
-    // Stream the request body through without buffering (default), OR buffer it
-    // once when something needs to read or reshape it. A body that isn't JSON
-    // falls through to the original bytes, so non-`/v1/messages` calls are
-    // untouched either way.
-    let mut request_model: Option<String> = None;
-    let mut rewrote_body = false;
-    let (upstream_body, traced_request) =
-        if langfuse.is_some() || fireworks.is_some() || model_gate.is_some() {
-            let bytes = axum::body::to_bytes(req.into_body(), usize::MAX)
-                .await
-                .map_err(|_| StatusCode::BAD_REQUEST)?;
-            let parsed = serde_json::from_slice::<serde_json::Value>(&bytes).ok();
-            request_model = parsed
-                .as_ref()
-                .and_then(|r| r.get("model"))
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned);
-            // The deferred half of the soft limit: a `weekly_model:` cap gates only
-            // the model it names, so a spent weekly Fable budget must let an Opus
-            // request through. Same `window_applies` the account election uses, so
-            // the two can never disagree.
-            if let Some(windows) = model_gate
-                && let crate::soft_limit::Decision::Block { retry_after_secs, reason, key } =
-                    crate::soft_limit::evaluate_soft_limit(
-                        &windows,
-                        &effective_limits,
-                        request_model.as_deref(),
-                        Utc::now(),
-                    )
-            {
-                tracing::info!(
-                    account = %acct.id,
-                    model = request_model.as_deref().unwrap_or("unknown"),
-                    retry_after_secs,
-                    "soft limit hit: {reason}"
-                );
-                return soft_limit_refusal(
-                    &state,
-                    &session_token,
-                    &acct,
-                    is_anthropic,
-                    request_model.as_deref(),
-                    retry_after_secs,
-                    reason,
-                    durable_block_key(&acct.soft_limits, &effective_limits, &key),
-                )
-                .await;
-            }
-            let (payload, changed) = upstream_payload(
-                &bytes,
-                parsed.as_ref(),
-                fireworks.as_ref(),
-                affinity_session.as_deref(),
-            );
-            rewrote_body = changed;
-            (reqwest::Body::from(payload), parsed.filter(|_| langfuse.is_some()))
-        } else {
-            let body_stream = req.into_body().into_data_stream();
-            (reqwest::Body::wrap_stream(body_stream), None)
-        };
+/// Stream the request body through without buffering (default), OR buffer it
+/// once when something needs to read or reshape it. A body that isn't JSON
+/// falls through to the original bytes, so non-`/v1/messages` calls are
+/// untouched either way.
+async fn prepare_body(
+    state: &AppState,
+    auth: &Authenticated,
+    admission: Admission,
+    obs: &Observers,
+    req: Request,
+    is_anthropic: bool,
+) -> Result<(reqwest::Body, RequestInfo), Reply> {
+    let Authenticated { session_token, acct } = auth;
+    let Admission { effective_limits, model_gate } = admission;
+    if !(obs.langfuse.is_some() || obs.fireworks.is_some() || model_gate.is_some()) {
+        let body_stream = req.into_body().into_data_stream();
+        return Ok((
+            reqwest::Body::wrap_stream(body_stream),
+            RequestInfo { traced_request: None, request_model: None, rewrote_body: false },
+        ));
+    }
+    let bytes = axum::body::to_bytes(req.into_body(), usize::MAX)
+        .await
+        .map_err(|_| Err(StatusCode::BAD_REQUEST))?;
+    let parsed = serde_json::from_slice::<serde_json::Value>(&bytes).ok();
+    let request_model = parsed
+        .as_ref()
+        .and_then(|r| r.get("model"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    // The deferred half of the soft limit: a `weekly_model:` cap gates only
+    // the model it names, so a spent weekly Fable budget must let an Opus
+    // request through. Same `window_applies` the account election uses, so
+    // the two can never disagree.
+    if let Some(windows) = model_gate
+        && let crate::soft_limit::Decision::Block { retry_after_secs, reason, key } =
+            crate::soft_limit::evaluate_soft_limit(
+                &windows,
+                &effective_limits,
+                request_model.as_deref(),
+                Utc::now(),
+            )
+    {
+        tracing::info!(
+            account = %acct.id,
+            model = request_model.as_deref().unwrap_or("unknown"),
+            retry_after_secs,
+            "soft limit hit: {reason}"
+        );
+        return Err(soft_limit_refusal(
+            state,
+            session_token,
+            acct,
+            is_anthropic,
+            request_model.as_deref(),
+            retry_after_secs,
+            reason,
+            durable_block_key(&acct.soft_limits, &effective_limits, &key),
+        )
+        .await);
+    }
+    let (payload, rewrote_body) = upstream_payload(
+        &bytes,
+        parsed.as_ref(),
+        obs.fireworks.as_ref(),
+        obs.affinity_session.as_deref(),
+    );
+    Ok((
+        reqwest::Body::from(payload),
+        RequestInfo {
+            traced_request: parsed.filter(|_| obs.langfuse.is_some()),
+            request_model,
+            rewrote_body,
+        },
+    ))
+}
 
-    let upstream =
-        client.request(method, &url).headers(headers).body(upstream_body).send().await.map_err(
-            |e| {
-                tracing::error!(account = %acct.id, "gateway upstream error: {e}");
-                StatusCode::BAD_GATEWAY
-            },
-        )?;
+/// Send the request upstream and settle everything that depends only on the
+/// response status: stats, credential/rate-limit outcomes, block clearing.
+async fn send_upstream(
+    state: &AppState,
+    auth: &Authenticated,
+    request: reqwest::RequestBuilder,
+    info: &RequestInfo,
+    obs: &Observers,
+    is_anthropic: bool,
+) -> Result<(reqwest::Response, StatusCode), Reply> {
+    let Authenticated { session_token, acct } = auth;
+    let upstream = request.send().await.map_err(|e| {
+        tracing::error!(account = %acct.id, "gateway upstream error: {e}");
+        Err(StatusCode::BAD_GATEWAY)
+    })?;
 
     // Opportunistic stats: request count + response byte count (no buffering).
     let resp_len = i64::try_from(upstream.content_length().unwrap_or(0)).unwrap_or(i64::MAX);
@@ -535,8 +631,6 @@ pub async fn passthrough(
         .await;
     });
 
-    // Mirror status + headers back to the client untouched (retry-after, 429,
-    // 529, SSE content-type — all verbatim) and stream the body.
     let status =
         StatusCode::from_u16(upstream.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
 
@@ -546,8 +640,8 @@ pub async fn passthrough(
     // worker/operator re-authenticates the account rather than the session.
     if status == StatusCode::UNAUTHORIZED {
         tracing::warn!(account = %acct.id, stage = "provider-oauth", "gateway 401: upstream provider rejected account credentials");
-        flag_account_reauth(&state, acct.id, "upstream provider rejected account credentials");
-        return Ok(auth_error(AuthStage::ProviderOauth, is_anthropic));
+        flag_account_reauth(state, acct.id, "upstream provider rejected account credentials");
+        return Err(Ok(auth_error(AuthStage::ProviderOauth, is_anthropic)));
     }
 
     // Upstream says the account is rate-limited. Mirroring it verbatim strands
@@ -557,38 +651,59 @@ pub async fn passthrough(
     // were forwarded yet, so discarding it is safe. Failovers are cooled down
     // per session, so a burst-RPM 429 doesn't ping-pong the binding.
     if status == StatusCode::TOO_MANY_REQUESTS
-        && let Some(target) =
-            super::pick_failover_target(&state, &session_token, acct.id, request_model.as_deref())
-                .await
-        && super::rebind_session(&state, &target, acct.id).await
+        && let Some(target) = super::pick_failover_target(
+            state,
+            session_token,
+            acct.id,
+            info.request_model.as_deref(),
+        )
+        .await
+        && super::rebind_session(state, &target, acct.id).await
     {
-        return Ok(super::failover_retry_response(
+        return Err(Ok(super::failover_retry_response(
             &target.account_name,
             target.reason,
             is_anthropic,
-        ));
+        )));
     }
 
     // A successful upstream call clears any soft-limit block on this session:
     // after the user switches accounts (or a window resets) the next
     // 2xx dismisses the banner. Unconditional: another replica may hold the block.
     if status.is_success() {
-        match &trace_session_id {
-            Some(sid) => clear_soft_limit_block(&state, sid).await,
-            None => clear_soft_limit_block_for_token(&state, &session_token).await,
+        match &obs.trace_session_id {
+            Some(sid) => clear_soft_limit_block(state, sid).await,
+            None => clear_soft_limit_block_for_token(state, session_token).await,
         }
     }
     // Usage ticker. Out of band on purpose: it reaches the agent as its own
     // turn, so nothing here can reshape the request that was just forwarded.
     if status.is_success() {
-        super::usage_notices::deliver_if_due(&state, &acct, &session_token).await;
+        super::usage_notices::deliver_if_due(state, acct, session_token).await;
     }
     // A successful upstream call means the account's credentials are good again —
     // clear any reauth flag. Gated in-memory, so this is free unless the
     // account was actually flagged.
     if status.is_success() {
-        clear_account_reauth(&state, acct.id);
+        clear_account_reauth(state, acct.id);
     }
+    Ok((upstream, status))
+}
+
+/// Mirror status + headers back to the client untouched (retry-after, 429,
+/// 529, SSE content-type — all verbatim) and stream the body, tool-guarded
+/// and/or teed to the observers.
+async fn relay_response(
+    state: &AppState,
+    auth: &Authenticated,
+    mut obs: Observers,
+    info: RequestInfo,
+    upstream: reqwest::Response,
+    status: StatusCode,
+    is_anthropic: bool,
+) -> Reply {
+    let Authenticated { session_token, acct } = auth;
+    let tool_guard = obs.tool_guard.take();
     let mut builder = Response::builder().status(status);
     for (name, value) in upstream.headers() {
         let n = name.as_str().to_ascii_lowercase();
@@ -606,11 +721,13 @@ pub async fn passthrough(
     // response itself: the `usage` object (JSON body or terminal SSE frame) plus
     // the two headers, which are what the provider bills against. Read the
     // headers now, before the body is consumed.
-    let usage_session = match (&fireworks, status.is_success()) {
-        (Some(_), true) => match affinity_session.clone().or_else(|| trace_session_id.clone()) {
-            Some(sid) => Some(sid),
-            None => session_id_for_token(&state, &session_token).await,
-        },
+    let usage_session = match (&obs.fireworks, status.is_success()) {
+        (Some(_), true) => {
+            match obs.affinity_session.clone().or_else(|| obs.trace_session_id.clone()) {
+                Some(sid) => Some(sid),
+                None => session_id_for_token(state, session_token).await,
+            }
+        }
         _ => None,
     };
     let usage_headers = usage_session.as_ref().map(|_| {
@@ -644,21 +761,44 @@ pub async fn passthrough(
     };
 
     // Fast path (nothing to observe): stream the response straight through.
-    if langfuse.is_none() && usage_session.is_none() {
+    if obs.langfuse.is_none() && usage_session.is_none() {
         return builder.body(Body::from_stream(resp_stream)).map_err(|e| {
             tracing::error!("gateway response build error: {e}");
             StatusCode::INTERNAL_SERVER_ERROR
         });
     }
 
-    // Observed path: tee the response body. Each chunk is forwarded to the client
-    // verbatim AND copied into an accumulator task over a bounded channel. The
-    // copy is best-effort — if the task lags, `try_send` drops the chunk
-    // (we lose the trace/usage, never the proxied bytes). When the upstream stream
-    // ends the channel closes and the task reconstructs the trace and the metered
-    // usage. Nothing here blocks or delays the client stream.
+    let tx = spawn_observer(state, acct, obs, info, usage_session, usage_headers);
+    let resp_stream = resp_stream.map(move |chunk| {
+        if let Ok(bytes) = &chunk {
+            // Drop on backpressure rather than block the proxied response.
+            let _ = tx.try_send(bytes.to_vec());
+        }
+        chunk
+    });
+    builder.body(Body::from_stream(resp_stream)).map_err(|e| {
+        tracing::error!("gateway response build error: {e}");
+        StatusCode::INTERNAL_SERVER_ERROR
+    })
+}
+
+/// Observed path: tee the response body. Each chunk is forwarded to the client
+/// verbatim AND copied into an accumulator task over a bounded channel. The
+/// copy is best-effort — if the task lags, `try_send` drops the chunk
+/// (we lose the trace/usage, never the proxied bytes). When the upstream stream
+/// ends the channel closes and the task reconstructs the trace and the metered
+/// usage. Nothing here blocks or delays the client stream.
+fn spawn_observer(
+    state: &AppState,
+    acct: &super::Account,
+    obs: Observers,
+    info: RequestInfo,
+    usage_session: Option<String>,
+    usage_headers: Option<(Option<String>, Option<String>)>,
+) -> tokio::sync::mpsc::Sender<Vec<u8>> {
+    let RequestInfo { traced_request, request_model, rewrote_body } = info;
     let ctx = crate::langfuse::TraceContext {
-        session_id: trace_session_id,
+        session_id: obs.trace_session_id,
         account_id: Some(acct.id.to_string()),
         model: request_model.clone(),
     };
@@ -670,6 +810,7 @@ pub async fn passthrough(
     // (Fireworks): the running window total the next request gates against.
     let rate_windows = acct.rate_limits.tpm.is_some().then(|| state.gateway_rate_windows.clone());
     let rate_provider = acct.id;
+    let langfuse = obs.langfuse;
     let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
     tokio::spawn(async move {
         let mut buf = Vec::new();
@@ -716,18 +857,46 @@ pub async fn passthrough(
             });
         }
     });
+    tx
+}
 
-    let resp_stream = resp_stream.map(move |chunk| {
-        if let Ok(bytes) = &chunk {
-            // Drop on backpressure rather than block the proxied response.
-            let _ = tx.try_send(bytes.to_vec());
-        }
-        chunk
-    });
-    builder.body(Body::from_stream(resp_stream)).map_err(|e| {
-        tracing::error!("gateway response build error: {e}");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })
+/// Linear proxy pipeline: authenticate, admit, resolve the upstream, forward,
+/// relay the response.
+pub async fn passthrough(
+    state: AppState,
+    req: Request,
+    prefix: &str,
+    upstream_base: &str,
+) -> Result<Response, StatusCode> {
+    let is_anthropic = prefix.contains("anthropic");
+    let auth = match authenticate(&state, req.headers(), is_anthropic).await {
+        Ok(auth) => auth,
+        Err(reply) => return reply,
+    };
+    let admission = match admit(&state, &auth, is_anthropic).await {
+        Ok(admission) => admission,
+        Err(reply) => return reply,
+    };
+    let target =
+        match resolve_upstream(&state, &auth.acct, &req, prefix, upstream_base, is_anthropic).await
+        {
+            Ok(target) => target,
+            Err(reply) => return reply,
+        };
+    let mut headers = forward_headers(req.headers(), &auth.acct, &target.access_token)?;
+    let obs = observers(&state, &auth, &mut headers).await?;
+    let (body, info) = match prepare_body(&state, &auth, admission, &obs, req, is_anthropic).await {
+        Ok(prepared) => prepared,
+        Err(reply) => return reply,
+    };
+    let UpstreamTarget { client, url, method, .. } = target;
+    let request = client.request(method, &url).headers(headers).body(body);
+    let (upstream, status) =
+        match send_upstream(&state, &auth, request, &info, &obs, is_anthropic).await {
+            Ok(sent) => sent,
+            Err(reply) => return reply,
+        };
+    relay_response(&state, &auth, obs, info, upstream, status, is_anthropic).await
 }
 
 #[cfg(test)]
