@@ -440,7 +440,8 @@ mod tests {
         assert!(!bash("python3 -c x git fetch", &["git fetch"], &[]).0);
         assert!(!bash("python3 -c x git fetch", &["git fetch"], &["*"]).0);
         assert!(bash("GIT_TRACE=1 git fetch", &["git fetch"], &[]).0);
-        assert!(bash("env A=1 git fetch", &["git fetch"], &[]).0);
+        assert!(!bash("env A=1 git fetch", &["git fetch"], &[]).0);
+        assert!(bash("env LANG=C git fetch", &["git fetch"], &[]).0);
     }
 
     #[test]
