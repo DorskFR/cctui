@@ -60,16 +60,18 @@
 	const heading = $derived(title ?? label);
 </script>
 
-<SectionHeader
-	variant="group"
-	level={3}
-	size="sm"
-	title={heading}
-	{hue}
-	count={m.sessions_group_count({ count })}
-	{lead}
-	actions={headerActions}
-/>
+<div class="ssh">
+	<SectionHeader
+		variant="group"
+		level={3}
+		size="sm"
+		title={heading}
+		{hue}
+		count={m.sessions_group_count({ count })}
+		{lead}
+		actions={headerActions}
+	/>
+</div>
 
 {#snippet headerActions()}
 	<Menu label={m.sessions_sort_menu_label()} items={sortItems} bare placement="bottom-end">
@@ -79,7 +81,10 @@
 				size="xs"
 				tone="faint"
 				style="white-space:nowrap; display:inline-flex; align-items:center; gap: var(--sp-1)"
-				>{m.sessions_sort_menu({ sort: fieldLabel(sort) })}<Icon name={dirIcon} label={dirLabel} /></Text
+				><span class="sort-words">{m.sessions_sort_menu({ sort: fieldLabel(sort) })}</span><Icon
+					name={dirIcon}
+					label={dirLabel}
+				/></Text
 			>
 		{/snippet}
 	</Menu>
@@ -106,3 +111,14 @@
 		/>
 	{/if}
 {/snippet}
+
+<style>
+	.ssh {
+		container: ssh / inline-size;
+	}
+	@container ssh (max-width: 26rem) {
+		.sort-words {
+			display: none;
+		}
+	}
+</style>

@@ -1,8 +1,7 @@
 <script lang="ts">
-	import AccountBadge from '$lib/components/molecules/AccountBadge.svelte';
 	import LabelBadge from '$lib/components/molecules/LabelBadge.svelte';
-	import MachineBadge from '$lib/components/molecules/MachineBadge.svelte';
 	import SessionDot from '$lib/components/molecules/SessionDot.svelte';
+	import SessionGlyphs from '$lib/components/molecules/SessionGlyphs.svelte';
 	import { m } from '$lib/paraglide/messages';
 	import { settings } from '$lib/settings.svelte';
 	import { Badge, Text, Timestamp } from '@dorsk/tsumikit';
@@ -10,7 +9,7 @@
 	import Gutter from './Gutter.svelte';
 	import type { SessionActions, SessionView } from './view';
 
-	// gutter · dot · machine · account · title · labels · ⚙N cadence — the lead
+	// gutter · star/dot/machine/account glyphs · title · labels · ⚙N cadence — the lead
 	// group both the compact row and the detailed card header open with.
 	let {
 		view,
@@ -31,21 +30,25 @@
 </script>
 
 <Gutter
-	session={s}
 	child={view.child}
 	selectable={actions.selectable}
 	selected={actions.selected}
 	subagentToggles={actions.subagentToggles}
-	onTogglePin={actions.onTogglePin}
 />
-<SessionDot session={s} livenessClass={view.livenessClass} now={view.now} />
 {#if view.child}
+	<SessionDot session={s} livenessClass={view.livenessClass} now={view.now} />
 	<Badge tone="info" size="xs">{m.sessions_subagent_badge()}</Badge>
-{:else if view.showMachine}
-	<MachineBadge name={s.machine_name} id={s.machine_id} hue={s.machine_hue} mono dense />
-{/if}
-{#if !view.child}
-	<AccountBadge name={s.account_name} warn={accountTrafficWarning(s)} showName={settings.accountNames} />
+{:else}
+	<SessionGlyphs
+		session={s}
+		livenessClass={view.livenessClass}
+		now={view.now}
+		stack={row ? 'auto' : 'never'}
+		showMachine={view.showMachine}
+		accountWarn={accountTrafficWarning(s)}
+		showAccountName={settings.accountNames}
+		onTogglePin={actions.selectable ? undefined : actions.onTogglePin}
+	/>
 {/if}
 <span class="title" class:capped={row}>
 	<Text
