@@ -18,7 +18,6 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 COPY keys/ keys/
 COPY migrations/ migrations/
-COPY keys/ keys/
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/app/target \
