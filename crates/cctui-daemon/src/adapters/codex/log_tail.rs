@@ -23,7 +23,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use cctui_proto::adapter::{AdapterEvent, EndReason, SessionMeta};
 use serde_json::{Value, json};
@@ -100,6 +100,92 @@ pub struct LogTail {
     /// pass replays from the mark instead.
     marks: ResumeMarks,
     reconciled: HashSet<PathBuf>,
+    index: RolloutIndex,
+    /// Derived `local_id` of quiet untracked rollouts, so the per-tick mark
+    /// check never re-opens them.
+    quiet_ids: HashMap<PathBuf, String>,
+}
+
+/// How often the whole sessions tree is re-walked; fast ticks only list the
+/// recent date dirs and stat the rollouts already being tailed.
+const FULL_WALK_EVERY: Duration = Duration::from_mins(5);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FileStat {
+    len: u64,
+    mtime: Option<SystemTime>,
+}
+
+/// Known rollout files with their last observed `(len, mtime)`.
+#[derive(Debug, Default)]
+struct RolloutIndex {
+    files: HashMap<PathBuf, FileStat>,
+    last_full: Option<Instant>,
+    stats: usize,
+}
+
+impl RolloutIndex {
+    fn full_due(&self, now: Instant) -> bool {
+        self.last_full.is_none_or(|t| now.duration_since(t) >= FULL_WALK_EVERY)
+    }
+
+    /// Blocking: must run under `spawn_blocking`.
+    fn refresh(&mut self, root: &Path, tracked: &[PathBuf], full: bool, now: Instant) {
+        self.stats = 0;
+        if full {
+            let mut files = Vec::new();
+            collect_rollout_files(root, 0, &mut files);
+            self.files.clear();
+            for path in files {
+                self.stat_into(path);
+            }
+            self.last_full = Some(now);
+            return;
+        }
+        let mut listed = HashSet::new();
+        for dir in recent_dirs(root) {
+            let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+            for entry in entries.flatten() {
+                if entry.file_type().is_ok_and(|t| t.is_file()) {
+                    listed.insert(entry.path());
+                }
+            }
+            self.files.retain(|p, _| p.parent() != Some(dir.as_path()) || listed.contains(p));
+        }
+        listed.extend(tracked.iter().cloned());
+        for path in listed {
+            self.stat_into(path);
+        }
+    }
+
+    fn stat_into(&mut self, path: PathBuf) {
+        self.stats += 1;
+        match std::fs::metadata(&path) {
+            Ok(m) if m.is_file() => {
+                self.files.insert(path, FileStat { len: m.len(), mtime: m.modified().ok() });
+            }
+            _ => {
+                self.files.remove(&path);
+            }
+        }
+    }
+}
+
+/// The root itself (flat layout) plus `YYYY/MM/DD` for today and yesterday,
+/// in both local time and UTC so a midnight rollover in either is covered.
+fn recent_dirs(root: &Path) -> Vec<PathBuf> {
+    let now_local = chrono::Local::now().date_naive();
+    let now_utc = chrono::Utc::now().date_naive();
+    let mut dirs = vec![root.to_path_buf()];
+    for day in [now_local, now_utc] {
+        for d in [Some(day), day.pred_opt()].into_iter().flatten() {
+            let dir = root.join(d.format("%Y/%m/%d").to_string());
+            if !dirs.contains(&dir) {
+                dirs.push(dir);
+            }
+        }
+    }
+    dirs
 }
 
 /// The server's per-session transcript marks, written by the codex command
@@ -130,6 +216,8 @@ impl LogTail {
             offsets_dirty: false,
             marks: ResumeMarks::default(),
             reconciled: HashSet::new(),
+            index: RolloutIndex::default(),
+            quiet_ids: HashMap::new(),
         }
     }
 
@@ -180,17 +268,17 @@ impl LogTail {
         // threads cctui drives live (`owned`) or whose real transcript came
         // back from `thread/turns/list` (`served`) are skipped.
         let mut alive: HashSet<PathBuf> = HashSet::new();
-        // real rollouts live under YYYY/MM/DD subdirectories, not
-        // directly under the sessions root, so the scan recurses.
-        let mut files = Vec::new();
-        collect_rollout_files(&self.cfg.sessions_root, 0, &mut files);
-        for path in files {
+        self.refresh_index().await;
+        let mut files: Vec<(PathBuf, FileStat)> =
+            self.index.files.iter().map(|(p, st)| (p.clone(), *st)).collect();
+        files.sort_by(|a, b| a.0.cmp(&b.0));
+        for (path, stat) in files {
             let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
             if owned.iter().any(|id| stem.ends_with(id.as_str())) {
                 continue;
             }
             alive.insert(path.clone());
-            self.tail_file(path).await;
+            self.tail_file(path, stat).await;
         }
         // The rollout is gone: the only evidence of an end this adapter has.
         let ended: Vec<PathBuf> =
@@ -229,14 +317,33 @@ impl LogTail {
             }
         }
         if self.offsets_dirty {
-            self.offsets.flush();
+            let offsets = std::mem::take(&mut self.offsets);
+            self.offsets = tokio::task::spawn_blocking(move || {
+                offsets.flush();
+                offsets
+            })
+            .await
+            .unwrap_or_default();
             self.offsets_dirty = false;
         }
     }
 
-    async fn tail_file(&mut self, path: PathBuf) {
-        let meta = std::fs::metadata(&path).ok();
-        let len = meta.as_ref().map_or(0, std::fs::Metadata::len);
+    async fn refresh_index(&mut self) {
+        let now = Instant::now();
+        let full = self.index.full_due(now);
+        let root = self.cfg.sessions_root.clone();
+        let tracked: Vec<PathBuf> = self.sessions.keys().cloned().collect();
+        let mut index = std::mem::take(&mut self.index);
+        self.index = tokio::task::spawn_blocking(move || {
+            index.refresh(&root, &tracked, full, now);
+            index
+        })
+        .await
+        .unwrap_or_default();
+    }
+
+    async fn tail_file(&mut self, path: PathBuf, stat: FileStat) {
+        let len = stat.len;
         let key = path.to_string_lossy().into_owned();
 
         let is_new = !self.sessions.contains_key(&path);
@@ -245,16 +352,20 @@ impl LogTail {
             // untracked so it stays invisible (no Started/Ended churn) unless
             // the server still holds a mark for it — then the gap behind that
             // mark is exactly what the reconcile pass must replay.
-            if len <= self.offsets.get(&key) && !self.needs_quiet_reconcile(&path, &key) {
+            if len <= self.offsets.get(&key) && !self.needs_quiet_reconcile(&path, &key).await {
                 return;
             }
-            let local_id = derive_local_id(&path);
-            let observed_at = meta
-                .as_ref()
-                .and_then(|m| m.modified().ok())
+            self.quiet_ids.remove(&path);
+            let observed_at = stat
+                .mtime
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                 .map(|d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
-            let link = rollout_link(&path);
+            let p = path.clone();
+            let Ok((local_id, link)) =
+                tokio::task::spawn_blocking(move || (derive_local_id(&p), rollout_link(&p))).await
+            else {
+                return;
+            };
             let mut extra = json!({"source": "codex-log-tail", "observed_at": observed_at});
             let mut parent_local_id = None;
             if link.source.as_deref().is_some_and(|s| s.starts_with("subAgent")) {
@@ -297,7 +408,11 @@ impl LogTail {
         if len <= offset {
             return; // no new bytes
         }
-        let (events, new_offset) = match read_new_lines(&path, offset, &local_id) {
+        let (p, id) = (path.clone(), local_id.clone());
+        let read = tokio::task::spawn_blocking(move || read_new_lines(&p, offset, &id))
+            .await
+            .unwrap_or_else(|err| Err(std::io::Error::other(err)));
+        let (events, new_offset) = match read {
             Ok(res) => res,
             Err(err) => {
                 tracing::debug!(%err, ?path, "codex log read failed");
@@ -334,11 +449,23 @@ impl LogTail {
     /// A quiet rollout still worth adopting: one we have tailed before and the
     /// server holds a mark for, i.e. a candidate for a gap that opened while
     /// its events were going nowhere.
-    fn needs_quiet_reconcile(&self, path: &Path, key: &str) -> bool {
+    async fn needs_quiet_reconcile(&mut self, path: &Path, key: &str) -> bool {
         if self.reconciled.contains(path) || self.offsets.get(key) == 0 {
             return false;
         }
-        let local_id = derive_local_id(path);
+        if !self.marks.lock().is_ok_and(|m| !m.is_empty()) {
+            return false;
+        }
+        let local_id = if let Some(id) = self.quiet_ids.get(path) {
+            id.clone()
+        } else {
+            let p = path.to_path_buf();
+            let Ok(id) = tokio::task::spawn_blocking(move || derive_local_id(&p)).await else {
+                return false;
+            };
+            self.quiet_ids.insert(path.to_path_buf(), id.clone());
+            id
+        };
         self.marks.lock().is_ok_and(|m| m.contains_key(&local_id))
     }
 
@@ -357,7 +484,11 @@ impl LogTail {
         let local_id = session.local_id.clone();
         let mark = self.marks.lock().ok().and_then(|m| m.get(&local_id).copied());
         let anchor = mark.map_or(persisted, |m| m.min(persisted));
-        let events = match reconcile_tail(path, &local_id, anchor) {
+        let (p, id) = (path.to_path_buf(), local_id.clone());
+        let read = tokio::task::spawn_blocking(move || reconcile_tail(&p, &id, anchor))
+            .await
+            .unwrap_or_else(|err| Err(std::io::Error::other(err)));
+        let events = match read {
             Ok(events) => events,
             Err(err) => {
                 tracing::debug!(%err, ?path, "codex reconcile read failed");
@@ -1447,5 +1578,80 @@ mod tests {
             )),
             "token_count lines must map to TokenUsage, not Message"
         );
+    }
+
+    #[tokio::test]
+    async fn fast_tick_stats_only_recent_date_dirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sessions = tmp.path().to_path_buf();
+        for day in 1..=20 {
+            let dir = sessions.join(format!("2020/01/{day:02}"));
+            std::fs::create_dir_all(&dir).unwrap();
+            for n in 0..100 {
+                std::fs::write(dir.join(format!("rollout-{day}-{n}.jsonl")), "").unwrap();
+            }
+        }
+        let today = sessions.join(chrono::Local::now().date_naive().format("%Y/%m/%d").to_string());
+        std::fs::create_dir_all(&today).unwrap();
+        let live = today.join(format!("{ROLLOUT}.jsonl"));
+        write_turns(&live, 0..1);
+
+        let (tx, mut rx) = mpsc::channel(256);
+        let mut tail = tail_with(&sessions, None, tx);
+        tail.scan_once().await;
+        assert_eq!(tail.index.files.len(), 2001);
+        assert!(tail.index.stats >= 2001, "first tick is a full walk");
+        let _ = drain(&mut rx);
+
+        write_turns(&live, 1..2);
+        tail.scan_once().await;
+        assert!(tail.index.stats <= 2, "fast tick stat {} files", tail.index.stats);
+        assert_eq!(tail.index.files.len(), 2001, "historic rollouts stay known");
+        assert_eq!(texts(&drain(&mut rx)), vec!["turn 1"]);
+    }
+
+    #[tokio::test]
+    async fn fast_tick_keeps_tailing_an_old_dated_rollout() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sessions = tmp.path().to_path_buf();
+        let old = sessions.join("2020/01/01");
+        std::fs::create_dir_all(&old).unwrap();
+        let path = old.join(format!("{ROLLOUT}.jsonl"));
+        write_turns(&path, 0..1);
+        let (tx, mut rx) = mpsc::channel(64);
+        let mut tail = tail_with(&sessions, None, tx);
+        tail.scan_once().await;
+        let _ = drain(&mut rx);
+        write_turns(&path, 1..2);
+        tail.scan_once().await;
+        assert_eq!(texts(&drain(&mut rx)), vec!["turn 1"]);
+    }
+
+    #[tokio::test]
+    async fn quiet_rollout_is_opened_once_for_the_mark_check() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sessions = tmp.path().to_path_buf();
+        let path = sessions.join(format!("{ROLLOUT}.jsonl"));
+        let offsets_path = tmp.path().join("offsets.json");
+        write_turns(&path, 0..2);
+        {
+            let (tx, _rx) = mpsc::channel(64);
+            let mut tail = tail_with(&sessions, Some(offsets_path.clone()), tx);
+            tail.scan_once().await;
+        }
+        let (tx, mut rx) = mpsc::channel(64);
+        let mut tail = tail_with(&sessions, Some(offsets_path), tx);
+        tail.set_resume_marks(Arc::new(Mutex::new(HashMap::from([("other".to_owned(), 1)]))));
+        tail.scan_once().await;
+        assert_eq!(tail.quiet_ids.get(&path).map(String::as_str), Some(ROLLOUT_ID));
+        std::fs::remove_file(&path).unwrap();
+        std::fs::write(&path, "x".repeat(10)).unwrap();
+        tail.scan_once().await;
+        assert_eq!(
+            tail.quiet_ids.get(&path).map(String::as_str),
+            Some(ROLLOUT_ID),
+            "cached id is reused, not re-derived from the rewritten file"
+        );
+        assert!(drain(&mut rx).is_empty(), "quiet rollout without a mark stays untracked");
     }
 }

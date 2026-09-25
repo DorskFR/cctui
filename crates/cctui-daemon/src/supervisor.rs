@@ -12,6 +12,7 @@ use std::time::Duration;
 use cctui_crypto::redact::{self, CompiledPatterns};
 use cctui_proto::adapter::{AdapterCommand, AdapterEvent};
 use cctui_proto::api::DaemonAdapterConfig;
+use cctui_proto::backoff::Backoff;
 use cctui_proto::ws::{DaemonFrameDown, DaemonFrameUp, SecretScrubConfig};
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
@@ -24,8 +25,6 @@ use crate::client::ServerClient;
 use crate::counters::{BandwidthCounters, Subsystem};
 use crate::sendguard::{MAX_ATTEMPTS, MAX_PAYLOAD_BYTES, SendGuard};
 
-/// Backoff schedule. Capped at the last entry on subsequent failures.
-const BACKOFF_SECS: &[u64] = &[5, 10, 20, 60];
 /// Gap before the first retry of a refused job removal. It doubles on
 /// every further refusal (see [`purge_gap`]).
 const PURGE_RETRY: Duration = Duration::from_mins(10);
@@ -216,7 +215,7 @@ impl Supervisor {
         let mut running: HashMap<String, AdapterRunning> = HashMap::new();
         let (event_tx, mut event_rx) = mpsc::channel::<(String, AdapterEvent)>(256);
 
-        let mut attempt = 0usize;
+        let mut backoff = Backoff::reconnect();
         loop {
             if shutdown.is_cancelled() {
                 break;
@@ -224,15 +223,13 @@ impl Supervisor {
             match self.run_once(shutdown.clone(), &mut running, &event_tx, &mut event_rx).await {
                 Ok(()) => {
                     tracing::info!("daemon WS closed cleanly, reconnecting");
-                    attempt = 0;
+                    backoff.reset();
                 }
                 Err(err) => {
-                    let delay = BACKOFF_SECS[attempt.min(BACKOFF_SECS.len() - 1)];
-                    tracing::warn!(%err, attempt, "daemon connection failed; retry in {delay}s");
-                    attempt = attempt.saturating_add(1);
-                    tokio::select! {
-                        () = tokio::time::sleep(Duration::from_secs(delay)) => {}
-                        () = shutdown.cancelled() => break,
+                    let attempt = backoff.attempt();
+                    tracing::warn!(%err, attempt, "daemon connection failed; retry in ~{:?}", backoff.peek());
+                    if !backoff.sleep(&shutdown).await {
+                        break;
                     }
                 }
             }
@@ -281,7 +278,7 @@ impl Supervisor {
 
         // Micro-batch buffer: adapter events accumulate here for up to
         // BATCH_WINDOW, then flush as one compress+chunk frame.
-        let mut batch: Vec<DaemonFrameUp> = Vec::new();
+        let mut batch: Vec<Vec<u8>> = Vec::new();
         let mut batch_bytes = 0usize;
         let mut batch_deadline: Option<tokio::time::Instant> = None;
 
@@ -297,10 +294,11 @@ impl Supervisor {
                         )
                         .await;
                         if !frames.is_empty()
-                            && let Ok(Prepared::Frame(text)) = prepare_send(&coalesce(frames))
+                            && let Ok(prepared) = prepare_serialized(coalesce(frames))
+                            && let Some(msg) = prepared.into_message()
                         {
-                            self.counters.add(Subsystem::Forward, text.len() as u64);
-                            let _ = sink.send(Message::Text(text.into())).await;
+                            self.counters.add(Subsystem::Forward, msg.len() as u64);
+                            let _ = sink.send(msg).await;
                         }
                         let _ = sink.send(Message::Close(None)).await;
                         return Ok(());
@@ -370,8 +368,8 @@ impl Supervisor {
                         }
                         // Redact secrets before the event reaches the wire / DB.
                         let event = scrub_event(event, &scrub);
-                        let up = DaemonFrameUp::Event { adapter_id, event };
-                        batch_bytes = batch_bytes.saturating_add(frame_size(&up));
+                        let up = serde_json::to_vec(&DaemonFrameUp::Event { adapter_id, event })?;
+                        batch_bytes = batch_bytes.saturating_add(up.len());
                         batch.push(up);
                         batch_deadline.get_or_insert_with(|| {
                             tokio::time::Instant::now() + BATCH_WINDOW
@@ -386,7 +384,7 @@ impl Supervisor {
                         batch_bytes = 0;
                         let frames = std::mem::take(&mut batch);
                         if !frames.is_empty() {
-                            match prepare_send(&coalesce(frames))? {
+                            match prepare_serialized(coalesce(frames))? {
                                 Prepared::Chunked(t) => {
                                     if self.guard.lock().unwrap().is_tombstoned(&t.id) {
                                         tracing::warn!(
@@ -401,6 +399,10 @@ impl Supervisor {
                                 Prepared::Frame(text) => {
                                     self.counters.add(Subsystem::Forward, text.len() as u64);
                                     sink.send(Message::Text(text.into())).await?;
+                                }
+                                Prepared::Binary(bytes) => {
+                                    self.counters.add(Subsystem::Forward, bytes.len() as u64);
+                                    sink.send(Message::Binary(bytes.into())).await?;
                                 }
                                 Prepared::Oversized(len) => {
                                     tracing::warn!(
@@ -1085,18 +1087,23 @@ const fn event_kind(event: &AdapterEvent) -> &'static str {
 
 /// Collapse a non-empty batch into one wire frame: a lone event stays an
 /// `Event` (no envelope overhead); several become a `Batch` the server unwraps.
-fn coalesce(frames: Vec<DaemonFrameUp>) -> DaemonFrameUp {
+/// Splice already-serialized frames into one wire frame: a lone frame as-is,
+/// several as the JSON of a [`DaemonFrameUp::Batch`].
+fn coalesce(mut frames: Vec<Vec<u8>>) -> Vec<u8> {
     if frames.len() == 1 {
-        frames.into_iter().next().expect("len checked")
-    } else {
-        DaemonFrameUp::Batch { frames }
+        return frames.pop().expect("len checked");
     }
-}
-
-/// Serialized byte size of a queued frame, for the pre-compression batch cap.
-/// Falls back to 0 on the structurally-impossible serialization failure.
-fn frame_size(frame: &DaemonFrameUp) -> usize {
-    serde_json::to_vec(frame).map_or(0, |v| v.len())
+    let body: usize = frames.iter().map(|f| f.len() + 1).sum();
+    let mut out = Vec::with_capacity(body + 32);
+    out.extend_from_slice(br#"{"type":"batch","frames":["#);
+    for (i, frame) in frames.iter().enumerate() {
+        if i > 0 {
+            out.push(b',');
+        }
+        out.extend_from_slice(frame);
+    }
+    out.extend_from_slice(b"]}");
+    out
 }
 
 /// Collect every event still owed to the wire at shutdown: the in-flight
@@ -1105,10 +1112,10 @@ fn frame_size(frame: &DaemonFrameUp) -> usize {
 /// pipeline goes quiet or [`SHUTDOWN_DRAIN_MAX`] elapses, so a stuck adapter
 /// can't wedge teardown.
 async fn drain_for_shutdown(
-    batch: Vec<DaemonFrameUp>,
+    batch: Vec<Vec<u8>>,
     event_rx: &mut mpsc::Receiver<(String, AdapterEvent)>,
     scrub: &CompiledPatterns,
-) -> Vec<DaemonFrameUp> {
+) -> Vec<Vec<u8>> {
     let mut frames = batch;
     let deadline = tokio::time::Instant::now() + SHUTDOWN_DRAIN_MAX;
     loop {
@@ -1120,7 +1127,9 @@ async fn drain_for_shutdown(
         match tokio::time::timeout(step, event_rx.recv()).await {
             Ok(Some((adapter_id, event))) => {
                 let event = scrub_event(event, scrub);
-                frames.push(DaemonFrameUp::Event { adapter_id, event });
+                if let Ok(frame) = serde_json::to_vec(&DaemonFrameUp::Event { adapter_id, event }) {
+                    frames.push(frame);
+                }
             }
             // All senders dropped (adapters finished) or the pipeline went quiet.
             Ok(None) | Err(_) => break,
@@ -1129,22 +1138,43 @@ async fn drain_for_shutdown(
     frames
 }
 
-/// The wire form a prepared frame takes: a ready-to-send text message, or a
-/// chunked transfer to drive over the connection with ack/resume.
+/// The wire form a prepared frame takes: a ready-to-send text message, a
+/// zstd-compressed binary message, or a chunked transfer to drive over the
+/// connection with ack/resume.
 enum Prepared {
     Frame(String),
+    /// The raw zstd bytes a [`DaemonFrameUp::Compressed`] would carry, sent as a
+    /// binary message instead of base64 in JSON.
+    Binary(Vec<u8>),
     Chunked(PendingTransfer),
     /// Post-compression bytes over [`MAX_PAYLOAD_BYTES`]; dropped unsent.
     Oversized(usize),
 }
 
+impl Prepared {
+    /// The single WS message this sends as, if it is one.
+    fn into_message(self) -> Option<Message> {
+        match self {
+            Self::Frame(text) => Some(Message::Text(text.into())),
+            Self::Binary(bytes) => Some(Message::Binary(bytes.into())),
+            Self::Chunked(_) | Self::Oversized(_) => None,
+        }
+    }
+}
+
 /// Compress `inner` when worthwhile, then chunk the compressed bytes if they
 /// still exceed the threshold. Composes compression with the
 /// chunk transfer while preserving its ack/resume semantics.
+#[cfg(test)]
 fn prepare_send(inner: &DaemonFrameUp) -> anyhow::Result<Prepared> {
-    let json = serde_json::to_vec(inner)?;
-    let (bytes, codec) = cctui_proto::compress::maybe_compress(&json);
-    classify(bytes, codec.map(str::to_owned))
+    prepare_serialized(serde_json::to_vec(inner)?)
+}
+
+fn prepare_serialized(json: Vec<u8>) -> anyhow::Result<Prepared> {
+    match cctui_proto::compress::maybe_compress(&json) {
+        (bytes, Some(codec)) => classify(bytes, Some(codec.to_owned())),
+        (_, None) => classify(json, None),
+    }
 }
 
 /// Turn the final post-compression wire `bytes` into a send decision: over the
@@ -1157,9 +1187,8 @@ fn classify(bytes: Vec<u8>, codec: Option<String>) -> anyhow::Result<Prepared> {
         let transfer =
             PendingTransfer::new(bytes, codec).expect("bytes exceed the chunk threshold");
         Ok(Prepared::Chunked(transfer))
-    } else if let Some(codec) = codec {
-        let up = cctui_proto::compress::compressed_frame(&codec, &bytes);
-        Ok(Prepared::Frame(serde_json::to_string(&up)?))
+    } else if codec.is_some() {
+        Ok(Prepared::Binary(bytes))
     } else {
         Ok(Prepared::Frame(String::from_utf8(bytes).expect("serde_json output is valid utf8")))
     }
@@ -1936,12 +1965,43 @@ mod tests {
 
     #[test]
     fn coalesce_single_stays_event_many_becomes_batch() {
-        assert!(matches!(super::coalesce(vec![synth_event(0)]), DaemonFrameUp::Event { .. }));
-        let batch = super::coalesce((0..3).map(synth_event).collect());
-        match batch {
+        let one = super::coalesce(vec![ser(&synth_event(0))]);
+        assert_eq!(one, ser(&synth_event(0)), "a lone frame is sent as serialized");
+        let batch = super::coalesce((0..3).map(|i| ser(&synth_event(i))).collect());
+        let frames = (0..3).map(synth_event).collect();
+        assert_eq!(batch, ser(&DaemonFrameUp::Batch { frames }), "matches serde's Batch");
+        match serde_json::from_slice(&batch).unwrap() {
             DaemonFrameUp::Batch { frames } => assert_eq!(frames.len(), 3),
             _ => panic!("expected a batch"),
         }
+    }
+
+    fn ser(frame: &DaemonFrameUp) -> Vec<u8> {
+        serde_json::to_vec(frame).unwrap()
+    }
+
+    #[test]
+    fn compressed_batch_is_a_binary_message_of_raw_zstd() {
+        let events: Vec<DaemonFrameUp> = (0..200).map(synth_event).collect();
+        let json = ser(&DaemonFrameUp::Batch { frames: events });
+        let prepared = super::prepare_serialized(json.clone()).unwrap();
+        let super::Prepared::Binary(bytes) = prepared else {
+            panic!("a compressible batch must go out binary")
+        };
+        assert!(bytes.len() < json.len());
+        assert_eq!(cctui_proto::compress::decompress_codec("zstd", &bytes).unwrap(), json);
+        let msg = super::prepare_serialized(json).unwrap().into_message().unwrap();
+        assert!(matches!(msg, tokio_tungstenite::tungstenite::Message::Binary(_)));
+    }
+
+    #[test]
+    fn uncompressible_frame_falls_back_to_text() {
+        let json = ser(&synth_event(1));
+        let msg = super::prepare_serialized(json.clone()).unwrap().into_message().unwrap();
+        let tokio_tungstenite::tungstenite::Message::Text(text) = msg else {
+            panic!("small frame stays text")
+        };
+        assert_eq!(text.as_bytes(), json.as_slice());
     }
 
     #[test]
@@ -1966,8 +2026,9 @@ mod tests {
     #[test]
     fn session_ids_lists_batch_members_for_the_give_up_log() {
         let mut rng = 0x1234_5678_9abc_def0_u64;
-        let batch = super::coalesce((0..800).map(|i| hi_entropy_event(&mut rng, i)).collect());
-        let super::Prepared::Chunked(t) = super::prepare_send(&batch).unwrap() else {
+        let batch =
+            super::coalesce((0..800).map(|i| ser(&hi_entropy_event(&mut rng, i))).collect());
+        let super::Prepared::Chunked(t) = super::prepare_serialized(batch).unwrap() else {
             panic!("a large batch must chunk");
         };
         let ids = t.session_ids();
@@ -2003,8 +2064,8 @@ mod tests {
         let mut rng = 0x9e37_79b9_7f4a_7c15_u64;
         let events: Vec<DaemonFrameUp> = (0..800).map(|i| hi_entropy_event(&mut rng, i)).collect();
         let want = events.len();
-        let inner = super::coalesce(events);
-        let super::Prepared::Chunked(mut sender) = super::prepare_send(&inner).unwrap() else {
+        let inner = super::coalesce(events.iter().map(ser).collect());
+        let super::Prepared::Chunked(mut sender) = super::prepare_serialized(inner).unwrap() else {
             panic!("a 20MB batch must chunk")
         };
         let codec = sender.codec.clone();

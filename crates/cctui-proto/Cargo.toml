@@ -18,6 +18,9 @@ zstd.workspace = true
 ts-rs.workspace = true
 minisign-verify.workspace = true
 semver.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
 
 [dev-dependencies]
 toml = "1.1"
+tokio = { workspace = true, features = ["test-util"] }

@@ -482,6 +482,9 @@ pub struct Driver {
     /// forward tail emits, so the periodic pass only re-sends on real
     /// divergence (local offset ahead of what the server holds).
     server_marks: HashMap<String, u64>,
+    /// Transcript marks the server itself reported (`ResumeMarks`), never
+    /// advanced by our own emits: the only proof of what it stored.
+    acked_marks: HashMap<String, u64>,
     /// Spawn-time `--model`/`--effort` remembered per worker `short`.
     /// Used as a fallback for the Status event when `state.json` isn't on disk
     /// yet (freshly spawned) or transiently absent (`/clear` rotation), so the
@@ -727,6 +730,7 @@ impl Driver {
             last_reconcile: Instant::now(),
             churned: false,
             server_marks: HashMap::new(),
+            acked_marks: HashMap::new(),
             spawn_model_effort: std::sync::Mutex::new(HashMap::new()),
             pending_turns: std::sync::Mutex::new(HashMap::new()),
             fork_parent_by_short: std::sync::Mutex::new(HashMap::new()),
@@ -2753,10 +2757,9 @@ impl Driver {
         }
         let now_shorts: HashSet<String> = visible.iter().map(|j| j.short.clone()).collect();
 
-        // Ground-truth effort for every live worker in one `/proc` pass,
-        // reused across the per-job Status build below so a busy roster doesn't
-        // rescan `/proc` per session.
-        let observed_efforts = super::envcheck::worker_efforts(&now_shorts);
+        // Ground-truth effort for every live worker, reused across the per-job
+        // Status build below.
+        let observed_efforts = super::envcheck::worker_efforts(&now_shorts).await;
 
         // Newly started.
         for job in &visible {
@@ -3407,22 +3410,26 @@ impl Driver {
         }
     }
 
-    /// Cheap periodic (and churn-`force`d) divergence check (replacing
-    /// the unconditional re-tail). The forward tail keeps `server_marks`
-    /// level with the persisted offset as it emits, so at idle every session is
-    /// in sync and this emits nothing. Only a session whose persisted offset has
-    /// run AHEAD of the mark we believe the server holds (`force` = a roster
-    /// churn re-home) gets one bounded re-send window to heal the gap; the
-    /// per-connect `ResumeMarks` handles the reconnect case.
+    /// Periodic (and churn-`force`d) divergence check. The forward tail keeps
+    /// `server_marks` level with the offset as it emits, so the periodic pass
+    /// only fires for a session whose offset moved without an emit. A forced
+    /// pass re-sends to sessions the server has not acked up to the offset.
+    /// Either way only the gap behind the offset is re-sent, never bytes the
+    /// server acked.
     async fn reconcile_tail(&mut self, force: bool) {
         self.last_reconcile = Instant::now();
         let locations: Vec<TranscriptLocation> =
             self.transcript_locations.values().cloned().collect();
         for loc in locations {
             let local = self.offsets.get(&loc.offset_key);
+            let acked = self.acked_marks.get(&loc.offset_key).copied();
+            if acked.is_some_and(|a| a >= local) {
+                continue;
+            }
             let server = self.server_marks.get(&loc.offset_key).copied().unwrap_or(0);
             if force || local > server {
-                self.resend_window(&loc).await;
+                let from = if force { acked } else { Some(server).max(acked) };
+                self.resend_window(&loc, from).await;
                 self.server_marks.insert(loc.offset_key.clone(), local);
             }
         }
@@ -3482,6 +3489,7 @@ impl Driver {
         for (key, mark) in &mark_map {
             let entry = self.server_marks.entry(key.clone()).or_insert(0);
             *entry = (*entry).max(*mark);
+            self.acked_marks.insert(key.clone(), *mark);
         }
         let locations: Vec<TranscriptLocation> =
             self.transcript_locations.values().cloned().collect();
@@ -3498,7 +3506,7 @@ impl Driver {
                 None => true,
             };
             if behind_or_absent && prev > 0 {
-                self.resend_window(&loc).await;
+                self.resend_window(&loc, mark_map.get(&loc.offset_key).copied()).await;
                 self.server_marks.insert(loc.offset_key.clone(), prev);
             }
         }
@@ -3507,13 +3515,22 @@ impl Driver {
         }
     }
 
-    /// Re-emit one bounded window BEHIND a session's persisted offset (the
-    /// 64 KiB re-tail) to heal a gap, then surface our offset as a mark
-    /// so the server's high-water mark catches up. The persisted offset is left
-    /// untouched — this is a pure catch-up replay the server dedups.
-    async fn resend_window(&self, loc: &TranscriptLocation) {
+    /// Re-emit the transcript from the server's mark `from` (or, without one,
+    /// one bounded window behind the persisted offset) to heal a gap, then
+    /// surface our offset as a mark. The persisted offset is left untouched —
+    /// this is a pure catch-up replay the server dedups.
+    async fn resend_window(&self, loc: &TranscriptLocation, from: Option<u64>) {
         let off = self.offsets.get(&loc.offset_key);
-        match transcript::reconcile_tail(&loc.path, &loc.local_id, off) {
+        if from.is_some_and(|m| m >= off) {
+            return;
+        }
+        let read = match from {
+            Some(mark) if off - mark <= transcript::RECONCILE_BACKUP_BYTES => {
+                transcript::tail_once(&loc.path, &loc.local_id, mark).map(|(events, _)| events)
+            }
+            _ => transcript::reconcile_tail(&loc.path, &loc.local_id, off),
+        };
+        match read {
             Ok(events) => {
                 for evt in events {
                     self.emit(evt).await;
@@ -6240,5 +6257,39 @@ mod tests {
         let resent = drain_messages(&mut rx);
         assert!(!resent.is_empty(), "a mark behind the local offset must re-send the window");
         assert_eq!(d.offsets.get(&sess), local, "the persisted offset is never rewound");
+    }
+
+    #[tokio::test]
+    async fn fully_acked_session_resends_nothing() {
+        let (mut d, mut rx) = driver();
+        let sess = write_main_transcript(&d, "abcd1234", &[&text_line("one"), &text_line("two")]);
+        d.apply_snapshot(vec![snap("abcd1234", "working", None)]).await;
+        let _ = drain_messages(&mut rx);
+        let local = d.offsets.get(&sess);
+
+        d.apply_resume_marks(vec![(sess.clone(), local)]).await;
+        for force in [false, true, false, true] {
+            d.reconcile_tail(force).await;
+        }
+        assert!(rx.try_recv().is_err(), "an acked session must emit zero resend frames");
+    }
+
+    #[tokio::test]
+    async fn forced_reconcile_resends_only_the_unacked_gap() {
+        let (mut d, mut rx) = driver();
+        let l0 = text_line("acked");
+        let sess = write_main_transcript(&d, "abcd1234", &[&l0]);
+        d.apply_snapshot(vec![snap("abcd1234", "working", None)]).await;
+        let _ = drain_messages(&mut rx);
+        let mark = d.offsets.get(&sess);
+        d.apply_resume_marks(vec![(sess.clone(), mark)]).await;
+
+        write_main_transcript(&d, "abcd1234", &[&text_line("fresh")]);
+        d.apply_snapshot(vec![snap("abcd1234", "working", None)]).await;
+        assert_eq!(drain_messages(&mut rx), vec!["fresh".to_owned()]);
+
+        d.reconcile_tail(true).await;
+        let resent = drain_messages(&mut rx);
+        assert_eq!(resent, vec!["fresh".to_owned()], "only bytes past the acked mark");
     }
 }

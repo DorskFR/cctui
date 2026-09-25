@@ -7,6 +7,7 @@
 
 use std::time::Duration;
 
+use cctui_proto::backoff::Backoff;
 use cctui_proto::ws::{DispatcherFrameDown, DispatcherFrameUp};
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite::Message;
@@ -15,8 +16,6 @@ use tokio_util::sync::CancellationToken;
 use crate::client::ServerClient;
 use crate::dispatcher::Dispatcher;
 
-/// Backoff schedule, capped at the last entry (daemon parity).
-const BACKOFF_SECS: &[u64] = &[5, 10, 20, 60];
 const PING_INTERVAL: Duration = Duration::from_secs(20);
 const LIVENESS_TIMEOUT: Duration = Duration::from_mins(1);
 
@@ -34,7 +33,7 @@ impl<D: Dispatcher> Runner<D> {
 
     /// Connect/reconnect until `shutdown` fires.
     pub async fn run(self, shutdown: CancellationToken) {
-        let mut attempt = 0usize;
+        let mut backoff = Backoff::reconnect();
         loop {
             if shutdown.is_cancelled() {
                 return;
@@ -42,15 +41,13 @@ impl<D: Dispatcher> Runner<D> {
             match self.run_once(shutdown.clone()).await {
                 Ok(()) => {
                     tracing::info!("dispatcher WS closed cleanly, reconnecting");
-                    attempt = 0;
+                    backoff.reset();
                 }
                 Err(err) => {
-                    let delay = BACKOFF_SECS[attempt.min(BACKOFF_SECS.len() - 1)];
-                    tracing::warn!(%err, attempt, "dispatcher connection failed; retry in {delay}s");
-                    attempt = attempt.saturating_add(1);
-                    tokio::select! {
-                        () = tokio::time::sleep(Duration::from_secs(delay)) => {}
-                        () = shutdown.cancelled() => return,
+                    let attempt = backoff.attempt();
+                    tracing::warn!(%err, attempt, "dispatcher connection failed; retry in ~{:?}", backoff.peek());
+                    if !backoff.sleep(&shutdown).await {
+                        return;
                     }
                 }
             }
