@@ -183,10 +183,11 @@ pub async fn fetch_manifest(
     Ok(res.json::<DaemonManifest>().await?)
 }
 
-/// Conditional manifest fetch: sends `If-None-Match` when `etag` is set,
-/// returns `Ok(None)` on `304` (etag untouched) and on `204` (nothing offered
-/// on `channel`), else stores the response
-/// `ETag` in `etag` and returns the parsed manifest.
+/// Conditional manifest fetch, sending `If-None-Match` when `etag` is set.
+///
+/// Returns `Ok(None)` on `304` (etag untouched) and on `204` (nothing offered
+/// on `channel`), else stores the response `ETag` in `etag` and returns the
+/// parsed manifest.
 pub async fn fetch_manifest_conditional(
     client: &reqwest::Client,
     server_url: &str,

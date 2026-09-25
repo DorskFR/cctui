@@ -158,6 +158,7 @@ fn remote_channel(raw: Option<&str>) -> Channel {
     raw.and_then(|raw| toml::from_str::<Config>(raw).ok()).map(|c| c.channel).unwrap_or_default()
 }
 
+#[must_use]
 pub fn reusable_config(raw: &str, server_url: &str) -> Option<Config> {
     let cfg: Config = toml::from_str(raw).ok()?;
     (cfg.server_url.trim_end_matches('/') == server_url.trim_end_matches('/')).then_some(cfg)

@@ -85,6 +85,7 @@ pub enum UpdateDecision {
 }
 
 /// Whether a machine on `machine` running `running` should install `candidate`.
+///
 /// A beta machine takes stable builds too, so it rolls forward onto the
 /// matching stable release; going back to an *older* stable is a downgrade
 /// and needs `allow_downgrade`.
