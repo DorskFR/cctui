@@ -582,6 +582,7 @@
 	"drawer_fork_title": "Bifurquer vers une nouvelle conversation (avec changement de modèle optionnel)",
 	"drawer_interrupt_label": "Interrompre le tour",
 	"drawer_interrupt_title": "Interrompre le tour en cours",
+	"drawer_meta_details": "Détails de la session",
 	"drawer_model_aria": "Modèle",
 	"drawer_more_actions": "Plus d'actions",
 	"drawer_terminal_label": "Terminal",
