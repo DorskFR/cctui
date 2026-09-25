@@ -311,6 +311,9 @@ const LAST_TWO_TURNS_SQL: &str = "SELECT s.session_id, u.input_tokens, u.cache_r
      ) u ON true \
      ORDER BY s.session_id, rn";
 
+/// `(session_id, preview, cut, created_at)` from [`LAST_MESSAGE_SQL`].
+type LastMessageRow = (String, Option<String>, Option<bool>, DateTime<Utc>);
+
 #[allow(clippy::too_many_lines, clippy::cognitive_complexity)]
 pub async fn list_sessions(
     State(state): State<AppState>,
@@ -649,18 +652,17 @@ async fn enrich_and_sort(
     }
 
     if !session_ids.is_empty() {
-        let rows: Vec<(String, Option<String>, Option<bool>, DateTime<Utc>)> =
-            sqlx::query_as(LAST_MESSAGE_SQL)
-                .bind(&session_ids)
-                .fetch_all(&state.pool)
-                .await
-                .map_err(|e| {
-                    tracing::error!("db error (last message lookup): {e}");
-                    (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(ApiError { error: "database error".into() }),
-                    )
-                })?;
+        let rows: Vec<LastMessageRow> = sqlx::query_as(LAST_MESSAGE_SQL)
+            .bind(&session_ids)
+            .fetch_all(&state.pool)
+            .await
+            .map_err(|e| {
+                tracing::error!("db error (last message lookup): {e}");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ApiError { error: "database error".into() }),
+                )
+            })?;
         let mut by_session: std::collections::HashMap<String, (Option<String>, DateTime<Utc>)> =
             std::collections::HashMap::new();
         for (sid, body, cut, ts) in rows {
@@ -3310,12 +3312,11 @@ mod tests {
         let Some((pool, sid)) = seeded_session("last_message_sql_bounded_preview").await else {
             return;
         };
-        let rows: Vec<(String, Option<String>, Option<bool>, chrono::DateTime<Utc>)> =
-            sqlx::query_as(super::LAST_MESSAGE_SQL)
-                .bind(vec![sid.clone()])
-                .fetch_all(&pool)
-                .await
-                .unwrap();
+        let rows: Vec<super::LastMessageRow> = sqlx::query_as(super::LAST_MESSAGE_SQL)
+            .bind(vec![sid.clone()])
+            .fetch_all(&pool)
+            .await
+            .unwrap();
         assert_eq!(rows[0].1.as_deref(), Some("hidden c"));
         assert_eq!(rows[0].2, Some(false));
 
@@ -3332,12 +3333,11 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
-            let rows: Vec<(String, Option<String>, Option<bool>, chrono::DateTime<Utc>)> =
-                sqlx::query_as(super::LAST_MESSAGE_SQL)
-                    .bind(vec![sid.clone()])
-                    .fetch_all(&pool)
-                    .await
-                    .unwrap();
+            let rows: Vec<super::LastMessageRow> = sqlx::query_as(super::LAST_MESSAGE_SQL)
+                .bind(vec![sid.clone()])
+                .fetch_all(&pool)
+                .await
+                .unwrap();
             let body = rows[0].1.clone().unwrap();
             if want.is_empty() {
                 assert_eq!(body.chars().count(), 400);
