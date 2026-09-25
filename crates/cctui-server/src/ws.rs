@@ -208,47 +208,9 @@ async fn handle_subscribe(
 ) {
     let receiver = state.bus.subscribe_session(&session_id);
 
-    // Replay any prompt the session is currently blocked on. Asks and
-    // permission requests were originally fire-and-forget broadcasts: a client
-    // that wasn't subscribed at the instant one went out never learned about it,
-    // and the client re-subscribes on every tab focus/visibility change
-    // — so a backgrounded tab routinely missed them. The store now
-    // holds them authoritatively; re-send them to *this* socket so a (re)subscribe
-    // always re-surfaces the live prompt. Deduped client-side by request_id /
-    // overwrite, so a replay that races the live broadcast is harmless.
-    {
-        let store = state.permission_store.read().await;
-        for p in store.list_pending().into_iter().filter(|p| p.session_id == session_id) {
-            let _ = event_tx
-                .send(ServerEvent::PermissionRequest {
-                    session_id: p.session_id,
-                    request_id: p.request_id,
-                    tool_name: p.tool_name,
-                    description: p.description,
-                    input_preview: p.input_preview,
-                })
-                .await;
-        }
-        if let Some(ask) = store.pending_ask(&session_id) {
-            let _ = event_tx
-                .send(ServerEvent::AskQuestion {
-                    session_id: ask.session_id,
-                    question: ask.question,
-                    questions: ask.questions,
-                    preamble: ask.preamble,
-                })
-                .await;
-        }
-        if let Some(plan) = store.pending_plan(&session_id) {
-            let _ = event_tx
-                .send(ServerEvent::PlanRequest {
-                    session_id: plan.session_id,
-                    plan: plan.plan,
-                    preamble: plan.preamble,
-                })
-                .await;
-        }
-    }
+    // Re-surface any prompt the session is blocked on: the client resubscribes
+    // on every focus change and dedups the replay by request_id / overwrite.
+    replay_pending(&state.permission_store, &session_id, event_tx).await;
 
     if let Some(receiver) = receiver {
         let handle = spawn_relay_task(receiver, session_id.clone(), event_tx.clone());
@@ -262,6 +224,51 @@ async fn handle_subscribe(
     } else {
         // Historical/terminated sessions won't be in the registry — this is expected
         tracing::debug!(session_id = %session_id, "tui_ws: session not in registry (historical)");
+    }
+}
+
+/// Copies the session's open prompts out of the store, then sends them with
+/// the guard released: a full per-socket channel must not hold the store.
+async fn replay_pending(
+    store: &crate::routes::permissions::SharedPermissionStore,
+    session_id: &str,
+    event_tx: &mpsc::Sender<ServerEvent>,
+) {
+    let prompts = {
+        let store = store.read().await;
+        let mut prompts: Vec<ServerEvent> = store
+            .list_pending()
+            .into_iter()
+            .filter(|p| p.session_id == session_id)
+            .map(|p| ServerEvent::PermissionRequest {
+                session_id: p.session_id,
+                request_id: p.request_id,
+                tool_name: p.tool_name,
+                description: p.description,
+                input_preview: p.input_preview,
+            })
+            .collect();
+        if let Some(ask) = store.pending_ask(session_id) {
+            prompts.push(ServerEvent::AskQuestion {
+                session_id: ask.session_id,
+                question: ask.question,
+                questions: ask.questions,
+                preamble: ask.preamble,
+            });
+        }
+        if let Some(plan) = store.pending_plan(session_id) {
+            prompts.push(ServerEvent::PlanRequest {
+                session_id: plan.session_id,
+                plan: plan.plan,
+                preamble: plan.preamble,
+            });
+        }
+        prompts
+    };
+    for event in prompts {
+        if event_tx.send(event).await.is_err() {
+            return;
+        }
     }
 }
 
@@ -550,7 +557,7 @@ mod tests {
     use cctui_proto::models::{Session, SessionStatus};
     use cctui_proto::ws::ServerEvent;
 
-    use super::{event_session_id, origin_permitted, permission_target};
+    use super::{event_session_id, origin_permitted, permission_target, replay_pending};
     use crate::config::Config;
     use crate::routes::permissions::{PendingPermission, PermissionStore};
 
@@ -635,6 +642,27 @@ mod tests {
 
         let stale = permission_target(&store, "sess-a".into(), "req-a", "allow".into()).await;
         assert_eq!(stale.as_deref(), Some("sess-a"));
+    }
+
+    #[tokio::test]
+    async fn replay_to_a_full_socket_does_not_hold_the_permission_store() {
+        let store = PermissionStore::shared();
+        store.write().await.insert_request(pending("sess-a", "req-a"));
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        tx.send(ServerEvent::Heartbeat {}).await.unwrap();
+
+        let replay = {
+            let store = store.clone();
+            let tx = tx.clone();
+            tokio::spawn(async move { replay_pending(&store, "sess-a", &tx).await })
+        };
+        tokio::task::yield_now().await;
+
+        let write = tokio::time::timeout(std::time::Duration::from_secs(2), store.write()).await;
+        assert!(write.is_ok(), "permission_store.write() blocked behind a stalled replay");
+        drop(write);
+        assert!(!replay.is_finished());
+        replay.abort();
     }
 
     #[test]
