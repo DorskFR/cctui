@@ -396,6 +396,7 @@ fn bearer_token(headers: &axum::http::HeaderMap) -> Option<String> {
 
 enum Inbound {
     Data(String),
+    Binary(Vec<u8>),
     Skip,
     Done,
     Idle,
@@ -421,7 +422,7 @@ where
                 *last_frame = tokio::time::Instant::now();
                 match msg {
                     Message::Text(t) => Inbound::Data(t.to_string()),
-                    Message::Binary(b) => Inbound::Data(String::from_utf8_lossy(&b).to_string()),
+                    Message::Binary(b) => Inbound::Binary(b.to_vec()),
                     Message::Close(_) => Inbound::Done,
                     _ => Inbound::Skip,
                 }
@@ -482,15 +483,31 @@ fn handle_chunk(
 /// bad codec / base64 / payload — logged and dropped like any malformed frame.
 fn decode_compressed_frame(codec: &str, data: &str) -> Option<DaemonFrameUp> {
     match cctui_proto::compress::decode_compressed(codec, data) {
-        Ok(bytes) => match serde_json::from_slice::<DaemonFrameUp>(&bytes) {
-            Ok(inner) => Some(inner),
-            Err(err) => {
-                tracing::warn!(%err, "decompressed frame did not parse");
-                None
-            }
-        },
+        Ok(bytes) => parse_decompressed(&bytes),
         Err(err) => {
             tracing::warn!(%err, "compressed frame failed to decode");
+            None
+        }
+    }
+}
+
+/// Decode a binary WS message: the raw zstd payload a `Compressed` frame
+/// carries base64-encoded.
+fn decode_binary_frame(data: &[u8]) -> Option<DaemonFrameUp> {
+    match cctui_proto::compress::decompress_codec(cctui_proto::compress::CODEC_ZSTD, data) {
+        Ok(bytes) => parse_decompressed(&bytes),
+        Err(err) => {
+            tracing::warn!(%err, "binary frame failed to decompress");
+            None
+        }
+    }
+}
+
+fn parse_decompressed(bytes: &[u8]) -> Option<DaemonFrameUp> {
+    match serde_json::from_slice::<DaemonFrameUp>(bytes) {
+        Ok(inner) => Some(inner),
+        Err(err) => {
+            tracing::warn!(%err, "decompressed frame did not parse");
             None
         }
     }
@@ -624,11 +641,11 @@ async fn handle(socket: WebSocket, state: AppState, machine_id: Uuid, user_id: U
     let mut owners = SessionOwners::new(machine_id, user_id);
     loop {
         reasm.evict_older_than(STALE_TRANSFER);
-        let payload =
+        let inbound =
             match next_inbound(&mut stream, &mut last_frame, &mut liveness, DAEMON_READ_TIMEOUT)
                 .await
             {
-                Inbound::Data(payload) => payload,
+                data @ (Inbound::Data(_) | Inbound::Binary(_)) => data,
                 Inbound::Skip => continue,
                 Inbound::Done => break,
                 Inbound::Idle => {
@@ -646,12 +663,19 @@ async fn handle(socket: WebSocket, state: AppState, machine_id: Uuid, user_id: U
                     break;
                 }
             };
-        let frame: DaemonFrameUp = match serde_json::from_str(&payload) {
-            Ok(f) => f,
-            Err(err) => {
-                tracing::warn!(%err, "bad daemon frame");
-                continue;
-            }
+        let frame: DaemonFrameUp = match inbound {
+            Inbound::Data(text) => match serde_json::from_str(&text) {
+                Ok(f) => f,
+                Err(err) => {
+                    tracing::warn!(%err, "bad daemon frame");
+                    continue;
+                }
+            },
+            Inbound::Binary(data) => match decode_binary_frame(&data) {
+                Some(inner) => DaemonFrameUp::Batch { frames: expand_batch(inner) },
+                None => continue,
+            },
+            Inbound::Skip | Inbound::Done | Inbound::Idle => continue,
         };
         let leaves: Vec<DaemonFrameUp> = match frame {
             DaemonFrameUp::Chunk { transfer_id, chunk_index, total_chunks, data, codec } => {
@@ -2106,7 +2130,7 @@ async fn register_announced_session(
         None,
     )
     .await?
-    == Some(true)
+        == Some(true)
     {
         publish_session_registered(state, local_id).await;
     }
@@ -2658,11 +2682,10 @@ mod tests {
     use super::{
         Arc, DAEMON_LOST_GRACE, DAEMON_SEEN_FRESH, EndReason, Future, Inbound, MAX_TRANSFER_BYTES,
         Ordering, PendingDaemonLost, SessionOwners, StatusSignals, TodoEntry, Utc, Uuid, admit,
-        bearer_token, claim_announced, insert_event, persist_session_end, session_scope,
-        upsert_session,
-        decode_compressed_frame, event_kind, event_local_id, expand_batch, extract_todos,
-        handle_chunk, merge_known_adapters, next_inbound, record_todos, seen_within,
-        should_auto_approve, strip_nul, write_status_signals,
+        bearer_token, claim_announced, decode_binary_frame, decode_compressed_frame, event_kind,
+        event_local_id, expand_batch, extract_todos, handle_chunk, insert_event,
+        merge_known_adapters, next_inbound, persist_session_end, record_todos, seen_within,
+        session_scope, should_auto_approve, strip_nul, upsert_session, write_status_signals,
     };
 
     #[test]
@@ -2844,7 +2867,7 @@ mod tests {
         liveness.tick().await;
         loop {
             match next_inbound(&mut stream, &mut last, &mut liveness, timeout).await {
-                Inbound::Data(_) | Inbound::Skip => {}
+                Inbound::Data(_) | Inbound::Binary(_) | Inbound::Skip => {}
                 term @ (Inbound::Done | Inbound::Idle) => return term,
             }
         }
@@ -3231,6 +3254,39 @@ mod tests {
         };
         let decoded = decode_compressed_frame(&codec, &data).expect("must decode");
         assert_eq!(serde_json::to_value(&decoded).unwrap(), serde_json::to_value(&inner).unwrap());
+    }
+
+    #[test]
+    fn decodes_binary_frame_like_its_compressed_twin() {
+        let inner =
+            DaemonFrameUp::Batch { frames: (0..3).map(|i| event(&format!("s{i}"))).collect() };
+        let compressed = cctui_proto::compress::zstd_compress(&serde_json::to_vec(&inner).unwrap());
+        let DaemonFrameUp::Compressed { codec, data } =
+            cctui_proto::compress::compressed_frame("zstd", &compressed)
+        else {
+            panic!("compressed_frame must build a Compressed");
+        };
+        let via_text = expand_batch(decode_compressed_frame(&codec, &data).expect("text decodes"));
+        let via_binary = expand_batch(decode_binary_frame(&compressed).expect("binary decodes"));
+        assert_eq!(via_binary.len(), 3);
+        assert_eq!(
+            serde_json::to_value(&via_binary).unwrap(),
+            serde_json::to_value(&via_text).unwrap(),
+        );
+        assert!(decode_binary_frame(b"{\"not\":\"zstd\"}").is_none());
+    }
+
+    #[tokio::test]
+    async fn a_binary_message_is_surfaced_as_binary() {
+        let mut stream = futures_util::stream::iter([Ok::<_, axum::Error>(Message::Binary(
+            vec![1_u8, 2, 3].into(),
+        ))]);
+        let mut last = tokio::time::Instant::now();
+        let mut liveness = tokio::time::interval(Duration::from_secs(3600));
+        liveness.tick().await;
+        let out =
+            next_inbound(&mut stream, &mut last, &mut liveness, Duration::from_secs(3600)).await;
+        assert!(matches!(out, Inbound::Binary(ref b) if b == &[1, 2, 3]));
     }
 
     #[test]
@@ -3654,7 +3710,9 @@ mod tests {
         .expect("count events");
         assert_eq!(events, 1);
 
-        super::persist_session_end(&pool, mid, uid, &sid, &EndReason::Killed).await.expect("persist");
+        super::persist_session_end(&pool, mid, uid, &sid, &EndReason::Killed)
+            .await
+            .expect("persist");
         let (end_reason, end_detail): (Option<String>, Option<String>) =
             sqlx::query_as("SELECT end_reason, end_detail FROM sessions WHERE id = $1")
                 .bind(&sid)
@@ -3750,8 +3808,10 @@ mod tests {
         bus.register_daemon(mb, conn_b, tx_b);
 
         let mut intruder = SessionOwners::new(mb, ub);
-        let announce =
-            DaemonFrameUp::SessionRegistered { adapter_id: "claude-code".into(), local_id: sid.clone() };
+        let announce = DaemonFrameUp::SessionRegistered {
+            adapter_id: "claude-code".into(),
+            local_id: sid.clone(),
+        };
         assert_eq!(session_scope(&announce), Some(sid.as_str()));
         assert!(!admit(&mut intruder, &pool, &sid).await, "a foreign announce must be dropped");
 
