@@ -83,7 +83,7 @@ describe('popover triggers match their sibling toggles', () => {
 	it('restates every chrome declaration a Toggle sets', () => {
 		const chrome = toolbarSource.slice(
 			toolbarSource.indexOf('\t.chip {'),
-			toolbarSource.indexOf('/* Filters sits among')
+			toolbarSource.indexOf('\t.chip.pill {')
 		);
 		for (const decl of [
 			'padding: 0 var(--sp-2)',
@@ -191,7 +191,7 @@ describe('drawer toolbar sizing', () => {
 			"const CTL = 'height:var(--bar-ctl-h);box-sizing:border-box;padding-block:0;line-height:1'"
 		);
 		expect(toolbarSource).toContain("const TRIG = 'display:flex;align-items:center;height:var(--bar-ctl-h)'");
-		const chip = toolbarSource.slice(toolbarSource.indexOf('\t.chip {'), toolbarSource.indexOf('/* Filters sits among'));
+		const chip = toolbarSource.slice(toolbarSource.indexOf('\t.chip {'), toolbarSource.indexOf('\t.chip.pill {'));
 		expect(chip).toContain('height: var(--bar-ctl-h)');
 		expect(chip).toContain('box-sizing: border-box');
 	});

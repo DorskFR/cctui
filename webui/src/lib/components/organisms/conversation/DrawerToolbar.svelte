@@ -45,14 +45,8 @@
 		onnexthit?: () => void;
 	} = $props();
 
-	// Every control in this bar paints the same box. The kit's Popover trigger
-	// cannot wear Toggle chrome (its canonical chrome is button-height), so the
-	// Pins and Filters triggers stay local `.chip` spans — which means the height
-	// has to be pinned from one place instead of emerging from each content's
-	// line box, or an emoji glyph makes its Toggle taller than an SVG one.
+	// One pinned height for every control, so glyph fonts can't size them.
 	const CTL = 'height:var(--bar-ctl-h);box-sizing:border-box;padding-block:0;line-height:1';
-	// `bare` leaves the trigger an inline box, whose baseline strut would add
-	// leading under the chip; flex removes the line box altogether.
 	const TRIG = 'display:flex;align-items:center;height:var(--bar-ctl-h)';
 
 	const QUICK_TINT: Record<QuickFilterId, string> = {
@@ -169,11 +163,7 @@
 </div>
 
 <style>
-	/* The Filters and Pins popover triggers must be indistinguishable from the
-	   Toggle chips beside them. `bare` strips the kit's own trigger chrome (its
-	   square floor included) and this local span — authored here, so scoped CSS
-	   reaches it — carries the whole chip restated from Toggle's own tokens.
-	   Keep in step with tsumikit Toggle's `.toggle` + `.pill`. */
+	/* Popover triggers restating kit Toggle chrome; keep in step with `.toggle`. */
 	.chip {
 		display: inline-flex;
 		align-items: center;
@@ -189,7 +179,6 @@
 		color: var(--text-muted);
 		font-size: var(--fs-xs);
 		font-weight: var(--fw-medium);
-		line-height: 1.4;
 		white-space: nowrap;
 		user-select: none;
 		cursor: pointer;
@@ -198,7 +187,6 @@
 			border-color 0.12s var(--ease),
 			color 0.12s var(--ease);
 	}
-	/* Filters sits among the pill quick-filter chips; Pins among the square ones. */
 	.chip.pill {
 		border-radius: var(--r-pill);
 	}
@@ -215,11 +203,8 @@
 		border-bottom: 1px solid var(--border);
 		font-size: var(--fs-xs);
 		container: drawer-toolbar / inline-size;
-		/* --box-xs at the default root size, but px like the rest of the bar so
-		   the text-size control cannot shift it under the cursor. */
+		/* Px, not rem: the text-size control must not shift the bar under the cursor. */
 		--bar-ctl-h: 24px;
-		/* Px, not rem: the text-size control rescales the root, and the bar must
-		   not shift under the cursor while it moves. */
 		--fs-xs: 12px;
 		--fs-sm: 13px;
 		--sp-1: 4px;
@@ -233,8 +218,6 @@
 		flex-wrap: nowrap;
 		align-items: center;
 	}
-	/* An emoji's line box is taller than a 12px SVG's. Fixing the inline size and
-	   killing the leading keeps the glyph from setting its control's height. */
 	.glyph {
 		display: inline-flex;
 		align-items: center;
@@ -242,9 +225,7 @@
 		min-width: 1em;
 		line-height: 1;
 	}
-	/* Auto-approve and Pins sit at the right edge, where an overflow clips them
-	   out of reach entirely. Any residual overflow is absorbed by the filters
-	   group instead, which can still be reopened from its own popover. */
+	/* Overflow is absorbed by the filters group, never by auto-approve or pins. */
 	.tagbar {
 		min-width: 0;
 		flex: 0 1 auto;
@@ -270,11 +251,7 @@
 	.narrow {
 		display: none;
 	}
-	/* The drawer is a resizable panel, so the form is chosen by the bar's own
-	   width, never the viewport. The full form needs, at 12px: role pills
-	   83+97+61, the filters chip 192, the hit stepper 155, auto-approve 154,
-	   pins 118, plus group gaps, rules and padding — about 940px in the longest
-	   locale with a search active. Below 1000px it cannot be trusted to fit. */
+	/* The full form needs ~940px in the longest locale with search hits shown. */
 	@container drawer-toolbar (max-width: 1000px) {
 		.wide {
 			display: none;
