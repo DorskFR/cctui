@@ -53,8 +53,9 @@ jobs:
         env:
           TAG: ${{ inputs.tag || github.ref_name }}
         run: |
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          bash scripts/release-channel.sh "$TAG" | tee -a "$GITHUB_OUTPUT"
+          out="$(bash scripts/release-channel.sh "$TAG")"
+          echo "$out"
+          { echo "tag=$TAG"; echo "$out"; } >> "$GITHUB_OUTPUT"
 
       - name: Require a green ci run on the release commit
         env:
@@ -210,6 +211,16 @@ jobs:
             case "$f" in *.minisig) continue ;; esac
             minisign -V -p ../keys/release.minisign.pub -m "$f"
           done
+      - name: Refuse a release without a resolved channel
+        env:
+          CHANNEL: ${{ needs.ci-green.outputs.channel }}
+          PRERELEASE: ${{ needs.ci-green.outputs.prerelease }}
+          MAKE_LATEST: ${{ needs.ci-green.outputs.make_latest }}
+        run: |
+          case "$CHANNEL/$PRERELEASE/$MAKE_LATEST" in
+            stable/false/true | beta/true/false) ;;
+            *) echo "unresolved release channel: '$CHANNEL/$PRERELEASE/$MAKE_LATEST'" >&2; exit 1 ;;
+          esac
       - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           tag_name: ${{ needs.ci-green.outputs.tag }}

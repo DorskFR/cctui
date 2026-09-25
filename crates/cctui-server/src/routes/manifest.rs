@@ -4,8 +4,9 @@
 //! per-arch download and minisign-signature URLs, always on this server's own
 //! origin so clients never send their credentials anywhere else. The daemon
 //! ships in the same release as the TUI/server, so the version is simply the
-//! server's own, and so is its release channel (a `-beta.N` version is beta):
-//! daemons following stable refuse a beta manifest.
+//! server's own, and so is its release channel (a `-beta.N` version is beta).
+//! A beta server answers `204 No Content` unless the caller opts in with
+//! `?channel=beta`, so daemons that predate channels never see a beta.
 //!
 //! `GET /api/v1/daemon/binary/{target}` proxies the actual binary, and
 //! `{target}.minisig` its detached signature. When the
@@ -21,7 +22,7 @@
 //! endpoints makes the server the single channel for daemon distribution.
 
 use axum::body::Body;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Redirect, Response};
 use cctui_proto::release_sig::Channel;
@@ -92,7 +93,28 @@ fn manifest_response(body: Vec<u8>, if_none_match: Option<&str>) -> Response {
         .into_response()
 }
 
-pub async fn daemon_manifest(State(state): State<AppState>, headers: HeaderMap) -> Response {
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct ManifestQuery {
+    #[serde(default)]
+    channel: Option<String>,
+}
+
+/// Whether a caller asking with `requested` may be offered `version`. Absent or
+/// unrecognised channels count as stable.
+fn offered_to(version: &str, requested: Option<&str>) -> bool {
+    let requested =
+        requested.and_then(|c| c.parse::<Channel>().ok()).unwrap_or(Channel::Stable);
+    requested == Channel::Beta || Channel::of_version(version) == Channel::Stable
+}
+
+pub async fn daemon_manifest(
+    State(state): State<AppState>,
+    Query(query): Query<ManifestQuery>,
+    headers: HeaderMap,
+) -> Response {
+    if !offered_to(env!("CARGO_PKG_VERSION"), query.channel.as_deref()) {
+        return StatusCode::NO_CONTENT.into_response();
+    }
     let body = serde_json::to_vec(&build_manifest(&state))
         .expect("DaemonManifest always serializes to JSON");
     let if_none_match = headers.get(header::IF_NONE_MATCH).and_then(|v| v.to_str().ok());
@@ -209,6 +231,24 @@ mod tests {
         let json = serde_json::to_value(build_manifest_for("https://s", "0.21.0-beta.2")).unwrap();
         assert_eq!(json["channel"], "beta");
         assert_eq!(json["version"], "0.21.0-beta.2");
+    }
+
+    #[test]
+    fn beta_builds_are_only_offered_to_callers_that_opt_in() {
+        let cases = [
+            ("0.20.0", None, true),
+            ("0.20.0", Some("stable"), true),
+            ("0.20.0", Some("beta"), true),
+            ("0.21.0-beta.1", None, false),
+            ("0.21.0-beta.1", Some("stable"), false),
+            ("0.21.0-beta.1", Some("nightly"), false),
+            ("0.21.0-beta.1", Some(""), false),
+            ("0.21.0-beta.1", Some("beta"), true),
+            ("0.21.0-beta.1", Some("BETA"), true),
+        ];
+        for (version, requested, want) in cases {
+            assert_eq!(offered_to(version, requested), want, "{version} asked as {requested:?}");
+        }
     }
 
     #[test]

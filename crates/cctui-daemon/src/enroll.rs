@@ -32,6 +32,7 @@ use uuid::Uuid;
 
 use crate::client::ServerClient;
 use crate::config::Config;
+use cctui_proto::release_sig::Channel;
 use crate::{selfupdate, service};
 
 /// Remote paths, all under the target user's `$HOME` (expanded remotely).
@@ -152,6 +153,11 @@ pub fn binary_needs_install(remote_sha: Option<&str>, expected_sha: &str) -> boo
 /// points at the same server. The async half (`daemon_auth` proving the key
 /// still works) lives in [`run`].
 #[must_use]
+/// The release channel an existing install follows; stable when there is none.
+fn remote_channel(raw: Option<&str>) -> Channel {
+    raw.and_then(|raw| toml::from_str::<Config>(raw).ok()).map(|c| c.channel).unwrap_or_default()
+}
+
 pub fn reusable_config(raw: &str, server_url: &str) -> Option<Config> {
     let cfg: Config = toml::from_str(raw).ok()?;
     (cfg.server_url.trim_end_matches('/') == server_url.trim_end_matches('/')).then_some(cfg)
@@ -277,9 +283,10 @@ pub async fn run(opts: RemoteEnrollOpts) -> Result<()> {
         if facts.service_active { ", service running" } else { "" },
     );
 
-    println!("[2/6] fetching daemon release from {server_url}");
+    let channel = remote_channel(facts.config.as_deref());
+    println!("[2/6] fetching the {channel} daemon release from {server_url}");
     let http = selfupdate::client()?;
-    let manifest = selfupdate::fetch_manifest(&http, &server_url, &opts.token)
+    let manifest = selfupdate::fetch_manifest(&http, &server_url, &opts.token, channel)
         .await
         .context("fetching the daemon manifest (is the token valid?)")?;
     let asset = format!("cctui-daemon-{release_target}");
@@ -349,7 +356,7 @@ pub async fn run(opts: RemoteEnrollOpts) -> Result<()> {
             machine_key: resp.machine_key,
             machine_id: Some(resp.machine_id),
             read_file_roots: Vec::new(),
-            channel: cctui_proto::release_sig::Channel::default(),
+            channel,
         };
         let raw = toml::to_string_pretty(&cfg)?;
         ssh(target, WRITE_CONFIG_SCRIPT, Some(raw.as_bytes()))
@@ -495,5 +502,13 @@ mod tests {
         let s = SERVICE_SCRIPT.replace("%ACTION%", "restart");
         assert!(s.contains("systemctl --user restart cctui-daemon.service"));
         assert!(!s.contains("%ACTION%"));
+    }
+
+    #[test]
+    fn remote_channel_keeps_an_existing_opt_in() {
+        assert_eq!(remote_channel(None), Channel::Stable);
+        assert_eq!(remote_channel(Some("not toml")), Channel::Stable);
+        let beta = "server_url = \"s\"\nmachine_key = \"k\"\nchannel = \"beta\"\n";
+        assert_eq!(remote_channel(Some(beta)), Channel::Beta);
     }
 }
