@@ -1297,17 +1297,35 @@ async fn handle_event(
         }
         AdapterEvent::Message { local_id, mut payload, turn_id } => {
             crate::keepalive::observe_message(state, &local_id, &mut payload).await;
-            inserted_seq = insert_event(state, &local_id, "message", payload, turn_id).await?;
+            inserted_seq = insert_event(
+                &state.pool,
+                machine_id,
+                user_id,
+                &local_id,
+                "message",
+                payload,
+                turn_id,
+            )
+            .await?;
             newly_inserted = inserted_seq.is_some();
             note_insert(state, machine_id, newly_inserted);
         }
         AdapterEvent::ToolUse { local_id, payload } => {
-            inserted_seq = insert_event(state, &local_id, "tool_use", payload, None).await?;
+            inserted_seq = insert_event(
+                &state.pool,
+                machine_id,
+                user_id,
+                &local_id,
+                "tool_use",
+                payload,
+                None,
+            )
+            .await?;
             newly_inserted = inserted_seq.is_some();
             note_insert(state, machine_id, newly_inserted);
         }
         AdapterEvent::SessionEnded { local_id, reason } => {
-            mark_session_ended(state, &local_id, &reason).await?;
+            mark_session_ended(state, machine_id, user_id, &local_id, &reason).await?;
             publish_session_ended(state, &local_id, &reason);
         }
         AdapterEvent::TranscriptMark { local_id, offset } => {
@@ -1441,7 +1459,18 @@ async fn handle_event(
             // and tell clients to dismiss the inline prompt. Idempotent: a
             // request answered via cctui already broadcast PermissionResolved on
             // the client path, so a second clear here is a harmless no-op.
-            state.permission_store.write().await.record_decision(&request_id, "resolved".into());
+            {
+                let mut store = state.permission_store.write().await;
+                let foreign = store
+                    .list_pending()
+                    .iter()
+                    .any(|p| p.request_id == request_id && p.session_id != local_id);
+                if foreign {
+                    tracing::warn!(%local_id, %request_id, "PermissionResolved for another session's request");
+                    return Ok(());
+                }
+                store.record_decision(&request_id, "resolved".into());
+            }
             state.bus.publish_server(cctui_proto::ws::ServerEvent::PermissionResolved {
                 session_id: local_id.clone(),
                 request_id,
@@ -2127,11 +2156,13 @@ async fn publish_session_registered(state: &AppState, local_id: &str) {
 /// Insert a stream event, returning `Some(id)` (the `stream_events.id`
 /// BIGSERIAL, used as the causal ordering `seq`) if a new row was
 /// written and `None` if it was a duplicate suppressed by the dedup constraint
-/// (or the session row was absent). Callers use the presence to decide whether
+/// (or the session row was absent or not owned by `machine_id`/`user_id`). Callers use the presence to decide whether
 /// to broadcast the event live, so a replayed session history doesn't re-stream
 /// to clients.
 async fn insert_event(
-    state: &AppState,
+    pool: &sqlx::PgPool,
+    machine_id: Uuid,
+    user_id: Uuid,
     local_id: &str,
     event_type: &str,
     mut payload: serde_json::Value,
@@ -2154,7 +2185,8 @@ async fn insert_event(
     // `stream_events_dedup_turn_idx` expression list or inference fails.
     let id: Option<i64> = sqlx::query_scalar(
         "INSERT INTO stream_events (session_id, event_type, payload, turn_id) \
-         SELECT $1, $2, $3, $4 WHERE EXISTS (SELECT 1 FROM sessions WHERE id = $1) \
+         SELECT $1, $2, $3, $4 WHERE EXISTS ( \
+             SELECT 1 FROM sessions WHERE id = $1 AND machine_uuid = $5 AND user_id = $6) \
          ON CONFLICT (session_id, event_type, content_hash, \
                       COALESCE(turn_id, '00000000-0000-0000-0000-000000000000'::uuid)) \
          DO NOTHING \
@@ -2164,10 +2196,12 @@ async fn insert_event(
     .bind(event_type)
     .bind(payload)
     .bind(turn_id)
-    .fetch_optional(&state.pool)
+    .bind(machine_id)
+    .bind(user_id)
+    .fetch_optional(pool)
     .await?;
     if id.is_some() {
-        crate::routes::fs::record_links(&state.pool, local_id, &links).await?;
+        crate::routes::fs::record_links(pool, local_id, &links).await?;
     }
     Ok(id)
 }
@@ -2245,10 +2279,12 @@ pub fn truncate_end_detail(detail: &str) -> &str {
 
 async fn mark_session_ended(
     state: &AppState,
+    machine_id: Uuid,
+    user_id: Uuid,
     local_id: &str,
     reason: &EndReason,
 ) -> anyhow::Result<()> {
-    persist_session_end(&state.pool, local_id, reason).await?;
+    persist_session_end(&state.pool, machine_id, user_id, local_id, reason).await?;
     // Revoke any per-session gateway tokens: the session-scoped
     // cctui tokens minted at spawn map to `(session_id, account_id)` and must
     // die with the session so the gateway can no longer be driven under them.
@@ -2293,15 +2329,17 @@ async fn persist_failed_spawn(
     if inserted.is_none() {
         return Ok(false);
     }
-    persist_session_end(pool, &row.session_id, reason).await?;
+    persist_session_end(pool, row.machine_id, row.user_id, &row.session_id, reason).await?;
     Ok(true)
 }
 
 /// Record the end: a `session_ended` stream event (the conversation's final
 /// line) plus the row's sticky `ended` status, `ended_at`, `end_reason` and
-/// `end_detail`.
+/// `end_detail`. A no-op unless `machine_id`/`user_id` own the session.
 async fn persist_session_end(
     pool: &sqlx::PgPool,
+    machine_id: Uuid,
+    user_id: Uuid,
     local_id: &str,
     reason: &EndReason,
 ) -> anyhow::Result<()> {
@@ -2312,13 +2350,16 @@ async fn persist_session_end(
     // cleanly instead of erroring; the UPDATE below is already missing-safe.
     sqlx::query(
         "INSERT INTO stream_events (session_id, event_type, payload) \
-         SELECT $1, 'session_ended', $2 WHERE EXISTS (SELECT 1 FROM sessions WHERE id = $1) \
+         SELECT $1, 'session_ended', $2 WHERE EXISTS ( \
+             SELECT 1 FROM sessions WHERE id = $1 AND machine_uuid = $3 AND user_id = $4) \
          ON CONFLICT (session_id, event_type, content_hash, \
                       COALESCE(turn_id, '00000000-0000-0000-0000-000000000000'::uuid)) \
          DO NOTHING",
     )
     .bind(local_id)
     .bind(&payload)
+    .bind(machine_id)
+    .bind(user_id)
     .execute(pool)
     .await?;
     // Flip to the sticky terminal status `ended` so clients render the
@@ -2331,12 +2372,14 @@ async fn persist_session_end(
     sqlx::query(concat!(
         "UPDATE sessions SET status = 'ended', ended_at = now(), end_reason = $2, \
                  end_detail = $3 \
-             WHERE id = $1 AND ",
+             WHERE id = $1 AND machine_uuid = $4 AND user_id = $5 AND ",
         live_sessions_predicate!()
     ))
     .bind(local_id)
     .bind(reason.kind().as_str())
     .bind(reason.detail().map(truncate_end_detail))
+    .bind(machine_id)
+    .bind(user_id)
     .execute(pool)
     .await?;
     Ok(())
@@ -2600,7 +2643,8 @@ mod tests {
     use super::{
         Arc, DAEMON_LOST_GRACE, DAEMON_SEEN_FRESH, EndReason, Future, Inbound, MAX_TRANSFER_BYTES,
         Ordering, PendingDaemonLost, SessionOwners, StatusSignals, TodoEntry, Utc, Uuid, admit,
-        bearer_token, claim_announced, session_scope, upsert_session,
+        bearer_token, claim_announced, insert_event, persist_session_end, session_scope,
+        upsert_session,
         decode_compressed_frame, event_kind, event_local_id, expand_batch, extract_todos,
         handle_chunk, merge_known_adapters, next_inbound, record_todos, seen_within,
         should_auto_approve, strip_nul, write_status_signals,
@@ -3559,29 +3603,13 @@ mod tests {
             .connect(&url)
             .await
             .expect("connect test db");
-        let uid = uuid::Uuid::new_v4();
-        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
-            .bind(uid)
-            .bind(format!("end-{uid}"))
-            .bind(format!("kh-{uid}"))
-            .execute(&pool)
-            .await
-            .expect("seed user");
-        let sid = format!("end-{}", uuid::Uuid::new_v4().simple());
-        sqlx::query(
-            "INSERT INTO sessions (id, machine_id, working_dir, user_id, adapter_id) \
-             VALUES ($1, 'm1', '/w', $2, 'claude-code')",
-        )
-        .bind(&sid)
-        .bind(uid)
-        .execute(&pool)
-        .await
-        .expect("seed session");
+        let (uid, mid) = seed_machine(&pool, "end").await;
+        let sid = seed_owned_session(&pool, uid, mid).await;
 
         let detail =
             format!("claude -p exited (exit status: 1); last stderr:\n{}", "x".repeat(3000));
         let reason = EndReason::Crashed { detail: detail.clone() };
-        super::persist_session_end(&pool, &sid, &reason).await.expect("persist");
+        super::persist_session_end(&pool, mid, uid, &sid, &reason).await.expect("persist");
 
         let (status, end_reason, end_detail, ended_at): (
             String,
@@ -3611,7 +3639,7 @@ mod tests {
         .expect("count events");
         assert_eq!(events, 1);
 
-        super::persist_session_end(&pool, &sid, &EndReason::Killed).await.expect("persist");
+        super::persist_session_end(&pool, mid, uid, &sid, &EndReason::Killed).await.expect("persist");
         let (end_reason, end_detail): (Option<String>, Option<String>) =
             sqlx::query_as("SELECT end_reason, end_detail FROM sessions WHERE id = $1")
                 .bind(&sid)
@@ -3731,6 +3759,115 @@ mod tests {
         assert!(rx_b.try_recv().is_err(), "the intruder receives nothing for the session");
 
         drop_machines(&pool, &[sid], &[(ua, ma), (ub, mb)]).await;
+    }
+
+    #[tokio::test]
+    async fn another_machines_events_never_reach_the_session() {
+        let Some(url) = crate::routes::gateway::test_db_url("foreign_events") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let (ua, ma) = seed_machine(&pool, "owner").await;
+        let (ub, mb) = seed_machine(&pool, "intruder").await;
+        let sid = seed_owned_session(&pool, ua, ma).await;
+
+        let event = |event| DaemonFrameUp::Event { adapter_id: "claude-code".into(), event };
+        let frames = [
+            event(cctui_proto::adapter::AdapterEvent::Message {
+                local_id: sid.clone(),
+                payload: json!({ "type": "assistant", "text": "run this" }),
+                turn_id: None,
+            }),
+            event(cctui_proto::adapter::AdapterEvent::SessionEnded {
+                local_id: sid.clone(),
+                reason: EndReason::Killed,
+            }),
+            event(cctui_proto::adapter::AdapterEvent::PermissionRequest {
+                local_id: sid.clone(),
+                request_id: "r1".into(),
+                tool: "Bash".into(),
+                input: json!({ "command": "true" }),
+            }),
+            event(cctui_proto::adapter::AdapterEvent::PtyChunk {
+                local_id: sid.clone(),
+                data: String::new(),
+            }),
+        ];
+        let mut intruder = SessionOwners::new(mb, ub);
+        for frame in &frames {
+            let scope = session_scope(frame).expect("session-scoped");
+            assert!(!admit(&mut intruder, &pool, scope).await, "foreign frame must be dropped");
+        }
+
+        let inserted = insert_event(
+            &pool,
+            mb,
+            ub,
+            &sid,
+            "message",
+            json!({ "type": "assistant", "text": "run this" }),
+            None,
+        )
+        .await
+        .expect("insert");
+        assert_eq!(inserted, None);
+        persist_session_end(&pool, mb, ub, &sid, &EndReason::Killed).await.expect("end");
+
+        let events: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM stream_events WHERE session_id = $1")
+                .bind(&sid)
+                .fetch_one(&pool)
+                .await
+                .expect("count events");
+        assert_eq!(events, 0, "no stream_events row for a foreign machine");
+        let status: String = sqlx::query_scalar("SELECT status FROM sessions WHERE id = $1")
+            .bind(&sid)
+            .fetch_one(&pool)
+            .await
+            .expect("status");
+        assert_eq!(status, "active", "a foreign SessionEnded leaves the status unchanged");
+
+        let mut owner = SessionOwners::new(ma, ua);
+        assert!(admit(&mut owner, &pool, &sid).await);
+
+        drop_machines(&pool, &[sid], &[(ua, ma), (ub, mb)]).await;
+    }
+
+    #[tokio::test]
+    async fn a_session_with_no_owner_is_foreign_to_every_machine() {
+        let Some(url) = crate::routes::gateway::test_db_url("ownerless_session") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let (ua, ma) = seed_machine(&pool, "owner").await;
+        let sid = Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO sessions (id, machine_id, machine_uuid, working_dir, status, adapter_id) \
+             VALUES ($1, $2, $3, '/w', 'active', 'claude-code')",
+        )
+        .bind(&sid)
+        .bind(ma.to_string())
+        .bind(ma)
+        .execute(&pool)
+        .await
+        .expect("seed session");
+
+        let mut owners = SessionOwners::new(ma, ua);
+        assert_eq!(owners.resolve(&pool, &sid).await.expect("resolve"), super::Ownership::Foreign);
+        assert_eq!(
+            owners.resolve(&pool, "never-registered").await.expect("resolve"),
+            super::Ownership::Absent
+        );
+
+        drop_machines(&pool, &[sid], &[(ua, ma)]).await;
     }
 
     #[tokio::test]
