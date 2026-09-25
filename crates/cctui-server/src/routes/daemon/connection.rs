@@ -123,7 +123,7 @@ struct Conn {
     user_id: Uuid,
     /// This connection's own routing address. The machine id groups the
     /// dispatched pods; only this distinguishes them.
-    conn_id: Uuid,
+    id: Uuid,
     /// Sessions this connection announced. Several daemons can share one
     /// machine id (every dispatched worker pod authenticates as the user's
     /// `dispatch` machine), so the close path may only end these, never the
@@ -146,7 +146,7 @@ impl Conn {
             state,
             machine_id,
             user_id,
-            conn_id: Uuid::new_v4(),
+            id: Uuid::new_v4(),
             announced: Arc::default(),
             owners: SessionOwners::new(machine_id, user_id),
             bumps: Arc::new(Bumps::default()),
@@ -157,7 +157,7 @@ impl Conn {
         let (state, machine_id) = (&self.state, self.machine_id);
         // Register the daemon for command fan-out with the bus. If a
         // stale entry exists, overwrite it (newest connection wins).
-        state.bus.register_daemon(machine_id, self.conn_id, tx.clone());
+        state.bus.register_daemon(machine_id, self.id, tx.clone());
         PENDING_DAEMON_LOST.cancel(machine_id);
         // Replica-aware presence: record this pod as the WS owner so a
         // peer replica can forward daemon-targeted requests here.
@@ -199,7 +199,7 @@ impl Conn {
     }
 
     async fn ingest_leaves(&mut self, leaves: Vec<DaemonFrameUp>) {
-        let (machine_id, user_id, conn_id) = (self.machine_id, self.user_id, self.conn_id);
+        let (machine_id, user_id, conn_id) = (self.machine_id, self.user_id, self.id);
         let (state, bumps) = (&self.state, &self.bumps);
         let mut run: Vec<Ingest> = Vec::new();
         for frame in leaves {
@@ -257,7 +257,7 @@ impl Conn {
         for session in sessions.iter().filter_map(|s| Uuid::parse_str(s).ok()) {
             crate::presence::unregister(state, crate::presence::Kind::Session, session).await;
         }
-        if state.bus.unregister_daemon(machine_id, self.conn_id, tx) {
+        if state.bus.unregister_daemon(machine_id, self.id, tx) {
             crate::presence::unregister(state, crate::presence::Kind::Daemon, machine_id).await;
             schedule_daemon_lost(state, machine_id, sessions);
         }
