@@ -37,7 +37,7 @@
 />
 {#if view.child}
 	<SessionDot session={s} livenessClass={view.livenessClass} now={view.now} />
-	<Badge tone="info" size="xs">{m.sessions_subagent_badge()}</Badge>
+	<span class="sub-badge"><Badge tone="info" size="xs">{m.sessions_subagent_badge()}</Badge></span>
 {:else}
 	<SessionGlyphs
 		session={s}
@@ -60,7 +60,7 @@
 	>
 </span>
 {#if s.labels.length > 0 || actions.labelEditable}
-	<LabelBadge
+	<span class="labels" class:empty={s.labels.length === 0}><LabelBadge
 		labels={s.labels}
 		editable={actions.labelEditable}
 		allLabels={actions.allLabels}
@@ -69,7 +69,7 @@
 		onDetach={(lid) => actions.onDetachLabel?.(s.id, lid)}
 		onUpdate={actions.onUpdateLabel}
 		onDelete={actions.onDeleteLabel}
-	/>
+	/></span>
 {/if}
 {#if act.show && !view.stale}
 	<span
@@ -99,6 +99,18 @@
 {/if}
 
 <style>
+	.labels,
+	.sub-badge {
+		display: contents;
+	}
+	/* Em, not rem: at a large text scale the row runs out of room well before
+	   its pixel width says so. */
+	@container sess-row (max-width: 20em) {
+		.labels.empty,
+		.sub-badge {
+			display: none;
+		}
+	}
 	.title {
 		display: inline-flex;
 		flex: 0 1 auto;

@@ -437,7 +437,6 @@
 				multiple
 				iconOnly
 				variant="ghost"
-				box="sm"
 				onfiles={addFiles}
 			/>
 		{/snippet}
@@ -530,11 +529,16 @@
 	.composer {
 		display: flex;
 		flex-direction: column;
-		gap: var(--sp-2);
-		padding: var(--sp-2) var(--sp-3);
-		padding-bottom: calc(var(--sp-3) + var(--safe-bottom));
+		padding-bottom: var(--safe-bottom);
 		border-top: 1px solid var(--border);
 		background: var(--bg-elevated);
+	}
+	/* The field runs edge to edge; the rows above it keep their own inset. */
+	.scheduled,
+	.cold-offer,
+	.attachments,
+	.archived-actions {
+		padding: var(--sp-2) var(--sp-3);
 	}
 	.scheduled:empty {
 		display: none;

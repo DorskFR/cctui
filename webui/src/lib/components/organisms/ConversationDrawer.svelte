@@ -484,7 +484,6 @@
 
 	// Mobile chat controls collapse behind text buttons that open popovers
 	//; null = no panel open. Desktop shows the controls inline.
-	let mobilePanel = $state<'filters' | 'format' | 'auto' | null>(null);
 	// The agent-side worker is gone once archived, so re-dispatch a fresh session
 	// seeded with this one's config rather than trying to revive it.
 	function newFromScript() {
@@ -575,9 +574,7 @@
 				onnexthit={hits.next}
 				bind:view
 				autoApprove={session.auto_approve}
-				bind:mobilePanel
 				ontoggleAuto={sa.toggleAutoApprove}
-				ondiagnose={() => (diagnoseOpen = true)}
 				{pins}
 				{lines}
 				onjumpseq={(seq) => void ensureSeqVisible(seq)}

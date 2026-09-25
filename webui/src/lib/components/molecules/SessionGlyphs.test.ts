@@ -31,7 +31,7 @@ function render(props: Record<string, unknown>) {
 		props: { session: session(), livenessClass: 'live', ...props } as never
 	});
 	flushSync();
-	return document.querySelector('.glyphs') as HTMLElement;
+	return document.querySelector('[data-tsu="GlyphStack"]') as HTMLElement;
 }
 
 describe('SessionGlyphs', () => {
@@ -51,13 +51,14 @@ describe('SessionGlyphs', () => {
 		expect(document.querySelector('[aria-pressed]')).toBeNull();
 	});
 
-	it('carries the stack mode as a class', () => {
-		expect(render({ stack: 'always' }).classList.contains('always')).toBe(true);
+	it('folds into the stacked form with the machine as a tile only when asked', () => {
+		const stacked = render({ stack: 'always' });
+		expect(stacked.dataset.stacked).toBe('true');
 		if (comp) unmount(comp);
 		comp = null;
-		const auto = render({});
-		expect(auto.classList.contains('auto')).toBe(true);
-		expect(auto.classList.contains('always')).toBe(false);
+		const inline = render({ stack: 'never' });
+		expect(inline.dataset.stacked).toBeUndefined();
+		expect(document.querySelector('.mach-tile')).toBeNull();
 	});
 
 	it('renders the machine as a numbered initial tile for the stacked form', () => {
@@ -69,8 +70,23 @@ describe('SessionGlyphs', () => {
 	});
 
 	it('drops the machine when told to', () => {
-		render({ showMachine: false });
+		render({ showMachine: false, stack: 'always' });
 		expect(document.querySelector('.mach-tile')).toBeNull();
-		expect(document.querySelector('.mach-full')).toBeNull();
+	});
+
+	function tapHit(): MouseEvent {
+		const ev = new MouseEvent('click', { bubbles: true, cancelable: true });
+		(document.querySelector('.glyph-hit') as HTMLElement).dispatchEvent(ev);
+		return ev;
+	}
+
+	it('keeps taps on the folded stack from reaching the row', () => {
+		render({ stack: 'always' });
+		expect(tapHit().cancelBubble).toBe(true);
+	});
+
+	it('lets taps through while the stack is inline', () => {
+		render({ stack: 'never' });
+		expect(tapHit().cancelBubble).toBe(false);
 	});
 });

@@ -1,13 +1,14 @@
 <script lang="ts">
 	import type { SessionListItem } from '@bindings/SessionListItem';
 	import { machineInitial, machineTint } from '$lib/format';
+	import { GlyphStack, type GlyphStackItem } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 	import AccountBadge from './AccountBadge.svelte';
 	import MachineBadge from './MachineBadge.svelte';
 	import SessionDot from './SessionDot.svelte';
 
-	// Star · status dot · machine · account. Inline by default; `stack` folds
-	// them into one 2×2 slot (`auto`: once the session row is narrow).
+	// Star · status dot · machine · account in one GlyphStack slot (`auto`: folds
+	// to 2×2 once the session row is narrow).
 	let {
 		session,
 		livenessClass,
@@ -36,52 +37,71 @@
 		e.stopPropagation();
 		onTogglePin?.(session);
 	}
+
+	function holdWhenFolded(e: Event) {
+		if ((e.currentTarget as HTMLElement).querySelector('[data-stacked]')) e.stopPropagation();
+	}
+
+	const items = $derived<GlyphStackItem[]>([
+		...(onTogglePin ? [{ inline: star }] : []),
+		{ inline: dot },
+		...(showMachine ? [{ inline: machine, stacked: machineTile }] : []),
+		{ inline: account }
+	]);
 </script>
 
-<span class="glyphs" class:auto={stack === 'auto'} class:always={stack === 'always'}>
-	{#if onTogglePin}
-		<span
-			class="star"
-			class:on={session.pinned}
-			role="button"
-			tabindex="0"
-			title={session.pinned ? m.sessions_unpin_title() : m.sessions_pin_title()}
-			aria-pressed={session.pinned}
-			aria-label={session.pinned ? m.sessions_unpin_aria() : m.sessions_pin_aria()}
-			onpointerdown={(e) => e.stopPropagation()}
-			onclick={pin}
-			onkeydown={(e) => {
-				if (e.key === 'Enter' || e.key === ' ') {
-					e.preventDefault();
-					pin(e);
-				}
-			}}>{session.pinned ? '★' : '☆'}</span
-		>
-	{/if}
-	<SessionDot {session} {livenessClass} {now} />
-	{#if showMachine}
-		<span class="mach-full"
-			><MachineBadge name={session.machine_name} id={session.machine_id} hue={session.machine_hue} mono dense /></span
-		>
-		<span class="mach-tile" style={machineTint(machineLabel, session.machine_hue)} title={machineLabel}
-			>{machineInitial(machineLabel)}</span
-		>
-	{/if}
-	<AccountBadge
-		name={session.account_name}
-		warn={accountWarn}
-		showName={showAccountName}
-		onclick={onAccountClick}
+{#snippet star()}
+	<span
+		class="star"
+		class:on={session.pinned}
+		role="button"
+		tabindex="0"
+		title={session.pinned ? m.sessions_unpin_title() : m.sessions_pin_title()}
+		aria-pressed={session.pinned}
+		aria-label={session.pinned ? m.sessions_unpin_aria() : m.sessions_pin_aria()}
+		onpointerdown={(e) => e.stopPropagation()}
+		onclick={pin}
+		onkeydown={(e) => {
+			if (e.key === 'Enter' || e.key === ' ') {
+				e.preventDefault();
+				pin(e);
+			}
+		}}>{session.pinned ? '★' : '☆'}</span
+	>
+{/snippet}
+{#snippet dot()}<SessionDot {session} {livenessClass} {now} />{/snippet}
+{#snippet machine()}
+	<MachineBadge name={session.machine_name} id={session.machine_id} hue={session.machine_hue} mono dense />
+{/snippet}
+{#snippet machineTile()}
+	<span class="mach-tile" style={machineTint(machineLabel, session.machine_hue)} title={machineLabel}
+		>{machineInitial(machineLabel)}</span
+	>
+{/snippet}
+{#snippet account()}
+	<AccountBadge name={session.account_name} warn={accountWarn} showName={showAccountName} onclick={onAccountClick} />
+{/snippet}
+
+<!-- Folded, the stack owns its taps: they open the big tiles instead of the row. -->
+<!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
+<span class="glyph-hit" onclick={holdWhenFolded} onpointerdown={holdWhenFolded}>
+	<GlyphStack
+		{items}
+		{stack}
+		stackBelow="34rem"
+		container={stack === 'auto' ? 'sess-row' : undefined}
+		expand="tap"
+		expandLabel={m.sessions_glyphs_expand_label()}
 	/>
 </span>
 
 <style>
-	.glyphs {
+	.glyph-hit {
 		display: contents;
 	}
 	.star {
 		flex: none;
-		width: 14px;
+		min-width: 14px;
 		text-align: center;
 		line-height: 1;
 		font-size: var(--fs-md);
@@ -93,28 +113,7 @@
 	.star:hover {
 		color: var(--warn);
 	}
-	.mach-full {
-		display: inline-flex;
-		flex: none;
-	}
 	.mach-tile {
-		display: none;
-	}
-	.glyphs.always {
-		display: inline-grid;
-		grid-template-columns: repeat(2, 1rem);
-		grid-auto-rows: 1rem;
-		gap: 1px;
-		place-items: center;
-		flex: none;
-	}
-	.always .star {
-		font-size: 0.8125rem;
-	}
-	.always .mach-full {
-		display: none;
-	}
-	.always .mach-tile {
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;
@@ -128,34 +127,6 @@
 		font-weight: 600;
 		line-height: 1;
 	}
-	@container sess-row (max-width: 34rem) {
-		.glyphs.auto {
-			display: inline-grid;
-			grid-template-columns: repeat(2, 1rem);
-			grid-auto-rows: 1rem;
-			gap: 1px;
-			place-items: center;
-			flex: none;
-		}
-		.auto .star {
-			font-size: 0.8125rem;
-		}
-		.auto .mach-full {
-			display: none;
-		}
-		.auto .mach-tile {
-			display: inline-flex;
-			align-items: center;
-			justify-content: center;
-			min-width: 1rem;
-			height: 0.875rem;
-			padding: 0 1px;
-			border: 1px solid;
-			border-radius: var(--r-sm);
-			font-family: var(--font-mono);
-			font-size: 0.625rem;
-			font-weight: 600;
-			line-height: 1;
-		}
-	}
 </style>
+
+

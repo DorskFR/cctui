@@ -58,16 +58,19 @@
 	);
 	const archiveLabel = $derived(m.sessions_archive_section({ section: label }));
 	const heading = $derived(title ?? label);
+	let width = $state(Infinity);
+	// Mirrors the `ssh` container query: a bare number once the row is tight.
+	const countLabel = $derived(width < 416 ? String(count) : m.sessions_group_count({ count }));
 </script>
 
-<div class="ssh">
+<div class="ssh" bind:clientWidth={width}>
 	<SectionHeader
 		variant="group"
 		level={3}
 		size="sm"
 		title={heading}
 		{hue}
-		count={m.sessions_group_count({ count })}
+		count={countLabel}
 		{lead}
 		actions={headerActions}
 	/>

@@ -39,7 +39,6 @@ async function render(extra: Record<string, unknown> = {}) {
 		props: {
 			view: view(),
 			autoApprove: false,
-			mobilePanel: null,
 			ontoggleAuto: vi.fn(),
 			onjumpseq: vi.fn(),
 			onunpin: vi.fn(),
@@ -129,12 +128,34 @@ describe('pin glyph', () => {
 });
 
 describe('terminal toggle', () => {
-	it('is not in the behavior group or its mobile popover', async () => {
-		const bar = await render({ mobilePanel: 'auto', ondiagnose: vi.fn() });
-		const beh = bar.querySelector('.behbar.panel-open') as HTMLElement;
-		expect(beh).toBeTruthy();
-		expect(beh.textContent).not.toMatch(/terminal/i);
+	it('is not in the toolbar', async () => {
+		const bar = await render({});
 		expect(bar.textContent).not.toMatch(/terminal/i);
 		expect(toolbarSource).not.toContain('onterminal');
+	});
+});
+
+describe('single-row toolbar', () => {
+	it('has no format toggles, no diagnose and no mobile tabs', async () => {
+		const bar = await render({});
+		expect(bar.textContent).not.toMatch(/JSON|Diff|Tables|Diagnose/);
+		expect(bar.querySelector('[data-journey="mobile-panel"]')).toBeNull();
+		expect(toolbarSource).not.toContain('mobilePanel');
+	});
+
+	it('marks auto-approve with a zap and keeps its accessible name', async () => {
+		const bar = await render({});
+		const auto = bar.querySelector('.behbar button') as HTMLElement;
+		expect(auto.textContent).toContain('⚡');
+		expect(auto.getAttribute('aria-label')).toBeTruthy();
+	});
+
+	it('shows how many categories are hidden next to the filter icon', async () => {
+		const bar = await render({
+			view: { ...view(), msgFilter: { ...allFilter(true), thinking: false, marker: false } }
+		});
+		const trigger = bar.querySelector('[data-journey="filter-menu"]') as HTMLElement;
+		expect(trigger.querySelector('svg')).toBeTruthy();
+		expect(trigger.querySelector('.narrow')?.textContent).toBe('2');
 	});
 });
