@@ -1,7 +1,9 @@
 //! Silent self-update on TUI startup.
 //!
 //! Flow (`maybe_update`):
-//!   1. Compare `CARGO_PKG_VERSION` with `GET {server}/api/v1/version`.
+//!   1. Compare `CARGO_PKG_VERSION` with `GET {server}/api/v1/version`. A
+//!      stable build never moves onto a beta server version unless
+//!      `CCTUI_CHANNEL=beta` opts in.
 //!   2. If server is newer, download `cctui-{os}-{arch}`, `SHA256SUMS` and
 //!      the asset's `.minisig` from the matching GitHub release, verify
 //!      checksum and release signature, stage it, require `--version` to
@@ -19,6 +21,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
+use cctui_proto::release_sig::Channel;
 
 use crate::install;
 
@@ -47,11 +50,22 @@ pub const fn asset_for(os: &str, arch: &str) -> Option<&'static str> {
 /// Any parse failure (dev builds, pre-release weirdness) yields `false` so we
 /// stay conservative and never auto-update from an unparseable base.
 #[must_use]
-pub fn should_update(local_ver: &str, server_ver: &str) -> bool {
+pub fn should_update(local_ver: &str, server_ver: &str, channel: Channel) -> bool {
+    if channel == Channel::Stable && Channel::of_version(server_ver) == Channel::Beta {
+        return false;
+    }
     match (semver::Version::parse(local_ver), semver::Version::parse(server_ver)) {
         (Ok(local), Ok(server)) => server > local,
         _ => false,
     }
+}
+
+/// `CCTUI_CHANNEL` when set, else the channel this build was released on.
+fn update_channel() -> Channel {
+    std::env::var("CCTUI_CHANNEL")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or_else(|| Channel::of_version(CURRENT_VERSION))
 }
 
 fn repo() -> String {
@@ -243,7 +257,7 @@ pub async fn maybe_update(server_url: &str) {
         return;
     }
     let Ok(server_version) = fetch_server_version(server_url).await else { return };
-    if !should_update(CURRENT_VERSION, &server_version) {
+    if !should_update(CURRENT_VERSION, &server_version, update_channel()) {
         // Still run the schema-only reapply if needed — covers users who
         // manually updated the binary but never re-ran install.sh.
         if install::SETTINGS_SCHEMA_VERSION > install::read_schema_marker()
@@ -290,12 +304,22 @@ mod tests {
 
     #[test]
     fn version_comparison() {
-        assert!(should_update("0.1.5", "0.1.6"));
-        assert!(should_update("0.1.5", "0.2.0"));
-        assert!(!should_update("0.1.6", "0.1.6"));
-        assert!(!should_update("0.1.7", "0.1.6"));
-        assert!(!should_update("not-semver", "0.1.6"));
-        assert!(!should_update("0.1.5", "bad"));
+        let s = Channel::Stable;
+        assert!(should_update("0.1.5", "0.1.6", s));
+        assert!(should_update("0.1.5", "0.2.0", s));
+        assert!(!should_update("0.1.6", "0.1.6", s));
+        assert!(!should_update("0.1.7", "0.1.6", s));
+        assert!(!should_update("not-semver", "0.1.6", s));
+        assert!(!should_update("0.1.5", "bad", s));
+    }
+
+    #[test]
+    fn channel_gates_beta_server_versions() {
+        assert!(!should_update("0.1.5", "0.2.0-beta.1", Channel::Stable));
+        assert!(should_update("0.1.5", "0.2.0-beta.1", Channel::Beta));
+        assert!(should_update("0.2.0-beta.1", "0.2.0", Channel::Stable));
+        assert!(should_update("0.2.0-beta.1", "0.2.0-beta.2", Channel::Beta));
+        assert!(!should_update("0.2.0", "0.2.0-beta.2", Channel::Beta));
     }
 
     #[test]

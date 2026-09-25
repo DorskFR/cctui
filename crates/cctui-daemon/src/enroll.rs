@@ -349,6 +349,7 @@ pub async fn run(opts: RemoteEnrollOpts) -> Result<()> {
             machine_key: resp.machine_key,
             machine_id: Some(resp.machine_id),
             read_file_roots: Vec::new(),
+            channel: cctui_proto::release_sig::Channel::default(),
         };
         let raw = toml::to_string_pretty(&cfg)?;
         ssh(target, WRITE_CONFIG_SCRIPT, Some(raw.as_bytes()))

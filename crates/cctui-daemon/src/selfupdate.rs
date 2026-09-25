@@ -13,8 +13,10 @@
 //! Steps:
 //!   1. `GET {server}/api/v1/manifest/daemon` → the server's version + a
 //!      download and signature URL per target.
-//!   2. Compare the manifest version against the running `CARGO_PKG_VERSION`;
-//!      older versions are skipped unless `CCTUI_DAEMON_ALLOW_DOWNGRADE=1`.
+//!   2. Decide with [`cctui_proto::release_sig::update_decision`]: a stable
+//!      machine never takes a beta build, and an older version is skipped
+//!      unless `CCTUI_DAEMON_ALLOW_DOWNGRADE=1`. That override is how a beta
+//!      machine rolls back to an older stable release.
 //!   3. Download the matching `{target}` asset, its `.minisig` and
 //!      `SHA256SUMS`, verify checksum and release signature, atomically rename
 //!      into place, check `--version`, then re-exec.
@@ -26,6 +28,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
+use cctui_proto::release_sig::{Channel, UpdateDecision};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use tokio_util::sync::CancellationToken;
@@ -64,6 +67,17 @@ pub fn poll_interval() -> Duration {
         Some(secs) if secs >= MIN_POLL_INTERVAL_SECS => Duration::from_secs(secs),
         _ => DEFAULT_POLL_INTERVAL,
     }
+}
+
+/// `--version` text: the version plus its channel, e.g. `0.21.0-beta.1 (beta)`.
+/// Keeps the bare version as its own word for the post-swap health check.
+#[must_use]
+pub fn version_display() -> &'static str {
+    static DISPLAY: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+        let version = env!("CARGO_PKG_VERSION");
+        format!("{version} ({})", Channel::of_version(version))
+    });
+    DISPLAY.as_str()
 }
 
 /// Release-asset basename for this build target, e.g.
@@ -304,9 +318,20 @@ async fn verify_binary(path: &Path) -> Result<String> {
 /// replaced (and the caller should re-exec *that* path — see [`reexec`]);
 /// `Ok(None)` if already current or no matching asset; `Err` only on
 /// unexpected failures.
-pub async fn check_and_apply(server_url: &str, machine_key: &str) -> Result<Option<PathBuf>> {
-    check_and_apply_with(&client()?, server_url, machine_key, &mut None, &BandwidthCounters::new())
-        .await
+pub async fn check_and_apply(
+    server_url: &str,
+    machine_key: &str,
+    channel: Channel,
+) -> Result<Option<PathBuf>> {
+    check_and_apply_with(
+        &client()?,
+        server_url,
+        machine_key,
+        channel,
+        &mut None,
+        &BandwidthCounters::new(),
+    )
+    .await
 }
 
 /// [`check_and_apply`] against a caller-owned client + `ETag` cache, so the
@@ -316,6 +341,7 @@ pub async fn check_and_apply_with(
     client: &reqwest::Client,
     server_url: &str,
     machine_key: &str,
+    channel: Channel,
     etag: &mut Option<String>,
     counters: &BandwidthCounters,
 ) -> Result<Option<PathBuf>> {
@@ -332,14 +358,24 @@ pub async fn check_and_apply_with(
         return Ok(None);
     };
     let running = env!("CARGO_PKG_VERSION");
-    if manifest.version == running {
-        tracing::debug!(running, "daemon already on latest release");
-        return Ok(None);
-    }
     let latest = manifest.version.clone();
-    if cctui_proto::release_sig::is_downgrade(running, &latest) && !allow_downgrade() {
-        tracing::warn!(running, %latest, "server offers an older cctui-daemon; not downgrading");
-        return Ok(None);
+    match cctui_proto::release_sig::update_decision(running, &latest, channel, allow_downgrade()) {
+        UpdateDecision::Install => {}
+        UpdateDecision::UpToDate => {
+            tracing::debug!(running, "daemon already on latest release");
+            return Ok(None);
+        }
+        UpdateDecision::WrongChannel => {
+            tracing::info!(
+                running, %latest, %channel,
+                "server offers a beta cctui-daemon; this machine follows stable"
+            );
+            return Ok(None);
+        }
+        UpdateDecision::Downgrade => {
+            tracing::warn!(running, %latest, "server offers an older cctui-daemon; not downgrading");
+            return Ok(None);
+        }
     }
     tracing::info!(running, %latest, "cctui-daemon release available");
 
@@ -428,6 +464,7 @@ pub fn spawn_loop(
     shutdown: CancellationToken,
     server_url: String,
     machine_key: String,
+    channel: Channel,
     interval: Duration,
     counters: BandwidthCounters,
 ) {
@@ -450,8 +487,15 @@ pub fn spawn_loop(
                 () = shutdown.cancelled() => return,
                 _ = tick.tick() => {}
             }
-            match check_and_apply_with(&client, &server_url, &machine_key, &mut etag, &counters)
-                .await
+            match check_and_apply_with(
+                &client,
+                &server_url,
+                &machine_key,
+                channel,
+                &mut etag,
+                &counters,
+            )
+            .await
             {
                 Ok(Some(exe)) => {
                     // The binary was swapped in place; re-exec so this running
@@ -560,6 +604,7 @@ mod tests {
             &client().unwrap(),
             &url,
             "key",
+            Channel::Stable,
             &mut etag,
             &BandwidthCounters::new(),
         )
@@ -641,11 +686,39 @@ mod tests {
             &client().unwrap(),
             &url,
             "key",
+            Channel::Stable,
             &mut None,
             &BandwidthCounters::new(),
         )
         .await;
         assert!(matches!(out, Ok(None)), "got: {out:?}");
+    }
+
+    #[tokio::test]
+    async fn beta_manifest_is_refused_by_a_stable_machine_without_downloading() {
+        let response = concat!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n",
+            "Content-Length: 93\r\n\r\n",
+            "{\"version\":\"999.0.0-beta.1\",\"assets\":[{\"target\":\"linux-amd64\",\"url\":\"http://x/linux-amd64\"}]}",
+        );
+        let (url, _req) = serve_once(response).await;
+        let out = check_and_apply_with(
+            &client().unwrap(),
+            &url,
+            "key",
+            Channel::Stable,
+            &mut None,
+            &BandwidthCounters::new(),
+        )
+        .await;
+        assert!(matches!(out, Ok(None)), "got: {out:?}");
+    }
+
+    #[test]
+    fn version_display_names_the_channel() {
+        let shown = version_display();
+        assert!(shown.split_whitespace().any(|w| w == env!("CARGO_PKG_VERSION")));
+        assert!(shown.ends_with("(stable)") || shown.ends_with("(beta)"), "got: {shown}");
     }
 
     #[test]

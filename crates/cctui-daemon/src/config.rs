@@ -6,6 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
+use cctui_proto::release_sig::Channel;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -17,6 +18,10 @@ pub struct Config {
     /// session's cwd and job dir cannot infer.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub read_file_roots: Vec<String>,
+    /// Release channel self-update follows; `beta` also accepts stable builds.
+    /// `CCTUI_DAEMON_CHANNEL` overrides it.
+    #[serde(default)]
+    pub channel: Channel,
 }
 
 impl Config {
@@ -53,7 +58,13 @@ impl Config {
             .or_else(|_| std::env::var("CCTUI_URL"))
             .ok()
             .filter(|s| !s.is_empty())?;
-        Some(Self { server_url, machine_key, machine_id: None, read_file_roots: Vec::new() })
+        Some(Self {
+            server_url,
+            machine_key,
+            machine_id: None,
+            read_file_roots: Vec::new(),
+            channel: Channel::default(),
+        })
     }
 
     /// Resolve config for `run`: prefer the env-provided shared key (dispatch
@@ -71,6 +82,12 @@ impl Config {
     #[must_use]
     pub fn exists_at(path: &Path) -> bool {
         path.exists()
+    }
+
+    /// The channel self-update follows, after the `CCTUI_DAEMON_CHANNEL` override.
+    #[must_use]
+    pub fn update_channel(&self) -> Channel {
+        channel_override(std::env::var("CCTUI_DAEMON_CHANNEL").ok().as_deref(), self.channel)
     }
 
     pub fn save_to(&self, path: &Path) -> anyhow::Result<()> {
@@ -110,9 +127,34 @@ fn write_private(path: &Path, contents: &[u8]) -> anyhow::Result<()> {
     result.map_err(|e| e.context(format!("writing {}", path.display())))
 }
 
+fn channel_override(env: Option<&str>, configured: Channel) -> Channel {
+    match env.filter(|v| !v.trim().is_empty()).map(str::parse::<Channel>) {
+        Some(Ok(channel)) => channel,
+        Some(Err(err)) => {
+            tracing::warn!(%err, %configured, "ignoring CCTUI_DAEMON_CHANNEL");
+            configured
+        }
+        None => configured,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn channel_defaults_to_stable_and_env_overrides_it() {
+        let cfg: Config = toml::from_str("server_url = \"s\"\nmachine_key = \"k\"\n").unwrap();
+        assert_eq!(cfg.channel, Channel::Stable);
+        let cfg: Config =
+            toml::from_str("server_url = \"s\"\nmachine_key = \"k\"\nchannel = \"beta\"\n").unwrap();
+        assert_eq!(cfg.channel, Channel::Beta);
+        assert_eq!(channel_override(None, Channel::Beta), Channel::Beta);
+        assert_eq!(channel_override(Some(""), Channel::Beta), Channel::Beta);
+        assert_eq!(channel_override(Some("stable"), Channel::Beta), Channel::Stable);
+        assert_eq!(channel_override(Some("beta"), Channel::Stable), Channel::Beta);
+        assert_eq!(channel_override(Some("nightly"), Channel::Stable), Channel::Stable);
+    }
 
     #[test]
     fn save_creates_an_owner_only_file_and_round_trips() {
@@ -123,6 +165,7 @@ mod tests {
             machine_key: "secret-key".to_owned(),
             machine_id: None,
             read_file_roots: Vec::new(),
+            channel: Channel::Beta,
         };
         cfg.save_to(&path).unwrap();
         #[cfg(unix)]
