@@ -27,7 +27,6 @@
 	import { promptHistory } from '$lib/drafts';
 	import { HistoryNav } from '$lib/historyNav';
 	import PromptHistoryMenu from '$lib/components/molecules/PromptHistoryMenu.svelte';
-	import { MediaQuery } from 'svelte/reactivity';
 
 	let {
 		form = $bindable(),
@@ -102,9 +101,6 @@
 		gitWatcher.update(form.machine_id, form.working_dir);
 		return gitWatcher.cancel;
 	});
-	// A narrow cwd field makes mobile browsers zoom on focus, so narrow
-	// viewports give the machine picker its own row.
-	const stacked = new MediaQuery('(max-width: 480px)');
 	const cwdBadgeTitle = $derived.by(() => {
 		if (!cwdBadge) return '';
 		if (cwdBadge.sha) return m.spawn_cwd_detached_title({ sha: cwdBadge.sha });
@@ -112,10 +108,6 @@
 		return m.spawn_cwd_branch_title({ branch: cwdBadge.text });
 	});
 </script>
-
-{#snippet machineInline()}
-	<MachinePicker bind:value={form.machine_id} {machines} label={m.spawn_machine_label()} />
-{/snippet}
 
 {#if machines.length === 0}
 	<Callout tone="warn" icon="info">
@@ -125,14 +117,8 @@
 {/if}
 
 <div class="where" data-journey="where">
-	{#if stacked.current}
-		<div class="machine-row">
-			<MachinePicker bind:value={form.machine_id} {machines} label={m.spawn_machine_label()} />
-		</div>
-	{/if}
 	<Field label={m.spawn_cwd_label()} for="sp-cwd">
 		<FilterInput
-			inline={stacked.current ? undefined : machineInline}
 			id="sp-cwd"
 			key="cwd"
 			schema={cwdSchema}
@@ -143,6 +129,9 @@
 			title={form.working_dir || undefined}
 			onchange={onCwdChange}
 		>
+			{#snippet inline()}
+				<MachinePicker bind:value={form.machine_id} {machines} label={m.spawn_machine_label()} />
+			{/snippet}
 			{#snippet display()}
 				<WorkingDir path={form.working_dir} shrink minLeaf={12} />
 			{/snippet}
@@ -215,9 +204,6 @@
 		flex-direction: column;
 		gap: var(--sp-1);
 		min-width: 0;
-	}
-	.machine-row {
-		display: flex;
 	}
 	.branch {
 		display: inline-flex;

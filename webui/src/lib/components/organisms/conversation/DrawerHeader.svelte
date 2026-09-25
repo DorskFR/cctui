@@ -463,9 +463,12 @@
 	   dir, mirroring the session card footer. */
 	.meta-trail {
 		display: flex;
+		flex-wrap: wrap;
+		justify-content: flex-end;
 		align-items: center;
 		gap: var(--sp-2);
-		flex: none;
+		flex: 0 1 auto;
+		min-width: 0;
 		margin-left: auto;
 	}
 	/* Star/pin toggle in the lead row (mirrors SessionCard). */

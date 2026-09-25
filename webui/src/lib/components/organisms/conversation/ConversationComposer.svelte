@@ -15,7 +15,17 @@
 		useSessionAttachments,
 		useSessions
 	} from '$lib/queries';
-	import { Button, FileButton, Input, Menu, Modal, Text, Textarea } from '@dorsk/tsumikit';
+	import {
+		Button,
+		FileButton,
+		IconButton,
+		Input,
+		InputGroup,
+		Menu,
+		Modal,
+		Text,
+		Textarea
+	} from '@dorsk/tsumikit';
 	import type { MenuItem } from '@dorsk/tsumikit';
 	import ScheduledMessages from './ScheduledMessages.svelte';
 	import { customBounds, parseCustom, schedulePresets, toLocalInput } from './scheduleTimes';
@@ -408,98 +418,98 @@
 		{/if}
 		{#if coldOffer}
 			<div class="cold-offer">
-				<Text tone="muted" size="sm">{m.composer_followup_offer()}</Text>
-				<span class="cold-offer-btns">
-					<Button size="sm" variant="primary" onclick={followup}>{m.drawer_followup_label()}</Button>
-					<Button size="sm" onclick={() => (coldOfferDismissed = session.id)}
-						>{m.composer_followup_dismiss()}</Button
-					>
-				</span>
+				<Text tone="muted" size="sm">
+					{m.composer_followup_offer()}
+					<Button variant="link" size="sm" onclick={followup}>{m.composer_followup_start()}</Button>
+				</Text>
+				<IconButton
+					icon="x"
+					variant="ghost"
+					box="xs"
+					label={m.composer_followup_dismiss()}
+					onclick={() => (coldOfferDismissed = session.id)}
+				/>
 			</div>
 		{/if}
-		<div class="composer-row">
-			{#if supportsAttachments}
-				<!-- File picker. Drag-and-drop onto the conversation pane also
-				     adds attachments. Icon-only: the label is hidden (a11y-only) so the
-				     control stays a compact square matching the textarea/Send height. -->
-				<FileButton label={m.composer_attach_files()} multiple iconOnly control onfiles={addFiles} />
-			{/if}
-			<!-- Starts at one row (Textarea's baked-in min-height) and grows with
-			     content (autoresize). The top handle drags a min-height floor so
-			     the user can pin a taller working area; content still grows past it
-			     (tsumikit 0.2.15). -->
-			<!-- The `#` session-mention panel opens as a dropup above the field
-			     (the composer is pinned to the bottom of the drawer). -->
-			<div class="composer-input">
-				<SessionMention
+		{#snippet attach()}
+			<FileButton
+				label={m.composer_attach_files()}
+				multiple
+				iconOnly
+				variant="ghost"
+				box="sm"
+				onfiles={addFiles}
+			/>
+		{/snippet}
+		<!-- The `#` session-mention panel opens as a dropup above the field
+		     (the composer is pinned to the bottom of the drawer). -->
+		<InputGroup leading={supportsAttachments ? attach : undefined}>
+			<SessionMention
+				bind:value={input}
+				el={scroll.textarea}
+				sessions={mentionSessions}
+				excludeId={session.id}
+				placement="up"
+			>
+				<Textarea
+					rows={1}
+					autoresize
+					resize="top"
+					maxHeight="40vh"
+					submitOn={coarsePointer ? 'mod-enter' : 'enter'}
+					onsubmit={submit}
+					data-journey="message"
+					aria-label={m.a11y_composer_message()}
+					placeholder={dragActive
+						? m.composer_drop_files()
+						: coarsePointer
+							? m.composer_placeholder_message()
+							: m.composer_placeholder_message_enter()}
 					bind:value={input}
-					el={scroll.textarea}
-					sessions={mentionSessions}
-					excludeId={session.id}
-					placement="up"
-				>
-					<Textarea
-						rows={1}
-						autoresize
-						resize="top"
-						maxHeight="40vh"
-						submitOn={coarsePointer ? 'mod-enter' : 'enter'}
-						onsubmit={submit}
-						data-journey="message"
-						aria-label={m.a11y_composer_message()}
-						placeholder={dragActive
-							? m.composer_drop_files()
-							: coarsePointer
-								? m.composer_placeholder_message()
-								: m.composer_placeholder_message_enter()}
-						bind:value={input}
-						bind:el={scroll.textarea}
-						onkeydown={onKey}
-						oninput={() => resetHistoryNav()}
-						onpaste={onPaste}
-					/>
-				</SessionMention>
-			</div>
-			<span class="row-push" aria-hidden="true"></span>
-			<!-- Stays a plain primary button across all cost states: layering a `tone`
-			     (info/warn) on `primary` recolored the LABEL to the tone hue over the
-			     accent fill (e.g. light-blue text on the green accent → unreadable).
-			     The cold/imminent state is signalled by the label itself
-			     (countdown · ❄️ · burst estimate) + the title tooltip, so the button
-			     keeps its expected high-contrast primary colors. -->
-			<span class="send-split">
-				<Button
-					variant="primary"
-					control
-					shrink={false}
-					disabled={uploading || images.pending.length > 0 || (!input.trim() && attachments.length === 0)}
-					onclick={send}
-					title={cacheCold
-						? burstTokens
-							? m.composer_cache_cold_burst({ tokens: compact(burstTokens) })
-							: m.composer_cache_cold()
-						: coldImminent
-							? m.composer_cache_imminent()
-							: undefined}
-				>
-					{#if uploading}{m.composer_uploading()}{:else if coldImminent}{m.composer_send()} (<span
-							class="countdown">{coldCountdownSecs}s</span
-						>){:else if cacheCold && burstTokens}{m.composer_send()} ❄️ ~{compact(
-							burstTokens
-						)}{:else if cacheCold}{m.composer_send()}
-						❄️{:else}{m.composer_send()}{/if}
-				</Button>
-				<Menu
-					label={m.composer_schedule_menu()}
-					items={scheduleItems}
-					placement="top-end"
-					variant="primary"
-					control
-				>
-					{#snippet trigger()}<span aria-hidden="true">▾</span>{/snippet}
-				</Menu>
-			</span>
-		</div>
+					bind:el={scroll.textarea}
+					onkeydown={onKey}
+					oninput={() => resetHistoryNav()}
+					onpaste={onPaste}
+				/>
+			</SessionMention>
+			{#snippet trailing()}
+				<!-- Stays a plain primary button across all cost states: a `tone` on
+				     `primary` recolors the label over the accent fill (unreadable). The
+				     cold/imminent state lives in the label and the title tooltip. -->
+				<span class="send-split">
+					<Button
+						variant="primary"
+						size="sm"
+						shrink={false}
+						disabled={uploading || images.pending.length > 0 || (!input.trim() && attachments.length === 0)}
+						onclick={send}
+						title={cacheCold
+							? burstTokens
+								? m.composer_cache_cold_burst({ tokens: compact(burstTokens) })
+								: m.composer_cache_cold()
+							: coldImminent
+								? m.composer_cache_imminent()
+								: undefined}
+					>
+						{#if uploading}{m.composer_uploading()}{:else if coldImminent}{m.composer_send()} (<span
+								class="countdown">{coldCountdownSecs}s</span
+							>){:else if cacheCold && burstTokens}{m.composer_send()} ❄️ ~{compact(
+								burstTokens
+							)}{:else if cacheCold}{m.composer_send()}
+							❄️{:else}{m.composer_send()}{/if}
+					</Button>
+					<Menu
+						label={m.composer_schedule_menu()}
+						items={scheduleItems}
+						placement="top-end"
+						variant="primary"
+						size="sm"
+					>
+						{#snippet trigger()}<span aria-hidden="true">▾</span>{/snippet}
+					</Menu>
+				</span>
+			{/snippet}
+		</InputGroup>
 	{/if}
 </div>
 
@@ -534,7 +544,6 @@
 		padding-bottom: calc(var(--sp-3) + var(--safe-bottom));
 		border-top: 1px solid var(--border);
 		background: var(--bg-elevated);
-		container: composer / inline-size;
 	}
 	/* Highlight the composer while a file drag hovers the conversation pane
 	  . */
@@ -543,61 +552,10 @@
 		outline-offset: -2px;
 		background: color-mix(in srgb, var(--c-blue) 8%, var(--bg-elevated));
 	}
-	.composer-row {
-		display: flex;
-		flex-wrap: nowrap;
-		gap: var(--sp-2);
-		/* Align the attach/send controls to the BOTTOM edge of the (growable)
-		   textarea so all three share a baseline at every font scale. */
-		align-items: flex-end;
-		/* Never let the row exceed the composer width — nowrap + min-width:0 on the
-		   textarea keeps it contained. */
-		min-width: 0;
-		/* Retune the shared control height the `control` prop reads so Send and the
-		   attach FileButton track the Textarea's font-scaled single line. The kit's
-		   own 2.75rem is fixed, but the textarea grows with --fs-base (form-control
-		   font is max(16px,--fs-base)) — leaving the buttons shorter at the largest
-		   scale. Mirror the Textarea's metrics: line-box (max(16px,--fs-base) ×
-		   --lh-tight) + 2×--sp-2 vertical padding + 2px border, floored at 2.5rem. */
-		--control-height: max(
-			2.5rem,
-			calc(max(16px, var(--fs-base)) * var(--lh-tight) + 2 * var(--sp-2) + 2px)
-		);
-	}
-	/* The Textarea now ships its own .textarea-wrap root, so the row flex lives on
-	   this layout wrapper rather than the textarea element. */
-	.composer-input {
-		flex: 1;
-		min-width: 0;
-	}
-	.row-push {
-		display: none;
-	}
-	/* Narrow: the textarea takes a full-width line (a narrow field makes mobile
-	   browsers zoom on focus); the controls wrap onto the line below, attach on
-	   the left and the send slot on the right. */
-	@container composer (max-width: 480px) {
-		.composer-row {
-			flex-wrap: wrap;
-		}
-		.composer-input {
-			order: -1;
-			flex: 1 1 100%;
-		}
-		.row-push {
-			display: block;
-			flex: 1;
-		}
-	}
 	.cold-offer {
 		display: flex;
-		flex-wrap: wrap;
 		align-items: center;
 		justify-content: space-between;
-		gap: var(--sp-2);
-	}
-	.cold-offer-btns {
-		display: flex;
 		gap: var(--sp-2);
 	}
 	.attachments {

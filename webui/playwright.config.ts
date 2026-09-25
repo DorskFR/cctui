@@ -31,7 +31,7 @@ export default defineConfig({
 		},
 		{
 			name: 'mobile-fields',
-			testMatch: 'mobile-field-width.spec.ts',
+			testMatch: 'mobile-inline-fields.spec.ts',
 			use: { baseURL: headerUrl, storageState: resolve(webui, 'journeys/.auth/state.json') }
 		},
 		{
