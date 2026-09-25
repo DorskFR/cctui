@@ -45,6 +45,16 @@
 		onnexthit?: () => void;
 	} = $props();
 
+	// Every control in this bar paints the same box. The kit's Popover trigger
+	// cannot wear Toggle chrome (its canonical chrome is button-height), so the
+	// Pins and Filters triggers stay local `.chip` spans — which means the height
+	// has to be pinned from one place instead of emerging from each content's
+	// line box, or an emoji glyph makes its Toggle taller than an SVG one.
+	const CTL = 'height:var(--bar-ctl-h);box-sizing:border-box;padding-block:0;line-height:1';
+	// `bare` leaves the trigger an inline box, whose baseline strut would add
+	// leading under the chip; flex removes the line box altogether.
+	const TRIG = 'display:flex;align-items:center;height:var(--bar-ctl-h)';
+
 	const QUICK_TINT: Record<QuickFilterId, string> = {
 		assistant: 'var(--role-assistant)',
 		user: 'var(--role-user)',
@@ -83,7 +93,7 @@
 				data-journey="quick"
 				data-journey-key={q.id}
 				pressed={quickOn(view.msgFilter, q.id)}
-				style={`--toggle-accent: ${QUICK_TINT[q.id]}${quickPartial(view.msgFilter, q.id) ? ';border-style:dashed' : ''}`}
+				style={`${CTL};--toggle-accent: ${QUICK_TINT[q.id]}${quickPartial(view.msgFilter, q.id) ? ';border-style:dashed' : ''}`}
 				title={quickTitle(q.id)}
 				onclick={() => toggleQuick(q.id)}
 			>
@@ -94,6 +104,7 @@
 			label={m.conversation_filter_menu_aria()}
 			placement="bottom-start"
 			bare
+			style={TRIG}
 			triggerClass="toolbar-chip"
 		>
 			{#snippet trigger()}
@@ -115,8 +126,12 @@
 	</div>
 	{#if hitCount > 0}
 		<div class="hitbar row" role="group" aria-label={m.conversation_hits_aria()}>
-			<Toggle pressed={false} title={m.conversation_hit_prev()} onclick={onprevhit}>↑</Toggle>
-			<Toggle pressed={false} title={m.conversation_hit_next()} onclick={onnexthit}>↓</Toggle>
+			<Toggle pressed={false} style={CTL} title={m.conversation_hit_prev()} onclick={onprevhit}
+				><span class="glyph">↑</span></Toggle
+			>
+			<Toggle pressed={false} style={CTL} title={m.conversation_hit_next()} onclick={onnexthit}
+				><span class="glyph">↓</span></Toggle
+			>
 			<span class="hit-count" aria-live="polite"
 				>{m.conversation_hit_counter({ n: hitIndex + 1, total: hitCount })}</span
 			>
@@ -125,22 +140,25 @@
 	<div class="behbar row" role="group" aria-label={m.conversation_behavior_aria()}>
 		<Toggle
 			pressed={autoApprove}
-			style="--toggle-accent: var(--warn)"
+			style={`${CTL};--toggle-accent: var(--warn)`}
 			title={m.conversation_auto_approve_title()}
 			aria-label={m.conversation_auto_approve_aria()}
 			onclick={ontoggleAuto}
-			><span aria-hidden="true">⚡</span><span class="wide"> {m.conversation_auto_approve_btn()}</span></Toggle
+			><span class="glyph" aria-hidden="true">⚡</span><span class="wide"
+				>{m.conversation_auto_approve_btn()}</span
+			></Toggle
 		>
 		{#if onjumpseq && onunpin}
 			<Popover
 				label={m.conversation_pins_aria()}
 				placement="bottom-end"
 				bare
+				style={TRIG}
 				triggerClass="toolbar-chip"
 			>
 				{#snippet trigger()}
 					<span class="chip">
-						<Icon name="pin" filled={pins.length > 0} />
+						<Icon name="pin" size={12} filled={pins.length > 0} />
 						<span class="wide">{m.conversation_pins()}</span>{pins.length ? ` ${pins.length}` : ''}
 					</span>
 				{/snippet}
@@ -161,7 +179,10 @@
 		align-items: center;
 		justify-content: center;
 		gap: 4px;
-		padding: 0.15rem var(--sp-2);
+		box-sizing: border-box;
+		height: var(--bar-ctl-h);
+		padding: 0 var(--sp-2);
+		line-height: 1;
 		border: 1px solid var(--border);
 		border-radius: var(--r-sm);
 		background: var(--bg-elevated-2);
@@ -194,6 +215,9 @@
 		border-bottom: 1px solid var(--border);
 		font-size: var(--fs-xs);
 		container: drawer-toolbar / inline-size;
+		/* --box-xs at the default root size, but px like the rest of the bar so
+		   the text-size control cannot shift it under the cursor. */
+		--bar-ctl-h: 24px;
 		/* Px, not rem: the text-size control rescales the root, and the bar must
 		   not shift under the cursor while it moves. */
 		--fs-xs: 12px;
@@ -207,6 +231,16 @@
 	.hitbar {
 		gap: var(--sp-1);
 		flex-wrap: nowrap;
+		align-items: center;
+	}
+	/* An emoji's line box is taller than a 12px SVG's. Fixing the inline size and
+	   killing the leading keeps the glyph from setting its control's height. */
+	.glyph {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		min-width: 1em;
+		line-height: 1;
 	}
 	/* Auto-approve and Pins sit at the right edge, where an overflow clips them
 	   out of reach entirely. Any residual overflow is absorbed by the filters
