@@ -2624,11 +2624,12 @@ pub struct MintTokenResponse {
     pub expires_at: Option<chrono::DateTime<Utc>>,
 }
 
-/// Only a human credential may mint a human token: a machine key would
-/// otherwise escalate itself. Admin may mint for anyone, a user only for itself.
-fn authorize_token_mint(ctx: &AuthContext, user_id: Uuid) -> Result<(), &'static str> {
-    if ctx.machine_id.is_some() {
-        return Err("machine keys cannot mint user tokens");
+/// Only a human credential may mint a human token: a machine or dispatcher key
+/// would otherwise escalate itself. Admin may mint for anyone, a user only for
+/// itself.
+fn authorize_token_mint(ctx: &AuthContext, human: bool, user_id: Uuid) -> Result<(), &'static str> {
+    if !human || ctx.machine_id.is_some() {
+        return Err("only a user credential can mint user tokens");
     }
     if !ctx.is_admin() && ctx.user_id != user_id {
         return Err("cannot mint tokens for another user");
@@ -2650,17 +2651,20 @@ pub async fn mint_user_token(
     Path(user_id): Path<Uuid>,
     Json(req): Json<MintTokenRequest>,
 ) -> Result<Json<MintTokenResponse>, (StatusCode, Json<ApiError>)> {
-    authorize_token_mint(&ctx, user_id)
-        .map_err(|msg| (StatusCode::FORBIDDEN, Json(ApiError { error: msg.into() })))?;
-
-    let ceiling = crate::store::acls::user_ceiling(&state.pool, user_id).await.map_err(|e| {
+    let db_err = |e: sqlx::Error| {
         tracing::error!("db error: {e}");
         (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-    })?;
+    };
+    let human = crate::auth::is_human_credential(&state.pool, &ctx).await.map_err(db_err)?;
+    authorize_token_mint(&ctx, human, user_id)
+        .map_err(|msg| (StatusCode::FORBIDDEN, Json(ApiError { error: msg.into() })))?;
+
+    let ceiling = crate::store::acls::user_ceiling(&state.pool, user_id).await.map_err(db_err)?;
     let grant = token_grant(&ctx, &ceiling);
     let token = user_token(&mint_secret());
     let hash = sha256_hex(&token);
     let preview = crate::auth::token_preview(&token);
+    let mut tx = state.pool.begin().await.map_err(db_err)?;
     sqlx::query(
         "INSERT INTO user_tokens (user_id, token_hash, label, expires_at, token_preview) \
          VALUES ($1, $2, $3, $4, $5)",
@@ -2670,17 +2674,11 @@ pub async fn mint_user_token(
     .bind(req.label.as_deref())
     .bind(req.expires_at)
     .bind(&preview)
-    .execute(&state.pool)
+    .execute(&mut *tx)
     .await
-    .map_err(|e| {
-        tracing::error!("db error: {e}");
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-    })?;
-
-    // Mirror into the unified api_keys table so the token resolves through the
-    // new auth path with the clamped grant.
-    if let Err(e) = crate::auth::register_key(
-        &state.pool,
+    .map_err(db_err)?;
+    crate::auth::register_key(
+        &mut *tx,
         crate::auth::NewKey {
             user_id,
             key_hash: &hash,
@@ -2695,9 +2693,8 @@ pub async fn mint_user_token(
         grant,
     )
     .await
-    {
-        tracing::warn!("failed to register user token in api_keys: {e}");
-    }
+    .map_err(db_err)?;
+    tx.commit().await.map_err(db_err)?;
 
     Ok(Json(MintTokenResponse { token, label: req.label, expires_at: req.expires_at }))
 }
@@ -2721,16 +2718,23 @@ mod mint_token_tests {
     #[test]
     fn machine_key_cannot_mint_for_its_own_user() {
         let uid = Uuid::new_v4();
-        assert!(authorize_token_mint(&ctx(uid, true, &Scope::all()), uid).is_err());
-        assert!(authorize_token_mint(&ctx(uid, false, &[Scope::Read]), uid).is_ok());
+        assert!(authorize_token_mint(&ctx(uid, true, &Scope::all()), true, uid).is_err());
+        assert!(authorize_token_mint(&ctx(uid, false, &[Scope::Read]), true, uid).is_ok());
+    }
+
+    #[test]
+    fn dispatcher_key_cannot_mint_for_its_own_user() {
+        let uid = Uuid::new_v4();
+        let dispatcher = ctx(uid, false, &[Scope::Read, Scope::Dispatch]);
+        assert!(authorize_token_mint(&dispatcher, false, uid).is_err());
     }
 
     #[test]
     fn only_admin_mints_for_another_user() {
         let target = Uuid::new_v4();
         let other = Uuid::new_v4();
-        assert!(authorize_token_mint(&ctx(other, false, &[Scope::Read]), target).is_err());
-        assert!(authorize_token_mint(&ctx(other, false, &Scope::all()), target).is_ok());
+        assert!(authorize_token_mint(&ctx(other, false, &[Scope::Read]), true, target).is_err());
+        assert!(authorize_token_mint(&ctx(other, false, &Scope::all()), true, target).is_ok());
     }
 
     #[test]

@@ -2,7 +2,7 @@
 // makes the new-session dialog open on a known folder. The DB half (machines,
 // sessions, transcripts) is seed.sql, and seed.sh runs both in the right order.
 //
-//   CCTUI_TOKEN=dev-admin node deploy/local/fixture/seed-api.mjs [theme]
+//   CCTUI_TOKEN=<admin token> node deploy/local/fixture/seed-api.mjs [theme]
 
 const vars = JSON.parse(process.env.JOURNEY_VARS ?? '{}');
 const token = vars.token ?? process.env.CCTUI_TOKEN;

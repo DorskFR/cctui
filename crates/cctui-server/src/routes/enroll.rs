@@ -84,6 +84,7 @@ async fn enroll_machine(
     let key_hash = sha256_hex(&token);
     let preview = crate::auth::token_preview(&token);
 
+    let mut tx = pool.begin().await?;
     sqlx::query(
         "INSERT INTO machines (id, user_id, name, key_hash, kind, key_preview) \
          VALUES ($1, $2, $3, $4, $5, $6)",
@@ -94,11 +95,11 @@ async fn enroll_machine(
     .bind(&key_hash)
     .bind(kind)
     .bind(&preview)
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
 
     crate::auth::register_key(
-        pool,
+        &mut *tx,
         crate::auth::NewKey {
             user_id,
             key_hash: &key_hash,
@@ -113,6 +114,7 @@ async fn enroll_machine(
         grant,
     )
     .await?;
+    tx.commit().await?;
     Ok((machine_id, token))
 }
 

@@ -128,7 +128,10 @@ clean:  ## Remove build artifacts
 # together. UI on :8088, server API on :8700. See deploy/local/.
 LOCAL_COMPOSE ?= deploy/local/docker-compose.yaml
 LOCAL_ENV ?= deploy/local/.env
-LOCAL_DC = docker compose -f $(LOCAL_COMPOSE) --env-file $(LOCAL_ENV)
+# The top-level dev defaults are exported into every recipe and would override
+# the generated secrets, so local/* recipes drop them.
+LOCAL_UNSET = env -u CCTUI_ADMIN_TOKENS -u CCTUI_VAULT_KEY -u CCTUI_TOKEN -u DATABASE_URL
+LOCAL_DC = $(LOCAL_UNSET) docker compose -f $(LOCAL_COMPOSE) --env-file $(LOCAL_ENV)
 LOCAL_ADMIN_TOKEN = $$(sed -n 's/^CCTUI_ADMIN_TOKENS=//p' $(LOCAL_ENV) | cut -d, -f1)
 
 .PHONY: local/up local/down local/logs local/pull local/ps local/seed local/demo
@@ -147,7 +150,7 @@ local/up: $(LOCAL_ENV)  ## Start the full local stack (postgres + server + UI) f
 	@echo "cctui up — UI: http://localhost:8088  ·  API: http://localhost:8700  (admin token: $(LOCAL_ADMIN_TOKEN))"
 
 local/seed: $(LOCAL_ENV)  ## Load the demo fixture into the running local stack
-	env -u DATABASE_URL CCTUI_TOKEN="$${CCTUI_TOKEN:-$(LOCAL_ADMIN_TOKEN)}" bash deploy/local/fixture/seed.sh
+	$(LOCAL_UNSET) CCTUI_TOKEN="$(LOCAL_ADMIN_TOKEN)" bash deploy/local/fixture/seed.sh
 
 local/demo: local/up  ## Start the local stack and fill it with demo data
 	@until curl -s -o /dev/null $(CCTUI_URL)/api/v1/version 2>/dev/null; do sleep 1; done

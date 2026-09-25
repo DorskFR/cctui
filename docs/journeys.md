@@ -63,7 +63,8 @@ the shoot just captured, and only those: quantisation is lossy and cannot be
 detected after the fact, so re-running it over the whole record would both
 degrade screens nobody re-rendered and show them up as a diff.
 
-The admin token defaults to `dev-admin` and only ever reaches the login
+The admin token comes from `CCTUI_TOKEN` or `deploy/local/.env` (written by
+`make local/up`) and only ever reaches the login
 endpoint; the browser state it mints lands in `webui/journeys/.auth/`, which is
 gitignored.
 

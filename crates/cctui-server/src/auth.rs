@@ -404,11 +404,12 @@ pub struct NewKey<'a> {
     pub passkey_id: Option<Uuid>,
 }
 
-pub async fn register_key(
-    pool: &PgPool,
+pub async fn register_key<'c>(
+    exec: impl sqlx::Acquire<'c, Database = sqlx::Postgres>,
     key: NewKey<'_>,
     scopes: impl IntoIterator<Item = Scope>,
 ) -> Result<Uuid, sqlx::Error> {
+    let mut tx = exec.begin().await?;
     let key_id: (Uuid,) = sqlx::query_as(
         "INSERT INTO auth_keys \
            (user_id, key_hash, key_preview, label, kind, machine_id, dispatcher_id, expires_at, \
@@ -426,10 +427,28 @@ pub async fn register_key(
     .bind(key.dispatcher_id)
     .bind(key.expires_at)
     .bind(key.passkey_id)
+    .fetch_one(&mut *tx)
+    .await?;
+    crate::store::acls::grant_key(&mut *tx, key_id.0, scopes).await?;
+    tx.commit().await?;
+    Ok(key_id.0)
+}
+
+/// Whether the credential behind `ctx` belongs to a person rather than a
+/// machine or dispatcher. Only a human credential may mint human tokens.
+pub async fn is_human_credential(pool: &PgPool, ctx: &AuthContext) -> Result<bool, sqlx::Error> {
+    if ctx.machine_id.is_some() {
+        return Ok(false);
+    }
+    let non_human: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM auth_keys WHERE id = $1 \
+           AND (dispatcher_id IS NOT NULL OR machine_id IS NOT NULL \
+                OR kind IN ('dispatcher', 'machine', 'ephemeral')))",
+    )
+    .bind(ctx.key_id)
     .fetch_one(pool)
     .await?;
-    crate::store::acls::grant_key(pool, key_id.0, scopes).await?;
-    Ok(key_id.0)
+    Ok(!non_human)
 }
 
 pub async fn auth_middleware(request: Request, next: Next) -> Result<Response, StatusCode> {
