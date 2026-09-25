@@ -76,9 +76,15 @@ function optimisticDispatchCard(
   };
 }
 
+/** Refetch every session list (active and archived). */
+export function useInvalidateSessions() {
+  const qc = useQueryClient();
+  return () => qc.invalidateQueries({ queryKey: qk.sessionsAll });
+}
+
 export function useSessionActions() {
   const qc = useQueryClient();
-  const inval = () => qc.invalidateQueries({ queryKey: ["sessions"] });
+  const inval = () => qc.invalidateQueries({ queryKey: qk.sessionsAll });
   const invalLabels = () => qc.invalidateQueries({ queryKey: qk.labels });
   return {
     rename: async (id: string, name: string) => {

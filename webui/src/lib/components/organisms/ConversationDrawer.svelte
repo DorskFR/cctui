@@ -141,7 +141,7 @@
 		historyData: () => history.data,
 		pin: scroll.stickToBottom,
 		invalidateConversation: () => qc.invalidateQueries({ queryKey: qk.conversation(id) }),
-		invalidateSessions: () => qc.invalidateQueries({ queryKey: ['sessions'] }),
+		invalidateSessions: () => qc.invalidateQueries({ queryKey: qk.sessionsAll }),
 		mergeIntoCache: (sid, ev) =>
 			qc.setQueryData<AgentEvent[]>(qk.conversation(sid), (prev) => mergeLiveEvent(prev, ev))
 	});

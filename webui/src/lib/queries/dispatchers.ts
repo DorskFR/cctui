@@ -1,3 +1,4 @@
+import { qk } from "./keys";
 import { createQuery, useQueryClient } from "@tanstack/svelte-query";
 import { endpoints } from "./endpoints";
 import type { RenameDispatcher } from "@bindings/RenameDispatcher";
@@ -36,7 +37,7 @@ export interface EnrollDispatcherResponse {
 
 export const useDispatchers = (enabled: () => boolean) =>
   createQuery(() => ({
-    queryKey: ["dispatchers"],
+    queryKey: qk.dispatchers,
     queryFn: endpoints.dispatchers,
     enabled: enabled(),
     staleTime: 60_000,
@@ -44,7 +45,7 @@ export const useDispatchers = (enabled: () => boolean) =>
 
 export const useUserDispatchers = () =>
   createQuery(() => ({
-    queryKey: ["user-dispatchers"],
+    queryKey: qk.userDispatchers,
     queryFn: endpoints.userDispatchers,
   }));
 
@@ -53,8 +54,8 @@ export const useUserDispatchers = () =>
 export function useDispatcherActions() {
   const qc = useQueryClient();
   const inval = () => {
-    qc.invalidateQueries({ queryKey: ["user-dispatchers"] });
-    qc.invalidateQueries({ queryKey: ["dispatchers"] });
+    qc.invalidateQueries({ queryKey: qk.userDispatchers });
+    qc.invalidateQueries({ queryKey: qk.dispatchers });
   };
   return {
     enroll: async (body: {

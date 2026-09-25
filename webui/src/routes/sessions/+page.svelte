@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { untrack, onMount, type Snippet } from 'svelte';
 	import type { SessionListItem } from '@bindings/SessionListItem';
-	import { useSessions, useSessionActions, useLabels, endpoints, qk } from '$lib/queries';
+	import { useSessions, useSessionActions, useInvalidateSessions, useLabels, endpoints, qk } from '$lib/queries';
 	import { useQueryClient } from '@tanstack/svelte-query';
 	import { page } from '$app/state';
 	import { pushState, replaceState } from '$app/navigation';
@@ -315,6 +315,7 @@
 	const sessions = useSessions(() => false);
 
 	const qc = useQueryClient();
+	const invalidateSessions = useInvalidateSessions();
 	const actions = useSessionActions();
 
 	// Labels: the global label set feeds both the per-card picker and
@@ -461,7 +462,7 @@
 				await actions.unarchiveMany(ids);
 				toasts.ok(m.sessions_toast_unarchived());
 				refreshTick++;
-				qc.invalidateQueries({ queryKey: ['sessions'] });
+				invalidateSessions();
 			}
 		};
 	}
@@ -470,7 +471,7 @@
 		await actions.archiveMany(ids);
 		toasts.ok(m.sessions_toast_archived({ count: ids.length }), undefined, undoArchive(ids));
 		refreshTick++;
-		qc.invalidateQueries({ queryKey: ['sessions'] });
+		invalidateSessions();
 	}
 	const archiveConfirm = new ArchiveConfirm(runArchive, (e) => toasts.error(errMessage(e)));
 	const archiving = $derived(archivingOne || archiveConfirm.busy);
@@ -540,7 +541,7 @@
 	// live status changes from the websocket → refetch the list
 	$effect(() => {
 		void ws.changeTick;
-		qc.invalidateQueries({ queryKey: ['sessions'] });
+		invalidateSessions();
 	});
 
 	// Tell the notifier which drawer is open so it won't notify for it.
@@ -561,7 +562,7 @@
 		if (!id) return;
 		void actions
 			.markSeen(id)
-			.then(() => qc.invalidateQueries({ queryKey: ['sessions'] }))
+			.then(() => invalidateSessions())
 			.catch(() => {});
 	});
 
@@ -1126,7 +1127,7 @@
 				spawnPrefill = null;
 				dockEpoch++;
 			}}
-			onspawned={() => qc.invalidateQueries({ queryKey: ['sessions'] })}
+			onspawned={() => invalidateSessions()}
 		/>
 	{/key}
 {:else if showSpawn}
@@ -1137,7 +1138,7 @@
 			showSpawn = false;
 			spawnPrefill = null;
 		}}
-		onspawned={() => qc.invalidateQueries({ queryKey: ['sessions'] })}
+		onspawned={() => invalidateSessions()}
 	/>
 {/if}
 

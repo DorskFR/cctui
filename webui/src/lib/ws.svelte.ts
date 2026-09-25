@@ -642,10 +642,10 @@ export class WsClient {
 			case 'resync': {
 				const sid = msg.session_id;
 				void this.queryClient?.invalidateQueries({
-					queryKey: sid ? qk.conversation(sid) : ['conversation']
+					queryKey: sid ? qk.conversation(sid) : qk.conversationAll
 				});
 				if (!sid) {
-					void this.queryClient?.invalidateQueries({ queryKey: ['sessions'] });
+					void this.queryClient?.invalidateQueries({ queryKey: qk.sessionsAll });
 					this.markListDirty();
 				}
 				break;
