@@ -21,7 +21,7 @@ const pace = (ratio: number, wall: string | null = null): UsagePace => ({
 	projected_wall_at: wall
 });
 
-const win = (key: string, utilization: number, p: UsagePace | null = null): UsageWindow => ({
+const win = (key: string, utilization: number, p?: UsagePace): UsageWindow => ({
 	key,
 	kind: key,
 	label: key,
