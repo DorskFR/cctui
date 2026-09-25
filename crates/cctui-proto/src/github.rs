@@ -1,5 +1,7 @@
-//! GitHub integration wire types. They live here because ts-rs bindings are
-//! generated from this crate and both the server and `cctui-github` depend on it.
+//! GitHub integration wire types.
+//!
+//! They live here because ts-rs bindings are generated from this crate and
+//! both the server and `cctui-github` depend on it.
 //! Credentials are accepted on create only and never read back.
 
 use serde::{Deserialize, Serialize};

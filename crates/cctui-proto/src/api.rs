@@ -482,7 +482,7 @@ pub struct UsageAnalytics {
 #[ts(export)]
 pub struct MessageRequest {
     pub content: String,
-    /// Client-minted UUIDv7 echoed on every event of the turn.
+    /// Client-minted `UUIDv7` echoed on every event of the turn.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub turn_id: Option<uuid::Uuid>,
     /// RFC3339, at most 30 days ahead; the request is queued and returns 202.

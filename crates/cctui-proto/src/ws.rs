@@ -36,17 +36,11 @@ pub const READ_FILE_INLINE_BYTES: u64 = 1024 * 1024;
 
 pub const READ_FILE_MAX_BYTES: u64 = 32 * 1024 * 1024;
 
-/// Frames sent by a daemon to the server over `/api/v1/daemon/ws`.
-///
-/// `Event` is inherently the largest variant (it carries an [`AdapterEvent`]
-/// with JSON payloads / many optional fields); boxing it would ripple
-/// through every construct/match site for no real benefit on this
-/// non-hot-path wire enum.
-
 /// Daemon → server frames on `/api/v1/daemon/ws`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[non_exhaustive]
+// Boxing `Event` would touch every construct/match site of this non-hot-path enum.
 #[allow(clippy::large_enum_variant)]
 pub enum DaemonFrameUp {
     Event {
@@ -469,7 +463,7 @@ pub enum TuiCommand {
         /// 0-based option picks per question; `content` stays the text fallback.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         ask_picks: Option<Vec<Vec<usize>>>,
-        /// Client-minted UUIDv7.
+        /// Client-minted `UUIDv7`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         turn_id: Option<uuid::Uuid>,
     },
