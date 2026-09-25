@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { highlightLine, highlightLineCached, langForPath } from "../diff/highlight";
+import { escapeHtml } from "../markdown/highlight";
 
 const PAYLOADS = [
   `<script>alert(1)</script>`,
@@ -61,5 +62,11 @@ describe("DiffView highlight sink is XSS-safe on both paths", () => {
     expect(highlightLine(`<img src=x onerror=alert(1)>`, null)).toBe(
       "&lt;img src=x onerror=alert(1)&gt;",
     );
+  });
+});
+
+describe("diff fallback escaping", () => {
+  it("uses the shared escapeHtml for unhighlighted lines", () => {
+    for (const p of PAYLOADS) expect(highlightLine(p, null)).toBe(escapeHtml(p));
   });
 });

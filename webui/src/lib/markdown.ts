@@ -3,39 +3,15 @@
  * escaped first, so no raw HTML from the model survives; we then re-introduce a
  * small, fixed set of tags. All colors are CSS-variable driven (see
  * `--md-*` / `--syn-*` in variables.css) so themes adapt.
- *
- * Adds over the legacy renderer:
- *  - per-language fenced-code highlighting (lang from the info-string)
- *  - Claude-terminal feel: grayish prose, bold = bright, `inline code` = blue
- *  - headings, lists, blockquotes
- *  - leaked `<system message>` / harness pseudo-tags rendered as muted markup
- *    instead of being dropped or shown as broken text.
  */
 
-export function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
+import {
+  escapeHtml,
+  highlightCode,
+  stripAnsi,
+} from "$ghreview/lib/markdown/highlight";
 
-// Terminal output (diffs, tool stdout) often carries ANSI escape sequences. They
-// aren't HTML-escaped by escapeHtml, so left in place they leak into the DOM as
-// raw control bytes — visible as garbled `28→29`-style artifacts that turn
-// pink/red when copied into a terminal. Strip the SGR/CSI/OSC sequences and any
-// stray C0 control chars (keeping \t and \n) before rendering. The ANSI pattern
-// is the well-worn `ansi-regex` one (ESC / CSI introducers + parameter bytes).
-// eslint-disable-next-line no-control-regex
-const ANSI_RE =
-  /[\x1B\x9B][[\]()#;?]*(?:(?:(?:(?:;[-a-zA-Z\d/#&.:=?%@~_]+)*|[a-zA-Z\d]+(?:;[-a-zA-Z\d/#&.:=?%@~_]*)*)?\x07)|(?:(?:\d{1,4}(?:;\d{0,4})*)?[\dA-PR-TZcf-ntqry=><~]))/g;
-// C0 control chars except tab (\x09) and newline (\x0A), plus DEL (\x7F).
-// eslint-disable-next-line no-control-regex
-const C0_RE = /[\x00-\x08\x0B-\x1F\x7F]/g;
-
-export function stripAnsi(s: string): string {
-  return s.replace(ANSI_RE, "").replace(C0_RE, "");
-}
+export { escapeHtml, stripAnsi };
 
 // Sentinels for placeholder protection — characters that never appear in source
 // text or in our escaped HTML, so restore passes can't collide with content.
@@ -46,130 +22,6 @@ const BLOCK_R = "";
 // markup. We render them as a muted inline chip rather than dropping them.
 const PSEUDO_TAG =
   /&lt;(\/?(?:system[- ]message|system-reminder|task-notification|command-name|command-message|local-command[^&]*|bash-input|bash-stdout|bash-stderr)[^&]*?)&gt;/gi;
-
-// ── Syntax highlighting ─────────────────────────────────────────────────────
-// Grammar-driven highlighting via highlight.js. We register only the languages
-// we care about (the common-set bundle), so the dep stays lean. highlight.js emits
-// already-escaped HTML with `hljs-*` token classes; we map those to the existing
-// `--syn-*` theme variables in CSS so dark/light/sepia themes still drive the
-// colors (and the standalone export's baked palette keeps working). Unknown
-// languages and diffs fall back to plain escaped text — still safe, just flat.
-
-import hljs from "highlight.js/lib/core";
-import javascript from "highlight.js/lib/languages/javascript";
-import typescript from "highlight.js/lib/languages/typescript";
-import python from "highlight.js/lib/languages/python";
-import rust from "highlight.js/lib/languages/rust";
-import go from "highlight.js/lib/languages/go";
-import bash from "highlight.js/lib/languages/shell";
-import bashLang from "highlight.js/lib/languages/bash";
-import json from "highlight.js/lib/languages/json";
-import yaml from "highlight.js/lib/languages/yaml";
-import xml from "highlight.js/lib/languages/xml";
-import css from "highlight.js/lib/languages/css";
-import sql from "highlight.js/lib/languages/sql";
-import dockerfile from "highlight.js/lib/languages/dockerfile";
-import diffLang from "highlight.js/lib/languages/diff";
-import markdown from "highlight.js/lib/languages/markdown";
-import toml from "highlight.js/lib/languages/ini";
-
-hljs.registerLanguage("javascript", javascript);
-hljs.registerLanguage("typescript", typescript);
-hljs.registerLanguage("python", python);
-hljs.registerLanguage("rust", rust);
-hljs.registerLanguage("go", go);
-hljs.registerLanguage("shell", bash);
-hljs.registerLanguage("bash", bashLang);
-hljs.registerLanguage("json", json);
-hljs.registerLanguage("yaml", yaml);
-hljs.registerLanguage("xml", xml);
-hljs.registerLanguage("css", css);
-hljs.registerLanguage("sql", sql);
-hljs.registerLanguage("dockerfile", dockerfile);
-hljs.registerLanguage("diff", diffLang);
-hljs.registerLanguage("markdown", markdown);
-hljs.registerLanguage("ini", toml);
-
-/** The shared highlight.js core with our lean language set already registered.
- * Re-exported so the diff viewer (GH-VIEW-3) can highlight individual rendered
- * lines without registering its own duplicate language bundle. */
-export { hljs };
-
-/** Resolve a fenced-code info-string / language hint to a registered highlight.js
- * language name, applying our alias table (`ts`→`typescript`, …). Returns the
- * canonical name when known, else `null`. */
-export function resolveLang(lang: string): string | null {
-  const norm = LANG_ALIAS[lang.toLowerCase()] ?? lang.toLowerCase();
-  return norm && hljs.getLanguage(norm) ? norm : null;
-}
-
-const LANG_ALIAS: Record<string, string> = {
-  js: "javascript",
-  jsx: "javascript",
-  mjs: "javascript",
-  cjs: "javascript",
-  ts: "typescript",
-  tsx: "typescript",
-  py: "python",
-  rs: "rust",
-  golang: "go",
-  sh: "shell",
-  zsh: "shell",
-  yml: "yaml",
-  html: "xml",
-  svg: "xml",
-  md: "markdown",
-  toml: "ini",
-  docker: "dockerfile",
-  patch: "diff",
-};
-
-function highlightCode(rawCode: string, lang: string): string {
-  const clean = stripAnsi(rawCode);
-  const norm = LANG_ALIAS[lang.toLowerCase()] ?? lang.toLowerCase();
-
-  // Diff blocks (our pretty-diff path passes `lang: ''` but the body is `+`/`-`
-  // prefixed lines) and explicit diff/patch: line-color them ourselves so the
-  // classic green-add / red-remove reads at a glance, independent of grammar.
-  if (norm === "diff" || (!norm && looksLikeDiff(clean)))
-    return highlightDiff(clean);
-
-  if (norm && hljs.getLanguage(norm)) {
-    try {
-      return hljs.highlight(clean, { language: norm, ignoreIllegals: true })
-        .value;
-    } catch {
-      /* fall through to plain */
-    }
-  }
-  // Unknown / no language: escaped plain text (flat, but safe).
-  return escapeHtml(clean);
-}
-
-// Heuristic: a body where most non-blank lines start with +/-/space (and at
-// least one +/- line) is a unified diff even without a `diff` info-string.
-function looksLikeDiff(s: string): boolean {
-  const lines = s.split("\n").filter((l) => l.length);
-  if (lines.length < 2) return false;
-  let marked = 0;
-  for (const l of lines) if (l[0] === "+" || l[0] === "-") marked++;
-  return marked >= 1 && marked >= lines.length * 0.5;
-}
-
-function highlightDiff(s: string): string {
-  return s
-    .split("\n")
-    .map((line) => {
-      const esc = escapeHtml(line);
-      if (line.startsWith("+"))
-        return `<span class="hljs-addition">${esc}</span>`;
-      if (line.startsWith("-"))
-        return `<span class="hljs-deletion">${esc}</span>`;
-      if (line.startsWith("@@")) return `<span class="hljs-meta">${esc}</span>`;
-      return esc;
-    })
-    .join("\n");
-}
 
 // Wrap a highlighted code body in a positioned figure carrying a copy button.
 // The button is plain markup; a single delegated listener
