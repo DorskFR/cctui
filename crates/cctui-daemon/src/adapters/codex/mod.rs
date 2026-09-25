@@ -21,7 +21,7 @@
 //! an `adapters_enabled` row can disable it per machine.
 //!
 //! Socket path: `$CCTUI_CODEX_SOCK`, defaulting to
-//! `$XDG_RUNTIME_DIR/cctui-codex.sock`.
+//! `$XDG_RUNTIME_DIR/cctui-codex.sock`, else a per-user private dir.
 
 pub(crate) mod app_server;
 pub mod codex_version_gate;
@@ -39,7 +39,6 @@ use std::path::PathBuf;
 
 use cctui_proto::adapter::{AdapterCommand, AdapterEvent};
 use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::net::UnixListener;
 use tokio::sync::mpsc;
 
 use crate::adapter_runtime::{Adapter, AdapterCtx, AdapterFactory};
@@ -116,17 +115,8 @@ impl Adapter for CodexAdapter {
             return run_default(ctx).await;
         }
         let path = resolve_socket_path(&ctx.config);
-        let _ = std::fs::remove_file(&path);
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let listener = UnixListener::bind(&path)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let perms = std::fs::Permissions::from_mode(0o600);
-            let _ = std::fs::set_permissions(&path, perms);
-        }
+        let listener = crate::runtime::bind_private_socket(&path)
+            .inspect_err(|err| tracing::error!(%err, "codex uds socket unavailable"))?;
         tracing::info!(socket = %path.display(), "codex adapter listening");
 
         loop {
@@ -1096,8 +1086,7 @@ fn resolve_socket_path(config: &serde_json::Value) -> PathBuf {
     if let Ok(p) = std::env::var("CCTUI_CODEX_SOCK") {
         return PathBuf::from(p);
     }
-    let base = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_string());
-    PathBuf::from(base).join("cctui-codex.sock")
+    crate::runtime::socket_path("cctui-codex.sock")
 }
 
 pub struct CodexFactory;

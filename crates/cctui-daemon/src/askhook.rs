@@ -286,7 +286,7 @@ fn run_perm(sock: &Path, session_id: &str, payload: &Value) {
 /// decision (`defer` on its timeout) before the hook's configured `timeout`
 /// ceiling, so this can't hang the turn indefinitely.
 fn request_decision(sock: &Path, line: &str) -> std::io::Result<Option<Value>> {
-    let mut stream = UnixStream::connect(sock)?;
+    let mut stream = connect_trusted(sock)?;
     stream.set_write_timeout(Some(Duration::from_secs(2)))?;
     stream.write_all(line.as_bytes())?;
     stream.write_all(b"\n")?;
@@ -426,16 +426,60 @@ fn format_questions(tool_input: Option<&Value>) -> String {
 /// Connect to the daemon socket and write one newline-delimited JSON line.
 /// A connect timeout keeps the hook from ever hanging the agent's turn.
 fn send(sock: &Path, line: &str) -> std::io::Result<()> {
-    let mut stream = UnixStream::connect(sock)?;
+    let mut stream = connect_trusted(sock)?;
     stream.set_write_timeout(Some(Duration::from_secs(2)))?;
     stream.write_all(line.as_bytes())?;
     stream.write_all(b"\n")?;
     stream.flush()
 }
 
+fn check_owner(what: &str, owner: u32, own: u32) -> std::io::Result<()> {
+    if owner == own {
+        Ok(())
+    } else {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!("{what} belongs to uid {owner}, not {own}; refusing"),
+        ))
+    }
+}
+
+/// Connect only to a daemon running as our own uid: the socket file must be
+/// ours and, where the kernel reports it, so must the listening peer.
+fn connect_trusted(sock: &Path) -> std::io::Result<UnixStream> {
+    use std::os::unix::fs::MetadataExt;
+    let own = rustix::process::getuid().as_raw();
+    check_owner("daemon socket", std::fs::symlink_metadata(sock)?.uid(), own)?;
+    let stream = UnixStream::connect(sock)?;
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        let cred = rustix::net::sockopt::socket_peercred(&stream)?;
+        check_owner("daemon socket peer", cred.uid.as_raw(), own)?;
+    }
+    Ok(stream)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn foreign_uid_is_refused() {
+        check_owner("peer", 1000, 1000).unwrap();
+        let err = check_owner("peer", 0, 1000).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+    }
+
+    #[test]
+    fn own_daemon_socket_is_trusted_and_missing_one_errors() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("d.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let handle = std::thread::spawn(move || listener.accept().map(|_| ()));
+        connect_trusted(&path).expect("own-uid socket and peer are trusted");
+        handle.join().unwrap().unwrap();
+        assert!(connect_trusted(&tmp.path().join("missing.sock")).is_err());
+    }
 
     #[test]
     fn formats_question_with_options() {
