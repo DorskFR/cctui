@@ -351,9 +351,6 @@ async fn run_tui_socket(
                 .await;
             }
             TuiCommand::PermissionResponse { session_id, request_id, behavior } => {
-                // Authorize against the session id the client supplied. The
-                // store's record_decision may re-resolve to a stored session id
-                // below, but the principal must own the one they're acting on.
                 if !ws_owns_session(&state, &ctx, &session_id).await {
                     tracing::debug!(session_id = %session_id, user_id = %ctx.user_id, "tui_ws: permission-response denied (not owner)");
                     continue;
@@ -368,12 +365,13 @@ async fn run_tui_socket(
                     let b = behavior.to_ascii_lowercase();
                     b.starts_with("allow") || b == "accept" || b == "approved"
                 };
-                let stored_session_id =
-                    state.permission_store.write().await.record_decision(&request_id, behavior);
-                // Prefer the id attached at submission; fall back to the one
-                // the client sent (stale / unknown request_id cases).
-                let resolved_session_id =
-                    if stored_session_id.is_empty() { session_id } else { stored_session_id };
+                let Some(resolved_session_id) =
+                    permission_target(&state.permission_store, session_id, &request_id, behavior)
+                        .await
+                else {
+                    tracing::warn!(%request_id, user_id = %ctx.user_id, "tui_ws: permission-response for another session's request");
+                    continue;
+                };
                 // Push the decision down to the adapter so blocking agents
                 // (e.g. the codex app-server, which holds the turn open until
                 // it gets a reply) are unblocked.
@@ -415,6 +413,22 @@ async fn run_tui_socket(
         if state.bus.pty_watch_dec(&session_id) {
             set_daemon_pty_watch(&state, &session_id, false).await;
         }
+    }
+}
+
+/// The session a client's permission decision is forwarded to, or `None` when
+/// `request_id` is pending for a session other than the (authorized)
+/// `session_id` the client named.
+async fn permission_target(
+    store: &crate::routes::permissions::SharedPermissionStore,
+    session_id: String,
+    request_id: &str,
+    behavior: String,
+) -> Option<String> {
+    use crate::routes::permissions::SessionDecision;
+    match store.write().await.record_session_decision(&session_id, request_id, behavior) {
+        SessionDecision::Foreign => None,
+        SessionDecision::Recorded | SessionDecision::Unknown => Some(session_id),
     }
 }
 
@@ -536,8 +550,9 @@ mod tests {
     use cctui_proto::models::{Session, SessionStatus};
     use cctui_proto::ws::ServerEvent;
 
-    use super::{event_session_id, origin_permitted};
+    use super::{event_session_id, origin_permitted, permission_target};
     use crate::config::Config;
+    use crate::routes::permissions::{PendingPermission, PermissionStore};
 
     fn cfg() -> Config {
         Config::for_test(vec!["https://cctui.example.com".to_owned()])
@@ -584,6 +599,42 @@ mod tests {
     fn session_registered_is_owner_scoped() {
         let event = ServerEvent::SessionRegistered { session: session("sess-1") };
         assert_eq!(event_session_id(&event), Some("sess-1"));
+    }
+
+    fn pending(session_id: &str, request_id: &str) -> PendingPermission {
+        PendingPermission {
+            session_id: session_id.into(),
+            request_id: request_id.into(),
+            tool_name: "Bash".into(),
+            description: String::new(),
+            input_preview: String::new(),
+            received_at: chrono::Utc::now(),
+        }
+    }
+
+    #[tokio::test]
+    async fn permission_response_for_foreign_request_is_not_dispatched() {
+        let store = PermissionStore::shared();
+        store.write().await.insert_request(pending("sess-b", "req-b"));
+
+        let target = permission_target(&store, "sess-a".into(), "req-b", "allow".into()).await;
+        assert_eq!(target, None);
+        let kept = store.read().await.list_pending();
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].session_id, "sess-b");
+    }
+
+    #[tokio::test]
+    async fn permission_response_for_own_request_is_dispatched() {
+        let store = PermissionStore::shared();
+        store.write().await.insert_request(pending("sess-a", "req-a"));
+
+        let target = permission_target(&store, "sess-a".into(), "req-a", "allow".into()).await;
+        assert_eq!(target.as_deref(), Some("sess-a"));
+        assert!(store.read().await.list_pending().is_empty());
+
+        let stale = permission_target(&store, "sess-a".into(), "req-a", "allow".into()).await;
+        assert_eq!(stale.as_deref(), Some("sess-a"));
     }
 
     #[test]
