@@ -47,7 +47,7 @@ pub struct ListDirsResponse {
 }
 
 // Machine ownership is enforced by the `Resource(Machine, Read, IdFrom::Path
-// ("machine_id"))` guard in `authz.rs`: the `authz_layer` middleware
+// ("machine_id"))` guard in `authz.rs`: the `enforce_route` middleware
 // resolves `machines.user_id` and applies `admin || owner == caller` before this
 // handler runs (404 unknown machine / 403 not-your-machine / admin bypass). The
 // handler only needs the machine id to talk to the daemon.

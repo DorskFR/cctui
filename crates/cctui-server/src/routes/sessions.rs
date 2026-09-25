@@ -92,7 +92,7 @@ pub async fn deregister(
 
 // Per-session ownership is enforced by the `Resource(Session, …)` guard in
 // `authz.rs`: the single-object session routes declare that policy and the
-// `authz_layer` middleware resolves owner via `machine_uuid -> machines.user_id`
+// `enforce_route` middleware resolves owner via `machine_uuid -> machines.user_id`
 // before the handler runs (404 unknown / 403 cross-user / admin bypass). The
 // batch routes below still filter inline (`filter_owned_ids`) because a yes/no
 // guard can't express "act only on the ids you own".

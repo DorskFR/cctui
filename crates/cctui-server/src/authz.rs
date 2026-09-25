@@ -2,112 +2,14 @@
 //!
 //! Every HTTP route is registered through [`Routes::add`], which demands BOTH
 //! an [`Authn`] (how identity is proven) and an [`Authz`] (what the principal
-//! may do). There is deliberately no overload that omits them, so "forgetting
-//! authorization on a route" cannot compile.
+//! may do), so "forgetting authorization on a route" cannot compile.
 //!
 //! The descriptor list ([`Routes::into_parts`]) IS the route table: the axum
 //! `Router` is built only from it, and a coverage test walks it to assert every
-//! route carries both axes. The list is the single source of truth.
+//! route carries both axes; each route's policy is enforced by
+//! [`enforce_route`] inside the outer `auth_middleware`.
 //!
-//! ## Enforcement model
-//!
-//! `add` attaches each route's [`Authz`] as a per-route request extension via
-//! `route_layer`. A single [`authz_layer`] middleware, layered on the
-//! authenticated `/api/v1` group AFTER `auth_middleware`, looks up that
-//! extension and evaluates it against the request's [`AuthContext`]:
-//!
-//!   * a request that reaches the layer with **no** `Authz` extension is
-//!     rejected `403` — **default deny**, the fail-closed backstop;
-//!   * otherwise the policy is evaluated (see [`Authz::enforce`]).
-//!
-//! ## Scope
-//!
-//! The [`Authn`] axis only records how identity is proven for the coverage
-//! test; it does not re-implement authentication (`auth_middleware` for
-//! `/api/v1`, inline self-auth on the daemon/dispatcher/trigger/gateway
-//! endpoints are untouched). Per-OBJECT ownership is centralized in the
-//! [`Resource`] guard: single-object session routes and the machine-scoped fs
-//! route declare [`Authz::Resource`], with in-handler owner checks gone (the
-//! guard is authoritative). Routes whose authorization can't be a yes/no gate
-//! — self-scoped list/search/stats endpoints (the `owner_filter()` SQL filter)
-//! and batch endpoints (`filter_owned_ids`) — declare [`Authz::Authenticated`]
-//! and keep their filter in the handler; they are enumerated in the coverage
-//! test. A handful of single-object routes (accounts/dispatchers/prompts/keys)
-//! also stay `Authenticated`/`Scope` because they fold ownership into the
-//! mutating SQL's `WHERE` clause and return `404` (not `403`) for a cross-user
-//! id — moving them onto the guard would change that client-visible
-//! semantics, so they are intentionally left inline.
-//!
-//! ## The full authn × authz model
-//!
-//! Two orthogonal, declarative axes are demanded per route:
-//!
-//!   * **Authn** — how identity is proven: [`Authn`] `{None, Bearer, BodyToken}`.
-//!     `None` is `/health` only; everything else proves a principal. `Bearer`
-//!     resolves from the `Authorization` header or the `HttpOnly` auth cookie.
-//!   * **Authz** — what the principal may do: [`Authz`] `{Public, Authenticated,
-//!     Human, Scope, Resource, Custom}`.
-//!
-//! For an [`Authz::Resource(kind, action, id)`] route the guard
-//! ([`authorize_resource`]) evaluates THREE composable steps, all in one place so
-//! no endpoint ever re-implements authorization:
-//!
-//!   1. **RBAC capability** ([`role_permits`]): may the principal's role exercise
-//!      `(ResourceKind, Action)` at all? Today the coarse [`Scope`] enforced
-//!      upstream is the only capability, so this is `true` for any authenticated
-//!      principal. A future role→`(kind, action)` table slots in HERE with no
-//!      per-endpoint change — the descriptor already names `kind` and `action`.
-//!   2. **Resource authorization** ([`Resource::authorize`]): may the principal
-//!      act on THIS object? The default rule is `admin || owner(id) == principal`.
-//!      Share grants compose here (see below).
-//!   3. (Self-scoped list/search/stats endpoints can't be a yes/no gate; they
-//!      declare [`Authz::Authenticated`] and apply `owner_filter()` in SQL.)
-//!
-//! ### Resource sharing extension point (design + seam, not yet implemented)
-//!
-//! Ownership is just the FIRST rule in [`Resource::authorize`]. Grants are added
-//! in ONE place — that default method — and every [`Authz::Resource`] route
-//! inherits them automatically, touching neither the guard nor any handler. A
-//! future implementation adds a `shares` table and a grant lookup inside
-//! `authorize`:
-//!
-//! ```sql
-//! -- shares(resource ResourceKind, id, grantee_user_id NULL, token NULL,
-//! --        action, expires, revoked)  -- DB-backed/revocable preferred
-//! ```
-//!
-//! ```ignore
-//! async fn authorize(ctx, action, id, db) -> Decision {
-//!     if ctx.is_admin() { return Decision::Allowed; }
-//!     if Self::owner_of(id, db).await? == Some(ctx.user_id) { return Decision::Allowed; }
-//!     // grant lookup composes here, no guard/endpoint change:
-//!     // if shares::granted(kind, id, ctx.user_id, action, db).await? { Decision::Allowed }
-//!     Decision::Denied
-//! }
-//! ```
-//!
-//! Self-scoped list queries would additionally `UNION` shared-in rows.
-//!
-//! ### `Principal::Share` deeplink tokens (design only, not built)
-//!
-//! Deeplink share tokens slot into the **Authn** axis without changing the real
-//! [`AuthContext`] or auth flow. The plan:
-//!
-//!   * A new principal variant resolved by the authenticator:
-//!     `Principal::Share { resource: ResourceKind, id: Uuid, action: Action,
-//!     expires: DateTime }`. The token is minted for exactly one
-//!     resource+action+object — least privilege.
-//!   * The guard checks the share principal against the route's declared
-//!     [`Authz::Resource(kind, action, IdFrom)`]: the token is honored ONLY when
-//!     `share.resource == kind && share.action permits action && share.id == the
-//!     resolved id && now < share.expires`. It can do nothing else — a Share
-//!     principal fails every other policy (other resources, other actions, scope
-//!     gates, admin collections).
-//!   * For sensitive session data, DB-backed tokens (a `shares` row) are
-//!     preferred over self-contained JWTs so a share is revocable.
-//!
-//! This documents the extension point; `Principal::Share` is not added to
-//! `AuthContext`/`auth.rs`.
+//! Enforcement model and the sharing extension point: `docs/authz.md`.
 
 use std::sync::Arc;
 
@@ -124,11 +26,6 @@ use crate::auth::{AuthContext, Scope};
 use crate::state::AppState;
 
 /// How identity is proven for a route.
-///
-/// `BodyToken` describes the self-authenticating endpoints' method for the route
-/// table / coverage test even though those endpoints keep their inline auth, so
-/// the variant is not constructed in the `/api/v1` descriptor list (only
-/// `Bearer`/`None` are).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
 pub enum Authn {
@@ -139,9 +36,8 @@ pub enum Authn {
     /// `HttpOnly` auth cookie (browser + WS upgrade); there is no
     /// `?token=`-on-URI variant.
     Bearer,
-    /// A token carried in the request body (daemon/dispatcher `auth`, triggers).
-    /// The field name differs per endpoint, so these keep their inline
-    /// self-authentication rather than folding into a generic body authenticator.
+    /// A token carried in the request body (daemon/dispatcher `auth`, triggers);
+    /// those endpoints keep their inline self-authentication.
     BodyToken,
 }
 
@@ -173,11 +69,7 @@ impl IdFrom {
 }
 
 /// The kinds of resource the per-object guard knows about. Each has a
-/// [`Resource`] owner-resolution impl. `Session` and `Machine` are
-/// wired onto HTTP routes; the rest are implemented for completeness and are
-/// reachable via the guard once their routes adopt it (their single-object
-/// routes currently fold ownership into the SQL `WHERE` clause — see the module
-/// doc).
+/// [`Resource`] owner-resolution impl.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
 pub enum ResourceKind {
@@ -190,35 +82,23 @@ pub enum ResourceKind {
     ApiKey,
 }
 
-/// The escape-hatch signature: a small, audited closure when neither a scope
-/// nor a single-object gate fits. Receives the principal and the resolved id
-/// (if any). Kept intentionally narrow.
+/// The escape-hatch signature: receives the principal and the resolved id (if any).
 #[allow(dead_code)]
 pub type AuthzFn = fn(&AuthContext, Option<&str>) -> Result<(), StatusCode>;
 
-/// What a principal may do on a route. `Resource` is used by per-object
-/// routes (sessions + the machine fs route). `Public` and
-/// `Custom` remain part of the framework's surface but are unused by any
-/// `/api/v1` route (`/health` is `Public` on the outer app; no `Custom` rule
-/// exists yet), so they are constructed only in tests.
+/// What a principal may do on a route.
 #[derive(Clone)]
 #[allow(dead_code)]
 pub enum Authz {
-    /// No identity required (only `/health`).
     Public,
-    /// Any valid principal. For `/api/v1` this is already guaranteed by
-    /// `auth_middleware`; the layer then re-asserts a principal is present.
-    /// Self-scoped list/filter endpoints use this and keep their SQL filter.
+    /// Any valid principal. Self-scoped list/filter endpoints keep their SQL filter.
     Authenticated,
     /// A human principal: a user or admin token with `Read`, never a machine key.
-    /// Self-scoped routes use this and keep their SQL owner filter.
     Human,
     /// A capability gate, no object: `ctx.requires(scope)`.
     Scope(Scope),
-    /// A per-object gate. The id is resolved from the request via [`IdFrom`]
-    /// and checked by [`authorize_resource`].
+    /// A per-object gate checked by [`authorize_resource`].
     Resource(ResourceKind, Action, IdFrom),
-    /// Small audited escape hatch.
     Custom(AuthzFn),
 }
 
@@ -236,9 +116,7 @@ impl std::fmt::Debug for Authz {
 }
 
 impl Authz {
-    /// Evaluate this policy. Called by [`authz_layer`] after authentication has
-    /// populated [`AuthContext`]. The resource id (if the policy is
-    /// [`Authz::Resource`]) is pre-resolved from the request by the caller so
+    /// Evaluate this policy. The resource id is pre-resolved by the caller so
     /// this future borrows nothing from the (non-`Send`) request body.
     async fn enforce(
         &self,
@@ -247,10 +125,7 @@ impl Authz {
         pool: Option<&PgPool>,
     ) -> Result<(), StatusCode> {
         match self {
-            // The authenticated `/api/v1` group never carries `Public` routes;
-            // `Public` reaching here still requires the principal that
-            // `auth_middleware` guaranteed. (The genuinely public `/health`
-            // lives outside this layer entirely.)
+            // `/health` is the only genuinely public route and lives outside this layer.
             Self::Public | Self::Authenticated => Ok(()),
             Self::Human => {
                 if ctx.machine_id.is_none() && ctx.has(Scope::Read) {
@@ -266,12 +141,10 @@ impl Authz {
                 let pool = pool.ok_or(StatusCode::INTERNAL_SERVER_ERROR)?;
                 authorize_resource(*kind, ctx, *action, id.as_deref(), pool).await
             }
-            // The escape hatch receives the resolved id where one exists.
             Self::Custom(f) => f(ctx, id.as_deref()),
         }
     }
 
-    /// The path param this policy sources its id from, if any.
     const fn id_from(&self) -> Option<IdFrom> {
         match self {
             Self::Resource(_, _, id_from) => Some(*id_from),
@@ -279,14 +152,9 @@ impl Authz {
         }
     }
 
-    /// The coarse [`Scope`] this policy implies for documentation.
-    ///
-    /// A `Scope(s)` route requires exactly `s`. Every other policy
-    /// (`Authenticated`, per-object `Resource`, `Custom`, `Public`) is reachable
-    /// by any authenticated principal, i.e. it needs no scope beyond `Read` — so
-    /// that is what the generated `OpenAPI`/`llms.txt` advertise as the minimum
-    /// scope. (Per-object routes ADDITIONALLY require ownership, documented
-    /// separately in `llms.txt`.)
+    /// The minimum [`Scope`] advertised in `OpenAPI`/`llms.txt`: `s` for
+    /// `Scope(s)`, otherwise `Read` (per-object routes additionally require
+    /// ownership).
     #[must_use]
     pub const fn human_only(&self) -> bool {
         matches!(self, Self::Human)
@@ -310,27 +178,17 @@ async fn resolve_id(req: &mut Request, id_from: IdFrom) -> Option<String> {
     raw.iter().find(|(k, _)| *k == name).map(|(_, v)| v.to_string())
 }
 
-/// RBAC capability insertion point. The FIRST step of an
-/// [`Authz::Resource`] evaluation: may the principal's role exercise
-/// `(ResourceKind, Action)` at all, independent of any specific object?
-///
-/// Today the coarse [`Scope`] enforced upstream by `auth_middleware` is the only
-/// capability model, so any authenticated principal is permitted here and this
-/// returns `true` — **no behavior change**. A future role-based model looks up
-/// the principal's role → permitted `(ResourceKind, Action)` set HERE; because
-/// the descriptor already carries `kind` and `action`, enabling roles needs NO
-/// per-endpoint change. Returning `false` makes the guard deny with `403`.
+/// RBAC capability gate, the first step of an [`Authz::Resource`] evaluation.
+/// Permits every authenticated principal; a role → `(ResourceKind, Action)`
+/// table belongs here. Returning `false` makes the guard deny with `403`.
 const fn role_permits(_ctx: &AuthContext, _kind: ResourceKind, _action: Action) -> bool {
     true
 }
 
-/// The outcome of a per-object authorization decision ([`Resource::authorize`]).
-/// Distinct from `Result<(), StatusCode>` so a resource impl expresses intent
-/// (allow / not-owned / unknown) and the guard maps it to the HTTP status,
-/// keeping the existence-leak-safe `404`-vs-`403` policy in ONE place.
+/// The outcome of a per-object authorization decision; the guard maps it to
+/// the HTTP status so the `404`-vs-`403` existence-leak policy lives in one place.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Decision {
-    /// The principal may act on this object.
     Allowed,
     /// The object exists but the principal is neither owner nor grantee → `403`.
     Denied,
@@ -339,36 +197,21 @@ enum Decision {
     NotFound,
 }
 
-/// One resource type's per-object authorization. The single per-resource
-/// authorization primitive: written **once per resource type, not per
-/// endpoint**.
+/// One resource type's per-object authorization.
 ///
-/// [`owner_of`](Resource::owner_of) is the minimal per-resource primitive — the
-/// owning-user DB lookup for that kind, which lives here and nowhere else:
-///   * `Ok(Some(uid))` — the resource exists and `uid` owns it;
-///   * `Ok(None)` — the resource does not exist (or has no resolvable owner);
-///   * `Err(_)` — a DB error, mapped to `500` by the guard.
-///
-/// [`authorize`](Resource::authorize) is the composed rule, **default-implemented
-/// once** on top of `owner_of`: `admin || owner(id) == principal`. This is the
-/// SHARING SEAM: a future `shares` grant lookup goes inside this one
-/// default method and every [`Authz::Resource`] route inherits it automatically,
-/// touching neither the guard nor any endpoint. A resource type overrides
-/// `authorize` only when its access rule is more than ownership (e.g. shares).
+/// [`owner_of`](Resource::owner_of) returns `Ok(Some(uid))` for an owned
+/// resource, `Ok(None)` when it does not exist, `Err(_)` on a DB error (`500`).
+/// [`authorize`](Resource::authorize) composes ownership and share grants for
+/// every [`Authz::Resource`] route.
 trait Resource {
     /// The `resource_shares.resource_type` for a shareable kind, or `None` when
-    /// the kind confers no grants (ownership-only). The default
-    /// [`authorize`](Resource::authorize) composes [`shares::granted`] onto
-    /// ownership for any kind that sets this, so a shareable kind needs ONLY
-    /// this associated const — no per-kind `authorize` override.
+    /// the kind is ownership-only.
     const SHARE_TYPE: Option<&'static str> = None;
 
     async fn owner_of(id: &str, pool: &PgPool) -> Result<Option<Uuid>, sqlx::Error>;
 
-    /// Default: admin bypass, else owner match, else — for a shareable kind — a
-    /// live `use` grant, else denied. The single sharing-composition point:
-    /// every [`Authz::Resource`] route inherits grants via this method,
-    /// touching neither the guard nor any handler.
+    /// Admin bypass, else owner match, else — for a shareable kind — a live
+    /// `use` grant, else denied.
     async fn authorize(
         ctx: &AuthContext,
         _action: Action,
@@ -485,7 +328,6 @@ impl Resource for MachineResource {
     }
 }
 
-/// Dispatchers are owned directly (`dispatchers.user_id`).
 struct DispatcherResource;
 impl Resource for DispatcherResource {
     const SHARE_TYPE: Option<&'static str> = Some(Shareable::Dispatcher.as_share_type());
@@ -502,12 +344,8 @@ impl Resource for UserResource {
     }
 }
 
-/// Accounts (identities) are owned directly (`accounts.user_id`) and may be
-/// SHARED to other users via `resource_shares`. Sharing is expressed by the
-/// `SHARE_TYPE` const, so the default `authorize` composes the grant lookup:
-/// admin → owner → live share grant → denied. Mutation stays owner-only (the
-/// edit/delete handlers fold ownership into their SQL), so a grant only ever
-/// confers use/read.
+/// Accounts may be shared via `resource_shares`; a grant only confers use/read
+/// because the edit/delete handlers fold ownership into their SQL.
 struct AccountResource;
 impl Resource for AccountResource {
     const SHARE_TYPE: Option<&'static str> = Some(Shareable::Account.as_share_type());
@@ -531,7 +369,6 @@ impl Resource for PromptResource {
     }
 }
 
-/// Stored provider keys are owned directly (`api_keys.user_id`).
 struct ApiKeyResource;
 impl Resource for ApiKeyResource {
     async fn owner_of(id: &str, pool: &PgPool) -> Result<Option<Uuid>, sqlx::Error> {
@@ -545,16 +382,8 @@ impl Resource for ApiKeyResource {
     }
 }
 
-/// The single per-object authorization chokepoint, evaluated by [`authz_layer`]
-/// for an [`Authz::Resource`] policy. Resolves the resource's owner via the
-/// per-kind [`Resource`] impl, then applies the default rule:
-/// `admin || owner(id) == principal`.
-///
-/// * admin → ok without a DB lookup;
-/// * owner match → ok;
-/// * a resource owned by someone else → `403`;
-/// * an unknown / unresolvable resource (owner `None`) → `404`, so a resource
-///   id's existence never leaks across users.
+/// The per-object authorization chokepoint for an [`Authz::Resource`] policy:
+/// admin → ok; owner → ok; another owner → `403`; unknown owner → `404`.
 async fn authorize_resource(
     kind: ResourceKind,
     ctx: &AuthContext,
@@ -562,22 +391,16 @@ async fn authorize_resource(
     id: Option<&str>,
     pool: &PgPool,
 ) -> Result<(), StatusCode> {
-    // Step 1 — RBAC capability gate. Today `true` for any principal;
-    // a role→(kind, action) table slots in here with no per-endpoint change.
     if !role_permits(ctx, kind, action) {
         return Err(StatusCode::FORBIDDEN);
     }
-    // Admin bypasses the per-object rule without a DB lookup.
     if ctx.is_admin() {
         return Ok(());
     }
     let Some(id) = id else {
-        // A per-object policy with no resolvable id cannot be satisfied safely
-        // → fail closed.
+        // A per-object policy with no resolvable id fails closed.
         return Err(StatusCode::FORBIDDEN);
     };
-    // Step 2 — per-object authorization. The default `Resource::authorize`
-    // applies `owner(id) == principal`; the sharing seam composes grants here.
     let decision = match kind {
         ResourceKind::Session => SessionResource::authorize(ctx, action, id, pool).await,
         ResourceKind::Machine => MachineResource::authorize(ctx, action, id, pool).await,
@@ -609,18 +432,13 @@ pub async fn authorize_session_read(
     authorize_resource(ResourceKind::Session, ctx, Action::Read, Some(id), pool).await
 }
 
-/// Public re-export of the session owner lookup so the WS path (`ws.rs`) can
-/// reuse the exact same ownership query as the HTTP guard (one authorizer,
-/// two transports). Returns the owning user, or `None` for an
-/// unknown/unresolvable session.
+/// The session owner lookup shared by the HTTP guard and the WS path.
 pub async fn session_owner(id: &str, pool: &PgPool) -> Result<Option<Uuid>, sqlx::Error> {
     SessionResource::owner_of(id, pool).await
 }
 
-/// A single registered route. The descriptor list of all of these is the route
-/// table and the source of truth for the coverage test. The fields are read by
-/// that test (and document each route's policy); at runtime enforcement keys
-/// off the per-route `Authz` extension, not these records.
+/// A registered route. At runtime enforcement keys off the per-route `Authz`
+/// extension; these records are the route table read by tests and docs.
 #[derive(Debug, Clone)]
 #[cfg_attr(not(test), allow(dead_code))]
 pub struct RouteDescriptor {
@@ -628,15 +446,10 @@ pub struct RouteDescriptor {
     pub path: &'static str,
     pub authn: Authn,
     pub authz: Authz,
-    /// A one-line, human-facing description of what the route does. Emitted into
-    /// the `OpenAPI` operation `summary` and the `llms.txt` endpoint list.
-    /// The `every_route_has_a_summary` guard test fails if any route ships this
-    /// empty, so a new route cannot be undocumented.
+    /// One-line description emitted into the `OpenAPI` `summary` and `llms.txt`.
     pub summary: &'static str,
 }
 
-/// Builder that records every route and assembles the axum `Router` from the
-/// recorded descriptors. Every `add` demands both axes.
 pub struct Routes {
     router: Router<AppState>,
     descriptors: Vec<RouteDescriptor>,
@@ -648,14 +461,8 @@ impl Routes {
         Self { router: Router::new(), descriptors: Vec::new() }
     }
 
-    /// Register one route. Records its descriptor(s) and attaches the [`Authz`]
-    /// policy as a per-route extension so [`authz_layer`] can look it up by the
-    /// matched route. There is intentionally no variant that omits the axes.
-    ///
-    /// `methods` lists every HTTP method served by the `handler` on `path` (so
-    /// the descriptor table records one entry per method). A route that serves
-    /// `GET`+`POST` on one path passes both; all methods on a path share the
-    /// same authn+authz, which is the case for every route in this server.
+    /// Register one route for every method in `methods`, attaching the
+    /// [`Authz`] policy as a per-route layer.
     #[must_use]
     #[allow(clippy::similar_names, clippy::needless_pass_by_value)]
     pub fn add(
@@ -668,12 +475,8 @@ impl Routes {
         authz: Authz,
     ) -> Self {
         let policy = Arc::new(authz.clone());
-        // Enforce this route's policy via `route_layer`, which runs ONLY for
-        // requests matched to this route — and, crucially, INSIDE the outer
-        // `auth_middleware` (so `AuthContext` is already populated) yet with the
-        // policy captured directly as layer state. A global `.layer` would run
-        // OUTSIDE the router before the matched route is entered, so it could
-        // never see a per-route extension.
+        // `route_layer` runs inside the outer `auth_middleware` and only for this
+        // route; a global `.layer` would run before the matched route is known.
         let handler = handler.route_layer(middleware::from_fn_with_state(policy, enforce_route));
         self.router = self.router.route(path, handler);
         for method in methods {
@@ -688,8 +491,6 @@ impl Routes {
         self
     }
 
-    /// Consume the builder, returning the assembled router and the descriptor
-    /// list for tests/inspection.
     pub fn into_parts(self) -> (Router<AppState>, Vec<RouteDescriptor>) {
         (self.router, self.descriptors)
     }
@@ -702,20 +503,12 @@ impl Default for Routes {
 }
 
 /// Per-route authorization enforcement, attached by [`Routes::add`] via
-/// `route_layer` with the route's [`Authz`] captured as layer state. It runs
-/// INSIDE the matched route, after the outer `auth_middleware` has populated
-/// [`AuthContext`], so both the policy and the principal are available.
-///
-/// Capturing the policy as `route_layer` state keeps policy and principal on the
-/// same layer, so there is no cross-layer ordering hazard.
+/// `route_layer`, after `auth_middleware` has populated [`AuthContext`].
 async fn enforce_route(
     State(policy): State<Arc<Authz>>,
     mut request: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
-    // Every `/api/v1` route is authenticated by the outer `auth_middleware`,
-    // which inserts the context; its absence means the principal was not
-    // established.
     let ctx = request.extensions().get::<AuthContext>().cloned().ok_or(StatusCode::UNAUTHORIZED)?;
 
     let id = match policy.id_from() {
@@ -723,8 +516,6 @@ async fn enforce_route(
         None => None,
     };
 
-    // The pool is needed ONLY for per-object [`Authz::Resource`] policies; the
-    // scope/authenticated/custom arms never touch it, so look it up lazily.
     let pool = match &*policy {
         Authz::Resource(..) => Some(
             request
@@ -745,8 +536,6 @@ mod tests {
     use super::*;
     use crate::build_api_routes;
 
-    /// The descriptor list IS the route table; walking it guarantees every
-    /// route declares both axes and that the framework's invariants hold.
     fn descriptors() -> Vec<RouteDescriptor> {
         build_api_routes().into_parts().1
     }
@@ -755,22 +544,12 @@ mod tests {
     fn every_api_route_declares_both_axes() {
         let descs = descriptors();
         assert!(!descs.is_empty(), "route table is empty");
-        // `add` cannot be called without both an Authn and an Authz (no
-        // overload omits them), so reaching a descriptor proves both are
-        // present. This test documents that contract and guards against a route
-        // being registered through some other path.
         for d in &descs {
-            // A trivially-true read that nonetheless forces every field to be
-            // read for every descriptor (both axes + method + path).
             let _ = (&d.method, d.path, d.authn, &d.authz);
         }
-        // Every path must start with `/` (it nests under `/api/v1`).
         assert!(descs.iter().all(|d| d.path.starts_with('/')));
     }
 
-    /// CI guard: every registered route MUST carry a non-empty
-    /// `summary`, so a new route cannot ship undocumented in the `OpenAPI` doc /
-    /// `llms.txt` capability index generated from this table.
     #[test]
     fn every_route_has_a_summary() {
         for d in descriptors() {
@@ -785,9 +564,7 @@ mod tests {
 
     #[test]
     fn no_anonymous_api_routes() {
-        // `/health` is the ONLY `Authn::None` route, and it lives outside the
-        // `/api/v1` descriptor table (on the outer app). So the `/api/v1` table
-        // must contain ZERO `Authn::None` routes — everything is authenticated.
+        // `/health` lives outside the `/api/v1` table, so no route here is `Authn::None`.
         let none: Vec<_> = descriptors().into_iter().filter(|d| d.authn == Authn::None).collect();
         assert!(
             none.is_empty(),
@@ -798,8 +575,6 @@ mod tests {
 
     #[test]
     fn no_api_route_is_public() {
-        // Likewise, no `/api/v1` route is `Authz::Public`; `Public` is reserved
-        // for `/health` on the outer app.
         let public: Vec<_> = descriptors()
             .into_iter()
             .filter(|d| matches!(d.authz, Authz::Public))
@@ -810,9 +585,7 @@ mod tests {
 
     #[test]
     fn resource_id_param_appears_in_path() {
-        // Each `Resource(_, _, IdFrom::Path(name))` must source from a param
-        // that actually exists in the route's path (`{name}`), or the id can
-        // never be resolved at runtime.
+        // A `Resource` id param must exist in the route's path.
         for d in descriptors() {
             if let Authz::Resource(_, _, IdFrom::Path(name)) = d.authz {
                 let token = format!("{{{name}}}");
@@ -876,9 +649,8 @@ mod tests {
 
     #[test]
     fn custom_and_scope_routes_are_enumerated() {
-        // Enumerate the non-`Authenticated` policies so any change to who-can-do
-        // -what is visible in this test's expectations. `Custom` routes (none
-        // today) must be listed explicitly when added.
+        // Enumerates every non-`Authenticated` policy so a change to who-can-do-what
+        // shows up in this test.
         let mut custom: Vec<&'static str> = Vec::new();
         let mut scoped: Vec<(&'static str, String)> = Vec::new();
         for d in descriptors() {
@@ -888,18 +660,13 @@ mod tests {
                 _ => {}
             }
         }
-        // No Custom escape-hatch routes exist this ticket; adding one must
-        // update this assertion deliberately.
         assert!(custom.is_empty(), "unexpected Custom authz route(s): {custom:?}");
-        // Scope-gated routes — the capability gates. (Deduped by path; multiple
-        // methods on a path share one policy.)
         scoped.sort();
         scoped.dedup();
         assert!(
             scoped.iter().all(|(_, s)| matches!(s.as_str(), "dispatch" | "enroll" | "admin")),
             "unexpected scope on a route: {scoped:?}"
         );
-        // Sanity: the admin surface and the dispatch/enroll gates are present.
         assert!(scoped.iter().any(|(_, s)| s == "admin"), "no admin-scoped route registered");
         assert!(scoped.iter().any(|(_, s)| s == "dispatch"), "no dispatch-scoped route");
         assert!(scoped.iter().any(|(_, s)| s == "enroll"), "no enroll-scoped route");
@@ -923,9 +690,7 @@ mod tests {
         }
     }
 
-    /// Every `ResourceKind` short-circuits to OK for an admin WITHOUT touching
-    /// the DB (the invalid pool would error if any kind queried it). This is the
-    /// admin-bypass arm of the guard's default rule for all seven kinds.
+    /// Admins short-circuit for every kind without touching the (invalid) pool.
     #[tokio::test]
     async fn resource_guard_admin_bypasses_every_kind() {
         let pool = sqlx::PgPool::connect_lazy("postgres://invalid").unwrap();
@@ -948,8 +713,6 @@ mod tests {
         }
     }
 
-    /// A per-object policy with no resolvable id fails closed (403) for a
-    /// non-admin, without a DB lookup.
     #[tokio::test]
     async fn resource_guard_missing_id_fails_closed() {
         let pool = sqlx::PgPool::connect_lazy("postgres://invalid").unwrap();
@@ -966,10 +729,7 @@ mod tests {
         );
     }
 
-    /// A non-UUID id for a UUID-keyed resource resolves to "unknown" → 404
-    /// (existence-leak-safe), and does NOT touch the DB (the invalid pool would
-    /// error otherwise). Covers the unknown-resource arm for every UUID-keyed
-    /// kind.
+    /// A non-UUID id resolves to unknown (404) without touching the pool.
     #[tokio::test]
     async fn resource_guard_unknown_id_is_404() {
         let pool = sqlx::PgPool::connect_lazy("postgres://invalid").unwrap();
@@ -989,16 +749,13 @@ mod tests {
         }
     }
 
-    /// The `User` resource needs no DB (the id IS the owner), so it exercises
-    /// the full owner-match / cross-user / unknown matrix of the default rule
-    /// without a live pool: owner allowed, another user 403, an unparseable id
-    /// 404.
+    /// `User` needs no DB (the id is the owner): owner 200, other user 403,
+    /// unparseable id 404.
     #[tokio::test]
     async fn resource_guard_user_kind_full_matrix() {
         let pool = sqlx::PgPool::connect_lazy("postgres://invalid").unwrap();
         let uid = Uuid::new_v4();
         let me = user(uid);
-        // Owner acts on itself → ok.
         assert!(
             authorize_resource(
                 ResourceKind::User,
@@ -1010,65 +767,43 @@ mod tests {
             .await
             .is_ok()
         );
-        // Another user → 403 (resource exists, owned by someone else).
         let other = Uuid::new_v4().to_string();
         assert_eq!(
             authorize_resource(ResourceKind::User, &me, Action::Read, Some(&other), &pool).await,
             Err(StatusCode::FORBIDDEN)
         );
-        // An id that can't name a user → 404.
         assert_eq!(
             authorize_resource(ResourceKind::User, &me, Action::Read, Some("nope"), &pool).await,
             Err(StatusCode::NOT_FOUND)
         );
     }
 
-    // ---- sharing/RBAC seam proofs ---------------------------------------------
 
-    /// RBAC SEAM proof. The production [`role_permits`] returns `true` (no
-    /// behavior change). This test reimplements ONLY that hook to deny a
-    /// `(kind, action)` and runs it through the SAME 3-step composition the guard
-    /// uses, proving that a role rule denying a capability yields `403` and that
-    /// the denial happens BEFORE any object/DB lookup (the invalid pool would
-    /// error if it were consulted). Flipping the real hook to consult a role
-    /// table needs no per-endpoint change.
+    /// A role rule denying a capability yields `403` before any object lookup.
     #[tokio::test]
     async fn role_seam_denies_with_403_before_object_lookup() {
-        // Test-only role rule: deny Write on Account, allow everything else.
         fn test_role_permits(_ctx: &AuthContext, kind: ResourceKind, action: Action) -> bool {
             !(kind == ResourceKind::Account && action == Action::Write)
         }
 
-        // Sanity: the production hook is permissive (the no-behavior-change
-        // contract for this ticket).
         assert!(role_permits(&user(Uuid::new_v4()), ResourceKind::Account, Action::Write));
 
         let pool = sqlx::PgPool::connect_lazy("postgres://invalid").unwrap();
         let me = user(Uuid::new_v4());
 
-        // The guard's step 1, with the test rule swapped in. A deny short-circuits
-        // to 403 without resolving the object (pool untouched).
         let gate = |kind, action| -> Result<(), StatusCode> {
             if test_role_permits(&me, kind, action) { Ok(()) } else { Err(StatusCode::FORBIDDEN) }
         };
         assert_eq!(gate(ResourceKind::Account, Action::Write), Err(StatusCode::FORBIDDEN));
-        // A capability the role still permits passes step 1 and proceeds to the
-        // object rule (here it would hit the pool, so we only assert step 1).
+        // Permitted capabilities pass step 1; the object rule would hit the pool.
         assert!(gate(ResourceKind::Account, Action::Read).is_ok());
         let _ = &pool;
     }
 
-    /// SHARING SEAM proof. A fake resource overrides ONLY [`Resource::authorize`]
-    /// to also allow one "shared" uuid in addition to ownership — exactly where a
-    /// future `shares` lookup lives. It composes with the existing rule (owner
-    /// still allowed, stranger still denied, unknown still 404) with ZERO change
-    /// to the guard or any endpoint, since `authorize` is the single override
-    /// point the guard already calls.
+    /// Overriding only [`Resource::authorize`] composes a grant with ownership
+    /// without touching the guard.
     #[tokio::test]
     async fn sharing_seam_grant_composes_with_ownership() {
-        // Fixed ids for this fake resource. The owner uid is fully determined by
-        // the resource itself, so `owner_of` needs no DB (the invalid pool below
-        // proves the override never touches it).
         const OWNER: Uuid = Uuid::from_u128(0x0001);
         const GRANTEE: Uuid = Uuid::from_u128(0x0002);
         const SHARED_ID: &str = "shared-object";
@@ -1078,8 +813,6 @@ mod tests {
             async fn owner_of(_id: &str, _pool: &PgPool) -> Result<Option<Uuid>, sqlx::Error> {
                 Ok(Some(OWNER))
             }
-            // Override: ownership FIRST (the default rule), then a fake grant
-            // lookup — exactly where a real `shares` row would be consulted.
             async fn authorize(
                 ctx: &AuthContext,
                 _action: Action,
@@ -1092,7 +825,6 @@ mod tests {
                 if Self::owner_of(id, pool).await? == Some(ctx.user_id) {
                     return Ok(Decision::Allowed);
                 }
-                // The seam: a `shares` lookup would replace this fake grant.
                 if id == SHARED_ID && ctx.user_id == GRANTEE {
                     return Ok(Decision::Allowed);
                 }
@@ -1102,43 +834,32 @@ mod tests {
 
         let pool = sqlx::PgPool::connect_lazy("postgres://invalid").unwrap();
 
-        // Owner still allowed — the ownership rule is unchanged by the override.
         assert_eq!(
             SharedThing::authorize(&user(OWNER), Action::Read, "any", &pool).await.unwrap(),
             Decision::Allowed
         );
-        // Grantee allowed for the shared id ONLY — the grant composed in via the
-        // single override point, no guard/endpoint change.
         assert_eq!(
             SharedThing::authorize(&user(GRANTEE), Action::Read, SHARED_ID, &pool).await.unwrap(),
             Decision::Allowed
         );
-        // The same grantee on a DIFFERENT object is still denied — least privilege.
         assert_eq!(
             SharedThing::authorize(&user(GRANTEE), Action::Read, "other", &pool).await.unwrap(),
             Decision::Denied
         );
-        // A stranger is denied even on the shared object.
         assert_eq!(
             SharedThing::authorize(&user(Uuid::new_v4()), Action::Read, SHARED_ID, &pool)
                 .await
                 .unwrap(),
             Decision::Denied
         );
-        // Admin still bypasses (default arm preserved in the override).
         assert_eq!(
             SharedThing::authorize(&admin(), Action::Write, "whatever", &pool).await.unwrap(),
             Decision::Allowed
         );
     }
 
-    /// Sharing seam wiring. Every shareable kind declares its
-    /// `resource_shares.resource_type` via `SHARE_TYPE`, and ownership-only kinds
-    /// declare `None`. Because the default `authorize` composes
-    /// `shares::granted(SHARE_TYPE, ..)` onto ownership, this const IS the grant
-    /// wiring for a kind — asserting it proves grants compose with ownership for
-    /// account/machine/dispatcher and stay off for the rest, on one path. Each
-    /// shareable type must also be a type the shares CRUD/table recognize.
+    /// Shareable kinds declare a `SHARE_TYPE` the shares table recognizes;
+    /// ownership-only kinds declare `None`.
     #[tokio::test]
     async fn session_owner_denies_user_machine_mismatch() {
         let Some(url) = crate::routes::gateway::test_db_url("session_owner_mismatch") else {
@@ -1233,14 +954,9 @@ mod tests {
         }
     }
 
-    // ---- request-level layer ordering -------------------
 
-    /// Build a one-route `Router<()>` wired EXACTLY as [`Routes::add`] does — the
-    /// route's policy enforced via `route_layer(from_fn_with_state(.., enforce_route))`
-    /// — optionally under a global layer that mimics `auth_middleware` by
-    /// inserting an [`AuthContext`]. This reproduces the production layer stack so
-    /// a real request exercises the ordering that the 0.7.0 global-`authz_layer`
-    /// design got wrong (it ran before the per-route policy existed → blanket 403).
+    /// A one-route router wired exactly as [`Routes::add`] does, optionally under
+    /// a layer that mimics `auth_middleware` by inserting an [`AuthContext`].
     fn one_route_app(policy: Authz, ctx: Option<AuthContext>) -> Router {
         use axum::routing::get;
         let route = get(|| async { "ok" })
@@ -1267,26 +983,19 @@ mod tests {
             .status()
     }
 
-    /// With a principal established (auth ran), an `Authenticated` route returns
-    /// 200 through the assembled stack. Drives a real request through the combined
-    /// layers, asserting authz at the request level.
     #[tokio::test]
     async fn authenticated_route_allows_real_request() {
         let app = one_route_app(Authz::Authenticated, Some(user(Uuid::new_v4())));
         assert_eq!(status_of(app, "/r").await, StatusCode::OK);
     }
 
-    /// The policy is genuinely enforced, not merely present: with NO principal
-    /// (auth did not run / failed) the per-route layer rejects with 401.
+    /// Without a principal the per-route layer rejects with 401.
     #[tokio::test]
     async fn route_without_principal_is_401() {
         let app = one_route_app(Authz::Authenticated, None);
         assert_eq!(status_of(app, "/r").await, StatusCode::UNAUTHORIZED);
     }
 
-    /// A scope gate is evaluated per-request through the stack: a `Read`-only
-    /// principal hitting an `admin`-scoped route is forbidden, while an admin
-    /// passes. Proves enforcement actually consults the captured policy.
     #[tokio::test]
     async fn scope_gate_enforced_through_stack() {
         let denied = one_route_app(Authz::Scope(Scope::Admin), Some(user(Uuid::new_v4())));
@@ -1296,12 +1005,8 @@ mod tests {
         assert_eq!(status_of(allowed, "/r").await, StatusCode::OK);
     }
 
-    /// A `Resource`-guarded route with a `{id}` path param,
-    /// hit by a NON-admin principal, must resolve that id from the matched route
-    /// and authorize an OWNED object (200) while denying a non-owner (403). This
-    /// exercises `resolve_id` through the real request stack, where the old
-    /// `extensions().get::<RawPathParams>()` returned `None` and fails-closed 403'd
-    /// every non-admin. `ResourceKind::User` (id IS the owner) needs no live DB.
+    /// A non-admin's `{id}` resolves from the matched route: owned → 200,
+    /// other user → 403.
     #[tokio::test]
     async fn resource_route_resolves_id_for_non_admin() {
         use axum::routing::get;
@@ -1326,9 +1031,7 @@ mod tests {
         }
 
         let uid = Uuid::new_v4();
-        // Owner: the resolved `{id}` equals the principal's user_id → 200.
         assert_eq!(status_of(app(user(uid)), &format!("/u/{uid}")).await, StatusCode::OK);
-        // Non-owner: id resolves to a DIFFERENT user → 403 (not a masked default-deny).
         let other = Uuid::new_v4();
         assert_eq!(status_of(app(user(uid)), &format!("/u/{other}")).await, StatusCode::FORBIDDEN);
     }
