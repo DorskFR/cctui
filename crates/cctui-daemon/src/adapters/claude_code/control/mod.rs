@@ -1034,9 +1034,8 @@ impl Driver {
 
     async fn poll_once(&mut self) -> anyhow::Result<()> {
         let Some(sock) = self.cfg.discovery.locate_live().await else {
-            // Daemon isn't running. Boot it (rate-limited) so it self-heals
-            // before the next dispatch, and treat any sessions we
-            // previously knew about as ended.
+            // Boot the daemon (rate-limited) so it self-heals before the next
+            // dispatch; every known session has ended.
             self.kickstarter.kick(false);
             self.flush_roster(EndReason::Other { detail: "daemon gone".into() }).await;
             // Roster churn: the socket vanished and sessions were

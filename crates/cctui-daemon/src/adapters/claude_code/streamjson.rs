@@ -1,34 +1,11 @@
-//! Shared stream-json plumbing for the headless claude-code drivers.
+//! Shared stream-json plumbing for the headless claude-code drivers: frame
+//! parsing ([`parse_stream_line`]), stdin user envelopes
+//! ([`user_message_envelope`]) and a stderr ring for crash detail
+//! ([`spawn_stderr_ring`]).
 //!
-//! Both the oneshot driver (a single `claude --print --output-format
-//! stream-json --verbose` invocation) and the SDK driver speak the CLI's
-//! line-delimited stream-json protocol. This module factors out the three
-//! pieces they share so neither reimplements them:
-//!
-//! 1. [`parse_stream_line`] — turn one stream-json stdout frame
-//!    (`system`/init, `assistant`, `user`, `stream_event`, `result`,
-//!    `system`/error) into zero or more [`AdapterEvent`]s, reusing the
-//!    transcript normalization where the frame shape matches.
-//! 2. [`user_message_envelope`] — build the `--input-format stream-json`
-//!    user-message line the CLI reads on stdin.
-//! 3. [`spawn_stderr_ring`] — keep the child's last stderr lines for crash detail.
-//!
-//! The line protocol mirrors what `claude --output-format stream-json
-//! --verbose` writes (one JSON object per line):
-//!
-//! - `{"type":"system","subtype":"init","session_id":"…","model":"…",…}`
-//!   — first frame; carries the resolved session id + model.
-//! - `{"type":"assistant","message":{"id":…,"model":…,"content":[…],"usage":{…}}}`
-//!   — a full assistant turn (same `message` shape as a transcript line).
-//! - `{"type":"user","message":{"content":[…]}}` — a user/`tool_result` turn.
-//! - `{"type":"stream_event","event":{…}}` — incremental SSE deltas
-//!   (`content_block_delta` etc.); ignored here — the coalesced `assistant`
-//!   frame carries the final text, and forwarding partial deltas would
-//!   double-emit.
-//! - `{"type":"result","subtype":"success","session_id":"…",…}` — terminal
-//!   frame for the run.
-//! - `{"type":"system","subtype":"error",…}` / `{"type":"error",…}` — an
-//!   error frame; ends the run with [`EndReason::Crashed`].
+//! `stream_event` deltas are ignored: the coalesced `assistant` frame carries
+//! the final text, and forwarding deltas would double-emit. An error frame
+//! ends the run with [`EndReason::Crashed`].
 
 use std::collections::VecDeque;
 use std::sync::Arc;

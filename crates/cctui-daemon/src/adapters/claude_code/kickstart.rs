@@ -1,24 +1,13 @@
 //! Self-heal the on-demand `claude daemon`.
 //!
-//! The claude supervisor runs *on demand*: after an idle period, laptop sleep,
-//! or a control-socket teardown there is frequently **no** `control.sock` at
-//! all — every `list` poll and every `dispatch` from this adapter then fails
-//! with "no claude daemon socket present".
+//! After idle, sleep or a socket teardown there is often no `control.sock`,
+//! and every `list` and `dispatch` fails. We ensure the supervisor runs under
+//! the OS user service manager ([`super::claude_service`]), which parents and
+//! reaps it; we only poll for its socket.
 //!
-//! Rather than spawn `claude daemon run` as our own child (which coupled its
-//! lifetime to cctui-daemon and left `Z <defunct>` zombies when the in-runtime
-//! reaper missed the exit), we ensure the supervisor is installed
-//! and running under the OS user service manager (see [`super::claude_service`]).
-//! The service manager parents and reaps it; we only ever poll for its socket.
-//!
-//! Environments with **no usable service manager** — dispatched worker
-//! containers foremost, which have no systemd and no user bus —
-//! fall back to spawning `claude daemon run` as a direct detached child. The
-//! worker contract (ephemeral, supervised,
-//! `--no-auto-update`) never wants a resident OS service anyway. The fallback
-//! also engages when [`super::claude_service::ensure`] itself fails (e.g.
-//! `systemctl` present but the user bus unreachable), so a missed heuristic
-//! still boots the daemon rather than timing out every dispatch.
+//! Without a usable service manager (worker containers), or when
+//! [`super::claude_service::ensure`] fails, we spawn `claude daemon run` as a
+//! detached child instead.
 
 use std::process::Stdio;
 use std::sync::{Mutex, PoisonError};

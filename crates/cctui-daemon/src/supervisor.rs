@@ -1835,14 +1835,8 @@ mod tests {
         }
     }
 
-    /// Regression for the connect-time freeze: a daemon that has never purged
-    /// (updated after many archives) receives a `ResumeMarks` whose `archived`
-    /// list matches hundreds of job dirs on disk. Every matching job used to be
-    /// pushed into the adapter's 64-deep command channel with `send().await`
-    /// from inside the transport `select!`, so the 65th blocked the loop: no
-    /// more pings, the server evicted the daemon after its 60s read timeout,
-    /// and the daemon never even read the Close. The invariant: pings keep
-    /// flowing during the whole purge, whatever the backlog.
+    /// A `ResumeMarks` archiving more jobs than the 64-deep command channel
+    /// holds must not block the transport loop: pings keep flowing.
     #[tokio::test]
     async fn resume_marks_backlog_does_not_starve_pings() {
         use futures_util::{SinkExt, StreamExt};

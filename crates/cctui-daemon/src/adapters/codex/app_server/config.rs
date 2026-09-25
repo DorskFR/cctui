@@ -112,9 +112,8 @@ impl AppServerConfig {
 /// from the environment alone: launched with only those env vars it POSTs to
 /// api.openai.com with no Authorization header and 401s. It reads them solely
 /// through a `model_providers` entry — `base_url` inlined here, the bearer via
-/// `env_key` from the launch env at request time. Mirrors the worker
-/// entrypoint's `phase_codex_config`, which fixed the same failure
-/// for k8s workers by writing this block into config.toml. Empty only when the
+/// `env_key` from the launch env at request time, mirroring the worker
+/// entrypoint's `phase_codex_config`. Empty only when the
 /// base URL is absent (an unbound session keeps codex's default provider).
 ///
 /// The block is emitted on the base URL ALONE, without the credential: codex

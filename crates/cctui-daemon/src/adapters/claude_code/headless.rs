@@ -1,50 +1,14 @@
 //! Persistent stream-json SDK driver for the claude-code adapter.
 //!
-//! Unlike the oneshot driver (a fresh `claude -p` child per turn), the SDK
-//! driver owns ONE long-lived `claude --print --input-format stream-json
-//! --output-format stream-json --verbose` child **per session**, driven over
-//! its stdio the way the Claude Agent SDK's streaming-input mode does. The
-//! spike proved this direct-wire shape works first-hand (against
-//! claude 2.1.193) — no TS/Python SDK sidecar, no `--resume` chaining for
-//! replies:
+//! Each session owns ONE long-lived `claude --print --input-format stream-json
+//! --output-format stream-json --verbose` child driven over stdio. A `result`
+//! frame is a turn boundary, not exit: replies are written to stdin, interrupt
+//! and in-place `SetModel` go out as `control_request`s. Permissions, Ask and
+//! Plan flow through the shared `--settings` hook listener.
 //!
-//! - **Spawn** → launch the persistent child with the pre-minted `--session-id`,
-//!   model/effort/permission flags, the `--settings` ask/permission hook, and
-//!   the gateway env; send the first user turn on stdin. Stdout `system`/
-//!   `assistant`/`user`/`result` frames map to [`AdapterEvent`]s via the shared
-//!   [`streamjson`](super::streamjson) codec (native usage + model events, no
-//!   transcript tailing). The `result` frame is a *turn boundary*, not process
-//!   exit — the child stays alive awaiting the next stdin turn.
-//! - **Reply / `SendMessage`** → write a `{"type":"user",…}` envelope to the
-//!   child's stdin. No respawn. If the child died (crash / daemon restart), it
-//!   is cold-resumed first with FRESH gateway env pulled from the server binding
-//!   (fail-closed) before the turn is written.
-//! - **Interrupt** → send a `control_request{subtype:"interrupt"}` on stdin
-//!   (keeps the child alive); the run loop echoes the `CommandResult`.
-//! - **`PermissionResponse` / Ask / Plan** → through the reused `--settings`
-//!   parked-`PreToolUse` hook path (same shared [`super::run_hook_listener`] the
-//!   `bg`/`oneshot` drivers use). Headless runs fire the hooks; forms don't
-//!   render headless so Ask/Plan surface as the existing live cards. See the
-//!   note on the `can_use_tool` stdio channel in [`SdkDriver`].
-//! - **Fork** → launch the persistent child with `--resume <parent>
-//!   --fork-session --session-id <child>`. **Resume** → cold-launch the
-//!   persistent child from the on-disk conversation (`--resume <id>`) with the
-//!   carried `working_dir`/env, no user turn.
-//! - **Kill** → terminate the child but keep the session resumable (no
-//!   `SessionEnded`); a later Reply/Resume cold-relaunches it. **Remove** →
-//!   terminate + clear all state + `SessionEnded{Killed}`.
-//! - **`SetModel`** → in-place via a `control_request{subtype:"set_model"}` on
-//!   stdin when a model is given (the SDK control lever);
-//!   effort-only changes have no control lever and fall back to "fork to change
-//!   model".
-//!
-//! Daemon ownership: the driver supervises N persistent children — clean
-//! shutdown on cancel (`kill_all`), stdin backpressure (writes `.await` on the
-//! child's stdin), and per-child stdout pump tasks that forward events. Crash
-//! recovery is **on-demand cold-resume**: a dead child is relaunched with fresh
-//! fail-closed gateway env on the next Reply/Resume rather than eagerly
-//! restarted by a background ticker (eager restart risks a 401 relaunch loop and
-//! is deferred — see the report).
+//! Kill keeps the session resumable; Remove ends it. A dead child is
+//! cold-resumed on the next Reply/Resume with fresh, fail-closed gateway env —
+//! never eagerly restarted, which risks a 401 relaunch loop.
 
 use std::collections::{BTreeMap, HashMap};
 use std::process::Stdio;

@@ -1,28 +1,15 @@
-//! Codex `app-server` driver.
+//! Codex `app-server` driver for sessions cctui spawns; [`super::log_tail`]
+//! observes the rest. Both key sessions by the rollout `UUIDv7`.
 //!
-//! Drives sessions that cctui *spawns*, as opposed to the log-tail
-//! ([`super::log_tail`]) which passively observes sessions started outside
-//! cctui (e.g. the Codex TUI). The two coexist: session identity is the
-//! rollout id (`UUIDv7`), so an app-server-driven session and its on-disk
-//! rollout file refer to the same `local_id`.
+//! JSON-RPC 2.0 over stdio: `initialize` → `initialized` → `thread/start` →
+//! `turn/start`; a stale thread is revived with `thread/resume` first.
+//! Streaming arrives as id-less notifications; tool approvals are
+//! server→client requests that block until answered with a `decision`. The
+//! supported version and schema live in [`super::contract`].
 //!
-//! `codex app-server` speaks newline-delimited JSON-RPC 2.0 over stdio
-//! (stderr is logs). The handshake is `initialize` (declaring client
-//! capabilities) → `initialized` notification → `thread/start { cwd }`
-//! → `turn/start { threadId, input }`. The minimum supported Codex
-//! version and the retained JSON Schema live in [`super::contract`]. A stale
-//! cctui-owned thread is revived
-//! with `thread/resume { threadId }` before the next `turn/start`.
-//! Streaming arrives as id-less
-//! notifications (`item/completed`, `turn/completed`, …); tool approvals
-//! arrive as server→client *requests* (they carry both `method` and `id`)
-//! that block until we reply with a `decision`.
-//!
-//!
-//! The pure protocol layer — the JSON-RPC codec ([`rpc`]), notification
-//! mapping ([`notifications`]), request builders ([`requests`]) and turn/item
-//! state ([`thread_state`]) — is unit-tested with fixtures; [`CodexSession`]
-//! owns the subprocess and pumps IO ([`event_loop`]).
+//! [`rpc`], [`notifications`], [`requests`] and [`thread_state`] are the pure
+//! protocol layer; [`CodexSession`] owns the subprocess and [`event_loop`]
+//! pumps its IO.
 
 mod config;
 mod diagnose;

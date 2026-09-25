@@ -5,7 +5,7 @@ use super::{
     PendingPerm, SessionMeta, StateJson, StatusSnapshot, TranscriptLocation, json, transcript,
 };
 
-/// What one `list` poll means against the previously known roster, decided
+/// What one `list` poll means against the last known roster, decided
 /// before any event is emitted.
 #[derive(Debug)]
 struct SnapshotPlan {
@@ -19,7 +19,7 @@ struct SnapshotPlan {
     roster_busy: bool,
     /// Visible shorts absent from the previous roster, in listing order.
     started: Vec<String>,
-    /// Previously known shorts no longer listed as visible.
+    /// Known shorts no longer listed as visible.
     gone: Vec<String>,
 }
 

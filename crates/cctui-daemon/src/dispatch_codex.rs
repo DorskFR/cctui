@@ -1,24 +1,12 @@
 //! Codex-native dispatch runner.
 //!
 //! A dispatched worker whose payload selects `adapter = "codex"` runs its task
-//! headlessly through `codex exec --json` instead of the claude-code control
-//! socket. This runner is deliberately SEPARATE from the interactive Rust
-//! app-server adapter in `adapters/codex/` — that adapter drives long-lived,
-//! attachable Codex threads; a dispatch is a one-shot, fire-and-report job.
-//!
-//! ## Why `codex exec`, not the Python Codex SDK
-//!
-//! See `docs/worker-contract.md` (§ "Codex-native dispatch") for the full spike
-//! rationale. In short: the claude dispatch path shells out to a CLI
-//! (`claude` via the `claude daemon` control socket), so shelling out to
-//! `codex exec` keeps the two runners symmetric, adds no Python runtime to the
-//! worker image, and reuses the per-pod `~/.codex/config.toml` the entrypoint
-//! already hardens (approvals off, sandbox full-access, cctui gateway provider).
-//! The SDK would pin its own Codex runtime and demand a Python layer for no gain.
-//!
-//! The runner parses the `codex exec --json` JSONL event stream into the same
-//! `RESULT_FILE` verdict the claude path's callback trap consumes, so the
-//! worker entrypoint's result-callback machinery is unchanged.
+//! headlessly through `codex exec --json` — a one-shot, fire-and-report job,
+//! separate from the interactive app-server adapter in `adapters/codex/`. The
+//! JSONL event stream is reduced to the same `RESULT_FILE` verdict the claude
+//! path writes, so the entrypoint's result callback is shared. Rationale for
+//! `codex exec` over the Python SDK: `docs/worker-contract.md`
+//! (§ "Codex-native dispatch").
 
 use std::collections::{BTreeMap, HashMap};
 use std::process::Stdio;

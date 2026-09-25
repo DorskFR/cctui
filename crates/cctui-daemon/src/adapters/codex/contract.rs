@@ -1,27 +1,15 @@
-//! Versioned Codex `app-server` protocol contract.
+//! Versioned Codex `app-server` protocol contract: the single source of truth
+//! for [`CODEX_MIN_VERSION`].
 //!
-//! Single source of truth for the minimum Codex version cctui supports. The
-//! floor is consumed by:
+//! The floor feeds the [`super::app_server`] handshake, `ARG CODEX_VERSION` in
+//! `deploy/worker.Dockerfile` (kept equal by
+//! `scripts/check-codex-version-drift.sh`), and the retained schema under
+//! `schema/`, generated with `codex app-server generate-json-schema`.
 //!
-//! - the [`super::app_server`] handshake (declared client version, and the
-//!   floor the discovered server version is checked against);
-//! - `deploy/worker.Dockerfile` (`ARG CODEX_VERSION`), which installs exactly
-//!   the floor; `scripts/check-codex-version-drift.sh` keeps the two equal and
-//!   checks any installed `codex` against the floor;
-//! - the retained JSON Schema under `schema/`, generated from the floor build
-//!   with `codex app-server generate-json-schema --out schema/`.
-//!
-//! The floor is a MINIMUM, not an exact pin: derived worker images (the harbor
-//! bake) refetch the harness, so workers run whatever is current at bake time,
-//! never older than the floor. The schema bundle
-//! (`schema/codex_app_server_protocol.schemas.json`) therefore documents the
-//! shapes the adapter is guaranteed to find — `initialize`, `initialized`,
-//! `thread/start`, `thread/resume`, `thread/fork`, `turn/start`, `thread/list`,
-//! `thread/read`, and the approval requests — not everything a newer server
-//! may send. Additions in a newer Codex are methods and notifications the
-//! adapter may not consume yet; they must surface as a visible gap, never be
-//! silently dropped. Regenerate the bundle whenever [`CODEX_MIN_VERSION`] is
-//! raised.
+//! It is a minimum, not a pin: derived worker images may run a newer Codex.
+//! The schema documents the shapes the adapter is guaranteed to find; methods
+//! a newer server adds must surface as a visible gap, never be silently
+//! dropped. Regenerate the schema whenever the floor is raised.
 
 /// The minimum Codex version whose `app-server` protocol the adapter speaks
 /// correctly. It is the version the worker image installs and the retained

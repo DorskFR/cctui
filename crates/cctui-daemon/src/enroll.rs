@@ -1,28 +1,14 @@
 //! One-shot remote install + enrolment over ssh.
 //!
-//! `cctui-daemon enroll <user@host> --server-url … --token …` takes a machine
-//! from zero to a connected fleet member:
+//! `cctui-daemon enroll <user@host>` probes the target, installs the binary
+//! from the server's release proxy (checksum verified locally and after
+//! upload), reuses the target's machine key when it still authenticates or
+//! mints one via `POST /api/v1/enroll`, installs and starts the systemd user
+//! unit with linger, then waits for the daemon's WS to connect.
 //!
-//!   1. probe the target over ssh (platform, existing install, config)
-//!   2. pull the right binary through the server's release proxy
-//!      (`/api/v1/daemon/binary/{target}`), verify its checksum locally AND
-//!      after upload
-//!   3. `install -m755`-equivalent into `~/.local/bin/cctui-daemon`
-//!   4. obtain a machine key — reuse the target's existing enrolment when its
-//!      `daemon.toml` still authenticates against the same server, otherwise
-//!      mint a fresh one via `POST /api/v1/enroll` with the operator's token —
-//!      and write `~/.config/cctui/daemon.toml`
-//!   5. drop the systemd user unit, `loginctl enable-linger`,
-//!      `systemctl --user enable` + start/restart
-//!   6. poll `GET /api/v1/machines/{id}/status` until the daemon's WS shows
-//!      connected
-//!
-//! Re-running against an already-enrolled machine upgrades/repairs it (binary
-//! refreshed only when its checksum differs, existing key kept when still
-//! valid) instead of failing. Non-systemd targets (macOS/launchd) are a
-//! follow-up and error out clearly.
-//!
-//! The manifest/checksum machinery is shared with [`crate::selfupdate`].
+//! Re-running repairs an enrolled machine instead of failing. Non-systemd
+//! targets error out. The manifest/checksum machinery is shared with
+//! [`crate::selfupdate`].
 
 use std::time::{Duration, Instant};
 

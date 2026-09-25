@@ -1,38 +1,12 @@
 //! Oneshot stream-json driver for the claude-code adapter.
 //!
-//! Runs claude as a one-shot `claude -p <prompt> --output-format stream-json
-//! --verbose` invocation per turn, mapped onto the
-//! [`AdapterCommand`](cctui_proto::adapter::AdapterCommand) /
-//! [`AdapterEvent`](cctui_proto::adapter::AdapterEvent) surface so the server is
-//! oblivious to the mode. It reuses the shared stream-json codec
-//! ([`super::streamjson`]) for event mapping and the same ask/permission hook
-//! listener ([`super::run_hook_listener`]) the `bg` driver uses — headless runs
-//! fire `PreToolUse`/`AskUserQuestion` hooks just like an interactive worker.
-//!
-//! Lifecycle, per the design (`sub4-oneshot-driver.md`):
-//!
-//! - **Spawn** → `claude -p <prompt> --output-format stream-json --verbose
-//!   --session-id <pre-minted uuid> [--model][--effort] [--permission-mode]
-//!   [--settings <hook>]`, run in `spec.working_dir`. The pre-minted session id
-//!   flows from `Spawn.session_id` exactly as `bg` uses it so the gateway-token
-//!   binding stays intact. On the terminal `result` frame the
-//!   driver emits an idle [`AdapterEvent::Status`] (NOT `SessionEnded`) so the
-//!   conversation stays resumable, mirroring how `--bg` idles awaiting input.
-//! - **Reply** → re-invoke `claude -p <text> --resume <session_id>`, a fresh
-//!   child against the same id. Gateway env carried on the command is injected
-//!   (cold-launch parity).
-//! - **Fork** → `claude -p --resume <parent> --fork-session --session-id
-//!   <child>` (optional first-turn prompt).
-//! - **Resume** → revive without a reply: a no-op turn against `--resume`.
-//! - **Kill / Interrupt** → terminate the in-flight child; the conversation
-//!   stays resumable (oneshot has no live mid-turn turn to ESC into, so
-//!   `Interrupt` == terminate the current `-p` process).
-//! - **`PermissionResponse` / Ask / Plan** → through the reused `--settings` hook
-//!   path; native keystroke answering is N/A for headless, so the perm hook's
-//!   long-poll allow/deny carries the decision.
-//! - **Rename** → stored daemon-side (no PTY/state.json round-trip).
-//!   **Remove** → no worker to stop; clear local state.
-//!   **`SetModel`** → unsupported in place (same "fork to change model" as bg).
+//! Every turn is a fresh `claude -p <prompt> --output-format stream-json
+//! --verbose` child: Spawn pre-mints `--session-id`, Reply/Resume use
+//! `--resume <id>`, Fork adds `--fork-session`. The terminal `result` frame
+//! emits an idle `Status`, not `SessionEnded`, so the conversation stays
+//! resumable. Kill and Interrupt both terminate the in-flight child.
+//! Permissions, Ask and Plan flow through the shared `--settings` hook
+//! listener; `SetModel` is unsupported in place.
 
 use std::collections::HashMap;
 use std::process::Stdio;
