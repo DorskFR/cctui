@@ -104,7 +104,10 @@ impl Adapter for ClaudeCodeAdapter {
             // stream-json codec. It binds the same `--settings` ask/permission
             // hook socket bg uses, so headless `-p` runs deliver hooks through
             // the same path.
-            Mode::Oneshot => oneshot::OneshotDriver::new(ctx).run().await,
+            Mode::Oneshot => {
+                let (driver, commands) = oneshot::OneshotDriver::new(ctx);
+                driver.run(commands).await
+            }
             // SDK driver: stream-json over the Claude Agent SDK, mapped onto the
             // AdapterCommand/AdapterEvent surface.
             Mode::Sdk => headless::SdkDriver::new(ctx).run().await,
