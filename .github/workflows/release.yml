@@ -107,6 +107,24 @@ jobs:
           cp "target/${{ matrix.target }}/release/cctui" "dist/cctui-${{ matrix.os }}-${{ matrix.arch }}"
           cp "target/${{ matrix.target }}/release/cctui-daemon" "dist/cctui-daemon-${{ matrix.os }}-${{ matrix.arch }}"
 
+      # The images job COPYs these static binaries instead of compiling in docker.
+      - name: Build image binaries (linux-amd64)
+        if: matrix.os == 'linux' && matrix.arch == 'amd64'
+        env:
+          SQLX_OFFLINE: "true"
+        run: |
+          bins="cctui-daemon cctui-guard-proxy cctui-supervisor cctui-guard cctui-dispatcher-kube cctui-orchestrator"
+          cargo zigbuild --release --target ${{ matrix.target }} $(printf -- '-p %s ' $bins)
+          mkdir -p image-bins
+          for b in $bins; do cp "target/${{ matrix.target }}/release/$b" image-bins/; done
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: matrix.os == 'linux' && matrix.arch == 'amd64'
+        with:
+          name: image-bins
+          retention-days: 1
+          path: image-bins/
+
       # Unsigned arm64 macOS binaries are SIGKILLed at exec; don't rely on the
       # linker's implicit ad-hoc signature.
       - name: Ad-hoc codesign (darwin)
@@ -135,6 +153,7 @@ jobs:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           path: dist
+          pattern: cctui-bins-*
           merge-multiple: true
       - name: Compute checksums
         working-directory: dist
@@ -156,25 +175,33 @@ jobs:
             dist/cctui-daemon-*
             dist/SHA256SUMS
 
-  # Build + push the server and webui container images to ghcr, tag-driven.
-  # Replaces the manual `make image/release` / `make ui/image/release` registry
-  # push (which needs a local docker daemon bg agents can't reach). The build
-  # is self-contained: public base images, crates.io deps, runtime-checked
-  # sqlx (no DB at build), no secrets baked in. (CCT-199)
+  # linux/amd64 only: rust-via-QEMU arm64 is too slow to justify here. Each
+  # image keeps its own gha layer cache scope so unchanged layers (apt, node,
+  # harness binaries) are reused across releases.
   images:
+    name: image ${{ matrix.image }}
     needs: [ci-green]
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: cctui
+            context: .
+            file: deploy/Dockerfile
+          - image: cctui-ui
+            context: .
+            file: webui/Dockerfile
+          - image: cctui-ghreview
+            context: ghreview
+            file: ghreview/Dockerfile
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Resolve version
         id: ver
         run: |
-          if [ -n "${{ inputs.tag }}" ]; then
-            tag="${{ inputs.tag }}"
-          else
-            tag="${GITHUB_REF#refs/tags/}"
-          fi
+          tag="${{ inputs.tag || github.ref_name }}"
           echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
@@ -186,96 +213,92 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # linux/amd64 only — matches the single-arch local builds the cluster
-      # runs today; rust-via-QEMU arm64 is too slow to justify here.
-      - name: Build + push server image
+      - name: Build + push
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
-          context: .
-          file: deploy/Dockerfile
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
           platforms: linux/amd64
           push: true
           build-args: |
             CCTUI_GIT_HASH=${{ github.sha }}
-          tags: |
-            ghcr.io/dorskfr/cctui:${{ steps.ver.outputs.version }}
-            ghcr.io/dorskfr/cctui:latest
-
-      - name: Build + push webui image
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
-        with:
-          context: .
-          file: webui/Dockerfile
-          platforms: linux/amd64
-          push: true
-          build-args: |
             CLIENT_VERSION=${{ steps.ver.outputs.version }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
           tags: |
-            ghcr.io/dorskfr/cctui-ui:${{ steps.ver.outputs.version }}
-            ghcr.io/dorskfr/cctui-ui:latest
+            ghcr.io/dorskfr/${{ matrix.image }}:${{ steps.ver.outputs.version }}
+            ghcr.io/dorskfr/${{ matrix.image }}:latest
 
-      # The per-session worker image dispatchers spawn: claude code + codex +
-      # cctui-daemon, non-enrolled (identity injected at spawn). (CCT-245)
-      # Built to the local daemon first so the harness floors can be checked
-      # against the real binaries before anything is published; the push below
-      # is a cache hit on this build.
-      - name: Build worker image
+  # These images take the linux-amd64 musl binaries from the build job through
+  # the `bins` build context, so no Rust compiles inside docker.
+  images-prebuilt:
+    name: image ${{ matrix.image }}
+    needs: [build]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: cctui-worker
+            file: deploy/worker.Dockerfile
+          - image: cctui-dispatcher-kube
+            file: deploy/dispatcher.Dockerfile
+          - image: cctui-orchestrator
+            file: deploy/orchestrator.Dockerfile
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: image-bins
+          path: image-bins
+
+      - name: Restore executable bits
+        run: chmod 0755 image-bins/*
+
+      - name: Resolve version
+        id: ver
+        run: |
+          tag="${{ inputs.tag || github.ref_name }}"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+
+      - name: Log in to ghcr
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Loaded locally first so the worker's harness floors are checked against
+      # the real binaries before anything is published; the push is a cache hit.
+      - name: Build
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           context: .
-          file: deploy/worker.Dockerfile
+          file: ${{ matrix.file }}
+          build-contexts: bins=image-bins
           platforms: linux/amd64
           load: true
           push: false
-          tags: |
-            ghcr.io/dorskfr/cctui-worker:${{ steps.ver.outputs.version }}
-            ghcr.io/dorskfr/cctui-worker:latest
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+          tags: ghcr.io/dorskfr/${{ matrix.image }}:${{ steps.ver.outputs.version }}
 
       - name: Verify harness version floors in the worker image
+        if: matrix.image == 'cctui-worker'
         run: bash scripts/check-worker-image-harness.sh ghcr.io/dorskfr/cctui-worker:${{ steps.ver.outputs.version }}
 
-      - name: Push worker image
+      - name: Push
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           context: .
-          file: deploy/worker.Dockerfile
+          file: ${{ matrix.file }}
+          build-contexts: bins=image-bins
           platforms: linux/amd64
           push: true
+          cache-from: type=gha,scope=${{ matrix.image }}
           tags: |
-            ghcr.io/dorskfr/cctui-worker:${{ steps.ver.outputs.version }}
-            ghcr.io/dorskfr/cctui-worker:latest
-
-      # The standalone, enrolled kubernetes dispatcher: connects out to the
-      # server and spawns worker Jobs in-cluster on dispatch. (CCT-291)
-      - name: Build + push dispatcher-kube image
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
-        with:
-          context: .
-          file: deploy/dispatcher.Dockerfile
-          platforms: linux/amd64
-          push: true
-          tags: |
-            ghcr.io/dorskfr/cctui-dispatcher-kube:${{ steps.ver.outputs.version }}
-            ghcr.io/dorskfr/cctui-dispatcher-kube:latest
-
-      - name: Build + push orchestrator image
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
-        with:
-          context: .
-          file: deploy/orchestrator.Dockerfile
-          platforms: linux/amd64
-          push: true
-          tags: |
-            ghcr.io/dorskfr/cctui-orchestrator:${{ steps.ver.outputs.version }}
-            ghcr.io/dorskfr/cctui-orchestrator:latest
-
-      - name: Build + push ghreview image
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
-        with:
-          context: ghreview
-          file: ghreview/Dockerfile
-          platforms: linux/amd64
-          push: true
-          tags: |
-            ghcr.io/dorskfr/cctui-ghreview:${{ steps.ver.outputs.version }}
-            ghcr.io/dorskfr/cctui-ghreview:latest
+            ghcr.io/dorskfr/${{ matrix.image }}:${{ steps.ver.outputs.version }}
+            ghcr.io/dorskfr/${{ matrix.image }}:latest
