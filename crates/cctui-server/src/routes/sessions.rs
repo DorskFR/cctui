@@ -282,8 +282,9 @@ pub const fn attention_from_bucket(bucket: Bucket) -> Option<Attention> {
 /// per-session `LIMIT 1` is the other half: any shape that groups or sorts the
 /// whole fan-out instead reads every message row of every listed session.
 ///
-/// Ships only the first [`LAST_MESSAGE_PREVIEW_CHARS`] of the string `text`
-/// (else `content`), plus whether it was cut, never the payload.
+/// Ships only the first 400 chars of the string `text` (else `content`), twice
+/// what [`normalize_last_message`] keeps, plus whether it was cut; never the
+/// payload.
 const LAST_MESSAGE_SQL: &str = "SELECT s.session_id, left(e.body, 400), length(e.body) > 400, \
             e.created_at \
      FROM unnest($1::text[]) AS s(session_id) \
@@ -336,10 +337,6 @@ const LAST_TWO_TURNS_SQL: &str = "SELECT s.session_id, u.input_tokens, u.cache_r
          LIMIT 2 \
      ) u ON true \
      ORDER BY s.session_id, rn";
-
-/// Characters of the last message [`LAST_MESSAGE_SQL`] returns: twice what
-/// [`normalize_last_message`] keeps, so whitespace collapsing has slack.
-const LAST_MESSAGE_PREVIEW_CHARS: usize = 400;
 
 #[allow(clippy::too_many_lines, clippy::cognitive_complexity)]
 pub async fn list_sessions(
@@ -3275,7 +3272,7 @@ mod tests {
 
     #[test]
     fn sql_prefix_preview_matches_the_full_text_preview() {
-        let n = super::LAST_MESSAGE_PREVIEW_CHARS;
+        let n = 400;
         assert!(super::LAST_MESSAGE_SQL.contains(&format!("left(e.body, {n})")));
         assert!(super::LAST_MESSAGE_SQL.contains(&format!("length(e.body) > {n}")));
         let inputs = [
@@ -3336,7 +3333,7 @@ mod tests {
                     .unwrap();
             let body = rows[0].1.clone().unwrap();
             if want.is_empty() {
-                assert_eq!(body.chars().count(), super::LAST_MESSAGE_PREVIEW_CHARS);
+                assert_eq!(body.chars().count(), 400);
                 assert_eq!(rows[0].2, Some(true));
             } else {
                 assert_eq!(body, want);
