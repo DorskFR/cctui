@@ -1055,6 +1055,14 @@ fn build_api_routes() -> Routes {
             Authenticated,
         )
         .add(
+            &[GET, Method::PUT],
+            "/accounts/{id}/tool-policy",
+            "Get or replace the account's gateway tool-call policy.",
+            get(routes::tool_policy::get_tool_policy).put(routes::tool_policy::put_tool_policy),
+            Authn::Bearer,
+            Authenticated,
+        )
+        .add(
             &[GET],
             "/redirects",
             "The caller's live account/model redirect rules.",

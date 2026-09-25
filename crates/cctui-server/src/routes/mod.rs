@@ -42,6 +42,7 @@ pub mod skills;
 pub mod spawn;
 pub mod spawn_child;
 pub mod stats;
+pub mod tool_policy;
 pub mod triggers;
 pub mod update_hook;
 pub mod usage_history;
