@@ -733,7 +733,7 @@ async fn handle(socket: WebSocket, state: AppState, machine_id: Uuid, user_id: U
                     run.push(ingest);
                     continue;
                 }
-                Err(frame) => frame,
+                Err(frame) => *frame,
             };
             ingest_run(&state, &bumps, machine_id, user_id, &mut run).await;
             let announce = announced_session(&frame).map(str::to_owned);
@@ -1126,7 +1126,8 @@ async fn process_frame(
                 local_id = event_local_id(&event),
                 "received event",
             );
-            handle_event(state, bumps, machine_id, user_id, &adapter_id, event, None).await
+            handle_event(state, bumps, machine_id, user_id, &adapter_id, event, Stored::Pending)
+                .await
         }
         DaemonFrameUp::StageFilesResult { request_id, ok, paths, error } => {
             // Mid-chat attachment reply: fire the oneshot the
@@ -1227,6 +1228,14 @@ fn on_heartbeat(state: &AppState, machine_id: Uuid, frame: DaemonFrameUp) {
 
 /// Bump the per-machine persisted-insert counter feeding divergence detection,
 /// only when a `stream_events` row was actually written.
+/// Whether an event's `stream_events` row is already written, and its seq if
+/// it was newly inserted.
+#[derive(Clone, Copy)]
+enum Stored {
+    Pending,
+    Done(Option<i64>),
+}
+
 /// A persistable event held back so consecutive ones from one frame share a
 /// single `stream_events` insert.
 struct Ingest {
@@ -1236,9 +1245,9 @@ struct Ingest {
 }
 
 impl Ingest {
-    fn take(frame: DaemonFrameUp) -> Result<Self, DaemonFrameUp> {
+    fn take(frame: DaemonFrameUp) -> Result<Self, Box<DaemonFrameUp>> {
         let DaemonFrameUp::Event { adapter_id, event } = frame else {
-            return Err(frame);
+            return Err(Box::new(frame));
         };
         let row = match &event {
             AdapterEvent::Message { local_id, payload, turn_id } => NewEvent {
@@ -1253,7 +1262,7 @@ impl Ingest {
                 payload: payload.clone(),
                 turn_id: None,
             },
-            _ => return Err(DaemonFrameUp::Event { adapter_id, event }),
+            _ => return Err(Box::new(DaemonFrameUp::Event { adapter_id, event })),
         };
         Ok(Self { adapter_id, event, row })
     }
@@ -1289,7 +1298,8 @@ async fn ingest_run(
     };
     for ((adapter_id, event), seq) in events.into_iter().zip(seqs) {
         if let Err(err) =
-            handle_event(state, bumps, machine_id, user_id, &adapter_id, event, Some(seq)).await
+            handle_event(state, bumps, machine_id, user_id, &adapter_id, event, Stored::Done(seq))
+                .await
         {
             tracing::warn!(%err, "handle_event error");
         }
@@ -1370,7 +1380,7 @@ async fn handle_event(
     user_id: Uuid,
     adapter_id: &str,
     event: AdapterEvent,
-    stored: Option<Option<i64>>,
+    stored: Stored,
 ) -> anyhow::Result<()> {
     let local_id_for_bump = match &event {
         AdapterEvent::Message { local_id, .. }
@@ -1450,40 +1460,30 @@ async fn handle_event(
             crate::followup::claim_intent(&state.pool, &local_id, spawn_key_hint.as_deref()).await;
         }
         AdapterEvent::Message { local_id, mut payload, turn_id } => {
-            inserted_seq = match stored {
-                Some(seq) => seq,
-                None => {
-                    crate::keepalive::observe_message(state, &local_id, &mut payload).await;
-                    insert_event(
-                        &state.pool,
-                        machine_id,
-                        user_id,
-                        &local_id,
-                        "message",
-                        payload,
-                        turn_id,
-                    )
-                    .await?
-                }
+            inserted_seq = if let Stored::Done(seq) = stored {
+                seq
+            } else {
+                crate::keepalive::observe_message(state, &local_id, &mut payload).await;
+                insert_event(
+                    &state.pool,
+                    machine_id,
+                    user_id,
+                    &local_id,
+                    "message",
+                    payload,
+                    turn_id,
+                )
+                .await?
             };
             newly_inserted = inserted_seq.is_some();
             note_insert(state, machine_id, newly_inserted);
         }
         AdapterEvent::ToolUse { local_id, payload } => {
-            inserted_seq = match stored {
-                Some(seq) => seq,
-                None => {
-                    insert_event(
-                        &state.pool,
-                        machine_id,
-                        user_id,
-                        &local_id,
-                        "tool_use",
-                        payload,
-                        None,
-                    )
+            inserted_seq = if let Stored::Done(seq) = stored {
+                seq
+            } else {
+                insert_event(&state.pool, machine_id, user_id, &local_id, "tool_use", payload, None)
                     .await?
-                }
             };
             newly_inserted = inserted_seq.is_some();
             note_insert(state, machine_id, newly_inserted);
