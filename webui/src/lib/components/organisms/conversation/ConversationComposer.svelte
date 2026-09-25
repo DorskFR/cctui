@@ -21,8 +21,8 @@
 		IconButton,
 		Input,
 		InputGroup,
-		Menu,
 		Modal,
+		SplitButton,
 		Text,
 		Textarea
 	} from '@dorsk/tsumikit';
@@ -476,38 +476,29 @@
 				<!-- Stays a plain primary button across all cost states: a `tone` on
 				     `primary` recolors the label over the accent fill (unreadable). The
 				     cold/imminent state lives in the label and the title tooltip. -->
-				<span class="send-split">
-					<Button
-						variant="primary"
-						size="sm"
-						shrink={false}
-						disabled={uploading || images.pending.length > 0 || (!input.trim() && attachments.length === 0)}
-						onclick={send}
-						title={cacheCold
-							? burstTokens
-								? m.composer_cache_cold_burst({ tokens: compact(burstTokens) })
-								: m.composer_cache_cold()
-							: coldImminent
-								? m.composer_cache_imminent()
-								: undefined}
-					>
-						{#if uploading}{m.composer_uploading()}{:else if coldImminent}{m.composer_send()} (<span
-								class="countdown">{coldCountdownSecs}s</span
-							>){:else if cacheCold && burstTokens}{m.composer_send()} ❄️ ~{compact(
-								burstTokens
-							)}{:else if cacheCold}{m.composer_send()}
-							❄️{:else}{m.composer_send()}{/if}
-					</Button>
-					<Menu
-						label={m.composer_schedule_menu()}
-						items={scheduleItems}
-						placement="top-end"
-						variant="primary"
-						size="sm"
-					>
-						{#snippet trigger()}<span aria-hidden="true">▾</span>{/snippet}
-					</Menu>
-				</span>
+				<SplitButton
+					variant="primary"
+					size="sm"
+					label={m.composer_schedule_menu()}
+					items={scheduleItems}
+					placement="top-end"
+					disabled={uploading || images.pending.length > 0 || (!input.trim() && attachments.length === 0)}
+					onclick={send}
+					title={cacheCold
+						? burstTokens
+							? m.composer_cache_cold_burst({ tokens: compact(burstTokens) })
+							: m.composer_cache_cold()
+						: coldImminent
+							? m.composer_cache_imminent()
+							: undefined}
+				>
+					{#if uploading}{m.composer_uploading()}{:else if coldImminent}{m.composer_send()} (<span
+							class="countdown">{coldCountdownSecs}s</span
+						>){:else if cacheCold && burstTokens}{m.composer_send()} ❄️ ~{compact(
+							burstTokens
+						)}{:else if cacheCold}{m.composer_send()}
+						❄️{:else}{m.composer_send()}{/if}
+				</SplitButton>
 			{/snippet}
 		</InputGroup>
 	{/if}
@@ -581,11 +572,6 @@
 		min-width: 2.4ch;
 		text-align: right;
 		font-variant-numeric: tabular-nums;
-	}
-	.send-split {
-		display: inline-flex;
-		flex: none;
-		gap: 1px;
 	}
 	.custom-at {
 		display: flex;
