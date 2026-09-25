@@ -175,9 +175,9 @@ export function useMessagePinActions() {
   };
 }
 
-/** Session diagnose panel. Fetched only while the panel is open;
- *  no polling — the panel offers an explicit refresh instead, since the call
- *  round-trips through the daemon. */
+/** Session diagnose facts for the activity dot tooltip. Fetched only once the
+ *  tooltip has been opened; the call round-trips through the daemon, so a short
+ *  stale time serves repeated hovers from cache instead. */
 export const useSessionDiagnose = (
   id: () => string,
   enabled: () => boolean = () => true,
@@ -186,7 +186,7 @@ export const useSessionDiagnose = (
     queryKey: ["session-diagnose", id()],
     queryFn: () => endpoints.sessionDiagnose(id()),
     enabled: enabled() && !!id(),
-    staleTime: 0,
+    staleTime: 30_000,
     retry: false,
   }));
 
