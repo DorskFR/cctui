@@ -199,3 +199,47 @@ pub fn track_command(
     map.retain(|_, c| now.duration_since(c.at) < PENDING_COMMAND_TTL);
     map.insert(command_id, PendingCommand { session_id, spawn, at: now });
 }
+
+#[cfg(test)]
+impl AppState {
+    /// An `AppState` around `pool` with every other dependency inert.
+    #[must_use]
+    pub fn for_test(pool: PgPool) -> Self {
+        Self {
+            config: Config::for_test(vec![]),
+            registry: crate::registry::Registry::shared(),
+            permission_store: crate::routes::permissions::PermissionStore::shared(),
+            bus: Bus::new(Box::new(crate::bus::NoopTransport)),
+            auth_config: AuthConfig::new(vec![], pool.clone()),
+            webauthn: None,
+            skills: Arc::new(SkillStore::new(std::env::temp_dir().join("cctui-test-skills"))),
+            presence: Arc::new(crate::presence::PodIdentity::from_env()),
+            internal_secret: None,
+            dispatcher_liveness: Arc::new(DashMap::new()),
+            dispatchers: Arc::new(DispatcherRegistry::new()),
+            machine_liveness: Arc::new(DashMap::new()),
+            account_locks: Arc::new(DashMap::new()),
+            http_client: reqwest::Client::new(),
+            langfuse: None,
+            pending_oauth_logins: Arc::new(DashMap::new()),
+            account_usage_cache: Arc::new(DashMap::new()),
+            pr_status_cache: cctui_proto::classifier::PrStatusCache::new(),
+            gateway_orphan_spam: Arc::new(DashMap::new()),
+            account_reauth: Arc::new(DashMap::new()),
+            codex_catalogs: Arc::new(DashMap::new()),
+            codex_account_catalogs: Arc::new(DashMap::new()),
+            codex_latest_version: Arc::new(std::sync::Mutex::new(None)),
+            eviction_tracker: Arc::new(crate::bandwidth_watch::EvictionTracker::default()),
+            connect_tracker: Arc::new(crate::bandwidth_watch::ConnectTracker::default()),
+            divergence_tracker: Arc::new(crate::bandwidth_watch::DivergenceTracker::default()),
+            machine_event_inserts: Arc::new(DashMap::new()),
+            spawn_capabilities: Arc::new(DashMap::new()),
+            session_usd_budgets: Arc::new(DashMap::new()),
+            gateway_rate_windows: Arc::new(DashMap::new()),
+            update_check: crate::update_check::UpdateCheck::shared(),
+            self_update: Arc::new(crate::routes::self_update::SelfUpdateGuard::default()),
+            pending_commands: Arc::new(DashMap::new()),
+            pool,
+        }
+    }
+}

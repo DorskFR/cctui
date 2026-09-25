@@ -26,7 +26,7 @@ use uuid::Uuid;
 
 use crate::auth::AuthContext;
 use crate::authz::{Shareable, shareable_owner};
-use crate::error::err;
+use crate::error::{AppError, err};
 use crate::routes::gateway;
 use crate::state::AppState;
 
@@ -651,7 +651,7 @@ fn build_soft_limits_json(
     legacy_weekly_cap: Option<i32>,
     legacy_session_bypass: Option<i32>,
     legacy_weekly_bypass: Option<i32>,
-) -> Result<Option<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+) -> Result<Option<serde_json::Value>, AppError> {
     use std::collections::BTreeMap;
     let mut out: BTreeMap<String, serde_json::Value> = BTreeMap::new();
 
@@ -663,30 +663,33 @@ fn build_soft_limits_json(
         if let Some(c) = cap
             && !(0..=100).contains(&c)
         {
-            return Err(err(StatusCode::BAD_REQUEST, "soft-limit cap must be 0-100"));
+            return Err(AppError::new(StatusCode::BAD_REQUEST, "soft-limit cap must be 0-100"));
         }
         // Below 1x is a cap tighter than an even spend, which would refuse an
         // idle-then-work account forever; above 100x can never trigger.
         if let Some(p) = pace_cap
             && (!p.is_finite() || !(1.0..=100.0).contains(&p))
         {
-            return Err(err(StatusCode::BAD_REQUEST, "soft-limit pace_cap must be 1-100"));
+            return Err(AppError::new(
+                StatusCode::BAD_REQUEST,
+                "soft-limit pace_cap must be 1-100",
+            ));
         }
         if let Some(c) = cap_usd
             && (!c.is_finite() || c < 0.0)
         {
-            return Err(err(StatusCode::BAD_REQUEST, "soft-limit cap_usd must be >= 0"));
+            return Err(AppError::new(StatusCode::BAD_REQUEST, "soft-limit cap_usd must be >= 0"));
         }
         if let Some(b) = bypass
             && b < 0
         {
-            return Err(err(StatusCode::BAD_REQUEST, "soft-limit bypass must be >= 0"));
+            return Err(AppError::new(StatusCode::BAD_REQUEST, "soft-limit bypass must be >= 0"));
         }
         if cap.is_none() && cap_usd.is_none() && bypass.is_none() && pace_cap.is_none() {
             return Ok(());
         }
         let Some(canon) = crate::soft_limit::canonicalize_key(key) else {
-            return Err(err(StatusCode::BAD_REQUEST, "unknown soft-limit window key"));
+            return Err(AppError::new(StatusCode::BAD_REQUEST, "unknown soft-limit window key"));
         };
         // A dollar cap belongs only to a dollar window, and vice versa: storing
         // the wrong one would read as an unenforceable cap in the UI.
@@ -721,7 +724,7 @@ fn build_soft_limits_json(
             insert(key, cap, cap_usd, bypass, pace_cap)?;
         }
     } else if map.is_some_and(|v| !v.is_null()) {
-        return Err(err(StatusCode::BAD_REQUEST, "soft_limits must be an object"));
+        return Err(AppError::new(StatusCode::BAD_REQUEST, "soft_limits must be an object"));
     } else {
         // No map supplied — fold the legacy scalar fields.
         insert(
@@ -748,10 +751,10 @@ fn build_soft_limits_json(
 /// (clears the column). Rejects negative / non-integer values and a non-object.
 fn build_rate_limits_json(
     map: Option<&serde_json::Value>,
-) -> Result<Option<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+) -> Result<Option<serde_json::Value>, AppError> {
     let Some(map) = map.filter(|v| !v.is_null()) else { return Ok(None) };
     let Some(obj) = map.as_object() else {
-        return Err(err(StatusCode::BAD_REQUEST, "rate_limits must be an object"));
+        return Err(AppError::new(StatusCode::BAD_REQUEST, "rate_limits must be an object"));
     };
     let mut out = serde_json::Map::new();
     for key in ["rpm", "tpm"] {
@@ -759,7 +762,7 @@ fn build_rate_limits_json(
             None | Some(serde_json::Value::Null) => {}
             Some(v) => {
                 let Some(n) = v.as_u64() else {
-                    return Err(err(
+                    return Err(AppError::new(
                         StatusCode::BAD_REQUEST,
                         "rate limit must be a whole number >= 0",
                     ));
@@ -774,21 +777,16 @@ fn build_rate_limits_json(
 }
 
 /// A compatible endpoint's `base_url` must not reach internal addresses.
-async fn check_base_url(raw: &str) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+async fn check_base_url(raw: &str) -> Result<(), AppError> {
     crate::outbound::validate_upstream_url(raw).await.map_err(|e| {
-        err(
+        AppError::new(
             StatusCode::BAD_REQUEST,
-            &format!(
+            format!(
                 "base_url {e}; an operator can allow a trusted host with \
                      CCTUI_UPSTREAM_ALLOWED_HOSTS"
             ),
         )
     })
-}
-
-fn db_err(e: &sqlx::Error) -> (StatusCode, Json<serde_json::Value>) {
-    tracing::error!("db error: {e}");
-    err(StatusCode::INTERNAL_SERVER_ERROR, "database error")
 }
 
 /// The settings catalog as served to the webui account-settings editor.
@@ -908,26 +906,25 @@ fn normalize_emoji(raw: &str) -> Result<Option<String>, &'static str> {
 }
 
 /// [`normalize_emoji`] as an API-level check.
-fn emoji_field(raw: Option<&str>) -> Result<Option<String>, (StatusCode, Json<serde_json::Value>)> {
-    raw.map_or(Ok(None), |v| normalize_emoji(v).map_err(|msg| err(StatusCode::BAD_REQUEST, msg)))
+fn emoji_field(raw: Option<&str>) -> Result<Option<String>, AppError> {
+    raw.map_or(Ok(None), |v| {
+        normalize_emoji(v).map_err(|msg| AppError::new(StatusCode::BAD_REQUEST, msg))
+    })
 }
 
 /// Validate a pasted `settings_json` blob before persisting it via the
 /// settings catalog: only keys tagged `safe`/`care` may be set
 /// per-provider; unknown, MANAGED, and SYSTEM keys are rejected. Fail-closed —
 /// any violation aborts the whole write.
-fn validate_settings_json(
-    provider: &str,
-    value: &serde_json::Value,
-) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+fn validate_settings_json(provider: &str, value: &serde_json::Value) -> Result<(), AppError> {
     let report = crate::settings_catalog::for_provider(provider).validate_settings(value);
     if report.ok() {
         return Ok(());
     }
     let detail = report.violations.iter().map(|v| v.key.as_str()).collect::<Vec<_>>().join(", ");
-    Err(err(
+    Err(AppError::new(
         StatusCode::BAD_REQUEST,
-        &format!("settings_json rejected — not settable per-account: {detail}"),
+        format!("settings_json rejected — not settable per-account: {detail}"),
     ))
 }
 
@@ -935,9 +932,7 @@ fn validate_settings_json(
 /// encrypted and stored: any well-formed env var name is accepted EXCEPT a
 /// denylist of session-critical / gateway-managed vars (values are arbitrary and
 /// may be secrets). Fail-closed with a per-name reason.
-fn validate_env_json(
-    env: &std::collections::HashMap<String, String>,
-) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+fn validate_env_json(env: &std::collections::HashMap<String, String>) -> Result<(), AppError> {
     let map: std::collections::BTreeMap<String, String> =
         env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
     let report = crate::settings_catalog::catalog().validate_free_env(&map);
@@ -950,7 +945,7 @@ fn validate_env_json(
         .map(|v| format!("{}: {}", v.key, v.reason))
         .collect::<Vec<_>>()
         .join("; ");
-    Err(err(StatusCode::BAD_REQUEST, &format!("env_json rejected — {detail}")))
+    Err(AppError::new(StatusCode::BAD_REQUEST, format!("env_json rejected — {detail}")))
 }
 
 /// Decrypt a stored `env_json` blob to its var NAMES only (sorted), never the
@@ -973,7 +968,7 @@ fn env_map_from_enc(enc: Option<&str>, key: &[u8]) -> std::collections::BTreeMap
 /// Validate + encrypt an extra-env map. Empty ⇒ `None` (clears).
 fn encrypt_env(
     env: Option<&std::collections::HashMap<String, String>>,
-) -> Result<Option<String>, (StatusCode, Json<serde_json::Value>)> {
+) -> Result<Option<String>, AppError> {
     let Some(map) = env.filter(|m| !m.is_empty()) else { return Ok(None) };
     validate_env_json(map)?;
     let key = crate::crypto::vault_key();
@@ -1003,17 +998,15 @@ struct ProviderWrite {
 /// `encrypted_access_token`, no refresh token, `auth_scheme` = `bearer|api_key`.
 // Linear validator: one branch per optional field, no nesting.
 #[allow(clippy::too_many_lines)]
-async fn prepare_provider_write(
-    spec: &ProviderSpec,
-) -> Result<ProviderWrite, (StatusCode, Json<serde_json::Value>)> {
+async fn prepare_provider_write(spec: &ProviderSpec) -> Result<ProviderWrite, AppError> {
     let Some(provider) = spec.provider.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
-        return Err(err(StatusCode::BAD_REQUEST, "provider required"));
+        return Err(AppError::new(StatusCode::BAD_REQUEST, "provider required"));
     };
     if !matches!(
         provider,
         "anthropic" | "openai" | "anthropic-compatible" | "openai-compatible" | "fireworks"
     ) {
-        return Err(err(
+        return Err(AppError::new(
             StatusCode::BAD_REQUEST,
             "provider must be anthropic|openai|anthropic-compatible|openai-compatible|fireworks",
         ));
@@ -1036,7 +1029,7 @@ async fn prepare_provider_write(
             Some(b) => Some(b),
             None if fireworks => None,
             None => {
-                return Err(err(
+                return Err(AppError::new(
                     StatusCode::BAD_REQUEST,
                     "base_url required for a compatible endpoint",
                 ));
@@ -1048,7 +1041,10 @@ async fn prepare_provider_write(
         let scheme = spec.auth_scheme.as_deref().map(str::trim).filter(|s| !s.is_empty());
         let scheme = scheme.unwrap_or("bearer");
         if !matches!(scheme, "bearer" | "api_key") {
-            return Err(err(StatusCode::BAD_REQUEST, "auth_scheme must be bearer|api_key"));
+            return Err(AppError::new(
+                StatusCode::BAD_REQUEST,
+                "auth_scheme must be bearer|api_key",
+            ));
         }
         // A static credential is optional (an open proxy accepts any value); when
         // absent we still store a dummy so the gateway has a bearer to forward.
@@ -1066,7 +1062,7 @@ async fn prepare_provider_write(
     } else {
         let refresh = spec.refresh_token.as_deref().map(str::trim).filter(|s| !s.is_empty());
         let Some(refresh) = refresh else {
-            return Err(err(StatusCode::BAD_REQUEST, "refresh_token required"));
+            return Err(AppError::new(StatusCode::BAD_REQUEST, "refresh_token required"));
         };
         let key = crate::crypto::vault_key();
         enc_refresh = Some(crate::crypto::encrypt(refresh, &key));
@@ -1122,11 +1118,9 @@ async fn prepare_provider_write(
 /// the family defaults, and a scalar/array would silently replace the whole
 /// blob instead of overriding one knob. `thinking_display` is dropped: the
 /// gateway forwards bytes verbatim and cannot apply it.
-fn validate_provider_settings(
-    v: &serde_json::Value,
-) -> Result<serde_json::Value, (StatusCode, Json<serde_json::Value>)> {
+fn validate_provider_settings(v: &serde_json::Value) -> Result<serde_json::Value, AppError> {
     v.as_object().map_or_else(
-        || Err(err(StatusCode::BAD_REQUEST, "provider_settings must be a JSON object")),
+        || Err(AppError::new(StatusCode::BAD_REQUEST, "provider_settings must be a JSON object")),
         |obj| {
             let mut obj = obj.clone();
             obj.remove("thinking_display");
@@ -1175,7 +1169,7 @@ async fn insert_provider(
 pub async fn list_accounts(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
-) -> Result<Json<Vec<AccountInfo>>, (StatusCode, Json<serde_json::Value>)> {
+) -> Result<Json<Vec<AccountInfo>>, AppError> {
     let accounts: Vec<AccountRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "{ACCOUNT_SELECT} WHERE $1::uuid IS NULL OR a.user_id = $1 \
            OR EXISTS (SELECT 1 FROM resource_shares s \
@@ -1185,8 +1179,7 @@ pub async fn list_accounts(
     )))
     .bind(ctx.owner_filter())
     .fetch_all(&state.pool)
-    .await
-    .map_err(|e| db_err(&e))?;
+    .await?;
     let providers: Vec<ProviderInfo> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "{PROVIDER_SELECT} WHERE $1::uuid IS NULL OR p.user_id = $1 \
            OR EXISTS (SELECT 1 FROM resource_shares s \
@@ -1196,8 +1189,7 @@ pub async fn list_accounts(
     )))
     .bind(ctx.owner_filter())
     .fetch_all(&state.pool)
-    .await
-    .map_err(|e| db_err(&e))?;
+    .await?;
 
     let mut by_account: HashMap<Uuid, Vec<ProviderInfo>> = HashMap::new();
     for p in providers {
@@ -1220,12 +1212,11 @@ pub async fn get_account(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<Uuid>,
-) -> Result<Json<AccountInfo>, (StatusCode, Json<serde_json::Value>)> {
+) -> Result<Json<AccountInfo>, AppError> {
     fetch_account_info(&state.pool, id, ctx.owner_filter())
-        .await
-        .map_err(|e| db_err(&e))?
+        .await?
         .map(Json)
-        .ok_or_else(|| err(StatusCode::NOT_FOUND, "no such account"))
+        .ok_or_else(|| AppError::new(StatusCode::NOT_FOUND, "no such account"))
 }
 
 /// `POST /api/v1/accounts` — register an account identity, optionally with its
@@ -1235,10 +1226,11 @@ pub async fn create_account(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Json(req): Json<CreateAccount>,
-) -> Result<(StatusCode, Json<AccountInfo>), (StatusCode, Json<serde_json::Value>)> {
-    let uid = resolve_owner(&ctx, req.user_id)?;
+) -> Result<(StatusCode, Json<AccountInfo>), AppError> {
+    let uid = resolve_owner(&ctx, req.user_id)
+        .map_err(|(s, Json(v))| AppError::new(s, v["error"].as_str().unwrap_or_default()))?;
     if req.name.trim().is_empty() {
-        return Err(err(StatusCode::BAD_REQUEST, "name required"));
+        return Err(AppError::new(StatusCode::BAD_REQUEST, "name required"));
     }
     let emoji = emoji_field(req.emoji.as_deref())?;
     let enc_env = encrypt_env(req.env_json.as_ref())?;
@@ -1250,7 +1242,7 @@ pub async fn create_account(
         None
     };
 
-    let mut tx = state.pool.begin().await.map_err(|e| db_err(&e))?;
+    let mut tx = state.pool.begin().await?;
     let account_id: Uuid = match sqlx::query_scalar(
         "INSERT INTO accounts (user_id, name, env_json, emoji) VALUES ($1, $2, $3, $4) RETURNING id",
     )
@@ -1263,23 +1255,25 @@ pub async fn create_account(
     {
         Ok(id) => id,
         Err(sqlx::Error::Database(db)) if db.is_unique_violation() => {
-            return Err(err(StatusCode::CONFLICT, "an account with that name already exists"));
+            return Err(AppError::new(
+                StatusCode::CONFLICT,
+                "an account with that name already exists",
+            ));
         }
-        Err(e) => return Err(db_err(&e)),
+        Err(e) => return Err(AppError::from(e)),
     };
     if let Some(w) = &provider_write
         && let Err(e) = insert_provider(&mut tx, uid, account_id, w).await
     {
         // A fresh account can't collide on (account_id, family); any error here
         // is a genuine DB failure. The tx rollback drops the parent too.
-        return Err(db_err(&e));
+        return Err(AppError::from(e));
     }
-    tx.commit().await.map_err(|e| db_err(&e))?;
+    tx.commit().await?;
 
-    let info = fetch_account_info(&state.pool, account_id, None)
-        .await
-        .map_err(|e| db_err(&e))?
-        .ok_or_else(|| err(StatusCode::INTERNAL_SERVER_ERROR, "account vanished after create"))?;
+    let info = fetch_account_info(&state.pool, account_id, None).await?.ok_or_else(|| {
+        AppError::new(StatusCode::INTERNAL_SERVER_ERROR, "account vanished after create")
+    })?;
     Ok((StatusCode::CREATED, Json(info)))
 }
 
@@ -1292,7 +1286,7 @@ pub async fn update_account(
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<Uuid>,
     Json(req): Json<UpdateAccount>,
-) -> Result<Json<AccountInfo>, (StatusCode, Json<serde_json::Value>)> {
+) -> Result<Json<AccountInfo>, AppError> {
     if req.base_url.is_some()
         || req.auth_scheme.is_some()
         || req.models.is_some()
@@ -1302,7 +1296,7 @@ pub async fn update_account(
         || req.settings_json.is_some()
         || req.defaults.is_some()
     {
-        return Err(err(
+        return Err(AppError::new(
             StatusCode::BAD_REQUEST,
             "provider fields moved: use PATCH /api/v1/accounts/:id/providers/:provider_id",
         ));
@@ -1310,13 +1304,16 @@ pub async fn update_account(
     if let Some(name) = req.name.as_deref()
         && name.trim().is_empty()
     {
-        return Err(err(StatusCode::BAD_REQUEST, "name required"));
+        return Err(AppError::new(StatusCode::BAD_REQUEST, "name required"));
     }
     let name = req.name.as_deref().map(str::trim).map(str::to_owned);
     if let Some(w) = req.pool_weight
         && !(w.is_finite() && w > 0.0)
     {
-        return Err(err(StatusCode::BAD_REQUEST, "pool_weight must be a positive number"));
+        return Err(AppError::new(
+            StatusCode::BAD_REQUEST,
+            "pool_weight must be a positive number",
+        ));
     }
     // emoji: provided → set (a blank string clears it); absent → unchanged.
     let emoji_provided = req.emoji.is_some();
@@ -1332,8 +1329,7 @@ pub async fn update_account(
         .bind(id)
         .bind(ctx.owner_filter())
         .fetch_optional(&state.pool)
-        .await
-        .map_err(|e| db_err(&e))?;
+        .await?;
         let key = crate::crypto::vault_key();
         let mut map = env_map_from_enc(stored.flatten().as_deref(), &key);
         map.retain(|name, _| !remove.contains(name));
@@ -1360,9 +1356,8 @@ pub async fn update_account(
         // guard would 404 an account the pool fields just applied to cleanly.
         if name.is_none() && !env_provided && !emoji_provided {
             let info = fetch_account_info(&state.pool, id, None)
-                .await
-                .map_err(|e| db_err(&e))?
-                .ok_or_else(|| err(StatusCode::NOT_FOUND, "no such account"))?;
+                .await?
+                .ok_or_else(|| AppError::new(StatusCode::NOT_FOUND, "no such account"))?;
             return Ok(Json(info));
         }
     }
@@ -1387,19 +1382,18 @@ pub async fn update_account(
     .bind(&emoji)
     .fetch_optional(&state.pool)
     .await
-    .map_err(|e| match &e {
+    .map_err(|e| match e {
         sqlx::Error::Database(db) if db.is_unique_violation() => {
-            err(StatusCode::CONFLICT, "an account with that name already exists")
+            AppError::new(StatusCode::CONFLICT, "an account with that name already exists")
         }
-        _ => db_err(&e),
+        other => AppError::from(other),
     })?;
     if updated.is_none() {
-        return Err(err(StatusCode::NOT_FOUND, "no such account"));
+        return Err(AppError::new(StatusCode::NOT_FOUND, "no such account"));
     }
     let info = fetch_account_info(&state.pool, id, None)
-        .await
-        .map_err(|e| db_err(&e))?
-        .ok_or_else(|| err(StatusCode::NOT_FOUND, "no such account"))?;
+        .await?
+        .ok_or_else(|| AppError::new(StatusCode::NOT_FOUND, "no such account"))?;
     Ok(Json(info))
 }
 
@@ -1410,7 +1404,7 @@ async fn set_pool_weight(
     id: Uuid,
     owner: Option<Uuid>,
     weight: f32,
-) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+) -> Result<(), AppError> {
     let touched = sqlx::query(
         "UPDATE accounts SET pool_weight = $3, updated_at = now() \
           WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2)",
@@ -1419,10 +1413,9 @@ async fn set_pool_weight(
     .bind(owner)
     .bind(weight)
     .execute(&state.pool)
-    .await
-    .map_err(|e| db_err(&e))?;
+    .await?;
     if touched.rows_affected() == 0 {
-        return Err(err(StatusCode::NOT_FOUND, "no such account"));
+        return Err(AppError::new(StatusCode::NOT_FOUND, "no such account"));
     }
     Ok(())
 }
@@ -1439,7 +1432,7 @@ async fn set_pool_eligible(
     id: Uuid,
     owner: Option<Uuid>,
     eligible: bool,
-) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+) -> Result<(), AppError> {
     let touched = sqlx::query(
         "UPDATE accounts SET pool_eligible = $3, updated_at = now() \
           WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2)",
@@ -1448,10 +1441,9 @@ async fn set_pool_eligible(
     .bind(owner)
     .bind(eligible)
     .execute(&state.pool)
-    .await
-    .map_err(|e| db_err(&e))?;
+    .await?;
     if touched.rows_affected() == 0 {
-        return Err(err(StatusCode::NOT_FOUND, "no such account"));
+        return Err(AppError::new(StatusCode::NOT_FOUND, "no such account"));
     }
     if !eligible
         && let Err(e) = sqlx::query(
@@ -1475,7 +1467,7 @@ pub async fn delete_account(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<Uuid>,
-) -> Result<StatusCode, (StatusCode, Json<serde_json::Value>)> {
+) -> Result<StatusCode, AppError> {
     // Admin (`ctx.user_id` = NULL) may delete any account; a user only its own.
     // Accounts holding a managed provider (litellm shim) are read-only.
     let res = sqlx::query(
@@ -1486,10 +1478,9 @@ pub async fn delete_account(
     .bind(id)
     .bind(ctx.owner_filter())
     .execute(&state.pool)
-    .await
-    .map_err(|e| db_err(&e))?;
+    .await?;
     if res.rows_affected() == 0 {
-        return Err(err(StatusCode::NOT_FOUND, "no such account"));
+        return Err(AppError::new(StatusCode::NOT_FOUND, "no such account"));
     }
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1508,26 +1499,25 @@ pub async fn add_provider(
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<Uuid>,
     Json(req): Json<ProviderSpec>,
-) -> Result<(StatusCode, Json<ProviderInfo>), (StatusCode, Json<serde_json::Value>)> {
+) -> Result<(StatusCode, Json<ProviderInfo>), AppError> {
     let owner = require_account_owner(&state, &ctx, id).await?;
     let w = prepare_provider_write(&req).await?;
 
-    let mut conn = state.pool.acquire().await.map_err(|e| db_err(&e))?;
+    let mut conn = state.pool.acquire().await?;
     let pid = match insert_provider(&mut conn, owner, id, &w).await {
         Ok(pid) => pid,
         Err(sqlx::Error::Database(db)) if db.is_unique_violation() => {
-            return Err(err(
+            return Err(AppError::new(
                 StatusCode::CONFLICT,
                 "the account already has a provider of that family",
             ));
         }
-        Err(e) => return Err(db_err(&e)),
+        Err(e) => return Err(AppError::from(e)),
     };
     drop(conn);
-    let info = fetch_provider_info(&state.pool, pid)
-        .await
-        .map_err(|e| db_err(&e))?
-        .ok_or_else(|| err(StatusCode::INTERNAL_SERVER_ERROR, "provider vanished after create"))?;
+    let info = fetch_provider_info(&state.pool, pid).await?.ok_or_else(|| {
+        AppError::new(StatusCode::INTERNAL_SERVER_ERROR, "provider vanished after create")
+    })?;
     Ok((StatusCode::CREATED, Json(info)))
 }
 
@@ -1570,7 +1560,7 @@ pub async fn update_provider(
     Extension(ctx): Extension<AuthContext>,
     Path((id, provider_id)): Path<(Uuid, Uuid)>,
     Json(req): Json<UpdateProvider>,
-) -> Result<Json<ProviderInfo>, (StatusCode, Json<serde_json::Value>)> {
+) -> Result<Json<ProviderInfo>, AppError> {
     // Resolve the target (scoped to the caller; admin sees all) so we can tell a
     // compatible endpoint from a native one and reject editing managed rows.
     let provider = crate::store::account_providers::provider_owner_scoped(
@@ -1579,10 +1569,9 @@ pub async fn update_provider(
         id,
         ctx.owner_filter(),
     )
-    .await
-    .map_err(|e| db_err(&e))?;
+    .await?;
     let Some(provider) = provider else {
-        return Err(err(StatusCode::NOT_FOUND, "no such provider"));
+        return Err(AppError::new(StatusCode::NOT_FOUND, "no such provider"));
     };
     let compatible =
         matches!(provider.as_str(), "anthropic-compatible" | "openai-compatible" | "fireworks");
@@ -1590,7 +1579,7 @@ pub async fn update_provider(
     // Endpoint fields are rejected for native providers so the edit form can't
     // silently no-op against a subscription credential.
     if !compatible && endpoint_fields_present(&req) {
-        return Err(err(
+        return Err(AppError::new(
             StatusCode::BAD_REQUEST,
             "endpoint fields are only editable for a compatible provider",
         ));
@@ -1610,7 +1599,10 @@ pub async fn update_provider(
     let auth_scheme = match req.auth_scheme.as_deref().map(str::trim) {
         Some(s) if !s.is_empty() => {
             if !matches!(s, "bearer" | "api_key") {
-                return Err(err(StatusCode::BAD_REQUEST, "auth_scheme must be bearer|api_key"));
+                return Err(AppError::new(
+                    StatusCode::BAD_REQUEST,
+                    "auth_scheme must be bearer|api_key",
+                ));
             }
             Some(s.to_owned())
         }
@@ -1656,7 +1648,7 @@ pub async fn update_provider(
     let usage_notices_provided = req.usage_notices.is_some();
     let usage_notices =
         crate::routes::gateway::usage_notices::UsageNotices::build_json(req.usage_notices.as_ref())
-            .map_err(|m| err(StatusCode::BAD_REQUEST, &m))?;
+            .map_err(|m| AppError::new(StatusCode::BAD_REQUEST, m))?;
 
     let updated: Option<Uuid> = sqlx::query_scalar(UPDATE_PROVIDER_SQL)
         .bind(provider_id)
@@ -1680,19 +1672,17 @@ pub async fn update_provider(
         .bind(&usage_notices)
         .bind(req.header_pin)
         .fetch_optional(&state.pool)
-        .await
-        .map_err(|e| db_err(&e))?;
+        .await?;
     if updated.is_none() {
-        return Err(err(StatusCode::NOT_FOUND, "no such provider"));
+        return Err(AppError::new(StatusCode::NOT_FOUND, "no such provider"));
     }
     if soft_provided {
         let caps = crate::soft_limit::SoftLimits::from_json(soft_limits_json.as_ref());
         reevaluate_soft_limit_block(&state, provider_id, &caps).await;
     }
     let info = fetch_provider_info(&state.pool, provider_id)
-        .await
-        .map_err(|e| db_err(&e))?
-        .ok_or_else(|| err(StatusCode::NOT_FOUND, "no such provider"))?;
+        .await?
+        .ok_or_else(|| AppError::new(StatusCode::NOT_FOUND, "no such provider"))?;
     Ok(Json(info))
 }
 
@@ -1772,17 +1762,16 @@ pub async fn delete_provider(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Path((id, provider_id)): Path<(Uuid, Uuid)>,
-) -> Result<StatusCode, (StatusCode, Json<serde_json::Value>)> {
+) -> Result<StatusCode, AppError> {
     let removed = crate::store::account_providers::delete_owner_scoped(
         &state.pool,
         provider_id,
         id,
         ctx.owner_filter(),
     )
-    .await
-    .map_err(|e| db_err(&e))?;
+    .await?;
     if removed == 0 {
-        return Err(err(StatusCode::NOT_FOUND, "no such provider"));
+        return Err(AppError::new(StatusCode::NOT_FOUND, "no such provider"));
     }
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1796,15 +1785,15 @@ pub async fn move_provider(
     Extension(ctx): Extension<AuthContext>,
     Path((id, provider_id)): Path<(Uuid, Uuid)>,
     Json(req): Json<MoveProvider>,
-) -> Result<Json<ProviderInfo>, (StatusCode, Json<serde_json::Value>)> {
+) -> Result<Json<ProviderInfo>, AppError> {
     let src_owner = require_account_owner(&state, &ctx, id).await?;
     let tgt_owner = require_account_owner(&state, &ctx, req.target_account_id)
         .await
-        .map_err(|_| err(StatusCode::NOT_FOUND, "no such target account"))?;
+        .map_err(|_| AppError::new(StatusCode::NOT_FOUND, "no such target account"))?;
     // Same-owner only: shares confer `use`, never re-homing a credential onto
     // another user's identity (which would also flip whose sessions bill it).
     if src_owner != tgt_owner {
-        return Err(err(
+        return Err(AppError::new(
             StatusCode::FORBIDDEN,
             "provider can only move between accounts of the same owner",
         ));
@@ -1820,20 +1809,19 @@ pub async fn move_provider(
     .await;
     match moved {
         Ok(done) if done.rows_affected() == 0 => {
-            Err(err(StatusCode::NOT_FOUND, "no such provider"))
+            Err(AppError::new(StatusCode::NOT_FOUND, "no such provider"))
         }
         Ok(_) => {
             let info = fetch_provider_info(&state.pool, provider_id)
-                .await
-                .map_err(|e| db_err(&e))?
-                .ok_or_else(|| err(StatusCode::NOT_FOUND, "no such provider"))?;
+                .await?
+                .ok_or_else(|| AppError::new(StatusCode::NOT_FOUND, "no such provider"))?;
             Ok(Json(info))
         }
-        Err(sqlx::Error::Database(db)) if db.is_unique_violation() => Err(err(
+        Err(sqlx::Error::Database(db)) if db.is_unique_violation() => Err(AppError::new(
             StatusCode::CONFLICT,
             "the target account already has a provider of that family",
         )),
-        Err(e) => Err(db_err(&e)),
+        Err(e) => Err(AppError::from(e)),
     }
 }
 
@@ -2005,20 +1993,19 @@ pub async fn oauth_start(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Json(req): Json<OAuthStart>,
-) -> Result<Json<OAuthStartResponse>, (StatusCode, Json<serde_json::Value>)> {
+) -> Result<Json<OAuthStartResponse>, AppError> {
     // The attach target names its owner; otherwise the caller does.
     let uid = if let Some(account_id) = req.account_id {
-        let owner = shareable_owner(Shareable::Account, account_id, &state.pool)
-            .await
-            .map_err(|e| db_err(&e))?;
+        let owner = shareable_owner(Shareable::Account, account_id, &state.pool).await?;
         owner
             .filter(|o| ctx.owner_filter().is_none_or(|f| f == *o))
-            .ok_or_else(|| err(StatusCode::NOT_FOUND, "no such account"))?
+            .ok_or_else(|| AppError::new(StatusCode::NOT_FOUND, "no such account"))?
     } else {
-        resolve_owner(&ctx, req.user_id)?
+        resolve_owner(&ctx, req.user_id)
+            .map_err(|(s, Json(v))| AppError::new(s, v["error"].as_str().unwrap_or_default()))?
     };
     if !matches!(req.provider.as_str(), "anthropic" | "openai") {
-        return Err(err(StatusCode::BAD_REQUEST, "provider must be anthropic|openai"));
+        return Err(AppError::new(StatusCode::BAD_REQUEST, "provider must be anthropic|openai"));
     }
 
     sweep_expired(&state.pending_oauth_logins);
@@ -2085,7 +2072,7 @@ pub async fn oauth_finish(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Json(req): Json<OAuthFinish>,
-) -> Result<(StatusCode, Json<AccountInfo>), (StatusCode, Json<serde_json::Value>)> {
+) -> Result<(StatusCode, Json<AccountInfo>), AppError> {
     sweep_expired(&state.pending_oauth_logins);
 
     // Consume the pending record (single-use), but only if it belongs to the
@@ -2094,7 +2081,7 @@ pub async fn oauth_finish(
     // any pending login. The account lands on the stored owner.
     let pending = match state.pending_oauth_logins.get(&req.nonce) {
         Some(p) if ctx.is_admin() || ctx.user_id == p.user_id => p.clone(),
-        _ => return Err(err(StatusCode::BAD_REQUEST, "unknown or expired login")),
+        _ => return Err(AppError::new(StatusCode::BAD_REQUEST, "unknown or expired login")),
     };
     let uid = pending.user_id;
     state.pending_oauth_logins.remove(&req.nonce);
@@ -2103,16 +2090,14 @@ pub async fn oauth_finish(
     // fails fast: an attach target must still exist and belong to the pending
     // owner; otherwise `name` finds-or-creates an identity after the exchange.
     let attach_target = if let Some(account_id) = pending.account_id {
-        let owner = shareable_owner(Shareable::Account, account_id, &state.pool)
-            .await
-            .map_err(|e| db_err(&e))?;
+        let owner = shareable_owner(Shareable::Account, account_id, &state.pool).await?;
         if owner != Some(uid) {
-            return Err(err(StatusCode::NOT_FOUND, "no such account"));
+            return Err(AppError::new(StatusCode::NOT_FOUND, "no such account"));
         }
         Some(account_id)
     } else {
         if account_name_missing(req.name.as_deref()) {
-            return Err(err(StatusCode::BAD_REQUEST, "name required"));
+            return Err(AppError::new(StatusCode::BAD_REQUEST, "name required"));
         }
         None
     };
@@ -2125,10 +2110,10 @@ pub async fn oauth_finish(
             .callback_url
             .as_deref()
             .or(req.code.as_deref())
-            .ok_or_else(|| err(StatusCode::BAD_REQUEST, "callback_url required"))?;
-        let code = code_from_callback(raw)
-            .filter(|c| !c.is_empty())
-            .ok_or_else(|| err(StatusCode::BAD_REQUEST, "could not find code in callback URL"))?;
+            .ok_or_else(|| AppError::new(StatusCode::BAD_REQUEST, "callback_url required"))?;
+        let code = code_from_callback(raw).filter(|c| !c.is_empty()).ok_or_else(|| {
+            AppError::new(StatusCode::BAD_REQUEST, "could not find code in callback URL")
+        })?;
 
         let form = [
             ("grant_type", "authorization_code"),
@@ -2139,11 +2124,13 @@ pub async fn oauth_finish(
         ];
         state.http_client.post(gateway::openai_token_url()).form(&form).send().await
     } else {
-        let raw =
-            req.code.as_deref().ok_or_else(|| err(StatusCode::BAD_REQUEST, "code required"))?;
+        let raw = req
+            .code
+            .as_deref()
+            .ok_or_else(|| AppError::new(StatusCode::BAD_REQUEST, "code required"))?;
         let (code, state_part) = split_code_state(raw);
         if code.is_empty() {
-            return Err(err(StatusCode::BAD_REQUEST, "code required"));
+            return Err(AppError::new(StatusCode::BAD_REQUEST, "code required"));
         }
         // claude.ai sends `code#state`; the state must equal the verifier we issued.
         let oauth_state = state_part.unwrap_or_else(|| pending.code_verifier.clone());
@@ -2160,20 +2147,20 @@ pub async fn oauth_finish(
 
     let resp = resp.map_err(|e| {
         tracing::error!("oauth token exchange transport error: {e}");
-        err(StatusCode::BAD_GATEWAY, "token exchange failed")
+        AppError::new(StatusCode::BAD_GATEWAY, "token exchange failed")
     })?;
     if !resp.status().is_success() {
         let status = resp.status();
         let detail = resp.text().await.unwrap_or_default();
         tracing::error!(%status, "oauth token exchange rejected: {detail}");
-        return Err(err(
+        return Err(AppError::new(
             StatusCode::BAD_REQUEST,
             "token exchange rejected — check the pasted code/URL",
         ));
     }
     let tok: OAuthTokenResponse = resp.json().await.map_err(|e| {
         tracing::error!("oauth token exchange decode error: {e}");
-        err(StatusCode::BAD_GATEWAY, "token exchange decode failed")
+        AppError::new(StatusCode::BAD_GATEWAY, "token exchange decode failed")
     })?;
 
     // For Codex, pull the chatgpt account id out of the id_token so the gateway
@@ -2203,8 +2190,7 @@ pub async fn oauth_finish(
         .bind(uid)
         .bind(name)
         .fetch_one(&state.pool)
-        .await
-        .map_err(|e| db_err(&e))?
+        .await?
     };
 
     // Upsert on (account_id, family): a first login inserts; re-running the flow
@@ -2240,15 +2226,13 @@ pub async fn oauth_finish(
             // Fresh credentials → drop the in-memory reauth gate too, so
             // the gateway's success path doesn't think it still needs clearing.
             state.account_reauth.remove(&pid);
-            let info = fetch_account_info(&state.pool, account_id, None)
-                .await
-                .map_err(|e| db_err(&e))?
-                .ok_or_else(|| {
-                    err(StatusCode::INTERNAL_SERVER_ERROR, "account vanished after login")
+            let info =
+                fetch_account_info(&state.pool, account_id, None).await?.ok_or_else(|| {
+                    AppError::new(StatusCode::INTERNAL_SERVER_ERROR, "account vanished after login")
                 })?;
             Ok((StatusCode::CREATED, Json(info)))
         }
-        Err(e) => Err(db_err(&e)),
+        Err(e) => Err(AppError::from(e)),
     }
 }
 
@@ -2416,7 +2400,7 @@ pub async fn account_usage(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<Uuid>,
-) -> Result<Json<AccountUsage>, (StatusCode, Json<serde_json::Value>)> {
+) -> Result<Json<AccountUsage>, AppError> {
     // Authorize + resolve provider in one go. Admin (`ctx.user_id` = NULL) may
     // read any provider; a user only its own.
     let provider: Option<String> = sqlx::query_scalar(
@@ -2426,10 +2410,9 @@ pub async fn account_usage(
     .bind(id)
     .bind(ctx.owner_filter())
     .fetch_optional(&state.pool)
-    .await
-    .map_err(|e| db_err(&e))?;
+    .await?;
     let Some(provider) = provider else {
-        return Err(err(StatusCode::NOT_FOUND, "no such account"));
+        return Err(AppError::new(StatusCode::NOT_FOUND, "no such account"));
     };
 
     // Serve a fresh-enough cached value without touching upstream.
@@ -2497,14 +2480,13 @@ struct UsageProviderRow {
 pub async fn all_accounts_usage(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
-) -> Result<Json<Vec<AccountUsageEntry>>, (StatusCode, Json<serde_json::Value>)> {
+) -> Result<Json<Vec<AccountUsageEntry>>, AppError> {
     let rows: Vec<UsageProviderRow> = sqlx::query_as(
         "SELECT p.id, p.provider, p.account_id, p.header_pin, a.name AS account_name, a.emoji AS account_emoji          FROM account_providers p JOIN accounts a ON a.id = p.account_id          WHERE ($1::uuid IS NULL OR p.user_id = $1)            AND p.provider IN ('anthropic', 'openai', 'fireworks')          ORDER BY a.name, p.family",
     )
     .bind(ctx.owner_filter())
     .fetch_all(&state.pool)
-    .await
-    .map_err(|e| db_err(&e))?;
+    .await?;
 
     let fetches = rows.iter().map(|r| gateway::usage_for_soft_limit(&state, r.id));
     let usages = futures_util::future::join_all(fetches).await;
@@ -2575,7 +2557,7 @@ async fn require_account_owner(
     state: &AppState,
     ctx: &AuthContext,
     id: Uuid,
-) -> Result<Uuid, (StatusCode, Json<serde_json::Value>)> {
+) -> Result<Uuid, AppError> {
     let owner: Option<Uuid> = sqlx::query_scalar(
         "SELECT user_id FROM accounts \
          WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2)",
@@ -2583,9 +2565,8 @@ async fn require_account_owner(
     .bind(id)
     .bind(ctx.owner_filter())
     .fetch_optional(&state.pool)
-    .await
-    .map_err(|e| db_err(&e))?;
-    owner.ok_or_else(|| err(StatusCode::NOT_FOUND, "no such account"))
+    .await?;
+    owner.ok_or_else(|| AppError::new(StatusCode::NOT_FOUND, "no such account"))
 }
 
 /// `GET /api/v1/accounts/{id}/shares` — who the account is shared with (owner-
@@ -2594,7 +2575,7 @@ pub async fn list_shares(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<Uuid>,
-) -> Result<Json<Vec<ShareInfo>>, (StatusCode, Json<serde_json::Value>)> {
+) -> Result<Json<Vec<ShareInfo>>, AppError> {
     require_account_owner(&state, &ctx, id).await?;
     let rows: Vec<ShareInfo> = sqlx::query_as(
         "SELECT s.resource_id AS account_id, s.grantee_id AS user_id, u.name AS user_name, \
@@ -2605,8 +2586,7 @@ pub async fn list_shares(
     )
     .bind(id)
     .fetch_all(&state.pool)
-    .await
-    .map_err(|e| db_err(&e))?;
+    .await?;
     Ok(Json(rows))
 }
 
@@ -2618,20 +2598,20 @@ pub async fn grant_share(
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<Uuid>,
     Json(req): Json<GrantShare>,
-) -> Result<(StatusCode, Json<ShareInfo>), (StatusCode, Json<serde_json::Value>)> {
+) -> Result<(StatusCode, Json<ShareInfo>), AppError> {
     require_account_owner(&state, &ctx, id).await?;
 
     // Only `use` today (schema default); reject anything else so a typo doesn't
     // silently store a dead action that no code path honours.
     let action = req.action.as_deref().map(str::trim).filter(|s| !s.is_empty()).unwrap_or("use");
     if action != "use" {
-        return Err(err(StatusCode::BAD_REQUEST, "action must be 'use'"));
+        return Err(AppError::new(StatusCode::BAD_REQUEST, "action must be 'use'"));
     }
 
     // Resolve the grantee by UUID or login (`users.name`), active users only.
     let ident = req.user.trim();
     if ident.is_empty() {
-        return Err(err(StatusCode::BAD_REQUEST, "user required"));
+        return Err(AppError::new(StatusCode::BAD_REQUEST, "user required"));
     }
     let target: Option<Uuid> = Uuid::parse_str(ident)
         .map_or_else(
@@ -2645,10 +2625,9 @@ pub async fn grant_share(
             },
         )
         .fetch_optional(&state.pool)
-        .await
-        .map_err(|e| db_err(&e))?;
+        .await?;
     let Some(target) = target else {
-        return Err(err(StatusCode::NOT_FOUND, "no such user"));
+        return Err(AppError::new(StatusCode::NOT_FOUND, "no such user"));
     };
 
     sqlx::query(
@@ -2661,8 +2640,7 @@ pub async fn grant_share(
     .bind(target)
     .bind(action)
     .execute(&state.pool)
-    .await
-    .map_err(|e| db_err(&e))?;
+    .await?;
 
     let info: ShareInfo = sqlx::query_as(
         "SELECT s.resource_id AS account_id, s.grantee_id AS user_id, u.name AS user_name, \
@@ -2675,8 +2653,7 @@ pub async fn grant_share(
     .bind(target)
     .bind(action)
     .fetch_one(&state.pool)
-    .await
-    .map_err(|e| db_err(&e))?;
+    .await?;
     Ok((StatusCode::CREATED, Json(info)))
 }
 
@@ -2687,7 +2664,7 @@ pub async fn revoke_share(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Path((id, user_id)): Path<(Uuid, Uuid)>,
-) -> Result<StatusCode, (StatusCode, Json<serde_json::Value>)> {
+) -> Result<StatusCode, AppError> {
     require_account_owner(&state, &ctx, id).await?;
     let res = sqlx::query(
         "UPDATE resource_shares SET revoked_at = now() \
@@ -2697,10 +2674,9 @@ pub async fn revoke_share(
     .bind(id)
     .bind(user_id)
     .execute(&state.pool)
-    .await
-    .map_err(|e| db_err(&e))?;
+    .await?;
     if res.rows_affected() == 0 {
-        return Err(err(StatusCode::NOT_FOUND, "no such share"));
+        return Err(AppError::new(StatusCode::NOT_FOUND, "no such share"));
     }
     Ok(StatusCode::NO_CONTENT)
 }
@@ -3246,7 +3222,7 @@ mod tests {
             let mut bad = std::collections::HashMap::new();
             bad.insert(denied.to_string(), "x".to_string());
             let e = validate_env_json(&bad).expect_err("denylisted name must be rejected");
-            assert_eq!(e.0, StatusCode::BAD_REQUEST);
+            assert!(matches!(e, AppError::Status(StatusCode::BAD_REQUEST, _)));
         }
 
         // Malformed name rejected.
@@ -3353,7 +3329,7 @@ mod tests {
             serde_json::json!([1, 2]),
         ] {
             let e = build_rate_limits_json(Some(&bad)).expect_err("invalid rate_limits must 400");
-            assert_eq!(e.0, StatusCode::BAD_REQUEST);
+            assert!(matches!(e, AppError::Status(StatusCode::BAD_REQUEST, _)));
         }
     }
 }

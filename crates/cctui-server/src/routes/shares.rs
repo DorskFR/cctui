@@ -17,7 +17,7 @@ use uuid::Uuid;
 
 use crate::auth::AuthContext;
 use crate::authz::{Shareable, shareable_owner};
-use crate::error::err;
+use crate::error::AppError;
 use crate::state::AppState;
 
 /// The single grant-lookup primitive: does `grantee` hold a LIVE `use` grant on
@@ -43,11 +43,6 @@ pub async fn granted(
     Ok(row.is_some())
 }
 
-fn db_err(e: &sqlx::Error) -> (StatusCode, Json<serde_json::Value>) {
-    tracing::error!("shares db error: {e}");
-    err(StatusCode::INTERNAL_SERVER_ERROR, "database error")
-}
-
 /// Confirm the caller owns the resource (admin sees any); returns the owner's id.
 /// Returns 404 (not 403) for a non-owner OR an unknown type/id so a resource id's
 /// existence never leaks. Share management is owner-only — a grant does NOT
@@ -57,14 +52,14 @@ async fn require_owner(
     ctx: &AuthContext,
     resource_type: &str,
     id: Uuid,
-) -> Result<Uuid, (StatusCode, Json<serde_json::Value>)> {
+) -> Result<Uuid, AppError> {
     let Ok(kind) = resource_type.parse::<Shareable>() else {
-        return Err(err(StatusCode::NOT_FOUND, "no such resource"));
+        return Err(AppError::new(StatusCode::NOT_FOUND, "no such resource"));
     };
-    let owner = shareable_owner(kind, id, &state.pool).await.map_err(|e| db_err(&e))?;
+    let owner = shareable_owner(kind, id, &state.pool).await?;
     match owner {
         Some(uid) if ctx.is_admin() || uid == ctx.user_id => Ok(uid),
-        _ => Err(err(StatusCode::NOT_FOUND, "no such resource")),
+        _ => Err(AppError::new(StatusCode::NOT_FOUND, "no such resource")),
     }
 }
 
@@ -97,7 +92,7 @@ pub async fn list_shares(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Path((resource_type, id)): Path<(String, Uuid)>,
-) -> Result<Json<Vec<ShareInfo>>, (StatusCode, Json<serde_json::Value>)> {
+) -> Result<Json<Vec<ShareInfo>>, AppError> {
     require_owner(&state, &ctx, &resource_type, id).await?;
     let rows: Vec<ShareInfo> = sqlx::query_as(
         "SELECT s.resource_type, s.resource_id, s.grantee_id AS user_id, \
@@ -109,8 +104,7 @@ pub async fn list_shares(
     .bind(&resource_type)
     .bind(id)
     .fetch_all(&state.pool)
-    .await
-    .map_err(|e| db_err(&e))?;
+    .await?;
     Ok(Json(rows))
 }
 
@@ -121,19 +115,19 @@ pub async fn grant_share(
     Extension(ctx): Extension<AuthContext>,
     Path((resource_type, id)): Path<(String, Uuid)>,
     Json(req): Json<GrantShare>,
-) -> Result<(StatusCode, Json<ShareInfo>), (StatusCode, Json<serde_json::Value>)> {
+) -> Result<(StatusCode, Json<ShareInfo>), AppError> {
     require_owner(&state, &ctx, &resource_type, id).await?;
 
     // Only `use` today; reject anything else so a typo doesn't store a dead
     // action no code path honours.
     let action = req.action.as_deref().map(str::trim).filter(|s| !s.is_empty()).unwrap_or("use");
     if action != "use" {
-        return Err(err(StatusCode::BAD_REQUEST, "action must be 'use'"));
+        return Err(AppError::new(StatusCode::BAD_REQUEST, "action must be 'use'"));
     }
 
     let ident = req.user.trim();
     if ident.is_empty() {
-        return Err(err(StatusCode::BAD_REQUEST, "user required"));
+        return Err(AppError::new(StatusCode::BAD_REQUEST, "user required"));
     }
     let target: Option<Uuid> = Uuid::parse_str(ident)
         .map_or_else(
@@ -147,10 +141,9 @@ pub async fn grant_share(
             },
         )
         .fetch_optional(&state.pool)
-        .await
-        .map_err(|e| db_err(&e))?;
+        .await?;
     let Some(target) = target else {
-        return Err(err(StatusCode::NOT_FOUND, "no such user"));
+        return Err(AppError::new(StatusCode::NOT_FOUND, "no such user"));
     };
 
     sqlx::query(
@@ -164,8 +157,7 @@ pub async fn grant_share(
     .bind(target)
     .bind(action)
     .execute(&state.pool)
-    .await
-    .map_err(|e| db_err(&e))?;
+    .await?;
 
     let info: ShareInfo = sqlx::query_as(
         "SELECT s.resource_type, s.resource_id, s.grantee_id AS user_id, \
@@ -178,8 +170,7 @@ pub async fn grant_share(
     .bind(target)
     .bind(action)
     .fetch_one(&state.pool)
-    .await
-    .map_err(|e| db_err(&e))?;
+    .await?;
     Ok((StatusCode::CREATED, Json(info)))
 }
 
@@ -189,7 +180,7 @@ pub async fn revoke_share(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Path((resource_type, id, user_id)): Path<(String, Uuid, Uuid)>,
-) -> Result<StatusCode, (StatusCode, Json<serde_json::Value>)> {
+) -> Result<StatusCode, AppError> {
     require_owner(&state, &ctx, &resource_type, id).await?;
     let res = sqlx::query(
         "UPDATE resource_shares SET revoked_at = now() \
@@ -199,10 +190,9 @@ pub async fn revoke_share(
     .bind(id)
     .bind(user_id)
     .execute(&state.pool)
-    .await
-    .map_err(|e| db_err(&e))?;
+    .await?;
     if res.rows_affected() == 0 {
-        return Err(err(StatusCode::NOT_FOUND, "no such share"));
+        return Err(AppError::new(StatusCode::NOT_FOUND, "no such share"));
     }
     Ok(StatusCode::NO_CONTENT)
 }

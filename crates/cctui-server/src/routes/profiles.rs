@@ -10,10 +10,8 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::auth::AuthContext;
-use crate::error::err;
+use crate::error::AppError;
 use crate::state::AppState;
-
-type ApiErr = (StatusCode, Json<serde_json::Value>);
 
 const HARNESSES: &[&str] = &["claude-code", "codex"];
 const PERMISSION_MODES: &[&str] = &["ask", "auto", "yolo", "whip"];
@@ -97,44 +95,46 @@ pub struct UpdateProfileRequest {
 const COLS: &str = "id, user_id, name, harness, account_id, pool_id, no_account, model_alias, \
                     effort, permission_mode, service_tier, sort_order, created_at, updated_at";
 
-fn db_err(e: &sqlx::Error) -> ApiErr {
-    if let sqlx::Error::Database(dbe) = e
+fn db_err(e: sqlx::Error) -> AppError {
+    if let sqlx::Error::Database(dbe) = &e
         && dbe.code().as_deref() == Some("23505")
     {
-        return err(StatusCode::CONFLICT, "a profile with that name already exists");
+        return AppError::new(StatusCode::CONFLICT, "a profile with that name already exists");
     }
-    tracing::error!("db error: {e}");
-    err(StatusCode::INTERNAL_SERVER_ERROR, "database error")
+    AppError::from(e)
 }
 
-fn clean_name(raw: &str) -> Result<String, ApiErr> {
+fn clean_name(raw: &str) -> Result<String, AppError> {
     let name = raw.trim();
     if name.is_empty() {
-        return Err(err(StatusCode::BAD_REQUEST, "profile name is required"));
+        return Err(AppError::new(StatusCode::BAD_REQUEST, "profile name is required"));
     }
     if name.chars().count() > 64 {
-        return Err(err(StatusCode::BAD_REQUEST, "profile name is too long (max 64)"));
+        return Err(AppError::new(StatusCode::BAD_REQUEST, "profile name is too long (max 64)"));
     }
     Ok(name.to_string())
 }
 
 /// Trim the knobs, drop empty ones, and reject values outside the vocabulary
 /// the spawn path understands.
-fn clean_spec(spec: ProfileSpec) -> Result<ProfileSpec, ApiErr> {
+fn clean_spec(spec: ProfileSpec) -> Result<ProfileSpec, AppError> {
     let harness = spec.harness.trim().to_string();
     if !HARNESSES.contains(&harness.as_str()) {
-        return Err(err(StatusCode::BAD_REQUEST, "unknown harness"));
+        return Err(AppError::new(StatusCode::BAD_REQUEST, "unknown harness"));
     }
     let opt = |v: Option<String>| v.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
     let permission_mode = opt(spec.permission_mode);
     if let Some(mode) = &permission_mode
         && !PERMISSION_MODES.contains(&mode.as_str())
     {
-        return Err(err(StatusCode::BAD_REQUEST, "unknown permission mode"));
+        return Err(AppError::new(StatusCode::BAD_REQUEST, "unknown permission mode"));
     }
     let picks = [spec.account_id.is_some(), spec.pool_id.is_some(), spec.no_account];
     if picks.iter().filter(|p| **p).count() > 1 {
-        return Err(err(StatusCode::BAD_REQUEST, "pick one of account, pool or no account"));
+        return Err(AppError::new(
+            StatusCode::BAD_REQUEST,
+            "pick one of account, pool or no account",
+        ));
     }
     Ok(ProfileSpec {
         harness,
@@ -191,16 +191,16 @@ async fn check_account(
     pool: &PgPool,
     user_id: Option<Uuid>,
     spec: &ProfileSpec,
-) -> Result<(), ApiErr> {
+) -> Result<(), AppError> {
     if let Some(account) = spec.account_id
-        && !account_usable(pool, user_id, account).await.map_err(|e| db_err(&e))?
+        && !account_usable(pool, user_id, account).await?
     {
-        return Err(err(StatusCode::BAD_REQUEST, "unknown account"));
+        return Err(AppError::new(StatusCode::BAD_REQUEST, "unknown account"));
     }
     if let Some(id) = spec.pool_id
-        && !pool_owned(pool, user_id, id).await.map_err(|e| db_err(&e))?
+        && !pool_owned(pool, user_id, id).await?
     {
-        return Err(err(StatusCode::BAD_REQUEST, "unknown pool"));
+        return Err(AppError::new(StatusCode::BAD_REQUEST, "unknown pool"));
     }
     Ok(())
 }
@@ -337,8 +337,8 @@ pub async fn delete(pool: &PgPool, user_id: Uuid, id: Uuid) -> Result<bool, sqlx
 pub async fn list_profiles(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
-) -> Result<Json<Vec<SessionProfile>>, ApiErr> {
-    let rows = list_for_user(&state.pool, ctx.user_id).await.map_err(|e| db_err(&e))?;
+) -> Result<Json<Vec<SessionProfile>>, AppError> {
+    let rows = list_for_user(&state.pool, ctx.user_id).await?;
     Ok(Json(rows))
 }
 
@@ -347,11 +347,11 @@ pub async fn create_profile(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Json(req): Json<CreateProfileRequest>,
-) -> Result<(StatusCode, Json<SessionProfile>), ApiErr> {
+) -> Result<(StatusCode, Json<SessionProfile>), AppError> {
     let name = clean_name(&req.name)?;
     let spec = clean_spec(req.spec)?;
     check_account(&state.pool, ctx.owner_filter(), &spec).await?;
-    let row = insert(&state.pool, ctx.user_id, &name, &spec).await.map_err(|e| db_err(&e))?;
+    let row = insert(&state.pool, ctx.user_id, &name, &spec).await.map_err(db_err)?;
     Ok((StatusCode::CREATED, Json(row)))
 }
 
@@ -361,7 +361,7 @@ pub async fn update_profile(
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<Uuid>,
     Json(req): Json<UpdateProfileRequest>,
-) -> Result<Json<SessionProfile>, ApiErr> {
+) -> Result<Json<SessionProfile>, AppError> {
     let name = req.name.as_deref().map(clean_name).transpose()?;
     let spec = req.spec.map(clean_spec).transpose()?;
     if let Some(spec) = &spec {
@@ -369,8 +369,8 @@ pub async fn update_profile(
     }
     let row = update(&state.pool, ctx.user_id, id, name.as_deref(), spec.as_ref())
         .await
-        .map_err(|e| db_err(&e))?;
-    row.map(Json).ok_or_else(|| err(StatusCode::NOT_FOUND, "profile not found"))
+        .map_err(db_err)?;
+    row.map(Json).ok_or_else(|| AppError::new(StatusCode::NOT_FOUND, "profile not found"))
 }
 
 /// `PUT /profiles/order` — persist the panel order; body is the caller's full
@@ -379,14 +379,14 @@ pub async fn reorder_profiles(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Json(req): Json<ReorderProfilesRequest>,
-) -> Result<Json<Vec<SessionProfile>>, ApiErr> {
-    if !reorder(&state.pool, ctx.user_id, &req.ids).await.map_err(|e| db_err(&e))? {
-        return Err(err(
+) -> Result<Json<Vec<SessionProfile>>, AppError> {
+    if !reorder(&state.pool, ctx.user_id, &req.ids).await? {
+        return Err(AppError::new(
             StatusCode::BAD_REQUEST,
             "order must list each of your profiles exactly once",
         ));
     }
-    let rows = list_for_user(&state.pool, ctx.user_id).await.map_err(|e| db_err(&e))?;
+    let rows = list_for_user(&state.pool, ctx.user_id).await?;
     Ok(Json(rows))
 }
 
@@ -396,16 +396,18 @@ pub async fn delete_profile(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<Uuid>,
-) -> Result<StatusCode, ApiErr> {
-    if delete(&state.pool, ctx.user_id, id).await.map_err(|e| db_err(&e))? {
+) -> Result<StatusCode, AppError> {
+    if delete(&state.pool, ctx.user_id, id).await? {
         Ok(StatusCode::NO_CONTENT)
     } else {
-        Err(err(StatusCode::NOT_FOUND, "profile not found"))
+        Err(AppError::new(StatusCode::NOT_FOUND, "profile not found"))
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use axum::response::IntoResponse;
+
     use super::*;
 
     fn spec(harness: &str, mode: Option<&str>) -> ProfileSpec {
@@ -447,22 +449,31 @@ mod tests {
 
     #[test]
     fn clean_spec_rejects_unknown_vocabulary() {
-        assert_eq!(clean_spec(spec("opencode", None)).unwrap_err().0, StatusCode::BAD_REQUEST);
         assert_eq!(
-            clean_spec(spec("claude-code", Some("sudo"))).unwrap_err().0,
+            clean_spec(spec("opencode", None)).unwrap_err().into_response().status(),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            clean_spec(spec("claude-code", Some("sudo"))).unwrap_err().into_response().status(),
             StatusCode::BAD_REQUEST
         );
         assert!(clean_spec(spec("claude-code", Some(" "))).unwrap().permission_mode.is_none());
         let both =
             ProfileSpec { pool_id: Some(Uuid::new_v4()), no_account: true, ..spec("codex", None) };
-        assert_eq!(clean_spec(both).unwrap_err().0, StatusCode::BAD_REQUEST);
+        assert_eq!(clean_spec(both).unwrap_err().into_response().status(), StatusCode::BAD_REQUEST);
     }
 
     #[test]
     fn clean_name_requires_something_short() {
         assert_eq!(clean_name("  Orchestrator ").unwrap(), "Orchestrator");
-        assert_eq!(clean_name("   ").unwrap_err().0, StatusCode::BAD_REQUEST);
-        assert_eq!(clean_name(&"x".repeat(65)).unwrap_err().0, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            clean_name("   ").unwrap_err().into_response().status(),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            clean_name(&"x".repeat(65)).unwrap_err().into_response().status(),
+            StatusCode::BAD_REQUEST
+        );
     }
 
     #[tokio::test]
@@ -523,7 +534,7 @@ mod tests {
         assert_eq!(created.permission_mode.as_deref(), Some("yolo"));
 
         let dup = insert(&pool, owner, "Orchestrator", &kit).await.unwrap_err();
-        assert_eq!(db_err(&dup).0, StatusCode::CONFLICT);
+        assert_eq!(db_err(dup).into_response().status(), StatusCode::CONFLICT);
         assert!(insert(&pool, other, "Orchestrator", &kit).await.is_ok());
 
         assert!(account_usable(&pool, Some(owner), account).await.unwrap());

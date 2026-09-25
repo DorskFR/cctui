@@ -12,31 +12,25 @@
 use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use cctui_proto::api::ApiError;
 use cctui_proto::diagnose::{ServerDiagnose, SessionDiagnoseResponse};
 use uuid::Uuid;
 
+use crate::error::AppError;
 use crate::state::AppState;
-
-fn db_err(e: &sqlx::Error) -> (StatusCode, Json<ApiError>) {
-    tracing::error!("db error (diagnose): {e}");
-    (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-}
 
 pub async fn diagnose_session(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
-) -> Result<Json<SessionDiagnoseResponse>, (StatusCode, Json<ApiError>)> {
+) -> Result<Json<SessionDiagnoseResponse>, AppError> {
     // Ownership is enforced by the authz layer (`sess_read`); this lookup
     // supplies the server-side facts and 404s a genuinely unknown id.
     let row: Option<(Option<String>, Option<String>, Option<Uuid>)> =
         sqlx::query_as("SELECT status, adapter_id, machine_uuid FROM sessions WHERE id = $1")
             .bind(&session_id)
             .fetch_optional(&state.pool)
-            .await
-            .map_err(|e| db_err(&e))?;
+            .await?;
     let Some((status, adapter_id, machine_uuid)) = row else {
-        return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "session not found".into() })));
+        return Err(AppError::new(StatusCode::NOT_FOUND, "session not found"));
     };
 
     // Gateway/account binding: the live (non-revoked) session tokens and the
@@ -52,15 +46,13 @@ pub async fn diagnose_session(
     )
     .bind(&session_id)
     .fetch_all(&state.pool)
-    .await
-    .map_err(|e| db_err(&e))?;
+    .await?;
 
     let machine_last_seen: Option<chrono::DateTime<chrono::Utc>> = match machine_uuid {
         Some(machine) => sqlx::query_scalar("SELECT last_seen_at FROM machines WHERE id = $1")
             .bind(machine)
             .fetch_optional(&state.pool)
-            .await
-            .map_err(|e| db_err(&e))?
+            .await?
             .flatten(),
         None => None,
     };

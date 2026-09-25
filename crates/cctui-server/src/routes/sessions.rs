@@ -8,27 +8,25 @@ use serde::Deserialize;
 
 use cctui_proto::adapter::{RemoveInitiator, SessionChild};
 use cctui_proto::api::{
-    ApiError, Label, MessageRequest, RegisterRequest, RegisterResponse, RenameRequest,
-    SessionListItem, SessionListResponse, SpawnRequest, SpawnResponse,
+    Label, MessageRequest, RegisterRequest, RegisterResponse, RenameRequest, SessionListItem,
+    SessionListResponse, SpawnRequest, SpawnResponse,
 };
 use cctui_proto::classifier::{Bucket, ClassifyInput, PrStatus, PrStatusCache, classify};
 use cctui_proto::models::{Attention, Liveness, Session, SessionEndReason, SessionStatus};
 
 use crate::auth::AuthContext;
+use crate::error::AppError;
 use crate::live_sessions::live_sessions_predicate;
-use crate::routes::spawn::{bad_request, resolve_owned_machine};
+use crate::routes::spawn::resolve_owned_machine;
 use crate::state::AppState;
 
 pub async fn register(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Json(req): Json<RegisterRequest>,
-) -> Result<Json<RegisterResponse>, (StatusCode, Json<ApiError>)> {
+) -> Result<Json<RegisterResponse>, AppError> {
     let Some(machine_uuid) = ctx.machine_id else {
-        return Err((
-            StatusCode::FORBIDDEN,
-            Json(ApiError { error: "a machine key is required".into() }),
-        ));
+        return Err(AppError::new(StatusCode::FORBIDDEN, "a machine key is required"));
     };
     // Use Claude's session_id directly — it's our primary key now
     let session_id = req.claude_session_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
@@ -53,16 +51,9 @@ pub async fn register(
     // updated; anything else, including a row with no owner, is left alone.
     let written =
         crate::store::sessions::upsert_registered(&state.pool, &session, machine_uuid, ctx.user_id)
-            .await
-            .map_err(|e| {
-                tracing::error!("db error: {e}");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ApiError { error: "database error".into() }),
-                )
-            })?;
+            .await?;
     if !written {
-        return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "session not found".into() })));
+        return Err(AppError::new(StatusCode::NOT_FOUND, "session not found"));
     }
 
     let ws_url = format!(
@@ -85,13 +76,10 @@ pub async fn register(
 pub async fn deregister(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
-) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+) -> Result<StatusCode, AppError> {
     // Deregister just drops the live handle; the session stays in DB as
     // `inactive` and can be revived by a future turn/message.
-    crate::store::sessions::set_inactive(&state.pool, &session_id, false).await.map_err(|e| {
-        tracing::error!("db error: {e}");
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-    })?;
+    crate::store::sessions::set_inactive(&state.pool, &session_id, false).await?;
     {
         let mut registry = state.registry.write().await;
         registry.deregister(&session_id);
@@ -320,13 +308,8 @@ pub async fn list_sessions(
     Extension(ctx): Extension<AuthContext>,
     Query(params): Query<ListParams>,
     req_headers: axum::http::HeaderMap,
-) -> Result<axum::response::Response, (StatusCode, Json<ApiError>)> {
+) -> Result<axum::response::Response, AppError> {
     let uid = ctx.owner_filter();
-    let db_err = |e: sqlx::Error| {
-        tracing::error!("db error: {e}");
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-    };
-
     // Live sessions from in-memory registry — keep registered_at for sorting.
     // Non-admins only see registry entries they own. The registry's
     // `machine_id` is freeform (UUID or hostname), so ownership can't be read
@@ -342,8 +325,7 @@ pub async fn list_sessions(
         };
         let owned =
             crate::store::sessions::visible_session_ids(&state.pool, &live_ids, ctx.user_id)
-                .await
-                .map_err(db_err)?;
+                .await?;
         Some(owned.into_iter().collect())
     };
 
@@ -440,8 +422,7 @@ pub async fn list_sessions(
     let mut rows: Vec<DbSession> = sqlx::query_as(sqlx::AssertSqlSafe(non_archived_query))
         .bind(uid)
         .fetch_all(&state.pool)
-        .await
-        .map_err(db_err)?;
+        .await?;
     if params.include_archived {
         let archived_query = format!(
             "SELECT {cols} \
@@ -454,8 +435,7 @@ pub async fn list_sessions(
         let archived: Vec<DbSession> = sqlx::query_as(sqlx::AssertSqlSafe(archived_query))
             .bind(uid)
             .fetch_all(&state.pool)
-            .await
-            .map_err(db_err)?;
+            .await?;
         rows.extend(archived);
     }
 
@@ -565,7 +545,7 @@ async fn enrich_and_sort(
     state: &AppState,
     viewer: Option<uuid::Uuid>,
     mut with_ts: Vec<(DateTime<Utc>, SessionListItem)>,
-) -> Result<Vec<SessionListItem>, (StatusCode, Json<ApiError>)> {
+) -> Result<Vec<SessionListItem>, AppError> {
     // Resolve machine names in one query. Historical sessions for purged
     // machines simply get `None`.
     let machine_ids: Vec<String> = with_ts
@@ -586,11 +566,7 @@ async fn enrich_and_sort(
         )
         .bind(&machine_ids)
         .fetch_all(&state.pool)
-        .await
-        .map_err(|e| {
-            tracing::error!("db error (machines lookup): {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-        })?;
+        .await?;
         let mut by_key: std::collections::HashMap<String, (String, Option<i16>, String)> =
             std::collections::HashMap::with_capacity(rows.len() * 2);
         for (id, name, display_name, hue, kind) in rows {
@@ -615,17 +591,8 @@ async fn enrich_and_sort(
     if !session_ids.is_empty() {
         type TokenRow =
             (String, Option<String>, Option<i64>, Option<i64>, Option<i64>, Option<i64>);
-        let rows: Vec<TokenRow> = sqlx::query_as(SESSION_TOTALS_SQL)
-            .bind(&session_ids)
-            .fetch_all(&state.pool)
-            .await
-            .map_err(|e| {
-                tracing::error!("db error (token usage aggregate): {e}");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ApiError { error: "database error".into() }),
-                )
-            })?;
+        let rows: Vec<TokenRow> =
+            sqlx::query_as(SESSION_TOTALS_SQL).bind(&session_ids).fetch_all(&state.pool).await?;
         let catalogs = session_catalogs(state, &session_ids).await;
         let mut by_session: std::collections::HashMap<String, cctui_proto::models::TokenUsage> =
             std::collections::HashMap::new();
@@ -652,17 +619,8 @@ async fn enrich_and_sort(
     }
 
     if !session_ids.is_empty() {
-        let rows: Vec<LastMessageRow> = sqlx::query_as(LAST_MESSAGE_SQL)
-            .bind(&session_ids)
-            .fetch_all(&state.pool)
-            .await
-            .map_err(|e| {
-                tracing::error!("db error (last message lookup): {e}");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ApiError { error: "database error".into() }),
-                )
-            })?;
+        let rows: Vec<LastMessageRow> =
+            sqlx::query_as(LAST_MESSAGE_SQL).bind(&session_ids).fetch_all(&state.pool).await?;
         let mut by_session: std::collections::HashMap<String, (Option<String>, DateTime<Utc>)> =
             std::collections::HashMap::new();
         for (sid, body, cut, ts) in rows {
@@ -687,14 +645,7 @@ async fn enrich_and_sort(
             .bind(&session_ids)
             .bind(uid)
             .fetch_all(&state.pool)
-            .await
-            .map_err(|e| {
-                tracing::error!("db error (unread count lookup): {e}");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ApiError { error: "database error".into() }),
-                )
-            })?;
+            .await?;
         let mut by_session: std::collections::HashMap<String, u32> =
             rows.into_iter().map(|(sid, n)| (sid, cap_unread(n))).collect();
         for (_, s) in &mut with_ts {
@@ -710,11 +661,7 @@ async fn enrich_and_sort(
         )
         .bind(&session_ids)
         .fetch_all(&state.pool)
-        .await
-        .map_err(|e| {
-            tracing::error!("db error (todos lookup): {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-        })?;
+        .await?;
         let mut by_session: std::collections::HashMap<String, serde_json::Value> =
             rows.into_iter().collect();
         for (_, s) in &mut with_ts {
@@ -762,11 +709,7 @@ async fn enrich_and_sort(
         )
         .bind(&session_ids)
         .fetch_all(&state.pool)
-        .await
-        .map_err(|e| {
-            tracing::error!("db error (status signals lookup): {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-        })?;
+        .await?;
         let mut by_session: std::collections::HashMap<String, SignalRow> =
             std::collections::HashMap::new();
         for row in rows {
@@ -831,11 +774,7 @@ async fn enrich_and_sort(
         )
         .bind(&session_ids)
         .fetch_all(&state.pool)
-        .await
-        .map_err(|e| {
-            tracing::error!("db error (labels lookup): {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-        })?;
+        .await?;
         let mut by_session: std::collections::HashMap<String, Vec<Label>> =
             std::collections::HashMap::new();
         for (sid, id, name, color) in rows {
@@ -865,11 +804,7 @@ async fn enrich_and_sort(
         )
         .bind(&session_ids)
         .fetch_all(&state.pool)
-        .await
-        .map_err(|e| {
-            tracing::error!("db error (account lookup): {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-        })?;
+        .await?;
         let mut by_session: std::collections::HashMap<String, String> = rows.into_iter().collect();
         for (_, s) in &mut with_ts {
             if let Some(name) = by_session.remove(&s.id) {
@@ -889,11 +824,7 @@ async fn enrich_and_sort(
         )
         .bind(&session_ids)
         .fetch_all(&state.pool)
-        .await
-        .map_err(|e| {
-            tracing::error!("db error (credential lookup): {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-        })?;
+        .await?;
         let with_creds: std::collections::HashSet<String> =
             rows.into_iter().map(|(id,)| id).collect();
         for (_, s) in &mut with_ts {
@@ -912,11 +843,7 @@ async fn enrich_and_sort(
         )
         .bind(&session_ids)
         .fetch_all(&state.pool)
-        .await
-        .map_err(|e| {
-            tracing::error!("db error (traffic lookup): {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-        })?;
+        .await?;
         let observed: std::collections::HashSet<String> =
             rows.into_iter().map(|(id,)| id).collect();
         for (_, s) in &mut with_ts {
@@ -949,17 +876,8 @@ async fn enrich_and_sort(
     //                        many tokens get re-written on the next send.
     if !session_ids.is_empty() {
         type LastRow = (String, i64, i64, i64, DateTime<Utc>, i64);
-        let rows: Vec<LastRow> = sqlx::query_as(LAST_TWO_TURNS_SQL)
-            .bind(&session_ids)
-            .fetch_all(&state.pool)
-            .await
-            .map_err(|e| {
-                tracing::error!("db error (last token usage lookup): {e}");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ApiError { error: "database error".into() }),
-                )
-            })?;
+        let rows: Vec<LastRow> =
+            sqlx::query_as(LAST_TWO_TURNS_SQL).bind(&session_ids).fetch_all(&state.pool).await?;
         // The last turn, plus the previous one's context to judge it against.
         let mut by_session: std::collections::HashMap<String, (i64, i64, DateTime<Utc>, i64)> =
             std::collections::HashMap::new();
@@ -1190,13 +1108,11 @@ fn join_children(
 }
 
 /// 400 for a raw search query too long to parse.
-fn check_query_len(q: &str) -> Result<(), (StatusCode, Json<ApiError>)> {
+fn check_query_len(q: &str) -> Result<(), AppError> {
     if q.len() > cctui_query::MAX_QUERY_LEN {
-        return Err((
+        return Err(AppError::new(
             StatusCode::BAD_REQUEST,
-            Json(ApiError {
-                error: format!("query too long (max {} bytes)", cctui_query::MAX_QUERY_LEN),
-            }),
+            format!("query too long (max {} bytes)", cctui_query::MAX_QUERY_LEN),
         ));
     }
     Ok(())
@@ -1255,7 +1171,7 @@ pub async fn search_sessions(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Query(params): Query<SearchParams>,
-) -> Result<Json<SessionListResponse>, (StatusCode, Json<ApiError>)> {
+) -> Result<Json<SessionListResponse>, AppError> {
     check_query_len(&params.q)?;
     let uid = ctx.owner_filter();
     // Parse the raw `q` into the AST. A blank query → `Empty` → browse.
@@ -1329,11 +1245,7 @@ pub async fn search_sessions(
             query = query.bind(live_ids);
         }
         query.bind(limit).bind(offset).bind(uid).fetch_all(&state.pool).await
-    }
-    .map_err(|e| {
-        tracing::error!("db error (session search): {e}");
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-    })?;
+    }?;
 
     let with_ts: Vec<(DateTime<Utc>, SessionListItem)> = rows
         .into_iter()
@@ -1410,10 +1322,7 @@ pub async fn search_sessions(
         for p in &patterns {
             query = query.bind(p);
         }
-        let snippet_rows = query.fetch_all(&state.pool).await.map_err(|e| {
-            tracing::error!("db error (search snippets): {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-        })?;
+        let snippet_rows = query.fetch_all(&state.pool).await?;
         attach_transcript_hits(&mut sessions, snippet_rows, &text_terms);
     }
 
@@ -1506,7 +1415,7 @@ pub async fn search_field_values(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Query(params): Query<FieldValuesParams>,
-) -> Result<Json<Vec<String>>, (StatusCode, Json<ApiError>)> {
+) -> Result<Json<Vec<String>>, AppError> {
     check_query_len(params.context.as_deref().unwrap_or(""))?;
     check_query_len(params.q.as_deref().unwrap_or(""))?;
     let uid = ctx.owner_filter();
@@ -1538,11 +1447,7 @@ pub async fn search_field_values(
             SqlParam::Bool(b) => query.bind(*b),
         };
     }
-    let rows: Vec<(String,)> =
-        query.bind(uid).bind(&like).fetch_all(&state.pool).await.map_err(|e| {
-            tracing::error!("db error (field values): {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-        })?;
+    let rows: Vec<(String,)> = query.bind(uid).bind(&like).fetch_all(&state.pool).await?;
     Ok(Json(rows.into_iter().map(|(v,)| v).collect()))
 }
 
@@ -1560,7 +1465,7 @@ type EndRow = (
 pub async fn get_session(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
-) -> Result<Json<SessionListItem>, (StatusCode, Json<ApiError>)> {
+) -> Result<Json<SessionListItem>, AppError> {
     // Live session — serve straight from the registry.
     {
         let registry = state.registry.read().await;
@@ -1637,14 +1542,9 @@ pub async fn get_session(
     // just archived (item 6 — kills the spurious "not found or
     // archived" toast on refresh).
     let row: Option<DbSession> =
-        crate::store::sessions::fetch_by_id(&state.pool, &session_id).await.map_err(|e| {
-            tracing::error!("db error: {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-        })?;
+        crate::store::sessions::fetch_by_id(&state.pool, &session_id).await?;
 
-    let row = row.ok_or_else(|| {
-        (StatusCode::NOT_FOUND, Json(ApiError { error: "session not found".into() }))
-    })?;
+    let row = row.ok_or_else(|| AppError::new(StatusCode::NOT_FOUND, "session not found"))?;
 
     let (status, liveness) =
         resolve_status_liveness(&row.status, row.registered_at, row.last_heartbeat);
@@ -1704,11 +1604,7 @@ pub async fn get_session(
     )
     .bind(&item.id)
     .fetch_optional(&state.pool)
-    .await
-    .map_err(|e| {
-        tracing::error!("db error: {e}");
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-    })?;
+    .await?;
     if let Some((end_reason, end_detail, ended_at, todos, permission_mode, pinned, archived_by)) =
         end
     {
@@ -1873,11 +1769,8 @@ async fn message_usage(
     state: &AppState,
     session_id: &str,
     message_ids: &[String],
-) -> Result<HashMap<String, cctui_proto::models::TokenUsage>, (StatusCode, Json<ApiError>)> {
-    let usage_rows = page_usage_rows(&state.pool, session_id, message_ids).await.map_err(|e| {
-        tracing::error!("db error (message usage): {e}");
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-    })?;
+) -> Result<HashMap<String, cctui_proto::models::TokenUsage>, AppError> {
+    let usage_rows = page_usage_rows(&state.pool, session_id, message_ids).await?;
     let wanted: HashSet<&str> = message_ids.iter().map(String::as_str).collect();
     let owned_id = session_id.to_owned();
     let catalog = session_catalogs(state, std::slice::from_ref(&owned_id)).await.remove(session_id);
@@ -1930,20 +1823,12 @@ pub async fn get_conversation(
     Path(session_id): Path<String>,
     Query(params): Query<ConversationQuery>,
     req_headers: axum::http::HeaderMap,
-) -> Result<axum::response::Response, (StatusCode, Json<ApiError>)> {
+) -> Result<axum::response::Response, AppError> {
     let adapter: Option<String> =
-        crate::store::sessions::adapter_id(&state.pool, &session_id).await.map_err(|e| {
-            tracing::error!("db error: {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-        })?;
+        crate::store::sessions::adapter_id(&state.pool, &session_id).await?;
 
     let adapter_id = adapter.as_deref().unwrap_or("claude-code");
-    let mut rows = fetch_renderable_rows(&state.pool, &session_id, adapter_id, &params)
-        .await
-        .map_err(|e| {
-            tracing::error!("db error: {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-        })?;
+    let mut rows = fetch_renderable_rows(&state.pool, &session_id, adapter_id, &params).await?;
     if params.order == ConversationOrder::Desc {
         rows.reverse();
     }
@@ -1954,12 +1839,8 @@ pub async fn get_conversation(
         .map(str::to_owned)
         .collect();
     let usage_by_message = message_usage(&state, &session_id, &message_ids).await?;
-    let scheduled_turns = crate::scheduled_messages::scheduled_turns(&state.pool, &session_id)
-        .await
-        .map_err(|e| {
-            tracing::error!("db error: {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-        })?;
+    let scheduled_turns =
+        crate::scheduled_messages::scheduled_turns(&state.pool, &session_id).await?;
 
     // Stamp each event with `ts` (unix millis, matching the live `AgentEvent`
     // shape) derived from `created_at`, so the client renders real timestamps
@@ -1997,7 +1878,7 @@ pub async fn send_message(
     Extension(ctx): Extension<AuthContext>,
     Path(session_id): Path<String>,
     Json(req): Json<MessageRequest>,
-) -> Result<(StatusCode, Json<cctui_proto::api::SpawnResponse>), (StatusCode, Json<ApiError>)> {
+) -> Result<(StatusCode, Json<cctui_proto::api::SpawnResponse>), AppError> {
     if let Some(raw) = req.deliver_at.as_deref() {
         return crate::routes::scheduled_messages::schedule(
             &state,
@@ -2038,7 +1919,7 @@ pub async fn send_message(
             _ => StatusCode::SERVICE_UNAVAILABLE,
         };
         tracing::warn!(%session_id, %err, "message dispatch failed");
-        return Err((status, Json(ApiError { error: err.to_string() })));
+        return Err(AppError::new(status, err.to_string()));
     }
     Ok((
         StatusCode::ACCEPTED,
@@ -2055,13 +1936,10 @@ pub async fn rename_session(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
     Json(req): Json<RenameRequest>,
-) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+) -> Result<StatusCode, AppError> {
     let name = req.name.trim();
     if name.is_empty() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(ApiError { error: "name must not be empty".into() }),
-        ));
+        return Err(AppError::new(StatusCode::BAD_REQUEST, "name must not be empty"));
     }
     // Persist immediately so the UI reflects the rename without waiting for
     // the daemon round-trip. The daemon write-through (below) keeps the
@@ -2070,11 +1948,7 @@ pub async fn rename_session(
         .bind(&session_id)
         .bind(name)
         .execute(&state.pool)
-        .await
-        .map_err(|e| {
-            tracing::error!("db error: {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-        })?;
+        .await?;
     // Best-effort propagation to the owning daemon's adapter.
     let _ = crate::bus::dispatch(
         &state,
@@ -2096,7 +1970,7 @@ pub async fn mark_seen(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Path(session_id): Path<String>,
-) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+) -> Result<StatusCode, AppError> {
     sqlx::query(
         "INSERT INTO session_reads (user_id, session_id, last_seen_at) \
          VALUES ($1, $2, now()) \
@@ -2106,18 +1980,14 @@ pub async fn mark_seen(
     .bind(ctx.user_id)
     .bind(&session_id)
     .execute(&state.pool)
-    .await
-    .map_err(|e| {
-        tracing::error!("db error (mark seen): {e}");
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-    })?;
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 pub async fn kill_session(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
-) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+) -> Result<StatusCode, AppError> {
     // Best-effort: also dispatch to the daemon so the running worker is
     // actually killed via the `claude daemon` socket. The DB update
     // below remains source-of-truth.
@@ -2129,10 +1999,7 @@ pub async fn kill_session(
     .await;
     // Kill drops the in-memory handle and marks the DB row inactive. The
     // session isn't archived — later activity can revive it.
-    crate::store::sessions::set_inactive(&state.pool, &session_id, false).await.map_err(|e| {
-        tracing::error!("db error: {e}");
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-    })?;
+    crate::store::sessions::set_inactive(&state.pool, &session_id, false).await?;
     {
         let mut registry = state.registry.write().await;
         registry.deregister(&session_id);
@@ -2158,7 +2025,7 @@ pub async fn kill_session(
 pub async fn interrupt_session(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
-) -> Result<(StatusCode, Json<cctui_proto::api::SpawnResponse>), (StatusCode, Json<ApiError>)> {
+) -> Result<(StatusCode, Json<cctui_proto::api::SpawnResponse>), AppError> {
     let command_id = uuid::Uuid::new_v4();
     crate::state::track_command(
         &state.pending_commands,
@@ -2214,14 +2081,8 @@ pub async fn switch_account(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
     Json(req): Json<SwitchAccountRequest>,
-) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+) -> Result<StatusCode, AppError> {
     use crate::routes::gateway::Family;
-
-    let err = |code: StatusCode, msg: &str| (code, Json(ApiError { error: msg.into() }));
-    let db = |e: sqlx::Error| {
-        tracing::error!("db error (switch-account): {e}");
-        err(StatusCode::INTERNAL_SERVER_ERROR, "database error")
-    };
 
     let meta: Option<(uuid::Uuid, Option<String>)> = sqlx::query_as(
         "SELECT a.user_id, s.adapter_id \
@@ -2233,10 +2094,9 @@ pub async fn switch_account(
     )
     .bind(&session_id)
     .fetch_optional(&state.pool)
-    .await
-    .map_err(db)?;
+    .await?;
     let Some((owner_id, adapter_id)) = meta else {
-        return Err(err(
+        return Err(AppError::new(
             StatusCode::NOT_FOUND,
             "session has no active gateway account binding to switch",
         ));
@@ -2246,7 +2106,7 @@ pub async fn switch_account(
         Some(label) => match Family::from_label(label) {
             Some(f) => f,
             None => {
-                return Err(err(
+                return Err(AppError::new(
                     StatusCode::BAD_REQUEST,
                     "family must be `anthropic`, `openai` or `fireworks`",
                 ));
@@ -2264,8 +2124,7 @@ pub async fn switch_account(
             .bind(tid)
             .bind(owner_id)
             .fetch_optional(&state.pool)
-            .await
-            .map_err(db)?;
+            .await?;
             if direct.is_some() {
                 direct
             } else {
@@ -2279,8 +2138,7 @@ pub async fn switch_account(
                 .bind(owner_id)
                 .bind(default_family.label())
                 .fetch_optional(&state.pool)
-                .await
-                .map_err(db)?
+                .await?
             }
         } else {
             sqlx::query_as(
@@ -2293,11 +2151,13 @@ pub async fn switch_account(
             .bind(owner_id)
             .bind(default_family.label())
             .fetch_optional(&state.pool)
-            .await
-            .map_err(db)?
+            .await?
         };
     let Some((target_id, target_family)) = target else {
-        return Err(err(StatusCode::NOT_FOUND, "no such account for this session's owner"));
+        return Err(AppError::new(
+            StatusCode::NOT_FOUND,
+            "no such account for this session's owner",
+        ));
     };
 
     let current: Option<(uuid::Uuid,)> = sqlx::query_as(
@@ -2309,17 +2169,16 @@ pub async fn switch_account(
     .bind(&session_id)
     .bind(&target_family)
     .fetch_optional(&state.pool)
-    .await
-    .map_err(db)?;
+    .await?;
     let Some((current_account_id,)) = current else {
-        return Err(err(
+        return Err(AppError::new(
             StatusCode::CONFLICT,
             "session has no binding in the target's provider family; cross-provider switching is not supported",
         ));
     };
 
     if target_id == current_account_id {
-        return Err(err(StatusCode::CONFLICT, "session is already on that account"));
+        return Err(AppError::new(StatusCode::CONFLICT, "session is already on that account"));
     }
 
     // Repoint only this family's row: touching the other family's would hand
@@ -2332,10 +2191,9 @@ pub async fn switch_account(
     .bind(current_account_id)
     .bind(target_id)
     .execute(&state.pool)
-    .await
-    .map_err(db)?;
+    .await?;
     if updated.rows_affected() == 0 {
-        return Err(err(StatusCode::NOT_FOUND, "no active token row to rebind"));
+        return Err(AppError::new(StatusCode::NOT_FOUND, "no active token row to rebind"));
     }
 
     // The rebind reuses the SAME token string — clear any orphan-spam block on
@@ -2369,7 +2227,7 @@ pub struct SessionBinding {
 pub async fn session_bindings(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
-) -> Result<Json<Vec<SessionBinding>>, (StatusCode, Json<ApiError>)> {
+) -> Result<Json<Vec<SessionBinding>>, AppError> {
     let rows: Vec<(String, uuid::Uuid, uuid::Uuid, String)> = sqlx::query_as(
         "SELECT DISTINCT ON (ap.family) ap.family, ap.id, acc.id, acc.name \
          FROM session_tokens t \
@@ -2380,11 +2238,7 @@ pub async fn session_bindings(
     )
     .bind(&session_id)
     .fetch_all(&state.pool)
-    .await
-    .map_err(|e| {
-        tracing::error!("db error (session-bindings): {e}");
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-    })?;
+    .await?;
     Ok(Json(
         rows.into_iter()
             .map(|(family, credential_id, account_id, account_name)| SessionBinding {
@@ -2403,7 +2257,7 @@ pub async fn session_bindings(
 pub async fn resume_session(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
-) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+) -> Result<StatusCode, AppError> {
     // Pass the working_dir so the daemon can resume even after archiving ran
     // `claude rm` (which deletes the on-disk job state.json but keeps the
     // conversation transcript) — the daemon falls back to local_id + this cwd.
@@ -2427,12 +2281,9 @@ pub async fn resume_session(
     .await
     .map_err(|e| {
         tracing::warn!(%session_id, error = %e, "resume dispatch failed");
-        (StatusCode::SERVICE_UNAVAILABLE, Json(ApiError { error: format!("resume failed: {e}") }))
+        AppError::new(StatusCode::SERVICE_UNAVAILABLE, format!("resume failed: {e}"))
     })?;
-    crate::store::sessions::set_inactive(&state.pool, &session_id, true).await.map_err(|e| {
-        tracing::error!("db error: {e}");
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-    })?;
+    crate::store::sessions::set_inactive(&state.pool, &session_id, true).await?;
     tracing::info!(session_id = %session_id, "resume dispatched");
     Ok(StatusCode::ACCEPTED)
 }
@@ -2455,15 +2306,12 @@ pub async fn set_model(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
     Json(req): Json<cctui_proto::api::SetModelRequest>,
-) -> Result<(StatusCode, Json<cctui_proto::api::SpawnResponse>), (StatusCode, Json<ApiError>)> {
+) -> Result<(StatusCode, Json<cctui_proto::api::SpawnResponse>), AppError> {
     let norm = |s: Option<String>| s.map(|v| v.trim().to_owned()).filter(|v| !v.is_empty());
     let model = norm(req.model);
     let effort = norm(req.effort);
     if model.is_none() && effort.is_none() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(ApiError { error: "model or effort must be set".into() }),
-        ));
+        return Err(AppError::new(StatusCode::BAD_REQUEST, "model or effort must be set"));
     }
     let command_id = uuid::Uuid::new_v4();
     crate::state::track_command(
@@ -2510,7 +2358,7 @@ pub async fn fork_session(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
     Json(req): Json<cctui_proto::api::ForkRequest>,
-) -> Result<(StatusCode, Json<cctui_proto::api::ForkResponse>), (StatusCode, Json<ApiError>)> {
+) -> Result<(StatusCode, Json<cctui_proto::api::ForkResponse>), AppError> {
     let norm = |s: Option<String>| s.map(|v| v.trim().to_owned()).filter(|v| !v.is_empty());
 
     // Resolve the parent: adapter + machine + cwd. The fork inherits the
@@ -2520,39 +2368,27 @@ pub async fn fork_session(
         sqlx::query_as("SELECT adapter_id, machine_uuid, working_dir FROM sessions WHERE id = $1")
             .bind(&session_id)
             .fetch_optional(&state.pool)
-            .await
-            .map_err(|e| {
-                tracing::error!("db error: {e}");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ApiError { error: "database error".into() }),
-                )
-            })?;
+            .await?;
     let Some((adapter_id, machine_uuid, working_dir)) = row else {
-        return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "session not found".into() })));
+        return Err(AppError::new(StatusCode::NOT_FOUND, "session not found"));
     };
     let Some(adapter_id) = adapter_id else {
-        return Err((
+        return Err(AppError::new(
             StatusCode::CONFLICT,
-            Json(ApiError { error: "session has no adapter (legacy) — cannot fork".into() }),
+            "session has no adapter (legacy) — cannot fork",
         ));
     };
     let Some(machine_uuid) = machine_uuid else {
-        return Err((
-            StatusCode::CONFLICT,
-            Json(ApiError { error: "session has no machine — cannot fork".into() }),
-        ));
+        return Err(AppError::new(StatusCode::CONFLICT, "session has no machine — cannot fork"));
     };
 
     // Subset forks slice the parent's on-disk transcript — a claude
     // primitive only. Codex has no partial-fork mechanism, so reject it here
     // rather than let the daemon silently full-fork.
     if req.extract.is_some() && adapter_id != "claude-code" {
-        return Err((
+        return Err(AppError::new(
             StatusCode::CONFLICT,
-            Json(ApiError {
-                error: "partial fork (from/after/selected messages) is only supported for claude sessions".into(),
-            }),
+            "partial fork (from/after/selected messages) is only supported for claude sessions",
         ));
     }
 
@@ -2597,14 +2433,10 @@ pub async fn fork_session(
     };
     state.bus.command_daemon_for_session(machine_uuid, &session_id, frame).await.map_err(
         |err| match err {
-            crate::bus::BusError::NoDaemon(_) => (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(ApiError { error: "daemon for that machine is offline".into() }),
-            ),
-            _ => (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(ApiError { error: "daemon disconnected mid-dispatch".into() }),
-            ),
+            crate::bus::BusError::NoDaemon(_) => {
+                AppError::new(StatusCode::SERVICE_UNAVAILABLE, "daemon for that machine is offline")
+            }
+            _ => AppError::new(StatusCode::SERVICE_UNAVAILABLE, "daemon disconnected mid-dispatch"),
         },
     )?;
     tracing::info!(parent = %session_id, %command_id, %adapter_id, child = ?child_session_id, "fork dispatched");
@@ -2625,7 +2457,7 @@ pub async fn set_auto_approve(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
     Json(req): Json<cctui_proto::api::AutoApproveRequest>,
-) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+) -> Result<StatusCode, AppError> {
     state.permission_store.write().await.set_auto_approve(&session_id, req.enabled);
     tracing::info!(session_id = %session_id, enabled = req.enabled, "auto-approve toggled");
     Ok(StatusCode::NO_CONTENT)
@@ -2647,17 +2479,13 @@ pub async fn archive_session(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
     Query(q): Query<ArchiveQuery>,
-) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
-    let outcome =
-        archive_one(&state, &session_id, q.force, RemoveInitiator::User).await.map_err(|e| {
-            tracing::error!("db error: {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-        })?;
+) -> Result<StatusCode, AppError> {
+    let outcome = archive_one(&state, &session_id, q.force, RemoveInitiator::User).await?;
     match outcome {
         ArchiveOutcome::Archived => Ok(StatusCode::NO_CONTENT),
-        ArchiveOutcome::SkippedPinned => Err((
+        ArchiveOutcome::SkippedPinned => Err(AppError::new(
             StatusCode::CONFLICT,
-            Json(ApiError { error: "session is pinned; unpin it or pass ?force=true".into() }),
+            "session is pinned; unpin it or pass ?force=true",
         )),
     }
 }
@@ -2798,11 +2626,8 @@ pub async fn archive_one(
 pub async fn unarchive_session(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
-) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
-    unarchive_one(&state, &session_id).await.map_err(|e| {
-        tracing::error!("db error: {e}");
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-    })?;
+) -> Result<StatusCode, AppError> {
+    unarchive_one(&state, &session_id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -2818,11 +2643,8 @@ async fn unarchive_one(state: &AppState, session_id: &str) -> Result<(), sqlx::E
 pub async fn pin_session(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
-) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
-    pin_one(&state, &session_id).await.map_err(|e| {
-        tracing::error!("db error: {e}");
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-    })?;
+) -> Result<StatusCode, AppError> {
+    pin_one(&state, &session_id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -2847,11 +2669,8 @@ async fn pin_one(state: &AppState, session_id: &str) -> Result<(), sqlx::Error> 
 pub async fn unpin_session(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
-) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
-    unpin_one(&state, &session_id).await.map_err(|e| {
-        tracing::error!("db error: {e}");
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-    })?;
+) -> Result<StatusCode, AppError> {
+    unpin_one(&state, &session_id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -2870,20 +2689,12 @@ pub async fn set_keepalive(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
     Json(req): Json<cctui_proto::api::SessionKeepaliveRequest>,
-) -> Result<Json<Option<cctui_proto::api::KeepaliveState>>, (StatusCode, Json<ApiError>)> {
+) -> Result<Json<Option<cctui_proto::api::KeepaliveState>>, AppError> {
     match crate::keepalive::apply(&state, &session_id, &req).await {
         Ok(Some(Ok(schedule))) => Ok(Json(schedule)),
-        Ok(Some(Err(msg))) => Err((StatusCode::BAD_REQUEST, Json(ApiError { error: msg }))),
-        Ok(None) => {
-            Err((StatusCode::NOT_FOUND, Json(ApiError { error: "session not found".into() })))
-        }
-        Err(e) => {
-            tracing::error!("db error: {e}");
-            Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiError { error: "database error".into() }),
-            ))
-        }
+        Ok(Some(Err(msg))) => Err(AppError::new(StatusCode::BAD_REQUEST, msg)),
+        Ok(None) => Err(AppError::new(StatusCode::NOT_FOUND, "session not found")),
+        Err(e) => Err(AppError::from(e)),
     }
 }
 
@@ -3014,7 +2825,7 @@ pub async fn set_session_policy(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
     Json(rules): Json<Vec<crate::policy::PolicyRule>>,
-) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+) -> Result<StatusCode, AppError> {
     {
         let mut registry = state.registry.write().await;
         registry.set_policy(&session_id, rules);
@@ -3052,17 +2863,16 @@ pub async fn update_draft(
     Extension(ctx): Extension<AuthContext>,
     Path(session_id): Path<String>,
     Json(req): Json<SpawnRequest>,
-) -> Result<Json<SpawnResponse>, (StatusCode, Json<ApiError>)> {
-    let draft_id =
-        uuid::Uuid::parse_str(&session_id).map_err(|_| bad_request("session id must be a uuid"))?;
-    let (machine_uuid, _) = resolve_owned_machine(&state, &ctx, &req.machine_id).await?;
+) -> Result<Json<SpawnResponse>, AppError> {
+    let draft_id = uuid::Uuid::parse_str(&session_id)
+        .map_err(|_| AppError::new(StatusCode::BAD_REQUEST, "session id must be a uuid"))?;
+    let (machine_uuid, _) = resolve_owned_machine(&state, &ctx, &req.machine_id)
+        .await
+        .map_err(|(code, Json(e))| AppError::new(code, e.error))?;
     let fields = DraftRowFields::from_request(&req);
     let draft_json = serde_json::to_value(fields.payload).map_err(|e| {
         tracing::error!("serializing draft payload: {e}");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiError { error: "could not encode draft".into() }),
-        )
+        AppError::new(StatusCode::INTERNAL_SERVER_ERROR, "could not encode draft")
     })?;
     let metadata =
         serde_json::json!({ "draft": draft_json, "draft_saved_at": Utc::now().to_rfc3339() });
@@ -3083,13 +2893,9 @@ pub async fn update_draft(
     .bind(fields.model)
     .bind(fields.effort)
     .execute(&state.pool)
-    .await
-    .map_err(|e| {
-        tracing::error!("db error (update draft): {e}");
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-    })?;
+    .await?;
     if res.rows_affected() == 0 {
-        return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "draft not found".into() })));
+        return Err(AppError::new(StatusCode::NOT_FOUND, "draft not found"));
     }
     crate::spawn_labels::sync_draft(&state.pool, &session_id, &req.label_ids).await;
     tracing::info!(draft = %session_id, "draft updated");
@@ -3627,8 +3433,8 @@ mod tests {
     #[test]
     fn oversize_query_is_bad_request() {
         assert!(super::check_query_len(&"a".repeat(cctui_query::MAX_QUERY_LEN)).is_ok());
-        let (status, _) = super::check_query_len(&"(".repeat(20_000)).unwrap_err();
-        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+        let err = super::check_query_len(&"(".repeat(20_000)).unwrap_err();
+        assert!(matches!(err, super::AppError::Status(axum::http::StatusCode::BAD_REQUEST, _)));
     }
 
     #[test]

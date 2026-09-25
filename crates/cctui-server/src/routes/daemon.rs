@@ -38,6 +38,7 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::auth::{AuthContext, mint_secret, sha256_hex, user_token};
+use crate::error::AppError;
 use crate::live_sessions::live_sessions_predicate;
 use crate::state::AppState;
 
@@ -2654,21 +2655,17 @@ pub async fn mint_user_token(
     Extension(ctx): Extension<AuthContext>,
     Path(user_id): Path<Uuid>,
     Json(req): Json<MintTokenRequest>,
-) -> Result<Json<MintTokenResponse>, (StatusCode, Json<ApiError>)> {
-    let db_err = |e: sqlx::Error| {
-        tracing::error!("db error: {e}");
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-    };
-    let human = crate::auth::is_human_credential(&state.pool, &ctx).await.map_err(db_err)?;
+) -> Result<Json<MintTokenResponse>, AppError> {
+    let human = crate::auth::is_human_credential(&state.pool, &ctx).await?;
     authorize_token_mint(&ctx, human, user_id)
-        .map_err(|msg| (StatusCode::FORBIDDEN, Json(ApiError { error: msg.into() })))?;
+        .map_err(|msg| AppError::new(StatusCode::FORBIDDEN, msg))?;
 
-    let ceiling = crate::store::acls::user_ceiling(&state.pool, user_id).await.map_err(db_err)?;
+    let ceiling = crate::store::acls::user_ceiling(&state.pool, user_id).await?;
     let grant = token_grant(&ctx, &ceiling);
     let token = user_token(&mint_secret());
     let hash = sha256_hex(&token);
     let preview = crate::auth::token_preview(&token);
-    let mut tx = state.pool.begin().await.map_err(db_err)?;
+    let mut tx = state.pool.begin().await?;
     sqlx::query(
         "INSERT INTO user_tokens (user_id, token_hash, label, expires_at, token_preview) \
          VALUES ($1, $2, $3, $4, $5)",
@@ -2679,8 +2676,7 @@ pub async fn mint_user_token(
     .bind(req.expires_at)
     .bind(&preview)
     .execute(&mut *tx)
-    .await
-    .map_err(db_err)?;
+    .await?;
     crate::auth::register_key(
         &mut *tx,
         crate::auth::NewKey {
@@ -2696,9 +2692,8 @@ pub async fn mint_user_token(
         },
         grant,
     )
-    .await
-    .map_err(db_err)?;
-    tx.commit().await.map_err(db_err)?;
+    .await?;
+    tx.commit().await?;
 
     Ok(Json(MintTokenResponse { token, label: req.label, expires_at: req.expires_at }))
 }

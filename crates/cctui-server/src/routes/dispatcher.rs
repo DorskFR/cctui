@@ -17,7 +17,7 @@ use axum::extract::{State, WebSocketUpgrade};
 use axum::http::{HeaderMap, StatusCode, Uri};
 use axum::response::IntoResponse;
 use axum::{Extension, Json, response};
-use cctui_proto::api::{ApiError, DaemonAuthRequest, DaemonAuthResponse};
+use cctui_proto::api::{DaemonAuthRequest, DaemonAuthResponse};
 use cctui_proto::ws::{DispatcherFrameDown, DispatcherFrameUp};
 use chrono::Utc;
 use futures_util::{SinkExt, StreamExt};
@@ -26,6 +26,7 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::auth::{AuthContext, Scope, machine_token, mint_secret, sha256_hex, token_preview};
+use crate::error::AppError;
 use crate::state::AppState;
 
 /// Evict a dispatcher whose WS yields no frame of any kind — data, ping, or pong
@@ -78,16 +79,15 @@ pub async fn enroll(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Json(req): Json<EnrollRequest>,
-) -> Result<Json<EnrollResponse>, (StatusCode, Json<ApiError>)> {
+) -> Result<Json<EnrollResponse>, AppError> {
     // Enrolling a dispatcher requires the `enroll` scope; admin holds
     // it by ceiling. The dispatcher is owned by the caller's user.
-    ctx.requires(Scope::Enroll)
-        .map_err(|s| (s, Json(ApiError { error: "the enroll scope is required".into() })))?;
+    ctx.requires(Scope::Enroll).map_err(|s| AppError::new(s, "the enroll scope is required"))?;
     let user_id = ctx.user_id;
 
     let name = req.name.trim();
     if name.is_empty() {
-        return Err((StatusCode::BAD_REQUEST, Json(ApiError { error: "name required".into() })));
+        return Err(AppError::new(StatusCode::BAD_REQUEST, "name required"));
     }
 
     // dispatcher names are globally unique among live (non-deleted)
@@ -102,19 +102,13 @@ pub async fn enroll(
     )
     .bind(name)
     .fetch_optional(&state.pool)
-    .await
-    .map_err(|e| {
-        tracing::error!("dispatcher name uniqueness check failed: {e}");
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-    })?;
+    .await?;
     if name_taken.is_some() {
-        return Err((
+        return Err(AppError::new(
             StatusCode::CONFLICT,
-            Json(ApiError {
-                error: format!(
-                    "a dispatcher named {name:?} is already enrolled; revoke or delete it before re-enrolling"
-                ),
-            }),
+            format!(
+                "a dispatcher named {name:?} is already enrolled; revoke or delete it before re-enrolling"
+            ),
         ));
     }
 
@@ -145,27 +139,19 @@ pub async fn enroll(
         .bind(name)
         .bind(provider)
         .fetch_all(&state.pool)
-        .await
-        .map_err(|e| {
-            tracing::error!("account lookup failed: {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-        })?;
+        .await?;
         match rows.as_slice() {
             [] => {
-                return Err((
+                return Err(AppError::new(
                     StatusCode::NOT_FOUND,
-                    Json(ApiError { error: format!("no account named {name:?}") }),
+                    format!("no account named {name:?}"),
                 ));
             }
             [(id,)] => Some(*id),
             _ => {
-                return Err((
+                return Err(AppError::new(
                     StatusCode::CONFLICT,
-                    Json(ApiError {
-                        error: format!(
-                            "account {name:?} exists for multiple providers; pass --provider"
-                        ),
-                    }),
+                    format!("account {name:?} exists for multiple providers; pass --provider"),
                 ));
             }
         }
@@ -184,18 +170,11 @@ pub async fn enroll(
     {
         Some(pool_name) => Some(
             crate::store::account_pools::by_name(&state.pool, user_id, pool_name)
-                .await
-                .map_err(|e| {
-                    tracing::error!("account pool lookup failed: {e}");
-                    (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(ApiError { error: "database error".into() }),
-                    )
-                })?
+                .await?
                 .ok_or_else(|| {
-                    (
+                    AppError::new(
                         StatusCode::NOT_FOUND,
-                        Json(ApiError { error: format!("no account pool named {pool_name:?}") }),
+                        format!("no account pool named {pool_name:?}"),
                     )
                 })?
                 .id,
@@ -205,10 +184,7 @@ pub async fn enroll(
 
     // Grant {read, dispatch} ∩ ceiling, read before anything is written so a
     // DB error fails the enroll rather than minting a scopeless key.
-    let mut grant = crate::store::acls::user_ceiling(&state.pool, user_id).await.map_err(|e| {
-        tracing::error!("db error: {e}");
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-    })?;
+    let mut grant = crate::store::acls::user_ceiling(&state.pool, user_id).await?;
     grant.retain(|s| matches!(s, Scope::Read | Scope::Dispatch));
 
     sqlx::query(
@@ -232,13 +208,12 @@ pub async fn enroll(
         if let sqlx::Error::Database(dbe) = &e
             && dbe.code().as_deref() == Some("23505")
         {
-            return (
+            return AppError::new(
                 StatusCode::CONFLICT,
-                Json(ApiError { error: "a dispatcher with that name already exists".into() }),
+                "a dispatcher with that name already exists",
             );
         }
-        tracing::error!("db error: {e}");
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
+        AppError::from(e)
     })?;
 
     // Mirror the enrollment key into the unified api_keys table. The
@@ -282,11 +257,10 @@ pub async fn enroll(
 pub async fn auth(
     State(state): State<AppState>,
     Json(req): Json<DaemonAuthRequest>,
-) -> Result<Json<DaemonAuthResponse>, (StatusCode, Json<ApiError>)> {
-    let (dispatcher_id, user_id) =
-        resolve_dispatcher_key(&state, &req.machine_key).await.ok_or_else(|| {
-            (StatusCode::UNAUTHORIZED, Json(ApiError { error: "invalid dispatcher key".into() }))
-        })?;
+) -> Result<Json<DaemonAuthResponse>, AppError> {
+    let (dispatcher_id, user_id) = resolve_dispatcher_key(&state, &req.machine_key)
+        .await
+        .ok_or_else(|| AppError::new(StatusCode::UNAUTHORIZED, "invalid dispatcher key"))?;
     Ok(Json(DaemonAuthResponse {
         session_token: req.machine_key,
         expires_at: Utc::now() + chrono::Duration::hours(24),

@@ -4,25 +4,17 @@ use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use cctui_proto::api::{ApiError, SpawnResponse};
+use cctui_proto::api::SpawnResponse;
 
 use crate::auth::AuthContext;
+use crate::error::AppError;
 use crate::scheduled_messages::{claim_one, deliver, parse_deliver_at};
 use crate::state::AppState;
 
-type ApiResult<T> = Result<T, (StatusCode, Json<ApiError>)>;
+type ApiResult<T> = Result<T, AppError>;
 
-fn err(status: StatusCode, msg: impl Into<String>) -> (StatusCode, Json<ApiError>) {
-    (status, Json(ApiError { error: msg.into() }))
-}
-
-fn db_err(e: &sqlx::Error) -> (StatusCode, Json<ApiError>) {
-    tracing::error!("db error (scheduled messages): {e}");
-    err(StatusCode::INTERNAL_SERVER_ERROR, "database error")
-}
-
-fn not_pending() -> (StatusCode, Json<ApiError>) {
-    err(StatusCode::NOT_FOUND, "no pending scheduled message with that id")
+fn not_pending() -> AppError {
+    AppError::new(StatusCode::NOT_FOUND, "no pending scheduled message with that id")
 }
 
 fn validate_body(body: &str) -> Result<(), &'static str> {
@@ -80,9 +72,9 @@ pub async fn schedule(
     content: &str,
     raw_deliver_at: &str,
 ) -> ApiResult<(StatusCode, Json<SpawnResponse>)> {
-    validate_body(content).map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
+    validate_body(content).map_err(|e| AppError::new(StatusCode::BAD_REQUEST, e))?;
     let deliver_at = parse_deliver_at(raw_deliver_at, Utc::now())
-        .map_err(|e| err(StatusCode::BAD_REQUEST, e.to_string()))?;
+        .map_err(|e| AppError::new(StatusCode::BAD_REQUEST, e.to_string()))?;
     let id: uuid::Uuid = sqlx::query_scalar(
         "INSERT INTO session_message_queue \
            (session_id, user_id, body, deliver_at, next_attempt_at, origin) \
@@ -93,8 +85,7 @@ pub async fn schedule(
     .bind(content)
     .bind(deliver_at)
     .fetch_one(&state.pool)
-    .await
-    .map_err(|e| db_err(&e))?;
+    .await?;
     Ok((
         StatusCode::ACCEPTED,
         Json(SpawnResponse {
@@ -123,8 +114,7 @@ pub async fn list(
     )
     .bind(&session_id)
     .fetch_all(&state.pool)
-    .await
-    .map_err(|e| db_err(&e))?;
+    .await?;
     Ok(Json(rows))
 }
 
@@ -133,7 +123,8 @@ pub async fn update(
     Path((session_id, queue_id)): Path<(String, uuid::Uuid)>,
     Json(patch): Json<PatchScheduled>,
 ) -> ApiResult<StatusCode> {
-    let patch = validate_patch(patch, Utc::now()).map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
+    let patch =
+        validate_patch(patch, Utc::now()).map_err(|e| AppError::new(StatusCode::BAD_REQUEST, e))?;
     let res = sqlx::query(
         "UPDATE session_message_queue SET \
            body = COALESCE($3, body), \
@@ -147,8 +138,7 @@ pub async fn update(
     .bind(patch.body)
     .bind(patch.deliver_at)
     .execute(&state.pool)
-    .await
-    .map_err(|e| db_err(&e))?;
+    .await?;
     if res.rows_affected() == 0 {
         return Err(not_pending());
     }
@@ -166,8 +156,7 @@ pub async fn cancel(
     .bind(queue_id)
     .bind(&session_id)
     .execute(&state.pool)
-    .await
-    .map_err(|e| db_err(&e))?;
+    .await?;
     if res.rows_affected() == 0 {
         return Err(not_pending());
     }
@@ -178,11 +167,8 @@ pub async fn send_now(
     State(state): State<AppState>,
     Path((session_id, queue_id)): Path<(String, uuid::Uuid)>,
 ) -> ApiResult<StatusCode> {
-    let row = claim_one(&state.pool, &session_id, queue_id)
-        .await
-        .map_err(|e| db_err(&e))?
-        .ok_or_else(not_pending)?;
-    deliver(&state, row).await.map_err(|e| err(StatusCode::SERVICE_UNAVAILABLE, e))?;
+    let row = claim_one(&state.pool, &session_id, queue_id).await?.ok_or_else(not_pending)?;
+    deliver(&state, row).await.map_err(|e| AppError::new(StatusCode::SERVICE_UNAVAILABLE, e))?;
     Ok(StatusCode::ACCEPTED)
 }
 

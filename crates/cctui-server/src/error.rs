@@ -57,20 +57,30 @@ impl From<(StatusCode, &str)> for AppError {
     }
 }
 
-impl IntoResponse for AppError {
-    fn into_response(self) -> Response {
+pub const DB_ERROR: &str = "database error";
+
+impl AppError {
+    /// Log and render as the `(status, { "error": … })` tuple the older
+    /// handlers return.
+    pub fn into_parts(self) -> (StatusCode, Json<ApiError>) {
         let (code, msg) = match self {
             Self::Status(code, msg) => (code, msg),
             Self::Db(e) => {
                 tracing::error!("db error: {e}");
-                (StatusCode::INTERNAL_SERVER_ERROR, "database error".to_owned())
+                (StatusCode::INTERNAL_SERVER_ERROR, DB_ERROR.to_owned())
             }
             Self::Json(e) => {
                 tracing::error!("json error: {e}");
                 (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_owned())
             }
         };
-        (code, Json(ApiError { error: msg })).into_response()
+        (code, Json(ApiError { error: msg }))
+    }
+}
+
+impl IntoResponse for AppError {
+    fn into_response(self) -> Response {
+        self.into_parts().into_response()
     }
 }
 

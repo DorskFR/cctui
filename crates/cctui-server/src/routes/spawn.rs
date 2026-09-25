@@ -27,6 +27,7 @@ use uuid::Uuid;
 
 use crate::auth::AuthContext;
 use crate::authz::{Shareable, shareable_owner};
+use crate::error::{AppError, DB_ERROR};
 use crate::registry::MachineCommand;
 use crate::state::AppState;
 use crate::uploads::parse_upload_multipart;
@@ -50,15 +51,18 @@ pub async fn spawn_session(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     multipart: Multipart,
-) -> Result<(StatusCode, Json<SpawnResponse>), (StatusCode, Json<ApiError>)> {
-    let parsed = parse_upload_multipart(multipart).await?;
+) -> Result<(StatusCode, Json<SpawnResponse>), AppError> {
+    let parsed = parse_upload_multipart(multipart)
+        .await
+        .map_err(|(code, Json(e))| AppError::new(code, e.error))?;
     let uploads = parsed.files;
     let req: SpawnRequest = parsed
         .request_json
-        .ok_or_else(|| bad_request("missing `request` part"))
+        .ok_or_else(|| AppError::new(StatusCode::BAD_REQUEST, "missing `request` part"))
         .and_then(|raw| {
-            serde_json::from_str(&raw)
-                .map_err(|e| bad_request(format!("invalid SpawnRequest JSON: {e}")))
+            serde_json::from_str(&raw).map_err(|e| {
+                AppError::new(StatusCode::BAD_REQUEST, format!("invalid SpawnRequest JSON: {e}"))
+            })
         })?;
 
     // Draft: stage the spawn payload as a `draft` session row and stop
@@ -68,7 +72,9 @@ pub async fn spawn_session(
         return save_draft(&state, &ctx, &req).await;
     }
 
-    dispatch_spawn(&state, &ctx, req, uploads, parsed.raw).await
+    dispatch_spawn(&state, &ctx, req, uploads, parsed.raw)
+        .await
+        .map_err(|(code, Json(e))| AppError::new(code, e.error))
 }
 
 /// Dispatch a spawn to the targeted daemon. Shared by the immediate spawn path
@@ -459,10 +465,7 @@ async fn default_account_name(
     .bind(family.label())
     .fetch_all(&state.pool)
     .await
-    .map_err(|e| {
-        tracing::error!("resolving default account: {e}");
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-    })?;
+    .map_err(|e| AppError::from(e).into_parts())?;
     resolve_default_account(&names, user_id, adapter_id)
 }
 
@@ -501,10 +504,7 @@ async fn auto_account_name(
     .bind(family.label())
     .fetch_all(&state.pool)
     .await
-    .map_err(|e| {
-        tracing::error!("resolving auto account candidates: {e}");
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-    })?;
+    .map_err(|e| AppError::from(e).into_parts())?;
     if rows.is_empty() {
         // No accounts configured: unbound spawn, exactly as an unset `account`.
         return Ok(None);
@@ -586,7 +586,7 @@ fn resolve_err(e: crate::account_resolve::ResolveError) -> (StatusCode, Json<Api
     match e {
         crate::account_resolve::ResolveError::Rejected(msg) => bad_request(msg),
         crate::account_resolve::ResolveError::Db => {
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: DB_ERROR.into() }))
         }
     }
 }
@@ -663,11 +663,9 @@ pub async fn resolve_owned_machine(
 ) -> Result<(Uuid, Uuid), (StatusCode, Json<ApiError>)> {
     let machine_uuid =
         Uuid::parse_str(machine_id).map_err(|_| bad_request("machine_id must be a uuid"))?;
-    let owner =
-        shareable_owner(Shareable::Machine, machine_uuid, &state.pool).await.map_err(|e| {
-            tracing::error!("db error: {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-        })?;
+    let owner = shareable_owner(Shareable::Machine, machine_uuid, &state.pool)
+        .await
+        .map_err(|e| AppError::from(e).into_parts())?;
     let Some(owner) = owner else {
         return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "machine not found".into() })));
     };
@@ -685,8 +683,10 @@ async fn save_draft(
     state: &AppState,
     ctx: &AuthContext,
     req: &SpawnRequest,
-) -> Result<(StatusCode, Json<SpawnResponse>), (StatusCode, Json<ApiError>)> {
-    let (machine_uuid, _) = resolve_owned_machine(state, ctx, &req.machine_id).await?;
+) -> Result<(StatusCode, Json<SpawnResponse>), AppError> {
+    let (machine_uuid, _) = resolve_owned_machine(state, ctx, &req.machine_id)
+        .await
+        .map_err(|(code, Json(e))| AppError::new(code, e.error))?;
     let adapter_id = req.adapter_id.clone().unwrap_or_else(|| "claude-code".to_owned());
 
     // Store the spawn config (NOT env — secrets never persisted) under
@@ -696,10 +696,7 @@ async fn save_draft(
     payload.save_draft = false;
     let draft_json = serde_json::to_value(&payload).map_err(|e| {
         tracing::error!("serializing draft payload: {e}");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiError { error: "could not encode draft".into() }),
-        )
+        AppError::new(StatusCode::INTERNAL_SERVER_ERROR, "could not encode draft")
     })?;
     let metadata = serde_json::json!({ "draft": draft_json });
 
@@ -723,11 +720,7 @@ async fn save_draft(
     .bind(model)
     .bind(effort)
     .execute(&state.pool)
-    .await
-    .map_err(|e| {
-        tracing::error!("db error (save draft): {e}");
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-    })?;
+    .await?;
 
     crate::spawn_labels::sync_draft(&state.pool, &draft_id.to_string(), &req.label_ids).await;
     tracing::info!(machine = %req.machine_id, draft = %draft_id, "draft session saved");
@@ -751,32 +744,26 @@ pub async fn launch_draft(
     Extension(ctx): Extension<AuthContext>,
     Path(session_id): Path<String>,
     Json(launch): Json<LaunchRequest>,
-) -> Result<(StatusCode, Json<SpawnResponse>), (StatusCode, Json<ApiError>)> {
+) -> Result<(StatusCode, Json<SpawnResponse>), AppError> {
     let row: Option<(String, serde_json::Value)> =
         sqlx::query_as("SELECT status, metadata FROM sessions WHERE id = $1")
             .bind(&session_id)
             .fetch_optional(&state.pool)
-            .await
-            .map_err(|e| {
-                tracing::error!("db error (launch lookup): {e}");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ApiError { error: "database error".into() }),
-                )
-            })?;
+            .await?;
     let Some((status, metadata)) = row else {
-        return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "draft not found".into() })));
+        return Err(AppError::new(StatusCode::NOT_FOUND, "draft not found"));
     };
     if status != "draft" {
-        return Err(bad_request("session is not a draft"));
+        return Err(AppError::new(StatusCode::BAD_REQUEST, "session is not a draft"));
     }
     let mut req: SpawnRequest = metadata
         .get("draft")
         .cloned()
-        .ok_or_else(|| bad_request("draft row missing payload"))
+        .ok_or_else(|| AppError::new(StatusCode::BAD_REQUEST, "draft row missing payload"))
         .and_then(|v| {
-            serde_json::from_value(v)
-                .map_err(|e| bad_request(format!("corrupt draft payload: {e}")))
+            serde_json::from_value(v).map_err(|e| {
+                AppError::new(StatusCode::BAD_REQUEST, format!("corrupt draft payload: {e}"))
+            })
         })?;
     // Env is entered fresh at launch; account gateway env is minted in dispatch.
     req.env = launch.env;
@@ -788,7 +775,9 @@ pub async fn launch_draft(
         }
     }
 
-    let outcome = dispatch_spawn(&state, &ctx, req, Vec::new(), Vec::new()).await?;
+    let outcome = dispatch_spawn(&state, &ctx, req, Vec::new(), Vec::new())
+        .await
+        .map_err(|(code, Json(e))| AppError::new(code, e.error))?;
 
     // Drop the draft only after a successful dispatch; the live session is born
     // from the daemon's registration with its own id.
@@ -808,17 +797,13 @@ pub async fn launch_draft(
 pub async fn discard_draft(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
-) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+) -> Result<StatusCode, AppError> {
     let res = sqlx::query("DELETE FROM sessions WHERE id = $1 AND status = 'draft'")
         .bind(&session_id)
         .execute(&state.pool)
-        .await
-        .map_err(|e| {
-            tracing::error!("db error (discard draft): {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-        })?;
+        .await?;
     if res.rows_affected() == 0 {
-        return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "draft not found".into() })));
+        return Err(AppError::new(StatusCode::NOT_FOUND, "draft not found"));
     }
     tracing::info!(draft = %session_id, "draft discarded");
     Ok(StatusCode::NO_CONTENT)
@@ -835,10 +820,12 @@ pub async fn stage_session_files(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
     multipart: Multipart,
-) -> Result<Json<cctui_proto::api::StageFilesResponse>, (StatusCode, Json<ApiError>)> {
-    let parsed = parse_upload_multipart(multipart).await?;
+) -> Result<Json<cctui_proto::api::StageFilesResponse>, AppError> {
+    let parsed = parse_upload_multipart(multipart)
+        .await
+        .map_err(|(code, Json(e))| AppError::new(code, e.error))?;
     if parsed.files.is_empty() {
-        return Err(bad_request("no files in upload"));
+        return Err(AppError::new(StatusCode::BAD_REQUEST, "no files in upload"));
     }
     let count = parsed.files.len();
     // Same ordering as the spawn path: store the blobs first so a blob-store
@@ -848,10 +835,7 @@ pub async fn stage_session_files(
             .await
             .map_err(|e| {
                 tracing::error!(%session_id, "recording attachments: {e}");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ApiError { error: "could not store the attachments".into() }),
-                )
+                AppError::new(StatusCode::INTERNAL_SERVER_ERROR, "could not store the attachments")
             })?;
     let recorded_ids: Vec<Uuid> = recorded.iter().map(|a| a.id).collect();
 
@@ -876,27 +860,24 @@ pub async fn stage_session_files(
             Ok(Json(cctui_proto::api::StageFilesResponse { paths }))
         }
         Err(crate::bus::BusError::NotFound) => {
-            Err((StatusCode::NOT_FOUND, Json(ApiError { error: "session not found".into() })))
+            Err(AppError::new(StatusCode::NOT_FOUND, "session not found"))
         }
-        Err(err @ (crate::bus::BusError::NoDaemon(_) | crate::bus::BusError::Closed)) => Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(ApiError {
-                error: format!("{err} — the session's machine is offline; try again"),
-            }),
-        )),
-        Err(crate::bus::BusError::Timeout) => Err((
+        Err(err @ (crate::bus::BusError::NoDaemon(_) | crate::bus::BusError::Closed)) => {
+            Err(AppError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                format!("{err} — the session's machine is offline; try again"),
+            ))
+        }
+        Err(crate::bus::BusError::Timeout) => Err(AppError::new(
             StatusCode::GATEWAY_TIMEOUT,
-            Json(ApiError { error: "timed out staging files on the session's machine".into() }),
+            "timed out staging files on the session's machine",
         )),
         Err(err @ crate::bus::BusError::Staging(_)) => {
-            Err((StatusCode::BAD_GATEWAY, Json(ApiError { error: err.to_string() })))
+            Err(AppError::new(StatusCode::BAD_GATEWAY, err.to_string()))
         }
         Err(err) => {
             tracing::error!(%session_id, %err, "stage_files dispatch error");
-            Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiError { error: "could not stage files".into() }),
-            ))
+            Err(AppError::new(StatusCode::INTERNAL_SERVER_ERROR, "could not stage files"))
         }
     }
 }

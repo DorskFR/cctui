@@ -179,10 +179,11 @@ pub fn authorize(
     Ok(Authorized { adapter: adapter.to_owned(), budget_usd: budget, permission_mode })
 }
 
+use crate::error::AppError;
 use crate::state::AppState;
 
-fn deny(code: StatusCode, msg: impl Into<String>) -> (StatusCode, Json<ApiError>) {
-    (code, Json(ApiError { error: msg.into() }))
+fn deny(code: StatusCode, msg: impl Into<String>) -> AppError {
+    AppError::new(code, msg)
 }
 
 /// Authenticate the caller as a daemon machine key and return its user id.
@@ -194,34 +195,29 @@ pub async fn machine_user(
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
-        .ok_or_else(|| deny(StatusCode::UNAUTHORIZED, "machine key required"))?;
-    let ctx = state
-        .auth_config
-        .validate(token)
-        .await
-        .ok_or_else(|| deny(StatusCode::UNAUTHORIZED, "invalid machine key"))?;
+        .ok_or_else(|| {
+            (StatusCode::UNAUTHORIZED, Json(ApiError { error: "machine key required".into() }))
+        })?;
+    let ctx = state.auth_config.validate(token).await.ok_or_else(|| {
+        (StatusCode::UNAUTHORIZED, Json(ApiError { error: "invalid machine key".into() }))
+    })?;
     if ctx.machine_id.is_none() {
-        return Err(deny(StatusCode::FORBIDDEN, "machine token required"));
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(ApiError { error: "machine token required".into() }),
+        ));
     }
     Ok(ctx.user_id)
 }
 
-async fn load_parent(
-    state: &AppState,
-    session_id: &str,
-    caller: Uuid,
-) -> Result<Parent, (StatusCode, Json<ApiError>)> {
+async fn load_parent(state: &AppState, session_id: &str, caller: Uuid) -> Result<Parent, AppError> {
     type ParentRow = (Option<Uuid>, Option<String>, Option<Uuid>, Option<String>);
     let row: Option<ParentRow> = sqlx::query_as(
         "SELECT machine_uuid, working_dir, user_id, permission_mode FROM sessions WHERE id = $1",
     )
     .bind(session_id)
     .fetch_optional(&state.pool)
-    .await
-    .map_err(|e| {
-        tracing::error!(%session_id, "db error (spawn-child parent): {e}");
-        deny(StatusCode::INTERNAL_SERVER_ERROR, "database error")
-    })?;
+    .await?;
     let Some((machine_uuid, working_dir, user_id, mode)) = row else {
         return Err(deny(StatusCode::NOT_FOUND, "calling session not found"));
     };
@@ -311,22 +307,17 @@ async fn reserve_child(
     req: &SpawnChildRequest,
     mut usage: Usage,
     child_key: &str,
-) -> Result<(Authorized, SpawnCapability), (StatusCode, Json<ApiError>)> {
-    let db_err = |e: sqlx::Error| {
-        tracing::error!(parent = %parent_id, error = %e, "spawn-child reservation failed");
-        deny(StatusCode::INTERNAL_SERVER_ERROR, "database error")
-    };
+) -> Result<(Authorized, SpawnCapability), AppError> {
     let root = cap.and_then(|c| c.tree_root.clone()).unwrap_or_else(|| parent_id.to_owned());
-    let mut tx = pool.begin().await.map_err(db_err)?;
+    let mut tx = pool.begin().await?;
     sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1))")
         .bind(format!("spawn-tree:{root}"))
         .execute(&mut *tx)
-        .await
-        .map_err(db_err)?;
-    usage.tree_granted_usd = tree_granted_usd(&mut *tx, &root).await.map_err(db_err)?;
+        .await?;
+    usage.tree_granted_usd = tree_granted_usd(&mut *tx, &root).await?;
     usage.live_children = live_child_count(&mut *tx, parent_id)
         .await
-        .saturating_add(pending_child_count(&mut *tx, parent_id).await.map_err(db_err)?);
+        .saturating_add(pending_child_count(&mut *tx, parent_id).await?);
     let authorized = authorize(cap, req, &usage).map_err(|d| match d {
         Denied::BadRequest(_) => deny(StatusCode::BAD_REQUEST, d.to_string()),
         _ => deny(StatusCode::FORBIDDEN, d.to_string()),
@@ -334,9 +325,7 @@ async fn reserve_child(
     let child_cap = cap.map_or_else(SpawnCapability::machine_default, |c| {
         c.inherited(parent_id, authorized.budget_usd, Some(authorized.permission_mode))
     });
-    crate::store::spawn_capabilities::upsert(&mut *tx, child_key, &child_cap)
-        .await
-        .map_err(db_err)?;
+    crate::store::spawn_capabilities::upsert(&mut *tx, child_key, &child_cap).await?;
     sqlx::query(
         "INSERT INTO spawn_tree_grants (root_id, parent_id, child_id, budget_usd) \
          VALUES ($1, $2, $3, $4)",
@@ -346,9 +335,8 @@ async fn reserve_child(
     .bind(child_key)
     .bind(authorized.budget_usd.unwrap_or(0.0))
     .execute(&mut *tx)
-    .await
-    .map_err(db_err)?;
-    tx.commit().await.map_err(db_err)?;
+    .await?;
+    tx.commit().await?;
     Ok((authorized, child_cap))
 }
 
@@ -382,10 +370,7 @@ async fn child_account_env(
     family: crate::routes::gateway::Family,
     requested_model: Option<&str>,
     child_key: &str,
-) -> Result<
-    (std::collections::BTreeMap<String, String>, Option<String>),
-    (StatusCode, Json<ApiError>),
-> {
+) -> Result<(std::collections::BTreeMap<String, String>, Option<String>), AppError> {
     let mut model = requested_model.map(str::trim).filter(|m| !m.is_empty()).map(str::to_owned);
     let Some(account) = parent_account_name(state, &parent.session_id).await else {
         return Ok((std::collections::BTreeMap::new(), model));
@@ -421,7 +406,7 @@ async fn child_account_env(
                 }
                 crate::routes::gateway::MintSessionEnvError::Db(err) => {
                     tracing::error!(parent = %parent.session_id, "spawn-child mint failed: {err}");
-                    "database error".to_owned()
+                    crate::error::DB_ERROR.to_owned()
                 }
             };
             Err(deny(
@@ -457,8 +442,10 @@ pub async fn spawn_child(
     headers: axum::http::HeaderMap,
     Path(session_id): Path<String>,
     Json(req): Json<SpawnChildRequest>,
-) -> Result<Json<SpawnChildResponse>, (StatusCode, Json<ApiError>)> {
-    let caller = machine_user(&state, &headers).await?;
+) -> Result<Json<SpawnChildResponse>, AppError> {
+    let caller = machine_user(&state, &headers)
+        .await
+        .map_err(|(code, Json(e))| AppError::new(code, e.error))?;
     let parent = load_parent(&state, &session_id, caller).await?;
 
     let cap = capability_for(&state, &session_id).await;
@@ -553,8 +540,10 @@ pub async fn message_child(
     headers: axum::http::HeaderMap,
     Path(session_id): Path<String>,
     Json(req): Json<cctui_proto::api::MessageChildRequest>,
-) -> Result<Json<serde_json::Value>, (StatusCode, Json<ApiError>)> {
-    let caller = machine_user(&state, &headers).await?;
+) -> Result<Json<serde_json::Value>, AppError> {
+    let caller = machine_user(&state, &headers)
+        .await
+        .map_err(|(code, Json(e))| AppError::new(code, e.error))?;
     let parent = load_parent(&state, &session_id, caller).await?;
     if req.prompt.trim().is_empty() {
         return Err(deny(StatusCode::BAD_REQUEST, "prompt is required"));
@@ -585,18 +574,14 @@ async fn resolve_child_adapter(
     caller: Uuid,
     parent: &Parent,
     child: &str,
-) -> Result<String, (StatusCode, Json<ApiError>)> {
+) -> Result<String, AppError> {
     let row: Option<(Option<String>, Option<Uuid>, Option<String>)> = sqlx::query_as(
         "SELECT parent_id, machine_uuid, adapter_id FROM sessions WHERE id = $1 AND user_id = $2",
     )
     .bind(child)
     .bind(caller)
     .fetch_optional(pool)
-    .await
-    .map_err(|e| {
-        tracing::error!(%child, "db error (message-child): {e}");
-        deny(StatusCode::INTERNAL_SERVER_ERROR, "database error")
-    })?;
+    .await?;
     let Some((child_parent, child_machine, adapter_id)) = row else {
         return Err(deny(StatusCode::NOT_FOUND, "child session not found"));
     };
