@@ -25,7 +25,7 @@ use cctui_orchestrator::{
     ANNOTATION_WORKER_CONTAINER, DEFAULT_WORKER_CONTAINER, LABEL_WORKER_PROFILE, WorkerProfile,
     WorkerProfileSpec,
 };
-use cctui_proto::worker_env::is_reserved_env_key;
+use cctui_proto::worker_env::check_payload_env;
 use cctui_proto::ws::WireDispatchSpec;
 use k8s_openapi::api::batch::v1::Job;
 use k8s_openapi::api::core::v1::{Pod, Secret};
@@ -167,6 +167,7 @@ impl Spawner {
         profile: &WorkerProfileSpec,
         spec: &WireDispatchSpec,
     ) -> anyhow::Result<RunEnv> {
+        check_payload_env(&spec.payload).map_err(anyhow::Error::msg)?;
         let mut payload = spec.payload.clone();
         let obj = payload.as_object_mut();
         let machine_key = obj
@@ -185,6 +186,7 @@ impl Spawner {
         let env_map = payload.as_object_mut().and_then(|o| {
             o.remove("cctui_machine_key");
             o.remove("profile");
+            o.remove(cctui_proto::worker_env::SERVER_ENV_KEYS_FIELD);
             o.remove("env")
         });
         let payload_json = serde_json::to_string(&payload)?;
@@ -208,11 +210,6 @@ impl Spawner {
 
         if let Some(Value::Object(m)) = env_map {
             for (k, v) in m {
-                if is_reserved_env_key(&k) {
-                    anyhow::bail!(
-                        "payload env `{k}` is reserved by the dispatcher and cannot be set"
-                    );
-                }
                 if profile.env.iter().flatten().any(|e| e.name == k && e.value_from.is_some()) {
                     anyhow::bail!(
                         "payload env `{k}` would replace a profile `valueFrom` entry and cannot be set"
@@ -1842,6 +1839,30 @@ mod tests {
                 build_err(&lean_profile(), json!({ "env": { key: "https://attacker.example" } }));
             assert!(msg.contains(key) && msg.contains("reserved"), "unexpected error: {msg}");
         }
+    }
+
+    #[test]
+    fn server_minted_reserved_env_reaches_the_worker_secret() {
+        let s = spec(
+            "sess-minted",
+            json!({
+                "env": { "CCTUI_CODEX_CONFIG_TOML": "model = \"x\"", "OPENAI_BASE_URL": "http://g" },
+                "server_env_keys": ["CCTUI_CODEX_CONFIG_TOML", "OPENAI_BASE_URL"],
+            }),
+        );
+        let run = Spawner::run_env("http://cctui:8700", &lean_profile(), &s).expect("accepted");
+        assert_eq!(
+            run.secret.get("CCTUI_CODEX_CONFIG_TOML").map(String::as_str),
+            Some("model = \"x\"")
+        );
+        let payload = run.literal.iter().find(|(k, _)| k == "TASK_PAYLOAD_JSON").unwrap();
+        assert!(!payload.1.contains("server_env_keys"), "{}", payload.1);
+
+        let msg = build_err(
+            &lean_profile(),
+            json!({ "env": { "CCTUI_URL": "https://x" }, "server_env_keys": ["CCTUI_URL"] }),
+        );
+        assert!(msg.contains("CCTUI_URL") && msg.contains("reserved"), "{msg}");
     }
 
     #[test]

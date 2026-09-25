@@ -548,12 +548,15 @@ async fn validate_dispatch(
         })?;
     }
 
-    cctui_proto::worker_env::check_payload_env(&req.payload).map_err(|e| {
+    cctui_proto::worker_env::check_caller_payload_env(&req.payload).map_err(|e| {
         tracing::warn!(uid = %ctx.user_id, "dispatch rejected: {e}");
         (StatusCode::BAD_REQUEST, Json(ApiError { error: e }))
     })?;
 
     let mut forwarded_payload = req.payload.clone();
+    if let Some(obj) = forwarded_payload.as_object_mut() {
+        obj.remove(cctui_proto::worker_env::SERVER_ENV_KEYS_FIELD);
+    }
     // Carry the caller's logical id as the session display name (the session id
     // itself is a derived UUID) so the UI still shows e.g.
     // `triage-PROJ-2026…`. Only when the caller didn't already name the session.
@@ -793,16 +796,7 @@ async fn mint_gateway_env(
         match crate::routes::gateway::mint_session_env_for_account(state, row.id, session_id).await
         {
             Ok(Some(gateway_env)) => {
-                if let Some(obj) = forwarded_payload.as_object_mut() {
-                    let env = obj
-                        .entry("env")
-                        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
-                    if let Some(env_obj) = env.as_object_mut() {
-                        for (k, v) in gateway_env {
-                            env_obj.insert(k, serde_json::Value::String(v));
-                        }
-                    }
-                }
+                merge_server_env(forwarded_payload, gateway_env);
             }
             Ok(None) => {
                 tracing::error!(
@@ -818,6 +812,38 @@ async fn mint_gateway_env(
         }
     }
     Ok(())
+}
+
+/// Merge server-minted env into `payload.env` and name its keys in
+/// `server_env_keys` so dispatchers exempt them from the reserved-name check.
+fn merge_server_env(
+    payload: &mut serde_json::Value,
+    minted: std::collections::BTreeMap<String, String>,
+) {
+    use cctui_proto::worker_env::SERVER_ENV_KEYS_FIELD;
+    let Some(obj) = payload.as_object_mut() else { return };
+    let keys: Vec<serde_json::Value> =
+        minted.keys().map(|k| serde_json::Value::String(k.clone())).collect();
+    if let Some(env_obj) = obj
+        .entry("env")
+        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()))
+        .as_object_mut()
+    {
+        for (k, v) in minted {
+            env_obj.insert(k, serde_json::Value::String(v));
+        }
+    }
+    if let Some(list) = obj
+        .entry(SERVER_ENV_KEYS_FIELD)
+        .or_insert_with(|| serde_json::Value::Array(Vec::new()))
+        .as_array_mut()
+    {
+        for k in keys {
+            if !list.contains(&k) {
+                list.push(k);
+            }
+        }
+    }
 }
 
 /// Account-scoped routing on the dispatch path: resolve which accounts the
@@ -1206,5 +1232,23 @@ mod tests {
     #[test]
     fn an_unbound_dispatcher_injects_nothing() {
         assert_eq!(default_binding(None, None), None);
+    }
+
+    #[test]
+    fn minted_reserved_env_passes_the_dispatcher_check() {
+        let mut payload = serde_json::json!({ "env": { "FEATURE": "1" } });
+        let minted: std::collections::BTreeMap<String, String> = [
+            ("CCTUI_CODEX_CONFIG_TOML".to_owned(), "model = \"x\"".to_owned()),
+            ("HTTPS_PROXY".to_owned(), "http://p".to_owned()),
+        ]
+        .into();
+        super::merge_server_env(&mut payload, minted);
+        cctui_proto::worker_env::check_payload_env(&payload).expect("minted keys exempt");
+        assert_eq!(payload["env"]["CCTUI_CODEX_CONFIG_TOML"], "model = \"x\"");
+        assert_eq!(payload["env"]["FEATURE"], "1");
+
+        payload["env"]["LD_PRELOAD"] = "/evil.so".into();
+        let err = cctui_proto::worker_env::check_payload_env(&payload).unwrap_err();
+        assert!(err.contains("LD_PRELOAD"), "{err}");
     }
 }
