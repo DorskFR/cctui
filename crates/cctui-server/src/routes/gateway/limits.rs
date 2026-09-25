@@ -575,14 +575,14 @@ mod tests {
         use super::{OrphanSpamMap, bump_orphan_401, sweep_orphan_spam};
         use std::time::{Duration, Instant};
         let map = OrphanSpamMap::new();
-        let window = Duration::from_secs(60);
-        let block = Duration::from_secs(300);
+        let window = Duration::from_mins(1);
+        let block = Duration::from_mins(5);
         let t0 = Instant::now();
         for i in 0..10_000 {
             bump_orphan_401(&map, &format!("fp-{i}"), t0, 1, window, block);
         }
         assert_eq!(map.len(), 10_000);
-        sweep_orphan_spam(&map, t0 + Duration::from_secs(120), window);
+        sweep_orphan_spam(&map, t0 + Duration::from_mins(2), window);
         assert_eq!(map.len(), 10_000, "blocks still live");
         sweep_orphan_spam(&map, t0 + block + Duration::from_secs(1), window);
         assert!(map.is_empty());
@@ -593,8 +593,8 @@ mod tests {
         use super::{ORPHAN_SWEEP_AT, OrphanSpamMap, bump_orphan_401};
         use std::time::{Duration, Instant};
         let map = OrphanSpamMap::new();
-        let window = Duration::from_secs(60);
-        let block = Duration::from_secs(300);
+        let window = Duration::from_mins(1);
+        let block = Duration::from_mins(5);
         let t0 = Instant::now();
         for i in 0..ORPHAN_SWEEP_AT {
             bump_orphan_401(&map, &format!("fp-{i}"), t0, 100, window, block);
