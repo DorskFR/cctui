@@ -77,12 +77,15 @@ impl DispatcherRow {
 /// A dispatcher edit. `name` renames; each binding field is left untouched when
 /// absent, cleared by an empty string, and set otherwise — so the one-control
 /// UI can express "bind this pool, drop the account" in a single call.
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, ts_rs::TS)]
+#[ts(export)]
 pub struct RenameDispatcher {
     pub name: String,
     #[serde(default)]
+    #[ts(type = "string | null", optional)]
     pub default_account: Option<String>,
     #[serde(default)]
+    #[ts(type = "string | null", optional)]
     pub default_pool: Option<String>,
 }
 

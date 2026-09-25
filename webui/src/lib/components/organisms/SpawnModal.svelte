@@ -74,7 +74,7 @@
 		specFromForm,
 		specOf,
 		uniqueProfileName,
-		type ProfileSpec
+		type ProfileSpecForm
 	} from './spawn/profiles';
 	import { buildDispatchBody } from './spawn/dispatchBody';
 	import { attachLabelsTo } from './spawn/labelAttach';
@@ -342,7 +342,7 @@
 	const profileActions = useProfileActions();
 	const profiles = $derived(profilesQuery.data ?? []);
 	let selectedProfileId = $state<string | null>(null);
-	let oneOff = $state<ProfileSpec | null>(null);
+	let oneOff = $state<ProfileSpecForm | null>(null);
 	let usageRaw = $state(drafts.get(PROFILE_USES));
 	const selectedProfile = $derived(profiles.find((p) => p.id === selectedProfileId) ?? null);
 	const profileSpec = $derived(oneOff ?? (selectedProfile ? specOf(selectedProfile) : null));
@@ -388,7 +388,7 @@
 			toasts.error(m.spawn_profile_toast_failed({ error: errMessage(e) }));
 		}
 	}
-	async function saveProfile(id: string, name: string, spec: ProfileSpec) {
+	async function saveProfile(id: string, name: string, spec: ProfileSpecForm) {
 		try {
 			await profileActions.update(id, { name, spec });
 			toasts.ok(m.spawn_profile_toast_saved());

@@ -70,7 +70,8 @@ async fn require_owner(
 
 /// API view of one live share grant. Safe to return — no secrets, just who the
 /// resource is shared with and since when.
-#[derive(Debug, serde::Serialize, sqlx::FromRow)]
+#[derive(Debug, serde::Serialize, sqlx::FromRow, ts_rs::TS)]
+#[ts(export, rename = "ResourceShareInfo")]
 pub struct ShareInfo {
     pub resource_type: String,
     pub resource_id: Uuid,
@@ -84,10 +85,12 @@ pub struct ShareInfo {
 /// `POST /api/v1/{resource_type}/{id}/shares` payload. `user` is the grantee,
 /// accepted as either a UUID or a login (`users.name`). `action` defaults to
 /// `use` (the only action today).
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, ts_rs::TS)]
+#[ts(export)]
 pub struct GrantShare {
     pub user: String,
     #[serde(default)]
+    #[ts(type = "string", optional)]
     pub action: Option<String>,
 }
 

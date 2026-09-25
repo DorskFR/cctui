@@ -1,5 +1,6 @@
 import { createQuery, useQueryClient } from "@tanstack/svelte-query";
 import { endpoints } from "./endpoints";
+import type { RenameDispatcher } from "@bindings/RenameDispatcher";
 
 /** An enrolled dispatcher: a standalone executor service enrolled per
  *  account that dials out over `/api/v1/dispatcher/ws`. Identity record only —
@@ -24,13 +25,7 @@ export interface UserDispatcher {
   default_pool: string | null;
 }
 
-/** Edit payload for an enrolled dispatcher. Each binding field is left alone
- *  when omitted, unbound by an empty string, and set by a name. */
-export interface RenameDispatcher {
-  name: string;
-  default_account?: string;
-  default_pool?: string;
-}
+export type { RenameDispatcher } from "@bindings/RenameDispatcher";
 
 /** Response to a dispatcher enroll — `dispatcher_key` is shown ONCE. */
 export interface EnrollDispatcherResponse {
