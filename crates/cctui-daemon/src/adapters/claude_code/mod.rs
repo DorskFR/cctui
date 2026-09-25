@@ -24,6 +24,7 @@ mod envcheck;
 mod fork_slice;
 mod headless;
 mod kickstart;
+mod launch;
 mod mode;
 mod oneshot;
 mod pty_view;
