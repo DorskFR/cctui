@@ -16,6 +16,37 @@ pub async fn set_inactive(
     Ok(())
 }
 
+/// Insert a freshly registered session, or reset an existing row to `new`.
+/// An existing row is only touched when it belongs to `user_id` on
+/// `machine_uuid`; returns whether a row was written.
+pub async fn upsert_registered(
+    exec: impl PgExecutor<'_>,
+    session: &cctui_proto::models::Session,
+    machine_uuid: uuid::Uuid,
+    user_id: uuid::Uuid,
+) -> Result<bool, sqlx::Error> {
+    let written: Option<String> = sqlx::query_scalar(
+        r"INSERT INTO sessions (id, parent_id, account_id, machine_id, machine_uuid, user_id, working_dir, status, registered_at, last_heartbeat, metadata, model)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, 'new', $8, $9, $10, NULLIF($10->>'model', ''))
+           ON CONFLICT (id) DO UPDATE SET status = 'new', last_heartbeat = $9, metadata = $10, model = COALESCE(sessions.model, EXCLUDED.model)
+           WHERE sessions.user_id = EXCLUDED.user_id AND sessions.machine_uuid = EXCLUDED.machine_uuid
+           RETURNING id",
+    )
+    .bind(&session.id)
+    .bind(&session.parent_id)
+    .bind(&session.account_id)
+    .bind(&session.machine_id)
+    .bind(machine_uuid)
+    .bind(user_id)
+    .bind(&session.working_dir)
+    .bind(session.registered_at)
+    .bind(session.last_heartbeat)
+    .bind(&session.metadata)
+    .fetch_optional(exec)
+    .await?;
+    Ok(written.is_some())
+}
+
 /// The subset of `ids` whose session runs on a machine owned by `user_id`.
 pub async fn visible_session_ids(
     exec: impl PgExecutor<'_>,
@@ -123,7 +154,7 @@ pub fn job_children<'a>(children: &'a [Child], archived: &[String]) -> Vec<&'a s
 
 #[cfg(test)]
 mod tests {
-    use super::{Child, descendants, job_children};
+    use super::{Child, descendants, job_children, upsert_registered};
 
     fn child(id: &str, observe_only: bool) -> Child {
         at_depth(id, observe_only, 1)
@@ -237,6 +268,90 @@ mod tests {
             "DELETE FROM users WHERE id = $1",
         ] {
             sqlx::query(sql).bind(uid).execute(&pool).await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn register_only_touches_the_callers_own_row() {
+        use uuid::Uuid;
+        let Some(url) = crate::routes::gateway::test_db_url("register_own_row") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let (me, other) = (Uuid::new_v4(), Uuid::new_v4());
+        let (mine, theirs) = (Uuid::new_v4(), Uuid::new_v4());
+        for uid in [me, other] {
+            sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+                .bind(uid)
+                .bind(format!("reg-{uid}"))
+                .bind(format!("kh-{uid}"))
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        for (machine, uid) in [(mine, me), (theirs, other)] {
+            sqlx::query(
+                "INSERT INTO machines (id, user_id, name, key_hash) VALUES ($1, $2, $3, $4)",
+            )
+            .bind(machine)
+            .bind(uid)
+            .bind(machine.to_string())
+            .bind(format!("kh-{machine}"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        let existing = [
+            (Some(me), Some(mine), true),
+            (Some(me), Some(theirs), false),
+            (Some(other), Some(mine), false),
+            (None, Some(mine), false),
+            (Some(me), None, false),
+            (None, None, false),
+        ];
+        for (user, machine, expect) in existing {
+            let sid = Uuid::new_v4().to_string();
+            sqlx::query(
+                "INSERT INTO sessions (id, machine_id, working_dir, user_id, machine_uuid, status, metadata) \
+                 VALUES ($1, 'm', '/w', $2, $3, 'active', '{\"k\":\"orig\"}'::jsonb)",
+            )
+            .bind(&sid)
+            .bind(user)
+            .bind(machine)
+            .execute(&pool)
+            .await
+            .unwrap();
+            let now = chrono::Utc::now();
+            let session = cctui_proto::models::Session {
+                id: sid.clone(),
+                parent_id: None,
+                account_id: None,
+                machine_id: "m".into(),
+                working_dir: "/w".into(),
+                status: cctui_proto::models::SessionStatus::New,
+                registered_at: now,
+                last_heartbeat: now,
+                metadata: serde_json::json!({"k": "new"}),
+                adapter_id: None,
+            };
+            let written = upsert_registered(&pool, &session, mine, me).await.unwrap();
+            assert_eq!(written, expect, "user {user:?} machine {machine:?}");
+            let (status, owner, uuid): (String, Option<Uuid>, Option<Uuid>) = sqlx::query_as(
+                "SELECT status, user_id, machine_uuid FROM sessions WHERE id = $1",
+            )
+            .bind(&sid)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            if expect {
+                assert_eq!(status, "new");
+            } else {
+                assert_eq!((status.as_str(), owner, uuid), ("active", user, machine));
+            }
         }
     }
 }

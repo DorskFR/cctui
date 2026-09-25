@@ -393,13 +393,13 @@ trait Resource {
     }
 }
 
-/// Sessions are owned via `sessions.machine_uuid -> machines.user_id`.
-/// Mirrors `ws::ws_owns_session`.
+/// Sessions are owned via `sessions.machine_uuid -> machines.user_id`. A row
+/// whose own `user_id` disagrees with that machine's owner has no owner.
 struct SessionResource;
 impl Resource for SessionResource {
     async fn owner_of(id: &str, pool: &PgPool) -> Result<Option<Uuid>, sqlx::Error> {
         let owner: Option<Option<Uuid>> = sqlx::query_scalar(
-            "SELECT m.user_id \
+            "SELECT CASE WHEN s.user_id IS NULL OR s.user_id = m.user_id THEN m.user_id END \
              FROM sessions s LEFT JOIN machines m ON m.id = s.machine_uuid \
              WHERE s.id = $1",
         )
@@ -1139,6 +1139,54 @@ mod tests {
     /// wiring for a kind — asserting it proves grants compose with ownership for
     /// account/machine/dispatcher and stay off for the rest, on one path. Each
     /// shareable type must also be a type the shares CRUD/table recognize.
+    #[tokio::test]
+    async fn session_owner_denies_user_machine_mismatch() {
+        let Some(url) = crate::routes::gateway::test_db_url("session_owner_mismatch") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let (owner, other, machine) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        for uid in [owner, other] {
+            sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+                .bind(uid)
+                .bind(format!("so-{uid}"))
+                .bind(format!("kh-{uid}"))
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        sqlx::query("INSERT INTO machines (id, user_id, name, key_hash) VALUES ($1, $2, $3, $4)")
+            .bind(machine)
+            .bind(owner)
+            .bind(machine.to_string())
+            .bind(format!("kh-{machine}"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        let mut ids = Vec::new();
+        for user in [Some(owner), Some(other), None] {
+            let sid = Uuid::new_v4().to_string();
+            sqlx::query(
+                "INSERT INTO sessions (id, machine_id, working_dir, user_id, machine_uuid) \
+                 VALUES ($1, 'm', '/w', $2, $3)",
+            )
+            .bind(&sid)
+            .bind(user)
+            .bind(machine)
+            .execute(&pool)
+            .await
+            .unwrap();
+            ids.push(sid);
+        }
+        assert_eq!(session_owner(&ids[0], &pool).await.unwrap(), Some(owner));
+        assert_eq!(session_owner(&ids[1], &pool).await.unwrap(), None);
+        assert_eq!(session_owner(&ids[2], &pool).await.unwrap(), Some(owner));
+    }
+
     #[test]
     fn shareable_parses_its_own_share_type_only() {
         for kind in

@@ -49,32 +49,19 @@ pub async fn register(
     // A fresh registration is `new` — it becomes `active` on the first
     // transcript line / turn. Re-registration of an already-known session
     // (e.g. Claude restart) is treated the same way: status=new, let the
-    // first activity promote it. A row owned by another user is left alone.
-    let written: Option<String> = sqlx::query_scalar(
-        r"INSERT INTO sessions (id, parent_id, account_id, machine_id, machine_uuid, user_id, working_dir, status, registered_at, last_heartbeat, metadata, model)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NULLIF($11->>'model', ''))
-           ON CONFLICT (id) DO UPDATE SET status = 'new', last_heartbeat = $10, metadata = $11, machine_uuid = COALESCE(sessions.machine_uuid, EXCLUDED.machine_uuid), user_id = COALESCE(sessions.user_id, EXCLUDED.user_id), model = COALESCE(sessions.model, EXCLUDED.model)
-           WHERE COALESCE((SELECT m.user_id FROM machines m WHERE m.id = sessions.machine_uuid), sessions.user_id, EXCLUDED.user_id) = EXCLUDED.user_id
-           RETURNING id",
-    )
-    .bind(&session.id)
-    .bind(&session.parent_id)
-    .bind(&session.account_id)
-    .bind(&session.machine_id)
-    .bind(machine_uuid)
-    .bind(ctx.user_id)
-    .bind(&session.working_dir)
-    .bind("new")
-    .bind(session.registered_at)
-    .bind(session.last_heartbeat)
-    .bind(&session.metadata)
-    .fetch_optional(&state.pool)
-    .await
-    .map_err(|e| {
-        tracing::error!("db error: {e}");
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-    })?;
-    if written.is_none() {
+    // first activity promote it. Only a row of this user on this machine is
+    // updated; anything else, including a row with no owner, is left alone.
+    let written =
+        crate::store::sessions::upsert_registered(&state.pool, &session, machine_uuid, ctx.user_id)
+            .await
+            .map_err(|e| {
+                tracing::error!("db error: {e}");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ApiError { error: "database error".into() }),
+                )
+            })?;
+    if !written {
         return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "session not found".into() })));
     }
 
