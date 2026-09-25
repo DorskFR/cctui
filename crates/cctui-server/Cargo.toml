@@ -30,6 +30,7 @@ tokio-util.workspace = true
 sqlx = { version = "0.9", features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json", "migrate"] }
 http = "1"
 dashmap = "6"
+regex.workspace = true
 async-trait.workspace = true
 reqwest.workspace = true
 ts-rs.workspace = true

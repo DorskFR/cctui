@@ -22,7 +22,8 @@
 //! Fireworks account opts into shaping ([`FireworksSettings`]); those buffer,
 //! and only Fireworks re-serializes. The anthropic path forwards the client's
 //! bytes verbatim under every feature — re-serializing sorts JSON keys and
-//! destroys the prompt cache. Response bodies are never rewritten.
+//! destroys the prompt cache. Response bodies are rewritten only by the
+//! [`toolguard`], and only for accounts with a tool-call policy.
 //!
 //! Stats are opportunistic: request count + byte count, never buffered parsing.
 //! Raw OAuth tokens never enter worker env, logs, or session records.
@@ -34,6 +35,7 @@ mod mint;
 mod proxy;
 mod ratelimit;
 mod refresh;
+pub mod toolguard;
 mod usage;
 pub mod usage_notices;
 
@@ -44,6 +46,7 @@ pub use mint::*;
 pub use proxy::*;
 pub use ratelimit::*;
 pub use refresh::*;
+pub use toolguard::{guard_for, guard_stream, guardable};
 pub use usage::*;
 
 /// Resolve the database a DB-gated test should run against.
