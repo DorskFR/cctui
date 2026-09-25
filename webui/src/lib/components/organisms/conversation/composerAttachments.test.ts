@@ -12,7 +12,9 @@ afterEach(() => {
 	comp = null;
 });
 
-function fakeSync(restored: { files: File[]; missing: string[] } | null = null) {
+function fakeSync(
+	restored: { files: File[]; missing: string[] } | null = { files: [], missing: [] }
+) {
 	return {
 		restore: vi.fn(async () => restored),
 		persist: vi.fn(async () => {}),
