@@ -5,14 +5,13 @@
 use std::collections::{BTreeMap, HashMap};
 
 use axum::extract::{Query, State};
-use axum::http::StatusCode;
 use axum::{Extension, Json};
-use cctui_proto::api::ApiError;
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::auth::AuthContext;
 use crate::cache_bust::{Reason, Turn, compute, ttl_window};
+use crate::error::AppError;
 use crate::state::AppState;
 
 const MAX_DAYS: i64 = 90;
@@ -70,7 +69,7 @@ pub async fn cache_loss(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Query(params): Query<CacheLossParams>,
-) -> Result<Json<Vec<DailyCacheLoss>>, (StatusCode, Json<ApiError>)> {
+) -> Result<Json<Vec<DailyCacheLoss>>, AppError> {
     let since = Utc::now() - Duration::days(params.days.clamp(1, MAX_DAYS));
     // Turns just before the range are the predecessors its first turns are
     // judged against.
@@ -86,11 +85,7 @@ pub async fn cache_loss(
     .bind(since - ttl_window() - Duration::minutes(5))
     .bind(ctx.owner_filter())
     .fetch_all(&state.pool)
-    .await
-    .map_err(|e| {
-        tracing::error!("db error (cache loss): {e}");
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-    })?;
+    .await?;
 
     let mut by_session: HashMap<String, Vec<Turn>> = HashMap::new();
     for (session_id, message_id, model, input, cache_read, cache_creation, rewrote, at) in rows {

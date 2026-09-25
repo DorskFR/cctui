@@ -1,7 +1,7 @@
 //! Egress allow-list policy: JSON file, fail-closed, hot-reloaded by mtime poll.
 
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, PoisonError, RwLock};
 use std::time::{Duration, SystemTime};
 
 use cctui_guard::decision_log::DecisionLog;
@@ -64,14 +64,14 @@ impl PolicyManager {
             Ok(data) => data,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 // File doesn't exist yet: clear policy (defaults to deny-all).
-                *self.config.write().expect("policy lock poisoned") = None;
+                *self.config.write().unwrap_or_else(PoisonError::into_inner) = None;
                 return Ok(());
             }
             Err(e) => return Err(e.into()),
         };
 
         let config: PolicyConfig = serde_json::from_slice(&data)?;
-        *self.config.write().expect("policy lock poisoned") = Some(config);
+        *self.config.write().unwrap_or_else(PoisonError::into_inner) = Some(config);
         Ok(())
     }
 
@@ -80,7 +80,7 @@ impl PolicyManager {
     /// Fail-closed: with no policy loaded, everything is denied.
     #[must_use]
     pub fn is_allowed(&self, host_port: &str) -> bool {
-        let guard = self.config.read().expect("policy lock poisoned");
+        let guard = self.config.read().unwrap_or_else(PoisonError::into_inner);
         guard.as_ref().is_some_and(|config| {
             config.allowed_hosts.iter().any(|allowed| matches_pattern(host_port, allowed))
                 || config.default == "allow"
@@ -92,7 +92,7 @@ impl PolicyManager {
     /// allow-all policy can never blanket-open the internal network.
     #[must_use]
     pub fn is_explicitly_listed(&self, host_port: &str) -> bool {
-        let guard = self.config.read().expect("policy lock poisoned");
+        let guard = self.config.read().unwrap_or_else(PoisonError::into_inner);
         guard.as_ref().is_some_and(|config| {
             config.allowed_hosts.iter().any(|allowed| matches_pattern(host_port, allowed))
         })
@@ -101,7 +101,7 @@ impl PolicyManager {
     /// True if a policy is currently loaded (used by the health endpoint).
     #[must_use]
     pub fn is_loaded(&self) -> bool {
-        self.config.read().expect("policy lock poisoned").is_some()
+        self.config.read().unwrap_or_else(PoisonError::into_inner).is_some()
     }
 
     /// Polls the policy file's mtime forever, reloading on change. The directory
@@ -112,11 +112,11 @@ impl PolicyManager {
             tokio::time::sleep(interval).await;
             let mtime = std::fs::metadata(&self.path).and_then(|m| m.modified()).ok();
             let changed = {
-                let last = self.last_mtime.read().expect("mtime lock poisoned");
+                let last = self.last_mtime.read().unwrap_or_else(PoisonError::into_inner);
                 *last != mtime
             };
             if changed {
-                *self.last_mtime.write().expect("mtime lock poisoned") = mtime;
+                *self.last_mtime.write().unwrap_or_else(PoisonError::into_inner) = mtime;
                 match self.load() {
                     Ok(()) => tracing::info!("policy reloaded successfully"),
                     Err(e) => tracing::warn!("failed to reload policy: {e}"),

@@ -3,9 +3,10 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 
 use cctui_proto::api::{
-    ApiError, AttachLabelRequest, CreateLabelRequest, Label, LabelListResponse, UpdateLabelRequest,
+    AttachLabelRequest, CreateLabelRequest, Label, LabelListResponse, UpdateLabelRequest,
 };
 
+use crate::error::AppError;
 use crate::state::AppState;
 
 // --- Session labels ---
@@ -17,18 +18,13 @@ use crate::state::AppState;
 // The per-session attach/detach routes, by contrast, ARE ownership-gated via
 // `authorize_session` since they mutate a specific session.
 
-fn db_err(e: &sqlx::Error) -> (StatusCode, Json<ApiError>) {
-    tracing::error!("db error: {e}");
-    (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-}
-
 /// `GET /api/v1/labels` — every label known to the server, ordered most-recently
 /// used (or created, whichever is later) first so the picker can surface the
 /// handful you actually reach for without listing them all. Feeds both the
 /// per-session label picker and the sessions-page filter.
 pub async fn list_labels(
     State(state): State<AppState>,
-) -> Result<Json<LabelListResponse>, (StatusCode, Json<ApiError>)> {
+) -> Result<Json<LabelListResponse>, AppError> {
     let rows: Vec<(uuid::Uuid, String, String)> = sqlx::query_as(
         "SELECT l.id, l.name, l.color \
          FROM labels l \
@@ -38,8 +34,7 @@ pub async fn list_labels(
                   lower(l.name)",
     )
     .fetch_all(&state.pool)
-    .await
-    .map_err(|e| db_err(&e))?;
+    .await?;
     let labels = rows
         .into_iter()
         .map(|(id, name, color)| Label { id: id.to_string(), name, color })
@@ -53,13 +48,10 @@ pub async fn list_labels(
 pub async fn create_label(
     State(state): State<AppState>,
     Json(req): Json<CreateLabelRequest>,
-) -> Result<(StatusCode, Json<Label>), (StatusCode, Json<ApiError>)> {
+) -> Result<(StatusCode, Json<Label>), AppError> {
     let name = req.name.trim();
     if name.is_empty() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(ApiError { error: "label name is required".into() }),
-        ));
+        return Err(AppError::new(StatusCode::BAD_REQUEST, "label name is required"));
     }
     let row: (uuid::Uuid, String, String) = sqlx::query_as(
         "INSERT INTO labels (name, color) VALUES ($1, $2) \
@@ -69,8 +61,7 @@ pub async fn create_label(
     .bind(name)
     .bind(&req.color)
     .fetch_one(&state.pool)
-    .await
-    .map_err(|e| db_err(&e))?;
+    .await?;
     Ok((StatusCode::CREATED, Json(Label { id: row.0.to_string(), name: row.1, color: row.2 })))
 }
 
@@ -83,14 +74,11 @@ pub async fn update_label(
     State(state): State<AppState>,
     Path(label_id): Path<String>,
     Json(req): Json<UpdateLabelRequest>,
-) -> Result<Json<Label>, (StatusCode, Json<ApiError>)> {
+) -> Result<Json<Label>, AppError> {
     let id = parse_label_id(&label_id)?;
     let name = match req.name.as_deref().map(str::trim) {
         Some("") => {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                Json(ApiError { error: "label name is required".into() }),
-            ));
+            return Err(AppError::new(StatusCode::BAD_REQUEST, "label name is required"));
         }
         other => other,
     };
@@ -111,16 +99,13 @@ pub async fn update_label(
         if let sqlx::Error::Database(dbe) = &e
             && dbe.code().as_deref() == Some("23505")
         {
-            return (
-                StatusCode::CONFLICT,
-                Json(ApiError { error: "a label with that name already exists".into() }),
-            );
+            return AppError::new(StatusCode::CONFLICT, "a label with that name already exists");
         }
-        db_err(&e)
+        AppError::from(e)
     })?;
     match row {
         Some(r) => Ok(Json(Label { id: r.0.to_string(), name: r.1, color: r.2 })),
-        None => Err((StatusCode::NOT_FOUND, Json(ApiError { error: "label not found".into() }))),
+        None => Err(AppError::new(StatusCode::NOT_FOUND, "label not found")),
     }
 }
 
@@ -129,13 +114,9 @@ pub async fn update_label(
 pub async fn delete_label(
     State(state): State<AppState>,
     Path(label_id): Path<String>,
-) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+) -> Result<StatusCode, AppError> {
     let id = parse_label_id(&label_id)?;
-    sqlx::query("DELETE FROM labels WHERE id = $1")
-        .bind(id)
-        .execute(&state.pool)
-        .await
-        .map_err(|e| db_err(&e))?;
+    sqlx::query("DELETE FROM labels WHERE id = $1").bind(id).execute(&state.pool).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -145,7 +126,7 @@ pub async fn attach_label(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
     Json(req): Json<AttachLabelRequest>,
-) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+) -> Result<StatusCode, AppError> {
     let label_id = parse_label_id(&req.label_id)?;
     sqlx::query(
         "INSERT INTO session_labels (session_id, label_id) VALUES ($1, $2) \
@@ -154,8 +135,7 @@ pub async fn attach_label(
     .bind(&session_id)
     .bind(label_id)
     .execute(&state.pool)
-    .await
-    .map_err(|e| db_err(&e))?;
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -164,18 +144,34 @@ pub async fn attach_label(
 pub async fn detach_label(
     State(state): State<AppState>,
     Path((session_id, label_id)): Path<(String, String)>,
-) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+) -> Result<StatusCode, AppError> {
     let label_id = parse_label_id(&label_id)?;
     sqlx::query("DELETE FROM session_labels WHERE session_id = $1 AND label_id = $2")
         .bind(&session_id)
         .bind(label_id)
         .execute(&state.pool)
-        .await
-        .map_err(|e| db_err(&e))?;
+        .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
-fn parse_label_id(raw: &str) -> Result<uuid::Uuid, (StatusCode, Json<ApiError>)> {
+fn parse_label_id(raw: &str) -> Result<uuid::Uuid, AppError> {
     uuid::Uuid::parse_str(raw)
-        .map_err(|_| (StatusCode::BAD_REQUEST, Json(ApiError { error: "invalid label id".into() })))
+        .map_err(|_| AppError::new(StatusCode::BAD_REQUEST, "invalid label id"))
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::response::IntoResponse;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn db_failure_is_opaque_500() {
+        let pool = sqlx::PgPool::connect_lazy("postgres://invalid").unwrap();
+        pool.close().await;
+        let resp = list_labels(State(AppState::for_test(pool))).await.unwrap_err().into_response();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(body, format!(r#"{{"error":"{}"}}"#, crate::error::DB_ERROR));
+    }
 }

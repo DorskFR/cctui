@@ -16,10 +16,11 @@ use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use cctui_proto::api::{ApiError, SessionImageUploadResponse};
+use cctui_proto::api::SessionImageUploadResponse;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+use crate::error::AppError;
 use crate::state::AppState;
 
 /// Per-image byte cap, matching the inbound attachment budget (`uploads.rs`).
@@ -28,10 +29,10 @@ pub const MAX_IMAGE_BYTES: usize = 5 * 1024 * 1024;
 pub const MAX_IMAGES_PER_SESSION: i64 = 200;
 pub const MAX_BYTES_PER_SESSION: i64 = 100 * 1024 * 1024;
 
-type ApiErr = (StatusCode, axum::Json<ApiError>);
+type ApiErr = AppError;
 
 fn err(code: StatusCode, msg: impl Into<String>) -> ApiErr {
-    (code, axum::Json(ApiError { error: msg.into() }))
+    AppError::new(code, msg)
 }
 
 /// Sniff an image media type from magic bytes. Returns `None` for anything
@@ -97,11 +98,7 @@ pub async fn upload_session_image(
     let owner: Option<Uuid> = sqlx::query_scalar("SELECT user_id FROM sessions WHERE id = $1")
         .bind(&session_id)
         .fetch_optional(&state.pool)
-        .await
-        .map_err(|e| {
-            tracing::error!("image upload owner lookup: {e}");
-            err(StatusCode::INTERNAL_SERVER_ERROR, "database error")
-        })?;
+        .await?;
     match owner {
         None => return Err(err(StatusCode::NOT_FOUND, "session not found")),
         Some(o) if o != user_id => return Err(err(StatusCode::FORBIDDEN, "not your session")),
@@ -117,11 +114,7 @@ pub async fn upload_session_image(
             .bind(&session_id)
             .bind(&sha256)
             .fetch_optional(&state.pool)
-            .await
-            .map_err(|e| {
-                tracing::error!("image dedup lookup: {e}");
-                err(StatusCode::INTERNAL_SERVER_ERROR, "database error")
-            })?;
+            .await?;
     if let Some(id) = existing {
         return Ok(axum::Json(SessionImageUploadResponse { image_id: id.to_string() }));
     }
@@ -131,11 +124,7 @@ pub async fn upload_session_image(
     )
     .bind(&session_id)
     .fetch_one(&state.pool)
-    .await
-    .map_err(|e| {
-        tracing::error!("image quota lookup: {e}");
-        err(StatusCode::INTERNAL_SERVER_ERROR, "database error")
-    })?;
+    .await?;
     let byte_len = i64::try_from(body.len()).unwrap_or(i64::MAX);
     if count >= MAX_IMAGES_PER_SESSION || total + byte_len > MAX_BYTES_PER_SESSION {
         return Err(err(StatusCode::PAYLOAD_TOO_LARGE, "session image quota exceeded"));
@@ -151,11 +140,7 @@ pub async fn upload_session_image(
     .bind(byte_len)
     .bind(body.as_ref())
     .fetch_one(&state.pool)
-    .await
-    .map_err(|e| {
-        tracing::error!("image insert: {e}");
-        err(StatusCode::INTERNAL_SERVER_ERROR, "database error")
-    })?;
+    .await?;
 
     Ok(axum::Json(SessionImageUploadResponse { image_id: id.to_string() }))
 }
