@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use clap::{Parser, Subcommand};
 use tokio_util::sync::CancellationToken;
 
-use cctui_dispatcher_core::{Runner, ServerClient};
+use cctui_dispatcher_core::{DispatcherConfig, Runner, ServerClient};
 use cctui_dispatcher_kube::config::Config;
 use cctui_dispatcher_kube::spawn::Spawner;
 

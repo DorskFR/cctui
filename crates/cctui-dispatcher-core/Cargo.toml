@@ -11,6 +11,8 @@ workspace = true
 [dependencies]
 cctui-proto.workspace = true
 anyhow.workspace = true
+dirs.workspace = true
+toml.workspace = true
 chrono.workspace = true
 futures-util.workspace = true
 reqwest.workspace = true

@@ -14,7 +14,6 @@ cctui-dispatcher-core = { path = "../cctui-dispatcher-core" }
 cctui-orchestrator = { path = "../cctui-orchestrator" }
 anyhow.workspace = true
 clap.workspace = true
-dirs = "7"
 futures-util.workspace = true
 reqwest.workspace = true
 serde.workspace = true
@@ -27,6 +26,5 @@ tokio-util.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true
-toml = "1.1"
 kube.workspace = true
 k8s-openapi.workspace = true

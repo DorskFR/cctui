@@ -9,10 +9,12 @@
 //! `PodSpec`, apple plist).
 
 pub mod client;
+pub mod config;
 pub mod dispatcher;
 pub mod run;
 
 pub use client::{EnrollResponse, ServerClient};
+pub use config::DispatcherConfig;
 pub use dispatcher::{
     BaseEnv, Dispatcher, HandleState, SpawnOutcome, build_env, dedup_source, label_safe,
     worker_name,

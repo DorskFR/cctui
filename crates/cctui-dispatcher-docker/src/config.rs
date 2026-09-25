@@ -1,13 +1,7 @@
-//! Dispatcher on-disk configuration.
-//!
-//! Lives at `$XDG_CONFIG_HOME/cctui/dispatcher.toml` (or
-//! `~/.config/cctui/dispatcher.toml`). Written by
-//! `cctui-dispatcher-docker enroll`; read by `cctui-dispatcher-docker run`.
-//! Mirror of the daemon's `daemon.toml` (enrollment spec) — an enrolled
-//! dispatcher is a peer of a machine, so its identity persists the same way.
+//! `cctui-dispatcher-docker` `dispatcher.toml`; loaded and saved through
+//! [`DispatcherConfig`].
 
-use std::path::{Path, PathBuf};
-
+use cctui_dispatcher_core::DispatcherConfig;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -35,56 +29,23 @@ pub struct Config {
     pub mounts: Vec<String>,
 }
 
-impl Config {
-    #[must_use]
-    pub fn default_path() -> PathBuf {
-        dirs::config_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("cctui")
-            .join("dispatcher.toml")
+impl DispatcherConfig for Config {
+    const ENROLL_HINT: &'static str =
+        "cctui-dispatcher-docker enroll --server-url <url> --token <token> --name <name> --image <image>";
+
+    fn server_url(&self) -> &str {
+        &self.server_url
     }
 
-    pub fn load_from(path: &Path) -> anyhow::Result<Self> {
-        let raw = std::fs::read_to_string(path).map_err(|err| {
-            if err.kind() == std::io::ErrorKind::NotFound {
-                anyhow::anyhow!(
-                    "no config at {} — this dispatcher is not enrolled yet. \
-                     Run `cctui-dispatcher-docker enroll --server-url <url> --token <token> \
-                     --name <name> --image <image>` first.",
-                    path.display()
-                )
-            } else {
-                anyhow::Error::new(err).context(format!("reading {}", path.display()))
-            }
-        })?;
-        Ok(toml::from_str(&raw)?)
+    fn dispatcher_key(&self) -> &str {
+        &self.dispatcher_key
     }
 
-    #[must_use]
-    pub fn exists_at(path: &Path) -> bool {
-        path.exists()
+    fn dispatcher_id(&self) -> Option<uuid::Uuid> {
+        self.dispatcher_id
     }
 
-    /// The URL injected into spawned workers as `CCTUI_URL`, falling back to the
-    /// dispatcher's own `server_url`.
-    #[must_use]
-    pub fn worker_url(&self) -> &str {
-        self.worker_cctui_url.as_deref().unwrap_or(&self.server_url)
-    }
-
-    pub fn save_to(&self, path: &Path) -> anyhow::Result<()> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let raw = toml::to_string_pretty(self)?;
-        std::fs::write(path, raw)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = std::fs::metadata(path)?.permissions();
-            perms.set_mode(0o600);
-            std::fs::set_permissions(path, perms)?;
-        }
-        Ok(())
+    fn worker_cctui_url(&self) -> Option<&str> {
+        self.worker_cctui_url.as_deref()
     }
 }

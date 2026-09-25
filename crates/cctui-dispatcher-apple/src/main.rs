@@ -6,7 +6,7 @@ use tokio_util::sync::CancellationToken;
 use cctui_dispatcher_apple::cli::RealCli;
 use cctui_dispatcher_apple::config::Config;
 use cctui_dispatcher_apple::spawn::Spawner;
-use cctui_dispatcher_core::{Runner, ServerClient};
+use cctui_dispatcher_core::{DispatcherConfig, Runner, ServerClient};
 
 #[derive(Parser)]
 #[command(

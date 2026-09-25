@@ -62,6 +62,8 @@ axum = { version = "0.8", features = ["ws", "multipart"] }
 jsonwebtoken = { version = "11", default-features = false, features = ["use_pem", "aws_lc_rs"] }
 thiserror = "2"
 tempfile = "3"
+dirs = "7"
+toml = "1.1"
 tokio-util = { version = "0.7", features = ["io"] }
 async-trait = "0.1"
 aws-config = { version = "1", default-features = false, features = ["behavior-version-latest", "default-https-client", "rt-tokio"] }

@@ -13,7 +13,6 @@ cctui-proto.workspace = true
 cctui-dispatcher-core = { path = "../cctui-dispatcher-core" }
 anyhow.workspace = true
 clap.workspace = true
-dirs = "7"
 futures-util.workspace = true
 reqwest.workspace = true
 serde.workspace = true
