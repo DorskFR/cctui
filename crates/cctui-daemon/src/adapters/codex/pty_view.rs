@@ -8,9 +8,7 @@
 //! watcher polls it and emits the suffix that is new. Polling keeps this
 //! entirely off the RPC path — a viewer cannot slow a turn down.
 
-use std::collections::HashMap;
 use std::fmt::Write as _;
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use base64::Engine as _;
@@ -20,13 +18,14 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use super::app_server::{CodexLiveSnapshot, LiveSessionRegistry, SessionCommand};
+use crate::adapters::pty_watch::PtyWatchSet;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(500);
 
 /// One viewer task per watched `local_id`, started and stopped by `WatchPty`.
 #[derive(Clone, Default)]
 pub(super) struct RingViewManager {
-    tasks: Arc<Mutex<HashMap<String, CancellationToken>>>,
+    watches: PtyWatchSet,
 }
 
 impl RingViewManager {
@@ -38,21 +37,12 @@ impl RingViewManager {
         events: mpsc::Sender<AdapterEvent>,
         shutdown: &CancellationToken,
     ) {
-        let Ok(mut tasks) = self.tasks.lock() else { return };
-        if tasks.contains_key(&local_id) {
-            return;
-        }
-        let cancel = shutdown.child_token();
-        tasks.insert(local_id.clone(), cancel.clone());
-        tokio::spawn(stream(local_id, live, events, cancel));
+        let key = local_id.clone();
+        self.watches.watch(key, shutdown, move |cancel| stream(local_id, live, events, cancel));
     }
 
     pub(super) fn unwatch(&self, local_id: &str) {
-        if let Ok(mut tasks) = self.tasks.lock()
-            && let Some(cancel) = tasks.remove(local_id)
-        {
-            cancel.cancel();
-        }
+        self.watches.unwatch(local_id);
     }
 }
 

@@ -444,7 +444,7 @@ mod tests {
     /// End-to-end check against a *live* `claude daemon` control socket:
     /// proves the half-open fix (we must NOT close the write half) and that
     /// `call` surfaces `ok:false`. Spawns a real `fleet` session via the same
-    /// payload shape `Driver::spawn` builds, then kills it. Ignored by
+    /// payload shape `Driver::prepare_spawn` builds, then kills it. Ignored by
     /// default — run with a daemon present:
     ///   `cargo test -p cctui-daemon live_dispatch_roundtrip -- --ignored`
     #[tokio::test]

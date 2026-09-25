@@ -6,11 +6,13 @@ pub mod events;
 pub mod normalize;
 pub mod session;
 
-use cctui_proto::adapter::{AdapterCommand, AdapterEvent};
+use cctui_proto::adapter::AdapterEvent;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use crate::adapter_runtime::{Adapter, AdapterCtx, AdapterFactory};
+use crate::adapter_runtime::{
+    Adapter, AdapterCtx, AdapterFactory, CommandOutcome, Handled, SessionDriver, dispatch_command,
+};
 use crate::client::ServerClient;
 use session::{LiveRegistry, OpenCodeConfig, OpenCodeSession, SessionCommand, SpawnParams};
 
@@ -70,7 +72,7 @@ async fn command_pump(cfg: OpenCodeConfig, ctx: AdapterCtx) {
 
 async fn pump(cfg: OpenCodeConfig, ctx: AdapterCtx, live: LiveRegistry) {
     let AdapterCtx { events, mut commands, shutdown, server, machine_key, mut connected, .. } = ctx;
-    let pump = Pump { cfg, events, shutdown, server, machine_key, live };
+    let mut pump = Pump { cfg, events, shutdown, server, machine_key, live };
     let mut announced: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut connect_closed = false;
 
@@ -90,7 +92,8 @@ async fn pump(cfg: OpenCodeConfig, ctx: AdapterCtx, live: LiveRegistry) {
             }
             cmd = commands.recv() => {
                 let Some(cmd) = cmd else { return };
-                pump.handle(cmd).await;
+                let events = pump.events.clone();
+                dispatch_command(&mut pump, &events, cmd).await;
             }
         }
     }
@@ -106,91 +109,138 @@ struct Pump {
     live: LiveRegistry,
 }
 
-impl Pump {
-    async fn handle(&self, cmd: AdapterCommand) {
-        let cmd_id = cmd.command_id();
-        match cmd {
-            AdapterCommand::Spawn { spec, command_id, session_id } => {
-                self.spawn(spec, command_id, session_id).await;
-            }
-            AdapterCommand::Fork { parent_local_id, spec, command_id, .. } => {
-                self.fork(&parent_local_id, &spec, command_id).await;
-            }
-            AdapterCommand::SendMessage { local_id, text }
-            | AdapterCommand::Reply { local_id, text, .. } => {
-                let command_id = cmd_id;
-                let delivered = route(
-                    &self.live,
-                    &local_id,
-                    SessionCommand::Prompt { session_id: local_id.clone(), text, command_id },
-                )
-                .await;
-                if !delivered {
-                    fail(&self.events, command_id, "no live opencode session").await;
-                }
-            }
-            AdapterCommand::Kill { local_id, .. } | AdapterCommand::Remove { local_id, .. } => {
-                if !route(
-                    &self.live,
-                    &local_id,
-                    SessionCommand::Kill { session_id: local_id.clone() },
-                )
-                .await
-                {
-                    let _ = self
-                        .events
-                        .send(AdapterEvent::SessionEnded {
-                            local_id,
-                            reason: cctui_proto::adapter::EndReason::Killed,
-                        })
-                        .await;
-                }
-            }
-            AdapterCommand::Interrupt { local_id, command_id } => {
-                let delivered = route(
-                    &self.live,
-                    &local_id,
-                    SessionCommand::Kill { session_id: local_id.clone() },
-                )
-                .await;
-                if let Some(command_id) = command_id {
-                    let _ = self
-                        .events
-                        .send(AdapterEvent::CommandResult {
-                            command_id,
-                            ok: delivered,
-                            error: (!delivered).then(|| "no live opencode session".to_owned()),
-                        })
-                        .await;
-                }
-            }
-            AdapterCommand::PermissionResponse { local_id, request_id, allow } => {
-                route(
-                    &self.live,
-                    &local_id,
-                    SessionCommand::Permission { session_id: local_id.clone(), request_id, allow },
-                )
-                .await;
-            }
-            AdapterCommand::Diagnose { local_id, request_id } => {
-                let report = diagnose(
-                    &self.live,
-                    &local_id,
-                    self.server.as_ref(),
-                    self.machine_key.as_ref(),
-                )
-                .await;
-                let _ = self
-                    .events
-                    .send(AdapterEvent::Diagnose { local_id, request_id, report: Box::new(report) })
-                    .await;
-            }
-            AdapterCommand::ResumeMarks { .. } | AdapterCommand::Resume { .. } => {}
-            _ => tracing::warn!("opencode: unhandled AdapterCommand variant"),
-        }
+#[async_trait::async_trait]
+impl SessionDriver for Pump {
+    fn adapter_id(&self) -> &'static str {
+        ADAPTER_ID
+    }
+
+    async fn spawn(
+        &mut self,
+        spec: cctui_proto::adapter::SessionSpec,
+        command_id: Option<Uuid>,
+        session_id: Option<Uuid>,
+    ) -> CommandOutcome {
+        self.start_session(spec, command_id, session_id).await;
+        Ok(Handled::Deferred)
     }
 
     async fn fork(
+        &mut self,
+        parent_local_id: String,
+        spec: cctui_proto::adapter::SessionSpec,
+        command_id: Option<Uuid>,
+        _session_id: Option<String>,
+        _extract: Option<cctui_proto::adapter::ForkExtract>,
+    ) -> CommandOutcome {
+        self.fork_session(&parent_local_id, &spec, command_id).await;
+        Ok(Handled::Deferred)
+    }
+
+    async fn send_message(&mut self, local_id: String, text: String) -> CommandOutcome {
+        self.prompt(local_id, text, None).await;
+        Ok(Handled::Deferred)
+    }
+
+    async fn reply(
+        &mut self,
+        local_id: String,
+        text: String,
+        _ask_picks: Option<Vec<Vec<usize>>>,
+        _env: std::collections::BTreeMap<String, String>,
+        command_id: Option<Uuid>,
+        _turn_id: Option<Uuid>,
+    ) -> CommandOutcome {
+        self.prompt(local_id, text, command_id).await;
+        Ok(Handled::Deferred)
+    }
+
+    async fn kill(&mut self, local_id: String, _signal: Option<i32>) -> CommandOutcome {
+        self.kill_session(local_id).await;
+        Ok(Handled::Deferred)
+    }
+
+    async fn remove(
+        &mut self,
+        local_id: String,
+        _command_id: Option<Uuid>,
+        _initiator: cctui_proto::adapter::RemoveInitiator,
+    ) -> CommandOutcome {
+        self.kill_session(local_id).await;
+        Ok(Handled::Deferred)
+    }
+
+    async fn interrupt(&mut self, local_id: String, command_id: Option<Uuid>) -> CommandOutcome {
+        let delivered =
+            route(&self.live, &local_id, SessionCommand::Kill { session_id: local_id.clone() })
+                .await;
+        if let Some(command_id) = command_id {
+            let _ = self
+                .events
+                .send(AdapterEvent::CommandResult {
+                    command_id,
+                    ok: delivered,
+                    error: (!delivered).then(|| "no live opencode session".to_owned()),
+                })
+                .await;
+        }
+        Ok(Handled::Deferred)
+    }
+
+    async fn permission_response(
+        &mut self,
+        local_id: String,
+        request_id: String,
+        allow: bool,
+    ) -> CommandOutcome {
+        route(
+            &self.live,
+            &local_id,
+            SessionCommand::Permission { session_id: local_id.clone(), request_id, allow },
+        )
+        .await;
+        Ok(Handled::Deferred)
+    }
+
+    async fn diagnose(&mut self, local_id: String, request_id: Uuid) -> CommandOutcome {
+        let report =
+            diagnose(&self.live, &local_id, self.server.as_ref(), self.machine_key.as_ref()).await;
+        let _ = self
+            .events
+            .send(AdapterEvent::Diagnose { local_id, request_id, report: Box::new(report) })
+            .await;
+        Ok(Handled::Deferred)
+    }
+}
+
+impl Pump {
+    async fn prompt(&self, local_id: String, text: String, command_id: Option<Uuid>) {
+        let delivered = route(
+            &self.live,
+            &local_id,
+            SessionCommand::Prompt { session_id: local_id.clone(), text, command_id },
+        )
+        .await;
+        if !delivered {
+            fail(&self.events, command_id, "no live opencode session").await;
+        }
+    }
+
+    async fn kill_session(&self, local_id: String) {
+        if !route(&self.live, &local_id, SessionCommand::Kill { session_id: local_id.clone() })
+            .await
+        {
+            let _ = self
+                .events
+                .send(AdapterEvent::SessionEnded {
+                    local_id,
+                    reason: cctui_proto::adapter::EndReason::Killed,
+                })
+                .await;
+        }
+    }
+
+    async fn fork_session(
         &self,
         parent_local_id: &str,
         spec: &cctui_proto::adapter::SessionSpec,
@@ -218,7 +268,7 @@ impl Pump {
         }
     }
 
-    async fn spawn(
+    async fn start_session(
         &self,
         spec: cctui_proto::adapter::SessionSpec,
         command_id: Option<Uuid>,
