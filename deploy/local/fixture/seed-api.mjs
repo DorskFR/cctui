@@ -10,16 +10,19 @@ const api = vars.api ?? process.env.CCTUI_API_URL ?? 'http://localhost:8700';
 const USER = '00000000-0000-0000-0000-000000000000';
 const MACHINE = 'c0000000-0000-4000-8000-000000000001';
 const DIR = '/work/acme/checkout-api';
+// seed.sql stores this key's hash on `workstation-01`: sessions register as
+// the machine that owns them.
+const MACHINE_KEY = 'cctui_m_seed-fixture-workstation-01';
 
 if (!token) {
 	console.error('fixture: no token — set JOURNEY_VARS=\'{"token":"…"}\'');
 	process.exit(1);
 }
 
-const call = async (method, path, body) => {
+const call = async (method, path, body, bearer = token) => {
 	const res = await fetch(`${api}/api/v1${path}`, {
 		method,
-		headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+		headers: { Authorization: `Bearer ${bearer}`, 'Content-Type': 'application/json' },
 		body: body === undefined ? undefined : JSON.stringify(body)
 	});
 	if (!res.ok) throw new Error(`${method} ${path} → ${res.status} ${await res.text()}`);
@@ -94,11 +97,16 @@ data.spawnMemory = {
 // running sessions here. The DB seed runs again afterwards to restore the
 // fields registration resets.
 for (const n of ['1', '2', '5']) {
-	await call('POST', '/sessions/register', {
-		claude_session_id: `a0000000-0000-4000-8000-00000000000${n}`,
-		machine_id: 'workstation-01',
-		working_dir: '/work/acme/checkout-api'
-	});
+	await call(
+		'POST',
+		'/sessions/register',
+		{
+			claude_session_id: `a0000000-0000-4000-8000-00000000000${n}`,
+			machine_id: 'workstation-01',
+			working_dir: DIR
+		},
+		MACHINE_KEY
+	);
 }
 console.log('fixture: registered 3 running sessions');
 
