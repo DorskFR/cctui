@@ -2374,6 +2374,7 @@ pub struct UsageWindowView {
     #[serde(flatten)]
     pub window: crate::soft_limit::UsageWindow,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub pace: Option<crate::pace::Pace>,
 }
 

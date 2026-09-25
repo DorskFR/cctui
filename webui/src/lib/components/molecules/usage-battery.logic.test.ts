@@ -41,6 +41,7 @@ const entry = (
 	usage: null,
 	windows,
 	age_secs: 0,
+	limit_reset: null,
 	account,
 	account_name: account,
 	account_emoji: null,
