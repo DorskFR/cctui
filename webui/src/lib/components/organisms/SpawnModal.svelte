@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { AutoGrid, Button, Callout, Checkbox, Dropzone, Modal, OptionButton, resizeHandle, Text } from '@dorsk/tsumikit';
+	import { AutoGrid, Button, Callout, Dropzone, Modal, resizeHandle } from '@dorsk/tsumikit';
 	import { isSubmitChord } from '$lib/platform';
 	import { dialogBackdropGuard } from '$lib/dialogBackdropGuard';
 	import { settings, type SpawnDockSide } from '$lib/settings.svelte';
@@ -8,10 +8,9 @@
 	import { m } from '$lib/paraglide/messages';
 	import type { SpawnPrefill } from './spawn/types';
 	import { SpawnForm } from './spawn/spawnForm.svelte';
-	import MachineFields from './spawn/MachineFields.svelte';
-	import DispatchFields from './spawn/DispatchFields.svelte';
-	import ProfileList from './spawn/ProfileList.svelte';
-	import SpawnAddons from './spawn/SpawnAddons.svelte';
+	import SpawnTargetSection from './spawn/SpawnTargetSection.svelte';
+	import SpawnPromptSection from './spawn/SpawnPromptSection.svelte';
+	import SpawnGrantsSection from './spawn/SpawnGrantsSection.svelte';
 
 	let dragging = $state(false);
 	let viewportWidth = $state(0);
@@ -135,68 +134,9 @@
 				}
 			}}
 		>
-			{#if sf.canDispatch}
-				<div class="switch-row">
-					<AutoGrid min="8rem" maxCols={2} gap="var(--sp-2)" role="radiogroup" aria-label={m.spawn_run_on_label()}>
-						{#each sf.targetOptions as o (o.value)}
-							<OptionButton
-								row
-								selected={sf.target === o.value}
-								role="radio"
-								aria-checked={sf.target === o.value}
-								onclick={() => sf.setTarget(o.value)}
-							>
-								<Text>{o.label}</Text>
-							</OptionButton>
-						{/each}
-					</AutoGrid>
-				</div>
-			{/if}
-			{#if sf.target === 'dispatch'}
-				<DispatchFields
-					bind:form={sf.form}
-					dispatcherIds={sf.dispatcherIds}
-					accounts={sf.allAccounts}
-					onsubmit={sf.submit}
-				/>
-			{:else}
-				<MachineFields
-					bind:form={sf.form}
-					machines={sf.machineList}
-					recentDirs={sf.recentDirs}
-					onsubmit={sf.submit}
-					onfiles={sf.addFiles}
-				/>
-				<ProfileList
-					profiles={sf.profiles}
-					bind:selectedId={sf.selectedProfileId}
-					bind:oneOff={sf.oneOff}
-					accounts={sf.allAccounts}
-					pools={sf.allPools}
-					usage={sf.allUsage}
-					usageRaw={sf.usageRaw}
-					machineId={sf.form.machine_id}
-					busy={sf.busy}
-					oncreate={() => sf.createProfile()}
-					onsave={(id, name, spec) => sf.saveProfile(id, name, spec)}
-					ondelete={(id) => sf.deleteProfile(id)}
-				/>
-			{/if}
-			<SpawnAddons
-				pending={sf.images.pending}
-				bind:labelIds={sf.form.labels}
-				bind:envRows={sf.envRows}
-				files={sf.files}
-				allLabels={sf.allLabels}
-				envInvalid={sf.badEnvKeys.length > 0}
-				attachments={sf.target === 'machine'}
-				labelActions={sf.actions}
-				onfiles={sf.addFiles}
-				onremovefile={sf.removeFile}
-			/>
-			{#if sf.followupParent}
-				<Checkbox bind:checked={sf.archiveSource} label={m.followup_archive_source()} />
-			{/if}
+			<SpawnTargetSection {sf} />
+			<SpawnPromptSection {sf} />
+			<SpawnGrantsSection {sf} />
 		</div>
 	</Dropzone>
 {/snippet}
@@ -239,9 +179,6 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--sp-3);
-	}
-	.switch-row {
-		display: block;
 	}
 	.spawn-failure-detail {
 		margin: var(--sp-1) 0 0;
