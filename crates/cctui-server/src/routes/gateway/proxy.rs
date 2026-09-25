@@ -591,13 +591,20 @@ pub async fn passthrough(
     };
     let (content_type, content_encoding) =
         (header(http::header::CONTENT_TYPE), header(http::header::CONTENT_ENCODING));
-    let guarded = tool_guard.filter(|_| status.is_success()).and_then(|g| {
-        let sse = guardable(content_type.as_deref(), content_encoding.as_deref());
-        if sse.is_none() && content_encoding.is_some() {
-            tracing::warn!(account = %acct.id, "encoded upstream response cannot be tool-guarded");
-        }
-        sse.map(|sse| (g, sse))
-    });
+    let encoded = content_encoding
+        .as_deref()
+        .is_some_and(|e| !e.trim().eq_ignore_ascii_case("identity"));
+    let guarded = match tool_guard.filter(|_| status.is_success()) {
+        None => None,
+        Some(g) => match guardable(content_type.as_deref(), content_encoding.as_deref()) {
+            Some(sse) => Some((g, sse)),
+            None if encoded => {
+                tracing::warn!(account = %acct.id, "encoded upstream response cannot be tool-guarded");
+                return Ok(super::toolguard::unscannable_response(is_anthropic));
+            }
+            None => None,
+        },
+    };
     let resp_stream: BoxStream<'static, Result<Bytes, reqwest::Error>> = match guarded {
         Some((g, sse)) => guard_stream(upstream.bytes_stream(), g, sse, state.clone()).boxed(),
         None => upstream.bytes_stream().boxed(),

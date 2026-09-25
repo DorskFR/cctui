@@ -9,6 +9,7 @@ use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
 use axum::body::Bytes;
+use axum::response::IntoResponse;
 use dashmap::DashMap;
 use futures_util::{Stream, StreamExt};
 use regex::Regex;
@@ -963,6 +964,24 @@ impl Guarded {
             Self::Json(..) => Vec::new(),
         }
     }
+}
+
+/// Refusal for a guarded response the upstream compressed anyway: forwarding
+/// it unscanned would bypass the policy.
+pub fn unscannable_response(is_anthropic: bool) -> axum::response::Response {
+    let message = "cctui cannot scan a compressed upstream response for this account's \
+                   tool-call policy; configure the upstream not to compress";
+    let body = if is_anthropic {
+        json!({"type": "error", "error": {"type": "api_error", "message": message}})
+    } else {
+        json!({"error": {"type": "server_error", "message": message}})
+    };
+    (
+        axum::http::StatusCode::BAD_GATEWAY,
+        [(axum::http::header::CONTENT_TYPE, "application/json")],
+        body.to_string(),
+    )
+        .into_response()
 }
 
 /// Whether a response with these headers can be guarded. Compressed bodies
