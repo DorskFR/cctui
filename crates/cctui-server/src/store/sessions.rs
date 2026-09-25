@@ -254,6 +254,8 @@ mod tests {
             migration.contains(&format!("CHECK (status IN ({}))", quoted.join(", "))),
             "migration 139's CHECK drifted from SessionRowStatus::ALL"
         );
+        let default = format!("SET DEFAULT '{}'", SessionRowStatus::New.as_str());
+        assert!(migration.contains(&default), "sessions.status default must satisfy the CHECK");
     }
 
     #[test]
