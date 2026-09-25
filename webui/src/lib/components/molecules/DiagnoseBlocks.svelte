@@ -1,94 +1,74 @@
 <script lang="ts">
 	import { CopyButton } from '@dorsk/tsumikit';
-	import { statusDotClass, type DiagnoseBlockSummary } from '$lib/diagnoseRows';
+	import { statusDotClass, trimDetail, type DiagnoseBlockSummary } from '$lib/diagnoseRows';
 	import { m } from '$lib/paraglide/messages';
 
 	let { blocks }: { blocks: DiagnoseBlockSummary[] } = $props();
 </script>
 
-<div class="blocks">
+<ul class="blocks">
 	{#each blocks as b (b.block)}
-		<details class="block" data-block={b.block} data-status={b.status} open={b.status !== 'ok'}>
-			<summary class="line">
+		<li class="block" data-block={b.block} data-status={b.status}>
+			<div class="line">
 				<span class="dot {statusDotClass(b.status)}"></span>
 				<span class="title">{b.title}</span>
 				<span class="short">{b.short}</span>
-			</summary>
-			{#each b.rows as r (r.label)}
-				{#if r.status === 'ok'}
-					<div class="row" data-status="ok">
-						<span class="dot {statusDotClass(r.status)}"></span>
-						<span class="label">{r.label}</span>
-						<span class="short" title={r.detail}>{r.short}</span>
+			</div>
+			{#if b.status !== 'ok'}
+				{#each b.rows.filter((r) => r.status !== 'ok' && r.detail) as r (r.label)}
+					<div class="detail-row">
+						<pre class="detail">{trimDetail(r.detail)}</pre>
+						<CopyButton
+							text={r.detail ?? ''}
+							variant="ghost"
+							box="xs"
+							label={m.diagnose_copy_detail()}
+						/>
 					</div>
-				{:else}
-					<div class="row open" data-status={r.status}>
-						<span class="dot {statusDotClass(r.status)}"></span>
-						<span class="label">{r.label}</span>
-						<span class="short">{r.short}</span>
-						{#if r.detail}
-							<CopyButton text={r.detail} variant="ghost" box="xs" label={m.diagnose_copy_detail()} />
-							<pre class="detail">{r.detail}</pre>
-						{/if}
-					</div>
-				{/if}
-			{/each}
-		</details>
+				{/each}
+			{/if}
+		</li>
 	{/each}
-</div>
+</ul>
 
 <style>
 	.blocks {
+		list-style: none;
 		display: flex;
 		flex-direction: column;
 		gap: var(--sp-1);
-	}
-	.block {
-		border: 1px solid var(--border);
-		border-radius: var(--r-md);
-		padding: var(--sp-1) var(--sp-2);
-	}
-	.block[data-status='error'] {
-		border-color: var(--danger);
-	}
-	.block[data-status='warn'] {
-		border-color: var(--warn);
+		margin: 0;
+		padding: 0;
 	}
 	.line {
 		display: flex;
 		align-items: center;
 		gap: var(--sp-2);
-		cursor: pointer;
 	}
 	.title {
 		font-weight: 600;
 		white-space: nowrap;
+		color: var(--text);
 	}
 	.short {
 		min-width: 0;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
+		overflow-wrap: anywhere;
 		color: var(--text-muted);
 	}
-	.row {
+	.detail-row {
 		display: flex;
-		flex-wrap: wrap;
-		align-items: center;
-		gap: var(--sp-2);
-		padding: 2px 0 2px var(--sp-3);
-	}
-	.label {
-		white-space: nowrap;
+		align-items: flex-start;
+		gap: var(--sp-1);
+		padding-left: var(--sp-3);
 	}
 	.detail {
-		flex-basis: 100%;
+		flex: 1;
+		min-width: 0;
 		margin: 0;
 		white-space: pre-wrap;
 		word-break: break-word;
 		font-family: var(--font-mono, monospace);
 		font-size: var(--fs-xs);
-		max-height: 12rem;
-		overflow: auto;
+		color: var(--text-muted);
 	}
 </style>

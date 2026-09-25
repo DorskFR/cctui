@@ -435,6 +435,7 @@
 			<FileButton
 				label={m.composer_attach_files()}
 				multiple
+				box="sm"
 				iconOnly
 				variant="ghost"
 				onfiles={addFiles}

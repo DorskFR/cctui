@@ -45,6 +45,10 @@
 		onnexthit?: () => void;
 	} = $props();
 
+	// One pinned height for every control, so glyph fonts can't size them.
+	const CTL = 'height:var(--bar-ctl-h);box-sizing:border-box;padding-block:0;line-height:1';
+	const TRIG = 'display:flex;align-items:center;height:var(--bar-ctl-h)';
+
 	const QUICK_TINT: Record<QuickFilterId, string> = {
 		assistant: 'var(--role-assistant)',
 		user: 'var(--role-user)',
@@ -83,7 +87,7 @@
 				data-journey="quick"
 				data-journey-key={q.id}
 				pressed={quickOn(view.msgFilter, q.id)}
-				style={`--toggle-accent: ${QUICK_TINT[q.id]}${quickPartial(view.msgFilter, q.id) ? ';border-style:dashed' : ''}`}
+				style={`${CTL};--toggle-accent: ${QUICK_TINT[q.id]}${quickPartial(view.msgFilter, q.id) ? ';border-style:dashed' : ''}`}
 				title={quickTitle(q.id)}
 				onclick={() => toggleQuick(q.id)}
 			>
@@ -94,6 +98,7 @@
 			label={m.conversation_filter_menu_aria()}
 			placement="bottom-start"
 			bare
+			style={TRIG}
 			triggerClass="toolbar-chip"
 		>
 			{#snippet trigger()}
@@ -115,8 +120,12 @@
 	</div>
 	{#if hitCount > 0}
 		<div class="hitbar row" role="group" aria-label={m.conversation_hits_aria()}>
-			<Toggle pressed={false} title={m.conversation_hit_prev()} onclick={onprevhit}>↑</Toggle>
-			<Toggle pressed={false} title={m.conversation_hit_next()} onclick={onnexthit}>↓</Toggle>
+			<Toggle pressed={false} style={CTL} title={m.conversation_hit_prev()} onclick={onprevhit}
+				><span class="glyph">↑</span></Toggle
+			>
+			<Toggle pressed={false} style={CTL} title={m.conversation_hit_next()} onclick={onnexthit}
+				><span class="glyph">↓</span></Toggle
+			>
 			<span class="hit-count" aria-live="polite"
 				>{m.conversation_hit_counter({ n: hitIndex + 1, total: hitCount })}</span
 			>
@@ -125,22 +134,25 @@
 	<div class="behbar row" role="group" aria-label={m.conversation_behavior_aria()}>
 		<Toggle
 			pressed={autoApprove}
-			style="--toggle-accent: var(--warn)"
+			style={`${CTL};--toggle-accent: var(--warn)`}
 			title={m.conversation_auto_approve_title()}
 			aria-label={m.conversation_auto_approve_aria()}
 			onclick={ontoggleAuto}
-			><span aria-hidden="true">⚡</span><span class="wide"> {m.conversation_auto_approve_btn()}</span></Toggle
+			><span class="glyph" aria-hidden="true">⚡</span><span class="wide"
+				>{m.conversation_auto_approve_btn()}</span
+			></Toggle
 		>
 		{#if onjumpseq && onunpin}
 			<Popover
 				label={m.conversation_pins_aria()}
 				placement="bottom-end"
 				bare
+				style={TRIG}
 				triggerClass="toolbar-chip"
 			>
 				{#snippet trigger()}
 					<span class="chip">
-						<Icon name="pin" filled={pins.length > 0} />
+						<Icon name="pin" size={12} filled={pins.length > 0} />
 						<span class="wide">{m.conversation_pins()}</span>{pins.length ? ` ${pins.length}` : ''}
 					</span>
 				{/snippet}
@@ -151,24 +163,22 @@
 </div>
 
 <style>
-	/* The Filters and Pins popover triggers must be indistinguishable from the
-	   Toggle chips beside them. `bare` strips the kit's own trigger chrome (its
-	   square floor included) and this local span — authored here, so scoped CSS
-	   reaches it — carries the whole chip restated from Toggle's own tokens.
-	   Keep in step with tsumikit Toggle's `.toggle` + `.pill`. */
+	/* Popover triggers restating kit Toggle chrome; keep in step with `.toggle`. */
 	.chip {
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;
 		gap: 4px;
-		padding: 0.15rem var(--sp-2);
+		box-sizing: border-box;
+		height: var(--bar-ctl-h);
+		padding: 0 var(--sp-2);
+		line-height: 1;
 		border: 1px solid var(--border);
 		border-radius: var(--r-sm);
 		background: var(--bg-elevated-2);
 		color: var(--text-muted);
 		font-size: var(--fs-xs);
 		font-weight: var(--fw-medium);
-		line-height: 1.4;
 		white-space: nowrap;
 		user-select: none;
 		cursor: pointer;
@@ -177,7 +187,6 @@
 			border-color 0.12s var(--ease),
 			color 0.12s var(--ease);
 	}
-	/* Filters sits among the pill quick-filter chips; Pins among the square ones. */
 	.chip.pill {
 		border-radius: var(--r-pill);
 	}
@@ -193,8 +202,9 @@
 		padding: var(--sp-2) var(--sp-3);
 		border-bottom: 1px solid var(--border);
 		font-size: var(--fs-xs);
-		/* Px, not rem: the text-size control rescales the root, and the bar must
-		   not shift under the cursor while it moves. */
+		container: drawer-toolbar / inline-size;
+		/* Px, not rem: the text-size control must not shift the bar under the cursor. */
+		--bar-ctl-h: 24px;
 		--fs-xs: 12px;
 		--fs-sm: 13px;
 		--sp-1: 4px;
@@ -206,6 +216,24 @@
 	.hitbar {
 		gap: var(--sp-1);
 		flex-wrap: nowrap;
+		align-items: center;
+	}
+	.glyph {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		min-width: 1em;
+		line-height: 1;
+	}
+	/* Overflow is absorbed by the filters group, never by auto-approve or pins. */
+	.tagbar {
+		min-width: 0;
+		flex: 0 1 auto;
+		overflow: hidden;
+	}
+	.behbar,
+	.hitbar {
+		flex: none;
 	}
 	.hitbar {
 		align-items: center;
@@ -223,7 +251,8 @@
 	.narrow {
 		display: none;
 	}
-	@media (max-width: 959px) {
+	/* The full form needs ~940px in the longest locale with search hits shown. */
+	@container drawer-toolbar (max-width: 1000px) {
 		.wide {
 			display: none;
 		}

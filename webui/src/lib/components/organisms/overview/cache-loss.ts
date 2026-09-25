@@ -1,5 +1,7 @@
 import type { DailyCacheLoss } from '$lib/queries';
 
+export const CACHE_LOSS_DAYS = 7;
+
 export const CACHE_LOSS_REASONS = ['ttl_expired', 'gateway_rewrote_body', 'unknown'] as const;
 export type CacheLossReason = (typeof CACHE_LOSS_REASONS)[number];
 

@@ -9,12 +9,13 @@ import {
 	diagnoseBlocks,
 	diagnoseRows,
 	statusDotClass,
+	trimDetail,
 	worstStatus,
 	type DiagnoseBlock
 } from './diagnoseRows';
-import panelSource from './components/organisms/conversation/DiagnosePanel.svelte?raw';
 import blocksSource from './components/molecules/DiagnoseBlocks.svelte?raw';
 import dotSource from './components/molecules/SessionDot.svelte?raw';
+import factsSource from './components/molecules/SessionDotFacts.svelte?raw';
 
 const NOW = 1_700_000_000_000;
 
@@ -104,7 +105,7 @@ describe('diagnoseRows: healthy session', () => {
 		expect(blocks.map((b) => b.status)).toEqual(['ok', 'ok', 'ok']);
 	});
 
-	it('keeps the panel green and short with the daemon report', () => {
+	it('keeps the tooltip green and short with the daemon report', () => {
 		const rows = diagnoseRows(session(), report(), NOW);
 		expect(rows.every((r) => r.status === 'ok')).toBe(true);
 		expect(diagnoseBlocks(rows).every((b) => b.status === 'ok')).toBe(true);
@@ -207,19 +208,45 @@ describe('status helpers', () => {
 	});
 });
 
-describe('one source of truth', () => {
-	it('feeds both the panel and the dot tooltip', () => {
-		expect(panelSource).toContain('diagnoseRows(');
-		expect(dotSource).toContain('diagnoseRows(');
-		expect(dotSource).toContain('diagnoseHref(session.id)');
+describe('trimDetail', () => {
+	it('keeps one or two lines as they are', () => {
+		expect(trimDetail('boom')).toBe('boom');
+		expect(trimDetail('boom\npanicked')).toBe('boom\npanicked');
 	});
 
-	it('keeps red and orange rows expanded, green ones collapsed', () => {
-		expect(blocksSource).toContain("open={b.status !== 'ok'}");
-		expect(blocksSource).toContain('<pre class="detail">');
+	it('keeps the end reason and the last stderr line of a long tail', () => {
+		expect(trimDetail('daemon stderr:\nfirst\nsecond\nlast line')).toBe('daemon stderr:\nlast line');
+	});
+
+	it('is empty for a missing detail', () => {
+		expect(trimDetail(undefined)).toBe('');
+	});
+});
+
+describe('the dot tooltip is the only diagnose surface', () => {
+	it('builds its blocks from diagnoseRows and the lazily fetched report', () => {
+		expect(factsSource).toContain('diagnoseRows(');
+		expect(factsSource).toContain('useSessionDiagnose(');
+		expect(dotSource).toContain('armed = true');
+	});
+
+	it('keeps the query out of the dot itself: no observer until the tooltip is armed', () => {
+		expect(dotSource).not.toContain('useSessionDiagnose');
+		expect(dotSource).toContain('{#if armed}');
+	});
+
+	it('has no link to a diagnose panel', () => {
+		expect(dotSource).not.toContain('diagnose=1');
+		expect(dotSource).not.toContain('DiagnosePanel');
+	});
+
+	it('trims non-green details and offers the full text on the clipboard', () => {
+		expect(blocksSource).toContain('trimDetail(r.detail)');
+		expect(blocksSource).toContain('<CopyButton');
+		expect(blocksSource).toContain("b.status !== 'ok'");
 	});
 
 	it('adds no :global override', () => {
-		for (const src of [panelSource, blocksSource, dotSource]) expect(src).not.toContain(':global(');
+		for (const src of [blocksSource, dotSource, factsSource]) expect(src).not.toContain(':global(');
 	});
 });

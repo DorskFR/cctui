@@ -1,9 +1,6 @@
 <script lang="ts">
 	import type { SessionListItem } from '@bindings/SessionListItem';
 	import type { AgentEvent } from '@bindings/AgentEvent';
-	import { page } from '$app/state';
-	import { replaceState } from '$app/navigation';
-	import { hrefWithoutDiagnose } from '../../../routes/sessions/sessions.logic';
 	import { ws } from '$lib/ws.svelte';
 	import {
 		useConversation,
@@ -26,7 +23,6 @@
 	import ForkModal from './conversation/ForkModal.svelte';
 	import DrawerHeader from './conversation/DrawerHeader.svelte';
 	import DrawerToolbar from './conversation/DrawerToolbar.svelte';
-	import DiagnosePanel from './conversation/DiagnosePanel.svelte';
 	import ActivityBanner from './conversation/ActivityBanner.svelte';
 	import AutoArchiveNotice from './conversation/AutoArchiveNotice.svelte';
 	import TaskPanel from './conversation/TaskPanel.svelte';
@@ -95,23 +91,13 @@
 	const showStatusBadge = $derived(session.status === 'new' || session.status === 'archived');
 	const qc = useQueryClient();
 
-	// Session diagnose panel, opened from the toolbar or a failure toast's
-	// Diagnose action (`?diagnose=1`).
-	let diagnoseOpen = $state(false);
 	// Read-only live terminal pane, toggled from the header menu.
 	let terminalOpen = $state(false);
-	// A navigation to another session must not leave a stale panel open.
+	// A navigation to another session must not leave a stale pane open.
 	$effect(() => {
 		void id;
-		diagnoseOpen = page.url.searchParams.get('diagnose') === '1';
 		terminalOpen = false;
 	});
-
-	function closeDiagnose() {
-		diagnoseOpen = false;
-		const href = hrefWithoutDiagnose(location.href);
-		if (href) replaceState(href, page.state);
-	}
 
 	const DRAWER_MIN_PX = 360;
 	const DRAWER_DEFAULT_PX = 900;
@@ -583,10 +569,6 @@
 
 			<TaskPanel sessionId={id} progress={stream.todoProgress} />
 
-			{#if diagnoseOpen}
-				<DiagnosePanel sessionId={id} {session} onclose={closeDiagnose} />
-			{/if}
-
 			{#if terminalOpen}
 				<TerminalPane sessionId={id} onclose={() => (terminalOpen = false)} />
 			{/if}
@@ -720,7 +702,7 @@
 		background: var(--bg-elevated-2);
 		border: 1px solid var(--border-strong);
 		border-radius: var(--r-md);
-		box-shadow: var(--shadow-lg, 0 8px 24px rgba(0, 0, 0, 0.5));
+		box-shadow: var(--shadow-lg);
 		white-space: nowrap;
 	}
 	.fork-select-count {

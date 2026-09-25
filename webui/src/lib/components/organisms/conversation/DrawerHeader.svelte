@@ -26,6 +26,7 @@
 		IconButton,
 		Input,
 		Menu,
+		Popover,
 		Select,
 		Text,
 		Toolbar,
@@ -168,6 +169,8 @@
 	let barWidth = $state(Infinity);
 	const collapsed = $derived(barWidth < COLLAPSE_BELOW);
 
+	const hasModelMeta = $derived((isCodexSession && !archived) || !!session.model || !!session.effort);
+
 	const overflowItems = $derived<MenuItem[]>([
 		...(collapsed
 			? [
@@ -215,7 +218,7 @@
 			: []),
 		{
 			label: m.drawer_keepalive_label(),
-			icon: 'bell' as const,
+			icon: 'recycle' as const,
 			pressed: !!session.keepalive,
 			onselect: () => (keepaliveOpen = true)
 		},
@@ -245,6 +248,61 @@
 		><span class="m-full">{model}</span><span class="m-short">{modelShort(model)}</span
 		>{#if session.effort}<span class="m-effort"> · {session.effort}</span>{/if}</span
 	>
+{/snippet}
+
+{#snippet modelMeta(idPrefix: string)}
+	{#if isCodexSession && !archived}
+		{#if modelEditing}
+			<span class="model-edit">
+				<Badge class="row" style="gap:var(--sp-1);padding:0.05rem var(--sp-1)">
+					<ModelPicker
+						id="{idPrefix}-model"
+						compact
+						variant="embedded"
+						width="auto"
+						bind:value={pendingModel}
+						options={codexModelOptions}
+						aria-label={m.drawer_model_aria()}
+					/>
+					<CodexModelsRefresh machineId={session.machine_id} size={14} />
+					<Select
+						variant="embedded"
+						width="auto"
+						size="sm"
+						chevron={false}
+						bind:value={pendingEffort}
+						aria-label={m.drawer_effort_aria()}
+					>
+						{#each codexEffortOptions as e (e)}<option value={e}>{e || m.drawer_default_effort()}</option>{/each}
+					</Select>
+					<IconButton chip variant="default" icon="check" label={m.common_apply()} onclick={applyModelChange} />
+					<IconButton chip variant="default" icon="x" label={m.common_cancel()} onclick={() => (modelEditing = false)} />
+				</Badge>
+			</span>
+		{:else}
+			<span class="model">
+				<Badge
+					as="button"
+					mono
+					title={m.drawer_change_model_title()}
+					onclick={openModelEditor}
+					style="min-width:0;max-width:100%"
+					>{@render modelText(session.model ?? m.drawer_default_model())} ✎</Badge
+				>
+			</span>
+		{/if}
+	{:else if session.model || session.effort}
+		<span class="model">
+			<Badge
+				as="button"
+				mono
+				title={m.drawer_no_inplace_model_title()}
+				onclick={onfork}
+				style="min-width:0;max-width:100%"
+				>{@render modelText(session.model ?? '')} ⑂</Badge
+			>
+		</span>
+	{/if}
 {/snippet}
 
 <div class="dhead" data-journey="header">
@@ -373,59 +431,24 @@
 		<div class="meta-trail">
 		<TokenUsage usage={session.token_usage} />
 		<span class="langfuse"><LangfuseChip id={session.id} /></span>
-		{#if isCodexSession && !archived}
-			{#if modelEditing}
-				<span class="model-edit">
-					<Badge class="row" style="gap:var(--sp-1);padding:0.05rem var(--sp-1)">
-						<ModelPicker
-							id="drawer-model"
-							compact
-							variant="embedded"
-							width="auto"
-							bind:value={pendingModel}
-							options={codexModelOptions}
-							aria-label={m.drawer_model_aria()}
-						/>
-						<CodexModelsRefresh machineId={session.machine_id} size={14} />
-						<Select
-							variant="embedded"
-							width="auto"
-							size="sm"
-							chevron={false}
-							bind:value={pendingEffort}
-							aria-label={m.drawer_effort_aria()}
-						>
-							{#each codexEffortOptions as e (e)}<option value={e}>{e || m.drawer_default_effort()}</option>{/each}
-						</Select>
-						<IconButton chip variant="default" icon="check" label={m.common_apply()} onclick={applyModelChange} />
-						<IconButton chip variant="default" icon="x" label={m.common_cancel()} onclick={() => (modelEditing = false)} />
-					</Badge>
-				</span>
-			{:else}
-				<span class="model">
-					<Badge
-						as="button"
-						mono
-						title={m.drawer_change_model_title()}
-						onclick={openModelEditor}
-						style="min-width:0;max-width:100%"
-						>{@render modelText(session.model ?? m.drawer_default_model())} ✎</Badge
-					>
-				</span>
-			{/if}
-		{:else if session.model || session.effort}
-			<span class="model">
-				<Badge
-					as="button"
-					mono
-					title={m.drawer_no_inplace_model_title()}
-					onclick={onfork}
-					style="min-width:0;max-width:100%"
-					>{@render modelText(session.model ?? '')} ⑂</Badge
+		{@render modelMeta('drawer')}
+		<AdapterIcon adapter={session.adapter_id} size={20} />
+		{#if hasModelMeta}
+			<span class="meta-details">
+				<Popover
+					label={m.drawer_meta_details()}
+					placement="bottom-end"
+					box="sm"
+					data-journey="head-details"
 				>
+					{#snippet trigger()}<Icon name="info" size={16} />{/snippet}
+					<div class="metapop">
+						<span class="langfuse"><LangfuseChip id={session.id} /></span>
+						{@render modelMeta('drawer-details')}
+					</div>
+				</Popover>
 			</span>
 		{/if}
-		<AdapterIcon adapter={session.adapter_id} size={20} />
 		</div>
 	</div>
 </div>
@@ -508,6 +531,14 @@
 	.m-short {
 		display: none;
 	}
+	.model-edit {
+		display: contents;
+	}
+	/* The ⓘ details trigger exists only to carry what the row has dropped, so it
+	   appears exactly when the first item goes. */
+	.meta-details {
+		display: none;
+	}
 	@container drawer-head (max-width: 40rem) {
 		.branch {
 			max-width: 8rem;
@@ -520,13 +551,38 @@
 		.m-short {
 			display: inline;
 		}
+		.meta-details {
+			display: inline-flex;
+		}
 	}
 	@container drawer-head (max-width: 26rem) {
-		.model {
+		.model,
+		.model-edit {
 			display: none;
 		}
 	}
-	.model-edit {
+	/* The popover holds what the row dropped, so it always shows the full model
+	   text the narrow row degrades. */
+	.metapop {
+		display: flex;
+		flex-direction: column;
+		align-items: flex-start;
+		gap: var(--sp-2);
+		min-width: 0;
+		max-width: 100%;
+	}
+	.metapop .m-full,
+	.metapop .m-effort {
+		display: inline;
+	}
+	.metapop .m-short {
+		display: none;
+	}
+	.metapop .langfuse,
+	.metapop .model-edit {
 		display: contents;
+	}
+	.metapop .model {
+		display: inline-flex;
 	}
 </style>

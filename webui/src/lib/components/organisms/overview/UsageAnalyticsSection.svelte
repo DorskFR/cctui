@@ -55,7 +55,7 @@
 				<ActivityHeatmap cells={data.heatmap} />
 			</Stack>
 		</Card>
-		<CacheLossCard days={range.days} />
+		<CacheLossCard />
 	</Stack>
 {/if}
 

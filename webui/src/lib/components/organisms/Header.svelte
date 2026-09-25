@@ -9,7 +9,7 @@
 	import { notify } from '$lib/notify.svelte';
 	import { settings } from '$lib/settings.svelte';
 	import { toasts } from '$lib/toast.svelte';
-	import { FontScalePicker, Menu, Text } from '@dorsk/tsumikit';
+	import { Avatar, Dot, FontScalePicker, Menu, Text } from '@dorsk/tsumikit';
 	import ThemeModePicker from '$lib/components/molecules/ThemeModePicker.svelte';
 	import type { MenuItem } from '@dorsk/tsumikit';
 	import NavLink from '$lib/components/atoms/NavLink.svelte';
@@ -89,7 +89,6 @@ import ResourceBattery from '$lib/components/molecules/ResourceBattery.svelte';
 
 	const userName = $derived(me.data?.user_name ?? '');
 	const userRole = $derived(me.data?.role ?? '');
-	const userInitial = $derived((userName || userRole || '?').slice(0, 1).toUpperCase());
 	const roleSuffix = $derived(
 		userRole && userRole.toLowerCase() !== userName.toLowerCase() ? userRole : ''
 	);
@@ -135,6 +134,10 @@ import ResourceBattery from '$lib/components/molecules/ResourceBattery.svelte';
 	]);
 </script>
 
+{#snippet alertDot()}
+	<Dot color="var(--danger)" />
+{/snippet}
+
 <header class="hd">
 	<div class="hd-inner">
 		<div class="lead">
@@ -174,7 +177,13 @@ import ResourceBattery from '$lib/components/molecules/ResourceBattery.svelte';
 			<Menu label={m.nav_user_menu()} items={userMenu} bare placement="bottom-end">
 				{#snippet trigger()}
 					<span class="pill">
-						<span class="avatar" class:alert={!!latest} aria-hidden="true">{userInitial}</span>
+						<Avatar
+							name={userName || userRole}
+							tone="accent"
+							size={24}
+							decorative
+							status={latest ? alertDot : undefined}
+						/>
 						<span class="who">
 							{#if userName}<span class="who-name">{userName}</span>{/if}
 							{#if userName && roleSuffix}<span class="who-sep">·</span>{/if}
@@ -340,31 +349,6 @@ import ResourceBattery from '$lib/components/molecules/ResourceBattery.svelte';
 	}
 	.pill:hover {
 		background: var(--bg-elevated-2);
-	}
-	.avatar {
-		position: relative;
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-		width: 24px;
-		height: 24px;
-		border-radius: 50%;
-		background: color-mix(in srgb, var(--accent) 18%, transparent);
-		color: var(--accent);
-		font-size: var(--fs-xs);
-		font-weight: var(--fw-semibold);
-		flex: none;
-	}
-	.avatar.alert::after {
-		content: '';
-		position: absolute;
-		top: -1px;
-		right: -1px;
-		width: 8px;
-		height: 8px;
-		border-radius: 50%;
-		background: var(--danger);
-		border: 2px solid var(--bg-elevated);
 	}
 	.who {
 		display: inline-flex;
