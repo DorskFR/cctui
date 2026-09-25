@@ -86,6 +86,32 @@ guarded("documents store", () => {
     const secondKeys = second.items.map((e) => (e.payload as { i: number }).i);
     expect(firstKeys.some((k) => secondKeys.includes(k))).toBe(false);
   });
+
+  test("pages through rows that share a millisecond", async () => {
+    for (let i = 0; i < 5; i++) {
+      await upsertDocument(db, {
+        account: "acme",
+        kind: "keyset_probe",
+        key: `acme/p${i}`,
+        etag: null,
+        payload: { i },
+      });
+      await db.sql`
+        UPDATE documents
+        SET updated_at = ${`2026-01-01T00:00:00.000${i + 1}00Z`}::timestamptz
+        WHERE kind = 'keyset_probe' AND key = ${`acme/p${i}`}
+      `;
+    }
+    const seen: number[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < 5; page++) {
+      const res = await listDocuments(db, "keyset_probe", { limit: 2, cursor });
+      seen.push(...res.items.map((e) => (e.payload as { i: number }).i));
+      if (!res.next_cursor) break;
+      cursor = res.next_cursor;
+    }
+    expect(seen).toEqual([4, 3, 2, 1, 0]);
+  });
 });
 
 function warmMockOctokit(seen: Set<string>): OctokitRequest {
