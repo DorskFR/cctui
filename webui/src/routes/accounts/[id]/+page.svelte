@@ -20,6 +20,7 @@
 	import IdentitySection from '$lib/components/organisms/accounts/account-page/IdentitySection.svelte';
 	import EnvSection from '$lib/components/organisms/accounts/account-page/EnvSection.svelte';
 	import ProvidersSection from '$lib/components/organisms/accounts/account-page/ProvidersSection.svelte';
+	import ToolPolicySection from '$lib/components/organisms/accounts/account-page/ToolPolicySection.svelte';
 	import DangerSection from '$lib/components/organisms/accounts/account-page/DangerSection.svelte';
 
 	const accounts = useAccounts();
@@ -114,6 +115,9 @@
 				onremove={removeProvider}
 			/>
 			<EnvSection {account} />
+			{#if !managed}
+				<ToolPolicySection {account} />
+			{/if}
 			<DangerSection {account} disabled={managed} ondelete={removeAccount} />
 		</div>
 	{:else if accounts.isLoading}
