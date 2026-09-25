@@ -1137,43 +1137,45 @@ async fn process_frame(
             harness,
             ..
         } => {
-            // A daemon too old to advertise omits the field; leave the stored
-            // flag alone rather than reading silence as "no hook".
-            if let Some(has_hook) = update_hook {
-                crate::routes::update_hook::record_hook_flag(&state.pool, machine_id, has_hook)
-                    .await;
-            }
-            // Machine liveness: advance `last_seen_at` on EVERY
-            // heartbeat (not just connect, as auth.rs does), then derive the
-            // online/stale/offline tier and broadcast it on transition. This is
-            // the proactive signal the server previously lacked — a daemon that
-            // stops heartbeating ages to offline without a failed dispatch.
-            if let Err(err) = sqlx::query("UPDATE machines SET last_seen_at = now() WHERE id = $1")
-                .bind(machine_id)
-                .execute(&state.pool)
-                .await
-            {
-                tracing::warn!(%err, %machine_id, "heartbeat last_seen_at bump failed");
-            }
             crate::machine_liveness::record_and_broadcast(
                 state,
                 machine_id,
                 cctui_proto::models::MachineLiveness::Online,
             );
-            if let Some(bandwidth) = bandwidth {
-                persist_bandwidth(state, machine_id, &bandwidth).await;
+            if let Some(bandwidth) = &bandwidth {
                 detect_divergence(state, machine_id, bandwidth.event_bytes());
             }
-            if let Some(resources) = resources {
-                crate::machine_resources::record_and_broadcast(state, machine_id, resources).await;
-            }
-            // Only a daemon that reports its jobs can parse the reply.
-            if let Some(shorts) = claude_jobs {
-                reconcile_claude_jobs(state, machine_id, &shorts).await;
-            }
-            if let Some(report) = harness {
-                crate::routes::harness_update::on_heartbeat(state, machine_id, &report).await;
-            }
+            let state = state.clone();
+            tokio::spawn(async move {
+                // A daemon too old to advertise omits the field; leave the stored
+                // flag alone rather than reading silence as "no hook".
+                if let Some(has_hook) = update_hook {
+                    crate::routes::update_hook::record_hook_flag(&state.pool, machine_id, has_hook)
+                        .await;
+                }
+                if let Err(err) =
+                    sqlx::query("UPDATE machines SET last_seen_at = now() WHERE id = $1")
+                        .bind(machine_id)
+                        .execute(&state.pool)
+                        .await
+                {
+                    tracing::warn!(%err, %machine_id, "heartbeat last_seen_at bump failed");
+                }
+                if let Some(bandwidth) = bandwidth {
+                    persist_bandwidth(&state, machine_id, &bandwidth).await;
+                }
+                if let Some(resources) = resources {
+                    crate::machine_resources::record_and_broadcast(&state, machine_id, resources)
+                        .await;
+                }
+                // Only a daemon that reports its jobs can parse the reply.
+                if let Some(shorts) = claude_jobs {
+                    reconcile_claude_jobs(&state, machine_id, &shorts).await;
+                }
+                if let Some(report) = harness {
+                    crate::routes::harness_update::on_heartbeat(&state, machine_id, &report).await;
+                }
+            });
             Ok(())
         }
         // Any future #[non_exhaustive] variants are no-ops.

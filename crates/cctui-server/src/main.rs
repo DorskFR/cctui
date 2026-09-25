@@ -297,6 +297,14 @@ async fn main() -> anyhow::Result<()> {
         .layer(cors_layer(&config.allowed_origins))
         .with_state(state.clone());
 
+    spawn_periodic(REAPER_PERIOD, {
+        let state = state.clone();
+        move || webhook_sweep(state.clone())
+    });
+    spawn_periodic(REAPER_PERIOD, {
+        let state = state.clone();
+        move || keepalive_sweep(state.clone())
+    });
     tokio::spawn(reaper_task(state));
 
     let listener = tokio::net::TcpListener::bind(config.bind_addr()).await?;
@@ -1673,20 +1681,46 @@ async fn auto_archive_stale(state: &AppState) {
     }
 }
 
+const REAPER_PERIOD: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Runs `job` every `period` on its own task, so a slow pass delays only itself.
+fn spawn_periodic<F, Fut>(period: std::time::Duration, mut job: F) -> tokio::task::JoinHandle<()>
+where
+    F: FnMut() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(period);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            interval.tick().await;
+            job().await;
+        }
+    })
+}
+
+async fn webhook_sweep(state: AppState) {
+    webhook::sweep(&state).await;
+}
+
+async fn keepalive_sweep(state: AppState) {
+    keepalive::sweep(&state).await;
+}
+
 async fn reaper_task(state: AppState) {
-    let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
+    let mut interval = tokio::time::interval(REAPER_PERIOD);
     loop {
         interval.tick().await;
         let demoted = {
             let mut registry = state.registry.write().await;
             registry.mark_stale(state.config.inactive_after_secs)
         };
-        for session_id in &demoted {
-            let _ = sqlx::query("UPDATE sessions SET status = 'inactive' WHERE id = $1")
-                .bind(session_id.as_str())
+        if !demoted.is_empty() {
+            let _ = sqlx::query("UPDATE sessions SET status = 'inactive' WHERE id = ANY($1)")
+                .bind(&demoted)
                 .execute(&state.pool)
                 .await;
-            tracing::info!(session_id = %session_id, "session demoted to inactive");
+            tracing::info!(session_ids = ?demoted, "sessions demoted to inactive");
         }
 
         auto_archive_stale(&state).await;
@@ -1768,14 +1802,32 @@ async fn reaper_task(state: AppState) {
         machine_liveness::sweep(&state).await;
         machine_liveness::sweep_dispatchers(&state).await;
 
-        // Completion webhooks: fire a server-side callback for any
-        // dispatched session that has reached a terminal state — the
-        // crash-coverage path the worker's REPLY_URL exit trap can miss.
-        webhook::sweep(&state).await;
         auto_resume::sweep(&state).await;
         scheduled_messages::sweep(&state).await;
-        keepalive::sweep(&state).await;
 
         state.permission_store.write().await.reap_stale(300); // seconds
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    use super::{REAPER_PERIOD, spawn_periodic};
+
+    #[tokio::test(start_paused = true)]
+    async fn a_hung_periodic_job_does_not_stall_the_others() {
+        let hung = spawn_periodic(REAPER_PERIOD, std::future::pending::<()>);
+        let ticks = Arc::new(AtomicU32::new(0));
+        let counter = ticks.clone();
+        let reaper = spawn_periodic(REAPER_PERIOD, move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+            async {}
+        });
+        tokio::time::sleep(REAPER_PERIOD * 10 + std::time::Duration::from_secs(1)).await;
+        assert_eq!(ticks.load(Ordering::SeqCst), 11);
+        hung.abort();
+        reaper.abort();
     }
 }

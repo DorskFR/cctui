@@ -54,6 +54,11 @@ const BACKOFF_SECS: &[i64] = &[10, 30, 120, 300, 900, 1800, 3600];
 
 pub use crate::outbound::OutboundUrlError as NotifyUrlError;
 
+/// Rows fetched per sweep, and how many of them are processed at once.
+const SWEEP_LIMIT: i64 = 50;
+const DELIVERY_CONCURRENCY: usize = 8;
+const DELIVERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// Fail-closed SSRF guard: requires `https` and refuses a host that is
 /// cluster-local, resolves to an internal address, or does not resolve.
 pub async fn validate_notify_url(raw: &str) -> Result<(), NotifyUrlError> {
@@ -243,8 +248,9 @@ pub async fn sweep(state: &AppState) {
          LEFT JOIN sessions s ON s.id = w.session_id \
          LEFT JOIN dispatch_handles dh ON dh.session_id = w.session_id \
          WHERE w.state = 'pending' AND w.next_attempt_at <= now() \
-         LIMIT 50",
+         LIMIT $1",
     )
+    .bind(SWEEP_LIMIT)
     .fetch_all(&state.pool)
     .await
     {
@@ -255,54 +261,66 @@ pub async fn sweep(state: &AppState) {
         }
     };
 
-    for row in rows {
-        // A frozen payload means we already decided to fire — this is a retry.
-        if let Some(payload) = row.payload.clone() {
-            deliver(state, row.id, &row.notify_url, row.secret.as_deref(), &payload, row.attempts)
-                .await;
-            continue;
-        }
+    for_each_bounded(rows, DELIVERY_CONCURRENCY, |row| process(state, row)).await;
+}
 
-        match decide(state, &row).await {
-            Outcome::Fire(reason) => {
-                let payload = build_payload(&row.task_id, &reason);
-                // Freeze the payload so a later state change can't rewrite the
-                // body mid-retry and a server restart re-uses the same bytes.
-                let _ = sqlx::query("UPDATE session_webhooks SET payload = $2 WHERE id = $1")
-                    .bind(row.id)
-                    .bind(&payload)
-                    .execute(&state.pool)
-                    .await;
-                deliver(
-                    state,
-                    row.id,
-                    &row.notify_url,
-                    row.secret.as_deref(),
-                    &payload,
-                    row.attempts,
-                )
-                .await;
-            }
-            Outcome::Supersede => {
-                let _ =
-                    sqlx::query("UPDATE session_webhooks SET state = 'superseded' WHERE id = $1")
-                        .bind(row.id)
-                        .execute(&state.pool)
-                        .await;
-                tracing::debug!(session_id = %row.session_id, "webhook superseded by worker callback");
-            }
-            Outcome::Wait => {
-                // Back off the next liveness poll without bumping the retry
-                // budget (that budget is for delivery failures, not polling).
-                let _ = sqlx::query(
-                    "UPDATE session_webhooks \
-                     SET next_attempt_at = now() + ($2 || ' seconds')::interval WHERE id = $1",
-                )
+async fn for_each_bounded<T, F, Fut>(items: Vec<T>, limit: usize, f: F)
+where
+    F: FnMut(T) -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    use futures_util::StreamExt;
+    futures_util::stream::iter(items).for_each_concurrent(limit, f).await;
+}
+
+#[allow(clippy::cognitive_complexity)]
+async fn process(state: &AppState, row: PendingRow) {
+    // A frozen payload means we already decided to fire — this is a retry.
+    if let Some(payload) = row.payload.clone() {
+        deliver(state, row.id, &row.notify_url, row.secret.as_deref(), &payload, row.attempts)
+            .await;
+        return;
+    }
+
+    match decide(state, &row).await {
+        Outcome::Fire(reason) => {
+            let payload = build_payload(&row.task_id, &reason);
+            // Freeze the payload so a later state change can't rewrite the
+            // body mid-retry and a server restart re-uses the same bytes.
+            let _ = sqlx::query("UPDATE session_webhooks SET payload = $2 WHERE id = $1")
                 .bind(row.id)
-                .bind(POLL_INTERVAL_SECS.to_string())
+                .bind(&payload)
                 .execute(&state.pool)
                 .await;
-            }
+            deliver(
+                state,
+                row.id,
+                &row.notify_url,
+                row.secret.as_deref(),
+                &payload,
+                row.attempts,
+            )
+            .await;
+        }
+        Outcome::Supersede => {
+            let _ =
+                sqlx::query("UPDATE session_webhooks SET state = 'superseded' WHERE id = $1")
+                    .bind(row.id)
+                    .execute(&state.pool)
+                    .await;
+            tracing::debug!(session_id = %row.session_id, "webhook superseded by worker callback");
+        }
+        Outcome::Wait => {
+            // Back off the next liveness poll without bumping the retry
+            // budget (that budget is for delivery failures, not polling).
+            let _ = sqlx::query(
+                "UPDATE session_webhooks \
+                 SET next_attempt_at = now() + ($2 || ' seconds')::interval WHERE id = $1",
+            )
+            .bind(row.id)
+            .bind(POLL_INTERVAL_SECS.to_string())
+            .execute(&state.pool)
+            .await;
         }
     }
 }
@@ -324,7 +342,7 @@ async fn deliver(
         req = req.header("X-CCTUI-Signature", format!("sha256={}", sign(secret, &body)));
     }
 
-    let outcome = req.timeout(std::time::Duration::from_secs(30)).send().await;
+    let outcome = req.timeout(DELIVERY_TIMEOUT).send().await;
 
     match outcome {
         Ok(resp) if resp.status().is_success() => {
@@ -389,7 +407,22 @@ async fn schedule_retry(state: &AppState, id: uuid::Uuid, attempts: i32, err: &s
 
 #[cfg(test)]
 mod tests {
-    use super::{NotifyUrlError, build_payload, sign, validate_notify_url};
+    use super::{
+        DELIVERY_CONCURRENCY, DELIVERY_TIMEOUT, NotifyUrlError, SWEEP_LIMIT, build_payload,
+        for_each_bounded, sign, validate_notify_url,
+    };
+
+    #[tokio::test(start_paused = true)]
+    async fn a_full_pass_of_hung_receivers_is_bounded_by_concurrency() {
+        let started = tokio::time::Instant::now();
+        let limit = usize::try_from(SWEEP_LIMIT).unwrap();
+        for_each_bounded((0..limit).collect(), DELIVERY_CONCURRENCY, |_| {
+            tokio::time::sleep(DELIVERY_TIMEOUT)
+        })
+        .await;
+        let waves = u32::try_from(limit.div_ceil(DELIVERY_CONCURRENCY)).unwrap();
+        assert_eq!(started.elapsed(), DELIVERY_TIMEOUT * waves);
+    }
 
     #[tokio::test]
     async fn notify_url_accepts_public_https() {

@@ -38,9 +38,9 @@ pub fn derive(last_seen_at: DateTime<Utc>) -> MachineLiveness {
 
 /// Record `tier` for `machine_id` and broadcast a
 /// [`ServerEvent::MachineLiveness`] iff it changed from the last known tier.
-/// Idempotent within a tier — only an actual transition hits the wire.
-pub fn record_and_broadcast(state: &AppState, machine_id: Uuid, tier: MachineLiveness) {
-    let changed = state.machine_liveness.insert(machine_id, tier).is_none_or(|prev| prev != tier);
+/// Returns whether it changed.
+pub fn record_and_broadcast(state: &AppState, machine_id: Uuid, tier: MachineLiveness) -> bool {
+    let changed = record_tier(&state.machine_liveness, machine_id, tier);
     if changed {
         tracing::info!(%machine_id, ?tier, "machine liveness changed");
         state.bus.publish_server(cctui_proto::ws::ServerEvent::MachineLiveness {
@@ -48,6 +48,15 @@ pub fn record_and_broadcast(state: &AppState, machine_id: Uuid, tier: MachineLiv
             liveness: tier,
         });
     }
+    changed
+}
+
+fn record_tier(
+    tiers: &dashmap::DashMap<Uuid, MachineLiveness>,
+    machine_id: Uuid,
+    tier: MachineLiveness,
+) -> bool {
+    tiers.insert(machine_id, tier).is_none_or(|prev| prev != tier)
 }
 
 /// Re-derive every non-deleted machine's tier from its persisted
@@ -67,32 +76,41 @@ pub async fn sweep(state: &AppState) {
             return;
         }
     };
-    for (id, last_seen_at) in rows {
+    let newly_offline = newly_offline(rows.into_iter().map(|(id, last_seen_at)| {
         let tier = derive(last_seen_at);
-        record_and_broadcast(state, id, tier);
-        if tier == MachineLiveness::Offline {
-            mark_sessions_machine_offline(state, id).await;
-        }
+        (id, tier, record_and_broadcast(state, id, tier))
+    }));
+    if !newly_offline.is_empty() {
+        mark_sessions_machine_offline(state, &newly_offline).await;
     }
 }
 
-/// End every still-live session of an offline machine as `machine_offline`.
-/// Soft: the daemon re-registering the session on reconnect reverts it.
-async fn mark_sessions_machine_offline(state: &AppState, machine_id: Uuid) {
+fn newly_offline(transitions: impl Iterator<Item = (Uuid, MachineLiveness, bool)>) -> Vec<Uuid> {
+    transitions
+        .filter(|&(_, tier, changed)| changed && tier == MachineLiveness::Offline)
+        .map(|(id, ..)| id)
+        .collect()
+}
+
+/// End every still-live session of the given offline machines as
+/// `machine_offline`. Soft: the daemon re-registering the session on reconnect
+/// reverts it.
+async fn mark_sessions_machine_offline(state: &AppState, machine_ids: &[Uuid]) {
     match sqlx::query(
         "UPDATE sessions SET status = 'ended', ended_at = now(), end_reason = 'machine_offline', \
              end_detail = 'machine offline: no daemon heartbeat' \
-         WHERE machine_uuid = $1 AND status IN ('new', 'active', 'inactive') AND end_reason IS NULL",
+         WHERE machine_uuid = ANY($1) AND status IN ('new', 'active', 'inactive') \
+           AND end_reason IS NULL",
     )
-    .bind(machine_id)
+    .bind(machine_ids)
     .execute(&state.pool)
     .await
     {
         Ok(res) if res.rows_affected() > 0 => {
-            tracing::info!(%machine_id, count = res.rows_affected(), "sessions marked machine_offline");
+            tracing::info!(machines = machine_ids.len(), count = res.rows_affected(), "sessions marked machine_offline");
         }
         Ok(_) => {}
-        Err(err) => tracing::warn!(%err, %machine_id, "machine_offline mark failed"),
+        Err(err) => tracing::warn!(%err, "machine_offline mark failed"),
     }
 }
 
@@ -138,6 +156,19 @@ pub async fn sweep_dispatchers(state: &AppState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_the_transition_to_offline_marks_sessions() {
+        let tiers = dashmap::DashMap::new();
+        let id = Uuid::from_u128(7);
+        let mut pass = |tier| newly_offline(std::iter::once((id, tier, record_tier(&tiers, id, tier))));
+        assert!(pass(MachineLiveness::Online).is_empty());
+        assert_eq!(pass(MachineLiveness::Offline), vec![id]);
+        assert!(pass(MachineLiveness::Offline).is_empty());
+        assert!(pass(MachineLiveness::Offline).is_empty());
+        assert!(pass(MachineLiveness::Online).is_empty());
+        assert_eq!(pass(MachineLiveness::Offline), vec![id]);
+    }
 
     #[test]
     fn derive_tiers_by_age() {
