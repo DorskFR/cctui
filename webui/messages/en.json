@@ -1855,7 +1855,7 @@
 	"tool_policy_owners": "Protected GitHub owners",
 	"tool_policy_owners_help": "Blocks owner/repo#123 references and PR, issue, commit or file links to repositories of these owners.",
 	"tool_policy_exempt": "Exempt roots",
-	"tool_policy_exempt_help": "Absolute paths, one per line. Sessions whose working directory is under one of them are not scanned.",
+	"tool_policy_exempt_help": "Absolute paths, one per line. Sessions whose working directory is under one of them are not scanned. Paths are compared as written: a root must not contain symlinks leading out of it.",
 	"tool_policy_saved": "Tool-call guard saved",
 	"conversation_tool_call_blocked": "cctui blocked a {tool} tool call in this session ({rule}).",
 	"conversation_tool_block_dismiss": "Dismiss"

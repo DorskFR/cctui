@@ -70,8 +70,11 @@ impl ToolPolicy {
             protected_owners: clean(self.protected_owners, "protected owners")?,
             exempt_roots: clean(self.exempt_roots, "exempt roots")?
                 .into_iter()
-                .map(|r| r.trim_end_matches('/').to_owned())
-                .filter(|r| !r.is_empty())
+                .map(|r| match path_components(&r) {
+                    Some(c) => format!("/{}", c.join("/")),
+                    None => r,
+                })
+                .filter(|r| r != "/")
                 .collect(),
         };
         for p in &policy.patterns {
@@ -123,11 +126,13 @@ impl CompiledPolicy {
         })
     }
 
+    /// Lexical only: `..` is resolved before comparing, symlinks are not.
     pub fn exempts(&self, cwd: Option<&str>) -> bool {
-        let Some(cwd) = cwd.map(|c| c.trim_end_matches('/')) else { return false };
-        self.exempt_roots.iter().any(|root| {
-            cwd == root || cwd.strip_prefix(root.as_str()).is_some_and(|rest| rest.starts_with('/'))
-        })
+        let Some(cwd) = cwd.and_then(path_components) else { return false };
+        self.exempt_roots
+            .iter()
+            .filter_map(|r| path_components(r))
+            .any(|root| cwd.len() >= root.len() && cwd[..root.len()] == root[..])
     }
 
     pub fn scan_str(&self, s: &str) -> Option<Hit> {
@@ -172,6 +177,25 @@ impl CompiledPolicy {
             _ => None,
         }
     }
+}
+
+/// Components of an absolute path with `.` and `..` resolved lexically; `None`
+/// for a relative path.
+fn path_components(path: &str) -> Option<Vec<&str>> {
+    if !path.starts_with('/') {
+        return None;
+    }
+    let mut out: Vec<&str> = Vec::new();
+    for c in path.split('/') {
+        match c {
+            "" | "." => {}
+            ".." => {
+                out.pop();
+            }
+            c => out.push(c),
+        }
+    }
+    Some(out)
 }
 
 pub fn mask(s: &str) -> String {
@@ -1504,9 +1528,25 @@ mod tests {
         assert!(p.exempts(Some("/home/u/work")));
         assert!(p.exempts(Some("/home/u/work/")));
         assert!(p.exempts(Some("/home/u/work/repo/sub")));
+        assert!(p.exempts(Some("/home/u/./work//repo")));
+        assert!(p.exempts(Some("/home/u/other/../work/repo")));
         assert!(!p.exempts(Some("/home/u/workshop")));
         assert!(!p.exempts(Some("/home/u/other")));
         assert!(!p.exempts(None), "unknown cwd is scanned");
+        assert!(!p.exempts(Some("home/u/work")), "relative cwd is scanned");
+    }
+
+    #[test]
+    fn dot_dot_cannot_escape_an_exempt_root() {
+        let p = policy();
+        for escape in [
+            "/home/u/work/../pub-repo",
+            "/home/u/work/repo/../../pub",
+            "/home/u/work/..",
+            "/home/u/work/../../../..",
+        ] {
+            assert!(!p.exempts(Some(escape)), "{escape}");
+        }
     }
 
     #[test]
@@ -1523,13 +1563,13 @@ mod tests {
     fn policy_normalization_rejects_bad_input() {
         let p = ToolPolicy {
             terms: vec![" a ".into(), "a".into(), String::new()],
-            exempt_roots: vec!["/w/".into()],
+            exempt_roots: vec!["/w/".into(), "/x/./y/../z".into(), "/".into()],
             ..ToolPolicy::default()
         }
         .normalized()
         .unwrap();
         assert_eq!(p.terms, vec!["a"]);
-        assert_eq!(p.exempt_roots, vec!["/w"]);
+        assert_eq!(p.exempt_roots, vec!["/w", "/x/z"]);
         assert!(ToolPolicy { patterns: vec!["(".into()], ..ToolPolicy::default() }.normalized().is_err());
         assert!(ToolPolicy { exempt_roots: vec!["rel".into()], ..ToolPolicy::default() }.normalized().is_err());
     }
