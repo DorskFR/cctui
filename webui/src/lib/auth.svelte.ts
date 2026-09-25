@@ -1,4 +1,5 @@
 import { browser } from '$app/environment';
+import { apiFetch } from './api';
 import { apiBase } from './config';
 import { clearCctuiStorage } from './drafts';
 import { clearGhreviewToken } from './ghreview';
@@ -25,7 +26,7 @@ class Auth {
 	async init(): Promise<void> {
 		if (!browser) return;
 		try {
-			const res = await fetch(`${apiBase()}/me`, { credentials: 'include' });
+			const res = await apiFetch(`${apiBase()}/me`);
 			this.isAuthed = res.ok;
 		} catch {
 			this.isAuthed = false;
@@ -36,10 +37,9 @@ class Auth {
 
 	/** Exchange a token for the `HttpOnly` cookie. Returns true on success. */
 	async login(token: string): Promise<boolean> {
-		const res = await fetch(`${apiBase()}/auth/login`, {
+		const res = await apiFetch(`${apiBase()}/auth/login`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
-			credentials: 'include',
 			body: JSON.stringify({ token })
 		});
 		this.isAuthed = res.ok;
@@ -53,7 +53,7 @@ class Auth {
 	async passkeyConfig(): Promise<PasskeyConfig | null> {
 		if (!browser || !passkeysSupported()) return null;
 		try {
-			const res = await fetch(`${apiBase()}/auth/passkey/config`, { credentials: 'include' });
+			const res = await apiFetch(`${apiBase()}/auth/passkey/config`);
 			if (!res.ok) return null;
 			return (await res.json()) as PasskeyConfig;
 		} catch {
@@ -73,9 +73,8 @@ class Auth {
 		mediation?: CredentialMediationRequirement,
 		signal?: AbortSignal
 	): Promise<boolean> {
-		const startRes = await fetch(`${apiBase()}/auth/passkey/login/start`, {
-			method: 'POST',
-			credentials: 'include'
+		const startRes = await apiFetch(`${apiBase()}/auth/passkey/login/start`, {
+			method: 'POST'
 		});
 		if (!startRes.ok) return false;
 		const challenge = (await startRes.json()) as PasskeyChallenge;
@@ -84,10 +83,9 @@ class Auth {
 			mediation,
 			signal
 		);
-		const finishRes = await fetch(`${apiBase()}/auth/passkey/login/finish`, {
+		const finishRes = await apiFetch(`${apiBase()}/auth/passkey/login/finish`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
-			credentials: 'include',
 			body: JSON.stringify({ challenge_id: challenge.challenge_id, credential })
 		});
 		this.isAuthed = finishRes.ok;
@@ -97,7 +95,7 @@ class Auth {
 	/** Clear the cookie server-side and drop back to the login screen. */
 	async logout(): Promise<void> {
 		try {
-			await fetch(`${apiBase()}/auth/logout`, { method: 'POST', credentials: 'include' });
+			await apiFetch(`${apiBase()}/auth/logout`, { method: 'POST' });
 		} catch {
 			/* clear locally regardless of network outcome */
 		}

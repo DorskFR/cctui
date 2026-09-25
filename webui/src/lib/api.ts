@@ -13,18 +13,20 @@ export class ApiError extends Error {
 
 type Method = 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE';
 
-interface RequestOpts {
+export interface RequestOpts {
 	method?: Method;
-	path: string;
 	body?: unknown;
 	/** when set, send as `?key=value`; undefined values are dropped */
 	query?: Record<string, string | number | boolean | undefined>;
 	/** let the request outlive the document (unload-time flushes) */
 	keepalive?: boolean;
+	/** Bearer for a non-cctui backend: no cctui cookie is sent, and its 401 does
+	 *  not end the cctui session. */
+	token?: string;
 }
 
-function buildUrl(path: string, query?: RequestOpts['query']): string {
-	const url = new URL(`${apiBase()}${path}`);
+function buildUrl(base: string, path: string, query?: RequestOpts['query']): string {
+	const url = new URL(`${base}${path}`, globalThis.location?.href);
 	if (query) {
 		for (const [k, v] of Object.entries(query)) {
 			if (v !== undefined) url.searchParams.set(k, String(v));
@@ -48,8 +50,8 @@ function rememberEtag(url: string, etag: string, text: string) {
 	}
 }
 
-async function handle<T>(res: Response, url: string = res.url): Promise<T> {
-	if (res.status === 401) {
+async function handle<T>(res: Response, url: string = res.url, session = true): Promise<T> {
+	if (res.status === 401 && session) {
 		auth.markLoggedOut();
 		throw new ApiError(401, 'Unauthorized');
 	}
@@ -62,8 +64,9 @@ async function handle<T>(res: Response, url: string = res.url): Promise<T> {
 	if (!res.ok) {
 		let msg = `${res.status} ${res.statusText}`;
 		try {
-			const j = await res.json();
-			if (j?.error) msg = j.error;
+			const err = (await res.json())?.error;
+			if (typeof err === 'string' && err) msg = err;
+			else if (typeof err?.message === 'string') msg = err.message;
 		} catch {
 			/* non-JSON error body */
 		}
@@ -83,10 +86,12 @@ export function errMessage(e: unknown): string {
 	return typeof e === 'string' ? e : String(e);
 }
 
-async function request<T>({ method = 'GET', path, body, query, keepalive }: RequestOpts): Promise<T> {
+export async function request<T>(base: string, path: string, opts: RequestOpts = {}): Promise<T> {
+	const { method = 'GET', body, query, keepalive, token } = opts;
 	const headers = new Headers();
 	if (body !== undefined) headers.set('Content-Type', 'application/json');
-	const url = buildUrl(path, query);
+	if (token) headers.set('Authorization', `Bearer ${token}`);
+	const url = buildUrl(base, path, query);
 	const cached = method === 'GET' ? revalidation.get(url) : undefined;
 	if (cached) headers.set('If-None-Match', cached.etag);
 
@@ -95,33 +100,39 @@ async function request<T>({ method = 'GET', path, body, query, keepalive }: Requ
 	const res = await fetch(url, {
 		method,
 		headers,
-		credentials: 'include',
+		credentials: token ? 'omit' : 'include',
 		keepalive,
 		body: body !== undefined ? JSON.stringify(body) : undefined
 	});
 
-	return handle<T>(res, url);
+	return handle<T>(res, url, !token);
+}
+
+/** Raw cookie-authed fetch for callers that branch on the `Response` itself. */
+export function apiFetch(url: string, init: RequestInit = {}): Promise<Response> {
+	return fetch(url, { ...init, credentials: 'include' });
+}
+
+/** Fetch a same-origin file/blob href; the caller inspects status and body. */
+export function apiBlob(href: string): Promise<Response> {
+	return apiFetch(href);
 }
 
 /** POST a `multipart/form-data` body (file uploads). The browser sets
  *  the `Content-Type` boundary itself, so we must NOT set it here. Shares the
  *  auth + error handling of {@link request}. */
 async function postForm<T>(path: string, form: FormData): Promise<T> {
-	const res = await fetch(buildUrl(path), {
-		method: 'POST',
-		credentials: 'include',
-		body: form
-	});
-
+	const res = await apiFetch(buildUrl(apiBase(), path), { method: 'POST', body: form });
 	return handle<T>(res);
 }
 
 export const api = {
-	get: <T>(path: string, query?: RequestOpts['query']) => request<T>({ path, query }),
-	post: <T>(path: string, body?: unknown) => request<T>({ method: 'POST', path, body }),
+	get: <T>(path: string, query?: RequestOpts['query']) => request<T>(apiBase(), path, { query }),
+	post: <T>(path: string, body?: unknown) => request<T>(apiBase(), path, { method: 'POST', body }),
 	postForm,
-	patch: <T>(path: string, body?: unknown) => request<T>({ method: 'PATCH', path, body }),
+	patch: <T>(path: string, body?: unknown) =>
+		request<T>(apiBase(), path, { method: 'PATCH', body }),
 	put: <T>(path: string, body?: unknown, opts?: { keepalive?: boolean }) =>
-		request<T>({ method: 'PUT', path, body, keepalive: opts?.keepalive }),
-	del: <T>(path: string) => request<T>({ method: 'DELETE', path })
+		request<T>(apiBase(), path, { method: 'PUT', body, keepalive: opts?.keepalive }),
+	del: <T>(path: string) => request<T>(apiBase(), path, { method: 'DELETE' })
 };
