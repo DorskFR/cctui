@@ -85,6 +85,6 @@ pub async fn put_tool_policy(
         .await
         .map_err(|e| db_err(&e))?;
     }
-    invalidate_policy_cache();
+    invalidate_policy_cache(id);
     Ok(Json(policy))
 }
