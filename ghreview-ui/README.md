@@ -137,7 +137,7 @@ directly and hardcodes no colors; adding a color means adding a token, not a lit
 
 WCAG AA (≥4.5:1) is enforced by `src/lib/theme/contrast.test.ts`, which parses the
 `data-theme` blocks out of `tokens.css` and asserts text and diff fg/bg pairs across
-all four themes (hex→luminance helper in `contrast.ts`).
+all four themes.
 
 ## Keyboard map
 
