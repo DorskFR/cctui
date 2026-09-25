@@ -85,14 +85,14 @@ pub(super) fn rollout_link(path: &Path) -> RolloutLink {
     let Some(payload) = session_meta_payload(path) else {
         return RolloutLink { source: None, subagent_parent: None, launcher_parent: None };
     };
-    let source = payload.get("source").and_then(super::thread_list::parse_source);
-    let subagent_parent = super::thread_list::parse_parent(&payload);
+    let source = payload.get("source").and_then(crate::adapters::codex::thread_list::parse_source);
+    let subagent_parent = crate::adapters::codex::thread_list::parse_parent(&payload);
     let launcher_parent = payload
         .get("originator")
         .and_then(Value::as_str)
         .and_then(|s| s.strip_prefix(LAUNCHER_ORIGINATOR_PREFIX))
         .filter(|s| !s.is_empty())
-        .map(super::thread_list::canonical_id);
+        .map(crate::adapters::codex::thread_list::canonical_id);
     RolloutLink { source, subagent_parent, launcher_parent }
 }
 
@@ -146,7 +146,7 @@ pub(super) fn read_new_lines(
         if trimmed.contains("\"rate_limits\"")
             && let Some(limits) = serde_json::from_str::<Value>(trimmed)
                 .ok()
-                .and_then(|v| super::rate_limits::from_rollout_line(local_id, &v))
+                .and_then(|v| crate::adapters::codex::rate_limits::from_rollout_line(local_id, &v))
         {
             out.push(limits);
         }
@@ -270,7 +270,7 @@ fn turn_context_status(local_id: &str, value: &Value) -> Option<AdapterEvent> {
 /// `info.last_token_usage` = that response's delta and `info.total_token_usage`
 /// = the running session total. We emit the `last` delta so the server's
 /// per-message SUM reconstructs the total, exactly like the app-server driver's
-/// [`super::app_server`] `thread/tokenUsage/updated` mapping (`inputTokens`
+/// [`crate::adapters::codex::app_server`] `thread/tokenUsage/updated` mapping (`inputTokens`
 /// includes the cached count, so subtract it for the non-cached/cached split
 /// the claude + app-server adapters use).
 ///

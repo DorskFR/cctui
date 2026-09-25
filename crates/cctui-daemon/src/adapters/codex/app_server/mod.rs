@@ -35,7 +35,9 @@ mod rpc;
 mod session;
 mod thread_state;
 
-pub use config::{AppServerConfig, gateway_provider_overrides};
+pub use config::AppServerConfig;
+#[cfg(test)]
+pub(super) use config::gateway_provider_overrides;
 pub use diagnose::{DiagnoseRings, set_ring_scrub, shared_rings};
 pub use lifecycle::{LifecycleOp, run_thread_lifecycle};
 pub use notifications::item_event;

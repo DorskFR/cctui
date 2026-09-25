@@ -1,6 +1,8 @@
 use serde_json::{Value, json};
 
-use super::rpc::{ID_INITIALIZE, ID_THREAD_START};
+use super::rpc::ID_INITIALIZE;
+#[cfg(test)]
+use super::rpc::ID_THREAD_START;
 use crate::adapters::codex::contract;
 
 /// Thread identity extracted from a `thread/start` response.
