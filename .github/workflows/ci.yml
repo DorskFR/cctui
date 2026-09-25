@@ -16,6 +16,7 @@ concurrency:
 env:
   # Keep in lockstep with rust-toolchain.toml and deploy/*.Dockerfile.
   RUST_VERSION: "1.97.1"
+  CARGO_INCREMENTAL: "0"
 
 jobs:
   fmt:
