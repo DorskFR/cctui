@@ -169,22 +169,7 @@
 	let barWidth = $state(Infinity);
 	const collapsed = $derived(barWidth < COLLAPSE_BELOW);
 
-	// The meta row drops items as it narrows, at the same widths the container
-	// queries below degrade the model text. Driving the drop from the measured
-	// width (rather than `display:none`) is what lets the ⓘ popover hold exactly
-	// what the row no longer shows.
-	const LANGFUSE_BELOW_REM = 40;
-	const MODEL_BELOW_REM = 26;
-	let headWidth = $state(Infinity);
-	let rootFontPx = $state(16);
-	$effect(() => {
-		const px = parseFloat(getComputedStyle(document.documentElement).fontSize);
-		if (px > 0) rootFontPx = px;
-	});
-	const hideLangfuse = $derived(headWidth < LANGFUSE_BELOW_REM * rootFontPx);
-	const hideModel = $derived(headWidth < MODEL_BELOW_REM * rootFontPx);
 	const hasModelMeta = $derived((isCodexSession && !archived) || !!session.model || !!session.effort);
-	const showDetails = $derived((hideLangfuse || hideModel) && hasModelMeta);
 
 	const overflowItems = $derived<MenuItem[]>([
 		...(collapsed
@@ -320,7 +305,7 @@
 	{/if}
 {/snippet}
 
-<div class="dhead" data-journey="header" bind:clientWidth={headWidth}>
+<div class="dhead" data-journey="header">
 	<div class="dbar" bind:clientWidth={barWidth}>
 	<Toolbar collapseBelow="{COLLAPSE_BELOW}px" density={collapsed ? 'compact' : 'default'}>
 		<IconButton icon="chevron-left" label={m.drawer_back()} box={collapsed ? 'sm' : 'md'} onclick={onclose} />
@@ -445,22 +430,24 @@
 		{/if}
 		<div class="meta-trail">
 		<TokenUsage usage={session.token_usage} />
-		{#if !hideLangfuse}<span class="langfuse"><LangfuseChip id={session.id} /></span>{/if}
-		{#if !hideModel}{@render modelMeta('drawer')}{/if}
+		<span class="langfuse"><LangfuseChip id={session.id} /></span>
+		{@render modelMeta('drawer')}
 		<AdapterIcon adapter={session.adapter_id} size={20} />
-		{#if showDetails}
-			<Popover
-				label={m.drawer_meta_details()}
-				placement="bottom-end"
-				box="sm"
-				data-journey="head-details"
-			>
-				{#snippet trigger()}<Icon name="info" size={16} />{/snippet}
-				<div class="metapop">
-					{#if hideLangfuse}<span class="langfuse"><LangfuseChip id={session.id} /></span>{/if}
-					{@render modelMeta('drawer-details')}
-				</div>
-			</Popover>
+		{#if hasModelMeta}
+			<span class="meta-details">
+				<Popover
+					label={m.drawer_meta_details()}
+					placement="bottom-end"
+					box="sm"
+					data-journey="head-details"
+				>
+					{#snippet trigger()}<Icon name="info" size={16} />{/snippet}
+					<div class="metapop">
+						<span class="langfuse"><LangfuseChip id={session.id} /></span>
+						{@render modelMeta('drawer-details')}
+					</div>
+				</Popover>
+			</span>
 		{/if}
 		</div>
 	</div>
@@ -544,10 +531,19 @@
 	.m-short {
 		display: none;
 	}
+	.model-edit {
+		display: contents;
+	}
+	/* The ⓘ details trigger exists only to carry what the row has dropped, so it
+	   appears exactly when the first item goes. */
+	.meta-details {
+		display: none;
+	}
 	@container drawer-head (max-width: 40rem) {
 		.branch {
 			max-width: 8rem;
 		}
+		.langfuse,
 		.m-effort,
 		.m-full {
 			display: none;
@@ -555,9 +551,15 @@
 		.m-short {
 			display: inline;
 		}
+		.meta-details {
+			display: inline-flex;
+		}
 	}
-	.model-edit {
-		display: contents;
+	@container drawer-head (max-width: 26rem) {
+		.model,
+		.model-edit {
+			display: none;
+		}
 	}
 	/* The popover holds what the row dropped, so it always shows the full model
 	   text the narrow row degrades. */
@@ -575,5 +577,12 @@
 	}
 	.metapop .m-short {
 		display: none;
+	}
+	.metapop .langfuse,
+	.metapop .model-edit {
+		display: contents;
+	}
+	.metapop .model {
+		display: inline-flex;
 	}
 </style>
