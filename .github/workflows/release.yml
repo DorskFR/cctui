@@ -157,7 +157,22 @@ jobs:
           merge-multiple: true
       - name: Compute checksums
         working-directory: dist
-        run: sha256sum cctui-* cctui-daemon-* > SHA256SUMS
+        run: sha256sum cctui-* > SHA256SUMS
+      - name: Install minisign
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends minisign
+      - name: Sign release assets
+        working-directory: dist
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+        run: |
+          [ -n "$MINISIGN_SECRET_KEY" ] || { echo "MINISIGN_SECRET_KEY is not set" >&2; exit 1; }
+          key="$(mktemp)"
+          trap 'rm -f "$key"' EXIT
+          chmod 0600 "$key"
+          printf '%s\n' "$MINISIGN_SECRET_KEY" > "$key"
+          for f in cctui-* SHA256SUMS; do
+            minisign -S -s "$key" -m "$f" < /dev/null
+          done
       - name: Resolve tag
         id: tag
         run: |
@@ -174,6 +189,7 @@ jobs:
             dist/cctui-*
             dist/cctui-daemon-*
             dist/SHA256SUMS
+            dist/*.minisig
 
   # linux/amd64 only: rust-via-QEMU arm64 is too slow to justify here. Each
   # image keeps its own gha layer cache scope so unchanged layers (apt, node,
