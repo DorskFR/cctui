@@ -203,7 +203,8 @@ impl Config {
             anyhow::bail!("invalid configuration:\n  {}", errors.join("\n  "));
         }
 
-        let external_url = get("CCTUI_EXTERNAL_URL").unwrap_or_else(|| "http://localhost:8700".into());
+        let external_url =
+            get("CCTUI_EXTERNAL_URL").unwrap_or_else(|| "http://localhost:8700".into());
         let allowed_origins =
             parse_allowed_origins(get("CCTUI_ALLOWED_ORIGINS").as_deref(), &external_url);
         Ok(Self {
@@ -224,7 +225,9 @@ impl Config {
                 .or_else(|| get("GH_TOKEN"))
                 .filter(|s| !s.trim().is_empty()),
             http_dispatchers,
-            dispatchers: set("CCTUI_DISPATCHERS").map(|s| parse_dispatchers(&s)).unwrap_or_default(),
+            dispatchers: set("CCTUI_DISPATCHERS")
+                .map(|s| parse_dispatchers(&s))
+                .unwrap_or_default(),
             ephemeral_machine_ttl_secs: get("CCTUI_EPHEMERAL_MACHINE_TTL_HOURS")
                 .and_then(|s| s.parse::<u64>().ok())
                 .map_or(2 * 60 * 60, |hours| hours * 60 * 60),
