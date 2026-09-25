@@ -896,3 +896,24 @@ fn legacy_state_file_without_visits_is_read() {
     std::fs::write(&state_file, "{\"step\": 1}").unwrap();
     assert_eq!(engine.transition(&json!(2))["ok"], json!(true));
 }
+
+#[test]
+fn test_guard_address_mention_is_not_a_bypass() {
+    let prompt = "### Step 1: Research\n[allowed]: git fetch\n[disallowed]: *\n[transition]: Exit\n";
+    let t = make_engine("", prompt);
+    let check = |cmd: &str| decision(&t.engine.check("Bash", &json!({ "command": cmd })));
+
+    assert_eq!(check("curl -s http://127.0.0.1:9999/state"), "allow");
+    assert_eq!(check("rm -rf x; echo 127.0.0.1:9999"), "deny");
+    assert_eq!(check("rm -rf x # localhost:9999"), "deny");
+    assert_eq!(check("python3 -c x git fetch"), "deny");
+    assert_eq!(check("git fetch & rm x"), "deny");
+    assert_eq!(check("git -C /repo fetch"), "allow");
+}
+
+#[test]
+fn test_git_global_flags_cannot_dodge_disallow() {
+    for cmd in ["git --bare push", "git -p push", "git --paginate --no-replace-objects push"] {
+        assert!(!ok("Bash", &json!({ "command": cmd }), &["*"], &["git push"]), "{cmd}");
+    }
+}
