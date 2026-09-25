@@ -27,13 +27,11 @@
 		Cluster,
 		ConfirmModal,
 		Container,
-		Dot,
 		Modal,
 		Spinner,
 		Text
 	} from '@dorsk/tsumikit';
-	import MachineBadge from '$lib/components/molecules/MachineBadge.svelte';
-	import SessionSectionHeader from '$lib/components/molecules/SessionSectionHeader.svelte';
+	import SessionGroupHeader from './SessionGroupHeader.svelte';
 	import { drafts, clearSpawnSlot, currentSpawnSlot, readSpawnSlot } from '$lib/drafts';
 	import { notify } from '$lib/notify.svelte';
 	import { settings } from '$lib/settings.svelte';
@@ -104,20 +102,6 @@
 	const machines = useAllMachines(() => sp.groupBy === 'machine');
 	const machineLiveness = (name: string): 'online' | 'stale' | 'offline' | null =>
 		(machines.data ?? []).find((mc) => mc.name === name)?.liveness ?? null;
-	function bucketColor(key: string | null | undefined): string {
-		switch (key) {
-			case 'blocked':
-				return 'var(--warn)';
-			case 'review':
-				return 'var(--accent)';
-			case 'working':
-				return 'var(--ok)';
-			case 'dispatched':
-				return 'var(--info)';
-			default:
-				return 'var(--text-faint)';
-		}
-	}
 
 	// ── Deep-linkable session ─────────────────────────────────────
 	// A session's stable, shareable URL is /sessions?session=<id>. The whole SPA
@@ -501,48 +485,23 @@
 	{@render loadMore()}
 {/snippet}
 
-<!-- One header for every section: label, live count, sort menu, an eye toggle
-     that collapses the rows, and (where `archiveIds` is given) a bulk archive
-     behind the shared confirm dialog. -->
 {#snippet groupHeader(
 	key: string,
 	label: string,
 	count: number,
 	opts: { hue?: number | null; bucket?: string | null; machine?: string | null; archiveIds?: string[] }
 )}
-	{@const liveness = opts.machine ? machineLiveness(opts.machine) : null}
-	{@const archiveIds = opts.archiveIds}
-	<SessionSectionHeader
+	<SessionGroupHeader
+		{sp}
+		{key}
 		{label}
-		title={opts.machine ? '' : label}
 		{count}
-		hue={opts.machine || opts.hue == null ? undefined : opts.hue}
-		lead={headerLead}
-		sort={sp.sortState.sort}
-		sortDir={sp.sortState.sortDir}
-		onsort={sp.selectSort}
-		hidden={sp.hiddenSections.has(key)}
-		ontogglehidden={() => sp.toggleSection(key)}
-		onarchive={archiveIds ? () => sp.archiveSection(label, archiveIds) : undefined}
-		archiving={sp.archiving}
+		hue={opts.hue}
+		bucket={opts.bucket}
+		machine={opts.machine}
+		liveness={opts.machine ? machineLiveness(opts.machine) : null}
+		archiveIds={opts.archiveIds}
 	/>
-	{#snippet headerLead()}
-		{#if opts.machine}
-			<MachineBadge name={opts.machine} id={opts.machine} hue={opts.hue} mono />
-			{#if liveness}
-				<span class="liveness" class:online={liveness === 'online'}>
-					<Dot status={liveness === 'online' ? 'active' : liveness === 'stale' ? 'stale' : 'dead'} />
-					{liveness === 'online'
-						? m.sessions_machine_online()
-						: liveness === 'stale'
-							? m.sessions_machine_stale()
-							: m.sessions_machine_offline()}
-				</span>
-			{/if}
-		{:else if opts.bucket}
-			<Dot color={bucketColor(opts.bucket)} />
-		{/if}
-	{/snippet}
 {/snippet}
 
 {#snippet liveSections()}
@@ -750,16 +709,6 @@
 		display: flex;
 		justify-content: center;
 		padding: var(--sp-3) 0;
-	}
-	.liveness {
-		display: inline-flex;
-		align-items: center;
-		gap: var(--sp-1);
-		font-size: var(--fs-xs);
-		color: var(--text-faint);
-	}
-	.liveness.online {
-		color: var(--ok);
 	}
 	/* Detailed cards auto-fill the strip: never narrower than a compact card,
 	   capped so a wide window packs more columns instead of stretching them,
