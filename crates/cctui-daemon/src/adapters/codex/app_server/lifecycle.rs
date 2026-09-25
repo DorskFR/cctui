@@ -160,10 +160,9 @@ mod tests {
 
     #[test]
     fn lifecycle_request_shapes() {
-        for (op, method) in [
-            (LifecycleOp::Archive, "thread/archive"),
-            (LifecycleOp::Unarchive, "thread/unarchive"),
-        ] {
+        for (op, method) in
+            [(LifecycleOp::Archive, "thread/archive"), (LifecycleOp::Unarchive, "thread/unarchive")]
+        {
             let req = thread_lifecycle_req(7, op, "thread-abc");
             assert_eq!(req["jsonrpc"], "2.0");
             assert_eq!(req["id"], 7);

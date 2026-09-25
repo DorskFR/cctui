@@ -1,6 +1,9 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
+use cctui_proto::codex_catalog::CodexModel;
 use serde_json::{Value, json};
+
+use super::rpc::ApprovalKind;
 
 /// A turn lifecycle transition parsed from a `turn/started` or `turn/completed`
 /// notification. The driver tracks the active turn id from these so a
@@ -213,6 +216,39 @@ pub fn steer_recovery(error: &str) -> SteerRecovery {
     } else {
         SteerRecovery::FallbackToStart
     }
+}
+
+/// What the driver knows about its one thread between frames.
+#[derive(Default)]
+pub(super) struct ThreadState {
+    /// Empty until `thread/start|resume|fork` answers.
+    pub(super) local_id: String,
+    pub(super) codex_version: Option<String>,
+    pub(super) rollout_path: Option<String>,
+    pub(super) active_turn: ActiveTurn,
+    pub(super) items: ItemAccumulator,
+    /// `request_id` (surfaced to TUI) → (`rpc_id` echoed to codex, decision kind).
+    pub(super) pending_approvals: HashMap<String, (Value, ApprovalKind)>,
+    /// Parked `item/tool/requestUserInput` requests: the next user reply
+    /// answers the oldest one (codex blocks the turn on it) rather than
+    /// starting a fresh turn.
+    pub(super) pending_questions: VecDeque<(Value, Vec<String>)>,
+    /// `turn/steer` request id → its text, for the `turn/start` fallback.
+    pub(super) steer_texts: HashMap<i64, String>,
+    /// In-place model/effort override. A `SetModel` records it here; every
+    /// subsequent `turn/start` carries it so codex adopts it as the later
+    /// default. Left `None` at launch — the spawn-time `-c model=`/
+    /// `-c model_reasoning_effort=` flags already seed the initial turns.
+    pub(super) override_model: Option<String>,
+    pub(super) override_effort: Option<String>,
+    /// `model/list` pages accumulated over this session's authenticated
+    /// connection; the counter bounds `nextCursor` following.
+    pub(super) model_catalog: Vec<CodexModel>,
+    pub(super) model_catalog_pages: usize,
+    /// `model/list` issued before the thread request to reject an unknown
+    /// `-c model=` up front; while set, that request is part of the handshake.
+    pub(super) validating_model: bool,
+    pub(super) catalog_sent: bool,
 }
 
 #[cfg(test)]
