@@ -1,6 +1,6 @@
 //! Per-session brief, fork, archive, pin, keepalive and policy routes.
 
-use super::{GET, sess_read, sess_write};
+use super::{sess_read, sess_write};
 use crate::authz::{Authn, Routes};
 use crate::routes;
 use axum::http::Method;
@@ -11,7 +11,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[Method::GET],
         "/sessions/{id}/brief",
         "Render a session's user/assistant transcript as a capped markdown brief.",
-        get(brief::session_brief),
+        get(crate::brief::session_brief),
         Authn::Bearer,
         sess_read(),
     )

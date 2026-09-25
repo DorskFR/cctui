@@ -60,7 +60,7 @@ pub(super) fn register(r: Routes) -> Routes {
         &[GET],
         "/machines/resources",
         "The caller's daemon machines with their last host CPU/memory/disk snapshot.",
-        get(machine_resources::list),
+        get(crate::machine_resources::list),
         Authn::Bearer,
         Authenticated,
     )
