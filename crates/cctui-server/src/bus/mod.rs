@@ -377,8 +377,14 @@ impl Bus {
         self.inner.session_conn.insert(session_id.to_owned(), conn_id);
     }
 
+    /// Drop `session_id`'s binding if `conn_id` still holds it.
+    pub fn unbind_session_conn(&self, session_id: &str, conn_id: Uuid) {
+        self.inner.session_conn.remove_if(session_id, |_, owner| *owner == conn_id);
+    }
+
     /// The channel a SESSION-scoped frame must take. The connection that
-    /// announced the session when known; otherwise the machine entry, but only
+    /// announced the session when known and authenticated as the session's
+    /// owning `machine`; otherwise the machine entry, but only
     /// while that machine has at most one live connection here. With several
     /// connections and no binding, any choice is a coin flip that silently
     /// delivers one session's command to another's worker, so refuse instead.
@@ -389,6 +395,7 @@ impl Bus {
     ) -> Option<mpsc::Sender<DaemonFrameDown>> {
         if let Some(conn_id) = self.inner.session_conn.get(session_id).map(|r| *r)
             && let Some(entry) = self.inner.conns.get(&conn_id)
+            && entry.0 == machine
         {
             return Some(entry.1.clone());
         }
@@ -1186,6 +1193,25 @@ mod tests {
         assert_eq!(replied_to(&rx_b.recv().await.unwrap()), "sess-b");
         assert!(rx_a.try_recv().is_err(), "conn A must not see conn B's session");
         assert!(rx_b.try_recv().is_err(), "conn B must not see conn A's session");
+    }
+
+    /// A binding from a connection of another machine never overrides the
+    /// session's owning machine.
+    #[tokio::test]
+    async fn a_foreign_connections_binding_does_not_capture_the_session() {
+        let bus = bus();
+        let owner = Uuid::new_v4();
+        let intruder = Uuid::new_v4();
+        let (tx_a, mut rx_a) = mpsc::channel(8);
+        let (tx_b, mut rx_b) = mpsc::channel(8);
+        let conn_b = Uuid::new_v4();
+        bus.register_daemon(owner, Uuid::new_v4(), tx_a);
+        bus.register_daemon(intruder, conn_b, tx_b);
+        bus.bind_session_conn("sess", conn_b);
+
+        bus.command_daemon_for_session(owner, "sess", reply("sess")).await.unwrap();
+        assert_eq!(replied_to(&rx_a.recv().await.unwrap()), "sess");
+        assert!(rx_b.try_recv().is_err(), "the intruder must not receive the session's frames");
     }
 
     /// The ordinary single-connection machine: an unannounced session still

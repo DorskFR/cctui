@@ -122,22 +122,17 @@ pub async fn session_gateway_env(
         .and_then(|v| v.strip_prefix("Bearer "))
         .ok_or(StatusCode::UNAUTHORIZED)?;
     let ctx = state.auth_config.validate(token).await.ok_or(StatusCode::UNAUTHORIZED)?;
-    if ctx.machine_id.is_none() {
+    let Some(machine_id) = ctx.machine_id else {
         return Err(StatusCode::FORBIDDEN);
-    }
+    };
 
-    // User-scope: only resolve env for sessions owned by the machine's user. A
-    // session row that exists but belongs to another user yields "not bound"
-    // (the daemon launches without gateway env) rather than leaking that user's
-    // account credential. A missing row (spawn-time race before register) is
-    // allowed through — the account resolves via the freshly-minted token row.
-    let owner: Option<Uuid> = sqlx::query_scalar("SELECT user_id FROM sessions WHERE id = $1")
-        .bind(&session_id)
-        .fetch_optional(&state.pool)
+    let allowed = gateway_env_allowed(&state.pool, ctx.user_id, machine_id, &session_id)
         .await
-        .ok()
-        .flatten();
-    if owner.is_some_and(|o| o != ctx.user_id) {
+        .map_err(|e| {
+            tracing::error!(%session_id, "daemon gateway-env ownership lookup failed: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    if !allowed {
         return Ok(Json(cctui_proto::api::GatewayEnvResponse {
             account_bound: false,
             env: std::collections::BTreeMap::default(),
@@ -218,6 +213,26 @@ pub async fn session_gateway_env(
         settings,
         whip_phrases,
         spawn_capability: spawn_capability_for(&state, &session_id).await,
+    }))
+}
+
+/// Whether a daemon may resolve `session_id`'s gateway env: the row is missing
+/// (spawn-time race before register; the account resolves via the freshly
+/// minted token row) or owned by `user_id`, and by `machine_id` when the row
+/// names a machine. A NULL owner is foreign.
+async fn gateway_env_allowed(
+    pool: &sqlx::PgPool,
+    user_id: Uuid,
+    machine_id: Uuid,
+    session_id: &str,
+) -> Result<bool, sqlx::Error> {
+    let row: Option<(Option<Uuid>, Option<Uuid>)> =
+        sqlx::query_as("SELECT user_id, machine_uuid FROM sessions WHERE id = $1")
+            .bind(session_id)
+            .fetch_optional(pool)
+            .await?;
+    Ok(row.is_none_or(|(owner, machine)| {
+        owner == Some(user_id) && machine.is_none_or(|m| m == machine_id)
     }))
 }
 
@@ -381,6 +396,7 @@ fn bearer_token(headers: &axum::http::HeaderMap) -> Option<String> {
 
 enum Inbound {
     Data(String),
+    Binary(Vec<u8>),
     Skip,
     Done,
     Idle,
@@ -406,7 +422,7 @@ where
                 *last_frame = tokio::time::Instant::now();
                 match msg {
                     Message::Text(t) => Inbound::Data(t.to_string()),
-                    Message::Binary(b) => Inbound::Data(String::from_utf8_lossy(&b).to_string()),
+                    Message::Binary(b) => Inbound::Binary(b.to_vec()),
                     Message::Close(_) => Inbound::Done,
                     _ => Inbound::Skip,
                 }
@@ -467,15 +483,31 @@ fn handle_chunk(
 /// bad codec / base64 / payload — logged and dropped like any malformed frame.
 fn decode_compressed_frame(codec: &str, data: &str) -> Option<DaemonFrameUp> {
     match cctui_proto::compress::decode_compressed(codec, data) {
-        Ok(bytes) => match serde_json::from_slice::<DaemonFrameUp>(&bytes) {
-            Ok(inner) => Some(inner),
-            Err(err) => {
-                tracing::warn!(%err, "decompressed frame did not parse");
-                None
-            }
-        },
+        Ok(bytes) => parse_decompressed(&bytes),
         Err(err) => {
             tracing::warn!(%err, "compressed frame failed to decode");
+            None
+        }
+    }
+}
+
+/// Decode a binary WS message: the raw zstd payload a `Compressed` frame
+/// carries base64-encoded.
+fn decode_binary_frame(data: &[u8]) -> Option<DaemonFrameUp> {
+    match cctui_proto::compress::decompress_codec(cctui_proto::compress::CODEC_ZSTD, data) {
+        Ok(bytes) => parse_decompressed(&bytes),
+        Err(err) => {
+            tracing::warn!(%err, "binary frame failed to decompress");
+            None
+        }
+    }
+}
+
+fn parse_decompressed(bytes: &[u8]) -> Option<DaemonFrameUp> {
+    match serde_json::from_slice::<DaemonFrameUp>(bytes) {
+        Ok(inner) => Some(inner),
+        Err(err) => {
+            tracing::warn!(%err, "decompressed frame did not parse");
             None
         }
     }
@@ -606,13 +638,14 @@ async fn handle(socket: WebSocket, state: AppState, machine_id: Uuid, user_id: U
     liveness.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     liveness.tick().await;
     let mut reasm = Reassembler::new(MAX_TRANSFER_BYTES);
+    let mut owners = SessionOwners::new(machine_id, user_id);
     loop {
         reasm.evict_older_than(STALE_TRANSFER);
-        let payload =
+        let inbound =
             match next_inbound(&mut stream, &mut last_frame, &mut liveness, DAEMON_READ_TIMEOUT)
                 .await
             {
-                Inbound::Data(payload) => payload,
+                data @ (Inbound::Data(_) | Inbound::Binary(_)) => data,
                 Inbound::Skip => continue,
                 Inbound::Done => break,
                 Inbound::Idle => {
@@ -630,12 +663,19 @@ async fn handle(socket: WebSocket, state: AppState, machine_id: Uuid, user_id: U
                     break;
                 }
             };
-        let frame: DaemonFrameUp = match serde_json::from_str(&payload) {
-            Ok(f) => f,
-            Err(err) => {
-                tracing::warn!(%err, "bad daemon frame");
-                continue;
-            }
+        let frame: DaemonFrameUp = match inbound {
+            Inbound::Data(text) => match serde_json::from_str(&text) {
+                Ok(f) => f,
+                Err(err) => {
+                    tracing::warn!(%err, "bad daemon frame");
+                    continue;
+                }
+            },
+            Inbound::Binary(data) => match decode_binary_frame(&data) {
+                Some(inner) => DaemonFrameUp::Batch { frames: expand_batch(inner) },
+                None => continue,
+            },
+            Inbound::Skip | Inbound::Done | Inbound::Idle => continue,
         };
         let leaves: Vec<DaemonFrameUp> = match frame {
             DaemonFrameUp::Chunk { transfer_id, chunk_index, total_chunks, data, codec } => {
@@ -665,19 +705,29 @@ async fn handle(socket: WebSocket, state: AppState, machine_id: Uuid, user_id: U
             other => vec![other],
         };
         for frame in leaves {
-            if let Some(local_id) = announced_session(&frame) {
+            if let Some(local_id) = session_scope(&frame)
+                && !admit(&mut owners, &state.pool, local_id).await
+            {
+                continue;
+            }
+            let announce = announced_session(&frame).map(str::to_owned);
+            if let Some(local_id) = &announce {
                 state.bus.bind_session_conn(local_id, conn_id);
-                // First announcement only: these frames repeat constantly and
-                // the presence row is a DB upsert.
-                let first = announced.lock().is_ok_and(|mut set| set.insert(local_id.to_owned()));
-                if first && let Ok(session) = Uuid::parse_str(local_id) {
-                    crate::presence::register(&state, crate::presence::Kind::Session, session)
-                        .await;
-                }
             }
             let trace = frame_trace(&frame);
             if let Err(err) = process_frame(&state, machine_id, user_id, frame).await {
                 tracing::warn!(%err, %trace, "process_frame error");
+            }
+            if let Some(local_id) = announce
+                && claim_announced(&mut owners, &state.pool, &state.bus, conn_id, &local_id).await
+            {
+                // First announcement only: these frames repeat constantly and
+                // the presence row is a DB upsert.
+                let first = announced.lock().is_ok_and(|mut set| set.insert(local_id.clone()));
+                if first && let Ok(session) = Uuid::parse_str(&local_id) {
+                    crate::presence::register(&state, crate::presence::Kind::Session, session)
+                        .await;
+                }
             }
         }
     }
@@ -713,6 +763,120 @@ fn announced_session(frame: &DaemonFrameUp) -> Option<&str> {
             Some(local_id)
         }
         _ => None,
+    }
+}
+
+/// The session a daemon frame acts on, if any.
+fn session_scope(frame: &DaemonFrameUp) -> Option<&str> {
+    match frame {
+        DaemonFrameUp::SessionRegistered { local_id, .. } => Some(local_id),
+        DaemonFrameUp::Event { event, .. } => match event {
+            AdapterEvent::SessionStarted { local_id, .. }
+            | AdapterEvent::Message { local_id, .. }
+            | AdapterEvent::ToolUse { local_id, .. }
+            | AdapterEvent::SessionEnded { local_id, .. }
+            | AdapterEvent::Status { local_id, .. }
+            | AdapterEvent::PrLink { local_id, .. }
+            | AdapterEvent::TokenUsage { local_id, .. }
+            | AdapterEvent::SessionModel { local_id, .. }
+            | AdapterEvent::PermissionRequest { local_id, .. }
+            | AdapterEvent::PermissionResolved { local_id, .. }
+            | AdapterEvent::AskQuestion { local_id, .. }
+            | AdapterEvent::AskResolved { local_id }
+            | AdapterEvent::PlanRequest { local_id, .. }
+            | AdapterEvent::PlanResolved { local_id }
+            | AdapterEvent::Diagnose { local_id, .. }
+            | AdapterEvent::PtyChunk { local_id, .. }
+            | AdapterEvent::TranscriptMark { local_id, .. }
+            | AdapterEvent::RateLimits { local_id, .. } => Some(local_id),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Ownership {
+    Mine,
+    Foreign,
+    Absent,
+}
+
+const MAX_CACHED_OWNERS: usize = 10_000;
+
+/// Which sessions a daemon connection's machine owns: the row's `machine_uuid`
+/// and `user_id` both match. A NULL on either is foreign. Only settled answers
+/// are cached; an absent row may be created by this connection's next upsert.
+struct SessionOwners {
+    machine_id: Uuid,
+    user_id: Uuid,
+    known: std::collections::HashMap<String, bool>,
+}
+
+impl SessionOwners {
+    fn new(machine_id: Uuid, user_id: Uuid) -> Self {
+        Self { machine_id, user_id, known: std::collections::HashMap::new() }
+    }
+
+    async fn resolve(
+        &mut self,
+        pool: &sqlx::PgPool,
+        local_id: &str,
+    ) -> Result<Ownership, sqlx::Error> {
+        if let Some(&mine) = self.known.get(local_id) {
+            return Ok(if mine { Ownership::Mine } else { Ownership::Foreign });
+        }
+        let row: Option<(Option<Uuid>, Option<Uuid>)> =
+            sqlx::query_as("SELECT machine_uuid, user_id FROM sessions WHERE id = $1")
+                .bind(local_id)
+                .fetch_optional(pool)
+                .await?;
+        let Some((machine, user)) = row else { return Ok(Ownership::Absent) };
+        let mine = machine == Some(self.machine_id) && user == Some(self.user_id);
+        if self.known.len() >= MAX_CACHED_OWNERS {
+            self.known.clear();
+        }
+        self.known.insert(local_id.to_owned(), mine);
+        Ok(if mine { Ownership::Mine } else { Ownership::Foreign })
+    }
+}
+
+/// Whether a frame scoped to `local_id` may be processed for this connection.
+/// A lookup failure refuses.
+async fn admit(owners: &mut SessionOwners, pool: &sqlx::PgPool, local_id: &str) -> bool {
+    match owners.resolve(pool, local_id).await {
+        Ok(Ownership::Mine | Ownership::Absent) => true,
+        Ok(Ownership::Foreign) => {
+            tracing::warn!(
+                machine_id = %owners.machine_id,
+                %local_id,
+                "dropping daemon frame for a session another machine owns",
+            );
+            false
+        }
+        Err(err) => {
+            tracing::warn!(%err, %local_id, "session ownership lookup failed; frame dropped");
+            false
+        }
+    }
+}
+
+/// Settle an announcement once its upsert ran: keep the session bound to this
+/// connection only if the row is now this machine's, otherwise release the
+/// binding.
+async fn claim_announced(
+    owners: &mut SessionOwners,
+    pool: &sqlx::PgPool,
+    bus: &crate::bus::Bus,
+    conn_id: Uuid,
+    local_id: &str,
+) -> bool {
+    if matches!(owners.resolve(pool, local_id).await, Ok(Ownership::Mine)) {
+        bus.bind_session_conn(local_id, conn_id);
+        true
+    } else {
+        bus.unbind_session_conn(local_id, conn_id);
+        false
     }
 }
 
@@ -1147,7 +1311,7 @@ async fn handle_event(
                 )
                 .await;
             }
-            let first_registration = upsert_session(
+            let Some(first_registration) = upsert_session(
                 &state.pool,
                 machine_id,
                 user_id,
@@ -1158,7 +1322,10 @@ async fn handle_event(
                 observed_at,
                 extra,
             )
-            .await?;
+            .await?
+            else {
+                return Ok(());
+            };
             if first_registration {
                 publish_session_registered(state, &local_id).await;
             }
@@ -1169,17 +1336,35 @@ async fn handle_event(
         }
         AdapterEvent::Message { local_id, mut payload, turn_id } => {
             crate::keepalive::observe_message(state, &local_id, &mut payload).await;
-            inserted_seq = insert_event(state, &local_id, "message", payload, turn_id).await?;
+            inserted_seq = insert_event(
+                &state.pool,
+                machine_id,
+                user_id,
+                &local_id,
+                "message",
+                payload,
+                turn_id,
+            )
+            .await?;
             newly_inserted = inserted_seq.is_some();
             note_insert(state, machine_id, newly_inserted);
         }
         AdapterEvent::ToolUse { local_id, payload } => {
-            inserted_seq = insert_event(state, &local_id, "tool_use", payload, None).await?;
+            inserted_seq = insert_event(
+                &state.pool,
+                machine_id,
+                user_id,
+                &local_id,
+                "tool_use",
+                payload,
+                None,
+            )
+            .await?;
             newly_inserted = inserted_seq.is_some();
             note_insert(state, machine_id, newly_inserted);
         }
         AdapterEvent::SessionEnded { local_id, reason } => {
-            mark_session_ended(state, &local_id, &reason).await?;
+            mark_session_ended(state, machine_id, user_id, &local_id, &reason).await?;
             publish_session_ended(state, &local_id, &reason);
         }
         AdapterEvent::TranscriptMark { local_id, offset } => {
@@ -1313,7 +1498,18 @@ async fn handle_event(
             // and tell clients to dismiss the inline prompt. Idempotent: a
             // request answered via cctui already broadcast PermissionResolved on
             // the client path, so a second clear here is a harmless no-op.
-            state.permission_store.write().await.record_decision(&request_id, "resolved".into());
+            {
+                let mut store = state.permission_store.write().await;
+                let foreign = store
+                    .list_pending()
+                    .iter()
+                    .any(|p| p.request_id == request_id && p.session_id != local_id);
+                if foreign {
+                    tracing::warn!(%local_id, %request_id, "PermissionResolved for another session's request");
+                    return Ok(());
+                }
+                store.record_decision(&request_id, "resolved".into());
+            }
             state.bus.publish_server(cctui_proto::ws::ServerEvent::PermissionResolved {
                 session_id: local_id.clone(),
                 request_id,
@@ -1833,7 +2029,7 @@ async fn upsert_session(
     parent_local_id: Option<String>,
     observed_at: Option<i64>,
     extra: Option<serde_json::Value>,
-) -> anyhow::Result<bool> {
+) -> anyhow::Result<Option<bool>> {
     // `parent_id`: resolve via a subquery rather than binding the
     // raw value so a not-yet-known parent yields NULL instead of an FK
     // violation that would drop the whole insert. In the normal case the
@@ -1862,6 +2058,8 @@ async fn upsert_session(
             adapter_id = EXCLUDED.adapter_id,
             parent_id = COALESCE(sessions.parent_id, EXCLUDED.parent_id),
             metadata = COALESCE(sessions.metadata, '{}'::jsonb) || COALESCE(EXCLUDED.metadata, '{}'::jsonb)
+          WHERE sessions.machine_uuid = EXCLUDED.machine_uuid
+            AND sessions.user_id = EXCLUDED.user_id
           RETURNING (xmax = 0)",
     )
     .bind(local_id)
@@ -1875,6 +2073,10 @@ async fn upsert_session(
     .bind(extra)
     .fetch_optional(pool)
     .await?;
+    let Some(inserted) = inserted else {
+        tracing::warn!(%machine_id, %local_id, "refusing to register a session another machine owns");
+        return Ok(None);
+    };
     // A daemon that re-registers the session after a reconnect proves the
     // `daemon_lost` / `machine_offline` end was spurious. So is a "released"
     // end: 0.17.0 ended every claude job cctui had not started, and those jobs
@@ -1903,7 +2105,7 @@ async fn upsert_session(
     .bind(local_id)
     .execute(pool)
     .await?;
-    Ok(inserted.unwrap_or(false))
+    Ok(Some(inserted))
 }
 
 /// Register a session the daemon announced, announcing it to browser clients
@@ -1928,6 +2130,7 @@ async fn register_announced_session(
         None,
     )
     .await?
+        == Some(true)
     {
         publish_session_registered(state, local_id).await;
     }
@@ -1992,11 +2195,13 @@ async fn publish_session_registered(state: &AppState, local_id: &str) {
 /// Insert a stream event, returning `Some(id)` (the `stream_events.id`
 /// BIGSERIAL, used as the causal ordering `seq`) if a new row was
 /// written and `None` if it was a duplicate suppressed by the dedup constraint
-/// (or the session row was absent). Callers use the presence to decide whether
+/// (or the session row was absent or not owned by `machine_id`/`user_id`). Callers use the presence to decide whether
 /// to broadcast the event live, so a replayed session history doesn't re-stream
 /// to clients.
 async fn insert_event(
-    state: &AppState,
+    pool: &sqlx::PgPool,
+    machine_id: Uuid,
+    user_id: Uuid,
     local_id: &str,
     event_type: &str,
     mut payload: serde_json::Value,
@@ -2019,7 +2224,8 @@ async fn insert_event(
     // `stream_events_dedup_turn_idx` expression list or inference fails.
     let id: Option<i64> = sqlx::query_scalar(
         "INSERT INTO stream_events (session_id, event_type, payload, turn_id) \
-         SELECT $1, $2, $3, $4 WHERE EXISTS (SELECT 1 FROM sessions WHERE id = $1) \
+         SELECT $1, $2, $3, $4 WHERE EXISTS ( \
+             SELECT 1 FROM sessions WHERE id = $1 AND machine_uuid = $5 AND user_id = $6) \
          ON CONFLICT (session_id, event_type, content_hash, \
                       COALESCE(turn_id, '00000000-0000-0000-0000-000000000000'::uuid)) \
          DO NOTHING \
@@ -2029,10 +2235,12 @@ async fn insert_event(
     .bind(event_type)
     .bind(payload)
     .bind(turn_id)
-    .fetch_optional(&state.pool)
+    .bind(machine_id)
+    .bind(user_id)
+    .fetch_optional(pool)
     .await?;
     if id.is_some() {
-        crate::routes::fs::record_links(&state.pool, local_id, &links).await?;
+        crate::routes::fs::record_links(pool, local_id, &links).await?;
     }
     Ok(id)
 }
@@ -2110,10 +2318,12 @@ pub fn truncate_end_detail(detail: &str) -> &str {
 
 async fn mark_session_ended(
     state: &AppState,
+    machine_id: Uuid,
+    user_id: Uuid,
     local_id: &str,
     reason: &EndReason,
 ) -> anyhow::Result<()> {
-    persist_session_end(&state.pool, local_id, reason).await?;
+    persist_session_end(&state.pool, machine_id, user_id, local_id, reason).await?;
     // Revoke any per-session gateway tokens: the session-scoped
     // cctui tokens minted at spawn map to `(session_id, account_id)` and must
     // die with the session so the gateway can no longer be driven under them.
@@ -2158,15 +2368,17 @@ async fn persist_failed_spawn(
     if inserted.is_none() {
         return Ok(false);
     }
-    persist_session_end(pool, &row.session_id, reason).await?;
+    persist_session_end(pool, row.machine_id, row.user_id, &row.session_id, reason).await?;
     Ok(true)
 }
 
 /// Record the end: a `session_ended` stream event (the conversation's final
 /// line) plus the row's sticky `ended` status, `ended_at`, `end_reason` and
-/// `end_detail`.
+/// `end_detail`. A no-op unless `machine_id`/`user_id` own the session.
 async fn persist_session_end(
     pool: &sqlx::PgPool,
+    machine_id: Uuid,
+    user_id: Uuid,
     local_id: &str,
     reason: &EndReason,
 ) -> anyhow::Result<()> {
@@ -2177,13 +2389,16 @@ async fn persist_session_end(
     // cleanly instead of erroring; the UPDATE below is already missing-safe.
     sqlx::query(
         "INSERT INTO stream_events (session_id, event_type, payload) \
-         SELECT $1, 'session_ended', $2 WHERE EXISTS (SELECT 1 FROM sessions WHERE id = $1) \
+         SELECT $1, 'session_ended', $2 WHERE EXISTS ( \
+             SELECT 1 FROM sessions WHERE id = $1 AND machine_uuid = $3 AND user_id = $4) \
          ON CONFLICT (session_id, event_type, content_hash, \
                       COALESCE(turn_id, '00000000-0000-0000-0000-000000000000'::uuid)) \
          DO NOTHING",
     )
     .bind(local_id)
     .bind(&payload)
+    .bind(machine_id)
+    .bind(user_id)
     .execute(pool)
     .await?;
     // Flip to the sticky terminal status `ended` so clients render the
@@ -2196,12 +2411,14 @@ async fn persist_session_end(
     sqlx::query(concat!(
         "UPDATE sessions SET status = 'ended', ended_at = now(), end_reason = $2, \
                  end_detail = $3 \
-             WHERE id = $1 AND ",
+             WHERE id = $1 AND machine_uuid = $4 AND user_id = $5 AND ",
         live_sessions_predicate!()
     ))
     .bind(local_id)
     .bind(reason.kind().as_str())
     .bind(reason.detail().map(truncate_end_detail))
+    .bind(machine_id)
+    .bind(user_id)
     .execute(pool)
     .await?;
     Ok(())
@@ -2464,10 +2681,11 @@ mod tests {
 
     use super::{
         Arc, DAEMON_LOST_GRACE, DAEMON_SEEN_FRESH, EndReason, Future, Inbound, MAX_TRANSFER_BYTES,
-        Ordering, PendingDaemonLost, StatusSignals, TodoEntry, Utc, Uuid, bearer_token,
-        decode_compressed_frame, event_kind, event_local_id, expand_batch, extract_todos,
-        handle_chunk, merge_known_adapters, next_inbound, record_todos, seen_within,
-        should_auto_approve, strip_nul, write_status_signals,
+        Ordering, PendingDaemonLost, SessionOwners, StatusSignals, TodoEntry, Utc, Uuid, admit,
+        bearer_token, claim_announced, decode_binary_frame, decode_compressed_frame, event_kind,
+        event_local_id, expand_batch, extract_todos, handle_chunk, insert_event,
+        merge_known_adapters, next_inbound, persist_session_end, record_todos, seen_within,
+        session_scope, should_auto_approve, strip_nul, upsert_session, write_status_signals,
     };
 
     #[test]
@@ -2649,7 +2867,7 @@ mod tests {
         liveness.tick().await;
         loop {
             match next_inbound(&mut stream, &mut last, &mut liveness, timeout).await {
-                Inbound::Data(_) | Inbound::Skip => {}
+                Inbound::Data(_) | Inbound::Binary(_) | Inbound::Skip => {}
                 term @ (Inbound::Done | Inbound::Idle) => return term,
             }
         }
@@ -3039,6 +3257,39 @@ mod tests {
     }
 
     #[test]
+    fn decodes_binary_frame_like_its_compressed_twin() {
+        let inner =
+            DaemonFrameUp::Batch { frames: (0..3).map(|i| event(&format!("s{i}"))).collect() };
+        let compressed = cctui_proto::compress::zstd_compress(&serde_json::to_vec(&inner).unwrap());
+        let DaemonFrameUp::Compressed { codec, data } =
+            cctui_proto::compress::compressed_frame("zstd", &compressed)
+        else {
+            panic!("compressed_frame must build a Compressed");
+        };
+        let via_text = expand_batch(decode_compressed_frame(&codec, &data).expect("text decodes"));
+        let via_binary = expand_batch(decode_binary_frame(&compressed).expect("binary decodes"));
+        assert_eq!(via_binary.len(), 3);
+        assert_eq!(
+            serde_json::to_value(&via_binary).unwrap(),
+            serde_json::to_value(&via_text).unwrap(),
+        );
+        assert!(decode_binary_frame(b"{\"not\":\"zstd\"}").is_none());
+    }
+
+    #[tokio::test]
+    async fn a_binary_message_is_surfaced_as_binary() {
+        let mut stream = futures_util::stream::iter([Ok::<_, axum::Error>(Message::Binary(
+            vec![1_u8, 2, 3].into(),
+        ))]);
+        let mut last = tokio::time::Instant::now();
+        let mut liveness = tokio::time::interval(Duration::from_secs(3600));
+        liveness.tick().await;
+        let out =
+            next_inbound(&mut stream, &mut last, &mut liveness, Duration::from_secs(3600)).await;
+        assert!(matches!(out, Inbound::Binary(ref b) if b == &[1, 2, 3]));
+    }
+
+    #[test]
     fn decodes_batch_frame_in_order() {
         let batch =
             DaemonFrameUp::Batch { frames: (0..4).map(|i| event(&format!("s{i}"))).collect() };
@@ -3423,29 +3674,13 @@ mod tests {
             .connect(&url)
             .await
             .expect("connect test db");
-        let uid = uuid::Uuid::new_v4();
-        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
-            .bind(uid)
-            .bind(format!("end-{uid}"))
-            .bind(format!("kh-{uid}"))
-            .execute(&pool)
-            .await
-            .expect("seed user");
-        let sid = format!("end-{}", uuid::Uuid::new_v4().simple());
-        sqlx::query(
-            "INSERT INTO sessions (id, machine_id, working_dir, user_id, adapter_id) \
-             VALUES ($1, 'm1', '/w', $2, 'claude-code')",
-        )
-        .bind(&sid)
-        .bind(uid)
-        .execute(&pool)
-        .await
-        .expect("seed session");
+        let (uid, mid) = seed_machine(&pool, "end").await;
+        let sid = seed_owned_session(&pool, uid, mid).await;
 
         let detail =
             format!("claude -p exited (exit status: 1); last stderr:\n{}", "x".repeat(3000));
         let reason = EndReason::Crashed { detail: detail.clone() };
-        super::persist_session_end(&pool, &sid, &reason).await.expect("persist");
+        super::persist_session_end(&pool, mid, uid, &sid, &reason).await.expect("persist");
 
         let (status, end_reason, end_detail, ended_at): (
             String,
@@ -3475,7 +3710,9 @@ mod tests {
         .expect("count events");
         assert_eq!(events, 1);
 
-        super::persist_session_end(&pool, &sid, &EndReason::Killed).await.expect("persist");
+        super::persist_session_end(&pool, mid, uid, &sid, &EndReason::Killed)
+            .await
+            .expect("persist");
         let (end_reason, end_detail): (Option<String>, Option<String>) =
             sqlx::query_as("SELECT end_reason, end_detail FROM sessions WHERE id = $1")
                 .bind(&sid)
@@ -3484,6 +3721,319 @@ mod tests {
                 .expect("read back");
         assert_eq!(end_reason.as_deref(), Some("killed"));
         assert_eq!(end_detail, None);
+    }
+
+    async fn seed_machine(pool: &sqlx::PgPool, tag: &str) -> (Uuid, Uuid) {
+        let uid = Uuid::new_v4();
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+            .bind(uid)
+            .bind(format!("{tag}-{uid}"))
+            .bind(format!("kh-{uid}"))
+            .execute(pool)
+            .await
+            .expect("seed user");
+        let mid = Uuid::new_v4();
+        sqlx::query("INSERT INTO machines (id, user_id, name, key_hash) VALUES ($1, $2, $3, $4)")
+            .bind(mid)
+            .bind(uid)
+            .bind(format!("m-{mid}"))
+            .bind(format!("mk-{mid}"))
+            .execute(pool)
+            .await
+            .expect("seed machine");
+        (uid, mid)
+    }
+
+    async fn seed_owned_session(pool: &sqlx::PgPool, uid: Uuid, mid: Uuid) -> String {
+        let sid = Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO sessions (id, machine_id, machine_uuid, working_dir, status, user_id, adapter_id) \
+             VALUES ($1, $2, $3, '/w', 'active', $4, 'claude-code')",
+        )
+        .bind(&sid)
+        .bind(mid.to_string())
+        .bind(mid)
+        .bind(uid)
+        .execute(pool)
+        .await
+        .expect("seed session");
+        sid
+    }
+
+    async fn drop_machines(pool: &sqlx::PgPool, sessions: &[String], owners: &[(Uuid, Uuid)]) {
+        sqlx::query("DELETE FROM sessions WHERE id = ANY($1)")
+            .bind(sessions)
+            .execute(pool)
+            .await
+            .ok();
+        for (uid, mid) in owners {
+            sqlx::query("DELETE FROM machines WHERE id = $1").bind(mid).execute(pool).await.ok();
+            sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(pool).await.ok();
+        }
+    }
+
+    fn reply(local_id: &str) -> DaemonFrameDown {
+        DaemonFrameDown::Command {
+            adapter_id: "claude-code".into(),
+            command: Box::new(cctui_proto::adapter::AdapterCommand::Reply {
+                local_id: local_id.into(),
+                text: "hi".into(),
+                ask_picks: None,
+                env: std::collections::BTreeMap::new(),
+                command_id: None,
+                turn_id: None,
+            }),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_foreign_announce_cannot_take_over_a_session() {
+        let Some(url) = crate::routes::gateway::test_db_url("foreign_announce") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let (ua, ma) = seed_machine(&pool, "owner").await;
+        let (ub, mb) = seed_machine(&pool, "intruder").await;
+        let sid = seed_owned_session(&pool, ua, ma).await;
+
+        let bus = crate::bus::Bus::new(Box::new(crate::bus::NoopTransport));
+        let (tx_a, mut rx_a) = tokio::sync::mpsc::channel(8);
+        let (tx_b, mut rx_b) = tokio::sync::mpsc::channel(8);
+        let conn_b = Uuid::new_v4();
+        bus.register_daemon(ma, Uuid::new_v4(), tx_a);
+        bus.register_daemon(mb, conn_b, tx_b);
+
+        let mut intruder = SessionOwners::new(mb, ub);
+        let announce = DaemonFrameUp::SessionRegistered {
+            adapter_id: "claude-code".into(),
+            local_id: sid.clone(),
+        };
+        assert_eq!(session_scope(&announce), Some(sid.as_str()));
+        assert!(!admit(&mut intruder, &pool, &sid).await, "a foreign announce must be dropped");
+
+        bus.bind_session_conn(&sid, conn_b);
+        assert!(!claim_announced(&mut intruder, &pool, &bus, conn_b, &sid).await);
+        let upserted = upsert_session(&pool, mb, ub, "claude-code", &sid, None, None, None, None)
+            .await
+            .expect("upsert");
+        assert_eq!(upserted, None, "the upsert must refuse a row another machine owns");
+        let (machine, user): (Option<Uuid>, Option<Uuid>) =
+            sqlx::query_as("SELECT machine_uuid, user_id FROM sessions WHERE id = $1")
+                .bind(&sid)
+                .fetch_one(&pool)
+                .await
+                .expect("read back");
+        assert_eq!((machine, user), (Some(ma), Some(ua)));
+
+        bus.command_daemon_for_session(ma, &sid, reply(&sid)).await.expect("route");
+        assert!(rx_a.recv().await.is_some(), "the owner still receives its session's frames");
+        assert!(rx_b.try_recv().is_err(), "the intruder receives nothing for the session");
+
+        drop_machines(&pool, &[sid], &[(ua, ma), (ub, mb)]).await;
+    }
+
+    #[tokio::test]
+    async fn another_machines_events_never_reach_the_session() {
+        let Some(url) = crate::routes::gateway::test_db_url("foreign_events") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let (ua, ma) = seed_machine(&pool, "owner").await;
+        let (ub, mb) = seed_machine(&pool, "intruder").await;
+        let sid = seed_owned_session(&pool, ua, ma).await;
+
+        let event = |event| DaemonFrameUp::Event { adapter_id: "claude-code".into(), event };
+        let frames = [
+            event(cctui_proto::adapter::AdapterEvent::Message {
+                local_id: sid.clone(),
+                payload: json!({ "type": "assistant", "text": "run this" }),
+                turn_id: None,
+            }),
+            event(cctui_proto::adapter::AdapterEvent::SessionEnded {
+                local_id: sid.clone(),
+                reason: EndReason::Killed,
+            }),
+            event(cctui_proto::adapter::AdapterEvent::PermissionRequest {
+                local_id: sid.clone(),
+                request_id: "r1".into(),
+                tool: "Bash".into(),
+                input: json!({ "command": "true" }),
+            }),
+            event(cctui_proto::adapter::AdapterEvent::PtyChunk {
+                local_id: sid.clone(),
+                data: String::new(),
+            }),
+        ];
+        let mut intruder = SessionOwners::new(mb, ub);
+        for frame in &frames {
+            let scope = session_scope(frame).expect("session-scoped");
+            assert!(!admit(&mut intruder, &pool, scope).await, "foreign frame must be dropped");
+        }
+
+        let inserted = insert_event(
+            &pool,
+            mb,
+            ub,
+            &sid,
+            "message",
+            json!({ "type": "assistant", "text": "run this" }),
+            None,
+        )
+        .await
+        .expect("insert");
+        assert_eq!(inserted, None);
+        persist_session_end(&pool, mb, ub, &sid, &EndReason::Killed).await.expect("end");
+
+        let events: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM stream_events WHERE session_id = $1")
+                .bind(&sid)
+                .fetch_one(&pool)
+                .await
+                .expect("count events");
+        assert_eq!(events, 0, "no stream_events row for a foreign machine");
+        let status: String = sqlx::query_scalar("SELECT status FROM sessions WHERE id = $1")
+            .bind(&sid)
+            .fetch_one(&pool)
+            .await
+            .expect("status");
+        assert_eq!(status, "active", "a foreign SessionEnded leaves the status unchanged");
+
+        let mut owner = SessionOwners::new(ma, ua);
+        assert!(admit(&mut owner, &pool, &sid).await);
+
+        drop_machines(&pool, &[sid], &[(ua, ma), (ub, mb)]).await;
+    }
+
+    #[tokio::test]
+    async fn a_session_with_no_owner_is_foreign_to_every_machine() {
+        let Some(url) = crate::routes::gateway::test_db_url("ownerless_session") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let (ua, ma) = seed_machine(&pool, "owner").await;
+        let sid = Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO sessions (id, machine_id, machine_uuid, working_dir, status, adapter_id) \
+             VALUES ($1, $2, $3, '/w', 'active', 'claude-code')",
+        )
+        .bind(&sid)
+        .bind(ma.to_string())
+        .bind(ma)
+        .execute(&pool)
+        .await
+        .expect("seed session");
+
+        let mut owners = SessionOwners::new(ma, ua);
+        assert_eq!(owners.resolve(&pool, &sid).await.expect("resolve"), super::Ownership::Foreign);
+        assert_eq!(
+            owners.resolve(&pool, "never-registered").await.expect("resolve"),
+            super::Ownership::Absent
+        );
+
+        drop_machines(&pool, &[sid], &[(ua, ma)]).await;
+    }
+
+    #[tokio::test]
+    async fn gateway_env_is_refused_for_sessions_the_machine_does_not_own() {
+        let Some(url) = crate::routes::gateway::test_db_url("gateway_env_owner") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let (ua, ma) = seed_machine(&pool, "owner").await;
+        let (ub, mb) = seed_machine(&pool, "intruder").await;
+        let ma2 = {
+            let mid = Uuid::new_v4();
+            sqlx::query(
+                "INSERT INTO machines (id, user_id, name, key_hash) VALUES ($1, $2, $3, $4)",
+            )
+            .bind(mid)
+            .bind(ua)
+            .bind(format!("m-{mid}"))
+            .bind(format!("mk-{mid}"))
+            .execute(&pool)
+            .await
+            .expect("seed second machine");
+            mid
+        };
+        let owned = seed_owned_session(&pool, ua, ma).await;
+        let (ownerless_user, ownerless) = seed_session(&pool, "claude-code", "anthropic").await;
+        sqlx::query("UPDATE sessions SET user_id = NULL WHERE id = $1")
+            .bind(&ownerless)
+            .execute(&pool)
+            .await
+            .expect("clear owner");
+
+        let allowed = async |user, machine, sid: &str| {
+            super::gateway_env_allowed(&pool, user, machine, sid).await.expect("lookup")
+        };
+        assert!(allowed(ua, ma, &owned).await);
+        assert!(allowed(ua, ma, "not-registered-yet").await);
+        assert!(!allowed(ub, mb, &owned).await, "another user's session is refused");
+        assert!(!allowed(ua, ma2, &owned).await, "another machine's session is refused");
+        assert!(!allowed(ub, mb, &ownerless).await, "a NULL-owner session is refused");
+        assert!(!allowed(ua, ma, &ownerless).await);
+
+        sqlx::query("DELETE FROM machines WHERE id = $1").bind(ma2).execute(&pool).await.ok();
+        drop_machines(&pool, &[owned, ownerless], &[(ua, ma), (ub, mb)]).await;
+        sqlx::query("DELETE FROM users WHERE id = $1")
+            .bind(ownerless_user)
+            .execute(&pool)
+            .await
+            .ok();
+
+        pool.close().await;
+        assert!(
+            super::gateway_env_allowed(&pool, ua, ma, "any").await.is_err(),
+            "a lookup failure surfaces as an error (500), never as allowed",
+        );
+    }
+
+    #[tokio::test]
+    async fn the_owner_re_announcing_on_a_new_connection_rebinds() {
+        let Some(url) = crate::routes::gateway::test_db_url("owner_reannounce") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let (ua, ma) = seed_machine(&pool, "owner").await;
+        let sid = seed_owned_session(&pool, ua, ma).await;
+
+        let bus = crate::bus::Bus::new(Box::new(crate::bus::NoopTransport));
+        let (tx_old, mut rx_old) = tokio::sync::mpsc::channel(8);
+        let (tx_new, mut rx_new) = tokio::sync::mpsc::channel(8);
+        let (conn_old, conn_new) = (Uuid::new_v4(), Uuid::new_v4());
+        bus.register_daemon(ma, conn_old, tx_old);
+        bus.bind_session_conn(&sid, conn_old);
+        bus.register_daemon(ma, conn_new, tx_new);
+
+        let mut owners = SessionOwners::new(ma, ua);
+        assert!(admit(&mut owners, &pool, &sid).await);
+        assert!(claim_announced(&mut owners, &pool, &bus, conn_new, &sid).await);
+
+        bus.command_daemon_for_session(ma, &sid, reply(&sid)).await.expect("route");
+        assert!(rx_new.recv().await.is_some(), "the new connection receives the session");
+        assert!(rx_old.try_recv().is_err());
+
+        drop_machines(&pool, &[sid], &[(ua, ma)]).await;
     }
 
     fn marker() -> (Arc<PendingDaemonLost>, Arc<AtomicUsize>) {
