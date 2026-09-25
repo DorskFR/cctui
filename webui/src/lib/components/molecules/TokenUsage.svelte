@@ -197,6 +197,9 @@
 		.detail {
 			display: none;
 		}
+		.cost {
+			display: none;
+		}
 		.sum-compact-only {
 			display: contents;
 		}

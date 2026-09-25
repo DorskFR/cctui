@@ -123,29 +123,13 @@ describe('the system bar no longer carries the ? or the bell (CCT-1012)', () => 
 	});
 });
 
-describe('notification state stays visible on the collapsed pill (CCT-1012)', () => {
-	it('marks the pill indicator off when notifications are disabled', () => {
+describe('notifications', () => {
+	it('keep no indicator on the pill; the toggle lives in the user menu', async () => {
 		notify.enabled = false;
 		render();
-		const bell = document.querySelector('.pill .bell') as HTMLElement;
-		expect(bell).not.toBeNull();
-		expect(bell.dataset.notify).toBe('off');
-		expect(bell.classList.contains('off')).toBe(true);
-		expect(bell.getAttribute('aria-label')).toBe('Notify me when a session needs input');
-		expect(bell.querySelector('svg')).not.toBeNull();
-	});
-
-	it('marks it on, and flags unread when a session needs input', () => {
-		notify.enabled = true;
-		sessionsData.sessions = [
-			{ id: 's1', attention: 'needs_input', name: 'one' } as unknown as SessionListItem
-		];
-		render();
-		const bell = document.querySelector('.pill .bell') as HTMLElement;
-		expect(bell.dataset.notify).toBe('on');
-		expect(bell.classList.contains('off')).toBe(false);
-		expect(bell.classList.contains('unread')).toBe(true);
-		expect(bell.getAttribute('aria-label')).toBe('Notifications on — click to mute');
+		expect(document.querySelector('.pill .bell')).toBeNull();
+		await openUserMenu();
+		expect(rowByText('Notify me when a session needs input')).toBeTruthy();
 	});
 });
 

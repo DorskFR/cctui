@@ -7,22 +7,18 @@
 	// are delegated to callbacks; the editing UI state lives here.
 	import type { SessionListItem } from '@bindings/SessionListItem';
 	import type { Label } from '@bindings/Label';
-	import { statusBadgeTone } from '$lib/format';
+	import { modelShort, statusBadgeTone } from '$lib/format';
 	import { sessionEnd, sessionEndTitle } from '$lib/sessionEnd';
 	import { branchOf } from '../../../../routes/sessions/sessions.logic';
 	import { fontScale, SCALE_LEVELS } from '$lib/fontscale.svelte';
 	import { settings } from '$lib/settings.svelte';
 	import { isArchiveChord } from '$lib/platform';
 	import AdapterIcon from '$lib/components/atoms/AdapterIcon.svelte';
-	import MachineBadge from '$lib/components/molecules/MachineBadge.svelte';
-	import AccountBadge from '$lib/components/molecules/AccountBadge.svelte';
 	import RebindTrail from '$lib/components/molecules/RebindTrail.svelte';
-	import SessionDot from '$lib/components/molecules/SessionDot.svelte';
+	import SessionGlyphs from '$lib/components/molecules/SessionGlyphs.svelte';
 	import LabelBadge from '$lib/components/molecules/LabelBadge.svelte';
 	import TokenUsage from '$lib/components/molecules/TokenUsage.svelte';
-	import PermissionModeBadge from '$lib/components/molecules/PermissionModeBadge.svelte';
 	import LangfuseChip from '$lib/components/molecules/LangfuseChip.svelte';
-	import CacheWarmChip from '$lib/components/molecules/CacheWarmChip.svelte';
 	import KeepaliveModal from '$lib/components/molecules/KeepaliveModal.svelte';
 	import {
 		Badge,
@@ -244,31 +240,25 @@
 
 <svelte:window onkeydown={onWinKey} />
 
+{#snippet modelText(model: string)}
+	<span class="ellipsis"
+		><span class="m-full">{model}</span><span class="m-short">{modelShort(model)}</span
+		>{#if session.effort}<span class="m-effort"> · {session.effort}</span>{/if}</span
+	>
+{/snippet}
+
 <div class="dhead" data-journey="header">
 	<div class="dbar" bind:clientWidth={barWidth}>
-	<Toolbar collapseBelow="{COLLAPSE_BELOW}px">
-		<IconButton icon="chevron-left" label={m.drawer_back()} onclick={onclose} />
-		{#if onTogglePin}
-			<span
-				class="star"
-				class:on={session.pinned}
-				role="button"
-				tabindex="0"
-				title={session.pinned ? m.drawer_unpin_title() : m.drawer_pin_title()}
-				aria-pressed={session.pinned}
-				aria-label={session.pinned ? m.drawer_unpin_aria() : m.drawer_pin_aria()}
-				onclick={() => onTogglePin?.(session)}
-				onkeydown={(e: KeyboardEvent) => {
-					if (e.key === 'Enter' || e.key === ' ') {
-						e.preventDefault();
-						onTogglePin?.(session);
-					}
-				}}>{session.pinned ? '★' : '☆'}</span
-			>
-		{/if}
-		<SessionDot {session} {livenessClass} />
-		<MachineBadge name={session.machine_name} id={session.machine_id} hue={session.machine_hue} mono />
-		<AccountBadge name={session.account_name} onclick={onAccountClick} showName={settings.accountNames} />
+	<Toolbar collapseBelow="{COLLAPSE_BELOW}px" density={collapsed ? 'compact' : 'default'}>
+		<IconButton icon="chevron-left" label={m.drawer_back()} box={collapsed ? 'sm' : 'md'} onclick={onclose} />
+		<SessionGlyphs
+			{session}
+			{livenessClass}
+			stack={collapsed ? 'always' : 'never'}
+			showAccountName={settings.accountNames}
+			{onTogglePin}
+			{onAccountClick}
+		/>
 		<RebindTrail sessionId={session.id} />
 		<div class="dtitle">
 			{#if renaming}
@@ -298,7 +288,7 @@
 		</div>
 		<!-- Text size: the same kit picker as the main header, writing the one
 		     global fontScale. It stays out of the ⋯ flyout on mobile. -->
-		<FontScalePicker box="lg" />
+		<FontScalePicker box={collapsed ? 'sm' : 'lg'} />
 		{#if renaming}
 			<IconButton data-overflow chip variant="default" icon="check" label={m.common_save()} onclick={doRename} />
 		{:else}
@@ -313,18 +303,20 @@
 		{/if}
 		{#if !archived}
 			<IconButton
-				chip
+				chip={!collapsed}
 				variant="default"
 				tone="warn"
+				box={collapsed ? 'sm' : 'md'}
 				style="background: color-mix(in srgb, var(--warn) 10%, var(--bg-elevated-2))"
 				icon="archive"
 				label={m.drawer_archive()}
 				onclick={onarchive}
 			/>
 			<IconButton
-				chip
+				chip={!collapsed}
 				variant="default"
 				tone="danger"
+				box={collapsed ? 'sm' : 'md'}
 				style="background: color-mix(in srgb, var(--danger) 10%, var(--bg-elevated-2))"
 				icon="stop"
 				label={m.drawer_interrupt_label()}
@@ -358,21 +350,29 @@
 			/>
 		</div>
 	{/if}
-	<div class="hmeta row row-wrap" data-journey="head-meta">
+	<div class="hmeta" class:editing={modelEditing} data-journey="head-meta">
 		{#if showStatusBadge}<Badge tone={statusBadgeTone(session.status)}>{session.status}</Badge>{/if}
 		{#if end}<Badge tone={end.tone} title={sessionEndTitle(end)} style={end.muted ? 'opacity:0.6' : undefined}>{end.label}</Badge>{/if}
-		<WorkingDir path={session.working_dir} copy title={m.sessions_workdir_copy_title({ path: session.working_dir })} />
+		<span class="cwd">
+			<WorkingDir
+				path={session.working_dir}
+				copy
+				shrink
+				title={m.sessions_workdir_copy_title({ path: session.working_dir })}
+				style="min-width:min(9rem,40%)"
+			/>
+		</span>
 		{#if branch}
-			<Badge mono title={m.sessions_branch_title({ branch })} style="display:inline-flex;align-items:center;gap:0.25em;min-width:0;max-width:14rem;flex:none">
-				<Icon name="fork" size={12} label={m.sessions_branch_label()} />
-				<span style="overflow:hidden;white-space:nowrap;text-overflow:ellipsis">{branch}</span>
-			</Badge>
+			<span class="branch">
+				<Badge mono title={m.sessions_branch_title({ branch })} style="display:inline-flex;align-items:center;gap:0.25em;min-width:0;max-width:100%">
+					<Icon name="fork" size={12} label={m.sessions_branch_label()} />
+					<span class="ellipsis">{branch}</span>
+				</Badge>
+			</span>
 		{/if}
 		<div class="meta-trail">
-		<PermissionModeBadge mode={session.permission_mode} />
 		<TokenUsage usage={session.token_usage} />
-		<LangfuseChip id={session.id} />
-		<CacheWarmChip {session} />
+		<span class="langfuse"><LangfuseChip id={session.id} /></span>
 		{#if isCodexSession && !archived}
 			{#if modelEditing}
 				<span class="model-edit">
@@ -402,20 +402,28 @@
 					</Badge>
 				</span>
 			{:else}
+				<span class="model">
+					<Badge
+						as="button"
+						mono
+						title={m.drawer_change_model_title()}
+						onclick={openModelEditor}
+						style="min-width:0;max-width:100%"
+						>{@render modelText(session.model ?? m.drawer_default_model())} ✎</Badge
+					>
+				</span>
+			{/if}
+		{:else if session.model || session.effort}
+			<span class="model">
 				<Badge
 					as="button"
 					mono
-					title={m.drawer_change_model_title()}
-					onclick={openModelEditor}
-				>{session.model ?? m.drawer_default_model()}{session.effort ? ` · ${session.effort}` : ''} ✎</Badge>
-			{/if}
-		{:else if session.model || session.effort}
-			<Badge
-				as="button"
-				mono
-				title={m.drawer_no_inplace_model_title()}
-				onclick={onfork}
-			>{session.model ?? ''}{session.effort ? ` · ${session.effort}` : ''} ⑂</Badge>
+					title={m.drawer_no_inplace_model_title()}
+					onclick={onfork}
+					style="min-width:0;max-width:100%"
+					>{@render modelText(session.model ?? '')} ⑂</Badge
+				>
+			</span>
 		{/if}
 		<AdapterIcon adapter={session.adapter_id} size={20} />
 		</div>
@@ -455,34 +463,68 @@
 		align-items: center;
 		gap: var(--sp-1);
 	}
+	/* One row: the model gives way first, then the branch; the cwd holds out
+	   longest. */
 	.hmeta {
-		gap: var(--sp-2);
+		display: flex;
 		align-items: center;
+		gap: var(--sp-2);
+		min-width: 0;
 	}
-	/* Push token usage · model · logo to the right edge, opposite the working
-	   dir, mirroring the session card footer. */
+	.hmeta.editing {
+		flex-wrap: wrap;
+	}
+	.cwd {
+		display: contents;
+	}
+	.branch {
+		display: inline-flex;
+		flex: 0 3 auto;
+		min-width: 4.5rem;
+		max-width: 14rem;
+	}
+	.ellipsis {
+		min-width: 0;
+		overflow: hidden;
+		white-space: nowrap;
+		text-overflow: ellipsis;
+	}
 	.meta-trail {
 		display: flex;
 		align-items: center;
 		gap: var(--sp-2);
-		flex: none;
+		flex: 0 8 auto;
+		min-width: 0;
 		margin-left: auto;
 	}
-	/* Star/pin toggle in the lead row (mirrors SessionCard). */
-	.star {
-		background: none;
-		border: none;
-		cursor: pointer;
-		user-select: none;
-		padding: 0;
-		line-height: 1;
-		font-size: 1.35rem;
-		color: var(--text-faint);
-		flex: none;
+	.model {
+		display: inline-flex;
+		flex: 0 1 auto;
+		min-width: 0;
 	}
-	.star.on,
-	.star:hover {
-		color: var(--warn);
+	.langfuse {
+		display: contents;
+	}
+	.m-short {
+		display: none;
+	}
+	@container drawer-head (max-width: 40rem) {
+		.branch {
+			max-width: 8rem;
+		}
+		.langfuse,
+		.m-effort,
+		.m-full {
+			display: none;
+		}
+		.m-short {
+			display: inline;
+		}
+	}
+	@container drawer-head (max-width: 26rem) {
+		.model {
+			display: none;
+		}
 	}
 	.model-edit {
 		display: contents;

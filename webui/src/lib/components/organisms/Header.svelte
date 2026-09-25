@@ -9,7 +9,7 @@
 	import { notify } from '$lib/notify.svelte';
 	import { settings } from '$lib/settings.svelte';
 	import { toasts } from '$lib/toast.svelte';
-	import { FontScalePicker, Icon, Menu, Text } from '@dorsk/tsumikit';
+	import { FontScalePicker, Menu, Text } from '@dorsk/tsumikit';
 	import ThemeModePicker from '$lib/components/molecules/ThemeModePicker.svelte';
 	import type { MenuItem } from '@dorsk/tsumikit';
 	import NavLink from '$lib/components/atoms/NavLink.svelte';
@@ -175,16 +175,6 @@ import ResourceBattery from '$lib/components/molecules/ResourceBattery.svelte';
 				{#snippet trigger()}
 					<span class="pill">
 						<span class="avatar" class:alert={!!latest} aria-hidden="true">{userInitial}</span>
-						<span
-							class="bell"
-							class:off={!notify.enabled}
-							class:unread={needsInput.length > 0}
-							data-notify={notify.enabled ? 'on' : 'off'}
-							title={notifyLabel}
-							aria-label={notifyLabel}
-						>
-							<Icon name="bell" size={12} />
-						</span>
 						<span class="who">
 							{#if userName}<span class="who-name">{userName}</span>{/if}
 							{#if userName && roleSuffix}<span class="who-sep">·</span>{/if}
@@ -375,20 +365,6 @@ import ResourceBattery from '$lib/components/molecules/ResourceBattery.svelte';
 		border-radius: 50%;
 		background: var(--danger);
 		border: 2px solid var(--bg-elevated);
-	}
-	/* The bell left the bar; its state has to stay readable on the collapsed pill. */
-	.bell {
-		display: inline-flex;
-		align-items: center;
-		color: var(--text-muted);
-		flex: none;
-	}
-	.bell.off {
-		opacity: 0.4;
-	}
-	.bell.unread {
-		color: var(--danger);
-		opacity: 1;
 	}
 	.who {
 		display: inline-flex;

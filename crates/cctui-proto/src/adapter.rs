@@ -771,7 +771,7 @@ pub enum PermissionMode {
     /// `sandbox_mode=workspace-write` + `approval_policy=never`.
     Auto,
     /// Prompt on every action. claude `--permission-mode default`; codex
-    /// `sandbox_mode=workspace-write` + `approval_policy=untrusted`.
+    /// `sandbox_mode=workspace-write` + `approval_policy=on-request`.
     Ask,
     /// "Whip" (🐎) — yolo on steroids. Same permission posture as
     /// [`Self::Yolo`] (no prompts, no sandbox), plus two enforcement hooks
@@ -799,7 +799,7 @@ impl PermissionMode {
         match self {
             Self::Yolo | Self::Whip => ("danger-full-access", "never"),
             Self::Auto => ("workspace-write", "never"),
-            Self::Ask => ("workspace-write", "untrusted"),
+            Self::Ask => ("workspace-write", "on-request"),
         }
     }
 
@@ -924,6 +924,16 @@ impl std::fmt::Debug for BootstrapFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_permission_mode_maps_to_an_approval_policy_codex_accepts() {
+        for mode in
+            [PermissionMode::Yolo, PermissionMode::Whip, PermissionMode::Auto, PermissionMode::Ask]
+        {
+            let (_, approval) = mode.codex_sandbox_approval();
+            assert!(matches!(approval, "on-request" | "never"), "{mode:?} → {approval}");
+        }
+    }
 
     #[test]
     fn remove_carries_its_correlation_id() {

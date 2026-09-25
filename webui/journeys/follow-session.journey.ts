@@ -99,20 +99,6 @@ export default defineJourney({
 			capture: 'line'
 		},
 		{
-			id: 'mobile-filters',
-			when: { viewport: 'mobile' },
-			target: 'mobile-panel[filters]',
-			do: { kind: 'click' },
-			say: {
-				title: { en: 'Open the filters', fr: 'Ouvrir les filtres' },
-				body: {
-					en: 'On a phone the controls collapse into three tabs; this one holds the message filters.',
-					fr: 'Sur téléphone les contrôles se replient en trois onglets ; celui-ci contient les filtres de messages.'
-				}
-			},
-			expect: [{ visible: 'filters/quick[assistant]' }]
-		},
-		{
 			id: 'filters',
 			target: 'filters',
 			say: {
