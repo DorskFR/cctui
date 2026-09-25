@@ -15,7 +15,8 @@ import {
 	type PermReq,
 	type LiveAsk,
 	type LivePlan,
-	type SoftLimit
+	type SoftLimit,
+	type ToolBlock
 } from '$lib/ws.svelte';
 import { eventSig, parseAsk, parseTodos, todoProgress as deriveTodoProgress } from './format';
 import { lastProseLine, toolInvocationSummary, type ActivityTool } from './activity';
@@ -79,6 +80,7 @@ export class ConversationStream {
 	// per-chat "soft limit reached → continue on another account" banner. Null
 	// when no block is active.
 	softLimit = $state<SoftLimit | null>(null);
+	toolBlock = $state<ToolBlock | null>(null);
 	// Folded last-write-wins: the list mutates many times per turn and only its
 	// latest state is meaningful.
 	todos = $state<TodoItem[] | null>(null);
@@ -191,6 +193,9 @@ export class ConversationStream {
 		const offSoftLimit = ws.onSoftLimit(sid, (sl) => {
 			this.softLimit = sl;
 		});
+		const offToolBlock = ws.onToolBlock(sid, (b) => {
+			this.toolBlock = b;
+		});
 		// Mirror the singleton's per-session delivery state. Fires
 		// immediately with the current snapshot and on every ack / auto-retry.
 		const offDelivery = ws.onDelivery(sid, (snap) => {
@@ -207,6 +212,7 @@ export class ConversationStream {
 			offAsk();
 			offPlan();
 			offSoftLimit();
+			offToolBlock();
 			offDelivery();
 			ws.unsubscribe(sid);
 			ws.clearStream(sid);
@@ -423,6 +429,10 @@ export class ConversationStream {
 		this.softLimit = null;
 		ws.clearSoftLimit(id);
 		this.#opts.invalidateSessions();
+	}
+
+	dismissToolBlock(): void {
+		ws.dismissToolBlock(this.#opts.id());
 	}
 
 	// Discard a still-pending optimistic echo (edit/recover). Stops

@@ -19,7 +19,7 @@
 		/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
 	import { highlightTerms } from '$lib/search';
 	import { drafts, VIEW_OPTS } from '$lib/drafts';
-	import { Button, Dropzone, ResizablePanel } from '@dorsk/tsumikit';
+	import { Button, Dropzone, ResizablePanel, Text } from '@dorsk/tsumikit';
 	import ForkModal from './conversation/ForkModal.svelte';
 	import DrawerHeader from './conversation/DrawerHeader.svelte';
 	import DrawerToolbar from './conversation/DrawerToolbar.svelte';
@@ -588,6 +588,20 @@
 				</div>
 			{/if}
 
+			{#if stream.toolBlock}
+				<div class="attn-banner tool-block-notice" role="alert">
+					<Text size="sm">
+						{m.conversation_tool_call_blocked({
+							tool: stream.toolBlock.tool_name,
+							rule: stream.toolBlock.rule
+						})}
+					</Text>
+					<Button size="sm" variant="ghost" onclick={() => stream.dismissToolBlock()}>
+						{m.conversation_tool_block_dismiss()}
+					</Button>
+				</div>
+			{/if}
+
 			{#if acctModalOpen}
 				<AccountSwitchModal
 					sessionId={id}
@@ -732,7 +746,8 @@
 		font-size: var(--fs-sm);
 		font-weight: var(--fw-medium);
 	}
-	.soft-limit-notice {
+	.soft-limit-notice,
+	.tool-block-notice {
 		display: flex;
 		align-items: center;
 		justify-content: space-between;

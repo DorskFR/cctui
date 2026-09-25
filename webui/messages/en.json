@@ -1857,5 +1857,6 @@
 	"tool_policy_exempt": "Exempt roots",
 	"tool_policy_exempt_help": "Absolute paths, one per line. Sessions whose working directory is under one of them are not scanned.",
 	"tool_policy_saved": "Tool-call guard saved",
-	"conversation_tool_call_blocked": "cctui blocked a {tool} tool call in this session ({rule})."
+	"conversation_tool_call_blocked": "cctui blocked a {tool} tool call in this session ({rule}).",
+	"conversation_tool_block_dismiss": "Dismiss"
 }

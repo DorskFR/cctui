@@ -1857,5 +1857,6 @@
 	"tool_policy_exempt": "Racines exemptées",
 	"tool_policy_exempt_help": "Chemins absolus, un par ligne. Les sessions dont le répertoire de travail s’y trouve ne sont pas analysées.",
 	"tool_policy_saved": "Garde des appels d’outils enregistrée",
-	"conversation_tool_call_blocked": "cctui a bloqué un appel d’outil {tool} dans cette session ({rule})."
+	"conversation_tool_call_blocked": "cctui a bloqué un appel d’outil {tool} dans cette session ({rule}).",
+	"conversation_tool_block_dismiss": "Ignorer"
 }
