@@ -32,6 +32,7 @@ use cctui_crypto::redact::{self, CompiledPatterns};
 use cctui_proto::adapter::{AdapterEvent, EndReason, SessionMeta};
 use cctui_proto::codex_catalog::{CodexModel, CodexModelCatalog};
 use cctui_proto::diagnose::{CodexProtocolError, CodexRpcFrame, CodexStderrLine};
+use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
@@ -442,6 +443,49 @@ fn notice_text(method: &str, params: Option<&Value>) -> String {
 
 /// Map `turn/plan/updated` → a `plan` item, the codex half of the agent task
 /// list. Rendered as an assistant plan line by the existing `plan` normalizer.
+/// Codex `ThreadStatus.type`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum ThreadStatusType {
+    Active,
+    Idle,
+    SystemError,
+    NotLoaded,
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+/// Codex `Turn.status`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) enum TurnStatus {
+    Completed,
+    Interrupted,
+    Failed,
+    InProgress,
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+/// Status of one `turn/plan/updated` step.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum PlanStepStatus {
+    Pending,
+    InProgress,
+    Completed,
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+/// Parse a codex status value; a non-string reads as the `Unknown` variant.
+pub(super) fn parse_status<T: for<'de> Deserialize<'de> + Default>(v: &Value) -> T {
+    T::deserialize(v).unwrap_or_default()
+}
+
 fn map_plan_updated(local_id: &str, v: &Value) -> Incoming {
     let Some(steps) = v.pointer("/params/plan").and_then(Value::as_array) else {
         return Incoming::Traced { method: "turn/plan/updated".to_owned(), reason: "no plan" };
@@ -450,10 +494,10 @@ fn map_plan_updated(local_id: &str, v: &Value) -> Incoming {
         .iter()
         .map(|s| {
             let text = s.get("step").and_then(Value::as_str).unwrap_or_default();
-            let mark = match s.get("status").and_then(Value::as_str) {
-                Some("completed") => "x",
-                Some("in_progress") => "~",
-                _ => " ",
+            let mark = match s.get("status").map_or(PlanStepStatus::Unknown, parse_status) {
+                PlanStepStatus::Completed => "x",
+                PlanStepStatus::InProgress => "~",
+                PlanStepStatus::Pending | PlanStepStatus::Unknown => " ",
             };
             format!("- [{mark}] {text}")
         })
@@ -516,7 +560,9 @@ fn map_error_notification(local_id: &str, v: &Value) -> Incoming {
 /// Successful turns stay ignored: idle status arrives via
 /// `thread/status/changed`.
 fn map_turn_completed(local_id: &str, v: &Value) -> Incoming {
-    if v.pointer("/params/turn/status").and_then(Value::as_str) != Some("failed") {
+    if v.pointer("/params/turn/status").map_or(TurnStatus::Unknown, parse_status)
+        != TurnStatus::Failed
+    {
         return Incoming::Traced { method: "turn/completed".to_owned(), reason: "turn not failed" };
     }
     let detail = v
@@ -577,7 +623,7 @@ fn map_status(local_id: &str, v: &Value) -> Incoming {
             reason: "no status",
         };
     };
-    let ty = status.get("type").and_then(Value::as_str).unwrap_or("");
+    let ty = status.get("type").map_or(ThreadStatusType::Unknown, parse_status);
     let waiting = status.get("activeFlags").and_then(Value::as_array).is_some_and(|flags| {
         flags
             .iter()
@@ -585,12 +631,11 @@ fn map_status(local_id: &str, v: &Value) -> Incoming {
             .any(|f| f == "waitingOnApproval" || f == "waitingOnUserInput")
     });
     let (tempo, state, activity) = match ty {
-        "active" if waiting => (Some("blocked"), Some("working"), None),
-        "active" => (Some("active"), Some("working"), None),
-        "idle" => (None, Some("idle"), None),
-        "systemError" => (None, Some("failed"), Some("failure")),
-        // `notLoaded` / unknown — nothing actionable.
-        _ => {
+        ThreadStatusType::Active if waiting => (Some("blocked"), Some("working"), None),
+        ThreadStatusType::Active => (Some("active"), Some("working"), None),
+        ThreadStatusType::Idle => (None, Some("idle"), None),
+        ThreadStatusType::SystemError => (None, Some("failed"), Some("failure")),
+        ThreadStatusType::NotLoaded | ThreadStatusType::Unknown => {
             return Incoming::Traced {
                 method: "thread/status/changed".to_owned(),
                 reason: "status not actionable",
@@ -3679,6 +3724,30 @@ async fn write_json<W: AsyncWriteExt + Unpin>(w: &mut W, v: &Value) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codex_status_fixtures_parse_into_enums() {
+        let thread = |raw: Value| parse_status::<ThreadStatusType>(&raw);
+        assert_eq!(thread(json!("active")), ThreadStatusType::Active);
+        assert_eq!(thread(json!("idle")), ThreadStatusType::Idle);
+        assert_eq!(thread(json!("systemError")), ThreadStatusType::SystemError);
+        assert_eq!(thread(json!("notLoaded")), ThreadStatusType::NotLoaded);
+        assert_eq!(thread(json!("somethingNew")), ThreadStatusType::Unknown);
+        assert_eq!(thread(json!(3)), ThreadStatusType::Unknown);
+
+        let turn = |raw: Value| parse_status::<TurnStatus>(&raw);
+        assert_eq!(turn(json!("completed")), TurnStatus::Completed);
+        assert_eq!(turn(json!("interrupted")), TurnStatus::Interrupted);
+        assert_eq!(turn(json!("failed")), TurnStatus::Failed);
+        assert_eq!(turn(json!("inProgress")), TurnStatus::InProgress);
+        assert_eq!(turn(json!("in_progress")), TurnStatus::Unknown);
+
+        let step = |raw: Value| parse_status::<PlanStepStatus>(&raw);
+        assert_eq!(step(json!("pending")), PlanStepStatus::Pending);
+        assert_eq!(step(json!("in_progress")), PlanStepStatus::InProgress);
+        assert_eq!(step(json!("completed")), PlanStepStatus::Completed);
+        assert_eq!(step(json!("skipped")), PlanStepStatus::Unknown);
+    }
 
     fn fresh_launch() -> SessionLaunch {
         SessionLaunch::Fresh { prompt: None, name: None, attachments: Vec::new() }

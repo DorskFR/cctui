@@ -40,7 +40,7 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_util::sync::CancellationToken;
 
-use super::app_server::ThreadConfig;
+use super::app_server::{ThreadConfig, TurnStatus, parse_status};
 
 /// Every frame on this socket is mirrored into the shared diagnose ring,
 /// tagged `shared`, so the protocol tail does not go blind on the transport
@@ -671,8 +671,10 @@ impl Routes {
             result.pointer("/thread/turns").and_then(Value::as_array).cloned().unwrap_or_default();
         let latest = turns.last();
         let latest_id = latest.and_then(|t| t.get("id")).and_then(Value::as_str);
-        let latest_running =
-            latest.and_then(|t| t.get("status")).and_then(Value::as_str) == Some("inProgress");
+        let latest_running = latest
+            .and_then(|t| t.get("status"))
+            .map_or(TurnStatus::Unknown, parse_status::<TurnStatus>)
+            == TurnStatus::InProgress;
 
         let mut replay = Vec::new();
         for (local_id, frame) in std::mem::take(&mut r.orphaned_starts) {

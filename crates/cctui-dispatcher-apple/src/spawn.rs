@@ -189,15 +189,15 @@ impl<C: ContainerCli> Spawner<C> {
             }
             other => other,
         };
-        let status = record
+        let raw = record
             .get("status")
             .and_then(|s| s.as_str())
             .or_else(|| record.pointer("/state/status").and_then(|s| s.as_str()))
             .unwrap_or("unknown")
             .to_ascii_lowercase();
-        match status.as_str() {
-            "running" => Ok((HandleState::Running, None)),
-            "stopped" | "exited" => {
+        match ContainerStatus::parse(&raw) {
+            ContainerStatus::Running => Ok((HandleState::Running, None)),
+            ContainerStatus::Stopped | ContainerStatus::Exited => {
                 let exit = record
                     .get("exitCode")
                     .or_else(|| record.pointer("/state/exitCode"))
@@ -209,8 +209,31 @@ impl<C: ContainerCli> Spawner<C> {
                     (HandleState::Failed, Some(format!("container exited with code {exit}")))
                 })
             }
-            other => Ok((HandleState::Running, Some(format!("unknown status: {other}")))),
+            ContainerStatus::Unknown => {
+                Ok((HandleState::Running, Some(format!("unknown status: {raw}"))))
+            }
         }
+    }
+}
+
+/// The `status` of an Apple `container inspect` record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum ContainerStatus {
+    Running,
+    Stopped,
+    Exited,
+    #[serde(other)]
+    Unknown,
+}
+
+impl ContainerStatus {
+    fn parse(s: &str) -> Self {
+        use serde::Deserialize;
+        use serde::de::IntoDeserializer;
+        let de: serde::de::value::StrDeserializer<'_, serde::de::value::Error> =
+            s.into_deserializer();
+        Self::deserialize(de).unwrap_or(Self::Unknown)
     }
 }
 
@@ -337,6 +360,25 @@ mod tests {
 
     use super::*;
     use crate::cli::CliOutput;
+
+    #[test]
+    fn inspect_status_fixtures_map_to_handle_states() {
+        let parse = Spawner::<MockCli>::parse_inspect_state;
+        let running = r#"[{"status":"running","configuration":{"id":"w"}}]"#;
+        assert_eq!(parse(running).unwrap(), (HandleState::Running, None));
+        let clean = r#"[{"status":"stopped","exitCode":0}]"#;
+        assert_eq!(parse(clean).unwrap(), (HandleState::Complete, None));
+        let crashed = r#"{"state":{"status":"Exited","exitCode":137}}"#;
+        assert_eq!(
+            parse(crashed).unwrap(),
+            (HandleState::Failed, Some("container exited with code 137".into()))
+        );
+        let odd = r#"[{"status":"paused"}]"#;
+        assert_eq!(
+            parse(odd).unwrap(),
+            (HandleState::Running, Some("unknown status: paused".into()))
+        );
+    }
 
     #[derive(Default)]
     struct MockCli {
