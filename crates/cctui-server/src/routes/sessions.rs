@@ -3223,6 +3223,17 @@ mod tests {
     }
 
     #[test]
+    fn conversation_pages_seek_the_session_id_index() {
+        let migration =
+            include_str!("../../../../migrations/132b_stream_events_session_id.up.sql");
+        assert!(migration.contains("ON stream_events (session_id, id)"));
+        for order in [super::ConversationOrder::Desc, super::ConversationOrder::Asc] {
+            let sql = super::conversation_sql(order);
+            assert!(sql.contains("WHERE session_id = $1") && sql.contains("ORDER BY id "));
+        }
+    }
+
+    #[test]
     fn conversation_order_defaults_to_desc() {
         let q: super::ConversationQuery =
             serde_json::from_value(serde_json::json!({"limit": 20})).unwrap();
