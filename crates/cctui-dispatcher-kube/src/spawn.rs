@@ -24,8 +24,9 @@
 //!   dispatch of the same logical key maps to the same Job.
 //! - 409 on create → read the existing Job: in-flight ⇒ `deduplicated`;
 //!   terminal (Complete/Failed) ⇒ delete + recreate ⇒ `redispatched`.
-//! - `cctui_machine_key` is lifted out of the payload into `CCTUI_MACHINE_KEY`
-//!   (runtime identity, not a stored secret) and kept OUT of `TASK_PAYLOAD_JSON`.
+//! - `cctui_machine_key` and the payload `env` are kept OUT of the Job spec and
+//!   `TASK_PAYLOAD_JSON`: they go into a per-dispatch Secret owned by the Job
+//!   (so deleting the Job collects it) and reach the worker via `secretKeyRef`.
 //! - reply_url → `REPLY_URL` env so the terminal callback fires.
 //!
 //! ⚠️ Repo is PUBLIC — no homelab namespaces/images/registries here; the
@@ -39,13 +40,13 @@ use cctui_dispatcher_core::{
 };
 use cctui_orchestrator::validate::template_drift;
 use cctui_orchestrator::{
-    ANNOTATION_GPG_SIGNING, ANNOTATION_GUARD_IDENTITY, ANNOTATION_WORKER_CONTAINER,
+    ANNOTATION_ENV_SECRET, ANNOTATION_GPG_SIGNING, ANNOTATION_GUARD_IDENTITY, ANNOTATION_WORKER_CONTAINER,
     DEFAULT_WORKER_CONTAINER, LABEL_WORKER_PROFILE, WorkerProfile, WorkerProfileSpec,
 };
 use cctui_proto::worker_env::is_reserved_env_key;
 use cctui_proto::ws::WireDispatchSpec;
 use k8s_openapi::api::batch::v1::Job;
-use k8s_openapi::api::core::v1::Pod;
+use k8s_openapi::api::core::v1::{Pod, Secret};
 use kube::api::{Api, DeleteParams, ListParams, Patch, PatchParams, PostParams, PropagationPolicy};
 use kube::{Client, Error as KubeError};
 use tokio_util::sync::CancellationToken;
@@ -74,6 +75,22 @@ const ANNOTATION_SESSION_ID: &str = "cctui.dev/session-id";
 /// `payload.env` is rejected: secrets flow through the guard-proxy sidecar, and
 /// a ref reaching pod env could be resolved by cluster machinery into the worker.
 const SECRET_REF_PREFIXES: [&str; 3] = ["vault:", "bao:", "k8s:"];
+
+/// Where a per-run worker env var gets its value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum EnvSource {
+    Literal(String),
+    /// Key named after the env var in this per-dispatch Secret.
+    Secret(String),
+}
+
+/// The per-run env of one dispatch, split into what may sit in the Job spec
+/// and what must live in its Secret.
+struct RunEnv {
+    literal: Vec<(String, String)>,
+    secret: std::collections::BTreeMap<String, String>,
+    identity: Option<String>,
+}
 
 /// How often the queue reconciler resumes suspended Jobs into freed slots.
 const QUEUE_RECONCILE_INTERVAL: Duration = Duration::from_secs(15);
@@ -155,20 +172,14 @@ impl Spawner {
         (!d.is_empty()).then(|| d.to_owned())
     }
 
-    /// Instantiate a one-shot Job from a `WorkerProfile` + this dispatch's
-    /// runtime data. Mechanical: the worker container comes from the profile's
-    /// first-class fields; every other container/volume/scheduling field is
-    /// passed through. No sidecars/security contexts are added — the admission
-    /// webhook injects the sandbox, keyed off the stamped labels/annotations.
-    fn build_job(
+    /// Split a dispatch into its worker env: contract vars stay literal, the
+    /// machine key and payload `env` are secret. A reserved name, a name the
+    /// profile sources via `valueFrom`, or a secret-ref-shaped value is rejected.
+    fn run_env(
         cctui_url: &str,
-        profile_name: &str,
         profile: &WorkerProfileSpec,
         spec: &WireDispatchSpec,
-        name: &str,
-        default_deadline_secs: i64,
-        suspend: bool,
-    ) -> anyhow::Result<Job> {
+    ) -> anyhow::Result<RunEnv> {
         let mut payload = spec.payload.clone();
         let obj = payload.as_object_mut();
         let machine_key = obj
@@ -191,24 +202,23 @@ impl Spawner {
         });
         let payload_json = serde_json::to_string(&payload)?;
 
-        let mut overrides: Vec<(String, String)> = vec![
+        let mut literal: Vec<(String, String)> = vec![
             ("SESSION_ID".into(), spec.session_id.clone()),
             ("TASK_ID".into(), spec.session_id.clone()),
             ("TASK_PAYLOAD_JSON".into(), payload_json),
             ("CCTUI_URL".into(), cctui_url.to_owned()),
         ];
         if let Some(n) = task_name {
-            overrides.push(("TASK_NAME".into(), n));
-        }
-        if let Some(k) = machine_key {
-            overrides.push(("CCTUI_MACHINE_KEY".into(), k));
+            literal.push(("TASK_NAME".into(), n));
         }
         if let Some(u) = &spec.reply_url {
-            overrides.push(("REPLY_URL".into(), u.clone()));
+            literal.push(("REPLY_URL".into(), u.clone()));
+        }
+        let mut secret = std::collections::BTreeMap::new();
+        if let Some(k) = machine_key {
+            secret.insert("CCTUI_MACHINE_KEY".to_owned(), k);
         }
 
-        // Plain payload env → literal worker vars. A secret-ref-shaped value is
-        // rejected — secrets flow through the guard-proxy sidecar, never here.
         if let Some(Value::Object(m)) = env_map {
             for (k, v) in m {
                 if is_reserved_env_key(&k) {
@@ -226,8 +236,69 @@ impl Spawner {
                          resolved by the guard-proxy sidecar, not passed through worker env"
                     );
                 }
-                overrides.push((k, val.to_owned()));
+                secret.insert(k, val.to_owned());
             }
+        }
+        Ok(RunEnv { literal, secret, identity })
+    }
+
+    /// The per-dispatch env Secret name: unique per session, so a redispatch
+    /// under the same Job name never reuses a previous run's Secret.
+    fn env_secret_name(job_name: &str, spec: &WireDispatchSpec) -> String {
+        let session = worker_name(&spec.session_id);
+        cctui_orchestrator::env_secret_name(
+            job_name,
+            session.strip_prefix("cctui-worker-").unwrap_or(&session),
+        )
+    }
+
+    /// The Secret holding this dispatch's secret env, or `None` when it has
+    /// none. Created unowned; [`Self::set_env_secret_owner`] binds it to the Job.
+    fn job_secret(
+        cctui_url: &str,
+        profile: &WorkerProfileSpec,
+        spec: &WireDispatchSpec,
+        job_name: &str,
+    ) -> anyhow::Result<Option<Secret>> {
+        let run = Self::run_env(cctui_url, profile, spec)?;
+        if run.secret.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(serde_json::from_value(json!({
+            "apiVersion": "v1",
+            "kind": "Secret",
+            "metadata": {
+                "name": Self::env_secret_name(job_name, spec),
+                "labels": {
+                    LABEL_ORIGIN: "cctui-kube-dispatcher",
+                    LABEL_SESSION_ID: label_safe(&spec.session_id),
+                },
+            },
+            "type": "Opaque",
+            "stringData": run.secret,
+        }))?))
+    }
+
+    /// Instantiate a one-shot Job from a `WorkerProfile` + this dispatch's
+    /// runtime data. Mechanical: the worker container comes from the profile's
+    /// first-class fields; every other container/volume/scheduling field is
+    /// passed through. No sidecars/security contexts are added — the admission
+    /// webhook injects the sandbox, keyed off the stamped labels/annotations.
+    fn build_job(
+        cctui_url: &str,
+        profile_name: &str,
+        profile: &WorkerProfileSpec,
+        spec: &WireDispatchSpec,
+        name: &str,
+        default_deadline_secs: i64,
+        suspend: bool,
+    ) -> anyhow::Result<Job> {
+        let RunEnv { literal, secret, identity } = Self::run_env(cctui_url, profile, spec)?;
+        let env_secret = (!secret.is_empty()).then(|| Self::env_secret_name(name, spec));
+        let mut overrides: Vec<(String, EnvSource)> =
+            literal.into_iter().map(|(k, v)| (k, EnvSource::Literal(v))).collect();
+        if let Some(s) = &env_secret {
+            overrides.extend(secret.into_keys().map(|k| (k, EnvSource::Secret(s.clone()))));
         }
 
         let worker_name = profile.worker_container_name().to_owned();
@@ -249,6 +320,9 @@ impl Spawner {
         }
         if profile.gpg_signing {
             annotations.insert(ANNOTATION_GPG_SIGNING.into(), json!("true"));
+        }
+        if let Some(s) = &env_secret {
+            annotations.insert(ANNOTATION_ENV_SECRET.into(), json!(s));
         }
 
         let deadline = spec.timeout_minutes.map_or(default_deadline_secs, |m| i64::from(m) * 60);
@@ -278,6 +352,9 @@ impl Spawner {
         if suspend {
             job_json["spec"]["suspend"] = json!(true);
         }
+        if let Some(s) = &env_secret {
+            job_json["metadata"]["annotations"][ANNOTATION_ENV_SECRET] = json!(s);
+        }
 
         Ok(serde_json::from_value(job_json)?)
     }
@@ -288,7 +365,7 @@ impl Spawner {
     fn pod_spec(
         profile: &WorkerProfileSpec,
         worker_name: &str,
-        overrides: &[(String, String)],
+        overrides: &[(String, EnvSource)],
     ) -> anyhow::Result<serde_json::Map<String, Value>> {
         let mut worker = serde_json::Map::new();
         worker.insert("name".into(), json!(worker_name));
@@ -343,10 +420,10 @@ impl Spawner {
     }
 
     /// Upsert env vars by name into the container's `env` array, preserving the
-    /// profile's existing entries (including `valueFrom`).
+    /// profile's other entries (including `valueFrom`).
     fn merge_env(
         worker: &mut serde_json::Map<String, Value>,
-        overrides: &[(String, String)],
+        overrides: &[(String, EnvSource)],
     ) -> anyhow::Result<()> {
         let env = worker.entry("env").or_insert_with(|| json!([]));
         let arr = env
@@ -356,12 +433,16 @@ impl Spawner {
             let existing = arr
                 .iter_mut()
                 .find(|e| e.get("name").and_then(Value::as_str) == Some(k.as_str()));
-            match existing.and_then(Value::as_object_mut) {
-                Some(obj) => {
-                    obj.insert("value".into(), json!(v));
-                    obj.remove("valueFrom");
-                }
-                None => arr.push(json!({ "name": k, "value": v })),
+            let entry = match v {
+                EnvSource::Literal(v) => json!({ "name": k, "value": v }),
+                EnvSource::Secret(s) => json!({
+                    "name": k,
+                    "valueFrom": { "secretKeyRef": { "name": s, "key": k } },
+                }),
+            };
+            match existing {
+                Some(e) => *e = entry,
+                None => arr.push(entry),
             }
         }
         Ok(())
@@ -401,19 +482,82 @@ impl Spawner {
         anyhow::bail!("timed out deleting Job {name}")
     }
 
-    async fn create(&self, job: &Job, status: &str, name: &str) -> Result<SpawnOutcome, KubeError> {
-        self.jobs().create(&PostParams::default(), job).await?;
-        Ok(SpawnOutcome {
+    async fn create(&self, job: &Job) -> Result<Job, KubeError> {
+        self.jobs().create(&PostParams::default(), job).await
+    }
+
+    fn outcome(&self, name: &str, status: &str) -> SpawnOutcome {
+        SpawnOutcome {
             handle: format!("jobs/{name}"),
             namespace: Some(self.namespace.clone()),
             status: status.to_owned(),
-        })
+        }
     }
 
-    /// Spawn a worker Job for the session. Idempotent: a repeat dispatch of the
-    /// same dedup key reuses the deterministic name; a 409 (name in use) is
-    /// resolved by reading the existing Job — in-flight ⇒ `deduplicated`,
-    /// terminal ⇒ delete + recreate ⇒ `redispatched`.
+    fn secrets(&self) -> Api<Secret> {
+        Api::namespaced(self.client.clone(), &self.namespace)
+    }
+
+    fn env_secret_of(job: &Job) -> Option<&str> {
+        job.metadata.annotations.as_ref()?.get(ANNOTATION_ENV_SECRET).map(String::as_str)
+    }
+
+    /// The ownerReference that makes deleting `job` garbage-collect its Secret.
+    fn owner_reference(job: &Job) -> anyhow::Result<Value> {
+        let name = job.metadata.name.as_deref().ok_or_else(|| anyhow::anyhow!("Job has no name"))?;
+        let uid = job.metadata.uid.as_deref().ok_or_else(|| anyhow::anyhow!("Job has no uid"))?;
+        Ok(json!({ "apiVersion": "batch/v1", "kind": "Job", "name": name, "uid": uid }))
+    }
+
+    /// Create the env Secret, or refresh a leftover one and drop its owner so
+    /// deleting an earlier Job cannot collect it.
+    async fn stage_env_secret(&self, secret: &Secret) -> anyhow::Result<()> {
+        let name = secret.metadata.name.as_deref().unwrap_or_default();
+        for _ in 0..2 {
+            match self.secrets().create(&PostParams::default(), secret).await {
+                Ok(_) => return Ok(()),
+                Err(KubeError::Api(e)) if e.code == 409 => {}
+                Err(e) => anyhow::bail!("creating env Secret `{name}`: {e}"),
+            }
+            let patch = Patch::Merge(json!({
+                "metadata": { "ownerReferences": null },
+                "stringData": secret.string_data,
+            }));
+            match self.secrets().patch(name, &PatchParams::default(), &patch).await {
+                Ok(_) => return Ok(()),
+                Err(KubeError::Api(e)) if e.code == 404 => {}
+                Err(e) => anyhow::bail!("refreshing env Secret `{name}`: {e}"),
+            }
+        }
+        anyhow::bail!("env Secret `{name}` was deleted while staging it")
+    }
+
+    /// Point the Secret's ownerReference at `owner`, or clear it with `None`.
+    /// A Secret already gone is not an error.
+    async fn set_env_secret_owner(&self, name: &str, owner: Option<&Job>) -> anyhow::Result<()> {
+        let refs = match owner {
+            Some(job) => json!([Self::owner_reference(job)?]),
+            None => Value::Null,
+        };
+        let patch = Patch::Merge(json!({ "metadata": { "ownerReferences": refs } }));
+        match self.secrets().patch(name, &PatchParams::default(), &patch).await {
+            Ok(_) => Ok(()),
+            Err(KubeError::Api(e)) if e.code == 404 => Ok(()),
+            Err(e) => anyhow::bail!("setting owner of env Secret `{name}`: {e}"),
+        }
+    }
+
+    async fn delete_env_secret(&self, name: &str) {
+        match self.secrets().delete(name, &DeleteParams::default()).await {
+            Ok(_) => {}
+            Err(KubeError::Api(e)) if e.code == 404 => {}
+            Err(e) => tracing::warn!(secret = %name, error = %e, "deleting unused env Secret failed"),
+        }
+    }
+
+    /// Spawn a worker Job for the session, with its env Secret staged first so
+    /// the pod never starts without it, then bound to whichever Job holds the
+    /// name (or deleted if that Job belongs to another dispatch).
     async fn dispatch_worker(&self, spec: &WireDispatchSpec) -> anyhow::Result<SpawnOutcome> {
         if spec.session_id.is_empty() {
             anyhow::bail!("session_id is required");
@@ -442,47 +586,73 @@ impl Spawner {
             self.default_deadline_secs,
             suspend,
         )?;
-        let status = if suspend { "queued" } else { "dispatched" };
+        let Some(secret) = Self::job_secret(&self.cctui_url, &profile.spec, spec, &name)? else {
+            return self.place_job(&job, suspend, &name).await.map(|(outcome, _)| outcome);
+        };
+        let secret_name = secret.metadata.name.clone().unwrap_or_default();
+        self.stage_env_secret(&secret).await?;
 
-        match self.create(&job, status, &name).await {
-            Ok(h) => return Ok(h),
+        match self.place_job(&job, suspend, &name).await {
+            Ok((outcome, Some(holder)))
+                if Self::env_secret_of(&holder) == Some(secret_name.as_str()) =>
+            {
+                if let Err(e) = self.set_env_secret_owner(&secret_name, Some(&holder)).await {
+                    tracing::warn!(secret = %secret_name, error = %e, "env Secret has no owner; it will outlive its Job");
+                }
+                Ok(outcome)
+            }
+            Ok((outcome, _)) => {
+                self.delete_env_secret(&secret_name).await;
+                Ok(outcome)
+            }
+            Err(e) => {
+                self.delete_env_secret(&secret_name).await;
+                Err(e)
+            }
+        }
+    }
+
+    /// Create the Job. Idempotent: a repeat dispatch of the same dedup key
+    /// reuses the deterministic name; a 409 (name in use) is resolved by
+    /// reading the existing Job — in-flight ⇒ `deduplicated`, terminal ⇒
+    /// delete + recreate ⇒ `redispatched`. Also returns the Job now holding
+    /// the name, when known.
+    async fn place_job(
+        &self,
+        job: &Job,
+        suspend: bool,
+        name: &str,
+    ) -> anyhow::Result<(SpawnOutcome, Option<Job>)> {
+        let status = if suspend { "queued" } else { "dispatched" };
+        match self.create(job).await {
+            Ok(j) => return Ok((self.outcome(name, status), Some(j))),
             Err(KubeError::Api(e)) if e.code == 409 => {}
             Err(e) => anyhow::bail!("creating Job: {e}"),
         }
 
         // 409: a prior dispatch of this session already made the Job. Dedup vs.
         // redispatch depends on whether that Job is terminal.
-        let existing = match self.jobs().get(&name).await {
+        let existing = match self.jobs().get(name).await {
             Ok(j) => j,
             // Raced its own teardown — name is free again, create afresh.
             Err(KubeError::Api(e)) if e.code == 404 => {
-                return self
-                    .create(&job, status, &name)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("creating Job: {e}"));
+                let j = self.create(job).await.map_err(|e| anyhow::anyhow!("creating Job: {e}"))?;
+                return Ok((self.outcome(name, status), Some(j)));
             }
             Err(e) => anyhow::bail!("reading existing Job: {e}"),
         };
 
         if Self::job_terminal_state(&existing).is_none() {
             // In flight: keep idempotent dedup; the original run fires the callback.
-            return Ok(SpawnOutcome {
-                handle: format!("jobs/{name}"),
-                namespace: Some(self.namespace.clone()),
-                status: "deduplicated".to_owned(),
-            });
+            return Ok((self.outcome(name, "deduplicated"), Some(existing)));
         }
 
         // Terminal: delete + recreate so a fresh run fires the callback.
-        self.delete_and_wait(&name).await?;
-        match self.create(&job, if suspend { "queued" } else { "redispatched" }, &name).await {
-            Ok(h) => Ok(h),
+        self.delete_and_wait(name).await?;
+        match self.create(job).await {
+            Ok(j) => Ok((self.outcome(name, if suspend { "queued" } else { "redispatched" }), Some(j))),
             // A concurrent re-dispatch beat us — its run owns the callback now.
-            Err(KubeError::Api(e)) if e.code == 409 => Ok(SpawnOutcome {
-                handle: format!("jobs/{name}"),
-                namespace: Some(self.namespace.clone()),
-                status: "deduplicated".to_owned(),
-            }),
+            Err(KubeError::Api(e)) if e.code == 409 => Ok((self.outcome(name, "deduplicated"), None)),
             Err(e) => anyhow::bail!("recreating Job: {e}"),
         }
     }
@@ -676,17 +846,34 @@ impl Spawner {
                 return;
             }
         };
+        let env_secret = Self::env_secret_of(&job).map(ToOwned::to_owned);
+        if let Some(s) = &env_secret
+            && let Err(e) = self.set_env_secret_owner(s, None).await
+        {
+            tracing::warn!(job = %name, session = %session, error = %e, "detaching env Secret from drifted worker Job failed; it stays stranded");
+            return;
+        }
         if let Err(e) = self.delete_and_wait(name).await {
             tracing::warn!(job = %name, session = %session, error = %e, "deleting drifted worker Job failed; it stays stranded");
             return;
         }
-        match self.jobs().create(&PostParams::default(), &job).await {
-            Ok(_) => tracing::info!(
-                job = %name, session = %session, profile = %profile_name, drift = %drift,
-                "recreated queued worker from the current profile"
-            ),
+        match self.create(&job).await {
+            Ok(created) => {
+                tracing::info!(
+                    job = %name, session = %session, profile = %profile_name, drift = %drift,
+                    "recreated queued worker from the current profile"
+                );
+                if let Some(s) = &env_secret
+                    && let Err(e) = self.set_env_secret_owner(s, Some(&created)).await
+                {
+                    tracing::warn!(secret = %s, error = %e, "env Secret has no owner; it will outlive its Job");
+                }
+            }
             Err(e) => {
                 tracing::warn!(job = %name, session = %session, error = %e, "recreating drifted worker Job failed; the dispatch is lost");
+                if let Some(s) = &env_secret {
+                    self.delete_env_secret(s).await;
+                }
             }
         }
     }
@@ -717,8 +904,9 @@ impl Spawner {
     /// the same name, `cctui.dev/*` labels and annotations, suspend state, Job
     /// mechanics, and the literal per-run env the dispatch carried.
     /// Cluster-owned metadata (`batch.kubernetes.io/*`) is dropped — the Job
-    /// controller re-stamps it. `valueFrom` env comes from the profile only, so
-    /// a reference the profile has dropped cannot survive the rebuild.
+    /// controller re-stamps it. `valueFrom` env comes from the profile only,
+    /// except refs into the Job's own env Secret, so a reference the profile
+    /// has dropped cannot survive the rebuild.
     fn rebuild_job(old: &Job, profile: &WorkerProfileSpec) -> anyhow::Result<Job> {
         let name =
             old.metadata.name.clone().ok_or_else(|| anyhow::anyhow!("worker Job has no name"))?;
@@ -735,13 +923,21 @@ impl Spawner {
             .and_then(|m| m.annotations.as_ref())
             .and_then(|a| a.get(ANNOTATION_WORKER_CONTAINER))
             .map_or(DEFAULT_WORKER_CONTAINER, String::as_str);
-        let overrides: Vec<(String, String)> = old_pod_spec
+        let env_secret = Self::env_secret_of(old);
+        let overrides: Vec<(String, EnvSource)> = old_pod_spec
             .containers
             .iter()
             .find(|c| c.name == old_worker)
             .into_iter()
             .flat_map(|c| c.env.iter().flatten())
-            .filter_map(|e| Some((e.name.clone(), e.value.clone()?)))
+            .filter_map(|e| {
+                if let Some(v) = &e.value {
+                    return Some((e.name.clone(), EnvSource::Literal(v.clone())));
+                }
+                let r = e.value_from.as_ref()?.secret_key_ref.as_ref()?;
+                (env_secret == Some(r.name.as_str()) && r.key == e.name)
+                    .then(|| (e.name.clone(), EnvSource::Secret(r.name.clone())))
+            })
             .collect();
 
         let worker_name = profile.worker_container_name().to_owned();
@@ -1047,6 +1243,17 @@ mod tests {
         v.pointer("/spec/template/spec/containers/0/env").unwrap().as_array().unwrap().clone()
     }
 
+    fn secret_ref(v: &Value, key: &str) -> Option<String> {
+        let e = worker_env(v).into_iter().find(|e| e["name"] == key)?;
+        assert!(e.get("value").is_none(), "`{key}` must not carry a literal value");
+        assert_eq!(e.pointer("/valueFrom/secretKeyRef/key"), Some(&json!(key)));
+        e.pointer("/valueFrom/secretKeyRef/name").and_then(Value::as_str).map(ToOwned::to_owned)
+    }
+
+    fn env_secret_name(s: &WireDispatchSpec) -> String {
+        Spawner::env_secret_name(&worker_name(&s.session_id), s)
+    }
+
     fn env_value(v: &Value, key: &str) -> Option<String> {
         worker_env(v)
             .iter()
@@ -1120,7 +1327,7 @@ mod tests {
         assert_eq!(env_value(&v, "SESSION_ID").as_deref(), Some("sess-123"));
         assert_eq!(env_value(&v, "TASK_ID").as_deref(), Some("sess-123"));
         assert_eq!(env_value(&v, "TASK_NAME").as_deref(), Some("Review #5697"));
-        assert_eq!(env_value(&v, "CCTUI_MACHINE_KEY").as_deref(), Some("SECRET"));
+        assert_eq!(secret_ref(&v, "CCTUI_MACHINE_KEY"), Some(env_secret_name(&s)));
         assert_eq!(env_value(&v, "REPLY_URL").as_deref(), Some("https://cb"));
         assert_eq!(env_value(&v, "LOG_LEVEL").as_deref(), Some("info"));
         assert_eq!(
@@ -1253,7 +1460,7 @@ mod tests {
     }
 
     #[test]
-    fn plain_payload_env_becomes_worker_env() {
+    fn payload_env_becomes_secret_backed_worker_env() {
         let payload = json!({
             "flow": "pr-review",
             "env": {
@@ -1263,11 +1470,8 @@ mod tests {
         });
         let s = spec("sess-9", payload);
         let v = build("lean", &lean_profile(), &s);
-        assert_eq!(
-            env_value(&v, "CONTEXT_PACK_URL").as_deref(),
-            Some("https://github.com/acme/pack")
-        );
-        assert_eq!(env_value(&v, "FEATURE_FLAG").as_deref(), Some("on"));
+        assert_eq!(secret_ref(&v, "CONTEXT_PACK_URL"), Some(env_secret_name(&s)));
+        assert_eq!(secret_ref(&v, "FEATURE_FLAG"), Some(env_secret_name(&s)));
         let tp = env_value(&v, "TASK_PAYLOAD_JSON").unwrap();
         assert!(!tp.contains("CONTEXT_PACK_URL"), "env lifted out of payload: {tp}");
         assert!(tp.contains("pr-review"));
@@ -1396,7 +1600,12 @@ mod tests {
         assert_eq!(env_value(&v, "SESSION_ID").as_deref(), Some("sess-drift"));
         assert_eq!(env_value(&v, "TASK_NAME").as_deref(), Some("triage"));
         assert_eq!(env_value(&v, "REPLY_URL").as_deref(), Some("https://cb"));
-        assert_eq!(env_value(&v, "EXTRA").as_deref(), Some("x"));
+        assert_eq!(secret_ref(&v, "EXTRA"), Some(env_secret_name(&s)));
+        assert_eq!(
+            v.pointer("/metadata/annotations/cctui.dev~1env-secret"),
+            Some(&json!(env_secret_name(&s))),
+            "the rebuilt Job keeps its env Secret"
+        );
         assert_eq!(env_value(&v, "CCTUI_URL").as_deref(), Some("http://cctui:8700"));
         assert!(env_value(&v, "TASK_PAYLOAD_JSON").is_some());
 
@@ -1629,7 +1838,7 @@ mod tests {
     fn map_shaped_env_is_an_error_not_a_panic() {
         let mut worker = serde_json::Map::new();
         worker.insert("env".into(), json!({ "LOG_LEVEL": "info" }));
-        let err = Spawner::merge_env(&mut worker, &[("SESSION_ID".into(), "s".into())])
+        let err = Spawner::merge_env(&mut worker, &[("SESSION_ID".into(), EnvSource::Literal("s".into()))])
             .expect_err("a map-shaped env must be rejected");
         assert!(err.to_string().contains("env"), "unexpected error: {err}");
 
@@ -1638,5 +1847,101 @@ mod tests {
             "env": { "LOG_LEVEL": "info" }
         }));
         assert!(profile.is_err(), "a map-shaped profile env fails to parse instead of panicking");
+    }
+
+    #[test]
+    fn job_spec_carries_no_secret_value() {
+        let payload = json!({
+            "cctui_machine_key": "SECRET-MACHINE-KEY",
+            "env": { "ANTHROPIC_AUTH_TOKEN": "SECRET-GATEWAY-TOKEN", "FEATURE_FLAG": "SECRET-FLAG" }
+        });
+        let s = spec("sess-secret", payload);
+        let v = build("lean", &lean_profile(), &s);
+        let raw = serde_json::to_string(&v).unwrap();
+        assert!(!raw.contains("SECRET"), "a secret value leaked into the Job: {raw}");
+        for key in ["CCTUI_MACHINE_KEY", "ANTHROPIC_AUTH_TOKEN", "FEATURE_FLAG"] {
+            assert_eq!(secret_ref(&v, key), Some(env_secret_name(&s)), "{key}");
+        }
+        for p in [
+            "/metadata/annotations/cctui.dev~1env-secret",
+            "/spec/template/metadata/annotations/cctui.dev~1env-secret",
+        ] {
+            assert_eq!(v.pointer(p), Some(&json!(env_secret_name(&s))), "{p}");
+        }
+    }
+
+    #[test]
+    fn env_secret_holds_the_secret_values() {
+        let payload = json!({
+            "cctui_machine_key": "SECRET-MACHINE-KEY",
+            "env": { "ANTHROPIC_AUTH_TOKEN": "SECRET-GATEWAY-TOKEN" }
+        });
+        let s = spec("sess-secret", payload);
+        let name = worker_name(&s.session_id);
+        let secret = Spawner::job_secret("http://cctui:8700", &lean_profile(), &s, &name)
+            .unwrap()
+            .expect("a dispatch with a machine key has an env Secret");
+        assert_eq!(secret.metadata.name, Some(env_secret_name(&s)));
+        assert!(secret.metadata.name.as_deref().unwrap().starts_with(&format!("{name}-env-")));
+        let data = secret.string_data.unwrap();
+        assert_eq!(data.get("CCTUI_MACHINE_KEY").map(String::as_str), Some("SECRET-MACHINE-KEY"));
+        assert_eq!(
+            data.get("ANTHROPIC_AUTH_TOKEN").map(String::as_str),
+            Some("SECRET-GATEWAY-TOKEN")
+        );
+        assert!(!data.contains_key("SESSION_ID"), "non-secret vars stay literal on the Job");
+        assert!(secret.metadata.owner_references.is_none(), "staged unowned, adopted after create");
+    }
+
+    #[test]
+    fn dispatch_without_secrets_has_no_env_secret() {
+        let s = spec("sess-plain", json!({ "flow": "review" }));
+        let name = worker_name(&s.session_id);
+        assert!(
+            Spawner::job_secret("http://cctui:8700", &lean_profile(), &s, &name)
+                .unwrap()
+                .is_none()
+        );
+        let v = build("lean", &lean_profile(), &s);
+        assert!(v.pointer("/metadata/annotations/cctui.dev~1env-secret").is_none());
+    }
+
+    #[test]
+    fn env_secret_name_is_unique_per_dispatch_of_the_same_job() {
+        let mut a = spec("11111111-1111-4111-8111-111111111111", json!({}));
+        a.dedup_key = Some("triage-PROJ-1".to_owned());
+        let mut b = spec("22222222-2222-4222-8222-222222222222", json!({}));
+        b.dedup_key = Some("triage-PROJ-1".to_owned());
+        let job = worker_name(dedup_source(&a));
+        assert_ne!(Spawner::env_secret_name(&job, &a), Spawner::env_secret_name(&job, &b));
+    }
+
+    #[test]
+    fn env_secret_owner_reference_points_at_the_job() {
+        let s = spec("sess-own", json!({ "cctui_machine_key": "k" }));
+        let mut job = queued_job("lean", &lean_profile(), &s);
+        assert!(Spawner::owner_reference(&job).is_err(), "an uncreated Job has no uid to own by");
+        job.metadata.uid = Some("0000-uid".to_owned());
+        let owner = Spawner::owner_reference(&job).unwrap();
+        assert_eq!(owner["apiVersion"], json!("batch/v1"));
+        assert_eq!(owner["kind"], json!("Job"));
+        assert_eq!(owner["name"], json!(worker_name(&s.session_id)));
+        assert_eq!(owner["uid"], json!("0000-uid"));
+        assert_eq!(Spawner::env_secret_of(&job), Some(env_secret_name(&s).as_str()));
+    }
+
+    #[test]
+    fn rebuild_drops_secret_refs_that_are_not_the_jobs_own() {
+        let s = spec("sess-foreign", json!({}));
+        let job = queued_job("lean", &lean_profile(), &s);
+        let mut v = serde_json::to_value(&job).unwrap();
+        v["spec"]["template"]["spec"]["containers"][0]["env"].as_array_mut().unwrap().push(json!({
+            "name": "STOLEN",
+            "valueFrom": { "secretKeyRef": { "name": "cluster-secret", "key": "STOLEN" } }
+        }));
+        let job: Job = serde_json::from_value(v).unwrap();
+        let rebuilt = serde_json::to_value(Spawner::rebuild_job(&job, &lean_profile()).unwrap())
+            .unwrap();
+        assert!(worker_env(&rebuilt).iter().all(|e| e["name"] != "STOLEN"));
     }
 }

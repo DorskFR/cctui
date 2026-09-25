@@ -68,9 +68,8 @@ fn payload_for_notify(payload: &serde_json::Value) -> String {
         if obj.contains_key("cctui_machine_key") {
             obj.insert("cctui_machine_key".into(), serde_json::Value::String("<redacted>".into()));
         }
-        // `payload.env` carries environment secrets for the k8s worker (the
-        // external dispatcher turns them into pod env / an ephemeral Secret).
-        // Redact the values — they must never land in a notification.
+        // `payload.env` carries worker environment secrets (the kube
+        // dispatcher stores them in a per-Job Secret). Redact the values.
         if let Some(env) = obj.get("env").and_then(serde_json::Value::as_object) {
             let redacted: serde_json::Map<String, serde_json::Value> = env
                 .keys()
@@ -94,8 +93,9 @@ fn payload_for_notify(payload: &serde_json::Value) -> String {
 /// THIS one key, so all dispatched sessions register under one stable machine
 /// — no per-pod enroll/deenroll churn and no `dispatch:<origin>` placeholder.
 /// The key is stored plaintext (`machines.dispatch_key`) because the server
-/// must hand it to pods verbatim; it ends up in pod env regardless, so the DB
-/// is not a meaningfully weaker home for it. Reused across concurrent pods:
+/// must hand it to pods verbatim. It is long-lived and shared by every
+/// dispatched session, so dispatchers must keep it out of anything readable
+/// beside the worker itself (the kube dispatcher puts it in a Job-owned Secret). Reused across concurrent pods:
 /// they share the machine row and key, and are told apart by `session_id`.
 async fn ensure_dispatch_machine(
     state: &AppState,
