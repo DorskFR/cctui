@@ -619,6 +619,7 @@
 	"drawer_fork_title": "Fork into a new conversation (optionally change model)",
 	"drawer_interrupt_label": "Interrupt turn",
 	"drawer_interrupt_title": "Interrupt the in-flight turn",
+	"drawer_meta_details": "Session details",
 	"drawer_model_aria": "Model",
 	"drawer_more_actions": "More actions",
 	"drawer_terminal_label": "Terminal",
