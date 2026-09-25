@@ -363,7 +363,7 @@ const fn read_error_status(kind: ReadFileErrorKind) -> StatusCode {
 /// `Content-Disposition` value: `inline` for viewable types, `attachment`
 /// otherwise; the filename is quoted with `"` / `\` escaped and non-ASCII
 /// carried in the RFC 5987 `filename*` form.
-pub(crate) fn content_disposition(media_type: &str, name: &str) -> String {
+pub fn content_disposition(media_type: &str, name: &str) -> String {
     let kind = if is_inline_type(media_type) { "inline" } else { "attachment" };
     let ascii: String =
         name.chars()
