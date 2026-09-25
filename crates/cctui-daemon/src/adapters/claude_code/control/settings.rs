@@ -1,6 +1,6 @@
 use std::fmt::Write as _;
 
-use super::*;
+use super::{PathBuf, json};
 
 /// Decode + stage `bootstrap` file uploads under
 /// `/tmp/cctui-uploads/<session-id>/`, returning their absolute paths in upload

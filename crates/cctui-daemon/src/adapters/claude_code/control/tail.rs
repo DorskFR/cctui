@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    AdapterEvent, Driver, EndReason, HashMap, Instant, Path, PathBuf, TranscriptLocation,
+    transcript,
+};
 
 impl Driver {
     /// Periodic (and churn-`force`d) divergence check. The forward tail keeps
@@ -180,7 +183,6 @@ pub(super) fn clamp_to_file_len(path: &Path, mark: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::super::test_support::*;
-    use super::*;
 
     #[tokio::test]
     async fn resume_mark_clamps_cursor_forward_and_skips_replay() {

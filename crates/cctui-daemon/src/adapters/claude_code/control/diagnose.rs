@@ -8,7 +8,7 @@ use super::super::diagnose::{
     ActivityInput, ActivityVerdict, ArbitrationInput, arbitrate, arbitrate_activity, now_unix_ms,
     to_unix_ms,
 };
-use super::*;
+use super::{AdapterEvent, Driver, PendingPerm, StateJson, SystemTime, detect_whip_from_settings};
 
 /// Hook- and control-socket-side prompt state for one session.
 struct PromptSignals {
@@ -302,23 +302,21 @@ fn pty_output_fact(
     attach_snap: Option<&AttachSnapshot>,
     now_ms: i64,
 ) -> DiagnoseFact<PtyOutputStats> {
-    match attach_snap.filter(|s| s.last_output_at.is_some()) {
-        Some(snap) => {
-            let last = snap.last_output_at.expect("filtered to Some");
+    attach_snap.and_then(|snap| snap.last_output_at.map(|last| (snap, last))).map_or_else(
+        || DiagnoseFact::missing("pty", "no PTY output observed on the held attach yet"),
+        |(snap, last)| {
             let value = PtyOutputStats {
                 last_output_age_ms: Some(now_ms - to_unix_ms(last)),
                 recent_bytes_per_min: snap.bytes_per_min(SystemTime::now()),
             };
             DiagnoseFact::observed(value, "pty", to_unix_ms(last), now_ms)
-        }
-        None => DiagnoseFact::missing("pty", "no PTY output observed on the held attach yet"),
-    }
+        },
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::super::test_support::*;
-    use super::*;
 
     /// the diagnose assembly aggregates the driver's live state —
     /// resolved short, activity-sourced verdict with an observation timestamp,

@@ -1,5 +1,8 @@
 use super::super::session_registry;
-use super::*;
+use super::{
+    AdapterEvent, Context, Driver, Duration, HashMap, HashSet, MAX_REMOVE_ATTEMPTS,
+    RemoveInitiator, json, socket,
+};
 
 impl Driver {
     /// Poll the `has` op until the worker is no longer alive (or we give up).

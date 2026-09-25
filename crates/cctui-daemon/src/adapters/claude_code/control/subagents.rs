@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    AdapterEvent, Driver, EndReason, PathBuf, SUBAGENT_IDLE_TICKS_TO_END, SessionMeta,
+    SubagentState, json, transcript,
+};
 
 impl Driver {
     /// The `meta.extra` a newly discovered subagent is announced with. The
