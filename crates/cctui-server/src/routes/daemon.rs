@@ -122,22 +122,17 @@ pub async fn session_gateway_env(
         .and_then(|v| v.strip_prefix("Bearer "))
         .ok_or(StatusCode::UNAUTHORIZED)?;
     let ctx = state.auth_config.validate(token).await.ok_or(StatusCode::UNAUTHORIZED)?;
-    if ctx.machine_id.is_none() {
+    let Some(machine_id) = ctx.machine_id else {
         return Err(StatusCode::FORBIDDEN);
-    }
+    };
 
-    // User-scope: only resolve env for sessions owned by the machine's user. A
-    // session row that exists but belongs to another user yields "not bound"
-    // (the daemon launches without gateway env) rather than leaking that user's
-    // account credential. A missing row (spawn-time race before register) is
-    // allowed through — the account resolves via the freshly-minted token row.
-    let owner: Option<Uuid> = sqlx::query_scalar("SELECT user_id FROM sessions WHERE id = $1")
-        .bind(&session_id)
-        .fetch_optional(&state.pool)
+    let allowed = gateway_env_allowed(&state.pool, ctx.user_id, machine_id, &session_id)
         .await
-        .ok()
-        .flatten();
-    if owner.is_some_and(|o| o != ctx.user_id) {
+        .map_err(|e| {
+            tracing::error!(%session_id, "daemon gateway-env ownership lookup failed: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    if !allowed {
         return Ok(Json(cctui_proto::api::GatewayEnvResponse {
             account_bound: false,
             env: std::collections::BTreeMap::default(),
@@ -218,6 +213,26 @@ pub async fn session_gateway_env(
         settings,
         whip_phrases,
         spawn_capability: spawn_capability_for(&state, &session_id).await,
+    }))
+}
+
+/// Whether a daemon may resolve `session_id`'s gateway env: the row is missing
+/// (spawn-time race before register; the account resolves via the freshly
+/// minted token row) or owned by `user_id`, and by `machine_id` when the row
+/// names a machine. A NULL owner is foreign.
+async fn gateway_env_allowed(
+    pool: &sqlx::PgPool,
+    user_id: Uuid,
+    machine_id: Uuid,
+    session_id: &str,
+) -> Result<bool, sqlx::Error> {
+    let row: Option<(Option<Uuid>, Option<Uuid>)> =
+        sqlx::query_as("SELECT user_id, machine_uuid FROM sessions WHERE id = $1")
+            .bind(session_id)
+            .fetch_optional(pool)
+            .await?;
+    Ok(row.is_none_or(|(owner, machine)| {
+        owner == Some(user_id) && machine.is_none_or(|m| m == machine_id)
     }))
 }
 
@@ -3868,6 +3883,65 @@ mod tests {
         );
 
         drop_machines(&pool, &[sid], &[(ua, ma)]).await;
+    }
+
+    #[tokio::test]
+    async fn gateway_env_is_refused_for_sessions_the_machine_does_not_own() {
+        let Some(url) = crate::routes::gateway::test_db_url("gateway_env_owner") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let (ua, ma) = seed_machine(&pool, "owner").await;
+        let (ub, mb) = seed_machine(&pool, "intruder").await;
+        let ma2 = {
+            let mid = Uuid::new_v4();
+            sqlx::query(
+                "INSERT INTO machines (id, user_id, name, key_hash) VALUES ($1, $2, $3, $4)",
+            )
+            .bind(mid)
+            .bind(ua)
+            .bind(format!("m-{mid}"))
+            .bind(format!("mk-{mid}"))
+            .execute(&pool)
+            .await
+            .expect("seed second machine");
+            mid
+        };
+        let owned = seed_owned_session(&pool, ua, ma).await;
+        let (ownerless_user, ownerless) = seed_session(&pool, "claude-code", "anthropic").await;
+        sqlx::query("UPDATE sessions SET user_id = NULL WHERE id = $1")
+            .bind(&ownerless)
+            .execute(&pool)
+            .await
+            .expect("clear owner");
+
+        let allowed = async |user, machine, sid: &str| {
+            super::gateway_env_allowed(&pool, user, machine, sid).await.expect("lookup")
+        };
+        assert!(allowed(ua, ma, &owned).await);
+        assert!(allowed(ua, ma, "not-registered-yet").await);
+        assert!(!allowed(ub, mb, &owned).await, "another user's session is refused");
+        assert!(!allowed(ua, ma2, &owned).await, "another machine's session is refused");
+        assert!(!allowed(ub, mb, &ownerless).await, "a NULL-owner session is refused");
+        assert!(!allowed(ua, ma, &ownerless).await);
+
+        sqlx::query("DELETE FROM machines WHERE id = $1").bind(ma2).execute(&pool).await.ok();
+        drop_machines(&pool, &[owned, ownerless], &[(ua, ma), (ub, mb)]).await;
+        sqlx::query("DELETE FROM users WHERE id = $1")
+            .bind(ownerless_user)
+            .execute(&pool)
+            .await
+            .ok();
+
+        pool.close().await;
+        assert!(
+            super::gateway_env_allowed(&pool, ua, ma, "any").await.is_err(),
+            "a lookup failure surfaces as an error (500), never as allowed",
+        );
     }
 
     #[tokio::test]
