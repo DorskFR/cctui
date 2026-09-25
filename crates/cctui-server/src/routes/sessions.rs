@@ -3582,7 +3582,7 @@ mod tests {
     #[test]
     fn conversation_pages_seek_the_session_id_index() {
         let migration =
-            include_str!("../../../../migrations/132b_stream_events_session_id.up.sql");
+            include_str!("../../../../migrations/137_stream_events_session_id.up.sql");
         assert!(migration.contains("ON stream_events (session_id, id)"));
         for order in [super::ConversationOrder::Desc, super::ConversationOrder::Asc] {
             let sql = super::conversation_sql(order);
