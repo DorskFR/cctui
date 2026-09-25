@@ -28,9 +28,9 @@ has a matching `gateway refused account base_url` warning.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `CCTUI_UPSTREAM_ALLOWED_HOSTS` | *(unset)* | Comma-separated hosts the guard lets through, e.g. `ollama.llm.svc,192.168.1.50`. Allowed hosts may use plain `http`. |
+| `CCTUI_UPSTREAM_ALLOWED_HOSTS` | *(unset)* | Comma-separated hosts the guard lets through, as `host` or `host:port`, e.g. `ollama.llm.svc:11434,192.168.1.50`. An entry with a port allows only that port; a bare host allows every port. Allowed hosts may use plain `http`. |
 
-The host of `CCTUI_CLAUDE_LITELLM_ENDPOINT` are always allowed, since the
+The host and port of `CCTUI_CLAUDE_LITELLM_ENDPOINT` are always allowed, since the
 managed LiteLLM account points at it.
 
 Only allow hosts you trust with arbitrary requests from any user who can create
