@@ -1157,7 +1157,16 @@ fn compile_filter(filter: &cctui_query::Filter, params: &mut Vec<SqlParam>) -> S
 /// predicates / join-EXISTS, free text takes the `pg_trgm` path, and the
 /// boolean/negation structure maps straight to `AND`/`OR`/`NOT`.
 fn compile_node(node: &cctui_query::Node, params: &mut Vec<SqlParam>) -> String {
+    compile_node_at(node, params, 0)
+}
+
+const MAX_COMPILE_DEPTH: usize = 4 * cctui_query::MAX_DEPTH + 8;
+
+fn compile_node_at(node: &cctui_query::Node, params: &mut Vec<SqlParam>, depth: usize) -> String {
     use cctui_query::Node;
+    if depth > MAX_COMPILE_DEPTH {
+        return "FALSE".to_string();
+    }
     match node {
         Node::Empty => "TRUE".to_string(),
         Node::Text { value } => {
@@ -1165,19 +1174,38 @@ fn compile_node(node: &cctui_query::Node, params: &mut Vec<SqlParam>) -> String 
             free_text_predicate(p)
         }
         Node::Filter { filter } => compile_filter(filter, params),
-        Node::Not { child } => format!("(NOT {})", compile_node(child, params)),
-        Node::And { children } => join_children(children, "AND", params),
-        Node::Or { children } => join_children(children, "OR", params),
+        Node::Not { child } => format!("(NOT {})", compile_node_at(child, params, depth + 1)),
+        Node::And { children } => join_children(children, "AND", params, depth),
+        Node::Or { children } => join_children(children, "OR", params, depth),
     }
 }
 
-fn join_children(children: &[cctui_query::Node], sep: &str, params: &mut Vec<SqlParam>) -> String {
-    let preds: Vec<String> = children.iter().map(|c| compile_node(c, params)).collect();
+fn join_children(
+    children: &[cctui_query::Node],
+    sep: &str,
+    params: &mut Vec<SqlParam>,
+    depth: usize,
+) -> String {
+    let preds: Vec<String> =
+        children.iter().map(|c| compile_node_at(c, params, depth + 1)).collect();
     if preds.is_empty() {
         "TRUE".to_string()
     } else {
         format!("({})", preds.join(&format!(" {sep} ")))
     }
+}
+
+/// 400 for a raw search query too long to parse.
+fn check_query_len(q: &str) -> Result<(), (StatusCode, Json<ApiError>)> {
+    if q.len() > cctui_query::MAX_QUERY_LEN {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ApiError {
+                error: format!("query too long (max {} bytes)", cctui_query::MAX_QUERY_LEN),
+            }),
+        ));
+    }
+    Ok(())
 }
 
 /// Newest event matching any term, at most one row per session.
@@ -1234,6 +1262,7 @@ pub async fn search_sessions(
     Extension(ctx): Extension<AuthContext>,
     Query(params): Query<SearchParams>,
 ) -> Result<Json<SessionListResponse>, (StatusCode, Json<ApiError>)> {
+    check_query_len(&params.q)?;
     let uid = ctx.owner_filter();
     // Parse the raw `q` into the AST. A blank query → `Empty` → browse.
     // A plain keyword parses to a single free-text leaf, so back-compat holds.
@@ -1484,6 +1513,8 @@ pub async fn search_field_values(
     Extension(ctx): Extension<AuthContext>,
     Query(params): Query<FieldValuesParams>,
 ) -> Result<Json<Vec<String>>, (StatusCode, Json<ApiError>)> {
+    check_query_len(params.context.as_deref().unwrap_or(""))?;
+    check_query_len(params.q.as_deref().unwrap_or(""))?;
     let uid = ctx.owner_filter();
     let Some(def) = cctui_query::resolve(&params.field) else {
         return Ok(Json(vec![]));
@@ -3262,6 +3293,33 @@ mod tests {
         assert_eq!(f.payload.env_keys, vec!["TOKEN"]);
         let json = serde_json::to_value(&f.payload).unwrap();
         assert!(json.get("env").is_none(), "{json}");
+    }
+
+    #[test]
+    fn oversize_query_is_bad_request() {
+        assert!(super::check_query_len(&"a".repeat(cctui_query::MAX_QUERY_LEN)).is_ok());
+        let (status, _) = super::check_query_len(&"(".repeat(20_000)).unwrap_err();
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+    }
+
+    #[test]
+    fn compile_node_is_depth_bounded() {
+        let mut node = cctui_query::Node::Text { value: "x".into() };
+        for _ in 0..100_000 {
+            node = cctui_query::Node::Not { child: Box::new(node) };
+        }
+        let mut params = Vec::new();
+        let sql = std::thread::Builder::new()
+            .stack_size(1024 * 1024)
+            .spawn(move || {
+                let sql = compile_node(&node, &mut params);
+                std::mem::forget(node);
+                sql
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert!(sql.contains("FALSE"));
     }
 
     fn compile(q: &str) -> (String, Vec<String>) {

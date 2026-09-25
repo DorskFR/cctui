@@ -117,6 +117,9 @@ pub async fn list_bookmarks(
     Extension(ctx): Extension<AuthContext>,
     Query(params): Query<ListQuery>,
 ) -> Result<Json<Vec<Bookmark>>, StatusCode> {
+    if params.q.as_deref().is_some_and(|q| q.len() > cctui_query::MAX_QUERY_LEN) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
     let limit = params.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
     let terms = q_terms(params.q.as_deref());
 

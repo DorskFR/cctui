@@ -600,3 +600,31 @@ async fn pool_weight_is_validated_and_persisted() {
         .unwrap();
     assert_eq!(fetched["pool_weight"].as_f64(), Some(4.0), "{fetched}");
 }
+
+#[tokio::test]
+#[ignore = "requires running server"]
+async fn oversize_search_query_is_rejected() {
+    let client = Client::new();
+    let base = server_url();
+    let q = "(".repeat(20_000);
+    for path in ["sessions/search", "bookmarks"] {
+        let resp = client
+            .get(format!("{base}/api/v1/{path}"))
+            .query(&[("q", q.as_str())])
+            .bearer_auth(admin_token())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 400, "{path}");
+    }
+    let resp = client
+        .get(format!("{base}/api/v1/sessions/search/values"))
+        .query(&[("field", "machine"), ("context", q.as_str())])
+        .bearer_auth(admin_token())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+    let resp = client.get(format!("{base}/health")).send().await.unwrap();
+    assert_eq!(resp.status(), 200);
+}
