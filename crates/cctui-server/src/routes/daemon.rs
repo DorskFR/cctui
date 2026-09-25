@@ -772,8 +772,8 @@ fn announced_session(frame: &DaemonFrameUp) -> Option<&str> {
 /// The session a daemon frame acts on, if any.
 fn session_scope(frame: &DaemonFrameUp) -> Option<&str> {
     match frame {
-        DaemonFrameUp::SessionRegistered { local_id, .. } => Some(local_id),
-        DaemonFrameUp::Event {
+        DaemonFrameUp::SessionRegistered { local_id, .. }
+        | DaemonFrameUp::Event {
             event:
                 AdapterEvent::SessionStarted { local_id, .. }
                 | AdapterEvent::Message { local_id, .. }
