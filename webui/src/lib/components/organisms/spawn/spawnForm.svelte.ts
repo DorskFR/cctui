@@ -36,14 +36,7 @@ import { settings } from '$lib/settings.svelte';
 import { m } from '$lib/paraglide/messages';
 import type { EnvRow, Form, SpawnPrefill, Target } from './types';
 import { accountBacksAdapter, providerForAdapter, NO_ACCOUNT, poolName } from './options';
-import {
-	applySpec,
-	initialProfile,
-	specFromForm,
-	specOf,
-	uniqueProfileName,
-	type ProfileSpecForm
-} from './profiles';
+import { applySpec, initialProfile, specFromForm, specOf, type ProfileSpecForm } from './profiles';
 import { blank, seedForm } from './spawnSeed';
 import { SpawnRecall } from './spawnRecall';
 import { buildSpawnBody, draftBody, envMap } from './spawnBody';
@@ -78,7 +71,7 @@ export class SpawnForm {
 	private readonly usageQuery = useAllAccountsUsage(() => true);
 	private readonly labelsQuery = useLabels();
 	private readonly profilesQuery = useProfiles();
-	private readonly profileActions = useProfileActions();
+	readonly profileActions = useProfileActions();
 	readonly actions = useSessionActions();
 	readonly labelApi = {
 		attachLabel: (sessionId: string, labelId: string) =>
@@ -395,39 +388,6 @@ export class SpawnForm {
 		this.files = removeFileByName(this.files, name);
 	};
 
-	async createProfile() {
-		const base = this.profileSpec ?? specFromForm(this.form, this.allAccounts, this.allPools);
-		const name = uniqueProfileName(
-			m.spawn_profile_new_name(),
-			this.profiles.map((p) => p.name)
-		);
-		try {
-			const p = await this.profileActions.create({ name, ...base });
-			this.selectedProfileId = p.id;
-			this.oneOff = null;
-		} catch (e) {
-			toasts.error(m.spawn_profile_toast_failed({ error: errMessage(e) }));
-		}
-	}
-	async saveProfile(id: string, name: string, spec: ProfileSpecForm) {
-		try {
-			await this.profileActions.update(id, { name, spec });
-			toasts.ok(m.spawn_profile_toast_saved());
-		} catch (e) {
-			toasts.error(m.spawn_profile_toast_failed({ error: errMessage(e) }));
-		}
-	}
-	async deleteProfile(id: string) {
-		try {
-			await this.profileActions.remove(id);
-			if (this.selectedProfileId === id) {
-				this.selectedProfileId = null;
-				this.oneOff = null;
-			}
-		} catch (e) {
-			toasts.error(m.spawn_profile_toast_failed({ error: errMessage(e) }));
-		}
-	}
 	rememberProfileUse(p: SessionProfile | null) {
 		if (!p) return;
 		this.usageRaw = recordProfileUse(this.usageRaw, p.id);

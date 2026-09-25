@@ -3,6 +3,7 @@
 	import DispatchFields from './DispatchFields.svelte';
 	import ProfileList from './ProfileList.svelte';
 	import type { SpawnForm } from './spawnForm.svelte';
+	import { createProfile, deleteProfile, saveProfile } from './profileCrud';
 
 	let { sf }: { sf: SpawnForm } = $props();
 </script>
@@ -32,8 +33,8 @@
 		usageRaw={sf.usageRaw}
 		machineId={sf.form.machine_id}
 		busy={sf.busy}
-		oncreate={() => sf.createProfile()}
-		onsave={(id, name, spec) => sf.saveProfile(id, name, spec)}
-		ondelete={(id) => sf.deleteProfile(id)}
+		oncreate={() => createProfile(sf)}
+		onsave={(id, name, spec) => saveProfile(sf, id, name, spec)}
+		ondelete={(id) => deleteProfile(sf, id)}
 	/>
 {/if}
