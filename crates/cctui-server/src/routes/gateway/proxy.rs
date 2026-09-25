@@ -395,7 +395,8 @@ async fn admit(
 async fn resolve_upstream(
     state: &AppState,
     acct: &super::Account,
-    req: &Request,
+    uri: &axum::http::Uri,
+    req_method: &axum::http::Method,
     prefix: &str,
     upstream_base: &str,
     is_anthropic: bool,
@@ -432,12 +433,12 @@ async fn resolve_upstream(
     };
 
     // Build the upstream URL: strip the gateway prefix, keep path + query.
-    let path = req.uri().path();
+    let path = uri.path();
     let tail = path.strip_prefix(prefix).unwrap_or(path);
-    let query = req.uri().query().map(|q| format!("?{q}")).unwrap_or_default();
+    let query = uri.query().map(|q| format!("?{q}")).unwrap_or_default();
     let url = format!("{}{tail}{query}", upstream.trim_end_matches('/'));
 
-    let method = reqwest::Method::from_bytes(req.method().as_str().as_bytes())
+    let method = reqwest::Method::from_bytes(req_method.as_str().as_bytes())
         .map_err(|_| Err(StatusCode::BAD_REQUEST))?;
 
     Ok(UpstreamTarget { client, url, method, access_token })
@@ -877,12 +878,21 @@ pub async fn passthrough(
         Ok(admission) => admission,
         Err(reply) => return reply,
     };
-    let target =
-        match resolve_upstream(&state, &auth.acct, &req, prefix, upstream_base, is_anthropic).await
-        {
-            Ok(target) => target,
-            Err(reply) => return reply,
-        };
+    let (uri, req_method) = (req.uri().clone(), req.method().clone());
+    let target = match resolve_upstream(
+        &state,
+        &auth.acct,
+        &uri,
+        &req_method,
+        prefix,
+        upstream_base,
+        is_anthropic,
+    )
+    .await
+    {
+        Ok(target) => target,
+        Err(reply) => return reply,
+    };
     let mut headers = forward_headers(req.headers(), &auth.acct, &target.access_token)?;
     let obs = observers(&state, &auth, &mut headers).await?;
     let (body, info) = match prepare_body(&state, &auth, admission, &obs, req, is_anthropic).await {

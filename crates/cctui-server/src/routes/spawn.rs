@@ -186,7 +186,7 @@ async fn resolve_spawn_account(
     target: &SpawnTarget,
     req: &SpawnRequest,
 ) -> Result<BoundAccount, (StatusCode, Json<ApiError>)> {
-    let SpawnTarget { uid, adapter_id, token_session_id, .. } = target;
+    let SpawnTarget { uid, adapter_id, .. } = target;
     let uid = *uid;
     let mut env = req.env.clone();
     let mut model = req.model.clone().filter(|m| !m.trim().is_empty());
