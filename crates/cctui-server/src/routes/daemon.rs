@@ -268,7 +268,10 @@ async fn spawn_capability_for(
 /// The default grant for a session launched without one. A persist failure
 /// still serves the grant for this launch.
 async fn grant_default(state: &AppState, session_id: &str) -> cctui_proto::api::SpawnCapability {
-    let cap = cctui_proto::api::SpawnCapability::machine_default();
+    let cap = cctui_proto::api::SpawnCapability {
+        max_permission_mode: Some(cctui_proto::adapter::PermissionMode::Ask),
+        ..cctui_proto::api::SpawnCapability::machine_default()
+    };
     if let Err(e) = crate::store::spawn_capabilities::upsert(&state.pool, session_id, &cap).await {
         tracing::error!(%session_id, error = %e, "default spawn-capability persist failed");
     }

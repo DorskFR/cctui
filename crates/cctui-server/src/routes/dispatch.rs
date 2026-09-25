@@ -830,7 +830,16 @@ pub async fn dispatch(
             .and_then(|obj| obj.remove("spawn_capability"))
             .and_then(|raw| serde_json::from_value::<cctui_proto::api::SpawnCapability>(raw).ok())
             .filter(|cap| !cap.is_empty());
-        let cap = declared.unwrap_or_else(cctui_proto::api::SpawnCapability::machine_default);
+        let mut cap = declared.unwrap_or_else(cctui_proto::api::SpawnCapability::machine_default);
+        if cap.max_permission_mode.is_none() {
+            cap.max_permission_mode = Some(
+                forwarded_payload
+                    .get("permission_mode")
+                    .and_then(serde_json::Value::as_str)
+                    .and_then(cctui_proto::adapter::PermissionMode::from_session_label)
+                    .unwrap_or(cctui_proto::adapter::PermissionMode::Ask),
+            );
+        }
         if let Err(e) =
             crate::store::spawn_capabilities::upsert(&state.pool, &session_id, &cap).await
         {
