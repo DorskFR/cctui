@@ -75,6 +75,16 @@ pub const ANNOTATION_GUARD_IDENTITY: &str = "cctui.dev/guard-identity";
 /// [`WorkerProfileSpec::gpg_signing`].
 pub const ANNOTATION_GPG_SIGNING: &str = "cctui.dev/gpg-signing";
 
+/// Pod annotation naming the Job-owned Secret that carries the worker's
+/// per-run secret env. Always [`env_secret_name`] of the pod's Job.
+pub const ANNOTATION_ENV_SECRET: &str = "cctui.dev/env-secret";
+
+/// Name of the per-dispatch env Secret for the Job `job_name`.
+#[must_use]
+pub fn env_secret_name(job_name: &str, nonce: &str) -> String {
+    format!("{job_name}-env-{nonce}")
+}
+
 /// Pod annotation the webhook stamps (`"true"`) after injecting the envelope.
 /// Its presence makes re-invocation a no-op.
 pub const ANNOTATION_ENVELOPE_INJECTED: &str = "cctui.dev/envelope-injected";

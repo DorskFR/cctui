@@ -4,7 +4,8 @@
 //! Apple `container` has none). Deterministic
 //! `cctui-worker-<sha1(dedup)[:12]>` naming for idempotency, env injection with
 //! `cctui_machine_key` lifted out of the payload and delivered as a
-//! **mounted file** by default, optional repo mount + shallow-pull
+//! **mounted file** by default (or a 0600 `--env-file`, never argv), optional
+//! repo mount + shallow-pull
 //! signal, and lifecycle via `inspect`/`stop`/`delete`.
 //!
 //! All runtime calls go through [`ContainerCli`] so the mechanics are unit
@@ -19,11 +20,13 @@ use std::path::PathBuf;
 use cctui_dispatcher_core::{
     Dispatcher, HandleState, SpawnOutcome, build_env, dedup_source, worker_name,
 };
+use cctui_proto::worker_env::check_payload_env;
 use cctui_proto::ws::WireDispatchSpec;
 
 use crate::cli::ContainerCli;
 
-/// A machine-key secret staged on the host, ready to mount into the guest.
+/// A machine-key secret staged on the host: a file mounted into the guest, or
+/// the `--env-file` in `secret_via_env` mode.
 #[derive(Debug, Clone)]
 struct SecretMount {
     host_file: PathBuf,
@@ -74,10 +77,11 @@ impl<C: ContainerCli> Spawner<C> {
         mount.split(':').nth(1).filter(|s| !s.is_empty())
     }
 
-    /// Build the env passed to the worker, minus the machine key (which becomes
-    /// a mounted file unless `secret_via_env`). Returns `(env, machine_key)`; the
+    /// Build the env passed to the worker, minus the machine key (a mounted
+    /// file, or an env file with `secret_via_env`). Returns `(env, machine_key)`; the
     /// key is `None` when the payload carried none.
     fn worker_env(&self, spec: &WireDispatchSpec) -> anyhow::Result<(Vec<String>, Option<String>)> {
+        check_payload_env(&spec.payload).map_err(anyhow::Error::msg)?;
         let base = build_env(spec, &self.cctui_url)?;
         let mut env = base.env;
         if let Some(guest) = self.repo_mount.as_deref().and_then(Self::mount_guest_path) {
@@ -104,20 +108,22 @@ impl<C: ContainerCli> Spawner<C> {
             args.push(net.clone());
         }
 
-        match (self.secret_via_env, machine_key) {
-            (true, Some(k)) => env.push(format!("CCTUI_MACHINE_KEY={k}")),
-            (false, Some(_)) => {
-                let secret = secret.ok_or_else(|| {
-                    anyhow::anyhow!("machine key present but no secret mount staged")
-                })?;
-                env.push(format!("CCTUI_MACHINE_KEY_FILE={}", secret.guest_path));
-            }
-            (_, None) => {}
+        let secret = if machine_key.is_some() {
+            Some(secret.ok_or_else(|| anyhow::anyhow!("machine key present but no secret file staged"))?)
+        } else {
+            None
+        };
+        if let Some(secret) = secret.filter(|_| !self.secret_via_env) {
+            env.push(format!("CCTUI_MACHINE_KEY_FILE={}", secret.guest_path));
         }
 
         for e in env {
             args.push("-e".to_owned());
             args.push(e);
+        }
+        if let Some(secret) = secret.filter(|_| self.secret_via_env) {
+            args.push("--env-file".to_owned());
+            args.push(secret.host_file.display().to_string());
         }
         if let Some(secret) = secret.filter(|_| !self.secret_via_env) {
             args.push("-v".to_owned());
@@ -135,18 +141,16 @@ impl<C: ContainerCli> Spawner<C> {
         Ok(args)
     }
 
-    /// Stage the machine key as a 0600 host file to be mounted read-only into the
-    /// guest. Preferred over an env var (a token in `container inspect` / the
-    /// guest process list is visible).
+    /// Stage the machine key as a 0600 host file: mounted read-only into the
+    /// guest, or passed as `--env-file` with `secret_via_env` so the key never
+    /// reaches the `container run` argv.
     fn stage_secret(&self, name: &str, key: &str) -> anyhow::Result<SecretMount> {
-        std::fs::create_dir_all(&self.secret_dir)?;
-        let host_file = self.secret_dir.join(format!("{name}.key"));
-        std::fs::write(&host_file, key)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&host_file, std::fs::Permissions::from_mode(0o600))?;
-        }
+        let (host_file, contents) = if self.secret_via_env {
+            (self.secret_dir.join(format!("{name}.env")), format!("CCTUI_MACHINE_KEY={key}\n"))
+        } else {
+            (self.secret_dir.join(format!("{name}.key")), key.to_owned())
+        };
+        write_private(&self.secret_dir, &host_file, contents.as_bytes())?;
         Ok(SecretMount { host_file, guest_path: self.secret_mount_path.clone() })
     }
 
@@ -207,6 +211,33 @@ impl<C: ContainerCli> Spawner<C> {
     }
 }
 
+/// Write `path` as a 0600 file, never readable by others even briefly: the
+/// bytes go to a fresh 0600 temp file that is then renamed over `path`.
+fn write_private(dir: &std::path::Path, path: &std::path::Path, contents: &[u8]) -> anyhow::Result<()> {
+    use std::io::Write;
+
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+        builder.mode(0o700);
+        opts.mode(0o600);
+    }
+    builder.create(dir)?;
+    let tmp = dir.join(format!(".{}.tmp", uuid::Uuid::new_v4()));
+    let written = opts.open(&tmp).and_then(|mut f| f.write_all(contents)).and_then(|()| {
+        std::fs::rename(&tmp, path)
+    });
+    if written.is_err() {
+        std::fs::remove_file(&tmp).ok();
+    }
+    written?;
+    Ok(())
+}
+
 impl<C: ContainerCli> Dispatcher for Spawner<C> {
     fn kind(&self) -> &'static str {
         "apple"
@@ -222,9 +253,9 @@ impl<C: ContainerCli> Dispatcher for Spawner<C> {
         }
         let name = worker_name(dedup_source(spec));
 
-        let secret = match (self.secret_via_env, Self::payload_machine_key(spec)) {
-            (false, Some(k)) => Some(self.stage_secret(&name, &k)?),
-            _ => None,
+        let secret = match Self::payload_machine_key(spec) {
+            Some(k) => Some(self.stage_secret(&name, &k)?),
+            None => None,
         };
 
         let args = self.build_run_args(spec, &name, secret.as_ref())?;
@@ -385,13 +416,51 @@ mod tests {
     }
 
     #[test]
-    fn build_run_args_env_secret_mode_uses_plain_var_no_mount() {
+    fn build_run_args_env_secret_mode_uses_env_file_not_argv() {
         let mut sp = spawner(MockCli::default());
         sp.secret_via_env = true;
         let s = spec("sess-1", json!({ "cctui_machine_key": "SECRET" }));
-        let args = sp.build_run_args(&s, "n", None).unwrap();
-        assert!(args.contains(&"CCTUI_MACHINE_KEY=SECRET".to_owned()));
+        let secret = SecretMount {
+            host_file: PathBuf::from("/tmp/n.env"),
+            guest_path: "/run/cctui/machine_key".to_owned(),
+        };
+        let args = sp.build_run_args(&s, "n", Some(&secret)).unwrap();
+        assert!(args.iter().all(|a| !a.contains("SECRET")), "machine key on argv: {args:?}");
+        let at = args.iter().position(|a| a == "--env-file").expect("--env-file passed");
+        assert_eq!(args[at + 1], "/tmp/n.env");
+        assert!(args.iter().all(|a| !a.starts_with("CCTUI_MACHINE_KEY_FILE=")));
         assert!(args.iter().all(|a| a != "-v"));
+    }
+
+    #[test]
+    fn build_run_args_env_secret_mode_requires_a_staged_env_file() {
+        let mut sp = spawner(MockCli::default());
+        sp.secret_via_env = true;
+        let s = spec("sess-1", json!({ "cctui_machine_key": "SECRET" }));
+        assert!(sp.build_run_args(&s, "n", None).is_err());
+    }
+
+    #[cfg(unix)]
+    fn mode_of(path: &std::path::Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    #[tokio::test]
+    async fn dispatch_env_secret_mode_keeps_the_key_off_argv() {
+        let mut sp = spawner(MockCli::with_responses(vec![ok("")]));
+        sp.secret_via_env = true;
+        let s = spec("sess-env", json!({ "cctui_machine_key": "TOPSECRET" }));
+        let out = sp.dispatch(&s).await.unwrap();
+        let calls = sp.cli.calls();
+        assert!(calls[0].iter().all(|a| !a.contains("TOPSECRET")), "key on argv: {:?}", calls[0]);
+        let name = out.handle.strip_prefix("container/").unwrap();
+        let env_file = sp.secret_dir.join(format!("{name}.env"));
+        assert!(calls[0].contains(&env_file.display().to_string()));
+        assert_eq!(std::fs::read_to_string(&env_file).unwrap(), "CCTUI_MACHINE_KEY=TOPSECRET\n");
+        #[cfg(unix)]
+        assert_eq!(mode_of(&env_file), 0o600);
+        std::fs::remove_dir_all(&sp.secret_dir).ok();
     }
 
     #[test]
@@ -427,6 +496,24 @@ mod tests {
         let name = out.handle.strip_prefix("container/").unwrap();
         let host_file = sp.secret_dir.join(format!("{name}.key"));
         assert_eq!(std::fs::read_to_string(&host_file).unwrap(), "TOPSECRET");
+        #[cfg(unix)]
+        assert_eq!(mode_of(&host_file), 0o600);
+        std::fs::remove_dir_all(&sp.secret_dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restaging_a_secret_replaces_a_lax_file_with_a_0600_one() {
+        use std::os::unix::fs::PermissionsExt;
+        let sp = spawner(MockCli::default());
+        std::fs::create_dir_all(&sp.secret_dir).unwrap();
+        let stale = sp.secret_dir.join("n.key");
+        std::fs::write(&stale, "OLD").unwrap();
+        std::fs::set_permissions(&stale, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let staged = sp.stage_secret("n", "NEW").unwrap();
+        assert_eq!(staged.host_file, stale);
+        assert_eq!(std::fs::read_to_string(&stale).unwrap(), "NEW");
+        assert_eq!(mode_of(&stale), 0o600);
         std::fs::remove_dir_all(&sp.secret_dir).ok();
     }
 
@@ -480,5 +567,15 @@ mod tests {
         let calls = sp.cli.calls();
         assert_eq!(calls[0][0], "stop");
         assert_eq!(calls[1][0], "delete");
+    }
+
+    #[test]
+    fn build_run_args_rejects_reserved_payload_env() {
+        let sp = spawner(MockCli::default());
+        for key in ["CCTUI_URL", "CCTUI_MACHINE_KEY", "DYLD_INSERT_LIBRARIES", "PATH"] {
+            let s = spec("sess-r", json!({ "env": { key: "x" } }));
+            let err = sp.build_run_args(&s, "n", None).unwrap_err();
+            assert!(err.to_string().contains(key), "{err}");
+        }
     }
 }
