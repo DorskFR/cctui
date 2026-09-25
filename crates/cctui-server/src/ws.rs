@@ -487,13 +487,27 @@ async fn set_daemon_pty_watch(state: &AppState, session_id: &str, watch: bool) {
     }
 }
 
-/// The `session_id` a server-initiated event pertains to, if any. Events with a
-/// session id are owner-scoped on the relay; the rest
-/// (`CommandResult`, machine-level/manifest events) are not session-scoped and
-/// pass through. `MessageAck` is already point-to-point (sent only to the
-/// originating socket via `event_tx`, not broadcast), but we still scope it
-/// defensively.
-fn event_session_id(event: &ServerEvent) -> Option<&str> {
+/// The resource whose owner may receive an event.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum Owned {
+    Session(String),
+    Machine(uuid::Uuid),
+    Account(uuid::Uuid),
+    Dispatcher(uuid::Uuid),
+}
+
+/// Who a broadcast event reaches besides admins.
+#[derive(Debug, PartialEq, Eq)]
+enum Audience {
+    Everyone,
+    OwnerOf(Owned),
+    AdminsOnly,
+}
+
+/// Exhaustive on purpose: a new variant must declare who may see it.
+fn audience(event: &ServerEvent) -> Audience {
+    use Audience::{AdminsOnly, Everyone, OwnerOf};
+    let session = |id: &str| OwnerOf(Owned::Session(id.to_owned()));
     match event {
         ServerEvent::Stream { session_id, .. }
         | ServerEvent::Status { session_id, .. }
@@ -506,10 +520,60 @@ fn event_session_id(event: &ServerEvent) -> Option<&str> {
         | ServerEvent::PlanResolved { session_id }
         | ServerEvent::PtyChunk { session_id, .. }
         | ServerEvent::SessionEnded { session_id, .. }
-        | ServerEvent::MessageAck { session_id, .. } => Some(session_id),
-        ServerEvent::SessionRegistered { session } => Some(&session.id),
-        ServerEvent::CommandResult { session_id, .. } => session_id.as_deref(),
-        _ => None,
+        | ServerEvent::MessageAck { session_id, .. }
+        | ServerEvent::SoftLimitReached { session_id, .. }
+        | ServerEvent::SoftLimitCleared { session_id } => session(session_id),
+        ServerEvent::SessionRegistered { session: s } => session(&s.id),
+        ServerEvent::CommandResult { session_id, .. } => {
+            session_id.as_deref().map_or(AdminsOnly, session)
+        }
+        ServerEvent::ArchiveManifest { machine_id, .. }
+        | ServerEvent::ArchiveUploaded { machine_id, .. }
+        | ServerEvent::MachineLiveness { machine_id, .. }
+        | ServerEvent::MachineResources { machine_id, .. } => OwnerOf(Owned::Machine(*machine_id)),
+        ServerEvent::AccountUsage { account_id, .. } => OwnerOf(Owned::Account(*account_id)),
+        ServerEvent::DispatcherLiveness { dispatcher_id, .. } => {
+            OwnerOf(Owned::Dispatcher(*dispatcher_id))
+        }
+        ServerEvent::GithubEvent { .. } => AdminsOnly,
+        ServerEvent::Heartbeat {} | ServerEvent::Resync { .. } => Everyone,
+    }
+}
+
+/// Resolves the owning user of a resource; `None` when unknown.
+trait OwnerLookup {
+    async fn owner(&self, owned: &Owned) -> Option<uuid::Uuid>;
+}
+
+impl OwnerLookup for sqlx::PgPool {
+    async fn owner(&self, owned: &Owned) -> Option<uuid::Uuid> {
+        let found = match owned {
+            Owned::Session(id) => crate::authz::session_owner(id, self).await,
+            Owned::Machine(id) => {
+                sqlx::query_scalar("SELECT user_id FROM machines WHERE id = $1")
+                    .bind(id)
+                    .fetch_optional(self)
+                    .await
+            }
+            Owned::Account(id) => {
+                sqlx::query_scalar("SELECT user_id FROM accounts WHERE id = $1")
+                    .bind(id)
+                    .fetch_optional(self)
+                    .await
+            }
+            Owned::Dispatcher(id) => {
+                sqlx::query_scalar(
+                    "SELECT user_id FROM dispatchers WHERE id = $1 AND deleted_at IS NULL",
+                )
+                .bind(id)
+                .fetch_optional(self)
+                .await
+            }
+        };
+        found.unwrap_or_else(|e| {
+            tracing::error!(?owned, "db error (ws event authz): {e}");
+            None
+        })
     }
 }
 
@@ -518,16 +582,23 @@ trait EventFilter {
     async fn allows(&mut self, event: &ServerEvent) -> bool;
 }
 
-struct OwnerFilter {
-    state: AppState,
-    ctx: AuthContext,
+/// Admins see everything; everyone else only events whose resource they own.
+/// An event without a resolvable owner is denied.
+struct OwnerFilter<L> {
+    is_admin: bool,
+    user_id: uuid::Uuid,
+    lookup: L,
 }
 
-impl EventFilter for OwnerFilter {
+impl<L: OwnerLookup> EventFilter for OwnerFilter<L> {
     async fn allows(&mut self, event: &ServerEvent) -> bool {
-        match event_session_id(event) {
-            Some(session_id) => ws_owns_session(&self.state, &self.ctx, session_id).await,
-            None => true,
+        if self.is_admin {
+            return true;
+        }
+        match audience(event) {
+            Audience::Everyone => true,
+            Audience::AdminsOnly => false,
+            Audience::OwnerOf(owned) => self.lookup.owner(&owned).await == Some(self.user_id),
         }
     }
 }
@@ -561,7 +632,8 @@ async fn handle_tui_ws(socket: WebSocket, state: AppState, ctx: AuthContext) {
     let (sink, stream) = socket.split();
     let (tx, rx) = mpsc::channel::<Frame>(256);
 
-    let filter = OwnerFilter { state: state.clone(), ctx: ctx.clone() };
+    let filter =
+        OwnerFilter { is_admin: ctx.is_admin(), user_id: ctx.user_id, lookup: state.pool.clone() };
     tokio::spawn(relay_server_frames(state.bus.subscribe_server(), filter, tx.clone()));
 
     spawn_send_task(sink, rx);
@@ -577,9 +649,14 @@ mod tests {
     use cctui_proto::models::{Session, SessionStatus};
     use cctui_proto::ws::ServerEvent;
 
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use uuid::Uuid;
+
     use super::{
-        EventFilter, event_session_id, origin_permitted, permission_target, relay_server_frames,
-        replay_pending, spawn_relay_task,
+        Audience, EventFilter, OwnerFilter, OwnerLookup, Owned, audience,
+        origin_permitted, permission_target, relay_server_frames, replay_pending, spawn_relay_task,
     };
     use crate::bus::ServerFrame;
     use crate::config::Config;
@@ -624,12 +701,113 @@ mod tests {
         }
     }
 
-    /// The relay drops session-scoped events for non-owners, so a registration
-    /// that reported no session id would fan out to every connected principal.
     #[test]
     fn session_registered_is_owner_scoped() {
         let event = ServerEvent::SessionRegistered { session: session("sess-1") };
-        assert_eq!(event_session_id(&event), Some("sess-1"));
+        assert_eq!(audience(&event), Audience::OwnerOf(Owned::Session("sess-1".into())));
+    }
+
+    #[test]
+    fn unowned_command_result_is_admin_only() {
+        let event = ServerEvent::CommandResult {
+            command_id: "c".into(),
+            ok: true,
+            error: None,
+            session_id: None,
+        };
+        assert_eq!(audience(&event), Audience::AdminsOnly);
+    }
+
+    const ALICE: Uuid = Uuid::from_u128(1);
+    const BOB: Uuid = Uuid::from_u128(2);
+    const BOB_MACHINE: Uuid = Uuid::from_u128(20);
+    const ALICE_MACHINE: Uuid = Uuid::from_u128(10);
+
+    /// Every resource named `*bob*` / `BOB_*` belongs to Bob, the rest to Alice.
+    #[derive(Default, Clone)]
+    struct FakeOwners {
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl OwnerLookup for FakeOwners {
+        async fn owner(&self, owned: &Owned) -> Option<Uuid> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            match owned {
+                Owned::Session(id) if id.contains("ghost") => None,
+                Owned::Session(id) if id.contains("bob") => Some(BOB),
+                Owned::Machine(id) if *id == BOB_MACHINE => Some(BOB),
+                _ => Some(ALICE),
+            }
+        }
+    }
+
+    fn filter_for(user_id: Uuid, lookup: FakeOwners) -> OwnerFilter<FakeOwners> {
+        OwnerFilter { is_admin: false, user_id, lookup }
+    }
+
+    fn foreign_events() -> Vec<ServerEvent> {
+        vec![
+            ServerEvent::SoftLimitReached {
+                session_id: "sess-bob".into(),
+                account_id: Uuid::from_u128(30),
+                account_name: "bob-max".into(),
+                reason: "cap".into(),
+                retry_after_secs: 60,
+            },
+            ServerEvent::MachineResources {
+                machine_id: BOB_MACHINE,
+                resources: Default::default(),
+            },
+            ServerEvent::ArchiveUploaded {
+                machine_id: BOB_MACHINE,
+                project_dir: "/home/bob/secret".into(),
+                session_id: "sess-bob".into(),
+                size_bytes: 1,
+                sha256: String::new(),
+            },
+            ServerEvent::MachineLiveness {
+                machine_id: BOB_MACHINE,
+                liveness: cctui_proto::models::MachineLiveness::Online,
+            },
+        ]
+    }
+
+    #[tokio::test]
+    async fn non_admin_does_not_receive_another_users_events() {
+        let mut alice = filter_for(ALICE, FakeOwners::default());
+        for event in foreign_events() {
+            assert!(!alice.allows(&event).await, "leaked to a non-owner: {event:?}");
+        }
+        let github = ServerEvent::GithubEvent {
+            kind: serde_json::from_value(serde_json::json!("pull")).unwrap(),
+            payload: serde_json::from_value(serde_json::json!({
+                "connector_id": Uuid::nil(),
+                "repo": "o/r",
+            }))
+            .unwrap(),
+        };
+        assert!(!alice.allows(&github).await);
+        let ghost = ServerEvent::SessionDeregistered { session_id: "sess-ghost".into() };
+        assert!(!alice.allows(&ghost).await);
+    }
+
+    #[tokio::test]
+    async fn owner_and_admin_receive_the_events() {
+        let mut bob = filter_for(BOB, FakeOwners::default());
+        for event in foreign_events() {
+            assert!(bob.allows(&event).await, "withheld from its owner: {event:?}");
+        }
+        let mine = ServerEvent::MachineResources {
+            machine_id: ALICE_MACHINE,
+            resources: Default::default(),
+        };
+        assert!(filter_for(ALICE, FakeOwners::default()).allows(&mine).await);
+
+        let mut admin = filter_for(ALICE, FakeOwners::default());
+        admin.is_admin = true;
+        for event in foreign_events() {
+            assert!(admin.allows(&event).await);
+        }
     }
 
     fn pending(session_id: &str, request_id: &str) -> PendingPermission {
@@ -737,6 +915,6 @@ mod tests {
     #[test]
     fn session_deregistered_is_owner_scoped() {
         let event = ServerEvent::SessionDeregistered { session_id: "sess-2".to_owned() };
-        assert_eq!(event_session_id(&event), Some("sess-2"));
+        assert_eq!(audience(&event), Audience::OwnerOf(Owned::Session("sess-2".into())));
     }
 }
