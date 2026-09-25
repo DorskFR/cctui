@@ -256,6 +256,7 @@ pub async fn enroll(
             machine_id: None,
             dispatcher_id: Some(dispatcher_id),
             expires_at: None,
+            passkey_id: None,
         },
         grant,
     )

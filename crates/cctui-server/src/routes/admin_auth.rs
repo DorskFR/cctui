@@ -182,6 +182,7 @@ pub async fn create_user(
             machine_id: None,
             dispatcher_id: None,
             expires_at: None,
+            passkey_id: None,
         },
         default_ceiling,
     )
@@ -224,7 +225,8 @@ pub async fn revoke_user(
     if res.rows_affected() == 0 {
         return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "user not found".into() })));
     }
-    purge_user_cache(&state.auth_config, id, &state.pool).await;
+    crate::store::tokens::revoke_by_user(&state.pool, id).await.map_err(|e| db_err(&e))?;
+    state.auth_config.purge_all();
     tracing::info!(user_id = %id, "user revoked");
     Ok(StatusCode::NO_CONTENT)
 }
@@ -642,6 +644,7 @@ pub async fn rotate_machine(
                     machine_id: Some(id),
                     dispatcher_id: None,
                     expires_at: None,
+                    passkey_id: None,
                 },
                 grant,
             )
@@ -888,6 +891,7 @@ pub async fn mint_user_key(
             machine_id: None,
             dispatcher_id: None,
             expires_at: req.expires_at,
+            passkey_id: None,
         },
         granted.clone(),
     )

@@ -401,6 +401,7 @@ pub struct NewKey<'a> {
     pub machine_id: Option<Uuid>,
     pub dispatcher_id: Option<Uuid>,
     pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub passkey_id: Option<Uuid>,
 }
 
 pub async fn register_key(
@@ -410,8 +411,9 @@ pub async fn register_key(
 ) -> Result<Uuid, sqlx::Error> {
     let key_id: (Uuid,) = sqlx::query_as(
         "INSERT INTO auth_keys \
-           (user_id, key_hash, key_preview, label, kind, machine_id, dispatcher_id, expires_at) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
+           (user_id, key_hash, key_preview, label, kind, machine_id, dispatcher_id, expires_at, \
+            passkey_id) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
          ON CONFLICT (key_hash) DO UPDATE SET label = EXCLUDED.label \
          RETURNING id",
     )
@@ -423,6 +425,7 @@ pub async fn register_key(
     .bind(key.machine_id)
     .bind(key.dispatcher_id)
     .bind(key.expires_at)
+    .bind(key.passkey_id)
     .fetch_one(pool)
     .await?;
     crate::store::acls::grant_key(pool, key_id.0, scopes).await?;

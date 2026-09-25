@@ -108,6 +108,7 @@ async fn enroll_machine(
             machine_id: Some(machine_id),
             dispatcher_id: None,
             expires_at: None,
+            passkey_id: None,
         },
         grant,
     )

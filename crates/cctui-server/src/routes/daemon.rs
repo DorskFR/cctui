@@ -2458,6 +2458,7 @@ pub async fn mint_user_token(
             machine_id: None,
             dispatcher_id: None,
             expires_at: req.expires_at,
+            passkey_id: None,
         },
         grant,
     )
