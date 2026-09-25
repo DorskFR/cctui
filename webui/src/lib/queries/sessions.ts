@@ -13,7 +13,9 @@ export const useSessions = (
   createQuery(() => ({
     queryKey: qk.sessions(archived()),
     queryFn: () => endpoints.sessions(archived()),
-    refetchInterval: 15_000,
+    // Ws list patches and change ticks keep live fields current; this only
+    // reconciles token totals, unread counts and last-message previews.
+    refetchInterval: 60_000,
     enabled: enabled(),
   }));
 

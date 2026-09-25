@@ -44,7 +44,7 @@ import ResourceBattery from '$lib/components/molecules/ResourceBattery.svelte';
 	});
 
 	// Cheap per-session ws patches applied to both list caches in place —
-	// no refetch. The 15s poll reconciles anything the patch can't know.
+	// no refetch. The 60s poll reconciles anything the patch can't know.
 	$effect(() =>
 		ws.onListPatch((p) => {
 			const { session_id, ...fields } = p;

@@ -290,6 +290,27 @@ const LAST_MESSAGE_SQL: &str = "SELECT s.session_id, e.payload, e.created_at \
          LIMIT 1 \
      ) e ON true";
 
+/// Per-(session, model) token totals, maintained by a trigger on
+/// `session_token_usage` (migration 132). `model` is stored as '' for NULL.
+const SESSION_TOTALS_SQL: &str = "SELECT session_id, NULLIF(model, ''), \
+            input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens \
+     FROM session_usage_totals WHERE session_id = ANY($1)";
+
+/// Unread messages per listed session, counting at most 100 per session: one
+/// past the badge's 99 ceiling, so a never-read session stops at the cap
+/// instead of counting its whole history.
+const UNREAD_COUNT_SQL: &str = "SELECT s.session_id, u.n \
+     FROM unnest($1::text[]) AS s(session_id) \
+     LEFT JOIN session_reads sr ON sr.session_id = s.session_id AND sr.user_id = $2 \
+     CROSS JOIN LATERAL ( \
+         SELECT COUNT(*) AS n FROM ( \
+             SELECT 1 FROM stream_events se \
+             WHERE se.session_id = s.session_id AND se.event_type = 'message' \
+               AND (sr.last_seen_at IS NULL OR se.created_at > sr.last_seen_at) \
+             LIMIT 100 \
+         ) capped \
+     ) u";
+
 #[allow(clippy::too_many_lines, clippy::cognitive_complexity)]
 pub async fn list_sessions(
     State(state): State<AppState>,
@@ -591,21 +612,13 @@ async fn enrich_and_sort(
         }
     }
 
-    // Aggregated token usage per session. Replaces the always-0
-    // historical values; live sessions also pick up DB-aggregated counts
-    // since the daemon persists every assistant turn.
+    // Token usage per session, from the running per-model totals the
+    // `session_token_usage` trigger keeps.
     let session_ids: Vec<String> = with_ts.iter().map(|(_, s)| s.id.clone()).collect();
     if !session_ids.is_empty() {
         type TokenRow =
             (String, Option<String>, Option<i64>, Option<i64>, Option<i64>, Option<i64>);
-        let rows: Vec<TokenRow> = sqlx::query_as(
-            "SELECT session_id, model, \
-                        SUM(input_tokens)::bigint, SUM(output_tokens)::bigint, \
-                        SUM(cache_read_tokens)::bigint, SUM(cache_creation_tokens)::bigint \
-                 FROM session_token_usage \
-                 WHERE session_id = ANY($1) \
-                 GROUP BY session_id, model",
-        )
+        let rows: Vec<TokenRow> = sqlx::query_as(SESSION_TOTALS_SQL)
         .bind(&session_ids)
         .fetch_all(&state.pool)
         .await
@@ -669,23 +682,13 @@ async fn enrich_and_sort(
         }
     }
 
-    // Unread assistant `message` count per session for the calling user:
-    // messages newer than the viewer's `session_reads.last_seen_at`,
-    // all of them when the user has never seen the session. One batched query
-    // over the same `session_ids` fan-out; capped at 99 to keep the badge tidy.
+    // Unread `message` count per session for the calling user: messages newer
+    // than the viewer's `session_reads.last_seen_at`, all of them when the user
+    // has never seen the session. Capped at 99 for the badge.
     if let Some(uid) = viewer
         && !session_ids.is_empty()
     {
-        let rows: Vec<(String, i64)> = sqlx::query_as(
-            "SELECT se.session_id, COUNT(*) \
-             FROM stream_events se \
-             LEFT JOIN session_reads sr \
-               ON sr.session_id = se.session_id AND sr.user_id = $2 \
-             WHERE se.session_id = ANY($1) \
-               AND se.event_type = 'message' \
-               AND (sr.last_seen_at IS NULL OR se.created_at > sr.last_seen_at) \
-             GROUP BY se.session_id",
-        )
+        let rows: Vec<(String, i64)> = sqlx::query_as(UNREAD_COUNT_SQL)
         .bind(&session_ids)
         .bind(uid)
         .fetch_all(&state.pool)
@@ -3259,6 +3262,148 @@ mod tests {
 
         assert_eq!(sessions[1].match_seq, None);
         assert_eq!(sessions[1].match_snippet, None);
+    }
+
+    type TotalsRow = (String, Option<String>, Option<i64>, Option<i64>, Option<i64>, Option<i64>);
+
+    async fn recomputed_totals(pool: &sqlx::PgPool, sid: &str) -> Vec<TotalsRow> {
+        let mut rows: Vec<TotalsRow> = sqlx::query_as(
+            "SELECT session_id, model, \
+                    SUM(input_tokens)::bigint, SUM(output_tokens)::bigint, \
+                    SUM(cache_read_tokens)::bigint, SUM(cache_creation_tokens)::bigint \
+             FROM session_token_usage WHERE session_id = ANY($1) \
+             GROUP BY session_id, model",
+        )
+        .bind(vec![sid.to_owned()])
+        .fetch_all(pool)
+        .await
+        .unwrap();
+        rows.sort();
+        rows
+    }
+
+    async fn trigger_totals(pool: &sqlx::PgPool, sid: &str) -> Vec<TotalsRow> {
+        let mut rows: Vec<TotalsRow> = sqlx::query_as(super::SESSION_TOTALS_SQL)
+            .bind(vec![sid.to_owned()])
+            .fetch_all(pool)
+            .await
+            .unwrap();
+        rows.retain(|r| r.2 != Some(0) || r.3 != Some(0) || r.4 != Some(0) || r.5 != Some(0));
+        rows.sort();
+        rows
+    }
+
+    #[tokio::test]
+    async fn trigger_totals_equal_a_recomputed_sum() {
+        let Some((pool, sid)) = seeded_session("trigger_totals_equal_a_recomputed_sum").await
+        else {
+            return;
+        };
+        let insert = |mid: &'static str, model: Option<&'static str>, n: i64| {
+            let pool = pool.clone();
+            let sid = sid.clone();
+            async move {
+                sqlx::query(
+                    "INSERT INTO session_token_usage (session_id, message_id, model, \
+                     input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens) \
+                     VALUES ($1, $2, $3, $4, $4 * 2, $4 * 3, $4 * 4) \
+                     ON CONFLICT (session_id, message_id) DO NOTHING",
+                )
+                .bind(&sid)
+                .bind(mid)
+                .bind(model)
+                .bind(n)
+                .execute(&pool)
+                .await
+                .unwrap();
+            }
+        };
+        insert("a", Some("opus"), 1).await;
+        insert("b", Some("opus"), 10).await;
+        insert("c", Some("haiku"), 100).await;
+        insert("d", None, 1000).await;
+        insert("e", None, 5).await;
+        insert("b", Some("opus"), 999_999).await;
+        assert_eq!(trigger_totals(&pool, &sid).await, recomputed_totals(&pool, &sid).await);
+
+        sqlx::query(
+            "UPDATE session_token_usage SET model = 'haiku', input_tokens = 7 \
+             WHERE session_id = $1 AND message_id = 'a'",
+        )
+        .bind(&sid)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("DELETE FROM session_token_usage WHERE session_id = $1 AND message_id = 'd'")
+            .bind(&sid)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let totals = trigger_totals(&pool, &sid).await;
+        assert_eq!(totals, recomputed_totals(&pool, &sid).await);
+        assert!(totals.iter().any(|r| r.1.is_none()), "NULL-model rows round-trip as None");
+
+        sqlx::query("DELETE FROM sessions WHERE id = $1").bind(&sid).execute(&pool).await.unwrap();
+        let left: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM session_usage_totals WHERE session_id = $1")
+                .bind(&sid)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(left, 0);
+    }
+
+    #[tokio::test]
+    async fn unread_count_stops_at_the_cap() {
+        let Some((pool, sid)) = seeded_session("unread_count_stops_at_the_cap").await else {
+            return;
+        };
+        let uid: uuid::Uuid = sqlx::query_scalar("SELECT user_id FROM sessions WHERE id = $1")
+            .bind(&sid)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let unread = || {
+            let pool = pool.clone();
+            let sid = sid.clone();
+            async move {
+                let rows: Vec<(String, i64)> = sqlx::query_as(super::UNREAD_COUNT_SQL)
+                    .bind(vec![sid.clone()])
+                    .bind(uid)
+                    .fetch_all(&pool)
+                    .await
+                    .unwrap();
+                assert_eq!(rows.len(), 1);
+                rows[0].1
+            }
+        };
+        assert_eq!(unread().await, 7, "never read: every message of the fixture");
+
+        sqlx::query(
+            "INSERT INTO stream_events (session_id, event_type, payload) \
+             SELECT $1, 'message', jsonb_build_object('role', 'assistant', 'text', g::text) \
+             FROM generate_series(1, 150) g",
+        )
+        .bind(&sid)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let n = unread().await;
+        assert_eq!(n, 100);
+        assert_eq!(super::cap_unread(n), 99);
+
+        sqlx::query(
+            "INSERT INTO session_reads (session_id, user_id, last_seen_at) \
+             VALUES ($1, $2, now() + interval '1 minute')",
+        )
+        .bind(&sid)
+        .bind(uid)
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert_eq!(unread().await, 0);
+
+        sqlx::query("DELETE FROM sessions WHERE id = $1").bind(&sid).execute(&pool).await.unwrap();
     }
 
     #[tokio::test]
