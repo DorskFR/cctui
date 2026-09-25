@@ -218,7 +218,7 @@
 			: []),
 		{
 			label: m.drawer_keepalive_label(),
-			icon: 'bell' as const,
+			icon: 'recycle' as const,
 			pressed: !!session.keepalive,
 			onselect: () => (keepaliveOpen = true)
 		},

@@ -48,7 +48,7 @@ describe('drawer header ⋯ menu', () => {
 			.slice(1);
 		expect(entries.length).toBeGreaterThanOrEqual(7);
 		for (const e of entries) expect(e, e.slice(0, 40)).toMatch(/\bicon:/);
-		expect(items()).toContain("icon: 'bell' as const");
+		expect(items()).toContain("icon: 'recycle' as const");
 		expect(header).toMatch(/followupItem = \$derived<MenuItem \| null>\([\s\S]*?icon: 'arrow-right'/);
 	});
 
