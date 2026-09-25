@@ -259,29 +259,6 @@ pub struct RegisterResponse {
     pub ws_url: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct CheckRequest {
-    pub session_id: String,
-    pub tool_name: String,
-    pub tool_input: serde_json::Value,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct CheckResponse {
-    #[serde(rename = "hookSpecificOutput")]
-    pub hook_specific_output: HookOutput,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct HookOutput {
-    #[serde(rename = "hookEventName")]
-    pub hook_event_name: String,
-    #[serde(rename = "permissionDecision", skip_serializing_if = "Option::is_none")]
-    pub permission_decision: Option<String>,
-    #[serde(rename = "permissionDecisionReason", skip_serializing_if = "Option::is_none")]
-    pub permission_decision_reason: Option<String>,
-}
-
 // --- TUI-facing ---
 
 const fn default_liveness() -> Liveness {
