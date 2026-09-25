@@ -11,14 +11,11 @@ use super::rpc::{RPC_TIMEOUT, RUN_BASE, response_outcome, write_json};
 
 /// A native codex thread lifecycle operation. Each maps to a single
 /// JSON-RPC method taking `{ threadId }`. Archive/unarchive are wired to the
-/// CCTUI archive/reopen actions; `Delete` implements the third native op for
-/// parity (no CCTUI destructive-delete action wires to it yet).
+/// CCTUI archive/reopen actions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LifecycleOp {
     Archive,
     Unarchive,
-    #[allow(dead_code)]
-    Delete,
 }
 
 impl LifecycleOp {
@@ -27,7 +24,6 @@ impl LifecycleOp {
         match self {
             Self::Archive => "thread/archive",
             Self::Unarchive => "thread/unarchive",
-            Self::Delete => "thread/delete",
         }
     }
 }
@@ -41,7 +37,7 @@ pub(super) fn thread_lifecycle_req(id: i64, op: LifecycleOp, thread_id: &str) ->
     })
 }
 
-/// Whether a `thread/{archive,unarchive,delete}` JSON-RPC error can be treated
+/// Whether a `thread/{archive,unarchive}` JSON-RPC error can be treated
 /// as success for idempotency: the thread is already in the target
 /// state or no longer exists, so CCTUI and native lifecycle state can't wedge
 /// each other. Matched on the codex error text since the app-server exposes no
@@ -60,7 +56,6 @@ pub fn is_idempotent_lifecycle_error(op: LifecycleOp, err: &str) -> bool {
     let already = match op {
         LifecycleOp::Archive => e.contains("already archived"),
         LifecycleOp::Unarchive => e.contains("already unarchived") || e.contains("not archived"),
-        LifecycleOp::Delete => e.contains("already deleted"),
     };
     missing || already
 }
@@ -168,7 +163,6 @@ mod tests {
         for (op, method) in [
             (LifecycleOp::Archive, "thread/archive"),
             (LifecycleOp::Unarchive, "thread/unarchive"),
-            (LifecycleOp::Delete, "thread/delete"),
         ] {
             let req = thread_lifecycle_req(7, op, "thread-abc");
             assert_eq!(req["jsonrpc"], "2.0");
@@ -186,12 +180,11 @@ mod tests {
         ));
         assert!(is_idempotent_lifecycle_error(LifecycleOp::Unarchive, "thread is not archived"));
         assert!(is_idempotent_lifecycle_error(LifecycleOp::Unarchive, "already unarchived"));
-        assert!(is_idempotent_lifecycle_error(LifecycleOp::Delete, "already deleted"));
     }
 
     #[test]
     fn lifecycle_idempotency_maps_missing_thread_for_every_op() {
-        for op in [LifecycleOp::Archive, LifecycleOp::Unarchive, LifecycleOp::Delete] {
+        for op in [LifecycleOp::Archive, LifecycleOp::Unarchive] {
             assert!(is_idempotent_lifecycle_error(op, "thread not found"));
             assert!(is_idempotent_lifecycle_error(op, "No such thread: abc"));
             assert!(is_idempotent_lifecycle_error(op, "thread does not exist"));

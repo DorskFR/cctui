@@ -554,7 +554,6 @@ mod tests {
             thread_name_set_req(1, "tid", "name"),
             thread_lifecycle_req(2, LifecycleOp::Archive, "tid"),
             thread_lifecycle_req(3, LifecycleOp::Unarchive, "tid"),
-            thread_lifecycle_req(4, LifecycleOp::Delete, "tid"),
             turn_start_req(5, "tid", "hi", &[], None, None),
             turn_steer_req(6, "tid", "turn-1", "hi", &[]),
             turn_interrupt_req(7, "tid", "turn-1"),
