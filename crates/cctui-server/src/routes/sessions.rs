@@ -848,65 +848,96 @@ async fn enrich_and_sort(
     }
 
     // Cold-cache surfacing. The per-message cache split lives in
-    // `session_token_usage`; the SUM() aggregate above flattens it, so here we
-    // pull the two most recent rows per session to derive:
-    //   - `cache_cold`     — that turn re-billed a prefix it should have read
-    //                        back (`cache_read < 0.5 * previous context`).
-    //                        `cache_creation > 0 && cache_read == 0` misses the
-    //                        common case: tools+system always match, so
-    //                        `cache_read` is never actually 0.
-    //   - `last_activity_at` — its timestamp, so the client can predict cache
-    //                        expiry (Anthropic's ~5-min sliding window) before
-    //                        the next send.
-    //   - `estimated_burst_tokens` — the cached-context size from the last
-    //                        turn (≈ cache_read + cache_creation), i.e. how
-    //                        many tokens get re-written on the next send.
+    // `session_token_usage`; the running totals above flatten it, so the two
+    // most recent rows per session derive `cache_cold`, `last_activity_at`
+    // (lets the client predict cache expiry, Anthropic's ~5-min sliding
+    // window, before the next send) and `estimated_burst_tokens`.
     if !session_ids.is_empty() {
-        type LastRow = (String, i64, i64, i64, DateTime<Utc>, i64);
-        let rows: Vec<LastRow> =
+        let rows: Vec<LastTurnRow> =
             sqlx::query_as(LAST_TWO_TURNS_SQL).bind(&session_ids).fetch_all(&state.pool).await?;
-        // The last turn, plus the previous one's context to judge it against.
-        let mut by_session: std::collections::HashMap<String, (i64, i64, DateTime<Utc>, i64)> =
-            std::collections::HashMap::new();
-        for (sid, input, cr, cc, ts, rn) in rows {
-            match rn {
-                1 => {
-                    by_session.entry(sid).or_insert((cr, cc, ts, 0));
-                }
-                2 => {
-                    if let Some(entry) = by_session.get_mut(&sid) {
-                        entry.3 = input.max(0) + cr.max(0) + cc.max(0);
-                    }
-                }
-                _ => {}
-            }
-        }
+        let mut by_session = fold_last_turns(rows);
         for (_, s) in &mut with_ts {
-            if let Some((cr, cc, ts, prev_context)) = by_session.remove(&s.id) {
-                s.last_activity_at = Some(ts);
-                s.cache_cold = if prev_context > 0 {
-                    (cr.max(0) as f64) < (prev_context as f64 * 0.5)
-                } else {
-                    cc > 0 && cr == 0
-                };
-                // Context size that would be re-written to cache on the next
-                // send (≈ the full cached prefix from the last turn).
-                let burst_tokens = u64::try_from(cr.saturating_add(cc)).unwrap_or(0);
-                if burst_tokens > 0 {
-                    s.estimated_burst_tokens = Some(burst_tokens);
-                }
+            if let Some(turn) = by_session.remove(&s.id) {
+                s.last_activity_at = Some(turn.at);
+                s.cache_cold = turn.cache_cold();
+                s.estimated_burst_tokens = turn.estimated_burst_tokens();
             }
         }
     }
 
-    // Pinned sessions sort above everything. Within each group, sort
-    // by most recent message so active sessions float to the top; fall back to
-    // registration time when a session has no messages yet.
+    Ok(sort_sessions(with_ts))
+}
+
+/// `(session_id, input, cache_read, cache_creation, created_at, rn)` from
+/// [`LAST_TWO_TURNS_SQL`].
+type LastTurnRow = (String, i64, i64, i64, DateTime<Utc>, i64);
+
+/// A session's newest usage row, plus the previous turn's context to judge
+/// its cache behaviour against (0 when there was no previous turn).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LastTurn {
+    cache_read: i64,
+    cache_creation: i64,
+    at: DateTime<Utc>,
+    prev_context: i64,
+}
+
+impl LastTurn {
+    /// The turn re-billed a prefix it should have read back
+    /// (`cache_read < 0.5 * previous context`). Without a previous turn only
+    /// the crude `cache_creation > 0 && cache_read == 0` signal is available;
+    /// that misses the common case, since tools+system always match, so
+    /// `cache_read` is never actually 0.
+    fn cache_cold(self) -> bool {
+        if self.prev_context > 0 {
+            (self.cache_read.max(0) as f64) < (self.prev_context as f64 * 0.5)
+        } else {
+            self.cache_creation > 0 && self.cache_read == 0
+        }
+    }
+
+    /// Context size re-written to cache on the next send (≈ the full cached
+    /// prefix from the last turn); `None` when nothing was cached.
+    fn estimated_burst_tokens(self) -> Option<u64> {
+        let burst = u64::try_from(self.cache_read.saturating_add(self.cache_creation)).unwrap_or(0);
+        (burst > 0).then_some(burst)
+    }
+}
+
+/// Fold [`LAST_TWO_TURNS_SQL`] rows (`rn` 1 = newest) into one [`LastTurn`]
+/// per session. A `rn = 2` row without its `rn = 1` sibling is ignored.
+fn fold_last_turns(rows: Vec<LastTurnRow>) -> HashMap<String, LastTurn> {
+    let mut by_session: HashMap<String, LastTurn> = HashMap::new();
+    for (sid, input, cache_read, cache_creation, at, rn) in rows {
+        match rn {
+            1 => {
+                by_session.entry(sid).or_insert(LastTurn {
+                    cache_read,
+                    cache_creation,
+                    at,
+                    prev_context: 0,
+                });
+            }
+            2 => {
+                if let Some(entry) = by_session.get_mut(&sid) {
+                    entry.prev_context = input.max(0) + cache_read.max(0) + cache_creation.max(0);
+                }
+            }
+            _ => {}
+        }
+    }
+    by_session
+}
+
+/// Pinned sessions sort above everything. Within each group, most recent
+/// message first so active sessions float to the top; a session with no
+/// messages yet falls back to its registration time.
+fn sort_sessions(mut with_ts: Vec<(DateTime<Utc>, SessionListItem)>) -> Vec<SessionListItem> {
     with_ts.sort_by(|a, b| {
         let key = |s: &SessionListItem, reg: DateTime<Utc>| s.last_message_at.unwrap_or(reg);
         b.1.pinned.cmp(&a.1.pinned).then_with(|| key(&b.1, b.0).cmp(&key(&a.1, a.0)))
     });
-    Ok(with_ts.into_iter().map(|(_, s)| s).collect())
+    with_ts.into_iter().map(|(_, s)| s).collect()
 }
 
 /// Query params for `GET /sessions/search`. `q` is a substring
@@ -3485,6 +3516,157 @@ mod tests {
     #[test]
     fn field_values_unknown_field_is_none() {
         assert!(field_values_sql("nope", "").is_none());
+    }
+
+    fn ts(secs: i64) -> chrono::DateTime<Utc> {
+        chrono::DateTime::from_timestamp(1_700_000_000 + secs, 0).unwrap()
+    }
+
+    #[test]
+    fn sort_pins_first_then_last_message_falling_back_to_registration() {
+        struct Case {
+            id: &'static str,
+            pinned: bool,
+            registered: i64,
+            last_message: Option<i64>,
+        }
+        let cases = [
+            Case { id: "old-unpinned", pinned: false, registered: 10, last_message: None },
+            Case { id: "pinned-quiet", pinned: true, registered: 5, last_message: None },
+            Case { id: "newest-msg", pinned: false, registered: 1, last_message: Some(100) },
+            Case { id: "pinned-chatty", pinned: true, registered: 2, last_message: Some(50) },
+            Case { id: "registered-late", pinned: false, registered: 60, last_message: None },
+            Case { id: "stale-msg", pinned: false, registered: 70, last_message: Some(20) },
+        ];
+        let with_ts = cases
+            .iter()
+            .map(|c| {
+                let mut s = bare_session(c.id);
+                s.pinned = c.pinned;
+                s.last_message_at = c.last_message.map(ts);
+                (ts(c.registered), s)
+            })
+            .collect();
+        let ids: Vec<String> = super::sort_sessions(with_ts).into_iter().map(|s| s.id).collect();
+        assert_eq!(
+            ids,
+            [
+                "pinned-chatty",
+                "pinned-quiet",
+                "newest-msg",
+                "registered-late",
+                "stale-msg",
+                "old-unpinned"
+            ]
+        );
+    }
+
+    #[test]
+    fn sort_of_nothing_is_nothing() {
+        assert!(super::sort_sessions(Vec::new()).is_empty());
+    }
+
+    #[test]
+    fn last_turn_cache_signals() {
+        struct Case {
+            name: &'static str,
+            cache_read: i64,
+            cache_creation: i64,
+            prev_context: i64,
+            cold: bool,
+            burst: Option<u64>,
+        }
+        let cases = [
+            Case {
+                name: "read back most of the previous context",
+                cache_read: 800,
+                cache_creation: 50,
+                prev_context: 1000,
+                cold: false,
+                burst: Some(850),
+            },
+            Case {
+                name: "read back under half the previous context",
+                cache_read: 400,
+                cache_creation: 600,
+                prev_context: 1000,
+                cold: true,
+                burst: Some(1000),
+            },
+            Case {
+                name: "exactly half is not cold",
+                cache_read: 500,
+                cache_creation: 0,
+                prev_context: 1000,
+                cold: false,
+                burst: Some(500),
+            },
+            Case {
+                name: "first turn that only wrote cache",
+                cache_read: 0,
+                cache_creation: 300,
+                prev_context: 0,
+                cold: true,
+                burst: Some(300),
+            },
+            Case {
+                name: "first turn that read something",
+                cache_read: 10,
+                cache_creation: 300,
+                prev_context: 0,
+                cold: false,
+                burst: Some(310),
+            },
+            Case {
+                name: "first turn with no cache activity",
+                cache_read: 0,
+                cache_creation: 0,
+                prev_context: 0,
+                cold: false,
+                burst: None,
+            },
+            Case {
+                name: "negative counters clamp",
+                cache_read: -5,
+                cache_creation: -5,
+                prev_context: 100,
+                cold: true,
+                burst: None,
+            },
+        ];
+        for c in cases {
+            let turn = super::LastTurn {
+                cache_read: c.cache_read,
+                cache_creation: c.cache_creation,
+                at: ts(0),
+                prev_context: c.prev_context,
+            };
+            assert_eq!(turn.cache_cold(), c.cold, "{}", c.name);
+            assert_eq!(turn.estimated_burst_tokens(), c.burst, "{}", c.name);
+        }
+    }
+
+    #[test]
+    fn fold_last_turns_pairs_newest_with_previous_context() {
+        let rows = vec![
+            ("a".to_string(), 100, 200, 300, ts(9), 1),
+            ("a".to_string(), 10, 20, 30, ts(8), 2),
+            ("b".to_string(), 1, 2, 3, ts(7), 1),
+            ("orphan".to_string(), 5, 5, 5, ts(6), 2),
+            ("neg".to_string(), 0, 0, 0, ts(5), 1),
+            ("neg".to_string(), -1, -2, 7, ts(4), 2),
+        ];
+        let folded = super::fold_last_turns(rows);
+        assert_eq!(
+            folded["a"],
+            super::LastTurn { cache_read: 200, cache_creation: 300, at: ts(9), prev_context: 60 }
+        );
+        assert_eq!(
+            folded["b"],
+            super::LastTurn { cache_read: 2, cache_creation: 3, at: ts(7), prev_context: 0 }
+        );
+        assert!(!folded.contains_key("orphan"));
+        assert_eq!(folded["neg"].prev_context, 7);
     }
 
     #[test]
