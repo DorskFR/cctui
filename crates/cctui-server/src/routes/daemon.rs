@@ -4290,7 +4290,7 @@ mod tests {
         let (uid, mid) = seed_machine(&pool, "backfill").await;
         let sid = seed_owned_session(&pool, uid, mid).await;
 
-        let n = 5000;
+        let n: usize = 5000;
         assert!(n.div_ceil(INSERT_BATCH) <= 5, "a 5k backfill is at most five statements");
         let mut rows = backfill(&sid, n);
         rows.push(NewEvent {
