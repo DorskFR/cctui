@@ -605,7 +605,10 @@ pub async fn login_finish(
     let token = auth::user_token(&auth::mint_secret());
     let hash = auth::sha256_hex(&token);
     let preview = auth::token_preview(&token);
-    let scopes = auth::ceiling_of(&state.pool, asserted.user_id).await;
+    let scopes = crate::store::acls::user_ceiling(&state.pool, asserted.user_id)
+        .await
+        .map_err(|e| db_error(&e))?;
+    let expires = Utc::now() + Duration::days(SESSION_DAYS);
     let label = format!("passkey: {}", asserted.label);
     let key_id = auth::register_key(
         &state.pool,
@@ -617,19 +620,12 @@ pub async fn login_finish(
             kind: SESSION_KIND,
             machine_id: None,
             dispatcher_id: None,
+            expires_at: Some(expires),
         },
         scopes,
     )
     .await
     .map_err(|e| db_error(&e))?;
-
-    let expires = Utc::now() + Duration::days(SESSION_DAYS);
-    sqlx::query("UPDATE auth_keys SET expires_at = $1 WHERE id = $2")
-        .bind(expires)
-        .bind(key_id)
-        .execute(&state.pool)
-        .await
-        .map_err(|e| db_error(&e))?;
 
     // Expired session keys are dead rows; drop the ones long past their date so
     // the admin key list stays about keys a human made.

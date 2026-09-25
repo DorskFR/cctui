@@ -203,6 +203,14 @@ pub async fn enroll(
         None => None,
     };
 
+    // Grant {read, dispatch} ∩ ceiling, read before anything is written so a
+    // DB error fails the enroll rather than minting a scopeless key.
+    let mut grant = crate::store::acls::user_ceiling(&state.pool, user_id).await.map_err(|e| {
+        tracing::error!("db error: {e}");
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
+    })?;
+    grant.retain(|s| matches!(s, Scope::Read | Scope::Dispatch));
+
     sqlx::query(
         "INSERT INTO dispatchers \
            (id, user_id, name, kind, key_hash, key_preview, \
@@ -235,9 +243,7 @@ pub async fn enroll(
 
     // Mirror the enrollment key into the unified api_keys table. The
     // dispatcher WS still authenticates via the dispatchers.key_hash path, so
-    // this is for inventory/management parity; grant {dispatch} ∩ ceiling.
-    let mut grant = crate::auth::ceiling_of(&state.pool, user_id).await;
-    grant.retain(|s| matches!(s, Scope::Read | Scope::Dispatch));
+    // this is for inventory/management parity.
     let preview = token_preview(&token);
     if let Err(e) = crate::auth::register_key(
         &state.pool,
@@ -249,6 +255,7 @@ pub async fn enroll(
             kind: "dispatcher",
             machine_id: None,
             dispatcher_id: Some(dispatcher_id),
+            expires_at: None,
         },
         grant,
     )

@@ -179,7 +179,7 @@ async fn mint_ephemeral_dispatch_key(
         .saturating_add(GRACE_SECS);
     let expires_at = chrono::Utc::now() + chrono::Duration::seconds(lifetime);
 
-    let scopes = crate::auth::ceiling_of(&state.pool, user_id).await;
+    let scopes = crate::store::acls::user_ceiling(&state.pool, user_id).await?;
     let key_id: (uuid::Uuid,) = sqlx::query_as(
         "INSERT INTO auth_keys \
            (user_id, key_hash, key_preview, label, kind, machine_id, session_id, expires_at) \
@@ -196,13 +196,7 @@ async fn mint_ephemeral_dispatch_key(
     .bind(expires_at)
     .fetch_one(&state.pool)
     .await?;
-    for scope in scopes {
-        sqlx::query("INSERT INTO key_acls (key_id, scope) VALUES ($1, $2) ON CONFLICT DO NOTHING")
-            .bind(key_id.0)
-            .bind(scope.as_str())
-            .execute(&state.pool)
-            .await?;
-    }
+    crate::store::acls::grant_key(&state.pool, key_id.0, scopes).await?;
     tracing::info!(%user_id, %machine_id, %session_id, "minted ephemeral dispatch key");
     Ok(token)
 }

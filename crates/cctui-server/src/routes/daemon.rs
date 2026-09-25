@@ -2407,6 +2407,10 @@ pub async fn mint_user_token(
         ));
     }
 
+    let grant = crate::store::acls::user_ceiling(&state.pool, user_id).await.map_err(|e| {
+        tracing::error!("db error: {e}");
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
+    })?;
     let token = user_token(&mint_secret());
     let hash = sha256_hex(&token);
     let preview = crate::auth::token_preview(&token);
@@ -2428,7 +2432,6 @@ pub async fn mint_user_token(
 
     // Mirror into the unified api_keys table with grant = owner's
     // ceiling, so the token behaves identically through the new auth path.
-    let grant = crate::auth::ceiling_of(&state.pool, user_id).await;
     if let Err(e) = crate::auth::register_key(
         &state.pool,
         crate::auth::NewKey {
@@ -2439,6 +2442,7 @@ pub async fn mint_user_token(
             kind: "user",
             machine_id: None,
             dispatcher_id: None,
+            expires_at: req.expires_at,
         },
         grant,
     )
