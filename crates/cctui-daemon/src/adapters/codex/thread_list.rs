@@ -42,9 +42,8 @@ use uuid::Uuid;
 use super::app_server::{AppServerConfig, SessionRecord, SessionRegistry};
 
 /// Set of thread ids the inventory has surfaced (id → last seen
-/// `status.type`). This is the inventory's own dedup state; since it is
-/// no longer shared with the log-tail (which keeps tailing the real rollout
-/// JSONL so discovered CLI sessions get a populated conversation).
+/// `status.type`). Not shared with the log-tail, which keeps tailing rollout
+/// JSONL so discovered CLI sessions get a populated conversation.
 pub type SeenIds = Arc<Mutex<HashMap<String, Option<String>>>>;
 
 /// One inventory entry parsed from a `thread/list` `data[]` element.
@@ -74,8 +73,7 @@ pub fn canonical_id(raw: &str) -> String {
 }
 
 /// Reduce a `SessionSource` (bare string, `{custom}`, or `{subAgent}` object)
-/// to a stable source label. Newer codex builds report subagent/custom sources
-/// as objects, which the string-only parser used to drop.
+/// to a stable source label.
 #[must_use]
 pub fn parse_source(v: &Value) -> Option<String> {
     match v {

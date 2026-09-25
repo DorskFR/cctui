@@ -1,31 +1,11 @@
 //! Persistent headless `attach` to `claude daemon` workers.
 //!
-//! Dispatching a fleet session boots a worker PTY, but the interactive Claude
-//! worker uses DEC focus-tracking (mode 1004) and stays *parked/unfocused* —
-//! it never pulls the seeded prompt through its input loop — until a client
-//! sends `op:"attach"`. The `attach` handler is what runs `seedFocus(true)`
-//! (writes focus-in `ESC[I` into the worker PTY), `noteActivity()` (resets the
-//! 60s idle-retire timer), and registers an attacher (`attachers.size > 0`
-//! blocks idle teardown + stall-respawn). Until then the worker sits in
-//! "limbo" and our `reply` text lands in an undriven PTY.
-//!
-//! The real `claude agents` TUI sends `attach` when a user opens a session —
-//! which is why a stuck session "unblocks" the moment it's opened on the
-//! machine. We reproduce that headlessly: for every live, user-visible session
-//! we hold an `attach` connection open (discarding the raw PTY byte stream the
-//! server emits after the ack). Holding the socket open is sufficient to keep
-//! the attacher registered; no heartbeat/ACK is required. When the connection
-//! drops (respawn, kick, settle) we reconnect with backoff until the driver
-//! tells us the session is gone.
-//!
-//! Wire protocol (claude 2.1.x control socket):
-//!   request : `{"proto":1,"op":"attach","short":"<8hex>","cols":N,"rows":M,
-//!               "attachId":"<unique>","caps":{"terminal":null,"mux":null,"ssh":false}}`
-//!   ack     : first newline-delimited JSON line — `{"ok":true,"op":"attach",…}`
-//!             on success, or `{"ok":false,"code":"…"}` on failure.
-//!   stream  : after a success ack the socket carries RAW PTY bytes (no JSON
-//!             envelope); we read and discard them. A server FIN means we were
-//!             detached / the session settled.
+//! A worker PTY stays parked and never reads its seeded prompt until a client
+//! sends `op:"attach"`, which focuses it, resets its idle-retire timer and
+//! blocks idle teardown. For every live, user-visible session we hold an
+//! attach socket open, discarding the raw PTY bytes that follow the JSON ack;
+//! no heartbeat is needed. A dropped connection is retried with backoff until
+//! the driver reports the session gone.
 
 use std::collections::HashMap;
 use std::path::Path;

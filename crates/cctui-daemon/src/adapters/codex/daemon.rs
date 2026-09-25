@@ -862,8 +862,7 @@ mod tests {
         }
     }
 
-    /// The end-to-end proof that the shared socket is no longer a blind spot:
-    /// a real request over a real WS connection must land in the ring tagged
+    /// A real request over a real WS connection lands in the ring tagged
     /// `shared`, in both directions.
     #[tokio::test]
     async fn frames_on_the_shared_connection_are_ringed_and_tagged_shared() {

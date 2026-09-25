@@ -189,9 +189,6 @@ async fn run_default(ctx: AdapterCtx) -> anyhow::Result<()> {
     persist::save(&registry).await;
 
     let inventory_handle = if thread_list::ThreadListConfig::enabled(&ctx.config) {
-        // the inventory's `seen` set is its own dedup state only — it
-        // is no longer shared with the log-tail to suppress rollout files, so a
-        // discovered CLI session still gets its real transcript backfilled.
         let seen = thread_list::SeenIds::default();
         let inv = thread_list::ThreadListInventory::new(
             thread_list::ThreadListConfig::from_value(&ctx.config),

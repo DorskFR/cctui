@@ -344,8 +344,7 @@ mod tests {
 
     #[tokio::test]
     async fn flat_task_subagent_is_named_from_its_sidecar() {
-        // A Task-tool subagent used to reach the UI as a bare 6-char id hash.
-        // Its sidecar names it, and the name rides the ordinary Status path.
+        // The sidecar name rides the ordinary Status path.
         let (mut d, mut rx) = driver();
         write_subagent(
             &d,
@@ -397,8 +396,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_sidecarless_subagent_is_announced_unnamed() {
-        // The pre-CCT-941 behaviour, preserved: no sidecar means no name and
-        // no agent_type, and the UI falls back to the 6-char id.
+        // No sidecar means no name and no agent_type; the UI shows the 6-char id.
         let (mut d, mut rx) = driver();
         write_subagent(
             &d,

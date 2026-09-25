@@ -246,8 +246,8 @@ mod tests {
         assert!(!errors[0].message.contains(token), "{}", errors[0].message);
     }
 
-    /// Without the tag a flood of stdio frames makes an entirely dead shared
-    /// connection look healthy — the blind spot CCT-966 opened.
+    /// Without the tag a flood of stdio frames makes a dead shared connection
+    /// look healthy.
     #[test]
     fn ring_entries_carry_the_transport_that_produced_them() {
         let stdio = DiagnoseRings::default();
