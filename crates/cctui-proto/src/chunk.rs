@@ -113,10 +113,11 @@ impl Partial {
     }
 }
 
-/// Per-connection chunk reassembly with a per-transfer byte bound, a cap on
-/// concurrent transfers and on their combined bytes (twice the per-transfer
-/// bound), and age-based eviction. Bounds memory against a stalled or
-/// malicious daemon.
+/// Per-connection chunk reassembly with bounded memory.
+///
+/// Bounds each transfer's bytes, the number of concurrent transfers and their
+/// combined bytes (twice the per-transfer bound), and evicts by age, so a
+/// stalled or malicious daemon cannot exhaust memory.
 pub struct Reassembler {
     max_bytes: usize,
     transfers: HashMap<String, Partial>,

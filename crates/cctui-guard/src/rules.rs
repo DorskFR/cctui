@@ -36,9 +36,11 @@ fn is_redirect_amp(chars: &[char], i: usize) -> bool {
     (i > 0 && matches!(chars[i - 1], '>' | '<')) || chars.get(i + 1) == Some(&'>')
 }
 
-/// Split a Bash command on shell operators (`&&`, `||`, `;`, `|`, `&`, newline) into
-/// individual segments, respecting single/double quotes. Each segment is
-/// trimmed. Returns `[cmd]` if no operators split it.
+/// Split a Bash command into its operator-separated segments.
+///
+/// Splits on `&&`, `||`, `;`, `|`, `&` and newline, respecting quotes and
+/// backslash escapes. Each segment is trimmed. Returns `[cmd]` if no
+/// operators split it.
 #[must_use]
 pub fn split_bash_segments(cmd: &str) -> Vec<String> {
     let chars: Vec<char> = cmd.chars().collect();

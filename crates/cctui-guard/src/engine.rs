@@ -953,10 +953,10 @@ fn is_guard_curl(cmd: &str) -> bool {
         return false;
     }
     let mut saw_guard = false;
-    let mut args = argv.iter().skip(1);
-    while let Some(arg) = args.next() {
+    let mut rest = argv.iter().skip(1);
+    while let Some(arg) = rest.next() {
         if VALUE_FLAGS.contains(&arg.as_str()) {
-            if args.next().is_none_or(|value| value.starts_with('@')) {
+            if rest.next().is_none_or(|value| value.starts_with('@')) {
                 return false;
             }
         } else if is_guard_url(arg) {
