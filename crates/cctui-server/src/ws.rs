@@ -577,6 +577,42 @@ impl OwnerLookup for sqlx::PgPool {
     }
 }
 
+const OWNER_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+const UNKNOWN_OWNER_TTL: std::time::Duration = std::time::Duration::from_secs(5);
+const OWNER_CACHE_MAX: usize = 4096;
+
+/// Per-socket memo of resource owners, so a busy session costs one lookup per
+/// socket per TTL instead of one per event.
+#[derive(Default)]
+struct OwnerCache {
+    entries: std::collections::HashMap<Owned, (Option<uuid::Uuid>, tokio::time::Instant)>,
+}
+
+impl OwnerCache {
+    async fn owner(&mut self, owned: &Owned, lookup: &impl OwnerLookup) -> Option<uuid::Uuid> {
+        let now = tokio::time::Instant::now();
+        if let Some(&(owner, expires)) = self.entries.get(owned)
+            && expires > now
+        {
+            return owner;
+        }
+        let owner = lookup.owner(owned).await;
+        if self.entries.len() >= OWNER_CACHE_MAX {
+            self.entries.retain(|_, (_, expires)| *expires > now);
+            if self.entries.len() >= OWNER_CACHE_MAX {
+                self.entries.clear();
+            }
+        }
+        let ttl = if owner.is_some() { OWNER_TTL } else { UNKNOWN_OWNER_TTL };
+        self.entries.insert(owned.clone(), (owner, now + ttl));
+        owner
+    }
+
+    fn forget(&mut self, owned: &Owned) {
+        self.entries.remove(owned);
+    }
+}
+
 /// Decides whether a server-wide event may reach one socket's principal.
 trait EventFilter {
     async fn allows(&mut self, event: &ServerEvent) -> bool;
@@ -588,6 +624,7 @@ struct OwnerFilter<L> {
     is_admin: bool,
     user_id: uuid::Uuid,
     lookup: L,
+    cache: OwnerCache,
 }
 
 impl<L: OwnerLookup> EventFilter for OwnerFilter<L> {
@@ -598,7 +635,17 @@ impl<L: OwnerLookup> EventFilter for OwnerFilter<L> {
         match audience(event) {
             Audience::Everyone => true,
             Audience::AdminsOnly => false,
-            Audience::OwnerOf(owned) => self.lookup.owner(&owned).await == Some(self.user_id),
+            Audience::OwnerOf(owned) => {
+                // A (re)registration may have moved the session to another machine.
+                if matches!(event, ServerEvent::SessionRegistered { .. }) {
+                    self.cache.forget(&owned);
+                }
+                let owner = self.cache.owner(&owned, &self.lookup).await;
+                if matches!(event, ServerEvent::SessionDeregistered { .. }) {
+                    self.cache.forget(&owned);
+                }
+                owner == Some(self.user_id)
+            }
         }
     }
 }
@@ -632,8 +679,12 @@ async fn handle_tui_ws(socket: WebSocket, state: AppState, ctx: AuthContext) {
     let (sink, stream) = socket.split();
     let (tx, rx) = mpsc::channel::<Frame>(256);
 
-    let filter =
-        OwnerFilter { is_admin: ctx.is_admin(), user_id: ctx.user_id, lookup: state.pool.clone() };
+    let filter = OwnerFilter {
+        is_admin: ctx.is_admin(),
+        user_id: ctx.user_id,
+        lookup: state.pool.clone(),
+        cache: OwnerCache::default(),
+    };
     tokio::spawn(relay_server_frames(state.bus.subscribe_server(), filter, tx.clone()));
 
     spawn_send_task(sink, rx);
@@ -655,7 +706,7 @@ mod tests {
     use uuid::Uuid;
 
     use super::{
-        Audience, EventFilter, OwnerFilter, OwnerLookup, Owned, audience,
+        Audience, EventFilter, OWNER_TTL, Owned, OwnerCache, OwnerFilter, OwnerLookup, audience,
         origin_permitted, permission_target, relay_server_frames, replay_pending, spawn_relay_task,
     };
     use crate::bus::ServerFrame;
@@ -742,7 +793,7 @@ mod tests {
     }
 
     fn filter_for(user_id: Uuid, lookup: FakeOwners) -> OwnerFilter<FakeOwners> {
-        OwnerFilter { is_admin: false, user_id, lookup }
+        OwnerFilter { is_admin: false, user_id, lookup, cache: OwnerCache::default() }
     }
 
     fn foreign_events() -> Vec<ServerEvent> {
@@ -789,6 +840,35 @@ mod tests {
         assert!(!alice.allows(&github).await);
         let ghost = ServerEvent::SessionDeregistered { session_id: "sess-ghost".into() };
         assert!(!alice.allows(&ghost).await);
+    }
+
+    fn bob_stream() -> ServerEvent {
+        ServerEvent::PtyChunk { session_id: "sess-bob".into(), data: String::new() }
+    }
+
+    #[tokio::test]
+    async fn many_events_for_one_foreign_session_cost_one_lookup() {
+        let owners = FakeOwners::default();
+        let mut alice = filter_for(ALICE, owners.clone());
+        for _ in 0..100 {
+            assert!(!alice.allows(&bob_stream()).await);
+        }
+        assert_eq!(owners.calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cached_owner_expires_and_registration_refreshes_it() {
+        let owners = FakeOwners::default();
+        let mut alice = filter_for(ALICE, owners.clone());
+        alice.allows(&bob_stream()).await;
+        tokio::time::advance(OWNER_TTL + std::time::Duration::from_secs(1)).await;
+        alice.allows(&bob_stream()).await;
+        assert_eq!(owners.calls.load(Ordering::SeqCst), 2);
+
+        let mut moved = session("sess-bob");
+        moved.machine_id = "m2".into();
+        alice.allows(&ServerEvent::SessionRegistered { session: moved }).await;
+        assert_eq!(owners.calls.load(Ordering::SeqCst), 3);
     }
 
     #[tokio::test]
