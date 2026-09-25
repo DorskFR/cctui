@@ -294,8 +294,7 @@ impl Supervisor {
                         )
                         .await;
                         if !frames.is_empty()
-                            && let Ok(prepared) = prepare_serialized(coalesce(frames))
-                            && let Some(msg) = prepared.into_message()
+                            && let Some(msg) = prepare_serialized(coalesce(frames)).into_message()
                         {
                             self.counters.add(Subsystem::Forward, msg.len() as u64);
                             let _ = sink.send(msg).await;
@@ -384,7 +383,7 @@ impl Supervisor {
                         batch_bytes = 0;
                         let frames = std::mem::take(&mut batch);
                         if !frames.is_empty() {
-                            match prepare_serialized(coalesce(frames))? {
+                            match prepare_serialized(coalesce(frames)) {
                                 Prepared::Chunked(t) => {
                                     if self.guard.lock().unwrap().is_tombstoned(&t.id) {
                                         tracing::warn!(
@@ -1167,10 +1166,10 @@ impl Prepared {
 /// chunk transfer while preserving its ack/resume semantics.
 #[cfg(test)]
 fn prepare_send(inner: &DaemonFrameUp) -> anyhow::Result<Prepared> {
-    prepare_serialized(serde_json::to_vec(inner)?)
+    Ok(prepare_serialized(serde_json::to_vec(inner)?))
 }
 
-fn prepare_serialized(json: Vec<u8>) -> anyhow::Result<Prepared> {
+fn prepare_serialized(json: Vec<u8>) -> Prepared {
     match cctui_proto::compress::maybe_compress(&json) {
         (bytes, Some(codec)) => classify(bytes, Some(codec.to_owned())),
         (_, None) => classify(json, None),
@@ -1179,18 +1178,18 @@ fn prepare_serialized(json: Vec<u8>) -> anyhow::Result<Prepared> {
 
 /// Turn the final post-compression wire `bytes` into a send decision: over the
 /// size cap → drop; over the chunk threshold → chunked transfer; else one frame.
-fn classify(bytes: Vec<u8>, codec: Option<String>) -> anyhow::Result<Prepared> {
+fn classify(bytes: Vec<u8>, codec: Option<String>) -> Prepared {
     if bytes.len() > MAX_PAYLOAD_BYTES {
-        return Ok(Prepared::Oversized(bytes.len()));
+        return Prepared::Oversized(bytes.len());
     }
     if bytes.len() > cctui_proto::chunk::CHUNK_THRESHOLD {
         let transfer =
             PendingTransfer::new(bytes, codec).expect("bytes exceed the chunk threshold");
-        Ok(Prepared::Chunked(transfer))
+        Prepared::Chunked(transfer)
     } else if codec.is_some() {
-        Ok(Prepared::Binary(bytes))
+        Prepared::Binary(bytes)
     } else {
-        Ok(Prepared::Frame(String::from_utf8(bytes).expect("serde_json output is valid utf8")))
+        Prepared::Frame(String::from_utf8(bytes).expect("serde_json output is valid utf8"))
     }
 }
 
@@ -1984,20 +1983,20 @@ mod tests {
     fn compressed_batch_is_a_binary_message_of_raw_zstd() {
         let events: Vec<DaemonFrameUp> = (0..200).map(synth_event).collect();
         let json = ser(&DaemonFrameUp::Batch { frames: events });
-        let prepared = super::prepare_serialized(json.clone()).unwrap();
+        let prepared = super::prepare_serialized(json.clone());
         let super::Prepared::Binary(bytes) = prepared else {
             panic!("a compressible batch must go out binary")
         };
         assert!(bytes.len() < json.len());
         assert_eq!(cctui_proto::compress::decompress_codec("zstd", &bytes).unwrap(), json);
-        let msg = super::prepare_serialized(json).unwrap().into_message().unwrap();
+        let msg = super::prepare_serialized(json).into_message().unwrap();
         assert!(matches!(msg, tokio_tungstenite::tungstenite::Message::Binary(_)));
     }
 
     #[test]
     fn uncompressible_frame_falls_back_to_text() {
         let json = ser(&synth_event(1));
-        let msg = super::prepare_serialized(json.clone()).unwrap().into_message().unwrap();
+        let msg = super::prepare_serialized(json.clone()).into_message().unwrap();
         let tokio_tungstenite::tungstenite::Message::Text(text) = msg else {
             panic!("small frame stays text")
         };
@@ -2018,9 +2017,9 @@ mod tests {
     fn oversized_payload_is_dropped_without_chunking() {
         // Over the 32 MiB cap → Oversized (dropped); at the cap → normal chunk.
         let over = vec![0u8; super::MAX_PAYLOAD_BYTES + 1];
-        assert!(matches!(super::classify(over, None).unwrap(), super::Prepared::Oversized(_)));
+        assert!(matches!(super::classify(over, None), super::Prepared::Oversized(_)));
         let at_cap = vec![0u8; super::MAX_PAYLOAD_BYTES];
-        assert!(matches!(super::classify(at_cap, None).unwrap(), super::Prepared::Chunked(_)));
+        assert!(matches!(super::classify(at_cap, None), super::Prepared::Chunked(_)));
     }
 
     #[test]
@@ -2028,7 +2027,7 @@ mod tests {
         let mut rng = 0x1234_5678_9abc_def0_u64;
         let batch =
             super::coalesce((0..800).map(|i| ser(&hi_entropy_event(&mut rng, i))).collect());
-        let super::Prepared::Chunked(t) = super::prepare_serialized(batch).unwrap() else {
+        let super::Prepared::Chunked(t) = super::prepare_serialized(batch) else {
             panic!("a large batch must chunk");
         };
         let ids = t.session_ids();
@@ -2065,7 +2064,7 @@ mod tests {
         let events: Vec<DaemonFrameUp> = (0..800).map(|i| hi_entropy_event(&mut rng, i)).collect();
         let want = events.len();
         let inner = super::coalesce(events.iter().map(ser).collect());
-        let super::Prepared::Chunked(mut sender) = super::prepare_serialized(inner).unwrap() else {
+        let super::Prepared::Chunked(mut sender) = super::prepare_serialized(inner) else {
             panic!("a 20MB batch must chunk")
         };
         let codec = sender.codec.clone();
