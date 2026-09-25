@@ -206,6 +206,8 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "22"
+          cache: npm
+          cache-dependency-path: webui/package-lock.json
 
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:
@@ -427,6 +429,18 @@ jobs:
           fi
           bash scripts/no-css-global.sh "$base...$head"
 
+  comment-refs:
+    name: comment-refs
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Reject ticket references in added comments
+        run: bash scripts/check-comment-refs.sh "origin/${{ github.base_ref }}"
+
   i18n-messages:
     name: i18n-messages
     runs-on: ubuntu-latest
@@ -466,6 +480,7 @@ jobs:
       - generated-artifacts
       - audit
       - no-css-global
+      - comment-refs
       - i18n-messages
       - actionlint
     runs-on: ubuntu-latest
