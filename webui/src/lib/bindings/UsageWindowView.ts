@@ -5,7 +5,7 @@ import type { UsagePace } from "./UsagePace";
  * A normalized window plus its pace against the window's linear budget
  * (`None` when the window has no reset time or no known length).
  */
-export type UsageWindowView = { pace: UsagePace | null, 
+export type UsageWindowView = { pace?: UsagePace, 
 /**
  * Stable canonical identity (`session` / `weekly_all` / `weekly_model:<id>`).
  */
