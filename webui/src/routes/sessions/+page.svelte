@@ -23,16 +23,16 @@
 	import {
 		Button,
 		Callout,
-		Cluster,
 		ConfirmModal,
 		Container,
-		Modal,
 		Spinner,
 		Text
 	} from '@dorsk/tsumikit';
 	import SessionGroupHeader from './SessionGroupHeader.svelte';
 	import SessionRows from './SessionRows.svelte';
 	import DraftRows from './DraftRows.svelte';
+	import SessionsBulkBar from './SessionsBulkBar.svelte';
+	import EditDraftModal from './EditDraftModal.svelte';
 	import { drafts, clearSpawnSlot, currentSpawnSlot, readSpawnSlot } from '$lib/drafts';
 	import { notify } from '$lib/notify.svelte';
 	import { settings } from '$lib/settings.svelte';
@@ -232,20 +232,7 @@
 />
 
 {#if sp.list.selecting}
-		<div class="bulkbar row">
-			<Text class="count" size="sm" weight="semibold" tone="muted">{m.sessions_selected_count({ count: sp.list.selected.size })}</Text>
-			<Button onclick={sp.list.selectAll}>{m.sessions_select_all()}</Button>
-			<Text size="xs" tone="muted">{m.sessions_select_range_hint()}</Text>
-			<div class="spacer"></div>
-			<Button
-				variant="danger"
-				loading={sp.archiving}
-				disabled={sp.list.selected.size === 0 || sp.archiving}
-				onclick={sp.archiveSelected}
-			>
-				{m.sessions_archive_count({ count: sp.list.selected.size || '' })}
-			</Button>
-		</div>
+	<SessionsBulkBar {sp} />
 {/if}
 
 <!-- Shared section wrapper: card-detailed fills the content column, which the
@@ -447,20 +434,7 @@
 {/if}
 
 {#if sp.pendingDraftEdit}
-	<Modal title={m.sessions_edit_draft_title()} onclose={() => (sp.pendingDraftEdit = null)} footerFill>
-		{#snippet body()}
-			<Text>{m.sessions_edit_draft_body()}</Text>
-		{/snippet}
-		{#snippet footer()}
-			<Cluster>
-				<Button grow onclick={() => (sp.pendingDraftEdit = null)}>{m.common_cancel()}</Button>
-				<Button grow onclick={() => void sp.confirmDraftEdit(true)}>{m.sessions_edit_draft_save_first()}</Button>
-				<Button grow variant="primary" onclick={() => void sp.confirmDraftEdit(false)}
-					>{m.sessions_edit_draft_replace()}</Button
-				>
-			</Cluster>
-		{/snippet}
-	</Modal>
+	<EditDraftModal {sp} />
 {/if}
 
 {#if sp.archiveConfirm.pending}
@@ -481,20 +455,6 @@
 {/if}
 
 <style>
-	/* Sticky bulk-action bar shown while in select mode. */
-	.bulkbar {
-		position: sticky;
-		top: calc(var(--header-h) + var(--safe-top) + var(--sp-2));
-		z-index: 5;
-		gap: var(--sp-2);
-		align-items: center;
-		margin-bottom: var(--sp-3);
-		padding: var(--sp-2) var(--sp-3);
-		border: 1px solid var(--border-strong);
-		border-radius: var(--r-md);
-		background: var(--bg-elevated);
-		box-shadow: var(--shadow-md);
-	}
 	/* Height floor so swapping the live list for short search results can't
 	   shrink the document under the sticky bar and clamp the scroll position. */
 	.list-area {
