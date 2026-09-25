@@ -259,7 +259,14 @@ impl<C: ContainerCli> Dispatcher for Spawner<C> {
         };
 
         let args = self.build_run_args(spec, &name, secret.as_ref())?;
-        let out = self.cli.exec(args).await?;
+        let out = self.cli.exec(args).await;
+        // `--env-file` is read at spawn time; a mounted key must outlive the run.
+        if let Some(s) = &secret
+            && (self.secret_via_env || !out.as_ref().is_ok_and(|o| o.ok() || Self::is_name_in_use(&o.stderr)))
+        {
+            std::fs::remove_file(&s.host_file).ok();
+        }
+        let out = out?;
         if out.ok() {
             return Ok(SpawnOutcome {
                 handle: format!("container/{name}"),
@@ -293,10 +300,14 @@ impl<C: ContainerCli> Dispatcher for Spawner<C> {
         Self::parse_inspect_state(&out.stdout)
     }
 
-    /// Stop then delete the container (Apple `container` has no auto-remove). A
-    /// missing container at either step is a successful cancel.
+    /// Stop then delete the container (Apple `container` has no auto-remove) and
+    /// remove its staged key files. A missing container at either step is a
+    /// successful cancel.
     async fn cancel(&self, handle: &str) -> anyhow::Result<()> {
         let name = Self::name_of(handle);
+        for ext in ["key", "env"] {
+            std::fs::remove_file(self.secret_dir.join(format!("{name}.{ext}"))).ok();
+        }
         let stop = self.cli.exec(vec!["stop".to_owned(), name.to_owned()]).await?;
         if !stop.ok() && !Self::is_not_found(&stop.stderr) {
             anyhow::bail!("`container stop` failed ({:?}): {}", stop.code, stop.stderr.trim());
@@ -457,9 +468,45 @@ mod tests {
         let name = out.handle.strip_prefix("container/").unwrap();
         let env_file = sp.secret_dir.join(format!("{name}.env"));
         assert!(calls[0].contains(&env_file.display().to_string()));
-        assert_eq!(std::fs::read_to_string(&env_file).unwrap(), "CCTUI_MACHINE_KEY=TOPSECRET\n");
+        assert!(!env_file.exists(), "the env file is removed once the container is spawned");
+        std::fs::remove_dir_all(&sp.secret_dir).ok();
+    }
+
+    #[test]
+    fn env_mode_stages_a_private_env_file() {
+        let mut sp = spawner(MockCli::default());
+        sp.secret_via_env = true;
+        let staged = sp.stage_secret("n", "TOPSECRET").unwrap();
+        assert_eq!(staged.host_file, sp.secret_dir.join("n.env"));
+        assert_eq!(
+            std::fs::read_to_string(&staged.host_file).unwrap(),
+            "CCTUI_MACHINE_KEY=TOPSECRET\n"
+        );
         #[cfg(unix)]
-        assert_eq!(mode_of(&env_file), 0o600);
+        assert_eq!(mode_of(&staged.host_file), 0o600);
+        std::fs::remove_dir_all(&sp.secret_dir).ok();
+    }
+
+    #[tokio::test]
+    async fn failed_run_removes_the_staged_key_file() {
+        let sp = spawner(MockCli::with_responses(vec![err(125, "Error: no such image")]));
+        let s = spec("sess-fail", json!({ "cctui_machine_key": "TOPSECRET" }));
+        assert!(sp.dispatch(&s).await.is_err());
+        let name = worker_name(dedup_source(&s));
+        assert!(!sp.secret_dir.join(format!("{name}.key")).exists());
+        std::fs::remove_dir_all(&sp.secret_dir).ok();
+    }
+
+    #[tokio::test]
+    async fn cancel_removes_the_staged_key_file() {
+        let sp = spawner(MockCli::with_responses(vec![ok("")]));
+        let s = spec("sess-cancel", json!({ "cctui_machine_key": "TOPSECRET" }));
+        let out = sp.dispatch(&s).await.unwrap();
+        let name = out.handle.strip_prefix("container/").unwrap().to_owned();
+        let key_file = sp.secret_dir.join(format!("{name}.key"));
+        assert!(key_file.exists(), "a mounted key outlives the spawn");
+        sp.cancel(&out.handle).await.unwrap();
+        assert!(!key_file.exists());
         std::fs::remove_dir_all(&sp.secret_dir).ok();
     }
 
