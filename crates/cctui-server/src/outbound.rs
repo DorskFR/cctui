@@ -214,16 +214,19 @@ impl reqwest::dns::Resolve for GuardedResolver {
     }
 }
 
-/// Client for user-supplied upstreams: no redirects, guarded DNS.
+/// A client that follows no redirects and resolves names through the guard.
+pub fn guarded_client(allow: &'static [AllowedHost]) -> reqwest::Client {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .dns_resolver(Arc::new(GuardedResolver { allow }))
+        .build()
+        .expect("build guarded client")
+}
+
+/// Client for user-supplied upstreams.
 pub fn upstream_client() -> &'static reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-    CLIENT.get_or_init(|| {
-        reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .dns_resolver(Arc::new(GuardedResolver { allow: &UPSTREAM_ALLOWED_HOSTS }))
-            .build()
-            .expect("build upstream client")
-    })
+    CLIENT.get_or_init(|| guarded_client(&UPSTREAM_ALLOWED_HOSTS))
 }
 
 #[cfg(test)]

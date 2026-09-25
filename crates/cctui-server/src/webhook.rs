@@ -60,17 +60,11 @@ pub async fn validate_notify_url(raw: &str) -> Result<(), NotifyUrlError> {
     crate::outbound::validate_outbound_url(raw, &[]).await
 }
 
-/// Redirects are disabled so a target can't 3xx-bounce the POST onto an internal
-/// address the registration check vetted; the shared gateway client follows
-/// redirects, so it is not reused here.
+/// No redirects and guarded DNS, so neither a 3xx nor a rebound name can move
+/// the POST onto an internal address after registration vetted the URL.
 fn delivery_client() -> &'static reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-    CLIENT.get_or_init(|| {
-        reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .expect("build webhook delivery client")
-    })
+    CLIENT.get_or_init(|| crate::outbound::guarded_client(&[]))
 }
 
 /// Register a pending completion webhook for a dispatched session.
