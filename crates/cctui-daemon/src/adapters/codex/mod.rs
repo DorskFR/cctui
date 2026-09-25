@@ -41,7 +41,9 @@ use cctui_proto::adapter::{AdapterCommand, AdapterEvent};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::mpsc;
 
-use crate::adapter_runtime::{Adapter, AdapterCtx, AdapterFactory};
+use crate::adapter_runtime::{
+    Adapter, AdapterCtx, AdapterFactory, CommandOutcome, Handled, SessionDriver, run_command_loop,
+};
 use crate::client::ServerClient;
 use app_server::{
     AppServerConfig, CodexLiveSnapshot, CodexSession, LiveSessionRegistry, RouteAction,
@@ -243,86 +245,153 @@ struct CommandPump {
     pty_views: pty_view::RingViewManager,
 }
 
-impl CommandPump {
-    async fn run(self, mut commands: mpsc::Receiver<AdapterCommand>) {
-        loop {
-            tokio::select! {
-                () = self.shutdown.cancelled() => return,
-                cmd = commands.recv() => {
-                    let Some(cmd) = cmd else { return };
-                    self.handle(cmd).await;
-                }
-            }
-        }
+#[async_trait::async_trait]
+impl SessionDriver for CommandPump {
+    fn adapter_id(&self) -> &'static str {
+        "codex"
     }
 
-    async fn handle(&self, cmd: AdapterCommand) {
-        let cmd_id = cmd.command_id();
-        match cmd {
-            AdapterCommand::Spawn { spec, command_id, session_id } => {
-                self.spawn(&spec, command_id, session_id).await;
-            }
-            AdapterCommand::Fork { parent_local_id, spec, command_id, session_id, extract: _ } => {
-                self.fork(parent_local_id, &spec, command_id, session_id).await;
-            }
-            AdapterCommand::PermissionResponse { local_id, request_id, allow } => {
-                self.forward(&local_id, SessionCommand::Permission { request_id, allow }).await;
-            }
-            AdapterCommand::SendMessage { local_id, text }
-            | AdapterCommand::Reply { local_id, text, .. } => {
-                self.forward(&local_id, SessionCommand::Send { text, command_id: cmd_id }).await;
-            }
-            AdapterCommand::Kill { local_id, signal } => {
-                self.forward(&local_id, SessionCommand::Kill { signal }).await;
-            }
-            AdapterCommand::Interrupt { local_id, command_id } => {
-                self.interrupt(&local_id, command_id).await;
-            }
-            AdapterCommand::Rename { local_id, name } => {
-                self.forward(&local_id, SessionCommand::Rename { name }).await;
-            }
-            AdapterCommand::Remove { local_id, .. } => self.remove(local_id).await,
-            AdapterCommand::Resume { local_id, .. } => self.unarchive(local_id),
-            AdapterCommand::SetModel { local_id, model, effort, command_id } => {
-                self.forward(&local_id, SessionCommand::SetModel { model, effort, command_id })
-                    .await;
-            }
-            AdapterCommand::Diagnose { local_id, request_id } => {
-                let report = build_diagnose(
-                    &self.live,
-                    &self.registry,
-                    self.server.as_ref(),
-                    self.machine_key.as_ref(),
-                    &local_id,
-                )
-                .await;
-                let _ = self
-                    .events
-                    .send(AdapterEvent::Diagnose { local_id, request_id, report: Box::new(report) })
-                    .await;
-            }
-            AdapterCommand::ResumeMarks { marks: session_marks } => {
-                // the tail needs the marks before it adopts a rollout:
-                // they are the only evidence of where the server's copy
-                // of the transcript actually stops.
-                if let Ok(mut store) = self.marks.lock() {
-                    store.extend(session_marks.iter().cloned());
-                }
-                announce_resume_marks(&self.registry, &self.events, &session_marks).await;
-            }
-            AdapterCommand::WatchPty { local_id, watch } => {
-                if watch {
-                    self.pty_views.watch(
-                        local_id,
-                        self.live.clone(),
-                        self.events.clone(),
-                        &self.shutdown,
-                    );
-                } else {
-                    self.pty_views.unwatch(&local_id);
-                }
-            }
+    async fn spawn(
+        &mut self,
+        spec: cctui_proto::adapter::SessionSpec,
+        command_id: Option<uuid::Uuid>,
+        session_id: Option<uuid::Uuid>,
+    ) -> CommandOutcome {
+        self.spawn_session(&spec, command_id, session_id).await;
+        Ok(Handled::Deferred)
+    }
+
+    async fn fork(
+        &mut self,
+        parent_local_id: String,
+        spec: cctui_proto::adapter::SessionSpec,
+        command_id: Option<uuid::Uuid>,
+        session_id: Option<String>,
+        _extract: Option<cctui_proto::adapter::ForkExtract>,
+    ) -> CommandOutcome {
+        self.fork_session(parent_local_id, &spec, command_id, session_id).await;
+        Ok(Handled::Deferred)
+    }
+
+    async fn permission_response(
+        &mut self,
+        local_id: String,
+        request_id: String,
+        allow: bool,
+    ) -> CommandOutcome {
+        self.forward(&local_id, SessionCommand::Permission { request_id, allow }).await;
+        Ok(Handled::Deferred)
+    }
+
+    async fn send_message(&mut self, local_id: String, text: String) -> CommandOutcome {
+        self.forward(&local_id, SessionCommand::Send { text, command_id: None }).await;
+        Ok(Handled::Deferred)
+    }
+
+    async fn reply(
+        &mut self,
+        local_id: String,
+        text: String,
+        _ask_picks: Option<Vec<Vec<usize>>>,
+        _env: std::collections::BTreeMap<String, String>,
+        command_id: Option<uuid::Uuid>,
+        _turn_id: Option<uuid::Uuid>,
+    ) -> CommandOutcome {
+        self.forward(&local_id, SessionCommand::Send { text, command_id }).await;
+        Ok(Handled::Deferred)
+    }
+
+    async fn kill(&mut self, local_id: String, signal: Option<i32>) -> CommandOutcome {
+        self.forward(&local_id, SessionCommand::Kill { signal }).await;
+        Ok(Handled::Deferred)
+    }
+
+    async fn interrupt(
+        &mut self,
+        local_id: String,
+        command_id: Option<uuid::Uuid>,
+    ) -> CommandOutcome {
+        self.interrupt_session(&local_id, command_id).await;
+        Ok(Handled::Deferred)
+    }
+
+    async fn rename(&mut self, local_id: String, name: String) -> CommandOutcome {
+        self.forward(&local_id, SessionCommand::Rename { name }).await;
+        Ok(Handled::Deferred)
+    }
+
+    async fn remove(
+        &mut self,
+        local_id: String,
+        _command_id: Option<uuid::Uuid>,
+        _initiator: cctui_proto::adapter::RemoveInitiator,
+    ) -> CommandOutcome {
+        self.remove_session(local_id).await;
+        Ok(Handled::Deferred)
+    }
+
+    async fn resume(
+        &mut self,
+        local_id: String,
+        _working_dir: Option<String>,
+        _env: std::collections::BTreeMap<String, String>,
+    ) -> CommandOutcome {
+        self.unarchive(local_id);
+        Ok(Handled::Deferred)
+    }
+
+    async fn set_model(
+        &mut self,
+        local_id: String,
+        model: Option<String>,
+        effort: Option<String>,
+        command_id: Option<uuid::Uuid>,
+    ) -> CommandOutcome {
+        self.forward(&local_id, SessionCommand::SetModel { model, effort, command_id }).await;
+        Ok(Handled::Deferred)
+    }
+
+    async fn diagnose(&mut self, local_id: String, request_id: uuid::Uuid) -> CommandOutcome {
+        let report = build_diagnose(
+            &self.live,
+            &self.registry,
+            self.server.as_ref(),
+            self.machine_key.as_ref(),
+            &local_id,
+        )
+        .await;
+        let _ = self
+            .events
+            .send(AdapterEvent::Diagnose { local_id, request_id, report: Box::new(report) })
+            .await;
+        Ok(Handled::Deferred)
+    }
+
+    async fn resume_marks(&mut self, marks: Vec<(String, u64)>) -> CommandOutcome {
+        // the tail needs the marks before it adopts a rollout:
+        // they are the only evidence of where the server's copy
+        // of the transcript actually stops.
+        if let Ok(mut store) = self.marks.lock() {
+            store.extend(marks.iter().cloned());
         }
+        announce_resume_marks(&self.registry, &self.events, &marks).await;
+        Ok(Handled::Deferred)
+    }
+
+    async fn watch_pty(&mut self, local_id: String, watch: bool) -> CommandOutcome {
+        if watch {
+            self.pty_views.watch(local_id, self.live.clone(), self.events.clone(), &self.shutdown);
+        } else {
+            self.pty_views.unwatch(&local_id);
+        }
+        Ok(Handled::Deferred)
+    }
+}
+
+impl CommandPump {
+    async fn run(mut self, mut commands: mpsc::Receiver<AdapterCommand>) {
+        let (events, shutdown) = (self.events.clone(), self.shutdown.clone());
+        run_command_loop(&mut self, &mut commands, &events, &shutdown).await;
     }
 
     async fn forward(&self, local_id: &str, cmd: SessionCommand) {
@@ -377,7 +446,7 @@ impl CommandPump {
 
     // codex mints its own thread id, so the server-pre-minted `session_id` is
     // ignored here.
-    async fn spawn(
+    async fn spawn_session(
         &self,
         spec: &cctui_proto::adapter::SessionSpec,
         command_id: Option<uuid::Uuid>,
@@ -457,7 +526,7 @@ impl CommandPump {
     /// Fork an existing thread into a new one seeded from its history.
     /// Mirrors Spawn for cfg overrides (permission/effort/model) but launches
     /// via thread/fork.
-    async fn fork(
+    async fn fork_session(
         &self,
         parent_local_id: String,
         spec: &cctui_proto::adapter::SessionSpec,
@@ -522,7 +591,7 @@ impl CommandPump {
     /// driver answers `command_id` from the correlated `turn/interrupt`
     /// JSON-RPC outcome; a non-delivery is reported as a failure here so the
     /// webui can say so.
-    async fn interrupt(&self, local_id: &str, command_id: Option<uuid::Uuid>) {
+    async fn interrupt_session(&self, local_id: &str, command_id: Option<uuid::Uuid>) {
         let delivered = matches!(
             route_or_prepare_resume(
                 &self.live,
@@ -544,7 +613,7 @@ impl CommandPump {
     /// claude's `claude rm`, keeping the transcript recoverable. Idempotent:
     /// archiving an already-archived / missing thread succeeds. Runs off the
     /// pump so a 30s app-server spawn can't stall other commands.
-    async fn remove(&self, local_id: String) {
+    async fn remove_session(&self, local_id: String) {
         self.forward(&local_id, SessionCommand::Kill { signal: None }).await;
         self.registry.lock().await.remove(&local_id);
         persist::save(&self.registry).await;
