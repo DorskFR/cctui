@@ -21,12 +21,9 @@ pub fn check_payload_env(payload: &serde_json::Value) -> Result<(), String> {
     let Some(env) = payload.get("env").and_then(serde_json::Value::as_object) else {
         return Ok(());
     };
-    match env.keys().find(|k| is_reserved_env_key(k)) {
-        Some(k) => {
-            Err(format!("payload env `{k}` is reserved by the dispatcher and cannot be set"))
-        }
-        None => Ok(()),
-    }
+    env.keys().find(|k| is_reserved_env_key(k)).map_or(Ok(()), |k| {
+        Err(format!("payload env `{k}` is reserved by the dispatcher and cannot be set"))
+    })
 }
 
 #[cfg(test)]

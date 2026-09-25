@@ -545,7 +545,7 @@ impl Spawner {
             Ok(_) => {}
             Err(KubeError::Api(e)) if e.code == 404 => {}
             Err(e) => {
-                tracing::warn!(secret = %name, error = %e, "deleting unused env Secret failed")
+                tracing::warn!(secret = %name, error = %e, "deleting unused env Secret failed");
             }
         }
     }
@@ -1143,7 +1143,7 @@ impl Dispatcher for Spawner {
     }
 
     async fn dispatch(&self, spec: &WireDispatchSpec) -> anyhow::Result<SpawnOutcome> {
-        self.dispatch_worker(spec).await
+        Box::pin(self.dispatch_worker(spec)).await
     }
 
     async fn status(&self, handle: &str) -> anyhow::Result<(HandleState, Option<String>)> {
