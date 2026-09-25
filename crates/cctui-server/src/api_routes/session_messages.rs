@@ -4,7 +4,7 @@ use super::{GET, sess_read, sess_write};
 use crate::authz::{Authn, Routes};
 use crate::routes;
 use axum::http::Method;
-use axum::routing::{delete, get, patch, post};
+use axum::routing::{get, patch, post};
 
 pub(super) fn register(r: Routes) -> Routes {
     r.add(

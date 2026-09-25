@@ -5,7 +5,7 @@ use crate::authz::Authz::Human;
 use crate::authz::{Authn, Routes};
 use crate::routes;
 use axum::http::Method;
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get};
 
 pub(super) fn register(r: Routes) -> Routes {
     r
