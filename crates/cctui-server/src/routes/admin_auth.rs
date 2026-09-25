@@ -847,10 +847,17 @@ pub async fn mint_user_key(
     Json(req): Json<MintKeyRequest>,
 ) -> Result<Json<MintKeyResponse>, (StatusCode, Json<ApiError>)> {
     self_or_admin(&ctx, user_id)?;
+    if ctx.machine_id.is_some() {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(ApiError { error: "machine keys cannot mint user keys".into() }),
+        ));
+    }
     let requested = parse_scopes(&req.scopes)?;
     let ceiling =
         crate::store::acls::user_ceiling(&state.pool, user_id).await.map_err(|e| db_err(&e))?;
-    let granted: Vec<Scope> = requested.into_iter().filter(|s| ceiling.contains(s)).collect();
+    let granted: Vec<Scope> =
+        requested.into_iter().filter(|s| ceiling.contains(s) && ctx.scopes.contains(s)).collect();
 
     let token = user_token(&mint_secret());
     let hash = sha256_hex(&token);
