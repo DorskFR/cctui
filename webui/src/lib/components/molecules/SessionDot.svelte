@@ -4,9 +4,7 @@
 	import { m } from '$lib/paraglide/messages';
 	import { sessionDebugRows } from '../../../routes/sessions/sessions.logic';
 	import { sessionEnd } from '$lib/sessionEnd';
-	import { diagnoseBlocks, diagnoseRows } from '$lib/diagnoseRows';
-	import DiagnoseBlocks from './DiagnoseBlocks.svelte';
-	import { useSessionDiagnose } from '$lib/queries';
+	import SessionDotFacts from './SessionDotFacts.svelte';
 
 	// Activity dot: the liveness dot carries a rich debug tooltip —
 	// session id (surfaced nowhere else, click-to-copy) plus the Process /
@@ -20,14 +18,9 @@
 		now = Date.now()
 	}: { session: SessionListItem; livenessClass: string; now?: number } = $props();
 
-	// The daemon report costs a server → daemon round trip, so it is fetched only
-	// once the tooltip has been opened at least once; the query's stale time then
-	// serves later hovers from cache.
+	// The daemon report costs a server → daemon round trip, so the facts child —
+	// and its query — mounts only once the tooltip is armed.
 	let armed = $state(false);
-	const report = useSessionDiagnose(
-		() => session.id,
-		() => armed
-	);
 
 	const rows = $derived.by((): { label: string; value: string; at?: string }[] => {
 		const base = sessionDebugRows(session, now);
@@ -38,8 +31,6 @@
 			{ label: m.sessions_dot_ended(), value: end.endedAt ? '' : '—', at: end.endedAt ?? undefined }
 		];
 	});
-
-	const blocks = $derived(diagnoseBlocks(diagnoseRows(session, report.data ?? null, now)));
 </script>
 
 <Tooltip maxWidth="26rem">
@@ -65,7 +56,9 @@
 					label={m.sessions_copy_id_title()}
 				/>
 			</div>
-			<div class="blocks"><DiagnoseBlocks {blocks} /></div>
+			{#if armed}
+				<div class="blocks"><SessionDotFacts {session} {now} /></div>
+			{/if}
 			<dl class="grid">
 				{#each rows as r (r.label)}
 					<dt>{r.label}</dt>

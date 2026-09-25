@@ -15,6 +15,7 @@ import {
 } from './diagnoseRows';
 import blocksSource from './components/molecules/DiagnoseBlocks.svelte?raw';
 import dotSource from './components/molecules/SessionDot.svelte?raw';
+import factsSource from './components/molecules/SessionDotFacts.svelte?raw';
 
 const NOW = 1_700_000_000_000;
 
@@ -224,9 +225,14 @@ describe('trimDetail', () => {
 
 describe('the dot tooltip is the only diagnose surface', () => {
 	it('builds its blocks from diagnoseRows and the lazily fetched report', () => {
-		expect(dotSource).toContain('diagnoseRows(');
-		expect(dotSource).toContain('useSessionDiagnose(');
+		expect(factsSource).toContain('diagnoseRows(');
+		expect(factsSource).toContain('useSessionDiagnose(');
 		expect(dotSource).toContain('armed = true');
+	});
+
+	it('keeps the query out of the dot itself: no observer until the tooltip is armed', () => {
+		expect(dotSource).not.toContain('useSessionDiagnose');
+		expect(dotSource).toContain('{#if armed}');
 	});
 
 	it('has no link to a diagnose panel', () => {
@@ -241,6 +247,6 @@ describe('the dot tooltip is the only diagnose surface', () => {
 	});
 
 	it('adds no :global override', () => {
-		for (const src of [blocksSource, dotSource]) expect(src).not.toContain(':global(');
+		for (const src of [blocksSource, dotSource, factsSource]) expect(src).not.toContain(':global(');
 	});
 });
