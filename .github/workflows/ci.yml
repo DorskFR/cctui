@@ -450,6 +450,15 @@ jobs:
       - name: Reject i18n sentence fragments and locale key drift
         run: bash scripts/check-i18n.test.sh
 
+  release-channel:
+    name: release-channel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Map release tags to channels
+        run: bash scripts/release-channel.test.sh
+
   actionlint:
     name: actionlint
     runs-on: ubuntu-latest
