@@ -620,7 +620,11 @@ impl DeferredDispatch {
 
     /// [`send`](Self::send) on its own task, reporting the outcome as the
     /// `CommandResult` for `command_id`.
-    fn run_detached(self, events: mpsc::Sender<AdapterEvent>, command_id: Option<uuid::Uuid>) {
+    pub(super) fn run_detached(
+        self,
+        events: mpsc::Sender<AdapterEvent>,
+        command_id: Option<uuid::Uuid>,
+    ) {
         tokio::spawn(async move {
             let res = self.send().await;
             if let Err(err) = &res {
