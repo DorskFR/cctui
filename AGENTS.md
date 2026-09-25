@@ -101,6 +101,8 @@ After a PR merges, **cut a release so the package is built/published**:
 
 - Tag the new version on the default branch; CI builds and publishes the
   artifacts/images for that tag.
+- Pick the channel with the tag: `vX.Y.Z` is stable, `vX.Y.Z-beta.N` is a beta
+  pre-release. See [docs/release-channels.md](./docs/release-channels.md).
 - The webui ships as its own image/overlay independent of the server.
 - Verify the release actually rolled out before considering the work done —
   don't stop at "PR merged" or "tag pushed".

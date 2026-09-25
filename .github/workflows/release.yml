@@ -31,6 +31,12 @@ jobs:
       contents: read
     outputs:
       sha: ${{ steps.sha.outputs.sha }}
+      tag: ${{ steps.channel.outputs.tag }}
+      version: ${{ steps.channel.outputs.version }}
+      channel: ${{ steps.channel.outputs.channel }}
+      prerelease: ${{ steps.channel.outputs.prerelease }}
+      make_latest: ${{ steps.channel.outputs.make_latest }}
+      floating_tag: ${{ steps.channel.outputs.floating_tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -39,6 +45,16 @@ jobs:
       - name: Resolve release commit
         id: sha
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      # vX.Y.Z-beta.N publishes a pre-release that never becomes latest and
+      # moves the :beta image tags instead of :latest.
+      - name: Resolve release channel
+        id: channel
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          bash scripts/release-channel.sh "$TAG" | tee -a "$GITHUB_OUTPUT"
 
       - name: Require a green ci run on the release commit
         env:
@@ -194,17 +210,11 @@ jobs:
             case "$f" in *.minisig) continue ;; esac
             minisign -V -p ../keys/release.minisign.pub -m "$f"
           done
-      - name: Resolve tag
-        id: tag
-        run: |
-          if [ -n "${{ inputs.tag }}" ]; then
-            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
-          fi
       - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
-          tag_name: ${{ steps.tag.outputs.tag }}
+          tag_name: ${{ needs.ci-green.outputs.tag }}
+          prerelease: ${{ needs.ci-green.outputs.prerelease }}
+          make_latest: ${{ needs.ci-green.outputs.make_latest }}
           generate_release_notes: true
           files: |
             dist/cctui-*
@@ -237,12 +247,6 @@ jobs:
         with:
           ref: ${{ needs.ci-green.outputs.sha }}
 
-      - name: Resolve version
-        id: ver
-        run: |
-          tag="${{ inputs.tag || github.ref_name }}"
-          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
-
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
 
       - name: Log in to ghcr
@@ -261,12 +265,12 @@ jobs:
           push: true
           build-args: |
             CCTUI_GIT_HASH=${{ needs.ci-green.outputs.sha }}
-            CLIENT_VERSION=${{ steps.ver.outputs.version }}
+            CLIENT_VERSION=${{ needs.ci-green.outputs.version }}
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,mode=max,scope=${{ matrix.image }}
           tags: |
-            ghcr.io/dorskfr/${{ matrix.image }}:${{ steps.ver.outputs.version }}
-            ghcr.io/dorskfr/${{ matrix.image }}:latest
+            ghcr.io/dorskfr/${{ matrix.image }}:${{ needs.ci-green.outputs.version }}
+            ghcr.io/dorskfr/${{ matrix.image }}:${{ needs.ci-green.outputs.floating_tag }}
 
   # These images take the linux-amd64 musl binaries from the build job through
   # the `bins` build context, so no Rust compiles inside docker.
@@ -297,12 +301,6 @@ jobs:
       - name: Restore executable bits
         run: chmod 0755 image-bins/*
 
-      - name: Resolve version
-        id: ver
-        run: |
-          tag="${{ inputs.tag || github.ref_name }}"
-          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
-
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
 
       - name: Log in to ghcr
@@ -325,11 +323,11 @@ jobs:
           push: false
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,mode=max,scope=${{ matrix.image }}
-          tags: ghcr.io/dorskfr/${{ matrix.image }}:${{ steps.ver.outputs.version }}
+          tags: ghcr.io/dorskfr/${{ matrix.image }}:${{ needs.ci-green.outputs.version }}
 
       - name: Verify harness version floors in the worker image
         if: matrix.image == 'cctui-worker'
-        run: bash scripts/check-worker-image-harness.sh ghcr.io/dorskfr/cctui-worker:${{ steps.ver.outputs.version }}
+        run: bash scripts/check-worker-image-harness.sh ghcr.io/dorskfr/cctui-worker:${{ needs.ci-green.outputs.version }}
 
       - name: Push
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
@@ -341,5 +339,5 @@ jobs:
           push: true
           cache-from: type=gha,scope=${{ matrix.image }}
           tags: |
-            ghcr.io/dorskfr/${{ matrix.image }}:${{ steps.ver.outputs.version }}
-            ghcr.io/dorskfr/${{ matrix.image }}:latest
+            ghcr.io/dorskfr/${{ matrix.image }}:${{ needs.ci-green.outputs.version }}
+            ghcr.io/dorskfr/${{ matrix.image }}:${{ needs.ci-green.outputs.floating_tag }}

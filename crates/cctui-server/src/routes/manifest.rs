@@ -4,7 +4,8 @@
 //! per-arch download and minisign-signature URLs, always on this server's own
 //! origin so clients never send their credentials anywhere else. The daemon
 //! ships in the same release as the TUI/server, so the version is simply the
-//! server's own.
+//! server's own, and so is its release channel (a `-beta.N` version is beta):
+//! daemons following stable refuse a beta manifest.
 //!
 //! `GET /api/v1/daemon/binary/{target}` proxies the actual binary, and
 //! `{target}.minisig` its detached signature. When the
@@ -23,6 +24,7 @@ use axum::body::Body;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Redirect, Response};
+use cctui_proto::release_sig::Channel;
 use serde::Serialize;
 
 use crate::state::AppState;
@@ -41,6 +43,7 @@ const TARGETS: [&str; 3] = ["linux-amd64", "linux-arm64", "darwin-arm64"];
 #[derive(Debug, Serialize)]
 pub struct DaemonManifest {
     pub version: &'static str,
+    pub channel: Channel,
     pub assets: Vec<DaemonAsset>,
 }
 
@@ -56,10 +59,10 @@ fn github_asset_url(version: &str, asset: &str) -> String {
 }
 
 fn build_manifest(state: &AppState) -> DaemonManifest {
-    build_manifest_for(&state.config.external_url)
+    build_manifest_for(&state.config.external_url, env!("CARGO_PKG_VERSION"))
 }
 
-fn build_manifest_for(external_url: &str) -> DaemonManifest {
+fn build_manifest_for(external_url: &str, version: &'static str) -> DaemonManifest {
     let base = external_url.trim_end_matches('/');
     let assets = TARGETS
         .iter()
@@ -69,7 +72,7 @@ fn build_manifest_for(external_url: &str) -> DaemonManifest {
             sig_url: format!("{base}/api/v1/daemon/binary/{target}.minisig"),
         })
         .collect();
-    DaemonManifest { version: env!("CARGO_PKG_VERSION"), assets }
+    DaemonManifest { version, channel: Channel::of_version(version), assets }
 }
 
 fn manifest_etag(body: &[u8]) -> String {
@@ -191,12 +194,21 @@ mod tests {
 
     #[test]
     fn manifest_urls_stay_on_the_server_origin() {
-        let m = build_manifest_for("https://cctui.example.com/");
+        let m = build_manifest_for("https://cctui.example.com/", "0.20.0");
         assert_eq!(m.assets.len(), TARGETS.len());
         for a in &m.assets {
             assert!(a.url.starts_with("https://cctui.example.com/api/v1/daemon/binary/"));
             assert_eq!(a.sig_url, format!("{}.minisig", a.url));
         }
+    }
+
+    #[test]
+    fn manifest_channel_follows_the_server_version() {
+        assert_eq!(build_manifest_for("https://s", "0.20.0").channel, Channel::Stable);
+        assert_eq!(build_manifest_for("https://s", "0.21.0-beta.2").channel, Channel::Beta);
+        let json = serde_json::to_value(build_manifest_for("https://s", "0.21.0-beta.2")).unwrap();
+        assert_eq!(json["channel"], "beta");
+        assert_eq!(json["version"], "0.21.0-beta.2");
     }
 
     #[test]

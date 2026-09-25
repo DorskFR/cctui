@@ -9,7 +9,11 @@ use cctui_daemon::supervisor::Supervisor;
 use cctui_daemon::{adapters, fatal, runlock, runtime, selfupdate, service};
 
 #[derive(Parser)]
-#[command(name = "cctui-daemon", about = "Per-machine agent supervisor for cctui", version)]
+#[command(
+    name = "cctui-daemon",
+    about = "Per-machine agent supervisor for cctui",
+    version = selfupdate::version_display()
+)]
 struct Cli {
     #[arg(long, env = "CCTUI_DAEMON_CONFIG")]
     config: Option<PathBuf>,
@@ -146,7 +150,7 @@ fn print_status(path: &PathBuf) -> anyhow::Result<()> {
             "enrolled: no — run `cctui-daemon enroll --server-url <url> --token <token> --name <name>`"
         );
         println!("service: {}", if service::is_active() { "running" } else { "not running" });
-        println!("binary version: {}", env!("CARGO_PKG_VERSION"));
+        println!("binary version: {}", selfupdate::version_display());
         return Ok(());
     }
     let cfg = Config::load_from(path)?;
@@ -156,8 +160,9 @@ fn print_status(path: &PathBuf) -> anyhow::Result<()> {
         println!("machine_id: {id}");
     }
     println!("machine_key: <redacted>");
+    println!("update channel: {}", cfg.update_channel());
     println!("service: {}", if service::is_active() { "running" } else { "not running" });
-    println!("binary version: {}", env!("CARGO_PKG_VERSION"));
+    println!("binary version: {}", selfupdate::version_display());
     match runtime::read() {
         Some(rt) if runtime::pid_alive(rt.pid) => {
             println!("running version: {} (pid {}, since {})", rt.version, rt.pid, rt.started_at);
@@ -241,6 +246,7 @@ async fn run_daemon(path: &std::path::Path, no_auto_update: bool) -> anyhow::Res
     // into the supervisor; both flow to the server-routed updater.
     let update_server_url = cfg.server_url.clone();
     let update_machine_key = cfg.machine_key.clone();
+    let update_channel = cfg.update_channel();
     let supervisor = Supervisor::new(client, cfg.machine_key, adapters::registry());
     if auto_update_enabled(no_auto_update) {
         let interval = selfupdate::poll_interval();
@@ -249,6 +255,7 @@ async fn run_daemon(path: &std::path::Path, no_auto_update: bool) -> anyhow::Res
             shutdown.clone(),
             update_server_url,
             update_machine_key,
+            update_channel,
             interval,
             counters.clone(),
         );
@@ -318,13 +325,13 @@ async fn main() -> anyhow::Result<()> {
             // Send `kind` only when non-default so older servers are unaffected.
             let kind_arg = (kind != "persistent").then_some(kind.as_str());
             let resp = client.enroll(&token, &name, kind_arg).await?;
+            let old = Config::load_from(&path).ok();
             let cfg = Config {
                 server_url,
                 machine_key: resp.machine_key,
                 machine_id: Some(resp.machine_id),
-                read_file_roots: Config::load_from(&path)
-                    .map(|old| old.read_file_roots)
-                    .unwrap_or_default(),
+                channel: old.as_ref().map(|o| o.channel).unwrap_or_default(),
+                read_file_roots: old.map(|o| o.read_file_roots).unwrap_or_default(),
             };
             cfg.save_to(&path)?;
             println!("enrolled as {} → {}", resp.machine_id, path.display());
@@ -339,7 +346,8 @@ async fn main() -> anyhow::Result<()> {
         },
         Cmd::Update => {
             let cfg = Config::load_from(&path)?;
-            match selfupdate::check_and_apply(&cfg.server_url, &cfg.machine_key).await {
+            let channel = cfg.update_channel();
+            match selfupdate::check_and_apply(&cfg.server_url, &cfg.machine_key, channel).await {
                 Ok(Some(_)) => {
                     // The running service is a separate process still on the
                     // old binary — restart it so the swap takes effect now.

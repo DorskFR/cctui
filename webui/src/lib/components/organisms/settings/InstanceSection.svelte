@@ -17,6 +17,7 @@
 	import StorageSection from './StorageSection.svelte';
 	import HarnessUpdateGroup from './HarnessUpdateGroup.svelte';
 	import { useVersion, useAllMachines, endpoints, qk } from '$lib/queries';
+	import { releaseChannel } from '$lib/releaseChannel';
 	import type { SelfUpdateTargetInfo } from '@bindings/SelfUpdateTargetInfo';
 	import { toasts } from '$lib/toast.svelte';
 	import { m } from '$lib/paraglide/messages';
@@ -154,6 +155,11 @@
 			<div class="ver">
 				{#if version.data}
 					<Text size="sm" variant="code">srv {version.data.version}</Text>
+					{#if releaseChannel(version.data.version) === 'beta'}
+						<span title={m.release_channel_beta_title()}>
+							<Text size="sm" tone="accent" variant="code" weight="bold">{m.release_channel_beta()}</Text>
+						</span>
+					{/if}
 					<Text size="sm" variant="code">ui {__CLIENT_VERSION__}</Text>
 					{#if version.data.latest_version}
 						<Button size="sm" variant="ghost" chip onclick={() => (updateOpen = true)}>

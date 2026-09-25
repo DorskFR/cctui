@@ -2,6 +2,7 @@
 	import { goto } from '$app/navigation';
 	import { ws } from '$lib/ws.svelte';
 	import { useMe, useVersion, useSessions, qk } from '$lib/queries';
+	import { releaseChannel } from '$lib/releaseChannel';
 	import type { SessionListResponse } from '@bindings/SessionListResponse';
 	import { useQueryClient } from '@tanstack/svelte-query';
 	import { fontScale } from '$lib/fontscale.svelte';
@@ -159,6 +160,11 @@ import ResourceBattery from '$lib/components/molecules/ResourceBattery.svelte';
 					<NavLink href={version.data.commit_url} target="_blank" rel="noopener">
 						<Text size="xs" tone="faint" variant="code">srv v{version.data.version}</Text>
 					</NavLink>
+					{#if releaseChannel(version.data.version) === 'beta'}
+						<span title={m.release_channel_beta_title()}>
+							<Text size="xs" tone="accent" variant="code" weight="bold">{m.release_channel_beta()}</Text>
+						</span>
+					{/if}
 				{/if}
 			</span>
 		</div>
