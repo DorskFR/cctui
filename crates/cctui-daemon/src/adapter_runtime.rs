@@ -176,9 +176,10 @@ pub trait SessionDriver: Send {
     }
 }
 
-/// Route one command to its driver method and report the outcome of a
-/// correlated command. The only `match` over [`AdapterCommand`] the adapters
-/// have; it has no wildcard arm, so a new variant needs a driver method.
+/// Route one command to its driver method and report its outcome.
+///
+/// The only `match` over [`AdapterCommand`] the adapters have; it has no
+/// wildcard arm, so a new variant needs a driver method.
 pub async fn dispatch_command<D: SessionDriver + ?Sized>(
     driver: &mut D,
     events: &mpsc::Sender<AdapterEvent>,
