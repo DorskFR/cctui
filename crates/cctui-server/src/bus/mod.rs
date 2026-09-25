@@ -170,6 +170,26 @@ pub enum BusEvent {
     Server(ServerEvent),
 }
 
+/// A [`ServerEvent`] with its JSON wire form, encoded once at publish so every
+/// socket relays the same bytes instead of re-serializing per subscriber.
+#[derive(Debug, Clone)]
+pub struct ServerFrame {
+    pub event: Arc<ServerEvent>,
+    pub json: Arc<str>,
+}
+
+impl ServerFrame {
+    pub fn encode(event: ServerEvent) -> Option<Self> {
+        match serde_json::to_string(&event) {
+            Ok(json) => Some(Self { event: Arc::new(event), json: json.into() }),
+            Err(err) => {
+                tracing::warn!(%err, "failed to serialize ServerEvent");
+                None
+            }
+        }
+    }
+}
+
 /// The routing backend behind the [`Bus`]. The bus always tries local
 /// delivery first (this pod's connection registries / broadcast channels);
 /// the transport is its escape hatch to the rest of the cluster.
@@ -293,7 +313,7 @@ struct Inner {
     /// [`DispatcherFrameUp`] reply.
     pending_dispatcher: DashMap<Uuid, oneshot::Sender<DispatcherFrameUp>>,
     /// Cluster-wide server event fan-out (the former `state.tui_tx`).
-    server_tx: broadcast::Sender<ServerEvent>,
+    server_tx: broadcast::Sender<ServerFrame>,
     /// Per-session agent stream channels (the former
     /// `SessionHandle::stream_tx`). Entries live exactly as long as the
     /// session's registry handle: created on register, removed on deregister.
@@ -909,7 +929,12 @@ impl Bus {
                 }
             }
             BusEvent::Server(server_event) => {
-                let _ = self.inner.server_tx.send(server_event);
+                if self.inner.server_tx.receiver_count() == 0 {
+                    return;
+                }
+                if let Some(frame) = ServerFrame::encode(server_event) {
+                    let _ = self.inner.server_tx.send(frame);
+                }
             }
         }
     }
@@ -927,7 +952,7 @@ impl Bus {
     }
 
     /// Subscribe to the cluster-wide server event stream.
-    pub fn subscribe_server(&self) -> broadcast::Receiver<ServerEvent> {
+    pub fn subscribe_server(&self) -> broadcast::Receiver<ServerFrame> {
         self.inner.server_tx.subscribe()
     }
 
@@ -1618,10 +1643,27 @@ mod tests {
         bus.publish(BusEvent::Server(ServerEvent::SessionDeregistered {
             session_id: "sess-1".into(),
         }));
+        let frame = rx.try_recv().unwrap();
         assert!(matches!(
-            rx.try_recv().unwrap(),
+            &*frame.event,
             ServerEvent::SessionDeregistered { session_id } if session_id == "sess-1"
         ));
+        assert_eq!(&*frame.json, r#"{"type":"session_deregistered","session_id":"sess-1"}"#);
+    }
+
+    #[tokio::test]
+    async fn publish_server_encodes_once_for_every_subscriber() {
+        let bus = bus();
+        let mut receivers: Vec<_> = (0..10).map(|_| bus.subscribe_server()).collect();
+        bus.publish_server(ServerEvent::PtyChunk {
+            session_id: "sess-1".into(),
+            data: "x".repeat(200 * 1024),
+        });
+        let first = receivers[0].try_recv().unwrap();
+        for rx in &mut receivers[1..] {
+            let frame = rx.try_recv().unwrap();
+            assert!(Arc::ptr_eq(&frame.json, &first.json));
+        }
     }
 
     #[tokio::test]

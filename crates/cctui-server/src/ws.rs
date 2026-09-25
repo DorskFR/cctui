@@ -2,9 +2,12 @@ use axum::extract::ws::{Message, WebSocket};
 use axum::extract::{State, WebSocketUpgrade};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
+use std::sync::Arc;
+
 use cctui_proto::ws::{AgentEvent, ServerEvent, TuiCommand};
 use futures_util::{SinkExt, StreamExt};
-use tokio::sync::mpsc;
+use tokio::sync::broadcast::error::RecvError;
+use tokio::sync::{broadcast, mpsc};
 
 use crate::auth::{AuthContext, Scope};
 use crate::state::AppState;
@@ -29,6 +32,21 @@ async fn ws_owns_session(state: &AppState, ctx: &AuthContext, session_id: &str) 
 }
 
 // --- TUI WebSocket ---
+
+/// A JSON-encoded [`ServerEvent`] queued on one socket's outbound channel.
+type Frame = Arc<str>;
+type FrameTx = mpsc::Sender<Frame>;
+
+/// Encode and queue a socket-local event. `false` once the socket is gone.
+async fn send_event(tx: &FrameTx, event: &ServerEvent) -> bool {
+    match serde_json::to_string(event) {
+        Ok(json) => tx.send(json.into()).await.is_ok(),
+        Err(err) => {
+            tracing::warn!(%err, "failed to serialize ServerEvent");
+            true
+        }
+    }
+}
 
 pub async fn tui_ws(
     ws: WebSocketUpgrade,
@@ -76,7 +94,7 @@ const TUI_KEEPALIVE: std::time::Duration = std::time::Duration::from_secs(20);
 /// reaches every client whether or not any daemon is online.
 fn spawn_send_task(
     mut sink: futures_util::stream::SplitSink<WebSocket, Message>,
-    mut rx: mpsc::Receiver<ServerEvent>,
+    mut rx: mpsc::Receiver<Frame>,
 ) {
     tokio::spawn(async move {
         let mut keepalive = tokio::time::interval(TUI_KEEPALIVE);
@@ -84,16 +102,9 @@ fn spawn_send_task(
         keepalive.tick().await;
         loop {
             tokio::select! {
-                event = rx.recv() => {
-                    let Some(event) = event else { break };
-                    let text = match serde_json::to_string(&event) {
-                        Ok(t) => t,
-                        Err(err) => {
-                            tracing::warn!(%err, "failed to serialize ServerEvent");
-                            continue;
-                        }
-                    };
-                    if sink.send(Message::Text(text.into())).await.is_err() {
+                frame = rx.recv() => {
+                    let Some(frame) = frame else { break };
+                    if sink.send(Message::Text((&*frame).into())).await.is_err() {
                         break;
                     }
                 }
@@ -113,24 +124,22 @@ fn spawn_send_task(
 }
 
 fn spawn_relay_task(
-    mut receiver: tokio::sync::broadcast::Receiver<AgentEvent>,
+    mut receiver: broadcast::Receiver<AgentEvent>,
     session_id: String,
-    event_tx: mpsc::Sender<ServerEvent>,
+    event_tx: FrameTx,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         loop {
-            match receiver.recv().await {
-                Ok(agent_event) => {
-                    let server_event =
-                        ServerEvent::Stream { session_id: session_id.clone(), data: agent_event };
-                    if event_tx.send(server_event).await.is_err() {
-                        break;
-                    }
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+            let event = match receiver.recv().await {
+                Ok(data) => ServerEvent::Stream { session_id: session_id.clone(), data },
+                Err(RecvError::Closed) => break,
+                Err(RecvError::Lagged(n)) => {
                     tracing::warn!(session_id = %session_id, skipped = n, "TUI receiver lagged");
+                    ServerEvent::Resync { session_id: Some(session_id.clone()) }
                 }
+            };
+            if !send_event(&event_tx, &event).await {
+                break;
             }
         }
     })
@@ -142,7 +151,7 @@ fn spawn_relay_task(
 /// of optimistically assuming a sent frame was delivered.
 async fn handle_message(
     state: &AppState,
-    event_tx: &mpsc::Sender<ServerEvent>,
+    event_tx: &FrameTx,
     session_id: String,
     content: String,
     client_msg_id: Option<String>,
@@ -188,22 +197,21 @@ async fn handle_message(
         err.to_string()
     });
     if let Some(client_msg_id) = client_msg_id {
-        let _ = event_tx
-            .send(ServerEvent::MessageAck {
-                session_id,
-                client_msg_id,
-                ok: err_reason.is_none(),
-                error: err_reason,
-                command_id: Some(command_id),
-            })
-            .await;
+        let ack = ServerEvent::MessageAck {
+            session_id,
+            client_msg_id,
+            ok: err_reason.is_none(),
+            error: err_reason,
+            command_id: Some(command_id),
+        };
+        send_event(event_tx, &ack).await;
     }
 }
 
 async fn handle_subscribe(
     session_id: String,
     state: &AppState,
-    event_tx: &mpsc::Sender<ServerEvent>,
+    event_tx: &FrameTx,
     sub_handles: &mut std::collections::HashMap<String, tokio::task::JoinHandle<()>>,
 ) {
     let receiver = state.bus.subscribe_session(&session_id);
@@ -232,7 +240,7 @@ async fn handle_subscribe(
 async fn replay_pending(
     store: &crate::routes::permissions::SharedPermissionStore,
     session_id: &str,
-    event_tx: &mpsc::Sender<ServerEvent>,
+    event_tx: &FrameTx,
 ) {
     let prompts = {
         let store = store.read().await;
@@ -265,8 +273,8 @@ async fn replay_pending(
         }
         prompts
     };
-    for event in prompts {
-        if event_tx.send(event).await.is_err() {
+    for event in &prompts {
+        if !send_event(event_tx, event).await {
             return;
         }
     }
@@ -277,7 +285,7 @@ async fn run_tui_socket(
     mut stream: futures_util::stream::SplitStream<WebSocket>,
     state: AppState,
     ctx: AuthContext,
-    event_tx: mpsc::Sender<ServerEvent>,
+    event_tx: FrameTx,
 ) {
     // Relay tasks keyed by session id, so a resubscribe replaces (not stacks)
     // the per-session relay and an unsubscribe can tear it down.
@@ -334,15 +342,14 @@ async fn run_tui_socket(
                     // Ack the failure when the client opted in, so it doesn't
                     // hang waiting on a delivery state for a denied send.
                     if let Some(client_msg_id) = client_msg_id {
-                        let _ = event_tx
-                            .send(ServerEvent::MessageAck {
-                                session_id,
-                                client_msg_id,
-                                ok: false,
-                                error: Some("forbidden".into()),
-                                command_id: None,
-                            })
-                            .await;
+                        let ack = ServerEvent::MessageAck {
+                            session_id,
+                            client_msg_id,
+                            ok: false,
+                            error: Some("forbidden".into()),
+                            command_id: None,
+                        };
+                        send_event(&event_tx, &ack).await;
                     }
                     continue;
                 }
@@ -506,43 +513,56 @@ fn event_session_id(event: &ServerEvent) -> Option<&str> {
     }
 }
 
-fn spawn_server_event_relay(
-    mut receiver: tokio::sync::broadcast::Receiver<ServerEvent>,
+/// Decides whether a server-wide event may reach one socket's principal.
+trait EventFilter {
+    async fn allows(&mut self, event: &ServerEvent) -> bool;
+}
+
+struct OwnerFilter {
     state: AppState,
     ctx: AuthContext,
-    event_tx: mpsc::Sender<ServerEvent>,
+}
+
+impl EventFilter for OwnerFilter {
+    async fn allows(&mut self, event: &ServerEvent) -> bool {
+        match event_session_id(event) {
+            Some(session_id) => ws_owns_session(&self.state, &self.ctx, session_id).await,
+            None => true,
+        }
+    }
+}
+
+/// Forward every permitted frame to the socket as-is. Events lost to lag are
+/// unrecoverable, so the client is told to refetch instead.
+async fn relay_server_frames(
+    mut receiver: broadcast::Receiver<crate::bus::ServerFrame>,
+    mut filter: impl EventFilter,
+    event_tx: FrameTx,
 ) {
-    tokio::spawn(async move {
-        loop {
-            match receiver.recv().await {
-                Ok(event) => {
-                    // Drop session-scoped events for sessions this principal
-                    // doesn't own (admin bypasses). Non-session events pass.
-                    if let Some(session_id) = event_session_id(&event)
-                        && !ws_owns_session(&state, &ctx, session_id).await
-                    {
-                        continue;
-                    }
-                    if event_tx.send(event).await.is_err() {
-                        break;
-                    }
+    loop {
+        match receiver.recv().await {
+            Ok(frame) => {
+                if filter.allows(&frame.event).await && event_tx.send(frame.json).await.is_err() {
+                    break;
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                    tracing::warn!(skipped = n, "TUI server-event relay lagged");
+            }
+            Err(RecvError::Closed) => break,
+            Err(RecvError::Lagged(n)) => {
+                tracing::warn!(skipped = n, "TUI server-event relay lagged");
+                if !send_event(&event_tx, &ServerEvent::Resync { session_id: None }).await {
+                    break;
                 }
             }
         }
-    });
+    }
 }
 
 async fn handle_tui_ws(socket: WebSocket, state: AppState, ctx: AuthContext) {
     let (sink, stream) = socket.split();
-    let (tx, rx) = mpsc::channel::<ServerEvent>(256);
+    let (tx, rx) = mpsc::channel::<Frame>(256);
 
-    // Relay server-initiated events (e.g. permission requests) to this TUI
-    // client, scoped to sessions the principal owns (admin sees all).
-    spawn_server_event_relay(state.bus.subscribe_server(), state.clone(), ctx.clone(), tx.clone());
+    let filter = OwnerFilter { state: state.clone(), ctx: ctx.clone() };
+    tokio::spawn(relay_server_frames(state.bus.subscribe_server(), filter, tx.clone()));
 
     spawn_send_task(sink, rx);
     run_tui_socket(stream, state, ctx, tx).await;
@@ -557,7 +577,11 @@ mod tests {
     use cctui_proto::models::{Session, SessionStatus};
     use cctui_proto::ws::ServerEvent;
 
-    use super::{event_session_id, origin_permitted, permission_target, replay_pending};
+    use super::{
+        EventFilter, event_session_id, origin_permitted, permission_target, relay_server_frames,
+        replay_pending, spawn_relay_task,
+    };
+    use crate::bus::ServerFrame;
     use crate::config::Config;
     use crate::routes::permissions::{PendingPermission, PermissionStore};
 
@@ -649,7 +673,7 @@ mod tests {
         let store = PermissionStore::shared();
         store.write().await.insert_request(pending("sess-a", "req-a"));
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
-        tx.send(ServerEvent::Heartbeat {}).await.unwrap();
+        tx.send(r#"{"type":"heartbeat"}"#.into()).await.unwrap();
 
         let replay = {
             let store = store.clone();
@@ -663,6 +687,51 @@ mod tests {
         drop(write);
         assert!(!replay.is_finished());
         replay.abort();
+    }
+
+    struct AllowAll;
+    impl EventFilter for AllowAll {
+        async fn allows(&mut self, _event: &ServerEvent) -> bool {
+            true
+        }
+    }
+
+    #[tokio::test]
+    async fn lagged_server_relay_sends_resync() {
+        let (bus_tx, bus_rx) = tokio::sync::broadcast::channel(1);
+        for id in ["a", "b", "c"] {
+            let event = ServerEvent::SessionDeregistered { session_id: id.into() };
+            bus_tx.send(ServerFrame::encode(event).unwrap()).unwrap();
+        }
+        drop(bus_tx);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        relay_server_frames(bus_rx, AllowAll, tx).await;
+
+        assert_eq!(&*rx.recv().await.unwrap(), r#"{"type":"resync"}"#);
+        assert_eq!(
+            &*rx.recv().await.unwrap(),
+            r#"{"type":"session_deregistered","session_id":"c"}"#
+        );
+    }
+
+    #[tokio::test]
+    async fn lagged_session_relay_sends_resync_for_that_session() {
+        let (stream_tx, stream_rx) = tokio::sync::broadcast::channel(1);
+        for _ in 0..3 {
+            let beat = cctui_proto::ws::AgentEvent::Heartbeat {
+                tokens_in: 0,
+                tokens_out: 0,
+                cost_usd: 0.0,
+                ts: 0,
+                seq: None,
+            };
+            stream_tx.send(beat).ok();
+        }
+        drop(stream_tx);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        spawn_relay_task(stream_rx, "sess-1".into(), tx).await.unwrap();
+
+        assert_eq!(&*rx.recv().await.unwrap(), r#"{"type":"resync","session_id":"sess-1"}"#);
     }
 
     #[test]

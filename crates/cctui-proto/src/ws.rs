@@ -831,6 +831,13 @@ pub enum ServerEvent {
     /// WebSocket `Ping`. The JS `WebSocket` API exposes no ping/pong event, so a
     /// client watchdog can only be fed by an application frame.
     Heartbeat {},
+    /// This socket missed events to relay lag. The client refetches what it
+    /// renders: the named session's conversation, or every session view when
+    /// `None`. Written per-socket, never broadcast.
+    Resync {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
+    },
 }
 
 #[cfg(test)]
@@ -1470,5 +1477,16 @@ mod tests {
         assert_eq!(json, r#"{"type":"heartbeat"}"#);
         let back: ServerEvent = serde_json::from_str(&json).unwrap();
         assert!(matches!(back, ServerEvent::Heartbeat {}));
+    }
+
+    #[test]
+    fn server_event_resync_serializes_with_optional_session() {
+        let all = serde_json::to_string(&ServerEvent::Resync { session_id: None }).unwrap();
+        assert_eq!(all, r#"{"type":"resync"}"#);
+        let one = serde_json::to_string(&ServerEvent::Resync { session_id: Some("s".into()) })
+            .unwrap();
+        assert_eq!(one, r#"{"type":"resync","session_id":"s"}"#);
+        let back: ServerEvent = serde_json::from_str(&one).unwrap();
+        assert!(matches!(back, ServerEvent::Resync { session_id: Some(s) } if s == "s"));
     }
 }
