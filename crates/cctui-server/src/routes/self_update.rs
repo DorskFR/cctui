@@ -1,28 +1,17 @@
 //! `POST /api/v1/version/self-update` — deploy the newer release.
 //!
-//! The webui's update modal ends here, and there are two ways out of it. The
-//! server knows *nothing* about how this deployment is updated (Kubernetes
-//! rollout, Compose pull, a systemd unit…), and there are as many answers as
-//! there are installations, so it never guesses. It asks whoever does know:
+//! The server never guesses how its deployment is updated; it asks whoever
+//! knows:
 //!
-//! 1. **The machine, if it was told.** A daemon with `CCTUI_UPDATE_COMMAND`
-//!    set advertises a deterministic update hook; the server hands it the
-//!    target version and the machine runs the operator's own command, verifies
-//!    the served version and rolls back on failure. No model, no account, the
-//!    same bytes every time. See `routes::update_hook` and
-//!    `docs/update-hook.md`.
+//! 1. A daemon advertising `CCTUI_UPDATE_COMMAND` runs the operator's own
+//!    command, verifies the served version and rolls back on failure (see
+//!    `routes::update_hook` and `docs/update-hook.md`). Preferred.
+//! 2. Otherwise a YOLO agent session on the configured self-update machine
+//!    (`routes::instance`), under the caller's own accounts (`auto_account`),
+//!    reads that machine's local instructions.
 //!
-//! 2. **A YOLO agent, otherwise.** The fallback for a deployment nobody has
-//!    written a hook for: spawn a session on the configured self-update
-//!    machine (see `routes::instance`) with a generic prompt, and let the
-//!    agent read that machine's local instructions. The session runs under the
-//!    caller's own accounts (`auto_account`), so the admin who clicks pays for
-//!    it. It is the fallback, not the design: prefer a hook.
-//!
-//! Model floor: see [`launch_profile`]. The point of a self-update agent is
-//! to read a deployment's runbook and act on infrastructure — never hand that
-//! to a small model. Raise the floor when a new generation ships (AGENTS.md
-//! keeps the rule).
+//! The agent acts on infrastructure, so [`launch_profile`] enforces a model
+//! floor; raise it when a new generation ships (AGENTS.md keeps the rule).
 
 use std::time::{Duration, Instant};
 

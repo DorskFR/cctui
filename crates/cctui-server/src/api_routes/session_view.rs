@@ -9,7 +9,7 @@ use axum::routing::{get, patch};
 pub(super) fn register(r: Routes) -> Routes {
     r
         // Per-session routes — ownership enforced by the `Resource(Session)`
-        // guard. The `authz_layer` resolves `machine_uuid ->
+        // guard. The `enforce_route` resolves `machine_uuid ->
         // machines.user_id` and applies `admin || owner == caller` before the
         // handler (404 unknown / 403 cross-user). Reads → `Action::Read`,
         // mutations/control → `Action::Write` (the action is recorded for

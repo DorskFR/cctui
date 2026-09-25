@@ -1,32 +1,14 @@
 //! The WebAuthn relying party — the passkey half of browser auth.
 //!
-//! ## Why this exists
+//! A successful assertion mints an ordinary expiring `auth_keys` row (kind
+//! `passkey`) riding the existing `HttpOnly` cookie, so nothing downstream of
+//! `auth_middleware` distinguishes it from a token login.
 //!
-//! The webui's only credential was a bearer token typed into a login box. A
-//! passkey is a second door onto the *same* model: a successful assertion mints
-//! an ordinary, expiring `auth_keys` row (kind `passkey`) whose token rides the
-//! existing `HttpOnly` cookie. Nothing downstream of `auth_middleware` knows or
-//! cares which door the request came through, and the token path is never
-//! removed — a lost passkey is an inconvenience, not a lockout.
-//!
-//! ## Relying-party identity
-//!
-//! WebAuthn binds every credential to an **RP ID** (a domain) and validates the
-//! ceremony against an **origin**. Both are derived from `CCTUI_EXTERNAL_URL`,
-//! which a real deployment already sets to its public URL, so a correctly
-//! configured server needs no new env. `CCTUI_RP_ID` overrides the derived host
-//! for the one case deriving gets wrong: serving the UI from a subdomain of the
-//! domain the credentials should be scoped to.
-//!
-//! Two consequences worth knowing before enrolling anything:
-//!   * a credential enrolled against one RP ID does not work on another
-//!     hostname (an IP, a tunnel, a second domain) — that is WebAuthn, not us;
-//!   * the ceremony demands a secure context, so `https://` (or `localhost`).
-//!
-//! When `CCTUI_EXTERNAL_URL` is a bare `http://` host that is not `localhost`,
-//! we refuse to build an RP rather than hand out challenges no browser will
-//! honour: passkeys simply report themselves unavailable and the login box
-//! behaves exactly as it did before.
+//! RP ID and origin derive from `CCTUI_EXTERNAL_URL`; `CCTUI_RP_ID` overrides
+//! the host when credentials should be scoped to a parent domain. A credential
+//! only works on the RP ID it was enrolled against, and the ceremony needs a
+//! secure context: with a non-`localhost` `http://` URL no RP is built and
+//! passkeys report themselves unavailable.
 
 // "WebAuthn" and the authenticator brand names below are proper nouns that trip
 // clippy's camel-case doc heuristic throughout this module; none is a code item.

@@ -1,26 +1,14 @@
-//! The single routing seam for all WS-bound traffic (phase 1 of the
-//! message-bus architecture).
+//! The single routing seam for all WS-bound traffic.
 //!
-//! The bus owns ALL WS delivery state in one place — pod-local daemon commands,
-//! per-session stream broadcast, and server event fan-out:
+//! The bus owns all WS delivery state: point-to-point commands toward the pod
+//! terminating a WS ([`Bus::command_daemon`], [`Bus::command_dispatcher`]),
+//! correlated round-trips ([`Bus::request_daemon`], [`Bus::request_dispatcher`])
+//! and cluster-wide pub/sub ([`Bus::publish`], [`Bus::subscribe_session`],
+//! [`Bus::subscribe_server`]).
 //!
-//!   * point-to-point commands toward the pod terminating a WS
-//!     ([`Bus::command_daemon`], [`Bus::command_dispatcher`]) and correlated
-//!     round-trips ([`Bus::request_daemon`], [`Bus::request_dispatcher`]) with
-//!     the pending oneshot maps as private internals;
-//!   * cluster-wide pub/sub ([`Bus::publish`], [`Bus::subscribe_session`],
-//!     [`Bus::subscribe_server`]).
-//!
-//! Behind it sits a [`Transport`]. [`NoopTransport`] (local dev / single
-//! replica) keeps single-pod semantics: routing is a local registry lookup and
-//! publish is a local broadcast. With `CCTUI_POD_IP` set, main swaps in
-//! [`peer::PeerHttpTransport`]: local misses are forwarded to the
-//! peer pod owning the WS, and publishes fan out to every live replica —
-//! replacing the retired HTTP request-replay forwarder. (NATS)
-//! plugs in here the same way without touching callers.
-//!
-//! Persistence is NOT the bus's job: event DB writes and the permission/ask/
-//! plan stores stay with their current owners — the bus moves delivery only.
+//! Behind it sits a [`Transport`]: [`NoopTransport`] for a single replica, or
+//! [`peer::PeerHttpTransport`] when `CCTUI_POD_IP` is set. Persistence is not
+//! the bus's job; it moves delivery only.
 
 pub mod peer;
 
@@ -1462,7 +1450,7 @@ mod tests {
     }
 
     /// disconnect cleanup only removes the entry when it is still the
-    /// same channel — a reconnect's newer channel must survive the old WS
+    /// same channel — a reconnect's newer channel must survive the stale WS
     /// task's cleanup.
     #[tokio::test]
     async fn unregister_daemon_guards_reconnect_race() {

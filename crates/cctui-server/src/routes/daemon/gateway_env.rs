@@ -221,9 +221,8 @@ pub struct TokenValidQuery {
 ///
 /// The daemon's validity sweep calls this for TRUSTED workers (ones it
 /// launched with gateway env) so a worker whose `session_tokens` row got
-/// unbound/deleted — which 401s forever at the gateway session-token stage —
-/// is finally observable and healable, instead of relying purely on
-/// launch-trust memory. `valid` = a `session_tokens` row with this hash exists
+/// unbound/deleted (401s forever at the gateway) is observable and healable.
+/// `valid` = a `session_tokens` row with this hash exists
 /// FOR THIS SESSION, is not revoked, and joins a live `account_providers` row
 /// (the same join [`resolve_account`](crate::routes::gateway) applies, but by
 /// hash equality).

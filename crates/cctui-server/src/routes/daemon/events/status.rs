@@ -16,11 +16,11 @@ struct StatusSignals<'a> {
 }
 
 /// Persist the latest Status signals onto the session row. `COALESCE` keeps
-/// a previously-known value when a given Status event omits a field, so a
-/// sparse update never clears signal. `model` is special-cased to
+/// the stored value when a Status event omits a field, so a sparse update
+/// never clears signal. `model` is special-cased to
 /// `COALESCE(model, $6)` (fill only when NULL): the requested model must not
 /// overwrite the init-frame ground truth that `SessionModel` writes.
-/// `effort` is safe to overwrite because the daemon now reports the observed
+/// `effort` is safe to overwrite because the daemon reports the observed
 /// (`/proc CLAUDE_EFFORT`) value in Status, not the requested one.
 async fn update_status_signals(
     state: &AppState,
@@ -30,10 +30,8 @@ async fn update_status_signals(
     let decorated = s.name.and_then(crate::session_emoji::decorate);
     let row = write_status_signals(&state.pool, local_id, &s, decorated.as_deref()).await?;
 
-    // Hand the freshly-changed name to the picker model, if one is configured.
-    // Only a name we just decorated qualifies, and only when it is genuinely
-    // new: comparing against the stored name with its emoji stripped means the
-    // same title re-reported on every Status costs no second call.
+    // Only a genuinely new decorated name goes to the picker model, so a title
+    // re-reported on every Status costs no second call.
     if let Some((old_name, true)) = row
         && let (Some(name), Some(decorated)) = (s.name, decorated.as_deref())
         && state.config.emoji_picker().is_some()
@@ -57,27 +55,11 @@ async fn write_status_signals(
     // title: a stored name still equal to it is agent-owned and claimable, any
     // other name was typed by the user and an agent title must not touch it.
     //
-    // Opt-in emoji prefix on the agent-supplied display name. cctui never
-    // generates a title itself (see `crate::session_emoji`), so the decoration
-    // has to happen here, where the agent's name lands. The keyword table's
-    // pick is written inline — instant, and the only result when no picker
-    // model is configured; a configured model then refines it below.
-    //
-    // The SQL takes the decorated form only when the owning user enabled
-    // `sessionEmojiPrefix` and the incoming name differs from the stored one.
-    //
-    // A stored name that is the incoming one behind a decoration — a run of
-    // symbols and one space, i.e. an emoji prefix — is left alone too. Without
-    // that guard every later Status pasted the table's emoji back over the
-    // model's, while the Rust check below correctly declined to ask again,
-    // pinning the name to the fallback emoji forever.
-    //
-    // The prefix is matched, not just the suffix, so a genuinely new title that
-    // happens to end the old name (`🐳 Docker build` → `build`) still lands
-    // rather than being mistaken for the same name already decorated.
-    //
-    // Both guards hang off `emoji_on`, so switching the setting off drops
-    // through to the plain name on the next Status.
+    // With `sessionEmojiPrefix` on, the SQL stores the decorated form when the
+    // incoming name differs from the stored one. A stored name that is the
+    // incoming one behind an emoji prefix is left alone, or every Status would
+    // paste the table's emoji back over the model's. The whole prefix is
+    // matched, so a new title that merely ends the stored name still lands.
     let row: Option<(Option<String>, bool)> = sqlx::query_as(
         "WITH claim AS ( \
             SELECT s.id, \
@@ -415,7 +397,7 @@ mod tests {
         }
     }
 
-    /// CCT-1081: an agent title owns a name it wrote — it fills an empty one and
+    /// An agent title owns a name it wrote — it fills an empty one and
     /// replaces its own earlier title.
     #[tokio::test]
     async fn an_agent_title_fills_an_empty_name_and_replaces_an_agent_title() {
@@ -441,7 +423,7 @@ mod tests {
         fx.cleanup().await;
     }
 
-    /// CCT-1081: the other direction — a name the user typed outranks any agent
+    /// A name the user typed outranks any agent
     /// title, whether it was typed at spawn or renamed over an agent title.
     #[tokio::test]
     async fn an_agent_title_never_overwrites_a_user_set_name() {

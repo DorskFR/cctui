@@ -71,9 +71,8 @@ pub struct Config {
     /// passkeys to a parent domain of the host serving the UI.
     pub rp_id: Option<String>,
     /// How long a session may sit without activity before the reaper
-    /// demotes it from `Active` to `Inactive`. The old
-    /// `CCTUI_HEARTBEAT_TIMEOUT` env var is still accepted for
-    /// back-compat with existing deployments.
+    /// demotes it from `Active` to `Inactive`. `CCTUI_HEARTBEAT_TIMEOUT` is
+    /// accepted as an alias.
     pub inactive_after_secs: u64,
     /// How long a session may sit without a heartbeat before the reaper
     /// auto-archives it (hides it from the default list). Configured in

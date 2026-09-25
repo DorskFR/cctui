@@ -1,30 +1,14 @@
 //! Passkey (WebAuthn) enrolment, management and login.
 //!
-//! ## The shape of the thing
+//! Three ceremonies — **register** and **test** (authenticated) and
+//! usernameless **login** — each a `start` issuing a challenge and a `finish`
+//! verifying it. In-flight state lives in `webauthn_challenges` (single-use,
+//! TTL-bounded) so ceremonies survive restarts and work across replicas.
 //!
-//! Three ceremonies, each a `start` that hands the browser a challenge and a
-//! `finish` that verifies what came back. The in-flight state lives in
-//! `webauthn_challenges` (single-use, TTL-bounded) rather than in memory, so a
-//! ceremony survives a restart and works with more than one replica.
-//!
-//!   * **register** (authenticated) — enrol a key on the caller's account. As
-//!     many as they like: they are rows, not a column.
-//!   * **test** (authenticated) — prove the key that was just enrolled actually
-//!     answers, without logging anyone out to find out.
-//!   * **login** (unauthenticated) — usernameless. The browser discovers the
-//!     credential and returns the user handle we stored at registration, so the
-//!     login screen never asks who you are.
-//!
-//! ## What a successful login *is*
-//!
-//! Not a new session concept: a passkey assertion mints an ordinary `auth_keys`
-//! row (kind `passkey`, 30-day expiry, the owner's full ceiling) and puts that
-//! token in the same `HttpOnly` cookie `POST /auth/login` sets. Every existing
-//! authz path is untouched. Logging out revokes the minted key, so a passkey
-//! session leaves nothing behind.
-//!
-//! The token login is never removed, and revoking your last passkey is allowed:
-//! the token is the recovery path, and it must stay one.
+//! A login mints an ordinary `auth_keys` row (kind `passkey`, 30-day expiry,
+//! the owner's full ceiling) in the same `HttpOnly` cookie `POST /auth/login`
+//! sets; logout revokes it. Revoking the last passkey is allowed: token login
+//! is the recovery path.
 
 // "WebAuthn" and the authenticator brand names below are proper nouns that trip
 // clippy's camel-case doc heuristic throughout this module; none is a code item.

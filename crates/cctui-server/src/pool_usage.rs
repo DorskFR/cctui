@@ -1,29 +1,15 @@
-//! Aggregating the quota windows of a pool's members into one gauge per
-//! window: a level, a pace, and — when the history allows it — a projection of
-//! when the pool as a whole runs dry.
+//! Aggregating a pool's member quota windows into one gauge per window.
 //!
-//! Three numbers, three different questions:
+//! * **level** — utilization weighted by each member's `pool_weight`.
+//! * **ratio** — weighted utilization over weighted linear budget (the same
+//!   flame threshold as the per-account cards).
+//! * **projection** — when the pool runs dry, simulated from members'
+//!   measured slopes ([`crate::store::usage_samples`]) with demand served by
+//!   the member with most headroom and each member refilling at its reset;
+//!   withheld until every member has a real slope.
 //!
-//!   * **level** — the weighted mean utilization, each member counting for
-//!     its `pool_weight` (the relative size of its plan, which upstream never
-//!     reports). "The pool is 43% into its week."
-//!   * **ratio** — weighted utilization over weighted linear budget, the same
-//!     flame threshold the per-account cards use. "The pool burns 1.4× an even
-//!     spend."
-//!   * **projection** — a simulation of the pool's remaining capacity under
-//!     the members' *measured* rates (two-point slopes over real samples, see
-//!     [`crate::store::usage_samples`]), with the demand always served by the
-//!     member holding the most headroom (what a `headroom` pool does at every
-//!     launch and, with failover, mid-run) and each member refilling at its own
-//!     reset. "All members hit 100% together in 2.2 days." A window average
-//!     would extrapolate a fresh account's first burst into a regime, so the
-//!     projection is withheld until every member has a real slope.
-//!
-//! The max of the members — what the header strip shows — is deliberately not
-//! offered: it names the worst account, which is exactly what a pool exists to
-//! route around.
-//!
-//! Pure: the route does the DB reads and the usage fetches.
+//! The member max is deliberately not offered: it names the worst account,
+//! which a pool exists to route around. Pure: the route does the I/O.
 
 use chrono::{DateTime, Duration, Utc};
 use uuid::Uuid;

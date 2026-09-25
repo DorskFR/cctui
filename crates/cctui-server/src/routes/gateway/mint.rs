@@ -373,15 +373,10 @@ pub async fn mint_env_for_account(
 ) -> Result<std::collections::BTreeMap<String, String>, sqlx::Error> {
     let family = Family::from_provider(provider);
 
-    // A session gets ONE stable gateway token **per provider family** for its
-    // whole life. Reuse the existing live token for THIS
-    // family if we have one persisted, rather than minting a fresh row on every
-    // resume — re-minting bloated `session_tokens` for no reason and left live
-    // workers holding a token the gateway might no longer resolve. The token
-    // string is immutable; only its account binding moves (repointed below) on
-    // an account switch. Scoping reuse + repoint to the family is what
-    // lets a worker carry claude + codex at once: minting the OpenAI account
-    // must NOT repoint the Anthropic token to it.
+    // A session keeps ONE immutable gateway token per provider family for its
+    // whole life; an account switch only repoints its binding. Scoping to the
+    // family lets a worker carry claude + codex at once: minting the OpenAI
+    // account must NOT repoint the Anthropic token.
     let key = crate::crypto::vault_key();
     let token = if let Some(existing) =
         existing_session_token(state, session_id, family, &key).await
@@ -521,8 +516,7 @@ pub fn apply_anthropic_cache_defaults(env: &mut std::collections::BTreeMap<Strin
 /// `family` selects the row so the families' tokens stay independent. `None` for
 /// a family with no live token, or pre-migration rows that only stored the
 /// one-way hash (those fall through to a one-time fresh mint). Picks the newest
-/// live token on the off chance a session accrued several from the old
-/// re-mint-on-resume behaviour.
+/// live token if a session holds several.
 pub async fn existing_session_token(
     state: &AppState,
     session_id: &str,

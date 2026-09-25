@@ -17,7 +17,7 @@
 //! account's catalog from upstream — no daemon, no local `codex` binary.
 //! Catalogs persist in `codex_model_catalogs` / `codex_account_model_catalogs`,
 //! warmed into `AppState` on boot. Machine ownership is enforced by the
-//! `authz_layer` guard (same as `fs::list_dirs`).
+//! `enforce_route` guard (same as `fs::list_dirs`).
 
 use axum::Json;
 use axum::extract::{Path, State};

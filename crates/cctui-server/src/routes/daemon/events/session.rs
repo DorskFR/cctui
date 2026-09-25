@@ -30,9 +30,7 @@ async fn mark_session_ended(
     reason: &EndReason,
 ) -> anyhow::Result<()> {
     persist_session_end(&state.pool, machine_id, user_id, local_id, reason).await?;
-    // Revoke any per-session gateway tokens: the session-scoped
-    // cctui tokens minted at spawn map to `(session_id, account_id)` and must
-    // die with the session so the gateway can no longer be driven under them.
+    // Session-scoped gateway tokens die with the session.
     crate::routes::gateway::revoke_session_tokens(state, local_id).await;
     Ok(())
 }
@@ -107,13 +105,9 @@ pub(in crate::routes::daemon) async fn persist_session_end(
     .bind(user_id)
     .execute(pool)
     .await?;
-    // Flip to the sticky terminal status `ended` so clients render the
-    // terminal state IMMEDIATELY. Plain `inactive` was re-derived back to
-    // Active for ~5 min from the still-recent heartbeat (admin::derive_status
-    // is time-based) — masking the end of unattended/dispatched jobs. `ended`
-    // is honoured as terminal by the list/search read paths regardless of
-    // heartbeat age. We do not delete the row — archival remains the
-    // persistence story; un-archive/resume can revive it.
+    // `ended` is sticky: read paths treat it as terminal regardless of
+    // heartbeat age, whereas `inactive` would be re-derived to Active from a
+    // still-recent heartbeat. Resume can revive the row.
     sqlx::query(concat!(
         "UPDATE sessions SET status = 'ended', ended_at = now(), end_reason = $2, \
                  end_detail = $3 \
@@ -169,12 +163,7 @@ pub(super) async fn on_session_event(
             update_transcript_mark(state, &local_id, offset).await?;
         }
         AdapterEvent::SessionModel { local_id, model } => {
-            // Overwrite with the transcript/init-frame ground truth — the model
-            // the session is ACTUALLY running. Previously this only
-            // filled when unset, so the requested `--model` (delivered first via
-            // a Status event) permanently masked a spare-claim/clamp drift. The
-            // Status path now fills model only when NULL, so this ground-truth
-            // write wins and sticks.
+            // Transcript ground truth overrides the requested `--model`.
             sqlx::query("UPDATE sessions SET model = $2 WHERE id = $1")
                 .bind(&local_id)
                 .bind(&model)

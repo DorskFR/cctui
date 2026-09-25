@@ -1,32 +1,17 @@
 //! `/gateway/anthropic/*` (and `/gateway/openai/*`) — the OAuth passthrough
 //! gateway.
 //!
-//! This is a **pure passthrough** that owns only OAuth storage + refresh:
+//! The worker's session-scoped cctui token maps to `(session_id, account_id)`;
+//! per request the gateway swaps `Authorization` for the account's current
+//! OAuth token (refreshing under a per-account mutex) and streams bytes both
+//! ways, preserving every other header, status code and `retry-after`. No
+//! retries or rate-limit handling, except [`failover`].
 //!
-//!   1. The worker carries a session-scoped cctui token (minted at spawn, mapped
-//!      to `(session_id, account_id)`), sent as the upstream `Authorization`
-//!      bearer (`ANTHROPIC_AUTH_TOKEN`).
-//!   2. Per request we map that token → account, swap `Authorization` to the
-//!      account's current OAuth access token (refreshing under a per-account
-//!      mutex when near expiry), and stream the bytes both ways. Every other
-//!      client header is preserved verbatim.
-//!   3. Status codes, `retry-after`, overload/streaming reconnects pass through
-//!      untouched — the harness handles backoff exactly as if talking upstream
-//!      directly. **No retries, no rate-limit handling** — with one exception:
-//!      when the bound account is out of allocation (soft-limit refusal or an
-//!      upstream 429) and an explicit redirect rule names another account, the
-//!      session is rebound to it and the worker's own 429 retry lands there
-//!      ([`failover`], opt-in via `CCTUI_GATEWAY_FAILOVER`).
-//!
-//! Request bodies stream through unread unless Langfuse samples the call or a
-//! Fireworks account opts into shaping ([`FireworksSettings`]); those buffer,
-//! and only Fireworks re-serializes. The anthropic path forwards the client's
-//! bytes verbatim under every feature — re-serializing sorts JSON keys and
-//! destroys the prompt cache. Response bodies are rewritten only by the
-//! [`toolguard`], and only for accounts with a tool-call policy.
-//!
-//! Stats are opportunistic: request count + byte count, never buffered parsing.
-//! Raw OAuth tokens never enter worker env, logs, or session records.
+//! Request bodies stream unread unless Langfuse samples the call or a
+//! Fireworks account opts into shaping ([`FireworksSettings`]). The anthropic
+//! path always forwards the client's bytes verbatim: re-serializing sorts JSON
+//! keys and destroys the prompt cache. Responses are rewritten only by
+//! [`toolguard`]. Raw OAuth tokens never enter worker env, logs, or sessions.
 
 mod config;
 mod failover;
@@ -238,7 +223,7 @@ mod tests {
         assert!(orphan_is_blocked_at(&map, fp, now), "precondition: fp is blocked");
 
         clear_orphan_fingerprint(&map, fp);
-        // No longer blocked — the next gateway request goes back to the DB
+        // Unblocked — the next gateway request goes back to the DB
         // lookup instead of being dropped.
         assert!(!orphan_is_blocked_at(&map, fp, now));
         // And the window restarts from scratch: one fresh 401 doesn't re-block.

@@ -356,7 +356,7 @@ async fn serve(config: &Config, app: Router) -> anyhow::Result<()> {
 /// Build the `/api/v1` route table from the descriptor list. Every
 /// route declares both an [`authz::Authn`] (recorded; the proven `auth_middleware`
 /// path still performs authentication) and an [`authz::Authz`] (enforced by
-/// `authz::authz_layer`, default-deny for any un-policied route). Each route's
+/// `authz::enforce_route`, default-deny for any un-policied route). Each route's
 /// declared policy mirrors its CURRENT enforcement exactly: routes with
 /// in-handler owner checks or `owner_filter()` SQL filters declare
 /// `Authenticated` and keep that filter in the handler (the type system can't
