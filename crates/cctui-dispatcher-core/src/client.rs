@@ -85,12 +85,25 @@ impl ServerClient {
         Ok(resp.json().await?)
     }
 
-    /// Build the dispatcher WS URL with the key as the `token` query parameter.
     #[must_use]
-    pub fn dispatcher_ws_url(&self, key: &str) -> String {
+    pub fn dispatcher_ws_url(&self) -> String {
         let base = self.base_url.trim_end_matches('/');
         let ws_base = base.replacen("http://", "ws://", 1).replacen("https://", "wss://", 1);
-        format!("{ws_base}/api/v1/dispatcher/ws?token={key}")
+        format!("{ws_base}/api/v1/dispatcher/ws")
+    }
+
+    /// WS handshake request carrying the dispatcher key as a Bearer header,
+    /// keeping it out of the URL and so out of proxy access logs.
+    pub fn dispatcher_ws_request(
+        &self,
+        key: &str,
+    ) -> anyhow::Result<tokio_tungstenite::tungstenite::handshake::client::Request> {
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+        let mut request = self.dispatcher_ws_url().into_client_request()?;
+        request
+            .headers_mut()
+            .insert(reqwest::header::AUTHORIZATION, format!("Bearer {key}").parse()?);
+        Ok(request)
     }
 }
 
@@ -99,13 +112,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ws_url_upgrades_scheme_and_carries_token() {
+    fn ws_url_upgrades_scheme_without_a_token() {
         let c = ServerClient::new("https://cctui.example.test/", "docker");
-        assert_eq!(
-            c.dispatcher_ws_url("k-123"),
-            "wss://cctui.example.test/api/v1/dispatcher/ws?token=k-123"
-        );
+        assert_eq!(c.dispatcher_ws_url(), "wss://cctui.example.test/api/v1/dispatcher/ws");
         let c = ServerClient::new("http://localhost:8700", "kubernetes");
-        assert_eq!(c.dispatcher_ws_url("k"), "ws://localhost:8700/api/v1/dispatcher/ws?token=k");
+        assert_eq!(c.dispatcher_ws_url(), "ws://localhost:8700/api/v1/dispatcher/ws");
+    }
+
+    #[test]
+    fn ws_request_sends_key_as_bearer_not_query() {
+        let c = ServerClient::new("https://cctui.example.test", "docker");
+        let req = c.dispatcher_ws_request("k-123").unwrap();
+        assert_eq!(req.uri().query(), None);
+        assert!(!req.uri().to_string().contains("k-123"));
+        assert_eq!(req.headers()[reqwest::header::AUTHORIZATION], "Bearer k-123");
     }
 }

@@ -58,9 +58,9 @@ impl<D: Dispatcher> Runner<D> {
     }
 
     async fn run_once(&self, shutdown: CancellationToken) -> anyhow::Result<()> {
-        let url = self.client.dispatcher_ws_url(&self.key);
+        let request = self.client.dispatcher_ws_request(&self.key)?;
         tracing::info!("connecting to dispatcher WS");
-        let (ws, _) = tokio_tungstenite::connect_async(&url).await?;
+        let (ws, _) = tokio_tungstenite::connect_async(request).await?;
         let (mut sink, mut stream) = ws.split();
 
         let hello = DispatcherFrameUp::Hello {
