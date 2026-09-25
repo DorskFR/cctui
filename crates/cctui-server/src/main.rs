@@ -436,7 +436,7 @@ fn build_api_routes() -> Routes {
             "Deregister a session (mark it gone).",
             post(routes::sessions::deregister),
             Authn::Bearer,
-            Authenticated,
+            sess_write(),
         )
         .add(
             &[Method::POST],
@@ -458,7 +458,7 @@ fn build_api_routes() -> Routes {
             "Attach files to a live session mid-conversation.",
             post(routes::spawn::stage_session_files).layer(DefaultBodyLimit::max(24 * 1024 * 1024)),
             Authn::Bearer,
-            Authenticated,
+            sess_write(),
         )
         .add(
             &[Method::POST],

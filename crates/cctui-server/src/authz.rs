@@ -761,6 +761,24 @@ mod tests {
     }
 
     #[test]
+    fn single_session_mutations_use_session_guard() {
+        for d in descriptors() {
+            if d.path.starts_with("/sessions/{id}") && d.method != Method::GET {
+                assert!(
+                    matches!(
+                        d.authz,
+                        Authz::Resource(ResourceKind::Session, _, IdFrom::Path("id"))
+                    ),
+                    "{} {} must declare a Session resource policy, found {:?}",
+                    d.method.as_str(),
+                    d.path,
+                    d.authz
+                );
+            }
+        }
+    }
+
+    #[test]
     fn custom_and_scope_routes_are_enumerated() {
         // Enumerate the non-`Authenticated` policies so any change to who-can-do
         // -what is visible in this test's expectations. `Custom` routes (none

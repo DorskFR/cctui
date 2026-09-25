@@ -600,3 +600,95 @@ async fn pool_weight_is_validated_and_persisted() {
         .unwrap();
     assert_eq!(fetched["pool_weight"].as_f64(), Some(4.0), "{fetched}");
 }
+
+/// Mint a fresh user and enroll one machine for it: `(user_key, machine_key)`.
+async fn user_with_machine(client: &Client, base: &str, prefix: &str) -> (String, String) {
+    let u: serde_json::Value = client
+        .post(format!("{base}/api/v1/admin/users"))
+        .bearer_auth(admin_token())
+        .json(&json!({"name": format!("{prefix}-{}", uuid_like())}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let user_key = u["key"].as_str().unwrap().to_string();
+    let m: serde_json::Value = client
+        .post(format!("{base}/api/v1/enroll"))
+        .bearer_auth(&user_key)
+        .json(&json!({"hostname": format!("{prefix}-host")}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    (user_key, m["machine_key"].as_str().unwrap().to_string())
+}
+
+async fn register_session(client: &Client, base: &str, machine_key: &str) -> String {
+    let resp = client
+        .post(format!("{base}/api/v1/sessions/register"))
+        .bearer_auth(machine_key)
+        .json(&json!({"machine_id": "ignored", "working_dir": "/tmp/own"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    body["session_id"].as_str().unwrap().to_string()
+}
+
+/// Another user can neither drop files into nor deregister someone else's
+/// session; the owner and an admin pass the guard.
+#[tokio::test]
+#[ignore = "requires running server"]
+async fn session_files_and_deregister_are_owner_only() {
+    let client = Client::new();
+    let base = server_url();
+    let (_, owner_machine) = user_with_machine(&client, &base, "own").await;
+    let (intruder_key, _) = user_with_machine(&client, &base, "intr").await;
+    let sid = register_session(&client, &base, &owner_machine).await;
+
+    for path in ["files", "deregister"] {
+        let resp = client
+            .post(format!("{base}/api/v1/sessions/{sid}/{path}"))
+            .bearer_auth(&intruder_key)
+            .send()
+            .await
+            .unwrap();
+        assert!(
+            matches!(resp.status().as_u16(), 403 | 404),
+            "intruder {path}: {}",
+            resp.status()
+        );
+    }
+
+    // Past the guard the handler rejects the empty non-multipart body.
+    let admin = admin_token();
+    for key in [owner_machine.as_str(), admin.as_str()] {
+        let resp = client
+            .post(format!("{base}/api/v1/sessions/{sid}/files"))
+            .bearer_auth(key)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 400);
+    }
+
+    let resp = client
+        .post(format!("{base}/api/v1/sessions/{sid}/deregister"))
+        .bearer_auth(&owner_machine)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 204);
+    let resp = client
+        .post(format!("{base}/api/v1/sessions/{sid}/deregister"))
+        .bearer_auth(&admin)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 204);
+}
