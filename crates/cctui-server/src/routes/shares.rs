@@ -15,7 +15,8 @@ use axum::{Extension, Json};
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
-use crate::auth::{AuthContext, Scope};
+use crate::auth::AuthContext;
+use crate::error::err;
 use crate::state::AppState;
 
 /// The resource kinds that may be shared, keyed by the `resource_type` stored on
@@ -90,20 +91,9 @@ pub async fn resource_owner(
     }
 }
 
-fn err(code: StatusCode, msg: &str) -> (StatusCode, Json<serde_json::Value>) {
-    (code, Json(serde_json::json!({ "error": msg })))
-}
-
 fn db_err(e: &sqlx::Error) -> (StatusCode, Json<serde_json::Value>) {
     tracing::error!("shares db error: {e}");
     err(StatusCode::INTERNAL_SERVER_ERROR, "database error")
-}
-
-fn require_human(ctx: &AuthContext) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
-    if ctx.machine_id.is_some() || !ctx.has(Scope::Read) {
-        return Err(err(StatusCode::FORBIDDEN, "user or admin token required"));
-    }
-    Ok(())
 }
 
 /// Confirm the caller owns the resource (admin sees any); returns the owner's id.
@@ -156,7 +146,6 @@ pub async fn list_shares(
     Extension(ctx): Extension<AuthContext>,
     Path((resource_type, id)): Path<(String, Uuid)>,
 ) -> Result<Json<Vec<ShareInfo>>, (StatusCode, Json<serde_json::Value>)> {
-    require_human(&ctx)?;
     require_owner(&state, &ctx, &resource_type, id).await?;
     let rows: Vec<ShareInfo> = sqlx::query_as(
         "SELECT s.resource_type, s.resource_id, s.grantee_id AS user_id, \
@@ -181,7 +170,6 @@ pub async fn grant_share(
     Path((resource_type, id)): Path<(String, Uuid)>,
     Json(req): Json<GrantShare>,
 ) -> Result<(StatusCode, Json<ShareInfo>), (StatusCode, Json<serde_json::Value>)> {
-    require_human(&ctx)?;
     require_owner(&state, &ctx, &resource_type, id).await?;
 
     // Only `use` today; reject anything else so a typo doesn't store a dead
@@ -250,7 +238,6 @@ pub async fn revoke_share(
     Extension(ctx): Extension<AuthContext>,
     Path((resource_type, id, user_id)): Path<(String, Uuid, Uuid)>,
 ) -> Result<StatusCode, (StatusCode, Json<serde_json::Value>)> {
-    require_human(&ctx)?;
     require_owner(&state, &ctx, &resource_type, id).await?;
     let res = sqlx::query(
         "UPDATE resource_shares SET revoked_at = now() \

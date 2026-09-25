@@ -11,7 +11,7 @@ use axum::{Extension, Json};
 use uuid::Uuid;
 
 use crate::auth::AuthContext;
-use crate::routes::accounts::{err, require_human};
+use crate::error::err;
 use crate::routes::gateway::{self, Account};
 use crate::state::AppState;
 
@@ -201,7 +201,6 @@ pub async fn limit_reset(
     Path(id): Path<Uuid>,
     body: Option<Json<LimitResetRequest>>,
 ) -> Result<Json<LimitResetResponse>, ApiError> {
-    require_human(&ctx)?;
     let req = body.map(|Json(b)| b).unwrap_or_default();
     let provider: Option<String> = sqlx::query_scalar(
         "SELECT provider FROM account_providers \

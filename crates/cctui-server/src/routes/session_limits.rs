@@ -8,7 +8,7 @@
 //! reach for each model the session could switch to.
 //!
 //! Deliberately NOT the human `GET /accounts/usage`: that route is
-//! `require_human` and lists every credential the owner holds, which a pooled or
+//! human-only and lists every credential the owner holds, which a pooled or
 //! shared session cannot tell itself apart in. The owner is never returned here.
 //!
 //! Fails soft, like the gateway's own evaluation: an empty usage cache yields no

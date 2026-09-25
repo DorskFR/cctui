@@ -20,7 +20,8 @@ use axum::http::StatusCode;
 use axum::{Extension, Json};
 use uuid::Uuid;
 
-use super::accounts::{err, require_human, resolve_owner};
+use super::accounts::resolve_owner;
+use crate::error::err;
 use crate::auth::AuthContext;
 use crate::pool_usage::{self, MemberWindow, PoolUsageWindow, WindowIdentity};
 use crate::routes::gateway;
@@ -99,7 +100,6 @@ pub async fn pools_usage(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
 ) -> Result<Json<Vec<PoolUsageView>>, ApiErr> {
-    require_human(&ctx)?;
     let pools =
         account_pools::list_for_owner(&state.pool, ctx.owner_filter()).await.map_err(|e| {
             tracing::error!("listing account pools: {e}");
@@ -283,7 +283,6 @@ pub async fn list_pools(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
 ) -> Result<Json<Vec<AccountPoolView>>, ApiErr> {
-    require_human(&ctx)?;
     let pools =
         account_pools::list_for_owner(&state.pool, ctx.owner_filter()).await.map_err(|e| {
             tracing::error!("listing account pools: {e}");
@@ -306,7 +305,6 @@ pub async fn create_pool(
     Extension(ctx): Extension<AuthContext>,
     Json(req): Json<CreatePoolRequest>,
 ) -> Result<(StatusCode, Json<AccountPoolView>), ApiErr> {
-    require_human(&ctx)?;
     let owner = resolve_owner(&ctx, req.user_id)?;
     let name = req.name.trim();
     if name.is_empty() {
@@ -347,7 +345,6 @@ pub async fn update_pool(
     Path(id): Path<Uuid>,
     Json(req): Json<UpdatePoolRequest>,
 ) -> Result<Json<AccountPoolView>, ApiErr> {
-    require_human(&ctx)?;
     let owner = ctx.owner_filter();
     let name = req.name.as_deref().map(str::trim);
     if name == Some("") {
@@ -400,7 +397,6 @@ pub async fn delete_pool(
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, ApiErr> {
-    require_human(&ctx)?;
     let gone = account_pools::delete(&state.pool, id, ctx.owner_filter()).await.map_err(|e| {
         tracing::error!("deleting account pool: {e}");
         err(StatusCode::INTERNAL_SERVER_ERROR, "could not delete pool")
@@ -414,10 +410,8 @@ pub async fn delete_pool(
 /// with when and why, instead of being discovered weeks later in a bill.
 pub async fn list_session_rebinds(
     State(state): State<AppState>,
-    Extension(ctx): Extension<AuthContext>,
     Path(session_id): Path<String>,
 ) -> Result<Json<Vec<SessionRebind>>, ApiErr> {
-    require_human(&ctx)?;
     let rebinds =
         account_pools::rebinds_for_session(&state.pool, &session_id).await.map_err(|e| {
             tracing::error!("listing session rebinds: {e}");

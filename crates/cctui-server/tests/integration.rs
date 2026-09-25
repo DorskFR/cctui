@@ -754,3 +754,24 @@ async fn register_and_rebinds_respect_session_owner() {
         .unwrap();
     assert_eq!(resp.status(), 200);
 }
+
+/// The account family is for humans: a machine key is refused.
+#[tokio::test]
+#[ignore = "requires running server"]
+async fn machine_key_cannot_read_accounts_or_profiles() {
+    let client = Client::new();
+    let base = server_url();
+    let (user_key, machine_key) = user_with_machine(&client, &base, "human").await;
+    for path in ["accounts", "profiles"] {
+        let resp = client
+            .get(format!("{base}/api/v1/{path}"))
+            .bearer_auth(&machine_key)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 403, "machine key on /{path}");
+        let resp =
+            client.get(format!("{base}/api/v1/{path}")).bearer_auth(&user_key).send().await.unwrap();
+        assert_eq!(resp.status(), 200, "user key on /{path}");
+    }
+}
