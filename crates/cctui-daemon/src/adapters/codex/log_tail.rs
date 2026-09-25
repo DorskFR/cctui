@@ -1630,7 +1630,8 @@ mod tests {
     #[tokio::test]
     async fn quiet_rollout_is_opened_once_for_the_mark_check() {
         let tmp = tempfile::tempdir().unwrap();
-        let sessions = tmp.path().to_path_buf();
+        let sessions = tmp.path().join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
         let path = sessions.join(format!("{ROLLOUT}.jsonl"));
         let offsets_path = tmp.path().join("offsets.json");
         write_turns(&path, 0..2);
