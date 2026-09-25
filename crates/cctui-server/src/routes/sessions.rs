@@ -267,14 +267,65 @@ pub const fn attention_from_bucket(bucket: Bucket) -> Option<Attention> {
 /// role filter, say) without narrowing the index costs the single probe. The
 /// per-session `LIMIT 1` is the other half: any shape that groups or sorts the
 /// whole fan-out instead reads every message row of every listed session.
-const LAST_MESSAGE_SQL: &str = "SELECT s.session_id, e.payload, e.created_at \
+///
+/// Ships only the first [`LAST_MESSAGE_PREVIEW_CHARS`] of the string `text`
+/// (else `content`), plus whether it was cut, never the payload.
+const LAST_MESSAGE_SQL: &str = "SELECT s.session_id, left(e.body, 400), length(e.body) > 400, \
+            e.created_at \
      FROM unnest($1::text[]) AS s(session_id) \
      JOIN LATERAL ( \
-         SELECT se.payload, se.created_at FROM stream_events se \
+         SELECT COALESCE( \
+                    CASE jsonb_typeof(se.payload->'text') \
+                        WHEN 'string' THEN se.payload->>'text' END, \
+                    CASE jsonb_typeof(se.payload->'content') \
+                        WHEN 'string' THEN se.payload->>'content' END) AS body, \
+                se.created_at \
+         FROM stream_events se \
          WHERE se.session_id = s.session_id AND se.event_type = 'message' \
          ORDER BY se.created_at DESC \
          LIMIT 1 \
      ) e ON true";
+
+/// Per-(session, model) token totals, maintained by a trigger on
+/// `session_token_usage` (migration 132). `model` is stored as '' for NULL.
+const SESSION_TOTALS_SQL: &str = "SELECT session_id, NULLIF(model, ''), \
+            input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens \
+     FROM session_usage_totals WHERE session_id = ANY($1)";
+
+/// Unread messages per listed session, counting at most 100 per session: one
+/// past the badge's 99 ceiling, so a never-read session stops at the cap
+/// instead of counting its whole history.
+const UNREAD_COUNT_SQL: &str = "SELECT s.session_id, u.n \
+     FROM unnest($1::text[]) AS s(session_id) \
+     LEFT JOIN session_reads sr ON sr.session_id = s.session_id AND sr.user_id = $2 \
+     CROSS JOIN LATERAL ( \
+         SELECT COUNT(*) AS n FROM ( \
+             SELECT 1 FROM stream_events se \
+             WHERE se.session_id = s.session_id AND se.event_type = 'message' \
+               AND (sr.last_seen_at IS NULL OR se.created_at > sr.last_seen_at) \
+             LIMIT 100 \
+         ) capped \
+     ) u";
+
+/// The two newest usage rows per listed session, `rn` 1 = newest: one short
+/// backwards walk of `(session_id, created_at DESC)` per session.
+const LAST_TWO_TURNS_SQL: &str = "SELECT s.session_id, u.input_tokens, u.cache_read_tokens, \
+            u.cache_creation_tokens, u.created_at, \
+            row_number() OVER (PARTITION BY s.session_id ORDER BY u.created_at DESC) AS rn \
+     FROM unnest($1::text[]) AS s(session_id) \
+     JOIN LATERAL ( \
+         SELECT stu.input_tokens, stu.cache_read_tokens, stu.cache_creation_tokens, \
+                stu.created_at \
+         FROM session_token_usage stu \
+         WHERE stu.session_id = s.session_id \
+         ORDER BY stu.created_at DESC \
+         LIMIT 2 \
+     ) u ON true \
+     ORDER BY s.session_id, rn";
+
+/// Characters of the last message [`LAST_MESSAGE_SQL`] returns: twice what
+/// [`normalize_last_message`] keeps, so whitespace collapsing has slack.
+const LAST_MESSAGE_PREVIEW_CHARS: usize = 400;
 
 #[allow(clippy::too_many_lines, clippy::cognitive_complexity)]
 pub async fn list_sessions(
@@ -571,21 +622,13 @@ async fn enrich_and_sort(
         }
     }
 
-    // Aggregated token usage per session. Replaces the always-0
-    // historical values; live sessions also pick up DB-aggregated counts
-    // since the daemon persists every assistant turn.
+    // Token usage per session, from the running per-model totals the
+    // `session_token_usage` trigger keeps.
     let session_ids: Vec<String> = with_ts.iter().map(|(_, s)| s.id.clone()).collect();
     if !session_ids.is_empty() {
         type TokenRow =
             (String, Option<String>, Option<i64>, Option<i64>, Option<i64>, Option<i64>);
-        let rows: Vec<TokenRow> = sqlx::query_as(
-            "SELECT session_id, model, \
-                        SUM(input_tokens)::bigint, SUM(output_tokens)::bigint, \
-                        SUM(cache_read_tokens)::bigint, SUM(cache_creation_tokens)::bigint \
-                 FROM session_token_usage \
-                 WHERE session_id = ANY($1) \
-                 GROUP BY session_id, model",
-        )
+        let rows: Vec<TokenRow> = sqlx::query_as(SESSION_TOTALS_SQL)
         .bind(&session_ids)
         .fetch_all(&state.pool)
         .await
@@ -619,7 +662,7 @@ async fn enrich_and_sort(
     }
 
     if !session_ids.is_empty() {
-        let rows: Vec<(String, serde_json::Value, DateTime<Utc>)> =
+        let rows: Vec<(String, Option<String>, Option<bool>, DateTime<Utc>)> =
             sqlx::query_as(LAST_MESSAGE_SQL)
                 .bind(&session_ids)
                 .fetch_all(&state.pool)
@@ -633,12 +676,8 @@ async fn enrich_and_sort(
                 })?;
         let mut by_session: std::collections::HashMap<String, (Option<String>, DateTime<Utc>)> =
             std::collections::HashMap::new();
-        for (sid, payload, ts) in rows {
-            let text = payload
-                .get("text")
-                .and_then(|v| v.as_str())
-                .or_else(|| payload.get("content").and_then(|v| v.as_str()))
-                .map(normalize_last_message);
+        for (sid, body, cut, ts) in rows {
+            let text = body.map(|b| preview_last_message(&b, cut.unwrap_or(false)));
             by_session.insert(sid, (text, ts));
         }
         for (_, s) in &mut with_ts {
@@ -649,23 +688,13 @@ async fn enrich_and_sort(
         }
     }
 
-    // Unread assistant `message` count per session for the calling user:
-    // messages newer than the viewer's `session_reads.last_seen_at`,
-    // all of them when the user has never seen the session. One batched query
-    // over the same `session_ids` fan-out; capped at 99 to keep the badge tidy.
+    // Unread `message` count per session for the calling user: messages newer
+    // than the viewer's `session_reads.last_seen_at`, all of them when the user
+    // has never seen the session. Capped at 99 for the badge.
     if let Some(uid) = viewer
         && !session_ids.is_empty()
     {
-        let rows: Vec<(String, i64)> = sqlx::query_as(
-            "SELECT se.session_id, COUNT(*) \
-             FROM stream_events se \
-             LEFT JOIN session_reads sr \
-               ON sr.session_id = se.session_id AND sr.user_id = $2 \
-             WHERE se.session_id = ANY($1) \
-               AND se.event_type = 'message' \
-               AND (sr.last_seen_at IS NULL OR se.created_at > sr.last_seen_at) \
-             GROUP BY se.session_id",
-        )
+        let rows: Vec<(String, i64)> = sqlx::query_as(UNREAD_COUNT_SQL)
         .bind(&session_ids)
         .bind(uid)
         .fetch_all(&state.pool)
@@ -928,17 +957,7 @@ async fn enrich_and_sort(
     //                        many tokens get re-written on the next send.
     if !session_ids.is_empty() {
         type LastRow = (String, i64, i64, i64, DateTime<Utc>, i64);
-        let rows: Vec<LastRow> = sqlx::query_as(
-            "SELECT session_id, input_tokens, cache_read_tokens, cache_creation_tokens, \
-                    created_at, rn \
-             FROM (SELECT session_id, input_tokens, cache_read_tokens, cache_creation_tokens, \
-                          created_at, \
-                          row_number() OVER ( \
-                              PARTITION BY session_id ORDER BY created_at DESC) AS rn \
-                   FROM session_token_usage WHERE session_id = ANY($1)) t \
-             WHERE rn <= 2 \
-             ORDER BY session_id, rn",
-        )
+        let rows: Vec<LastRow> = sqlx::query_as(LAST_TWO_TURNS_SQL)
         .bind(&session_ids)
         .fetch_all(&state.pool)
         .await
@@ -1812,26 +1831,59 @@ async fn fetch_renderable_rows(
     }
 }
 
-/// Per-message token usage for one session, each turn carrying the cache bust it
-/// suffered (if any) against the previous turn of its own agent stream.
+/// `(message_id, model, input, output, cache_read, cache_creation,
+/// gateway_rewrote_body, created_at)` from `session_token_usage`.
+type UsageRow = (String, Option<String>, i64, i64, i64, i64, bool, DateTime<Utc>);
+
+/// Turns before a page's first turn read to rebuild the agent streams its
+/// cache-bust verdicts are judged against.
+const USAGE_LOOKBACK: i64 = 40;
+
+/// Usage rows a conversation page needs: every turn in the time span of the
+/// page's `message_ids`, plus the [`USAGE_LOOKBACK`] turns before it.
+async fn page_usage_rows(
+    pool: &sqlx::PgPool,
+    session_id: &str,
+    message_ids: &[String],
+) -> Result<Vec<UsageRow>, sqlx::Error> {
+    if message_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    sqlx::query_as(
+        "WITH span AS ( \
+             SELECT min(created_at) AS lo, max(created_at) AS hi FROM session_token_usage \
+             WHERE session_id = $1 AND message_id = ANY($2)) \
+         SELECT u.message_id, u.model, u.input_tokens, u.output_tokens, u.cache_read_tokens, \
+                u.cache_creation_tokens, u.gateway_rewrote_body, u.created_at \
+         FROM span JOIN session_token_usage u \
+           ON u.session_id = $1 AND u.created_at BETWEEN span.lo AND span.hi \
+         UNION ALL \
+         (SELECT u.message_id, u.model, u.input_tokens, u.output_tokens, u.cache_read_tokens, \
+                 u.cache_creation_tokens, u.gateway_rewrote_body, u.created_at \
+          FROM span JOIN session_token_usage u \
+            ON u.session_id = $1 AND u.created_at < span.lo \
+          ORDER BY u.created_at DESC LIMIT $3)",
+    )
+    .bind(session_id)
+    .bind(message_ids)
+    .bind(USAGE_LOOKBACK)
+    .fetch_all(pool)
+    .await
+}
+
+/// Per-message token usage for a page's `message_ids`, each turn carrying the
+/// cache bust it suffered (if any) against the previous turn of its own agent
+/// stream.
 async fn message_usage(
     state: &AppState,
     session_id: &str,
+    message_ids: &[String],
 ) -> Result<HashMap<String, cctui_proto::models::TokenUsage>, (StatusCode, Json<ApiError>)> {
-    type UsageRow = (String, Option<String>, i64, i64, i64, i64, bool, DateTime<Utc>);
-    let usage_rows: Vec<UsageRow> = sqlx::query_as(
-        "SELECT message_id, model, \
-                input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, \
-                gateway_rewrote_body, created_at \
-         FROM session_token_usage WHERE session_id = $1",
-    )
-    .bind(session_id)
-    .fetch_all(&state.pool)
-    .await
-    .map_err(|e| {
+    let usage_rows = page_usage_rows(&state.pool, session_id, message_ids).await.map_err(|e| {
         tracing::error!("db error (message usage): {e}");
         (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
     })?;
+    let wanted: HashSet<&str> = message_ids.iter().map(String::as_str).collect();
     let owned_id = session_id.to_owned();
     let catalog = session_catalogs(state, std::slice::from_ref(&owned_id)).await.remove(session_id);
     let turns: Vec<crate::cache_bust::Turn> = usage_rows
@@ -1851,6 +1903,7 @@ async fn message_usage(
     let mut busts = crate::cache_bust::compute(&turns, catalog.as_ref());
     Ok(usage_rows
         .into_iter()
+        .filter(|row| wanted.contains(row.0.as_str()))
         .map(|(message_id, model, input, output, cache_read, cache_creation, _, _)| {
             let to_u64 = |v: i64| u64::try_from(v).unwrap_or(0);
             let cost = crate::cost::tallies_cost_usd(
@@ -1900,7 +1953,12 @@ pub async fn get_conversation(
         rows.reverse();
     }
 
-    let usage_by_message = message_usage(&state, &session_id).await?;
+    let message_ids: Vec<String> = rows
+        .iter()
+        .filter_map(|(_, v, _, _)| v.get("message_id").and_then(serde_json::Value::as_str))
+        .map(str::to_owned)
+        .collect();
+    let usage_by_message = message_usage(&state, &session_id, &message_ids).await?;
     let scheduled_turns = crate::scheduled_messages::scheduled_turns(&state.pool, &session_id)
         .await
         .map_err(|e| {
@@ -2975,6 +3033,14 @@ pub async fn set_session_policy(
 /// up row height when CSS doesn't fully suppress wrapping, and caps at
 /// 200 chars + ellipsis as a backstop. CSS handles the *visual* truncation
 /// to the column's actual rendered width (`text-overflow: ellipsis`).
+/// [`normalize_last_message`] over a SQL-truncated prefix: `cut` says the
+/// stored text ran past it, so the preview is elided even when collapsing
+/// whitespace left it under the limit.
+fn preview_last_message(prefix: &str, cut: bool) -> String {
+    let preview = normalize_last_message(prefix);
+    if cut && !preview.ends_with('…') { format!("{preview}…") } else { preview }
+}
+
 fn normalize_last_message(s: &str) -> String {
     const MAX_CHARS: usize = 200;
     let collapsed = s.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -3219,6 +3285,79 @@ mod tests {
     }
 
     #[test]
+    fn sql_prefix_preview_matches_the_full_text_preview() {
+        let n = super::LAST_MESSAGE_PREVIEW_CHARS;
+        assert!(super::LAST_MESSAGE_SQL.contains(&format!("left(e.body, {n})")));
+        assert!(super::LAST_MESSAGE_SQL.contains(&format!("length(e.body) > {n}")));
+        let inputs = [
+            String::new(),
+            "short message".to_owned(),
+            "line one\n\n  line two".to_owned(),
+            "x".repeat(200),
+            "x".repeat(201),
+            "é".repeat(400),
+            "word ".repeat(80),
+            "y".repeat(50_000),
+            format!("{}\n{}", "a".repeat(399), "b".repeat(10_000)),
+        ];
+        for full in inputs {
+            let prefix: String = full.chars().take(n).collect();
+            let cut = full.chars().count() > n;
+            assert_eq!(
+                super::preview_last_message(&prefix, cut),
+                normalize_last_message(&full),
+                "{} chars",
+                full.len()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn last_message_sql_returns_a_bounded_preview_not_the_payload() {
+        let Some((pool, sid)) = seeded_session("last_message_sql_bounded_preview").await else {
+            return;
+        };
+        let rows: Vec<(String, Option<String>, Option<bool>, chrono::DateTime<Utc>)> =
+            sqlx::query_as(super::LAST_MESSAGE_SQL)
+                .bind(vec![sid.clone()])
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(rows[0].1.as_deref(), Some("hidden c"));
+        assert_eq!(rows[0].2, Some(false));
+
+        for (payload, want) in [
+            (serde_json::json!({"role": "user", "text": 5, "content": "fallback"}), "fallback"),
+            (serde_json::json!({"role": "assistant", "text": "z".repeat(90_000)}), ""),
+        ] {
+            sqlx::query(
+                "INSERT INTO stream_events (session_id, event_type, payload) \
+                 VALUES ($1, 'message', $2)",
+            )
+            .bind(&sid)
+            .bind(&payload)
+            .execute(&pool)
+            .await
+            .unwrap();
+            let rows: Vec<(String, Option<String>, Option<bool>, chrono::DateTime<Utc>)> =
+                sqlx::query_as(super::LAST_MESSAGE_SQL)
+                    .bind(vec![sid.clone()])
+                    .fetch_all(&pool)
+                    .await
+                    .unwrap();
+            let body = rows[0].1.clone().unwrap();
+            if want.is_empty() {
+                assert_eq!(body.chars().count(), super::LAST_MESSAGE_PREVIEW_CHARS);
+                assert_eq!(rows[0].2, Some(true));
+            } else {
+                assert_eq!(body, want);
+            }
+        }
+
+        sqlx::query("DELETE FROM sessions WHERE id = $1").bind(&sid).execute(&pool).await.unwrap();
+    }
+
+    #[test]
     fn transcript_hits_attach_seq_and_leave_id_only_matches_none() {
         let mut sessions = vec![bare_session("s-transcript"), bare_session("s-id-only")];
         let rows =
@@ -3231,6 +3370,224 @@ mod tests {
 
         assert_eq!(sessions[1].match_seq, None);
         assert_eq!(sessions[1].match_snippet, None);
+    }
+
+    type TotalsRow = (String, Option<String>, Option<i64>, Option<i64>, Option<i64>, Option<i64>);
+
+    async fn recomputed_totals(pool: &sqlx::PgPool, sid: &str) -> Vec<TotalsRow> {
+        let mut rows: Vec<TotalsRow> = sqlx::query_as(
+            "SELECT session_id, model, \
+                    SUM(input_tokens)::bigint, SUM(output_tokens)::bigint, \
+                    SUM(cache_read_tokens)::bigint, SUM(cache_creation_tokens)::bigint \
+             FROM session_token_usage WHERE session_id = ANY($1) \
+             GROUP BY session_id, model",
+        )
+        .bind(vec![sid.to_owned()])
+        .fetch_all(pool)
+        .await
+        .unwrap();
+        rows.sort();
+        rows
+    }
+
+    async fn trigger_totals(pool: &sqlx::PgPool, sid: &str) -> Vec<TotalsRow> {
+        let mut rows: Vec<TotalsRow> = sqlx::query_as(super::SESSION_TOTALS_SQL)
+            .bind(vec![sid.to_owned()])
+            .fetch_all(pool)
+            .await
+            .unwrap();
+        rows.retain(|r| r.2 != Some(0) || r.3 != Some(0) || r.4 != Some(0) || r.5 != Some(0));
+        rows.sort();
+        rows
+    }
+
+    #[tokio::test]
+    async fn trigger_totals_equal_a_recomputed_sum() {
+        let Some((pool, sid)) = seeded_session("trigger_totals_equal_a_recomputed_sum").await
+        else {
+            return;
+        };
+        let insert = |mid: &'static str, model: Option<&'static str>, n: i64| {
+            let pool = pool.clone();
+            let sid = sid.clone();
+            async move {
+                sqlx::query(
+                    "INSERT INTO session_token_usage (session_id, message_id, model, \
+                     input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens) \
+                     VALUES ($1, $2, $3, $4, $4 * 2, $4 * 3, $4 * 4) \
+                     ON CONFLICT (session_id, message_id) DO NOTHING",
+                )
+                .bind(&sid)
+                .bind(mid)
+                .bind(model)
+                .bind(n)
+                .execute(&pool)
+                .await
+                .unwrap();
+            }
+        };
+        insert("a", Some("opus"), 1).await;
+        insert("b", Some("opus"), 10).await;
+        insert("c", Some("haiku"), 100).await;
+        insert("d", None, 1000).await;
+        insert("e", None, 5).await;
+        insert("b", Some("opus"), 999_999).await;
+        assert_eq!(trigger_totals(&pool, &sid).await, recomputed_totals(&pool, &sid).await);
+
+        sqlx::query(
+            "UPDATE session_token_usage SET model = 'haiku', input_tokens = 7 \
+             WHERE session_id = $1 AND message_id = 'a'",
+        )
+        .bind(&sid)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("DELETE FROM session_token_usage WHERE session_id = $1 AND message_id = 'd'")
+            .bind(&sid)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let totals = trigger_totals(&pool, &sid).await;
+        assert_eq!(totals, recomputed_totals(&pool, &sid).await);
+        assert!(totals.iter().any(|r| r.1.is_none()), "NULL-model rows round-trip as None");
+
+        sqlx::query("DELETE FROM sessions WHERE id = $1").bind(&sid).execute(&pool).await.unwrap();
+        let left: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM session_usage_totals WHERE session_id = $1")
+                .bind(&sid)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(left, 0);
+    }
+
+    #[tokio::test]
+    async fn last_two_turns_are_the_newest_two_per_session() {
+        let Some((pool, sid)) = seeded_session("last_two_turns_newest_two").await else {
+            return;
+        };
+        let t0 = Utc::now() - Duration::hours(1);
+        for n in 0..5_i64 {
+            sqlx::query(
+                "INSERT INTO session_token_usage (session_id, message_id, input_tokens, created_at) \
+                 VALUES ($1, $2, $3, $4)",
+            )
+            .bind(&sid)
+            .bind(format!("t{n}"))
+            .bind(n)
+            .bind(t0 + Duration::seconds(n))
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        let rows: Vec<(String, i64, i64, i64, chrono::DateTime<Utc>, i64)> =
+            sqlx::query_as(super::LAST_TWO_TURNS_SQL)
+                .bind(vec![sid.clone(), "no-such-session".to_owned()])
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        let got: Vec<(i64, i64)> = rows.iter().map(|r| (r.1, r.5)).collect();
+        assert_eq!(got, [(4, 1), (3, 2)]);
+
+        sqlx::query("DELETE FROM sessions WHERE id = $1").bind(&sid).execute(&pool).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn unread_count_stops_at_the_cap() {
+        let Some((pool, sid)) = seeded_session("unread_count_stops_at_the_cap").await else {
+            return;
+        };
+        let uid: uuid::Uuid = sqlx::query_scalar("SELECT user_id FROM sessions WHERE id = $1")
+            .bind(&sid)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let unread = || {
+            let pool = pool.clone();
+            let sid = sid.clone();
+            async move {
+                let rows: Vec<(String, i64)> = sqlx::query_as(super::UNREAD_COUNT_SQL)
+                    .bind(vec![sid.clone()])
+                    .bind(uid)
+                    .fetch_all(&pool)
+                    .await
+                    .unwrap();
+                assert_eq!(rows.len(), 1);
+                rows[0].1
+            }
+        };
+        assert_eq!(unread().await, 7, "never read: every message of the fixture");
+
+        sqlx::query(
+            "INSERT INTO stream_events (session_id, event_type, payload) \
+             SELECT $1, 'message', jsonb_build_object('role', 'assistant', 'text', g::text) \
+             FROM generate_series(1, 150) g",
+        )
+        .bind(&sid)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let n = unread().await;
+        assert_eq!(n, 100);
+        assert_eq!(super::cap_unread(n), 99);
+
+        sqlx::query(
+            "INSERT INTO session_reads (session_id, user_id, last_seen_at) \
+             VALUES ($1, $2, now() + interval '1 minute')",
+        )
+        .bind(&sid)
+        .bind(uid)
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert_eq!(unread().await, 0);
+
+        sqlx::query("DELETE FROM sessions WHERE id = $1").bind(&sid).execute(&pool).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn page_usage_reads_the_page_span_plus_a_bounded_lookback() {
+        let Some((pool, sid)) = seeded_session("page_usage_bounded").await else {
+            return;
+        };
+        let t0 = Utc::now() - Duration::hours(3);
+        for n in 0..200_i64 {
+            sqlx::query(
+                "INSERT INTO session_token_usage (session_id, message_id, input_tokens, \
+                 cache_read_tokens, created_at) VALUES ($1, $2, 10, $3, $4)",
+            )
+            .bind(&sid)
+            .bind(format!("m{n:03}"))
+            .bind(n * 100)
+            .bind(t0 + Duration::seconds(n))
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        let page: Vec<String> = (150..160).map(|n| format!("m{n:03}")).collect();
+
+        let rows = super::page_usage_rows(&pool, &sid, &page).await.unwrap();
+
+        let limit = page.len() + usize::try_from(super::USAGE_LOOKBACK).unwrap();
+        assert_eq!(rows.len(), limit, "page span plus lookback, not the whole session");
+        let ids: std::collections::HashSet<&str> = rows.iter().map(|r| r.0.as_str()).collect();
+        assert!(page.iter().all(|m| ids.contains(m.as_str())));
+        assert!(ids.contains("m149"), "the previous turn of the stream is read");
+        assert!(!ids.contains("m000") && !ids.contains("m199"));
+        assert!(super::page_usage_rows(&pool, &sid, &[]).await.unwrap().is_empty());
+
+        sqlx::query("DELETE FROM sessions WHERE id = $1").bind(&sid).execute(&pool).await.unwrap();
+    }
+
+    #[test]
+    fn conversation_pages_seek_the_session_id_index() {
+        let migration =
+            include_str!("../../../../migrations/132b_stream_events_session_id.up.sql");
+        assert!(migration.contains("ON stream_events (session_id, id)"));
+        for order in [super::ConversationOrder::Desc, super::ConversationOrder::Asc] {
+            let sql = super::conversation_sql(order);
+            assert!(sql.contains("WHERE session_id = $1") && sql.contains("ORDER BY id "));
+        }
     }
 
     #[test]
