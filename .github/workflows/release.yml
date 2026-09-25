@@ -29,15 +29,21 @@ jobs:
     permissions:
       actions: read
       contents: read
+    outputs:
+      sha: ${{ steps.sha.outputs.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.tag || github.ref }}
 
+      - name: Resolve release commit
+        id: sha
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
       - name: Require a green ci run on the release commit
         env:
           GH_TOKEN: ${{ github.token }}
-        run: bash scripts/check-ci-green.sh "${{ github.repository }}" "$(git rev-parse HEAD)"
+        run: bash scripts/check-ci-green.sh "${{ github.repository }}" "${{ steps.sha.outputs.sha }}"
 
   build:
     name: build ${{ matrix.os }}-${{ matrix.arch }}
@@ -61,6 +67,8 @@ jobs:
             target: aarch64-apple-darwin
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.ci-green.outputs.sha }}
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
@@ -146,10 +154,12 @@ jobs:
             dist/cctui-daemon-${{ matrix.os }}-${{ matrix.arch }}
 
   release:
-    needs: build
+    needs: [ci-green, build]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.ci-green.outputs.sha }}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           path: dist
@@ -160,6 +170,8 @@ jobs:
         run: sha256sum cctui-* > SHA256SUMS
       - name: Install minisign
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends minisign
+      # MINISIGN_SECRET_KEY is the whole .key file (comment line + key line) of a
+      # password-less key (`minisign -G -W`) whose public half is keys/release.minisign.pub.
       - name: Sign release assets
         working-directory: dist
         env:
@@ -172,6 +184,13 @@ jobs:
           printf '%s\n' "$MINISIGN_SECRET_KEY" > "$key"
           for f in cctui-* SHA256SUMS; do
             minisign -S -s "$key" -m "$f" < /dev/null
+          done
+      - name: Verify signatures against the committed public key
+        working-directory: dist
+        run: |
+          for f in cctui-* SHA256SUMS; do
+            case "$f" in *.minisig) continue ;; esac
+            minisign -V -p ../keys/release.minisign.pub -m "$f"
           done
       - name: Resolve tag
         id: tag
@@ -213,6 +232,8 @@ jobs:
             file: ghreview/Dockerfile
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.ci-green.outputs.sha }}
 
       - name: Resolve version
         id: ver
@@ -237,7 +258,7 @@ jobs:
           platforms: linux/amd64
           push: true
           build-args: |
-            CCTUI_GIT_HASH=${{ github.sha }}
+            CCTUI_GIT_HASH=${{ needs.ci-green.outputs.sha }}
             CLIENT_VERSION=${{ steps.ver.outputs.version }}
           cache-from: type=gha,scope=${{ matrix.image }}
           cache-to: type=gha,mode=max,scope=${{ matrix.image }}
@@ -249,7 +270,7 @@ jobs:
   # the `bins` build context, so no Rust compiles inside docker.
   images-prebuilt:
     name: image ${{ matrix.image }}
-    needs: [build]
+    needs: [ci-green, build]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -263,6 +284,8 @@ jobs:
             file: deploy/orchestrator.Dockerfile
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.ci-green.outputs.sha }}
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
