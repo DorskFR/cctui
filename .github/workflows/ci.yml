@@ -19,8 +19,59 @@ env:
   CARGO_INCREMENTAL: "0"
 
 jobs:
+  changes:
+    name: changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      rust: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.rust == 'true' }}
+      webui: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.webui == 'true' }}
+      ghreview: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.ghreview == 'true' }}
+      ghreview-ui: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.ghreview-ui == 'true' }}
+      deps: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.deps == 'true' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        id: filter
+        if: github.event_name != 'workflow_dispatch'
+        with:
+          filters: |
+            ci: &ci
+              - .github/workflows/ci.yml
+            rust:
+              - *ci
+              - crates/**
+              - migrations/**
+              - Cargo.toml
+              - Cargo.lock
+              - rust-toolchain.toml
+              - rustfmt.toml
+              - .cargo/**
+            webui:
+              - *ci
+              - webui/**
+              - ghreview-ui/**
+            ghreview:
+              - *ci
+              - ghreview/**
+            ghreview-ui:
+              - *ci
+              - ghreview-ui/**
+            deps:
+              - *ci
+              - Cargo.lock
+              - .cargo/**
+              - webui/package-lock.json
+              - ghreview/bun.lock
+              - ghreview-ui/bun.lock
+
   fmt:
     name: cargo fmt
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -52,6 +103,8 @@ jobs:
 
   clippy:
     name: cargo clippy
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -69,6 +122,8 @@ jobs:
 
   test:
     name: cargo test
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -142,6 +197,8 @@ jobs:
 
   webui:
     name: webui
+    needs: changes
+    if: needs.changes.outputs.webui == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -182,6 +239,8 @@ jobs:
 
   ghreview:
     name: ghreview
+    needs: changes
+    if: needs.changes.outputs.ghreview == 'true'
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -224,6 +283,8 @@ jobs:
 
   ghreview-ui:
     name: ghreview-ui
+    needs: changes
+    if: needs.changes.outputs.ghreview-ui == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -254,6 +315,8 @@ jobs:
 
   generated-artifacts:
     name: generated artifacts up to date
+    needs: changes
+    if: needs.changes.outputs.ghreview == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -279,6 +342,8 @@ jobs:
 
   audit:
     name: audit
+    needs: changes
+    if: needs.changes.outputs.deps == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -383,3 +448,28 @@ jobs:
 
       - name: actionlint
         run: ./actionlint -color
+
+  # The single required check for branch protection: skipped jobs count as
+  # passing, failed or cancelled ones do not.
+  ci-ok:
+    name: ci-ok
+    if: always()
+    needs:
+      - changes
+      - fmt
+      - biome
+      - clippy
+      - test
+      - webui
+      - ghreview
+      - ghreview-ui
+      - generated-artifacts
+      - audit
+      - no-css-global
+      - i18n-messages
+      - actionlint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every job passed or was skipped
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
