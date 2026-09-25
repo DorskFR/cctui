@@ -5,9 +5,9 @@
 //! legacy XOR-hex rows and must keep decrypting (lazy migration); legacy
 //! values are pure hex, so they can never collide with the prefix.
 //!
-//! Key: `CCTUI_VAULT_KEY`, hex-encoded 32 bytes. Empty key = pass-through
-//! (dev/test, matching the historical scheme); any other length is stretched
-//! to 32 via SHA-256 so historical keys keep working.
+//! Key: `CCTUI_VAULT_KEY`, hex-encoded, at least 32 bytes. Empty key =
+//! pass-through (dev/test only; [`vault_key_checked`] rejects it); a longer key
+//! is stretched to 32 via SHA-256 so historical keys keep working.
 
 pub mod redact;
 
@@ -114,13 +114,22 @@ fn xor_deobfuscate(ciphertext: &str, key: &[u8]) -> Option<String> {
 pub enum KeyError {
     Unset,
     InvalidHex(hex::FromHexError),
+    TooShort(usize),
 }
+
+/// Minimum decoded vault key length, in bytes.
+pub const MIN_KEY_LEN: usize = 32;
 
 impl std::fmt::Display for KeyError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Unset => f.write_str("CCTUI_VAULT_KEY is not set (hex-encoded 32-byte key)"),
             Self::InvalidHex(e) => write!(f, "CCTUI_VAULT_KEY is not valid hex: {e}"),
+            Self::TooShort(n) => write!(
+                f,
+                "CCTUI_VAULT_KEY decodes to {n} bytes; at least {MIN_KEY_LEN} are required \
+                 (generate one with `openssl rand -hex 32`)"
+            ),
         }
     }
 }
@@ -129,23 +138,15 @@ impl std::error::Error for KeyError {}
 
 fn key_from_env(var: Result<String, std::env::VarError>) -> Result<Vec<u8>, KeyError> {
     let raw = var.map_err(|_| KeyError::Unset)?;
-    hex::decode(raw).map_err(KeyError::InvalidHex)
+    let key = hex::decode(raw.trim()).map_err(KeyError::InvalidHex)?;
+    if key.len() < MIN_KEY_LEN {
+        return Err(KeyError::TooShort(key.len()));
+    }
+    Ok(key)
 }
 
-/// Like [`vault_key`] but distinguishes unset from invalid hex, so a caller can
-/// fail closed instead of silently degrading to pass-through.
-pub fn vault_key_checked() -> Result<Vec<u8>, KeyError> {
-    key_from_env(std::env::var("CCTUI_VAULT_KEY"))
-}
-
-/// The hex-decoded vault key from `CCTUI_VAULT_KEY`.
-///
-/// Unset yields an empty key (pass-through) so non-prod builds and tests don't
-/// panic. Invalid hex also degrades to pass-through but is logged at `error` —
-/// prefer [`vault_key_checked`] where storing values UNENCRYPTED is unacceptable.
-#[must_use]
-pub fn vault_key() -> Vec<u8> {
-    match vault_key_checked() {
+fn weak_key_from_env(var: Result<String, std::env::VarError>) -> Vec<u8> {
+    match key_from_env(var.clone()) {
         Ok(key) => key,
         Err(KeyError::Unset) => Vec::new(),
         Err(KeyError::InvalidHex(e)) => {
@@ -155,7 +156,28 @@ pub fn vault_key() -> Vec<u8> {
             );
             Vec::new()
         }
+        Err(e @ KeyError::TooShort(_)) => {
+            tracing::error!("{e}");
+            var.ok().and_then(|raw| hex::decode(raw.trim()).ok()).unwrap_or_default()
+        }
     }
+}
+
+/// Like [`vault_key`] but rejects an unset, non-hex or too-short key, so a
+/// caller can fail closed instead of silently degrading to pass-through.
+pub fn vault_key_checked() -> Result<Vec<u8>, KeyError> {
+    key_from_env(std::env::var("CCTUI_VAULT_KEY"))
+}
+
+/// The hex-decoded vault key from `CCTUI_VAULT_KEY`.
+///
+/// Unset yields an empty key (pass-through) so non-prod builds and tests don't
+/// panic. Invalid hex also degrades to pass-through, and a too-short key is
+/// used as-is; both are logged at `error` — prefer [`vault_key_checked`] where
+/// weak or missing encryption is unacceptable.
+#[must_use]
+pub fn vault_key() -> Vec<u8> {
+    weak_key_from_env(std::env::var("CCTUI_VAULT_KEY"))
 }
 
 /// Like [`vault_key`] but panics when `CCTUI_VAULT_KEY` is unset or not valid
@@ -249,6 +271,25 @@ mod tests {
 
     #[test]
     fn key_from_env_valid_hex_decodes() {
-        assert_eq!(key_from_env(Ok("00ff".to_owned())).unwrap(), vec![0x00, 0xff]);
+        let hex = "00ff".repeat(16);
+        assert_eq!(key_from_env(Ok(hex.clone())).unwrap(), hex::decode(hex).unwrap());
+    }
+
+    #[test]
+    fn key_from_env_empty_is_error() {
+        assert!(matches!(key_from_env(Ok(String::new())), Err(KeyError::TooShort(0))));
+    }
+
+    #[test]
+    fn key_from_env_one_byte_is_error() {
+        assert!(matches!(key_from_env(Ok("00".to_owned())), Err(KeyError::TooShort(1))));
+        assert!(matches!(key_from_env(Ok("00".repeat(31))), Err(KeyError::TooShort(31))));
+    }
+
+    #[test]
+    fn weak_key_keeps_its_bytes_for_non_server_callers() {
+        assert_eq!(weak_key_from_env(Ok("00ff".to_owned())), vec![0x00, 0xff]);
+        assert!(weak_key_from_env(Ok(String::new())).is_empty());
+        assert!(weak_key_from_env(Err(std::env::VarError::NotPresent)).is_empty());
     }
 }
