@@ -10,6 +10,7 @@
 import { execFileSync, spawn } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { localToken } from './local-token.mjs';
 import { changedFiles, journeysForChanges, knownJourneys } from './journeys-for-changes.mjs';
 import { previewStaleness } from './preview-freshness.mjs';
 import { previewRenderFailure } from './preview-render.mjs';
@@ -19,7 +20,7 @@ const webui = resolve(here, '..');
 const seed = resolve(webui, '../deploy/local/fixture/seed.sh');
 
 const argv = process.argv.slice(2);
-const token = process.env.CCTUI_TOKEN ?? 'dev-admin';
+const token = localToken();
 const env = { ...process.env, CCTUI_TOKEN: token, JOURNEY_VARS: JSON.stringify({ token }) };
 const run = (cmd, args) => execFileSync(cmd, args, { cwd: webui, env, stdio: 'inherit' });
 

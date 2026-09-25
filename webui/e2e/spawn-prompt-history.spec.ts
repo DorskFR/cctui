@@ -1,7 +1,8 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
+import { localToken } from '../scripts/local-token.mjs';
 
 const APP = process.env.SPAWN_E2E_URL ?? 'http://localhost:5311';
-const TOKEN = process.env.SPAWN_E2E_TOKEN ?? 'dev-admin';
+const TOKEN: string = process.env.SPAWN_E2E_TOKEN ?? localToken();
 const SHOTS = process.env.SPAWN_E2E_SHOTS ?? 'test-results/spawn-prompt-history';
 
 const WIDTHS = [

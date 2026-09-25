@@ -2,14 +2,15 @@
 // viewport at the widths the book is shot at (CCT-1015). Exits non-zero on the
 // first control whose box crosses an edge.
 //
-//   CCTUI_TOKEN=dev-admin node scripts/check-drawer-clipping.mjs [--out DIR] [--tag before]
+//   node scripts/check-drawer-clipping.mjs [--out DIR] [--tag before]
 //
 // Needs a served build (vite preview) in APP_URL proxying a seeded API.
 import { mkdirSync } from 'node:fs';
 import { chromium } from 'playwright';
+import { localToken } from './local-token.mjs';
 
 const app = process.env.JOURNEY_APP_URL ?? 'http://localhost:5291';
-const token = process.env.CCTUI_TOKEN ?? 'dev-admin';
+const token = localToken();
 const args = process.argv.slice(2);
 const arg = (name, fallback) => {
 	const i = args.indexOf(`--${name}`);
