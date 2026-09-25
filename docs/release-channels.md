@@ -12,8 +12,11 @@ and verified the same way.
 
 ## Which machines take a beta
 
-A daemon updates to whatever version its server runs, and the manifest
-(`GET /api/v1/manifest/daemon`) reports that version's `channel`. A machine
+A daemon updates to whatever version its server runs. It asks for the manifest
+with `GET /api/v1/manifest/daemon?channel=<its channel>`; a beta server answers
+`204 No Content` to any caller that does not ask for `beta`, including daemons
+too old to send a channel, so they are never offered the beta. Both sides check:
+the daemon also refuses a beta version itself when it follows stable. A machine
 follows `stable` unless it opts in:
 
 ```toml
@@ -35,9 +38,17 @@ channel, e.g. `cctui-daemon 0.21.0-beta.1 (beta)`.
 The TUI follows the same rule: a stable build never updates onto a beta server
 unless `CCTUI_CHANNEL=beta` is set.
 
-A server running a beta therefore only moves beta machines. Try a beta on a
-server that only beta machines talk to, or accept that stable machines on that
-server hold their version until it returns to stable.
+A server running a beta therefore only moves beta machines; stable machines on
+it hold their version, logging that nothing is offered, until it returns to
+stable. Remote `enroll` installs the channel the target already follows, so a
+fresh or stable target cannot be enrolled against a beta server.
+
+## Worker images
+
+The harbor worker bake is keyed by the full version: `make release
+VERSION=X.Y.Z-beta.N` builds on `cctui-worker:X.Y.Z-beta.N` and pushes the same
+tag, which can never collide with a stable `X.Y.Z`. Never pass a `TAG=` override
+for a beta, and point only beta worker profiles at beta tags.
 
 ## Promotion and rollback
 

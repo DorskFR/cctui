@@ -62,10 +62,15 @@ pub fn should_update(local_ver: &str, server_ver: &str, channel: Channel) -> boo
 
 /// `CCTUI_CHANNEL` when set, else the channel this build was released on.
 fn update_channel() -> Channel {
-    std::env::var("CCTUI_CHANNEL")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or_else(|| Channel::of_version(CURRENT_VERSION))
+    let own = Channel::of_version(CURRENT_VERSION);
+    match std::env::var("CCTUI_CHANNEL").map(|v| v.parse::<Channel>()) {
+        Ok(Ok(channel)) => channel,
+        Ok(Err(err)) => {
+            eprintln!("[cctui] ignoring CCTUI_CHANNEL: {err}");
+            own
+        }
+        Err(_) => own,
+    }
 }
 
 fn repo() -> String {

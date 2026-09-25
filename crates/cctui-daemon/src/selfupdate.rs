@@ -137,8 +137,10 @@ impl DaemonAsset {
     }
 }
 
-fn manifest_url(server_url: &str) -> String {
-    format!("{}/api/v1/manifest/daemon", server_url.trim_end_matches('/'))
+/// The channel rides as a query parameter: servers without channels ignore it,
+/// and a beta server offers nothing to a caller that does not ask for beta.
+fn manifest_url(server_url: &str, channel: Channel) -> String {
+    format!("{}/api/v1/manifest/daemon?channel={channel}", server_url.trim_end_matches('/'))
 }
 
 #[must_use]
@@ -167,10 +169,14 @@ pub async fn fetch_manifest(
     client: &reqwest::Client,
     server_url: &str,
     bearer: &str,
+    channel: Channel,
 ) -> Result<DaemonManifest> {
-    let url = manifest_url(server_url);
+    let url = manifest_url(server_url, channel);
     let res =
         client.get(&url).bearer_auth(bearer).header("Accept", "application/json").send().await?;
+    if res.status() == reqwest::StatusCode::NO_CONTENT {
+        bail!("the server runs a beta build; opt into the beta channel to install it");
+    }
     if !res.status().is_success() {
         bail!("daemon manifest returned {}", res.status());
     }
@@ -178,21 +184,27 @@ pub async fn fetch_manifest(
 }
 
 /// Conditional manifest fetch: sends `If-None-Match` when `etag` is set,
-/// returns `Ok(None)` on `304` (etag untouched), else stores the response
+/// returns `Ok(None)` on `304` (etag untouched) and on `204` (nothing offered
+/// on `channel`), else stores the response
 /// `ETag` in `etag` and returns the parsed manifest.
 pub async fn fetch_manifest_conditional(
     client: &reqwest::Client,
     server_url: &str,
     bearer: &str,
+    channel: Channel,
     etag: &mut Option<String>,
 ) -> Result<Option<DaemonManifest>> {
-    let url = manifest_url(server_url);
+    let url = manifest_url(server_url, channel);
     let mut req = client.get(&url).bearer_auth(bearer).header("Accept", "application/json");
     if let Some(tag) = etag.as_deref() {
         req = req.header(reqwest::header::IF_NONE_MATCH, tag);
     }
     let response = req.send().await?;
     if response.status() == reqwest::StatusCode::NOT_MODIFIED {
+        return Ok(None);
+    }
+    if response.status() == reqwest::StatusCode::NO_CONTENT {
+        *etag = None;
         return Ok(None);
     }
     if !response.status().is_success() {
@@ -352,7 +364,7 @@ pub async fn check_and_apply_with(
         return Ok(None);
     }
 
-    let Some(manifest) = fetch_manifest_conditional(client, server_url, machine_key, etag).await?
+    let Some(manifest) = fetch_manifest_conditional(client, server_url, machine_key, channel, etag).await?
     else {
         tracing::debug!("daemon manifest unchanged (304); skipping update");
         return Ok(None);
@@ -536,8 +548,12 @@ mod tests {
     #[test]
     fn urls_are_built_under_api_v1_without_double_slash() {
         assert_eq!(
-            manifest_url("https://cctui.example.com/"),
-            "https://cctui.example.com/api/v1/manifest/daemon"
+            manifest_url("https://cctui.example.com/", Channel::Stable),
+            "https://cctui.example.com/api/v1/manifest/daemon?channel=stable"
+        );
+        assert_eq!(
+            manifest_url("https://cctui.example.com", Channel::Beta),
+            "https://cctui.example.com/api/v1/manifest/daemon?channel=beta"
         );
         assert_eq!(
             sha256sums_url("https://cctui.example.com"),
@@ -572,10 +588,24 @@ mod tests {
     async fn conditional_fetch_sends_if_none_match_and_treats_304_as_none() {
         let (url, req) = serve_once("HTTP/1.1 304 Not Modified\r\nETag: \"v1\"\r\n\r\n").await;
         let mut etag = Some("\"v1\"".to_string());
-        let got = fetch_manifest_conditional(&client().unwrap(), &url, "key", &mut etag).await;
+        let got =
+            fetch_manifest_conditional(&client().unwrap(), &url, "key", Channel::Stable, &mut etag)
+                .await;
         assert!(matches!(got, Ok(None)));
         assert_eq!(etag.as_deref(), Some("\"v1\""));
         assert!(req.lock().await.to_lowercase().contains("if-none-match: \"v1\""));
+    }
+
+    #[tokio::test]
+    async fn no_content_means_nothing_offered_on_this_channel() {
+        let (url, req) = serve_once("HTTP/1.1 204 No Content\r\n\r\n").await;
+        let mut etag = Some("\"old\"".to_string());
+        let got =
+            fetch_manifest_conditional(&client().unwrap(), &url, "key", Channel::Stable, &mut etag)
+                .await;
+        assert!(matches!(got, Ok(None)));
+        assert_eq!(etag, None);
+        assert!(req.lock().await.contains("?channel=stable "));
     }
 
     #[tokio::test]
@@ -586,10 +616,11 @@ mod tests {
         );
         let (url, _req) = serve_once(response).await;
         let mut etag = None;
-        let m = fetch_manifest_conditional(&client().unwrap(), &url, "key", &mut etag)
-            .await
-            .unwrap()
-            .expect("200 yields a manifest");
+        let m =
+            fetch_manifest_conditional(&client().unwrap(), &url, "key", Channel::Stable, &mut etag)
+                .await
+                .unwrap()
+                .expect("200 yields a manifest");
         assert_eq!(m.version, "9.9.9");
         assert_eq!(etag.as_deref(), Some("\"v2\""));
     }
