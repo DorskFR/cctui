@@ -36,6 +36,7 @@ use sha2::Sha256;
 
 use crate::dispatchers::HandleStatus;
 use crate::state::AppState;
+use crate::store::sessions::SessionRowStatus;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -178,16 +179,16 @@ enum Outcome {
 /// that never registered is resolved by asking the owning dispatcher whether its
 /// workload is still alive.
 async fn decide(state: &AppState, row: &PendingRow) -> Outcome {
-    match row.session_status.as_deref() {
+    match row.session_status.as_deref().and_then(SessionRowStatus::parse) {
         // Any SessionEnded means the worker process reached its EXIT/INT/TERM
         // trap (completed, killed, or crashed) and already POSTed REPLY_URL —
         // the worker owns the verdict, the server stays quiet.
-        Some("ended") => return Outcome::Supersede,
+        Some(SessionRowStatus::Ended) => return Outcome::Supersede,
         // Dispatch never launched a runtime: no worker, no callback ever.
-        Some("failed") => return Outcome::Fire("dispatch never launched".into()),
+        Some(SessionRowStatus::Failed) => return Outcome::Fire("dispatch never launched".into()),
         // Time-based archive backstop (silence past grace) for when no
         // dispatcher poll resolved it first.
-        Some("archived") => {
+        Some(SessionRowStatus::Archived) => {
             return Outcome::Fire(
                 "session ended without a completion signal (timed out / crashed / connection lost)"
                     .into(),

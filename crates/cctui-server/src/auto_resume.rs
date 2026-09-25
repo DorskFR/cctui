@@ -28,6 +28,7 @@ use chrono::{DateTime, Duration, Utc};
 
 use crate::live_sessions::live_sessions_predicate;
 use crate::state::AppState;
+use crate::store::sessions::SessionRowStatus;
 
 /// Delay before the first nudge, then between successive nudges. The last
 /// entry is also the grace period after the final attempt before the row is
@@ -155,7 +156,7 @@ const STUCK_SELECT: &str = concat!(
      LEFT JOIN session_auto_resume r ON r.session_id = le.session_id \
      WHERE ",
     live_sessions_predicate!("s"),
-    " AND s.status NOT IN ('archived', 'ended', 'failed', 'draft') \
+    " AND s.status <> ALL($3) \
        AND COALESCE((SELECT us.data->'autoResumeOnConnectionLoss' = 'true'::jsonb \
                      FROM user_settings us WHERE us.user_id = s.user_id), false) \
        AND NOT EXISTS ( \
@@ -192,6 +193,7 @@ pub async fn sweep(state: &AppState) {
     let rows: Vec<StuckRow> = match sqlx::query_as(STUCK_SELECT)
         .bind(LOOKBACK_SECS.to_string())
         .bind(BATCH)
+        .bind(SessionRowStatus::names(SessionRowStatus::NOT_RESUMABLE))
         .fetch_all(&state.pool)
         .await
     {

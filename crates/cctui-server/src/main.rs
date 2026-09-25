@@ -59,6 +59,7 @@ use config::Config;
 use live_sessions::live_sessions_predicate;
 use registry::Registry;
 use state::AppState;
+use store::sessions::SessionRowStatus;
 
 #[tokio::main]
 #[allow(clippy::too_many_lines)]
@@ -1656,12 +1657,13 @@ async fn auto_archive_stale(state: &AppState) {
                  end_reason = COALESCE(end_reason, 'reaped_inactive') \
              WHERE ",
             live_sessions_predicate!(),
-            " AND status NOT IN ('archived', 'draft') \
+            " AND status <> ALL($2) \
                AND pinned = false AND last_heartbeat < $1 \
              RETURNING id"
         ),
     )
     .bind(cutoff)
+    .bind(SessionRowStatus::names(SessionRowStatus::NOT_ARCHIVABLE))
     .fetch_all(&state.pool)
     .await
     {

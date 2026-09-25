@@ -29,6 +29,7 @@ use crate::auth::AuthContext;
 use crate::authz::{Shareable, shareable_owner};
 use crate::registry::MachineCommand;
 use crate::state::AppState;
+use crate::store::sessions::SessionRowStatus;
 use crate::uploads::parse_upload_multipart;
 
 pub fn bad_request(msg: impl Into<String>) -> (StatusCode, Json<ApiError>) {
@@ -735,7 +736,7 @@ async fn save_draft(
         StatusCode::CREATED,
         Json(SpawnResponse {
             command_id: draft_id,
-            status: "draft".into(),
+            status: SessionRowStatus::Draft.as_str().into(),
             account: None,
             session_id: None,
         }),
@@ -767,7 +768,7 @@ pub async fn launch_draft(
     let Some((status, metadata)) = row else {
         return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "draft not found".into() })));
     };
-    if status != "draft" {
+    if SessionRowStatus::parse(&status) != Some(SessionRowStatus::Draft) {
         return Err(bad_request("session is not a draft"));
     }
     let mut req: SpawnRequest = metadata

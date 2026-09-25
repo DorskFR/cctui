@@ -9,6 +9,7 @@ use chrono::{DateTime, Duration, Utc};
 
 use crate::soft_limit::UsageWindow;
 use crate::state::AppState;
+use crate::store::sessions::SessionRowStatus;
 
 /// Ticks sent without a human message before the schedule pauses.
 pub const DEFAULT_MAX_TICKS: u32 = 6;
@@ -140,7 +141,9 @@ pub struct Snapshot<'a> {
 /// row is re-checked with the same logic before anything is sent.
 #[must_use]
 pub fn skip_reason(snap: &Snapshot<'_>) -> Option<Skip> {
-    if snap.ended || !matches!(snap.status, "active" | "inactive") {
+    let keepalive_status = SessionRowStatus::parse(snap.status)
+        .is_some_and(|s| SessionRowStatus::KEEPALIVE.contains(&s));
+    if snap.ended || !keepalive_status {
         return Some(Skip::Ended);
     }
     if snap.soft_limit_reason.is_some() {
@@ -251,7 +254,7 @@ pub async fn apply(
 const CLAIM_SQL: &str = "WITH due AS ( \
         SELECT id FROM sessions \
         WHERE keepalive_json IS NOT NULL \
-          AND status IN ('active', 'inactive') \
+          AND status = ANY($2) \
           AND ended_at IS NULL \
           AND soft_limit_reason IS NULL \
           AND COALESCE(tempo, '') NOT IN ('blocked', 'active') \
@@ -293,14 +296,18 @@ struct ClaimedRow {
 /// same path as a human reply. A claimed tick that turns out unsendable is
 /// simply deferred to the next interval.
 pub async fn sweep(state: &AppState) {
-    let rows: Vec<ClaimedRow> =
-        match sqlx::query_as(CLAIM_SQL).bind(BATCH).fetch_all(&state.pool).await {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::warn!("keep-alive claim query failed: {e}");
-                return;
-            }
-        };
+    let rows: Vec<ClaimedRow> = match sqlx::query_as(CLAIM_SQL)
+        .bind(BATCH)
+        .bind(SessionRowStatus::names(SessionRowStatus::KEEPALIVE))
+        .fetch_all(&state.pool)
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!("keep-alive claim query failed: {e}");
+            return;
+        }
+    };
     let accounts: Vec<Vec<uuid::Uuid>> = futures_util::future::join_all(
         rows.iter().map(|row| crate::routes::gateway::resolve_session_accounts(state, &row.id)),
     )
@@ -540,7 +547,7 @@ mod tests {
         ));
         assert!(CLAIM_SQL.contains("RETURNING s.id"));
         for guard in [
-            "status IN ('active', 'inactive')",
+            "status = ANY($2)",
             "ended_at IS NULL",
             "soft_limit_reason IS NULL",
             "COALESCE(tempo, '') NOT IN ('blocked', 'active')",

@@ -14,7 +14,6 @@ pub mod redact;
 use chacha20poly1305::aead::{Aead, Generate, KeyInit};
 use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
 use sha2::{Digest, Sha256};
-use std::fmt::Write;
 
 const V1_PREFIX: &str = "v1:";
 const NONCE_LEN: usize = 12;
@@ -82,20 +81,6 @@ fn try_decrypt_v1(body: &str, key: &[u8]) -> Result<String, String> {
             "authentication failed (tampered value or wrong CCTUI_VAULT_KEY)".to_string()
         })?;
     String::from_utf8(plaintext).map_err(|e| format!("plaintext is not UTF-8: {e}"))
-}
-
-/// Legacy XOR-with-repeating-key + hex writer. Kept only so tests can fabricate
-/// rows; production code must use [`encrypt`].
-#[must_use]
-pub fn legacy_xor_obfuscate(plaintext: &str, key: &[u8]) -> String {
-    if key.is_empty() {
-        return plaintext.to_string();
-    }
-    let mut result = String::new();
-    for (i, b) in plaintext.bytes().enumerate() {
-        let _ = write!(result, "{:02x}", b ^ key[i % key.len()]);
-    }
-    result
 }
 
 fn xor_deobfuscate(ciphertext: &str, key: &[u8]) -> Option<String> {
@@ -197,6 +182,18 @@ pub fn vault_key_required() -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fmt::Write;
+
+    fn legacy_xor_obfuscate(plaintext: &str, key: &[u8]) -> String {
+        if key.is_empty() {
+            return plaintext.to_string();
+        }
+        let mut result = String::new();
+        for (i, b) in plaintext.bytes().enumerate() {
+            let _ = write!(result, "{:02x}", b ^ key[i % key.len()]);
+        }
+        result
+    }
 
     const KEY: &[u8] = b"test-key-32-bytes-test-key-32byt";
 

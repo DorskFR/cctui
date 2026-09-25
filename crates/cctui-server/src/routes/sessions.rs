@@ -17,6 +17,7 @@ use cctui_proto::models::{Attention, Liveness, Session, SessionEndReason, Sessio
 use crate::auth::AuthContext;
 use crate::live_sessions::live_sessions_predicate;
 use crate::routes::spawn::{bad_request, resolve_owned_machine};
+use crate::store::sessions::SessionRowStatus;
 use crate::state::AppState;
 
 pub async fn register(
@@ -181,37 +182,23 @@ pub fn derive_liveness(last_heartbeat: DateTime<Utc>) -> Liveness {
     }
 }
 
-/// Sticky terminal statuses: persisted states that must NOT be
-/// re-derived from heartbeat age. `ended` (`SessionEnded` received) and `failed`
-/// (dispatch never launched) both mean "this session is over" — without this
-/// they showed Active/green for ~5 min until the heartbeat aged out, masking
-/// the end of unattended/dispatched jobs.
-fn sticky_status(row_status: &str) -> Option<SessionStatus> {
-    match row_status {
-        "archived" => Some(SessionStatus::Archived),
-        "ended" | "failed" => Some(SessionStatus::Inactive),
-        // Draft: staged-not-running, never re-derived from heartbeat.
-        "draft" => Some(SessionStatus::Draft),
-        _ => None,
-    }
-}
-
 /// Resolve the row's status + liveness, honouring sticky terminal states.
 pub fn resolve_status_liveness(
     row_status: &str,
     registered_at: DateTime<Utc>,
     last_heartbeat: DateTime<Utc>,
 ) -> (SessionStatus, Liveness) {
-    sticky_status(row_status).map_or_else(
+    let sticky = SessionRowStatus::parse(row_status).filter(|s| s.is_sticky());
+    sticky.map_or_else(
         || (derive_status(registered_at, last_heartbeat), derive_liveness(last_heartbeat)),
         |s| {
-            // Archived keeps its real liveness dot; ended/failed are terminal → Dead.
-            let liveness = if matches!(s, SessionStatus::Archived) {
+            // Archived keeps its real liveness dot; ended/failed/draft → Dead.
+            let liveness = if s == SessionRowStatus::Archived {
                 derive_liveness(last_heartbeat)
             } else {
                 Liveness::Dead
             };
-            (s, liveness)
+            (s.to_wire(), liveness)
         },
     )
 }
@@ -3095,7 +3082,7 @@ pub async fn update_draft(
     tracing::info!(draft = %session_id, "draft updated");
     Ok(Json(SpawnResponse {
         command_id: draft_id,
-        status: "draft".into(),
+        status: SessionRowStatus::Draft.as_str().into(),
         account: None,
         session_id: None,
     }))
