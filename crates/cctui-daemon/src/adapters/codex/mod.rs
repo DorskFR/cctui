@@ -995,6 +995,29 @@ impl AdapterFactory for CodexFactory {
 }
 
 #[cfg(test)]
+pub(crate) async fn run_command_pump_for_test(
+    bin: &str,
+    events: mpsc::Sender<AdapterEvent>,
+    commands: mpsc::Receiver<AdapterCommand>,
+    shutdown: tokio_util::sync::CancellationToken,
+) {
+    let app_cfg = AppServerConfig::from_value(&serde_json::json!({ "codex_bin": bin }));
+    let pump = CommandPump {
+        events,
+        live: LiveSessionRegistry::default(),
+        registry: SessionRegistry::default(),
+        shared: daemon::SharedDaemon::new(app_cfg.bin.clone(), shutdown.clone()),
+        app_cfg,
+        shutdown,
+        server: None,
+        machine_key: None,
+        marks: log_tail::ResumeMarks::default(),
+        pty_views: pty_view::RingViewManager::default(),
+    };
+    pump.run(commands).await;
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use cctui_proto::adapter::EndReason;

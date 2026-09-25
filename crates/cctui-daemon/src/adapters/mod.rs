@@ -3,6 +3,8 @@
 pub mod agent_mcp;
 pub mod claude_code;
 pub mod codex;
+#[cfg(test)]
+mod conformance_tests;
 pub mod gateway_env;
 pub mod opencode;
 pub mod uploads;
