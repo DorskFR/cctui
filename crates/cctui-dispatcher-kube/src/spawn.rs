@@ -311,7 +311,7 @@ impl Spawner {
         if let Some(mounts) = &profile.volume_mounts {
             worker.insert("volumeMounts".into(), serde_json::to_value(mounts)?);
         }
-        Self::merge_env(&mut worker, overrides);
+        Self::merge_env(&mut worker, overrides)?;
 
         let mut containers = vec![Value::Object(worker)];
         for extra in profile.containers.iter().flatten() {
@@ -344,20 +344,27 @@ impl Spawner {
 
     /// Upsert env vars by name into the container's `env` array, preserving the
     /// profile's existing entries (including `valueFrom`).
-    fn merge_env(worker: &mut serde_json::Map<String, Value>, overrides: &[(String, String)]) {
+    fn merge_env(
+        worker: &mut serde_json::Map<String, Value>,
+        overrides: &[(String, String)],
+    ) -> anyhow::Result<()> {
         let env = worker.entry("env").or_insert_with(|| json!([]));
-        let arr = env.as_array_mut().expect("env is an array");
+        let arr = env
+            .as_array_mut()
+            .ok_or_else(|| anyhow::anyhow!("worker profile `env` must be a list of env vars"))?;
         for (k, v) in overrides {
-            if let Some(existing) =
-                arr.iter_mut().find(|e| e.get("name").and_then(Value::as_str) == Some(k.as_str()))
-            {
-                let obj = existing.as_object_mut().unwrap();
-                obj.insert("value".into(), json!(v));
-                obj.remove("valueFrom");
-            } else {
-                arr.push(json!({ "name": k, "value": v }));
+            let existing = arr
+                .iter_mut()
+                .find(|e| e.get("name").and_then(Value::as_str) == Some(k.as_str()));
+            match existing.and_then(Value::as_object_mut) {
+                Some(obj) => {
+                    obj.insert("value".into(), json!(v));
+                    obj.remove("valueFrom");
+                }
+                None => arr.push(json!({ "name": k, "value": v })),
             }
         }
+        Ok(())
     }
 
     /// 'Complete' / 'Failed' if the Job carries a terminal condition, else None.
@@ -1616,5 +1623,20 @@ mod tests {
         .unwrap();
         let msg = build_err(&profile, json!({ "env": { "GH_TOKEN": "attacker" } }));
         assert!(msg.contains("GH_TOKEN") && msg.contains("valueFrom"), "unexpected error: {msg}");
+    }
+
+    #[test]
+    fn map_shaped_env_is_an_error_not_a_panic() {
+        let mut worker = serde_json::Map::new();
+        worker.insert("env".into(), json!({ "LOG_LEVEL": "info" }));
+        let err = Spawner::merge_env(&mut worker, &[("SESSION_ID".into(), "s".into())])
+            .expect_err("a map-shaped env must be rejected");
+        assert!(err.to_string().contains("env"), "unexpected error: {err}");
+
+        let profile = serde_json::from_value::<WorkerProfileSpec>(json!({
+            "image": "example.com/worker:latest",
+            "env": { "LOG_LEVEL": "info" }
+        }));
+        assert!(profile.is_err(), "a map-shaped profile env fails to parse instead of panicking");
     }
 }
