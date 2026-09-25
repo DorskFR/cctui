@@ -4,11 +4,16 @@
 //! scanned; clean bytes are released verbatim. A match becomes an explanation
 //! text block and a normal end of turn, never an HTTP error: harnesses retry
 //! errors and would regenerate the same call.
+//!
+//! Only text the model generates in the tool input is seen. Content read from
+//! files at run time, or deliberately obfuscated (split strings, base64, shell
+//! concatenation), passes: this stops accidents, not an evasive model.
 
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
 use axum::body::Bytes;
+use axum::response::IntoResponse;
 use dashmap::DashMap;
 use futures_util::{Stream, StreamExt};
 use regex::Regex;
@@ -70,8 +75,11 @@ impl ToolPolicy {
             protected_owners: clean(self.protected_owners, "protected owners")?,
             exempt_roots: clean(self.exempt_roots, "exempt roots")?
                 .into_iter()
-                .map(|r| r.trim_end_matches('/').to_owned())
-                .filter(|r| !r.is_empty())
+                .map(|r| match path_components(&r) {
+                    Some(c) => format!("/{}", c.join("/")),
+                    None => r,
+                })
+                .filter(|r| r != "/")
                 .collect(),
         };
         for p in &policy.patterns {
@@ -123,11 +131,13 @@ impl CompiledPolicy {
         })
     }
 
+    /// Lexical only: `..` is resolved before comparing, symlinks are not.
     pub fn exempts(&self, cwd: Option<&str>) -> bool {
-        let Some(cwd) = cwd.map(|c| c.trim_end_matches('/')) else { return false };
-        self.exempt_roots.iter().any(|root| {
-            cwd == root || cwd.strip_prefix(root.as_str()).is_some_and(|rest| rest.starts_with('/'))
-        })
+        let Some(cwd) = cwd.and_then(path_components) else { return false };
+        self.exempt_roots
+            .iter()
+            .filter_map(|r| path_components(r))
+            .any(|root| cwd.len() >= root.len() && cwd[..root.len()] == root[..])
     }
 
     pub fn scan_str(&self, s: &str) -> Option<Hit> {
@@ -172,6 +182,25 @@ impl CompiledPolicy {
             _ => None,
         }
     }
+}
+
+/// Components of an absolute path with `.` and `..` resolved lexically; `None`
+/// for a relative path.
+fn path_components(path: &str) -> Option<Vec<&str>> {
+    if !path.starts_with('/') {
+        return None;
+    }
+    let mut out: Vec<&str> = Vec::new();
+    for c in path.split('/') {
+        match c {
+            "" | "." => {}
+            ".." => {
+                out.pop();
+            }
+            c => out.push(c),
+        }
+    }
+    Some(out)
 }
 
 pub fn mask(s: &str) -> String {
@@ -751,45 +780,98 @@ pub fn rewrite_json(policy: &CompiledPolicy, body: &[u8]) -> Option<(Vec<u8>, Bl
 
 // ---- policy lookup ----
 
-type PolicyCache = DashMap<Uuid, (Instant, Option<(Uuid, Arc<CompiledPolicy>)>)>;
-static POLICY_CACHE: LazyLock<PolicyCache> = LazyLock::new(DashMap::new);
-
-/// Drop cached policies after an edit, so this replica applies it at once.
-/// Other replicas pick it up within [`POLICY_TTL`].
-pub fn invalidate_policy_cache() {
-    POLICY_CACHE.clear();
+struct CachedPolicy {
+    at: Instant,
+    account_id: Option<Uuid>,
+    policy: Option<(Uuid, Arc<CompiledPolicy>)>,
 }
 
+static POLICY_CACHE: LazyLock<DashMap<Uuid, CachedPolicy>> = LazyLock::new(DashMap::new);
+
+const SESSION_TTL: Duration = Duration::from_mins(5);
+const SESSION_CACHE_MAX: usize = 4096;
+type CachedSession = (Instant, Option<String>, Option<String>);
+static SESSION_CACHE: LazyLock<DashMap<String, CachedSession>> = LazyLock::new(DashMap::new);
+
+/// Drop an account's cached policy after an edit, so this replica applies it at
+/// once. Other replicas pick it up within [`POLICY_TTL`].
+pub fn invalidate_policy_cache(account_id: Uuid) {
+    POLICY_CACHE.retain(|_, c| c.account_id != Some(account_id));
+}
+
+/// `Err` only when the lookup failed and nothing is cached: the caller must not
+/// forward unguarded.
 async fn policy_for_provider(
     state: &AppState,
     provider_id: Uuid,
-) -> Option<(Uuid, Arc<CompiledPolicy>)> {
+) -> Result<Option<(Uuid, Arc<CompiledPolicy>)>, sqlx::Error> {
     if let Some(entry) = POLICY_CACHE.get(&provider_id)
-        && entry.0.elapsed() < POLICY_TTL
+        && entry.at.elapsed() < POLICY_TTL
     {
-        return entry.1.clone();
+        return Ok(entry.policy.clone());
     }
-    let row: Result<Option<(Uuid, Vec<String>, Vec<String>, Vec<String>, Vec<String>)>, _> =
-        sqlx::query_as(
-            "SELECT p.account_id, p.terms, p.patterns, p.protected_owners, p.exempt_roots \
-             FROM account_providers ap JOIN account_tool_policies p ON p.account_id = ap.account_id \
-             WHERE ap.id = $1",
-        )
-        .bind(provider_id)
-        .fetch_optional(&state.pool)
-        .await;
-    let compiled = match row {
-        Ok(row) => row.and_then(|(account_id, terms, patterns, protected_owners, exempt_roots)| {
-            let p = ToolPolicy { terms, patterns, protected_owners, exempt_roots };
-            CompiledPolicy::compile(&p).map(|c| (account_id, Arc::new(c)))
-        }),
+    type Row = (
+        Uuid,
+        Option<Vec<String>>,
+        Option<Vec<String>>,
+        Option<Vec<String>>,
+        Option<Vec<String>>,
+    );
+    let row: Result<Option<Row>, _> = sqlx::query_as(
+        "SELECT ap.account_id, p.terms, p.patterns, p.protected_owners, p.exempt_roots \
+         FROM account_providers ap \
+         LEFT JOIN account_tool_policies p ON p.account_id = ap.account_id \
+         WHERE ap.id = $1",
+    )
+    .bind(provider_id)
+    .fetch_optional(&state.pool)
+    .await;
+    let row = match row {
+        Ok(row) => row,
         Err(e) => {
             tracing::warn!(provider = %provider_id, error = %e, "tool policy lookup failed");
-            return POLICY_CACHE.get(&provider_id).and_then(|e| e.1.clone());
+            return POLICY_CACHE.get(&provider_id).map(|c| c.policy.clone()).ok_or(e);
         }
     };
-    POLICY_CACHE.insert(provider_id, (Instant::now(), compiled.clone()));
-    compiled
+    let account_id = row.as_ref().map(|r| r.0);
+    let policy = row.and_then(|(account_id, terms, patterns, owners, roots)| {
+        let p = ToolPolicy {
+            terms: terms.unwrap_or_default(),
+            patterns: patterns.unwrap_or_default(),
+            protected_owners: owners.unwrap_or_default(),
+            exempt_roots: roots.unwrap_or_default(),
+        };
+        CompiledPolicy::compile(&p).map(|c| (account_id, Arc::new(c)))
+    });
+    POLICY_CACHE
+        .insert(provider_id, CachedPolicy { at: Instant::now(), account_id, policy: policy.clone() });
+    Ok(policy)
+}
+
+/// The token's session id and cwd. A lookup failure yields "unknown", which is
+/// scanned, and is not cached.
+async fn session_for_token(state: &AppState, session_token: &str) -> CachedSession {
+    let hash = crate::auth::sha256_hex(session_token);
+    if let Some(c) = SESSION_CACHE.get(&hash)
+        && c.0.elapsed() < SESSION_TTL
+    {
+        return c.value().clone();
+    }
+    let row: Result<Option<(String, Option<String>)>, _> = sqlx::query_as(
+        "SELECT t.session_id, s.working_dir FROM session_tokens t \
+         LEFT JOIN sessions s ON s.id = t.session_id WHERE t.token_hash = $1",
+    )
+    .bind(&hash)
+    .fetch_optional(&state.pool)
+    .await;
+    let Ok(row) = row else { return (Instant::now(), None, None) };
+    let (session_id, cwd) = row.map_or((None, None), |(s, c)| (Some(s), c));
+    if SESSION_CACHE.len() >= SESSION_CACHE_MAX {
+        SESSION_CACHE.retain(|_, c| c.0.elapsed() < SESSION_TTL);
+    }
+    let entry = (Instant::now(), session_id, cwd);
+    SESSION_CACHE.insert(hash, entry.clone());
+    entry
 }
 
 /// What the proxy needs to guard one response.
@@ -800,28 +882,21 @@ pub struct ActiveGuard {
     session_id: Option<String>,
 }
 
-/// `None` when the account has no effective policy or the session is exempt.
+/// `Ok(None)` when the account has no effective policy or the session is
+/// exempt; `Err` when the policy could not be read at all.
 pub async fn guard_for(
     state: &AppState,
     provider_id: Uuid,
     session_token: &str,
-) -> Option<ActiveGuard> {
-    let (account_id, policy) = policy_for_provider(state, provider_id).await?;
-    let hash = crate::auth::sha256_hex(session_token);
-    let session: Option<(String, Option<String>)> = sqlx::query_as(
-        "SELECT t.session_id, s.working_dir FROM session_tokens t \
-         LEFT JOIN sessions s ON s.id = t.session_id WHERE t.token_hash = $1",
-    )
-    .bind(&hash)
-    .fetch_optional(&state.pool)
-    .await
-    .ok()
-    .flatten();
-    let (session_id, cwd) = session.map_or((None, None), |(s, c)| (Some(s), c));
+) -> Result<Option<ActiveGuard>, sqlx::Error> {
+    let Some((account_id, policy)) = policy_for_provider(state, provider_id).await? else {
+        return Ok(None);
+    };
+    let (_, session_id, cwd) = session_for_token(state, session_token).await;
     if policy.exempts(cwd.as_deref()) {
-        return None;
+        return Ok(None);
     }
-    Some(ActiveGuard { policy, account_id, session_id })
+    Ok(Some(ActiveGuard { policy, account_id, session_id }))
 }
 
 async fn record_block(state: &AppState, guard: &ActiveGuard, block: Block) {
@@ -893,6 +968,24 @@ impl Guarded {
             Self::Json(..) => Vec::new(),
         }
     }
+}
+
+/// Refusal for a guarded response the upstream compressed anyway: forwarding
+/// it unscanned would bypass the policy.
+pub fn unscannable_response(is_anthropic: bool) -> axum::response::Response {
+    let message = "cctui cannot scan a compressed upstream response for this account's \
+                   tool-call policy; configure the upstream not to compress";
+    let body = if is_anthropic {
+        json!({"type": "error", "error": {"type": "api_error", "message": message}})
+    } else {
+        json!({"error": {"type": "server_error", "message": message}})
+    };
+    (
+        axum::http::StatusCode::BAD_GATEWAY,
+        [(axum::http::header::CONTENT_TYPE, "application/json")],
+        body.to_string(),
+    )
+        .into_response()
 }
 
 /// Whether a response with these headers can be guarded. Compressed bodies
@@ -1504,9 +1597,25 @@ mod tests {
         assert!(p.exempts(Some("/home/u/work")));
         assert!(p.exempts(Some("/home/u/work/")));
         assert!(p.exempts(Some("/home/u/work/repo/sub")));
+        assert!(p.exempts(Some("/home/u/./work//repo")));
+        assert!(p.exempts(Some("/home/u/other/../work/repo")));
         assert!(!p.exempts(Some("/home/u/workshop")));
         assert!(!p.exempts(Some("/home/u/other")));
         assert!(!p.exempts(None), "unknown cwd is scanned");
+        assert!(!p.exempts(Some("home/u/work")), "relative cwd is scanned");
+    }
+
+    #[test]
+    fn dot_dot_cannot_escape_an_exempt_root() {
+        let p = policy();
+        for escape in [
+            "/home/u/work/../pub-repo",
+            "/home/u/work/repo/../../pub",
+            "/home/u/work/..",
+            "/home/u/work/../../../..",
+        ] {
+            assert!(!p.exempts(Some(escape)), "{escape}");
+        }
     }
 
     #[test]
@@ -1523,13 +1632,13 @@ mod tests {
     fn policy_normalization_rejects_bad_input() {
         let p = ToolPolicy {
             terms: vec![" a ".into(), "a".into(), String::new()],
-            exempt_roots: vec!["/w/".into()],
+            exempt_roots: vec!["/w/".into(), "/x/./y/../z".into(), "/".into()],
             ..ToolPolicy::default()
         }
         .normalized()
         .unwrap();
         assert_eq!(p.terms, vec!["a"]);
-        assert_eq!(p.exempt_roots, vec!["/w"]);
+        assert_eq!(p.exempt_roots, vec!["/w", "/x/z"]);
         assert!(ToolPolicy { patterns: vec!["(".into()], ..ToolPolicy::default() }.normalized().is_err());
         assert!(ToolPolicy { exempt_roots: vec!["rel".into()], ..ToolPolicy::default() }.normalized().is_err());
     }
