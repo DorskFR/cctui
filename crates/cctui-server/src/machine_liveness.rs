@@ -16,6 +16,7 @@ use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use crate::state::AppState;
+use crate::store::sessions::SessionRowStatus;
 
 /// `Online` (green) within the active window, `Stale` (orange) up to the dead
 /// window, `Offline` beyond it. Mirrors `routes::sessions::LIVENESS_*` so machine
@@ -99,10 +100,11 @@ async fn mark_sessions_machine_offline(state: &AppState, machine_ids: &[Uuid]) {
     match sqlx::query(
         "UPDATE sessions SET status = 'ended', ended_at = now(), end_reason = 'machine_offline', \
              end_detail = 'machine offline: no daemon heartbeat' \
-         WHERE machine_uuid = ANY($1) AND status IN ('new', 'active', 'inactive') \
+         WHERE machine_uuid = ANY($1) AND status = ANY($2) \
            AND end_reason IS NULL",
     )
     .bind(machine_ids)
+    .bind(SessionRowStatus::names(SessionRowStatus::RUNNING))
     .execute(&state.pool)
     .await
     {

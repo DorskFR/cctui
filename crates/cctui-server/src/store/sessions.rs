@@ -1,6 +1,87 @@
+use cctui_proto::models::SessionStatus;
 use sqlx::PgExecutor;
 
 use crate::routes::sessions::DbSession;
+
+/// Every value `sessions.status` may hold; migration 139 enforces the same set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionRowStatus {
+    New,
+    Active,
+    Inactive,
+    Archived,
+    Draft,
+    Ended,
+    Failed,
+}
+
+impl SessionRowStatus {
+    pub const ALL: &'static [Self] = &[
+        Self::New,
+        Self::Active,
+        Self::Inactive,
+        Self::Archived,
+        Self::Draft,
+        Self::Ended,
+        Self::Failed,
+    ];
+    /// Rows a daemon may still be running.
+    pub const RUNNING: &'static [Self] = &[Self::New, Self::Active, Self::Inactive];
+    /// Rows a keep-alive tick may be sent to.
+    pub const KEEPALIVE: &'static [Self] = &[Self::Active, Self::Inactive];
+    /// Rows auto-archive must never touch.
+    pub const NOT_ARCHIVABLE: &'static [Self] = &[Self::Archived, Self::Draft];
+    /// Rows auto-resume must never touch.
+    pub const NOT_RESUMABLE: &'static [Self] =
+        &[Self::Archived, Self::Ended, Self::Failed, Self::Draft];
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::New => "new",
+            Self::Active => "active",
+            Self::Inactive => "inactive",
+            Self::Archived => "archived",
+            Self::Draft => "draft",
+            Self::Ended => "ended",
+            Self::Failed => "failed",
+        }
+    }
+
+    #[must_use]
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|v| v.as_str() == s)
+    }
+
+    /// The set as bindable text, for `status = ANY($n)` / `status <> ALL($n)`.
+    #[must_use]
+    pub fn names(set: &[Self]) -> Vec<&'static str> {
+        set.iter().map(|s| s.as_str()).collect()
+    }
+
+    #[must_use]
+    pub const fn is_terminal(self) -> bool {
+        matches!(self, Self::Archived | Self::Ended | Self::Failed)
+    }
+
+    /// Persisted states the API reports as-is instead of re-deriving from
+    /// heartbeat age.
+    #[must_use]
+    pub const fn is_sticky(self) -> bool {
+        self.is_terminal() || matches!(self, Self::Draft)
+    }
+
+    #[must_use]
+    pub const fn to_wire(self) -> SessionStatus {
+        match self {
+            Self::New => SessionStatus::New,
+            Self::Active => SessionStatus::Active,
+            Self::Inactive | Self::Ended | Self::Failed => SessionStatus::Inactive,
+            Self::Archived => SessionStatus::Archived,
+            Self::Draft => SessionStatus::Draft,
+        }
+    }
+}
 
 pub async fn set_inactive(
     exec: impl PgExecutor<'_>,
@@ -154,7 +235,37 @@ pub fn job_children<'a>(children: &'a [Child], archived: &[String]) -> Vec<&'a s
 
 #[cfg(test)]
 mod tests {
-    use super::{Child, descendants, job_children, upsert_registered};
+    use super::{Child, SessionRowStatus, descendants, job_children, upsert_registered};
+
+    #[test]
+    fn row_status_round_trips_through_text() {
+        for s in SessionRowStatus::ALL {
+            assert_eq!(SessionRowStatus::parse(s.as_str()), Some(*s));
+        }
+        assert_eq!(SessionRowStatus::parse("registering"), None);
+    }
+
+    #[test]
+    fn check_constraint_lists_exactly_the_enum() {
+        let migration = include_str!("../../../../migrations/139_sessions_status_check.up.sql");
+        let quoted: Vec<String> =
+            SessionRowStatus::ALL.iter().map(|s| format!("'{}'", s.as_str())).collect();
+        assert!(
+            migration.contains(&format!("CHECK (status IN ({}))", quoted.join(", "))),
+            "migration 139's CHECK drifted from SessionRowStatus::ALL"
+        );
+    }
+
+    #[test]
+    fn wire_status_collapses_ended_and_failed_to_inactive() {
+        use cctui_proto::models::SessionStatus;
+        assert!(matches!(SessionRowStatus::Ended.to_wire(), SessionStatus::Inactive));
+        assert!(matches!(SessionRowStatus::Failed.to_wire(), SessionStatus::Inactive));
+        assert!(matches!(SessionRowStatus::Archived.to_wire(), SessionStatus::Archived));
+        assert!(matches!(SessionRowStatus::Draft.to_wire(), SessionStatus::Draft));
+        assert!(!SessionRowStatus::Active.is_sticky());
+        assert!(SessionRowStatus::Draft.is_sticky() && !SessionRowStatus::Draft.is_terminal());
+    }
 
     fn child(id: &str, observe_only: bool) -> Child {
         at_depth(id, observe_only, 1)

@@ -30,6 +30,15 @@ mod tests {
     }
 
     #[test]
+    fn predicate_excludes_exactly_the_archived_status() {
+        use crate::store::sessions::SessionRowStatus;
+        assert_eq!(
+            live_sessions_predicate!(),
+            format!("status <> '{}'", SessionRowStatus::Archived.as_str())
+        );
+    }
+
+    #[test]
     fn qualified_form_prefixes_the_alias() {
         assert_eq!(live_sessions_predicate!("s"), "s.status <> 'archived'");
     }
