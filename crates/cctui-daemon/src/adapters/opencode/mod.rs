@@ -68,15 +68,15 @@ async fn command_pump(cfg: OpenCodeConfig, ctx: AdapterCtx) {
     pump(cfg, ctx, LiveRegistry::default()).await;
 }
 
-#[allow(clippy::too_many_lines, clippy::cognitive_complexity)]
 async fn pump(cfg: OpenCodeConfig, ctx: AdapterCtx, live: LiveRegistry) {
     let AdapterCtx { events, mut commands, shutdown, server, machine_key, mut connected, .. } = ctx;
+    let pump = Pump { cfg, events, shutdown, server, machine_key, live };
     let mut announced: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut connect_closed = false;
 
     loop {
         tokio::select! {
-            () = shutdown.cancelled() => return,
+            () = pump.shutdown.cancelled() => return,
             edge = connected.recv(), if !connect_closed => {
                 // Lagged is an edge like any other — the signal has no payload.
                 // Closed only disables this arm: a closed receiver returns
@@ -86,177 +86,187 @@ async fn pump(cfg: OpenCodeConfig, ctx: AdapterCtx, live: LiveRegistry) {
                     continue;
                 }
                 announced.clear();
-                announce_live_sessions(&live, &events, &mut announced).await;
+                announce_live_sessions(&pump.live, &pump.events, &mut announced).await;
             }
             cmd = commands.recv() => {
                 let Some(cmd) = cmd else { return };
-                let cmd_id = cmd.command_id();
-                match cmd {
-                    AdapterCommand::Spawn { spec, command_id, session_id } => {
-                        let Some(working_dir) = spec.working_dir.clone() else {
-                            fail(&events, command_id, "working_dir required").await;
-                            continue;
-                        };
-                        let key = session_id
-                            .or(command_id)
-                            .map_or_else(String::new, |id| id.to_string());
-                        let launch = match resolve_launch(
-                            server.as_ref(),
-                            machine_key.as_ref(),
-                            &key,
-                            &spec.env,
-                        )
-                        .await
-                        {
-                            Ok(launch) => launch,
-                            Err(err) => {
-                                fail(&events, command_id, &err.to_string()).await;
-                                continue;
-                            }
-                        };
-                        let env = launch.env;
-                        let agent_mcp = crate::adapters::agent_mcp::AgentMcp::for_capability(
-                            &key,
-                            launch.spawn_capability.as_ref(),
-                        );
-                        let attachments = match crate::adapters::uploads::stage_bootstrap(
-                            &key,
-                            &spec.bootstrap,
-                        ) {
-                            Ok(paths) => paths,
-                            Err(err) => {
-                                fail(
-                                    &events,
-                                    command_id,
-                                    &format!("attachment staging failed: {err}"),
-                                )
-                                .await;
-                                continue;
-                            }
-                        };
-                        let params = SpawnParams {
-                            cfg: cfg.clone(),
-                            key,
-                            cwd: working_dir,
-                            env,
-                            prompt: spec.prompt.clone(),
-                            name: spec.name.clone(),
-                            model: spec.model.clone(),
-                            agent: agent_of(&spec, &cfg),
-                            attachments,
-                            command_id,
-                            parent_local_id: spec.parent_local_id.clone(),
-                            agent_mcp,
-                        };
-                        let session = OpenCodeSession::new(
-                            params,
-                            events.clone(),
-                            live.clone(),
-                            shutdown.clone(),
-                        );
-                        tokio::spawn(session.run());
-                    }
-                    AdapterCommand::Fork { parent_local_id, spec, command_id, .. } => {
-                        let delivered = route(
-                            &live,
-                            &parent_local_id,
-                            SessionCommand::Fork {
-                                parent: parent_local_id.clone(),
-                                prompt: spec.prompt.clone(),
-                                name: spec.name.clone(),
-                                command_id,
-                            },
-                        )
-                        .await;
-                        if !delivered {
-                            fail(
-                                &events,
-                                command_id,
-                                "opencode fork requires the parent session to be live on this \
-                                 daemon",
-                            )
-                            .await;
-                        }
-                    }
-                    AdapterCommand::SendMessage { local_id, text }
-                    | AdapterCommand::Reply { local_id, text, .. } => {
-                        let command_id = cmd_id;
-                        let delivered = route(
-                            &live,
-                            &local_id,
-                            SessionCommand::Prompt {
-                                session_id: local_id.clone(),
-                                text,
-                                command_id,
-                            },
-                        )
-                        .await;
-                        if !delivered {
-                            fail(&events, command_id, "no live opencode session").await;
-                        }
-                    }
-                    AdapterCommand::Kill { local_id, .. } | AdapterCommand::Remove { local_id, .. } => {
-                        if !route(
-                            &live,
-                            &local_id,
-                            SessionCommand::Kill { session_id: local_id.clone() },
-                        )
-                        .await
-                        {
-                            let _ = events
-                                .send(AdapterEvent::SessionEnded {
-                                    local_id,
-                                    reason: cctui_proto::adapter::EndReason::Killed,
-                                })
-                                .await;
-                        }
-                    }
-                    AdapterCommand::Interrupt { local_id, command_id } => {
-                        let delivered = route(
-                            &live,
-                            &local_id,
-                            SessionCommand::Kill { session_id: local_id.clone() },
-                        )
-                        .await;
-                        if let Some(command_id) = command_id {
-                            let _ = events
-                                .send(AdapterEvent::CommandResult {
-                                    command_id,
-                                    ok: delivered,
-                                    error: (!delivered)
-                                        .then(|| "no live opencode session".to_owned()),
-                                })
-                                .await;
-                        }
-                    }
-                    AdapterCommand::PermissionResponse { local_id, request_id, allow } => {
-                        route(
-                            &live,
-                            &local_id,
-                            SessionCommand::Permission {
-                                session_id: local_id.clone(),
-                                request_id,
-                                allow,
-                            },
-                        )
-                        .await;
-                    }
-                    AdapterCommand::Diagnose { local_id, request_id } => {
-                        let report = diagnose(&live, &local_id, server.as_ref(), machine_key.as_ref())
-                            .await;
-                        let _ = events
-                            .send(AdapterEvent::Diagnose {
-                                local_id,
-                                request_id,
-                                report: Box::new(report),
-                            })
-                            .await;
-                    }
-                    AdapterCommand::ResumeMarks { .. } | AdapterCommand::Resume { .. } => {}
-                    _ => tracing::warn!("opencode: unhandled AdapterCommand variant"),
-                }
+                pump.handle(cmd).await;
             }
         }
+    }
+}
+
+/// Everything the command loop needs besides the channels it selects on.
+struct Pump {
+    cfg: OpenCodeConfig,
+    events: mpsc::Sender<AdapterEvent>,
+    shutdown: tokio_util::sync::CancellationToken,
+    server: Option<ServerClient>,
+    machine_key: Option<String>,
+    live: LiveRegistry,
+}
+
+impl Pump {
+    async fn handle(&self, cmd: AdapterCommand) {
+        let cmd_id = cmd.command_id();
+        match cmd {
+            AdapterCommand::Spawn { spec, command_id, session_id } => {
+                self.spawn(spec, command_id, session_id).await;
+            }
+            AdapterCommand::Fork { parent_local_id, spec, command_id, .. } => {
+                let delivered = route(
+                    &self.live,
+                    &parent_local_id,
+                    SessionCommand::Fork {
+                        parent: parent_local_id.clone(),
+                        prompt: spec.prompt.clone(),
+                        name: spec.name.clone(),
+                        command_id,
+                    },
+                )
+                .await;
+                if !delivered {
+                    fail(
+                        &self.events,
+                        command_id,
+                        "opencode fork requires the parent session to be live on this \
+                         daemon",
+                    )
+                    .await;
+                }
+            }
+            AdapterCommand::SendMessage { local_id, text }
+            | AdapterCommand::Reply { local_id, text, .. } => {
+                let command_id = cmd_id;
+                let delivered = route(
+                    &self.live,
+                    &local_id,
+                    SessionCommand::Prompt { session_id: local_id.clone(), text, command_id },
+                )
+                .await;
+                if !delivered {
+                    fail(&self.events, command_id, "no live opencode session").await;
+                }
+            }
+            AdapterCommand::Kill { local_id, .. } | AdapterCommand::Remove { local_id, .. } => {
+                if !route(
+                    &self.live,
+                    &local_id,
+                    SessionCommand::Kill { session_id: local_id.clone() },
+                )
+                .await
+                {
+                    let _ = self
+                        .events
+                        .send(AdapterEvent::SessionEnded {
+                            local_id,
+                            reason: cctui_proto::adapter::EndReason::Killed,
+                        })
+                        .await;
+                }
+            }
+            AdapterCommand::Interrupt { local_id, command_id } => {
+                let delivered = route(
+                    &self.live,
+                    &local_id,
+                    SessionCommand::Kill { session_id: local_id.clone() },
+                )
+                .await;
+                if let Some(command_id) = command_id {
+                    let _ = self
+                        .events
+                        .send(AdapterEvent::CommandResult {
+                            command_id,
+                            ok: delivered,
+                            error: (!delivered).then(|| "no live opencode session".to_owned()),
+                        })
+                        .await;
+                }
+            }
+            AdapterCommand::PermissionResponse { local_id, request_id, allow } => {
+                route(
+                    &self.live,
+                    &local_id,
+                    SessionCommand::Permission {
+                        session_id: local_id.clone(),
+                        request_id,
+                        allow,
+                    },
+                )
+                .await;
+            }
+            AdapterCommand::Diagnose { local_id, request_id } => {
+                let report =
+                    diagnose(&self.live, &local_id, self.server.as_ref(), self.machine_key.as_ref())
+                        .await;
+                let _ = self
+                    .events
+                    .send(AdapterEvent::Diagnose { local_id, request_id, report: Box::new(report) })
+                    .await;
+            }
+            AdapterCommand::ResumeMarks { .. } | AdapterCommand::Resume { .. } => {}
+            _ => tracing::warn!("opencode: unhandled AdapterCommand variant"),
+        }
+    }
+
+    async fn spawn(
+        &self,
+        spec: cctui_proto::adapter::SessionSpec,
+        command_id: Option<Uuid>,
+        session_id: Option<Uuid>,
+    ) {
+        let Some(working_dir) = spec.working_dir.clone() else {
+            fail(&self.events, command_id, "working_dir required").await;
+            return;
+        };
+        let key = session_id.or(command_id).map_or_else(String::new, |id| id.to_string());
+        let launch = match resolve_launch(
+            self.server.as_ref(),
+            self.machine_key.as_ref(),
+            &key,
+            &spec.env,
+        )
+        .await
+        {
+            Ok(launch) => launch,
+            Err(err) => {
+                fail(&self.events, command_id, &err.to_string()).await;
+                return;
+            }
+        };
+        let env = launch.env;
+        let agent_mcp = crate::adapters::agent_mcp::AgentMcp::for_capability(
+            &key,
+            launch.spawn_capability.as_ref(),
+        );
+        let attachments = match crate::adapters::uploads::stage_bootstrap(&key, &spec.bootstrap) {
+            Ok(paths) => paths,
+            Err(err) => {
+                fail(&self.events, command_id, &format!("attachment staging failed: {err}")).await;
+                return;
+            }
+        };
+        let params = SpawnParams {
+            cfg: self.cfg.clone(),
+            key,
+            cwd: working_dir,
+            env,
+            prompt: spec.prompt.clone(),
+            name: spec.name.clone(),
+            model: spec.model.clone(),
+            agent: agent_of(&spec, &self.cfg),
+            attachments,
+            command_id,
+            parent_local_id: spec.parent_local_id.clone(),
+            agent_mcp,
+        };
+        let session = OpenCodeSession::new(
+            params,
+            self.events.clone(),
+            self.live.clone(),
+            self.shutdown.clone(),
+        );
+        tokio::spawn(session.run());
     }
 }
 
