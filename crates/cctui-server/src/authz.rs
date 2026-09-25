@@ -761,9 +761,9 @@ mod tests {
     }
 
     #[test]
-    fn single_session_mutations_use_session_guard() {
+    fn single_session_routes_use_session_guard() {
         for d in descriptors() {
-            if d.path.starts_with("/sessions/{id}") && d.method != Method::GET {
+            if d.path.starts_with("/sessions/{id}") {
                 assert!(
                     matches!(
                         d.authz,

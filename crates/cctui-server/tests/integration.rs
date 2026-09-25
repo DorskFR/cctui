@@ -692,3 +692,65 @@ async fn session_files_and_deregister_are_owner_only() {
         .unwrap();
     assert_eq!(resp.status(), 204);
 }
+
+/// Registering is machine-key only, and never rewrites another user's session;
+/// another user's rebind history is invisible.
+#[tokio::test]
+#[ignore = "requires running server"]
+async fn register_and_rebinds_respect_session_owner() {
+    let client = Client::new();
+    let base = server_url();
+    let (owner_key, owner_machine) = user_with_machine(&client, &base, "rown").await;
+    let (intruder_key, intruder_machine) = user_with_machine(&client, &base, "rintr").await;
+    let sid = register_session(&client, &base, &owner_machine).await;
+
+    let resp = client
+        .post(format!("{base}/api/v1/sessions/register"))
+        .bearer_auth(&owner_key)
+        .json(&json!({"machine_id": "x", "working_dir": "/tmp/own"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 403, "a user key cannot register");
+
+    let resp = client
+        .post(format!("{base}/api/v1/sessions/register"))
+        .bearer_auth(&intruder_machine)
+        .json(&json!({
+            "claude_session_id": sid,
+            "machine_id": "x",
+            "working_dir": "/tmp/hijack",
+            "metadata": {"project_name": "hijacked"}
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+
+    let session: serde_json::Value = client
+        .get(format!("{base}/api/v1/sessions/{sid}"))
+        .bearer_auth(&owner_key)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(!session.to_string().contains("hijacked"), "{session}");
+
+    let resp = client
+        .get(format!("{base}/api/v1/sessions/{sid}/rebinds"))
+        .bearer_auth(&intruder_key)
+        .send()
+        .await
+        .unwrap();
+    assert!(matches!(resp.status().as_u16(), 403 | 404), "{}", resp.status());
+
+    let resp = client
+        .get(format!("{base}/api/v1/sessions/{sid}/rebinds"))
+        .bearer_auth(&owner_key)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+}

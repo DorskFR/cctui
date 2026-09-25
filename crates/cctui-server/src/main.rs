@@ -428,6 +428,7 @@ fn build_api_routes() -> Routes {
             "Register a session the daemon just launched.",
             post(routes::sessions::register),
             Authn::Bearer,
+            // In-handler: machine key only; binds to that machine and its owner.
             Authenticated,
         )
         .add(
@@ -1127,7 +1128,7 @@ fn build_api_routes() -> Routes {
             "Every mid-run account move this session made, newest first.",
             get(routes::account_pools::list_session_rebinds),
             Authn::Bearer,
-            Authenticated,
+            sess_read(),
         )
         // Provider credentials under an account identity: owner-scoped
         // in the handlers like the other account routes.
