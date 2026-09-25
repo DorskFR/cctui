@@ -174,7 +174,7 @@ pub async fn enroll(
 /// rather than letting a re-enrollment under a DIFFERENT principal create a
 /// shadow row — owner-scoped resolution then routes the caller to one row
 /// while the live WS connection is on the other → "dispatcher offline" 502 on
-/// every dispatch. Matches the dispatchers_name_live unique index; the INSERT
+/// every dispatch. Matches the `dispatchers_name_live` unique index; the INSERT
 /// still catches the race via 23505.
 async fn reject_live_name(pool: &sqlx::PgPool, name: &str) -> Result<(), AppError> {
     let name_taken: Option<(Uuid,)> = sqlx::query_as(
