@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { flushSync } from 'svelte';
+import { flushSync, tick } from 'svelte';
 import { clockRunning, now } from './clock.svelte';
 
 describe('shared clock', () => {
@@ -15,7 +15,7 @@ describe('shared clock', () => {
 		expect(clockRunning()).toBe(false);
 	});
 
-	it('shares one interval and notifies each cadence on its own boundary', () => {
+	it('shares one interval and notifies each cadence on its own boundary', async () => {
 		const seen = { fast: 0, slow: 0 };
 		const spy = vi.spyOn(globalThis, 'setInterval');
 		const stop = $effect.root(() => {
@@ -42,6 +42,7 @@ describe('shared clock', () => {
 		expect(seen.fast).toBe(31);
 		expect(seen.slow).toBe(2);
 		stop();
+		await tick();
 		expect(clockRunning()).toBe(false);
 		spy.mockRestore();
 	});
