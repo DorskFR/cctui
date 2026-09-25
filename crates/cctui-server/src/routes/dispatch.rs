@@ -495,12 +495,9 @@ async fn validate_dispatch(
 
     // Claude's daemon derives `short = session_id[..8]` and rejects a dispatch
     // unless `short` matches /^[a-f0-9]{8}$/ — so the worker's session id must be
-    // UUID-shaped. Callers may pass a human-readable logical id (e.g.
-    // an automation dedup key like `triage-PROJ-2026…`); we mint a FRESH UUID
-    // session for it and carry the original as both the display name and the
-    // `dedup_key`. The dispatcher hashes `dedup_key` into the Job name,
-    // so a duplicate webhook still coalesces while each round keeps an isolated
-    // session — the server never chains every round's logs onto one id.
+    // UUID-shaped. A non-UUID logical id becomes the display name and
+    // `dedup_key` (hashed into the Job name, so duplicate webhooks coalesce)
+    // while each round gets a fresh UUID session.
     let (session_id, display_name, dedup_key) =
         resolve_dispatch_session_id(req.session_id.as_deref());
 

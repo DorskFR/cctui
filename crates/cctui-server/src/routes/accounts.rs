@@ -2937,7 +2937,7 @@ mod tests {
         assert!(cleared.is_empty());
     }
 
-    /// CCT-962, both directions: the account cap only lifts the blocks it owns.
+    /// The account cap only lifts the blocks it owns, in both directions.
     #[test]
     fn raising_an_account_cap_spares_a_session_over_its_own_budget() {
         let caps = crate::soft_limit::SoftLimits::from_json(Some(&serde_json::json!({

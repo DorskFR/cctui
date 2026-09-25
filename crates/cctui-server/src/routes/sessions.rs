@@ -4139,8 +4139,8 @@ mod tests {
         assert!(out.ends_with('…'));
     }
 
-    /// The pre-CCT-1006 `make_snippet`, kept verbatim as the oracle: the
-    /// optimisation may not change a single byte of user-visible snippet.
+    /// Reference `make_snippet` oracle: the optimised version must produce
+    /// byte-identical snippets.
     fn make_snippet_reference(text: &str, needles: &[String]) -> String {
         const WINDOW: usize = 200;
         let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -4229,7 +4229,7 @@ mod tests {
         assert!(sql.contains("e.session_id = (SELECT s.id)"), "{sql}");
     }
 
-    /// CCT-1080: the persisted posture reaches the sessions payload and the
+    /// The persisted posture reaches the sessions payload and the
     /// wire shape only carries the key when it is known.
     #[test]
     fn permission_mode_rides_the_session_payload() {

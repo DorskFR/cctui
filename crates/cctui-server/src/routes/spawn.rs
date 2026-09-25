@@ -110,7 +110,7 @@ struct SpawnTarget {
     /// its tokens still fall back to `command_id` keying.
     pre_session_id: Option<Uuid>,
     /// The id the gateway session token is bound to: the pre-minted real
-    /// session id for claude, else the `command_id` (legacy behaviour).
+    /// session id for claude, else the `command_id`.
     token_session_id: String,
 }
 
@@ -171,16 +171,8 @@ struct BoundAccount {
 
 /// OAuth account selection: if the caller picked a named account, mint a
 /// session-scoped gateway token bound to it and inject the gateway base-url +
-/// token into the worker env. Raw OAuth tokens never leave the server.
-///
-/// Single source of truth for credentials: an unspecified account does not
-/// silently mean "run on whatever ambient login the machine has" — that
-/// spawned sessions whose traffic bypassed the gateway (no usage attribution,
-/// no soft limits, no langfuse capture) and, on a desktop, billed the machine
-/// owner's personal login regardless of intent. With no account named:
-/// exactly one matching-family account → bind it; several → 400 (pick
-/// explicitly, never guess); none → unbound (setups with no accounts
-/// configured keep working).
+/// token into the worker env. Raw OAuth tokens never leave the server. With
+/// no account named, see [`default_account_name`].
 async fn resolve_spawn_account(
     state: &AppState,
     target: &SpawnTarget,
@@ -321,7 +313,7 @@ async fn spawn_service_tier(
 /// Resolve `model` through the account's alias map and mint the gateway env
 /// for the session. Resolution is by (account identity, harness family): the
 /// adapter names the family, and the identity carries at most one provider
-/// row per family. The request's legacy `provider` hint is not consulted.
+/// row per family.
 async fn mint_account_env(
     state: &AppState,
     target: &SpawnTarget,
@@ -518,20 +510,10 @@ async fn persist_spawn_capability(
     state.spawn_capabilities.insert(token_session_id.to_owned(), cap);
 }
 
-/// Pick the account to bind when a spawn names none.
-///
-/// Sessions used to launch UNBOUND in this case — their traffic skipped the
-/// gateway entirely (no usage attribution, no soft limits, no langfuse trace)
-/// and, on a desktop daemon, silently consumed the machine owner's ambient
-/// `~/.claude` login whatever account the user believed was in play. Credential
-/// choice must have one source of truth:
-///
-///   * exactly one account (owned or shared) in the adapter's provider family →
-///     bind it, exactly as if the caller had named it;
-///   * several → `400` listing them — the server never guesses between
-///     accounts, that's the caller's decision;
-///   * none → `Ok(None)`, unbound spawn as before (no-accounts setups keep
-///     working; on k8s an unbound worker has no ambient login to leak to).
+/// Account to bind when a spawn names none: the only one (owned or shared) in
+/// the adapter's family, `400` listing them if several, unbound if none. An
+/// unbound desktop worker would run on the machine owner's ambient login, so
+/// the server never guesses between accounts.
 async fn default_account_name(
     state: &AppState,
     user_id: Uuid,
@@ -969,8 +951,8 @@ pub async fn stage_session_files(
     }
 }
 
-/// Legacy poll endpoint — superseded by WS push. Retained so older
-/// clients that still poll get an empty list rather than a 404.
+/// Poll endpoint superseded by WS push; answers an empty list so polling
+/// clients don't get a 404.
 pub async fn get_machine_commands(
     State(state): State<AppState>,
     Path(machine_id): Path<String>,

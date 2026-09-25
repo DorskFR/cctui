@@ -112,13 +112,9 @@ pub(super) async fn insert_event(
     // the event is silently lost. Strip NULs from every string so
     // the rest of the payload survives.
     strip_nul(&mut payload);
-    // Guard the insert on the session row existing. A daemon can emit an event
-    // for a session the server never registered (e.g. a session_ended whose
-    // prior SessionStarted was never received, or an ephemeral subagent
-    // session): a bare INSERT then trips `stream_events_session_id_fkey`,
-    // spamming WARN logs and burning a failed DB round-trip per event. The
-    // `WHERE EXISTS` makes that case a clean no-op (0 rows) instead — when the
-    // session is present this is identical to the old insert.
+    // `WHERE EXISTS`: a daemon can emit events for a session the server never
+    // registered (missed SessionStarted, ephemeral subagent); those are a
+    // no-op instead of an FK violation.
     let links = crate::routes::fs::extract_links(&payload);
     // The ON CONFLICT target must stay character-identical to migration 121's
     // `stream_events_dedup_turn_idx` expression list or inference fails.

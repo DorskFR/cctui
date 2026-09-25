@@ -5,8 +5,8 @@
 # schema lacks: per-key POLICY TAGS (safe/care/managed/system), the docs-only keys the
 # schema still lags on, a curated env-var allowlist, and named presets.
 #
-# Consumed by the settings_catalog Rust module (server-side allowlist validation, CCT-538)
-# and the webui account settings editor (CCT-541). Keep in sync with the Claude Code docs.
+# Consumed by the settings_catalog Rust module (server-side allowlist validation)
+# and the webui account settings editor. Keep in sync with the Claude Code docs.
 #
 # Policy tags:
 #   safe    — good per-account toggle candidate, low blast radius
