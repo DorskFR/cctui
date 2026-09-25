@@ -26,5 +26,6 @@
 //! ⚠️ Repo is PUBLIC — no homelab namespaces/images/registries baked in;
 //! everything environment-specific comes from `dispatcher.toml` / enroll flags.
 
+pub mod backend;
 pub mod config;
 pub mod spawn;

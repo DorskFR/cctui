@@ -8,6 +8,7 @@
 //! implements with its own workload builder (docker `HostConfig`, kube
 //! `PodSpec`, apple plist).
 
+pub mod cli;
 pub mod client;
 pub mod config;
 pub mod dispatcher;
