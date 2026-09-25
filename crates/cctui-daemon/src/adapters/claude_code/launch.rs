@@ -132,7 +132,7 @@ pub(super) fn dispatch_request(
     launch: &LaunchArgs,
     prompt: Option<&str>,
     env: &std::collections::BTreeMap<String, String>,
-    seed: Value,
+    seed: &Value,
 ) -> Value {
     let mut args = launch.to_argv();
     if let Some(prompt) = prompt {

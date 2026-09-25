@@ -1730,7 +1730,7 @@ impl Driver {
         // identity fields, so the seed is just protocol filler.
         let seed =
             json!({ "intent": st.as_ref().and_then(|s| s.intent.clone()).unwrap_or_default() });
-        let req = launch::dispatch_request(&ids, &cwd, &launch, None, &env, seed);
+        let req = launch::dispatch_request(&ids, &cwd, &launch, None, &env, &seed);
         let session_id = ids.session_id;
         let resp: serde_json::Value = socket::call(sock, &req)
             .await
@@ -2142,7 +2142,7 @@ impl Driver {
             &launch,
             Some(&prompt),
             &launch_env.env,
-            dispatch_seed(spec),
+            &dispatch_seed(spec),
         );
         let gate = self.launch_gate(session_id, short, spec.model.as_deref());
         Ok(DeferredDispatch {
@@ -2320,7 +2320,7 @@ impl Driver {
             &launch,
             prompt,
             &launch_env.env,
-            dispatch_seed(spec),
+            &dispatch_seed(spec),
         );
         tracing::info!(%cwd, %session_id, %parent_local_id, %resume_id, "fork prepared for control socket");
         Ok(DeferredDispatch {
@@ -4374,7 +4374,7 @@ mod tests {
             &launch,
             prompt,
             &std::collections::BTreeMap::new(),
-            json!({}),
+            &json!({}),
         );
         let strings = |v: &serde_json::Value| -> Vec<String> {
             v.as_array().unwrap().iter().map(|s| s.as_str().unwrap().to_owned()).collect()
@@ -4383,9 +4383,8 @@ mod tests {
     }
 
     #[test]
-    fn control_launch_argv_snapshot() {
+    fn control_launch_argv_snapshot_spawn() {
         let spec = launch_argv_spec();
-
         let (args, respawn) =
             dispatched_argv(spawn_launch(&spec, "child"), true, Some("ctx\n\ngo"));
         assert_eq!(
@@ -4418,7 +4417,11 @@ mod tests {
                 "/cfg/settings.json"
             ]
         );
+    }
 
+    #[test]
+    fn control_launch_argv_snapshot_fork() {
+        let spec = launch_argv_spec();
         let (args, respawn) =
             dispatched_argv(fork_launch(&spec, "parent", "child", false), true, Some("go"));
         assert_eq!(
@@ -4460,7 +4463,23 @@ mod tests {
             "/cfg/settings.json",
         ];
         assert_eq!(respawn, fork_respawn);
+    }
 
+    #[test]
+    fn control_launch_argv_snapshot_sliced_fork() {
+        let spec = launch_argv_spec();
+        let fork_respawn = [
+            "--agent",
+            "claude",
+            "--effort",
+            "high",
+            "--model",
+            "opus",
+            "--mcp-config",
+            "/cfg/mcp.json",
+            "--settings",
+            "/cfg/settings.json",
+        ];
         let (args, respawn) =
             dispatched_argv(fork_launch(&spec, "parent", "child", true), true, None);
         assert_eq!(
@@ -4487,7 +4506,10 @@ mod tests {
             ]
         );
         assert_eq!(respawn, fork_respawn);
+    }
 
+    #[test]
+    fn control_launch_argv_snapshot_resume() {
         let (args, respawn) = dispatched_argv(resume_launch("child"), false, None);
         assert_eq!(
             args,
