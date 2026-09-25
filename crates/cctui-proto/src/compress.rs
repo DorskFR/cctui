@@ -25,7 +25,12 @@ pub fn zstd_compress(data: &[u8]) -> Vec<u8> {
 
 /// Upper bound on decompressed output, so a zstd bomb errors instead of
 /// exhausting memory.
-pub const MAX_DECOMPRESSED_BYTES: usize = 256 * 1024 * 1024;
+pub const MAX_DECOMPRESSED_BYTES: usize = 128 * 1024 * 1024;
+
+/// Largest zstd window (log2 bytes) a frame may demand; the encoder's level
+/// never needs more, and it keeps a crafted header from forcing a huge
+/// allocation before any output.
+pub const ZSTD_WINDOW_LOG_MAX: u32 = 24;
 
 /// Decompress a zstd buffer, erroring past [`MAX_DECOMPRESSED_BYTES`].
 pub fn zstd_decompress(data: &[u8]) -> std::io::Result<Vec<u8>> {
@@ -37,7 +42,9 @@ pub fn zstd_decompress_bounded(data: &[u8], max: usize) -> std::io::Result<Vec<u
     use std::io::Read;
     let limit = u64::try_from(max).unwrap_or(u64::MAX).saturating_add(1);
     let mut out = Vec::with_capacity(data.len().saturating_mul(4).min(max));
-    zstd::stream::read::Decoder::new(data)?.take(limit).read_to_end(&mut out)?;
+    let mut decoder = zstd::stream::read::Decoder::new(data)?;
+    decoder.window_log_max(ZSTD_WINDOW_LOG_MAX)?;
+    decoder.take(limit).read_to_end(&mut out)?;
     if out.len() > max {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
@@ -175,6 +182,16 @@ mod tests {
         assert!(zstd_decompress(&bomb).is_err());
         assert!(decompress_codec(CODEC_ZSTD, &bomb).is_err());
         assert!(decode_compressed(CODEC_ZSTD, &BASE64.encode(&bomb)).is_err());
+    }
+
+    #[test]
+    fn oversized_window_is_rejected() {
+        let mut enc = zstd::stream::write::Encoder::new(Vec::new(), 1).unwrap();
+        enc.window_log(ZSTD_WINDOW_LOG_MAX + 2).unwrap();
+        enc.include_contentsize(false).unwrap();
+        std::io::Write::write_all(&mut enc, &vec![7u8; 1024]).unwrap();
+        let frame = enc.finish().unwrap();
+        assert!(zstd_decompress(&frame).is_err());
     }
 
     #[test]
