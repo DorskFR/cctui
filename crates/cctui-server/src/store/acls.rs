@@ -21,6 +21,25 @@ pub async fn user_ceiling(
     Ok(parse(rows))
 }
 
+/// Replace a user's ceiling. Run inside the caller's transaction.
+pub async fn set_user_ceiling(
+    conn: &mut sqlx::PgConnection,
+    user_id: Uuid,
+    scopes: &[Scope],
+) -> Result<(), sqlx::Error> {
+    sqlx::query("DELETE FROM user_acls WHERE user_id = $1")
+        .bind(user_id)
+        .execute(&mut *conn)
+        .await?;
+    let scopes: Vec<&str> = scopes.iter().copied().map(Scope::as_str).collect();
+    sqlx::query("INSERT INTO user_acls (user_id, scope) SELECT $1, unnest($2::text[])")
+        .bind(user_id)
+        .bind(scopes)
+        .execute(&mut *conn)
+        .await?;
+    Ok(())
+}
+
 /// A key's own grant, before intersecting with its owner's ceiling.
 pub async fn key_grant(
     exec: impl PgExecutor<'_>,

@@ -749,19 +749,9 @@ pub async fn set_user_acls(
     forbid_or(&ctx)?; // admin only
     let scopes = parse_scopes(&req.scopes)?;
     let mut tx = state.pool.begin().await.map_err(|e| db_err(&e))?;
-    sqlx::query("DELETE FROM user_acls WHERE user_id = $1")
-        .bind(user_id)
-        .execute(&mut *tx)
+    crate::store::acls::set_user_ceiling(&mut tx, user_id, &scopes)
         .await
         .map_err(|e| db_err(&e))?;
-    for scope in &scopes {
-        sqlx::query("INSERT INTO user_acls (user_id, scope) VALUES ($1, $2)")
-            .bind(user_id)
-            .bind(scope.as_str())
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| db_err(&e))?;
-    }
     // Keep the legacy can_dispatch flag in sync: the dispatch scope
     // supersedes it, but other code paths / older clients may still read it.
     let can_dispatch = scopes.contains(&Scope::Dispatch);
