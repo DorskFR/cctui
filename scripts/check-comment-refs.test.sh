@@ -41,6 +41,8 @@ check "ticket in an html comment fails" fails c.svelte "<!-- $T -->"
 check "ticket in a shell comment fails" fails d.sh "# $T"
 check "ticket in a yaml comment fails" fails e.yml "  # $T"
 check "ticket in a Makefile comment fails" fails Makefile "# $T"
+check "ticket in a systemd unit comment fails" fails x.service "# $T"
+check "ticket in a Dockerfile comment fails" fails worker.Dockerfile "# $T"
 check "wave note fails" fails a.rs '// added in Wave 12'
 check "lane note fails" fails a.rs '// lane W3 owns this'
 check "ticket in a describe name fails" fails f.test.ts "describe('$T drawer', () => {});"

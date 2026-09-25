@@ -37,10 +37,8 @@ fn run() -> anyhow::Result<()> {
     // Hidden self-test hook (used by integration tests, no privileges needed):
     // install the seccomp denylist, then call unshare(0). `unshare` with no
     // flags is a no-op that normally succeeds for any user, so a resulting
-    // EPERM is unambiguous proof the filter denied it. (setuid is no longer
-    // suitable here: a no-op setuid to the current id is now deliberately
-    // allowed for, so it would not prove the filter is active.) Prints
-    // the errno and exits with that code.
+    // EPERM is unambiguous proof the filter denied it (a no-op setuid is
+    // allowed, so it cannot prove that). Prints the errno and exits with it.
     if std::env::var_os("CCTUI_SUPERVISOR_SELFTEST_SECCOMP").is_some() {
         return selftest_seccomp();
     }

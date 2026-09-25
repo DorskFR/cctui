@@ -115,9 +115,8 @@ pub fn apply_settings(server_url: &str, _bin_path: &Path) -> Result<()> {
     let hooks_val = sobj.entry("hooks").or_insert_with(|| Value::Object(serde_json::Map::new()));
     let new_hooks = build_hooks(server_url);
     if let (Some(existing), Some(new_map)) = (hooks_val.as_object_mut(), new_hooks.as_object()) {
-        // Drop the stale `/api/v1/check` PreToolUse hook left by schema v1
-        // installs: the server route no longer exists, so re-applying
-        // must actively remove the key, not just overwrite the ones we still emit.
+        // PreToolUse is not emitted; remove it so a stale `/api/v1/check` hook
+        // from a schema v1 install does not survive re-applying.
         existing.remove("PreToolUse");
         for (k, v) in new_map {
             existing.insert(k.clone(), v.clone());

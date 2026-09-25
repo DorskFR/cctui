@@ -1,38 +1,16 @@
 #!/usr/bin/env sh
 # Entrypoint for the cctui worker container (contract v1).
-#
-# The dispatcher injects the session identity as env (CCTUI_URL,
-# CCTUI_MACHINE_KEY, SESSION_ID, TASK_PAYLOAD_JSON, optional REPLY_URL /
-# TASK_NAME). The cctui-daemon reads CCTUI_MACHINE_KEY + CCTUI_URL from the
-# environment (Config::from_env), so no enroll step and no config file are
-# needed here.
-#
-# The container starts as ROOT to bootstrap the sandbox, then drops to the
-# unprivileged `worker` user (uid 1000) via cctui-supervisor before exec'ing the
-# daemon. The phases below run root-side; each is INDIVIDUALLY SKIPPABLE on its
-# own env, so a worker booted with ONLY CCTUI_URL + CCTUI_MACHINE_KEY +
-# SESSION_ID falls straight through to
-# `exec cctui-supervisor -- cctui-daemon run --no-auto-update`.
-#
-# No phase may hard-fail when its inputs are absent. The ONE exception is the
-# context-pack fetch: if CONTEXT_PACK_URL is set it MUST succeed (the pack
-# defines the guard rules — proceeding without it would weaken the sandbox).
-#
-# Ephemeral worker: --no-auto-update, since the container is short-lived and
-# re-fetched on every spawn (k8s/docker workers never self-update — CCT memory).
-#
-# See docs/worker-contract.md for the full env / mount / capability contract.
+# Runs root-side bootstrap phases, each skippable when its env is absent, then
+# drops to uid 1000 via cctui-supervisor and execs the daemon. Only the context
+# pack fetch is fail-closed. Ephemeral: never self-updates.
+# See docs/worker-contract.md for the env / mount / capability contract.
 set -eu
 
 log() { echo "cctui-worker: $*"; }
 
-# Extra read-only paths for DERIVED images. The base entrypoint's RO
-# allow-list is fixed, but a fat derived image installs its own toolchain outside
-# it (e.g. Node/pnpm under /opt/mise, Rust under /opt/rust). Such an image can set
-# CCTUI_WORKER_EXTRA_RO (colon-separated, e.g. `/opt/mise:/opt/rust`) to have each
-# path added to the supervisor's Landlock RO set. Emits a `--ro <path>` token per
-# non-empty entry (newline-separated for word-splitting at the call sites); a
-# no-op when the var is unset/empty.
+# Emits one `--ro <path>` token per entry of CCTUI_WORKER_EXTRA_RO
+# (colon-separated), so derived images can add toolchain dirs to the Landlock
+# RO set.
 extra_ro_flags() {
     _ero="${CCTUI_WORKER_EXTRA_RO:-}"
     [ -n "$_ero" ] || return 0
@@ -119,13 +97,8 @@ url_host() {
     printf '%s' "$(url_hostport "$1")" | sed 's,:.*$,,'
 }
 
-# The guard-proxy sidecar TLS-terminates injection hosts with leaf certs
-# signed by a per-pod CA it mints at boot, writing the PUBLIC cert (only) to the
-# shared emptyDir below. Trust that CA so the worker's toolchains accept the
-# intercepted TLS — IN ADDITION to the public roots, never replacing them
-# (non-injected hosts stay passthrough with their real certs). Bounded wait +
-# best-effort: if injection is disabled the file never appears, so we log and
-# carry on. transparent-external only; single-container modes never MITM.
+# Trust the guard-proxy sidecar's per-pod CA alongside the public roots.
+# Best-effort with a bounded wait; transparent-external only.
 GUARD_CA_FILE="${GUARD_PROXY_CA_FILE:-/var/run/guard-proxy-ca/ca.pem}"
 install_guard_ca() {
     _i=0
@@ -170,15 +143,9 @@ install_guard_ca() {
     log "guard-proxy CA trusted by worker toolchains (bundle=$_bundle)"
 }
 
-# Remote GPG signing. The private key never enters this container; the
-# guard-proxy sidecar runs gpg-agent and forwards ONLY its restricted
-# `--extra-socket` (cannot export secret keys) into the shared gpg-agent
-# emptyDir. Here we point the worker's gpg at that forwarded socket: import the
-# PUBLIC key the sidecar published, symlink gpg's expected agent-socket to the
-# extra socket, and set user.signingkey + commit.gpgsign — ONLY when the socket
-# is actually present. Bounded wait, best-effort: if absent (feature off) we log
-# loud and leave signing unconfigured. transparent-external only (same gate as
-# the CA install); single-container modes keep the legacy in-worker key import.
+# Point the worker's gpg at the sidecar's forwarded restricted agent socket
+# and enable commit signing; the private key never enters this container.
+# Best-effort with a bounded wait; transparent-external only.
 GPG_AGENT_DIR="${CCTUI_GPG_AGENT_DIR:-/var/run/gpg-agent}"
 GPG_EXTRA_SOCKET="${CCTUI_GPG_EXTRA_SOCKET:-${GPG_AGENT_DIR}/S.gpg-agent.extra}"
 wire_gpg_forwarding() {
@@ -228,16 +195,9 @@ wire_gpg_forwarding() {
 }
 
 # ── Phase 1: Network mode + guard proxy ─────────────────────────────────────
-# transparent (default when CAP_NET_ADMIN): iptables REDIRECT worker egress to
-#   the proxy; exempt the proxy uid, root, loopback, the CCTUI_URL host, DNS,
-#   and any WORKER_NET_EXEMPT entries; deny IPv6 egress.
-# forward (or no NET_ADMIN): no iptables; export HTTP(S)_PROXY for the worker.
-# transparent-external (explicit only): the proxy runs as a separate
-#   sidecar container and the iptables REDIRECT was installed by a NET_ADMIN
-#   init container (cctui-worker-net-init) — this container needs neither
-#   privileged nor NET_ADMIN. Only seed the policy and wait for the sidecar.
-# In the two in-container modes start cctui-guard-proxy (uid 1337); in all modes
-# seed a deny-default policy that always-allows the CCTUI_URL + REPLY_URL hosts.
+# transparent: iptables REDIRECT to an in-container proxy. forward: proxy env
+# only. transparent-external: sidecar proxy, REDIRECT installed by net-init.
+# Every mode seeds a deny-default policy allowing the CCTUI_URL + REPLY_URL hosts.
 NET_MODE=""
 phase_network() {
     # Decide the mode. Explicit WORKER_NET_MODE wins; else transparent iff we
@@ -253,15 +213,8 @@ phase_network() {
 
     mkdir -p "$(dirname "$POLICY_FILE")"
 
-    # Seed a base deny-default policy: allow the structural hosts (the cctui
-    # server + the result callback) plus any WORKER_NET_ALLOW hosts. cctui-guard
-    # rewrites this per step when a guarded prompt runs (WORKER_NET_ALLOW is
-    # re-applied there via --always-allow so it survives every rewrite).
-    #
-    # WORKER_NET_ALLOW vs WORKER_NET_EXEMPT: ALLOW routes the host THROUGH the
-    # proxy and permits it by SNI (IP-independent — the right tool for CDN /
-    # multi-IP hosts like a SaaS API). EXEMPT bypasses the proxy via an iptables
-    # RETURN on a single boot-resolved IP — only safe for IP-stable hosts.
+    # WORKER_NET_ALLOW permits a host through the proxy by SNI; WORKER_NET_EXEMPT
+    # bypasses the proxy for one boot-resolved IP, so only for IP-stable hosts.
     _cctui_hp=$(url_hostport "$CCTUI_BASE_URL")
     _reply_hp=$(url_hostport "${REPLY_URL:-}")
     # Boot-only: the pack host is deliberately NOT --always-allow'ed in
@@ -508,21 +461,10 @@ phase_workspace() {
 }
 
 # ── Phase 3: Context pack ───────────────────────────────────────────────────
-# Operator-plane: CONTEXT_PACK_URL/REF (+ optional TOKEN, SUBDIR). git clone
-# --depth 1 the pinned ref into /opt/context (root-side, pre-lockdown), then
-# wire its CLAUDE.md / guard-rules.md and the dirs its pack.toml [dirs] table
-# declares (falling back to the v1 set: skills/rules/docs/style/projects) into
-# the locations the agent expects. FAIL-CLOSED: when CONTEXT_PACK_URL is set the
-# fetch MUST succeed (the pack defines the guard rules). Skipped entirely when
-# CONTEXT_PACK_URL is unset.
-#
-# Precedence: the pod template (true operator plane) wins. Only when a
-# CONTEXT_PACK_* var is NOT already set in the pod env do we fall back to the
-# dispatch payload's `env` map (TASK_PAYLOAD_JSON.env, the operator-controlled
-# automation dispatcher) — letting a flow select its pack without baking it into the
-# template, while a template that pins the pack still overrides the payload.
-# [dirs] table from the merged pack manifest ($CONTEXT_DIR/pack.toml), one
-# `key srcdir` pair per line. Empty when the pack ships no manifest / no [dirs].
+# Clone CONTEXT_PACK_URL@REF into /opt/context and wire it into the worker home.
+# Fail-closed when CONTEXT_PACK_URL is set. Pod env wins over the payload's env.
+
+# [dirs] table from $CONTEXT_DIR/pack.toml as `key srcdir` lines.
 pack_dirs() {
     [ -f "$CONTEXT_DIR/pack.toml" ] || return 0
     sed -n '/^\[dirs\]/,/^\[/s/^[[:space:]]*\([A-Za-z0-9_-][A-Za-z0-9_-]*\)[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1 \2/p' \
@@ -539,14 +481,8 @@ pack_dir_src() {
     done
 }
 
-# Home-relative wiring target for a [dirs] key. rules/ = always-on guidance
-# (Claude Code auto-loads each *.md); docs/ = on-demand
-# reference pulled by path (@~/.claude/docs/<x>.md), not auto-loaded; hooks/ =
-# PreToolUse scripts (chmod +x here, registered in phase_permissions). prompts/
-# and scripts/ stay in /opt/context (TASK_PROMPT_FILE / absolute paths resolve
-# there); projects/ is consumed by pack_wire_instructions, not copied to the
-# home. Unknown keys land under ~/.claude/<key> — a per-pod emptyDir, so a new
-# pack dir never writes to the NFS-shared home root.
+# Home-relative wiring target for a [dirs] key; empty means it stays in
+# /opt/context. Unknown keys land under the per-pod ~/.claude, never the shared home.
 pack_dir_target() {
     case "$1" in
         skills)          printf '.claude/skills' ;;
@@ -559,18 +495,8 @@ pack_dir_target() {
     esac
 }
 
-# Stage the pack's always-on instructions into /workspace, the PARENT of the
-# checkout at /workspace/${TASK_REPO}. Both harnesses resolve instructions by
-# walking UP from the cwd, and $HOME is not on that path — ~/CLAUDE.md and
-# ~/projects/<repo>/CLAUDE.md are never read. Do not "restore" this to $HOME.
-#
-# One level above the checkout is also the nearest read slot OUTSIDE the repo:
-# the repo's own committed AGENTS.md/CLAUDE.md stays deeper in the ancestry, so
-# it still loads and wins on conflict, and nothing lands in `git status`.
-#
-# AGENTS.md is the source (Codex reads it natively); CLAUDE.md beside it is the
-# pack's one-line @AGENTS.md import. A pack predating the split ships only
-# CLAUDE.md — use it for both.
+# Stage the pack's AGENTS.md/CLAUDE.md in the checkout's parent: harnesses walk
+# up from the cwd (never $HOME), and the repo's own files still load and win.
 pack_wire_instructions() {
     _ws="${PACK_WORKSPACE_DIR:-/workspace}"
     [ -d "$_ws" ] || return 0
@@ -610,22 +536,9 @@ phase_context_pack() {
             _v=$(printf '%s' "$TASK_PAYLOAD_JSON" | jq -r --arg k "$_k" '.env[$k] // empty' 2>/dev/null || true)
             [ -n "$_v" ] && export "$_k=$_v"
         done
-        # Single-token model: one GITHUB_TOKEN pulls the pack AND (via the daemon
-        # applying it to the session) clones/pushes the work repo, so the tenant
-        # ships exactly one credential. If no dedicated CONTEXT_PACK_TOKEN was
-        # given, resolve a GitHub token for the pack clone, in priority order:
-        #   1. payload.env.GITHUB_TOKEN — explicit override (tests / ad-hoc).
-        #   2. GITHUB_TOKEN_<IDENTITY> from the pod env — the per-identity secret
-        #      Vault injects operator-side (identity-as-root; the job carries only
-        #      the `identity` selector, never the secret). Same source the
-        #      credentials helper materializes. A future dispatcher-side secret
-        #      broker can populate this var without changing the job contract.
-        # Operator-named source for the pack-clone token: CONTEXT_PACK_TOKEN_FROM
-        # holds the NAME of an env var holding a token that can read the pack repo
-        # (e.g. a privileged identity), set in the worker template. The
-        # indirection keeps any specific identity name out of this image while
-        # letting the operator point the pack clone at a different credential than
-        # the task identity (whose token may not have pack-repo access).
+        # Pack-clone token: CONTEXT_PACK_TOKEN, else the env var named by
+        # CONTEXT_PACK_TOKEN_FROM, else payload GITHUB_TOKEN, else the
+        # per-identity GITHUB_TOKEN_<IDENTITY>.
         if [ -z "${CONTEXT_PACK_TOKEN:-}" ] && [ -n "${CONTEXT_PACK_TOKEN_FROM:-}" ]; then
             case "$CONTEXT_PACK_TOKEN_FROM" in
                 [A-Za-z_][A-Za-z0-9_]*)
@@ -722,13 +635,8 @@ phase_context_pack() {
         exit 1
     fi
 
-    # Optional shared base layer merged UNDER the selected pack. A monorepo of
-    # packs keeps universal material (home CLAUDE.md, guard-rules.md, universal
-    # rules) once in a `_base` dir; each pack subdir overlays its own files on
-    # top. The subdir's pack.toml declares its location via `base = "../_base"`
-    # (path relative to the subdir); absent that we fall back to a repo-root
-    # `_base` when a subdir is selected. Copied FIRST so the pack wins on
-    # conflict (cp -a "$X/." merges trees, later copy overwrites same-named files).
+    # Optional `_base` layer (pack.toml `base = "../_base"`, else repo-root
+    # `_base` when a subdir is selected) is copied first so the pack wins.
     _base_dir=""
     if [ -n "${CONTEXT_PACK_SUBDIR:-}" ]; then
         _base_rel=""
@@ -771,14 +679,8 @@ docs docs
 style style
 projects projects"
 
-    # Per-pod isolation of the home paths the pack overwrites. /home/worker is a
-    # ReadWriteMany NFS volume shared across concurrent workers, so writing the
-    # pack's style dir straight onto it would race-corrupt other in-flight
-    # dispatches. When a pack is active we bind an empty per-pod dir (under the
-    # /overlay emptyDir) over it, so the pack's writes are private to this pod
-    # and the shared NFS copy is untouched. (~/.claude is already a per-pod
-    # emptyDir, so skills/rules/docs need no isolation.) Best-effort: if /overlay
-    # or mount is unavailable we fall through to direct copy.
+    # The home is shared NFS: bind a per-pod dir over the paths the pack writes
+    # so concurrent pods don't race. Best-effort.
     if [ -d /overlay ]; then
         _iso="/overlay/pack-home"
         mkdir -p "$_iso"
@@ -867,32 +769,8 @@ phase_extensions() {
 }
 
 # ── Phase 4b: Codex model provider ──────────────────────────────────────────
-# The platform injects OPENAI_API_KEY + OPENAI_BASE_URL (the cctui openai
-# gateway) into the agent env, but the `codex` CLI IGNORES those
-# vars — it reads its model provider only from ~/.codex/config.toml. The pod's
-# config.toml has just `trust_level = "trusted"` (codex writes that itself), so
-# codex's default provider connects straight to api.openai.com with no bearer →
-# `401 Unauthorized (Missing bearer)`, and the dual-reviewer review-pr flow
-# silently degrades to Claude-only.
-#
-# When OPENAI_API_KEY is set, MERGE a `[model_providers.cctui]` block + a
-# `model_provider = "cctui"` selector into config.toml, pointing codex's
-# `responses` wire transport at OPENAI_BASE_URL and reading the bearer from the
-# OPENAI_API_KEY env var (codex DOES read env_key from env at request time).
-#
-# We ALSO pin standard service tier + disable fast mode (CCT: codex spend).
-# Codex "fast mode" is a 1.5x speed lever that bills subscription credits at
-# 2-2.5x the standard rate (same model, same quality) and can persist via
-# `service_tier = "fast"` + `[features].fast_mode = true`. Unattended dispatched
-# workers must never silently run on the expensive tier, so we force the inverse
-# (`service_tier = "default"`, `fast_mode = false`) into the managed region.
-#
-# The block is delimited by BEGIN/END markers and rewritten in place, so this
-# is idempotent (safe to re-run) and preserves codex's own keys (trust_level).
-# No TOML-aware tool ships in the worker image (jq is JSON-only, no python3), so
-# the merge is plain shell: drop any prior cctui-managed region + a stray
-# top-level `model_provider`, then append a fresh region. Skipped silently when
-# OPENAI_API_KEY is unset.
+# codex ignores OPENAI_* env; write a managed [model_providers.cctui] block
+# (standard tier, fast_mode off) into config.toml. Idempotent.
 CODEX_MARKER_BEGIN="# >>> cctui codex model_provider >>>"
 CODEX_MARKER_END="# <<< cctui codex model_provider <<<"
 
@@ -1147,14 +1025,8 @@ phase_hardening() {
 }
 
 # ── Phase 7b: Permission bypass seeding ─────────────────────────────────────
-# A dispatched headless session runs in claude's bypassPermissions mode, which
-# REFUSES to start (prompts the disclaimer) until `bypassPermissionsModeAccepted`
-# is recorded in .claude.json, and prompts a trust dialog until
-# `projects.<cwd>.hasTrustDialogAccepted` is set. The per-pod .claude is a fresh
-# emptyDir every pod, so we seed both. Belt-and-suspenders in settings.json:
-# `skipDangerousModePermissionPrompt` (the disclaimer) + `permissions.defaultMode
-# = bypassPermissions` (unattended, no prompts). Merged into any existing files
-# so the daemon's --settings hooks and managed-settings are untouched.
+# Seed claude's bypass-permissions and trust-dialog acceptance into the fresh
+# per-pod config, merged into existing files.
 phase_permissions() {
     _cfgdir="${CLAUDE_CONFIG_DIR:-/home/${WORKER_USER}/.claude}"
     _cwd="${CCTUI_DISPATCH_WORKDIR:-/workspace}"
@@ -1295,65 +1167,21 @@ stop_daemon_gracefully() {
 }
 
 # ── Phase 9: Dual-signal "work done" wait ─────────────────────────
-# With `claude -p`, "work is done" (semantic) and "process is gone" (liveness)
-# were the same event, so `wait $PID` sufficed. `claude daemon` splits them:
-# the dispatch op acks instantly and the daemon stays up — there is no blocking
-# "wait until done" primitive. So a DISPATCHED worker (SESSION_ID +
-# TASK_PAYLOAD_JSON present) runs the daemon in the BACKGROUND and blocks on two
-# signals:
-#
-#   PRIMARY (done)     — the agent declares completion via cctui-guard ->
-#                        POST /transition {"step":"exit"}, which flips the guard
-#                        state file to STEP_EXITED (-1) AND relaxes the egress
-#                        proxy so the result callback can leave. Guard-less
-#                        workers (no step markers) fall back to watching the
-#                        RESULT_FILE appear with valid JSON, or the daemon's
-#                        dispatch_done turn-complete marker.
-#   BACKSTOP (crashed) — the dispatched session dies WITHOUT signalling done.
-#                        Sourced from the daemon's authoritative registration:
-#                        the server row for $SESSION_ID leaves "active" (the
-#                        daemon deregistered it on SessionEnded, or its heartbeat
-#                        went stale). Gated on "seen registered once" so a slow
-#                        cold start is not mistaken for a crash.
-#
-# Either signal ends the wait; the EXIT trap (phase_callback) then POSTs the
-# preserved clean/failed verdict from RESULT_FILE. A non-dispatched (thin)
-# worker has no task to finish, so it keeps the original exec-forever behavior.
-# GUARD_STATE is already the state FILE path (--state, default
-# /var/run/workflow-guard/state) that cctui-guard's engine writes {"step":N} to.
+# Dispatched workers block until the guard reports exit / RESULT_FILE appears,
+# or the server marks the session inactive. Thin workers run the daemon forever.
 GUARD_STATE_FILE="$GUARD_STATE"
 WAIT_POLL_SECS="${WORKER_DONE_POLL_SECS:-2}"
-# Fail-closed boot bound. A `claude daemon run` that crash-loops
-# `exited code=1` (often behind a network deny) keeps cctui-daemon up but never
-# dispatches a session, so it never registers and the backstop (gated on "seen
-# registered once") never fires — the wait would block to the 24h
-# activeDeadlineSeconds, burning a pod slot for a day with no callback. Bound the
-# time-to-first-registration: if the dispatched session never registers within
-# this window, write a failed RESULT_FILE and exit non-zero so the EXIT trap
-# POSTs the callback promptly.
+# Fail the pod if the dispatched session never registers within this bound.
 WORKER_BOOT_DEADLINE_SECS="${WORKER_BOOT_DEADLINE_SECS:-120}"
 
-# Belt-and-suspenders result grace: under GUARD_ON a finished session
-# that wrote a valid RESULT_FILE but never POSTed /transition exit would block to
-# the 24h activeDeadlineSeconds. Arm a countdown on a valid RESULT_FILE and exit
-# the wait even under guard once it elapses; guard-exit stays the fast path.
+# Exit the wait this long after a valid RESULT_FILE even without a guard exit.
 WORKER_RESULT_GRACE_SECS="${WORKER_RESULT_GRACE_SECS:-60}"
 
-# Teardown flush grace: after the done-signal, SIGTERM the daemon and give it
-# this long to flush the transcript tail (final tool_use + error) to the server
-# before the pod is reaped, then SIGKILL. cctui-daemon handles SIGTERM as a
-# graceful shutdown; a hard kill here would drop the last events.
+# SIGTERM-to-SIGKILL grace for the daemon to flush the transcript tail.
 WORKER_TEARDOWN_GRACE_SECS="${WORKER_TEARDOWN_GRACE_SECS:-10}"
 
-# Turn-complete marker: cctui-daemon writes
-# ~worker/.claude/jobs/<short>/dispatch_done once the session it dispatched at
-# boot has been busy at least once and then settled idle (default 60s,
-# CCTUI_DISPATCH_DONE_SETTLE_SECS). Catches the "finished its turn but stays
-# idle-and-alive under `claude daemon`" case none of the other signals fires
-# for: no guard step=-1, no RESULT_FILE, the daemon stays up and the session
-# stays registered — the pod would otherwise idle to activeDeadlineSeconds.
-# <short> is the first 8 chars of the session id, mirroring the daemon's
-# `session_id[..8]` (control.rs).
+# Written by cctui-daemon once the boot-dispatched session went busy then
+# settled idle; <short> mirrors the daemon's `session_id[..8]`.
 _SHORT=$(printf %s "${SESSION_ID:-}" | cut -c1-8)
 DISPATCH_DONE_MARKER="/home/${WORKER_USER}/.claude/jobs/${_SHORT}/dispatch_done"
 
@@ -1380,19 +1208,8 @@ result_ready() {
     result_valid
 }
 
-# Per-session liveness backstop — sourced from the cctui-daemon's own
-# registration, NOT a grep of claude's private jobs dir: claude's internal job
-# id rotates on resume/clear and isn't reliably discoverable for
-# cold-dispatched worker sessions. The daemon is the source of truth: it
-# launches claude with `--session-id $SESSION_ID` and registers THAT stable
-# id with the server, immune to claude's id rotation. Ask the server for it.
-#
-# Use the LIST endpoint, not GET /sessions/{id}: the per-object route's
-# Resource(Session) guard is `admin || owner==principal`, and a machine-key
-# principal is NOT the session's resolved owner (machine_uuid -> user_id), so
-# it 403s even for the pod's OWN session. GET /sessions is self-scoped via
-# owner_filter(): a machine key sees its OWN machine's sessions — a short list
-# (dispatch pods are single-session) that includes our dispatched id.
+# Liveness comes from the daemon's server registration of $SESSION_ID. Use the
+# self-scoped list endpoint: GET /sessions/{id} 403s for a machine key.
 _SESSIONS_URL="${CCTUI_BASE_URL%/}/api/v1/sessions"
 _PROBE_BODY=/tmp/cctui-liveness-probe.json
 WORKER_LIVENESS_POLL_SECS="${WORKER_LIVENESS_POLL_SECS:-10}"
@@ -1419,16 +1236,8 @@ esac
 _PROBE_LOGGED_CODE=""
 _PROBE_LOGGED_NOHB=""
 _QUIET_LOGGED=""
-# Probe the daemon's server-side registration for OUR session id. Echoes:
-#   registered — our id present with status "active"/"new": the daemon holds
-#                this session live (registered, heartbeat within STATUS_WINDOW=5m).
-#   ended      — 'inactive' AND the heartbeat explains it as a real deregistration
-#                (still fresh) or as staleness past WORKER_LIVENESS_STALE_SECS.
-#                Only trusted as death after we have seen it registered once.
-#   quiet      — 'inactive' only because the heartbeat aged past the server's
-#                window: alive but mid-blocking-call. Keep waiting.
-#   unknown    — transient curl/non-200, or our id not (yet) in the roster;
-#                never read as death.
+# Echoes registered | ended | quiet (inactive only by heartbeat age: keep
+# waiting) | unknown (transient or not listed yet; never death).
 # `-4` mirrors the callback curl (the worker forces IPv4 egress).
 probe_session() {
     _code=$(curl -4 -sS -o "$_PROBE_BODY" -w '%{http_code}' --max-time 5 \

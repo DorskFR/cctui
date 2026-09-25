@@ -10,7 +10,8 @@ else
 fi
 
 hits=$(git diff -U0 --no-color --diff-filter=AMR "${diff_args[@]}" -- \
-  '*.rs' '*.ts' '*.svelte' '*.sh' '*.yml' '*.yaml' 'Makefile' '**/Makefile' |
+  '*.rs' '*.ts' '*.svelte' '*.sh' '*.yml' '*.yaml' '*.service' 'Makefile' '**/Makefile' \
+  '*Dockerfile' |
   awk '
     /^\+\+\+ / { file = substr($0, 7); next }
     /^@@/ {
@@ -19,7 +20,7 @@ hits=$(git diff -U0 --no-color --diff-filter=AMR "${diff_args[@]}" -- \
     /^\+/ {
       text = substr($0, 2)
       trimmed = text; sub(/^[ \t]+/, "", trimmed)
-      if (file ~ /\.(sh|ya?ml)$/ || file ~ /(^|\/)Makefile$/) {
+      if (file ~ /\.(sh|ya?ml|service)$/ || file ~ /(^|\/)(Makefile|[^\/]*Dockerfile)$/) {
         comment = (trimmed ~ /^#/)
       } else {
         comment = (trimmed ~ /^(\/\/|\/\*|\*|<!--)/)

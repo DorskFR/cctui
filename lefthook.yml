@@ -49,7 +49,7 @@ pre-commit:
     # Ticket ids and wave/lane notes belong in commits and PRs, not in comments
     # or test names. Shares its implementation with the comment-refs CI job.
     comment-refs:
-      glob: "{*.rs,*.ts,*.svelte,*.sh,*.yml,*.yaml,Makefile,**/Makefile}"
+      glob: "{*.rs,*.ts,*.svelte,*.sh,*.yml,*.yaml,*.service,*Dockerfile,Makefile,**/Makefile}"
       run: bash scripts/check-comment-refs.sh
 
 pre-push:

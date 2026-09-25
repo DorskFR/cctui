@@ -1,36 +1,17 @@
 //! Kubernetes Job spawn mechanics for the standalone kube dispatcher.
 //!
-//! This dispatcher is a neutral profile-instantiator: a dispatch may only
-//! *select* an operator-authored [`WorkerProfile`] by name and carry runtime
-//! data (session token, payload, ephemeral machine key). It never accepts raw
-//! pod-spec fields — the agent inside the worker influences the request, so any
-//! override surface would let it reshape its own sandbox.
+//! A dispatch may only *select* an operator-authored [`WorkerProfile`] by name
+//! and carry runtime data; it never accepts raw pod-spec fields, since the agent
+//! influences the request. The worker container is built from the profile and
+//! everything else passes through; the sandbox is injected by the admission
+//! webhook, not here. Secret-ref-shaped payload env is rejected.
 //!
-//! Instantiation is mechanical: the worker container is built from the profile
-//! (`image`/`command`/`args`/`resources`/`env`/`envFrom`/`volumeMounts`, named
-//! [`WorkerProfileSpec::worker_container_name`]); everything else on the profile
-//! (extra containers, init containers, volumes, pull secrets, node selector,
-//! runtime class, service account, pod annotations) is passed through untouched.
-//! Profile `podAnnotations` land on the pod template metadata; the dispatcher's
-//! own `cctui.dev/*` session annotations win on key conflict. The dispatcher
-//! adds **no** sidecars, security contexts, or credential plumbing — a mutating
-//! admission webhook injects the sandbox at pod admission, keyed off the
-//! stamped `cctui.dev/worker-*` labels/annotations. Secret refs are resolved by
-//! the guard-proxy sidecar, not here: a secret-ref-shaped env value in the
-//! payload is rejected outright.
+//! - Job name = `cctui-worker-<sha1(dedup_key||session_id)[:12]>`; a 409 on an
+//!   in-flight Job is `deduplicated`, on a terminal one `redispatched`.
+//! - The machine key and payload `env` go into a per-dispatch Secret owned by
+//!   the Job, never into the Job spec or `TASK_PAYLOAD_JSON`.
 //!
-//! Orthogonal Job mechanics are unchanged:
-//! - Job name = `cctui-worker-<sha1(dedup_key||session_id)[:12]>` so a repeat
-//!   dispatch of the same logical key maps to the same Job.
-//! - 409 on create → read the existing Job: in-flight ⇒ `deduplicated`;
-//!   terminal (Complete/Failed) ⇒ delete + recreate ⇒ `redispatched`.
-//! - `cctui_machine_key` and the payload `env` are kept OUT of the Job spec and
-//!   `TASK_PAYLOAD_JSON`: they go into a per-dispatch Secret owned by the Job
-//!   (so deleting the Job collects it) and reach the worker via `secretKeyRef`.
-//! - reply_url → `REPLY_URL` env so the terminal callback fires.
-//!
-//! ⚠️ Repo is PUBLIC — no homelab namespaces/images/registries here; the
-//! namespace + profile come from the dispatcher's own config / the request.
+//! ⚠️ Repo is PUBLIC — namespace and profile come from config / the request.
 #![allow(clippy::doc_markdown)]
 
 use std::time::Duration;

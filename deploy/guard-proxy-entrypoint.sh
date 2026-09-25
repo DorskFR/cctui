@@ -1,22 +1,8 @@
 #!/usr/bin/env sh
-# Boot wrapper for the guard-proxy sidecar (remote GPG signing).
-#
-# The container command is normally just `cctui-guard-proxy <flags>`. This
-# wrapper runs FIRST, optionally stands up a gpg-agent that holds the signing
-# private key, forwards ONLY the agent's restricted `--extra-socket` into a
-# shared emptyDir, then `exec`s cctui-guard-proxy with the SAME flags. It is a
-# pure passthrough (just exec the proxy) when GPG_PRIVATE_KEY is absent, so the
-# proxy behaves exactly as before when remote signing is off.
-#
-# Why here and not in the worker: the private key must never enter the worker
-# container. The worker only ever sees the restricted extra socket — which can
-# USE the key for signing but cannot export it. GPG never touches the network,
-# so the proxy's header-injection cannot help; forwarding the agent socket is
-# the mechanism.
-#
-# The signing key SHOULD be a per-identity signing SUBKEY with a short expiry,
-# passphrase-less (a headless sidecar has no pinentry). The mechanism works with
-# a subkey: gpg selects the signing-capable subkey automatically.
+# Boot wrapper for the guard-proxy sidecar. With GPG_PRIVATE_KEY set, runs a
+# gpg-agent and forwards only its restricted --extra-socket (sign, never export)
+# to the worker; then execs cctui-guard-proxy with the same flags.
+# See docs/worker-contract.md (Remote GPG signing).
 set -eu
 
 log() { echo "guard-proxy-entrypoint: $*"; }

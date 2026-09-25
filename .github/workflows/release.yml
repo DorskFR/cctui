@@ -104,7 +104,7 @@ jobs:
       # (the claude-worker image is debian bookworm = glibc 2.36, while the
       # default GitHub runners are glibc 2.39). cargo-zigbuild cross-compiles
       # both linux arches to musl from the x86 runner, using zig cc as the C
-      # compiler for the rustls native deps. (CCT-117)
+      # compiler for the rustls native deps.
       - name: Set up zig + cargo-zigbuild (linux)
         if: matrix.os == 'linux'
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1

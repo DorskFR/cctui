@@ -1,7 +1,7 @@
 name: schema-drift
 
 # Re-fetch the upstream Claude Code settings JSON schema and diff it against the
-# vendored copy consumed by the settings catalog (CCT-537). The schema drives the
+# vendored copy consumed by the settings catalog. The schema drives the
 # types/enums/defaults for the ~84 keys it covers, so drift here means the catalog's
 # machine-readable half is stale and should be re-vendored + the hand-maintained
 # delta (catalog.toml) reviewed for newly added / removed keys.

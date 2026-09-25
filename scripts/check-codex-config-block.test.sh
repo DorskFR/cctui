@@ -65,7 +65,7 @@ check "account keys sit above the gateway table" \
 check "re-running does not duplicate an account key" \
   test "$(grep -c '^web_search = ' "$cfg")" -eq 1
 
-# With no block set, the file is exactly what it was before this change.
+# With no block set, only the gateway wiring is written.
 unset CCTUI_CODEX_CONFIG_TOML
 rm -f "$cfg"
 run_phase
