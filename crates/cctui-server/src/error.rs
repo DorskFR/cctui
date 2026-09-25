@@ -88,3 +88,11 @@ impl IntoResponse for AppError {
 pub fn err(code: StatusCode, msg: &str) -> (StatusCode, Json<serde_json::Value>) {
     (code, Json(serde_json::json!({ "error": msg })))
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn db_error_body_is_stable() {
+        assert_eq!(super::DB_ERROR, "database error");
+    }
+}

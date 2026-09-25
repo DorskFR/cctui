@@ -172,6 +172,6 @@ mod tests {
         let resp = list_labels(State(AppState::for_test(pool))).await.unwrap_err().into_response();
         assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
         let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
-        assert_eq!(&body[..], br#"{"error":"database error"}"#);
+        assert_eq!(body, format!(r#"{{"error":"{}"}}"#, crate::error::DB_ERROR));
     }
 }
