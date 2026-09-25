@@ -31,12 +31,15 @@ describe('shared clock', () => {
 		flushSync();
 		expect(clockRunning()).toBe(true);
 		expect(spy).toHaveBeenCalledTimes(1);
-		vi.advanceTimersByTime(5_000);
+		for (let s = 1; s < 30; s++) {
+			vi.advanceTimersByTime(1_000);
+			flushSync();
+			expect(seen.fast).toBe(1 + s);
+			expect(seen.slow).toBe(1);
+		}
+		vi.advanceTimersByTime(1_000);
 		flushSync();
-		expect(seen.fast).toBe(6);
-		expect(seen.slow).toBe(1);
-		vi.advanceTimersByTime(25_000);
-		flushSync();
+		expect(seen.fast).toBe(31);
 		expect(seen.slow).toBe(2);
 		stop();
 		expect(clockRunning()).toBe(false);
