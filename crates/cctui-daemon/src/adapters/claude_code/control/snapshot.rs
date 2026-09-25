@@ -1,6 +1,9 @@
 use crate::git::{read_git_branch, read_git_remote};
 
-use super::*;
+use super::{
+    AdapterEvent, DispatchDoneTracker, Driver, EndReason, HashMap, HashSet, Instant, LiveSnapshot,
+    PendingPerm, SessionMeta, StateJson, StatusSnapshot, TranscriptLocation, json, transcript,
+};
 
 /// What one `list` poll means against the previously known roster, decided
 /// before any event is emitted.
@@ -636,6 +639,7 @@ pub(super) fn parse_permission_needs(needs: &str) -> (String, String) {
 
 #[cfg(test)]
 mod tests {
+    use super::super::SPARE_SOURCE;
     use super::super::test_support::*;
     use super::*;
 

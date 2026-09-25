@@ -1,4 +1,4 @@
-use super::*;
+use super::{AdapterEvent, Driver, json, socket, transcript};
 
 impl Driver {
     /// Deliver a user message to a worker, handling a pending `AskUserQuestion`
@@ -240,7 +240,6 @@ pub(super) fn ask_keystrokes(
 
 #[cfg(test)]
 mod tests {
-    use super::super::test_support::*;
     use super::*;
 
     #[test]
