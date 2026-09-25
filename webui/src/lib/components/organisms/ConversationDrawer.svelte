@@ -35,7 +35,7 @@
 	import type { Line, MsgCategory, ViewOpts } from './conversation/types';
 	import { parseViewOpts } from './conversation/filters';
 	import { mergeEventSources } from './conversation/format';
-	import { buildLines, type LineBuildCtx } from './conversation/lines';
+	import { createLineBuilder, type LineBuildCtx } from './conversation/lines';
 	import { ConversationStream, mergeLiveEvent } from './conversation/stream.svelte';
 	import { ScrollController } from './conversation/scroll.svelte';
 	import { createSeqJumper, type RenderWindow } from './conversation/jump';
@@ -283,8 +283,12 @@
 		},
 		get scheduledTurns() {
 			return scheduledTurnMap;
+		},
+		get renderKey() {
+			return `${view.prettyTables}|${id}|${session.machine_id}`;
 		}
 	};
+	const buildLines = createLineBuilder();
 	const lines = $derived.by(() =>
 		buildLines(events, lineCtx, {
 			pending: stream.pendingReplies,

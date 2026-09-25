@@ -26,6 +26,9 @@ export interface LineBuildCtx {
 	prettyDiff: boolean;
 	/** turn_id → deliver_at of delivered scheduled messages. */
 	scheduledTurns?: ReadonlyMap<string, string>;
+	/** Identifies the options `renderMarkdown`/`renderCode` close over; a change
+	 * drops every memoized render. */
+	renderKey?: string;
 }
 
 export interface DeliveryState {
@@ -556,14 +559,54 @@ export function buildLines(
 	// `seq`), so `out` is built in causal order and rendered as-is — no role
 	// grouping, no structural re-anchoring. Ordering by `seq` is what keeps
 	// a reloaded AskUserQuestion in [preamble, card, answer] order.
-	for (let i = 0; i < lines.length; i++) {
-		if (lines[i].role !== 'assistant') continue;
-		const prev = [...lines.slice(0, i)]
-			.reverse()
-			.find((l) => l.role === 'user' || l.role === 'assistant');
+	let prev: Line | undefined;
+	for (const ln of lines) {
 		// A `system/turn_duration` annotation is exact; only estimate without one.
-		if (lines[i].durationMs !== undefined) continue;
-		if (prev && lines[i].ts > prev.ts) lines[i].durationMs = lines[i].ts - prev.ts;
+		if (ln.role === 'assistant' && ln.durationMs === undefined && prev && ln.ts > prev.ts) {
+			ln.durationMs = ln.ts - prev.ts;
+		}
+		if (ln.role === 'user' || ln.role === 'assistant') prev = ln;
 	}
 	return assignLineKeys(stampTurns(lines));
+}
+
+// `buildLines` with its renders memoized across calls, so a live event only
+// renders its own markdown. Entries unused by the latest build are dropped.
+export function createLineBuilder(): typeof buildLines {
+	let renderKey: string | undefined;
+	let md = new Map<string, string>();
+	let code = new Map<string, string>();
+	return (events, ctx, delivery) => {
+		if (ctx.renderKey !== renderKey) {
+			renderKey = ctx.renderKey;
+			md = new Map();
+			code = new Map();
+		}
+		const nextMd = new Map<string, string>();
+		const nextCode = new Map<string, string>();
+		const memo = (
+			prev: Map<string, string>,
+			next: Map<string, string>,
+			key: string,
+			render: () => string
+		) => {
+			let html = next.get(key) ?? prev.get(key);
+			if (html === undefined) html = render();
+			next.set(key, html);
+			return html;
+		};
+		const memoCtx: LineBuildCtx = Object.create(ctx, {
+			renderMarkdown: {
+				value: (s: string) => memo(md, nextMd, s, () => ctx.renderMarkdown(s))
+			},
+			renderCode: {
+				value: (text: string, lang: string) =>
+					memo(code, nextCode, `${lang}\u0000${text}`, () => ctx.renderCode(text, lang))
+			}
+		});
+		const out = buildLines(events, memoCtx, delivery);
+		md = nextMd;
+		code = nextCode;
+		return out;
+	};
 }

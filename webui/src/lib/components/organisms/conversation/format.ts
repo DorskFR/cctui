@@ -232,7 +232,18 @@ export function latestTodoLineKey(lines: Line[]): string | undefined {
 // before the column existed — where user messages collapse across their three
 // shapes via `userMsgKey`. Markers (reset/turn_end/heartbeat) key on ts so
 // distinct ones aren't over-collapsed.
+const sigCache = new WeakMap<AgentEvent, string>();
+
 export function eventSig(e: AgentEvent): string {
+	let sig = sigCache.get(e);
+	if (sig === undefined) {
+		sig = computeEventSig(e);
+		sigCache.set(e, sig);
+	}
+	return sig;
+}
+
+function computeEventSig(e: AgentEvent): string {
 	// A queue op shares its text with the prompt it brackets (and its sibling
 	// close op), so it needs a signature of its own or the pair collapses.
 	if (e.type === 'text' && e.kind === 'queue_op') {
