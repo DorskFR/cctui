@@ -283,9 +283,11 @@ pub async fn run(opts: RemoteEnrollOpts) -> Result<()> {
         .await
         .context("fetching the daemon manifest (is the token valid?)")?;
     let asset = format!("cctui-daemon-{release_target}");
-    let entry = manifest.assets.iter().find(|a| a.target == release_target).with_context(|| {
-        format!("manifest {} has no asset for target {release_target}", manifest.version)
-    })?;
+    if !manifest.assets.iter().any(|a| a.target == release_target) {
+        bail!("manifest {} has no asset for target {release_target}", manifest.version);
+    }
+    let bin_url = selfupdate::binary_url(&server_url, release_target);
+    let sig_url = format!("{bin_url}{}", cctui_proto::release_sig::SIG_SUFFIX);
     let sums = selfupdate::download(
         &http,
         &server_url,
@@ -301,10 +303,10 @@ pub async fn run(opts: RemoteEnrollOpts) -> Result<()> {
     let install_binary = binary_needs_install(facts.bin_sha.as_deref(), &expected_sha);
     if install_binary {
         println!("[3/6] installing cctui-daemon {} → {REMOTE_BIN}", manifest.version);
-        let bytes = selfupdate::download(&http, &server_url, &entry.url, &opts.token)
+        let bytes = selfupdate::download(&http, &server_url, &bin_url, &opts.token)
             .await
             .context("downloading the daemon binary")?;
-        let sig = selfupdate::download(&http, &server_url, &entry.signature_url(), &opts.token)
+        let sig = selfupdate::download(&http, &server_url, &sig_url, &opts.token)
             .await
             .context("downloading the daemon binary signature")?;
         selfupdate::verify_release(&asset, &bytes, sums, &sig)?;
