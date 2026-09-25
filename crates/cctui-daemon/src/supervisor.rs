@@ -81,6 +81,40 @@ async fn wait_deadline(deadline: Option<tokio::time::Instant>) {
     }
 }
 
+type WsSink = futures_util::stream::SplitSink<
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+    Message,
+>;
+
+/// Micro-batch buffer: adapter events accumulate here for up to
+/// BATCH_WINDOW, then flush as one compress+chunk frame.
+struct EventBatch {
+    frames: Vec<Vec<u8>>,
+    bytes: usize,
+    deadline: Option<tokio::time::Instant>,
+}
+
+impl EventBatch {
+    const fn new() -> Self {
+        Self { frames: Vec::new(), bytes: 0, deadline: None }
+    }
+
+    fn push(&mut self, up: Vec<u8>) {
+        self.bytes = self.bytes.saturating_add(up.len());
+        self.frames.push(up);
+        self.deadline.get_or_insert_with(|| tokio::time::Instant::now() + BATCH_WINDOW);
+        if self.bytes >= BATCH_MAX_BYTES {
+            self.deadline = Some(tokio::time::Instant::now());
+        }
+    }
+
+    fn take(&mut self) -> Vec<Vec<u8>> {
+        self.deadline = None;
+        self.bytes = 0;
+        std::mem::take(&mut self.frames)
+    }
+}
+
 pub struct Supervisor {
     client: ServerClient,
     machine_key: String,
@@ -238,7 +272,6 @@ impl Supervisor {
         stop_adapters(&mut running).await;
     }
 
-    #[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
     async fn run_once(
         &self,
         shutdown: CancellationToken,
@@ -276,30 +309,14 @@ impl Supervisor {
             t.rewind_to_ack();
         }
 
-        // Micro-batch buffer: adapter events accumulate here for up to
-        // BATCH_WINDOW, then flush as one compress+chunk frame.
-        let mut batch: Vec<Vec<u8>> = Vec::new();
-        let mut batch_bytes = 0usize;
-        let mut batch_deadline: Option<tokio::time::Instant> = None;
+        let mut batch = EventBatch::new();
 
         let outcome: anyhow::Result<()> = async {
             loop {
                 tokio::select! {
                     biased;
                     () = shutdown.cancelled() => {
-                        let frames = drain_for_shutdown(
-                            std::mem::take(&mut batch),
-                            event_rx,
-                            &scrub,
-                        )
-                        .await;
-                        if !frames.is_empty()
-                            && let Some(msg) = prepare_serialized(coalesce(frames)).into_message()
-                        {
-                            self.counters.add(Subsystem::Forward, msg.len() as u64);
-                            let _ = sink.send(msg).await;
-                        }
-                        let _ = sink.send(Message::Close(None)).await;
+                        self.flush_on_shutdown(&mut sink, batch.take(), event_rx, &scrub).await;
                         return Ok(());
                     }
                     msg = stream.next() => {
@@ -308,18 +325,7 @@ impl Supervisor {
                         last_rx = tokio::time::Instant::now();
                         if let Some(frame) = parse_frame(msg)? {
                             if let DaemonFrameDown::ChunkAck { transfer_id, highest_contiguous_chunk } = &frame {
-                                if let Some(t) = active.as_mut()
-                                    && t.id == *transfer_id {
-                                        t.record_ack(*highest_contiguous_chunk);
-                                        if t.is_complete() {
-                                            {
-                                                let mut guard = self.guard.lock().unwrap();
-                                                guard.complete(&t.id);
-                                                guard.flush();
-                                            }
-                                            active = None;
-                                        }
-                                    }
+                                self.record_chunk_ack(&mut active, transfer_id, *highest_contiguous_chunk);
                             } else {
                                 let reconciled =
                                     matches!(frame, DaemonFrameDown::Reconcile { .. });
@@ -367,96 +373,149 @@ impl Supervisor {
                         }
                         // Redact secrets before the event reaches the wire / DB.
                         let event = scrub_event(event, &scrub);
-                        let up = serde_json::to_vec(&DaemonFrameUp::Event { adapter_id, event })?;
-                        batch_bytes = batch_bytes.saturating_add(up.len());
-                        batch.push(up);
-                        batch_deadline.get_or_insert_with(|| {
-                            tokio::time::Instant::now() + BATCH_WINDOW
-                        });
-                        if batch_bytes >= BATCH_MAX_BYTES {
-                            batch_deadline = Some(tokio::time::Instant::now());
-                        }
+                        batch.push(serde_json::to_vec(&DaemonFrameUp::Event { adapter_id, event })?);
                     }
                     // Flush the coalesced batch once its window elapses.
-                    () = wait_deadline(batch_deadline), if active.is_none() => {
-                        batch_deadline = None;
-                        batch_bytes = 0;
-                        let frames = std::mem::take(&mut batch);
+                    () = wait_deadline(batch.deadline), if active.is_none() => {
+                        let frames = batch.take();
                         if !frames.is_empty() {
-                            match prepare_serialized(coalesce(frames)) {
-                                Prepared::Chunked(t) => {
-                                    if self.guard.lock().unwrap().is_tombstoned(&t.id) {
-                                        tracing::warn!(
-                                            transfer_id = %t.id,
-                                            sessions = ?t.session_ids(),
-                                            "give-up: skipping tombstoned poison transfer",
-                                        );
-                                    } else {
-                                        active = Some(t);
-                                    }
-                                }
-                                Prepared::Frame(text) => {
-                                    self.counters.add(Subsystem::Forward, text.len() as u64);
-                                    sink.send(Message::Text(text.into())).await?;
-                                }
-                                Prepared::Binary(bytes) => {
-                                    self.counters.add(Subsystem::Forward, bytes.len() as u64);
-                                    sink.send(Message::Binary(bytes.into())).await?;
-                                }
-                                Prepared::Oversized(len) => {
-                                    tracing::warn!(
-                                        bytes = len,
-                                        cap = MAX_PAYLOAD_BYTES,
-                                        "give-up: dropping payload over the size cap unsent",
-                                    );
-                                }
-                            }
+                            self.send_batch(&mut sink, frames, &mut active).await?;
                         }
                     }
                     _ = ping.tick() => {
-                        // Detect a half-open connection: if the server hasn't sent
-                        // anything (not even a Pong) within LIVENESS_TIMEOUT, tear
-                        // down so the reconnect loop takes over.
-                        if last_rx.elapsed() > LIVENESS_TIMEOUT {
-                            anyhow::bail!(
-                                "no server traffic for {}s — WS half-open, reconnecting",
-                                last_rx.elapsed().as_secs()
-                            );
-                        }
-                        sink.send(Message::Ping(Vec::new().into())).await?;
-                        // App-level liveness heartbeat. The WS Ping above
-                        // keeps the socket warm, but the server only advances
-                        // `machines.last_seen_at` on an application frame; this
-                        // Heartbeat gives it a per-cadence signal to derive the
-                        // machine online/stale/offline tier from.
-                        let hb = DaemonFrameUp::Heartbeat {
-                            sent_at: chrono::Utc::now(),
-                            bandwidth: Some(self.counters.summary()),
-                            // Re-read per heartbeat: an operator who configures
-                            // the hook and restarts the daemon is picked up on
-                            // the next ping, with nothing to do server-side.
-                            update_hook: Some(crate::updatehook::configured()),
-                            // Sampled per heartbeat; `None` until the second
-                            // ping (CPU needs an interval) or off-Linux.
-                            resources: self
-                                .resources
-                                .lock()
-                                .map_or(None, |mut s| s.sample()),
-                            claude_jobs: claude_jobs_root(running).map(|root| jobs_on_disk(&root)),
-                            harness: Some(crate::harness_update::report()),
-                        };
-                        let payload = serde_json::to_string(&hb)?;
-                        self.counters.add(Subsystem::Heartbeat, payload.len() as u64);
-                        sink.send(Message::Text(payload.into())).await?;
-                        self.counters.persist();
+                        self.send_heartbeat(&mut sink, running, last_rx).await?;
                     }
                 }
             }
         }
         .await;
 
-        // An unfinished transfer resumes next connection, unless it has burned
-        // MAX_ATTEMPTS without progress: then tombstone + drop it.
+        self.park_transfer(active);
+        outcome
+    }
+
+    /// Drain the shutdown tail (buffered batch plus late adapter events) onto
+    /// the wire, then close the socket.
+    async fn flush_on_shutdown(
+        &self,
+        sink: &mut WsSink,
+        batch: Vec<Vec<u8>>,
+        event_rx: &mut mpsc::Receiver<(String, AdapterEvent)>,
+        scrub: &CompiledPatterns,
+    ) {
+        let frames = drain_for_shutdown(batch, event_rx, scrub).await;
+        if !frames.is_empty()
+            && let Some(msg) = prepare_serialized(coalesce(frames)).into_message()
+        {
+            self.counters.add(Subsystem::Forward, msg.len() as u64);
+            let _ = sink.send(msg).await;
+        }
+        let _ = sink.send(Message::Close(None)).await;
+    }
+
+    fn record_chunk_ack(
+        &self,
+        active: &mut Option<PendingTransfer>,
+        transfer_id: &str,
+        highest_contiguous_chunk: Option<u32>,
+    ) {
+        if let Some(t) = active.as_mut()
+            && t.id == transfer_id
+        {
+            t.record_ack(highest_contiguous_chunk);
+            if t.is_complete() {
+                {
+                    let mut guard = self.guard.lock().unwrap();
+                    guard.complete(&t.id);
+                    guard.flush();
+                }
+                *active = None;
+            }
+        }
+    }
+
+    /// Send one coalesced batch: inline when it fits a frame, otherwise it
+    /// becomes the active chunked transfer (unless tombstoned as poison).
+    async fn send_batch(
+        &self,
+        sink: &mut WsSink,
+        frames: Vec<Vec<u8>>,
+        active: &mut Option<PendingTransfer>,
+    ) -> anyhow::Result<()> {
+        match prepare_serialized(coalesce(frames)) {
+            Prepared::Chunked(t) => {
+                if self.guard.lock().unwrap().is_tombstoned(&t.id) {
+                    tracing::warn!(
+                        transfer_id = %t.id,
+                        sessions = ?t.session_ids(),
+                        "give-up: skipping tombstoned poison transfer",
+                    );
+                } else {
+                    *active = Some(t);
+                }
+            }
+            Prepared::Frame(text) => {
+                self.counters.add(Subsystem::Forward, text.len() as u64);
+                sink.send(Message::Text(text.into())).await?;
+            }
+            Prepared::Binary(bytes) => {
+                self.counters.add(Subsystem::Forward, bytes.len() as u64);
+                sink.send(Message::Binary(bytes.into())).await?;
+            }
+            Prepared::Oversized(len) => {
+                tracing::warn!(
+                    bytes = len,
+                    cap = MAX_PAYLOAD_BYTES,
+                    "give-up: dropping payload over the size cap unsent",
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Ping tick: detect a half-open connection (no server traffic, not even
+    /// a Pong, within LIVENESS_TIMEOUT) and bail so the reconnect loop takes
+    /// over; otherwise send the WS Ping plus the app-level heartbeat.
+    async fn send_heartbeat(
+        &self,
+        sink: &mut WsSink,
+        running: &HashMap<String, AdapterRunning>,
+        last_rx: tokio::time::Instant,
+    ) -> anyhow::Result<()> {
+        if last_rx.elapsed() > LIVENESS_TIMEOUT {
+            anyhow::bail!(
+                "no server traffic for {}s — WS half-open, reconnecting",
+                last_rx.elapsed().as_secs()
+            );
+        }
+        sink.send(Message::Ping(Vec::new().into())).await?;
+        // The WS Ping above keeps the socket warm, but the server only
+        // advances `machines.last_seen_at` on an application frame; this
+        // Heartbeat gives it a per-cadence signal to derive the machine
+        // online/stale/offline tier from.
+        let hb = DaemonFrameUp::Heartbeat {
+            sent_at: chrono::Utc::now(),
+            bandwidth: Some(self.counters.summary()),
+            // Re-read per heartbeat: an operator who configures
+            // the hook and restarts the daemon is picked up on
+            // the next ping, with nothing to do server-side.
+            update_hook: Some(crate::updatehook::configured()),
+            // Sampled per heartbeat; `None` until the second
+            // ping (CPU needs an interval) or off-Linux.
+            resources: self.resources.lock().map_or(None, |mut s| s.sample()),
+            claude_jobs: claude_jobs_root(running).map(|root| jobs_on_disk(&root)),
+            harness: Some(crate::harness_update::report()),
+        };
+        let payload = serde_json::to_string(&hb)?;
+        self.counters.add(Subsystem::Heartbeat, payload.len() as u64);
+        sink.send(Message::Text(payload.into())).await?;
+        self.counters.persist();
+        Ok(())
+    }
+
+    /// An unfinished transfer resumes next connection, unless it has burned
+    /// MAX_ATTEMPTS without progress: then tombstone + drop it.
+    fn park_transfer(&self, active: Option<PendingTransfer>) {
         if let Some(t) = active
             && !t.is_complete()
         {
@@ -476,7 +535,6 @@ impl Supervisor {
                 *self.pending_transfer.lock().unwrap() = Some(t);
             }
         }
-        outcome
     }
 
     // Dispatch over every `DaemonFrameDown` variant (reconcile / spawn / command /
