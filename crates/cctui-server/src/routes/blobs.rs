@@ -15,9 +15,11 @@
 use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::{StatusCode, header};
-use axum::response::{IntoResponse, Response};
+use axum::response::Response;
+use cctui_proto::media::sniff_media_type;
 use sha2::{Digest, Sha256};
 
+use crate::routes::fs::content_disposition;
 use crate::state::AppState;
 
 /// A single blob may be several MB (full-resolution screenshots); cap it well
@@ -59,12 +61,9 @@ pub async fn put_blob(
         return Err(StatusCode::BAD_REQUEST);
     }
 
-    let media_type = headers
-        .get(header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .filter(|v| !v.is_empty() && *v != "application/octet-stream");
+    let media_type = sniff_media_type("", &body);
 
-    match store_blob(&state.pool, &body, media_type).await {
+    match store_blob(&state.pool, &body, Some(media_type)).await {
         Ok(StoredBlob { created: true, .. }) => Ok(StatusCode::CREATED),
         Ok(StoredBlob { created: false, .. }) => Ok(StatusCode::OK),
         Err(e) => {
@@ -121,19 +120,30 @@ pub async fn get_blob(
         tracing::error!("blob get: {e}");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
-    let (media_type, bytes) = row.ok_or(StatusCode::NOT_FOUND)?;
+    let (_, bytes) = row.ok_or(StatusCode::NOT_FOUND)?;
+    Ok(blob_response(&hash, bytes))
+}
 
+/// The stored media type is never trusted: the type is re-sniffed from the
+/// bytes (never active), non-inline types download, and the sandbox CSP keeps
+/// anything that slips through from running on this origin.
+fn blob_response(hash: &str, bytes: Vec<u8>) -> Response {
+    let media_type = sniff_media_type("", &bytes);
+    let disposition = content_disposition(media_type, hash);
     let mut resp = Response::new(axum::body::Body::from(bytes));
-    let ct = media_type
-        .as_deref()
-        .and_then(|m| m.parse().ok())
-        .unwrap_or_else(|| header::HeaderValue::from_static("application/octet-stream"));
-    resp.headers_mut().insert(header::CONTENT_TYPE, ct);
-    resp.headers_mut().insert(
+    let h = resp.headers_mut();
+    h.insert(header::CONTENT_TYPE, header::HeaderValue::from_static(media_type));
+    h.insert(header::CONTENT_DISPOSITION, disposition.parse().expect("ascii disposition"));
+    h.insert(header::X_CONTENT_TYPE_OPTIONS, header::HeaderValue::from_static("nosniff"));
+    h.insert(
+        header::CONTENT_SECURITY_POLICY,
+        header::HeaderValue::from_static("default-src 'none'; sandbox"),
+    );
+    h.insert(
         header::CACHE_CONTROL,
         header::HeaderValue::from_static("private, max-age=31536000, immutable"),
     );
-    Ok(resp.into_response())
+    resp
 }
 
 #[cfg(test)]
@@ -147,6 +157,42 @@ mod tests {
         assert!(!is_sha256_hex(&"A".repeat(64)), "uppercase rejected");
         assert!(!is_sha256_hex(&"a".repeat(63)), "wrong length rejected");
         assert!(!is_sha256_hex(&"g".repeat(64)), "non-hex rejected");
+    }
+
+    fn header(resp: &Response, name: header::HeaderName) -> &str {
+        resp.headers().get(name).and_then(|v| v.to_str().ok()).unwrap_or("")
+    }
+
+    fn assert_hardened(resp: &Response) {
+        assert_eq!(header(resp, header::X_CONTENT_TYPE_OPTIONS), "nosniff");
+        assert_eq!(header(resp, header::CONTENT_SECURITY_POLICY), "default-src 'none'; sandbox");
+    }
+
+    #[test]
+    fn html_and_svg_blobs_are_never_active() {
+        let hash = "a".repeat(64);
+        for body in [
+            &b"<html><script>alert(1)</script></html>"[..],
+            &b"<svg xmlns=\"http://www.w3.org/2000/svg\" onload=\"alert(1)\"/>"[..],
+        ] {
+            let resp = blob_response(&hash, body.to_vec());
+            let ct = header(&resp, header::CONTENT_TYPE);
+            assert!(!ct.contains("html") && !ct.contains("svg") && !ct.contains("xml"), "{ct}");
+            assert_hardened(&resp);
+        }
+        let resp = blob_response(&hash, vec![0, 1, 2]);
+        assert_eq!(header(&resp, header::CONTENT_TYPE), "application/octet-stream");
+        assert!(header(&resp, header::CONTENT_DISPOSITION).starts_with("attachment;"));
+        assert_hardened(&resp);
+    }
+
+    #[test]
+    fn png_blob_renders_inline() {
+        let png = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 0].to_vec();
+        let resp = blob_response(&"b".repeat(64), png);
+        assert_eq!(header(&resp, header::CONTENT_TYPE), "image/png");
+        assert!(header(&resp, header::CONTENT_DISPOSITION).starts_with("inline;"));
+        assert_hardened(&resp);
     }
 
     async fn test_pool(test_name: &str) -> Option<sqlx::PgPool> {
