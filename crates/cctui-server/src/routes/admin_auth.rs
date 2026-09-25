@@ -840,10 +840,10 @@ pub async fn mint_user_key(
     Json(req): Json<MintKeyRequest>,
 ) -> Result<Json<MintKeyResponse>, (StatusCode, Json<ApiError>)> {
     self_or_admin(&ctx, user_id)?;
-    if ctx.machine_id.is_some() {
+    if !crate::auth::is_human_credential(&state.pool, &ctx).await.map_err(|e| db_err(&e))? {
         return Err((
             StatusCode::FORBIDDEN,
-            Json(ApiError { error: "machine keys cannot mint user keys".into() }),
+            Json(ApiError { error: "only a user credential can mint user keys".into() }),
         ));
     }
     let requested = parse_scopes(&req.scopes)?;
