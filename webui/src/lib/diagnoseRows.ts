@@ -231,6 +231,16 @@ export function diagnoseRows(
 	];
 }
 
+/** First and last line of a detail: an end reason keeps the last stderr line next to it. */
+export function trimDetail(detail: string | undefined): string {
+	const lines = (detail ?? '')
+		.split('\n')
+		.map((l) => l.trim())
+		.filter(Boolean);
+	if (lines.length <= 2) return lines.join('\n');
+	return `${lines[0]}\n${lines[lines.length - 1]}`;
+}
+
 export function diagnoseBlocks(rows: DiagnoseRow[]): DiagnoseBlockSummary[] {
 	return DIAGNOSE_BLOCKS.map((block) => {
 		const own = rows.filter((r) => r.block === block);
