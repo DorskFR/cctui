@@ -1270,7 +1270,7 @@ notes = "background-session edit guard; `none` edits the checkout in place — t
 [[presets]]
 id = "quiet-defaults"
 name = "Quiet defaults"
-description = "Silence bundled skills/workflows/artifact + remote-control + telemetry/updater noise. All reversible per account. MANAGED keys may be ignored via a plain --settings file (needs a managed-settings drop-in) — see CCT-539."
+description = "Silence bundled skills/workflows/artifact + remote-control + telemetry/updater noise. All reversible per account. MANAGED keys may be ignored via a plain --settings file (needs a managed-settings drop-in)."
 
 # settings.json keys applied by the preset (deep-merged under managed hooks).
 [presets.settings]
