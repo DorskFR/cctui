@@ -1,8 +1,9 @@
-use cctui_proto::adapter::EndReason;
+use cctui_proto::adapter::{AdapterEvent, EndReason};
 use serde_json::json;
 use uuid::Uuid;
 
 use crate::live_sessions::live_sessions_predicate;
+use crate::routes::daemon::registration::{publish_session_registered, upsert_session};
 use crate::state::AppState;
 
 /// `end_detail` cap: enough for an exit status plus a 40-line stderr tail
@@ -21,7 +22,7 @@ pub fn truncate_end_detail(detail: &str) -> &str {
     &detail[..end]
 }
 
-pub(super) async fn mark_session_ended(
+async fn mark_session_ended(
     state: &AppState,
     machine_id: Uuid,
     user_id: Uuid,
@@ -132,7 +133,7 @@ pub(in crate::routes::daemon) async fn persist_session_end(
 /// Advance a session's stored transcript high-water mark to `offset`, keeping
 /// the max so a replayed / out-of-order mark can't rewind it. Handed
 /// back to the daemon as a resume point on its next connect.
-pub(super) async fn update_transcript_mark(
+async fn update_transcript_mark(
     state: &AppState,
     local_id: &str,
     offset: u64,
@@ -145,6 +146,94 @@ pub(super) async fn update_transcript_mark(
     .bind(offset)
     .execute(&state.pool)
     .await?;
+    Ok(())
+}
+
+/// Session lifecycle events: start, end, transcript mark and model.
+pub(super) async fn on_session_event(
+    state: &AppState,
+    machine_id: Uuid,
+    user_id: Uuid,
+    adapter_id: &str,
+    event: AdapterEvent,
+) -> anyhow::Result<()> {
+    match event {
+        e @ AdapterEvent::SessionStarted { .. } => {
+            on_session_started(state, machine_id, user_id, adapter_id, e).await?;
+        }
+        AdapterEvent::SessionEnded { local_id, reason } => {
+            mark_session_ended(state, machine_id, user_id, &local_id, &reason).await?;
+            publish_session_ended(state, &local_id, &reason);
+        }
+        AdapterEvent::TranscriptMark { local_id, offset } => {
+            update_transcript_mark(state, &local_id, offset).await?;
+        }
+        AdapterEvent::SessionModel { local_id, model } => {
+            // Overwrite with the transcript/init-frame ground truth — the model
+            // the session is ACTUALLY running. Previously this only
+            // filled when unset, so the requested `--model` (delivered first via
+            // a Status event) permanently masked a spare-claim/clamp drift. The
+            // Status path now fills model only when NULL, so this ground-truth
+            // write wins and sticks.
+            sqlx::query("UPDATE sessions SET model = $2 WHERE id = $1")
+                .bind(&local_id)
+                .bind(&model)
+                .execute(&state.pool)
+                .await
+                .map_err(|e| {
+                    tracing::error!("db error (session model): {e}");
+                    e
+                })?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+async fn on_session_started(
+    state: &AppState,
+    machine_id: Uuid,
+    user_id: Uuid,
+    adapter_id: &str,
+    event: AdapterEvent,
+) -> anyhow::Result<()> {
+    let AdapterEvent::SessionStarted { local_id, meta } = event else {
+        return Ok(());
+    };
+    let working_dir = meta.working_dir.clone();
+    let observed_at = meta.extra.get("observed_at").and_then(serde_json::Value::as_i64);
+    let extra = (!meta.extra.is_null()).then(|| meta.extra.clone());
+    let spawn_key_hint =
+        meta.extra.get("spawn_key").and_then(serde_json::Value::as_str).map(str::to_owned);
+    if let Some(spawn_key) = meta.extra.get("spawn_key").and_then(serde_json::Value::as_str) {
+        crate::routes::gateway::rebind_spawn_key(
+            state,
+            cctui_proto::ids::SpawnKey::from(spawn_key),
+            cctui_proto::ids::SessionId::from(local_id.as_str()),
+        )
+        .await;
+    }
+    let Some(first_registration) = upsert_session(
+        &state.pool,
+        machine_id,
+        user_id,
+        adapter_id,
+        &local_id,
+        working_dir,
+        meta.parent_local_id.clone(),
+        observed_at,
+        extra,
+    )
+    .await?
+    else {
+        return Ok(());
+    };
+    if first_registration {
+        publish_session_registered(state, &local_id).await;
+    }
+    crate::auto_archive::claim_intent(state, &local_id, spawn_key_hint.as_deref()).await;
+    crate::spawn_labels::claim_intent(&state.pool, &local_id, spawn_key_hint.as_deref()).await;
+    crate::followup::claim_intent(&state.pool, &local_id, spawn_key_hint.as_deref()).await;
     Ok(())
 }
 

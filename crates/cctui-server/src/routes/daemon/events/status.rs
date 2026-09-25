@@ -1,16 +1,18 @@
+use cctui_proto::adapter::AdapterEvent;
+
 use crate::state::AppState;
 
 /// Latest classifier signals + display metadata from a Status event.
-pub(super) struct StatusSignals<'a> {
-    pub(super) tempo: Option<&'a str>,
-    pub(super) agent_state: Option<&'a str>,
-    pub(super) activity: Option<&'a str>,
-    pub(super) name: Option<&'a str>,
-    pub(super) intent: Option<&'a str>,
-    pub(super) model: Option<&'a str>,
-    pub(super) effort: Option<&'a str>,
-    pub(super) permission_mode: Option<String>,
-    pub(super) children: &'a [cctui_proto::adapter::SessionChild],
+struct StatusSignals<'a> {
+    tempo: Option<&'a str>,
+    agent_state: Option<&'a str>,
+    activity: Option<&'a str>,
+    name: Option<&'a str>,
+    intent: Option<&'a str>,
+    model: Option<&'a str>,
+    effort: Option<&'a str>,
+    permission_mode: Option<String>,
+    children: &'a [cctui_proto::adapter::SessionChild],
 }
 
 /// Persist the latest Status signals onto the session row. `COALESCE` keeps
@@ -20,7 +22,7 @@ pub(super) struct StatusSignals<'a> {
 /// overwrite the init-frame ground truth that `SessionModel` writes.
 /// `effort` is safe to overwrite because the daemon now reports the observed
 /// (`/proc CLAUDE_EFFORT`) value in Status, not the requested one.
-pub(super) async fn update_status_signals(
+async fn update_status_signals(
     state: &AppState,
     local_id: &str,
     s: StatusSignals<'_>,
@@ -195,7 +197,7 @@ fn spawn_emoji_refine(state: &AppState, local_id: &str, name: &str, decorated: &
 /// when it has none: an authoritative `Status` snapshot (from `state.json`) must
 /// always win, so the transcript source is a gap-filler for sessions whose
 /// `state.json` carries no children.
-pub(super) async fn persist_pr_link_children(
+async fn persist_pr_link_children(
     state: &AppState,
     local_id: &str,
     children: &[cctui_proto::adapter::SessionChild],
@@ -212,6 +214,56 @@ pub(super) async fn persist_pr_link_children(
     .bind(children)
     .execute(&state.pool)
     .await?;
+    Ok(())
+}
+
+/// Status snapshots, transcript PR links and rate-limit windows.
+pub(super) async fn on_status_event(state: &AppState, event: AdapterEvent) -> anyhow::Result<()> {
+    match event {
+        AdapterEvent::Status {
+            local_id,
+            tempo,
+            state: agent_state,
+            detail: _,
+            activity,
+            name,
+            intent,
+            model,
+            effort,
+            permission_mode,
+            children,
+        } => {
+            // Persist the classifier signals + display metadata so
+            // `list_sessions` can derive the "needs input" attention flag and
+            // show name/model/effort. Status events are otherwise not stored
+            // as stream_events (heartbeat bump below handles liveness).
+            update_status_signals(
+                state,
+                &local_id,
+                StatusSignals {
+                    tempo: tempo.as_deref(),
+                    agent_state: agent_state.as_deref(),
+                    activity: activity.as_deref(),
+                    name: name.as_deref(),
+                    intent: intent.as_deref(),
+                    model: model.as_deref(),
+                    effort: effort.as_deref(),
+                    permission_mode: permission_mode
+                        .and_then(|m| serde_json::to_value(m).ok())
+                        .and_then(|v| v.as_str().map(str::to_owned)),
+                    children: &children,
+                },
+            )
+            .await?;
+        }
+        AdapterEvent::PrLink { local_id, children } => {
+            persist_pr_link_children(state, &local_id, &children).await?;
+        }
+        AdapterEvent::RateLimits { local_id, windows, observed_at } => {
+            crate::usage_history::record_agent_limits(state, local_id, &windows, observed_at);
+        }
+        _ => {}
+    }
     Ok(())
 }
 

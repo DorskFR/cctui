@@ -1,5 +1,12 @@
+use cctui_proto::adapter::AdapterEvent;
+use uuid::Uuid;
+
+use super::Inserted;
+use crate::routes::daemon::ingest::{Stored, insert_event, note_insert};
+use crate::state::AppState;
+
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn insert_token_usage(
+async fn insert_token_usage(
     pool: &sqlx::PgPool,
     local_id: &str,
     message_id: &str,
@@ -32,6 +39,72 @@ pub(super) async fn insert_token_usage(
     .bind(cr)
     .bind(cc)
     .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Persist a `Message`/`ToolUse` row unless the batched ingest already did.
+pub(super) async fn on_stream_event(
+    state: &AppState,
+    machine_id: Uuid,
+    user_id: Uuid,
+    event: AdapterEvent,
+    stored: Stored,
+) -> anyhow::Result<Inserted> {
+    let seq = match event {
+        AdapterEvent::Message { local_id, mut payload, turn_id } => {
+            if let Stored::Done(seq) = stored {
+                seq
+            } else {
+                crate::keepalive::observe_message(state, &local_id, &mut payload).await;
+                insert_event(
+                    &state.pool,
+                    machine_id,
+                    user_id,
+                    &local_id,
+                    "message",
+                    payload,
+                    turn_id,
+                )
+                .await?
+            }
+        }
+        AdapterEvent::ToolUse { local_id, payload } => {
+            if let Stored::Done(seq) = stored {
+                seq
+            } else {
+                insert_event(&state.pool, machine_id, user_id, &local_id, "tool_use", payload, None)
+                    .await?
+            }
+        }
+        _ => return Ok(Inserted::UNSTORED),
+    };
+    let inserted = Inserted::from_seq(seq);
+    note_insert(state, machine_id, inserted.newly);
+    Ok(inserted)
+}
+
+pub(super) async fn on_token_usage(pool: &sqlx::PgPool, event: AdapterEvent) -> anyhow::Result<()> {
+    let AdapterEvent::TokenUsage {
+        local_id,
+        message_id,
+        input_tokens,
+        output_tokens,
+        cache_read_tokens,
+        cache_creation_tokens,
+    } = event
+    else {
+        return Ok(());
+    };
+    insert_token_usage(
+        pool,
+        &local_id,
+        &message_id,
+        input_tokens,
+        output_tokens,
+        cache_read_tokens,
+        cache_creation_tokens,
+    )
     .await?;
     Ok(())
 }
