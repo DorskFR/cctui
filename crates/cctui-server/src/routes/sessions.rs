@@ -1801,26 +1801,59 @@ async fn fetch_renderable_rows(
     }
 }
 
-/// Per-message token usage for one session, each turn carrying the cache bust it
-/// suffered (if any) against the previous turn of its own agent stream.
+/// `(message_id, model, input, output, cache_read, cache_creation,
+/// gateway_rewrote_body, created_at)` from `session_token_usage`.
+type UsageRow = (String, Option<String>, i64, i64, i64, i64, bool, DateTime<Utc>);
+
+/// Turns before a page's first turn read to rebuild the agent streams its
+/// cache-bust verdicts are judged against.
+const USAGE_LOOKBACK: i64 = 40;
+
+/// Usage rows a conversation page needs: every turn in the time span of the
+/// page's `message_ids`, plus the [`USAGE_LOOKBACK`] turns before it.
+async fn page_usage_rows(
+    pool: &sqlx::PgPool,
+    session_id: &str,
+    message_ids: &[String],
+) -> Result<Vec<UsageRow>, sqlx::Error> {
+    if message_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    sqlx::query_as(
+        "WITH span AS ( \
+             SELECT min(created_at) AS lo, max(created_at) AS hi FROM session_token_usage \
+             WHERE session_id = $1 AND message_id = ANY($2)) \
+         SELECT u.message_id, u.model, u.input_tokens, u.output_tokens, u.cache_read_tokens, \
+                u.cache_creation_tokens, u.gateway_rewrote_body, u.created_at \
+         FROM span JOIN session_token_usage u \
+           ON u.session_id = $1 AND u.created_at BETWEEN span.lo AND span.hi \
+         UNION ALL \
+         (SELECT u.message_id, u.model, u.input_tokens, u.output_tokens, u.cache_read_tokens, \
+                 u.cache_creation_tokens, u.gateway_rewrote_body, u.created_at \
+          FROM span JOIN session_token_usage u \
+            ON u.session_id = $1 AND u.created_at < span.lo \
+          ORDER BY u.created_at DESC LIMIT $3)",
+    )
+    .bind(session_id)
+    .bind(message_ids)
+    .bind(USAGE_LOOKBACK)
+    .fetch_all(pool)
+    .await
+}
+
+/// Per-message token usage for a page's `message_ids`, each turn carrying the
+/// cache bust it suffered (if any) against the previous turn of its own agent
+/// stream.
 async fn message_usage(
     state: &AppState,
     session_id: &str,
+    message_ids: &[String],
 ) -> Result<HashMap<String, cctui_proto::models::TokenUsage>, (StatusCode, Json<ApiError>)> {
-    type UsageRow = (String, Option<String>, i64, i64, i64, i64, bool, DateTime<Utc>);
-    let usage_rows: Vec<UsageRow> = sqlx::query_as(
-        "SELECT message_id, model, \
-                input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, \
-                gateway_rewrote_body, created_at \
-         FROM session_token_usage WHERE session_id = $1",
-    )
-    .bind(session_id)
-    .fetch_all(&state.pool)
-    .await
-    .map_err(|e| {
+    let usage_rows = page_usage_rows(&state.pool, session_id, message_ids).await.map_err(|e| {
         tracing::error!("db error (message usage): {e}");
         (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
     })?;
+    let wanted: HashSet<&str> = message_ids.iter().map(String::as_str).collect();
     let owned_id = session_id.to_owned();
     let catalog = session_catalogs(state, std::slice::from_ref(&owned_id)).await.remove(session_id);
     let turns: Vec<crate::cache_bust::Turn> = usage_rows
@@ -1840,6 +1873,7 @@ async fn message_usage(
     let mut busts = crate::cache_bust::compute(&turns, catalog.as_ref());
     Ok(usage_rows
         .into_iter()
+        .filter(|row| wanted.contains(row.0.as_str()))
         .map(|(message_id, model, input, output, cache_read, cache_creation, _, _)| {
             let to_u64 = |v: i64| u64::try_from(v).unwrap_or(0);
             let cost = crate::cost::tallies_cost_usd(
@@ -1889,7 +1923,12 @@ pub async fn get_conversation(
         rows.reverse();
     }
 
-    let usage_by_message = message_usage(&state, &session_id).await?;
+    let message_ids: Vec<String> = rows
+        .iter()
+        .filter_map(|(_, v, _, _)| v.get("message_id").and_then(serde_json::Value::as_str))
+        .map(str::to_owned)
+        .collect();
+    let usage_by_message = message_usage(&state, &session_id, &message_ids).await?;
     let scheduled_turns = crate::scheduled_messages::scheduled_turns(&state.pool, &session_id)
         .await
         .map_err(|e| {
@@ -3220,6 +3259,40 @@ mod tests {
 
         assert_eq!(sessions[1].match_seq, None);
         assert_eq!(sessions[1].match_snippet, None);
+    }
+
+    #[tokio::test]
+    async fn page_usage_reads_the_page_span_plus_a_bounded_lookback() {
+        let Some((pool, sid)) = seeded_session("page_usage_bounded").await else {
+            return;
+        };
+        let t0 = Utc::now() - Duration::hours(3);
+        for n in 0..200_i64 {
+            sqlx::query(
+                "INSERT INTO session_token_usage (session_id, message_id, input_tokens, \
+                 cache_read_tokens, created_at) VALUES ($1, $2, 10, $3, $4)",
+            )
+            .bind(&sid)
+            .bind(format!("m{n:03}"))
+            .bind(n * 100)
+            .bind(t0 + Duration::seconds(n))
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        let page: Vec<String> = (150..160).map(|n| format!("m{n:03}")).collect();
+
+        let rows = super::page_usage_rows(&pool, &sid, &page).await.unwrap();
+
+        let limit = page.len() + usize::try_from(super::USAGE_LOOKBACK).unwrap();
+        assert_eq!(rows.len(), limit, "page span plus lookback, not the whole session");
+        let ids: std::collections::HashSet<&str> = rows.iter().map(|r| r.0.as_str()).collect();
+        assert!(page.iter().all(|m| ids.contains(m.as_str())));
+        assert!(ids.contains("m149"), "the previous turn of the stream is read");
+        assert!(!ids.contains("m000") && !ids.contains("m199"));
+        assert!(super::page_usage_rows(&pool, &sid, &[]).await.unwrap().is_empty());
+
+        sqlx::query("DELETE FROM sessions WHERE id = $1").bind(&sid).execute(&pool).await.unwrap();
     }
 
     #[test]
