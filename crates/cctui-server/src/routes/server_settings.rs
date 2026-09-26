@@ -372,6 +372,7 @@ mod tests {
 
     #[tokio::test]
     async fn upstream_hosts_round_trip_and_apply_without_restart() {
+        let _serial = UPSTREAM_TESTS.lock().await;
         let Some(state) = state("upstream_hosts_round_trip_and_apply_without_restart").await else {
             return;
         };
@@ -418,6 +419,70 @@ mod tests {
         .unwrap();
         assert_ne!(info.source, SettingSource::Settings);
         assert!(crate::outbound::upstream_url_permitted(url).is_err());
+    }
+
+    static UPSTREAM_TESTS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    #[tokio::test]
+    async fn upgrade_seeds_existing_upstreams_into_the_allowlist() {
+        let _serial = UPSTREAM_TESTS.lock().await;
+        let Some(state) = state("upgrade_seeds_existing_upstreams_into_the_allowlist").await else {
+            return;
+        };
+        let pool = &state.pool;
+        sqlx::query("DELETE FROM instance_settings WHERE key = $1")
+            .bind(UPSTREAM_KEY)
+            .execute(pool)
+            .await
+            .unwrap();
+        let (user, account) = (Uuid::new_v4(), Uuid::new_v4());
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+            .bind(user)
+            .bind(format!("seed-{user}"))
+            .bind(format!("seed-{user}-hash"))
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO accounts (id, user_id, name) VALUES ($1, $2, 'seed')")
+            .bind(account)
+            .bind(user)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO account_providers (user_id, account_id, provider, base_url, auth_scheme) \
+             VALUES ($1, $2, 'anthropic', 'http://10.9.8.7:4000/v1', 'api_key')",
+        )
+        .bind(user)
+        .bind(account)
+        .execute(pool)
+        .await
+        .unwrap();
+        let old = "http://10.9.8.7:4000/v1/messages";
+        let new = "http://10.9.8.6:4000/v1";
+        refresh_upstream_allowlist(pool).await;
+        assert!(crate::outbound::upstream_url_permitted(old).is_err());
+
+        sqlx::raw_sql(include_str!("../../../../migrations/140_seed_upstream_allowlist.up.sql"))
+            .execute(pool)
+            .await
+            .unwrap();
+        refresh_upstream_allowlist(pool).await;
+        let info = read_upstream_hosts(pool).await.unwrap();
+        assert_eq!(info.source, SettingSource::Settings);
+        assert!(info.hosts.contains(&"10.9.8.7:4000".to_owned()), "{:?}", info.hosts);
+        crate::outbound::upstream_url_permitted(old).unwrap();
+        crate::routes::accounts::check_base_url("http://10.9.8.7:4000/v1").await.unwrap();
+        assert!(crate::outbound::upstream_url_permitted(new).is_err());
+        assert!(crate::routes::accounts::check_base_url(new).await.is_err());
+
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(user).execute(pool).await.unwrap();
+        sqlx::query("DELETE FROM instance_settings WHERE key = $1")
+            .bind(UPSTREAM_KEY)
+            .execute(pool)
+            .await
+            .unwrap();
+        refresh_upstream_allowlist(pool).await;
     }
 
     async fn state(tag: &str) -> Option<AppState> {
