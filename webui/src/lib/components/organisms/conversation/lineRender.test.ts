@@ -8,7 +8,7 @@ describe('isMachineUuid', () => {
 	});
 
 	it('rejects legacy hostname-valued machine ids', () => {
-		expect(isMachineUuid('cyberia-worker-1')).toBe(false);
+		expect(isMachineUuid('homelab-worker-1')).toBe(false);
 		expect(isMachineUuid('')).toBe(false);
 		expect(isMachineUuid('0f8fad5b-d9cb-469f-a165-70867728950e-x')).toBe(false);
 	});
