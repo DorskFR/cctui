@@ -257,11 +257,13 @@ impl Conn {
         for session in sessions.iter().filter_map(|s| Uuid::parse_str(s).ok()) {
             crate::presence::unregister(state, crate::presence::Kind::Session, session).await;
         }
+        // Detach, don't close: a rolling restart reconnects the daemon (maybe
+        // on another pod) and it re-announces these previews by id.
         for session in &sessions {
-            state.preview.close_session(session);
+            state.preview.detach_session(&state.pool, session).await;
         }
         if state.bus.unregister_daemon(machine_id, self.id, tx) {
-            state.preview.close_machine(machine_id);
+            state.preview.detach_machine(&state.pool, machine_id).await;
             crate::presence::unregister(state, crate::presence::Kind::Daemon, machine_id).await;
             schedule_daemon_lost(state, machine_id, sessions);
         }

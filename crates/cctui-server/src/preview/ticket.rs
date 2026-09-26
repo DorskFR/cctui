@@ -1,12 +1,10 @@
 //! Signed, short-lived, single-use tickets that turn into the preview cookie.
 //!
 //! Both are `base64url(payload).base64url(hmac)` with a key derived from the
-//! vault key. A ticket carries `preview_id|user_id|exp|nonce` and is burnt
-//! on first use; the cookie carries `preview_id|user_id|iat` and lives as
+//! vault key. A ticket carries `preview_id|user_id|exp|nonce` and its nonce is
+//! burnt in `preview_tickets_used` on first use, so a replay is refused on
+//! every replica; the cookie carries `preview_id|user_id|iat` and lives as
 //! long as the preview does.
-
-use std::collections::HashMap;
-use std::sync::Mutex;
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
@@ -35,9 +33,16 @@ pub struct Grant {
     pub user_id: Uuid,
 }
 
+/// A ticket that passed verification but whose nonce is not burnt yet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Redeemed {
+    pub grant: Grant,
+    pub nonce: String,
+    pub expires_at: chrono::DateTime<chrono::Utc>,
+}
+
 pub struct Signer {
     key: Vec<u8>,
-    used: Mutex<HashMap<String, i64>>,
 }
 
 impl Signer {
@@ -45,7 +50,7 @@ impl Signer {
     pub fn new(root: &[u8]) -> Self {
         let mut mac = Hmac::<Sha256>::new_from_slice(root).expect("hmac accepts any key length");
         mac.update(b"cctui-preview-ticket");
-        Self { key: mac.finalize().into_bytes().to_vec(), used: Mutex::new(HashMap::new()) }
+        Self { key: mac.finalize().into_bytes().to_vec() }
     }
 
     fn sign(&self, payload: &str) -> String {
@@ -77,12 +82,18 @@ impl Signer {
         self.sign(&format!("{TICKET_TAG}|{preview_id}|{user_id}|{exp}|{nonce}"))
     }
 
-    /// Validate and burn a ticket for `preview_id`.
-    pub fn redeem_ticket(&self, ticket: &str, preview_id: &str) -> Result<Grant, Reject> {
-        self.redeem_ticket_at(ticket, preview_id, chrono::Utc::now().timestamp())
+    /// Signature, expiry and audience of a ticket, without burning it. The
+    /// nonce is burnt separately in the DB so single-use holds cluster-wide.
+    pub fn check_ticket(&self, ticket: &str, preview_id: &str) -> Result<Redeemed, Reject> {
+        self.check_ticket_at(ticket, preview_id, chrono::Utc::now().timestamp())
     }
 
-    fn redeem_ticket_at(&self, ticket: &str, preview_id: &str, now: i64) -> Result<Grant, Reject> {
+    fn check_ticket_at(
+        &self,
+        ticket: &str,
+        preview_id: &str,
+        now: i64,
+    ) -> Result<Redeemed, Reject> {
         let payload = self.verify(ticket)?;
         let parts: Vec<&str> = payload.split('|').collect();
         let [TICKET_TAG, pid, user, exp, nonce] = parts.as_slice() else {
@@ -96,15 +107,26 @@ impl Signer {
         if *pid != preview_id {
             return Err(Reject::WrongPreview);
         }
-        let reused = {
-            let mut burnt = self.used.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            burnt.retain(|_, until| *until >= now);
-            burnt.insert((*nonce).to_owned(), exp).is_some()
-        };
-        if reused {
-            return Err(Reject::Reused);
+        Ok(Redeemed {
+            grant: Grant { preview_id: (*pid).to_owned(), user_id },
+            nonce: (*nonce).to_owned(),
+            expires_at: chrono::DateTime::from_timestamp(exp, 0).unwrap_or_else(chrono::Utc::now),
+        })
+    }
+
+    /// Validate a ticket and burn its nonce against the shared table.
+    pub async fn redeem_ticket(
+        &self,
+        pool: &sqlx::PgPool,
+        ticket: &str,
+        preview_id: &str,
+    ) -> Result<Grant, Reject> {
+        let redeemed = self.check_ticket(ticket, preview_id)?;
+        if super::store::burn_nonce(pool, &redeemed.nonce, redeemed.expires_at).await {
+            Ok(redeemed.grant)
+        } else {
+            Err(Reject::Reused)
         }
-        Ok(Grant { preview_id: (*pid).to_owned(), user_id })
     }
 
     #[must_use]
@@ -168,27 +190,36 @@ mod tests {
         let signer = Signer::new(b"root");
         let user = Uuid::new_v4();
         let ticket = signer.mint_ticket_at(PID, user, 1_000);
-        let grant = signer.redeem_ticket_at(&ticket, PID, 1_010).unwrap();
-        assert_eq!(grant, Grant { preview_id: PID.into(), user_id: user });
-        assert_eq!(signer.redeem_ticket_at(&ticket, PID, 1_010), Err(Reject::Reused));
+        let redeemed = signer.check_ticket_at(&ticket, PID, 1_010).unwrap();
+        assert_eq!(redeemed.grant, Grant { preview_id: PID.into(), user_id: user });
+        assert_eq!(redeemed.expires_at.timestamp(), 1_000 + TICKET_TTL_SECS);
+        assert!(!redeemed.nonce.is_empty());
+        assert_ne!(
+            signer
+                .check_ticket_at(&signer.mint_ticket_at(PID, user, 1_000), PID, 1_010)
+                .unwrap()
+                .nonce,
+            redeemed.nonce,
+            "each ticket carries its own nonce"
+        );
 
         let late = signer.mint_ticket_at(PID, user, 1_000);
         assert_eq!(
-            signer.redeem_ticket_at(&late, PID, 1_000 + TICKET_TTL_SECS + 1),
+            signer.check_ticket_at(&late, PID, 1_000 + TICKET_TTL_SECS + 1),
             Err(Reject::Expired)
         );
         let elsewhere = signer.mint_ticket_at(PID, user, 1_000);
         assert_eq!(
-            signer.redeem_ticket_at(&elsewhere, "zzzzzzzzzzzzzzzz", 1_001),
+            signer.check_ticket_at(&elsewhere, "zzzzzzzzzzzzzzzz", 1_001),
             Err(Reject::WrongPreview)
         );
 
         let other_key = Signer::new(b"other");
         let forged = other_key.mint_ticket_at(PID, user, 1_000);
-        assert_eq!(signer.redeem_ticket_at(&forged, PID, 1_001), Err(Reject::BadSignature));
-        assert_eq!(signer.redeem_ticket_at("garbage", PID, 1_001), Err(Reject::Malformed));
+        assert_eq!(signer.check_ticket_at(&forged, PID, 1_001), Err(Reject::BadSignature));
+        assert_eq!(signer.check_ticket_at("garbage", PID, 1_001), Err(Reject::Malformed));
         assert_eq!(
-            signer.redeem_ticket_at("Z2FyYmFnZQ.Z2FyYmFnZQ", PID, 1_001),
+            signer.check_ticket_at("Z2FyYmFnZQ.Z2FyYmFnZQ", PID, 1_001),
             Err(Reject::BadSignature)
         );
     }
@@ -205,7 +236,7 @@ mod tests {
             Err(Reject::WrongPreview)
         );
         assert_eq!(signer.check_cookie(&cookie, PID, Uuid::new_v4()), Err(Reject::WrongUser));
-        assert_eq!(signer.redeem_ticket_at(&cookie, PID, 1), Err(Reject::Malformed));
+        assert_eq!(signer.check_ticket_at(&cookie, PID, 1), Err(Reject::Malformed));
         let ticket = signer.mint_ticket_at(PID, user, 1);
         assert_eq!(signer.check_cookie(&ticket, PID, user), Err(Reject::Malformed));
     }

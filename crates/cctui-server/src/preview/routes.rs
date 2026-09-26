@@ -62,7 +62,8 @@ pub async fn list(
     Path(session_id): Path<String>,
 ) -> Result<Json<Vec<PreviewInfo>>, StatusCode> {
     require_owner(&state, &ctx, &session_id).await?;
-    Ok(Json(state.preview.list(&session_id).iter().map(|p| info(&state, p)).collect()))
+    let previews = state.preview.list(&state.pool, &session_id).await;
+    Ok(Json(previews.iter().map(|p| info(&state, p)).collect()))
 }
 
 pub async fn ticket(
@@ -71,7 +72,7 @@ pub async fn ticket(
     Path((session_id, preview_id)): Path<(String, String)>,
 ) -> Result<Json<PreviewTicket>, StatusCode> {
     let owner = require_owner(&state, &ctx, &session_id).await?;
-    let Some(preview) = state.preview.get(&preview_id) else {
+    let Some(preview) = state.preview.get(&state.pool, &preview_id).await else {
         return Err(StatusCode::NOT_FOUND);
     };
     if preview.session_id != session_id || preview.user_id != owner {

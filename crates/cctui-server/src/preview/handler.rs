@@ -15,7 +15,7 @@ use cctui_proto::ws::{DaemonFrameDown, PREVIEW_CHUNK_BYTES, PreviewChunk, Previe
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 
-use super::{Head, Inbound, Preview, Registry, ticket};
+use super::{Head, Inbound, Preview, ticket};
 use crate::state::AppState;
 
 pub const MAX_REQUEST_BODY: u64 = 25 * 1024 * 1024;
@@ -52,11 +52,21 @@ pub async fn host_gate(State(state): State<AppState>, request: Request, next: Ne
 }
 
 pub async fn handle(state: AppState, preview_id: &str, request: Request) -> Response {
-    let Some(preview) = state.preview.get(preview_id) else {
+    let Some(preview) = state.preview.get(&state.pool, preview_id).await else {
         return page(StatusCode::NOT_FOUND, "No such preview", "This preview is not open.");
     };
     if request.uri().path() == "/__cctui/auth" {
-        return redeem(&state.preview, &preview, &request);
+        let ticket = request
+            .uri()
+            .query()
+            .into_iter()
+            .flat_map(|q| q.split('&'))
+            .find_map(|pair| pair.strip_prefix("ticket="))
+            .unwrap_or("")
+            .to_owned();
+        let https = crate::auth::request_is_https(request.headers());
+        drop(request);
+        return redeem(&state, &preview, &ticket, https).await;
     }
     let authorized = ticket::cookie_value(request.headers()).is_some_and(|c| {
         state.preview.tickets().check_cookie(&c, &preview.id, preview.user_id).is_ok()
@@ -68,6 +78,37 @@ pub async fn handle(state: AppState, preview_id: &str, request: Request) -> Resp
             "Open this preview from your cctui session so it can hand you an access ticket.",
         );
     }
+    serve(state, preview, request).await
+}
+
+/// Tunnel locally when this pod holds the daemon link, else hand the request to
+/// the pod that does. Auth has already happened on the receiving pod.
+pub async fn serve(state: AppState, preview: Preview, request: Request) -> Response {
+    if state.preview.local(&preview.id).is_some() {
+        return if is_websocket_upgrade(request.headers()) {
+            tunnel_ws(state, preview, request).await
+        } else {
+            tunnel_http(state, preview, request).await
+        };
+    }
+    let peer = crate::presence::preview_owner_ip(&state, &preview).await;
+    let Some(peer) = peer else {
+        return gateway_error("The session's daemon is not connected.");
+    };
+    let user = preview.user_id;
+    if is_websocket_upgrade(request.headers()) {
+        super::forward::websocket(&state, &peer, &preview.id, user, request).await
+    } else {
+        super::forward::http(&state, &peer, &preview.id, user, request).await
+    }
+}
+
+/// Serve a preview request that arrived over the internal hop: this pod must
+/// hold the link, so a stale presence row cannot bounce it onwards.
+pub async fn serve_local_only(state: AppState, preview: Preview, request: Request) -> Response {
+    if state.preview.local(&preview.id).is_none() {
+        return gateway_error("This replica no longer holds the preview's daemon link.");
+    }
     if is_websocket_upgrade(request.headers()) {
         tunnel_ws(state, preview, request).await
     } else {
@@ -75,18 +116,11 @@ pub async fn handle(state: AppState, preview_id: &str, request: Request) -> Resp
     }
 }
 
-fn redeem(registry: &Registry, preview: &Preview, request: &Request) -> Response {
-    let ticket = request
-        .uri()
-        .query()
-        .into_iter()
-        .flat_map(|q| q.split('&'))
-        .find_map(|pair| pair.strip_prefix("ticket="))
-        .unwrap_or("");
-    match registry.tickets().redeem_ticket(ticket, &preview.id) {
+async fn redeem(state: &AppState, preview: &Preview, ticket: &str, https: bool) -> Response {
+    let registry = &state.preview;
+    match registry.tickets().redeem_ticket(&state.pool, ticket, &preview.id).await {
         Ok(grant) if grant.user_id == preview.user_id => {
             let cookie = registry.tickets().mint_cookie(&grant);
-            let https = crate::auth::request_is_https(request.headers());
             (
                 StatusCode::FOUND,
                 [

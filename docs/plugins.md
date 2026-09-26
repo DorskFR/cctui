@@ -146,6 +146,32 @@ the server looks up the preview id and tunnels the request down that daemon's
 existing WS as streamed request/response frames, WebSocket upgrades included, so
 HMR works. Unknown ids 404; every other Host keeps today's behaviour.
 
+### Multiple replicas
+
+Previews are shared state, because a daemon's WS lands on one replica while the
+browser can reach any of them. The `previews` table (migration 142) is the source
+of truth for id → session/owner/machine/port, so every pod resolves every
+preview; only the tunnel's stream state is pod-local.
+
+A pod that receives a preview request it cannot serve itself looks up the pod
+holding that daemon's WS in `ws_presence` and reverse-proxies the raw request to
+its `/internal/preview/{id}/{*path}`, streaming bodies both ways and bridging
+WebSocket upgrades. That endpoint takes the same cluster-internal secret as
+`/internal/bus/*` and serves **locally only** — it never forwards again, so a
+stale presence row cannot start a loop. Ticket nonces are burnt in
+`preview_tickets_used`, so a ticket minted on one pod is single-use across all
+of them.
+
+Rolling restarts keep previews alive. A daemon that loses its WS keeps its open
+previews and re-announces them by id when it reconnects (possibly to a different
+pod); the server re-binds an existing row only when machine, session, user and
+port all match. Meanwhile the row is marked detached rather than deleted, and a
+sweeper drops it once it has been detached for more than
+`DETACH_GRACE_SECS` (2 min). Session end still deletes immediately.
+
+This needs no extra configuration beyond what the peer mesh already requires
+(`CCTUI_POD_IP`); without it a single replica keeps working unchanged.
+
 ### Security model
 
 - **Owner only.** `GET /api/v1/sessions/{id}/previews` lists a session's

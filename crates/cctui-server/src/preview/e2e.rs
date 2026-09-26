@@ -23,7 +23,8 @@ async fn upstream() -> u16 {
             "/echo",
             post(|body: String| async move { ([("x-upstream", "yes")], format!("echo:{body}")) }),
         )
-        .route("/", get(|| async { "root" }));
+        .route("/", get(|| async { "root" }))
+        .fallback(|uri: axum::http::Uri| async move { format!("upstream:{uri}") });
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -178,31 +179,70 @@ struct Harness {
     host: String,
 }
 
-async fn harness() -> Harness {
-    let pool = sqlx::PgPool::connect_lazy("postgres://invalid").unwrap();
-    let mut state = AppState::for_test(pool);
+/// `None` when no test database is configured (CI always has one).
+async fn test_pool(name: &str) -> Option<sqlx::PgPool> {
+    let url = crate::routes::gateway::test_db_url(name)?;
+    Some(sqlx::postgres::PgPoolOptions::new().max_connections(4).connect(&url).await.unwrap())
+}
+
+async fn test_user(pool: &sqlx::PgPool) -> Uuid {
+    let id = Uuid::new_v4();
+    sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+        .bind(id)
+        .bind(format!("preview-e2e-{id}"))
+        .bind(format!("hash-{id}"))
+        .execute(pool)
+        .await
+        .unwrap();
+    id
+}
+
+fn pod_state(pool: &sqlx::PgPool, pod: &str) -> AppState {
+    let mut state = AppState::for_test(pool.clone());
     state.preview = Arc::new(Registry::new(
         Some(PreviewHost::parse(HOST).unwrap()),
         "http://localhost:8700",
         b"e2e",
     ));
-    let (machine, user, conn) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
-    let (tx, rx) = mpsc::channel(64);
-    state.bus.register_daemon(machine, conn, tx);
-    state.bus.bind_session_conn("sess", conn);
-    tokio::spawn(fake_daemon(state.clone(), machine, user, rx));
-    let upstream_port = upstream().await;
-    let preview = state.preview.open("sess", user, machine, upstream_port).unwrap();
+    state.presence = Arc::new(crate::presence::PodIdentity::for_test(pod, "127.0.0.1"));
+    state.internal_secret = Some(Arc::from("cluster-secret"));
+    state
+}
 
+/// The public router of one replica: the preview host gate plus the internal
+/// peer endpoint, exactly as `main` mounts them.
+async fn serve_pod(state: &AppState) -> u16 {
     let app = Router::new()
         .route("/api/v1/ping", get(|| async { "api" }))
+        .route(
+            "/internal/preview/{id}/{*path}",
+            axum::routing::any(crate::routes::internal::preview_serve),
+        )
         .with_state(state.clone())
         .layer(axum::middleware::from_fn_with_state(state.clone(), super::handler::host_gate));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    port
+}
+
+async fn harness() -> Option<Harness> {
+    let pool = test_pool("preview_e2e").await?;
+    let state = pod_state(&pool, "pod-a");
+    let user = test_user(&pool).await;
+    let (machine, conn) = (Uuid::new_v4(), Uuid::new_v4());
+    let session = Uuid::new_v4().to_string();
+    let (tx, rx) = mpsc::channel(64);
+    state.bus.register_daemon(machine, conn, tx);
+    state.bus.bind_session_conn(&session, conn);
+    tokio::spawn(fake_daemon(state.clone(), machine, user, rx));
+    let upstream_port = upstream().await;
+    let preview =
+        state.preview.open(&pool, &session, user, machine, upstream_port, None).await.unwrap();
+
+    let port = serve_pod(&state).await;
     let host = state.preview.host().unwrap().host_for(&preview.id);
-    Harness { state, port, preview_id: preview.id, user, host }
+    Some(Harness { state, port, preview_id: preview.id, user, host })
 }
 
 impl Harness {
@@ -234,7 +274,7 @@ impl Harness {
 
 #[tokio::test]
 async fn preview_host_is_gated_and_tunnels_http() {
-    let h = harness().await;
+    let Some(h) = harness().await else { return };
     let client = Harness::client();
 
     let api = client.get(h.url("/api/v1/ping")).send().await.unwrap();
@@ -292,7 +332,7 @@ async fn preview_host_is_gated_and_tunnels_http() {
         .unwrap();
     assert_eq!(resp.status(), 401, "cookie for another preview");
 
-    h.state.preview.close(&h.preview_id);
+    h.state.preview.close(&h.state.pool, &h.preview_id).await;
     let resp = client
         .get(h.url("/"))
         .header("host", &h.host)
@@ -309,7 +349,7 @@ async fn preview_websocket_is_passed_through() {
     use tokio_tungstenite::tungstenite::Message;
     use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
-    let h = harness().await;
+    let Some(h) = harness().await else { return };
     let cookie = h.cookie().await;
     let mut request =
         format!("ws://127.0.0.1:{}/hmr?token=1", h.port).into_client_request().unwrap();
@@ -331,4 +371,128 @@ async fn preview_websocket_is_passed_through() {
     request.headers_mut().insert("host", h.host.parse().unwrap());
     let err = tokio_tungstenite::connect_async(request).await.unwrap_err();
     assert!(err.to_string().contains("401"), "{err}");
+}
+
+/// Two replicas sharing one database: the daemon's WS is on pod A, the browser
+/// hits pod B. Pod B must resolve the preview, gate it on the cookie, and
+/// reverse-proxy both HTTP and WebSocket to pod A.
+#[tokio::test]
+async fn a_browser_on_the_wrong_pod_is_forwarded_to_the_pod_holding_the_daemon() {
+    use tokio_tungstenite::tungstenite::Message;
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
+    let Some(pool) = test_pool("preview_two_pods").await else { return };
+    let user = test_user(&pool).await;
+    let session = Uuid::new_v4();
+    let (machine, conn) = (Uuid::new_v4(), Uuid::new_v4());
+
+    // Pod A terminates the daemon WS and registers the preview.
+    let pod_a = pod_state(&pool, "pod-a");
+    let (tx, rx) = mpsc::channel(64);
+    pod_a.bus.register_daemon(machine, conn, tx);
+    pod_a.bus.bind_session_conn(&session.to_string(), conn);
+    tokio::spawn(fake_daemon(pod_a.clone(), machine, user, rx));
+    let upstream_port = upstream().await;
+    let preview = pod_a
+        .preview
+        .open(&pool, &session.to_string(), user, machine, upstream_port, None)
+        .await
+        .unwrap();
+    let port_a = serve_pod(&pod_a).await;
+
+    // Pod B holds no link. Its peer lookups must land on pod A's port.
+    let mut pod_b = pod_state(&pool, "pod-b");
+    pod_b.config.port = port_a;
+    let port_b = serve_pod(&pod_b).await;
+
+    sqlx::query(
+        "INSERT INTO ws_presence (kind, entity_id, pod, pod_ip) VALUES ('session', $1, $2, $3) \
+         ON CONFLICT (kind, entity_id) DO UPDATE SET pod = EXCLUDED.pod, pod_ip = EXCLUDED.pod_ip",
+    )
+    .bind(session)
+    .bind("pod-a")
+    .bind("127.0.0.1")
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let host = pod_a.preview.host().unwrap().host_for(&preview.id);
+    let client = Harness::client();
+    let url_b = |path: &str| format!("http://127.0.0.1:{port_b}{path}");
+
+    assert!(pod_b.preview.local(&preview.id).is_none(), "pod B must not think it holds the link");
+
+    let unauthed = client.get(url_b("/")).header("host", &host).send().await.unwrap();
+    assert_eq!(unauthed.status(), 401, "pod B gates on the cookie before forwarding");
+
+    // The ticket is minted on pod B and redeemed on pod B: both sides of the
+    // single-use check go through the shared table.
+    let ticket = pod_b.preview.tickets().mint_ticket(&preview.id, user);
+    let redeem = client
+        .get(url_b(&format!("/__cctui/auth?ticket={ticket}")))
+        .header("host", &host)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(redeem.status(), 302);
+    let cookie = redeem
+        .headers()
+        .get("set-cookie")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.split(';').next())
+        .unwrap()
+        .to_owned();
+
+    let replay = client
+        .get(url_b(&format!("/__cctui/auth?ticket={ticket}")))
+        .header("host", &host)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(replay.status(), 403, "a ticket cannot be replayed on any pod");
+
+    let resp = client
+        .get(url_b("/hello?x=1"))
+        .header("host", &host)
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.text().await.unwrap(), "upstream:/hello?x=1");
+
+    let mut request = format!("ws://127.0.0.1:{port_b}/hmr?token=1").into_client_request().unwrap();
+    request.headers_mut().insert("host", host.parse().unwrap());
+    request.headers_mut().insert("cookie", cookie.parse().unwrap());
+    let (mut ws, resp) = tokio_tungstenite::connect_async(request).await.unwrap();
+    assert_eq!(resp.status(), 101, "the upgrade is tunnelled across both hops");
+    ws.send(Message::Text("ping".into())).await.unwrap();
+    assert_eq!(ws.next().await.unwrap().unwrap(), Message::Text("ping".into()));
+    ws.send(Message::Binary(vec![9, 8].into())).await.unwrap();
+    assert_eq!(ws.next().await.unwrap().unwrap(), Message::Binary(vec![9, 8].into()));
+    ws.close(None).await.unwrap();
+
+    // Without the cluster secret the internal leg is not usable at all.
+    let naked = client
+        .get(format!("http://127.0.0.1:{port_a}/internal/preview/{}/hello", preview.id))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(naked.status(), 401, "the internal endpoint needs the cluster secret");
+
+    let wrong_user = client
+        .get(format!("http://127.0.0.1:{port_a}/internal/preview/{}/hello", preview.id))
+        .bearer_auth("cluster-secret")
+        .header(super::forward::USER_HEADER, Uuid::new_v4().to_string())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(wrong_user.status(), 403, "the forwarded identity must be the preview's owner");
+
+    sqlx::query("DELETE FROM ws_presence WHERE entity_id = $1")
+        .bind(session)
+        .execute(&pool)
+        .await
+        .unwrap();
+    super::store::delete_session(&pool, &session.to_string()).await;
 }

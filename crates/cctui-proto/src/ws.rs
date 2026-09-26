@@ -129,6 +129,10 @@ pub enum DaemonFrameUp {
         request_id: uuid::Uuid,
         session_id: String,
         port: u16,
+        /// Set when a reconnecting daemon re-announces a preview it still holds,
+        /// so the server re-binds that id instead of minting a new one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        preview_id: Option<String>,
     },
     PreviewClose {
         session_id: String,

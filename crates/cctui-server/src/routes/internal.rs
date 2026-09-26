@@ -16,6 +16,7 @@
 use axum::Json;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode, header};
+use axum::response::{IntoResponse, Response};
 use chrono::Utc;
 use sha2::{Digest, Sha256};
 use sqlx::PgPool;
@@ -172,6 +173,41 @@ pub async fn bus_publish(
         state.bus.deliver_local(event.into());
     }
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// `ANY /internal/preview/{id}/{*path}` — serve a preview request forwarded by
+/// the pod the browser reached. That pod already checked the preview cookie, so
+/// the verified owner rides in [`forward::USER_HEADER`]; this hop never carries
+/// the browser's own cookie. Served locally only, never re-forwarded.
+pub async fn preview_serve(
+    State(state): State<AppState>,
+    axum::extract::Path((preview_id, path)): axum::extract::Path<(String, String)>,
+    mut request: axum::extract::Request,
+) -> Response {
+    if let Err(status) = authenticate(&state, request.headers()) {
+        return status.into_response();
+    }
+    let claimed = request
+        .headers()
+        .get(crate::preview::forward::USER_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| uuid::Uuid::parse_str(v).ok());
+    let Some(claimed) = claimed else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let Some(preview) = state.preview.get(&state.pool, &preview_id).await else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    if preview.user_id != claimed {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    // The app must see its own path, not the internal envelope's.
+    let query = request.uri().query().map(|q| format!("?{q}")).unwrap_or_default();
+    match format!("/{path}{query}").parse() {
+        Ok(uri) => *request.uri_mut() = uri,
+        Err(_) => return StatusCode::BAD_REQUEST.into_response(),
+    }
+    crate::preview::handler::serve_local_only(state, preview, request).await
 }
 
 /// Mirror a relayed [`ServerEvent`]'s prompt-store side effects locally.

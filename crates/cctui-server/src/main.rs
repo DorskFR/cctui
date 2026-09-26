@@ -373,6 +373,9 @@ fn outer_routes() -> Router<AppState> {
             post(routes::internal::bus_route).layer(DefaultBodyLimit::max(32 * 1024 * 1024)),
         )
         .route("/internal/bus/publish", post(routes::internal::bus_publish))
+        // Preview leg for a browser that landed on a pod without the daemon
+        // link. Same secret; serves locally only, so it cannot loop.
+        .route("/internal/preview/{id}/{*path}", any(routes::internal::preview_serve))
 }
 
 fn spawn_sweeps(state: AppState) {
@@ -383,6 +386,16 @@ fn spawn_sweeps(state: AppState) {
     spawn_periodic(REAPER_PERIOD, {
         let state = state.clone();
         move || keepalive_sweep(state.clone())
+    });
+    spawn_periodic(REAPER_PERIOD, {
+        let pool = state.pool.clone();
+        let tracked = state.presence.ip.is_some();
+        move || {
+            let pool = pool.clone();
+            async move {
+                preview::store::sweep(&pool, tracked).await;
+            }
+        }
     });
     tokio::spawn(reaper_task(state));
 }

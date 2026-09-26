@@ -7,8 +7,10 @@
 pub mod csrf;
 #[cfg(test)]
 mod e2e;
+pub mod forward;
 pub mod handler;
 pub mod routes;
+pub mod store;
 pub mod ticket;
 
 use std::sync::Arc;
@@ -138,6 +140,8 @@ pub enum OpenError {
     Disabled,
     Limit,
     Port,
+    Taken,
+    Db,
 }
 
 impl OpenError {
@@ -147,6 +151,8 @@ impl OpenError {
             Self::Disabled => "previews are not enabled on this server".to_owned(),
             Self::Limit => format!("session already has {MAX_PER_SESSION} open previews"),
             Self::Port => format!("previews only tunnel ports >= {MIN_PORT}"),
+            Self::Taken => "that session and port belong to another user".to_owned(),
+            Self::Db => "could not register the preview".to_owned(),
         }
     }
 }
@@ -194,12 +200,17 @@ impl Registry {
     }
 
     /// Register (or return the already open) preview for `session_id:port`.
-    pub fn open(
+    /// Register a preview and bind its daemon link to this pod. `requested_id`
+    /// is a daemon re-announcing after a reconnect: the existing row is adopted
+    /// only when machine, session, user and port all still match.
+    pub async fn open(
         &self,
+        pool: &sqlx::PgPool,
         session_id: &str,
         user_id: Uuid,
         machine_id: Uuid,
         port: u16,
+        requested_id: Option<&str>,
     ) -> Result<Preview, OpenError> {
         if !self.enabled() {
             return Err(OpenError::Disabled);
@@ -207,79 +218,125 @@ impl Registry {
         if port < MIN_PORT {
             return Err(OpenError::Port);
         }
-        let existing = self
-            .previews
-            .iter()
-            .find(|p| p.session_id == session_id && p.port == port)
-            .map(|p| p.clone());
-        if let Some(existing) = existing {
-            return Ok(existing);
+        if let Some(requested) = requested_id.filter(|id| is_preview_id(id))
+            && let Some(preview) =
+                store::rebind(pool, requested, session_id, user_id, machine_id, port).await
+        {
+            self.bind_local(&preview);
+            return Ok(preview);
         }
-        if self.list(session_id).len() >= MAX_PER_SESSION {
+        if let Some(existing) = store::by_port(pool, session_id, port).await {
+            if existing.user_id != user_id {
+                return Err(OpenError::Taken);
+            }
+            let preview = store::insert(pool, &Preview { machine_id, ..existing })
+                .await
+                .map_err(|_| OpenError::Db)?;
+            self.bind_local(&preview);
+            return Ok(preview);
+        }
+        if store::check_limit(pool, session_id).await.is_err() {
             return Err(OpenError::Limit);
         }
-        let preview = Preview {
-            id: new_preview_id(),
-            session_id: session_id.to_owned(),
-            user_id,
-            machine_id,
-            port,
-            opened_at: Utc::now(),
-        };
-        self.previews.insert(preview.id.clone(), preview.clone());
+        let preview = store::insert(
+            pool,
+            &Preview {
+                id: new_preview_id(),
+                session_id: session_id.to_owned(),
+                user_id,
+                machine_id,
+                port,
+                opened_at: Utc::now(),
+            },
+        )
+        .await
+        .map_err(|_| OpenError::Db)?;
+        self.bind_local(&preview);
         Ok(preview)
     }
 
+    fn bind_local(&self, preview: &Preview) {
+        self.previews.insert(preview.id.clone(), preview.clone());
+    }
+
+    /// The preview whose daemon WS this pod terminates. `None` means the
+    /// request has to be forwarded to (or is simply unknown by) another pod.
     #[must_use]
-    pub fn get(&self, id: &str) -> Option<Preview> {
+    pub fn local(&self, id: &str) -> Option<Preview> {
         self.previews.get(id).map(|p| p.clone())
     }
 
-    #[must_use]
-    pub fn list(&self, session_id: &str) -> Vec<Preview> {
-        let mut out: Vec<Preview> = self
-            .previews
-            .iter()
-            .filter(|p| p.session_id == session_id)
-            .map(|p| p.clone())
-            .collect();
-        out.sort_by_key(|p| (p.opened_at, p.port));
-        out
+    /// Any pod's view of a preview, from the shared table.
+    pub async fn get(&self, pool: &sqlx::PgPool, id: &str) -> Option<Preview> {
+        if !self.enabled() {
+            return None;
+        }
+        store::lookup(pool, id).await
     }
 
-    pub fn close(&self, id: &str) -> Option<Preview> {
-        let (_, preview) = self.previews.remove(id)?;
+    pub async fn list(&self, pool: &sqlx::PgPool, session_id: &str) -> Vec<Preview> {
+        store::list_session(pool, session_id).await
+    }
+
+    /// Forget a preview everywhere: the shared row and this pod's streams.
+    pub async fn close(&self, pool: &sqlx::PgPool, id: &str) -> Option<Preview> {
+        let preview = store::lookup(pool, id).await;
+        store::delete(pool, id).await;
+        self.forget_local(id);
+        preview
+    }
+
+    fn forget_local(&self, id: &str) {
+        self.previews.remove(id);
         self.streams.retain(|_, s| s.preview_id != id);
-        Some(preview)
     }
 
-    pub fn close_port(&self, session_id: &str, port: u16) -> Option<Preview> {
-        let id = self
-            .previews
-            .iter()
-            .find(|p| p.session_id == session_id && p.port == port)
-            .map(|p| p.id.clone())?;
-        self.close(&id)
+    pub async fn close_port(
+        &self,
+        pool: &sqlx::PgPool,
+        session_id: &str,
+        port: u16,
+    ) -> Option<Preview> {
+        let preview = store::by_port(pool, session_id, port).await?;
+        self.close(pool, &preview.id).await
     }
 
-    pub fn close_session(&self, session_id: &str) -> Vec<Preview> {
+    /// The session is over: its previews go for good.
+    pub async fn close_session(&self, pool: &sqlx::PgPool, session_id: &str) -> Vec<Preview> {
+        let previews = store::list_session(pool, session_id).await;
+        store::delete_session(pool, session_id).await;
+        for preview in &previews {
+            self.forget_local(&preview.id);
+        }
+        previews
+    }
+
+    /// A daemon dropped its WS. The rows survive the grace period so a rolling
+    /// restart can re-announce them, but this pod no longer serves them.
+    pub async fn detach_session(&self, pool: &sqlx::PgPool, session_id: &str) {
+        store::detach_session(pool, session_id).await;
         let ids: Vec<String> = self
             .previews
             .iter()
             .filter(|p| p.session_id == session_id)
             .map(|p| p.id.clone())
             .collect();
-        ids.iter().filter_map(|id| self.close(id)).collect()
+        for id in &ids {
+            self.forget_local(id);
+        }
     }
 
-    pub fn close_machine(&self, machine_id: Uuid) -> Vec<Preview> {
+    pub async fn detach_machine(&self, pool: &sqlx::PgPool, machine_id: Uuid) {
+        store::detach_machine(pool, machine_id).await;
         let ids: Vec<String> = self
             .previews
             .iter()
             .filter(|p| p.machine_id == machine_id)
             .map(|p| p.id.clone())
             .collect();
-        ids.iter().filter_map(|id| self.close(id)).collect()
+        for id in &ids {
+            self.forget_local(id);
+        }
     }
 
     /// Park a new tunnelled stream; the daemon's head and body arrive on the
@@ -341,7 +398,7 @@ async fn session_owner_on_machine(
 pub async fn on_frame(state: &AppState, machine_id: Uuid, daemon_user: Uuid, frame: DaemonFrameUp) {
     let registry = &state.preview;
     match frame {
-        DaemonFrameUp::PreviewOpen { request_id, session_id, port } => {
+        DaemonFrameUp::PreviewOpen { request_id, session_id, port, preview_id } => {
             let owner = match session_owner_on_machine(state, &session_id, machine_id).await {
                 Ok(Some(owner)) => Some(if owner.is_nil() { daemon_user } else { owner }),
                 Ok(None) => None,
@@ -350,12 +407,13 @@ pub async fn on_frame(state: &AppState, machine_id: Uuid, daemon_user: Uuid, fra
                     None
                 }
             };
-            let outcome = owner.map_or_else(
-                || Err("session is not running on this machine".to_owned()),
-                |owner| {
-                    registry.open(&session_id, owner, machine_id, port).map_err(|e| e.message())
-                },
-            );
+            let outcome = match owner {
+                Some(owner) => registry
+                    .open(&state.pool, &session_id, owner, machine_id, port, preview_id.as_deref())
+                    .await
+                    .map_err(|e| e.message()),
+                None => Err("session is not running on this machine".to_owned()),
+            };
             let reply = match outcome {
                 Ok(preview) => DaemonFrameDown::PreviewOpened {
                     request_id,
@@ -375,7 +433,7 @@ pub async fn on_frame(state: &AppState, machine_id: Uuid, daemon_user: Uuid, fra
             send_down(state, machine_id, &session_id, reply).await;
         }
         DaemonFrameUp::PreviewClose { session_id, port } => {
-            registry.close_port(&session_id, port);
+            registry.close_port(&state.pool, &session_id, port).await;
         }
         DaemonFrameUp::PreviewResponse { stream_id, status, headers } => {
             let Some(stream) = registry.stream(&stream_id) else { return };
@@ -428,7 +486,7 @@ pub async fn abort_stream(
     stream_id: &str,
 ) {
     registry.drop_stream(stream_id);
-    let Some(preview) = registry.get(preview_id) else { return };
+    let Some(preview) = registry.local(preview_id) else { return };
     send_down(
         state,
         preview.machine_id,
@@ -440,7 +498,7 @@ pub async fn abort_stream(
 
 /// Close every preview of `session_id` and let its daemon forget them.
 pub async fn close_session(state: &AppState, session_id: &str) {
-    for preview in state.preview.close_session(session_id) {
+    for preview in state.preview.close_session(&state.pool, session_id).await {
         send_down(
             state,
             preview.machine_id,
@@ -505,40 +563,157 @@ mod tests {
         assert_ne!(a, b);
     }
 
-    #[test]
-    fn registry_lifecycle_open_close_session_machine() {
+    async fn test_user(pool: &sqlx::PgPool) -> Uuid {
+        let id = Uuid::new_v4();
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+            .bind(id)
+            .bind(format!("preview-{id}"))
+            .bind(format!("hash-{id}"))
+            .execute(pool)
+            .await
+            .unwrap();
+        id
+    }
+
+    #[tokio::test]
+    async fn registry_lifecycle_open_close_session_machine() {
+        let Some(url) = crate::routes::gateway::test_db_url("preview_registry_lifecycle") else {
+            return;
+        };
+        let pool =
+            sqlx::postgres::PgPoolOptions::new().max_connections(2).connect(&url).await.unwrap();
         let reg = registry();
-        let (user, machine) = (Uuid::new_v4(), Uuid::new_v4());
-        let p = reg.open("s1", user, machine, 5173).unwrap();
+        let user = test_user(&pool).await;
+        let machine = Uuid::new_v4();
+        let (s1, s2) = (format!("s1-{}", Uuid::new_v4()), format!("s2-{}", Uuid::new_v4()));
+
+        let p = reg.open(&pool, &s1, user, machine, 5173, None).await.unwrap();
         assert_eq!(reg.url_for(&p.id), format!("https://cctui-pv-{}.example.test", p.id));
         assert_eq!(
-            reg.open("s1", user, machine, 5173).unwrap(),
-            p,
-            "same port re-open is idempotent"
+            reg.open(&pool, &s1, user, machine, 5173, None).await.unwrap().id,
+            p.id,
+            "same port re-open keeps the id"
         );
-        assert!(matches!(reg.open("s1", user, machine, 80), Err(OpenError::Port)));
+        assert!(matches!(
+            reg.open(&pool, &s1, user, machine, 80, None).await,
+            Err(OpenError::Port)
+        ));
         for port in 0..7u16 {
-            reg.open("s1", user, machine, 6000 + port).unwrap();
+            reg.open(&pool, &s1, user, machine, 6000 + port, None).await.unwrap();
         }
-        assert!(matches!(reg.open("s1", user, machine, 7000), Err(OpenError::Limit)));
-        assert_eq!(reg.list("s1").len(), 8);
+        assert!(matches!(
+            reg.open(&pool, &s1, user, machine, 7000, None).await,
+            Err(OpenError::Limit)
+        ));
+        assert_eq!(reg.list(&pool, &s1).await.len(), 8);
+
+        // A reconnect re-announcing its id adopts the row; a mismatched
+        // session/user/machine never does.
+        reg.detach_machine(&pool, machine).await;
+        assert!(reg.local(&p.id).is_none(), "a detached preview is not served by this pod");
+        let rebound = reg.open(&pool, &s1, user, machine, 5173, Some(&p.id)).await.unwrap();
+        assert_eq!(rebound.id, p.id, "the existing id is rebound");
+        assert!(reg.local(&p.id).is_some(), "and bound back to this pod");
+        let other_user = test_user(&pool).await;
+        let stolen = reg.open(&pool, &s1, other_user, machine, 5173, Some(&p.id)).await;
+        assert!(matches!(stolen, Err(OpenError::Taken)), "another user cannot claim the id");
 
         let (sid, _, _) = reg.open_stream(&p.id);
         assert_eq!(reg.stream_count(), 1);
-        assert_eq!(reg.close_port("s1", 5173).map(|c| c.id), Some(p.id.clone()));
+        assert_eq!(reg.close_port(&pool, &s1, 5173).await.map(|c| c.id), Some(p.id.clone()));
         assert_eq!(reg.stream_count(), 0, "closing a preview drops its streams");
-        assert!(reg.get(&p.id).is_none());
+        assert!(reg.get(&pool, &p.id).await.is_none());
         reg.drop_stream(&sid);
 
-        let other = reg.open("s2", user, Uuid::new_v4(), 5173).unwrap();
-        assert_eq!(reg.close_session("s1").len(), 7);
-        assert!(reg.list("s1").is_empty());
-        assert_eq!(reg.get(&other.id), Some(other.clone()));
-        assert_eq!(reg.close_machine(other.machine_id).len(), 1);
-        assert!(reg.list("s2").is_empty());
+        let other = reg.open(&pool, &s2, user, Uuid::new_v4(), 5173, None).await.unwrap();
+        assert_eq!(reg.close_session(&pool, &s1).await.len(), 7);
+        assert!(reg.list(&pool, &s1).await.is_empty());
+        assert_eq!(reg.get(&pool, &other.id).await.map(|p| p.id), Some(other.id.clone()));
+
+        // A daemon disconnect only detaches: the row survives for the reconnect
+        // and the sweeper is what finally drops it.
+        reg.detach_machine(&pool, other.machine_id).await;
+        assert!(reg.get(&pool, &other.id).await.is_some(), "still resolvable during the grace");
+        assert!(reg.local(&other.id).is_none());
+        store::delete_session(&pool, &s2).await;
 
         let off = Registry::new(None, "http://localhost:8700", b"k");
-        assert!(matches!(off.open("s", user, machine, 5173), Err(OpenError::Disabled)));
+        assert!(matches!(
+            off.open(&pool, "s", user, machine, 5173, None).await,
+            Err(OpenError::Disabled)
+        ));
+    }
+
+    #[tokio::test]
+    async fn the_sweeper_drops_previews_whose_daemon_never_came_back() {
+        let Some(url) = crate::routes::gateway::test_db_url("preview_sweeper") else {
+            return;
+        };
+        let pool =
+            sqlx::postgres::PgPoolOptions::new().max_connections(2).connect(&url).await.unwrap();
+        let reg = registry();
+        let user = test_user(&pool).await;
+        let session = format!("sweep-{}", Uuid::new_v4());
+        let p = reg.open(&pool, &session, user, Uuid::new_v4(), 5173, None).await.unwrap();
+
+        reg.detach_machine(&pool, p.machine_id).await;
+        store::sweep(&pool, true).await;
+        assert!(reg.get(&pool, &p.id).await.is_some(), "inside the grace period it stays");
+
+        sqlx::query(
+            "UPDATE previews SET detached_at = now() - interval '10 minutes' WHERE id = $1",
+        )
+        .bind(&p.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        store::sweep(&pool, true).await;
+        assert!(reg.get(&pool, &p.id).await.is_none(), "past the grace period it is swept");
+
+        // A pod killed without closing its WS leaves detached_at NULL; only the
+        // presence-aware sweep can tell that daemon is gone for good.
+        let orphan = reg.open(&pool, &session, user, Uuid::new_v4(), 5174, None).await.unwrap();
+        sqlx::query("UPDATE previews SET created_at = now() - interval '10 minutes' WHERE id = $1")
+            .bind(&orphan.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        store::sweep(&pool, false).await;
+        assert!(
+            reg.get(&pool, &orphan.id).await.is_some(),
+            "without presence tracking an absent row proves nothing"
+        );
+        store::sweep(&pool, true).await;
+        assert!(
+            reg.get(&pool, &orphan.id).await.is_none(),
+            "with presence tracking the orphan is reaped"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_ticket_nonce_cannot_be_redeemed_on_a_second_pod() {
+        let Some(url) = crate::routes::gateway::test_db_url("preview_ticket_replay") else {
+            return;
+        };
+        let pool =
+            sqlx::postgres::PgPoolOptions::new().max_connections(2).connect(&url).await.unwrap();
+        // Two pods, same signing key and same DB — as in a real deployment.
+        let (pod_a, pod_b) = (registry(), registry());
+        let user = test_user(&pool).await;
+        let session = format!("replay-{}", Uuid::new_v4());
+        let p = pod_a.open(&pool, &session, user, Uuid::new_v4(), 5173, None).await.unwrap();
+
+        let ticket = pod_a.tickets().mint_ticket(&p.id, user);
+        assert!(
+            pod_b.tickets().redeem_ticket(&pool, &ticket, &p.id).await.is_ok(),
+            "either pod can redeem a ticket the other minted"
+        );
+        assert_eq!(
+            pod_a.tickets().redeem_ticket(&pool, &ticket, &p.id).await,
+            Err(ticket::Reject::Reused),
+            "and the nonce is burnt for every pod"
+        );
+        store::delete_session(&pool, &session).await;
     }
 
     #[test]

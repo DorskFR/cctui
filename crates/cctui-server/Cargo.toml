@@ -41,10 +41,10 @@ webauthn-rs = { version = "0.5", features = ["danger-allow-state-serialisation",
 webauthn-rs-proto = "0.5"
 flate2 = "1"
 tar = "0.4"
+tokio-tungstenite.workspace = true
 
 [dev-dependencies]
 reqwest.workspace = true
-tokio-tungstenite.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 tempfile.workspace = true
 tower.workspace = true

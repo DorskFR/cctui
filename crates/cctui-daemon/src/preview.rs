@@ -54,22 +54,56 @@ fn registry() -> std::sync::MutexGuard<'static, Registry> {
     REGISTRY.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// Bind (or, with `None`, drop) the live daemon WS uplink. Dropping it fails
-/// pending opens, forgets every open preview and aborts in-flight streams:
-/// the server forgets them on disconnect too.
+/// Bind (or, with `None`, drop) the live daemon WS uplink.
+///
+/// Dropping it fails pending opens and aborts in-flight streams, but KEEPS the
+/// open previews: the server holds their rows through a grace period, so the
+/// reconnect re-announces them by id and the browser's URL survives a rolling
+/// restart.
 pub fn set_uplink(tx: Option<mpsc::Sender<DaemonFrameUp>>) {
-    let mut reg = registry();
-    reg.uplink = tx;
-    if reg.uplink.is_some() {
+    let reannounce = {
+        let mut reg = registry();
+        reg.uplink = tx;
+        if reg.uplink.is_none() {
+            for (_, waiter) in reg.pending_open.drain() {
+                let _ = waiter.send(Err("daemon lost its server connection".to_owned()));
+            }
+            for (_, handle) in reg.streams.drain() {
+                handle.cancel.cancel();
+            }
+            return;
+        }
+        let uplink = reg.uplink.clone();
+        let open: Vec<(String, u16, String)> = reg
+            .open
+            .iter()
+            .map(|((session, port), opened)| (session.clone(), *port, opened.preview_id.clone()))
+            .collect();
+        drop(reg);
+        uplink.zip(Some(open))
+    };
+    let Some((uplink, open)) = reannounce else { return };
+    if open.is_empty() {
         return;
     }
-    for (_, waiter) in reg.pending_open.drain() {
-        let _ = waiter.send(Err("daemon lost its server connection".to_owned()));
-    }
-    reg.open.clear();
-    for (_, handle) in reg.streams.drain() {
-        handle.cancel.cancel();
-    }
+    tokio::spawn(async move {
+        for (session_id, port, preview_id) in open {
+            let frame = DaemonFrameUp::PreviewOpen {
+                request_id: Uuid::new_v4(),
+                session_id,
+                port,
+                preview_id: Some(preview_id),
+            };
+            if uplink.send(frame).await.is_err() {
+                return;
+            }
+        }
+    });
+}
+
+/// Forget every open preview: the session is over, not merely disconnected.
+pub fn forget_all() {
+    registry().open.clear();
 }
 
 pub fn validate_port(port: u16) -> Result<(), String> {
@@ -95,7 +129,12 @@ pub async fn open(session_id: &str, port: u16) -> Result<Opened, String> {
         reg.pending_open.insert(request_id, tx);
         uplink
     };
-    let frame = DaemonFrameUp::PreviewOpen { request_id, session_id: session_id.to_owned(), port };
+    let frame = DaemonFrameUp::PreviewOpen {
+        request_id,
+        session_id: session_id.to_owned(),
+        port,
+        preview_id: None,
+    };
     if uplink.send(frame).await.is_err() {
         registry().pending_open.remove(&request_id);
         return Err("daemon is not connected to the server".to_owned());
@@ -724,11 +763,13 @@ mod tests {
         let (up_tx, mut up_rx) = mpsc::channel(8);
         set_uplink(Some(up_tx.clone()));
         let opener = tokio::spawn(open("sess", 5173));
-        let DaemonFrameUp::PreviewOpen { request_id, session_id, port } = recv_up(&mut up_rx).await
+        let DaemonFrameUp::PreviewOpen { request_id, session_id, port, preview_id } =
+            recv_up(&mut up_rx).await
         else {
             panic!("expected PreviewOpen");
         };
         assert_eq!((session_id.as_str(), port), ("sess", 5173));
+        assert!(preview_id.is_none(), "a fresh open asks the server for a new id");
         handle_down(
             DaemonFrameDown::PreviewOpened {
                 request_id,
@@ -750,6 +791,48 @@ mod tests {
         ));
         assert!(registry().open.is_empty());
         set_uplink(None);
+    }
+
+    #[tokio::test]
+    async fn a_reconnect_re_announces_open_previews_with_their_existing_ids() {
+        let _serial = SERIAL.lock().await;
+        set_uplink(None);
+        forget_all();
+
+        let (up_tx, mut up_rx) = mpsc::channel(8);
+        set_uplink(Some(up_tx.clone()));
+        let opener = tokio::spawn(open("sess", 5173));
+        let DaemonFrameUp::PreviewOpen { request_id, .. } = recv_up(&mut up_rx).await else {
+            panic!("expected PreviewOpen");
+        };
+        handle_down(
+            DaemonFrameDown::PreviewOpened {
+                request_id,
+                ok: true,
+                preview_id: Some("keepme".into()),
+                url: Some("https://cctui-pv-keepme.example".into()),
+                error: None,
+            },
+            &up_tx,
+        )
+        .await;
+        opener.await.unwrap().unwrap();
+
+        set_uplink(None);
+        assert!(!registry().open.is_empty(), "a disconnect keeps the preview for the reconnect");
+
+        let (up2_tx, mut up2_rx) = mpsc::channel(8);
+        set_uplink(Some(up2_tx));
+        let DaemonFrameUp::PreviewOpen { session_id, port, preview_id, .. } =
+            recv_up(&mut up2_rx).await
+        else {
+            panic!("expected a re-announced PreviewOpen");
+        };
+        assert_eq!((session_id.as_str(), port), ("sess", 5173));
+        assert_eq!(preview_id.as_deref(), Some("keepme"), "the id is re-announced, not reminted");
+
+        set_uplink(None);
+        forget_all();
     }
 
     #[test]
