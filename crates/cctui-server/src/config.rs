@@ -66,6 +66,9 @@ pub struct Config {
     pub port: u16,
     pub database_url: String,
     pub external_url: String,
+    /// `CCTUI_PREVIEW_HOST`: host pattern with `{id}` for dev-server
+    /// previews (`cctui-pv-{id}.example`); unset disables previews.
+    pub preview_host: Option<crate::preview::PreviewHost>,
     /// Browser origins allowed to make credentialed (cookie) cross-origin
     /// requests and to open the user WebSocket. Defaults to the server's own
     /// `external_url` plus the local Vite dev origins; extend via
@@ -76,6 +79,8 @@ pub struct Config {
     /// case — derives it from `external_url`'s host. Set it only to scope
     /// passkeys to a parent domain of the host serving the UI.
     pub rp_id: Option<String>,
+    /// `CCTUI_PLUGINS_DIR`: folder of runtime plugins. `None` = feature off.
+    pub plugins_dir: Option<std::path::PathBuf>,
     /// How long a session may sit without activity before the reaper
     /// demotes it from `Active` to `Inactive`. `CCTUI_HEARTBEAT_TIMEOUT` is
     /// accepted as an alias.
@@ -232,6 +237,10 @@ impl Config {
             get("CCTUI_EXTERNAL_URL").unwrap_or_else(|| "http://localhost:8700".into());
         let allowed_origins =
             parse_allowed_origins(get("CCTUI_ALLOWED_ORIGINS").as_deref(), &external_url);
+        let preview_host = match get("CCTUI_PREVIEW_HOST") {
+            Some(pattern) => Some(crate::preview::PreviewHost::parse(&pattern)?),
+            None => None,
+        };
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let (spawn_max_children, spawn_max_depth) =
             (spawn_max_children.map(|v| v as u32), spawn_max_depth.map(|v| v as u32));
@@ -244,7 +253,9 @@ impl Config {
             database_url,
             external_url,
             allowed_origins,
+            preview_host,
             rp_id: set("CCTUI_RP_ID"),
+            plugins_dir: set("CCTUI_PLUGINS_DIR").map(std::path::PathBuf::from),
             inactive_after_secs: get("CCTUI_INACTIVE_AFTER")
                 .or_else(|| get("CCTUI_HEARTBEAT_TIMEOUT"))
                 .and_then(|s| s.parse().ok())
@@ -326,7 +337,9 @@ impl Config {
             database_url: String::new(),
             external_url: String::new(),
             allowed_origins,
+            preview_host: None,
             rp_id: None,
+            plugins_dir: None,
             inactive_after_secs: 0,
             archive_after_secs: 0,
             github_token: None,
@@ -439,7 +452,9 @@ mod tests {
             database_url: String::new(),
             external_url: String::new(),
             allowed_origins: vec![],
+            preview_host: None,
             rp_id: None,
+            plugins_dir: None,
             inactive_after_secs: 0,
             archive_after_secs: 0,
             github_token: None,

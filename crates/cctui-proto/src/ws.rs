@@ -123,6 +123,34 @@ pub enum DaemonFrameUp {
         data: String,
     },
     /// Frames coalesced for better compression, processed in order.
+    /// Register a local dev server port as a preview for `session_id`;
+    /// answered by `PreviewOpened`.
+    PreviewOpen {
+        request_id: uuid::Uuid,
+        session_id: String,
+        port: u16,
+        /// Set when a reconnecting daemon re-announces a preview it still holds,
+        /// so the server re-binds that id instead of minting a new one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        preview_id: Option<String>,
+    },
+    PreviewClose {
+        session_id: String,
+        port: u16,
+    },
+    /// Response head for a tunnelled `PreviewRequest` (`101` for a
+    /// completed WebSocket upgrade); body follows as `PreviewChunk`s.
+    PreviewResponse {
+        stream_id: String,
+        status: u16,
+        #[serde(default)]
+        headers: Vec<PreviewHeader>,
+    },
+    PreviewChunk(PreviewChunk),
+    PreviewError {
+        stream_id: String,
+        error: String,
+    },
     Batch {
         frames: Vec<Self>,
     },
@@ -204,10 +232,69 @@ pub enum DaemonFrameDown {
         release_url: String,
     },
     /// Sent only to daemons that report `harness`.
+    PreviewOpened {
+        request_id: uuid::Uuid,
+        ok: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        preview_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        url: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+    /// The server dropped a preview (session ended, owner closed it).
+    PreviewClosed {
+        session_id: String,
+        port: u16,
+    },
+    /// One browser request to tunnel to `127.0.0.1:port`. `path` carries the
+    /// query string; `upgrade` asks for a WebSocket passthrough, in which
+    /// case chunks in both directions are WebSocket messages.
+    PreviewRequest {
+        stream_id: String,
+        port: u16,
+        method: String,
+        path: String,
+        #[serde(default)]
+        headers: Vec<PreviewHeader>,
+        #[serde(default)]
+        upgrade: bool,
+        #[serde(default)]
+        has_body: bool,
+    },
+    PreviewChunk(PreviewChunk),
+    PreviewAbort {
+        stream_id: String,
+    },
     HarnessUpdatePolicy {
         policy: crate::harness::HarnessUpdatePolicy,
     },
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreviewHeader {
+    pub name: String,
+    pub value: String,
+}
+
+/// One piece of a tunnelled body, base64 in `data`.
+///
+/// For HTTP bodies `text` is false and `end` closes the body; for WebSocket
+/// passthrough each chunk is one message (`text` picks the opcode) and `end`
+/// is the close frame.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreviewChunk {
+    pub stream_id: String,
+    #[serde(default)]
+    pub data: String,
+    #[serde(default)]
+    pub text: bool,
+    #[serde(default)]
+    pub end: bool,
+}
+
+/// Largest decoded payload carried by one `PreviewChunk`.
+pub const PREVIEW_CHUNK_BYTES: usize = 64 * 1024;
 
 /// User patterns only; compiled defaults live in `cctui-crypto`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1267,5 +1354,39 @@ mod tests {
         assert_eq!(one, r#"{"type":"resync","session_id":"s"}"#);
         let back: ServerEvent = serde_json::from_str(&one).unwrap();
         assert!(matches!(back, ServerEvent::Resync { session_id: Some(s) } if s == "s"));
+    }
+
+    #[test]
+    fn preview_frames_round_trip_with_tags() {
+        let down = DaemonFrameDown::PreviewRequest {
+            stream_id: "s1".into(),
+            port: 5173,
+            method: "GET".into(),
+            path: "/a?b=1".into(),
+            headers: vec![PreviewHeader { name: "accept".into(), value: "*/*".into() }],
+            upgrade: true,
+            has_body: false,
+        };
+        let json = serde_json::to_string(&down).unwrap();
+        assert!(json.contains("\"type\":\"preview_request\""));
+        assert!(matches!(
+            serde_json::from_str::<DaemonFrameDown>(&json).unwrap(),
+            DaemonFrameDown::PreviewRequest { upgrade: true, port: 5173, .. }
+        ));
+        let up = DaemonFrameUp::PreviewChunk(PreviewChunk {
+            stream_id: "s1".into(),
+            data: "aGk=".into(),
+            text: true,
+            end: false,
+        });
+        let json = serde_json::to_string(&up).unwrap();
+        assert!(json.contains("\"type\":\"preview_chunk\""));
+        let DaemonFrameUp::PreviewChunk(chunk) = serde_json::from_str(&json).unwrap() else {
+            panic!("expected chunk");
+        };
+        assert!(chunk.text && !chunk.end);
+        let minimal: DaemonFrameUp =
+            serde_json::from_str(r#"{"type":"preview_chunk","stream_id":"x","end":true}"#).unwrap();
+        assert!(matches!(minimal, DaemonFrameUp::PreviewChunk(PreviewChunk { end: true, .. })));
     }
 }

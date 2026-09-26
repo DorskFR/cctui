@@ -659,6 +659,9 @@ impl Supervisor {
             DaemonFrameDown::HarnessUpdatePolicy { policy } => {
                 crate::harness_update::set_policy(policy);
             }
+            frame if crate::preview::is_preview_frame(&frame) => {
+                crate::preview::handle_down(frame, frame_up_tx).await;
+            }
             _ => {}
         }
     }

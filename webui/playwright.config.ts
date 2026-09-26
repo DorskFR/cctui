@@ -38,6 +38,11 @@ export default defineConfig({
 			name: 'spawn',
 			testMatch: 'spawn-prompt-history.spec.ts',
 			use: { baseURL: process.env.SPAWN_E2E_URL ?? 'http://localhost:5311' }
+		},
+		{
+			name: 'plugins',
+			testMatch: ['plugin-review-pane.spec.ts', 'plugin-admin.spec.ts'],
+			use: { baseURL: process.env.PLUGIN_E2E_URL ?? headerUrl }
 		}
 	]
 });

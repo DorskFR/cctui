@@ -53,13 +53,17 @@ pub async fn session_gateway_env(
             settings: None,
             whip_phrases: None,
             spawn_capability: None,
+            plugins: Vec::new(),
         }));
     }
 
     // The machine user's whip stall-phrase override rides this pull to
     // reach the connectionless `whip-stop-hook`; per-user, so it applies whether
     // or not the session is account-bound.
-    let whip_phrases = resolve_whip_phrases(&state, ctx.user_id).await;
+    let user_settings = user_settings_of(&state, ctx.user_id).await;
+    let whip_phrases =
+        user_settings.as_ref().and_then(crate::routes::settings::whip_stop_phrases_of);
+    let plugins = session_plugins(&state.plugins, user_settings.as_ref());
 
     // Resolve EVERY bound family (one account per family) and re-mint each, so a
     // worker carrying both claude + codex creds gets both restored on launch,
@@ -73,6 +77,7 @@ pub async fn session_gateway_env(
             settings: None,
             whip_phrases,
             spawn_capability: spawn_capability_for(&state, &session_id).await,
+            plugins,
         }));
     }
     let mut env = std::collections::BTreeMap::new();
@@ -127,6 +132,7 @@ pub async fn session_gateway_env(
         settings,
         whip_phrases,
         spawn_capability: spawn_capability_for(&state, &session_id).await,
+        plugins,
     }))
 }
 
@@ -194,15 +200,34 @@ async fn grant_default(state: &AppState, session_id: &str) -> cctui_proto::api::
 /// The machine user's clamped `whipStopPhrases` block from
 /// `user_settings.data`, or `None` when unset / reduced to the default. Read from
 /// the DB on the same gateway-env pull that carries the account settings.
-async fn resolve_whip_phrases(state: &AppState, user_id: Uuid) -> Option<serde_json::Value> {
-    let data: Option<serde_json::Value> =
-        sqlx::query_scalar("SELECT data FROM user_settings WHERE user_id = $1")
-            .bind(user_id)
-            .fetch_optional(&state.pool)
-            .await
-            .ok()
-            .flatten();
-    data.as_ref().and_then(crate::routes::settings::whip_stop_phrases_of)
+async fn user_settings_of(state: &AppState, user_id: Uuid) -> Option<serde_json::Value> {
+    sqlx::query_scalar("SELECT data FROM user_settings WHERE user_id = $1")
+        .bind(user_id)
+        .fetch_optional(&state.pool)
+        .await
+        .ok()
+        .flatten()
+}
+
+/// The skill bundles and setting env of every installed plugin the user
+/// enabled; plugins that contribute neither are skipped.
+pub fn session_plugins(
+    registry: &crate::plugins::PluginRegistry,
+    settings: Option<&serde_json::Value>,
+) -> Vec<cctui_proto::api::SessionPlugin> {
+    crate::plugins::enabled_ids(settings)
+        .iter()
+        .filter_map(|id| registry.get(id))
+        .map(|p| (crate::plugins::plugin_env(&p.manifest, settings), p))
+        .filter(|(env, p)| !p.skill_files.is_empty() || !env.is_empty())
+        .map(|(env, p)| cctui_proto::api::SessionPlugin {
+            id: p.manifest.id,
+            version: p.manifest.version,
+            skills_hash: p.skills_hash,
+            files: p.skill_files,
+            env,
+        })
+        .collect()
 }
 
 // ---- /api/v1/daemon/sessions/{id}/token-valid ----
@@ -373,5 +398,39 @@ mod tests {
             super::gateway_env_allowed(&pool, ua, ma, "any").await.is_err(),
             "a lookup failure surfaces as an error (500), never as allowed",
         );
+    }
+
+    #[test]
+    fn session_plugins_follow_the_users_enabled_flags() {
+        use crate::plugins::test_support::write_plugin;
+        let root = tempfile::tempdir().unwrap();
+        write_plugin(
+            root.path(),
+            "on",
+            r#","settings":[{"key":"host","label":"Host","env":"ON_HOST","type":"string"}]"#,
+        );
+        write_plugin(root.path(), "off", "");
+        let noskill = root.path().join("bare");
+        std::fs::create_dir_all(&noskill).unwrap();
+        std::fs::write(
+            noskill.join("plugin.json"),
+            br#"{"id":"bare","name":"b","version":"1","cctuiApi":1}"#,
+        )
+        .unwrap();
+        let registry = crate::plugins::PluginRegistry::from_dir(root.path().to_path_buf());
+        let settings = serde_json::json!({
+            "plugins": {
+                "enabled": { "on": true, "off": false, "bare": true, "ghost": true },
+                "config": { "on": { "host": "10.0.0.5" }, "off": { "host": "x" } }
+            }
+        });
+        let plugins = super::session_plugins(&registry, Some(&settings));
+        assert_eq!(plugins.len(), 1);
+        assert_eq!(plugins[0].id, "on");
+        assert_eq!(plugins[0].version, "1.2.3");
+        assert_eq!(plugins[0].files, vec!["on/SKILL.md", "on/notes.txt"]);
+        assert_eq!(plugins[0].skills_hash.len(), 16);
+        assert_eq!(plugins[0].env.get("ON_HOST").map(String::as_str), Some("10.0.0.5"));
+        assert!(super::session_plugins(&registry, None).is_empty());
     }
 }

@@ -588,6 +588,9 @@ pub(super) struct LaunchEnv {
     /// Present only when the server says this session may spawn subagents; it
     /// gates whether the `CctuiAgent` MCP server is registered at all.
     pub spawn_capability: Option<cctui_proto::api::SpawnCapability>,
+    /// Local mirrors of the owner's enabled plugin skills, passed as
+    /// `--plugin-dir` so the worker loads them without touching the repo.
+    pub plugin_dirs: Vec<String>,
 }
 
 /// Resolve a launch env into a full [`LaunchEnv`] from the server pull, shared
@@ -601,24 +604,40 @@ pub(super) async fn resolve_launch_env_for(
     hint: &std::collections::BTreeMap<String, String>,
 ) -> anyhow::Result<LaunchEnv> {
     let (Some(server), Some(mk)) = (server, machine_key) else {
-        return Ok(LaunchEnv { env: with_resume_guard(hint.clone()), ..Default::default() });
+        let mut env = with_resume_guard(hint.clone());
+        if let Some(server) = server {
+            crate::childenv::with_web_origin(&mut env, server.base_url());
+            crate::childenv::with_session_id(&mut env, local_id);
+        }
+        return Ok(LaunchEnv { env, ..Default::default() });
     };
     match server.gateway_env(mk, local_id).await {
-        Ok(resp) => Ok(LaunchEnv {
-            env: with_resume_guard(crate::adapters::gateway_env::launch_env_decision(
+        Ok(resp) => {
+            let mut env = with_resume_guard(crate::adapters::gateway_env::launch_env_decision(
                 "claude",
                 local_id,
                 &resp,
                 hint,
                 crate::adapters::gateway_env::CLAUDE_GATEWAY_KEYS,
-            )?),
-            settings: resp.settings,
-            whip_phrases: resp.whip_phrases,
-            spawn_capability: resp.spawn_capability,
-        }),
+            )?);
+            crate::childenv::with_web_origin(&mut env, server.base_url());
+            crate::childenv::with_session_id(&mut env, local_id);
+            crate::plugins::export_env(&mut env, &resp.plugins);
+            let plugin_dirs = crate::plugins::plugin_dirs(server, &resp.plugins).await;
+            Ok(LaunchEnv {
+                env,
+                settings: resp.settings,
+                whip_phrases: resp.whip_phrases,
+                spawn_capability: resp.spawn_capability,
+                plugin_dirs,
+            })
+        }
         Err(e) => {
             tracing::warn!(%local_id, "gateway-env pull failed; falling back to pushed env: {e}");
-            Ok(LaunchEnv { env: with_resume_guard(hint.clone()), ..Default::default() })
+            let mut env = with_resume_guard(hint.clone());
+            crate::childenv::with_web_origin(&mut env, server.base_url());
+            crate::childenv::with_session_id(&mut env, local_id);
+            Ok(LaunchEnv { env, ..Default::default() })
         }
     }
 }

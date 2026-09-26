@@ -125,6 +125,31 @@ enum Cmd {
         #[command(subcommand)]
         cmd: ServiceCmd,
     },
+    /// Expose a local dev server (127.0.0.1:<port>) as a preview URL through
+    /// the cctui server, owner-only. Run from inside an agent session.
+    Preview {
+        #[command(subcommand)]
+        cmd: PreviewCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum PreviewCmd {
+    /// Register the port and print the preview URL.
+    Open {
+        #[arg(long)]
+        port: u16,
+        /// Defaults to `$CCTUI_SESSION_ID`.
+        #[arg(long)]
+        session: Option<String>,
+    },
+    /// Drop the preview for the port.
+    Close {
+        #[arg(long)]
+        port: u16,
+        #[arg(long)]
+        session: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -290,6 +315,15 @@ async fn wait_for_termination() {
     let _ = tokio::signal::ctrl_c().await;
 }
 
+fn run_preview(cmd: PreviewCmd) -> anyhow::Result<()> {
+    let (kind, session, port) = match cmd {
+        PreviewCmd::Open { port, session } => ("preview_open", session, port),
+        PreviewCmd::Close { port, session } => ("preview_close", session, port),
+    };
+    println!("{}", cctui_daemon::preview::cli(kind, session, port)?);
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -382,6 +416,7 @@ async fn main() -> anyhow::Result<()> {
             }
         },
         Cmd::Status => print_status(&path),
+        Cmd::Preview { cmd } => run_preview(cmd),
         Cmd::AskHook { event, sock, deny } => cctui_daemon::askhook::run(&event, &sock, deny),
         Cmd::McpAgent { session, sock } => cctui_daemon::mcp::run(&session, &sock),
         Cmd::McpWait { session, sock, timeout } => {

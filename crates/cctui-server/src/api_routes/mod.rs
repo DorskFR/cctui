@@ -11,6 +11,8 @@ mod labels;
 mod machines;
 mod me;
 mod passkeys;
+mod plugins;
+mod previews;
 mod profiles;
 mod prompts;
 mod session_bulk;
@@ -44,12 +46,14 @@ const fn sess_write() -> Authz {
 
 pub fn register(r: Routes) -> Routes {
     let r = passkeys::register(r);
+    let r = plugins::register(r);
     let r = version::register(r);
     let r = session_lifecycle::register(r);
     let r = dispatch::register(r);
     let r = session_bulk::register(r);
     let r = session_list::register(r);
     let r = session_view::register(r);
+    let r = previews::register(r);
     let r = session_messages::register(r);
     let r = session_control::register(r);
     let r = session_state::register(r);

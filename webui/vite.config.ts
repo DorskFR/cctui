@@ -3,6 +3,7 @@ import { sveltekit } from '@sveltejs/kit/vite';
 import { createReadStream, statSync } from 'node:fs';
 import { dirname, extname, join, resolve as resolvePath, sep } from 'node:path';
 import { defineConfig, type Plugin } from 'vite';
+import { pluginRuntime } from './plugin-runtime.vite';
 
 // Node global (no @types/node in this project); only used at build time.
 declare const process: { env: Record<string, string | undefined> };
@@ -136,7 +137,8 @@ export default defineConfig({
 			strategy: ['localStorage', 'preferredLanguage', 'baseLocale'],
 			disableAsyncLocalStorage: true
 		}),
-		sveltekit()
+		sveltekit(),
+		pluginRuntime()
 	],
 	define: {
 		__CLIENT_VERSION__: JSON.stringify(clientVersion)
