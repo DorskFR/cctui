@@ -83,12 +83,13 @@ fn init_tracing() {
 }
 
 async fn bootstrap() -> anyhow::Result<(Config, sqlx::PgPool, auth::AuthConfig)> {
-    if let Err(e) = cctui_crypto::vault_key_checked() {
+    if let Err(e @ cctui_crypto::KeyError::InvalidHex(_)) = cctui_crypto::vault_key_checked() {
         anyhow::bail!("refusing to start: {e}");
     }
 
     let config = Config::from_env()?;
     let pool = db::connect(&config.database_url).await?;
+    install_vault_key(&pool).await?;
     // One-release back-compat shim: if the retired
     // CCTUI_CLAUDE_LITELLM_* env vars are set, synthesize a managed (read-only)
     // anthropic-compatible account per user so existing deployments keep working
@@ -100,6 +101,25 @@ async fn bootstrap() -> anyhow::Result<(Config, sqlx::PgPool, auth::AuthConfig)>
     // rather than a user_id=None ghost. Idempotent, best-effort.
     auth_config.seed_admin().await;
     Ok((config, pool, auth_config))
+}
+
+async fn install_vault_key(pool: &sqlx::PgPool) -> anyhow::Result<()> {
+    let has_data = crypto::has_vault_data(pool).await?;
+    match cctui_crypto::startup_key(has_data) {
+        Err(e) => anyhow::bail!("refusing to start: {e}"),
+        Ok(cctui_crypto::StartupKey::Strong(key)) => crypto::install_vault_key(key),
+        Ok(cctui_crypto::StartupKey::Legacy(key, reason)) => {
+            tracing::warn!(
+                "INSECURE VAULT KEY: {reason}. Starting anyway because the vault already holds \
+                 credentials written under this key{}. Rotate it: generate a new key with \
+                 `openssl rand -hex 32`, set CCTUI_VAULT_KEY, then re-enter every stored \
+                 credential (provider accounts, API keys, account env).",
+                if key.is_empty() { " (stored UNENCRYPTED)" } else { "" }
+            );
+            crypto::install_vault_key(key);
+        }
+    }
+    Ok(())
 }
 
 async fn build_state(

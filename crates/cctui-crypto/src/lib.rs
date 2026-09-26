@@ -6,7 +6,7 @@
 //! values are pure hex, so they can never collide with the prefix.
 //!
 //! Key: `CCTUI_VAULT_KEY`, hex-encoded, at least 32 bytes. Empty key =
-//! pass-through (dev/test only; [`vault_key_checked`] rejects it); a longer key
+//! pass-through (dev/test, or a legacy instance; see [`resolve_startup_key`]); a longer key
 //! is stretched to 32 via SHA-256 so historical keys keep working.
 
 pub mod redact;
@@ -169,6 +169,40 @@ pub fn vault_key() -> Vec<u8> {
     weak_key_from_env(std::env::var("CCTUI_VAULT_KEY"))
 }
 
+/// How the server may run with the configured key.
+#[derive(Debug, PartialEq, Eq)]
+pub enum StartupKey {
+    Strong(Vec<u8>),
+    /// Unset or short key kept only because the vault already holds data
+    /// written under it. An unset key means pass-through (plaintext).
+    Legacy(Vec<u8>, String),
+}
+
+/// Decide whether the server may start.
+///
+/// Invalid hex always refuses; an unset
+/// or short key refuses on a fresh install but is tolerated when the vault
+/// already holds data, so existing instances stay readable.
+pub fn resolve_startup_key(
+    var: Result<String, std::env::VarError>,
+    has_encrypted_data: bool,
+) -> Result<StartupKey, KeyError> {
+    match key_from_env(var.clone()) {
+        Ok(key) => Ok(StartupKey::Strong(key)),
+        Err(e @ KeyError::InvalidHex(_)) => Err(e),
+        Err(e) if !has_encrypted_data => Err(e),
+        Err(e) => {
+            let key = var.ok().and_then(|raw| hex::decode(raw.trim()).ok()).unwrap_or_default();
+            Ok(StartupKey::Legacy(key, e.to_string()))
+        }
+    }
+}
+
+/// [`resolve_startup_key`] against `CCTUI_VAULT_KEY`.
+pub fn startup_key(has_encrypted_data: bool) -> Result<StartupKey, KeyError> {
+    resolve_startup_key(std::env::var("CCTUI_VAULT_KEY"), has_encrypted_data)
+}
+
 /// Like [`vault_key`] but panics when `CCTUI_VAULT_KEY` is unset or not valid
 /// hex — for binaries that must never fall back to pass-through.
 #[must_use]
@@ -285,6 +319,58 @@ mod tests {
     fn key_from_env_one_byte_is_error() {
         assert!(matches!(key_from_env(Ok("00".to_owned())), Err(KeyError::TooShort(1))));
         assert!(matches!(key_from_env(Ok("00".repeat(31))), Err(KeyError::TooShort(31))));
+    }
+
+    fn unset() -> Result<String, std::env::VarError> {
+        Err(std::env::VarError::NotPresent)
+    }
+
+    #[test]
+    fn startup_invalid_hex_refuses_even_with_data() {
+        assert!(matches!(
+            resolve_startup_key(Ok("zz".to_owned()), true),
+            Err(KeyError::InvalidHex(_))
+        ));
+        assert!(matches!(
+            resolve_startup_key(Ok("zz".to_owned()), false),
+            Err(KeyError::InvalidHex(_))
+        ));
+    }
+
+    #[test]
+    fn startup_short_key_with_data_runs_legacy() {
+        let got = resolve_startup_key(Ok("00ff".to_owned()), true).unwrap();
+        assert!(matches!(got, StartupKey::Legacy(ref k, _) if k == &[0x00, 0xff]));
+    }
+
+    #[test]
+    fn startup_short_key_fresh_install_refuses() {
+        assert!(matches!(
+            resolve_startup_key(Ok("00ff".to_owned()), false),
+            Err(KeyError::TooShort(2))
+        ));
+    }
+
+    #[test]
+    fn startup_unset_with_data_runs_passthrough() {
+        let got = resolve_startup_key(unset(), true).unwrap();
+        assert!(matches!(got, StartupKey::Legacy(ref k, _) if k.is_empty()));
+    }
+
+    #[test]
+    fn startup_unset_fresh_install_refuses() {
+        assert!(matches!(resolve_startup_key(unset(), false), Err(KeyError::Unset)));
+    }
+
+    #[test]
+    fn startup_good_key_is_strong() {
+        let hex = "ab".repeat(32);
+        for has_data in [true, false] {
+            assert_eq!(
+                resolve_startup_key(Ok(hex.clone()), has_data).unwrap(),
+                StartupKey::Strong(hex::decode(&hex).unwrap())
+            );
+        }
     }
 
     #[test]
