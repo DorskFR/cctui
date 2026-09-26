@@ -79,8 +79,8 @@ pub fn upstream_refused(
     is_anthropic: bool,
 ) -> Response {
     let message = format!(
-        "cctui gateway refused this account's base_url: it {reason}. An operator can \
-         allow a trusted host by adding it to CCTUI_UPSTREAM_ALLOWED_HOSTS on the server."
+        "cctui gateway refused this account's base_url: it {reason}. An admin can \
+         allow a trusted host in Settings (upstream hosts, seeded by CCTUI_UPSTREAM_ALLOWED_HOSTS)."
     );
     let body = if is_anthropic {
         serde_json::json!({ "type": "error", "error": { "type": "api_error", "message": message } })
@@ -420,8 +420,8 @@ async fn resolve_upstream(
         tracing::warn!(
             account = %acct.id,
             base_url = %base,
-            "gateway refused account base_url ({e}); allow the host with \
-             CCTUI_UPSTREAM_ALLOWED_HOSTS if it is trusted"
+            "gateway refused account base_url ({e}); allow the host in Settings \
+             (seeded by CCTUI_UPSTREAM_ALLOWED_HOSTS) if it is trusted"
         );
         return Err(Ok(upstream_refused(&e, is_anthropic)));
     }

@@ -44,6 +44,14 @@ pub(super) fn register(r: Routes) -> Routes {
         )
         .add(
             &[GET, Method::PUT],
+            "/admin/instance/upstream-hosts",
+            "Read or set the hosts per-account upstreams may reach despite the SSRF guard (admin).",
+            get(routes::server_settings::get_upstream_hosts).put(routes::server_settings::update_upstream_hosts),
+            Authn::Bearer,
+            ScopeAz(auth::Scope::Admin),
+        )
+        .add(
+            &[GET, Method::PUT],
             "/admin/harness-autoupdate",
             "Read the harness auto-update settings of every machine, or set the instance default (admin).",
             get(routes::harness_update::read).put(routes::harness_update::set_instance),

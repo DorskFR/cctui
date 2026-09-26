@@ -13,6 +13,7 @@ use crate::error::AppError;
 use crate::state::AppState;
 
 const SPAWN_KEY: &str = "spawn_defaults";
+const UPSTREAM_KEY: &str = "upstream_allowed_hosts";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, TS)]
 #[serde(rename_all = "lowercase")]
@@ -194,6 +195,108 @@ pub async fn update_spawn_defaults(
     Ok(Json(read_spawn_defaults(&state).await))
 }
 
+#[derive(Debug, Serialize, TS)]
+#[ts(export)]
+pub struct UpstreamHostsInfo {
+    /// The effective editable list.
+    pub hosts: Vec<String>,
+    pub source: SettingSource,
+    /// The `CCTUI_UPSTREAM_ALLOWED_HOSTS` seed.
+    pub env: Vec<String>,
+    /// Always allowed on top of `hosts` (the `LiteLLM` endpoint).
+    pub managed: Vec<String>,
+}
+
+#[derive(Deserialize, TS)]
+#[ts(export)]
+pub struct UpstreamHostsRequest {
+    /// `null` resets to the env seed / default.
+    pub hosts: Option<Vec<String>>,
+}
+
+pub fn resolve_upstream_hosts(
+    settings: Option<Vec<String>>,
+    env: Vec<String>,
+) -> UpstreamHostsInfo {
+    let managed = crate::outbound::managed_upstream_entries();
+    match settings {
+        Some(hosts) => UpstreamHostsInfo { hosts, source: SettingSource::Settings, env, managed },
+        None if !env.is_empty() => {
+            UpstreamHostsInfo { hosts: env.clone(), source: SettingSource::Env, env, managed }
+        }
+        None => {
+            UpstreamHostsInfo { hosts: Vec::new(), source: SettingSource::Default, env, managed }
+        }
+    }
+}
+
+async fn read_upstream_hosts(pool: &sqlx::PgPool) -> Result<UpstreamHostsInfo, sqlx::Error> {
+    let raw = sqlx::query_scalar::<_, serde_json::Value>(
+        "SELECT value FROM instance_settings WHERE key = $1",
+    )
+    .bind(UPSTREAM_KEY)
+    .fetch_optional(pool)
+    .await?;
+    let settings = raw.and_then(|v| serde_json::from_value(v).ok());
+    Ok(resolve_upstream_hosts(settings, crate::outbound::env_upstream_entries()))
+}
+
+/// Reloads the in-memory upstream allowlist from the table; a failed read
+/// keeps the current list.
+pub async fn refresh_upstream_allowlist(pool: &sqlx::PgPool) {
+    match read_upstream_hosts(pool).await {
+        Ok(info) => crate::outbound::set_upstream_allowlist(&info.hosts),
+        Err(e) => tracing::warn!(error = %e, "upstream allowlist refresh failed"),
+    }
+}
+
+/// Other replicas pick an edit up on this tick.
+pub async fn upstream_allowlist_task(pool: sqlx::PgPool) {
+    let mut tick = tokio::time::interval(std::time::Duration::from_secs(30));
+    loop {
+        tick.tick().await;
+        refresh_upstream_allowlist(&pool).await;
+    }
+}
+
+fn validate_upstream_hosts(raw: &[String]) -> Result<Vec<String>, AppError> {
+    let mut out: Vec<String> = Vec::new();
+    for entry in raw.iter().filter(|e| !e.trim().is_empty()) {
+        let host = crate::outbound::normalize_allowlist_entry(entry)
+            .map_err(|e| AppError::new(StatusCode::BAD_REQUEST, e))?;
+        if !out.contains(&host) {
+            out.push(host);
+        }
+    }
+    Ok(out)
+}
+
+pub async fn get_upstream_hosts(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+) -> Result<Json<UpstreamHostsInfo>, AppError> {
+    admin(&ctx)?;
+    Ok(Json(read_upstream_hosts(&state.pool).await?))
+}
+
+pub async fn update_upstream_hosts(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Json(req): Json<UpstreamHostsRequest>,
+) -> Result<Json<UpstreamHostsInfo>, AppError> {
+    admin(&ctx)?;
+    let value = req
+        .hosts
+        .as_deref()
+        .map(validate_upstream_hosts)
+        .transpose()?
+        .map(|h| serde_json::to_value(h).expect("serializable"));
+    store(&state.pool, UPSTREAM_KEY, value).await?;
+    let info = read_upstream_hosts(&state.pool).await?;
+    crate::outbound::set_upstream_allowlist(&info.hosts);
+    Ok(Json(info))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -245,6 +348,76 @@ mod tests {
         }
         let parsed: Result<SpawnDefaults, _> = serde_json::from_str(r#"{"max_children": -1}"#);
         assert!(parsed.is_err());
+    }
+
+    #[test]
+    fn upstream_hosts_resolve_settings_then_env_then_default() {
+        let env = vec!["a.example".to_owned()];
+        let info = resolve_upstream_hosts(Some(vec![]), env.clone());
+        assert_eq!((info.hosts.len(), info.source), (0, SettingSource::Settings));
+        let info = resolve_upstream_hosts(None, env.clone());
+        assert_eq!((info.hosts, info.source), (env, SettingSource::Env));
+        let info = resolve_upstream_hosts(None, vec![]);
+        assert_eq!((info.hosts.len(), info.source), (0, SettingSource::Default));
+    }
+
+    #[test]
+    fn upstream_hosts_validation_normalizes_and_dedupes() {
+        let ok =
+            validate_upstream_hosts(&[" A.example ".into(), "a.example".into(), String::new()]);
+        assert_eq!(ok.unwrap(), vec!["a.example".to_owned()]);
+        let bad = validate_upstream_hosts(&["https://a.example".into()]);
+        assert_eq!(bad.unwrap_err().status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn upstream_hosts_round_trip_and_apply_without_restart() {
+        let Some(state) = state("upstream_hosts_round_trip_and_apply_without_restart").await else {
+            return;
+        };
+        let url = "http://settings-allowlist-probe.internal:8123/v1";
+        let denied = update_upstream_hosts(
+            State(state.clone()),
+            Extension(ctx(&[])),
+            Json(UpstreamHostsRequest { hosts: Some(vec!["x.example".into()]) }),
+        )
+        .await;
+        assert_eq!(denied.unwrap_err().status(), StatusCode::FORBIDDEN);
+        let denied = get_upstream_hosts(State(state.clone()), Extension(ctx(&[]))).await;
+        assert_eq!(denied.unwrap_err().status(), StatusCode::FORBIDDEN);
+        assert!(crate::outbound::upstream_url_permitted(url).is_err());
+
+        let Json(info) = update_upstream_hosts(
+            State(state.clone()),
+            Extension(ctx(&[Scope::Admin])),
+            Json(UpstreamHostsRequest {
+                hosts: Some(vec!["Settings-Allowlist-Probe.internal:8123".into()]),
+            }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(info.source, SettingSource::Settings);
+        assert_eq!(info.hosts, vec!["settings-allowlist-probe.internal:8123".to_owned()]);
+        crate::outbound::upstream_url_permitted(url).unwrap();
+        crate::outbound::validate_upstream_url(url).await.unwrap();
+
+        let bad = update_upstream_hosts(
+            State(state.clone()),
+            Extension(ctx(&[Scope::Admin])),
+            Json(UpstreamHostsRequest { hosts: Some(vec!["*.example".into()]) }),
+        )
+        .await;
+        assert_eq!(bad.unwrap_err().status(), StatusCode::BAD_REQUEST);
+
+        let Json(info) = update_upstream_hosts(
+            State(state.clone()),
+            Extension(ctx(&[Scope::Admin])),
+            Json(UpstreamHostsRequest { hosts: None }),
+        )
+        .await
+        .unwrap();
+        assert_ne!(info.source, SettingSource::Settings);
+        assert!(crate::outbound::upstream_url_permitted(url).is_err());
     }
 
     async fn state(tag: &str) -> Option<AppState> {
