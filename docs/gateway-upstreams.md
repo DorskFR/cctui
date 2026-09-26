@@ -21,14 +21,21 @@ every gateway request, if:
 The gateway never follows a redirect from a per-account upstream.
 
 A refused account gets a `400` from the accounts API, and a `502` from the
-gateway whose error message names `CCTUI_UPSTREAM_ALLOWED_HOSTS`. The server log
+gateway whose error message points at the allowlist below. The server log
 has a matching `gateway refused account base_url` warning.
 
 ## Allowing a trusted internal upstream
 
+An admin edits the allowlist in **Settings > Instance > Allowed upstream hosts**;
+changes apply immediately (other replicas pick them up within 30 seconds). The
+env var below only seeds it: a list saved in Settings wins over the env value,
+and resetting it in Settings falls back to the env value (or to an empty list).
+On upgrade to 0.20 the list is seeded with the host of every account `base_url`
+already stored, so existing upstreams keep working.
+
 | Variable | Default | Meaning |
 |---|---|---|
-| `CCTUI_UPSTREAM_ALLOWED_HOSTS` | *(unset)* | Comma-separated hosts the guard lets through, as `host` or `host:port`, e.g. `ollama.llm.svc:11434,192.168.1.50`. An entry with a port allows only that port; a bare host allows every port. Allowed hosts may use plain `http`. |
+| `CCTUI_UPSTREAM_ALLOWED_HOSTS` | *(unset)* | Seed for the Settings list. Comma-separated hosts the guard lets through, as `host` or `host:port`, e.g. `ollama.llm.svc:11434,192.168.1.50`. An entry with a port allows only that port; a bare host allows every port. Allowed hosts may use plain `http`. |
 
 The host and port of `CCTUI_CLAUDE_LITELLM_ENDPOINT` are always allowed, since the
 managed LiteLLM account points at it.

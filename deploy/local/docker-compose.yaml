@@ -52,8 +52,8 @@ services:
       CCTUI_EXTERNAL_URL: ${CCTUI_EXTERNAL_URL:-http://localhost:8700}
       # The UI origin, for the WS origin allowlist (403 otherwise).
       CCTUI_ALLOWED_ORIGINS: ${CCTUI_ALLOWED_ORIGINS:-http://localhost:8088,http://127.0.0.1:8088}
-      # Internal hosts a compatible account's base_url may reach
-      # (docs/gateway-upstreams.md), as host[:port], e.g. a LAN Ollama: 192.168.1.50:11434.
+      # Seed for Settings > Instance > Allowed upstream hosts (docs/gateway-upstreams.md),
+      # as host[:port], e.g. a LAN Ollama: 192.168.1.50:11434.
       CCTUI_UPSTREAM_ALLOWED_HOSTS: ${CCTUI_UPSTREAM_ALLOWED_HOSTS:-}
     ports:
       - "${CCTUI_BIND_ADDR:-127.0.0.1}:${CCTUI_SERVER_PORT:-8700}:8700"
