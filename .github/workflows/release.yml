@@ -229,9 +229,7 @@ jobs:
           generate_release_notes: true
           files: |
             dist/cctui-*
-            dist/cctui-daemon-*
-            dist/SHA256SUMS
-            dist/*.minisig
+            dist/SHA256SUMS*
 
   # linux/amd64 only: rust-via-QEMU arm64 is too slow to justify here. Each
   # image keeps its own gha layer cache scope so unchanged layers (apt, node,

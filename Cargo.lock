@@ -957,7 +957,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-admin"
-version = "0.20.0"
+version = "0.20.1"
 dependencies = [
  "anyhow",
  "cctui-proto",
@@ -972,7 +972,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-crypto"
-version = "0.20.0"
+version = "0.20.1"
 dependencies = [
  "chacha20poly1305",
  "hex",
@@ -985,7 +985,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-daemon"
-version = "0.20.0"
+version = "0.20.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1014,7 +1014,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-dispatcher-apple"
-version = "0.20.0"
+version = "0.20.1"
 dependencies = [
  "anyhow",
  "cctui-dispatcher-core",
@@ -1035,7 +1035,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-dispatcher-core"
-version = "0.20.0"
+version = "0.20.1"
 dependencies = [
  "anyhow",
  "cctui-proto",
@@ -1060,7 +1060,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-dispatcher-docker"
-version = "0.20.0"
+version = "0.20.1"
 dependencies = [
  "anyhow",
  "bollard",
@@ -1081,7 +1081,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-dispatcher-kube"
-version = "0.20.0"
+version = "0.20.1"
 dependencies = [
  "anyhow",
  "cctui-dispatcher-core",
@@ -1104,7 +1104,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-guard"
-version = "0.20.0"
+version = "0.20.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -1122,7 +1122,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-guard-proxy"
-version = "0.20.0"
+version = "0.20.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1153,7 +1153,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-orchestrator"
-version = "0.20.0"
+version = "0.20.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1176,7 +1176,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-proto"
-version = "0.20.0"
+version = "0.20.1"
 dependencies = [
  "base64 0.23.1",
  "chrono",
@@ -1196,7 +1196,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-query"
-version = "0.20.0"
+version = "0.20.1"
 dependencies = [
  "serde",
  "ts-rs",
@@ -1204,7 +1204,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-server"
-version = "0.20.0"
+version = "0.20.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1244,7 +1244,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-supervisor"
-version = "0.20.0"
+version = "0.20.1"
 dependencies = [
  "anyhow",
  "caps",
@@ -1260,7 +1260,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-tui"
-version = "0.20.0"
+version = "0.20.1"
 dependencies = [
  "anyhow",
  "cctui-proto",
