@@ -44,14 +44,14 @@
 		<SettingRow label={m.settings_upstreams_label()} help={m.settings_upstreams_help()} server admin wide selfLabelled>
 			<div class="hosts">
 				{#if info}
-					{#if info.hosts.length === 0 && info.managed.length === 0}
+					{#if info.hosts.length === 0 && info.env.length === 0 && info.managed.length === 0}
 						<Text size="sm" tone="faint">{m.settings_upstreams_empty()}</Text>
 					{/if}
 					<ul>
 						{#each info.hosts as host (host)}
 							<li>
 								<Text size="sm" variant="code">{host}</Text>
-								<Badge size="sm">{sourceLabel(info.source)}</Badge>
+								<Badge size="sm">{sourceLabel('settings')}</Badge>
 								<Button
 									size="sm"
 									variant="ghost"
@@ -61,6 +61,12 @@
 								>
 									×
 								</Button>
+							</li>
+						{/each}
+						{#each info.env.filter((h) => !info?.hosts.includes(h)) as host (host)}
+							<li>
+								<Text size="sm" variant="code">{host}</Text>
+								<Badge size="sm">{sourceLabel('env')}</Badge>
 							</li>
 						{/each}
 						{#each info.managed as host (host)}

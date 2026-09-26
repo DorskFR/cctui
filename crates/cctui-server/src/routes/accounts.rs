@@ -855,7 +855,7 @@ pub async fn check_base_url(raw: &str) -> Result<(), AppError> {
             StatusCode::BAD_REQUEST,
             format!(
                 "base_url {e}; an admin can allow a trusted host in Settings \
-                     (upstream hosts, seeded by CCTUI_UPSTREAM_ALLOWED_HOSTS)"
+                     (allowed upstream hosts) or with CCTUI_UPSTREAM_ALLOWED_HOSTS"
             ),
         )
     })

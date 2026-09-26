@@ -76,7 +76,7 @@ pub struct AllowedHost {
     port: Option<u16>,
 }
 
-/// The `CCTUI_UPSTREAM_ALLOWED_HOSTS` seed, as `host[:port]` entries.
+/// `CCTUI_UPSTREAM_ALLOWED_HOSTS`, as `host[:port]` entries.
 pub fn env_upstream_entries() -> Vec<String> {
     std::env::var("CCTUI_UPSTREAM_ALLOWED_HOSTS")
         .unwrap_or_default()
@@ -103,20 +103,21 @@ pub fn managed_upstream_entries() -> Vec<String> {
         .collect()
 }
 
-fn build_upstream_allowlist(entries: &[String]) -> Vec<AllowedHost> {
-    parse_allowlist(&[entries, &managed_upstream_entries()].concat().join(","))
+fn build_upstream_allowlist(saved: &[String], env: &[String]) -> Vec<AllowedHost> {
+    parse_allowlist(&[saved, env, &managed_upstream_entries()].concat().join(","))
 }
 
 static UPSTREAM_ALLOWED_HOSTS: LazyLock<RwLock<Arc<Vec<AllowedHost>>>> =
-    LazyLock::new(|| RwLock::new(Arc::new(build_upstream_allowlist(&env_upstream_entries()))));
+    LazyLock::new(|| RwLock::new(Arc::new(build_upstream_allowlist(&[], &env_upstream_entries()))));
 
-/// Hosts per-account upstreams may reach regardless of the guard.
+/// Hosts per-account upstreams may reach regardless of the guard: the saved
+/// list, the env seed and the managed endpoint, all at once.
 pub fn upstream_allowlist() -> Arc<Vec<AllowedHost>> {
     UPSTREAM_ALLOWED_HOSTS.read().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
 }
 
-pub fn set_upstream_allowlist(entries: &[String]) {
-    let next = Arc::new(build_upstream_allowlist(entries));
+pub fn set_upstream_allowlist(saved: &[String]) {
+    let next = Arc::new(build_upstream_allowlist(saved, &env_upstream_entries()));
     *UPSTREAM_ALLOWED_HOSTS.write().unwrap_or_else(std::sync::PoisonError::into_inner) = next;
 }
 
@@ -315,6 +316,19 @@ mod tests {
         OutboundUrlError, ip_is_internal, normalize_allowlist_entry, parse_allowlist,
         validate_outbound_url,
     };
+
+    #[test]
+    fn env_hosts_stay_allowed_alongside_saved_ones() {
+        let allow = super::build_upstream_allowlist(
+            &["saved.internal:8080".to_owned()],
+            &["env.internal".to_owned()],
+        );
+        super::precheck("http://saved.internal:8080/v1", &allow).unwrap();
+        super::precheck("http://env.internal:9000/v1", &allow).unwrap();
+        let only_env = super::build_upstream_allowlist(&[], &["env.internal".to_owned()]);
+        super::precheck("http://env.internal/v1", &only_env).unwrap();
+        assert!(super::precheck("http://saved.internal:8080/v1", &only_env).is_err());
+    }
 
     #[test]
     fn allowlist_entries_are_validated_and_normalized() {

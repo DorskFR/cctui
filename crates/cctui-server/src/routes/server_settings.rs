@@ -198,10 +198,11 @@ pub async fn update_spawn_defaults(
 #[derive(Debug, Serialize, TS)]
 #[ts(export)]
 pub struct UpstreamHostsInfo {
-    /// The effective editable list.
+    /// The saved, editable entries.
     pub hosts: Vec<String>,
+    /// `settings` once a list has been saved, else `default`.
     pub source: SettingSource,
-    /// The `CCTUI_UPSTREAM_ALLOWED_HOSTS` seed.
+    /// `CCTUI_UPSTREAM_ALLOWED_HOSTS`, always allowed on top of `hosts`.
     pub env: Vec<String>,
     /// Always allowed on top of `hosts` (the `LiteLLM` endpoint).
     pub managed: Vec<String>,
@@ -210,7 +211,7 @@ pub struct UpstreamHostsInfo {
 #[derive(Deserialize, TS)]
 #[ts(export)]
 pub struct UpstreamHostsRequest {
-    /// `null` resets to the env seed / default.
+    /// `null` clears the saved list; env and managed hosts stay allowed.
     pub hosts: Option<Vec<String>>,
 }
 
@@ -219,15 +220,8 @@ pub fn resolve_upstream_hosts(
     env: Vec<String>,
 ) -> UpstreamHostsInfo {
     let managed = crate::outbound::managed_upstream_entries();
-    match settings {
-        Some(hosts) => UpstreamHostsInfo { hosts, source: SettingSource::Settings, env, managed },
-        None if !env.is_empty() => {
-            UpstreamHostsInfo { hosts: env.clone(), source: SettingSource::Env, env, managed }
-        }
-        None => {
-            UpstreamHostsInfo { hosts: Vec::new(), source: SettingSource::Default, env, managed }
-        }
-    }
+    let source = if settings.is_some() { SettingSource::Settings } else { SettingSource::Default };
+    UpstreamHostsInfo { hosts: settings.unwrap_or_default(), source, env, managed }
 }
 
 async fn read_upstream_hosts(pool: &sqlx::PgPool) -> Result<UpstreamHostsInfo, sqlx::Error> {
@@ -351,12 +345,14 @@ mod tests {
     }
 
     #[test]
-    fn upstream_hosts_resolve_settings_then_env_then_default() {
+    fn upstream_hosts_keep_env_separate_from_saved() {
         let env = vec!["a.example".to_owned()];
-        let info = resolve_upstream_hosts(Some(vec![]), env.clone());
-        assert_eq!((info.hosts.len(), info.source), (0, SettingSource::Settings));
+        let info = resolve_upstream_hosts(Some(vec!["b.example".into()]), env.clone());
+        assert_eq!(info.hosts, vec!["b.example".to_owned()]);
+        assert_eq!((info.source, info.env), (SettingSource::Settings, env.clone()));
         let info = resolve_upstream_hosts(None, env.clone());
-        assert_eq!((info.hosts, info.source), (env, SettingSource::Env));
+        assert_eq!((info.hosts.len(), info.source), (0, SettingSource::Default));
+        assert_eq!(info.env, env);
         let info = resolve_upstream_hosts(None, vec![]);
         assert_eq!((info.hosts.len(), info.source), (0, SettingSource::Default));
     }

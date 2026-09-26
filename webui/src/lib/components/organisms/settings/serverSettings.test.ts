@@ -116,35 +116,36 @@ describe('CctuiAgent limits', () => {
 
 describe('allowed upstream hosts', () => {
 	const hostsInfo = (over: Partial<UpstreamHostsInfo> = {}): UpstreamHostsInfo => ({
-		hosts: ['ollama.llm.svc'],
-		source: 'env',
+		hosts: [],
+		source: 'default',
 		env: ['ollama.llm.svc'],
 		managed: ['litellm.llm.svc:4000'],
 		...over
 	});
 
-	it('lists hosts with their source, adds, removes and resets', async () => {
+	it('shows env and managed hosts as fixed; saved entries add, remove and reset', async () => {
 		api.upstreamHosts.mockResolvedValue(hostsInfo());
 		comp = mount(UpstreamHostsGroup, { target: document.body });
 		await settle();
 		expect(document.body.textContent).toContain('ollama.llm.svc');
 		expect(document.body.textContent).toContain('from env');
 		expect(document.body.textContent).toContain('litellm.llm.svc:4000');
+		expect(document.querySelector('button[aria-label="Remove ollama.llm.svc"]')).toBeNull();
 		expect(button('Reset')).toBeUndefined();
 
-		api.setUpstreamHosts.mockResolvedValue(
-			hostsInfo({ hosts: ['ollama.llm.svc', '10.0.0.5:8080'], source: 'settings' })
-		);
+		api.setUpstreamHosts.mockResolvedValue(hostsInfo({ hosts: ['10.0.0.5:8080'], source: 'settings' }));
 		type(input('host or host:port'), ' 10.0.0.5:8080 ');
 		button('Add')?.click();
 		await settle();
-		expect(api.setUpstreamHosts).toHaveBeenCalledWith(['ollama.llm.svc', '10.0.0.5:8080']);
+		expect(api.setUpstreamHosts).toHaveBeenCalledWith(['10.0.0.5:8080']);
 		expect(document.body.textContent).toContain('saved in Settings');
+		expect(document.body.textContent).toContain('ollama.llm.svc');
+		expect(document.querySelector('button[aria-label="Remove ollama.llm.svc"]')).toBeNull();
 
-		api.setUpstreamHosts.mockResolvedValue(hostsInfo({ hosts: ['10.0.0.5:8080'], source: 'settings' }));
-		document.querySelector<HTMLButtonElement>('button[aria-label="Remove ollama.llm.svc"]')?.click();
+		api.setUpstreamHosts.mockResolvedValue(hostsInfo({ hosts: [], source: 'settings' }));
+		document.querySelector<HTMLButtonElement>('button[aria-label="Remove 10.0.0.5:8080"]')?.click();
 		await settle();
-		expect(api.setUpstreamHosts).toHaveBeenLastCalledWith(['10.0.0.5:8080']);
+		expect(api.setUpstreamHosts).toHaveBeenLastCalledWith([]);
 
 		api.setUpstreamHosts.mockResolvedValue(hostsInfo());
 		button('Reset')?.click();

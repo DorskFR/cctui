@@ -2,6 +2,6 @@
 
 export type UpstreamHostsRequest = { 
 /**
- * `null` resets to the env seed / default.
+ * `null` clears the saved list; env and managed hosts stay allowed.
  */
 hosts: Array<string> | null, };

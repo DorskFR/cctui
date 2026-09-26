@@ -3,11 +3,15 @@ import type { SettingSource } from "./SettingSource";
 
 export type UpstreamHostsInfo = { 
 /**
- * The effective editable list.
+ * The saved, editable entries.
  */
-hosts: Array<string>, source: SettingSource, 
+hosts: Array<string>, 
 /**
- * The `CCTUI_UPSTREAM_ALLOWED_HOSTS` seed.
+ * `settings` once a list has been saved, else `default`.
+ */
+source: SettingSource, 
+/**
+ * `CCTUI_UPSTREAM_ALLOWED_HOSTS`, always allowed on top of `hosts`.
  */
 env: Array<string>, 
 /**

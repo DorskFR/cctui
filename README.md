@@ -109,7 +109,7 @@ via `deploy/local/.env` (`CCTUI_ADMIN_TOKENS`, `CCTUI_UI_PORT`, …).
 
 A compatible-endpoint account whose `base_url` points at an internal or plain
 `http` host is refused unless an admin allows that host in Settings > Instance
-(seeded by `CCTUI_UPSTREAM_ALLOWED_HOSTS`); see [docs/gateway-upstreams.md](docs/gateway-upstreams.md).
+or lists it in `CCTUI_UPSTREAM_ALLOWED_HOSTS`; see [docs/gateway-upstreams.md](docs/gateway-upstreams.md).
 
 ### Connect a machine
 
