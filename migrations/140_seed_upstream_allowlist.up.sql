@@ -1,5 +1,5 @@
--- Upstream hosts become an admin setting that wins over the env seed, so every
--- base_url already stored keeps working after the upgrade.
+-- Seeds the admin upstream allowlist with every stored base_url host, so
+-- existing accounts keep working after the upgrade.
 WITH parsed AS (
     SELECT lower(scheme) AS scheme,
            rtrim(lower(host), '.') AS host,
