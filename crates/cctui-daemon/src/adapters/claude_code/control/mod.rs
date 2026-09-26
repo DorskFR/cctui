@@ -780,6 +780,7 @@ impl Driver {
 
     #[allow(clippy::cognitive_complexity)]
     pub async fn run(mut self) -> anyhow::Result<()> {
+        self.refresh_managed_unit().await;
         if !self.cfg.skip_backfill {
             self.run_backfill().await;
         }
@@ -991,6 +992,24 @@ impl Driver {
             }
         }
         anyhow::bail!("no claude daemon socket present (kickstart did not bring it up in time)");
+    }
+
+    /// Refresh an installed managed claude-daemon unit that drifted from the
+    /// bundled template (rewrite + daemon-reload, no restart). Without this a
+    /// machine whose supervisor never goes down keeps the old unit, since
+    /// `ensure` only runs when the socket is missing. Best-effort.
+    async fn refresh_managed_unit(&self) {
+        if !super::claude_service::manager_available() {
+            return;
+        }
+        let bin = self.cfg.claude_bin.clone();
+        match tokio::task::spawn_blocking(move || super::claude_service::refresh_installed(&bin))
+            .await
+        {
+            Ok(Ok(_)) => {}
+            Ok(Err(err)) => tracing::warn!(%err, "failed to refresh the claude daemon unit"),
+            Err(err) => tracing::warn!(%err, "managed claude daemon unit refresh task failed"),
+        }
     }
 
     /// Pick up a `claude` CLI auto-update the running daemon missed. Cycles
