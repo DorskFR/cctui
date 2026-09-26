@@ -849,7 +849,7 @@ fn build_rate_limits_json(
 }
 
 /// A compatible endpoint's `base_url` must not reach internal addresses.
-pub(crate) async fn check_base_url(raw: &str) -> Result<(), AppError> {
+pub async fn check_base_url(raw: &str) -> Result<(), AppError> {
     crate::outbound::validate_upstream_url(raw).await.map_err(|e| {
         AppError::new(
             StatusCode::BAD_REQUEST,
