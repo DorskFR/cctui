@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 import { flushSync } from 'svelte';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { showConclusion } from './guideConclusion.svelte';

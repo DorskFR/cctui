@@ -12,7 +12,8 @@ use crate::soft_limit::{KEY_SESSION, KEY_USD_5H, KEY_USD_7D, KEY_WEEKLY_ALL, WEE
 const MIN_EXPECTED_PCT: f64 = 1.0;
 
 /// Pace of one window relative to its linear budget.
-#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, ts_rs::TS)]
+#[ts(export, rename = "UsagePace")]
 pub struct Pace {
     /// 0..1: share of the window already elapsed.
     pub elapsed_fraction: f64,
@@ -22,10 +23,12 @@ pub struct Pace {
     pub ratio: f64,
     /// When utilization reaches 100% at the current rate; `None` when idle.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(type = "string | null", optional)]
     pub projected_wall_at: Option<DateTime<Utc>>,
     /// Length, in hours, of the base the rate was measured over when it came
     /// from an earlier sample; `None` when the rate is the window average.
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(type = "number | null", optional)]
     pub slope_hours: Option<f64>,
 }
 

@@ -22,7 +22,7 @@ anyhow.workspace = true
 axum.workspace = true
 tower-http = { version = "0.7", features = ["cors", "trace"] }
 sha2.workspace = true
-hmac = "0.12"
+hmac.workspace = true
 hex.workspace = true
 base64.workspace = true
 thiserror.workspace = true
@@ -30,19 +30,18 @@ tokio-util.workspace = true
 sqlx = { version = "0.9", features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "chrono", "json", "migrate"] }
 http = "1"
 dashmap = "6"
+regex.workspace = true
 async-trait.workspace = true
 reqwest.workspace = true
 ts-rs.workspace = true
-toml = "1.1"
+toml.workspace = true
 log = "0.4.33"
 webauthn-rs = { version = "0.5", features = ["danger-allow-state-serialisation", "conditional-ui"] }
 webauthn-rs-proto = "0.5"
 
 [dev-dependencies]
 reqwest.workspace = true
-tokio = { version = "1", features = ["full", "test-util"] }
-tempfile = "3"
-# Request-level regression test for the authz layer ordering (CCT-423): drive a
-# real request through the assembled router via `ServiceExt::oneshot`.
-tower = { version = "0.5", features = ["util"] }
-http-body-util = "0.1"
+tokio = { workspace = true, features = ["test-util"] }
+tempfile.workspace = true
+tower.workspace = true
+http-body-util.workspace = true

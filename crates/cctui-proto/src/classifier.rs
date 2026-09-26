@@ -102,15 +102,9 @@ impl OwnedPrStatus {
 
 /// Shared, core-owned, best-effort PR status cache keyed by `SessionChild.href`.
 ///
-/// This is the **seam** between the optional GitHub connector and the
-/// classifier (docs/github-integration.md §6.1, GH-CLS-1). The cache lives in
-/// core (`AppState`) and the classifier reads it; the GitHub connector, when
-/// compiled in, *pushes* enriched check/review state into it. Core/classifier
-/// never depend on `cctui-github` — the dependency is strictly one-directional
-/// (docs §7.5). When GitHub is absent the cache simply stays empty: sessions
-/// still render and `SessionChild` links remain opaque core metadata, so the
-/// `Review` bucket never arises spuriously and behaviour is byte-for-byte the
-/// feature-off baseline.
+/// The GitHub connector pushes check/review state in; the classifier reads it.
+/// Core never depends on `cctui-github`. Without GitHub the cache stays empty
+/// and the `Review` bucket never arises.
 #[derive(Debug, Clone, Default)]
 pub struct PrStatusCache {
     inner: Arc<RwLock<HashMap<String, OwnedPrStatus>>>,
@@ -297,8 +291,7 @@ mod tests {
 
     #[test]
     fn soft_limit_block_trumps_idle_done() {
-        // The actual bug: a soft-limited idle session that would otherwise fall
-        // through to Working/Done is now durably Blocked (needs input).
+        // A soft-limited idle session is Blocked, not Working/Done.
         let mut s = snap();
         s.activity = Some("success");
         s.soft_limit_blocked = Some("switch account: foo rate-limited");
@@ -387,8 +380,7 @@ mod tests {
 
     #[test]
     fn cache_seam_enriches_then_degrades() {
-        // The seam GH-CLS-1 builds on: the connector upserts owned status into
-        // the shared cache; the classifier borrows a snapshot of it.
+        // The connector upserts status into the cache; the classifier snapshots it.
         let children = [SessionChild {
             id: "1".into(),
             href: "https://github.com/o/r/pull/7".into(),

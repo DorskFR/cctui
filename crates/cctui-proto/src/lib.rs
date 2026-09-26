@@ -1,5 +1,6 @@
 pub mod adapter;
 pub mod api;
+pub mod backoff;
 pub mod bandwidth;
 pub mod blob;
 pub mod chunk;
@@ -15,7 +16,9 @@ pub mod identity;
 pub mod ids;
 pub mod media;
 pub mod models;
+pub mod release_sig;
 pub mod resources;
 pub mod updatehook;
 pub mod util;
+pub mod worker_env;
 pub mod ws;

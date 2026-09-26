@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 /// (new hook, changed endpoint, altered prelude…). Self-update compares this
 /// against the integer stored in `~/.cctui/settings_schema` to decide whether
 /// to re-merge the user's settings files.
-pub const SETTINGS_SCHEMA_VERSION: u32 = 2;
+pub const SETTINGS_SCHEMA_VERSION: u32 = 3;
 
 const SCHEMA_MARKER_FILENAME: &str = "settings_schema";
 
@@ -49,25 +49,26 @@ pub fn write_schema_marker(v: u32) -> Result<()> {
     Ok(())
 }
 
-fn auth_prelude(fallback_token: &str) -> String {
-    format!(
-        "KEY=\"${{CCTUI_AGENT_TOKEN:-$(jq -r .machine_key \
-\"${{XDG_CONFIG_HOME:-$HOME/.config}}/cctui/machine.json\" 2>/dev/null)}}\"; \
-[ -z \"$KEY\" ] && KEY=\"{fallback_token}\"; "
-    )
+const AUTH_PRELUDE: &str = "KEY=\"${CCTUI_AGENT_TOKEN:-$(jq -r .machine_key \
+\"${XDG_CONFIG_HOME:-$HOME/.config}/cctui/machine.json\" 2>/dev/null)}\"; ";
+
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-fn curl_cmd(server_url: &str, path: &str, enrich: Option<&str>, fallback_token: &str) -> String {
+/// The bearer reaches curl through a heredoc on fd 3, never through argv.
+fn curl_cmd(server_url: &str, path: &str, enrich: Option<&str>) -> String {
     let pipe = enrich.map_or_else(|| "cat".to_string(), |jq_args| format!("jq -c {jq_args}"));
+    let url = shell_quote(&format!("{server_url}{path}"));
     format!(
-        "{prelude}{pipe} | curl -sf -X POST {server_url}{path} \
--H 'Content-Type: application/json' \
--H \"Authorization: Bearer $KEY\" -d @-",
-        prelude = auth_prelude(fallback_token),
+        "{AUTH_PRELUDE}{pipe} | curl -sf -X POST {url} \
+-H 'Content-Type: application/json' -H @/dev/fd/3 -d @- 3<<CCTUI_AUTH
+Authorization: Bearer $KEY
+CCTUI_AUTH"
     )
 }
 
-fn build_hooks(server_url: &str, fallback_token: &str) -> Value {
+fn build_hooks(server_url: &str) -> Value {
     let session_start = curl_cmd(
         server_url,
         "/api/v1/hooks/session-start",
@@ -75,10 +76,9 @@ fn build_hooks(server_url: &str, fallback_token: &str) -> Value {
             "--arg ppid \"$PPID\" --arg mid \"$(hostname)\" \
 '. + {ppid: ($ppid | tonumber), machine_id: $mid}'",
         ),
-        fallback_token,
     );
-    let post_tool = curl_cmd(server_url, "/api/v1/hooks/post-tool-use", None, fallback_token);
-    let stop = curl_cmd(server_url, "/api/v1/hooks/stop", None, fallback_token);
+    let post_tool = curl_cmd(server_url, "/api/v1/hooks/post-tool-use", None);
+    let stop = curl_cmd(server_url, "/api/v1/hooks/stop", None);
 
     json!({
         "SessionStart": [{"hooks": [{"type": "command", "command": session_start}]}],
@@ -103,14 +103,9 @@ fn write_json_pretty(path: &Path, value: &Value) -> Result<()> {
     Ok(())
 }
 
-/// Merge the cctui hook block into the user's Claude Code config.
-///
-/// `fallback_token` is embedded verbatim into the hook command strings as the
-/// last-resort auth token if neither `$CCTUI_AGENT_TOKEN` (a local bearer
-/// override; despite the historical name it carries a machine key, not the
-/// retired server-side `CCTUI_AGENT_TOKENS`) nor `machine.json` is readable at
-/// hook time. Pass the current `machine_key`.
-pub fn apply_settings(server_url: &str, fallback_token: &str, _bin_path: &Path) -> Result<()> {
+/// Merge the cctui hook block into the user's Claude Code config. Hooks read
+/// the bearer at run time from `$CCTUI_AGENT_TOKEN` or `machine.json`.
+pub fn apply_settings(server_url: &str, _bin_path: &Path) -> Result<()> {
     let home = home_dir().context("could not resolve $HOME")?;
     let settings_json = home.join(".claude/settings.json");
 
@@ -118,11 +113,10 @@ pub fn apply_settings(server_url: &str, fallback_token: &str, _bin_path: &Path) 
     let mut settings = load_json_or_empty(&settings_json);
     let sobj = settings.as_object_mut().context("settings.json is not a JSON object")?;
     let hooks_val = sobj.entry("hooks").or_insert_with(|| Value::Object(serde_json::Map::new()));
-    let new_hooks = build_hooks(server_url, fallback_token);
+    let new_hooks = build_hooks(server_url);
     if let (Some(existing), Some(new_map)) = (hooks_val.as_object_mut(), new_hooks.as_object()) {
-        // Drop the stale `/api/v1/check` PreToolUse hook left by schema v1
-        // installs: the server route no longer exists, so re-applying
-        // must actively remove the key, not just overwrite the ones we still emit.
+        // PreToolUse is not emitted; remove it so a stale `/api/v1/check` hook
+        // from a schema v1 install does not survive re-applying.
         existing.remove("PreToolUse");
         for (k, v) in new_map {
             existing.insert(k.clone(), v.clone());
@@ -195,14 +189,35 @@ mod tests {
         let bin = tmp.path().join("cctui");
         std::fs::write(&bin, b"").unwrap();
 
-        apply_settings("https://server.example", "cctui_m_test", &bin).unwrap();
+        apply_settings("https://server.example", &bin).unwrap();
         let first = std::fs::read_to_string(tmp.path().join(".claude/settings.json")).unwrap();
 
-        apply_settings("https://server.example", "cctui_m_test", &bin).unwrap();
+        apply_settings("https://server.example", &bin).unwrap();
         let second = std::fs::read_to_string(tmp.path().join(".claude/settings.json")).unwrap();
 
         assert_eq!(first, second);
         assert!(first.contains("session-start"));
+    }
+
+    #[test]
+    fn hook_commands_carry_no_token_and_keep_bearer_off_argv() {
+        let hooks = build_hooks("https://s.example");
+        let text = hooks.to_string();
+        assert!(!text.contains("cctui_m_"), "no token literal: {text}");
+        for cmd in ["SessionStart", "PostToolUse", "Stop"]
+            .map(|k| hooks[k][0]["hooks"][0]["command"].as_str().unwrap().to_owned())
+        {
+            let argv = cmd.split("3<<CCTUI_AUTH").next().unwrap();
+            assert!(!argv.contains("Bearer"), "bearer on curl argv: {cmd}");
+            assert!(argv.contains("-H @/dev/fd/3"));
+            assert!(cmd.contains("\nAuthorization: Bearer $KEY\nCCTUI_AUTH"));
+        }
+    }
+
+    #[test]
+    fn server_url_is_shell_quoted() {
+        let cmd = curl_cmd("https://s/$(id)'x", "/p", None);
+        assert!(cmd.contains(r"'https://s/$(id)'\''x/p'"), "got: {cmd}");
     }
 
     #[test]
@@ -220,7 +235,7 @@ mod tests {
 
         let bin = tmp.path().join("cctui");
         std::fs::write(&bin, b"").unwrap();
-        apply_settings("https://s", "tok", &bin).unwrap();
+        apply_settings("https://s", &bin).unwrap();
 
         let v: Value =
             serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
@@ -239,7 +254,7 @@ mod tests {
 
         let bin = tmp.path().join("cctui");
         std::fs::write(&bin, b"").unwrap();
-        apply_settings("https://s", "tok", &bin).unwrap();
+        apply_settings("https://s", &bin).unwrap();
 
         let v: Value =
             serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();

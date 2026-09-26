@@ -24,7 +24,7 @@ export CCTUI_TOKEN
 
 # CI publishes images on tag push (.github/workflows/release.yml → ghcr). These
 # `make image/*` targets are a local fallback; they default to the same ghcr
-# namespace so a manual push lands where the cluster pulls from. (CCT-199)
+# namespace so a manual push lands where the cluster pulls from.
 IMAGE_REGISTRY ?= ghcr.io/dorskfr
 IMAGE_REPO     ?= cctui
 IMAGE_VERSION  ?= $(shell awk -F'"' '/^\[workspace.package\]/{f=1} f && /^version/{print $$2; exit}' Cargo.toml)
@@ -127,32 +127,47 @@ clean:  ## Remove build artifacts
 # Self-contained: postgres + cctui-server + cctui-ui pulled from ghcr and wired
 # together. UI on :8088, server API on :8700. See deploy/local/.
 LOCAL_COMPOSE ?= deploy/local/docker-compose.yaml
+LOCAL_ENV ?= deploy/local/.env
+# The top-level dev defaults are exported into every recipe and would override
+# the generated secrets, so local/* recipes drop them.
+LOCAL_UNSET = env -u CCTUI_ADMIN_TOKENS -u CCTUI_VAULT_KEY -u CCTUI_TOKEN -u DATABASE_URL
+LOCAL_DC = $(LOCAL_UNSET) docker compose -f $(LOCAL_COMPOSE) --env-file $(LOCAL_ENV)
+LOCAL_ADMIN_TOKEN = $$(sed -n 's/^CCTUI_ADMIN_TOKENS=//p' $(LOCAL_ENV) | cut -d, -f1)
 
 .PHONY: local/up local/down local/logs local/pull local/ps local/seed local/demo
 
-local/up:  ## Start the full local stack (postgres + server + UI) from published images
-	docker compose -f $(LOCAL_COMPOSE) up -d
-	@echo "cctui up — UI: http://localhost:8088  ·  API: http://localhost:8700  (admin token: dev-admin)"
+$(LOCAL_ENV):
+	@umask 077 && { \
+		echo "CCTUI_ADMIN_TOKENS=$$(openssl rand -hex 32)"; \
+		echo "CCTUI_VAULT_KEY=$$(openssl rand -hex 32)"; \
+	} > $@
+	@echo "generated $@ with a random admin token and vault key"
+	@echo "  a stack created before this file existed used the vault key deadbeef… (64 chars);"
+	@echo "  put that value in $@ to keep reading its stored credentials"
 
-local/seed:  ## Load the demo fixture into the running local stack
-	env -u DATABASE_URL bash deploy/local/fixture/seed.sh
+local/up: $(LOCAL_ENV)  ## Start the full local stack (postgres + server + UI) from published images
+	$(LOCAL_DC) up -d
+	@echo "cctui up — UI: http://localhost:8088  ·  API: http://localhost:8700  (admin token: $(LOCAL_ADMIN_TOKEN))"
+
+local/seed: $(LOCAL_ENV)  ## Load the demo fixture into the running local stack
+	$(LOCAL_UNSET) CCTUI_TOKEN="$(LOCAL_ADMIN_TOKEN)" bash deploy/local/fixture/seed.sh
 
 local/demo: local/up  ## Start the local stack and fill it with demo data
 	@until curl -s -o /dev/null $(CCTUI_URL)/api/v1/version 2>/dev/null; do sleep 1; done
 	@$(MAKE) local/seed
-	@echo "demo data loaded — open http://localhost:8088 and log in with 'dev-admin'"
+	@echo "demo data loaded — open http://localhost:8088 and log in with the admin token in $(LOCAL_ENV)"
 
-local/down:  ## Stop the local stack (keeps the postgres volume)
-	docker compose -f $(LOCAL_COMPOSE) down
+local/down: $(LOCAL_ENV)  ## Stop the local stack (keeps the postgres volume)
+	$(LOCAL_DC) down
 
-local/pull:  ## Pull the latest published images for the local stack
-	docker compose -f $(LOCAL_COMPOSE) pull
+local/pull: $(LOCAL_ENV)  ## Pull the latest published images for the local stack
+	$(LOCAL_DC) pull
 
-local/logs:  ## Tail logs from the local stack
-	docker compose -f $(LOCAL_COMPOSE) logs -f
+local/logs: $(LOCAL_ENV)  ## Tail logs from the local stack
+	$(LOCAL_DC) logs -f
 
-local/ps:  ## Show local stack status
-	docker compose -f $(LOCAL_COMPOSE) ps
+local/ps: $(LOCAL_ENV)  ## Show local stack status
+	$(LOCAL_DC) ps
 
 # ── Deploy ──────────────────────────────────────────────────
 
@@ -172,7 +187,7 @@ image/push:  ## Push container image tag
 image/release: image/build image/push  ## Build + push container image
 
 # ── Worker image (claude code + codex + cctui-daemon, non-enrolled) ────────
-# The execution environment dispatchers spawn per session (CCT-245). CI builds
+# The execution environment dispatchers spawn per session. CI builds
 # + pushes it on tag (see .github/workflows/release.yml); these targets are the
 # same local fallback as image/*.
 WORKER_IMAGE ?= $(IMAGE_REGISTRY)/cctui-worker
@@ -187,7 +202,7 @@ worker/image/push:  ## Push the worker image tag
 worker/image/release: worker/image/build worker/image/push  ## Build + push the worker image
 
 # ── Kubernetes dispatcher image (standalone, enrolled) ─────────────────────
-# The dispatcher that spawns worker Jobs in-cluster (CCT-291). CI builds +
+# The dispatcher that spawns worker Jobs in-cluster. CI builds +
 # pushes it on tag (see .github/workflows/release.yml); these targets are the
 # same local fallback as image/*.
 DISPATCHER_KUBE_IMAGE ?= $(IMAGE_REGISTRY)/cctui-dispatcher-kube

@@ -2,37 +2,19 @@
 import type { GithubCredentialKind } from "./GithubCredentialKind";
 
 /**
- * Request body for `POST /api/v1/github/connectors`.
- *
- * Carries the **plaintext** credential and webhook secret exactly once, on
- * create. The server encrypts both at rest (`crate::crypto` XOR-vault pattern,
- * same key as the OAuth-account vault) and never echoes them back — every read
- * path returns [`ConnectorInfo`] with the credential masked.
+ * Body for `POST /api/v1/github/connectors`. The only place the plaintext
+ * credential and webhook secret travel; both are stored encrypted.
  */
-export type CreateConnector = { 
+export type CreateConnector = { name: string, credential_kind: GithubCredentialKind, credential: string, 
 /**
- * Human-readable label for this connector (e.g. `personal`, `work`).
- */
-name: string, 
-/**
- * Whether `credential` is a PAT or an App installation token.
- */
-credential_kind: GithubCredentialKind, 
-/**
- * The GitHub credential. Stored encrypted; never returned by any endpoint.
- */
-credential: string, 
-/**
- * `owner/name` slugs (or bare `owner` for whole-org) this connector tracks.
+ * `owner/name` slugs, or bare `owner` for a whole org.
  */
 repos: Array<string>, 
 /**
- * Optional webhook signing secret (`X-Hub-Signature-256`). Stored
- * encrypted; never returned. A later story verifies signatures with it.
+ * `X-Hub-Signature-256` secret.
  */
 webhook_secret: string | null, 
 /**
- * Owning user — required (and only honoured) when authenticated with the
- * admin token, which has no user identity of its own.
+ * Required with the admin token, ignored otherwise.
  */
 user_id: string | null, };

@@ -11,11 +11,9 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::auth::AuthContext;
-use crate::routes::accounts::{err, require_human};
+use crate::error::AppError;
 use crate::state::AppState;
 use crate::store::usage_samples::{self, CloseRow, HistoryRow, RETENTION_DAYS};
-
-type ApiErr = (StatusCode, Json<serde_json::Value>);
 
 const DEFAULT_LOOKBACK: Duration = Duration::days(7);
 
@@ -25,7 +23,8 @@ pub struct HistoryQuery {
     pub from: Option<DateTime<Utc>>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
+#[ts(export, rename = "UsageHistorySample")]
 pub struct HistorySample {
     pub window_key: String,
     pub utilization: f64,
@@ -35,13 +34,15 @@ pub struct HistorySample {
     pub source: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
+#[ts(export)]
 pub struct UsageHistory {
     pub account_id: Uuid,
     pub samples: Vec<HistorySample>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
+#[ts(export, rename = "UsageWindowClose")]
 pub struct WindowClose {
     pub account_id: Uuid,
     pub window_key: String,
@@ -53,14 +54,17 @@ pub struct WindowClose {
 }
 
 /// Mean unused share of the closed instances of one window key.
-#[derive(Debug, Serialize, PartialEq)]
+#[derive(Debug, Serialize, PartialEq, ts_rs::TS)]
+#[ts(export)]
 pub struct WastedSummary {
     pub window_key: String,
+    #[ts(type = "number")]
     pub windows: usize,
     pub mean_wasted_pct: f64,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ts_rs::TS)]
+#[ts(export, rename = "UsageWindowCloses")]
 pub struct WindowCloses {
     pub closes: Vec<WindowClose>,
     pub summary: Vec<WastedSummary>,
@@ -70,16 +74,11 @@ fn clamp_from(from: Option<DateTime<Utc>>, now: DateTime<Utc>) -> DateTime<Utc> 
     from.unwrap_or(now - DEFAULT_LOOKBACK).max(now - Duration::days(RETENTION_DAYS))
 }
 
-fn db_err(e: &sqlx::Error) -> ApiErr {
-    tracing::error!("db error (usage history): {e}");
-    err(StatusCode::INTERNAL_SERVER_ERROR, "database error")
-}
-
 async fn owned_provider_ids(
     state: &AppState,
     ctx: &AuthContext,
     only: Option<Uuid>,
-) -> Result<Vec<Uuid>, ApiErr> {
+) -> Result<Vec<Uuid>, AppError> {
     sqlx::query_scalar(
         "SELECT id FROM account_providers \
          WHERE ($1::uuid IS NULL OR user_id = $1) AND ($2::uuid IS NULL OR id = $2)",
@@ -88,7 +87,7 @@ async fn owned_provider_ids(
     .bind(only)
     .fetch_all(&state.pool)
     .await
-    .map_err(|e| db_err(&e))
+    .map_err(AppError::from)
 }
 
 pub fn history_sample(r: HistoryRow) -> HistorySample {
@@ -138,15 +137,12 @@ pub async fn account_usage_history(
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<Uuid>,
     Query(q): Query<HistoryQuery>,
-) -> Result<Json<UsageHistory>, ApiErr> {
-    require_human(&ctx)?;
+) -> Result<Json<UsageHistory>, AppError> {
     if owned_provider_ids(&state, &ctx, Some(id)).await?.is_empty() {
-        return Err(err(StatusCode::NOT_FOUND, "no such account"));
+        return Err(AppError::new(StatusCode::NOT_FOUND, "no such account"));
     }
     let from = clamp_from(q.from, Utc::now());
-    let rows = usage_samples::history(&state.pool, id, q.window.as_deref(), from)
-        .await
-        .map_err(|e| db_err(&e))?;
+    let rows = usage_samples::history(&state.pool, id, q.window.as_deref(), from).await?;
     Ok(Json(UsageHistory {
         account_id: id,
         samples: rows.into_iter().map(history_sample).collect(),
@@ -157,11 +153,9 @@ async fn closes_for(
     state: &AppState,
     ids: &[Uuid],
     q: &HistoryQuery,
-) -> Result<Json<WindowCloses>, ApiErr> {
+) -> Result<Json<WindowCloses>, AppError> {
     let from = clamp_from(q.from, Utc::now());
-    let rows = usage_samples::closes(&state.pool, ids, q.window.as_deref(), from)
-        .await
-        .map_err(|e| db_err(&e))?;
+    let rows = usage_samples::closes(&state.pool, ids, q.window.as_deref(), from).await?;
     let closes: Vec<WindowClose> = rows.into_iter().map(window_close).collect();
     let summary = summarize(&closes);
     Ok(Json(WindowCloses { closes, summary }))
@@ -173,11 +167,10 @@ pub async fn account_usage_closes(
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<Uuid>,
     Query(q): Query<HistoryQuery>,
-) -> Result<Json<WindowCloses>, ApiErr> {
-    require_human(&ctx)?;
+) -> Result<Json<WindowCloses>, AppError> {
     let ids = owned_provider_ids(&state, &ctx, Some(id)).await?;
     if ids.is_empty() {
-        return Err(err(StatusCode::NOT_FOUND, "no such account"));
+        return Err(AppError::new(StatusCode::NOT_FOUND, "no such account"));
     }
     closes_for(&state, &ids, &q).await
 }
@@ -187,8 +180,7 @@ pub async fn all_usage_closes(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Query(q): Query<HistoryQuery>,
-) -> Result<Json<WindowCloses>, ApiErr> {
-    require_human(&ctx)?;
+) -> Result<Json<WindowCloses>, AppError> {
     let ids = owned_provider_ids(&state, &ctx, None).await?;
     closes_for(&state, &ids, &q).await
 }

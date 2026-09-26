@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SPAWN_ACK_TIMEOUT_MS, WsClient, spawnOutcomeFromEnd } from './ws.svelte';
 import { auth } from './auth.svelte';
@@ -63,7 +64,7 @@ const settled = async <T>(p: Promise<T>): Promise<T | 'pending'> => {
 	return r;
 };
 
-describe('awaitSpawn (CCT-971)', () => {
+describe('awaitSpawn', () => {
 	it('resolves on the command_result ack as before', async () => {
 		const c = openClient();
 		const p = c.awaitSpawn('cmd-1', 'sess-1');

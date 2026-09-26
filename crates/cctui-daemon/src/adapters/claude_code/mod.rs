@@ -7,7 +7,7 @@
 //!   merges identity from `~/.claude/jobs/<short>/state.json`, and emits
 //!   real `AdapterEvent`s.
 //! - **Legacy uds** — a Unix domain socket at `$CCTUI_DAEMON_SOCK` (or
-//!   `$XDG_RUNTIME_DIR/cctui-daemon.sock`) accepts line-delimited
+//!   `$XDG_RUNTIME_DIR/cctui-daemon.sock`, else a per-user private dir) accepts line-delimited
 //!   [`AdapterEvent`] JSON from clients. Opt in via
 //!   `CCTUI_ADAPTER_CLAUDE_DAEMON=0` or `config.mode = "legacy"`. Kept
 //!   until the legacy path is retired.
@@ -24,6 +24,7 @@ mod envcheck;
 mod fork_slice;
 mod headless;
 mod kickstart;
+mod launch;
 mod mode;
 mod oneshot;
 mod pty_view;
@@ -37,7 +38,7 @@ pub(crate) mod version_gate;
 use mode::Mode;
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use cctui_proto::adapter::AdapterEvent;
@@ -103,10 +104,16 @@ impl Adapter for ClaudeCodeAdapter {
             // stream-json codec. It binds the same `--settings` ask/permission
             // hook socket bg uses, so headless `-p` runs deliver hooks through
             // the same path.
-            Mode::Oneshot => oneshot::OneshotDriver::new(ctx).run().await,
+            Mode::Oneshot => {
+                let (driver, commands) = oneshot::OneshotDriver::new(ctx);
+                driver.run(commands).await
+            }
             // SDK driver: stream-json over the Claude Agent SDK, mapped onto the
             // AdapterCommand/AdapterEvent surface.
-            Mode::Sdk => headless::SdkDriver::new(ctx).run().await,
+            Mode::Sdk => {
+                let (driver, commands) = headless::SdkDriver::new(ctx);
+                driver.run(commands).await
+            }
             Mode::Legacy => run_legacy_uds(ctx).await,
         }
     }
@@ -126,6 +133,8 @@ async fn start_bg(ctx: AdapterCtx) -> anyhow::Result<()> {
     // live `session_id`; the driver's shared map translates it to the stable
     // `local_id` the rest of the pipeline (and the server) keys on.
     let hook_sock = resolve_legacy_socket_path(&ctx.config);
+    let hook_listener = crate::runtime::bind_private_socket(&hook_sock)
+        .inspect_err(|err| tracing::error!(%err, "claude-code ask-hook socket unavailable"))?;
     let hook_events = ctx.events;
     let hook_shutdown = ctx.shutdown;
     let session_map = driver.session_map();
@@ -134,7 +143,7 @@ async fn start_bg(ctx: AdapterCtx) -> anyhow::Result<()> {
     let hook_log = driver.hook_log();
     tokio::spawn(async move {
         if let Err(err) = run_hook_listener(
-            hook_sock,
+            hook_listener,
             hook_events,
             hook_shutdown,
             session_map,
@@ -152,17 +161,8 @@ async fn start_bg(ctx: AdapterCtx) -> anyhow::Result<()> {
 
 async fn run_legacy_uds(ctx: AdapterCtx) -> anyhow::Result<()> {
     let path = resolve_legacy_socket_path(&ctx.config);
-    let _ = std::fs::remove_file(&path);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let listener = UnixListener::bind(&path)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let perms = std::fs::Permissions::from_mode(0o600);
-        let _ = std::fs::set_permissions(&path, perms);
-    }
+    let listener = crate::runtime::bind_private_socket(&path)
+        .inspect_err(|err| tracing::error!(%err, "claude-code uds socket unavailable"))?;
     tracing::info!(socket = %path.display(), "claude-code legacy uds adapter listening");
 
     loop {
@@ -214,7 +214,7 @@ async fn handle_legacy_connection(
 /// `cctui-daemon ask-hook` command; we translate `session_id → local_id` via
 /// the shared map and emit the existing `AskQuestion` / `AskResolved` events.
 async fn run_hook_listener(
-    path: PathBuf,
+    listener: UnixListener,
     events: tokio::sync::mpsc::Sender<AdapterEvent>,
     shutdown: CancellationToken,
     session_map: SessionMap,
@@ -222,16 +222,7 @@ async fn run_hook_listener(
     pending_perm_hooks: PendingPermHooks,
     hook_log: HookLog,
 ) -> anyhow::Result<()> {
-    let _ = std::fs::remove_file(&path);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let listener = UnixListener::bind(&path)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
-    }
+    let path = listener.local_addr()?.as_pathname().map(Path::to_path_buf).unwrap_or_default();
     tracing::info!(socket = %path.display(), "claude-code ask-hook listener ready");
 
     loop {
@@ -542,8 +533,7 @@ pub(crate) fn resolve_legacy_socket_path(config: &serde_json::Value) -> PathBuf 
     if let Ok(p) = std::env::var("CCTUI_DAEMON_SOCK") {
         return PathBuf::from(p);
     }
-    let base = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_string());
-    PathBuf::from(base).join("cctui-daemon.sock")
+    crate::runtime::socket_path("cctui-daemon.sock")
 }
 
 pub struct ClaudeCodeFactory;

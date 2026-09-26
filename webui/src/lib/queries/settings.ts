@@ -1,3 +1,4 @@
+import { qk } from "./keys";
 import { useQueryClient } from "@tanstack/svelte-query";
 import { endpoints } from "./endpoints";
 import type { RescrubRequest } from "@bindings/RescrubRequest";
@@ -10,7 +11,7 @@ export function useRescrub() {
   return async (req: RescrubRequest) => {
     const report = await endpoints.rescrubSettings(req);
     if (!req.dry_run && report.rows_changed > 0) {
-      qc.invalidateQueries({ queryKey: ["conversation"] });
+      qc.invalidateQueries({ queryKey: qk.conversationAll });
     }
     return report;
   };

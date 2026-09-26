@@ -183,7 +183,7 @@ mod tests {
         for i in 0..4 {
             t.record_at(m, base + Duration::from_secs(i));
         }
-        // Well past the window: the old four have aged out, this is a lone event.
+        // Well past the window: the earlier four have aged out, this is a lone event.
         let n = t.record_at(m, base + EVICTION_WINDOW + Duration::from_mins(1));
         assert_eq!(n, 1);
     }

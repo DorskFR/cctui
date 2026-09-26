@@ -1,6 +1,7 @@
 import { createQuery, useQueryClient } from "@tanstack/svelte-query";
 import type { AccountRedirect } from "@bindings/AccountRedirect";
 import type { PutRedirectRequest } from "@bindings/PutRedirectRequest";
+import type { ToolPolicy } from "@bindings/ToolPolicy";
 import type { CreatePoolRequest } from "@bindings/CreatePoolRequest";
 import type { UpdatePoolRequest } from "@bindings/UpdatePoolRequest";
 import { api } from "../api";
@@ -20,14 +21,14 @@ import type {
 
 export const useAccounts = (enabled: () => boolean = () => true) =>
   createQuery(() => ({
-    queryKey: ["accounts"],
+    queryKey: qk.accounts,
     queryFn: endpoints.accounts,
     enabled: enabled(),
   }));
 
 export const useRedirects = (enabled: () => boolean = () => true) =>
   createQuery(() => ({
-    queryKey: ["redirects"],
+    queryKey: qk.redirects,
     queryFn: endpoints.redirects,
     enabled: enabled(),
   }));
@@ -68,7 +69,7 @@ export function useRedirectChips(enabled: () => boolean = () => true) {
 /** Set/clear launch-time redirect rules; both invalidate the rules query. */
 export function useRedirectActions() {
   const qc = useQueryClient();
-  const invalidate = () => qc.invalidateQueries({ queryKey: ["redirects"] });
+  const invalidate = () => qc.invalidateQueries({ queryKey: qk.redirects });
   return {
     put: async (accountId: string, body: PutRedirectRequest) => {
       const r = await endpoints.putRedirect(accountId, body);
@@ -82,12 +83,30 @@ export function useRedirectActions() {
   };
 }
 
+export const useToolPolicy = (accountId: () => string) =>
+  createQuery(() => ({
+    queryKey: qk.toolPolicy(accountId()),
+    queryFn: () => endpoints.toolPolicy(accountId()),
+    enabled: !!accountId(),
+  }));
+
+export function useToolPolicyActions() {
+  const qc = useQueryClient();
+  return {
+    put: async (accountId: string, body: ToolPolicy) => {
+      const r = await endpoints.putToolPolicy(accountId, body);
+      qc.setQueryData(["tool-policy", accountId], r);
+      return r;
+    },
+  };
+}
+
 /** The caller's account pools with their membership. A pool is the durable
  *  "these accounts are interchangeable" statement that bounds both auto-binding
  *  and mid-session failover; see the accounts screen's Pools tab. */
 export const useAccountPools = (enabled: () => boolean = () => true) =>
   createQuery(() => ({
-    queryKey: ["account-pools"],
+    queryKey: qk.accountPools,
     queryFn: endpoints.accountPools,
     enabled: enabled(),
   }));
@@ -97,7 +116,7 @@ export const useAccountPools = (enabled: () => boolean = () => true) =>
  *  server-side the rows come from the same per-provider cache. */
 export const useAccountPoolsUsage = (enabled: () => boolean = () => true) =>
   createQuery(() => ({
-    queryKey: ["account-pools-usage"],
+    queryKey: qk.accountPoolsUsage,
     queryFn: endpoints.accountPoolsUsage,
     enabled: enabled(),
     staleTime: 180_000,
@@ -111,8 +130,8 @@ export const useAccountPoolsUsage = (enabled: () => boolean = () => true) =>
 export function useAccountPoolActions() {
   const qc = useQueryClient();
   const invalidate = () => {
-    qc.invalidateQueries({ queryKey: ["account-pools"] });
-    qc.invalidateQueries({ queryKey: ["account-pools-usage"] });
+    qc.invalidateQueries({ queryKey: qk.accountPools });
+    qc.invalidateQueries({ queryKey: qk.accountPoolsUsage });
   };
   return {
     /** Replace several pools' memberships in order (an account leaving one
@@ -147,7 +166,7 @@ export const useSessionRebinds = (
   enabled: () => boolean = () => true,
 ) =>
   createQuery(() => ({
-    queryKey: ["session-rebinds", sessionId()],
+    queryKey: qk.sessionRebinds(sessionId()),
     queryFn: () => endpoints.sessionRebinds(sessionId()),
     enabled: enabled(),
     retry: false,
@@ -202,7 +221,7 @@ export const useUsageHistory = (
   from: () => string,
 ) =>
   createQuery(() => ({
-    queryKey: ["account-usage-history", accountId(), windowKey(), from()],
+    queryKey: qk.usageHistory(accountId(), windowKey(), from()),
     queryFn: () =>
       api.get<UsageHistory>(`/accounts/${accountId()}/usage/history`, {
         window: windowKey(),
@@ -218,7 +237,7 @@ export const useUsageHistory = (
 /** Closed quota windows of every owned credential since `from` (ISO). */
 export const useUsageCloses = (from: () => string) =>
   createQuery(() => ({
-    queryKey: ["account-usage-closes", from()],
+    queryKey: qk.usageCloses(from()),
     queryFn: () => api.get<UsageWindowCloses>("/accounts/usage/closes", { from: from() }),
     staleTime: USAGE_POLL_MS,
     refetchInterval: USAGE_POLL_MS,
@@ -288,7 +307,7 @@ export function useResourceShareActions() {
  *  list after a mutation. */
 export function useAccountActions() {
   const qc = useQueryClient();
-  const inval = () => qc.invalidateQueries({ queryKey: ["accounts"] });
+  const inval = () => qc.invalidateQueries({ queryKey: qk.accounts });
   return {
     create: async (body: CreateAccount) => {
       const r = await endpoints.createAccount(body);
@@ -310,7 +329,7 @@ export function useAccountActions() {
       inval();
       // The pool weight feeds the pool aggregate.
       if (body.pool_weight !== undefined) {
-        qc.invalidateQueries({ queryKey: ["account-pools-usage"] });
+        qc.invalidateQueries({ queryKey: qk.accountPoolsUsage });
       }
       return r;
     },

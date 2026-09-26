@@ -6,6 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
+use cctui_proto::release_sig::Channel;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -17,6 +18,10 @@ pub struct Config {
     /// session's cwd and job dir cannot infer.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub read_file_roots: Vec<String>,
+    /// Release channel self-update follows; `beta` also accepts stable builds.
+    /// `CCTUI_DAEMON_CHANNEL` overrides it.
+    #[serde(default)]
+    pub channel: Channel,
 }
 
 impl Config {
@@ -53,7 +58,13 @@ impl Config {
             .or_else(|_| std::env::var("CCTUI_URL"))
             .ok()
             .filter(|s| !s.is_empty())?;
-        Some(Self { server_url, machine_key, machine_id: None, read_file_roots: Vec::new() })
+        Some(Self {
+            server_url,
+            machine_key,
+            machine_id: None,
+            read_file_roots: Vec::new(),
+            channel: Channel::default(),
+        })
     }
 
     /// Resolve config for `run`: prefer the env-provided shared key (dispatch
@@ -73,19 +84,111 @@ impl Config {
         path.exists()
     }
 
-    pub fn save_to(&self, path: &PathBuf) -> anyhow::Result<()> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+    /// The channel self-update follows, after the `CCTUI_DAEMON_CHANNEL` override.
+    #[must_use]
+    pub fn update_channel(&self) -> Channel {
+        channel_override(std::env::var("CCTUI_DAEMON_CHANNEL").ok().as_deref(), self.channel)
+    }
+
+    pub fn save_to(&self, path: &Path) -> anyhow::Result<()> {
+        write_private(path, toml::to_string_pretty(self)?.as_bytes())
+    }
+}
+
+/// Atomically replace `path` with `contents` through a sibling tempfile
+/// created with mode 0600, so the key is never readable by anyone else.
+fn write_private(path: &Path, contents: &[u8]) -> anyhow::Result<()> {
+    use std::io::Write;
+
+    let dir = match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
+    };
+    std::fs::create_dir_all(dir)?;
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let tmp = dir.join(format!(".{name}.{}.tmp", uuid::Uuid::new_v4().simple()));
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let result = (|| -> anyhow::Result<()> {
+        let mut file = opts.open(&tmp)?;
+        file.write_all(contents)?;
+        file.sync_all()?;
+        std::fs::rename(&tmp, path)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result.map_err(|e| e.context(format!("writing {}", path.display())))
+}
+
+fn channel_override(env: Option<&str>, configured: Channel) -> Channel {
+    match env.filter(|v| !v.trim().is_empty()).map(str::parse::<Channel>) {
+        Some(Ok(channel)) => channel,
+        Some(Err(err)) => {
+            tracing::warn!(%err, %configured, "ignoring CCTUI_DAEMON_CHANNEL");
+            configured
         }
-        let raw = toml::to_string_pretty(self)?;
-        std::fs::write(path, raw)?;
+        None => configured,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn channel_defaults_to_stable_and_env_overrides_it() {
+        let cfg: Config = toml::from_str("server_url = \"s\"\nmachine_key = \"k\"\n").unwrap();
+        assert_eq!(cfg.channel, Channel::Stable);
+        let cfg: Config =
+            toml::from_str("server_url = \"s\"\nmachine_key = \"k\"\nchannel = \"beta\"\n")
+                .unwrap();
+        assert_eq!(cfg.channel, Channel::Beta);
+        assert_eq!(channel_override(None, Channel::Beta), Channel::Beta);
+        assert_eq!(channel_override(Some(""), Channel::Beta), Channel::Beta);
+        assert_eq!(channel_override(Some("stable"), Channel::Beta), Channel::Stable);
+        assert_eq!(channel_override(Some("beta"), Channel::Stable), Channel::Beta);
+        assert_eq!(channel_override(Some("nightly"), Channel::Stable), Channel::Stable);
+    }
+
+    #[test]
+    fn save_creates_an_owner_only_file_and_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cctui").join("daemon.toml");
+        let cfg = Config {
+            server_url: "https://s.example.test".to_owned(),
+            machine_key: "secret-key".to_owned(),
+            machine_id: None,
+            read_file_roots: Vec::new(),
+            channel: Channel::Beta,
+        };
+        cfg.save_to(&path).unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mut perms = std::fs::metadata(path)?.permissions();
-            perms.set_mode(0o600);
-            std::fs::set_permissions(path, perms)?;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600);
         }
-        Ok(())
+        assert_eq!(Config::load_from(&path).unwrap().machine_key, "secret-key");
+        assert_eq!(std::fs::read_dir(path.parent().unwrap()).unwrap().count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_over_a_world_readable_file_leaves_it_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("daemon.toml");
+        std::fs::write(&path, "old").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        write_private(&path, b"new").unwrap();
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new");
     }
 }

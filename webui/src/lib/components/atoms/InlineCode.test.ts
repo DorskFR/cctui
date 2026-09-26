@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 import { mount, unmount } from "svelte";
 import { afterEach, describe, expect, it } from "vitest";
 import InlineCode, { SLOT } from "./InlineCode.svelte";

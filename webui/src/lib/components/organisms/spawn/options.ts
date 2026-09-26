@@ -1,5 +1,4 @@
-// Shared spawn-form option lists, extracted from SpawnModal (no behavior
-// change). Used by the machine + dispatch field groups for their model/effort
+// Shared spawn-form option lists, used by the machine + dispatch field groups for their model/effort
 // selectors and permission-mode picker.
 import type { PermissionMode } from '@bindings/PermissionMode';
 import type { AccountPoolView } from '@bindings/AccountPoolView';

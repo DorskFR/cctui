@@ -11,11 +11,9 @@ use axum::{Extension, Json};
 use uuid::Uuid;
 
 use crate::auth::AuthContext;
-use crate::routes::accounts::{err, require_human};
+use crate::error::AppError;
 use crate::routes::gateway::{self, Account};
 use crate::state::AppState;
-
-type ApiError = (StatusCode, Json<serde_json::Value>);
 
 /// The endpoint that spends a Codex reset credit, overridable on its own: the
 /// `wham` default performs the reset but answers in the credits shape, while
@@ -38,9 +36,11 @@ pub fn anthropic_reset_url(organization_uuid: &str) -> String {
 
 /// What the account's latest usage payload says about a limit reset, normalized
 /// across providers for the button in the usage row.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, ts_rs::TS)]
+#[ts(export)]
 pub struct LimitResetStatus {
     /// `codex` (reset credits) or `claude` (`juniper_tide`).
+    #[ts(type = "\"codex\" | \"claude\"")]
     pub kind: &'static str,
     /// Whether a claim would do anything right now.
     pub available: bool,
@@ -177,7 +177,8 @@ pub struct LimitResetRequest {
     pub credit_id: Option<String>,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, ts_rs::TS)]
+#[ts(export)]
 pub struct LimitResetResponse {
     pub account_id: Uuid,
     pub provider: String,
@@ -200,8 +201,7 @@ pub async fn limit_reset(
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<Uuid>,
     body: Option<Json<LimitResetRequest>>,
-) -> Result<Json<LimitResetResponse>, ApiError> {
-    require_human(&ctx)?;
+) -> Result<Json<LimitResetResponse>, AppError> {
     let req = body.map(|Json(b)| b).unwrap_or_default();
     let provider: Option<String> = sqlx::query_scalar(
         "SELECT provider FROM account_providers \
@@ -210,25 +210,23 @@ pub async fn limit_reset(
     .bind(id)
     .bind(ctx.owner_filter())
     .fetch_optional(&state.pool)
-    .await
-    .map_err(|e| {
-        tracing::error!("db error: {e}");
-        err(StatusCode::INTERNAL_SERVER_ERROR, "database error")
-    })?;
+    .await?;
     let Some(provider) = provider else {
-        return Err(err(StatusCode::NOT_FOUND, "no such account"));
+        return Err(AppError::new(StatusCode::NOT_FOUND, "no such account"));
     };
     let Some(acct) = gateway::reload_account(&state, id).await else {
-        return Err(err(StatusCode::NOT_FOUND, "no such account"));
+        return Err(AppError::new(StatusCode::NOT_FOUND, "no such account"));
     };
     let access_token = gateway::current_access_token(&state, &acct)
         .await
-        .map_err(|s| err(s, "could not obtain an access token for this account"))?;
+        .map_err(|s| AppError::new(s, "could not obtain an access token for this account"))?;
 
     let out = match provider.as_str() {
         "openai" => claim_codex(&state, &acct, &access_token, req.credit_id).await,
         "anthropic" => claim_claude(&state, &acct, &access_token).await,
-        _ => return Err(err(StatusCode::BAD_REQUEST, "this provider has no limit reset")),
+        _ => {
+            return Err(AppError::new(StatusCode::BAD_REQUEST, "this provider has no limit reset"));
+        }
     };
     record(&state, id, &out, ctx.user_id).await;
     if invalidates_usage(&out.outcome) {

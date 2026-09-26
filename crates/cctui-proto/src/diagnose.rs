@@ -1,11 +1,6 @@
-//! Session diagnose report.
-//!
-//! One structured blob answering "everything the daemon knows about this
-//! session, dated": every input to the session's derived state, each carried
-//! as a [`DiagnoseFact`] with a value, an `observed_at_ms`/`age_ms` pair and a
-//! `source`, plus the arbitration verdict. Facts the daemon cannot produce
-//! right now come back with `value: None` and a `missing_reason` instead of
-//! failing the whole call (fail-soft).
+//! Session diagnose report: every input to a session's derived state as a
+//! dated [`DiagnoseFact`]. Unavailable facts carry a `missing_reason` instead
+//! of failing the call.
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -17,28 +12,22 @@ use ts_rs::TS;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct DiagnoseFact<T> {
-    // Fn-path default: `#[serde(default)]` would bound `T: Default` on the
-    // generic derive; a named fn keeps `DiagnoseFact<T>` bound-free.
     #[serde(default = "none", skip_serializing_if = "Option::is_none")]
     pub value: Option<T>,
-    /// Unix epoch millis when the daemon last observed this fact. `None`
-    /// when the underlying signal carries no timestamp.
+    /// Unix ms. `None` when the signal carries no timestamp.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub observed_at_ms: Option<i64>,
-    /// Staleness at report-build time: `generated_at_ms - observed_at_ms`,
-    /// clamped to `>= 0`.
+    /// `generated_at_ms - observed_at_ms`, clamped to `>= 0`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub age_ms: Option<i64>,
-    /// Which input/subsystem produced the fact (e.g. `hook`,
-    /// `control_socket`, `discovery`, `filesystem`).
+    /// Producing subsystem, e.g. `hook`, `control_socket`, `discovery`.
     pub source: String,
     /// Why `value` is absent. Always `Some` when `value` is `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub missing_reason: Option<String>,
 }
 
-/// serde needs a named fn (not `#[serde(default)]`) for a generic
-/// `Option<T>` default that must not require `T: Default`.
+/// Named default so the derive does not bound `T: Default`.
 const fn none<T>() -> Option<T> {
     None
 }
@@ -123,7 +112,7 @@ pub struct HookEvent {
     pub kind: String,
 }
 
-/// Persistent-attach keep-alive status (487) for the session's worker.
+/// Persistent-attach keep-alive status for the session's worker.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct AttachStatus {
@@ -223,11 +212,7 @@ pub struct GatewayStatus {
     pub server_configured: bool,
 }
 
-/// Codex-adapter-specific diagnostics.
-///
-/// Present only when the session is driven by the codex adapter; `None` for
-/// claude-code, whose facts are the neutral top-level fields instead. Kept as
-/// One retained `codex app-server` stderr line, secret-redacted.
+/// A retained `codex app-server` stderr line, secret-redacted.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct CodexStderrLine {
@@ -266,21 +251,18 @@ pub struct CodexProtocolError {
     pub transport: String,
 }
 
-/// an optional tagged section so the claude wire shape stays unchanged
-/// (additive-only).
+/// Codex-only section; `None` for claude-code.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct CodexDiagnose {
     /// Discovered `codex app-server` version (from the `initialize` userAgent).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub codex_version: Option<String>,
-    /// The minimum Codex version the adapter supports (`CODEX_MIN_VERSION`);
-    /// also the version the worker image installs.
+    /// `CODEX_MIN_VERSION`, also what the worker image installs.
     pub min_version: String,
     /// Whether the discovered version is at or above `min_version`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version_supported: Option<bool>,
-    /// Transport to the app-server child (always `stdio` today).
     pub transport: String,
     /// app-server child PID, when a live session owns one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -313,8 +295,7 @@ pub struct CodexDiagnose {
     /// Rollout (transcript) file path for the thread.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rollout_path: Option<String>,
-    /// Rollout file size in bytes at report time — the tail-offset analogue for
-    /// an app-server-owned rollout (no external tail consumes it).
+    /// Bytes at report time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rollout_size_bytes: Option<u64>,
     /// Cheap auth/account posture: whether the launch env carries gateway
@@ -327,13 +308,8 @@ pub struct CodexDiagnose {
     pub registry_live_mismatch: Option<String>,
 }
 
-/// Everything the daemon knows about one session, dated. Assembled
-/// by the adapter from state it already tracks — aggregation, not new sensing.
-///
-/// The named facts below are the adapter-neutral / claude-code set. Adapters
-/// with their own diagnostics attach an optional tagged section (currently
-/// [`SessionDiagnose::codex`]); this keeps the claude wire shape stable while
-/// letting each adapter carry its own payload.
+/// Everything the daemon knows about one session, dated. Adapter-specific
+/// diagnostics go in tagged sections such as [`SessionDiagnose::codex`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct SessionDiagnose {
@@ -435,7 +411,7 @@ mod tests {
                 },
                 "attach",
             ),
-            pty_output: DiagnoseFact::missing("pty", "depends on CCT-546 (not landed)"),
+            pty_output: DiagnoseFact::missing("pty", "PTY capture not implemented"),
             claude_socket: DiagnoseFact::fresh(
                 SocketStatus {
                     path: Some("/tmp/cc-daemon-1000/ab/control.sock".into()),
@@ -513,7 +489,7 @@ mod tests {
         let report = sample_report();
         let json = serde_json::to_value(&report).unwrap();
         assert!(json["pty_output"].get("value").is_none(), "None value must be skipped");
-        assert_eq!(json["pty_output"]["missing_reason"], "depends on CCT-546 (not landed)");
+        assert_eq!(json["pty_output"]["missing_reason"], "PTY capture not implemented");
         assert_eq!(json["effective_state"]["age_ms"], 1_000);
         assert_eq!(json["effective_state"]["source"], "activity");
     }

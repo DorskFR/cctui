@@ -1072,9 +1072,8 @@ mod tests {
 
     #[test]
     fn codex_legacy_role_text_preview_is_dropped() {
-        // the old inventory preview payload `{role,text}` has no codex
-        // `type` discriminant, so the codex normalizer drops it → the
-        // conversation drawer rendered "No events yet". Documents that bug.
+        // A `{role,text}` preview payload has no codex `type` discriminant,
+        // so the codex normalizer drops it.
         let p = json!({ "role": "user", "text": "Implement CCT-276 please." });
         assert_eq!(for_client("codex", "message", p), None);
     }

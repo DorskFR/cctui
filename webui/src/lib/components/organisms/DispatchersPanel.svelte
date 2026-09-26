@@ -1,7 +1,6 @@
 <!--
-  Dispatcher management, extracted from the /dispatchers route so it
-  can be hosted under the Accounts page (the single home for everything that
-  connects to something external) as well as its own route.
+  Dispatcher management, hosted under the Accounts page (the single home for everything that
+  connects to something external) and on its own route.
 -->
 <script lang="ts">
 	import { errMessage } from '$lib/api';

@@ -10,15 +10,9 @@ use axum::{Extension, Json};
 use cctui_proto::models::MessagePin;
 use chrono::{DateTime, Utc};
 
-use cctui_proto::api::ApiError;
-
 use crate::auth::AuthContext;
+use crate::error::AppError;
 use crate::state::AppState;
-
-fn db_err(e: &sqlx::Error) -> (StatusCode, Json<ApiError>) {
-    tracing::error!("db error (message pins): {e}");
-    (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-}
 
 type PinRow = (String, i64, Option<String>, Option<String>, DateTime<Utc>);
 
@@ -30,7 +24,7 @@ pub async fn list_pins(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Path(session_id): Path<String>,
-) -> Result<Json<Vec<MessagePin>>, (StatusCode, Json<ApiError>)> {
+) -> Result<Json<Vec<MessagePin>>, AppError> {
     let rows: Vec<PinRow> = sqlx::query_as(
         "SELECT session_id, seq, message_id, note, created_at \
          FROM session_message_pins WHERE user_id = $1 AND session_id = $2 \
@@ -39,8 +33,7 @@ pub async fn list_pins(
     .bind(ctx.user_id)
     .bind(&session_id)
     .fetch_all(&state.pool)
-    .await
-    .map_err(|e| db_err(&e))?;
+    .await?;
     Ok(Json(rows.into_iter().map(to_pin).collect()))
 }
 
@@ -58,12 +51,9 @@ pub async fn create_pin(
     Extension(ctx): Extension<AuthContext>,
     Path(session_id): Path<String>,
     Json(body): Json<CreatePin>,
-) -> Result<Json<MessagePin>, (StatusCode, Json<ApiError>)> {
+) -> Result<Json<MessagePin>, AppError> {
     if body.seq <= 0 {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(ApiError { error: "seq must be positive".into() }),
-        ));
+        return Err(AppError::new(StatusCode::BAD_REQUEST, "seq must be positive"));
     }
     let row: PinRow = sqlx::query_as(
         "INSERT INTO session_message_pins (user_id, session_id, seq, message_id, note) \
@@ -79,8 +69,7 @@ pub async fn create_pin(
     .bind(body.message_id.as_deref())
     .bind(body.note.as_deref())
     .fetch_one(&state.pool)
-    .await
-    .map_err(|e| db_err(&e))?;
+    .await?;
     Ok(Json(to_pin(row)))
 }
 
@@ -88,7 +77,7 @@ pub async fn delete_pin(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Path((session_id, seq)): Path<(String, i64)>,
-) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+) -> Result<StatusCode, AppError> {
     sqlx::query(
         "DELETE FROM session_message_pins WHERE user_id = $1 AND session_id = $2 AND seq = $3",
     )
@@ -96,7 +85,6 @@ pub async fn delete_pin(
     .bind(&session_id)
     .bind(seq)
     .execute(&state.pool)
-    .await
-    .map_err(|e| db_err(&e))?;
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }

@@ -3,81 +3,38 @@ import type { DispatchAccount } from "./DispatchAccount";
 import type { JsonValue } from "./serde_json/JsonValue";
 
 /**
- * dispatcher-routed session start.
- *
- * `dispatcher` selects which [`Dispatcher`] impl on the server materializes
- * the request (e.g. `"k8s_job"`). Everything else is deliberately
- * runtime-agnostic: cctui mints/dedups the session, carries `reply_url` to
- * the runtime, sets the per-flow `timeout`, and forwards `payload` verbatim.
- *
- * `payload` is **opaque to cctui** — never typed or inspected here. It is
- * forwarded verbatim to the dispatcher, so the caller↔runtime contract can
- * evolve with zero cctui changes.
+ * Dispatcher-routed session start. `payload` is opaque and forwarded verbatim.
  */
 export type DispatchRequest = { dispatcher: string, 
 /**
- * Optional pre-minted session id. When absent the server mints one.
- * Doubles as the **idempotency key**: a repeat dispatch with the same
- * id returns the existing session without launching a second runtime.
+ * Idempotency key; minted when absent.
  */
 session_id?: string | null, 
 /**
- * Per-flow timeout in minutes. Sets the K8s Job `activeDeadlineSeconds`
- * and is mirrored by the caller's own wait limit. Falls back to the
- * runtime default when absent.
+ * Minutes. `None` = runtime default.
  */
 timeout?: number | null, 
 /**
- * Caller resume URL (e.g. an automation `$execution.resumeUrl`). A **bearer
- * capability** — carried to the runtime, never logged or persisted.
- * The worker POSTs its deterministic result here.
+ * Bearer capability the worker posts its result to. Never logged or persisted.
  */
 reply_url?: string | null, 
 /**
- * Server-side completion-webhook target: the eventual
- * replacement for `reply_url`. When set, the SERVER (not the worker) POSTs
- * the completion payload here once the dispatched session reaches a
- * terminal state — INCLUDING crash cases the worker's exit trap can miss
- * (OOM/SIGKILL, daemon never connected, connection lost past the grace
- * window). The wire shape matches the `reply_url` contract (`task_id`,
- * `status`, `error`/verdict) so flows migrate by swapping the URL. This is
- * additive: `reply_url` keeps working during migration.
+ * The server posts the completion payload here on any terminal state, crashes included.
  */
 notify_url?: string | null, 
 /**
- * Optional per-target HMAC secret. When set, the server signs the
- * completion-webhook body with HMAC-SHA256 and sends the hex digest in an
- * `X-CCTUI-Signature: sha256=<hex>` header so the receiver can verify the
- * POST originated from cctui. Never logged.
+ * Signs the webhook body: `X-CCTUI-Signature: sha256=<hex>`. Never logged.
  */
-notify_secret?: string | null, 
+notify_secret?: string | null, payload?: JsonValue, 
 /**
- * Free-form, opaque to cctui. Forwarded to the runtime as-is.
- */
-payload?: JsonValue, 
-/**
- * Named account to run the dispatched session under. When set the
- * server mints a session-scoped gateway token bound to `(session_id,
- * account)` and merges the gateway base-url + token into `payload.env`, so a
- * dispatched worker routes through the passthrough gateway exactly like a
- * machine spawn. `None` → no gateway injection (the worker's own auth).
+ * Account whose gateway env is merged into `payload.env`.
  */
 account?: string | null, 
 /**
- * Provider of the selected `account`, disambiguating a shared
- * name across providers. `None` → assume the claude-code (anthropic) family,
- * matching the k8s claude-worker the dispatch path runs.
+ * `None` = anthropic.
  */
 provider?: string | null, 
 /**
- * Multiple accounts to route the dispatched session through.
- * When non-empty the server mints a session-scoped gateway token for EACH
- * account and merges every family's env into `payload.env`, so one worker
- * can carry `ANTHROPIC_*` and `OPENAI_*` at once (e.g. claude + codex both
- * authenticating through the passthrough gateway). At most one account per
- * provider family — two accounts of the same family collide on the same env
- * keys and the dispatch is rejected. Takes precedence over the singular
- * `account`/`provider` shortcut (and the dispatcher's bound default) when
- * present; an empty list falls back to the single-account path unchanged.
+ * At most one per provider family. Takes precedence over `account`.
  */
 accounts?: Array<DispatchAccount>, };

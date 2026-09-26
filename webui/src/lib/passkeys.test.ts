@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 import { describe, expect, it } from 'vitest';
 import { fromBase64Url, toBase64Url } from './passkeys';
 

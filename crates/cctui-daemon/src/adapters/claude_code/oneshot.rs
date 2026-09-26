@@ -1,38 +1,12 @@
 //! Oneshot stream-json driver for the claude-code adapter.
 //!
-//! Runs claude as a one-shot `claude -p <prompt> --output-format stream-json
-//! --verbose` invocation per turn, mapped onto the
-//! [`AdapterCommand`](cctui_proto::adapter::AdapterCommand) /
-//! [`AdapterEvent`](cctui_proto::adapter::AdapterEvent) surface so the server is
-//! oblivious to the mode. It reuses the shared stream-json codec
-//! ([`super::streamjson`]) for event mapping and the same ask/permission hook
-//! listener ([`super::run_hook_listener`]) the `bg` driver uses — headless runs
-//! fire `PreToolUse`/`AskUserQuestion` hooks just like an interactive worker.
-//!
-//! Lifecycle, per the design (`sub4-oneshot-driver.md`):
-//!
-//! - **Spawn** → `claude -p <prompt> --output-format stream-json --verbose
-//!   --session-id <pre-minted uuid> [--model][--effort] [--permission-mode]
-//!   [--settings <hook>]`, run in `spec.working_dir`. The pre-minted session id
-//!   flows from `Spawn.session_id` exactly as `bg` uses it so the gateway-token
-//!   binding stays intact. On the terminal `result` frame the
-//!   driver emits an idle [`AdapterEvent::Status`] (NOT `SessionEnded`) so the
-//!   conversation stays resumable, mirroring how `--bg` idles awaiting input.
-//! - **Reply** → re-invoke `claude -p <text> --resume <session_id>`, a fresh
-//!   child against the same id. Gateway env carried on the command is injected
-//!   (cold-launch parity).
-//! - **Fork** → `claude -p --resume <parent> --fork-session --session-id
-//!   <child>` (optional first-turn prompt).
-//! - **Resume** → revive without a reply: a no-op turn against `--resume`.
-//! - **Kill / Interrupt** → terminate the in-flight child; the conversation
-//!   stays resumable (oneshot has no live mid-turn turn to ESC into, so
-//!   `Interrupt` == terminate the current `-p` process).
-//! - **`PermissionResponse` / Ask / Plan** → through the reused `--settings` hook
-//!   path; native keystroke answering is N/A for headless, so the perm hook's
-//!   long-poll allow/deny carries the decision.
-//! - **Rename** → stored daemon-side (no PTY/state.json round-trip).
-//!   **Remove** → no worker to stop; clear local state.
-//!   **`SetModel`** → unsupported in place (same "fork to change model" as bg).
+//! Every turn is a fresh `claude -p <prompt> --output-format stream-json
+//! --verbose` child: Spawn pre-mints `--session-id`, Reply/Resume use
+//! `--resume <id>`, Fork adds `--fork-session`. The terminal `result` frame
+//! emits an idle `Status`, not `SessionEnded`, so the conversation stays
+//! resumable. Kill and Interrupt both terminate the in-flight child.
+//! Permissions, Ask and Plan flow through the shared `--settings` hook
+//! listener; `SetModel` is unsupported in place.
 
 use std::collections::HashMap;
 use std::process::Stdio;
@@ -46,9 +20,11 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use super::control::DriverConfig;
-use super::streamjson::{self, LaunchArgs};
-use super::{PendingAsks, PendingPermHooks, SessionMap};
-use crate::adapter_runtime::AdapterCtx;
+use super::launch::LaunchArgs;
+use super::{PendingAsks, PendingPermHooks, SessionMap, streamjson};
+use crate::adapter_runtime::{
+    AdapterCtx, CommandOutcome, Handled, SessionDriver, run_command_loop,
+};
 
 /// A single-shot `claude -p` driver.
 ///
@@ -59,7 +35,6 @@ use crate::adapter_runtime::AdapterCtx;
 pub(super) struct OneshotDriver {
     cfg: DriverConfig,
     events: mpsc::Sender<AdapterEvent>,
-    commands: mpsc::Receiver<AdapterCommand>,
     shutdown: CancellationToken,
     server: Option<crate::client::ServerClient>,
     machine_key: Option<String>,
@@ -83,12 +58,11 @@ pub(super) struct OneshotDriver {
 }
 
 impl OneshotDriver {
-    pub(super) fn new(ctx: AdapterCtx) -> Self {
+    pub(super) fn new(ctx: AdapterCtx) -> (Self, mpsc::Receiver<AdapterCommand>) {
         let cfg = DriverConfig::from_value(&ctx.config);
-        Self {
+        let driver = Self {
             cfg,
             events: ctx.events,
-            commands: ctx.commands,
             shutdown: ctx.shutdown,
             server: ctx.server,
             machine_key: ctx.machine_key,
@@ -99,59 +73,36 @@ impl OneshotDriver {
             session_map: Arc::default(),
             pending_asks: Arc::default(),
             pending_perm_hooks: Arc::default(),
-        }
+        };
+        (driver, ctx.commands)
     }
 
-    // Top-level driver event loop (hook listener + select over shutdown / commands
-    // / turn completion); complexity is the per-branch dispatch, not nesting.
-    // Splitting the select arms would obscure the loop's lifecycle.
-    #[allow(clippy::cognitive_complexity)]
-    pub(super) async fn run(mut self) -> anyhow::Result<()> {
+    pub(super) async fn run(
+        mut self,
+        mut commands: mpsc::Receiver<AdapterCommand>,
+    ) -> anyhow::Result<()> {
         tracing::info!("claude-code adapter starting in oneshot mode");
         // The same ask/permission hook listener the bg driver uses: headless
         // `-p` runs fire PreToolUse/AskUserQuestion hooks, so
         // bind the local socket the injected `--settings` file targets and route
         // deliveries through the shared maps. Spawned as a sibling task; it
         // exits on the shared shutdown token.
-        self.spawn_hook_listener();
+        self.spawn_hook_listener()?;
 
-        loop {
-            tokio::select! {
-                () = self.shutdown.cancelled() => {
-                    self.kill_all().await;
-                    return Ok(());
-                }
-                cmd = self.commands.recv() => {
-                    let Some(cmd) = cmd else {
-                        // Sender closed: drain to shutdown.
-                        self.shutdown.cancelled().await;
-                        self.kill_all().await;
-                        return Ok(());
-                    };
-                    let command_id = cmd.command_id();
-                    let res = self.handle_command(cmd).await;
-                    if let Some(command_id) = command_id {
-                        let (ok, error) = match &res {
-                            Ok(()) => (true, None),
-                            Err(err) => (false, Some(err.to_string())),
-                        };
-                        let _ = self
-                            .events
-                            .send(AdapterEvent::CommandResult { command_id, ok, error })
-                            .await;
-                    }
-                    if let Err(err) = res {
-                        tracing::warn!(%err, "oneshot command dispatch failed");
-                    }
-                }
-            }
-        }
+        let (events, shutdown) = (self.events.clone(), self.shutdown.clone());
+        run_command_loop(&mut self, &mut commands, &events, &shutdown).await;
+        shutdown.cancelled().await;
+        self.kill_all().await;
+        Ok(())
     }
 
     /// Bind the shared ask/permission hook socket and route deliveries through
     /// the same handler the bg driver uses.
-    fn spawn_hook_listener(&self) {
-        let sock = self.cfg.hook_socket_path.clone();
+    fn spawn_hook_listener(&self) -> anyhow::Result<()> {
+        let sock = &self.cfg.hook_socket_path;
+        let listener = crate::runtime::bind_private_socket(sock).inspect_err(
+            |err| tracing::error!(%err, "claude-code oneshot ask-hook socket unavailable"),
+        )?;
         let events = self.events.clone();
         let shutdown = self.shutdown.clone();
         let session_map = self.session_map.clone();
@@ -159,7 +110,7 @@ impl OneshotDriver {
         let pending_perm_hooks = self.pending_perm_hooks.clone();
         tokio::spawn(async move {
             if let Err(err) = super::run_hook_listener(
-                sock,
+                listener,
                 events,
                 shutdown,
                 session_map,
@@ -174,75 +125,7 @@ impl OneshotDriver {
                 tracing::warn!(%err, "claude-code oneshot ask-hook listener exited");
             }
         });
-    }
-
-    // Dispatch over every `AdapterCommand` variant; complexity is the breadth of
-    // the match arms, not nesting. Per-arm helpers would be pure churn.
-    #[allow(clippy::cognitive_complexity)]
-    async fn handle_command(&mut self, cmd: AdapterCommand) -> anyhow::Result<()> {
-        match cmd {
-            AdapterCommand::Spawn { spec, session_id, .. } => {
-                let session_id = session_id
-                    .map_or_else(|| uuid::Uuid::new_v4().to_string(), |id| id.to_string());
-                self.spawn(&spec, session_id, None).await
-            }
-            AdapterCommand::Fork { parent_local_id, spec, session_id, .. } => {
-                let child_id = session_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-                self.spawn(&spec, child_id, Some(parent_local_id)).await
-            }
-            AdapterCommand::Reply { local_id, text, env, .. } => {
-                self.reply(&local_id, &text, env).await
-            }
-            AdapterCommand::SendMessage { local_id, text } => {
-                self.reply(&local_id, &text, std::collections::BTreeMap::new()).await
-            }
-            AdapterCommand::Resume { local_id, working_dir, .. } => {
-                self.resume(&local_id, working_dir).await
-            }
-            AdapterCommand::Kill { local_id, .. } | AdapterCommand::Interrupt { local_id, .. } => {
-                self.kill(&local_id).await;
-                Ok(())
-            }
-            AdapterCommand::Remove { local_id, .. } => {
-                self.kill(&local_id).await;
-                self.names.remove(&local_id);
-                self.cwds.remove(&local_id);
-                self.forget(&local_id);
-                self.emit(AdapterEvent::SessionEnded { local_id, reason: EndReason::Killed }).await;
-                Ok(())
-            }
-            AdapterCommand::PermissionResponse { local_id, request_id, allow } => {
-                // Headless: the only carrier is the bidirectional PreToolUse
-                // hook long-polling in the listener. Hand it the decision; there
-                // is no PTY keystroke fallback in oneshot mode.
-                let hook =
-                    self.pending_perm_hooks.lock().ok().and_then(|mut m| m.remove(&local_id));
-                if let Some(tx) = hook {
-                    if tx.send(allow).is_ok() {
-                        tracing::info!(%local_id, %request_id, allow, "oneshot answered permission via hook");
-                        return Ok(());
-                    }
-                    tracing::debug!(%local_id, %request_id, "oneshot perm hook receiver gone");
-                } else {
-                    tracing::warn!(%local_id, %request_id, "oneshot: no pending permission hook to answer");
-                }
-                Ok(())
-            }
-            AdapterCommand::Rename { local_id, name } => {
-                self.names.insert(local_id, name);
-                Ok(())
-            }
-            AdapterCommand::SetModel { local_id, .. } => {
-                tracing::warn!(%local_id, "claude oneshot: in-place model/effort switch not supported; fork to change model");
-                anyhow::bail!(
-                    "in-place model/effort switch is not supported for claude sessions — fork to change model"
-                );
-            }
-            _ => {
-                tracing::warn!("oneshot: unhandled AdapterCommand variant");
-                Ok(())
-            }
-        }
+        Ok(())
     }
 
     /// Spawn a brand-new (or forked) conversation as a first `-p` turn.
@@ -503,6 +386,133 @@ impl OneshotDriver {
 
     async fn emit(&self, evt: AdapterEvent) {
         let _ = self.events.send(evt).await;
+    }
+}
+
+#[async_trait::async_trait]
+impl SessionDriver for OneshotDriver {
+    fn adapter_id(&self) -> &'static str {
+        "claude-code"
+    }
+
+    async fn spawn(
+        &mut self,
+        spec: SessionSpec,
+        _command_id: Option<uuid::Uuid>,
+        session_id: Option<uuid::Uuid>,
+    ) -> CommandOutcome {
+        let session_id =
+            session_id.map_or_else(|| uuid::Uuid::new_v4().to_string(), |id| id.to_string());
+        self.spawn(&spec, session_id, None).await?;
+        Ok(Handled::Done)
+    }
+
+    async fn fork(
+        &mut self,
+        parent_local_id: String,
+        spec: SessionSpec,
+        _command_id: Option<uuid::Uuid>,
+        session_id: Option<String>,
+        _extract: Option<cctui_proto::adapter::ForkExtract>,
+    ) -> CommandOutcome {
+        let child_id = session_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        self.spawn(&spec, child_id, Some(parent_local_id)).await?;
+        Ok(Handled::Done)
+    }
+
+    async fn reply(
+        &mut self,
+        local_id: String,
+        text: String,
+        _ask_picks: Option<Vec<Vec<usize>>>,
+        env: std::collections::BTreeMap<String, String>,
+        _command_id: Option<uuid::Uuid>,
+        _turn_id: Option<uuid::Uuid>,
+    ) -> CommandOutcome {
+        self.reply(&local_id, &text, env).await?;
+        Ok(Handled::Done)
+    }
+
+    async fn send_message(&mut self, local_id: String, text: String) -> CommandOutcome {
+        self.reply(&local_id, &text, std::collections::BTreeMap::new()).await?;
+        Ok(Handled::Done)
+    }
+
+    async fn resume(
+        &mut self,
+        local_id: String,
+        working_dir: Option<String>,
+        _env: std::collections::BTreeMap<String, String>,
+    ) -> CommandOutcome {
+        self.resume(&local_id, working_dir).await?;
+        Ok(Handled::Done)
+    }
+
+    async fn kill(&mut self, local_id: String, _signal: Option<i32>) -> CommandOutcome {
+        self.kill(&local_id).await;
+        Ok(Handled::Done)
+    }
+
+    async fn interrupt(
+        &mut self,
+        local_id: String,
+        _command_id: Option<uuid::Uuid>,
+    ) -> CommandOutcome {
+        self.kill(&local_id).await;
+        Ok(Handled::Done)
+    }
+
+    async fn remove(
+        &mut self,
+        local_id: String,
+        _command_id: Option<uuid::Uuid>,
+        _initiator: cctui_proto::adapter::RemoveInitiator,
+    ) -> CommandOutcome {
+        self.kill(&local_id).await;
+        self.names.remove(&local_id);
+        self.cwds.remove(&local_id);
+        self.forget(&local_id);
+        self.emit(AdapterEvent::SessionEnded { local_id, reason: EndReason::Killed }).await;
+        Ok(Handled::Done)
+    }
+
+    async fn permission_response(
+        &mut self,
+        local_id: String,
+        request_id: String,
+        allow: bool,
+    ) -> CommandOutcome {
+        // Headless: the only carrier is the bidirectional PreToolUse hook
+        // long-polling in the listener; there is no PTY keystroke fallback.
+        let hook = self.pending_perm_hooks.lock().ok().and_then(|mut m| m.remove(&local_id));
+        if let Some(tx) = hook {
+            if tx.send(allow).is_ok() {
+                tracing::info!(%local_id, %request_id, allow, "oneshot answered permission via hook");
+                return Ok(Handled::Done);
+            }
+            tracing::debug!(%local_id, %request_id, "oneshot perm hook receiver gone");
+        } else {
+            tracing::warn!(%local_id, %request_id, "oneshot: no pending permission hook to answer");
+        }
+        Ok(Handled::Done)
+    }
+
+    async fn rename(&mut self, local_id: String, name: String) -> CommandOutcome {
+        self.names.insert(local_id, name);
+        Ok(Handled::Done)
+    }
+
+    async fn set_model(
+        &mut self,
+        local_id: String,
+        _model: Option<String>,
+        _effort: Option<String>,
+        _command_id: Option<uuid::Uuid>,
+    ) -> CommandOutcome {
+        tracing::warn!(%local_id, "claude oneshot: in-place model/effort switch not supported; fork to change model");
+        anyhow::bail!(
+            "in-place model/effort switch is not supported for claude sessions — fork to change model"
+        );
     }
 }
 

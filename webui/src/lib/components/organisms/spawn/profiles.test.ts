@@ -14,7 +14,7 @@ import {
 	uniqueProfileName,
 	moveProfile,
 	moveProfileOnto,
-	type ProfileSpec
+	type ProfileSpecForm
 } from './profiles';
 
 const account = (over: Partial<Record<keyof OAuthAccount, unknown>>) =>
@@ -110,7 +110,7 @@ describe('specFromForm / applySpec', () => {
 	});
 
 	it('writes codex knobs to the codex fields and clears a missing account', () => {
-		const spec: ProfileSpec = {
+		const spec: ProfileSpecForm = {
 			harness: 'codex',
 			account_id: 'gone',
 			pool_id: null,

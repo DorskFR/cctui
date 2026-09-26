@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 import { describe, expect, it } from 'vitest';
 import { formatBytes, net, normalizeRoute } from './netstats.svelte';
 

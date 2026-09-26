@@ -5,29 +5,22 @@ import type { JsonValue } from "./serde_json/JsonValue";
 export type AgentEvent = { "type": "text", content: string, meta: boolean, 
 /**
  * `thinking` | `redacted_thinking` | `attachment` | `system_marker` |
- * `turn_annotation` | `queue_op`;
- * `None` is ordinary visible prose. Free string so an unknown adapter
- * kind still decodes.
+ * `turn_annotation` | `queue_op`. `None` is visible prose.
  */
 kind?: string | null, 
 /**
- * Queue verb for a `queue_op`: `queued` | `dequeued` | `removed` |
- * `cleared`. `None` for every other kind.
+ * For `queue_op`: `queued` | `dequeued` | `removed` | `cleared`.
  */
 operation?: string | null, ts: number, message_id?: string | null, usage?: TokenUsage | null, seq?: number | null, 
 /**
- * Identity of the human turn this text belongs to. `None` for
- * assistant text, for turns cctui did not originate, and for rows
- * stored before the column existed.
+ * `None` for assistant text and turns cctui did not originate.
  */
 turn_id?: string | null, } | { "type": "tool_call", tool: string, input: JsonValue, 
 /**
- * `server_tool_use` marks a provider-executed tool (web search, code
- * execution); `None` is an ordinary client-side tool call.
+ * `server_tool_use` for provider-executed tools.
  */
 kind?: string | null, ts: number, seq?: number | null, } | { "type": "tool_result", tool: string, output_summary: string, 
 /**
- * `server_tool_result` marks the output of a provider-executed tool;
- * `None` is an ordinary client-side tool result.
+ * `server_tool_result` for provider-executed tools.
  */
 kind?: string | null, error: boolean, ts: number, seq?: number | null, } | { "type": "heartbeat", tokens_in: number, tokens_out: number, cost_usd: number, ts: number, seq?: number | null, } | { "type": "reply", content: string, ts: number, seq?: number | null, turn_id?: string | null, } | { "type": "context_reset", ts: number, seq?: number | null, } | { "type": "compact_summary", content: string, ts: number, seq?: number | null, } | { "type": "turn_summary", detail: string, status_category?: string | null, needs_action: boolean, ts: number, seq?: number | null, } | { "type": "turn_end", ts: number, seq?: number | null, };

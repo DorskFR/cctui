@@ -1,27 +1,13 @@
-//! GitHub App installation-token provider. Instead of injecting a
-//! long-lived PAT for the `github` service, the sidecar mints a short-lived,
-//! repo-scoped GitHub App *installation token* at use-time and injects THAT, so
-//! even in-session misuse (which the boundary can't prevent) is time- and
-//! scope-bounded.
+//! GitHub App installation-token provider: the sidecar mints a short-lived,
+//! repo-scoped installation token at use-time instead of injecting a long-lived
+//! PAT, so in-session misuse is time- and scope-bounded.
 //!
-//! Mechanism: the App private key (PEM) lives in the secret store — fetched by
-//! the sidecar via its configured key [`SecretRef`], never on the worker. At
-//! use-time the sidecar signs a short RS256 JWT (`iss`=App id,
-//! ~9 min lifetime), exchanges it at `POST /app/installations/<id>/access_tokens`
-//! (optionally scoping to `repositories`), and injects the returned ~1h
-//! installation token. The token is cached until ~5 min before its `expires_at`
-//! and re-minted on expiry — never per request. Neither the token nor the
-//! private key is ever written to disk.
-//!
-//! Fail-closed and inert-by-default: if the App key is absent the key fetch is
-//! `NotFound`, which the injector treats as "fall through to the normal
-//! `github` `SecretBackend` fetch" (today's PAT/passthrough behavior). If the
-//! token exchange itself fails (e.g. 401) that is a `Backend` error and the
-//! injector forwards the agent's original header unchanged — never a blank.
-//!
-//! Personal-repo caveat: a GitHub App bot cannot CREATE PRs on a repo it isn't a
-//! collaborator on. Where that bites, the injected `NanachiBot` machine-user PAT
-//! path stays the fallback — keep the App path opt-in per identity.
+//! The App key comes from the secret store via [`SecretRef`] and never touches
+//! disk or the worker. Tokens are cached until ~5 min before `expires_at`.
+//! A missing key is `NotFound` (fall through to the plain `github` secret); a
+//! failed exchange is a `Backend` error (forward the agent's header unchanged).
+//! A GitHub App bot cannot open PRs on repos it doesn't collaborate on, so keep
+//! the App path opt-in per identity.
 
 use std::collections::HashMap;
 use std::sync::Arc;

@@ -23,8 +23,8 @@ use ts_rs::TS;
 use uuid::Uuid;
 
 use crate::auth::{AuthContext, Scope};
+use crate::error::AppError;
 use crate::state::AppState;
-use cctui_proto::api::ApiError;
 
 /// Hard cap on the label; it lives in a header slot and the tab title.
 pub const NAME_MAX_CHARS: usize = 48;
@@ -44,16 +44,16 @@ pub struct InstanceInfo {
 }
 
 /// Trim, collapse to `None` when empty, reject when over the cap.
-fn normalize(raw: Option<&str>) -> Result<Option<String>, (StatusCode, Json<ApiError>)> {
+fn normalize(raw: Option<&str>) -> Result<Option<String>, AppError> {
     let Some(raw) = raw else { return Ok(None) };
     let trimmed = raw.split_whitespace().collect::<Vec<_>>().join(" ");
     if trimmed.is_empty() {
         return Ok(None);
     }
     if trimmed.chars().count() > NAME_MAX_CHARS {
-        return Err((
+        return Err(AppError::new(
             StatusCode::BAD_REQUEST,
-            Json(ApiError { error: format!("name must be at most {NAME_MAX_CHARS} characters") }),
+            format!("name must be at most {NAME_MAX_CHARS} characters"),
         ));
     }
     Ok(Some(trimmed))
@@ -77,9 +77,8 @@ pub async fn update(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Json(req): Json<InstanceUpdateRequest>,
-) -> Result<Json<InstanceInfo>, (StatusCode, Json<ApiError>)> {
-    ctx.requires(Scope::Admin)
-        .map_err(|s| (s, Json(ApiError { error: "admin token required".into() })))?;
+) -> Result<Json<InstanceInfo>, AppError> {
+    ctx.requires(Scope::Admin).map_err(|s| AppError::new(s, "admin token required"))?;
     let name = normalize(req.name.as_deref())?;
     let res = match &name {
         Some(n) => {
@@ -93,10 +92,7 @@ pub async fn update(
         }
         None => sqlx::query("DELETE FROM instance_settings WHERE key = 'name'").execute(&state.pool).await,
     };
-    res.map_err(|e| {
-        tracing::error!("instance settings write failed: {e}");
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-    })?;
+    res?;
     Ok(Json(InstanceInfo { name }))
 }
 
@@ -185,10 +181,8 @@ pub async fn read_self_update_target(pool: &sqlx::PgPool) -> SelfUpdateTargetInf
 }
 
 /// Trim both fields and require a uuid machine id + non-empty directory.
-fn normalize_target(
-    raw: SelfUpdateTarget,
-) -> Result<SelfUpdateTarget, (StatusCode, Json<ApiError>)> {
-    let bad = |msg: &str| (StatusCode::BAD_REQUEST, Json(ApiError { error: msg.into() }));
+fn normalize_target(raw: SelfUpdateTarget) -> Result<SelfUpdateTarget, AppError> {
+    let bad = |msg: &str| AppError::new(StatusCode::BAD_REQUEST, msg);
     let machine_id = uuid::Uuid::parse_str(raw.machine_id.trim())
         .map_err(|_| bad("machine_id must be a uuid"))?;
     let working_dir = raw.working_dir.trim().to_owned();
@@ -205,9 +199,8 @@ fn normalize_target(
 pub async fn get_self_update_target(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
-) -> Result<Json<SelfUpdateTargetInfo>, (StatusCode, Json<ApiError>)> {
-    ctx.requires(Scope::Admin)
-        .map_err(|s| (s, Json(ApiError { error: "admin token required".into() })))?;
+) -> Result<Json<SelfUpdateTargetInfo>, AppError> {
+    ctx.requires(Scope::Admin).map_err(|s| AppError::new(s, "admin token required"))?;
     Ok(Json(read_self_update_target(&state.pool).await))
 }
 
@@ -215,13 +208,8 @@ pub async fn update_self_update_target(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Json(req): Json<SelfUpdateTargetRequest>,
-) -> Result<Json<SelfUpdateTargetInfo>, (StatusCode, Json<ApiError>)> {
-    ctx.requires(Scope::Admin)
-        .map_err(|s| (s, Json(ApiError { error: "admin token required".into() })))?;
-    let db_err = |e: sqlx::Error| {
-        tracing::error!("instance settings write failed: {e}");
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-    };
+) -> Result<Json<SelfUpdateTargetInfo>, AppError> {
+    ctx.requires(Scope::Admin).map_err(|s| AppError::new(s, "admin token required"))?;
     match req.target {
         Some(raw) => {
             let target = normalize_target(raw)?;
@@ -229,13 +217,9 @@ pub async fn update_self_update_target(
                 sqlx::query_as("SELECT id FROM machines WHERE id = $1 AND revoked_at IS NULL")
                     .bind(uuid::Uuid::parse_str(&target.machine_id).expect("normalized"))
                     .fetch_optional(&state.pool)
-                    .await
-                    .map_err(db_err)?;
+                    .await?;
             if exists.is_none() {
-                return Err((
-                    StatusCode::NOT_FOUND,
-                    Json(ApiError { error: "machine not found".into() }),
-                ));
+                return Err(AppError::new(StatusCode::NOT_FOUND, "machine not found"));
             }
             sqlx::query(
                 "INSERT INTO instance_settings (key, value, updated_at) VALUES ('self_update', $1, now()) \
@@ -243,14 +227,12 @@ pub async fn update_self_update_target(
             )
             .bind(serde_json::to_value(&target).expect("serializable"))
             .execute(&state.pool)
-            .await
-            .map_err(db_err)?;
+            .await?;
         }
         None => {
             sqlx::query("DELETE FROM instance_settings WHERE key = 'self_update'")
                 .execute(&state.pool)
-                .await
-                .map_err(db_err)?;
+                .await?;
         }
     }
     Ok(Json(read_self_update_target(&state.pool).await))
@@ -276,19 +258,19 @@ mod tests {
             working_dir: "/x".into(),
             adapter_id: None,
         });
-        assert_eq!(bad_id.unwrap_err().0, StatusCode::BAD_REQUEST);
+        assert_eq!(bad_id.unwrap_err().status(), StatusCode::BAD_REQUEST);
         let bad_dir = normalize_target(SelfUpdateTarget {
             machine_id: Uuid::nil().to_string(),
             working_dir: " ".into(),
             adapter_id: None,
         });
-        assert_eq!(bad_dir.unwrap_err().0, StatusCode::BAD_REQUEST);
+        assert_eq!(bad_dir.unwrap_err().status(), StatusCode::BAD_REQUEST);
         let bad_adapter = normalize_target(SelfUpdateTarget {
             machine_id: Uuid::nil().to_string(),
             working_dir: "/x".into(),
             adapter_id: Some("opencode".into()),
         });
-        assert_eq!(bad_adapter.unwrap_err().0, StatusCode::BAD_REQUEST);
+        assert_eq!(bad_adapter.unwrap_err().status(), StatusCode::BAD_REQUEST);
     }
 
     #[test]
@@ -302,7 +284,7 @@ mod tests {
     #[test]
     fn normalize_rejects_too_long() {
         let long = "x".repeat(NAME_MAX_CHARS + 1);
-        assert_eq!(normalize(Some(&long)).unwrap_err().0, StatusCode::BAD_REQUEST);
+        assert_eq!(normalize(Some(&long)).unwrap_err().status(), StatusCode::BAD_REQUEST);
         let ok = "x".repeat(NAME_MAX_CHARS);
         assert!(normalize(Some(&ok)).is_ok());
     }

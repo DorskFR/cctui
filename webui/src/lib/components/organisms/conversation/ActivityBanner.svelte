@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { now as clockNow } from '$lib/clock.svelte';
 	import type { ConversationStream } from './stream.svelte';
 	import { formatElapsed } from './activity';
 	import { m } from '$lib/paraglide/messages';
@@ -12,12 +13,7 @@
 	);
 
 	// Ticks only while a turn is live, so an idle drawer costs no timer.
-	let now = $state(Date.now());
-	$effect(() => {
-		if (!active) return;
-		const h = setInterval(() => (now = Date.now()), 1000);
-		return () => clearInterval(h);
-	});
+	const now = $derived(active ? clockNow(1_000) : Date.now());
 
 	const tool = $derived(active ? stream.currentTool : null);
 	const progress = $derived(stream.todoProgress);

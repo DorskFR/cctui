@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 import { afterEach, describe, expect, it } from 'vitest';
 import { mount, unmount } from 'svelte';
 import type { AgentEvent } from '@bindings/AgentEvent';
@@ -114,7 +115,7 @@ const buildCtx: LineBuildCtx = {
 	prettyDiff: true
 };
 
-describe('one user message with an image renders as one bubble (CCT-1008)', () => {
+describe('one user message with an image renders as one bubble', () => {
 	const threeEncodings = [
 		userEvent(COMPOSER, 1, 1),
 		userEvent(CLAUDE_COPY, 2, 2),

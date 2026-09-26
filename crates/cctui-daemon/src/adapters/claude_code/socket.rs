@@ -389,15 +389,6 @@ async fn attach_send_chunks(socket: &Path, short: &str, chunks: &[Vec<u8>]) -> R
     Ok(())
 }
 
-/// Health check — `{"op":"ping"}` (no `proto` field per §4.2 of the
-/// protocol doc). Currently used only in integration tests / manual
-/// probing; the `list` op double-serves as a liveness check.
-#[cfg(test)]
-#[allow(dead_code)]
-pub async fn ping(socket: &Path) -> Result<Value> {
-    one_shot(socket, &serde_json::json!({"op": "ping"})).await
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -453,7 +444,7 @@ mod tests {
     /// End-to-end check against a *live* `claude daemon` control socket:
     /// proves the half-open fix (we must NOT close the write half) and that
     /// `call` surfaces `ok:false`. Spawns a real `fleet` session via the same
-    /// payload shape `Driver::spawn` builds, then kills it. Ignored by
+    /// payload shape `Driver::prepare_spawn` builds, then kills it. Ignored by
     /// default — run with a daemon present:
     ///   `cargo test -p cctui-daemon live_dispatch_roundtrip -- --ignored`
     #[tokio::test]
@@ -465,7 +456,7 @@ mod tests {
 
         let session_id = uuid::Uuid::new_v4().to_string();
         let short = &session_id[..8];
-        let nonce: String = uuid::Uuid::new_v4().simple().to_string().chars().take(8).collect();
+        let nonce = super::super::launch::nonce();
         let cwd = std::env::current_dir().unwrap().to_string_lossy().into_owned();
         let req = serde_json::json!({
             "proto": 1, "op": "dispatch", "timeoutMs": 15000,
@@ -506,7 +497,7 @@ mod tests {
 
         let session_id = uuid::Uuid::new_v4().to_string();
         let short = &session_id[..8];
-        let nonce: String = uuid::Uuid::new_v4().simple().to_string().chars().take(8).collect();
+        let nonce = super::super::launch::nonce();
         let cwd = std::env::current_dir().unwrap().to_string_lossy().into_owned();
         let want_name = "cct-135 seed name probe";
         let req = serde_json::json!({

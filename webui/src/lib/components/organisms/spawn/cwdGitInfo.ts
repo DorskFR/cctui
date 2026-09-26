@@ -19,7 +19,7 @@ export function gitBadge(info: GitInfo | null | undefined): GitBadge | null {
 // Debounced (machine, path) lookup; only the latest request may deliver.
 // Empty machine or path resolves to null immediately.
 export function makeGitInfoWatcher(
-	fetch: (machineId: string, path: string) => Promise<GitInfo>,
+	lookup: (machineId: string, path: string) => Promise<GitInfo>,
 	onResult: (info: GitInfo | null) => void,
 	delayMs = GIT_INFO_DEBOUNCE_MS
 ) {
@@ -39,7 +39,7 @@ export function makeGitInfoWatcher(
 		const mine = seq;
 		timer = setTimeout(() => {
 			timer = undefined;
-			fetch(machineId, path.trim()).then(
+			lookup(machineId, path.trim()).then(
 				(info) => {
 					if (mine === seq) onResult(info);
 				},

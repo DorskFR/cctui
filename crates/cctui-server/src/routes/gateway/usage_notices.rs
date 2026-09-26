@@ -17,7 +17,8 @@ use crate::state::AppState;
 pub const DEFAULT_STEP_PCT: u32 = 10;
 
 /// `{ "enabled": bool, "step_pct": int }` on the provider row. NULL ⇒ off.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[ts(export)]
 pub struct UsageNotices {
     pub enabled: bool,
     pub step_pct: u32,

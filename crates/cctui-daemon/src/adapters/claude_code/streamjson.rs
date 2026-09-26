@@ -1,46 +1,16 @@
-//! Shared stream-json plumbing for the headless claude-code drivers.
+//! Shared stream-json plumbing for the headless claude-code drivers: frame
+//! parsing ([`parse_stream_line`]), stdin user envelopes
+//! ([`user_message_envelope`]) and a stderr ring for crash detail
+//! ([`spawn_stderr_ring`]).
 //!
-//! Both the oneshot driver (a single `claude --print --output-format
-//! stream-json --verbose` invocation) and the SDK driver speak the CLI's
-//! line-delimited stream-json protocol. This module factors out the three
-//! pieces they share so neither reimplements them:
-//!
-//! 1. [`parse_stream_line`] — turn one stream-json stdout frame
-//!    (`system`/init, `assistant`, `user`, `stream_event`, `result`,
-//!    `system`/error) into zero or more [`AdapterEvent`]s, reusing the
-//!    transcript normalization where the frame shape matches.
-//! 2. [`user_message_envelope`] — build the `--input-format stream-json`
-//!    user-message line the CLI reads on stdin.
-//! 3. [`LaunchArgs`] — assemble the launch argv (model/effort/permission-mode,
-//!    `--session-id`, `--resume`/`--fork-session`, `--settings` hook path,
-//!    staged-file prompt prefix) shared with the control driver's dispatch.
-//!
-//! The line protocol mirrors what `claude --output-format stream-json
-//! --verbose` writes (one JSON object per line):
-//!
-//! - `{"type":"system","subtype":"init","session_id":"…","model":"…",…}`
-//!   — first frame; carries the resolved session id + model.
-//! - `{"type":"assistant","message":{"id":…,"model":…,"content":[…],"usage":{…}}}`
-//!   — a full assistant turn (same `message` shape as a transcript line).
-//! - `{"type":"user","message":{"content":[…]}}` — a user/`tool_result` turn.
-//! - `{"type":"stream_event","event":{…}}` — incremental SSE deltas
-//!   (`content_block_delta` etc.); ignored here — the coalesced `assistant`
-//!   frame carries the final text, and forwarding partial deltas would
-//!   double-emit.
-//! - `{"type":"result","subtype":"success","session_id":"…",…}` — terminal
-//!   frame for the run.
-//! - `{"type":"system","subtype":"error",…}` / `{"type":"error",…}` — an
-//!   error frame; ends the run with [`EndReason::Crashed`].
-
-// The stream-json plumbing is exercised by this module's unit tests but not
-// yet wired into a live driver — the oneshot/sdk run loops that consume it
-// land in follow-up tickets (ships only the shared codec + stubs).
-#![allow(dead_code)]
+//! `stream_event` deltas are ignored: the coalesced `assistant` frame carries
+//! the final text, and forwarding deltas would double-emit. An error frame
+//! ends the run with [`EndReason::Crashed`].
 
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use cctui_proto::adapter::{AdapterEvent, EndReason, SessionMeta};
+use cctui_proto::adapter::{AdapterEvent, EndReason};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::ChildStderr;
@@ -49,13 +19,9 @@ use tokio::sync::Mutex;
 use super::transcript;
 
 /// What a single stream-json frame told us, beyond any [`AdapterEvent`]s it
-/// produced. The driver uses these to drive its own lifecycle (pin the
-/// session id, stop the read loop on the terminal frame).
+/// produced: whether it ends the run.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(super) struct StreamOutcome {
-    /// The session id the CLI resolved (from a `system`/init or `result`
-    /// frame). `None` for frames that don't carry one.
-    pub session_id: Option<String>,
     /// `Some` when this frame terminates the run: a `result` frame
     /// ([`EndReason::Completed`]) or an error frame ([`EndReason::Crashed`]).
     pub end: Option<EndReason>,
@@ -89,12 +55,9 @@ pub(super) fn parse_stream_line(
         // Incremental SSE deltas: the coalesced `assistant` frame is the
         // source of truth, so drop partials to avoid double-emitting.
         "stream_event" => StreamOutcome::default(),
-        "result" => StreamOutcome {
-            session_id: v.get("session_id").and_then(Value::as_str).map(str::to_owned),
-            end: Some(result_end_reason(&v)),
-        },
+        "result" => StreamOutcome { end: Some(result_end_reason(&v)) },
         // A top-level error frame (some CLI builds emit `type:"error"`).
-        "error" => StreamOutcome { session_id: None, end: Some(error_end(&v)) },
+        "error" => StreamOutcome { end: Some(error_end(&v)) },
         other => {
             tracing::debug!(kind = other, "ignoring unknown stream-json frame");
             StreamOutcome::default()
@@ -118,12 +81,9 @@ fn parse_system(local_id: &str, v: &Value, out: &mut Vec<AdapterEvent>) -> Strea
                     model: model.to_owned(),
                 });
             }
-            StreamOutcome {
-                session_id: v.get("session_id").and_then(Value::as_str).map(str::to_owned),
-                end: None,
-            }
+            StreamOutcome::default()
         }
-        Some("error") => StreamOutcome { session_id: None, end: Some(error_end(v)) },
+        Some("error") => StreamOutcome { end: Some(error_end(v)) },
         other => {
             transcript::record_unknown("unknown-streamjson-system", other.unwrap_or("<none>"));
             StreamOutcome::default()
@@ -215,112 +175,9 @@ pub(super) fn user_message_envelope(content: &Value) -> Value {
     })
 }
 
-/// The fixed [`SessionMeta`] a headless stream-json run announces. Kept here
-/// so the oneshot/sdk drivers emit an identical [`AdapterEvent::SessionStarted`].
-#[allow(dead_code)]
-pub(super) fn session_started(local_id: &str) -> AdapterEvent {
-    AdapterEvent::SessionStarted { local_id: local_id.to_owned(), meta: SessionMeta::default() }
-}
-
-/// The launch-arg pieces shared between the control driver's dispatch and the
-/// headless stream-json drivers. Built from a [`SessionSpec`] plus
-/// the resolved hook-settings path; the driver appends transport-specific
-/// flags (`--output-format`/`--input-format`/`--print`) around it.
-#[derive(Debug, Default, Clone)]
-#[allow(dead_code)]
-pub(super) struct LaunchArgs {
-    /// `--session-id <id>`: the (possibly server-pre-minted) session id.
-    pub session_id: Option<String>,
-    /// `--resume <id> --fork-session`: parent id to fork from. `None` for a
-    /// plain new session.
-    pub resume_from: Option<String>,
-    /// Whether the resume is a fork (adds `--fork-session`). Ignored when
-    /// `resume_from` is `None`.
-    pub fork: bool,
-    /// `--model <m>`.
-    pub model: Option<String>,
-    /// `--effort <e>`.
-    pub effort: Option<String>,
-    /// `--permission-mode <flag>` (claude flag, already mapped).
-    pub permission_flag: Option<String>,
-    /// `--settings <path>`: the ask/permission hook settings file.
-    pub settings_path: Option<String>,
-    /// `--name <n>`.
-    pub name: Option<String>,
-}
-
-#[allow(dead_code)]
-impl LaunchArgs {
-    /// Derive the shared args from a spec + resolved hook-settings path,
-    /// mirroring `control::Driver::spawn`'s argv. `settings_path`
-    /// is the output of `ensure_hook_settings`, threaded in by the driver so
-    /// this module stays free of the hook-file I/O.
-    pub fn from_spec(
-        spec: &cctui_proto::adapter::SessionSpec,
-        settings_path: Option<String>,
-    ) -> Self {
-        let clean = |o: &Option<String>| {
-            o.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned)
-        };
-        Self {
-            session_id: None,
-            resume_from: None,
-            fork: false,
-            model: clean(&spec.model),
-            effort: clean(&spec.effort),
-            permission_flag: spec.permission_mode.map(|m| m.claude_flag().to_owned()),
-            settings_path,
-            name: clean(&spec.name),
-        }
-    }
-
-    /// Flatten into a claude argv (excluding the transport `--print` /
-    /// `--output-format` / `--input-format` flags and the `-- <prompt>` tail,
-    /// which the driver owns). Order mirrors the control driver: resume/fork
-    /// first, then `--session-id`, identity, posture, then `--settings`.
-    pub fn to_argv(&self) -> Vec<String> {
-        let mut args = Vec::new();
-        if let Some(resume) = &self.resume_from {
-            args.push("--resume".to_owned());
-            args.push(resume.clone());
-            if self.fork {
-                args.push("--fork-session".to_owned());
-            }
-        }
-        if let Some(id) = &self.session_id {
-            args.push("--session-id".to_owned());
-            args.push(id.clone());
-        }
-        args.push("--agent".to_owned());
-        args.push("claude".to_owned());
-        if let Some(name) = &self.name {
-            args.push("--name".to_owned());
-            args.push(name.clone());
-        }
-        if let Some(flag) = &self.permission_flag {
-            args.push("--permission-mode".to_owned());
-            args.push(flag.clone());
-        }
-        if let Some(effort) = &self.effort {
-            args.push("--effort".to_owned());
-            args.push(effort.clone());
-        }
-        if let Some(model) = &self.model {
-            args.push("--model".to_owned());
-            args.push(model.clone());
-        }
-        if let Some(settings) = &self.settings_path {
-            args.push("--settings".to_owned());
-            args.push(settings.clone());
-        }
-        args
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cctui_proto::adapter::{AdapterId, PermissionMode, SessionSpec};
 
     #[tokio::test]
     async fn exit_detail_carries_status_and_stderr_tail() {
@@ -373,22 +230,6 @@ mod tests {
         }
     }
 
-    fn base_spec() -> SessionSpec {
-        SessionSpec {
-            service_tier: None,
-            adapter_id: AdapterId::new("claude-code"),
-            working_dir: None,
-            prompt: None,
-            name: None,
-            permission_mode: None,
-            effort: None,
-            model: None,
-            env: std::collections::BTreeMap::new(),
-            bootstrap: serde_json::Value::Null,
-            parent_local_id: None,
-        }
-    }
-
     // Captured `claude --output-format stream-json --verbose` stdout lines.
     const INIT_LINE: &str = r#"{"type":"system","subtype":"init","session_id":"11111111-2222-3333-4444-555555555555","model":"claude-opus-4-8","cwd":"/tmp/x","tools":["Bash","Read"],"permissionMode":"default"}"#;
     const ASSISTANT_LINE: &str = r#"{"type":"assistant","message":{"id":"msg_01","model":"claude-opus-4-8","role":"assistant","content":[{"type":"text","text":"Hello there"},{"type":"tool_use","id":"tu_1","name":"Bash","input":{"command":"ls"}}],"usage":{"input_tokens":120,"output_tokens":45,"cache_read_input_tokens":900,"cache_creation_input_tokens":10}}}"#;
@@ -405,9 +246,8 @@ mod tests {
     }
 
     #[test]
-    fn init_carries_session_id_and_model() {
+    fn init_carries_model() {
         let (events, outcome) = parse(INIT_LINE);
-        assert_eq!(outcome.session_id.as_deref(), Some("11111111-2222-3333-4444-555555555555"));
         assert!(outcome.end.is_none());
         match events.as_slice() {
             [AdapterEvent::SessionModel { local_id, model }] => {
@@ -465,7 +305,6 @@ mod tests {
         let (events, outcome) = parse(RESULT_SUCCESS_LINE);
         assert!(events.is_empty());
         assert_eq!(outcome.end, Some(EndReason::Completed));
-        assert_eq!(outcome.session_id.as_deref(), Some("11111111-2222-3333-4444-555555555555"));
     }
 
     #[test]
@@ -508,72 +347,5 @@ mod tests {
         let blocks = json!([{"type":"text","text":"a"}]);
         let env = user_message_envelope(&blocks);
         assert_eq!(env["message"]["content"], blocks);
-    }
-
-    #[test]
-    fn launch_args_argv_mirrors_control_driver_order() {
-        let spec = SessionSpec {
-            working_dir: Some("/tmp/x".into()),
-            prompt: Some("do it".into()),
-            name: Some("task".into()),
-            permission_mode: Some(PermissionMode::Auto),
-            effort: Some("high".into()),
-            model: Some("opus".into()),
-            ..base_spec()
-        };
-        let mut la = LaunchArgs::from_spec(&spec, Some("/run/hook.json".into()));
-        la.session_id = Some("sid-1".into());
-        let argv = la.to_argv();
-        assert_eq!(
-            argv,
-            vec![
-                "--session-id",
-                "sid-1",
-                "--agent",
-                "claude",
-                "--name",
-                "task",
-                "--permission-mode",
-                "acceptEdits",
-                "--effort",
-                "high",
-                "--model",
-                "opus",
-                "--settings",
-                "/run/hook.json",
-            ]
-        );
-    }
-
-    #[test]
-    fn launch_args_fork_emits_resume_and_fork_session() {
-        let spec = base_spec();
-        let mut la = LaunchArgs::from_spec(&spec, None);
-        la.resume_from = Some("parent-sid".into());
-        la.fork = true;
-        la.session_id = Some("child-sid".into());
-        let argv = la.to_argv();
-        assert_eq!(
-            argv,
-            vec![
-                "--resume",
-                "parent-sid",
-                "--fork-session",
-                "--session-id",
-                "child-sid",
-                "--agent",
-                "claude",
-            ]
-        );
-    }
-
-    #[test]
-    fn launch_args_blank_fields_omitted() {
-        let spec =
-            SessionSpec { model: Some("   ".into()), effort: Some(String::new()), ..base_spec() };
-        let la = LaunchArgs::from_spec(&spec, None);
-        assert!(la.model.is_none());
-        assert!(la.effort.is_none());
-        assert_eq!(la.to_argv(), vec!["--agent", "claude"]);
     }
 }

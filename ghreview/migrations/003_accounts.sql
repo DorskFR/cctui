@@ -1,4 +1,4 @@
--- CCT-603: multi-account support + ownership.
+-- Multi-account support + ownership.
 -- A cctui user (external identity: the cctui auth_keys user_id, or a static-mode
 -- id) owns N GitHub accounts. Each account carries its own sealed PAT, rate
 -- budget and poll schedule. `login` is globally unique so the documents /

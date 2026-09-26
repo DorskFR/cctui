@@ -9,7 +9,9 @@
 //! is rewritten on every `run` startup — including the self-update re-exec —
 //! so it always reflects the process currently serving.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+use anyhow::Context as _;
 
 use serde::{Deserialize, Serialize};
 
@@ -112,9 +114,120 @@ pub fn pid_alive(pid: u32) -> bool {
         .is_some_and(|p| rustix::process::test_kill_process(p).is_ok())
 }
 
+/// Default path for a local IPC socket: `$XDG_RUNTIME_DIR/<name>`, otherwise
+/// a per-user private dir (never a shared `/tmp` path another user could squat).
+pub(crate) fn socket_path(file_name: &str) -> PathBuf {
+    std::env::var_os("XDG_RUNTIME_DIR")
+        .filter(|v| !v.is_empty())
+        .map_or_else(|| private_socket_dir().join(file_name), |d| PathBuf::from(d).join(file_name))
+}
+
+fn private_socket_dir() -> PathBuf {
+    if cfg!(target_os = "macos")
+        && let Some(d) = dirs::config_dir()
+    {
+        return d.join("cctui");
+    }
+    let uid = rustix::process::getuid().as_raw();
+    std::env::temp_dir().join(format!("cctui-{uid}"))
+}
+
+/// Create `dir` if missing and require it to be a real directory owned by us,
+/// tightened to 0700.
+pub(crate) fn ensure_private_dir(dir: &Path) -> anyhow::Result<()> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+    if let Err(err) = std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)
+        && err.kind() != std::io::ErrorKind::AlreadyExists
+    {
+        return Err(err).with_context(|| format!("create {}", dir.display()));
+    }
+    let meta = std::fs::symlink_metadata(dir).with_context(|| format!("stat {}", dir.display()))?;
+    if !meta.is_dir() {
+        anyhow::bail!("{} is not a directory", dir.display());
+    }
+    let uid = rustix::process::getuid().as_raw();
+    if meta.uid() != uid {
+        anyhow::bail!("{} is owned by uid {}, not {uid}", dir.display(), meta.uid());
+    }
+    if meta.mode() & 0o077 != 0 {
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(())
+}
+
+/// Bind a 0600 Unix socket at `path`. The private fallback dir is created and
+/// ownership-checked; an existing socket file owned by another uid is an error
+/// rather than something to silently fail to replace.
+pub(crate) fn bind_private_socket(path: &Path) -> anyhow::Result<tokio::net::UnixListener> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let parent = path.parent().context("socket path has no parent")?;
+    if parent == private_socket_dir() {
+        ensure_private_dir(parent)?;
+    } else {
+        std::fs::create_dir_all(parent)?;
+    }
+    if let Ok(meta) = std::fs::symlink_metadata(path) {
+        let uid = rustix::process::getuid().as_raw();
+        if meta.uid() != uid {
+            anyhow::bail!("socket {} is owned by uid {}, not {uid}", path.display(), meta.uid());
+        }
+        std::fs::remove_file(path).with_context(|| format!("remove stale {}", path.display()))?;
+    }
+    let listener =
+        tokio::net::UnixListener::bind(path).with_context(|| format!("bind {}", path.display()))?;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+    Ok(listener)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ensure_private_dir_creates_a_0700_dir_and_tightens_loose_ones() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("a/b");
+        ensure_private_dir(&dir).unwrap();
+        let mode = |d: &Path| std::fs::metadata(d).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&dir), 0o700);
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o777)).unwrap();
+        ensure_private_dir(&dir).unwrap();
+        assert_eq!(mode(&dir), 0o700);
+    }
+
+    #[test]
+    fn ensure_private_dir_rejects_symlinks_and_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("f");
+        std::fs::write(&file, b"").unwrap();
+        assert!(ensure_private_dir(&file).is_err());
+        let link = tmp.path().join("l");
+        std::os::unix::fs::symlink(tmp.path(), &link).unwrap();
+        assert!(ensure_private_dir(&link).is_err());
+    }
+
+    #[test]
+    fn socket_fallback_is_a_private_per_user_dir() {
+        let dir = private_socket_dir();
+        let uid = rustix::process::getuid().as_raw();
+        if cfg!(target_os = "macos") {
+            assert!(dir.ends_with("cctui"));
+        } else {
+            assert_eq!(dir, std::env::temp_dir().join(format!("cctui-{uid}")));
+        }
+        assert_ne!(dir.join("x.sock"), Path::new("/tmp/x.sock"));
+    }
+
+    #[tokio::test]
+    async fn bind_private_socket_replaces_own_stale_socket_with_0600() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("s.sock");
+        drop(bind_private_socket(&path).unwrap());
+        let _l = bind_private_socket(&path).expect("own stale socket is replaced");
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+    }
 
     fn sample_json() -> String {
         serde_json::to_string_pretty(&Runtime {

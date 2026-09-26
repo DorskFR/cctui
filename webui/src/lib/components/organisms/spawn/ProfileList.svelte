@@ -13,7 +13,7 @@
 		moveProfileOnto,
 		specChain,
 		specOf,
-		type ProfileSpec
+		type ProfileSpecForm
 	} from './profiles';
 	import { nextRadioIndex } from './radioNav';
 	import { useProfileActions } from '$lib/queries';
@@ -38,7 +38,7 @@
 	}: {
 		profiles: SessionProfile[];
 		selectedId: string | null;
-		oneOff: ProfileSpec | null;
+		oneOff: ProfileSpecForm | null;
 		accounts: OAuthAccount[];
 		pools?: AccountPoolView[];
 		usage: AccountUsageEntry[];
@@ -46,7 +46,7 @@
 		machineId: string;
 		busy?: boolean;
 		oncreate: () => void;
-		onsave: (id: string, name: string, spec: ProfileSpec) => void;
+		onsave: (id: string, name: string, spec: ProfileSpecForm) => void;
 		ondelete: (id: string) => void;
 	} = $props();
 
@@ -158,12 +158,12 @@
 	function toggle(id: string) {
 		openId = openId === id ? null : id;
 	}
-	function useOnce(p: SessionProfile, spec: ProfileSpec) {
+	function useOnce(p: SessionProfile, spec: ProfileSpecForm) {
 		selectedId = p.id;
 		oneOff = spec;
 		openId = null;
 	}
-	function save(p: SessionProfile, name: string, spec: ProfileSpec) {
+	function save(p: SessionProfile, name: string, spec: ProfileSpecForm) {
 		if (selectedId === p.id) oneOff = null;
 		openId = null;
 		onsave(p.id, name, spec);

@@ -8,9 +8,6 @@ pre-commit:
     clippy:
       glob: "*.rs"
       run: cargo clippy --workspace --all-targets -- -D warnings
-    check:
-      glob: "*.rs"
-      run: cargo check --workspace
     biome:
       glob: "*.{json,yaml,yml,md}"
       run: biome check --write --no-errors-on-unmatched {staged_files}
@@ -49,6 +46,11 @@ pre-commit:
     i18n-messages:
       glob: "webui/messages/*.json"
       run: bash scripts/check-i18n.sh
+    # Ticket ids and wave/lane notes belong in commits and PRs, not in comments
+    # or test names. Shares its implementation with the comment-refs CI job.
+    comment-refs:
+      glob: "{*.rs,*.ts,*.svelte,*.sh,*.yml,*.yaml,*.service,*Dockerfile,Makefile,**/Makefile}"
+      run: bash scripts/check-comment-refs.sh
 
 pre-push:
   commands:

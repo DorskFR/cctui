@@ -43,7 +43,7 @@ guarded("auto-subscription handlers", () => {
     await db.sql.unsafe("DELETE FROM sync_state");
   });
 
-  test("CCT-657: participating PR notification auto-subscribes with source=notification", async () => {
+  test("participating PR notification auto-subscribes with source=notification", async () => {
     const threads = [
       {
         id: "t1",
@@ -79,7 +79,7 @@ guarded("auto-subscription handlers", () => {
     expect(subs.filter((s) => s.kind === "pull_request").length).toBe(1);
   });
 
-  test("CCT-687: syncNotifications requests all=true (full inbox: read + unread)", async () => {
+  test("syncNotifications requests all=true (full inbox: read + unread)", async () => {
     let seenAll: unknown;
     const octokit: OctokitRequest = {
       request: async (_route, params = {}) => {
@@ -98,7 +98,7 @@ guarded("auto-subscription handlers", () => {
     expect(seenAll).toBe(true);
   });
 
-  test("CCT-675/687: follows Link rel=next past GitHub's 50/page cap and ingests every read+unread thread", async () => {
+  test("follows Link rel=next past GitHub's 50/page cap and ingests every read+unread thread", async () => {
     const total = 230;
     const cappedPerPage = 50;
     let calls = 0;
@@ -142,7 +142,7 @@ guarded("auto-subscription handlers", () => {
     expect(docs.items.length).toBe(total);
   });
 
-  test("CCT-675: syncNotifications short-circuits on a 304 without walking pages", async () => {
+  test("syncNotifications short-circuits on a 304 without walking pages", async () => {
     let calls = 0;
     const octokit: OctokitRequest = {
       request: async () => {
@@ -161,7 +161,7 @@ guarded("auto-subscription handlers", () => {
     expect(calls).toBe(1);
   });
 
-  test("CCT-656: syncRepo enumerates open PRs and subscribes with source=repo", async () => {
+  test("syncRepo enumerates open PRs and subscribes with source=repo", async () => {
     const octokit: OctokitRequest = {
       request: async (route, params = {}) => {
         if (route === "GET /repos/{owner}/{repo}") {
@@ -189,7 +189,7 @@ guarded("auto-subscription handlers", () => {
     expect(await sourceOf("auto/repo#1")).toBe("repo");
   });
 
-  test("CCT-694: merged PR is deleted (doc + viewed + draft) and deactivated on sync", async () => {
+  test("merged PR is deleted (doc + viewed + draft) and deactivated on sync", async () => {
     await upsertSubscription(db, "auto", "pull_request", "auto/repo#5", "user");
     await db.sql`
       INSERT INTO documents (account, kind, key, etag, payload)
@@ -300,7 +300,7 @@ guarded("auto-subscription handlers", () => {
     expect(calls).toContain("GET /repos/{owner}/{repo}/pulls/{pull_number}/commits");
   });
 
-  test("CCT-694: syncRepoPulls reconciles PRs that merged between polls", async () => {
+  test("syncRepoPulls reconciles PRs that merged between polls", async () => {
     for (const n of [1, 2, 3]) {
       await upsertSubscription(db, "auto", "pull_request", `auto/repo#${n}`, "repo");
       await db.sql`
@@ -339,7 +339,7 @@ guarded("auto-subscription handlers", () => {
     expect(gone?.active).toBe(false);
   });
 
-  test("CCT-694: syncRepoPulls follows Link rel=next so drafts past page 1 are enumerated", async () => {
+  test("syncRepoPulls follows Link rel=next so drafts past page 1 are enumerated", async () => {
     const total = 150;
     const perPage = 100;
     let calls = 0;

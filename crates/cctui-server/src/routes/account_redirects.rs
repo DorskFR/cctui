@@ -11,8 +11,9 @@ use axum::{Extension, Json};
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
-use super::accounts::{err, require_human, resolve_owner};
+use super::accounts::resolve_owner;
 use crate::auth::AuthContext;
+use crate::error::err;
 use crate::state::AppState;
 use crate::store::account_redirects::{self, AccountRedirect};
 
@@ -43,7 +44,6 @@ pub async fn list_redirects(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
 ) -> Result<Json<Vec<AccountRedirect>>, ApiErr> {
-    require_human(&ctx)?;
     let rules = if ctx.is_admin() {
         account_redirects::live_all(&state.pool).await
     } else {
@@ -64,7 +64,6 @@ pub async fn put_redirect(
     Path(from_account): Path<Uuid>,
     Json(req): Json<PutRedirectRequest>,
 ) -> Result<Json<AccountRedirect>, ApiErr> {
-    require_human(&ctx)?;
     let owner = resolve_owner(&ctx, req.user_id)?;
 
     if !matches!(req.family.as_str(), "anthropic" | "openai" | "fireworks") {
@@ -134,7 +133,6 @@ pub async fn delete_redirect(
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, ApiErr> {
-    require_human(&ctx)?;
     let owner = if ctx.is_admin() { None } else { Some(ctx.user_id) };
     let gone = account_redirects::delete(&state.pool, id, owner).await.map_err(|e| {
         tracing::error!("deleting account redirect: {e}");

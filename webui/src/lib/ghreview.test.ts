@@ -1,7 +1,11 @@
+// @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { get, post } = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn() }));
-vi.mock('./api', () => ({ api: { get, post } }));
+vi.mock('./api', async (importOriginal) => ({
+	...(await importOriginal<typeof import('./api')>()),
+	api: { get, post }
+}));
 
 const { ghreviewUrl } = vi.hoisted(() => ({ ghreviewUrl: vi.fn() }));
 vi.mock('./config', () => ({ ghreviewUrl }));
@@ -111,7 +115,7 @@ describe('listGhreviewAccounts', () => {
 		expect(items).toEqual([{ id: '7', login: 'octocat' }]);
 		const [url, init] = fetchSpy.mock.calls[0];
 		expect(url).toBe('https://gh.example/v1/accounts');
-		expect((init?.headers as Record<string, string>).authorization).toBe('Bearer tok');
+		expect(new Headers(init?.headers).get('authorization')).toBe('Bearer tok');
 	});
 });
 
@@ -130,7 +134,7 @@ describe('addGhreviewAccount', () => {
 		expect(url).toBe('https://gh.example/v1/accounts');
 		expect(init?.method).toBe('POST');
 		expect(JSON.parse(init?.body as string)).toEqual({ token: 'pat-xyz' });
-		expect((init?.headers as Record<string, string>).authorization).toBe('Bearer tok');
+		expect(new Headers(init?.headers).get('authorization')).toBe('Bearer tok');
 	});
 
 	it('includes the expected login when provided', async () => {

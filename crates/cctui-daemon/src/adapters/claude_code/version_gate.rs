@@ -1,26 +1,18 @@
 //! Cycle a `claude daemon` left behind by a CLI auto-update, but only while
-//! nothing is running: the sole remedy the CLI offers, `daemon stop --any`,
-//! kills every background worker.
+//! nothing is running: the sole remedy, `daemon stop --any`, kills every
+//! background worker.
 //!
-//! Idle must be agreed by two sources. Our roster is filtered
-//! (`is_user_visible` drops spares); the `bg workers: N running` count is the
-//! daemon's own.
-//! Unknown counts as busy — a missed upgrade costs a stale daemon until the
-//! next check, a wrong cycle costs somebody's session.
+//! Idle must be agreed by our filtered roster and the daemon's own
+//! `bg workers: N running` count; unknown counts as busy.
 //!
-//! Worker counts alone can deadlock the cycle: a stale daemon breaks its own
-//! workers, the broken sessions park at the prompt and keep the counts
-//! non-zero (spares inflate the daemon's count the same way), and the
-//! mismatch defers forever while nothing on the machine can reach the API.
-//! Hence the escalation: a mismatch deferred [`ESCALATE_AFTER`] with no
-//! roster session seen busy the whole time cycles anyway — quiescent
-//! sessions survive as resumable transcripts, and a session observed
-//! mid-turn keeps resetting the clock. A live job cctui did not start vetoes
-//! the escalation outright: `stop --any` would kill someone's own terminal
-//! session, which is not ours to trade away.
+//! Counts alone can deadlock: a stale daemon breaks its workers, which park
+//! and keep the counts non-zero. So a mismatch deferred [`ESCALATE_AFTER`]
+//! with no roster session seen busy cycles anyway; quiescent sessions survive
+//! as resumable transcripts. A live job cctui did not start vetoes the
+//! escalation outright.
 //!
-//! The versions cannot come from the control socket: `cliVersion` rides each
-//! *job*, so an idle daemon reports none — exactly when cycling is safe.
+//! Versions cannot come from the control socket: `cliVersion` rides each job,
+//! so an idle daemon reports none.
 
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};

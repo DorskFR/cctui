@@ -5,7 +5,10 @@
 //! here with its machine key. The server is the only place the decision is made:
 //! it reads the calling session's [`SpawnCapability`] — set by whoever launched
 //! that session, never writable by the session itself — and refuses anything the
-//! capability does not name. No capability at all ⇒ deny.
+//! capability does not name. No capability at all ⇒ deny. A child never runs
+//! more permissively than its parent, never deeper than the capability's
+//! depth, and the budgets granted across one spawn tree never sum past the
+//! root's tree ceiling.
 //!
 //! An authorized child goes down the ordinary spawn path (pre-minted session id,
 //! account-bound gateway env, `AdapterCommand::Spawn` over the daemon WS), with
@@ -15,7 +18,7 @@ use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 
-use cctui_proto::adapter::{AdapterCommand, AdapterId, SessionSpec};
+use cctui_proto::adapter::{AdapterCommand, AdapterId, PermissionMode, SessionSpec};
 use cctui_proto::api::{ApiError, SpawnCapability, SpawnChildRequest, SpawnChildResponse};
 use cctui_proto::ws::DaemonFrameDown;
 use uuid::Uuid;
@@ -26,6 +29,17 @@ struct Parent {
     machine_uuid: Uuid,
     working_dir: Option<String>,
     user_id: Uuid,
+    permission_mode: Option<PermissionMode>,
+}
+
+/// What the parent's tree has already consumed when a child is requested.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Usage {
+    pub live_children: u32,
+    /// Sum of budgets already granted to descendants of the tree root.
+    pub tree_granted_usd: f64,
+    /// The parent's live posture, when known.
+    pub parent_mode: Option<PermissionMode>,
 }
 
 /// A spawn request that cleared the capability check.
@@ -33,6 +47,7 @@ struct Parent {
 pub struct Authorized {
     pub adapter: String,
     pub budget_usd: Option<f64>,
+    pub permission_mode: PermissionMode,
 }
 
 /// Why a `CctuiAgent` call was refused. Rendered verbatim into the tool result,
@@ -43,6 +58,9 @@ pub enum Denied {
     Adapter { requested: String, allowed: Vec<String> },
     Budget { requested: f64, max: Option<f64> },
     TooManyChildren { max: u32 },
+    Depth,
+    PermissionMode { requested: PermissionMode, max: PermissionMode },
+    TreeBudget { requested: f64, remaining: f64 },
     BadRequest(String),
 }
 
@@ -69,6 +87,17 @@ impl std::fmt::Display for Denied {
             Self::TooManyChildren { max } => {
                 write!(f, "this session already spawned its maximum of {max} children")
             }
+            Self::Depth => f.write_str("this session is at its maximum spawn depth"),
+            Self::PermissionMode { requested, max } => write!(
+                f,
+                "permission_mode {} is more permissive than this session's {}",
+                requested.normalized_label(),
+                max.normalized_label()
+            ),
+            Self::TreeBudget { requested, remaining } => write!(
+                f,
+                "budget_usd {requested} exceeds the {remaining} left in this spawn tree's budget"
+            ),
             Self::BadRequest(msg) => f.write_str(msg),
         }
     }
@@ -77,13 +106,14 @@ impl std::fmt::Display for Denied {
 /// Decide whether `req` is permitted by `cap`, and with what budget.
 ///
 /// Pure and fail-closed: an absent capability, an unlisted adapter, a budget
-/// over the ceiling, or a child count at the cap all deny. A call that names no
-/// budget inherits the capability's ceiling, so a child is never unbudgeted when
-/// the parent is budgeted.
+/// over the per-child or remaining tree ceiling, a child count at the cap, an
+/// exhausted depth, or a posture above the parent's all deny. A call that names
+/// no budget inherits the smaller of the ceiling and what the tree has left; one
+/// that names no posture inherits the parent's.
 pub fn authorize(
     cap: Option<&SpawnCapability>,
     req: &SpawnChildRequest,
-    live_children: u32,
+    usage: &Usage,
 ) -> Result<Authorized, Denied> {
     let Some(cap) = cap.filter(|c| !c.is_empty()) else {
         return Err(Denied::NoCapability);
@@ -101,11 +131,25 @@ pub fn authorize(
             allowed: cap.adapters.clone(),
         });
     }
+    if cap.max_depth == Some(0) {
+        return Err(Denied::Depth);
+    }
     if let Some(max) = cap.max_children
-        && live_children >= max
+        && usage.live_children >= max
     {
         return Err(Denied::TooManyChildren { max });
     }
+    let ceiling = match (cap.max_permission_mode, usage.parent_mode) {
+        (Some(c), Some(p)) => PermissionMode::stricter(p, c),
+        (c, p) => p.or(c).unwrap_or(PermissionMode::Ask),
+    };
+    let permission_mode = match req.permission_mode {
+        Some(m) if !m.within(ceiling) => {
+            return Err(Denied::PermissionMode { requested: m, max: ceiling });
+        }
+        Some(m) => m,
+        None => ceiling,
+    };
     let budget = match req.budget_usd {
         None => cap.max_budget_usd,
         Some(b) if !b.is_finite() || b <= 0.0 => {
@@ -116,13 +160,30 @@ pub fn authorize(
             max => return Err(Denied::Budget { requested: b, max }),
         },
     };
-    Ok(Authorized { adapter: adapter.to_owned(), budget_usd: budget })
+    let budget = match cap.max_tree_budget_usd {
+        None => budget,
+        Some(tree) => {
+            let remaining = (tree - usage.tree_granted_usd).max(0.0);
+            match (req.budget_usd, budget) {
+                (Some(b), _) if b > remaining => {
+                    return Err(Denied::TreeBudget { requested: b, remaining });
+                }
+                _ if remaining <= 0.0 => {
+                    return Err(Denied::TreeBudget { requested: budget.unwrap_or(0.0), remaining });
+                }
+                (_, Some(b)) => Some(b.min(remaining)),
+                (_, None) => Some(remaining),
+            }
+        }
+    };
+    Ok(Authorized { adapter: adapter.to_owned(), budget_usd: budget, permission_mode })
 }
 
+use crate::error::AppError;
 use crate::state::AppState;
 
-fn deny(code: StatusCode, msg: impl Into<String>) -> (StatusCode, Json<ApiError>) {
-    (code, Json(ApiError { error: msg.into() }))
+fn deny(code: StatusCode, msg: impl Into<String>) -> AppError {
+    AppError::new(code, msg)
 }
 
 /// Authenticate the caller as a daemon machine key and return its user id.
@@ -134,33 +195,30 @@ pub async fn machine_user(
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
-        .ok_or_else(|| deny(StatusCode::UNAUTHORIZED, "machine key required"))?;
-    let ctx = state
-        .auth_config
-        .validate(token)
-        .await
-        .ok_or_else(|| deny(StatusCode::UNAUTHORIZED, "invalid machine key"))?;
+        .ok_or_else(|| {
+            (StatusCode::UNAUTHORIZED, Json(ApiError { error: "machine key required".into() }))
+        })?;
+    let ctx = state.auth_config.validate(token).await.ok_or_else(|| {
+        (StatusCode::UNAUTHORIZED, Json(ApiError { error: "invalid machine key".into() }))
+    })?;
     if ctx.machine_id.is_none() {
-        return Err(deny(StatusCode::FORBIDDEN, "machine token required"));
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(ApiError { error: "machine token required".into() }),
+        ));
     }
     Ok(ctx.user_id)
 }
 
-async fn load_parent(
-    state: &AppState,
-    session_id: &str,
-    caller: Uuid,
-) -> Result<Parent, (StatusCode, Json<ApiError>)> {
-    let row: Option<(Option<Uuid>, Option<String>, Option<Uuid>)> =
-        sqlx::query_as("SELECT machine_uuid, working_dir, user_id FROM sessions WHERE id = $1")
-            .bind(session_id)
-            .fetch_optional(&state.pool)
-            .await
-            .map_err(|e| {
-                tracing::error!(%session_id, "db error (spawn-child parent): {e}");
-                deny(StatusCode::INTERNAL_SERVER_ERROR, "database error")
-            })?;
-    let Some((machine_uuid, working_dir, user_id)) = row else {
+async fn load_parent(state: &AppState, session_id: &str, caller: Uuid) -> Result<Parent, AppError> {
+    type ParentRow = (Option<Uuid>, Option<String>, Option<Uuid>, Option<String>);
+    let row: Option<ParentRow> = sqlx::query_as(
+        "SELECT machine_uuid, working_dir, user_id, permission_mode FROM sessions WHERE id = $1",
+    )
+    .bind(session_id)
+    .fetch_optional(&state.pool)
+    .await?;
+    let Some((machine_uuid, working_dir, user_id, mode)) = row else {
         return Err(deny(StatusCode::NOT_FOUND, "calling session not found"));
     };
     let (Some(machine_uuid), Some(user_id)) = (machine_uuid, user_id) else {
@@ -169,7 +227,13 @@ async fn load_parent(
     if user_id != caller {
         return Err(deny(StatusCode::FORBIDDEN, "session belongs to another user"));
     }
-    Ok(Parent { session_id: session_id.to_owned(), machine_uuid, working_dir, user_id })
+    Ok(Parent {
+        session_id: session_id.to_owned(),
+        machine_uuid,
+        working_dir,
+        user_id,
+        permission_mode: mode.as_deref().and_then(PermissionMode::from_session_label),
+    })
 }
 
 /// The account identity the parent is bound to, resolved so the child can mint
@@ -190,8 +254,90 @@ async fn parent_account_name(state: &AppState, session_id: &str) -> Option<Strin
     .flatten()
 }
 
-async fn child_count(state: &AppState, parent_id: &str) -> u32 {
-    live_child_count(&state.pool, parent_id).await
+/// Reservations for `parent_id` whose child has not registered yet: its
+/// capability is still keyed by the spawn key and no session row exists.
+async fn pending_child_count(
+    exec: impl sqlx::PgExecutor<'_>,
+    parent_id: &str,
+) -> Result<u32, sqlx::Error> {
+    let n: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM spawn_tree_grants g \
+         WHERE g.parent_id = $1 \
+         AND EXISTS (SELECT 1 FROM session_spawn_capabilities c WHERE c.session_id = g.child_id) \
+         AND NOT EXISTS (SELECT 1 FROM sessions s WHERE s.id = g.child_id)",
+    )
+    .bind(parent_id)
+    .fetch_one(exec)
+    .await?;
+    Ok(u32::try_from(n).unwrap_or(u32::MAX))
+}
+
+/// Sum of the budgets ever granted to descendants of `root`.
+async fn tree_granted_usd(exec: impl sqlx::PgExecutor<'_>, root: &str) -> Result<f64, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT COALESCE(SUM(budget_usd), 0)::float8 FROM spawn_tree_grants WHERE root_id = $1",
+    )
+    .bind(root)
+    .fetch_one(exec)
+    .await
+}
+
+/// Return a reservation whose child never launched to the tree budget.
+async fn release_child(pool: &sqlx::PgPool, child_key: &str) {
+    let released = async {
+        crate::store::spawn_capabilities::delete(pool, child_key).await?;
+        sqlx::query("DELETE FROM spawn_tree_grants WHERE child_id = $1")
+            .bind(child_key)
+            .execute(pool)
+            .await
+            .map(|_| ())
+    };
+    if let Err(e) = released.await {
+        tracing::error!(child = %child_key, error = %e, "spawn-child reservation release failed");
+    }
+}
+
+/// Count children, authorize `req` and persist the child's capability in one
+/// transaction under a per-tree advisory lock, so concurrent spawns cannot both
+/// claim the same child slot or slice of the tree budget.
+async fn reserve_child(
+    pool: &sqlx::PgPool,
+    parent_id: &str,
+    cap: Option<&SpawnCapability>,
+    req: &SpawnChildRequest,
+    mut usage: Usage,
+    child_key: &str,
+) -> Result<(Authorized, SpawnCapability), AppError> {
+    let root = cap.and_then(|c| c.tree_root.clone()).unwrap_or_else(|| parent_id.to_owned());
+    let mut tx = pool.begin().await?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1))")
+        .bind(format!("spawn-tree:{root}"))
+        .execute(&mut *tx)
+        .await?;
+    usage.tree_granted_usd = tree_granted_usd(&mut *tx, &root).await?;
+    usage.live_children = live_child_count(&mut *tx, parent_id)
+        .await
+        .saturating_add(pending_child_count(&mut *tx, parent_id).await?);
+    let authorized = authorize(cap, req, &usage).map_err(|d| match d {
+        Denied::BadRequest(_) => deny(StatusCode::BAD_REQUEST, d.to_string()),
+        _ => deny(StatusCode::FORBIDDEN, d.to_string()),
+    })?;
+    let child_cap = cap.map_or_else(SpawnCapability::machine_default, |c| {
+        c.inherited(parent_id, authorized.budget_usd, Some(authorized.permission_mode))
+    });
+    crate::store::spawn_capabilities::upsert(&mut *tx, child_key, &child_cap).await?;
+    sqlx::query(
+        "INSERT INTO spawn_tree_grants (root_id, parent_id, child_id, budget_usd) \
+         VALUES ($1, $2, $3, $4)",
+    )
+    .bind(&root)
+    .bind(parent_id)
+    .bind(child_key)
+    .bind(authorized.budget_usd.unwrap_or(0.0))
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok((authorized, child_cap))
 }
 
 /// Children counting against the parent's spawn quota: every child except those
@@ -199,7 +345,7 @@ async fn child_count(state: &AppState, parent_id: &str) -> u32 {
 /// reason is anything but `Completed` (crashed, killed, adapter error) has freed
 /// its slot, so the parent can respawn a replacement. Still-running and
 /// completed-successful children both count.
-async fn live_child_count(pool: &sqlx::PgPool, parent_id: &str) -> u32 {
+async fn live_child_count(exec: impl sqlx::PgExecutor<'_>, parent_id: &str) -> u32 {
     let n: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM sessions s \
          WHERE s.parent_id = $1 \
@@ -210,7 +356,7 @@ async fn live_child_count(pool: &sqlx::PgPool, parent_id: &str) -> u32 {
          )",
     )
     .bind(parent_id)
-    .fetch_one(pool)
+    .fetch_one(exec)
     .await
     .unwrap_or(0);
     u32::try_from(n).unwrap_or(u32::MAX)
@@ -224,10 +370,7 @@ async fn child_account_env(
     family: crate::routes::gateway::Family,
     requested_model: Option<&str>,
     child_key: &str,
-) -> Result<
-    (std::collections::BTreeMap<String, String>, Option<String>),
-    (StatusCode, Json<ApiError>),
-> {
+) -> Result<(std::collections::BTreeMap<String, String>, Option<String>), AppError> {
     let mut model = requested_model.map(str::trim).filter(|m| !m.is_empty()).map(str::to_owned);
     let Some(account) = parent_account_name(state, &parent.session_id).await else {
         return Ok((std::collections::BTreeMap::new(), model));
@@ -263,7 +406,7 @@ async fn child_account_env(
                 }
                 crate::routes::gateway::MintSessionEnvError::Db(err) => {
                     tracing::error!(parent = %parent.session_id, "spawn-child mint failed: {err}");
-                    "database error".to_owned()
+                    crate::error::DB_ERROR.to_owned()
                 }
             };
             Err(deny(
@@ -299,22 +442,29 @@ pub async fn spawn_child(
     headers: axum::http::HeaderMap,
     Path(session_id): Path<String>,
     Json(req): Json<SpawnChildRequest>,
-) -> Result<Json<SpawnChildResponse>, (StatusCode, Json<ApiError>)> {
-    let caller = machine_user(&state, &headers).await?;
+) -> Result<Json<SpawnChildResponse>, AppError> {
+    let caller = machine_user(&state, &headers)
+        .await
+        .map_err(|(code, Json(e))| AppError::new(code, e.error))?;
     let parent = load_parent(&state, &session_id, caller).await?;
 
     let cap = capability_for(&state, &session_id).await;
-    let authorized = authorize(cap.as_ref(), &req, child_count(&state, &session_id).await)
-        .map_err(|d| match d {
-            Denied::BadRequest(_) => deny(StatusCode::BAD_REQUEST, d.to_string()),
-            _ => deny(StatusCode::FORBIDDEN, d.to_string()),
-        })?;
-
+    let usage = Usage { parent_mode: parent.permission_mode, ..Usage::default() };
     let child_id = Uuid::new_v4();
     let child_key = child_id.to_string();
+    // Persisted before the frame: the child pulls its gateway env the moment it
+    // launches, and a missing row there would hand it the unclamped default.
+    let (authorized, child_cap) =
+        reserve_child(&state.pool, &session_id, cap.as_ref(), &req, usage, &child_key).await?;
     let family = crate::routes::gateway::Family::from_adapter(&authorized.adapter);
     let (mut env, model) =
-        child_account_env(&state, &parent, family, req.model.as_deref(), &child_key).await?;
+        match child_account_env(&state, &parent, family, req.model.as_deref(), &child_key).await {
+            Ok(v) => v,
+            Err(e) => {
+                release_child(&state.pool, &child_key).await;
+                return Err(e);
+            }
+        };
     if let Some(profile) = req.agent_profile.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
         env.insert(AGENT_PROFILE_ENV.to_owned(), profile.to_owned());
     }
@@ -337,9 +487,7 @@ pub async fn spawn_child(
             .or_else(|| parent.working_dir.clone()),
         prompt: Some(req.prompt.clone()),
         name: req.name.clone().filter(|n| !n.trim().is_empty()),
-        // A child with nobody attached can only stall on a permission prompt,
-        // so the default posture is promptless, like a Task subagent.
-        permission_mode: req.permission_mode.or(Some(cctui_proto::adapter::PermissionMode::Yolo)),
+        permission_mode: Some(authorized.permission_mode),
         effort: None,
         model,
         service_tier,
@@ -347,16 +495,6 @@ pub async fn spawn_child(
         bootstrap: serde_json::Value::Null,
         parent_local_id: Some(parent.session_id.clone()),
     };
-    // Before the frame: the child pulls its gateway env the moment it launches,
-    // and a missing row there would hand it the unclamped machine default.
-    let child_cap = cap
-        .as_ref()
-        .map_or_else(SpawnCapability::machine_default, |c| c.inherited(authorized.budget_usd));
-    if let Err(e) =
-        crate::store::spawn_capabilities::upsert(&state.pool, &child_key, &child_cap).await
-    {
-        tracing::error!(child = %child_key, error = %e, "child spawn-capability persist failed");
-    }
     state.spawn_capabilities.insert(child_key.clone(), child_cap);
 
     let frame = DaemonFrameDown::Command {
@@ -367,13 +505,16 @@ pub async fn spawn_child(
             session_id: Some(child_id),
         }),
     };
-    state
-        .bus
-        .command_daemon_for_session(parent.machine_uuid, &parent.session_id, frame)
-        .await
-        .map_err(|err| {
-            deny(StatusCode::SERVICE_UNAVAILABLE, format!("could not reach the daemon: {err}"))
-        })?;
+    if let Err(err) =
+        state.bus.command_daemon_for_session(parent.machine_uuid, &parent.session_id, frame).await
+    {
+        state.spawn_capabilities.remove(&child_key);
+        release_child(&state.pool, &child_key).await;
+        return Err(deny(
+            StatusCode::SERVICE_UNAVAILABLE,
+            format!("could not reach the daemon: {err}"),
+        ));
+    }
 
     // The child's dollar budget is session-scoped, so it rides the in-memory
     // per-session map the gateway overlays onto the account's soft limits.
@@ -399,8 +540,10 @@ pub async fn message_child(
     headers: axum::http::HeaderMap,
     Path(session_id): Path<String>,
     Json(req): Json<cctui_proto::api::MessageChildRequest>,
-) -> Result<Json<serde_json::Value>, (StatusCode, Json<ApiError>)> {
-    let caller = machine_user(&state, &headers).await?;
+) -> Result<Json<serde_json::Value>, AppError> {
+    let caller = machine_user(&state, &headers)
+        .await
+        .map_err(|(code, Json(e))| AppError::new(code, e.error))?;
     let parent = load_parent(&state, &session_id, caller).await?;
     if req.prompt.trim().is_empty() {
         return Err(deny(StatusCode::BAD_REQUEST, "prompt is required"));
@@ -431,18 +574,14 @@ async fn resolve_child_adapter(
     caller: Uuid,
     parent: &Parent,
     child: &str,
-) -> Result<String, (StatusCode, Json<ApiError>)> {
+) -> Result<String, AppError> {
     let row: Option<(Option<String>, Option<Uuid>, Option<String>)> = sqlx::query_as(
         "SELECT parent_id, machine_uuid, adapter_id FROM sessions WHERE id = $1 AND user_id = $2",
     )
     .bind(child)
     .bind(caller)
     .fetch_optional(pool)
-    .await
-    .map_err(|e| {
-        tracing::error!(%child, "db error (message-child): {e}");
-        deny(StatusCode::INTERNAL_SERVER_ERROR, "database error")
-    })?;
+    .await?;
     let Some((child_parent, child_machine, adapter_id)) = row else {
         return Err(deny(StatusCode::NOT_FOUND, "child session not found"));
     };
@@ -474,7 +613,12 @@ mod tests {
             adapters: adapters.iter().map(|s| (*s).to_owned()).collect(),
             max_budget_usd: max_budget,
             max_children,
+            ..SpawnCapability::default()
         }
+    }
+
+    fn usage(live_children: u32) -> Usage {
+        Usage { live_children, ..Usage::default() }
     }
 
     fn req(adapter: &str, budget: Option<f64>) -> SpawnChildRequest {
@@ -488,19 +632,22 @@ mod tests {
 
     #[test]
     fn no_capability_denies() {
-        assert_eq!(authorize(None, &req("opencode", None), 0), Err(Denied::NoCapability));
+        assert_eq!(authorize(None, &req("opencode", None), &usage(0)), Err(Denied::NoCapability));
     }
 
     #[test]
     fn empty_adapter_list_denies_like_no_capability() {
         let cap = cap(&[], Some(1.0), None);
-        assert_eq!(authorize(Some(&cap), &req("opencode", None), 0), Err(Denied::NoCapability));
+        assert_eq!(
+            authorize(Some(&cap), &req("opencode", None), &usage(0)),
+            Err(Denied::NoCapability)
+        );
     }
 
     #[test]
     fn unlisted_adapter_denies_and_names_the_allowed_set() {
         let cap = cap(&["opencode"], Some(1.0), None);
-        let err = authorize(Some(&cap), &req("claude-code", None), 0).unwrap_err();
+        let err = authorize(Some(&cap), &req("claude-code", None), &usage(0)).unwrap_err();
         assert_eq!(
             err,
             Denied::Adapter {
@@ -514,15 +661,22 @@ mod tests {
     #[test]
     fn listed_adapter_allows_and_inherits_the_ceiling_budget() {
         let cap = cap(&["opencode", "codex"], Some(2.5), None);
-        let ok = authorize(Some(&cap), &req("opencode", None), 0).unwrap();
-        assert_eq!(ok, Authorized { adapter: "opencode".into(), budget_usd: Some(2.5) });
+        let ok = authorize(Some(&cap), &req("opencode", None), &usage(0)).unwrap();
+        assert_eq!(
+            ok,
+            Authorized {
+                adapter: "opencode".into(),
+                budget_usd: Some(2.5),
+                permission_mode: PermissionMode::Ask,
+            }
+        );
     }
 
     #[test]
     fn budget_over_the_ceiling_denies() {
         let cap = cap(&["opencode"], Some(2.0), None);
         assert_eq!(
-            authorize(Some(&cap), &req("opencode", Some(5.0)), 0),
+            authorize(Some(&cap), &req("opencode", Some(5.0)), &usage(0)),
             Err(Denied::Budget { requested: 5.0, max: Some(2.0) })
         );
     }
@@ -531,7 +685,7 @@ mod tests {
     fn budget_requested_without_a_ceiling_denies() {
         let cap = cap(&["opencode"], None, None);
         assert_eq!(
-            authorize(Some(&cap), &req("opencode", Some(0.5)), 0),
+            authorize(Some(&cap), &req("opencode", Some(0.5)), &usage(0)),
             Err(Denied::Budget { requested: 0.5, max: None })
         );
     }
@@ -540,7 +694,7 @@ mod tests {
     fn budget_at_the_ceiling_is_allowed() {
         let cap = cap(&["opencode"], Some(2.0), None);
         assert_eq!(
-            authorize(Some(&cap), &req("opencode", Some(2.0)), 0).unwrap().budget_usd,
+            authorize(Some(&cap), &req("opencode", Some(2.0)), &usage(0)).unwrap().budget_usd,
             Some(2.0)
         );
     }
@@ -549,11 +703,11 @@ mod tests {
     fn nonpositive_or_nonfinite_budget_is_a_bad_request() {
         let cap = cap(&["opencode"], Some(2.0), None);
         assert!(matches!(
-            authorize(Some(&cap), &req("opencode", Some(0.0)), 0),
+            authorize(Some(&cap), &req("opencode", Some(0.0)), &usage(0)),
             Err(Denied::BadRequest(_))
         ));
         assert!(matches!(
-            authorize(Some(&cap), &req("opencode", Some(f64::NAN)), 0),
+            authorize(Some(&cap), &req("opencode", Some(f64::NAN)), &usage(0)),
             Err(Denied::BadRequest(_))
         ));
     }
@@ -561,9 +715,9 @@ mod tests {
     #[test]
     fn child_cap_denies_once_reached() {
         let cap = cap(&["opencode"], Some(1.0), Some(2));
-        assert!(authorize(Some(&cap), &req("opencode", None), 1).is_ok());
+        assert!(authorize(Some(&cap), &req("opencode", None), &usage(1)).is_ok());
         assert_eq!(
-            authorize(Some(&cap), &req("opencode", None), 2),
+            authorize(Some(&cap), &req("opencode", None), &usage(2)),
             Err(Denied::TooManyChildren { max: 2 })
         );
     }
@@ -572,21 +726,22 @@ mod tests {
     fn machine_default_authorizes_every_known_adapter() {
         let cap = SpawnCapability::machine_default();
         for adapter in cctui_proto::adapter::KNOWN_ADAPTERS {
-            let ok = authorize(Some(&cap), &req(adapter, None), 99).unwrap();
+            let ok = authorize(Some(&cap), &req(adapter, None), &usage(0)).unwrap();
             assert_eq!(
                 ok,
                 Authorized {
                     adapter: (*adapter).to_owned(),
                     budget_usd: Some(cctui_proto::api::DEFAULT_CHILD_BUDGET_USD),
+                    permission_mode: PermissionMode::Ask,
                 }
             );
         }
         assert_eq!(
-            authorize(Some(&cap), &req("claude-code", Some(1.5)), 0).unwrap().budget_usd,
+            authorize(Some(&cap), &req("claude-code", Some(1.5)), &usage(0)).unwrap().budget_usd,
             Some(1.5)
         );
         assert!(matches!(
-            authorize(Some(&cap), &req("claude-code", Some(1_000.0)), 0),
+            authorize(Some(&cap), &req("claude-code", Some(1_000.0)), &usage(0)),
             Err(Denied::Budget { .. })
         ));
     }
@@ -657,6 +812,7 @@ mod tests {
             machine_uuid: machine,
             working_dir: None,
             user_id: uid,
+            permission_mode: None,
         };
 
         assert_eq!(
@@ -664,22 +820,25 @@ mod tests {
             "claude-code"
         );
         assert_eq!(
-            resolve_child_adapter(&pool, uid, &parent, &orphan_id).await.unwrap_err().0,
+            resolve_child_adapter(&pool, uid, &parent, &orphan_id).await.unwrap_err().status(),
             StatusCode::FORBIDDEN,
             "a non-child of the caller must refuse"
         );
         assert_eq!(
-            resolve_child_adapter(&pool, uid, &parent, &elsewhere_id).await.unwrap_err().0,
+            resolve_child_adapter(&pool, uid, &parent, &elsewhere_id).await.unwrap_err().status(),
             StatusCode::CONFLICT,
             "a child on another machine must refuse"
         );
         assert_eq!(
-            resolve_child_adapter(&pool, stranger, &parent, &child_id).await.unwrap_err().0,
+            resolve_child_adapter(&pool, stranger, &parent, &child_id).await.unwrap_err().status(),
             StatusCode::NOT_FOUND,
             "another user's lookup must not even see the session"
         );
         assert_eq!(
-            resolve_child_adapter(&pool, uid, &parent, "no-such-session").await.unwrap_err().0,
+            resolve_child_adapter(&pool, uid, &parent, "no-such-session")
+                .await
+                .unwrap_err()
+                .status(),
             StatusCode::NOT_FOUND,
         );
 
@@ -775,21 +934,24 @@ mod tests {
     #[test]
     fn an_inherited_ceiling_only_shrinks_down_the_tree() {
         let root = cap(&["claude-code"], Some(20.0), Some(3));
-        let child = root.inherited(Some(5.0));
+        let child = root.inherited("root", Some(5.0), None);
         assert_eq!(child.max_budget_usd, Some(5.0));
         assert_eq!(child.adapters, root.adapters);
         assert_eq!(child.max_children, Some(3));
 
-        let grandchild = child.inherited(Some(50.0));
+        let grandchild = child.inherited("root", Some(50.0), None);
         assert_eq!(
             grandchild.max_budget_usd,
             Some(5.0),
             "a child cannot hand a descendant more than its own ceiling"
         );
 
-        assert_eq!(root.inherited(None).max_budget_usd, Some(20.0));
-        assert_eq!(cap(&["codex"], None, None).inherited(Some(2.0)).max_budget_usd, Some(2.0));
-        assert_eq!(cap(&["codex"], None, None).inherited(None).max_budget_usd, None);
+        assert_eq!(root.inherited("root", None, None).max_budget_usd, Some(20.0));
+        assert_eq!(
+            cap(&["codex"], None, None).inherited("root", Some(2.0), None).max_budget_usd,
+            Some(2.0)
+        );
+        assert_eq!(cap(&["codex"], None, None).inherited("root", None, None).max_budget_usd, None);
     }
 
     /// A child spawned under the default grant inherits the budget it was
@@ -797,15 +959,15 @@ mod tests {
     #[test]
     fn a_child_of_the_default_grant_inherits_its_own_budget() {
         let root = SpawnCapability::machine_default();
-        let granted = authorize(Some(&root), &req("claude-code", Some(1.5)), 0).unwrap();
-        let child = root.inherited(granted.budget_usd);
+        let granted = authorize(Some(&root), &req("claude-code", Some(1.5)), &usage(0)).unwrap();
+        let child = root.inherited("root", granted.budget_usd, None);
         assert_eq!(child.max_budget_usd, Some(1.5));
         assert!(
-            authorize(Some(&child), &req("claude-code", Some(2.0)), 0).is_err(),
+            authorize(Some(&child), &req("claude-code", Some(2.0)), &usage(0)).is_err(),
             "the grandchild request must not exceed the child's inherited ceiling"
         );
         assert_eq!(
-            authorize(Some(&child), &req("claude-code", None), 0).unwrap().budget_usd,
+            authorize(Some(&child), &req("claude-code", None), &usage(0)).unwrap().budget_usd,
             Some(1.5)
         );
     }
@@ -815,7 +977,309 @@ mod tests {
         let cap = cap(&["opencode"], Some(1.0), None);
         let mut blank_prompt = req("opencode", None);
         blank_prompt.prompt = "  ".into();
-        assert!(matches!(authorize(Some(&cap), &blank_prompt, 0), Err(Denied::BadRequest(_))));
-        assert!(matches!(authorize(Some(&cap), &req("  ", None), 0), Err(Denied::BadRequest(_))));
+        assert!(matches!(
+            authorize(Some(&cap), &blank_prompt, &usage(0)),
+            Err(Denied::BadRequest(_))
+        ));
+        assert!(matches!(
+            authorize(Some(&cap), &req("  ", None), &usage(0)),
+            Err(Denied::BadRequest(_))
+        ));
+    }
+
+    #[test]
+    fn a_parent_in_ask_mode_cannot_mint_a_yolo_child() {
+        let cap = cap(&["claude-code"], Some(1.0), None);
+        let mut r = req("claude-code", None);
+        r.permission_mode = Some(PermissionMode::Yolo);
+        let ask = Usage { parent_mode: Some(PermissionMode::Ask), ..Usage::default() };
+        assert_eq!(
+            authorize(Some(&cap), &r, &ask),
+            Err(Denied::PermissionMode {
+                requested: PermissionMode::Yolo,
+                max: PermissionMode::Ask
+            })
+        );
+        r.permission_mode = Some(PermissionMode::Whip);
+        assert!(matches!(authorize(Some(&cap), &r, &ask), Err(Denied::PermissionMode { .. })));
+
+        let ceiling = SpawnCapability { max_permission_mode: Some(PermissionMode::Auto), ..cap };
+        r.permission_mode = Some(PermissionMode::Yolo);
+        let yolo = Usage { parent_mode: Some(PermissionMode::Yolo), ..Usage::default() };
+        assert!(
+            matches!(authorize(Some(&ceiling), &r, &yolo), Err(Denied::PermissionMode { .. })),
+            "the capability ceiling holds even when the parent was toggled to yolo"
+        );
+        r.permission_mode = Some(PermissionMode::Ask);
+        assert_eq!(
+            authorize(Some(&ceiling), &r, &yolo).unwrap().permission_mode,
+            PermissionMode::Ask
+        );
+    }
+
+    #[test]
+    fn a_child_naming_no_mode_inherits_the_parents() {
+        let cap = cap(&["claude-code"], Some(1.0), None);
+        for mode in [PermissionMode::Ask, PermissionMode::Auto, PermissionMode::Yolo] {
+            let u = Usage { parent_mode: Some(mode), ..Usage::default() };
+            assert_eq!(
+                authorize(Some(&cap), &req("claude-code", None), &u).unwrap().permission_mode,
+                mode
+            );
+        }
+        let stored = SpawnCapability { max_permission_mode: Some(PermissionMode::Auto), ..cap };
+        assert_eq!(
+            authorize(Some(&stored), &req("claude-code", None), &usage(0)).unwrap().permission_mode,
+            PermissionMode::Auto,
+            "with no live mode the stored ceiling is the parent's posture"
+        );
+        let child = stored.inherited("root", Some(1.0), Some(PermissionMode::Ask));
+        assert_eq!(child.max_permission_mode, Some(PermissionMode::Ask));
+    }
+
+    #[test]
+    fn session_labels_parse_to_postures() {
+        assert_eq!(PermissionMode::from_session_label("default"), Some(PermissionMode::Ask));
+        assert_eq!(PermissionMode::from_session_label("plan"), Some(PermissionMode::Ask));
+        assert_eq!(PermissionMode::from_session_label("acceptEdits"), Some(PermissionMode::Auto));
+        assert_eq!(
+            PermissionMode::from_session_label("bypassPermissions"),
+            Some(PermissionMode::Yolo)
+        );
+        assert_eq!(PermissionMode::from_session_label("yolo"), Some(PermissionMode::Yolo));
+        assert_eq!(PermissionMode::from_session_label("nonsense"), None);
+    }
+
+    #[test]
+    fn spawning_past_max_depth_is_denied() {
+        let root = SpawnCapability { max_depth: Some(2), ..cap(&["codex"], Some(1.0), None) };
+        assert!(authorize(Some(&root), &req("codex", None), &usage(0)).is_ok());
+        let child = root.inherited("root", Some(1.0), None);
+        assert_eq!(child.max_depth, Some(1));
+        assert!(authorize(Some(&child), &req("codex", None), &usage(0)).is_ok());
+        let grandchild = child.inherited("child", Some(1.0), None);
+        assert_eq!(grandchild.max_depth, Some(0));
+        assert_eq!(
+            authorize(Some(&grandchild), &req("codex", None), &usage(0)),
+            Err(Denied::Depth)
+        );
+        assert_eq!(grandchild.tree_root.as_deref(), Some("root"), "the root id carries down");
+    }
+
+    #[test]
+    fn machine_default_is_finite() {
+        let root = SpawnCapability::machine_default();
+        assert_eq!(root.max_depth, Some(cctui_proto::api::DEFAULT_MAX_DEPTH));
+        assert_eq!(root.max_children, Some(cctui_proto::api::DEFAULT_MAX_CHILDREN));
+        assert!(root.max_tree_budget_usd.is_some_and(f64::is_finite));
+        const { assert!(cctui_proto::api::DEFAULT_MAX_DEPTH >= 2) };
+    }
+
+    #[test]
+    fn with_no_mode_information_the_ceiling_is_ask() {
+        let root = SpawnCapability::machine_default();
+        let mut r = req("claude-code", None);
+        assert_eq!(
+            authorize(Some(&root), &r, &usage(0)).unwrap().permission_mode,
+            PermissionMode::Ask
+        );
+        r.permission_mode = Some(PermissionMode::Yolo);
+        assert!(matches!(
+            authorize(Some(&root), &r, &usage(0)),
+            Err(Denied::PermissionMode { max: PermissionMode::Ask, .. })
+        ));
+    }
+
+    /// A session launched in yolo is stamped with a yolo ceiling at spawn time,
+    /// and its tree keeps spawning yolo descendants even when no session row
+    /// ever reports a live mode.
+    #[test]
+    fn a_yolo_launched_tree_spawns_yolo_children_and_grandchildren() {
+        let root = SpawnCapability {
+            max_permission_mode: Some(PermissionMode::Yolo),
+            ..SpawnCapability::machine_default()
+        };
+        let unknown = usage(0);
+        let mut explicit = req("claude-code", None);
+        explicit.permission_mode = Some(PermissionMode::Yolo);
+        let implicit = req("codex", None);
+
+        let mut node = root;
+        let mut id = "root".to_owned();
+        for generation in 1..=cctui_proto::api::DEFAULT_MAX_DEPTH {
+            let a = authorize(Some(&node), &explicit, &unknown).unwrap();
+            assert_eq!(a.permission_mode, PermissionMode::Yolo, "generation {generation}");
+            let b = authorize(Some(&node), &implicit, &unknown).unwrap();
+            assert_eq!(b.permission_mode, PermissionMode::Yolo, "an omitted mode inherits yolo");
+            node = node.inherited(&id, a.budget_usd, Some(a.permission_mode));
+            assert_eq!(node.max_permission_mode, Some(PermissionMode::Yolo));
+            id = format!("gen-{generation}");
+        }
+        assert_eq!(authorize(Some(&node), &explicit, &unknown), Err(Denied::Depth));
+
+        let reported_yolo = Usage { parent_mode: Some(PermissionMode::Yolo), ..Usage::default() };
+        let child =
+            SpawnCapability::machine_default().inherited("r", None, Some(PermissionMode::Yolo));
+        assert_eq!(
+            authorize(Some(&child), &explicit, &reported_yolo).unwrap().permission_mode,
+            PermissionMode::Yolo
+        );
+        let toggled_to_ask = Usage { parent_mode: Some(PermissionMode::Ask), ..Usage::default() };
+        assert!(
+            authorize(Some(&child), &explicit, &toggled_to_ask).is_err(),
+            "a yolo tree whose parent was switched to ask stops minting yolo children"
+        );
+    }
+
+    #[test]
+    fn granted_budgets_under_one_root_never_exceed_the_tree_ceiling() {
+        let root =
+            SpawnCapability { max_tree_budget_usd: Some(10.0), ..cap(&["codex"], Some(4.0), None) };
+        let mut granted = 0.0;
+        let mut denied = false;
+        for i in 0..10 {
+            let parent =
+                if i % 2 == 0 { root.clone() } else { root.inherited("root", Some(4.0), None) };
+            let u = Usage { tree_granted_usd: granted, ..Usage::default() };
+            match authorize(Some(&parent), &req("codex", None), &u) {
+                Ok(a) => granted += a.budget_usd.unwrap(),
+                Err(Denied::TreeBudget { .. }) => denied = true,
+                Err(e) => panic!("unexpected denial {e}"),
+            }
+            assert!(granted <= 10.0, "granted {granted} past the tree ceiling");
+        }
+        assert!(denied);
+        assert!(
+            (granted - 10.0).abs() < f64::EPSILON,
+            "the last grant is clamped to the remainder"
+        );
+
+        let u = Usage { tree_granted_usd: 8.0, ..Usage::default() };
+        assert_eq!(
+            authorize(Some(&root), &req("codex", Some(3.0)), &u),
+            Err(Denied::TreeBudget { requested: 3.0, remaining: 2.0 })
+        );
+    }
+
+    /// DB-gated: reservations across a two-level tree are summed from the
+    /// ledger under the root, and a released reservation frees its share.
+    #[tokio::test]
+    async fn reservations_sum_across_the_tree_under_the_root_ceiling() {
+        let Some(url) = crate::routes::gateway::test_db_url("spawn_tree_reservations") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let root_id = Uuid::new_v4().to_string();
+        let root =
+            SpawnCapability { max_tree_budget_usd: Some(5.0), ..cap(&["codex"], Some(2.0), None) };
+        let (a, child_cap) = reserve_child(
+            &pool,
+            &root_id,
+            Some(&root),
+            &req("codex", None),
+            usage(0),
+            &Uuid::new_v4().to_string(),
+        )
+        .await
+        .expect("first child");
+        assert_eq!(a.budget_usd, Some(2.0));
+        assert_eq!(child_cap.tree_root.as_deref(), Some(root_id.as_str()));
+
+        let child_id = Uuid::new_v4().to_string();
+        let grandchild_key = Uuid::new_v4().to_string();
+        let (a, _) = reserve_child(
+            &pool,
+            &child_id,
+            Some(&child_cap),
+            &req("codex", None),
+            usage(0),
+            &grandchild_key,
+        )
+        .await
+        .expect("grandchild");
+        assert_eq!(a.budget_usd, Some(2.0));
+
+        let (a, _) = reserve_child(
+            &pool,
+            &root_id,
+            Some(&root),
+            &req("codex", None),
+            usage(1),
+            &Uuid::new_v4().to_string(),
+        )
+        .await
+        .expect("clamped to the remainder");
+        assert_eq!(a.budget_usd, Some(1.0));
+        assert!((tree_granted_usd(&pool, &root_id).await.unwrap() - 5.0).abs() < 1e-9);
+
+        let err = reserve_child(
+            &pool,
+            &child_id,
+            Some(&child_cap),
+            &req("codex", None),
+            usage(1),
+            &Uuid::new_v4().to_string(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.status(), StatusCode::FORBIDDEN, "the tree is spent");
+
+        release_child(&pool, &grandchild_key).await;
+        assert!((tree_granted_usd(&pool, &root_id).await.unwrap() - 3.0).abs() < 1e-9);
+
+        sqlx::query("DELETE FROM session_spawn_capabilities WHERE capability->>'tree_root' = $1")
+            .bind(&root_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM spawn_tree_grants WHERE root_id = $1")
+            .bind(&root_id)
+            .execute(&pool)
+            .await
+            .ok();
+    }
+
+    /// DB-gated: a reserved child that has not registered yet still occupies
+    /// its slot, so back-to-back spawns cannot overshoot `max_children`.
+    #[tokio::test]
+    async fn unregistered_reservations_count_against_max_children() {
+        let Some(url) = crate::routes::gateway::test_db_url("spawn_child_pending_slots") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let parent_id = Uuid::new_v4().to_string();
+        let parent = cap(&["codex"], Some(1.0), Some(2));
+        for _ in 0..2 {
+            let key = Uuid::new_v4().to_string();
+            reserve_child(&pool, &parent_id, Some(&parent), &req("codex", None), usage(0), &key)
+                .await
+                .expect("within the child cap");
+        }
+        let key = Uuid::new_v4().to_string();
+        let err =
+            reserve_child(&pool, &parent_id, Some(&parent), &req("codex", None), usage(0), &key)
+                .await
+                .unwrap_err();
+        assert_eq!(err.status(), StatusCode::FORBIDDEN);
+        assert!(err.message().contains("maximum of 2"), "{}", err.message());
+
+        sqlx::query("DELETE FROM session_spawn_capabilities WHERE capability->>'tree_root' = $1")
+            .bind(&parent_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM spawn_tree_grants WHERE root_id = $1")
+            .bind(&parent_id)
+            .execute(&pool)
+            .await
+            .ok();
     }
 }

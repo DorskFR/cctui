@@ -16,6 +16,24 @@ pub async fn revoke_by_session(
     Ok(())
 }
 
+/// Revoke every live token of every session the user owns, directly or
+/// through one of its machines.
+pub async fn revoke_by_user(
+    exec: impl PgExecutor<'_>,
+    user_id: uuid::Uuid,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE session_tokens SET revoked_at = now() \
+         WHERE revoked_at IS NULL AND session_id IN ( \
+           SELECT s.id FROM sessions s LEFT JOIN machines m ON m.id = s.machine_uuid \
+           WHERE COALESCE(s.user_id, m.user_id) = $1)",
+    )
+    .bind(user_id)
+    .execute(exec)
+    .await?;
+    Ok(())
+}
+
 /// Move a session's token and any usage already metered under `spawn_key` onto
 /// the id the harness registered under. Both tables must move together: the
 /// usage FK targets `sessions(id)`, so a token left on an unregistered key

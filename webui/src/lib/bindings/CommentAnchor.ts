@@ -2,39 +2,14 @@
 import type { DiffSide } from "./DiffSide";
 
 /**
- * A fully resolved GitHub review-comment anchor — the precise shape a
- * `POST .../reviews` comment entry needs.
- *
- * Produced by resolving a
- * [`DiffSelection`] against the [`PullDiff`] it targets. Every field maps 1:1
- * to GitHub's review-comment API.
+ * A [`DiffSelection`] resolved to GitHub review-comment coordinates.
  */
-export type CommentAnchor = { 
+export type CommentAnchor = { path: string, commit_id: string, 
 /**
- * GitHub comment `path` (head-side path).
+ * End line of a range.
  */
-path: string, 
+line: number, side: DiffSide, start_line?: number | null, 
 /**
- * GitHub `commit_id` — the head SHA the comment is anchored to.
- */
-commit_id: string, 
-/**
- * GitHub `line` — the (1-based) line on `side`. For a multi-line comment
- * this is the END line of the range.
- */
-line: number, 
-/**
- * GitHub `side` — `LEFT` (base) or `RIGHT` (head).
- */
-side: DiffSide, 
-/**
- * GitHub `start_line` — the START line of a multi-line range. `None` for a
- * single-line comment.
- */
-start_line?: number | null, 
-/**
- * GitHub `start_side` — the side of `start_line`. Always equals `side`
- * here (cctui never anchors a range across the two columns). `None` when
- * `start_line` is `None`.
+ * Always equals `side` when set.
  */
 start_side?: DiffSide | null, };

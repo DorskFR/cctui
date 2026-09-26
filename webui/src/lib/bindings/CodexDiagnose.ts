@@ -4,8 +4,7 @@ import type { CodexRpcFrame } from "./CodexRpcFrame";
 import type { CodexStderrLine } from "./CodexStderrLine";
 
 /**
- * an optional tagged section so the claude wire shape stays unchanged
- * (additive-only).
+ * Codex-only section; `None` for claude-code.
  */
 export type CodexDiagnose = { 
 /**
@@ -13,18 +12,13 @@ export type CodexDiagnose = {
  */
 codex_version?: string | null, 
 /**
- * The minimum Codex version the adapter supports (`CODEX_MIN_VERSION`);
- * also the version the worker image installs.
+ * `CODEX_MIN_VERSION`, also what the worker image installs.
  */
 min_version: string, 
 /**
  * Whether the discovered version is at or above `min_version`.
  */
-version_supported?: boolean | null, 
-/**
- * Transport to the app-server child (always `stdio` today).
- */
-transport: string, 
+version_supported?: boolean | null, transport: string, 
 /**
  * app-server child PID, when a live session owns one.
  */
@@ -74,8 +68,7 @@ rpc_tail?: Array<CodexRpcFrame>,
  */
 rollout_path?: string | null, 
 /**
- * Rollout file size in bytes at report time — the tail-offset analogue for
- * an app-server-owned rollout (no external tail consumes it).
+ * Bytes at report time.
  */
 rollout_size_bytes?: number | null, 
 /**

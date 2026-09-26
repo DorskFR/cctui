@@ -68,6 +68,7 @@
 			queries: { retry: 1, staleTime: 5_000, refetchOnWindowFocus: false }
 		}
 	});
+	ws.bindQueryClient(queryClient);
 
 	// Persist the heavyweight caches to IndexedDB so a reload paints from disk
 	// and revalidates as a delta/304 instead of re-downloading everything.
@@ -97,7 +98,7 @@
 		void attachmentStore.sweep(live?.sessions ?? null);
 		if (!live) return;
 		const keep = new Set(live.sessions.filter((s) => s.status !== 'archived').map((s) => s.id));
-		for (const q of queryClient.getQueryCache().findAll({ queryKey: ['conversation'] })) {
+		for (const q of queryClient.getQueryCache().findAll({ queryKey: qk.conversationAll })) {
 			const sid = q.queryKey[1] as string;
 			if (!keep.has(sid)) queryClient.removeQueries({ queryKey: q.queryKey, exact: true });
 		}

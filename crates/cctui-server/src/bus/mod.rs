@@ -1,26 +1,14 @@
-//! The single routing seam for all WS-bound traffic (phase 1 of the
-//! message-bus architecture).
+//! The single routing seam for all WS-bound traffic.
 //!
-//! The bus owns ALL WS delivery state in one place — pod-local daemon commands,
-//! per-session stream broadcast, and server event fan-out:
+//! The bus owns all WS delivery state: point-to-point commands toward the pod
+//! terminating a WS ([`Bus::command_daemon`], [`Bus::command_dispatcher`]),
+//! correlated round-trips ([`Bus::request_daemon`], [`Bus::request_dispatcher`])
+//! and cluster-wide pub/sub ([`Bus::publish`], [`Bus::subscribe_session`],
+//! [`Bus::subscribe_server`]).
 //!
-//!   * point-to-point commands toward the pod terminating a WS
-//!     ([`Bus::command_daemon`], [`Bus::command_dispatcher`]) and correlated
-//!     round-trips ([`Bus::request_daemon`], [`Bus::request_dispatcher`]) with
-//!     the pending oneshot maps as private internals;
-//!   * cluster-wide pub/sub ([`Bus::publish`], [`Bus::subscribe_session`],
-//!     [`Bus::subscribe_server`]).
-//!
-//! Behind it sits a [`Transport`]. [`NoopTransport`] (local dev / single
-//! replica) keeps single-pod semantics: routing is a local registry lookup and
-//! publish is a local broadcast. With `CCTUI_POD_IP` set, main swaps in
-//! [`peer::PeerHttpTransport`]: local misses are forwarded to the
-//! peer pod owning the WS, and publishes fan out to every live replica —
-//! replacing the retired HTTP request-replay forwarder. (NATS)
-//! plugs in here the same way without touching callers.
-//!
-//! Persistence is NOT the bus's job: event DB writes and the permission/ask/
-//! plan stores stay with their current owners — the bus moves delivery only.
+//! Behind it sits a [`Transport`]: [`NoopTransport`] for a single replica, or
+//! [`peer::PeerHttpTransport`] when `CCTUI_POD_IP` is set. Persistence is not
+//! the bus's job; it moves delivery only.
 
 pub mod peer;
 
@@ -170,6 +158,26 @@ pub enum BusEvent {
     Server(ServerEvent),
 }
 
+/// A [`ServerEvent`] with its JSON wire form, encoded once at publish so every
+/// socket relays the same bytes instead of re-serializing per subscriber.
+#[derive(Debug, Clone)]
+pub struct ServerFrame {
+    pub event: Arc<ServerEvent>,
+    pub json: Arc<str>,
+}
+
+impl ServerFrame {
+    pub fn encode(event: ServerEvent) -> Option<Self> {
+        match serde_json::to_string(&event) {
+            Ok(json) => Some(Self { event: Arc::new(event), json: json.into() }),
+            Err(err) => {
+                tracing::warn!(%err, "failed to serialize ServerEvent");
+                None
+            }
+        }
+    }
+}
+
 /// The routing backend behind the [`Bus`]. The bus always tries local
 /// delivery first (this pod's connection registries / broadcast channels);
 /// the transport is its escape hatch to the rest of the cluster.
@@ -293,7 +301,7 @@ struct Inner {
     /// [`DispatcherFrameUp`] reply.
     pending_dispatcher: DashMap<Uuid, oneshot::Sender<DispatcherFrameUp>>,
     /// Cluster-wide server event fan-out (the former `state.tui_tx`).
-    server_tx: broadcast::Sender<ServerEvent>,
+    server_tx: broadcast::Sender<ServerFrame>,
     /// Per-session agent stream channels (the former
     /// `SessionHandle::stream_tx`). Entries live exactly as long as the
     /// session's registry handle: created on register, removed on deregister.
@@ -377,8 +385,14 @@ impl Bus {
         self.inner.session_conn.insert(session_id.to_owned(), conn_id);
     }
 
+    /// Drop `session_id`'s binding if `conn_id` still holds it.
+    pub fn unbind_session_conn(&self, session_id: &str, conn_id: Uuid) {
+        self.inner.session_conn.remove_if(session_id, |_, owner| *owner == conn_id);
+    }
+
     /// The channel a SESSION-scoped frame must take. The connection that
-    /// announced the session when known; otherwise the machine entry, but only
+    /// announced the session when known and authenticated as the session's
+    /// owning `machine`; otherwise the machine entry, but only
     /// while that machine has at most one live connection here. With several
     /// connections and no binding, any choice is a coin flip that silently
     /// delivers one session's command to another's worker, so refuse instead.
@@ -389,6 +403,7 @@ impl Bus {
     ) -> Option<mpsc::Sender<DaemonFrameDown>> {
         if let Some(conn_id) = self.inner.session_conn.get(session_id).map(|r| *r)
             && let Some(entry) = self.inner.conns.get(&conn_id)
+            && entry.0 == machine
         {
             return Some(entry.1.clone());
         }
@@ -909,7 +924,12 @@ impl Bus {
                 }
             }
             BusEvent::Server(server_event) => {
-                let _ = self.inner.server_tx.send(server_event);
+                if self.inner.server_tx.receiver_count() == 0 {
+                    return;
+                }
+                if let Some(frame) = ServerFrame::encode(server_event) {
+                    let _ = self.inner.server_tx.send(frame);
+                }
             }
         }
     }
@@ -927,7 +947,7 @@ impl Bus {
     }
 
     /// Subscribe to the cluster-wide server event stream.
-    pub fn subscribe_server(&self) -> broadcast::Receiver<ServerEvent> {
+    pub fn subscribe_server(&self) -> broadcast::Receiver<ServerFrame> {
         self.inner.server_tx.subscribe()
     }
 
@@ -1188,6 +1208,25 @@ mod tests {
         assert!(rx_b.try_recv().is_err(), "conn B must not see conn A's session");
     }
 
+    /// A binding from a connection of another machine never overrides the
+    /// session's owning machine.
+    #[tokio::test]
+    async fn a_foreign_connections_binding_does_not_capture_the_session() {
+        let bus = bus();
+        let owner = Uuid::new_v4();
+        let intruder = Uuid::new_v4();
+        let (tx_a, mut rx_a) = mpsc::channel(8);
+        let (tx_b, mut rx_b) = mpsc::channel(8);
+        let conn_b = Uuid::new_v4();
+        bus.register_daemon(owner, Uuid::new_v4(), tx_a);
+        bus.register_daemon(intruder, conn_b, tx_b);
+        bus.bind_session_conn("sess", conn_b);
+
+        bus.command_daemon_for_session(owner, "sess", reply("sess")).await.unwrap();
+        assert_eq!(replied_to(&rx_a.recv().await.unwrap()), "sess");
+        assert!(rx_b.try_recv().is_err(), "the intruder must not receive the session's frames");
+    }
+
     /// The ordinary single-connection machine: an unannounced session still
     /// routes exactly as it did before per-connection routing existed.
     #[tokio::test]
@@ -1411,7 +1450,7 @@ mod tests {
     }
 
     /// disconnect cleanup only removes the entry when it is still the
-    /// same channel — a reconnect's newer channel must survive the old WS
+    /// same channel — a reconnect's newer channel must survive the stale WS
     /// task's cleanup.
     #[tokio::test]
     async fn unregister_daemon_guards_reconnect_race() {
@@ -1618,10 +1657,27 @@ mod tests {
         bus.publish(BusEvent::Server(ServerEvent::SessionDeregistered {
             session_id: "sess-1".into(),
         }));
+        let frame = rx.try_recv().unwrap();
         assert!(matches!(
-            rx.try_recv().unwrap(),
+            &*frame.event,
             ServerEvent::SessionDeregistered { session_id } if session_id == "sess-1"
         ));
+        assert_eq!(&*frame.json, r#"{"type":"session_deregistered","session_id":"sess-1"}"#);
+    }
+
+    #[tokio::test]
+    async fn publish_server_encodes_once_for_every_subscriber() {
+        let bus = bus();
+        let mut receivers: Vec<_> = (0..10).map(|_| bus.subscribe_server()).collect();
+        bus.publish_server(ServerEvent::PtyChunk {
+            session_id: "sess-1".into(),
+            data: "x".repeat(200 * 1024),
+        });
+        let first = receivers[0].try_recv().unwrap();
+        for rx in &mut receivers[1..] {
+            let frame = rx.try_recv().unwrap();
+            assert!(Arc::ptr_eq(&frame.json, &first.json));
+        }
     }
 
     #[tokio::test]

@@ -101,9 +101,7 @@ impl SessionEndReason {
 
 /// Coarse liveness tier for a machine (its daemon's WS).
 ///
-/// Derived from the age
-/// of `machines.last_seen_at`, which the server now advances on every daemon
-/// `Heartbeat` frame. Mirrors the session [`Liveness`] tiers but
+/// Derived from the age of `machines.last_seen_at`. Mirrors the session [`Liveness`] tiers but
 /// names them in machine terms:
 ///
 /// - `Online`: a heartbeat arrived within the active window.
@@ -144,10 +142,7 @@ pub struct Session {
     pub registered_at: DateTime<Utc>,
     pub last_heartbeat: DateTime<Utc>,
     pub metadata: serde_json::Value,
-    /// Adapter that produced this session (e.g. `"claude-code"`, `"codex"`).
-    /// Optional in the wire shape for back-compat with rows persisted before
-    /// the `adapter_id` column was added; v0 server fills with `"claude-code"`
-    /// for legacy rows so this is always populated in fresh data.
+    /// `None` means claude-code.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub adapter_id: Option<crate::adapter::AdapterId>,
 }

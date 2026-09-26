@@ -1,6 +1,5 @@
 // WS subscription + live-event/permission/ask/delivery state and the send
-// orchestration for the conversation drawer, extracted from ConversationDrawer
-// with no behavior change. This is the "event context": it owns the live buffer,
+// orchestration for the conversation drawer. This is the "event context": it owns the live buffer,
 // the optimistic-reply echoes, and the per-message delivery tracking, and drives
 // the activity ("Working…") indicator.
 //
@@ -15,7 +14,8 @@ import {
 	type PermReq,
 	type LiveAsk,
 	type LivePlan,
-	type SoftLimit
+	type SoftLimitBlock,
+	type ToolBlock
 } from '$lib/ws.svelte';
 import { eventSig, parseAsk, parseTodos, todoProgress as deriveTodoProgress } from './format';
 import { lastProseLine, toolInvocationSummary, type ActivityTool } from './activity';
@@ -40,6 +40,8 @@ export function mergeLiveEvent(
 	if (seq === null || seq === undefined) return prev;
 	const sig = eventSig(ev);
 	if (prev.some((e) => e.seq === seq || eventSig(e) === sig)) return prev;
+	const tail = prev[prev.length - 1].seq;
+	if (tail != null && Number(seq) > Number(tail)) return [...prev, ev];
 	const at = prev.findIndex((e) => e.seq != null && Number(e.seq) > Number(seq));
 	return at < 0 ? [...prev, ev] : [...prev.slice(0, at), ev, ...prev.slice(at)];
 }
@@ -78,7 +80,8 @@ export class ConversationStream {
 	// request because cctui's share of the account window is at cap. Drives the
 	// per-chat "soft limit reached → continue on another account" banner. Null
 	// when no block is active.
-	softLimit = $state<SoftLimit | null>(null);
+	softLimit = $state<SoftLimitBlock | null>(null);
+	toolBlock = $state<ToolBlock | null>(null);
 	// Folded last-write-wins: the list mutates many times per turn and only its
 	// latest state is meaningful.
 	todos = $state<TodoItem[] | null>(null);
@@ -139,8 +142,7 @@ export class ConversationStream {
 			// A pending live ask/plan is superseded the instant the agent streams a
 			// fresh substantive (non-user, non-heartbeat) event past it:
 			// the question was skipped/answered out-of-band and the turn moved on, so
-			// the daemon's AskResolved/onAsk(null) — which a half-open ws can miss —
-			// is no longer the only thing that clears the form. While a prompt is
+			// the daemon's AskResolved/onAsk(null) can be missed by a half-open ws. While a prompt is
 			// genuinely pending claude is blocked and emits nothing, so this can't
 			// race a still-open question. Remember it resolved so its late transcript
 			// line stays suppressed. User echoes (key !== null) never clear
@@ -191,6 +193,9 @@ export class ConversationStream {
 		const offSoftLimit = ws.onSoftLimit(sid, (sl) => {
 			this.softLimit = sl;
 		});
+		const offToolBlock = ws.onToolBlock(sid, (b) => {
+			this.toolBlock = b;
+		});
 		// Mirror the singleton's per-session delivery state. Fires
 		// immediately with the current snapshot and on every ack / auto-retry.
 		const offDelivery = ws.onDelivery(sid, (snap) => {
@@ -207,6 +212,7 @@ export class ConversationStream {
 			offAsk();
 			offPlan();
 			offSoftLimit();
+			offToolBlock();
 			offDelivery();
 			ws.unsubscribe(sid);
 			ws.clearStream(sid);
@@ -423,6 +429,10 @@ export class ConversationStream {
 		this.softLimit = null;
 		ws.clearSoftLimit(id);
 		this.#opts.invalidateSessions();
+	}
+
+	dismissToolBlock(): void {
+		ws.dismissToolBlock(this.#opts.id());
 	}
 
 	// Discard a still-pending optimistic echo (edit/recover). Stops

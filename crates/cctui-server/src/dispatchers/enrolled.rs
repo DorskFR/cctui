@@ -18,6 +18,29 @@ use super::{DispatchError, DispatchHandle, DispatchSpec, Dispatcher, HandleStatu
 use crate::bus::{Bus, BusError};
 use crate::state::AppState;
 
+/// A dispatcher's `StatusResult.state`; anything unrecognised is still running.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ReportedState {
+    Running,
+    Queued,
+    Complete,
+    Failed,
+    Gone,
+    #[serde(other)]
+    Unknown,
+}
+
+impl ReportedState {
+    fn parse(s: &str) -> Self {
+        use serde::Deserialize;
+        use serde::de::IntoDeserializer;
+        let de: serde::de::value::StrDeserializer<'_, serde::de::value::Error> =
+            s.into_deserializer();
+        Self::deserialize(de).unwrap_or(Self::Unknown)
+    }
+}
+
 /// How long a dispatch is held while the dispatcher is not connected. A release
 /// rolling-restarts the dispatcher and the observed re-enrol gap is ~30s; 45s
 /// covers it with margin yet stays far below the caller's HTTP timeout, so a
@@ -224,11 +247,13 @@ impl Dispatcher for EnrolledDispatcher {
                 // (CrashLoopBackOff / OOMKilled / non-zero exit), not a
                 // transport error — only treat it as a hard error when the
                 // dispatcher reported no state at all (couldn't introspect).
-                match state.as_deref() {
-                    Some("complete") => Ok(HandleStatus::Complete),
-                    Some("failed") => Ok(HandleStatus::Failed(error)),
-                    Some("gone") => Ok(HandleStatus::Gone),
-                    Some(_) => Ok(HandleStatus::Running),
+                match state.as_deref().map(ReportedState::parse) {
+                    Some(ReportedState::Complete) => Ok(HandleStatus::Complete),
+                    Some(ReportedState::Failed) => Ok(HandleStatus::Failed(error)),
+                    Some(ReportedState::Gone) => Ok(HandleStatus::Gone),
+                    Some(
+                        ReportedState::Running | ReportedState::Queued | ReportedState::Unknown,
+                    ) => Ok(HandleStatus::Running),
                     None => Err(DispatchError::Backend(
                         error.unwrap_or_else(|| "dispatcher returned no status".into()),
                     )),
@@ -267,6 +292,21 @@ mod tests {
 
     use super::*;
     use crate::bus::NoopTransport;
+
+    #[test]
+    fn reported_state_parses_every_dispatcher_value() {
+        for (raw, want) in [
+            ("running", ReportedState::Running),
+            ("queued", ReportedState::Queued),
+            ("complete", ReportedState::Complete),
+            ("failed", ReportedState::Failed),
+            ("gone", ReportedState::Gone),
+            ("pending", ReportedState::Unknown),
+            ("", ReportedState::Unknown),
+        ] {
+            assert_eq!(ReportedState::parse(raw), want, "{raw}");
+        }
+    }
 
     fn bus() -> Bus {
         Bus::new(Box::new(NoopTransport))

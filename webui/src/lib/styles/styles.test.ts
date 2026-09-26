@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -87,7 +88,7 @@ describe('every app theme resolves against the kit stylesheet', () => {
 	});
 });
 
-describe('app.css no longer re-declares kit classes', () => {
+describe('app.css does not re-declare kit classes', () => {
 	it('imports the kit reset and utilities', () => {
 		expect(app).toContain('@import "@dorsk/tsumikit/styles/reset.css";');
 		expect(app).toContain('@import "@dorsk/tsumikit/styles/utilities.css";');

@@ -1,30 +1,14 @@
 //! Passkey (WebAuthn) enrolment, management and login.
 //!
-//! ## The shape of the thing
+//! Three ceremonies — **register** and **test** (authenticated) and
+//! usernameless **login** — each a `start` issuing a challenge and a `finish`
+//! verifying it. In-flight state lives in `webauthn_challenges` (single-use,
+//! TTL-bounded) so ceremonies survive restarts and work across replicas.
 //!
-//! Three ceremonies, each a `start` that hands the browser a challenge and a
-//! `finish` that verifies what came back. The in-flight state lives in
-//! `webauthn_challenges` (single-use, TTL-bounded) rather than in memory, so a
-//! ceremony survives a restart and works with more than one replica.
-//!
-//!   * **register** (authenticated) — enrol a key on the caller's account. As
-//!     many as they like: they are rows, not a column.
-//!   * **test** (authenticated) — prove the key that was just enrolled actually
-//!     answers, without logging anyone out to find out.
-//!   * **login** (unauthenticated) — usernameless. The browser discovers the
-//!     credential and returns the user handle we stored at registration, so the
-//!     login screen never asks who you are.
-//!
-//! ## What a successful login *is*
-//!
-//! Not a new session concept: a passkey assertion mints an ordinary `auth_keys`
-//! row (kind `passkey`, 30-day expiry, the owner's full ceiling) and puts that
-//! token in the same `HttpOnly` cookie `POST /auth/login` sets. Every existing
-//! authz path is untouched. Logging out revokes the minted key, so a passkey
-//! session leaves nothing behind.
-//!
-//! The token login is never removed, and revoking your last passkey is allowed:
-//! the token is the recovery path, and it must stay one.
+//! A login mints an ordinary `auth_keys` row (kind `passkey`, 30-day expiry,
+//! the owner's full ceiling) in the same `HttpOnly` cookie `POST /auth/login`
+//! sets; logout revokes it. Revoking the last passkey is allowed: token login
+//! is the recovery path.
 
 // "WebAuthn" and the authenticator brand names below are proper nouns that trip
 // clippy's camel-case doc heuristic throughout this module; none is a code item.
@@ -46,8 +30,8 @@ use webauthn_rs::prelude::{
 };
 
 use crate::auth::{self, AuthContext, Scope};
+use crate::error::AppError;
 use crate::state::AppState;
-use cctui_proto::api::ApiError;
 
 /// How long a browser has to answer a challenge before it is swept. Comfortably
 /// past the authenticator timeout webauthn-rs asks for, so the user meets the
@@ -86,15 +70,10 @@ const LABEL_MAX_CHARS: usize = 64;
 /// as the login screen opens" toggle.
 const AUTO_PROMPT_KEY: &str = "passkey_auto_prompt";
 
-type ApiResult<T> = Result<T, (StatusCode, Json<ApiError>)>;
+type ApiResult<T> = Result<T, AppError>;
 
-fn bad_request(msg: impl Into<String>) -> (StatusCode, Json<ApiError>) {
-    (StatusCode::BAD_REQUEST, Json(ApiError { error: msg.into() }))
-}
-
-fn db_error(e: &sqlx::Error) -> (StatusCode, Json<ApiError>) {
-    tracing::error!("passkey store error: {e}");
-    (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
+fn bad_request(msg: impl Into<String>) -> AppError {
+    AppError::new(StatusCode::BAD_REQUEST, msg)
 }
 
 /// The relying party, or a 503 explaining that this deployment has none. Every
@@ -102,13 +81,10 @@ fn db_error(e: &sqlx::Error) -> (StatusCode, Json<ApiError>) {
 /// silently in the UI (which asked `/auth/passkey/config` first).
 fn relying_party(state: &AppState) -> ApiResult<&webauthn_rs::Webauthn> {
     state.webauthn.as_deref().ok_or_else(|| {
-        (
+        AppError::new(
             StatusCode::SERVICE_UNAVAILABLE,
-            Json(ApiError {
-                error: "passkeys are not configured on this server (set CCTUI_EXTERNAL_URL to the \
-                        public https URL)"
-                    .into(),
-            }),
+            "passkeys are not configured on this server (set CCTUI_EXTERNAL_URL to the \
+             public https URL)",
         )
     })
 }
@@ -190,8 +166,7 @@ async fn take_challenge(
     .bind(kind)
     .bind(user_id)
     .fetch_optional(pool)
-    .await
-    .map_err(|e| db_error(&e))?;
+    .await?;
     row.map(|(v,)| v).ok_or_else(|| bad_request("challenge expired or already used"))
 }
 
@@ -300,16 +275,14 @@ pub async fn register_start(
     let name = sqlx::query_scalar::<_, String>("SELECT name FROM users WHERE id = $1")
         .bind(ctx.user_id)
         .fetch_optional(&state.pool)
-        .await
-        .map_err(|e| db_error(&e))?
+        .await?
         .unwrap_or_else(|| "cctui".to_owned());
 
     let existing: Vec<(Vec<u8>,)> =
         sqlx::query_as("SELECT credential_id FROM webauthn_credentials WHERE user_id = $1")
             .bind(ctx.user_id)
             .fetch_all(&state.pool)
-            .await
-            .map_err(|e| db_error(&e))?;
+            .await?;
     let exclude = (!existing.is_empty())
         .then(|| existing.into_iter().map(|(id,)| id.into()).collect::<Vec<_>>());
 
@@ -321,9 +294,8 @@ pub async fn register_start(
 
     let stashed = serde_json::to_value(&reg_state)
         .map_err(|e| bad_request(format!("could not park challenge: {e}")))?;
-    let challenge_id = stash_challenge(&state.pool, Some(ctx.user_id), "register", &stashed)
-        .await
-        .map_err(|e| db_error(&e))?;
+    let challenge_id =
+        stash_challenge(&state.pool, Some(ctx.user_id), "register", &stashed).await?;
     let options = serde_json::to_value(&options)
         .map_err(|e| bad_request(format!("could not serialize options: {e}")))?;
     Ok(Json(PasskeyChallenge { challenge_id, options }))
@@ -362,8 +334,7 @@ pub async fn register_finish(
     // discoverable rather than warning about something that probably works.
     .bind(req.discoverable.unwrap_or(true))
     .fetch_one(&state.pool)
-    .await
-    .map_err(|e| db_error(&e))?;
+    .await?;
 
     tracing::info!(user_id = %ctx.user_id, passkey_id = %row.0, "passkey enrolled");
     Ok(Json(PasskeyRow {
@@ -390,8 +361,7 @@ pub async fn list(
     )
     .bind(ctx.user_id)
     .fetch_all(&state.pool)
-    .await
-    .map_err(|e| db_error(&e))?;
+    .await?;
     Ok(Json(PasskeyListResponse {
         passkeys: rows
             .into_iter()
@@ -420,10 +390,9 @@ pub async fn relabel(
             .bind(id)
             .bind(ctx.user_id)
             .execute(&state.pool)
-            .await
-            .map_err(|e| db_error(&e))?;
+            .await?;
     if done.rows_affected() == 0 {
-        return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "no such passkey".into() })));
+        return Err(AppError::new(StatusCode::NOT_FOUND, "no such passkey"));
     }
     Ok(StatusCode::NO_CONTENT)
 }
@@ -437,17 +406,46 @@ pub async fn revoke(
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<Uuid>,
 ) -> ApiResult<StatusCode> {
-    let done = sqlx::query("DELETE FROM webauthn_credentials WHERE id = $1 AND user_id = $2")
-        .bind(id)
-        .bind(ctx.user_id)
-        .execute(&state.pool)
-        .await
-        .map_err(|e| db_error(&e))?;
-    if done.rows_affected() == 0 {
-        return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "no such passkey".into() })));
+    let Some(hashes) = revoke_passkey(&state.pool, ctx.user_id, id).await? else {
+        return Err(AppError::new(StatusCode::NOT_FOUND, "no such passkey"));
+    };
+    for hash in &hashes {
+        state.auth_config.purge(hash);
     }
-    tracing::info!(user_id = %ctx.user_id, passkey_id = %id, "passkey revoked");
+    tracing::info!(user_id = %ctx.user_id, passkey_id = %id, sessions = hashes.len(), "passkey revoked");
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Delete the passkey and revoke the login keys it minted, returning their
+/// hashes for the auth cache. Login keys minted before keys recorded their
+/// passkey are revoked too. `None` when the user has no such passkey.
+async fn revoke_passkey(
+    pool: &PgPool,
+    user_id: Uuid,
+    passkey_id: Uuid,
+) -> Result<Option<Vec<String>>, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    let done = sqlx::query("DELETE FROM webauthn_credentials WHERE id = $1 AND user_id = $2")
+        .bind(passkey_id)
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+    if done.rows_affected() == 0 {
+        return Ok(None);
+    }
+    let hashes: Vec<String> = sqlx::query_scalar(
+        "UPDATE auth_keys SET revoked_at = now() \
+         WHERE user_id = $1 AND kind = $2 AND revoked_at IS NULL \
+           AND (passkey_id = $3 OR passkey_id IS NULL) \
+         RETURNING key_hash",
+    )
+    .bind(user_id)
+    .bind(SESSION_KIND)
+    .bind(passkey_id)
+    .fetch_all(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(Some(hashes))
 }
 
 // ---------------------------------------------------------------------------
@@ -462,9 +460,7 @@ async fn start_assertion(state: &AppState) -> ApiResult<Json<PasskeyChallenge>> 
         .map_err(|e| bad_request(format!("could not start authentication: {e}")))?;
     let stashed = serde_json::to_value(&auth_state)
         .map_err(|e| bad_request(format!("could not park challenge: {e}")))?;
-    let challenge_id = stash_challenge(&state.pool, None, "authenticate", &stashed)
-        .await
-        .map_err(|e| db_error(&e))?;
+    let challenge_id = stash_challenge(&state.pool, None, "authenticate", &stashed).await?;
     let options = serde_json::to_value(&options)
         .map_err(|e| bad_request(format!("could not serialize options: {e}")))?;
     Ok(Json(PasskeyChallenge { challenge_id, options }))
@@ -503,11 +499,8 @@ async fn finish_assertion(state: &AppState, req: PasskeyAssertion) -> ApiResult<
     .bind(user_id)
     .bind(cred_id)
     .fetch_optional(&state.pool)
-    .await
-    .map_err(|e| db_error(&e))?
-    .ok_or_else(|| {
-        (StatusCode::UNAUTHORIZED, Json(ApiError { error: "unknown passkey".into() }))
-    })?;
+    .await?
+    .ok_or_else(|| AppError::new(StatusCode::UNAUTHORIZED, "unknown passkey"))?;
 
     let (passkey_id, label, stored) = row;
     let mut passkey: Passkey = serde_json::from_value(stored)
@@ -520,7 +513,7 @@ async fn finish_assertion(state: &AppState, req: PasskeyAssertion) -> ApiResult<
         )
         .map_err(|e| {
             tracing::warn!(%user_id, "passkey assertion rejected: {e}");
-            (StatusCode::UNAUTHORIZED, Json(ApiError { error: "assertion rejected".into() }))
+            AppError::new(StatusCode::UNAUTHORIZED, "assertion rejected")
         })?;
 
     // Persist the rolled counter / backup flags so a cloned authenticator is
@@ -560,9 +553,9 @@ pub async fn test_finish(
 ) -> ApiResult<Json<PasskeyTestResult>> {
     let asserted = finish_assertion(&state, req).await?;
     if asserted.user_id != ctx.user_id {
-        return Err((
+        return Err(AppError::new(
             StatusCode::FORBIDDEN,
-            Json(ApiError { error: "that passkey belongs to another account".into() }),
+            "that passkey belongs to another account",
         ));
     }
     tracing::info!(user_id = %ctx.user_id, passkey_id = %asserted.passkey_id, "passkey tested");
@@ -597,7 +590,7 @@ pub async fn login_finish(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(req): Json<PasskeyAssertion>,
-) -> Result<Response, (StatusCode, Json<ApiError>)> {
+) -> Result<Response, AppError> {
     let asserted = finish_assertion(&state, req).await?;
 
     // Same credential shape as any other user token, so nothing downstream has
@@ -605,7 +598,8 @@ pub async fn login_finish(
     let token = auth::user_token(&auth::mint_secret());
     let hash = auth::sha256_hex(&token);
     let preview = auth::token_preview(&token);
-    let scopes = auth::ceiling_of(&state.pool, asserted.user_id).await;
+    let scopes = crate::store::acls::user_ceiling(&state.pool, asserted.user_id).await?;
+    let expires = Utc::now() + Duration::days(SESSION_DAYS);
     let label = format!("passkey: {}", asserted.label);
     let key_id = auth::register_key(
         &state.pool,
@@ -617,19 +611,12 @@ pub async fn login_finish(
             kind: SESSION_KIND,
             machine_id: None,
             dispatcher_id: None,
+            expires_at: Some(expires),
+            passkey_id: Some(asserted.passkey_id),
         },
         scopes,
     )
-    .await
-    .map_err(|e| db_error(&e))?;
-
-    let expires = Utc::now() + Duration::days(SESSION_DAYS);
-    sqlx::query("UPDATE auth_keys SET expires_at = $1 WHERE id = $2")
-        .bind(expires)
-        .bind(key_id)
-        .execute(&state.pool)
-        .await
-        .map_err(|e| db_error(&e))?;
+    .await?;
 
     // Expired session keys are dead rows; drop the ones long past their date so
     // the admin key list stays about keys a human made.
@@ -669,8 +656,7 @@ pub async fn set_auto_prompt(
     Extension(ctx): Extension<AuthContext>,
     Json(req): Json<PasskeyAutoPromptRequest>,
 ) -> ApiResult<StatusCode> {
-    ctx.requires(Scope::Admin)
-        .map_err(|s| (s, Json(ApiError { error: "admin token required".into() })))?;
+    ctx.requires(Scope::Admin).map_err(|s| AppError::new(s, "admin token required"))?;
     sqlx::query(
         "INSERT INTO instance_settings (key, value, updated_at) \
          VALUES ($1, to_jsonb($2::bool), now()) \
@@ -679,8 +665,7 @@ pub async fn set_auto_prompt(
     .bind(AUTO_PROMPT_KEY)
     .bind(req.auto_prompt)
     .execute(&state.pool)
-    .await
-    .map_err(|e| db_error(&e))?;
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -711,10 +696,83 @@ mod tests {
         assert_eq!(normalize_label(Some("Clé Yubico")).unwrap(), "Clé Yubico");
     }
 
+    #[tokio::test]
+    async fn passkey_revoke_kills_its_login_keys() {
+        let Some(url) = crate::routes::gateway::test_db_url("passkey_revoke_kills_its_login_keys")
+        else {
+            return;
+        };
+        let pool = PgPool::connect(&url).await.expect("connect test db");
+        let uid: Uuid = sqlx::query_scalar(
+            "INSERT INTO users (id, name, key_hash) \
+             VALUES (gen_random_uuid(), $1, gen_random_uuid()::text) RETURNING id",
+        )
+        .bind(format!("passkey-revoke-{}", Uuid::new_v4()))
+        .fetch_one(&pool)
+        .await
+        .expect("insert user");
+        sqlx::query("INSERT INTO user_acls (user_id, scope) VALUES ($1, 'read')")
+            .bind(uid)
+            .execute(&pool)
+            .await
+            .expect("insert ceiling");
+        let passkey_id: Uuid = sqlx::query_scalar(
+            "INSERT INTO webauthn_credentials (user_id, credential_id, passkey, label) \
+             VALUES ($1, gen_random_uuid()::text::bytea, '{}', 'test') RETURNING id",
+        )
+        .bind(uid)
+        .fetch_one(&pool)
+        .await
+        .expect("insert passkey");
+
+        let token = auth::user_token(&auth::mint_secret());
+        let hash = auth::sha256_hex(&token);
+        let key_id = auth::register_key(
+            &pool,
+            auth::NewKey {
+                user_id: uid,
+                key_hash: &hash,
+                key_preview: None,
+                label: Some("passkey: test"),
+                kind: SESSION_KIND,
+                machine_id: None,
+                dispatcher_id: None,
+                expires_at: Some(Utc::now() + Duration::days(SESSION_DAYS)),
+                passkey_id: Some(passkey_id),
+            },
+            [Scope::Read],
+        )
+        .await
+        .expect("register key");
+        let expires: Option<DateTime<Utc>> =
+            sqlx::query_scalar("SELECT expires_at FROM auth_keys WHERE id = $1")
+                .bind(key_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(expires.is_some(), "login key is inserted with its expiry");
+
+        let cfg = auth::AuthConfig::new(vec![], pool.clone());
+        assert!(cfg.validate(&token).await.is_some(), "cookie works before revoke");
+
+        let hashes = revoke_passkey(&pool, uid, passkey_id).await.unwrap().expect("found");
+        assert_eq!(hashes, vec![hash.clone()]);
+        for h in &hashes {
+            cfg.purge(h);
+        }
+        assert!(cfg.validate(&token).await.is_none(), "cookie is dead after revoke");
+        assert!(revoke_passkey(&pool, uid, passkey_id).await.unwrap().is_none());
+
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
+    }
+
     #[test]
     fn label_rejects_an_essay() {
         let long = "x".repeat(LABEL_MAX_CHARS + 1);
-        assert_eq!(normalize_label(Some(&long)).unwrap_err().0, StatusCode::BAD_REQUEST);
+        assert!(matches!(
+            normalize_label(Some(&long)).unwrap_err(),
+            AppError::Status(code, _) if code == StatusCode::BAD_REQUEST
+        ));
         assert!(normalize_label(Some(&"x".repeat(LABEL_MAX_CHARS))).is_ok());
     }
 }

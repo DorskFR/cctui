@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 # cctui worker image (contract v1) — the execution environment dispatchers
 # (the docker / kubernetes dispatchers) spawn per session. Bundles:
 #   - the claude code CLI
@@ -37,16 +38,21 @@ WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
 COPY migrations/ migrations/
+COPY keys/ keys/
 # cctui-daemon's service.rs include_str!()s these unit templates at compile time.
 COPY packaging/ packaging/
 
 # sqlx runs in offline mode so no database is needed at build time.
 ENV SQLX_OFFLINE=true
-RUN cargo build --release \
-        -p cctui-daemon \
-        -p cctui-guard-proxy \
-        -p cctui-supervisor \
-        -p cctui-guard
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/app/target \
+    cargo build --release -p cctui-daemon -p cctui-guard-proxy -p cctui-supervisor -p cctui-guard \
+    && mkdir -p /out \
+    && cp target/release/cctui-daemon target/release/cctui-guard-proxy target/release/cctui-supervisor target/release/cctui-guard /out/
+
+# Release builds replace this stage with prebuilt binaries (build context `bins`).
+FROM scratch AS bins
+COPY --from=builder /out/ /
 
 # ── Runtime: claude code + codex + cctui binaries ───────────────────────────
 # Every bundled CLI is a native binary; node is here only so context packs can
@@ -219,10 +225,10 @@ RUN groupadd --gid 1000 worker \
     && useradd --uid 1000 --gid 1000 --home-dir /home/worker --create-home --shell /bin/bash worker \
     && chmod 0755 /home/worker
 
-COPY --from=builder /app/target/release/cctui-daemon       /usr/local/bin/cctui-daemon
-COPY --from=builder /app/target/release/cctui-guard-proxy  /usr/local/bin/cctui-guard-proxy
-COPY --from=builder /app/target/release/cctui-supervisor   /usr/local/bin/cctui-supervisor
-COPY --from=builder /app/target/release/cctui-guard        /usr/local/bin/cctui-guard
+COPY --from=bins /cctui-daemon       /usr/local/bin/cctui-daemon
+COPY --from=bins /cctui-guard-proxy  /usr/local/bin/cctui-guard-proxy
+COPY --from=bins /cctui-supervisor   /usr/local/bin/cctui-supervisor
+COPY --from=bins /cctui-guard        /usr/local/bin/cctui-guard
 COPY deploy/worker-entrypoint.sh   /usr/local/bin/cctui-worker-entrypoint
 # worker-net-init — pod-netns iptables for the k8s sidecar mode: run
 # from a NET_ADMIN init container so the worker container needs no privileged.

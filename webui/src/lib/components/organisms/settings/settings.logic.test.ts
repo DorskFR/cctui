@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 import { afterEach, describe, expect, it } from 'vitest';
 import {
 	applySettingsFilter,
@@ -54,6 +55,8 @@ describe('page map', () => {
 		expect(pageForHash('passkeys')).toBe('security');
 		expect(pageForHash('#Storage')).toBe('instance');
 		expect(pageForHash('#self-update')).toBe('instance');
+		expect(pageForHash('#upstreams')).toBe('instance');
+		expect(pageForHash('#spawn-limits')).toBe('instance');
 		expect(pageForHash('#redaction')).toBe('privacy');
 		expect(pageForHash('')).toBe(DEFAULT_SETTINGS_PAGE);
 		expect(pageForHash(null)).toBe(DEFAULT_SETTINGS_PAGE);

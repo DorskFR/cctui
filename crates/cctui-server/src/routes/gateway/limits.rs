@@ -386,6 +386,9 @@ pub fn bump_orphan_401(
     window: std::time::Duration,
     block: std::time::Duration,
 ) -> (u32, bool) {
+    if map.len() >= ORPHAN_SWEEP_AT && orphan_sweep_due(now) {
+        sweep_orphan_spam(map, now, window);
+    }
     let mut entry = map.entry(token_fp.to_string()).or_insert_with(|| crate::state::OrphanSpam {
         count: 0,
         window_start: now,
@@ -407,6 +410,31 @@ pub fn bump_orphan_401(
     }
     drop(entry);
     (count, newly_blocked)
+}
+
+const ORPHAN_SWEEP_AT: usize = 1024;
+const ORPHAN_SWEEP_EVERY: std::time::Duration = std::time::Duration::from_secs(10);
+
+fn orphan_sweep_due(now: std::time::Instant) -> bool {
+    static LAST: std::sync::Mutex<Option<std::time::Instant>> = std::sync::Mutex::new(None);
+    let mut last = LAST.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if last.is_some_and(|t| now.saturating_duration_since(t) < ORPHAN_SWEEP_EVERY) {
+        return false;
+    }
+    *last = Some(now);
+    true
+}
+
+/// Evict fingerprints whose window and block have both lapsed.
+pub fn sweep_orphan_spam(
+    map: &OrphanSpamMap,
+    now: std::time::Instant,
+    window: std::time::Duration,
+) {
+    map.retain(|_, e| {
+        now.duration_since(e.window_start) <= window
+            || matches!(e.blocked_until, Some(until) if until > now)
+    });
 }
 
 #[cfg(test)]
@@ -540,5 +568,38 @@ mod tests {
             .execute(&pool)
             .await
             .expect("cleanup");
+    }
+
+    #[test]
+    fn expired_orphan_fingerprints_are_swept() {
+        use super::{OrphanSpamMap, bump_orphan_401, sweep_orphan_spam};
+        use std::time::{Duration, Instant};
+        let map = OrphanSpamMap::new();
+        let window = Duration::from_mins(1);
+        let block = Duration::from_mins(5);
+        let t0 = Instant::now();
+        for i in 0..10_000 {
+            bump_orphan_401(&map, &format!("fp-{i}"), t0, 1, window, block);
+        }
+        assert_eq!(map.len(), 10_000);
+        sweep_orphan_spam(&map, t0 + Duration::from_mins(2), window);
+        assert_eq!(map.len(), 10_000, "blocks still live");
+        sweep_orphan_spam(&map, t0 + block + Duration::from_secs(1), window);
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn bump_sweeps_once_the_map_is_large() {
+        use super::{ORPHAN_SWEEP_AT, OrphanSpamMap, bump_orphan_401};
+        use std::time::{Duration, Instant};
+        let map = OrphanSpamMap::new();
+        let window = Duration::from_mins(1);
+        let block = Duration::from_mins(5);
+        let t0 = Instant::now();
+        for i in 0..ORPHAN_SWEEP_AT {
+            bump_orphan_401(&map, &format!("fp-{i}"), t0, 100, window, block);
+        }
+        bump_orphan_401(&map, "fresh", t0 + Duration::from_secs(61), 100, window, block);
+        assert_eq!(map.len(), 1);
     }
 }

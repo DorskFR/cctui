@@ -1,24 +1,10 @@
-//! Emoji prefix for auto-generated session names (opt-in, per user).
+//! Emoji prefix for agent-generated session names (opt-in per user via
+//! `sessionEmojiPrefix`), applied as the name arrives on the `Status` event.
 //!
-//! cctui does not generate session titles: they come from the agent itself
-//! (the claude binary writes `name` into its `state.json`, codex reports
-//! `thread/name/updated`) and reach us on the `Status` event. There is
-//! therefore no naming prompt to ask for an emoji — instead, when the owning
-//! user has `sessionEmojiPrefix` enabled in their settings, we decorate the
-//! name on ingestion, deterministically, from the words it already contains.
-//!
-//! Two paths produce the emoji:
-//!
-//! * **A small model**, when `CCTUI_EMOJI_ENDPOINT` + `CCTUI_EMOJI_MODEL` are
-//!   configured — one short OpenAI-compatible call per *new* name, off the
-//!   status path, so the emoji is genuinely chosen for the subject.
-//! * **A deterministic keyword table** otherwise, and whenever the call fails,
-//!   times out or answers with something that is not a single emoji. It costs
-//!   nothing, never blocks, and keeps the feature working for adapters and
-//!   deployments with no model wired up.
-//!
-//! The table result is written first, so the name is decorated immediately; the
-//! model refines it a moment later when it has something better.
+//! A deterministic keyword table decorates the name immediately. When
+//! `CCTUI_EMOJI_ENDPOINT` + `CCTUI_EMOJI_MODEL` are configured, one
+//! OpenAI-compatible call per new name refines it off the status path; any
+//! failure, timeout or non-single-emoji answer keeps the table result.
 
 /// Keyword stems (English + French) mapped to the emoji they select. Scanned in
 /// order, first hit wins, so the more specific families come first: `docker`

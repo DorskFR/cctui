@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { settings } from "./settings.svelte";
 import { auth } from "./auth.svelte";

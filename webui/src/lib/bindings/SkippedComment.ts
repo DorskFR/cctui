@@ -2,26 +2,6 @@
 import type { AnchorError } from "./AnchorError";
 
 /**
- * One draft comment that could not be anchored at publish time, so it was left
- * out of the submitted review.
- *
- * The webui surfaces these so the reviewer knows a
- * comment did not post (rather than silently dropping it).
+ * A draft comment left out because it no longer anchors.
  */
-export type SkippedComment = { 
-/**
- * The draft comment's id.
- */
-comment_id: string, 
-/**
- * The file path it was anchored on.
- */
-path: string, 
-/**
- * 1-based line on its side.
- */
-line: number, 
-/**
- * Why it could not be anchored (the [`AnchorError`] reason).
- */
-reason: AnchorError, };
+export type SkippedComment = { comment_id: string, path: string, line: number, reason: AnchorError, };

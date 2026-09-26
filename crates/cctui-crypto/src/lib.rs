@@ -5,16 +5,15 @@
 //! legacy XOR-hex rows and must keep decrypting (lazy migration); legacy
 //! values are pure hex, so they can never collide with the prefix.
 //!
-//! Key: `CCTUI_VAULT_KEY`, hex-encoded 32 bytes. Empty key = pass-through
-//! (dev/test, matching the historical scheme); any other length is stretched
-//! to 32 via SHA-256 so historical keys keep working.
+//! Key: `CCTUI_VAULT_KEY`, hex-encoded, at least 32 bytes. Empty key =
+//! pass-through (dev/test, or a legacy instance; see [`resolve_startup_key`]); a longer key
+//! is stretched to 32 via SHA-256 so historical keys keep working.
 
 pub mod redact;
 
 use chacha20poly1305::aead::{Aead, Generate, KeyInit};
 use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
 use sha2::{Digest, Sha256};
-use std::fmt::Write;
 
 const V1_PREFIX: &str = "v1:";
 const NONCE_LEN: usize = 12;
@@ -84,20 +83,6 @@ fn try_decrypt_v1(body: &str, key: &[u8]) -> Result<String, String> {
     String::from_utf8(plaintext).map_err(|e| format!("plaintext is not UTF-8: {e}"))
 }
 
-/// Legacy XOR-with-repeating-key + hex writer. Kept only so tests can fabricate
-/// rows; production code must use [`encrypt`].
-#[must_use]
-pub fn legacy_xor_obfuscate(plaintext: &str, key: &[u8]) -> String {
-    if key.is_empty() {
-        return plaintext.to_string();
-    }
-    let mut result = String::new();
-    for (i, b) in plaintext.bytes().enumerate() {
-        let _ = write!(result, "{:02x}", b ^ key[i % key.len()]);
-    }
-    result
-}
-
 fn xor_deobfuscate(ciphertext: &str, key: &[u8]) -> Option<String> {
     if !ciphertext.len().is_multiple_of(2) {
         return None;
@@ -114,13 +99,22 @@ fn xor_deobfuscate(ciphertext: &str, key: &[u8]) -> Option<String> {
 pub enum KeyError {
     Unset,
     InvalidHex(hex::FromHexError),
+    TooShort(usize),
 }
+
+/// Minimum decoded vault key length, in bytes.
+pub const MIN_KEY_LEN: usize = 32;
 
 impl std::fmt::Display for KeyError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Unset => f.write_str("CCTUI_VAULT_KEY is not set (hex-encoded 32-byte key)"),
             Self::InvalidHex(e) => write!(f, "CCTUI_VAULT_KEY is not valid hex: {e}"),
+            Self::TooShort(n) => write!(
+                f,
+                "CCTUI_VAULT_KEY decodes to {n} bytes; at least {MIN_KEY_LEN} are required \
+                 (generate one with `openssl rand -hex 32`)"
+            ),
         }
     }
 }
@@ -129,11 +123,37 @@ impl std::error::Error for KeyError {}
 
 fn key_from_env(var: Result<String, std::env::VarError>) -> Result<Vec<u8>, KeyError> {
     let raw = var.map_err(|_| KeyError::Unset)?;
-    hex::decode(raw).map_err(KeyError::InvalidHex)
+    let key = hex::decode(raw.trim()).map_err(KeyError::InvalidHex)?;
+    if key.len() < MIN_KEY_LEN {
+        return Err(KeyError::TooShort(key.len()));
+    }
+    Ok(key)
 }
 
-/// Like [`vault_key`] but distinguishes unset from invalid hex, so a caller can
-/// fail closed instead of silently degrading to pass-through.
+static WEAK_KEY_WARNED: std::sync::Once = std::sync::Once::new();
+
+fn weak_key_from_env(var: Result<String, std::env::VarError>) -> Vec<u8> {
+    match key_from_env(var.clone()) {
+        Ok(key) => key,
+        Err(KeyError::Unset) => Vec::new(),
+        Err(KeyError::InvalidHex(e)) => {
+            WEAK_KEY_WARNED.call_once(|| {
+                tracing::error!(
+                    "CCTUI_VAULT_KEY is set but not valid hex ({e}); falling back to pass-through \
+                     — vault values will be stored UNENCRYPTED"
+                );
+            });
+            Vec::new()
+        }
+        Err(e @ KeyError::TooShort(_)) => {
+            WEAK_KEY_WARNED.call_once(|| tracing::error!("{e}"));
+            var.ok().and_then(|raw| hex::decode(raw.trim()).ok()).unwrap_or_default()
+        }
+    }
+}
+
+/// Like [`vault_key`] but rejects an unset, non-hex or too-short key, so a
+/// caller can fail closed instead of silently degrading to pass-through.
 pub fn vault_key_checked() -> Result<Vec<u8>, KeyError> {
     key_from_env(std::env::var("CCTUI_VAULT_KEY"))
 }
@@ -141,21 +161,46 @@ pub fn vault_key_checked() -> Result<Vec<u8>, KeyError> {
 /// The hex-decoded vault key from `CCTUI_VAULT_KEY`.
 ///
 /// Unset yields an empty key (pass-through) so non-prod builds and tests don't
-/// panic. Invalid hex also degrades to pass-through but is logged at `error` —
-/// prefer [`vault_key_checked`] where storing values UNENCRYPTED is unacceptable.
+/// panic. Invalid hex also degrades to pass-through, and a too-short key is
+/// used as-is; both are logged at `error` — prefer [`vault_key_checked`] where
+/// weak or missing encryption is unacceptable.
 #[must_use]
 pub fn vault_key() -> Vec<u8> {
-    match vault_key_checked() {
-        Ok(key) => key,
-        Err(KeyError::Unset) => Vec::new(),
-        Err(KeyError::InvalidHex(e)) => {
-            tracing::error!(
-                "CCTUI_VAULT_KEY is set but not valid hex ({e}); falling back to pass-through — \
-                 vault values will be stored UNENCRYPTED"
-            );
-            Vec::new()
+    weak_key_from_env(std::env::var("CCTUI_VAULT_KEY"))
+}
+
+/// How the server may run with the configured key.
+#[derive(Debug, PartialEq, Eq)]
+pub enum StartupKey {
+    Strong(Vec<u8>),
+    /// Unset or short key kept only because the vault already holds data
+    /// written under it. An unset key means pass-through (plaintext).
+    Legacy(Vec<u8>, String),
+}
+
+/// Decide whether the server may start.
+///
+/// Invalid hex always refuses; an unset
+/// or short key refuses on a fresh install but is tolerated when the vault
+/// already holds data, so existing instances stay readable.
+pub fn resolve_startup_key(
+    var: Result<String, std::env::VarError>,
+    has_encrypted_data: bool,
+) -> Result<StartupKey, KeyError> {
+    match key_from_env(var.clone()) {
+        Ok(key) => Ok(StartupKey::Strong(key)),
+        Err(e @ KeyError::InvalidHex(_)) => Err(e),
+        Err(e) if !has_encrypted_data => Err(e),
+        Err(e) => {
+            let key = var.ok().and_then(|raw| hex::decode(raw.trim()).ok()).unwrap_or_default();
+            Ok(StartupKey::Legacy(key, e.to_string()))
         }
     }
+}
+
+/// [`resolve_startup_key`] against `CCTUI_VAULT_KEY`.
+pub fn startup_key(has_encrypted_data: bool) -> Result<StartupKey, KeyError> {
+    resolve_startup_key(std::env::var("CCTUI_VAULT_KEY"), has_encrypted_data)
 }
 
 /// Like [`vault_key`] but panics when `CCTUI_VAULT_KEY` is unset or not valid
@@ -171,6 +216,18 @@ pub fn vault_key_required() -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fmt::Write;
+
+    fn legacy_xor_obfuscate(plaintext: &str, key: &[u8]) -> String {
+        if key.is_empty() {
+            return plaintext.to_string();
+        }
+        let mut result = String::new();
+        for (i, b) in plaintext.bytes().enumerate() {
+            let _ = write!(result, "{:02x}", b ^ key[i % key.len()]);
+        }
+        result
+    }
 
     const KEY: &[u8] = b"test-key-32-bytes-test-key-32byt";
 
@@ -249,6 +306,77 @@ mod tests {
 
     #[test]
     fn key_from_env_valid_hex_decodes() {
-        assert_eq!(key_from_env(Ok("00ff".to_owned())).unwrap(), vec![0x00, 0xff]);
+        let hex = "00ff".repeat(16);
+        assert_eq!(key_from_env(Ok(hex.clone())).unwrap(), hex::decode(hex).unwrap());
+    }
+
+    #[test]
+    fn key_from_env_empty_is_error() {
+        assert!(matches!(key_from_env(Ok(String::new())), Err(KeyError::TooShort(0))));
+    }
+
+    #[test]
+    fn key_from_env_one_byte_is_error() {
+        assert!(matches!(key_from_env(Ok("00".to_owned())), Err(KeyError::TooShort(1))));
+        assert!(matches!(key_from_env(Ok("00".repeat(31))), Err(KeyError::TooShort(31))));
+    }
+
+    fn unset() -> Result<String, std::env::VarError> {
+        Err(std::env::VarError::NotPresent)
+    }
+
+    #[test]
+    fn startup_invalid_hex_refuses_even_with_data() {
+        assert!(matches!(
+            resolve_startup_key(Ok("zz".to_owned()), true),
+            Err(KeyError::InvalidHex(_))
+        ));
+        assert!(matches!(
+            resolve_startup_key(Ok("zz".to_owned()), false),
+            Err(KeyError::InvalidHex(_))
+        ));
+    }
+
+    #[test]
+    fn startup_short_key_with_data_runs_legacy() {
+        let got = resolve_startup_key(Ok("00ff".to_owned()), true).unwrap();
+        assert!(matches!(got, StartupKey::Legacy(ref k, _) if k == &[0x00, 0xff]));
+    }
+
+    #[test]
+    fn startup_short_key_fresh_install_refuses() {
+        assert!(matches!(
+            resolve_startup_key(Ok("00ff".to_owned()), false),
+            Err(KeyError::TooShort(2))
+        ));
+    }
+
+    #[test]
+    fn startup_unset_with_data_runs_passthrough() {
+        let got = resolve_startup_key(unset(), true).unwrap();
+        assert!(matches!(got, StartupKey::Legacy(ref k, _) if k.is_empty()));
+    }
+
+    #[test]
+    fn startup_unset_fresh_install_refuses() {
+        assert!(matches!(resolve_startup_key(unset(), false), Err(KeyError::Unset)));
+    }
+
+    #[test]
+    fn startup_good_key_is_strong() {
+        let hex = "ab".repeat(32);
+        for has_data in [true, false] {
+            assert_eq!(
+                resolve_startup_key(Ok(hex.clone()), has_data).unwrap(),
+                StartupKey::Strong(hex::decode(&hex).unwrap())
+            );
+        }
+    }
+
+    #[test]
+    fn weak_key_keeps_its_bytes_for_non_server_callers() {
+        assert_eq!(weak_key_from_env(Ok("00ff".to_owned())), vec![0x00, 0xff]);
+        assert!(weak_key_from_env(Ok(String::new())).is_empty());
+        assert!(weak_key_from_env(Err(std::env::VarError::NotPresent)).is_empty());
     }
 }

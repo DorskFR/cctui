@@ -134,7 +134,7 @@ guarded("subscription management", () => {
     expect(res.status).toBe(400);
   });
 
-  test("CCT-776: rejects owner/repo path segments like ..", async () => {
+  test("rejects owner/repo path segments like ..", async () => {
     const app = createApp(deps());
     for (const target of ["../..#1", "https://github.com/../../x/pull/1"]) {
       const res = await app.request("/v1/subscriptions", {
@@ -181,7 +181,7 @@ guarded("subscription management", () => {
     expect(((await after.json()) as { items: unknown[] }).items.length).toBe(0);
   });
 
-  test("CCT-775: /v1/status requires auth and scopes accounts to the caller", async () => {
+  test("/v1/status requires auth and scopes accounts to the caller", async () => {
     const app = createApp({
       db,
       auth,
@@ -194,7 +194,7 @@ guarded("subscription management", () => {
     expect(body.sync.accounts).toEqual(["alpha"]);
   });
 
-  test("CCT-687: the permanent notification subscription cannot be deleted (400)", async () => {
+  test("the permanent notification subscription cannot be deleted (400)", async () => {
     const app = createApp(deps());
     await upsertSubscription(db, "alpha", "notification", null, "notification");
     const [row] = await db.sql<{ id: string }[]>`

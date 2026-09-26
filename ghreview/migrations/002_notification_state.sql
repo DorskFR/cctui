@@ -1,4 +1,4 @@
--- CCT-602: server-managed notification state.
+-- Server-managed notification state.
 -- Read/done/archived flags live here, layered on top of the GitHub-shaped
 -- notification documents (documents WHERE kind = 'notification', key = thread id).
 -- One row per (account, thread_id); absent rows mean "no local state yet".

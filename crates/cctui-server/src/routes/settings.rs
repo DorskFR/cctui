@@ -1,29 +1,12 @@
-//! `GET`/`PUT /api/v1/settings` — server-persisted per-user settings (//! epic).
+//! `GET`/`PUT /api/v1/settings` — server-persisted per-user settings.
 //!
-//! Each user owns a single row in `user_settings` holding a `version` and an
-//! open JSON `data` blob. The blob is deliberately schema-less on the wire (we
-//! store `serde_json::Value`, not a rigid struct) so the webui can grow new
-//! keys without a server change or SQL migration.
+//! Each user owns one `user_settings` row: an integer `version` and an open,
+//! schema-less JSON `data` blob, so the webui can add keys without a migration.
 //!
-//! ## Versioning & lazy persistence
-//!
-//! `data` is versioned by an integer. Upgrades between payload shapes are
-//! applied **in code** by [`migrate`] (NOT by SQL) — a pure, sequential chain
-//! from the stored version up to [`CURRENT_VERSION`]. The chain runs on both
-//! read and write:
-//!   - On `GET` we upgrade the stored payload in memory so callers always see
-//!     the current shape, but we do NOT write the upgraded row back. Persistence
-//!     is **lazy**: the upgraded payload is written on the *next* `PUT` (the
-//!     user's next settings edit), at which point the stored `version` advances.
-//!     This keeps reads side-effect-free and avoids a write storm on deploy.
-//!   - On `PUT` we upgrade the incoming payload to `CURRENT_VERSION` before the
-//!     upsert and store that version, so writes are always current-shaped.
-//!
-//! ## Reserved keys
-//!
-//! `keymap` and `shortcutsEnabled` are reserved for the later keyboard-shortcuts
-//! feature. Because `data` is an open JSON object, no work is needed now to
-//! "reserve" them — adding those keys later is a no-op on the storage side.
+//! Shape upgrades run **in code** through [`migrate`], a pure sequential chain
+//! up to [`CURRENT_VERSION`]. `GET` upgrades in memory without writing back
+//! (reads stay side-effect-free, no write storm on deploy); `PUT` upgrades the
+//! incoming payload and stores the current version.
 
 use axum::extract::State;
 use axum::http::StatusCode;

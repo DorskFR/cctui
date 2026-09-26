@@ -1,8 +1,32 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { hexToRgb, type Rgb } from "./contrast";
 import { THEMES } from "./theme";
+
+interface Rgb {
+  r: number;
+  g: number;
+  b: number;
+}
+
+function hexToRgb(hex: string): Rgb {
+  const h = hex.trim().replace(/^#/, "");
+  const full =
+    h.length === 3
+      ? h
+          .split("")
+          .map((c) => c + c)
+          .join("")
+      : h;
+  if (!/^[0-9a-fA-F]{6}$/.test(full)) {
+    throw new Error(`not an opaque hex color: ${hex}`);
+  }
+  return {
+    r: Number.parseInt(full.slice(0, 2), 16),
+    g: Number.parseInt(full.slice(2, 4), 16),
+    b: Number.parseInt(full.slice(4, 6), 16),
+  };
+}
 
 const TSUMIKIT_VARS = ["tokens.css", "themes.css"]
   .map((f) => readFileSync(resolve(process.cwd(), `node_modules/@dorsk/tsumikit/dist/styles/${f}`), "utf8"))

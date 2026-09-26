@@ -1,29 +1,16 @@
-//! `PeerHttpTransport` (phase 2 of the message-bus architecture):
-//! cross-replica routing + event fan-out over plain pod-to-pod HTTP.
+//! `PeerHttpTransport`: cross-replica routing and event fan-out over
+//! pod-to-pod HTTP.
 //!
-//! With multiple server replicas, a daemon/dispatcher WS is terminated by
-//! exactly one pod while browser/API traffic load-balances across all of them.
-//! This transport fills the [`super::Transport`] seam:
+//! * **route**: a local registry miss looks up the live owning peer in
+//!   `ws_presence` and POSTs the frame to its `/internal/bus/route`; no live
+//!   owner yields the same `NoDaemon`/`NoDispatcher` miss as locally.
+//! * **relay**: every locally-published [`BusEvent`] is batched and sent to
+//!   every live pod's `/internal/bus/publish`, best-effort; the DB stays the
+//!   source of truth for refetch.
 //!
-//!   * **route** (commands + correlated round-trips): a local registry miss
-//!     consults `ws_presence` for a live peer owning the WS and POSTs the frame
-//!     to that pod's `/internal/bus/route`, returning the peer's outcome. No
-//!     live owner ⇒ the same `NoDaemon`/`NoDispatcher` miss the caller would
-//!     have seen locally, so the webui ack goes red honestly.
-//!   * **relay** (publish fan-out): every locally-published [`BusEvent`] is
-//!     queued to a background worker that batches and POSTs it to every live
-//!     peer pod (from the `pods` table) at `/internal/bus/publish`. Best-effort
-//!     with a short timeout — DB persistence remains the source of truth for
-//!     refetch, exactly as today.
-//!
-//! The receiving pod's internal endpoints (`crate::routes::internal`) deliver
-//! LOCALLY only (`Bus::*_local` / [`super::Bus::deliver_local`]) — the loop
-//! guard: a forwarded frame or relayed event can never be re-forwarded.
-//!
-//! Auth is an internal shared secret minted once into `cluster_secrets` at
-//! first boot and read by every replica; requests carry it as a Bearer token
-//! and ingest compares it in constant time. It is never a user-facing
-//! credential and no user/machine token can reach these endpoints.
+//! Receiving endpoints deliver locally only, so nothing is re-forwarded. Auth is
+//! a shared secret minted once into `cluster_secrets`, compared in constant
+//! time; no user or machine token can reach these endpoints.
 
 use cctui_proto::adapter::BootstrapFile;
 use cctui_proto::git::GitInfo;
@@ -33,6 +20,10 @@ use cctui_proto::ws::{
 };
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
@@ -58,6 +49,9 @@ const DISPATCHER_FORWARD_TIMEOUT: std::time::Duration = std::time::Duration::fro
 const RELAY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 /// Max events drained into one relay batch.
 const RELAY_BATCH: usize = 64;
+/// Capacity of the relay ingress and of each peer's queue. Overflow is
+/// dropped: peers recover dropped events from the DB on resubscribe.
+const RELAY_QUEUE: usize = 4096;
 /// How long a fetched peer-pod list is reused before re-querying `pods`.
 const PEER_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(5);
 
@@ -245,8 +239,10 @@ pub struct PeerHttpTransport {
     port: u16,
     /// The cluster-internal shared secret (Bearer on every internal call).
     secret: String,
-    /// Queue into the background relay worker.
-    relay_tx: mpsc::UnboundedSender<WireBusEvent>,
+    /// Queue into the background relay worker, as pre-serialized events.
+    relay_tx: mpsc::Sender<Arc<str>>,
+    /// Events dropped because the relay ingress was full.
+    relay_dropped: AtomicU64,
 }
 
 impl PeerHttpTransport {
@@ -257,7 +253,7 @@ impl PeerHttpTransport {
         port: u16,
         secret: String,
     ) -> Self {
-        let (relay_tx, relay_rx) = mpsc::unbounded_channel();
+        let (relay_tx, relay_rx) = mpsc::channel(RELAY_QUEUE);
         tokio::spawn(relay_worker(
             pool.clone(),
             client.clone(),
@@ -266,7 +262,7 @@ impl PeerHttpTransport {
             secret.clone(),
             relay_rx,
         ));
-        Self { pool, client, pod, port, secret, relay_tx }
+        Self { pool, client, pod, port, secret, relay_tx, relay_dropped: AtomicU64::new(0) }
     }
 
     /// The miss error for `kind` — what the caller would have seen locally.
@@ -428,69 +424,193 @@ impl Transport for PeerHttpTransport {
     }
 
     fn relay(&self, event: &BusEvent) {
-        // Unbounded so `publish` stays sync + infallible for callers; the
-        // worker drains in batches. Send only fails after worker death (process
-        // teardown) — nothing to do then.
-        let _ = self.relay_tx.send(WireBusEvent::from(event));
+        let json = match serde_json::to_string(&WireBusEvent::from(event)) {
+            Ok(json) => Arc::<str>::from(json),
+            Err(err) => {
+                tracing::warn!(%err, "bus event not serializable for relay");
+                return;
+            }
+        };
+        if let Err(mpsc::error::TrySendError::Full(_)) = self.relay_tx.try_send(json) {
+            note_drop(&self.relay_dropped, "ingress");
+        }
     }
 }
 
-/// Background fan-out: drain relayed events in batches and POST each batch to
-/// every live peer pod. Best-effort — a failed or slow peer is warned about and
-/// skipped; the DB remains the recovery path (clients refetch on resubscribe).
+fn note_drop(counter: &AtomicU64, peer: &str) {
+    let dropped = counter.fetch_add(1, Ordering::Relaxed) + 1;
+    if dropped.is_power_of_two() {
+        tracing::warn!(%peer, dropped, "peer bus relay queue full, dropping events");
+    }
+}
+
+/// Background fan-out: route each relayed event into every live peer's own
+/// queue. Best-effort — the DB remains the recovery path (clients refetch on
+/// resubscribe).
 async fn relay_worker(
     pool: PgPool,
     client: reqwest::Client,
     pod: String,
     port: u16,
     secret: String,
-    mut rx: mpsc::UnboundedReceiver<WireBusEvent>,
+    mut rx: mpsc::Receiver<Arc<str>>,
 ) {
-    let mut peers: Vec<String> = Vec::new();
+    let mut fanout = RelayFanout::default();
     let mut peers_fetched_at: Option<std::time::Instant> = None;
-    while let Some(first) = rx.recv().await {
-        let mut batch = vec![first];
-        while batch.len() < RELAY_BATCH {
-            match rx.try_recv() {
-                Ok(ev) => batch.push(ev),
-                Err(_) => break,
-            }
-        }
-        // Refresh the peer list past its TTL. An empty list (single replica /
-        // peers down) short-circuits: events are dropped here, delivered
-        // locally already, persisted in the DB.
+    while let Some(event) = rx.recv().await {
         if peers_fetched_at.is_none_or(|t| t.elapsed() > PEER_CACHE_TTL) {
-            peers = presence::live_peer_pods(&pool, &pod).await;
+            let peers = presence::live_peer_pods(&pool, &pod).await;
+            fanout.sync_peers(&peers, |ip| {
+                spawn_peer_relay(client.clone(), peer_base(ip, port), secret.clone())
+            });
             peers_fetched_at = Some(std::time::Instant::now());
         }
-        if peers.is_empty() {
-            continue;
-        }
-        let posts = peers.iter().map(|ip| {
-            let url = format!("{}/internal/bus/publish", peer_base(ip, port));
-            let fut = client
-                .post(url)
-                .bearer_auth(&secret)
-                .timeout(RELAY_TIMEOUT)
-                .json(&batch)
-                .send();
-            async move {
-                match fut.await {
-                    Ok(r) if r.status().is_success() => {}
-                    Ok(r) => {
-                        tracing::warn!(peer = %ip, status = %r.status(), "peer bus publish rejected");
-                    }
-                    Err(err) => tracing::warn!(peer = %ip, %err, "peer bus publish failed"),
-                }
+        fanout.push(&event);
+    }
+}
+
+struct PeerQueue {
+    tx: mpsc::Sender<Arc<str>>,
+    dropped: AtomicU64,
+}
+
+/// One bounded queue per live peer, so a slow peer sheds its own backlog
+/// without stalling the others.
+#[derive(Default)]
+struct RelayFanout {
+    peers: HashMap<String, PeerQueue>,
+}
+
+impl RelayFanout {
+    /// Keep a queue for exactly `live` peers. Dropping a departed peer's sender
+    /// ends its task.
+    fn sync_peers(
+        &mut self,
+        live: &[String],
+        mut spawn: impl FnMut(&str) -> mpsc::Sender<Arc<str>>,
+    ) {
+        self.peers.retain(|ip, _| live.contains(ip));
+        for ip in live {
+            if !self.peers.contains_key(ip) {
+                let tx = spawn(ip);
+                self.peers.insert(ip.clone(), PeerQueue { tx, dropped: AtomicU64::new(0) });
             }
-        });
-        futures_util::future::join_all(posts).await;
+        }
+    }
+
+    fn push(&self, event: &Arc<str>) {
+        for (ip, peer) in &self.peers {
+            if let Err(mpsc::error::TrySendError::Full(_)) = peer.tx.try_send(Arc::clone(event)) {
+                note_drop(&peer.dropped, ip);
+            }
+        }
+    }
+}
+
+fn spawn_peer_relay(
+    client: reqwest::Client,
+    base: String,
+    secret: String,
+) -> mpsc::Sender<Arc<str>> {
+    let (tx, rx) = mpsc::channel(RELAY_QUEUE);
+    tokio::spawn(peer_relay(client, base, secret, rx));
+    tx
+}
+
+/// Drain one peer's queue in batches, `POSTing` each as a JSON array.
+async fn peer_relay(
+    client: reqwest::Client,
+    base: String,
+    secret: String,
+    mut rx: mpsc::Receiver<Arc<str>>,
+) {
+    let url = format!("{base}/internal/bus/publish");
+    let mut batch = Vec::with_capacity(RELAY_BATCH);
+    while rx.recv_many(&mut batch, RELAY_BATCH).await > 0 {
+        let mut body = String::from("[");
+        for (i, event) in batch.iter().enumerate() {
+            if i > 0 {
+                body.push(',');
+            }
+            body.push_str(event);
+        }
+        body.push(']');
+        batch.clear();
+        let sent = client
+            .post(&url)
+            .bearer_auth(&secret)
+            .timeout(RELAY_TIMEOUT)
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(body)
+            .send()
+            .await;
+        match sent {
+            Ok(r) if r.status().is_success() => {}
+            Ok(r) => {
+                tracing::warn!(peer = %base, status = %r.status(), "peer bus publish rejected");
+            }
+            Err(err) => tracing::warn!(peer = %base, %err, "peer bus publish failed"),
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn stub_peer(delay: std::time::Duration, received: Arc<AtomicU64>) -> String {
+        let app = axum::Router::new().route(
+            "/internal/bus/publish",
+            axum::routing::post(move |axum::Json(batch): axum::Json<Vec<WireBusEvent>>| {
+                let received = received.clone();
+                async move {
+                    tokio::time::sleep(delay).await;
+                    received.fetch_add(u64::try_from(batch.len()).unwrap(), Ordering::SeqCst);
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        addr.to_string()
+    }
+
+    #[tokio::test]
+    async fn a_hung_peer_sheds_its_own_backlog_without_starving_a_healthy_one() {
+        let slow_rx = Arc::new(AtomicU64::new(0));
+        let fast_rx = Arc::new(AtomicU64::new(0));
+        let slow = stub_peer(std::time::Duration::from_secs(10), slow_rx.clone()).await;
+        let fast = stub_peer(std::time::Duration::ZERO, fast_rx.clone()).await;
+        let client = reqwest::Client::new();
+        let mut fanout = RelayFanout::default();
+        fanout.sync_peers(&[slow.clone(), fast.clone()], |addr| {
+            spawn_peer_relay(client.clone(), format!("http://{addr}"), "s".into())
+        });
+
+        let event = BusEvent::Server(ServerEvent::AskResolved { session_id: "sess-1".into() });
+        let json: Arc<str> = serde_json::to_string(&WireBusEvent::from(&event)).unwrap().into();
+        let total = 10_000u64;
+        for i in 0..total {
+            fanout.push(&json);
+            if i % 256 == 0 {
+                tokio::task::yield_now().await;
+            }
+        }
+
+        let slow_dropped = fanout.peers[&slow].dropped.load(Ordering::SeqCst);
+        let slow_room = u64::try_from(RELAY_QUEUE + 2 * RELAY_BATCH).unwrap();
+        assert!(slow_dropped >= total - slow_room, "{slow_dropped}");
+
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        while fast_rx.load(Ordering::SeqCst) == 0 && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(fast_rx.load(Ordering::SeqCst) > 0, "healthy peer received nothing");
+        assert_eq!(slow_rx.load(Ordering::SeqCst), 0);
+
+        fanout.sync_peers(std::slice::from_ref(&fast), |_| unreachable!());
+        assert!(!fanout.peers.contains_key(&slow));
+    }
 
     /// Cross-replica forwarding keys on the session, so a machine-scoped
     /// frame and a session-scoped one must be told apart from the frame alone.

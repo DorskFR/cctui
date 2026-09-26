@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 import type { Journey } from '@dorsk/journey';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { auth } from './auth.svelte';

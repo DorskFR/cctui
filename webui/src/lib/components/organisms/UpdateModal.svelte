@@ -13,9 +13,8 @@
 	//     because a transcript is the only progress an agent has.
 	import { goto } from '$app/navigation';
 	import { Button, Modal, Text } from '@dorsk/tsumikit';
-	import { createQuery } from '@tanstack/svelte-query';
 	import type { UpdateHookPhase } from '@bindings/UpdateHookPhase';
-	import { endpoints, useMe } from '$lib/queries';
+	import { endpoints, useChangelog, useMe, useSelfUpdateRun } from '$lib/queries';
 	import { renderMarkdown } from '$lib/markdown';
 	import { toasts } from '$lib/toast.svelte';
 	import { ws } from '$lib/ws.svelte';
@@ -39,23 +38,14 @@
 
 	const me = useMe();
 	const isAdmin = $derived(me.data?.role === 'admin');
-	const changelog = createQuery(() => ({
-		queryKey: ['version', 'changelog', latestVersion],
-		queryFn: endpoints.changelog,
-		staleTime: 60_000
-	}));
+	const changelog = useChangelog(() => latestVersion);
 
 	let step = $state<'notes' | 'confirm' | 'run'>('notes');
 	let launching = $state(false);
 
 	// Only polls once a hook run is actually in flight, and stops itself the
 	// moment the run reports a terminal phase.
-	const run = createQuery(() => ({
-		queryKey: ['version', 'self-update-run'],
-		queryFn: endpoints.selfUpdateStatus,
-		enabled: step === 'run',
-		refetchInterval: (query) => (query.state.data?.done ? false : 3_000)
-	}));
+	const run = useSelfUpdateRun(() => step === 'run');
 
 	const PHASE_LABEL: Record<UpdateHookPhase, () => string> = {
 		running: m.update_run_phase_running,

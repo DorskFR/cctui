@@ -4,7 +4,7 @@ import { qk } from "./keys";
 
 export const useMe = () =>
   createQuery(() => ({
-    queryKey: ["me"],
+    queryKey: qk.me,
     queryFn: endpoints.me,
     staleTime: 5 * 60_000,
   }));
@@ -32,4 +32,21 @@ export const useVersion = () =>
     queryKey: qk.version,
     queryFn: endpoints.version,
     staleTime: 60_000,
+  }));
+
+/** Release notes for `version`, as collected by the server's update probe. */
+export const useChangelog = (version: () => string) =>
+  createQuery(() => ({
+    queryKey: qk.changelog(version()),
+    queryFn: endpoints.changelog,
+    staleTime: 60_000,
+  }));
+
+/** The in-flight self-update hook run; polls until it reports a terminal phase. */
+export const useSelfUpdateRun = (enabled: () => boolean) =>
+  createQuery(() => ({
+    queryKey: qk.selfUpdateRun,
+    queryFn: endpoints.selfUpdateStatus,
+    enabled: enabled(),
+    refetchInterval: (query) => (query.state.data?.done ? false : 3_000),
   }));

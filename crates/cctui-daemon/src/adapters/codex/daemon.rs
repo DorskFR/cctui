@@ -1,28 +1,15 @@
 //! Persistent connection to the shared `codex app-server` daemon.
 //!
 //! The control socket at `$CODEX_HOME/app-server-control/app-server-control.sock`
-//! speaks **WebSocket, not newline-delimited JSON**: a bare `connect()` +
-//! `write(json)` is dropped by the server with `failed to upgrade control
-//! socket websocket connection`. This is undocumented upstream and is the one
-//! thing that makes this module more than a socket swap — after the HTTP/1.1
-//! `Upgrade` the JSON-RPC is byte-identical to what [`super::app_server`]
-//! writes over stdio.
+//! speaks WebSocket, not newline-delimited JSON (undocumented upstream); after
+//! the `Upgrade` the JSON-RPC matches what [`super::app_server`] writes over
+//! stdio. Reads and archive/unarchive answer unauthenticated, so one
+//! connection serves every account's threads.
 //!
-//! Reads (`thread/list`, `thread/read`, `thread/turns/list`) and the
-//! `thread/{archive,unarchive}` lifecycle ops all answer unauthenticated,
-//! which is what lets one connection serve every session's inventory
-//! regardless of which account owns the thread.
-//!
-//! Responses and notifications interleave on the one socket, so requests are
-//! correlated by JSON-RPC id and everything else fans out to
-//! [`DaemonHandle::subscribe`].
-//!
-//! A session can also run its turns here through a [`ThreadWire`]: a raw
-//! JSON-RPC pipe scoped to one thread, byte-compatible with the stdio child.
-//! Unlike a read, a thread route outlives a drop: on reconnect it rejoins its
-//! thread with `thread/resume` (re-supplying its [`ThreadConfig`]) and
-//! reconciles a `turn/start` whose answer the drop swallowed, so a running
-//! turn is neither lost nor duplicated.
+//! Requests are correlated by JSON-RPC id; everything else fans out to
+//! [`DaemonHandle::subscribe`]. A [`ThreadWire`] runs one thread's turns over
+//! the socket and survives a drop: on reconnect it `thread/resume`s with its
+//! [`ThreadConfig`] and reconciles a `turn/start` whose answer was lost.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -32,6 +19,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use cctui_proto::backoff::Backoff;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use tokio::net::UnixStream;
@@ -39,7 +27,7 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_util::sync::CancellationToken;
 
-use super::app_server::ThreadConfig;
+use super::app_server::{ThreadConfig, TurnStatus, parse_status};
 
 /// Every frame on this socket is mirrored into the shared diagnose ring,
 /// tagged `shared`, so the protocol tail does not go blind on the transport
@@ -225,7 +213,7 @@ async fn supervise(
     connected: Arc<AtomicBool>,
     shutdown: CancellationToken,
 ) {
-    let mut backoff = BACKOFF_MIN;
+    let mut backoff = Backoff::new(BACKOFF_MIN, BACKOFF_MAX);
     let mut generation = 0_u64;
     let mut routes = Routes::default();
     loop {
@@ -236,7 +224,7 @@ async fn supervise(
             Ok((stream, init)) => {
                 routes.init = Some(init);
                 generation += 1;
-                backoff = BACKOFF_MIN;
+                backoff.reset();
                 connected.store(true, Ordering::Relaxed);
                 let _ = events.send(DaemonEvent::Connected { generation });
                 tracing::info!(
@@ -254,11 +242,9 @@ async fn supervise(
             }
             Err(err) => tracing::debug!(%err, "codex: shared app-server connect failed"),
         }
-        tokio::select! {
-            () = shutdown.cancelled() => return,
-            () = tokio::time::sleep(backoff) => {}
+        if !backoff.sleep(&shutdown).await {
+            return;
         }
-        backoff = (backoff * 2).min(BACKOFF_MAX);
     }
 }
 
@@ -672,8 +658,10 @@ impl Routes {
             result.pointer("/thread/turns").and_then(Value::as_array).cloned().unwrap_or_default();
         let latest = turns.last();
         let latest_id = latest.and_then(|t| t.get("id")).and_then(Value::as_str);
-        let latest_running =
-            latest.and_then(|t| t.get("status")).and_then(Value::as_str) == Some("inProgress");
+        let latest_running = latest
+            .and_then(|t| t.get("status"))
+            .map_or(TurnStatus::Unknown, parse_status::<TurnStatus>)
+            == TurnStatus::InProgress;
 
         let mut replay = Vec::new();
         for (local_id, frame) in std::mem::take(&mut r.orphaned_starts) {
@@ -861,8 +849,7 @@ mod tests {
         }
     }
 
-    /// The end-to-end proof that the shared socket is no longer a blind spot:
-    /// a real request over a real WS connection must land in the ring tagged
+    /// A real request over a real WS connection lands in the ring tagged
     /// `shared`, in both directions.
     #[tokio::test]
     async fn frames_on_the_shared_connection_are_ringed_and_tagged_shared() {

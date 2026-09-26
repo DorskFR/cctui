@@ -1,31 +1,11 @@
 //! Persistent headless `attach` to `claude daemon` workers.
 //!
-//! Dispatching a fleet session boots a worker PTY, but the interactive Claude
-//! worker uses DEC focus-tracking (mode 1004) and stays *parked/unfocused* —
-//! it never pulls the seeded prompt through its input loop — until a client
-//! sends `op:"attach"`. The `attach` handler is what runs `seedFocus(true)`
-//! (writes focus-in `ESC[I` into the worker PTY), `noteActivity()` (resets the
-//! 60s idle-retire timer), and registers an attacher (`attachers.size > 0`
-//! blocks idle teardown + stall-respawn). Until then the worker sits in
-//! "limbo" and our `reply` text lands in an undriven PTY.
-//!
-//! The real `claude agents` TUI sends `attach` when a user opens a session —
-//! which is why a stuck session "unblocks" the moment it's opened on the
-//! machine. We reproduce that headlessly: for every live, user-visible session
-//! we hold an `attach` connection open (discarding the raw PTY byte stream the
-//! server emits after the ack). Holding the socket open is sufficient to keep
-//! the attacher registered; no heartbeat/ACK is required. When the connection
-//! drops (respawn, kick, settle) we reconnect with backoff until the driver
-//! tells us the session is gone.
-//!
-//! Wire protocol (claude 2.1.x control socket):
-//!   request : `{"proto":1,"op":"attach","short":"<8hex>","cols":N,"rows":M,
-//!               "attachId":"<unique>","caps":{"terminal":null,"mux":null,"ssh":false}}`
-//!   ack     : first newline-delimited JSON line — `{"ok":true,"op":"attach",…}`
-//!             on success, or `{"ok":false,"code":"…"}` on failure.
-//!   stream  : after a success ack the socket carries RAW PTY bytes (no JSON
-//!             envelope); we read and discard them. A server FIN means we were
-//!             detached / the session settled.
+//! A worker PTY stays parked and never reads its seeded prompt until a client
+//! sends `op:"attach"`, which focuses it, resets its idle-retire timer and
+//! blocks idle teardown. For every live, user-visible session we hold an
+//! attach socket open, discarding the raw PTY bytes that follow the JSON ack;
+//! no heartbeat is needed. A dropped connection is retried with backoff until
+//! the driver reports the session gone.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -33,6 +13,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
+use cctui_proto::backoff::Backoff;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
@@ -268,7 +249,7 @@ impl AttachTask {
     }
 
     async fn run(self) {
-        let mut backoff = BACKOFF_MIN;
+        let mut backoff = Backoff::new(BACKOFF_MIN, BACKOFF_MAX);
         loop {
             if self.cancel.is_cancelled() {
                 return;
@@ -277,7 +258,7 @@ impl AttachTask {
                 AttachOutcome::Detached => {
                     // Clean detach (settle / kick / respawn): reconnect quickly
                     // in case the worker came back under the same short.
-                    backoff = BACKOFF_MIN;
+                    backoff.reset();
                 }
                 AttachOutcome::HeldDead => {
                     // Keep-alive FAILED: the liveness probe found the
@@ -288,14 +269,14 @@ impl AttachTask {
                     // is truly gone the reject will downgrade us to Gone and the
                     // next poll drops us from the roster (where `resume_worker`
                     // can revive a still-revivable session).
-                    backoff = BACKOFF_MIN;
+                    backoff.reset();
                 }
                 AttachOutcome::Gone => {
                     // ENOJOB / EUNVERIFIED: the worker is unrecoverable under
                     // this short. The next poll will drop us from the roster
                     // and cancel this task; back off hard meanwhile so we don't
                     // hammer the socket.
-                    backoff = BACKOFF_MAX;
+                    backoff.saturate();
                 }
                 AttachOutcome::Unauthorized => {
                     // EAUTH: the control key is missing/rotated/wrong, so every
@@ -303,19 +284,16 @@ impl AttachTask {
                     // hard like `Gone` so we don't hammer the socket, but unlike
                     // `Gone` the roster won't drop us — keep retrying so a
                     // regenerated key (re-read fresh each cycle) is picked up.
-                    backoff = BACKOFF_MAX;
+                    backoff.saturate();
                 }
-                AttachOutcome::Retry => {
-                    backoff = (backoff * 2).min(BACKOFF_MAX);
-                }
+                AttachOutcome::Retry => {}
             }
             self.note(|s| {
                 "reconnecting".clone_into(&mut s.phase);
-                s.backoff = Some(backoff);
+                s.backoff = Some(backoff.peek());
             });
-            tokio::select! {
-                () = self.cancel.cancelled() => return,
-                () = tokio::time::sleep(backoff) => {}
+            if !backoff.sleep(&self.cancel).await {
+                return;
             }
         }
     }

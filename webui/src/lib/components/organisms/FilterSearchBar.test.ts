@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 import { mount, tick, unmount } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { FilterSearchBar, type Schema } from '@dorsk/tsumikit';

@@ -1,25 +1,20 @@
-//! Daemon-binary manifest + download-proxy endpoints.
+//! Daemon-binary manifest + download-proxy endpoints — the single channel for
+//! daemon distribution.
 //!
-//! `GET /api/v1/manifest/daemon` returns the server-known daemon version +
-//! per-arch download URLs. The daemon ships in the same release as the
-//! TUI/server, so the version is simply the server's own.
+//! `GET /api/v1/manifest/daemon` returns the server's own version (the daemon
+//! ships in the same release) with per-arch binary and minisign URLs on this
+//! server's origin, so clients never send credentials elsewhere. A beta server
+//! answers `204` unless the caller passes `?channel=beta`.
 //!
-//! `GET /api/v1/daemon/binary/{target}` proxies the actual binary. When the
-//! releases repo is private its assets aren't publicly downloadable, so if
-//! the server is configured with a GitHub PAT
-//! (`CCTUI_GITHUB_TOKEN`/`GH_TOKEN`) it streams the asset itself — clients
-//! never need a token and a private releases repo stays private. Without a
-//! PAT it falls back to a 302 to the raw GitHub URL (which fails for a
-//! private repo — the intended graceful no-op for selfupdate until a token
-//! is provided).
-//!
-//! Routing every version-check / selfupdate / download through these
-//! endpoints makes the server the single channel for daemon distribution.
+//! `GET /api/v1/daemon/binary/{target}` (and `{target}.minisig`) streams the
+//! asset using `CCTUI_GITHUB_TOKEN`/`GH_TOKEN` when set, so a private releases
+//! repo stays private; without a PAT it 302s to the raw GitHub URL.
 
 use axum::body::Body;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Redirect, Response};
+use cctui_proto::release_sig::Channel;
 use serde::Serialize;
 
 use crate::state::AppState;
@@ -38,6 +33,7 @@ const TARGETS: [&str; 3] = ["linux-amd64", "linux-arm64", "darwin-arm64"];
 #[derive(Debug, Serialize)]
 pub struct DaemonManifest {
     pub version: &'static str,
+    pub channel: Channel,
     pub assets: Vec<DaemonAsset>,
 }
 
@@ -45,6 +41,7 @@ pub struct DaemonManifest {
 pub struct DaemonAsset {
     pub target: &'static str,
     pub url: String,
+    pub sig_url: String,
 }
 
 fn github_asset_url(version: &str, asset: &str) -> String {
@@ -52,23 +49,20 @@ fn github_asset_url(version: &str, asset: &str) -> String {
 }
 
 fn build_manifest(state: &AppState) -> DaemonManifest {
-    let version = env!("CARGO_PKG_VERSION");
-    // With a PAT, point clients at our proxy so the private-repo binary is
-    // served by us; otherwise hand back the raw GitHub URLs.
-    let proxying = state.config.github_token.is_some();
-    let base = state.config.external_url.trim_end_matches('/');
+    build_manifest_for(&state.config.external_url, env!("CARGO_PKG_VERSION"))
+}
+
+fn build_manifest_for(external_url: &str, version: &'static str) -> DaemonManifest {
+    let base = external_url.trim_end_matches('/');
     let assets = TARGETS
         .iter()
-        .map(|&target| {
-            let url = if proxying {
-                format!("{base}/api/v1/daemon/binary/{target}")
-            } else {
-                github_asset_url(version, &format!("cctui-daemon-{target}"))
-            };
-            DaemonAsset { target, url }
+        .map(|&target| DaemonAsset {
+            target,
+            url: format!("{base}/api/v1/daemon/binary/{target}"),
+            sig_url: format!("{base}/api/v1/daemon/binary/{target}.minisig"),
         })
         .collect();
-    DaemonManifest { version, assets }
+    DaemonManifest { version, channel: Channel::of_version(version), assets }
 }
 
 fn manifest_etag(body: &[u8]) -> String {
@@ -88,19 +82,42 @@ fn manifest_response(body: Vec<u8>, if_none_match: Option<&str>) -> Response {
         .into_response()
 }
 
-pub async fn daemon_manifest(State(state): State<AppState>, headers: HeaderMap) -> Response {
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct ManifestQuery {
+    #[serde(default)]
+    channel: Option<String>,
+}
+
+/// Whether a caller asking with `requested` may be offered `version`. Absent or
+/// unrecognised channels count as stable.
+fn offered_to(version: &str, requested: Option<&str>) -> bool {
+    let requested = requested.and_then(|c| c.parse::<Channel>().ok()).unwrap_or(Channel::Stable);
+    requested == Channel::Beta || Channel::of_version(version) == Channel::Stable
+}
+
+pub async fn daemon_manifest(
+    State(state): State<AppState>,
+    Query(query): Query<ManifestQuery>,
+    headers: HeaderMap,
+) -> Response {
+    if !offered_to(env!("CARGO_PKG_VERSION"), query.channel.as_deref()) {
+        return StatusCode::NO_CONTENT.into_response();
+    }
     let body = serde_json::to_vec(&build_manifest(&state))
         .expect("DaemonManifest always serializes to JSON");
     let if_none_match = headers.get(header::IF_NONE_MATCH).and_then(|v| v.to_str().ok());
     manifest_response(body, if_none_match)
 }
 
-/// Map a `{target}` path segment to its GitHub release asset name.
-/// Accepts the three arch targets plus `SHA256SUMS` (for selfupdate
-/// checksum verification).
+/// Map a `{target}` path segment to its GitHub release asset name: an arch
+/// target, its `.minisig`, or `SHA256SUMS`.
 fn asset_name_for(target: &str) -> Option<String> {
     if target == "SHA256SUMS" {
         Some("SHA256SUMS".to_string())
+    } else if let Some(arch) = target.strip_suffix(".minisig")
+        && TARGETS.contains(&arch)
+    {
+        Some(format!("cctui-daemon-{arch}.minisig"))
     } else if TARGETS.contains(&target) {
         Some(format!("cctui-daemon-{target}"))
     } else {
@@ -130,7 +147,8 @@ pub async fn download_daemon_binary(
         .ok_or_else(|| (StatusCode::NOT_FOUND, format!("unknown target: {target}")))?;
 
     let Some(token) = state.config.github_token.as_deref() else {
-        // No PAT: hand back the raw GitHub URL. Fails for a private repo,
+        // No PAT: redirect to the public GitHub asset. Clients drop their
+        // Authorization header on the cross-origin hop; a private repo fails,
         // which is the intended graceful degradation.
         return Ok(Redirect::temporary(&github_asset_url(version, &asset)).into_response());
     };
@@ -183,6 +201,55 @@ pub async fn download_daemon_binary(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn manifest_urls_stay_on_the_server_origin() {
+        let m = build_manifest_for("https://cctui.example.com/", "0.20.0");
+        assert_eq!(m.assets.len(), TARGETS.len());
+        for a in &m.assets {
+            assert!(a.url.starts_with("https://cctui.example.com/api/v1/daemon/binary/"));
+            assert_eq!(a.sig_url, format!("{}.minisig", a.url));
+        }
+    }
+
+    #[test]
+    fn manifest_channel_follows_the_server_version() {
+        assert_eq!(build_manifest_for("https://s", "0.20.0").channel, Channel::Stable);
+        assert_eq!(build_manifest_for("https://s", "0.21.0-beta.2").channel, Channel::Beta);
+        let json = serde_json::to_value(build_manifest_for("https://s", "0.21.0-beta.2")).unwrap();
+        assert_eq!(json["channel"], "beta");
+        assert_eq!(json["version"], "0.21.0-beta.2");
+    }
+
+    #[test]
+    fn beta_builds_are_only_offered_to_callers_that_opt_in() {
+        let cases = [
+            ("0.20.0", None, true),
+            ("0.20.0", Some("stable"), true),
+            ("0.20.0", Some("beta"), true),
+            ("0.21.0-beta.1", None, false),
+            ("0.21.0-beta.1", Some("stable"), false),
+            ("0.21.0-beta.1", Some("nightly"), false),
+            ("0.21.0-beta.1", Some(""), false),
+            ("0.21.0-beta.1", Some("beta"), true),
+            ("0.21.0-beta.1", Some("BETA"), true),
+        ];
+        for (version, requested, want) in cases {
+            assert_eq!(offered_to(version, requested), want, "{version} asked as {requested:?}");
+        }
+    }
+
+    #[test]
+    fn asset_names_cover_signatures() {
+        assert_eq!(asset_name_for("linux-amd64").as_deref(), Some("cctui-daemon-linux-amd64"));
+        assert_eq!(
+            asset_name_for("linux-amd64.minisig").as_deref(),
+            Some("cctui-daemon-linux-amd64.minisig")
+        );
+        assert_eq!(asset_name_for("SHA256SUMS").as_deref(), Some("SHA256SUMS"));
+        assert_eq!(asset_name_for("evil.minisig"), None);
+        assert_eq!(asset_name_for("../x"), None);
+    }
 
     #[test]
     fn etag_is_stable_and_body_sensitive() {

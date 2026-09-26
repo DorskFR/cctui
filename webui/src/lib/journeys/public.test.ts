@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 import { readdirSync, readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { QueryClient } from '@tanstack/svelte-query';

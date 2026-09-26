@@ -23,9 +23,35 @@ pub fn zstd_compress(data: &[u8]) -> Vec<u8> {
     zstd::encode_all(data, ZSTD_LEVEL).expect("zstd encode of an in-memory buffer cannot fail")
 }
 
-/// Decompress a zstd buffer.
+/// Upper bound on decompressed output, so a zstd bomb errors instead of
+/// exhausting memory.
+pub const MAX_DECOMPRESSED_BYTES: usize = 128 * 1024 * 1024;
+
+/// Largest zstd window (log2 bytes) a frame may demand; the encoder's level
+/// never needs more, and it keeps a crafted header from forcing a huge
+/// allocation before any output.
+pub const ZSTD_WINDOW_LOG_MAX: u32 = 24;
+
+/// Decompress a zstd buffer, erroring past [`MAX_DECOMPRESSED_BYTES`].
 pub fn zstd_decompress(data: &[u8]) -> std::io::Result<Vec<u8>> {
-    zstd::decode_all(data)
+    zstd_decompress_bounded(data, MAX_DECOMPRESSED_BYTES)
+}
+
+/// Decompress a zstd buffer, erroring once output would exceed `max` bytes.
+pub fn zstd_decompress_bounded(data: &[u8], max: usize) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    let limit = u64::try_from(max).unwrap_or(u64::MAX).saturating_add(1);
+    let mut out = Vec::with_capacity(data.len().saturating_mul(4).min(max));
+    let mut decoder = zstd::stream::read::Decoder::new(data)?;
+    decoder.window_log_max(ZSTD_WINDOW_LOG_MAX)?;
+    decoder.take(limit).read_to_end(&mut out)?;
+    if out.len() > max {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("decompressed payload exceeds {max} bytes"),
+        ));
+    }
+    Ok(out)
 }
 
 /// Compress a serialized frame when it clears [`COMPRESS_MIN_BYTES`] and zstd
@@ -72,9 +98,7 @@ mod tests {
     use super::*;
     use crate::adapter::AdapterEvent;
 
-    /// A synthetic transcript event of a realistic shape/size (§5). The
-    /// deliberately repetitive envelope (tool names, keys, boilerplate prose)
-    /// mirrors the cross-event redundancy that makes batch compression win.
+    /// Realistic transcript event with the cross-event redundancy batching exploits.
     fn synth_event(i: usize) -> DaemonFrameUp {
         let payload = serde_json::json!({
             "role": "assistant",
@@ -127,6 +151,45 @@ mod tests {
         let frame = compressed_frame(codec, &bytes);
         let DaemonFrameUp::Compressed { codec, data } = frame else { panic!("wrong variant") };
         assert_eq!(decode_compressed(&codec, &data).unwrap(), inner);
+    }
+
+    fn zero_bomb(len: usize) -> Vec<u8> {
+        use std::io::Write;
+        let block = vec![0u8; 1024 * 1024];
+        let mut enc = zstd::stream::write::Encoder::new(Vec::new(), ZSTD_LEVEL).unwrap();
+        let mut left = len;
+        while left > 0 {
+            let n = left.min(block.len());
+            enc.write_all(&block[..n]).unwrap();
+            left -= n;
+        }
+        enc.finish().unwrap()
+    }
+
+    #[test]
+    fn bomb_over_cap_errors() {
+        let bomb = zero_bomb(64 * 1024 * 1024);
+        assert!(bomb.len() < 64 * 1024, "bomb must be tiny on the wire");
+        assert!(zstd_decompress_bounded(&bomb, 1024 * 1024).is_err());
+        assert_eq!(zstd_decompress_bounded(&bomb, 64 * 1024 * 1024).unwrap().len(), 64 << 20);
+    }
+
+    #[test]
+    fn bomb_over_default_cap_is_rejected_by_every_decoder() {
+        let bomb = zero_bomb(MAX_DECOMPRESSED_BYTES + 1);
+        assert!(zstd_decompress(&bomb).is_err());
+        assert!(decompress_codec(CODEC_ZSTD, &bomb).is_err());
+        assert!(decode_compressed(CODEC_ZSTD, &BASE64.encode(&bomb)).is_err());
+    }
+
+    #[test]
+    fn oversized_window_is_rejected() {
+        let mut enc = zstd::stream::write::Encoder::new(Vec::new(), 1).unwrap();
+        enc.window_log(ZSTD_WINDOW_LOG_MAX + 2).unwrap();
+        enc.include_contentsize(false).unwrap();
+        std::io::Write::write_all(&mut enc, &vec![7u8; 1024]).unwrap();
+        let frame = enc.finish().unwrap();
+        assert!(zstd_decompress(&frame).is_err());
     }
 
     #[test]
@@ -195,8 +258,7 @@ mod tests {
 
     #[test]
     fn batched_replay_hits_the_five_x_target() {
-        // 500 realistic events, replayed one-per-frame vs coalesced into one
-        // batch and zstd-compressed. Batch compression must beat 5x (§5).
+        // One batched zstd frame must be 5x smaller than 500 single frames.
         let events: Vec<DaemonFrameUp> = (0..500).map(synth_event).collect();
         let per_frame_bytes: usize =
             events.iter().map(|e| serde_json::to_vec(e).unwrap().len()).sum();

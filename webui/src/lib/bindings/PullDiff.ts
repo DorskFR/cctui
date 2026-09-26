@@ -2,30 +2,18 @@
 import type { DiffFile } from "./DiffFile";
 
 /**
- * The structured diff for one PR, returned by `pulls/{ref}/diff`.
- *
- * Cached server-side keyed on `head_sha`, so a repeated load of an unchanged
- * PR is served from memory with no GitHub round-trip (docs §6.2). When the head
- * SHA rotates (a new push), the cache entry is naturally superseded.
+ * Structured PR diff, cached server-side by `head_sha`.
  */
-export type PullDiff = { repo: string, number: number, 
+export type PullDiff = { repo: string, number: number, head_sha: string, 
 /**
- * The head SHA this diff was computed against (the cache key).
- */
-head_sha: string, 
-/**
- * Total changed-file count across the whole PR (even when `huge` truncates
- * `files`), so the UI can show "showing N of M files".
+ * Whole-PR count, even when `huge` caps `files`.
  */
 total_files: number, 
 /**
- * Total changed-line count (additions + deletions) across the PR.
+ * Additions + deletions.
  */
 total_changes: number, 
 /**
- * `true` when the PR exceeds the large-diff threshold (docs §11, the
- * 100k-plus-line case GitHub serves unreliably): `files` is then capped and
- * the webui shows a "huge diff" affordance / per-file lazy load instead of
- * rendering everything at once.
+ * Over the large-diff threshold; `files` is capped.
  */
 huge: boolean, files: Array<DiffFile>, };

@@ -1,8 +1,9 @@
 <script lang="ts">
 	// Settings › Instance: what this deployment is (versions, update check) and
 	// what this browser spends on it (network, local storage), plus the
-	// admin-only server settings — the instance name shown in the header and the
-	// machine the self-update agent runs on. Admin values live in
+	// admin-only server settings — the instance name shown in the header, the
+	// machine the self-update agent runs on, the default CctuiAgent limits and
+	// the upstream host allowlist. Admin values live in
 	// `instance_settings` on the server, not in the per-user blob; the name is
 	// read back through /version so the header and tab title pick it up on the
 	// next refetch.
@@ -16,7 +17,10 @@
 	import UpdateModal from '$lib/components/organisms/UpdateModal.svelte';
 	import StorageSection from './StorageSection.svelte';
 	import HarnessUpdateGroup from './HarnessUpdateGroup.svelte';
+	import SpawnLimitsGroup from './SpawnLimitsGroup.svelte';
+	import UpstreamHostsGroup from './UpstreamHostsGroup.svelte';
 	import { useVersion, useAllMachines, endpoints, qk } from '$lib/queries';
+	import { releaseChannel } from '$lib/releaseChannel';
 	import type { SelfUpdateTargetInfo } from '@bindings/SelfUpdateTargetInfo';
 	import { toasts } from '$lib/toast.svelte';
 	import { m } from '$lib/paraglide/messages';
@@ -154,6 +158,11 @@
 			<div class="ver">
 				{#if version.data}
 					<Text size="sm" variant="code">srv {version.data.version}</Text>
+					{#if releaseChannel(version.data.version) === 'beta'}
+						<span title={m.release_channel_beta_title()}>
+							<Text size="sm" tone="accent" variant="code" weight="bold">{m.release_channel_beta()}</Text>
+						</span>
+					{/if}
 					<Text size="sm" variant="code">ui {__CLIENT_VERSION__}</Text>
 					{#if version.data.latest_version}
 						<Button size="sm" variant="ghost" chip onclick={() => (updateOpen = true)}>
@@ -220,6 +229,8 @@
 			</SettingRow>
 		</SettingGroup>
 		<HarnessUpdateGroup />
+		<SpawnLimitsGroup />
+		<UpstreamHostsGroup />
 	{/if}
 
 	<StorageSection />

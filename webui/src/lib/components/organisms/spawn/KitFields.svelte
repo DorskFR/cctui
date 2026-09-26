@@ -27,7 +27,7 @@
 		providerForAdapter,
 		withAliasTargets
 	} from './options';
-	import { accountById, accountUsedPct, type ProfileSpec } from './profiles';
+	import { accountById, accountUsedPct, type ProfileSpecForm } from './profiles';
 	import { m } from '$lib/paraglide/messages';
 
 	let {
@@ -39,7 +39,7 @@
 		/** Distinguishes the effort slider's ids when several kits are mounted. */
 		idSuffix = 'new'
 	}: {
-		draft: ProfileSpec;
+		draft: ProfileSpecForm;
 		accounts: OAuthAccount[];
 		pools?: AccountPoolView[];
 		usage: AccountUsageEntry[];

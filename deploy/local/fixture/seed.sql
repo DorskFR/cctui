@@ -25,7 +25,7 @@ DELETE FROM session_profiles WHERE id::text LIKE 'd0000000-%';
 INSERT INTO machines (id, user_id, name, key_hash, kind, hue, display_name, first_seen_at, last_seen_at)
 VALUES
   ('c0000000-0000-4000-8000-000000000001', '00000000-0000-0000-0000-000000000000',
-   'workstation-01', 'seed-fixture-machine-1', 'persistent', 210, 'workstation-01',
+   'workstation-01', encode(sha256('cctui_m_seed-fixture-workstation-01'::bytea), 'hex'), 'persistent', 210, 'workstation-01',
    now() - interval '31 days', now()),
   ('c0000000-0000-4000-8000-000000000002', '00000000-0000-0000-0000-000000000000',
    'ci-runner-02', 'seed-fixture-machine-2', 'persistent', 145, 'ci-runner-02',

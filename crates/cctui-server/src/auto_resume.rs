@@ -1,33 +1,20 @@
-//! Auto-resume after a mid-stream connection loss (opt-in, per user).
+//! Auto-resume after a mid-stream connection loss (opt-in per user via the
+//! `autoResumeOnConnectionLoss` setting).
 //!
-//! When the connection between a Claude Code worker and the API drops while a
-//! reply is streaming (a gateway restart, a proxy hiccup, a pod reschedule),
-//! the worker writes a synthetic assistant message — `API Error: Connection
-//! lost mid-response. The response above may be incomplete.` — and ends its
-//! turn **without retrying**. Unless the cut reply already carried a complete
-//! tool call, the session then sits idle until someone types something.
+//! A Claude Code worker that loses the API mid-reply writes `API Error:
+//! Connection lost mid-response…` and ends its turn without retrying. Each
+//! reaper tick finds sessions whose latest assistant message is that error and
+//! nudges them with "continue", backing off 1, 5 and 10 minutes; after the third
+//! nudge the session is left alone and reported through ntfy.
 //!
-//! This module is that someone. Every reaper tick it looks for sessions whose
-//! most recent assistant message is such an error with nothing after it, and
-//! nudges them with a short "continue" reply, with a backoff of 1, 5 and 10
-//! minutes between the three attempts. A session that is still stuck after the
-//! third nudge is left alone and reported through ntfy, so a genuinely broken
-//! path (daemon gone, account exhausted) does not turn into an endless loop.
-//!
-//! Everything is derived from what the server already stores: the daemon
-//! forwards every assistant text block as a `message` stream event, so no
-//! daemon change is needed and mixed daemon versions behave the same. Each
-//! nudge carries a timestamp so its echo in the transcript is a distinct event
-//! (the `stream_events` dedup index would otherwise swallow a second identical
-//! "continue" and hide the fact that the session moved on).
-//!
-//! The feature is gated by the owning user's `autoResumeOnConnectionLoss`
-//! setting (see `routes::settings`), off by default.
+//! Each nudge carries a timestamp so the `stream_events` dedup index does not
+//! swallow a repeated identical "continue".
 
 use chrono::{DateTime, Duration, Utc};
 
 use crate::live_sessions::live_sessions_predicate;
 use crate::state::AppState;
+use crate::store::sessions::SessionRowStatus;
 
 /// Delay before the first nudge, then between successive nudges. The last
 /// entry is also the grace period after the final attempt before the row is
@@ -155,7 +142,7 @@ const STUCK_SELECT: &str = concat!(
      LEFT JOIN session_auto_resume r ON r.session_id = le.session_id \
      WHERE ",
     live_sessions_predicate!("s"),
-    " AND s.status NOT IN ('archived', 'ended', 'failed', 'draft') \
+    " AND s.status <> ALL($3) \
        AND COALESCE((SELECT us.data->'autoResumeOnConnectionLoss' = 'true'::jsonb \
                      FROM user_settings us WHERE us.user_id = s.user_id), false) \
        AND NOT EXISTS ( \
@@ -192,6 +179,7 @@ pub async fn sweep(state: &AppState) {
     let rows: Vec<StuckRow> = match sqlx::query_as(STUCK_SELECT)
         .bind(LOOKBACK_SECS.to_string())
         .bind(BATCH)
+        .bind(SessionRowStatus::names(SessionRowStatus::NOT_RESUMABLE))
         .fetch_all(&state.pool)
         .await
     {

@@ -5,8 +5,8 @@
 # schema lacks: per-key POLICY TAGS (safe/care/managed/system), the docs-only keys the
 # schema still lags on, a curated env-var allowlist, and named presets.
 #
-# Consumed by the settings_catalog Rust module (server-side allowlist validation, CCT-538)
-# and the webui account settings editor (CCT-541). Keep in sync with the Claude Code docs.
+# Consumed by the settings_catalog Rust module (server-side allowlist validation)
+# and the webui account settings editor. Keep in sync with the Claude Code docs.
 #
 # Policy tags:
 #   safe    — good per-account toggle candidate, low blast radius
@@ -1270,7 +1270,7 @@ notes = "background-session edit guard; `none` edits the checkout in place — t
 [[presets]]
 id = "quiet-defaults"
 name = "Quiet defaults"
-description = "Silence bundled skills/workflows/artifact + remote-control + telemetry/updater noise. All reversible per account. MANAGED keys may be ignored via a plain --settings file (needs a managed-settings drop-in) — see CCT-539."
+description = "Silence bundled skills/workflows/artifact + remote-control + telemetry/updater noise. All reversible per account. MANAGED keys may be ignored via a plain --settings file (needs a managed-settings drop-in)."
 
 # settings.json keys applied by the preset (deep-merged under managed hooks).
 [presets.settings]

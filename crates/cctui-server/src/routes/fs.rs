@@ -47,7 +47,7 @@ pub struct ListDirsResponse {
 }
 
 // Machine ownership is enforced by the `Resource(Machine, Read, IdFrom::Path
-// ("machine_id"))` guard in `authz.rs`: the `authz_layer` middleware
+// ("machine_id"))` guard in `authz.rs`: the `enforce_route` middleware
 // resolves `machines.user_id` and applies `admin || owner == caller` before this
 // handler runs (404 unknown machine / 403 not-your-machine / admin bypass). The
 // handler only needs the machine id to talk to the daemon.
@@ -363,7 +363,7 @@ const fn read_error_status(kind: ReadFileErrorKind) -> StatusCode {
 /// `Content-Disposition` value: `inline` for viewable types, `attachment`
 /// otherwise; the filename is quoted with `"` / `\` escaped and non-ASCII
 /// carried in the RFC 5987 `filename*` form.
-fn content_disposition(media_type: &str, name: &str) -> String {
+pub fn content_disposition(media_type: &str, name: &str) -> String {
     let kind = if is_inline_type(media_type) { "inline" } else { "attachment" };
     let ascii: String =
         name.chars()

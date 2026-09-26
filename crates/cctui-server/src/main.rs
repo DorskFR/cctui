@@ -1,5 +1,6 @@
 mod account_pick;
 mod account_resolve;
+mod api_routes;
 mod auth;
 mod authz;
 mod auto_archive;
@@ -25,6 +26,7 @@ mod machine_resources;
 mod normalize;
 mod ntfy;
 mod openapi;
+mod outbound;
 mod pace;
 mod policy;
 mod pool_usage;
@@ -49,32 +51,45 @@ mod ws;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use authz::{Action, Authn, Authz, IdFrom, ResourceKind, Routes};
+use authz::Routes;
 use axum::extract::DefaultBodyLimit;
 use axum::http::Method;
-use axum::routing::{any, delete, get, patch, post, put};
+use axum::routing::{any, get, post, put};
 use axum::{Extension, Router, middleware};
 use config::Config;
 use live_sessions::live_sessions_predicate;
 use registry::Registry;
 use state::AppState;
+use store::sessions::SessionRowStatus;
 
 #[tokio::main]
-#[allow(clippy::too_many_lines)]
 async fn main() -> anyhow::Result<()> {
+    init_tracing();
+    let (config, pool, auth_config) = bootstrap().await?;
+    let state = build_state(&config, pool, auth_config.clone()).await?;
+    start_background_tasks(&state).await;
+    let app = build_app(&state, &config, &auth_config);
+    spawn_sweeps(state);
+    serve(&config, app).await
+}
+
+fn init_tracing() {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| "cctui_server=info,sqlx::query=warn".into()),
         )
         .init();
+}
 
-    if let Err(e) = cctui_crypto::vault_key_checked() {
+async fn bootstrap() -> anyhow::Result<(Config, sqlx::PgPool, auth::AuthConfig)> {
+    if let Err(e @ cctui_crypto::KeyError::InvalidHex(_)) = cctui_crypto::vault_key_checked() {
         anyhow::bail!("refusing to start: {e}");
     }
 
-    let config = Config::from_env();
+    let config = Config::from_env()?;
     let pool = db::connect(&config.database_url).await?;
+    install_vault_key(&pool).await?;
     // One-release back-compat shim: if the retired
     // CCTUI_CLAUDE_LITELLM_* env vars are set, synthesize a managed (read-only)
     // anthropic-compatible account per user so existing deployments keep working
@@ -85,41 +100,50 @@ async fn main() -> anyhow::Result<()> {
     // with {admin} ceiling/grant, so the break-glass token is a real identity
     // rather than a user_id=None ghost. Idempotent, best-effort.
     auth_config.seed_admin().await;
+    Ok((config, pool, auth_config))
+}
 
+async fn install_vault_key(pool: &sqlx::PgPool) -> anyhow::Result<()> {
+    let has_data = crypto::has_vault_data(pool).await?;
+    match cctui_crypto::startup_key(has_data) {
+        Err(e) => anyhow::bail!("refusing to start: {e}"),
+        Ok(cctui_crypto::StartupKey::Strong(key)) => crypto::install_vault_key(key),
+        Ok(cctui_crypto::StartupKey::Legacy(key, reason)) => {
+            tracing::warn!(
+                "INSECURE VAULT KEY: {reason}. Starting anyway because the vault already holds \
+                 credentials written under this key{}. Rotate it: generate a new key with \
+                 `openssl rand -hex 32`, set CCTUI_VAULT_KEY, then re-enter every stored \
+                 credential (provider accounts, API keys, account env).",
+                if key.is_empty() { " (stored UNENCRYPTED)" } else { "" }
+            );
+            crypto::install_vault_key(key);
+        }
+    }
+    Ok(())
+}
+
+async fn build_state(
+    config: &Config,
+    pool: sqlx::PgPool,
+    auth_config: auth::AuthConfig,
+) -> anyhow::Result<AppState> {
     let skills = init_skill_store().await;
-    let dispatchers = init_dispatchers(&config);
+    let dispatchers = init_dispatchers(config);
 
     let presence = Arc::new(presence::PodIdentity::from_env());
     let http_client = reqwest::Client::new();
 
-    // Bus transport selection: with a routable pod IP this replica
-    // participates in the peer mesh — mint/load the internal shared secret and
-    // route/relay through `PeerHttpTransport`. Without one (local dev, single
-    // replica) the bus stays local-only (`NoopTransport`) and writes nothing.
-    let (transport, internal_secret): (Box<dyn bus::Transport>, Option<Arc<str>>) =
-        if presence.ip.is_some() {
-            let secret = routes::internal::ensure_secret(&pool).await?;
-            let transport = bus::peer::PeerHttpTransport::new(
-                pool.clone(),
-                http_client.clone(),
-                presence.pod.clone(),
-                config.port,
-                secret.clone(),
-            );
-            (Box::new(transport), Some(Arc::from(secret.as_str())))
-        } else {
-            (Box::new(bus::NoopTransport), None)
-        };
+    let (transport, internal_secret) = init_bus(&pool, config, &presence, &http_client).await?;
 
-    let state = AppState {
+    Ok(AppState {
         pool,
         config: config.clone(),
         registry: Registry::shared(),
         permission_store: routes::permissions::PermissionStore::shared(),
         // The single routing seam for daemon/dispatcher WS traffic;
-        // the transport behind it is chosen above.
+        // the transport behind it is chosen by `init_bus`.
         bus: bus::Bus::new(transport),
-        auth_config: auth_config.clone(),
+        auth_config,
         // Passkeys ride the deployment's own public URL: a server already
         // configured with an https `CCTUI_EXTERNAL_URL` needs no new env.
         webauthn: webauthn::build(&config.external_url, config.rp_id.as_deref()).map(Arc::new),
@@ -153,7 +177,38 @@ async fn main() -> anyhow::Result<()> {
         update_check: update_check::UpdateCheck::shared(),
         self_update: Arc::new(routes::self_update::SelfUpdateGuard::default()),
         pending_commands: Arc::new(dashmap::DashMap::new()),
+    })
+}
+
+/// Bus transport selection: with a routable pod IP this replica
+/// participates in the peer mesh — mint/load the internal shared secret and
+/// route/relay through `PeerHttpTransport`. Without one (local dev, single
+/// replica) the bus stays local-only (`NoopTransport`) and writes nothing.
+async fn init_bus(
+    pool: &sqlx::PgPool,
+    config: &Config,
+    presence: &presence::PodIdentity,
+    http_client: &reqwest::Client,
+) -> anyhow::Result<(Box<dyn bus::Transport>, Option<Arc<str>>)> {
+    let selected: (Box<dyn bus::Transport>, Option<Arc<str>>) = if presence.ip.is_some() {
+        let secret = routes::internal::ensure_secret(pool).await?;
+        let transport = bus::peer::PeerHttpTransport::new(
+            pool.clone(),
+            http_client.clone(),
+            presence.pod.clone(),
+            config.port,
+            secret.clone(),
+        );
+        (Box::new(transport), Some(Arc::from(secret.as_str())))
+    } else {
+        (Box::new(bus::NoopTransport), None)
     };
+    Ok(selected)
+}
+
+async fn start_background_tasks(state: &AppState) {
+    routes::server_settings::refresh_upstream_allowlist(&state.pool).await;
+    tokio::spawn(routes::server_settings::upstream_allowlist_task(state.pool.clone()));
 
     // Slow upstream release probe feeding `/version.latest_version`;
     // `CCTUI_UPDATE_CHECK=0` keeps air-gapped deployments quiet.
@@ -174,7 +229,7 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    routes::codex_models::warm_cache(&state).await;
+    routes::codex_models::warm_cache(state).await;
 
     // Replica-aware WS presence: registered only when the pod knows
     // its routable IP; the heartbeat task keeps this pod's rows trusted and
@@ -182,7 +237,9 @@ async fn main() -> anyhow::Result<()> {
     if state.presence.ip.is_some() {
         tokio::spawn(presence::heartbeat_task(state.clone()));
     }
+}
 
+fn build_app(state: &AppState, config: &Config, auth_config: &auth::AuthConfig) -> Router {
     let (api_router, api_descriptors) = build_api_routes().into_parts();
 
     // The descriptor list is the route table / source of truth, consumed by
@@ -197,10 +254,19 @@ async fn main() -> anyhow::Result<()> {
         // `AuthContext` it inserts is already present when the policy evaluates.
         .layer(middleware::from_fn(auth::auth_middleware))
         .layer(Extension(auth_config.clone()));
+    outer_routes()
+        .nest("/api/v1", api_router)
+        // Credentialed CORS bound to an explicit origin allowlist (same-origin
+        // webui + dev Vite, extendable via CCTUI_ALLOWED_ORIGINS). A wildcard
+        // origin is invalid once credentials are allowed.
+        .layer(cors_layer(&config.allowed_origins))
+        .with_state(state.clone())
+}
 
-    // `{id}` etc. in route paths are axum path-param syntax, not format args.
-    #[allow(clippy::literal_string_with_formatting_args)]
-    let app = Router::new()
+// `{id}` etc. in route paths are axum path-param syntax, not format args.
+#[allow(clippy::literal_string_with_formatting_args)]
+fn outer_routes() -> Router<AppState> {
+    Router::new()
         .route("/health", get(|| async { "ok" }))
         // Self-describing API surface. Both are unauthenticated meta
         // routes — like `/health` — because they expose ONLY the public shape of
@@ -289,15 +355,21 @@ async fn main() -> anyhow::Result<()> {
             post(routes::internal::bus_route).layer(DefaultBodyLimit::max(32 * 1024 * 1024)),
         )
         .route("/internal/bus/publish", post(routes::internal::bus_publish))
-        .nest("/api/v1", api_router)
-        // Credentialed CORS bound to an explicit origin allowlist (same-origin
-        // webui + dev Vite, extendable via CCTUI_ALLOWED_ORIGINS). A wildcard
-        // origin is invalid once credentials are allowed.
-        .layer(cors_layer(&config.allowed_origins))
-        .with_state(state.clone());
+}
 
+fn spawn_sweeps(state: AppState) {
+    spawn_periodic(REAPER_PERIOD, {
+        let state = state.clone();
+        move || webhook_sweep(state.clone())
+    });
+    spawn_periodic(REAPER_PERIOD, {
+        let state = state.clone();
+        move || keepalive_sweep(state.clone())
+    });
     tokio::spawn(reaper_task(state));
+}
 
+async fn serve(config: &Config, app: Router) -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(config.bind_addr()).await?;
     tracing::info!("listening on {}", config.bind_addr());
     axum::serve(listener, app).await?;
@@ -305,1264 +377,17 @@ async fn main() -> anyhow::Result<()> {
 }
 
 /// Build the `/api/v1` route table from the descriptor list. Every
-/// route declares both an [`Authn`] (recorded; the proven `auth_middleware`
-/// path still performs authentication) and an [`Authz`] (enforced by
-/// `authz::authz_layer`, default-deny for any un-policied route). Each route's
+/// route declares both an [`authz::Authn`] (recorded; the proven `auth_middleware`
+/// path still performs authentication) and an [`authz::Authz`] (enforced by
+/// `authz::enforce_route`, default-deny for any un-policied route). Each route's
 /// declared policy mirrors its CURRENT enforcement exactly: routes with
 /// in-handler owner checks or `owner_filter()` SQL filters declare
 /// `Authenticated` and keep that filter in the handler (the type system can't
 /// express a self-scoped filter); scope-gated routes declare the matching
 /// `Scope`. The returned [`Routes`] is the single source of truth walked by the
 /// coverage test.
-#[allow(clippy::too_many_lines)]
 fn build_api_routes() -> Routes {
-    use Authz::{Authenticated, Scope as ScopeAz};
-    const GET: Method = Method::GET;
-    // Per-session ownership guard: `machine_uuid -> machines.user_id`,
-    // id sourced from the `{id}` path param. `read`/`write` differ only in the
-    // recorded `Action` (for RBAC); the owner rule is identical today.
-    let sess_read = || Authz::Resource(ResourceKind::Session, Action::Read, IdFrom::Path("id"));
-    let sess_write = || Authz::Resource(ResourceKind::Session, Action::Write, IdFrom::Path("id"));
-    Routes::new()
-        // Version info requires a valid principal — no unauthenticated endpoint
-        // survives except `/health`.
-        .add(
-            &[GET],
-            "/version",
-            "Server version and build info.",
-            get(routes::web::version),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[GET],
-            "/passkeys",
-            "List the passkeys enrolled on your account.",
-            get(routes::passkeys::list),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[Method::POST],
-            "/passkeys/register/start",
-            "Begin enrolling a passkey on your account.",
-            post(routes::passkeys::register_start),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[Method::POST],
-            "/passkeys/register/finish",
-            "Finish enrolling a passkey and store the credential.",
-            post(routes::passkeys::register_finish),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[Method::POST],
-            "/passkeys/test/start",
-            "Begin a test of an enrolled passkey without signing out.",
-            post(routes::passkeys::test_start),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[Method::POST],
-            "/passkeys/test/finish",
-            "Finish a passkey test and report which key answered.",
-            post(routes::passkeys::test_finish),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[Method::PATCH, Method::DELETE],
-            "/passkeys/{id}",
-            "Rename or revoke one of your passkeys.",
-            patch(routes::passkeys::relabel).delete(routes::passkeys::revoke),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[Method::PUT],
-            "/admin/passkeys/auto-prompt",
-            "Server-wide: try the passkey as soon as the login screen opens (admin).",
-            put(routes::passkeys::set_auto_prompt),
-            Authn::Bearer,
-            ScopeAz(auth::Scope::Admin),
-        )
-        .add(
-            &[Method::POST],
-            "/version/refresh",
-            "Probe upstream for a newer release now instead of waiting out the background interval.",
-            post(routes::web::refresh_version),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[GET],
-            "/version/changelog",
-            "Release notes of every upstream release newer than this server.",
-            get(routes::web::changelog),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[Method::POST],
-            "/version/self-update",
-            "Deploy the newer release: the machine's own update hook when it has one, a YOLO agent otherwise (admin).",
-            post(routes::self_update::launch),
-            Authn::Bearer,
-            ScopeAz(auth::Scope::Admin),
-        )
-        .add(
-            &[GET],
-            "/version/self-update",
-            "The most recent update-hook run and where it got to.",
-            get(routes::self_update::status),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[Method::POST],
-            "/sessions/register",
-            "Register a session the daemon just launched.",
-            post(routes::sessions::register),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[Method::POST],
-            "/sessions/{id}/deregister",
-            "Deregister a session (mark it gone).",
-            post(routes::sessions::deregister),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[Method::POST],
-            "/sessions/spawn",
-            "Spawn a new session on a machine, with optional file uploads.",
-            // Multipart spawn with file uploads: the route enforces a
-            // 20 MB total cap itself; allow a little headroom over it for
-            // multipart framing + base64 isn't applied until after parsing.
-            post(routes::spawn::spawn_session).layer(DefaultBodyLimit::max(24 * 1024 * 1024)),
-            Authn::Bearer,
-            // In-handler machine-owner check (`is_admin || user_id == owner`).
-            Authenticated,
-        )
-        .add(
-            // Mid-chat file attachments — same multipart shape + caps
-            // as spawn, same body-limit headroom.
-            &[Method::POST],
-            "/sessions/{id}/files",
-            "Attach files to a live session mid-conversation.",
-            post(routes::spawn::stage_session_files).layer(DefaultBodyLimit::max(24 * 1024 * 1024)),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[Method::POST],
-            "/sessions/dispatch",
-            "Dispatch a session to an enrolled executor (remote runner).",
-            post(routes::dispatch::dispatch),
-            Authn::Bearer,
-            ScopeAz(auth::Scope::Dispatch),
-        )
-        .add(
-            &[GET],
-            "/sessions/dispatchers",
-            "List dispatch targets available for a spawn.",
-            get(routes::dispatch::list_dispatchers),
-            Authn::Bearer,
-            // owner_filter() SQL filter in the handler.
-            Authenticated,
-        )
-        // Enrolled-dispatcher management: list with liveness, rename,
-        // remove. Enrollment itself is `POST /dispatcher/enroll` below.
-        .add(
-            &[GET],
-            "/dispatchers",
-            "List enrolled dispatchers with liveness.",
-            get(routes::dispatchers::list_dispatchers),
-            Authn::Bearer,
-            // owner_filter() filter.
-            Authenticated,
-        )
-        .add(
-            &[Method::PATCH, Method::DELETE],
-            "/dispatchers/{id}",
-            "Rename or remove an enrolled dispatcher.",
-            patch(routes::dispatchers::update_dispatcher)
-                .delete(routes::dispatchers::delete_dispatcher),
-            Authn::Bearer,
-            ScopeAz(auth::Scope::Enroll),
-        )
-        .add(
-            &[Method::POST],
-            "/dispatcher/enroll",
-            "Enroll a new dispatcher (executor) and mint its key.",
-            post(routes::dispatcher::enroll),
-            Authn::Bearer,
-            ScopeAz(auth::Scope::Enroll),
-        )
-        // Batch session mutations: owner-filtered in the handler
-        // (`filter_owned_ids`), so any authenticated principal is allowed and
-        // only their own ids are acted on.
-        .add(
-            &[Method::POST],
-            "/sessions/archive",
-            "Archive a batch of sessions by id.",
-            post(routes::sessions::archive_sessions),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[Method::POST],
-            "/sessions/unarchive",
-            "Unarchive a batch of sessions by id.",
-            post(routes::sessions::unarchive_sessions),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[Method::POST],
-            "/sessions/pin",
-            "Pin a batch of sessions by id.",
-            post(routes::sessions::pin_sessions),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[Method::POST],
-            "/sessions/unpin",
-            "Unpin a batch of sessions by id.",
-            post(routes::sessions::unpin_sessions),
-            Authn::Bearer,
-            Authenticated,
-        )
-        // Self-scoped list/stats/search endpoints — `owner_filter()` filter in
-        // the handler (admin sees all rows, others only their own).
-        .add(
-            &[GET],
-            "/sessions",
-            "List your sessions (admin: all).",
-            get(routes::sessions::list_sessions),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[GET],
-            "/sessions/stats",
-            "Aggregate session counts/status stats.",
-            get(routes::stats::session_stats),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[GET],
-            "/sessions/stats/tokens",
-            "Token-usage stats across sessions.",
-            get(routes::stats::session_token_stats),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[GET],
-            "/sessions/stats/usage",
-            "Overview usage analytics: tokens over time, per-model, heatmap.",
-            get(routes::stats::session_usage_analytics),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[GET],
-            "/sessions/stats/cache-busts",
-            "Dollars lost to prompt-cache busts per day, by reason.",
-            get(routes::cache_loss::cache_loss),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[GET],
-            "/sessions/search",
-            "Full-text search across your sessions.",
-            get(routes::sessions::search_sessions),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[GET],
-            "/sessions/search/values",
-            "Autocomplete values for a search field.",
-            get(routes::sessions::search_field_values),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[GET],
-            "/sessions/recent-dirs",
-            "List recently used working directories.",
-            get(routes::stats::recent_dirs),
-            Authn::Bearer,
-            Authenticated,
-        )
-        // Per-session routes — ownership enforced by the `Resource(Session)`
-        // guard. The `authz_layer` resolves `machine_uuid ->
-        // machines.user_id` and applies `admin || owner == caller` before the
-        // handler (404 unknown / 403 cross-user). Reads → `Action::Read`,
-        // mutations/control → `Action::Write` (the action is recorded for
-        // RBAC; the owner rule is identical for both today).
-        .add(
-            &[GET],
-            "/sessions/{id}",
-            "Get one session's details.",
-            get(routes::sessions::get_session),
-            Authn::Bearer,
-            sess_read(),
-        )
-        .add(
-            &[Method::PATCH],
-            "/sessions/{id}",
-            "Rename a session.",
-            patch(routes::sessions::rename_session),
-            Authn::Bearer,
-            sess_write(),
-        )
-        .add(
-            &[GET],
-            "/sessions/{id}/conversation",
-            "Fetch a session's normalized conversation transcript.",
-            get(routes::sessions::get_conversation),
-            Authn::Bearer,
-            sess_read(),
-        )
-        .add(
-            &[GET],
-            "/sessions/{id}/images/{image_id}",
-            "Fetch an agent-posted image blob.",
-            get(routes::images::get_session_image),
-            Authn::Bearer,
-            sess_read(),
-        )
-        .add(
-            &[GET],
-            "/sessions/{id}/blobs/{hash}",
-            "Resolve a content-addressed embedded-attachment blob.",
-            get(routes::blobs::get_blob),
-            Authn::Bearer,
-            sess_read(),
-        )
-        .add(
-            &[GET],
-            "/sessions/{id}/attachments",
-            "List the files the user uploaded into a session (served via blobs).",
-            get(routes::attachments::get_session_attachments),
-            Authn::Bearer,
-            sess_read(),
-        )
-        .add(
-            &[GET],
-            "/sessions/{id}/diagnose",
-            "Snapshot everything the daemon knows about a session, dated.",
-            get(routes::diagnose::diagnose_session),
-            Authn::Bearer,
-            sess_read(),
-        )
-        .add(
-            &[GET],
-            "/sessions/{id}/langfuse",
-            "Langfuse cost/usage rollup for a session.",
-            get(routes::langfuse::session_langfuse),
-            Authn::Bearer,
-            sess_read(),
-        )
-        .add(
-            &[Method::POST],
-            "/sessions/{id}/message",
-            "Send a message to a live session.",
-            post(routes::sessions::send_message),
-            Authn::Bearer,
-            sess_write(),
-        )
-        .add(
-            &[GET],
-            "/sessions/{id}/messages/scheduled",
-            "List a session's scheduled messages.",
-            get(routes::scheduled_messages::list),
-            Authn::Bearer,
-            sess_read(),
-        )
-        .add(
-            &[Method::PATCH, Method::DELETE],
-            "/sessions/{id}/messages/scheduled/{queue_id}",
-            "Edit/reschedule or cancel a scheduled message.",
-            patch(routes::scheduled_messages::update).delete(routes::scheduled_messages::cancel),
-            Authn::Bearer,
-            sess_write(),
-        )
-        .add(
-            &[Method::POST],
-            "/sessions/{id}/messages/scheduled/{queue_id}/send-now",
-            "Deliver a scheduled message immediately.",
-            post(routes::scheduled_messages::send_now),
-            Authn::Bearer,
-            sess_write(),
-        )
-        .add(
-            &[Method::POST],
-            "/sessions/{id}/kill",
-            "Kill a session's underlying process.",
-            post(routes::sessions::kill_session),
-            Authn::Bearer,
-            sess_write(),
-        )
-        .add(
-            &[GET],
-            "/sessions/{id}/pins",
-            "List the caller's pinned messages in a session.",
-            get(routes::message_pins::list_pins),
-            Authn::Bearer,
-            sess_read(),
-        )
-        .add(
-            &[Method::POST],
-            "/sessions/{id}/pins",
-            "Pin a message (by stream seq) in a session.",
-            post(routes::message_pins::create_pin),
-            Authn::Bearer,
-            sess_write(),
-        )
-        .add(
-            &[Method::DELETE],
-            "/sessions/{id}/pins/{seq}",
-            "Unpin a message in a session.",
-            axum::routing::delete(routes::message_pins::delete_pin),
-            Authn::Bearer,
-            sess_write(),
-        )
-        .add(
-            &[Method::POST],
-            "/sessions/{id}/seen",
-            "Mark this session's messages seen for the caller.",
-            post(routes::sessions::mark_seen),
-            Authn::Bearer,
-            sess_write(),
-        )
-        // Draft sessions: launch promotes a draft to a live spawn
-        // (env entered fresh in the body), discard deletes the draft row.
-        .add(
-            &[Method::POST],
-            "/sessions/{id}/launch",
-            "Launch a draft session into a live spawn.",
-            post(routes::spawn::launch_draft),
-            Authn::Bearer,
-            sess_write(),
-        )
-        .add(
-            &[Method::POST],
-            "/sessions/{id}/discard",
-            "Discard a draft session.",
-            post(routes::spawn::discard_draft),
-            Authn::Bearer,
-            sess_write(),
-        )
-        .add(
-            &[Method::PUT],
-            "/sessions/{id}/draft",
-            "Replace a draft session's stored spawn payload in place.",
-            put(routes::sessions::update_draft),
-            Authn::Bearer,
-            sess_write(),
-        )
-        .add(
-            &[Method::POST],
-            "/sessions/{id}/interrupt",
-            "Interrupt a session's current turn.",
-            post(routes::sessions::interrupt_session),
-            Authn::Bearer,
-            sess_write(),
-        )
-        .add(
-            &[Method::POST],
-            "/sessions/{id}/resume",
-            "Resume an exited session.",
-            post(routes::sessions::resume_session),
-            Authn::Bearer,
-            sess_write(),
-        )
-        .add(
-            &[Method::POST],
-            "/sessions/{id}/set-model",
-            "Change a session's model.",
-            post(routes::sessions::set_model),
-            Authn::Bearer,
-            sess_write(),
-        )
-        .add(
-            &[Method::POST],
-            "/sessions/{id}/switch-account",
-            "Switch the account backing a session.",
-            post(routes::sessions::switch_account),
-            Authn::Bearer,
-            sess_write(),
-        )
-        .add(
-            &[GET],
-            "/sessions/{id}/bindings",
-            "List a session's per-family account bindings.",
-            get(routes::sessions::session_bindings),
-            Authn::Bearer,
-            sess_read(),
-        )
-        .add(
-            &[Method::GET],
-            "/sessions/{id}/brief",
-            "Render a session's user/assistant transcript as a capped markdown brief.",
-            get(brief::session_brief),
-            Authn::Bearer,
-            sess_read(),
-        )
-        .add(
-            &[Method::POST],
-            "/sessions/{id}/fork",
-            "Fork a session into a new one.",
-            post(routes::sessions::fork_session),
-            Authn::Bearer,
-            sess_write(),
-        )
-        .add(
-            &[Method::POST],
-            "/sessions/{id}/auto-approve",
-            "Toggle auto-approval of tool-use for a session.",
-            post(routes::sessions::set_auto_approve),
-            Authn::Bearer,
-            sess_write(),
-        )
-        .add(
-            &[Method::POST],
-            "/sessions/{id}/archive",
-            "Archive a single session.",
-            post(routes::sessions::archive_session),
-            Authn::Bearer,
-            sess_write(),
-        )
-        .add(
-            &[Method::POST],
-            "/sessions/{id}/unarchive",
-            "Unarchive a single session.",
-            post(routes::sessions::unarchive_session),
-            Authn::Bearer,
-            sess_write(),
-        )
-        .add(
-            &[Method::POST],
-            "/sessions/{id}/pin",
-            "Pin a single session.",
-            post(routes::sessions::pin_session),
-            Authn::Bearer,
-            sess_write(),
-        )
-        .add(
-            &[Method::POST],
-            "/sessions/{id}/unpin",
-            "Unpin a single session.",
-            post(routes::sessions::unpin_session),
-            Authn::Bearer,
-            sess_write(),
-        )
-        .add(
-            &[Method::POST],
-            "/sessions/{id}/keepalive",
-            "Set or clear the session's prompt-cache keep-alive schedule.",
-            post(routes::sessions::set_keepalive),
-            Authn::Bearer,
-            sess_write(),
-        )
-        .add(
-            &[Method::POST],
-            "/sessions/{id}/policy",
-            "Set a session's permission policy.",
-            post(routes::sessions::set_session_policy),
-            Authn::Bearer,
-            sess_write(),
-        )
-        // Session labels: global label definitions (no owner) +
-        // per-session attach/detach (authorize_session in the handler).
-        .add(
-            &[GET, Method::POST],
-            "/labels",
-            "List label definitions, or create one.",
-            get(routes::labels::list_labels).post(routes::labels::create_label),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[Method::PATCH, Method::DELETE],
-            "/labels/{id}",
-            "Rename or delete a label definition.",
-            axum::routing::patch(routes::labels::update_label).delete(routes::labels::delete_label),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[Method::POST],
-            "/sessions/{id}/labels",
-            "Attach a label to a session.",
-            post(routes::labels::attach_label),
-            Authn::Bearer,
-            sess_write(),
-        )
-        .add(
-            &[Method::DELETE],
-            "/sessions/{id}/labels/{label_id}",
-            "Detach a label from a session.",
-            axum::routing::delete(routes::labels::detach_label),
-            Authn::Bearer,
-            sess_write(),
-        )
-        .add(
-            &[GET],
-            "/manifest/daemon",
-            "Daemon update manifest (latest version + download URLs).",
-            get(routes::manifest::daemon_manifest),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[GET],
-            "/daemon/binary/{target}",
-            "Download a daemon binary for a target (self-update proxy).",
-            get(routes::manifest::download_daemon_binary),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[GET, Method::POST],
-            "/bookmarks",
-            "List your saved messages, or save one.",
-            get(routes::bookmarks::list_bookmarks).post(routes::bookmarks::create_bookmark),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[Method::PATCH, Method::DELETE],
-            "/bookmarks/{id}",
-            "Edit a bookmark's title/note, or delete it.",
-            patch(routes::bookmarks::update_bookmark)
-                .delete(routes::bookmarks::delete_bookmark),
-            Authn::Bearer,
-            Authenticated,
-        )
-        // Prompts: owner_filter() filter in the handler.
-        .add(
-            &[GET, Method::POST],
-            "/prompts",
-            "List your saved prompts, or create one.",
-            get(routes::prompts::list_prompts).post(routes::prompts::create_prompt),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[GET],
-            "/prompts/resolve",
-            "Resolve a prompt by name/reference.",
-            get(routes::prompts::resolve_prompt),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[GET, Method::DELETE],
-            "/prompts/{id}",
-            "Get or delete a saved prompt.",
-            get(routes::prompts::get_prompt).delete(routes::prompts::delete_prompt),
-            Authn::Bearer,
-            Authenticated,
-        )
-        // Provider keys: owner_filter() filter in the handler.
-        .add(
-            &[GET, Method::POST],
-            "/keys",
-            "List your provider API keys, or store a new one.",
-            get(routes::credentials::list_api_keys).post(routes::credentials::create_api_key),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[Method::DELETE],
-            "/keys/{id}",
-            "Delete a stored provider API key.",
-            delete(routes::credentials::delete_api_key),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[GET],
-            "/keys/{id}/value",
-            "Reveal a stored provider API key's value.",
-            get(routes::credentials::get_api_key_value),
-            Authn::Bearer,
-            Authenticated,
-        )
-        // Accounts: require_human() + owner_filter()/resolve_owner in handler.
-        .add(
-            &[GET],
-            "/accounts/settings-catalog",
-            "The per-account settings catalog (exposable keys, env allowlist, preset).",
-            get(routes::accounts::settings_catalog),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[GET, Method::POST],
-            "/accounts",
-            "List your accounts (identities + provider credentials), or create one.",
-            get(routes::accounts::list_accounts).post(routes::accounts::create_account),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[Method::POST],
-            "/accounts/oauth/start",
-            "Begin an OAuth account authorization flow.",
-            post(routes::accounts::oauth_start),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[Method::POST],
-            "/accounts/oauth/finish",
-            "Complete an OAuth account authorization flow.",
-            post(routes::accounts::oauth_finish),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[GET, Method::PATCH, Method::DELETE],
-            "/accounts/{id}",
-            "Get, rename/re-env, or delete an account identity.",
-            get(routes::accounts::get_account)
-                .patch(routes::accounts::update_account)
-                .delete(routes::accounts::delete_account),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[Method::PUT],
-            "/accounts/{id}/redirect",
-            "Create/overwrite a launch-time redirect rule for this account.",
-            axum::routing::put(routes::account_redirects::put_redirect),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[GET],
-            "/redirects",
-            "The caller's live account/model redirect rules.",
-            get(routes::account_redirects::list_redirects),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[Method::DELETE],
-            "/redirects/{id}",
-            "Delete a redirect rule.",
-            axum::routing::delete(routes::account_redirects::delete_redirect),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[GET, Method::POST],
-            "/profiles",
-            "List the caller's spawn profiles, or create one.",
-            get(routes::profiles::list_profiles).post(routes::profiles::create_profile),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[Method::PUT],
-            "/profiles/order",
-            "Persist the caller's profile order.",
-            axum::routing::put(routes::profiles::reorder_profiles),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[Method::PATCH, Method::DELETE],
-            "/profiles/{id}",
-            "Rename, adjust or delete a spawn profile.",
-            patch(routes::profiles::update_profile).delete(routes::profiles::delete_profile),
-            Authn::Bearer,
-            Authenticated,
-        )
-        // Account pools: the durable "these accounts are interchangeable"
-        // statement that bounds both auto-binding and mid-session failover.
-        .add(
-            &[GET, Method::POST],
-            "/account-pools",
-            "List the caller's account pools, or create one.",
-            get(routes::account_pools::list_pools).post(routes::account_pools::create_pool),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[GET],
-            "/account-pools/usage",
-            "Every pool's quota windows aggregated per provider family: level, pace, projection.",
-            get(routes::account_pools::pools_usage),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[Method::PATCH, Method::DELETE],
-            "/account-pools/{id}",
-            "Edit a pool (name, strategy, failover, membership) or delete it.",
-            patch(routes::account_pools::update_pool)
-                .delete(routes::account_pools::delete_pool),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[GET],
-            "/sessions/{id}/rebinds",
-            "Every mid-run account move this session made, newest first.",
-            get(routes::account_pools::list_session_rebinds),
-            Authn::Bearer,
-            Authenticated,
-        )
-        // Provider credentials under an account identity: owner-scoped
-        // in the handlers like the other account routes.
-        .add(
-            &[Method::POST],
-            "/accounts/{id}/providers",
-            "Attach a provider credential to an account.",
-            post(routes::accounts::add_provider),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[Method::PATCH, Method::DELETE],
-            "/accounts/{id}/providers/{provider_id}",
-            "Edit or remove one of an account's provider credentials.",
-            patch(routes::accounts::update_provider).delete(routes::accounts::delete_provider),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[Method::POST],
-            "/accounts/{id}/providers/{provider_id}/move",
-            "Move a provider credential to another account of the same owner.",
-            post(routes::accounts::move_provider),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[GET],
-            "/accounts/usage",
-            "Usage windows of every provider credential the caller owns, in one call.",
-            get(routes::accounts::all_accounts_usage),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[GET],
-            "/accounts/{id}/usage",
-            "Get an account's usage/limits.",
-            get(routes::accounts::account_usage),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[GET],
-            "/accounts/{id}/usage/history",
-            "Sampled usage of one provider credential over time.",
-            get(routes::usage_history::account_usage_history),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[GET],
-            "/accounts/{id}/usage/closes",
-            "Closed usage windows of one provider credential, with unused share.",
-            get(routes::usage_history::account_usage_closes),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[GET],
-            "/accounts/usage/closes",
-            "Closed usage windows of every owned credential, with unused share.",
-            get(routes::usage_history::all_usage_closes),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[Method::POST],
-            "/accounts/{id}/limit-reset",
-            "Claim a usage-limit reset on a provider credential.",
-            post(routes::limit_reset::limit_reset),
-            Authn::Bearer,
-            Authenticated,
-        )
-        // Account sharing management: owner-scoped in the handler
-        // (require_account_owner) just like the other account routes.
-        .add(
-            &[GET, Method::POST],
-            "/accounts/{id}/shares",
-            "List or grant shares of an account to other users.",
-            get(routes::accounts::list_shares).post(routes::accounts::grant_share),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[Method::DELETE],
-            "/accounts/{id}/shares/{user_id}",
-            "Revoke a user's share of an account.",
-            delete(routes::accounts::revoke_share),
-            Authn::Bearer,
-            Authenticated,
-        )
-        // Generic resource-sharing CRUD: owner-scoped in the handler
-        // (require_owner) for any shareable kind. The account routes above are
-        // static-path back-compat aliases; these serve machine/dispatcher/etc.
-        .add(
-            &[GET, Method::POST],
-            "/{resource_type}/{id}/shares",
-            "List or grant shares of a resource to other users.",
-            get(routes::shares::list_shares).post(routes::shares::grant_share),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[Method::DELETE],
-            "/{resource_type}/{id}/shares/{user_id}",
-            "Revoke a user's share of a resource.",
-            delete(routes::shares::revoke_share),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[GET],
-            "/machines/{machine_id}/commands/pending",
-            "Poll a machine's pending spawn/control commands.",
-            get(routes::spawn::get_machine_commands),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[GET],
-            "/machines/{machine_id}/fs/dirs",
-            "List directories on a machine (spawn dir picker).",
-            get(routes::fs::list_dirs),
-            Authn::Bearer,
-            // Machine-owner guard: `machines.user_id`, id from the
-            // `{machine_id}` path param.
-            Authz::Resource(ResourceKind::Machine, Action::Read, IdFrom::Path("machine_id")),
-        )
-        .add(
-            &[GET],
-            "/machines/{machine_id}/fs/gitinfo",
-            "Git branch / detached HEAD of a directory on a machine (spawn dir badge).",
-            get(routes::fs::git_info),
-            Authn::Bearer,
-            Authz::Resource(ResourceKind::Machine, Action::Read, IdFrom::Path("machine_id")),
-        )
-        .add(
-            &[GET],
-            "/machines/{machine_id}/fs/file",
-            "Read one file on a machine (agent-linked path): inline or blob redirect.",
-            get(routes::fs::read_file),
-            Authn::Bearer,
-            Authz::Resource(ResourceKind::Machine, Action::Read, IdFrom::Path("machine_id")),
-        )
-        .add(
-            &[GET],
-            "/machines/{machine_id}/codex-models",
-            "Machine/account-scoped codex model catalog.",
-            get(routes::codex_models::get_codex_models),
-            Authn::Bearer,
-            Authz::Resource(ResourceKind::Machine, Action::Read, IdFrom::Path("machine_id")),
-        )
-        .add(
-            &[Method::POST],
-            "/machines/{machine_id}/codex-models/refresh",
-            "Re-read every OpenAI account's codex model catalog from upstream.",
-            post(routes::codex_models::refresh_codex_models),
-            Authn::Bearer,
-            Authz::Resource(ResourceKind::Machine, Action::Read, IdFrom::Path("machine_id")),
-        )
-        .add(
-            &[GET],
-            "/models/codex",
-            "Codex model catalog merged across every machine (newest report wins).",
-            get(routes::codex_models::get_merged_codex_models),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[GET],
-            "/me",
-            "Get the current principal (user, scopes, machine).",
-            get(routes::me::me),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[GET],
-            "/settings",
-            "Get your user settings.",
-            get(routes::settings::get_settings),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[Method::PUT],
-            "/settings",
-            "Replace your user settings.",
-            put(routes::settings::put_settings),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[Method::POST],
-            "/settings/rescrub",
-            "Re-apply the secret-scrub list to your stored events.",
-            post(routes::settings::rescrub_settings),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[GET],
-            "/capabilities",
-            "List server capabilities/feature flags.",
-            get(routes::capabilities::capabilities),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[Method::POST],
-            "/enroll",
-            "Enroll this machine and mint its machine key.",
-            post(routes::enroll::enroll),
-            Authn::Bearer,
-            ScopeAz(auth::Scope::Enroll),
-        )
-        .add(
-            &[GET],
-            "/machines/resources",
-            "The caller's daemon machines with their last host CPU/memory/disk snapshot.",
-            get(machine_resources::list),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[GET],
-            "/machines/{machine_id}/status",
-            "Machine connectivity/liveness snapshot (remote-enroll verification).",
-            get(routes::enroll::machine_status),
-            Authn::Bearer,
-            Authz::Resource(ResourceKind::Machine, Action::Read, IdFrom::Path("machine_id")),
-        )
-        .add(
-            &[Method::POST],
-            "/deenroll",
-            "Deenroll the current machine.",
-            post(routes::enroll::deenroll),
-            Authn::Bearer,
-            // In-handler: requires a machine token (machine_id present).
-            Authenticated,
-        )
-        // Admin surface: every route is `forbid_or` (Scope::Admin).
-        .add(
-            &[Method::POST, GET],
-            "/admin/users",
-            "List all users, or create a user (admin).",
-            post(routes::admin_auth::create_user).get(routes::admin_auth::list_users),
-            Authn::Bearer,
-            ScopeAz(auth::Scope::Admin),
-        )
-        .add(
-            &[Method::PUT],
-            "/admin/instance",
-            "Set or clear the server-wide deployment name shown in the webui header (admin).",
-            put(routes::instance::update),
-            Authn::Bearer,
-            ScopeAz(auth::Scope::Admin),
-        )
-        .add(
-            &[GET, Method::PUT],
-            "/admin/instance/self-update",
-            "Read or set the machine + directory the self-update agent runs on (admin).",
-            get(routes::instance::get_self_update_target).put(routes::instance::update_self_update_target),
-            Authn::Bearer,
-            ScopeAz(auth::Scope::Admin),
-        )
-        .add(
-            &[GET, Method::PUT],
-            "/admin/harness-autoupdate",
-            "Read the harness auto-update settings of every machine, or set the instance default (admin).",
-            get(routes::harness_update::read).put(routes::harness_update::set_instance),
-            Authn::Bearer,
-            ScopeAz(auth::Scope::Admin),
-        )
-        .add(
-            &[Method::PUT],
-            "/admin/harness-autoupdate/{machine_id}",
-            "Set or clear one machine's harness auto-update override (admin).",
-            put(routes::harness_update::set_machine),
-            Authn::Bearer,
-            ScopeAz(auth::Scope::Admin),
-        )
-        .add(
-            &[Method::DELETE, Method::PATCH],
-            "/admin/users/{id}",
-            "Revoke or update a user (admin).",
-            delete(routes::admin_auth::revoke_user).patch(routes::admin_auth::update_user),
-            Authn::Bearer,
-            ScopeAz(auth::Scope::Admin),
-        )
-        .add(
-            &[Method::DELETE],
-            "/admin/users/{id}/purge",
-            "Hard-delete a user and all their data (admin).",
-            delete(routes::admin_auth::purge_user),
-            Authn::Bearer,
-            ScopeAz(auth::Scope::Admin),
-        )
-        .add(
-            &[Method::POST],
-            "/admin/users/{id}/rotate",
-            "Rotate a user's tokens (admin).",
-            post(routes::admin_auth::rotate_user),
-            Authn::Bearer,
-            ScopeAz(auth::Scope::Admin),
-        )
-        .add(
-            &[GET],
-            "/admin/users/{id}/machines",
-            "List a user's machines (admin).",
-            get(routes::admin_auth::list_user_machines),
-            Authn::Bearer,
-            ScopeAz(auth::Scope::Admin),
-        )
-        .add(
-            &[GET],
-            "/admin/users/{id}/tokens",
-            "List a user's tokens (admin).",
-            get(routes::admin_auth::list_user_tokens),
-            Authn::Bearer,
-            ScopeAz(auth::Scope::Admin),
-        )
-        .add(
-            &[Method::PATCH, Method::DELETE],
-            "/admin/users/{id}/tokens/{token_id}",
-            "Relabel or revoke a user's token (admin).",
-            patch(routes::admin_auth::relabel_user_token)
-                .delete(routes::admin_auth::revoke_user_token),
-            Authn::Bearer,
-            ScopeAz(auth::Scope::Admin),
-        )
-        .add(
-            &[Method::DELETE],
-            "/admin/users/{id}/tokens/{token_id}/purge",
-            "Hard-delete a user's token (admin).",
-            delete(routes::admin_auth::delete_user_token),
-            Authn::Bearer,
-            ScopeAz(auth::Scope::Admin),
-        )
-        .add(
-            &[Method::DELETE, Method::PATCH],
-            "/admin/machines/{id}",
-            "Revoke or rename a machine (admin).",
-            delete(routes::admin_auth::revoke_machine).patch(routes::admin_auth::rename_machine),
-            Authn::Bearer,
-            ScopeAz(auth::Scope::Admin),
-        )
-        .add(
-            &[Method::POST],
-            "/admin/machines/{id}/rotate",
-            "Rotate a machine's key (admin).",
-            post(routes::admin_auth::rotate_machine),
-            Authn::Bearer,
-            ScopeAz(auth::Scope::Admin),
-        )
-        .add(
-            &[Method::DELETE],
-            "/admin/machines/{id}/purge",
-            "Hard-delete a machine (admin).",
-            delete(routes::admin_auth::delete_machine),
-            Authn::Bearer,
-            ScopeAz(auth::Scope::Admin),
-        )
-        .add(
-            &[GET],
-            "/permissions/pending",
-            "List pending tool-use permission requests.",
-            get(routes::permissions::list_pending),
-            Authn::Bearer,
-            // In-handler owner join on session machine_uuid -> machines.user_id.
-            Authenticated,
-        )
-        .add(
-            &[GET],
-            "/skills/index",
-            "List available skills.",
-            get(routes::skills::index),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[Method::PUT, GET],
-            "/skills/{name}",
-            "Upload or fetch a skill bundle by name.",
-            put(routes::skills::put)
-                .get(routes::skills::get)
-                .layer(DefaultBodyLimit::max(50 * 1024 * 1024)),
-            Authn::Bearer,
-            Authenticated,
-        )
-        .add(
-            &[Method::POST],
-            "/users/{id}/tokens",
-            "Mint a token for a user (self or admin).",
-            post(routes::daemon::mint_user_token),
-            Authn::Bearer,
-            // In-handler: admin may mint for anyone; a user only for itself.
-            Authenticated,
-        )
-        // per-user scope (ceiling) + per-key (grant) management — all
-        // admin-only (`forbid_or`).
-        .add(
-            &[GET, Method::PATCH],
-            "/users/{id}/acls",
-            "Get or set a user's scope ceiling (admin).",
-            get(routes::admin_auth::get_user_acls).patch(routes::admin_auth::set_user_acls),
-            Authn::Bearer,
-            ScopeAz(auth::Scope::Admin),
-        )
-        .add(
-            &[GET, Method::POST],
-            "/users/{id}/keys",
-            "List or mint a user's API keys (admin).",
-            get(routes::admin_auth::list_user_keys).post(routes::admin_auth::mint_user_key),
-            Authn::Bearer,
-            ScopeAz(auth::Scope::Admin),
-        )
-        .add(
-            &[Method::DELETE],
-            "/users/{id}/keys/{kid}",
-            "Revoke a user's API key (admin).",
-            delete(routes::admin_auth::revoke_user_key),
-            Authn::Bearer,
-            ScopeAz(auth::Scope::Admin),
-        )
-        .add(
-            &[Method::PATCH],
-            "/users/{id}/keys/{kid}/acls",
-            "Set a key's scope grant (admin).",
-            patch(routes::admin_auth::set_key_acls),
-            Authn::Bearer,
-            ScopeAz(auth::Scope::Admin),
-        )
+    api_routes::register(Routes::new())
 }
 
 /// Credentialed CORS layer restricted to `allowed_origins`. Credentials forbid
@@ -1638,12 +463,13 @@ async fn auto_archive_stale(state: &AppState) {
                  end_reason = COALESCE(end_reason, 'reaped_inactive') \
              WHERE ",
             live_sessions_predicate!(),
-            " AND status NOT IN ('archived', 'draft') \
+            " AND status <> ALL($2) \
                AND pinned = false AND last_heartbeat < $1 \
              RETURNING id"
         ),
     )
     .bind(cutoff)
+    .bind(SessionRowStatus::names(SessionRowStatus::NOT_ARCHIVABLE))
     .fetch_all(&state.pool)
     .await
     {
@@ -1663,20 +489,46 @@ async fn auto_archive_stale(state: &AppState) {
     }
 }
 
+const REAPER_PERIOD: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Runs `job` every `period` on its own task, so a slow pass delays only itself.
+fn spawn_periodic<F, Fut>(period: std::time::Duration, mut job: F) -> tokio::task::JoinHandle<()>
+where
+    F: FnMut() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(period);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            interval.tick().await;
+            job().await;
+        }
+    })
+}
+
+async fn webhook_sweep(state: AppState) {
+    webhook::sweep(&state).await;
+}
+
+async fn keepalive_sweep(state: AppState) {
+    keepalive::sweep(&state).await;
+}
+
 async fn reaper_task(state: AppState) {
-    let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
+    let mut interval = tokio::time::interval(REAPER_PERIOD);
     loop {
         interval.tick().await;
         let demoted = {
             let mut registry = state.registry.write().await;
             registry.mark_stale(state.config.inactive_after_secs)
         };
-        for session_id in &demoted {
-            let _ = sqlx::query("UPDATE sessions SET status = 'inactive' WHERE id = $1")
-                .bind(session_id.as_str())
+        if !demoted.is_empty() {
+            let _ = sqlx::query("UPDATE sessions SET status = 'inactive' WHERE id = ANY($1)")
+                .bind(&demoted)
                 .execute(&state.pool)
                 .await;
-            tracing::info!(session_id = %session_id, "session demoted to inactive");
+            tracing::info!(session_ids = ?demoted, "sessions demoted to inactive");
         }
 
         auto_archive_stale(&state).await;
@@ -1758,14 +610,229 @@ async fn reaper_task(state: AppState) {
         machine_liveness::sweep(&state).await;
         machine_liveness::sweep_dispatchers(&state).await;
 
-        // Completion webhooks: fire a server-side callback for any
-        // dispatched session that has reached a terminal state — the
-        // crash-coverage path the worker's REPLY_URL exit trap can miss.
-        webhook::sweep(&state).await;
         auto_resume::sweep(&state).await;
         scheduled_messages::sweep(&state).await;
-        keepalive::sweep(&state).await;
 
         state.permission_store.write().await.reap_stale(300); // seconds
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    use super::{REAPER_PERIOD, spawn_periodic};
+
+    #[tokio::test(start_paused = true)]
+    async fn a_hung_periodic_job_does_not_stall_the_others() {
+        let hung = spawn_periodic(REAPER_PERIOD, std::future::pending::<()>);
+        let ticks = Arc::new(AtomicU32::new(0));
+        let counter = ticks.clone();
+        let reaper = spawn_periodic(REAPER_PERIOD, move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+            async {}
+        });
+        tokio::time::sleep(REAPER_PERIOD * 10 + std::time::Duration::from_secs(1)).await;
+        assert_eq!(ticks.load(Ordering::SeqCst), 11);
+        hung.abort();
+        reaper.abort();
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)] // literal route-table snapshot
+    fn api_route_table_is_unchanged() {
+        let mut descs = super::build_api_routes().into_parts().1;
+        descs.sort_by(|a, b| (a.path, a.method.as_str()).cmp(&(b.path, b.method.as_str())));
+        let actual: Vec<String> = descs
+            .iter()
+            .map(|d| format!("{} {} {:?} {:?}", d.method, d.path, d.authn, d.authz))
+            .collect();
+        let expected = [
+            "GET /account-pools Bearer Human",
+            "POST /account-pools Bearer Human",
+            "GET /account-pools/usage Bearer Human",
+            "DELETE /account-pools/{id} Bearer Human",
+            "PATCH /account-pools/{id} Bearer Human",
+            "GET /accounts Bearer Human",
+            "POST /accounts Bearer Human",
+            "POST /accounts/oauth/finish Bearer Human",
+            "POST /accounts/oauth/start Bearer Human",
+            "GET /accounts/settings-catalog Bearer Authenticated",
+            "GET /accounts/usage Bearer Human",
+            "GET /accounts/usage/closes Bearer Human",
+            "DELETE /accounts/{id} Bearer Human",
+            "GET /accounts/{id} Bearer Human",
+            "PATCH /accounts/{id} Bearer Human",
+            "POST /accounts/{id}/limit-reset Bearer Human",
+            "POST /accounts/{id}/providers Bearer Human",
+            "DELETE /accounts/{id}/providers/{provider_id} Bearer Human",
+            "PATCH /accounts/{id}/providers/{provider_id} Bearer Human",
+            "POST /accounts/{id}/providers/{provider_id}/move Bearer Human",
+            "PUT /accounts/{id}/redirect Bearer Human",
+            "GET /accounts/{id}/shares Bearer Human",
+            "POST /accounts/{id}/shares Bearer Human",
+            "DELETE /accounts/{id}/shares/{user_id} Bearer Human",
+            "GET /accounts/{id}/tool-policy Bearer Human",
+            "PUT /accounts/{id}/tool-policy Bearer Human",
+            "GET /accounts/{id}/usage Bearer Human",
+            "GET /accounts/{id}/usage/closes Bearer Human",
+            "GET /accounts/{id}/usage/history Bearer Human",
+            "GET /admin/harness-autoupdate Bearer Scope(Admin)",
+            "PUT /admin/harness-autoupdate Bearer Scope(Admin)",
+            "PUT /admin/harness-autoupdate/{machine_id} Bearer Scope(Admin)",
+            "PUT /admin/instance Bearer Scope(Admin)",
+            "GET /admin/instance/self-update Bearer Scope(Admin)",
+            "PUT /admin/instance/self-update Bearer Scope(Admin)",
+            "GET /admin/instance/spawn-defaults Bearer Scope(Admin)",
+            "PUT /admin/instance/spawn-defaults Bearer Scope(Admin)",
+            "GET /admin/instance/upstream-hosts Bearer Scope(Admin)",
+            "PUT /admin/instance/upstream-hosts Bearer Scope(Admin)",
+            "DELETE /admin/machines/{id} Bearer Scope(Admin)",
+            "PATCH /admin/machines/{id} Bearer Scope(Admin)",
+            "DELETE /admin/machines/{id}/purge Bearer Scope(Admin)",
+            "POST /admin/machines/{id}/rotate Bearer Scope(Admin)",
+            "PUT /admin/passkeys/auto-prompt Bearer Scope(Admin)",
+            "GET /admin/users Bearer Scope(Admin)",
+            "POST /admin/users Bearer Scope(Admin)",
+            "DELETE /admin/users/{id} Bearer Scope(Admin)",
+            "PATCH /admin/users/{id} Bearer Scope(Admin)",
+            "GET /admin/users/{id}/machines Bearer Scope(Admin)",
+            "DELETE /admin/users/{id}/purge Bearer Scope(Admin)",
+            "POST /admin/users/{id}/rotate Bearer Scope(Admin)",
+            "GET /admin/users/{id}/tokens Bearer Scope(Admin)",
+            "DELETE /admin/users/{id}/tokens/{token_id} Bearer Scope(Admin)",
+            "PATCH /admin/users/{id}/tokens/{token_id} Bearer Scope(Admin)",
+            "DELETE /admin/users/{id}/tokens/{token_id}/purge Bearer Scope(Admin)",
+            "GET /bookmarks Bearer Authenticated",
+            "POST /bookmarks Bearer Authenticated",
+            "DELETE /bookmarks/{id} Bearer Authenticated",
+            "PATCH /bookmarks/{id} Bearer Authenticated",
+            "GET /capabilities Bearer Authenticated",
+            "GET /daemon/binary/{target} Bearer Authenticated",
+            "POST /deenroll Bearer Authenticated",
+            "POST /dispatcher/enroll Bearer Scope(Enroll)",
+            "GET /dispatchers Bearer Authenticated",
+            "DELETE /dispatchers/{id} Bearer Scope(Enroll)",
+            "PATCH /dispatchers/{id} Bearer Scope(Enroll)",
+            "POST /enroll Bearer Scope(Enroll)",
+            "GET /keys Bearer Authenticated",
+            "POST /keys Bearer Authenticated",
+            "DELETE /keys/{id} Bearer Authenticated",
+            "GET /keys/{id}/value Bearer Authenticated",
+            "GET /labels Bearer Authenticated",
+            "POST /labels Bearer Authenticated",
+            "DELETE /labels/{id} Bearer Authenticated",
+            "PATCH /labels/{id} Bearer Authenticated",
+            "GET /machines/resources Bearer Authenticated",
+            r#"GET /machines/{machine_id}/codex-models Bearer Resource(Machine, Read, Path("machine_id"))"#,
+            r#"POST /machines/{machine_id}/codex-models/refresh Bearer Resource(Machine, Read, Path("machine_id"))"#,
+            "GET /machines/{machine_id}/commands/pending Bearer Authenticated",
+            r#"GET /machines/{machine_id}/fs/dirs Bearer Resource(Machine, Read, Path("machine_id"))"#,
+            r#"GET /machines/{machine_id}/fs/file Bearer Resource(Machine, Read, Path("machine_id"))"#,
+            r#"GET /machines/{machine_id}/fs/gitinfo Bearer Resource(Machine, Read, Path("machine_id"))"#,
+            r#"GET /machines/{machine_id}/status Bearer Resource(Machine, Read, Path("machine_id"))"#,
+            "GET /manifest/daemon Bearer Authenticated",
+            "GET /me Bearer Authenticated",
+            "GET /models/codex Bearer Authenticated",
+            "GET /passkeys Bearer Authenticated",
+            "POST /passkeys/register/finish Bearer Authenticated",
+            "POST /passkeys/register/start Bearer Authenticated",
+            "POST /passkeys/test/finish Bearer Authenticated",
+            "POST /passkeys/test/start Bearer Authenticated",
+            "DELETE /passkeys/{id} Bearer Authenticated",
+            "PATCH /passkeys/{id} Bearer Authenticated",
+            "GET /permissions/pending Bearer Authenticated",
+            "GET /profiles Bearer Human",
+            "POST /profiles Bearer Human",
+            "PUT /profiles/order Bearer Human",
+            "DELETE /profiles/{id} Bearer Human",
+            "PATCH /profiles/{id} Bearer Human",
+            "GET /prompts Bearer Authenticated",
+            "POST /prompts Bearer Authenticated",
+            "GET /prompts/resolve Bearer Authenticated",
+            "DELETE /prompts/{id} Bearer Authenticated",
+            "GET /prompts/{id} Bearer Authenticated",
+            "GET /redirects Bearer Human",
+            "DELETE /redirects/{id} Bearer Human",
+            "GET /sessions Bearer Authenticated",
+            "POST /sessions/archive Bearer Authenticated",
+            "POST /sessions/dispatch Bearer Scope(Dispatch)",
+            "GET /sessions/dispatchers Bearer Authenticated",
+            "POST /sessions/pin Bearer Authenticated",
+            "GET /sessions/recent-dirs Bearer Authenticated",
+            "POST /sessions/register Bearer Authenticated",
+            "GET /sessions/search Bearer Authenticated",
+            "GET /sessions/search/values Bearer Authenticated",
+            "POST /sessions/spawn Bearer Authenticated",
+            "GET /sessions/stats Bearer Authenticated",
+            "GET /sessions/stats/cache-busts Bearer Authenticated",
+            "GET /sessions/stats/tokens Bearer Authenticated",
+            "GET /sessions/stats/usage Bearer Authenticated",
+            "POST /sessions/unarchive Bearer Authenticated",
+            "POST /sessions/unpin Bearer Authenticated",
+            r#"GET /sessions/{id} Bearer Resource(Session, Read, Path("id"))"#,
+            r#"PATCH /sessions/{id} Bearer Resource(Session, Write, Path("id"))"#,
+            r#"POST /sessions/{id}/archive Bearer Resource(Session, Write, Path("id"))"#,
+            r#"GET /sessions/{id}/attachments Bearer Resource(Session, Read, Path("id"))"#,
+            r#"POST /sessions/{id}/auto-approve Bearer Resource(Session, Write, Path("id"))"#,
+            r#"GET /sessions/{id}/bindings Bearer Resource(Session, Read, Path("id"))"#,
+            r#"GET /sessions/{id}/blobs/{hash} Bearer Resource(Session, Read, Path("id"))"#,
+            r#"GET /sessions/{id}/brief Bearer Resource(Session, Read, Path("id"))"#,
+            r#"GET /sessions/{id}/conversation Bearer Resource(Session, Read, Path("id"))"#,
+            r#"POST /sessions/{id}/deregister Bearer Resource(Session, Write, Path("id"))"#,
+            r#"GET /sessions/{id}/diagnose Bearer Resource(Session, Read, Path("id"))"#,
+            r#"POST /sessions/{id}/discard Bearer Resource(Session, Write, Path("id"))"#,
+            r#"PUT /sessions/{id}/draft Bearer Resource(Session, Write, Path("id"))"#,
+            r#"POST /sessions/{id}/files Bearer Resource(Session, Write, Path("id"))"#,
+            r#"POST /sessions/{id}/fork Bearer Resource(Session, Write, Path("id"))"#,
+            r#"GET /sessions/{id}/images/{image_id} Bearer Resource(Session, Read, Path("id"))"#,
+            r#"POST /sessions/{id}/interrupt Bearer Resource(Session, Write, Path("id"))"#,
+            r#"POST /sessions/{id}/keepalive Bearer Resource(Session, Write, Path("id"))"#,
+            r#"POST /sessions/{id}/kill Bearer Resource(Session, Write, Path("id"))"#,
+            r#"POST /sessions/{id}/labels Bearer Resource(Session, Write, Path("id"))"#,
+            r#"DELETE /sessions/{id}/labels/{label_id} Bearer Resource(Session, Write, Path("id"))"#,
+            r#"GET /sessions/{id}/langfuse Bearer Resource(Session, Read, Path("id"))"#,
+            r#"POST /sessions/{id}/launch Bearer Resource(Session, Write, Path("id"))"#,
+            r#"POST /sessions/{id}/message Bearer Resource(Session, Write, Path("id"))"#,
+            r#"GET /sessions/{id}/messages/scheduled Bearer Resource(Session, Read, Path("id"))"#,
+            r#"DELETE /sessions/{id}/messages/scheduled/{queue_id} Bearer Resource(Session, Write, Path("id"))"#,
+            r#"PATCH /sessions/{id}/messages/scheduled/{queue_id} Bearer Resource(Session, Write, Path("id"))"#,
+            r#"POST /sessions/{id}/messages/scheduled/{queue_id}/send-now Bearer Resource(Session, Write, Path("id"))"#,
+            r#"POST /sessions/{id}/pin Bearer Resource(Session, Write, Path("id"))"#,
+            r#"GET /sessions/{id}/pins Bearer Resource(Session, Read, Path("id"))"#,
+            r#"POST /sessions/{id}/pins Bearer Resource(Session, Write, Path("id"))"#,
+            r#"DELETE /sessions/{id}/pins/{seq} Bearer Resource(Session, Write, Path("id"))"#,
+            r#"POST /sessions/{id}/policy Bearer Resource(Session, Write, Path("id"))"#,
+            r#"GET /sessions/{id}/rebinds Bearer Resource(Session, Read, Path("id"))"#,
+            r#"POST /sessions/{id}/resume Bearer Resource(Session, Write, Path("id"))"#,
+            r#"POST /sessions/{id}/seen Bearer Resource(Session, Write, Path("id"))"#,
+            r#"POST /sessions/{id}/set-model Bearer Resource(Session, Write, Path("id"))"#,
+            r#"POST /sessions/{id}/switch-account Bearer Resource(Session, Write, Path("id"))"#,
+            r#"POST /sessions/{id}/unarchive Bearer Resource(Session, Write, Path("id"))"#,
+            r#"POST /sessions/{id}/unpin Bearer Resource(Session, Write, Path("id"))"#,
+            "GET /settings Bearer Authenticated",
+            "PUT /settings Bearer Authenticated",
+            "POST /settings/rescrub Bearer Authenticated",
+            "GET /skills/index Bearer Authenticated",
+            "GET /skills/{name} Bearer Authenticated",
+            "PUT /skills/{name} Bearer Authenticated",
+            "GET /users/{id}/acls Bearer Scope(Admin)",
+            "PATCH /users/{id}/acls Bearer Scope(Admin)",
+            "GET /users/{id}/keys Bearer Scope(Admin)",
+            "POST /users/{id}/keys Bearer Scope(Admin)",
+            "DELETE /users/{id}/keys/{kid} Bearer Scope(Admin)",
+            "PATCH /users/{id}/keys/{kid}/acls Bearer Scope(Admin)",
+            "POST /users/{id}/tokens Bearer Authenticated",
+            "GET /version Bearer Authenticated",
+            "GET /version/changelog Bearer Authenticated",
+            "POST /version/refresh Bearer Authenticated",
+            "GET /version/self-update Bearer Authenticated",
+            "POST /version/self-update Bearer Scope(Admin)",
+            "GET /{resource_type}/{id}/shares Bearer Human",
+            "POST /{resource_type}/{id}/shares Bearer Human",
+            "DELETE /{resource_type}/{id}/shares/{user_id} Bearer Human",
+        ];
+        assert_eq!(actual, expected);
     }
 }

@@ -3,44 +3,12 @@ import type { AttentionBucket } from "./AttentionBucket";
 import type { CheckSummary } from "./CheckSummary";
 import type { ReviewSummary } from "./ReviewSummary";
 
-/**
- * One row in the `/github` PR inbox: the synced PR plus its derived attention
- * bucket and pre-aggregated CI/review summaries.
- */
-export type PullInboxItem = { 
-/**
- * The connector that tracks this PR (multi-account scoping in the UI).
- */
-connector_id: string, 
-/**
- * `owner/name` slug.
- */
-repo: string, 
-/**
- * PR number within the repo.
- */
-number: number, title: string, 
+export type PullInboxItem = { connector_id: string, repo: string, number: number, title: string, 
 /**
  * `open` | `closed`.
  */
-state: string, merged: boolean, draft: boolean, author: string, head_ref: string, base_ref: string, 
+state: string, merged: boolean, draft: boolean, author: string, head_ref: string, base_ref: string, mergeable_state: string | null, 
 /**
- * GitHub's `mergeable_state`, when known.
+ * ISO-8601; the inbox sort key.
  */
-mergeable_state: string | null, 
-/**
- * GitHub's last-update timestamp (ISO-8601) — the inbox sorts on it.
- */
-gh_updated_at: string, 
-/**
- * The most-actionable attention bucket (GH-CONN-6 derivation).
- */
-bucket: AttentionBucket, 
-/**
- * Pre-aggregated CI state for the head SHA.
- */
-checks: CheckSummary, 
-/**
- * Pre-aggregated review state.
- */
-reviews: ReviewSummary, };
+gh_updated_at: string, bucket: AttentionBucket, checks: CheckSummary, reviews: ReviewSummary, };

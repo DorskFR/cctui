@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 import { describe, expect, it, vi } from 'vitest';
 import { decodeBase64, KeyedListeners, BoundedEventBuffer } from './ws.svelte';
 import type { AgentEvent } from '@bindings/AgentEvent';
@@ -9,7 +10,7 @@ const reply = (content: string, ts: number): AgentEvent => ({
 	seq: null
 });
 
-describe('decodeBase64 (CCT-545 PTY chunks)', () => {
+describe('decodeBase64 (PTY chunks)', () => {
 	it('round-trips ASCII bytes', () => {
 		expect(Array.from(decodeBase64('aGk='))).toEqual([104, 105]);
 	});

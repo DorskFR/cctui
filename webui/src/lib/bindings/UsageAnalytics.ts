@@ -3,25 +3,16 @@ import type { HeatmapCell } from "./HeatmapCell";
 import type { ModelUsage } from "./ModelUsage";
 import type { UsageBucket } from "./UsageBucket";
 
-/**
- * Overview usage analytics: tokens-over-time buckets, per-model
- * breakdown, and an activity heatmap — one endpoint, one round-trip set for
- * the whole Overview usage section.
- */
 export type UsageAnalytics = { 
 /**
- * Bucket granularity: `"hour"` for short ranges, else `"day"`.
+ * `hour` or `day`.
  */
 granularity: string, 
 /**
- * Tokens-over-time buckets, ordered oldest→newest.
+ * Oldest first.
  */
 buckets: Array<UsageBucket>, 
 /**
- * Per-model breakdown, ordered by output-token volume (desc).
+ * By output tokens, descending.
  */
-models: Array<ModelUsage>, 
-/**
- * Sparse hour-of-week activity cells.
- */
-heatmap: Array<HeatmapCell>, };
+models: Array<ModelUsage>, heatmap: Array<HeatmapCell>, };

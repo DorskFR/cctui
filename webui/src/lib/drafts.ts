@@ -200,7 +200,7 @@ export const LIST_DENSITY = 'cctui_list_density';
 // grid of detailed cards).
 export const LIST_VIEW = 'cctui_list_view';
 // Which session section is in view: 'starred' | 'live' | 'dispatched'
-// | 'archived'. Replaces the old archived on/off checkbox with a 4-way picker.
+// | 'archived'.
 export const LIST_SECTION = 'cctui_list_section';
 // Section headers hidden by their eye toggle, comma-joined section keys.
 export const LIST_HIDDEN = 'cctui_list_hidden';

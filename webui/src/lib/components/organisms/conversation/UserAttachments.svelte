@@ -4,6 +4,7 @@
 	// else opens through the remote-file viewer (overlay or download).
 	import { IconButton } from '@dorsk/tsumikit';
 	import FileChip from '$lib/components/molecules/FileChip.svelte';
+	import { apiBlob } from '$lib/api';
 	import { attachmentStore } from '$lib/attachmentStore';
 	import { copyText } from '$lib/clipboard';
 	import { refusalMessage, tryOpenLocalFile } from '$lib/fileviewer';
@@ -79,11 +80,11 @@
 	}
 
 	async function fetchBody(a: SessionAttachment): Promise<Response | null> {
-		const blob = await fetch(url(a), { credentials: 'same-origin' }).catch(() => null);
+		const blob = await apiBlob(url(a)).catch(() => null);
 		if (blob?.ok) return blob;
 		const href = stagedHref(a);
 		if (!href) return null;
-		const staged = await fetch(href, { credentials: 'same-origin' }).catch(() => null);
+		const staged = await apiBlob(href).catch(() => null);
 		return staged?.ok ? staged : null;
 	}
 

@@ -14,7 +14,7 @@ export const useBookmarks = (q: () => string = () => "") =>
 
 export function useBookmarkActions() {
   const qc = useQueryClient();
-  const invalidate = () => qc.invalidateQueries({ queryKey: ["bookmarks"] });
+  const invalidate = () => qc.invalidateQueries({ queryKey: qk.bookmarksAll });
   return {
     create: async (body: CreateBookmark): Promise<Bookmark> => {
       const b = await endpoints.createBookmark(body);

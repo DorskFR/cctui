@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { RESUME_STALE_MS, WATCHDOG_MS, WsClient } from './ws.svelte';
 import { auth } from './auth.svelte';
@@ -64,7 +65,7 @@ function openClient(): WsClient {
 	return c;
 }
 
-describe('watchdog (CCT-1048)', () => {
+describe('watchdog', () => {
 	it('reconnects when no frame arrives within the window', () => {
 		const c = openClient();
 		const dead = last();
@@ -134,7 +135,7 @@ describe('watchdog (CCT-1048)', () => {
 	});
 });
 
-describe('resumeCheck (CCT-1048)', () => {
+describe('resumeCheck', () => {
 	it('forces a fresh socket when the current one has gone quiet', () => {
 		const c = openClient();
 		const dead = last();
@@ -178,7 +179,7 @@ describe('resumeCheck (CCT-1048)', () => {
 	});
 });
 
-describe('ack timeout forces a reconnect (CCT-1048)', () => {
+describe('ack timeout forces a reconnect', () => {
 	it('dials a new socket rather than retrying the dead one', () => {
 		const c = openClient();
 		const dead = last();

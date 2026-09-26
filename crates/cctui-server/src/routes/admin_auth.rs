@@ -12,21 +12,14 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
-use cctui_proto::api::ApiError;
-
 use crate::auth::{
     AuthConfig, AuthContext, Scope, machine_token, mint_secret, sha256_hex, user_token,
 };
+use crate::error::AppError;
 use crate::state::AppState;
 
-fn forbid_or(ctx: &AuthContext) -> Result<(), (StatusCode, Json<ApiError>)> {
-    ctx.requires(Scope::Admin)
-        .map_err(|s| (s, Json(ApiError { error: "admin token required".into() })))
-}
-
-fn db_err(e: &sqlx::Error) -> (StatusCode, Json<ApiError>) {
-    tracing::error!("db error: {e}");
-    (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
+fn forbid_or(ctx: &AuthContext) -> Result<(), AppError> {
+    ctx.requires(Scope::Admin).map_err(|s| AppError::new(s, "admin token required"))
 }
 
 #[derive(Deserialize, TS)]
@@ -140,10 +133,10 @@ pub async fn create_user(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Json(req): Json<CreateUserRequest>,
-) -> Result<Json<CreateUserResponse>, (StatusCode, Json<ApiError>)> {
+) -> Result<Json<CreateUserResponse>, AppError> {
     forbid_or(&ctx)?;
     if req.name.trim().is_empty() {
-        return Err((StatusCode::BAD_REQUEST, Json(ApiError { error: "name required".into() })));
+        return Err(AppError::new(StatusCode::BAD_REQUEST, "name required"));
     }
     let id = Uuid::new_v4();
     let secret = mint_secret();
@@ -154,8 +147,7 @@ pub async fn create_user(
         .bind(&req.name)
         .bind(&hash)
         .execute(&state.pool)
-        .await
-        .map_err(|e| db_err(&e))?;
+        .await?;
     // Seed the new user's ceiling: the default capability set a fresh
     // user gets — read + enroll + dispatch (NOT admin). Matches the legacy
     // default where can_dispatch=TRUE and any user token could enroll/dispatch.
@@ -181,6 +173,8 @@ pub async fn create_user(
             kind: "user",
             machine_id: None,
             dispatcher_id: None,
+            expires_at: None,
+            passkey_id: None,
         },
         default_ceiling,
     )
@@ -195,7 +189,7 @@ pub async fn create_user(
 pub async fn list_users(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
-) -> Result<Json<Vec<UserRow>>, (StatusCode, Json<ApiError>)> {
+) -> Result<Json<Vec<UserRow>>, AppError> {
     forbid_or(&ctx)?;
     let rows: Vec<UserRow> = sqlx::query_as(
         "SELECT u.id, u.name, u.created_at, u.revoked_at, u.disabled_at, u.can_dispatch, \
@@ -203,8 +197,7 @@ pub async fn list_users(
          FROM users u ORDER BY u.created_at",
     )
     .fetch_all(&state.pool)
-    .await
-    .map_err(|e| db_err(&e))?;
+    .await?;
     Ok(Json(rows))
 }
 
@@ -212,18 +205,18 @@ pub async fn revoke_user(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<Uuid>,
-) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+) -> Result<StatusCode, AppError> {
     forbid_or(&ctx)?;
     let res =
         sqlx::query("UPDATE users SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL")
             .bind(id)
             .execute(&state.pool)
-            .await
-            .map_err(|e| db_err(&e))?;
+            .await?;
     if res.rows_affected() == 0 {
-        return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "user not found".into() })));
+        return Err(AppError::new(StatusCode::NOT_FOUND, "user not found"));
     }
-    purge_user_cache(&state.auth_config, id, &state.pool).await;
+    crate::store::tokens::revoke_by_user(&state.pool, id).await?;
+    state.auth_config.purge_all();
     tracing::info!(user_id = %id, "user revoked");
     Ok(StatusCode::NO_CONTENT)
 }
@@ -232,16 +225,15 @@ pub async fn rotate_user(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<Uuid>,
-) -> Result<Json<RotateResponse>, (StatusCode, Json<ApiError>)> {
+) -> Result<Json<RotateResponse>, AppError> {
     forbid_or(&ctx)?;
     let old_hash: Option<(String,)> =
         sqlx::query_as("SELECT key_hash FROM users WHERE id = $1 AND revoked_at IS NULL")
             .bind(id)
             .fetch_optional(&state.pool)
-            .await
-            .map_err(|e| db_err(&e))?;
+            .await?;
     let Some((old_hash,)) = old_hash else {
-        return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "user not found".into() })));
+        return Err(AppError::new(StatusCode::NOT_FOUND, "user not found"));
     };
     let secret = mint_secret();
     let token = user_token(&secret);
@@ -250,8 +242,7 @@ pub async fn rotate_user(
         .bind(&hash)
         .bind(id)
         .execute(&state.pool)
-        .await
-        .map_err(|e| db_err(&e))?;
+        .await?;
     state.auth_config.purge(&old_hash);
     tracing::info!(user_id = %id, "user key rotated");
     Ok(Json(RotateResponse { id, key: token }))
@@ -261,7 +252,7 @@ pub async fn list_user_machines(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Path(user_id): Path<Uuid>,
-) -> Result<Json<Vec<MachineRow>>, (StatusCode, Json<ApiError>)> {
+) -> Result<Json<Vec<MachineRow>>, AppError> {
     forbid_or(&ctx)?;
     let mut rows: Vec<MachineRow> = sqlx::query_as(
         "SELECT id, user_id, name, display_name, first_seen_at, last_seen_at, revoked_at, kind, \
@@ -270,8 +261,7 @@ pub async fn list_user_machines(
     )
     .bind(user_id)
     .fetch_all(&state.pool)
-    .await
-    .map_err(|e| db_err(&e))?;
+    .await?;
     // Derive the online/stale/offline tier from `last_seen_at` age so
     // the UI can render a machine health dot without re-implementing the
     // thresholds client-side.
@@ -288,7 +278,7 @@ pub async fn delete_machine(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<Uuid>,
-) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+) -> Result<StatusCode, AppError> {
     forbid_or(&ctx)?;
     let res = sqlx::query(
         "UPDATE machines SET deleted_at = now() \
@@ -296,13 +286,9 @@ pub async fn delete_machine(
     )
     .bind(id)
     .execute(&state.pool)
-    .await
-    .map_err(|e| db_err(&e))?;
+    .await?;
     if res.rows_affected() == 0 {
-        return Err((
-            StatusCode::CONFLICT,
-            Json(ApiError { error: "machine must be revoked before delete".into() }),
-        ));
+        return Err(AppError::new(StatusCode::CONFLICT, "machine must be revoked before delete"));
     }
     tracing::info!(machine_id = %id, "machine deleted (soft)");
     Ok(StatusCode::NO_CONTENT)
@@ -312,22 +298,20 @@ pub async fn revoke_machine(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<Uuid>,
-) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+) -> Result<StatusCode, AppError> {
     forbid_or(&ctx)?;
     let old_hash: Option<(String,)> =
         sqlx::query_as("SELECT key_hash FROM machines WHERE id = $1 AND revoked_at IS NULL")
             .bind(id)
             .fetch_optional(&state.pool)
-            .await
-            .map_err(|e| db_err(&e))?;
+            .await?;
     let Some((old_hash,)) = old_hash else {
-        return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "machine not found".into() })));
+        return Err(AppError::new(StatusCode::NOT_FOUND, "machine not found"));
     };
     sqlx::query("UPDATE machines SET revoked_at = now() WHERE id = $1")
         .bind(id)
         .execute(&state.pool)
-        .await
-        .map_err(|e| db_err(&e))?;
+        .await?;
     // Auth resolves against auth_keys first; revoke the mirror row too or the
     // key keeps authenticating.
     sqlx::query(
@@ -335,8 +319,7 @@ pub async fn revoke_machine(
     )
     .bind(id)
     .execute(&state.pool)
-    .await
-    .map_err(|e| db_err(&e))?;
+    .await?;
     state.auth_config.purge(&old_hash);
     tracing::info!(machine_id = %id, "machine revoked");
     Ok(StatusCode::NO_CONTENT)
@@ -347,26 +330,22 @@ pub async fn rename_machine(
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<Uuid>,
     Json(req): Json<RenameMachineRequest>,
-) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+) -> Result<StatusCode, AppError> {
     forbid_or(&ctx)?;
     let trimmed = req.display_name.as_ref().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
     if let Some(h) = req.hue
         && !(0..360).contains(&h)
     {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(ApiError { error: "hue must be in 0..360".into() }),
-        ));
+        return Err(AppError::new(StatusCode::BAD_REQUEST, "hue must be in 0..360"));
     }
     let outcome = sqlx::query("UPDATE machines SET display_name = $1, hue = $2 WHERE id = $3")
         .bind(&trimmed)
         .bind(req.hue)
         .bind(id)
         .execute(&state.pool)
-        .await
-        .map_err(|e| db_err(&e))?;
+        .await?;
     if outcome.rows_affected() == 0 {
-        return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "machine not found".into() })));
+        return Err(AppError::new(StatusCode::NOT_FOUND, "machine not found"));
     }
     tracing::info!(machine_id = %id, display_name = ?trimmed, "machine renamed");
     Ok(StatusCode::NO_CONTENT)
@@ -381,22 +360,16 @@ pub async fn update_user(
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<Uuid>,
     Json(req): Json<UpdateUserRequest>,
-) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+) -> Result<StatusCode, AppError> {
     forbid_or(&ctx)?;
     let name = match req.name.as_deref().map(str::trim) {
         Some("") => {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                Json(ApiError { error: "name required".into() }),
-            ));
+            return Err(AppError::new(StatusCode::BAD_REQUEST, "name required"));
         }
         other => other,
     };
     if name.is_none() && req.can_dispatch.is_none() && req.disabled.is_none() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(ApiError { error: "nothing to update".into() }),
-        ));
+        return Err(AppError::new(StatusCode::BAD_REQUEST, "nothing to update"));
     }
     // COALESCE keeps the existing value when a field is NULL (not supplied).
     // `disabled` maps to the timestamp: true → now() (kept if already set so
@@ -416,10 +389,9 @@ pub async fn update_user(
     .bind(req.disabled)
     .bind(id)
     .execute(&state.pool)
-    .await
-    .map_err(|e| db_err(&e))?;
+    .await?;
     if outcome.rows_affected() == 0 {
-        return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "user not found".into() })));
+        return Err(AppError::new(StatusCode::NOT_FOUND, "user not found"));
     }
     // Disabling must take effect immediately, not after the auth-cache TTL.
     if req.disabled == Some(true) {
@@ -439,27 +411,23 @@ pub async fn purge_user(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<Uuid>,
-) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+) -> Result<StatusCode, AppError> {
     forbid_or(&ctx)?;
     // Gather hashes up-front so we can evict them from the auth cache after the
     // row is gone (the rows themselves are about to be deleted).
     purge_user_cache(&state.auth_config, id, &state.pool).await;
 
-    let mut tx = state.pool.begin().await.map_err(|e| db_err(&e))?;
+    let mut tx = state.pool.begin().await?;
     let revoked: Option<(Option<DateTime<Utc>>,)> =
         sqlx::query_as("SELECT revoked_at FROM users WHERE id = $1 FOR UPDATE")
             .bind(id)
             .fetch_optional(&mut *tx)
-            .await
-            .map_err(|e| db_err(&e))?;
+            .await?;
     let Some((revoked_at,)) = revoked else {
-        return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "user not found".into() })));
+        return Err(AppError::new(StatusCode::NOT_FOUND, "user not found"));
     };
     if revoked_at.is_none() {
-        return Err((
-            StatusCode::CONFLICT,
-            Json(ApiError { error: "user must be revoked before delete".into() }),
-        ));
+        return Err(AppError::new(StatusCode::CONFLICT, "user must be revoked before delete"));
     }
     // Disown sessions that reference this user or any of its machines (no FK
     // cascade there — preserve the transcript rows, just drop ownership).
@@ -469,22 +437,16 @@ pub async fn purge_user(
     )
     .bind(id)
     .execute(&mut *tx)
-    .await
-    .map_err(|e| db_err(&e))?;
+    .await?;
     sqlx::query("UPDATE sessions SET user_id = NULL WHERE user_id = $1")
         .bind(id)
         .execute(&mut *tx)
-        .await
-        .map_err(|e| db_err(&e))?;
-    let outcome = sqlx::query("DELETE FROM users WHERE id = $1")
-        .bind(id)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| db_err(&e))?;
+        .await?;
+    let outcome = sqlx::query("DELETE FROM users WHERE id = $1").bind(id).execute(&mut *tx).await?;
     if outcome.rows_affected() == 0 {
-        return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "user not found".into() })));
+        return Err(AppError::new(StatusCode::NOT_FOUND, "user not found"));
     }
-    tx.commit().await.map_err(|e| db_err(&e))?;
+    tx.commit().await?;
     tracing::info!(user_id = %id, "user purged");
     Ok(StatusCode::NO_CONTENT)
 }
@@ -495,7 +457,7 @@ pub async fn list_user_tokens(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<Uuid>,
-) -> Result<Json<Vec<UserTokenRow>>, (StatusCode, Json<ApiError>)> {
+) -> Result<Json<Vec<UserTokenRow>>, AppError> {
     forbid_or(&ctx)?;
     let rows: Vec<UserTokenRow> = sqlx::query_as(
         "SELECT id, label, created_at, expires_at, revoked_at, token_preview \
@@ -503,8 +465,7 @@ pub async fn list_user_tokens(
     )
     .bind(id)
     .fetch_all(&state.pool)
-    .await
-    .map_err(|e| db_err(&e))?;
+    .await?;
     Ok(Json(rows))
 }
 
@@ -514,7 +475,7 @@ pub async fn relabel_user_token(
     Extension(ctx): Extension<AuthContext>,
     Path((user_id, token_id)): Path<(Uuid, Uuid)>,
     Json(req): Json<RelabelTokenRequest>,
-) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+) -> Result<StatusCode, AppError> {
     forbid_or(&ctx)?;
     let trimmed = req.label.as_ref().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
     let outcome = sqlx::query("UPDATE user_tokens SET label = $1 WHERE id = $2 AND user_id = $3")
@@ -522,10 +483,9 @@ pub async fn relabel_user_token(
         .bind(token_id)
         .bind(user_id)
         .execute(&state.pool)
-        .await
-        .map_err(|e| db_err(&e))?;
+        .await?;
     if outcome.rows_affected() == 0 {
-        return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "token not found".into() })));
+        return Err(AppError::new(StatusCode::NOT_FOUND, "token not found"));
     }
     tracing::info!(%user_id, %token_id, label = ?trimmed, "token relabeled");
     Ok(StatusCode::NO_CONTENT)
@@ -537,7 +497,7 @@ pub async fn revoke_user_token(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Path((user_id, token_id)): Path<(Uuid, Uuid)>,
-) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+) -> Result<StatusCode, AppError> {
     forbid_or(&ctx)?;
     let outcome = sqlx::query(
         "UPDATE user_tokens SET revoked_at = now() \
@@ -546,10 +506,9 @@ pub async fn revoke_user_token(
     .bind(token_id)
     .bind(user_id)
     .execute(&state.pool)
-    .await
-    .map_err(|e| db_err(&e))?;
+    .await?;
     if outcome.rows_affected() == 0 {
-        return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "token not found".into() })));
+        return Err(AppError::new(StatusCode::NOT_FOUND, "token not found"));
     }
     purge_user_cache(&state.auth_config, user_id, &state.pool).await;
     tracing::info!(%user_id, %token_id, "token revoked");
@@ -565,16 +524,15 @@ pub async fn delete_user_token(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Path((user_id, token_id)): Path<(Uuid, Uuid)>,
-) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+) -> Result<StatusCode, AppError> {
     forbid_or(&ctx)?;
     let outcome = sqlx::query("DELETE FROM user_tokens WHERE id = $1 AND user_id = $2")
         .bind(token_id)
         .bind(user_id)
         .execute(&state.pool)
-        .await
-        .map_err(|e| db_err(&e))?;
+        .await?;
     if outcome.rows_affected() == 0 {
-        return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "token not found".into() })));
+        return Err(AppError::new(StatusCode::NOT_FOUND, "token not found"));
     }
     purge_user_cache(&state.auth_config, user_id, &state.pool).await;
     tracing::info!(%user_id, %token_id, "token purged");
@@ -585,16 +543,15 @@ pub async fn rotate_machine(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<Uuid>,
-) -> Result<Json<RotateResponse>, (StatusCode, Json<ApiError>)> {
+) -> Result<Json<RotateResponse>, AppError> {
     forbid_or(&ctx)?;
     let old_hash: Option<(String,)> =
         sqlx::query_as("SELECT key_hash FROM machines WHERE id = $1 AND revoked_at IS NULL")
             .bind(id)
             .fetch_optional(&state.pool)
-            .await
-            .map_err(|e| db_err(&e))?;
+            .await?;
     let Some((old_hash,)) = old_hash else {
-        return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "machine not found".into() })));
+        return Err(AppError::new(StatusCode::NOT_FOUND, "machine not found"));
     };
     let secret = mint_secret();
     let token = machine_token(&secret);
@@ -605,9 +562,8 @@ pub async fn rotate_machine(
         .bind(&preview)
         .bind(id)
         .execute(&state.pool)
-        .await
-        .map_err(|e| db_err(&e))?;
-    // Auth resolves against auth_keys first; without this the old key keeps
+        .await?;
+    // Auth resolves against auth_keys first; without this the replaced key keeps
     // authenticating and the new one only works via the legacy dual-read.
     let mirrored = sqlx::query(
         "UPDATE auth_keys SET key_hash = $1, key_preview = $2 \
@@ -617,17 +573,15 @@ pub async fn rotate_machine(
     .bind(&preview)
     .bind(id)
     .execute(&state.pool)
-    .await
-    .map_err(|e| db_err(&e))?;
+    .await?;
     if mirrored.rows_affected() == 0 {
         let owner: Option<(Uuid, String)> =
             sqlx::query_as("SELECT user_id, name FROM machines WHERE id = $1")
                 .bind(id)
                 .fetch_optional(&state.pool)
-                .await
-                .map_err(|e| db_err(&e))?;
+                .await?;
         if let Some((user_id, name)) = owner {
-            let grant = crate::auth::ceiling_of(&state.pool, user_id).await;
+            let grant = crate::store::acls::user_ceiling(&state.pool, user_id).await?;
             if let Err(e) = crate::auth::register_key(
                 &state.pool,
                 crate::auth::NewKey {
@@ -638,6 +592,8 @@ pub async fn rotate_machine(
                     kind: "machine",
                     machine_id: Some(id),
                     dispatcher_id: None,
+                    expires_at: None,
+                    passkey_id: None,
                 },
                 grant,
             )
@@ -683,20 +639,12 @@ async fn purge_user_cache(auth: &AuthConfig, user_id: Uuid, pool: &sqlx::PgPool)
 // ===========================================================================
 
 /// Allow if the caller is admin, or is acting on its own account.
-fn self_or_admin(ctx: &AuthContext, target: Uuid) -> Result<(), (StatusCode, Json<ApiError>)> {
+fn self_or_admin(ctx: &AuthContext, target: Uuid) -> Result<(), AppError> {
     if ctx.is_admin() || ctx.user_id == target {
         Ok(())
     } else {
-        Err((StatusCode::FORBIDDEN, Json(ApiError { error: "admin scope required".into() })))
+        Err(AppError::new(StatusCode::FORBIDDEN, "admin scope required"))
     }
-}
-
-async fn load_user_acls(pool: &sqlx::PgPool, user_id: Uuid) -> Result<Vec<Scope>, sqlx::Error> {
-    let rows: Vec<(String,)> = sqlx::query_as("SELECT scope FROM user_acls WHERE user_id = $1")
-        .bind(user_id)
-        .fetch_all(pool)
-        .await?;
-    Ok(rows.iter().filter_map(|(s,)| Scope::parse(s)).collect())
 }
 
 #[derive(Serialize, TS)]
@@ -712,9 +660,9 @@ pub async fn get_user_acls(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Path(user_id): Path<Uuid>,
-) -> Result<Json<UserAclsResponse>, (StatusCode, Json<ApiError>)> {
+) -> Result<Json<UserAclsResponse>, AppError> {
     self_or_admin(&ctx, user_id)?;
-    let scopes = load_user_acls(&state.pool, user_id).await.map_err(|e| db_err(&e))?;
+    let scopes = crate::store::acls::user_ceiling(&state.pool, user_id).await?;
     Ok(Json(UserAclsResponse { user_id, scopes: scopes.iter().map(ToString::to_string).collect() }))
 }
 
@@ -726,11 +674,11 @@ pub struct SetAclsRequest {
     pub scopes: Vec<String>,
 }
 
-fn parse_scopes(raw: &[String]) -> Result<Vec<Scope>, (StatusCode, Json<ApiError>)> {
+fn parse_scopes(raw: &[String]) -> Result<Vec<Scope>, AppError> {
     raw.iter()
         .map(|s| {
             Scope::parse(s).ok_or_else(|| {
-                (StatusCode::BAD_REQUEST, Json(ApiError { error: format!("unknown scope: {s}") }))
+                AppError::new(StatusCode::BAD_REQUEST, format!("unknown scope: {s}"))
             })
         })
         .collect()
@@ -745,23 +693,11 @@ pub async fn set_user_acls(
     Extension(ctx): Extension<AuthContext>,
     Path(user_id): Path<Uuid>,
     Json(req): Json<SetAclsRequest>,
-) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+) -> Result<StatusCode, AppError> {
     forbid_or(&ctx)?; // admin only
     let scopes = parse_scopes(&req.scopes)?;
-    let mut tx = state.pool.begin().await.map_err(|e| db_err(&e))?;
-    sqlx::query("DELETE FROM user_acls WHERE user_id = $1")
-        .bind(user_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| db_err(&e))?;
-    for scope in &scopes {
-        sqlx::query("INSERT INTO user_acls (user_id, scope) VALUES ($1, $2)")
-            .bind(user_id)
-            .bind(scope.as_str())
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| db_err(&e))?;
-    }
+    let mut tx = state.pool.begin().await?;
+    crate::store::acls::set_user_ceiling(&mut tx, user_id, &scopes).await?;
     // Keep the legacy can_dispatch flag in sync: the dispatch scope
     // supersedes it, but other code paths / older clients may still read it.
     let can_dispatch = scopes.contains(&Scope::Dispatch);
@@ -769,9 +705,8 @@ pub async fn set_user_acls(
         .bind(can_dispatch)
         .bind(user_id)
         .execute(&mut *tx)
-        .await
-        .map_err(|e| db_err(&e))?;
-    tx.commit().await.map_err(|e| db_err(&e))?;
+        .await?;
+    tx.commit().await?;
     // A ceiling change affects every key the user owns; we don't track which
     // hashes are cached, so drop the whole cache (short TTL, repopulates fast).
     state.auth_config.purge_all();
@@ -801,7 +736,7 @@ pub async fn list_user_keys(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Path(user_id): Path<Uuid>,
-) -> Result<Json<Vec<ApiKeyRow>>, (StatusCode, Json<ApiError>)> {
+) -> Result<Json<Vec<ApiKeyRow>>, AppError> {
     self_or_admin(&ctx, user_id)?;
     let mut rows: Vec<ApiKeyRow> = sqlx::query_as(
         "SELECT id, label, key_preview, kind, created_at, expires_at, revoked_at, last_used_at \
@@ -809,8 +744,7 @@ pub async fn list_user_keys(
     )
     .bind(user_id)
     .fetch_all(&state.pool)
-    .await
-    .map_err(|e| db_err(&e))?;
+    .await?;
     for row in &mut rows {
         let scopes: Vec<(String,)> = sqlx::query_as("SELECT scope FROM key_acls WHERE key_id = $1")
             .bind(row.id)
@@ -848,11 +782,18 @@ pub async fn mint_user_key(
     Extension(ctx): Extension<AuthContext>,
     Path(user_id): Path<Uuid>,
     Json(req): Json<MintKeyRequest>,
-) -> Result<Json<MintKeyResponse>, (StatusCode, Json<ApiError>)> {
+) -> Result<Json<MintKeyResponse>, AppError> {
     self_or_admin(&ctx, user_id)?;
+    if !crate::auth::is_human_credential(&state.pool, &ctx).await? {
+        return Err(AppError::new(
+            StatusCode::FORBIDDEN,
+            "only a user credential can mint user keys",
+        ));
+    }
     let requested = parse_scopes(&req.scopes)?;
-    let ceiling = load_user_acls(&state.pool, user_id).await.map_err(|e| db_err(&e))?;
-    let granted: Vec<Scope> = requested.into_iter().filter(|s| ceiling.contains(s)).collect();
+    let ceiling = crate::store::acls::user_ceiling(&state.pool, user_id).await?;
+    let granted: Vec<Scope> =
+        requested.into_iter().filter(|s| ceiling.contains(s) && ctx.scopes.contains(s)).collect();
 
     let token = user_token(&mint_secret());
     let hash = sha256_hex(&token);
@@ -869,8 +810,7 @@ pub async fn mint_user_key(
     .bind(req.expires_at)
     .bind(&preview)
     .execute(&state.pool)
-    .await
-    .map_err(|e| db_err(&e))?;
+    .await?;
 
     let key_id = crate::auth::register_key(
         &state.pool,
@@ -882,18 +822,12 @@ pub async fn mint_user_key(
             kind: "user",
             machine_id: None,
             dispatcher_id: None,
+            expires_at: req.expires_at,
+            passkey_id: None,
         },
         granted.clone(),
     )
-    .await
-    .map_err(|e| db_err(&e))?;
-    if let Some(exp) = req.expires_at {
-        let _ = sqlx::query("UPDATE auth_keys SET expires_at = $1 WHERE id = $2")
-            .bind(exp)
-            .bind(key_id)
-            .execute(&state.pool)
-            .await;
-    }
+    .await?;
     tracing::info!(%user_id, %key_id, ?granted, "key minted");
     Ok(Json(MintKeyResponse {
         id: key_id,
@@ -910,7 +844,7 @@ pub async fn set_key_acls(
     Extension(ctx): Extension<AuthContext>,
     Path((user_id, key_id)): Path<(Uuid, Uuid)>,
     Json(req): Json<SetAclsRequest>,
-) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+) -> Result<StatusCode, AppError> {
     self_or_admin(&ctx, user_id)?;
     // The key must belong to the named user.
     let owns: Option<(Uuid,)> =
@@ -918,30 +852,18 @@ pub async fn set_key_acls(
             .bind(key_id)
             .bind(user_id)
             .fetch_optional(&state.pool)
-            .await
-            .map_err(|e| db_err(&e))?;
+            .await?;
     if owns.is_none() {
-        return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "key not found".into() })));
+        return Err(AppError::new(StatusCode::NOT_FOUND, "key not found"));
     }
     let requested = parse_scopes(&req.scopes)?;
-    let ceiling = load_user_acls(&state.pool, user_id).await.map_err(|e| db_err(&e))?;
+    let ceiling = crate::store::acls::user_ceiling(&state.pool, user_id).await?;
     let granted: Vec<Scope> = requested.into_iter().filter(|s| ceiling.contains(s)).collect();
 
-    let mut tx = state.pool.begin().await.map_err(|e| db_err(&e))?;
-    sqlx::query("DELETE FROM key_acls WHERE key_id = $1")
-        .bind(key_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(|e| db_err(&e))?;
-    for scope in &granted {
-        sqlx::query("INSERT INTO key_acls (key_id, scope) VALUES ($1, $2)")
-            .bind(key_id)
-            .bind(scope.as_str())
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| db_err(&e))?;
-    }
-    tx.commit().await.map_err(|e| db_err(&e))?;
+    let mut tx = state.pool.begin().await?;
+    sqlx::query("DELETE FROM key_acls WHERE key_id = $1").bind(key_id).execute(&mut *tx).await?;
+    crate::store::acls::grant_key(&mut *tx, key_id, granted.iter().copied()).await?;
+    tx.commit().await?;
     state.auth_config.purge_all();
     tracing::info!(%user_id, %key_id, ?granted, "key scopes edited");
     Ok(StatusCode::NO_CONTENT)
@@ -956,7 +878,7 @@ pub async fn revoke_user_key(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Path((user_id, key_id)): Path<(Uuid, Uuid)>,
-) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+) -> Result<StatusCode, AppError> {
     self_or_admin(&ctx, user_id)?;
     let row: Option<(String,)> = sqlx::query_as(
         "UPDATE auth_keys SET revoked_at = now() \
@@ -965,10 +887,9 @@ pub async fn revoke_user_key(
     .bind(key_id)
     .bind(user_id)
     .fetch_optional(&state.pool)
-    .await
-    .map_err(|e| db_err(&e))?;
+    .await?;
     let Some((hash,)) = row else {
-        return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "key not found".into() })));
+        return Err(AppError::new(StatusCode::NOT_FOUND, "key not found"));
     };
     // Revoke the legacy mirrors sharing this hash (transparency cutover).
     if let Err(e) = sqlx::query("UPDATE user_tokens SET revoked_at = now() WHERE token_hash = $1")
@@ -1018,9 +939,14 @@ mod tests {
     #[test]
     fn forbid_or_gates_on_admin_scope() {
         assert!(forbid_or(&ctx(Uuid::new_v4(), &[Scope::Admin])).is_ok());
-        let (status, _) = forbid_or(&ctx(Uuid::new_v4(), &[Scope::Read])).unwrap_err();
+        let Err(AppError::Status(status, _)) = forbid_or(&ctx(Uuid::new_v4(), &[Scope::Read]))
+        else {
+            panic!("expected a status error");
+        };
         assert_eq!(status, StatusCode::FORBIDDEN);
-        let (status, _) = forbid_or(&ctx(Uuid::new_v4(), &[])).unwrap_err();
+        let Err(AppError::Status(status, _)) = forbid_or(&ctx(Uuid::new_v4(), &[])) else {
+            panic!("expected a status error");
+        };
         assert_eq!(status, StatusCode::FORBIDDEN);
     }
 
@@ -1032,7 +958,10 @@ mod tests {
         assert!(self_or_admin(&ctx(me, &[Scope::Read]), me).is_ok(), "acting on own account");
         assert!(self_or_admin(&ctx(me, &[Scope::Admin]), other).is_ok(), "admin acts on anyone");
 
-        let (status, _) = self_or_admin(&ctx(me, &[Scope::Read]), other).unwrap_err();
+        let Err(AppError::Status(status, _)) = self_or_admin(&ctx(me, &[Scope::Read]), other)
+        else {
+            panic!("expected a status error");
+        };
         assert_eq!(status, StatusCode::FORBIDDEN, "non-admin cannot touch another account");
     }
 
@@ -1043,7 +972,9 @@ mod tests {
 
         assert!(parse_scopes(&[]).unwrap().is_empty());
 
-        let (status, _) = parse_scopes(&["read".into(), "root".into()]).unwrap_err();
+        let Err(AppError::Status(status, _)) = parse_scopes(&["read".into(), "root".into()]) else {
+            panic!("expected a status error");
+        };
         assert_eq!(status, StatusCode::BAD_REQUEST, "an unknown scope is rejected");
     }
 }

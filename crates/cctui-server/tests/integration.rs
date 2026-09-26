@@ -303,7 +303,7 @@ async fn account_redirect_flow() {
         .bearer_auth(&user_key)
         .json(&json!({
             "provider": "anthropic-compatible",
-            "base_url": "http://localhost:9",
+            "base_url": "https://1.1.1.1",
             "access_token": "test-cred"
         }))
         .send()
@@ -599,4 +599,207 @@ async fn pool_weight_is_validated_and_persisted() {
         .await
         .unwrap();
     assert_eq!(fetched["pool_weight"].as_f64(), Some(4.0), "{fetched}");
+}
+
+#[tokio::test]
+#[ignore = "requires running server"]
+async fn oversize_search_query_is_rejected() {
+    let client = Client::new();
+    let base = server_url();
+    let q = "(".repeat(20_000);
+    for path in ["sessions/search", "bookmarks"] {
+        let resp = client
+            .get(format!("{base}/api/v1/{path}"))
+            .query(&[("q", q.as_str())])
+            .bearer_auth(admin_token())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 400, "{path}");
+    }
+    let resp = client
+        .get(format!("{base}/api/v1/sessions/search/values"))
+        .query(&[("field", "machine"), ("context", q.as_str())])
+        .bearer_auth(admin_token())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+    let resp = client.get(format!("{base}/health")).send().await.unwrap();
+    assert_eq!(resp.status(), 200);
+}
+
+/// Mint a fresh user and enroll one machine for it: `(user_key, machine_key)`.
+async fn user_with_machine(client: &Client, base: &str, prefix: &str) -> (String, String) {
+    let u: serde_json::Value = client
+        .post(format!("{base}/api/v1/admin/users"))
+        .bearer_auth(admin_token())
+        .json(&json!({"name": format!("{prefix}-{}", uuid_like())}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let user_key = u["key"].as_str().unwrap().to_string();
+    let m: serde_json::Value = client
+        .post(format!("{base}/api/v1/enroll"))
+        .bearer_auth(&user_key)
+        .json(&json!({"hostname": format!("{prefix}-host")}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    (user_key, m["machine_key"].as_str().unwrap().to_string())
+}
+
+async fn register_session(client: &Client, base: &str, machine_key: &str) -> String {
+    let resp = client
+        .post(format!("{base}/api/v1/sessions/register"))
+        .bearer_auth(machine_key)
+        .json(&json!({"machine_id": "ignored", "working_dir": "/tmp/own"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    body["session_id"].as_str().unwrap().to_string()
+}
+
+/// Another user can neither drop files into nor deregister someone else's
+/// session; the owner and an admin pass the guard.
+#[tokio::test]
+#[ignore = "requires running server"]
+async fn session_files_and_deregister_are_owner_only() {
+    let client = Client::new();
+    let base = server_url();
+    let (_, owner_machine) = user_with_machine(&client, &base, "own").await;
+    let (intruder_key, _) = user_with_machine(&client, &base, "intr").await;
+    let sid = register_session(&client, &base, &owner_machine).await;
+
+    for path in ["files", "deregister"] {
+        let resp = client
+            .post(format!("{base}/api/v1/sessions/{sid}/{path}"))
+            .bearer_auth(&intruder_key)
+            .send()
+            .await
+            .unwrap();
+        assert!(matches!(resp.status().as_u16(), 403 | 404), "intruder {path}: {}", resp.status());
+    }
+
+    // Past the guard the handler rejects the empty non-multipart body.
+    let admin = admin_token();
+    for key in [owner_machine.as_str(), admin.as_str()] {
+        let resp = client
+            .post(format!("{base}/api/v1/sessions/{sid}/files"))
+            .bearer_auth(key)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 400);
+    }
+
+    let resp = client
+        .post(format!("{base}/api/v1/sessions/{sid}/deregister"))
+        .bearer_auth(&owner_machine)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 204);
+    let resp = client
+        .post(format!("{base}/api/v1/sessions/{sid}/deregister"))
+        .bearer_auth(&admin)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 204);
+}
+
+/// Registering is machine-key only, and never rewrites another user's session;
+/// another user's rebind history is invisible.
+#[tokio::test]
+#[ignore = "requires running server"]
+async fn register_and_rebinds_respect_session_owner() {
+    let client = Client::new();
+    let base = server_url();
+    let (owner_key, owner_machine) = user_with_machine(&client, &base, "rown").await;
+    let (intruder_key, intruder_machine) = user_with_machine(&client, &base, "rintr").await;
+    let sid = register_session(&client, &base, &owner_machine).await;
+
+    let resp = client
+        .post(format!("{base}/api/v1/sessions/register"))
+        .bearer_auth(&owner_key)
+        .json(&json!({"machine_id": "x", "working_dir": "/tmp/own"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 403, "a user key cannot register");
+
+    let resp = client
+        .post(format!("{base}/api/v1/sessions/register"))
+        .bearer_auth(&intruder_machine)
+        .json(&json!({
+            "claude_session_id": sid,
+            "machine_id": "x",
+            "working_dir": "/tmp/hijack",
+            "metadata": {"project_name": "hijacked"}
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+
+    let session: serde_json::Value = client
+        .get(format!("{base}/api/v1/sessions/{sid}"))
+        .bearer_auth(&owner_key)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(!session.to_string().contains("hijacked"), "{session}");
+
+    let resp = client
+        .get(format!("{base}/api/v1/sessions/{sid}/rebinds"))
+        .bearer_auth(&intruder_key)
+        .send()
+        .await
+        .unwrap();
+    assert!(matches!(resp.status().as_u16(), 403 | 404), "{}", resp.status());
+
+    let resp = client
+        .get(format!("{base}/api/v1/sessions/{sid}/rebinds"))
+        .bearer_auth(&owner_key)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+}
+
+/// The account family is for humans: a machine key is refused.
+#[tokio::test]
+#[ignore = "requires running server"]
+async fn machine_key_cannot_read_accounts_or_profiles() {
+    let client = Client::new();
+    let base = server_url();
+    let (user_key, machine_key) = user_with_machine(&client, &base, "human").await;
+    for path in ["accounts", "profiles"] {
+        let resp = client
+            .get(format!("{base}/api/v1/{path}"))
+            .bearer_auth(&machine_key)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 403, "machine key on /{path}");
+        let resp = client
+            .get(format!("{base}/api/v1/{path}"))
+            .bearer_auth(&user_key)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200, "user key on /{path}");
+    }
 }

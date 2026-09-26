@@ -1,9 +1,13 @@
 //! Silent self-update on TUI startup.
 //!
 //! Flow (`maybe_update`):
-//!   1. Compare `CARGO_PKG_VERSION` with `GET {server}/api/v1/version`.
-//!   2. If server is newer, download `cctui-{os}-{arch}` from the matching
-//!      GitHub release, atomic-rename over `current_exe()`.
+//!   1. Compare `CARGO_PKG_VERSION` with `GET {server}/api/v1/version`. A
+//!      stable build never moves onto a beta server version unless
+//!      `CCTUI_CHANNEL=beta` opts in.
+//!   2. If server is newer, download `cctui-{os}-{arch}`, `SHA256SUMS` and
+//!      the asset's `.minisig` from the matching GitHub release, verify
+//!      checksum and release signature, stage it, require `--version` to
+//!      succeed, then rename over `current_exe()` keeping a `.bak`.
 //!   3. If `install::SETTINGS_SCHEMA_VERSION` exceeds the marker file,
 //!      re-apply hook/MCP config.
 //!   4. `exec()` into the freshly-written binary with `CCTUI_UPDATED=1` so we
@@ -17,6 +21,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
+use cctui_proto::release_sig::Channel;
 
 use crate::install;
 
@@ -45,10 +50,26 @@ pub const fn asset_for(os: &str, arch: &str) -> Option<&'static str> {
 /// Any parse failure (dev builds, pre-release weirdness) yields `false` so we
 /// stay conservative and never auto-update from an unparseable base.
 #[must_use]
-pub fn should_update(local_ver: &str, server_ver: &str) -> bool {
+pub fn should_update(local_ver: &str, server_ver: &str, channel: Channel) -> bool {
+    if channel == Channel::Stable && Channel::of_version(server_ver) == Channel::Beta {
+        return false;
+    }
     match (semver::Version::parse(local_ver), semver::Version::parse(server_ver)) {
         (Ok(local), Ok(server)) => server > local,
         _ => false,
+    }
+}
+
+/// `CCTUI_CHANNEL` when set, else the channel this build was released on.
+fn update_channel() -> Channel {
+    let own = Channel::of_version(CURRENT_VERSION);
+    match std::env::var("CCTUI_CHANNEL").map(|v| v.parse::<Channel>()) {
+        Ok(Ok(channel)) => channel,
+        Ok(Err(err)) => {
+            eprintln!("[cctui] ignoring CCTUI_CHANNEL: {err}");
+            own
+        }
+        Err(_) => own,
     }
 }
 
@@ -86,10 +107,46 @@ async fn fetch_server_version(server_url: &str) -> Result<String> {
     Ok(info.version)
 }
 
-async fn download_to(path: &Path, url: &str) -> Result<()> {
-    let client = reqwest::Client::builder().timeout(DOWNLOAD_TIMEOUT).build()?;
+async fn fetch(client: &reqwest::Client, url: &str) -> Result<Vec<u8>> {
     let resp = client.get(url).send().await?.error_for_status()?;
-    let bytes = resp.bytes().await?;
+    Ok(resp.bytes().await?.to_vec())
+}
+
+fn hex_sha256(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(bytes).iter().fold(String::with_capacity(64), |mut acc, b| {
+        use std::fmt::Write;
+        let _ = write!(acc, "{b:02x}");
+        acc
+    })
+}
+
+/// Check `bin` against its `SHA256SUMS` entry and the release signature.
+fn verify_release(asset: &str, bin: &[u8], sums: &[u8], minisig: &[u8]) -> Result<()> {
+    let sums = std::str::from_utf8(sums).context("SHA256SUMS not UTF-8")?;
+    let expected = sums
+        .lines()
+        .find_map(|l| {
+            let mut it = l.split_whitespace();
+            let hash = it.next()?;
+            (it.next()? == asset).then_some(hash)
+        })
+        .ok_or_else(|| anyhow!("{asset} missing from SHA256SUMS"))?;
+    let actual = hex_sha256(bin);
+    if actual != expected {
+        bail!("downloaded {asset} hash {actual} != expected {expected}");
+    }
+    let minisig = std::str::from_utf8(minisig).context("signature not UTF-8")?;
+    cctui_proto::release_sig::verify(bin, minisig).map_err(|e| anyhow!("{asset}: {e}"))
+}
+
+async fn download_verified(path: &Path, asset: &str, tag: Option<&str>) -> Result<()> {
+    let client = reqwest::Client::builder().timeout(DOWNLOAD_TIMEOUT).build()?;
+    let bytes = fetch(&client, &release_url(asset, tag)).await?;
+    let sums = fetch(&client, &release_url("SHA256SUMS", tag)).await.context("SHA256SUMS")?;
+    let sig_name = format!("{asset}{}", cctui_proto::release_sig::SIG_SUFFIX);
+    let sig = fetch(&client, &release_url(&sig_name, tag)).await.context("signature")?;
+    verify_release(asset, &bytes, &sums, &sig)?;
     std::fs::write(path, &bytes).with_context(|| format!("write {}", path.display()))?;
     #[cfg(unix)]
     {
@@ -109,17 +166,50 @@ async fn swap_binary(target_tag: Option<&str>) -> Result<PathBuf> {
         bail!("current exe directory is not writable: {}", current.display());
     }
     let staging = current.with_extension("new");
-    download_to(&staging, &release_url(asset, target_tag)).await?;
-    std::fs::rename(&staging, &current)
-        .with_context(|| format!("rename {} -> {}", staging.display(), current.display()))?;
+    let backup = current.with_extension("bak");
+    download_verified(&staging, asset, target_tag).await?;
+    if let Err(e) = check_version(&staging) {
+        let _ = std::fs::remove_file(&staging);
+        return Err(e);
+    }
+    install_staged(&staging, &current, &backup)?;
     Ok(current)
 }
 
-fn maybe_reapply_settings(server_url: &str, fallback_token: &str, bin_path: &Path) {
+fn check_version(exe: &Path) -> Result<()> {
+    let out = std::process::Command::new(exe)
+        .arg("--version")
+        .output()
+        .with_context(|| format!("run `{} --version`", exe.display()))?;
+    if !out.status.success() {
+        bail!("`{} --version` exited {}", exe.display(), out.status);
+    }
+    Ok(())
+}
+
+/// Move `staging` over `current`, keeping the old binary at `backup` until
+/// the installed file passes `--version`; restore it otherwise.
+fn install_staged(staging: &Path, current: &Path, backup: &Path) -> Result<()> {
+    let backed_up = current.exists() && std::fs::copy(current, backup).is_ok();
+    std::fs::rename(staging, current)
+        .with_context(|| format!("rename {} -> {}", staging.display(), current.display()))?;
+    if let Err(e) = check_version(current) {
+        if backed_up {
+            let _ = std::fs::rename(backup, current);
+        }
+        return Err(e);
+    }
+    if backed_up {
+        let _ = std::fs::remove_file(backup);
+    }
+    Ok(())
+}
+
+fn maybe_reapply_settings(server_url: &str, bin_path: &Path) {
     if install::SETTINGS_SCHEMA_VERSION <= install::read_schema_marker() {
         return;
     }
-    if let Err(e) = install::apply_settings(server_url, fallback_token, bin_path) {
+    if let Err(e) = install::apply_settings(server_url, bin_path) {
         eprintln!("[cctui] settings re-apply failed: {e}");
         return;
     }
@@ -149,9 +239,7 @@ fn exec_new(_: &Path) -> ! {
 
 async fn update_inner(server_url: &str, target_tag: Option<&str>) -> Result<()> {
     let new_exe = swap_binary(target_tag).await?;
-    let fallback_token =
-        cctui_proto::identity::load_machine().map(|m| m.machine_key).unwrap_or_default();
-    maybe_reapply_settings(server_url, &fallback_token, &new_exe);
+    maybe_reapply_settings(server_url, &new_exe);
     exec_new(&new_exe);
 }
 
@@ -174,15 +262,13 @@ pub async fn maybe_update(server_url: &str) {
         return;
     }
     let Ok(server_version) = fetch_server_version(server_url).await else { return };
-    if !should_update(CURRENT_VERSION, &server_version) {
+    if !should_update(CURRENT_VERSION, &server_version, update_channel()) {
         // Still run the schema-only reapply if needed — covers users who
         // manually updated the binary but never re-ran install.sh.
         if install::SETTINGS_SCHEMA_VERSION > install::read_schema_marker()
             && let Ok(exe) = std::env::current_exe()
         {
-            let fallback_token =
-                cctui_proto::identity::load_machine().map(|m| m.machine_key).unwrap_or_default();
-            maybe_reapply_settings(server_url, &fallback_token, &exe);
+            maybe_reapply_settings(server_url, &exe);
         }
         return;
     }
@@ -199,9 +285,7 @@ pub async fn force_update(server_url: &str) -> Result<()> {
     clear_updated_flag();
     eprintln!("[cctui] forcing update from {}", repo());
     let new_exe = swap_binary(tag_override().as_deref()).await?;
-    let fallback_token =
-        cctui_proto::identity::load_machine().map(|m| m.machine_key).unwrap_or_default();
-    if let Err(e) = install::apply_settings(server_url, &fallback_token, &new_exe) {
+    if let Err(e) = install::apply_settings(server_url, &new_exe) {
         eprintln!("[cctui] settings re-apply failed: {e}");
     } else {
         let _ = install::write_schema_marker(install::SETTINGS_SCHEMA_VERSION);
@@ -225,12 +309,68 @@ mod tests {
 
     #[test]
     fn version_comparison() {
-        assert!(should_update("0.1.5", "0.1.6"));
-        assert!(should_update("0.1.5", "0.2.0"));
-        assert!(!should_update("0.1.6", "0.1.6"));
-        assert!(!should_update("0.1.7", "0.1.6"));
-        assert!(!should_update("not-semver", "0.1.6"));
-        assert!(!should_update("0.1.5", "bad"));
+        let s = Channel::Stable;
+        assert!(should_update("0.1.5", "0.1.6", s));
+        assert!(should_update("0.1.5", "0.2.0", s));
+        assert!(!should_update("0.1.6", "0.1.6", s));
+        assert!(!should_update("0.1.7", "0.1.6", s));
+        assert!(!should_update("not-semver", "0.1.6", s));
+        assert!(!should_update("0.1.5", "bad", s));
+    }
+
+    #[test]
+    fn channel_gates_beta_server_versions() {
+        assert!(!should_update("0.1.5", "0.2.0-beta.1", Channel::Stable));
+        assert!(should_update("0.1.5", "0.2.0-beta.1", Channel::Beta));
+        assert!(should_update("0.2.0-beta.1", "0.2.0", Channel::Stable));
+        assert!(should_update("0.2.0-beta.1", "0.2.0-beta.2", Channel::Beta));
+        assert!(!should_update("0.2.0", "0.2.0-beta.2", Channel::Beta));
+    }
+
+    #[test]
+    fn forged_binary_with_matching_sha256sums_is_rejected() {
+        let forged = b"#!/bin/sh\necho pwned\n";
+        let sums = format!("{}  cctui-linux-amd64\n", hex_sha256(forged));
+        let err = verify_release("cctui-linux-amd64", forged, sums.as_bytes(), b"bogus")
+            .expect_err("a checksum alone must not authenticate a binary");
+        assert!(err.to_string().contains("signature"), "got: {err}");
+    }
+
+    #[test]
+    fn checksum_mismatch_is_rejected() {
+        let err = verify_release("a", b"x", b"deadbeef  a\n", b"").unwrap_err();
+        assert!(err.to_string().contains("hash"), "got: {err}");
+        verify_release("a", b"x", b"", b"").expect_err("missing entry");
+    }
+
+    fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join(name);
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    #[test]
+    fn install_staged_restores_backup_when_new_binary_is_broken() {
+        let tmp = tempfile::tempdir().unwrap();
+        let current = script(tmp.path(), "cctui", "exit 0");
+        let staging = script(tmp.path(), "cctui.new", "exit 3");
+        let backup = tmp.path().join("cctui.bak");
+        install_staged(&staging, &current, &backup).expect_err("broken binary must fail");
+        assert!(std::fs::read_to_string(&current).unwrap().contains("exit 0"));
+        assert!(!backup.exists());
+    }
+
+    #[test]
+    fn install_staged_drops_backup_after_healthy_install() {
+        let tmp = tempfile::tempdir().unwrap();
+        let current = script(tmp.path(), "cctui", "exit 0");
+        let staging = script(tmp.path(), "cctui.new", "echo new");
+        let backup = tmp.path().join("cctui.bak");
+        install_staged(&staging, &current, &backup).unwrap();
+        assert!(std::fs::read_to_string(&current).unwrap().contains("echo new"));
+        assert!(!backup.exists());
     }
 
     #[test]

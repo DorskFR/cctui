@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 import { describe, expect, it, vi } from 'vitest';
 import { imageAttachments } from './imageAttachments.svelte';
 import { compressImage } from './compressImage';

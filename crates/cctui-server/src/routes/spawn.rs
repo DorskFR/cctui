@@ -26,8 +26,11 @@ use cctui_proto::ws::DaemonFrameDown;
 use uuid::Uuid;
 
 use crate::auth::AuthContext;
+use crate::authz::{Shareable, shareable_owner};
+use crate::error::{AppError, DB_ERROR};
 use crate::registry::MachineCommand;
 use crate::state::AppState;
+use crate::store::sessions::SessionRowStatus;
 use crate::uploads::parse_upload_multipart;
 
 pub fn bad_request(msg: impl Into<String>) -> (StatusCode, Json<ApiError>) {
@@ -44,20 +47,22 @@ pub fn bad_request(msg: impl Into<String>) -> (StatusCode, Json<ApiError>) {
 /// the daemon decodes + writes them to `/tmp/cctui-uploads/<session-id>/` and
 /// references their paths in the prompt. `env` secrets ride on `SessionSpec.env`
 /// (never persisted/logged) and the daemon injects them into the worker process.
-#[allow(clippy::too_many_lines)]
 pub async fn spawn_session(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     multipart: Multipart,
-) -> Result<(StatusCode, Json<SpawnResponse>), (StatusCode, Json<ApiError>)> {
-    let parsed = parse_upload_multipart(multipart).await?;
+) -> Result<(StatusCode, Json<SpawnResponse>), AppError> {
+    let parsed = parse_upload_multipart(multipart)
+        .await
+        .map_err(|(code, Json(e))| AppError::new(code, e.error))?;
     let uploads = parsed.files;
     let req: SpawnRequest = parsed
         .request_json
-        .ok_or_else(|| bad_request("missing `request` part"))
+        .ok_or_else(|| AppError::new(StatusCode::BAD_REQUEST, "missing `request` part"))
         .and_then(|raw| {
-            serde_json::from_str(&raw)
-                .map_err(|e| bad_request(format!("invalid SpawnRequest JSON: {e}")))
+            serde_json::from_str(&raw).map_err(|e| {
+                AppError::new(StatusCode::BAD_REQUEST, format!("invalid SpawnRequest JSON: {e}"))
+            })
         })?;
 
     // Draft: stage the spawn payload as a `draft` session row and stop
@@ -67,14 +72,15 @@ pub async fn spawn_session(
         return save_draft(&state, &ctx, &req).await;
     }
 
-    dispatch_spawn(&state, &ctx, req, uploads, parsed.raw).await
+    dispatch_spawn(&state, &ctx, req, uploads, parsed.raw)
+        .await
+        .map_err(|(code, Json(e))| AppError::new(code, e.error))
 }
 
 /// Dispatch a spawn to the targeted daemon. Shared by the immediate spawn path
 /// and the draft-launch path so account env is minted + the command
 /// dispatched identically. Validates env keys + machine ownership, mints any
 /// account gateway env, and pushes `AdapterCommand::Spawn` over the WS.
-#[allow(clippy::too_many_lines)]
 pub async fn dispatch_spawn(
     state: &AppState,
     ctx: &AuthContext,
@@ -82,6 +88,37 @@ pub async fn dispatch_spawn(
     uploads: Vec<cctui_proto::adapter::BootstrapFile>,
     raw_uploads: Vec<crate::uploads::RawUpload>,
 ) -> Result<(StatusCode, Json<SpawnResponse>), (StatusCode, Json<ApiError>)> {
+    let target = validate_spawn(state, ctx, &req).await?;
+    let bound = resolve_spawn_account(state, &target, &req).await?;
+    execute_spawn(state, target, bound, &req, uploads, raw_uploads).await
+}
+
+/// The validated spawn target plus the ids minted for it.
+struct SpawnTarget {
+    machine_uuid: Uuid,
+    owner: Uuid,
+    /// The user whose accounts the spawn resolves against.
+    uid: Uuid,
+    adapter_id: String,
+    command_id: Uuid,
+    /// For claude-code the session id is pre-minted here and handed to the
+    /// worker as `--session-id` (mirroring the fork path), so the gateway token
+    /// can be bound to the *real* session id the worker registers as — rather
+    /// than the `command_id`, which the worker never knows and so never
+    /// reconciles (leaving `account_name` perpetually null + the key icon
+    /// dead). codex mints its own thread id and ignores the pre-minted id, so
+    /// its tokens still fall back to `command_id` keying.
+    pre_session_id: Option<Uuid>,
+    /// The id the gateway session token is bound to: the pre-minted real
+    /// session id for claude, else the `command_id`.
+    token_session_id: String,
+}
+
+async fn validate_spawn(
+    state: &AppState,
+    ctx: &AuthContext,
+    req: &SpawnRequest,
+) -> Result<SpawnTarget, (StatusCode, Json<ApiError>)> {
     // Validate env keys: shell-style `^[A-Z_][A-Z0-9_]*$`.
     for key in req.env.keys() {
         let ok = !key.is_empty()
@@ -92,77 +129,63 @@ pub async fn dispatch_spawn(
         }
     }
 
-    let machine_uuid = Uuid::parse_str(&req.machine_id).map_err(|_| {
-        (StatusCode::BAD_REQUEST, Json(ApiError { error: "machine_id must be a uuid".into() }))
-    })?;
-    let row: Option<(Uuid,)> = sqlx::query_as("SELECT user_id FROM machines WHERE id = $1")
-        .bind(machine_uuid)
-        .fetch_optional(&state.pool)
-        .await
-        .map_err(|e| {
-            tracing::error!("db error: {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-        })?;
-    let Some((owner,)) = row else {
-        return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "machine not found".into() })));
-    };
-    let permitted = ctx.is_admin() || ctx.user_id == owner;
-    if !permitted {
-        return Err((StatusCode::FORBIDDEN, Json(ApiError { error: "not your machine".into() })));
-    }
-
-    // Replica-aware forwarding: if a live peer replica holds this
-    // machine's daemon WS, hand the request over before any command/env
+    let (machine_uuid, owner) = resolve_owned_machine(state, ctx, &req.machine_id).await?;
 
     let adapter_id = req.adapter_id.clone().unwrap_or_else(|| "claude-code".to_owned());
-
-    // OAuth account selection: if the caller picked a named account,
-    // mint a session-scoped gateway token bound to it and inject the gateway
-    // base-url + token into the worker env. Raw OAuth tokens never leave the
-    // server.
-    //
-    // For claude-code we pre-mint the session id here and hand it to
-    // the worker as `--session-id` (mirroring the fork path), so the token can
-    // be bound to the *real* session id the worker registers as — rather than
-    // the command_id, which the worker never knows and so never reconciles
-    // (leaving `account_name` perpetually null + the key icon dead). codex
-    // mints its own thread id and ignores the pre-minted id, so its tokens
-    // still fall back to command_id keying (account_name stays unresolved for
-    // codex until a codex-side reconcile lands).
     let command_id = Uuid::new_v4();
     let is_claude = adapter_id == "claude-code";
     let pre_session_id = is_claude.then(Uuid::new_v4);
-    // The id the gateway session token is bound to: the pre-minted real session
-    // id for claude, else the command_id (legacy behaviour).
     let token_session_id = pre_session_id.unwrap_or(command_id).to_string();
     if req.auto_archive {
         crate::auto_archive::remember_intent(state, &token_session_id).await;
     }
     crate::spawn_labels::remember_intent(&state.pool, &token_session_id, &req.label_ids).await;
-    crate::followup::remember_intent(&state.pool, &token_session_id, &req).await;
-    let mut env = req.env.clone();
-    // The session's model before any per-account remapping. When a
-    // named account is selected below, its alias map can rewrite this to a
-    // concrete model id (e.g. `opus` → `claude-opus-4-8[1m]`).
-    let mut model = req.model.clone().filter(|m| !m.trim().is_empty());
-    // Session-provided effort/permission_mode pass through as-is. The
-    // per-account launch defaults were dropped with the schema split
-    // (superseded by per-(machine, cwd) client memory); an unset field
-    // falls back to the adapter's/claude's own default.
-    let effort = req.effort.clone().filter(|e| !e.trim().is_empty());
-    let permission_mode = req.permission_mode;
+    crate::followup::remember_intent(&state.pool, &token_session_id, req).await;
     // Accounts are user-owned. The admin token has no user identity, so it
     // resolves the account against the target machine's owner —
     // the session runs on that user's machine with that user's account.
     let uid = ctx.owner_filter().unwrap_or(owner);
-    // Single source of truth for credentials: an unspecified account
-    // no longer silently means "run on whatever ambient login the machine
-    // has" — that spawned sessions whose traffic bypassed the gateway (no
-    // usage attribution, no soft limits, no langfuse capture) and, on a
-    // desktop, billed the machine owner's personal login regardless of intent.
-    // With no account named: exactly one matching-family account → bind it;
-    // several → 400 (pick explicitly, never guess); none → unbound as before
-    // (setups with no accounts configured keep working).
+
+    Ok(SpawnTarget {
+        machine_uuid,
+        owner,
+        uid,
+        adapter_id,
+        command_id,
+        pre_session_id,
+        token_session_id,
+    })
+}
+
+/// The account binding outcome and the session settings it may have rewritten.
+struct BoundAccount {
+    /// Request env plus any minted gateway env.
+    env: std::collections::BTreeMap<String, String>,
+    /// The session's model after per-account alias remapping (e.g. `opus` →
+    /// `claude-opus-4-8[1m]`).
+    model: Option<String>,
+    effort: Option<String>,
+    permission_mode: Option<cctui_proto::adapter::PermissionMode>,
+    account_choice: Option<String>,
+}
+
+/// OAuth account selection: if the caller picked a named account, mint a
+/// session-scoped gateway token bound to it and inject the gateway base-url +
+/// token into the worker env. Raw OAuth tokens never leave the server. With
+/// no account named, see [`default_account_name`].
+async fn resolve_spawn_account(
+    state: &AppState,
+    target: &SpawnTarget,
+    req: &SpawnRequest,
+) -> Result<BoundAccount, (StatusCode, Json<ApiError>)> {
+    let SpawnTarget { uid, adapter_id, .. } = target;
+    let uid = *uid;
+    let mut env = req.env.clone();
+    let mut model = req.model.clone().filter(|m| !m.trim().is_empty());
+    // Session-provided effort/permission_mode pass through as-is; an unset
+    // field falls back to the adapter's/claude's own default.
+    let effort = req.effort.clone().filter(|e| !e.trim().is_empty());
+    let permission_mode = req.permission_mode;
     let decision = decide_account(
         req.account.as_deref(),
         req.no_account,
@@ -178,7 +201,7 @@ pub async fn dispatch_spawn(
     // once the account is minted. `None` for every other decision: a session
     // that named no pool is never moved.
     let mut bound_pool: Option<Uuid> = None;
-    let family_for_binding = crate::routes::gateway::Family::from_adapter(&adapter_id);
+    let family_for_binding = crate::routes::gateway::Family::from_adapter(adapter_id);
     let account_choice = match decision {
         // A name is an account name first; it only elects a pool when no
         // account of the user's answers to it.
@@ -196,9 +219,9 @@ pub async fn dispatch_spawn(
             Some(bound.account)
         }
         AccountDecision::Unbound => None,
-        AccountDecision::ResolveDefault => default_account_name(state, uid, &adapter_id).await?,
+        AccountDecision::ResolveDefault => default_account_name(state, uid, adapter_id).await?,
         AccountDecision::Auto => {
-            auto_account_name(state, uid, &adapter_id, model.as_deref()).await?
+            auto_account_name(state, uid, adapter_id, model.as_deref()).await?
         }
         AccountDecision::Pool(name) => {
             let (account, pool_id) = crate::account_resolve::resolve_pool(
@@ -222,76 +245,17 @@ pub async fn dispatch_spawn(
         } else {
             format!("account {account_name:?}")
         };
-        // Resolution is by (account identity, harness family): the
-        // adapter names the family, and the identity carries at most one
-        // provider row per family. The request's legacy `provider`
-        // hint is no longer consulted.
-        let family = crate::routes::gateway::Family::from_adapter(&adapter_id);
-        // Resolve the model through this account's alias map
-        // before it reaches the worker — a no-op when the account has no
-        // matching alias.
-        // The fireworks family resolves even an ABSENT model: its catalog is the
-        // only source of model ids, and its harness has no default to fall back
-        // on.
-        if model.is_some() || family == crate::routes::gateway::Family::Fireworks {
-            let requested = model.as_deref().unwrap_or_default();
-            let resolved = crate::routes::gateway::resolve_account_model(
-                state,
-                uid,
-                account_name,
-                family,
-                requested,
-            )
-            .await;
-            model = (!resolved.is_empty()).then_some(resolved);
-        }
-        match crate::routes::gateway::mint_session_env_all_families(
-            state,
-            uid,
-            account_name,
-            family,
-            &token_session_id,
-        )
-        .await
-        {
-            Ok(gateway_env) => {
-                env.extend(gateway_env);
-                if let Some(pool_id) = bound_pool {
-                    crate::account_resolve::stamp_pool(state, &token_session_id, pool_id).await;
-                }
-            }
-            Err(crate::routes::gateway::MintSessionEnvError::NoAccount) => {
-                return Err((
-                    StatusCode::NOT_FOUND,
-                    Json(ApiError {
-                        error: format!(
-                            "{acct_ref} does not exist — connect it on the accounts page"
-                        ),
-                    }),
-                ));
-            }
-            Err(crate::routes::gateway::MintSessionEnvError::NoProviderForFamily(f)) => {
-                return Err((
-                    StatusCode::NOT_FOUND,
-                    Json(ApiError {
-                        error: format!(
-                            "{acct_ref} has no {} provider (required by adapter \
-                             {adapter_id:?}) — connect one on the accounts page",
-                            f.label()
-                        ),
-                    }),
-                ));
-            }
-            Err(crate::routes::gateway::MintSessionEnvError::Db(e)) => {
-                tracing::error!("mint_session_env failed: {e}");
-                return Err((
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ApiError { error: "could not provision account session".into() }),
-                ));
-            }
-        }
+        mint_account_env(state, target, account_name, &acct_ref, bound_pool, &mut env, &mut model)
+            .await?;
     }
-
+    Ok(BoundAccount { env, model, effort, permission_mode, account_choice })
+}
+async fn stage_uploads(
+    state: &AppState,
+    token_session_id: &str,
+    uploads: Vec<cctui_proto::adapter::BootstrapFile>,
+    raw_uploads: Vec<crate::uploads::RawUpload>,
+) -> Result<(serde_json::Value, Vec<Uuid>), (StatusCode, Json<ApiError>)> {
     let bootstrap = if uploads.is_empty() {
         serde_json::Value::Null
     } else {
@@ -310,38 +274,136 @@ pub async fn dispatch_spawn(
     let recorded = if raw_uploads.is_empty() {
         Vec::new()
     } else {
-        crate::routes::attachments::record_uploads(
-            &state.pool,
-            &token_session_id,
-            &raw_uploads,
-            &[],
-        )
-        .await
-        .map_err(|e| {
-            tracing::error!(session = %token_session_id, "recording bootstrap uploads: {e}");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiError { error: "could not store the attachments".into() }),
-            )
-        })?
+        crate::routes::attachments::record_uploads(&state.pool, token_session_id, &raw_uploads, &[])
+            .await
+            .map_err(|e| {
+                tracing::error!(session = %token_session_id, "recording bootstrap uploads: {e}");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ApiError { error: "could not store the attachments".into() }),
+                )
+            })?
     };
-    let recorded_ids: Vec<Uuid> = recorded.iter().map(|a| a.id).collect();
+    Ok((bootstrap, recorded.iter().map(|a| a.id).collect()))
+}
 
+async fn spawn_service_tier(
+    state: &AppState,
+    adapter_id: &str,
+    req: &SpawnRequest,
+    token_session_id: &str,
+) -> Option<String> {
     // Codex's own default tier is `priority`, so an unset tier is the expensive
     // one: resolve to a concrete value here rather than letting the worker
     // inherit whatever the machine's config.toml happens to say.
-    let service_tier = if crate::routes::gateway::Family::from_adapter(&adapter_id)
+    if crate::routes::gateway::Family::from_adapter(adapter_id)
         == crate::routes::gateway::Family::Openai
     {
         let account_settings =
-            crate::routes::gateway::resolve_session_settings(state, &token_session_id).await;
+            crate::routes::gateway::resolve_session_settings(state, token_session_id).await;
         Some(crate::settings_catalog::codex::resolve_service_tier(
             req.service_tier.as_deref(),
             account_settings.as_ref(),
         ))
     } else {
         None
-    };
+    }
+}
+
+/// Resolve `model` through the account's alias map and mint the gateway env
+/// for the session. Resolution is by (account identity, harness family): the
+/// adapter names the family, and the identity carries at most one provider
+/// row per family.
+async fn mint_account_env(
+    state: &AppState,
+    target: &SpawnTarget,
+    account_name: &str,
+    acct_ref: &str,
+    bound_pool: Option<Uuid>,
+    env: &mut std::collections::BTreeMap<String, String>,
+    model: &mut Option<String>,
+) -> Result<(), (StatusCode, Json<ApiError>)> {
+    let SpawnTarget { uid, adapter_id, token_session_id, .. } = target;
+    let uid = *uid;
+    let family = crate::routes::gateway::Family::from_adapter(adapter_id);
+    // The fireworks family resolves even an ABSENT model: its catalog is the
+    // only source of model ids, and its harness has no default to fall back on.
+    if model.is_some() || family == crate::routes::gateway::Family::Fireworks {
+        let requested = model.as_deref().unwrap_or_default();
+        let resolved = crate::routes::gateway::resolve_account_model(
+            state,
+            uid,
+            account_name,
+            family,
+            requested,
+        )
+        .await;
+        *model = (!resolved.is_empty()).then_some(resolved);
+    }
+    match crate::routes::gateway::mint_session_env_all_families(
+        state,
+        uid,
+        account_name,
+        family,
+        token_session_id,
+    )
+    .await
+    {
+        Ok(gateway_env) => {
+            env.extend(gateway_env);
+            if let Some(pool_id) = bound_pool {
+                crate::account_resolve::stamp_pool(state, token_session_id, pool_id).await;
+            }
+            Ok(())
+        }
+        Err(crate::routes::gateway::MintSessionEnvError::NoAccount) => Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: format!("{acct_ref} does not exist — connect it on the accounts page"),
+            }),
+        )),
+        Err(crate::routes::gateway::MintSessionEnvError::NoProviderForFamily(f)) => Err((
+            StatusCode::NOT_FOUND,
+            Json(ApiError {
+                error: format!(
+                    "{acct_ref} has no {} provider (required by adapter \
+                     {adapter_id:?}) — connect one on the accounts page",
+                    f.label()
+                ),
+            }),
+        )),
+        Err(crate::routes::gateway::MintSessionEnvError::Db(e)) => {
+            tracing::error!("mint_session_env failed: {e}");
+            Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ApiError { error: "could not provision account session".into() }),
+            ))
+        }
+    }
+}
+
+async fn execute_spawn(
+    state: &AppState,
+    target: SpawnTarget,
+    bound: BoundAccount,
+    req: &SpawnRequest,
+    uploads: Vec<cctui_proto::adapter::BootstrapFile>,
+    raw_uploads: Vec<crate::uploads::RawUpload>,
+) -> Result<(StatusCode, Json<SpawnResponse>), (StatusCode, Json<ApiError>)> {
+    let SpawnTarget {
+        machine_uuid,
+        owner,
+        adapter_id,
+        command_id,
+        pre_session_id,
+        token_session_id,
+        ..
+    } = target;
+    let BoundAccount { env, model, effort, permission_mode, account_choice } = bound;
+    let (bootstrap, recorded_ids) =
+        stage_uploads(state, &token_session_id, uploads, raw_uploads).await?;
+
+    let service_tier = spawn_service_tier(state, &adapter_id, req, &token_session_id).await;
     let spec_model = model.clone();
     let spec_effort = effort.clone();
     let spec = SessionSpec {
@@ -357,26 +419,8 @@ pub async fn dispatch_spawn(
         bootstrap,
         parent_local_id: None,
     };
-    // Keyed by the id the worker will register as, and stored before dispatch so
-    // the capability resolves the moment the worker asks.
-    {
-        let cap = req
-            .spawn_capability
-            .clone()
-            .filter(|c| !c.is_empty())
-            .unwrap_or_else(cctui_proto::api::SpawnCapability::machine_default);
-        if let Err(e) =
-            crate::store::spawn_capabilities::upsert(&state.pool, &token_session_id, &cap).await
-        {
-            tracing::error!(
-                session = %token_session_id,
-                error = %e,
-                "spawn-capability persist failed — CctuiAgent will be lost on server restart"
-            );
-        }
-        state.spawn_capabilities.insert(token_session_id.clone(), cap);
-    }
-    // `command_id` (minted above) travels with the command and comes back in an
+    persist_spawn_capability(state, req, permission_mode, &token_session_id).await;
+    // `command_id` travels with the command and comes back in an
     // `AdapterEvent::CommandResult` → `ServerEvent::CommandResult`, letting the
     // client surface success/failure instead of silently polling.
     let frame = DaemonFrameDown::Command {
@@ -436,22 +480,39 @@ pub async fn dispatch_spawn(
     ))
 }
 
-/// Resolve `req.machine_id` (a UUID) to the owning user, enforcing
-/// `admin || caller == owner`. Returns the machine UUID on success.
-/// Pick the account to bind when a spawn names none.
-///
-/// Sessions used to launch UNBOUND in this case — their traffic skipped the
-/// gateway entirely (no usage attribution, no soft limits, no langfuse trace)
-/// and, on a desktop daemon, silently consumed the machine owner's ambient
-/// `~/.claude` login whatever account the user believed was in play. Credential
-/// choice must have one source of truth:
-///
-///   * exactly one account (owned or shared) in the adapter's provider family →
-///     bind it, exactly as if the caller had named it;
-///   * several → `400` listing them — the server never guesses between
-///     accounts, that's the caller's decision;
-///   * none → `Ok(None)`, unbound spawn as before (no-accounts setups keep
-///     working; on k8s an unbound worker has no ambient login to leak to).
+/// Keyed by the id the worker will register as, and stored before dispatch so
+/// the capability resolves the moment the worker asks.
+async fn persist_spawn_capability(
+    state: &AppState,
+    req: &SpawnRequest,
+    permission_mode: Option<cctui_proto::adapter::PermissionMode>,
+    token_session_id: &str,
+) {
+    let mut cap = match req.spawn_capability.clone().filter(|c| !c.is_empty()) {
+        Some(cap) => cap,
+        None => crate::routes::server_settings::spawn_default_capability(state).await,
+    };
+    let launched = permission_mode.unwrap_or(cctui_proto::adapter::PermissionMode::Ask);
+    cap.max_permission_mode = Some(
+        cap.max_permission_mode
+            .map_or(launched, |c| cctui_proto::adapter::PermissionMode::stricter(c, launched)),
+    );
+    if let Err(e) =
+        crate::store::spawn_capabilities::upsert(&state.pool, token_session_id, &cap).await
+    {
+        tracing::error!(
+            session = %token_session_id,
+            error = %e,
+            "spawn-capability persist failed — CctuiAgent will be lost on server restart"
+        );
+    }
+    state.spawn_capabilities.insert(token_session_id.to_owned(), cap);
+}
+
+/// Account to bind when a spawn names none: the only one (owned or shared) in
+/// the adapter's family, `400` listing them if several, unbound if none. An
+/// unbound desktop worker would run on the machine owner's ambient login, so
+/// the server never guesses between accounts.
 async fn default_account_name(
     state: &AppState,
     user_id: Uuid,
@@ -472,10 +533,7 @@ async fn default_account_name(
     .bind(family.label())
     .fetch_all(&state.pool)
     .await
-    .map_err(|e| {
-        tracing::error!("resolving default account: {e}");
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-    })?;
+    .map_err(|e| AppError::from(e).into_parts())?;
     resolve_default_account(&names, user_id, adapter_id)
 }
 
@@ -514,10 +572,7 @@ async fn auto_account_name(
     .bind(family.label())
     .fetch_all(&state.pool)
     .await
-    .map_err(|e| {
-        tracing::error!("resolving auto account candidates: {e}");
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-    })?;
+    .map_err(|e| AppError::from(e).into_parts())?;
     if rows.is_empty() {
         // No accounts configured: unbound spawn, exactly as an unset `account`.
         return Ok(None);
@@ -599,7 +654,7 @@ fn resolve_err(e: crate::account_resolve::ResolveError) -> (StatusCode, Json<Api
     match e {
         crate::account_resolve::ResolveError::Rejected(msg) => bad_request(msg),
         crate::account_resolve::ResolveError::Db => {
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: DB_ERROR.into() }))
         }
     }
 }
@@ -667,28 +722,25 @@ fn resolve_default_account(
     }
 }
 
+/// Resolve `machine_id` (a UUID) to `(machine_uuid, owner)`, enforcing
+/// `admin || caller == owner`.
 pub async fn resolve_owned_machine(
     state: &AppState,
     ctx: &AuthContext,
     machine_id: &str,
-) -> Result<Uuid, (StatusCode, Json<ApiError>)> {
+) -> Result<(Uuid, Uuid), (StatusCode, Json<ApiError>)> {
     let machine_uuid =
         Uuid::parse_str(machine_id).map_err(|_| bad_request("machine_id must be a uuid"))?;
-    let row: Option<(Uuid,)> = sqlx::query_as("SELECT user_id FROM machines WHERE id = $1")
-        .bind(machine_uuid)
-        .fetch_optional(&state.pool)
+    let owner = shareable_owner(Shareable::Machine, machine_uuid, &state.pool)
         .await
-        .map_err(|e| {
-            tracing::error!("db error: {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-        })?;
-    let Some((owner,)) = row else {
+        .map_err(|e| AppError::from(e).into_parts())?;
+    let Some(owner) = owner else {
         return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "machine not found".into() })));
     };
     if !(ctx.is_admin() || ctx.user_id == owner) {
         return Err((StatusCode::FORBIDDEN, Json(ApiError { error: "not your machine".into() })));
     }
-    Ok(machine_uuid)
+    Ok((machine_uuid, owner))
 }
 
 /// Persist a spawn payload as a `draft` session row. No env is stored
@@ -699,8 +751,10 @@ async fn save_draft(
     state: &AppState,
     ctx: &AuthContext,
     req: &SpawnRequest,
-) -> Result<(StatusCode, Json<SpawnResponse>), (StatusCode, Json<ApiError>)> {
-    let machine_uuid = resolve_owned_machine(state, ctx, &req.machine_id).await?;
+) -> Result<(StatusCode, Json<SpawnResponse>), AppError> {
+    let (machine_uuid, _) = resolve_owned_machine(state, ctx, &req.machine_id)
+        .await
+        .map_err(|(code, Json(e))| AppError::new(code, e.error))?;
     let adapter_id = req.adapter_id.clone().unwrap_or_else(|| "claude-code".to_owned());
 
     // Store the spawn config (NOT env — secrets never persisted) under
@@ -710,10 +764,7 @@ async fn save_draft(
     payload.save_draft = false;
     let draft_json = serde_json::to_value(&payload).map_err(|e| {
         tracing::error!("serializing draft payload: {e}");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ApiError { error: "could not encode draft".into() }),
-        )
+        AppError::new(StatusCode::INTERNAL_SERVER_ERROR, "could not encode draft")
     })?;
     let metadata = serde_json::json!({ "draft": draft_json });
 
@@ -737,11 +788,7 @@ async fn save_draft(
     .bind(model)
     .bind(effort)
     .execute(&state.pool)
-    .await
-    .map_err(|e| {
-        tracing::error!("db error (save draft): {e}");
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-    })?;
+    .await?;
 
     crate::spawn_labels::sync_draft(&state.pool, &draft_id.to_string(), &req.label_ids).await;
     tracing::info!(machine = %req.machine_id, draft = %draft_id, "draft session saved");
@@ -749,7 +796,7 @@ async fn save_draft(
         StatusCode::CREATED,
         Json(SpawnResponse {
             command_id: draft_id,
-            status: "draft".into(),
+            status: SessionRowStatus::Draft.as_str().into(),
             account: None,
             session_id: None,
         }),
@@ -765,32 +812,26 @@ pub async fn launch_draft(
     Extension(ctx): Extension<AuthContext>,
     Path(session_id): Path<String>,
     Json(launch): Json<LaunchRequest>,
-) -> Result<(StatusCode, Json<SpawnResponse>), (StatusCode, Json<ApiError>)> {
+) -> Result<(StatusCode, Json<SpawnResponse>), AppError> {
     let row: Option<(String, serde_json::Value)> =
         sqlx::query_as("SELECT status, metadata FROM sessions WHERE id = $1")
             .bind(&session_id)
             .fetch_optional(&state.pool)
-            .await
-            .map_err(|e| {
-                tracing::error!("db error (launch lookup): {e}");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ApiError { error: "database error".into() }),
-                )
-            })?;
+            .await?;
     let Some((status, metadata)) = row else {
-        return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "draft not found".into() })));
+        return Err(AppError::new(StatusCode::NOT_FOUND, "draft not found"));
     };
-    if status != "draft" {
-        return Err(bad_request("session is not a draft"));
+    if SessionRowStatus::parse(&status) != Some(SessionRowStatus::Draft) {
+        return Err(AppError::new(StatusCode::BAD_REQUEST, "session is not a draft"));
     }
     let mut req: SpawnRequest = metadata
         .get("draft")
         .cloned()
-        .ok_or_else(|| bad_request("draft row missing payload"))
+        .ok_or_else(|| AppError::new(StatusCode::BAD_REQUEST, "draft row missing payload"))
         .and_then(|v| {
-            serde_json::from_value(v)
-                .map_err(|e| bad_request(format!("corrupt draft payload: {e}")))
+            serde_json::from_value(v).map_err(|e| {
+                AppError::new(StatusCode::BAD_REQUEST, format!("corrupt draft payload: {e}"))
+            })
         })?;
     // Env is entered fresh at launch; account gateway env is minted in dispatch.
     req.env = launch.env;
@@ -802,7 +843,9 @@ pub async fn launch_draft(
         }
     }
 
-    let outcome = dispatch_spawn(&state, &ctx, req, Vec::new(), Vec::new()).await?;
+    let outcome = dispatch_spawn(&state, &ctx, req, Vec::new(), Vec::new())
+        .await
+        .map_err(|(code, Json(e))| AppError::new(code, e.error))?;
 
     // Drop the draft only after a successful dispatch; the live session is born
     // from the daemon's registration with its own id.
@@ -822,17 +865,13 @@ pub async fn launch_draft(
 pub async fn discard_draft(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
-) -> Result<StatusCode, (StatusCode, Json<ApiError>)> {
+) -> Result<StatusCode, AppError> {
     let res = sqlx::query("DELETE FROM sessions WHERE id = $1 AND status = 'draft'")
         .bind(&session_id)
         .execute(&state.pool)
-        .await
-        .map_err(|e| {
-            tracing::error!("db error (discard draft): {e}");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-        })?;
+        .await?;
     if res.rows_affected() == 0 {
-        return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "draft not found".into() })));
+        return Err(AppError::new(StatusCode::NOT_FOUND, "draft not found"));
     }
     tracing::info!(draft = %session_id, "draft discarded");
     Ok(StatusCode::NO_CONTENT)
@@ -849,10 +888,12 @@ pub async fn stage_session_files(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
     multipart: Multipart,
-) -> Result<Json<cctui_proto::api::StageFilesResponse>, (StatusCode, Json<ApiError>)> {
-    let parsed = parse_upload_multipart(multipart).await?;
+) -> Result<Json<cctui_proto::api::StageFilesResponse>, AppError> {
+    let parsed = parse_upload_multipart(multipart)
+        .await
+        .map_err(|(code, Json(e))| AppError::new(code, e.error))?;
     if parsed.files.is_empty() {
-        return Err(bad_request("no files in upload"));
+        return Err(AppError::new(StatusCode::BAD_REQUEST, "no files in upload"));
     }
     let count = parsed.files.len();
     // Same ordering as the spawn path: store the blobs first so a blob-store
@@ -862,10 +903,7 @@ pub async fn stage_session_files(
             .await
             .map_err(|e| {
                 tracing::error!(%session_id, "recording attachments: {e}");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ApiError { error: "could not store the attachments".into() }),
-                )
+                AppError::new(StatusCode::INTERNAL_SERVER_ERROR, "could not store the attachments")
             })?;
     let recorded_ids: Vec<Uuid> = recorded.iter().map(|a| a.id).collect();
 
@@ -890,33 +928,30 @@ pub async fn stage_session_files(
             Ok(Json(cctui_proto::api::StageFilesResponse { paths }))
         }
         Err(crate::bus::BusError::NotFound) => {
-            Err((StatusCode::NOT_FOUND, Json(ApiError { error: "session not found".into() })))
+            Err(AppError::new(StatusCode::NOT_FOUND, "session not found"))
         }
-        Err(err @ (crate::bus::BusError::NoDaemon(_) | crate::bus::BusError::Closed)) => Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(ApiError {
-                error: format!("{err} — the session's machine is offline; try again"),
-            }),
-        )),
-        Err(crate::bus::BusError::Timeout) => Err((
+        Err(err @ (crate::bus::BusError::NoDaemon(_) | crate::bus::BusError::Closed)) => {
+            Err(AppError::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                format!("{err} — the session's machine is offline; try again"),
+            ))
+        }
+        Err(crate::bus::BusError::Timeout) => Err(AppError::new(
             StatusCode::GATEWAY_TIMEOUT,
-            Json(ApiError { error: "timed out staging files on the session's machine".into() }),
+            "timed out staging files on the session's machine",
         )),
         Err(err @ crate::bus::BusError::Staging(_)) => {
-            Err((StatusCode::BAD_GATEWAY, Json(ApiError { error: err.to_string() })))
+            Err(AppError::new(StatusCode::BAD_GATEWAY, err.to_string()))
         }
         Err(err) => {
             tracing::error!(%session_id, %err, "stage_files dispatch error");
-            Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ApiError { error: "could not stage files".into() }),
-            ))
+            Err(AppError::new(StatusCode::INTERNAL_SERVER_ERROR, "could not stage files"))
         }
     }
 }
 
-/// Legacy poll endpoint — superseded by WS push. Retained so older
-/// clients that still poll get an empty list rather than a 404.
+/// Poll endpoint superseded by WS push; answers an empty list so polling
+/// clients don't get a 404.
 pub async fn get_machine_commands(
     State(state): State<AppState>,
     Path(machine_id): Path<String>,

@@ -1,34 +1,29 @@
 //! Codex log-tail adapter.
 //!
-//! Watches `~/.codex/sessions/` for new log files. For each new file:
+//! Watches `~/.codex/sessions/`. A new file emits `SessionStarted` (`local_id`
+//! is the basename, `working_dir` the first `cwd`/`working_dir` seen); each
+//! line becomes a `Message` (non-JSON is wrapped as assistant text, and a
+//! `"tool"`/`"function_call"` field marks a tool call). After `quiesce_secs`
+//! without growth the session is `hibernated`, not ended: it resumes when the
+//! file grows. `SessionEnded` is reserved for the file disappearing.
 //!
-//! 1. Emit `SessionStarted` with `local_id` = file basename (without
-//!    `.jsonl` / `.log` suffix) and `working_dir` from the
-//!    `cwd`/`working_dir` field in the first parseable JSON line that
-//!    carries one (if any).
-//! 2. Tail subsequent lines: if the line parses as JSON it becomes a
-//!    `Message` payload as-is; otherwise it's wrapped as
-//!    `{role: "assistant", text: <line>}`. Tool-call payloads are
-//!    recognised heuristically by the presence of a `"tool"` or
-//!    `"function_call"` field.
-//! 3. After `quiesce_secs` of no new bytes on a tracked file, emit a
-//!    `hibernated` `Status`: an idle rollout is not a finished one, so the
-//!    session stays tracked and resumes streaming when it grows again.
-//!    `SessionEnded` is reserved for the rollout file disappearing.
-//!
-//! The exact Codex log schema isn't documented here — this is an
-//! opt-in scaffold that will need refinement once we have concrete
-//! fixtures. The line parser is intentionally permissive.
+//! The Codex log schema is undocumented, so the line parser is permissive.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use cctui_proto::adapter::{AdapterEvent, EndReason, SessionMeta};
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
+
+mod rollout;
+
+use rollout::{
+    collect_rollout_files, derive_local_id, read_new_lines, reconcile_tail, rollout_link,
+};
 
 #[derive(Debug, Clone)]
 pub struct LogTailConfig {
@@ -100,6 +95,92 @@ pub struct LogTail {
     /// pass replays from the mark instead.
     marks: ResumeMarks,
     reconciled: HashSet<PathBuf>,
+    index: RolloutIndex,
+    /// Derived `local_id` of quiet untracked rollouts, so the per-tick mark
+    /// check never re-opens them.
+    quiet_ids: HashMap<PathBuf, String>,
+}
+
+/// How often the whole sessions tree is re-walked; fast ticks only list the
+/// recent date dirs and stat the rollouts already being tailed.
+const FULL_WALK_EVERY: Duration = Duration::from_mins(5);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FileStat {
+    len: u64,
+    mtime: Option<SystemTime>,
+}
+
+/// Known rollout files with their last observed `(len, mtime)`.
+#[derive(Debug, Default)]
+struct RolloutIndex {
+    files: HashMap<PathBuf, FileStat>,
+    last_full: Option<Instant>,
+    stats: usize,
+}
+
+impl RolloutIndex {
+    fn full_due(&self, now: Instant) -> bool {
+        self.last_full.is_none_or(|t| now.duration_since(t) >= FULL_WALK_EVERY)
+    }
+
+    /// Blocking: must run under `spawn_blocking`.
+    fn refresh(&mut self, root: &Path, tracked: &[PathBuf], full: bool, now: Instant) {
+        self.stats = 0;
+        if full {
+            let mut files = Vec::new();
+            collect_rollout_files(root, 0, &mut files);
+            self.files.clear();
+            for path in files {
+                self.stat_into(path);
+            }
+            self.last_full = Some(now);
+            return;
+        }
+        let mut listed = HashSet::new();
+        for dir in recent_dirs(root) {
+            let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+            for entry in entries.flatten() {
+                if entry.file_type().is_ok_and(|t| t.is_file()) {
+                    listed.insert(entry.path());
+                }
+            }
+            self.files.retain(|p, _| p.parent() != Some(dir.as_path()) || listed.contains(p));
+        }
+        listed.extend(tracked.iter().cloned());
+        for path in listed {
+            self.stat_into(path);
+        }
+    }
+
+    fn stat_into(&mut self, path: PathBuf) {
+        self.stats += 1;
+        match std::fs::metadata(&path) {
+            Ok(m) if m.is_file() => {
+                self.files.insert(path, FileStat { len: m.len(), mtime: m.modified().ok() });
+            }
+            _ => {
+                self.files.remove(&path);
+            }
+        }
+    }
+}
+
+/// The root itself (flat layout) plus `YYYY/MM/DD` for today and yesterday,
+/// in both local time and UTC so a midnight rollover in either is covered.
+fn recent_dirs(root: &Path) -> Vec<PathBuf> {
+    let now_local = chrono::Local::now().date_naive();
+    let now_utc = chrono::Utc::now().date_naive();
+    let mut dirs = vec![root.to_path_buf()];
+    for day in [now_local, now_utc] {
+        for d in [Some(day), day.pred_opt()].into_iter().flatten() {
+            let dir = root.join(d.format("%Y/%m/%d").to_string());
+            if !dirs.contains(&dir) {
+                dirs.push(dir);
+            }
+        }
+    }
+    dirs
 }
 
 /// The server's per-session transcript marks, written by the codex command
@@ -130,6 +211,8 @@ impl LogTail {
             offsets_dirty: false,
             marks: ResumeMarks::default(),
             reconciled: HashSet::new(),
+            index: RolloutIndex::default(),
+            quiet_ids: HashMap::new(),
         }
     }
 
@@ -180,17 +263,17 @@ impl LogTail {
         // threads cctui drives live (`owned`) or whose real transcript came
         // back from `thread/turns/list` (`served`) are skipped.
         let mut alive: HashSet<PathBuf> = HashSet::new();
-        // real rollouts live under YYYY/MM/DD subdirectories, not
-        // directly under the sessions root, so the scan recurses.
-        let mut files = Vec::new();
-        collect_rollout_files(&self.cfg.sessions_root, 0, &mut files);
-        for path in files {
+        self.refresh_index().await;
+        let mut files: Vec<(PathBuf, FileStat)> =
+            self.index.files.iter().map(|(p, st)| (p.clone(), *st)).collect();
+        files.sort_by(|a, b| a.0.cmp(&b.0));
+        for (path, stat) in files {
             let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
             if owned.iter().any(|id| stem.ends_with(id.as_str())) {
                 continue;
             }
             alive.insert(path.clone());
-            self.tail_file(path).await;
+            self.tail_file(path, stat).await;
         }
         // The rollout is gone: the only evidence of an end this adapter has.
         let ended: Vec<PathBuf> =
@@ -229,14 +312,33 @@ impl LogTail {
             }
         }
         if self.offsets_dirty {
-            self.offsets.flush();
+            let offsets = std::mem::take(&mut self.offsets);
+            self.offsets = tokio::task::spawn_blocking(move || {
+                offsets.flush();
+                offsets
+            })
+            .await
+            .unwrap_or_default();
             self.offsets_dirty = false;
         }
     }
 
-    async fn tail_file(&mut self, path: PathBuf) {
-        let meta = std::fs::metadata(&path).ok();
-        let len = meta.as_ref().map_or(0, std::fs::Metadata::len);
+    async fn refresh_index(&mut self) {
+        let now = Instant::now();
+        let full = self.index.full_due(now);
+        let root = self.cfg.sessions_root.clone();
+        let tracked: Vec<PathBuf> = self.sessions.keys().cloned().collect();
+        let mut index = std::mem::take(&mut self.index);
+        self.index = tokio::task::spawn_blocking(move || {
+            index.refresh(&root, &tracked, full, now);
+            index
+        })
+        .await
+        .unwrap_or_default();
+    }
+
+    async fn tail_file(&mut self, path: PathBuf, stat: FileStat) {
+        let len = stat.len;
         let key = path.to_string_lossy().into_owned();
 
         let is_new = !self.sessions.contains_key(&path);
@@ -245,16 +347,20 @@ impl LogTail {
             // untracked so it stays invisible (no Started/Ended churn) unless
             // the server still holds a mark for it — then the gap behind that
             // mark is exactly what the reconcile pass must replay.
-            if len <= self.offsets.get(&key) && !self.needs_quiet_reconcile(&path, &key) {
+            if len <= self.offsets.get(&key) && !self.needs_quiet_reconcile(&path, &key).await {
                 return;
             }
-            let local_id = derive_local_id(&path);
-            let observed_at = meta
-                .as_ref()
-                .and_then(|m| m.modified().ok())
+            self.quiet_ids.remove(&path);
+            let observed_at = stat
+                .mtime
                 .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                 .map(|d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
-            let link = rollout_link(&path);
+            let p = path.clone();
+            let Ok((local_id, link)) =
+                tokio::task::spawn_blocking(move || (derive_local_id(&p), rollout_link(&p))).await
+            else {
+                return;
+            };
             let mut extra = json!({"source": "codex-log-tail", "observed_at": observed_at});
             let mut parent_local_id = None;
             if link.source.as_deref().is_some_and(|s| s.starts_with("subAgent")) {
@@ -297,7 +403,11 @@ impl LogTail {
         if len <= offset {
             return; // no new bytes
         }
-        let (events, new_offset) = match read_new_lines(&path, offset, &local_id) {
+        let (p, id) = (path.clone(), local_id.clone());
+        let read = tokio::task::spawn_blocking(move || read_new_lines(&p, offset, &id))
+            .await
+            .unwrap_or_else(|err| Err(std::io::Error::other(err)));
+        let (events, new_offset) = match read {
             Ok(res) => res,
             Err(err) => {
                 tracing::debug!(%err, ?path, "codex log read failed");
@@ -334,11 +444,23 @@ impl LogTail {
     /// A quiet rollout still worth adopting: one we have tailed before and the
     /// server holds a mark for, i.e. a candidate for a gap that opened while
     /// its events were going nowhere.
-    fn needs_quiet_reconcile(&self, path: &Path, key: &str) -> bool {
+    async fn needs_quiet_reconcile(&mut self, path: &Path, key: &str) -> bool {
         if self.reconciled.contains(path) || self.offsets.get(key) == 0 {
             return false;
         }
-        let local_id = derive_local_id(path);
+        if !self.marks.lock().is_ok_and(|m| !m.is_empty()) {
+            return false;
+        }
+        let local_id = if let Some(id) = self.quiet_ids.get(path) {
+            id.clone()
+        } else {
+            let p = path.to_path_buf();
+            let Ok(id) = tokio::task::spawn_blocking(move || derive_local_id(&p)).await else {
+                return false;
+            };
+            self.quiet_ids.insert(path.to_path_buf(), id.clone());
+            id
+        };
         self.marks.lock().is_ok_and(|m| m.contains_key(&local_id))
     }
 
@@ -357,7 +479,11 @@ impl LogTail {
         let local_id = session.local_id.clone();
         let mark = self.marks.lock().ok().and_then(|m| m.get(&local_id).copied());
         let anchor = mark.map_or(persisted, |m| m.min(persisted));
-        let events = match reconcile_tail(path, &local_id, anchor) {
+        let (p, id) = (path.to_path_buf(), local_id.clone());
+        let read = tokio::task::spawn_blocking(move || reconcile_tail(&p, &id, anchor))
+            .await
+            .unwrap_or_else(|err| Err(std::io::Error::other(err)));
+        let events = match read {
             Ok(events) => events,
             Err(err) => {
                 tracing::debug!(%err, ?path, "codex reconcile read failed");
@@ -392,302 +518,6 @@ fn hibernated_status(local_id: String) -> AdapterEvent {
     }
 }
 
-/// Recursively collect rollout files under `dir`. Codex nests sessions as
-/// `sessions/YYYY/MM/DD/rollout-*.jsonl`; depth is capped so a symlink cycle or
-/// unexpected tree can't spin the scan forever. Flat files directly under the
-/// root (used by tests and older layouts) are still picked up at depth 0.
-fn collect_rollout_files(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
-    if depth > 6 {
-        return;
-    }
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            collect_rollout_files(&path, depth + 1, out);
-        } else if path.is_file() {
-            out.push(path);
-        }
-    }
-}
-
-/// Canonical thread id for a rollout file. The identity is the
-/// `session_meta` payload `id` (a UUID), not the filename — the app-server
-/// registry and `thread/list` inventory key off the same UUID, so deriving it
-/// from the file avoids a second, filename-shaped local id for one thread.
-/// Falls back to a UUID embedded in the filename, then the bare stem.
-fn derive_local_id(path: &Path) -> String {
-    if let Some(id) = session_meta_id(path) {
-        return id;
-    }
-    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("unknown");
-    uuid_from_stem(stem).unwrap_or_else(|| stem.to_owned())
-}
-
-/// Read the `session_meta` line (first line of a well-formed rollout) and return
-/// its lowercased payload `id`. Scans a bounded prefix in case the meta isn't
-/// strictly first; returns `None` for files that carry no `session_meta`.
-fn session_meta_id(path: &Path) -> Option<String> {
-    session_meta_payload(path)
-        .as_ref()
-        .and_then(|p| p.get("id").and_then(Value::as_str).map(str::to_ascii_lowercase))
-}
-
-/// The `session_meta` line's `payload` object, or `None` for a rollout that
-/// carries no `session_meta`. Scans a bounded prefix in case the meta isn't
-/// strictly first.
-fn session_meta_payload(path: &Path) -> Option<Value> {
-    use std::io::{BufRead, BufReader};
-    let file = std::fs::File::open(path).ok()?;
-    let reader = BufReader::new(file);
-    for line in reader.lines().take(64).map_while(Result::ok) {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let Ok(value) = serde_json::from_str::<Value>(trimmed) else { continue };
-        if value.get("type").and_then(Value::as_str) == Some("session_meta") {
-            return value.get("payload").cloned();
-        }
-    }
-    None
-}
-
-/// Stamped by a launcher through `CODEX_INTERNAL_ORIGINATOR_OVERRIDE`, which codex
-/// copies verbatim into `session_meta.originator`.
-const LAUNCHER_ORIGINATOR_PREFIX: &str = "cctui-parent.";
-
-struct RolloutLink {
-    source: Option<String>,
-    subagent_parent: Option<String>,
-    launcher_parent: Option<String>,
-}
-
-/// Reduce a rollout's `session_meta` to how it links to a parent. Mirrors the
-/// `thread/list` inventory extraction so both discovery paths agree on which
-/// rollouts are subagents and who their parent is. Codex calls a plain `codex
-/// exec` a root thread, so the stamped originator is the only thing tying one
-/// back to the cctui session that launched it.
-fn rollout_link(path: &Path) -> RolloutLink {
-    let Some(payload) = session_meta_payload(path) else {
-        return RolloutLink { source: None, subagent_parent: None, launcher_parent: None };
-    };
-    let source = payload.get("source").and_then(super::thread_list::parse_source);
-    let subagent_parent = super::thread_list::parse_parent(&payload);
-    let launcher_parent = payload
-        .get("originator")
-        .and_then(Value::as_str)
-        .and_then(|s| s.strip_prefix(LAUNCHER_ORIGINATOR_PREFIX))
-        .filter(|s| !s.is_empty())
-        .map(super::thread_list::canonical_id);
-    RolloutLink { source, subagent_parent, launcher_parent }
-}
-
-/// Extract a canonical 8-4-4-4-12 hex UUID from a rollout filename stem such as
-/// `rollout-2026-07-12T01-25-55-019f51ff-f19f-7ed2-bf2a-bbb0d5cc5b90` by scanning
-/// hyphen-separated segments for the five-group UUID window.
-fn uuid_from_stem(stem: &str) -> Option<String> {
-    let segs: Vec<&str> = stem.split('-').collect();
-    let is_hex = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_hexdigit());
-    for w in segs.windows(5) {
-        if [8, 4, 4, 4, 12] == [w[0].len(), w[1].len(), w[2].len(), w[3].len(), w[4].len()]
-            && w.iter().all(|s| is_hex(s))
-        {
-            return Some(w.join("-").to_ascii_lowercase());
-        }
-    }
-    None
-}
-
-/// Parse from `offset` to the last complete line, returning the events and the
-/// offset that line ends at. A truncated trailing line never advances the
-/// offset, so the next scan re-reads it whole.
-fn read_new_lines(
-    path: &Path,
-    offset: u64,
-    local_id: &str,
-) -> std::io::Result<(Vec<AdapterEvent>, u64)> {
-    use std::io::{BufRead, BufReader, Seek, SeekFrom};
-
-    let mut file = std::fs::File::open(path)?;
-    let len = file.metadata()?.len();
-    if len <= offset {
-        return Ok((vec![], offset));
-    }
-    file.seek(SeekFrom::Start(offset))?;
-    let mut reader = BufReader::new(file);
-    let mut out = Vec::new();
-    let mut new_offset = offset;
-    loop {
-        let mut line = String::new();
-        let n = reader.read_line(&mut line)?;
-        if n == 0 || !line.ends_with('\n') {
-            break;
-        }
-        new_offset += n as u64;
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        out.push(parse_line(local_id, trimmed));
-        if trimmed.contains("\"rate_limits\"")
-            && let Some(limits) = serde_json::from_str::<Value>(trimmed)
-                .ok()
-                .and_then(|v| super::rate_limits::from_rollout_line(local_id, &v))
-        {
-            out.push(limits);
-        }
-    }
-    Ok((out, new_offset))
-}
-
-/// Re-read `path` from a window BEHIND `anchor`, realigned to a line boundary
-/// so parsing never starts mid-line. The caller must not persist any offset
-/// from this: it re-reads already-seen lines and relies on the server's
-/// content-hash dedup to drop the duplicates and surface only real gaps.
-fn reconcile_tail(path: &Path, local_id: &str, anchor: u64) -> std::io::Result<Vec<AdapterEvent>> {
-    use std::io::{BufRead, BufReader, Seek, SeekFrom};
-
-    let mut file = match std::fs::File::open(path) {
-        Ok(f) => f,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
-        Err(e) => return Err(e),
-    };
-    let len = file.metadata()?.len();
-    if len == 0 {
-        return Ok(vec![]);
-    }
-    let start = anchor.min(len).saturating_sub(RECONCILE_BACKUP_BYTES);
-    file.seek(SeekFrom::Start(start))?;
-    let mut reader = BufReader::new(file);
-    if start > 0 {
-        let mut partial = String::new();
-        reader.read_line(&mut partial)?;
-        if !partial.ends_with('\n') {
-            return Ok(vec![]);
-        }
-    }
-    let mut out = Vec::new();
-    loop {
-        let mut line = String::new();
-        let n = reader.read_line(&mut line)?;
-        if n == 0 || !line.ends_with('\n') {
-            break;
-        }
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        out.push(parse_line(local_id, trimmed));
-    }
-    Ok(out)
-}
-
-fn parse_line(local_id: &str, line: &str) -> AdapterEvent {
-    if let Ok(value) = serde_json::from_str::<Value>(line) {
-        // `turn_context` rollout lines carry the model + reasoning effort the
-        // session runs on. Surface them as a Status so discovered
-        // (log-tailed) codex sessions render model/effort in the list, instead
-        // of letting the line fall through as a meaningless "message".
-        if value.get("type").and_then(Value::as_str) == Some("turn_context")
-            && let Some(status) = turn_context_status(local_id, &value)
-        {
-            return status;
-        }
-        if let Some(usage) = token_usage_event(local_id, &value) {
-            return usage;
-        }
-        // Heuristic: lines that look like tool calls.
-        if value.get("tool").is_some()
-            || value.get("function_call").is_some()
-            || value.get("type").and_then(Value::as_str) == Some("tool_use")
-        {
-            return AdapterEvent::ToolUse { local_id: local_id.to_owned(), payload: value };
-        }
-        return AdapterEvent::Message {
-            local_id: local_id.to_owned(),
-            payload: value,
-            turn_id: None,
-        };
-    }
-    AdapterEvent::Message {
-        local_id: local_id.to_owned(),
-        payload: json!({"role": "assistant", "text": line}),
-        turn_id: None,
-    }
-}
-
-/// Extract model + reasoning effort from a `turn_context` rollout line and build
-/// a `Status` event. The model lives at `payload.model`; effort at
-/// `payload.collaboration_mode.settings.reasoning_effort` (newer codex) or a
-/// top-level `payload.reasoning_effort` fallback — both may be null. Returns
-/// `None` when neither is present so we don't emit an empty Status.
-fn turn_context_status(local_id: &str, value: &Value) -> Option<AdapterEvent> {
-    let p = value.get("payload")?;
-    let str_at = |v: &Value, ptr: &str| {
-        v.pointer(ptr).and_then(Value::as_str).map(str::to_owned).filter(|s| !s.is_empty())
-    };
-    let model = str_at(p, "/model");
-    let effort = str_at(p, "/collaboration_mode/settings/reasoning_effort")
-        .or_else(|| str_at(p, "/reasoning_effort"));
-    if model.is_none() && effort.is_none() {
-        return None;
-    }
-    Some(AdapterEvent::Status {
-        local_id: local_id.to_owned(),
-        tempo: None,
-        state: None,
-        detail: None,
-        activity: None,
-        name: None,
-        intent: None,
-        model,
-        effort,
-        permission_mode: None,
-        children: vec![],
-    })
-}
-
-/// Map a codex `event_msg`/`token_count` rollout line → [`AdapterEvent::TokenUsage`].
-/// Codex writes one after every model response with
-/// `info.last_token_usage` = that response's delta and `info.total_token_usage`
-/// = the running session total. We emit the `last` delta so the server's
-/// per-message SUM reconstructs the total, exactly like the app-server driver's
-/// [`super::app_server`] `thread/tokenUsage/updated` mapping (`inputTokens`
-/// includes the cached count, so subtract it for the non-cached/cached split
-/// the claude + app-server adapters use).
-///
-/// `message_id` is derived from the line's own content — the timestamp plus the
-/// strictly-monotonic cumulative total — so re-tailing the same rollout file
-/// after a daemon restart re-emits identical ids and the server's
-/// `ON CONFLICT (session_id, message_id) DO NOTHING` upsert refuses to
-/// double-count. Returns `None` for non-token lines so `parse_line` continues.
-fn token_usage_event(local_id: &str, value: &Value) -> Option<AdapterEvent> {
-    if value.get("type").and_then(Value::as_str) != Some("event_msg") {
-        return None;
-    }
-    let payload = value.get("payload")?;
-    if payload.get("type").and_then(Value::as_str) != Some("token_count") {
-        return None;
-    }
-    let last = payload.pointer("/info/last_token_usage");
-    let g = |k: &str| last.and_then(|l| l.get(k)).and_then(Value::as_u64).unwrap_or(0);
-    let cached = g("cached_input_tokens");
-    let cumulative = payload
-        .pointer("/info/total_token_usage/total_tokens")
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
-    let ts = value.get("timestamp").and_then(Value::as_str).unwrap_or("");
-    Some(AdapterEvent::TokenUsage {
-        local_id: local_id.to_owned(),
-        message_id: format!("codex-tokens-{ts}-{cumulative}"),
-        input_tokens: g("input_tokens").saturating_sub(cached),
-        output_tokens: g("output_tokens"),
-        cache_read_tokens: cached,
-        cache_creation_tokens: 0,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -695,7 +525,6 @@ mod tests {
 
     const ROLLOUT: &str = "rollout-2026-09-07T01-00-00-019f51ff-f19f-7ed2-bf2a-bbb0d5cc5b90";
     const ROLLOUT_ID: &str = "019f51ff-f19f-7ed2-bf2a-bbb0d5cc5b90";
-
     fn write_turns(path: &Path, range: std::ops::Range<usize>) {
         let mut f =
             std::fs::OpenOptions::new().create(true).append(true).open(path).expect("open rollout");
@@ -703,7 +532,6 @@ mod tests {
             writeln!(f, r#"{{"role":"assistant","text":"turn {i}"}}"#).unwrap();
         }
     }
-
     fn texts(events: &[AdapterEvent]) -> Vec<String> {
         events
             .iter()
@@ -715,7 +543,6 @@ mod tests {
             })
             .collect()
     }
-
     fn drain(rx: &mut mpsc::Receiver<AdapterEvent>) -> Vec<AdapterEvent> {
         let mut out = Vec::new();
         while let Ok(evt) = rx.try_recv() {
@@ -723,7 +550,6 @@ mod tests {
         }
         out
     }
-
     fn tail_with(
         sessions: &Path,
         offsets_path: Option<PathBuf>,
@@ -740,7 +566,6 @@ mod tests {
             CancellationToken::new(),
         )
     }
-
     /// A daemon that kept tailing while its events went nowhere leaves the
     /// persisted offset past turns the server never stored. On restart the
     /// server's resume mark is the only evidence of where its copy stops, so
@@ -781,7 +606,6 @@ mod tests {
             "the gap behind the mark must be replayed, got {healed:?}"
         );
     }
-
     /// The offset is a promise that everything before it was handed off. A
     /// failed send must leave it where it was so the next scan re-reads.
     #[tokio::test]
@@ -804,7 +628,6 @@ mod tests {
         tail.scan_once().await;
         assert_eq!(texts(&drain(&mut rx)), ["turn 0", "turn 1", "turn 2"]);
     }
-
     #[tokio::test]
     async fn a_partial_trailing_line_is_re_read_whole() {
         let tmp = tempfile::tempdir().unwrap();
@@ -826,7 +649,6 @@ mod tests {
         tail.scan_once().await;
         assert_eq!(texts(&drain(&mut rx)), ["turn 1"]);
     }
-
     #[tokio::test]
     async fn detects_new_session_file() {
         let tmp = tempfile::tempdir().unwrap();
@@ -851,7 +673,6 @@ mod tests {
         assert!(matches!(evt1, AdapterEvent::SessionStarted { .. }));
         assert!(matches!(evt2, AdapterEvent::Message { .. }));
     }
-
     #[tokio::test]
     async fn quiesce_emits_hibernated_status() {
         let tmp = tempfile::tempdir().unwrap();
@@ -878,7 +699,6 @@ mod tests {
             other => panic!("expected hibernated status, got {other:?}"),
         }
     }
-
     #[tokio::test]
     async fn tool_lines_emit_tool_use() {
         let tmp = tempfile::tempdir().unwrap();
@@ -902,7 +722,6 @@ mod tests {
         let evt = rx.recv().await.unwrap();
         assert!(matches!(evt, AdapterEvent::ToolUse { .. }));
     }
-
     #[tokio::test]
     async fn inventory_discovered_session_still_tails_transcript() {
         // regression: a session whose rollout id was discovered by the
@@ -932,7 +751,6 @@ mod tests {
         assert!(matches!(evt1, AdapterEvent::SessionStarted { .. }));
         assert!(matches!(evt2, AdapterEvent::Message { .. }), "transcript must be tailed");
     }
-
     #[tokio::test]
     async fn app_server_owned_session_is_skipped() {
         // The app-server `owned` set is still honored — cctui drives those live.
@@ -967,7 +785,6 @@ mod tests {
         tail.scan_once().await;
         assert!(rx.try_recv().is_err(), "owned rollout file must not be tailed");
     }
-
     #[tokio::test]
     async fn subagent_rollout_nests_under_dispatched_parent() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1002,7 +819,6 @@ mod tests {
         assert_eq!(meta.parent_local_id.as_deref(), Some("DISPATCH-LT-1"));
         assert_eq!(meta.extra["subagent"], json!(true));
     }
-
     #[tokio::test]
     async fn snake_case_subagent_rollout_nests_under_its_parent() {
         // codex 0.153 writes `source.subagent` (snake_case) + top-level
@@ -1039,7 +855,6 @@ mod tests {
         assert_eq!(meta.parent_local_id.as_deref(), Some(parent));
         assert_eq!(meta.extra["subagent"], json!(true));
     }
-
     #[tokio::test]
     async fn orphan_subagent_rollout_is_skipped() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1067,7 +882,6 @@ mod tests {
         tail.scan_once().await;
         assert!(rx.try_recv().is_err(), "orphan subagent rollout must be skipped");
     }
-
     async fn started_meta_for_exec(originator: &str, id: &str) -> SessionMeta {
         let tmp = tempfile::tempdir().unwrap();
         let sessions = tmp.path().to_path_buf();
@@ -1096,7 +910,6 @@ mod tests {
         };
         meta
     }
-
     #[tokio::test]
     async fn exec_rollout_nests_under_stamped_launcher() {
         let id = "019f832c-6301-7053-8000-0000000000f1";
@@ -1105,7 +918,6 @@ mod tests {
         assert_eq!(meta.parent_local_id.as_deref(), Some(launcher));
         assert_eq!(meta.extra["subagent"], json!(true));
     }
-
     #[tokio::test]
     async fn unstamped_exec_rollout_stays_parentless() {
         let id = "019f832c-6301-7053-8000-0000000000f2";
@@ -1113,14 +925,12 @@ mod tests {
         assert_eq!(meta.parent_local_id, None);
         assert_eq!(meta.extra.get("subagent"), None);
     }
-
     #[tokio::test]
     async fn self_referential_stamp_is_refused() {
         let id = "019f832c-6301-7053-8000-0000000000f3";
         let meta = started_meta_for_exec(&format!("cctui-parent.{id}"), id).await;
         assert_eq!(meta.parent_local_id, None, "a self-parent would cycle the heartbeat CTE");
     }
-
     #[tokio::test]
     async fn quiesced_rollout_is_not_replayed_on_rediscovery() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1158,7 +968,6 @@ mod tests {
         }
         assert!(texts(&drain(&mut rx)).is_empty());
     }
-
     #[tokio::test]
     async fn idle_rollout_hibernates_and_resumes_without_replay() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1207,7 +1016,6 @@ mod tests {
             "a removed rollout is the one real end"
         );
     }
-
     #[tokio::test]
     async fn offsets_survive_restart() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1234,218 +1042,77 @@ mod tests {
         tail.scan_once().await;
         assert!(rx.try_recv().is_err(), "restart must not replay the rollout");
     }
-
-    #[test]
-    fn parse_line_handles_plain_text() {
-        let evt = parse_line("s1", "hello world");
-        assert!(matches!(evt, AdapterEvent::Message { .. }));
-    }
-
-    #[test]
-    fn turn_context_line_emits_status_with_model_and_effort() {
-        let line = r#"{"type":"turn_context","payload":{"model":"gpt-5.5","collaboration_mode":{"settings":{"reasoning_effort":"high"}}}}"#;
-        match parse_line("s1", line) {
-            AdapterEvent::Status { model, effort, .. } => {
-                assert_eq!(model.as_deref(), Some("gpt-5.5"));
-                assert_eq!(effort.as_deref(), Some("high"));
-            }
-            other => panic!("expected Status, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn turn_context_with_null_effort_still_surfaces_model() {
-        let line = r#"{"type":"turn_context","payload":{"model":"gpt-5.5","collaboration_mode":{"settings":{"reasoning_effort":null}}}}"#;
-        match parse_line("s1", line) {
-            AdapterEvent::Status { model, effort, .. } => {
-                assert_eq!(model.as_deref(), Some("gpt-5.5"));
-                assert_eq!(effort, None);
-            }
-            other => panic!("expected Status, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn turn_context_without_model_or_effort_falls_through_to_message() {
-        let line = r#"{"type":"turn_context","payload":{"cwd":"/w"}}"#;
-        assert!(matches!(parse_line("s1", line), AdapterEvent::Message { .. }));
-    }
-
-    const ROLLOUT_FIXTURE: &str = include_str!("fixtures/rollout_token_usage.jsonl");
-    const HISTORY_FIXTURE: &str = include_str!("fixtures/rollout_history.jsonl");
-
-    #[test]
-    fn uuid_from_stem_extracts_canonical_uuid() {
-        let stem = "rollout-2026-07-12T01-25-55-019f51ff-f19f-7ed2-bf2a-bbb0d5cc5b90";
-        assert_eq!(uuid_from_stem(stem).as_deref(), Some("019f51ff-f19f-7ed2-bf2a-bbb0d5cc5b90"));
-        assert_eq!(uuid_from_stem("no-uuid-here"), None);
-    }
-
-    #[test]
-    fn derive_local_id_prefers_session_meta_over_filename() {
-        let tmp = tempfile::tempdir().unwrap();
-        // Filename UUID differs from the session_meta id to prove meta wins.
-        let path = tmp
-            .path()
-            .join("rollout-2026-07-12T01-25-55-ffffffff-0000-7000-8000-000000000000.jsonl");
-        std::fs::write(&path, HISTORY_FIXTURE).unwrap();
-        assert_eq!(derive_local_id(&path), "019f5200-aaaa-7bbb-8ccc-000000000001");
-    }
-
-    #[test]
-    fn derive_local_id_falls_back_to_filename_uuid() {
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp
-            .path()
-            .join("rollout-2026-07-12T01-25-55-019f51ff-f19f-7ed2-bf2a-bbb0d5cc5b90.jsonl");
-        std::fs::write(&path, "{\"role\":\"assistant\",\"text\":\"no meta\"}\n").unwrap();
-        assert_eq!(derive_local_id(&path), "019f51ff-f19f-7ed2-bf2a-bbb0d5cc5b90");
-    }
-
     #[tokio::test]
-    async fn recursive_scan_finds_nested_rollout_with_canonical_id() {
+    async fn fast_tick_stats_only_recent_date_dirs() {
         let tmp = tempfile::tempdir().unwrap();
         let sessions = tmp.path().to_path_buf();
-        let nested = sessions.join("2026").join("07").join("12");
-        std::fs::create_dir_all(&nested).unwrap();
-        let path =
-            nested.join("rollout-2026-07-12T01-25-55-ffffffff-0000-7000-8000-000000000000.jsonl");
-        std::fs::write(&path, HISTORY_FIXTURE).unwrap();
-        let (tx, mut rx) = mpsc::channel(64);
-        let mut tail = LogTail::new(
-            LogTailConfig {
-                sessions_root: sessions,
-                poll_interval: Duration::from_millis(10),
-                quiesce: Duration::from_hours(1),
-                offsets_path: None,
-            },
-            tx,
-            CancellationToken::new(),
-        );
+        for day in 1..=20 {
+            let dir = sessions.join(format!("2020/01/{day:02}"));
+            std::fs::create_dir_all(&dir).unwrap();
+            for n in 0..100 {
+                std::fs::write(dir.join(format!("rollout-{day}-{n}.jsonl")), "").unwrap();
+            }
+        }
+        let today = sessions.join(chrono::Local::now().date_naive().format("%Y/%m/%d").to_string());
+        std::fs::create_dir_all(&today).unwrap();
+        let live = today.join(format!("{ROLLOUT}.jsonl"));
+        write_turns(&live, 0..1);
+
+        let (tx, mut rx) = mpsc::channel(256);
+        let mut tail = tail_with(&sessions, None, tx);
         tail.scan_once().await;
-        let started = rx.recv().await.unwrap();
-        match started {
-            AdapterEvent::SessionStarted { local_id, .. } => {
-                assert_eq!(local_id, "019f5200-aaaa-7bbb-8ccc-000000000001");
-            }
-            other => panic!("expected SessionStarted, got {other:?}"),
-        }
-        // Every subsequent event must carry the canonical id, not the filename.
-        let mut saw_message = false;
-        while let Ok(evt) = rx.try_recv() {
-            let id = match &evt {
-                AdapterEvent::Message { local_id, .. }
-                | AdapterEvent::ToolUse { local_id, .. }
-                | AdapterEvent::Status { local_id, .. }
-                | AdapterEvent::TokenUsage { local_id, .. }
-                | AdapterEvent::TranscriptMark { local_id, .. } => local_id.clone(),
-                other => panic!("unexpected event {other:?}"),
-            };
-            assert_eq!(id, "019f5200-aaaa-7bbb-8ccc-000000000001");
-            if matches!(evt, AdapterEvent::Message { .. }) {
-                saw_message = true;
-            }
-        }
-        assert!(saw_message, "nested rollout transcript must be tailed");
-    }
+        assert_eq!(tail.index.files.len(), 2001);
+        assert!(tail.index.stats >= 2001, "first tick is a full walk");
+        let _ = drain(&mut rx);
 
-    #[test]
-    fn history_fixture_response_and_event_envelopes_parse() {
-        let events: Vec<AdapterEvent> = HISTORY_FIXTURE
-            .lines()
-            .filter(|l| !l.trim().is_empty())
-            .map(|l| parse_line("hist", l.trim()))
-            .collect();
-        // token_count → TokenUsage, turn_context → Status, the rest → Message.
+        write_turns(&live, 1..2);
+        tail.scan_once().await;
+        assert!(tail.index.stats <= 2, "fast tick stat {} files", tail.index.stats);
+        assert_eq!(tail.index.files.len(), 2001, "historic rollouts stay known");
+        assert_eq!(texts(&drain(&mut rx)), vec!["turn 1"]);
+    }
+    #[tokio::test]
+    async fn fast_tick_keeps_tailing_an_old_dated_rollout() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sessions = tmp.path().to_path_buf();
+        let old = sessions.join("2020/01/01");
+        std::fs::create_dir_all(&old).unwrap();
+        let path = old.join(format!("{ROLLOUT}.jsonl"));
+        write_turns(&path, 0..1);
+        let (tx, mut rx) = mpsc::channel(64);
+        let mut tail = tail_with(&sessions, None, tx);
+        tail.scan_once().await;
+        let _ = drain(&mut rx);
+        write_turns(&path, 1..2);
+        tail.scan_once().await;
+        assert_eq!(texts(&drain(&mut rx)), vec!["turn 1"]);
+    }
+    #[tokio::test]
+    async fn quiet_rollout_is_opened_once_for_the_mark_check() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sessions = tmp.path().join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        let path = sessions.join(format!("{ROLLOUT}.jsonl"));
+        let offsets_path = tmp.path().join("offsets.json");
+        write_turns(&path, 0..2);
+        {
+            let (tx, _rx) = mpsc::channel(64);
+            let mut tail = tail_with(&sessions, Some(offsets_path.clone()), tx);
+            tail.scan_once().await;
+        }
+        let (tx, mut rx) = mpsc::channel(64);
+        let mut tail = tail_with(&sessions, Some(offsets_path), tx);
+        tail.set_resume_marks(Arc::new(Mutex::new(HashMap::from([("other".to_owned(), 1)]))));
+        tail.scan_once().await;
+        assert_eq!(tail.quiet_ids.get(&path).map(String::as_str), Some(ROLLOUT_ID));
+        std::fs::remove_file(&path).unwrap();
+        std::fs::write(&path, "x".repeat(10)).unwrap();
+        tail.scan_once().await;
         assert_eq!(
-            events.iter().filter(|e| matches!(e, AdapterEvent::TokenUsage { .. })).count(),
-            1
+            tail.quiet_ids.get(&path).map(String::as_str),
+            Some(ROLLOUT_ID),
+            "cached id is reused, not re-derived from the rewritten file"
         );
-        assert_eq!(events.iter().filter(|e| matches!(e, AdapterEvent::Status { .. })).count(), 1);
-        // The response_item / event_msg envelopes are preserved verbatim as
-        // Message payloads so the server-side normalizer can unwrap them.
-        let has_envelope = |t: &str| {
-            events.iter().any(|e| {
-                matches!(e,
-                AdapterEvent::Message { payload, .. }
-                    if payload.get("type").and_then(Value::as_str) == Some(t))
-            })
-        };
-        assert!(has_envelope("response_item"));
-        assert!(has_envelope("event_msg"));
-    }
-
-    #[test]
-    fn token_count_line_emits_token_usage() {
-        let line = r#"{"timestamp":"2026-05-30T07:37:04.869Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":23695},"last_token_usage":{"input_tokens":11860,"cached_input_tokens":9600,"output_tokens":214,"reasoning_output_tokens":117,"total_tokens":12074}}}}"#;
-        match parse_line("sess", line) {
-            AdapterEvent::TokenUsage {
-                local_id,
-                input_tokens,
-                output_tokens,
-                cache_read_tokens,
-                cache_creation_tokens,
-                ..
-            } => {
-                assert_eq!(local_id, "sess");
-                assert_eq!(input_tokens, 11860 - 9600);
-                assert_eq!(output_tokens, 214);
-                assert_eq!(cache_read_tokens, 9600);
-                assert_eq!(cache_creation_tokens, 0);
-            }
-            other => panic!("expected TokenUsage, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn token_usage_message_id_is_stable_and_distinct_per_line() {
-        let a = r#"{"timestamp":"2026-05-30T07:36:59.740Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":11621},"last_token_usage":{"input_tokens":11111,"cached_input_tokens":9600,"output_tokens":510,"total_tokens":11621}}}}"#;
-        let b = r#"{"timestamp":"2026-05-30T07:37:04.869Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":23695},"last_token_usage":{"input_tokens":11860,"cached_input_tokens":9600,"output_tokens":214,"total_tokens":12074}}}}"#;
-        let id = |line: &str| match parse_line("s", line) {
-            AdapterEvent::TokenUsage { message_id, .. } => message_id,
-            other => panic!("expected TokenUsage, got {other:?}"),
-        };
-        assert_eq!(id(a), id(a));
-        assert_ne!(id(a), id(b));
-    }
-
-    #[test]
-    fn fixture_rollout_accumulates_per_turn_token_usage() {
-        let events: Vec<AdapterEvent> = ROLLOUT_FIXTURE
-            .lines()
-            .filter(|l| !l.trim().is_empty())
-            .map(|l| parse_line("fixture", l.trim()))
-            .collect();
-        let usages: Vec<_> = events
-            .iter()
-            .filter_map(|e| match e {
-                AdapterEvent::TokenUsage {
-                    message_id,
-                    input_tokens,
-                    output_tokens,
-                    cache_read_tokens,
-                    ..
-                } => Some((message_id.clone(), *input_tokens, *output_tokens, *cache_read_tokens)),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(usages.len(), 3);
-        let ids: HashSet<&String> = usages.iter().map(|(id, ..)| id).collect();
-        assert_eq!(ids.len(), 3, "message ids must be unique per token_count line");
-        let sum_in: u64 = usages.iter().map(|(_, i, ..)| i).sum();
-        let sum_out: u64 = usages.iter().map(|(_, _, o, _)| o).sum();
-        let sum_cache: u64 = usages.iter().map(|(.., c)| c).sum();
-        assert_eq!(sum_in, (11111 - 9600) + (11860 - 9600) + (12134 - 10624));
-        assert_eq!(sum_out, 510 + 214 + 61);
-        assert_eq!(sum_cache, 9600 + 9600 + 10624);
-        // token_count lines must NOT also surface as transcript messages.
-        assert!(
-            !events.iter().any(|e| matches!(
-                e,
-                AdapterEvent::Message { payload, .. }
-                    if payload.pointer("/payload/type").and_then(Value::as_str) == Some("token_count")
-            )),
-            "token_count lines must map to TokenUsage, not Message"
-        );
+        assert!(drain(&mut rx).is_empty(), "quiet rollout without a mark stays untracked");
     }
 }

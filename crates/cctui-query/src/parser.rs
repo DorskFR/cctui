@@ -177,8 +177,17 @@ fn classify_word(word: &Word, out: &mut Vec<Tok>) {
             _ => {}
         }
     }
-    if let Some(rest) = strip_negation(word) {
-        out.push(Tok::Not);
+    if let Some(mut rest) = strip_negation(word) {
+        let mut negated = true;
+        while rest.plain() != Some("-")
+            && let Some(next) = strip_negation(&rest)
+        {
+            negated = !negated;
+            rest = next;
+        }
+        if negated {
+            out.push(Tok::Not);
+        }
         classify_word(&rest, out);
         return;
     }
@@ -274,9 +283,13 @@ fn bool_value(v: &str) -> bool {
     matches!(v.to_lowercase().as_str(), "true" | "1" | "yes" | "y" | "on" | "pinned" | "starred")
 }
 
+/// Nesting deeper than this is flattened: extra parens are ignored.
+pub const MAX_DEPTH: usize = 32;
+
 struct Parser {
     toks: Vec<Tok>,
     pos: usize,
+    depth: usize,
 }
 
 impl Parser {
@@ -327,29 +340,37 @@ impl Parser {
     }
 
     fn parse_unary(&mut self) -> Option<Node> {
-        if matches!(self.peek(), Some(Tok::Not)) {
+        let mut negated = false;
+        while matches!(self.peek(), Some(Tok::Not)) {
             self.bump();
-            return self.parse_unary().map(|child| match child {
-                Node::Empty => Node::Empty,
-                child => Node::Not { child: Box::new(child) },
-            });
+            negated = !negated;
         }
-        self.parse_primary()
+        let child = self.parse_primary()?;
+        Some(match child {
+            Node::Empty => Node::Empty,
+            child if negated => Node::Not { child: Box::new(child) },
+            child => child,
+        })
     }
 
     fn parse_primary(&mut self) -> Option<Node> {
-        match self.bump()? {
-            Tok::LParen => {
-                let inner = self.parse_or();
-                if matches!(self.peek(), Some(Tok::RParen)) {
-                    self.bump();
+        loop {
+            match self.bump()? {
+                Tok::LParen if self.depth >= MAX_DEPTH => {}
+                Tok::LParen => {
+                    self.depth += 1;
+                    let inner = self.parse_or();
+                    self.depth -= 1;
+                    if matches!(self.peek(), Some(Tok::RParen)) {
+                        self.bump();
+                    }
+                    return inner;
                 }
-                inner
+                Tok::RParen => return None,
+                Tok::Text(t) => return Some(Node::Text { value: t }),
+                Tok::Field { field, op, values } => return Some(field_leaf(&field, op, values)),
+                Tok::And | Tok::Or | Tok::Not => {}
             }
-            Tok::RParen => None,
-            Tok::Text(t) => Some(Node::Text { value: t }),
-            Tok::Field { field, op, values } => Some(field_leaf(&field, op, values)),
-            Tok::And | Tok::Or | Tok::Not => self.parse_primary(),
         }
     }
 }
@@ -371,7 +392,7 @@ pub fn parse(input: &str) -> Node {
         return Node::Empty;
     }
     let toks = tokenize(trimmed);
-    let mut parser = Parser { toks, pos: 0 };
+    let mut parser = Parser { toks, pos: 0, depth: 0 };
     let mut nodes = Vec::new();
     while parser.peek().is_some() {
         let before = parser.pos;

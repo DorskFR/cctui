@@ -1,8 +1,9 @@
+// @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mount, unmount } from 'svelte';
 import DrawerToolbar from './DrawerToolbar.svelte';
 import toolbarSource from './DrawerToolbar.svelte?raw';
-import lineSource from './ConversationLine.svelte?raw';
+import lineSource from './LineActions.svelte?raw';
 import { allFilter } from './filters';
 import type { ViewOpts } from './types';
 import type { MessagePin } from '@bindings/MessagePin';

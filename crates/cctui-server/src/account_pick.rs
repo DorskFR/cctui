@@ -1,46 +1,17 @@
 //! Ranking the candidate accounts an `auto` spawn may bind to.
 //!
-//! `POST /spawn` with `auto_account` asks the server to choose between the
-//! caller's accounts instead of refusing to guess. "Best" here means *most
-//! allocation left for the session about to run*, which is not the same as
-//! "least used": an account can sit at 0% of its 5h window and still be at 100%
-//! of its weekly one, so it would rate-limit on the first request. An account is
-//! therefore judged on its **narrowest** window among those that apply, never
-//! on its idlest one.
+//! An account is judged on its **narrowest** applicable window, never its
+//! idlest: model-scoped windows count only for the launched model, the
+//! account's own soft limits count, and dollar windows are excluded from the
+//! margin (their caps still block through the soft limit).
 //!
-//! Three rules shape which windows apply:
+//! The `headroom` score is a sustainable rate: each percent window contributes
+//! `margin / hours until reset` (floored at [`MIN_HOURS_TO_RESET`]); the lowest
+//! rate is divided by the pace penalty and shared with in-flight sessions
+//! (`score / (1 + in_flight × RESERVATION)`), so a burst of spawns spreads
+//! across the pool instead of landing on one account before usage moves.
 //!
-//!   * model-scoped windows count only for the model being launched — an
-//!     account whose weekly Fable budget is spent is still fine for an Opus
-//!     session;
-//!   * the account's own configured soft limits count, so `auto` never elects
-//!     an account the gateway would 429 moments later;
-//!   * dollar windows are excluded from the margin (a percent of a USD budget
-//!     means nothing), though their caps still block through the soft limit.
-//!
-//! A margin alone is not room, though: 35% of a weekly window that resets in
-//! 18 hours can be spent far faster than 35% of one that resets in two hours
-//! would ever need to be. The `headroom` score is therefore a **sustainable
-//! rate**: each applicable percent window contributes `margin / hours until its
-//! reset` (hours floored at [`MIN_HOURS_TO_RESET`]; a window with no reset time
-//! contributes its raw margin), the account's score is the lowest of those
-//! rates, divided by its pace penalty, then shared with the sessions already in
-//! flight on it (`score / (1 + in_flight × RESERVATION)`). The last step is what
-//! walks a wave of spawns across the pool: usage read between two spawns has
-//! not moved yet, so without it every spawn of the wave lands on the same
-//! account and they all hit its wall in the same second.
-//!
-//! An account that opted into pace limits and is burning faster than its linear
-//! budget has its score further discounted by that burn rate, so equal room
-//! goes to the calmer account.
-//!
-//! Pools choose between these two rankers with their `strategy`. Moving a live
-//! session to a sibling when its account refuses is also a pool setting
-//! (`failover` on the pool itself); `CCTUI_GATEWAY_FAILOVER=1` only governs the
-//! explicit `account_redirects` rules, never in-pool moves.
-//!
-//! This module is pure: the caller does the DB reads and the usage fetches, so
-//! every rule above is unit-testable without a database or a network.
+//! Pure: the caller does the DB reads and usage fetches.
 
 use chrono::{DateTime, Utc};
 

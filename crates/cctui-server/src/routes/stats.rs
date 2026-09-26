@@ -1,18 +1,18 @@
 use std::collections::HashSet;
 
 use axum::extract::{Query, State};
-use axum::http::StatusCode;
 use axum::{Extension, Json};
 use chrono::{DateTime, Duration, Utc};
 use serde::Deserialize;
 
 use cctui_proto::api::{
-    ApiError, HeatmapCell, ModelUsage, SessionStats, TokenUsageWindows, UsageAnalytics,
-    UsageBucket, WindowTokenUsage,
+    HeatmapCell, ModelUsage, SessionStats, TokenUsageWindows, UsageAnalytics, UsageBucket,
+    WindowTokenUsage,
 };
 use cctui_proto::models::SessionStatus;
 
 use crate::auth::AuthContext;
+use crate::error::AppError;
 use crate::live_sessions::live_sessions_predicate;
 use crate::routes::sessions::{attention_from_bucket, bucket_from_signals, derive_status};
 use crate::state::AppState;
@@ -35,7 +35,7 @@ pub async fn recent_dirs(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Query(params): Query<RecentDirsParams>,
-) -> Result<Json<Vec<String>>, (StatusCode, Json<ApiError>)> {
+) -> Result<Json<Vec<String>>, AppError> {
     // Scope to the caller's own sessions (admin sees all) via the
     // machine_uuid -> machines.user_id join, bound to owner_filter().
     let uid = ctx.owner_filter();
@@ -73,11 +73,7 @@ pub async fn recent_dirs(
             .fetch_all(&state.pool)
             .await
         }
-    }
-    .map_err(|e| {
-        tracing::error!("db error (recent dirs): {e}");
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-    })?;
+    }?;
     Ok(Json(rows.into_iter().map(|(d,)| d).collect()))
 }
 
@@ -122,11 +118,7 @@ pub async fn session_stats(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Query(params): Query<SessionStatsParams>,
-) -> Result<Json<SessionStats>, (StatusCode, Json<ApiError>)> {
-    let db_err = |e: sqlx::Error| {
-        tracing::error!("db error (session stats): {e}");
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-    };
+) -> Result<Json<SessionStats>, AppError> {
     let uid = ctx.owner_filter();
 
     // All counts scoped to the caller (NULL = admin sees all) via the
@@ -137,8 +129,7 @@ pub async fn session_stats(
             .bind(params.timezone.as_deref().unwrap_or("UTC"))
             .bind(Utc::now())
             .fetch_one(&state.pool)
-            .await
-            .map_err(db_err)?;
+            .await?;
 
     // Live = sessions currently in the registry whose derived status is
     // active/new (matches how the list surfaces "live"). Scope to the caller's
@@ -150,17 +141,10 @@ pub async fn session_stats(
             let registry = state.registry.read().await;
             registry.list().into_iter().map(|h| h.session.id.clone()).collect()
         };
-        let rows: Vec<(String,)> = sqlx::query_as(
-            "SELECT s.id FROM sessions s \
-             LEFT JOIN machines m ON m.id = s.machine_uuid \
-             WHERE s.id = ANY($1) AND m.user_id = $2",
-        )
-        .bind(&live_ids)
-        .bind(ctx.user_id)
-        .fetch_all(&state.pool)
-        .await
-        .map_err(db_err)?;
-        Some(rows.into_iter().map(|(id,)| id).collect())
+        let owned =
+            crate::store::sessions::visible_session_ids(&state.pool, &live_ids, ctx.user_id)
+                .await?;
+        Some(owned.into_iter().collect())
     };
     let live: i64 = {
         let registry = state.registry.read().await;
@@ -190,8 +174,7 @@ pub async fn session_stats(
     ))
     .bind(uid)
     .fetch_all(&state.pool)
-    .await
-    .map_err(db_err)?;
+    .await?;
     let needs_input: i64 = signal_rows
         .into_iter()
         .filter(|(tempo, agent_state, activity, soft_limit_reason)| {
@@ -241,7 +224,7 @@ pub async fn session_token_stats(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Query(params): Query<TokenStatsParams>,
-) -> Result<Json<TokenUsageWindows>, (StatusCode, Json<ApiError>)> {
+) -> Result<Json<TokenUsageWindows>, AppError> {
     type Row = (i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64);
 
     let uid = ctx.owner_filter();
@@ -286,11 +269,7 @@ pub async fn session_token_stats(
     .bind(month)
     .bind(uid)
     .fetch_one(&state.pool)
-    .await
-    .map_err(|e| {
-        tracing::error!("db error (token stats): {e}");
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-    })?;
+    .await?;
 
     let cast = |v: i64| u64::try_from(v).unwrap_or(0);
     let win = |i: usize, o: usize, c: usize, t: &Row| WindowTokenUsage {
@@ -421,7 +400,7 @@ pub async fn session_usage_analytics(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Query(params): Query<UsageAnalyticsParams>,
-) -> Result<Json<UsageAnalytics>, (StatusCode, Json<ApiError>)> {
+) -> Result<Json<UsageAnalytics>, AppError> {
     let uid = ctx.owner_filter();
     let days = params.days.clamp(1, 365);
     let tz = params.tz_offset;
@@ -434,21 +413,15 @@ pub async fn session_usage_analytics(
         .bind(since)
         .bind(uid)
         .fetch_all(&state.pool)
-        .await
-        .map_err(|e| usage_db_err(&e))?;
-    let model_rows: Vec<ModelRow> = sqlx::query_as(USAGE_MODELS_SQL)
-        .bind(since)
-        .bind(uid)
-        .fetch_all(&state.pool)
-        .await
-        .map_err(|e| usage_db_err(&e))?;
+        .await?;
+    let model_rows: Vec<ModelRow> =
+        sqlx::query_as(USAGE_MODELS_SQL).bind(since).bind(uid).fetch_all(&state.pool).await?;
     let heat_rows: Vec<HeatRow> = sqlx::query_as(USAGE_HEATMAP_SQL)
         .bind(tz)
         .bind(since)
         .bind(uid)
         .fetch_all(&state.pool)
-        .await
-        .map_err(|e| usage_db_err(&e))?;
+        .await?;
 
     let cast = |v: i64| u64::try_from(v).unwrap_or(0);
     let buckets = bucket_rows
@@ -482,11 +455,6 @@ pub async fn session_usage_analytics(
         .collect();
 
     Ok(Json(UsageAnalytics { granularity: granularity.into(), buckets, models, heatmap }))
-}
-
-fn usage_db_err(e: &sqlx::Error) -> (StatusCode, Json<ApiError>) {
-    tracing::error!("db error (usage analytics): {e}");
-    (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
 }
 
 #[cfg(test)]

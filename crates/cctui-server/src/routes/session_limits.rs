@@ -8,7 +8,7 @@
 //! reach for each model the session could switch to.
 //!
 //! Deliberately NOT the human `GET /accounts/usage`: that route is
-//! `require_human` and lists every credential the owner holds, which a pooled or
+//! human-only and lists every credential the owner holds, which a pooled or
 //! shared session cannot tell itself apart in. The owner is never returned here.
 //!
 //! Fails soft, like the gateway's own evaluation: an empty usage cache yields no
@@ -20,10 +20,10 @@ use std::collections::BTreeMap;
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use cctui_proto::api::ApiError;
 use chrono::Utc;
 use uuid::Uuid;
 
+use crate::error::AppError;
 use crate::routes::gateway;
 use crate::soft_limit::{self, Decision, SoftLimits, UsageWindow};
 use crate::state::AppState;
@@ -106,8 +106,8 @@ pub struct SessionLimits {
     pub stale: bool,
 }
 
-fn deny(code: StatusCode, msg: impl Into<String>) -> (StatusCode, Json<ApiError>) {
-    (code, Json(ApiError { error: msg.into() }))
+fn deny(code: StatusCode, msg: impl Into<String>) -> AppError {
+    AppError::new(code, msg)
 }
 
 /// The calling session's own row: who owns it, what it runs on, and any
@@ -171,18 +171,16 @@ pub async fn session_limits(
     headers: axum::http::HeaderMap,
     Path(session_id): Path<String>,
     Query(q): Query<LimitsQuery>,
-) -> Result<Json<SessionLimits>, (StatusCode, Json<ApiError>)> {
-    let caller = crate::routes::spawn_child::machine_user(&state, &headers).await?;
+) -> Result<Json<SessionLimits>, AppError> {
+    let caller = crate::routes::spawn_child::machine_user(&state, &headers)
+        .await
+        .map_err(|(code, Json(e))| AppError::new(code, e.error))?;
     let row: Option<SessionRow> = sqlx::query_as(
         "SELECT user_id, model, soft_limit_reason, soft_limit_key FROM sessions WHERE id = $1",
     )
     .bind(&session_id)
     .fetch_optional(&state.pool)
-    .await
-    .map_err(|e| {
-        tracing::error!(%session_id, "db error (session limits): {e}");
-        deny(StatusCode::INTERNAL_SERVER_ERROR, "database error")
-    })?;
+    .await?;
     let Some(session) = row else {
         return Err(deny(StatusCode::NOT_FOUND, "calling session not found"));
     };
@@ -191,10 +189,7 @@ pub async fn session_limits(
     }
     let SessionRow { model: current_model, soft_limit_reason, soft_limit_key, .. } = session;
 
-    let binding = binding_for(&state, &session_id).await.map_err(|e| {
-        tracing::error!(%session_id, "db error (session limits binding): {e}");
-        deny(StatusCode::INTERNAL_SERVER_ERROR, "database error")
-    })?;
+    let binding = binding_for(&state, &session_id).await?;
     let Some(binding) = binding else {
         return Err(deny(
             StatusCode::NOT_FOUND,

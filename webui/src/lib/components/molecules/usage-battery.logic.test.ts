@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 import { describe, expect, it } from 'vitest';
 import type { AccountUsageEntry, UsagePace, UsageWindow } from '$lib/queries';
 import {
@@ -20,7 +21,7 @@ const pace = (ratio: number, wall: string | null = null): UsagePace => ({
 	projected_wall_at: wall
 });
 
-const win = (key: string, utilization: number, p: UsagePace | null = null): UsageWindow => ({
+const win = (key: string, utilization: number, p?: UsagePace): UsageWindow => ({
 	key,
 	kind: key,
 	label: key,
@@ -40,6 +41,7 @@ const entry = (
 	usage: null,
 	windows,
 	age_secs: 0,
+	limit_reset: null,
 	account,
 	account_name: account,
 	account_emoji: null,

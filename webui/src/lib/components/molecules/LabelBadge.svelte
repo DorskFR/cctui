@@ -14,7 +14,7 @@
 	// trigger.
 	//
 	// Recolor/rename go through PATCH /labels/{id} (`onUpdate`), keyed on id so a
-	// rename never orphans the old name. Create still uses POST /labels.
+	// rename never orphans the old name. Create uses POST /labels.
 	let {
 		labels,
 		editable = false,

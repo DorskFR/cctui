@@ -1,35 +1,17 @@
-//! Server-emitted completion webhooks.
+//! Server-emitted completion webhooks: a death-detector for the cases the
+//! worker's `REPLY_URL` exit-trap cannot cover (OOM/SIGKILL, never registered,
+//! connection lost past grace). The worker's own payload stays the verdict; the
+//! server only ever sends `status:"failed"` with a reason.
 //!
-//! A lifecycle-only **death-detector**, complementing — not replacing — the
-//! worker's `REPLY_URL` exit-trap. The worker owns the verdict: on any orderly
-//! exit (clean, killed, or crashed) its trap POSTs the real `RESULT_FILE` to
-//! `REPLY_URL`, and that payload (opaque to the server) is the source of truth.
-//! The server fires only for the cases the worker's trap CANNOT cover — a pod
-//! OOM/SIGKILL that never runs the trap, a worker that never registered
-//! (`CrashLoopBackOff` / unschedulable), or a connection lost past grace — and
-//! then the callback is uniformly `status:"failed"` with a reason. The verdict
-//! never transits or is stored on the server.
+//! At dispatch, [`register`] writes a `pending` row keyed on the pre-minted
+//! `session_id`. The reaper's [`sweep`] resolves each row via [`decide`]: a
+//! clean `SessionEnded` supersedes it; a never-registered session is probed
+//! through its dispatcher, and only `Failed`/`Gone` (plus the never-launched and
+//! archive backstops) fire, with backoff and dead-lettering after `MAX_ATTEMPTS`.
 //!
-//! Flow:
-//!   1. At dispatch (see `routes::dispatch`), if the request carries
-//!      `notify_url`, [`register`] writes a `pending` row to `session_webhooks`
-//!      keyed on the (pre-minted) `session_id`; the dispatch handle is persisted
-//!      to `dispatch_handles`.
-//!   2. The reaper sweep ([`sweep`], called from `main::reaper_task`) resolves
-//!      each `pending` row via [`decide`]: a clean `SessionEnded` is superseded
-//!      (the worker's trap owned the callback); a session that never registered
-//!      is probed by asking the owning **dispatcher** whether its workload is
-//!      `Running` / `Complete` / `Failed` / `Gone`. Only `Failed`/`Gone` (and
-//!      the dispatch-never-launched / time-archive backstops) fire the death
-//!      payload, with exponential-backoff delivery and dead-lettering after
-//!      `MAX_ATTEMPTS`.
-//!
-//! Wire shape: `{ task_id, status:"failed", error }` — preserving the
-//! `REPLY_URL` contract so automation flows migrate by swapping the URL. When a
-//! per-target `secret` is registered, the body is signed HMAC-SHA256 and the
-//! hex digest is sent in `X-CCTUI-Signature: sha256=<hex>`.
+//! Wire shape: `{ task_id, status:"failed", error }`. With a per-target
+//! `secret` the body is signed HMAC-SHA256 in `X-CCTUI-Signature: sha256=<hex>`.
 
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::OnceLock;
 
 use hmac::{Hmac, Mac};
@@ -37,6 +19,7 @@ use sha2::Sha256;
 
 use crate::dispatchers::HandleStatus;
 use crate::state::AppState;
+use crate::store::sessions::SessionRowStatus;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -53,98 +36,24 @@ const MAX_ATTEMPTS: i32 = 8;
 /// last entry for any attempt beyond the table.
 const BACKOFF_SECS: &[i64] = &[10, 30, 120, 300, 900, 1800, 3600];
 
-#[derive(Debug)]
-pub enum NotifyUrlError {
-    Malformed,
-    NotHttps,
-    NoHost,
-    Unresolvable,
-    Internal,
-}
+pub use crate::outbound::OutboundUrlError as NotifyUrlError;
 
-impl std::fmt::Display for NotifyUrlError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::Malformed => "must be a valid absolute URL",
-            Self::NotHttps => "must use the https scheme",
-            Self::NoHost => "must include a host",
-            Self::Unresolvable => "host does not resolve",
-            Self::Internal => "resolves to a private or loopback address",
-        })
-    }
-}
+/// Rows fetched per sweep, and how many of them are processed at once.
+const SWEEP_LIMIT: i64 = 50;
+const DELIVERY_CONCURRENCY: usize = 8;
+const DELIVERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
-fn ipv4_is_internal(ip: Ipv4Addr) -> bool {
-    let [a, b, ..] = ip.octets();
-    ip.is_loopback()
-        || ip.is_private()
-        || ip.is_link_local()
-        || ip.is_unspecified()
-        || ip.is_broadcast()
-        // CGNAT 100.64.0.0/10; `Ipv4Addr::is_shared` is still unstable.
-        || (a == 100 && (64..=127).contains(&b))
-}
-
-fn ipv6_is_internal(ip: Ipv6Addr) -> bool {
-    if ip.is_loopback() || ip.is_unspecified() {
-        return true;
-    }
-    // `to_ipv4` also maps `::`/`::1`, but those return above, so any remaining
-    // embedded IPv4 (v4-mapped or deprecated v4-compatible) is a real target.
-    if let Some(v4) = ip.to_ipv4() {
-        return ipv4_is_internal(v4);
-    }
-    let seg0 = ip.segments()[0];
-    (seg0 & 0xfe00) == 0xfc00 || (seg0 & 0xffc0) == 0xfe80
-}
-
-fn ip_is_internal(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(v4) => ipv4_is_internal(v4),
-        IpAddr::V6(v6) => ipv6_is_internal(v6),
-    }
-}
-
-/// Fail-closed SSRF guard: requires `https` and refuses a host that resolves to
-/// an internal address or does not resolve. DNS rebinding at delivery is out of
-/// scope — pinning the resolved IP is left for a follow-up.
+/// Fail-closed SSRF guard: requires `https` and refuses a host that is
+/// cluster-local, resolves to an internal address, or does not resolve.
 pub async fn validate_notify_url(raw: &str) -> Result<(), NotifyUrlError> {
-    let url = reqwest::Url::parse(raw).map_err(|_| NotifyUrlError::Malformed)?;
-    if url.scheme() != "https" {
-        return Err(NotifyUrlError::NotHttps);
-    }
-    let host = url.host_str().ok_or(NotifyUrlError::NoHost)?;
-    let bare = host.strip_prefix('[').and_then(|h| h.strip_suffix(']')).unwrap_or(host);
-    if let Ok(ip) = bare.parse::<IpAddr>() {
-        return if ip_is_internal(ip) { Err(NotifyUrlError::Internal) } else { Ok(()) };
-    }
-    let port = url.port_or_known_default().unwrap_or(443);
-    let mut addrs = tokio::net::lookup_host((host, port))
-        .await
-        .map_err(|_| NotifyUrlError::Unresolvable)?
-        .peekable();
-    if addrs.peek().is_none() {
-        return Err(NotifyUrlError::Unresolvable);
-    }
-    for addr in addrs {
-        if ip_is_internal(addr.ip()) {
-            return Err(NotifyUrlError::Internal);
-        }
-    }
-    Ok(())
+    crate::outbound::validate_outbound_url(raw, &[]).await
 }
 
-/// Redirects are disabled so a target can't 3xx-bounce the POST onto an internal
-/// address the registration check vetted; the shared gateway client follows
-/// redirects, so it is not reused here.
+/// No redirects and guarded DNS, so neither a 3xx nor a rebound name can move
+/// the POST onto an internal address after registration vetted the URL.
 fn delivery_client() -> &'static reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-    CLIENT.get_or_init(|| {
-        reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .expect("build webhook delivery client")
-    })
+    CLIENT.get_or_init(|| crate::outbound::guarded_client(crate::outbound::no_allowlist))
 }
 
 /// Register a pending completion webhook for a dispatched session.
@@ -253,16 +162,16 @@ enum Outcome {
 /// that never registered is resolved by asking the owning dispatcher whether its
 /// workload is still alive.
 async fn decide(state: &AppState, row: &PendingRow) -> Outcome {
-    match row.session_status.as_deref() {
+    match row.session_status.as_deref().and_then(SessionRowStatus::parse) {
         // Any SessionEnded means the worker process reached its EXIT/INT/TERM
         // trap (completed, killed, or crashed) and already POSTed REPLY_URL —
         // the worker owns the verdict, the server stays quiet.
-        Some("ended") => return Outcome::Supersede,
+        Some(SessionRowStatus::Ended) => return Outcome::Supersede,
         // Dispatch never launched a runtime: no worker, no callback ever.
-        Some("failed") => return Outcome::Fire("dispatch never launched".into()),
+        Some(SessionRowStatus::Failed) => return Outcome::Fire("dispatch never launched".into()),
         // Time-based archive backstop (silence past grace) for when no
         // dispatcher poll resolved it first.
-        Some("archived") => {
+        Some(SessionRowStatus::Archived) => {
             return Outcome::Fire(
                 "session ended without a completion signal (timed out / crashed / connection lost)"
                     .into(),
@@ -317,8 +226,9 @@ pub async fn sweep(state: &AppState) {
          LEFT JOIN sessions s ON s.id = w.session_id \
          LEFT JOIN dispatch_handles dh ON dh.session_id = w.session_id \
          WHERE w.state = 'pending' AND w.next_attempt_at <= now() \
-         LIMIT 50",
+         LIMIT $1",
     )
+    .bind(SWEEP_LIMIT)
     .fetch_all(&state.pool)
     .await
     {
@@ -329,54 +239,58 @@ pub async fn sweep(state: &AppState) {
         }
     };
 
-    for row in rows {
-        // A frozen payload means we already decided to fire — this is a retry.
-        if let Some(payload) = row.payload.clone() {
-            deliver(state, row.id, &row.notify_url, row.secret.as_deref(), &payload, row.attempts)
-                .await;
-            continue;
-        }
+    for_each_bounded(rows, DELIVERY_CONCURRENCY, |row| process(state, row)).await;
+}
 
-        match decide(state, &row).await {
-            Outcome::Fire(reason) => {
-                let payload = build_payload(&row.task_id, &reason);
-                // Freeze the payload so a later state change can't rewrite the
-                // body mid-retry and a server restart re-uses the same bytes.
-                let _ = sqlx::query("UPDATE session_webhooks SET payload = $2 WHERE id = $1")
-                    .bind(row.id)
-                    .bind(&payload)
-                    .execute(&state.pool)
-                    .await;
-                deliver(
-                    state,
-                    row.id,
-                    &row.notify_url,
-                    row.secret.as_deref(),
-                    &payload,
-                    row.attempts,
-                )
-                .await;
-            }
-            Outcome::Supersede => {
-                let _ =
-                    sqlx::query("UPDATE session_webhooks SET state = 'superseded' WHERE id = $1")
-                        .bind(row.id)
-                        .execute(&state.pool)
-                        .await;
-                tracing::debug!(session_id = %row.session_id, "webhook superseded by worker callback");
-            }
-            Outcome::Wait => {
-                // Back off the next liveness poll without bumping the retry
-                // budget (that budget is for delivery failures, not polling).
-                let _ = sqlx::query(
-                    "UPDATE session_webhooks \
-                     SET next_attempt_at = now() + ($2 || ' seconds')::interval WHERE id = $1",
-                )
+async fn for_each_bounded<T, F, Fut>(items: Vec<T>, limit: usize, f: F)
+where
+    F: FnMut(T) -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    use futures_util::StreamExt;
+    futures_util::stream::iter(items).for_each_concurrent(limit, f).await;
+}
+
+#[allow(clippy::cognitive_complexity)]
+async fn process(state: &AppState, row: PendingRow) {
+    // A frozen payload means we already decided to fire — this is a retry.
+    if let Some(payload) = row.payload.clone() {
+        deliver(state, row.id, &row.notify_url, row.secret.as_deref(), &payload, row.attempts)
+            .await;
+        return;
+    }
+
+    match decide(state, &row).await {
+        Outcome::Fire(reason) => {
+            let payload = build_payload(&row.task_id, &reason);
+            // Freeze the payload so a later state change can't rewrite the
+            // body mid-retry and a server restart re-uses the same bytes.
+            let _ = sqlx::query("UPDATE session_webhooks SET payload = $2 WHERE id = $1")
                 .bind(row.id)
-                .bind(POLL_INTERVAL_SECS.to_string())
+                .bind(&payload)
                 .execute(&state.pool)
                 .await;
-            }
+            deliver(state, row.id, &row.notify_url, row.secret.as_deref(), &payload, row.attempts)
+                .await;
+        }
+        Outcome::Supersede => {
+            let _ = sqlx::query("UPDATE session_webhooks SET state = 'superseded' WHERE id = $1")
+                .bind(row.id)
+                .execute(&state.pool)
+                .await;
+            tracing::debug!(session_id = %row.session_id, "webhook superseded by worker callback");
+        }
+        Outcome::Wait => {
+            // Back off the next liveness poll without bumping the retry
+            // budget (that budget is for delivery failures, not polling).
+            let _ = sqlx::query(
+                "UPDATE session_webhooks \
+                 SET next_attempt_at = now() + ($2 || ' seconds')::interval WHERE id = $1",
+            )
+            .bind(row.id)
+            .bind(POLL_INTERVAL_SECS.to_string())
+            .execute(&state.pool)
+            .await;
         }
     }
 }
@@ -398,7 +312,7 @@ async fn deliver(
         req = req.header("X-CCTUI-Signature", format!("sha256={}", sign(secret, &body)));
     }
 
-    let outcome = req.timeout(std::time::Duration::from_secs(30)).send().await;
+    let outcome = req.timeout(DELIVERY_TIMEOUT).send().await;
 
     match outcome {
         Ok(resp) if resp.status().is_success() => {
@@ -463,29 +377,21 @@ async fn schedule_retry(state: &AppState, id: uuid::Uuid, attempts: i32, err: &s
 
 #[cfg(test)]
 mod tests {
-    use super::{NotifyUrlError, build_payload, ip_is_internal, sign, validate_notify_url};
+    use super::{
+        DELIVERY_CONCURRENCY, DELIVERY_TIMEOUT, NotifyUrlError, SWEEP_LIMIT, build_payload,
+        for_each_bounded, sign, validate_notify_url,
+    };
 
-    #[test]
-    fn ip_classifier_flags_internal_and_passes_public() {
-        for ip in [
-            "127.0.0.1",
-            "10.1.2.3",
-            "172.31.0.1",
-            "192.168.0.1",
-            "169.254.169.254",
-            "100.64.0.1",
-            "0.0.0.0",
-            "255.255.255.255",
-            "::1",
-            "fe80::1",
-            "fc00::1",
-            "::ffff:169.254.169.254",
-        ] {
-            assert!(ip_is_internal(ip.parse().unwrap()), "{ip} must be internal");
-        }
-        for ip in ["1.1.1.1", "8.8.8.8", "93.184.216.34", "2606:4700:4700::1111"] {
-            assert!(!ip_is_internal(ip.parse().unwrap()), "{ip} must be public");
-        }
+    #[tokio::test(start_paused = true)]
+    async fn a_full_pass_of_hung_receivers_is_bounded_by_concurrency() {
+        let started = tokio::time::Instant::now();
+        let limit = usize::try_from(SWEEP_LIMIT).unwrap();
+        for_each_bounded((0..limit).collect(), DELIVERY_CONCURRENCY, |_| {
+            tokio::time::sleep(DELIVERY_TIMEOUT)
+        })
+        .await;
+        let waves = u32::try_from(limit.div_ceil(DELIVERY_CONCURRENCY)).unwrap();
+        assert_eq!(started.elapsed(), DELIVERY_TIMEOUT * waves);
     }
 
     #[tokio::test]

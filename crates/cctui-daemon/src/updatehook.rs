@@ -1,30 +1,14 @@
-//! Deploy a new cctui the way *this* deployment is normally deployed.
+//! Deploy a new cctui with the operator's own `CCTUI_UPDATE_COMMAND`, so the
+//! server never has to know how it is deployed.
 //!
-//! The server has no idea whether it lives in a Kubernetes Deployment, a
-//! Compose project or a systemd unit, and it should not have to guess. So the
-//! knowledge stays where it belongs: on the machine, as one shell command the
-//! operator wrote once (`CCTUI_UPDATE_COMMAND`). The server only ever says
-//! "please update to v1.2.3"; this module does it.
+//! One run: `Running` (the command, capped by `CCTUI_UPDATE_TIMEOUT_SECS`) →
+//! `Verifying` (poll health until it serves the target version, capped by
+//! `CCTUI_UPDATE_HEALTH_TIMEOUT_SECS`) → `Succeeded`, or `RollingBack` →
+//! `RolledBack` when `CCTUI_UPDATE_ROLLBACK_COMMAND` is set, else `Failed`.
 //!
-//! What that buys over handing the job to a YOLO agent: the same bytes run
-//! every time, the operator can read them before they run, the daemon needs no
-//! model and no account, and a failure has a defined answer instead of a
-//! transcript.
-//!
-//! One run, in order:
-//!
-//!   1. `Running` — execute `CCTUI_UPDATE_COMMAND`, capped by
-//!      `CCTUI_UPDATE_TIMEOUT_SECS`.
-//!   2. `Verifying` — poll the health endpoint until it reports the target
-//!      version, capped by `CCTUI_UPDATE_HEALTH_TIMEOUT_SECS`. An update that
-//!      "succeeded" but did not move the served version did not succeed.
-//!   3. `Succeeded`, or `RollingBack` → `RolledBack` when
-//!      `CCTUI_UPDATE_ROLLBACK_COMMAND` is set, or `Failed` when it is not.
-//!
-//! Every phase is reported to the server over HTTP. That is not a detail: step
-//! 1 restarts the server, so the process that asked for the run is usually
-//! gone by step 2. Reports retry across that gap, and the run row in Postgres
-//! is what actually remembers.
+//! Every phase is reported to the server over HTTP. Running restarts the
+//! server, so reports retry across that gap; the run row in Postgres is the
+//! source of truth.
 
 // `Ops` is generic, so clippy cannot prove any implementor's futures are
 // `Send`; the one that matters (`LiveOps`) is, which is why `spawn` below

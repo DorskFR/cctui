@@ -1,18 +1,8 @@
 //! Pluggable [`Dispatcher`]s that turn a [`DispatchSpec`] into a launched
-//! session. Impls:
-//!   * [`enrolled::EnrolledDispatcher`] — the primary model: a standalone
-//!     executor service (cctui-dispatcher-kube / -docker) that enrolled per
-//!     account and dials out over `/api/v1/dispatcher/ws`. The server sends a
-//!     key-checked [`cctui_proto::ws::DispatcherFrameDown::Dispatch`] over the
-//!     hub and awaits the [`cctui_proto::ws::DispatcherFrameUp::DispatchResult`]
-//!     reply. The server never needs kube/docker API access.
-//!   * [`http::HttpDispatcher`] — the escape hatch: forward a dispatch to a
-//!     fully external HTTP endpoint (env-configured global registry only).
-//!
-//! The transitional in-process `kube`/`docker` dispatchers are removed now
-//! that prod dispatches exclusively through the enrolled executor binaries.
-//! Dispatch resolution is enrolled-first
-//! with the `http` escape hatch as the only in-process fallback.
+//! session: [`enrolled::EnrolledDispatcher`] sends a key-checked dispatch frame
+//! to an enrolled executor over its WS (the server needs no kube/docker
+//! access), and [`http::HttpDispatcher`] forwards to an env-configured external
+//! endpoint as the only in-process fallback.
 
 use async_trait::async_trait;
 
@@ -23,31 +13,20 @@ pub mod http;
 pub struct DispatchHandle {
     pub handle: String,
     pub namespace: Option<String>,
-    /// Outcome reported by the dispatcher, surfaced to the caller verbatim.
-    /// `None` when the dispatcher predates the field; the route then
-    /// falls back to `"dispatched"`. Known values: `dispatched` (fresh run),
-    /// `deduplicated` (in-flight Job — the original run still calls back),
-    /// `redispatched` (a terminal Job was deleted + recreated so a fresh run
-    /// calls back, instead of the caller parking on a dead Job).
+    /// `None` falls back to `"dispatched"`. Also `deduplicated` (an in-flight
+    /// Job will call back) and `redispatched` (a terminal Job was recreated).
     pub status: Option<String>,
 }
 
-/// Everything a [`Dispatcher`] needs to materialize a session. Built by the
-/// route from a [`cctui_proto::api::DispatchRequest`]. `payload` is opaque —
-/// dispatchers forward it to their runtime without inspecting it.
+/// Built by the route from a [`cctui_proto::api::DispatchRequest`].
 pub struct DispatchSpec<'a> {
-    /// Pre-minted session id (also the runtime's correlation id).
     pub session_id: &'a str,
-    /// Per-flow timeout in minutes, if the caller set one.
     pub timeout_minutes: Option<u32>,
-    /// Caller resume URL — a bearer capability; do not log.
+    /// A bearer capability; do not log.
     pub reply_url: Option<&'a str>,
-    /// Idempotency / dedup key: the caller's logical request id, hashed
-    /// by the dispatcher into the worker Job name so a fresh-per-dispatch
-    /// `session_id` no longer chains conversations. `None` ⇒ derive from
-    /// `session_id` (each dispatch unique).
+    /// Hashed into the worker Job name; `None` ⇒ derived from `session_id`.
     pub dedup_key: Option<&'a str>,
-    /// Free-form blob, forwarded verbatim to the runtime.
+    /// Forwarded verbatim to the runtime.
     pub payload: &'a serde_json::Value,
 }
 
@@ -59,69 +38,42 @@ pub enum DispatchError {
     InvalidIntent(String),
     #[error("backend error: {0}")]
     Backend(String),
-    /// The dispatcher does not implement this operation (e.g. `HttpDispatcher`
-    /// can dispatch but not introspect/cancel a handle it forwarded).
     #[error("operation not supported by dispatcher: {0}")]
     Unsupported(String),
 }
 
-/// Lifecycle state of a dispatched handle, reported by [`Dispatcher::status`].
-///
-/// Part of the trait surface added in (`status`/`cancel`). With the
-/// in-process kube/docker dispatchers gone no impl reports a live
-/// status today — the enrolled/http dispatchers return `Unsupported` and the
-/// completion webhook treats that as `Wait` — so the variants are reserved for
-/// a future observe/cancel route and allowed to be unused for now.
+/// No impl reports a live status yet (the webhook treats `Unsupported` as `Wait`).
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum HandleStatus {
-    /// The Job/container is still pending or running.
     Running,
-    /// The Job/container finished successfully.
     Complete,
-    /// The Job/container failed (backoff exhausted, deadline, non-zero exit,
-    /// `CrashLoopBackOff`, `OOMKilled`, unschedulable). Carries the dispatcher's
-    /// human reason when it has one, surfaced in the completion webhook's
-    /// `error` field.
+    /// Carries the dispatcher's human reason, surfaced in the webhook `error`.
     Failed(Option<String>),
-    /// No Job/container with this handle exists (already GC'd or never created).
+    /// Already GC'd or never created.
     Gone,
 }
 
 #[async_trait]
 pub trait Dispatcher: Send + Sync {
-    /// Stable identifier matching `DispatchRequest::dispatcher`. Borrowed
-    /// (not `&'static`) so config-driven dispatchers can own their id.
+    /// Matches `DispatchRequest::dispatcher`.
     fn id(&self) -> &str;
 
-    /// Materialize the request for the pre-minted `session_id`. The
-    /// returned handle is opaque per-dispatcher (e.g. `"jobs/foo-…"`)
-    /// and persisted alongside the session row for observability.
+    /// The returned handle is opaque and persisted beside the session row.
     async fn dispatch(&self, spec: &DispatchSpec<'_>) -> Result<DispatchHandle, DispatchError>;
 
-    /// Inspect a previously returned handle. Defaults to `Unsupported` so
-    /// `HttpDispatcher` (which forwards to an opaque endpoint) need not
-    /// implement it; the native kube/docker dispatchers override it.
     #[allow(dead_code)]
     async fn status(&self, handle: &str) -> Result<HandleStatus, DispatchError> {
         Err(DispatchError::Unsupported(format!("status({handle})")))
     }
 
-    /// Cancel/delete a previously returned handle. Defaults to `Unsupported`.
     #[allow(dead_code)]
     async fn cancel(&self, handle: &str) -> Result<(), DispatchError> {
         Err(DispatchError::Unsupported(format!("cancel({handle})")))
     }
 }
 
-/// Resolves dispatcher id strings to concrete impls. Built once at
-/// startup and shared through `AppState`.
-///
-/// Dispatch resolution targets an *enrolled* dispatcher (a per-account
-/// peer of a machine) and dispatches by sending a key-checked command over that
-/// dispatcher's live WS connection ([`enrolled::EnrolledDispatcher`]). This
-/// in-process registry now holds only the env-configured plain-`http` escape
-/// hatch ([`http::HttpDispatcher`]).
+/// Resolves dispatcher id strings to the env-configured in-process impls.
 pub struct Registry {
     dispatchers: std::collections::HashMap<String, std::sync::Arc<dyn Dispatcher>>,
 }

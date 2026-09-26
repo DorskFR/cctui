@@ -646,6 +646,33 @@ input), then drops to uid 1000:
 11. **Drop + run** — `exec cctui-supervisor --ro … --rw … --user 1000
     --report /tmp/hardening.json -- cctui-daemon run --no-auto-update`.
 
+### Entrypoint internals
+
+- **Codex provider.** `codex` reads its provider only from
+  `~/.codex/config.toml`, never `OPENAI_*` env, so without the managed region it
+  calls api.openai.com with no bearer and gets a 401. The region is delimited by
+  BEGIN/END markers and rewritten in place with plain shell (the image has no
+  TOML tool). It also pins `service_tier = "default"` and `fast_mode = false`:
+  fast mode bills 2–2.5x and unattended workers must never run on it.
+- **Done wait.** `claude daemon` acks a dispatch instantly and stays up, so
+  process exit does not mean work done. A dispatched worker runs the daemon in
+  the background and waits for either: the guard state reaching exit (-1), a
+  valid `RESULT_FILE`, or the daemon's `dispatch_done` turn-complete marker
+  (done); or its session leaving `active` on the server after having been seen
+  registered once (crashed). A boot deadline fails the pod when the session
+  never registers (e.g. `claude daemon run` crash-looping behind a network
+  deny), and a result grace ends the wait when `RESULT_FILE` is valid but the
+  guard exit never arrives. The EXIT trap then POSTs the callback.
+- **Liveness probe.** It lists `GET /api/v1/sessions` (self-scoped to the
+  machine key) rather than `GET /sessions/{id}`, whose owner check rejects a
+  machine-key principal. The session id is stable because the daemon launches
+  claude with `--session-id`; claude's own job id rotates on resume.
+- **Instructions placement.** The pack's `AGENTS.md`/`CLAUDE.md` go in the
+  checkout's parent (`/workspace`): both harnesses walk up from the cwd and never
+  read `$HOME`, and the repo's own files stay deeper so they load and win.
+- **Pack home isolation.** `/home/worker` is RWX NFS shared across pods, so
+  paths the pack writes there are bind-mounted over a per-pod `/overlay` dir.
+
 ## Context pack
 
 A git-hosted bundle of prompts/docs/skills/guard-rules the worker fetches at
@@ -1212,8 +1239,13 @@ writable by the session:
 
 - interactive spawns: `spawn_capability` on the `SpawnRequest`. Omitted → the
   session gets the **machine default**: every known adapter, a $20 per-child
-  ceiling, no child cap. A session launched on the user's own machine is trusted
-  to spawn there; send an explicit capability to narrow it.
+  ceiling, 16 children, 3 generations below the root and a $400 budget across
+  the whole tree. A session launched on the user's own machine is trusted to
+  spawn there; send an explicit capability to narrow it. An admin tunes the
+  last three in Settings > Instance > CctuiAgent limits, seeded by
+  `CCTUI_SPAWN_MAX_CHILDREN`, `CCTUI_SPAWN_MAX_DEPTH` and
+  `CCTUI_SPAWN_MAX_TREE_BUDGET_USD` (a saved value wins over env, env over the
+  built-in default).
 - dispatched workers: `payload.spawn_capability`, which the server **strips from
   the forwarded payload** so the worker cannot read or restate it. Absent here
   still means no tool — dispatched workers get no default.

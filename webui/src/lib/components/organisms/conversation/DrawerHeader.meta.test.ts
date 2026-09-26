@@ -1,5 +1,7 @@
+// @vitest-environment happy-dom
 import { describe, expect, it } from 'vitest';
-import header from './DrawerHeader.svelte?raw';
+import header from './HeaderMeta.svelte?raw';
+import host from './DrawerHeader.svelte?raw';
 import en from '../../../../../messages/en.json?raw';
 import fr from '../../../../../messages/fr.json?raw';
 
@@ -17,7 +19,7 @@ describe('drawer header meta row', () => {
 	});
 
 	it('decides every width from the drawer container, never the viewport or JS', () => {
-		expect(css).toContain('container: drawer-head / inline-size');
+		expect(host).toContain('container: drawer-head / inline-size');
 		expect(css).toContain('@container drawer-head (max-width: 40rem)');
 		expect(css).toContain('@container drawer-head (max-width: 26rem)');
 		expect(css).not.toContain('@media');

@@ -957,7 +957,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-admin"
-version = "0.19.2"
+version = "0.20.0"
 dependencies = [
  "anyhow",
  "cctui-proto",
@@ -972,7 +972,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-crypto"
-version = "0.19.2"
+version = "0.20.0"
 dependencies = [
  "chacha20poly1305",
  "hex",
@@ -985,7 +985,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-daemon"
-version = "0.19.2"
+version = "0.20.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1014,18 +1014,41 @@ dependencies = [
 
 [[package]]
 name = "cctui-dispatcher-apple"
-version = "0.19.2"
+version = "0.20.0"
 dependencies = [
  "anyhow",
  "cctui-dispatcher-core",
  "cctui-proto",
  "chrono",
  "clap",
- "dirs",
  "futures-util",
  "reqwest",
  "serde",
  "serde_json",
+ "tokio",
+ "tokio-tungstenite 0.30.0",
+ "tokio-util",
+ "toml",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "cctui-dispatcher-core"
+version = "0.20.0"
+dependencies = [
+ "anyhow",
+ "cctui-proto",
+ "chrono",
+ "clap",
+ "dirs",
+ "futures-util",
+ "hex",
+ "reqwest",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha1 0.11.0",
  "tokio",
  "tokio-tungstenite 0.30.0",
  "tokio-util",
@@ -1036,28 +1059,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "cctui-dispatcher-core"
-version = "0.19.2"
-dependencies = [
- "anyhow",
- "cctui-proto",
- "chrono",
- "futures-util",
- "hex",
- "reqwest",
- "serde",
- "serde_json",
- "sha1 0.11.0",
- "tokio",
- "tokio-tungstenite 0.30.0",
- "tokio-util",
- "tracing",
- "uuid",
-]
-
-[[package]]
 name = "cctui-dispatcher-docker"
-version = "0.19.2"
+version = "0.20.0"
 dependencies = [
  "anyhow",
  "bollard",
@@ -1065,7 +1068,6 @@ dependencies = [
  "cctui-proto",
  "chrono",
  "clap",
- "dirs",
  "futures-util",
  "reqwest",
  "serde",
@@ -1073,15 +1075,13 @@ dependencies = [
  "tokio",
  "tokio-tungstenite 0.30.0",
  "tokio-util",
- "toml",
  "tracing",
- "tracing-subscriber",
  "uuid",
 ]
 
 [[package]]
 name = "cctui-dispatcher-kube"
-version = "0.19.2"
+version = "0.20.0"
 dependencies = [
  "anyhow",
  "cctui-dispatcher-core",
@@ -1089,26 +1089,22 @@ dependencies = [
  "cctui-proto",
  "chrono",
  "clap",
- "dirs",
  "futures-util",
  "k8s-openapi",
  "kube",
  "reqwest",
- "rustls",
  "serde",
  "serde_json",
  "tokio",
  "tokio-tungstenite 0.30.0",
  "tokio-util",
- "toml",
  "tracing",
- "tracing-subscriber",
  "uuid",
 ]
 
 [[package]]
 name = "cctui-guard"
-version = "0.19.2"
+version = "0.20.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -1126,7 +1122,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-guard-proxy"
-version = "0.19.2"
+version = "0.20.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1157,7 +1153,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-orchestrator"
-version = "0.19.2"
+version = "0.20.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1180,14 +1176,18 @@ dependencies = [
 
 [[package]]
 name = "cctui-proto"
-version = "0.19.2"
+version = "0.20.0"
 dependencies = [
  "base64 0.23.1",
  "chrono",
  "hex",
+ "minisign-verify",
+ "semver",
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "tokio",
+ "tokio-util",
  "toml",
  "ts-rs",
  "uuid",
@@ -1196,7 +1196,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-query"
-version = "0.19.2"
+version = "0.20.0"
 dependencies = [
  "serde",
  "ts-rs",
@@ -1204,7 +1204,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-server"
-version = "0.19.2"
+version = "0.20.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1221,6 +1221,7 @@ dependencies = [
  "http 1.5.0",
  "http-body-util",
  "log",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",
@@ -1243,7 +1244,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-supervisor"
-version = "0.19.2"
+version = "0.20.0"
 dependencies = [
  "anyhow",
  "caps",
@@ -1259,7 +1260,7 @@ dependencies = [
 
 [[package]]
 name = "cctui-tui"
-version = "0.19.2"
+version = "0.20.0"
 dependencies = [
  "anyhow",
  "cctui-proto",
@@ -1278,6 +1279,7 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "similar",
  "supports-color",
  "syntect",
@@ -3208,6 +3210,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
 
 [[package]]
+name = "minisign-verify"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "22f9645cb765ea72b8111f36c522475d2daa0d22c957a9826437e97534bc4e9e"
+
+[[package]]
 name = "miniz_oxide"
 version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5086,7 +5094,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",

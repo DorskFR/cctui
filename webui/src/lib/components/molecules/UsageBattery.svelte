@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { now as clockNow } from '$lib/clock.svelte';
 	import { Popover, Text } from '@dorsk/tsumikit';
 	import AdapterIcon from '$lib/components/atoms/AdapterIcon.svelte';
 	import AccountCard from '$lib/components/organisms/AccountCard.svelte';
@@ -52,11 +53,7 @@
 	});
 	const agg = $derived(aggregateBars(entries));
 
-	let now = $state(Date.now());
-	$effect(() => {
-		const id = setInterval(() => (now = Date.now()), 30_000);
-		return () => clearInterval(id);
-	});
+	const now = $derived(clockNow(30_000));
 
 	const pctText = (w: UsageWindow | null) => {
 		const p = barPct(w);

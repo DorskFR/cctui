@@ -6,7 +6,7 @@
 	import type { AccountUsageEntry, OAuthAccount } from '$lib/queries';
 	import { Button, Field, Input, Text } from '@dorsk/tsumikit';
 	import KitFields from './KitFields.svelte';
-	import { specChanges, specOf, type ProfileSpec } from './profiles';
+	import { specChanges, specOf, type ProfileSpecForm } from './profiles';
 	import { m } from '$lib/paraglide/messages';
 
 	let {
@@ -23,19 +23,19 @@
 	}: {
 		/** null = no saved profile yet: the panel edits an unsaved kit. */
 		profile?: SessionProfile | null;
-		initial: ProfileSpec;
+		initial: ProfileSpecForm;
 		accounts: OAuthAccount[];
 		pools?: AccountPoolView[];
 		usage: AccountUsageEntry[];
 		machineId: string;
 		busy?: boolean;
-		onuseonce: (spec: ProfileSpec) => void;
-		onsave: (name: string, spec: ProfileSpec) => void;
+		onuseonce: (spec: ProfileSpecForm) => void;
+		onsave: (name: string, spec: ProfileSpecForm) => void;
 		ondelete?: () => void;
 	} = $props();
 
 	// svelte-ignore state_referenced_locally
-	let draft = $state<ProfileSpec>({ ...initial });
+	let draft = $state<ProfileSpecForm>({ ...initial });
 	// svelte-ignore state_referenced_locally
 	let name = $state(profile?.name ?? '');
 

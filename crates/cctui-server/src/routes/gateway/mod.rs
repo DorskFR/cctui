@@ -1,31 +1,17 @@
 //! `/gateway/anthropic/*` (and `/gateway/openai/*`) — the OAuth passthrough
 //! gateway.
 //!
-//! This is a **pure passthrough** that owns only OAuth storage + refresh:
+//! The worker's session-scoped cctui token maps to `(session_id, account_id)`;
+//! per request the gateway swaps `Authorization` for the account's current
+//! OAuth token (refreshing under a per-account mutex) and streams bytes both
+//! ways, preserving every other header, status code and `retry-after`. No
+//! retries or rate-limit handling, except [`failover`].
 //!
-//!   1. The worker carries a session-scoped cctui token (minted at spawn, mapped
-//!      to `(session_id, account_id)`), sent as the upstream `Authorization`
-//!      bearer (`ANTHROPIC_AUTH_TOKEN`).
-//!   2. Per request we map that token → account, swap `Authorization` to the
-//!      account's current OAuth access token (refreshing under a per-account
-//!      mutex when near expiry), and stream the bytes both ways. Every other
-//!      client header is preserved verbatim.
-//!   3. Status codes, `retry-after`, overload/streaming reconnects pass through
-//!      untouched — the harness handles backoff exactly as if talking upstream
-//!      directly. **No retries, no rate-limit handling** — with one exception:
-//!      when the bound account is out of allocation (soft-limit refusal or an
-//!      upstream 429) and an explicit redirect rule names another account, the
-//!      session is rebound to it and the worker's own 429 retry lands there
-//!      ([`failover`], opt-in via `CCTUI_GATEWAY_FAILOVER`).
-//!
-//! Request bodies stream through unread unless Langfuse samples the call or a
-//! Fireworks account opts into shaping ([`FireworksSettings`]); those buffer,
-//! and only Fireworks re-serializes. The anthropic path forwards the client's
-//! bytes verbatim under every feature — re-serializing sorts JSON keys and
-//! destroys the prompt cache. Response bodies are never rewritten.
-//!
-//! Stats are opportunistic: request count + byte count, never buffered parsing.
-//! Raw OAuth tokens never enter worker env, logs, or session records.
+//! Request bodies stream unread unless Langfuse samples the call or a
+//! Fireworks account opts into shaping ([`FireworksSettings`]). The anthropic
+//! path always forwards the client's bytes verbatim: re-serializing sorts JSON
+//! keys and destroys the prompt cache. Responses are rewritten only by
+//! [`toolguard`]. Raw OAuth tokens never enter worker env, logs, or sessions.
 
 mod config;
 mod failover;
@@ -34,6 +20,7 @@ mod mint;
 mod proxy;
 mod ratelimit;
 mod refresh;
+pub mod toolguard;
 mod usage;
 pub mod usage_notices;
 
@@ -44,6 +31,7 @@ pub use mint::*;
 pub use proxy::*;
 pub use ratelimit::*;
 pub use refresh::*;
+pub use toolguard::{guard_for, guard_stream, guardable};
 pub use usage::*;
 
 /// Resolve the database a DB-gated test should run against.
@@ -235,7 +223,7 @@ mod tests {
         assert!(orphan_is_blocked_at(&map, fp, now), "precondition: fp is blocked");
 
         clear_orphan_fingerprint(&map, fp);
-        // No longer blocked — the next gateway request goes back to the DB
+        // Unblocked — the next gateway request goes back to the DB
         // lookup instead of being dropped.
         assert!(!orphan_is_blocked_at(&map, fp, now));
         // And the window restarts from scratch: one fresh 401 doesn't re-block.
@@ -949,6 +937,7 @@ mod tests {
             adapters: vec!["opencode".to_owned()],
             max_budget_usd: None,
             max_children: Some(3),
+            ..Default::default()
         };
 
         crate::store::spawn_capabilities::upsert(&pool, &spawn_key, &cap).await.expect("upsert");
@@ -1089,5 +1078,115 @@ mod tests {
         assert_eq!(retry, "1", "an immediate retry, not the exhausted window's horizon");
         assert_eq!(resp.headers().get("x-cctui-failover").unwrap(), "Secours");
         assert_eq!(resp.headers().get(http::header::CONTENT_TYPE).unwrap(), "application/json");
+    }
+
+    #[tokio::test]
+    async fn a_reminted_session_is_not_double_counted() {
+        let Some(url) = super::test_db_url("a_reminted_session_is_not_double_counted") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+
+        let uid = uuid::Uuid::new_v4();
+        let acct = uuid::Uuid::new_v4();
+        let prov = uuid::Uuid::new_v4();
+        let sid = format!("ses_remint_{uid}");
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+            .bind(uid)
+            .bind(format!("remint-{uid}"))
+            .bind(format!("kh-{uid}"))
+            .execute(&pool)
+            .await
+            .expect("seed user");
+        sqlx::query("INSERT INTO accounts (id, user_id, name) VALUES ($1, $2, $3)")
+            .bind(acct)
+            .bind(uid)
+            .bind("remint-acct")
+            .execute(&pool)
+            .await
+            .expect("seed account");
+        sqlx::query(
+            "INSERT INTO account_providers \
+                 (id, user_id, provider, encrypted_refresh_token, account_id) \
+             VALUES ($1, $2, 'fireworks', 'x', $3)",
+        )
+        .bind(prov)
+        .bind(uid)
+        .bind(acct)
+        .execute(&pool)
+        .await
+        .expect("seed provider");
+        sqlx::query(
+            "INSERT INTO sessions (id, machine_id, working_dir, user_id, adapter_id) \
+             VALUES ($1, 'm1', '/w', $2, 'opencode')",
+        )
+        .bind(&sid)
+        .bind(uid)
+        .execute(&pool)
+        .await
+        .expect("seed session");
+        sqlx::query(
+            "INSERT INTO session_token_usage \
+                 (session_id, message_id, input_tokens, output_tokens, model) \
+             VALUES ($1, 'm-remint', 1000000, 0, 'accounts/fireworks/models/kimi-k3')",
+        )
+        .bind(&sid)
+        .execute(&pool)
+        .await
+        .expect("seed usage");
+
+        let catalog = serde_json::json!([
+            { "model": "accounts/fireworks/models/kimi-k3", "price_input_per_mtok": 3.0 }
+        ]);
+        let mut seen = Vec::new();
+        for n in 0..2 {
+            sqlx::query(
+                "INSERT INTO session_tokens (token_hash, session_id, account_id) \
+                 VALUES ($1, $2, $3)",
+            )
+            .bind(format!("th-remint-{uid}-{n}"))
+            .bind(&sid)
+            .bind(prov)
+            .execute(&pool)
+            .await
+            .expect("seed token");
+            let rows = super::model_tallies(&pool, prov, "stu.session_id = $2", &sid).await;
+            let session = super::priced(Some(&catalog), &rows);
+            let window = super::priced(
+                Some(&catalog),
+                &super::model_tallies(
+                    &pool,
+                    prov,
+                    "stu.created_at >= now() - $2::interval",
+                    "5 hours",
+                )
+                .await,
+            );
+            let top = super::max_session_spend_usd(&pool, prov, Some(&catalog), "5 hours")
+                .await
+                .expect("metered");
+            seen.push((session, window, top));
+        }
+        assert_eq!(seen[0], seen[1], "a second token row must not change spend");
+        assert!((seen[1].0 - 3.0).abs() < 1e-6, "got {:?}", seen[1]);
+
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.ok();
+    }
+
+    #[tokio::test]
+    async fn a_refused_upstream_names_the_allowlist() {
+        for anthropic in [true, false] {
+            let resp =
+                super::upstream_refused(&crate::outbound::OutboundUrlError::Internal, anthropic);
+            assert_eq!(resp.status(), axum::http::StatusCode::BAD_GATEWAY);
+            let body = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
+            let text = String::from_utf8(body.to_vec()).unwrap();
+            assert!(text.contains("CCTUI_UPSTREAM_ALLOWED_HOSTS"), "{text}");
+            assert!(text.contains("private or loopback"), "{text}");
+        }
     }
 }

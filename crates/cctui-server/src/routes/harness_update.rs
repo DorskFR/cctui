@@ -8,7 +8,6 @@
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::{Extension, Json};
-use cctui_proto::api::ApiError;
 use cctui_proto::harness::{HarnessReport, HarnessUpdatePolicy};
 use cctui_proto::ws::DaemonFrameDown;
 use serde::{Deserialize, Serialize};
@@ -16,6 +15,7 @@ use ts_rs::TS;
 use uuid::Uuid;
 
 use crate::auth::{AuthContext, Scope};
+use crate::error::AppError;
 use crate::state::AppState;
 
 const KEY: &str = "harness_autoupdate";
@@ -48,16 +48,10 @@ pub struct HarnessPolicyRequest {
     pub policy: Option<HarnessUpdatePolicy>,
 }
 
-type ApiResult<T> = Result<Json<T>, (StatusCode, Json<ApiError>)>;
+type ApiResult<T> = Result<Json<T>, AppError>;
 
-fn db_err(e: &sqlx::Error) -> (StatusCode, Json<ApiError>) {
-    tracing::error!("harness auto-update settings failed: {e}");
-    (StatusCode::INTERNAL_SERVER_ERROR, Json(ApiError { error: "database error".into() }))
-}
-
-fn admin(ctx: &AuthContext) -> Result<(), (StatusCode, Json<ApiError>)> {
-    ctx.requires(Scope::Admin)
-        .map_err(|s| (s, Json(ApiError { error: "admin token required".into() })))
+fn admin(ctx: &AuthContext) -> Result<(), AppError> {
+    ctx.requires(Scope::Admin).map_err(|s| AppError::new(s, "admin token required"))
 }
 
 fn parse(v: Option<serde_json::Value>) -> Option<HarnessUpdatePolicy> {
@@ -163,7 +157,7 @@ pub async fn read(
     Extension(ctx): Extension<AuthContext>,
 ) -> ApiResult<HarnessAutoupdateInfo> {
     admin(&ctx)?;
-    Ok(Json(read_info(&state.pool).await.map_err(|e| db_err(&e))?))
+    Ok(Json(read_info(&state.pool).await?))
 }
 
 pub async fn set_instance(
@@ -181,18 +175,16 @@ pub async fn set_instance(
             .bind(KEY)
             .bind(serde_json::to_value(&policy).expect("serializable"))
             .execute(&state.pool)
-            .await
-            .map_err(|e| db_err(&e))?;
+            .await?;
         }
         None => {
             sqlx::query("DELETE FROM instance_settings WHERE key = $1")
                 .bind(KEY)
                 .execute(&state.pool)
-                .await
-                .map_err(|e| db_err(&e))?;
+                .await?;
         }
     }
-    Ok(Json(read_info(&state.pool).await.map_err(|e| db_err(&e))?))
+    Ok(Json(read_info(&state.pool).await?))
 }
 
 pub async fn set_machine(
@@ -209,10 +201,9 @@ pub async fn set_machine(
     .bind(machine_id)
     .bind(value)
     .execute(&state.pool)
-    .await
-    .map_err(|e| db_err(&e))?;
+    .await?;
     if res.rows_affected() == 0 {
-        return Err((StatusCode::NOT_FOUND, Json(ApiError { error: "machine not found".into() })));
+        return Err(AppError::new(StatusCode::NOT_FOUND, "machine not found"));
     }
-    Ok(Json(read_info(&state.pool).await.map_err(|e| db_err(&e))?))
+    Ok(Json(read_info(&state.pool).await?))
 }

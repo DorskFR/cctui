@@ -18,8 +18,8 @@ use crate::envelope::{
     WORKER_ADDED_CAPS, WORKER_ENVELOPE_MOUNTS,
 };
 use crate::{
-    ANNOTATION_ENVELOPE_INJECTED, ANNOTATION_WORKER_CONTAINER, DEFAULT_WORKER_CONTAINER,
-    LABEL_WORKER_PROFILE, WorkerProfileSpec,
+    ANNOTATION_ENV_SECRET, ANNOTATION_ENVELOPE_INJECTED, ANNOTATION_WORKER_CONTAINER,
+    DEFAULT_WORKER_CONTAINER, LABEL_WORKER_PROFILE, WorkerProfileSpec,
 };
 use k8s_openapi::api::core::v1::{Container, Pod, PodSpec, PodTemplateSpec};
 use std::collections::BTreeSet;
@@ -94,7 +94,19 @@ async fn validate_inner(
         format!("WorkerProfile `{name}` not found in `{namespace}` — refusing to admit a pod whose profile is missing")
     })?;
 
-    check_conformance(spec, worker, &worker_name, &profile)
+    check_conformance(spec, worker, &worker_name, &profile, dispatch_env_secret(pod))
+}
+
+/// The pod's own per-dispatch env Secret: named by its annotation and bound to
+/// the Job that owns the pod, so a dispatch cannot point it at another Secret.
+fn dispatch_env_secret(pod: &Pod) -> Option<&str> {
+    let secret = pod.metadata.annotations.as_ref()?.get(ANNOTATION_ENV_SECRET)?;
+    let labels = pod.metadata.labels.as_ref()?;
+    let job = labels.get("batch.kubernetes.io/job-name").or_else(|| labels.get("job-name"))?;
+    secret
+        .strip_prefix(&crate::env_secret_name(job, ""))
+        .is_some_and(|nonce| !nonce.is_empty())
+        .then_some(secret.as_str())
 }
 
 /// Exactly one worker container, and the envelope marker present (fail-closed
@@ -197,12 +209,13 @@ fn check_conformance(
     worker: &Container,
     worker_name: &str,
     profile: &WorkerProfileSpec,
+    dispatch_secret: Option<&str>,
 ) -> Result<(), String> {
     check_template_conformance(spec, worker, profile)?;
     check_name_sets(spec, worker_name, profile)?;
     check_volumes(spec, profile)?;
     check_worker_mounts(worker, worker_name, profile)?;
-    check_worker_env(worker, worker_name, profile)
+    check_worker_env(worker, worker_name, profile, dispatch_secret)
 }
 
 /// The conformance decided entirely by the Job's pod *template*.
@@ -394,17 +407,20 @@ fn diff_names(kind: &str, want: &BTreeSet<&str>, have: &BTreeSet<&str>) -> Resul
 
 /// Payload env is agent-influenced by design, so env *names* are not policed.
 /// Instead: reject `valueFrom` refs the profile itself does not declare (no
-/// mounting cluster secrets via env), and reject secret-ref-shaped literals.
+/// mounting cluster secrets via env) other than the pod's own per-dispatch env
+/// Secret, and reject secret-ref-shaped literals.
 fn check_worker_env(
     worker: &Container,
     worker_name: &str,
     profile: &WorkerProfileSpec,
+    dispatch_secret: Option<&str>,
 ) -> Result<(), String> {
     for env in worker.env.iter().flatten() {
         if let Some(value_from) = &env.value_from {
             // fieldRef/resourceFieldRef reach only the pod's own metadata, so
             // they stay exempt from the cluster-data smuggling check.
             let smuggled = match (&value_from.secret_key_ref, &value_from.config_map_key_ref) {
+                (Some(sk), _) if dispatch_secret == Some(sk.name.as_str()) => sk.key != env.name,
                 (Some(sk), _) => !profile.env.iter().flatten().any(|p| {
                     p.name == env.name
                         && p.value_from
@@ -798,6 +814,46 @@ mod tests {
                 ..EnvVarSource::default()
             }),
         });
+        let src = source("lean", lean_profile());
+        assert!(deny_msg(decide(&pod, &src).await).contains("valueFrom"));
+    }
+
+    fn with_dispatch_secret_ref(pod: &mut Pod, job: &str, secret: &str) {
+        use k8s_openapi::api::core::v1::{EnvVar, EnvVarSource, SecretKeySelector};
+        pod.metadata
+            .labels
+            .get_or_insert_with(Default::default)
+            .insert("batch.kubernetes.io/job-name".to_owned(), job.to_owned());
+        pod.metadata
+            .annotations
+            .get_or_insert_with(Default::default)
+            .insert(ANNOTATION_ENV_SECRET.to_owned(), secret.to_owned());
+        worker_mut(pod).env.get_or_insert_with(Vec::new).push(EnvVar {
+            name: "CCTUI_MACHINE_KEY".to_owned(),
+            value: None,
+            value_from: Some(EnvVarSource {
+                secret_key_ref: Some(SecretKeySelector {
+                    name: secret.to_owned(),
+                    key: "CCTUI_MACHINE_KEY".to_owned(),
+                    optional: None,
+                }),
+                ..EnvVarSource::default()
+            }),
+        });
+    }
+
+    #[tokio::test]
+    async fn own_dispatch_env_secret_ref_is_allowed() {
+        let mut pod = dispatched_pod("lean", &lean_profile());
+        with_dispatch_secret_ref(&mut pod, "cctui-worker-abc", "cctui-worker-abc-env-123");
+        let src = source("lean", lean_profile());
+        assert!(matches!(decide(&pod, &src).await, Decision::Allow));
+    }
+
+    #[tokio::test]
+    async fn dispatch_env_secret_of_another_job_is_denied() {
+        let mut pod = dispatched_pod("lean", &lean_profile());
+        with_dispatch_secret_ref(&mut pod, "cctui-worker-abc", "cluster-secret");
         let src = source("lean", lean_profile());
         assert!(deny_msg(decide(&pod, &src).await).contains("valueFrom"));
     }

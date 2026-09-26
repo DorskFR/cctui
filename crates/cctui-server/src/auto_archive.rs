@@ -20,6 +20,7 @@ use chrono::{DateTime, Utc};
 use crate::live_sessions::live_sessions_predicate;
 use crate::routes::sessions::ArchiveOutcome;
 use crate::state::AppState;
+use crate::store::sessions::SessionRowStatus;
 
 /// Unclaimed intents older than this are dropped: the spawn never registered.
 const INTENT_TTL_SECS: i64 = 6 * 3600;
@@ -117,10 +118,11 @@ pub async fn sweep(state: &AppState) {
              WHERE ",
         live_sessions_predicate!(),
         " AND metadata->>'auto_archive' = 'true' \
-               AND status NOT IN ('archived', 'draft') \
+               AND status <> ALL($2) \
              LIMIT $1"
     ))
     .bind(BATCH)
+    .bind(SessionRowStatus::names(SessionRowStatus::NOT_ARCHIVABLE))
     .fetch_all(&state.pool)
     .await
     {

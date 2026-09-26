@@ -5,7 +5,7 @@ import type { Line } from '$lib/components/organisms/conversation/types';
 
 const TITLE_MAX = 120;
 
-/** `seq` is stamped onto lines by the conversation builder (CCT-990); it is
+/** `seq` is stamped onto lines by the conversation builder; it is
  * absent on older/unstamped lines, which still bookmark fine as a
  * session-only back-link. */
 type SeqLine = Line & { seq?: number | null };
@@ -80,7 +80,7 @@ export function isDeadLink(b: Bookmark): boolean {
 
 /**
  * Target URL for "Open session". The `seq` param is the seam the
- * `focusSeq` / `ensureSeqVisible(seq)` primitive (CCT-990/CCT-991) reads to
+ * `focusSeq` / `ensureSeqVisible(seq)` primitive reads to
  * scroll the drawer to the source message; without it the drawer simply opens.
  */
 export function sourceHref(b: Bookmark): string | null {

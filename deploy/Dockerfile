@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 # Builder base must match the runtime's glibc: bookworm-slim runtime ships
 # glibc 2.36, so build on the bookworm-based rust image (not the default
 # trixie one, whose binaries require GLIBC_2.39).
@@ -15,13 +16,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends pkg-config libs
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY crates/ crates/
+COPY keys/ keys/
 COPY migrations/ migrations/
 
-RUN cargo build --release -p cctui-server
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/app/target \
+    cargo build --release -p cctui-server \
+    && mkdir -p /out \
+    && cp target/release/cctui-server /out/
+
+FROM scratch AS bins
+COPY --from=builder /out/ /
 
 FROM debian:bookworm-slim@sha256:63a496b5d3b99214b39f5ed70eb71a61e590a77979c79cbee4faf991f8c0783e
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libssl3 \
     && rm -rf /var/lib/apt/lists/*
-COPY --from=builder /app/target/release/cctui-server /usr/local/bin/cctui-server
+COPY --from=bins /cctui-server /usr/local/bin/cctui-server
+RUN useradd --system --uid 10001 --user-group --create-home --home-dir /home/cctui cctui \
+    && mkdir -p /skills /archive && chown 10001:10001 /skills /archive
+USER 10001
 EXPOSE 8700
 CMD ["cctui-server"]

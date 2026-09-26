@@ -20,6 +20,7 @@ use bollard::models::HostConfig;
 use cctui_dispatcher_core::{
     Dispatcher, HandleState, SpawnOutcome, build_env, dedup_source, label_safe, worker_name,
 };
+use cctui_proto::worker_env::check_payload_env;
 use cctui_proto::ws::WireDispatchSpec;
 
 const LABEL_ORIGIN: &str = "cctui.dev/origin";
@@ -57,6 +58,7 @@ impl Spawner {
     }
 
     fn build_worker_env(spec: &WireDispatchSpec, cctui_url: &str) -> anyhow::Result<Vec<String>> {
+        check_payload_env(&spec.payload).map_err(anyhow::Error::msg)?;
         let base = build_env(spec, cctui_url)?;
         let mut env = base.env;
         if let Some(k) = base.machine_key {
@@ -260,5 +262,14 @@ mod tests {
         let s = spec("sess-9", json!({ "flow": "review" }));
         let env = Spawner::build_worker_env(&s, "https://cctui.example.test").unwrap();
         assert!(env.iter().all(|e| !e.starts_with("CCTUI_MACHINE_KEY=")));
+    }
+
+    #[test]
+    fn worker_env_rejects_reserved_payload_env() {
+        for key in ["CCTUI_URL", "CCTUI_MACHINE_KEY", "LD_PRELOAD", "HTTPS_PROXY"] {
+            let s = spec("sess-r", json!({ "env": { key: "https://attacker.example" } }));
+            let err = Spawner::build_worker_env(&s, "https://cctui.example.test").unwrap_err();
+            assert!(err.to_string().contains(key), "{err}");
+        }
     }
 }

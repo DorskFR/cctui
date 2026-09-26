@@ -1,28 +1,14 @@
 //! One-shot remote install + enrolment over ssh.
 //!
-//! `cctui-daemon enroll <user@host> --server-url … --token …` takes a machine
-//! from zero to a connected fleet member:
+//! `cctui-daemon enroll <user@host>` probes the target, installs the binary
+//! from the server's release proxy (checksum verified locally and after
+//! upload), reuses the target's machine key when it still authenticates or
+//! mints one via `POST /api/v1/enroll`, installs and starts the systemd user
+//! unit with linger, then waits for the daemon's WS to connect.
 //!
-//!   1. probe the target over ssh (platform, existing install, config)
-//!   2. pull the right binary through the server's release proxy
-//!      (`/api/v1/daemon/binary/{target}`), verify its checksum locally AND
-//!      after upload
-//!   3. `install -m755`-equivalent into `~/.local/bin/cctui-daemon`
-//!   4. obtain a machine key — reuse the target's existing enrolment when its
-//!      `daemon.toml` still authenticates against the same server, otherwise
-//!      mint a fresh one via `POST /api/v1/enroll` with the operator's token —
-//!      and write `~/.config/cctui/daemon.toml`
-//!   5. drop the systemd user unit, `loginctl enable-linger`,
-//!      `systemctl --user enable` + start/restart
-//!   6. poll `GET /api/v1/machines/{id}/status` until the daemon's WS shows
-//!      connected
-//!
-//! Re-running against an already-enrolled machine upgrades/repairs it (binary
-//! refreshed only when its checksum differs, existing key kept when still
-//! valid) instead of failing. Non-systemd targets (macOS/launchd) are a
-//! follow-up and error out clearly.
-//!
-//! The manifest/checksum machinery is shared with [`crate::selfupdate`].
+//! Re-running repairs an enrolled machine instead of failing. Non-systemd
+//! targets error out. The manifest/checksum machinery is shared with
+//! [`crate::selfupdate`].
 
 use std::time::{Duration, Instant};
 
@@ -33,6 +19,7 @@ use uuid::Uuid;
 use crate::client::ServerClient;
 use crate::config::Config;
 use crate::{selfupdate, service};
+use cctui_proto::release_sig::Channel;
 
 /// Remote paths, all under the target user's `$HOME` (expanded remotely).
 const REMOTE_BIN: &str = "$HOME/.local/bin/cctui-daemon";
@@ -151,6 +138,12 @@ pub fn binary_needs_install(remote_sha: Option<&str>, expected_sha: &str) -> boo
 /// An existing remote config is a reuse *candidate* only if it parses and
 /// points at the same server. The async half (`daemon_auth` proving the key
 /// still works) lives in [`run`].
+#[must_use]
+/// The release channel an existing install follows; stable when there is none.
+fn remote_channel(raw: Option<&str>) -> Channel {
+    raw.and_then(|raw| toml::from_str::<Config>(raw).ok()).map(|c| c.channel).unwrap_or_default()
+}
+
 #[must_use]
 pub fn reusable_config(raw: &str, server_url: &str) -> Option<Config> {
     let cfg: Config = toml::from_str(raw).ok()?;
@@ -277,23 +270,26 @@ pub async fn run(opts: RemoteEnrollOpts) -> Result<()> {
         if facts.service_active { ", service running" } else { "" },
     );
 
-    println!("[2/6] fetching daemon release from {server_url}");
+    let channel = remote_channel(facts.config.as_deref());
+    println!("[2/6] fetching the {channel} daemon release from {server_url}");
     let http = selfupdate::client()?;
-    let manifest = selfupdate::fetch_manifest(&http, &server_url, &opts.token)
+    let manifest = selfupdate::fetch_manifest(&http, &server_url, &opts.token, channel)
         .await
         .context("fetching the daemon manifest (is the token valid?)")?;
     let asset = format!("cctui-daemon-{release_target}");
-    let binary_url = manifest
-        .assets
-        .iter()
-        .find(|a| a.target == release_target)
-        .map(|a| a.url.clone())
-        .with_context(|| {
-            format!("manifest {} has no asset for target {release_target}", manifest.version)
-        })?;
-    let sums = selfupdate::download(&http, &selfupdate::sha256sums_url(&server_url), &opts.token)
-        .await
-        .context("downloading SHA256SUMS")?;
+    if !manifest.assets.iter().any(|a| a.target == release_target) {
+        bail!("manifest {} has no asset for target {release_target}", manifest.version);
+    }
+    let bin_url = selfupdate::binary_url(&server_url, release_target);
+    let sig_url = format!("{bin_url}{}", cctui_proto::release_sig::SIG_SUFFIX);
+    let sums = selfupdate::download(
+        &http,
+        &server_url,
+        &selfupdate::sha256sums_url(&server_url),
+        &opts.token,
+    )
+    .await
+    .context("downloading SHA256SUMS")?;
     let sums = std::str::from_utf8(&sums).context("SHA256SUMS not UTF-8")?;
     let expected_sha = selfupdate::parse_sha256sums(sums, &asset)
         .with_context(|| format!("{asset} missing from SHA256SUMS"))?;
@@ -301,13 +297,13 @@ pub async fn run(opts: RemoteEnrollOpts) -> Result<()> {
     let install_binary = binary_needs_install(facts.bin_sha.as_deref(), &expected_sha);
     if install_binary {
         println!("[3/6] installing cctui-daemon {} → {REMOTE_BIN}", manifest.version);
-        let bytes = selfupdate::download(&http, &binary_url, &opts.token)
+        let bytes = selfupdate::download(&http, &server_url, &bin_url, &opts.token)
             .await
             .context("downloading the daemon binary")?;
-        let local_sha = selfupdate::hex_sha256(&bytes);
-        if local_sha != expected_sha {
-            bail!("downloaded {asset} hash {local_sha} != expected {expected_sha}");
-        }
+        let sig = selfupdate::download(&http, &server_url, &sig_url, &opts.token)
+            .await
+            .context("downloading the daemon binary signature")?;
+        selfupdate::verify_release(&asset, &bytes, sums, &sig)?;
         let remote_sha = ssh(target, INSTALL_BINARY_SCRIPT, Some(&bytes))
             .await
             .context("uploading the binary")?;
@@ -347,6 +343,7 @@ pub async fn run(opts: RemoteEnrollOpts) -> Result<()> {
             machine_key: resp.machine_key,
             machine_id: Some(resp.machine_id),
             read_file_roots: Vec::new(),
+            channel,
         };
         let raw = toml::to_string_pretty(&cfg)?;
         ssh(target, WRITE_CONFIG_SCRIPT, Some(raw.as_bytes()))
@@ -492,5 +489,13 @@ mod tests {
         let s = SERVICE_SCRIPT.replace("%ACTION%", "restart");
         assert!(s.contains("systemctl --user restart cctui-daemon.service"));
         assert!(!s.contains("%ACTION%"));
+    }
+
+    #[test]
+    fn remote_channel_keeps_an_existing_opt_in() {
+        assert_eq!(remote_channel(None), Channel::Stable);
+        assert_eq!(remote_channel(Some("not toml")), Channel::Stable);
+        let beta = "server_url = \"s\"\nmachine_key = \"k\"\nchannel = \"beta\"\n";
+        assert_eq!(remote_channel(Some(beta)), Channel::Beta);
     }
 }

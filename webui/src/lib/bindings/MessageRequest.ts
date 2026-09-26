@@ -2,13 +2,10 @@
 
 export type MessageRequest = { content: string, 
 /**
- * Client-minted `UUIDv7` identity for this human turn, echoed by the daemon
- * onto every event the turn produces. Optional: a client that mints none
- * falls back to content matching.
+ * Client-minted `UUIDv7` echoed on every event of the turn.
  */
 turn_id?: string | null, 
 /**
- * RFC3339 instant to deliver at instead of now: future, at most 30 days
- * ahead. The message is queued server-side and the response is 202.
+ * RFC3339, at most 30 days ahead; the request is queued and returns 202.
  */
 deliver_at?: string | null, };

@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 import { describe, expect, it } from 'vitest';
 import type { UsageWindow } from '$lib/queries';
 import { editorWindowKeys, isUsdKey, mergeUsageWindows, windowLabelFromKey } from './usage-windows';

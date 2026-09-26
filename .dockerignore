@@ -16,3 +16,5 @@ docker-compose.yaml
 README.md
 STATUS.md
 PRD.md
+image-bins/
+dist/

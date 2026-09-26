@@ -4,6 +4,7 @@
 use chrono::{DateTime, Duration, Utc};
 
 use crate::state::AppState;
+use crate::store::sessions::SessionRowStatus;
 
 pub const MAX_HORIZON_DAYS: i64 = 30;
 const MAX_ATTEMPTS: i32 = 8;
@@ -63,11 +64,13 @@ pub fn retry_after_failure(attempts: i32) -> Retry {
 
 /// Reason a message can never be delivered to a session in this status.
 pub fn undeliverable_reason(session_status: Option<&str>) -> Option<&'static str> {
-    match session_status {
-        None => Some("session no longer exists"),
-        Some("ended") => Some("session ended before delivery"),
-        Some("archived") => Some("session archived before delivery"),
-        Some("failed") => Some("session failed to launch"),
+    let Some(status) = session_status else {
+        return Some("session no longer exists");
+    };
+    match SessionRowStatus::parse(status)? {
+        SessionRowStatus::Ended => Some("session ended before delivery"),
+        SessionRowStatus::Archived => Some("session archived before delivery"),
+        SessionRowStatus::Failed => Some("session failed to launch"),
         _ => None,
     }
 }

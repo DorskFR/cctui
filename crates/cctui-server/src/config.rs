@@ -56,6 +56,12 @@ pub struct LiteLlmModel {
 
 #[derive(Debug, Clone)]
 pub struct Config {
+    /// Env seeds for the default `CctuiAgent` limits (`CCTUI_SPAWN_MAX_CHILDREN`,
+    /// `CCTUI_SPAWN_MAX_DEPTH`, `CCTUI_SPAWN_MAX_TREE_BUDGET_USD`); `None` when
+    /// unset. A value saved in Settings wins over these.
+    pub spawn_max_children: Option<u32>,
+    pub spawn_max_depth: Option<u32>,
+    pub spawn_max_tree_budget_usd: Option<f64>,
     pub host: String,
     pub port: u16,
     pub database_url: String,
@@ -71,9 +77,8 @@ pub struct Config {
     /// passkeys to a parent domain of the host serving the UI.
     pub rp_id: Option<String>,
     /// How long a session may sit without activity before the reaper
-    /// demotes it from `Active` to `Inactive`. The old
-    /// `CCTUI_HEARTBEAT_TIMEOUT` env var is still accepted for
-    /// back-compat with existing deployments.
+    /// demotes it from `Active` to `Inactive`. `CCTUI_HEARTBEAT_TIMEOUT` is
+    /// accepted as an alias.
     pub inactive_after_secs: u64,
     /// How long a session may sit without a heartbeat before the reaper
     /// auto-archives it (hides it from the default list). Configured in
@@ -167,70 +172,107 @@ impl Config {
         self.allowed_origins.iter().any(|o| o == origin)
     }
 
-    pub fn from_env() -> Self {
+    pub fn from_env() -> anyhow::Result<Self> {
+        Self::from_lookup(|k| env::var(k).ok())
+    }
+
+    /// Build the config from `get` (an env lookup), reporting every invalid
+    /// variable in one error rather than failing on the first.
+    fn from_lookup(get: impl Fn(&str) -> Option<String>) -> anyhow::Result<Self> {
+        let set = |k: &str| get(k).filter(|s| !s.trim().is_empty());
+        let mut errors: Vec<String> = Vec::new();
+
+        let database_url = get("DATABASE_URL").unwrap_or_else(|| {
+            errors.push("DATABASE_URL must be set".into());
+            String::new()
+        });
+        let http_dispatchers = set("CCTUI_HTTP_DISPATCHERS")
+            .map(|s| {
+                serde_json::from_str(&s).unwrap_or_else(|e| {
+                    errors.push(format!("CCTUI_HTTP_DISPATCHERS must be a JSON array: {e}"));
+                    Vec::new()
+                })
+            })
+            .unwrap_or_default();
+        let claude_litellm_models = set("CCTUI_CLAUDE_LITELLM_MODELS")
+            .map(|s| {
+                serde_json::from_str(&s).unwrap_or_else(|e| {
+                    errors.push(format!(
+                        "CCTUI_CLAUDE_LITELLM_MODELS must be a JSON array of {{model,label}}: {e}"
+                    ));
+                    Vec::new()
+                })
+            })
+            .unwrap_or_default();
+        let mut num = |k: &str| -> Option<f64> {
+            set(k).and_then(|s| match s.trim().parse::<f64>() {
+                Ok(v) if v.is_finite() && v >= 0.0 => Some(v),
+                _ => {
+                    errors.push(format!("{k} must be a non-negative number, got `{s}`"));
+                    None
+                }
+            })
+        };
+        let spawn_max_children = num("CCTUI_SPAWN_MAX_CHILDREN");
+        let spawn_max_depth = num("CCTUI_SPAWN_MAX_DEPTH");
+        let spawn_max_tree_budget_usd = num("CCTUI_SPAWN_MAX_TREE_BUDGET_USD");
+        for (k, v) in [
+            ("CCTUI_SPAWN_MAX_CHILDREN", spawn_max_children),
+            ("CCTUI_SPAWN_MAX_DEPTH", spawn_max_depth),
+        ] {
+            if v.is_some_and(|v| v.fract() != 0.0 || v > f64::from(u32::MAX)) {
+                errors.push(format!("{k} must be a whole number"));
+            }
+        }
+        if !errors.is_empty() {
+            anyhow::bail!("invalid configuration:\n  {}", errors.join("\n  "));
+        }
+
         let external_url =
-            env::var("CCTUI_EXTERNAL_URL").unwrap_or_else(|_| "http://localhost:8700".into());
+            get("CCTUI_EXTERNAL_URL").unwrap_or_else(|| "http://localhost:8700".into());
         let allowed_origins =
-            parse_allowed_origins(env::var("CCTUI_ALLOWED_ORIGINS").ok().as_deref(), &external_url);
-        Self {
-            host: env::var("CCTUI_HOST").unwrap_or_else(|_| "0.0.0.0".into()),
-            port: env::var("CCTUI_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(8700),
-            database_url: env::var("DATABASE_URL").expect("DATABASE_URL must be set"),
+            parse_allowed_origins(get("CCTUI_ALLOWED_ORIGINS").as_deref(), &external_url);
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let (spawn_max_children, spawn_max_depth) =
+            (spawn_max_children.map(|v| v as u32), spawn_max_depth.map(|v| v as u32));
+        Ok(Self {
+            spawn_max_children,
+            spawn_max_depth,
+            spawn_max_tree_budget_usd,
+            host: get("CCTUI_HOST").unwrap_or_else(|| "0.0.0.0".into()),
+            port: get("CCTUI_PORT").and_then(|p| p.parse().ok()).unwrap_or(8700),
+            database_url,
             external_url,
             allowed_origins,
-            rp_id: env::var("CCTUI_RP_ID").ok().filter(|s| !s.trim().is_empty()),
-            inactive_after_secs: env::var("CCTUI_INACTIVE_AFTER")
-                .or_else(|_| env::var("CCTUI_HEARTBEAT_TIMEOUT"))
-                .ok()
+            rp_id: set("CCTUI_RP_ID"),
+            inactive_after_secs: get("CCTUI_INACTIVE_AFTER")
+                .or_else(|| get("CCTUI_HEARTBEAT_TIMEOUT"))
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(90),
-            archive_after_secs: env::var("CCTUI_SESSION_ARCHIVE_TTL_HOURS")
-                .ok()
+            archive_after_secs: get("CCTUI_SESSION_ARCHIVE_TTL_HOURS")
                 .and_then(|s| s.parse::<u64>().ok())
                 .map_or(24 * 60 * 60, |hours| hours * 60 * 60),
-            github_token: env::var("CCTUI_GITHUB_TOKEN")
-                .or_else(|_| env::var("GH_TOKEN"))
-                .ok()
+            github_token: get("CCTUI_GITHUB_TOKEN")
+                .or_else(|| get("GH_TOKEN"))
                 .filter(|s| !s.trim().is_empty()),
-            http_dispatchers: env::var("CCTUI_HTTP_DISPATCHERS")
-                .ok()
-                .filter(|s| !s.trim().is_empty())
-                .map(|s| {
-                    serde_json::from_str(&s).expect("CCTUI_HTTP_DISPATCHERS must be a JSON array")
-                })
-                .unwrap_or_default(),
-            dispatchers: env::var("CCTUI_DISPATCHERS")
-                .ok()
-                .filter(|s| !s.trim().is_empty())
+            http_dispatchers,
+            dispatchers: set("CCTUI_DISPATCHERS")
                 .map(|s| parse_dispatchers(&s))
                 .unwrap_or_default(),
-            ephemeral_machine_ttl_secs: env::var("CCTUI_EPHEMERAL_MACHINE_TTL_HOURS")
-                .ok()
+            ephemeral_machine_ttl_secs: get("CCTUI_EPHEMERAL_MACHINE_TTL_HOURS")
                 .and_then(|s| s.parse::<u64>().ok())
                 .map_or(2 * 60 * 60, |hours| hours * 60 * 60),
-            ntfy_token: env::var("CCTUI_NTFY_TOKEN").ok().filter(|s| !s.trim().is_empty()),
-            ntfy_url: env::var("CCTUI_NTFY_URL").ok().filter(|s| !s.trim().is_empty()),
-            claude_litellm_endpoint: env::var("CCTUI_CLAUDE_LITELLM_ENDPOINT")
-                .ok()
-                .filter(|s| !s.trim().is_empty()),
-            claude_litellm_token: env::var("CCTUI_CLAUDE_LITELLM_TOKEN")
-                .ok()
-                .filter(|s| !s.trim().is_empty()),
-            emoji_endpoint: env::var("CCTUI_EMOJI_ENDPOINT")
-                .ok()
+            ntfy_token: set("CCTUI_NTFY_TOKEN"),
+            ntfy_url: set("CCTUI_NTFY_URL"),
+            claude_litellm_endpoint: set("CCTUI_CLAUDE_LITELLM_ENDPOINT"),
+            claude_litellm_token: set("CCTUI_CLAUDE_LITELLM_TOKEN"),
+            emoji_endpoint: get("CCTUI_EMOJI_ENDPOINT")
                 .map(|s| s.trim().trim_end_matches('/').to_owned())
                 .filter(|s| !s.is_empty()),
-            emoji_model: env::var("CCTUI_EMOJI_MODEL").ok().filter(|s| !s.trim().is_empty()),
-            emoji_token: env::var("CCTUI_EMOJI_TOKEN").ok().filter(|s| !s.trim().is_empty()),
-            claude_litellm_models: env::var("CCTUI_CLAUDE_LITELLM_MODELS")
-                .ok()
-                .filter(|s| !s.trim().is_empty())
-                .map(|s| {
-                    serde_json::from_str(&s)
-                        .expect("CCTUI_CLAUDE_LITELLM_MODELS must be a JSON array of {model,label}")
-                })
-                .unwrap_or_default(),
-        }
+            emoji_model: set("CCTUI_EMOJI_MODEL"),
+            emoji_token: set("CCTUI_EMOJI_TOKEN"),
+            claude_litellm_models,
+        })
     }
 
     pub fn bind_addr(&self) -> String {
@@ -276,6 +318,9 @@ impl Config {
     #[must_use]
     pub fn for_test(allowed_origins: Vec<String>) -> Self {
         Self {
+            spawn_max_children: None,
+            spawn_max_depth: None,
+            spawn_max_tree_budget_usd: None,
             host: "0.0.0.0".into(),
             port: 8700,
             database_url: String::new(),
@@ -374,8 +419,7 @@ mod tests {
     #[test]
     fn claude_litellm_models_parse() {
         let raw = r#"[{"model":"qwen3-coder","label":"Qwen3-Coder (local)"}]"#;
-        let parsed: Vec<LiteLlmModel> =
-            serde_json::from_str(raw).expect("CCTUI_CLAUDE_LITELLM_MODELS must parse");
+        let parsed: Vec<LiteLlmModel> = serde_json::from_str(raw).unwrap();
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].model, "qwen3-coder");
         assert_eq!(parsed[0].label, "Qwen3-Coder (local)");
@@ -387,6 +431,9 @@ mod tests {
     #[test]
     fn claude_litellm_gating() {
         let base = Config {
+            spawn_max_children: None,
+            spawn_max_depth: None,
+            spawn_max_tree_budget_usd: None,
             host: "0.0.0.0".into(),
             port: 8700,
             database_url: String::new(),
@@ -422,5 +469,58 @@ mod tests {
             ..base
         };
         assert_eq!(cfg.claude_litellm_visible_models().len(), 1);
+    }
+
+    #[test]
+    fn from_lookup_reports_every_invalid_var() {
+        let env = |k: &str| match k {
+            "CCTUI_HTTP_DISPATCHERS" => Some("not json".to_owned()),
+            "CCTUI_CLAUDE_LITELLM_MODELS" => Some("{}".to_owned()),
+            _ => None,
+        };
+        let msg = Config::from_lookup(env).unwrap_err().to_string();
+        assert!(msg.contains("DATABASE_URL"), "{msg}");
+        assert!(msg.contains("CCTUI_HTTP_DISPATCHERS"), "{msg}");
+        assert!(msg.contains("CCTUI_CLAUDE_LITELLM_MODELS"), "{msg}");
+    }
+
+    #[test]
+    fn from_lookup_accepts_minimal_env() {
+        let env = |k: &str| (k == "DATABASE_URL").then(|| "postgres://x".to_owned());
+        let cfg = Config::from_lookup(env).unwrap();
+        assert_eq!(cfg.database_url, "postgres://x");
+        assert_eq!(cfg.port, 8700);
+        assert!(cfg.http_dispatchers.is_empty());
+    }
+
+    #[test]
+    fn spawn_defaults_are_env_tunable() {
+        let base = |k: &str| (k == "DATABASE_URL").then(|| "postgres://x".to_owned());
+        let cfg = Config::from_lookup(base).unwrap();
+        assert_eq!(cfg.spawn_max_children, None);
+        assert_eq!(cfg.spawn_max_depth, None);
+        assert_eq!(cfg.spawn_max_tree_budget_usd, None);
+
+        let tuned = |k: &str| match k {
+            "DATABASE_URL" => Some("postgres://x".to_owned()),
+            "CCTUI_SPAWN_MAX_CHILDREN" => Some("4".to_owned()),
+            "CCTUI_SPAWN_MAX_DEPTH" => Some("1".to_owned()),
+            "CCTUI_SPAWN_MAX_TREE_BUDGET_USD" => Some("12.5".to_owned()),
+            _ => None,
+        };
+        let cfg = Config::from_lookup(tuned).unwrap();
+        assert_eq!(cfg.spawn_max_children, Some(4));
+        assert_eq!(cfg.spawn_max_depth, Some(1));
+        assert_eq!(cfg.spawn_max_tree_budget_usd, Some(12.5));
+
+        let bad = |k: &str| match k {
+            "DATABASE_URL" => Some("postgres://x".to_owned()),
+            "CCTUI_SPAWN_MAX_CHILDREN" => Some("2.5".to_owned()),
+            "CCTUI_SPAWN_MAX_TREE_BUDGET_USD" => Some("-1".to_owned()),
+            _ => None,
+        };
+        let msg = Config::from_lookup(bad).unwrap_err().to_string();
+        assert!(msg.contains("CCTUI_SPAWN_MAX_CHILDREN"), "{msg}");
+        assert!(msg.contains("CCTUI_SPAWN_MAX_TREE_BUDGET_USD"), "{msg}");
     }
 }

@@ -1,8 +1,8 @@
 import { sveltekit } from '@sveltejs/kit/vite';
 import { defineConfig } from 'vitest/config';
 
-// Unit tests (CCT-338): the sveltekit() plugin resolves the `$lib` / `@bindings`
-// aliases so the conversation formatting helpers import cleanly under vitest.
+// Tests run under node; files that need a DOM opt in with
+// `// @vitest-environment happy-dom`.
 export default defineConfig({
 	plugins: [sveltekit()],
 	resolve: {
@@ -12,7 +12,17 @@ export default defineConfig({
 		}
 	},
 	test: {
-		environment: 'happy-dom',
+		environment: 'node',
+		environmentOptions: {
+			happyDOM: {
+				settings: {
+					disableJavaScriptFileLoading: true,
+					disableCSSFileLoading: true,
+					disableIframePageLoading: true
+				}
+			}
+		},
+		setupFiles: ['./vitest.setup.ts'],
 		include: ['src/**/*.test.ts', 'scripts/**/*.test.mjs']
 	}
 });

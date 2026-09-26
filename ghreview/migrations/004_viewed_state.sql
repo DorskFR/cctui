@@ -1,4 +1,4 @@
--- CCT-609: server-managed per-file viewed state for pull requests.
+-- Server-managed per-file viewed state for pull requests.
 -- One row per (account, owner, repo, pull_number, path). Absent rows mean the
 -- file has not been marked viewed. Layered on top of the stored pull_request
 -- document (documents WHERE kind = 'pull_request', key = 'owner/repo#number').

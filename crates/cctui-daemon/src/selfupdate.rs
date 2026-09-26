@@ -1,33 +1,22 @@
-//! Self-update routed through the cctui-server.
+//! Self-update routed through the cctui-server, the single channel for daemon
+//! distribution.
 //!
-//! Historically the daemon hit the GitHub API directly. It now
-//! goes entirely through the cctui-server, which is the single channel for
-//! daemon distribution (the server proxies private-repo release assets when
-//! it holds a GitHub PAT — see `cctui-server`'s `routes::manifest`).
+//! `cctui-daemon update` runs once; `cctui-daemon run` also calls
+//! [`check_and_apply`] every [`poll_interval`] unless `--no-auto-update` or
+//! `CCTUI_DAEMON_AUTOUPDATE=0`. Each check fetches the daemon manifest, decides
+//! with [`cctui_proto::release_sig::update_decision`] (stable never takes a
+//! beta; downgrades need `CCTUI_DAEMON_ALLOW_DOWNGRADE=1`), verifies the
+//! asset's SHA256 and minisign signature, renames it into place, checks
+//! `--version`, then re-execs.
 //!
-//! `cctui-daemon update` is the one-shot path. `cctui-daemon run` also
-//! spawns a background ticker that calls [`check_and_apply`] every
-//! [`poll_interval`] (default [`DEFAULT_POLL_INTERVAL`]) unless disabled via
-//! `--no-auto-update` or `CCTUI_DAEMON_AUTOUPDATE=0`.
-//!
-//! Steps:
-//!   1. `GET {server}/api/v1/manifest/daemon` → the server's version + a
-//!      download URL per target.
-//!   2. Compare the manifest version against the running `CARGO_PKG_VERSION`.
-//!   3. Download the matching `{target}` asset and `SHA256SUMS` from the
-//!      server (`/api/v1/daemon/binary/{...}`), verify the checksum,
-//!      atomically rename into place, then re-exec.
-//!
-//! Every request authenticates with the daemon's machine key; the daemon no
-//! longer needs a GitHub token of its own. If the server has no PAT it hands
-//! back a raw (private, unreachable) GitHub URL for the binary, so the
-//! update degrades to a logged no-op until a token is configured server-side.
+//! The machine key is only ever sent to the server's own origin.
 
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
+use cctui_proto::release_sig::{Channel, UpdateDecision};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use tokio_util::sync::CancellationToken;
@@ -66,6 +55,17 @@ pub fn poll_interval() -> Duration {
         Some(secs) if secs >= MIN_POLL_INTERVAL_SECS => Duration::from_secs(secs),
         _ => DEFAULT_POLL_INTERVAL,
     }
+}
+
+/// `--version` text: the version plus its channel, e.g. `0.21.0-beta.1 (beta)`.
+/// Keeps the bare version as its own word for the post-swap health check.
+#[must_use]
+pub fn version_display() -> &'static str {
+    static DISPLAY: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+        let version = env!("CARGO_PKG_VERSION");
+        format!("{version} ({})", Channel::of_version(version))
+    });
+    DISPLAY.as_str()
 }
 
 /// Release-asset basename for this build target, e.g.
@@ -112,15 +112,36 @@ pub struct DaemonManifest {
 pub struct DaemonAsset {
     pub target: String,
     pub url: String,
+    #[serde(default)]
+    pub sig_url: Option<String>,
 }
 
-fn manifest_url(server_url: &str) -> String {
-    format!("{}/api/v1/manifest/daemon", server_url.trim_end_matches('/'))
+impl DaemonAsset {
+    #[must_use]
+    pub fn signature_url(&self) -> String {
+        self.sig_url
+            .clone()
+            .unwrap_or_else(|| format!("{}{}", self.url, cctui_proto::release_sig::SIG_SUFFIX))
+    }
+}
+
+/// The channel rides as a query parameter: servers without channels ignore it,
+/// and a beta server offers nothing to a caller that does not ask for beta.
+fn manifest_url(server_url: &str, channel: Channel) -> String {
+    format!("{}/api/v1/manifest/daemon?channel={channel}", server_url.trim_end_matches('/'))
 }
 
 #[must_use]
 pub fn sha256sums_url(server_url: &str) -> String {
     format!("{}/api/v1/daemon/binary/SHA256SUMS", server_url.trim_end_matches('/'))
+}
+
+/// Binary (and, with `.minisig` appended, signature) URL on the configured
+/// server; the manifest's own host is ignored so a daemon reaching the server
+/// by another name still authenticates.
+#[must_use]
+pub fn binary_url(server_url: &str, target: &str) -> String {
+    format!("{}/api/v1/daemon/binary/{target}", server_url.trim_end_matches('/'))
 }
 
 pub fn client() -> Result<reqwest::Client> {
@@ -136,32 +157,43 @@ pub async fn fetch_manifest(
     client: &reqwest::Client,
     server_url: &str,
     bearer: &str,
+    channel: Channel,
 ) -> Result<DaemonManifest> {
-    let url = manifest_url(server_url);
+    let url = manifest_url(server_url, channel);
     let res =
         client.get(&url).bearer_auth(bearer).header("Accept", "application/json").send().await?;
+    if res.status() == reqwest::StatusCode::NO_CONTENT {
+        bail!("the server runs a beta build; opt into the beta channel to install it");
+    }
     if !res.status().is_success() {
         bail!("daemon manifest returned {}", res.status());
     }
     Ok(res.json::<DaemonManifest>().await?)
 }
 
-/// Conditional manifest fetch: sends `If-None-Match` when `etag` is set,
-/// returns `Ok(None)` on `304` (etag untouched), else stores the response
-/// `ETag` in `etag` and returns the parsed manifest.
+/// Conditional manifest fetch, sending `If-None-Match` when `etag` is set.
+///
+/// Returns `Ok(None)` on `304` (etag untouched) and on `204` (nothing offered
+/// on `channel`), else stores the response `ETag` in `etag` and returns the
+/// parsed manifest.
 pub async fn fetch_manifest_conditional(
     client: &reqwest::Client,
     server_url: &str,
     bearer: &str,
+    channel: Channel,
     etag: &mut Option<String>,
 ) -> Result<Option<DaemonManifest>> {
-    let url = manifest_url(server_url);
+    let url = manifest_url(server_url, channel);
     let mut req = client.get(&url).bearer_auth(bearer).header("Accept", "application/json");
     if let Some(tag) = etag.as_deref() {
         req = req.header(reqwest::header::IF_NONE_MATCH, tag);
     }
     let response = req.send().await?;
     if response.status() == reqwest::StatusCode::NOT_MODIFIED {
+        return Ok(None);
+    }
+    if response.status() == reqwest::StatusCode::NO_CONTENT {
+        *etag = None;
         return Ok(None);
     }
     if !response.status().is_success() {
@@ -177,16 +209,26 @@ pub async fn fetch_manifest_conditional(
     Ok(Some(manifest))
 }
 
-/// Download bytes from a server endpoint, authenticated with `bearer` (a
-/// machine key on the self-update path, a user token on remote enroll).
-pub async fn download(client: &reqwest::Client, url: &str, bearer: &str) -> Result<Vec<u8>> {
-    let res = client
-        .get(url)
-        .bearer_auth(bearer)
-        .header("Accept", "application/octet-stream")
-        .send()
-        .await?
-        .error_for_status()?;
+fn same_origin(a: &str, b: &str) -> bool {
+    match (reqwest::Url::parse(a), reqwest::Url::parse(b)) {
+        (Ok(a), Ok(b)) => a.origin() == b.origin(),
+        _ => false,
+    }
+}
+
+/// Download bytes, attaching `bearer` (a machine key on the self-update path,
+/// a user token on remote enroll) only when `url` is on `server_url`'s origin.
+pub async fn download(
+    client: &reqwest::Client,
+    server_url: &str,
+    url: &str,
+    bearer: &str,
+) -> Result<Vec<u8>> {
+    let mut req = client.get(url).header("Accept", "application/octet-stream");
+    if same_origin(server_url, url) {
+        req = req.bearer_auth(bearer);
+    }
+    let res = req.send().await?.error_for_status()?;
     let bytes = res.bytes().await?;
     Ok(bytes.to_vec())
 }
@@ -211,6 +253,22 @@ pub fn hex_sha256(bytes: &[u8]) -> String {
         write!(acc, "{b:02x}").expect("formatting to a String is infallible");
         acc
     })
+}
+
+/// Check `bin` against its `SHA256SUMS` entry and the release signature.
+pub fn verify_release(asset: &str, bin: &[u8], sums_text: &str, minisig: &[u8]) -> Result<()> {
+    let expected = parse_sha256sums(sums_text, asset)
+        .ok_or_else(|| anyhow!("{asset} missing from SHA256SUMS"))?;
+    let actual = hex_sha256(bin);
+    if actual != expected {
+        bail!("downloaded {asset} hash {actual} != expected {expected}");
+    }
+    let minisig = std::str::from_utf8(minisig).context("signature not UTF-8")?;
+    cctui_proto::release_sig::verify(bin, minisig).map_err(|e| anyhow!("{asset}: {e}"))
+}
+
+fn allow_downgrade() -> bool {
+    std::env::var("CCTUI_DAEMON_ALLOW_DOWNGRADE").is_ok_and(|v| v == "1")
 }
 
 fn install_dir() -> Result<PathBuf> {
@@ -241,7 +299,7 @@ const HEALTH_CHECK_TIMEOUT: Duration = Duration::from_secs(10);
 /// A binary that cannot even print `--version` would crashloop under
 /// launchd/systemd forever (the updater's first tick is skipped, so a broken
 /// image can never heal itself) — gate the re-exec on it.
-async fn verify_binary(path: &Path) -> Result<()> {
+async fn verify_binary(path: &Path) -> Result<String> {
     let out = tokio::time::timeout(
         HEALTH_CHECK_TIMEOUT,
         tokio::process::Command::new(path).arg("--version").kill_on_drop(true).output(),
@@ -252,7 +310,7 @@ async fn verify_binary(path: &Path) -> Result<()> {
     if !out.status.success() {
         bail!("`{} --version` exited {}", path.display(), out.status);
     }
-    Ok(())
+    Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 /// Run one check-and-apply cycle against the cctui-server.
@@ -261,9 +319,20 @@ async fn verify_binary(path: &Path) -> Result<()> {
 /// replaced (and the caller should re-exec *that* path — see [`reexec`]);
 /// `Ok(None)` if already current or no matching asset; `Err` only on
 /// unexpected failures.
-pub async fn check_and_apply(server_url: &str, machine_key: &str) -> Result<Option<PathBuf>> {
-    check_and_apply_with(&client()?, server_url, machine_key, &mut None, &BandwidthCounters::new())
-        .await
+pub async fn check_and_apply(
+    server_url: &str,
+    machine_key: &str,
+    channel: Channel,
+) -> Result<Option<PathBuf>> {
+    check_and_apply_with(
+        &client()?,
+        server_url,
+        machine_key,
+        channel,
+        &mut None,
+        &BandwidthCounters::new(),
+    )
+    .await
 }
 
 /// [`check_and_apply`] against a caller-owned client + `ETag` cache, so the
@@ -273,6 +342,7 @@ pub async fn check_and_apply_with(
     client: &reqwest::Client,
     server_url: &str,
     machine_key: &str,
+    channel: Channel,
     etag: &mut Option<String>,
     counters: &BandwidthCounters,
 ) -> Result<Option<PathBuf>> {
@@ -283,45 +353,66 @@ pub async fn check_and_apply_with(
         return Ok(None);
     }
 
-    let Some(manifest) = fetch_manifest_conditional(client, server_url, machine_key, etag).await?
+    let Some(manifest) =
+        fetch_manifest_conditional(client, server_url, machine_key, channel, etag).await?
     else {
         tracing::debug!("daemon manifest unchanged (304); skipping update");
         return Ok(None);
     };
     let running = env!("CARGO_PKG_VERSION");
-    if manifest.version == running {
-        tracing::debug!(running, "daemon already on latest release");
-        return Ok(None);
-    }
     let latest = manifest.version.clone();
-    tracing::info!(running, %latest, "newer cctui-daemon release available");
+    match cctui_proto::release_sig::update_decision(running, &latest, channel, allow_downgrade()) {
+        UpdateDecision::Install => {}
+        UpdateDecision::UpToDate => {
+            tracing::debug!(running, "daemon already on latest release");
+            return Ok(None);
+        }
+        UpdateDecision::WrongChannel => {
+            tracing::info!(
+                running, %latest, %channel,
+                "server offers a beta cctui-daemon; this machine follows stable"
+            );
+            return Ok(None);
+        }
+        UpdateDecision::Downgrade => {
+            tracing::warn!(running, %latest, "server offers an older cctui-daemon; not downgrading");
+            return Ok(None);
+        }
+    }
+    tracing::info!(running, %latest, "cctui-daemon release available");
 
-    let binary_url = manifest
-        .assets
-        .iter()
-        .find(|a| a.target == target)
-        .map(|a| a.url.clone())
-        .ok_or_else(|| anyhow!("manifest {latest} has no asset for target {target}"))?;
+    if !manifest.assets.iter().any(|a| a.target == target) {
+        bail!("manifest {latest} has no asset for target {target}");
+    }
+    let bin_url = binary_url(server_url, target);
+    let sig_url = format!("{bin_url}{}", cctui_proto::release_sig::SIG_SUFFIX);
 
-    let sums_bytes = download(client, &sha256sums_url(server_url), machine_key)
+    let sums_bytes = download(client, server_url, &sha256sums_url(server_url), machine_key)
         .await
         .context("download SHA256SUMS")?;
     counters.add(Subsystem::SelfUpdate, sums_bytes.len() as u64);
     let sums_text = std::str::from_utf8(&sums_bytes).context("SHA256SUMS not UTF-8")?;
-    let expected = parse_sha256sums(sums_text, asset)
-        .ok_or_else(|| anyhow!("{asset} missing from SHA256SUMS"))?;
 
-    let bin_bytes = download(client, &binary_url, machine_key).await.context("download binary")?;
+    let sig_bytes =
+        download(client, server_url, &sig_url, machine_key).await.context("download signature")?;
+    counters.add(Subsystem::SelfUpdate, sig_bytes.len() as u64);
+
+    let bin_bytes =
+        download(client, server_url, &bin_url, machine_key).await.context("download binary")?;
     counters.add(Subsystem::SelfUpdate, bin_bytes.len() as u64);
-    let actual = hex_sha256(&bin_bytes);
-    if actual != expected {
-        bail!("downloaded {asset} hash {actual} != expected {expected}");
-    }
+    verify_release(asset, &bin_bytes, sums_text, &sig_bytes)?;
 
     let dir = install_dir()?;
     let target_path = dir.join("cctui-daemon");
     let backup = swap_in_place(&target_path, &bin_bytes)?;
-    if let Err(err) = verify_binary(&target_path).await {
+    let health = verify_binary(&target_path).await.and_then(|out| {
+        if out.split_whitespace().any(|w| w == latest) {
+            Ok(())
+        } else {
+            Err(anyhow!("new binary reports {:?}, expected {latest}", out.trim()))
+        }
+    });
+    if let Err(err) = health {
         match backup.map(|b| std::fs::rename(&b, &target_path)) {
             Some(Ok(())) => tracing::error!(
                 %err, version = %latest,
@@ -375,6 +466,7 @@ pub fn spawn_loop(
     shutdown: CancellationToken,
     server_url: String,
     machine_key: String,
+    channel: Channel,
     interval: Duration,
     counters: BandwidthCounters,
 ) {
@@ -397,8 +489,15 @@ pub fn spawn_loop(
                 () = shutdown.cancelled() => return,
                 _ = tick.tick() => {}
             }
-            match check_and_apply_with(&client, &server_url, &machine_key, &mut etag, &counters)
-                .await
+            match check_and_apply_with(
+                &client,
+                &server_url,
+                &machine_key,
+                channel,
+                &mut etag,
+                &counters,
+            )
+            .await
             {
                 Ok(Some(exe)) => {
                     // The binary was swapped in place; re-exec so this running
@@ -439,8 +538,12 @@ mod tests {
     #[test]
     fn urls_are_built_under_api_v1_without_double_slash() {
         assert_eq!(
-            manifest_url("https://cctui.example.com/"),
-            "https://cctui.example.com/api/v1/manifest/daemon"
+            manifest_url("https://cctui.example.com/", Channel::Stable),
+            "https://cctui.example.com/api/v1/manifest/daemon?channel=stable"
+        );
+        assert_eq!(
+            manifest_url("https://cctui.example.com", Channel::Beta),
+            "https://cctui.example.com/api/v1/manifest/daemon?channel=beta"
         );
         assert_eq!(
             sha256sums_url("https://cctui.example.com"),
@@ -475,10 +578,24 @@ mod tests {
     async fn conditional_fetch_sends_if_none_match_and_treats_304_as_none() {
         let (url, req) = serve_once("HTTP/1.1 304 Not Modified\r\nETag: \"v1\"\r\n\r\n").await;
         let mut etag = Some("\"v1\"".to_string());
-        let got = fetch_manifest_conditional(&client().unwrap(), &url, "key", &mut etag).await;
+        let got =
+            fetch_manifest_conditional(&client().unwrap(), &url, "key", Channel::Stable, &mut etag)
+                .await;
         assert!(matches!(got, Ok(None)));
         assert_eq!(etag.as_deref(), Some("\"v1\""));
         assert!(req.lock().await.to_lowercase().contains("if-none-match: \"v1\""));
+    }
+
+    #[tokio::test]
+    async fn no_content_means_nothing_offered_on_this_channel() {
+        let (url, req) = serve_once("HTTP/1.1 204 No Content\r\n\r\n").await;
+        let mut etag = Some("\"old\"".to_string());
+        let got =
+            fetch_manifest_conditional(&client().unwrap(), &url, "key", Channel::Stable, &mut etag)
+                .await;
+        assert!(matches!(got, Ok(None)));
+        assert_eq!(etag, None);
+        assert!(req.lock().await.contains("?channel=stable "));
     }
 
     #[tokio::test]
@@ -489,10 +606,11 @@ mod tests {
         );
         let (url, _req) = serve_once(response).await;
         let mut etag = None;
-        let m = fetch_manifest_conditional(&client().unwrap(), &url, "key", &mut etag)
-            .await
-            .unwrap()
-            .expect("200 yields a manifest");
+        let m =
+            fetch_manifest_conditional(&client().unwrap(), &url, "key", Channel::Stable, &mut etag)
+                .await
+                .unwrap()
+                .expect("200 yields a manifest");
         assert_eq!(m.version, "9.9.9");
         assert_eq!(etag.as_deref(), Some("\"v2\""));
     }
@@ -507,6 +625,7 @@ mod tests {
             &client().unwrap(),
             &url,
             "key",
+            Channel::Stable,
             &mut etag,
             &BandwidthCounters::new(),
         )
@@ -556,6 +675,97 @@ mod tests {
         let target = tmp.path().join("cctui-daemon");
         assert!(swap_in_place(&target, b"new").unwrap().is_none());
         assert_eq!(std::fs::read(&target).unwrap(), b"new");
+    }
+
+    #[test]
+    fn forged_binary_with_matching_sha256sums_is_rejected() {
+        let forged = b"#!/bin/sh\necho pwned\n";
+        let sums = format!("{}  cctui-daemon-linux-amd64\n", hex_sha256(forged));
+        let sig = b"untrusted comment: forged\nRWQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\ntrusted comment: x\nAAAA\n";
+        let err = verify_release("cctui-daemon-linux-amd64", forged, &sums, sig)
+            .expect_err("a checksum alone must not authenticate a binary");
+        assert!(err.to_string().contains("signature"), "got: {err}");
+        verify_release("cctui-daemon-linux-amd64", forged, &sums, b"")
+            .expect_err("a missing signature must be rejected");
+    }
+
+    #[test]
+    fn checksum_mismatch_is_rejected_before_signature() {
+        let err = verify_release("a", b"x", "deadbeef  a\n", b"").unwrap_err();
+        assert!(err.to_string().contains("hash"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn older_manifest_version_is_skipped_without_downloading() {
+        let response = concat!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n",
+            "Content-Length: 84\r\n\r\n",
+            "{\"version\":\"0.0.1\",\"assets\":[{\"target\":\"linux-amd64\",\"url\":\"http://x/linux-amd64\"}]}",
+        );
+        let (url, _req) = serve_once(response).await;
+        let out = check_and_apply_with(
+            &client().unwrap(),
+            &url,
+            "key",
+            Channel::Stable,
+            &mut None,
+            &BandwidthCounters::new(),
+        )
+        .await;
+        assert!(matches!(out, Ok(None)), "got: {out:?}");
+    }
+
+    #[tokio::test]
+    async fn beta_manifest_is_refused_by_a_stable_machine_without_downloading() {
+        let response = concat!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n",
+            "Content-Length: 93\r\n\r\n",
+            "{\"version\":\"999.0.0-beta.1\",\"assets\":[{\"target\":\"linux-amd64\",\"url\":\"http://x/linux-amd64\"}]}",
+        );
+        let (url, _req) = serve_once(response).await;
+        let out = check_and_apply_with(
+            &client().unwrap(),
+            &url,
+            "key",
+            Channel::Stable,
+            &mut None,
+            &BandwidthCounters::new(),
+        )
+        .await;
+        assert!(matches!(out, Ok(None)), "got: {out:?}");
+    }
+
+    #[test]
+    fn version_display_names_the_channel() {
+        let shown = version_display();
+        assert!(shown.split_whitespace().any(|w| w == env!("CARGO_PKG_VERSION")));
+        assert!(shown.ends_with("(stable)") || shown.ends_with("(beta)"), "got: {shown}");
+    }
+
+    #[test]
+    fn bearer_is_only_attached_to_the_server_origin() {
+        let server = "https://cctui.example.com";
+        assert!(same_origin(server, "https://cctui.example.com/api/v1/daemon/binary/x"));
+        assert!(!same_origin(server, "https://github.com/DorskFR/cctui/releases/download/v1/x"));
+        assert!(!same_origin(server, "http://cctui.example.com/x"));
+        assert!(!same_origin(server, "https://cctui.example.com.evil.io/x"));
+        assert!(!same_origin(server, "not a url"));
+    }
+
+    #[test]
+    fn binary_url_uses_the_configured_server() {
+        assert_eq!(
+            binary_url("http://cctui.dev.svc:8700/", "linux-amd64"),
+            "http://cctui.dev.svc:8700/api/v1/daemon/binary/linux-amd64"
+        );
+    }
+
+    #[test]
+    fn signature_url_defaults_next_to_the_binary() {
+        let a: DaemonAsset =
+            serde_json::from_str(r#"{"target":"linux-amd64","url":"https://s/b/linux-amd64"}"#)
+                .unwrap();
+        assert_eq!(a.signature_url(), "https://s/b/linux-amd64.minisig");
     }
 
     #[test]

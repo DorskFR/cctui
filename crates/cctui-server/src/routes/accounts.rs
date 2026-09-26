@@ -10,7 +10,7 @@
 //! `api_keys`/`dispatchers`) and are **never** returned over the API —
 //! list/get only ever surface provider/expiry/last-used + lightweight stats.
 //! Accounts belong to the registering user and are visible/usable only by that
-//! user (`require_human` + `owner_filter`).
+//! user (the `Human` route policy + `owner_filter`).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -24,7 +24,9 @@ use dashmap::DashMap;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use crate::auth::{AuthContext, Scope};
+use crate::auth::AuthContext;
+use crate::authz::{Shareable, shareable_owner};
+use crate::error::{AppError, err};
 use crate::routes::gateway;
 use crate::state::AppState;
 
@@ -57,12 +59,6 @@ pub fn resolve_owner(
     ctx: &AuthContext,
     explicit: Option<Uuid>,
 ) -> Result<Uuid, (StatusCode, Json<serde_json::Value>)> {
-    // A machine key has no business creating accounts: require a
-    // human identity (read scope, no machine id). An admin acts cross-user by
-    // naming the owner explicitly; a user acts as itself.
-    if ctx.machine_id.is_some() || !ctx.has(Scope::Read) {
-        return Err(err(StatusCode::FORBIDDEN, "user or admin token required"));
-    }
     if ctx.is_admin() {
         explicit.ok_or_else(|| {
             err(StatusCode::BAD_REQUEST, "user_id required when using the admin token")
@@ -70,16 +66,6 @@ pub fn resolve_owner(
     } else {
         Ok(ctx.user_id)
     }
-}
-
-/// Gate the account read/mutation routes to a human identity (a user or admin
-/// token, never a machine key). Admin then sees/acts across all owners via
-/// `owner_filter`.
-pub fn require_human(ctx: &AuthContext) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
-    if ctx.machine_id.is_some() || !ctx.has(Scope::Read) {
-        return Err(err(StatusCode::FORBIDDEN, "user or admin token required"));
-    }
-    Ok(())
 }
 
 /// Back-compat shim: if `CCTUI_CLAUDE_LITELLM_*` is set,
@@ -193,17 +179,22 @@ pub async fn sync_litellm_shim(pool: &sqlx::PgPool, config: &crate::config::Conf
 /// Pricing is per *million* tokens in USD and is account-owned data: it is what
 /// a pay-per-token provider is metered against, so it lives on the row rather
 /// than in a table someone has to redeploy to correct.
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[ts(export)]
 pub struct AccountModel {
     pub model: String,
     pub label: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(type = "number | null", optional)]
     pub price_input_per_mtok: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(type = "number | null", optional)]
     pub price_cached_input_per_mtok: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(type = "number | null", optional)]
     pub price_output_per_mtok: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(type = "number | null", optional)]
     pub context_length: Option<i64>,
 }
 
@@ -224,7 +215,8 @@ fn fireworks_default_models() -> serde_json::Value {
 /// API view of one provider credential under an account. Secrets (the
 /// OAuth/static tokens) are deliberately absent; `base_url`/`auth_scheme` are
 /// surfaced so the accounts UI can render/edit a compatible endpoint in place.
-#[derive(Debug, serde::Serialize, sqlx::FromRow)]
+#[derive(Debug, serde::Serialize, sqlx::FromRow, ts_rs::TS)]
+#[ts(export, rename = "AccountProvider")]
 pub struct ProviderInfo {
     pub id: Uuid,
     pub account_id: Uuid,
@@ -236,9 +228,11 @@ pub struct ProviderInfo {
     /// Models this credential offers, declared by the operator, with optional
     /// pricing. `None`/empty falls back to the harness catalog / native
     /// families. Honoured for every provider kind.
+    #[ts(as = "Option<Vec<AccountModel>>")]
     pub models: Option<serde_json::Value>,
     /// Per-provider logical→concrete model alias map, e.g.
     /// `{"opus": "claude-opus-4-8[1m]"}`. Resolved server-side at spawn.
+    #[ts(type = "Record<string, string> | null")]
     pub model_aliases: Option<serde_json::Value>,
     /// `true` for a server-synthesized (managed) provider — read-only over the
     /// API (the back-compat shim for `CCTUI_CLAUDE_LITELLM_*`).
@@ -252,11 +246,14 @@ pub struct ProviderInfo {
     pub expires_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub last_used_at: Option<DateTime<Utc>>,
+    #[ts(type = "number")]
     pub request_count: i64,
+    #[ts(type = "number")]
     pub bytes_transferred: i64,
     /// Total tokens (input + output + cache) attributed to this provider across
     /// all its sessions. Joined from `session_tokens` →
     /// `session_token_usage` at read time.
+    #[ts(type = "number")]
     pub total_tokens: i64,
     /// USD cost of this provider's recorded usage. For a pay-per-token
     /// (`fireworks`) row this is priced per model from the account's own
@@ -266,8 +263,10 @@ pub struct ProviderInfo {
     /// Per-provider soft limits: a validated JSONB map keyed by
     /// canonical window identity (`session` | `weekly_all` | `weekly_model:<id>`),
     /// each value `{cap_pct?, bypass_minutes?, pace_cap?}`. NULL ⇒ no soft limits configured.
+    #[ts(as = "Option<std::collections::BTreeMap<String, crate::soft_limit::SoftLimit>>")]
     pub soft_limits: Option<serde_json::Value>,
     /// Usage ticker `{ enabled, step_pct }`; NULL ⇒ off.
+    #[ts(as = "Option<crate::routes::gateway::usage_notices::UsageNotices>")]
     pub usage_notices: Option<serde_json::Value>,
     /// Whether this credential's gauge shows in the header strip.
     pub header_pin: bool,
@@ -279,19 +278,23 @@ pub struct ProviderInfo {
     pub last_auth_error_at: Option<DateTime<Utc>>,
     /// Validated, allowlisted subset of harness settings applied to sessions run
     /// under this provider. Config, not secret → returned normally.
+    #[ts(type = "Record<string, unknown> | null")]
     pub settings_json: Option<serde_json::Value>,
     /// Gateway request-shaping settings for this credential (fireworks:
     /// `context_length_exceeded_behavior`, session affinity, extra body keys).
     /// Distinct from `settings_json`, which is harness settings.
+    #[ts(type = "Record<string, unknown> | null")]
     pub provider_settings: Option<serde_json::Value>,
     /// Per-(account, provider) gateway rate limits `{ rpm?, tpm? }`, enforced in
     /// the proxy path. NULL ⇒ no throttling.
+    #[ts(as = "Option<crate::routes::gateway::RateLimits>")]
     pub rate_limits: Option<serde_json::Value>,
 }
 
 /// API view of an account identity: name, owner, timestamps, and its
 /// provider credentials.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, ts_rs::TS)]
+#[ts(export, rename = "OAuthAccount")]
 pub struct AccountInfo {
     pub id: Uuid,
     pub name: String,
@@ -363,7 +366,9 @@ impl AccountRow {
 /// row it ran under. `SUM()` over bigint returns NUMERIC, so cast back to bigint
 /// for the i64 columns. Cost uses a per-provider blended per-million rate
 /// (input/output/cache weighted) — an estimate, not a meter. Append a
-/// `WHERE`/`ORDER BY` clause before use. The token totals are a correlated
+/// `WHERE`/`ORDER BY` clause before use. Usage is read from the running
+/// per-(session, model) totals in `session_usage_totals`, one row per session
+/// and model rather than one per turn. The token totals are a correlated
 /// LATERAL rather than a grouped subquery so that selecting one provider
 /// aggregates one provider's rows instead of the whole table.
 const PROVIDER_SELECT: &str = "SELECT p.id, p.account_id, p.provider, p.family, p.models, p.model_aliases, p.managed, \
@@ -392,7 +397,7 @@ const PROVIDER_SELECT: &str = "SELECT p.id, p.account_id, p.provider, p.family, 
                 SUM(stu.cache_read_tokens)     AS cache_read_tokens, \
                 SUM(stu.cache_creation_tokens) AS cache_creation_tokens \
          FROM session_tokens st \
-         JOIN session_token_usage stu ON stu.session_id = st.session_id \
+         JOIN session_usage_totals stu ON stu.session_id = st.session_id \
          WHERE st.account_id = p.id \
      ) t ON true \
      LEFT JOIN LATERAL ( \
@@ -405,7 +410,7 @@ const PROVIDER_SELECT: &str = "SELECT p.id, p.account_id, p.provider, p.family, 
                     * COALESCE((m.value->>'price_output_per_mtok')::double precision, 0) \
                 ) / 1000000.0) AS usd \
          FROM session_tokens st \
-         JOIN session_token_usage stu ON stu.session_id = st.session_id \
+         JOIN session_usage_totals stu ON stu.session_id = st.session_id \
          JOIN jsonb_array_elements( \
                 CASE WHEN jsonb_typeof(p.models) = 'array' THEN p.models ELSE '[]'::jsonb END \
               ) m ON m.value->>'model' = stu.model \
@@ -457,89 +462,114 @@ async fn fetch_provider_info(
 /// provider row. Used standalone by `POST /accounts/{id}/providers` and
 /// flattened into [`CreateAccount`] so the legacy one-shot account+credential
 /// create keeps working.
-#[derive(Debug, Default, serde::Deserialize)]
+#[derive(Debug, Default, serde::Deserialize, ts_rs::TS)]
+#[ts(export, rename = "CreateProvider")]
 pub struct ProviderSpec {
     /// `anthropic` | `openai` (native subscription) | `anthropic-compatible` |
     /// `openai-compatible`. Optional only when flattened into
     /// [`CreateAccount`] (identity-only create); required on the provider route.
     #[serde(default)]
+    #[ts(type = "string", optional)]
     pub provider: Option<String>,
     /// OAuth refresh token (subscription providers). Optional for compatible
     /// endpoints, which store only a static credential (in `access_token`).
     /// Stored encrypted; the gateway exchanges it for access tokens on demand.
     #[serde(default)]
+    #[ts(type = "string", optional)]
     pub refresh_token: Option<String>,
     /// Initial access token (subscription) OR the static credential (a compatible
     /// endpoint's bearer/api key). Stored encrypted; never read back.
     #[serde(default)]
+    #[ts(type = "string", optional)]
     pub access_token: Option<String>,
     /// Optional access-token expiry (unix seconds). When absent the gateway
     /// refreshes on first use (subscription) / never refreshes (compatible).
     #[serde(default)]
+    #[ts(type = "number", optional)]
     pub expires_at: Option<i64>,
     /// Compatible-endpoint base URL, e.g. a LiteLLM/vLLM/Ollama-proxy.
     /// Required for `*-compatible` providers; ignored for native ones.
     #[serde(default)]
+    #[ts(type = "string", optional)]
     pub base_url: Option<String>,
     /// Models this credential offers; empty falls back to the harness catalog.
     #[serde(default)]
+    #[ts(as = "Option<Vec<AccountModel>>", optional)]
     pub models: Option<Vec<AccountModel>>,
     /// Logical→concrete model alias map, e.g.
     /// `{"opus": "claude-opus-4-8[1m]"}`. Honoured for every provider.
     #[serde(default)]
+    #[ts(type = "Record<string, string>", optional)]
     pub model_aliases: Option<std::collections::HashMap<String, String>>,
     /// Credential scheme for a compatible endpoint: `bearer` | `api_key`.
     /// Defaults to `bearer`. Native providers are always `oauth`.
     #[serde(default)]
+    #[ts(type = "string", optional)]
     pub auth_scheme: Option<String>,
     /// Per-provider soft limits: a canonical-key map
     /// `{ "session": {cap_pct?, bypass_minutes?, pace_cap?}, "weekly_all": {…}, … }`.
     /// Absent ⇒ NULL (no caps). Validated before persist.
     #[serde(default)]
+    #[ts(
+        as = "Option<std::collections::BTreeMap<String, crate::soft_limit::SoftLimit>>",
+        optional
+    )]
     pub soft_limits: Option<serde_json::Value>,
     /// Legacy scalar soft-limit fields, still accepted on create and
     /// folded into the `session` / `weekly_all` keys when `soft_limits` is absent.
     #[serde(default)]
+    #[ts(skip)]
     pub soft_limit_5h_pct: Option<i32>,
     #[serde(default)]
+    #[ts(skip)]
     pub soft_limit_7d_pct: Option<i32>,
     #[serde(default)]
+    #[ts(skip)]
     pub soft_limit_bypass_5h_minutes: Option<i32>,
     #[serde(default)]
+    #[ts(skip)]
     pub soft_limit_bypass_7d_minutes: Option<i32>,
     #[serde(default)]
+    #[ts(skip)]
     pub soft_limit_bypass_minutes: Option<i32>,
     /// Validated, allowlisted harness settings for this provider.
     /// Server rejects MANAGED/SYSTEM keys before persist. Returned normally.
     #[serde(default)]
+    #[ts(type = "Record<string, unknown>", optional)]
     pub settings_json: Option<serde_json::Value>,
     /// Gateway request-shaping settings. Absent on a `fireworks` create seeds
     /// the defaults so every knob is visible and editable from the start.
     #[serde(default)]
+    #[ts(type = "Record<string, unknown>", optional)]
     pub provider_settings: Option<serde_json::Value>,
     /// Per-(account, provider) gateway rate limits `{ rpm?, tpm? }`. Absent ⇒
     /// NULL (no throttling). Validated before persist.
     #[serde(default)]
+    #[ts(as = "Option<crate::routes::gateway::RateLimits>", optional)]
     pub rate_limits: Option<serde_json::Value>,
 }
 
 /// `POST /api/v1/accounts` payload: the identity fields, plus an
 /// optionally flattened [`ProviderSpec`] — supplying `provider` creates the
 /// account and its first credential in one call (the legacy shape).
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, ts_rs::TS)]
+#[ts(export)]
 pub struct CreateAccount {
     pub name: String,
     /// Identity glyph; one emoji grapheme. Blank/absent ⇒ the letter square.
     #[serde(default)]
+    #[ts(type = "string", optional)]
     pub emoji: Option<String>,
     /// Owning user — required (and only honoured) when authenticated with the
     /// admin token, which has no user identity of its own.
     #[serde(default)]
+    #[ts(type = "string", optional)]
     pub user_id: Option<Uuid>,
     /// Extra environment variables for sessions run under this account.
     /// Stored ENCRYPTED at rest and never returned over the API (write-only,
     /// like the OAuth tokens). An empty map ⇒ no override.
     #[serde(default)]
+    #[ts(type = "Record<string, string>", optional)]
     pub env_json: Option<std::collections::HashMap<String, String>>,
     #[serde(flatten)]
     pub provider: ProviderSpec,
@@ -551,45 +581,60 @@ pub struct CreateAccount {
 /// provider-ish fields are accepted syntactically but rejected with a pointer
 /// to the provider route, so an un-migrated client gets a clear 400 instead of
 /// a silent no-op.
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, ts_rs::TS)]
+#[ts(export)]
 pub struct UpdateAccount {
     #[serde(default)]
+    #[ts(type = "string", optional)]
     pub name: Option<String>,
     /// Identity glyph. A blank string clears it back to the letter square;
     /// absent leaves it unchanged.
     #[serde(default)]
+    #[ts(type = "string", optional)]
     pub emoji: Option<String>,
     #[serde(default)]
+    #[ts(type = "Record<string, string>", optional)]
     pub env_json: Option<std::collections::HashMap<String, String>>,
     /// Names to remove from the stored env without re-sending the other
     /// values: decrypt → drop names → re-encrypt, all server-side. Ignored
     /// when `env_json` is provided (replace-all wins).
     #[serde(default)]
+    #[ts(type = "string[]", optional)]
     pub env_remove: Option<Vec<String>>,
     /// Owner-only: whether grantees may enrol this account in their pools.
     #[serde(default)]
+    #[ts(type = "boolean", optional)]
     pub pool_eligible: Option<bool>,
     /// Owner-only: the account's relative plan size in pool aggregates. Must
     /// be a finite positive number.
     #[serde(default)]
+    #[ts(type = "number", optional)]
     pub pool_weight: Option<f32>,
     // Legacy provider fields (any shape): presence ⇒ 400 pointing at
     // PATCH /accounts/{id}/providers/{provider_id}.
     #[serde(default)]
+    #[ts(skip)]
     pub base_url: Option<serde_json::Value>,
     #[serde(default)]
+    #[ts(skip)]
     pub auth_scheme: Option<serde_json::Value>,
     #[serde(default)]
+    #[ts(skip)]
     pub models: Option<serde_json::Value>,
     #[serde(default)]
+    #[ts(skip)]
     pub model_aliases: Option<serde_json::Value>,
     #[serde(default)]
+    #[ts(skip)]
     pub access_token: Option<serde_json::Value>,
     #[serde(default)]
+    #[ts(skip)]
     pub soft_limits: Option<serde_json::Value>,
     #[serde(default)]
+    #[ts(skip)]
     pub settings_json: Option<serde_json::Value>,
     #[serde(default)]
+    #[ts(skip)]
     pub defaults: Option<serde_json::Value>,
 }
 
@@ -601,47 +646,62 @@ pub struct UpdateAccount {
 /// `base_url`/credential are never returned, so the editor re-supplies
 /// `base_url` when changing it and leaves the credential blank to keep the
 /// stored one.
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, ts_rs::TS)]
+#[ts(export)]
 pub struct UpdateProvider {
     #[serde(default)]
+    #[ts(type = "string", optional)]
     pub base_url: Option<String>,
     #[serde(default)]
+    #[ts(type = "string", optional)]
     pub auth_scheme: Option<String>,
     #[serde(default)]
+    #[ts(as = "Option<Vec<AccountModel>>", optional)]
     pub models: Option<Vec<AccountModel>>,
     /// Replacement model alias map. Provided → replaces the stored map
     /// wholesale (an empty object clears it); absent → unchanged.
     #[serde(default)]
+    #[ts(type = "Record<string, string>", optional)]
     pub model_aliases: Option<std::collections::HashMap<String, String>>,
     /// New static credential for a compatible endpoint; blank/absent keeps the
     /// stored one.
     #[serde(default)]
+    #[ts(type = "string", optional)]
     pub access_token: Option<String>,
     /// Replacement soft-limit config: a canonical-key map
     /// `{ key: {cap_pct?, bypass_minutes?, pace_cap?} }`. Provided → replaces the whole
     /// stored map (an empty object clears it, an omitted key drops that window);
     /// absent → unchanged. Validated before persist.
     #[serde(default)]
+    #[ts(
+        as = "Option<std::collections::BTreeMap<String, crate::soft_limit::SoftLimit>>",
+        optional
+    )]
     pub soft_limits: Option<serde_json::Value>,
     /// Replacement usage ticker `{ enabled?, step_pct? }`. Provided → replaces
     /// (an empty object / `enabled: false` turns it off); absent → unchanged.
     #[serde(default)]
+    #[ts(as = "Option<crate::routes::gateway::usage_notices::UsageNotices>", optional)]
     pub usage_notices: Option<serde_json::Value>,
     /// Show this credential's gauge in the header strip; absent → unchanged.
     #[serde(default)]
+    #[ts(type = "boolean", optional)]
     pub header_pin: Option<bool>,
     /// Replacement validated settings blob. Provided → replaces the
     /// stored settings wholesale (an empty object clears it); absent → unchanged.
     /// Validated against the allowlist before persist.
     #[serde(default)]
+    #[ts(type = "Record<string, unknown>", optional)]
     pub settings_json: Option<serde_json::Value>,
     /// Replacement gateway settings object. Provided → replaces wholesale (an
     /// empty object drops back to the family defaults); absent → unchanged.
     #[serde(default)]
+    #[ts(type = "Record<string, unknown>", optional)]
     pub provider_settings: Option<serde_json::Value>,
     /// Replacement rate-limit object `{ rpm?, tpm? }`. Provided → replaces the
     /// stored value (an empty object / zeros clear it); absent → unchanged.
     #[serde(default)]
+    #[ts(as = "Option<crate::routes::gateway::RateLimits>", optional)]
     pub rate_limits: Option<serde_json::Value>,
 }
 
@@ -663,7 +723,7 @@ fn build_soft_limits_json(
     legacy_weekly_cap: Option<i32>,
     legacy_session_bypass: Option<i32>,
     legacy_weekly_bypass: Option<i32>,
-) -> Result<Option<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+) -> Result<Option<serde_json::Value>, AppError> {
     use std::collections::BTreeMap;
     let mut out: BTreeMap<String, serde_json::Value> = BTreeMap::new();
 
@@ -675,30 +735,33 @@ fn build_soft_limits_json(
         if let Some(c) = cap
             && !(0..=100).contains(&c)
         {
-            return Err(err(StatusCode::BAD_REQUEST, "soft-limit cap must be 0-100"));
+            return Err(AppError::new(StatusCode::BAD_REQUEST, "soft-limit cap must be 0-100"));
         }
         // Below 1x is a cap tighter than an even spend, which would refuse an
         // idle-then-work account forever; above 100x can never trigger.
         if let Some(p) = pace_cap
             && (!p.is_finite() || !(1.0..=100.0).contains(&p))
         {
-            return Err(err(StatusCode::BAD_REQUEST, "soft-limit pace_cap must be 1-100"));
+            return Err(AppError::new(
+                StatusCode::BAD_REQUEST,
+                "soft-limit pace_cap must be 1-100",
+            ));
         }
         if let Some(c) = cap_usd
             && (!c.is_finite() || c < 0.0)
         {
-            return Err(err(StatusCode::BAD_REQUEST, "soft-limit cap_usd must be >= 0"));
+            return Err(AppError::new(StatusCode::BAD_REQUEST, "soft-limit cap_usd must be >= 0"));
         }
         if let Some(b) = bypass
             && b < 0
         {
-            return Err(err(StatusCode::BAD_REQUEST, "soft-limit bypass must be >= 0"));
+            return Err(AppError::new(StatusCode::BAD_REQUEST, "soft-limit bypass must be >= 0"));
         }
         if cap.is_none() && cap_usd.is_none() && bypass.is_none() && pace_cap.is_none() {
             return Ok(());
         }
         let Some(canon) = crate::soft_limit::canonicalize_key(key) else {
-            return Err(err(StatusCode::BAD_REQUEST, "unknown soft-limit window key"));
+            return Err(AppError::new(StatusCode::BAD_REQUEST, "unknown soft-limit window key"));
         };
         // A dollar cap belongs only to a dollar window, and vice versa: storing
         // the wrong one would read as an unenforceable cap in the UI.
@@ -733,7 +796,7 @@ fn build_soft_limits_json(
             insert(key, cap, cap_usd, bypass, pace_cap)?;
         }
     } else if map.is_some_and(|v| !v.is_null()) {
-        return Err(err(StatusCode::BAD_REQUEST, "soft_limits must be an object"));
+        return Err(AppError::new(StatusCode::BAD_REQUEST, "soft_limits must be an object"));
     } else {
         // No map supplied — fold the legacy scalar fields.
         insert(
@@ -760,10 +823,10 @@ fn build_soft_limits_json(
 /// (clears the column). Rejects negative / non-integer values and a non-object.
 fn build_rate_limits_json(
     map: Option<&serde_json::Value>,
-) -> Result<Option<serde_json::Value>, (StatusCode, Json<serde_json::Value>)> {
+) -> Result<Option<serde_json::Value>, AppError> {
     let Some(map) = map.filter(|v| !v.is_null()) else { return Ok(None) };
     let Some(obj) = map.as_object() else {
-        return Err(err(StatusCode::BAD_REQUEST, "rate_limits must be an object"));
+        return Err(AppError::new(StatusCode::BAD_REQUEST, "rate_limits must be an object"));
     };
     let mut out = serde_json::Map::new();
     for key in ["rpm", "tpm"] {
@@ -771,7 +834,7 @@ fn build_rate_limits_json(
             None | Some(serde_json::Value::Null) => {}
             Some(v) => {
                 let Some(n) = v.as_u64() else {
-                    return Err(err(
+                    return Err(AppError::new(
                         StatusCode::BAD_REQUEST,
                         "rate limit must be a whole number >= 0",
                     ));
@@ -785,13 +848,17 @@ fn build_rate_limits_json(
     Ok((!out.is_empty()).then_some(serde_json::Value::Object(out)))
 }
 
-pub fn err(code: StatusCode, msg: &str) -> (StatusCode, Json<serde_json::Value>) {
-    (code, Json(serde_json::json!({ "error": msg })))
-}
-
-fn db_err(e: &sqlx::Error) -> (StatusCode, Json<serde_json::Value>) {
-    tracing::error!("db error: {e}");
-    err(StatusCode::INTERNAL_SERVER_ERROR, "database error")
+/// A compatible endpoint's `base_url` must not reach internal addresses.
+pub async fn check_base_url(raw: &str) -> Result<(), AppError> {
+    crate::outbound::validate_upstream_url(raw).await.map_err(|e| {
+        AppError::new(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "base_url {e}; an admin can allow a trusted host in Settings \
+                     (allowed upstream hosts) or with CCTUI_UPSTREAM_ALLOWED_HOSTS"
+            ),
+        )
+    })
 }
 
 /// The settings catalog as served to the webui account-settings editor.
@@ -911,26 +978,25 @@ fn normalize_emoji(raw: &str) -> Result<Option<String>, &'static str> {
 }
 
 /// [`normalize_emoji`] as an API-level check.
-fn emoji_field(raw: Option<&str>) -> Result<Option<String>, (StatusCode, Json<serde_json::Value>)> {
-    raw.map_or(Ok(None), |v| normalize_emoji(v).map_err(|msg| err(StatusCode::BAD_REQUEST, msg)))
+fn emoji_field(raw: Option<&str>) -> Result<Option<String>, AppError> {
+    raw.map_or(Ok(None), |v| {
+        normalize_emoji(v).map_err(|msg| AppError::new(StatusCode::BAD_REQUEST, msg))
+    })
 }
 
 /// Validate a pasted `settings_json` blob before persisting it via the
 /// settings catalog: only keys tagged `safe`/`care` may be set
 /// per-provider; unknown, MANAGED, and SYSTEM keys are rejected. Fail-closed —
 /// any violation aborts the whole write.
-fn validate_settings_json(
-    provider: &str,
-    value: &serde_json::Value,
-) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+fn validate_settings_json(provider: &str, value: &serde_json::Value) -> Result<(), AppError> {
     let report = crate::settings_catalog::for_provider(provider).validate_settings(value);
     if report.ok() {
         return Ok(());
     }
     let detail = report.violations.iter().map(|v| v.key.as_str()).collect::<Vec<_>>().join(", ");
-    Err(err(
+    Err(AppError::new(
         StatusCode::BAD_REQUEST,
-        &format!("settings_json rejected — not settable per-account: {detail}"),
+        format!("settings_json rejected — not settable per-account: {detail}"),
     ))
 }
 
@@ -938,9 +1004,7 @@ fn validate_settings_json(
 /// encrypted and stored: any well-formed env var name is accepted EXCEPT a
 /// denylist of session-critical / gateway-managed vars (values are arbitrary and
 /// may be secrets). Fail-closed with a per-name reason.
-fn validate_env_json(
-    env: &std::collections::HashMap<String, String>,
-) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+fn validate_env_json(env: &std::collections::HashMap<String, String>) -> Result<(), AppError> {
     let map: std::collections::BTreeMap<String, String> =
         env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
     let report = crate::settings_catalog::catalog().validate_free_env(&map);
@@ -953,7 +1017,7 @@ fn validate_env_json(
         .map(|v| format!("{}: {}", v.key, v.reason))
         .collect::<Vec<_>>()
         .join("; ");
-    Err(err(StatusCode::BAD_REQUEST, &format!("env_json rejected — {detail}")))
+    Err(AppError::new(StatusCode::BAD_REQUEST, format!("env_json rejected — {detail}")))
 }
 
 /// Decrypt a stored `env_json` blob to its var NAMES only (sorted), never the
@@ -976,7 +1040,7 @@ fn env_map_from_enc(enc: Option<&str>, key: &[u8]) -> std::collections::BTreeMap
 /// Validate + encrypt an extra-env map. Empty ⇒ `None` (clears).
 fn encrypt_env(
     env: Option<&std::collections::HashMap<String, String>>,
-) -> Result<Option<String>, (StatusCode, Json<serde_json::Value>)> {
+) -> Result<Option<String>, AppError> {
     let Some(map) = env.filter(|m| !m.is_empty()) else { return Ok(None) };
     validate_env_json(map)?;
     let key = crate::crypto::vault_key();
@@ -1006,17 +1070,15 @@ struct ProviderWrite {
 /// `encrypted_access_token`, no refresh token, `auth_scheme` = `bearer|api_key`.
 // Linear validator: one branch per optional field, no nesting.
 #[allow(clippy::too_many_lines)]
-fn prepare_provider_write(
-    spec: &ProviderSpec,
-) -> Result<ProviderWrite, (StatusCode, Json<serde_json::Value>)> {
+async fn prepare_provider_write(spec: &ProviderSpec) -> Result<ProviderWrite, AppError> {
     let Some(provider) = spec.provider.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
-        return Err(err(StatusCode::BAD_REQUEST, "provider required"));
+        return Err(AppError::new(StatusCode::BAD_REQUEST, "provider required"));
     };
     if !matches!(
         provider,
         "anthropic" | "openai" | "anthropic-compatible" | "openai-compatible" | "fireworks"
     ) {
-        return Err(err(
+        return Err(AppError::new(
             StatusCode::BAD_REQUEST,
             "provider must be anthropic|openai|anthropic-compatible|openai-compatible|fireworks",
         ));
@@ -1039,23 +1101,22 @@ fn prepare_provider_write(
             Some(b) => Some(b),
             None if fireworks => None,
             None => {
-                return Err(err(
+                return Err(AppError::new(
                     StatusCode::BAD_REQUEST,
                     "base_url required for a compatible endpoint",
                 ));
             }
         };
-        // SSRF is explicitly out of scope for this single-operator, self-hosted
-        // deployment; a light scheme check only. Prefer https.
-        if let Some(b) = base
-            && !(b.starts_with("http://") || b.starts_with("https://"))
-        {
-            return Err(err(StatusCode::BAD_REQUEST, "base_url must be an http(s) URL"));
+        if let Some(b) = base {
+            check_base_url(b).await?;
         }
         let scheme = spec.auth_scheme.as_deref().map(str::trim).filter(|s| !s.is_empty());
         let scheme = scheme.unwrap_or("bearer");
         if !matches!(scheme, "bearer" | "api_key") {
-            return Err(err(StatusCode::BAD_REQUEST, "auth_scheme must be bearer|api_key"));
+            return Err(AppError::new(
+                StatusCode::BAD_REQUEST,
+                "auth_scheme must be bearer|api_key",
+            ));
         }
         // A static credential is optional (an open proxy accepts any value); when
         // absent we still store a dummy so the gateway has a bearer to forward.
@@ -1073,7 +1134,7 @@ fn prepare_provider_write(
     } else {
         let refresh = spec.refresh_token.as_deref().map(str::trim).filter(|s| !s.is_empty());
         let Some(refresh) = refresh else {
-            return Err(err(StatusCode::BAD_REQUEST, "refresh_token required"));
+            return Err(AppError::new(StatusCode::BAD_REQUEST, "refresh_token required"));
         };
         let key = crate::crypto::vault_key();
         enc_refresh = Some(crate::crypto::encrypt(refresh, &key));
@@ -1129,11 +1190,9 @@ fn prepare_provider_write(
 /// the family defaults, and a scalar/array would silently replace the whole
 /// blob instead of overriding one knob. `thinking_display` is dropped: the
 /// gateway forwards bytes verbatim and cannot apply it.
-fn validate_provider_settings(
-    v: &serde_json::Value,
-) -> Result<serde_json::Value, (StatusCode, Json<serde_json::Value>)> {
+fn validate_provider_settings(v: &serde_json::Value) -> Result<serde_json::Value, AppError> {
     v.as_object().map_or_else(
-        || Err(err(StatusCode::BAD_REQUEST, "provider_settings must be a JSON object")),
+        || Err(AppError::new(StatusCode::BAD_REQUEST, "provider_settings must be a JSON object")),
         |obj| {
             let mut obj = obj.clone();
             obj.remove("thinking_display");
@@ -1182,8 +1241,7 @@ async fn insert_provider(
 pub async fn list_accounts(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
-) -> Result<Json<Vec<AccountInfo>>, (StatusCode, Json<serde_json::Value>)> {
-    require_human(&ctx)?;
+) -> Result<Json<Vec<AccountInfo>>, AppError> {
     let accounts: Vec<AccountRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "{ACCOUNT_SELECT} WHERE $1::uuid IS NULL OR a.user_id = $1 \
            OR EXISTS (SELECT 1 FROM resource_shares s \
@@ -1193,8 +1251,7 @@ pub async fn list_accounts(
     )))
     .bind(ctx.owner_filter())
     .fetch_all(&state.pool)
-    .await
-    .map_err(|e| db_err(&e))?;
+    .await?;
     let providers: Vec<ProviderInfo> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "{PROVIDER_SELECT} WHERE $1::uuid IS NULL OR p.user_id = $1 \
            OR EXISTS (SELECT 1 FROM resource_shares s \
@@ -1204,8 +1261,7 @@ pub async fn list_accounts(
     )))
     .bind(ctx.owner_filter())
     .fetch_all(&state.pool)
-    .await
-    .map_err(|e| db_err(&e))?;
+    .await?;
 
     let mut by_account: HashMap<Uuid, Vec<ProviderInfo>> = HashMap::new();
     for p in providers {
@@ -1228,13 +1284,11 @@ pub async fn get_account(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<Uuid>,
-) -> Result<Json<AccountInfo>, (StatusCode, Json<serde_json::Value>)> {
-    require_human(&ctx)?;
+) -> Result<Json<AccountInfo>, AppError> {
     fetch_account_info(&state.pool, id, ctx.owner_filter())
-        .await
-        .map_err(|e| db_err(&e))?
+        .await?
         .map(Json)
-        .ok_or_else(|| err(StatusCode::NOT_FOUND, "no such account"))
+        .ok_or_else(|| AppError::new(StatusCode::NOT_FOUND, "no such account"))
 }
 
 /// `POST /api/v1/accounts` — register an account identity, optionally with its
@@ -1244,22 +1298,23 @@ pub async fn create_account(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Json(req): Json<CreateAccount>,
-) -> Result<(StatusCode, Json<AccountInfo>), (StatusCode, Json<serde_json::Value>)> {
-    let uid = resolve_owner(&ctx, req.user_id)?;
+) -> Result<(StatusCode, Json<AccountInfo>), AppError> {
+    let uid = resolve_owner(&ctx, req.user_id)
+        .map_err(|(s, Json(v))| AppError::new(s, v["error"].as_str().unwrap_or_default()))?;
     if req.name.trim().is_empty() {
-        return Err(err(StatusCode::BAD_REQUEST, "name required"));
+        return Err(AppError::new(StatusCode::BAD_REQUEST, "name required"));
     }
     let emoji = emoji_field(req.emoji.as_deref())?;
     let enc_env = encrypt_env(req.env_json.as_ref())?;
     // Validate the optional provider payload BEFORE creating the identity so a
     // bad credential body doesn't leave an empty account behind.
     let provider_write = if req.provider.provider.is_some() {
-        Some(prepare_provider_write(&req.provider)?)
+        Some(prepare_provider_write(&req.provider).await?)
     } else {
         None
     };
 
-    let mut tx = state.pool.begin().await.map_err(|e| db_err(&e))?;
+    let mut tx = state.pool.begin().await?;
     let account_id: Uuid = match sqlx::query_scalar(
         "INSERT INTO accounts (user_id, name, env_json, emoji) VALUES ($1, $2, $3, $4) RETURNING id",
     )
@@ -1272,23 +1327,25 @@ pub async fn create_account(
     {
         Ok(id) => id,
         Err(sqlx::Error::Database(db)) if db.is_unique_violation() => {
-            return Err(err(StatusCode::CONFLICT, "an account with that name already exists"));
+            return Err(AppError::new(
+                StatusCode::CONFLICT,
+                "an account with that name already exists",
+            ));
         }
-        Err(e) => return Err(db_err(&e)),
+        Err(e) => return Err(AppError::from(e)),
     };
     if let Some(w) = &provider_write
         && let Err(e) = insert_provider(&mut tx, uid, account_id, w).await
     {
         // A fresh account can't collide on (account_id, family); any error here
         // is a genuine DB failure. The tx rollback drops the parent too.
-        return Err(db_err(&e));
+        return Err(AppError::from(e));
     }
-    tx.commit().await.map_err(|e| db_err(&e))?;
+    tx.commit().await?;
 
-    let info = fetch_account_info(&state.pool, account_id, None)
-        .await
-        .map_err(|e| db_err(&e))?
-        .ok_or_else(|| err(StatusCode::INTERNAL_SERVER_ERROR, "account vanished after create"))?;
+    let info = fetch_account_info(&state.pool, account_id, None).await?.ok_or_else(|| {
+        AppError::new(StatusCode::INTERNAL_SERVER_ERROR, "account vanished after create")
+    })?;
     Ok((StatusCode::CREATED, Json(info)))
 }
 
@@ -1301,8 +1358,7 @@ pub async fn update_account(
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<Uuid>,
     Json(req): Json<UpdateAccount>,
-) -> Result<Json<AccountInfo>, (StatusCode, Json<serde_json::Value>)> {
-    require_human(&ctx)?;
+) -> Result<Json<AccountInfo>, AppError> {
     if req.base_url.is_some()
         || req.auth_scheme.is_some()
         || req.models.is_some()
@@ -1312,7 +1368,7 @@ pub async fn update_account(
         || req.settings_json.is_some()
         || req.defaults.is_some()
     {
-        return Err(err(
+        return Err(AppError::new(
             StatusCode::BAD_REQUEST,
             "provider fields moved: use PATCH /api/v1/accounts/:id/providers/:provider_id",
         ));
@@ -1320,13 +1376,16 @@ pub async fn update_account(
     if let Some(name) = req.name.as_deref()
         && name.trim().is_empty()
     {
-        return Err(err(StatusCode::BAD_REQUEST, "name required"));
+        return Err(AppError::new(StatusCode::BAD_REQUEST, "name required"));
     }
     let name = req.name.as_deref().map(str::trim).map(str::to_owned);
     if let Some(w) = req.pool_weight
         && !(w.is_finite() && w > 0.0)
     {
-        return Err(err(StatusCode::BAD_REQUEST, "pool_weight must be a positive number"));
+        return Err(AppError::new(
+            StatusCode::BAD_REQUEST,
+            "pool_weight must be a positive number",
+        ));
     }
     // emoji: provided → set (a blank string clears it); absent → unchanged.
     let emoji_provided = req.emoji.is_some();
@@ -1342,8 +1401,7 @@ pub async fn update_account(
         .bind(id)
         .bind(ctx.owner_filter())
         .fetch_optional(&state.pool)
-        .await
-        .map_err(|e| db_err(&e))?;
+        .await?;
         let key = crate::crypto::vault_key();
         let mut map = env_map_from_enc(stored.flatten().as_deref(), &key);
         map.retain(|name, _| !remove.contains(name));
@@ -1370,9 +1428,8 @@ pub async fn update_account(
         // guard would 404 an account the pool fields just applied to cleanly.
         if name.is_none() && !env_provided && !emoji_provided {
             let info = fetch_account_info(&state.pool, id, None)
-                .await
-                .map_err(|e| db_err(&e))?
-                .ok_or_else(|| err(StatusCode::NOT_FOUND, "no such account"))?;
+                .await?
+                .ok_or_else(|| AppError::new(StatusCode::NOT_FOUND, "no such account"))?;
             return Ok(Json(info));
         }
     }
@@ -1397,19 +1454,18 @@ pub async fn update_account(
     .bind(&emoji)
     .fetch_optional(&state.pool)
     .await
-    .map_err(|e| match &e {
+    .map_err(|e| match e {
         sqlx::Error::Database(db) if db.is_unique_violation() => {
-            err(StatusCode::CONFLICT, "an account with that name already exists")
+            AppError::new(StatusCode::CONFLICT, "an account with that name already exists")
         }
-        _ => db_err(&e),
+        other => AppError::from(other),
     })?;
     if updated.is_none() {
-        return Err(err(StatusCode::NOT_FOUND, "no such account"));
+        return Err(AppError::new(StatusCode::NOT_FOUND, "no such account"));
     }
     let info = fetch_account_info(&state.pool, id, None)
-        .await
-        .map_err(|e| db_err(&e))?
-        .ok_or_else(|| err(StatusCode::NOT_FOUND, "no such account"))?;
+        .await?
+        .ok_or_else(|| AppError::new(StatusCode::NOT_FOUND, "no such account"))?;
     Ok(Json(info))
 }
 
@@ -1420,7 +1476,7 @@ async fn set_pool_weight(
     id: Uuid,
     owner: Option<Uuid>,
     weight: f32,
-) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+) -> Result<(), AppError> {
     let touched = sqlx::query(
         "UPDATE accounts SET pool_weight = $3, updated_at = now() \
           WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2)",
@@ -1429,10 +1485,9 @@ async fn set_pool_weight(
     .bind(owner)
     .bind(weight)
     .execute(&state.pool)
-    .await
-    .map_err(|e| db_err(&e))?;
+    .await?;
     if touched.rows_affected() == 0 {
-        return Err(err(StatusCode::NOT_FOUND, "no such account"));
+        return Err(AppError::new(StatusCode::NOT_FOUND, "no such account"));
     }
     Ok(())
 }
@@ -1449,7 +1504,7 @@ async fn set_pool_eligible(
     id: Uuid,
     owner: Option<Uuid>,
     eligible: bool,
-) -> Result<(), (StatusCode, Json<serde_json::Value>)> {
+) -> Result<(), AppError> {
     let touched = sqlx::query(
         "UPDATE accounts SET pool_eligible = $3, updated_at = now() \
           WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2)",
@@ -1458,10 +1513,9 @@ async fn set_pool_eligible(
     .bind(owner)
     .bind(eligible)
     .execute(&state.pool)
-    .await
-    .map_err(|e| db_err(&e))?;
+    .await?;
     if touched.rows_affected() == 0 {
-        return Err(err(StatusCode::NOT_FOUND, "no such account"));
+        return Err(AppError::new(StatusCode::NOT_FOUND, "no such account"));
     }
     if !eligible
         && let Err(e) = sqlx::query(
@@ -1485,8 +1539,7 @@ pub async fn delete_account(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<Uuid>,
-) -> Result<StatusCode, (StatusCode, Json<serde_json::Value>)> {
-    require_human(&ctx)?;
+) -> Result<StatusCode, AppError> {
     // Admin (`ctx.user_id` = NULL) may delete any account; a user only its own.
     // Accounts holding a managed provider (litellm shim) are read-only.
     let res = sqlx::query(
@@ -1497,10 +1550,9 @@ pub async fn delete_account(
     .bind(id)
     .bind(ctx.owner_filter())
     .execute(&state.pool)
-    .await
-    .map_err(|e| db_err(&e))?;
+    .await?;
     if res.rows_affected() == 0 {
-        return Err(err(StatusCode::NOT_FOUND, "no such account"));
+        return Err(AppError::new(StatusCode::NOT_FOUND, "no such account"));
     }
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1519,27 +1571,25 @@ pub async fn add_provider(
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<Uuid>,
     Json(req): Json<ProviderSpec>,
-) -> Result<(StatusCode, Json<ProviderInfo>), (StatusCode, Json<serde_json::Value>)> {
-    require_human(&ctx)?;
+) -> Result<(StatusCode, Json<ProviderInfo>), AppError> {
     let owner = require_account_owner(&state, &ctx, id).await?;
-    let w = prepare_provider_write(&req)?;
+    let w = prepare_provider_write(&req).await?;
 
-    let mut conn = state.pool.acquire().await.map_err(|e| db_err(&e))?;
+    let mut conn = state.pool.acquire().await?;
     let pid = match insert_provider(&mut conn, owner, id, &w).await {
         Ok(pid) => pid,
         Err(sqlx::Error::Database(db)) if db.is_unique_violation() => {
-            return Err(err(
+            return Err(AppError::new(
                 StatusCode::CONFLICT,
                 "the account already has a provider of that family",
             ));
         }
-        Err(e) => return Err(db_err(&e)),
+        Err(e) => return Err(AppError::from(e)),
     };
     drop(conn);
-    let info = fetch_provider_info(&state.pool, pid)
-        .await
-        .map_err(|e| db_err(&e))?
-        .ok_or_else(|| err(StatusCode::INTERNAL_SERVER_ERROR, "provider vanished after create"))?;
+    let info = fetch_provider_info(&state.pool, pid).await?.ok_or_else(|| {
+        AppError::new(StatusCode::INTERNAL_SERVER_ERROR, "provider vanished after create")
+    })?;
     Ok((StatusCode::CREATED, Json(info)))
 }
 
@@ -1582,8 +1632,7 @@ pub async fn update_provider(
     Extension(ctx): Extension<AuthContext>,
     Path((id, provider_id)): Path<(Uuid, Uuid)>,
     Json(req): Json<UpdateProvider>,
-) -> Result<Json<ProviderInfo>, (StatusCode, Json<serde_json::Value>)> {
-    require_human(&ctx)?;
+) -> Result<Json<ProviderInfo>, AppError> {
     // Resolve the target (scoped to the caller; admin sees all) so we can tell a
     // compatible endpoint from a native one and reject editing managed rows.
     let provider = crate::store::account_providers::provider_owner_scoped(
@@ -1592,10 +1641,9 @@ pub async fn update_provider(
         id,
         ctx.owner_filter(),
     )
-    .await
-    .map_err(|e| db_err(&e))?;
+    .await?;
     let Some(provider) = provider else {
-        return Err(err(StatusCode::NOT_FOUND, "no such provider"));
+        return Err(AppError::new(StatusCode::NOT_FOUND, "no such provider"));
     };
     let compatible =
         matches!(provider.as_str(), "anthropic-compatible" | "openai-compatible" | "fireworks");
@@ -1603,7 +1651,7 @@ pub async fn update_provider(
     // Endpoint fields are rejected for native providers so the edit form can't
     // silently no-op against a subscription credential.
     if !compatible && endpoint_fields_present(&req) {
-        return Err(err(
+        return Err(AppError::new(
             StatusCode::BAD_REQUEST,
             "endpoint fields are only editable for a compatible provider",
         ));
@@ -1615,9 +1663,7 @@ pub async fn update_provider(
     // COALESCE no-op in SQL). models replaces the list wholesale when provided.
     let base_url = match req.base_url.as_deref().map(str::trim) {
         Some(b) if !b.is_empty() => {
-            if !(b.starts_with("http://") || b.starts_with("https://")) {
-                return Err(err(StatusCode::BAD_REQUEST, "base_url must be an http(s) URL"));
-            }
+            check_base_url(b).await?;
             Some(b.to_owned())
         }
         _ => None,
@@ -1625,7 +1671,10 @@ pub async fn update_provider(
     let auth_scheme = match req.auth_scheme.as_deref().map(str::trim) {
         Some(s) if !s.is_empty() => {
             if !matches!(s, "bearer" | "api_key") {
-                return Err(err(StatusCode::BAD_REQUEST, "auth_scheme must be bearer|api_key"));
+                return Err(AppError::new(
+                    StatusCode::BAD_REQUEST,
+                    "auth_scheme must be bearer|api_key",
+                ));
             }
             Some(s.to_owned())
         }
@@ -1671,7 +1720,7 @@ pub async fn update_provider(
     let usage_notices_provided = req.usage_notices.is_some();
     let usage_notices =
         crate::routes::gateway::usage_notices::UsageNotices::build_json(req.usage_notices.as_ref())
-            .map_err(|m| err(StatusCode::BAD_REQUEST, &m))?;
+            .map_err(|m| AppError::new(StatusCode::BAD_REQUEST, m))?;
 
     let updated: Option<Uuid> = sqlx::query_scalar(UPDATE_PROVIDER_SQL)
         .bind(provider_id)
@@ -1695,19 +1744,17 @@ pub async fn update_provider(
         .bind(&usage_notices)
         .bind(req.header_pin)
         .fetch_optional(&state.pool)
-        .await
-        .map_err(|e| db_err(&e))?;
+        .await?;
     if updated.is_none() {
-        return Err(err(StatusCode::NOT_FOUND, "no such provider"));
+        return Err(AppError::new(StatusCode::NOT_FOUND, "no such provider"));
     }
     if soft_provided {
         let caps = crate::soft_limit::SoftLimits::from_json(soft_limits_json.as_ref());
         reevaluate_soft_limit_block(&state, provider_id, &caps).await;
     }
     let info = fetch_provider_info(&state.pool, provider_id)
-        .await
-        .map_err(|e| db_err(&e))?
-        .ok_or_else(|| err(StatusCode::NOT_FOUND, "no such provider"))?;
+        .await?
+        .ok_or_else(|| AppError::new(StatusCode::NOT_FOUND, "no such provider"))?;
     Ok(Json(info))
 }
 
@@ -1731,8 +1778,7 @@ async fn soft_limit_blocked_sessions(
 ///
 /// Each candidate is judged against the limit that blocked it, so a session over
 /// its own `session_usd` budget stays blocked however high the account cap goes.
-/// A row from before the key column carries `None` and keeps the old
-/// whole-config reading. Clear-only (no re-block); pure so it is unit-testable.
+/// A `None` key is judged against the whole config. Clear-only (no re-block); pure so it is unit-testable.
 fn soft_limit_blocks_to_clear(
     candidates: &[(String, Option<String>)],
     windows: &[crate::soft_limit::UsageWindow],
@@ -1787,18 +1833,16 @@ pub async fn delete_provider(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Path((id, provider_id)): Path<(Uuid, Uuid)>,
-) -> Result<StatusCode, (StatusCode, Json<serde_json::Value>)> {
-    require_human(&ctx)?;
+) -> Result<StatusCode, AppError> {
     let removed = crate::store::account_providers::delete_owner_scoped(
         &state.pool,
         provider_id,
         id,
         ctx.owner_filter(),
     )
-    .await
-    .map_err(|e| db_err(&e))?;
+    .await?;
     if removed == 0 {
-        return Err(err(StatusCode::NOT_FOUND, "no such provider"));
+        return Err(AppError::new(StatusCode::NOT_FOUND, "no such provider"));
     }
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1812,16 +1856,15 @@ pub async fn move_provider(
     Extension(ctx): Extension<AuthContext>,
     Path((id, provider_id)): Path<(Uuid, Uuid)>,
     Json(req): Json<MoveProvider>,
-) -> Result<Json<ProviderInfo>, (StatusCode, Json<serde_json::Value>)> {
-    require_human(&ctx)?;
+) -> Result<Json<ProviderInfo>, AppError> {
     let src_owner = require_account_owner(&state, &ctx, id).await?;
     let tgt_owner = require_account_owner(&state, &ctx, req.target_account_id)
         .await
-        .map_err(|_| err(StatusCode::NOT_FOUND, "no such target account"))?;
+        .map_err(|_| AppError::new(StatusCode::NOT_FOUND, "no such target account"))?;
     // Same-owner only: shares confer `use`, never re-homing a credential onto
     // another user's identity (which would also flip whose sessions bill it).
     if src_owner != tgt_owner {
-        return Err(err(
+        return Err(AppError::new(
             StatusCode::FORBIDDEN,
             "provider can only move between accounts of the same owner",
         ));
@@ -1837,20 +1880,19 @@ pub async fn move_provider(
     .await;
     match moved {
         Ok(done) if done.rows_affected() == 0 => {
-            Err(err(StatusCode::NOT_FOUND, "no such provider"))
+            Err(AppError::new(StatusCode::NOT_FOUND, "no such provider"))
         }
         Ok(_) => {
             let info = fetch_provider_info(&state.pool, provider_id)
-                .await
-                .map_err(|e| db_err(&e))?
-                .ok_or_else(|| err(StatusCode::NOT_FOUND, "no such provider"))?;
+                .await?
+                .ok_or_else(|| AppError::new(StatusCode::NOT_FOUND, "no such provider"))?;
             Ok(Json(info))
         }
-        Err(sqlx::Error::Database(db)) if db.is_unique_violation() => Err(err(
+        Err(sqlx::Error::Database(db)) if db.is_unique_violation() => Err(AppError::new(
             StatusCode::CONFLICT,
             "the target account already has a provider of that family",
         )),
-        Err(e) => Err(db_err(&e)),
+        Err(e) => Err(AppError::from(e)),
     }
 }
 
@@ -1886,27 +1928,32 @@ pub struct OAuthStart {
     pub account_id: Option<Uuid>,
 }
 
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, ts_rs::TS)]
+#[ts(export)]
 pub struct OAuthStartResponse {
     pub nonce: String,
     pub authorize_url: String,
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, ts_rs::TS)]
+#[ts(export)]
 pub struct OAuthFinish {
     pub nonce: String,
     /// New-account name. Required unless the flow was started with an
     /// `account_id` attach target (then ignored).
     #[serde(default)]
+    #[ts(type = "string", optional)]
     pub name: Option<String>,
     /// anthropic: the `code#state` pair pasted from claude.ai (the `#state`
     /// suffix is optional). Either this or `callback_url` must be present.
     #[serde(default)]
+    #[ts(type = "string", optional)]
     pub code: Option<String>,
     /// openai/Codex: the full `http://localhost:1455/auth/callback?code=…&state=…`
     /// URL the user copies from the browser address bar after the redirect fails
     /// to load (the fixed redirect can't reach cctui).
     #[serde(default)]
+    #[ts(type = "string", optional)]
     pub callback_url: Option<String>,
 }
 
@@ -2022,24 +2069,19 @@ pub async fn oauth_start(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Json(req): Json<OAuthStart>,
-) -> Result<Json<OAuthStartResponse>, (StatusCode, Json<serde_json::Value>)> {
+) -> Result<Json<OAuthStartResponse>, AppError> {
     // The attach target names its owner; otherwise the caller does.
     let uid = if let Some(account_id) = req.account_id {
-        require_human(&ctx)?;
-        let owner: Option<Uuid> = sqlx::query_scalar(
-            "SELECT user_id FROM accounts WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2)",
-        )
-        .bind(account_id)
-        .bind(ctx.owner_filter())
-        .fetch_optional(&state.pool)
-        .await
-        .map_err(|e| db_err(&e))?;
-        owner.ok_or_else(|| err(StatusCode::NOT_FOUND, "no such account"))?
+        let owner = shareable_owner(Shareable::Account, account_id, &state.pool).await?;
+        owner
+            .filter(|o| ctx.owner_filter().is_none_or(|f| f == *o))
+            .ok_or_else(|| AppError::new(StatusCode::NOT_FOUND, "no such account"))?
     } else {
-        resolve_owner(&ctx, req.user_id)?
+        resolve_owner(&ctx, req.user_id)
+            .map_err(|(s, Json(v))| AppError::new(s, v["error"].as_str().unwrap_or_default()))?
     };
     if !matches!(req.provider.as_str(), "anthropic" | "openai") {
-        return Err(err(StatusCode::BAD_REQUEST, "provider must be anthropic|openai"));
+        return Err(AppError::new(StatusCode::BAD_REQUEST, "provider must be anthropic|openai"));
     }
 
     sweep_expired(&state.pending_oauth_logins);
@@ -2106,9 +2148,7 @@ pub async fn oauth_finish(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Json(req): Json<OAuthFinish>,
-) -> Result<(StatusCode, Json<AccountInfo>), (StatusCode, Json<serde_json::Value>)> {
-    require_human(&ctx)?;
-
+) -> Result<(StatusCode, Json<AccountInfo>), AppError> {
     sweep_expired(&state.pending_oauth_logins);
 
     // Consume the pending record (single-use), but only if it belongs to the
@@ -2117,7 +2157,7 @@ pub async fn oauth_finish(
     // any pending login. The account lands on the stored owner.
     let pending = match state.pending_oauth_logins.get(&req.nonce) {
         Some(p) if ctx.is_admin() || ctx.user_id == p.user_id => p.clone(),
-        _ => return Err(err(StatusCode::BAD_REQUEST, "unknown or expired login")),
+        _ => return Err(AppError::new(StatusCode::BAD_REQUEST, "unknown or expired login")),
     };
     let uid = pending.user_id;
     state.pending_oauth_logins.remove(&req.nonce);
@@ -2126,20 +2166,14 @@ pub async fn oauth_finish(
     // fails fast: an attach target must still exist and belong to the pending
     // owner; otherwise `name` finds-or-creates an identity after the exchange.
     let attach_target = if let Some(account_id) = pending.account_id {
-        let owner: Option<Uuid> =
-            sqlx::query_scalar("SELECT user_id FROM accounts WHERE id = $1 AND user_id = $2")
-                .bind(account_id)
-                .bind(uid)
-                .fetch_optional(&state.pool)
-                .await
-                .map_err(|e| db_err(&e))?;
-        if owner.is_none() {
-            return Err(err(StatusCode::NOT_FOUND, "no such account"));
+        let owner = shareable_owner(Shareable::Account, account_id, &state.pool).await?;
+        if owner != Some(uid) {
+            return Err(AppError::new(StatusCode::NOT_FOUND, "no such account"));
         }
         Some(account_id)
     } else {
         if account_name_missing(req.name.as_deref()) {
-            return Err(err(StatusCode::BAD_REQUEST, "name required"));
+            return Err(AppError::new(StatusCode::BAD_REQUEST, "name required"));
         }
         None
     };
@@ -2152,10 +2186,10 @@ pub async fn oauth_finish(
             .callback_url
             .as_deref()
             .or(req.code.as_deref())
-            .ok_or_else(|| err(StatusCode::BAD_REQUEST, "callback_url required"))?;
-        let code = code_from_callback(raw)
-            .filter(|c| !c.is_empty())
-            .ok_or_else(|| err(StatusCode::BAD_REQUEST, "could not find code in callback URL"))?;
+            .ok_or_else(|| AppError::new(StatusCode::BAD_REQUEST, "callback_url required"))?;
+        let code = code_from_callback(raw).filter(|c| !c.is_empty()).ok_or_else(|| {
+            AppError::new(StatusCode::BAD_REQUEST, "could not find code in callback URL")
+        })?;
 
         let form = [
             ("grant_type", "authorization_code"),
@@ -2166,11 +2200,13 @@ pub async fn oauth_finish(
         ];
         state.http_client.post(gateway::openai_token_url()).form(&form).send().await
     } else {
-        let raw =
-            req.code.as_deref().ok_or_else(|| err(StatusCode::BAD_REQUEST, "code required"))?;
+        let raw = req
+            .code
+            .as_deref()
+            .ok_or_else(|| AppError::new(StatusCode::BAD_REQUEST, "code required"))?;
         let (code, state_part) = split_code_state(raw);
         if code.is_empty() {
-            return Err(err(StatusCode::BAD_REQUEST, "code required"));
+            return Err(AppError::new(StatusCode::BAD_REQUEST, "code required"));
         }
         // claude.ai sends `code#state`; the state must equal the verifier we issued.
         let oauth_state = state_part.unwrap_or_else(|| pending.code_verifier.clone());
@@ -2187,20 +2223,20 @@ pub async fn oauth_finish(
 
     let resp = resp.map_err(|e| {
         tracing::error!("oauth token exchange transport error: {e}");
-        err(StatusCode::BAD_GATEWAY, "token exchange failed")
+        AppError::new(StatusCode::BAD_GATEWAY, "token exchange failed")
     })?;
     if !resp.status().is_success() {
         let status = resp.status();
         let detail = resp.text().await.unwrap_or_default();
         tracing::error!(%status, "oauth token exchange rejected: {detail}");
-        return Err(err(
+        return Err(AppError::new(
             StatusCode::BAD_REQUEST,
             "token exchange rejected — check the pasted code/URL",
         ));
     }
     let tok: OAuthTokenResponse = resp.json().await.map_err(|e| {
         tracing::error!("oauth token exchange decode error: {e}");
-        err(StatusCode::BAD_GATEWAY, "token exchange decode failed")
+        AppError::new(StatusCode::BAD_GATEWAY, "token exchange decode failed")
     })?;
 
     // For Codex, pull the chatgpt account id out of the id_token so the gateway
@@ -2230,8 +2266,7 @@ pub async fn oauth_finish(
         .bind(uid)
         .bind(name)
         .fetch_one(&state.pool)
-        .await
-        .map_err(|e| db_err(&e))?
+        .await?
     };
 
     // Upsert on (account_id, family): a first login inserts; re-running the flow
@@ -2267,15 +2302,13 @@ pub async fn oauth_finish(
             // Fresh credentials → drop the in-memory reauth gate too, so
             // the gateway's success path doesn't think it still needs clearing.
             state.account_reauth.remove(&pid);
-            let info = fetch_account_info(&state.pool, account_id, None)
-                .await
-                .map_err(|e| db_err(&e))?
-                .ok_or_else(|| {
-                    err(StatusCode::INTERNAL_SERVER_ERROR, "account vanished after login")
+            let info =
+                fetch_account_info(&state.pool, account_id, None).await?.ok_or_else(|| {
+                    AppError::new(StatusCode::INTERNAL_SERVER_ERROR, "account vanished after login")
                 })?;
             Ok((StatusCode::CREATED, Json(info)))
         }
-        Err(e) => Err(db_err(&e)),
+        Err(e) => Err(AppError::from(e)),
     }
 }
 
@@ -2309,11 +2342,15 @@ pub const USAGE_CACHE_TTL: Duration = Duration::minutes(3);
 /// credential has no active windows — the webui hides the indicator in that
 /// case. `account_id` is the provider-row id (the legacy field name is the
 /// API contract).
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, ts_rs::TS)]
+#[ts(export)]
 pub struct AccountUsage {
     pub account_id: Uuid,
     pub provider: String,
     /// Raw upstream usage JSON (passed through verbatim) or `null`.
+    #[ts(
+        type = "Record<string, { utilization?: number | null, resets_at?: string | null } | null> | null"
+    )]
     pub usage: Option<serde_json::Value>,
     /// Normalized, provider-agnostic usage windows: the collection the
     /// UI renders and the soft-limit evaluator gates on. Empty ⇒ no supported
@@ -2321,6 +2358,7 @@ pub struct AccountUsage {
     pub windows: Vec<UsageWindowView>,
     /// Seconds since this usage was fetched upstream (0 = just now). Lets the UI
     /// show staleness; values refresh on the slow cache TTL, not per request.
+    #[ts(type = "number")]
     pub age_secs: u64,
     /// Whether a usage-limit reset can be claimed right now (Codex reset
     /// credits, Claude `juniper_tide`); `None` when the payload has no such block.
@@ -2329,11 +2367,13 @@ pub struct AccountUsage {
 
 /// A normalized window plus its pace against the window's linear budget
 /// (`None` when the window has no reset time or no known length).
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, ts_rs::TS)]
+#[ts(export)]
 pub struct UsageWindowView {
     #[serde(flatten)]
     pub window: crate::soft_limit::UsageWindow,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub pace: Option<crate::pace::Pace>,
 }
 
@@ -2443,8 +2483,7 @@ pub async fn account_usage(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<Uuid>,
-) -> Result<Json<AccountUsage>, (StatusCode, Json<serde_json::Value>)> {
-    require_human(&ctx)?;
+) -> Result<Json<AccountUsage>, AppError> {
     // Authorize + resolve provider in one go. Admin (`ctx.user_id` = NULL) may
     // read any provider; a user only its own.
     let provider: Option<String> = sqlx::query_scalar(
@@ -2454,10 +2493,9 @@ pub async fn account_usage(
     .bind(id)
     .bind(ctx.owner_filter())
     .fetch_optional(&state.pool)
-    .await
-    .map_err(|e| db_err(&e))?;
+    .await?;
     let Some(provider) = provider else {
-        return Err(err(StatusCode::NOT_FOUND, "no such account"));
+        return Err(AppError::new(StatusCode::NOT_FOUND, "no such account"));
     };
 
     // Serve a fresh-enough cached value without touching upstream.
@@ -2495,7 +2533,8 @@ pub async fn account_usage(
 
 /// One row of `GET /api/v1/accounts/usage`: a provider credential's usage plus
 /// the account it hangs off, so a caller can group without a second request.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, ts_rs::TS)]
+#[ts(export)]
 pub struct AccountUsageEntry {
     #[serde(flatten)]
     pub usage: AccountUsage,
@@ -2525,15 +2564,13 @@ struct UsageProviderRow {
 pub async fn all_accounts_usage(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
-) -> Result<Json<Vec<AccountUsageEntry>>, (StatusCode, Json<serde_json::Value>)> {
-    require_human(&ctx)?;
+) -> Result<Json<Vec<AccountUsageEntry>>, AppError> {
     let rows: Vec<UsageProviderRow> = sqlx::query_as(
         "SELECT p.id, p.provider, p.account_id, p.header_pin, a.name AS account_name, a.emoji AS account_emoji          FROM account_providers p JOIN accounts a ON a.id = p.account_id          WHERE ($1::uuid IS NULL OR p.user_id = $1)            AND p.provider IN ('anthropic', 'openai', 'fireworks')          ORDER BY a.name, p.family",
     )
     .bind(ctx.owner_filter())
     .fetch_all(&state.pool)
-    .await
-    .map_err(|e| db_err(&e))?;
+    .await?;
 
     let fetches = rows.iter().map(|r| gateway::usage_for_soft_limit(&state, r.id));
     let usages = futures_util::future::join_all(fetches).await;
@@ -2575,7 +2612,8 @@ pub async fn all_accounts_usage(
 
 /// API view of one live share grant on an account. Safe to return —
 /// no secrets; just who the account is shared with and since when.
-#[derive(Debug, serde::Serialize, sqlx::FromRow)]
+#[derive(Debug, serde::Serialize, sqlx::FromRow, ts_rs::TS)]
+#[ts(export, rename = "AccountShareInfo")]
 pub struct ShareInfo {
     pub account_id: Uuid,
     pub user_id: Uuid,
@@ -2588,10 +2626,12 @@ pub struct ShareInfo {
 /// `POST /api/v1/accounts/{id}/shares` payload. `user` is the grantee,
 /// accepted as either a UUID or a login (`users.name`) so an operator can grant
 /// by whichever they have. `action` defaults to `use` (the only action today).
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, ts_rs::TS)]
+#[ts(export, rename = "AccountGrantShare")]
 pub struct GrantShare {
     pub user: String,
     #[serde(default)]
+    #[ts(type = "string", optional)]
     pub action: Option<String>,
 }
 
@@ -2604,7 +2644,7 @@ async fn require_account_owner(
     state: &AppState,
     ctx: &AuthContext,
     id: Uuid,
-) -> Result<Uuid, (StatusCode, Json<serde_json::Value>)> {
+) -> Result<Uuid, AppError> {
     let owner: Option<Uuid> = sqlx::query_scalar(
         "SELECT user_id FROM accounts \
          WHERE id = $1 AND ($2::uuid IS NULL OR user_id = $2)",
@@ -2612,9 +2652,8 @@ async fn require_account_owner(
     .bind(id)
     .bind(ctx.owner_filter())
     .fetch_optional(&state.pool)
-    .await
-    .map_err(|e| db_err(&e))?;
-    owner.ok_or_else(|| err(StatusCode::NOT_FOUND, "no such account"))
+    .await?;
+    owner.ok_or_else(|| AppError::new(StatusCode::NOT_FOUND, "no such account"))
 }
 
 /// `GET /api/v1/accounts/{id}/shares` — who the account is shared with (owner-
@@ -2623,8 +2662,7 @@ pub async fn list_shares(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<Uuid>,
-) -> Result<Json<Vec<ShareInfo>>, (StatusCode, Json<serde_json::Value>)> {
-    require_human(&ctx)?;
+) -> Result<Json<Vec<ShareInfo>>, AppError> {
     require_account_owner(&state, &ctx, id).await?;
     let rows: Vec<ShareInfo> = sqlx::query_as(
         "SELECT s.resource_id AS account_id, s.grantee_id AS user_id, u.name AS user_name, \
@@ -2635,34 +2673,32 @@ pub async fn list_shares(
     )
     .bind(id)
     .fetch_all(&state.pool)
-    .await
-    .map_err(|e| db_err(&e))?;
+    .await?;
     Ok(Json(rows))
 }
 
 /// `POST /api/v1/accounts/{id}/shares` — grant `use` to another user (owner-
-/// scoped). `user` is a UUID or login. Idempotent: re-granting a previously
+/// scoped). `user` is a UUID or login. Idempotent: re-granting a
 /// revoked share un-revokes it in place rather than 409ing on the primary key.
 pub async fn grant_share(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Path(id): Path<Uuid>,
     Json(req): Json<GrantShare>,
-) -> Result<(StatusCode, Json<ShareInfo>), (StatusCode, Json<serde_json::Value>)> {
-    require_human(&ctx)?;
+) -> Result<(StatusCode, Json<ShareInfo>), AppError> {
     require_account_owner(&state, &ctx, id).await?;
 
     // Only `use` today (schema default); reject anything else so a typo doesn't
     // silently store a dead action that no code path honours.
     let action = req.action.as_deref().map(str::trim).filter(|s| !s.is_empty()).unwrap_or("use");
     if action != "use" {
-        return Err(err(StatusCode::BAD_REQUEST, "action must be 'use'"));
+        return Err(AppError::new(StatusCode::BAD_REQUEST, "action must be 'use'"));
     }
 
     // Resolve the grantee by UUID or login (`users.name`), active users only.
     let ident = req.user.trim();
     if ident.is_empty() {
-        return Err(err(StatusCode::BAD_REQUEST, "user required"));
+        return Err(AppError::new(StatusCode::BAD_REQUEST, "user required"));
     }
     let target: Option<Uuid> = Uuid::parse_str(ident)
         .map_or_else(
@@ -2676,10 +2712,9 @@ pub async fn grant_share(
             },
         )
         .fetch_optional(&state.pool)
-        .await
-        .map_err(|e| db_err(&e))?;
+        .await?;
     let Some(target) = target else {
-        return Err(err(StatusCode::NOT_FOUND, "no such user"));
+        return Err(AppError::new(StatusCode::NOT_FOUND, "no such user"));
     };
 
     sqlx::query(
@@ -2692,8 +2727,7 @@ pub async fn grant_share(
     .bind(target)
     .bind(action)
     .execute(&state.pool)
-    .await
-    .map_err(|e| db_err(&e))?;
+    .await?;
 
     let info: ShareInfo = sqlx::query_as(
         "SELECT s.resource_id AS account_id, s.grantee_id AS user_id, u.name AS user_name, \
@@ -2706,8 +2740,7 @@ pub async fn grant_share(
     .bind(target)
     .bind(action)
     .fetch_one(&state.pool)
-    .await
-    .map_err(|e| db_err(&e))?;
+    .await?;
     Ok((StatusCode::CREATED, Json(info)))
 }
 
@@ -2718,8 +2751,7 @@ pub async fn revoke_share(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Path((id, user_id)): Path<(Uuid, Uuid)>,
-) -> Result<StatusCode, (StatusCode, Json<serde_json::Value>)> {
-    require_human(&ctx)?;
+) -> Result<StatusCode, AppError> {
     require_account_owner(&state, &ctx, id).await?;
     let res = sqlx::query(
         "UPDATE resource_shares SET revoked_at = now() \
@@ -2729,10 +2761,9 @@ pub async fn revoke_share(
     .bind(id)
     .bind(user_id)
     .execute(&state.pool)
-    .await
-    .map_err(|e| db_err(&e))?;
+    .await?;
     if res.rows_affected() == 0 {
-        return Err(err(StatusCode::NOT_FOUND, "no such share"));
+        return Err(AppError::new(StatusCode::NOT_FOUND, "no such share"));
     }
     Ok(StatusCode::NO_CONTENT)
 }
@@ -2751,6 +2782,12 @@ mod tests {
             !PROVIDER_SELECT.contains("GROUP BY st.account_id"),
             "a grouped subquery aggregates every provider's rows on a single-id lookup"
         );
+    }
+
+    #[test]
+    fn provider_usage_reads_running_totals_not_every_turn() {
+        assert!(!PROVIDER_SELECT.contains("session_token_usage"));
+        assert_eq!(PROVIDER_SELECT.matches("JOIN session_usage_totals stu").count(), 2);
     }
 
     #[test]
@@ -2899,7 +2936,7 @@ mod tests {
         assert!(cleared.is_empty());
     }
 
-    /// CCT-962, both directions: the account cap only lifts the blocks it owns.
+    /// The account cap only lifts the blocks it owns, in both directions.
     #[test]
     fn raising_an_account_cap_spares_a_session_over_its_own_budget() {
         let caps = crate::soft_limit::SoftLimits::from_json(Some(&serde_json::json!({
@@ -3272,7 +3309,7 @@ mod tests {
             let mut bad = std::collections::HashMap::new();
             bad.insert(denied.to_string(), "x".to_string());
             let e = validate_env_json(&bad).expect_err("denylisted name must be rejected");
-            assert_eq!(e.0, StatusCode::BAD_REQUEST);
+            assert!(matches!(e, AppError::Status(StatusCode::BAD_REQUEST, _)));
         }
 
         // Malformed name rejected.
@@ -3315,15 +3352,42 @@ mod tests {
         assert!(decrypted.is_empty(), "removing every name clears the blob");
     }
 
-    #[test]
-    fn provider_write_validates_provider() {
+    #[tokio::test]
+    async fn provider_write_validates_provider() {
         let spec = ProviderSpec { provider: Some("bogus".into()), ..Default::default() };
-        assert!(prepare_provider_write(&spec).is_err());
+        assert!(prepare_provider_write(&spec).await.is_err());
         let spec = ProviderSpec::default();
-        assert!(prepare_provider_write(&spec).is_err());
+        assert!(prepare_provider_write(&spec).await.is_err());
         // native without refresh token → 400.
         let spec = ProviderSpec { provider: Some("anthropic".into()), ..Default::default() };
-        assert!(prepare_provider_write(&spec).is_err());
+        assert!(prepare_provider_write(&spec).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn provider_write_rejects_an_internal_base_url() {
+        for base in [
+            "http://127.0.0.1:9000",
+            "https://10.0.0.5",
+            "https://169.254.169.254",
+            "https://minio.storage.svc:9000",
+            "https://localhost",
+        ] {
+            let spec = ProviderSpec {
+                provider: Some("openai-compatible".into()),
+                base_url: Some(base.into()),
+                ..Default::default()
+            };
+            assert!(prepare_provider_write(&spec).await.is_err(), "{base}");
+        }
+        if std::env::var_os("CCTUI_VAULT_KEY").is_some() {
+            let spec = ProviderSpec {
+                provider: Some("openai-compatible".into()),
+                base_url: Some("https://1.1.1.1/v1".into()),
+                ..Default::default()
+            };
+            assert!(prepare_provider_write(&spec).await.is_ok());
+        }
+        assert!(check_base_url("https://192.168.1.10").await.is_err());
     }
 
     #[test]
@@ -3352,7 +3416,7 @@ mod tests {
             serde_json::json!([1, 2]),
         ] {
             let e = build_rate_limits_json(Some(&bad)).expect_err("invalid rate_limits must 400");
-            assert_eq!(e.0, StatusCode::BAD_REQUEST);
+            assert!(matches!(e, AppError::Status(StatusCode::BAD_REQUEST, _)));
         }
     }
 }

@@ -3,7 +3,10 @@ pub mod parser;
 pub mod registry;
 
 pub use ast::{Filter, FilterOp, Node};
-pub use parser::parse;
+pub use parser::{MAX_DEPTH, parse};
+
+/// Longest raw query string routes accept before parsing.
+pub const MAX_QUERY_LEN: usize = 2048;
 pub use registry::{FIELDS, FieldDef, FieldType, resolve};
 
 #[cfg(test)]
@@ -235,5 +238,48 @@ mod tests {
                 ]
             }
         );
+    }
+
+    fn on_small_stack(f: impl FnOnce() + Send + 'static) {
+        std::thread::Builder::new().stack_size(256 * 1024).spawn(f).unwrap().join().unwrap();
+    }
+
+    fn depth(n: &Node) -> usize {
+        match n {
+            Node::Not { child } => 1 + depth(child),
+            Node::And { children } | Node::Or { children } => {
+                1 + children.iter().map(depth).max().unwrap_or(0)
+            }
+            _ => 1,
+        }
+    }
+
+    #[test]
+    fn deep_parens_do_not_overflow() {
+        on_small_stack(|| {
+            let _ = parse(&"(".repeat(100_000));
+            let n = parse(&format!("{}x{}", "(".repeat(100_000), ")".repeat(100_000)));
+            assert_eq!(n, text("x"));
+            let nested = format!("{}a OR b{}", "(a AND ".repeat(10_000), ")".repeat(10_000));
+            assert!(depth(&parse(&nested)) <= 3 * (crate::MAX_DEPTH + 2));
+        });
+    }
+
+    #[test]
+    fn long_not_chains_do_not_overflow() {
+        on_small_stack(|| {
+            assert!(parse(&"NOT ".repeat(50_000)).is_empty());
+            assert_eq!(parse(&format!("{}x", "NOT ".repeat(50_000))), text("x"));
+            assert_eq!(
+                parse(&format!("{}x", "NOT ".repeat(50_001))),
+                Node::Not { child: Box::new(text("x")) }
+            );
+            assert_eq!(parse(&format!("{}x", "not:".repeat(50_000))), text("x"));
+            assert_eq!(
+                parse(&format!("{}x", "-".repeat(50_001))),
+                Node::Not { child: Box::new(text("x")) }
+            );
+            let _ = parse(&"NOT AND ".repeat(50_000));
+        });
     }
 }

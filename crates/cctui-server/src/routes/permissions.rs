@@ -46,6 +46,17 @@ pub struct PendingPlan {
     pub received_at: DateTime<Utc>,
 }
 
+/// Outcome of [`PermissionStore::record_session_decision`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionDecision {
+    Recorded,
+    /// No pending entry: already resolved, or lost to a server restart while the
+    /// adapter still waits. Safe to forward to the caller's own session.
+    Unknown,
+    /// The request belongs to a different session; nothing was recorded.
+    Foreign,
+}
+
 pub struct PermissionStore {
     /// Pending requests waiting for TUI decision: `request_id` → entry.
     /// Populated by the daemon-WS path when an adapter forwards a
@@ -101,6 +112,25 @@ impl PermissionStore {
         let session_id = self.pending.remove(request_id).map(|p| p.session_id).unwrap_or_default();
         self.decisions.insert(request_id.to_string(), (session_id.clone(), behavior, Utc::now()));
         session_id
+    }
+
+    /// Record a client decision only if `request_id` is pending for
+    /// `session_id`. A request parked for another session is left untouched, so
+    /// a principal authorized for one session can never resolve another's.
+    pub fn record_session_decision(
+        &mut self,
+        session_id: &str,
+        request_id: &str,
+        behavior: String,
+    ) -> SessionDecision {
+        match self.pending.get(request_id) {
+            Some(p) if p.session_id != session_id => SessionDecision::Foreign,
+            Some(_) => {
+                self.record_decision(request_id, behavior);
+                SessionDecision::Recorded
+            }
+            None => SessionDecision::Unknown,
+        }
     }
 
     pub fn list_pending(&self) -> Vec<PendingPermission> {
@@ -209,21 +239,15 @@ pub async fn list_pending(
             .collect::<std::collections::HashSet<_>>()
             .into_iter()
             .collect();
-        let owned: std::collections::HashSet<String> = sqlx::query_scalar::<_, String>(
-            "SELECT s.id FROM sessions s \
-             LEFT JOIN machines m ON m.id = s.machine_uuid \
-             WHERE s.id = ANY($1) AND m.user_id = $2",
-        )
-        .bind(&session_ids)
-        .bind(ctx.user_id)
-        .fetch_all(&state.pool)
-        .await
-        .unwrap_or_else(|e| {
-            tracing::error!("db error (pending permissions authz): {e}");
-            Vec::new()
-        })
-        .into_iter()
-        .collect();
+        let owned: std::collections::HashSet<String> =
+            crate::store::sessions::visible_session_ids(&state.pool, &session_ids, ctx.user_id)
+                .await
+                .unwrap_or_else(|e| {
+                    tracing::error!("db error (pending permissions authz): {e}");
+                    Vec::new()
+                })
+                .into_iter()
+                .collect();
         pending.into_iter().filter(|p| owned.contains(&p.session_id)).collect()
     };
 
@@ -264,6 +288,35 @@ mod tests {
         assert_eq!(store.record_decision("r1", "allow".into()), "s1");
         // Unknown request_id returns empty.
         assert_eq!(store.record_decision("nope", "allow".into()), "");
+    }
+
+    #[test]
+    fn session_decision_refuses_another_sessions_request() {
+        let mut store = PermissionStore::new();
+        store.insert_request(PendingPermission {
+            session_id: "victim".into(),
+            request_id: "r1".into(),
+            tool_name: "Bash".into(),
+            description: "rm -rf".into(),
+            input_preview: "rm -rf /".into(),
+            received_at: Utc::now(),
+        });
+        assert_eq!(
+            store.record_session_decision("attacker", "r1", "allow".into()),
+            SessionDecision::Foreign
+        );
+        assert_eq!(store.list_pending().len(), 1);
+        assert!(store.decisions.is_empty());
+
+        assert_eq!(
+            store.record_session_decision("victim", "r1", "allow".into()),
+            SessionDecision::Recorded
+        );
+        assert!(store.list_pending().is_empty());
+        assert_eq!(
+            store.record_session_decision("victim", "r1", "allow".into()),
+            SessionDecision::Unknown
+        );
     }
 
     #[test]

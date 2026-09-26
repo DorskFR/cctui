@@ -17,7 +17,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 use cctui_proto::adapter::{AdapterEvent, EndReason, SessionMeta};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::sync::mpsc;
 
@@ -46,11 +46,30 @@ struct JobState {
     #[serde(default)]
     cwd: Option<String>,
     #[serde(default)]
-    state: Option<String>,
+    state: Option<JobPhase>,
     #[serde(default)]
     activity: Option<String>,
     #[serde(default, alias = "firstTerminalAt")]
     first_terminal_at: Option<String>,
+}
+
+/// A bg job's `state.json` `state`; unrecognised values are kept verbatim so
+/// they still reach the session metadata.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum JobPhase {
+    Done,
+    Stopped,
+    Killed,
+    Failed,
+    #[serde(untagged)]
+    Other(String),
+}
+
+impl JobPhase {
+    const fn is_terminal(&self) -> bool {
+        !matches!(self, Self::Other(_))
+    }
 }
 
 impl JobState {
@@ -68,14 +87,13 @@ impl JobState {
 
 impl JobState {
     fn is_terminal(&self) -> bool {
-        self.first_terminal_at.is_some()
-            || matches!(self.state.as_deref(), Some("done" | "stopped" | "killed" | "failed"))
+        self.first_terminal_at.is_some() || self.state.as_ref().is_some_and(JobPhase::is_terminal)
     }
 
     fn end_reason(&self) -> EndReason {
-        match self.state.as_deref() {
-            Some("killed") => EndReason::Killed,
-            Some("failed") => EndReason::Crashed { detail: "agent failed".into() },
+        match self.state {
+            Some(JobPhase::Killed) => EndReason::Killed,
+            Some(JobPhase::Failed) => EndReason::Crashed { detail: "agent failed".into() },
             _ => EndReason::Completed,
         }
     }
@@ -271,6 +289,23 @@ pub fn default_cursor_path() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn job_phase_fixtures_parse_and_round_trip() {
+        for (raw, want, terminal) in [
+            ("done", JobPhase::Done, true),
+            ("stopped", JobPhase::Stopped, true),
+            ("killed", JobPhase::Killed, true),
+            ("failed", JobPhase::Failed, true),
+            ("working", JobPhase::Other("working".into()), false),
+        ] {
+            let body = format!(r#"{{"sessionId":"s","state":"{raw}"}}"#);
+            let job: JobState = serde_json::from_str(&body).unwrap();
+            assert_eq!(job.state.as_ref(), Some(&want), "{raw}");
+            assert_eq!(want.is_terminal(), terminal, "{raw}");
+            assert_eq!(serde_json::to_value(&want).unwrap(), json!(raw));
+        }
+    }
 
     fn write_state(jobs_root: &std::path::Path, short: &str, body: &str) {
         let dir = jobs_root.join(short);

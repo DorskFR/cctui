@@ -1,6 +1,87 @@
+use cctui_proto::models::SessionStatus;
 use sqlx::PgExecutor;
 
 use crate::routes::sessions::DbSession;
+
+/// Every value `sessions.status` may hold; migration 139 enforces the same set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionRowStatus {
+    New,
+    Active,
+    Inactive,
+    Archived,
+    Draft,
+    Ended,
+    Failed,
+}
+
+impl SessionRowStatus {
+    pub const ALL: &'static [Self] = &[
+        Self::New,
+        Self::Active,
+        Self::Inactive,
+        Self::Archived,
+        Self::Draft,
+        Self::Ended,
+        Self::Failed,
+    ];
+    /// Rows a daemon may still be running.
+    pub const RUNNING: &'static [Self] = &[Self::New, Self::Active, Self::Inactive];
+    /// Rows a keep-alive tick may be sent to.
+    pub const KEEPALIVE: &'static [Self] = &[Self::Active, Self::Inactive];
+    /// Rows auto-archive must never touch.
+    pub const NOT_ARCHIVABLE: &'static [Self] = &[Self::Archived, Self::Draft];
+    /// Rows auto-resume must never touch.
+    pub const NOT_RESUMABLE: &'static [Self] =
+        &[Self::Archived, Self::Ended, Self::Failed, Self::Draft];
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::New => "new",
+            Self::Active => "active",
+            Self::Inactive => "inactive",
+            Self::Archived => "archived",
+            Self::Draft => "draft",
+            Self::Ended => "ended",
+            Self::Failed => "failed",
+        }
+    }
+
+    #[must_use]
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|v| v.as_str() == s)
+    }
+
+    /// The set as bindable text, for `status = ANY($n)` / `status <> ALL($n)`.
+    #[must_use]
+    pub fn names(set: &[Self]) -> Vec<&'static str> {
+        set.iter().map(|s| s.as_str()).collect()
+    }
+
+    #[must_use]
+    pub const fn is_terminal(self) -> bool {
+        matches!(self, Self::Archived | Self::Ended | Self::Failed)
+    }
+
+    /// Persisted states the API reports as-is instead of re-deriving from
+    /// heartbeat age.
+    #[must_use]
+    pub const fn is_sticky(self) -> bool {
+        self.is_terminal() || matches!(self, Self::Draft)
+    }
+
+    #[must_use]
+    pub const fn to_wire(self) -> SessionStatus {
+        match self {
+            Self::New => SessionStatus::New,
+            Self::Active => SessionStatus::Active,
+            Self::Inactive | Self::Ended | Self::Failed => SessionStatus::Inactive,
+            Self::Archived => SessionStatus::Archived,
+            Self::Draft => SessionStatus::Draft,
+        }
+    }
+}
 
 pub async fn set_inactive(
     exec: impl PgExecutor<'_>,
@@ -14,6 +95,54 @@ pub async fn set_inactive(
     };
     sqlx::query(sql).bind(id).execute(exec).await?;
     Ok(())
+}
+
+/// Insert a freshly registered session, or reset an existing row to `new`.
+/// An existing row is only touched when it belongs to `user_id` on
+/// `machine_uuid`; returns whether a row was written.
+pub async fn upsert_registered(
+    exec: impl PgExecutor<'_>,
+    session: &cctui_proto::models::Session,
+    machine_uuid: uuid::Uuid,
+    user_id: uuid::Uuid,
+) -> Result<bool, sqlx::Error> {
+    let written: Option<String> = sqlx::query_scalar(
+        r"INSERT INTO sessions (id, parent_id, account_id, machine_id, machine_uuid, user_id, working_dir, status, registered_at, last_heartbeat, metadata, model)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, 'new', $8, $9, $10, NULLIF($10->>'model', ''))
+           ON CONFLICT (id) DO UPDATE SET status = 'new', last_heartbeat = $9, metadata = $10, model = COALESCE(sessions.model, EXCLUDED.model)
+           WHERE sessions.user_id = EXCLUDED.user_id AND sessions.machine_uuid = EXCLUDED.machine_uuid
+           RETURNING id",
+    )
+    .bind(&session.id)
+    .bind(&session.parent_id)
+    .bind(&session.account_id)
+    .bind(&session.machine_id)
+    .bind(machine_uuid)
+    .bind(user_id)
+    .bind(&session.working_dir)
+    .bind(session.registered_at)
+    .bind(session.last_heartbeat)
+    .bind(&session.metadata)
+    .fetch_optional(exec)
+    .await?;
+    Ok(written.is_some())
+}
+
+/// The subset of `ids` whose session runs on a machine owned by `user_id`.
+pub async fn visible_session_ids(
+    exec: impl PgExecutor<'_>,
+    ids: &[String],
+    user_id: uuid::Uuid,
+) -> Result<Vec<String>, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT s.id FROM sessions s \
+         LEFT JOIN machines m ON m.id = s.machine_uuid \
+         WHERE s.id = ANY($1) AND m.user_id = $2",
+    )
+    .bind(ids)
+    .bind(user_id)
+    .fetch_all(exec)
+    .await
 }
 
 pub async fn fetch_by_id(
@@ -106,7 +235,39 @@ pub fn job_children<'a>(children: &'a [Child], archived: &[String]) -> Vec<&'a s
 
 #[cfg(test)]
 mod tests {
-    use super::{Child, descendants, job_children};
+    use super::{Child, SessionRowStatus, descendants, job_children, upsert_registered};
+
+    #[test]
+    fn row_status_round_trips_through_text() {
+        for s in SessionRowStatus::ALL {
+            assert_eq!(SessionRowStatus::parse(s.as_str()), Some(*s));
+        }
+        assert_eq!(SessionRowStatus::parse("registering"), None);
+    }
+
+    #[test]
+    fn check_constraint_lists_exactly_the_enum() {
+        let migration = include_str!("../../../../migrations/139_sessions_status_check.up.sql");
+        let quoted: Vec<String> =
+            SessionRowStatus::ALL.iter().map(|s| format!("'{}'", s.as_str())).collect();
+        assert!(
+            migration.contains(&format!("CHECK (status IN ({}))", quoted.join(", "))),
+            "migration 139's CHECK drifted from SessionRowStatus::ALL"
+        );
+        let default = format!("SET DEFAULT '{}'", SessionRowStatus::New.as_str());
+        assert!(migration.contains(&default), "sessions.status default must satisfy the CHECK");
+    }
+
+    #[test]
+    fn wire_status_collapses_ended_and_failed_to_inactive() {
+        use cctui_proto::models::SessionStatus;
+        assert!(matches!(SessionRowStatus::Ended.to_wire(), SessionStatus::Inactive));
+        assert!(matches!(SessionRowStatus::Failed.to_wire(), SessionStatus::Inactive));
+        assert!(matches!(SessionRowStatus::Archived.to_wire(), SessionStatus::Archived));
+        assert!(matches!(SessionRowStatus::Draft.to_wire(), SessionStatus::Draft));
+        assert!(!SessionRowStatus::Active.is_sticky());
+        assert!(SessionRowStatus::Draft.is_sticky() && !SessionRowStatus::Draft.is_terminal());
+    }
 
     fn child(id: &str, observe_only: bool) -> Child {
         at_depth(id, observe_only, 1)
@@ -220,6 +381,89 @@ mod tests {
             "DELETE FROM users WHERE id = $1",
         ] {
             sqlx::query(sql).bind(uid).execute(&pool).await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn register_only_touches_the_callers_own_row() {
+        use uuid::Uuid;
+        let Some(url) = crate::routes::gateway::test_db_url("register_own_row") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let (me, other) = (Uuid::new_v4(), Uuid::new_v4());
+        let (mine, theirs) = (Uuid::new_v4(), Uuid::new_v4());
+        for uid in [me, other] {
+            sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+                .bind(uid)
+                .bind(format!("reg-{uid}"))
+                .bind(format!("kh-{uid}"))
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        for (machine, uid) in [(mine, me), (theirs, other)] {
+            sqlx::query(
+                "INSERT INTO machines (id, user_id, name, key_hash) VALUES ($1, $2, $3, $4)",
+            )
+            .bind(machine)
+            .bind(uid)
+            .bind(machine.to_string())
+            .bind(format!("kh-{machine}"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        let existing = [
+            (Some(me), Some(mine), true),
+            (Some(me), Some(theirs), false),
+            (Some(other), Some(mine), false),
+            (None, Some(mine), false),
+            (Some(me), None, false),
+            (None, None, false),
+        ];
+        for (user, machine, expect) in existing {
+            let sid = Uuid::new_v4().to_string();
+            sqlx::query(
+                "INSERT INTO sessions (id, machine_id, working_dir, user_id, machine_uuid, status, metadata) \
+                 VALUES ($1, 'm', '/w', $2, $3, 'active', '{\"k\":\"orig\"}'::jsonb)",
+            )
+            .bind(&sid)
+            .bind(user)
+            .bind(machine)
+            .execute(&pool)
+            .await
+            .unwrap();
+            let now = chrono::Utc::now();
+            let session = cctui_proto::models::Session {
+                id: sid.clone(),
+                parent_id: None,
+                account_id: None,
+                machine_id: "m".into(),
+                working_dir: "/w".into(),
+                status: cctui_proto::models::SessionStatus::New,
+                registered_at: now,
+                last_heartbeat: now,
+                metadata: serde_json::json!({"k": "new"}),
+                adapter_id: None,
+            };
+            let written = upsert_registered(&pool, &session, mine, me).await.unwrap();
+            assert_eq!(written, expect, "user {user:?} machine {machine:?}");
+            let (status, owner, uuid): (String, Option<Uuid>, Option<Uuid>) =
+                sqlx::query_as("SELECT status, user_id, machine_uuid FROM sessions WHERE id = $1")
+                    .bind(&sid)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            if expect {
+                assert_eq!(status, "new");
+            } else {
+                assert_eq!((status.as_str(), owner, uuid), ("active", user, machine));
+            }
         }
     }
 }

@@ -1,4 +1,5 @@
 import { browser } from '$app/environment';
+import { apiBlob } from '$lib/api';
 import { m } from '$lib/paraglide/messages';
 import { renderMarkdown } from '$lib/markdown';
 import { toasts } from '$lib/toast.svelte';
@@ -134,7 +135,7 @@ export async function tryOpenLocalFile(
 export async function attemptOpen(href: string, name: string): Promise<Refusal | null> {
 	let res: Response;
 	try {
-		res = await fetch(href, { credentials: 'same-origin' });
+		res = await apiBlob(href);
 	} catch {
 		return { status: 0, detail: '' };
 	}

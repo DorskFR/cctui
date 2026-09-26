@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 import { describe, expect, it } from 'vitest';
 import type { LimitResetStatus } from '$lib/queries';
 import { limitResetHint, limitResetLabel } from './limit-reset';
@@ -5,6 +6,11 @@ import { limitResetHint, limitResetLabel } from './limit-reset';
 const status = (extra: Partial<LimitResetStatus> = {}): LimitResetStatus => ({
 	kind: 'claude',
 	available: false,
+	title: null,
+	credit_id: null,
+	ineligible_reason: null,
+	next_available_at: null,
+	weekly_resets_at: null,
 	...extra
 });
 
