@@ -496,17 +496,37 @@ enum Owned {
     Dispatcher(uuid::Uuid),
 }
 
+impl Owned {
+    const fn share_type(&self) -> Option<&'static str> {
+        match self {
+            Self::Session(_) => None,
+            Self::Machine(_) => Some("machine"),
+            Self::Account(_) => Some("account"),
+            Self::Dispatcher(_) => Some("dispatcher"),
+        }
+    }
+
+    const fn uuid(&self) -> Option<uuid::Uuid> {
+        match self {
+            Self::Session(_) => None,
+            Self::Machine(id) | Self::Account(id) | Self::Dispatcher(id) => Some(*id),
+        }
+    }
+}
+
 /// Who a broadcast event reaches besides admins.
 #[derive(Debug, PartialEq, Eq)]
 enum Audience {
     Everyone,
     OwnerOf(Owned),
+    /// The owner plus users holding a live `resource_shares` grant on it.
+    SharedWith(Owned),
     AdminsOnly,
 }
 
 /// Exhaustive on purpose: a new variant must declare who may see it.
 fn audience(event: &ServerEvent) -> Audience {
-    use Audience::{AdminsOnly, Everyone, OwnerOf};
+    use Audience::{AdminsOnly, Everyone, OwnerOf, SharedWith};
     let session = |id: &str| OwnerOf(Owned::Session(id.to_owned()));
     match event {
         ServerEvent::Stream { session_id, .. }
@@ -529,12 +549,14 @@ fn audience(event: &ServerEvent) -> Audience {
             session_id.as_deref().map_or(AdminsOnly, session)
         }
         ServerEvent::ArchiveManifest { machine_id, .. }
-        | ServerEvent::ArchiveUploaded { machine_id, .. }
-        | ServerEvent::MachineLiveness { machine_id, .. }
-        | ServerEvent::MachineResources { machine_id, .. } => OwnerOf(Owned::Machine(*machine_id)),
-        ServerEvent::AccountUsage { account_id, .. } => OwnerOf(Owned::Account(*account_id)),
+        | ServerEvent::ArchiveUploaded { machine_id, .. } => OwnerOf(Owned::Machine(*machine_id)),
+        ServerEvent::MachineLiveness { machine_id, .. }
+        | ServerEvent::MachineResources { machine_id, .. } => {
+            SharedWith(Owned::Machine(*machine_id))
+        }
+        ServerEvent::AccountUsage { account_id, .. } => SharedWith(Owned::Account(*account_id)),
         ServerEvent::DispatcherLiveness { dispatcher_id, .. } => {
-            OwnerOf(Owned::Dispatcher(*dispatcher_id))
+            SharedWith(Owned::Dispatcher(*dispatcher_id))
         }
         ServerEvent::GithubEvent { .. } => AdminsOnly,
         ServerEvent::Heartbeat {} | ServerEvent::Resync { .. } => Everyone,
@@ -544,6 +566,7 @@ fn audience(event: &ServerEvent) -> Audience {
 /// Resolves the owning user of a resource; `None` when unknown.
 trait OwnerLookup: Sync {
     fn owner(&self, owned: &Owned) -> impl Future<Output = Option<uuid::Uuid>> + Send;
+    fn shared_with(&self, owned: &Owned, user: uuid::Uuid) -> impl Future<Output = bool> + Send;
 }
 
 impl OwnerLookup for sqlx::PgPool {
@@ -576,6 +599,14 @@ impl OwnerLookup for sqlx::PgPool {
             None
         })
     }
+
+    async fn shared_with(&self, owned: &Owned, user: uuid::Uuid) -> bool {
+        let (Some(kind), Some(id)) = (owned.share_type(), owned.uuid()) else { return false };
+        crate::routes::shares::granted(self, kind, id, user).await.unwrap_or_else(|e| {
+            tracing::error!(?owned, "db error (ws event share authz): {e}");
+            false
+        })
+    }
 }
 
 const OWNER_TTL: std::time::Duration = std::time::Duration::from_mins(1);
@@ -587,6 +618,19 @@ const OWNER_CACHE_MAX: usize = 4096;
 #[derive(Default)]
 struct OwnerCache {
     entries: std::collections::HashMap<Owned, (Option<uuid::Uuid>, tokio::time::Instant)>,
+    grants: std::collections::HashMap<Owned, (bool, tokio::time::Instant)>,
+}
+
+fn make_room<V>(
+    map: &mut std::collections::HashMap<Owned, (V, tokio::time::Instant)>,
+    now: tokio::time::Instant,
+) {
+    if map.len() >= OWNER_CACHE_MAX {
+        map.retain(|_, (_, expires)| *expires > now);
+        if map.len() >= OWNER_CACHE_MAX {
+            map.clear();
+        }
+    }
 }
 
 impl OwnerCache {
@@ -598,15 +642,30 @@ impl OwnerCache {
             return cached;
         }
         let resolved = lookup.owner(owned).await;
-        if self.entries.len() >= OWNER_CACHE_MAX {
-            self.entries.retain(|_, (_, expires)| *expires > now);
-            if self.entries.len() >= OWNER_CACHE_MAX {
-                self.entries.clear();
-            }
-        }
+        make_room(&mut self.entries, now);
         let ttl = if resolved.is_some() { OWNER_TTL } else { UNKNOWN_OWNER_TTL };
         self.entries.insert(owned.clone(), (resolved, now + ttl));
         resolved
+    }
+
+    /// Whether `user` holds a live share grant on `owned`, memoized per socket.
+    async fn shared_with(
+        &mut self,
+        owned: &Owned,
+        user: uuid::Uuid,
+        lookup: &impl OwnerLookup,
+    ) -> bool {
+        let now = tokio::time::Instant::now();
+        if let Some(&(cached, expires)) = self.grants.get(owned)
+            && expires > now
+        {
+            return cached;
+        }
+        let granted = lookup.shared_with(owned, user).await;
+        make_room(&mut self.grants, now);
+        let ttl = if granted { OWNER_TTL } else { UNKNOWN_OWNER_TTL };
+        self.grants.insert(owned.clone(), (granted, now + ttl));
+        granted
     }
 
     fn forget(&mut self, owned: &Owned) {
@@ -646,6 +705,10 @@ impl<L: OwnerLookup + Send> EventFilter for OwnerFilter<L> {
                     self.cache.forget(&owned);
                 }
                 resolved == Some(self.user_id)
+            }
+            Audience::SharedWith(owned) => {
+                self.cache.owner(&owned, &self.lookup).await == Some(self.user_id)
+                    || self.cache.shared_with(&owned, self.user_id, &self.lookup).await
             }
         }
     }
@@ -773,6 +836,10 @@ mod tests {
     const ALICE: Uuid = Uuid::from_u128(1);
     const BOB: Uuid = Uuid::from_u128(2);
     const BOB_MACHINE: Uuid = Uuid::from_u128(20);
+    const CAROL: Uuid = Uuid::from_u128(3);
+    const DAVE: Uuid = Uuid::from_u128(4);
+    const BOB_ACCOUNT: Uuid = Uuid::from_u128(21);
+    const BOB_DISPATCHER: Uuid = Uuid::from_u128(22);
     const ALICE_MACHINE: Uuid = Uuid::from_u128(10);
 
     /// Every resource named `*bob*` / `BOB_*` belongs to Bob, the rest to Alice.
@@ -790,6 +857,17 @@ mod tests {
                 Owned::Machine(id) if *id == BOB_MACHINE => Some(BOB),
                 _ => Some(ALICE),
             }
+        }
+
+        async fn shared_with(&self, owned: &Owned, user: Uuid) -> bool {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            user == CAROL
+                && [
+                    Owned::Machine(BOB_MACHINE),
+                    Owned::Account(BOB_ACCOUNT),
+                    Owned::Dispatcher(BOB_DISPATCHER),
+                ]
+                .contains(owned)
         }
     }
 
@@ -997,5 +1075,48 @@ mod tests {
     fn session_deregistered_is_owner_scoped() {
         let event = ServerEvent::SessionDeregistered { session_id: "sess-2".to_owned() };
         assert_eq!(audience(&event), Audience::OwnerOf(Owned::Session("sess-2".into())));
+    }
+
+    fn shared_events() -> Vec<ServerEvent> {
+        vec![
+            ServerEvent::MachineResources {
+                machine_id: BOB_MACHINE,
+                resources: cctui_proto::resources::MachineResources::default(),
+            },
+            ServerEvent::MachineLiveness {
+                machine_id: BOB_MACHINE,
+                liveness: cctui_proto::models::MachineLiveness::Online,
+            },
+            ServerEvent::AccountUsage { account_id: BOB_ACCOUNT, usage: serde_json::Value::Null },
+            ServerEvent::DispatcherLiveness {
+                dispatcher_id: BOB_DISPATCHER,
+                liveness: cctui_proto::models::MachineLiveness::Online,
+            },
+        ]
+    }
+
+    #[tokio::test]
+    async fn grantees_receive_shared_resource_events_and_others_do_not() {
+        let owners = FakeOwners::default();
+        let mut carol = filter_for(CAROL, owners.clone());
+        let mut dave = filter_for(DAVE, FakeOwners::default());
+        for event in shared_events() {
+            assert!(carol.allows(&event).await, "withheld from a grantee: {event:?}");
+            assert!(!dave.allows(&event).await, "leaked to a non-grantee: {event:?}");
+        }
+        let archive = ServerEvent::ArchiveUploaded {
+            machine_id: BOB_MACHINE,
+            project_dir: "/home/bob/secret".into(),
+            session_id: "sess-bob".into(),
+            size_bytes: 1,
+            sha256: String::new(),
+        };
+        assert!(!carol.allows(&archive).await, "archives stay owner-only");
+
+        let calls = owners.calls.load(Ordering::SeqCst);
+        for event in shared_events() {
+            carol.allows(&event).await;
+        }
+        assert_eq!(owners.calls.load(Ordering::SeqCst), calls, "grants are cached");
     }
 }
