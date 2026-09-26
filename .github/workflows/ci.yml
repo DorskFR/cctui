@@ -170,7 +170,7 @@ jobs:
       # rest need a live claude/codex/opencode binary and stay manual-only.
       - name: cargo test --ignored (database, fake harness shims)
         run: |
-          cargo test --locked -p cctui-server --lib -- --ignored routes::gateway::mint::db_tests
+          cargo test --locked -p cctui-server --bin cctui-server -- --ignored routes::gateway::mint::db_tests
           cargo test --locked -p cctui-daemon --lib -- --ignored harness_update::
 
       - name: Start the server
