@@ -23,7 +23,6 @@
 	import { parseViewOpts } from './conversation/filters';
 	import { mergeEventSources } from './conversation/format';
 	import { ConversationStream, mergeLiveEvent } from './conversation/stream.svelte';
-	import { freezeWidthDuringResize } from './conversation/resizeFreeze';
 	import { ScrollController } from './conversation/scroll.svelte';
 	import { SearchHitStepper } from './conversation/searchHits.svelte';
 	import { ForkController } from './conversation/fork.svelte';
@@ -277,7 +276,6 @@
 			class="drawer"
 			data-journey="conversation"
 			onkeydown={guardEscape}
-			use:freezeWidthDuringResize
 		>
 			<!-- The whole drawer is a file drop area: dragging files over it
 			     shows the tsumikit Dropzone overlay; on drop they're staged as composer
