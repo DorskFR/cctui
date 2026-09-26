@@ -35,9 +35,7 @@ pub async fn connect(database_url: &str) -> Result<PgPool, sqlx::Error> {
         .connect_with(connect_options)
         .await?;
 
-    reconcile_migration_checksums(&pool).await?;
-
-    MIGRATOR.run(&pool).await?;
+    migrate(&pool).await?;
 
     tracing::info!(
         max_connections,
@@ -47,6 +45,29 @@ pub async fn connect(database_url: &str) -> Result<PgPool, sqlx::Error> {
         "database connected and migrations applied"
     );
     Ok(pool)
+}
+
+/// Serializes migrations across replicas with a polled advisory lock. A
+/// blocking `pg_advisory_lock` waiter holds a snapshot that a concurrent
+/// `CREATE INDEX CONCURRENTLY` must wait out, which deadlocks the two.
+async fn migrate(pool: &PgPool) -> Result<(), sqlx::Error> {
+    const LOCK_KEY: i64 = 0x6363_7475_695f_6d67;
+    let mut conn = pool.acquire().await?;
+    while !sqlx::query_scalar::<_, bool>("SELECT pg_try_advisory_lock($1)")
+        .bind(LOCK_KEY)
+        .fetch_one(&mut *conn)
+        .await?
+    {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    let result = async {
+        reconcile_migration_checksums(pool).await?;
+        MIGRATOR.run(&mut *conn).await?;
+        Ok(())
+    }
+    .await;
+    sqlx::query("SELECT pg_advisory_unlock($1)").bind(LOCK_KEY).execute(&mut *conn).await?;
+    result
 }
 
 async fn reconcile_migration_checksums(pool: &PgPool) -> Result<(), sqlx::Error> {

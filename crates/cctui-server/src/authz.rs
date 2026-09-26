@@ -864,11 +864,7 @@ mod tests {
         let Some(url) = crate::routes::gateway::test_db_url("session_owner_mismatch") else {
             return;
         };
-        let pool = sqlx::postgres::PgPoolOptions::new()
-            .max_connections(2)
-            .connect(&url)
-            .await
-            .expect("connect test db");
+        let pool = crate::db::connect(&url).await.expect("connect test db");
         let (owner, other, machine) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
         for uid in [owner, other] {
             sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
