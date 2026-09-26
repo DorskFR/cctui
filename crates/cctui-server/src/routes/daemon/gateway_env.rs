@@ -179,13 +179,11 @@ async fn spawn_capability_for(
     }
 }
 
-/// The default grant for a session launched without one. A persist failure
-/// still serves the grant for this launch.
+/// The default grant for a session launched without one. It carries no mode
+/// ceiling: spawn-child then caps children at the session's live
+/// `permission_mode`. A persist failure still serves the grant for this launch.
 async fn grant_default(state: &AppState, session_id: &str) -> cctui_proto::api::SpawnCapability {
-    let cap = cctui_proto::api::SpawnCapability {
-        max_permission_mode: Some(cctui_proto::adapter::PermissionMode::Ask),
-        ..cctui_proto::api::SpawnCapability::machine_default()
-    };
+    let cap = state.config.spawn_default_capability();
     if let Err(e) = crate::store::spawn_capabilities::upsert(&state.pool, session_id, &cap).await {
         tracing::error!(%session_id, error = %e, "default spawn-capability persist failed");
     }
@@ -292,6 +290,31 @@ mod tests {
     use crate::routes::daemon::test_support::{
         drop_machines, seed_machine, seed_owned_session, seed_session,
     };
+
+    #[test]
+    fn ungranted_sessions_spawn_up_to_their_live_mode() {
+        use crate::routes::spawn_child::{Usage, authorize};
+        use cctui_proto::adapter::PermissionMode;
+        let cap = crate::config::Config::for_test(vec![]).spawn_default_capability();
+        let req = |m| cctui_proto::api::SpawnChildRequest {
+            adapter: "codex".into(),
+            prompt: "go".into(),
+            permission_mode: Some(m),
+            ..Default::default()
+        };
+        let usage = |p| Usage { parent_mode: Some(p), ..Usage::default() };
+
+        let a = authorize(Some(&cap), &req(PermissionMode::Yolo), &usage(PermissionMode::Yolo))
+            .expect("yolo parent spawns yolo");
+        assert_eq!(a.permission_mode, PermissionMode::Yolo);
+
+        assert!(
+            authorize(Some(&cap), &req(PermissionMode::Yolo), &usage(PermissionMode::Ask)).is_err()
+        );
+        let a = authorize(Some(&cap), &req(PermissionMode::Ask), &usage(PermissionMode::Ask))
+            .expect("ask parent spawns ask");
+        assert_eq!(a.permission_mode, PermissionMode::Ask);
+    }
 
     #[tokio::test]
     async fn gateway_env_is_refused_for_sessions_the_machine_does_not_own() {
