@@ -183,7 +183,7 @@ async fn spawn_capability_for(
 /// ceiling: spawn-child then caps children at the session's live
 /// `permission_mode`. A persist failure still serves the grant for this launch.
 async fn grant_default(state: &AppState, session_id: &str) -> cctui_proto::api::SpawnCapability {
-    let cap = state.config.spawn_default_capability();
+    let cap = crate::routes::server_settings::spawn_default_capability(state).await;
     if let Err(e) = crate::store::spawn_capabilities::upsert(&state.pool, session_id, &cap).await {
         tracing::error!(%session_id, error = %e, "default spawn-capability persist failed");
     }
@@ -295,7 +295,7 @@ mod tests {
     fn ungranted_sessions_spawn_up_to_their_live_mode() {
         use crate::routes::spawn_child::{Usage, authorize};
         use cctui_proto::adapter::PermissionMode;
-        let cap = crate::config::Config::for_test(vec![]).spawn_default_capability();
+        let cap = cctui_proto::api::SpawnCapability::machine_default();
         let req = |m| cctui_proto::api::SpawnChildRequest {
             adapter: "codex".into(),
             prompt: "go".into(),

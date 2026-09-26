@@ -36,6 +36,14 @@ pub(super) fn register(r: Routes) -> Routes {
         )
         .add(
             &[GET, Method::PUT],
+            "/admin/instance/spawn-defaults",
+            "Read or set the default CctuiAgent limits for sessions that declare none (admin).",
+            get(routes::server_settings::get_spawn_defaults).put(routes::server_settings::update_spawn_defaults),
+            Authn::Bearer,
+            ScopeAz(auth::Scope::Admin),
+        )
+        .add(
+            &[GET, Method::PUT],
             "/admin/harness-autoupdate",
             "Read the harness auto-update settings of every machine, or set the instance default (admin).",
             get(routes::harness_update::read).put(routes::harness_update::set_instance),

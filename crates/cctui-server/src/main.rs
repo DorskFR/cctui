@@ -661,6 +661,8 @@ mod tests {
             "PUT /admin/instance Bearer Scope(Admin)",
             "GET /admin/instance/self-update Bearer Scope(Admin)",
             "PUT /admin/instance/self-update Bearer Scope(Admin)",
+            "GET /admin/instance/spawn-defaults Bearer Scope(Admin)",
+            "PUT /admin/instance/spawn-defaults Bearer Scope(Admin)",
             "DELETE /admin/machines/{id} Bearer Scope(Admin)",
             "PATCH /admin/machines/{id} Bearer Scope(Admin)",
             "DELETE /admin/machines/{id}/purge Bearer Scope(Admin)",
