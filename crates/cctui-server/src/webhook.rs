@@ -53,7 +53,7 @@ pub async fn validate_notify_url(raw: &str) -> Result<(), NotifyUrlError> {
 /// the POST onto an internal address after registration vetted the URL.
 fn delivery_client() -> &'static reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-    CLIENT.get_or_init(|| crate::outbound::guarded_client(&[]))
+    CLIENT.get_or_init(|| crate::outbound::guarded_client(crate::outbound::no_allowlist))
 }
 
 /// Register a pending completion webhook for a dispatched session.

@@ -1241,9 +1241,11 @@ writable by the session:
   session gets the **machine default**: every known adapter, a $20 per-child
   ceiling, 16 children, 3 generations below the root and a $400 budget across
   the whole tree. A session launched on the user's own machine is trusted to
-  spawn there; send an explicit capability to narrow it. The server tunes the
-  last three with `CCTUI_SPAWN_MAX_CHILDREN`, `CCTUI_SPAWN_MAX_DEPTH` and
-  `CCTUI_SPAWN_MAX_TREE_BUDGET_USD`.
+  spawn there; send an explicit capability to narrow it. An admin tunes the
+  last three in Settings > Instance > CctuiAgent limits, seeded by
+  `CCTUI_SPAWN_MAX_CHILDREN`, `CCTUI_SPAWN_MAX_DEPTH` and
+  `CCTUI_SPAWN_MAX_TREE_BUDGET_USD` (a saved value wins over env, env over the
+  built-in default).
 - dispatched workers: `payload.spawn_capability`, which the server **strips from
   the forwarded payload** so the worker cannot read or restate it. Absent here
   still means no tool — dispatched workers get no default.

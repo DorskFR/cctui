@@ -108,8 +108,8 @@ The server migrates its database on start; nothing else to set up. Other targets
 via `deploy/local/.env` (`CCTUI_ADMIN_TOKENS`, `CCTUI_UI_PORT`, …).
 
 A compatible-endpoint account whose `base_url` points at an internal or plain
-`http` host is refused unless that host is listed in
-`CCTUI_UPSTREAM_ALLOWED_HOSTS`; see [docs/gateway-upstreams.md](docs/gateway-upstreams.md).
+`http` host is refused unless an admin allows that host in Settings > Instance
+or lists it in `CCTUI_UPSTREAM_ALLOWED_HOSTS`; see [docs/gateway-upstreams.md](docs/gateway-upstreams.md).
 
 ### Connect a machine
 

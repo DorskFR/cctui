@@ -112,6 +112,8 @@ const HASH_ALIASES: Record<string, SettingsPage> = {
 	version: 'instance',
 	'self-update': 'instance',
 	'net-stats': 'instance',
+	upstreams: 'instance',
+	'spawn-limits': 'instance',
 	theme: 'appearance',
 	language: 'appearance',
 	spawn: 'sessions',

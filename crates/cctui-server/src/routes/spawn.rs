@@ -488,11 +488,10 @@ async fn persist_spawn_capability(
     permission_mode: Option<cctui_proto::adapter::PermissionMode>,
     token_session_id: &str,
 ) {
-    let mut cap = req
-        .spawn_capability
-        .clone()
-        .filter(|c| !c.is_empty())
-        .unwrap_or_else(|| state.config.spawn_default_capability());
+    let mut cap = match req.spawn_capability.clone().filter(|c| !c.is_empty()) {
+        Some(cap) => cap,
+        None => crate::routes::server_settings::spawn_default_capability(state).await,
+    };
     let launched = permission_mode.unwrap_or(cctui_proto::adapter::PermissionMode::Ask);
     cap.max_permission_mode = Some(
         cap.max_permission_mode

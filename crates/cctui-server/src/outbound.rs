@@ -1,7 +1,7 @@
 //! SSRF guard for server-initiated requests to user-supplied URLs.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::sync::{Arc, LazyLock, OnceLock};
+use std::sync::{Arc, LazyLock, OnceLock, RwLock};
 
 #[derive(Debug)]
 pub enum OutboundUrlError {
@@ -76,22 +76,104 @@ pub struct AllowedHost {
     port: Option<u16>,
 }
 
-/// Hosts an operator lets per-account upstreams reach regardless of the guard:
-/// `CCTUI_UPSTREAM_ALLOWED_HOSTS` (comma-separated `host[:port]`) plus the host
-/// and port of `CCTUI_CLAUDE_LITELLM_ENDPOINT`, which the managed shim account
-/// points at.
-pub static UPSTREAM_ALLOWED_HOSTS: LazyLock<Vec<AllowedHost>> = LazyLock::new(|| {
-    let mut hosts =
-        parse_allowlist(&std::env::var("CCTUI_UPSTREAM_ALLOWED_HOSTS").unwrap_or_default());
-    if let Some(url) = std::env::var("CCTUI_CLAUDE_LITELLM_ENDPOINT")
+/// `CCTUI_UPSTREAM_ALLOWED_HOSTS`, as `host[:port]` entries.
+pub fn env_upstream_entries() -> Vec<String> {
+    std::env::var("CCTUI_UPSTREAM_ALLOWED_HOSTS")
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|e| !e.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The host and port of `CCTUI_CLAUDE_LITELLM_ENDPOINT`, which the managed shim
+/// account points at; always allowed on top of the editable list.
+pub fn managed_upstream_entries() -> Vec<String> {
+    std::env::var("CCTUI_CLAUDE_LITELLM_ENDPOINT")
         .ok()
         .and_then(|e| reqwest::Url::parse(e.trim()).ok())
-        && let Some(host) = url.host_str()
-    {
-        hosts.push(AllowedHost { host: normalize_host(host), port: url.port_or_known_default() });
+        .and_then(|url| {
+            let host = url.host_str()?.to_owned();
+            Some(
+                url.port_or_known_default().map_or_else(|| host.clone(), |p| format!("{host}:{p}")),
+            )
+        })
+        .into_iter()
+        .collect()
+}
+
+fn build_upstream_allowlist(saved: &[String], env: &[String]) -> Vec<AllowedHost> {
+    parse_allowlist(&[saved, env, &managed_upstream_entries()].concat().join(","))
+}
+
+static UPSTREAM_ALLOWED_HOSTS: LazyLock<RwLock<Arc<Vec<AllowedHost>>>> =
+    LazyLock::new(|| RwLock::new(Arc::new(build_upstream_allowlist(&[], &env_upstream_entries()))));
+
+/// Hosts per-account upstreams may reach regardless of the guard: the saved
+/// list, the env seed and the managed endpoint, all at once.
+pub fn upstream_allowlist() -> Arc<Vec<AllowedHost>> {
+    UPSTREAM_ALLOWED_HOSTS.read().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+}
+
+pub fn set_upstream_allowlist(saved: &[String]) {
+    let next = Arc::new(build_upstream_allowlist(saved, &env_upstream_entries()));
+    *UPSTREAM_ALLOWED_HOSTS.write().unwrap_or_else(std::sync::PoisonError::into_inner) = next;
+}
+
+pub fn no_allowlist() -> Arc<Vec<AllowedHost>> {
+    static EMPTY: LazyLock<Arc<Vec<AllowedHost>>> = LazyLock::new(|| Arc::new(Vec::new()));
+    EMPTY.clone()
+}
+
+fn valid_label_host(h: &str) -> bool {
+    h.len() <= 253
+        && h.trim_end_matches('.').split('.').all(|l| {
+            !l.is_empty()
+                && l.len() <= 63
+                && !l.starts_with('-')
+                && !l.ends_with('-')
+                && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        })
+}
+
+/// Checks one `host[:port]` entry and returns it normalized.
+pub fn normalize_allowlist_entry(raw: &str) -> Result<String, String> {
+    let entry = raw.trim();
+    let err = || format!("`{entry}` is not a host or host:port");
+    if entry.is_empty() || entry.contains("://") || entry.contains(['/', '*', ' ', ',', '@']) {
+        return Err(err());
     }
-    hosts
-});
+    let (host, port) = if let Some(rest) = entry.strip_prefix('[') {
+        let (h, tail) = rest.split_once(']').ok_or_else(err)?;
+        h.parse::<Ipv6Addr>().map_err(|_| err())?;
+        match tail {
+            "" => (format!("[{}]", h.to_ascii_lowercase()), None),
+            t => (
+                format!("[{}]", h.to_ascii_lowercase()),
+                Some(t.strip_prefix(':').ok_or_else(err)?),
+            ),
+        }
+    } else if entry.parse::<Ipv6Addr>().is_ok() {
+        (format!("[{}]", entry.to_ascii_lowercase()), None)
+    } else {
+        let (h, p) = match entry.rsplit_once(':') {
+            Some((h, p)) => (h, Some(p)),
+            None => (entry, None),
+        };
+        if h.parse::<Ipv4Addr>().is_err() && !valid_label_host(h) {
+            return Err(err());
+        }
+        (normalize_host(h), p)
+    };
+    match port {
+        None => Ok(host),
+        Some(p) => match p.parse::<u16>() {
+            Ok(n) if n > 0 => Ok(format!("{host}:{n}")),
+            _ => Err(format!("`{entry}` has an invalid port")),
+        },
+    }
+}
 
 fn normalize_host(host: &str) -> String {
     bare_host(host).trim_end_matches('.').to_ascii_lowercase()
@@ -180,26 +262,26 @@ pub async fn validate_outbound_url(
 
 /// A per-account upstream `base_url`, validated against the operator allowlist.
 pub async fn validate_upstream_url(raw: &str) -> Result<(), OutboundUrlError> {
-    validate_outbound_url(raw, &UPSTREAM_ALLOWED_HOSTS).await
+    validate_outbound_url(raw, &upstream_allowlist()).await
 }
 
 /// The DNS-free part of [`validate_upstream_url`], for the request path; names
 /// are re-checked at connect time by [`upstream_client`]'s resolver.
 pub fn upstream_url_permitted(raw: &str) -> Result<(), OutboundUrlError> {
-    precheck(raw, &UPSTREAM_ALLOWED_HOSTS).map(|_| ())
+    precheck(raw, &upstream_allowlist()).map(|_| ())
 }
 
 /// Drops internal addresses from every resolution, so a name that passed
 /// validation cannot later be rebound onto an internal address.
 /// Ports are not visible here; [`precheck`] enforces them on every request.
 struct GuardedResolver {
-    allow: &'static [AllowedHost],
+    allow: fn() -> Arc<Vec<AllowedHost>>,
 }
 
 impl reqwest::dns::Resolve for GuardedResolver {
     fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
         let host = name.as_str().to_owned();
-        let open = host_allowlisted(&host, self.allow);
+        let open = host_allowlisted(&host, &(self.allow)());
         Box::pin(async move {
             let addrs: Vec<SocketAddr> = tokio::net::lookup_host((host.as_str(), 0))
                 .await?
@@ -214,7 +296,7 @@ impl reqwest::dns::Resolve for GuardedResolver {
 }
 
 /// A client that follows no redirects and resolves names through the guard.
-pub fn guarded_client(allow: &'static [AllowedHost]) -> reqwest::Client {
+pub fn guarded_client(allow: fn() -> Arc<Vec<AllowedHost>>) -> reqwest::Client {
     reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .dns_resolver(Arc::new(GuardedResolver { allow }))
@@ -225,12 +307,59 @@ pub fn guarded_client(allow: &'static [AllowedHost]) -> reqwest::Client {
 /// Client for user-supplied upstreams.
 pub fn upstream_client() -> &'static reqwest::Client {
     static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
-    CLIENT.get_or_init(|| guarded_client(&UPSTREAM_ALLOWED_HOSTS))
+    CLIENT.get_or_init(|| guarded_client(upstream_allowlist))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{OutboundUrlError, ip_is_internal, parse_allowlist, validate_outbound_url};
+    use super::{
+        OutboundUrlError, ip_is_internal, normalize_allowlist_entry, parse_allowlist,
+        validate_outbound_url,
+    };
+
+    #[test]
+    fn env_hosts_stay_allowed_alongside_saved_ones() {
+        let allow = super::build_upstream_allowlist(
+            &["saved.internal:8080".to_owned()],
+            &["env.internal".to_owned()],
+        );
+        super::precheck("http://saved.internal:8080/v1", &allow).unwrap();
+        super::precheck("http://env.internal:9000/v1", &allow).unwrap();
+        let only_env = super::build_upstream_allowlist(&[], &["env.internal".to_owned()]);
+        super::precheck("http://env.internal/v1", &only_env).unwrap();
+        assert!(super::precheck("http://saved.internal:8080/v1", &only_env).is_err());
+    }
+
+    #[test]
+    fn allowlist_entries_are_validated_and_normalized() {
+        for (raw, want) in [
+            (" Ollama.LLM.svc ", "ollama.llm.svc"),
+            ("litellm.llm.svc:4000", "litellm.llm.svc:4000"),
+            ("10.0.0.5", "10.0.0.5"),
+            ("10.0.0.5:8080", "10.0.0.5:8080"),
+            ("[FD00::1]:8080", "[fd00::1]:8080"),
+            ("fd00::1", "[fd00::1]"),
+            ("minio", "minio"),
+        ] {
+            assert_eq!(normalize_allowlist_entry(raw).unwrap(), want, "{raw}");
+        }
+        for bad in [
+            "",
+            "https://example.com",
+            "example.com/v1",
+            "*.example.com",
+            "exa mple.com",
+            "example.com:0",
+            "example.com:99999",
+            "example.com:abc",
+            "-bad.example.com",
+            "a..b",
+            "[fd00::1",
+            "user@host",
+        ] {
+            assert!(normalize_allowlist_entry(bad).is_err(), "{bad}");
+        }
+    }
 
     #[test]
     fn ip_classifier_flags_internal_and_passes_public() {

@@ -43,6 +43,10 @@ import type { SelfUpdateRun } from "@bindings/SelfUpdateRun";
 import type { SelfUpdateTarget } from "@bindings/SelfUpdateTarget";
 import type { SelfUpdateTargetInfo } from "@bindings/SelfUpdateTargetInfo";
 import type { SelfUpdateTargetRequest } from "@bindings/SelfUpdateTargetRequest";
+import type { SpawnDefaults } from "@bindings/SpawnDefaults";
+import type { SpawnDefaultsInfo } from "@bindings/SpawnDefaultsInfo";
+import type { UpstreamHostsInfo } from "@bindings/UpstreamHostsInfo";
+import type { UpstreamHostsRequest } from "@bindings/UpstreamHostsRequest";
 import type { HarnessAutoupdateInfo } from "@bindings/HarnessAutoupdateInfo";
 import type { HarnessPolicyRequest } from "@bindings/HarnessPolicyRequest";
 import type { HarnessUpdatePolicy } from "@bindings/HarnessUpdatePolicy";
@@ -116,6 +120,16 @@ export const endpoints = {
     api.put<SelfUpdateTargetInfo>("/admin/instance/self-update", {
       target,
     } satisfies SelfUpdateTargetRequest),
+  spawnDefaults: () => api.get<SpawnDefaultsInfo>("/admin/instance/spawn-defaults"),
+  /** `null` fields fall back to env, then the built-in default (admin). */
+  setSpawnDefaults: (settings: SpawnDefaults) =>
+    api.put<SpawnDefaultsInfo>("/admin/instance/spawn-defaults", settings),
+  upstreamHosts: () => api.get<UpstreamHostsInfo>("/admin/instance/upstream-hosts"),
+  /** `null` resets the list to the env seed (admin). */
+  setUpstreamHosts: (hosts: string[] | null) =>
+    api.put<UpstreamHostsInfo>("/admin/instance/upstream-hosts", {
+      hosts,
+    } satisfies UpstreamHostsRequest),
   /** Harness auto-update: instance default plus every machine's override and report (admin). */
   harnessAutoupdate: () => api.get<HarnessAutoupdateInfo>("/admin/harness-autoupdate"),
   /** Set (or clear with `null`) the instance-wide harness auto-update default (admin). */

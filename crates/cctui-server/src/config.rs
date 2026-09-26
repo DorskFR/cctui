@@ -56,12 +56,12 @@ pub struct LiteLlmModel {
 
 #[derive(Debug, Clone)]
 pub struct Config {
-    /// Default `CctuiAgent` limits for sessions that declare no capability:
-    /// `CCTUI_SPAWN_MAX_CHILDREN`, `CCTUI_SPAWN_MAX_DEPTH`,
-    /// `CCTUI_SPAWN_MAX_TREE_BUDGET_USD`.
-    pub spawn_max_children: u32,
-    pub spawn_max_depth: u32,
-    pub spawn_max_tree_budget_usd: f64,
+    /// Env seeds for the default `CctuiAgent` limits (`CCTUI_SPAWN_MAX_CHILDREN`,
+    /// `CCTUI_SPAWN_MAX_DEPTH`, `CCTUI_SPAWN_MAX_TREE_BUDGET_USD`); `None` when
+    /// unset. A value saved in Settings wins over these.
+    pub spawn_max_children: Option<u32>,
+    pub spawn_max_depth: Option<u32>,
+    pub spawn_max_tree_budget_usd: Option<f64>,
     pub host: String,
     pub port: u16,
     pub database_url: String,
@@ -204,26 +204,23 @@ impl Config {
                 })
             })
             .unwrap_or_default();
-        let mut num = |k: &str, default: f64| -> f64 {
-            set(k).map_or(default, |s| match s.trim().parse::<f64>() {
-                Ok(v) if v.is_finite() && v >= 0.0 => v,
+        let mut num = |k: &str| -> Option<f64> {
+            set(k).and_then(|s| match s.trim().parse::<f64>() {
+                Ok(v) if v.is_finite() && v >= 0.0 => Some(v),
                 _ => {
                     errors.push(format!("{k} must be a non-negative number, got `{s}`"));
-                    default
+                    None
                 }
             })
         };
-        let spawn_max_children =
-            num("CCTUI_SPAWN_MAX_CHILDREN", f64::from(cctui_proto::api::DEFAULT_MAX_CHILDREN));
-        let spawn_max_depth =
-            num("CCTUI_SPAWN_MAX_DEPTH", f64::from(cctui_proto::api::DEFAULT_MAX_DEPTH));
-        let spawn_max_tree_budget_usd =
-            num("CCTUI_SPAWN_MAX_TREE_BUDGET_USD", cctui_proto::api::DEFAULT_TREE_BUDGET_USD);
+        let spawn_max_children = num("CCTUI_SPAWN_MAX_CHILDREN");
+        let spawn_max_depth = num("CCTUI_SPAWN_MAX_DEPTH");
+        let spawn_max_tree_budget_usd = num("CCTUI_SPAWN_MAX_TREE_BUDGET_USD");
         for (k, v) in [
             ("CCTUI_SPAWN_MAX_CHILDREN", spawn_max_children),
             ("CCTUI_SPAWN_MAX_DEPTH", spawn_max_depth),
         ] {
-            if v.fract() != 0.0 || v > f64::from(u32::MAX) {
+            if v.is_some_and(|v| v.fract() != 0.0 || v > f64::from(u32::MAX)) {
                 errors.push(format!("{k} must be a whole number"));
             }
         }
@@ -237,7 +234,7 @@ impl Config {
             parse_allowed_origins(get("CCTUI_ALLOWED_ORIGINS").as_deref(), &external_url);
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let (spawn_max_children, spawn_max_depth) =
-            (spawn_max_children as u32, spawn_max_depth as u32);
+            (spawn_max_children.map(|v| v as u32), spawn_max_depth.map(|v| v as u32));
         Ok(Self {
             spawn_max_children,
             spawn_max_depth,
@@ -276,17 +273,6 @@ impl Config {
             emoji_token: set("CCTUI_EMOJI_TOKEN"),
             claude_litellm_models,
         })
-    }
-
-    /// Capability for a session that declares none.
-    #[must_use]
-    pub fn spawn_default_capability(&self) -> cctui_proto::api::SpawnCapability {
-        cctui_proto::api::SpawnCapability {
-            max_children: Some(self.spawn_max_children),
-            max_depth: Some(self.spawn_max_depth),
-            max_tree_budget_usd: Some(self.spawn_max_tree_budget_usd),
-            ..cctui_proto::api::SpawnCapability::machine_default()
-        }
     }
 
     pub fn bind_addr(&self) -> String {
@@ -332,9 +318,9 @@ impl Config {
     #[must_use]
     pub fn for_test(allowed_origins: Vec<String>) -> Self {
         Self {
-            spawn_max_children: cctui_proto::api::DEFAULT_MAX_CHILDREN,
-            spawn_max_depth: cctui_proto::api::DEFAULT_MAX_DEPTH,
-            spawn_max_tree_budget_usd: cctui_proto::api::DEFAULT_TREE_BUDGET_USD,
+            spawn_max_children: None,
+            spawn_max_depth: None,
+            spawn_max_tree_budget_usd: None,
             host: "0.0.0.0".into(),
             port: 8700,
             database_url: String::new(),
@@ -445,9 +431,9 @@ mod tests {
     #[test]
     fn claude_litellm_gating() {
         let base = Config {
-            spawn_max_children: 0,
-            spawn_max_depth: 0,
-            spawn_max_tree_budget_usd: 0.0,
+            spawn_max_children: None,
+            spawn_max_depth: None,
+            spawn_max_tree_budget_usd: None,
             host: "0.0.0.0".into(),
             port: 8700,
             database_url: String::new(),
@@ -510,8 +496,10 @@ mod tests {
     #[test]
     fn spawn_defaults_are_env_tunable() {
         let base = |k: &str| (k == "DATABASE_URL").then(|| "postgres://x".to_owned());
-        let cap = Config::from_lookup(base).unwrap().spawn_default_capability();
-        assert_eq!(cap, cctui_proto::api::SpawnCapability::machine_default());
+        let cfg = Config::from_lookup(base).unwrap();
+        assert_eq!(cfg.spawn_max_children, None);
+        assert_eq!(cfg.spawn_max_depth, None);
+        assert_eq!(cfg.spawn_max_tree_budget_usd, None);
 
         let tuned = |k: &str| match k {
             "DATABASE_URL" => Some("postgres://x".to_owned()),
@@ -520,10 +508,10 @@ mod tests {
             "CCTUI_SPAWN_MAX_TREE_BUDGET_USD" => Some("12.5".to_owned()),
             _ => None,
         };
-        let cap = Config::from_lookup(tuned).unwrap().spawn_default_capability();
-        assert_eq!(cap.max_children, Some(4));
-        assert_eq!(cap.max_depth, Some(1));
-        assert_eq!(cap.max_tree_budget_usd, Some(12.5));
+        let cfg = Config::from_lookup(tuned).unwrap();
+        assert_eq!(cfg.spawn_max_children, Some(4));
+        assert_eq!(cfg.spawn_max_depth, Some(1));
+        assert_eq!(cfg.spawn_max_tree_budget_usd, Some(12.5));
 
         let bad = |k: &str| match k {
             "DATABASE_URL" => Some("postgres://x".to_owned()),
