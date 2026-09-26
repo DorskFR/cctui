@@ -28,9 +28,13 @@ mod ntfy;
 mod openapi;
 mod outbound;
 mod pace;
+mod plugin_archive;
+mod plugin_store;
+mod plugins;
 mod policy;
 mod pool_usage;
 mod presence;
+mod preview;
 mod registry;
 mod routes;
 mod scheduled_messages;
@@ -67,6 +71,7 @@ async fn main() -> anyhow::Result<()> {
     init_tracing();
     let (config, pool, auth_config) = bootstrap().await?;
     let state = build_state(&config, pool, auth_config.clone()).await?;
+    plugin_store::init(&state.pool, &state.plugins).await;
     start_background_tasks(&state).await;
     let app = build_app(&state, &config, &auth_config);
     spawn_sweeps(state);
@@ -148,6 +153,12 @@ async fn build_state(
         // configured with an https `CCTUI_EXTERNAL_URL` needs no new env.
         webauthn: webauthn::build(&config.external_url, config.rp_id.as_deref()).map(Arc::new),
         skills,
+        plugins: Arc::new(init_plugins(config)),
+        preview: Arc::new(preview::Registry::new(
+            config.preview_host.clone(),
+            &config.external_url,
+            &crypto::vault_key(),
+        )),
         presence,
         internal_secret,
         dispatcher_liveness: Arc::new(dashmap::DashMap::new()),
@@ -253,13 +264,18 @@ fn build_app(state: &AppState, config: &Config, auth_config: &auth::AuthConfig) 
         // `Routes::add`), which runs INSIDE this `auth_middleware` so the
         // `AuthContext` it inserts is already present when the policy evaluates.
         .layer(middleware::from_fn(auth::auth_middleware))
-        .layer(Extension(auth_config.clone()));
+        .layer(Extension(auth_config.clone()))
+        .layer(middleware::from_fn_with_state(
+            Arc::new(config.allowed_origins.clone()),
+            preview::csrf::middleware,
+        ));
     outer_routes()
         .nest("/api/v1", api_router)
         // Credentialed CORS bound to an explicit origin allowlist (same-origin
         // webui + dev Vite, extendable via CCTUI_ALLOWED_ORIGINS). A wildcard
         // origin is invalid once credentials are allowed.
         .layer(cors_layer(&config.allowed_origins))
+        .layer(middleware::from_fn_with_state(state.clone(), preview::handler::host_gate))
         .with_state(state.clone())
 }
 
@@ -342,6 +358,8 @@ fn outer_routes() -> Router<AppState> {
         // token in the request's own Authorization header — NOT the user-token
         // `api_router` middleware — so it lives on the outer app. Matches any
         // method + sub-path under each provider prefix.
+        // Public like the SPA assets: the webui `import()`s plugin modules.
+        .route("/plugins/{id}/{*path}", get(routes::plugins::static_file))
         .route("/gateway/anthropic/{*path}", any(routes::gateway::anthropic))
         .route("/gateway/openai/{*path}", any(routes::gateway::openai))
         .route("/gateway/fireworks/{*path}", any(routes::gateway::fireworks))
@@ -410,6 +428,14 @@ fn cors_layer(allowed_origins: &[String]) -> tower_http::cors::CorsLayer {
             Method::OPTIONS,
         ])
         .allow_headers(AllowHeaders::mirror_request())
+}
+
+fn init_plugins(config: &Config) -> plugins::PluginRegistry {
+    config.plugins_dir.as_ref().map_or_else(plugins::PluginRegistry::disabled, |dir| {
+        let registry = plugins::PluginRegistry::from_dir(dir.clone());
+        tracing::info!(dir = %dir.display(), installed = registry.all().len(), "plugins dir scanned");
+        registry
+    })
 }
 
 async fn init_skill_store() -> Arc<skill_store::SkillStore> {
@@ -693,6 +719,10 @@ mod tests {
             "DELETE /admin/machines/{id}/purge Bearer Scope(Admin)",
             "POST /admin/machines/{id}/rotate Bearer Scope(Admin)",
             "PUT /admin/passkeys/auto-prompt Bearer Scope(Admin)",
+            "GET /admin/plugins Bearer Scope(Admin)",
+            "POST /admin/plugins Bearer Scope(Admin)",
+            "DELETE /admin/plugins/{id} Bearer Scope(Admin)",
+            "PATCH /admin/plugins/{id} Bearer Scope(Admin)",
             "GET /admin/users Bearer Scope(Admin)",
             "POST /admin/users Bearer Scope(Admin)",
             "DELETE /admin/users/{id} Bearer Scope(Admin)",
@@ -743,6 +773,8 @@ mod tests {
             "DELETE /passkeys/{id} Bearer Authenticated",
             "PATCH /passkeys/{id} Bearer Authenticated",
             "GET /permissions/pending Bearer Authenticated",
+            "GET /plugins Bearer Authenticated",
+            "POST /plugins/rescan Bearer Scope(Admin)",
             "GET /profiles Bearer Human",
             "POST /profiles Bearer Human",
             "PUT /profiles/order Bearer Human",
@@ -804,6 +836,8 @@ mod tests {
             r#"POST /sessions/{id}/pins Bearer Resource(Session, Write, Path("id"))"#,
             r#"DELETE /sessions/{id}/pins/{seq} Bearer Resource(Session, Write, Path("id"))"#,
             r#"POST /sessions/{id}/policy Bearer Resource(Session, Write, Path("id"))"#,
+            r#"GET /sessions/{id}/previews Bearer Resource(Session, Read, Path("id"))"#,
+            r#"POST /sessions/{id}/previews/{pid}/ticket Bearer Resource(Session, Read, Path("id"))"#,
             r#"GET /sessions/{id}/rebinds Bearer Resource(Session, Read, Path("id"))"#,
             r#"POST /sessions/{id}/resume Bearer Resource(Session, Write, Path("id"))"#,
             r#"POST /sessions/{id}/seen Bearer Resource(Session, Write, Path("id"))"#,

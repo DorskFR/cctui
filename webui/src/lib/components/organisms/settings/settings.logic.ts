@@ -93,6 +93,7 @@ export const SETTINGS_PAGES = [
 	'appearance',
 	'sessions',
 	'macros',
+	'plugins',
 	'execution',
 	'privacy',
 	'notifications',

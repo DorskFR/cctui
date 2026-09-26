@@ -14,6 +14,7 @@
 	import LabelBadge from '$lib/components/molecules/LabelBadge.svelte';
 	import KeepaliveModal from '$lib/components/molecules/KeepaliveModal.svelte';
 	import { IconButton, Input, Menu, Text, Toolbar, FontScalePicker, type MenuItem } from '@dorsk/tsumikit';
+	import type { PluginButton } from '$lib/plugins/types';
 	import HeaderMeta from './HeaderMeta.svelte';
 	import { m } from '$lib/paraglide/messages';
 
@@ -35,6 +36,7 @@
 		forkSelectActive = false,
 		onterminal,
 		terminalOpen = false,
+		plugins = [],
 		oninterrupt,
 		onarchive,
 		onstoparchive,
@@ -71,6 +73,8 @@
 		/** Toggles the read-only live terminal; omit to hide the entry. */
 		onterminal?: () => void;
 		terminalOpen?: boolean;
+		/** Enabled plugin panes; one toggle button each. */
+		plugins?: PluginButton[];
 		oninterrupt: () => void;
 		onarchive: () => void;
 		// Stop-then-archive, fired by the ⌘/Ctrl+E keyboard chord.
@@ -231,6 +235,19 @@
 		<!-- Text size: the same kit picker as the main header, writing the one
 		     global fontScale. It stays out of the ⋯ flyout on mobile. -->
 		<FontScalePicker box={collapsed ? 'sm' : 'lg'} />
+		{#each plugins as p (p.id)}
+			<IconButton
+				chip={!collapsed}
+				variant={p.open ? 'primary' : 'default'}
+				box={collapsed ? 'sm' : 'md'}
+				icon={p.icon}
+				label={m.drawer_plugin_toggle({ name: p.label })}
+				pressed={p.open}
+				data-journey="plugin"
+				data-plugin={p.id}
+				onclick={p.onselect}
+			/>
+		{/each}
 		{#if renaming}
 			<IconButton data-overflow chip variant="default" icon="check" label={m.common_save()} onclick={doRename} />
 		{:else}

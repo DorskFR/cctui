@@ -10,6 +10,8 @@
 	import ThinkingBubble from './ThinkingBubble.svelte';
 	import TurnSummaryFooter from './TurnSummaryFooter.svelte';
 	import UserAttachments from './UserAttachments.svelte';
+	import PluginMessageActions from '$lib/components/molecules/PluginMessageActions.svelte';
+	import type { PluginActionButton } from '$lib/plugins/types';
 	import type { Line } from './types';
 	import { m } from '$lib/paraglide/messages';
 	import { settings } from '$lib/settings.svelte';
@@ -30,7 +32,9 @@
 		pinned = false,
 		onpin,
 		onbookmark,
-		bookmarked = false
+		bookmarked = false,
+		pluginActions = [],
+		onpluginaction
 	}: {
 		ln: Line;
 		archived: boolean;
@@ -57,6 +61,9 @@
 		 * omit to hide the action. */
 		onbookmark?: (ln: Line) => void;
 		bookmarked?: boolean;
+		/** Buttons runtime plugins contribute to this (assistant) line. */
+		pluginActions?: PluginActionButton[];
+		onpluginaction?: (a: PluginActionButton) => void;
 	} = $props();
 
 	// An optimistic user echo carries a synthetic `maxSeq + 1` seq that no server
@@ -144,6 +151,9 @@
 		<pre class="bubble mono code">{@html ln.htmlCode}</pre>
 	{:else if ln.text}
 		<pre class="bubble mono code">{ln.text}</pre>
+	{/if}
+	{#if pluginActions.length && onpluginaction}
+		<PluginMessageActions actions={pluginActions} onopen={onpluginaction} />
 	{/if}
 	{#if uploadRefs && uploadRefs.names.length}
 		<UserAttachments refs={uploadRefs} ts={ln.ts} {archived} />

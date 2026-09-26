@@ -6,6 +6,7 @@ import {
 	maxDockWidth,
 	resolveDocks,
 	SPAWN_DOCK_WIDTH,
+	storedDockWidth,
 	STATS_DOCK_WIDTH
 } from './dock';
 
@@ -79,6 +80,16 @@ describe('resolveDocks', () => {
 		});
 		expect(r.right).toBe(`${DOCK_MIN_PX}px`);
 		expect(r.left).toBe(STATS_DOCK_WIDTH);
+	});
+});
+
+describe('storedDockWidth', () => {
+	it('treats a missing entry as unset instead of clamping 0 to the minimum', () => {
+		expect(storedDockWidth(null)).toBeUndefined();
+		expect(storedDockWidth('')).toBeUndefined();
+		expect(storedDockWidth('480')).toBe(480);
+		expect(storedDockWidth('abc')).toBeUndefined();
+		expect(storedDockWidth('1')).toBe(DOCK_MIN_PX);
 	});
 });
 

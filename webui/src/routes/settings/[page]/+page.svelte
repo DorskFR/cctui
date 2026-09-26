@@ -39,6 +39,7 @@
 		{ page: 'appearance', icon: '◐', label: m.settings_nav_appearance() },
 		{ page: 'sessions', icon: '◰', label: m.settings_nav_sessions() },
 		{ page: 'macros', icon: '⚡', label: m.settings_nav_macros() },
+		{ page: 'plugins', icon: '⧉', label: m.settings_nav_plugins() },
 		{ page: 'execution', icon: '▶', label: m.settings_nav_execution() },
 		{ page: 'privacy', icon: '◈', label: m.settings_nav_privacy() },
 		{ page: 'notifications', icon: '🔔', label: m.settings_notifications_title() },

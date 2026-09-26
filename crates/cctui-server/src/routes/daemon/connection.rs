@@ -257,7 +257,11 @@ impl Conn {
         for session in sessions.iter().filter_map(|s| Uuid::parse_str(s).ok()) {
             crate::presence::unregister(state, crate::presence::Kind::Session, session).await;
         }
+        for session in &sessions {
+            state.preview.close_session(session);
+        }
         if state.bus.unregister_daemon(machine_id, self.id, tx) {
+            state.preview.close_machine(machine_id);
             crate::presence::unregister(state, crate::presence::Kind::Daemon, machine_id).await;
             schedule_daemon_lost(state, machine_id, sessions);
         }

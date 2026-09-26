@@ -11,4 +11,5 @@ export * from "./machines";
 export * from "./profiles";
 export * from "./settings";
 export * from "./bookmarks";
+export * from "./plugins";
 export * from "./scheduled";

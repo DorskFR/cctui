@@ -4,6 +4,8 @@
   "files": {
     "includes": [
       "src/**/*.ts",
+      "plugin-sdk/**/*.ts",
+      "plugin-runtime.vite.ts",
       "!src/lib/paraglide/**",
       "!src/lib/bindings/**",
       "!**/*.d.ts"

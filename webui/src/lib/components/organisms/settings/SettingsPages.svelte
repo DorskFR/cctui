@@ -6,6 +6,7 @@
 	import AppearanceSection from './AppearanceSection.svelte';
 	import SessionsSection from './SessionsSection.svelte';
 	import MacrosSection from './MacrosSection.svelte';
+	import PluginsSection from './PluginsSection.svelte';
 	import ExecutionSection from './ExecutionSection.svelte';
 	import PrivacySection from './PrivacySection.svelte';
 	import NotificationsSection from './NotificationsSection.svelte';
@@ -26,6 +27,9 @@ import SecuritySection from './SecuritySection.svelte';
 </div>
 <div class="pg" class:on={current === 'macros'} data-settings-page="macros" data-journey="page" data-journey-key="macros">
 	<MacrosSection />
+</div>
+<div class="pg" class:on={current === 'plugins'} data-settings-page="plugins" data-journey="page" data-journey-key="plugins">
+	<PluginsSection />
 </div>
 <div class="pg" class:on={current === 'execution'} data-settings-page="execution" data-journey="page" data-journey-key="execution">
 	<ExecutionSection />

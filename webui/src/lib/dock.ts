@@ -33,6 +33,12 @@ export function clampDockWidth(v: unknown): number | undefined {
 	return Math.min(DOCK_MAX_PX, Math.max(DOCK_MIN_PX, Math.round(v)));
 }
 
+/** A width persisted as a localStorage string; `null` (never stored) is "not set",
+ *  not `Number(null) === 0` clamped up to the minimum. */
+export function storedDockWidth(raw: string | null): number | undefined {
+	return raw === null || raw === '' ? undefined : clampDockWidth(Number(raw));
+}
+
 export interface DockLayout {
 	/** Edge the spawn form is pinned to, or `null` for the "+ New" button + modal. */
 	spawn: DockSide | null;

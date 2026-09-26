@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   CURRENT_VERSION,
   clampNavPosition,
+  clampPluginsConfig,
+  clampPluginsEnabled,
   clampSessionListWidth,
   mergeDefaults,
   sessionListWidthSize,
@@ -29,6 +31,44 @@ afterEach(() => {
 });
 
 describe("Settings save → load round-trip through the blob", () => {
+  it("a plugin switch survives a persist then reload; unknown ids are dropped", () => {
+    expect(loadFromCache().plugins.enabled).toEqual({});
+    settings.setPluginEnabled("yubisashi", true);
+    expect(settings.pluginsEnabled.yubisashi).toBe(true);
+    expect(loadFromCache().plugins.enabled).toEqual({ yubisashi: true });
+    settings.setPluginEnabled("yubisashi", false);
+    expect(loadFromCache().plugins.enabled).toEqual({ yubisashi: false });
+
+    expect(clampPluginsEnabled({ yubisashi: "yes", "Not An Id": true })).toEqual({});
+    expect(clampPluginsEnabled(null)).toEqual({});
+    expect(clampPluginsEnabled([true])).toEqual({});
+    expect(mergeDefaults({ plugins: { enabled: { yubisashi: true, "bad id": true }, config: {} } }).plugins.enabled).toEqual({
+      yubisashi: true,
+    });
+  });
+
+  it("a plugin's setting values round-trip; empty values and bad shapes are dropped", () => {
+    expect(loadFromCache().plugins.config).toEqual({});
+    settings.setPluginConfig("yubisashi", "host", "0.0.0.0");
+    settings.setPluginConfig("yubisashi", "advertise", "box.lan");
+    expect(settings.pluginConfig("yubisashi")).toEqual({ host: "0.0.0.0", advertise: "box.lan" });
+    expect(loadFromCache().plugins.config).toEqual({ yubisashi: { host: "0.0.0.0", advertise: "box.lan" } });
+    settings.setPluginConfig("yubisashi", "host", "");
+    expect(loadFromCache().plugins.config).toEqual({ yubisashi: { advertise: "box.lan" } });
+    settings.setPluginConfig("yubisashi", "advertise", "");
+    expect(loadFromCache().plugins.config).toEqual({});
+    expect(settings.pluginConfig("nobody")).toEqual({});
+
+    expect(clampPluginsConfig({ yubisashi: { host: "h", n: 1, empty: "" }, "Bad Id": { x: "y" }, arr: ["x"] })).toEqual({
+      yubisashi: { host: "h" },
+    });
+    expect(clampPluginsConfig([{ a: "b" }])).toEqual({});
+    expect(mergeDefaults({ plugins: { enabled: {}, config: { demo: { k: "v" } } } }).plugins).toEqual({
+      enabled: {},
+      config: { demo: { k: "v" } },
+    });
+  });
+
   it("theme / fontScale / notify / locale survive a persist then reload", () => {
     settings.setDisplay({
       theme: "sepia",

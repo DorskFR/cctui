@@ -30,6 +30,8 @@ pub mod listdirs;
 pub mod mcp;
 pub mod mcpready;
 pub mod offsets;
+pub mod plugins;
+pub mod preview;
 pub mod readfile;
 pub mod resources;
 pub mod runlock;

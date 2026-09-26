@@ -112,6 +112,10 @@ pub(super) async fn process_frame(
             on_heartbeat(state, machine_id, frame);
             Ok(())
         }
+        frame if crate::preview::is_preview_frame(&frame) => {
+            crate::preview::on_frame(state, machine_id, user_id, frame).await;
+            Ok(())
+        }
         // Any future #[non_exhaustive] variants are no-ops.
         _ => Ok(()),
     }

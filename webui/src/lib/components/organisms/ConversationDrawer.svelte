@@ -17,6 +17,11 @@
 	import TerminalPane from './conversation/TerminalPane.svelte';
 	import Conversation from './conversation/Conversation.svelte';
 	import ConversationComposer from './conversation/ConversationComposer.svelte';
+	import PluginPaneHost from './conversation/PluginPaneHost.svelte';
+	import { registerComposer } from '$lib/plugins/composerBridge.svelte';
+	import { DrawerPlugins } from '$lib/plugins/drawerPlugins.svelte';
+	import { usePlugins } from '$lib/queries';
+	import { settings } from '$lib/settings.svelte';
 	import { scheduledTurns, useScheduledMessages } from '$lib/queries/scheduled';
 	import BookmarkSaveModal from './bookmarks/BookmarkSaveModal.svelte';
 	import type { ViewOpts } from './conversation/types';
@@ -67,6 +72,15 @@
 
 	// Read-only live terminal pane, toggled from the header menu.
 	let terminalOpen = $state(false);
+	// Runtime plugins: a pane docked on the drawer's left edge plus the buttons
+	// they contribute to assistant lines.
+	const installedPlugins = usePlugins();
+	const plugins = new DrawerPlugins({
+		sessionId: () => id,
+		installed: () => installedPlugins.data ?? [],
+		enabled: () => settings.pluginsEnabled
+	});
+	$effect(() => plugins.ensureLoaded());
 
 	const DRAWER_MIN_PX = 360;
 	const DRAWER_DEFAULT_PX = 900;
@@ -152,6 +166,11 @@
 		planPreamble: () => stream.plan?.preamble
 	});
 	const lines = $derived(renderer.lines);
+	$effect(() => {
+		void lines.length;
+		void plugins.ready.length;
+		plugins.autoOpenFrom(lines);
+	});
 
 	// Only follow new content when the user is pinned to the bottom.
 	$effect(() => {
@@ -195,6 +214,7 @@
 		earlier.reset();
 		hits.reset();
 		terminalOpen = false;
+		plugins.close();
 	});
 
 	const isCodexSession = $derived((session.adapter_id ?? '').startsWith('codex'));
@@ -238,6 +258,13 @@
 		session.adapter_id === 'claude-code' || session.adapter_id === 'codex'
 	);
 	let composer = $state<ConversationComposer>();
+	$effect(() =>
+		registerComposer(id, {
+			insertText: (text) => void composer?.insertText(text),
+			addFiles: (files) => composer?.addFiles(files),
+			focus: () => composer?.focus()
+		})
+	);
 
 	// Edit a still-pending message: drop the in-flight echo and pull its
 	// text back into the composer to fix and resend.
@@ -271,9 +298,19 @@
 	resizeStep={32}
 >
 	{#snippet panel()}
+		{#if plugins.current && plugins.open}
+			<PluginPaneHost
+				plugin={plugins.current.info}
+				module={plugins.current.module}
+				{session}
+				params={plugins.open.params}
+				onclose={() => plugins.close()}
+			/>
+		{/if}
 		<!-- svelte-ignore a11y_no_static_element_interactions -->
 		<div
 			class="drawer"
+			class:plugin-open={plugins.current !== null}
 			data-journey="conversation"
 			onkeydown={guardEscape}
 		>
@@ -306,6 +343,7 @@
 				forkSelectActive={forkSelect.active}
 				onterminal={() => (terminalOpen = !terminalOpen)}
 				{terminalOpen}
+				plugins={plugins.buttons}
 				oninterrupt={sa.interrupt}
 				onarchive={sa.archive}
 				onstoparchive={sa.stopAndArchive}
@@ -366,6 +404,8 @@
 				{focusTs}
 				onbookmark={bookmarks.open}
 				isBookmarked={bookmarks.isBookmarked}
+				pluginActionsFor={(ln) => plugins.actionsFor(ln)}
+				onpluginaction={(a) => plugins.openWith(a.pluginId, a.params)}
 			/>
 
 			<ActivityBanner {stream} {archived} />
@@ -440,5 +480,10 @@
 		height: 100%;
 		background: var(--bg);
 		padding-top: var(--safe-top);
+	}
+	@media (max-width: 959px) {
+		.drawer.plugin-open {
+			display: none;
+		}
 	}
 </style>
