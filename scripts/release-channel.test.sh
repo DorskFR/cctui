@@ -6,8 +6,8 @@ script="$here/release-channel.sh"
 
 failures=0
 expect() {
-  local tag="$1" want="$2" out
-  if out="$(bash "$script" "$tag" 2>/dev/null)"; then :; else out="refused"; fi
+  local tag="$1" want="$2" mode="${3:-}" out
+  if out="$(bash "$script" "$tag" $mode 2>/dev/null)"; then :; else out="refused"; fi
   if [ "$out" = "$want" ]; then
     echo "ok   — $tag"
   else
@@ -32,6 +32,13 @@ channel=beta
 prerelease=true
 make_latest=false
 floating_tag=beta"
+expect v0.21.0 "version=0.21.0
+channel=stable
+prerelease=true
+make_latest=false
+floating_tag=candidate" candidate
+expect v0.21.0-beta.1 refused candidate
+expect v0.21.0 refused bogus
 expect v0.20.0-rc.1 refused
 expect v0.20.0-beta refused
 expect v0.20.0-beta.01 refused

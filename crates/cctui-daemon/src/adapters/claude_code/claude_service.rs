@@ -53,6 +53,23 @@ pub(super) fn ensure(claude_bin: &str) -> Result<()> {
     anyhow::bail!("claude daemon service: unsupported OS")
 }
 
+/// Bring an already-installed managed unit up to the bundled template, e.g.
+/// after a cctui-daemon self-update ships a changed unit. [`ensure`] only runs
+/// when the control socket is missing, so a machine whose supervisor stays up
+/// would otherwise keep a stale unit indefinitely. Rewrite + daemon-reload
+/// only: never installs, starts or restarts anything, so live session jobs are
+/// untouched. Returns whether the unit was rewritten. Linux only; the launchd
+/// plist is only (re)written when the agent is not loaded.
+#[cfg(target_os = "linux")]
+pub(super) fn refresh_installed(claude_bin: &str) -> Result<bool> {
+    linux::refresh_installed(claude_bin)
+}
+#[cfg(not(target_os = "linux"))]
+pub(super) fn refresh_installed(claude_bin: &str) -> Result<bool> {
+    let _ = claude_bin;
+    Ok(false)
+}
+
 /// Whether the managed service is currently the thing running the daemon. A
 /// daemon started some other way (`origin: foreground`) survives a unit
 /// restart untouched, so the caller must pick a different remedy.
@@ -189,11 +206,7 @@ mod linux {
         }
         if stale {
             std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
-            std::fs::write(&path, &rendered)
-                .with_context(|| format!("write {}", path.display()))?;
-            // daemon-reload, never restart: live session jobs must survive.
-            systemctl(&["daemon-reload"])?;
-            tracing::info!(unit = UNIT_NAME, "refreshed managed claude daemon unit");
+            write_and_reload(&path, &rendered)?;
         }
         if is_active() {
             return Ok(());
@@ -204,6 +217,29 @@ mod linux {
         systemctl(&["enable", "--now", UNIT_NAME])?;
         tracing::info!(unit = UNIT_NAME, "installed and started managed claude daemon");
         Ok(())
+    }
+
+    /// Rewrite the unit and daemon-reload, never restart: live session jobs
+    /// must survive. A running service picks up the new directives on reload.
+    fn write_and_reload(path: &std::path::Path, rendered: &str) -> Result<()> {
+        std::fs::write(path, rendered).with_context(|| format!("write {}", path.display()))?;
+        systemctl(&["daemon-reload"])?;
+        tracing::info!(unit = UNIT_NAME, "refreshed managed claude daemon unit");
+        Ok(())
+    }
+
+    pub(super) fn refresh_installed(claude_bin: &str) -> Result<bool> {
+        let path = unit_dir()?.join(UNIT_NAME);
+        // Not installed: nothing to refresh, `ensure` installs it on demand.
+        let Ok(cur) = std::fs::read_to_string(&path) else {
+            return Ok(false);
+        };
+        let rendered = render_unit(claude_bin);
+        if cur == rendered {
+            return Ok(false);
+        }
+        write_and_reload(&path, &rendered)?;
+        Ok(true)
     }
 
     pub(super) fn restart(claude_bin: &str) -> Result<()> {
@@ -330,6 +366,10 @@ mod tests {
         assert!(
             unit.contains("OOMPolicy=continue"),
             "an OOM-killed child must not fail the unit and kill every session:\n{unit}"
+        );
+        assert!(
+            unit.lines().any(|l| l.trim() == "ExitType=cgroup"),
+            "the upgrade self-restart must not deactivate the unit and kill every session:\n{unit}"
         );
         // Its own unit — must NOT reference cctui-daemon's unit/cgroup, or a
         // cctui restart (KillMode=control-group) would take it down with it.

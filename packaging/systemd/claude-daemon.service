@@ -13,6 +13,15 @@ RestartSec=5s
 # every live session job in this cgroup. The kernel already picked its victim.
 OOMPolicy=continue
 
+# On a claude CLI auto-update the supervisor self-restarts for the upgrade: it
+# spawns a fresh `claude daemon run` that adopts the live session jobs, then
+# the old main process exits 0. With the default ExitType=main systemd sees
+# the main process gone, marks the unit inactive and kills the whole cgroup,
+# i.e. every session the new supervisor just adopted. ExitType=cgroup keeps
+# the unit active while any process in it lives (systemd >= 250; older
+# versions ignore the key with a warning).
+ExitType=cgroup
+
 # Give the supervisor an augmented PATH so its own exec'd tooling resolves
 # regardless of the (possibly minimal) inherited environment.
 Environment=PATH=__CLAUDE_DAEMON_PATH__
