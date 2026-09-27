@@ -705,6 +705,7 @@
 	"guide_welcome_finish": "Commencer",
 	"guide_welcome_skip": "Passer",
 	"guide_welcome_title": "Bienvenue dans cctui",
+	"home_cache_loss_busts": "{count} invalidations",
 	"home_cache_loss_gateway_rewrote_body": "Corps réécrit par la passerelle",
 	"home_cache_loss_none": "Aucun cache invalidé sur cette période.",
 	"home_cache_loss_title_7d": "Perdu en caches invalidés · 7 derniers jours",

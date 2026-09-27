@@ -705,6 +705,7 @@
 	"guide_welcome_finish": "Get started",
 	"guide_welcome_skip": "Skip",
 	"guide_welcome_title": "Welcome to cctui",
+	"home_cache_loss_busts": "{count} busts",
 	"home_cache_loss_gateway_rewrote_body": "Gateway rewrote body",
 	"home_cache_loss_none": "No cache bust in this range.",
 	"home_cache_loss_title_7d": "Lost to cache busts · last 7 days",

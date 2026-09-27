@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { useCacheLoss } from '$lib/queries';
-	import { usd } from '$lib/format';
+	import { compact, usd } from '$lib/format';
 	import { m } from '$lib/paraglide/messages';
 	import { Card, Cluster, Stack, Text } from '@dorsk/tsumikit';
 	import {
@@ -29,7 +29,13 @@
 	<Stack gap="var(--sp-3)">
 		<Cluster gap="var(--sp-3)" align="baseline">
 			<Text size="sm" weight="semibold">{m.home_cache_loss_title_7d()}</Text>
-			<Text size="xs" tone="faint" numeric>{usd(totals.total)}</Text>
+			<Text size="xs" tone="faint" numeric>{compact(totals.tokens.total)}</Text>
+			{#if totals.busts > 0}
+				<Text size="xs" tone="faint" numeric>{m.home_cache_loss_busts({ count: totals.busts })}</Text>
+			{/if}
+			{#if totals.usd > 0}
+				<Text size="xs" tone="faint" numeric>{usd(totals.usd)}</Text>
+			{/if}
 		</Cluster>
 		{#if q.isLoading}
 			<Text tone="faint" size="sm">{m.common_loading()}</Text>
@@ -40,19 +46,21 @@
 				{#each CACHE_LOSS_REASONS as r (r)}
 					<span class="legend">
 						<span class="swatch {r}"></span>
-						<Text size="xs" tone="muted">{reasonLabel(r)} · {usd(totals[r])}</Text>
+						<Text size="xs" tone="muted">{reasonLabel(r)} · {compact(totals.tokens[r])}</Text>
 					</span>
 				{/each}
 			</Cluster>
 			<div class="rows">
 				{#each rows as row (row.day)}
 					<Text size="xs" tone="muted" numeric>{row.day}</Text>
-					<div class="bar" role="img" aria-label={`${row.day}: ${usd(row.total)}`}>
+					<div class="bar" role="img" aria-label={`${row.day}: ${compact(row.tokens)}`}>
 						{#each CACHE_LOSS_REASONS as r (r)}
 							<span class="seg {r}" style:width={`${row.widths[r]}%`}></span>
 						{/each}
 					</div>
-					<Text size="xs" numeric>{usd(row.total)}</Text>
+					<Text size="xs" numeric>
+						{compact(row.tokens)}{row.usd > 0 ? ` · ${usd(row.usd)}` : ''}
+					</Text>
 				{/each}
 			</div>
 		{/if}
