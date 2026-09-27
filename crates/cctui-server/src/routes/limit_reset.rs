@@ -57,7 +57,7 @@ pub struct LimitResetStatus {
     pub weekly_resets_at: Option<String>,
     /// Claude `cedar_ember`: claims left on the named grant.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
+    #[ts(type = "number | null", optional)]
     pub resets_left: Option<i64>,
     /// Claude `cedar_ember`: the grant may only be spent at a limit.
     #[serde(skip_serializing_if = "Option::is_none")]

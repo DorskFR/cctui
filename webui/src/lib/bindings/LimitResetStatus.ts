@@ -4,24 +4,42 @@
  * What the account's latest usage payload says about a limit reset, normalized
  * across providers for the button in the usage row.
  */
-export type LimitResetStatus = { 
+export type LimitResetStatus = {
 /**
- * `codex` (reset credits) or `claude` (`juniper_tide`).
+ * `codex` (reset credits) or `claude` (`cedar_ember` / `juniper_tide`).
  */
-kind: "codex" | "claude", 
+kind: "codex" | "claude",
 /**
  * Whether a claim would do anything right now.
  */
-available: boolean, 
+available: boolean,
 /**
  * Codex: the redeemable credit's title (e.g. "Full reset (Weekly + 5 hr)").
+ * Claude: the `cedar_ember` grant's label.
  */
-title: string | null, 
+title: string | null,
 /**
- * Codex: the credit a claim would name.
+ * Codex: the credit a claim would name. Claude: the `cedar_ember` grant id.
  */
-credit_id: string | null, 
+credit_id: string | null,
 /**
  * Claude: why the reset cannot be claimed (e.g. `not_at_wall`).
  */
-ineligible_reason: string | null, next_available_at: string | null, weekly_resets_at: string | null, };
+ineligible_reason: string | null,
+/**
+ * Codex: the credit's expiry. Claude: a grant's `ends_at`, else when the
+ * at-wall reset comes back.
+ */
+next_available_at: string | null, weekly_resets_at: string | null,
+/**
+ * Claude `cedar_ember`: claims left on the named grant.
+ */
+resets_left?: number | null,
+/**
+ * Claude `cedar_ember`: the grant may only be spent at a limit.
+ */
+requires_limit?: boolean,
+/**
+ * Claude `cedar_ember`: the limit windows a claim refills.
+ */
+clears?: Array<string>, };

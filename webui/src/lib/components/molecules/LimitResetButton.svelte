@@ -7,7 +7,7 @@
 	import { m } from '$lib/paraglide/messages';
 	import { toasts } from '$lib/toast.svelte';
 	import { errMessage } from '$lib/api';
-	import { limitResetHint, limitResetLabel } from './limit-reset';
+	import { limitResetClears, limitResetHint, limitResetLabel } from './limit-reset';
 
 	let { providerId, enabled = true }: { providerId: string; enabled?: boolean } = $props();
 
@@ -57,6 +57,9 @@
 		>
 			{#snippet body()}
 				<Text>{m.sessions_limit_reset_confirm_body({ title: reset.title ?? m.sessions_limit_reset() })}</Text>
+				{#if limitResetClears(reset)}
+					<Text tone="muted">{limitResetClears(reset)}</Text>
+				{/if}
 			{/snippet}
 			{#snippet footer()}
 				<Button variant="ghost" onclick={() => (confirming = false)}>{m.sessions_limit_reset_cancel()}</Button>
