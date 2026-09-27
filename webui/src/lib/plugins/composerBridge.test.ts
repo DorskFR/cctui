@@ -2,7 +2,12 @@ import { describe, expect, it, vi } from 'vitest';
 import { composerFor, registerComposer } from './composerBridge.svelte';
 import type { ComposerBridge } from './types';
 
-const fake = (): ComposerBridge => ({ insertText: vi.fn(), addFiles: vi.fn(), focus: vi.fn() });
+const fake = (): ComposerBridge => ({
+	insertText: vi.fn(),
+	send: vi.fn(),
+	addFiles: vi.fn(),
+	focus: vi.fn()
+});
 
 describe('composer bridge', () => {
 	it('routes calls to the composer registered for the session', () => {
@@ -28,5 +33,19 @@ describe('composer bridge', () => {
 		composerFor('s2').addFiles([]);
 		expect(fresh.addFiles).toHaveBeenCalled();
 		expect(old.addFiles).not.toHaveBeenCalled();
+	});
+
+	it('send() delivers the text through the composer send path without touching the draft', () => {
+		let draft = 'half-typed';
+		const sent: string[] = [];
+		registerComposer('s3', {
+			insertText: (t) => (draft += t),
+			send: (t) => sent.push(t),
+			addFiles: vi.fn(),
+			focus: vi.fn()
+		});
+		composerFor('s3').send('run the tests');
+		expect(sent).toEqual(['run the tests']);
+		expect(draft).toBe('half-typed');
 	});
 });

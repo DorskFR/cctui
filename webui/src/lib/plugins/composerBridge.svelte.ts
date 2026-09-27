@@ -16,6 +16,7 @@ export function composerFor(sessionId: string): ComposerBridge {
 	const get = () => bridges.get(sessionId);
 	return {
 		insertText: (text) => get()?.insertText(text),
+		send: (text) => get()?.send(text),
 		addFiles: (files) => get()?.addFiles(files),
 		focus: () => get()?.focus()
 	};

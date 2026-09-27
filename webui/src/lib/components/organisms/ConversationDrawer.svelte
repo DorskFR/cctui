@@ -261,6 +261,7 @@
 	$effect(() =>
 		registerComposer(id, {
 			insertText: (text) => void composer?.insertText(text),
+			send: (text) => composer?.sendText(text),
 			addFiles: (files) => composer?.addFiles(files),
 			focus: () => composer?.focus()
 		})

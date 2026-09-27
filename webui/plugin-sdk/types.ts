@@ -19,6 +19,9 @@ export interface ComposerBridge {
 	/** Insert at the caret (or append, separated by a blank line), keep the
 	 *  draft that was already there, focus the textarea. */
 	insertText(text: string): void;
+	/** Send `text` as a user message to the session now, as if typed and
+	 *  submitted; does not touch the current draft. */
+	send(text: string): void;
 	addFiles(files: File[]): void;
 	focus(): void;
 }

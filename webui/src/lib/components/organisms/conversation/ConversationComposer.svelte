@@ -210,6 +210,15 @@
 		el.setSelectionRange(next.caret, next.caret);
 	}
 
+	/** A plugin pane's message: goes out through the same path as a typed one,
+	 *  the draft stays. */
+	export function sendText(text: string) {
+		const body = text.trim();
+		if (!body || archived) return;
+		onsend(body);
+		msgHistory.push(session.id, body);
+	}
+
 	async function send() {
 		const text = input.trim();
 		// Attachments alone are a valid message (the staged paths become the body).
