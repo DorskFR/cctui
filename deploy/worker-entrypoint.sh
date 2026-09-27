@@ -789,6 +789,19 @@ codex_mcp_toml() {
     ' "$1" 2>/dev/null || true
 }
 
+# `codex app-server daemon` only starts from a standalone install at
+# $CODEX_HOME/packages/standalone/current; point it at the baked package.
+phase_codex_package() {
+    [ -n "${CODEX_PACKAGE_DIR:-}" ] && [ -x "$CODEX_PACKAGE_DIR/codex" ] || return 0
+    _cfgdir="${CODEX_HOME:-/home/${WORKER_USER}/.codex}"
+    _standalone="$_cfgdir/packages/standalone"
+    [ -e "$_standalone/current" ] && return 0
+    mkdir -p "$_standalone"
+    ln -s "$CODEX_PACKAGE_DIR" "$_standalone/current"
+    chown -R "${WORKER_UID}:${WORKER_UID}" "$_cfgdir" 2>/dev/null || true
+    log "codex: standalone package linked ($_standalone/current -> $CODEX_PACKAGE_DIR)"
+}
+
 phase_codex_config() {
     [ -n "${OPENAI_API_KEY:-}" ] || { log "codex: OPENAI_API_KEY unset, skipping model_provider"; return 0; }
     _base="${OPENAI_BASE_URL:-}"
@@ -1129,6 +1142,7 @@ if [ -z "${TASK_PROMPT_FILE:-}" ] && [ -n "${CONTEXT_PACK_URL:-}" ] && [ -n "${T
         && log "prompt: TASK_PROMPT_FILE=${TASK_PROMPT_FILE} (from payload; pack active → guard will engage if the prompt has steps)"
 fi
 phase_extensions
+phase_codex_package
 phase_codex_config
 phase_codex_pack
 phase_callback
