@@ -116,6 +116,7 @@ test.describe('runtime plugins', () => {
 		await login(page);
 		await page.route('**/api/v1/plugins', (route) => route.fulfill({ json: [] }));
 		await page.goto('/settings/plugins');
+		await expect(page.locator('[data-journey="plugins-empty"]')).toBeVisible();
 		await expect(page.locator('[data-journey="plugins-empty"]')).toContainText('CCTUI_PLUGINS_DIR');
 		await expect(page.locator('[data-journey="plugin-switch"]')).toHaveCount(0);
 	});

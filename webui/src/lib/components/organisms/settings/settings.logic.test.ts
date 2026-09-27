@@ -5,6 +5,7 @@ import {
 	DEFAULT_SETTINGS_PAGE,
 	firstMatchingPage,
 	firstMatchingRow,
+	isFiltered,
 	isSettingsPage,
 	normalizeForFilter,
 	pageForHash,
@@ -37,6 +38,27 @@ function tree(): HTMLElement {
 }
 
 afterEach(() => document.body.replaceChildren());
+
+describe('applySettingsFilter', () => {
+	it('keeps row-less sections and groups visible until a query filters them', () => {
+		const root = document.createElement('div');
+		root.innerHTML = `
+			<section data-setting-section id="empty-section"><p>No plugins installed</p></section>
+			<section data-setting-section id="empty-group"><div data-setting-group><p>Install from URL</p></div></section>
+		`;
+		document.body.append(root);
+		const section = root.querySelector<HTMLElement>('#empty-section')!;
+		const group = root.querySelector<HTMLElement>('#empty-group [data-setting-group]')!;
+
+		applySettingsFilter(root, '');
+		expect(isFiltered(section)).toBe(false);
+		expect(isFiltered(group)).toBe(false);
+
+		applySettingsFilter(root, 'theme');
+		expect(isFiltered(section)).toBe(true);
+		expect(isFiltered(group)).toBe(true);
+	});
+});
 
 describe('page map', () => {
 	it('starts on the default page and knows every slug', () => {
