@@ -375,6 +375,7 @@ fn outer_routes() -> Router<AppState> {
         .route("/internal/bus/publish", post(routes::internal::bus_publish))
         // Preview leg for a browser that landed on a pod without the daemon
         // link. Same secret; serves locally only, so it cannot loop.
+        .route("/internal/preview/{id}/", any(routes::internal::preview_serve_root))
         .route("/internal/preview/{id}/{*path}", any(routes::internal::preview_serve))
 }
 

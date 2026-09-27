@@ -4,6 +4,7 @@ import { mount, unmount } from 'svelte';
 import DrawerToolbar from './DrawerToolbar.svelte';
 import toolbarSource from './DrawerToolbar.svelte?raw';
 import lineSource from './LineActions.svelte?raw';
+import headerSource from './DrawerHeader.svelte?raw';
 import { allFilter } from './filters';
 import type { ViewOpts } from './types';
 import type { MessagePin } from '@bindings/MessagePin';
@@ -230,5 +231,40 @@ describe('drawer toolbar sizing', () => {
 
 	it('adds no :global override', () => {
 		expect(toolbarSource).not.toContain(':global(');
+	});
+});
+
+describe('plugin pane toggles', () => {
+	const plugin = (open = false, onselect = vi.fn()) => ({
+		id: 'demo',
+		label: 'yubisashi',
+		icon: 'eye' as const,
+		open,
+		onselect
+	});
+
+	it('sit in the behavior group beside auto-approve, with icon and visible name', async () => {
+		const onselect = vi.fn();
+		const bar = await render({ plugins: [plugin(false, onselect)] });
+		const btn = bar.querySelector('.behbar [data-journey="plugin"][data-plugin="demo"]') as HTMLButtonElement;
+		expect(btn).not.toBeNull();
+		expect(btn.querySelector('svg[data-tsu="Icon"]')).not.toBeNull();
+		expect(btn.textContent).toContain('yubisashi');
+		expect(btn.getAttribute('aria-pressed')).toBe('false');
+		expect(btn.previousElementSibling?.getAttribute('aria-pressed')).toBe('false');
+		btn.click();
+		expect(onselect).toHaveBeenCalledOnce();
+	});
+
+	it('read as pressed while the pane is open', async () => {
+		const bar = await render({ plugins: [plugin(true)] });
+		const btn = bar.querySelector('[data-journey="plugin"]') as HTMLButtonElement;
+		expect(btn.getAttribute('aria-pressed')).toBe('true');
+		expect(btn.classList.contains('on')).toBe(true);
+	});
+
+	it('render nowhere else: the header lost its copy', () => {
+		expect(headerSource).not.toContain('data-journey="plugin"');
+		expect(headerSource).not.toContain('plugins');
 	});
 });

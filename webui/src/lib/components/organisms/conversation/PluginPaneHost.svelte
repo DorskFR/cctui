@@ -1,7 +1,8 @@
 <script lang="ts">
 	// Mounts an enabled plugin's pane against the left edge of the conversation
-	// drawer: a fixed column with a resize grip (the stats-dock pattern) on wide
-	// screens, the whole drawer below the mobile breakpoint.
+	// drawer: a fixed column on wide screens, the whole drawer below the mobile
+	// breakpoint. The resize grip sits on the pane's free (left) edge; the
+	// drawer's own grip owns the shared edge on the right.
 	import { browser } from '$app/environment';
 	import { setContext } from 'svelte';
 	import { MediaQuery } from 'svelte/reactivity';
@@ -85,7 +86,7 @@
 			aria-label={m.dock_resize_grip()}
 			title={m.dock_resize_grip()}
 			use:resizeHandle={{
-				side: 'left',
+				side: 'right',
 				min: DOCK_MIN_PX,
 				max: maxPx,
 				onwidth: setWidth,
@@ -122,7 +123,7 @@
 		position: absolute;
 		top: 0;
 		bottom: 0;
-		right: -5px;
+		left: -5px;
 		width: 10px;
 		cursor: ew-resize;
 		touch-action: none;

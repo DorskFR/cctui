@@ -182,6 +182,24 @@ pub async fn bus_publish(
 pub async fn preview_serve(
     State(state): State<AppState>,
     axum::extract::Path((preview_id, path)): axum::extract::Path<(String, String)>,
+    request: axum::extract::Request,
+) -> Response {
+    serve_forwarded(state, preview_id, &path, request).await
+}
+
+/// `ANY /internal/preview/{id}/` — the app root, which `{*path}` cannot match.
+pub async fn preview_serve_root(
+    State(state): State<AppState>,
+    axum::extract::Path(preview_id): axum::extract::Path<String>,
+    request: axum::extract::Request,
+) -> Response {
+    serve_forwarded(state, preview_id, "", request).await
+}
+
+async fn serve_forwarded(
+    state: AppState,
+    preview_id: String,
+    path: &str,
     mut request: axum::extract::Request,
 ) -> Response {
     if let Err(status) = authenticate(&state, request.headers()) {

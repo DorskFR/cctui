@@ -13,7 +13,7 @@ export { CCTUI_PLUGIN_API, HOST_CONTEXT_KEY, type HostContext } from '../../../p
 export type { PluginInfo } from '$lib/bindings/PluginInfo';
 export type { PluginSetting as PluginSettingDecl } from '$lib/bindings/PluginSetting';
 
-/** One header toggle per enabled pane plugin. */
+/** One toolbar toggle per enabled pane plugin. */
 export interface PluginButton {
 	id: string;
 	label: string;

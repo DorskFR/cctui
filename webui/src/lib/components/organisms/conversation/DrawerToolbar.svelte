@@ -1,6 +1,7 @@
 <script lang="ts">
 	// Conversation toolbar, one row at every width: message filters on the left,
-	// auto-approve and pins on the right. Narrow drawers drop the labels.
+	// auto-approve, plugin panes and pins on the right. Narrow drawers drop the
+	// labels, except on plugin toggles whose name is what identifies them.
 	import {
 		MSG_CATEGORIES,
 		QUICK_FILTERS,
@@ -15,12 +16,14 @@
 	import PinsPanel from './PinsPanel.svelte';
 	import type { MessagePin } from '@bindings/MessagePin';
 	import type { Line } from './types';
+	import type { PluginButton } from '$lib/plugins/types';
 	import { m } from '$lib/paraglide/messages';
 
 	let {
 		view = $bindable(),
 		autoApprove,
 		ontoggleAuto,
+		plugins = [],
 		pins = [],
 		lines = [],
 		onjumpseq,
@@ -33,6 +36,8 @@
 		view: ViewOpts;
 		autoApprove: boolean;
 		ontoggleAuto: () => void;
+		/** Enabled plugin panes; one toggle each, pressed while its pane is open. */
+		plugins?: PluginButton[];
 		pins?: MessagePin[];
 		lines?: Line[];
 		/** Omit both to hide the pins button (e.g. no session context). */
@@ -142,6 +147,17 @@
 				>{m.conversation_auto_approve_btn()}</span
 			></Toggle
 		>
+		{#each plugins as p (p.id)}
+			<Toggle
+				pressed={p.open}
+				style={CTL}
+				title={m.drawer_plugin_toggle({ name: p.label })}
+				data-journey="plugin"
+				data-plugin={p.id}
+				onclick={p.onselect}
+				><Icon name={p.icon} size={12} /><span>{p.label}</span></Toggle
+			>
+		{/each}
 		{#if onjumpseq && onunpin}
 			<Popover
 				label={m.conversation_pins_aria()}

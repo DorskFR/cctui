@@ -344,7 +344,6 @@
 				forkSelectActive={forkSelect.active}
 				onterminal={() => (terminalOpen = !terminalOpen)}
 				{terminalOpen}
-				plugins={plugins.buttons}
 				oninterrupt={sa.interrupt}
 				onarchive={sa.archive}
 				onstoparchive={sa.stopAndArchive}
@@ -366,6 +365,7 @@
 				bind:view
 				autoApprove={session.auto_approve}
 				ontoggleAuto={sa.toggleAutoApprove}
+				plugins={plugins.buttons}
 				pins={pins.pins}
 				{lines}
 				onjumpseq={(seq) => void pins.ensureSeqVisible(seq)}

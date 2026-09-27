@@ -215,6 +215,10 @@ async fn serve_pod(state: &AppState) -> u16 {
     let app = Router::new()
         .route("/api/v1/ping", get(|| async { "api" }))
         .route(
+            "/internal/preview/{id}/",
+            axum::routing::any(crate::routes::internal::preview_serve_root),
+        )
+        .route(
             "/internal/preview/{id}/{*path}",
             axum::routing::any(crate::routes::internal::preview_serve),
         )
@@ -451,15 +455,13 @@ async fn a_browser_on_the_wrong_pod_is_forwarded_to_the_pod_holding_the_daemon()
         .unwrap();
     assert_eq!(replay.status(), 403, "a ticket cannot be replayed on any pod");
 
-    let resp = client
-        .get(url_b("/hello?x=1"))
-        .header("host", &host)
-        .header("cookie", &cookie)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 200);
-    assert_eq!(resp.text().await.unwrap(), "upstream:/hello?x=1");
+    for (path, body) in [("/hello?x=1", "upstream:/hello?x=1"), ("/", "root")] {
+        let resp =
+            client.get(url_b(path)).header("host", &host).header("cookie", &cookie).send().await;
+        let resp = resp.unwrap();
+        assert_eq!(resp.status(), 200, "{path} is forwarded");
+        assert_eq!(resp.text().await.unwrap(), body);
+    }
 
     let mut request = format!("ws://127.0.0.1:{port_b}/hmr?token=1").into_client_request().unwrap();
     request.headers_mut().insert("host", host.parse().unwrap());
