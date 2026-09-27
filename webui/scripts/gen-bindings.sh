@@ -6,6 +6,7 @@
 # Run from anywhere; resolves the repo root itself. Emits flat *.ts files into
 # webui/src/lib/bindings/ plus an index.ts barrel.
 set -euo pipefail
+export LC_ALL=C
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 out="$repo_root/webui/src/lib/bindings"
