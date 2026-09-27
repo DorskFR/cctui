@@ -4,4 +4,4 @@ export type DailyCacheLoss = {
 /**
  * Local calendar day, `YYYY-MM-DD`.
  */
-day: string, ttl_expired: number, gateway_rewrote_body: number, unknown: number, total: number, busts: number, };
+day: string, ttl_expired: number, gateway_rewrote_body: number, unknown: number, total: number, ttl_expired_tokens: number, gateway_rewrote_body_tokens: number, unknown_tokens: number, lost_tokens: number, busts: number, };

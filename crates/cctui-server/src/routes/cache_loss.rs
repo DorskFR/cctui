@@ -1,4 +1,4 @@
-//! Dollars lost to prompt-cache busts per local day and reason, recomputed
+//! Tokens and dollars lost to prompt-cache busts per local day and reason, recomputed
 //! from `session_token_usage` with the same per-turn verdict the conversation
 //! view shows.
 
@@ -39,24 +39,43 @@ pub struct DailyCacheLoss {
     pub unknown: f64,
     pub total: f64,
     #[ts(type = "number")]
+    pub ttl_expired_tokens: u64,
+    #[ts(type = "number")]
+    pub gateway_rewrote_body_tokens: u64,
+    #[ts(type = "number")]
+    pub unknown_tokens: u64,
+    #[ts(type = "number")]
+    pub lost_tokens: u64,
+    #[ts(type = "number")]
     pub busts: u64,
 }
 
-/// Sum each bust's `lost_usd` into its local day and reason, oldest day first.
+/// Sum each bust's lost tokens and `lost_usd` into its local day and reason,
+/// oldest day first.
 pub fn aggregate(
-    busts: impl IntoIterator<Item = (DateTime<Utc>, Reason, f64)>,
+    busts: impl IntoIterator<Item = (DateTime<Utc>, Reason, u64, f64)>,
     tz_offset: i32,
 ) -> Vec<DailyCacheLoss> {
     let mut days: BTreeMap<NaiveDate, DailyCacheLoss> = BTreeMap::new();
-    for (at, reason, usd) in busts {
+    for (at, reason, tokens, usd) in busts {
         let day = (at - Duration::minutes(i64::from(tz_offset))).date_naive();
         let d = days.entry(day).or_default();
         match reason {
-            Reason::TtlExpired => d.ttl_expired += usd,
-            Reason::GatewayRewroteBody => d.gateway_rewrote_body += usd,
-            Reason::Unknown => d.unknown += usd,
+            Reason::TtlExpired => {
+                d.ttl_expired += usd;
+                d.ttl_expired_tokens += tokens;
+            }
+            Reason::GatewayRewroteBody => {
+                d.gateway_rewrote_body += usd;
+                d.gateway_rewrote_body_tokens += tokens;
+            }
+            Reason::Unknown => {
+                d.unknown += usd;
+                d.unknown_tokens += tokens;
+            }
         }
         d.total += usd;
+        d.lost_tokens += tokens;
         d.busts += 1;
     }
     days.into_iter()
@@ -76,7 +95,7 @@ pub async fn cache_loss(
     // Turns just before the range are the predecessors its first turns are
     // judged against.
     let rows: Vec<UsageRow> = sqlx::query_as(
-        "SELECT stu.session_id, stu.message_id, stu.model, stu.input_tokens, \
+        "SELECT stu.session_id, stu.message_id, COALESCE(stu.model, s.model), stu.input_tokens, \
                 stu.cache_read_tokens, stu.cache_creation_tokens, stu.gateway_rewrote_body, \
                 stu.created_at \
          FROM session_token_usage stu \
@@ -112,7 +131,7 @@ pub async fn cache_loss(
             if let Some(&when) = at.get(message_id.as_str())
                 && when >= since
             {
-                busts.push((when, bust.reason, bust.lost_usd));
+                busts.push((when, bust.reason, bust.lost_tokens, bust.lost_usd));
             }
         }
     }
@@ -131,10 +150,10 @@ mod tests {
     fn busts_sum_per_day_and_reason() {
         let out = aggregate(
             [
-                (t("2026-09-20T10:00:00Z"), Reason::TtlExpired, 1.5),
-                (t("2026-09-20T11:00:00Z"), Reason::GatewayRewroteBody, 0.25),
-                (t("2026-09-20T12:00:00Z"), Reason::TtlExpired, 0.5),
-                (t("2026-09-19T12:00:00Z"), Reason::Unknown, 2.0),
+                (t("2026-09-20T10:00:00Z"), Reason::TtlExpired, 100, 1.5),
+                (t("2026-09-20T11:00:00Z"), Reason::GatewayRewroteBody, 20, 0.25),
+                (t("2026-09-20T12:00:00Z"), Reason::TtlExpired, 30, 0.5),
+                (t("2026-09-19T12:00:00Z"), Reason::Unknown, 7, 2.0),
             ],
             0,
         );
@@ -145,6 +164,8 @@ mod tests {
                     day: "2026-09-19".into(),
                     unknown: 2.0,
                     total: 2.0,
+                    unknown_tokens: 7,
+                    lost_tokens: 7,
                     busts: 1,
                     ..Default::default()
                 },
@@ -153,6 +174,9 @@ mod tests {
                     ttl_expired: 2.0,
                     gateway_rewrote_body: 0.25,
                     total: 2.25,
+                    ttl_expired_tokens: 130,
+                    gateway_rewrote_body_tokens: 20,
+                    lost_tokens: 150,
                     busts: 3,
                     ..Default::default()
                 },
@@ -163,9 +187,9 @@ mod tests {
     #[test]
     fn days_are_local_to_the_callers_offset() {
         // UTC+9 reports -540: 20:00Z on the 19th is already the 20th locally.
-        let out = aggregate([(t("2026-09-19T20:00:00Z"), Reason::Unknown, 1.0)], -540);
+        let out = aggregate([(t("2026-09-19T20:00:00Z"), Reason::Unknown, 1, 1.0)], -540);
         assert_eq!(out[0].day, "2026-09-20");
-        let out = aggregate([(t("2026-09-20T02:00:00Z"), Reason::Unknown, 1.0)], 300);
+        let out = aggregate([(t("2026-09-20T02:00:00Z"), Reason::Unknown, 1, 1.0)], 300);
         assert_eq!(out[0].day, "2026-09-19");
     }
 
@@ -179,7 +203,18 @@ mod tests {
         let v =
             serde_json::to_value(DailyCacheLoss { day: "2026-09-20".into(), ..Default::default() })
                 .unwrap();
-        for k in ["day", "ttl_expired", "gateway_rewrote_body", "unknown", "total", "busts"] {
+        for k in [
+            "day",
+            "ttl_expired",
+            "gateway_rewrote_body",
+            "unknown",
+            "total",
+            "ttl_expired_tokens",
+            "gateway_rewrote_body_tokens",
+            "unknown_tokens",
+            "lost_tokens",
+            "busts",
+        ] {
             assert!(v.get(k).is_some(), "missing {k}");
         }
     }

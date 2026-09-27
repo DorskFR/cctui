@@ -44,4 +44,26 @@ describe('CacheLossCard', () => {
 		render({ days: 1 });
 		expect(requested).toEqual([1]);
 	});
+
+	it('reports an unpriced week in tokens and bust counts, not $0.00', () => {
+		query.data = [
+			{
+				day: '2026-09-24',
+				ttl_expired: 0,
+				gateway_rewrote_body: 0,
+				unknown: 0,
+				total: 0,
+				ttl_expired_tokens: 0,
+				gateway_rewrote_body_tokens: 0,
+				unknown_tokens: 172_523,
+				lost_tokens: 172_523,
+				busts: 3
+			}
+		];
+		const text = render({}).textContent ?? '';
+		query.data = [];
+		expect(text).toContain('173k');
+		expect(text).toContain('3 busts');
+		expect(text).not.toContain('$0.00');
+	});
 });
