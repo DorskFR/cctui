@@ -150,16 +150,6 @@ jobs:
           SQLX_OFFLINE: "true"
         run: bash scripts/release-build-bins.sh "${{ matrix.os }}" "${{ matrix.arch }}" "${{ matrix.target }}"
 
-      # cctui-server links the distro OpenSSL (webauthn-rs), so it cannot be a
-      # static musl build; it is cross-linked against glibc 2.36 to match the
-      # bookworm-slim runtime of deploy/Dockerfile.
-      - name: Build cctui-server for the image (linux-amd64)
-        if: matrix.os == 'linux' && matrix.arch == 'amd64'
-        env:
-          SQLX_OFFLINE: "true"
-          CCTUI_GIT_HASH: ${{ needs.meta.outputs.sha }}
-        run: bash scripts/release-build-server.sh
-
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: matrix.os == 'linux' && matrix.arch == 'amd64'
         with:
@@ -186,6 +176,35 @@ jobs:
           path: |
             dist/cctui-${{ matrix.os }}-${{ matrix.arch }}
             dist/cctui-daemon-${{ matrix.os }}-${{ matrix.arch }}
+
+  # cctui-server links the distro OpenSSL (webauthn-rs), so it is not a musl
+  # build. Built natively on ubuntu-22.04, whose glibc (2.35) is older than the
+  # bookworm-slim runtime of deploy/Dockerfile (2.36).
+  build-server:
+    needs: [meta]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.meta.outputs.sha }}
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          shared-key: release-server
+          save-if: ${{ github.event_name == 'workflow_dispatch' }}
+      - name: Build cctui-server for the image
+        env:
+          SQLX_OFFLINE: "true"
+          CCTUI_GIT_HASH: ${{ needs.meta.outputs.sha }}
+        run: bash scripts/release-build-server.sh
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: image-bins-server
+          retention-days: 1
+          path: image-bins/
 
   release:
     needs: [meta, ci-green, build]
@@ -258,7 +277,7 @@ jobs:
   # compiles inside docker.
   images:
     name: image ${{ matrix.image }}
-    needs: [meta, build]
+    needs: [meta, build, build-server]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -296,7 +315,8 @@ jobs:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         if: matrix.bins
         with:
-          name: image-bins
+          pattern: image-bins*
+          merge-multiple: true
           path: image-bins
 
       - name: Restore executable bits
@@ -367,7 +387,8 @@ jobs:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         if: matrix.bins
         with:
-          name: image-bins
+          pattern: image-bins*
+          merge-multiple: true
           path: image-bins
 
       - name: Restore executable bits
