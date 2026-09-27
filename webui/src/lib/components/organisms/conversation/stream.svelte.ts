@@ -17,7 +17,7 @@ import {
 	type SoftLimitBlock,
 	type ToolBlock
 } from '$lib/ws.svelte';
-import { eventSig, parseAsk, parseTodos, todoProgress as deriveTodoProgress } from './format';
+import { eventKeys, parseAsk, parseTodos, todoProgress as deriveTodoProgress } from './format';
 import { lastProseLine, toolInvocationSummary, type ActivityTool } from './activity';
 import type { AskQuestion, TodoItem, TodoProgress } from './types';
 import { endpoints } from '$lib/queries';
@@ -38,8 +38,8 @@ export function mergeLiveEvent(
 	if (!prev?.length) return prev;
 	const seq = ev.seq;
 	if (seq === null || seq === undefined) return prev;
-	const sig = eventSig(ev);
-	if (prev.some((e) => e.seq === seq || eventSig(e) === sig)) return prev;
+	const keys = new Set(eventKeys(ev));
+	if (prev.some((e) => e.seq === seq || eventKeys(e).some((k) => keys.has(k)))) return prev;
 	const tail = prev[prev.length - 1].seq;
 	if (tail != null && Number(seq) > Number(tail)) return [...prev, ev];
 	const at = prev.findIndex((e) => e.seq != null && Number(e.seq) > Number(seq));

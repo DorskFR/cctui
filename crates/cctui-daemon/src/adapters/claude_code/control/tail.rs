@@ -73,12 +73,28 @@ impl Driver {
         local
     }
 
+    /// Translate a server mark key into the key our offsets are stored under.
+    /// The server keys marks by `sessions.id` (the stable `local_id`); we key
+    /// offsets by `offset_key`, the live claude session id, which `/clear` and
+    /// `/compact` rotate away from it. Without this the lookup misses and every
+    /// restart re-tails the whole transcript.
+    fn offset_key_for_mark(&self, key: String) -> String {
+        if self.transcript_locations.values().any(|loc| loc.offset_key == key) {
+            return key;
+        }
+        self.transcript_locations
+            .values()
+            .find(|loc| loc.local_id == key)
+            .map_or(key, |loc| loc.offset_key.clone())
+    }
+
     /// Apply server-pushed transcript resume marks: record each mark,
     /// clamp the cursor of any session already ahead-clampable forward, and heal
     /// a session we already tail whose offset has run ahead of (or has no) mark
     /// with a single bounded re-send window.
     pub(super) async fn apply_resume_marks(&mut self, marks: Vec<(String, u64)>) {
-        let mark_map: HashMap<String, u64> = marks.into_iter().collect();
+        let mark_map: HashMap<String, u64> =
+            marks.into_iter().map(|(key, mark)| (self.offset_key_for_mark(key), mark)).collect();
         for (key, mark) in &mark_map {
             let entry = self.server_marks.entry(key.clone()).or_insert(0);
             *entry = (*entry).max(*mark);
@@ -182,6 +198,49 @@ pub(super) fn clamp_to_file_len(path: &Path, mark: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::super::test_support::*;
+
+    #[tokio::test]
+    async fn only_the_forward_tail_stamps_a_turn_id() {
+        // acceptance: a replay window must re-emit a user line byte-identically
+        // to the forward tail, turn id included, or the server's dedupe sees a
+        // new row and the drawer shows the prompt twice.
+        let (mut d, mut rx) = driver();
+        let turn = uuid::Uuid::new_v4();
+        write_main_transcript(&d, "abcd1234", &[&user_line("line-1", "ship it")]);
+        d.note_turn("abcd1234-uuid", Some(turn));
+
+        d.apply_snapshot(vec![snap("abcd1234", "working", None)]).await;
+        assert_eq!(
+            drain_user_turns(&mut rx),
+            vec![("ship it".to_owned(), Some("line-1".to_owned()), Some(turn))],
+        );
+
+        let loc = d.transcript_locations.get("abcd1234").cloned().expect("pinned");
+        d.resend_window(&loc, Some(0)).await;
+        assert_eq!(
+            drain_user_turns(&mut rx),
+            vec![("ship it".to_owned(), Some("line-1".to_owned()), None)],
+            "a replay carries the line id, never a freshly stamped turn id",
+        );
+    }
+
+    #[tokio::test]
+    async fn a_mark_keyed_by_local_id_lands_on_a_rotated_offset_key() {
+        // acceptance: after `/clear` the offset key is the rotated session id
+        // while the server still keys its mark by the stable local_id.
+        let (mut d, mut rx) = driver();
+        write_main_transcript(&d, "abcd1234", &[&text_line("first")]);
+        d.apply_snapshot(vec![snap("abcd1234", "working", None)]).await;
+        let _ = drain_messages(&mut rx);
+        let loc = d.transcript_locations.get_mut("abcd1234").expect("pinned");
+        "rotated-uuid".clone_into(&mut loc.offset_key);
+        d.offsets.set("rotated-uuid".to_owned(), 0);
+
+        d.apply_resume_marks(vec![("abcd1234-uuid".to_owned(), 77)]).await;
+
+        assert_eq!(d.acked_marks.get("rotated-uuid").copied(), Some(77));
+        assert_eq!(d.server_marks.get("rotated-uuid").copied(), Some(77));
+    }
 
     #[tokio::test]
     async fn resume_mark_clamps_cursor_forward_and_skips_replay() {

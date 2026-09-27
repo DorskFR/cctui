@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { AgentEvent } from '@bindings/AgentEvent';
-import { eventSig, mergeEventSources } from './format';
+import { eventKeys, eventSig, mergeEventSources } from './format';
 import { newTurnId } from '$lib/turnid';
 
 const userEv = (seq: number, content: string, turnId?: string): AgentEvent =>
@@ -75,6 +75,51 @@ describe('mergeEventSources with turn ids', () => {
 	it('does not collapse a turn-less row into a turn-carrying one', () => {
 		const id = newTurnId();
 		const out = mergeEventSources([userEv(1, 'hello', id), userEv(2, 'hello')], [], []);
+		expect(out).toHaveLength(2);
+	});
+});
+
+const lineEv = (seq: number, content: string, lineId: string, turnId?: string): AgentEvent =>
+	({
+		...userEv(seq, content, turnId),
+		line_id: lineId
+	}) as unknown as AgentEvent;
+
+describe('eventKeys', () => {
+	it('answers to both the line id and the turn id', () => {
+		const id = newTurnId();
+		expect(eventKeys(lineEv(1, 'hello', 'line-a', id))).toEqual(['l:line-a', `t:${id}`]);
+	});
+
+	it('falls back to the single content key with no line id', () => {
+		expect(eventKeys(userEv(1, 'hello'))).toEqual(['u:hello']);
+	});
+});
+
+describe('mergeEventSources with replayed lines', () => {
+	it('collapses a replay that lost its turn id onto the original', () => {
+		const id = newTurnId();
+		const out = mergeEventSources(
+			[lineEv(1, 'ship it', 'line-a', id), lineEv(2, 'ship it', 'line-a')],
+			[],
+			[]
+		);
+		expect(out).toHaveLength(1);
+	});
+
+	it('collapses the live copy, which carries the turn id and no line id', () => {
+		const id = newTurnId();
+		const live = [userEv(2, 'ship it', id)];
+		const out = mergeEventSources([lineEv(1, 'ship it', 'line-a', id)], [], live);
+		expect(out).toHaveLength(1);
+	});
+
+	it('keeps two distinct lines with the same prose', () => {
+		const out = mergeEventSources(
+			[lineEv(1, 'continue', 'line-a', newTurnId()), lineEv(2, 'continue', 'line-b', newTurnId())],
+			[],
+			[]
+		);
 		expect(out).toHaveLength(2);
 	});
 });

@@ -59,8 +59,11 @@ pub struct DriverConfig {
     pub projects_root: PathBuf,
     /// Override the discovery base for tests / non-standard layouts.
     pub discovery: Discovery,
-    /// Optional override for the transcript-offsets store path. `None`
-    /// uses the default `$XDG_CONFIG_HOME/cctui/transcript-offsets.json`.
+    /// Where to persist transcript-tail offsets. `None` — the default — keeps
+    /// them in memory only: a persisted offset can outrun the events it covers
+    /// if the WS drops between the tail and the send, and those events would
+    /// then never be re-read. Server-side dedupe makes the re-tail from 0 that
+    /// this costs us idempotent. Tests set a path to exercise the file I/O.
     pub offsets_path: Option<PathBuf>,
     /// Optional override for the backfill cursor path. `None` uses the
     /// default `$XDG_CONFIG_HOME/cctui/backfill.json`.
@@ -812,9 +815,17 @@ impl Driver {
         let events = self.events.clone();
         loop {
             tokio::select! {
+                // Biased: the interval's first tick is ready immediately, so an
+                // unbiased select can poll before a queued `ResumeMarks` is
+                // applied — and a tail that starts with no marks restarts from
+                // byte 0 and replays the whole transcript.
+                biased;
                 () = self.shutdown.cancelled() => {
                     self.flush_before_teardown().await;
                     return Ok(());
+                }
+                Some(cmd) = self.commands.recv() => {
+                    crate::adapter_runtime::dispatch_command(&mut self, &events, cmd).await;
                 }
                 _ = tick.tick() => {
                     if let Err(err) = self.poll_once().await {
@@ -828,9 +839,6 @@ impl Driver {
                         self.reconcile_tail(false).await;
                         self.maybe_cycle_stale_daemon().await;
                     }
-                }
-                Some(cmd) = self.commands.recv() => {
-                    crate::adapter_runtime::dispatch_command(&mut self, &events, cmd).await;
                 }
             }
         }
@@ -1132,6 +1140,15 @@ impl Driver {
     }
 
     async fn emit(&self, evt: AdapterEvent) {
+        let _ = self.events.send(evt).await;
+    }
+
+    /// Emit an event parsed out of transcript bytes read for the FIRST time.
+    /// Only this path may stamp a turn id: a replay window
+    /// (`resend_window` / `reconcile_tail` / backfill) re-reads bytes that
+    /// belong to an older turn, and stamping them with whatever turn happens
+    /// to be in flight mints a row the server sees as new.
+    async fn emit_fresh(&self, evt: AdapterEvent) {
         let _ = self.events.send(self.stamp_turn(evt)).await;
     }
 
