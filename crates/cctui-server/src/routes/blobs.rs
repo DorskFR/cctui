@@ -8,9 +8,10 @@
 //!
 //! `GET /api/v1/sessions/{id}/blobs/{hash}` — a consumer resolves a
 //! `{type:"cctui-blob", blob_id}` reference. Session-read authz (enforced by the
-//! `api_router` layer via `{id}`) plus a `session_blob_links` row: a hash is
-//! only servable through a session that actually referenced it, so knowing a
-//! hash is not by itself a capability across tenants.
+//! `api_router` layer via `{id}`) plus a `session_blob_links` row, or a
+//! `session_attachments` row for a file the user uploaded to that session: a
+//! hash is only servable through a session that actually referenced it, so
+//! knowing a hash is not by itself a capability across tenants.
 
 use axum::body::Bytes;
 use axum::extract::{Path, State};
@@ -100,6 +101,28 @@ pub async fn store_blob(
     Ok(StoredBlob { hash, created: rows == 1 })
 }
 
+/// Uploads authorize through `session_attachments` rather than a link row:
+/// spawn uploads are recorded before the `sessions` row exists, so they cannot
+/// satisfy `session_blob_links`' FK.
+pub async fn fetch_session_blob(
+    pool: &sqlx::PgPool,
+    session_id: &str,
+    hash: &str,
+) -> Result<Option<(Option<String>, Vec<u8>)>, sqlx::Error> {
+    sqlx::query_as(
+        "SELECT b.media_type, b.bytes FROM daemon_blobs b \
+         WHERE b.hash = $1 AND ( \
+           EXISTS (SELECT 1 FROM session_blob_links l \
+                   WHERE l.hash = b.hash AND l.session_id = $2) \
+           OR EXISTS (SELECT 1 FROM session_attachments a \
+                      WHERE a.hash = b.hash AND a.session_id = $2))",
+    )
+    .bind(hash)
+    .bind(session_id)
+    .fetch_optional(pool)
+    .await
+}
+
 pub async fn get_blob(
     State(state): State<AppState>,
     Path((session_id, hash)): Path<(String, String)>,
@@ -107,16 +130,7 @@ pub async fn get_blob(
     if !is_sha256_hex(&hash) {
         return Err(StatusCode::BAD_REQUEST);
     }
-    let row: Option<(Option<String>, Vec<u8>)> = sqlx::query_as(
-        "SELECT b.media_type, b.bytes FROM daemon_blobs b \
-         JOIN session_blob_links l ON l.hash = b.hash \
-         WHERE b.hash = $1 AND l.session_id = $2",
-    )
-    .bind(&hash)
-    .bind(&session_id)
-    .fetch_optional(&state.pool)
-    .await
-    .map_err(|e| {
+    let row = fetch_session_blob(&state.pool, &session_id, &hash).await.map_err(|e| {
         tracing::error!("blob get: {e}");
         StatusCode::INTERNAL_SERVER_ERROR
     })?;
@@ -127,7 +141,7 @@ pub async fn get_blob(
 /// The stored media type is never trusted: the type is re-sniffed from the
 /// bytes (never active), non-inline types download, and the sandbox CSP keeps
 /// anything that slips through from running on this origin.
-fn blob_response(hash: &str, bytes: Vec<u8>) -> Response {
+pub(crate) fn blob_response(hash: &str, bytes: Vec<u8>) -> Response {
     let media_type = sniff_media_type("", &bytes);
     let disposition = content_disposition(media_type, hash);
     let mut resp = Response::new(axum::body::Body::from(bytes));
@@ -218,18 +232,7 @@ mod tests {
         let fetch = |session: &'static str| {
             let pool = pool.clone();
             let hash = hash.clone();
-            async move {
-                sqlx::query_as::<_, (Option<String>, Vec<u8>)>(
-                    "SELECT b.media_type, b.bytes FROM daemon_blobs b \
-                     JOIN session_blob_links l ON l.hash = b.hash \
-                     WHERE b.hash = $1 AND l.session_id = $2",
-                )
-                .bind(&hash)
-                .bind(session)
-                .fetch_optional(&pool)
-                .await
-                .unwrap()
-            }
+            async move { fetch_session_blob(&pool, session, &hash).await.unwrap() }
         };
         assert!(fetch("session-a").await.is_none(), "no link yet → not servable");
 
