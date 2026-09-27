@@ -136,6 +136,8 @@ export type * from './PoolUsageView';
 export type * from './PoolUsageWindowMember';
 export type * from './PoolUsageWindow';
 export type * from './Preset';
+export type * from './PreviewInfo';
+export type * from './PreviewTicket';
 export type * from './ProfileSpec';
 export type * from './Prompt';
 export type * from './PtyOutputStats';

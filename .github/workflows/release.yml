@@ -25,13 +25,13 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
   # Keep in lockstep with rust-toolchain.toml and deploy/*.Dockerfile.
   RUST_VERSION: "1.97.1"
+  CARGO_INCREMENTAL: "0"
 
 jobs:
-  ci-green:
-    name: ci passed on this commit
+  meta:
+    name: resolve release commit + channel
     runs-on: ubuntu-latest
     permissions:
-      actions: read
       contents: read
     outputs:
       sha: ${{ steps.sha.outputs.sha }}
@@ -63,14 +63,29 @@ jobs:
           echo "$out"
           { echo "tag=$TAG"; echo "$out"; } >> "$GITHUB_OUTPUT"
 
+  # Only the publish steps (GitHub Release, image pushes) wait on this; builds
+  # start right away and run alongside the ci.yml run for the same commit.
+  ci-green:
+    name: ci passed on this commit
+    needs: [meta]
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.meta.outputs.sha }}
+          sparse-checkout: scripts
+
       - name: Require a green ci run on the release commit
         env:
           GH_TOKEN: ${{ github.token }}
-        run: bash scripts/check-ci-green.sh "${{ github.repository }}" "${{ steps.sha.outputs.sha }}"
+        run: bash scripts/check-ci-green.sh "${{ github.repository }}" "${{ needs.meta.outputs.sha }}"
 
   build:
     name: build ${{ matrix.os }}-${{ matrix.arch }}
-    needs: [ci-green]
+    needs: [meta]
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -91,7 +106,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.ci-green.outputs.sha }}
+          ref: ${{ needs.meta.outputs.sha }}
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
@@ -105,6 +120,14 @@ jobs:
       # No-op when the target equals the host (darwin).
       - name: Add cross target to the pinned toolchain
         run: rustup target add ${{ matrix.target }}
+
+      # Tag refs can only restore caches saved on the default branch, so the
+      # `release-*` shared keys are populated by ci.yml on pushes to main (and by
+      # candidate runs dispatched from main); a tag run then restores them.
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          shared-key: release-${{ matrix.target }}
+          save-if: ${{ github.event_name == 'workflow_dispatch' }}
 
       # Linux artifacts are static musl builds so they run on any glibc
       # (the claude-worker image is debian bookworm = glibc 2.36, while the
@@ -120,36 +143,22 @@ jobs:
         with:
           tool: cargo-zigbuild
 
-      - name: Build cctui + cctui-daemon (offline sqlx)
+      # One invocation for every musl binary: separate `-p` runs unify features
+      # differently and rebuild most of the dependency graph twice.
+      - name: Build binaries (offline sqlx)
         env:
           SQLX_OFFLINE: "true"
-        run: |
-          if [ "${{ matrix.os }}" = "linux" ]; then
-            cargo zigbuild --release -p cctui-tui --target ${{ matrix.target }}
-            cargo zigbuild --release -p cctui-daemon --target ${{ matrix.target }}
-          else
-            cargo build --release -p cctui-tui --target ${{ matrix.target }}
-            cargo build --release -p cctui-daemon --target ${{ matrix.target }}
-          fi
+        run: bash scripts/release-build-bins.sh "${{ matrix.os }}" "${{ matrix.arch }}" "${{ matrix.target }}"
 
-      - name: Stage artifacts
-        run: |
-          mkdir -p dist
-          cp "target/${{ matrix.target }}/release/cctui" "dist/cctui-${{ matrix.os }}-${{ matrix.arch }}"
-          cp "target/${{ matrix.target }}/release/cctui-daemon" "dist/cctui-daemon-${{ matrix.os }}-${{ matrix.arch }}"
-
-      # The images job COPYs these static binaries instead of compiling in docker.
-      - name: Build image binaries (linux-amd64)
+      # cctui-server links the distro OpenSSL (webauthn-rs), so it cannot be a
+      # static musl build; it is cross-linked against glibc 2.36 to match the
+      # bookworm-slim runtime of deploy/Dockerfile.
+      - name: Build cctui-server for the image (linux-amd64)
         if: matrix.os == 'linux' && matrix.arch == 'amd64'
         env:
           SQLX_OFFLINE: "true"
-        run: |
-          bins=(cctui-daemon cctui-guard-proxy cctui-supervisor cctui-guard cctui-dispatcher-kube cctui-orchestrator)
-          pkgs=()
-          for b in "${bins[@]}"; do pkgs+=(-p "$b"); done
-          cargo zigbuild --release --target "${{ matrix.target }}" "${pkgs[@]}"
-          mkdir -p image-bins
-          for b in "${bins[@]}"; do cp "target/${{ matrix.target }}/release/$b" image-bins/; done
+          CCTUI_GIT_HASH: ${{ needs.meta.outputs.sha }}
+        run: bash scripts/release-build-server.sh
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: matrix.os == 'linux' && matrix.arch == 'amd64'
@@ -179,12 +188,12 @@ jobs:
             dist/cctui-daemon-${{ matrix.os }}-${{ matrix.arch }}
 
   release:
-    needs: [ci-green, build]
+    needs: [meta, ci-green, build]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.ci-green.outputs.sha }}
+          ref: ${{ needs.meta.outputs.sha }}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           path: dist
@@ -219,9 +228,9 @@ jobs:
           done
       - name: Refuse a release without a resolved channel
         env:
-          CHANNEL: ${{ needs.ci-green.outputs.channel }}
-          PRERELEASE: ${{ needs.ci-green.outputs.prerelease }}
-          MAKE_LATEST: ${{ needs.ci-green.outputs.make_latest }}
+          CHANNEL: ${{ needs.meta.outputs.channel }}
+          PRERELEASE: ${{ needs.meta.outputs.prerelease }}
+          MAKE_LATEST: ${{ needs.meta.outputs.make_latest }}
         run: |
           case "$CHANNEL/$PRERELEASE/$MAKE_LATEST" in
             stable/false/true | stable/true/false | beta/true/false) ;;
@@ -229,10 +238,10 @@ jobs:
           esac
       - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
-          tag_name: ${{ needs.ci-green.outputs.tag }}
-          target_commitish: ${{ needs.ci-green.outputs.sha }}
-          prerelease: ${{ needs.ci-green.outputs.prerelease }}
-          make_latest: ${{ needs.ci-green.outputs.make_latest }}
+          tag_name: ${{ needs.meta.outputs.tag }}
+          target_commitish: ${{ needs.meta.outputs.sha }}
+          prerelease: ${{ needs.meta.outputs.prerelease }}
+          make_latest: ${{ needs.meta.outputs.make_latest }}
           generate_release_notes: true
           files: |
             dist/cctui-*
@@ -241,9 +250,15 @@ jobs:
   # linux/amd64 only: rust-via-QEMU arm64 is too slow to justify here. Each
   # image keeps its own gha layer cache scope so unchanged layers (apt, node,
   # harness binaries) are reused across releases.
+  #
+  # Images are built (not pushed) as soon as the run starts; `images-push`
+  # replays the build from the layer cache once ci is green, so nothing lands
+  # on ghcr before the gate. The `bins` build context replaces the Dockerfile's
+  # builder stage with the linux-amd64 binaries from the build job, so no Rust
+  # compiles inside docker.
   images:
     name: image ${{ matrix.image }}
-    needs: [ci-green]
+    needs: [meta, build]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -252,69 +267,111 @@ jobs:
           - image: cctui
             context: .
             file: deploy/Dockerfile
+            bins: true
+          - image: cctui-worker
+            context: .
+            file: deploy/worker.Dockerfile
+            bins: true
+          - image: cctui-dispatcher-kube
+            context: .
+            file: deploy/dispatcher.Dockerfile
+            bins: true
+          - image: cctui-orchestrator
+            context: .
+            file: deploy/orchestrator.Dockerfile
+            bins: true
           - image: cctui-ui
             context: .
             file: webui/Dockerfile
+            bins: false
           - image: cctui-ghreview
             context: ghreview
             file: ghreview/Dockerfile
+            bins: false
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.ci-green.outputs.sha }}
-
-      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
-
-      - name: Log in to ghcr
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build + push
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
-        with:
-          context: ${{ matrix.context }}
-          file: ${{ matrix.file }}
-          platforms: linux/amd64
-          push: true
-          build-args: |
-            CCTUI_GIT_HASH=${{ needs.ci-green.outputs.sha }}
-            CLIENT_VERSION=${{ needs.ci-green.outputs.version }}
-          cache-from: type=gha,scope=${{ matrix.image }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
-          tags: |
-            ghcr.io/dorskfr/${{ matrix.image }}:${{ needs.ci-green.outputs.version }}
-            ghcr.io/dorskfr/${{ matrix.image }}:${{ needs.ci-green.outputs.floating_tag }}
-
-  # These images take the linux-amd64 musl binaries from the build job through
-  # the `bins` build context, so no Rust compiles inside docker.
-  images-prebuilt:
-    name: image ${{ matrix.image }}
-    needs: [ci-green, build]
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - image: cctui-worker
-            file: deploy/worker.Dockerfile
-          - image: cctui-dispatcher-kube
-            file: deploy/dispatcher.Dockerfile
-          - image: cctui-orchestrator
-            file: deploy/orchestrator.Dockerfile
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ needs.ci-green.outputs.sha }}
+          ref: ${{ needs.meta.outputs.sha }}
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        if: matrix.bins
         with:
           name: image-bins
           path: image-bins
 
       - name: Restore executable bits
+        if: matrix.bins
+        run: chmod 0755 image-bins/*
+
+      - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+
+      # Loaded locally so the worker's harness floors are checked against the
+      # real binaries before anything is published.
+      - name: Build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
+          build-contexts: ${{ matrix.bins && 'bins=image-bins' || '' }}
+          platforms: linux/amd64
+          load: ${{ matrix.image == 'cctui-worker' }}
+          push: false
+          build-args: |
+            CCTUI_GIT_HASH=${{ needs.meta.outputs.sha }}
+            CLIENT_VERSION=${{ needs.meta.outputs.version }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+          tags: ghcr.io/dorskfr/${{ matrix.image }}:${{ needs.meta.outputs.version }}
+
+      - name: Verify harness version floors in the worker image
+        if: matrix.image == 'cctui-worker'
+        run: bash scripts/check-worker-image-harness.sh ghcr.io/dorskfr/cctui-worker:${{ needs.meta.outputs.version }}
+
+  images-push:
+    name: push ${{ matrix.image }}
+    needs: [meta, ci-green, build, images]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: cctui
+            context: .
+            file: deploy/Dockerfile
+            bins: true
+          - image: cctui-worker
+            context: .
+            file: deploy/worker.Dockerfile
+            bins: true
+          - image: cctui-dispatcher-kube
+            context: .
+            file: deploy/dispatcher.Dockerfile
+            bins: true
+          - image: cctui-orchestrator
+            context: .
+            file: deploy/orchestrator.Dockerfile
+            bins: true
+          - image: cctui-ui
+            context: .
+            file: webui/Dockerfile
+            bins: false
+          - image: cctui-ghreview
+            context: ghreview
+            file: ghreview/Dockerfile
+            bins: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.meta.outputs.sha }}
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        if: matrix.bins
+        with:
+          name: image-bins
+          path: image-bins
+
+      - name: Restore executable bits
+        if: matrix.bins
         run: chmod 0755 image-bins/*
 
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
@@ -326,34 +383,19 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Loaded locally first so the worker's harness floors are checked against
-      # the real binaries before anything is published; the push is a cache hit.
-      - name: Build
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
-        with:
-          context: .
-          file: ${{ matrix.file }}
-          build-contexts: bins=image-bins
-          platforms: linux/amd64
-          load: true
-          push: false
-          cache-from: type=gha,scope=${{ matrix.image }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
-          tags: ghcr.io/dorskfr/${{ matrix.image }}:${{ needs.ci-green.outputs.version }}
-
-      - name: Verify harness version floors in the worker image
-        if: matrix.image == 'cctui-worker'
-        run: bash scripts/check-worker-image-harness.sh ghcr.io/dorskfr/cctui-worker:${{ needs.ci-green.outputs.version }}
-
+      # Same inputs as the `images` build, so every layer is a cache hit.
       - name: Push
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
-          context: .
+          context: ${{ matrix.context }}
           file: ${{ matrix.file }}
-          build-contexts: bins=image-bins
+          build-contexts: ${{ matrix.bins && 'bins=image-bins' || '' }}
           platforms: linux/amd64
           push: true
+          build-args: |
+            CCTUI_GIT_HASH=${{ needs.meta.outputs.sha }}
+            CLIENT_VERSION=${{ needs.meta.outputs.version }}
           cache-from: type=gha,scope=${{ matrix.image }}
           tags: |
-            ghcr.io/dorskfr/${{ matrix.image }}:${{ needs.ci-green.outputs.version }}
-            ghcr.io/dorskfr/${{ matrix.image }}:${{ needs.ci-green.outputs.floating_tag }}
+            ghcr.io/dorskfr/${{ matrix.image }}:${{ needs.meta.outputs.version }}
+            ghcr.io/dorskfr/${{ matrix.image }}:${{ needs.meta.outputs.floating_tag }}

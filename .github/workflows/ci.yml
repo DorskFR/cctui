@@ -163,6 +163,9 @@ jobs:
       - name: Apply migrations
         run: sqlx migrate run --source migrations
 
+      # Every cargo test below keeps the same --workspace package selection so
+      # feature unification (and therefore the compiled artifacts) is identical
+      # and the workspace compiles once.
       - name: cargo test (workspace)
         run: cargo test --workspace --locked
 
@@ -170,12 +173,14 @@ jobs:
       # rest need a live claude/codex/opencode binary and stay manual-only.
       - name: cargo test --ignored (database, fake harness shims)
         run: |
-          cargo test --locked -p cctui-server --bin cctui-server -- --ignored routes::gateway::mint::db_tests
-          cargo test --locked -p cctui-daemon --lib -- --ignored harness_update::
+          cargo test --workspace --locked --bins --lib -- --ignored routes::gateway::mint::db_tests harness_update::
 
+      # `cargo test --workspace` already linked target/debug/cctui-server for the
+      # integration test target; do not rebuild it with a different package
+      # selection.
       - name: Start the server
         run: |
-          cargo build --locked -p cctui-server --bin cctui-server
+          test -x ./target/debug/cctui-server || { echo "cargo test did not produce target/debug/cctui-server" >&2; exit 1; }
           ./target/debug/cctui-server > /tmp/cctui-server.log 2>&1 &
           for _ in $(seq 1 60); do
             if curl -fsS http://localhost:8700/health >/dev/null 2>&1; then
@@ -189,11 +194,80 @@ jobs:
           exit 1
 
       - name: cargo test --ignored (against the running server)
-        run: cargo test --locked -p cctui-server --test integration -- --ignored
+        run: cargo test --workspace --locked --test integration -- --ignored
+
+      # Same --workspace selection as the tests above (minus cctui-query, whose
+      # ts exports are not part of the webui bindings), so nothing recompiles.
+      - name: Regenerate webui bindings
+        env:
+          CCTUI_BINDINGS_CARGO_ARGS: --workspace --locked --lib --bins --exclude cctui-query
+        run: |
+          bash webui/scripts/gen-bindings.sh
+          node webui/scripts/gen-scrub-detectors.mjs
+
+      - name: Committed bindings match the generators
+        run: |
+          git add --intent-to-add webui/src/lib/bindings
+          if ! git diff --exit-code webui/src/lib/bindings webui/src/lib/scrubDetectors.generated.ts; then
+            echo "::error::webui bindings are stale. Run 'make bindings' and commit the result."
+            exit 1
+          fi
 
       - name: Server log
         if: always()
         run: cat /tmp/cctui-server.log 2>/dev/null || true
+
+  # Warms the Swatinem/rust-cache keys release.yml restores (tag refs can only
+  # read caches saved on the default branch). Main pushes only; a cold run is
+  # about the length of the test job, a warm one is incremental.
+  release-cache:
+    name: warm release cache ${{ matrix.target }}
+    needs: changes
+    if: github.event_name == 'push' && needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: linux
+            arch: amd64
+            target: x86_64-unknown-linux-musl
+          - os: linux
+            arch: arm64
+            target: aarch64-unknown-linux-musl
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: ${{ matrix.target }}
+
+      - name: Add cross target to the pinned toolchain
+        run: rustup target add ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
+        with:
+          shared-key: release-${{ matrix.target }}
+
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+      - uses: taiki-e/install-action@d438492cf8a250514fa2d34b30bc3c0dc37c65ff # v2
+        with:
+          tool: cargo-zigbuild
+
+      - name: Build release binaries
+        env:
+          SQLX_OFFLINE: "true"
+        run: bash scripts/release-build-bins.sh "${{ matrix.os }}" "${{ matrix.arch }}" "${{ matrix.target }}"
+
+      - name: Build cctui-server for the image
+        if: matrix.arch == 'amd64'
+        env:
+          SQLX_OFFLINE: "true"
+        run: bash scripts/release-build-server.sh
 
   webui:
     name: webui
