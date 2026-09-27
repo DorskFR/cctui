@@ -68,6 +68,12 @@ async fn fetch_file(server: &ServerClient, url: &str) -> anyhow::Result<Vec<u8>>
     let resp = server.http().get(url).send().await?;
     let status = resp.status();
     anyhow::ensure!(status.is_success(), "GET {url} -> {status}");
+    let html = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|ct| ct.starts_with("text/html"));
+    anyhow::ensure!(!html, "GET {url} returned HTML: /plugins is not routed to the server");
     Ok(resp.bytes().await?.to_vec())
 }
 
@@ -258,6 +264,28 @@ mod tests {
 
         let again = mirror_plugin(&server, root.path(), &p).await.unwrap();
         assert_eq!(again, dir);
+    }
+
+    #[tokio::test]
+    async fn an_html_answer_is_refused_and_leaves_no_ready_dir() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let (mut sock, _) = listener.accept().unwrap();
+            let _ = sock.read(&mut [0u8; 4096]).unwrap();
+            let body = "<!doctype html>";
+            let _ = write!(
+                sock,
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+        });
+        let server = ServerClient::new(format!("http://{addr}"));
+        let root = tempfile::tempdir().unwrap();
+        let p = plugin(&["yubisashi/SKILL.md"]);
+        let err = mirror_plugin(&server, root.path(), &p).await.unwrap_err();
+        assert!(format!("{err:#}").contains("HTML"), "{err:#}");
+        assert!(!plugin_dir(root.path(), &p).unwrap().exists());
     }
 
     #[tokio::test]
