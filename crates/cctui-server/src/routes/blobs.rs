@@ -141,7 +141,7 @@ pub async fn get_blob(
 /// The stored media type is never trusted: the type is re-sniffed from the
 /// bytes (never active), non-inline types download, and the sandbox CSP keeps
 /// anything that slips through from running on this origin.
-pub(crate) fn blob_response(hash: &str, bytes: Vec<u8>) -> Response {
+pub fn blob_response(hash: &str, bytes: Vec<u8>) -> Response {
     let media_type = sniff_media_type("", &bytes);
     let disposition = content_disposition(media_type, hash);
     let mut resp = Response::new(axum::body::Body::from(bytes));
