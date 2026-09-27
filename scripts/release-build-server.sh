@@ -1,16 +1,15 @@
 #!/usr/bin/env bash
-# Cross-links cctui-server against glibc 2.36 (the bookworm-slim runtime of
-# deploy/Dockerfile) and stages it in image-bins/. The distro OpenSSL is linked
-# dynamically by soname (libssl.so.3 / libcrypto.so.3), which the runtime
-# provides through the libssl3 package.
+# Builds cctui-server natively and stages it in image-bins/. Run it on a host
+# whose glibc is no newer than the bookworm-slim runtime of deploy/Dockerfile
+# (2.36); the distro OpenSSL is linked by soname (libssl.so.3), which the
+# runtime provides through libssl3.
 set -euo pipefail
 
-target=x86_64-unknown-linux-gnu
 glibc="${SERVER_GLIBC:-2.36}"
 
-cargo zigbuild --release --locked -p cctui-server --target "$target.$glibc"
+cargo build --release --locked -p cctui-server
 
-bin="target/$target/release/cctui-server"
+bin="target/release/cctui-server"
 mkdir -p image-bins
 cp "$bin" image-bins/
 
