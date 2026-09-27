@@ -789,6 +789,19 @@ codex_mcp_toml() {
     ' "$1" 2>/dev/null || true
 }
 
+# `codex app-server daemon` only starts from a standalone install at
+# $CODEX_HOME/packages/standalone/current; point it at the baked package.
+phase_codex_package() {
+    [ -n "${CODEX_PACKAGE_DIR:-}" ] && [ -x "$CODEX_PACKAGE_DIR/codex" ] || return 0
+    _cfgdir="${CODEX_HOME:-/home/${WORKER_USER}/.codex}"
+    _standalone="$_cfgdir/packages/standalone"
+    [ -e "$_standalone/current" ] && return 0
+    mkdir -p "$_standalone"
+    ln -s "$CODEX_PACKAGE_DIR" "$_standalone/current"
+    chown -R "${WORKER_UID}:${WORKER_UID}" "$_cfgdir" 2>/dev/null || true
+    log "codex: standalone package linked ($_standalone/current -> $CODEX_PACKAGE_DIR)"
+}
+
 phase_codex_config() {
     [ -n "${OPENAI_API_KEY:-}" ] || { log "codex: OPENAI_API_KEY unset, skipping model_provider"; return 0; }
     _base="${OPENAI_BASE_URL:-}"
@@ -1085,13 +1098,15 @@ phase_permissions() {
 # payload. The dispatcher forwards the whole payload as TASK_PAYLOAD_JSON but
 # only injects a few magic vars, so map the conventional fields here. Each is
 # only set when unset, so an explicit pod-template/dispatcher value still wins.
-if [ -n "${TASK_PAYLOAD_JSON:-}" ]; then
+derive_task_env() {
+    [ -n "${TASK_PAYLOAD_JSON:-}" ] || return 0
     _pj() { printf '%s' "$TASK_PAYLOAD_JSON" | jq -r "$1 // empty" 2>/dev/null || true; }
     [ -z "${TASK_IDENTITY:-}" ] && { _v=$(_pj '.identity'); [ -n "$_v" ] && export TASK_IDENTITY="$_v"; }
     [ -z "${TASK_REPO:-}" ]     && { _v=$(_pj '.repo');     [ -n "$_v" ] && export TASK_REPO="$_v"; }
     [ -z "${TASK_EFFORT:-}" ]   && { _v=$(_pj '.effort');   [ -n "$_v" ] && export TASK_EFFORT="$_v"; }
     [ -z "${TASK_MODEL:-}" ]    && { _v=$(_pj '.model');    [ -n "$_v" ] && export TASK_MODEL="$_v"; }
     [ -z "${TASK_ADAPTER:-}" ]  && { _v=$(_pj '.adapter');  [ -n "$_v" ] && export TASK_ADAPTER="$_v"; }
+    [ -z "${TASK_CODEX_MODEL:-}" ] && { _v=$(_pj '.codex_model'); [ -n "$_v" ] && export TASK_CODEX_MODEL="$_v"; }
     if [ -z "${TASK_CONTEXT_JSON:-}" ]; then
         _v=$(printf '%s' "$TASK_PAYLOAD_JSON" | jq -c '.context // empty' 2>/dev/null || true)
         [ -n "$_v" ] && export TASK_CONTEXT_JSON="$_v"
@@ -1103,7 +1118,9 @@ if [ -n "${TASK_PAYLOAD_JSON:-}" ]; then
         [ -n "$_owner" ] && export TASK_REPO_URL="https://github.com/${_owner}/${TASK_REPO}"
     fi
     [ -z "${TASK_REPO_REF:-}" ] && { _v=$(_pj '.context.head_sha'); [ -n "$_v" ] && export TASK_REPO_REF="$_v"; }
-fi
+    return 0
+}
+derive_task_env
 phase_network
 phase_workspace
 # The CLI grants edit-in-place only when the session cwd IS a git repo,
@@ -1125,6 +1142,7 @@ if [ -z "${TASK_PROMPT_FILE:-}" ] && [ -n "${CONTEXT_PACK_URL:-}" ] && [ -n "${T
         && log "prompt: TASK_PROMPT_FILE=${TASK_PROMPT_FILE} (from payload; pack active → guard will engage if the prompt has steps)"
 fi
 phase_extensions
+phase_codex_package
 phase_codex_config
 phase_codex_pack
 phase_callback

@@ -74,6 +74,7 @@ FROM debian:bookworm-slim@sha256:63a496b5d3b99214b39f5ed70eb71a61e590a77979c79cb
 #   openssh-client          — git over SSH for credentialed clones.
 #   gh                      — GitHub CLI for token auth + PR work.
 #   xz-utils                — unpacks the node tarball below.
+#   procps                  — `ps`, which `codex app-server daemon start` needs.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
@@ -84,6 +85,7 @@ RUN apt-get update \
         iptables \
         jq \
         openssh-client \
+        procps \
         ripgrep \
         rsync \
         xz-utils \
@@ -157,13 +159,15 @@ RUN base="https://downloads.claude.ai/claude-code-releases" \
     && chmod 0755 /usr/local/bin/claude \
     && claude --version
 
-# Codex — native static-musl binary from the GitHub release, NOT the npm package.
+# Codex — the standalone package from the GitHub release, NOT the npm package.
 # The npm codex is a node entrypoint, so in derived images that put a node shim
 # on PATH (e.g. mise managing the toolchain) launching it resolves `node`
 # through the shim and can fail before codex starts (the
 # "mise ERROR Permission denied (os error 13)" seen in the acme fat image).
-# The standalone binary has no node dependency and sidesteps that entirely.
-# Checksum-verified.
+# The package, not the bare binary: `codex app-server daemon` only runs from a
+# complete standalone install at $CODEX_HOME/packages/standalone/current, which
+# the entrypoint links to CODEX_PACKAGE_DIR. It lives under /usr so the
+# supervisor's landlock ruleset can read it. Checksum-verified.
 #
 # Model provider: codex IGNORES OPENAI_API_KEY / OPENAI_BASE_URL env and reads
 # its provider only from ~/.codex/config.toml. Do NOT bake a static config here —
@@ -177,18 +181,20 @@ RUN base="https://downloads.claude.ai/claude-code-releases" \
 # JSON Schema was generated from; scripts/check-codex-version-drift.sh enforces
 # both that and the floor against any installed binary.
 ARG CODEX_VERSION=0.153.4
+ENV CODEX_PACKAGE_DIR=/usr/local/lib/codex
 RUN arch="$(dpkg --print-architecture)" \
     && case "$arch" in \
-         amd64) target=x86_64-unknown-linux-musl;  sha=f479424eca092484dc40d87ae28c44f4cc40234a60045d6131e493800d814a30 ;; \
-         arm64) target=aarch64-unknown-linux-musl; sha=5cda6182bd94c3a30f2eb63a495489ebf7f691fddb14d70f48c6c1a5071b6cde ;; \
+         amd64) target=x86_64-unknown-linux-musl;  sha=a822187e1a2420c61c5926721bfbd878701ed95547c9bb0d4de4498a16ba1821 ;; \
+         arm64) target=aarch64-unknown-linux-musl; sha=fc395cb043a1093ab0db34f44aba3199bfaa9ce640cd9be7fd588f44b0da64a4 ;; \
          *) echo "codex: unsupported arch '$arch'" >&2; exit 1 ;; \
        esac \
-    && curl -fsSL "https://github.com/openai/codex/releases/download/rust-v${CODEX_VERSION}/codex-${target}.tar.gz" \
+    && curl -fsSL "https://github.com/openai/codex/releases/download/rust-v${CODEX_VERSION}/codex-package-${target}.tar.gz" \
         -o /tmp/codex.tar.gz \
     && echo "${sha}  /tmp/codex.tar.gz" | sha256sum -c - \
-    && tar -xzf /tmp/codex.tar.gz -C /usr/local/bin \
-    && mv "/usr/local/bin/codex-${target}" /usr/local/bin/codex \
-    && chmod 0755 /usr/local/bin/codex \
+    && mkdir -p "$CODEX_PACKAGE_DIR" \
+    && tar -xzf /tmp/codex.tar.gz -C "$CODEX_PACKAGE_DIR" \
+    && ln -s bin/codex "$CODEX_PACKAGE_DIR/codex" \
+    && ln -sf "$CODEX_PACKAGE_DIR/bin/codex" /usr/local/bin/codex \
     && rm /tmp/codex.tar.gz \
     && codex --version
 

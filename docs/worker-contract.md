@@ -633,7 +633,9 @@ input), then drops to uid 1000:
    order). The generic seam derived images use to inject boot phases (e.g.
    credential materialization) without forking the entrypoint. No-op on the
    public image (empty dir).
-5. **Codex config** — write the `cctui` model-provider region into
+5. **Codex package** — link `~/.codex/packages/standalone/current` to the baked
+   `CODEX_PACKAGE_DIR`, the standalone install `codex app-server daemon` needs.
+   **Codex config** — write the `cctui` model-provider region into
    `~/.codex/config.toml` (see Codex-native dispatch, below).
 6. **Codex pack** — under the Codex adapter, stage `AGENTS.md` + `prompts/` from
    the context pack (see `docs/context-packs.md`).
@@ -795,7 +797,9 @@ For `adapter: "codex"` the entrypoint **additively** stages the Codex targets
   `/opt/context/prompts/`, where `TASK_PROMPT_FILE` resolves for both adapters).
 - **Model provider + account config.** The `cctui` gateway provider, model,
   effort, approvals, and sandbox mode come from `phase_codex_config` as before
-  (from `OPENAI_API_KEY`/`OPENAI_BASE_URL` + `TASK_CODEX_MODEL`/`TASK_EFFORT`).
+  (from `OPENAI_API_KEY`/`OPENAI_BASE_URL` + `TASK_CODEX_MODEL`/`TASK_EFFORT`, which default from
+  `payload.codex_model`/`payload.effort`; `TASK_*` keys in `payload.env` are
+  rejected by the server).
 
 `skills/`, `hooks/`, and Claude-only conventions have no Codex target and are
 skipped for Codex; always-on `rules/` are best folded into `AGENTS.md` by the
@@ -1248,13 +1252,17 @@ writable by the session:
   built-in default).
 - dispatched workers: `payload.spawn_capability`, which the server **strips from
   the forwarded payload** so the worker cannot read or restate it. Absent here
-  still means no tool — dispatched workers get no default.
+  still means no tool — dispatched workers get no default. With no
+  `max_permission_mode`, children may run as permissively as the worker itself
+  (`payload.permission_mode`, else yolo — workers run approvals-off), still
+  clamped to the parent's reported mode. Set `max_permission_mode` to narrow it.
 
 ```jsonc
 "spawn_capability": {
   "adapters": ["opencode"],   // exact ids; empty or absent = spawning denied
   "max_budget_usd": 0.50,     // ceiling AND the default when a call omits one
-  "max_children": 3           // total children over the session's life
+  "max_children": 3,          // total children over the session's life
+  "max_permission_mode": "ask" // optional child posture ceiling
 }
 ```
 

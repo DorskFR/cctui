@@ -923,13 +923,7 @@ async fn persist_spawn_capability(
         None => crate::routes::server_settings::spawn_default_capability(state).await,
     };
     if cap.max_permission_mode.is_none() {
-        cap.max_permission_mode = Some(
-            forwarded_payload
-                .get("permission_mode")
-                .and_then(serde_json::Value::as_str)
-                .and_then(cctui_proto::adapter::PermissionMode::from_session_label)
-                .unwrap_or(cctui_proto::adapter::PermissionMode::Ask),
-        );
+        cap.max_permission_mode = Some(dispatch_ceiling(forwarded_payload));
     }
     if let Err(e) = crate::store::spawn_capabilities::upsert(&state.pool, session_id, &cap).await {
         tracing::error!(
@@ -939,6 +933,21 @@ async fn persist_spawn_capability(
         );
     }
     state.spawn_capabilities.insert(session_id.to_owned(), cap);
+}
+
+/// Child posture ceiling when the dispatcher names none: the worker's own
+/// mode. Dispatched workers run approvals-off (the pod is the sandbox), so this
+/// is `Yolo` unless `payload.permission_mode` says otherwise.
+///
+/// By design: a yolo parent may spawn yolo children. `spawn_child` still clamps
+/// to the parent's reported mode, so a child never outranks its parent. Callers
+/// that want a stricter tree set `spawn_capability.max_permission_mode`.
+fn dispatch_ceiling(payload: &serde_json::Value) -> cctui_proto::adapter::PermissionMode {
+    payload
+        .get("permission_mode")
+        .and_then(serde_json::Value::as_str)
+        .and_then(cctui_proto::adapter::PermissionMode::from_session_label)
+        .unwrap_or(cctui_proto::adapter::PermissionMode::Yolo)
 }
 
 /// Forward the prepared dispatch, persist the returned handle and map a
@@ -1073,10 +1082,28 @@ pub async fn dispatch(
 #[cfg(test)]
 mod tests {
     use super::{
-        DefaultBinding, binding_family, colliding_family, default_binding,
+        DefaultBinding, binding_family, colliding_family, default_binding, dispatch_ceiling,
         resolve_dispatch_account, resolve_dispatch_session_id, rewrite_model_if_aliased,
     };
     use crate::routes::gateway::Family;
+    use cctui_proto::adapter::PermissionMode;
+
+    #[test]
+    fn dispatch_ceiling_defaults_to_the_workers_own_yolo_mode() {
+        assert_eq!(dispatch_ceiling(&serde_json::json!({})), PermissionMode::Yolo);
+        assert_eq!(
+            dispatch_ceiling(&serde_json::json!({"permission_mode": "nonsense"})),
+            PermissionMode::Yolo
+        );
+        assert_eq!(
+            dispatch_ceiling(&serde_json::json!({"permission_mode": "auto"})),
+            PermissionMode::Auto
+        );
+        assert_eq!(
+            dispatch_ceiling(&serde_json::json!({"permission_mode": "ask"})),
+            PermissionMode::Ask
+        );
+    }
 
     #[test]
     fn session_id_human_logical_mints_fresh_uuid_keeps_key_as_dedup_and_name() {
