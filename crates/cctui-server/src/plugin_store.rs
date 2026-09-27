@@ -13,6 +13,7 @@ use crate::routes::blobs::store_blob;
 
 const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 const ARCHIVE_MEDIA_TYPE: &str = "application/gzip";
+const MAX_REDIRECTS: usize = 5;
 
 #[derive(Debug, thiserror::Error)]
 pub enum InstallError {
@@ -129,19 +130,33 @@ pub async fn uninstall(pool: &PgPool, registry: &PluginRegistry, id: &str) -> sq
     Ok(true)
 }
 
-/// Download an archive from an https URL through the SSRF-guarded client.
+/// Download an archive from an https URL through the SSRF-guarded client,
+/// following redirects (release hosts like GitHub serve assets via a 302) and
+/// re-validating every hop.
 pub async fn fetch_archive(url: &str) -> Result<Vec<u8>, InstallError> {
-    if !url.starts_with("https://") {
-        return Err(InstallError::Url(crate::outbound::OutboundUrlError::NotHttps));
-    }
     let allow = crate::outbound::upstream_allowlist();
-    crate::outbound::validate_outbound_url(url, &allow).await.map_err(InstallError::Url)?;
-    let resp = crate::outbound::upstream_client()
-        .get(url)
-        .timeout(FETCH_TIMEOUT)
-        .send()
-        .await
-        .map_err(|e| InstallError::Fetch(e.to_string()))?;
+    let mut url = url.to_owned();
+    let mut hops = 0;
+    let resp = loop {
+        if !url.starts_with("https://") {
+            return Err(InstallError::Url(crate::outbound::OutboundUrlError::NotHttps));
+        }
+        crate::outbound::validate_outbound_url(&url, &allow).await.map_err(InstallError::Url)?;
+        let resp = crate::outbound::upstream_client()
+            .get(&url)
+            .timeout(FETCH_TIMEOUT)
+            .send()
+            .await
+            .map_err(|e| InstallError::Fetch(e.to_string()))?;
+        if !resp.status().is_redirection() {
+            break resp;
+        }
+        hops += 1;
+        if hops > MAX_REDIRECTS {
+            return Err(InstallError::Fetch("too many redirects".into()));
+        }
+        url = redirect_target(&url, resp.headers().get(reqwest::header::LOCATION))?;
+    };
     if !resp.status().is_success() {
         return Err(InstallError::Fetch(format!("HTTP {}", resp.status())));
     }
@@ -157,6 +172,20 @@ pub async fn fetch_archive(url: &str) -> Result<Vec<u8>, InstallError> {
         }
     }
     Ok(body)
+}
+
+fn redirect_target(
+    from: &str,
+    location: Option<&reqwest::header::HeaderValue>,
+) -> Result<String, InstallError> {
+    let location = location
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| InstallError::Fetch("redirect without a Location".into()))?;
+    let base = reqwest::Url::parse(from)
+        .map_err(|_| InstallError::Url(crate::outbound::OutboundUrlError::Malformed))?;
+    base.join(location)
+        .map(String::from)
+        .map_err(|_| InstallError::Url(crate::outbound::OutboundUrlError::Malformed))
 }
 
 #[cfg(test)]
@@ -223,5 +252,33 @@ mod tests {
         assert!(err.to_string().contains("https"), "{err}");
         let err = fetch_archive("https://127.0.0.1/p.tgz").await.unwrap_err();
         assert!(err.to_string().contains("private or loopback"), "{err}");
+    }
+
+    #[test]
+    fn redirect_targets_resolve_against_the_current_hop() {
+        use reqwest::header::HeaderValue;
+        let from = "https://github.com/o/r/releases/download/v1/p.tgz";
+        let abs = HeaderValue::from_static("https://release-assets.githubusercontent.com/x?sig=1");
+        assert_eq!(
+            super::redirect_target(from, Some(&abs)).unwrap(),
+            "https://release-assets.githubusercontent.com/x?sig=1"
+        );
+        let rel = HeaderValue::from_static("/o/r/other.tgz");
+        assert_eq!(
+            super::redirect_target(from, Some(&rel)).unwrap(),
+            "https://github.com/o/r/other.tgz"
+        );
+        assert!(super::redirect_target(from, None).is_err());
+    }
+
+    #[tokio::test]
+    #[ignore = "needs network"]
+    async fn fetch_follows_github_release_redirects() {
+        let bytes = fetch_archive(
+            "https://github.com/DorskFR/yubisashi/releases/download/v0.5.0/yubisashi-0.5.0.tgz",
+        )
+        .await
+        .unwrap();
+        crate::plugin_archive::load_archive(&bytes, true).unwrap();
     }
 }
