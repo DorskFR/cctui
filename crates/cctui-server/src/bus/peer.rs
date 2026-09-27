@@ -423,6 +423,11 @@ impl Transport for PeerHttpTransport {
         }
     }
 
+    async fn session_elsewhere(&self, session_id: &str) -> bool {
+        let Ok(session) = Uuid::parse_str(session_id) else { return false };
+        presence::peer_owner_ip(&self.pool, &self.pod, Kind::Session, session).await.is_some()
+    }
+
     fn relay(&self, event: &BusEvent) {
         let json = match serde_json::to_string(&WireBusEvent::from(event)) {
             Ok(json) => Arc::<str>::from(json),

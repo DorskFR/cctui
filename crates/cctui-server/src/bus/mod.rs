@@ -222,6 +222,9 @@ pub trait Transport: Send + Sync {
     /// Relay a locally-published event to peer pods (local delivery already
     /// happened). Fire-and-forget: publish is infallible for callers.
     fn relay(&self, event: &BusEvent);
+
+    /// Whether a live peer pod announced `session_id`.
+    async fn session_elsewhere(&self, session_id: &str) -> bool;
 }
 
 /// Local-only transport: single-pod semantics. A local lookup miss is a miss —
@@ -263,6 +266,10 @@ impl Transport for NoopTransport {
     }
 
     fn relay(&self, _event: &BusEvent) {}
+
+    async fn session_elsewhere(&self, _session_id: &str) -> bool {
+        false
+    }
 }
 
 struct Inner {
@@ -401,11 +408,8 @@ impl Bus {
         machine: Uuid,
         session_id: &str,
     ) -> Option<mpsc::Sender<DaemonFrameDown>> {
-        if let Some(conn_id) = self.inner.session_conn.get(session_id).map(|r| *r)
-            && let Some(entry) = self.inner.conns.get(&conn_id)
-            && entry.0 == machine
-        {
-            return Some(entry.1.clone());
+        if let Some(tx) = self.bound_channel(machine, session_id) {
+            return Some(tx);
         }
         let ambiguous = self.inner.machine_conns.get(&machine).is_some_and(|conns| conns.len() > 1);
         if ambiguous {
@@ -418,6 +422,33 @@ impl Bus {
             return None;
         }
         self.inner.daemons.get(&machine).map(|r| r.clone())
+    }
+
+    fn bound_channel(
+        &self,
+        machine: Uuid,
+        session_id: &str,
+    ) -> Option<mpsc::Sender<DaemonFrameDown>> {
+        let conn_id = self.inner.session_conn.get(session_id).map(|r| *r)?;
+        let entry = self.inner.conns.get(&conn_id)?;
+        (entry.0 == machine).then(|| entry.1.clone())
+    }
+
+    /// [`Self::session_channel`] for callers that may still forward: a session
+    /// announced on a peer goes there, never to this pod's connection for the
+    /// shared machine identity, which would be another worker's.
+    async fn routable_session_channel(
+        &self,
+        machine: Uuid,
+        session_id: &str,
+    ) -> Option<mpsc::Sender<DaemonFrameDown>> {
+        if let Some(tx) = self.bound_channel(machine, session_id) {
+            return Some(tx);
+        }
+        if self.inner.transport.session_elsewhere(session_id).await {
+            return None;
+        }
+        self.session_channel(machine, session_id)
     }
 
     /// Whether THIS pod terminates `machine`'s daemon WS.
@@ -512,7 +543,7 @@ impl Bus {
         session_id: &str,
         frame: DaemonFrameDown,
     ) -> Result<(), BusError> {
-        let Some(tx) = self.session_channel(machine, session_id) else {
+        let Some(tx) = self.routable_session_channel(machine, session_id).await else {
             return self.inner.transport.forward_daemon(machine, frame).await;
         };
         tx.send(frame).await.map_err(|_| BusError::Closed)
@@ -525,7 +556,7 @@ impl Bus {
         session_id: &str,
         request: DaemonRequest,
     ) -> Result<DaemonResponse, BusError> {
-        let Some(tx) = self.session_channel(machine, session_id) else {
+        let Some(tx) = self.routable_session_channel(machine, session_id).await else {
             return self.inner.transport.request_daemon(machine, request).await;
         };
         self.request_daemon_via(tx, request).await
@@ -1240,6 +1271,78 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(replied_to(&rx.recv().await.unwrap()), "never-announced");
+    }
+
+    /// Owns `peer_session` on a peer pod; records what it was asked to forward.
+    struct PeerOwns {
+        peer_session: &'static str,
+        forwarded: std::sync::Arc<std::sync::Mutex<Vec<Option<String>>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Transport for PeerOwns {
+        async fn forward_daemon(&self, _: Uuid, frame: DaemonFrameDown) -> Result<(), BusError> {
+            let session = crate::bus::peer::frame_session(&frame).map(ToOwned::to_owned);
+            self.forwarded.lock().unwrap().push(session);
+            Ok(())
+        }
+        async fn forward_dispatcher(
+            &self,
+            d: Uuid,
+            _: DispatcherFrameDown,
+        ) -> Result<(), BusError> {
+            Err(BusError::NoDispatcher(d))
+        }
+        async fn request_daemon(
+            &self,
+            m: Uuid,
+            _: DaemonRequest,
+        ) -> Result<DaemonResponse, BusError> {
+            Err(BusError::NoDaemon(m))
+        }
+        async fn request_dispatcher(
+            &self,
+            d: Uuid,
+            _: Uuid,
+            _: DispatcherFrameDown,
+        ) -> Result<DispatcherFrameUp, BusError> {
+            Err(BusError::NoDispatcher(d))
+        }
+        fn relay(&self, _: &BusEvent) {}
+        async fn session_elsewhere(&self, session_id: &str) -> bool {
+            session_id == self.peer_session
+        }
+    }
+
+    /// Two replicas, each terminating one pod of the shared `dispatch`
+    /// identity: a session announced on the peer must be forwarded there, not
+    /// handed to this replica's lone connection, which is another worker.
+    #[tokio::test]
+    async fn a_session_announced_on_a_peer_is_forwarded_not_sent_to_the_local_pod() {
+        let forwarded = std::sync::Arc::default();
+        let bus = Bus::new(Box::new(PeerOwns {
+            peer_session: "theirs",
+            forwarded: std::sync::Arc::clone(&forwarded),
+        }));
+        let machine = Uuid::new_v4();
+        let (tx, mut rx) = mpsc::channel(8);
+        let conn = Uuid::new_v4();
+        bus.register_daemon(machine, conn, tx);
+        bus.bind_session_conn("mine", conn);
+
+        bus.command_daemon_for_session(machine, "theirs", reply("theirs")).await.unwrap();
+        bus.command_daemon_for_session(machine, "theirs", child_spawn("theirs")).await.unwrap();
+        assert!(rx.try_recv().is_err(), "the local pod must not receive the peer's session");
+        assert_eq!(
+            *forwarded.lock().unwrap(),
+            vec![Some("theirs".to_owned()), Some("theirs".to_owned())]
+        );
+
+        bus.command_daemon_for_session(machine, "mine", reply("mine")).await.unwrap();
+        bus.command_daemon_for_session(machine, "unannounced", reply("unannounced")).await.unwrap();
+        assert!(rx.try_recv().is_ok());
+        assert!(rx.try_recv().is_ok(), "an unannounced session keeps the sole-connection fallback");
+        assert_eq!(forwarded.lock().unwrap().len(), 2);
     }
 
     /// A shared identity with no binding is ambiguous: refuse loudly rather
