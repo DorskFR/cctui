@@ -310,8 +310,23 @@ async fn verify_binary(path: &Path) -> Result<String> {
     if !out.status.success() {
         bail!("`{} --version` exited {}", path.display(), out.status);
     }
+    // `--version` never reaches TLS set-up, where a binary built with an
+    // ambiguous rustls crypto provider panics on start. Releases without the
+    // subcommand exit with clap's usage code, which passes.
+    let check = tokio::time::timeout(
+        HEALTH_CHECK_TIMEOUT,
+        tokio::process::Command::new(path).arg("selfcheck").kill_on_drop(true).output(),
+    )
+    .await
+    .map_err(|_| anyhow!("`{} selfcheck` timed out", path.display()))?
+    .with_context(|| format!("run `{} selfcheck`", path.display()))?;
+    if !check.status.success() && check.status.code() != Some(CLAP_USAGE_EXIT) {
+        bail!("`{} selfcheck` exited {}", path.display(), check.status);
+    }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
+
+const CLAP_USAGE_EXIT: i32 = 2;
 
 /// Run one check-and-apply cycle against the cctui-server.
 ///
@@ -687,20 +702,50 @@ mod tests {
         path
     }
 
+    /// Executing a script another test thread's fork still holds open for
+    /// writing fails with ETXTBSY; retry that race rather than the gate.
+    async fn verify(path: &Path) -> Result<String> {
+        for _ in 0..20 {
+            match verify_binary(path).await {
+                Err(e) if format!("{e:#}").contains("Text file busy") => {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                other => return other,
+            }
+        }
+        verify_binary(path).await
+    }
+
     #[tokio::test]
     async fn verify_binary_accepts_a_healthy_binary() {
         let tmp = tempfile::tempdir().unwrap();
         let ok = write_script(tmp.path(), "ok", "exit 0");
-        verify_binary(&ok).await.expect("clean --version passes the gate");
+        verify(&ok).await.expect("clean --version passes the gate");
     }
 
     #[tokio::test]
     async fn verify_binary_rejects_broken_binaries() {
         let tmp = tempfile::tempdir().unwrap();
         let bad = write_script(tmp.path(), "bad", "exit 3");
-        let err = verify_binary(&bad).await.expect_err("non-zero exit must fail the gate");
+        let err = verify(&bad).await.expect_err("non-zero exit must fail the gate");
         assert!(err.to_string().contains("exited"), "got: {err}");
-        verify_binary(&tmp.path().join("missing")).await.expect_err("unexecutable must fail");
+        verify(&tmp.path().join("missing")).await.expect_err("unexecutable must fail");
+    }
+
+    #[tokio::test]
+    async fn verify_binary_rejects_a_binary_that_panics_past_version() {
+        let tmp = tempfile::tempdir().unwrap();
+        let panics =
+            write_script(tmp.path(), "panics", r#"[ "$1" = selfcheck ] && exit 101; exit 0"#);
+        let err = verify(&panics).await.expect_err("a selfcheck panic must fail the gate");
+        assert!(err.to_string().contains("selfcheck"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn verify_binary_accepts_a_release_without_selfcheck() {
+        let tmp = tempfile::tempdir().unwrap();
+        let older = write_script(tmp.path(), "older", r#"[ "$1" = selfcheck ] && exit 2; exit 0"#);
+        verify(&older).await.expect("an older release's usage error passes");
     }
 
     #[test]

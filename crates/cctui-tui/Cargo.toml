@@ -11,6 +11,7 @@ name = "cctui"
 path = "src/main.rs"
 
 [dependencies]
+rustls.workspace = true
 cctui-proto.workspace = true
 clap.workspace = true
 serde.workspace = true

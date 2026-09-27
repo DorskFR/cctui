@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Builds cctui-server natively and stages it in image-bins/. Run it on a host
-# whose glibc is no newer than the bookworm-slim runtime of deploy/Dockerfile
-# (2.36); the distro OpenSSL is linked by soname (libssl.so.3), which the
-# runtime provides through libssl3.
+# whose glibc is no newer than the trixie-slim runtime of deploy/Dockerfile
+# (2.41); the distro OpenSSL is linked by soname (libssl.so.3), which the
+# runtime provides through libssl3t64.
 set -euo pipefail
 
-glibc="${SERVER_GLIBC:-2.36}"
+glibc="${SERVER_GLIBC:-2.41}"
 
 cargo build --release --locked -p cctui-server
 
