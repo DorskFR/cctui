@@ -35,19 +35,40 @@ export function devProxy(target: string | undefined) {
 			secure: true,
 			headers: { origin },
 			cookieDomainRewrite: '',
-			configure: (proxy: {
-				on: (
-					ev: string,
-					fn: (res: { headers: Record<string, string | string[] | undefined> }) => void
-				) => void;
-			}) => {
-				proxy.on('proxyRes', (res) => {
+			configure: (proxy: DevProxyServer) => {
+				const renameUp = (req: ProxiedRequest) => {
+					const cookie = req.getHeader('cookie');
+					if (typeof cookie === 'string') req.setHeader('cookie', toUpstreamCookies(cookie));
+				};
+				proxy.on('proxyReq', renameUp);
+				proxy.on('proxyReqWs', renameUp);
+				proxy.on('proxyRes', (res: { headers: Record<string, string | string[] | undefined> }) => {
 					const set = res.headers['set-cookie'];
-					if (Array.isArray(set)) res.headers['set-cookie'] = set.map(stripSecure);
+					if (Array.isArray(set)) res.headers['set-cookie'] = set.map((c) => toDevCookie(stripSecure(c)));
 				});
 			}
 		}
 	};
+}
+
+type ProxiedRequest = {
+	getHeader: (name: string) => unknown;
+	setHeader: (name: string, value: string) => void;
+};
+// biome-ignore lint/suspicious/noExplicitAny: http-proxy's event handlers differ per event
+type DevProxyServer = { on: (ev: string, fn: (...args: any[]) => void) => void };
+
+/** The dev server's auth cookie name. A cctui preview strips `cctui_auth` from
+ *  requests to the previewed app, so a dev UI served through one stores it
+ *  under this name and the proxy maps it back for the upstream. */
+export const DEV_AUTH_COOKIE = 'cctui_dev_auth';
+
+export function toDevCookie(setCookie: string): string {
+	return setCookie.replace(/^\s*cctui_auth=/, `${DEV_AUTH_COOKIE}=`);
+}
+
+export function toUpstreamCookies(cookie: string): string {
+	return cookie.replace(new RegExp(`(^|;\\s*)${DEV_AUTH_COOKIE}=`, 'g'), '$1cctui_auth=');
 }
 
 /** Drop `Secure` (and downgrade the `SameSite=None` that requires it). */

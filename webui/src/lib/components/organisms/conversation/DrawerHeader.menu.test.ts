@@ -21,14 +21,14 @@ describe('drawer header ⋯ menu', () => {
 		expect(lastEnd).toBeGreaterThan(lastIf);
 	});
 
-	it('holds copy link, fork and the terminal permanently', () => {
+	it('holds copy link and fork permanently, and no terminal entry', () => {
 		const list = items();
 		expect(list).toContain('m.drawer_copy_link_label()');
 		expect(list).toContain('m.drawer_fork_label()');
 		expect(list).toContain('pressed: onforkselect ? forkSelectActive : undefined');
-		expect(list).toContain('m.drawer_terminal_label()');
-		expect(list).toContain('pressed: terminalOpen');
-		expect(list).toContain("'data-journey': 'terminal'");
+		expect(list).not.toContain('m.drawer_terminal_label()');
+		expect(list).not.toContain('terminal');
+		expect(header).not.toContain('onterminal');
 	});
 
 	it('only stands in for rename while the bar is collapsed', () => {
@@ -46,7 +46,7 @@ describe('drawer header ⋯ menu', () => {
 		const entries = items()
 			.split(/\blabel:/)
 			.slice(1);
-		expect(entries.length).toBeGreaterThanOrEqual(7);
+		expect(entries.length).toBeGreaterThanOrEqual(6);
 		for (const e of entries) expect(e, e.slice(0, 40)).toMatch(/\bicon:/);
 		expect(items()).toContain("icon: 'recycle' as const");
 		expect(header).toMatch(/followupItem = \$derived<MenuItem \| null>\([\s\S]*?icon: 'arrow-right'/);
@@ -57,13 +57,13 @@ describe('drawer header ⋯ menu', () => {
 		expect(markup()).not.toContain('data-journey="fork"');
 	});
 
-	it('wires the terminal to the header, not the toolbar', () => {
+	it('wires the terminal to the toolbar, not the header', () => {
 		const head = drawer.slice(drawer.indexOf('<DrawerHeader'), drawer.indexOf('/>', drawer.indexOf('<DrawerHeader')));
 		const bar = drawer.slice(drawer.indexOf('<DrawerToolbar'), drawer.indexOf('/>', drawer.indexOf('<DrawerToolbar')));
-		expect(head).toContain('onterminal=');
-		expect(head).toContain('{terminalOpen}');
-		expect(bar).not.toContain('terminal');
-		expect(toolbar).not.toContain('terminal');
+		expect(head).not.toContain('terminal');
+		expect(bar).toContain('{terminalOpen}');
+		expect(bar).toContain('ontoggleTerminal=');
+		expect(toolbar).toContain('data-journey="terminal"');
 	});
 
 	it('adds no :global override', () => {

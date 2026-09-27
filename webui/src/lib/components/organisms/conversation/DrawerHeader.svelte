@@ -1,7 +1,7 @@
 <script lang="ts">
 	// Conversation drawer header. Owns the title + rename (collapsed into the ⋯
 	// menu on narrow bars), the always-present ⋯ menu of less-used actions (copy
-	// link, copy markdown, export, fork, terminal), the interrupt/archive controls
+	// link, copy markdown, export, fork), the interrupt/archive controls
 	// and the label strip; the meta row is HeaderMeta. Action side-effects are
 	// delegated to callbacks; the editing UI state lives here.
 	import type { SessionListItem } from '@bindings/SessionListItem';
@@ -33,8 +33,6 @@
 		onfollowup,
 		onforkselect,
 		forkSelectActive = false,
-		onterminal,
-		terminalOpen = false,
 		oninterrupt,
 		onarchive,
 		onstoparchive,
@@ -68,9 +66,6 @@
 		// (codex sessions have no partial-fork primitive).
 		onforkselect?: () => void;
 		forkSelectActive?: boolean;
-		/** Toggles the read-only live terminal; omit to hide the entry. */
-		onterminal?: () => void;
-		terminalOpen?: boolean;
 		oninterrupt: () => void;
 		onarchive: () => void;
 		// Stop-then-archive, fired by the ⌘/Ctrl+E keyboard chord.
@@ -151,17 +146,6 @@
 			attrs: { title: onforkselect ? m.drawer_fork_select_title() : m.drawer_fork_title() },
 			onselect: onforkselect ?? onfork
 		},
-		...(onterminal
-			? [
-					{
-						label: m.drawer_terminal_label(),
-						icon: 'tv' as const,
-						pressed: terminalOpen,
-						attrs: { title: m.conversation_terminal_title(), 'data-journey': 'terminal' },
-						onselect: onterminal
-					}
-				]
-			: []),
 		{
 			label: m.drawer_keepalive_label(),
 			icon: 'recycle' as const,

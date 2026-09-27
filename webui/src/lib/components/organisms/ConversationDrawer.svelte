@@ -70,7 +70,7 @@
 	const showStatusBadge = $derived(session.status === 'new' || session.status === 'archived');
 	const qc = useQueryClient();
 
-	// Read-only live terminal pane, toggled from the header menu.
+	// Read-only live terminal pane, toggled from the toolbar.
 	let terminalOpen = $state(false);
 	// Runtime plugins: a pane docked on the drawer's left edge plus the buttons
 	// they contribute to assistant lines.
@@ -342,8 +342,6 @@
 				onfollowup={onFollowup ? () => followup() : undefined}
 				onforkselect={forkable ? forkSelect.toggleMode : undefined}
 				forkSelectActive={forkSelect.active}
-				onterminal={() => (terminalOpen = !terminalOpen)}
-				{terminalOpen}
 				oninterrupt={sa.interrupt}
 				onarchive={sa.archive}
 				onstoparchive={sa.stopAndArchive}
@@ -365,6 +363,8 @@
 				bind:view
 				autoApprove={session.auto_approve}
 				ontoggleAuto={sa.toggleAutoApprove}
+				{terminalOpen}
+				ontoggleTerminal={() => (terminalOpen = !terminalOpen)}
 				plugins={plugins.buttons}
 				pins={pins.pins}
 				{lines}
