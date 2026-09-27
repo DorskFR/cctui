@@ -88,6 +88,7 @@ enum Command {
 #[tokio::main]
 async fn main() -> Result<()> {
     use clap::Parser;
+    let _ = rustls::crypto::ring::default_provider().install_default();
     match Cli::parse().command {
         Some(Command::Update) => {
             let (base_url, _) = resolve_identity();

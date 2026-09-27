@@ -28,6 +28,12 @@ mkdir -p dist
 cp "$release/cctui" "dist/cctui-$os-$arch"
 cp "$release/cctui-daemon" "dist/cctui-daemon-$os-$arch"
 
+# A daemon whose TLS set-up panics passes `--version`; refuse to publish it.
+# The x86 runner cannot execute the arm64 musl build.
+if [ "$os" = darwin ] || [ "$arch" = amd64 ]; then
+  "dist/cctui-daemon-$os-$arch" selfcheck
+fi
+
 if [ "${#image_bins[@]}" -gt 0 ]; then
   mkdir -p image-bins
   for b in "${image_bins[@]}"; do cp "$release/$b" image-bins/; done

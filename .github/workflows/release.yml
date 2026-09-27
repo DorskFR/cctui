@@ -178,11 +178,11 @@ jobs:
             dist/cctui-daemon-${{ matrix.os }}-${{ matrix.arch }}
 
   # cctui-server links the distro OpenSSL (webauthn-rs), so it is not a musl
-  # build. Built natively on ubuntu-22.04, whose glibc (2.35) is older than the
-  # bookworm-slim runtime of deploy/Dockerfile (2.36).
+  # build. The runner's glibc must not be newer than the trixie-slim runtime
+  # of deploy/Dockerfile (2.41); the build script enforces it.
   build-server:
     needs: [meta]
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

@@ -120,6 +120,9 @@ enum Cmd {
     /// Check for a newer release, swap the binary in place, and restart
     /// the daemon service (if one is running) so it picks up the new binary.
     Update,
+    /// Exercise start-up paths that `--version` skips (TLS client setup) and
+    /// exit 0; release builds run it before publishing.
+    Selfcheck,
     /// Install / uninstall the cctui-daemon systemd user service.
     Service {
         #[command(subcommand)]
@@ -324,8 +327,15 @@ fn run_preview(cmd: PreviewCmd) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn selfcheck() {
+    let roots = rustls::RootCertStore::empty();
+    let _ = rustls::ClientConfig::builder().with_root_certificates(roots).with_no_client_auth();
+    println!("ok");
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(
             |_| {
@@ -378,6 +388,10 @@ async fn main() -> anyhow::Result<()> {
             }
             other => other,
         },
+        Cmd::Selfcheck => {
+            selfcheck();
+            Ok(())
+        }
         Cmd::Update => {
             let cfg = Config::load_from(&path)?;
             let channel = cfg.update_channel();

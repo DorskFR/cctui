@@ -242,6 +242,7 @@ fn run_lint(args: &LintArgs) -> anyhow::Result<bool> {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .with_env_filter(

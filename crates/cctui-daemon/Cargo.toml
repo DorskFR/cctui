@@ -11,6 +11,7 @@ name = "cctui-daemon"
 path = "src/main.rs"
 
 [dependencies]
+rustls.workspace = true
 cctui-proto.workspace = true
 cctui-crypto.workspace = true
 serde.workspace = true

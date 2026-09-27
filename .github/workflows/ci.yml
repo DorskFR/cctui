@@ -268,7 +268,7 @@ jobs:
     name: warm release cache cctui-server
     needs: changes
     if: github.event_name == 'push' && needs.changes.outputs.rust == 'true'
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
     steps:
