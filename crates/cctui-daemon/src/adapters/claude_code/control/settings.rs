@@ -240,9 +240,7 @@ pub(in crate::adapters::claude_code) fn ensure_hook_settings(
         .ok()?;
     let exe = exe.to_string_lossy();
     let sock = sock.to_string_lossy();
-    let deny = if whip { " --deny" } else { "" };
     let hook = |event: &str| {
-        let extra = if event == "pre" { deny } else { "" };
         json!({
             // AskUserQuestion + ExitPlanMode both fire this hook: the former
             // surfaces a live question card, the latter a live Plan card.
@@ -251,7 +249,7 @@ pub(in crate::adapters::claude_code) fn ensure_hook_settings(
             "matcher": "AskUserQuestion|ExitPlanMode",
             "hooks": [{
                 "type": "command",
-                "command": format!("{exe} ask-hook --event {event} --sock {sock}{extra}"),
+                "command": ask_hook_command(&exe, event, &sock, whip && event == "pre"),
                 "timeout": 5,
             }],
         })
@@ -271,7 +269,7 @@ pub(in crate::adapters::claude_code) fn ensure_hook_settings(
         "matcher": perm_matcher,
         "hooks": [{
             "type": "command",
-            "command": format!("{exe} ask-hook --event perm --sock {sock}"),
+            "command": ask_hook_command(&exe, "perm", &sock, false),
             "timeout": 600,
         }],
     });
@@ -283,7 +281,7 @@ pub(in crate::adapters::claude_code) fn ensure_hook_settings(
         "matcher": "EnterPlanMode",
         "hooks": [{
             "type": "command",
-            "command": format!("{exe} ask-hook --event pre --sock {sock}{deny}"),
+            "command": ask_hook_command(&exe, "pre", &sock, whip),
             "timeout": 5,
         }],
     });
@@ -299,11 +297,11 @@ pub(in crate::adapters::claude_code) fn ensure_hook_settings(
             },
             |v| {
                 write_whip_phrases(short, v)
-                    .map(|p| format!(" --phrases {}", p.to_string_lossy()))
+                    .map(|p| format!(" --phrases {}", shell_quote(&p.to_string_lossy())))
                     .unwrap_or_default()
             },
         );
-        format!("{exe} whip-stop-hook{arg}")
+        format!("{} whip-stop-hook{arg}", shell_quote(&exe))
     } else {
         String::new()
     };
@@ -356,6 +354,17 @@ pub(in crate::adapters::claude_code) fn ensure_hook_settings(
     Some(path)
 }
 
+/// Claude Code runs hook commands through a shell; an unquoted macOS
+/// `~/Library/Application Support/...` path would split into two arguments.
+fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+fn ask_hook_command(exe: &str, event: &str, sock: &str, deny: bool) -> String {
+    let deny = if deny { " --deny" } else { "" };
+    format!("{} ask-hook --event {event} --sock {}{deny}", shell_quote(exe), shell_quote(sock))
+}
+
 /// The `SessionStart` block that holds the first turn until `session`'s MCP
 /// relay is up. `None` for a zero wait, which disables the gate.
 ///
@@ -373,7 +382,10 @@ pub(super) fn mcp_ready_hook(
             "hooks": [{
                 "type": "command",
                 "command": format!(
-                    "{exe} mcp-wait --session {session} --sock {sock} --timeout {wait_secs}"
+                    "{} mcp-wait --session {} --sock {} --timeout {wait_secs}",
+                    shell_quote(exe),
+                    shell_quote(session),
+                    shell_quote(sock),
                 ),
                 "timeout": wait_secs + 5,
             }],
@@ -769,7 +781,7 @@ mod tests {
         let hook = &block[0]["hooks"][0];
         assert_eq!(
             hook["command"],
-            "/usr/bin/cctui-daemon mcp-wait --session sess-1 --sock /run/a.sock --timeout 8"
+            "'/usr/bin/cctui-daemon' mcp-wait --session 'sess-1' --sock '/run/a.sock' --timeout 8"
         );
         assert_eq!(
             hook["timeout"], 13,
@@ -778,6 +790,34 @@ mod tests {
         assert!(
             mcp_ready_hook("/usr/bin/cctui-daemon", "sess-1", "/run/a.sock", 0).is_none(),
             "a zero wait disables the gate"
+        );
+    }
+
+    #[test]
+    fn hook_commands_survive_the_shell_with_spaces_and_quotes_in_paths() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("Application Support");
+        std::fs::create_dir(&dir).unwrap();
+        let exe = dir.join("it's cctui-daemon");
+        std::fs::write(&exe, "#!/bin/sh\nprintf '%s\\n' \"$@\"\n").unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let exe = exe.to_string_lossy();
+        let sock = dir.join("cctui-daemon.sock").to_string_lossy().into_owned();
+        let argv = |command: &str| {
+            let out =
+                std::process::Command::new("/bin/sh").arg("-c").arg(command).output().unwrap();
+            assert!(out.status.success(), "{command}: {}", String::from_utf8_lossy(&out.stderr));
+            String::from_utf8(out.stdout).unwrap().lines().map(str::to_owned).collect::<Vec<_>>()
+        };
+        assert_eq!(
+            argv(&ask_hook_command(&exe, "pre", &sock, true)),
+            ["ask-hook", "--event", "pre", "--sock", sock.as_str(), "--deny"]
+        );
+        let wait = mcp_ready_hook(&exe, "sess-1", &sock, 8).unwrap();
+        assert_eq!(
+            argv(wait[0]["hooks"][0]["command"].as_str().unwrap()),
+            ["mcp-wait", "--session", "sess-1", "--sock", sock.as_str(), "--timeout", "8"]
         );
     }
 

@@ -333,6 +333,17 @@ fn selfcheck() {
     println!("ok");
 }
 
+fn parse_cli() -> Cli {
+    Cli::try_parse().unwrap_or_else(|err| {
+        // Claude Code reads a hook's exit 2 as a hard deny of the tool call.
+        if err.use_stderr() && std::env::args().any(|a| a == "ask-hook") {
+            eprintln!("cctui-daemon ask-hook: {err}");
+            std::process::exit(0);
+        }
+        err.exit()
+    })
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let _ = rustls::crypto::ring::default_provider().install_default();
@@ -346,7 +357,7 @@ async fn main() -> anyhow::Result<()> {
         ))
         .init();
 
-    let cli = Cli::parse();
+    let cli = parse_cli();
     let path = cli.config.unwrap_or_else(Config::default_path);
 
     match cli.cmd {
