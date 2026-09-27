@@ -164,6 +164,20 @@ fn is_websocket_upgrade(headers: &HeaderMap) -> bool {
         .is_some_and(|v| v.eq_ignore_ascii_case("websocket"))
 }
 
+/// A `Cookie` header value minus cctui's own credentials; `None` when nothing
+/// belonging to the app is left.
+pub(super) fn app_cookies(value: &str) -> Option<String> {
+    let kept: Vec<&str> = value
+        .split(';')
+        .map(str::trim)
+        .filter(|pair| {
+            let name = pair.split('=').next().unwrap_or("").trim();
+            !name.is_empty() && name != crate::auth::AUTH_COOKIE && name != ticket::COOKIE_NAME
+        })
+        .collect();
+    (!kept.is_empty()).then(|| kept.join("; "))
+}
+
 /// Headers the app may see: hop-by-hop, `Host` and cctui's own credentials
 /// never cross the tunnel.
 fn forwardable_headers(headers: &HeaderMap) -> Vec<PreviewHeader> {
@@ -175,16 +189,8 @@ fn forwardable_headers(headers: &HeaderMap) -> Vec<PreviewHeader> {
         }
         let Ok(value) = value.to_str() else { continue };
         if lower == "cookie" {
-            let kept: Vec<&str> = value
-                .split(';')
-                .map(str::trim)
-                .filter(|pair| {
-                    let name = pair.split('=').next().unwrap_or("").trim();
-                    name != crate::auth::AUTH_COOKIE && name != ticket::COOKIE_NAME
-                })
-                .collect();
-            if !kept.is_empty() {
-                out.push(PreviewHeader { name: lower.to_owned(), value: kept.join("; ") });
+            if let Some(kept) = app_cookies(value) {
+                out.push(PreviewHeader { name: lower.to_owned(), value: kept });
             }
             continue;
         }

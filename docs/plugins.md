@@ -170,6 +170,18 @@ port all match. Meanwhile the row is marked detached rather than deleted, and a
 sweeper drops it once it has been detached for more than
 `DETACH_GRACE_SECS` (2 min). Session end still deletes immediately.
 
+The daemon snapshots its open previews to `~/.config/cctui/previews.json`, so
+a self-update re-exec (a server release usually triggers one within minutes of
+the rollout) still re-announces them on its first connect. A re-announce the
+server refuses is dropped from the snapshot. Both sides log the exchange
+(`re-announcing preview` / `preview re-announce accepted|refused` on the
+daemon, `preview re-bound to this pod` / `preview re-announce matched no row`
+on the server).
+
+The cross-pod hop forwards the browser's request headers, including the app's
+own cookies; only cctui's `cctui_auth` and `cctui_preview` cookies are stripped
+before the hop, exactly as on the tunnel itself.
+
 This needs no extra configuration beyond what the peer mesh already requires
 (`CCTUI_POD_IP`); without it a single replica keeps working unchanged.
 

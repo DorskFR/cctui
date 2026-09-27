@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
+use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
 
@@ -16,6 +17,7 @@ use cctui_proto::ws::{
     DaemonFrameDown, DaemonFrameUp, PREVIEW_CHUNK_BYTES, PreviewChunk, PreviewHeader,
 };
 use futures_util::{SinkExt, StreamExt};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
@@ -40,12 +42,125 @@ struct StreamHandle {
     cancel: CancellationToken,
 }
 
-#[derive(Default)]
 struct Registry {
     uplink: Option<mpsc::Sender<DaemonFrameUp>>,
     pending_open: HashMap<Uuid, oneshot::Sender<Result<Opened, String>>>,
     open: HashMap<(String, u16), Opened>,
+    /// Re-announced opens awaiting the server's verdict, by request id.
+    reannounced: HashMap<Uuid, (String, u16)>,
     streams: HashMap<String, StreamHandle>,
+    /// Snapshot of `open`, so a self-update re-exec (a new process image with
+    /// an empty registry) can still re-announce the previews it inherited.
+    store: Option<PathBuf>,
+    restored: bool,
+}
+
+impl Default for Registry {
+    fn default() -> Self {
+        Self {
+            uplink: None,
+            pending_open: HashMap::new(),
+            open: HashMap::new(),
+            reannounced: HashMap::new(),
+            streams: HashMap::new(),
+            store: default_store(),
+            restored: false,
+        }
+    }
+}
+
+/// Unit tests never touch the developer's real state file.
+fn default_store() -> Option<PathBuf> {
+    if cfg!(test) {
+        return None;
+    }
+    dirs::config_dir().map(|d| d.join("cctui").join("previews.json"))
+}
+
+#[derive(Serialize, Deserialize)]
+struct PersistedPreview {
+    session_id: String,
+    port: u16,
+    preview_id: String,
+    url: String,
+}
+
+fn persist_to(path: &Path, open: &HashMap<(String, u16), Opened>) -> std::io::Result<()> {
+    let mut rows: Vec<PersistedPreview> = open
+        .iter()
+        .map(|((session_id, port), o)| PersistedPreview {
+            session_id: session_id.clone(),
+            port: *port,
+            preview_id: o.preview_id.clone(),
+            url: o.url.clone(),
+        })
+        .collect();
+    rows.sort_by(|a, b| (&a.session_id, a.port).cmp(&(&b.session_id, b.port)));
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let json = serde_json::to_string_pretty(&rows).map_err(std::io::Error::other)?;
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, json)?;
+    std::fs::rename(tmp, path)
+}
+
+fn load_from(path: &Path) -> Vec<PersistedPreview> {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+type Snapshot = (PathBuf, HashMap<(String, u16), Opened>);
+
+/// What [`persist`] needs, taken under the lock so the write happens outside it.
+fn snapshot(reg: &Registry) -> Option<Snapshot> {
+    reg.store.clone().map(|path| (path, reg.open.clone()))
+}
+
+/// Mutate the registry under the lock and leave with what [`persist`] needs;
+/// the guard never outlives this call, so the file write happens unlocked.
+fn edit<R>(f: impl FnOnce(&mut Registry) -> R) -> (R, Option<Snapshot>) {
+    let mut reg = registry();
+    let out = f(&mut reg);
+    let snap = snapshot(&reg);
+    drop(reg);
+    (out, snap)
+}
+
+/// Best-effort write of the open previews; a failure never fails the caller.
+fn persist(snapshot: Option<Snapshot>) {
+    let Some((path, open)) = snapshot else { return };
+    if let Err(err) = persist_to(&path, &open) {
+        tracing::warn!(%err, path = %path.display(), "preview registry persist failed");
+    }
+}
+
+/// Merge the previous image's snapshot into `open` once per process, keeping
+/// anything this image already opened itself.
+fn restore(reg: &mut Registry) {
+    if reg.restored {
+        return;
+    }
+    reg.restored = true;
+    let Some(path) = reg.store.as_deref() else { return };
+    let mut restored = 0_usize;
+    for row in load_from(path) {
+        reg.open.entry((row.session_id, row.port)).or_insert_with(|| {
+            restored += 1;
+            Opened { preview_id: row.preview_id, url: row.url }
+        });
+    }
+    if restored > 0 {
+        tracing::info!(restored, "preview registry restored from state file");
+    }
+}
+
+/// A fresh process image (an execve) sharing the previous one's state file.
+#[cfg(test)]
+fn reset_as_new_process(store: Option<PathBuf>) {
+    *registry() = Registry { store, ..Registry::default() };
 }
 
 static REGISTRY: LazyLock<Mutex<Registry>> = LazyLock::new(|| Mutex::new(Registry::default()));
@@ -71,14 +186,21 @@ pub fn set_uplink(tx: Option<mpsc::Sender<DaemonFrameUp>>) {
             for (_, handle) in reg.streams.drain() {
                 handle.cancel.cancel();
             }
+            reg.reannounced.clear();
             return;
         }
+        restore(&mut reg);
         let uplink = reg.uplink.clone();
-        let open: Vec<(String, u16, String)> = reg
+        let open: Vec<(Uuid, String, u16, String)> = reg
             .open
             .iter()
-            .map(|((session, port), opened)| (session.clone(), *port, opened.preview_id.clone()))
+            .map(|((session, port), opened)| {
+                (Uuid::new_v4(), session.clone(), *port, opened.preview_id.clone())
+            })
             .collect();
+        for (request_id, session, port, _) in &open {
+            reg.reannounced.insert(*request_id, (session.clone(), *port));
+        }
         drop(reg);
         uplink.zip(Some(open))
     };
@@ -87,14 +209,16 @@ pub fn set_uplink(tx: Option<mpsc::Sender<DaemonFrameUp>>) {
         return;
     }
     tokio::spawn(async move {
-        for (session_id, port, preview_id) in open {
+        for (request_id, session_id, port, preview_id) in open {
+            tracing::info!(%request_id, %session_id, port, %preview_id, "re-announcing preview");
             let frame = DaemonFrameUp::PreviewOpen {
-                request_id: Uuid::new_v4(),
+                request_id,
                 session_id,
                 port,
                 preview_id: Some(preview_id),
             };
             if uplink.send(frame).await.is_err() {
+                tracing::warn!("preview re-announce dropped: the uplink closed");
                 return;
             }
         }
@@ -103,7 +227,8 @@ pub fn set_uplink(tx: Option<mpsc::Sender<DaemonFrameUp>>) {
 
 /// Forget every open preview: the session is over, not merely disconnected.
 pub fn forget_all() {
-    registry().open.clear();
+    let ((), snap) = edit(|reg| reg.open.clear());
+    persist(snap);
 }
 
 pub fn validate_port(port: u16) -> Result<(), String> {
@@ -148,17 +273,19 @@ pub async fn open(session_id: &str, port: u16) -> Result<Opened, String> {
         }
     };
     if let Ok(opened) = &outcome {
-        registry().open.insert((session_id.to_owned(), port), opened.clone());
+        let (_, snap) = edit(|reg| reg.open.insert((session_id.to_owned(), port), opened.clone()));
+        persist(snap);
     }
     outcome
 }
 
 pub async fn close(session_id: &str, port: u16) -> Result<(), String> {
-    let uplink = {
-        let mut reg = registry();
+    let (uplink, snap) = edit(|reg| {
         reg.open.remove(&(session_id.to_owned(), port));
-        reg.uplink.clone().ok_or("daemon is not connected to the server")?
-    };
+        reg.uplink.clone()
+    });
+    persist(snap);
+    let uplink = uplink.ok_or("daemon is not connected to the server")?;
     uplink
         .send(DaemonFrameUp::PreviewClose { session_id: session_id.to_owned(), port })
         .await
@@ -185,15 +312,43 @@ pub const fn is_preview_frame(frame: &DaemonFrameDown) -> bool {
 pub async fn handle_down(frame: DaemonFrameDown, up: &mpsc::Sender<DaemonFrameUp>) {
     match frame {
         DaemonFrameDown::PreviewOpened { request_id, ok, preview_id, url, error } => {
-            let Some(waiter) = registry().pending_open.remove(&request_id) else { return };
             let outcome = match (ok, preview_id, url) {
                 (true, Some(preview_id), Some(url)) => Ok(Opened { preview_id, url }),
                 _ => Err(error.unwrap_or_else(|| "server refused the preview".to_owned())),
             };
-            let _ = waiter.send(outcome);
+            let (changed, snap) = edit(|reg| {
+                if let Some(waiter) = reg.pending_open.remove(&request_id) {
+                    let _ = waiter.send(outcome);
+                    return false;
+                }
+                let Some((session_id, port)) = reg.reannounced.remove(&request_id) else {
+                    return false;
+                };
+                match outcome {
+                    Ok(opened) => {
+                        tracing::info!(
+                            %request_id, %session_id, port, preview_id = %opened.preview_id,
+                            "preview re-announce accepted"
+                        );
+                        reg.open.insert((session_id, port), opened);
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            %request_id, %session_id, port, %err,
+                            "preview re-announce refused; forgetting it"
+                        );
+                        reg.open.remove(&(session_id, port));
+                    }
+                }
+                true
+            });
+            if changed {
+                persist(snap);
+            }
         }
         DaemonFrameDown::PreviewClosed { session_id, port } => {
-            registry().open.remove(&(session_id, port));
+            let (_, snap) = edit(|reg| reg.open.remove(&(session_id, port)));
+            persist(snap);
         }
         DaemonFrameDown::PreviewRequest {
             stream_id,
@@ -833,6 +988,72 @@ mod tests {
 
         set_uplink(None);
         forget_all();
+    }
+
+    /// A self-update `execve` starts a fresh image with an empty registry; the
+    /// previews it inherited must still be re-announced on its first connect.
+    #[tokio::test]
+    async fn a_re_exec_re_announces_previews_persisted_by_the_previous_image() {
+        let _serial = SERIAL.lock().await;
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("previews.json");
+        reset_as_new_process(Some(store.clone()));
+
+        let (up_tx, mut up_rx) = mpsc::channel(8);
+        set_uplink(Some(up_tx.clone()));
+        let opener = tokio::spawn(open("sess", 5173));
+        let DaemonFrameUp::PreviewOpen { request_id, .. } = recv_up(&mut up_rx).await else {
+            panic!("expected PreviewOpen");
+        };
+        handle_down(
+            DaemonFrameDown::PreviewOpened {
+                request_id,
+                ok: true,
+                preview_id: Some("keepme".into()),
+                url: Some("https://cctui-pv-keepme.example".into()),
+                error: None,
+            },
+            &up_tx,
+        )
+        .await;
+        opener.await.unwrap().unwrap();
+        assert!(store.exists(), "an accepted open is snapshotted");
+        set_uplink(None);
+
+        reset_as_new_process(Some(store.clone()));
+        assert!(registry().open.is_empty(), "the new image starts empty");
+        let (up2_tx, mut up2_rx) = mpsc::channel(8);
+        set_uplink(Some(up2_tx.clone()));
+        let DaemonFrameUp::PreviewOpen { request_id, session_id, port, preview_id } =
+            recv_up(&mut up2_rx).await
+        else {
+            panic!("expected the inherited preview to be re-announced");
+        };
+        assert_eq!((session_id.as_str(), port), ("sess", 5173));
+        assert_eq!(preview_id.as_deref(), Some("keepme"));
+
+        handle_down(
+            DaemonFrameDown::PreviewOpened {
+                request_id,
+                ok: false,
+                preview_id: None,
+                url: None,
+                error: Some("no such session".into()),
+            },
+            &up2_tx,
+        )
+        .await;
+        assert!(registry().open.is_empty(), "a refused re-announce is forgotten");
+        set_uplink(None);
+
+        reset_as_new_process(Some(store));
+        let (up3_tx, mut up3_rx) = mpsc::channel(8);
+        set_uplink(Some(up3_tx));
+        let quiet = tokio::time::timeout(Duration::from_millis(200), up3_rx.recv()).await;
+        assert!(quiet.is_err(), "a forgotten preview is not re-announced by the next image");
+
+        set_uplink(None);
+        reset_as_new_process(None);
     }
 
     #[test]
