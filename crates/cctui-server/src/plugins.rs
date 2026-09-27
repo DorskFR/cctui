@@ -365,6 +365,8 @@ pub struct PluginRegistry {
     dir: Option<PathBuf>,
     dir_plugins: RwLock<BTreeMap<String, Plugin>>,
     installed: RwLock<BTreeMap<String, Plugin>>,
+    /// Fingerprint of the `plugins` rows `installed` was last loaded from.
+    loaded_from: RwLock<Option<String>>,
 }
 
 impl Default for PluginRegistry {
@@ -380,6 +382,7 @@ impl PluginRegistry {
             dir: None,
             dir_plugins: RwLock::new(BTreeMap::new()),
             installed: RwLock::new(BTreeMap::new()),
+            loaded_from: RwLock::new(None),
         }
     }
 
@@ -391,6 +394,7 @@ impl PluginRegistry {
             dir: Some(dir),
             dir_plugins: RwLock::new(plugins),
             installed: RwLock::new(BTreeMap::new()),
+            loaded_from: RwLock::new(None),
         }
     }
 
@@ -408,9 +412,21 @@ impl PluginRegistry {
         n
     }
 
-    /// Replace every installed plugin (startup load).
+    /// Replace every installed plugin.
     pub fn set_installed(&self, plugins: BTreeMap<String, Plugin>) {
         *self.installed.write().unwrap_or_else(std::sync::PoisonError::into_inner) = plugins;
+    }
+
+    #[must_use]
+    pub fn loaded_from(&self) -> Option<String> {
+        self.loaded_from.read().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+    }
+
+    /// Replace every installed plugin with a load of the rows `fingerprint` describes.
+    pub fn set_installed_from(&self, plugins: BTreeMap<String, Plugin>, fingerprint: String) {
+        self.set_installed(plugins);
+        *self.loaded_from.write().unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some(fingerprint);
     }
 
     pub fn upsert_installed(&self, plugin: Plugin) {

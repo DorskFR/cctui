@@ -397,6 +397,13 @@ fn spawn_sweeps(state: AppState) {
             }
         }
     });
+    spawn_periodic(PLUGIN_SYNC_PERIOD, {
+        let state = state.clone();
+        move || {
+            let state = state.clone();
+            async move { plugin_store::sync_or_warn(&state.pool, &state.plugins).await }
+        }
+    });
     tokio::spawn(reaper_task(state));
 }
 
@@ -529,6 +536,7 @@ async fn auto_archive_stale(state: &AppState) {
 }
 
 const REAPER_PERIOD: std::time::Duration = std::time::Duration::from_secs(30);
+const PLUGIN_SYNC_PERIOD: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Runs `job` every `period` on its own task, so a slow pass delays only itself.
 fn spawn_periodic<F, Fut>(period: std::time::Duration, mut job: F) -> tokio::task::JoinHandle<()>

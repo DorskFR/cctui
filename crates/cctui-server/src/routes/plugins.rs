@@ -75,6 +75,7 @@ pub async fn list(
                 tracing::error!("db error: {e}");
                 StatusCode::INTERNAL_SERVER_ERROR
             })?;
+    crate::plugin_store::sync_or_warn(&state.pool, &state.plugins).await;
     Ok(Json(list_for(&state.plugins.all(), settings.as_ref())))
 }
 
@@ -112,6 +113,9 @@ pub async fn static_file(
     Path((id, path)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Response {
+    if state.plugins.get(&id).is_none() {
+        crate::plugin_store::sync_or_warn(&state.pool, &state.plugins).await;
+    }
     let Some(plugin) = state.plugins.get(&id) else {
         return StatusCode::NOT_FOUND.into_response();
     };

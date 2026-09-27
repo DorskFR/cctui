@@ -63,6 +63,7 @@ pub async fn session_gateway_env(
     let user_settings = user_settings_of(&state, ctx.user_id).await;
     let whip_phrases =
         user_settings.as_ref().and_then(crate::routes::settings::whip_stop_phrases_of);
+    crate::plugin_store::sync_or_warn(&state.pool, &state.plugins).await;
     let plugins = session_plugins(&state.plugins, user_settings.as_ref());
 
     // Resolve EVERY bound family (one account per family) and re-mint each, so a

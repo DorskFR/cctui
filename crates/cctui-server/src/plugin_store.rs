@@ -53,12 +53,40 @@ pub async fn load_all(pool: &PgPool) -> sqlx::Result<BTreeMap<String, Plugin>> {
 
 /// Load the table into `registry` at startup.
 pub async fn init(pool: &PgPool, registry: &PluginRegistry) {
-    match load_all(pool).await {
-        Ok(plugins) => {
-            tracing::info!(installed = plugins.len(), "installed plugins loaded");
-            registry.set_installed(plugins);
-        }
-        Err(e) => tracing::error!("installed plugins not loaded: {e}"),
+    if let Err(e) = sync(pool, registry).await {
+        tracing::error!("installed plugins not loaded: {e}");
+    }
+}
+
+/// A digest of every row that shapes the registry, so a pod can tell that
+/// another replica installed, toggled or removed a plugin.
+async fn fingerprint(pool: &PgPool) -> sqlx::Result<String> {
+    sqlx::query_scalar(
+        "SELECT coalesce(string_agg(id || ':' || archive_hash || ':' || enabled::text, ',' \
+         ORDER BY id), '') FROM plugins",
+    )
+    .fetch_one(pool)
+    .await
+}
+
+/// Reload `registry` when the table no longer matches what it was loaded from.
+/// The fingerprint is read before the rows, so a concurrent change can only
+/// cause one extra reload, never a stale registry.
+pub async fn sync(pool: &PgPool, registry: &PluginRegistry) -> sqlx::Result<()> {
+    let current = fingerprint(pool).await?;
+    if registry.loaded_from().as_deref() == Some(current.as_str()) {
+        return Ok(());
+    }
+    let plugins = load_all(pool).await?;
+    tracing::info!(installed = plugins.len(), "installed plugins loaded");
+    registry.set_installed_from(plugins, current);
+    Ok(())
+}
+
+/// [`sync`] for request paths: a failure keeps serving the current registry.
+pub async fn sync_or_warn(pool: &PgPool, registry: &PluginRegistry) {
+    if let Err(e) = sync(pool, registry).await {
+        tracing::warn!("plugin registry sync failed: {e}");
     }
 }
 
@@ -190,7 +218,7 @@ fn redirect_target(
 
 #[cfg(test)]
 mod tests {
-    use super::{fetch_archive, install, load_all, set_enabled, uninstall};
+    use super::{fetch_archive, install, load_all, set_enabled, sync, uninstall};
     use crate::plugin_archive::test_support::demo_tgz;
     use crate::plugins::PluginRegistry;
 
@@ -244,6 +272,36 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(blobs, 0);
+    }
+
+    #[tokio::test]
+    async fn a_replica_picks_up_changes_made_through_another() {
+        let Some(url) = crate::routes::gateway::test_db_url("plugin_store_replicas") else {
+            return;
+        };
+        let pool =
+            sqlx::postgres::PgPoolOptions::new().max_connections(2).connect(&url).await.unwrap();
+        sqlx::query("DELETE FROM plugins WHERE id = 'demo'").execute(&pool).await.unwrap();
+        let (a, b) = (PluginRegistry::disabled(), PluginRegistry::disabled());
+        sync(&pool, &b).await.unwrap();
+
+        install(&pool, &a, &demo_tgz(None, "1.0.0"), None).await.unwrap();
+        assert!(b.all_admin().is_empty());
+        sync(&pool, &b).await.unwrap();
+        assert_eq!(b.all_admin().len(), 1);
+        assert!(b.get("demo").is_none());
+
+        set_enabled(&pool, &a, "demo", true).await.unwrap();
+        sync(&pool, &b).await.unwrap();
+        assert!(b.get("demo").is_some());
+
+        install(&pool, &a, &demo_tgz(Some("demo"), "1.1.0"), None).await.unwrap();
+        sync(&pool, &b).await.unwrap();
+        assert_eq!(b.get("demo").unwrap().manifest.version, "1.1.0");
+
+        uninstall(&pool, &a, "demo").await.unwrap();
+        sync(&pool, &b).await.unwrap();
+        assert!(b.all_admin().is_empty());
     }
 
     #[tokio::test]

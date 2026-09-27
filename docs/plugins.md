@@ -17,9 +17,10 @@ Two gates, both required before a user sees anything:
    per-plugin settings form only renders once that switch is on.
 
 Installed plugins live in the `plugins` table: the manifest plus the archive in
-the existing blob store, extracted into memory at install and at startup. No
-writable volume is needed, so a plugin survives a pod restart and reaches every
-replica.
+the existing blob store, extracted into memory. No writable volume is needed,
+so a plugin survives a pod restart and reaches every replica: each pod reloads
+when the table changes, checked every 10 s and before it answers a session
+launch, the plugin lists, or a static file it does not have.
 
 `CCTUI_PLUGINS_DIR=/path/to/plugins` stays as an optional **read-only** source
 for dev and the local stack. Those plugins list as "from directory", are always

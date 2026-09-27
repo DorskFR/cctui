@@ -69,6 +69,7 @@ pub async fn list(
     Extension(ctx): Extension<AuthContext>,
 ) -> Result<Json<Vec<AdminPluginInfo>>, StatusCode> {
     ctx.requires(Scope::Admin)?;
+    plugin_store::sync_or_warn(&state.pool, &state.plugins).await;
     Ok(Json(state.plugins.all_admin().iter().map(AdminPluginInfo::from).collect()))
 }
 
