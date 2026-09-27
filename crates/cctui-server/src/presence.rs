@@ -48,7 +48,7 @@ impl Kind {
 /// A row's heartbeat must be at most this old to be trusted. Heartbeats are
 /// written every [`HEARTBEAT_SECS`], so 3× distinguishes a crashed pod from a
 /// slow tick (mirrors the WS read-timeout discipline).
-const LIVE_WITHIN_SECS: i32 = 45;
+pub const LIVE_WITHIN_SECS: i32 = 45;
 /// Cadence of the per-pod heartbeat task.
 const HEARTBEAT_SECS: u64 = 15;
 /// Rows a crashed peer never deleted are reaped past this age. Far beyond
@@ -83,7 +83,7 @@ impl PodIdentity {
     }
 
     #[cfg(test)]
-    fn for_test(pod: &str, ip: &str) -> Self {
+    pub(crate) fn for_test(pod: &str, ip: &str) -> Self {
         Self { pod: pod.into(), ip: Some(ip.into()), owned: DashMap::new() }
     }
 }
@@ -160,6 +160,22 @@ pub async fn peer_owner_ip(
     .map_err(|err| tracing::warn!(%err, %entity_id, "ws_presence lookup failed"))
     .ok()
     .flatten()
+}
+
+/// The peer pod holding a preview's daemon link: the pod that announced the
+/// session, else the pod owning the machine (a machine id can be shared by
+/// several daemons, so the session row is the precise answer).
+pub async fn preview_owner_ip(
+    state: &crate::state::AppState,
+    preview: &crate::preview::Preview,
+) -> Option<String> {
+    let pod = &state.presence.pod;
+    if let Ok(session) = Uuid::parse_str(&preview.session_id)
+        && let Some(ip) = peer_owner_ip(&state.pool, pod, Kind::Session, session).await
+    {
+        return Some(ip);
+    }
+    peer_owner_ip(&state.pool, pod, Kind::Daemon, preview.machine_id).await
 }
 
 /// IPs of every live PEER pod (excluding this one), for event fan-out.

@@ -6,6 +6,7 @@
 # Run from anywhere; resolves the repo root itself. Emits flat *.ts files into
 # webui/src/lib/bindings/ plus an index.ts barrel.
 set -euo pipefail
+export LC_ALL=C
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 out="$repo_root/webui/src/lib/bindings"
@@ -40,8 +41,13 @@ done
 mkdir -p "$staging"
 
 # ts-rs writes one file per #[ts(export)] type, relative to TS_RS_EXPORT_DIR.
+# CI overrides the package selection with one that matches its earlier
+# `cargo test --workspace` so the compile is reused; the exported set must stay
+# the same (cctui-query exports are not part of the webui bindings).
+# shellcheck disable=SC2206
+cargo_args=(${CCTUI_BINDINGS_CARGO_ARGS:--p cctui-proto -p cctui-server})
 TS_RS_EXPORT_DIR="$staging" cargo test --manifest-path "$repo_root/Cargo.toml" \
-  -p cctui-proto -p cctui-server export_bindings
+  "${cargo_args[@]}" export_bindings
 
 generated="$(count_ts "$staging")"
 if [ "$generated" -eq 0 ]; then

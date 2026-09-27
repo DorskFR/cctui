@@ -48,6 +48,8 @@ export const qk = {
   usageCloses: (from: string) => ["account-usage-closes", from] as const,
   user: (userId: string) => ["users", userId] as const,
   bookmarksAll: ["bookmarks"] as const,
+  plugins: ["plugins"] as const,
+  adminPlugins: ["admin", "plugins"] as const,
   cacheLoss: (days: number) => ["cache-loss", { days }] as const,
   sessionDiagnose: (id: string) => ["session-diagnose", id] as const,
   sessionLangfuse: (id: string) => ["session-langfuse", id] as const,

@@ -55,6 +55,10 @@ services:
       # Always allowed on top of Settings > Instance > Allowed upstream hosts (docs/gateway-upstreams.md),
       # as host[:port], e.g. a LAN Ollama: 192.168.1.50:11434.
       CCTUI_UPSTREAM_ALLOWED_HOSTS: ${CCTUI_UPSTREAM_ALLOWED_HOSTS:-}
+      # Runtime plugins (docs/plugins.md): folders dropped into ./plugins.
+      CCTUI_PLUGINS_DIR: /plugins
+    volumes:
+      - ./plugins:/plugins:ro
     ports:
       - "${CCTUI_BIND_ADDR:-127.0.0.1}:${CCTUI_SERVER_PORT:-8700}:8700"
     restart: unless-stopped

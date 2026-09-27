@@ -16,6 +16,8 @@ pub(super) struct LaunchArgs {
     pub mcp_config: Option<String>,
     pub settings_path: Option<String>,
     pub name: Option<String>,
+    /// One `--plugin-dir` per entry; survives respawns like `--settings`.
+    pub plugin_dirs: Vec<String>,
 }
 
 impl LaunchArgs {
@@ -75,6 +77,10 @@ impl LaunchArgs {
         push_flag(args, "--model", self.model.as_ref());
         push_flag(args, "--mcp-config", self.mcp_config.as_ref());
         push_flag(args, "--settings", self.settings_path.as_ref());
+        for dir in &self.plugin_dirs {
+            args.push("--plugin-dir".to_owned());
+            args.push(dir.clone());
+        }
     }
 }
 
@@ -183,6 +189,26 @@ mod tests {
             bootstrap: serde_json::Value::Null,
             parent_local_id: None,
         }
+    }
+
+    #[test]
+    fn plugin_dirs_ride_both_argv_and_respawn_flags() {
+        let launch = LaunchArgs {
+            settings_path: Some("/cfg/s.json".to_owned()),
+            plugin_dirs: vec!["/cache/a/h1".to_owned(), "/cache/b/h2".to_owned()],
+            ..LaunchArgs::default()
+        };
+        let tail = [
+            "--settings",
+            "/cfg/s.json",
+            "--plugin-dir",
+            "/cache/a/h1",
+            "--plugin-dir",
+            "/cache/b/h2",
+        ];
+        assert!(launch.to_argv().ends_with(&tail.map(str::to_owned)));
+        assert!(launch.respawn_argv().ends_with(&tail.map(str::to_owned)));
+        assert!(!LaunchArgs::default().to_argv().iter().any(|a| a == "--plugin-dir"));
     }
 
     #[test]

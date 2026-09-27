@@ -1,0 +1,9 @@
+{
+	"id": "demo",
+	"name": "Demo",
+	"description": "E2E fixture built with the plugin SDK.",
+	"version": "0.0.1",
+	"cctuiApi": 1,
+	"icon": "eye",
+	"web": "web/index.js"
+}

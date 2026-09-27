@@ -56,6 +56,12 @@ enum CallKind {
     /// The session's `SessionStart` hook holding the first turn until the relay
     /// is ready.
     RelayWait,
+    PreviewOpen {
+        port: u16,
+    },
+    PreviewClose {
+        port: u16,
+    },
 }
 
 #[derive(Debug)]
@@ -118,6 +124,19 @@ fn parse_call(line: &str) -> Result<Call, String> {
         Some("usage") => CallKind::Usage { model: string_arg(&args, "model") },
         Some("relay_ready") => CallKind::RelayReady,
         Some("relay_wait") => CallKind::RelayWait,
+        Some(kind @ ("preview_open" | "preview_close")) => {
+            let port = args
+                .get("port")
+                .and_then(Value::as_u64)
+                .and_then(|p| u16::try_from(p).ok())
+                .ok_or("port is required")?;
+            crate::preview::validate_port(port)?;
+            if kind == "preview_open" {
+                CallKind::PreviewOpen { port }
+            } else {
+                CallKind::PreviewClose { port }
+            }
+        }
         Some("spawn_agent") => {
             let prompt = args.get("prompt").and_then(Value::as_str).unwrap_or("").to_owned();
             if prompt.trim().is_empty() {
@@ -205,7 +224,11 @@ fn dispatch_note(kind: &CallKind, timeout: Duration) -> String {
             req.session_id,
             timeout.as_secs(),
         ),
-        CallKind::Usage { .. } | CallKind::RelayReady | CallKind::RelayWait => String::new(),
+        CallKind::Usage { .. }
+        | CallKind::RelayReady
+        | CallKind::RelayWait
+        | CallKind::PreviewOpen { .. }
+        | CallKind::PreviewClose { .. } => String::new(),
     }
 }
 
@@ -458,6 +481,18 @@ async fn run_call(
             let result = if ready { "ready" } else { "timeout" };
             return json!({ "ok": true, "result": result });
         }
+        CallKind::PreviewOpen { port } => {
+            return match crate::preview::open(&call.session_id, *port).await {
+                Ok(opened) => json!({ "ok": true, "result": opened.url }),
+                Err(err) => json!({ "ok": false, "error": err }),
+            };
+        }
+        CallKind::PreviewClose { port } => {
+            return match crate::preview::close(&call.session_id, *port).await {
+                Ok(()) => json!({ "ok": true, "result": "closed" }),
+                Err(err) => json!({ "ok": false, "error": err }),
+            };
+        }
         CallKind::Spawn(_) | CallKind::Message(_) => {}
     }
     let note = dispatch_note(&call.kind, call.timeout);
@@ -491,7 +526,11 @@ async fn run_call(
             );
             (handle, req.session_id.clone())
         }
-        CallKind::Usage { .. } | CallKind::RelayReady | CallKind::RelayWait => {
+        CallKind::Usage { .. }
+        | CallKind::RelayReady
+        | CallKind::RelayWait
+        | CallKind::PreviewOpen { .. }
+        | CallKind::PreviewClose { .. } => {
             unreachable!("these return above; they have no child to spawn or follow")
         }
     };

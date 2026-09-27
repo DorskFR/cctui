@@ -13,6 +13,7 @@
 	import type { ConversationStream } from './stream.svelte';
 	import type { RenderWindow } from './jump';
 	import type { Line } from './types';
+	import type { PluginActionButton } from '$lib/plugins/types';
 	import { m } from '$lib/paraglide/messages';
 	import { untrack } from 'svelte';
 
@@ -41,7 +42,9 @@
 		jumper = $bindable(),
 		focusTs = null,
 		onbookmark,
-		isBookmarked
+		isBookmarked,
+		pluginActionsFor,
+		onpluginaction
 	}: {
 		/** Live-stream controller. Passed whole rather than as a dozen
 		 * pass-through props; its `$state` fields stay reactive when read through it. */
@@ -76,6 +79,9 @@
 		focusTs?: number | null;
 		onbookmark?: (ln: Line) => void;
 		isBookmarked?: (ln: Line) => boolean;
+		/** Buttons runtime plugins contribute to an assistant line. */
+		pluginActionsFor?: (ln: Line) => PluginActionButton[];
+		onpluginaction?: (a: PluginActionButton) => void;
 	} = $props();
 
 	// ── Lazy render of large transcripts ───────────────────
@@ -166,6 +172,8 @@
 		{ontoggleselect}
 		{onbookmark}
 		bookmarked={isBookmarked?.(ln) ?? false}
+		pluginActions={pluginActionsFor?.(ln) ?? []}
+		{onpluginaction}
 	/>
 {/snippet}
 

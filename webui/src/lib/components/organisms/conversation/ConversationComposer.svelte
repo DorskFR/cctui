@@ -1,5 +1,6 @@
 <script lang="ts">
-	import { onDestroy } from 'svelte';
+	import { onDestroy, tick } from 'svelte';
+	import { insertBlock } from './insertText';
 	import ImageCompressionStatus from '$lib/components/molecules/ImageCompressionStatus.svelte';
 	import { errMessage } from '$lib/api';
 	import type { SessionListItem } from '@bindings/SessionListItem';
@@ -190,6 +191,32 @@
 		input = text;
 		resetHistoryNav();
 		scroll.textarea?.focus();
+	}
+
+	export function focus() {
+		scroll.textarea?.focus();
+	}
+
+	/** Drop a block at the caret (a plugin pane's context), keeping the draft. */
+	export async function insertText(text: string) {
+		const el = scroll.textarea;
+		const caret = el && document.activeElement === el ? el.selectionStart : undefined;
+		const next = insertBlock(input, text, caret);
+		input = next.value;
+		resetHistoryNav();
+		await tick();
+		if (!el) return;
+		el.focus();
+		el.setSelectionRange(next.caret, next.caret);
+	}
+
+	/** A plugin pane's message: goes out through the same path as a typed one,
+	 *  the draft stays. */
+	export function sendText(text: string) {
+		const body = text.trim();
+		if (!body || archived) return;
+		onsend(body);
+		msgHistory.push(session.id, body);
 	}
 
 	async function send() {

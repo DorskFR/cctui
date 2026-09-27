@@ -27,6 +27,8 @@ pub struct AppState {
     /// answer "unavailable".
     pub webauthn: Option<Arc<webauthn_rs::Webauthn>>,
     pub skills: Arc<SkillStore>,
+    pub plugins: Arc<crate::plugins::PluginRegistry>,
+    pub preview: Arc<crate::preview::Registry>,
     pub presence: Arc<crate::presence::PodIdentity>,
     /// Shared secret for pod-to-pod `/internal/bus/*` calls; `None` (no
     /// `CCTUI_POD_IP`) makes those endpoints refuse everything.
@@ -146,6 +148,8 @@ impl AppState {
             auth_config: AuthConfig::new(vec![], pool.clone()),
             webauthn: None,
             skills: Arc::new(SkillStore::new(std::env::temp_dir().join("cctui-test-skills"))),
+            plugins: Arc::new(crate::plugins::PluginRegistry::disabled()),
+            preview: Arc::new(crate::preview::Registry::new(None, "", b"test")),
             presence: Arc::new(crate::presence::PodIdentity::from_env()),
             internal_secret: None,
             dispatcher_liveness: Arc::new(DashMap::new()),

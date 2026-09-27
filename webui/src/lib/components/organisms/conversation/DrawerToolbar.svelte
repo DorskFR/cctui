@@ -1,6 +1,7 @@
 <script lang="ts">
 	// Conversation toolbar, one row at every width: message filters on the left,
-	// auto-approve and pins on the right. Narrow drawers drop the labels.
+	// auto-approve, terminal, plugin panes and pins right-aligned. Narrow drawers
+	// drop every label and keep the icons.
 	import {
 		MSG_CATEGORIES,
 		QUICK_FILTERS,
@@ -15,12 +16,16 @@
 	import PinsPanel from './PinsPanel.svelte';
 	import type { MessagePin } from '@bindings/MessagePin';
 	import type { Line } from './types';
+	import type { PluginButton } from '$lib/plugins/types';
 	import { m } from '$lib/paraglide/messages';
 
 	let {
 		view = $bindable(),
 		autoApprove,
 		ontoggleAuto,
+		terminalOpen = false,
+		ontoggleTerminal,
+		plugins = [],
 		pins = [],
 		lines = [],
 		onjumpseq,
@@ -33,6 +38,11 @@
 		view: ViewOpts;
 		autoApprove: boolean;
 		ontoggleAuto: () => void;
+		/** Read-only live terminal pane; omit the handler to hide the toggle. */
+		terminalOpen?: boolean;
+		ontoggleTerminal?: () => void;
+		/** Enabled plugin panes; one toggle each, pressed while its pane is open. */
+		plugins?: PluginButton[];
 		pins?: MessagePin[];
 		lines?: Line[];
 		/** Omit both to hide the pins button (e.g. no session context). */
@@ -142,6 +152,29 @@
 				>{m.conversation_auto_approve_btn()}</span
 			></Toggle
 		>
+		{#if ontoggleTerminal}
+			<Toggle
+				pressed={terminalOpen}
+				style={CTL}
+				title={m.conversation_terminal_title()}
+				aria-label={m.drawer_terminal_label()}
+				data-journey="terminal"
+				onclick={ontoggleTerminal}
+				><Icon name="tv" size={12} /><span class="wide">{m.drawer_terminal_label()}</span></Toggle
+			>
+		{/if}
+		{#each plugins as p (p.id)}
+			<Toggle
+				pressed={p.open}
+				style={CTL}
+				title={m.drawer_plugin_toggle({ name: p.label })}
+				aria-label={p.label}
+				data-journey="plugin"
+				data-plugin={p.id}
+				onclick={p.onselect}
+				><Icon name={p.icon} size={12} /><span class="wide">{p.label}</span></Toggle
+			>
+		{/each}
 		{#if onjumpseq && onunpin}
 			<Popover
 				label={m.conversation_pins_aria()}
@@ -235,6 +268,9 @@
 	.hitbar {
 		flex: none;
 	}
+	.behbar {
+		margin-left: auto;
+	}
 	.hitbar {
 		align-items: center;
 	}
@@ -260,7 +296,6 @@
 			display: inline;
 		}
 		.behbar {
-			margin-left: auto;
 			padding-left: 0;
 			border-left: none;
 		}

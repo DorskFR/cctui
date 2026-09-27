@@ -13,6 +13,7 @@ import { notify } from "./notify.svelte";
 import type { SettingsPayload } from "@bindings/SettingsPayload";
 import { clampDockWidth } from "./dock";
 import { clampFollowupWhenCold, type FollowupWhenCold } from "./followup";
+import { isPluginId } from "./plugins/discovery";
 import {
   latestDirFor,
   latestEntryFor,
@@ -418,6 +419,40 @@ export function ratchetStepProgress(
   };
 }
 
+// Opt-in runtime plugins (Settings › Plugins). Serializes as `data.plugins`;
+// only well-formed plugin ids survive a load, everything is off unless literally true.
+export interface PluginsSettings {
+  enabled: Record<string, boolean>;
+  // Values for the settings a plugin declares, by plugin id then key. The
+  // daemon exports them into the user's own sessions as the declared env vars.
+  config: Record<string, Record<string, string>>;
+}
+
+export function clampPluginsEnabled(v: unknown): Record<string, boolean> {
+  const out: Record<string, boolean> = {};
+  if (!v || typeof v !== "object" || Array.isArray(v)) return out;
+  for (const [id, on] of Object.entries(v as Record<string, unknown>)) {
+    if (isPluginId(id) && typeof on === "boolean") out[id] = on;
+  }
+  return out;
+}
+
+export function clampPluginsConfig(
+  v: unknown,
+): Record<string, Record<string, string>> {
+  const out: Record<string, Record<string, string>> = {};
+  if (!v || typeof v !== "object" || Array.isArray(v)) return out;
+  for (const [id, cfg] of Object.entries(v as Record<string, unknown>)) {
+    if (!isPluginId(id) || !cfg || typeof cfg !== "object" || Array.isArray(cfg)) continue;
+    const vals: Record<string, string> = {};
+    for (const [k, val] of Object.entries(cfg as Record<string, unknown>)) {
+      if (typeof val === "string" && val !== "") vals[k] = val;
+    }
+    if (Object.keys(vals).length) out[id] = vals;
+  }
+  return out;
+}
+
 export interface SettingsState {
   sessionList: SessionListSettings;
   display: DisplaySettings;
@@ -450,6 +485,7 @@ export interface SettingsState {
   autoResumeOnConnectionLoss: boolean;
   // Macros menu (off by default) and its entries. Serializes as `data.macros`.
   macros: MacrosSettings;
+  plugins: PluginsSettings;
   // Which edge the toast stack sits on. Top-level so it serializes as
   // `data.toastPosition`; the server stores the blob untouched.
   toastPosition: ToastPosition;
@@ -502,6 +538,7 @@ const DEFAULTS: SettingsState = {
   sessionEmojiPrefix: false,
   autoResumeOnConnectionLoss: false,
   macros: { enabled: false, items: [] },
+  plugins: { enabled: {}, config: {} },
   toastPosition: DEFAULT_TOAST_POSITION,
   spawnMemory: {},
   shortcutsEnabled: false,
@@ -567,6 +604,10 @@ export function mergeDefaults(
     sessionEmojiPrefix: p.sessionEmojiPrefix === true,
     autoResumeOnConnectionLoss: p.autoResumeOnConnectionLoss === true,
     macros: mergeMacros(p.macros),
+    plugins: {
+      enabled: clampPluginsEnabled(p.plugins?.enabled),
+      config: clampPluginsConfig(p.plugins?.config),
+    },
     toastPosition: clampToastPosition(p.toastPosition),
     spawnMemory: p.spawnMemory ?? {},
     shortcutsEnabled: p.shortcutsEnabled ?? DEFAULTS.shortcutsEnabled,
@@ -927,6 +968,30 @@ class Settings {
   }
   get autoResumeOnConnectionLoss(): boolean {
     return this.state.autoResumeOnConnectionLoss;
+  }
+
+  get pluginsEnabled(): Record<string, boolean> {
+    return this.state.plugins.enabled;
+  }
+  pluginConfig(id: string): Record<string, string> {
+    return this.state.plugins.config[id] ?? {};
+  }
+  setPluginConfig(id: string, key: string, value: string) {
+    const cfg = { ...this.pluginConfig(id) };
+    if (value === "") delete cfg[key];
+    else cfg[key] = value;
+    const config = { ...this.state.plugins.config };
+    if (Object.keys(cfg).length) config[id] = cfg;
+    else delete config[id];
+    this.state.plugins = { ...this.state.plugins, config };
+    this.persist();
+  }
+  setPluginEnabled(id: string, on: boolean) {
+    this.state.plugins = {
+      ...this.state.plugins,
+      enabled: { ...this.state.plugins.enabled, [id]: on },
+    };
+    this.persist();
   }
 
   get macrosEnabled(): boolean {

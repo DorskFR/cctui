@@ -1,4 +1,8 @@
 import { api } from "../api";
+import type { PluginInfo } from "../plugins/types";
+import type { AdminPluginInfo } from "@bindings/AdminPluginInfo";
+import type { PluginEnableRequest } from "@bindings/PluginEnableRequest";
+import type { PluginInstallRequest } from "@bindings/PluginInstallRequest";
 import type { SessionListResponse } from "@bindings/SessionListResponse";
 import type { ToolPolicy } from "@bindings/ToolPolicy";
 import type { PoolUsageView } from "@bindings/PoolUsageView";
@@ -189,6 +193,25 @@ export const endpoints = {
   updateBookmark: (id: string, body: UpdateBookmark) =>
     api.patch<Bookmark>(`/bookmarks/${id}`, body),
   deleteBookmark: (id: string) => api.del<void>(`/bookmarks/${id}`),
+  /** Runtime plugins found in the server's plugins dir, with the caller's
+   * enabled flag. */
+  plugins: () => api.get<PluginInfo[]>("/plugins"),
+  /** Every plugin with its source and instance toggle (admin). */
+  adminPlugins: () => api.get<AdminPluginInfo[]>("/admin/plugins"),
+  /** Install or upgrade a plugin from an https archive URL (admin). */
+  installPluginFromUrl: (url: string) =>
+    api.post<AdminPluginInfo>("/admin/plugins", { url } satisfies PluginInstallRequest),
+  /** Install or upgrade a plugin from an uploaded `.tar.gz` (admin). */
+  installPluginUpload: (file: File) => {
+    const form = new FormData();
+    form.append("file", file, file.name);
+    return api.postForm<AdminPluginInfo>("/admin/plugins", form);
+  },
+  setPluginInstanceEnabled: (id: string, enabled: boolean) =>
+    api.patch<AdminPluginInfo>(`/admin/plugins/${encodeURIComponent(id)}`, {
+      enabled,
+    } satisfies PluginEnableRequest),
+  uninstallPlugin: (id: string) => api.del<void>(`/admin/plugins/${encodeURIComponent(id)}`),
   /** The caller's spawn profiles, oldest first. */
   profiles: () => api.get<SessionProfile[]>("/profiles"),
   createProfile: (body: CreateProfileRequest) =>

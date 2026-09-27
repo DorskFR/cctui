@@ -337,8 +337,26 @@ pub async fn check_and_apply(
 
 /// [`check_and_apply`] against a caller-owned client + `ETag` cache, so the
 /// auto-update loop can pool connections and skip unchanged manifests.
-#[allow(clippy::cognitive_complexity)]
+///
+/// A failed apply keeps the previous `ETag`, so the same manifest is retried.
 pub async fn check_and_apply_with(
+    client: &reqwest::Client,
+    server_url: &str,
+    machine_key: &str,
+    channel: Channel,
+    etag: &mut Option<String>,
+    counters: &BandwidthCounters,
+) -> Result<Option<PathBuf>> {
+    let previous = etag.clone();
+    let out = apply_manifest(client, server_url, machine_key, channel, etag, counters).await;
+    if out.is_err() {
+        *etag = previous;
+    }
+    out
+}
+
+#[allow(clippy::cognitive_complexity)]
+async fn apply_manifest(
     client: &reqwest::Client,
     server_url: &str,
     machine_key: &str,
@@ -631,6 +649,34 @@ mod tests {
         )
         .await;
         assert!(matches!(out, Ok(None)));
+    }
+
+    #[tokio::test]
+    async fn failed_apply_keeps_the_previous_etag_so_the_manifest_is_retried() {
+        let body = format!(
+            "{{\"version\":\"999.0.0\",\"assets\":[{{\"target\":\"{}\",\"url\":\"http://x/bin\"}}]}}",
+            target_name()
+        );
+        let response: &'static str = Box::leak(
+            format!(
+                "HTTP/1.1 200 OK\r\nETag: \"v2\"\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            )
+            .into_boxed_str(),
+        );
+        let (url, _req) = serve_once(response).await;
+        let mut etag = None;
+        let out = check_and_apply_with(
+            &client().unwrap(),
+            &url,
+            "key",
+            Channel::Stable,
+            &mut etag,
+            &BandwidthCounters::new(),
+        )
+        .await;
+        assert!(out.is_err(), "the SHA256SUMS download has no server: {out:?}");
+        assert_eq!(etag, None);
     }
 
     fn write_script(dir: &Path, name: &str, body: &str) -> PathBuf {

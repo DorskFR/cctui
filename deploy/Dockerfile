@@ -1,4 +1,9 @@
 # syntax=docker/dockerfile:1
+# Local builds (`make image/build`) compile in the builder stage below. Release
+# builds pass `--build-context bins=<dir>` with a cctui-server cross-linked
+# against glibc 2.36 (scripts/release-build-server.sh), which replaces the
+# `bins` stage so nothing compiles inside docker.
+#
 # Builder base must match the runtime's glibc: bookworm-slim runtime ships
 # glibc 2.36, so build on the bookworm-based rust image (not the default
 # trixie one, whose binaries require GLIBC_2.39).

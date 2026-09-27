@@ -289,6 +289,7 @@ impl Supervisor {
         // `StageFilesResult` reply to a mid-chat attachment request),
         // fanned onto the same WS sink as adapter events.
         let (frame_up_tx, mut frame_up_rx) = mpsc::channel::<DaemonFrameUp>(64);
+        crate::preview::set_uplink(Some(frame_up_tx.clone()));
 
         let mut scrub = CompiledPatterns::disabled();
 
@@ -390,6 +391,7 @@ impl Supervisor {
         }
         .await;
 
+        crate::preview::set_uplink(None);
         self.park_transfer(active);
         outcome
     }
@@ -658,6 +660,9 @@ impl Supervisor {
             }
             DaemonFrameDown::HarnessUpdatePolicy { policy } => {
                 crate::harness_update::set_policy(policy);
+            }
+            frame if crate::preview::is_preview_frame(&frame) => {
+                crate::preview::handle_down(frame, frame_up_tx).await;
             }
             _ => {}
         }

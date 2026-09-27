@@ -361,6 +361,68 @@ fn clamp_macros(data: &mut Value) {
     }
 }
 
+const MAX_PLUGIN_ENTRIES: usize = 32;
+const MAX_PLUGIN_ID_CHARS: usize = 64;
+
+/// Normalize the `plugins` block the webui stores:
+/// `{ enabled: { id: bool }, config: { id: { key: string } } }`. `declared`
+/// gives an installed plugin's setting keys (`None` = not installed). Unknown
+/// plugins and keys are dropped, values are strings of at most
+/// [`crate::plugins::MAX_SETTING_VALUE_CHARS`], and the key goes away when
+/// nothing is left.
+fn clamp_plugins(data: &mut Value, declared: impl Fn(&str) -> Option<Vec<String>>) {
+    let Some(obj) = data.as_object_mut() else { return };
+    let Some(raw) = obj.get("plugins") else { return };
+    let valid_id = |k: &String| !k.is_empty() && k.chars().count() <= MAX_PLUGIN_ID_CHARS;
+    let enabled: serde_json::Map<String, Value> = raw
+        .get("enabled")
+        .and_then(Value::as_object)
+        .map(|m| {
+            m.iter()
+                .filter(|(k, v)| valid_id(k) && v.is_boolean() && declared(k).is_some())
+                .take(MAX_PLUGIN_ENTRIES)
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect()
+        })
+        .unwrap_or_default();
+    let config: serde_json::Map<String, Value> = raw
+        .get("config")
+        .and_then(Value::as_object)
+        .map(|m| {
+            m.iter()
+                .filter(|(k, _)| valid_id(k))
+                .filter_map(|(id, values)| {
+                    let keys = declared(id)?;
+                    let values = values.as_object()?;
+                    let kept: serde_json::Map<String, Value> = keys
+                        .iter()
+                        .filter_map(|key| {
+                            let v = values.get(key)?.as_str()?;
+                            (!v.is_empty()
+                                && v.chars().count() <= crate::plugins::MAX_SETTING_VALUE_CHARS)
+                                .then(|| (key.clone(), Value::String(v.to_owned())))
+                        })
+                        .collect();
+                    (!kept.is_empty()).then(|| (id.clone(), Value::Object(kept)))
+                })
+                .take(MAX_PLUGIN_ENTRIES)
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut block = serde_json::Map::new();
+    if !enabled.is_empty() {
+        block.insert("enabled".to_owned(), Value::Object(enabled));
+    }
+    if !config.is_empty() {
+        block.insert("config".to_owned(), Value::Object(config));
+    }
+    if block.is_empty() {
+        obj.remove("plugins");
+    } else {
+        obj.insert("plugins".to_owned(), Value::Object(block));
+    }
+}
+
 fn clamp_auto_resume(data: &mut Value) {
     let Some(obj) = data.as_object_mut() else { return };
     if obj.contains_key("autoResumeOnConnectionLoss") {
@@ -417,6 +479,9 @@ pub async fn put_settings(
     clamp_session_emoji_prefix(&mut data);
     clamp_auto_resume(&mut data);
     clamp_macros(&mut data);
+    clamp_plugins(&mut data, |id| {
+        state.plugins.get(id).map(|p| p.manifest.settings.iter().map(|s| s.key.clone()).collect())
+    });
     let new_mode = harness_mode_of(&data);
     let new_scrub = serde_json::to_value(secret_scrub_of(&data)).unwrap_or(Value::Null);
 
@@ -593,11 +658,72 @@ pub async fn rescrub_settings(
 #[cfg(test)]
 mod tests {
     use super::{
-        clamp_auto_resume, clamp_harness_mode, clamp_locale, clamp_macros, clamp_secret_scrub,
-        clamp_session_emoji_prefix, clamp_whip_stop_phrases, harness_mode_of,
+        clamp_auto_resume, clamp_harness_mode, clamp_locale, clamp_macros, clamp_plugins,
+        clamp_secret_scrub, clamp_session_emoji_prefix, clamp_whip_stop_phrases, harness_mode_of,
         harness_mode_to_adapter_token, secret_scrub_of, whip_stop_phrases_of,
     };
     use serde_json::json;
+
+    #[test]
+    fn clamp_plugins_keeps_installed_boolean_flags_and_drops_an_empty_block() {
+        let installed = |id: &str| match id {
+            "yubisashi" => Some(vec!["host".to_owned(), "cert".to_owned()]),
+            "x" => Some(vec![]),
+            _ => None,
+        };
+        let mut data = json!({ "plugins": { "enabled": { "yubisashi": true, "other": "yes", "": true, "gone": true } } });
+        clamp_plugins(&mut data, installed);
+        assert_eq!(data["plugins"], json!({ "enabled": { "yubisashi": true } }));
+
+        let mut empty = json!({ "plugins": { "enabled": { "x": 1 } } });
+        clamp_plugins(&mut empty, installed);
+        assert_eq!(empty, json!({}));
+
+        let mut junk = json!({ "plugins": "on" });
+        clamp_plugins(&mut junk, installed);
+        assert_eq!(junk, json!({}));
+
+        let mut absent = json!({ "macros": { "enabled": true } });
+        clamp_plugins(&mut absent, installed);
+        assert_eq!(absent, json!({ "macros": { "enabled": true } }));
+
+        let mut none = json!({ "plugins": { "enabled": { "yubisashi": true } } });
+        clamp_plugins(&mut none, |_| None);
+        assert_eq!(none, json!({}));
+    }
+
+    #[test]
+    fn clamp_plugins_keeps_declared_string_config_only() {
+        let installed = |id: &str| match id {
+            "yubisashi" => Some(vec!["host".to_owned(), "cert".to_owned()]),
+            "x" => Some(vec![]),
+            _ => None,
+        };
+        let long = "a".repeat(513);
+        let mut data = json!({ "plugins": { "config": {
+            "yubisashi": { "host": "10.0.0.5", "cert": "", "nope": "v", "n": 1 },
+            "x": { "host": "dropped, undeclared" },
+            "ghost": { "host": "dropped, not installed" },
+            "y": { "host": long }
+        } } });
+        clamp_plugins(&mut data, installed);
+        assert_eq!(data["plugins"], json!({ "config": { "yubisashi": { "host": "10.0.0.5" } } }));
+
+        let mut both = json!({ "plugins": {
+            "enabled": { "yubisashi": false },
+            "config": { "yubisashi": { "cert": "/c.pem" } }
+        } });
+        clamp_plugins(&mut both, installed);
+        assert_eq!(
+            both["plugins"],
+            json!({ "enabled": { "yubisashi": false }, "config": { "yubisashi": { "cert": "/c.pem" } } })
+        );
+
+        let mut over =
+            json!({ "plugins": { "config": { "yubisashi": { "host": "a".repeat(513) } } } });
+        clamp_plugins(&mut over, installed);
+        assert_eq!(over, json!({}));
+    }
 
     #[test]
     fn clamp_auto_resume_coerces_to_a_boolean() {

@@ -170,6 +170,7 @@ impl OneshotDriver {
 
         let mut launch = LaunchArgs::from_spec(spec, settings);
         launch.session_id = Some(session_id.clone());
+        launch.plugin_dirs.clone_from(&launch_env.plugin_dirs);
         if let Some(parent) = &fork_parent {
             launch.resume_from = Some(parent.clone());
             launch.fork = true;
@@ -208,13 +209,14 @@ impl OneshotDriver {
             .get(local_id)
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("reply: unknown session {local_id}"))?;
+        let launch_env = self.resolve_launch_env(local_id, &env_hint).await?;
         let launch = LaunchArgs {
             resume_from: Some(local_id.to_owned()),
             settings_path: self.settings_path.clone(),
+            plugin_dirs: launch_env.plugin_dirs,
             ..LaunchArgs::default()
         };
-        let env = self.resolve_launch_env(local_id, &env_hint).await?.env;
-        self.launch_turn(local_id, &cwd, launch.to_argv(), text, &env).await
+        self.launch_turn(local_id, &cwd, launch.to_argv(), text, &launch_env.env).await
     }
 
     /// Revive an exited-but-resumable conversation without a reply: a no-op
@@ -224,13 +226,15 @@ impl OneshotDriver {
             .or_else(|| self.cwds.get(local_id).cloned())
             .ok_or_else(|| anyhow::anyhow!("resume: no working_dir for {local_id}"))?;
         self.register(local_id, &cwd);
+        let launch_env =
+            self.resolve_launch_env(local_id, &std::collections::BTreeMap::new()).await?;
         let launch = LaunchArgs {
             resume_from: Some(local_id.to_owned()),
             settings_path: self.settings_path.clone(),
+            plugin_dirs: launch_env.plugin_dirs,
             ..LaunchArgs::default()
         };
-        let env = self.resolve_launch_env(local_id, &std::collections::BTreeMap::new()).await?.env;
-        self.launch_turn(local_id, &cwd, launch.to_argv(), "", &env).await
+        self.launch_turn(local_id, &cwd, launch.to_argv(), "", &launch_env.env).await
     }
 
     /// Spawn one `claude -p` child, stream its stdout through the shared codec,

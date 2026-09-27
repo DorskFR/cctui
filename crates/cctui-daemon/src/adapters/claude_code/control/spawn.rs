@@ -156,7 +156,11 @@ impl Driver {
         // vars) — so the revived worker came up with no `ANTHROPIC_BASE_URL`/
         // token and 401ed/ConnectionRefused. The resumed session already carries
         // its model/effort in the transcript; only `spawn` seeds them as flags.
-        let launch = LaunchArgs { settings_path: settings_arg, ..resume_launch(&session_id) };
+        let launch = LaunchArgs {
+            settings_path: settings_arg,
+            plugin_dirs: launch.plugin_dirs,
+            ..resume_launch(&session_id)
+        };
         let ids = JobIds::existing(short, session_id);
         // `state.json` already exists for this short; the daemon keeps its
         // identity fields, so the seed is just protocol filler.
@@ -371,6 +375,7 @@ impl Driver {
         // unmintable aborts rather than launching a worker that will 401.
         let launch_env = self.resolve_launch_env(session_id, &spec.env).await?;
         let mut launch = spawn_launch(spec, session_id);
+        launch.plugin_dirs.clone_from(&launch_env.plugin_dirs);
         launch.mcp_config =
             agent_relay_config(short, session_id, launch_env.spawn_capability.as_ref());
         // The `SessionStart` hook that holds the first turn is only registered
@@ -563,6 +568,7 @@ impl Driver {
         if launch_env.env.is_empty() {
             launch_env = self.resolve_launch_env(parent_local_id, &no_env).await?;
         }
+        launch.plugin_dirs.clone_from(&launch_env.plugin_dirs);
         launch.mcp_config =
             agent_relay_config(short, session_id, launch_env.spawn_capability.as_ref());
         launch.settings_path = ensure_hook_settings(

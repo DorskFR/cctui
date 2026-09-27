@@ -52,7 +52,7 @@ export function normalizeForFilter(s: string): string {
 /**
  * Apply a free-text filter to the rendered settings tree: a row stays when its
  * text contains the query, a group stays when it keeps a row, a section when it
- * keeps a group. Returns the number of visible rows so the page can show an
+ * keeps a group. Without a query everything shows, row-less empty states included. Returns the number of visible rows so the page can show an
  * empty state. DOM-driven on purpose — the rows already carry their localized
  * copy, so there is no second catalogue to keep in sync. Visibility goes
  * through `style.display` rather than `hidden`: the rows set their own
@@ -80,10 +80,10 @@ export function applySettingsFilter(root: ParentNode, query: string): number {
 					visible++;
 				}
 			}
-			show(group, groupAny);
+			show(group, groupAny || !q);
 			if (groupAny) sectionAny = true;
 		}
-		show(section, sectionAny);
+		show(section, sectionAny || !q);
 	}
 	return visible;
 }
@@ -93,6 +93,7 @@ export const SETTINGS_PAGES = [
 	'appearance',
 	'sessions',
 	'macros',
+	'plugins',
 	'execution',
 	'privacy',
 	'notifications',

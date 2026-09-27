@@ -158,6 +158,7 @@ pub(super) async fn on_session_event(
         AdapterEvent::SessionEnded { local_id, reason } => {
             mark_session_ended(state, machine_id, user_id, &local_id, &reason).await?;
             publish_session_ended(state, &local_id, &reason);
+            crate::preview::close_session(state, &local_id).await;
         }
         AdapterEvent::TranscriptMark { local_id, offset } => {
             update_transcript_mark(state, &local_id, offset).await?;

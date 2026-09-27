@@ -168,6 +168,26 @@ pub struct GatewayEnvResponse {
     /// `None` = no `CctuiAgent` tool.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spawn_capability: Option<SpawnCapability>,
+    /// Runtime plugins the session owner enabled that ship skills. The daemon
+    /// mirrors each one under its cache and passes it as `--plugin-dir`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub plugins: Vec<SessionPlugin>,
+}
+
+/// One enabled plugin's skill bundle, as served under
+/// `/plugins/{id}/skills/{file}` for every entry of `files`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionPlugin {
+    pub id: String,
+    pub version: String,
+    /// Content hash of the skill files; the daemon's cache key.
+    pub skills_hash: String,
+    /// Paths relative to the plugin's `skills/` folder.
+    pub files: Vec<String>,
+    /// The owner's plugin settings as `env name -> value`, exported into the
+    /// agent's environment. Names are validated on both ends.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub env: std::collections::BTreeMap<String, String>,
 }
 
 /// Response for `GET /api/v1/daemon/sessions/{id}/token-valid?hash=<sha256hex>`.

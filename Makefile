@@ -221,6 +221,7 @@ UI_IMAGE ?= $(IMAGE_REGISTRY)/cctui-ui
 
 bindings:  ## Regenerate webui TypeScript bindings from Rust structs
 	bash webui/scripts/gen-bindings.sh
+	node webui/scripts/gen-scrub-detectors.mjs
 
 # webui aliases $ghreview to ../ghreview-ui/src, so both must be installed —
 # each with its own package manager (see AGENTS.md).

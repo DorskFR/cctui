@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { devProxy, stripSecure } from '../../vite.config';
+import { devProxy, stripSecure, toDevCookie, toUpstreamCookies } from '../../vite.config';
 
 describe('stripSecure', () => {
 	it('drops Secure so a LAN dev origin can store the cookie over http', () => {
@@ -46,5 +46,18 @@ describe('devProxy', () => {
 		const res = { headers: { 'set-cookie': ['a=1; Secure', 'b=2; SameSite=None; Secure'] } };
 		onRes!(res);
 		expect(res.headers['set-cookie']).toEqual(['a=1', 'b=2; SameSite=Lax']);
+	});
+});
+
+describe('dev auth cookie rename', () => {
+	it('stores the upstream auth cookie under the dev name', () => {
+		expect(toDevCookie('cctui_auth=t0k; Path=/; HttpOnly')).toBe('cctui_dev_auth=t0k; Path=/; HttpOnly');
+		expect(toDevCookie('other=1; Path=/')).toBe('other=1; Path=/');
+	});
+
+	it('maps the dev cookie back for the upstream and leaves others alone', () => {
+		expect(toUpstreamCookies('a=1; cctui_dev_auth=t0k; b=2')).toBe('a=1; cctui_auth=t0k; b=2');
+		expect(toUpstreamCookies('cctui_dev_auth=t0k')).toBe('cctui_auth=t0k');
+		expect(toUpstreamCookies('x_cctui_dev_auth=1')).toBe('x_cctui_dev_auth=1');
 	});
 });

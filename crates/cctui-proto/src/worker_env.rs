@@ -13,6 +13,26 @@ pub fn is_reserved_env_key(name: &str) -> bool {
         || upper.ends_with("_PROXY")
 }
 
+const PLUGIN_DENIED_EXACT: [&str; 6] =
+    ["HOME", "SHELL", "USER", "NODE_OPTIONS", "TMPDIR", "XDG_CONFIG_HOME"];
+const PLUGIN_DENIED_PREFIXES: [&str; 5] =
+    ["ANTHROPIC_", "CLAUDE_", "OPENAI_", "FIREWORKS_", "CODEX_"];
+
+/// Whether a plugin may declare `name` as the env var carrying one of its
+/// user settings: `^[A-Z][A-Z0-9_]{0,63}$`, and none of the names that steer
+/// the shell, the loader, the harness or cctui itself.
+#[must_use]
+pub fn valid_plugin_env_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    let shape = chars.next().is_some_and(|c| c.is_ascii_uppercase())
+        && name.len() <= 64
+        && chars.all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_');
+    shape
+        && !is_reserved_env_key(name)
+        && !PLUGIN_DENIED_EXACT.contains(&name)
+        && !PLUGIN_DENIED_PREFIXES.iter().any(|p| name.starts_with(p))
+}
+
 /// Payload field listing the `env` keys the server minted itself (gateway
 /// routing, account env). The server strips any caller-supplied copy.
 pub const SERVER_ENV_KEYS_FIELD: &str = "server_env_keys";
@@ -118,6 +138,40 @@ mod tests {
         for k in ["CCTUI_URL", "CCTUI_MACHINE_KEY", "SESSION_ID", "REPLY_URL", "TASK_ID"] {
             let p = json!({ "env": { k: "x" }, SERVER_ENV_KEYS_FIELD: [k] });
             assert!(check_payload_env(&p).unwrap_err().contains(k), "{k}");
+        }
+    }
+
+    #[test]
+    fn plugin_env_names_are_shaped_and_not_reserved() {
+        for ok in ["YUBI_HOST", "X", "A1_B2", &format!("A{}", "B".repeat(63))] {
+            assert!(super::valid_plugin_env_name(ok), "{ok}");
+        }
+        for bad in [
+            "",
+            "yubi_host",
+            "1ABC",
+            "A-B",
+            "A B",
+            &format!("A{}", "B".repeat(64)),
+            "PATH",
+            "HOME",
+            "SHELL",
+            "USER",
+            "NODE_OPTIONS",
+            "LD_PRELOAD",
+            "DYLD_X",
+            "ANTHROPIC_BASE_URL",
+            "CLAUDE_CODE_X",
+            "CCTUI_WEB_ORIGIN",
+            "OPENAI_API_KEY",
+            "FIREWORKS_API_KEY",
+            "HTTP_PROXY",
+            "REPLY_URL",
+            "SESSION_ID",
+            "BASH_ENV",
+            "ENV",
+        ] {
+            assert!(!super::valid_plugin_env_name(bad), "{bad}");
         }
     }
 }

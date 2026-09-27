@@ -201,7 +201,8 @@ impl SdkDriver {
         )
         .map(|p| p.to_string_lossy().into_owned());
 
-        let base = LaunchArgs::from_spec(spec, settings.clone());
+        let mut base = LaunchArgs::from_spec(spec, settings.clone());
+        base.plugin_dirs.clone_from(&launch_env.plugin_dirs);
         let posture = SessionPosture {
             cwd: cwd.clone(),
             settings_path: settings,
@@ -337,6 +338,7 @@ impl SdkDriver {
             anyhow::anyhow!("cannot (re)launch {local_id}: no known working_dir/posture")
         })?;
         self.register(local_id);
+        let launch_env = self.resolve_launch_env(local_id, env_hint).await?;
         let launch = LaunchArgs {
             resume_from: Some(local_id.to_owned()),
             settings_path: posture.settings_path.clone(),
@@ -344,10 +346,10 @@ impl SdkDriver {
             effort: posture.effort.clone(),
             permission_flag: posture.permission_flag.clone(),
             name: posture.name.clone(),
+            plugin_dirs: launch_env.plugin_dirs,
             ..LaunchArgs::default()
         };
-        let env = self.resolve_launch_env(local_id, env_hint).await?.env;
-        self.launch_child(local_id, &posture.cwd, launch.to_argv(), &env).await
+        self.launch_child(local_id, &posture.cwd, launch.to_argv(), &launch_env.env).await
     }
 
     /// Spawn the persistent `claude` child, wire its stdout pump, and store the
