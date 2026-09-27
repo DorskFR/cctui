@@ -544,7 +544,7 @@ async fn claim_claude(state: &AppState, acct: &Account, access_token: &str) -> L
             }
             ClaimPlan::Send { idempotency_key, reused } => (idempotency_key, reused),
         };
-        out.idempotency_key = request_id.clone();
+        out.idempotency_key.clone_from(&request_id);
         out.credit_id = Some(grant_id.clone());
         out.reused = reused;
         let Some(body) = cedar_ember_claim_body(grant_id, &request_id) else {
@@ -624,7 +624,7 @@ mod tests {
         assert!(limit_reset_status("anthropic", &serde_json::json!({ "five_hour": {} })).is_none());
     }
 
-    fn cedar_usage(grant: serde_json::Value, extra: serde_json::Value) -> serde_json::Value {
+    fn cedar_usage(grant: &serde_json::Value, extra: &serde_json::Value) -> serde_json::Value {
         let mut ce = serde_json::json!({
             "eligible": true,
             "next_grant_id": "opus_55_explore",
@@ -651,8 +651,9 @@ mod tests {
 
     #[test]
     fn cedar_ember_grant_is_surfaced() {
-        let s = limit_reset_status("anthropic", &cedar_usage(usable_grant(), serde_json::json!({})))
-            .unwrap();
+        let s =
+            limit_reset_status("anthropic", &cedar_usage(&usable_grant(), &serde_json::json!({})))
+                .unwrap();
         assert_eq!(s.kind, "claude");
         assert!(s.available);
         assert_eq!(s.title.as_deref(), Some("Get extra wiggle room to explore Opus 5.5"));
@@ -672,7 +673,7 @@ mod tests {
             for (k, v) in patch.as_object().cloned().unwrap_or_default() {
                 grant[k] = v;
             }
-            let s = limit_reset_status("anthropic", &cedar_usage(grant, serde_json::json!({})))
+            let s = limit_reset_status("anthropic", &cedar_usage(&grant, &serde_json::json!({})))
                 .unwrap();
             assert!(!s.available, "{patch} should not be claimable");
         };
@@ -683,19 +684,19 @@ mod tests {
 
         let orphan = limit_reset_status(
             "anthropic",
-            &cedar_usage(usable_grant(), serde_json::json!({ "next_grant_id": "other" })),
+            &cedar_usage(&usable_grant(), &serde_json::json!({ "next_grant_id": "other" })),
         )
         .unwrap();
         assert!(!orphan.available);
         assert_eq!(orphan.credit_id, None);
 
         let null_next = serde_json::json!({ "next_grant_id": serde_json::Value::Null });
-        let no_next = cedar_usage(usable_grant(), null_next);
+        let no_next = cedar_usage(&usable_grant(), &null_next);
         assert!(!limit_reset_status("anthropic", &no_next).unwrap().available);
 
         let ineligible = cedar_usage(
-            usable_grant(),
-            serde_json::json!({ "eligible": false, "ineligible_reason": "no_grant" }),
+            &usable_grant(),
+            &serde_json::json!({ "eligible": false, "ineligible_reason": "no_grant" }),
         );
         let s = limit_reset_status("anthropic", &ineligible).unwrap();
         assert!(!s.available);
@@ -714,7 +715,7 @@ mod tests {
 
     #[test]
     fn cedar_ember_outranks_juniper_tide() {
-        let mut usage = cedar_usage(usable_grant(), serde_json::json!({}));
+        let mut usage = cedar_usage(&usable_grant(), &serde_json::json!({}));
         usage["juniper_tide"] = serde_json::json!({
             "eligible": true, "available": true, "next_available_at": "2026-09-30T00:00:00Z"
         });
@@ -741,7 +742,7 @@ mod tests {
 
     #[test]
     fn the_claim_names_only_an_offered_grant() {
-        let ce = cedar_usage(usable_grant(), serde_json::json!({}))["cedar_ember"].clone();
+        let ce = cedar_usage(&usable_grant(), &serde_json::json!({}))["cedar_ember"].clone();
         let status = serde_json::json!({ "cedar_ember": ce });
         assert_eq!(cedar_ember_grant_to_claim(&status).as_deref(), Some("opus_55_explore"));
 
@@ -749,7 +750,7 @@ mod tests {
         paused["cedar_ember"]["grants"][0]["paused"] = serde_json::json!(true);
         assert!(cedar_ember_grant_to_claim(&paused).is_none());
 
-        let mut ineligible = status.clone();
+        let mut ineligible = status;
         ineligible["cedar_ember"]["eligible"] = serde_json::json!(false);
         assert!(cedar_ember_grant_to_claim(&ineligible).is_none());
 

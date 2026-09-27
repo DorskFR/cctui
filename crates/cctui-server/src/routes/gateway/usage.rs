@@ -29,7 +29,7 @@ pub fn anthropic_reset_status_url() -> String {
 
 /// The reset programs change on the scale of a grant's lifetime, not a usage
 /// window's, so their own cache is much slower than [`crate::routes::accounts::USAGE_CACHE_TTL`].
-pub const RESET_STATUS_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+pub const RESET_STATUS_CACHE_TTL: std::time::Duration = std::time::Duration::from_mins(30);
 
 /// The keys [`anthropic_reset_status_url`] answers and the usage poll cannot.
 pub const RESET_STATUS_KEYS: [&str; 2] = ["cedar_ember", "juniper_tide"];
