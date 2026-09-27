@@ -2,10 +2,11 @@
 //! but the browser can land on any of them, so a pod that does not hold the
 //! link reverse-proxies the raw request to the one that does.
 //!
-//! The browser's cookie is verified *before* this hop and never travels on it:
-//! the forwarded request carries only the already-verified user id, under the
-//! cluster-internal secret. The receiving pod therefore serves locally and
-//! never forwards again, so a stale presence row cannot start a loop.
+//! The browser's cctui cookies are verified *before* this hop and never travel
+//! on it: the forwarded request carries only the already-verified user id,
+//! under the cluster-internal secret, plus the app's own cookies. The receiving
+//! pod therefore serves locally and never forwards again, so a stale presence
+//! row cannot start a loop.
 
 use axum::body::Body;
 use axum::extract::FromRequestParts;
@@ -30,11 +31,12 @@ pub fn internal_url(peer_ip: &str, port: u16, preview_id: &str, path_and_query: 
 
 /// Headers that must not cross the internal hop: the browser's cctui
 /// credentials, and anything hop-by-hop for the pod-to-pod connection itself.
+/// `Cookie` is filtered per cookie, not skipped: the app's own cookies must
+/// reach it or a logged-in app bounces to its login page in a loop.
 fn skip_on_hop(name: &str) -> bool {
     matches!(
         name,
         "host"
-            | "cookie"
             | "authorization"
             | "connection"
             | "keep-alive"
@@ -51,9 +53,18 @@ fn skip_on_hop(name: &str) -> bool {
 fn hop_headers(src: &HeaderMap, user: Uuid) -> HeaderMap {
     let mut out = HeaderMap::new();
     for (name, value) in src {
-        if !skip_on_hop(name.as_str()) {
-            out.insert(name.clone(), value.clone());
+        if skip_on_hop(name.as_str()) {
+            continue;
         }
+        if name == header::COOKIE {
+            if let Some(kept) = value.to_str().ok().and_then(super::handler::app_cookies)
+                && let Ok(kept) = HeaderValue::from_str(&kept)
+            {
+                out.append(name.clone(), kept);
+            }
+            continue;
+        }
+        out.append(name.clone(), value.clone());
     }
     if let Ok(value) = HeaderValue::from_str(&user.to_string())
         && let Ok(name) = HeaderName::from_bytes(USER_HEADER.as_bytes())
@@ -155,7 +166,7 @@ pub async fn websocket(
     {
         let headers = peer_request.headers_mut();
         for (name, value) in &hop_headers(&parts.headers, user) {
-            headers.insert(name.clone(), value.clone());
+            headers.append(name.clone(), value.clone());
         }
         if let Ok(value) = HeaderValue::from_str(&format!("Bearer {secret}")) {
             headers.insert(header::AUTHORIZATION, value);
@@ -246,19 +257,34 @@ mod tests {
     fn the_hop_drops_browser_credentials_and_pins_the_user() {
         let user = Uuid::new_v4();
         let mut src = HeaderMap::new();
-        src.insert(header::COOKIE, HeaderValue::from_static("cctui_session=secret"));
+        src.insert(header::COOKIE, HeaderValue::from_static("cctui_auth=secret; cctui_preview=t"));
         src.insert(header::AUTHORIZATION, HeaderValue::from_static("Bearer user-token"));
         src.insert(header::HOST, HeaderValue::from_static("cctui-pv-abc.example"));
         src.insert(header::ACCEPT, HeaderValue::from_static("text/html"));
         src.insert("sec-websocket-key", HeaderValue::from_static("abc"));
 
         let out = hop_headers(&src, user);
-        assert!(out.get(header::COOKIE).is_none(), "the browser cookie never crosses the hop");
+        assert!(out.get(header::COOKIE).is_none(), "cctui cookies never cross the hop");
         assert!(out.get(header::AUTHORIZATION).is_none());
         assert!(out.get(header::HOST).is_none());
         assert!(out.get("sec-websocket-key").is_none());
         assert_eq!(out.get(header::ACCEPT).unwrap(), "text/html");
         assert_eq!(out.get(USER_HEADER).unwrap(), &user.to_string());
         assert_eq!(out.get(HOP_HEADER).unwrap(), "1");
+    }
+
+    #[test]
+    fn the_hop_keeps_the_apps_cookies_and_multi_valued_headers() {
+        let mut src = HeaderMap::new();
+        src.append(header::COOKIE, HeaderValue::from_static("cctui_auth=secret; app=1"));
+        src.append(header::COOKIE, HeaderValue::from_static("cctui_preview=t"));
+        src.append(header::COOKIE, HeaderValue::from_static("theme=dark"));
+        src.append(header::ACCEPT_LANGUAGE, HeaderValue::from_static("ja"));
+        src.append(header::ACCEPT_LANGUAGE, HeaderValue::from_static("en"));
+
+        let out = hop_headers(&src, Uuid::new_v4());
+        let cookies: Vec<&HeaderValue> = out.get_all(header::COOKIE).iter().collect();
+        assert_eq!(cookies, ["app=1", "theme=dark"], "only the app's cookies cross");
+        assert_eq!(out.get_all(header::ACCEPT_LANGUAGE).iter().count(), 2);
     }
 }

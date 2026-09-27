@@ -218,12 +218,23 @@ impl Registry {
         if port < MIN_PORT {
             return Err(OpenError::Port);
         }
-        if let Some(requested) = requested_id.filter(|id| is_preview_id(id))
-            && let Some(preview) =
+        if let Some(requested) = requested_id.filter(|id| is_preview_id(id)) {
+            if let Some(preview) =
                 store::rebind(pool, requested, session_id, user_id, machine_id, port).await
-        {
-            self.bind_local(&preview);
-            return Ok(preview);
+            {
+                tracing::info!(preview_id = %preview.id, %session_id, port, "preview re-bound to this pod");
+                self.bind_local(&preview);
+                return Ok(preview);
+            }
+            tracing::warn!(
+                preview_id = %requested,
+                %session_id,
+                %user_id,
+                %machine_id,
+                port,
+                "preview re-announce matched no row (swept, or another owner/machine/port); \
+                 falling back to a fresh registration",
+            );
         }
         if let Some(existing) = store::by_port(pool, session_id, port).await {
             if existing.user_id != user_id {

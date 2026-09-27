@@ -24,12 +24,25 @@ async fn upstream() -> u16 {
             post(|body: String| async move { ([("x-upstream", "yes")], format!("echo:{body}")) }),
         )
         .route("/", get(|| async { "root" }))
+        .route(
+            "/cookies",
+            get(|headers: axum::http::HeaderMap| async move {
+                headers
+                    .get_all("cookie")
+                    .iter()
+                    .map(|v| v.to_str().unwrap().to_owned())
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            }),
+        )
         .fallback(|uri: axum::http::Uri| async move { format!("upstream:{uri}") });
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     port
 }
+
+type Pending = (u16, String, String, Vec<PreviewHeader>, Vec<u8>);
 
 async fn fake_daemon(
     state: AppState,
@@ -38,8 +51,7 @@ async fn fake_daemon(
     mut rx: mpsc::Receiver<DaemonFrameDown>,
 ) {
     let http = reqwest::Client::new();
-    let mut pending: std::collections::HashMap<String, (u16, String, String, Vec<u8>)> =
-        std::collections::HashMap::new();
+    let mut pending: std::collections::HashMap<String, Pending> = std::collections::HashMap::new();
     let mut echo: std::collections::HashSet<String> = std::collections::HashSet::new();
     while let Some(frame) = rx.recv().await {
         match frame {
@@ -75,20 +87,10 @@ async fn fake_daemon(
                 assert!(headers.iter().all(|h| h.name != "host" && h.name != "authorization"));
                 assert!(headers.iter().all(|h| !h.value.contains("cctui_")));
                 if has_body {
-                    pending.insert(stream_id, (port, method, path, Vec::new()));
+                    pending.insert(stream_id, (port, method, path, headers, Vec::new()));
                 } else {
-                    relay(
-                        &state,
-                        &http,
-                        machine,
-                        user,
-                        &stream_id,
-                        port,
-                        &method,
-                        &path,
-                        Vec::new(),
-                    )
-                    .await;
+                    let req = Relay { port, method, path, headers, body: Vec::new() };
+                    relay(&state, &http, machine, user, &stream_id, req).await;
                 }
             }
             DaemonFrameDown::PreviewChunk(PreviewChunk { stream_id, data, text, end }) => {
@@ -106,11 +108,11 @@ async fn fake_daemon(
                     continue;
                 }
                 let Some(entry) = pending.get_mut(&stream_id) else { continue };
-                entry.3.extend(BASE64.decode(data).unwrap());
+                entry.4.extend(BASE64.decode(data).unwrap());
                 if end {
-                    let (port, method, path, body) = pending.remove(&stream_id).unwrap();
-                    relay(&state, &http, machine, user, &stream_id, port, &method, &path, body)
-                        .await;
+                    let (port, method, path, headers, body) = pending.remove(&stream_id).unwrap();
+                    let req = Relay { port, method, path, headers, body };
+                    relay(&state, &http, machine, user, &stream_id, req).await;
                 }
             }
             _ => {}
@@ -118,27 +120,31 @@ async fn fake_daemon(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+struct Relay {
+    port: u16,
+    method: String,
+    path: String,
+    headers: Vec<PreviewHeader>,
+    body: Vec<u8>,
+}
+
 async fn relay(
     state: &AppState,
     http: &reqwest::Client,
     machine: Uuid,
     user: Uuid,
     stream_id: &str,
-    port: u16,
-    method: &str,
-    path: &str,
-    body: Vec<u8>,
+    req: Relay,
 ) {
-    let resp = http
-        .request(
-            reqwest::Method::from_bytes(method.as_bytes()).unwrap(),
-            format!("http://127.0.0.1:{port}{path}"),
-        )
-        .body(body)
-        .send()
-        .await
-        .unwrap();
+    let Relay { port, method, path, headers, body } = req;
+    let mut upstream = http.request(
+        reqwest::Method::from_bytes(method.as_bytes()).unwrap(),
+        format!("http://127.0.0.1:{port}{path}"),
+    );
+    for h in headers.iter().filter(|h| h.name != "content-length") {
+        upstream = upstream.header(h.name.as_str(), h.value.as_str());
+    }
+    let resp = upstream.body(body).send().await.unwrap();
     let headers = resp
         .headers()
         .iter()
@@ -377,14 +383,68 @@ async fn preview_websocket_is_passed_through() {
     assert!(err.to_string().contains("401"), "{err}");
 }
 
+async fn assert_app_cookies_cross_the_hop(
+    client: &reqwest::Client,
+    url: &str,
+    host: &str,
+    cookie: &str,
+) {
+    let resp = client
+        .get(url)
+        .header("host", host)
+        .header("cookie", format!("cctui_auth=secret; app=1; {cookie}; theme=dark"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    assert_eq!(
+        resp.text().await.unwrap(),
+        "app=1; theme=dark",
+        "the app's cookies survive the hop; cctui's never cross it"
+    );
+}
+
+async fn assert_websocket_crosses_the_hop(port: u16, host: &str, cookie: &str) {
+    use tokio_tungstenite::tungstenite::Message;
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+
+    let mut request = format!("ws://127.0.0.1:{port}/hmr?token=1").into_client_request().unwrap();
+    request.headers_mut().insert("host", host.parse().unwrap());
+    request.headers_mut().insert("cookie", cookie.parse().unwrap());
+    let (mut ws, resp) = tokio_tungstenite::connect_async(request).await.unwrap();
+    assert_eq!(resp.status(), 101, "the upgrade is tunnelled across both hops");
+    ws.send(Message::Text("ping".into())).await.unwrap();
+    assert_eq!(ws.next().await.unwrap().unwrap(), Message::Text("ping".into()));
+    ws.send(Message::Binary(vec![9, 8].into())).await.unwrap();
+    assert_eq!(ws.next().await.unwrap().unwrap(), Message::Binary(vec![9, 8].into()));
+    ws.close(None).await.unwrap();
+}
+
+/// Without the cluster secret the internal leg is not usable at all, and the
+/// forwarded identity must be the preview's owner.
+async fn assert_internal_leg_is_guarded(client: &reqwest::Client, port: u16, preview_id: &str) {
+    let naked = client
+        .get(format!("http://127.0.0.1:{port}/internal/preview/{preview_id}/hello"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(naked.status(), 401, "the internal endpoint needs the cluster secret");
+
+    let wrong_user = client
+        .get(format!("http://127.0.0.1:{port}/internal/preview/{preview_id}/hello"))
+        .bearer_auth("cluster-secret")
+        .header(super::forward::USER_HEADER, Uuid::new_v4().to_string())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(wrong_user.status(), 403, "the forwarded identity must be the preview's owner");
+}
+
 /// Two replicas sharing one database: the daemon's WS is on pod A, the browser
 /// hits pod B. Pod B must resolve the preview, gate it on the cookie, and
 /// reverse-proxy both HTTP and WebSocket to pod A.
 #[tokio::test]
 async fn a_browser_on_the_wrong_pod_is_forwarded_to_the_pod_holding_the_daemon() {
-    use tokio_tungstenite::tungstenite::Message;
-    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-
     let Some(pool) = test_pool("preview_two_pods").await else { return };
     let user = test_user(&pool).await;
     let session = Uuid::new_v4();
@@ -463,33 +523,9 @@ async fn a_browser_on_the_wrong_pod_is_forwarded_to_the_pod_holding_the_daemon()
         assert_eq!(resp.text().await.unwrap(), body);
     }
 
-    let mut request = format!("ws://127.0.0.1:{port_b}/hmr?token=1").into_client_request().unwrap();
-    request.headers_mut().insert("host", host.parse().unwrap());
-    request.headers_mut().insert("cookie", cookie.parse().unwrap());
-    let (mut ws, resp) = tokio_tungstenite::connect_async(request).await.unwrap();
-    assert_eq!(resp.status(), 101, "the upgrade is tunnelled across both hops");
-    ws.send(Message::Text("ping".into())).await.unwrap();
-    assert_eq!(ws.next().await.unwrap().unwrap(), Message::Text("ping".into()));
-    ws.send(Message::Binary(vec![9, 8].into())).await.unwrap();
-    assert_eq!(ws.next().await.unwrap().unwrap(), Message::Binary(vec![9, 8].into()));
-    ws.close(None).await.unwrap();
-
-    // Without the cluster secret the internal leg is not usable at all.
-    let naked = client
-        .get(format!("http://127.0.0.1:{port_a}/internal/preview/{}/hello", preview.id))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(naked.status(), 401, "the internal endpoint needs the cluster secret");
-
-    let wrong_user = client
-        .get(format!("http://127.0.0.1:{port_a}/internal/preview/{}/hello", preview.id))
-        .bearer_auth("cluster-secret")
-        .header(super::forward::USER_HEADER, Uuid::new_v4().to_string())
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(wrong_user.status(), 403, "the forwarded identity must be the preview's owner");
+    assert_app_cookies_cross_the_hop(&client, &url_b("/cookies"), &host, &cookie).await;
+    assert_websocket_crosses_the_hop(port_b, &host, &cookie).await;
+    assert_internal_leg_is_guarded(&client, port_a, &preview.id).await;
 
     sqlx::query("DELETE FROM ws_presence WHERE entity_id = $1")
         .bind(session)
@@ -497,4 +533,112 @@ async fn a_browser_on_the_wrong_pod_is_forwarded_to_the_pod_holding_the_daemon()
         .await
         .unwrap();
     super::store::delete_session(&pool, &session.to_string()).await;
+}
+
+/// A rolling restart replaces both pods. The daemon comes back on a fresh pod
+/// and re-announces its preview by id; the row is re-bound there and the
+/// browser is served whichever new pod it lands on.
+#[tokio::test]
+async fn a_rolling_restart_keeps_the_preview_once_the_daemon_re_announces_it() {
+    let Some(pool) = test_pool("preview_rollout").await else { return };
+    let user = test_user(&pool).await;
+    let session = Uuid::new_v4();
+    let machine = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO sessions (id, machine_id, working_dir, user_id, adapter_id) \
+         VALUES ($1, $2, '/w', $3, 'claude-code')",
+    )
+    .bind(session.to_string())
+    .bind(machine.to_string())
+    .bind(user)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let upstream_port = upstream().await;
+    let pod_a = pod_state(&pool, "pod-a");
+    let (tx_a, _rx_a) = mpsc::channel(64);
+    pod_a.bus.register_daemon(machine, Uuid::new_v4(), tx_a);
+    crate::presence::register(&pod_a, crate::presence::Kind::Session, session).await;
+    let preview = pod_a
+        .preview
+        .open(&pool, &session.to_string(), user, machine, upstream_port, None)
+        .await
+        .unwrap();
+
+    // Pod A goes down: its WS close path detaches the machine's previews.
+    pod_a.preview.detach_machine(&pool, machine).await;
+    crate::presence::unregister(&pod_a, crate::presence::Kind::Session, session).await;
+    drop(pod_a);
+
+    // Fresh pods C and D share the database. The daemon reconnects to C.
+    let pod_c = pod_state(&pool, "pod-c");
+    let port_c = serve_pod(&pod_c).await;
+    let mut pod_d = pod_state(&pool, "pod-d");
+    pod_d.config.port = port_c;
+    let port_d = serve_pod(&pod_d).await;
+
+    let conn_c = Uuid::new_v4();
+    let (tx_c, rx_c) = mpsc::channel(64);
+    pod_c.bus.register_daemon(machine, conn_c, tx_c);
+    crate::presence::register(&pod_c, crate::presence::Kind::Daemon, machine).await;
+    tokio::spawn(fake_daemon(pod_c.clone(), machine, user, rx_c));
+    super::on_frame(
+        &pod_c,
+        machine,
+        user,
+        DaemonFrameUp::PreviewOpen {
+            request_id: Uuid::new_v4(),
+            session_id: session.to_string(),
+            port: upstream_port,
+            preview_id: Some(preview.id.clone()),
+        },
+    )
+    .await;
+    pod_c.bus.bind_session_conn(&session.to_string(), conn_c);
+    crate::presence::register(&pod_c, crate::presence::Kind::Session, session).await;
+
+    let rebound = pod_c.preview.local(&preview.id).expect("pod C holds the re-bound preview");
+    assert_eq!(rebound.id, preview.id, "the browser's URL survives the rollout");
+    let detached: Option<chrono::DateTime<chrono::Utc>> =
+        sqlx::query_scalar("SELECT detached_at FROM previews WHERE id = $1")
+            .bind(&preview.id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(detached.is_none(), "the re-bind clears the detach marker");
+
+    let host = pod_c.preview.host().unwrap().host_for(&preview.id);
+    let client = Harness::client();
+    let cookie = format!(
+        "cctui_preview={}",
+        pod_d
+            .preview
+            .tickets()
+            .mint_cookie(&super::ticket::Grant { preview_id: preview.id.clone(), user_id: user })
+    );
+    for port in [port_d, port_c] {
+        let resp = client
+            .get(format!("http://127.0.0.1:{port}/hello"))
+            .header("host", &host)
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200, "served through pod on :{port}");
+        assert_eq!(resp.text().await.unwrap(), "upstream:/hello");
+    }
+
+    sqlx::query("DELETE FROM ws_presence WHERE entity_id = $1 OR entity_id = $2")
+        .bind(session)
+        .bind(machine)
+        .execute(&pool)
+        .await
+        .unwrap();
+    super::store::delete_session(&pool, &session.to_string()).await;
+    sqlx::query("DELETE FROM sessions WHERE id = $1")
+        .bind(session.to_string())
+        .execute(&pool)
+        .await
+        .unwrap();
 }
