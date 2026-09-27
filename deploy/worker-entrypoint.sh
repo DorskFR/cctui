@@ -1085,13 +1085,15 @@ phase_permissions() {
 # payload. The dispatcher forwards the whole payload as TASK_PAYLOAD_JSON but
 # only injects a few magic vars, so map the conventional fields here. Each is
 # only set when unset, so an explicit pod-template/dispatcher value still wins.
-if [ -n "${TASK_PAYLOAD_JSON:-}" ]; then
+derive_task_env() {
+    [ -n "${TASK_PAYLOAD_JSON:-}" ] || return 0
     _pj() { printf '%s' "$TASK_PAYLOAD_JSON" | jq -r "$1 // empty" 2>/dev/null || true; }
     [ -z "${TASK_IDENTITY:-}" ] && { _v=$(_pj '.identity'); [ -n "$_v" ] && export TASK_IDENTITY="$_v"; }
     [ -z "${TASK_REPO:-}" ]     && { _v=$(_pj '.repo');     [ -n "$_v" ] && export TASK_REPO="$_v"; }
     [ -z "${TASK_EFFORT:-}" ]   && { _v=$(_pj '.effort');   [ -n "$_v" ] && export TASK_EFFORT="$_v"; }
     [ -z "${TASK_MODEL:-}" ]    && { _v=$(_pj '.model');    [ -n "$_v" ] && export TASK_MODEL="$_v"; }
     [ -z "${TASK_ADAPTER:-}" ]  && { _v=$(_pj '.adapter');  [ -n "$_v" ] && export TASK_ADAPTER="$_v"; }
+    [ -z "${TASK_CODEX_MODEL:-}" ] && { _v=$(_pj '.codex_model'); [ -n "$_v" ] && export TASK_CODEX_MODEL="$_v"; }
     if [ -z "${TASK_CONTEXT_JSON:-}" ]; then
         _v=$(printf '%s' "$TASK_PAYLOAD_JSON" | jq -c '.context // empty' 2>/dev/null || true)
         [ -n "$_v" ] && export TASK_CONTEXT_JSON="$_v"
@@ -1103,7 +1105,9 @@ if [ -n "${TASK_PAYLOAD_JSON:-}" ]; then
         [ -n "$_owner" ] && export TASK_REPO_URL="https://github.com/${_owner}/${TASK_REPO}"
     fi
     [ -z "${TASK_REPO_REF:-}" ] && { _v=$(_pj '.context.head_sha'); [ -n "$_v" ] && export TASK_REPO_REF="$_v"; }
-fi
+    return 0
+}
+derive_task_env
 phase_network
 phase_workspace
 # The CLI grants edit-in-place only when the session cwd IS a git repo,

@@ -795,7 +795,9 @@ For `adapter: "codex"` the entrypoint **additively** stages the Codex targets
   `/opt/context/prompts/`, where `TASK_PROMPT_FILE` resolves for both adapters).
 - **Model provider + account config.** The `cctui` gateway provider, model,
   effort, approvals, and sandbox mode come from `phase_codex_config` as before
-  (from `OPENAI_API_KEY`/`OPENAI_BASE_URL` + `TASK_CODEX_MODEL`/`TASK_EFFORT`).
+  (from `OPENAI_API_KEY`/`OPENAI_BASE_URL` + `TASK_CODEX_MODEL`/`TASK_EFFORT`, which default from
+  `payload.codex_model`/`payload.effort`; `TASK_*` keys in `payload.env` are
+  rejected by the server).
 
 `skills/`, `hooks/`, and Claude-only conventions have no Codex target and are
 skipped for Codex; always-on `rules/` are best folded into `AGENTS.md` by the
