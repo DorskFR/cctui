@@ -12,7 +12,8 @@ latest_version: string | null,
  */
 latest_url: string | null, 
 /**
- * Admin-set deployment label (`PUT /admin/instance`); `null` by default.
+ * Admin-set deployment label (`PUT /admin/instance`); `null` by default,
+ * and always `null` for an unauthenticated caller.
  */
 instance_name: string | null, 
 /**
