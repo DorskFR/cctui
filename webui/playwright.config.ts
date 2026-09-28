@@ -36,7 +36,7 @@ export default defineConfig({
 		},
 		{
 			name: 'drawer-header',
-			testMatch: 'drawer-header-meta.spec.ts',
+			testMatch: ['drawer-header-meta.spec.ts', 'drawer-header-actions.spec.ts'],
 			use: { baseURL: headerUrl, storageState: resolve(webui, 'journeys/.auth/state.json') }
 		},
 		{
