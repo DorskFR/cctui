@@ -71,6 +71,37 @@ enum BlockKind {
     Permission,
 }
 
+/// The child's last output, which is what decides whether a turn is over.
+/// Thinking and a text tail are mutually exclusive by construction.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum Tail {
+    /// Nothing that could end a turn: a tool call, or nothing yet.
+    #[default]
+    Other,
+    /// A thinking block — the model planned more work and stopped.
+    Thinking,
+    /// Text the model itself flagged as the turn's last output.
+    EndTurn,
+    /// Text with no stop reason: a turn tail only once it has stood this long.
+    QuietSince(Instant),
+}
+
+impl Tail {
+    /// Whether this tail is assistant text at all, flagged or not.
+    const fn is_text(self) -> bool {
+        matches!(self, Self::EndTurn | Self::QuietSince(_))
+    }
+
+    /// Whether the text has become the turn's last word by `now`.
+    fn ended_turn_by(self, now: Instant) -> bool {
+        match self {
+            Self::EndTurn => true,
+            Self::QuietSince(at) => now.duration_since(at) >= TEXT_QUIET_GRACE,
+            Self::Other | Self::Thinking => false,
+        }
+    }
+}
+
 /// Everything observed about a watched child so far.
 #[derive(Debug, Clone, Default)]
 struct WatchState {
@@ -84,13 +115,8 @@ struct WatchState {
     done_since: Option<Instant>,
     ended: bool,
     error: Option<String>,
-    tail_is_thinking: bool,
-    /// When assistant text became the child's last output; cleared by anything
-    /// proving the turn carried on.
-    text_tail_at: Option<Instant>,
-    /// The last assistant text reported `stop_reason: "end_turn"`: the turn is
-    /// over on the spot, with no window to wait out.
-    text_ends_turn: bool,
+    /// Reset by anything proving the turn carried on.
+    tail: Tail,
     tool_errors: u32,
     tokens: u64,
 }
@@ -116,9 +142,7 @@ pub struct ChildSnapshot {
     ended: bool,
     error: Option<String>,
     registered_at: Instant,
-    tail_is_thinking: bool,
-    text_tail_at: Option<Instant>,
-    text_ends_turn: bool,
+    tail: Tail,
     tool_errors: u32,
     tokens: u64,
 }
@@ -138,7 +162,7 @@ impl ChildSnapshot {
             final_text: self.final_text.clone(),
             error: self.error.clone(),
             local_id: self.local_id.clone(),
-            tail_is_thinking: self.tail_is_thinking,
+            tail_is_thinking: self.tail == Tail::Thinking,
         }
     }
 
@@ -186,11 +210,7 @@ impl ChildSnapshot {
                 return Assessment::Finished(self.outcome());
             }
         }
-        if !self.prompt_pending()
-            && !self.tail_is_thinking
-            && let Some(text_at) = self.text_tail_at
-            && (self.text_ends_turn || now.duration_since(text_at) >= TEXT_QUIET_GRACE)
-        {
+        if !self.prompt_pending() && self.tail.ended_turn_by(now) {
             return Assessment::Finished(self.outcome());
         }
         Assessment::Running(self.progress_line())
@@ -199,7 +219,7 @@ impl ChildSnapshot {
     /// Whether the text in hand is the turn's last output, rather than
     /// narration with more work behind it.
     const fn text_is_turn_tail(&self) -> bool {
-        self.final_text.is_some() && self.text_tail_at.is_some()
+        self.final_text.is_some() && self.tail.is_text()
     }
 
     /// One line describing what the child is doing, streamed to the parent.
@@ -337,9 +357,7 @@ impl ChildWatch {
             ended: w.state.ended,
             error: w.state.error.clone(),
             registered_at: w.registered_at,
-            tail_is_thinking: w.state.tail_is_thinking,
-            text_tail_at: w.state.text_tail_at,
-            text_ends_turn: w.state.text_ends_turn,
+            tail: w.state.tail,
             tool_errors: w.state.tool_errors,
             tokens: w.state.tokens,
         })
@@ -511,20 +529,16 @@ fn apply_status(
 fn apply_message(w: &mut Watch, payload: &serde_json::Value) {
     if let Some(text) = assistant_text(payload) {
         w.state.final_text = Some(text);
-        w.state.tail_is_thinking = false;
         // Narration that the model itself flagged as leading into a tool call
         // is not a turn tail, however long the tool then takes to appear.
-        let stop = stop_reason(payload);
-        w.state.text_ends_turn = stop == Some(TURN_END_STOP_REASON);
-        w.state.text_tail_at = match stop {
-            Some(reason) if reason != TURN_END_STOP_REASON => None,
-            _ => Some(Instant::now()),
+        w.state.tail = match stop_reason(payload) {
+            Some(TURN_END_STOP_REASON) => Tail::EndTurn,
+            Some(_) => Tail::Other,
+            None => Tail::QuietSince(Instant::now()),
         };
         w.notify.notify_waiters();
     } else if is_thinking_message(payload) {
-        w.state.tail_is_thinking = true;
-        w.state.text_tail_at = None;
-        w.state.text_ends_turn = false;
+        w.state.tail = Tail::Thinking;
         w.notify.notify_waiters();
     } else if is_turn_summary(payload) {
         apply_summary(w, payload);
@@ -533,9 +547,7 @@ fn apply_message(w: &mut Watch, payload: &serde_json::Value) {
         // and done reading are stale.
         w.state.final_text = None;
         w.state.done_since = None;
-        w.state.tail_is_thinking = false;
-        w.state.text_tail_at = None;
-        w.state.text_ends_turn = false;
+        w.state.tail = Tail::Other;
         w.state.tool_errors = 0;
     }
 }
@@ -556,8 +568,16 @@ fn apply_tool_use(w: &mut Watch, payload: &serde_json::Value) {
     // Tool traffic is proof of an in-flight turn.
     w.state.saw_working = true;
     w.state.done_since = None;
-    w.state.text_tail_at = None;
+    clear_text_tail(w);
     w.notify.notify_waiters();
+}
+
+/// Drop a text tail without disturbing a thinking one: a thinking block stays
+/// the tail across the tool call it planned, which is what nudges a stalled turn.
+fn clear_text_tail(w: &mut Watch) {
+    if w.state.tail.is_text() {
+        w.state.tail = Tail::Other;
+    }
 }
 
 fn set_blocked(w: &mut Watch, kind: BlockKind, reason: String) {
@@ -567,7 +587,7 @@ fn set_blocked(w: &mut Watch, kind: BlockKind, reason: String) {
     // A pending prompt makes the text before it a preamble, not an answer; a
     // self-reported block leaves the answer standing.
     if kind != BlockKind::Status {
-        w.state.text_tail_at = None;
+        clear_text_tail(w);
     }
     w.notify.notify_waiters();
 }
@@ -579,7 +599,7 @@ fn clear_blocked(w: &mut Watch, kind: BlockKind) {
         w.state.blocked = None;
         w.state.blocked_kind = None;
         w.state.done_since = None;
-        w.state.text_tail_at = None;
+        clear_text_tail(w);
         w.notify.notify_waiters();
     }
 }
@@ -897,7 +917,8 @@ mod tests {
         let snap = h.snapshot().unwrap();
         // Past DONE_TEXT_GRACE but still inside QUIET_DONE_MIN_AGE, which is
         // what keeps this never-worked done reading distrusted.
-        let later = Instant::now() + QUIET_DONE_MIN_AGE - Duration::from_secs(1);
+        assert!(DONE_TEXT_GRACE + Duration::from_secs(1) < QUIET_DONE_MIN_AGE);
+        let later = Instant::now() + DONE_TEXT_GRACE + Duration::from_secs(1);
         assert!(
             matches!(snap.assess(later), Assessment::Running(_)),
             "a done reading predating the follow-up must not answer it"
