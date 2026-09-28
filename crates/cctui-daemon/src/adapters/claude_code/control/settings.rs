@@ -338,18 +338,13 @@ pub(in crate::adapters::claude_code) fn ensure_hook_settings(
         tracing::warn!(%err, "ask-hook: cannot create settings dir");
         return None;
     }
-    if let Err(err) = std::fs::write(&path, serde_json::to_vec_pretty(&settings).ok()?) {
+    // The file carries the gateway bearer token, so it must never exist
+    // world-readable, not even briefly.
+    if let Err(err) =
+        cctui_proto::util::write_private(&path, &serde_json::to_vec_pretty(&settings).ok()?)
+    {
         tracing::warn!(%err, path = %path.display(), "ask-hook: cannot write settings");
         return None;
-    }
-    // The file now carries the gateway bearer token — restrict it to
-    // owner-only so the secret isn't world-readable on disk.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if let Err(err) = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)) {
-            tracing::warn!(%err, path = %path.display(), "ask-hook: cannot chmod settings 0600");
-        }
     }
     Some(path)
 }
@@ -430,7 +425,11 @@ pub(in crate::adapters::claude_code) fn ensure_agent_mcp_config(
         tracing::warn!(%err, "CctuiAgent: cannot create mcp config dir");
         return None;
     }
-    if let Err(err) = std::fs::write(&path, serde_json::to_vec_pretty(&config).ok()?) {
+    // The config carries the session key that authenticates to the relay
+    // socket, so it must never exist world-readable, not even briefly.
+    if let Err(err) =
+        cctui_proto::util::write_private(&path, &serde_json::to_vec_pretty(&config).ok()?)
+    {
         tracing::warn!(%err, path = %path.display(), "CctuiAgent: cannot write mcp config");
         return None;
     }

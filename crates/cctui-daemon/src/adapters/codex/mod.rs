@@ -313,7 +313,7 @@ impl SessionDriver for CommandPump {
         _initiator: cctui_proto::adapter::RemoveInitiator,
     ) -> CommandOutcome {
         self.remove_session(local_id).await;
-        Ok(Handled::Deferred)
+        Ok(Handled::Done)
     }
 
     async fn resume(

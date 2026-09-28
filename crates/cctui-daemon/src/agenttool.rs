@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use cctui_proto::api::{MessageChildRequest, SpawnChildRequest};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::{UnixListener, UnixStream};
+use tokio::net::UnixStream;
 use tokio_util::sync::CancellationToken;
 
 use crate::childwatch::{Assessment, WatchHandle, snippet};
@@ -598,16 +598,7 @@ pub async fn serve(
     machine_key: String,
     shutdown: CancellationToken,
 ) -> anyhow::Result<()> {
-    let _ = std::fs::remove_file(&path);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let listener = UnixListener::bind(&path)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
-    }
+    let listener = crate::runtime::bind_private_socket(&path)?;
     tracing::info!(socket = %path.display(), "CctuiAgent tool listener ready");
     loop {
         tokio::select! {
