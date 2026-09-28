@@ -73,12 +73,15 @@ export class ComposerAttachments {
 		});
 	}
 
-	add(incoming: File[]): void {
+	/** Stage `incoming`. Only a masked paste tokenizes the draft: its token marks
+	 *  where the collapsed text belonged, while picked or dropped files would
+	 *  just flood the textarea — the sent body lists them all either way. */
+	add(incoming: File[], tokenize = false): void {
 		if (!this.#o.enabled() || this.uploading) return;
 		this.images.add(
 			incoming,
 			(file) => {
-				const next = attachFiles(this.files, this.#o.input(), [file]);
+				const next = attachFiles(this.files, this.#o.input(), [file], tokenize);
 				this.files = next.files;
 				this.#o.setInput(next.text);
 			},
@@ -106,7 +109,7 @@ export class ComposerAttachments {
 		if (!text || text.length < PASTE_MASK_CHARS) return;
 		e.preventDefault();
 		const name = `paste-${nextPasteIndex(this.files, this.#o.input(), this.#o.stagedNames())}.txt`;
-		this.add([new File([text], name, { type: 'text/plain' })]);
+		this.add([new File([text], name, { type: 'text/plain' })], true);
 		const lines = text.split('\n').length;
 		toasts.ok(m.composer_large_paste({ name, lines }));
 	}
