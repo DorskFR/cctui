@@ -6,6 +6,7 @@
 
 use std::path::{Path, PathBuf};
 
+use anyhow::Context;
 use cctui_proto::release_sig::Channel;
 use serde::{Deserialize, Serialize};
 
@@ -95,36 +96,9 @@ impl Config {
     }
 }
 
-/// Atomically replace `path` with `contents` through a sibling tempfile
-/// created with mode 0600, so the key is never readable by anyone else.
 fn write_private(path: &Path, contents: &[u8]) -> anyhow::Result<()> {
-    use std::io::Write;
-
-    let dir = match path.parent() {
-        Some(p) if !p.as_os_str().is_empty() => p,
-        _ => Path::new("."),
-    };
-    std::fs::create_dir_all(dir)?;
-    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let tmp = dir.join(format!(".{name}.{}.tmp", uuid::Uuid::new_v4().simple()));
-    let mut opts = std::fs::OpenOptions::new();
-    opts.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600);
-    }
-    let result = (|| -> anyhow::Result<()> {
-        let mut file = opts.open(&tmp)?;
-        file.write_all(contents)?;
-        file.sync_all()?;
-        std::fs::rename(&tmp, path)?;
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&tmp);
-    }
-    result.map_err(|e| e.context(format!("writing {}", path.display())))
+    cctui_proto::util::write_private(path, contents)
+        .with_context(|| format!("writing {}", path.display()))
 }
 
 fn channel_override(env: Option<&str>, configured: Channel) -> Channel {

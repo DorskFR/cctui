@@ -53,14 +53,8 @@ pub fn stage_files(session_id: &str, uploads: &[BootstrapFile]) -> Result<Vec<St
             .decode(file.content_b64.as_bytes())
             .with_context(|| format!("base64-decoding upload {name}"))?;
         let path = unique_staging_path(&dir, name);
-        std::fs::write(&path, &bytes)
+        cctui_proto::util::write_private(&path, &bytes)
             .with_context(|| format!("writing upload {}", path.display()))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
-                .with_context(|| format!("chmod 0600 {}", path.display()))?;
-        }
         paths.push(path.to_string_lossy().into_owned());
     }
     tracing::info!(%session_id, count = paths.len(), "staged uploaded files");
