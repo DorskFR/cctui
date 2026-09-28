@@ -242,6 +242,13 @@ async fn start_background_tasks(state: &AppState) {
 
     routes::codex_models::warm_cache(state).await;
 
+    // Off the startup path: every replica sweeps, and the scan is IO over a
+    // shared volume.
+    tokio::spawn({
+        let (pool, skills) = (state.pool.clone(), state.skills.clone());
+        async move { skill_store::sweep_orphans_or_warn(&pool, &skills).await }
+    });
+
     // Replica-aware WS presence: registered only when the pod knows
     // its routable IP; the heartbeat task keeps this pod's rows trusted and
     // reaps rows crashed pods left behind.
