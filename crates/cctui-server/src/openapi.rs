@@ -28,15 +28,12 @@ use axum::http::{Method, header};
 use axum::response::{IntoResponse, Response};
 use serde_json::{Map, Value, json};
 
-use crate::authz::RouteDescriptor;
-
-/// Public base prefix every descriptor path nests under.
-const API_PREFIX: &str = "/api/v1";
+use crate::authz::{API_PREFIX, RouteDescriptor};
 
 /// Build the descriptor table without standing up any runtime state. The router
 /// half is discarded; only the descriptors drive the documents.
 fn descriptors() -> Vec<RouteDescriptor> {
-    crate::build_api_routes().into_parts().1
+    crate::build_api_routes().into_parts().2
 }
 
 /// Lower-case HTTP method name as OpenAPI expects it as the operation key.
@@ -96,21 +93,30 @@ pub fn build_openapi() -> Value {
     for d in &descs {
         let item = paths.entry(full_path(d.path)).or_default();
         let scope = scope_label(d);
-        // bearerAuth always applies; the per-route scope is recorded as a
-        // `x-required-scope` extension so an agent can see the gate without a
-        // bespoke per-scope security scheme.
-        let op = json!({
-            "summary": d.summary,
-            "tags": [group_of(d.path)],
-            "security": [{ "bearerAuth": [] }],
-            "x-required-scope": scope,
-            "x-human-only": d.authz.human_only(),
-            "responses": {
-                "200": { "description": "OK" },
-                "401": { "description": "Unauthenticated" },
-                "403": { "description": "Forbidden (insufficient scope or not owner)" }
-            }
-        });
+        let op = if crate::authz::PUBLIC_PATHS.contains(&d.path) {
+            // An empty `security` array is how OpenAPI spells "no credential".
+            json!({
+                "summary": d.summary,
+                "tags": [group_of(d.path)],
+                "security": [],
+                "responses": { "200": { "description": "OK" } }
+            })
+        } else {
+            // The per-route scope is an `x-required-scope` extension so an agent
+            // can see the gate without a bespoke per-scope security scheme.
+            json!({
+                "summary": d.summary,
+                "tags": [group_of(d.path)],
+                "security": [{ "bearerAuth": [] }],
+                "x-required-scope": scope,
+                "x-human-only": d.authz.human_only(),
+                "responses": {
+                    "200": { "description": "OK" },
+                    "401": { "description": "Unauthenticated" },
+                    "403": { "description": "Forbidden (insufficient scope or not owner)" }
+                }
+            })
+        };
         item.insert(method_key(&d.method).to_string(), op);
     }
 

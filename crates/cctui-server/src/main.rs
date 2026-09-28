@@ -251,7 +251,7 @@ async fn start_background_tasks(state: &AppState) {
 }
 
 fn build_app(state: &AppState, config: &Config, auth_config: &auth::AuthConfig) -> Router {
-    let (api_router, api_descriptors) = build_api_routes().into_parts();
+    let (api_router, public_api_router, api_descriptors) = build_api_routes().into_parts();
 
     // The descriptor list is the route table / source of truth, consumed by
     // the coverage test. At runtime it is informational only.
@@ -271,6 +271,10 @@ fn build_app(state: &AppState, config: &Config, auth_config: &auth::AuthConfig) 
         ));
     outer_routes()
         .nest("/api/v1", api_router)
+        // `authz::PUBLIC_PATHS`, already prefixed. Merged rather than nested —
+        // a second nest at `/api/v1` collides on axum's nest catch-all — so
+        // `auth_middleware` cannot 401 a tokenless caller.
+        .merge(public_api_router)
         // Credentialed CORS bound to an explicit origin allowlist (same-origin
         // webui + dev Vite, extendable via CCTUI_ALLOWED_ORIGINS). A wildcard
         // origin is invalid once credentials are allowed.
@@ -690,7 +694,7 @@ mod tests {
     #[test]
     #[allow(clippy::too_many_lines)] // literal route-table snapshot
     fn api_route_table_is_unchanged() {
-        let mut descs = super::build_api_routes().into_parts().1;
+        let mut descs = super::build_api_routes().into_parts().2;
         descs.sort_by(|a, b| (a.path, a.method.as_str()).cmp(&(b.path, b.method.as_str())));
         let actual: Vec<String> = descs
             .iter()
@@ -880,7 +884,7 @@ mod tests {
             "DELETE /users/{id}/keys/{kid} Bearer Scope(Admin)",
             "PATCH /users/{id}/keys/{kid}/acls Bearer Scope(Admin)",
             "POST /users/{id}/tokens Bearer Authenticated",
-            "GET /version Bearer Authenticated",
+            "GET /version None Public",
             "GET /version/changelog Bearer Authenticated",
             "POST /version/refresh Bearer Authenticated",
             "GET /version/self-update Bearer Authenticated",

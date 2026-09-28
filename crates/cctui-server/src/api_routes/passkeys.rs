@@ -1,7 +1,7 @@
 //! Version info and passkey routes.
 
 use super::GET;
-use crate::authz::Authz::{Authenticated, Scope as ScopeAz};
+use crate::authz::Authz::{Authenticated, Public, Scope as ScopeAz};
 use crate::authz::{Authn, Routes};
 use crate::{auth, routes};
 use axum::http::Method;
@@ -9,15 +9,13 @@ use axum::routing::{get, patch, post, put};
 
 pub(super) fn register(r: Routes) -> Routes {
     r
-        // Version info requires a valid principal — no unauthenticated endpoint
-        // survives except `/health`.
         .add(
             &[GET],
             "/version",
-            "Server version and build info.",
+            "Server version and build info. Public; deployment fields need a token.",
             get(routes::web::version),
-            Authn::Bearer,
-            Authenticated,
+            Authn::None,
+            Public,
         )
         .add(
             &[GET],
