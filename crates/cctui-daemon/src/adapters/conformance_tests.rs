@@ -292,6 +292,7 @@ async fn opencode_answers_every_command() {
         "result fork ok=false error=Some(\"opencode fork requires the parent session to be live on this daemon\")",
         "result interrupt ok=false error=Some(\"no live opencode session\")",
         "result reply ok=false error=Some(\"no live opencode session\")",
+        "result remove ok=true error=None",
         "result set_model ok=false error=Some(\"set_model is not supported by this adapter\")",
         "result spawn ok=false error=Some(\"working_dir required\")",
     ]);
@@ -317,6 +318,7 @@ async fn codex_answers_every_command() {
         "result fork ok=false error=Some(\"<os>\")",
         "result interrupt ok=false error=Some(\"no live codex session to interrupt\")",
         "result reply ok=false error=Some(\"no codex session for command\")",
+        "result remove ok=true error=None",
         "result set_model ok=false error=Some(\"no codex session for command\")",
         "result spawn ok=false error=Some(\"working_dir required\")",
         &lost,

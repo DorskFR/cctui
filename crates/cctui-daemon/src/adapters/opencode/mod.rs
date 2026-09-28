@@ -167,7 +167,7 @@ impl SessionDriver for Pump {
         _initiator: cctui_proto::adapter::RemoveInitiator,
     ) -> CommandOutcome {
         self.kill_session(local_id).await;
-        Ok(Handled::Deferred)
+        Ok(Handled::Done)
     }
 
     async fn interrupt(&mut self, local_id: String, command_id: Option<Uuid>) -> CommandOutcome {
