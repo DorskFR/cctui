@@ -4,7 +4,7 @@ import { NARROW, TINY, openDrawer, pageOverflow } from './drawer-header.helpers'
 for (const viewport of [NARROW, TINY]) {
 	const w = viewport.width;
 
-	test(`${w}px: the drawer header never scrolls the page sideways (CCT-1358)`, async ({ page }) => {
+	test(`${w}px: the drawer header never scrolls the page sideways`, async ({ page }) => {
 		await openDrawer(page, viewport);
 		expect(await pageOverflow(page)).toBeLessThanOrEqual(1);
 
@@ -13,7 +13,7 @@ for (const viewport of [NARROW, TINY]) {
 		expect(await pageOverflow(page)).toBeLessThanOrEqual(1);
 	});
 
-	test(`${w}px: the logo trigger and its popover stay inside the viewport (CCT-1358)`, async ({
+	test(`${w}px: the logo trigger and its popover stay inside the viewport`, async ({
 		page
 	}) => {
 		await openDrawer(page, viewport);
@@ -37,7 +37,7 @@ for (const viewport of [NARROW, TINY]) {
 		expect(p.y + p.height).toBeLessThanOrEqual(viewport.height + 0.5);
 	});
 
-	test(`${w}px: the model chip and Σ live only behind the logo (CCT-1358)`, async ({ page }) => {
+	test(`${w}px: the model chip and Σ live only behind the logo`, async ({ page }) => {
 		await openDrawer(page, viewport);
 
 		const row = page.locator('[data-journey="head-meta"] .meta-trail');
