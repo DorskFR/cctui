@@ -18,7 +18,7 @@ async function openDrawer(page: Page, viewport: { width: number; height: number 
 const htmlOverflowY = (page: Page) =>
 	page.evaluate(() => getComputedStyle(document.documentElement).overflowY);
 
-test('desktop: the open drawer leaves only the transcript scrollbar (CCT-1386)', async ({ page }) => {
+test('desktop: the open drawer leaves only the transcript scrollbar', async ({ page }) => {
 	await openDrawer(page, DESKTOP);
 
 	expect(await htmlOverflowY(page)).toBe('hidden');
@@ -29,9 +29,7 @@ test('desktop: the open drawer leaves only the transcript scrollbar (CCT-1386)',
 	expect(overflow).toBeLessThanOrEqual(1);
 });
 
-test('desktop: closing the drawer restores the page scrollbar without shifting (CCT-1386)', async ({
-	page
-}) => {
+test('desktop: closing the drawer restores the page scrollbar without shifting', async ({ page }) => {
 	await openSessions(page, DESKTOP);
 	const app = page.locator('.app');
 	const closed = await app.boundingBox();
@@ -52,7 +50,7 @@ test('desktop: closing the drawer restores the page scrollbar without shifting (
 
 // Needs the tsumikit `.overlay.full-bleed .panel { width: 100vw }` fix: 100vw
 // counts the reserved gutter, so the panel's left 8px are clipped.
-test.fixme('800px: the full-bleed drawer fits the viewport (CCT-1386)', async ({ page }) => {
+test.fixme('800px: the full-bleed drawer fits the viewport', async ({ page }) => {
 	await openDrawer(page, NARROW);
 	const panel = await page.locator('.panel').first().boundingBox();
 	const inner = await page.evaluate(() => window.innerWidth);

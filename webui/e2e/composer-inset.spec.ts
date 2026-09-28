@@ -10,9 +10,7 @@ async function openDrawer(page: Page) {
 	await page.locator('[data-journey="composer"]').waitFor();
 }
 
-test('desktop: the composer field keeps an inset from the drawer edges (CCT-1385)', async ({
-	page
-}) => {
+test('desktop: the composer field keeps an inset from the drawer edges', async ({ page }) => {
 	await openDrawer(page);
 	const composer = page.locator('[data-journey="composer"]');
 	const outer = await composer.boundingBox();
