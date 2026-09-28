@@ -574,7 +574,7 @@ fn apply_tool_use(w: &mut Watch, payload: &serde_json::Value) {
 
 /// Drop a text tail without disturbing a thinking one: a thinking block stays
 /// the tail across the tool call it planned, which is what nudges a stalled turn.
-fn clear_text_tail(w: &mut Watch) {
+const fn clear_text_tail(w: &mut Watch) {
     if w.state.tail.is_text() {
         w.state.tail = Tail::Other;
     }
