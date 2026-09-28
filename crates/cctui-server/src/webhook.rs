@@ -39,7 +39,7 @@ const MAX_ATTEMPTS: i32 = 11;
 /// retry stays seconds away for a transient blip; [`MAX_ATTEMPTS`] carries the
 /// total reach past two hours.
 const fn retry_schedule() -> Backoff {
-    Backoff::new(Duration::from_secs(10), Duration::from_secs(3600))
+    Backoff::new(Duration::from_secs(10), Duration::from_hours(1))
 }
 
 pub use crate::outbound::OutboundUrlError as NotifyUrlError;
