@@ -16,6 +16,7 @@ use serde_json::{Value, json};
 use ts_rs::TS;
 
 use crate::auth::AuthContext;
+use crate::error::AppError;
 use crate::state::AppState;
 
 /// Current settings payload schema version. Bump when adding a `migrate` arm.
@@ -462,7 +463,7 @@ pub async fn put_settings(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Json(body): Json<SettingsPayload>,
-) -> Result<Json<SettingsPayload>, StatusCode> {
+) -> Result<Json<SettingsPayload>, AppError> {
     // Upgrade the incoming payload to the current shape before persisting, so
     // stored rows are always current-versioned.
     let mut data = migrate(body.data, body.version);
@@ -473,7 +474,7 @@ pub async fn put_settings(
     // Reject the whole PUT if any user scrub regex fails to compile.
     if let Err(msg) = clamp_secret_scrub(&mut data) {
         tracing::info!("rejecting settings PUT: {msg}");
-        return Err(StatusCode::BAD_REQUEST);
+        return Err(AppError::new(StatusCode::BAD_REQUEST, msg));
     }
     clamp_locale(&mut data);
     clamp_session_emoji_prefix(&mut data);
@@ -492,11 +493,7 @@ pub async fn put_settings(
         sqlx::query_scalar("SELECT data FROM user_settings WHERE user_id = $1")
             .bind(ctx.user_id)
             .fetch_optional(&state.pool)
-            .await
-            .map_err(|e| {
-                tracing::error!("db error: {e}");
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?;
+            .await?;
     let prev_mode = prev.as_ref().map_or(DEFAULT_HARNESS_MODE, |d| harness_mode_of(d));
     let prev_scrub = prev
         .as_ref()
@@ -514,11 +511,7 @@ pub async fn put_settings(
     .bind(CURRENT_VERSION)
     .bind(data)
     .fetch_one(&state.pool)
-    .await
-    .map_err(|e| {
-        tracing::error!("db error: {e}");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    .await?;
 
     // Live-push a fresh Reconcile to every machine the user owns the instant the
     // harness mode changes, so connected daemons pick up the new mode without a
@@ -663,10 +656,11 @@ mod tests {
     use uuid::Uuid;
 
     use super::{
-        AppState, AuthContext, Extension, Json, RescrubRequest, State, Value, clamp_auto_resume,
-        clamp_harness_mode, clamp_locale, clamp_macros, clamp_plugins, clamp_secret_scrub,
-        clamp_session_emoji_prefix, clamp_whip_stop_phrases, harness_mode_of,
-        harness_mode_to_adapter_token, rescrub_settings, secret_scrub_of, whip_stop_phrases_of,
+        AppState, AuthContext, Extension, Json, RescrubRequest, SettingsPayload, State, StatusCode,
+        Value, clamp_auto_resume, clamp_harness_mode, clamp_locale, clamp_macros, clamp_plugins,
+        clamp_secret_scrub, clamp_session_emoji_prefix, clamp_whip_stop_phrases, harness_mode_of,
+        harness_mode_to_adapter_token, put_settings, rescrub_settings, secret_scrub_of,
+        whip_stop_phrases_of,
     };
 
     #[test]
@@ -963,6 +957,30 @@ mod tests {
 
     fn ctx(user_id: Uuid) -> AuthContext {
         AuthContext { user_id, key_id: Uuid::new_v4(), machine_id: None, scopes: BTreeSet::new() }
+    }
+
+    #[tokio::test]
+    async fn put_settings_rejects_a_bad_regex_with_the_parse_error() {
+        let state = AppState::for_test(
+            sqlx::PgPool::connect_lazy("postgres://unused@localhost/none").unwrap(),
+        );
+        let err = put_settings(
+            State(state),
+            Extension(ctx(Uuid::new_v4())),
+            Json(SettingsPayload {
+                version: 1,
+                data: json!({
+                    "secretScrubPatterns": [
+                        { "name": "custom", "regex": "*_token", "enabled": true }
+                    ]
+                }),
+            }),
+        )
+        .await
+        .expect_err("an uncompilable pattern must not reach the database");
+        assert_eq!(err.status(), StatusCode::BAD_REQUEST);
+        assert!(err.message().contains("*_token"), "{}", err.message());
+        assert!(err.message().starts_with("invalid scrub regex"), "{}", err.message());
     }
 
     type Since = chrono::DateTime<chrono::Utc>;

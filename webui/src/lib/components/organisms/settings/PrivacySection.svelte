@@ -1,8 +1,10 @@
 <script lang="ts">
 	// Settings › Privacy: daemon-side secret redaction. The switch toggles live
 	// scrubbing; the textarea holds one extra regex per line, layered on the
-	// daemon's compiled defaults. The server validates each regex on save.
-	import { Button, Callout, Switch, Textarea } from '@dorsk/tsumikit';
+	// daemon's compiled defaults. A line that does not compile is flagged here and
+	// withheld from the save; the server stays authoritative (Rust regex syntax).
+	import { Button, Callout, Switch, Text, Textarea } from '@dorsk/tsumikit';
+	import { parseScrubPatterns } from './scrub-patterns';
 	import DetectorList from '$lib/components/molecules/DetectorList.svelte';
 	import RescrubPanel from '$lib/components/molecules/RescrubPanel.svelte';
 	import SettingGroup from '$lib/components/molecules/SettingGroup.svelte';
@@ -12,14 +14,17 @@
 	import { m } from '$lib/paraglide/messages';
 
 	const scrubEnabled = $derived(settings.secretScrubEnabled);
-	const scrubPatternsText = $derived(settings.secretScrubPatterns.map((p) => p.regex).join('\n'));
+	// The draft holds what was typed, including a line that doesn't compile: only
+	// the valid lines are handed to the store, so one bad pattern can't make every
+	// later settings save fail.
+	let draft = $state<string | null>(null);
+	const scrubPatternsText = $derived(
+		draft ?? settings.secretScrubPatterns.map((p) => p.regex).join('\n')
+	);
+	const issues = $derived(parseScrubPatterns(scrubPatternsText).issues);
 	function setScrubPatternsText(text: string) {
-		const patterns = text
-			.split('\n')
-			.map((r) => r.trim())
-			.filter((r) => r.length > 0)
-			.map((regex) => ({ name: 'custom', regex, enabled: true }));
-		settings.setSecretScrubPatterns(patterns);
+		draft = text;
+		settings.setSecretScrubPatterns(parseScrubPatterns(text).patterns);
 	}
 </script>
 
@@ -59,8 +64,17 @@
 				style="width:100%;min-height:9rem"
 				value={scrubPatternsText}
 				placeholder={'ACME-[0-9]{6}\nMYCORP_[A-Za-z0-9]{20,}'}
+				oninput={(e) => (draft = (e.currentTarget as HTMLTextAreaElement).value)}
 				onchange={(e) => setScrubPatternsText((e.currentTarget as HTMLTextAreaElement).value)}
 			/>
+			{#each issues as issue (issue.line)}
+				<Text size="xs" tone="danger" as="div">
+					{m.settings_redaction_patterns_invalid({ line: issue.line, message: issue.message })}
+				</Text>
+			{/each}
+			{#if settings.saveError}
+				<Text size="xs" tone="danger" as="div">{settings.saveError}</Text>
+			{/if}
 		</SettingRow>
 		<RescrubPanel />
 		<DetectorList />

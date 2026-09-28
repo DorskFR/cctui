@@ -12,6 +12,7 @@ import { fontScale, nearestLevel } from "./fontscale.svelte";
 import { notify } from "./notify.svelte";
 import type { SettingsPayload } from "@bindings/SettingsPayload";
 import { clampDockWidth } from "./dock";
+import { saveErrorMessage } from "./saveError";
 import { clampFollowupWhenCold, type FollowupWhenCold } from "./followup";
 import { isPluginId } from "./plugins/discovery";
 import {
@@ -698,6 +699,9 @@ class Settings {
   // time), `error` when the PUT failed (the local cache still holds the value).
   saveStatus = $state<"idle" | "pending" | "saved" | "error">("idle");
   savedAt = $state<number | null>(null);
+  /** The server's message when a save was rejected (4xx). Null for network /
+   *  5xx failures, where the value is still cached locally and will retry. */
+  saveError = $state<string | null>(null);
 
   constructor() {
     if (browser) {
@@ -768,9 +772,12 @@ class Settings {
         if (this.saveTimer) return;
         this.saveStatus = "saved";
         this.savedAt = Date.now();
+        this.saveError = null;
       })
-      .catch(() => {
-        if (!this.saveTimer) this.saveStatus = "error";
+      .catch((e: unknown) => {
+        if (this.saveTimer) return;
+        this.saveStatus = "error";
+        this.saveError = saveErrorMessage(e);
       });
   }
 
@@ -778,6 +785,7 @@ class Settings {
     if (!browser || !auth.isAuthed) return;
     if (this.saveTimer) clearTimeout(this.saveTimer);
     this.saveStatus = "pending";
+    this.saveError = null;
     this.saveTimer = setTimeout(() => {
       this.saveTimer = null;
       this.sendSave();
