@@ -17,7 +17,7 @@ const MAX_ATTEMPTS: i32 = 11;
 /// Redelivery schedule: 10 s doubling to a 1 h cap, jittered so a batch that
 /// failed together does not retry in lockstep. The first retry stays seconds
 /// away for a transient failure; [`MAX_ATTEMPTS`] carries the total reach.
-fn retry_schedule() -> Backoff {
+const fn retry_schedule() -> Backoff {
     Backoff::new(StdDuration::from_secs(10), StdDuration::from_secs(3600))
 }
 const CLAIM_LEASE_SECS: i64 = 300;

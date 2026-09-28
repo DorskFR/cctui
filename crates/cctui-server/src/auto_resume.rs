@@ -23,7 +23,7 @@ use crate::store::sessions::SessionRowStatus;
 /// to a 10 min cap, jittered so a server restart does not nudge every stuck
 /// session at once. The delay after the final attempt is also the grace period
 /// before the row is declared exhausted.
-fn schedule() -> Backoff {
+const fn schedule() -> Backoff {
     Backoff::new(StdDuration::from_secs(60), StdDuration::from_secs(600))
 }
 

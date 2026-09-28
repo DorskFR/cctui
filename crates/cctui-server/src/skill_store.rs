@@ -101,11 +101,7 @@ impl SkillStore {
         Ok(removed)
     }
 
-    async fn sweep_owner_dir(
-        owner: Uuid,
-        dir: &Path,
-        refs: &SkillRefs,
-    ) -> std::io::Result<usize> {
+    async fn sweep_owner_dir(owner: Uuid, dir: &Path, refs: &SkillRefs) -> std::io::Result<usize> {
         let mut entries = match fs::read_dir(dir).await {
             Ok(entries) => entries,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),

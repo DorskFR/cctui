@@ -38,7 +38,7 @@ const MAX_ATTEMPTS: i32 = 11;
 /// coming back from an outage is not hit by every pending row at once. The first
 /// retry stays seconds away for a transient blip; [`MAX_ATTEMPTS`] carries the
 /// total reach past two hours.
-fn retry_schedule() -> Backoff {
+const fn retry_schedule() -> Backoff {
     Backoff::new(Duration::from_secs(10), Duration::from_secs(3600))
 }
 

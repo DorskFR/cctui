@@ -50,7 +50,7 @@ const DISPATCH_HOLD: Duration = Duration::from_secs(45);
 
 /// Backoff between hold attempts: 1 s doubling to an 8 s cap, jittered so a
 /// burst of held dispatches does not re-probe the dispatcher in lockstep.
-fn hold_schedule() -> Backoff {
+const fn hold_schedule() -> Backoff {
     Backoff::new(Duration::from_secs(1), Duration::from_secs(8))
 }
 

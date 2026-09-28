@@ -498,7 +498,8 @@ impl Routes {
             let policy = Arc::new(authz.clone());
             // `route_layer` runs inside the outer `auth_middleware` and only for this
             // route; a global `.layer` would run before the matched route is known.
-            let handler = handler.route_layer(middleware::from_fn_with_state(policy, enforce_route));
+            let handler =
+                handler.route_layer(middleware::from_fn_with_state(policy, enforce_route));
             self.router = self.router.route(path, handler);
         }
         for method in methods {
@@ -586,11 +587,8 @@ mod tests {
 
     #[test]
     fn only_allowlisted_api_routes_are_anonymous() {
-        let none: Vec<_> = descriptors()
-            .into_iter()
-            .filter(|d| d.authn == Authn::None)
-            .map(|d| d.path)
-            .collect();
+        let none: Vec<_> =
+            descriptors().into_iter().filter(|d| d.authn == Authn::None).map(|d| d.path).collect();
         for path in &none {
             assert!(
                 PUBLIC_PATHS.contains(path),
@@ -603,10 +601,8 @@ mod tests {
     /// that would build its principal.
     #[test]
     fn public_routes_are_exactly_the_allowlist() {
-        let public: Vec<_> = descriptors()
-            .into_iter()
-            .filter(|d| matches!(d.authz, Authz::Public))
-            .collect();
+        let public: Vec<_> =
+            descriptors().into_iter().filter(|d| matches!(d.authz, Authz::Public)).collect();
         let mut paths: Vec<_> = public.iter().map(|d| d.path).collect();
         paths.sort_unstable();
         paths.dedup();
