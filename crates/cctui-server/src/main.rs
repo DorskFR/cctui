@@ -243,6 +243,13 @@ async fn start_background_tasks(state: &AppState) {
 
     routes::codex_models::warm_cache(state).await;
 
+    // Off the startup path: every replica sweeps, and the scan is IO over a
+    // shared volume.
+    tokio::spawn({
+        let (pool, skills) = (state.pool.clone(), state.skills.clone());
+        async move { skill_store::sweep_orphans_or_warn(&pool, &skills).await }
+    });
+
     // Replica-aware WS presence: registered only when the pod knows
     // its routable IP; the heartbeat task keeps this pod's rows trusted and
     // reaps rows crashed pods left behind.
@@ -252,7 +259,7 @@ async fn start_background_tasks(state: &AppState) {
 }
 
 fn build_app(state: &AppState, config: &Config, auth_config: &auth::AuthConfig) -> Router {
-    let (api_router, api_descriptors) = build_api_routes().into_parts();
+    let (api_router, public_api_router, api_descriptors) = build_api_routes().into_parts();
 
     // The descriptor list is the route table / source of truth, consumed by
     // the coverage test. At runtime it is informational only.
@@ -272,6 +279,10 @@ fn build_app(state: &AppState, config: &Config, auth_config: &auth::AuthConfig) 
         ));
     outer_routes()
         .nest("/api/v1", api_router)
+        // `authz::PUBLIC_PATHS`, already prefixed. Merged rather than nested —
+        // a second nest at `/api/v1` collides on axum's nest catch-all — so
+        // `auth_middleware` cannot 401 a tokenless caller.
+        .merge(public_api_router)
         // Credentialed CORS bound to an explicit origin allowlist (same-origin
         // webui + dev Vite, extendable via CCTUI_ALLOWED_ORIGINS). A wildcard
         // origin is invalid once credentials are allowed.
@@ -350,8 +361,8 @@ fn outer_routes() -> Router<AppState> {
         .route("/api/v1/daemon/version", get(routes::update_hook::daemon_version))
         .route("/api/v1/daemon/update-hook/{run_id}", post(routes::update_hook::report))
         // Enrolled-dispatcher endpoints. Carry their own key auth
-        // (dispatcher-key Bearer / `?token=`), so they live outside the
-        // user-token `api_router` group, like the daemon endpoints.
+        // (dispatcher-key Bearer), so they live outside the user-token
+        // `api_router` group, like the daemon endpoints.
         .route("/api/v1/dispatcher/auth", post(routes::dispatcher::auth))
         .route("/api/v1/dispatcher/ws", get(routes::dispatcher::ws))
         .route("/api/v1/triggers/{kind}", post(routes::triggers::ingest))
@@ -691,7 +702,7 @@ mod tests {
     #[test]
     #[allow(clippy::too_many_lines)] // literal route-table snapshot
     fn api_route_table_is_unchanged() {
-        let mut descs = super::build_api_routes().into_parts().1;
+        let mut descs = super::build_api_routes().into_parts().2;
         descs.sort_by(|a, b| (a.path, a.method.as_str()).cmp(&(b.path, b.method.as_str())));
         let actual: Vec<String> = descs
             .iter()
@@ -881,7 +892,7 @@ mod tests {
             "DELETE /users/{id}/keys/{kid} Bearer Scope(Admin)",
             "PATCH /users/{id}/keys/{kid}/acls Bearer Scope(Admin)",
             "POST /users/{id}/tokens Bearer Authenticated",
-            "GET /version Bearer Authenticated",
+            "GET /version None Public",
             "GET /version/changelog Bearer Authenticated",
             "POST /version/refresh Bearer Authenticated",
             "GET /version/self-update Bearer Authenticated",

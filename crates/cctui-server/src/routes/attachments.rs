@@ -174,7 +174,7 @@ mod tests {
 
     #[test]
     fn listing_requires_session_read() {
-        let descs = crate::build_api_routes().into_parts().1;
+        let descs = crate::build_api_routes().into_parts().2;
         let d = descs
             .iter()
             .find(|d| d.path == "/sessions/{id}/attachments" && d.method == Method::GET)
