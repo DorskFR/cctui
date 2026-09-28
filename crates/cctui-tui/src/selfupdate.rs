@@ -100,6 +100,7 @@ fn exe_dir_writable(exe: &Path) -> bool {
 }
 
 async fn fetch_server_version(server_url: &str) -> Result<String> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let client = reqwest::Client::builder().timeout(VERSION_TIMEOUT).build()?;
     let url = format!("{}/api/v1/version", server_url.trim_end_matches('/'));
     let resp = client.get(&url).send().await?.error_for_status()?;
@@ -141,6 +142,7 @@ fn verify_release(asset: &str, bin: &[u8], sums: &[u8], minisig: &[u8]) -> Resul
 }
 
 async fn download_verified(path: &Path, asset: &str, tag: Option<&str>) -> Result<()> {
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let client = reqwest::Client::builder().timeout(DOWNLOAD_TIMEOUT).build()?;
     let bytes = fetch(&client, &release_url(asset, tag)).await?;
     let sums = fetch(&client, &release_url("SHA256SUMS", tag)).await.context("SHA256SUMS")?;

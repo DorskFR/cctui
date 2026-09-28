@@ -41,13 +41,15 @@ done
 mkdir -p "$staging"
 
 # ts-rs writes one file per #[ts(export)] type, relative to TS_RS_EXPORT_DIR.
-# CI overrides the package selection with one that matches its earlier
-# `cargo test --workspace` so the compile is reused; the exported set must stay
-# the same (cctui-query exports are not part of the webui bindings).
+# CI overrides the package selection; the exported set must stay the same
+# (cctui-query exports are not part of the webui bindings).
 # shellcheck disable=SC2206
 cargo_args=(${CCTUI_BINDINGS_CARGO_ARGS:--p cctui-proto -p cctui-server})
+# ts-rs (and every `#[ts(export)]` test) is behind each crate's `ts` feature, so
+# only this path compiles it.
+features="${CCTUI_BINDINGS_FEATURES:-cctui-proto/ts,cctui-server/ts}"
 TS_RS_EXPORT_DIR="$staging" cargo test --manifest-path "$repo_root/Cargo.toml" \
-  "${cargo_args[@]}" export_bindings
+  "${cargo_args[@]}" --features "$features" export_bindings
 
 generated="$(count_ts "$staging")"
 if [ "$generated" -eq 0 ]; then

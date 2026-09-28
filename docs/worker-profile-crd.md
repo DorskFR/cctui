@@ -20,9 +20,9 @@ field of the spec.
 
 Exactly one container is sandboxed by the webhook. By convention it is the
 container named `worker`; a profile overrides the name with `spec.workerContainer`.
-Later tickets (CCT-726 mutating webhook, CCT-727 validating webhook, CCT-728
-dispatcher) resolve it via `WorkerProfileSpec::worker_container_name()`
-(explicit `workerContainer`, else the `worker` default). The worker container's
+The mutating webhook, the validating webhook and the dispatcher all resolve it
+via `WorkerProfileSpec::worker_container_name()` (explicit `workerContainer`,
+else the `worker` default). The worker container's
 shape comes from the first-class fields (`image`, `command`, `args`, `resources`,
 `env`); everything in `containers`/`initContainers` is the surrounding app stack
 and is left untouched.
@@ -37,7 +37,7 @@ and is left untouched.
 | `containers`, `initContainers`, `volumes`, `imagePullSecrets`, `nodeSelector`, `runtimeClassName` | operator | passthrough pod shape; webhook does not sandbox these |
 | `podAnnotations` | operator | stamped onto each instantiated pod's template metadata; the dispatcher's own `cctui.dev/*` session annotations win on key conflict |
 | `serviceAccountName` | operator | identity / secret scope mapping; the dispatch request never sets this |
-| `gpgSigning` | operator | opt-in; webhook wires a gpg-agent socket into the worker container (CCT-726) |
+| `gpgSigning` | operator | opt-in; webhook wires a gpg-agent socket into the worker container |
 | per-run env (session id, reply URL, task payload, ...) | dispatcher | layered onto the worker `env` at Job creation |
 | secretless credential envelope, gpg-agent socket | webhook | injected into **only** the worker container at pod admission |
 

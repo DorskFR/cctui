@@ -9,6 +9,7 @@ use axum::http::StatusCode;
 use axum::{Extension, Json};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "ts")]
 use ts_rs::TS;
 use uuid::Uuid;
 
@@ -22,22 +23,22 @@ fn forbid_or(ctx: &AuthContext) -> Result<(), AppError> {
     ctx.requires(Scope::Admin).map_err(|s| AppError::new(s, "admin token required"))
 }
 
-#[derive(Deserialize, TS)]
-#[ts(export)]
+#[derive(Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct CreateUserRequest {
     pub name: String,
 }
 
-#[derive(Serialize, TS)]
-#[ts(export)]
+#[derive(Serialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct CreateUserResponse {
     pub id: Uuid,
     pub name: String,
     pub key: String,
 }
 
-#[derive(Serialize, sqlx::FromRow, TS)]
-#[ts(export)]
+#[derive(Serialize, sqlx::FromRow)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct UserRow {
     pub id: Uuid,
     pub name: String,
@@ -54,8 +55,8 @@ pub struct UserRow {
     pub last_seen_at: Option<DateTime<Utc>>,
 }
 
-#[derive(Serialize, sqlx::FromRow, TS)]
-#[ts(export)]
+#[derive(Serialize, sqlx::FromRow)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct MachineRow {
     pub id: Uuid,
     pub user_id: Uuid,
@@ -79,8 +80,8 @@ pub struct MachineRow {
     pub liveness: cctui_proto::models::MachineLiveness,
 }
 
-#[derive(Deserialize, TS)]
-#[ts(export)]
+#[derive(Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct RenameMachineRequest {
     /// `None` clears the override so the UI falls back to `name`.
     pub display_name: Option<String>,
@@ -92,8 +93,8 @@ pub struct RenameMachineRequest {
 
 /// Partial update of a user. Any field left `None` is unchanged, so
 /// the same endpoint serves both rename and the dispatch-permission toggle.
-#[derive(Deserialize, TS)]
-#[ts(export)]
+#[derive(Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct UpdateUserRequest {
     /// Blank/whitespace is rejected (name is `NOT NULL`); `None` leaves it.
     pub name: Option<String>,
@@ -102,15 +103,15 @@ pub struct UpdateUserRequest {
     pub disabled: Option<bool>,
 }
 
-#[derive(Deserialize, TS)]
-#[ts(export)]
+#[derive(Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct RelabelTokenRequest {
     /// `None`/blank clears the label.
     pub label: Option<String>,
 }
 
-#[derive(Serialize, sqlx::FromRow, TS)]
-#[ts(export)]
+#[derive(Serialize, sqlx::FromRow)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct UserTokenRow {
     pub id: Uuid,
     pub label: Option<String>,
@@ -122,8 +123,8 @@ pub struct UserTokenRow {
     pub token_preview: Option<String>,
 }
 
-#[derive(Serialize, TS)]
-#[ts(export)]
+#[derive(Serialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct RotateResponse {
     pub id: Uuid,
     pub key: String,
@@ -647,8 +648,8 @@ fn self_or_admin(ctx: &AuthContext, target: Uuid) -> Result<(), AppError> {
     }
 }
 
-#[derive(Serialize, TS)]
-#[ts(export)]
+#[derive(Serialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct UserAclsResponse {
     pub user_id: Uuid,
     /// The user's ceiling (what its keys may be granted), as scope strings.
@@ -666,8 +667,8 @@ pub async fn get_user_acls(
     Ok(Json(UserAclsResponse { user_id, scopes: scopes.iter().map(ToString::to_string).collect() }))
 }
 
-#[derive(Deserialize, TS)]
-#[ts(export)]
+#[derive(Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct SetAclsRequest {
     /// The full desired scope set (replaces the existing rows). Strings from the
     /// `read|dispatch|enroll|admin` set; unknown values are rejected.
@@ -714,8 +715,8 @@ pub async fn set_user_acls(
     Ok(StatusCode::NO_CONTENT)
 }
 
-#[derive(Serialize, sqlx::FromRow, TS)]
-#[ts(export)]
+#[derive(Serialize, sqlx::FromRow)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct ApiKeyRow {
     pub id: Uuid,
     pub label: Option<String>,
@@ -756,8 +757,8 @@ pub async fn list_user_keys(
     Ok(Json(rows))
 }
 
-#[derive(Deserialize, TS)]
-#[ts(export)]
+#[derive(Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct MintKeyRequest {
     pub label: Option<String>,
     /// Scopes to grant — must be ⊆ the owner's ceiling (enforced server-side).
@@ -765,8 +766,8 @@ pub struct MintKeyRequest {
     pub expires_at: Option<DateTime<Utc>>,
 }
 
-#[derive(Serialize, TS)]
-#[ts(export)]
+#[derive(Serialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct MintKeyResponse {
     pub id: Uuid,
     /// The plaintext token — returned ONCE, never recoverable after.

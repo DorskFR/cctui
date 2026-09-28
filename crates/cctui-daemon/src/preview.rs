@@ -459,6 +459,7 @@ fn decode_chunk(chunk: &PreviewChunk) -> Result<Vec<u8>, String> {
 }
 
 static HTTP: LazyLock<reqwest::Client> = LazyLock::new(|| {
+    crate::install_crypto_provider();
     reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .no_proxy()

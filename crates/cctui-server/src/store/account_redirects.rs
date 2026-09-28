@@ -5,24 +5,24 @@ use uuid::Uuid;
 /// One live redirect rule. Exactly one of `to_account` / `to_model` is set
 /// (enforced by `account_redirects_one_target`): a rule either moves new
 /// sessions to another account or flips the model they spawn with — never both.
-#[derive(Clone, Debug, sqlx::FromRow, serde::Serialize, ts_rs::TS)]
-#[ts(export)]
+#[derive(Clone, Debug, sqlx::FromRow, serde::Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct AccountRedirect {
-    #[ts(type = "string")]
+    #[cfg_attr(feature = "ts", ts(type = "string"))]
     pub id: Uuid,
-    #[ts(type = "string")]
+    #[cfg_attr(feature = "ts", ts(type = "string"))]
     pub user_id: Uuid,
-    #[ts(type = "string")]
+    #[cfg_attr(feature = "ts", ts(type = "string"))]
     pub from_account: Uuid,
-    #[ts(type = "string | null")]
+    #[cfg_attr(feature = "ts", ts(type = "string | null"))]
     pub to_account: Option<Uuid>,
     pub family: String,
     pub match_model: Option<String>,
     pub to_model: Option<String>,
-    #[ts(type = "string | null")]
+    #[cfg_attr(feature = "ts", ts(type = "string | null"))]
     pub expires_at: Option<DateTime<Utc>>,
     pub reason: Option<String>,
-    #[ts(type = "string")]
+    #[cfg_attr(feature = "ts", ts(type = "string"))]
     pub created_at: DateTime<Utc>,
 }
 

@@ -589,7 +589,7 @@ mod tests {
         let fast_rx = Arc::new(AtomicU64::new(0));
         let slow = stub_peer(std::time::Duration::from_secs(10), slow_rx.clone()).await;
         let fast = stub_peer(std::time::Duration::ZERO, fast_rx.clone()).await;
-        let client = reqwest::Client::new();
+        let client = crate::build_http_client();
         let mut fanout = RelayFanout::default();
         fanout.sync_peers(&[slow.clone(), fast.clone()], |addr| {
             spawn_peer_relay(client.clone(), format!("http://{addr}"), "s".into())

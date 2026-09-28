@@ -12,8 +12,8 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const GIT_HASH: &str = env!("CCTUI_GIT_HASH");
 const REPO_URL: &str = "https://github.com/DorskFR/cctui";
 
-#[derive(Serialize, ts_rs::TS)]
-#[ts(export)]
+#[derive(Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct VersionInfo {
     pub version: &'static str,
     pub git_hash: &'static str,
@@ -38,8 +38,8 @@ pub struct VersionInfo {
     pub self_update_hook: bool,
 }
 
-#[derive(Serialize, ts_rs::TS)]
-#[ts(export)]
+#[derive(Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ChangelogResponse {
     pub version: &'static str,
     /// Releases published since `version`, newest first (capped server-side).

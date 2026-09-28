@@ -8,6 +8,9 @@ authors.workspace = true
 [lints]
 workspace = true
 
+[features]
+ts = ["dep:ts-rs"]
+
 [dependencies]
 serde.workspace = true
-ts-rs.workspace = true
+ts-rs = { workspace = true, optional = true }

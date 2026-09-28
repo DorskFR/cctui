@@ -163,6 +163,7 @@ struct EnrollResponse {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let client = Client::builder().build()?;
 
     match cli.cmd {

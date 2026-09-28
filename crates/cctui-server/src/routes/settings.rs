@@ -13,6 +13,7 @@ use axum::http::StatusCode;
 use axum::{Extension, Json};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+#[cfg(feature = "ts")]
 use ts_rs::TS;
 
 use crate::auth::AuthContext;
@@ -22,8 +23,8 @@ use crate::state::AppState;
 /// Current settings payload schema version. Bump when adding a `migrate` arm.
 const CURRENT_VERSION: i32 = 1;
 
-#[derive(Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct SettingsPayload {
     pub version: i32,
     pub data: Value,
@@ -540,8 +541,8 @@ pub async fn put_settings(
 /// list to their already-stored `stream_events`. `dry_run` reports counts and
 /// writes nothing; the real pass masks matching rows and is idempotent (a second
 /// run reports zero changes). Optional `session_ids` / `since` scope the sweep.
-#[derive(Deserialize, TS)]
-#[ts(export)]
+#[derive(Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct RescrubRequest {
     #[serde(default)]
     pub dry_run: bool,
@@ -551,8 +552,8 @@ pub struct RescrubRequest {
     pub since: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-#[derive(Serialize, TS)]
-#[ts(export)]
+#[derive(Serialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct RescrubReport {
     pub dry_run: bool,
     pub rows_scanned: u64,

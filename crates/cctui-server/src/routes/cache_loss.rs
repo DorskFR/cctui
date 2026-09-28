@@ -29,8 +29,8 @@ const fn default_days() -> i64 {
     14
 }
 
-#[derive(Debug, Default, Serialize, PartialEq, ts_rs::TS)]
-#[ts(export)]
+#[derive(Debug, Default, Serialize, PartialEq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct DailyCacheLoss {
     /// Local calendar day, `YYYY-MM-DD`.
     pub day: String,
@@ -38,15 +38,15 @@ pub struct DailyCacheLoss {
     pub gateway_rewrote_body: f64,
     pub unknown: f64,
     pub total: f64,
-    #[ts(type = "number")]
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub ttl_expired_tokens: u64,
-    #[ts(type = "number")]
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub gateway_rewrote_body_tokens: u64,
-    #[ts(type = "number")]
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub unknown_tokens: u64,
-    #[ts(type = "number")]
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub lost_tokens: u64,
-    #[ts(type = "number")]
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub busts: u64,
 }
 

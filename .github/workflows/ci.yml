@@ -196,8 +196,9 @@ jobs:
       - name: cargo test --ignored (against the running server)
         run: cargo test --workspace --locked --test integration -- --ignored
 
-      # Same --workspace selection as the tests above (minus cctui-query, whose
-      # ts exports are not part of the webui bindings), so nothing recompiles.
+      # Same --workspace selection as the tests above, minus cctui-query, whose
+      # ts exports are not part of the webui bindings. The `ts` feature is only
+      # enabled here, so this step recompiles the exporting crates.
       - name: Regenerate webui bindings
         env:
           CCTUI_BINDINGS_CARGO_ARGS: --workspace --locked --lib --bins --exclude cctui-query

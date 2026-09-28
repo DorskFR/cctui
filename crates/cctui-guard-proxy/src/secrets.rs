@@ -333,6 +333,7 @@ pub struct VaultClient {
 
 impl VaultClient {
     pub fn new(addr: String, role: String, token_path: PathBuf) -> anyhow::Result<Self> {
+        crate::inject::install_crypto();
         let http = reqwest::Client::builder().timeout(Duration::from_secs(10)).build()?;
         Ok(Self { http, addr, role, token_path })
     }
@@ -419,6 +420,7 @@ impl K8sClient {
         let host = std::env::var("KUBERNETES_SERVICE_HOST")
             .map_err(|_| anyhow::anyhow!("KUBERNETES_SERVICE_HOST unset (not in-cluster)"))?;
         let port = std::env::var("KUBERNETES_SERVICE_PORT").unwrap_or_else(|_| "443".to_owned());
+        crate::inject::install_crypto();
         let ca = std::fs::read(format!("{K8S_SA_DIR}/ca.crt"))?;
         let namespace = std::fs::read_to_string(format!("{K8S_SA_DIR}/namespace"))?;
         let http = reqwest::Client::builder()
@@ -436,6 +438,7 @@ impl K8sClient {
     /// Test/off-cluster constructor with an explicit API base + token path.
     #[cfg(test)]
     pub fn with_base(api_base: String, token_path: PathBuf, default_namespace: String) -> Self {
+        crate::inject::install_crypto();
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
             .build()

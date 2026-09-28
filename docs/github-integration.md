@@ -5,7 +5,7 @@
 > skeleton) and Epic 1 (connector, webhook, reconcile, classifier feed) shipped
 > as specified. The fast diff viewer and the review-draft/publish UI (Epic 2, and
 > the UI half of Epic 3) were superseded by a standalone service, **ghreview**
-> (`ghreview/` + `ghreview-ui/`, epic CCT-600) — see `ghreview/README.md`. Those
+> (`ghreview/` + `ghreview-ui/`) — see `ghreview/README.md`. Those
 > sections below are kept for the parts still current: the connector/webhook/
 > capability design (§6.1, §7) and the agent MCP review-draft tool (§6.3, still
 > in `cctui-github`), and are historical for the removed diff-viewer plan (§6.2).
@@ -164,10 +164,10 @@ extra UI.
 
 This component (server diff proxy, virtualized viewer, review-draft/publish HTTP
 routes and their `github.*` tables) was originally planned to live in
-`cctui-github`, and an early version shipped there. It was later removed
-(CCT-611) in favour of a standalone service, **ghreview** (`ghreview/` backend +
-`ghreview-ui` frontend, epic CCT-600) — see `ghreview/README.md` for the current
-diff-viewer and review-publish design.
+`cctui-github`, and an early version shipped there. It was later removed in
+favour of a standalone service, **ghreview** (`ghreview/` backend +
+`ghreview-ui` frontend) — see `ghreview/README.md` for the current diff-viewer
+and review-publish design.
 
 ### 6.3 Component C — agent review sessions ("review *with* an agent")
 
@@ -329,11 +329,11 @@ Sized rough (S ≈ <1d, M ≈ 1–3d, L ≈ 1wk+). Deps in parentheses.
   SessionCard-style rows + filters. *(GH-CONN-5, GH-CAP-1)*
 - **GH-CLS-1 (S):** feed connector state into the classifier PR cache. *(GH-CONN-3)*
 
-### Epic 2 — Fast diff viewer ("review efficiently") — superseded (CCT-611)
+### Epic 2 — Fast diff viewer ("review efficiently") — superseded
 
 Shipped as GH-VIEW-1..6 inside `cctui-github`, then removed in favour of the
-standalone `ghreview` service (§6.2). See `ghreview/README.md` and its own
-ticket history (epic CCT-600) for the current design.
+standalone `ghreview` service (§6.2). See `ghreview/README.md` for the current
+design.
 
 ### Epic 3 — Agent review sessions ("review with an agent")
 - **GH-AGENT-1 (M):** repo-scoped review-prompt selection (extend `prompts`) +

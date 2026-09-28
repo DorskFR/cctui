@@ -85,8 +85,8 @@ the whole wall clock.
 
 ## Candidates
 
-Applied means the change landed in 0.20. "After" numbers are to be filled in from
-the first 10+ CI runs and first 3+ releases on 0.20, measured the same way.
+Applied means the change landed in 0.20; the after-numbers go in the TODO table
+below.
 
 | Candidate | Status | Targets |
 | --- | --- | --- |
@@ -105,6 +105,46 @@ the first 10+ CI runs and first 3+ releases on 0.20, measured the same way.
 | CI job splitting | Rejected | CI already runs 13 jobs in parallel; wall clock tracks the single slowest job. |
 | Per-test DB schemas to parallelise DB tests | Rejected for now | DB-backed execution is seconds; the Postgres service start (16–18 s) costs more than the tests. |
 | Dependency-graph surgery / duplicate crates | Deferred | No evidence yet. Needs `cargo build --timings` and `cargo tree --duplicates`, which are local measurements outside this pass. |
+
+## After (0.20) — TODO
+
+> **TODO — not yet measured.** Fill these in from the first 10+ `ci.yml` runs and
+> first 3+ `release.yml` runs on 0.20, measured exactly as "How to re-measure"
+> below describes, then compare against the baseline tables above.
+
+| Workflow | Baseline median | After median | Delta |
+| --- | ---: | ---: | ---: |
+| `ci.yml` wall clock | 192 s | TODO | TODO |
+| `ci.yml` :: cargo test | 186 s | TODO | TODO |
+| `ci.yml` :: webui | 170 s | TODO | TODO |
+| `ci.yml` :: cargo test (ignored integration) | 132 s | TODO | TODO |
+| `release.yml` wall clock | 1193 s | TODO | TODO |
+| `release.yml` :: images | 1008 s | TODO | TODO |
+
+## Batched ingest (`stream_events`)
+
+Daemon ingest groups the persistable events of one frame into a single multi-row
+`INSERT`, one statement per 1000 rows, instead of one awaited round-trip per
+event. The benchmark measures both paths against the same database:
+
+```sh
+DATABASE_URL=postgres://… cargo test -p cctui-server --lib routes::daemon::ingest \
+  -- --ignored --nocapture batched_backfill
+```
+
+It backfills 5000 events twice — once through the per-row path, once batched —
+and fails under a 10x speedup. It is `#[ignore]`d: it is slow, and its numbers
+only mean something on an otherwise quiet machine. `bench/ingest/README.md` has
+the dataset, the database setup and the attribution.
+
+> **TODO — not yet measured.** Run the command above on the CI database and paste
+> the printed timings here.
+
+| Path | Statements | Wall time | Events/s |
+| --- | ---: | ---: | ---: |
+| One `INSERT` per event | 5000 | TODO | TODO |
+| Batched | 5 | TODO | TODO |
+| Speedup | | TODO | |
 
 ## How to re-measure
 

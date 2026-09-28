@@ -7,6 +7,7 @@ use axum::http::header::CONTENT_TYPE;
 use axum::{Extension, Json};
 use cctui_proto::api::ApiError;
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "ts")]
 use ts_rs::TS;
 
 use crate::auth::{AuthContext, Scope};
@@ -26,8 +27,8 @@ fn db_err(e: &sqlx::Error) -> ApiErr {
     err(StatusCode::INTERNAL_SERVER_ERROR, "database error")
 }
 
-#[derive(Debug, Clone, Serialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct AdminPluginInfo {
     pub id: String,
     pub name: String,
@@ -51,15 +52,15 @@ impl From<&Plugin> for AdminPluginInfo {
     }
 }
 
-#[derive(Debug, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct PluginInstallRequest {
     /// https URL of a `.tar.gz` plugin archive.
     pub url: String,
 }
 
-#[derive(Debug, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct PluginEnableRequest {
     pub enabled: bool,
 }

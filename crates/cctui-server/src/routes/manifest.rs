@@ -153,7 +153,7 @@ pub async fn download_daemon_binary(
         return Ok(Redirect::temporary(&github_asset_url(version, &asset)).into_response());
     };
 
-    let client = reqwest::Client::new();
+    let client = crate::build_http_client();
     // 1) Resolve the release for this version to find the asset id.
     let rel_url = format!("https://api.github.com/repos/{}/releases/tags/v{version}", repo());
     let rel: GhRelease = client

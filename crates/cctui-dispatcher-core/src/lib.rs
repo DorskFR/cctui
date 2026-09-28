@@ -8,6 +8,11 @@
 //! implements with its own workload builder (docker `HostConfig`, kube
 //! `PodSpec`, apple plist).
 
+/// `reqwest` has no built-in provider: a `Client` built before this panics.
+pub fn install_crypto_provider() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+}
+
 pub mod cli;
 pub mod client;
 pub mod config;

@@ -130,7 +130,7 @@ jobs:
           save-if: ${{ github.event_name == 'workflow_dispatch' }}
 
       # Linux artifacts are static musl builds so they run on any glibc
-      # (the claude-worker image is debian bookworm = glibc 2.36, while the
+      # (the claude-worker image is debian trixie = glibc 2.41, while the
       # default GitHub runners are glibc 2.39). cargo-zigbuild cross-compiles
       # both linux arches to musl from the x86 runner, using zig cc as the C
       # compiler for the rustls native deps.

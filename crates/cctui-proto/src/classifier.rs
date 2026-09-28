@@ -11,13 +11,14 @@ use crate::adapter::SessionChild;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
+#[cfg(feature = "ts")]
 use ts_rs::TS;
 
 /// The four session buckets clients group on. Serialized `snake_case`
 /// (`working` / `blocked` / `review` / `done`) and shared verbatim by the
 /// TUI and web UI as the on-wire grouping signal.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum Bucket {
     Working,

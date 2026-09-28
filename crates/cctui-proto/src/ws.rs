@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "ts")]
 use ts_rs::TS;
 
 use crate::adapter::{AdapterCommand, AdapterEvent, BootstrapFile};
@@ -395,8 +396,8 @@ pub enum DispatcherFrameUp {
 
 // --- Agent → Server (stream events) ---
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentEvent {
     /// `meta` marks text injected into the agent rather than typed by the human.
@@ -535,8 +536,8 @@ impl AgentEvent {
 
 // --- TUI → Server ---
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum TuiCommand {
     Subscribe {
@@ -572,8 +573,8 @@ pub enum TuiCommand {
 
 // --- Server → TUI ---
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerEvent {
     Stream {

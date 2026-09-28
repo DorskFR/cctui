@@ -16,18 +16,18 @@ use crate::state::AppState;
 const HARNESSES: &[&str] = &["claude-code", "codex"];
 const PERMISSION_MODES: &[&str] = &["ask", "auto", "yolo", "whip"];
 
-#[derive(Clone, Debug, sqlx::FromRow, serde::Serialize, ts_rs::TS)]
-#[ts(export)]
+#[derive(Clone, Debug, sqlx::FromRow, serde::Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct SessionProfile {
-    #[ts(type = "string")]
+    #[cfg_attr(feature = "ts", ts(type = "string"))]
     pub id: Uuid,
-    #[ts(type = "string")]
+    #[cfg_attr(feature = "ts", ts(type = "string"))]
     pub user_id: Uuid,
     pub name: String,
     pub harness: String,
-    #[ts(type = "string | null")]
+    #[cfg_attr(feature = "ts", ts(type = "string | null"))]
     pub account_id: Option<Uuid>,
-    #[ts(type = "string | null")]
+    #[cfg_attr(feature = "ts", ts(type = "string | null"))]
     pub pool_id: Option<Uuid>,
     pub no_account: bool,
     pub model_alias: Option<String>,
@@ -35,44 +35,44 @@ pub struct SessionProfile {
     pub permission_mode: Option<String>,
     pub service_tier: Option<String>,
     pub sort_order: i32,
-    #[ts(type = "string")]
+    #[cfg_attr(feature = "ts", ts(type = "string"))]
     pub created_at: DateTime<Utc>,
-    #[ts(type = "string")]
+    #[cfg_attr(feature = "ts", ts(type = "string"))]
     pub updated_at: DateTime<Utc>,
 }
 
 /// The knobs a profile carries. The account pick is at most one of
 /// `account_id` / `pool_id` / `no_account`; none = Auto (the server elects one).
 /// `None` model / effort / permission mode = the harness or account default.
-#[derive(Clone, Debug, Default, serde::Deserialize, ts_rs::TS)]
-#[ts(export)]
+#[derive(Clone, Debug, Default, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ProfileSpec {
     pub harness: String,
     #[serde(default)]
-    #[ts(type = "string | null", optional)]
+    #[cfg_attr(feature = "ts", ts(type = "string | null", optional))]
     pub account_id: Option<Uuid>,
     #[serde(default)]
-    #[ts(type = "string | null", optional)]
+    #[cfg_attr(feature = "ts", ts(type = "string | null", optional))]
     pub pool_id: Option<Uuid>,
     #[serde(default)]
-    #[ts(type = "boolean", optional)]
+    #[cfg_attr(feature = "ts", ts(type = "boolean", optional))]
     pub no_account: bool,
     #[serde(default)]
-    #[ts(type = "string | null", optional)]
+    #[cfg_attr(feature = "ts", ts(type = "string | null", optional))]
     pub model_alias: Option<String>,
     #[serde(default)]
-    #[ts(type = "string | null", optional)]
+    #[cfg_attr(feature = "ts", ts(type = "string | null", optional))]
     pub effort: Option<String>,
     #[serde(default)]
-    #[ts(type = "string | null", optional)]
+    #[cfg_attr(feature = "ts", ts(type = "string | null", optional))]
     pub permission_mode: Option<String>,
     #[serde(default)]
-    #[ts(type = "string | null", optional)]
+    #[cfg_attr(feature = "ts", ts(type = "string | null", optional))]
     pub service_tier: Option<String>,
 }
 
-#[derive(Debug, serde::Deserialize, ts_rs::TS)]
-#[ts(export)]
+#[derive(Debug, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct CreateProfileRequest {
     pub name: String,
     #[serde(flatten)]
@@ -81,14 +81,14 @@ pub struct CreateProfileRequest {
 
 /// Every field optional; the spec, when present, replaces the whole kit (the
 /// panel always holds the full one), so a cleared knob really clears.
-#[derive(Debug, serde::Deserialize, ts_rs::TS)]
-#[ts(export)]
+#[derive(Debug, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct UpdateProfileRequest {
     #[serde(default)]
-    #[ts(optional)]
+    #[cfg_attr(feature = "ts", ts(optional))]
     pub name: Option<String>,
     #[serde(default)]
-    #[ts(optional)]
+    #[cfg_attr(feature = "ts", ts(optional))]
     pub spec: Option<ProfileSpec>,
 }
 
@@ -283,10 +283,10 @@ pub async fn update(
     .await
 }
 
-#[derive(Debug, serde::Deserialize, ts_rs::TS)]
-#[ts(export)]
+#[derive(Debug, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ReorderProfilesRequest {
-    #[ts(type = "string[]")]
+    #[cfg_attr(feature = "ts", ts(type = "string[]"))]
     pub ids: Vec<Uuid>,
 }
 

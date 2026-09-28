@@ -9,6 +9,7 @@ use axum::{Extension, Json};
 use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+#[cfg(feature = "ts")]
 use ts_rs::TS;
 
 use crate::auth::AuthContext;
@@ -17,8 +18,8 @@ use std::collections::BTreeMap;
 use crate::plugins::{Plugin, PluginSetting, enabled_ids, mime_for, plugin_config, resolve_static};
 use crate::state::AppState;
 
-#[derive(Debug, Clone, Serialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct PluginInfo {
     pub id: String,
     pub name: String,

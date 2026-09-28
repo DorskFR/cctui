@@ -28,12 +28,12 @@ pub fn valid_strategy(s: &str) -> bool {
 }
 
 /// One pool, without its members.
-#[derive(Clone, Debug, PartialEq, Eq, sqlx::FromRow, serde::Serialize, ts_rs::TS)]
-#[ts(export)]
+#[derive(Clone, Debug, PartialEq, Eq, sqlx::FromRow, serde::Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct AccountPool {
-    #[ts(type = "string")]
+    #[cfg_attr(feature = "ts", ts(type = "string"))]
     pub id: Uuid,
-    #[ts(type = "string")]
+    #[cfg_attr(feature = "ts", ts(type = "string"))]
     pub user_id: Uuid,
     pub name: String,
     /// `headroom` (most allocation left wins) or `ordered` (first member with
@@ -42,16 +42,16 @@ pub struct AccountPool {
     /// Whether a live session bound to this pool may be moved between members
     /// when its account is refused.
     pub failover: bool,
-    #[ts(type = "string")]
+    #[cfg_attr(feature = "ts", ts(type = "string"))]
     pub created_at: DateTime<Utc>,
 }
 
 /// A member as the API renders it: enough for the UI to explain why an account
 /// is or is not currently electable, without a second round trip.
-#[derive(Clone, Debug, sqlx::FromRow, serde::Serialize, ts_rs::TS)]
-#[ts(export)]
+#[derive(Clone, Debug, sqlx::FromRow, serde::Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct AccountPoolMember {
-    #[ts(type = "string")]
+    #[cfg_attr(feature = "ts", ts(type = "string"))]
     pub account_id: Uuid,
     pub name: String,
     pub position: i32,
@@ -269,19 +269,19 @@ pub async fn usable_members(
 }
 
 /// One recorded mid-session account move.
-#[derive(Clone, Debug, sqlx::FromRow, serde::Serialize, ts_rs::TS)]
-#[ts(export)]
+#[derive(Clone, Debug, sqlx::FromRow, serde::Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct SessionRebind {
-    #[ts(type = "string")]
+    #[cfg_attr(feature = "ts", ts(type = "string"))]
     pub id: Uuid,
     pub session_id: String,
-    #[ts(type = "string | null")]
+    #[cfg_attr(feature = "ts", ts(type = "string | null"))]
     pub pool_id: Option<Uuid>,
     pub from_account: String,
     pub to_account: String,
     /// `pool` or `redirect` — which mechanism moved the session.
     pub reason: String,
-    #[ts(type = "string")]
+    #[cfg_attr(feature = "ts", ts(type = "string"))]
     pub created_at: DateTime<Utc>,
 }
 
