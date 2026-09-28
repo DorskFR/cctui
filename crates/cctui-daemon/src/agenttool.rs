@@ -951,6 +951,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn follow_returns_the_answer_of_a_child_that_self_reports_blocked() {
+        // acceptance: the follow window must not be waited out by a child whose
+        // answer ended in a question, which leaves its job state `blocked`.
+        let watch = std::sync::Arc::new(crate::childwatch::ChildWatch::default());
+        let handle = watch.register("child-1");
+        let observer = watch.clone();
+        let feeder = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            observer.observe(&cctui_proto::adapter::AdapterEvent::Message {
+                local_id: "child-1".into(),
+                payload: json!({ "role": "assistant", "text": "which skill did you mean?" }),
+                turn_id: None,
+            });
+            observer.observe(&cctui_proto::adapter::AdapterEvent::Status {
+                local_id: "child-1".into(),
+                tempo: Some("blocked".into()),
+                state: Some("blocked".into()),
+                detail: Some("clarify search".into()),
+                activity: None,
+                name: None,
+                intent: None,
+                model: None,
+                effort: None,
+                permission_mode: None,
+                children: Vec::new(),
+            });
+        });
+        let mut out: Vec<u8> = Vec::new();
+        let frame = follow_result_to_frame(
+            follow_child_with(
+                &handle,
+                "child-1",
+                Duration::from_secs(10),
+                SILENT_CHILD_GRACE,
+                2,
+                &mut out,
+            )
+            .await,
+        );
+        feeder.await.unwrap();
+        assert_eq!(frame["ok"], json!(true));
+        assert!(frame["result"].as_str().unwrap().starts_with("which skill did you mean?"));
+    }
+
+    #[tokio::test]
     async fn follow_child_times_out_with_a_follow_up_hint() {
         let watch = std::sync::Arc::new(crate::childwatch::ChildWatch::default());
         let handle = watch.register("child-1");

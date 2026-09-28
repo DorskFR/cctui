@@ -100,6 +100,7 @@ pub struct ChildSnapshot {
     pub last_tool: Option<String>,
     pub status_line: Option<String>,
     pub blocked: Option<String>,
+    blocked_kind: Option<BlockKind>,
     saw_working: bool,
     done_since: Option<Instant>,
     ended: bool,
@@ -130,6 +131,13 @@ impl ChildSnapshot {
         }
     }
 
+    /// Whether a pending prompt is holding the turn open. Only a real prompt
+    /// counts: a child that self-reports `blocked` has answered and is waiting
+    /// on its parent, which is a turn that ended.
+    const fn prompt_pending(&self) -> bool {
+        matches!(self.blocked_kind, Some(BlockKind::Ask | BlockKind::Plan | BlockKind::Permission))
+    }
+
     /// Decide whether the child counts as finished right now.
     ///
     /// Finished when the session ended (or its spawn failed), or when a
@@ -146,9 +154,14 @@ impl ChildSnapshot {
         if self.ended || self.error.is_some() {
             return Assessment::Finished(self.outcome());
         }
+        // A self-reported block with an answer in hand ended its turn on a
+        // question to the parent.
+        if self.blocked_kind == Some(BlockKind::Status) && self.final_text.is_some() {
+            return Assessment::Finished(self.outcome());
+        }
         // claude's control socket reports done while an AskUserQuestion /
-        // ExitPlanMode prompt is pending: a blocked child is never done.
-        if self.blocked.is_none()
+        // ExitPlanMode prompt is pending: such a child is never done.
+        if !self.prompt_pending()
             && let Some(done_at) = self.done_since
         {
             let trusted = self.saw_working
@@ -160,7 +173,7 @@ impl ChildSnapshot {
                 return Assessment::Finished(self.outcome());
             }
         }
-        if self.blocked.is_none()
+        if !self.prompt_pending()
             && !self.tail_is_thinking
             && let Some(text_at) = self.text_tail_at
             && now.duration_since(text_at) >= TEXT_QUIET_GRACE
@@ -299,6 +312,7 @@ impl ChildWatch {
             last_tool: w.state.last_tool.clone(),
             status_line: w.state.status_line.clone(),
             blocked: w.state.blocked.clone(),
+            blocked_kind: w.state.blocked_kind,
             saw_working: w.state.saw_working,
             done_since: w.state.done_since,
             ended: w.state.ended,
@@ -443,10 +457,12 @@ fn apply_status(
 ) {
     let input = ClassifyInput { tempo, state, activity, ..ClassifyInput::default() };
     match classify(&input, &HashMap::new()) {
+        // A `working` reading is self-reported and can stand long after the
+        // turn's last word, so it must not reopen a turn the text already
+        // closed; only tool traffic and new messages do that.
         Bucket::Working => {
             w.state.saw_working = true;
             w.state.done_since = None;
-            w.state.text_tail_at = None;
             clear_blocked(w, BlockKind::Status);
         }
         Bucket::Blocked => {
@@ -860,14 +876,6 @@ mod tests {
             "a thinking tail is mid-turn narration, not an answer"
         );
 
-        let working = watch.register_bound("child-3");
-        watch.observe(&msg("child-3", "assistant", "let me check the tests"));
-        watch.observe(&status("child-3", Some("active"), Some("working"), None));
-        assert!(
-            matches!(working.snapshot().unwrap().assess(later()), Assessment::Running(_)),
-            "a working status after the text reopens the turn"
-        );
-
         let asked = watch.register_bound("child-4");
         watch.observe(&msg("child-4", "assistant", "Before I continue:"));
         watch.observe(&AdapterEvent::AskQuestion {
@@ -879,6 +887,87 @@ mod tests {
         assert!(
             matches!(asked.snapshot().unwrap().assess(later()), Assessment::Running(_)),
             "a pending question is not a finished turn"
+        );
+    }
+
+    #[test]
+    fn a_turn_ends_on_its_final_text_while_the_job_state_still_reads_working() {
+        // acceptance: the job `state` is self-reported and observed to stay
+        // "working" for half an hour after the answer landed; it must not keep
+        // the follower waiting out its window.
+        let watch = Arc::new(ChildWatch::default());
+        let h = watch.register("child-1");
+        watch.observe(&started("child-1", None));
+        watch.observe(&status("child-1", Some("active"), Some("working"), None));
+        watch.observe(&AdapterEvent::ToolUse {
+            local_id: "child-1".into(),
+            payload: json!({ "tool": "Grep" }),
+        });
+        watch.observe(&msg("child-1", "assistant", "the findings, in full"));
+        watch.observe(&status("child-1", Some("active"), Some("working"), Some("still working")));
+        assert!(finished(&h).is_none(), "the turn stays open inside the quiet grace");
+        let snap = h.snapshot().unwrap();
+        let later = Instant::now() + TEXT_QUIET_GRACE + Duration::from_secs(1);
+        let Assessment::Finished(out) = snap.assess(later) else {
+            panic!("a stale working state must not outlast the answer")
+        };
+        assert_eq!(out.final_text.as_deref(), Some("the findings, in full"));
+        assert!(out.error.is_none());
+    }
+
+    #[test]
+    fn a_self_reported_blocked_state_ends_the_turn_with_its_answer() {
+        // acceptance: a child whose answer ends in a question to the parent
+        // self-reports `blocked`; that is a turn that ended, and the text is
+        // returned at once rather than after the follow window expires.
+        let watch = Arc::new(ChildWatch::default());
+        let h = watch.register("child-1");
+        watch.observe(&started("child-1", None));
+        watch.observe(&status("child-1", Some("active"), Some("working"), None));
+        watch.observe(&msg("child-1", "assistant", "no skills contain 'yubisashi'; clarify?"));
+        watch.observe(&AdapterEvent::Status {
+            local_id: "child-1".into(),
+            tempo: Some("blocked".into()),
+            state: Some("blocked".into()),
+            detail: Some("no skills contain 'yubisashi'; clarify search".into()),
+            activity: None,
+            name: None,
+            intent: None,
+            model: None,
+            effort: None,
+            permission_mode: None,
+            children: Vec::new(),
+        });
+        let out = finished(&h).expect("a blocked child with an answer has finished its turn");
+        assert_eq!(out.final_text.as_deref(), Some("no skills contain 'yubisashi'; clarify?"));
+        assert!(out.error.is_none());
+    }
+
+    #[test]
+    fn a_needs_action_turn_summary_ends_the_turn_too() {
+        let watch = Arc::new(ChildWatch::default());
+        let h = watch.register_bound("child-1");
+        watch.observe(&msg("child-1", "assistant", "one question before I go on"));
+        watch.observe(&AdapterEvent::Message {
+            local_id: "child-1".into(),
+            payload: json!({ "role": "summary", "needs_action": "pick a database" }),
+            turn_id: None,
+        });
+        let out = finished(&h).expect("needs_action is a turn that ended on a question");
+        assert_eq!(out.final_text.as_deref(), Some("one question before I go on"));
+    }
+
+    #[test]
+    fn a_blocked_child_that_never_spoke_keeps_the_watch_open() {
+        let watch = Arc::new(ChildWatch::default());
+        let h = watch.register("child-1");
+        watch.observe(&started("child-1", None));
+        watch.observe(&status("child-1", Some("blocked"), Some("blocked"), None));
+        let snap = h.snapshot().unwrap();
+        let later = Instant::now() + DONE_TEXT_GRACE * 3;
+        assert!(
+            matches!(snap.assess(later), Assessment::Running(_)),
+            "with no text there is nothing to hand back"
         );
     }
 
