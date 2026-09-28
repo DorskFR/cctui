@@ -8,14 +8,14 @@ sessions. The server sends the same mode-agnostic
 SetModel / …) regardless of mode; only the daemon-side driver differs.
 
 The active mode is a **per-user** setting, `user_settings.data.harnessMode` ∈
-{`bg`, `sdk`, `oneshot`} (default `bg`, CCT-495). On change it is bridged into
+{`bg`, `sdk`, `oneshot`} (default `bg`). On change it is bridged into
 each owned daemon's `DaemonAdapterConfig.config["mode"]` and pushed as a fresh
-Reconcile, so every connected daemon picks up the new mode live (CCT-494). A
+Reconcile, so every connected daemon picks up the new mode live. A
 per-machine `adapters_enabled.config` may still override for machine pinning.
 
 Driver selection lives in `crates/cctui-daemon/src/adapters/claude_code/mode.rs`
 (`Mode::from_config`), which maps the string to `Mode::Bg` /
-`Mode::Oneshot` / `Mode::Sdk` (plus the legacy UDS listener kept for CCT-87).
+`Mode::Oneshot` / `Mode::Sdk` (plus the legacy UDS listener).
 
 ---
 
@@ -33,19 +33,19 @@ reading `~/.claude/jobs/<short>/state.json`; message/tool/token events come from
 - **Observability / transcript story:** rich, but **disk-coupled**. It depends
   on `state.json` (status, `resumeSessionId`, cwd) and the JSONL transcript
   file being present and tailed. This is the historical strength that made
-  CCT-173 pick `--bg` over `-p` (a `-p` run never registered in
-  `state.json`, so no transcript surfaced).
+  `--bg` win over `-p` (a `-p` run never registered in `state.json`, so no
+  transcript surfaced).
 - Multi-turn is native: the worker idles awaiting input between turns; no
   respawn per reply.
 
-### `oneshot` — `claude -p … --resume` per turn (CCT-499)
+### `oneshot` — `claude -p … --resume` per turn
 
 Driver: `oneshot.rs` (`OneshotDriver`). Each **turn** is a fresh, transient
 `claude --print --output-format stream-json --verbose` child:
 
 - **Spawn:** `claude -p <prompt> … --session-id <pre-minted uuid>` in the
   session cwd. The pre-minted id flows from `Spawn.session_id` exactly as `bg`
-  uses it so the gateway-token binding stays intact (CCT-446/CCT-460).
+  uses it so the gateway-token binding stays intact.
 - **Reply:** re-invoke `claude -p <text> --resume <session_id>` — a **new child
   per turn**, keyed on the same session id.
 - On the terminal `result` frame it emits an idle `Status` (not
@@ -56,7 +56,7 @@ Driver: `oneshot.rs` (`OneshotDriver`). Each **turn** is a fresh, transient
   `state.json` and no transcript-tail dependency**. Resume still relies on
   claude's own on-disk conversation store (`--resume <id>`).
 
-### `sdk` — persistent stream-json child (CCT-500)
+### `sdk` — persistent stream-json child
 
 Driver: `headless.rs` (`SdkDriver`). The daemon owns **one long-lived** `claude
 --print --input-format stream-json --output-format stream-json --verbose` child
@@ -115,7 +115,7 @@ cards.
 cctui does **not** run workers against Anthropic directly. Every mode launches
 `claude` with `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN` pointing at cctui's
 **own gateway** (OAuth-account passthrough, minted per session via
-`resolve_launch_env` → `server.gateway_env`, fail-closed per CCT-460). So how a
+`resolve_launch_env` → `server.gateway_env`, fail-closed). So how a
 run is metered/billed depends on **how the gateway and the bound account treat
 the traffic**, not on any consumer-plan page or on whether the CLI was invoked
 as `-p` vs `--bg`. The transport shape (PTY worker vs `-p` vs persistent
@@ -124,7 +124,7 @@ property of the account/gateway, and must be confirmed first-hand.
 
 ### Historical context (why `bg` was chosen)
 
-CCT-173 moved the worker from `claude -p` to `claude --bg` for two reasons:
+The worker moved from `claude -p` to `claude --bg` for two reasons:
 1. **Observability** — `-p` never registered in `state.json`, so no transcript
    surfaced. Stream-json output now gives the daemon structured events directly,
    removing this reason for the headless modes.
@@ -148,7 +148,7 @@ numbers until it is. Method:
    three times, once under each `harnessMode` (`bg`, `oneshot`, `sdk`), each
    against that test account through the gateway.
 3. For each run capture the gateway/account signal: gateway request logs, the
-   account usage-window delta (the same windows CCT-444 surfaces), and any
+   account usage-window delta (the same windows the UI surfaces), and any
    provider-side usage counter — before vs after.
 4. Compare: confirm `oneshot`/`sdk` do **not** silently draw from a different
    pool than `bg` today, and record the per-mode delta.
@@ -165,7 +165,7 @@ numbers until it is. Method:
 
 ## 4. TokenUsage / SessionModel parity (from the code)
 
-The soft-limit (CCT-431) and usage windows (CCT-444) depend on each mode
+The soft limit and the usage windows depend on each mode
 emitting `AdapterEvent::TokenUsage` and `AdapterEvent::SessionModel`. All three
 modes converge on the **same normalizer**, so parity holds:
 

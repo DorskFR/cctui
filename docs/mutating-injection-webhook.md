@@ -12,7 +12,7 @@ pure functions (`mutate_pod`, `inject`); the axum server is `src/main.rs`.
 
 ## Trigger and cross-crate contract
 
-Pods instantiated from a profile carry (set by the dispatcher, CCT-725/728):
+Pods instantiated from a profile carry (set by the dispatcher):
 
 | Key | Kind | Meaning |
 |---|---|---|

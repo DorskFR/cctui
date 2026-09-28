@@ -1,8 +1,8 @@
-# pulldash idea audit — patterns to steal for the gh-review center (CCT-606)
+# pulldash idea audit — patterns to steal for the gh-review center
 
 Systematic pass over `coder/pulldash`, audited at commit **`1fd065e`** ("feat: add
 personal access token authentication (#15)", 2026-01-05), cloned to
-`~/.claude/artifacts/pulldash-audit/pulldash`. Part of epic **CCT-600**.
+`~/.claude/artifacts/pulldash-audit/pulldash`. Part of the **gh-review center** epic.
 
 pulldash's thesis: "Fast, filterable PR review. Entirely client-side." It runs with
 **no backend** — GitHub's REST/GraphQL API supports CORS, so the browser talks to
@@ -12,8 +12,8 @@ navigation indexing, request caching) on the client. The tiny Hono server
 two OAuth device-flow endpoints that lack CORS.
 
 **Our architecture is the inverse.** The gh-review center has a warm server-side
-sync daemon (CCT-601) with a Postgres JSONB store, ETag polling, and SSE push, plus
-a versioned `/v1` contract (CCT-604). Performance requirement #1 is **instant opens
+sync daemon with a Postgres JSONB store, ETag polling, and SSE push, plus a
+versioned `/v1` contract. Performance requirement #1 is **instant opens
 from a warm backend**. So pulldash's heroics around client-side caching, request
 dedup, and SWR are, for us, mostly a *catalogue of problems the backend deletes* —
 we read them to know what NOT to rebuild. What we do steal is the **UX semantics and
@@ -27,7 +27,7 @@ comes from.
 
 ---
 
-## 1. Tab system (→ CCT-605 foundation)
+## 1. Tab system (→ the UI foundation)
 
 **What pulldash does.** A single `TabProvider` (React context, `useState` +
 `useEffect`-persisted to `localStorage` under one key) holds an array of tabs plus an
@@ -67,8 +67,8 @@ same color semantics.
 **backend's synced PR record over SSE**, not be pushed up from client-side CI
 polling — the tab dot updates live when the daemon re-syncs, with zero client fetch.
 (2) Persisting *which tabs are open* is fine in localStorage, but consider letting
-the backend remember open-tab sets per user later (out of scope for CCT-605). Add a
-`draft`/`merged`/`closed` enum that matches our `/v1` PR state contract (CCT-604)
+the backend remember open-tab sets per user later (out of scope for the first cut).
+Add a `draft`/`merged`/`closed` enum that matches our `/v1` PR state contract
 rather than pulldash's ad-hoc strings.
 
 **Skip.** Nothing here is wasteful. The `try/catch` around `useTabContext` in the PR
@@ -77,7 +77,7 @@ our component tree is disciplined.
 
 ---
 
-## 2. Diff parse + highlight pipeline (→ CCT-608 canvas diff, CCT-605)
+## 2. Diff parse + highlight pipeline (→ the canvas diff pane)
 
 **What pulldash does.** This is the crown jewel and the most reusable idea. A
 **Web-Worker pool** (`src/browser/lib/diff.ts`) sized to
@@ -130,7 +130,7 @@ calls) purely so it can do context-correct highlighting, then aggressively prefe
 Postgres.** Options, in preference order: (a) backend ships the patch plus enough
 file context for correct highlighting over `/v1`, worker only parses+highlights; or
 (b) backend ships *already-parsed, already-highlighted* line HTML and the worker pool
-mostly disappears. Given CCT-608 wants a **Canvas 2D diff pane** for huge diffs, the
+mostly disappears. Given we want a **Canvas 2D diff pane** for huge diffs, the
 worker's *output shape* (per-line: type, old/new line number, array of highlighted
 segments) is exactly the display list a canvas renderer consumes — so keep the
 worker's data model even if the renderer becomes canvas instead of DOM rows.
@@ -143,7 +143,7 @@ legacy) are both cruft born of not having a backend.
 
 ---
 
-## 3. Virtualized rendering (→ CCT-608, CCT-605)
+## 3. Virtualized rendering (→ the canvas diff pane)
 
 **What pulldash does.** The diff view flattens hunks + skip blocks into a single row
 list and renders it with `@tanstack/react-virtual` (`useVirtualizer`,
@@ -170,7 +170,7 @@ DOM work.
 the navigable-line index on diff load. Persist unified/split preference. Keep rows
 memoized and inject pre-highlighted HTML.
 
-**Adapt.** For CCT-608's canvas pane, "virtualization" becomes "only paint visible
+**Adapt.** For the canvas pane, "virtualization" becomes "only paint visible
 rows onto the canvas" — same idea, different primitive — and the pre-computed nav
 index becomes the canvas's row→y-offset map. The huge-overscan trick is DOM-specific;
 canvas gets the same smoothness from cheap repaint.
@@ -179,7 +179,7 @@ canvas gets the same smoothness from cheap repaint.
 
 ---
 
-## 4. Bookmarklet + route mirroring (→ CCT-605)
+## 4. Bookmarklet + route mirroring (→ the UI foundation)
 
 **What pulldash does.** The headline growth feature: **"replace `github.com` with
 `pulldash.com` in any PR URL."** Because the review route is
@@ -201,17 +201,17 @@ Work.
 the host-swap bookmarklet and the paste-a-URL input. Dismissable, remembered,
 hidden in any desktop/embedded context.
 
-**Adapt.** Our host is behind the cctui plugin/deploy (CCT-610/612), so the
+**Adapt.** Our host is behind the cctui plugin/deploy, so the
 bookmarklet origin must be generated from `window.location.origin` at runtime (as
 pulldash does) rather than hard-coded. Consider also accepting GitHub *notification*
-and *files* URLs, since our backend syncs notifications (CCT-602).
+and *files* URLs, since our backend syncs notifications.
 
 **Skip.** Nothing structural; just re-implement the trivial regex and origin-swap
 ourselves.
 
 ---
 
-## 5. External store + review-flow UX (→ CCT-605, CCT-609)
+## 5. External store + review-flow UX (→ the UI foundation, viewed state)
 
 **External store (`useSyncExternalStore`).** All PR-review state lives in a plain
 class store outside React — `subscribe`/`getSnapshot`, listeners fire on `set()`.
@@ -265,8 +265,8 @@ permission-gated edit/delete.
 **Adapt.** (1) **Pending review + viewed state should live server-side**, not
 localStorage — our backend can persist review-in-progress and viewed state per user
 per PR, so it survives across devices/browsers, not just reloads. localStorage becomes
-an offline/optimistic cache, not the source of truth. This directly feeds **CCT-609
-multifold viewed-state** (mark a *tree node* viewed → collapse everything under it):
+an offline/optimistic cache, not the source of truth. This directly feeds
+**multifold viewed state** (mark a *tree node* viewed → collapse everything under it):
 pulldash only has per-file viewed booleans in a `Set`; we extend that to hierarchical
 tree-node viewed state, ideally server-synced. (2) After submit, we don't
 invalidate+refetch — the backend pushes the new review over SSE and the store applies
@@ -275,12 +275,12 @@ it. (3) Thread resolve/optimistic flip stays, but reconcile against SSE truth.
 **Skip.** The manual GitHub GraphQL/REST dance for pending reviews, replies, resolve,
 edit/delete, and the "find the review I just created by sorting `submitted_at`"
 scroll-target hack — all of that is because pulldash talks straight to GitHub. Our
-`/v1` contract (CCT-604) gives us a typed mutation that returns the created review id
+`/v1` contract gives us a typed mutation that returns the created review id
 directly.
 
 ---
 
-## 6. Command palette + fuzzy file search (→ CCT-605)
+## 6. Command palette + fuzzy file search (→ the UI foundation)
 
 **What pulldash does.** `Cmd/Ctrl+K` (or `Ctrl+P`) toggles a `cmdk`-based palette,
 bound in the capture phase to beat the browser. It fuzzy-searches the changed-file
@@ -310,7 +310,7 @@ just files in the current one.
 
 ---
 
-## 7. Request-cache / SWR patterns — the catalogue of what the backend deletes (→ CCT-601/604)
+## 7. Request-cache / SWR patterns — the catalogue of what the backend deletes
 
 **What pulldash does** (all in `src/browser/contexts/github.tsx`, ~3000 lines). This
 is the machinery a no-backend app *must* build and that our sync daemon replaces:
@@ -354,14 +354,14 @@ SSE-offline fallback.
 `GraphQLBatcher`, per-client `localStorage` `gh_cache:` mirror, `AbortController`
 supersede dance, client-side rate-limit handling, device-flow/PAT-in-localStorage,
 unauth Octokit, and the ±file diff prefetch (§2). All of it is "no backend" tax. The
-backend (CCT-601) polls once per account with ETags, stores JSONB, and pushes over
-SSE; the `/v1` contract (CCT-604) hands clients typed, warm data. **This whole
+backend polls once per account with ETags, stores JSONB, and pushes over SSE; the
+`/v1` contract hands clients typed, warm data. **This whole
 section is the strongest evidence for the epic's thesis: the warm backend makes the
 single largest and gnarliest part of pulldash unnecessary.**
 
 ---
 
-## 8. Themes (→ CCT-607)
+## 8. Themes
 
 **What pulldash does.** One theme only: a dark UI with Tailwind v4 `@theme`
 oklch tokens (`--background`, `--foreground`, …) in `index.css`, a `.dark` custom
@@ -370,7 +370,7 @@ variant wired but effectively always-on, a GitHub-dark syntax palette, and a bun
 Syntax colors are CSS variables consumed by the pre-highlighted HTML the worker emits.
 
 **Why it's relevant.** The token structure — semantic CSS variables for chrome plus a
-separate Prism/refractor palette for code — is exactly the seam CCT-607 needs: swap
+separate Prism/refractor palette for code — is exactly the seam theming needs: swap
 the variable set to switch themes without touching component code, and swap the syntax
 palette independently.
 
@@ -378,7 +378,7 @@ palette independently.
 highlighting so the worker output is theme-agnostic (it emits Prism class names, CSS
 colors them).
 
-**Adapt / extend (this is CCT-607's actual work).** pulldash has *one* theme; we ship
+**Adapt / extend (this is the actual theming work).** pulldash has *one* theme; we ship
 **four** — light, dark, colorblind-light, colorblind-dark. That means a real theme
 switcher (persisted, ideally server-synced with other prefs), a diff add/remove color
 scheme that stays legible under colorblind palettes (don't rely on red/green alone —
@@ -395,32 +395,32 @@ add texture/position cues), and multiple Prism palettes selected by active theme
 - **`CustomEvent` bus** for keymap→component actions is a pragmatic decoupling; fine to
   adopt sparingly, but our store can also just expose the action directly.
 - **Electron packaging** (electron-builder, auto-update): out of scope — we're a web
-  plugin in cctui (CCT-610), not a desktop app. Skip.
+  plugin in cctui, not a desktop app. Skip.
 - **Telemetry (PostHog)**: the infra overlay already neutralizes it via a no-op
   `telemetry.tsx` shim at build. We add none.
 - **Deployment today**: the personal infra repo runs upstream pulldash at this
   pinned sha, built from source (no upstream image), telemetry stripped.
-  **CCT-612 retires this overlay** once our review center supersedes it.
+  **That overlay is retired** once our review center supersedes it.
 
 ---
 
-## Pattern → epic ticket map
+## Pattern → where it lands
 
 | Pattern | Adopt / Adapt / Skip | Lands in |
 |---|---|---|
-| Tab system, deterministic ids, active-only mount, status dot | Adopt; status via SSE | CCT-605 |
-| Worker-pool diff parse + whole-file-highlight-by-line + skip blocks | Adopt pipeline; source diffs from backend | CCT-608, CCT-605 |
-| Modified-line pairing + inline word/char threshold | Adopt (reimplement) | CCT-608 |
-| Virtualized diff/file/palette + pre-computed nav index | Adopt; canvas variant | CCT-608, CCT-605 |
-| Bookmarklet + `/:owner/:repo/pull/:n` mirror + paste-URL input | Adopt; runtime origin | CCT-605 |
-| External store + selectors + hash nav deep-link | Adopt | CCT-605 |
-| Full keyboard map, goto-line, permission gating | Adopt | CCT-605 |
-| Optimistic pending comments / review submit / thread resolve | Adopt UX; server-persist state, typed mutations | CCT-605, CCT-604 |
-| Per-file viewed `Set` in localStorage | Adapt → hierarchical, server-synced | CCT-609 |
-| Command palette + tiered fuzzy scorer + deferred value | Adopt; extend to commands + cross-PR | CCT-605 |
-| RequestCache / SWR / GraphQLBatcher / rate-limit hooks / abort | **Skip** — backend replaces | CCT-601, CCT-604 |
-| CI-status enum rollup | Adapt → compute server-side | CCT-601 |
-| Semantic CSS tokens + separate syntax palette | Adopt seam; extend to 4 themes + colorblind | CCT-607 |
+| Tab system, deterministic ids, active-only mount, status dot | Adopt; status via SSE | UI foundation |
+| Worker-pool diff parse + whole-file-highlight-by-line + skip blocks | Adopt pipeline; source diffs from backend | Canvas diff pane, UI foundation |
+| Modified-line pairing + inline word/char threshold | Adopt (reimplement) | Canvas diff pane |
+| Virtualized diff/file/palette + pre-computed nav index | Adopt; canvas variant | Canvas diff pane, UI foundation |
+| Bookmarklet + `/:owner/:repo/pull/:n` mirror + paste-URL input | Adopt; runtime origin | UI foundation |
+| External store + selectors + hash nav deep-link | Adopt | UI foundation |
+| Full keyboard map, goto-line, permission gating | Adopt | UI foundation |
+| Optimistic pending comments / review submit / thread resolve | Adopt UX; server-persist state, typed mutations | UI foundation, `/v1` contract |
+| Per-file viewed `Set` in localStorage | Adapt → hierarchical, server-synced | Viewed state |
+| Command palette + tiered fuzzy scorer + deferred value | Adopt; extend to commands + cross-PR | UI foundation |
+| RequestCache / SWR / GraphQLBatcher / rate-limit hooks / abort | **Skip** — backend replaces | Sync daemon, `/v1` contract |
+| CI-status enum rollup | Adapt → compute server-side | Sync daemon |
+| Semantic CSS tokens + separate syntax palette | Adopt seam; extend to 4 themes + colorblind | Theming |
 | Electron / PostHog / device-flow-in-localStorage | Skip | — |
 
 ---

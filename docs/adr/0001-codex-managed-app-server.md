@@ -2,19 +2,18 @@
 
 - **Status:** Proposed
 - **Date:** 2026-07-12
-- **Ticket:** CCT-645
 - **Deciders:** cctui daemon maintainers
-- **Supersedes / relates to:** CCT-98 (app-server driver), CCT-263/339/632
-  (thread/list inventory), CCT-461/482 (gateway env), CCT-631/635/639/640/641
-  (protocol client hardening, native lifecycle, diagnose, model catalog)
+- **Builds on:** the app-server driver, the thread/list inventory, the
+  per-session gateway env, and the protocol client hardening work (native
+  lifecycle, diagnose, model catalog)
 
 ## Context
 
 The codex adapter (`crates/cctui-daemon/src/adapters/codex/`) drives every
 cctui-owned session by spawning `codex app-server` and speaking newline-delimited
 JSON-RPC 2.0 over **stdio**. Codex mints thread ids (rollout `UUIDv7`), and the
-protocol supports many threads per connection (`thread/start` per thread). After
-CCT-631/635/639/640/641 the protocol client is reliable: correlated
+protocol supports many threads per connection (`thread/start` per thread). The
+protocol client is by now reliable: correlated
 `PendingRpcs`, deferred spawn acks, timeouts, hibernate/resume, native
 archive/unarchive, diagnose snapshots, and the model catalog are all in place.
 
@@ -89,7 +88,7 @@ CLI/daemon layer, but it is young.
 
 - **Account/config isolation.** cctui launches sessions under different
   `OPENAI_BASE_URL`/`OPENAI_API_KEY` gateway envs, resolved per-session from the
-  server's durable `sessions.account_id` binding (CCT-461/482), and different
+  server's durable `sessions.account_id` binding, and different
   accounts imply different `CODEX_HOME`/auth. A single shared app-server cannot
   carry per-thread gateway credentials — env is a **process-level** input today
   (`cmd.env(...)` in `run_inner`). This is the central constraint.
@@ -129,7 +128,8 @@ auth. cctui's whole point is running threads bound to *different* gateway
 accounts; per-turn `model`/`effort` already ride on `turn/start`, but gateway
 routing is a process env var. Unless codex grows per-thread auth/base-url in the
 protocol, option B cannot serve multi-account use without silently mis-routing —
-the exact class of bug CCT-460/461 fixed. Also maximal crash blast radius.
+the exact class of bug the account-bound launch contract fixed. Also maximal
+crash blast radius.
 
 ### C. Per-account managed app-servers
 
@@ -167,8 +167,8 @@ Rationale:
   one-shots — matching the existing "probe failure ⇒ silent fallback" contract in
   `thread_list`/`model_list`.
 - B is rejected: a single shared process cannot honour per-thread gateway
-  accounts (env is process-level), so it would reintroduce the CCT-460/461
-  mis-routing class and give the worst crash blast radius.
+  accounts (env is process-level), so it would reintroduce that mis-routing
+  class and give the worst crash blast radius.
 - C is the right home for multiplexing the turn path *if* we later want it, but
   it is a per-account daemon pool with real lifecycle/health/eviction surface,
   and the socket mode is still `[experimental]`. It should not be the first
@@ -202,8 +202,8 @@ Rationale:
   process pools).
 - **Not** adopting `ws://` remote transport or `enable-remote-control` /
   `bootstrap` (SSH-driven remote use) — out of scope; cctui is local-daemon.
-- **Not** changing session identity, hibernate/resume, gateway-env resolution
-  (CCT-461/482), or the fail-closed account-bound launch contract.
+- **Not** changing session identity, hibernate/resume, gateway-env resolution,
+  or the fail-closed account-bound launch contract.
 - **Not** restarting or replacing the per-machine `cctui-daemon` process model;
   the codex managed app-server is a child the daemon supervises, not a peer.
 
