@@ -532,6 +532,67 @@ mod tests {
         drop_machines(&pool, &[sid], &[(uid, mid)]).await;
     }
 
+    /// Timing benchmark for the batched insert, not a correctness test: it
+    /// measures the acceptance criterion that a 5k-event backfill costs a
+    /// handful of statements instead of 5k round-trips. Ignored because it is
+    /// slow and its numbers are only meaningful on a quiet machine — run it
+    /// explicitly and read the printed timings.
+    ///
+    /// `cargo test -p cctui-server --lib routes::daemon::ingest -- --ignored
+    ///  --nocapture batched_backfill`
+    #[tokio::test]
+    #[ignore = "timing benchmark; run explicitly"]
+    async fn batched_backfill_is_ten_times_faster_than_a_row_per_round_trip() {
+        let Some(url) = crate::routes::gateway::test_db_url("batched_backfill_timing") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let (uid, mid) = seed_machine(&pool, "timing").await;
+        let per_row_sid = seed_owned_session(&pool, uid, mid).await;
+        let batched_sid = seed_owned_session(&pool, uid, mid).await;
+
+        let n: usize = 5000;
+
+        // The pre-batching path: one INSERT per event, awaited in turn.
+        let started = std::time::Instant::now();
+        for row in backfill(&per_row_sid, n) {
+            insert_event(&pool, mid, uid, &row.local_id, row.event_type, row.payload, row.turn_id)
+                .await
+                .expect("per-row insert");
+        }
+        let per_row = started.elapsed();
+
+        let started = std::time::Instant::now();
+        let seqs = insert_events(&pool, mid, uid, backfill(&batched_sid, n)).await.expect("batched");
+        let batched = started.elapsed();
+
+        assert_eq!(seqs.len(), n);
+        assert!(seqs.iter().all(Option::is_some), "every event is a fresh row");
+
+        let speedup = per_row.as_secs_f64() / batched.as_secs_f64();
+        let per_row_rate = n as f64 / per_row.as_secs_f64();
+        let batched_rate = n as f64 / batched.as_secs_f64();
+        let statements = n.div_ceil(INSERT_BATCH);
+        println!("{n} events, {statements} batched statements vs {n} round-trips");
+        println!("  per-row: {per_row:?} ({per_row_rate:.0} events/s)");
+        println!("  batched: {batched:?} ({batched_rate:.0} events/s)");
+        println!("  speedup: {speedup:.1}x");
+        assert!(speedup >= 10.0, "batched ingest is only {speedup:.1}x faster, expected 10x");
+
+        for sid in [&per_row_sid, &batched_sid] {
+            sqlx::query("DELETE FROM stream_events WHERE session_id = $1")
+                .bind(sid)
+                .execute(&pool)
+                .await
+                .ok();
+        }
+        drop_machines(&pool, &[per_row_sid, batched_sid], &[(uid, mid)]).await;
+    }
+
     #[tokio::test]
     async fn a_batch_refuses_the_rows_of_a_foreign_session() {
         let Some(url) = crate::routes::gateway::test_db_url("batched_foreign") else {
