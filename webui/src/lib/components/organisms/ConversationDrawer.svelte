@@ -38,6 +38,7 @@
 	import { MessagePins } from './conversation/messagePins.svelte';
 	import { BookmarkSaver } from './conversation/bookmarkSave.svelte';
 	import { guardEscape } from './conversation/escapeGuard';
+	import { lockDocumentScroll } from './conversation/scrollLock';
 	import { livenessClass } from './conversation/liveness';
 	import { m } from '$lib/paraglide/messages';
 
@@ -69,6 +70,8 @@
 	const needsInput = $derived(session.attention === 'needs_input' && !archived);
 	const showStatusBadge = $derived(session.status === 'new' || session.status === 'archived');
 	const qc = useQueryClient();
+
+	$effect(() => lockDocumentScroll());
 
 	// Read-only live terminal pane, toggled from the toolbar.
 	let terminalOpen = $state(false);
@@ -474,13 +477,6 @@
 	.drawer-host {
 		position: relative;
 		z-index: var(--z-drawer);
-	}
-	/* The reserved scrollbar gutter (`scrollbar-gutter: stable` on `html`) lies
-	   outside the viewport the fixed panel is positioned against, so a scrollable
-	   page paints a second bar beside the drawer. Freezing the document while the
-	   drawer is open empties that strip with no sideways shift. */
-	:global(html:has(.drawer-host)) {
-		overflow-y: hidden;
 	}
 	.drawer {
 		display: flex;
