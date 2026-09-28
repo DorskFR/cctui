@@ -1003,6 +1003,14 @@ mod tests {
 
     #[test]
     fn transcript_ack_roundtrips_and_an_old_daemon_reads_it_as_unknown() {
+        /// A daemon that predates the variant decodes the frames it knew and
+        /// nothing else, which is why the server gates the ack on `mark_acks`.
+        #[derive(serde::Deserialize)]
+        #[serde(tag = "type", rename_all = "snake_case")]
+        enum OldFrameDown {
+            Ack { seq: u64 },
+        }
+
         let f = DaemonFrameDown::TranscriptAck {
             adapter_id: "claude-code".into(),
             session_marks: vec![("sess-1".into(), 4096)],
@@ -1017,13 +1025,9 @@ mod tests {
             }
             _ => panic!("expected TranscriptAck"),
         }
-        // A daemon that predates the variant cannot decode it, which is why the
-        // server sends it only to daemons advertising `mark_acks`.
-        #[derive(serde::Deserialize)]
-        #[serde(tag = "type", rename_all = "snake_case")]
-        enum OldFrameDown {
-            Ack { seq: u64 },
-        }
+        let OldFrameDown::Ack { seq } =
+            serde_json::from_str::<OldFrameDown>(r#"{"type":"ack","seq":7}"#).unwrap();
+        assert_eq!(seq, 7, "the stub must decode what an old daemon really knew");
         assert!(serde_json::from_str::<OldFrameDown>(&json).is_err());
     }
 
