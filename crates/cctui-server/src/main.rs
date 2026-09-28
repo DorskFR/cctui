@@ -353,8 +353,8 @@ fn outer_routes() -> Router<AppState> {
         .route("/api/v1/daemon/version", get(routes::update_hook::daemon_version))
         .route("/api/v1/daemon/update-hook/{run_id}", post(routes::update_hook::report))
         // Enrolled-dispatcher endpoints. Carry their own key auth
-        // (dispatcher-key Bearer / `?token=`), so they live outside the
-        // user-token `api_router` group, like the daemon endpoints.
+        // (dispatcher-key Bearer), so they live outside the user-token
+        // `api_router` group, like the daemon endpoints.
         .route("/api/v1/dispatcher/auth", post(routes::dispatcher::auth))
         .route("/api/v1/dispatcher/ws", get(routes::dispatcher::ws))
         .route("/api/v1/triggers/{kind}", post(routes::triggers::ingest))

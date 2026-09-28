@@ -1,8 +1,8 @@
 //! Browser auth-cookie endpoints.
 //!
-//! The bearer token rides an `HttpOnly`+`SameSite`+`Secure` cookie, not the WS
-//! upgrade `?token=` query (which leaks into proxy/access logs). These two
-//! endpoints move the credential into that cookie:
+//! The bearer token rides an `HttpOnly`+`SameSite`+`Secure` cookie, never a
+//! `?token=` query (which leaks into proxy/access logs; no WS upgrade accepts
+//! one). These two endpoints move the credential into that cookie:
 //! `login` validates a presented token and sets the cookie; `logout` clears it.
 //! Both live OUTSIDE the `auth_middleware` group (login cannot require prior
 //! auth). After login, `auth_middleware` and the WS upgrade resolve the cookie
