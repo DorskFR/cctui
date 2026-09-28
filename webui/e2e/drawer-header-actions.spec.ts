@@ -9,7 +9,7 @@ const trailing = (page: Page) =>
 for (const viewport of [WIDE, NARROW]) {
 	const w = viewport.width;
 
-	test(`${w}px: every trailing header control shares one height and top y (CCT-1357)`, async ({
+	test(`${w}px: every trailing header control shares one height and top y`, async ({
 		page
 	}) => {
 		await openDrawer(page, viewport);
@@ -22,7 +22,7 @@ for (const viewport of [WIDE, NARROW]) {
 		expect([...new Set(controls.map((c) => Math.round(c.y)))]).toHaveLength(1);
 	});
 
-	test(`${w}px: the header action row never overflows the drawer (CCT-1357)`, async ({ page }) => {
+	test(`${w}px: the header action row never overflows the drawer`, async ({ page }) => {
 		await openDrawer(page, viewport);
 
 		const bar = page.locator('[data-journey="header"] .dbar');
@@ -36,7 +36,7 @@ for (const viewport of [WIDE, NARROW]) {
 	});
 }
 
-test('the ⋯ menu is one button, so its tooltip cannot land on a sibling (CCT-1357)', async ({
+test('the ⋯ menu is one button, so its tooltip cannot land on a sibling', async ({
 	page
 }) => {
 	await openDrawer(page, WIDE);
