@@ -215,6 +215,9 @@ impl From<WireBusEvent> for BusEvent {
 pub fn frame_session(frame: &DaemonFrameDown) -> Option<&str> {
     match frame {
         DaemonFrameDown::Command { command, .. } => command.local_id(),
+        DaemonFrameDown::TranscriptAck { session_marks, .. } => {
+            session_marks.first().map(|(id, _)| id.as_str())
+        }
         _ => None,
     }
 }
@@ -647,6 +650,12 @@ mod tests {
             }),
         };
         assert_eq!(frame_session(&spawn), None, "adapter-wide commands stay machine-scoped");
+
+        let ack = DaemonFrameDown::TranscriptAck {
+            adapter_id: "claude-code".into(),
+            session_marks: vec![("sess-1".into(), 4096)],
+        };
+        assert_eq!(frame_session(&ack), Some("sess-1"), "an ack belongs to its session's daemon");
     }
 
     #[test]

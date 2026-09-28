@@ -81,6 +81,9 @@ pub struct AppState {
     pub spawn_capabilities: Arc<DashMap<String, cctui_proto::api::SpawnCapability>>,
     /// Read on the gateway hot path only while non-empty.
     pub session_usd_budgets: Arc<DashMap<String, f64>>,
+    /// Machines whose daemon advertised `mark_acks`; only they may be sent
+    /// [`cctui_proto::ws::DaemonFrameDown::TranscriptAck`].
+    pub mark_ack_daemons: Arc<DashMap<Uuid, ()>>,
     /// Rolling RPM/TPM windows, keyed by provider row id.
     pub gateway_rate_windows: Arc<DashMap<Uuid, crate::routes::gateway::RateWindow>>,
 }
@@ -172,6 +175,7 @@ impl AppState {
             machine_event_inserts: Arc::new(DashMap::new()),
             spawn_capabilities: Arc::new(DashMap::new()),
             session_usd_budgets: Arc::new(DashMap::new()),
+            mark_ack_daemons: Arc::new(DashMap::new()),
             gateway_rate_windows: Arc::new(DashMap::new()),
             update_check: crate::update_check::UpdateCheck::shared(),
             self_update: Arc::new(crate::routes::self_update::SelfUpdateGuard::default()),

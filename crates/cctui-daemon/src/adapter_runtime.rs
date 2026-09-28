@@ -111,6 +111,10 @@ pub trait SessionDriver: Send {
         unsupported("resume_marks")
     }
 
+    async fn ack_marks(&mut self, _marks: Vec<(String, u64)>) -> CommandOutcome {
+        unsupported("ack_marks")
+    }
+
     async fn fork(
         &mut self,
         _parent_local_id: String,
@@ -188,6 +192,7 @@ pub async fn dispatch_command<D: SessionDriver + ?Sized>(
     let command_id = cmd.command_id();
     let outcome = match cmd {
         AdapterCommand::ResumeMarks { marks } => driver.resume_marks(marks).await,
+        AdapterCommand::AckMarks { marks } => driver.ack_marks(marks).await,
         AdapterCommand::SendMessage { local_id, text } => driver.send_message(local_id, text).await,
         AdapterCommand::Kill { local_id, signal } => driver.kill(local_id, signal).await,
         AdapterCommand::Spawn { spec, command_id, session_id } => {

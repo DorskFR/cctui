@@ -88,6 +88,19 @@ impl Driver {
             .map_or(key, |loc| loc.offset_key.clone())
     }
 
+    /// Record marks the server has durably stored, so neither the periodic nor
+    /// the forced reconcile re-sends a window behind them. Purely additive and
+    /// monotonic: a late or out-of-order ack can never rewind what is acked.
+    pub(super) fn apply_mark_acks(&mut self, marks: Vec<(String, u64)>) {
+        for (key, mark) in marks {
+            let key = self.offset_key_for_mark(key);
+            let acked = self.acked_marks.entry(key.clone()).or_insert(0);
+            *acked = (*acked).max(mark);
+            let server = self.server_marks.entry(key).or_insert(0);
+            *server = (*server).max(mark);
+        }
+    }
+
     /// Apply server-pushed transcript resume marks: record each mark,
     /// clamp the cursor of any session already ahead-clampable forward, and heal
     /// a session we already tail whose offset has run ahead of (or has no) mark
@@ -331,6 +344,69 @@ mod tests {
             d.reconcile_tail(force).await;
         }
         assert!(rx.try_recv().is_err(), "an acked session must emit zero resend frames");
+    }
+
+    #[tokio::test]
+    async fn a_per_mark_ack_stops_the_forced_reconcile_from_resending_the_window() {
+        // acceptance: without the ack, every 45 s forced pass re-sends the last
+        // growth window until the next reconnect's ResumeMarks.
+        let (mut d, mut rx) = driver();
+        let sess = write_main_transcript(&d, "abcd1234", &[&text_line("one")]);
+        d.apply_snapshot(vec![snap("abcd1234", "working", None)]).await;
+        assert_eq!(drain_messages(&mut rx), vec!["one".to_owned()]);
+        let mark = d.offsets.get(&sess);
+
+        d.apply_mark_acks(vec![(sess.clone(), mark)]);
+        for force in [true, false, true] {
+            d.reconcile_tail(force).await;
+        }
+        assert!(rx.try_recv().is_err(), "an acked window must never be re-sent");
+    }
+
+    #[tokio::test]
+    async fn an_ack_only_covers_the_bytes_it_names() {
+        let (mut d, mut rx) = driver();
+        let sess = write_main_transcript(&d, "abcd1234", &[&text_line("acked")]);
+        d.apply_snapshot(vec![snap("abcd1234", "working", None)]).await;
+        let _ = drain_messages(&mut rx);
+        d.apply_mark_acks(vec![(sess.clone(), d.offsets.get(&sess))]);
+
+        write_main_transcript(&d, "abcd1234", &[&text_line("fresh")]);
+        d.apply_snapshot(vec![snap("abcd1234", "working", None)]).await;
+        assert_eq!(drain_messages(&mut rx), vec!["fresh".to_owned()]);
+
+        d.reconcile_tail(true).await;
+        assert_eq!(drain_messages(&mut rx), vec!["fresh".to_owned()], "only the unacked tail");
+    }
+
+    #[tokio::test]
+    async fn a_stale_ack_can_never_rewind_what_is_already_acked() {
+        let (mut d, mut rx) = driver();
+        let sess = write_main_transcript(&d, "abcd1234", &[&text_line("one"), &text_line("two")]);
+        d.apply_snapshot(vec![snap("abcd1234", "working", None)]).await;
+        let _ = drain_messages(&mut rx);
+        let mark = d.offsets.get(&sess);
+
+        d.apply_mark_acks(vec![(sess.clone(), mark)]);
+        d.apply_mark_acks(vec![(sess.clone(), 1)]);
+        assert_eq!(d.acked_marks.get(&sess).copied(), Some(mark));
+        d.reconcile_tail(true).await;
+        assert!(rx.try_recv().is_err(), "an out-of-order ack must not reopen the window");
+    }
+
+    #[tokio::test]
+    async fn an_ack_keyed_by_local_id_lands_on_a_rotated_offset_key() {
+        let (mut d, mut rx) = driver();
+        write_main_transcript(&d, "abcd1234", &[&text_line("first")]);
+        d.apply_snapshot(vec![snap("abcd1234", "working", None)]).await;
+        let _ = drain_messages(&mut rx);
+        let loc = d.transcript_locations.get_mut("abcd1234").expect("pinned");
+        "rotated-uuid".clone_into(&mut loc.offset_key);
+
+        d.apply_mark_acks(vec![("abcd1234-uuid".to_owned(), 77)]);
+
+        assert_eq!(d.acked_marks.get("rotated-uuid").copied(), Some(77));
+        assert_eq!(d.server_marks.get("rotated-uuid").copied(), Some(77));
     }
 
     #[tokio::test]

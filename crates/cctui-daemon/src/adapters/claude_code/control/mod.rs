@@ -467,8 +467,9 @@ pub struct Driver {
     /// forward tail emits, so the periodic pass only re-sends on real
     /// divergence (local offset ahead of what the server holds).
     server_marks: HashMap<String, u64>,
-    /// Transcript marks the server itself reported (`ResumeMarks`), never
-    /// advanced by our own emits: the only proof of what it stored.
+    /// Transcript marks the server itself reported (`ResumeMarks` on connect,
+    /// `TranscriptAck` as each mark lands), never advanced by our own emits:
+    /// the only proof of what it stored.
     acked_marks: HashMap<String, u64>,
     /// Spawn-time `--model`/`--effort` remembered per worker `short`.
     /// Used as a fallback for the Status event when `state.json` isn't on disk
@@ -1213,6 +1214,11 @@ impl SessionDriver for Driver {
 
     async fn resume_marks(&mut self, marks: Vec<(String, u64)>) -> CommandOutcome {
         self.apply_resume_marks(marks).await;
+        Ok(Handled::Done)
+    }
+
+    async fn ack_marks(&mut self, marks: Vec<(String, u64)>) -> CommandOutcome {
+        self.apply_mark_acks(marks);
         Ok(Handled::Done)
     }
 

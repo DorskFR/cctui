@@ -317,6 +317,11 @@ pub enum AdapterCommand {
     ResumeMarks {
         marks: Vec<(String, u64)>,
     },
+    /// `local_id` → offset the server has durably stored; nothing behind it is
+    /// ever re-sent again.
+    AckMarks {
+        marks: Vec<(String, u64)>,
+    },
     SendMessage {
         local_id: String,
         text: String,
@@ -445,7 +450,7 @@ impl AdapterCommand {
             | Self::WatchPty { local_id, .. } => Some(local_id),
             Self::Fork { parent_local_id, .. } => Some(parent_local_id),
             Self::Spawn { spec, .. } => spec.parent_local_id.as_deref(),
-            Self::ResumeMarks { .. } => None,
+            Self::ResumeMarks { .. } | Self::AckMarks { .. } => None,
         }
     }
 

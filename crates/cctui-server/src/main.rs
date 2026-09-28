@@ -182,6 +182,7 @@ async fn build_state(
         connect_tracker: Arc::new(bandwidth_watch::ConnectTracker::default()),
         divergence_tracker: Arc::new(bandwidth_watch::DivergenceTracker::default()),
         machine_event_inserts: Arc::new(dashmap::DashMap::new()),
+        mark_ack_daemons: Arc::new(dashmap::DashMap::new()),
         spawn_capabilities: Arc::new(dashmap::DashMap::new()),
         session_usd_budgets: Arc::new(dashmap::DashMap::new()),
         gateway_rate_windows: Arc::new(dashmap::DashMap::new()),
