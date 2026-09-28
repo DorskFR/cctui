@@ -914,14 +914,16 @@ fn parse_assistant(local_id: &str, line: &Value, out: &mut Vec<AdapterEvent>) {
     let Some(content) = message.and_then(|m| m.get("content")).and_then(Value::as_array) else {
         return;
     };
+    let stop_reason = message.and_then(|m| m.get("stop_reason")).and_then(Value::as_str);
     for block in content {
-        parse_assistant_block(local_id, message_id, block, out);
+        parse_assistant_block(local_id, message_id, stop_reason, block, out);
     }
 }
 
 fn parse_assistant_block(
     local_id: &str,
     message_id: Option<&str>,
+    stop_reason: Option<&str>,
     block: &Value,
     out: &mut Vec<AdapterEvent>,
 ) {
@@ -933,6 +935,9 @@ fn parse_assistant_block(
                     "role": "assistant",
                     "text": block.get("text"),
                     "message_id": message_id,
+                    // `end_turn` is the only proof this text was the turn's last
+                    // output; anything else means more work follows.
+                    "stop_reason": stop_reason,
                 }),
                 turn_id: None,
             });
@@ -1701,6 +1706,50 @@ mod tests {
             assert_eq!(payloads[0]["text"], payloads[1]["text"]);
             assert_ne!(payloads[0], payloads[1], "{content}");
         }
+    }
+
+    /// The turn-end policy in `childwatch` reads `stop_reason` off assistant
+    /// text: without it, narration that precedes a tool call is mistaken for a
+    /// final answer.
+    #[test]
+    fn assistant_text_carries_the_messages_stop_reason() {
+        let cases = [
+            (r#""end_turn""#, Some("end_turn")),
+            (r#""tool_use""#, Some("tool_use")),
+            ("null", None),
+        ];
+        for (raw, want) in cases {
+            let line = format!(
+                r#"{{"type":"assistant","message":{{"role":"assistant","stop_reason":{raw},"content":[{{"type":"text","text":"hi"}}]}}}}"#
+            );
+            let mut events = Vec::new();
+            parse_line("s", &serde_json::from_str::<Value>(&line).unwrap(), &mut events);
+            let payload = events
+                .iter()
+                .find_map(|e| match e {
+                    AdapterEvent::Message { payload, .. } if payload["role"] == "assistant" => {
+                        Some(payload.clone())
+                    }
+                    _ => None,
+                })
+                .expect("assistant text event");
+            assert_eq!(payload["stop_reason"].as_str(), want, "{raw}");
+        }
+
+        // A line with no stop_reason at all must not invent one.
+        let mut events = Vec::new();
+        let bare = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"hi"}]}}"#;
+        parse_line("s", &serde_json::from_str::<Value>(bare).unwrap(), &mut events);
+        let payload = events
+            .iter()
+            .find_map(|e| match e {
+                AdapterEvent::Message { payload, .. } if payload["role"] == "assistant" => {
+                    Some(payload.clone())
+                }
+                _ => None,
+            })
+            .expect("assistant text event");
+        assert!(payload["stop_reason"].is_null(), "{payload}");
     }
 
     #[test]

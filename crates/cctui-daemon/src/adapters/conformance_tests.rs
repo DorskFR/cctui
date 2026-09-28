@@ -42,6 +42,7 @@ fn spec_without_dir(adapter: &str) -> SessionSpec {
 fn every_command(adapter: &str) -> Vec<AdapterCommand> {
     vec![
         AdapterCommand::ResumeMarks { marks: vec![] },
+        AdapterCommand::AckMarks { marks: vec![] },
         AdapterCommand::SendMessage { local_id: GHOST.into(), text: "hi".into() },
         AdapterCommand::Kill { local_id: GHOST.into(), signal: None },
         AdapterCommand::Spawn {
