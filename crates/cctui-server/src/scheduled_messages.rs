@@ -10,9 +10,13 @@ use crate::state::AppState;
 use crate::store::sessions::SessionRowStatus;
 
 pub const MAX_HORIZON_DAYS: i64 = 30;
-const MAX_ATTEMPTS: i32 = 8;
+/// Sized so the doubling schedule below still spans over two hours: a session
+/// unreachable for an hour must recover, not dead-letter.
+const MAX_ATTEMPTS: i32 = 11;
+
 /// Redelivery schedule: 10 s doubling to a 1 h cap, jittered so a batch that
-/// failed together does not retry in lockstep.
+/// failed together does not retry in lockstep. The first retry stays seconds
+/// away for a transient failure; [`MAX_ATTEMPTS`] carries the total reach.
 fn retry_schedule() -> Backoff {
     Backoff::new(StdDuration::from_secs(10), StdDuration::from_secs(3600))
 }
@@ -280,8 +284,29 @@ mod tests {
                 other => panic!("attempts {attempts} should retry, got {other:?}"),
             }
         }
-        assert_eq!(retry_after_failure(7), Retry::Dead { attempts: 8 });
+        assert_eq!(retry_after_failure(MAX_ATTEMPTS - 1), Retry::Dead { attempts: MAX_ATTEMPTS });
         assert_eq!(retry_after_failure(20), Retry::Dead { attempts: 21 });
+    }
+
+    /// Sum of the superseded fixed table (10/30/120/300/900/1800/3600). The
+    /// doubling schedule must reach at least this far, even at the bottom of the
+    /// jitter range, or an hour-long outage dead-letters where it used to recover.
+    const PREVIOUS_HORIZON_SECS: i64 = 6760;
+
+    #[test]
+    fn retry_horizon_is_no_shorter_than_the_table_it_replaced() {
+        let horizon: i64 = (0..MAX_ATTEMPTS - 1)
+            .map(|attempts| match retry_after_failure(attempts) {
+                Retry::After { secs, .. } => secs,
+                Retry::Dead { .. } => panic!("attempts {attempts} is inside the budget"),
+            })
+            .sum();
+        assert!(
+            horizon >= PREVIOUS_HORIZON_SECS,
+            "horizon {horizon}s is shorter than the {PREVIOUS_HORIZON_SECS}s it replaced"
+        );
+        assert!(horizon >= 3600, "horizon {horizon}s cannot outlast a one-hour outage");
+        assert_eq!(retry_after_failure(MAX_ATTEMPTS - 1), Retry::Dead { attempts: MAX_ATTEMPTS });
     }
 
     #[test]

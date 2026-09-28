@@ -30,12 +30,14 @@ type HmacSha256 = Hmac<Sha256>;
 /// "running" must not consume the delivery retry budget.
 const POLL_INTERVAL_SECS: i64 = 30;
 
-/// Retry budget before dead-lettering. With the backoff schedule below this
-/// spans well over an hour of attempts.
-const MAX_ATTEMPTS: i32 = 8;
+/// Retry budget before dead-lettering, sized so the schedule below spans over
+/// two hours: a receiver down for an hour must recover, not dead-letter.
+const MAX_ATTEMPTS: i32 = 11;
 
 /// Delivery retry schedule: 10 s doubling to a 1 h cap, jittered so a receiver
-/// coming back from an outage is not hit by every pending row at once.
+/// coming back from an outage is not hit by every pending row at once. The first
+/// retry stays seconds away for a transient blip; [`MAX_ATTEMPTS`] carries the
+/// total reach past two hours.
 fn retry_schedule() -> Backoff {
     Backoff::new(Duration::from_secs(10), Duration::from_secs(3600))
 }
@@ -382,6 +384,27 @@ mod tests {
         DELIVERY_CONCURRENCY, DELIVERY_TIMEOUT, MAX_ATTEMPTS, NotifyUrlError, SWEEP_LIMIT,
         build_payload, for_each_bounded, retry_schedule, sign, validate_notify_url,
     };
+
+    /// Sum of the superseded fixed table (10/30/120/300/900/1800/3600). The
+    /// doubling schedule must reach at least this far, even at the bottom of the
+    /// jitter range, or an hour-long outage dead-letters where it used to recover.
+    const PREVIOUS_HORIZON_SECS: i64 = 6760;
+
+    /// Retries span the whole budget, so the horizon is the sum of every delay a
+    /// row can be given before it is declared dead.
+    #[test]
+    fn retry_horizon_is_no_shorter_than_the_table_it_replaced() {
+        let s = retry_schedule();
+        let retries = u32::try_from(MAX_ATTEMPTS - 1).unwrap();
+        let horizon: i64 = (0..retries).map(|a| s.delay_secs_for(a)).sum();
+        assert!(
+            horizon >= PREVIOUS_HORIZON_SECS,
+            "horizon {horizon}s over {retries} retries is shorter than the \
+             {PREVIOUS_HORIZON_SECS}s it replaced"
+        );
+        // A receiver that comes back within the hour must still be delivered to.
+        assert!(horizon >= 3600, "horizon {horizon}s cannot outlast a one-hour outage");
+    }
 
     /// Every retry inside the attempt budget doubles within the shared ±20%
     /// jitter and never exceeds the 1 h cap.
