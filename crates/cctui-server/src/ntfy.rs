@@ -32,7 +32,7 @@ pub fn notify(config: &Config, n: Notification) {
         return;
     };
     tokio::spawn(async move {
-        let client = crate::http_client();
+        let client = crate::build_http_client();
         let resp = client
             .post(&url)
             .bearer_auth(token)

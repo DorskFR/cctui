@@ -327,7 +327,7 @@ mod tests {
         // A recorded answer stamps the probe clock, so an immediate on-demand
         // refresh serves it instead of reaching for the network.
         c.record("v999.0.0", "u".into()).await;
-        assert_eq!(c.refresh(&crate::http_client()).await, Ok(false));
+        assert_eq!(c.refresh(&crate::build_http_client()).await, Ok(false));
         assert_eq!(c.newer().await.map(|l| l.version), Some("999.0.0".into()));
     }
 }

@@ -567,7 +567,8 @@ mod tests {
         let per_row = started.elapsed();
 
         let started = std::time::Instant::now();
-        let seqs = insert_events(&pool, mid, uid, backfill(&batched_sid, n)).await.expect("batched");
+        let seqs =
+            insert_events(&pool, mid, uid, backfill(&batched_sid, n)).await.expect("batched");
         let batched = started.elapsed();
 
         assert_eq!(seqs.len(), n);

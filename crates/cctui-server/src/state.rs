@@ -156,7 +156,7 @@ impl AppState {
             dispatchers: Arc::new(DispatcherRegistry::new()),
             machine_liveness: Arc::new(DashMap::new()),
             account_locks: Arc::new(DashMap::new()),
-            http_client: crate::http_client(),
+            http_client: crate::build_http_client(),
             langfuse: None,
             pending_oauth_logins: Arc::new(DashMap::new()),
             account_usage_cache: Arc::new(DashMap::new()),

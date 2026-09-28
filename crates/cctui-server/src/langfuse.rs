@@ -715,7 +715,7 @@ mod tests {
                 secret_key: "s".into(),
                 sample_rate: 1.0,
             },
-            crate::http_client(),
+            crate::build_http_client(),
         );
         assert!(c.should_sample());
         let z = LangfuseClient::new(
@@ -726,7 +726,7 @@ mod tests {
                 secret_key: "s".into(),
                 sample_rate: 0.0,
             },
-            crate::http_client(),
+            crate::build_http_client(),
         );
         assert!(!z.should_sample());
     }
@@ -749,7 +749,7 @@ mod tests {
                 secret_key: "s".into(),
                 sample_rate: 1.0,
             },
-            crate::http_client(),
+            crate::build_http_client(),
         );
         assert!(client.usage_cache.is_empty());
 

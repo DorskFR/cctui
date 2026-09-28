@@ -36,7 +36,7 @@ struct DispatchReply {
 
 impl HttpDispatcher {
     pub fn new(id: impl Into<String>, url: impl Into<String>, token: Option<String>) -> Self {
-        Self { id: id.into(), url: url.into(), token, client: crate::http_client() }
+        Self { id: id.into(), url: url.into(), token, client: crate::build_http_client() }
     }
 }
 

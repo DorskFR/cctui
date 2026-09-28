@@ -518,7 +518,10 @@ pub struct ProviderSpec {
     #[serde(default)]
     #[cfg_attr(
         feature = "ts",
-        ts(as = "Option<std::collections::BTreeMap<String, crate::soft_limit::SoftLimit>>", optional)
+        ts(
+            as = "Option<std::collections::BTreeMap<String, crate::soft_limit::SoftLimit>>",
+            optional
+        )
     )]
     pub soft_limits: Option<serde_json::Value>,
     /// Legacy scalar soft-limit fields, still accepted on create and
@@ -681,7 +684,10 @@ pub struct UpdateProvider {
     #[serde(default)]
     #[cfg_attr(
         feature = "ts",
-        ts(as = "Option<std::collections::BTreeMap<String, crate::soft_limit::SoftLimit>>", optional)
+        ts(
+            as = "Option<std::collections::BTreeMap<String, crate::soft_limit::SoftLimit>>",
+            optional
+        )
     )]
     pub soft_limits: Option<serde_json::Value>,
     /// Replacement usage ticker `{ enabled?, step_pct? }`. Provided → replaces
@@ -2359,7 +2365,9 @@ pub struct AccountUsage {
     /// Raw upstream usage JSON (passed through verbatim) or `null`.
     #[cfg_attr(
         feature = "ts",
-        ts(type = "Record<string, { utilization?: number | null, resets_at?: string | null } | null> | null")
+        ts(
+            type = "Record<string, { utilization?: number | null, resets_at?: string | null } | null> | null"
+        )
     )]
     pub usage: Option<serde_json::Value>,
     /// Normalized, provider-agnostic usage windows: the collection the

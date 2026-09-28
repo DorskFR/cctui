@@ -84,7 +84,7 @@ fn install_crypto_provider() {
     let _ = rustls::crypto::ring::default_provider().install_default();
 }
 
-fn http_client() -> reqwest::Client {
+fn build_http_client() -> reqwest::Client {
     install_crypto_provider();
     reqwest::Client::new()
 }
@@ -147,7 +147,7 @@ async fn build_state(
     let dispatchers = init_dispatchers(config);
 
     let presence = Arc::new(presence::PodIdentity::from_env());
-    let http_client = http_client();
+    let http_client = build_http_client();
 
     let (transport, internal_secret) = init_bus(&pool, config, &presence, &http_client).await?;
 
@@ -180,7 +180,7 @@ async fn build_state(
         // Optional Langfuse tracing sink. `None` (dark) unless the
         // CCTUI_LANGFUSE_* env is fully set — zero overhead on the gateway path.
         langfuse: langfuse::LangfuseConfig::from_env()
-            .map(|c| Arc::new(langfuse::LangfuseClient::new(c, http_client()))),
+            .map(|c| Arc::new(langfuse::LangfuseClient::new(c, build_http_client()))),
         pending_oauth_logins: Arc::new(dashmap::DashMap::new()),
         account_usage_cache: Arc::new(dashmap::DashMap::new()),
         pr_status_cache: cctui_proto::classifier::PrStatusCache::new(),
