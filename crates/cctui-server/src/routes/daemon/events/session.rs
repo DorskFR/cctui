@@ -150,7 +150,7 @@ async fn ack_transcript_mark(
     state: &AppState,
     machine_id: Uuid,
     adapter_id: &str,
-    local_id: String,
+    local_id: &str,
     offset: u64,
 ) {
     if !state.mark_ack_daemons.contains_key(&machine_id) {
@@ -158,9 +158,9 @@ async fn ack_transcript_mark(
     }
     let frame = cctui_proto::ws::DaemonFrameDown::TranscriptAck {
         adapter_id: adapter_id.to_owned(),
-        session_marks: vec![(local_id.clone(), offset)],
+        session_marks: vec![(local_id.to_owned(), offset)],
     };
-    if let Err(err) = state.bus.command_daemon_for_session(machine_id, &local_id, frame).await {
+    if let Err(err) = state.bus.command_daemon_for_session(machine_id, local_id, frame).await {
         tracing::debug!(%err, %machine_id, "transcript ack not delivered");
     }
 }
@@ -184,7 +184,7 @@ pub(super) async fn on_session_event(
         }
         AdapterEvent::TranscriptMark { local_id, offset } => {
             update_transcript_mark(state, &local_id, offset).await?;
-            ack_transcript_mark(state, machine_id, adapter_id, local_id, offset).await;
+            ack_transcript_mark(state, machine_id, adapter_id, &local_id, offset).await;
         }
         AdapterEvent::SessionModel { local_id, model } => {
             // Transcript ground truth overrides the requested `--model`.
