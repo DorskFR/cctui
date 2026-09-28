@@ -103,15 +103,29 @@ struct SpawnTarget {
     command_id: Uuid,
     /// For claude-code the session id is pre-minted here and handed to the
     /// worker as `--session-id` (mirroring the fork path), so the gateway token
-    /// can be bound to the *real* session id the worker registers as — rather
-    /// than the `command_id`, which the worker never knows and so never
-    /// reconciles (leaving `account_name` perpetually null + the key icon
-    /// dead). codex mints its own thread id and ignores the pre-minted id, so
-    /// its tokens still fall back to `command_id` keying.
+    /// can be bound to the *real* session id the worker registers as. Only
+    /// claude registers under it, so only claude gets it back in the response.
     pre_session_id: Option<Uuid>,
-    /// The id the gateway session token is bound to: the pre-minted real
-    /// session id for claude, else the `command_id`.
+    /// The key the gateway session token, spawn capability and spawn intents
+    /// are stored under: the pre-minted session id for claude, else the
+    /// `command_id`. Always sent to the daemon as `Spawn.session_id`, whose
+    /// adapters echo it as `spawn_key` on `SessionStarted` so the server can
+    /// re-key all of it onto the id the harness really registered under.
+    token_key: Uuid,
+    /// `token_key` as the text id the stores use.
     token_session_id: String,
+}
+
+/// The ids a spawn is dispatched under: `(pre_session_id, token_key)`.
+///
+/// codex and opencode mint their own session id, so the token cannot be bound
+/// to it up front. It is bound to `command_id` instead, and that key must still
+/// reach the daemon: an adapter that never learns it cannot echo it as
+/// `spawn_key`, and the token then stays on an id no session ever has, which
+/// leaves the session with no account, no switch-account and no revocation.
+fn spawn_ids(adapter_id: &str, command_id: Uuid) -> (Option<Uuid>, Uuid) {
+    let pre_session_id = (adapter_id == "claude-code").then(Uuid::new_v4);
+    (pre_session_id, pre_session_id.unwrap_or(command_id))
 }
 
 async fn validate_spawn(
@@ -133,9 +147,8 @@ async fn validate_spawn(
 
     let adapter_id = req.adapter_id.clone().unwrap_or_else(|| "claude-code".to_owned());
     let command_id = Uuid::new_v4();
-    let is_claude = adapter_id == "claude-code";
-    let pre_session_id = is_claude.then(Uuid::new_v4);
-    let token_session_id = pre_session_id.unwrap_or(command_id).to_string();
+    let (pre_session_id, token_key) = spawn_ids(&adapter_id, command_id);
+    let token_session_id = token_key.to_string();
     if req.auto_archive {
         crate::auto_archive::remember_intent(state, &token_session_id).await;
     }
@@ -153,6 +166,7 @@ async fn validate_spawn(
         adapter_id,
         command_id,
         pre_session_id,
+        token_key,
         token_session_id,
     })
 }
@@ -396,6 +410,7 @@ async fn execute_spawn(
         adapter_id,
         command_id,
         pre_session_id,
+        token_key,
         token_session_id,
         ..
     } = target;
@@ -428,7 +443,7 @@ async fn execute_spawn(
         command: Box::new(AdapterCommand::Spawn {
             spec,
             command_id: Some(command_id),
-            session_id: pre_session_id,
+            session_id: Some(token_key),
         }),
     };
 
@@ -965,6 +980,19 @@ pub async fn get_machine_commands(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn every_spawn_hands_the_daemon_the_key_its_token_is_bound_to() {
+        let command_id = uuid::Uuid::new_v4();
+        for adapter in ["codex", "opencode"] {
+            let (pre, key) = super::spawn_ids(adapter, command_id);
+            assert_eq!(pre, None, "{adapter} registers under its own id, none is promised");
+            assert_eq!(key, command_id, "{adapter}'s token is keyed on the dispatch");
+        }
+        let (pre, key) = super::spawn_ids("claude-code", command_id);
+        assert_eq!(pre, Some(key), "claude registers under the pre-minted id");
+        assert_ne!(key, command_id);
+    }
+
     use super::{AccountDecision, decide_account, resolve_default_account};
     use uuid::Uuid;
 

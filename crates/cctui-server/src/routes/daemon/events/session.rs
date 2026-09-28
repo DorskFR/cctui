@@ -368,4 +368,128 @@ mod tests {
         assert_eq!(end_reason.as_deref(), Some("killed"));
         assert_eq!(end_detail, None);
     }
+
+    /// An account named `Astra-<id>` with one openai provider row, for `uid`.
+    async fn seed_openai_account(pool: &sqlx::PgPool, uid: Uuid) -> (Uuid, Uuid) {
+        let acct = Uuid::new_v4();
+        let prov = Uuid::new_v4();
+        sqlx::query("INSERT INTO accounts (id, user_id, name) VALUES ($1, $2, $3)")
+            .bind(acct)
+            .bind(uid)
+            .bind(format!("Astra-{acct}"))
+            .execute(pool)
+            .await
+            .expect("seed account");
+        sqlx::query(
+            "INSERT INTO account_providers \
+                 (id, user_id, provider, encrypted_refresh_token, account_id) \
+             VALUES ($1, $2, 'openai', 'x', $3)",
+        )
+        .bind(prov)
+        .bind(uid)
+        .bind(acct)
+        .execute(pool)
+        .await
+        .expect("seed provider");
+        (acct, prov)
+    }
+
+    /// DB-gated: a codex spawn binds its gateway token to the dispatch key
+    /// (codex mints its own thread id), and the thread registers under that
+    /// thread id echoing the key as `spawn_key`. The token, and the spawn's
+    /// attachments, must land on the thread id: every account lookup of the
+    /// session list (`account_name`, switch-account, revocation at end) reads
+    /// `session_tokens` by the registered id.
+    #[tokio::test]
+    async fn codex_start_rebinds_the_dispatch_key_onto_the_thread_id() {
+        let Some(url) = crate::routes::gateway::test_db_url("codex_start_rebinds") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let state = AppState::for_test(pool.clone());
+        let (uid, mid) = seed_machine(&pool, "codex-rebind").await;
+        let (acct, prov) = seed_openai_account(&pool, uid).await;
+        let dispatch_key = Uuid::new_v4().to_string();
+        let thread_id = Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO session_tokens (token_hash, session_id, account_id) VALUES ($1, $2, $3)",
+        )
+        .bind(format!("th-{dispatch_key}"))
+        .bind(&dispatch_key)
+        .bind(prov)
+        .execute(&pool)
+        .await
+        .expect("seed token under the dispatch key");
+        sqlx::query(
+            "INSERT INTO session_attachments (session_id, name, hash, size) \
+             VALUES ($1, 'brief.md', 'h', 1)",
+        )
+        .bind(&dispatch_key)
+        .execute(&pool)
+        .await
+        .expect("seed bootstrap attachment");
+
+        super::on_session_event(
+            &state,
+            mid,
+            uid,
+            "codex",
+            AdapterEvent::SessionStarted {
+                local_id: thread_id.clone(),
+                meta: cctui_proto::adapter::SessionMeta {
+                    working_dir: Some("/w".into()),
+                    parent_local_id: None,
+                    extra: json!({ "source": "codex-app-server", "spawn_key": dispatch_key }),
+                },
+            },
+        )
+        .await
+        .expect("session started");
+
+        let name: Option<String> = sqlx::query_scalar(
+            "SELECT a.name FROM session_tokens st \
+             JOIN account_providers ap ON ap.id = st.account_id \
+             JOIN accounts a ON a.id = ap.account_id \
+             WHERE st.session_id = $1 AND st.revoked_at IS NULL",
+        )
+        .bind(&thread_id)
+        .fetch_optional(&pool)
+        .await
+        .expect("account lookup");
+        assert_eq!(name, Some(format!("Astra-{acct}")), "the thread id must resolve its account");
+        let left: i64 = sqlx::query_scalar(
+            "SELECT (SELECT count(*) FROM session_tokens WHERE session_id = $1) \
+                  + (SELECT count(*) FROM session_attachments WHERE session_id = $1)",
+        )
+        .bind(&dispatch_key)
+        .fetch_one(&pool)
+        .await
+        .expect("count leftovers");
+        assert_eq!(left, 0, "nothing may stay behind on the dispatch key");
+        let attachments: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM session_attachments WHERE session_id = $1")
+                .bind(&thread_id)
+                .fetch_one(&pool)
+                .await
+                .expect("count attachments");
+        assert_eq!(attachments, 1, "the bootstrap attachment follows the session");
+
+        sqlx::query("DELETE FROM session_tokens WHERE session_id = $1")
+            .bind(&thread_id)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM account_providers WHERE id = $1")
+            .bind(prov)
+            .execute(&pool)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM accounts WHERE id = $1").bind(acct).execute(&pool).await.ok();
+        crate::routes::daemon::test_support::drop_machines(&pool, &[thread_id], &[(uid, mid)])
+            .await;
+    }
 }

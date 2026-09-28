@@ -431,7 +431,9 @@ impl CommandPump {
     }
 
     // codex mints its own thread id, so the server-pre-minted `session_id` is
-    // ignored here.
+    // not the thread's id: it keys the launch and is echoed as `spawn_key` on
+    // `SessionStarted`, which is how the server moves the gateway token onto
+    // the thread id.
     async fn spawn_session(
         &self,
         spec: &cctui_proto::adapter::SessionSpec,
