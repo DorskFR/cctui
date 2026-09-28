@@ -16,6 +16,7 @@ use serde_json::{Value, json};
 use ts_rs::TS;
 
 use crate::auth::AuthContext;
+use crate::error::AppError;
 use crate::state::AppState;
 
 /// Current settings payload schema version. Bump when adding a `migrate` arm.
@@ -462,7 +463,7 @@ pub async fn put_settings(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
     Json(body): Json<SettingsPayload>,
-) -> Result<Json<SettingsPayload>, StatusCode> {
+) -> Result<Json<SettingsPayload>, AppError> {
     // Upgrade the incoming payload to the current shape before persisting, so
     // stored rows are always current-versioned.
     let mut data = migrate(body.data, body.version);
@@ -473,7 +474,7 @@ pub async fn put_settings(
     // Reject the whole PUT if any user scrub regex fails to compile.
     if let Err(msg) = clamp_secret_scrub(&mut data) {
         tracing::info!("rejecting settings PUT: {msg}");
-        return Err(StatusCode::BAD_REQUEST);
+        return Err(AppError::new(StatusCode::BAD_REQUEST, msg));
     }
     clamp_locale(&mut data);
     clamp_session_emoji_prefix(&mut data);
@@ -492,11 +493,7 @@ pub async fn put_settings(
         sqlx::query_scalar("SELECT data FROM user_settings WHERE user_id = $1")
             .bind(ctx.user_id)
             .fetch_optional(&state.pool)
-            .await
-            .map_err(|e| {
-                tracing::error!("db error: {e}");
-                StatusCode::INTERNAL_SERVER_ERROR
-            })?;
+            .await?;
     let prev_mode = prev.as_ref().map_or(DEFAULT_HARNESS_MODE, |d| harness_mode_of(d));
     let prev_scrub = prev
         .as_ref()
@@ -514,11 +511,7 @@ pub async fn put_settings(
     .bind(CURRENT_VERSION)
     .bind(data)
     .fetch_one(&state.pool)
-    .await
-    .map_err(|e| {
-        tracing::error!("db error: {e}");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    .await?;
 
     // Live-push a fresh Reconcile to every machine the user owns the instant the
     // harness mode changes, so connected daemons pick up the new mode without a
@@ -553,7 +546,7 @@ pub struct RescrubRequest {
     #[serde(default)]
     pub dry_run: bool,
     #[serde(default)]
-    pub session_ids: Option<Vec<uuid::Uuid>>,
+    pub session_ids: Option<Vec<String>>,
     #[serde(default)]
     pub since: Option<chrono::DateTime<chrono::Utc>>,
 }
@@ -606,7 +599,7 @@ pub async fn rescrub_settings(
             "SELECT se.id, se.payload FROM stream_events se \
              JOIN sessions s ON s.id = se.session_id \
              WHERE s.user_id = $1 AND se.id > $2 \
-               AND ($3::uuid[] IS NULL OR se.session_id = ANY($3)) \
+               AND ($3::text[] IS NULL OR se.session_id = ANY($3)) \
                AND ($4::timestamptz IS NULL OR se.created_at >= $4) \
              ORDER BY se.id LIMIT $5",
         )
@@ -657,12 +650,18 @@ pub async fn rescrub_settings(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        clamp_auto_resume, clamp_harness_mode, clamp_locale, clamp_macros, clamp_plugins,
-        clamp_secret_scrub, clamp_session_emoji_prefix, clamp_whip_stop_phrases, harness_mode_of,
-        harness_mode_to_adapter_token, secret_scrub_of, whip_stop_phrases_of,
-    };
+    use std::collections::BTreeSet;
+
     use serde_json::json;
+    use uuid::Uuid;
+
+    use super::{
+        AppState, AuthContext, Extension, Json, RescrubRequest, SettingsPayload, State, StatusCode,
+        Value, clamp_auto_resume, clamp_harness_mode, clamp_locale, clamp_macros, clamp_plugins,
+        clamp_secret_scrub, clamp_session_emoji_prefix, clamp_whip_stop_phrases, harness_mode_of,
+        harness_mode_to_adapter_token, put_settings, rescrub_settings, secret_scrub_of,
+        whip_stop_phrases_of,
+    };
 
     #[test]
     fn clamp_plugins_keeps_installed_boolean_flags_and_drops_an_empty_block() {
@@ -954,5 +953,149 @@ mod tests {
         clamp_macros(&mut on);
         assert_eq!(on["macros"]["enabled"], serde_json::json!(true));
         assert_eq!(on["macros"]["items"], serde_json::json!([]));
+    }
+
+    fn ctx(user_id: Uuid) -> AuthContext {
+        AuthContext { user_id, key_id: Uuid::new_v4(), machine_id: None, scopes: BTreeSet::new() }
+    }
+
+    #[tokio::test]
+    async fn put_settings_rejects_a_bad_regex_with_the_parse_error() {
+        let pool = sqlx::PgPool::connect_lazy("postgres://unused@localhost/none").unwrap();
+        let body = SettingsPayload {
+            version: 1,
+            data: json!({
+                "secretScrubPatterns": [{ "name": "custom", "regex": "*_token", "enabled": true }]
+            }),
+        };
+        let state = State(AppState::for_test(pool));
+        let sent = put_settings(state, Extension(ctx(Uuid::new_v4())), Json(body)).await;
+        let Err(err) = sent else {
+            panic!("an uncompilable pattern must not reach the database");
+        };
+        assert_eq!(err.status(), StatusCode::BAD_REQUEST);
+        assert!(err.message().contains("*_token"), "{}", err.message());
+        assert!(err.message().starts_with("invalid scrub regex"), "{}", err.message());
+    }
+
+    type Since = chrono::DateTime<chrono::Utc>;
+
+    const TOKEN: &str = "ghp_ABCDEFGHIJKLMNOPQRSTUVWX0123";
+
+    async fn seed_session(pool: &sqlx::PgPool, user: Uuid, machine: Uuid) -> String {
+        let sid = Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO sessions (id, machine_id, working_dir, user_id, machine_uuid, adapter_id) \
+             VALUES ($1, $2, '/w', $3, $4, 'claude-code')",
+        )
+        .bind(&sid)
+        .bind(machine.to_string())
+        .bind(user)
+        .bind(machine)
+        .execute(pool)
+        .await
+        .unwrap();
+        sid
+    }
+
+    async fn seed_event(pool: &sqlx::PgPool, sid: &str, age_days: i32) {
+        sqlx::query(
+            "INSERT INTO stream_events (session_id, event_type, payload, created_at) \
+             VALUES ($1, 'message', $2, now() - make_interval(days => $3::int))",
+        )
+        .bind(sid)
+        .bind(json!({ "role": "user", "text": format!("export TOKEN={TOKEN}") }))
+        .bind(age_days)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn rescrub_scopes_stored_events_by_text_session_id_and_since() {
+        let Some(url) = crate::routes::gateway::test_db_url("rescrub_scopes_stored_events") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let uid = Uuid::new_v4();
+        let machine = Uuid::new_v4();
+        sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
+            .bind(uid)
+            .bind(format!("rescrub-{uid}"))
+            .bind(format!("kh-{uid}"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO machines (id, user_id, name, key_hash) VALUES ($1, $2, $3, $4)")
+            .bind(machine)
+            .bind(uid)
+            .bind(machine.to_string())
+            .bind(format!("kh-{machine}"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        let old = seed_session(&pool, uid, machine).await;
+        let fresh = seed_session(&pool, uid, machine).await;
+        seed_event(&pool, &old, 60).await;
+        seed_event(&pool, &fresh, 1).await;
+
+        let state = AppState::for_test(pool.clone());
+        let ctx = ctx(uid);
+        let run = |dry_run: bool, ids: Option<Vec<String>>, since: Option<Since>| {
+            let (state, ctx) = (state.clone(), ctx.clone());
+            let req = RescrubRequest { dry_run, session_ids: ids, since };
+            async move { rescrub_settings(State(state), Extension(ctx), Json(req)).await }
+        };
+
+        let Json(all) = run(true, None, None).await.expect("all history");
+        assert_eq!((all.rows_scanned, all.rows_changed), (2, 2));
+        assert_eq!(all.by_category.get("github_token"), Some(&2));
+
+        let Json(one) = run(true, Some(vec![fresh]), None).await.expect("one session");
+        assert_eq!((one.rows_scanned, one.rows_changed), (1, 1));
+
+        let week_ago = chrono::Utc::now() - chrono::Duration::days(7);
+        let Json(recent) = run(true, None, Some(week_ago)).await.expect("scoped by since");
+        assert_eq!((recent.rows_scanned, recent.rows_changed), (1, 1));
+
+        let unknown = run(true, Some(vec!["not-a-uuid".to_owned()]), None).await;
+        let Json(unknown) = unknown.expect("a non-uuid id filters, it does not 500");
+        assert_eq!(unknown.rows_scanned, 0);
+
+        let Json(applied) = run(false, None, None).await.expect("real pass");
+        assert_eq!(applied.rows_changed, 2);
+        let stored: Vec<Value> = sqlx::query_scalar(
+            "SELECT se.payload FROM stream_events se JOIN sessions s ON s.id = se.session_id \
+             WHERE s.user_id = $1",
+        )
+        .bind(uid)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(stored.len(), 2);
+        for payload in &stored {
+            let text = payload["text"].as_str().unwrap();
+            assert!(!text.contains(TOKEN), "{text}");
+            assert!(text.contains("[REDACTED:github_token"), "{text}");
+        }
+
+        let Json(again) = run(false, None, None).await.expect("second pass");
+        assert_eq!(again.rows_changed, 0);
+
+        sqlx::query("DELETE FROM sessions WHERE user_id = $1")
+            .bind(uid)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM machines WHERE id = $1")
+            .bind(machine)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(uid).execute(&pool).await.unwrap();
     }
 }

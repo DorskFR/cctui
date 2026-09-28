@@ -109,8 +109,13 @@ export function localFileHref(path: string, links: LocalFileLinks): string {
 // extension. Runs on escaped text, so `&`, `<`, `>`, quotes never appear in a
 // path; the left boundary is start / whitespace / an opener / an entity's `;` /
 // one of our own tags' `>`, so `</code>` or a URL's path part never match.
+// The second name alternative is the Rust `extend_over_spaces` twin: a name may
+// absorb spaces (`Screenshot 2026-09-29 at 10.11.12.png`), but only up to the
+// first chunk completing an alphabetic extension, and never across a chunk that
+// opens a new path, so surrounding prose stays out. The space-free alternative
+// comes first and therefore wins whenever it can.
 const LOCAL_PATH =
-  /(^|[\s([;>])(~?\/(?:[A-Za-z0-9_.@+%-]+\/)*[A-Za-z0-9_.@+%-]+\.[A-Za-z0-9]{1,8})(?=[\s)\],;:!?<]|\.(?:\s|$)|$)/g;
+  /(^|[\s([;>])(~?\/(?:[A-Za-z0-9_.@+%-]+\/)*(?:[A-Za-z0-9_.@+%-]+\.[A-Za-z0-9]{1,8}|[A-Za-z0-9_.@+%-]+(?: (?!\/)[A-Za-z0-9_.@+%-]+){1,5}\.[A-Za-z]{1,8}))(?=[\s)\],;:!?<]|\.(?:\s|$)|$)/g;
 
 // Turn local file paths into links to the machine-scoped read-file route.
 // Runs after autolinkUrls so anchors (and the paths inside their URLs) are
