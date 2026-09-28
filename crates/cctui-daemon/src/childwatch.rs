@@ -23,21 +23,28 @@ use tokio::sync::Notify;
 /// After a done-classified status, how long to keep waiting for the final
 /// assistant text to land (claude's transcript tail can lag the status poll).
 pub const DONE_TEXT_GRACE: Duration = Duration::from_secs(20);
-/// How long assistant text must stand as a child's last output before the turn
-/// counts as over.
+/// How long assistant text with no `stop_reason` must stand as a child's last
+/// output before the turn counts as over.
 ///
 /// The claude driver emits a `Status` only when the polled snapshot *changes*,
 /// so a follow-up turn running between two identical idle readings produces no
-/// done status and the text is the only turn-end evidence there is. Text and
-/// the tool call that follows it belong to one assistant response and arrive
-/// together, so a gap this long is real.
-pub const TEXT_QUIET_GRACE: Duration = Duration::from_secs(10);
+/// done status and the text is the only turn-end evidence there is.
+///
+/// Narration and the tool call that follows it are SEPARATE assistant
+/// responses, with a model round-trip in between: measured over 25 real
+/// transcripts, that gap runs to 15s at p99 and 102s at worst. No window is
+/// safe on its own, so a `stop_reason` of `end_turn` ends the turn outright and
+/// this window only covers adapters that report no stop reason at all.
+pub const TEXT_QUIET_GRACE: Duration = Duration::from_secs(45);
 /// Trust window for early done readings.
 ///
 /// A done classification observed before the child was ever seen working is
 /// distrusted until the watch is at least this old (a freshly dispatched
 /// worker can briefly read as idle before its first status poll).
 pub const QUIET_DONE_MIN_AGE: Duration = Duration::from_mins(1);
+/// The one `stop_reason` that means the model handed back rather than lining up
+/// another tool call.
+const TURN_END_STOP_REASON: &str = "end_turn";
 
 /// How a finished child is reported to the parent.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -81,6 +88,9 @@ struct WatchState {
     /// When assistant text became the child's last output; cleared by anything
     /// proving the turn carried on.
     text_tail_at: Option<Instant>,
+    /// The last assistant text reported `stop_reason: "end_turn"`: the turn is
+    /// over on the spot, with no window to wait out.
+    text_ends_turn: bool,
     tool_errors: u32,
     tokens: u64,
 }
@@ -108,6 +118,7 @@ pub struct ChildSnapshot {
     registered_at: Instant,
     tail_is_thinking: bool,
     text_tail_at: Option<Instant>,
+    text_ends_turn: bool,
     tool_errors: u32,
     tokens: u64,
 }
@@ -146,9 +157,11 @@ impl ChildSnapshot {
     /// done reading (see [`QUIET_DONE_MIN_AGE`]) unless text already proves
     /// the turn ran.
     ///
-    /// Also finished when assistant text has stood as the child's last output
-    /// for [`TEXT_QUIET_GRACE`], which is all a turn between two identical
-    /// deduped status polls ever produces.
+    /// Also finished when the text was the turn's last output: at once when the
+    /// model said so (`stop_reason: "end_turn"`), else after
+    /// [`TEXT_QUIET_GRACE`], which is all a turn between two identical deduped
+    /// status polls ever produces. Text the model flagged as leading into a
+    /// tool call is never a turn tail and never finishes a turn.
     #[must_use]
     pub fn assess(&self, now: Instant) -> Assessment {
         if self.ended || self.error.is_some() {
@@ -156,7 +169,7 @@ impl ChildSnapshot {
         }
         // A self-reported block with an answer in hand ended its turn on a
         // question to the parent.
-        if self.blocked_kind == Some(BlockKind::Status) && self.final_text.is_some() {
+        if self.blocked_kind == Some(BlockKind::Status) && self.text_is_turn_tail() {
             return Assessment::Finished(self.outcome());
         }
         // claude's control socket reports done while an AskUserQuestion /
@@ -168,7 +181,7 @@ impl ChildSnapshot {
                 || self.final_text.is_some()
                 || now.duration_since(self.registered_at) >= QUIET_DONE_MIN_AGE;
             if trusted
-                && (self.final_text.is_some() || now.duration_since(done_at) >= DONE_TEXT_GRACE)
+                && (self.text_is_turn_tail() || now.duration_since(done_at) >= DONE_TEXT_GRACE)
             {
                 return Assessment::Finished(self.outcome());
             }
@@ -176,11 +189,17 @@ impl ChildSnapshot {
         if !self.prompt_pending()
             && !self.tail_is_thinking
             && let Some(text_at) = self.text_tail_at
-            && now.duration_since(text_at) >= TEXT_QUIET_GRACE
+            && (self.text_ends_turn || now.duration_since(text_at) >= TEXT_QUIET_GRACE)
         {
             return Assessment::Finished(self.outcome());
         }
         Assessment::Running(self.progress_line())
+    }
+
+    /// Whether the text in hand is the turn's last output, rather than
+    /// narration with more work behind it.
+    const fn text_is_turn_tail(&self) -> bool {
+        self.final_text.is_some() && self.text_tail_at.is_some()
     }
 
     /// One line describing what the child is doing, streamed to the parent.
@@ -320,6 +339,7 @@ impl ChildWatch {
             registered_at: w.registered_at,
             tail_is_thinking: w.state.tail_is_thinking,
             text_tail_at: w.state.text_tail_at,
+            text_ends_turn: w.state.text_ends_turn,
             tool_errors: w.state.tool_errors,
             tokens: w.state.tokens,
         })
@@ -492,11 +512,19 @@ fn apply_message(w: &mut Watch, payload: &serde_json::Value) {
     if let Some(text) = assistant_text(payload) {
         w.state.final_text = Some(text);
         w.state.tail_is_thinking = false;
-        w.state.text_tail_at = Some(Instant::now());
+        // Narration that the model itself flagged as leading into a tool call
+        // is not a turn tail, however long the tool then takes to appear.
+        let stop = stop_reason(payload);
+        w.state.text_ends_turn = stop == Some(TURN_END_STOP_REASON);
+        w.state.text_tail_at = match stop {
+            Some(reason) if reason != TURN_END_STOP_REASON => None,
+            _ => Some(Instant::now()),
+        };
         w.notify.notify_waiters();
     } else if is_thinking_message(payload) {
         w.state.tail_is_thinking = true;
         w.state.text_tail_at = None;
+        w.state.text_ends_turn = false;
         w.notify.notify_waiters();
     } else if is_turn_summary(payload) {
         apply_summary(w, payload);
@@ -507,6 +535,7 @@ fn apply_message(w: &mut Watch, payload: &serde_json::Value) {
         w.state.done_since = None;
         w.state.tail_is_thinking = false;
         w.state.text_tail_at = None;
+        w.state.text_ends_turn = false;
         w.state.tool_errors = 0;
     }
 }
@@ -535,7 +564,11 @@ fn set_blocked(w: &mut Watch, kind: BlockKind, reason: String) {
     w.state.blocked = Some(reason);
     w.state.blocked_kind = Some(kind);
     w.state.done_since = None;
-    w.state.text_tail_at = None;
+    // A pending prompt makes the text before it a preamble, not an answer; a
+    // self-reported block leaves the answer standing.
+    if kind != BlockKind::Status {
+        w.state.text_tail_at = None;
+    }
     w.notify.notify_waiters();
 }
 
@@ -612,6 +645,16 @@ fn is_user_message(payload: &serde_json::Value) -> bool {
             payload.get("type").and_then(serde_json::Value::as_str),
             Some("userMessage" | "user_message")
         )
+}
+
+/// The adapter-reported stop reason of an assistant message, when it reports
+/// one at all. `None` means no evidence either way, not "the turn goes on".
+fn stop_reason(payload: &serde_json::Value) -> Option<&str> {
+    payload
+        .get("stop_reason")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|r| !r.is_empty())
 }
 
 fn is_thinking_message(payload: &serde_json::Value) -> bool {
@@ -694,6 +737,19 @@ mod tests {
             payload: json!({ "role": role, "text": text }),
             turn_id: None,
         }
+    }
+
+    /// An assistant message carrying the stop reason claude writes alongside it.
+    fn msg_stopping(local_id: &str, text: &str, stop_reason: &str) -> AdapterEvent {
+        AdapterEvent::Message {
+            local_id: local_id.to_owned(),
+            payload: json!({ "role": "assistant", "text": text, "stop_reason": stop_reason }),
+            turn_id: None,
+        }
+    }
+
+    fn tool_use(local_id: &str, tool: &str) -> AdapterEvent {
+        AdapterEvent::ToolUse { local_id: local_id.to_owned(), payload: json!({ "tool": tool }) }
     }
 
     fn status(
@@ -839,7 +895,9 @@ mod tests {
         let h = watch.register_bound("child-1");
         watch.observe(&status("child-1", None, Some("done"), Some("success")));
         let snap = h.snapshot().unwrap();
-        let later = Instant::now() + TEXT_QUIET_GRACE + DONE_TEXT_GRACE;
+        // Past DONE_TEXT_GRACE but still inside QUIET_DONE_MIN_AGE, which is
+        // what keeps this never-worked done reading distrusted.
+        let later = Instant::now() + QUIET_DONE_MIN_AGE - Duration::from_secs(1);
         assert!(
             matches!(snap.assess(later), Assessment::Running(_)),
             "a done reading predating the follow-up must not answer it"
@@ -891,6 +949,79 @@ mod tests {
     }
 
     #[test]
+    fn narration_flagged_as_leading_into_a_tool_call_never_ends_a_turn() {
+        // acceptance: observed live — "Sanity-checking the final diffs by eye"
+        // was handed back as the answer while the child went on to amend a
+        // commit. Such text carries stop_reason "tool_use", and the tool call
+        // that follows is a SEPARATE assistant response an arbitrary model
+        // round-trip later (102s at worst), so no quiet window can cover it.
+        let watch = Arc::new(ChildWatch::default());
+        let h = watch.register("child-1");
+        watch.observe(&started("child-1", None));
+        watch.observe(&status("child-1", Some("active"), Some("working"), None));
+        watch.observe(&msg_stopping(
+            "child-1",
+            "Sanity-checking the final diffs by eye.",
+            "tool_use",
+        ));
+        let snap = h.snapshot().unwrap();
+        for after in [TEXT_QUIET_GRACE, TEXT_QUIET_GRACE * 4, Duration::from_mins(30)] {
+            assert!(
+                matches!(snap.assess(Instant::now() + after), Assessment::Running(_)),
+                "narration must never be returned as the answer, even after {after:?}"
+            );
+        }
+        // The tool call it announced lands long after the old 10s window.
+        watch.observe(&tool_use("child-1", "Bash"));
+        watch.observe(&msg_stopping("child-1", "the real answer", "end_turn"));
+        let out = finished(&h).expect("end_turn ends the turn on the spot");
+        assert_eq!(out.final_text.as_deref(), Some("the real answer"));
+    }
+
+    #[test]
+    fn a_tool_call_inside_the_quiet_window_keeps_an_unflagged_turn_running() {
+        // Text with no stop reason at all (codex, opencode) still leans on the
+        // quiet window, so a tool call arriving inside it must reopen the turn.
+        let watch = Arc::new(ChildWatch::default());
+        let h = watch.register_bound("child-1");
+        watch.observe(&msg("child-1", "assistant", "let me check the tests"));
+        watch.observe(&tool_use("child-1", "Bash"));
+        let snap = h.snapshot().unwrap();
+        assert!(
+            matches!(snap.assess(Instant::now() + TEXT_QUIET_GRACE * 3), Assessment::Running(_)),
+            "a tool call after the text proves the turn carried on"
+        );
+    }
+
+    #[test]
+    fn an_end_turn_answer_finishes_without_waiting_out_any_window() {
+        let watch = Arc::new(ChildWatch::default());
+        let h = watch.register_bound("child-1");
+        watch.observe(&msg("child-1", "user", "Reply with exactly the word: pong"));
+        watch.observe(&msg_stopping("child-1", "pong", "end_turn"));
+        let out = finished(&h).expect("the model said it handed back");
+        assert_eq!(out.final_text.as_deref(), Some("pong"));
+    }
+
+    #[test]
+    fn an_idle_status_does_not_hand_back_text_known_to_be_mid_turn() {
+        // A done reading that lands while the held text is flagged narration
+        // must wait out DONE_TEXT_GRACE rather than answer with it at once.
+        let watch = Arc::new(ChildWatch::default());
+        let h = watch.register("child-1");
+        watch.observe(&started("child-1", None));
+        watch.observe(&status("child-1", Some("active"), Some("working"), None));
+        watch.observe(&msg_stopping("child-1", "One more sweep of the writes.", "tool_use"));
+        watch.observe(&status("child-1", None, Some("done"), Some("success")));
+        assert!(finished(&h).is_none(), "narration plus an idle blip is not an answer");
+        let snap = h.snapshot().unwrap();
+        assert!(
+            matches!(snap.assess(Instant::now() + DONE_TEXT_GRACE * 2), Assessment::Finished(_)),
+            "a done status that persists still has to end the wait"
+        );
+    }
+
+    #[test]
     fn a_turn_ends_on_its_final_text_while_the_job_state_still_reads_working() {
         // acceptance: the job `state` is self-reported and observed to stay
         // "working" for half an hour after the answer landed; it must not keep
@@ -913,6 +1044,15 @@ mod tests {
         };
         assert_eq!(out.final_text.as_deref(), Some("the findings, in full"));
         assert!(out.error.is_none());
+
+        // The same, as claude really writes it: the answer says end_turn, and a
+        // later stale `working` reading must not reopen it.
+        let flagged = watch.register("child-2");
+        watch.observe(&started("child-2", None));
+        watch.observe(&msg_stopping("child-2", "the findings, in full", "end_turn"));
+        watch.observe(&status("child-2", Some("active"), Some("working"), Some("still working")));
+        let out = finished(&flagged).expect("a stale working state cannot reopen an ended turn");
+        assert_eq!(out.final_text.as_deref(), Some("the findings, in full"));
     }
 
     #[test]
