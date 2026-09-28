@@ -8,9 +8,9 @@ database:
 CREATE EXTENSION IF NOT EXISTS pg_stat_statements;
 ```
 
-These are the three queries the CCT-1057 investigation ran. Use them in that
-order: total time finds what the database actually spends its day on, mean time
-finds what a user feels, index usage finds what is being paid for and not used.
+These are the three queries to run, in that order: total time finds what the
+database actually spends its day on, mean time finds what a user feels, index
+usage finds what is being paid for and not used.
 
 ## 1. Where the time goes (total)
 

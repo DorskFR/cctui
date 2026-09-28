@@ -27,28 +27,29 @@ describe('drawer header meta row', () => {
 		expect(script).not.toContain('getComputedStyle');
 	});
 
-	it('drops langfuse below 40rem and the model badge and its editor below 26rem', () => {
+	it('drops langfuse below 40rem, and the model badge, its editor and Σ below 26rem', () => {
 		const wide = css.slice(css.indexOf('@container drawer-head (max-width: 40rem)'));
 		expect(wide.slice(0, wide.indexOf('\n\t}'))).toContain('.langfuse,');
 		const narrow = css.slice(css.indexOf('@container drawer-head (max-width: 26rem)'));
 		const body = narrow.slice(0, narrow.indexOf('\n\t}'));
 		expect(body).toContain('.model,');
 		expect(body).toContain('.model-edit');
+		expect(body).toContain('.tokens');
 	});
 
 	it('declares the model-edit base rule before the query that hides it', () => {
 		expect(css.indexOf('.model-edit {')).toBeLessThan(css.indexOf('@container drawer-head (max-width: 26rem)'));
 	});
 
-	it('reveals the ⓘ trigger exactly when the first item goes', () => {
-		expect(css).toMatch(/\n\t\.meta-details \{\n\t\tdisplay: none;/);
-		const wide = css.slice(css.indexOf('@container drawer-head (max-width: 40rem)'));
-		expect(wide.slice(0, wide.indexOf('\n\t}'))).toContain('.meta-details {');
-		expect(trail).toContain('{#if hasModelMeta}');
-		expect(script).toContain('const hasModelMeta = $derived(');
+	it('makes the adapter logo the one trigger, with no separate ⓘ button', () => {
+		expect(popover).toContain('{#snippet trigger()}<AdapterIcon');
+		expect(trail).not.toContain('<Icon name="info"');
+		expect(css).not.toContain('.meta-details');
+		expect(popover).toContain('box="sm"');
 	});
 
 	it('puts the droppable items behind the trigger, model editor included', () => {
+		expect(popover).toContain('<span class="tokens"><TokenUsage');
 		expect(popover).toContain('<span class="langfuse"><LangfuseChip');
 		expect(popover).toContain("{@render modelMeta('drawer-details')}");
 		const snippet = markup.slice(markup.indexOf('{#snippet modelMeta'), markup.indexOf('{#snippet modelMeta') + 2000);
@@ -66,7 +67,6 @@ describe('drawer header meta row', () => {
 
 	it('names the trigger and lets the kit own aria-expanded and Escape', () => {
 		expect(popover).toContain('label={m.drawer_meta_details()}');
-		expect(popover).toContain('{#snippet trigger()}<Icon name="info"');
 		expect(header).toContain('Popover,');
 		for (const msgs of [en, fr]) expect(JSON.parse(msgs).drawer_meta_details).toBeTruthy();
 	});
@@ -75,6 +75,7 @@ describe('drawer header meta row', () => {
 		expect(css).toContain('.metapop .m-full');
 		expect(css).toContain('.metapop .m-short');
 		expect(css).toContain('.metapop .langfuse,');
+		expect(css).toContain('.metapop .tokens,');
 		expect(css).toContain('.metapop .model-edit');
 		expect(css).toContain('.metapop .model {');
 	});

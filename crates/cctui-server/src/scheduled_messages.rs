@@ -1,14 +1,25 @@
 //! A claim is a lease: a row left in `sending` by a crashed replica becomes
 //! claimable again once its `next_attempt_at` passes.
 
+use std::time::Duration as StdDuration;
+
+use cctui_proto::backoff::Backoff;
 use chrono::{DateTime, Duration, Utc};
 
 use crate::state::AppState;
 use crate::store::sessions::SessionRowStatus;
 
 pub const MAX_HORIZON_DAYS: i64 = 30;
-const MAX_ATTEMPTS: i32 = 8;
-const BACKOFF_SECS: &[i64] = &[10, 30, 120, 300, 900, 1800, 3600];
+/// Sized so the doubling schedule below still spans over two hours: a session
+/// unreachable for an hour must recover, not dead-letter.
+const MAX_ATTEMPTS: i32 = 11;
+
+/// Redelivery schedule: 10 s doubling to a 1 h cap, jittered so a batch that
+/// failed together does not retry in lockstep. The first retry stays seconds
+/// away for a transient failure; [`MAX_ATTEMPTS`] carries the total reach.
+const fn retry_schedule() -> Backoff {
+    Backoff::new(StdDuration::from_secs(10), StdDuration::from_hours(1))
+}
 const CLAIM_LEASE_SECS: i64 = 300;
 const CLAIM_BATCH: i64 = 50;
 
@@ -53,12 +64,7 @@ pub fn retry_after_failure(attempts: i32) -> Retry {
     if next >= MAX_ATTEMPTS {
         return Retry::Dead { attempts: next };
     }
-    let secs = usize::try_from(attempts)
-        .ok()
-        .and_then(|i| BACKOFF_SECS.get(i))
-        .or_else(|| BACKOFF_SECS.last())
-        .copied()
-        .unwrap_or(3600);
+    let secs = retry_schedule().delay_secs_for(u32::try_from(attempts).unwrap_or(u32::MAX));
     Retry::After { attempts: next, secs }
 }
 
@@ -261,13 +267,48 @@ mod tests {
         );
     }
 
+    /// Doubling 10 s → 1 h within the shared ±20% jitter, then dead-lettered once
+    /// the attempt budget is spent.
     #[test]
     fn failures_back_off_then_dead_letter() {
-        assert_eq!(retry_after_failure(0), Retry::After { attempts: 1, secs: 10 });
-        assert_eq!(retry_after_failure(1), Retry::After { attempts: 2, secs: 30 });
-        assert_eq!(retry_after_failure(6), Retry::After { attempts: 7, secs: 3600 });
-        assert_eq!(retry_after_failure(7), Retry::Dead { attempts: 8 });
+        for (attempts, base) in [(0, 10), (1, 20), (2, 40), (6, 640)] {
+            let (lo, hi) = (base * 8 / 10, base * 12 / 10);
+            match retry_after_failure(attempts) {
+                Retry::After { attempts: next, secs } => {
+                    assert_eq!(next, attempts + 1);
+                    assert!(
+                        (lo..=hi).contains(&secs),
+                        "attempts {attempts}: {secs}s outside {lo}..={hi}"
+                    );
+                }
+                other @ Retry::Dead { .. } => {
+                    panic!("attempts {attempts} should retry, got {other:?}")
+                }
+            }
+        }
+        assert_eq!(retry_after_failure(MAX_ATTEMPTS - 1), Retry::Dead { attempts: MAX_ATTEMPTS });
         assert_eq!(retry_after_failure(20), Retry::Dead { attempts: 21 });
+    }
+
+    /// Sum of the superseded fixed table (10/30/120/300/900/1800/3600). The
+    /// doubling schedule must reach at least this far, even at the bottom of the
+    /// jitter range, or an hour-long outage dead-letters where it used to recover.
+    const PREVIOUS_HORIZON_SECS: i64 = 6760;
+
+    #[test]
+    fn retry_horizon_is_no_shorter_than_the_table_it_replaced() {
+        let horizon: i64 = (0..MAX_ATTEMPTS - 1)
+            .map(|attempts| match retry_after_failure(attempts) {
+                Retry::After { secs, .. } => secs,
+                Retry::Dead { .. } => panic!("attempts {attempts} is inside the budget"),
+            })
+            .sum();
+        assert!(
+            horizon >= PREVIOUS_HORIZON_SECS,
+            "horizon {horizon}s is shorter than the {PREVIOUS_HORIZON_SECS}s it replaced"
+        );
+        assert!(horizon >= 3600, "horizon {horizon}s cannot outlast a one-hour outage");
+        assert_eq!(retry_after_failure(MAX_ATTEMPTS - 1), Retry::Dead { attempts: MAX_ATTEMPTS });
     }
 
     #[test]

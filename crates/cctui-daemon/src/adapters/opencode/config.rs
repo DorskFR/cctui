@@ -219,14 +219,8 @@ impl SessionHome {
         let dir = self.config_file.parent().context("config file has no parent")?;
         std::fs::create_dir_all(dir)?;
         std::fs::create_dir_all(&self.data_home)?;
-        std::fs::write(&self.config_file, serde_json::to_vec_pretty(config)?)
+        cctui_proto::util::write_private(&self.config_file, &serde_json::to_vec_pretty(config)?)
             .with_context(|| format!("write {}", self.config_file.display()))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ =
-                std::fs::set_permissions(&self.config_file, std::fs::Permissions::from_mode(0o600));
-        }
         Ok(())
     }
 }
@@ -414,5 +408,22 @@ mod tests {
         assert_eq!(env["HOME"], home.home.display().to_string());
         assert_eq!(env["XDG_CONFIG_HOME"], home.config_home.display().to_string());
         assert!(!home.home.display().to_string().contains(".."));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn session_home_writes_the_config_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let home = SessionHome::under(tmp.path(), "ses");
+        let config = session_config(None, &BTreeMap::new());
+        home.write_config(&config).unwrap();
+        let mode = std::fs::metadata(&home.config_file).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "opencode.json must be 0600");
+
+        home.write_config(&config).unwrap();
+        let mode = std::fs::metadata(&home.config_file).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "a rewrite stays 0600");
     }
 }

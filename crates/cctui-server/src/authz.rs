@@ -450,19 +450,29 @@ pub struct RouteDescriptor {
     pub summary: &'static str,
 }
 
+/// Public base prefix every descriptor path nests under.
+pub const API_PREFIX: &str = "/api/v1";
+
+/// `/api/v1` paths that answer without a credential. Declared here so the
+/// descriptor table stays the whole API surface, but mounted outside
+/// `auth_middleware`, which 401s a tokenless request before any route layer runs.
+pub const PUBLIC_PATHS: &[&str] = &["/version"];
+
 pub struct Routes {
     router: Router<AppState>,
+    public_router: Router<AppState>,
     descriptors: Vec<RouteDescriptor>,
 }
 
 impl Routes {
     #[must_use]
     pub fn new() -> Self {
-        Self { router: Router::new(), descriptors: Vec::new() }
+        Self { router: Router::new(), public_router: Router::new(), descriptors: Vec::new() }
     }
 
     /// Register one route for every method in `methods`, attaching the
-    /// [`Authz`] policy as a per-route layer.
+    /// [`Authz`] policy as a per-route layer. A [`PUBLIC_PATHS`] route carries no
+    /// policy layer: it has no principal to evaluate.
     #[must_use]
     #[allow(clippy::similar_names, clippy::needless_pass_by_value)]
     pub fn add(
@@ -474,11 +484,24 @@ impl Routes {
         authn: Authn,
         authz: Authz,
     ) -> Self {
-        let policy = Arc::new(authz.clone());
-        // `route_layer` runs inside the outer `auth_middleware` and only for this
-        // route; a global `.layer` would run before the matched route is known.
-        let handler = handler.route_layer(middleware::from_fn_with_state(policy, enforce_route));
-        self.router = self.router.route(path, handler);
+        let public = authn == Authn::None && matches!(authz, Authz::Public);
+        assert_eq!(
+            public,
+            PUBLIC_PATHS.contains(&path),
+            "{path}: a public route is exactly `Authn::None` + `Authz::Public` listed in \
+             PUBLIC_PATHS; anything else must authenticate"
+        );
+        if public {
+            // Full path: this router is merged into the outer app, not nested.
+            self.public_router = self.public_router.route(&format!("{API_PREFIX}{path}"), handler);
+        } else {
+            let policy = Arc::new(authz.clone());
+            // `route_layer` runs inside the outer `auth_middleware` and only for this
+            // route; a global `.layer` would run before the matched route is known.
+            let handler =
+                handler.route_layer(middleware::from_fn_with_state(policy, enforce_route));
+            self.router = self.router.route(path, handler);
+        }
         for method in methods {
             self.descriptors.push(RouteDescriptor {
                 method: method.clone(),
@@ -491,8 +514,8 @@ impl Routes {
         self
     }
 
-    pub fn into_parts(self) -> (Router<AppState>, Vec<RouteDescriptor>) {
-        (self.router, self.descriptors)
+    pub fn into_parts(self) -> (Router<AppState>, Router<AppState>, Vec<RouteDescriptor>) {
+        (self.router, self.public_router, self.descriptors)
     }
 }
 
@@ -537,7 +560,7 @@ mod tests {
     use crate::build_api_routes;
 
     fn descriptors() -> Vec<RouteDescriptor> {
-        build_api_routes().into_parts().1
+        build_api_routes().into_parts().2
     }
 
     #[test]
@@ -563,24 +586,42 @@ mod tests {
     }
 
     #[test]
-    fn no_anonymous_api_routes() {
-        // `/health` lives outside the `/api/v1` table, so no route here is `Authn::None`.
-        let none: Vec<_> = descriptors().into_iter().filter(|d| d.authn == Authn::None).collect();
-        assert!(
-            none.is_empty(),
-            "no /api/v1 route may be Authn::None (only /health, which is on the outer app); found: {:?}",
-            none.iter().map(|d| d.path).collect::<Vec<_>>()
-        );
+    fn only_allowlisted_api_routes_are_anonymous() {
+        let none: Vec<_> =
+            descriptors().into_iter().filter(|d| d.authn == Authn::None).map(|d| d.path).collect();
+        for path in &none {
+            assert!(
+                PUBLIC_PATHS.contains(path),
+                "{path} is Authn::None but not in PUBLIC_PATHS — every other route authenticates"
+            );
+        }
+    }
+
+    /// A half-public route would be unreachable: it is mounted outside the layer
+    /// that would build its principal.
+    #[test]
+    fn public_routes_are_exactly_the_allowlist() {
+        let public: Vec<_> =
+            descriptors().into_iter().filter(|d| matches!(d.authz, Authz::Public)).collect();
+        let mut paths: Vec<_> = public.iter().map(|d| d.path).collect();
+        paths.sort_unstable();
+        paths.dedup();
+        assert_eq!(paths, PUBLIC_PATHS, "the Authz::Public set must equal PUBLIC_PATHS");
+        for d in &public {
+            assert_eq!(d.authn, Authn::None, "{} must also be Authn::None", d.path);
+            assert_eq!(d.method, Method::GET, "{} must be read-only", d.path);
+        }
     }
 
     #[test]
-    fn no_api_route_is_public() {
-        let public: Vec<_> = descriptors()
-            .into_iter()
-            .filter(|d| matches!(d.authz, Authz::Public))
-            .map(|d| d.path)
-            .collect();
-        assert!(public.is_empty(), "no /api/v1 route may be Authz::Public; found: {public:?}");
+    fn every_public_path_is_registered() {
+        let descs = descriptors();
+        for path in PUBLIC_PATHS {
+            assert!(
+                descs.iter().any(|d| d.path == *path),
+                "{path} is in PUBLIC_PATHS but not registered"
+            );
+        }
     }
 
     #[test]

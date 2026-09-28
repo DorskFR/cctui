@@ -86,7 +86,7 @@
 			case 'pending':
 				return m.settings_saving();
 			case 'error':
-				return m.settings_save_failed();
+				return settings.saveError ?? m.settings_save_failed();
 			case 'saved':
 				return settings.savedAt && now - settings.savedAt < 15_000
 					? m.settings_saved_now()

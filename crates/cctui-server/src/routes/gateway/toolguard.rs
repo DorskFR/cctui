@@ -35,8 +35,8 @@ static GITHUB_URL: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 /// The stored, editable form of an account's policy.
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize, ts_rs::TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ToolPolicy {
     /// Case-insensitive literals.
     #[serde(default)]

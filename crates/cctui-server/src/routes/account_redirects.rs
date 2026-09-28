@@ -19,22 +19,22 @@ use crate::store::account_redirects::{self, AccountRedirect};
 
 type ApiErr = (StatusCode, Json<serde_json::Value>);
 
-#[derive(serde::Deserialize, ts_rs::TS)]
-#[ts(export)]
+#[derive(serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct PutRedirectRequest {
-    #[ts(type = "string | null", optional)]
+    #[cfg_attr(feature = "ts", ts(type = "string | null", optional))]
     pub to_account: Option<Uuid>,
-    #[ts(optional)]
+    #[cfg_attr(feature = "ts", ts(optional))]
     pub to_model: Option<String>,
     pub family: String,
-    #[ts(optional)]
+    #[cfg_attr(feature = "ts", ts(optional))]
     pub match_model: Option<String>,
-    #[ts(type = "string | null", optional)]
+    #[cfg_attr(feature = "ts", ts(type = "string | null", optional))]
     pub until: Option<DateTime<Utc>>,
-    #[ts(optional)]
+    #[cfg_attr(feature = "ts", ts(optional))]
     pub reason: Option<String>,
     /// The admin token has no user identity and must name the rule's owner.
-    #[ts(type = "string | null", optional)]
+    #[cfg_attr(feature = "ts", ts(type = "string | null", optional))]
     pub user_id: Option<Uuid>,
 }
 

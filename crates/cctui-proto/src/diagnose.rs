@@ -3,14 +3,15 @@
 //! of failing the call.
 
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "ts")]
 use ts_rs::TS;
 
 /// One dated fact in a [`SessionDiagnose`] report.
 ///
 /// `value: None` + `missing_reason` means the daemon could not produce the
 /// fact right now; the call as a whole still succeeds.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct DiagnoseFact<T> {
     #[serde(default = "none", skip_serializing_if = "Option::is_none")]
     pub value: Option<T>,
@@ -87,8 +88,8 @@ impl<T> DiagnoseFact<T> {
 /// The arbitration output: the session's effective state and the raw signals
 /// it was derived from. The wrapping fact's `source` says which input won
 /// (`hook` / `activity` / `timeout`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct EffectiveState {
     /// Human-readable verdict, e.g. `awaiting ask answer`,
     /// `blocked: approve Bash: …`, `active/working`, `hibernated`, `dead`.
@@ -104,8 +105,8 @@ pub struct EffectiveState {
 }
 
 /// The most recent ask/permission/plan hook delivery for the session.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct HookEvent {
     /// Hook line kind: `ask`, `resolved`, `plan`, `plan_resolved`,
     /// `perm-request`.
@@ -113,8 +114,8 @@ pub struct HookEvent {
 }
 
 /// Persistent-attach keep-alive status for the session's worker.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct AttachStatus {
     /// `held` (attached, socket open), `reconnecting` (backoff between
     /// attempts), or `connecting` (task exists, no cycle finished yet).
@@ -134,8 +135,8 @@ pub struct AttachStatus {
 /// PTY output freshness/throughput sensed by the held-attach drain loop:
 /// the second, hook-independent activity signal. `missing` until
 /// the drain loop has read bytes for the session.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct PtyOutputStats {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_output_age_ms: Option<i64>,
@@ -145,8 +146,8 @@ pub struct PtyOutputStats {
 
 /// Which `claude daemon` control socket discovery picked, and whether it
 /// answered a live probe.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct SocketStatus {
     /// The live socket path, `None` when no candidate answered.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -157,8 +158,8 @@ pub struct SocketStatus {
 }
 
 /// The pinned transcript file for the session.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct TranscriptStatus {
     pub path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -176,8 +177,8 @@ pub struct TranscriptStatus {
 }
 
 /// Live ask/permission prompt state for the session.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct PendingPrompts {
     /// An `AskUserQuestion`/plan form is up in the worker PTY.
     pub pending_ask: bool,
@@ -193,8 +194,8 @@ pub struct PendingPrompts {
 }
 
 /// Dispatched-pod turn-complete watcher state.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct DispatchStatus {
     pub seen_busy: bool,
     pub done: bool,
@@ -204,8 +205,8 @@ pub struct DispatchStatus {
 /// What the daemon knows about gateway routing for this session. The
 /// authoritative account binding lives server-side (see
 /// [`SessionDiagnoseResponse::server`]).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct GatewayStatus {
     /// Whether the daemon has an authenticated server client + machine key
     /// for the launch-time gateway-env pull.
@@ -213,16 +214,16 @@ pub struct GatewayStatus {
 }
 
 /// A retained `codex app-server` stderr line, secret-redacted.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct CodexStderrLine {
     pub ts_ms: i64,
     pub line: String,
 }
 
 /// One retained JSON-RPC frame, secret-redacted and truncated to 2 KiB.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct CodexRpcFrame {
     pub ts_ms: i64,
     /// `out` (daemon → app-server) or `in` (app-server → daemon).
@@ -241,8 +242,8 @@ fn transport_stdio() -> String {
 }
 
 /// One JSON-RPC protocol error (`<method>: <error>`), secret-redacted.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct CodexProtocolError {
     pub ts_ms: i64,
     pub message: String,
@@ -252,8 +253,8 @@ pub struct CodexProtocolError {
 }
 
 /// Codex-only section; `None` for claude-code.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct CodexDiagnose {
     /// Discovered `codex app-server` version (from the `initialize` userAgent).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -310,8 +311,8 @@ pub struct CodexDiagnose {
 
 /// Everything the daemon knows about one session, dated. Adapter-specific
 /// diagnostics go in tagged sections such as [`SessionDiagnose::codex`].
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct SessionDiagnose {
     /// The stable session id the server keys on.
     pub local_id: String,
@@ -345,8 +346,8 @@ pub struct SessionDiagnose {
 
 /// Server-side facts merged into the diagnose response (the daemon cannot see
 /// its own DB row or the gateway token bindings).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct ServerDiagnose {
     /// `sessions.status` (`active`/`ended`/`archived`/…).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -368,8 +369,8 @@ pub struct ServerDiagnose {
 /// Body of `GET /api/v1/sessions/{id}/diagnose`. Fail-soft: when the daemon
 /// round-trip fails (offline, timeout) `daemon` is `None` and `daemon_error`
 /// says why; the server facts are still served.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct SessionDiagnoseResponse {
     pub session_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]

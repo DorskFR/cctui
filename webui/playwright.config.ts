@@ -35,9 +35,19 @@ export default defineConfig({
 			use: { baseURL: headerUrl, storageState: resolve(webui, 'journeys/.auth/state.json') }
 		},
 		{
+			name: 'drawer-header',
+			testMatch: ['drawer-header-meta.spec.ts', 'drawer-header-actions.spec.ts'],
+			use: { baseURL: headerUrl, storageState: resolve(webui, 'journeys/.auth/state.json') }
+		},
+		{
 			name: 'spawn',
 			testMatch: 'spawn-prompt-history.spec.ts',
 			use: { baseURL: process.env.SPAWN_E2E_URL ?? 'http://localhost:5311' }
+		},
+		{
+			name: 'drawer',
+			testMatch: ['drawer-scrollbars.spec.ts', 'composer-inset.spec.ts'],
+			use: { baseURL: headerUrl, storageState: resolve(webui, 'journeys/.auth/state.json') }
 		},
 		{
 			name: 'plugins',

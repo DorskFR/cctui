@@ -22,6 +22,7 @@ use cctui_proto::adapter::PermissionMode;
 use cctui_proto::api::{ApiError, SpawnRequest};
 use serde::Serialize;
 use tokio::sync::Mutex;
+#[cfg(feature = "ts")]
 use ts_rs::TS;
 
 use crate::auth::{AuthContext, Scope};
@@ -100,8 +101,8 @@ pub fn prompt(current: &str, latest: &update_check::LatestRelease) -> String {
 }
 
 /// Which of the two paths took the job, and what to watch as a result.
-#[derive(Serialize, TS)]
-#[ts(export)]
+#[derive(Serialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 #[serde(tag = "mode", rename_all = "snake_case")]
 pub enum SelfUpdateResponse {
     /// The machine's own update command is running. There is no session to

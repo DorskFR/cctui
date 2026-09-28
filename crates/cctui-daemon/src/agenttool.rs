@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use cctui_proto::api::{MessageChildRequest, SpawnChildRequest};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::{UnixListener, UnixStream};
+use tokio::net::UnixStream;
 use tokio_util::sync::CancellationToken;
 
 use crate::childwatch::{Assessment, WatchHandle, snippet};
@@ -598,16 +598,7 @@ pub async fn serve(
     machine_key: String,
     shutdown: CancellationToken,
 ) -> anyhow::Result<()> {
-    let _ = std::fs::remove_file(&path);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let listener = UnixListener::bind(&path)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
-    }
+    let listener = crate::runtime::bind_private_socket(&path)?;
     tracing::info!(socket = %path.display(), "CctuiAgent tool listener ready");
     loop {
         tokio::select! {
@@ -948,6 +939,103 @@ mod tests {
         feeder.await.unwrap();
         assert_eq!(frame["ok"], json!(true));
         assert!(frame["result"].as_str().unwrap().starts_with("all done"));
+    }
+
+    #[tokio::test]
+    async fn follow_keeps_waiting_through_narration_and_returns_the_real_answer() {
+        // acceptance: the live failure — narration was returned while the child
+        // kept working. The follow must hold until the model says end_turn.
+        let watch = std::sync::Arc::new(crate::childwatch::ChildWatch::default());
+        let handle = watch.register("child-1");
+        let observer = watch.clone();
+        let feeder = tokio::spawn(async move {
+            let narrate = |text: &str| cctui_proto::adapter::AdapterEvent::Message {
+                local_id: "child-1".into(),
+                payload: json!({ "role": "assistant", "text": text, "stop_reason": "tool_use" }),
+                turn_id: None,
+            };
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            observer.observe(&narrate("Sanity-checking the final diffs by eye."));
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            observer.observe(&narrate("One more sweep of the remaining unchecked writes."));
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            observer.observe(&cctui_proto::adapter::AdapterEvent::ToolUse {
+                local_id: "child-1".into(),
+                payload: json!({ "tool": "Bash" }),
+            });
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            observer.observe(&cctui_proto::adapter::AdapterEvent::Message {
+                local_id: "child-1".into(),
+                payload: json!({
+                    "role": "assistant",
+                    "text": "done: both commits are in",
+                    "stop_reason": "end_turn",
+                }),
+                turn_id: None,
+            });
+        });
+        let mut out: Vec<u8> = Vec::new();
+        let frame = follow_result_to_frame(
+            follow_child_with(
+                &handle,
+                "child-1",
+                Duration::from_secs(10),
+                SILENT_CHILD_GRACE,
+                2,
+                &mut out,
+            )
+            .await,
+        );
+        feeder.await.unwrap();
+        assert_eq!(frame["ok"], json!(true));
+        let text = frame["result"].as_str().unwrap();
+        assert!(text.starts_with("done: both commits are in"), "{text}");
+        assert!(!text.contains("Sanity-checking"), "narration must never be the answer: {text}");
+    }
+
+    #[tokio::test]
+    async fn follow_returns_the_answer_of_a_child_that_self_reports_blocked() {
+        // acceptance: the follow window must not be waited out by a child whose
+        // answer ended in a question, which leaves its job state `blocked`.
+        let watch = std::sync::Arc::new(crate::childwatch::ChildWatch::default());
+        let handle = watch.register("child-1");
+        let observer = watch.clone();
+        let feeder = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            observer.observe(&cctui_proto::adapter::AdapterEvent::Message {
+                local_id: "child-1".into(),
+                payload: json!({ "role": "assistant", "text": "which skill did you mean?" }),
+                turn_id: None,
+            });
+            observer.observe(&cctui_proto::adapter::AdapterEvent::Status {
+                local_id: "child-1".into(),
+                tempo: Some("blocked".into()),
+                state: Some("blocked".into()),
+                detail: Some("clarify search".into()),
+                activity: None,
+                name: None,
+                intent: None,
+                model: None,
+                effort: None,
+                permission_mode: None,
+                children: Vec::new(),
+            });
+        });
+        let mut out: Vec<u8> = Vec::new();
+        let frame = follow_result_to_frame(
+            follow_child_with(
+                &handle,
+                "child-1",
+                Duration::from_secs(10),
+                SILENT_CHILD_GRACE,
+                2,
+                &mut out,
+            )
+            .await,
+        );
+        feeder.await.unwrap();
+        assert_eq!(frame["ok"], json!(true));
+        assert!(frame["result"].as_str().unwrap().starts_with("which skill did you mean?"));
     }
 
     #[tokio::test]

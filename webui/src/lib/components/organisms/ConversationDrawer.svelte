@@ -38,6 +38,7 @@
 	import { MessagePins } from './conversation/messagePins.svelte';
 	import { BookmarkSaver } from './conversation/bookmarkSave.svelte';
 	import { guardEscape } from './conversation/escapeGuard';
+	import { lockDocumentScroll } from './conversation/scrollLock';
 	import { livenessClass } from './conversation/liveness';
 	import { m } from '$lib/paraglide/messages';
 
@@ -69,6 +70,8 @@
 	const needsInput = $derived(session.attention === 'needs_input' && !archived);
 	const showStatusBadge = $derived(session.status === 'new' || session.status === 'archived');
 	const qc = useQueryClient();
+
+	$effect(() => lockDocumentScroll());
 
 	// Read-only live terminal pane, toggled from the toolbar.
 	let terminalOpen = $state(false);

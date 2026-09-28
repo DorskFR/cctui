@@ -6,6 +6,9 @@ edition.workspace = true
 [lints]
 workspace = true
 
+[features]
+ts = ["dep:ts-rs"]
+
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
@@ -15,7 +18,7 @@ sha2.workspace = true
 hex.workspace = true
 base64.workspace = true
 zstd.workspace = true
-ts-rs.workspace = true
+ts-rs = { workspace = true, optional = true }
 minisign-verify.workspace = true
 semver.workspace = true
 tokio.workspace = true

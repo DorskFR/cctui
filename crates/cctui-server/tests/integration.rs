@@ -5,6 +5,11 @@
 use reqwest::Client;
 use serde_json::json;
 
+fn client() -> Client {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    Client::new()
+}
+
 fn server_url() -> String {
     std::env::var("TEST_CCTUI_URL").unwrap_or_else(|_| "http://localhost:8700".into())
 }
@@ -16,7 +21,7 @@ fn admin_token() -> String {
 #[tokio::test]
 #[ignore = "requires running server"]
 async fn health_check() {
-    let client = Client::new();
+    let client = client();
     let resp = client.get(format!("{}/health", server_url())).send().await.unwrap();
     assert_eq!(resp.status(), 200);
     assert_eq!(resp.text().await.unwrap(), "ok");
@@ -25,7 +30,7 @@ async fn health_check() {
 #[tokio::test]
 #[ignore = "requires running server"]
 async fn register_and_list_session() {
-    let client = Client::new();
+    let client = client();
     let base = server_url();
 
     let u: serde_json::Value = client
@@ -93,7 +98,7 @@ async fn register_and_list_session() {
 #[tokio::test]
 #[ignore = "requires running server"]
 async fn auth_rejects_bad_token() {
-    let client = Client::new();
+    let client = client();
     let resp = client
         .get(format!("{}/api/v1/sessions", server_url()))
         .bearer_auth("wrong-token")
@@ -106,7 +111,7 @@ async fn auth_rejects_bad_token() {
 #[tokio::test]
 #[ignore = "requires running server"]
 async fn user_enroll_revoke_flow() {
-    let client = Client::new();
+    let client = client();
     let base = server_url();
 
     // 1. Admin creates a user — receives key once.
@@ -180,7 +185,7 @@ async fn user_enroll_revoke_flow() {
 #[tokio::test]
 #[ignore = "requires running server"]
 async fn machine_rotate_invalidates_old_key() {
-    let client = Client::new();
+    let client = client();
     let base = server_url();
 
     let u: serde_json::Value = client
@@ -252,7 +257,7 @@ fn uuid_like() -> String {
 #[ignore = "requires running server"]
 #[allow(clippy::too_many_lines)]
 async fn account_redirect_flow() {
-    let client = Client::new();
+    let client = client();
     let base = server_url();
 
     let u: serde_json::Value = client
@@ -397,7 +402,7 @@ async fn account_redirect_flow() {
 #[tokio::test]
 #[ignore = "requires running server"]
 async fn admin_creates_and_lists_a_pool_for_a_user() {
-    let client = Client::new();
+    let client = client();
     let base = server_url();
 
     let owner: serde_json::Value = client
@@ -464,7 +469,7 @@ async fn admin_creates_and_lists_a_pool_for_a_user() {
 #[tokio::test]
 #[ignore = "requires running server"]
 async fn pool_usage_lists_every_pool() {
-    let client = Client::new();
+    let client = client();
     let base = server_url();
 
     let u: serde_json::Value = client
@@ -538,7 +543,7 @@ async fn pool_usage_lists_every_pool() {
 #[tokio::test]
 #[ignore = "requires running server"]
 async fn pool_weight_is_validated_and_persisted() {
-    let client = Client::new();
+    let client = client();
     let base = server_url();
 
     let u: serde_json::Value = client
@@ -604,7 +609,7 @@ async fn pool_weight_is_validated_and_persisted() {
 #[tokio::test]
 #[ignore = "requires running server"]
 async fn oversize_search_query_is_rejected() {
-    let client = Client::new();
+    let client = client();
     let base = server_url();
     let q = "(".repeat(20_000);
     for path in ["sessions/search", "bookmarks"] {
@@ -673,7 +678,7 @@ async fn register_session(client: &Client, base: &str, machine_key: &str) -> Str
 #[tokio::test]
 #[ignore = "requires running server"]
 async fn session_files_and_deregister_are_owner_only() {
-    let client = Client::new();
+    let client = client();
     let base = server_url();
     let (_, owner_machine) = user_with_machine(&client, &base, "own").await;
     let (intruder_key, _) = user_with_machine(&client, &base, "intr").await;
@@ -722,7 +727,7 @@ async fn session_files_and_deregister_are_owner_only() {
 #[tokio::test]
 #[ignore = "requires running server"]
 async fn register_and_rebinds_respect_session_owner() {
-    let client = Client::new();
+    let client = client();
     let base = server_url();
     let (owner_key, owner_machine) = user_with_machine(&client, &base, "rown").await;
     let (intruder_key, intruder_machine) = user_with_machine(&client, &base, "rintr").await;
@@ -783,7 +788,7 @@ async fn register_and_rebinds_respect_session_owner() {
 #[tokio::test]
 #[ignore = "requires running server"]
 async fn machine_key_cannot_read_accounts_or_profiles() {
-    let client = Client::new();
+    let client = client();
     let base = server_url();
     let (user_key, machine_key) = user_with_machine(&client, &base, "human").await;
     for path in ["accounts", "profiles"] {

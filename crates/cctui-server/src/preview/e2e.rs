@@ -50,7 +50,7 @@ async fn fake_daemon(
     user: Uuid,
     mut rx: mpsc::Receiver<DaemonFrameDown>,
 ) {
-    let http = reqwest::Client::new();
+    let http = crate::build_http_client();
     let mut pending: std::collections::HashMap<String, Pending> = std::collections::HashMap::new();
     let mut echo: std::collections::HashSet<String> = std::collections::HashSet::new();
     while let Some(frame) = rx.recv().await {
@@ -257,6 +257,7 @@ async fn harness() -> Option<Harness> {
 
 impl Harness {
     fn client() -> reqwest::Client {
+        crate::install_crypto_provider();
         reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap()
     }
 

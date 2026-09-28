@@ -1,7 +1,8 @@
 <script lang="ts">
 	// Drawer header meta row: status badge, cwd, branch, token usage, langfuse
 	// chip, the in-place codex model editor or the claude "fork to change model"
-	// chip, adapter icon, and the ⓘ popover holding what a narrow row dropped.
+	// chip, and the adapter logo, which is the trigger of the popover holding
+	// what a narrow row dropped.
 	import type { SessionListItem } from '@bindings/SessionListItem';
 	import { modelShort, statusBadgeTone } from '$lib/format';
 	import { sessionEnd, sessionEndTitle } from '$lib/sessionEnd';
@@ -62,8 +63,6 @@
 		if (!model && !effort) return;
 		onsetmodel(model, effort);
 	}
-
-	const hasModelMeta = $derived((isCodexSession && !archived) || !!session.model || !!session.effort);
 </script>
 
 {#snippet modelText(model: string)}
@@ -149,26 +148,22 @@
 		</span>
 	{/if}
 	<div class="meta-trail">
-	<TokenUsage usage={session.token_usage} />
+	<span class="tokens"><TokenUsage usage={session.token_usage} /></span>
 	<span class="langfuse"><LangfuseChip id={session.id} /></span>
 	{@render modelMeta('drawer')}
-	<AdapterIcon adapter={session.adapter_id} size={20} />
-	{#if hasModelMeta}
-		<span class="meta-details">
-			<Popover
-				label={m.drawer_meta_details()}
-				placement="bottom-end"
-				box="sm"
-				data-journey="head-details"
-			>
-				{#snippet trigger()}<Icon name="info" size={16} />{/snippet}
-				<div class="metapop">
-					<span class="langfuse"><LangfuseChip id={session.id} /></span>
-					{@render modelMeta('drawer-details')}
-				</div>
-			</Popover>
-		</span>
-	{/if}
+	<Popover
+		label={m.drawer_meta_details()}
+		placement="bottom-end"
+		box="sm"
+		data-journey="head-details"
+	>
+		{#snippet trigger()}<AdapterIcon adapter={session.adapter_id} size={20} />{/snippet}
+		<div class="metapop">
+			<span class="tokens"><TokenUsage usage={session.token_usage} /></span>
+			<span class="langfuse"><LangfuseChip id={session.id} /></span>
+			{@render modelMeta('drawer-details')}
+		</div>
+	</Popover>
 	</div>
 </div>
 
@@ -212,7 +207,8 @@
 		flex: 0 1 auto;
 		min-width: 0;
 	}
-	.langfuse {
+	.langfuse,
+	.tokens {
 		display: contents;
 	}
 	.m-short {
@@ -220,11 +216,6 @@
 	}
 	.model-edit {
 		display: contents;
-	}
-	/* The ⓘ details trigger exists only to carry what the row has dropped, so it
-	   appears exactly when the first item goes. */
-	.meta-details {
-		display: none;
 	}
 	@container drawer-head (max-width: 40rem) {
 		.branch {
@@ -238,14 +229,18 @@
 		.m-short {
 			display: inline;
 		}
-		.meta-details {
-			display: inline-flex;
-		}
 	}
+	/* Narrow: the model chip and the token sum collapse into the logo, which is
+	   the row's one fixed, non-growing slot. */
 	@container drawer-head (max-width: 26rem) {
 		.model,
-		.model-edit {
+		.model-edit,
+		.tokens {
 			display: none;
+		}
+		.branch {
+			min-width: 0;
+			max-width: 6rem;
 		}
 	}
 	/* The popover holds what the row dropped, so it always shows the full model
@@ -266,10 +261,15 @@
 		display: none;
 	}
 	.metapop .langfuse,
+	.metapop .tokens,
 	.metapop .model-edit {
 		display: contents;
 	}
 	.metapop .model {
 		display: inline-flex;
+		max-width: 100%;
+	}
+	.metapop .ellipsis {
+		max-width: 100%;
 	}
 </style>

@@ -18,19 +18,19 @@ use crate::routes::blobs::store_blob;
 use crate::state::AppState;
 use crate::uploads::RawUpload;
 
-#[derive(Debug, Clone, Serialize, sqlx::FromRow, ts_rs::TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct SessionAttachment {
     pub id: uuid::Uuid,
     pub session_id: String,
     pub message_id: Option<String>,
     pub name: String,
     pub hash: String,
-    #[ts(type = "number")]
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub size: i64,
     pub content_type: Option<String>,
     #[sqlx(rename = "created_at_ms")]
-    #[ts(type = "number")]
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
     pub created_at: i64,
     /// The session's machine, once it has registered: what the webui needs to
     /// fall back to the staged copy through `/machines/{id}/fs/file`.
@@ -174,7 +174,7 @@ mod tests {
 
     #[test]
     fn listing_requires_session_read() {
-        let descs = crate::build_api_routes().into_parts().1;
+        let descs = crate::build_api_routes().into_parts().2;
         let d = descs
             .iter()
             .find(|d| d.path == "/sessions/{id}/attachments" && d.method == Method::GET)

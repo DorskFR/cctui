@@ -143,6 +143,28 @@ async fn update_transcript_mark(
     Ok(())
 }
 
+/// Tell the daemon the mark is stored, so its reconcile stops re-sending the
+/// window behind it. Skipped for a daemon that never advertised `mark_acks`:
+/// an unknown frame kills such a connection.
+async fn ack_transcript_mark(
+    state: &AppState,
+    machine_id: Uuid,
+    adapter_id: &str,
+    local_id: &str,
+    offset: u64,
+) {
+    if !state.mark_ack_daemons.contains_key(&machine_id) {
+        return;
+    }
+    let frame = cctui_proto::ws::DaemonFrameDown::TranscriptAck {
+        adapter_id: adapter_id.to_owned(),
+        session_marks: vec![(local_id.to_owned(), offset)],
+    };
+    if let Err(err) = state.bus.command_daemon_for_session(machine_id, local_id, frame).await {
+        tracing::debug!(%err, %machine_id, "transcript ack not delivered");
+    }
+}
+
 /// Session lifecycle events: start, end, transcript mark and model.
 pub(super) async fn on_session_event(
     state: &AppState,
@@ -162,6 +184,7 @@ pub(super) async fn on_session_event(
         }
         AdapterEvent::TranscriptMark { local_id, offset } => {
             update_transcript_mark(state, &local_id, offset).await?;
+            ack_transcript_mark(state, machine_id, adapter_id, &local_id, offset).await;
         }
         AdapterEvent::SessionModel { local_id, model } => {
             // Transcript ground truth overrides the requested `--model`.

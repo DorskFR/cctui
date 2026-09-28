@@ -13,7 +13,7 @@
 	import SessionGlyphs from '$lib/components/molecules/SessionGlyphs.svelte';
 	import LabelBadge from '$lib/components/molecules/LabelBadge.svelte';
 	import KeepaliveModal from '$lib/components/molecules/KeepaliveModal.svelte';
-	import { IconButton, Input, Menu, Text, Toolbar, FontScalePicker, type MenuItem } from '@dorsk/tsumikit';
+	import { Icon, IconButton, Input, Menu, Text, Toolbar, FontScalePicker, type MenuItem } from '@dorsk/tsumikit';
 	import HeaderMeta from './HeaderMeta.svelte';
 	import { m } from '$lib/paraglide/messages';
 
@@ -112,6 +112,13 @@
 	let barWidth = $state(Infinity);
 	const collapsed = $derived(barWidth < COLLAPSE_BELOW);
 
+	// One square per density for every control in the bar, so they share a
+	// height and a top edge whatever chrome or glyph they carry.
+	const box: 'sm' | 'md' = $derived(collapsed ? 'sm' : 'md');
+	// Popover-backed triggers (text size, ⋯) wear the chip chrome through the
+	// kit's published trigger properties; IconButton gets it from `chip`.
+	const CHIP_CHROME = '--pop-trigger-border: var(--border-strong); --pop-trigger-bg: var(--surface)';
+
 	const overflowItems = $derived<MenuItem[]>([
 		...(collapsed
 			? [
@@ -176,7 +183,7 @@
 <div class="dhead" data-journey="header">
 	<div class="dbar" bind:clientWidth={barWidth}>
 	<Toolbar collapseBelow="{COLLAPSE_BELOW}px" density={collapsed ? 'compact' : 'default'}>
-		<IconButton icon="chevron-left" label={m.drawer_back()} box={collapsed ? 'sm' : 'md'} onclick={onclose} />
+		<IconButton icon="chevron-left" label={m.drawer_back()} {box} onclick={onclose} />
 		<SessionGlyphs
 			{session}
 			{livenessClass}
@@ -214,13 +221,14 @@
 		</div>
 		<!-- Text size: the same kit picker as the main header, writing the one
 		     global fontScale. It stays out of the ⋯ flyout on mobile. -->
-		<FontScalePicker box={collapsed ? 'sm' : 'lg'} />
+		<FontScalePicker {box} style={CHIP_CHROME} />
 		{#if renaming}
-			<IconButton data-overflow chip variant="default" icon="check" label={m.common_save()} onclick={doRename} />
+			<IconButton data-overflow chip {box} variant="default" icon="check" label={m.common_save()} onclick={doRename} />
 		{:else}
 			<IconButton
 				data-overflow
 				chip
+				{box}
 				variant="default"
 				icon="edit"
 				label={m.drawer_rename()}
@@ -229,20 +237,20 @@
 		{/if}
 		{#if !archived}
 			<IconButton
-				chip={!collapsed}
+				chip
 				variant="default"
 				tone="warn"
-				box={collapsed ? 'sm' : 'md'}
+				{box}
 				style="background: color-mix(in srgb, var(--warn) 10%, var(--bg-elevated-2))"
 				icon="archive"
 				label={m.drawer_archive()}
 				onclick={onarchive}
 			/>
 			<IconButton
-				chip={!collapsed}
+				chip
 				variant="default"
 				tone="danger"
-				box={collapsed ? 'sm' : 'md'}
+				{box}
 				style="background: color-mix(in srgb, var(--danger) 10%, var(--bg-elevated-2))"
 				icon="stop"
 				label={m.drawer_interrupt_label()}
@@ -250,9 +258,11 @@
 				onclick={oninterrupt}
 			/>
 		{/if}
-		<Menu label={m.drawer_more_actions()} items={overflowItems} placement="bottom-end" box="sm">
+		<Menu label={m.drawer_more_actions()} items={overflowItems} placement="bottom-end" {box} style={CHIP_CHROME}>
 			{#snippet trigger()}
-				<IconButton data-journey="actions" icon="more" label={m.drawer_more_actions()} box="sm" />
+				<span class="mtrig" data-journey="actions" title={m.drawer_more_actions()}>
+					<Icon name="more" size={18} />
+				</span>
 			{/snippet}
 		</Menu>
 	</Toolbar>
@@ -304,6 +314,11 @@
 	.hlabels {
 		display: flex;
 		min-width: 0;
+	}
+	.mtrig {
+		display: inline-flex;
+		align-items: center;
+		line-height: 1;
 	}
 	.dtitle {
 		flex: 1;

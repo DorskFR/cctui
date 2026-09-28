@@ -13,7 +13,9 @@
 //! `secret` the body is signed HMAC-SHA256 in `X-CCTUI-Signature: sha256=<hex>`.
 
 use std::sync::OnceLock;
+use std::time::Duration;
 
+use cctui_proto::backoff::Backoff;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 
@@ -28,20 +30,24 @@ type HmacSha256 = Hmac<Sha256>;
 /// "running" must not consume the delivery retry budget.
 const POLL_INTERVAL_SECS: i64 = 30;
 
-/// Retry budget before dead-lettering. With the backoff schedule below this
-/// spans well over an hour of attempts.
-const MAX_ATTEMPTS: i32 = 8;
+/// Retry budget before dead-lettering, sized so the schedule below spans over
+/// two hours: a receiver down for an hour must recover, not dead-letter.
+const MAX_ATTEMPTS: i32 = 11;
 
-/// Exponential backoff (seconds) for the Nth attempt (0-indexed). Capped at the
-/// last entry for any attempt beyond the table.
-const BACKOFF_SECS: &[i64] = &[10, 30, 120, 300, 900, 1800, 3600];
+/// Delivery retry schedule: 10 s doubling to a 1 h cap, jittered so a receiver
+/// coming back from an outage is not hit by every pending row at once. The first
+/// retry stays seconds away for a transient blip; [`MAX_ATTEMPTS`] carries the
+/// total reach past two hours.
+const fn retry_schedule() -> Backoff {
+    Backoff::new(Duration::from_secs(10), Duration::from_hours(1))
+}
 
 pub use crate::outbound::OutboundUrlError as NotifyUrlError;
 
 /// Rows fetched per sweep, and how many of them are processed at once.
 const SWEEP_LIMIT: i64 = 50;
 const DELIVERY_CONCURRENCY: usize = 8;
-const DELIVERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const DELIVERY_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Fail-closed SSRF guard: requires `https` and refuses a host that is
 /// cluster-local, resolves to an internal address, or does not resolve.
@@ -356,10 +362,7 @@ async fn schedule_retry(state: &AppState, id: uuid::Uuid, attempts: i32, err: &s
         );
         return;
     }
-    let backoff = BACKOFF_SECS
-        .get(usize::try_from(attempts).unwrap_or(usize::MAX))
-        .copied()
-        .unwrap_or_else(|| *BACKOFF_SECS.last().unwrap_or(&3600));
+    let backoff = retry_schedule().delay_secs_for(u32::try_from(attempts).unwrap_or(u32::MAX));
     let _ = sqlx::query(
         "UPDATE session_webhooks \
          SET attempts = $2, last_error = $3, \
@@ -378,9 +381,45 @@ async fn schedule_retry(state: &AppState, id: uuid::Uuid, attempts: i32, err: &s
 #[cfg(test)]
 mod tests {
     use super::{
-        DELIVERY_CONCURRENCY, DELIVERY_TIMEOUT, NotifyUrlError, SWEEP_LIMIT, build_payload,
-        for_each_bounded, sign, validate_notify_url,
+        DELIVERY_CONCURRENCY, DELIVERY_TIMEOUT, MAX_ATTEMPTS, NotifyUrlError, SWEEP_LIMIT,
+        build_payload, for_each_bounded, retry_schedule, sign, validate_notify_url,
     };
+
+    /// Sum of the superseded fixed table (10/30/120/300/900/1800/3600). The
+    /// doubling schedule must reach at least this far, even at the bottom of the
+    /// jitter range, or an hour-long outage dead-letters where it used to recover.
+    const PREVIOUS_HORIZON_SECS: i64 = 6760;
+
+    /// Retries span the whole budget, so the horizon is the sum of every delay a
+    /// row can be given before it is declared dead.
+    #[test]
+    fn retry_horizon_is_no_shorter_than_the_table_it_replaced() {
+        let s = retry_schedule();
+        let retries = u32::try_from(MAX_ATTEMPTS - 1).unwrap();
+        let horizon: i64 = (0..retries).map(|a| s.delay_secs_for(a)).sum();
+        assert!(
+            horizon >= PREVIOUS_HORIZON_SECS,
+            "horizon {horizon}s over {retries} retries is shorter than the \
+             {PREVIOUS_HORIZON_SECS}s it replaced"
+        );
+        // A receiver that comes back within the hour must still be delivered to.
+        assert!(horizon >= 3600, "horizon {horizon}s cannot outlast a one-hour outage");
+    }
+
+    /// Every retry inside the attempt budget doubles within the shared ±20%
+    /// jitter and never exceeds the 1 h cap.
+    #[test]
+    fn retry_schedule_doubles_and_caps() {
+        let s = retry_schedule();
+        let mut base = 10i64;
+        for attempt in 0..u32::try_from(MAX_ATTEMPTS).unwrap() {
+            let secs = s.delay_secs_for(attempt);
+            let (lo, hi) = (base * 8 / 10, base * 12 / 10);
+            assert!((lo..=hi).contains(&secs), "attempt {attempt}: {secs}s outside {lo}..={hi}");
+            base = (base * 2).min(3600);
+        }
+        assert!(s.delay_secs_for(u32::MAX) <= 3600 * 12 / 10);
+    }
 
     #[tokio::test(start_paused = true)]
     async fn a_full_pass_of_hung_receivers_is_bounded_by_concurrency() {

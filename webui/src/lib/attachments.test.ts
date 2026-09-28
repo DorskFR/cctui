@@ -62,6 +62,12 @@ describe('attachFiles', () => {
 		expect(files.map((x) => x.name)).toEqual(['a.txt', 'a-2.txt']);
 		expect(text).toBe('[a.txt] [a-2.txt]');
 	});
+
+	it('leaves the text untouched when not tokenizing', () => {
+		const { files, text } = attachFiles([], 'hello', [f('a.txt'), f('b.txt')], false);
+		expect(files.map((x) => x.name)).toEqual(['a.txt', 'b.txt']);
+		expect(text).toBe('hello');
+	});
 });
 
 describe('nextPasteIndex', () => {

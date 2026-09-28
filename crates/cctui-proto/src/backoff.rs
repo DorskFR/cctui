@@ -38,6 +38,21 @@ impl Backoff {
         self.cur
     }
 
+    /// Jittered delay for a 0-based `attempt`, for retry schedules whose counter
+    /// is persisted (a database row) rather than carried in a loop.
+    #[must_use]
+    pub fn delay_for(&self, attempt: u32) -> Duration {
+        let base = self.min.saturating_mul(1u32 << attempt.min(31)).min(self.max);
+        jitter(base, unit_random())
+    }
+
+    /// [`Self::delay_for`] in whole seconds, for a `next_attempt_at` that SQL
+    /// computes as an interval.
+    #[must_use]
+    pub fn delay_secs_for(&self, attempt: u32) -> i64 {
+        i64::try_from(self.delay_for(attempt).as_secs()).unwrap_or(i64::MAX)
+    }
+
     pub fn next_delay(&mut self) -> Duration {
         let base = self.cur;
         self.cur = base.saturating_mul(2).min(self.max);
@@ -104,6 +119,37 @@ mod tests {
         assert_eq!(b.attempt(), 0);
         b.saturate();
         assert_eq!(b.peek(), Duration::from_mins(1));
+    }
+
+    #[test]
+    fn delay_for_doubles_from_the_attempt_index_and_caps() {
+        let b = Backoff::new(Duration::from_secs(10), Duration::from_hours(1));
+        for (attempt, secs) in [(0, 10), (1, 20), (2, 40), (3, 80), (8, 2560), (9, 3600)] {
+            let d = b.delay_for(attempt);
+            assert!(within(d, Duration::from_secs(secs)), "attempt {attempt}: {d:?} vs {secs}s");
+        }
+        // No shift overflow, and no delay beyond the cap, however large the count.
+        for attempt in [31, 32, 1000, u32::MAX] {
+            assert!(within(b.delay_for(attempt), Duration::from_hours(1)));
+        }
+    }
+
+    #[test]
+    fn delay_for_leaves_the_schedule_alone() {
+        let b = Backoff::reconnect();
+        let _ = b.delay_for(5);
+        assert_eq!(b.peek(), Duration::from_secs(5));
+        assert_eq!(b.attempt(), 0);
+    }
+
+    #[test]
+    fn delay_secs_for_matches_delay_for() {
+        let b = Backoff::new(Duration::from_secs(30), Duration::from_mins(15));
+        for attempt in 0..8 {
+            let secs = b.delay_secs_for(attempt);
+            assert!(secs >= 24, "attempt {attempt} under the jitter floor: {secs}");
+            assert!(secs <= 1080, "attempt {attempt} over the jittered cap: {secs}");
+        }
     }
 
     #[test]

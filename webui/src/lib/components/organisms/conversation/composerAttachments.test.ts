@@ -47,14 +47,44 @@ async function make(over: Partial<ComposerAttachmentsOpts> = {}) {
 
 const file = (name: string, body = 'x') => new File([body], name, { type: 'text/plain' });
 
+const pasteEvent = (text: string) =>
+	({
+		preventDefault: () => {},
+		clipboardData: { items: [], files: [], getData: () => text }
+	}) as unknown as ClipboardEvent;
+
 describe('ComposerAttachments', () => {
-	it('adds files, tokens the draft and persists under the restored key', async () => {
-		const { a, sync, text } = await make();
+	it('adds files without touching the draft and persists under the restored key', async () => {
+		const { a, sync, text } = await make({ input: () => 'note' });
 		a.add([file('a.txt')]);
 		await flush();
 		expect(a.files.map((f) => f.name)).toEqual(['a.txt']);
-		expect(text()).toContain('[a.txt]');
+		expect(text()).toBe('note');
 		expect(sync.persist).toHaveBeenLastCalledWith('draft:s1', a.files);
+	});
+
+	it('keeps long screenshot names out of the textarea', async () => {
+		const { a, text } = await make();
+		a.add([1, 2, 3, 4].map((i) => file(`Screenshot 2026-09-25 at 11.3${i}.22.png`)));
+		await flush();
+		expect(a.files).toHaveLength(4);
+		expect(text()).toBe('');
+	});
+
+	it('still lists every staged path in the sent body with no tokens in the text', async () => {
+		const { a } = await make();
+		a.add([file('a.png'), file('b.png')]);
+		await flush();
+		const body = await a.stage('look', async () => ({ paths: ['/tmp/a.png', '/tmp/b.png'] }));
+		expect(body).toBe('look\n\nAttached files (2):\n- /tmp/a.png\n- /tmp/b.png');
+	});
+
+	it('tokens the draft for a masked large paste', async () => {
+		const { a, text } = await make();
+		a.onPaste(pasteEvent('y'.repeat(2500)));
+		await flush();
+		expect(a.files.map((f) => f.name)).toEqual(['paste-1.txt']);
+		expect(text()).toContain('[paste-1.txt]');
 	});
 
 	it('removes a file by name', async () => {

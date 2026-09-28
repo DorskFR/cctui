@@ -260,6 +260,7 @@ pub struct OpenCodeClient {
 impl OpenCodeClient {
     #[must_use]
     pub fn new(base: impl Into<String>, password: impl Into<String>) -> Self {
+        crate::install_crypto_provider();
         Self {
             base: base.into(),
             password: password.into(),

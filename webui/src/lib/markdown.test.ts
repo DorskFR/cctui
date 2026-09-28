@@ -96,6 +96,30 @@ describe('renderMarkdown local path links', () => {
 		expect(anchors(renderMarkdown('a/b.txt and 1/2.5', opts))).toEqual([]);
 	});
 
+	it('links a name with spaces without swallowing the prose around it', () => {
+		const shot = '/Users/u/Desktop/Screenshot 2026-09-29 at 10.11.12.png';
+		const got = anchors(renderMarkdown(`Attached file(s): ${shot}`, opts));
+		expect(got).toEqual([
+			{
+				href: `/api/v1/machines/mach-1/fs/file?path=${encodeURIComponent(shot)}&session_id=sess-1`,
+				text: shot,
+				cls: 'md-file',
+				name: 'Screenshot 2026-09-29 at 10.11.12.png'
+			}
+		]);
+		expect(
+			anchors(renderMarkdown('see ~/Documents/My Report v2.pdf please', opts)).map((a) => a.text)
+		).toEqual(['~/Documents/My Report v2.pdf']);
+	});
+
+	it('does not join two paths or a dotted version into one spaced name', () => {
+		expect(anchors(renderMarkdown('wrote /tmp/a.png and /tmp/b.png', opts)).map((a) => a.text)).toEqual([
+			'/tmp/a.png',
+			'/tmp/b.png'
+		]);
+		expect(anchors(renderMarkdown('/tmp/notes at version 1.2', opts))).toEqual([]);
+	});
+
 	it('keeps trailing punctuation out of the path', () => {
 		const got = anchors(renderMarkdown('open /tmp/x.md, then /tmp/y.md; done /tmp/z.md.', opts));
 		expect(got.map((a) => a.text)).toEqual(['/tmp/x.md', '/tmp/y.md', '/tmp/z.md']);

@@ -36,11 +36,11 @@ pub fn anthropic_reset_url(organization_uuid: &str) -> String {
 
 /// What the account's latest usage payload says about a limit reset, normalized
 /// across providers for the button in the usage row.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, ts_rs::TS)]
-#[ts(export)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct LimitResetStatus {
     /// `codex` (reset credits) or `claude` (`cedar_ember` / `juniper_tide`).
-    #[ts(type = "\"codex\" | \"claude\"")]
+    #[cfg_attr(feature = "ts", ts(type = "\"codex\" | \"claude\""))]
     pub kind: &'static str,
     /// Whether a claim would do anything right now.
     pub available: bool,
@@ -57,15 +57,15 @@ pub struct LimitResetStatus {
     pub weekly_resets_at: Option<String>,
     /// Claude `cedar_ember`: claims left on the named grant.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(type = "number | null", optional)]
+    #[cfg_attr(feature = "ts", ts(type = "number | null", optional))]
     pub resets_left: Option<i64>,
     /// Claude `cedar_ember`: the grant may only be spent at a limit.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
+    #[cfg_attr(feature = "ts", ts(optional))]
     pub requires_limit: Option<bool>,
     /// Claude `cedar_ember`: the limit windows a claim refills.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
+    #[cfg_attr(feature = "ts", ts(optional))]
     pub clears: Option<Vec<String>>,
 }
 
@@ -284,8 +284,8 @@ pub struct LimitResetRequest {
     pub credit_id: Option<String>,
 }
 
-#[derive(Debug, serde::Serialize, ts_rs::TS)]
-#[ts(export)]
+#[derive(Debug, serde::Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct LimitResetResponse {
     pub account_id: Uuid,
     pub provider: String,

@@ -30,9 +30,9 @@
 # hosts, or namespaces — neutral placeholders only.
 
 # ── Builder: compile the worker binaries ────────────────────────────────────
-# Match the runtime's glibc (bookworm-slim ships glibc 2.36) by building on the
-# bookworm-based rust image, same as deploy/Dockerfile.
-FROM rust:1.97.1-slim-bookworm@sha256:b001fed8c602fe3126bfee18c7afa14fe58dc855ce1d0cdfb4ac3ee7d6361a1c AS builder
+# Match the runtime's glibc (trixie-slim ships glibc 2.41) by building on the
+# trixie-based rust image, same as deploy/Dockerfile.
+FROM rust:1.97.1-slim-trixie@sha256:8e8cf8f7fd54a2d23d5a743b3a03f56e26b6c774276c33fa0595111704ebb15c AS builder
 
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
@@ -58,7 +58,7 @@ COPY --from=builder /out/ /
 # Every bundled CLI is a native binary; node is here only so context packs can
 # run npx-based MCP servers. Heavier JS tooling (pnpm stores, a managed
 # toolchain) still belongs in derived org images, e.g. under /opt/mise.
-FROM debian:bookworm-slim@sha256:63a496b5d3b99214b39f5ed70eb71a61e590a77979c79cbee4faf991f8c0783e
+FROM debian:trixie-slim@sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee5b77cc54cd1b20a
 
 # Base tooling kept deliberately lean:
 #   ca-certificates          — TLS trust roots for the daemon's rustls stack.

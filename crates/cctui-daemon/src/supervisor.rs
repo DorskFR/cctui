@@ -324,7 +324,7 @@ impl Supervisor {
                         let Some(msg) = msg else { return Ok(()); };
                         let msg = msg?;
                         last_rx = tokio::time::Instant::now();
-                        if let Some(frame) = parse_frame(msg)? {
+                        if let Some(frame) = parse_frame(msg) {
                             if let DaemonFrameDown::ChunkAck { transfer_id, highest_contiguous_chunk } = &frame {
                                 self.record_chunk_ack(&mut active, transfer_id, *highest_contiguous_chunk);
                             } else {
@@ -507,6 +507,7 @@ impl Supervisor {
             resources: self.resources.lock().map_or(None, |mut s| s.sample()),
             claude_jobs: claude_jobs_root(running).map(|root| jobs_on_disk(&root)),
             harness: Some(crate::harness_update::report()),
+            mark_acks: Some(true),
         };
         let payload = serde_json::to_string(&hb)?;
         self.counters.add(Subsystem::Heartbeat, payload.len() as u64);
@@ -606,6 +607,17 @@ impl Supervisor {
                     }
                 }
                 self.purge_archived_jobs(running, &archived);
+            }
+            DaemonFrameDown::TranscriptAck { adapter_id, session_marks } => {
+                if let Some(running) = running.get(&adapter_id)
+                    && running
+                        .commands_tx
+                        .try_send(AdapterCommand::AckMarks { marks: session_marks })
+                        .is_err()
+                {
+                    // A dropped ack only costs one more re-sent window.
+                    tracing::debug!(%adapter_id, "adapter busy; transcript ack dropped");
+                }
             }
             DaemonFrameDown::ArchivedJobs { session_ids } => {
                 self.purge_archived_jobs(running, &session_ids);
@@ -1311,14 +1323,18 @@ fn leaked_jobs(jobs_root: &std::path::Path, archived: &[String]) -> Vec<String> 
         .collect()
 }
 
-fn parse_frame(msg: Message) -> anyhow::Result<Option<DaemonFrameDown>> {
+/// A frame this build has no variant for is skipped, never fatal: a newer
+/// server must be able to send one without dropping the connection.
+fn parse_frame(msg: Message) -> Option<DaemonFrameDown> {
     let txt = match msg {
         Message::Text(t) => t.to_string(),
         Message::Binary(b) => String::from_utf8_lossy(&b).to_string(),
         // Close + ping/pong/etc are not application frames.
-        _ => return Ok(None),
+        _ => return None,
     };
-    Ok(Some(serde_json::from_str(&txt)?))
+    serde_json::from_str(&txt)
+        .inspect_err(|err| tracing::debug!(%err, "ignoring unrecognised down-frame"))
+        .ok()
 }
 
 #[cfg(test)]
@@ -1589,6 +1605,59 @@ mod tests {
             }
             other => panic!("expected a failed CommandResult, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn a_transcript_ack_reaches_the_named_adapter_and_an_unknown_frame_is_ignored() {
+        let (commands_tx, mut commands_rx) = mpsc::channel(8);
+        let mut running: std::collections::HashMap<String, AdapterRunning> =
+            std::collections::HashMap::new();
+        running.insert(
+            "claude-code".to_owned(),
+            AdapterRunning {
+                shutdown: CancellationToken::new(),
+                config: serde_json::json!({}),
+                commands_tx,
+                tasks: Vec::new(),
+            },
+        );
+        let (event_tx, _event_rx) = mpsc::channel(8);
+        let (frame_up_tx, _frame_up_rx) = mpsc::channel(8);
+        let mut scrub = cctui_crypto::redact::CompiledPatterns::disabled();
+        let supervisor = Supervisor::new(
+            ServerClient::new("http://localhost"),
+            "machine-key".to_string(),
+            vec![],
+        );
+        let marks = vec![("sess-1".to_owned(), 4096_u64)];
+        for adapter_id in ["claude-code", "codex"] {
+            supervisor
+                .handle_frame(
+                    cctui_proto::ws::DaemonFrameDown::TranscriptAck {
+                        adapter_id: adapter_id.to_owned(),
+                        session_marks: marks.clone(),
+                    },
+                    &mut running,
+                    &event_tx,
+                    &frame_up_tx,
+                    &mut scrub,
+                    &CancellationToken::new(),
+                )
+                .await;
+        }
+        match commands_rx.try_recv() {
+            Ok(cctui_proto::adapter::AdapterCommand::AckMarks { marks: got }) => {
+                assert_eq!(got, marks);
+            }
+            other => panic!("expected AckMarks, got {other:?}"),
+        }
+        assert!(commands_rx.try_recv().is_err(), "an ack for another adapter is dropped");
+
+        // A frame from a newer server must be skipped, not close the socket.
+        let unknown = tokio_tungstenite::tungstenite::Message::Text(
+            r#"{"type":"some_future_frame","whatever":1}"#.into(),
+        );
+        assert!(super::parse_frame(unknown).is_none());
     }
 
     #[tokio::test]
@@ -2104,6 +2173,7 @@ mod tests {
             resources: None,
             claude_jobs: None,
             harness: None,
+            mark_acks: None,
         };
         let super::Prepared::Frame(text) = super::prepare_send(&hb).unwrap() else {
             panic!("heartbeat must not chunk")
@@ -2274,13 +2344,13 @@ mod tests {
         use tokio_tungstenite::tungstenite::Message;
         let json = r#"{"type":"ack","seq":7}"#;
         for msg in [Message::Text(json.into()), Message::Binary(json.as_bytes().to_vec().into())] {
-            match super::parse_frame(msg).unwrap() {
+            match super::parse_frame(msg) {
                 Some(cctui_proto::ws::DaemonFrameDown::Ack { seq }) => assert_eq!(seq, 7),
                 other => panic!("expected Ack, got {other:?}"),
             }
         }
-        assert!(super::parse_frame(Message::Ping(Vec::new().into())).unwrap().is_none());
-        assert!(super::parse_frame(Message::Close(None)).unwrap().is_none());
+        assert!(super::parse_frame(Message::Ping(Vec::new().into())).is_none());
+        assert!(super::parse_frame(Message::Close(None)).is_none());
     }
 
     /// Counts adapter instances that are live at the same time. `peak > 1`

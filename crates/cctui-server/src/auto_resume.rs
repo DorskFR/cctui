@@ -4,22 +4,28 @@
 //! A Claude Code worker that loses the API mid-reply writes `API Error:
 //! Connection lost mid-response…` and ends its turn without retrying. Each
 //! reaper tick finds sessions whose latest assistant message is that error and
-//! nudges them with "continue", backing off 1, 5 and 10 minutes; after the third
+//! nudges them with "continue", backing off 1, 2 and 4 minutes; after the third
 //! nudge the session is left alone and reported through ntfy.
 //!
 //! Each nudge carries a timestamp so the `stream_events` dedup index does not
 //! swallow a repeated identical "continue".
 
+use std::time::Duration as StdDuration;
+
+use cctui_proto::backoff::Backoff;
 use chrono::{DateTime, Duration, Utc};
 
 use crate::live_sessions::live_sessions_predicate;
 use crate::state::AppState;
 use crate::store::sessions::SessionRowStatus;
 
-/// Delay before the first nudge, then between successive nudges. The last
-/// entry is also the grace period after the final attempt before the row is
-/// declared exhausted.
-pub const BACKOFF_SECS: &[i64] = &[60, 300, 600];
+/// Delay before the first nudge, then between successive nudges: 1 min doubling
+/// to a 10 min cap, jittered so a server restart does not nudge every stuck
+/// session at once. The delay after the final attempt is also the grace period
+/// before the row is declared exhausted.
+const fn schedule() -> Backoff {
+    Backoff::new(StdDuration::from_mins(1), StdDuration::from_mins(10))
+}
 
 /// Nudges sent before giving up.
 pub const MAX_ATTEMPTS: i32 = 3;
@@ -103,7 +109,7 @@ pub fn plan(
             }
             (attempts, next_attempt_at)
         }
-        _ => (0, error_at + Duration::seconds(BACKOFF_SECS[0])),
+        _ => (0, error_at + Duration::seconds(first_delay_secs())),
     };
     if now < due {
         return Action::Skip;
@@ -111,12 +117,19 @@ pub fn plan(
     if attempts >= MAX_ATTEMPTS { Action::Exhaust } else { Action::Fire { attempt: attempts + 1 } }
 }
 
+/// Delay from the error to the first nudge. Un-jittered on purpose: [`plan`] is
+/// re-evaluated every sweep and must reach the same verdict each time, and each
+/// session's own `error_at` already spreads these out.
+fn first_delay_secs() -> i64 {
+    i64::try_from(schedule().peek().as_secs()).unwrap_or(60)
+}
+
 /// Seconds to wait after nudge number `attempt` (1-based) before the next
-/// decision point.
+/// decision point. Jittered, and written once to `next_attempt_at`, so sessions
+/// that failed together stop nudging in lockstep.
 #[must_use]
 pub fn backoff_after(attempt: i32) -> i64 {
-    let idx = usize::try_from(attempt).unwrap_or(usize::MAX);
-    BACKOFF_SECS.get(idx).copied().unwrap_or_else(|| *BACKOFF_SECS.last().unwrap_or(&600))
+    schedule().delay_secs_for(u32::try_from(attempt).unwrap_or(u32::MAX))
 }
 
 /// The `event_type`/`role`/`text` triple in `last_err` is also the predicate of
@@ -296,7 +309,8 @@ mod tests {
     use chrono::{Duration, TimeZone, Utc};
 
     use super::{
-        Action, BACKOFF_SECS, MAX_ATTEMPTS, STUCK_SELECT, backoff_after, is_connection_loss, plan,
+        Action, MAX_ATTEMPTS, STUCK_SELECT, backoff_after, first_delay_secs, is_connection_loss,
+        plan,
     };
 
     const MIGRATION_115: &str =
@@ -390,11 +404,20 @@ mod tests {
         );
     }
 
+    /// Doubling 1 min → 10 min, each delay within the shared ±20% jitter.
     #[test]
-    fn backoff_follows_the_table_then_caps() {
-        assert_eq!(backoff_after(1), BACKOFF_SECS[1]);
-        assert_eq!(backoff_after(2), BACKOFF_SECS[2]);
-        assert_eq!(backoff_after(3), *BACKOFF_SECS.last().unwrap());
-        assert_eq!(backoff_after(99), *BACKOFF_SECS.last().unwrap());
+    fn backoff_doubles_then_caps() {
+        for (attempt, base) in [(1, 120), (2, 240), (3, 480), (4, 600), (99, 600)] {
+            let secs = backoff_after(attempt);
+            let (lo, hi) = (base * 8 / 10, base * 12 / 10);
+            assert!((lo..=hi).contains(&secs), "attempt {attempt}: {secs}s outside {lo}..={hi}");
+        }
+    }
+
+    /// The first nudge is deterministic, so a sweep cannot re-roll it.
+    #[test]
+    fn first_delay_is_stable_and_unjittered() {
+        assert_eq!(first_delay_secs(), 60);
+        assert_eq!(first_delay_secs(), 60);
     }
 }

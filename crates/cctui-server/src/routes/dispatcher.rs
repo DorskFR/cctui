@@ -14,7 +14,7 @@
 
 use axum::extract::ws::{Message, WebSocket};
 use axum::extract::{State, WebSocketUpgrade};
-use axum::http::{HeaderMap, StatusCode, Uri};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::{Extension, Json, response};
 use cctui_proto::api::{DaemonAuthRequest, DaemonAuthResponse};
@@ -312,40 +312,22 @@ pub async fn ws(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
     headers: HeaderMap,
-    uri: Uri,
 ) -> Result<response::Response, StatusCode> {
-    let token = ws_credential(&headers, &uri).ok_or(StatusCode::UNAUTHORIZED)?;
+    let token = ws_credential(&headers).ok_or(StatusCode::UNAUTHORIZED)?;
     let (dispatcher_id, _user_id) =
         resolve_dispatcher_key(&state, &token).await.ok_or(StatusCode::UNAUTHORIZED)?;
     Ok(ws.on_upgrade(move |socket| handle(socket, state, dispatcher_id)).into_response())
 }
 
-/// The dispatcher key from `Authorization: Bearer`, else from the deprecated
-/// `?token=` query parameter, which leaks the key into access logs.
-fn ws_credential(headers: &HeaderMap, uri: &Uri) -> Option<String> {
-    let bearer = headers
+/// The dispatcher key from `Authorization: Bearer`. Header only — a `?token=`
+/// query parameter leaks the key into proxy and access logs.
+fn ws_credential(headers: &HeaderMap) -> Option<String> {
+    headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
         .filter(|t| !t.is_empty())
-        .map(str::to_string);
-    bearer.or_else(|| {
-        let token = extract_token_from_uri(uri)?;
-        tracing::warn!("dispatcher WS authenticated via deprecated ?token= query parameter");
-        Some(token)
-    })
-}
-
-fn extract_token_from_uri(uri: &Uri) -> Option<String> {
-    uri.query().and_then(|q| {
-        q.split('&').find_map(|param| {
-            let mut parts = param.split('=');
-            match (parts.next(), parts.next()) {
-                (Some("token"), Some(token)) => Some(token.to_string()),
-                _ => None,
-            }
-        })
-    })
+        .map(str::to_string)
 }
 
 /// Resolve a dispatcher enrollment key to `(dispatcher_id, user_id)`. A
@@ -592,36 +574,23 @@ mod tests {
 
     #[test]
     fn ws_credential_reads_bearer_header() {
-        let uri: axum::http::Uri = "/api/v1/dispatcher/ws".parse().unwrap();
-        assert_eq!(
-            super::ws_credential(&headers_with("Bearer dkey-1"), &uri).as_deref(),
-            Some("dkey-1")
-        );
+        assert_eq!(super::ws_credential(&headers_with("Bearer dkey-1")).as_deref(), Some("dkey-1"));
     }
 
+    /// `?token=` is gone: a request carrying one and no header has no credential.
     #[test]
-    fn ws_credential_prefers_header_over_query() {
-        let uri: axum::http::Uri = "/api/v1/dispatcher/ws?token=from-query".parse().unwrap();
-        assert_eq!(
-            super::ws_credential(&headers_with("Bearer from-header"), &uri).as_deref(),
-            Some("from-header")
-        );
-    }
-
-    #[test]
-    fn ws_credential_still_accepts_query_token() {
-        let uri: axum::http::Uri = "/api/v1/dispatcher/ws?token=legacy".parse().unwrap();
-        assert_eq!(
-            super::ws_credential(&axum::http::HeaderMap::new(), &uri).as_deref(),
-            Some("legacy")
-        );
+    fn ws_credential_ignores_a_query_token() {
+        let req = axum::http::Request::builder()
+            .uri("/api/v1/dispatcher/ws?token=legacy")
+            .body(())
+            .unwrap();
+        assert!(super::ws_credential(req.headers()).is_none());
     }
 
     #[test]
     fn ws_credential_rejects_missing_or_non_bearer() {
-        let uri: axum::http::Uri = "/api/v1/dispatcher/ws".parse().unwrap();
-        assert!(super::ws_credential(&axum::http::HeaderMap::new(), &uri).is_none());
-        assert!(super::ws_credential(&headers_with("Basic abc"), &uri).is_none());
-        assert!(super::ws_credential(&headers_with("Bearer "), &uri).is_none());
+        assert!(super::ws_credential(&axum::http::HeaderMap::new()).is_none());
+        assert!(super::ws_credential(&headers_with("Basic abc")).is_none());
+        assert!(super::ws_credential(&headers_with("Bearer ")).is_none());
     }
 }

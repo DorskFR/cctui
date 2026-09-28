@@ -91,11 +91,11 @@ case, never a *no-`SESSION_ID`* case.
 | `REPLY_URL` | Result-callback target (a bearer capability — never logged). Set ⇒ exit trap installed. Its host is always-allowed. |
 | `RESULT_FILE` | Where the session writes its verdict. Default `/tmp/cctui-result.json`. |
 
-### Credential env — placeholders only (CCT-719)
+### Credential env — placeholders only
 
 The worker holds **no real secrets**, in env or on disk. The guard-proxy sidecar
 TLS-terminates github/npm/… and injects the real `Authorization` from its own
-secret source (CCT-716/717/718); the worker's job is only to make each tool
+secret source; the worker's job is only to make each tool
 **emit** an `Authorization` for the proxy to rewrite. So the credential helper
 (`worker-credentials.sh`) materializes **placeholder** tokens, never real ones:
 
@@ -108,7 +108,7 @@ secret source (CCT-716/717/718); the worker's job is only to make each tool
 github/npm placeholders are written **unconditionally** (those tools always need
 a token); the host-targeted blocks (mcp) are skipped when their
 non-secret host/workspace config is absent (nothing to target). Every block is
-idempotent. `GPG_PRIVATE_KEY` is **sidecar-only** (CCT-721) — never imported into
+idempotent. `GPG_PRIVATE_KEY` is **sidecar-only** — never imported into
 the worker; a key seen in the worker env is a misconfiguration. `ANTHROPIC_*` /
 `OPENAI_*` model auth is unchanged (platform env passthrough / gateway token).
 
@@ -130,7 +130,7 @@ need only the role.
 > Anonymous reads still work. The boundary (no real secret in the worker) holds
 > regardless.
 
-### Secret references in `payload.env` (CCT-490)
+### Secret references in `payload.env`
 
 The dispatch payload's `env` map is the **one secret-injection surface**, and it
 carries **references, never secret values**. The kube dispatcher lifts
@@ -164,7 +164,7 @@ the resolved pod env.
 | `/home/worker` | RW | Per-session agent state (`.claude`, `.codex`, `.mcp.json`, `.npmrc`, `.gnupg`). |
 | `/var/run/guard-proxy`, `/var/run/workflow-guard` | RW | Proxy policy + guard state. |
 | `/var/run/guard-proxy-ca` | RO | Per-pod guard-proxy CA (`ca.pem`); in the supervisor's Landlock RO set so `NODE_EXTRA_CA_CERTS` is readable after privdrop. |
-| `/var/run/gpg-agent` | RW | Shared `gpg-agent` emptyDir carrying the forwarded restricted signing socket (`transparent-external` only, CCT-721). |
+| `/var/run/gpg-agent` | RW | Shared `gpg-agent` emptyDir carrying the forwarded restricted signing socket (`transparent-external` only). |
 | `/tmp` | RW | Scratch, `RESULT_FILE`, hardening report. |
 
 ## Network modes & capability requirements
@@ -200,7 +200,7 @@ prompt step blocks; the default is the safe fallback, not a recommendation.
 The proxy listens on `:15001` (traffic) and `:15002` (`/health`, `/ready`).
 Capabilities are dropped entirely before the daemon runs — see hardening below.
 
-### Daemon child-env capability scrub (CCT-719)
+### Daemon child-env capability scrub
 
 The daemon runs inside the worker and inherits the platform capability vars
 (`CCTUI_MACHINE_KEY[_FILE]`, `REPLY_URL`). A `Command` inherits the daemon's full
@@ -210,7 +210,7 @@ spawn site) — the agent (untrusted code that can read its own env) never sees 
 machine key it could impersonate the machine with, or the result-callback bearer
 it could spoof completion with.
 
-### Metadata/credential deny-list (CCT-720)
+### Metadata/credential deny-list
 
 The whole credential model depends on the **worker** container being unable to
 reach the credential backend directly — credential-backend reachability is a
@@ -247,7 +247,7 @@ be exercised in unit tests):
   from the worker fails to obtain any identity (no IMDS/IRSA reach). The worker
   carries a non-secret `AWS_REGION` only — a region hint, not a credential.
 
-### Sidecar mode (`transparent-external`, CCT-716)
+### Sidecar mode (`transparent-external`)
 
 Promotes the guard-proxy out of the worker container so its memory, env, and
 `/proc` live in a namespace the agent cannot read, and lets the worker container
@@ -285,7 +285,7 @@ dispatched-worker wait kills the uid-1000 daemon tree from root). The container
 mounts need an unconfined AppArmor profile where the runtime's default profile
 denies `mount(2)` (previously masked by `privileged: true`).
 
-### Sidecar secret source (CCT-717)
+### Sidecar secret source
 
 Every secret the sidecar can inject is named by an **explicit, engine-qualified
 secret ref** — the proxy knows engines, never a service taxonomy of its own, so
@@ -323,7 +323,7 @@ The `fetch-secret <ref>` subcommand resolves one ref (identity templating
 applied) and prints it to stdout — how the sidecar entrypoint obtains the GPG
 signing key.
 
-### TLS-terminating credential injection (CCT-718)
+### TLS-terminating credential injection
 
 For an **injection allow-list** of hosts the sidecar TLS-terminates the agent's
 connection, STRIPS whatever credential the agent supplied, substitutes the real
@@ -406,7 +406,7 @@ header: the safe intermediate state while a deployment's refs are being wired.
 would break under this MITM, so such hosts must never appear in the inject
 config; they get their credential another way.
 
-### GitHub App installation tokens (CCT-722)
+### GitHub App installation tokens
 
 For the `github` service the sidecar can inject a short-lived, repo-scoped
 GitHub **App installation token** instead of a stored long-lived PAT, so even
@@ -446,7 +446,7 @@ a collaborator on. Where PR creation is needed, keep that identity on the
 injected `NanachiBot` machine-user PAT path (the `github` service credential)
 instead of the App path.
 
-### Remote GPG signing (`transparent-external`, CCT-721)
+### Remote GPG signing (`transparent-external`)
 
 GPG never touches the network, so the header-injection above cannot deliver a
 signing key — and shipping `GPG_PRIVATE_KEY` to the worker would put the raw key
@@ -540,7 +540,7 @@ blocked. The array is consumed by the PR renderer (one section per surface) and,
 longer-term, by `cctui-github` (diff viewer + review-draft store + evidence
 attachments) — the not-yet-built crate is the natural home for richer rendering.
 
-## Codex-native dispatch (CCT-643)
+## Codex-native dispatch
 
 A dispatch payload carries an optional **`adapter`** key selecting which harness
 the worker runs:
@@ -765,13 +765,13 @@ selected; with no `_base` present the pack is used as-is (unchanged behaviour).
   of `GUARD_RULES_BASE` (the operator base). `[name]: …` overrides a base set;
   `[name]+: …` extends it (appends); a new name adds a set. So a pack reuses
   common sets (`net-dev`, …) and only states its deltas.
-- `rules/` vs `docs/` (CCT-490): `rules/` is **push** — copied to
+- `rules/` vs `docs/`: `rules/` is **push** — copied to
   `~/.claude/rules/`, which Claude Code auto-loads as instructions on every task
   (always-on guardrails/conventions). `docs/` is **pull** — copied to
   `~/.claude/docs/` and referenced on demand by a prompt that needs it
   (`@~/.claude/docs/<x>.md`); it is not auto-loaded.
 
-### Codex context-pack packaging (CCT-644)
+### Codex context-pack packaging
 
 The staging above is Claude-shaped (`.claude` conventions). A pack is
 **adapter-portable**: it declares content once, in an adapter-neutral form, and
@@ -994,8 +994,8 @@ Long sessions drift. Past the halfway mark, the agent's working context dilutes
 (the "dumb zone") and any ticket, comment, or web page it fetched is sitting in
 that context as if it were an instruction — a prompt-injection surface. And every
 step transition so far has trusted the agent's *claim* that the step is done.
-CCT-440 hardens both ends of a transition; both are enforced by the guard, not by
-convention.
+The guard hardens both ends of a transition; both are enforced by the guard,
+not by convention.
 
 **Re-inject the step on every transition.** A numeric transition (and the
 `SessionStart`/compact hook) returns the **authoritative next-step prompt body
@@ -1006,7 +1006,7 @@ The body is captured from the prompt step's prose lines; no annotation is needed
 **Compaction is opt-in (`[compact]`).** A step may add a `[compact]` line to also
 emit a directive to compact the working context to `{plan, current diff, the step
 instructions}` and to treat any fetched ticket/comment/web content as untrusted
-input rather than instructions. It is **off by default** (CCT-450): compaction is
+input rather than instructions. It is **off by default**: compaction is
 lossy and counter-productive on large-context models, so re-injection re-anchors
 context without discarding it unless the step explicitly asks for it. Bare
 `[compact]` turns it on; `[compact]: false` (or `no`/`off`/`0`) keeps it off so a
@@ -1041,8 +1041,8 @@ that already exists. That class is ~80% **human-caught** at review (the
 review-mining finding); the bot passes correctness but is blind to "we already
 have this" and "we don't do it that way here". These are not verification
 failures — they are **retrieval** (the agent didn't know the helper existed) and
-**codification** (the convention lived in a reviewer's head) failures. CCT-441
-closes both, and the close lives in the repo so it protects humans too.
+**codification** (the convention lived in a reviewer's head) failures. The
+guard closes both, and the close lives in the repo so it protects humans too.
 
 **Deterministic consistency gates (codification + detection).** Three
 repo-resident gates run in the implement step and chain into its `[gate]`:
@@ -1178,7 +1178,7 @@ unattended merge.
 > verdict contract — is what the `acceptance-agent` skill specifies and is reusable
 > the moment a preview URL is provided.
 
-## `CctuiAgent` — native subagent spawning (CCT-758)
+## `CctuiAgent` — native subagent spawning
 
 A session can spawn **real cctui child sessions** instead of shelling out to a
 runner script. The child is a first-class session: nested under its caller in
@@ -1280,7 +1280,7 @@ children.
 
 ### Budgets
 
-`budget_usd` becomes a `session_usd` soft limit on the child (CCT-757 dollar
+`budget_usd` becomes a `session_usd` soft limit on the child (the dollar
 windows), overlaid at the gateway on top of the account's own limits and
 enforced with the existing 429 path. A child's budget always wins over a looser
 account-level `session_usd`. The child mints its own gateway credential under
@@ -1291,7 +1291,7 @@ can spawn an opencode/Fireworks child on the same account.
 cap already bounds a child, gateway-side. Naming a ceiling in the launcher only
 adds a second limit that can deny the spawn. Prefer the account cap.
 
-### `CctuiUsage` — the limits that apply to *this* session (CCT-1076)
+### `CctuiUsage` — the limits that apply to *this* session
 
 The same relay exposes a second tool:
 

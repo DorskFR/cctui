@@ -24,6 +24,7 @@ use base64::Engine;
 use dashmap::DashMap;
 use serde::Serialize;
 use serde_json::{Value, json};
+#[cfg(feature = "ts")]
 use ts_rs::TS;
 
 /// Langfuse sink configuration (`[langfuse]` block / `CCTUI_LANGFUSE_*` env).
@@ -116,8 +117,8 @@ const USAGE_TTL: Duration = Duration::from_mins(1);
 /// Cost + `trace_count` are exact off the traces list; token classes are
 /// best-effort — only populated when the deployment carries per-trace
 /// `usageDetails` (legacy self-hosted trace lists often don't).
-#[derive(Debug, Clone, Default, Serialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Default, Serialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct LangfuseSessionUsage {
     pub cost_usd: f64,
     pub input_tokens: u64,
@@ -714,7 +715,7 @@ mod tests {
                 secret_key: "s".into(),
                 sample_rate: 1.0,
             },
-            reqwest::Client::new(),
+            crate::build_http_client(),
         );
         assert!(c.should_sample());
         let z = LangfuseClient::new(
@@ -725,7 +726,7 @@ mod tests {
                 secret_key: "s".into(),
                 sample_rate: 0.0,
             },
-            reqwest::Client::new(),
+            crate::build_http_client(),
         );
         assert!(!z.should_sample());
     }
@@ -748,7 +749,7 @@ mod tests {
                 secret_key: "s".into(),
                 sample_rate: 1.0,
             },
-            reqwest::Client::new(),
+            crate::build_http_client(),
         );
         assert!(client.usage_cache.is_empty());
 

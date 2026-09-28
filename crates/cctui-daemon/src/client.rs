@@ -62,6 +62,7 @@ impl std::error::Error for AuthRejected {}
 impl ServerClient {
     #[must_use]
     pub fn new(base_url: impl Into<String>) -> Self {
+        crate::install_crypto_provider();
         Self {
             base_url: base_url.into(),
             http: reqwest::Client::new(),

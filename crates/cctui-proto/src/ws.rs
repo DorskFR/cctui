@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "ts")]
 use ts_rs::TS;
 
 use crate::adapter::{AdapterCommand, AdapterEvent, BootstrapFile};
@@ -67,6 +68,9 @@ pub enum DaemonFrameUp {
         claude_jobs: Option<Vec<String>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         harness: Option<crate::harness::HarnessReport>,
+        /// Omitted by daemons that cannot parse [`DaemonFrameDown::TranscriptAck`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mark_acks: Option<bool>,
     },
     /// Reply to [`DaemonFrameDown::StageFiles`].
     StageFilesResult {
@@ -215,6 +219,12 @@ pub enum DaemonFrameDown {
         /// Superseded by [`Self::ArchivedJobs`].
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         archived: Vec<String>,
+    },
+    /// `local_id` → transcript byte offset now durably stored, sent as each
+    /// mark lands. Sent only to daemons that advertise `mark_acks`.
+    TranscriptAck {
+        adapter_id: String,
+        session_marks: Vec<(String, u64)>,
     },
     /// Archived sessions among the reported `claude_jobs`; the daemon removes
     /// their jobs. Sent only to daemons that report `claude_jobs`.
@@ -386,8 +396,8 @@ pub enum DispatcherFrameUp {
 
 // --- Agent → Server (stream events) ---
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentEvent {
     /// `meta` marks text injected into the agent rather than typed by the human.
@@ -526,8 +536,8 @@ impl AgentEvent {
 
 // --- TUI → Server ---
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum TuiCommand {
     Subscribe {
@@ -563,8 +573,8 @@ pub enum TuiCommand {
 
 // --- Server → TUI ---
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerEvent {
     Stream {
@@ -957,6 +967,7 @@ mod tests {
             }),
             claude_jobs: Some(vec!["deadbeef".into()]),
             harness: Some(crate::harness::HarnessReport::default()),
+            mark_acks: Some(true),
         };
         let json = serde_json::to_string(&hb).unwrap();
         assert!(json.contains(r#""forward":900"#), "{json}");
@@ -976,9 +987,11 @@ mod tests {
                 resources,
                 claude_jobs,
                 harness,
+                mark_acks,
                 ..
             } => {
                 assert!(harness.is_none());
+                assert!(mark_acks.is_none(), "silence is not support");
                 assert!(bandwidth.is_none());
                 assert!(update_hook.is_none());
                 assert!(resources.is_none());
@@ -986,6 +999,36 @@ mod tests {
             }
             _ => panic!("expected Heartbeat"),
         }
+    }
+
+    #[test]
+    fn transcript_ack_roundtrips_and_an_old_daemon_reads_it_as_unknown() {
+        /// A daemon that predates the variant decodes the frames it knew and
+        /// nothing else, which is why the server gates the ack on `mark_acks`.
+        #[derive(serde::Deserialize)]
+        #[serde(tag = "type", rename_all = "snake_case")]
+        enum OldFrameDown {
+            Ack { seq: u64 },
+        }
+
+        let f = DaemonFrameDown::TranscriptAck {
+            adapter_id: "claude-code".into(),
+            session_marks: vec![("sess-1".into(), 4096)],
+        };
+        let json = serde_json::to_string(&f).unwrap();
+        assert!(json.contains(r#""type":"transcript_ack""#), "{json}");
+        let back: DaemonFrameDown = serde_json::from_str(&json).unwrap();
+        match back {
+            DaemonFrameDown::TranscriptAck { adapter_id, session_marks } => {
+                assert_eq!(adapter_id, "claude-code");
+                assert_eq!(session_marks, vec![("sess-1".to_owned(), 4096)]);
+            }
+            _ => panic!("expected TranscriptAck"),
+        }
+        let OldFrameDown::Ack { seq } =
+            serde_json::from_str::<OldFrameDown>(r#"{"type":"ack","seq":7}"#).unwrap();
+        assert_eq!(seq, 7, "the stub must decode what an old daemon really knew");
+        assert!(serde_json::from_str::<OldFrameDown>(&json).is_err());
     }
 
     #[test]

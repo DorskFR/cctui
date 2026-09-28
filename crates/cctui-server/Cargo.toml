@@ -6,6 +6,9 @@ edition.workspace = true
 [lints]
 workspace = true
 
+[features]
+ts = ["dep:ts-rs", "cctui-proto/ts", "cctui-query/ts"]
+
 [dependencies]
 cctui-proto.workspace = true
 cctui-crypto.workspace = true
@@ -34,7 +37,8 @@ dashmap = "6"
 regex.workspace = true
 async-trait.workspace = true
 reqwest.workspace = true
-ts-rs.workspace = true
+rustls.workspace = true
+ts-rs = { workspace = true, optional = true }
 toml.workspace = true
 log = "0.4.33"
 webauthn-rs = { version = "0.5", features = ["danger-allow-state-serialisation", "conditional-ui"] }

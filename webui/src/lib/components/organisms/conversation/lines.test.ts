@@ -738,6 +738,26 @@ describe('queued messages carry their own queue state', () => {
 		expect(lines[0].queuedAt).toBe(1);
 	});
 
+	it('collapses an absorbed mid-turn prompt carrying an image into one full bubble', () => {
+		const full = "[Image #1]I'm on \nui v0.21.1\nsrv v0.21.1\nsettings > plugins is an empty screen";
+		const lines = buildLines(
+			[
+				queueOp('queued', "[Image #1]I'm on", 1, 5),
+				queueOp('absorbed', "[Image #1]I'm on", 2, 6),
+				user(full, 3, 9)
+			],
+			ctx()
+		);
+		expect(lines).toHaveLength(1);
+		expect(lines[0].text).toBe(
+			"I'm on\nui v0.21.1\nsrv v0.21.1\nsettings > plugins is an empty screen"
+		);
+		expect(lines[0].seq).toBe(9);
+		expect(lines[0].queued).toBeUndefined();
+		expect(lines[0].queuedAt).toBe(1);
+		expect(lines[0].cancelled).toBeUndefined();
+	});
+
 	it('does not attach a queued prompt to a different message', () => {
 		const lines = buildLines(
 			[queueOp('queued', 'ship the thing', 1, 5), user('something else entirely', 3, 9)],

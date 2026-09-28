@@ -81,18 +81,7 @@ pub fn save_user(id: &UserIdentity) -> std::io::Result<PathBuf> {
 }
 
 fn write_secure(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(path, bytes)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(path)?.permissions();
-        perms.set_mode(0o600);
-        std::fs::set_permissions(path, perms)?;
-    }
-    Ok(())
+    crate::util::write_private(path, bytes)
 }
 
 #[cfg(test)]
@@ -110,6 +99,18 @@ mod tests {
         let s = serde_json::to_string(&id).unwrap();
         let back: MachineIdentity = serde_json::from_str(&s).unwrap();
         assert_eq!(back.machine_key, "cctui_m_xxx");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_secure_leaves_the_identity_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!("cctui-id-{}", uuid::Uuid::new_v4().simple()));
+        let path = dir.join("machine.json");
+        write_secure(&path, b"{}").unwrap();
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

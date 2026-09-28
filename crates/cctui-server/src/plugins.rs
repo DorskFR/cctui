@@ -37,8 +37,8 @@ pub struct PluginManifest {
     pub settings: Vec<PluginSetting>,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq, ts_rs::TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "camelCase")]
 pub struct PluginSetting {
     pub key: String,
@@ -58,8 +58,8 @@ fn valid_setting_key(key: &str) -> bool {
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ts_rs::TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 #[serde(rename_all = "lowercase")]
 pub enum PluginSource {
     Directory,

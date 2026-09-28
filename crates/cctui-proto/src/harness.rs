@@ -1,6 +1,7 @@
 //! Harness auto-update: the policy pushed to daemons and the heartbeat report.
 
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "ts")]
 use ts_rs::TS;
 
 pub const HARNESS_CLAUDE_CODE: &str = "claude-code";
@@ -18,8 +19,8 @@ fn default_harnesses() -> Vec<String> {
     KNOWN_HARNESSES.iter().map(|h| (*h).to_owned()).collect()
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct HarnessUpdatePolicy {
     #[serde(default)]
     pub enabled: bool,
@@ -68,8 +69,8 @@ impl HarnessUpdatePolicy {
 
 /// CLI version on disk and the version of the long-lived process serving
 /// sessions (`claude daemon`, `codex app-server daemon`).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct HarnessVersion {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cli: Option<String>,
@@ -77,8 +78,8 @@ pub struct HarnessVersion {
     pub daemon: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct HarnessVersions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub claude_code: Option<HarnessVersion>,
@@ -86,21 +87,21 @@ pub struct HarnessVersions {
     pub codex: Option<HarnessVersion>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct HarnessOutcome {
     pub harness: String,
     /// `updated a→b`, `up to date`, `failed: …`, `deferred: busy`, `not installed`.
     pub outcome: String,
-    #[ts(type = "string")]
+    #[cfg_attr(feature = "ts", ts(type = "string"))]
     pub at: chrono::DateTime<chrono::Utc>,
 }
 
 /// Heartbeat block. `policy` echoes what the daemon currently holds so the
 /// server resends [`crate::ws::DaemonFrameDown::HarnessUpdatePolicy`] only on
 /// a difference, and only to a daemon that can parse it.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct HarnessReport {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub policy: Option<HarnessUpdatePolicy>,

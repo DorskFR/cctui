@@ -6,6 +6,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::{Extension, Json};
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "ts")]
 use ts_rs::TS;
 
 use crate::auth::{AuthContext, Scope};
@@ -15,9 +16,10 @@ use crate::state::AppState;
 const SPAWN_KEY: &str = "spawn_defaults";
 const UPSTREAM_KEY: &str = "upstream_allowed_hosts";
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, TS)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "ts", derive(TS))]
 #[serde(rename_all = "lowercase")]
-#[ts(export)]
+#[cfg_attr(feature = "ts", ts(export))]
 pub enum SettingSource {
     Settings,
     Env,
@@ -25,8 +27,8 @@ pub enum SettingSource {
 }
 
 /// Default `CctuiAgent` limits; `null` fields are unset at that layer.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 #[allow(clippy::struct_field_names)]
 pub struct SpawnDefaults {
     #[serde(default)]
@@ -37,8 +39,8 @@ pub struct SpawnDefaults {
     pub max_tree_budget_usd: Option<f64>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, TS)]
-#[ts(export)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 #[allow(clippy::struct_field_names)]
 pub struct SpawnDefaultsSources {
     pub max_children: SettingSource,
@@ -46,8 +48,8 @@ pub struct SpawnDefaultsSources {
     pub max_tree_budget_usd: SettingSource,
 }
 
-#[derive(Debug, Serialize, TS)]
-#[ts(export)]
+#[derive(Debug, Serialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct SpawnDefaultsInfo {
     /// Every field set: the values new sessions get.
     pub effective: SpawnDefaults,
@@ -195,8 +197,8 @@ pub async fn update_spawn_defaults(
     Ok(Json(read_spawn_defaults(&state).await))
 }
 
-#[derive(Debug, Serialize, TS)]
-#[ts(export)]
+#[derive(Debug, Serialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct UpstreamHostsInfo {
     /// The saved, editable entries.
     pub hosts: Vec<String>,
@@ -208,8 +210,8 @@ pub struct UpstreamHostsInfo {
     pub managed: Vec<String>,
 }
 
-#[derive(Deserialize, TS)]
-#[ts(export)]
+#[derive(Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct UpstreamHostsRequest {
     /// `null` clears the saved list; env and managed hosts stay allowed.
     pub hosts: Option<Vec<String>>,

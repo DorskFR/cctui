@@ -68,6 +68,7 @@ use store::sessions::SessionRowStatus;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    install_crypto_provider();
     init_tracing();
     let (config, pool, auth_config) = bootstrap().await?;
     let state = build_state(&config, pool, auth_config.clone()).await?;
@@ -76,6 +77,16 @@ async fn main() -> anyhow::Result<()> {
     let app = build_app(&state, &config, &auth_config);
     spawn_sweeps(state);
     serve(&config, app).await
+}
+
+/// `reqwest` has no built-in provider: a `Client` built before this panics.
+fn install_crypto_provider() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+}
+
+fn build_http_client() -> reqwest::Client {
+    install_crypto_provider();
+    reqwest::Client::new()
 }
 
 fn init_tracing() {
@@ -136,7 +147,7 @@ async fn build_state(
     let dispatchers = init_dispatchers(config);
 
     let presence = Arc::new(presence::PodIdentity::from_env());
-    let http_client = reqwest::Client::new();
+    let http_client = build_http_client();
 
     let (transport, internal_secret) = init_bus(&pool, config, &presence, &http_client).await?;
 
@@ -169,7 +180,7 @@ async fn build_state(
         // Optional Langfuse tracing sink. `None` (dark) unless the
         // CCTUI_LANGFUSE_* env is fully set — zero overhead on the gateway path.
         langfuse: langfuse::LangfuseConfig::from_env()
-            .map(|c| Arc::new(langfuse::LangfuseClient::new(c, reqwest::Client::new()))),
+            .map(|c| Arc::new(langfuse::LangfuseClient::new(c, build_http_client()))),
         pending_oauth_logins: Arc::new(dashmap::DashMap::new()),
         account_usage_cache: Arc::new(dashmap::DashMap::new()),
         pr_status_cache: cctui_proto::classifier::PrStatusCache::new(),
@@ -182,6 +193,7 @@ async fn build_state(
         connect_tracker: Arc::new(bandwidth_watch::ConnectTracker::default()),
         divergence_tracker: Arc::new(bandwidth_watch::DivergenceTracker::default()),
         machine_event_inserts: Arc::new(dashmap::DashMap::new()),
+        mark_ack_daemons: Arc::new(dashmap::DashMap::new()),
         spawn_capabilities: Arc::new(dashmap::DashMap::new()),
         session_usd_budgets: Arc::new(dashmap::DashMap::new()),
         gateway_rate_windows: Arc::new(dashmap::DashMap::new()),
@@ -242,6 +254,13 @@ async fn start_background_tasks(state: &AppState) {
 
     routes::codex_models::warm_cache(state).await;
 
+    // Off the startup path: every replica sweeps, and the scan is IO over a
+    // shared volume.
+    tokio::spawn({
+        let (pool, skills) = (state.pool.clone(), state.skills.clone());
+        async move { skill_store::sweep_orphans_or_warn(&pool, &skills).await }
+    });
+
     // Replica-aware WS presence: registered only when the pod knows
     // its routable IP; the heartbeat task keeps this pod's rows trusted and
     // reaps rows crashed pods left behind.
@@ -251,7 +270,7 @@ async fn start_background_tasks(state: &AppState) {
 }
 
 fn build_app(state: &AppState, config: &Config, auth_config: &auth::AuthConfig) -> Router {
-    let (api_router, api_descriptors) = build_api_routes().into_parts();
+    let (api_router, public_api_router, api_descriptors) = build_api_routes().into_parts();
 
     // The descriptor list is the route table / source of truth, consumed by
     // the coverage test. At runtime it is informational only.
@@ -271,6 +290,10 @@ fn build_app(state: &AppState, config: &Config, auth_config: &auth::AuthConfig) 
         ));
     outer_routes()
         .nest("/api/v1", api_router)
+        // `authz::PUBLIC_PATHS`, already prefixed. Merged rather than nested —
+        // a second nest at `/api/v1` collides on axum's nest catch-all — so
+        // `auth_middleware` cannot 401 a tokenless caller.
+        .merge(public_api_router)
         // Credentialed CORS bound to an explicit origin allowlist (same-origin
         // webui + dev Vite, extendable via CCTUI_ALLOWED_ORIGINS). A wildcard
         // origin is invalid once credentials are allowed.
@@ -349,8 +372,8 @@ fn outer_routes() -> Router<AppState> {
         .route("/api/v1/daemon/version", get(routes::update_hook::daemon_version))
         .route("/api/v1/daemon/update-hook/{run_id}", post(routes::update_hook::report))
         // Enrolled-dispatcher endpoints. Carry their own key auth
-        // (dispatcher-key Bearer / `?token=`), so they live outside the
-        // user-token `api_router` group, like the daemon endpoints.
+        // (dispatcher-key Bearer), so they live outside the user-token
+        // `api_router` group, like the daemon endpoints.
         .route("/api/v1/dispatcher/auth", post(routes::dispatcher::auth))
         .route("/api/v1/dispatcher/ws", get(routes::dispatcher::ws))
         .route("/api/v1/triggers/{kind}", post(routes::triggers::ingest))
@@ -690,7 +713,7 @@ mod tests {
     #[test]
     #[allow(clippy::too_many_lines)] // literal route-table snapshot
     fn api_route_table_is_unchanged() {
-        let mut descs = super::build_api_routes().into_parts().1;
+        let mut descs = super::build_api_routes().into_parts().2;
         descs.sort_by(|a, b| (a.path, a.method.as_str()).cmp(&(b.path, b.method.as_str())));
         let actual: Vec<String> = descs
             .iter()
@@ -880,7 +903,7 @@ mod tests {
             "DELETE /users/{id}/keys/{kid} Bearer Scope(Admin)",
             "PATCH /users/{id}/keys/{kid}/acls Bearer Scope(Admin)",
             "POST /users/{id}/tokens Bearer Authenticated",
-            "GET /version Bearer Authenticated",
+            "GET /version None Public",
             "GET /version/changelog Bearer Authenticated",
             "POST /version/refresh Bearer Authenticated",
             "GET /version/self-update Bearer Authenticated",

@@ -215,6 +215,9 @@ impl From<WireBusEvent> for BusEvent {
 pub fn frame_session(frame: &DaemonFrameDown) -> Option<&str> {
     match frame {
         DaemonFrameDown::Command { command, .. } => command.local_id(),
+        DaemonFrameDown::TranscriptAck { session_marks, .. } => {
+            session_marks.first().map(|(id, _)| id.as_str())
+        }
         _ => None,
     }
 }
@@ -586,7 +589,7 @@ mod tests {
         let fast_rx = Arc::new(AtomicU64::new(0));
         let slow = stub_peer(std::time::Duration::from_secs(10), slow_rx.clone()).await;
         let fast = stub_peer(std::time::Duration::ZERO, fast_rx.clone()).await;
-        let client = reqwest::Client::new();
+        let client = crate::build_http_client();
         let mut fanout = RelayFanout::default();
         fanout.sync_peers(&[slow.clone(), fast.clone()], |addr| {
             spawn_peer_relay(client.clone(), format!("http://{addr}"), "s".into())
@@ -647,6 +650,12 @@ mod tests {
             }),
         };
         assert_eq!(frame_session(&spawn), None, "adapter-wide commands stay machine-scoped");
+
+        let ack = DaemonFrameDown::TranscriptAck {
+            adapter_id: "claude-code".into(),
+            session_marks: vec![("sess-1".into(), 4096)],
+        };
+        assert_eq!(frame_session(&ack), Some("sess-1"), "an ack belongs to its session's daemon");
     }
 
     #[test]

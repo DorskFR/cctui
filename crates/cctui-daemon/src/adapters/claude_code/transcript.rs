@@ -595,10 +595,9 @@ fn attachment_annotation(local_id: &str, line: &Value, out: &mut Vec<AdapterEven
         att.and_then(|a| a.get("type")).and_then(Value::as_str).unwrap_or("unknown").to_owned();
     if kind == "queued_command"
         && let Some(att) = att
-        && let Some(prompt) =
-            first_str(att, &["prompt", "command", "text", "content"]).map(str::trim)
-        && !prompt.is_empty()
+        && let Some(prompt) = queued_command_body(att)
     {
+        let prompt = prompt.as_str();
         let mut payload =
             json!({"role": "user", "text": prompt, "meta": user_text_is_meta(prompt)});
         let id = first_str(att, &["source_uuid", "sourceUuid", "uuid"])
@@ -611,6 +610,48 @@ fn attachment_annotation(local_id: &str, line: &Value, out: &mut Vec<AdapterEven
         return;
     }
     record_ignored(&format!("attachment/{kind}"));
+}
+
+/// A queued prompt carrying an image is stored as a content-block array rather
+/// than a string, so both shapes have to be accepted here.
+fn queued_command_body(att: &Value) -> Option<String> {
+    let text = match first_str(att, &["prompt", "command", "text", "content"]) {
+        Some(s) => s.to_owned(),
+        None => collapse_user_blocks(att.get("prompt")?.as_array()?, &mut Vec::new())?,
+    };
+    let trimmed = text.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_owned())
+}
+
+/// Claude expands attached files into synthetic `[Image #N]` text blocks plus
+/// raw `image` blocks, so one turn spans several blocks: joining them into one
+/// body (order preserved) is what keeps it from fanning out into duplicate
+/// bubbles in the webui. `tool_result` blocks are handed back to the caller.
+fn collapse_user_blocks<'a>(
+    blocks: &'a [Value],
+    tool_results: &mut Vec<&'a Value>,
+) -> Option<String> {
+    let mut texts: Vec<&str> = Vec::new();
+    let mut has_attachment = false;
+    for block in blocks {
+        match block.get("type").and_then(Value::as_str) {
+            Some("text") => {
+                texts.push(block.get("text").and_then(Value::as_str).unwrap_or_default());
+            }
+            Some("image") => has_attachment = true,
+            Some("tool_result") => tool_results.push(block),
+            other => record_unknown("unknown-user-block", other.unwrap_or("<none>")),
+        }
+    }
+    if texts.is_empty() && !has_attachment {
+        return None;
+    }
+    let joined = texts.join("\n");
+    Some(if has_attachment && joined.trim().is_empty() {
+        "[image attachment]".to_owned()
+    } else {
+        joined
+    })
 }
 
 fn file_history_detail(kind: &str, line: &Value) -> String {
@@ -873,14 +914,16 @@ fn parse_assistant(local_id: &str, line: &Value, out: &mut Vec<AdapterEvent>) {
     let Some(content) = message.and_then(|m| m.get("content")).and_then(Value::as_array) else {
         return;
     };
+    let stop_reason = message.and_then(|m| m.get("stop_reason")).and_then(Value::as_str);
     for block in content {
-        parse_assistant_block(local_id, message_id, block, out);
+        parse_assistant_block(local_id, message_id, stop_reason, block, out);
     }
 }
 
 fn parse_assistant_block(
     local_id: &str,
     message_id: Option<&str>,
+    stop_reason: Option<&str>,
     block: &Value,
     out: &mut Vec<AdapterEvent>,
 ) {
@@ -892,6 +935,9 @@ fn parse_assistant_block(
                     "role": "assistant",
                     "text": block.get("text"),
                     "message_id": message_id,
+                    // `end_turn` is the only proof this text was the turn's last
+                    // output; anything else means more work follows.
+                    "stop_reason": stop_reason,
                 }),
                 turn_id: None,
             });
@@ -1107,45 +1153,8 @@ fn parse_user(local_id: &str, line: &Value, out: &mut Vec<AdapterEvent>) {
         return;
     }
     let Some(blocks) = content.as_array() else { return };
-    // A user turn stored as a block array can interleave several `text` blocks
-    // with `image` blocks — Claude expands attached files into their own
-    // synthetic `[Image #N]` / `[Image: source: …]` text blocks plus raw
-    // `image` blocks. Emitting one `Message` per block fans a single turn out
-    // into 3+ duplicate bubbles in the webui and drops the `image` blocks
-    // entirely. Instead JOIN the text blocks into ONE `Message` for the turn
-    // (preserving order) and note any attachments with a single indicator so
-    // an attachment-only turn isn't lost. `tool_result` blocks stay
-    // as their own events.
-    let mut texts: Vec<&str> = Vec::new();
-    let mut has_attachment = false;
-    let mut tool_results: Vec<AdapterEvent> = Vec::new();
-    for block in blocks {
-        match block.get("type").and_then(Value::as_str) {
-            Some("text") => {
-                texts.push(block.get("text").and_then(Value::as_str).unwrap_or_default());
-            }
-            Some("image") => {
-                has_attachment = true;
-            }
-            Some("tool_result") => {
-                tool_results.push(AdapterEvent::ToolUse {
-                    local_id: local_id.to_owned(),
-                    payload: json!({
-                        "kind": "tool_result",
-                        "tool_use_id": block.get("tool_use_id"),
-                        "content": block.get("content"),
-                        "is_error": block.get("is_error"),
-                    }),
-                });
-            }
-            other => record_unknown("unknown-user-block", other.unwrap_or("<none>")),
-        }
-    }
-    if !texts.is_empty() || has_attachment {
-        let mut joined = texts.join("\n");
-        if has_attachment && joined.trim().is_empty() {
-            "[image attachment]".clone_into(&mut joined);
-        }
+    let mut tool_results: Vec<&Value> = Vec::new();
+    if let Some(joined) = collapse_user_blocks(blocks, &mut tool_results) {
         let payload = interrupted_marker_payload(&joined).unwrap_or_else(
             || json!({"role": "user", "text": joined, "meta": user_text_is_meta(&joined)}),
         );
@@ -1155,7 +1164,15 @@ fn parse_user(local_id: &str, line: &Value, out: &mut Vec<AdapterEvent>) {
             turn_id: None,
         });
     }
-    out.extend(tool_results);
+    out.extend(tool_results.into_iter().map(|block| AdapterEvent::ToolUse {
+        local_id: local_id.to_owned(),
+        payload: json!({
+            "kind": "tool_result",
+            "tool_use_id": block.get("tool_use_id"),
+            "content": block.get("content"),
+            "is_error": block.get("is_error"),
+        }),
+    }));
 }
 
 pub use crate::offsets::OffsetStore;
@@ -1691,6 +1708,50 @@ mod tests {
         }
     }
 
+    /// The turn-end policy in `childwatch` reads `stop_reason` off assistant
+    /// text: without it, narration that precedes a tool call is mistaken for a
+    /// final answer.
+    #[test]
+    fn assistant_text_carries_the_messages_stop_reason() {
+        let cases = [
+            (r#""end_turn""#, Some("end_turn")),
+            (r#""tool_use""#, Some("tool_use")),
+            ("null", None),
+        ];
+        for (raw, want) in cases {
+            let line = format!(
+                r#"{{"type":"assistant","message":{{"role":"assistant","stop_reason":{raw},"content":[{{"type":"text","text":"hi"}}]}}}}"#
+            );
+            let mut events = Vec::new();
+            parse_line("s", &serde_json::from_str::<Value>(&line).unwrap(), &mut events);
+            let payload = events
+                .iter()
+                .find_map(|e| match e {
+                    AdapterEvent::Message { payload, .. } if payload["role"] == "assistant" => {
+                        Some(payload.clone())
+                    }
+                    _ => None,
+                })
+                .expect("assistant text event");
+            assert_eq!(payload["stop_reason"].as_str(), want, "{raw}");
+        }
+
+        // A line with no stop_reason at all must not invent one.
+        let mut events = Vec::new();
+        let bare = r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"hi"}]}}"#;
+        parse_line("s", &serde_json::from_str::<Value>(bare).unwrap(), &mut events);
+        let payload = events
+            .iter()
+            .find_map(|e| match e {
+                AdapterEvent::Message { payload, .. } if payload["role"] == "assistant" => {
+                    Some(payload.clone())
+                }
+                _ => None,
+            })
+            .expect("assistant text event");
+        assert!(payload["stop_reason"].is_null(), "{payload}");
+    }
+
     #[test]
     fn replayed_user_line_yields_an_identical_payload() {
         let line = r#"{"type":"user","uuid":"u-1","message":{"role":"user","content":"continue"}}"#;
@@ -2097,6 +2158,50 @@ mod tests {
         let text = msgs[0].get("text").and_then(Value::as_str).unwrap();
         assert!(text.starts_with("just testing"));
         assert!(text.contains("paste-1-2.txt"), "the staged-path block survives: {text}");
+    }
+
+    #[test]
+    fn a_queued_command_attachment_with_an_image_keeps_every_line() {
+        let mut out = Vec::new();
+        parse_line(
+            "s",
+            &json!({"type":"attachment","attachment":{
+                "type":"queued_command",
+                "source_uuid":"ea412466",
+                "prompt":[
+                    {"type":"text","text":"[Image #1]I'm on \nui v0.21.1\nsrv v0.21.1\nsettings > plugins is an empty screen"},
+                    {"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBOR"}}
+                ]
+            }}),
+            &mut out,
+        );
+        let msgs = message_payloads(&out);
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].get("role").and_then(Value::as_str), Some("user"));
+        assert_eq!(msgs[0].get("line_id").and_then(Value::as_str), Some("ea412466"));
+        let text = msgs[0].get("text").and_then(Value::as_str).unwrap();
+        assert!(text.starts_with("[Image #1]I'm on"), "{text}");
+        assert!(text.contains("ui v0.21.1"), "{text}");
+        assert!(text.contains("srv v0.21.1"), "{text}");
+        assert!(text.contains("settings > plugins is an empty screen"), "{text}");
+    }
+
+    #[test]
+    fn an_image_only_queued_command_attachment_still_becomes_one_event() {
+        let mut out = Vec::new();
+        parse_line(
+            "s",
+            &json!({"type":"attachment","attachment":{
+                "type":"queued_command",
+                "source_uuid":"aa11bb22",
+                "prompt":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBOR"}}]
+            }}),
+            &mut out,
+        );
+        let msgs = message_payloads(&out);
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].get("text").and_then(Value::as_str), Some("[image attachment]"));
+        assert_eq!(msgs[0].get("line_id").and_then(Value::as_str), Some("aa11bb22"));
     }
 
     #[test]

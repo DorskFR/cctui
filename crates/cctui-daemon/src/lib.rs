@@ -6,6 +6,11 @@
 //!
 //! See `crates/cctui-daemon/src/main.rs` for the CLI entry point.
 
+/// `reqwest` has no built-in provider: a `Client` built before this panics.
+pub fn install_crypto_provider() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+}
+
 pub mod adapter_runtime;
 pub mod adapters;
 pub mod agenttool;

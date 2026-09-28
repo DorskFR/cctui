@@ -10,6 +10,7 @@
 use std::sync::LazyLock;
 use std::time::Duration;
 
+use cctui_proto::backoff::Backoff;
 use cctui_proto::ws::{DispatcherFrameDown, DispatcherFrameUp, WireDispatchSpec};
 use tokio::sync::Semaphore;
 use uuid::Uuid;
@@ -47,8 +48,11 @@ impl ReportedState {
 /// dead dispatcher still fails the request rather than hanging it.
 const DISPATCH_HOLD: Duration = Duration::from_secs(45);
 
-/// Backoff between hold attempts, capped at the last entry.
-const HOLD_BACKOFF_SECS: &[u64] = &[1, 2, 4, 8];
+/// Backoff between hold attempts: 1 s doubling to an 8 s cap, jittered so a
+/// burst of held dispatches does not re-probe the dispatcher in lockstep.
+const fn hold_schedule() -> Backoff {
+    Backoff::new(Duration::from_secs(1), Duration::from_secs(8))
+}
 
 /// How many dispatches may be held concurrently while the dispatcher is away;
 /// the rest fail fast on the existing loud path (error log, 502, ntfy) so the
@@ -190,8 +194,7 @@ async fn dispatch_held_with(
             return Err(backend_error(name, &err));
         }
 
-        let backoff =
-            Duration::from_secs(HOLD_BACKOFF_SECS[attempt.min(HOLD_BACKOFF_SECS.len() - 1)]);
+        let backoff = hold_schedule().delay_for(u32::try_from(attempt).unwrap_or(u32::MAX));
         tracing::warn!(
             dispatcher = name,
             session = %spec.session_id,
