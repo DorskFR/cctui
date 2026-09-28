@@ -961,23 +961,18 @@ mod tests {
 
     #[tokio::test]
     async fn put_settings_rejects_a_bad_regex_with_the_parse_error() {
-        let state = AppState::for_test(
-            sqlx::PgPool::connect_lazy("postgres://unused@localhost/none").unwrap(),
-        );
-        let err = put_settings(
-            State(state),
-            Extension(ctx(Uuid::new_v4())),
-            Json(SettingsPayload {
-                version: 1,
-                data: json!({
-                    "secretScrubPatterns": [
-                        { "name": "custom", "regex": "*_token", "enabled": true }
-                    ]
-                }),
+        let pool = sqlx::PgPool::connect_lazy("postgres://unused@localhost/none").unwrap();
+        let body = SettingsPayload {
+            version: 1,
+            data: json!({
+                "secretScrubPatterns": [{ "name": "custom", "regex": "*_token", "enabled": true }]
             }),
-        )
-        .await
-        .expect_err("an uncompilable pattern must not reach the database");
+        };
+        let state = State(AppState::for_test(pool));
+        let sent = put_settings(state, Extension(ctx(Uuid::new_v4())), Json(body)).await;
+        let Err(err) = sent else {
+            panic!("an uncompilable pattern must not reach the database");
+        };
         assert_eq!(err.status(), StatusCode::BAD_REQUEST);
         assert!(err.message().contains("*_token"), "{}", err.message());
         assert!(err.message().starts_with("invalid scrub regex"), "{}", err.message());
@@ -1056,22 +1051,19 @@ mod tests {
             async move { rescrub_settings(State(state), Extension(ctx), Json(req)).await }
         };
 
-        let Json(all) = run(true, None, None).await.expect("dry run over all history");
+        let Json(all) = run(true, None, None).await.expect("all history");
         assert_eq!((all.rows_scanned, all.rows_changed), (2, 2));
         assert_eq!(all.by_category.get("github_token"), Some(&2));
 
-        let Json(one) = run(true, Some(vec![fresh]), None)
-            .await
-            .expect("dry run scoped to one session");
+        let Json(one) = run(true, Some(vec![fresh]), None).await.expect("one session");
         assert_eq!((one.rows_scanned, one.rows_changed), (1, 1));
 
         let week_ago = chrono::Utc::now() - chrono::Duration::days(7);
         let Json(recent) = run(true, None, Some(week_ago)).await.expect("scoped by since");
         assert_eq!((recent.rows_scanned, recent.rows_changed), (1, 1));
 
-        let Json(unknown) = run(true, Some(vec!["not-a-uuid".to_owned()]), None)
-            .await
-            .expect("a non-uuid session id is a plain text filter, not a 500");
+        let unknown = run(true, Some(vec!["not-a-uuid".to_owned()]), None).await;
+        let Json(unknown) = unknown.expect("a non-uuid id filters, it does not 500");
         assert_eq!(unknown.rows_scanned, 0);
 
         let Json(applied) = run(false, None, None).await.expect("real pass");
@@ -1091,7 +1083,7 @@ mod tests {
             assert!(text.contains("[REDACTED:github_token"), "{text}");
         }
 
-        let Json(again) = run(false, None, None).await.expect("second pass is idempotent");
+        let Json(again) = run(false, None, None).await.expect("second pass");
         assert_eq!(again.rows_changed, 0);
 
         sqlx::query("DELETE FROM sessions WHERE user_id = $1")
