@@ -34,10 +34,11 @@ pub async fn revoke_by_user(
     Ok(())
 }
 
-/// Move a session's token and any usage already metered under `spawn_key` onto
-/// the id the harness registered under. Both tables must move together: the
-/// usage FK targets `sessions(id)`, so a token left on an unregistered key
-/// meters nothing.
+/// Move a session's token, any usage already metered and the spawn's bootstrap
+/// attachments from `spawn_key` onto the id the harness registered under. The
+/// token and usage must move together: the usage FK targets `sessions(id)`, so
+/// a token left on an unregistered key meters nothing. Attachments recorded at
+/// spawn under the key would otherwise never show on the session.
 pub async fn rebind_session_id(
     exec: impl PgExecutor<'_> + Copy,
     spawn_key: &str,
@@ -46,6 +47,7 @@ pub async fn rebind_session_id(
     for sql in [
         "UPDATE session_tokens SET session_id = $2 WHERE session_id = $1",
         "UPDATE session_token_usage SET session_id = $2 WHERE session_id = $1",
+        "UPDATE session_attachments SET session_id = $2 WHERE session_id = $1",
     ] {
         sqlx::query(sql).bind(spawn_key).bind(session_id).execute(exec).await?;
     }

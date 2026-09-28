@@ -332,8 +332,9 @@ pub enum AdapterCommand {
         /// Echoed in [`AdapterEvent::CommandResult`].
         #[serde(default, skip_serializing_if = "Option::is_none")]
         command_id: Option<Uuid>,
-        /// Pre-minted id the gateway token is bound to. Ignored by adapters that mint
-        /// their own.
+        /// Pre-minted id the gateway token is bound to. Adapters that mint their
+        /// own session id launch under it and echo it as `spawn_key` on
+        /// `SessionStarted`, so the server re-keys the token onto the real id.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         session_id: Option<Uuid>,
     },
