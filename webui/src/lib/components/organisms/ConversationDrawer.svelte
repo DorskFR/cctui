@@ -475,6 +475,13 @@
 		position: relative;
 		z-index: var(--z-drawer);
 	}
+	/* The reserved scrollbar gutter (`scrollbar-gutter: stable` on `html`) lies
+	   outside the viewport the fixed panel is positioned against, so a scrollable
+	   page paints a second bar beside the drawer. Freezing the document while the
+	   drawer is open empties that strip with no sideways shift. */
+	:global(html:has(.drawer-host)) {
+		overflow-y: hidden;
+	}
 	.drawer {
 		display: flex;
 		flex-direction: column;

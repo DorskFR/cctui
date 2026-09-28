@@ -40,6 +40,11 @@ export default defineConfig({
 			use: { baseURL: process.env.SPAWN_E2E_URL ?? 'http://localhost:5311' }
 		},
 		{
+			name: 'drawer',
+			testMatch: 'drawer-scrollbars.spec.ts',
+			use: { baseURL: headerUrl, storageState: resolve(webui, 'journeys/.auth/state.json') }
+		},
+		{
 			name: 'plugins',
 			testMatch: ['plugin-review-pane.spec.ts', 'plugin-admin.spec.ts'],
 			use: { baseURL: process.env.PLUGIN_E2E_URL ?? headerUrl }
