@@ -43,14 +43,20 @@ export function mergeFiles(current: File[], incoming: File[]): File[] {
 	return mergeFilesRenamed(current, incoming).files;
 }
 
-/** Add `incoming` to `files` and reference each (post-rename) name in `text`. */
+/** Add `incoming` to `files`. With `tokenize`, each (post-rename) name is also
+ *  referenced in `text`; callers that show the staged list elsewhere pass false
+ *  and leave `text` to the user. */
 export function attachFiles(
 	files: File[],
 	text: string,
-	incoming: File[]
+	incoming: File[],
+	tokenize = true
 ): { files: File[]; text: string } {
 	const merged = mergeFilesRenamed(files, incoming);
-	return { files: merged.files, text: appendFileTokens(text, merged.added) };
+	return {
+		files: merged.files,
+		text: tokenize ? appendFileTokens(text, merged.added) : text
+	};
 }
 
 const PASTE_NAME = /\bpaste-(\d+)\.txt\b/g;

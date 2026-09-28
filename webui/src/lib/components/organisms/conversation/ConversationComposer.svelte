@@ -373,15 +373,15 @@
 	.composer {
 		display: flex;
 		flex-direction: column;
-		padding-bottom: var(--safe-bottom);
+		gap: var(--sp-2);
+		padding: var(--sp-2) var(--sp-3) calc(var(--sp-3) + var(--safe-bottom));
 		border-top: 1px solid var(--border);
 		background: var(--bg-elevated);
 	}
-	/* The field runs edge to edge; the rows above it keep their own inset. */
-	.scheduled,
-	.cold-offer,
-	.attachments {
-		padding: var(--sp-2) var(--sp-3);
+	@media (max-width: 959px) {
+		.composer {
+			padding: var(--sp-2) var(--sp-2) calc(var(--sp-2) + var(--safe-bottom));
+		}
 	}
 	.scheduled:empty {
 		display: none;
