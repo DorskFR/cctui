@@ -416,7 +416,7 @@ impl Driver {
                         );
                     }
                     for evt in events {
-                        self.emit(evt).await;
+                        self.emit_fresh(evt).await;
                     }
                     if new_off != off {
                         self.emit(AdapterEvent::TranscriptMark {

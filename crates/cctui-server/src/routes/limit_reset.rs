@@ -39,19 +39,34 @@ pub fn anthropic_reset_url(organization_uuid: &str) -> String {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, ts_rs::TS)]
 #[ts(export)]
 pub struct LimitResetStatus {
-    /// `codex` (reset credits) or `claude` (`juniper_tide`).
+    /// `codex` (reset credits) or `claude` (`cedar_ember` / `juniper_tide`).
     #[ts(type = "\"codex\" | \"claude\"")]
     pub kind: &'static str,
     /// Whether a claim would do anything right now.
     pub available: bool,
     /// Codex: the redeemable credit's title (e.g. "Full reset (Weekly + 5 hr)").
+    /// Claude: the `cedar_ember` grant's label.
     pub title: Option<String>,
-    /// Codex: the credit a claim would name.
+    /// Codex: the credit a claim would name. Claude: the `cedar_ember` grant id.
     pub credit_id: Option<String>,
     /// Claude: why the reset cannot be claimed (e.g. `not_at_wall`).
     pub ineligible_reason: Option<String>,
+    /// Codex: the credit's expiry. Claude: a grant's `ends_at`, else when the
+    /// at-wall reset comes back.
     pub next_available_at: Option<String>,
     pub weekly_resets_at: Option<String>,
+    /// Claude `cedar_ember`: claims left on the named grant.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(type = "number | null", optional)]
+    pub resets_left: Option<i64>,
+    /// Claude `cedar_ember`: the grant may only be spent at a limit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub requires_limit: Option<bool>,
+    /// Claude `cedar_ember`: the limit windows a claim refills.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub clears: Option<Vec<String>>,
 }
 
 /// Derive the reset status from the usage JSON `GET /accounts/{id}/usage`
@@ -79,10 +94,19 @@ pub fn limit_reset_status(provider: &str, usage: &serde_json::Value) -> Option<L
                 ineligible_reason: None,
                 next_available_at: first.and_then(|c| str_at(c, "expires_at")),
                 weekly_resets_at: None,
+                resets_left: None,
+                requires_limit: None,
+                clears: None,
             })
         }
         "anthropic" => {
-            let jt = usage.get("juniper_tide")?;
+            // An explicit `null` block must read as absent: `Value::get` would
+            // otherwise yield a status with every flag false, i.e. a dead button.
+            let block = |k: &str| usage.get(k).filter(|v| !v.is_null());
+            if let Some(ce) = block("cedar_ember") {
+                return Some(cedar_ember_status(ce));
+            }
+            let jt = block("juniper_tide")?;
             let flag = |k: &str| jt.get(k).and_then(serde_json::Value::as_bool).unwrap_or(false);
             Some(LimitResetStatus {
                 kind: "claude",
@@ -92,10 +116,82 @@ pub fn limit_reset_status(provider: &str, usage: &serde_json::Value) -> Option<L
                 ineligible_reason: str_at(jt, "ineligible_reason"),
                 next_available_at: str_at(jt, "next_available_at"),
                 weekly_resets_at: str_at(jt, "weekly_resets_at"),
+                resets_left: None,
+                requires_limit: None,
+                clears: None,
             })
         }
         _ => None,
     }
+}
+
+/// The grant a `cedar_ember` claim would spend: the one `next_grant_id` names.
+fn next_grant(ce: &serde_json::Value) -> Option<&serde_json::Value> {
+    let id = ce.get("next_grant_id").and_then(|v| v.as_str())?;
+    ce.get("grants")?.as_array()?.iter().find(|g| g.get("id").and_then(|v| v.as_str()) == Some(id))
+}
+
+fn grant_is_offered(grant: &serde_json::Value) -> bool {
+    let flag = |k: &str| grant.get(k).and_then(serde_json::Value::as_bool).unwrap_or(false);
+    let not_expired = grant
+        .get("ends_at")
+        .and_then(|v| v.as_str())
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .is_none_or(|t| t > chrono::Utc::now());
+    let resets_left =
+        grant.get("resets_left").and_then(serde_json::Value::as_i64).unwrap_or_default();
+    flag("usable_now") && !flag("paused") && not_expired && resets_left > 0
+}
+
+/// The `cedar_ember` grant program: promotional resets with a label and an
+/// expiry, claimable before hitting a limit when `use_requires_limit` is false.
+fn cedar_ember_status(ce: &serde_json::Value) -> LimitResetStatus {
+    let str_at =
+        |v: &serde_json::Value, k: &str| v.get(k).and_then(|x| x.as_str()).map(str::to_owned);
+    let eligible = ce.get("eligible").and_then(serde_json::Value::as_bool).unwrap_or(false);
+    let grant = next_grant(ce);
+    LimitResetStatus {
+        kind: "claude",
+        available: eligible && grant.is_some_and(grant_is_offered),
+        title: grant.and_then(|g| str_at(g, "label")),
+        credit_id: grant.and_then(|g| str_at(g, "id")),
+        ineligible_reason: str_at(ce, "ineligible_reason"),
+        next_available_at: grant.and_then(|g| str_at(g, "ends_at")),
+        weekly_resets_at: str_at(ce, "weekly_resets_at"),
+        resets_left: grant.and_then(|g| g.get("resets_left").and_then(serde_json::Value::as_i64)),
+        requires_limit: grant.map(|g| {
+            g.get("use_requires_limit").and_then(serde_json::Value::as_bool).unwrap_or(true)
+        }),
+        clears: grant.and_then(|g| g.get("clears")).and_then(|c| c.as_array()).map(|list| {
+            list.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect::<Vec<_>>()
+        }),
+    }
+}
+
+/// The CLI's own id shapes. A malformed id is a bug on our side, not something
+/// to hand to the claim endpoint.
+pub fn valid_grant_id(id: &str) -> bool {
+    (1..=40).contains(&id.len())
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-')
+}
+
+pub fn valid_request_id(id: &str) -> bool {
+    (1..=64).contains(&id.len())
+        && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
+/// The `cedar_ember` claim body; `None` when either id is malformed, so nothing
+/// is sent.
+pub fn cedar_ember_claim_body(grant_id: &str, request_id: &str) -> Option<serde_json::Value> {
+    (valid_grant_id(grant_id) && valid_request_id(request_id)).then(|| {
+        serde_json::json!({
+            "program": "cedar_ember",
+            "grant_id": grant_id,
+            "request_id": request_id,
+        })
+    })
 }
 
 /// Upstream outcomes arrive `camelCase` from the app-server shape and `snake_case`
@@ -146,7 +242,16 @@ pub fn consume_outcome(credit_id: Option<&str>, body: &serde_json::Value) -> Str
 /// Whether the claim may have moved the account's windows, so the cached usage
 /// must be dropped rather than served until the next poll.
 pub fn invalidates_usage(outcome: &str) -> bool {
-    !matches!(outcome, "error" | "unavailable" | "already_redeemed")
+    !matches!(
+        outcome,
+        "error"
+            | "unavailable"
+            | "already_redeemed"
+            | "already_used"
+            | "not_limited"
+            | "cooldown"
+            | "ineligible"
+    )
 }
 
 /// What a repeat claim on the same credit does with the prior attempt's row.
@@ -161,7 +266,9 @@ pub enum ClaimPlan {
 
 pub fn plan_claim(prior: Option<(String, String)>, fresh_key: String) -> ClaimPlan {
     match prior {
-        Some((key, outcome)) if outcome == "reset" || outcome == "already_redeemed" => {
+        Some((key, outcome))
+            if matches!(outcome.as_str(), "reset" | "already_redeemed" | "already_used") =>
+        {
             ClaimPlan::AlreadyRedeemed { idempotency_key: key }
         }
         Some((key, _)) => ClaimPlan::Send { idempotency_key: key, reused: true },
@@ -374,12 +481,80 @@ async fn organization_uuid(state: &AppState, acct: &Account, access_token: &str)
     Some(org)
 }
 
+/// Re-read the reset programs right before a claim, so the grant the body names
+/// is the one upstream would spend now, and refresh the cached usage with it.
+async fn fresh_reset_status(
+    state: &AppState,
+    acct: &Account,
+    access_token: &str,
+) -> Option<serde_json::Value> {
+    let status = gateway::reset_status(state, acct, access_token, true).await?;
+    let mut usage = state
+        .account_usage_cache
+        .get(&acct.id)
+        .and_then(|h| h.usage.clone())
+        .unwrap_or_else(|| serde_json::json!({}));
+    gateway::merge_reset_status(&mut usage, &status);
+    state.account_usage_cache.insert(
+        acct.id,
+        crate::state::CachedUsage { fetched_at: std::time::Instant::now(), usage: Some(usage) },
+    );
+    Some(status)
+}
+
+/// The grant a `cedar_ember` claim would name, or `None` for the at-wall
+/// (`juniper_tide`) program.
+pub fn cedar_ember_grant_to_claim(status: &serde_json::Value) -> Option<String> {
+    let ce = status.get("cedar_ember").filter(|v| !v.is_null())?;
+    if !ce.get("eligible").and_then(serde_json::Value::as_bool).unwrap_or(false) {
+        return None;
+    }
+    let grant = next_grant(ce).filter(|g| grant_is_offered(g))?;
+    grant.get("id").and_then(|v| v.as_str()).map(str::to_owned)
+}
+
 async fn claim_claude(state: &AppState, acct: &Account, access_token: &str) -> LimitResetResponse {
+    let grant_id = fresh_reset_status(state, acct, access_token)
+        .await
+        .as_ref()
+        .and_then(cedar_ember_grant_to_claim);
     let key = Uuid::new_v4().to_string();
     let mut out = blank("unavailable", key);
     let Some(org) = organization_uuid(state, acct, access_token).await else {
         tracing::warn!(account = %acct.id, "claude limit reset: organization uuid unknown");
         return out;
+    };
+    let body = if let Some(grant_id) = &grant_id {
+        let prior: Option<(String, String)> = sqlx::query_as(
+            "SELECT idempotency_key, outcome FROM account_limit_resets \
+             WHERE provider_id = $1 AND credit_id IS NOT DISTINCT FROM $2 \
+             ORDER BY at DESC LIMIT 1",
+        )
+        .bind(acct.id)
+        .bind(grant_id)
+        .fetch_optional(&state.pool)
+        .await
+        .unwrap_or_default();
+        let (request_id, reused) = match plan_claim(prior, out.idempotency_key.clone()) {
+            ClaimPlan::AlreadyRedeemed { idempotency_key } => {
+                let mut r = blank("already_used", idempotency_key);
+                r.credit_id = Some(grant_id.clone());
+                r.reused = true;
+                return r;
+            }
+            ClaimPlan::Send { idempotency_key, reused } => (idempotency_key, reused),
+        };
+        out.idempotency_key.clone_from(&request_id);
+        out.credit_id = Some(grant_id.clone());
+        out.reused = reused;
+        let Some(body) = cedar_ember_claim_body(grant_id, &request_id) else {
+            tracing::warn!(account = %acct.id, "claude limit reset: malformed cedar_ember ids");
+            out.outcome = "error".into();
+            return out;
+        };
+        body
+    } else {
+        serde_json::json!({ "program": "juniper_tide" })
     };
     let lock = state
         .account_locks
@@ -393,7 +568,7 @@ async fn claim_claude(state: &AppState, acct: &Account, access_token: &str) -> L
         .header(reqwest::header::AUTHORIZATION, format!("Bearer {access_token}"))
         .header(reqwest::header::USER_AGENT, gateway::anthropic_usage_user_agent())
         .header("anthropic-beta", "oauth-2025-04-20")
-        .json(&serde_json::json!({ "program": "juniper_tide" }))
+        .json(&body)
         .send()
         .await;
     let resp = match resp {
@@ -447,6 +622,178 @@ mod tests {
         assert_eq!(s.ineligible_reason.as_deref(), Some("not_at_wall"));
 
         assert!(limit_reset_status("anthropic", &serde_json::json!({ "five_hour": {} })).is_none());
+    }
+
+    fn cedar_usage(grant: &serde_json::Value, extra: &serde_json::Value) -> serde_json::Value {
+        let mut ce = serde_json::json!({
+            "eligible": true,
+            "next_grant_id": "opus_55_explore",
+            "grants": [grant],
+            "weekly_resets_at": "2026-10-05T00:00:00Z"
+        });
+        for (k, v) in extra.as_object().cloned().unwrap_or_default() {
+            ce[k] = v;
+        }
+        serde_json::json!({ "five_hour": { "utilization": 12.0 }, "cedar_ember": ce })
+    }
+
+    fn usable_grant() -> serde_json::Value {
+        serde_json::json!({
+            "id": "opus_55_explore",
+            "label": "Get extra wiggle room to explore Opus 5.5",
+            "resets_total": 3, "resets_left": 2,
+            "ends_at": "2126-10-23T00:00:00Z",
+            "clears": ["five_hour", "seven_day"],
+            "paused": false, "usable_now": true, "use_requires_limit": false,
+            "percent_used": { "five_hour": 12 }, "blocking": []
+        })
+    }
+
+    #[test]
+    fn cedar_ember_grant_is_surfaced() {
+        let s =
+            limit_reset_status("anthropic", &cedar_usage(&usable_grant(), &serde_json::json!({})))
+                .unwrap();
+        assert_eq!(s.kind, "claude");
+        assert!(s.available);
+        assert_eq!(s.title.as_deref(), Some("Get extra wiggle room to explore Opus 5.5"));
+        assert_eq!(s.credit_id.as_deref(), Some("opus_55_explore"));
+        assert_eq!(s.next_available_at.as_deref(), Some("2126-10-23T00:00:00Z"));
+        assert_eq!(s.weekly_resets_at.as_deref(), Some("2026-10-05T00:00:00Z"));
+        assert_eq!(s.resets_left, Some(2));
+        assert_eq!(s.requires_limit, Some(false));
+        let clears = ["five_hour".to_owned(), "seven_day".to_owned()];
+        assert_eq!(s.clears.as_deref(), Some(clears.as_slice()));
+    }
+
+    #[test]
+    fn an_unofferable_cedar_ember_grant_is_not_available() {
+        let unavailable = |patch: serde_json::Value| {
+            let mut grant = usable_grant();
+            for (k, v) in patch.as_object().cloned().unwrap_or_default() {
+                grant[k] = v;
+            }
+            let s = limit_reset_status("anthropic", &cedar_usage(&grant, &serde_json::json!({})))
+                .unwrap();
+            assert!(!s.available, "{patch} should not be claimable");
+        };
+        unavailable(serde_json::json!({ "paused": true }));
+        unavailable(serde_json::json!({ "usable_now": false }));
+        unavailable(serde_json::json!({ "resets_left": 0 }));
+        unavailable(serde_json::json!({ "ends_at": "2020-01-01T00:00:00Z" }));
+
+        let orphan = limit_reset_status(
+            "anthropic",
+            &cedar_usage(&usable_grant(), &serde_json::json!({ "next_grant_id": "other" })),
+        )
+        .unwrap();
+        assert!(!orphan.available);
+        assert_eq!(orphan.credit_id, None);
+
+        let null_next = serde_json::json!({ "next_grant_id": serde_json::Value::Null });
+        let no_next = cedar_usage(&usable_grant(), &null_next);
+        assert!(!limit_reset_status("anthropic", &no_next).unwrap().available);
+
+        let ineligible = cedar_usage(
+            &usable_grant(),
+            &serde_json::json!({ "eligible": false, "ineligible_reason": "no_grant" }),
+        );
+        let s = limit_reset_status("anthropic", &ineligible).unwrap();
+        assert!(!s.available);
+        assert_eq!(s.ineligible_reason.as_deref(), Some("no_grant"));
+    }
+
+    #[test]
+    fn a_null_reset_block_is_absent_rather_than_a_dead_button() {
+        let nulls = serde_json::json!({
+            "five_hour": { "utilization": 3.0 },
+            "juniper_tide": serde_json::Value::Null,
+            "cedar_ember": serde_json::Value::Null
+        });
+        assert!(limit_reset_status("anthropic", &nulls).is_none());
+    }
+
+    #[test]
+    fn cedar_ember_outranks_juniper_tide() {
+        let mut usage = cedar_usage(&usable_grant(), &serde_json::json!({}));
+        usage["juniper_tide"] = serde_json::json!({
+            "eligible": true, "available": true, "next_available_at": "2026-09-30T00:00:00Z"
+        });
+        let s = limit_reset_status("anthropic", &usage).unwrap();
+        assert_eq!(s.credit_id.as_deref(), Some("opus_55_explore"));
+        assert_eq!(s.next_available_at.as_deref(), Some("2126-10-23T00:00:00Z"));
+    }
+
+    #[test]
+    fn the_cedar_ember_claim_body_carries_the_program_and_the_grant() {
+        let body = cedar_ember_claim_body("opus_55_explore", "b3f4-Req_1").unwrap();
+        assert_eq!(body["program"], "cedar_ember");
+        assert_eq!(body["grant_id"], "opus_55_explore");
+        assert_eq!(body["request_id"], "b3f4-Req_1");
+        assert!(cedar_ember_claim_body("opus_55_explore", &Uuid::new_v4().to_string()).is_some());
+
+        assert!(cedar_ember_claim_body("Opus 5.5!", "req").is_none());
+        assert!(cedar_ember_claim_body("", "req").is_none());
+        assert!(cedar_ember_claim_body(&"a".repeat(41), "req").is_none());
+        assert!(cedar_ember_claim_body("grant", "").is_none());
+        assert!(cedar_ember_claim_body("grant", &"r".repeat(65)).is_none());
+        assert!(cedar_ember_claim_body("grant", "req id").is_none());
+    }
+
+    #[test]
+    fn the_claim_names_only_an_offered_grant() {
+        let ce = cedar_usage(&usable_grant(), &serde_json::json!({}))["cedar_ember"].clone();
+        let status = serde_json::json!({ "cedar_ember": ce });
+        assert_eq!(cedar_ember_grant_to_claim(&status).as_deref(), Some("opus_55_explore"));
+
+        let mut paused = status.clone();
+        paused["cedar_ember"]["grants"][0]["paused"] = serde_json::json!(true);
+        assert!(cedar_ember_grant_to_claim(&paused).is_none());
+
+        let mut ineligible = status;
+        ineligible["cedar_ember"]["eligible"] = serde_json::json!(false);
+        assert!(cedar_ember_grant_to_claim(&ineligible).is_none());
+
+        let null_block = serde_json::json!({ "cedar_ember": serde_json::Value::Null });
+        assert!(cedar_ember_grant_to_claim(&null_block).is_none());
+        assert!(cedar_ember_grant_to_claim(&serde_json::json!({})).is_none());
+    }
+
+    #[test]
+    fn a_settled_grant_claim_never_re_sends_and_a_retry_reuses_its_request_id() {
+        assert_eq!(
+            plan_claim(Some(("req-1".into(), "already_used".into())), "fresh".into()),
+            ClaimPlan::AlreadyRedeemed { idempotency_key: "req-1".into() }
+        );
+        assert_eq!(
+            plan_claim(Some(("req-1".into(), "unavailable".into())), "fresh".into()),
+            ClaimPlan::Send { idempotency_key: "req-1".into(), reused: true }
+        );
+    }
+
+    #[test]
+    fn the_reset_status_url_carries_the_read_flags_and_is_a_get() {
+        let url = gateway::anthropic_reset_status_url();
+        assert!(url.contains("cedar_ember=1"), "{url}");
+        assert!(url.contains("skip_spend=1"), "{url}");
+        assert!(!url.contains("reset_rate_limits"), "{url}");
+        assert!(!gateway::anthropic_usage_url().contains("cedar_ember"));
+    }
+
+    #[test]
+    fn only_the_reset_program_keys_are_merged_into_usage() {
+        let mut usage =
+            serde_json::json!({ "five_hour": { "utilization": 9.0 }, "spend": { "usd": 1 } });
+        let status = serde_json::json!({
+            "five_hour": { "utilization": 0.0 },
+            "cedar_ember": { "eligible": true },
+            "juniper_tide": serde_json::Value::Null
+        });
+        gateway::merge_reset_status(&mut usage, &status);
+        assert_eq!(usage["five_hour"]["utilization"], 9.0);
+        assert_eq!(usage["spend"]["usd"], 1);
+        assert_eq!(usage["cedar_ember"]["eligible"], true);
+        assert!(usage.get("juniper_tide").is_none());
     }
 
     #[test]

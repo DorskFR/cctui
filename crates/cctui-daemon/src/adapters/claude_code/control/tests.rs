@@ -96,7 +96,7 @@ async fn injected_turn_stamps_every_encoding_with_one_id() {
         "[Image #1][shot.png]look at this",
         "[Image: source: /tmp/cctui-uploads/sess-1/shot.png]",
     ] {
-        d.emit(AdapterEvent::Message {
+        d.emit_fresh(AdapterEvent::Message {
             local_id: "sess-1".into(),
             payload: json!({"role": "user", "text": text, "meta": false}),
             turn_id: None,
@@ -110,7 +110,7 @@ async fn injected_turn_stamps_every_encoding_with_one_id() {
         assert_eq!(turn_id, Some(id));
     }
 
-    d.emit(AdapterEvent::Message {
+    d.emit_fresh(AdapterEvent::Message {
         local_id: "sess-1".into(),
         payload: json!({"role": "assistant", "text": "on it"}),
         turn_id: None,
@@ -121,7 +121,7 @@ async fn injected_turn_stamps_every_encoding_with_one_id() {
     };
     assert_eq!(turn_id, None, "assistant text must not inherit the turn id");
 
-    d.emit(AdapterEvent::Message {
+    d.emit_fresh(AdapterEvent::Message {
         local_id: "sess-2".into(),
         payload: json!({"role": "user", "text": "hi"}),
         turn_id: None,
@@ -138,7 +138,7 @@ async fn a_reply_without_a_turn_id_clears_the_previous_one() {
     let (d, mut rx) = driver();
     d.note_turn("sess-1", Some(uuid::Uuid::new_v4()));
     d.note_turn("sess-1", None);
-    d.emit(AdapterEvent::Message {
+    d.emit_fresh(AdapterEvent::Message {
         local_id: "sess-1".into(),
         payload: json!({"role": "user", "text": "typed in the TUI"}),
         turn_id: None,

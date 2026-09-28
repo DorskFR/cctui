@@ -354,6 +354,65 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_uploaded_blob_is_servable_to_its_own_session_only() {
+        let Some(url) = crate::routes::gateway::test_db_url("upload_blob_servable") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+
+        let sid = Uuid::new_v4().to_string();
+        let other = Uuid::new_v4().to_string();
+        let mut png =
+            vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0, 0x0D, b'I', b'H', b'D'];
+        png.extend_from_slice(sid.as_bytes());
+        let uploads = [upload("Screenshot 2026-09-25 at 13.23.11.png", &png, None)];
+        let recorded = record_uploads(&pool, &sid, &uploads, &[]).await.unwrap();
+        let hash = recorded[0].hash.clone();
+        assert_eq!(recorded[0].content_type.as_deref(), Some("image/png"));
+
+        let (linked,): (bool,) =
+            sqlx::query_as("SELECT EXISTS (SELECT 1 FROM session_blob_links WHERE hash = $1)")
+                .bind(&hash)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(!linked, "no link row is created, and none is needed");
+
+        let served = crate::routes::blobs::fetch_session_blob(&pool, &sid, &hash)
+            .await
+            .unwrap()
+            .expect("the uploading session serves its own attachment");
+        assert_eq!(served.1, png);
+        let resp = crate::routes::blobs::blob_response(&hash, served.1);
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers().get(axum::http::header::CONTENT_TYPE).unwrap(),
+            "image/png",
+            "the upload is served as an image, so the thumbnail renders"
+        );
+
+        assert!(
+            crate::routes::blobs::fetch_session_blob(&pool, &other, &hash).await.unwrap().is_none(),
+            "another session cannot fetch the same hash"
+        );
+
+        delete_attachments(&pool, &[recorded[0].id]).await.unwrap();
+        assert!(
+            crate::routes::blobs::fetch_session_blob(&pool, &sid, &hash).await.unwrap().is_none(),
+            "authz follows the attachment row"
+        );
+        sqlx::query("DELETE FROM daemon_blobs WHERE hash = $1")
+            .bind(&hash)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
     async fn delete_attachments_undoes_a_recorded_batch() {
         let Some(url) = crate::routes::gateway::test_db_url("delete_attachments") else {
             return;

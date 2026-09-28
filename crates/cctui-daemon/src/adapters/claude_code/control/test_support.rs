@@ -167,6 +167,29 @@ pub(super) fn text_line(t: &str) -> String {
     format!(r#"{{"type":"assistant","message":{{"content":[{{"type":"text","text":"{t}"}}]}}}}"#)
 }
 
+pub(super) fn user_line(uuid: &str, t: &str) -> String {
+    format!(r#"{{"type":"user","uuid":"{uuid}","message":{{"content":"{t}"}}}}"#)
+}
+
+/// `(text, line_id, turn_id)` of every `role:"user"` message drained.
+pub(super) fn drain_user_turns(
+    rx: &mut mpsc::Receiver<AdapterEvent>,
+) -> Vec<(String, Option<String>, Option<uuid::Uuid>)> {
+    let mut out = Vec::new();
+    while let Ok(evt) = rx.try_recv() {
+        if let AdapterEvent::Message { payload, turn_id, .. } = evt
+            && payload.get("role").and_then(|v| v.as_str()) == Some("user")
+        {
+            out.push((
+                payload.get("text").and_then(|v| v.as_str()).unwrap_or_default().to_owned(),
+                payload.get("line_id").and_then(|v| v.as_str()).map(str::to_owned),
+                turn_id,
+            ));
+        }
+    }
+    out
+}
+
 pub(super) fn drain_messages(rx: &mut mpsc::Receiver<AdapterEvent>) -> Vec<String> {
     let mut out = Vec::new();
     while let Ok(evt) = rx.try_recv() {

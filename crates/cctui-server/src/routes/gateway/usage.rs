@@ -15,6 +15,95 @@ pub fn anthropic_usage_url() -> String {
         .unwrap_or_else(|_| "https://api.anthropic.com/api/oauth/usage".into())
 }
 
+/// The same usage endpoint, asked for the limit-reset programs: upstream only
+/// populates `juniper_tide`/`cedar_ember` when a read flag is on the query
+/// string. `skip_spend=1` drops the `spend` block, so this must stay a separate
+/// call from the usage poll. Read-only `GET`: it never claims anything.
+pub fn anthropic_reset_status_url() -> String {
+    std::env::var("CCTUI_ANTHROPIC_RESET_STATUS_URL").unwrap_or_else(|_| {
+        let usage = anthropic_usage_url();
+        let sep = if usage.contains('?') { '&' } else { '?' };
+        format!("{usage}{sep}cedar_ember=1&skip_spend=1")
+    })
+}
+
+/// The reset programs change on the scale of a grant's lifetime, not a usage
+/// window's, so their own cache is much slower than [`crate::routes::accounts::USAGE_CACHE_TTL`].
+pub const RESET_STATUS_CACHE_TTL: std::time::Duration = std::time::Duration::from_mins(30);
+
+/// The keys [`anthropic_reset_status_url`] answers and the usage poll cannot.
+pub const RESET_STATUS_KEYS: [&str; 2] = ["cedar_ember", "juniper_tide"];
+
+#[derive(Clone)]
+struct CachedResetStatus {
+    fetched_at: std::time::Instant,
+    status: Option<serde_json::Value>,
+}
+
+fn reset_status_cache() -> &'static dashmap::DashMap<Uuid, CachedResetStatus> {
+    static CACHE: std::sync::OnceLock<dashmap::DashMap<Uuid, CachedResetStatus>> =
+        std::sync::OnceLock::new();
+    CACHE.get_or_init(dashmap::DashMap::new)
+}
+
+/// Copy the reset-program blocks of a status payload into a usage payload, so
+/// `AccountUsage.limit_reset` keeps being derived from one JSON value. A `null`
+/// block carries no information and is left out.
+pub fn merge_reset_status(usage: &mut serde_json::Value, status: &serde_json::Value) {
+    let Some(obj) = usage.as_object_mut() else {
+        return;
+    };
+    for key in RESET_STATUS_KEYS {
+        if let Some(v) = status.get(key).filter(|v| !v.is_null()) {
+            obj.insert(key.to_owned(), v.clone());
+        }
+    }
+}
+
+/// The account's limit-reset programs, from the per-account cache unless `force`
+/// or the entry is older than [`RESET_STATUS_CACHE_TTL`].
+pub async fn reset_status(
+    state: &AppState,
+    acct: &Account,
+    access_token: &str,
+    force: bool,
+) -> Option<serde_json::Value> {
+    if !force
+        && let Some(hit) = reset_status_cache().get(&acct.id)
+        && hit.fetched_at.elapsed() < RESET_STATUS_CACHE_TTL
+    {
+        return hit.status.clone();
+    }
+    let status = fetch_reset_status(state, acct, access_token).await;
+    reset_status_cache().insert(
+        acct.id,
+        CachedResetStatus { fetched_at: std::time::Instant::now(), status: status.clone() },
+    );
+    status
+}
+
+async fn fetch_reset_status(
+    state: &AppState,
+    acct: &Account,
+    access_token: &str,
+) -> Option<serde_json::Value> {
+    let resp = state
+        .http_client
+        .get(anthropic_reset_status_url())
+        .header(reqwest::header::AUTHORIZATION, format!("Bearer {access_token}"))
+        .header(reqwest::header::USER_AGENT, anthropic_usage_user_agent())
+        .header("anthropic-beta", "oauth-2025-04-20")
+        .send()
+        .await
+        .map_err(|e| tracing::warn!(account = %acct.id, "reset status transport error: {e}"))
+        .ok()?;
+    if !resp.status().is_success() {
+        tracing::warn!(account = %acct.id, status = %resp.status(), "reset status fetch rejected");
+        return None;
+    }
+    resp.json().await.ok()
+}
+
 /// `User-Agent` the usage endpoint requires (`claude-code/<version>`). Without a
 /// claude-code UA the endpoint drops the caller into an aggressively rate-limited
 /// bucket (persistent 429s). Overridable so we can bump the version it expects
@@ -324,10 +413,13 @@ async fn usage_for_account(
         tracing::warn!(account = %account_id, %status, "usage fetch rejected");
         return Err(status);
     }
-    let json: serde_json::Value = resp.json().await.map_err(|e| {
+    let mut json: serde_json::Value = resp.json().await.map_err(|e| {
         tracing::warn!(account = %account_id, "usage decode error: {e}");
         StatusCode::BAD_GATEWAY
     })?;
+    if let Some(status) = reset_status(state, &acct, &access_token, false).await {
+        merge_reset_status(&mut json, &status);
+    }
     Ok(Some(json))
 }
 

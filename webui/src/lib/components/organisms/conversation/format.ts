@@ -243,6 +243,19 @@ export function eventSig(e: AgentEvent): string {
 	return sig;
 }
 
+// Every identity an event answers to. A user row replayed after a daemon
+// restart lost its `turn_id` but kept `line_id` (the transcript record's uuid),
+// so the two copies only ever meet on the line key; conversely a live broadcast
+// carries the turn id and no line id. Matching on ANY key collapses both pairs
+// without collapsing two distinct turns, which share neither.
+export function eventKeys(e: AgentEvent): string[] {
+	const sig = eventSig(e);
+	const lineId = 'line_id' in e ? (e.line_id as string | null | undefined) : undefined;
+	if (!lineId) return [sig];
+	const line = `l:${lineId}`;
+	return line === sig ? [line] : [line, sig];
+}
+
 function computeEventSig(e: AgentEvent): string {
 	// A queue op shares its text with the prompt it brackets (and its sibling
 	// close op), so it needs a signature of its own or the pair collapses.
@@ -279,9 +292,9 @@ export function mergeEventSources(
 	const seen = new Set<string>();
 	const dedup = (list: AgentEvent[]) =>
 		list.filter((e) => {
-			const sig = eventSig(e);
-			if (seen.has(sig)) return false;
-			seen.add(sig);
+			const keys = eventKeys(e);
+			if (keys.some((k) => seen.has(k))) return false;
+			for (const k of keys) seen.add(k);
 			return true;
 		});
 	const hist = dedup(history);

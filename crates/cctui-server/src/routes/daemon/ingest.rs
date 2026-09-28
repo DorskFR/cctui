@@ -116,15 +116,13 @@ pub(super) async fn insert_event(
     // registered (missed SessionStarted, ephemeral subagent); those are a
     // no-op instead of an FK violation.
     let links = crate::routes::fs::extract_links(&payload);
-    // The ON CONFLICT target must stay character-identical to migration 121's
-    // `stream_events_dedup_turn_idx` expression list or inference fails.
+    // Untargeted: two dedup indexes cover this table and either must suppress
+    // the row; a targeted clause can only name one.
     let id: Option<i64> = sqlx::query_scalar(
         "INSERT INTO stream_events (session_id, event_type, payload, turn_id) \
          SELECT $1, $2, $3, $4 WHERE EXISTS ( \
              SELECT 1 FROM sessions WHERE id = $1 AND machine_uuid = $5 AND user_id = $6) \
-         ON CONFLICT (session_id, event_type, content_hash, \
-                      COALESCE(turn_id, '00000000-0000-0000-0000-000000000000'::uuid)) \
-         DO NOTHING \
+         ON CONFLICT DO NOTHING \
          RETURNING id",
     )
     .bind(local_id)
@@ -176,8 +174,6 @@ pub(super) async fn insert_events(
             payloads.push(std::mem::take(&mut row.payload));
             turns.push(row.turn_id);
         }
-        // The ON CONFLICT target must stay character-identical to migration 121's
-        // `stream_events_dedup_turn_idx` expression list or inference fails.
         let inserted: Vec<(i64, i64)> = sqlx::query_as(
             "WITH src AS ( \
                  SELECT nextval(pg_get_serial_sequence('stream_events', 'id')) AS id, r.* \
@@ -193,9 +189,7 @@ pub(super) async fn insert_events(
              ), ins AS ( \
                  INSERT INTO stream_events (id, session_id, event_type, payload, turn_id) \
                  SELECT id, session_id, event_type, payload, turn_id FROM src ORDER BY ord \
-                 ON CONFLICT (session_id, event_type, content_hash, \
-                              COALESCE(turn_id, '00000000-0000-0000-0000-000000000000'::uuid)) \
-                 DO NOTHING \
+                 ON CONFLICT DO NOTHING \
                  RETURNING id \
              ) \
              SELECT src.ord, ins.id FROM ins JOIN src USING (id)",
@@ -350,6 +344,73 @@ mod tests {
         assert_eq!(stored, vec![Some(first), Some(second), None]);
 
         sqlx::query("DELETE FROM sessions WHERE id = $1").bind(&sid).execute(&pool).await.unwrap();
+    }
+
+    /// DB-gated: a daemon restart replays a cctui-sent prompt with its
+    /// `turn_id` lost, and the turn-keyed index of migration 121 lets that
+    /// through. The `line_id` index must catch it.
+    #[tokio::test]
+    async fn a_replayed_user_line_dedups_even_when_the_turn_id_is_lost() {
+        let Some(url) = crate::routes::gateway::test_db_url("line_id_replay") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let (uid, mid) = seed_machine(&pool, "line_id_replay").await;
+        let sid = seed_owned_session(&pool, uid, mid).await;
+
+        let payload = json!({
+            "role": "user",
+            "text": "continue",
+            "meta": false,
+            "line_id": "0f2f3f4e-0000-4000-8000-000000000001",
+        });
+        let user_line = |turn_id| NewEvent {
+            local_id: sid.clone(),
+            event_type: "message",
+            payload: payload.clone(),
+            turn_id,
+        };
+
+        let sent = insert_events(&pool, mid, uid, vec![user_line(Some(Uuid::new_v4()))])
+            .await
+            .expect("insert");
+        assert!(sent[0].is_some(), "the original send persists");
+
+        let replay = insert_events(&pool, mid, uid, vec![user_line(None)]).await.expect("replay");
+        assert_eq!(replay[0], None, "the turn-less replay of the same line is suppressed");
+
+        let single =
+            insert_event(&pool, mid, uid, &sid, "message", payload.clone(), None).await.unwrap();
+        assert_eq!(single, None, "and so is the unbatched path");
+
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM stream_events WHERE session_id = $1")
+                .bind(&sid)
+                .fetch_one(&pool)
+                .await
+                .expect("count events");
+        assert_eq!(count, 1);
+
+        // A different line with the same prose is a different turn, not a replay.
+        let other = json!({
+            "role": "user",
+            "text": "continue",
+            "meta": false,
+            "line_id": "0f2f3f4e-0000-4000-8000-000000000002",
+        });
+        let fresh = insert_event(&pool, mid, uid, &sid, "message", other, None).await.unwrap();
+        assert!(fresh.is_some(), "a distinct transcript line still persists");
+
+        sqlx::query("DELETE FROM stream_events WHERE session_id = $1")
+            .bind(&sid)
+            .execute(&pool)
+            .await
+            .ok();
+        drop_machines(&pool, &[sid], &[(uid, mid)]).await;
     }
 
     #[tokio::test]

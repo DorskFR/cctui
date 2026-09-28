@@ -601,7 +601,15 @@ fn map_daemon_message(payload: &Value) -> Option<Value> {
     match role {
         "user" => {
             let meta = payload.get("meta").and_then(Value::as_bool).unwrap_or(false);
-            Some(json!({ "type": "text", "content": format!("▷ User: {text}"), "meta": meta }))
+            let mut out =
+                json!({ "type": "text", "content": format!("▷ User: {text}"), "meta": meta });
+            // The transcript line's own uuid: the only identity shared by a
+            // row stored with a turn_id and its turn_id-less replay, so the
+            // client can collapse the pair.
+            if let (Some(line_id), Some(obj)) = (payload.get("line_id"), out.as_object_mut()) {
+                obj.insert("line_id".to_owned(), line_id.clone());
+            }
+            Some(out)
         }
         "assistant"
         | "assistant_thinking"
@@ -701,6 +709,17 @@ mod tests {
             }
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_user_line_carries_its_line_id_to_the_client() {
+        let p = json!({ "role": "user", "text": "ship it", "line_id": "line-a" });
+        let n = for_client("claude-code", "message", p).unwrap();
+        assert_eq!(n["content"], "▷ User: ship it");
+        assert_eq!(n["line_id"], "line-a");
+        let bare = json!({ "role": "user", "text": "ship it" });
+        let n = for_client("claude-code", "message", bare).unwrap();
+        assert!(n.get("line_id").is_none(), "absent, not null, when the line had none");
     }
 
     #[test]
