@@ -10,6 +10,7 @@ use axum::http::StatusCode;
 use axum::{Extension, Json};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "ts")]
 use ts_rs::TS;
 use uuid::Uuid;
 
@@ -19,8 +20,8 @@ use crate::auth::AuthContext;
 use crate::routes::sessions::ilike_contains;
 use crate::state::AppState;
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct Bookmark {
     pub id: Uuid,
     /// Source session, or `None` once that session has been deleted.
@@ -40,8 +41,8 @@ pub struct Bookmark {
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct CreateBookmark {
     #[serde(default)]
     pub session_id: Option<String>,
@@ -61,8 +62,8 @@ pub struct CreateBookmark {
 }
 
 /// `PATCH` payload — title and note only; the snapshot itself is immutable.
-#[derive(Debug, Clone, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct UpdateBookmark {
     #[serde(default)]
     pub title: Option<String>,

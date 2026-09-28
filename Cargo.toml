@@ -52,7 +52,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio-tungstenite = { version = "0.30", features = ["rustls-tls-native-roots"] }
 futures-util = "0.3"
 anyhow = "1"
-reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "stream", "query", "form"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls-no-provider", "stream", "query", "form"] }
 sha2 = "0.10"
 hex = "0.4"
 base64 = "0.23"
@@ -71,7 +71,7 @@ aws-config = { version = "1", default-features = false, features = ["behavior-ve
 aws-sdk-secretsmanager = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio"] }
 aws-sigv4 = { version = "1", default-features = false, features = ["sign-http"] }
 aws-credential-types = "1"
-kube = { version = "4.2", default-features = false, features = ["client", "rustls-tls", "derive", "admission"] }
+kube = { version = "4.2", default-features = false, features = ["client", "rustls-tls", "ring", "derive", "admission"] }
 json-patch = "4"
 axum-server = { version = "0.8", features = ["tls-rustls-no-provider"] }
 rustls = { version = "0.23", default-features = false, features = ["ring"] }

@@ -696,14 +696,14 @@ mod tests {
     #[tokio::test]
     async fn the_latest_version_is_read_from_the_npm_dist_tag() {
         let (url, served) = one_shot(r#"{"name":"@openai/codex","version":"0.156.1"}"#).await;
-        let client = reqwest::Client::new();
+        let client = crate::http_client();
         assert_eq!(fetch_latest_codex_version(&client, &url).await.as_deref(), Some("0.156.1"));
         assert!(served.await.unwrap()[0].starts_with("GET /"));
     }
 
     #[tokio::test]
     async fn an_unreachable_npm_leaves_the_caller_with_no_version() {
-        let client = reqwest::Client::new();
+        let client = crate::http_client();
         let dead = "http://127.0.0.1:1/";
         assert_eq!(fetch_latest_codex_version(&client, dead).await, None);
         assert_eq!(resolve_client_version(None, None), BUNDLED_CODEX_CLIENT_VERSION);
@@ -712,7 +712,7 @@ mod tests {
     #[tokio::test]
     async fn the_catalog_read_carries_the_resolved_client_version() {
         let (url, served) = one_shot(r#"{"models":[{"id":"gpt-6-astra"}]}"#).await;
-        let client = reqwest::Client::new();
+        let client = crate::http_client();
         let resp = catalog_request(&client, &url, "tok", "acct-1", "0.156.1")
             .send()
             .await
@@ -739,7 +739,7 @@ mod tests {
             r#"{"version":"0.157.0"}"#.to_owned(),
         ])
         .await;
-        let client = reqwest::Client::new();
+        let client = crate::http_client();
         let cache = std::sync::Mutex::new(None);
 
         let (version, moved) = resolve_latest_into(&client, &url, &cache).await;
@@ -759,7 +759,7 @@ mod tests {
             return;
         }
         let (url, served) = one_shot(r#"{"version":"0.157.0"}"#).await;
-        let client = reqwest::Client::new();
+        let client = crate::http_client();
         let cache = std::sync::Mutex::new(None);
         assert!(resolve_latest_into(&client, &url, &cache).await.1);
         served.await.unwrap();

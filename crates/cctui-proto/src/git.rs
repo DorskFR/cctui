@@ -2,12 +2,13 @@
 //! metadata (no `git` subprocess unless `dirty` is requested).
 
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "ts")]
 use ts_rs::TS;
 
 /// Reply payload of `GET /api/v1/machines/{id}/fs/gitinfo` and of the
 /// daemon's `GitInfoResult` frame.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct GitInfo {
     /// `false` when `path` has no `.git` → every other field is empty.
     pub is_repo: bool,

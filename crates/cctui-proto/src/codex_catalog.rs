@@ -2,14 +2,15 @@
 //! keyed by `machine_id` on the server and consumed by the webui model picker.
 
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "ts")]
 use ts_rs::TS;
 
 /// One model advertised by `model/list` (codex 0.144.1 `Model`).
 ///
 /// Only the fields the picker needs are retained; the rest of the codex shape
 /// (service tiers, personality, NUX copy) is intentionally dropped.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct CodexModel {
     /// Catalog id — the value passed as `-c model="…"` on a spawn.
     pub id: String,
@@ -43,8 +44,8 @@ pub struct CodexModel {
 
 /// The full machine/account-scoped model catalog, as reported by one
 /// machine's `codex app-server`.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct CodexModelCatalog {
     pub models: Vec<CodexModel>,
     /// The `client_version` the catalog was read under; set on responses only.

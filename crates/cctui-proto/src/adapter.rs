@@ -2,12 +2,13 @@
 //! `cctui-daemon` so this crate stays free of tokio.
 
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "ts")]
 use ts_rs::TS;
 use uuid::Uuid;
 
 /// Adapter implementation id, e.g. `claude-code`, `codex`.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 #[serde(transparent)]
 pub struct AdapterId(pub String);
 
@@ -464,8 +465,8 @@ impl AdapterCommand {
 }
 
 /// Defaults to [`Self::Automatic`], the conservative reading.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum RemoveInitiator {
     User,
@@ -494,8 +495,8 @@ impl RemoveInitiator {
 }
 
 /// Subset-fork slice, anchored on assistant `message_id`s.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum ForkMode {
     /// Up to and including the anchor.
@@ -506,8 +507,8 @@ pub enum ForkMode {
     Selected,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct ForkExtract {
     pub mode: ForkMode,
     /// For `up_to` / `after`.
@@ -519,8 +520,8 @@ pub struct ForkExtract {
 }
 
 /// Per-spawn permission posture.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 #[serde(rename_all = "lowercase")]
 pub enum PermissionMode {
     /// No prompts, no sandbox.

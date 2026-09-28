@@ -297,6 +297,7 @@ impl reqwest::dns::Resolve for GuardedResolver {
 
 /// A client that follows no redirects and resolves names through the guard.
 pub fn guarded_client(allow: fn() -> Arc<Vec<AllowedHost>>) -> reqwest::Client {
+    crate::install_crypto_provider();
     reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .dns_resolver(Arc::new(GuardedResolver { allow }))

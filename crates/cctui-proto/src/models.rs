@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "ts")]
 use ts_rs::TS;
 
 /// Lifecycle state for a session. Three non-terminal states driven by the
@@ -16,8 +17,8 @@ use ts_rs::TS;
 ///   payload in `metadata.draft` but has no `command_id`, no daemon dispatch,
 ///   and no heartbeat — excluded from liveness/reaping. An explicit Launch
 ///   mints env fresh, dispatches a normal spawn, and removes the draft.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum SessionStatus {
     New,
@@ -36,8 +37,8 @@ pub enum SessionStatus {
 /// - `Active`: heartbeat within the active window (green dot).
 /// - `Stale`: alive but quiet — past the active window (orange dot).
 /// - `Dead`: long inactive (no dot).
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum Liveness {
     Active,
@@ -50,8 +51,8 @@ pub enum Liveness {
 /// Coarser than [`crate::adapter::EndReason`]: the adapter's free-form detail
 /// lives in `end_detail`, and the server adds the reasons no adapter can
 /// report (daemon gone, machine offline, aged out by the reaper).
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum SessionEndReason {
     Completed,
@@ -107,8 +108,8 @@ impl SessionEndReason {
 /// - `Online`: a heartbeat arrived within the active window.
 /// - `Stale`: quiet but not yet declared dead — past the active window.
 /// - `Offline`: no heartbeat for the full dead window (daemon gone).
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum MachineLiveness {
     Online,
@@ -123,15 +124,15 @@ pub enum MachineLiveness {
 ///
 /// Derived from the classifier; today only the "blocked" bucket is
 /// surfaced (the ✋ "needs input" hand).
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum Attention {
     NeedsInput,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct Session {
     pub id: String,
     pub parent_id: Option<String>,
@@ -147,8 +148,8 @@ pub struct Session {
     pub adapter_id: Option<crate::adapter::AdapterId>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct TokenUsage {
     pub tokens_in: u64,
     pub tokens_out: u64,
@@ -158,7 +159,7 @@ pub struct TokenUsage {
     #[serde(default)]
     pub cache_creation_tokens: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
+    #[cfg_attr(feature = "ts", ts(optional))]
     pub cache_bust: Option<CacheBust>,
 }
 
@@ -177,8 +178,8 @@ impl Default for TokenUsage {
 
 /// What a turn lost when its prompt cache did not match.
 /// `reason` is `ttl_expired` | `gateway_rewrote_body` | `unknown`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct CacheBust {
     pub lost_tokens: u64,
     pub lost_usd: f64,
@@ -187,8 +188,8 @@ pub struct CacheBust {
 
 /// `seq` is the `stream_events.id` insert sequence: the only stable address of
 /// a message (`ts` collides).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct MessagePin {
     pub session_id: String,
     pub seq: i64,

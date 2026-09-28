@@ -91,6 +91,7 @@ async fn check(client: &reqwest::Client, base: &str, tool: &str, input: Value) -
 #[tokio::test]
 async fn allow_transition_deny_flow() {
     let (base, dir) = spawn().await;
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let client = reqwest::Client::new();
     let policy_file = dir.path().join("guard-proxy").join("policy.json");
 

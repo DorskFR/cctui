@@ -363,7 +363,7 @@ impl ResolvesServerCert for SniResolver {
 }
 
 /// Ensures a process-default rustls crypto provider is installed. Idempotent.
-fn install_crypto() {
+pub(crate) fn install_crypto() {
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
 }
 

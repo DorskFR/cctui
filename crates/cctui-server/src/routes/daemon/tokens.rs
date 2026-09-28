@@ -11,15 +11,15 @@ use crate::state::AppState;
 
 // ---- /api/v1/users/{id}/tokens ----
 
-#[derive(Deserialize, ts_rs::TS)]
-#[ts(export)]
+#[derive(Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct MintTokenRequest {
     pub label: Option<String>,
     pub expires_at: Option<chrono::DateTime<Utc>>,
 }
 
-#[derive(serde::Serialize, ts_rs::TS)]
-#[ts(export)]
+#[derive(serde::Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct MintTokenResponse {
     pub token: String,
     pub label: Option<String>,

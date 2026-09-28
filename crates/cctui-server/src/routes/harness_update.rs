@@ -11,6 +11,7 @@ use axum::{Extension, Json};
 use cctui_proto::harness::{HarnessReport, HarnessUpdatePolicy};
 use cctui_proto::ws::DaemonFrameDown;
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "ts")]
 use ts_rs::TS;
 use uuid::Uuid;
 
@@ -20,8 +21,8 @@ use crate::state::AppState;
 
 const KEY: &str = "harness_autoupdate";
 
-#[derive(Serialize, TS)]
-#[ts(export)]
+#[derive(Serialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct MachineHarnessInfo {
     pub machine_id: String,
     pub name: String,
@@ -29,19 +30,19 @@ pub struct MachineHarnessInfo {
     pub policy: Option<HarnessUpdatePolicy>,
     pub effective: HarnessUpdatePolicy,
     pub report: Option<HarnessReport>,
-    #[ts(type = "string | null")]
+    #[cfg_attr(feature = "ts", ts(type = "string | null"))]
     pub report_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-#[derive(Serialize, TS)]
-#[ts(export)]
+#[derive(Serialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct HarnessAutoupdateInfo {
     pub instance: Option<HarnessUpdatePolicy>,
     pub machines: Vec<MachineHarnessInfo>,
 }
 
-#[derive(Deserialize, TS)]
-#[ts(export)]
+#[derive(Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct HarnessPolicyRequest {
     /// `null` clears: the instance default falls back to off, a machine
     /// override falls back to the instance default.

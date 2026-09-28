@@ -5,11 +5,12 @@
 //! Credentials are accepted on create only and never read back.
 
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "ts")]
 use ts_rs::TS;
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum GithubCredentialKind {
     /// Fine-grained personal access token.
@@ -19,8 +20,8 @@ pub enum GithubCredentialKind {
 
 /// Body for `POST /api/v1/github/connectors`. The only place the plaintext
 /// credential and webhook secret travel; both are stored encrypted.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct CreateConnector {
     pub name: String,
     pub credential_kind: GithubCredentialKind,
@@ -38,8 +39,8 @@ pub struct CreateConnector {
 
 /// Body for `PATCH /api/v1/github/connectors/{id}`; absent fields are unchanged.
 /// Rotating the credential clears the cached viewer login.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct UpdateConnector {
     #[serde(default)]
     pub name: Option<String>,
@@ -55,8 +56,8 @@ pub struct UpdateConnector {
 }
 
 /// A connector as read back; secrets are never included.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct ConnectorInfo {
     pub id: Uuid,
     pub name: String,
@@ -75,8 +76,8 @@ pub struct ConnectorInfo {
 }
 
 /// Parsed PR, keyed on `(connector, repo, number)`.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct PullUpsert {
     /// GraphQL node id.
     pub node_id: String,
@@ -100,8 +101,8 @@ pub struct PullUpsert {
 }
 
 /// Parsed `check_run` or legacy commit status.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct CheckUpsert {
     pub repo: String,
     pub head_sha: String,
@@ -115,8 +116,8 @@ pub struct CheckUpsert {
     pub details_url: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct ReviewUpsert {
     pub repo: String,
     pub pull_number: i64,
@@ -130,8 +131,8 @@ pub struct ReviewUpsert {
     pub submitted_at: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct ReviewThreadUpsert {
     pub repo: String,
     pub pull_number: i64,
@@ -143,8 +144,8 @@ pub struct ReviewThreadUpsert {
     pub resolved: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct ReviewCommentUpsert {
     pub repo: String,
     pub pull_number: i64,
@@ -160,8 +161,8 @@ pub struct ReviewCommentUpsert {
 }
 
 /// Object kind a [`crate::ws::ServerEvent::GithubEvent`] refers to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum GithubEventKind {
     Pull,
@@ -172,8 +173,8 @@ pub enum GithubEventKind {
 }
 
 /// Locator for what to refetch; never carries row bodies or credentials.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct GithubEventPayload {
     pub connector_id: Uuid,
     pub repo: String,
@@ -184,8 +185,8 @@ pub struct GithubEventPayload {
 
 /// What a tracked PR needs from the viewer. Exactly one per PR; variants are
 /// in inbox display order.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum AttentionBucket {
     /// Review requested from the viewer and not yet given.
@@ -211,8 +212,8 @@ impl AttentionBucket {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct CheckSummary {
     /// Includes neutral and skipped.
     pub passed: u32,
@@ -220,16 +221,16 @@ pub struct CheckSummary {
     pub pending: u32,
 }
 
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct ReviewSummary {
     pub changes_requested: u32,
     pub approved: u32,
     pub commented: u32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct DiffLine {
     pub kind: DiffLineKind,
     /// Without the leading ` `/`+`/`-` marker.
@@ -242,8 +243,8 @@ pub struct DiffLine {
     pub new_line: Option<u32>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum DiffLineKind {
     Context,
@@ -251,8 +252,8 @@ pub enum DiffLineKind {
     Del,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct DiffHunk {
     /// 1-based.
     pub old_start: u32,
@@ -266,8 +267,8 @@ pub struct DiffHunk {
     pub lines: Vec<DiffLine>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct DiffFile {
     /// Head-side path; the removed path for a delete.
     pub path: String,
@@ -289,8 +290,8 @@ pub struct DiffFile {
 }
 
 /// Structured PR diff, cached server-side by `head_sha`.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct PullDiff {
     pub repo: String,
     pub number: i64,
@@ -304,8 +305,8 @@ pub struct PullDiff {
     pub files: Vec<DiffFile>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum DiffSide {
     /// Base side, GitHub `LEFT`.
@@ -325,8 +326,8 @@ impl DiffSide {
 }
 
 /// A reviewer's diff selection. A different diff `head_sha` makes it stale.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct DiffSelection {
     /// Head-side path.
     pub path: String,
@@ -340,8 +341,8 @@ pub struct DiffSelection {
 }
 
 /// A [`DiffSelection`] resolved to GitHub review-comment coordinates.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct CommentAnchor {
     pub path: String,
     pub commit_id: String,
@@ -355,8 +356,8 @@ pub struct CommentAnchor {
     pub start_side: Option<DiffSide>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum AnchorError {
     /// The PR head moved since the selection was made.
@@ -371,8 +372,8 @@ pub enum AnchorError {
     InvalidRange,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum DraftAuthorKind {
     /// One open draft per user and PR.
@@ -380,8 +381,8 @@ pub enum DraftAuthorKind {
     Agent,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum ReviewVerdict {
     Comment,
@@ -389,8 +390,8 @@ pub enum ReviewVerdict {
     RequestChanges,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 #[serde(rename_all = "snake_case")]
 pub enum DraftStatus {
     Draft,
@@ -398,22 +399,22 @@ pub enum DraftStatus {
 }
 
 /// Opens the caller's draft for a PR, or returns the open one.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct CreateReviewDraft {
     /// Defaults to `comment`.
     #[serde(default)]
     pub verdict: Option<ReviewVerdict>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct UpdateReviewDraft {
     pub verdict: ReviewVerdict,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct CreateDraftComment {
     pub path: String,
     pub side: DiffSide,
@@ -428,14 +429,14 @@ pub struct CreateDraftComment {
 }
 
 /// Only the body is editable; the anchor is fixed.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct UpdateDraftComment {
     pub body: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct DraftCommentInfo {
     pub id: Uuid,
     pub draft_id: Uuid,
@@ -454,8 +455,8 @@ pub struct DraftCommentInfo {
     pub updated_at: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct ReviewDraftInfo {
     pub id: Uuid,
     pub connector_id: Uuid,
@@ -477,8 +478,8 @@ pub struct ReviewDraftInfo {
 }
 
 /// Body for `mark-viewed` / `unmark-viewed`.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct MarkViewedRequest {
     pub path: String,
     /// Required on mark, ignored on unmark.
@@ -486,8 +487,8 @@ pub struct MarkViewedRequest {
     pub blob_sha: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct ViewedMarkInfo {
     pub path: String,
     /// The file counts as reviewed only while its current blob SHA matches.
@@ -495,8 +496,8 @@ pub struct ViewedMarkInfo {
     pub marked_at: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct PullInboxItem {
     pub connector_id: Uuid,
     pub repo: String,
@@ -518,8 +519,8 @@ pub struct PullInboxItem {
 }
 
 /// Publishes a draft as one batched GitHub review.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct PublishReviewRequest {
     pub draft_id: Uuid,
     /// Review body.
@@ -531,8 +532,8 @@ pub struct PublishReviewRequest {
 }
 
 /// A draft comment left out because it no longer anchors.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct SkippedComment {
     pub comment_id: Uuid,
     pub path: String,
@@ -540,16 +541,16 @@ pub struct SkippedComment {
     pub reason: AnchorError,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct PublishReviewResult {
     pub review_id: i64,
     pub submitted: u32,
     pub skipped: Vec<SkippedComment>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct ReviewThreadCommentInfo {
     pub comment_id: i64,
     pub author: String,
@@ -558,8 +559,8 @@ pub struct ReviewThreadCommentInfo {
 }
 
 /// A review thread already posted on GitHub.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct ReviewThreadInfo {
     pub thread_node_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]

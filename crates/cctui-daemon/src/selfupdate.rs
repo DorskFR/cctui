@@ -145,6 +145,7 @@ pub fn binary_url(server_url: &str, target: &str) -> String {
 }
 
 pub fn client() -> Result<reqwest::Client> {
+    crate::install_crypto_provider();
     Ok(reqwest::Client::builder()
         .user_agent(concat!("cctui-daemon/", env!("CARGO_PKG_VERSION")))
         .build()?)

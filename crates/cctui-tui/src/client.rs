@@ -15,6 +15,7 @@ pub struct ServerClient {
 
 impl ServerClient {
     pub fn new(base_url: impl Into<String>, token: impl Into<String>) -> Self {
+        let _ = rustls::crypto::ring::default_provider().install_default();
         Self { base_url: base_url.into(), token: token.into(), http: reqwest::Client::new() }
     }
 

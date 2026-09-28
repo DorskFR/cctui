@@ -19,14 +19,15 @@ use axum::extract::{Path, State};
 use axum::http::{StatusCode, header};
 use cctui_proto::updatehook::{UpdateHookPhase, UpdateHookReport};
 use serde::Serialize;
+#[cfg(feature = "ts")]
 use ts_rs::TS;
 use uuid::Uuid;
 
 use crate::state::AppState;
 
 /// A hook run as the webui sees it.
-#[derive(Debug, Clone, Serialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct SelfUpdateRun {
     pub id: Uuid,
     pub machine_id: Uuid,
@@ -180,8 +181,8 @@ async fn require_machine(
     ctx.machine_id.ok_or(StatusCode::FORBIDDEN)
 }
 
-#[derive(Serialize, TS)]
-#[ts(export)]
+#[derive(Serialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct DaemonVersion {
     pub version: &'static str,
     pub git_hash: &'static str,

@@ -19,6 +19,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::{Extension, Json};
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "ts")]
 use ts_rs::TS;
 use uuid::Uuid;
 
@@ -29,15 +30,15 @@ use crate::state::AppState;
 /// Hard cap on the label; it lives in a header slot and the tab title.
 pub const NAME_MAX_CHARS: usize = 48;
 
-#[derive(Deserialize, TS)]
-#[ts(export)]
+#[derive(Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct InstanceUpdateRequest {
     /// New deployment name. Empty / whitespace-only clears it.
     pub name: Option<String>,
 }
 
-#[derive(Serialize, TS)]
-#[ts(export)]
+#[derive(Serialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct InstanceInfo {
     /// The deployment label, `null` when unset (the default).
     pub name: Option<String>,
@@ -97,8 +98,8 @@ pub async fn update(
 }
 
 /// Where the self-update agent runs. Stored under `instance_settings.self_update`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct SelfUpdateTarget {
     /// Enrolled machine (uuid) the update session is spawned on.
     pub machine_id: String,
@@ -110,15 +111,15 @@ pub struct SelfUpdateTarget {
     pub adapter_id: Option<String>,
 }
 
-#[derive(Deserialize, TS)]
-#[ts(export)]
+#[derive(Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct SelfUpdateTargetRequest {
     /// `null` clears the stored target (the env fallback, if any, then applies).
     pub target: Option<SelfUpdateTarget>,
 }
 
-#[derive(Serialize, TS)]
-#[ts(export)]
+#[derive(Serialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct SelfUpdateTargetInfo {
     /// The effective target: stored one first, else the env fallback, else
     /// `null` (the button then tells the admin to configure one).

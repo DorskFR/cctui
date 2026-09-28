@@ -36,6 +36,7 @@ pub struct EnrollResponse {
 impl ServerClient {
     #[must_use]
     pub fn new(base_url: impl Into<String>, kind: &'static str) -> Self {
+        crate::install_crypto_provider();
         Self { base_url: base_url.into(), kind, http: reqwest::Client::new() }
     }
 

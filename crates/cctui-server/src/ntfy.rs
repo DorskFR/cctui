@@ -32,7 +32,7 @@ pub fn notify(config: &Config, n: Notification) {
         return;
     };
     tokio::spawn(async move {
-        let client = reqwest::Client::new();
+        let client = crate::http_client();
         let resp = client
             .post(&url)
             .bearer_auth(token)

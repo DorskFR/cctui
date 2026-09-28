@@ -115,6 +115,7 @@ impl GhAppMinter {
         config: GhAppConfig,
         key_ref: SecretRef,
     ) -> anyhow::Result<Self> {
+        crate::inject::install_crypto();
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(10))
             .pool_max_idle_per_host(0)

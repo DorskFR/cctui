@@ -12,14 +12,15 @@ use axum::http::StatusCode;
 use axum::{Extension, Json};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "ts")]
 use ts_rs::TS;
 use uuid::Uuid;
 
 use crate::auth::AuthContext;
 use crate::state::AppState;
 
-#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct Prompt {
     pub id: Uuid,
     pub name: String,

@@ -42,8 +42,8 @@ pub struct LatestRelease {
 }
 
 /// One release published since the running build: tag, page and Markdown notes.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, ts_rs::TS)]
-#[ts(export)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct ReleaseNote {
     pub version: String,
     pub url: String,
@@ -327,7 +327,7 @@ mod tests {
         // A recorded answer stamps the probe clock, so an immediate on-demand
         // refresh serves it instead of reaching for the network.
         c.record("v999.0.0", "u".into()).await;
-        assert_eq!(c.refresh(&reqwest::Client::new()).await, Ok(false));
+        assert_eq!(c.refresh(&crate::http_client()).await, Ok(false));
         assert_eq!(c.newer().await.map(|l| l.version), Some("999.0.0".into()));
     }
 }

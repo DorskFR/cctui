@@ -8,6 +8,7 @@ use cctui_proto::models::MachineLiveness;
 use cctui_proto::resources::MachineResources;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
+#[cfg(feature = "ts")]
 use ts_rs::TS;
 use uuid::Uuid;
 
@@ -89,8 +90,8 @@ fn materially_changed(prev: &MachineResources, next: &MachineResources) -> bool 
 
 /// One enrolled daemon machine and its last-known resource snapshot, for the
 /// Settings › Resource monitoring list and the header gauge.
-#[derive(Debug, Serialize, TS)]
-#[ts(export)]
+#[derive(Debug, Serialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct MachineResourcesRow {
     pub machine_id: Uuid,
     pub name: String,

@@ -22,6 +22,7 @@ use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sqlx::PgPool;
+#[cfg(feature = "ts")]
 use ts_rs::TS;
 use uuid::Uuid;
 use webauthn_rs::prelude::{
@@ -174,8 +175,8 @@ async fn take_challenge(
 // Wire types
 // ---------------------------------------------------------------------------
 
-#[derive(Serialize, TS)]
-#[ts(export)]
+#[derive(Serialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct PasskeyChallenge {
     /// Handle for the parked ceremony state; echoed back on finish.
     pub challenge_id: Uuid,
@@ -185,8 +186,8 @@ pub struct PasskeyChallenge {
     pub options: Value,
 }
 
-#[derive(Deserialize, TS)]
-#[ts(export)]
+#[derive(Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct PasskeyRegisterFinish {
     pub challenge_id: Uuid,
     /// Human label for the key ("iPhone", "YubiKey", "Bitwarden").
@@ -198,16 +199,16 @@ pub struct PasskeyRegisterFinish {
     pub discoverable: Option<bool>,
 }
 
-#[derive(Deserialize, TS)]
-#[ts(export)]
+#[derive(Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct PasskeyAssertion {
     pub challenge_id: Uuid,
     /// The `PublicKeyCredential` from `navigator.credentials.get()`.
     pub credential: Value,
 }
 
-#[derive(Serialize, TS)]
-#[ts(export)]
+#[derive(Serialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct PasskeyRow {
     pub id: Uuid,
     pub label: String,
@@ -219,14 +220,14 @@ pub struct PasskeyRow {
     pub last_used_at: Option<DateTime<Utc>>,
 }
 
-#[derive(Serialize, TS)]
-#[ts(export)]
+#[derive(Serialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct PasskeyListResponse {
     pub passkeys: Vec<PasskeyRow>,
 }
 
-#[derive(Serialize, TS)]
-#[ts(export)]
+#[derive(Serialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct PasskeyConfig {
     /// Whether this server can run a passkey ceremony at all (relying party
     /// configured). False means the login screen shows only the token box.
@@ -240,21 +241,21 @@ pub struct PasskeyConfig {
     pub auto_prompt: bool,
 }
 
-#[derive(Deserialize, TS)]
-#[ts(export)]
+#[derive(Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct PasskeyAutoPromptRequest {
     pub auto_prompt: bool,
 }
 
-#[derive(Serialize, TS)]
-#[ts(export)]
+#[derive(Serialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct PasskeyTestResult {
     /// The label of the key that answered, so the UI can say which one.
     pub label: String,
 }
 
-#[derive(Deserialize, TS)]
-#[ts(export)]
+#[derive(Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct RelabelPasskeyRequest {
     pub label: String,
 }

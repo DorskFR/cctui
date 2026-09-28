@@ -7,14 +7,15 @@ use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::{Extension, Json};
 use serde::Serialize;
+#[cfg(feature = "ts")]
 use ts_rs::TS;
 use uuid::Uuid;
 
 use crate::auth::{AuthContext, token_preview};
 use crate::state::AppState;
 
-#[derive(Serialize, TS)]
-#[ts(export)]
+#[derive(Serialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct MeResponse {
     /// Coarse role hint for the UI: `admin` | `user` | `machine`. Derived from
     /// scopes + machine id; authority itself lives in `scopes`.

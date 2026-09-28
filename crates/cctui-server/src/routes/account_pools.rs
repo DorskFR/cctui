@@ -32,8 +32,8 @@ use crate::store::usage_samples;
 type ApiErr = (StatusCode, Json<serde_json::Value>);
 
 /// A pool with its membership — what the accounts screen renders.
-#[derive(serde::Serialize, ts_rs::TS)]
-#[ts(export)]
+#[derive(serde::Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct AccountPoolView {
     #[serde(flatten)]
     pub pool: AccountPool,
@@ -42,10 +42,10 @@ pub struct AccountPoolView {
 
 /// A pool's quota, aggregated per provider family — what the pool zone and
 /// the stats panel render. See [`crate::pool_usage`] for the arithmetic.
-#[derive(serde::Serialize, ts_rs::TS)]
-#[ts(export)]
+#[derive(serde::Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct PoolUsageView {
-    #[ts(type = "string")]
+    #[cfg_attr(feature = "ts", ts(type = "string"))]
     pub pool_id: Uuid,
     pub name: String,
     pub strategy: String,
@@ -58,8 +58,8 @@ pub struct PoolUsageView {
 /// One provider family inside a pool: only its members are interchangeable
 /// (a claude-code spawn elects among the anthropic credentials, a codex spawn
 /// among the openai ones), so only they are aggregated together.
-#[derive(serde::Serialize, ts_rs::TS)]
-#[ts(export)]
+#[derive(serde::Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct PoolFamilyUsage {
     /// `anthropic` | `openai` | `fireworks`.
     pub family: String,
@@ -67,10 +67,10 @@ pub struct PoolFamilyUsage {
     pub windows: Vec<PoolUsageWindow>,
 }
 
-#[derive(serde::Serialize, ts_rs::TS)]
-#[ts(export)]
+#[derive(serde::Serialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct PoolUsageMember {
-    #[ts(type = "string")]
+    #[cfg_attr(feature = "ts", ts(type = "string"))]
     pub account_id: Uuid,
     pub name: String,
     pub emoji: Option<String>,
@@ -240,39 +240,39 @@ fn window_rank(key: &str) -> (u8, String) {
     (rank, key.to_owned())
 }
 
-#[derive(serde::Deserialize, ts_rs::TS)]
-#[ts(export)]
+#[derive(serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct CreatePoolRequest {
     pub name: String,
     /// `headroom` (default) or `ordered`.
-    #[ts(optional)]
+    #[cfg_attr(feature = "ts", ts(optional))]
     pub strategy: Option<String>,
     /// Whether a live session may be moved between members. Defaults to false:
     /// creating a pool changes how launches pick, nothing about running work.
-    #[ts(optional)]
+    #[cfg_attr(feature = "ts", ts(optional))]
     pub failover: Option<bool>,
     /// Members, in election order for the `ordered` strategy.
     #[serde(default)]
-    #[ts(type = "string[]", optional)]
+    #[cfg_attr(feature = "ts", ts(type = "string[]", optional))]
     pub accounts: Vec<Uuid>,
     /// The admin token has no user identity and must name the pool's owner.
-    #[ts(type = "string | null", optional)]
+    #[cfg_attr(feature = "ts", ts(type = "string | null", optional))]
     pub user_id: Option<Uuid>,
 }
 
-#[derive(serde::Deserialize, ts_rs::TS)]
-#[ts(export)]
+#[derive(serde::Deserialize)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
 pub struct UpdatePoolRequest {
-    #[ts(optional)]
+    #[cfg_attr(feature = "ts", ts(optional))]
     pub name: Option<String>,
-    #[ts(optional)]
+    #[cfg_attr(feature = "ts", ts(optional))]
     pub strategy: Option<String>,
-    #[ts(optional)]
+    #[cfg_attr(feature = "ts", ts(optional))]
     pub failover: Option<bool>,
     /// Absent leaves the membership alone; present replaces it wholesale, in
     /// the given order.
     #[serde(default)]
-    #[ts(type = "string[] | null", optional)]
+    #[cfg_attr(feature = "ts", ts(type = "string[] | null", optional))]
     pub accounts: Option<Vec<Uuid>>,
 }
 

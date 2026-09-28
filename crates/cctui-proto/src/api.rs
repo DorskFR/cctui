@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "ts")]
 use ts_rs::TS;
 use uuid::Uuid;
 
@@ -236,8 +237,8 @@ const fn default_bucket() -> Bucket {
 // Public wire/data shape mirrored to TS bindings; the bool fields are independent
 // session flags, not a state machine, so refactoring them into enums would churn the API.
 #[allow(clippy::struct_excessive_bools)]
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct SessionListItem {
     pub id: String,
     pub parent_id: Option<String>,
@@ -335,8 +336,8 @@ pub struct SessionListItem {
 
 /// Cache keep-alive: one tick every `interval_secs` while idle, stopping after
 /// `max_ticks` (`0` = never). Human activity resets `ticks_sent`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct KeepaliveState {
     pub interval_secs: u32,
     pub max_ticks: u32,
@@ -348,8 +349,8 @@ pub struct KeepaliveState {
 }
 
 /// `enabled: false` clears the schedule; omitted fields use provider defaults.
-#[derive(Debug, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct SessionKeepaliveRequest {
     pub enabled: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -360,8 +361,8 @@ pub struct SessionKeepaliveRequest {
 
 /// Task-list entry. `status` is `pending`, `in_progress` or `completed`;
 /// `active_form` is claude-only.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct TodoEntry {
     pub content: String,
     pub status: String,
@@ -370,8 +371,8 @@ pub struct TodoEntry {
 }
 
 /// `color` is a CSS hex string.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct Label {
     pub id: String,
     pub name: String,
@@ -379,16 +380,16 @@ pub struct Label {
 }
 
 /// Get-or-create by name.
-#[derive(Debug, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct CreateLabelRequest {
     pub name: String,
     pub color: String,
 }
 
 /// Omitted fields are unchanged.
-#[derive(Debug, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct UpdateLabelRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -396,27 +397,27 @@ pub struct UpdateLabelRequest {
     pub color: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct AttachLabelRequest {
     pub label_id: String,
 }
 
-#[derive(Debug, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct LabelListResponse {
     pub labels: Vec<Label>,
 }
 
-#[derive(Debug, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct SessionListResponse {
     pub sessions: Vec<SessionListItem>,
 }
 
 /// Session counts from SQL aggregates, not the capped list.
-#[derive(Debug, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct SessionStats {
     /// Includes archived.
     pub total: i64,
@@ -431,8 +432,8 @@ pub struct SessionStats {
     pub month: i64,
 }
 
-#[derive(Debug, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct WindowTokenUsage {
     pub input: u64,
     pub output: u64,
@@ -440,8 +441,8 @@ pub struct WindowTokenUsage {
 }
 
 /// `today` is since local midnight; the rest are rolling.
-#[derive(Debug, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct TokenUsageWindows {
     pub hour: WindowTokenUsage,
     pub today: WindowTokenUsage,
@@ -451,8 +452,8 @@ pub struct TokenUsageWindows {
 }
 
 /// Missing buckets are zero-filled client-side.
-#[derive(Debug, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct UsageBucket {
     /// Bucket start, RFC3339 UTC.
     pub bucket: String,
@@ -463,8 +464,8 @@ pub struct UsageBucket {
 }
 
 /// Attributed by session model, not per turn.
-#[derive(Debug, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct ModelUsage {
     /// `"unknown"` when unrecorded.
     pub model: String,
@@ -476,8 +477,8 @@ pub struct ModelUsage {
 }
 
 /// Empty cells are omitted.
-#[derive(Debug, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct HeatmapCell {
     /// 0 = Sunday.
     pub dow: u8,
@@ -486,8 +487,8 @@ pub struct HeatmapCell {
     pub output: u64,
 }
 
-#[derive(Debug, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct UsageAnalytics {
     /// `hour` or `day`.
     pub granularity: String,
@@ -498,8 +499,8 @@ pub struct UsageAnalytics {
     pub heatmap: Vec<HeatmapCell>,
 }
 
-#[derive(Debug, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct MessageRequest {
     pub content: String,
     /// Client-minted `UUIDv7` echoed on every event of the turn.
@@ -510,21 +511,21 @@ pub struct MessageRequest {
     pub deliver_at: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct RenameRequest {
     pub name: String,
 }
 
-#[derive(Debug, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct AutoApproveRequest {
     pub enabled: bool,
 }
 
 /// `None` fields are left unchanged.
-#[derive(Debug, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct SetModelRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
@@ -533,8 +534,8 @@ pub struct SetModelRequest {
 }
 
 /// Omitted fields inherit from the parent; working dir, adapter and account always do.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct ForkRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
@@ -549,14 +550,14 @@ pub struct ForkRequest {
     pub extract: Option<crate::adapter::ForkExtract>,
 }
 
-#[derive(Debug, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct ApiError {
     pub error: String,
 }
 
-#[derive(Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 // `no_account` / `auto_account` / `save_draft` / `auto_archive` are independent
 // wire flags, each defaulting to false; an enum would change the JSON shape.
 #[allow(clippy::struct_excessive_bools)]
@@ -618,7 +619,7 @@ pub struct SpawnRequest {
     pub label_ids: Vec<String>,
     /// `None` = cannot spawn children.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(skip)]
+    #[cfg_attr(feature = "ts", ts(skip))]
     pub spawn_capability: Option<SpawnCapability>,
     /// `followup`: the first prompt embeds the parent's brief. `None` = root.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -658,8 +659,8 @@ impl std::fmt::Debug for SpawnRequest {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct SpawnResponse {
     pub command_id: Uuid,
     pub status: String,
@@ -672,16 +673,16 @@ pub struct SpawnResponse {
 }
 
 /// Body for `POST /api/v1/sessions/{id}/launch`; env is entered fresh, never stored.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct LaunchRequest {
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub env: std::collections::BTreeMap<String, String>,
 }
 
 /// `session_id` is set when the adapter accepts a pre-minted id.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct ForkResponse {
     pub command_id: Uuid,
     pub status: String,
@@ -690,8 +691,8 @@ pub struct ForkResponse {
 }
 
 /// User/assistant transcript as markdown, oldest turns elided past the caps.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct BriefResponse {
     pub markdown: String,
     pub turns: u32,
@@ -700,15 +701,15 @@ pub struct BriefResponse {
 }
 
 /// Absolute paths on the session's machine, in upload order.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct StageFilesResponse {
     pub paths: Vec<String>,
 }
 
 /// Dispatcher-routed session start. `payload` is opaque and forwarded verbatim.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct DispatchRequest {
     pub dispatcher: String,
     /// Idempotency key; minted when absent.
@@ -740,8 +741,8 @@ pub struct DispatchRequest {
 }
 
 /// One `(account, provider)` entry in [`DispatchRequest::accounts`].
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct DispatchAccount {
     pub account: String,
     /// `None` = anthropic.
@@ -749,8 +750,8 @@ pub struct DispatchAccount {
     pub provider: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct DispatchResponse {
     pub session_id: String,
     pub dispatcher: String,
@@ -763,8 +764,8 @@ pub struct DispatchResponse {
 }
 
 /// `image_id` is referenced as `cctui-img://<image_id>`.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct SessionImageUploadResponse {
     pub image_id: String,
 }
