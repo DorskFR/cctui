@@ -84,6 +84,10 @@ async fn reconcile_migration_checksums(pool: &PgPool) -> Result<(), sqlx::Error>
             60,
             "8d0caf988684f0c4894fe6ea43ec74c44453e79c23a68518604e77e78e9a57466d792b8e6253090b80eea4c278d400dd",
         ),
+        (
+            143,
+            "6b54d6a5cf2c7c5e3d701fbd49a6a45818bb10bc0032bbd811f840ebbd809322fabcb1b28b0fec596e6a4d362e37c4e9",
+        ),
     ];
     let table_exists: bool =
         sqlx::query_scalar("SELECT to_regclass('_sqlx_migrations') IS NOT NULL")
