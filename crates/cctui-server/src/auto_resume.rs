@@ -24,7 +24,7 @@ use crate::store::sessions::SessionRowStatus;
 /// session at once. The delay after the final attempt is also the grace period
 /// before the row is declared exhausted.
 const fn schedule() -> Backoff {
-    Backoff::new(StdDuration::from_secs(60), StdDuration::from_secs(600))
+    Backoff::new(StdDuration::from_mins(1), StdDuration::from_mins(10))
 }
 
 /// Nudges sent before giving up.

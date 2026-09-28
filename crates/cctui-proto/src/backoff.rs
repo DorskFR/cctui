@@ -123,14 +123,14 @@ mod tests {
 
     #[test]
     fn delay_for_doubles_from_the_attempt_index_and_caps() {
-        let b = Backoff::new(Duration::from_secs(10), Duration::from_secs(3600));
+        let b = Backoff::new(Duration::from_secs(10), Duration::from_hours(1));
         for (attempt, secs) in [(0, 10), (1, 20), (2, 40), (3, 80), (8, 2560), (9, 3600)] {
             let d = b.delay_for(attempt);
             assert!(within(d, Duration::from_secs(secs)), "attempt {attempt}: {d:?} vs {secs}s");
         }
         // No shift overflow, and no delay beyond the cap, however large the count.
         for attempt in [31, 32, 1000, u32::MAX] {
-            assert!(within(b.delay_for(attempt), Duration::from_secs(3600)));
+            assert!(within(b.delay_for(attempt), Duration::from_hours(1)));
         }
     }
 
@@ -144,7 +144,7 @@ mod tests {
 
     #[test]
     fn delay_secs_for_matches_delay_for() {
-        let b = Backoff::new(Duration::from_secs(30), Duration::from_secs(900));
+        let b = Backoff::new(Duration::from_secs(30), Duration::from_mins(15));
         for attempt in 0..8 {
             let secs = b.delay_secs_for(attempt);
             assert!(secs >= 24, "attempt {attempt} under the jitter floor: {secs}");

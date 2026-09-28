@@ -18,7 +18,7 @@ const MAX_ATTEMPTS: i32 = 11;
 /// failed together does not retry in lockstep. The first retry stays seconds
 /// away for a transient failure; [`MAX_ATTEMPTS`] carries the total reach.
 const fn retry_schedule() -> Backoff {
-    Backoff::new(StdDuration::from_secs(10), StdDuration::from_secs(3600))
+    Backoff::new(StdDuration::from_secs(10), StdDuration::from_hours(1))
 }
 const CLAIM_LEASE_SECS: i64 = 300;
 const CLAIM_BATCH: i64 = 50;
@@ -281,7 +281,9 @@ mod tests {
                         "attempts {attempts}: {secs}s outside {lo}..={hi}"
                     );
                 }
-                other => panic!("attempts {attempts} should retry, got {other:?}"),
+                other @ Retry::Dead { .. } => {
+                    panic!("attempts {attempts} should retry, got {other:?}")
+                }
             }
         }
         assert_eq!(retry_after_failure(MAX_ATTEMPTS - 1), Retry::Dead { attempts: MAX_ATTEMPTS });
