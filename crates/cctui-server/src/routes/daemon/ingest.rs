@@ -413,6 +413,79 @@ mod tests {
         drop_machines(&pool, &[sid], &[(uid, mid)]).await;
     }
 
+    /// Migration 143 must apply over the duplicate shapes a live database
+    /// holds. It runs against a temp table that shadows `stream_events` on this
+    /// connection, carrying only 121's turn-keyed index, as before 143.
+    #[tokio::test]
+    async fn migration_143_dedupes_line_id_duplicates_without_breaking_the_turn_index() {
+        let Some(url) = crate::routes::gateway::test_db_url("migration_143") else {
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let mut conn = pool.acquire().await.expect("acquire");
+
+        sqlx::raw_sql(
+            "CREATE TEMP TABLE stream_events \
+                 (LIKE public.stream_events INCLUDING DEFAULTS INCLUDING GENERATED); \
+             CREATE UNIQUE INDEX stream_events_dedup_turn_idx ON stream_events ( \
+                 session_id, event_type, content_hash, \
+                 COALESCE(turn_id, '00000000-0000-0000-0000-000000000000'::uuid));",
+        )
+        .execute(&mut *conn)
+        .await
+        .expect("shadow table");
+
+        let t = |n: u128| Some(Uuid::from_u128(n));
+        let line = |lid: &str, text: &str| json!({"role": "user", "text": text, "line_id": lid});
+        let rows = [
+            (1_i64, line("a", "x"), t(1)),
+            (2, line("a", "x"), None),
+            (3, line("b", "x"), None),
+            (4, line("b", "x"), t(2)),
+            (5, line("c", "x"), t(3)),
+            (6, line("c", "x"), t(4)),
+            (7, line("d", "x"), None),
+            (8, line("d", "y"), None),
+        ];
+        for (id, payload, turn) in rows {
+            sqlx::query(
+                "INSERT INTO stream_events (id, session_id, event_type, payload, turn_id) \
+                 VALUES ($1, 's', 'message', $2, $3)",
+            )
+            .bind(id)
+            .bind(payload)
+            .bind(turn)
+            .execute(&mut *conn)
+            .await
+            .expect("seed");
+        }
+
+        sqlx::raw_sql(include_str!(
+            "../../../../../migrations/143_stream_events_line_id_dedupe.up.sql"
+        ))
+        .execute(&mut *conn)
+        .await
+        .expect("migration 143 applies over duplicates");
+
+        let kept: Vec<i64> = sqlx::query_scalar("SELECT id FROM stream_events ORDER BY id")
+            .fetch_all(&mut *conn)
+            .await
+            .expect("kept ids");
+        assert_eq!(kept, vec![1, 4, 5, 7, 8], "the row with a turn_id wins, else the lowest id");
+
+        let replay = sqlx::query(
+            "INSERT INTO stream_events (session_id, event_type, payload) VALUES ('s', 'message', $1)",
+        )
+        .bind(line("a", "x"))
+        .execute(&mut *conn)
+        .await;
+        assert!(replay.is_err(), "the line_id index now rejects a turn-less replay");
+    }
+
     #[tokio::test]
     async fn a_backfill_lands_in_a_handful_of_statements_in_order() {
         let Some(url) = crate::routes::gateway::test_db_url("batched_backfill") else {
