@@ -308,6 +308,9 @@ impl Pump {
                 return;
             }
         };
+        let preflight = crate::preflight::Preflight::new(self.events.clone(), spec.model.clone())
+            .with_limits(self.server.as_ref(), self.machine_key.as_deref())
+            .with_relay(agent_mcp.as_ref().map(|relay| relay.session_key().to_owned()));
         let params = SpawnParams {
             cfg: self.cfg.clone(),
             key,
@@ -322,6 +325,7 @@ impl Pump {
             parent_local_id: spec.parent_local_id.clone(),
             agent_mcp,
             skill_roots: skills.roots,
+            preflight: Some(preflight),
         };
         let session = OpenCodeSession::new(
             params,

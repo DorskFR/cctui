@@ -430,6 +430,19 @@ impl CommandPump {
         cfg
     }
 
+    /// The launch preflight for a codex thread: the limit hold, plus the
+    /// readiness wait when this session declares a `CctuiAgent` relay. Bound
+    /// to its card only once codex has minted the thread id.
+    fn preflight(
+        &self,
+        model: Option<String>,
+        agent_mcp: Option<&crate::adapters::agent_mcp::AgentMcp>,
+    ) -> crate::preflight::Preflight {
+        crate::preflight::Preflight::new(self.events.clone(), model)
+            .with_limits(self.server.as_ref(), self.machine_key.as_deref())
+            .with_relay(agent_mcp.map(|relay| relay.session_key().to_owned()))
+    }
+
     // codex mints its own thread id, so the server-pre-minted `session_id` is
     // not the thread's id: it keys the launch and is echoed as `spawn_key` on
     // `SessionStarted`, which is how the server moves the gateway token onto
@@ -494,6 +507,11 @@ impl CommandPump {
                     return;
                 }
             };
+        let agent_mcp = crate::adapters::agent_mcp::AgentMcp::for_capability(
+            &launch_key,
+            launch.spawn_capability.as_ref(),
+        );
+        let preflight = self.preflight(cfg.model.clone(), agent_mcp.as_ref());
         let session = CodexSession::new_fresh(
             cfg,
             working_dir,
@@ -509,10 +527,8 @@ impl CommandPump {
             self.registry.clone(),
             self.shutdown.clone(),
         )
-        .with_agent_mcp(crate::adapters::agent_mcp::AgentMcp::for_capability(
-            &launch_key,
-            launch.spawn_capability.as_ref(),
-        ))
+        .with_agent_mcp(agent_mcp)
+        .with_preflight(Some(preflight))
         .with_skills(skills);
         tokio::spawn(async move {
             if let Err(err) = session.run().await {
@@ -553,6 +569,7 @@ impl CommandPump {
             }
         };
         let cfg = self.launch_cfg(spec, served_settings.as_ref());
+        let preflight = self.preflight(cfg.model.clone(), None);
         let skills =
             crate::plugins::resolve_session_skills(self.server.as_ref(), &launch_key, &plugins)
                 .await;
@@ -581,6 +598,7 @@ impl CommandPump {
             self.registry.clone(),
             self.shutdown.clone(),
         )
+        .with_preflight(Some(preflight))
         .with_skills(skills);
         tokio::spawn(async move {
             if let Err(err) = session.run().await {
@@ -1164,6 +1182,7 @@ mod tests {
                 name: None,
                 env: std::collections::BTreeMap::new(),
                 spawn_relay: false,
+                started_at_ms: None,
             },
         );
         let (tx, mut rx) = mpsc::channel(8);

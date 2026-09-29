@@ -99,6 +99,10 @@ pub struct SessionRecord {
     /// because the relay map is process-local and a resume carries no
     /// capability to re-derive the decision from.
     pub spawn_relay: bool,
+    /// Wall-clock start of the thread, epoch ms. Persisted so a thread
+    /// restored after a daemon restart keeps its real age instead of dating
+    /// itself from the restore.
+    pub started_at_ms: Option<u64>,
 }
 
 /// `local_id` → cctui-owned Codex thread metadata.
@@ -167,6 +171,7 @@ mod tests {
                 name: Some("n".to_owned()),
                 env: std::collections::BTreeMap::new(),
                 spawn_relay: false,
+                started_at_ms: None,
             },
         );
 
@@ -196,6 +201,7 @@ mod tests {
                 name: Some("stale".to_owned()),
                 env: std::collections::BTreeMap::new(),
                 spawn_relay: false,
+                started_at_ms: None,
             },
         );
 

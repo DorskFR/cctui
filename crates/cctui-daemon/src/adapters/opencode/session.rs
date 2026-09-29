@@ -145,6 +145,9 @@ pub struct SpawnParams {
     pub agent_mcp: Option<crate::adapters::agent_mcp::AgentMcp>,
     /// Mirrored `skills/` roots for this session's `skills.paths`.
     pub skill_roots: Vec<std::path::PathBuf>,
+    /// Limit hold + MCP-readiness wait, awaited between session creation and
+    /// the first turn. `None` outside a real daemon run.
+    pub preflight: Option<crate::preflight::Preflight>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -327,7 +330,11 @@ impl OpenCodeSession {
         let (evt_tx, mut evt_rx) = mpsc::channel(256);
         let mut stream = tokio::spawn(pump_sse(client.clone(), evt_tx, self.shutdown.clone()));
 
-        if let Some(text) = self.first_turn()
+        if let Some(preflight) = &self.params.preflight {
+            preflight.run_bound(&session.id).await;
+        }
+
+        if let Some(text) = self.first_turn(&session.id)
             && !self.prompt_or_crash(&client, &session.id, &text, model.as_ref(), None).await
         {
             stream.abort();
@@ -435,13 +442,19 @@ impl OpenCodeSession {
         self.params.agent.clone().or_else(|| self.params.cfg.default_agent.clone())
     }
 
-    fn first_turn(&self) -> Option<String> {
+    /// The spawn prompt, behind the harness-neutral preamble. opencode has no
+    /// instruction channel of its own, so the preamble rides the first turn —
+    /// and is delivered even when the spawn carried no prompt at all.
+    fn first_turn(&self, local_id: &str) -> Option<String> {
         let prompt = self.params.prompt.clone().unwrap_or_default();
-        if self.params.attachments.is_empty() {
-            return (!prompt.trim().is_empty()).then_some(prompt);
-        }
-        let files = self.params.attachments.join("\n");
-        Some(format!("{prompt}\n\nAttached files:\n{files}").trim().to_owned())
+        let body = if self.params.attachments.is_empty() {
+            prompt.trim().to_owned()
+        } else {
+            let files = self.params.attachments.join("\n");
+            format!("{prompt}\n\nAttached files:\n{files}").trim().to_owned()
+        };
+        let preamble = crate::preamble::block(&self.params.cwd, Some(local_id));
+        crate::preamble::merge(preamble, (!body.is_empty()).then_some(body))
     }
 
     async fn await_health(&self, client: &OpenCodeClient) -> Result<()> {
@@ -1056,6 +1069,7 @@ mod tests {
             command_id: Some(command_id),
             parent_local_id: None,
             agent_mcp: None,
+            preflight: None,
             skill_roots: Vec::new(),
         };
         let live = LiveRegistry::default();
@@ -1132,6 +1146,7 @@ mod tests {
             command_id: None,
             parent_local_id,
             agent_mcp: None,
+            preflight: None,
             skill_roots: Vec::new(),
         };
         let mut session =
@@ -1140,6 +1155,96 @@ mod tests {
         let client =
             Arc::new(OpenCodeClient::new("http://127.0.0.1:1".to_owned(), "pw".to_owned()));
         (session, rx, client)
+    }
+
+    /// opencode delivers the harness-neutral preamble on its first turn: it
+    /// has no instruction channel of its own.
+    #[test]
+    fn a_spawn_beside_a_live_session_is_told_they_share_the_checkout() {
+        let dir = tempfile::tempdir().unwrap();
+        let neighbour = format!("nb-{}", Uuid::new_v4());
+        crate::neighbours::global().observe(
+            "codex",
+            &AdapterEvent::SessionStarted {
+                local_id: neighbour.clone(),
+                meta: cctui_proto::adapter::SessionMeta {
+                    working_dir: Some(dir.path().to_string_lossy().into_owned()),
+                    parent_local_id: None,
+                    extra: serde_json::json!({ "started_at_ms": crate::neighbours::now_ms() }),
+                },
+            },
+        );
+
+        let (mut session, _rx, _client) = test_session(None);
+        session.params.cwd = dir.path().to_string_lossy().into_owned();
+
+        let turn = session.first_turn("ses_me").expect("a first turn");
+        assert!(turn.starts_with("<session-context>"), "{turn}");
+        assert!(turn.contains("shared cwd: 1 other live session"), "{turn}");
+        assert!(turn.contains("review the diff"), "the spawn prompt survives: {turn}");
+
+        crate::neighbours::global().forget(&[neighbour]);
+    }
+
+    /// The notice is worth a turn on its own: a spawn with no prompt still
+    /// has to learn it is not alone in the tree.
+    #[test]
+    fn a_promptless_spawn_still_receives_the_notice() {
+        let dir = tempfile::tempdir().unwrap();
+        let neighbour = format!("nb-{}", Uuid::new_v4());
+        crate::neighbours::global().observe(
+            "codex",
+            &AdapterEvent::SessionStarted {
+                local_id: neighbour.clone(),
+                meta: cctui_proto::adapter::SessionMeta {
+                    working_dir: Some(dir.path().to_string_lossy().into_owned()),
+                    parent_local_id: None,
+                    extra: serde_json::json!({ "started_at_ms": crate::neighbours::now_ms() }),
+                },
+            },
+        );
+
+        let (mut session, _rx, _client) = test_session(None);
+        session.params.cwd = dir.path().to_string_lossy().into_owned();
+        session.params.prompt = None;
+        let turn = session.first_turn("ses_me").expect("the notice is the whole turn");
+        assert!(turn.contains("do not switch branches"), "{turn}");
+
+        crate::neighbours::global().forget(&[neighbour]);
+    }
+
+    /// A session alone in its tree is sent its prompt and nothing else.
+    #[test]
+    fn a_spawn_alone_in_its_tree_gets_only_its_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut session, _rx, _client) = test_session(None);
+        session.params.cwd = dir.path().to_string_lossy().into_owned();
+        assert_eq!(session.first_turn("ses_me").as_deref(), Some("review the diff"));
+        session.params.prompt = None;
+        assert_eq!(session.first_turn("ses_me"), None);
+    }
+
+    /// The session must never report itself as its own neighbour: `first_turn`
+    /// runs after the session is registered on the roster.
+    #[test]
+    fn a_spawn_is_not_its_own_neighbour() {
+        let dir = tempfile::tempdir().unwrap();
+        let me = format!("ses-{}", Uuid::new_v4());
+        crate::neighbours::global().observe(
+            "opencode",
+            &AdapterEvent::SessionStarted {
+                local_id: me.clone(),
+                meta: cctui_proto::adapter::SessionMeta {
+                    working_dir: Some(dir.path().to_string_lossy().into_owned()),
+                    parent_local_id: None,
+                    extra: serde_json::json!({ "started_at_ms": crate::neighbours::now_ms() }),
+                },
+            },
+        );
+        let (mut session, _rx, _client) = test_session(None);
+        session.params.cwd = dir.path().to_string_lossy().into_owned();
+        assert_eq!(session.first_turn(&me).as_deref(), Some("review the diff"));
+        crate::neighbours::global().forget(&[me]);
     }
 
     fn idle() -> OcEvent {
@@ -1459,6 +1564,7 @@ mod tests {
             command_id: None,
             parent_local_id: Some("parent-1".to_owned()),
             agent_mcp: None,
+            preflight: None,
             skill_roots: Vec::new(),
         };
         params.cfg.bin = "/definitely/not/a/binary".to_owned();

@@ -808,6 +808,9 @@ impl<'a> EventLoop<'a> {
         }
         self.announce_launch_settings().await;
         let session = self.session;
+        if let Some(preflight) = &session.preflight {
+            preflight.run_bound(&self.thread.local_id).await;
+        }
         let end_after_initial = match &session.launch {
             SessionLaunch::Fresh { name, prompt, attachments }
             | SessionLaunch::Fork { name, prompt, attachments, .. } => {
@@ -836,6 +839,15 @@ impl<'a> EventLoop<'a> {
             crate::agenttool::bind_session_alias(key, &local_id);
         }
         crate::plugins::remember_skills(&local_id, &session.skills);
+        // A resumed thread keeps the start time its record carries: dating it
+        // from the restore would report a fresh age for an hours-old session.
+        let started_at_ms = session
+            .registry
+            .lock()
+            .await
+            .get(&local_id)
+            .and_then(|record| record.started_at_ms)
+            .unwrap_or_else(crate::neighbours::now_ms);
         // A `CctuiAgent` call from this session arrives keyed by the launch
         // key baked into the relay argv.
         if let Some(agent_mcp) = &session.agent_mcp {
@@ -855,7 +867,7 @@ impl<'a> EventLoop<'a> {
                         "codex_version": self.thread.codex_version,
                         "spawn_key": session.spawn_key,
                         "relation": relation,
-                        "started_at_ms": crate::neighbours::now_ms(),
+                        "started_at_ms": started_at_ms,
                     }),
                 },
             })
@@ -875,6 +887,7 @@ impl<'a> EventLoop<'a> {
                 name: remembered_name,
                 env: session.env.clone(),
                 spawn_relay: session.agent_mcp.is_some(),
+                started_at_ms: Some(started_at_ms),
             },
         );
         crate::adapters::codex::persist::save(&session.registry).await;
