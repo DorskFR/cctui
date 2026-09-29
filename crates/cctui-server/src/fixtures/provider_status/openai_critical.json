@@ -6,9 +6,24 @@
     "updated_at": "2026-09-07T12:00:00Z"
   },
   "components": [
-    { "id": "01jhq7xz6vpw", "name": "Responses", "status": "major_outage", "group": false },
-    { "id": "s4bkzgc5kx8m", "name": "Login", "status": "major_outage", "group": false },
-    { "id": "kzr6m9v7pt1q", "name": "Files", "status": "major_outage", "group": false }
+    {
+      "id": "01jhq7xz6vpw",
+      "name": "Responses",
+      "status": "major_outage",
+      "group": false
+    },
+    {
+      "id": "s4bkzgc5kx8m",
+      "name": "Login",
+      "status": "major_outage",
+      "group": false
+    },
+    {
+      "id": "kzr6m9v7pt1q",
+      "name": "Files",
+      "status": "major_outage",
+      "group": false
+    }
   ],
   "incidents": [
     {

@@ -6,10 +6,30 @@
     "updated_at": "2026-09-07T11:02:00Z"
   },
   "components": [
-    { "id": "n0ttv6mfpnw1", "name": "API", "status": "major_outage", "group": true },
-    { "id": "01jhq7xz6vpw", "name": "Responses", "status": "major_outage", "group": false },
-    { "id": "s4bkzgc5kx8m", "name": "Login", "status": "partial_outage", "group": false },
-    { "id": "kzr6m9v7pt1q", "name": "Files", "status": "operational", "group": false }
+    {
+      "id": "n0ttv6mfpnw1",
+      "name": "API",
+      "status": "major_outage",
+      "group": true
+    },
+    {
+      "id": "01jhq7xz6vpw",
+      "name": "Responses",
+      "status": "major_outage",
+      "group": false
+    },
+    {
+      "id": "s4bkzgc5kx8m",
+      "name": "Login",
+      "status": "partial_outage",
+      "group": false
+    },
+    {
+      "id": "kzr6m9v7pt1q",
+      "name": "Files",
+      "status": "operational",
+      "group": false
+    }
   ],
   "incidents": [
     {

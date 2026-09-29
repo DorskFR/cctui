@@ -12,8 +12,18 @@
       "status": "operational",
       "group": false
     },
-    { "id": "r0t2gm3hqvb1", "name": "Claude Code", "status": "operational", "group": false },
-    { "id": "kk5fr8bzqzqd", "name": "console.anthropic.com", "status": "operational", "group": false }
+    {
+      "id": "r0t2gm3hqvb1",
+      "name": "Claude Code",
+      "status": "operational",
+      "group": false
+    },
+    {
+      "id": "kk5fr8bzqzqd",
+      "name": "console.anthropic.com",
+      "status": "operational",
+      "group": false
+    }
   ],
   "incidents": [],
   "scheduled_maintenances": [],

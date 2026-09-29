@@ -12,7 +12,12 @@
       "status": "degraded_performance",
       "group": false
     },
-    { "id": "r0t2gm3hqvb1", "name": "Claude Code", "status": "operational", "group": false }
+    {
+      "id": "r0t2gm3hqvb1",
+      "name": "Claude Code",
+      "status": "operational",
+      "group": false
+    }
   ],
   "incidents": [
     {
@@ -26,5 +31,8 @@
     }
   ],
   "scheduled_maintenances": [],
-  "status": { "indicator": "minor", "description": "Partially Degraded Service" }
+  "status": {
+    "indicator": "minor",
+    "description": "Partially Degraded Service"
+  }
 }
