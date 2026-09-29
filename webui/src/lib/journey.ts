@@ -344,6 +344,7 @@ export function mountJourneys(qc: QueryClient): Promise<void> {
 			await api.register(publicJourneys);
 		}
 		watchLocale(api);
+		watchViewport(api);
 	})();
 	return mounted;
 }
@@ -435,13 +436,28 @@ function watchLocale(api: JourneyApi): void {
 	new MutationObserver(() => {
 		if (root.lang === lang) return;
 		lang = root.lang;
-		const current = api.current();
-		if (!current) return;
-		void api.start(current.id, {
-			mode: 'guide',
-			from: current.index,
-			params: lastParams,
-			variant: viewportVariant()
-		});
+		redrawCurrent(api);
 	}).observe(root, { attributeFilter: ['lang'] });
+}
+
+/** `shouldSkip` reads the variant the run was started with, so a window that
+ *  crosses the mobile breakpoint mid-guide would keep offering the steps of the
+ *  width it no longer has. Re-drawing at the same step re-resolves it. */
+function watchViewport(api: JourneyApi): void {
+	if (typeof window.matchMedia !== 'function') return;
+	const query = window.matchMedia(MOBILE_QUERY);
+	const onChange = () => redrawCurrent(api);
+	if (typeof query.addEventListener === 'function') query.addEventListener('change', onChange);
+	else query.addListener(onChange);
+}
+
+function redrawCurrent(api: JourneyApi): void {
+	const current = api.current();
+	if (!current) return;
+	void api.start(current.id, {
+		mode: 'guide',
+		from: current.index,
+		params: lastParams,
+		variant: viewportVariant()
+	});
 }

@@ -5,8 +5,10 @@ import {
 	publicJourneys,
 	type StartGuideOptions,
 	type StartOutcome,
-	startGuide
+	startGuide,
+	translate
 } from './journey';
+import { baseLocale, getLocale } from './paraglide/runtime';
 import type { OnboardingSettings } from './settings.svelte';
 import { settings } from './settings.svelte';
 
@@ -71,12 +73,23 @@ export interface CurriculumView {
 	totalCount: number;
 }
 
-/** A message ref or per-locale map needs the mounted runtime to resolve it. */
-export function guideText(text: Text | undefined): string {
+/** Resolved against the app's own locale rather than through the mounted runtime:
+ *  the runtime reads `document.documentElement.lang`, which a book shoot never
+ *  sets, and is absent altogether until it mounts. Both yielded the raw guide id. */
+export function guideText(text: Text | undefined, locale: string = currentLocale()): string {
 	if (text === undefined) return '';
 	if (typeof text === 'string') return text;
-	const runtime = globalThis.window?.__journey;
-	return typeof runtime?.translate === 'function' ? runtime.translate(text) : '';
+	if ('$msg' in text && typeof text.$msg === 'string') return translate(text.$msg) ?? text.$msg;
+	const table = text as Record<string, string>;
+	return table[locale] ?? table[baseLocale] ?? Object.values(table)[0] ?? '';
+}
+
+function currentLocale(): string {
+	try {
+		return getLocale();
+	} catch {
+		return baseLocale;
+	}
 }
 
 /** The compiled book still carries journeys whose public step count is zero. */
@@ -172,10 +185,13 @@ export function buildCurriculum(
 			} satisfies GuideView;
 		});
 
+		// Reading `blockers` here would announce "Locked" over guides already showing
+		// Done; locking on *any* locked guide would announce it over a startable one.
+		const lockedGuides = guides.filter((g) => g.locked);
 		sections.push({
 			id: sectionId,
-			locked: blockers.length > 0,
-			lockedBy: [...new Set(blockers)].map(titleOf),
+			locked: lockedGuides.length === guides.length,
+			lockedBy: [...new Set(lockedGuides.flatMap((g) => g.lockedBy))],
 			guides
 		});
 	}

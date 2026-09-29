@@ -9,6 +9,7 @@ import {
 	CURRICULUM,
 	GUIDE_SECTIONS,
 	guideEntries,
+	guideText,
 	guideStatus,
 	progressJourneyId,
 	replayGuide,
@@ -49,6 +50,35 @@ function through(section: GuideSectionId): Record<string, number> {
 	}
 	return seen;
 }
+
+describe('guideText', () => {
+	it('resolves a locale map without the mounted runtime', () => {
+		const journey = globalThis.window?.__journey;
+		if (globalThis.window) delete globalThis.window.__journey;
+		expect(guideText({ en: 'Read the fleet', fr: 'Lire la flotte' })).toBe('Read the fleet');
+		expect(guideText({ en: 'Read the fleet', fr: 'Lire la flotte' }, 'fr')).toBe('Lire la flotte');
+		if (globalThis.window && journey) globalThis.window.__journey = journey;
+	});
+
+	it('falls back to English, then to any locale the map does carry', () => {
+		expect(guideText({ en: 'English only' }, 'fr')).toBe('English only');
+		expect(guideText({ de: 'Nur Deutsch' } as unknown as Parameters<typeof guideText>[0], 'fr')).toBe(
+			'Nur Deutsch'
+		);
+	});
+
+	it('is empty only for absent copy', () => {
+		expect(guideText(undefined)).toBe('');
+		expect(guideText('literal')).toBe('literal');
+	});
+
+	it('never leaves an entry titled by its raw id', () => {
+		const titled = guideEntries([
+			{ id: 'sessions-list', title: { en: 'Read the fleet at a glance' }, steps: [] }
+		] as unknown as Journey[]);
+		expect(titled[0].title).toBe('Read the fleet at a glance');
+	});
+});
 
 describe('guideEntries', () => {
 	it('normalizes titles, descriptions and versions', () => {
@@ -177,6 +207,21 @@ describe('buildCurriculum', () => {
 		expect(run.guides[1].id).toBe('follow-session');
 		expect(run.guides[1].locked).toBe(true);
 		expect(run.guides[1].lockedBy).toEqual(['SPAWN-SESSION']);
+	});
+
+	it('does not announce Locked over a section whose guides are all done from live state', () => {
+		const done = { 'accounts-pools': true, 'enroll-machine': true };
+		const view = buildCurriculum(entries, onboarding(), done);
+		const setup = view.sections[1];
+		expect(setup.guides.map((g) => g.status)).toEqual(['done', 'done']);
+		expect(setup.locked).toBe(false);
+		expect(setup.lockedBy).toEqual([]);
+	});
+
+	it('still announces Locked when no guide in the section can be started', () => {
+		const view = buildCurriculum(entries, onboarding());
+		expect(view.sections[1].guides.every((g) => g.locked)).toBe(true);
+		expect(view.sections[1].locked).toBe(true);
 	});
 
 	it('never locks a guide that is already done', () => {
