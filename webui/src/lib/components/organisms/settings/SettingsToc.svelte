@@ -55,6 +55,8 @@
 			href={settingsHref(e.page)}
 			class="toc-link"
 			aria-current={active === e.page ? 'page' : undefined}
+			data-journey="settings-nav"
+			data-journey-key={e.page}
 		>
 			<span class="toc-item" class:active={active === e.page}>
 				<span class="ico"><Text tone={active === e.page ? 'accent' : 'faint'}>{e.icon}</Text></span>
