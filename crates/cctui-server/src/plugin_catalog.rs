@@ -14,8 +14,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 const EMBEDDED: &str = include_str!("../../../plugins/catalog.json");
-const FRESH_TTL: Duration = Duration::from_secs(60 * 60);
-const RETRY_TTL: Duration = Duration::from_secs(5 * 60);
+const FRESH_TTL: Duration = Duration::from_hours(1);
+const RETRY_TTL: Duration = Duration::from_mins(5);
 const FETCH_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_BYTES: usize = 256 * 1024;
 
@@ -72,9 +72,10 @@ pub fn parse(body: &str) -> Vec<CatalogEntry> {
     let mut out = Vec::with_capacity(file.plugins.len());
     for raw in file.plugins {
         let id = raw.get("id").and_then(serde_json::Value::as_str).unwrap_or("?").to_owned();
-        match serde_json::from_value::<CatalogEntry>(raw).ok().and_then(check) {
-            Some(entry) => out.push(entry),
-            None => tracing::warn!(id, "plugin catalog entry skipped: invalid"),
+        if let Some(entry) = serde_json::from_value::<CatalogEntry>(raw).ok().and_then(check) {
+            out.push(entry);
+        } else {
+            tracing::warn!(id, "plugin catalog entry skipped: invalid");
         }
     }
     out
@@ -113,7 +114,9 @@ fn cache() -> &'static Mutex<Option<Cached>> {
 fn cached() -> Option<Vec<CatalogEntry>> {
     let guard = cache().lock().ok()?;
     let hit = guard.as_ref()?;
-    (hit.at.elapsed() < hit.ttl).then(|| hit.entries.clone())
+    let fresh = (hit.at.elapsed() < hit.ttl).then(|| hit.entries.clone());
+    drop(guard);
+    fresh
 }
 
 fn remember(entries: &[CatalogEntry], ttl: Duration) {
