@@ -40,6 +40,14 @@ pub(super) fn register(r: Routes) -> Routes {
         )
         .add(
             &[GET],
+            "/sessions/{id}/search",
+            "Find-in-conversation hit list for one session's transcript.",
+            get(routes::sessions::search_conversation),
+            Authn::Bearer,
+            sess_read(),
+        )
+        .add(
+            &[GET],
             "/sessions/{id}/images/{image_id}",
             "Fetch an agent-posted image blob.",
             get(routes::images::get_session_image),

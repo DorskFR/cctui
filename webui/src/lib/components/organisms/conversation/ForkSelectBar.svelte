@@ -6,16 +6,19 @@
 		count,
 		onfork,
 		onforkall,
-		oncancel
+		oncancel,
+		contained = false
 	}: {
 		count: number;
 		onfork: () => void;
 		onforkall: () => void;
 		oncancel: () => void;
+		/** Centre on the pane instead of the viewport — a tile is one of nine. */
+		contained?: boolean;
 	} = $props();
 </script>
 
-<div class="fork-select-bar row">
+<div class="fork-select-bar row" class:contained>
 	{#if count > 0}
 		<span class="fork-select-count">{count}</span>
 	{/if}
@@ -42,6 +45,9 @@
 		border-radius: var(--r-md);
 		box-shadow: var(--shadow-lg);
 		white-space: nowrap;
+	}
+	.fork-select-bar.contained {
+		position: absolute;
 	}
 	.fork-select-count {
 		font-variant-numeric: tabular-nums;

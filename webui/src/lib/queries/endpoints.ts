@@ -14,6 +14,7 @@ import type { UsageAnalytics } from "@bindings/UsageAnalytics";
 import type { SessionListItem } from "@bindings/SessionListItem";
 import type { AgentEvent } from "@bindings/AgentEvent";
 import type { MessagePin } from "@bindings/MessagePin";
+import type { ConversationSearchResponse } from "@bindings/ConversationSearchResponse";
 import type { SpawnRequest } from "@bindings/SpawnRequest";
 import type { SessionProfile } from "@bindings/SessionProfile";
 import type { CreateProfileRequest } from "@bindings/CreateProfileRequest";
@@ -294,6 +295,14 @@ export const endpoints = {
       before: opts?.before,
       after: opts?.after,
       order: opts?.order,
+    }),
+  /** Find-in-conversation hit list for ONE session, oldest → newest. The
+   *  server is the source of truth for the total: the DOM only holds the
+   *  currently paged window. */
+  conversationSearch: (id: string, q: string, limit?: number) =>
+    api.get<ConversationSearchResponse>(`/sessions/${id}/search`, {
+      q,
+      limit,
     }),
   messagePins: (id: string) =>
     api.get<MessagePin[]>(`/sessions/${id}/pins`),

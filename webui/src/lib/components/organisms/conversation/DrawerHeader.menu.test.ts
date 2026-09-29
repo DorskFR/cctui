@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import header from './DrawerHeader.svelte?raw';
 import toolbar from './DrawerToolbar.svelte?raw';
-import drawer from '../ConversationDrawer.svelte?raw';
+import pane from '../ConversationPane.svelte?raw';
 
 const items = () => {
 	const start = header.indexOf('const overflowItems');
@@ -58,12 +58,26 @@ describe('drawer header ⋯ menu', () => {
 	});
 
 	it('wires the terminal to the toolbar, not the header', () => {
-		const head = drawer.slice(drawer.indexOf('<DrawerHeader'), drawer.indexOf('/>', drawer.indexOf('<DrawerHeader')));
-		const bar = drawer.slice(drawer.indexOf('<DrawerToolbar'), drawer.indexOf('/>', drawer.indexOf('<DrawerToolbar')));
+		const head = pane.slice(pane.indexOf('<DrawerHeader'), pane.indexOf('/>', pane.indexOf('<DrawerHeader')));
+		const bar = pane.slice(pane.indexOf('<DrawerToolbar'), pane.indexOf('/>', pane.indexOf('<DrawerToolbar')));
 		expect(head).not.toContain('terminal');
 		expect(bar).toContain('{terminalOpen}');
 		expect(bar).toContain('ontoggleTerminal=');
 		expect(toolbar).toContain('data-journey="terminal"');
+	});
+
+	it('offers find-in-conversation inline and in the collapsed menu, never both', () => {
+		expect(markup()).toMatch(/<IconButton\s+data-overflow[\s\S]{0,200}icon="search"/);
+		const collapsedOnly = items().slice(0, items().indexOf('m.drawer_copy_link_label'));
+		expect(collapsedOnly).toContain('m.conversation_search_label()');
+		expect(items().slice(collapsedOnly.length)).not.toContain('m.conversation_search_label()');
+	});
+
+	it('binds ⌘F / Ctrl+F to the find bar and gives it first refusal on Escape', () => {
+		expect(header).toContain('isFindChord(e)');
+		expect(header).toMatch(/if \(onescape\?\.\(\)\) \{/);
+		const esc = header.indexOf("e.key !== 'Escape'");
+		expect(header.indexOf('onescape?.()', esc)).toBeLessThan(header.indexOf('onclose();', esc));
 	});
 
 	it('adds no :global override', () => {

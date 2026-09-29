@@ -13,6 +13,7 @@ import {
 } from "$lib/drafts";
 import { ApiError, errMessage } from "$lib/api";
 import { m } from "$lib/paraglide/messages";
+import { awaitSessionRow } from "$lib/awaitSessionRow";
 import { tokenizeQuery } from "$lib/search";
 import { BRIEF_FETCH_MAX_BYTES, followupPrefill } from "$lib/followup";
 import { freeText, parse, type Schema } from "@dorsk/tsumikit";
@@ -396,22 +397,13 @@ export class SessionsPage {
   // lands (~2-3s). Poll a few times so it opens in place without a manual
   // refresh, and without a false "not found" during the gap.
   navigateToForked = async (id: string) => {
-    for (let i = 0; i < 16; i++) {
-      const found = this.#loaded.find((s) => s.id === id);
-      if (found) {
-        this.openSession = found;
-        return;
-      }
-      try {
-        this.openSession = await this.#d.api.session(id);
-        return;
-      } catch {
-        // not registered yet — keep polling
-      }
-      await this.#d.refetchLive();
-      await new Promise((r) => setTimeout(r, 500));
-    }
-    this.#d.toasts.error(m.sessions_toast_fork_slow());
+    const row = await awaitSessionRow(id, {
+      loaded: () => this.#loaded,
+      fetchOne: (sid) => this.#d.api.session(sid),
+      refetchLive: () => this.#d.refetchLive(),
+    });
+    if (row) this.openSession = row;
+    else this.#d.toasts.error(m.sessions_toast_fork_slow());
   };
 
   loadPage = async (reset: boolean) => {

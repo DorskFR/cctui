@@ -12,7 +12,7 @@ const registry = readFileSync(
 );
 
 const backButton = () => {
-	const i = header.indexOf('label={m.drawer_back()}');
+	const i = header.indexOf('m.drawer_back()');
 	expect(i).toBeGreaterThan(-1);
 	const start = header.lastIndexOf('<IconButton', i);
 	return header.slice(start, header.indexOf('/>', i) + 2);
@@ -26,8 +26,13 @@ const glyph = (name: string) => {
 
 describe('drawer back control', () => {
 	it('uses the bare chevron, not the arrow', () => {
-		expect(backButton()).toContain('icon="chevron-left"');
-		expect(backButton()).not.toContain('icon="back"');
+		expect(backButton()).toContain("'chevron-left'");
+		expect(backButton()).not.toContain("'back'");
+	});
+
+	it('becomes a close × in a tile, where there is nothing to go back to', () => {
+		expect(backButton()).toContain("chrome === 'tile' ? 'x' : 'chevron-left'");
+		expect(backButton()).toContain('m.tiles_close_tile()');
 	});
 
 	it('stays a quiet affordance — no chip box, no oversized glyph', () => {

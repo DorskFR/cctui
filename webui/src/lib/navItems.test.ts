@@ -48,9 +48,9 @@ describe('navItems', () => {
 		expect(hrefs.at(-1)).toBe('/settings');
 	});
 
-	it('places bookmarks between sessions and access', () => {
+	it('places bookmarks between tiles and access', () => {
 		const hrefs = navItems().map((i) => i.href);
-		expect(hrefs.indexOf('/bookmarks')).toBe(hrefs.indexOf('/sessions') + 1);
+		expect(hrefs.indexOf('/bookmarks')).toBe(hrefs.indexOf('/tiles') + 1);
 		expect(hrefs.indexOf('/access')).toBe(hrefs.indexOf('/bookmarks') + 1);
 	});
 

@@ -119,13 +119,13 @@ export async function spawnOnMachine(sf: SpawnForm) {
 		toasts.ok(m.spawn_toast_spawned());
 		if (sf.followupParent && sf.archiveSource) void sf.actions.archive(sf.followupParent);
 		sf.discardMirror();
-		sf.finish();
+		sf.finish(sessionId);
 	} else if (result.timedOut) {
 		// No confirmation ≠ failed: cold spawns routinely land after the wait.
 		// Keep the draft so a real miss is one re-open away; re-submitting
 		// blindly would dispatch a second agent.
 		toasts.info(m.spawn_toast_unconfirmed());
-		sf.onspawned();
+		sf.onspawned(sessionId);
 		sf.onclose();
 	} else {
 		sf.spawnFailure = result.error ?? m.spawn_error_unknown();
@@ -148,5 +148,5 @@ export async function dispatchToK8s(sf: SpawnForm) {
 	toasts.ok(m.spawn_toast_dispatched({ dispatcher: res.dispatcher, handle: res.handle }));
 	sf.pendingDispatchId = null;
 	sf.discardMirror();
-	sf.finish();
+	sf.finish(dispatchedId);
 }

@@ -8,13 +8,14 @@
 	import type { Label } from '@bindings/Label';
 	import { fontScale, SCALE_LEVELS } from '$lib/fontscale.svelte';
 	import { settings } from '$lib/settings.svelte';
-	import { isArchiveChord } from '$lib/platform';
+	import { isArchiveChord, isFindChord } from '$lib/platform';
 	import RebindTrail from '$lib/components/molecules/RebindTrail.svelte';
 	import SessionGlyphs from '$lib/components/molecules/SessionGlyphs.svelte';
 	import LabelBadge from '$lib/components/molecules/LabelBadge.svelte';
 	import KeepaliveModal from '$lib/components/molecules/KeepaliveModal.svelte';
 	import { Icon, IconButton, Input, Menu, Text, Toolbar, FontScalePicker, type MenuItem } from '@dorsk/tsumikit';
 	import HeaderMeta from './HeaderMeta.svelte';
+	import type { ConversationChrome } from './chrome';
 	import { m } from '$lib/paraglide/messages';
 
 	let {
@@ -23,12 +24,18 @@
 		isCodexSession,
 		livenessClass,
 		showStatusBadge,
+		chrome = 'drawer',
+		maximized = false,
+		onmaximize,
 		onclose,
 		onrename,
 		onsetmodel,
 		oncopylink,
 		oncopymarkdown,
 		onexport,
+		onsearch,
+		onopenintiles,
+		onescape,
 		onfork,
 		onfollowup,
 		onforkselect,
@@ -54,12 +61,24 @@
 		isCodexSession: boolean;
 		livenessClass: string;
 		showStatusBadge: boolean;
+		/** In a tile the back chevron becomes a close ×; the maximize toggle
+		 *  appears only when the shell supplies `onmaximize`. */
+		chrome?: ConversationChrome;
+		maximized?: boolean;
+		onmaximize?: () => void;
 		onclose: () => void;
 		onrename: (name: string) => void;
 		onsetmodel: (model: string, effort: string) => void;
 		oncopylink: () => void;
 		oncopymarkdown: () => void;
 		onexport: () => void;
+		/** Open the find-in-conversation bar; omitted → no entry and no ⌘F. */
+		onsearch?: () => void;
+		/** Move this session into the tiles grid; omitted → no entry. */
+		onopenintiles?: () => void;
+		/** First refusal on Escape: true when it was consumed (the find bar
+		 *  clears or closes) and the drawer must stay open. */
+		onescape?: () => boolean;
 		onfork: () => void;
 		onfollowup?: () => void;
 		// Toggle multi-select-to-fork mode; omitted → button hidden
@@ -124,7 +143,17 @@
 			? [
 					renaming
 						? { label: m.common_save(), icon: 'check' as const, onselect: doRename }
-						: { label: m.drawer_rename(), icon: 'edit' as const, onselect: startRename }
+						: { label: m.drawer_rename(), icon: 'edit' as const, onselect: startRename },
+					...(onsearch
+						? [
+								{
+									label: m.conversation_search_label(),
+									icon: 'search' as const,
+									attrs: { title: m.conversation_search_title() },
+									onselect: onsearch
+								}
+							]
+						: [])
 				]
 			: []),
 		{
@@ -153,6 +182,15 @@
 			attrs: { title: onforkselect ? m.drawer_fork_select_title() : m.drawer_fork_title() },
 			onselect: onforkselect ?? onfork
 		},
+		...(onopenintiles
+			? [
+					{
+						label: m.tiles_open_here(),
+						icon: 'grid' as const,
+						onselect: onopenintiles
+					}
+				]
+			: []),
 		{
 			label: m.drawer_keepalive_label(),
 			icon: 'recycle' as const,
@@ -163,6 +201,13 @@
 	]);
 
 	function onWinKey(e: KeyboardEvent) {
+		// ⌘F / Ctrl+F opens the transcript's own find bar in place of the
+		// browser's, which can only see the paged window.
+		if (onsearch && !renaming && isFindChord(e)) {
+			e.preventDefault();
+			onsearch();
+			return;
+		}
 		// Archive chord (⌘ E / Ctrl+E): interrupt any running turn and archive the
 		// session, which then dismisses the drawer. Opt-out via Settings. Skipped
 		// while renaming (so the chord can't fire mid-edit) and on already-archived
@@ -174,6 +219,10 @@
 			return;
 		}
 		if (e.key !== 'Escape' || renaming) return;
+		if (onescape?.()) {
+			e.preventDefault();
+			return;
+		}
 		onclose();
 	}
 </script>
@@ -183,7 +232,12 @@
 <div class="dhead" data-journey="header">
 	<div class="dbar" bind:clientWidth={barWidth}>
 	<Toolbar collapseBelow="{COLLAPSE_BELOW}px" density={collapsed ? 'compact' : 'default'}>
-		<IconButton icon="chevron-left" label={m.drawer_back()} {box} onclick={onclose} />
+		<IconButton
+			icon={chrome === 'tile' ? 'x' : 'chevron-left'}
+			label={chrome === 'tile' ? m.tiles_close_tile() : m.drawer_back()}
+			{box}
+			onclick={onclose}
+		/>
 		<SessionGlyphs
 			{session}
 			{livenessClass}
@@ -233,6 +287,29 @@
 				icon="edit"
 				label={m.drawer_rename()}
 				onclick={startRename}
+			/>
+		{/if}
+		{#if onmaximize}
+			<IconButton
+				chip
+				{box}
+				variant="default"
+				icon={maximized ? 'grid' : 'external'}
+				label={maximized ? m.tiles_restore() : m.tiles_maximize()}
+				onclick={onmaximize}
+			/>
+		{/if}
+		{#if onsearch}
+			<IconButton
+				data-overflow
+				data-journey="find"
+				chip
+				{box}
+				variant="default"
+				icon="search"
+				label={m.conversation_search_label()}
+				title={m.conversation_search_title()}
+				onclick={onsearch}
 			/>
 		{/if}
 		{#if !archived}

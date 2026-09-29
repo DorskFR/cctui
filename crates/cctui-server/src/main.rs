@@ -919,6 +919,7 @@ mod tests {
             r#"GET /sessions/{id}/rebinds Bearer Resource(Session, Read, Path("id"))"#,
             r#"POST /sessions/{id}/resume Bearer Resource(Session, Write, Path("id"))"#,
             r#"POST /sessions/{id}/schedule-launch Bearer Resource(Session, Write, Path("id"))"#,
+            r#"GET /sessions/{id}/search Bearer Resource(Session, Read, Path("id"))"#,
             r#"POST /sessions/{id}/seen Bearer Resource(Session, Write, Path("id"))"#,
             r#"POST /sessions/{id}/set-model Bearer Resource(Session, Write, Path("id"))"#,
             r#"POST /sessions/{id}/switch-account Bearer Resource(Session, Write, Path("id"))"#,
