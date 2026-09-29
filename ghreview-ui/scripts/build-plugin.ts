@@ -83,7 +83,7 @@ const tgz = join(root, "dist", `ghreview-${version}.tgz`);
 await rm(tgz, { force: true });
 await run(["tar", "czf", tgz, "-C", join(root, "dist"), "plugin"]);
 
-const size = (await Bun.file(tgz).arrayBuffer()).byteLength;
+const size = Bun.file(tgz).size;
 console.log(`plugin.json + web/index.js -> ${tgz} (${(size / 1024).toFixed(1)} KiB)`);
 if (size > MAX_ARCHIVE_BYTES) {
   throw new Error(
