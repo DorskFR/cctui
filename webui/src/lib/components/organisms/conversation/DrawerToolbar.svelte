@@ -57,7 +57,6 @@
 
 	// One pinned height for every control, so glyph fonts can't size them.
 	const CTL = 'height:var(--bar-ctl-h);box-sizing:border-box;padding-block:0;line-height:1';
-	const TRIG = 'display:flex;align-items:center;height:var(--bar-ctl-h)';
 
 	const QUICK_TINT: Record<QuickFilterId, string> = {
 		assistant: 'var(--role-assistant)',
@@ -107,19 +106,18 @@
 		<Popover
 			label={m.conversation_filter_menu_aria()}
 			placement="bottom-start"
-			bare
-			style={TRIG}
-			triggerClass="toolbar-chip"
+			variant="toggle"
+			pill
+			style={CTL}
+			data-journey="filter-menu"
 		>
 			{#snippet trigger()}
-				<span class="chip pill" data-journey="filter-menu">
-					<Icon name="filter" size={12} />
-					<span class="wide"
-						>{offCount > 0
-							? m.conversation_filters_off_count({ count: offCount })
-							: m.conversation_filters()}</span
-					>{#if offCount > 0}<span class="narrow">{offCount}</span>{/if}
-				</span>
+				<Icon name="filter" size={12} />
+				<span class="wide"
+					>{offCount > 0
+						? m.conversation_filters_off_count({ count: offCount })
+						: m.conversation_filters()}</span
+				>{#if offCount > 0}<span class="narrow">{offCount}</span>{/if}
 			{/snippet}
 			<FilterMenu
 				filter={view.msgFilter}
@@ -179,15 +177,12 @@
 			<Popover
 				label={m.conversation_pins_aria()}
 				placement="bottom-end"
-				bare
-				style={TRIG}
-				triggerClass="toolbar-chip"
+				variant="toggle"
+				style={CTL}
 			>
 				{#snippet trigger()}
-					<span class="chip">
-						<Icon name="pin" size={12} filled={pins.length > 0} />
-						<span class="wide">{m.conversation_pins()}</span>{pins.length ? ` ${pins.length}` : ''}
-					</span>
+					<Icon name="pin" size={12} filled={pins.length > 0} />
+					<span class="wide">{m.conversation_pins()}</span>{pins.length ? ` ${pins.length}` : ''}
 				{/snippet}
 				<PinsPanel {pins} {lines} onjump={onjumpseq} {onunpin} />
 			</Popover>
@@ -196,37 +191,6 @@
 </div>
 
 <style>
-	/* Popover triggers restating kit Toggle chrome; keep in step with `.toggle`. */
-	.chip {
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-		gap: 4px;
-		box-sizing: border-box;
-		height: var(--bar-ctl-h);
-		padding: 0 var(--sp-2);
-		line-height: 1;
-		border: 1px solid var(--border);
-		border-radius: var(--r-sm);
-		background: var(--bg-elevated-2);
-		color: var(--text-muted);
-		font-size: var(--fs-xs);
-		font-weight: var(--fw-medium);
-		white-space: nowrap;
-		user-select: none;
-		cursor: pointer;
-		transition:
-			background 0.12s var(--ease),
-			border-color 0.12s var(--ease),
-			color 0.12s var(--ease);
-	}
-	.chip.pill {
-		border-radius: var(--r-pill);
-	}
-	.chip:hover {
-		border-color: var(--border-strong);
-	}
-
 	.toolbar {
 		display: flex;
 		flex-wrap: nowrap;

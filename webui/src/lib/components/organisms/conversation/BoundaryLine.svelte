@@ -2,6 +2,7 @@
 	// Context boundaries in the transcript: a `/clear` or `/compact` reset
 	// divider, or the summary block a `/compact` produced.
 	import type { Line } from './types';
+	import { Badge } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 
 	let { ln }: { ln: Line } = $props();
@@ -9,7 +10,12 @@
 
 {#if ln.role === 'reset'}
 	<div class="reset-divider" role="separator">
-		<span class="reset-chip">⟳ {ln.text}</span>
+		<Badge
+			uppercase
+			color="var(--role-boundary)"
+			style="--badge-bg: color-mix(in srgb, var(--role-boundary) 12%, var(--bg-elevated))"
+			>⟳ {ln.text}</Badge
+		>
 	</div>
 {:else if ln.role === 'compact'}
 	<div class="compact-block">
@@ -20,7 +26,7 @@
 
 <style>
 	/* Context-reset boundary (/clear or /compact) — a full-width rule with
-	   a centered chip in its own blue hue. */
+	   a centered Badge in its own blue hue. */
 	.reset-divider {
 		display: flex;
 		align-items: center;
@@ -34,17 +40,6 @@
 		flex: 1;
 		height: 1px;
 		background: color-mix(in srgb, var(--role-boundary) 40%, transparent);
-	}
-	.reset-chip {
-		padding: 2px var(--sp-3);
-		border-radius: var(--r-pill, 999px);
-		border: 1px solid color-mix(in srgb, var(--role-boundary) 45%, transparent);
-		background: color-mix(in srgb, var(--role-boundary) 12%, var(--bg-elevated));
-		font-size: var(--fs-xs);
-		font-weight: var(--fw-medium);
-		text-transform: uppercase;
-		letter-spacing: 0.04em;
-		white-space: nowrap;
 	}
 	/* Compact-summary block (/compact) — its own blue hue, a filled
 	   left-bordered block (not the thin reset divider) so the two boundary kinds
