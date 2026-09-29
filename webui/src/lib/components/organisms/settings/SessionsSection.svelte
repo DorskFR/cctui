@@ -154,7 +154,12 @@
 	</SettingGroup>
 
 	<SettingGroup title={m.settings_group_conversation()}>
-		<SettingRow label={m.settings_auto_resume_label()} help={m.settings_auto_resume_help()}>
+		<SettingRow
+			label={m.settings_auto_resume_label()}
+			help={m.settings_auto_resume_help()}
+			journey="setting"
+			journeyKey="auto-resume"
+		>
 			<Switch
 				bind:checked={() => autoResume, (v) => settings.setAutoResumeOnConnectionLoss(v)}
 				label={m.settings_auto_resume_label()}
