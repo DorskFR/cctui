@@ -22,20 +22,7 @@ pub fn server_supports(capability: &str) -> bool {
     ADVERTISED.read().is_ok_and(|c| cctui_proto::capability::has(c.as_slice(), capability))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use cctui_proto::capability::TURN_END;
-
-    /// One global, so this is deliberately a single test: a second one would
-    /// race it.
-    #[test]
-    fn an_unset_registry_grants_nothing_and_a_downgrade_takes_it_away() {
-        assert!(!server_supports(TURN_END));
-        set(&[TURN_END.to_owned()]);
-        assert!(server_supports(TURN_END));
-        assert!(!server_supports("never_advertised"));
-        set(&[]);
-        assert!(!server_supports(TURN_END), "an older server must lose the capability again");
-    }
-}
+// Deliberately untested: every test of `set` mutates state the whole test
+// binary reads, making any test that constructs an adapter order-dependent. The
+// lookup itself is `cctui_proto::capability::has`, which is tested; adapters
+// take the flag as a parameter so they are tested without this global.

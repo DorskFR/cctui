@@ -254,6 +254,8 @@ pub struct OpenCodeSession {
     server_pid: Option<u32>,
     server_version: Option<String>,
     pending_permissions: HashSet<String>,
+    /// Snapshotted at construction rather than read per turn.
+    turn_end_supported: bool,
 }
 
 impl OpenCodeSession {
@@ -286,6 +288,7 @@ impl OpenCodeSession {
             server_pid: None,
             server_version: None,
             pending_permissions: HashSet::new(),
+            turn_end_supported: crate::adapters::turn_end::supported(),
         }
     }
 
@@ -849,6 +852,14 @@ impl OpenCodeSession {
             }
             OcEvent::SessionIdle { .. } => {
                 self.in_flight = false;
+                // opencode's authoritative turn end. Sent before the oneshot
+                // bail-out so a child's last turn still reports one.
+                crate::adapters::turn_end::emit_gated(
+                    &self.events,
+                    &session_id,
+                    self.turn_end_supported,
+                )
+                .await;
                 if self.oneshot && self.saw_assistant {
                     return false;
                 }
@@ -1518,6 +1529,34 @@ mod tests {
         match rx.recv().await.unwrap() {
             AdapterEvent::Status { tempo, .. } => assert_eq!(tempo.as_deref(), Some("idle")),
             other => panic!("expected Status, got {other:?}"),
+        }
+    }
+
+    /// `session.idle` is where opencode already knows the turn is over, so it
+    /// is where the client-visible signal comes from — ahead of the Status the
+    /// same arm sends, which is persisted but never broadcast.
+    #[tokio::test]
+    async fn idle_reports_a_turn_end_to_a_capable_server() {
+        let (mut session, mut rx, client) = test_session(None);
+        session.turn_end_supported = true;
+        assert!(session.on_event(&client, idle()).await);
+        match rx.recv().await.unwrap() {
+            AdapterEvent::TurnEnd { local_id, ts } => {
+                assert_eq!(local_id, "ses_1");
+                assert!(ts.is_some_and(|ts| ts > 0));
+            }
+            other => panic!("expected a TurnEnd, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn idle_reports_nothing_new_to_a_server_without_the_capability() {
+        let (mut session, mut rx, client) = test_session(None);
+        session.turn_end_supported = false;
+        assert!(session.on_event(&client, idle()).await);
+        match rx.recv().await.unwrap() {
+            AdapterEvent::Status { tempo, .. } => assert_eq!(tempo.as_deref(), Some("idle")),
+            other => panic!("an older server must only see the Status, got {other:?}"),
         }
     }
 
