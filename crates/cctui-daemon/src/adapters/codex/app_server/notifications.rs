@@ -362,10 +362,7 @@ fn turn_completion(local_id: &str, v: &Value, turn_end_supported: bool) -> Incom
             turn_end_supported,
         )
         .map_or_else(
-            || Incoming::Traced {
-                method: "turn/completed".to_owned(),
-                reason: "turn not failed",
-            },
+            || Incoming::Traced { method: "turn/completed".to_owned(), reason: "turn not failed" },
             Incoming::Event,
         );
     }
