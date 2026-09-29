@@ -110,3 +110,83 @@ describe('queue state on the message itself', () => {
 		expect(el.querySelector('.meta-end')).toBeNull();
 	});
 });
+
+describe('quote reply action', () => {
+	const onquote = vi.fn();
+
+	async function renderQuotable(ln: Line, over: Record<string, unknown> = {}) {
+		onquote.mockClear();
+		comp = mount(ConversationLine, {
+			target: document.body,
+			props: {
+				ln,
+				archived: false,
+				onretry: vi.fn(),
+				onedit: vi.fn(),
+				onsaveimage: vi.fn(),
+				oncopymarkdown: vi.fn(),
+				onquote,
+				...over
+			}
+		});
+		await flush();
+		return document.querySelector('.quote-btn') as HTMLButtonElement | null;
+	}
+
+	it('shows on a user line and reports the whole line when nothing is selected', async () => {
+		const btn = await renderQuotable(line());
+		expect(btn).not.toBeNull();
+		btn?.click();
+		await flush();
+		expect(onquote).toHaveBeenCalledTimes(1);
+		expect(onquote.mock.calls[0][0].text).toBe('hello');
+		expect(onquote.mock.calls[0][1]).toBeNull();
+	});
+
+	it('shows on assistant, peer, tool and result lines', async () => {
+		for (const role of ['assistant', 'peer', 'tool', 'result'] as const) {
+			const btn = await renderQuotable(line({ role }));
+			expect(btn, role).not.toBeNull();
+			if (comp) unmount(comp);
+			comp = null;
+			document.body.innerHTML = '';
+		}
+	});
+
+	it('hides on thinking and marker lines', async () => {
+		expect(await renderQuotable(line({ role: 'thinking', html: '<p>hmm</p>' }))).toBeNull();
+		if (comp) unmount(comp);
+		comp = null;
+		document.body.innerHTML = '';
+		expect(await renderQuotable(line({ role: 'marker', markerTexts: ['mode'] }))).toBeNull();
+	});
+
+	it('hides on an archived session and in fork select mode', async () => {
+		expect(await renderQuotable(line(), { archived: true })).toBeNull();
+		if (comp) unmount(comp);
+		comp = null;
+		document.body.innerHTML = '';
+		expect(await renderQuotable(line(), { selectMode: true })).toBeNull();
+	});
+
+	it('hides when no onquote handler is given', async () => {
+		const el = await render(line());
+		expect(el.querySelector('.quote-btn')).toBeNull();
+	});
+
+	it('passes a selection contained in the bubble', async () => {
+		const btn = await renderQuotable(line({ html: '<p>hello world</p>' }));
+		const text = document.querySelector('.bubble p')?.firstChild as Text;
+		const range = document.createRange();
+		range.setStart(text, 0);
+		range.setEnd(text, 5);
+		const sel = window.getSelection();
+		sel?.removeAllRanges();
+		sel?.addRange(range);
+		btn?.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+		btn?.click();
+		await flush();
+		expect(onquote.mock.calls[0][1]).toBe('hello');
+		sel?.removeAllRanges();
+	});
+});

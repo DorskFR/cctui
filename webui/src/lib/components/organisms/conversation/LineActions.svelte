@@ -1,7 +1,8 @@
 <script lang="ts">
 	// Per-message action cluster at the right of the meta row: pin, save-as-image,
-	// copy-as-Markdown, bookmark. Excluded from the saved image.
+	// copy-as-Markdown, quote-reply, bookmark. Excluded from the saved image.
 	import { Icon, IconButton } from '@dorsk/tsumikit';
+	import { bubbleSelection } from './lineActions';
 	import type { Line } from './types';
 	import { m } from '$lib/paraglide/messages';
 
@@ -13,7 +14,8 @@
 		onsaveimage,
 		oncopymarkdown,
 		onbookmark,
-		bookmarked = false
+		bookmarked = false,
+		onquote
 	}: {
 		ln: Line;
 		pinnable: boolean;
@@ -24,7 +26,17 @@
 		/** Omit to hide the bookmark action. */
 		onbookmark?: (ln: Line) => void;
 		bookmarked?: boolean;
+		/** Quote this line (or the selection inside it) into the composer;
+		 * omit to hide the action. */
+		onquote?: (ln: Line, selection: string | null) => void;
 	} = $props();
+
+	// Clicking collapses the selection, so it is read on pointerdown.
+	let picked: string | null = null;
+	function grabSelection(e: Event) {
+		const line = (e.currentTarget as HTMLElement).closest('.line');
+		picked = bubbleSelection(line?.querySelector('.bubble') ?? null);
+	}
 </script>
 
 <span class="line-actions" class:has-pin={pinned} data-journey="line-actions">
@@ -58,6 +70,22 @@
 		title={m.conversation_copy_markdown_title()}
 		onclick={() => oncopymarkdown(ln)}
 	/>
+	{#if onquote}
+		<IconButton
+			inline
+			glyphSize={16}
+			icon="back"
+			class="quote-btn"
+			label={m.conversation_quote_label()}
+			title={m.conversation_quote_title()}
+			onpointerdown={grabSelection}
+			onmousedown={grabSelection}
+			onclick={() => {
+				onquote?.(ln, picked);
+				picked = null;
+			}}
+		/>
+	{/if}
 	{#if onbookmark}
 		<button
 			type="button"

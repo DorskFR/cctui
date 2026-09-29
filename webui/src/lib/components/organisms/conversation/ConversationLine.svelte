@@ -34,7 +34,8 @@
 		onbookmark,
 		bookmarked = false,
 		pluginActions = [],
-		onpluginaction
+		onpluginaction,
+		onquote
 	}: {
 		ln: Line;
 		archived: boolean;
@@ -64,7 +65,14 @@
 		/** Buttons runtime plugins contribute to this (assistant) line. */
 		pluginActions?: PluginActionButton[];
 		onpluginaction?: (a: PluginActionButton) => void;
+		/** Quote this line into the composer; omit to hide the action. */
+		onquote?: (ln: Line, selection: string | null) => void;
 	} = $props();
+
+	// An archived session has no composer to quote into.
+	const quotable = $derived(
+		!!onquote && !archived && !selectMode && ln.role !== 'thinking' && ln.role !== 'marker'
+	);
 
 	// An optimistic user echo carries a synthetic `maxSeq + 1` seq that no server
 	// row backs, so it must not be pinnable until the send is confirmed.
@@ -139,6 +147,7 @@
 			{oncopymarkdown}
 			{onbookmark}
 			{bookmarked}
+			onquote={quotable ? onquote : undefined}
 		/>
 	</div>
 	{#if ln.role === 'thinking'}

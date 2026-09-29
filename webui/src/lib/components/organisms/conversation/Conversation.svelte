@@ -47,7 +47,8 @@
 		onbookmark,
 		isBookmarked,
 		pluginActionsFor,
-		onpluginaction
+		onpluginaction,
+		onquote
 	}: {
 		/** Live-stream controller. Passed whole rather than as a dozen
 		 * pass-through props; its `$state` fields stay reactive when read through it. */
@@ -88,6 +89,8 @@
 		/** Buttons runtime plugins contribute to an assistant line. */
 		pluginActionsFor?: (ln: Line) => PluginActionButton[];
 		onpluginaction?: (a: PluginActionButton) => void;
+		/** Quote a line into the composer; omit to hide the action. */
+		onquote?: (ln: Line, selection: string | null) => void;
 	} = $props();
 
 	// ── Lazy render of large transcripts ───────────────────
@@ -181,6 +184,7 @@
 		bookmarked={isBookmarked?.(ln) ?? false}
 		pluginActions={pluginActionsFor?.(ln) ?? []}
 		{onpluginaction}
+		{onquote}
 	/>
 {/snippet}
 
