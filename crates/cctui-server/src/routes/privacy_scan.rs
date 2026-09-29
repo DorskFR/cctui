@@ -555,10 +555,11 @@ mod tests {
     async fn seed_session(pool: &PgPool, uid: Uuid, machine: Uuid) -> String {
         let sid = Uuid::new_v4().to_string();
         sqlx::query(
-            "INSERT INTO sessions (id, user_id, machine_id, adapter, status) \
-             VALUES ($1, $2, $3, 'claude_code', 'idle')",
+            "INSERT INTO sessions (id, machine_id, working_dir, user_id, machine_uuid, adapter_id) \
+             VALUES ($1, $2, '/w', $3, $4, 'claude-code')",
         )
         .bind(&sid)
+        .bind(machine.to_string())
         .bind(uid)
         .bind(machine)
         .execute(pool)
