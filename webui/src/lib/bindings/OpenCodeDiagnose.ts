@@ -6,51 +6,51 @@ import type { TrafficStderrLine } from "./TrafficStderrLine";
 /**
  * `OpenCode`-only section; the HTTP/SSE counterpart of [`CodexDiagnose`].
  */
-export type OpenCodeDiagnose = {
+export type OpenCodeDiagnose = { 
 /**
  * Base URL of the session's `opencode serve` instance.
  */
-server_url?: string | null,
+server_url?: string | null, 
 /**
  * `opencode serve` child PID, when a live session owns one.
  */
-server_pid?: number | null,
+server_pid?: number | null, 
 /**
  * Version the adapter is written against.
  */
-pinned_version: string, server_version?: string | null,
+pinned_version: string, server_version?: string | null, 
 /**
  * Whether the running server matches [`Self::pinned_version`].
  */
-version_matches?: boolean | null,
+version_matches?: boolean | null, 
 /**
  * Whether a live command channel exists for this session.
  */
-live: boolean,
+live: boolean, 
 /**
  * Opencode session ids this driver owns (the session plus its forks).
  */
-owned_sessions?: Array<string>,
+owned_sessions?: Array<string>, 
 /**
  * `working` (a turn is in flight) or `idle`.
  */
-turn_status: string,
+turn_status: string, 
 /**
  * Whether the `GET /event` stream is currently connected.
  */
-sse_connected: boolean,
+sse_connected: boolean, 
 /**
  * When the last SSE event arrived (unix ms).
  */
-last_sse_event_ms?: number | null,
+last_sse_event_ms?: number | null, 
 /**
  * Permission prompts awaiting an answer.
  */
-pending_permissions?: Array<string>, protocol_errors?: Array<TrafficError>,
+pending_permissions?: Array<string>, protocol_errors?: Array<TrafficError>, 
 /**
  * Trailing `opencode serve` stdout/stderr lines, oldest first.
  */
-stderr_tail?: Array<TrafficStderrLine>,
+stderr_tail?: Array<TrafficStderrLine>, 
 /**
  * The last HTTP and SSE frames, oldest first.
  */

@@ -5,7 +5,7 @@ import type { ConversationHit } from "./ConversationHit";
  * `total` counts the hits returned; `truncated` says the scan stopped at the
  * cap, so the real total is higher.
  */
-export type ConversationSearchResponse = { hits: Array<ConversationHit>, total: number, truncated: boolean,
+export type ConversationSearchResponse = { hits: Array<ConversationHit>, total: number, truncated: boolean, 
 /**
  * Tool ids seen among the hits, for the `tool:` autocomplete.
  */

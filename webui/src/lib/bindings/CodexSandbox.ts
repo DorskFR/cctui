@@ -5,7 +5,7 @@
  *
  * Codex's Linux sandbox is bubblewrap, and host policy can break it outright:
  * on Ubuntu 24.04+ `kernel.apparmor_restrict_unprivileged_userns=1` with no
- * bwrap AppArmor profile makes every sandboxed command fail. Codex reports the
+ * bwrap `AppArmor` profile makes every sandboxed command fail. Codex reports the
  * sandbox as healthy in that state, so cctui probes it itself.
  */
-export type CodexSandbox = { "state": "ok" } | { "state": "userns_denied", detail: string } | { "state": "unknown", detail: string };
+export type CodexSandbox = { "state": "ok" } | { "state": "userns_denied", detail: string, } | { "state": "unknown", detail: string, };
