@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { EmptyState } from "@dorsk/tsumikit";
+  import { EmptyState, Prose } from "@dorsk/tsumikit";
   import { api } from "../api/client";
   import type { ReactionContent, ReactionRollup } from "../api/types";
   import { renderMarkdown, repoBaseUrl } from "../markdown";
@@ -24,7 +24,7 @@
 
 <div class="prdesc">
   {#if text}
-    <div class="body markdown">{@html renderMarkdown(text, { baseUrl: markdownBaseUrl })}</div>
+    <div class="body"><Prose html={renderMarkdown(text, { baseUrl: markdownBaseUrl })} /></div>
   {:else}
     <EmptyState size="inline" title="No description provided." />
   {/if}

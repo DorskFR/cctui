@@ -103,7 +103,7 @@
 </script>
 
 <script lang="ts">
-  import { Callout, EmptyState, Skeleton } from "@dorsk/tsumikit";
+  import { Callout, EmptyState, Prose, Skeleton } from "@dorsk/tsumikit";
   import { createQuery } from "@tanstack/svelte-query";
   import { api } from "../api/client";
   import { keys } from "../api/queries";
@@ -198,7 +198,9 @@
                 {/if}
               </header>
               {#if entry.body}
-                <div class="body markdown">{@html renderMarkdown(entry.body, { baseUrl: markdownBaseUrl })}</div>
+                <div class="body">
+                  <Prose html={renderMarkdown(entry.body, { baseUrl: markdownBaseUrl })} compact />
+                </div>
               {/if}
               {#if entry.kind !== "review" && numericId(entry) !== null}
                 <ReactionBar

@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Button, Callout, IconButton } from "@dorsk/tsumikit";
+  import { Button, Callout, IconButton, Prose } from "@dorsk/tsumikit";
   import { api, ApiError } from "../api/client";
   import { keys, queryClient } from "../api/queries";
   import type { ReactionContent } from "../api/types";
@@ -105,7 +105,9 @@
           </span>
         {/if}
       </div>
-      <div class="body markdown">{@html renderMarkdown(c.body ?? "", { baseUrl: markdownBaseUrl })}</div>
+      <div class="body">
+        <Prose html={renderMarkdown(c.body ?? "", { baseUrl: markdownBaseUrl })} compact />
+      </div>
       {#if deleteError && confirmingDelete === c.id}
         <Callout tone="danger">{deleteError}</Callout>
       {/if}
