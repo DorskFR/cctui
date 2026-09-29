@@ -8,7 +8,9 @@
 	import { toasts } from '$lib/toast.svelte';
 	import { m } from '$lib/paraglide/messages';
 
-	const plugins = useAdminPlugins(() => true);
+	let { isAdmin = false }: { isAdmin?: boolean } = $props();
+
+	const plugins = useAdminPlugins(() => isAdmin);
 	const qc = useQueryClient();
 	const list = $derived(plugins.data ?? []);
 
@@ -58,7 +60,7 @@
 </script>
 
 <div id="instance-plugins" data-journey="plugins-admin">
-	<SettingGroup title={m.settings_nav_plugins()}>
+	<SettingGroup title={m.settings_plugins_group_manage()}>
 		<SettingRow label={m.settings_plugins_admin_label()} help={m.settings_plugins_admin_help()} server admin wide selfLabelled>
 			<div class="plugins">
 				{#if plugins.isError}

@@ -1,7 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 import { localToken } from '../scripts/local-token.mjs';
 
-// Settings › Instance › Plugins (admin) and the user Settings › Plugins list,
+// Settings › Plugins: the admin Manage block and the user list on the same page,
 // against a mocked admin plugin API: install from URL, instance toggle,
 // uninstall, and the user-side rule that only instance-enabled plugins show
 // with their settings form gated behind the personal switch.
@@ -77,7 +77,7 @@ async function login(page: Page) {
 
 const row = (page: Page, id: string) => page.locator(`[data-journey="plugin-admin-row"][data-plugin="${id}"]`);
 
-test.describe('instance plugins (admin)', () => {
+test.describe('plugins page (admin)', () => {
 	test.use({ viewport: { width: 1440, height: 900 } });
 
 	test('lists sources, toggles instance-wide, installs from URL and uninstalls', async ({ page }) => {
@@ -86,7 +86,7 @@ test.describe('instance plugins (admin)', () => {
 			{ id: 'demo', name: 'Demo', description: 'd', version: '0.0.1', source: 'installed', enabled: false },
 			{ id: 'local', name: 'Local', description: 'l', version: '0.0.2', source: 'directory', enabled: true }
 		]);
-		await page.goto('/settings/instance');
+		await page.goto('/settings/plugins');
 		const group = page.locator('[data-journey="plugins-admin"]');
 		await expect(group).toBeVisible();
 		await expect(row(page, 'demo')).toContainText('0.0.1');
@@ -109,6 +109,9 @@ test.describe('instance plugins (admin)', () => {
 		await row(page, 'fromurl').locator('[data-journey="plugin-admin-uninstall"]').click();
 		await expect(row(page, 'fromurl')).toHaveCount(0);
 		expect(state.calls).toContain('DELETE /api/v1/admin/plugins/fromurl');
+
+		await page.goto('/settings/instance');
+		await expect(page.locator('[data-journey="plugins-admin"]')).toHaveCount(0);
 	});
 
 	test('users only see instance-enabled plugins, with the form behind their own switch', async ({ page }) => {

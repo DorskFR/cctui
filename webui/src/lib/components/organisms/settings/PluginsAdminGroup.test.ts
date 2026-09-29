@@ -34,7 +34,7 @@ afterEach(() => {
 
 function render(data: AdminPluginInfo[] | undefined) {
 	Object.assign(query, { data, isPending: data === undefined, isError: false });
-	comp = mount(PluginsAdminGroup, { target: document.body });
+	comp = mount(PluginsAdminGroup, { target: document.body, props: { isAdmin: true } });
 	flushSync();
 }
 

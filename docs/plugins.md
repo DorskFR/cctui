@@ -11,7 +11,8 @@ into the user's repository.
 Two gates, both required before a user sees anything:
 
 1. **Instance** — an admin installs the plugin and turns it on in
-   Settings → Instance → Plugins. `GET /api/v1/plugins` only ever returns
+   Settings → Plugins (the admin-only **Manage** block at the top of the page).
+   `GET /api/v1/plugins` only ever returns
    instance-enabled plugins.
 2. **User** — each user flips their own switch in Settings → Plugins. The
    per-plugin settings form only renders once that switch is on.
