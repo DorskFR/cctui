@@ -15,7 +15,11 @@ const loaded = vi.hoisted(() => ({ page: undefined as unknown, mounted: [] as un
 vi.mock('$app/state', () => ({ page: state }));
 vi.mock('$app/navigation', () => ({ goto }));
 vi.mock('$app/environment', () => ({ browser: true }));
-vi.mock('$lib/queries', () => ({ usePlugins: () => query }));
+vi.mock('$lib/queries', () => ({
+	usePlugins: () => query,
+	useMe: () => ({ data: { role: 'admin', user_id: 'u1', user_name: 'dorsk' } })
+}));
+vi.mock('$lib/toast.svelte', () => ({ toasts: { ok: vi.fn(), info: vi.fn(), error: vi.fn() } }));
 vi.mock('$lib/settings.svelte', () => ({
 	settings: {
 		get pluginsEnabled() {

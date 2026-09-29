@@ -13,7 +13,10 @@ export {
 	CCTUI_PLUGIN_API,
 	CCTUI_PLUGIN_API_MINOR,
 	HOST_CONTEXT_KEY,
-	type HostContext
+	type HostContext,
+	type HostSpawnRequest,
+	type HostToastTone,
+	type HostUser
 } from '../../../plugin-sdk/types';
 
 export type { PluginInfo } from '$lib/bindings/PluginInfo';

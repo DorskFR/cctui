@@ -66,11 +66,42 @@ export interface MessageAction {
 /** Svelte context the host sets above every mounted pane. */
 export const HOST_CONTEXT_KEY = 'cctui:host';
 
+/** The signed-in user, as the host knows them. */
+export interface HostUser {
+	id: string;
+	name: string;
+	isAdmin: boolean;
+}
+
+export type HostToastTone = 'ok' | 'info' | 'error';
+
+/** What a plugin asks the host to open its New session form pre-filled with. */
+export interface HostSpawnRequest {
+	prompt: string;
+	working_dir?: string;
+	machine_id?: string;
+}
+
+/** Everything past `{ cctuiApi, origin }` arrived in a later minor, so a plugin
+ *  checks for a member before calling it. */
 export interface HostContext {
 	cctuiApi: number;
 	cctuiApiMinor?: number;
 	/** The webui origin, what a skill needs as `--parent-origin`. */
 	origin: string;
+	user?: HostUser;
+	/** `fetch` against the host API (`path` is relative to `/api/v1`), with the
+	 *  user's own session: a plugin can do exactly what the user can, no more. */
+	apiFetch?(path: string, init?: RequestInit): Promise<Response>;
+	/** `fetch` against the plugin's own backend through the host proxy
+	 *  (`/api/v1/plugins/<id>/backend/<path>`), which signs the user's identity
+	 *  upstream. The upstream URL and its secret never reach the browser. */
+	pluginFetch?(path: string, init?: RequestInit): Promise<Response>;
+	/** Navigate the host SPA to an app path (`/sessions/...`). */
+	navigate?(path: string): void;
+	/** Open the host's New session form pre-filled. The user still submits it. */
+	openSpawn?(req: HostSpawnRequest): void;
+	toast?(message: string, tone?: HostToastTone): void;
 }
 
 export interface CctuiPluginModule {

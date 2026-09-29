@@ -51,7 +51,24 @@ export default {
   the host to open the pane itself, once per (session, params), for the newest line.
 - The host sets a Svelte context under `HOST_CONTEXT_KEY` above both surfaces.
   `cctuiApi` is the contract major (`1`); `cctuiApiMinor` counts the additive
-  extensions the host has, so feature-check anything beyond `{ cctuiApi, origin }`.
+  extensions the host has, so feature-check anything beyond `{ cctuiApi, origin }`:
+
+  ```ts
+  const host = getContext<HostContext | undefined>(HOST_CONTEXT_KEY);
+  host?.toast?.('saved', 'ok');
+  const res = await host?.pluginFetch?.('/pulls?state=open');
+  host?.openSpawn?.({ prompt: `Review ${url}`, working_dir: repo });
+  ```
+
+  `user` is `{ id, name, isAdmin }` once the host knows it. `apiFetch(path)` is the
+  cctui API under `/api/v1`; `pluginFetch(path)` is your own backend through the
+  host proxy, which signs the user's identity upstream so no token is held in the
+  browser. `navigate(path)` moves the host SPA; `openSpawn` opens the host's New
+  session form pre-filled, for the user to submit.
+
+  A plugin is admin-trusted code running with the user's session: it shares the
+  page, the cookie and the Svelte runtime with cctui and is not sandboxed. See
+  `docs/plugins.md` § Security model.
 
 ## Building
 

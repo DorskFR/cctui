@@ -308,6 +308,56 @@ restart drops open streams, and the client is expected to reconnect
 (`EventSource` does so by itself). If the *upstream* runs several replicas, it is
 responsible for its own fan-out; cctui does not broadcast between them.
 
+### Host context (`HostContext`)
+
+The host sets a Svelte context under `HOST_CONTEXT_KEY` above every mounted
+surface — pane and page alike. v1.1 (contract major 1, minor 1):
+
+```ts
+interface HostContext {
+	cctuiApi: number;                 // 1
+	cctuiApiMinor?: number;           // 1
+	origin: string;                   // the webui origin
+	user?: { id: string; name: string; isAdmin: boolean };
+	apiFetch?(path: string, init?: RequestInit): Promise<Response>;
+	pluginFetch?(path: string, init?: RequestInit): Promise<Response>;
+	navigate?(path: string): void;
+	openSpawn?(req: { prompt: string; working_dir?: string; machine_id?: string }): void;
+	toast?(message: string, tone?: 'ok' | 'info' | 'error'): void;
+}
+```
+
+Every member past `origin` is optional in the type, because an older host does
+not have it: a plugin checks before calling (`ctx.toast?.(…)`). `user` is filled
+in once `GET /me` answers. `apiFetch` prefixes `/api/v1`; `pluginFetch` prefixes
+`/api/v1/plugins/<id>/backend` for the plugin's own id, so the upstream URL and
+its shared secret stay on the server. `openSpawn` opens the host's New session
+form pre-filled, wherever the user is — the plugin never launches a session
+itself, the user submits the form.
+
+### Security model
+
+**A plugin is admin-trusted code that runs with the user's session.** There is no
+sandbox, and there is no attempt at one:
+
+- The bundle is an ES module the SPA `import()`s into the page. It shares the
+  document, the Svelte runtime, the DOM and the same-origin cookie with cctui.
+  Nothing stops it reading or calling anything the page can.
+- `apiFetch` is therefore a convenience, not a boundary: the plugin could call
+  `fetch('/api/v1/...')` itself and the cookie would ride along either way. It
+  acts with the authority of whoever is looking at it — no more (the server still
+  enforces that user's scopes) and no less.
+- The gates are social, not technical: **an admin** installs the archive and turns
+  it on for the instance, and **each user** switches it on for themselves. Install
+  a plugin you would let commit to this repo, from a pinned catalog entry whose
+  sha256 is checked, and nothing else.
+- `pluginFetch` exists so a plugin's backend needs no browser-held token: the
+  server signs the caller's identity upstream. That protects the *upstream
+  secret*, not the browser — a plugin can still call its own backend as the user.
+- Secrets in `instanceSettings` are write-only and never returned by the API, so
+  a plugin's frontend cannot read them even though its backend can be reached
+  through the proxy.
+
 ## Endpoints
 
 | Route | Auth | Purpose |

@@ -16,6 +16,8 @@
 	import { sessionFailureToast } from '$lib/sessionFailureToast';
 	import Header from '$lib/components/organisms/Header.svelte';
 	import MainNav from '$lib/components/organisms/MainNav.svelte';
+	import SpawnModal from '$lib/components/organisms/SpawnModal.svelte';
+	import { pluginSpawn } from '$lib/plugins/spawnRequest.svelte';
 	import Login from '$lib/components/organisms/Login.svelte';
 	import { installCodeCopy } from '$lib/codecopy';
 	import { installImageLightbox } from '$lib/imagelightbox';
@@ -173,6 +175,13 @@
 				</main>
 				<MainNav />
 			</div>
+			{#if pluginSpawn.prefill}
+				<SpawnModal
+					prefill={pluginSpawn.prefill}
+					onclose={() => pluginSpawn.close()}
+					onspawned={() => void queryClient.invalidateQueries({ queryKey: qk.sessionsAll })}
+				/>
+			{/if}
 		{:else if !auth.checking}
 			<Login />
 		{/if}
