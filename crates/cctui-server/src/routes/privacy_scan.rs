@@ -36,7 +36,6 @@ use crate::state::AppState;
 /// id-keyset batch size for the sweep.
 const BATCH: i64 = 500;
 
-
 #[derive(Deserialize)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct RescrubRequest {
