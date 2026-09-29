@@ -8,7 +8,7 @@
 	import type { Label } from '@bindings/Label';
 	import { fontScale, SCALE_LEVELS } from '$lib/fontscale.svelte';
 	import { settings } from '$lib/settings.svelte';
-	import { isArchiveChord } from '$lib/platform';
+	import { isArchiveChord, isFindChord } from '$lib/platform';
 	import RebindTrail from '$lib/components/molecules/RebindTrail.svelte';
 	import SessionGlyphs from '$lib/components/molecules/SessionGlyphs.svelte';
 	import LabelBadge from '$lib/components/molecules/LabelBadge.svelte';
@@ -29,6 +29,8 @@
 		oncopylink,
 		oncopymarkdown,
 		onexport,
+		onsearch,
+		onescape,
 		onfork,
 		onfollowup,
 		onforkselect,
@@ -60,6 +62,11 @@
 		oncopylink: () => void;
 		oncopymarkdown: () => void;
 		onexport: () => void;
+		/** Open the find-in-conversation bar; omitted → no entry and no ⌘F. */
+		onsearch?: () => void;
+		/** First refusal on Escape: true when it was consumed (the find bar
+		 *  clears or closes) and the drawer must stay open. */
+		onescape?: () => boolean;
 		onfork: () => void;
 		onfollowup?: () => void;
 		// Toggle multi-select-to-fork mode; omitted → button hidden
@@ -124,7 +131,17 @@
 			? [
 					renaming
 						? { label: m.common_save(), icon: 'check' as const, onselect: doRename }
-						: { label: m.drawer_rename(), icon: 'edit' as const, onselect: startRename }
+						: { label: m.drawer_rename(), icon: 'edit' as const, onselect: startRename },
+					...(onsearch
+						? [
+								{
+									label: m.conversation_search_label(),
+									icon: 'search' as const,
+									attrs: { title: m.conversation_search_title() },
+									onselect: onsearch
+								}
+							]
+						: [])
 				]
 			: []),
 		{
@@ -163,6 +180,13 @@
 	]);
 
 	function onWinKey(e: KeyboardEvent) {
+		// ⌘F / Ctrl+F opens the transcript's own find bar in place of the
+		// browser's, which can only see the paged window.
+		if (onsearch && !renaming && isFindChord(e)) {
+			e.preventDefault();
+			onsearch();
+			return;
+		}
 		// Archive chord (⌘ E / Ctrl+E): interrupt any running turn and archive the
 		// session, which then dismisses the drawer. Opt-out via Settings. Skipped
 		// while renaming (so the chord can't fire mid-edit) and on already-archived
@@ -174,6 +198,10 @@
 			return;
 		}
 		if (e.key !== 'Escape' || renaming) return;
+		if (onescape?.()) {
+			e.preventDefault();
+			return;
+		}
 		onclose();
 	}
 </script>
@@ -233,6 +261,19 @@
 				icon="edit"
 				label={m.drawer_rename()}
 				onclick={startRename}
+			/>
+		{/if}
+		{#if onsearch}
+			<IconButton
+				data-overflow
+				data-journey="find"
+				chip
+				{box}
+				variant="default"
+				icon="search"
+				label={m.conversation_search_label()}
+				title={m.conversation_search_title()}
+				onclick={onsearch}
 			/>
 		{/if}
 		{#if !archived}

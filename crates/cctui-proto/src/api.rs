@@ -422,6 +422,31 @@ pub struct SessionListResponse {
     pub sessions: Vec<SessionListItem>,
 }
 
+/// One transcript match inside a single session. `seq` is `stream_events.id`,
+/// the same address pins and the client's jump primitive use; `role` is the
+/// webui's `MsgCategory`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct ConversationHit {
+    pub seq: i64,
+    pub ts: i64,
+    pub role: String,
+    pub tool: Option<String>,
+    pub snippet: String,
+}
+
+/// `total` counts the hits returned; `truncated` says the scan stopped at the
+/// cap, so the real total is higher.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct ConversationSearchResponse {
+    pub hits: Vec<ConversationHit>,
+    pub total: u32,
+    pub truncated: bool,
+    /// Tool ids seen among the hits, for the `tool:` autocomplete.
+    pub tools: Vec<String>,
+}
+
 /// Session counts from SQL aggregates, not the capped list.
 #[derive(Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]

@@ -87,6 +87,55 @@ pub static FIELDS: &[FieldDef] = &[
         default_op: FilterOp::Contains,
         enum_values: &[],
     },
+    // Transcript-scoped fields: only `/sessions/{id}/search` interprets them.
+    // `enum_values` mirrors the webui's `MsgCategory`.
+    FieldDef {
+        name: "role",
+        aliases: &["type"],
+        ty: FieldType::Enum,
+        default_op: FilterOp::Eq,
+        enum_values: &[
+            "assistant",
+            "thinking",
+            "redacted",
+            "attachment",
+            "user",
+            "poll",
+            "peer",
+            "system",
+            "tool",
+            "mcp",
+            "server_tool",
+            "result",
+            "server_result",
+            "error",
+            "marker",
+            "summary",
+            "compact",
+            "reset",
+        ],
+    },
+    FieldDef {
+        name: "tool",
+        aliases: &[],
+        ty: FieldType::Str,
+        default_op: FilterOp::Eq,
+        enum_values: &[],
+    },
+    FieldDef {
+        name: "after",
+        aliases: &[],
+        ty: FieldType::Str,
+        default_op: FilterOp::Eq,
+        enum_values: &[],
+    },
+    FieldDef {
+        name: "before",
+        aliases: &[],
+        ty: FieldType::Str,
+        default_op: FilterOp::Eq,
+        enum_values: &[],
+    },
 ];
 
 #[must_use]

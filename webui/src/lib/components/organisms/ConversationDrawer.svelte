@@ -1,8 +1,11 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	import type { SessionListItem } from '@bindings/SessionListItem';
 	import type { AgentEvent } from '@bindings/AgentEvent';
 	import { ws } from '$lib/ws.svelte';
-	import { useConversation, useSessionActions, useLabels, qk } from '$lib/queries';
+	import { endpoints, useConversation, useSessionActions, useLabels, qk } from '$lib/queries';
+	import { toasts } from '$lib/toast.svelte';
+	import { errMessage } from '$lib/api';
 	import { useQueryClient } from '@tanstack/svelte-query';
 	import { drafts, VIEW_OPTS } from '$lib/drafts';
 	import { Dropzone, ResizablePanel } from '@dorsk/tsumikit';
@@ -29,7 +32,9 @@
 	import { lineMarkdown, mergeEventSources } from './conversation/format';
 	import { ConversationStream, mergeLiveEvent } from './conversation/stream.svelte';
 	import { ScrollController } from './conversation/scroll.svelte';
-	import { SearchHitStepper } from './conversation/searchHits.svelte';
+	import { ConversationSearch } from './conversation/convSearch.svelte';
+	import ConversationSearchBar from './conversation/ConversationSearchBar.svelte';
+	import { buildConversationSearchSchema } from './conversation/searchSchema';
 	import { ForkController } from './conversation/fork.svelte';
 	import { ForkSelection } from './conversation/forkSelect.svelte';
 	import { SessionActions } from './conversation/sessionActions.svelte';
@@ -159,7 +164,9 @@
 		id: () => id,
 		machineId: () => session.machine_id,
 		view: () => view,
-		highlight: () => highlight,
+		// The find bar owns the highlight once it is open, so the /sessions-search
+		// terms and a refined in-conversation query never fight over it.
+		highlight: () => (search.open ? search.terms : highlight),
 		events: () => events,
 		scheduledTurns: () => scheduledTurnMap,
 		pending: () => stream.pendingReplies,
@@ -205,24 +212,37 @@
 		fetchOlder: earlier.fetchEarlier,
 		scroll
 	});
-	let conv = $state<Conversation>();
-	const hits = new SearchHitStepper({
-		scroller: () => scroll.scroller,
-		loadOlder: () => conv?.loadOlder()
+	// Find-in-conversation. The hit list is the server's: the DOM only holds
+	// the paged tail, so a `mark.search-hit` count can never be the total.
+	const search = new ConversationSearch({
+		id: () => id,
+		schema: buildConversationSearchSchema(() => search.tools),
+		fetchHits: (sid, q) => endpoints.conversationSearch(sid, q),
+		ensureSeqVisible: (seq) => pins.ensureSeqVisible(seq),
+		onerror: (e) => toasts.error(errMessage(e))
 	});
 	$effect(() => {
-		void lines.length;
-		void highlight;
-		hits.refresh();
+		const ev = stream.live.at(-1);
+		if (ev) untrack(() => search.appendLive(ev));
+	});
+	$effect(() => {
+		if (!stream.working) untrack(() => search.turnEnded());
 	});
 	// A session switch drops the older pages and hit cursor and closes a stale
 	// terminal pane.
 	$effect(() => {
 		void id;
 		earlier.reset();
-		hits.reset();
+		search.reset();
 		terminalOpen = false;
 		plugins.close();
+	});
+
+	// Opened from the /sessions search: the bar starts filled with those terms
+	// so both flows run through one code path.
+	$effect(() => {
+		const seed = highlight.join(' ').trim();
+		if (seed) untrack(() => search.openBar(seed));
 	});
 
 	const isCodexSession = $derived((session.adapter_id ?? '').startsWith('codex'));
@@ -351,6 +371,8 @@
 				oncopylink={sa.copyLink}
 				oncopymarkdown={sa.copyMarkdown}
 				onexport={sa.export}
+				onsearch={() => search.openBar()}
+				onescape={search.escape}
 				onfork={fork.openDialog}
 				onfollowup={onFollowup ? () => followup() : undefined}
 				onforkselect={forkable ? forkSelect.toggleMode : undefined}
@@ -369,10 +391,6 @@
 			/>
 
 			<DrawerToolbar
-				hitCount={hits.count}
-				hitIndex={hits.index}
-				onprevhit={hits.prev}
-				onnexthit={hits.next}
 				bind:view
 				autoApprove={session.auto_approve}
 				ontoggleAuto={sa.toggleAutoApprove}
@@ -385,6 +403,10 @@
 				onunpin={pins.unpinSeq}
 			/>
 
+			{#if search.open}
+				<ConversationSearchBar {search} />
+			{/if}
+
 			<TaskPanel sessionId={id} progress={stream.todoProgress} />
 
 			{#if terminalOpen}
@@ -394,7 +416,6 @@
 			<DrawerBanners sessionId={id} {needsInput} {stream} bind:acctModalOpen />
 
 			<Conversation
-				bind:this={conv}
 				{stream}
 				{scroll}
 				sessionId={id}

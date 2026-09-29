@@ -66,6 +66,20 @@ describe('drawer header ⋯ menu', () => {
 		expect(toolbar).toContain('data-journey="terminal"');
 	});
 
+	it('offers find-in-conversation inline and in the collapsed menu, never both', () => {
+		expect(markup()).toMatch(/<IconButton\s+data-overflow[\s\S]{0,200}icon="search"/);
+		const collapsedOnly = items().slice(0, items().indexOf('m.drawer_copy_link_label'));
+		expect(collapsedOnly).toContain('m.conversation_search_label()');
+		expect(items().slice(collapsedOnly.length)).not.toContain('m.conversation_search_label()');
+	});
+
+	it('binds ⌘F / Ctrl+F to the find bar and gives it first refusal on Escape', () => {
+		expect(header).toContain('isFindChord(e)');
+		expect(header).toMatch(/if \(onescape\?\.\(\)\) \{/);
+		const esc = header.indexOf("e.key !== 'Escape'");
+		expect(header.indexOf('onescape?.()', esc)).toBeLessThan(header.indexOf('onclose();', esc));
+	});
+
 	it('adds no :global override', () => {
 		expect(header).not.toContain(':global(');
 	});

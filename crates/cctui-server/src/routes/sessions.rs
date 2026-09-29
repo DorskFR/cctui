@@ -1148,6 +1148,13 @@ fn leaf_predicate(field: &str, value: &str, params: &mut Vec<SqlParam>) -> Strin
             let p = ph_text(params, ilike_contains(value));
             format!("s.working_dir ILIKE ${p}")
         }
+        // Transcript-scoped fields, meaningful only to `/sessions/{id}/search`.
+        // Across sessions they stay the literal free text they were before the
+        // query registry learned them.
+        "role" | "tool" | "after" | "before" => {
+            let p = ph_text(params, ilike_contains(&format!("{field}:{value}")));
+            free_text_predicate(p)
+        }
         _ => {
             let p = ph_text(params, ilike_contains(value));
             free_text_predicate(p)
@@ -1939,6 +1946,257 @@ pub async fn get_conversation(
         })
         .collect();
     Ok(crate::http_cache::json_with_etag(&req_headers, &normalized))
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct ConversationSearchParams {
+    #[serde(default)]
+    pub q: String,
+    pub limit: Option<i64>,
+}
+
+/// Hits past this are dropped and the response reports `truncated`.
+const CONV_SEARCH_MAX_HITS: usize = 500;
+
+/// Rows the indexed scan reads before stopping. Higher than the hit cap
+/// because a scanned row may normalise to nothing renderable or be dropped by
+/// a `role`/`tool`/`pinned` clause, none of which SQL can decide.
+const CONV_SEARCH_SCAN_CAP: i64 = 20_000;
+
+/// The in-conversation bar composes its clauses as one conjunction, so the AST
+/// is flattened to `(every term) AND (every clause)`; `OR` nesting a user types
+/// by hand collapses into that same conjunction.
+///
+/// `-role:x` / `role!:x` parse as a `Not` around the leaf (the parser never
+/// emits `FilterOp::Ne`), so the wrapper is what carries negation down here.
+fn flatten_conv_query(
+    node: &cctui_query::Node,
+    negated: bool,
+    terms: &mut Vec<String>,
+    out: &mut Vec<(bool, cctui_query::Filter)>,
+) {
+    use cctui_query::Node;
+    match node {
+        Node::Empty => {}
+        Node::Text { value } => terms.push(value.clone()),
+        Node::Filter { filter } => out.push((negated, filter.clone())),
+        Node::Not { child } => flatten_conv_query(child, !negated, terms, out),
+        Node::And { children } | Node::Or { children } => {
+            for c in children {
+                flatten_conv_query(c, negated, terms, out);
+            }
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct ConvSearchFilters {
+    roles: Vec<String>,
+    not_roles: Vec<String>,
+    tools: Vec<String>,
+    not_tools: Vec<String>,
+    pinned: Option<bool>,
+    after: Option<DateTime<Utc>>,
+    before: Option<DateTime<Utc>>,
+}
+
+/// A bare `YYYY-MM-DD` means that day's UTC midnight; a full RFC 3339 stamp is
+/// taken as given.
+fn parse_conv_bound(v: &str) -> Option<DateTime<Utc>> {
+    let v = v.trim();
+    if let Ok(dt) = DateTime::parse_from_rfc3339(v) {
+        return Some(dt.with_timezone(&Utc));
+    }
+    let day = chrono::NaiveDate::parse_from_str(v, "%Y-%m-%d").ok()?;
+    Some(DateTime::from_naive_utc_and_offset(day.and_hms_opt(0, 0, 0)?, Utc))
+}
+
+/// `tool:mcp__github__*` matches by prefix; anything else is exact, both
+/// case-insensitively.
+fn tool_matches(pattern: &str, tool: &str) -> bool {
+    if let Some(prefix) = pattern.strip_suffix('*') {
+        return tool.to_lowercase().starts_with(&prefix.to_lowercase());
+    }
+    tool.eq_ignore_ascii_case(pattern)
+}
+
+fn conv_filters(filters: &[(bool, cctui_query::Filter)]) -> ConvSearchFilters {
+    let mut out = ConvSearchFilters::default();
+    for (negated, f) in filters {
+        let negated = *negated;
+        match f.field.as_str() {
+            "role" => {
+                let bucket = if negated { &mut out.not_roles } else { &mut out.roles };
+                bucket.extend(f.values.iter().map(|v| v.to_lowercase()));
+            }
+            "tool" => {
+                let bucket = if negated { &mut out.not_tools } else { &mut out.tools };
+                bucket.extend(f.values.iter().cloned());
+            }
+            "pinned" => {
+                let want = f.values.first().is_none_or(|v| v.eq_ignore_ascii_case("true"));
+                out.pinned = Some(want != negated);
+            }
+            "after" => out.after = f.values.first().map(String::as_str).and_then(parse_conv_bound),
+            "before" => {
+                out.before = f.values.first().map(String::as_str).and_then(parse_conv_bound);
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+impl ConvSearchFilters {
+    fn accepts(&self, role: &str, tool: Option<&str>, seq: i64, pinned: &HashSet<i64>) -> bool {
+        if role.is_empty() {
+            return false;
+        }
+        if !self.roles.is_empty() && !self.roles.iter().any(|r| r.as_str() == role) {
+            return false;
+        }
+        if self.not_roles.iter().any(|r| r.as_str() == role) {
+            return false;
+        }
+        if !self.tools.is_empty()
+            && !tool.is_some_and(|t| self.tools.iter().any(|p| tool_matches(p, t)))
+        {
+            return false;
+        }
+        if self.not_tools.iter().any(|p| tool.is_some_and(|t| tool_matches(p, t))) {
+            return false;
+        }
+        if let Some(want) = self.pinned
+            && pinned.contains(&seq) != want
+        {
+            return false;
+        }
+        true
+    }
+}
+
+/// `(id, event_type, payload, created_at, capped search_text)`.
+type ConvSearchRow = (i64, String, serde_json::Value, DateTime<Utc>, Option<String>);
+
+/// `$1` the session id, `$2…$n+1` the ILIKE patterns (ANDed per event, so one
+/// event must carry every term), then `after`, `before` and the scan cap.
+///
+/// The `left(search_text, …)` must match the migration-108 index expression
+/// exactly or the ILIKE stops using it.
+fn conv_search_sql(n_patterns: usize) -> String {
+    let text_where = if n_patterns == 0 {
+        "TRUE".to_string()
+    } else {
+        (1..=n_patterns)
+            .map(|i| format!("left(e.search_text, {SEARCH_TEXT_CAP}) ILIKE ${}", i + 1))
+            .collect::<Vec<_>>()
+            .join(" AND ")
+    };
+    let (a, b, l) = (n_patterns + 2, n_patterns + 3, n_patterns + 4);
+    format!(
+        "SELECT e.id, e.event_type, e.payload, e.created_at, \
+                left(e.search_text, {SEARCH_TEXT_CAP}) \
+         FROM stream_events e \
+         WHERE e.session_id = $1 AND ({text_where}) \
+           AND (${a}::timestamptz IS NULL OR e.created_at >= ${a}) \
+           AND (${b}::timestamptz IS NULL OR e.created_at < ${b}) \
+         ORDER BY e.id ASC LIMIT ${l}"
+    )
+}
+
+/// `GET /sessions/{id}/search?q=…&limit=…`: the hit list for a find-in-
+/// conversation bar, oldest → newest. Free text is ANDed per event over the
+/// capped `search_text` (served by the `(session_id, left(search_text, 8192))`
+/// GIN of migration 108); `role`/`type`/`tool`/`pinned` are decided on the
+/// normalised client payload so the roles match the webui's `MsgCategory`.
+#[allow(clippy::too_many_lines)]
+pub async fn search_conversation(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Path(session_id): Path<String>,
+    Query(params): Query<ConversationSearchParams>,
+) -> Result<Json<cctui_proto::api::ConversationSearchResponse>, AppError> {
+    check_query_len(&params.q)?;
+    let root = cctui_query::parse(params.q.trim());
+    let max_hits = params
+        .limit
+        .map_or(CONV_SEARCH_MAX_HITS, |l| usize::try_from(l.max(1)).unwrap_or(CONV_SEARCH_MAX_HITS))
+        .min(CONV_SEARCH_MAX_HITS);
+    if root.is_empty() {
+        return Ok(Json(cctui_proto::api::ConversationSearchResponse {
+            hits: Vec::new(),
+            total: 0,
+            truncated: false,
+            tools: Vec::new(),
+        }));
+    }
+
+    let mut terms = Vec::new();
+    let mut raw_filters = Vec::new();
+    flatten_conv_query(&root, false, &mut terms, &mut raw_filters);
+    let filters = conv_filters(&raw_filters);
+
+    let patterns: Vec<String> = terms.iter().map(|t| ilike_contains(t)).collect();
+    let sql = conv_search_sql(patterns.len());
+    let mut query = sqlx::query_as::<_, ConvSearchRow>(sqlx::AssertSqlSafe(sql)).bind(&session_id);
+    for p in &patterns {
+        query = query.bind(p);
+    }
+    let rows = query
+        .bind(filters.after)
+        .bind(filters.before)
+        .bind(CONV_SEARCH_SCAN_CAP)
+        .fetch_all(&state.pool)
+        .await?;
+    let scanned = i64::try_from(rows.len()).unwrap_or(i64::MAX);
+
+    let pinned: HashSet<i64> = if filters.pinned.is_some() {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT seq FROM session_message_pins WHERE user_id = $1 AND session_id = $2",
+        )
+        .bind(ctx.user_id)
+        .bind(&session_id)
+        .fetch_all(&state.pool)
+        .await?
+        .into_iter()
+        .collect()
+    } else {
+        HashSet::new()
+    };
+
+    let adapter = crate::store::sessions::adapter_id(&state.pool, &session_id).await?;
+    let adapter_id = adapter.as_deref().unwrap_or("claude-code");
+
+    let mut hits: Vec<cctui_proto::api::ConversationHit> = Vec::new();
+    let mut truncated = scanned >= CONV_SEARCH_SCAN_CAP;
+    let mut tools: Vec<String> = Vec::new();
+    for (id, event_type, payload, created_at, text) in rows {
+        let Some(client) = crate::normalize::for_client(adapter_id, &event_type, payload) else {
+            continue;
+        };
+        let (role, tool) = crate::normalize::client_category(&client);
+        if !filters.accepts(role, tool.as_deref(), id, &pinned) {
+            continue;
+        }
+        if let Some(t) = &tool
+            && !tools.contains(t)
+        {
+            tools.push(t.clone());
+        }
+        if hits.len() >= max_hits {
+            truncated = true;
+            break;
+        }
+        hits.push(cctui_proto::api::ConversationHit {
+            seq: id,
+            ts: created_at.timestamp_millis(),
+            role: role.to_owned(),
+            tool,
+            snippet: make_snippet(text.as_deref().unwrap_or_default(), &terms),
+        });
+    }
+    let total = u32::try_from(hits.len()).unwrap_or(u32::MAX);
+    Ok(Json(cctui_proto::api::ConversationSearchResponse { hits, total, truncated, tools }))
 }
 
 pub async fn send_message(
@@ -3020,7 +3278,7 @@ mod tests {
         make_snippet, normalize_last_message, remove_command, snippet_sql,
     };
     use cctui_proto::models::{Attention, Liveness};
-    use chrono::{Duration, Utc};
+    use chrono::{DateTime, Duration, Utc};
 
     fn bare_session(id: &str) -> cctui_proto::api::SessionListItem {
         serde_json::from_value(serde_json::json!({
@@ -3453,6 +3711,160 @@ mod tests {
         assert!(ids.contains("m149"), "the previous turn of the stream is read");
         assert!(!ids.contains("m000") && !ids.contains("m199"));
         assert!(super::page_usage_rows(&pool, &sid, &[]).await.unwrap().is_empty());
+
+        sqlx::query("DELETE FROM sessions WHERE id = $1").bind(&sid).execute(&pool).await.unwrap();
+    }
+
+    fn conv_filters_of(q: &str) -> super::ConvSearchFilters {
+        let root = cctui_query::parse(q);
+        let (mut terms, mut raw) = (Vec::new(), Vec::new());
+        super::flatten_conv_query(&root, false, &mut terms, &mut raw);
+        super::conv_filters(&raw)
+    }
+
+    fn conv_terms_of(q: &str) -> Vec<String> {
+        let root = cctui_query::parse(q);
+        let (mut terms, mut raw) = (Vec::new(), Vec::new());
+        super::flatten_conv_query(&root, false, &mut terms, &mut raw);
+        terms
+    }
+
+    #[test]
+    fn conversation_search_ands_every_term_over_the_indexed_expression() {
+        let sql = super::conv_search_sql(3);
+        assert_eq!(sql.matches("ILIKE $").count(), 3);
+        assert!(sql.contains("$2") && sql.contains("$3") && sql.contains("$4"));
+        assert!(
+            !sql.contains(" OR left(e.search_text"),
+            "terms are ANDed per event, not ORed: {sql}"
+        );
+        assert!(sql.contains(&format!("left(e.search_text, {})", super::SEARCH_TEXT_CAP)));
+        assert!(sql.contains("WHERE e.session_id = $1"), "the hit list never leaves the session");
+        assert!(sql.ends_with("ORDER BY e.id ASC LIMIT $7"), "oldest first: {sql}");
+
+        let none = super::conv_search_sql(0);
+        assert!(none.contains("AND (TRUE)"));
+        assert!(none.ends_with("ORDER BY e.id ASC LIMIT $4"));
+    }
+
+    #[test]
+    fn conversation_search_reads_role_tool_and_date_clauses() {
+        let f = conv_filters_of("role:user foo");
+        assert_eq!(f.roles, ["user"]);
+        assert_eq!(conv_terms_of("role:user foo"), ["foo"]);
+
+        let f = conv_filters_of("type:tool,result rm");
+        assert_eq!(f.roles, ["tool", "result"]);
+
+        let f = conv_filters_of("-role:thinking");
+        assert_eq!(f.not_roles, ["thinking"]);
+        assert!(f.roles.is_empty());
+
+        let f = conv_filters_of("tool:Bash rm");
+        assert_eq!(f.tools, ["Bash"]);
+        assert_eq!(conv_terms_of("tool:Bash rm"), ["rm"]);
+
+        let f = conv_filters_of("after:2026-09-01 before:2026-09-30");
+        assert_eq!(f.after.unwrap().to_rfc3339(), "2026-09-01T00:00:00+00:00");
+        assert_eq!(f.before.unwrap().to_rfc3339(), "2026-09-30T00:00:00+00:00");
+
+        assert_eq!(conv_filters_of("pinned:true").pinned, Some(true));
+        assert_eq!(conv_filters_of("pinned:false").pinned, Some(false));
+        assert_eq!(conv_filters_of("foo").pinned, None);
+    }
+
+    #[test]
+    fn conversation_search_filters_accept_only_matching_events() {
+        let pins: std::collections::HashSet<i64> = [7].into_iter().collect();
+
+        let f = conv_filters_of("role:user");
+        assert!(f.accepts("user", None, 1, &pins));
+        assert!(!f.accepts("assistant", None, 1, &pins));
+
+        let f = conv_filters_of("tool:mcp__github__*");
+        assert!(f.accepts("mcp", Some("mcp__github__create_issue"), 1, &pins));
+        assert!(!f.accepts("tool", Some("Bash"), 1, &pins));
+
+        let f = conv_filters_of("tool:bash");
+        assert!(f.accepts("tool", Some("Bash"), 1, &pins), "tool ids match case-insensitively");
+
+        let f = conv_filters_of("pinned:true");
+        assert!(f.accepts("assistant", None, 7, &pins));
+        assert!(!f.accepts("assistant", None, 8, &pins));
+
+        assert!(
+            !conv_filters_of("foo").accepts("", None, 1, &pins),
+            "a row that normalises to nothing renderable is never a hit"
+        );
+    }
+
+    #[tokio::test]
+    async fn conversation_search_sql_ands_terms_and_honours_the_date_window() {
+        let Some((pool, sid)) = seeded_session("conversation_search_sql").await else {
+            return;
+        };
+        for (text, at) in [
+            ("alpha and beta together", "2026-09-05T00:00:00Z"),
+            ("alpha only", "2026-09-05T00:00:00Z"),
+            ("alpha and beta, but later", "2026-10-05T00:00:00Z"),
+        ] {
+            sqlx::query(
+                "INSERT INTO stream_events (session_id, event_type, payload, created_at) \
+                 VALUES ($1, 'message', jsonb_build_object('role', 'assistant', 'text', $2::text), $3)",
+            )
+            .bind(&sid)
+            .bind(text)
+            .bind(at.parse::<DateTime<Utc>>().unwrap())
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let run = |patterns: Vec<String>,
+                   after: Option<DateTime<Utc>>,
+                   before: Option<DateTime<Utc>>| {
+            let (pool, sid) = (pool.clone(), sid.clone());
+            async move {
+                let mut q = sqlx::query_as::<_, super::ConvSearchRow>(sqlx::AssertSqlSafe(
+                    super::conv_search_sql(patterns.len()),
+                ))
+                .bind(&sid);
+                for p in &patterns {
+                    q = q.bind(p);
+                }
+                q.bind(after).bind(before).bind(100_i64).fetch_all(&pool).await.unwrap()
+            }
+        };
+        let texts = |rows: Vec<super::ConvSearchRow>| {
+            rows.into_iter().map(|r| r.4.unwrap_or_default()).collect::<Vec<_>>()
+        };
+
+        let both = texts(run(vec!["%alpha%".into(), "%beta%".into()], None, None).await);
+        assert_eq!(both.len(), 2, "only events carrying BOTH terms: {both:?}");
+        assert!(both.iter().all(|t| t.contains("alpha") && t.contains("beta")));
+
+        let one = run(vec!["%alpha%".into()], None, None).await;
+        assert_eq!(one.len(), 3);
+        let ids: Vec<i64> = one.iter().map(|r| r.0).collect();
+        let mut sorted = ids.clone();
+        sorted.sort_unstable();
+        assert_eq!(ids, sorted, "hits come back oldest first");
+
+        let windowed = run(
+            vec!["%alpha%".into()],
+            None,
+            Some("2026-10-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap()),
+        )
+        .await;
+        assert_eq!(windowed.len(), 2, "`before` is exclusive of the bound");
+
+        let after = run(
+            vec!["%alpha%".into()],
+            Some("2026-10-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap()),
+            None,
+        )
+        .await;
+        assert_eq!(after.len(), 1);
 
         sqlx::query("DELETE FROM sessions WHERE id = $1").bind(&sid).execute(&pool).await.unwrap();
     }
