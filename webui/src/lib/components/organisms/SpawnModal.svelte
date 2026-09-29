@@ -200,7 +200,7 @@
 				data-journey="submit"
 				variant="primary"
 				caret="half"
-				class="split-grow"
+				style="width: 100%"
 				placement="top-end"
 				label={m.spawn_schedule_menu()}
 				items={scheduleItems}
@@ -364,10 +364,5 @@
 	.foot-primary {
 		display: flex;
 		flex: 1 1 11rem;
-	}
-	/* The SplitButton's root is a child component's element; scoped CSS cannot
-	   reach it. */
-	.foot-primary :global(.split-grow) {
-		width: 100%;
 	}
 </style>
