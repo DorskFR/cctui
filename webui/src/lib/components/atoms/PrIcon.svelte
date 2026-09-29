@@ -1,6 +1,6 @@
 <script lang="ts">
-	// Pull-request glyph. Local because tsumikit's Icon set has no VCS icons
-	// beyond `fork`; drop this once the kit carries `pull-request`.
+	// Superseded: the kit has carried `pull-request` since 0.63.1. Replace the two
+	// uses in sessioncard/Footer.svelte with `<Icon name="pull-request" />`.
 	let { size = 12 }: { size?: number } = $props();
 </script>
 
