@@ -34,7 +34,7 @@
 
 	// The kit keeps a popover's panel mounted after its first open, so LabelMenu's
 	// mount-time autofocus only fires once; every reopen refocuses explicitly.
-	let panel = $state<ReturnType<typeof LabelMenu> | null>(null);
+	let panel = $state<LabelMenu>();
 
 	function toggle(l: Label) {
 		const next = new Set(selected);
