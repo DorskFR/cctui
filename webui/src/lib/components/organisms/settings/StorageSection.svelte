@@ -1,7 +1,7 @@
 <script lang="ts">
-	// What this browser holds locally, shown as a group of the Instance page.
-	// Today that is the IndexedDB attachment cache behind unsent drafts; the
-	// readout is recomputed after a clear so the figure never lies.
+	// What this browser holds locally: the IndexedDB attachment cache behind
+	// unsent drafts. The readout is recomputed after a clear so the figure
+	// never lies.
 	import { Button, Text } from '@dorsk/tsumikit';
 	import SettingGroup from '$lib/components/molecules/SettingGroup.svelte';
 	import SettingRow from '$lib/components/molecules/SettingRow.svelte';

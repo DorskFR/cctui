@@ -6,7 +6,13 @@
 	import { Input, Badge, Tabs, Text, type TabItem } from '@dorsk/tsumikit';
 	import { goto } from '$app/navigation';
 	import NavLink from '$lib/components/atoms/NavLink.svelte';
-	import { settingsHref, type SettingsPage } from './settings.logic';
+	import {
+		SETTINGS_SCOPES,
+		settingsHref,
+		settingsScope,
+		type SettingsPage,
+		type SettingsScope
+	} from './settings.logic';
 	import { m } from '$lib/paraglide/messages';
 
 	export interface TocEntry {
@@ -25,6 +31,15 @@
 		active: SettingsPage;
 		query?: string;
 	} = $props();
+
+	const scopeLabel = (s: SettingsScope) =>
+		s === 'you' ? m.settings_scope_you() : m.settings_scope_instance();
+	const groups = $derived(
+		SETTINGS_SCOPES.map((scope) => ({
+			scope,
+			entries: entries.filter((e) => settingsScope(e.page) === scope)
+		})).filter((g) => g.entries.length > 0)
+	);
 
 	// Narrow screens: the same pages as kit tabs; picking one routes.
 	const tabs = $derived<TabItem[]>(entries.map((e) => ({ id: e.page, label: e.label })));
@@ -50,20 +65,25 @@
 			placeholder={m.settings_filter_placeholder()}
 		/>
 	</div>
-	{#each entries as e (e.page)}
-		<NavLink
-			href={settingsHref(e.page)}
-			class="toc-link"
-			aria-current={active === e.page ? 'page' : undefined}
-		>
-			<span class="toc-item" class:active={active === e.page}>
-				<span class="ico"><Text tone={active === e.page ? 'accent' : 'faint'}>{e.icon}</Text></span>
-				<Text size="sm" tone={active === e.page ? 'default' : 'muted'}>{e.label}</Text>
-				{#if e.admin}
-					<span class="tag"><Badge tone="warn" size="sm" border>{m.settings_scope_admin()}</Badge></span>
-				{/if}
-			</span>
-		</NavLink>
+	{#each groups as g (g.scope)}
+		<div class="scope">
+			<Text size="xs" tone="faint" weight="semibold">{scopeLabel(g.scope)}</Text>
+		</div>
+		{#each g.entries as e (e.page)}
+			<NavLink
+				href={settingsHref(e.page)}
+				class="toc-link"
+				aria-current={active === e.page ? 'page' : undefined}
+			>
+				<span class="toc-item" class:active={active === e.page}>
+					<span class="ico"><Text tone={active === e.page ? 'accent' : 'faint'}>{e.icon}</Text></span>
+					<Text size="sm" tone={active === e.page ? 'default' : 'muted'}>{e.label}</Text>
+					{#if e.admin}
+						<span class="tag"><Badge tone="warn" size="sm" border>{m.settings_scope_admin()}</Badge></span>
+					{/if}
+				</span>
+			</NavLink>
+		{/each}
 	{/each}
 </nav>
 
@@ -78,6 +98,14 @@
 	.search {
 		position: relative;
 		margin-bottom: var(--sp-3);
+	}
+	.scope {
+		padding: var(--sp-3) var(--sp-3) var(--sp-1);
+		text-transform: uppercase;
+		letter-spacing: 0.06em;
+	}
+	.scope:first-of-type {
+		padding-top: 0;
 	}
 	.search-icon {
 		position: absolute;

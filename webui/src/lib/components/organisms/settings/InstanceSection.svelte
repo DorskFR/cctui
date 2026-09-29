@@ -1,9 +1,9 @@
 <script lang="ts">
 	// Settings › Instance: what this deployment is (versions, update check) and
-	// what this browser spends on it (network, local storage), plus the
-	// admin-only server settings — the instance name shown in the header, the
-	// machine the self-update agent runs on, the default CctuiAgent limits and
-	// the upstream host allowlist. Admin values live in
+	// what this browser spends on it (network), plus the admin-only server
+	// settings — the instance name shown in the header, server-wide sign-in,
+	// the machine the self-update agent runs on, the default CctuiAgent limits
+	// and the upstream host allowlist. Admin values live in
 	// `instance_settings` on the server, not in the per-user blob; the name is
 	// read back through /version so the header and tab title pick it up on the
 	// next refetch.
@@ -15,8 +15,8 @@
 	import MachinePicker from '$lib/components/molecules/MachinePicker.svelte';
 	import NetStatsChip from '$lib/components/molecules/NetStatsChip.svelte';
 	import UpdateModal from '$lib/components/organisms/UpdateModal.svelte';
-	import StorageSection from './StorageSection.svelte';
 	import HarnessUpdateGroup from './HarnessUpdateGroup.svelte';
+	import PasskeySignInGroup from './PasskeySignInGroup.svelte';
 	import SpawnLimitsGroup from './SpawnLimitsGroup.svelte';
 	import UpstreamHostsGroup from './UpstreamHostsGroup.svelte';
 	import { useVersion, useAllMachines, endpoints, qk } from '$lib/queries';
@@ -228,12 +228,11 @@
 				</div>
 			</SettingRow>
 		</SettingGroup>
+		<PasskeySignInGroup />
 		<HarnessUpdateGroup />
 		<SpawnLimitsGroup />
 		<UpstreamHostsGroup />
 	{/if}
-
-	<StorageSection />
 </SettingSection>
 
 {#if updateOpen && version.data?.latest_version}

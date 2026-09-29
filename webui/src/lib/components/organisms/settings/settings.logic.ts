@@ -88,7 +88,11 @@ export function applySettingsFilter(root: ParentNode, query: string): number {
 	return visible;
 }
 
-/** The routed Settings pages, in navigation order. */
+/**
+ * The routed Settings pages, in navigation order. The order is also the scope
+ * grouping: every "you" page comes before every "instance" page, so the nav can
+ * render one heading per scope without reordering.
+ */
 export const SETTINGS_PAGES = [
 	'appearance',
 	'sessions',
@@ -99,18 +103,32 @@ export const SETTINGS_PAGES = [
 	'notifications',
 	'monitoring',
 	'security',
-	'instance',
-	'guides'
+	'guides',
+	'instance'
 ] as const;
 
 export type SettingsPage = (typeof SETTINGS_PAGES)[number];
 
 export const DEFAULT_SETTINGS_PAGE: SettingsPage = 'appearance';
 
+export const SETTINGS_SCOPES = ['you', 'instance'] as const;
+export type SettingsScope = (typeof SETTINGS_SCOPES)[number];
+
+const INSTANCE_PAGES: readonly SettingsPage[] = ['instance'];
+
+export function settingsScope(page: SettingsPage): SettingsScope {
+	return INSTANCE_PAGES.includes(page) ? 'instance' : 'you';
+}
+
+export function pagesInScope(scope: SettingsScope): SettingsPage[] {
+	return SETTINGS_PAGES.filter((p) => settingsScope(p) === scope);
+}
+
 /** Anchors older deep links point at, and the page that now owns them. */
 const HASH_ALIASES: Record<string, SettingsPage> = {
-	storage: 'instance',
+	storage: 'sessions',
 	version: 'instance',
+	'passkey-sign-in': 'instance',
 	'self-update': 'instance',
 	'net-stats': 'instance',
 	upstreams: 'instance',

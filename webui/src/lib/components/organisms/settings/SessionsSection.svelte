@@ -8,6 +8,7 @@
 	import SettingGroup from '$lib/components/molecules/SettingGroup.svelte';
 	import SettingRow from '$lib/components/molecules/SettingRow.svelte';
 	import SettingSection from '$lib/components/molecules/SettingSection.svelte';
+	import StorageSection from './StorageSection.svelte';
 	import { settings } from '$lib/settings.svelte';
 	import { m } from '$lib/paraglide/messages';
 	import { clampFollowupWhenCold } from '$lib/followup';
@@ -206,4 +207,5 @@
 			/>
 		</SettingRow>
 	</SettingGroup>
+	<StorageSection />
 </SettingSection>

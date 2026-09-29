@@ -11,7 +11,7 @@
 	import PrivacySection from './PrivacySection.svelte';
 	import NotificationsSection from './NotificationsSection.svelte';
 	import MonitoringSection from './MonitoringSection.svelte';
-import SecuritySection from './SecuritySection.svelte';
+	import SecuritySection from './SecuritySection.svelte';
 	import GuidesSection from './GuidesSection.svelte';
 	import InstanceSection from './InstanceSection.svelte';
 	import type { SettingsPage } from './settings.logic';
@@ -44,13 +44,13 @@ import SecuritySection from './SecuritySection.svelte';
 	<MonitoringSection />
 </div>
 <div class="pg" class:on={current === 'security'} data-settings-page="security" data-journey="page" data-journey-key="security">
-	<SecuritySection {isAdmin} />
-</div>
-<div class="pg" class:on={current === 'instance'} data-settings-page="instance" data-journey="page" data-journey-key="instance">
-	<InstanceSection {isAdmin} />
+	<SecuritySection />
 </div>
 <div class="pg" class:on={current === 'guides'} data-settings-page="guides" data-journey="page" data-journey-key="guides">
 	<GuidesSection />
+</div>
+<div class="pg" class:on={current === 'instance'} data-settings-page="instance" data-journey="page" data-journey-key="instance">
+	<InstanceSection {isAdmin} />
 </div>
 
 <style>

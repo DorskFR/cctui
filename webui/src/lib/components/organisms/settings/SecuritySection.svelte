@@ -1,12 +1,11 @@
 <script lang="ts">
 	// Settings › Security: the caller's own WebAuthn credentials (list, enrol,
-	// test, revoke) plus the one server-wide knob (admin) that decides whether
-	// the login screen reads the key on its own. The list is loaded on demand
-	// rather than through the query cache: it changes only from this screen.
-	import { Button, Icon, Input, Switch, Text, Timestamp } from '@dorsk/tsumikit';
+	// test, revoke). The server-wide sign-in knob lives under Instance. The list
+	// is loaded on demand rather than through the query cache: it changes only
+	// from this screen.
+	import { Button, Icon, Input, Text, Timestamp } from '@dorsk/tsumikit';
 	import SettingGroup from '$lib/components/molecules/SettingGroup.svelte';
-	import SettingRow from '$lib/components/molecules/SettingRow.svelte';
-	import SettingSection from '$lib/components/molecules/SettingSection.svelte';
+		import SettingSection from '$lib/components/molecules/SettingSection.svelte';
 	import { endpoints } from '$lib/queries';
 	import { toasts } from '$lib/toast.svelte';
 	import { auth } from '$lib/auth.svelte';
@@ -15,8 +14,6 @@
 	import type { PasskeyRow } from '@bindings/PasskeyRow';
 	import type { JsonValue } from '@bindings/serde_json/JsonValue';
 	import { m } from '$lib/paraglide/messages';
-
-	let { isAdmin }: { isAdmin: boolean } = $props();
 
 	let passkeyCfg = $state<PasskeyConfig | null>(null);
 	let passkeyList = $state<PasskeyRow[]>([]);
@@ -90,15 +87,6 @@
 		}
 	}
 
-	async function setPasskeyAutoPrompt(on: boolean) {
-		try {
-			await endpoints.setPasskeyAutoPrompt(on);
-			if (passkeyCfg) passkeyCfg = { ...passkeyCfg, auto_prompt: on };
-		} catch (e) {
-			toasts.error(e instanceof Error ? e.message : String(e));
-		}
-	}
-
 	$effect(() => {
 		void loadPasskeys();
 	});
@@ -162,21 +150,6 @@
 				{/if}
 			</div>
 		</SettingGroup>
-		{#if isAdmin}
-			<SettingGroup>
-				<SettingRow
-					label={m.settings_passkeys_auto_prompt_label()}
-					help={m.settings_passkeys_auto_prompt_help()}
-					server
-					admin
-				>
-					<Switch
-						bind:checked={() => passkeyCfg?.auto_prompt === true, (v) => setPasskeyAutoPrompt(v)}
-						label={m.settings_passkeys_auto_prompt_label()}
-					/>
-				</SettingRow>
-			</SettingGroup>
-		{/if}
 	{/if}
 </SettingSection>
 
