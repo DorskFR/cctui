@@ -855,6 +855,7 @@ impl<'a> EventLoop<'a> {
                         "codex_version": self.thread.codex_version,
                         "spawn_key": session.spawn_key,
                         "relation": relation,
+                        "started_at_ms": crate::neighbours::now_ms(),
                     }),
                 },
             })

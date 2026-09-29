@@ -682,7 +682,7 @@ async fn announce_resume_marks(
                 meta: cctui_proto::adapter::SessionMeta {
                     working_dir: Some(cwd),
                     parent_local_id: None,
-                    extra: serde_json::json!({ "source": "codex-app-server" }),
+                    extra: serde_json::json!({ "source": "codex-app-server", "replayed": true }),
                 },
             })
             .await
