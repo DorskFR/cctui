@@ -1,4 +1,4 @@
-import { AUTO_THEME, type ThemePreference } from '$lib/themeMode';
+import { AUTO_THEME, type ThemePreference } from '@dorsk/tsumikit';
 
 /** The subset of a kit theme definition the pickers need. */
 export interface ThemeOptionDef {

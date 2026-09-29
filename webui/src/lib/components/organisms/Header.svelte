@@ -10,8 +10,7 @@
 	import { notify } from '$lib/notify.svelte';
 	import { settings } from '$lib/settings.svelte';
 	import { toasts } from '$lib/toast.svelte';
-	import { Avatar, Dot, FontScalePicker, Menu, Text } from '@dorsk/tsumikit';
-	import ThemeModePicker from '$lib/components/molecules/ThemeModePicker.svelte';
+	import { Avatar, Dot, FontScalePicker, Menu, Text, ThemePicker } from '@dorsk/tsumikit';
 	import type { MenuItem } from '@dorsk/tsumikit';
 	import NavLink from '$lib/components/atoms/NavLink.svelte';
 	import MainNav from '$lib/components/organisms/MainNav.svelte';
@@ -177,7 +176,15 @@ import ResourceBattery from '$lib/components/molecules/ResourceBattery.svelte';
 			<span class="batt"><ResourceBattery /><UsageBattery /></span>
 			<span class="divider" aria-hidden="true"></span>
 			<span class="prefs">
-				<ThemeModePicker />
+				<ThemePicker
+					auto
+					autoLabel={m.theme_auto_label()}
+					autoHelp={m.theme_auto_help()}
+					lightLabel={m.theme_group_light()}
+					darkLabel={m.theme_group_dark()}
+					box="md"
+					placement="bottom-end"
+				/>
 				<FontScalePicker />
 			</span>
 			<Menu label={m.nav_user_menu()} items={userMenu} bare placement="bottom-end">
