@@ -838,9 +838,11 @@ impl CategorySamples {
     }
 }
 
-/// Collect example matches per category from `value`, accumulating into `out`
-/// so a caller can sample across many rows under one budget. Read-only: unlike
-/// [`redact_json_stats`] it never rewrites the document.
+/// Collect example matches per category from `value`.
+///
+/// Accumulates into `out` so a caller can sample across many rows under one
+/// budget. Read-only: unlike [`redact_json_stats`] it never rewrites the
+/// document.
 pub fn collect_samples(
     value: &Value,
     patterns: &CompiledPatterns,
@@ -963,14 +965,14 @@ fn sample_context(input: &str, start: usize, end: usize, patterns: &CompiledPatt
     ctx.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn floor_boundary(s: &str, mut i: usize) -> usize {
+const fn floor_boundary(s: &str, mut i: usize) -> usize {
     while i > 0 && !s.is_char_boundary(i) {
         i -= 1;
     }
     i
 }
 
-fn ceil_boundary(s: &str, mut i: usize) -> usize {
+const fn ceil_boundary(s: &str, mut i: usize) -> usize {
     while i < s.len() && !s.is_char_boundary(i) {
         i += 1;
     }
