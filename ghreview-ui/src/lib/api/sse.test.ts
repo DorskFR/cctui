@@ -95,12 +95,12 @@ describe("eventsUrl", () => {
     expect(eventsUrl()).toBe("/api/v1/plugins/ghreview/backend/v1/events");
   });
 
-  it("carries the bearer token as a query parameter when standalone", () => {
+  it("never puts a credential in the standalone stream url", () => {
     configureRuntime({ baseUrl: "https://ghreview.example", token: "session-token" });
-    expect(eventsUrl()).toBe("https://ghreview.example/v1/events?access_token=session-token");
+    expect(eventsUrl()).toBe("https://ghreview.example/v1/events");
   });
 
-  it("omits the token when there is none", () => {
+  it("builds the same url when there is no token", () => {
     configureRuntime({ baseUrl: "https://ghreview.example", token: null });
     expect(eventsUrl()).toBe("https://ghreview.example/v1/events");
   });

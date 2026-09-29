@@ -1,5 +1,5 @@
 import type { QueryClient } from "@tanstack/svelte-query";
-import { baseUrl, getToken, transport } from "./config";
+import { baseUrl, transport } from "./config";
 import { keys } from "./queries";
 import type { SseEvent } from "./types";
 
@@ -47,13 +47,13 @@ export interface SseHandle {
   close(): void;
 }
 
+// EventSource cannot set an Authorization header and the backend no longer reads
+// a token from the query string, so an authenticated standalone stream is not
+// possible: dev runs the backend in its loopback-only anonymous mode.
 export function eventsUrl(): string {
   const proxy = transport();
   if (proxy) return proxy.eventsUrl();
-  const token = getToken();
-  const url = new URL(`${baseUrl()}/v1/events`, window.location.origin);
-  if (token) url.searchParams.set("access_token", token);
-  return url.toString();
+  return new URL(`${baseUrl()}/v1/events`, window.location.origin).toString();
 }
 
 export function subscribeSse(client: QueryClient, onEvent?: SseListener): SseHandle {

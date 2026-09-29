@@ -88,22 +88,32 @@ bun install
 GHREVIEW_URL=http://localhost:8790 bun run dev   # vite dev server on :5290
 ```
 
+Run the backend in its loopback-only anonymous mode for this
+(`GHREVIEW_AUTH_MODE=none GHREVIEW_UNSAFE_ALLOW_ANONYMOUS=true`): see _Auth_ below
+for why standalone SSE has no other option.
+
 The dev server proxies `/v1` (including `/v1/events` SSE) to `GHREVIEW_URL`
 (default `http://localhost:8790`), so the app is same-origin in dev. For a hosted
 build, set `VITE_GHREVIEW_URL` to the backend origin at build time instead.
 
 ### Auth
 
-Auth reuses cctui bearer tokens (see `ghreview/README.md`); the token is sent as
-`Authorization: Bearer …` on every `/v1` call and as `?access_token=` on the SSE
-stream.
+Three cases, in descending order of how much you should rely on them:
 
-- **Standalone** — the `AuthGate` prompts for a token on first load and stores it
-  in `localStorage` (`ghreview:token`) with an optional default account
+- **Plugin** — no token anywhere. The proxy authenticates the cctui session cookie
+  and signs `X-Cctui-*` identity headers the backend verifies. `EventSource` hits
+  the proxy path directly and the cookie rides along because it is same-origin.
+- **Embedded (legacy)** — cctui-ui injects a bearer minted for the signed-in user,
+  sent as `Authorization: Bearer …` on every `/v1` call.
+- **Standalone** — the `AuthGate` prompts for a token and stores it in
+  `localStorage` (`ghreview:token`) with an optional default account
   (`ghreview:account`); `VITE_GHREVIEW_TOKEN` / `VITE_GHREVIEW_ACCOUNT` seed these
-  for local dev.
-- **Embedded** — cctui-ui injects a bearer minted for the signed-in user (CCT-603
-  resolves it against the shared DB), so there is no second login.
+  for local dev. **SSE cannot be authenticated in this mode.** `EventSource` cannot
+  set a request header and the backend no longer reads a token from the query
+  string (a credential in a URL lands in every access log), so `/v1/events` only
+  works against a backend in `GHREVIEW_AUTH_MODE=none`, which refuses to boot
+  without `GHREVIEW_UNSAFE_ALLOW_ANONYMOUS=true` and binds to `127.0.0.1` only.
+  Plain `/v1` fetches still authenticate normally with the bearer header.
 
 ## Commands
 
