@@ -185,11 +185,116 @@ or an over-long value is a `400`. An unknown plugin id is a `404`.
   and again when the response is built.
 - `backend` — `true` when the plugin declares one.
 
+## Plugin backends
+
+A plugin may ship its own HTTP service, deployed separately from cctui. The
+browser never talks to it directly and never holds a token for it: every call
+goes through cctui, which authenticates the user as usual and then asserts that
+identity to the backend with a signature.
+
+```json
+"instanceSettings": [ { "key": "upstream", "label": "Backend URL", "type": "url" } ],
+"backend": { "upstreamSetting": "upstream" }
+```
+
+`upstreamSetting` must name a declared instance setting of type `url` that is
+**not** secret — the admin has to be able to see and edit it. A manifest that
+breaks either rule is refused at install.
+
+### The route
+
+```
+ANY /api/v1/plugins/{id}/backend/{*path}
+```
+
+- Authenticates with the normal cctui **cookie or bearer** (`read` scope). No
+  new credential exists, so nothing is minted into the browser.
+- `404` when the plugin is unknown, instance-disabled, or declares no `backend` —
+  the three are deliberately indistinguishable. `403` when the caller has not
+  enabled the plugin for themselves.
+- `503` when no admin has set the upstream, or the plugin has no proxy secret.
+- `502` when the upstream does not answer.
+- Request and response bodies are **streamed**, never buffered, and the client
+  used for upstreams has **no response timeout**, so a `text/event-stream`
+  response stays open as long as the backend keeps it open. The request body
+  limit is lifted on this route only.
+- **No redirects.** The upstream client's redirect policy is `none`: a `3xx` is
+  relayed to the caller verbatim rather than followed, so a compromised backend
+  cannot walk the proxy to an address the admin never configured.
+- The upstream is validated as an absolute `http`/`https` URL with a host, but
+  it is **not** put through the SSRF guard — cluster-internal hosts like
+  `http://ghreview.cctui.svc.cluster.local:8790` are exactly the point, and only
+  an admin can set it.
+- **CSRF.** The route sits under the same `/api/v1` gate as everything else, so
+  an unsafe method (`POST`/`PUT`/`PATCH`/`DELETE`) carried by the `cctui_auth`
+  cookie needs an allowed `Origin` (else `Referer`). Bearer calls are unaffected.
+
+### What the backend receives
+
+Stripped before forwarding: `Authorization`, the `cctui_auth` and
+`cctui_preview` cookies (other cookies are kept, per cookie, not per header),
+`Host`, every hop-by-hop header, and **every inbound `X-Cctui-*` header**, so a
+caller cannot supply its own identity.
+
+Injected:
+
+| Header | Value |
+| --- | --- |
+| `X-Cctui-User-Id` | the authenticated user's UUID |
+| `X-Cctui-User-Name` | `users.name` |
+| `X-Cctui-Plugin` | the plugin id |
+| `X-Cctui-Ts` | Unix seconds when the proxy signed |
+| `X-Cctui-Sig` | lowercase hex `HMAC-SHA256(secret, canonical)` |
+
+The canonical string is, byte for byte:
+
+```
+<METHOD> LF <PATH> LF <TS> LF <USER_ID>
+```
+
+i.e. `format!("{method}\n{path}\n{ts}\n{user_id}")`. Exactly:
+
+- `METHOD` is the HTTP method upper-case, as received (`GET`, `POST`, …).
+- `PATH` is the `{*path}` suffix with **exactly one leading slash and no query
+  string or fragment** — `v1/pulls?state=open` signs as `/v1/pulls`. The query
+  is still forwarded, it is simply not signed.
+- `TS` is the Unix timestamp in seconds, decimal, no padding.
+- `USER_ID` is the UUID in lower-case hyphenated form.
+- There is no trailing newline.
+
+A backend verifies by recomputing this with its own copy of the secret, in
+constant time, and rejecting a `TS` outside its clock-skew window (ghreview
+allows ±300 s). Fixed vectors both sides' tests read live in
+[`plugin-proxy-signature-vectors.json`](./plugin-proxy-signature-vectors.json) —
+change the signer and that test fails on both sides.
+
+### The proxy secret
+
+One secret per plugin, sealed in `plugin_settings.proxy_secret` with the server's
+vault key. It is minted when a plugin declaring a `backend` is installed, and the
+install response carries it **once** as `proxy_secret` (only when freshly
+minted). `POST /api/v1/admin/plugins/{id}/proxy-secret` rotates it and returns
+the new value once. No other endpoint ever returns it; `proxy_secret_set` only
+says whether one exists. Rotating it breaks the backend until its
+`GHREVIEW_PROXY_SECRET` (or equivalent) is updated — rotate both together.
+
+### SSE and replicas
+
+The proxy is a **stateless per-pod forward**. It holds no shared state: the pod
+that receives the browser's request opens its own connection to the upstream and
+streams bytes through it. There is no cross-pod hop as previews have, and none is
+needed — any replica can serve any plugin backend request, and an SSE stream
+simply lives for as long as that one pod↔upstream connection does. A rolling
+restart drops open streams, and the client is expected to reconnect
+(`EventSource` does so by itself). If the *upstream* runs several replicas, it is
+responsible for its own fan-out; cctui does not broadcast between them.
+
 ## Endpoints
 
 | Route | Auth | Purpose |
 | --- | --- | --- |
 | `GET /api/v1/plugins` | bearer, read | `PluginInfo[]`: manifest fields, `web` as `/plugins/<id>/<web>?v=<sha8>`, `enabled`, `settings` declarations and the caller's `config` values |
+| `ANY /api/v1/plugins/{id}/backend/{*path}` | bearer or cookie, read | proxy to the plugin's backend with signed identity headers; streams, incl. SSE |
 | `POST /api/v1/plugins/rescan` | admin | re-read the plugins directory |
 | `GET /api/v1/admin/plugins` | admin | `AdminPluginInfo[]`: every plugin, installed or from the directory, with its instance toggle |
 | `GET /api/v1/admin/plugins/catalog` | admin | `CatalogPluginInfo[]`: the published catalog, annotated with `installed_version` and `update_available` |

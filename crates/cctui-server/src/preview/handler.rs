@@ -166,7 +166,7 @@ fn is_websocket_upgrade(headers: &HeaderMap) -> bool {
 
 /// A `Cookie` header value minus cctui's own credentials; `None` when nothing
 /// belonging to the app is left.
-pub(super) fn app_cookies(value: &str) -> Option<String> {
+pub fn app_cookies(value: &str) -> Option<String> {
     let kept: Vec<&str> = value
         .split(';')
         .map(str::trim)

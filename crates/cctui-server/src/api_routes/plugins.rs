@@ -6,7 +6,7 @@ use crate::authz::{Authn, Routes};
 use crate::{auth, routes};
 use axum::extract::DefaultBodyLimit;
 use axum::http::Method;
-use axum::routing::{get, patch, post};
+use axum::routing::{any, get, patch, post};
 
 const INSTALL_BODY_LIMIT: usize = crate::plugin_archive::MAX_ARCHIVE_BYTES + 1024 * 1024;
 
@@ -16,6 +16,14 @@ pub(super) fn register(r: Routes) -> Routes {
         "/plugins",
         "List installed plugins with the caller's enabled flags.",
         get(routes::plugins::list),
+        Authn::Bearer,
+        Authenticated,
+    )
+    .add(
+        &[GET, Method::POST, Method::PUT, Method::PATCH, Method::DELETE],
+        "/plugins/{id}/backend/{*path}",
+        "Proxy a request to the plugin's own backend, authenticated as the caller with signed identity headers; the plugin must be instance-enabled and enabled by the caller.",
+        any(crate::plugin_proxy::backend).layer(DefaultBodyLimit::disable()),
         Authn::Bearer,
         Authenticated,
     )
