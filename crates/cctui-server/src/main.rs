@@ -202,6 +202,7 @@ async fn build_state(
         spawn_capabilities: Arc::new(dashmap::DashMap::new()),
         session_usd_budgets: Arc::new(dashmap::DashMap::new()),
         gateway_rate_windows: Arc::new(dashmap::DashMap::new()),
+        upload_caps: Arc::new(std::sync::RwLock::new(uploads::UploadCaps::default())),
         update_check: update_check::UpdateCheck::shared(),
         provider_status: provider_status::ProviderStatusCache::shared(),
         self_update: Arc::new(routes::self_update::SelfUpdateGuard::default()),
