@@ -31,7 +31,7 @@ async function render(host: Partial<HostContext>, path = "/"): Promise<void> {
     props: {
       host: { cctuiApi: 1, origin: "https://cctui.example", ...host } as HostContext,
       component: ReviewPage,
-      page: { basePath: "/apps/ghreview", path, navigate: host.navigate ?? (() => {}) },
+      props: { basePath: "/apps/ghreview", path, navigate: host.navigate ?? (() => {}) },
     },
   });
   await tick();

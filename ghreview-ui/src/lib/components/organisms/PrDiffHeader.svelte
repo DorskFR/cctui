@@ -12,6 +12,7 @@
   import MergeButton from "../MergeButton.svelte";
   import Reviewers from "../Reviewers.svelte";
   import ReviewSummaryBar from "../ReviewSummaryBar.svelte";
+  import ReviewWithAgent from "../ReviewWithAgent.svelte";
   import PrHeaderIdentity from "../molecules/PrHeaderIdentity.svelte";
 
   interface Props {
@@ -137,6 +138,9 @@
           size="sm"
           label="Diff layout"
         />
+      </div>
+      <div class="agent-action">
+        <ReviewWithAgent {owner} {repo} {pull} />
       </div>
       <div class="review-action">
         <ReviewSummaryBar

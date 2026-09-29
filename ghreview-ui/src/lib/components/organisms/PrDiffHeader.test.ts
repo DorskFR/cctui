@@ -124,5 +124,7 @@ describe("PrDiffHeader", () => {
     expect(document.querySelector(".reviewers-row")).not.toBeNull();
     expect(document.querySelector(".actions .diff-mode")).not.toBeNull();
     expect(document.querySelector(".actions .review-action")).not.toBeNull();
+    expect(document.querySelector(".actions .agent-action")).not.toBeNull();
+    expect(document.querySelector('[data-action="review-with-agent"]')).toBeNull();
   });
 });
