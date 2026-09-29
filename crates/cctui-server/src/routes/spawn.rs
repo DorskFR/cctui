@@ -21,7 +21,9 @@ use axum::http::StatusCode;
 use axum::{Extension, Json};
 
 use cctui_proto::adapter::{AdapterCommand, AdapterId, BootstrapUploads, SessionSpec};
-use cctui_proto::api::{ApiError, LaunchRequest, SpawnRequest, SpawnResponse};
+use cctui_proto::api::{
+    ApiError, LaunchRequest, ScheduleLaunchRequest, SpawnRequest, SpawnResponse,
+};
 use cctui_proto::ws::DaemonFrameDown;
 use uuid::Uuid;
 
@@ -828,9 +830,20 @@ pub async fn launch_draft(
     Path(session_id): Path<String>,
     Json(launch): Json<LaunchRequest>,
 ) -> Result<(StatusCode, Json<SpawnResponse>), AppError> {
+    launch_stored_draft(&state, &ctx, &session_id, launch.env).await
+}
+
+/// Shared with the scheduled-launch sweep: a due draft must go out through the
+/// same path as a hand-launched one.
+pub async fn launch_stored_draft(
+    state: &AppState,
+    ctx: &AuthContext,
+    session_id: &str,
+    env: std::collections::BTreeMap<String, String>,
+) -> Result<(StatusCode, Json<SpawnResponse>), AppError> {
     let row: Option<(String, serde_json::Value)> =
         sqlx::query_as("SELECT status, metadata FROM sessions WHERE id = $1")
-            .bind(&session_id)
+            .bind(session_id)
             .fetch_optional(&state.pool)
             .await?;
     let Some((status, metadata)) = row else {
@@ -849,23 +862,23 @@ pub async fn launch_draft(
             })
         })?;
     // Env is entered fresh at launch; account gateway env is minted in dispatch.
-    req.env = launch.env;
+    req.env = env;
     req.save_draft = false;
     // Labels put on the draft card after it was saved travel with the launch.
-    for id in crate::spawn_labels::draft_label_ids(&state.pool, &session_id).await {
+    for id in crate::spawn_labels::draft_label_ids(&state.pool, session_id).await {
         if !req.label_ids.contains(&id) {
             req.label_ids.push(id);
         }
     }
 
-    let outcome = dispatch_spawn(&state, &ctx, req, Vec::new(), Vec::new())
+    let outcome = dispatch_spawn(state, ctx, req, Vec::new(), Vec::new())
         .await
         .map_err(|(code, Json(e))| AppError::new(code, e.error))?;
 
     // Drop the draft only after a successful dispatch; the live session is born
     // from the daemon's registration with its own id.
     if let Err(e) = sqlx::query("DELETE FROM sessions WHERE id = $1 AND status = 'draft'")
-        .bind(&session_id)
+        .bind(session_id)
         .execute(&state.pool)
         .await
     {
@@ -873,6 +886,44 @@ pub async fn launch_draft(
     }
     tracing::info!(draft = %session_id, "draft launched");
     Ok(outcome)
+}
+
+/// `POST /api/v1/sessions/{id}/schedule-launch`. Queue a draft to launch at
+/// `launch_at`; replaces any schedule already on it.
+pub async fn schedule_draft_launch(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Path(session_id): Path<String>,
+    Json(body): Json<ScheduleLaunchRequest>,
+) -> Result<StatusCode, AppError> {
+    let at = crate::scheduled_messages::parse_deliver_at(&body.launch_at, chrono::Utc::now())
+        .map_err(|e| AppError::new(StatusCode::BAD_REQUEST, e.to_string()))?;
+    let status: Option<String> = sqlx::query_scalar("SELECT status FROM sessions WHERE id = $1")
+        .bind(&session_id)
+        .fetch_optional(&state.pool)
+        .await?;
+    let Some(status) = status else {
+        return Err(AppError::new(StatusCode::NOT_FOUND, "draft not found"));
+    };
+    if SessionRowStatus::parse(&status) != Some(SessionRowStatus::Draft) {
+        return Err(AppError::new(StatusCode::BAD_REQUEST, "session is not a draft"));
+    }
+    crate::scheduled_spawns::schedule(&state.pool, &session_id, Some(ctx.user_id), at).await?;
+    tracing::info!(draft = %session_id, launch_at = %at, "draft launch scheduled");
+    Ok(StatusCode::ACCEPTED)
+}
+
+/// `POST /api/v1/sessions/{id}/cancel-launch`. Drop a draft's schedule and
+/// leave the draft itself alone.
+pub async fn cancel_draft_launch(
+    State(state): State<AppState>,
+    Path(session_id): Path<String>,
+) -> Result<StatusCode, AppError> {
+    if !crate::scheduled_spawns::cancel(&state.pool, &session_id).await? {
+        return Err(AppError::new(StatusCode::NOT_FOUND, "draft is not scheduled"));
+    }
+    tracing::info!(draft = %session_id, "draft launch schedule cancelled");
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// `POST /api/v1/sessions/{id}/discard`. Delete a draft session row.

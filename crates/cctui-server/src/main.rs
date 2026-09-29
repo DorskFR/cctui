@@ -38,6 +38,7 @@ mod preview;
 mod registry;
 mod routes;
 mod scheduled_messages;
+mod scheduled_spawns;
 mod session_emoji;
 mod settings_catalog;
 mod skill_store;
@@ -683,6 +684,7 @@ async fn reaper_task(state: AppState) {
 
         auto_resume::sweep(&state).await;
         scheduled_messages::sweep(&state).await;
+        scheduled_spawns::sweep(&state).await;
 
         state.permission_store.write().await.reap_stale(300); // seconds
     }

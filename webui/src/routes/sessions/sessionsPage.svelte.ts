@@ -81,6 +81,7 @@ export interface SessionsPageDeps {
     | "deleteLabel"
     | "launchDraft"
     | "discardDraft"
+    | "cancelDraftLaunch"
     | "updateDraft"
     | "spawn"
   >;
@@ -545,6 +546,16 @@ export class SessionsPage {
       );
     } finally {
       this.launchingDraft = null;
+    }
+  };
+
+  // Cancelling a schedule keeps the draft: the queue row is the schedule.
+  cancelDraftSchedule = async (s: SessionListItem) => {
+    try {
+      await this.#d.actions.cancelDraftLaunch(s.id);
+      this.#d.toasts.ok(m.sessions_toast_draft_schedule_cancelled());
+    } catch (e) {
+      this.#d.toasts.error(errMessage(e));
     }
   };
 

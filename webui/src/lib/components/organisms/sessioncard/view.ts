@@ -45,6 +45,26 @@ export interface SessionView {
 	unreadCount: number;
 	draft: boolean;
 	draftLaunching: boolean;
+	/** Scheduled draft: when it is due, and the last launch failure if any. */
+	scheduled: ScheduledLaunch | null;
+}
+
+export type ScheduledLaunch = { at: Date; label: string; error: string | null };
+
+/** A draft's queued launch, `null` when it is not scheduled. */
+export function scheduledLaunchOf(s: SessionListItem): ScheduledLaunch | null {
+	if (!s.launch_at) return null;
+	const at = new Date(s.launch_at);
+	if (Number.isNaN(at.getTime())) return null;
+	return {
+		at,
+		label: at.toLocaleString([], {
+			weekday: 'short',
+			hour: '2-digit',
+			minute: '2-digit'
+		}),
+		error: s.launch_error ?? null
+	};
 }
 
 export interface SessionActions {
@@ -62,6 +82,7 @@ export interface SessionActions {
 	onLaunch?: (s: SessionListItem) => void;
 	onEdit?: (s: SessionListItem) => void;
 	onDiscard?: (s: SessionListItem) => void;
+	onCancelSchedule?: (s: SessionListItem) => void;
 }
 
 export function prLinksOf(s: SessionListItem): PrLink[] {
@@ -146,6 +167,7 @@ export function buildView(
 		pendingCount: opts.pendingCount,
 		unreadCount: opts.unreadCount,
 		draft: opts.draft,
-		draftLaunching: opts.draftLaunching
+		draftLaunching: opts.draftLaunching,
+		scheduled: scheduledLaunchOf(s)
 	};
 }

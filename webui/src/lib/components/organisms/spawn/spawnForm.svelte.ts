@@ -40,7 +40,13 @@ import { applySpec, initialProfile, specFromForm, specOf, type ProfileSpecForm }
 import { blank, seedForm } from './spawnSeed';
 import { SpawnRecall } from './spawnRecall';
 import { buildSpawnBody, draftBody, envMap } from './spawnBody';
-import { autosave, dispatchToK8s, saveDraft, spawnOnMachine } from './spawnSubmit';
+import {
+	autosave,
+	dispatchToK8s,
+	saveDraft,
+	scheduleLaunch as queueLaunch,
+	spawnOnMachine
+} from './spawnSubmit';
 
 const ENV_KEY_RE = /^[A-Z_][A-Z0-9_]*$/;
 
@@ -420,6 +426,18 @@ export class SpawnForm {
 			await saveDraft(this);
 		} catch (e) {
 			toasts.error(m.spawn_toast_save_draft_failed({ error: errMessage(e) }));
+		} finally {
+			this.busy = false;
+		}
+	};
+
+	scheduleLaunch = async (at: Date) => {
+		if (!this.draftValid || this.busy) return;
+		this.busy = true;
+		try {
+			await queueLaunch(this, at);
+		} catch (e) {
+			toasts.error(m.spawn_toast_schedule_failed({ error: errMessage(e) }));
 		} finally {
 			this.busy = false;
 		}

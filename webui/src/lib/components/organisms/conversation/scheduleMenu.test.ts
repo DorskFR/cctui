@@ -41,6 +41,15 @@ describe('scheduleMenuItems', () => {
 		expect(list[list.length - 1].disabled).toBe(false);
 	});
 
+	it('drops the pending-list entry where there is no list (the spawn modal)', () => {
+		const presets = schedulePresets(new Date(NOW));
+		const oncustom = vi.fn();
+		const list = scheduleMenuItems({ now: NOW, canSchedule: true, onpreset: vi.fn(), oncustom });
+		expect(list).toHaveLength(presets.length + 1);
+		list[list.length - 1].onselect?.();
+		expect(oncustom).toHaveBeenCalledTimes(1);
+	});
+
 	it('disables the pending list entry when nothing is scheduled', () => {
 		const { list, onlist, oncustom } = items({ scheduledCount: 0 });
 		const last = list[list.length - 1];

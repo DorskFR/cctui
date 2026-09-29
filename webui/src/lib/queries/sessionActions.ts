@@ -205,6 +205,14 @@ export function useSessionActions() {
       inval();
       return res;
     },
+    scheduleDraftLaunch: async (id: string, launchAt: string) => {
+      await endpoints.scheduleDraftLaunch(id, launchAt);
+      inval();
+    },
+    cancelDraftLaunch: async (id: string) => {
+      await endpoints.cancelDraftLaunch(id);
+      inval();
+    },
     discardDraft: async (id: string) => {
       await endpoints.discardDraft(id);
       inval();

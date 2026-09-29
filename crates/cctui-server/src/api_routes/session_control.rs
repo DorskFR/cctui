@@ -27,6 +27,22 @@ pub(super) fn register(r: Routes) -> Routes {
             sess_write(),
         )
         .add(
+            &[Method::POST],
+            "/sessions/{id}/schedule-launch",
+            "Queue a draft session to launch later.",
+            post(routes::spawn::schedule_draft_launch),
+            Authn::Bearer,
+            sess_write(),
+        )
+        .add(
+            &[Method::POST],
+            "/sessions/{id}/cancel-launch",
+            "Cancel a draft session's queued launch.",
+            post(routes::spawn::cancel_draft_launch),
+            Authn::Bearer,
+            sess_write(),
+        )
+        .add(
             &[Method::PUT],
             "/sessions/{id}/draft",
             "Replace a draft session's stored spawn payload in place.",

@@ -24,4 +24,12 @@ unread_count: number, activity_detail?: string | null, last_tool_at?: string | n
 /**
  * Empty means render nothing.
  */
-todos: Array<TodoEntry>, has_token_credentials: boolean, account_traffic_observed: boolean, pr_links?: Array<string>, end_reason?: SessionEndReason | null, end_detail?: string | null, ended_at?: string | null, auto_archive_at?: string | null, archived_by?: RemoveInitiator | null, keepalive?: KeepaliveState | null, last_keepalive_at?: string | null, };
+todos: Array<TodoEntry>, has_token_credentials: boolean, account_traffic_observed: boolean, pr_links?: Array<string>, end_reason?: SessionEndReason | null, end_detail?: string | null, ended_at?: string | null, auto_archive_at?: string | null, archived_by?: RemoveInitiator | null, keepalive?: KeepaliveState | null, last_keepalive_at?: string | null, 
+/**
+ * Draft only: when the queued launch is due.
+ */
+launch_at?: string | null, 
+/**
+ * Draft only: the last launch attempt's failure, kept until it succeeds.
+ */
+launch_error?: string | null, };
