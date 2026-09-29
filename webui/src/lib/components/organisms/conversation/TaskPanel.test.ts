@@ -31,7 +31,8 @@ const render = (progress: TodoProgress | null, sessionId = 's1') => {
 	comp = mount(TaskPanel, { target: document.body, props: { sessionId, progress } });
 };
 
-const strip = () => document.querySelector('.strip') as HTMLButtonElement | null;
+const strip = () =>
+	document.querySelector('.tasks button[aria-expanded]') as HTMLButtonElement | null;
 const text = () => document.body.textContent ?? '';
 
 describe('TaskPanel', () => {

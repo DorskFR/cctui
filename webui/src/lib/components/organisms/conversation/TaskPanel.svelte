@@ -39,20 +39,22 @@
 					{/if}
 				</span>
 			{/snippet}
-			<ul class="list">
-				{#each progress.items as t, i (i)}
-					<li class="task" class:done={t.status === 'completed'} class:active={t.status === 'in_progress'}>
-						<span class="glyph" aria-hidden="true">{GLYPH[t.status]}</span>
-						<span class="subject" title={t.content}>{t.content}</span>
-						<span class="status">{label[t.status]()}</span>
-						{#if t.blockedBy?.length}
-							<span class="blocked" title={t.blockedBy.join(', ')}>
-								{m.tasks_blocked_by({ tasks: t.blockedBy.join(', ') })}
-							</span>
-						{/if}
-					</li>
-				{/each}
-			</ul>
+			{#if open}
+				<ul class="list">
+					{#each progress.items as t, i (i)}
+						<li class="task" class:done={t.status === 'completed'} class:active={t.status === 'in_progress'}>
+							<span class="glyph" aria-hidden="true">{GLYPH[t.status]}</span>
+							<span class="subject" title={t.content}>{t.content}</span>
+							<span class="status">{label[t.status]()}</span>
+							{#if t.blockedBy?.length}
+								<span class="blocked" title={t.blockedBy.join(', ')}>
+									{m.tasks_blocked_by({ tasks: t.blockedBy.join(', ') })}
+								</span>
+							{/if}
+						</li>
+					{/each}
+				</ul>
+			{/if}
 		</Disclosure>
 	</div>
 {/if}
