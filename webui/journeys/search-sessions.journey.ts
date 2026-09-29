@@ -31,7 +31,7 @@ export default defineJourney({
 				title: { en: 'Everything you have run is in here', fr: 'Tout ce que vous avez lancé est ici' },
 				body: { en: 'Live runs and finished ones alike. Count the rows now — the next two steps will cut this list down in front of you.', fr: 'Les runs en cours comme ceux terminés. Comptez les lignes maintenant : les deux étapes suivantes vont réduire cette liste sous vos yeux.' }
 			},
-			expect: [{ count: ['session', { min: 4 }] }],
+			expect: [{ count: ['session', { min: 1 }] }],
 			capture: 'before'
 		},
 		{

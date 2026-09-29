@@ -1,10 +1,10 @@
 import { defineJourney } from '@dorsk/journey';
 
-const LOOSE = 'acme-research';
 const BOARD = '/accounts';
-// Positional: a real board holds any number of cards, so a path segment would
-// resolve ambiguously and fail.
-const ANY_ACCOUNT = { css: '[data-journey="account"]', nth: 0 } as const;
+// Every step anchors on board furniture rather than on a card: a user who has no
+// account yet is exactly who this guide is for, and `optional` cannot rescue a
+// missing target once a human is driving.
+const CLOSE = { role: 'button', name: 'Cancel' } as const;
 
 export default defineJourney({
 	id: 'accounts-pools',
@@ -20,75 +20,50 @@ export default defineJourney({
 			target: 'accounts',
 			say: {
 				title: { en: 'Every account you can run on', fr: 'Tous les comptes sur lesquels vous pouvez travailler' },
-				body: { en: 'Accounts are the provider credentials your agents run on. This board is empty until you add one, and nothing can be launched before it has one.', fr: 'Les comptes sont les identifiants fournisseur sur lesquels vos agents s’exécutent. Ce tableau reste vide jusqu’à ce que vous en ajoutiez un, et rien ne peut être lancé avant.' }
+				body: { en: 'An account is one provider credential — the thing an agent bills its tokens to. This board is the whole list, and until it holds one, nothing can be launched.', fr: 'Un compte est un identifiant fournisseur — ce sur quoi un agent facture ses jetons. Ce tableau est la liste complète, et tant qu’il est vide, rien ne peut être lancé.' }
 			},
 			expect: [{ visible: 'accounts' }],
 			capture: 'board'
 		},
 		{
-			id: 'card',
-			route: BOARD,
-			optional: true,
-			target: ANY_ACCOUNT,
+			id: 'anatomy',
+			target: 'accounts',
 			say: {
-				title: { en: 'What a card tells you', fr: 'Ce que dit une carte' },
-				body: { en: 'Each card is one credential: who owns it, which providers it carries, and how much of its budget is already spent. The grip on its edge is how it joins a pool.', fr: 'Chaque carte représente un identifiant : son propriétaire, les fournisseurs qu’il porte et la part de budget déjà consommée. La poignée sur son bord permet de le rattacher à un pool.' }
-			}
-		},
-		{
-			id: 'pool',
-			qaOnly: true,
-			target: 'pool[production]',
-			say: {
-				title: { en: 'A pool is a set of interchangeable accounts', fr: 'Un pool est un ensemble de comptes interchangeables' },
-				body: { en: 'Launches aimed at the pool elect a member by headroom, so a spent weekly budget on one account does not stop the work.', fr: 'Les lancements visant le pool élisent un membre selon sa marge restante : un budget hebdomadaire épuisé sur un compte n’arrête pas le travail.' }
+				title: { en: 'What each card tells you', fr: 'Ce que dit chaque carte' },
+				body: { en: 'A card carries its name and emoji, who owns it, which providers and models it can reach, and how much of its budget is already spent. The grip on its left edge is how it joins a pool.', fr: 'Une carte porte son nom et son emoji, son propriétaire, les fournisseurs et modèles qu’elle atteint, et la part de budget déjà consommée. La poignée sur son bord gauche permet de la rattacher à un pool.' }
 			},
-			expect: [{ visible: 'pool[production]' }],
-			capture: 'pool'
-		},
-		{
-			id: 'handle',
-			qaOnly: true,
-			target: `account[${LOOSE}]/drag-handle`,
-			say: {
-				title: { en: 'Drag an account into a pool', fr: 'Glisser un compte dans un pool' },
-				body: { en: 'The grip on a card lifts it; dropping it on a pool adds it to the membership.', fr: 'La poignée d’une carte la soulève ; la déposer sur un pool l’ajoute aux membres.' }
-			},
-			expect: [{ visible: `account[${LOOSE}]/drag-handle` }],
-			capture: 'handle'
-		},
-		{
-			id: 'menu',
-			qaOnly: true,
-			target: `account[${LOOSE}]/account-menu`,
-			do: { kind: 'click' },
-			say: {
-				title: { en: 'Or add it from the card menu', fr: 'Ou l’ajouter depuis le menu de la carte' },
-				body: { en: 'The same membership change without a mouse drag, which is also how it is done on a phone.', fr: 'Le même changement d’appartenance sans glisser-déposer, et c’est aussi la méthode sur téléphone.' }
-			},
-			capture: 'menu'
+			capture: 'anatomy'
 		},
 		{
 			id: 'pools',
-			route: BOARD,
 			target: 'new-pool',
 			say: {
-				title: { en: 'Group accounts once you have several', fr: 'Regrouper les comptes quand vous en avez plusieurs' },
-				body: { en: 'A pool is a set of interchangeable accounts. Aim a session at the pool instead of one account and it picks whichever member has budget left, so a weekly limit on one does not halt your work.', fr: 'Un pool est un ensemble de comptes interchangeables. Visez le pool plutôt qu’un compte précis : il choisit le membre qui a encore du budget, et une limite hebdomadaire n’arrête pas votre travail.' }
+				title: { en: 'A pool is a set of interchangeable accounts', fr: 'Un pool est un ensemble de comptes interchangeables' },
+				body: { en: 'Aim a session at a pool instead of one account and it elects whichever member has the most budget left, so a weekly limit reached on one account does not stop your work. Drag a card by its grip onto a pool to add it, or use the card’s own menu — the same change without a mouse, which is how it is done on a phone.', fr: 'Visez un pool plutôt qu’un compte précis : il élit le membre qui a le plus de budget restant, et une limite hebdomadaire atteinte sur un compte n’arrête pas votre travail. Glissez une carte par sa poignée sur un pool pour l’ajouter, ou passez par le menu de la carte — le même changement sans souris, et c’est la méthode sur téléphone.' }
 			},
-			expect: [{ visible: 'new-pool' }]
+			expect: [{ visible: 'new-pool' }],
+			capture: 'pools'
 		},
-		// Must stay last: the click opens a modal over the board, hiding every
-		// capture above it.
 		{
 			id: 'add',
-			route: BOARD,
 			target: 'new-account',
 			do: { kind: 'click' },
 			say: {
 				title: { en: 'Add your first account', fr: 'Ajoutez votre premier compte' },
-				body: { en: 'Add the credential your agents will run on. Once it is saved you can launch a session; pools are for when you have more than one.', fr: 'Ajoutez l’identifiant sur lequel vos agents s’exécuteront. Une fois enregistré, vous pouvez lancer une session ; les pools servent quand vous en avez plusieurs.' }
-			}
+				body: { en: 'Open the dialog. You will name the credential, pick its provider and paste the key — nothing leaves this instance, and the key is encrypted before it is stored.', fr: 'Ouvrez la boîte de dialogue. Vous nommerez l’identifiant, choisirez son fournisseur et collerez la clé — rien ne quitte cette instance, et la clé est chiffrée avant d’être stockée.' }
+			},
+			capture: 'add'
+		},
+		{
+			id: 'close',
+			target: CLOSE,
+			do: { kind: 'click' },
+			say: {
+				title: { en: 'Close it for now', fr: 'Fermez-la pour l’instant' },
+				body: { en: 'Nothing is saved until you submit, so dismissing it changes nothing. Come back with a real key and the board will have its first card — then a session has something to run on.', fr: 'Rien n’est enregistré avant validation : fermer ne change rien. Revenez avec une vraie clé et le tableau aura sa première carte — une session aura alors de quoi tourner.' }
+			},
+			expect: [{ visible: 'new-account' }],
+			capture: 'closed'
 		}
 	]
 });
