@@ -19,6 +19,17 @@ describe('looksMeta', () => {
 		expect(looksMeta('# Autonomous loop\ntick')).toBe(true);
 	});
 
+	it('leaves a pasted transcript that quotes a marker deep down alone', () => {
+		const pasted = [
+			'We reached 1M context, take over please',
+			...Array.from({ length: 195 }, (_, i) => `**User:** turn ${i}\n**Assistant:** ok`),
+			'<task-notification>a job finished</task-notification>'
+		].join('\n');
+		expect(looksMeta(pasted)).toBe(false);
+		const rambling = ['please read this', 'it is long', 'and rambling', 'but mine'].join('\n');
+		expect(looksMeta(`${rambling}\n<system-reminder>x</system-reminder>`)).toBe(false);
+	});
+
 	it('leaves human prose that quotes a marker inline alone', () => {
 		expect(looksMeta('the <system-reminder> tag keeps firing, can we mute it?')).toBe(false);
 		expect(looksMeta('ship it')).toBe(false);

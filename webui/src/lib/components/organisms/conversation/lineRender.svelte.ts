@@ -1,6 +1,7 @@
 import type { AgentEvent } from '@bindings/AgentEvent';
 import { highlightBlock, renderMarkdown } from '$lib/markdown';
 import { highlightTerms } from '$lib/search';
+import { headHiddenByFilter } from './headHidden';
 import { createLineBuilder, type DeliveryState, type LineBuildCtx } from './lines';
 import type { Line, MsgCategory, ViewOpts } from './types';
 
@@ -76,6 +77,9 @@ export class LineRenderer {
 			retrying: this.#o.retrying()
 		})
 	);
+	// What the filter drops ahead of the first rendered row, so the head of the
+	// transcript is never silently empty.
+	headHidden = $derived.by(() => headHiddenByFilter(this.#o.events(), this.#ctx));
 	askPreambleHtml = $derived.by(() => {
 		const p = this.#o.askPreamble();
 		return p ? this.hl(renderMarkdown(p)) : null;

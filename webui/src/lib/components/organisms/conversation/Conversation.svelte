@@ -8,6 +8,7 @@
 	import LivePrompts from './LivePrompts.svelte';
 	import TurnSummaryFooter from './TurnSummaryFooter.svelte';
 	import { latestTodoLineKey } from './format';
+	import { NO_HEAD_HIDDEN, atHeadOfTranscript, type HeadHidden } from './headHidden';
 	import { copyLineMarkdown, saveLineImage } from './lineActions';
 	import type { ScrollController } from './scroll.svelte';
 	import type { ConversationStream } from './stream.svelte';
@@ -26,6 +27,8 @@
 		canFetchOlder = false,
 		fetchingOlder = false,
 		onfetcholder,
+		headHidden = NO_HEAD_HIDDEN,
+		onrevealhead,
 		archived,
 		askPreambleHtml,
 		planPreambleHtml,
@@ -57,6 +60,9 @@
 		canFetchOlder?: boolean;
 		fetchingOlder?: boolean;
 		onfetcholder?: () => Promise<void>;
+		/** Renderable rows the filter hides ahead of the oldest rendered one. */
+		headHidden?: HeadHidden;
+		onrevealhead?: (categories: HeadHidden['categories']) => void;
 		archived: boolean;
 		askPreambleHtml: string | null;
 		planPreambleHtml: string | null;
@@ -106,6 +112,7 @@
 		grow: () => scroll.holdForPrepend(() => (renderLimit += RENDER_CHUNK))
 	};
 	const visibleLines = $derived(hiddenOlder > 0 ? lines.slice(hiddenOlder) : lines);
+	const atStart = $derived(atHeadOfTranscript(hiddenOlder, canFetchOlder));
 	const latestTodoKey = $derived(latestTodoLineKey(lines));
 	export async function loadOlder() {
 		if (hiddenOlder === 0 && canFetchOlder && onfetcholder) await onfetcholder();
@@ -194,6 +201,16 @@
 			<EmptyState size="inline" title={m.conversation_no_events()} />
 		{/if}
 
+		{#if atStart && headHidden.count > 0}
+			<div class="older-row">
+				<Button pill size="sm" onclick={() => onrevealhead?.(headHidden.categories)}>
+					{m.conversation_start_of_conversation()}
+					<Text tone="faint">
+						{' · '}{m.conversation_hidden_by_filters({ count: headHidden.count })}
+					</Text>
+				</Button>
+			</div>
+		{/if}
 		{#if hiddenOlder > 0 || canFetchOlder}
 			<!-- Lazy render: older lines are mounted on demand so a
 			     long transcript opens fast. -->

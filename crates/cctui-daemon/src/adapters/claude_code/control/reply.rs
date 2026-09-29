@@ -27,6 +27,7 @@ impl Driver {
         // injected turn ahead of its id. A reply with no id clears any previous
         // one rather than letting it leak onto an unrelated turn.
         self.note_turn(local_id, turn_id);
+        self.note_delivered(local_id, text);
         // Hibernated sessions (worker exited, job state still on disk)
         // have left `short_by_session`, so fall back to deriving the
         // short from the session id — same as the removal path. The derived
