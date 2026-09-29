@@ -56,4 +56,10 @@ provider_settings?: Record<string, unknown>,
  * Replacement rate-limit object `{ rpm?, tpm? }`. Provided → replaces the
  * stored value (an empty object / zeros clear it); absent → unchanged.
  */
-rate_limits?: RateLimits, };
+rate_limits?: RateLimits, 
+/**
+ * Replacement quota probe id. Provided → replaces it (an empty string
+ * clears it, leaving the credential unmeasured); absent → unchanged. Must
+ * name a registered probe.
+ */
+usage_probe?: string, };

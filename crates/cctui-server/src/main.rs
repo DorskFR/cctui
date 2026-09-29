@@ -23,6 +23,7 @@ mod langfuse;
 mod live_sessions;
 mod machine_liveness;
 mod machine_resources;
+mod metrics;
 mod normalize;
 mod ntfy;
 mod openapi;
@@ -36,6 +37,7 @@ mod policy;
 mod pool_usage;
 mod presence;
 mod preview;
+mod provider_status;
 mod registry;
 mod routes;
 mod scheduled_messages;
@@ -50,6 +52,7 @@ mod store;
 mod update_check;
 mod uploads;
 mod usage_history;
+mod usage_probe;
 mod webauthn;
 mod webhook;
 mod ws;
@@ -200,6 +203,7 @@ async fn build_state(
         session_usd_budgets: Arc::new(dashmap::DashMap::new()),
         gateway_rate_windows: Arc::new(dashmap::DashMap::new()),
         update_check: update_check::UpdateCheck::shared(),
+        provider_status: provider_status::ProviderStatusCache::shared(),
         self_update: Arc::new(routes::self_update::SelfUpdateGuard::default()),
         pending_commands: Arc::new(dashmap::DashMap::new()),
     })
@@ -241,6 +245,15 @@ async fn start_background_tasks(state: &AppState) {
     // `CCTUI_UPDATE_CHECK=0` keeps air-gapped deployments quiet.
     if update_check::enabled_from_env() {
         tokio::spawn(update_check::task(state.update_check.clone(), state.http_client.clone()));
+    }
+
+    // Statuspage poller behind `GET /provider-status` and the usage payloads;
+    // `CCTUI_PROVIDER_STATUS=0` keeps every family on `unknown`.
+    if provider_status::enabled_from_env() {
+        tokio::spawn(provider_status::task(
+            state.provider_status.clone(),
+            state.http_client.clone(),
+        ));
     }
 
     // Warm the reauth gate from the persisted flag so a restart doesn't
@@ -311,6 +324,11 @@ fn build_app(state: &AppState, config: &Config, auth_config: &auth::AuthConfig) 
 fn outer_routes() -> Router<AppState> {
     Router::new()
         .route("/health", get(|| async { "ok" }))
+        // Prometheus scrape. Self-authenticating (same token scheme as
+        // `/api/v1`, unless `CCTUI_METRICS_PUBLIC` opts out), so it sits here
+        // rather than under the `/api/v1` auth layer: a scrape config expects
+        // `/metrics` at the root.
+        .route("/metrics", get(routes::metrics::metrics))
         // Self-describing API surface. Both are unauthenticated meta
         // routes — like `/health` — because they expose ONLY the public shape of
         // the API (paths/methods/auth model/summaries), never any data. An agent
@@ -842,6 +860,7 @@ mod tests {
             "GET /prompts/resolve Bearer Authenticated",
             "DELETE /prompts/{id} Bearer Authenticated",
             "GET /prompts/{id} Bearer Authenticated",
+            "GET /provider-status Bearer Authenticated",
             "GET /redirects Bearer Human",
             "DELETE /redirects/{id} Bearer Human",
             "GET /sessions Bearer Authenticated",

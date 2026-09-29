@@ -15,6 +15,7 @@ mod plugins;
 mod previews;
 mod profiles;
 mod prompts;
+mod provider_status;
 mod session_bulk;
 mod session_control;
 mod session_lifecycle;
@@ -60,6 +61,7 @@ pub fn register(r: Routes) -> Routes {
     let r = labels::register(r);
     let r = daemon::register(r);
     let r = prompts::register(r);
+    let r = provider_status::register(r);
     let r = keys::register(r);
     let r = accounts::register(r);
     let r = profiles::register(r);

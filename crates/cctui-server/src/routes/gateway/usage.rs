@@ -331,7 +331,7 @@ pub fn record_usage_samples(
             &pool,
             provider_id,
             &windows,
-            chrono::Utc::now(),
+            Utc::now(),
             "poll",
         )
         .await;
@@ -380,6 +380,14 @@ async fn usage_for_account(
     if Family::from_provider(&acct.provider) == Family::Fireworks {
         return fireworks_usd_windows(state, &acct).await;
     }
+    // A compatible endpoint measures itself only if the operator named a probe;
+    // a probe failure returns an error so the caller degrades to "usage unknown"
+    // rather than to an unmeasured credential that looks wide open.
+    if matches!(acct.provider.as_str(), "anthropic-compatible" | "openai-compatible")
+        && let Some(id) = usage_probe_id(state, account_id).await
+    {
+        return probe_usage_windows(state, &acct, &id).await;
+    }
     if acct.provider != "anthropic" {
         // OpenAI/codex accounts: read the ChatGPT backend's REAL 5h/7d rate-limit
         // windows — the same numbers `codex /status` shows, keyed on the
@@ -421,6 +429,54 @@ async fn usage_for_account(
         merge_reset_status(&mut json, &status);
     }
     Ok(Some(json))
+}
+
+/// The probe named on a credential, for the compatible endpoints that may carry
+/// one. Read separately from the account load so the shared `Account` shape
+/// stays as the gateway's hot path needs it.
+async fn usage_probe_id(state: &AppState, account_id: Uuid) -> Option<String> {
+    sqlx::query_scalar::<_, Option<String>>(
+        "SELECT usage_probe FROM account_providers WHERE id = $1",
+    )
+    .bind(account_id)
+    .fetch_optional(&state.pool)
+    .await
+    .ok()
+    .flatten()
+    .flatten()
+    .filter(|id| !id.is_empty())
+}
+
+/// Run a named probe for a credential and shape its windows like an upstream
+/// usage payload, so the cache, the history samples and the soft limit consume
+/// it unchanged.
+async fn probe_usage_windows(
+    state: &AppState,
+    acct: &Account,
+    probe_id: &str,
+) -> Result<Option<serde_json::Value>, StatusCode> {
+    let Some(probe) = crate::usage_probe::probe(probe_id) else {
+        tracing::warn!(account = %acct.id, probe_id, "unknown usage probe on a credential");
+        return Ok(None);
+    };
+    let Some(token) = acct.access_token.as_deref() else {
+        return Err(StatusCode::BAD_GATEWAY);
+    };
+    match crate::usage_probe::run(
+        &state.http_client,
+        probe,
+        acct.base_url.as_deref(),
+        token,
+        chrono::Utc::now(),
+    )
+    .await
+    {
+        Ok(windows) => Ok(Some(crate::usage_probe::windows_to_usage_json(&windows))),
+        Err(e) => {
+            tracing::warn!(account = %acct.id, probe_id, "usage probe failed: {e}");
+            Err(StatusCode::BAD_GATEWAY)
+        }
+    }
 }
 
 /// Per-window token budget an OpenAI/codex account's local utilization is measured

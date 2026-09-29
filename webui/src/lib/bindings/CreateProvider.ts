@@ -71,4 +71,9 @@ provider_settings?: Record<string, unknown>,
  * Per-(account, provider) gateway rate limits `{ rpm?, tpm? }`. Absent ⇒
  * NULL (no throttling). Validated before persist.
  */
-rate_limits?: RateLimits, };
+rate_limits?: RateLimits, 
+/**
+ * Quota probe from the server's registry that measures this credential.
+ * Compatible endpoints only; absent ⇒ unmeasured.
+ */
+usage_probe?: string, };

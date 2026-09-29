@@ -3,6 +3,7 @@
 	import { m } from '$lib/paraglide/messages';
 	import Error from '$lib/components/atoms/Error.svelte';
 	import { looseSettings } from './pages.logic';
+	import { USAGE_PROBES } from '$lib/providers';
 
 	let {
 		endpoint = false,
@@ -13,6 +14,7 @@
 		baseUrl = $bindable(''),
 		credential = $bindable(''),
 		authScheme = $bindable('keep'),
+		usageProbe = $bindable(''),
 		settings = $bindable({}),
 		moveTargets = [],
 		moveFamily = '',
@@ -28,6 +30,7 @@
 		baseUrl?: string;
 		credential?: string;
 		authScheme?: 'bearer' | 'api_key' | 'keep';
+		usageProbe?: string;
 		settings?: Record<string, unknown>;
 		moveTargets?: { id: string; name: string }[];
 		moveFamily?: string;
@@ -98,6 +101,14 @@
 					placeholder={m.accounts_placeholder_keep_current()}
 				/>
 			</Field>
+			<Field label={m.accounts_field_usage_probe()}>
+				<Select bind:value={usageProbe} aria-label={m.accounts_field_usage_probe()}>
+					{#each USAGE_PROBES as p (p.value)}
+						<option value={p.value}>{p.label}</option>
+					{/each}
+				</Select>
+			</Field>
+			<Text as="div" tone="faint" size="xs">{m.accounts_usage_probe_help()}</Text>
 		</div>
 	{/if}
 
