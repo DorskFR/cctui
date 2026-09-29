@@ -807,9 +807,16 @@ mod tests {
     /// check through this channel.
     #[test]
     fn the_tool_env_leaves_the_gateway_env_untouched() {
-        let env: std::collections::BTreeMap<String, String> =
-            std::iter::once(("OPENAI_BASE_URL".to_owned(), "https://gw.example/v1".to_owned()))
-                .collect();
+        let env: std::collections::BTreeMap<String, String> = [
+            ("OPENAI_BASE_URL".to_owned(), "https://gw.example/v1".to_owned()),
+            ("OPENAI_API_KEY".to_owned(), "SECRET-D".to_owned()),
+        ]
+        .into_iter()
+        .collect();
+        assert!(
+            super::super::config::shared_eligible(&env, false),
+            "the fixture must be a shared-eligible gateway env, or this proves nothing"
+        );
         let tc = ThreadConfig::new(&env, None).with_tool_env(
             std::iter::once(("CCTUI_SESSION_ID".to_owned(), "k".to_owned())).collect(),
         );
