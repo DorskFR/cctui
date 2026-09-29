@@ -769,6 +769,7 @@ mod tests {
             "PUT /admin/passkeys/auto-prompt Bearer Scope(Admin)",
             "GET /admin/plugins Bearer Scope(Admin)",
             "POST /admin/plugins Bearer Scope(Admin)",
+            "GET /admin/plugins/catalog Bearer Scope(Admin)",
             "DELETE /admin/plugins/{id} Bearer Scope(Admin)",
             "PATCH /admin/plugins/{id} Bearer Scope(Admin)",
             "GET /admin/users Bearer Scope(Admin)",
