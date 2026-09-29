@@ -6,11 +6,6 @@ use std::time::{Duration, Instant};
 use tokio::sync::Notify;
 use uuid::Uuid;
 
-/// Live daemon WS connections one machine key may hold at once. A daemon needs
-/// exactly one; the rest is headroom for the overlap of a self-update re-exec
-/// and for a half-open socket that liveness has not reaped yet.
-pub(crate) const DEFAULT_MAX_CONNS: usize = 4;
-
 /// A connection this old may be displaced by a newer one from the same key.
 /// Under the daemon read timeout, so a reconnecting daemon never waits on
 /// liveness to reap its own half-open socket; above any legitimate reconnect
@@ -126,8 +121,9 @@ mod tests {
     #[test]
     fn admits_up_to_the_cap() {
         let (limit, key, now) = (limit(), Uuid::new_v4(), Instant::now());
-        let held: Vec<ConnGuard> = (0..3).filter_map(|_| limit.acquire(key, 3, now)).collect();
-        assert_eq!(held.len(), 3);
+        let held =
+            [limit.acquire(key, 3, now), limit.acquire(key, 3, now), limit.acquire(key, 3, now)];
+        assert!(held.iter().all(Option::is_some));
         assert_eq!(limit.live(key), 3);
     }
 

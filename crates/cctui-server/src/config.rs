@@ -149,6 +149,20 @@ pub struct Config {
     pub emoji_token: Option<String>,
 }
 
+/// A daemon holds one connection; the rest is headroom for the overlap of a
+/// self-update re-exec and for a half-open socket liveness has not reaped yet.
+const DEFAULT_MAX_DAEMON_WS_CONNS: usize = 4;
+
+fn daemon_ws_cap(raw: Option<String>) -> usize {
+    raw.and_then(|s| s.trim().parse::<usize>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(DEFAULT_MAX_DAEMON_WS_CONNS)
+}
+
+fn secs_from_hours(raw: Option<String>, default_hours: u64) -> u64 {
+    raw.and_then(|s| s.trim().parse::<u64>().ok()).unwrap_or(default_hours) * 60 * 60
+}
+
 fn add_origin(out: &mut Vec<String>, origin: &str) {
     let origin = origin.trim().trim_end_matches('/');
     if !origin.is_empty() && !out.iter().any(|e| e == origin) {
@@ -263,13 +277,8 @@ impl Config {
                 .or_else(|| get("CCTUI_HEARTBEAT_TIMEOUT"))
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(90),
-            archive_after_secs: get("CCTUI_SESSION_ARCHIVE_TTL_HOURS")
-                .and_then(|s| s.parse::<u64>().ok())
-                .map_or(24 * 60 * 60, |hours| hours * 60 * 60),
-            max_daemon_ws_conns: get("CCTUI_MAX_DAEMON_WS_CONNS")
-                .and_then(|s| s.trim().parse::<usize>().ok())
-                .filter(|n| *n > 0)
-                .unwrap_or(crate::routes::daemon::DEFAULT_MAX_DAEMON_WS_CONNS),
+            archive_after_secs: secs_from_hours(get("CCTUI_SESSION_ARCHIVE_TTL_HOURS"), 24),
+            max_daemon_ws_conns: daemon_ws_cap(get("CCTUI_MAX_DAEMON_WS_CONNS")),
             github_token: get("CCTUI_GITHUB_TOKEN")
                 .or_else(|| get("GH_TOKEN"))
                 .filter(|s| !s.trim().is_empty()),
@@ -277,9 +286,10 @@ impl Config {
             dispatchers: set("CCTUI_DISPATCHERS")
                 .map(|s| parse_dispatchers(&s))
                 .unwrap_or_default(),
-            ephemeral_machine_ttl_secs: get("CCTUI_EPHEMERAL_MACHINE_TTL_HOURS")
-                .and_then(|s| s.parse::<u64>().ok())
-                .map_or(2 * 60 * 60, |hours| hours * 60 * 60),
+            ephemeral_machine_ttl_secs: secs_from_hours(
+                get("CCTUI_EPHEMERAL_MACHINE_TTL_HOURS"),
+                2,
+            ),
             ntfy_token: set("CCTUI_NTFY_TOKEN"),
             ntfy_url: set("CCTUI_NTFY_URL"),
             claude_litellm_endpoint: set("CCTUI_CLAUDE_LITELLM_ENDPOINT"),
@@ -349,7 +359,7 @@ impl Config {
             plugins_dir: None,
             inactive_after_secs: 0,
             archive_after_secs: 0,
-            max_daemon_ws_conns: crate::routes::daemon::DEFAULT_MAX_DAEMON_WS_CONNS,
+            max_daemon_ws_conns: DEFAULT_MAX_DAEMON_WS_CONNS,
             github_token: None,
             http_dispatchers: vec![],
             dispatchers: vec![],
@@ -465,7 +475,7 @@ mod tests {
             plugins_dir: None,
             inactive_after_secs: 0,
             archive_after_secs: 0,
-            max_daemon_ws_conns: crate::routes::daemon::DEFAULT_MAX_DAEMON_WS_CONNS,
+            max_daemon_ws_conns: DEFAULT_MAX_DAEMON_WS_CONNS,
             github_token: None,
             http_dispatchers: vec![],
             dispatchers: vec![],
