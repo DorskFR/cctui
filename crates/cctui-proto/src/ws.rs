@@ -37,6 +37,16 @@ pub enum ReadFileErrorKind {
     Io,
 }
 
+/// A refused read, with the folders the daemon checked the path against so a
+/// client can list them without parsing `message`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReadFileRefusal {
+    pub kind: ReadFileErrorKind,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_folders: Vec<String>,
+}
+
 /// Larger files go through the blob store.
 pub const READ_FILE_INLINE_BYTES: u64 = 1024 * 1024;
 
@@ -114,6 +124,9 @@ pub enum DaemonFrameUp {
         error_kind: Option<ReadFileErrorKind>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
+        /// Folders a `Denied` was checked against. Empty from older daemons.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        allowed_folders: Vec<String>,
     },
     /// One chunk of an up-frame split by [`crate::chunk`]. `transfer_id` is the
     /// payload hash; `data` is base64. `codec: Some("zstd")` means the joined
@@ -1335,6 +1348,7 @@ mod tests {
             }),
             error_kind: None,
             error: None,
+            allowed_folders: Vec::new(),
         };
         let json = serde_json::to_string(&up).unwrap();
         assert!(json.contains(r#""type":"read_file_result""#));
@@ -1347,10 +1361,36 @@ mod tests {
             file: None,
             error_kind: Some(ReadFileErrorKind::TooLarge),
             error: Some("too big".into()),
+            allowed_folders: Vec::new(),
         };
         let json = serde_json::to_string(&err).unwrap();
         assert!(json.contains(r#""error_kind":"too_large""#));
+        assert!(!json.contains("allowed_folders"), "an empty list is skipped: {json}");
         let _back: DaemonFrameUp = serde_json::from_str(&json).unwrap();
+
+        let denied = DaemonFrameUp::ReadFileResult {
+            request_id: uuid::Uuid::nil(),
+            ok: false,
+            file: None,
+            error_kind: Some(ReadFileErrorKind::Denied),
+            error: Some("/x is outside the allowed roots: /tmp".into()),
+            allowed_folders: vec!["/tmp".into(), "/srv/app".into()],
+        };
+        let json = serde_json::to_string(&denied).unwrap();
+        assert!(json.contains(r#""allowed_folders":["/tmp","/srv/app"]"#), "{json}");
+        let back: DaemonFrameUp = serde_json::from_str(&json).unwrap();
+        assert!(
+            matches!(back, DaemonFrameUp::ReadFileResult { allowed_folders, .. }
+                if allowed_folders == ["/tmp", "/srv/app"])
+        );
+
+        let legacy_result = r#"{"type":"read_file_result","request_id":"00000000-0000-0000-0000-000000000000","ok":false,"error_kind":"denied","error":"nope"}"#;
+        let back: DaemonFrameUp = serde_json::from_str(legacy_result).unwrap();
+        assert!(
+            matches!(back, DaemonFrameUp::ReadFileResult { allowed_folders, .. }
+                if allowed_folders.is_empty()),
+            "an older daemon simply lists nothing"
+        );
     }
 
     #[test]

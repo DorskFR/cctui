@@ -880,6 +880,7 @@ mod tests {
             r#"DELETE /sessions/{id}/labels/{label_id} Bearer Resource(Session, Write, Path("id"))"#,
             r#"GET /sessions/{id}/langfuse Bearer Resource(Session, Read, Path("id"))"#,
             r#"POST /sessions/{id}/launch Bearer Resource(Session, Write, Path("id"))"#,
+            r#"GET /sessions/{id}/linked-file-owner Bearer Resource(Session, Read, Path("id"))"#,
             r#"POST /sessions/{id}/message Bearer Resource(Session, Write, Path("id"))"#,
             r#"GET /sessions/{id}/messages/scheduled Bearer Resource(Session, Read, Path("id"))"#,
             r#"DELETE /sessions/{id}/messages/scheduled/{queue_id} Bearer Resource(Session, Write, Path("id"))"#,

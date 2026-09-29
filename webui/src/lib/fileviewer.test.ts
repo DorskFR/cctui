@@ -3,7 +3,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('$app/environment', () => ({ browser: true }));
 
-import { classify, deniedRoots, installFileViewer, refusalMessage } from './fileviewer';
+import {
+	attemptOpen,
+	classify,
+	deniedRoots,
+	installFileViewer,
+	refusalMessage,
+	retargetHref
+} from './fileviewer';
 
 describe('fileviewer classify', () => {
 	it('routes by base content type', () => {
@@ -55,10 +62,100 @@ describe('fileviewer refusalMessage', () => {
 		expect(withRoots).not.toBe(refusalMessage(403, 'x.md', 'machine'));
 	});
 
+	it('prefers the structured folder list over parsing the prose', () => {
+		const detail = '/x/note.md is outside the allowed roots: /tmp';
+		expect(deniedRoots(detail, ['/srv/app', '/var/data'])).toEqual(['/srv/app', '/var/data']);
+		expect(deniedRoots(detail)).toEqual(['/tmp']);
+		expect(deniedRoots('', ['/srv/app'])).toEqual(['/srv/app']);
+		expect(deniedRoots('path was not linked in this session', [])).toEqual([]);
+
+		const worded = refusalMessage(403, 'x.md', 'machine', 'nothing parseable here');
+		const structured = refusalMessage(403, 'x.md', 'machine', 'nothing parseable here', [
+			'/srv/app'
+		]);
+		expect(structured).toContain('/srv/app');
+		expect(structured).not.toBe(worded);
+	});
+
 	it('calls a network failure a network failure on either source', () => {
 		for (const source of ['machine', 'blob'] as const) {
 			expect(refusalMessage(0, 'x.md', source)).toContain('network');
 		}
+	});
+});
+
+describe('routing a linked path to the machine that owns it', () => {
+	afterEach(() => vi.unstubAllGlobals());
+
+	const HREF = '/api/v1/machines/m1/fs/file?path=%2Fx%2Fnote.md&session_id=s1';
+
+	it('rewrites only a machine file href, keeping the path', () => {
+		expect(retargetHref(HREF, { session_id: 's2', machine_id: 'm2' })).toBe(
+			'/api/v1/machines/m2/fs/file?path=%2Fx%2Fnote.md&session_id=s2'
+		);
+		expect(retargetHref('/api/v1/sessions/s1/blobs/abc', { session_id: 's2', machine_id: 'm2' })).toBeNull();
+	});
+
+	it('retries the read on the owning machine after a refusal', async () => {
+		const seen: string[] = [];
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(async (url: string) => {
+				seen.push(url);
+				if (url.includes('linked-file-owner'))
+					return new Response(JSON.stringify({ session_id: 's2', machine_id: 'm2' }), {
+						status: 200
+					});
+				if (url.includes('/machines/m2/'))
+					return new Response('hello', {
+						status: 200,
+						headers: { 'content-type': 'text/plain' }
+					});
+				return new Response(JSON.stringify({ error: 'path was not linked in this session' }), {
+					status: 403
+				});
+			})
+		);
+		URL.createObjectURL = vi.fn(() => 'blob:stub');
+		URL.revokeObjectURL = vi.fn();
+		expect(await attemptOpen(HREF, 'note.md')).toBeNull();
+		expect(seen[0]).toBe(HREF);
+		expect(seen[1]).toContain('/api/v1/sessions/s1/linked-file-owner?path=%2Fx%2Fnote.md');
+		expect(seen[2]).toContain('/machines/m2/fs/file');
+		document.body.innerHTML = '';
+	});
+
+	it('keeps the original refusal when no other session owns the path', async () => {
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(async (url: string) =>
+				url.includes('linked-file-owner')
+					? new Response(JSON.stringify({ error: 'not linked' }), { status: 404 })
+					: new Response(
+							JSON.stringify({
+								error: '/x/note.md is outside the allowed roots: /tmp',
+								allowed_folders: ['/tmp']
+							}),
+							{ status: 403 }
+						)
+			)
+		);
+		const refusal = await attemptOpen(HREF, 'note.md');
+		expect(refusal?.status).toBe(403);
+		expect(refusal?.allowedFolders).toEqual(['/tmp']);
+	});
+
+	it('does not chase an owner for a too-large or offline refusal', async () => {
+		const seen: string[] = [];
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(async (url: string) => {
+				seen.push(url);
+				return new Response(JSON.stringify({ error: 'too big' }), { status: 413 });
+			})
+		);
+		expect((await attemptOpen(HREF, 'note.md'))?.status).toBe(413);
+		expect(seen).toEqual([HREF]);
 	});
 });
 

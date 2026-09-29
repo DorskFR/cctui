@@ -54,10 +54,14 @@ function showInlineRefusal(link: HTMLAnchorElement, text: string | null): void {
 export interface Refusal {
 	status: number;
 	detail: string;
+	/** The route's structured `allowed_folders`; empty from an older server. */
+	allowedFolders?: string[];
 }
 
-/** The roots a denial was checked against, as the daemon listed them. */
-export function deniedRoots(detail: string): string[] {
+/** The roots a denial was checked against. The structured list wins; the prose
+ *  parse is the fallback for a server or daemon that does not send one. */
+export function deniedRoots(detail: string, allowedFolders: string[] = []): string[] {
+	if (allowedFolders.length) return allowedFolders;
 	const at = detail.indexOf('allowed roots:');
 	if (at < 0) return [];
 	return detail
@@ -65,6 +69,46 @@ export function deniedRoots(detail: string): string[] {
 		.split(',')
 		.map((r) => r.trim())
 		.filter(Boolean);
+}
+
+/** The session and machine that linked a path, as `linked-file-owner` reports. */
+export interface LinkedFileOwner {
+	session_id: string;
+	machine_id: string;
+}
+
+/** The same read aimed at the machine that owns the link. `null` when `href`
+ *  is not a machine file href, so a blob href is never rewritten. */
+export function retargetHref(href: string, owner: LinkedFileOwner): string | null {
+	const url = new URL(href, 'http://cctui.invalid');
+	const path = url.pathname.replace(
+		/\/machines\/[^/]+\/fs\/file$/,
+		`/machines/${encodeURIComponent(owner.machine_id)}/fs/file`
+	);
+	if (path === url.pathname) return null;
+	url.pathname = path;
+	url.searchParams.set('session_id', owner.session_id);
+	return url.pathname + url.search;
+}
+
+/** Which session and machine linked `path`, or `null` when none the viewer can
+ *  read did. */
+async function linkOwner(sessionId: string, path: string): Promise<LinkedFileOwner | null> {
+	const url = `/api/v1/sessions/${encodeURIComponent(sessionId)}/linked-file-owner?path=${encodeURIComponent(path)}`;
+	try {
+		const res = await apiBlob(url);
+		if (!res.ok) return null;
+		const owner = (await res.json()) as LinkedFileOwner;
+		return owner.machine_id && owner.session_id ? owner : null;
+	} catch {
+		return null;
+	}
+}
+
+/** A refusal the owning machine might not give: the path may simply belong to
+ *  another machine's session. */
+function mayLiveElsewhere(status: number): boolean {
+	return status === 403 || status === 404;
 }
 
 export type FileKind = 'image' | 'text' | 'markdown' | 'download';
@@ -91,7 +135,8 @@ export function refusalMessage(
 	status: number,
 	name: string,
 	source: FileSource = 'machine',
-	detail = ''
+	detail = '',
+	allowedFolders: string[] = []
 ): string {
 	if (status === 0) return m.conversation_file_open_failed({ name, status: 'network' });
 	if (source === 'blob') {
@@ -103,7 +148,7 @@ export function refusalMessage(
 		case 413:
 			return m.conversation_file_too_large({ name });
 		case 403: {
-			const roots = deniedRoots(detail);
+			const roots = deniedRoots(detail, allowedFolders);
 			return roots.length
 				? m.conversation_file_denied_roots({ name, roots: roots.join(', ') })
 				: m.conversation_file_denied({ name });
@@ -133,24 +178,49 @@ export async function tryOpenLocalFile(
  * without surfacing anything, so the caller decides between a fallback source,
  * a toast and an inline message. */
 export async function attemptOpen(href: string, name: string): Promise<Refusal | null> {
+	const first = await readOnce(href, name);
+	if (!first || !mayLiveElsewhere(first.status)) return first;
+	const retried = await retryOnOwningMachine(href, name);
+	return retried === undefined ? first : retried;
+}
+
+/** Re-ask the machine that linked the path. `undefined` means there was nobody
+ *  else to ask, so the original refusal stands. */
+async function retryOnOwningMachine(
+	href: string,
+	name: string
+): Promise<Refusal | null | undefined> {
+	const url = new URL(href, 'http://cctui.invalid');
+	const path = url.searchParams.get('path');
+	const sessionId = url.searchParams.get('session_id');
+	if (!path || !sessionId) return undefined;
+	const owner = await linkOwner(sessionId, path);
+	if (!owner) return undefined;
+	const next = retargetHref(href, owner);
+	return next ? await readOnce(next, name) : undefined;
+}
+
+async function readOnce(href: string, name: string): Promise<Refusal | null> {
 	let res: Response;
 	try {
 		res = await apiBlob(href);
 	} catch {
 		return { status: 0, detail: '' };
 	}
-	if (!res.ok) return { status: res.status, detail: await errorDetail(res) };
+	if (!res.ok) return { status: res.status, ...(await errorDetail(res)) };
 	await present(res, name);
 	return null;
 }
 
-async function errorDetail(res: Response): Promise<string> {
+async function errorDetail(res: Response): Promise<{ detail: string; allowedFolders: string[] }> {
 	try {
-		const body: unknown = await res.json();
-		const err = (body as { error?: unknown }).error;
-		return typeof err === 'string' ? err : '';
+		const body = (await res.json()) as { error?: unknown; allowed_folders?: unknown };
+		const folders = Array.isArray(body.allowed_folders)
+			? body.allowed_folders.filter((f): f is string => typeof f === 'string')
+			: [];
+		return { detail: typeof body.error === 'string' ? body.error : '', allowedFolders: folders };
 	} catch {
-		return '';
+		return { detail: '', allowedFolders: [] };
 	}
 }
 
@@ -160,7 +230,10 @@ export async function openLocalFile(
 	source: FileSource = 'machine'
 ): Promise<void> {
 	const refusal = await attemptOpen(href, name);
-	if (refusal) toasts.error(refusalMessage(refusal.status, name, source, refusal.detail));
+	if (refusal)
+		toasts.error(
+			refusalMessage(refusal.status, name, source, refusal.detail, refusal.allowedFolders)
+		);
 }
 
 async function present(res: Response, name: string): Promise<void> {

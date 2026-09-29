@@ -26,10 +26,12 @@ use crate::client::ServerClient;
 pub struct Refused {
     pub kind: ReadFileErrorKind,
     pub message: String,
+    /// Set only for the out-of-roots denial, whose whole point is the list.
+    pub allowed_folders: Vec<String>,
 }
 
 fn refused(kind: ReadFileErrorKind, message: impl Into<String>) -> Refused {
-    Refused { kind, message: message.into() }
+    Refused { kind, message: message.into(), allowed_folders: Vec::new() }
 }
 
 /// Roots for a read made on behalf of the session whose cwd is `cwd`, using
@@ -161,10 +163,11 @@ pub fn resolve(path: &str, roots: &[PathBuf]) -> Result<PathBuf, Refused> {
     };
     if !roots.iter().any(|root| real.starts_with(root)) {
         let checked: Vec<String> = roots.iter().map(|r| r.display().to_string()).collect();
-        return Err(refused(
-            ReadFileErrorKind::Denied,
-            format!("{path} is outside the allowed roots: {}", checked.join(", ")),
-        ));
+        return Err(Refused {
+            kind: ReadFileErrorKind::Denied,
+            message: format!("{path} is outside the allowed roots: {}", checked.join(", ")),
+            allowed_folders: checked,
+        });
     }
     if is_denied(&real) {
         return Err(refused(ReadFileErrorKind::Denied, format!("{path} is not readable")));
@@ -221,8 +224,9 @@ pub async fn handle(
             file: Some(file),
             error_kind: None,
             error: None,
+            allowed_folders: Vec::new(),
         },
-        Err(Refused { kind, message }) => {
+        Err(Refused { kind, message, allowed_folders }) => {
             tracing::warn!(%path, ?kind, %message, "read-file refused");
             DaemonFrameUp::ReadFileResult {
                 request_id,
@@ -230,6 +234,7 @@ pub async fn handle(
                 file: None,
                 error_kind: Some(kind),
                 error: Some(message),
+                allowed_folders,
             }
         }
     }
@@ -302,7 +307,17 @@ mod tests {
             resolve(f.to_str().unwrap(), &roots).unwrap_err().kind,
             ReadFileErrorKind::Denied
         );
+        let err = resolve(f.to_str().unwrap(), &roots).unwrap_err();
+        let listed: Vec<String> = roots.iter().map(|r| r.display().to_string()).collect();
+        assert_eq!(err.allowed_folders, listed, "the roots travel as a list, not only as prose");
+        for root in &listed {
+            assert!(err.message.contains(root), "{}", err.message);
+        }
         assert_eq!(resolve("relative/x.txt", &roots).unwrap_err().kind, ReadFileErrorKind::Denied);
+        assert!(
+            resolve("relative/x.txt", &roots).unwrap_err().allowed_folders.is_empty(),
+            "only the out-of-roots denial lists folders"
+        );
         assert_eq!(
             resolve(dir.path().to_str().unwrap(), &roots).unwrap_err().kind,
             ReadFileErrorKind::Denied
