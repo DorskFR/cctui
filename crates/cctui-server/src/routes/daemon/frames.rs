@@ -20,17 +20,21 @@ fn resolve_read_file_result(
     file: Option<cctui_proto::ws::ReadFileOk>,
     error_kind: Option<cctui_proto::ws::ReadFileErrorKind>,
     error: Option<String>,
+    allowed_folders: Vec<String>,
 ) {
+    use cctui_proto::ws::{ReadFileErrorKind, ReadFileRefusal};
     let outcome = match (ok, file) {
         (true, Some(file)) => Ok(file),
-        (true, None) => Err((
-            cctui_proto::ws::ReadFileErrorKind::Io,
-            "daemon returned no file payload".to_owned(),
-        )),
-        (false, _) => Err((
-            error_kind.unwrap_or(cctui_proto::ws::ReadFileErrorKind::Io),
-            error.unwrap_or_else(|| "daemon reported a read failure".to_owned()),
-        )),
+        (true, None) => Err(ReadFileRefusal {
+            kind: ReadFileErrorKind::Io,
+            message: "daemon returned no file payload".to_owned(),
+            allowed_folders: Vec::new(),
+        }),
+        (false, _) => Err(ReadFileRefusal {
+            kind: error_kind.unwrap_or(ReadFileErrorKind::Io),
+            message: error.unwrap_or_else(|| "daemon reported a read failure".to_owned()),
+            allowed_folders,
+        }),
     };
     if !state.bus.resolve_read_file(request_id, outcome) {
         tracing::debug!(%request_id, "ReadFileResult for unknown request (timed out?)");
@@ -104,8 +108,23 @@ pub(super) async fn process_frame(
             }
             Ok(())
         }
-        DaemonFrameUp::ReadFileResult { request_id, ok, file, error_kind, error } => {
-            resolve_read_file_result(state, request_id, ok, file, error_kind, error);
+        DaemonFrameUp::ReadFileResult {
+            request_id,
+            ok,
+            file,
+            error_kind,
+            error,
+            allowed_folders,
+        } => {
+            resolve_read_file_result(
+                state,
+                request_id,
+                ok,
+                file,
+                error_kind,
+                error,
+                allowed_folders,
+            );
             Ok(())
         }
         frame @ DaemonFrameUp::Heartbeat { .. } => {

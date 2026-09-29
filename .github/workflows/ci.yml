@@ -507,6 +507,9 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Test the guard itself
+        run: bash scripts/no-css-global.test.sh
+
       - name: Reject new :global(...) overrides in webui Svelte files
         run: |
           base="${{ github.event.pull_request.base.sha }}"

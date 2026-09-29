@@ -112,6 +112,24 @@ export interface SessionListPatch {
 	last_message_at?: string;
 	attention?: 'needs_input';
 	bucket?: 'blocked';
+	launch_at?: string | null;
+	launch_error?: string | null;
+}
+
+/** The list patch a scheduled-draft transition implies, or `null` when the
+ *  draft row itself changed and only a refetch can describe it. */
+export function scheduledLaunchPatch(ev: EventOf<'scheduled_launch'>): SessionListPatch | null {
+	switch (ev.state) {
+		case 'scheduled':
+			return { session_id: ev.draft_id, launch_at: ev.launch_at ?? null, launch_error: null };
+		case 'cancelled':
+			return { session_id: ev.draft_id, launch_at: null, launch_error: null };
+		case 'failed':
+		case 'dead':
+			return { session_id: ev.draft_id, launch_error: ev.last_error ?? null };
+		case 'launched':
+			return null;
+	}
 }
 
 export type MessageAck = EventOf<'message_ack'>;

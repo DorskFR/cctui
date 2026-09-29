@@ -64,6 +64,14 @@ pub(super) fn register(r: Routes) -> Routes {
         )
         .add(
             &[GET],
+            "/sessions/{id}/linked-file-owner",
+            "Which session and machine linked a path, when this session did not.",
+            get(routes::fs::linked_file_owner),
+            Authn::Bearer,
+            sess_read(),
+        )
+        .add(
+            &[GET],
             "/sessions/{id}/diagnose",
             "Snapshot everything the daemon knows about a session, dated.",
             get(routes::diagnose::diagnose_session),

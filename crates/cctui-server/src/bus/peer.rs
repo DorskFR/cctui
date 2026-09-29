@@ -153,7 +153,7 @@ pub fn encode_error(err: &BusError) -> (WireErrorCode, String) {
         BusError::Staging(msg) => (WireErrorCode::Staging, msg.clone()),
         BusError::ListDirs(msg) => (WireErrorCode::ListDirs, msg.clone()),
         BusError::GitInfo(msg) => (WireErrorCode::GitInfo, msg.clone()),
-        BusError::ReadFile(kind, msg) => (WireErrorCode::ReadFile { kind: *kind }, msg.clone()),
+        BusError::ReadFile(r) => (WireErrorCode::ReadFile { kind: r.kind }, r.message.clone()),
         BusError::NotFound
         | BusError::NoAdapter
         | BusError::NoMachine
@@ -175,7 +175,13 @@ pub fn decode_error(code: WireErrorCode, message: String, target: Uuid) -> BusEr
         WireErrorCode::Staging => BusError::Staging(message),
         WireErrorCode::ListDirs => BusError::ListDirs(message),
         WireErrorCode::GitInfo => BusError::GitInfo(message),
-        WireErrorCode::ReadFile { kind } => BusError::ReadFile(kind, message),
+        // The folder list does not ride this wire; a peer-relayed denial falls
+        // back to the message alone.
+        WireErrorCode::ReadFile { kind } => BusError::ReadFile(cctui_proto::ws::ReadFileRefusal {
+            kind,
+            message,
+            allowed_folders: Vec::new(),
+        }),
         // An unclassified peer-side failure still means the frame was not
         // delivered; surface the peer's message verbatim.
         WireErrorCode::Other => BusError::Transport(message),

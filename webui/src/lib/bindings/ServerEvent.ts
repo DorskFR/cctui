@@ -4,6 +4,7 @@ import type { GithubEventKind } from "./GithubEventKind";
 import type { GithubEventPayload } from "./GithubEventPayload";
 import type { MachineLiveness } from "./MachineLiveness";
 import type { MachineResources } from "./MachineResources";
+import type { ScheduledLaunchState } from "./ScheduledLaunchState";
 import type { Session } from "./Session";
 import type { SessionEndReason } from "./SessionEndReason";
 import type { SessionStatus } from "./SessionStatus";
@@ -21,4 +22,8 @@ session_id?: string | null, } | { "type": "session_ended", session_id: string, r
 /**
  * Delivery is confirmed by [`ServerEvent::CommandResult`] under this id.
  */
-command_id?: string | null, } | { "type": "archive_manifest", machine_id: string, count: number, } | { "type": "machine_liveness", machine_id: string, liveness: MachineLiveness, } | { "type": "machine_resources", machine_id: string, resources: MachineResources, } | { "type": "account_usage", account_id: string, usage: JsonValue, } | { "type": "dispatcher_liveness", dispatcher_id: string, liveness: MachineLiveness, } | { "type": "archive_uploaded", machine_id: string, project_dir: string, session_id: string, size_bytes: number, sha256: string, } | { "type": "github_event", kind: GithubEventKind, payload: GithubEventPayload, } | { "type": "soft_limit_reached", session_id: string, account_id: string, account_name: string, reason: string, retry_after_secs: number, } | { "type": "soft_limit_cleared", session_id: string, } | { "type": "tool_call_blocked", session_id: string, tool_name: string, rule: string, } | { "type": "pty_chunk", session_id: string, data: string, } | { "type": "heartbeat", } | { "type": "resync", session_id?: string | null, };
+command_id?: string | null, } | { "type": "archive_manifest", machine_id: string, count: number, } | { "type": "machine_liveness", machine_id: string, liveness: MachineLiveness, } | { "type": "machine_resources", machine_id: string, resources: MachineResources, } | { "type": "account_usage", account_id: string, usage: JsonValue, } | { "type": "dispatcher_liveness", dispatcher_id: string, liveness: MachineLiveness, } | { "type": "archive_uploaded", machine_id: string, project_dir: string, session_id: string, size_bytes: number, sha256: string, } | { "type": "github_event", kind: GithubEventKind, payload: GithubEventPayload, } | { "type": "soft_limit_reached", session_id: string, account_id: string, account_name: string, reason: string, retry_after_secs: number, } | { "type": "soft_limit_cleared", session_id: string, } | { "type": "tool_call_blocked", session_id: string, tool_name: string, rule: string, } | { "type": "pty_chunk", session_id: string, data: string, } | { "type": "scheduled_launch", draft_id: string, 
+/**
+ * Whose drafts list this belongs to; the draft row may already be gone.
+ */
+user_id?: string | null, state: ScheduledLaunchState, launch_at?: string | null, last_error?: string | null, } | { "type": "heartbeat", } | { "type": "resync", session_id?: string | null, };
