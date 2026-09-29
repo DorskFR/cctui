@@ -97,12 +97,17 @@ afterEach(async () => {
 
 const tick = (ms = 50) => new Promise((r) => setTimeout(r, ms));
 
-async function open() {
-  localStorage.setItem(
-    SLOT,
-    JSON.stringify({ machine_id: "m-uuid-1", working_dir: "/w" }),
-  );
-  localStorage.setItem("cctui_spawn_slot", SLOT);
+// `seedSlot: false` leaves the form without a machine/cwd, the state a first
+// visit is in — `spawnValid` reads the form, not the machine list, so a seeded
+// slot keeps the CTA enabled even with nothing enrolled.
+async function open({ seedSlot = true }: { seedSlot?: boolean } = {}) {
+  if (seedSlot) {
+    localStorage.setItem(
+      SLOT,
+      JSON.stringify({ machine_id: "m-uuid-1", working_dir: "/w" }),
+    );
+    localStorage.setItem("cctui_spawn_slot", SLOT);
+  }
   component = mount(SpawnModal, {
     target: document.body,
     props: {
@@ -206,7 +211,7 @@ describe("SpawnModal schedule split-button", () => {
 
   it("falls back to a plain titled Spawn button with no machines", async () => {
     machineList = [];
-    await open();
+    await open({ seedSlot: false });
     expect(caret()).toBeNull();
     const reason = "No machines enrolled — enroll one from the Overview page.";
     const spawn = [...document.querySelectorAll("button")].find((b) =>
