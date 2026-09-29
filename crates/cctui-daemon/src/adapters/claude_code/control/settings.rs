@@ -38,7 +38,7 @@ pub(super) fn build_session_context(
         let _ = writeln!(b, "permission-mode: {}", mode.normalized_label());
     }
     let _ = writeln!(b, "cwd: {cwd}");
-    if let Some(shared) = crate::neighbours::notice(neighbours, std::time::Instant::now()) {
+    if let Some(shared) = crate::neighbours::notice(neighbours, std::time::SystemTime::now()) {
         b.push_str(&shared);
     }
     if !spec.env.is_empty() {
@@ -919,7 +919,7 @@ mod tests {
             harness: "claude-code".to_owned(),
             label: Some(label.to_owned()),
             status: Some("working".to_owned()),
-            since: std::time::Instant::now(),
+            started_at: Some(std::time::SystemTime::now()),
         }
     }
 
@@ -943,6 +943,16 @@ mod tests {
         assert!(block.contains("\"wave-3 integrator\" (claude-code, working, started 0s ago)"));
         assert!(block.contains("Its uncommitted changes are not yours"), "{block}");
         assert!(block.ends_with("</session-context>"));
+    }
+
+    #[test]
+    fn session_context_leaves_the_age_out_when_the_start_is_unknown() {
+        let mut lone = neighbour("wave-3 integrator");
+        lone.started_at = None;
+        let one = std::slice::from_ref(&lone);
+        let block = build_session_context(&bare_spec(), "/work/cctui", &[], None, one);
+        assert!(block.contains("\"wave-3 integrator\" (claude-code, working)."), "{block}");
+        assert!(!block.contains("started"), "no age beats a wrong age: {block}");
     }
 
     #[test]

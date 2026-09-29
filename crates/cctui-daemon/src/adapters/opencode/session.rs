@@ -483,6 +483,7 @@ impl OpenCodeSession {
             extra: serde_json::json!({
                 "harness": "opencode",
                 "spawn_key": self.params.key,
+                "started_at_ms": crate::neighbours::now_ms(),
             }),
         };
         self.live.lock().await.insert(

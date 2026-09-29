@@ -13,9 +13,10 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Instant;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use cctui_proto::adapter::AdapterEvent;
+use serde_json::Value;
 
 /// How many neighbours are named before the list collapses to `+N more`.
 const LIST_CAP: usize = 3;
@@ -28,17 +29,21 @@ pub struct Neighbour {
     /// The session's name, else its intent. `None` for an unnamed session.
     pub label: Option<String>,
     pub status: Option<String>,
-    pub since: Instant,
+    /// Wall-clock start the adapter reported; `None` leaves the age out rather
+    /// than dating the session from when the daemon observed it.
+    pub started_at: Option<SystemTime>,
 }
 
 impl Neighbour {
     /// `"name" (claude-code, working, started 14m ago)`.
-    fn render(&self, now: Instant) -> String {
+    fn render(&self, now: SystemTime) -> String {
         let mut parts = vec![self.harness.clone()];
         if let Some(status) = &self.status {
             parts.push(status.clone());
         }
-        parts.push(format!("started {} ago", age(now.saturating_duration_since(self.since))));
+        if let Some(elapsed) = self.started_at.and_then(|at| now.duration_since(at).ok()) {
+            parts.push(format!("started {} ago", age(elapsed)));
+        }
         let label = self.label.as_deref().unwrap_or("unnamed");
         format!("\"{label}\" ({})", parts.join(", "))
     }
@@ -52,7 +57,7 @@ struct Live {
     name: Option<String>,
     intent: Option<String>,
     status: Option<String>,
-    since: Instant,
+    started_at: Option<SystemTime>,
 }
 
 impl Live {
@@ -92,17 +97,25 @@ impl LiveDirs {
                 else {
                     return;
                 };
-                let now = Instant::now();
+                // A replay is not evidence of death: it must not register an
+                // unknown session, nor drop one already known to be running.
+                if !is_running_session(&meta.extra) {
+                    return;
+                }
+                let started_at = reported_start(&meta.extra);
                 let entry = sessions.entry(local_id.clone()).or_insert_with(|| Live {
                     cwd: PathBuf::new(),
                     harness: String::new(),
                     name: None,
                     intent: None,
                     status: None,
-                    since: now,
+                    started_at: None,
                 });
                 entry.cwd = canonical(dir);
                 adapter_id.clone_into(&mut entry.harness);
+                if started_at.is_some() {
+                    entry.started_at = started_at;
+                }
             }
             // Only an already-registered session is updated: a status carries no
             // working dir, so there is nothing to match a new entry on.
@@ -131,6 +144,14 @@ impl LiveDirs {
         }
     }
 
+    /// Drop archived sessions. Only the server knows they are archived.
+    pub fn forget(&self, local_ids: &[String]) {
+        let Ok(mut sessions) = self.sessions.lock() else { return };
+        for local_id in local_ids {
+            sessions.remove(local_id);
+        }
+    }
+
     #[must_use]
     pub fn neighbours(&self, cwd: &str, exclude: Option<&str>) -> Vec<Neighbour> {
         let Ok(sessions) = self.sessions.lock() else { return Vec::new() };
@@ -144,15 +165,15 @@ impl LiveDirs {
                 harness: live.harness.clone(),
                 label: live.label(),
                 status: live.status.clone(),
-                since: live.since,
+                started_at: live.started_at,
             })
             .collect();
-        out.sort_by(|a, b| a.since.cmp(&b.since).then_with(|| a.local_id.cmp(&b.local_id)));
+        out.sort_by_key(|n| (n.started_at.is_none(), n.started_at, n.local_id.clone()));
         out
     }
 
     #[cfg(test)]
-    fn note(&self, local_id: &str, harness: &str, cwd: &Path, since: Instant) {
+    fn note(&self, local_id: &str, harness: &str, cwd: &Path, started_at: Option<SystemTime>) {
         self.sessions.lock().unwrap().insert(
             local_id.to_owned(),
             Live {
@@ -161,10 +182,46 @@ impl LiveDirs {
                 name: None,
                 intent: None,
                 status: None,
-                since,
+                started_at,
             },
         );
     }
+}
+
+/// Whether a `SessionStarted` announces a session running under this daemon or
+/// merely a record of one. The codex `thread/list` inventory re-announces every
+/// thread on the machine, backfill replays historical transcripts, and a
+/// restored registry record has no live driver behind it.
+fn is_running_session(extra: &Value) -> bool {
+    if extra.get("backfilled").and_then(Value::as_bool) == Some(true)
+        || extra.get("replayed").and_then(Value::as_bool) == Some(true)
+    {
+        return false;
+    }
+    !extra
+        .get("source")
+        .and_then(Value::as_str)
+        .is_some_and(|source| source.starts_with("codex-thread-list"))
+}
+
+/// The `started_at_ms` an adapter stamps into `SessionMeta::extra` as it starts
+/// a session, so a later re-announcement cannot re-date it to the present.
+#[must_use]
+pub fn now_ms() -> u64 {
+    u64::try_from(SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis()))
+        .unwrap_or(0)
+}
+
+/// The session's own start time, as the adapter that owns it reported it:
+/// `started_at_ms` (epoch ms) or claude's RFC 3339 `created_at`.
+fn reported_start(extra: &Value) -> Option<SystemTime> {
+    if let Some(ms) = extra.get("started_at_ms").and_then(Value::as_u64) {
+        return Some(UNIX_EPOCH + Duration::from_millis(ms));
+    }
+    let text = extra.get("created_at").and_then(Value::as_str)?;
+    let parsed = chrono::DateTime::parse_from_rfc3339(text).ok()?;
+    let ms = u64::try_from(parsed.timestamp_millis()).ok()?;
+    Some(UNIX_EPOCH + Duration::from_millis(ms))
 }
 
 fn text(value: Option<&str>) -> Option<String> {
@@ -196,7 +253,7 @@ fn shares_tree(a: &Path, b: &Path) -> bool {
 }
 
 /// `3s` / `14m` / `1h02`, the compact spelling the notice reads with.
-fn age(elapsed: std::time::Duration) -> String {
+fn age(elapsed: Duration) -> String {
     let secs = elapsed.as_secs();
     if secs >= 3600 {
         format!("{}h{:02}", secs / 3600, (secs % 3600) / 60)
@@ -210,7 +267,7 @@ fn age(elapsed: std::time::Duration) -> String {
 /// The `shared cwd:` lines for `neighbours`, or `None` when the session is
 /// alone — there is no "0 other sessions" line.
 #[must_use]
-pub fn notice(neighbours: &[Neighbour], now: Instant) -> Option<String> {
+pub fn notice(neighbours: &[Neighbour], now: SystemTime) -> Option<String> {
     if neighbours.is_empty() {
         return None;
     }
@@ -238,6 +295,7 @@ pub fn notice(neighbours: &[Neighbour], now: Instant) -> Option<String> {
 mod tests {
     use super::*;
     use cctui_proto::adapter::{EndReason, SessionMeta};
+    use serde_json::json;
 
     /// Run `git` in `dir` with signing and the user's identity pinned off, so a
     /// fixture repo never reaches the developer's signing key.
@@ -271,10 +329,15 @@ mod tests {
     }
 
     fn started(local_id: &str, cwd: &Path) -> AdapterEvent {
+        started_with(local_id, cwd, Value::Null)
+    }
+
+    fn started_with(local_id: &str, cwd: &Path, extra: Value) -> AdapterEvent {
         AdapterEvent::SessionStarted {
             local_id: local_id.to_owned(),
             meta: SessionMeta {
                 working_dir: Some(cwd.to_string_lossy().into_owned()),
+                extra,
                 ..SessionMeta::default()
             },
         }
@@ -398,47 +461,151 @@ mod tests {
     }
 
     #[test]
-    fn sessions_of_every_harness_are_reported_oldest_first() {
+    fn sessions_of_every_harness_are_reported_oldest_first_with_unknown_starts_last() {
         let repo = git_repo();
         let dirs = LiveDirs::default();
-        let base = Instant::now();
-        dirs.note("newest", "opencode", repo.path(), base);
-        dirs.note(
-            "oldest",
-            "codex",
-            repo.path(),
-            base.checked_sub(std::time::Duration::from_mins(10)).unwrap(),
-        );
-        dirs.note(
-            "middle",
-            "claude-code",
-            repo.path(),
-            base.checked_sub(std::time::Duration::from_mins(1)).unwrap(),
-        );
+        let base = SystemTime::now();
+        dirs.note("newest", "opencode", repo.path(), Some(base));
+        dirs.note("oldest", "codex", repo.path(), Some(base - Duration::from_mins(10)));
+        dirs.note("middle", "claude-code", repo.path(), Some(base - Duration::from_mins(1)));
+        dirs.note("undated", "codex", repo.path(), None);
         assert_eq!(
             ids(&dirs.neighbours(&repo.path().to_string_lossy(), None)),
-            ["oldest", "middle", "newest"]
+            ["oldest", "middle", "newest", "undated"]
         );
     }
 
-    fn neighbour(local_id: &str, label: Option<&str>, secs: u64, now: Instant) -> Neighbour {
+    #[test]
+    fn an_inventory_or_backfill_announcement_is_not_a_live_neighbour() {
+        let repo = git_repo();
+        let cwd = repo.path().to_string_lossy().into_owned();
+        let dirs = LiveDirs::default();
+        dirs.observe(
+            "codex",
+            &started_with(
+                "inventory",
+                repo.path(),
+                json!({ "source": "codex-thread-list:user", "observed_at": 1 }),
+            ),
+        );
+        dirs.observe(
+            "claude-code",
+            &started_with("history", repo.path(), json!({ "backfilled": true })),
+        );
+        dirs.observe(
+            "codex",
+            &started_with(
+                "restored",
+                repo.path(),
+                json!({ "source": "codex-app-server", "replayed": true }),
+            ),
+        );
+        assert!(
+            dirs.neighbours(&cwd, None).is_empty(),
+            "a record of a session is not a session running here"
+        );
+
+        dirs.observe(
+            "codex",
+            &started_with(
+                "restored",
+                repo.path(),
+                json!({ "source": "codex-app-server", "started_at_ms": now_ms() }),
+            ),
+        );
+        assert_eq!(ids(&dirs.neighbours(&cwd, None)), ["restored"]);
+        dirs.observe(
+            "codex",
+            &started_with(
+                "restored",
+                repo.path(),
+                json!({ "source": "codex-app-server", "replayed": true }),
+            ),
+        );
+        assert_eq!(
+            ids(&dirs.neighbours(&cwd, None)),
+            ["restored"],
+            "a reconnect replay of a live session must not evict it"
+        );
+    }
+
+    #[test]
+    fn a_session_the_server_reports_archived_is_dropped() {
+        let repo = git_repo();
+        let cwd = repo.path().to_string_lossy().into_owned();
+        let dirs = LiveDirs::default();
+        dirs.observe("claude-code", &started("archived-later", repo.path()));
+        dirs.observe("claude-code", &started("kept", repo.path()));
+        dirs.forget(&["archived-later".to_owned(), "never-known".to_owned()]);
+        assert_eq!(ids(&dirs.neighbours(&cwd, None)), ["kept"]);
+    }
+
+    #[test]
+    fn an_idle_live_session_is_still_a_neighbour() {
+        let repo = git_repo();
+        let dirs = LiveDirs::default();
+        dirs.observe("codex", &started("waiting", repo.path()));
+        dirs.observe("codex", &status("waiting", "active", "idle", Some("awaiting input")));
+        let found = dirs.neighbours(&repo.path().to_string_lossy(), None);
+        assert_eq!(ids(&found), ["waiting"], "idle work still sits in the tree");
+        assert_eq!(found[0].status.as_deref(), Some("idle"));
+    }
+
+    #[test]
+    fn the_age_comes_from_the_reported_start_not_the_moment_it_was_observed() {
+        let repo = git_repo();
+        let cwd = repo.path().to_string_lossy().into_owned();
+        let dirs = LiveDirs::default();
+        let hour_ago = now_ms() - 3_600_000;
+        dirs.observe(
+            "codex",
+            &started_with("stamped", repo.path(), json!({ "started_at_ms": hour_ago })),
+        );
+        dirs.observe(
+            "claude-code",
+            &started_with(
+                "rfc3339",
+                repo.path(),
+                json!({ "created_at": "2026-07-15T19:25:30.428Z" }),
+            ),
+        );
+        dirs.observe("opencode", &started("undated", repo.path()));
+
+        let found = dirs.neighbours(&cwd, None);
+        let by_id =
+            |id: &str| found.iter().find(|n| n.local_id == id).expect("registered").started_at;
+        assert_eq!(by_id("stamped"), Some(UNIX_EPOCH + Duration::from_millis(hour_ago)));
+        assert_eq!(
+            by_id("rfc3339"),
+            Some(UNIX_EPOCH + Duration::from_millis(1_784_143_530_428)),
+            "claude's createdAt dates the worker, not this observation"
+        );
+        assert_eq!(by_id("undated"), None);
+
+        let now = SystemTime::now();
+        let text = notice(&found, now).expect("a notice");
+        assert!(text.contains("started 1h00 ago"), "{text}");
+        assert!(text.contains("\"unnamed\" (opencode)"), "no age beats a wrong age: {text}");
+    }
+
+    fn neighbour(local_id: &str, label: Option<&str>, secs: u64, now: SystemTime) -> Neighbour {
         Neighbour {
             local_id: local_id.to_owned(),
             harness: "claude-code".to_owned(),
             label: label.map(str::to_owned),
             status: Some("working".to_owned()),
-            since: now.checked_sub(std::time::Duration::from_secs(secs)).unwrap(),
+            started_at: Some(now - Duration::from_secs(secs)),
         }
     }
 
     #[test]
     fn no_neighbours_means_no_notice_at_all() {
-        assert!(notice(&[], Instant::now()).is_none());
+        assert!(notice(&[], SystemTime::now()).is_none());
     }
 
     #[test]
     fn one_neighbour_is_named_with_its_harness_status_age_and_the_guidance() {
-        let now = Instant::now();
+        let now = SystemTime::now();
         let text = notice(&[neighbour("s1", Some("wave-3 integrator"), 14 * 60, now)], now)
             .expect("a notice");
         assert!(text.starts_with("shared cwd: 1 other live session in this directory: "), "{text}");
@@ -450,7 +617,7 @@ mod tests {
 
     #[test]
     fn four_neighbours_list_three_and_say_how_many_more() {
-        let now = Instant::now();
+        let now = SystemTime::now();
         let all: Vec<Neighbour> = (1..=4)
             .map(|i| neighbour(&format!("s{i}"), Some(&format!("agent {i}")), 30, now))
             .collect();
@@ -469,7 +636,7 @@ mod tests {
 
     #[test]
     fn an_unnamed_neighbour_still_renders() {
-        let now = Instant::now();
+        let now = SystemTime::now();
         let text = notice(&[neighbour("s1", None, 3, now)], now).unwrap();
         assert!(text.contains("\"unnamed\" (claude-code, working, started 3s ago)"), "{text}");
     }
