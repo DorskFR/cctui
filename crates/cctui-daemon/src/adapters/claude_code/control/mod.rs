@@ -103,6 +103,25 @@ impl Default for DriverConfig {
     }
 }
 
+/// Machine-local override for `supervise_daemon`. The `adapters_enabled.config`
+/// key is server-side state an operator standing at the machine cannot reach,
+/// so the machine that owns the claude daemon gets the last word.
+const SUPERVISE_ENV: &str = "CCTUI_CLAUDE_SUPERVISE_DAEMON";
+
+/// `0`/`false`/`no`/`off` disable supervision, `1`/`true`/`yes`/`on` force it
+/// on; anything else (including unset and empty) leaves the config alone.
+fn supervise_env_override(raw: Option<&str>) -> Option<bool> {
+    match raw?.trim().to_ascii_lowercase().as_str() {
+        "0" | "false" | "no" | "off" => Some(false),
+        "1" | "true" | "yes" | "on" => Some(true),
+        "" => None,
+        other => {
+            tracing::warn!(value = other, var = SUPERVISE_ENV, "ignoring unparseable override");
+            None
+        }
+    }
+}
+
 impl DriverConfig {
     pub fn from_value(v: &serde_json::Value) -> Self {
         let mut cfg = Self::default();
@@ -131,6 +150,9 @@ impl DriverConfig {
             cfg.claude_bin = s.to_string();
         }
         if let Some(b) = v.get("supervise_daemon").and_then(serde_json::Value::as_bool) {
+            cfg.supervise_daemon = b;
+        }
+        if let Some(b) = supervise_env_override(std::env::var(SUPERVISE_ENV).ok().as_deref()) {
             cfg.supervise_daemon = b;
         }
         cfg.hook_socket_path = super::resolve_legacy_socket_path(v);

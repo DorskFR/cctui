@@ -308,11 +308,13 @@ async fn handle_hook_connection(
             return Ok(());
         }
         // A `Stop` hook delivery: the harness itself reporting the turn over.
-        // It carries no client-visible event; it resolves the CctuiAgent follow,
-        // which otherwise has to infer the turn end from the transcript tail.
+        // It resolves the CctuiAgent follow, which otherwise has to infer the
+        // turn end from the transcript tail, and reaches clients so the webui
+        // idles now instead of on the next status poll.
         if let Some(local_id) = parse_turn_end(line, &session_map) {
             record_hook(&hook_log, &local_id, "turn_end");
             crate::childwatch::global().note_turn_end(&local_id);
+            crate::adapters::turn_end::emit(&events, &local_id).await;
             continue;
         }
         let Some(evt) = hook_line_to_event(line, &session_map) else {

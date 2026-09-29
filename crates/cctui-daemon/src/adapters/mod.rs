@@ -10,6 +10,7 @@ pub mod opencode;
 pub(crate) mod pty_watch;
 pub mod ring_view;
 pub mod traffic_rings;
+pub mod turn_end;
 pub mod uploads;
 
 use crate::adapter_runtime::AdapterFactory;

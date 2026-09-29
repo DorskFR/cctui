@@ -1163,7 +1163,8 @@ fn event_local_id(event: &AdapterEvent) -> &str {
         | AdapterEvent::AskQuestion { local_id, .. }
         | AdapterEvent::AskResolved { local_id }
         | AdapterEvent::PlanRequest { local_id, .. }
-        | AdapterEvent::PlanResolved { local_id } => local_id,
+        | AdapterEvent::PlanResolved { local_id }
+        | AdapterEvent::TurnEnd { local_id, .. } => local_id,
         _ => "",
     }
 }
@@ -1179,6 +1180,7 @@ const fn event_kind(event: &AdapterEvent) -> &'static str {
         AdapterEvent::AskResolved { .. } => "ask_resolved",
         AdapterEvent::PlanRequest { .. } => "plan_request",
         AdapterEvent::PlanResolved { .. } => "plan_resolved",
+        AdapterEvent::TurnEnd { .. } => "turn_end",
         _ => "other",
     }
 }
