@@ -594,7 +594,7 @@ mod tests {
 
     #[test]
     fn remembered_skills_are_what_a_resume_recalls() {
-        assert_eq!(recall_skills("thread_0199absent"), None);
+        assert!(recall_skills("thread_0199absent").is_none());
         let skills = SessionSkills {
             env: std::collections::BTreeMap::from([(
                 "CCTUI_SESSION_ID".to_owned(),
