@@ -103,6 +103,7 @@
 </script>
 
 <script lang="ts">
+  import { Callout, EmptyState, Skeleton } from "@dorsk/tsumikit";
   import { createQuery } from "@tanstack/svelte-query";
   import { api } from "../api/client";
   import { keys } from "../api/queries";
@@ -158,17 +159,21 @@
   }
 </script>
 
-<div class="comments">
+<div class="comments" aria-busy={viewState === "loading" ? "true" : undefined}>
   {#if viewState === "no-account"}
-    <p class="muted">No account is available for comments.</p>
+    <EmptyState size="inline" title="No account is available for comments." />
   {:else if viewState === "loading"}
-    <p class="muted">Loading comments…</p>
+    <Skeleton lines={4} height="1.4em" />
   {:else if viewState === "error"}
-    <p class="err">{error?.message}</p>
+    <Callout tone="danger">{error?.message}</Callout>
   {:else if viewState === "empty"}
-    <p class="muted">No comments yet.</p>
+    <EmptyState size="inline" title="No comments yet." />
   {:else}
-    {#if error}<p class="err">Some comments could not be loaded: {error.message}</p>{/if}
+    {#if error}
+      <div class="partial">
+        <Callout tone="warn">Some comments could not be loaded: {error.message}</Callout>
+      </div>
+    {/if}
     <ol class="comment-list">
       {#each groups as group (group.key)}
         <li class="group">
@@ -262,12 +267,7 @@
   .body {
     margin-top: var(--gh-space-2);
   }
-  .muted {
-    color: var(--gh-fg-muted);
-    margin: 0;
-  }
-  .err {
-    color: var(--gh-danger);
-    margin: 0 0 var(--gh-space-2);
+  .partial {
+    margin-bottom: var(--gh-space-2);
   }
 </style>

@@ -1,6 +1,6 @@
 <script lang="ts">
+  import { EmptyState } from "@dorsk/tsumikit";
   import type { GithubCommit, GithubPull } from "../api/types";
-  import PrEmptyTab from "./PrEmptyTab.svelte";
 
   interface Props {
     pull: GithubPull;
@@ -47,9 +47,10 @@
     {/each}
   </ul>
 {:else}
-  <PrEmptyTab
+  <EmptyState
+    icon="git-commit"
     title="No commit list synced"
-    detail="The current sync payload records a commit count but not the individual commits. This tab will list them once the backend relays the commit list."
+    description="The current sync payload records a commit count but not the individual commits. This tab will list them once the backend relays the commit list."
   />
 {/if}
 

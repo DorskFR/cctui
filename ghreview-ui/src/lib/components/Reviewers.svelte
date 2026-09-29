@@ -14,7 +14,16 @@
 </script>
 
 <script lang="ts">
-  import { Badge, Button, Icon, IconButton, Input, Popover } from "@dorsk/tsumikit";
+  import {
+    Badge,
+    Button,
+    Callout,
+    EmptyState,
+    Icon,
+    IconButton,
+    Input,
+    Popover,
+  } from "@dorsk/tsumikit";
   import { createQuery } from "@tanstack/svelte-query";
   import { api } from "../api/client";
   import { keys, queryClient } from "../api/queries";
@@ -68,14 +77,14 @@
 <section class="reviewers">
   <h2>Reviewers</h2>
   {#if !account}
-    <p class="muted">No account.</p>
+    <EmptyState size="inline" title="No account." />
   {:else if query.isLoading}
-    <p class="muted">Loading reviewers…</p>
+    <EmptyState size="inline" loading title="Loading reviewers…" />
   {:else if query.isError}
-    <p class="err">{(query.error as Error).message}</p>
+    <Callout tone="danger">{(query.error as Error).message}</Callout>
   {:else}
     {#if reviewers.length === 0 && teams.length === 0}
-      <p class="muted">No reviewers requested.</p>
+      <EmptyState size="inline" title="No reviewers requested." />
     {:else}
       <ul>
         {#each reviewers as r (r.login)}
@@ -178,15 +187,5 @@
     align-items: center;
     gap: var(--gh-space-2);
     padding: var(--gh-space-2);
-  }
-  .muted {
-    color: var(--gh-fg-muted);
-    margin: 0;
-    font-size: var(--fs-xs);
-  }
-  .err {
-    color: var(--gh-danger);
-    margin: 0;
-    font-size: var(--fs-xs);
   }
 </style>

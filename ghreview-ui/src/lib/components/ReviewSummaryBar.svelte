@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Button, Popover, Select, Textarea } from "@dorsk/tsumikit";
+  import { Button, Callout, Popover, Select, Textarea } from "@dorsk/tsumikit";
   import type { ReviewDraftComment, ReviewVerdict } from "../api/types";
 
   interface Skipped {
@@ -70,7 +70,7 @@
       {/if}
 
       {#if error}
-        <div class="err">{error}</div>
+        <Callout tone="danger">{error}</Callout>
       {/if}
 
       {#if skipped.length > 0}
@@ -128,10 +128,6 @@
   .actions {
     display: flex;
     justify-content: flex-end;
-  }
-  .err {
-    font-size: var(--fs-xs);
-    color: var(--gh-danger);
   }
   .skipped {
     font-size: var(--fs-xs);

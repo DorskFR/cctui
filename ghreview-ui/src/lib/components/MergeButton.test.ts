@@ -115,7 +115,7 @@ describe("MergeButton", () => {
     (document.querySelector('[data-action="confirm-merge"]') as HTMLButtonElement).click();
     await tick();
     await tick();
-    expect(document.querySelector(".err")?.textContent).toContain("not mergeable");
+    expect(document.querySelector('[data-tsu="Callout"]')?.textContent).toContain("not mergeable");
     expect(document.querySelector(".confirm")).not.toBeNull();
     expect(onmerged).not.toHaveBeenCalled();
   });
@@ -138,7 +138,7 @@ describe("MergeButton", () => {
     await tick();
     await tick();
 
-    expect(document.querySelector(".err")?.textContent).toContain("required checks are pending");
+    expect(document.querySelector('[data-tsu="Callout"]')?.textContent).toContain("required checks are pending");
     expect(document.querySelector(".confirm")).not.toBeNull();
     expect(onmerged).not.toHaveBeenCalled();
   });

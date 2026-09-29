@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { ResizablePanel } from "@dorsk/tsumikit";
+  import { EmptyState, ResizablePanel } from "@dorsk/tsumikit";
   import { router } from "../router/router.svelte";
   import PrList from "./PrList.svelte";
   import PrView from "./PrView.svelte";
@@ -33,9 +33,9 @@
             <PrView owner={route.owner} repo={route.repo} number={route.number} />
           {/key}
         {:else if route.name === "notfound"}
-          <div class="empty">Not found: {route.path}</div>
+          <EmptyState icon="alert-circle" title="Not found" description={route.path} />
         {:else}
-          <div class="empty">Select a pull request from the list.</div>
+          <EmptyState icon="pull-request" title="Select a pull request from the list." />
         {/if}
       </div>
     </section>
@@ -70,9 +70,5 @@
     flex: 1;
     min-height: 0;
     overflow: auto;
-  }
-  .empty {
-    padding: var(--gh-space-4);
-    color: var(--gh-fg-muted);
   }
 </style>

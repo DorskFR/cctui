@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { EmptyState } from "@dorsk/tsumikit";
   import { api } from "../api/client";
   import type { ReactionContent, ReactionRollup } from "../api/types";
   import { renderMarkdown, repoBaseUrl } from "../markdown";
@@ -25,7 +26,7 @@
   {#if text}
     <div class="body markdown">{@html renderMarkdown(text, { baseUrl: markdownBaseUrl })}</div>
   {:else}
-    <div class="msg">No description provided.</div>
+    <EmptyState size="inline" title="No description provided." />
   {/if}
 
   {#if canReact}
@@ -51,8 +52,5 @@
   }
   .body {
     max-width: 72ch;
-  }
-  .msg {
-    color: var(--gh-fg-muted);
   }
 </style>
