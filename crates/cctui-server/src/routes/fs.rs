@@ -245,14 +245,20 @@ pub async fn linked_file_owner(
     if path.is_empty() {
         return Err(AppError::new(StatusCode::BAD_REQUEST, "path is required"));
     }
-    match find_link_owner(&state.pool, &ctx, path, &session_id).await? {
-        Some(owner) => Ok(Json(owner)),
-        None => Err(AppError::new(
-            StatusCode::NOT_FOUND,
-            "path is not linked in any session you can read",
-        )),
-    }
+    find_link_owner(&state.pool, &ctx, path, &session_id).await?.map_or_else(
+        || {
+            Err(AppError::new(
+                StatusCode::NOT_FOUND,
+                "path is not linked in any session you can read",
+            ))
+        },
+        |owner| Ok(Json(owner)),
+    )
 }
+
+/// `(session_id, machine_uuid, status, registered_at, last_heartbeat)` of one
+/// candidate owner of a linked path.
+type LinkOwnerRow = (String, Option<Uuid>, String, DateTime<Utc>, DateTime<Utc>);
 
 /// The first session other than `asked` that linked `path`, is live, and the
 /// caller may read. Newest link first, so a re-run of the same work wins.
@@ -262,8 +268,11 @@ async fn find_link_owner(
     path: &str,
     asked: &str,
 ) -> Result<Option<LinkedFileOwner>, AppError> {
-    let rows: Vec<(String, Option<Uuid>, String, DateTime<Utc>, DateTime<Utc>)> = sqlx::query_as(
-        "SELECT l.session_id, s.machine_uuid, s.status, s.registered_at, s.last_heartbeat          FROM session_file_links l JOIN sessions s ON s.id = l.session_id          WHERE l.path = $1 AND l.session_id <> $2 AND s.machine_uuid IS NOT NULL          ORDER BY l.first_seen_at DESC LIMIT $3",
+    let rows: Vec<LinkOwnerRow> = sqlx::query_as(
+        "SELECT l.session_id, s.machine_uuid, s.status, s.registered_at, s.last_heartbeat \
+         FROM session_file_links l JOIN sessions s ON s.id = l.session_id \
+         WHERE l.path = $1 AND l.session_id <> $2 AND s.machine_uuid IS NOT NULL \
+         ORDER BY l.first_seen_at DESC LIMIT $3",
     )
     .bind(path)
     .bind(asked)
@@ -272,11 +281,8 @@ async fn find_link_owner(
     .await?;
     for (sid, machine, status, registered_at, last_heartbeat) in rows {
         let Some(machine_id) = machine else { continue };
-        let (session_status, liveness) = crate::routes::sessions::resolve_status_liveness(
-            &status,
-            registered_at,
-            last_heartbeat,
-        );
+        let (session_status, liveness) =
+            crate::routes::sessions::resolve_status_liveness(&status, registered_at, last_heartbeat);
         if session_status == SessionStatus::Archived || liveness == Liveness::Dead {
             continue;
         }
@@ -825,7 +831,9 @@ mod tests {
             None,
             "nothing is linked yet"
         );
-        record_links(&f.pool, &f.session, &extract_links(&serde_json::json!(path))).await.unwrap();
+        record_links(&f.pool, &f.session, &extract_links(&serde_json::json!(path)))
+            .await
+            .unwrap();
         assert_eq!(
             find_link_owner(&f.pool, &f.owner, path, &viewer).await.unwrap(),
             Some(LinkedFileOwner { session_id: f.session.clone(), machine_id: f.machine }),
@@ -853,11 +861,7 @@ mod tests {
             "an archived owner is as unreadable here as on its own route"
         );
 
-        sqlx::query("DELETE FROM sessions WHERE id = $1")
-            .bind(&viewer)
-            .execute(&f.pool)
-            .await
-            .unwrap();
+        sqlx::query("DELETE FROM sessions WHERE id = $1").bind(&viewer).execute(&f.pool).await.unwrap();
         cleanup(&f).await;
     }
 
