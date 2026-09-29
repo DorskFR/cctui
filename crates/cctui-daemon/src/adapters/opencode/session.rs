@@ -232,6 +232,9 @@ enum Stall {
     Crashed,
 }
 
+// Four independent flags with nothing to group them: two are construction-time
+// facts (`oneshot`, `turn_end_supported`), two are turn state.
+#[allow(clippy::struct_excessive_bools)]
 pub struct OpenCodeSession {
     params: SpawnParams,
     events: mpsc::Sender<AdapterEvent>,
@@ -821,6 +824,22 @@ impl OpenCodeSession {
     }
 
     /// Returns `false` when the driver should stop.
+    /// `session.idle` is where opencode knows the turn is over. Returns whether
+    /// the session lives on: a oneshot child that has produced its output is
+    /// done, since `opencode serve` never exits on its own.
+    async fn on_idle(&mut self, session_id: &str) -> bool {
+        self.in_flight = false;
+        // Sent before the oneshot bail-out so a child's last turn still
+        // reports one.
+        crate::adapters::turn_end::emit_gated(&self.events, session_id, self.turn_end_supported)
+            .await;
+        if self.oneshot && self.saw_assistant {
+            return false;
+        }
+        let _ = self.events.send(status(session_id, Some("idle".to_owned()), None, None)).await;
+        true
+    }
+
     async fn on_event(&mut self, client: &OpenCodeClient, evt: OcEvent) -> bool {
         let Some(session_id) = evt.session_id().map(str::to_owned) else { return true };
         if !self.owned.contains(&session_id) {
@@ -850,24 +869,7 @@ impl OpenCodeSession {
             OcEvent::PartUpdated { properties } => {
                 self.emit_part(&session_id, &properties.part).await;
             }
-            OcEvent::SessionIdle { .. } => {
-                self.in_flight = false;
-                // opencode's authoritative turn end. Sent before the oneshot
-                // bail-out so a child's last turn still reports one.
-                crate::adapters::turn_end::emit_gated(
-                    &self.events,
-                    &session_id,
-                    self.turn_end_supported,
-                )
-                .await;
-                if self.oneshot && self.saw_assistant {
-                    return false;
-                }
-                let _ = self
-                    .events
-                    .send(status(&session_id, Some("idle".to_owned()), None, None))
-                    .await;
-            }
+            OcEvent::SessionIdle { .. } => return self.on_idle(&session_id).await,
             OcEvent::SessionStatus { properties } => {
                 if let Some(kind) = status_kind(&properties.status) {
                     let (tempo, detail) = match kind {
