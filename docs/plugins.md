@@ -43,6 +43,50 @@ Entries that are absolute, escape the root, or are symlinks are refused, and
 `plugin.json` is validated exactly as a directory plugin is. Installing a
 different version of an existing id upgrades it in place.
 
+## Published catalog
+
+`plugins/catalog.json` in this repo lists the plugins we publish, each pinned to
+an exact release asset:
+
+```json
+{
+  "version": 1,
+  "plugins": [
+    {
+      "id": "yubisashi",
+      "name": "Review",
+      "description": "Point at your running app and hand comments to the agent",
+      "version": "0.5.2",
+      "url": "https://github.com/DorskFR/yubisashi/releases/download/v0.5.2/yubisashi-0.5.2.tgz",
+      "sha256": "3aa31bb529f23a306854f2282192b8597904268855627c58048d7b162ff072ac",
+      "homepage": "https://github.com/DorskFR/yubisashi"
+    }
+  ]
+}
+```
+
+Settings → Plugins shows these under **Available** with one button each:
+*Install*, *Update to X* when the catalog is ahead of the installed version, or
+*Installed*. A catalog install is still off for the instance until the admin
+flips its switch.
+
+`POST /api/v1/admin/plugins` with `{"catalog": "<id>"}` resolves the `url` and
+`sha256` from the **server's** catalog — a client-supplied url is ignored — and
+refuses the archive unless its bytes hash to the pinned digest. The `url` must
+point at an archive in the layout above; an npm tarball does not work, because
+its files sit under `package/`.
+
+Publishing a new version is a PR that bumps `version`, `url` and `sha256`. The
+release workflow re-downloads every entry and re-checks its digest
+(`scripts/check-plugin-catalog.sh`), so a wrong hash never reaches a release.
+
+`CCTUI_PLUGIN_CATALOG_URL` says where the server reads the catalog from.
+Unset — the normal case — it is the raw `plugins/catalog.json` on the repo's
+`main` branch (`CCTUI_REPO` picks the repo), so a new plugin appears without a
+cctui release. The answer is cached for an hour, the fetch goes through the same
+SSRF guard as a URL install, and a copy embedded at build time serves offline
+instances. `CCTUI_PLUGIN_CATALOG_URL=off` uses only that embedded copy.
+
 ## Folder layout
 
 ```
@@ -87,7 +131,8 @@ different version of an existing id upgrades it in place.
 | `GET /api/v1/plugins` | bearer, read | `PluginInfo[]`: manifest fields, `web` as `/plugins/<id>/<web>?v=<sha8>`, `enabled`, `settings` declarations and the caller's `config` values |
 | `POST /api/v1/plugins/rescan` | admin | re-read the plugins directory |
 | `GET /api/v1/admin/plugins` | admin | `AdminPluginInfo[]`: every plugin, installed or from the directory, with its instance toggle |
-| `POST /api/v1/admin/plugins` | admin | install or upgrade from `{url}` or a multipart `file` |
+| `GET /api/v1/admin/plugins/catalog` | admin | `CatalogPluginInfo[]`: the published catalog, annotated with `installed_version` and `update_available` |
+| `POST /api/v1/admin/plugins` | admin | install or upgrade from `{catalog}`, `{url}` or a multipart `file` |
 | `PATCH /api/v1/admin/plugins/{id}` | admin | `{enabled}`, the instance-wide toggle |
 | `DELETE /api/v1/admin/plugins/{id}` | admin | uninstall (directory plugins cannot be removed) |
 | `GET /plugins/{id}/{path}` | none | static files from the plugin: traversal-safe, typed by extension, `X-Content-Type-Options: nosniff`, `Cache-Control: no-cache` + `ETag` |

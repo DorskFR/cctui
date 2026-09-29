@@ -30,18 +30,34 @@ const userInfo = (p: AdminPlugin) => ({
 	config: {}
 });
 
+const catalogPosts: { catalog: string }[] = [];
+
 function mockAdminApi(page: Page, initial: AdminPlugin[]) {
+	catalogPosts.length = 0;
 	const state = { plugins: initial, calls: [] as string[] };
 	const admin = '**/api/v1/admin/plugins';
 	page.route(admin, async (route) => {
 		const req = route.request();
 		state.calls.push(`${req.method()} ${new URL(req.url()).pathname}`);
 		if (req.method() === 'POST') {
-			const body = req.postDataJSON() as { url: string };
+			const body = req.postDataJSON() as { url?: string; catalog?: string };
+			if (body.catalog) {
+				catalogPosts.push({ catalog: body.catalog });
+				const fromCatalog: AdminPlugin = {
+					id: body.catalog,
+					name: 'Catalogged',
+					description: 'Published and pinned.',
+					version: '3.0.0',
+					source: 'installed',
+					enabled: false
+				};
+				state.plugins = [...state.plugins.filter((p) => p.id !== fromCatalog.id), fromCatalog];
+				return route.fulfill({ json: fromCatalog });
+			}
 			const installed: AdminPlugin = {
 				id: 'fromurl',
 				name: 'From URL',
-				description: body.url,
+				description: body.url ?? '',
 				version: '2.0.0',
 				source: 'installed',
 				enabled: false
@@ -67,6 +83,23 @@ function mockAdminApi(page: Page, initial: AdminPlugin[]) {
 	page.route('**/api/v1/plugins', (route) =>
 		route.fulfill({ json: state.plugins.filter((p) => p.enabled).map(userInfo) })
 	);
+	page.route(`${admin}/catalog`, (route) => {
+		state.calls.push('GET /api/v1/admin/plugins/catalog');
+		const installed = state.plugins.find((p) => p.id === 'catalogged');
+		return route.fulfill({
+			json: [
+				{
+					id: 'catalogged',
+					name: 'Catalogged',
+					description: 'Published and pinned.',
+					version: '3.0.0',
+					homepage: 'https://example.com/catalogged',
+					installed_version: installed?.version ?? null,
+					update_available: installed !== undefined && installed.version !== '3.0.0'
+				}
+			]
+		});
+	});
 	return state;
 }
 
@@ -104,6 +137,15 @@ test.describe('plugins page (admin)', () => {
 		await page.locator('[data-journey="plugin-admin-install"]').click();
 		await expect(row(page, 'fromurl')).toContainText('2.0.0');
 		expect(state.calls).toContain('POST /api/v1/admin/plugins');
+
+		const catalogButton = page.locator('[data-journey="plugin-catalog-install"][data-plugin="catalogged"]');
+		await expect(catalogButton).toHaveText('Install');
+		await catalogButton.click();
+		await expect(row(page, 'catalogged')).toContainText('3.0.0');
+		await expect(catalogButton).toHaveText('Installed');
+		await expect(catalogButton).toBeDisabled();
+		expect(state.calls).toContain('GET /api/v1/admin/plugins/catalog');
+		expect(catalogPosts).toEqual([{ catalog: 'catalogged' }]);
 
 		page.once('dialog', (d) => d.accept());
 		await row(page, 'fromurl').locator('[data-journey="plugin-admin-uninstall"]').click();

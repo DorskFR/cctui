@@ -2,23 +2,35 @@
 import { flushSync, mount, unmount } from 'svelte';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AdminPluginInfo } from '@bindings/AdminPluginInfo';
+import type { CatalogPluginInfo } from '@bindings/CatalogPluginInfo';
 
 const query = vi.hoisted(() => ({
 	data: undefined as AdminPluginInfo[] | undefined,
 	isPending: true,
 	isError: false
 }));
+const catalogQuery = vi.hoisted(() => ({
+	data: [] as CatalogPluginInfo[],
+	isPending: false,
+	isError: false
+}));
 const endpoints = vi.hoisted(() => ({
 	installPluginFromUrl: vi.fn(async () => ({})),
 	installPluginUpload: vi.fn(async () => ({})),
+	installPluginFromCatalog: vi.fn(async () => ({})),
 	setPluginInstanceEnabled: vi.fn(async () => ({})),
 	uninstallPlugin: vi.fn(async () => undefined)
 }));
 const invalidateQueries = vi.hoisted(() => vi.fn(async () => undefined));
 vi.mock('$lib/queries', () => ({
 	useAdminPlugins: () => query,
+	useAdminPluginCatalog: () => catalogQuery,
 	endpoints,
-	qk: { plugins: ['plugins'], adminPlugins: ['admin', 'plugins'] }
+	qk: {
+		plugins: ['plugins'],
+		adminPlugins: ['admin', 'plugins'],
+		adminPluginCatalog: ['admin', 'plugins', 'catalog']
+	}
 }));
 vi.mock('@tanstack/svelte-query', () => ({ useQueryClient: () => ({ invalidateQueries }) }));
 
@@ -32,8 +44,9 @@ afterEach(() => {
 	vi.clearAllMocks();
 });
 
-function render(data: AdminPluginInfo[] | undefined) {
+function render(data: AdminPluginInfo[] | undefined, catalog: CatalogPluginInfo[] = []) {
 	Object.assign(query, { data, isPending: data === undefined, isError: false });
+	Object.assign(catalogQuery, { data: catalog, isPending: false, isError: false });
 	comp = mount(PluginsAdminGroup, { target: document.body, props: { isAdmin: true } });
 	flushSync();
 }
@@ -47,6 +60,17 @@ const installed: AdminPluginInfo = {
 	enabled: false
 };
 const fromDir: AdminPluginInfo = { ...installed, id: 'local', name: 'Local', source: 'directory', enabled: true };
+
+const published = (over: Partial<CatalogPluginInfo> = {}): CatalogPluginInfo => ({
+	id: 'yubisashi',
+	name: 'Review',
+	description: 'Point at your running app.',
+	version: '0.5.2',
+	homepage: 'https://github.com/DorskFR/yubisashi',
+	installed_version: null,
+	update_available: false,
+	...over
+});
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
 
@@ -88,6 +112,47 @@ describe('PluginsAdminGroup', () => {
 		expect(endpoints.installPluginFromUrl).toHaveBeenCalledWith('https://example.com/p.tgz');
 		flushSync();
 		expect(input.value).toBe('');
+	});
+
+	it('offers Install, Update or Installed from the catalog annotations', () => {
+		render([], [
+			published(),
+			published({ id: 'stale', name: 'Stale', installed_version: '0.4.0', update_available: true }),
+			published({ id: 'current', name: 'Current', installed_version: '0.5.2', homepage: null })
+		]);
+		const rows = document.querySelectorAll<HTMLElement>('[data-journey="plugin-catalog-row"]');
+		expect([...rows].map((r) => r.dataset.plugin)).toEqual(['yubisashi', 'stale', 'current']);
+		expect(rows[0].textContent).toContain('Point at your running app.');
+		expect(rows[0].textContent).toContain('0.5.2');
+		const button = (id: string) =>
+			document.querySelector<HTMLButtonElement>(`[data-journey="plugin-catalog-install"][data-plugin="${id}"]`);
+		expect(button('yubisashi')?.textContent?.trim()).toBe('Install');
+		expect(button('yubisashi')?.disabled).toBe(false);
+		expect(button('stale')?.textContent?.trim()).toBe('Update to 0.5.2');
+		expect(button('stale')?.disabled).toBe(false);
+		expect(button('current')?.textContent?.trim()).toBe('Installed');
+		expect(button('current')?.disabled).toBe(true);
+		const home = rows[0].querySelector<HTMLAnchorElement>('[data-journey="plugin-catalog-homepage"]');
+		expect(home?.getAttribute('href')).toBe('https://github.com/DorskFR/yubisashi');
+		expect(rows[2].querySelector('[data-journey="plugin-catalog-homepage"]')).toBeNull();
+	});
+
+	it('installs a catalog entry by id and refreshes the catalog too', async () => {
+		render([], [published()]);
+		document.querySelector<HTMLElement>('[data-journey="plugin-catalog-install"]')?.click();
+		flushSync();
+		await tick();
+		expect(endpoints.installPluginFromCatalog).toHaveBeenCalledWith('yubisashi');
+		expect(endpoints.installPluginFromUrl).not.toHaveBeenCalled();
+		expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ['admin', 'plugins', 'catalog'] });
+		expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ['admin', 'plugins'] });
+		expect(invalidateQueries).toHaveBeenCalledWith({ queryKey: ['plugins'] });
+	});
+
+	it('says so when the catalog is empty', () => {
+		render([]);
+		expect(document.querySelector('[data-journey="plugins-catalog-empty"]')).not.toBeNull();
+		expect(document.querySelector('[data-journey="plugin-catalog-row"]')).toBeNull();
 	});
 
 	it('uninstalls after confirmation only', async () => {

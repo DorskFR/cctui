@@ -3,6 +3,8 @@ import type { PluginInfo } from "../plugins/types";
 import type { AdminPluginInfo } from "@bindings/AdminPluginInfo";
 import type { PluginEnableRequest } from "@bindings/PluginEnableRequest";
 import type { PluginInstallRequest } from "@bindings/PluginInstallRequest";
+import type { PluginCatalogInstallRequest } from "@bindings/PluginCatalogInstallRequest";
+import type { CatalogPluginInfo } from "@bindings/CatalogPluginInfo";
 import type { SessionListResponse } from "@bindings/SessionListResponse";
 import type { ToolPolicy } from "@bindings/ToolPolicy";
 import type { PoolUsageView } from "@bindings/PoolUsageView";
@@ -201,6 +203,12 @@ export const endpoints = {
   /** Install or upgrade a plugin from an https archive URL (admin). */
   installPluginFromUrl: (url: string) =>
     api.post<AdminPluginInfo>("/admin/plugins", { url } satisfies PluginInstallRequest),
+  /** The published plugin catalog, annotated with what is installed (admin). */
+  adminPluginCatalog: () => api.get<CatalogPluginInfo[]>("/admin/plugins/catalog"),
+  /** Install or upgrade a published plugin; the server resolves its URL and
+   * sha256 from its own catalog (admin). */
+  installPluginFromCatalog: (catalog: string) =>
+    api.post<AdminPluginInfo>("/admin/plugins", { catalog } satisfies PluginCatalogInstallRequest),
   /** Install or upgrade a plugin from an uploaded `.tar.gz` (admin). */
   installPluginUpload: (file: File) => {
     const form = new FormData();

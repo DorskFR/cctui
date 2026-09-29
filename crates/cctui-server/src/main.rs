@@ -29,6 +29,7 @@ mod openapi;
 mod outbound;
 mod pace;
 mod plugin_archive;
+mod plugin_catalog;
 mod plugin_store;
 mod plugins;
 mod policy;

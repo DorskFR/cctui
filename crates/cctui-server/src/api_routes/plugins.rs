@@ -30,10 +30,18 @@ pub(super) fn register(r: Routes) -> Routes {
     .add(
         &[GET, Method::POST],
         "/admin/plugins",
-        "List every plugin with its source and instance toggle, or install one from an https URL (JSON `{url}`) or a multipart `file` upload (admin).",
+        "List every plugin with its source and instance toggle, or install one from a published catalog id (JSON `{catalog}`), an https URL (JSON `{url}`) or a multipart `file` upload (admin).",
         get(routes::plugins_admin::list)
             .post(routes::plugins_admin::install)
             .layer(DefaultBodyLimit::max(INSTALL_BODY_LIMIT)),
+        Authn::Bearer,
+        ScopeAz(auth::Scope::Admin),
+    )
+    .add(
+        &[GET],
+        "/admin/plugins/catalog",
+        "List the published plugin catalog, annotated with what this instance has installed (admin).",
+        get(routes::plugins_admin::catalog),
         Authn::Bearer,
         ScopeAz(auth::Scope::Admin),
     )
