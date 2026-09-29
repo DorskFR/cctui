@@ -31,10 +31,12 @@
 	{/if}
 	{#each rows as { pin, line } (pin.seq)}
 		<div class="pin-row">
-			<Button variant="ghost" size="sm" block class="pin-jump" onclick={() => onjump(pin.seq)}>
-				<span class="role-dot" style={`--dot: var(--role-${pinRole(line)})`}></span>
-				<Timestamp value={line?.ts ?? Date.parse(pin.created_at)} mode="time" tone="faint" size="xs" />
-				<span class="excerpt">{pinExcerpt(line)}</span>
+			<Button variant="ghost" size="sm" block onclick={() => onjump(pin.seq)}>
+				<span class="jump-inner">
+					<span class="role-dot" style={`--dot: var(--role-${pinRole(line)})`}></span>
+					<Timestamp value={line?.ts ?? Date.parse(pin.created_at)} mode="time" tone="faint" size="xs" />
+					<span class="excerpt">{pinExcerpt(line)}</span>
+				</span>
 			</Button>
 			<IconButton
 				inline
@@ -61,14 +63,16 @@
 		padding: var(--sp-2);
 	}
 	.pin-row {
-		display: flex;
+		display: grid;
+		grid-template-columns: 1fr auto;
 		align-items: center;
 		gap: var(--sp-1);
 	}
-	.pins :global(.pin-jump) {
-		flex: 1;
-		justify-content: flex-start;
+	.jump-inner {
+		display: flex;
+		align-items: center;
 		gap: var(--sp-2);
+		width: 100%;
 		min-width: 0;
 		color: var(--text);
 		font-size: var(--fs-xs);
