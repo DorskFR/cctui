@@ -30,6 +30,7 @@
 				onLaunch={sp.launchDraft}
 				onEdit={sp.editDraft}
 				onDiscard={sp.discardDraft}
+				onCancelSchedule={sp.cancelDraftSchedule}
 				onopen={() => {}}
 			/>
 		</div>

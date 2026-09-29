@@ -168,6 +168,7 @@ export type * from './ReviewThreadUpsert';
 export type * from './ReviewUpsert';
 export type * from './ReviewVerdict';
 export type * from './RotateResponse';
+export type * from './ScheduleLaunchRequest';
 export type * from './SelfUpdateResponse';
 export type * from './SelfUpdateRun';
 export type * from './SelfUpdateTarget';

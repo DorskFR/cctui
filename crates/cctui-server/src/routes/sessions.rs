@@ -451,6 +451,8 @@ fn skeleton_list_item(
         archived_by: None,
         keepalive: None,
         last_keepalive_at: None,
+        launch_at: None,
+        launch_error: None,
     }
 }
 
@@ -601,6 +603,8 @@ struct EnrichContext {
     traffic_observed: HashSet<String>,
     auto_approve: HashSet<String>,
     last_turns: HashMap<String, LastTurn>,
+    /// Queued draft launches: `(launch_at, last_error)` by draft id.
+    scheduled_launches: HashMap<String, (DateTime<Utc>, Option<String>)>,
     archive_after_secs: u64,
 }
 
@@ -644,6 +648,15 @@ impl EnrichContext {
             session_ids.iter().filter(|id| store.is_auto_approve(id)).cloned().collect()
         };
         ctx.last_turns = fetch_last_turns(state, &session_ids).await?;
+        let draft_ids: Vec<String> = with_ts
+            .iter()
+            .filter(|(_, s)| s.status == SessionStatus::Draft)
+            .map(|(_, s)| s.id.clone())
+            .collect();
+        if !draft_ids.is_empty() {
+            ctx.scheduled_launches =
+                crate::scheduled_spawns::pending_for(&state.pool, &draft_ids).await?;
+        }
         Ok(ctx)
     }
 }
@@ -899,6 +912,10 @@ fn enrich(
         s.has_token_credentials = ctx.with_credentials.contains(&s.id);
         s.account_traffic_observed = ctx.traffic_observed.contains(&s.id);
         s.auto_approve = ctx.auto_approve.contains(&s.id);
+        if let Some((at, err)) = ctx.scheduled_launches.remove(&s.id) {
+            s.launch_at = Some(at);
+            s.launch_error = err;
+        }
         if let Some(turn) = ctx.last_turns.remove(&s.id) {
             s.last_activity_at = Some(turn.at);
             s.cache_cold = turn.cache_cold();
@@ -1579,6 +1596,8 @@ pub async fn get_session(
                 archived_by: None,
                 keepalive: None,
                 last_keepalive_at: None,
+                launch_at: None,
+                launch_error: None,
             };
             return Ok(Json(item));
         }
@@ -1644,6 +1663,8 @@ pub async fn get_session(
         archived_by: None,
         keepalive: None,
         last_keepalive_at: None,
+        launch_at: None,
+        launch_error: None,
     };
     let end: Option<EndRow> = sqlx::query_as(
         "SELECT end_reason, end_detail, ended_at, todos, permission_mode, pinned, archived_by \

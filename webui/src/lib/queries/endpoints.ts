@@ -373,6 +373,13 @@ export const endpoints = {
    *  draft row is removed and a live session is born from the daemon. */
   launchDraft: (sessionId: string, env: Record<string, string> = {}) =>
     api.post<SpawnResponse>(`/sessions/${sessionId}/launch`, { env }),
+  /** Queue a draft to launch at `launchAt` (RFC3339, at most 30 days out),
+   *  replacing any schedule already on it. */
+  scheduleDraftLaunch: (sessionId: string, launchAt: string) =>
+    api.post<void>(`/sessions/${sessionId}/schedule-launch`, { launch_at: launchAt }),
+  /** Drop a draft's queued launch, keeping the draft. */
+  cancelDraftLaunch: (sessionId: string) =>
+    api.post<void>(`/sessions/${sessionId}/cancel-launch`, {}),
   /** Discard (delete) a draft session row. */
   discardDraft: (sessionId: string) =>
     api.post<void>(`/sessions/${sessionId}/discard`, {}),

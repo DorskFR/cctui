@@ -42,6 +42,7 @@
 		onLaunch,
 		onEdit,
 		onDiscard,
+		onCancelSchedule,
 		accentHue = null
 	}: {
 		session: SessionListItem;
@@ -80,6 +81,7 @@
 		onLaunch?: (s: SessionListItem) => void;
 		onEdit?: (s: SessionListItem) => void;
 		onDiscard?: (s: SessionListItem) => void;
+		onCancelSchedule?: (s: SessionListItem) => void;
 		/** Color-by hue for the left strip; null = none. */
 		accentHue?: number | null;
 	} = $props();
@@ -118,7 +120,8 @@
 		onDeleteLabel,
 		onLaunch,
 		onEdit,
-		onDiscard
+		onDiscard,
+		onCancelSchedule
 	});
 
 	const swipe = new SwipeGesture(

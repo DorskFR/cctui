@@ -48,9 +48,7 @@ test('desktop: closing the drawer restores the page scrollbar without shifting',
 	expect(await htmlOverflowY(page)).not.toBe('hidden');
 });
 
-// Needs the tsumikit `.overlay.full-bleed .panel { width: 100vw }` fix: 100vw
-// counts the reserved gutter, so the panel's left 8px are clipped.
-test.fixme('800px: the full-bleed drawer fits the viewport', async ({ page }) => {
+test('800px: the full-bleed drawer fits the viewport', async ({ page }) => {
 	await openDrawer(page, NARROW);
 	const panel = await page.locator('.panel').first().boundingBox();
 	const inner = await page.evaluate(() => window.innerWidth);
