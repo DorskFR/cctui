@@ -111,6 +111,17 @@ export interface CctuiPluginModule {
 	messageActions?: (msg: PluginMessage) => MessageAction[];
 }
 
+/** A plugin's `plugin.json`, as far as the browser half cares. */
+export interface PluginManifestWeb {
+	id: string;
+	cctuiApi: number;
+	web?: string;
+	page?: { title: string; icon?: string };
+	/** Global stylesheets, relative to the plugin folder (`web/app.css`). The
+	 *  host links each one once per document, before the module is imported. */
+	styles?: string[];
+}
+
 /** Shared modules a plugin must not bundle, keyed by import specifier; the
  *  value is the stable URL the host serves them from. */
 export const PLUGIN_RUNTIME_PATHS: Record<string, string> = {

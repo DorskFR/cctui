@@ -13,6 +13,7 @@ const info = (id: string, web: string | null = `/plugins/${id}/web/index.js`): P
 	icon: 'eye',
 	web,
 	page: null,
+	styles: [],
 	skills: [],
 	enabled: true,
 	settings: [],

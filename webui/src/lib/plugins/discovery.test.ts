@@ -18,6 +18,7 @@ const info = (over: Partial<PluginInfo> = {}): PluginInfo => ({
 	icon: null,
 	web: '/plugins/demo/web/index.js?v=abcd1234',
 	page: null,
+	styles: [],
 	skills: [],
 	enabled: false,
 	settings: [],

@@ -129,7 +129,9 @@ instances. `CCTUI_PLUGIN_CATALOG_URL=off` uses only that embedded copy.
   bundle, as plugin-folder-relative paths (`["web/app.css"]`). Each is validated
   exactly like `web`: relative, inside the plugin folder (no `..`, no absolute
   path, no hidden segment) and it must exist. They are served by the same
-  `GET /plugins/{id}/{path}` static route as everything else.
+  `GET /plugins/{id}/{path}` static route as everything else. The host links each one once per
+  document, with the bundle's `?v=`, before it imports the module. Component CSS
+  needs none of this — it is injected at mount.
 - `settings` (optional): each entry declares a per-user string value. `env`
   must match `^[A-Z][A-Z0-9_]{0,63}$` and may not be a reserved name
   (`PATH`, `HOME`, `SHELL`, `USER`, `NODE_OPTIONS`, `LD_*`, `DYLD_*`,
@@ -218,7 +220,7 @@ identity to the backend with a signature.
 
 `upstreamSetting` must name a declared instance setting of type `url` that is
 **not** secret — the admin has to be able to see and edit it. A manifest that
-breaks either rule is refused at install. The module must export `page`.
+breaks either rule is refused at install.
 
 ### The route
 

@@ -43,6 +43,7 @@ const info = (over: Partial<PluginInfo> = {}): PluginInfo => ({
 	icon: null,
 	web: '/plugins/demo/web/index.js?v=abcd1234',
 	page: { title: 'Demo app', icon: 'eye' },
+	styles: [],
 	skills: [],
 	enabled: true,
 	settings: [],

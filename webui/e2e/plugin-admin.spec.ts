@@ -27,6 +27,7 @@ const userInfo = (p: AdminPlugin) => ({
 	icon: 'eye',
 	web: null,
 	page: null,
+	styles: [],
 	skills: [],
 	enabled: false,
 	settings: [{ key: 'host', label: 'Bind address', env: 'DEMO_HOST', type: 'string' }],

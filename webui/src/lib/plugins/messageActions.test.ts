@@ -10,6 +10,7 @@ const info = (id: string, icon: string | null = null): PluginInfo => ({
 	icon,
 	web: `/plugins/${id}/web/index.js`,
 	page: null,
+	styles: [],
 	skills: [],
 	enabled: true,
 	settings: [],
