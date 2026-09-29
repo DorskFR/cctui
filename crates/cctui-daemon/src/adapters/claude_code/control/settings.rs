@@ -116,18 +116,33 @@ pub(super) fn detect_whip_from_settings(short: &str) -> bool {
         .is_some()
 }
 
-pub(super) fn hook_settings_path(file: &str) -> Option<PathBuf> {
+/// The directory holding the per-session settings, mcp-config and whip-phrase
+/// files. The `*_in` writers take it as an argument because mutating the process
+/// env is unsound under the threaded test runner.
+pub(super) fn config_root() -> Option<PathBuf> {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
-    Some(base.join("cctui").join(file))
+    Some(base.join("cctui"))
+}
+
+pub(super) fn hook_settings_path(file: &str) -> Option<PathBuf> {
+    Some(config_root()?.join(file))
 }
 
 /// Write the per-session whip phrase override file the `whip-stop-hook`
 /// reads via `--phrases`, returning its path. `None` (unwritable) → the caller
 /// launches the hook without the arg, so it uses its compiled defaults.
 pub(super) fn write_whip_phrases(short: &str, block: &serde_json::Value) -> Option<PathBuf> {
-    let path = hook_settings_path(&format!("whip-phrases-{short}.json"))?;
+    write_whip_phrases_in(&config_root()?, short, block)
+}
+
+fn write_whip_phrases_in(
+    root: &std::path::Path,
+    short: &str,
+    block: &serde_json::Value,
+) -> Option<PathBuf> {
+    let path = root.join(format!("whip-phrases-{short}.json"));
     if let Some(Err(err)) = path.parent().map(std::fs::create_dir_all) {
         tracing::warn!(%err, "whip-stop: cannot create phrases dir");
         return None;
@@ -144,9 +159,13 @@ pub(super) fn write_whip_phrases(short: &str, block: &serde_json::Value) -> Opti
 /// Delete a stale whip phrase file for `short` so a spawn after the user cleared
 /// the override falls back to the compiled defaults. Best-effort.
 pub(super) fn remove_whip_phrases(short: &str) {
-    if let Some(path) = hook_settings_path(&format!("whip-phrases-{short}.json")) {
-        let _ = std::fs::remove_file(path);
+    if let Some(root) = config_root() {
+        remove_whip_phrases_in(&root, short);
     }
+}
+
+fn remove_whip_phrases_in(root: &std::path::Path, short: &str) {
+    let _ = std::fs::remove_file(root.join(format!("whip-phrases-{short}.json")));
 }
 
 /// Recursively deep-merge `overlay` into `base`, with `overlay` winning at every
@@ -234,7 +253,34 @@ pub(in crate::adapters::claude_code) fn ensure_hook_settings(
     whip_phrases: Option<&serde_json::Value>,
     agent_relay_session: Option<&str>,
 ) -> Option<PathBuf> {
-    let path = hook_settings_path(&format!("hook-settings-{short}.json"))?;
+    ensure_hook_settings_in(
+        &config_root()?,
+        sock,
+        whip,
+        short,
+        account_settings,
+        gateway_env,
+        model,
+        effort,
+        whip_phrases,
+        agent_relay_session,
+    )
+}
+
+#[allow(clippy::cognitive_complexity, clippy::too_many_arguments)]
+fn ensure_hook_settings_in(
+    root: &std::path::Path,
+    sock: &std::path::Path,
+    whip: bool,
+    short: &str,
+    account_settings: Option<&serde_json::Value>,
+    gateway_env: &std::collections::BTreeMap<String, String>,
+    model: Option<&str>,
+    effort: Option<&str>,
+    whip_phrases: Option<&serde_json::Value>,
+    agent_relay_session: Option<&str>,
+) -> Option<PathBuf> {
+    let path = root.join(format!("hook-settings-{short}.json"));
     let exe = std::env::current_exe()
         .map_err(|err| tracing::warn!(%err, "ask-hook: cannot resolve current_exe"))
         .ok()?;
@@ -292,11 +338,11 @@ pub(in crate::adapters::claude_code) fn ensure_hook_settings(
     let whip_stop_command = if whip {
         let arg = whip_phrases.filter(|v| !v.is_null()).map_or_else(
             || {
-                remove_whip_phrases(short);
+                remove_whip_phrases_in(root, short);
                 String::new()
             },
             |v| {
-                write_whip_phrases(short, v)
+                write_whip_phrases_in(root, short, v)
                     .map(|p| format!(" --phrases {}", shell_quote(&p.to_string_lossy())))
                     .unwrap_or_default()
             },
@@ -409,10 +455,19 @@ pub(in crate::adapters::claude_code) fn ensure_agent_mcp_config(
     session_id: &str,
     capability: Option<&cctui_proto::api::SpawnCapability>,
 ) -> Option<PathBuf> {
+    ensure_agent_mcp_config_in(&config_root()?, short, session_id, capability)
+}
+
+fn ensure_agent_mcp_config_in(
+    root: &std::path::Path,
+    short: &str,
+    session_id: &str,
+    capability: Option<&cctui_proto::api::SpawnCapability>,
+) -> Option<PathBuf> {
     if capability.is_none_or(cctui_proto::api::SpawnCapability::is_empty) {
         return None;
     }
-    let path = hook_settings_path(&format!("mcp-agent-{short}.json"))?;
+    let path = root.join(format!("mcp-agent-{short}.json"));
     let exe = std::env::current_exe()
         .map_err(|err| tracing::warn!(%err, "CctuiAgent: cannot resolve current_exe"))
         .ok()?;
@@ -536,6 +591,100 @@ mod tests {
         };
         assert!(path.contains(&short));
         std::fs::remove_file(&path).ok();
+    }
+
+    fn mode_of(path: &std::path::Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    #[test]
+    fn hook_settings_land_0600_under_the_injected_root_on_create_and_rewrite() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("nested").join("cctui");
+        let env = env_of(&[("ANTHROPIC_AUTH_TOKEN", "cctui_s_bearer")]);
+        let write = || {
+            ensure_hook_settings_in(
+                &root,
+                std::path::Path::new("/run/hook.sock"),
+                false,
+                "aaaaaaa1",
+                None,
+                &env,
+                Some("opus"),
+                Some("high"),
+                None,
+                None,
+            )
+            .expect("the injected root is writable")
+        };
+
+        let path = write();
+        assert_eq!(path, root.join("hook-settings-aaaaaaa1.json"));
+        assert_eq!(mode_of(&path), 0o600, "the gateway bearer token must never be readable");
+        let written: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(written["env"]["ANTHROPIC_AUTH_TOKEN"], json!("cctui_s_bearer"));
+        assert!(written["hooks"]["PreToolUse"].is_array());
+
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(write(), path);
+        assert_eq!(mode_of(&path), 0o600, "a rewrite must restore 0600");
+    }
+
+    #[test]
+    fn whip_hook_settings_and_phrases_stay_inside_the_injected_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("cctui");
+        let phrases = json!({ "mode": "extend", "phrases": ["pour une autre session"] });
+        let path = ensure_hook_settings_in(
+            &root,
+            std::path::Path::new("/run/hook.sock"),
+            true,
+            "bbbbbbb2",
+            None,
+            &std::collections::BTreeMap::new(),
+            None,
+            None,
+            Some(&phrases),
+            None,
+        )
+        .expect("written");
+        assert_eq!(mode_of(&path), 0o600);
+        let written: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let stop = written["hooks"]["Stop"][0]["hooks"][0]["command"].as_str().unwrap();
+        assert!(stop.contains("whip-stop-hook"), "{stop}");
+        let phrases_path = root.join("whip-phrases-bbbbbbb2.json");
+        assert!(phrases_path.exists(), "the override file rides the injected root too");
+        assert!(stop.contains(&phrases_path.to_string_lossy().into_owned()), "{stop}");
+    }
+
+    #[test]
+    fn agent_mcp_config_lands_0600_under_the_injected_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("cctui");
+        let cap = cctui_proto::api::SpawnCapability {
+            adapters: vec!["claude-code".to_owned()],
+            ..Default::default()
+        };
+        assert!(
+            ensure_agent_mcp_config_in(&root, "ccccccc3", "sess-3", None).is_none(),
+            "no capability writes no file"
+        );
+        let path = ensure_agent_mcp_config_in(&root, "ccccccc3", "sess-3", Some(&cap))
+            .expect("the injected root is writable");
+        assert_eq!(path, root.join("mcp-agent-ccccccc3.json"));
+        assert_eq!(mode_of(&path), 0o600, "the relay session key must never be readable");
+        let written: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(written["mcpServers"]["cctui"]["args"][2], json!("sess-3"));
+
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o666)).unwrap();
+        ensure_agent_mcp_config_in(&root, "ccccccc3", "sess-3", Some(&cap)).expect("rewritten");
+        assert_eq!(mode_of(&path), 0o600, "a rewrite must restore 0600");
     }
 
     #[test]
