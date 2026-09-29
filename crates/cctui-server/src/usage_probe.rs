@@ -40,8 +40,6 @@ pub struct ProbeRequest {
 pub trait UsageProbe: Send + Sync {
     /// Registry id, as stored in `account_providers.usage_probe`.
     fn id(&self) -> &'static str;
-    /// Operator-facing name.
-    fn label(&self) -> &'static str;
     /// The call to make. `base_url` is the credential's configured endpoint.
     fn request(&self, base_url: Option<&str>, token: &str) -> ProbeRequest;
     /// The upstream body → canonical windows. An unexpected shape yields an
@@ -164,10 +162,6 @@ impl UsageProbe for OpenRouterProbe {
         "openrouter"
     }
 
-    fn label(&self) -> &'static str {
-        "OpenRouter (credits)"
-    }
-
     fn request(&self, base_url: Option<&str>, token: &str) -> ProbeRequest {
         ProbeRequest {
             url: format!("{}/key", openrouter_api_base(base_url)),
@@ -206,7 +200,7 @@ fn next_utc_monday(now: DateTime<Utc>) -> DateTime<Utc> {
 /// window.
 ///
 /// Reported **only** when the key's `budget_duration` is one cctui already has a
-/// canonical key for. A LiteLLM budget can be any duration (`30d`, `1mo`), and
+/// canonical key for. A `LiteLLM` budget can be any duration (`30d`, `1mo`), and
 /// there is no canonical monthly dollar window; emitting such a key as `usd_7d`
 /// would make every downstream reset time a lie. Saying nothing keeps the
 /// credential honestly unmeasured until the vocabulary is extended on purpose.
@@ -215,10 +209,6 @@ pub struct LiteLlmProbe;
 impl UsageProbe for LiteLlmProbe {
     fn id(&self) -> &'static str {
         "litellm"
-    }
-
-    fn label(&self) -> &'static str {
-        "LiteLLM (virtual-key budget)"
     }
 
     fn request(&self, base_url: Option<&str>, token: &str) -> ProbeRequest {
@@ -249,7 +239,7 @@ impl UsageProbe for LiteLlmProbe {
     }
 }
 
-/// A LiteLLM `budget_duration` → the canonical dollar window of that length, or
+/// A `LiteLLM` `budget_duration` → the canonical dollar window of that length, or
 /// `None` when cctui has no key for it.
 fn usd_key_for_duration(duration: &str) -> Option<&'static str> {
     match duration.trim() {
@@ -259,7 +249,7 @@ fn usd_key_for_duration(duration: &str) -> Option<&'static str> {
     }
 }
 
-/// The LiteLLM admin root: the credential's base URL points at the OpenAI-shaped
+/// The `LiteLLM` admin root: the credential's base URL points at the OpenAI-shaped
 /// `…/v1`, while the key-management endpoints hang off the root.
 fn litellm_root(base_url: Option<&str>) -> String {
     let base = base_url.map(trim_base).filter(|b| !b.is_empty()).unwrap_or_default();
@@ -415,7 +405,7 @@ mod tests {
         let back = normalize_usage_windows(&windows_to_usage_json(&windows));
         assert_eq!(back.len(), 1);
         assert_eq!(back[0].key, KEY_SESSION);
-        assert_eq!(back[0].utilization, 42.0);
+        assert!((back[0].utilization - 42.0).abs() < f64::EPSILON);
         assert_eq!(back[0].resets_at, Some(now()));
     }
 

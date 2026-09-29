@@ -1,7 +1,7 @@
 //! Prometheus text exposition of the numbers the webui already shows.
 //!
 //! Third-party status bars, dashboards and alerts pin to metric NAMES, so the
-//! names here are an API: add freely, rename never. [`docs/metrics.md`] is the
+//! names here are an API: add freely, rename never. `docs/metrics.md` is the
 //! contract.
 //!
 //! ## A scrape never touches an upstream
@@ -65,7 +65,7 @@ pub struct ProviderRow {
 }
 
 impl ProviderRow {
-    fn total_tokens(&self) -> i64 {
+    const fn total_tokens(&self) -> i64 {
         self.input_tokens + self.output_tokens + self.cache_read_tokens + self.cache_creation_tokens
     }
 
@@ -75,11 +75,13 @@ impl ProviderRow {
     fn est_cost_usd(&self) -> f64 {
         let (i, o, cr, cc) =
             if self.family == "openai" { OPENAI_RATES } else { ANTHROPIC_RATES };
-        (self.input_tokens as f64 * i
-            + self.output_tokens as f64 * o
-            + self.cache_read_tokens as f64 * cr
-            + self.cache_creation_tokens as f64 * cc)
-            / 1_000_000.0
+        let per_kind = [
+            (self.input_tokens, i),
+            (self.output_tokens, o),
+            (self.cache_read_tokens, cr),
+            (self.cache_creation_tokens, cc),
+        ];
+        per_kind.iter().map(|&(tokens, rate)| tokens as f64 * rate).sum::<f64>() / 1_000_000.0
     }
 }
 
@@ -185,7 +187,7 @@ fn escape(value: &str) -> String {
     out
 }
 
-fn seconds_since_epoch(at: DateTime<Utc>) -> i64 {
+const fn seconds_since_epoch(at: DateTime<Utc>) -> i64 {
     at.timestamp()
 }
 
