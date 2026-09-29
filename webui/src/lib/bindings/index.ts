@@ -32,6 +32,7 @@ export type * from './CheckUpsert';
 export type * from './CodexDiagnose';
 export type * from './CodexModel';
 export type * from './CodexModelCatalog';
+export type * from './CodexSandbox';
 export type * from './CommentAnchor';
 export type * from './ConnectorInfo';
 export type * from './CreateAccount';

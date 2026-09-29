@@ -3,6 +3,7 @@
 	import SettingGroup from '$lib/components/molecules/SettingGroup.svelte';
 	import SettingRow from '$lib/components/molecules/SettingRow.svelte';
 	import { endpoints } from '$lib/queries';
+	import type { CodexSandbox } from '@bindings/CodexSandbox';
 	import type { HarnessAutoupdateInfo } from '@bindings/HarnessAutoupdateInfo';
 	import type { HarnessUpdatePolicy } from '@bindings/HarnessUpdatePolicy';
 	import type { HarnessVersion } from '@bindings/HarnessVersion';
@@ -11,6 +12,8 @@
 	import { m } from '$lib/paraglide/messages';
 
 	const HARNESSES = ['claude-code', 'codex'] as const;
+	const CODEX_SANDBOX_DOCS =
+		'https://github.com/DorskFR/cctui/blob/main/docs/codex-sandbox.md';
 	const DEFAULT_POLICY: HarnessUpdatePolicy = {
 		enabled: false,
 		interval_hours: 24,
@@ -72,6 +75,12 @@
 		run(() => endpoints.setMachineHarnessAutoupdate(row.machine_id, policy));
 	}
 
+	function brokenSandbox(
+		s: CodexSandbox | null | undefined
+	): Exclude<CodexSandbox, { state: 'ok' }> | null {
+		return s && s.state !== 'ok' ? s : null;
+	}
+
 	function versions(v: HarnessVersion | null | undefined): string {
 		if (!v) return '—';
 		if (!v.daemon || v.daemon === v.cli) return v.cli ?? '—';
@@ -131,6 +140,18 @@
 							</Text>
 							{#if row.report.managed_by_image}
 								<Badge>{m.settings_harness_update_managed_by_image()}</Badge>
+							{/if}
+							{#if brokenSandbox(row.report.codex_sandbox)}
+								{@const sandbox = brokenSandbox(row.report.codex_sandbox)!}
+								<Badge tone="danger" size="sm" border>
+									{sandbox.state === 'userns_denied'
+										? m.settings_codex_sandbox_userns_denied()
+										: m.settings_codex_sandbox_unknown()}
+								</Badge>
+								<Text size="xs" tone="faint" variant="code">{sandbox.detail}</Text>
+								<a href={CODEX_SANDBOX_DOCS} target="_blank" rel="noreferrer noopener">
+									<Text size="xs">{m.settings_codex_sandbox_help()}</Text>
+								</a>
 							{/if}
 							{#each row.report.outcomes as o (o.harness)}
 								<Text size="xs" tone={o.outcome.startsWith('failed') ? 'danger' : 'faint'}>

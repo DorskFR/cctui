@@ -22,7 +22,7 @@ mod rpc;
 mod session;
 mod thread_state;
 
-pub use config::AppServerConfig;
+pub use config::{AppServerConfig, SandboxFallback};
 #[cfg(test)]
 pub(super) use config::gateway_provider_overrides;
 pub use diagnose::{DiagnoseRings, shared_rings};
