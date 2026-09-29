@@ -161,8 +161,7 @@ mod tests {
 
     const BOUNDARY: &str = "capsboundary";
 
-    async fn multipart_of(files: &[(&str, usize)]) -> Multipart {
-        use axum::extract::FromRequest;
+    fn request_of(files: &[(&str, usize)]) -> axum::http::Request<axum::body::Body> {
         use std::fmt::Write as _;
         let mut body = String::new();
         for (name, size) in files {
@@ -173,23 +172,48 @@ mod tests {
             );
         }
         let _ = write!(body, "--{BOUNDARY}--\r\n");
-        let req = axum::http::Request::builder()
+        axum::http::Request::builder()
             .method("POST")
+            .uri("/u")
             .header("content-type", format!("multipart/form-data; boundary={BOUNDARY}"))
             .body(axum::body::Body::from(body))
-            .expect("request");
-        Multipart::from_request(req, &()).await.expect("multipart")
+            .expect("request")
     }
 
-    /// `Ok(file count)` or `Err((status, message))` — neither `ParsedUploads`
-    /// nor `ApiErr` is `Debug`, so the assertions work on plain values.
+    /// `Ok(file count)` or `Err((status, message))`.
+    ///
+    /// Goes through a one-route service so the body limit is explicit: a bare
+    /// `Multipart::from_request` would apply axum's 2 MB default and reject the
+    /// default-cap bodies as malformed before any cap is checked. Neither
+    /// `ParsedUploads` nor `ApiErr` is `Debug`, hence the plain return values.
     async fn parse(
         files: &[(&str, usize)],
         caps: UploadCaps,
     ) -> Result<usize, (StatusCode, String)> {
-        match parse_upload_multipart(multipart_of(files).await, caps).await {
-            Ok(p) => Ok(p.files.len()),
-            Err((status, Json(e))) => Err((status, e.error)),
+        use axum::response::IntoResponse;
+        use tower::ServiceExt;
+
+        let app = axum::Router::new()
+            .route(
+                "/u",
+                axum::routing::post(move |mp: Multipart| async move {
+                    match parse_upload_multipart(mp, caps).await {
+                        Ok(p) => (StatusCode::OK, p.files.len().to_string()).into_response(),
+                        Err((status, Json(e))) => (status, e.error).into_response(),
+                    }
+                }),
+            )
+            .layer(axum::extract::DefaultBodyLimit::disable());
+
+        let res = app.oneshot(request_of(files)).await.expect("infallible");
+        let status = res.status();
+        let bytes =
+            axum::body::to_bytes(res.into_body(), 64 * 1024 * 1024).await.expect("response body");
+        let text = String::from_utf8_lossy(&bytes).to_string();
+        if status == StatusCode::OK {
+            Ok(text.parse().expect("file count"))
+        } else {
+            Err((status, text))
         }
     }
 
