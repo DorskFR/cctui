@@ -198,13 +198,20 @@ describe('fileviewer inline refusals', () => {
 	});
 
 	it('clears a previous refusal when a retry succeeds', async () => {
-		const fetchMock = vi
-			.fn()
-			.mockResolvedValueOnce(new Response(JSON.stringify({ error: 'nope' }), { status: 404 }))
-			.mockResolvedValueOnce(
-				new Response('hello', { status: 200, headers: { 'content-type': 'text/plain' } })
-			);
-		vi.stubGlobal('fetch', fetchMock);
+		// Keyed by URL, not by call order: a refused read also asks
+		// linked-file-owner whether another machine holds the path.
+		let reads = 0;
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(async (url: string) => {
+				if (url.includes('linked-file-owner'))
+					return new Response(JSON.stringify({ error: 'not linked' }), { status: 404 });
+				reads += 1;
+				return reads === 1
+					? new Response(JSON.stringify({ error: 'nope' }), { status: 404 })
+					: new Response('hello', { status: 200, headers: { 'content-type': 'text/plain' } });
+			})
+		);
 		const a = link();
 
 		click(a);
