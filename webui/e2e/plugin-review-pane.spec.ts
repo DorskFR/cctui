@@ -46,7 +46,10 @@ const pluginInfo = (enabled: boolean) => [
 		skills: [],
 		enabled,
 		settings: [{ key: 'host', label: 'Bind address', env: 'DEMO_HOST', type: 'string' }],
-		config: {}
+		config: {},
+		instanceSettings: [],
+		instanceSettingValues: {},
+		backend: false
 	}
 ];
 

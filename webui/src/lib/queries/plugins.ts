@@ -26,3 +26,11 @@ export const useAdminPluginCatalog = (enabled: () => boolean) =>
     enabled: enabled(),
     staleTime: 5 * 60_000,
   }));
+
+/** One plugin's instance-level settings; only fetched while its form is open. */
+export const usePluginInstanceSettings = (id: () => string | null) =>
+  createQuery(() => ({
+    queryKey: qk.adminPluginSettings(id() ?? ""),
+    queryFn: () => endpoints.pluginInstanceSettings(id()!),
+    enabled: id() !== null,
+  }));

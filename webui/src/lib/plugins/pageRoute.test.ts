@@ -14,6 +14,9 @@ const info = (over: Partial<PluginInfo> = {}): PluginInfo => ({
 	enabled: false,
 	settings: [],
 	config: {},
+	instanceSettings: [],
+	instanceSettingValues: {},
+	backend: false,
 	...over
 });
 

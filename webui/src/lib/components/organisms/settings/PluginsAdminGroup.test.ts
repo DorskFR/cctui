@@ -15,6 +15,8 @@ const catalogQuery = vi.hoisted(() => ({
 	isError: false
 }));
 const endpoints = vi.hoisted(() => ({
+	savePluginInstanceSettings: vi.fn(async () => ({})),
+	rotatePluginProxySecret: vi.fn(async () => ({ id: 'x', secret: 's' })),
 	installPluginFromUrl: vi.fn(async () => ({})),
 	installPluginUpload: vi.fn(async () => ({})),
 	installPluginFromCatalog: vi.fn(async () => ({})),
@@ -25,13 +27,16 @@ const invalidateQueries = vi.hoisted(() => vi.fn(async () => undefined));
 vi.mock('$lib/queries', () => ({
 	useAdminPlugins: () => query,
 	useAdminPluginCatalog: () => catalogQuery,
+	usePluginInstanceSettings: () => ({ data: undefined, isPending: true, isError: false }),
 	endpoints,
 	qk: {
 		plugins: ['plugins'],
 		adminPlugins: ['admin', 'plugins'],
-		adminPluginCatalog: ['admin', 'plugins', 'catalog']
+		adminPluginCatalog: ['admin', 'plugins', 'catalog'],
+		adminPluginSettings: (id: string) => ['admin', 'plugins', id, 'settings']
 	}
 }));
+vi.mock('$lib/clipboard', () => ({ copyText: vi.fn(async () => undefined) }));
 vi.mock('@tanstack/svelte-query', () => ({ useQueryClient: () => ({ invalidateQueries }) }));
 
 import PluginsAdminGroup from './PluginsAdminGroup.svelte';
@@ -57,7 +62,9 @@ const installed: AdminPluginInfo = {
 	description: 'Frames the app.',
 	version: '0.5.0',
 	source: 'installed',
-	enabled: false
+	enabled: false,
+	instance_settings: [],
+	backend: false
 };
 const fromDir: AdminPluginInfo = { ...installed, id: 'local', name: 'Local', source: 'directory', enabled: true };
 
@@ -153,6 +160,30 @@ describe('PluginsAdminGroup', () => {
 		render([]);
 		expect(document.querySelector('[data-journey="plugins-catalog-empty"]')).not.toBeNull();
 		expect(document.querySelector('[data-journey="plugin-catalog-row"]')).toBeNull();
+	});
+
+	it('offers Configure only to a plugin that declares instance settings or a backend', () => {
+		render([installed]);
+		expect(document.querySelector('[data-journey="plugin-admin-configure"]')).toBeNull();
+		unmount(comp!);
+		comp = null;
+		document.body.innerHTML = '';
+		render([{ ...installed, backend: true }]);
+		expect(document.querySelector('[data-journey="plugin-admin-configure"]')).not.toBeNull();
+	});
+
+	it('opens the settings form on the row it was asked for', () => {
+		render([
+			{
+				...installed,
+				instance_settings: [{ key: 'upstream', label: 'Backend URL', type: 'url', secret: false }]
+			}
+		]);
+		expect(document.querySelector('[data-journey="plugin-instance-settings"]')).toBeNull();
+		document.querySelector<HTMLElement>('[data-journey="plugin-admin-configure"]')?.click();
+		flushSync();
+		const form = document.querySelector('[data-journey="plugin-instance-settings"]');
+		expect(form?.getAttribute('data-plugin')).toBe('yubisashi');
 	});
 
 	it('uninstalls after confirmation only', async () => {

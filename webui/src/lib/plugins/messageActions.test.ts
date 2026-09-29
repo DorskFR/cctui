@@ -13,7 +13,10 @@ const info = (id: string, icon: string | null = null): PluginInfo => ({
 	skills: [],
 	enabled: true,
 	settings: [],
-	config: {}
+	config: {},
+	instanceSettings: [],
+	instanceSettingValues: {},
+	backend: false
 });
 const pane = (() => {}) as unknown as CctuiPluginModule['sessionPane'];
 const src = (id: string, module: Partial<CctuiPluginModule>, icon: string | null = null) => ({

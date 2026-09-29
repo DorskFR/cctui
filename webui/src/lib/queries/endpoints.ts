@@ -5,6 +5,9 @@ import type { PluginEnableRequest } from "@bindings/PluginEnableRequest";
 import type { PluginInstallRequest } from "@bindings/PluginInstallRequest";
 import type { PluginCatalogInstallRequest } from "@bindings/PluginCatalogInstallRequest";
 import type { CatalogPluginInfo } from "@bindings/CatalogPluginInfo";
+import type { PluginInstanceSettings } from "@bindings/PluginInstanceSettings";
+import type { PluginInstanceSettingsRequest } from "@bindings/PluginInstanceSettingsRequest";
+import type { PluginProxySecret } from "@bindings/PluginProxySecret";
 import type { SessionListResponse } from "@bindings/SessionListResponse";
 import type { ToolPolicy } from "@bindings/ToolPolicy";
 import type { PoolUsageView } from "@bindings/PoolUsageView";
@@ -231,6 +234,20 @@ export const endpoints = {
       enabled,
     } satisfies PluginEnableRequest),
   uninstallPlugin: (id: string) => api.del<void>(`/admin/plugins/${encodeURIComponent(id)}`),
+  /** A plugin's instance-level settings: declarations, non-secret values and
+   * which secrets are set (admin). */
+  pluginInstanceSettings: (id: string) =>
+    api.get<PluginInstanceSettings>(`/admin/plugins/${encodeURIComponent(id)}/settings`),
+  /** Patch instance-level settings: an empty value clears a key, omitted keys
+   * keep theirs (admin). */
+  savePluginInstanceSettings: (id: string, values: Record<string, string>) =>
+    api.put<PluginInstanceSettings>(`/admin/plugins/${encodeURIComponent(id)}/settings`, {
+      values,
+    } satisfies PluginInstanceSettingsRequest),
+  /** Rotate the backend-proxy secret; the response is the only time it is
+   * readable (admin). */
+  rotatePluginProxySecret: (id: string) =>
+    api.post<PluginProxySecret>(`/admin/plugins/${encodeURIComponent(id)}/proxy-secret`, {}),
   /** The caller's spawn profiles, oldest first. */
   profiles: () => api.get<SessionProfile[]>("/profiles"),
   createProfile: (body: CreateProfileRequest) =>

@@ -308,6 +308,20 @@ restart drops open streams, and the client is expected to reconnect
 (`EventSource` does so by itself). If the *upstream* runs several replicas, it is
 responsible for its own fan-out; cctui does not broadcast between them.
 
+### Admin UI
+
+Settings › Plugins, **Manage** block: a row that declares `instanceSettings` or a
+`backend` gets a **Configure** button, and the form is only fetched while it is
+open. Non-secret fields show their stored value; a secret field is write-only —
+always blank, typed values are sent, and a badge says "set" or "not set" with a
+**Clear** action that writes `""`. Only keys the admin actually typed are sent, so
+leaving a secret blank keeps it.
+
+A plugin with a backend also shows the proxy secret's state and a **Rotate**
+button. The secret itself is displayed exactly once, in the response that mints
+it — on rotation, and on an install that created one (`AdminPluginInfo.proxy_secret`).
+Copy it then or rotate again.
+
 ### Host context (`HostContext`)
 
 The host sets a Svelte context under `HOST_CONTEXT_KEY` above every mounted

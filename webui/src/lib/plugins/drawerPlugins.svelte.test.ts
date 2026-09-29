@@ -16,7 +16,10 @@ const info = (id: string, web: string | null = `/plugins/${id}/web/index.js`): P
 	skills: [],
 	enabled: true,
 	settings: [],
-	config: {}
+	config: {},
+	instanceSettings: [],
+	instanceSettingValues: {},
+	backend: false
 });
 const pane = (() => {}) as unknown as CctuiPluginModule['sessionPane'];
 const modules: Record<string, CctuiPluginModule> = {

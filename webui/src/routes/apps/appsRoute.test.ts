@@ -47,6 +47,9 @@ const info = (over: Partial<PluginInfo> = {}): PluginInfo => ({
 	enabled: true,
 	settings: [],
 	config: {},
+	instanceSettings: [],
+	instanceSettingValues: {},
+	backend: false,
 	...over
 });
 

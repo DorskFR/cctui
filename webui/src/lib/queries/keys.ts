@@ -52,6 +52,7 @@ export const qk = {
   plugins: ["plugins"] as const,
   adminPlugins: ["admin", "plugins"] as const,
   adminPluginCatalog: ["admin", "plugins", "catalog"] as const,
+  adminPluginSettings: (id: string) => ["admin", "plugins", id, "settings"] as const,
   cacheLoss: (days: number) => ["cache-loss", { days }] as const,
   sessionDiagnose: (id: string) => ["session-diagnose", id] as const,
   sessionLangfuse: (id: string) => ["session-langfuse", id] as const,
