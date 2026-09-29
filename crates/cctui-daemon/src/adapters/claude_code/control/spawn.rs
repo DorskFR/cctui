@@ -110,7 +110,7 @@ impl Driver {
         // keeps its ask/permission/Stop hooks AND picks up the (possibly
         // refreshed) per-account settings the env pull re-served.
         // `whip` is recovered from the settings file the original spawn wrote for
-        // this `short` (its `hooks.Stop` block is whip-only) — cold resume has no
+        // this `short` (its Stop hook runs `whip-stop-hook`) — cold resume has no
         // `spec` to read it from directly, and defaulting false would silently
         // downgrade a 🐎 session's enforcement profile.
         let whip = detect_whip_from_settings(short);

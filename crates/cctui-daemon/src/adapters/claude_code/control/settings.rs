@@ -101,10 +101,10 @@ pub fn stage_mid_chat_files(
 }
 
 /// Recover a session's whip posture from the per-session settings file the
-/// original spawn wrote for `short`. The whip profile is the only one
-/// that emits a top-level `hooks.Stop` block (the `whip-stop-hook`), so its
-/// presence is a reliable discriminator. Used by cold resume, which has no
-/// `spec` to read `permission_mode` from. Absent/unreadable file → not whip.
+/// original spawn wrote for `short`. Every session registers a `hooks.Stop`
+/// block, so the discriminator is the `whip-stop-hook` command inside it. Used
+/// by cold resume, which has no `spec` to read `permission_mode` from.
+/// Absent/unreadable file → not whip.
 pub(super) fn detect_whip_from_settings(short: &str) -> bool {
     let Some(path) = hook_settings_path(&format!("hook-settings-{short}.json")) else {
         return false;
@@ -112,8 +112,12 @@ pub(super) fn detect_whip_from_settings(short: &str) -> bool {
     std::fs::read(&path)
         .ok()
         .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
-        .and_then(|v| v.get("hooks").and_then(|h| h.get("Stop")).cloned())
-        .is_some()
+        .is_some_and(|v| stop_block_is_whip(v.pointer("/hooks/Stop")))
+}
+
+fn stop_block_is_whip(stop: Option<&serde_json::Value>) -> bool {
+    stop.and_then(|s| serde_json::to_string(s).ok())
+        .is_some_and(|s| s.contains("whip-stop-hook"))
 }
 
 /// The directory holding the per-session settings, mcp-config and whip-phrase
@@ -347,25 +351,35 @@ fn ensure_hook_settings_in(
                     .unwrap_or_default()
             },
         );
-        format!("{} whip-stop-hook{arg}", shell_quote(&exe))
+        format!(
+            "{} whip-stop-hook --sock {}{arg}",
+            shell_quote(&exe),
+            shell_quote(&sock)
+        )
     } else {
         String::new()
     };
-    let mut hooks = if whip {
-        json!({
-            "PreToolUse": pre_hooks,
-            "PostToolUse": [hook("post")],
-            "Stop": [{
-                "hooks": [{
-                    "type": "command",
-                    "command": whip_stop_command,
-                    "timeout": 10,
-                }],
-            }],
-        })
+    // Exactly one `Stop` hook per session: whip's reports the turn end itself
+    // when it lets the stop through, so a second reporter would double-count and
+    // would also fire on a stop whip just blocked.
+    let stop_hooks = if whip {
+        json!([{
+            "hooks": [{ "type": "command", "command": whip_stop_command, "timeout": 10 }],
+        }])
     } else {
-        json!({ "PreToolUse": pre_hooks, "PostToolUse": [hook("post")] })
+        json!([{
+            "hooks": [{
+                "type": "command",
+                "command": ask_hook_command(&exe, "stop", &sock, false),
+                "timeout": 5,
+            }],
+        }])
     };
+    let mut hooks = json!({
+        "PreToolUse": pre_hooks,
+        "PostToolUse": [hook("post")],
+        "Stop": stop_hooks,
+    });
     // Claude Code connects its MCP servers while the session starts, so a turn-1
     // `CctuiAgent` call can beat the relay's `initialize`.
     if let Some(block) = agent_relay_session.and_then(|session| {
@@ -631,6 +645,51 @@ mod tests {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
         assert_eq!(write(), path);
         assert_eq!(mode_of(&path), 0o600, "a rewrite must restore 0600");
+    }
+
+    #[test]
+    fn every_session_installs_exactly_one_stop_hook() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("cctui");
+        let sock = std::path::Path::new("/run/hook.sock");
+        let write = |whip: bool, short: &str| {
+            let path = ensure_hook_settings_in(
+                &root,
+                sock,
+                whip,
+                short,
+                None,
+                &std::collections::BTreeMap::new(),
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("written");
+            serde_json::from_slice::<serde_json::Value>(&std::fs::read(path).unwrap()).unwrap()
+        };
+
+        let plain = write(false, "ddddddd4");
+        let stop = plain["hooks"]["Stop"].as_array().unwrap();
+        assert_eq!(stop.len(), 1, "one Stop group");
+        let hooks = stop[0]["hooks"].as_array().unwrap();
+        assert_eq!(hooks.len(), 1, "one Stop hook, never a second reporter");
+        let command = hooks[0]["command"].as_str().unwrap();
+        assert!(command.contains("ask-hook --event stop"), "{command}");
+        assert!(command.contains("/run/hook.sock"), "{command}");
+        assert!(!command.contains("whip-stop-hook"), "{command}");
+        assert!(!stop_block_is_whip(plain.pointer("/hooks/Stop")));
+
+        let whip = write(true, "eeeeeee5");
+        let hooks = whip["hooks"]["Stop"][0]["hooks"].as_array().unwrap();
+        assert_eq!(hooks.len(), 1, "whip reports the turn end itself, so it stays alone");
+        let command = hooks[0]["command"].as_str().unwrap();
+        assert!(command.contains("whip-stop-hook --sock '/run/hook.sock'"), "{command}");
+        assert!(!command.contains("ask-hook"), "{command}");
+        assert!(
+            stop_block_is_whip(whip.pointer("/hooks/Stop")),
+            "the whip discriminator is the command, not the block's presence"
+        );
     }
 
     #[test]

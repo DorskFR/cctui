@@ -300,6 +300,14 @@ async fn handle_hook_connection(
             // One request per connection; the hook closes after reading.
             return Ok(());
         }
+        // A `Stop` hook delivery: the harness itself reporting the turn over.
+        // It carries no client-visible event; it resolves the CctuiAgent follow,
+        // which otherwise has to infer the turn end from the transcript tail.
+        if let Some(local_id) = parse_turn_end(line, &session_map) {
+            record_hook(&hook_log, &local_id, "turn_end");
+            crate::childwatch::global().note_turn_end(&local_id);
+            continue;
+        }
         let Some(evt) = hook_line_to_event(line, &session_map) else {
             continue;
         };
@@ -413,6 +421,23 @@ fn hook_line_to_event(line: &str, session_map: &SessionMap) -> Option<AdapterEve
             None
         }
     }
+}
+
+/// The stable `local_id` of a `kind:"turn_end"` hook line, or `None` for any
+/// other line shape.
+fn parse_turn_end(line: &str, session_map: &SessionMap) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(line).ok()?;
+    if v.get("kind").and_then(|k| k.as_str()) != Some("turn_end") {
+        return None;
+    }
+    let session_id = v.get("session_id").and_then(|s| s.as_str())?;
+    Some(
+        session_map
+            .lock()
+            .ok()
+            .and_then(|m| m.get(session_id).cloned())
+            .unwrap_or_else(|| session_id.to_owned()),
+    )
 }
 
 /// A tool-permission hook delivery awaiting a decision.
@@ -660,6 +685,20 @@ mod tests {
         assert_eq!(req.request_id, "h1");
         assert_eq!(req.tool, "Bash");
         assert_eq!(req.input["command"], "ls");
+    }
+
+    #[test]
+    fn parse_turn_end_resolves_the_local_id_and_ignores_other_kinds() {
+        let map: SessionMap = Arc::default();
+        map.lock().unwrap().insert("sess-live".into(), "local-42".into());
+        let line = r#"{"kind":"turn_end","session_id":"sess-live"}"#;
+        assert_eq!(parse_turn_end(line, &map).as_deref(), Some("local-42"));
+        // Before the driver pinned the session, the live id stands in.
+        let unmapped = r#"{"kind":"turn_end","session_id":"sess-new"}"#;
+        assert_eq!(parse_turn_end(unmapped, &map).as_deref(), Some("sess-new"));
+        assert!(parse_turn_end(r#"{"kind":"ask","session_id":"s"}"#, &map).is_none());
+        assert!(parse_turn_end(r#"{"kind":"turn_end"}"#, &map).is_none());
+        assert!(parse_turn_end("not json", &map).is_none());
     }
 
     #[test]

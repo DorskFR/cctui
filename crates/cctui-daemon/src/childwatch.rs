@@ -117,6 +117,9 @@ struct WatchState {
     error: Option<String>,
     /// Reset by anything proving the turn carried on.
     tail: Tail,
+    /// When a `Stop` hook reported the turn over. Authoritative, unlike the
+    /// tail inference; cleared by a new user turn or fresh tool traffic.
+    turn_end_at: Option<Instant>,
     tool_errors: u32,
     tokens: u64,
 }
@@ -143,6 +146,7 @@ pub struct ChildSnapshot {
     error: Option<String>,
     registered_at: Instant,
     tail: Tail,
+    turn_end_at: Option<Instant>,
     tool_errors: u32,
     tokens: u64,
 }
@@ -189,6 +193,14 @@ impl ChildSnapshot {
     #[must_use]
     pub fn assess(&self, now: Instant) -> Assessment {
         if self.ended || self.error.is_some() {
+            return Assessment::Finished(self.outcome());
+        }
+        // A `Stop` hook is the harness itself saying the turn is over, so it
+        // outranks every inference below. The grace only covers the transcript
+        // poll landing the final text after the hook fired.
+        if let Some(at) = self.turn_end_at
+            && (self.final_text.is_some() || now.duration_since(at) >= DONE_TEXT_GRACE)
+        {
             return Assessment::Finished(self.outcome());
         }
         // A self-reported block with an answer in hand ended its turn on a
@@ -358,6 +370,7 @@ impl ChildWatch {
             error: w.state.error.clone(),
             registered_at: w.registered_at,
             tail: w.state.tail,
+            turn_end_at: w.state.turn_end_at,
             tool_errors: w.state.tool_errors,
             tokens: w.state.tokens,
         })
@@ -374,6 +387,17 @@ impl ChildWatch {
         let now = Instant::now();
         unclaimed.retain(|_, (_, seen)| now.duration_since(*seen) < UNCLAIMED_BIND_TTL);
         unclaimed.insert(spawn_key, (local_id.to_owned(), now));
+    }
+
+    /// Record a `Stop`-hook turn end for the session `local_id`, delivered over
+    /// the hook socket rather than as an adapter event. No-op for a session
+    /// nothing is watching.
+    pub fn note_turn_end(&self, local_id: &str) {
+        let Ok(mut guard) = self.watches.lock() else { return };
+        if let Some(w) = find_mut(&mut guard, local_id) {
+            w.state.turn_end_at = Some(Instant::now());
+            w.notify.notify_waiters();
+        }
     }
 
     /// Feed one adapter event. Cheap while nothing is being watched: only a
@@ -548,6 +572,7 @@ fn apply_message(w: &mut Watch, payload: &serde_json::Value) {
         w.state.final_text = None;
         w.state.done_since = None;
         w.state.tail = Tail::Other;
+        w.state.turn_end_at = None;
         w.state.tool_errors = 0;
     }
 }
@@ -568,6 +593,7 @@ fn apply_tool_use(w: &mut Watch, payload: &serde_json::Value) {
     // Tool traffic is proof of an in-flight turn.
     w.state.saw_working = true;
     w.state.done_since = None;
+    w.state.turn_end_at = None;
     clear_text_tail(w);
     w.notify.notify_waiters();
 }
@@ -1022,6 +1048,77 @@ mod tests {
         watch.observe(&msg_stopping("child-1", "pong", "end_turn"));
         let out = finished(&h).expect("the model said it handed back");
         assert_eq!(out.final_text.as_deref(), Some("pong"));
+    }
+
+    #[test]
+    fn a_stop_hook_ends_the_turn_without_waiting_out_the_quiet_window() {
+        // acceptance: text with no stop reason normally waits out
+        // TEXT_QUIET_GRACE; the Stop hook is authoritative, so it ends the turn
+        // on the spot with that text as the answer.
+        let watch = Arc::new(ChildWatch::default());
+        let h = watch.register_bound("child-1");
+        watch.observe(&msg("child-1", "user", "do the thing"));
+        watch.observe(&msg("child-1", "assistant", "the answer"));
+        assert!(finished(&h).is_none(), "no Stop yet, and the quiet window has not elapsed");
+        watch.note_turn_end("child-1");
+        let out = finished(&h).expect("the Stop hook ends the turn");
+        assert_eq!(out.final_text.as_deref(), Some("the answer"));
+        assert!(out.error.is_none());
+    }
+
+    #[test]
+    fn text_then_a_tool_call_keeps_running_until_a_stop_hook_fires() {
+        // acceptance: narration followed by a tool call is mid-turn however long
+        // the tool takes; only the Stop hook ends it.
+        let watch = Arc::new(ChildWatch::default());
+        let h = watch.register_bound("child-1");
+        watch.observe(&msg("child-1", "assistant", "let me check the tests"));
+        watch.observe(&tool_use("child-1", "Bash"));
+        let snap = h.snapshot().unwrap();
+        assert!(
+            matches!(snap.assess(Instant::now() + TEXT_QUIET_GRACE * 3), Assessment::Running(_)),
+            "a tool call after the text proves the turn carried on"
+        );
+        watch.observe(&msg("child-1", "assistant", "tests pass"));
+        watch.note_turn_end("child-1");
+        assert_eq!(finished(&h).unwrap().final_text.as_deref(), Some("tests pass"));
+    }
+
+    #[test]
+    fn a_stop_hook_with_no_text_yet_waits_for_the_transcript_poll() {
+        // The hook can beat the poll that carries the final assistant message,
+        // so the grace covers it rather than answering with nothing.
+        let watch = Arc::new(ChildWatch::default());
+        let h = watch.register_bound("child-1");
+        watch.note_turn_end("child-1");
+        assert!(finished(&h).is_none(), "nothing to hand back inside the grace");
+        let snap = h.snapshot().unwrap();
+        let later = Instant::now() + DONE_TEXT_GRACE + Duration::from_secs(1);
+        assert!(matches!(snap.assess(later), Assessment::Finished(_)), "the grace still expires");
+    }
+
+    #[test]
+    fn a_follow_up_turn_is_not_finished_by_the_previous_turns_stop_hook() {
+        let watch = Arc::new(ChildWatch::default());
+        let h = watch.register_bound("child-1");
+        watch.observe(&msg("child-1", "assistant", "turn one answer"));
+        watch.note_turn_end("child-1");
+        assert_eq!(finished(&h).unwrap().final_text.as_deref(), Some("turn one answer"));
+        watch.observe(&msg("child-1", "user", "and now do this"));
+        assert!(finished(&h).is_none(), "a new prompt reopens the watch");
+        let snap = h.snapshot().unwrap();
+        assert!(
+            matches!(snap.assess(Instant::now() + DONE_TEXT_GRACE * 3), Assessment::Running(_)),
+            "the previous turn's Stop must not answer the new one"
+        );
+    }
+
+    #[test]
+    fn a_stop_hook_for_an_unwatched_session_is_a_no_op() {
+        let watch = Arc::new(ChildWatch::default());
+        let h = watch.register_bound("child-1");
+        watch.note_turn_end("someone-else");
+        assert!(finished(&h).is_none());
     }
 
     #[test]
