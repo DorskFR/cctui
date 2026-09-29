@@ -36,8 +36,12 @@ function setup() {
 	flushSync();
 }
 
+// The bar holds several menu popovers (the section filter is one), so the
+// overflow panel is reached through its own trigger rather than by document order.
 function panel() {
-	const el = document.querySelector<HTMLElement>('[popover][role="menu"]');
+	const trigger = document.querySelector<HTMLElement>('[data-journey="options"]');
+	const id = trigger?.getAttribute('popovertarget');
+	const el = id ? document.getElementById(id) : null;
 	if (!el) throw new Error('overflow panel did not render');
 	return el;
 }
@@ -54,7 +58,7 @@ async function open() {
 it('opens the display options through a menu popover', async () => {
 	setup();
 
-	const trigger = document.querySelector<HTMLButtonElement>('[data-journey="options"]');
+	const trigger = document.querySelector<HTMLElement>('[data-journey="options"]');
 	expect(trigger?.getAttribute('aria-haspopup')).toBe('menu');
 	expect(panel().querySelector('[data-journey="display-options"]')).toBeNull();
 

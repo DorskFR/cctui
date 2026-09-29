@@ -150,8 +150,11 @@ describe('public journey set', () => {
 		const anchors = new Set<string>();
 		for (const file of readdirSync('src', { recursive: true, encoding: 'utf8' })) {
 			if (!/\.(svelte|ts)$/.test(file) || file.endsWith('.test.ts')) continue;
-			for (const m of readFileSync(`src/${file}`, 'utf8').matchAll(/data-journey="([^"]+)"/g)) {
-				anchors.add(m[1]);
+			const source = readFileSync(`src/${file}`, 'utf8');
+			// A hook reaches the DOM either as a markup attribute or, when a kit
+			// component renders the element, through its `attrs` object.
+			for (const re of [/data-journey="([^"]+)"/g, /'data-journey':\s*'([^']+)'/g]) {
+				for (const m of source.matchAll(re)) anchors.add(m[1]);
 			}
 		}
 		expect(anchors.size).toBeGreaterThan(0);
