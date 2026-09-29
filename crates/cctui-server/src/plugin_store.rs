@@ -154,6 +154,7 @@ pub async fn uninstall(pool: &PgPool, registry: &PluginRegistry, id: &str) -> sq
     .bind(&hash)
     .execute(pool)
     .await?;
+    crate::plugin_settings::delete(pool, id).await?;
     registry.remove_installed(id);
     Ok(true)
 }

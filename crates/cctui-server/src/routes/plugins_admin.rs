@@ -13,8 +13,9 @@ use ts_rs::TS;
 use crate::auth::{AuthContext, Scope};
 use crate::plugin_archive::ArchiveError;
 use crate::plugin_catalog::{self, CatalogEntry};
+use crate::plugin_settings;
 use crate::plugin_store::{self, InstallError};
-use crate::plugins::{Plugin, PluginSource};
+use crate::plugins::{Plugin, PluginInstanceSetting, PluginSource};
 use crate::state::AppState;
 
 type ApiErr = (StatusCode, Json<ApiError>);
@@ -38,6 +39,14 @@ pub struct AdminPluginInfo {
     pub source: PluginSource,
     /// The instance-wide toggle; directory plugins are always on.
     pub enabled: bool,
+    /// Declarations for the admin settings form.
+    pub instance_settings: Vec<PluginInstanceSetting>,
+    /// The plugin declares a backend, so it needs an upstream and a secret.
+    pub backend: bool,
+    /// Set by an install that minted a fresh proxy secret; the only response
+    /// that ever carries it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proxy_secret: Option<String>,
 }
 
 impl From<&Plugin> for AdminPluginInfo {
@@ -49,6 +58,9 @@ impl From<&Plugin> for AdminPluginInfo {
             version: p.manifest.version.clone(),
             source: p.source,
             enabled: p.instance_enabled,
+            instance_settings: p.manifest.instance_settings.clone(),
+            backend: p.manifest.backend.is_some(),
+            proxy_secret: None,
         }
     }
 }
@@ -224,7 +236,14 @@ pub async fn install(
         .await
         .map_err(install_error)?;
     tracing::info!(id = %plugin.manifest.id, version = %plugin.manifest.version, "plugin installed");
-    Ok(Json(AdminPluginInfo::from(&plugin)))
+    let mut info = AdminPluginInfo::from(&plugin);
+    if plugin.manifest.backend.is_some() {
+        let (secret, fresh) = plugin_settings::ensure_proxy_secret(&state.pool, &plugin.manifest.id)
+            .await
+            .map_err(|e| db_err(&e))?;
+        info.proxy_secret = fresh.then_some(secret);
+    }
+    Ok(Json(info))
 }
 
 pub async fn set_enabled(
@@ -258,11 +277,110 @@ pub async fn uninstall(
     }
 }
 
+/// The admin settings form for one plugin. Secret values are represented only
+/// by `secrets_set`.
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct PluginInstanceSettings {
+    pub id: String,
+    pub instance_settings: Vec<PluginInstanceSetting>,
+    pub values: std::collections::BTreeMap<String, String>,
+    pub secrets_set: std::collections::BTreeMap<String, bool>,
+    /// The `instanceSettings` key the backend proxy reads the upstream from.
+    pub backend_upstream_setting: Option<String>,
+    /// Whether a proxy secret exists; its value is only ever shown at rotation.
+    pub proxy_secret_set: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct PluginInstanceSettingsRequest {
+    /// Keys to write. An empty value clears the setting; omitted keys keep
+    /// their current value.
+    pub values: std::collections::BTreeMap<String, String>,
+}
+
+/// A rotated proxy secret, returned exactly once.
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct PluginProxySecret {
+    pub id: String,
+    pub secret: String,
+}
+
+async fn plugin_by_id(state: &AppState, id: &str) -> Result<Plugin, ApiErr> {
+    plugin_store::sync_or_warn(&state.pool, &state.plugins).await;
+    state
+        .plugins
+        .all_admin()
+        .into_iter()
+        .find(|p| p.manifest.id == id)
+        .ok_or_else(|| err(StatusCode::NOT_FOUND, "no plugin with that id"))
+}
+
+async fn settings_view(state: &AppState, plugin: &Plugin) -> Result<PluginInstanceSettings, ApiErr> {
+    let m = &plugin.manifest;
+    let view = plugin_settings::admin_view(&state.pool, m).await.map_err(|e| db_err(&e))?;
+    let proxy_secret_set =
+        plugin_settings::proxy_secret(&state.pool, &m.id).await.map_err(|e| db_err(&e))?.is_some();
+    Ok(PluginInstanceSettings {
+        id: m.id.clone(),
+        instance_settings: m.instance_settings.clone(),
+        values: view.values,
+        secrets_set: view.secrets_set,
+        backend_upstream_setting: m.backend.as_ref().map(|b| b.upstream_setting.clone()),
+        proxy_secret_set,
+    })
+}
+
+pub async fn get_settings(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Path(id): Path<String>,
+) -> Result<Json<PluginInstanceSettings>, ApiErr> {
+    ctx.requires(Scope::Admin).map_err(|s| err(s, "admin only"))?;
+    let plugin = plugin_by_id(&state, &id).await?;
+    Ok(Json(settings_view(&state, &plugin).await?))
+}
+
+pub async fn put_settings(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Path(id): Path<String>,
+    Json(body): Json<PluginInstanceSettingsRequest>,
+) -> Result<Json<PluginInstanceSettings>, ApiErr> {
+    ctx.requires(Scope::Admin).map_err(|s| err(s, "admin only"))?;
+    let plugin = plugin_by_id(&state, &id).await?;
+    plugin_settings::write(&state.pool, &plugin.manifest, &body.values).await.map_err(
+        |e| match e {
+            plugin_settings::SettingsError::Db(e) => db_err(&e),
+            other => err(StatusCode::BAD_REQUEST, other.to_string()),
+        },
+    )?;
+    tracing::info!(id = %plugin.manifest.id, "plugin instance settings updated");
+    Ok(Json(settings_view(&state, &plugin).await?))
+}
+
+pub async fn rotate_proxy_secret(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Path(id): Path<String>,
+) -> Result<Json<PluginProxySecret>, ApiErr> {
+    ctx.requires(Scope::Admin).map_err(|s| err(s, "admin only"))?;
+    let plugin = plugin_by_id(&state, &id).await?;
+    let secret = plugin_settings::rotate_proxy_secret(&state.pool, &plugin.manifest.id)
+        .await
+        .map_err(|e| db_err(&e))?;
+    tracing::info!(id = %plugin.manifest.id, "plugin proxy secret rotated");
+    Ok(Json(PluginProxySecret { id: plugin.manifest.id.clone(), secret }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        CatalogEntry, InstallBody, PluginEnableRequest, annotate, catalog, find_entry, install,
-        set_enabled, uninstall, verify_digest,
+        CatalogEntry, InstallBody, PluginEnableRequest, PluginInstanceSettingsRequest, annotate,
+        catalog, find_entry, get_settings, install, put_settings, rotate_proxy_secret, set_enabled,
+        uninstall, verify_digest,
     };
     use crate::auth::AuthContext;
     use crate::state::AppState;
@@ -303,6 +421,37 @@ mod tests {
         assert_eq!(status, StatusCode::FORBIDDEN);
         let (status, _) = catalog(State(state()), Extension(user())).await.unwrap_err();
         assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, _) = get_settings(State(state()), Extension(user()), Path("demo".into()))
+            .await
+            .unwrap_err();
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, _) = put_settings(
+            State(state()),
+            Extension(user()),
+            Path("demo".into()),
+            Json(PluginInstanceSettingsRequest { values: std::collections::BTreeMap::new() }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, _) =
+            rotate_proxy_secret(State(state()), Extension(user()), Path("demo".into()))
+                .await
+                .unwrap_err();
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn an_admin_listing_never_carries_a_proxy_secret() {
+        let plugin = crate::plugin_archive::load_archive(
+            &crate::plugin_archive::test_support::demo_tgz(None, "1.0.0"),
+            true,
+        )
+        .unwrap();
+        let info = super::AdminPluginInfo::from(&plugin);
+        assert!(info.proxy_secret.is_none());
+        let json = serde_json::to_value(&info).unwrap();
+        assert!(json.get("proxy_secret").is_none());
     }
 
     fn entry(version: &str) -> CatalogEntry {

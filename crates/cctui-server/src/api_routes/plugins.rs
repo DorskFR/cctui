@@ -53,4 +53,20 @@ pub(super) fn register(r: Routes) -> Routes {
         Authn::Bearer,
         ScopeAz(auth::Scope::Admin),
     )
+    .add(
+        &[GET, Method::PUT],
+        "/admin/plugins/{id}/settings",
+        "Read or write a plugin's instance-level settings; secret values are never returned, only whether each is set (admin).",
+        get(routes::plugins_admin::get_settings).put(routes::plugins_admin::put_settings),
+        Authn::Bearer,
+        ScopeAz(auth::Scope::Admin),
+    )
+    .add(
+        &[Method::POST],
+        "/admin/plugins/{id}/proxy-secret",
+        "Rotate the plugin's backend-proxy signing secret and return the new value once (admin).",
+        post(routes::plugins_admin::rotate_proxy_secret),
+        Authn::Bearer,
+        ScopeAz(auth::Scope::Admin),
+    )
 }

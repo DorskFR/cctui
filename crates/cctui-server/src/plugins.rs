@@ -35,6 +35,13 @@ pub struct PluginManifest {
     /// sessions as `env`.
     #[serde(default)]
     pub settings: Vec<PluginSetting>,
+    /// Instance-level settings only an admin may read or write.
+    #[serde(default)]
+    pub instance_settings: Vec<PluginInstanceSetting>,
+    /// The plugin's own HTTP backend, reachable only through the authenticated
+    /// proxy at `/api/v1/plugins/<id>/backend/*`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend: Option<PluginBackend>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -48,7 +55,31 @@ pub struct PluginSetting {
     pub kind: String,
 }
 
+/// One instance-level setting. `secret` values are sealed at rest and never
+/// leave the server, not even to the admin who wrote them.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "camelCase")]
+pub struct PluginInstanceSetting {
+    pub key: String,
+    pub label: String,
+    #[serde(rename = "type")]
+    pub kind: String,
+    #[serde(default)]
+    pub secret: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[serde(rename_all = "camelCase")]
+pub struct PluginBackend {
+    /// The `instanceSettings` key holding the upstream base URL.
+    pub upstream_setting: String,
+}
+
 pub const MAX_SETTING_VALUE_CHARS: usize = 512;
+/// Instance settings hold URLs and tokens, not the 512-char per-user strings.
+pub const MAX_INSTANCE_SETTING_VALUE_CHARS: usize = 2048;
 const MAX_SETTINGS: usize = 32;
 
 fn valid_setting_key(key: &str) -> bool {
@@ -142,6 +173,10 @@ pub enum ManifestError {
     Missing(String, String),
     #[error("plugin `{0}`: setting `{1}` is invalid: {2}")]
     BadSetting(String, String, &'static str),
+    #[error("plugin `{0}`: instance setting `{1}` is invalid: {2}")]
+    BadInstanceSetting(String, String, &'static str),
+    #[error("plugin `{0}`: backend is invalid: {1}")]
+    BadBackend(String, &'static str),
 }
 
 pub fn valid_id(id: &str) -> bool {
@@ -223,6 +258,63 @@ pub fn validate_manifest(
         }
         if !keys.insert(setting.key.as_str()) || !envs.insert(setting.env.as_str()) {
             return Err(bad("duplicate key or env"));
+        }
+    }
+    validate_instance_settings(manifest, &id)?;
+    Ok(())
+}
+
+fn validate_instance_settings(
+    manifest: &PluginManifest,
+    id: &str,
+) -> Result<(), ManifestError> {
+    if manifest.instance_settings.len() > MAX_SETTINGS {
+        return Err(ManifestError::BadInstanceSetting(
+            id.to_owned(),
+            String::new(),
+            "too many instanceSettings",
+        ));
+    }
+    let mut keys = std::collections::HashSet::new();
+    for setting in &manifest.instance_settings {
+        let bad = |why| {
+            ManifestError::BadInstanceSetting(id.to_owned(), setting.key.clone(), why)
+        };
+        if !valid_setting_key(&setting.key) {
+            return Err(bad("key must match [a-zA-Z][a-zA-Z0-9_-]{0,39}"));
+        }
+        if setting.label.trim().is_empty() {
+            return Err(bad("label is empty"));
+        }
+        if setting.kind != "string" && setting.kind != "url" {
+            return Err(bad("type must be \"string\" or \"url\""));
+        }
+        if !keys.insert(setting.key.as_str()) {
+            return Err(bad("duplicate key"));
+        }
+    }
+    if let Some(backend) = &manifest.backend {
+        let declared = manifest
+            .instance_settings
+            .iter()
+            .find(|s| s.key == backend.upstream_setting)
+            .ok_or_else(|| {
+                ManifestError::BadBackend(
+                    id.to_owned(),
+                    "upstreamSetting names no instanceSettings entry",
+                )
+            })?;
+        if declared.kind != "url" {
+            return Err(ManifestError::BadBackend(
+                id.to_owned(),
+                "upstreamSetting must be an instance setting of type \"url\"",
+            ));
+        }
+        if declared.secret {
+            return Err(ManifestError::BadBackend(
+                id.to_owned(),
+                "upstreamSetting must not be secret",
+            ));
         }
     }
     Ok(())
@@ -594,9 +686,9 @@ pub mod test_support {
 mod tests {
     use super::test_support::write_plugin;
     use super::{
-        ManifestError, PluginManifest, PluginRegistry, PluginSetting, PluginSource, enabled_ids,
-        load_plugin, mime_for, plugin_config, plugin_env, resolve_static, safe_relative, scan_dir,
-        valid_id, validate_manifest,
+        ManifestError, PluginBackend, PluginInstanceSetting, PluginManifest, PluginRegistry,
+        PluginSetting, PluginSource, enabled_ids, load_plugin, mime_for, plugin_config, plugin_env,
+        resolve_static, safe_relative, scan_dir, valid_id, validate_manifest,
     };
     use serde_json::json;
     use std::collections::BTreeMap;
@@ -612,6 +704,17 @@ mod tests {
             web: None,
             skills: vec![],
             settings: vec![],
+            instance_settings: vec![],
+            backend: None,
+        }
+    }
+
+    fn instance_setting(key: &str, kind: &str, secret: bool) -> PluginInstanceSetting {
+        PluginInstanceSetting {
+            key: key.to_owned(),
+            label: "L".to_owned(),
+            kind: kind.to_owned(),
+            secret,
         }
     }
 
@@ -661,6 +764,95 @@ mod tests {
             validate_manifest(&m, "p", &|_| false),
             Err(ManifestError::BadSetting(..))
         ));
+    }
+
+    #[test]
+    fn instance_settings_and_backend_are_validated_together() {
+        let mut m = manifest("p");
+        m.instance_settings = vec![
+            instance_setting("upstream", "url", false),
+            instance_setting("token", "string", true),
+        ];
+        m.backend = Some(PluginBackend { upstream_setting: "upstream".to_owned() });
+        assert_eq!(validate_manifest(&m, "p", &|_| false), Ok(()));
+
+        let mut m = manifest("p");
+        m.instance_settings = vec![instance_setting("a", "number", false)];
+        assert!(matches!(
+            validate_manifest(&m, "p", &|_| false),
+            Err(ManifestError::BadInstanceSetting(..))
+        ));
+
+        let mut m = manifest("p");
+        m.instance_settings =
+            vec![instance_setting("a", "url", false), instance_setting("a", "string", false)];
+        assert!(matches!(
+            validate_manifest(&m, "p", &|_| false),
+            Err(ManifestError::BadInstanceSetting(..))
+        ));
+
+        let mut m = manifest("p");
+        m.instance_settings = vec![instance_setting("1bad", "url", false)];
+        assert!(matches!(
+            validate_manifest(&m, "p", &|_| false),
+            Err(ManifestError::BadInstanceSetting(..))
+        ));
+
+        let mut m = manifest("p");
+        m.backend = Some(PluginBackend { upstream_setting: "nope".to_owned() });
+        assert!(matches!(
+            validate_manifest(&m, "p", &|_| false),
+            Err(ManifestError::BadBackend(..))
+        ));
+
+        let mut m = manifest("p");
+        m.instance_settings = vec![instance_setting("upstream", "string", false)];
+        m.backend = Some(PluginBackend { upstream_setting: "upstream".to_owned() });
+        assert!(
+            matches!(validate_manifest(&m, "p", &|_| false), Err(ManifestError::BadBackend(..))),
+            "the upstream setting must be a url"
+        );
+
+        let mut m = manifest("p");
+        m.instance_settings = vec![instance_setting("upstream", "url", true)];
+        m.backend = Some(PluginBackend { upstream_setting: "upstream".to_owned() });
+        assert!(
+            matches!(validate_manifest(&m, "p", &|_| false), Err(ManifestError::BadBackend(..))),
+            "a secret upstream could never be shown back to the admin"
+        );
+
+        let mut m = manifest("p");
+        m.instance_settings =
+            (0..33).map(|i| instance_setting(&format!("k{i}"), "string", false)).collect();
+        assert!(matches!(
+            validate_manifest(&m, "p", &|_| false),
+            Err(ManifestError::BadInstanceSetting(..))
+        ));
+    }
+
+    #[test]
+    fn a_manifest_round_trips_instance_settings_in_camel_case() {
+        let raw = r#"{"id":"p","name":"N","version":"1","cctuiApi":1,
+            "instanceSettings":[{"key":"upstream","label":"Upstream","type":"url"},
+                                {"key":"token","label":"Token","type":"string","secret":true}],
+            "backend":{"upstreamSetting":"upstream"}}"#;
+        let m: PluginManifest = serde_json::from_str(raw).unwrap();
+        assert_eq!(m.instance_settings.len(), 2);
+        assert!(!m.instance_settings[0].secret);
+        assert!(m.instance_settings[1].secret);
+        assert_eq!(m.backend.as_ref().unwrap().upstream_setting, "upstream");
+        let back = serde_json::to_value(&m).unwrap();
+        assert_eq!(back["instanceSettings"][0]["type"], "url");
+        assert_eq!(back["backend"]["upstreamSetting"], "upstream");
+    }
+
+    #[test]
+    fn a_manifest_without_the_new_fields_still_loads() {
+        let m: PluginManifest =
+            serde_json::from_str(r#"{"id":"p","name":"N","version":"1","cctuiApi":1}"#).unwrap();
+        assert!(m.instance_settings.is_empty());
+        assert!(m.backend.is_none());
+        assert_eq!(validate_manifest(&m, "p", &|_| false), Ok(()));
     }
 
     #[test]

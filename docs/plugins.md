@@ -123,6 +123,67 @@ instances. `CCTUI_PLUGIN_CATALOG_URL=off` uses only that embedded copy.
   (`PATH`, `HOME`, `SHELL`, `USER`, `NODE_OPTIONS`, `LD_*`, `DYLD_*`,
   `ANTHROPIC_*`, `CLAUDE_*`, `CCTUI_*`, `OPENAI_*`, `FIREWORKS_*`, `*_PROXY`,
   and the daemon's own contract vars).
+- `instanceSettings` (optional): see below.
+- `backend` (optional): see [Plugin backends](#plugin-backends).
+
+## Instance settings (admin-owned)
+
+`settings` is per user. `instanceSettings` is per *instance*: one value for the
+whole deployment, writable only by an admin.
+
+```json
+"instanceSettings": [
+  { "key": "upstream", "label": "Backend URL", "type": "url" },
+  { "key": "webhookSecret", "label": "Webhook secret", "type": "string", "secret": true }
+]
+```
+
+- `key` matches `[a-zA-Z][a-zA-Z0-9_-]{0,39}`, is unique, and at most 32 entries.
+- `type` is `"string"` or `"url"`. A `url` value must parse as an absolute
+  `http`/`https` URL with a host.
+- `secret: true` values are sealed with the server's vault key
+  (`CCTUI_VAULT_KEY`, the same ChaCha20-Poly1305 vault as API keys and OAuth
+  tokens) and are **never returned by any endpoint** — not to users, not to the
+  admin who wrote them. The admin API reports only whether each is set.
+- Values are at most 2048 characters.
+
+They live in the `plugin_settings` table (migration 155), keyed by plugin id
+rather than on the `plugins` row, so a read-only `CCTUI_PLUGINS_DIR` plugin —
+which has no `plugins` row — can still be configured. Uninstalling a plugin
+deletes its row, secret and all.
+
+### Admin endpoints
+
+`GET /api/v1/admin/plugins/{id}/settings` → `PluginInstanceSettings`:
+
+```json
+{
+  "id": "ghreview",
+  "instance_settings": [ { "key": "upstream", "label": "Backend URL", "type": "url", "secret": false } ],
+  "values": { "upstream": "https://ghreview.dorsk.dev" },
+  "secrets_set": { "webhookSecret": true },
+  "backend_upstream_setting": "upstream",
+  "proxy_secret_set": true
+}
+```
+
+`values` carries non-secret values only; every declared secret appears in
+`secrets_set` as a boolean.
+
+`PUT /api/v1/admin/plugins/{id}/settings` with `{"values": { "<key>": "<value>" }}`
+returns the same shape. It is a **patch**: keys present are written, a key set to
+`""` is cleared, omitted keys keep their value. An undeclared key, a bad `url`,
+or an over-long value is a `400`. An unknown plugin id is a `404`.
+
+### What users see
+
+`GET /api/v1/plugins` adds, per plugin:
+
+- `instanceSettings` — the declarations, for display.
+- `instanceSettingValues` — non-secret values, and only to a caller who has the
+  plugin enabled. Secrets are filtered out twice: once when the values are read
+  and again when the response is built.
+- `backend` — `true` when the plugin declares one.
 
 ## Endpoints
 
@@ -134,6 +195,9 @@ instances. `CCTUI_PLUGIN_CATALOG_URL=off` uses only that embedded copy.
 | `GET /api/v1/admin/plugins/catalog` | admin | `CatalogPluginInfo[]`: the published catalog, annotated with `installed_version` and `update_available` |
 | `POST /api/v1/admin/plugins` | admin | install or upgrade from `{catalog}`, `{url}` or a multipart `file` |
 | `PATCH /api/v1/admin/plugins/{id}` | admin | `{enabled}`, the instance-wide toggle |
+| `GET /api/v1/admin/plugins/{id}/settings` | admin | `PluginInstanceSettings`: declarations, non-secret values, which secrets are set |
+| `PUT /api/v1/admin/plugins/{id}/settings` | admin | patch `{values}`; `""` clears a key |
+| `POST /api/v1/admin/plugins/{id}/proxy-secret` | admin | rotate the backend-proxy secret, returned once |
 | `DELETE /api/v1/admin/plugins/{id}` | admin | uninstall (directory plugins cannot be removed) |
 | `GET /plugins/{id}/{path}` | none | static files from the plugin: traversal-safe, typed by extension, `X-Content-Type-Options: nosniff`, `Cache-Control: no-cache` + `ETag` |
 

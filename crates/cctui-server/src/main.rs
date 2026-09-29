@@ -31,6 +31,8 @@ mod outbound;
 mod pace;
 mod plugin_archive;
 mod plugin_catalog;
+mod plugin_proxy;
+mod plugin_settings;
 mod plugin_store;
 mod plugins;
 mod policy;
