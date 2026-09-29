@@ -44,6 +44,7 @@ pub mod runlock;
 pub mod runtime;
 pub mod selfupdate;
 pub mod sendguard;
+pub mod servercaps;
 pub mod service;
 pub mod supervisor;
 pub mod updatehook;

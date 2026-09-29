@@ -272,7 +272,13 @@ async fn run_daemon(path: &std::path::Path, no_auto_update: bool) -> anyhow::Res
         Some(Err(err)) => return Err(fatal::mark(err)),
         None => return Ok(()),
     };
-    tracing::info!(machine_id = %auth.machine_id, user_id = %auth.user_id, "authenticated");
+    cctui_daemon::servercaps::set(&auth.capabilities);
+    tracing::info!(
+        machine_id = %auth.machine_id,
+        user_id = %auth.user_id,
+        capabilities = ?auth.capabilities,
+        "authenticated"
+    );
     // Captured for the self-update loop before `machine_key` is moved
     // into the supervisor; both flow to the server-routed updater.
     let update_server_url = cfg.server_url.clone();

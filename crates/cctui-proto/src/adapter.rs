@@ -280,6 +280,16 @@ pub enum AdapterEvent {
         local_id: String,
         offset: u64,
     },
+    /// The harness itself reporting a turn over, ahead of any poll. Harness-
+    /// neutral: claude-code sources it from the `Stop` hook, and any adapter
+    /// that knows when a turn ends may send it. Send only to a server that
+    /// advertises [`crate::capability::TURN_END`].
+    TurnEnd {
+        local_id: String,
+        /// Unix seconds. `None` = now.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ts: Option<i64>,
+    },
     /// Rate-limit windows the agent reported for its bound credential.
     RateLimits {
         local_id: String,

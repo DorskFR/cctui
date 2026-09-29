@@ -3,6 +3,7 @@ pub mod api;
 pub mod backoff;
 pub mod bandwidth;
 pub mod blob;
+pub mod capability;
 pub mod chunk;
 pub mod classifier;
 pub mod codex_catalog;

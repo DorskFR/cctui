@@ -956,6 +956,39 @@ mod tests {
         let _back: DaemonFrameUp = serde_json::from_str(&json).unwrap();
     }
 
+    /// Why `AdapterEvent::TurnEnd` is gated on
+    /// [`crate::capability::TURN_END`]: an older server cannot skip a kind it
+    /// does not know — the tag failure rejects the whole frame, and inside a
+    /// batch it would take the real events beside it down too.
+    #[test]
+    fn an_unknown_event_kind_rejects_the_whole_frame() {
+        let turn_end = r#"{"type":"event","adapter_id":"claude-code",
+            "event":{"kind":"turn_end","local_id":"abc","ts":7}}"#;
+        match serde_json::from_str::<DaemonFrameUp>(turn_end).expect("this build knows turn_end") {
+            DaemonFrameUp::Event { event: AdapterEvent::TurnEnd { local_id, ts }, .. } => {
+                assert_eq!(local_id, "abc");
+                assert_eq!(ts, Some(7));
+            }
+            other => panic!("expected a turn_end event, got {other:?}"),
+        }
+
+        let from_the_future = r#"{"type":"event","adapter_id":"claude-code",
+            "event":{"kind":"not_invented_yet","local_id":"abc"}}"#;
+        assert!(
+            serde_json::from_str::<DaemonFrameUp>(from_the_future).is_err(),
+            "an unknown kind must be assumed lost, not tolerated"
+        );
+
+        let batch = r#"{"type":"batch","frames":[
+            {"type":"session_registered","adapter_id":"claude-code","local_id":"abc"},
+            {"type":"event","adapter_id":"claude-code",
+             "event":{"kind":"not_invented_yet","local_id":"abc"}}]}"#;
+        assert!(
+            serde_json::from_str::<DaemonFrameUp>(batch).is_err(),
+            "one unknown kind costs the whole batch"
+        );
+    }
+
     #[test]
     fn heartbeat_carries_bandwidth_and_accepts_legacy_payload() {
         let hb = DaemonFrameUp::Heartbeat {
