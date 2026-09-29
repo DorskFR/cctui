@@ -2663,6 +2663,16 @@ pub async fn archive_one(
     .bind(initiator.as_str())
     .fetch_all(&state.pool)
     .await?;
+    // An archived session is over: its gateway credential dies with it, exactly
+    // as it does on a reported end. Without this an archived session keeps a
+    // live token, which still counts as load on its account in
+    // `in_flight_by_provider` for the whole recent-binding window and skews
+    // every election away from an account that is in fact free. The token row
+    // survives revoked and still names the account, so an unarchive + resume
+    // re-mints a fresh one (see `resolve_session_accounts`).
+    for id in &archived {
+        crate::routes::gateway::revoke_session_tokens(state, id).await;
+    }
     // Deepest first, and always before the parent: a live descendant holds its
     // parent's worktree, and `claude rm` refuses a job whose worktree is the
     // working directory of a live session. Task-tool subagents are observe-only

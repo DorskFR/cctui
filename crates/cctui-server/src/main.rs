@@ -548,6 +548,10 @@ async fn auto_archive_stale(state: &AppState) {
         Ok(ids) if !ids.is_empty() => {
             tracing::info!(count = ids.len(), "auto-archived stale sessions");
             for id in &ids {
+                // Same as the explicit archive route: the sweep ends the
+                // session, so its gateway credential goes with it instead of
+                // counting as load on its account until the token expires.
+                crate::routes::gateway::revoke_session_tokens(state, id).await;
                 crate::routes::sessions::dispatch_remove(
                     state,
                     id,
