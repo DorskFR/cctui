@@ -1,7 +1,7 @@
 <script lang="ts">
 	// Per-message action cluster at the right of the meta row: pin, save-as-image,
 	// copy-as-Markdown, quote-reply, bookmark. Excluded from the saved image.
-	import { IconButton } from '@dorsk/tsumikit';
+	import { Button, Icon, IconButton } from '@dorsk/tsumikit';
 	import { bubbleSelection } from './lineActions';
 	import type { Line } from './types';
 	import { m } from '$lib/paraglide/messages';
@@ -41,16 +41,17 @@
 
 <span class="line-actions" class:has-pin={pinned} data-journey="line-actions">
 	{#if pinnable}
-		<IconButton
-			inline
-			glyphSize={16}
-			icon="pin"
-			pressed={pinned}
-			style="--btn-on: var(--warn)"
-			label={pinned ? m.conversation_unpin_label() : m.conversation_pin_label()}
+		<Button
+			variant="ghost"
+			iconInline
+			aria-pressed={pinned}
+			aria-label={pinned ? m.conversation_unpin_label() : m.conversation_pin_label()}
 			title={pinned ? m.conversation_unpin_title() : m.conversation_pin_title()}
+			style="--btn-on: var(--warn)"
 			onclick={() => onpin?.(ln)}
-		/>
+		>
+			<Icon name="pin" size={16} filled={pinned} />
+		</Button>
 	{/if}
 	<!-- Copy-as-Markdown uses the same markdown glyph as the
 	     conversation-level copy; save-as-image uses a
