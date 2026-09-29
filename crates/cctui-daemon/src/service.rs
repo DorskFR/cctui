@@ -461,6 +461,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn unit_survives_an_oom_killed_child() {
+        assert!(
+            UNIT_TEMPLATE.lines().any(|l| l.trim() == "OOMPolicy=continue"),
+            "an OOM-killed agent tool must not stop the unit and kill every session:\n{UNIT_TEMPLATE}"
+        );
+    }
+
+    #[test]
     fn plist_keepalive_only_respawns_on_failure() {
         assert!(PLIST_TEMPLATE.contains("<key>SuccessfulExit</key>"));
         assert!(PLIST_TEMPLATE.contains("<key>ThrottleInterval</key>"));

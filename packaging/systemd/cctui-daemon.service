@@ -9,6 +9,12 @@ Type=simple
 ExecStart=%h/.local/bin/cctui-daemon run
 Restart=on-failure
 RestartSec=5s
+# Coding agents run their tools (builds, Gradle/Kotlin daemons, test
+# runners) as descendants of this unit. When the kernel OOM-kills one of
+# them, the default OOMPolicy=stop would stop the whole unit and take every
+# live Codex/opencode session down with it. Let the kernel kill the culprit
+# and keep the daemon running.
+OOMPolicy=continue
 
 # The default (control-group) SIGTERMs every process in the unit's cgroup on
 # stop/restart — which includes the `claude daemon` and every worker session the
