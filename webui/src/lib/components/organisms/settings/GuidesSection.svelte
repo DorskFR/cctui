@@ -80,7 +80,7 @@
 	async function launch(guide: GuideView) {
 		busy = guide.id;
 		try {
-			const say = startFailureMessage(await replayGuide(guide.id, guideOptions(guide)));
+			const say = startFailureMessage(await replayGuide(guide.id, guideOptions(guide, curriculum)));
 			if (say) toasts.info(say);
 		} catch {
 			toasts.error(m.journey_unavailable());

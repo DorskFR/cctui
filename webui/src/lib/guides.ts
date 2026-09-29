@@ -221,12 +221,22 @@ export function resetGuides() {
 
 /** What the runtime needs to refuse a locked guide with the same words the page
  *  already shows, and to close the tour on its XP. */
-export function guideOptions(guide: GuideView): StartGuideOptions {
+export function guideOptions(guide: GuideView, curriculum?: CurriculumView): StartGuideOptions {
 	return {
 		blockedBy: guide.locked ? guide.lockedBy : [],
-		conclusion: { title: guide.title, xp: guide.xp },
+		conclusion: { title: guide.title, xp: guide.xp, next: nextGuide(guide, curriculum)?.title },
 		returnTo: GUIDES_ROUTE
 	};
+}
+
+/** The guide to offer once this one is finished: the next one in curriculum
+ *  order that is neither done nor locked, counting this one as done. */
+export function nextGuide(guide: GuideView, curriculum?: CurriculumView): GuideView | undefined {
+	if (!curriculum) return undefined;
+	const all = curriculum.sections.flatMap((s) => s.guides);
+	const from = all.findIndex((g) => g.id === guide.id);
+	if (from < 0) return undefined;
+	return all.slice(from + 1).find((g) => g.status !== 'done' && !g.locked);
 }
 
 /** Replaying drops the done marker so the guide reads as unfinished while it

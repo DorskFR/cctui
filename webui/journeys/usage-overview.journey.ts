@@ -27,7 +27,6 @@ export default defineJourney({
 		},
 		{
 			id: 'attention',
-			route: HOME,
 			target: 'tile[needs_input]',
 			say: {
 				title: { en: 'The one number to act on', fr: 'Le chiffre sur lequel agir' },
@@ -37,7 +36,6 @@ export default defineJourney({
 		},
 		{
 			id: 'capacity',
-			route: HOME,
 			target: 'tile[machines]',
 			say: {
 				title: { en: 'How much capacity you have', fr: 'La capacité dont vous disposez' },
@@ -47,7 +45,6 @@ export default defineJourney({
 		},
 		{
 			id: 'periods',
-			route: HOME,
 			target: 'session-periods',
 			say: {
 				title: { en: 'Is today busier than usual?', fr: 'La journée est-elle plus chargée que d’habitude ?' },
@@ -58,7 +55,6 @@ export default defineJourney({
 		},
 		{
 			id: 'windows',
-			route: HOME,
 			target: 'windows',
 			say: {
 				title: { en: 'Tokens by time window', fr: 'Jetons par fenêtre de temps' },
@@ -79,7 +75,6 @@ export default defineJourney({
 		},
 		{
 			id: 'analytics',
-			route: HOME,
 			target: 'analytics',
 			say: {
 				title: { en: 'Where the tokens went', fr: 'Où sont passés les jetons' },

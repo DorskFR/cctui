@@ -216,7 +216,7 @@ export interface StartGuideOptions {
 	 *  list refuses the guide; the caller has already said so on the page. */
 	blockedBy?: readonly string[];
 	/** Closing card copy. Omitted, the tour ends where its last step left off. */
-	conclusion?: { title: string; xp: number };
+	conclusion?: { title: string; xp: number; next?: string };
 	/** Where to hand the user back on any ending, including Esc. */
 	returnTo?: string;
 }
@@ -404,7 +404,7 @@ async function returnTo(opts: StartGuideOptions): Promise<void> {
 
 /** A deck closes on its own last card, so a conclusion would stack a second
  *  one on top of it; it still hands the user back to the guides. */
-async function concludeGuide(ir: IR, conclusion: { title: string; xp: number }): Promise<void> {
+async function concludeGuide(ir: IR, conclusion: { title: string; xp: number; next?: string }): Promise<void> {
 	if (!isDeck(ir)) await showConclusion(conclusion);
 	if (location.pathname !== GUIDES_ROUTE) await goto(GUIDES_ROUTE);
 }

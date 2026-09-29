@@ -641,6 +641,7 @@
 	"fork_toast_reopened": "Reopened as a new conversation",
 	"guide_done_body": "You finished {title}.",
 	"guide_done_continue": "Back to guides",
+	"guide_done_next": "Up next: {title}",
 	"guide_done_title": "Tour complete",
 	"guide_done_xp": "+{xp} XP",
 	"github_account_label": "Account",

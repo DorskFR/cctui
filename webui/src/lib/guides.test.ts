@@ -10,6 +10,7 @@ import {
 	GUIDE_SECTIONS,
 	guideEntries,
 	guideText,
+	nextGuide,
 	guideStatus,
 	progressJourneyId,
 	replayGuide,
@@ -265,9 +266,37 @@ describe('buildCurriculum', () => {
 		const [guide] = buildCurriculum(entries, onboarding()).sections[0].guides;
 		expect(guideOptions(guide)).toEqual({
 			blockedBy: [],
-			conclusion: { title: 'WELCOME', xp: 10 },
+			conclusion: { title: 'WELCOME', xp: 10, next: undefined },
 			returnTo: GUIDES_ROUTE
 		});
+	});
+
+	it('names the next guide to take in the conclusion', () => {
+		const view = buildCurriculum(entries, onboarding());
+		const [guide] = view.sections[0].guides;
+		expect(guideOptions(guide, view).conclusion).toEqual({
+			title: 'WELCOME',
+			xp: 10,
+			next: 'SESSIONS-LIST'
+		});
+	});
+
+	it('skips guides already done when naming the next one', () => {
+		const view = buildCurriculum(entries, onboarding({ seenVersion: through('basics') }));
+		const [guide] = view.sections[0].guides;
+		expect(nextGuide(guide, view)?.id).toBe('accounts-pools');
+	});
+
+	it('never names a locked guide as the next one', () => {
+		const view = buildCurriculum(entries, onboarding());
+		const last = view.sections[0].guides[1];
+		expect(nextGuide(last, view)).toBeUndefined();
+	});
+
+	it('has no next guide once every guide is done', () => {
+		const view = buildCurriculum(entries, onboarding({ seenVersion: through('master') }));
+		const [guide] = view.sections[0].guides;
+		expect(nextGuide(guide, view)).toBeUndefined();
 	});
 
 	it('reads live-state completion for the guides that write no marker', () => {

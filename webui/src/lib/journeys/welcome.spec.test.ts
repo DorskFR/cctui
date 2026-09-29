@@ -30,37 +30,38 @@ describe('welcome spec', () => {
 		expect(pub.steps.map((s) => s.id)).toEqual([
 			'overview',
 			'attention',
+			'to-sessions',
 			'sessions',
 			'start',
+			'to-accounts',
 			'accounts',
+			'to-access',
 			'access',
-			'usage',
+			'settings',
 			'guides'
 		]);
-		expect(pub.steps.map((s) => s.route)).toEqual([
-			'/',
-			'/',
-			'/sessions',
-			'/sessions',
-			'/accounts',
-			'/access',
-			'/',
-			'/settings/guides'
+	});
+
+	it('changes page by asking the user to click the nav, not by interrupting', () => {
+		// Only the closing hop to the guides page declares a route; every other
+		// screen is reached by the user clicking the nav item the step points at.
+		const hops = pub.steps.filter((s) => s.id.startsWith('to-'));
+		for (const hop of hops) expect(hop.target, hop.id).toBe(`nav[${hop.id.slice(3)}]`);
+		expect(hops.map((s) => s.id)).toEqual(['to-sessions', 'to-accounts', 'to-access']);
+		for (const hop of hops) expect(hop.do.kind, hop.id).toBe('click');
+		expect(pub.steps.slice(1).filter((s) => s.route !== undefined).map((s) => s.id)).toEqual([
+			'guides'
 		]);
 	});
 
-	it('captures each route once, since doc mode shoots the page and not the spotlight', () => {
-		const shot = book.steps.filter((s) => s.capture);
-		expect(shot.length).toBeGreaterThan(0);
-		const routes = shot.map((s) => s.route);
-		expect(routes).toEqual([...new Set(routes)]);
-		expect(new Set(book.steps.map((s) => s.route)).size).toBe(routes.length);
+	it('marks no step optional, which guide mode cannot honour anyway', () => {
+		for (const step of pub.steps) expect(step.optional, step.id).toBeUndefined();
 	});
 
-	it('keeps the data-dependent step optional', () => {
-		const attention = pub.steps.find((s) => s.id === 'attention');
-		expect(attention?.optional).toBe(true);
-		expect(attention?.expect ?? []).toEqual([]);
+	it('ends on the guides page, pointing at the guide to take next', () => {
+		const last = pub.steps.at(-1)!;
+		expect(last.route).toBe('/settings/guides');
+		expect(last.target).toBe('guide[sessions-list]');
 	});
 
 	it('never autostarts: the user opens it from the Guides page', () => {
