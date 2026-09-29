@@ -2,28 +2,30 @@
 import { describe, expect, it, vi } from 'vitest';
 import { PtyStream, loadTerminalFont } from './terminalStream.svelte';
 
+const bytes = (s: string) => new TextEncoder().encode(s);
+
 function writer() {
-	const written: string[] = [];
-	return { written, write: (d: string) => written.push(d) };
+	const written: Uint8Array[] = [];
+	return { written, write: (d: Uint8Array) => written.push(d) };
 }
 
 describe('PtyStream', () => {
 	it('writes chunks that arrived before the terminal opened, in order', () => {
 		const s = new PtyStream();
-		s.push('a');
-		s.push('b');
+		s.push(bytes('a'));
+		s.push(bytes('b'));
 		const w = writer();
 		expect(w.written).toEqual([]);
 		s.attach(w);
-		expect(w.written).toEqual(['a', 'b']);
+		expect(w.written).toEqual([bytes('a'), bytes('b')]);
 	});
 
 	it('writes straight through once attached, buffering nothing', () => {
 		const s = new PtyStream();
 		const w = writer();
 		s.attach(w);
-		s.push('a');
-		expect(w.written).toEqual(['a']);
+		s.push(bytes('a'));
+		expect(w.written).toEqual([bytes('a')]);
 		const next = writer();
 		s.attach(next);
 		expect(next.written).toEqual([]);
@@ -34,13 +36,13 @@ describe('PtyStream', () => {
 		expect(s.live).toBe(false);
 		s.attach(writer());
 		expect(s.live).toBe(false);
-		s.push('a');
+		s.push(bytes('a'));
 		expect(s.live).toBe(true);
 	});
 
 	it('drops the buffer and goes offline on detach', () => {
 		const s = new PtyStream();
-		s.push('a');
+		s.push(bytes('a'));
 		s.detach();
 		expect(s.live).toBe(false);
 		const w = writer();

@@ -8,16 +8,16 @@
  */
 
 export interface TerminalWriter {
-	write(data: string): void;
+	write(data: Uint8Array): void;
 }
 
 export class PtyStream {
-	#buffered: string[] = [];
+	#buffered: Uint8Array[] = [];
 	#writer: TerminalWriter | null = null;
 	/** True from the first chunk, not from when the watch was sent. */
 	live = $state(false);
 
-	push = (data: string): void => {
+	push = (data: Uint8Array): void => {
 		this.live = true;
 		if (this.#writer) this.#writer.write(data);
 		else this.#buffered.push(data);
