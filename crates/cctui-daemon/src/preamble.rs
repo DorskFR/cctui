@@ -8,9 +8,10 @@
 
 use std::time::SystemTime;
 
-/// The shared-checkout warning for a session about to work in `cwd`, or `None`
-/// when no other live session shares its working tree. `local_id` is the
-/// session's own roster id, so a session already registered does not warn
+/// The shared-checkout warning for a session about to work in `cwd`.
+///
+/// `None` when no other live session shares its working tree. `local_id` is
+/// the session's own roster id, so a session already registered does not warn
 /// about itself; `None` before the harness has minted one.
 #[must_use]
 pub fn shared_checkout(cwd: &str, local_id: Option<&str>) -> Option<String> {

@@ -297,7 +297,7 @@ impl CodexSession {
 
     /// The roster id this session already holds, so the preamble does not
     /// report the session to itself. A fresh thread has none yet.
-    fn roster_self(&self) -> Option<&str> {
+    const fn roster_self(&self) -> Option<&str> {
         match &self.launch {
             SessionLaunch::Resume { thread_id, .. } => Some(thread_id.as_str()),
             SessionLaunch::Fresh { .. } | SessionLaunch::Fork { .. } => None,
