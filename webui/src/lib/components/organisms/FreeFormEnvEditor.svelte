@@ -7,7 +7,7 @@
 	// these checks are fast feedback). Saving replaces the whole stored blob;
 	// stored names can also be deleted individually via `env_remove` (the server
 	// drops them from the decrypted blob without the other values round-tripping).
-	import { Button, IconButton, Input, Text } from '@dorsk/tsumikit';
+	import { Badge, Button, IconButton, Input, Text } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 	import Error from '$lib/components/atoms/Error.svelte';
 
@@ -90,15 +90,26 @@
 			<div class="chips">
 				{#each storedNames as n (n)}
 					{#if envRemove.includes(n)}
-						<span class="chip removing">
-							<s>{n}</s>
-							<IconButton icon="retry" inline size={12} label={m.providers_env_keep_aria({ name: n })} onclick={() => unmarkRemove(n)} />
-						</span>
-					{:else}
-						<span class="chip">
+						<Badge
+							size="sm"
+							mono
+							removed
+							actionIcon="retry"
+							actionLabel={m.providers_env_keep_aria({ name: n })}
+							onaction={() => unmarkRemove(n)}
+						>
 							{n}
-							<IconButton icon="x" inline size={12} label={m.providers_env_remove_named_aria({ name: n })} onclick={() => markRemove(n)} />
-						</span>
+						</Badge>
+					{:else}
+						<Badge
+							size="sm"
+							mono
+							removable
+							actionLabel={m.providers_env_remove_named_aria({ name: n })}
+							onremove={() => markRemove(n)}
+						>
+							{n}
+						</Badge>
 					{/if}
 				{/each}
 			</div>
@@ -168,19 +179,6 @@
 		display: flex;
 		flex-wrap: wrap;
 		gap: var(--sp-1);
-	}
-	.chip {
-		display: inline-flex;
-		align-items: center;
-		gap: 0.35em;
-		font-family: var(--font-mono, monospace);
-		font-size: var(--fs-xs);
-		padding: 0.1em 0.5em;
-		border-radius: var(--r-sm);
-		background: var(--surface-2, color-mix(in srgb, var(--text) 8%, transparent));
-	}
-	.chip.removing {
-		opacity: 0.6;
 	}
 	.env-rows {
 		display: flex;

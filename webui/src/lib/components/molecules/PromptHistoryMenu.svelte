@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Icon, Popover } from '@dorsk/tsumikit';
+	import { Button, Icon, Popover } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 	import { promptHistory } from '$lib/drafts';
 
@@ -10,6 +10,11 @@
 	let { onpick, disabled = false }: { onpick: (value: string) => void; disabled?: boolean } = $props();
 
 	let entries = $state<string[]>([]);
+
+	// Rows are multi-line previews, not one-line labels; `style` is the only hook
+	// that reaches the element Button renders.
+	const ENTRY =
+		'justify-content:flex-start;text-align:left;height:auto;min-height:0;white-space:pre-wrap;font-family:var(--font-mono);font-size:var(--fs-xs)';
 
 	function preview(value: string) {
 		const text = value.trim();
@@ -36,29 +41,35 @@
 			<p class="empty">{m.spawn_prompt_history_empty()}</p>
 		{:else}
 			{#each entries as entry, i (`${i}:${entry}`)}
-				<button
-					type="button"
+				<Button
+					variant="ghost"
+					size="sm"
+					block
 					role="menuitem"
-					class="entry"
+					style={ENTRY}
 					title={entry}
 					onclick={() => {
 						onpick(entry);
 						close();
 					}}
 				>
-					{preview(entry)}
-				</button>
+					<span class="clamp">{preview(entry)}</span>
+				</Button>
 			{/each}
-			<button
-				type="button"
-				class="clear"
+			<!-- The footer resets the list in place, so it stays outside the
+			     menuitem set and leaves the panel open. -->
+			<Button
+				variant="ghost"
+				size="sm"
+				block
+				style={ENTRY}
 				onclick={() => {
 					promptHistory.clear();
 					entries = [];
 				}}
 			>
 				{m.spawn_prompt_history_clear()}
-			</button>
+			</Button>
 		{/if}
 	{/snippet}
 </Popover>
@@ -70,45 +81,13 @@
 		color: var(--text-faint);
 		font-size: var(--fs-xs);
 	}
-	.entry {
+	.clamp {
 		display: -webkit-box;
 		-webkit-box-orient: vertical;
 		-webkit-line-clamp: 3;
 		line-clamp: 3;
-		width: 100%;
-		padding: var(--sp-1) var(--sp-2);
-		border: none;
-		border-radius: var(--r-sm);
-		background: none;
-		color: var(--text);
-		font-family: var(--font-mono);
-		font-size: var(--fs-xs);
-		text-align: left;
-		white-space: pre-wrap;
+		min-width: 0;
 		overflow: hidden;
 		overflow-wrap: anywhere;
-		cursor: pointer;
-	}
-	.entry + .entry {
-		border-top: 1px solid var(--border);
-	}
-	.entry:hover {
-		background: var(--bg-elevated-3, var(--bg-elevated-2));
-	}
-	.clear {
-		display: block;
-		width: 100%;
-		margin-top: var(--sp-1);
-		padding: var(--sp-1) var(--sp-2);
-		border: none;
-		border-top: 1px solid var(--border);
-		background: none;
-		color: var(--text-faint);
-		font-size: var(--fs-xs);
-		text-align: left;
-		cursor: pointer;
-	}
-	.clear:hover {
-		color: var(--text);
 	}
 </style>

@@ -59,20 +59,24 @@ describe('wrap-up bookmark shortcut', () => {
 });
 
 describe('popover triggers match their sibling toggles', () => {
-	it('renders both triggers bare, with a local chip span carrying the chrome', async () => {
+	it('renders both triggers as the kit Toggle chip itself', async () => {
 		const bar = await render();
-		const triggers = bar.querySelectorAll('.pop-trigger.toolbar-chip');
+		const triggers = [...bar.querySelectorAll('[data-tsu="Popover"]')];
 		expect(triggers.length).toBe(2);
-		for (const t of triggers) expect(t.classList.contains('bare')).toBe(true);
-		const chips = [...triggers].map((t) => t.querySelector('.chip'));
-		expect(chips.every(Boolean)).toBe(true);
+		for (const t of triggers) {
+			expect(t.classList.contains('toggle')).toBe(true);
+			expect(t.classList.contains('trigger-toggle')).toBe(true);
+			expect(t.classList.contains('bare')).toBe(false);
+		}
 		// Filters rides with the pill quick chips; Pins with the square toggles.
-		expect(chips[0]!.classList.contains('pill')).toBe(true);
-		expect(chips[1]!.classList.contains('pill')).toBe(false);
+		expect(triggers[0].classList.contains('pill')).toBe(true);
+		expect(triggers[1].classList.contains('pill')).toBe(false);
 	});
 
-	it('styles the chip with scoped CSS, never :global', () => {
+	it('keeps no local chip chrome to drift from the kit Toggle', () => {
 		expect(toolbarSource).not.toContain(':global(');
+		expect(toolbarSource).not.toContain('toolbar-chip');
+		expect(toolbarSource).not.toContain('\t.chip {');
 	});
 
 	it('drops the ad-hoc override string and the local label span', () => {
@@ -81,31 +85,12 @@ describe('popover triggers match their sibling toggles', () => {
 		expect(toolbarSource).not.toContain('--pop-trigger-');
 		expect(toolbarSource).not.toContain('--pop-box');
 	});
-
-	it('restates every chrome declaration a Toggle sets', () => {
-		const chrome = toolbarSource.slice(
-			toolbarSource.indexOf('\t.chip {'),
-			toolbarSource.indexOf('\t.chip.pill {')
-		);
-		for (const decl of [
-			'padding: 0 var(--sp-2)',
-			'border: 1px solid var(--border)',
-			'border-radius: var(--r-sm)',
-			'background: var(--bg-elevated-2)',
-			'color: var(--text-muted)',
-			'font-size: var(--fs-xs)',
-			'font-weight: var(--fw-medium)',
-			'line-height: 1'
-		]) {
-			expect(chrome).toContain(decl);
-		}
-	});
 });
 
 describe('pin glyph', () => {
 	it('uses the kit pin icon, not a star, in the toolbar', async () => {
 		const bar = await render();
-		const chips = [...bar.querySelectorAll('.pop-trigger.toolbar-chip')];
+		const chips = [...bar.querySelectorAll('[data-tsu="Popover"]')];
 		const pinChip = chips[chips.length - 1];
 		expect(pinChip.textContent).not.toContain('★');
 		expect(pinChip.querySelector('svg[data-tsu="Icon"]')).not.toBeNull();
@@ -113,13 +98,13 @@ describe('pin glyph', () => {
 
 	it('renders outline when there are no pins and filled once there are', async () => {
 		let bar = await render();
-		let icon = [...bar.querySelectorAll('.pop-trigger.toolbar-chip svg')].pop() as SVGElement;
+		let icon = [...bar.querySelectorAll('[data-tsu="Popover"] svg')].pop() as SVGElement;
 		expect(icon.getAttribute('fill')).toBe('none');
 
 		if (comp) unmount(comp);
 		document.body.innerHTML = '';
 		bar = await render({ pins: [pin(3)] });
-		icon = [...bar.querySelectorAll('.pop-trigger.toolbar-chip svg')].pop() as SVGElement;
+		icon = [...bar.querySelectorAll('[data-tsu="Popover"] svg')].pop() as SVGElement;
 		expect(icon.getAttribute('fill')).toBe('currentColor');
 	});
 
@@ -218,10 +203,7 @@ describe('drawer toolbar sizing', () => {
 		expect(toolbarSource).toContain(
 			"const CTL = 'height:var(--bar-ctl-h);box-sizing:border-box;padding-block:0;line-height:1'"
 		);
-		expect(toolbarSource).toContain("const TRIG = 'display:flex;align-items:center;height:var(--bar-ctl-h)'");
-		const chip = toolbarSource.slice(toolbarSource.indexOf('\t.chip {'), toolbarSource.indexOf('\t.chip.pill {'));
-		expect(chip).toContain('height: var(--bar-ctl-h)');
-		expect(chip).toContain('box-sizing: border-box');
+		expect(toolbarSource).not.toContain('const TRIG');
 	});
 
 	it('gives auto-approve and pins the same box construction', () => {
@@ -231,7 +213,8 @@ describe('drawer toolbar sizing', () => {
 		for (const t of toggles) expect(t, t.slice(0, 60)).toMatch(/\$\{CTL\}|style=\{CTL\}/);
 		const triggers = toolbarSource.match(/<Popover[\s\S]*?>/g) ?? [];
 		expect(triggers.length).toBe(2);
-		for (const p of triggers) expect(p).toContain('style={TRIG}');
+		for (const p of triggers) expect(p).toContain('variant="toggle"');
+		for (const p of triggers) expect(p).toContain('style={CTL}');
 	});
 
 	it('neutralises the emoji line box so it cannot set the height', () => {
