@@ -16,7 +16,7 @@ export type { LimitResetStatus } from "@bindings/LimitResetStatus";
 export type { OAuthAccount } from "@bindings/OAuthAccount";
 export type { OAuthFinish } from "@bindings/OAuthFinish";
 export type { OAuthStartResponse } from "@bindings/OAuthStartResponse";
-export type { Indicator } from "@bindings/Indicator";
+export type { ProviderIndicator } from "@bindings/ProviderIndicator";
 export type { ProviderStatus } from "@bindings/ProviderStatus";
 export type { RateLimits } from "@bindings/RateLimits";
 export type { ResourceShareInfo } from "@bindings/ResourceShareInfo";

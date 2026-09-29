@@ -4,4 +4,4 @@
  * Normalized severity of an upstream family. `Unknown` is a first-class state:
  * no reading yet, or a reading we could not parse.
  */
-export type Indicator = "unknown" | "none" | "minor" | "major" | "critical";
+export type ProviderIndicator = "unknown" | "none" | "minor" | "major" | "critical";

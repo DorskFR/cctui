@@ -46,7 +46,7 @@ const INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
 /// no reading yet, or a reading we could not parse.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
-#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export))]
+#[cfg_attr(feature = "ts", derive(ts_rs::TS), ts(export, rename = "ProviderIndicator"))]
 pub enum Indicator {
     Unknown,
     None,

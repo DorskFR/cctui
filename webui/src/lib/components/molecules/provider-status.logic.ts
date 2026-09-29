@@ -1,17 +1,17 @@
-import type { Indicator, ProviderStatus } from "$lib/queries";
+import type { ProviderIndicator, ProviderStatus } from "$lib/queries";
 
 /** Severity order, worst last. `unknown` is not a severity — it never ranks. */
-const ORDER: Indicator[] = ["none", "minor", "major", "critical"];
+const ORDER: ProviderIndicator[] = ["none", "minor", "major", "critical"];
 
-export const isDegraded = (i: Indicator) => i === "minor" || i === "major" || i === "critical";
+export const isDegraded = (i: ProviderIndicator) => i === "minor" || i === "major" || i === "critical";
 
 /** Only the families worth showing: healthy and unknown both say nothing. */
 export const degraded = (list: ProviderStatus[] | undefined): ProviderStatus[] =>
   (list ?? []).filter((s) => isDegraded(s.indicator));
 
 /** The worst indicator across the given families, or `null` when none is degraded. */
-export function worstIndicator(list: ProviderStatus[] | undefined): Indicator | null {
-  let worst: Indicator | null = null;
+export function worstIndicator(list: ProviderStatus[] | undefined): ProviderIndicator | null {
+  let worst: ProviderIndicator | null = null;
   for (const s of degraded(list)) {
     if (worst === null || ORDER.indexOf(s.indicator) > ORDER.indexOf(worst)) worst = s.indicator;
   }
@@ -19,7 +19,7 @@ export function worstIndicator(list: ProviderStatus[] | undefined): Indicator | 
 }
 
 /** Tone token for an indicator: `minor` is a warning, worse is a danger. */
-export const indicatorTone = (i: Indicator | null): "warn" | "danger" | null =>
+export const indicatorTone = (i: ProviderIndicator | null): "warn" | "danger" | null =>
   i === "minor" ? "warn" : i === "major" || i === "critical" ? "danger" : null;
 
 /** Display name for a polled family. */
