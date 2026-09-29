@@ -1073,6 +1073,7 @@ mod tests {
             dispatch: crate::diagnose::DiagnoseFact::missing("dispatch", "none"),
             gateway: crate::diagnose::DiagnoseFact::missing("daemon-config", "none"),
             codex: None,
+            opencode: None,
         };
         let evt = AdapterEvent::Diagnose {
             local_id: "s1".into(),

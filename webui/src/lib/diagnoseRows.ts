@@ -1,8 +1,9 @@
 import type { SessionListItem } from '@bindings/SessionListItem';
 import type { SessionDiagnoseResponse } from '@bindings/SessionDiagnoseResponse';
 import type { CodexDiagnose } from '@bindings/CodexDiagnose';
+import type { OpenCodeDiagnose } from '@bindings/OpenCodeDiagnose';
 import { sessionEnd } from '$lib/sessionEnd';
-import { fmtAge, silenceReasons } from '$lib/diagnoseSilence';
+import { fmtAge, openCodeSilenceReasons, silenceReasons } from '$lib/diagnoseSilence';
 import { m } from '$lib/paraglide/messages';
 
 export type DiagnoseStatus = 'ok' | 'warn' | 'error';
@@ -51,6 +52,7 @@ function joinTail(lines: string[] | undefined): string | undefined {
 function processRows(session: SessionListItem | null, report: SessionDiagnoseResponse | null): DiagnoseRow[] {
 	const rows: DiagnoseRow[] = [];
 	const cx = report?.daemon?.codex ?? null;
+	const oc = report?.daemon?.opencode ?? null;
 	const end = session ? sessionEnd(session) : null;
 	if (session) {
 		if (end && !TRANSPORT_END_REASONS.has(end.reason)) {
@@ -75,7 +77,7 @@ function processRows(session: SessionListItem | null, report: SessionDiagnoseRes
 		}
 	}
 	const state = report?.daemon?.effective_state;
-	if (state && !cx) {
+	if (state && !cx && !oc) {
 		rows.push(
 			state.value
 				? {
@@ -95,7 +97,22 @@ function processRows(session: SessionListItem | null, report: SessionDiagnoseRes
 		);
 	}
 	if (cx) rows.push(codexProcessRow(cx, report!.daemon!.generated_at_ms));
+	if (oc) rows.push(openCodeProcessRow(oc, report!.daemon!.generated_at_ms));
 	return rows;
+}
+
+function openCodeProcessRow(oc: OpenCodeDiagnose, generatedAtMs: number): DiagnoseRow {
+	const stderr = joinTail(
+		(oc.stderr_tail ?? []).map((l) => `${fmtAge(generatedAtMs - l.ts_ms)}  ${l.line}`)
+	);
+	const pid = oc.server_pid != null ? `pid ${oc.server_pid}` : m.diagnose_short_down();
+	return {
+		block: 'process',
+		label: m.diagnose_opencode_serve(),
+		status: !oc.live ? 'error' : oc.version_matches === false ? 'warn' : 'ok',
+		short: oc.live ? pid : m.diagnose_short_down(),
+		detail: [oc.server_url, stderr].filter(Boolean).join('\n') || undefined
+	};
 }
 
 function codexProcessRow(cx: CodexDiagnose, generatedAtMs: number): DiagnoseRow {
@@ -148,6 +165,23 @@ function transportRows(session: SessionListItem | null, report: SessionDiagnoseR
 		});
 	}
 	if (!daemon) return rows;
+	const oc = daemon.opencode ?? null;
+	if (oc) {
+		const reasons = openCodeSilenceReasons(oc, daemon.generated_at_ms);
+		rows.push({
+			block: 'transport',
+			label: m.diagnose_opencode_silence(),
+			status:
+				!oc.sse_connected && oc.live
+					? 'error'
+					: reasons.length && oc.turn_status === 'working'
+						? 'warn'
+						: 'ok',
+			short: reasons.length ? reasons[0] : m.diagnose_short_live(),
+			detail: reasons.length > 1 ? reasons.join('\n') : undefined
+		});
+		return rows;
+	}
 	if (cx) {
 		const reasons = silenceReasons(cx, daemon.generated_at_ms);
 		rows.push({

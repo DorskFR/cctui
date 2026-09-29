@@ -213,26 +213,28 @@ pub struct GatewayStatus {
     pub server_configured: bool,
 }
 
-/// A retained `codex app-server` stderr line, secret-redacted.
+/// A retained stderr line from the harness process, secret-redacted.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
-pub struct CodexStderrLine {
+pub struct TrafficStderrLine {
     pub ts_ms: i64,
     pub line: String,
 }
 
-/// One retained JSON-RPC frame, secret-redacted and truncated to 2 KiB.
+/// One retained protocol frame, secret-redacted and truncated to 2 KiB.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
-pub struct CodexRpcFrame {
+pub struct TrafficFrame {
     pub ts_ms: i64,
-    /// `out` (daemon → app-server) or `in` (app-server → daemon).
+    /// `out` (daemon → harness) or `in` (harness → daemon).
     pub direction: String,
-    /// The frame's `method`, else its `id`, else `frame`.
+    /// What the frame is: a JSON-RPC `method`/`id` for codex, an
+    /// `METHOD /path` or SSE event type for opencode.
     pub label: String,
     pub json: String,
-    /// Which transport carried the frame: `stdio` (the per-session app-server
-    /// child) or `shared` (the process-wide `codex app-server daemon` socket).
+    /// Which transport carried the frame. Codex: `stdio` (the per-session
+    /// app-server child) or `shared` (the process-wide app-server socket).
+    /// `OpenCode`: `http` (the request/response API) or `sse` (`GET /event`).
     #[serde(default = "transport_stdio")]
     pub transport: String,
 }
@@ -241,13 +243,13 @@ fn transport_stdio() -> String {
     "stdio".to_owned()
 }
 
-/// One JSON-RPC protocol error (`<method>: <error>`), secret-redacted.
+/// One protocol error (`<label>: <error>`), secret-redacted.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
-pub struct CodexProtocolError {
+pub struct TrafficError {
     pub ts_ms: i64,
     pub message: String,
-    /// Which transport the error was observed on: `stdio` or `shared`.
+    /// Which transport the error was observed on.
     #[serde(default = "transport_stdio")]
     pub transport: String,
 }
@@ -286,13 +288,13 @@ pub struct CodexDiagnose {
     pub pending_rpc_methods: Vec<String>,
     /// JSON-RPC protocol errors seen on this session, oldest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub protocol_errors: Vec<CodexProtocolError>,
+    pub protocol_errors: Vec<TrafficError>,
     /// Trailing `codex app-server` stderr lines, oldest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub stderr_tail: Vec<CodexStderrLine>,
+    pub stderr_tail: Vec<TrafficStderrLine>,
     /// The last JSON-RPC frames in both directions, oldest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub rpc_tail: Vec<CodexRpcFrame>,
+    pub rpc_tail: Vec<TrafficFrame>,
     /// Rollout (transcript) file path for the thread.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rollout_path: Option<String>,
@@ -307,6 +309,48 @@ pub struct CodexDiagnose {
     /// (e.g. a live channel with no durable record).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub registry_live_mismatch: Option<String>,
+}
+
+/// `OpenCode`-only section; the HTTP/SSE counterpart of [`CodexDiagnose`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct OpenCodeDiagnose {
+    /// Base URL of the session's `opencode serve` instance.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_url: Option<String>,
+    /// `opencode serve` child PID, when a live session owns one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_pid: Option<u32>,
+    /// Version the adapter is written against.
+    pub pinned_version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_version: Option<String>,
+    /// Whether the running server matches [`Self::pinned_version`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version_matches: Option<bool>,
+    /// Whether a live command channel exists for this session.
+    pub live: bool,
+    /// Opencode session ids this driver owns (the session plus its forks).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub owned_sessions: Vec<String>,
+    /// `working` (a turn is in flight) or `idle`.
+    pub turn_status: String,
+    /// Whether the `GET /event` stream is currently connected.
+    pub sse_connected: bool,
+    /// When the last SSE event arrived (unix ms).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_sse_event_ms: Option<i64>,
+    /// Permission prompts awaiting an answer.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending_permissions: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub protocol_errors: Vec<TrafficError>,
+    /// Trailing `opencode serve` stdout/stderr lines, oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stderr_tail: Vec<TrafficStderrLine>,
+    /// The last HTTP and SSE frames, oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rpc_tail: Vec<TrafficFrame>,
 }
 
 /// Everything the daemon knows about one session, dated. Adapter-specific
@@ -342,6 +386,9 @@ pub struct SessionDiagnose {
     /// Codex-adapter-specific section; `None` for claude-code.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub codex: Option<CodexDiagnose>,
+    /// `OpenCode`-adapter-specific section.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opencode: Option<OpenCodeDiagnose>,
 }
 
 /// Server-side facts merged into the diagnose response (the daemon cannot see
@@ -451,6 +498,7 @@ mod tests {
                 1_700_000_100_000,
             ),
             codex: None,
+            opencode: None,
         }
     }
 
@@ -532,16 +580,16 @@ mod tests {
             turn_status: "working".into(),
             pending_rpc_count: 1,
             pending_rpc_methods: vec!["turn/start".into()],
-            protocol_errors: vec![CodexProtocolError {
+            protocol_errors: vec![TrafficError {
                 ts_ms: 1_700_000_000_000,
                 message: "turn/start: boom".into(),
                 transport: "stdio".into(),
             }],
-            stderr_tail: vec![CodexStderrLine {
+            stderr_tail: vec![TrafficStderrLine {
                 ts_ms: 1_700_000_000_001,
                 line: "ERROR stream disconnected".into(),
             }],
-            rpc_tail: vec![CodexRpcFrame {
+            rpc_tail: vec![TrafficFrame {
                 ts_ms: 1_700_000_000_002,
                 direction: "out".into(),
                 label: "turn/start".into(),

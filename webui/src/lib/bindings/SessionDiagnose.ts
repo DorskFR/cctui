@@ -6,6 +6,7 @@ import type { DispatchStatus } from "./DispatchStatus";
 import type { EffectiveState } from "./EffectiveState";
 import type { GatewayStatus } from "./GatewayStatus";
 import type { HookEvent } from "./HookEvent";
+import type { OpenCodeDiagnose } from "./OpenCodeDiagnose";
 import type { PendingPrompts } from "./PendingPrompts";
 import type { PtyOutputStats } from "./PtyOutputStats";
 import type { SocketStatus } from "./SocketStatus";
@@ -47,4 +48,8 @@ permission_mode: DiagnoseFact<string>, dispatch: DiagnoseFact<DispatchStatus>, g
 /**
  * Codex-adapter-specific section; `None` for claude-code.
  */
-codex?: CodexDiagnose | null, };
+codex?: CodexDiagnose | null, 
+/**
+ * `OpenCode`-adapter-specific section.
+ */
+opencode?: OpenCodeDiagnose | null, };

@@ -1662,6 +1662,7 @@ mod tests {
             dispatch: DiagnoseFact::missing("dispatch", "n/a"),
             gateway: DiagnoseFact::missing("daemon-config", "n/a"),
             codex: None,
+            opencode: None,
         }
     }
 

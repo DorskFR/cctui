@@ -1,4 +1,5 @@
 import type { CodexDiagnose } from '@bindings/CodexDiagnose';
+import type { OpenCodeDiagnose } from '@bindings/OpenCodeDiagnose';
 import { m } from '$lib/paraglide/messages';
 
 const STALLED_RPC_MS = 60_000;
@@ -44,5 +45,49 @@ export function silenceReasons(cx: CodexDiagnose, generatedAtMs: number): string
 	if (cx.registry_live_mismatch)
 		out.push(m.diagnose_codex_silence_mismatch({ detail: cx.registry_live_mismatch }));
 	if (!cx.live) out.push(m.diagnose_codex_silence_not_live());
+	return out;
+}
+
+/** Same question for opencode. Its transports are HTTP and SSE, and the
+ * asymmetry matters: a request/response call failing is loud (the caller sees
+ * the status), while the event stream going down is completely silent — every
+ * turn observation rides it. */
+export function openCodeSilenceReasons(oc: OpenCodeDiagnose, generatedAtMs: number): string[] {
+	const out: string[] = [];
+	const frames = oc.rpc_tail ?? [];
+	const working = oc.turn_status === 'working';
+	if (!oc.sse_connected) out.push(m.diagnose_opencode_silence_sse_down());
+	const eventAgeMs = oc.last_sse_event_ms === null || oc.last_sse_event_ms === undefined
+		? null
+		: generatedAtMs - oc.last_sse_event_ms;
+	if (working && oc.sse_connected && eventAgeMs !== null && eventAgeMs > STALLED_RPC_MS)
+		out.push(m.diagnose_opencode_silence_sse_stalled({ age: fmtAge(eventAgeMs) }));
+	// Only meaningful once *some* traffic exists: HTTP frames with no SSE frame
+	// is the blind spot the transport tagging exists to expose.
+	if (frames.length && !frames.some((f) => f.transport === 'sse'))
+		out.push(m.diagnose_opencode_silence_sse_no_frames());
+	const rejected = (oc.protocol_errors ?? []).filter((e) => e.transport === 'http');
+	if (rejected.length) {
+		const last = rejected[rejected.length - 1];
+		out.push(
+			m.diagnose_opencode_silence_http_errors({
+				count: rejected.length,
+				age: fmtAge(generatedAtMs - last.ts_ms),
+				message: last.message
+			})
+		);
+	}
+	const pending = oc.pending_permissions ?? [];
+	if (pending.length)
+		out.push(m.diagnose_opencode_silence_awaiting_permission({ count: pending.length }));
+	if (!working) out.push(m.diagnose_opencode_silence_idle());
+	if (oc.version_matches === false && oc.server_version)
+		out.push(
+			m.diagnose_opencode_silence_version({
+				version: oc.server_version,
+				pinned: oc.pinned_version
+			})
+		);
+	if (!oc.live) out.push(m.diagnose_opencode_silence_not_live());
 	return out;
 }

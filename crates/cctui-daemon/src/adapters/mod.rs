@@ -8,6 +8,8 @@ mod conformance_tests;
 pub mod gateway_env;
 pub mod opencode;
 pub(crate) mod pty_watch;
+pub mod ring_view;
+pub mod traffic_rings;
 pub mod uploads;
 
 use crate::adapter_runtime::AdapterFactory;

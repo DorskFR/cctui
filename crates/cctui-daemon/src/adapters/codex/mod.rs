@@ -793,6 +793,7 @@ async fn build_diagnose(
         dispatch: na(),
         gateway,
         codex: Some(codex),
+        opencode: None,
     }
 }
 

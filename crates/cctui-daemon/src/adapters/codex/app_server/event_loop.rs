@@ -503,9 +503,9 @@ impl<'a> EventLoop<'a> {
             pid: self.child.as_ref().and_then(Child::id),
             active_turn_id: self.thread.active_turn.id().map(str::to_owned),
             pending_rpc_methods: self.pending_rpcs.pending_methods(),
-            protocol_errors: self.rings.protocol_errors_with_shared(),
+            protocol_errors: super::diagnose::protocol_errors_with_shared(self.rings),
             stderr_tail: self.rings.stderr_tail(),
-            rpc_tail: self.rings.rpc_tail_with_shared(),
+            rpc_tail: super::diagnose::rpc_tail_with_shared(self.rings),
             rollout_path: self.thread.rollout_path.clone(),
             rollout_size_bytes: self
                 .thread
