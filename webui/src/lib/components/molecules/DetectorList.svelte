@@ -29,40 +29,41 @@
 	});
 </script>
 
-<Disclosure class="detectors" data-setting-row buttonClass="detectors-summary" panelClass="body">
-	{#snippet header()}
-		<Text size="sm" tone="muted">
-			{m.settings_redaction_builtins_count({ count: BUILTIN_SCRUB_DETECTORS.length })}
-		</Text>
-	{/snippet}
-	<Input
-		type="search"
-		size="sm"
-		style="width:100%"
-		bind:value={filter}
-		aria-label={m.settings_redaction_detector_filter_label()}
-		placeholder={m.settings_redaction_detector_filter_label()}
-	/>
-	{#each groups as group (group.family)}
-		<SectionHeader title={familyLabel[group.family]()} size="sm" />
-		<div class="chips">
-			{#each group.items as d (d.category)}
-				<Badge mono size="sm" border>{d.category}</Badge>
+<div class="detectors" data-setting-row>
+	<Disclosure>
+		{#snippet header()}
+			<Text size="sm" tone="muted">
+				{m.settings_redaction_builtins_count({ count: BUILTIN_SCRUB_DETECTORS.length })}
+			</Text>
+		{/snippet}
+		<div class="body">
+			<Input
+				type="search"
+				size="sm"
+				style="width:100%"
+				bind:value={filter}
+				aria-label={m.settings_redaction_detector_filter_label()}
+				placeholder={m.settings_redaction_detector_filter_label()}
+			/>
+			{#each groups as group (group.family)}
+				<SectionHeader title={familyLabel[group.family]()} size="sm" />
+				<div class="chips">
+					{#each group.items as d (d.category)}
+						<Badge mono size="sm" border>{d.category}</Badge>
+					{/each}
+				</div>
+			{:else}
+				<Text size="sm" tone="muted">{m.settings_redaction_detector_filter_empty()}</Text>
 			{/each}
 		</div>
-	{:else}
-		<Text size="sm" tone="muted">{m.settings_redaction_detector_filter_empty()}</Text>
-	{/each}
-</Disclosure>
+	</Disclosure>
+</div>
 
 <style>
-	:global(.detectors) {
+	.detectors {
 		border-top: 1px solid var(--border);
 	}
-	:global(.detectors-summary) {
-		padding: var(--sp-2) var(--sp-4);
-	}
-	:global(.detectors .body) {
+	.body {
 		display: flex;
 		flex-direction: column;
 		gap: var(--sp-2);

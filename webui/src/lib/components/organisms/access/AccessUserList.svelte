@@ -78,14 +78,16 @@
 		{:else}
 			{#each groups.active as u (u.id)}{@render entry(u, false)}{/each}
 			{#if groups.revoked.length}
-				<Disclosure class="revoked" buttonClass="revoked-summary">
-					{#snippet header()}
-						<Text size="xs" tone="faint"
-							>{m.access_revoked_group({ count: groups.revoked.length })}</Text
-						>
-					{/snippet}
-					{#each groups.revoked as u (u.id)}{@render entry(u, true)}{/each}
-				</Disclosure>
+				<div class="revoked">
+					<Disclosure>
+						{#snippet header()}
+							<Text size="xs" tone="faint"
+								>{m.access_revoked_group({ count: groups.revoked.length })}</Text
+							>
+						{/snippet}
+						{#each groups.revoked as u (u.id)}{@render entry(u, true)}{/each}
+					</Disclosure>
+				</div>
 			{/if}
 		{/if}
 	</div>
@@ -153,10 +155,7 @@
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
-	:global(.revoked) {
+	.revoked {
 		border-top: 1px solid var(--border);
-	}
-	:global(.revoked-summary) {
-		padding: var(--sp-2) var(--sp-3);
 	}
 </style>

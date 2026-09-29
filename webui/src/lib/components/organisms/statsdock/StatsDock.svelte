@@ -4,8 +4,7 @@
 	import { useVersion } from '$lib/queries';
 	import NavLink from '$lib/components/atoms/NavLink.svelte';
 	import UpdateModal from '$lib/components/organisms/UpdateModal.svelte';
-	import { Accordion, Button, Text } from '@dorsk/tsumikit';
-	import type { AccordionItem } from '@dorsk/tsumikit';
+	import { Button, Disclosure, Text } from '@dorsk/tsumikit';
 	import { resizeHandle } from '@dorsk/tsumikit';
 	import AccountUsageList from './AccountUsageList.svelte';
 	import PoolUsageList from './PoolUsageList.svelte';
@@ -42,22 +41,24 @@
 	const version = useVersion();
 	let updateOpen = $state(false);
 
-	const sections: AccordionItem[] = $derived([
-		{ id: 'pools', title: m.stats_dock_pools(), content: pools, open: true },
-		{ id: 'accounts', title: m.stats_dock_accounts(), content: accounts, open: true },
-		{ id: 'tokens', title: m.home_token_usage(), content: tokens, open: true },
-		{ id: 'overview', title: m.home_overview_title(), content: overview, open: true },
-		{ id: 'history', title: m.stats_dock_window_history(), content: history, open: false },
-		{ id: 'usage', title: m.home_usage_title(), content: usage, open: false }
+	const sections = $derived([
+		{ key: 'pools', title: m.stats_dock_pools() },
+		{ key: 'accounts', title: m.stats_dock_accounts() },
+		{ key: 'tokens', title: m.home_token_usage() },
+		{ key: 'overview', title: m.home_overview_title() },
+		{ key: 'history', title: m.stats_dock_window_history() },
+		{ key: 'usage', title: m.home_usage_title() }
 	]);
-</script>
 
-{#snippet pools()}<PoolUsageList />{/snippet}
-{#snippet accounts()}<AccountUsageList />{/snippet}
-{#snippet tokens()}<TokenWindows />{/snippet}
-{#snippet overview()}<OverviewTiles />{/snippet}
-{#snippet history()}<WindowHistory />{/snippet}
-{#snippet usage()}<UsageCharts />{/snippet}
+	let open = $state<Record<string, boolean>>({
+		pools: true,
+		accounts: true,
+		tokens: true,
+		overview: true,
+		history: false,
+		usage: false
+	});
+</script>
 
 <svelte:window bind:innerWidth={viewportWidth} />
 
@@ -94,7 +95,30 @@
 	></div>
 	<div class="dock-head">{m.stats_dock_title()}</div>
 	<div class="dock-body">
-		<Accordion items={sections} multiple class="sections" />
+		{#each sections as s (s.key)}
+			<div class="section">
+				<Disclosure bind:open={open[s.key]}>
+					{#snippet header()}
+						<span class="sec-title">{s.title}</span>
+					{/snippet}
+					<div class="section-body">
+						{#if s.key === 'pools'}
+							<PoolUsageList />
+						{:else if s.key === 'accounts'}
+							<AccountUsageList />
+						{:else if s.key === 'tokens'}
+							<TokenWindows />
+						{:else if s.key === 'overview'}
+							<OverviewTiles />
+						{:else if s.key === 'history'}
+							<WindowHistory />
+						{:else}
+							<UsageCharts />
+						{/if}
+					</div>
+				</Disclosure>
+			</div>
+		{/each}
 	</div>
 	{#if version.data}
 		<div class="dock-ver">
@@ -226,21 +250,23 @@
 		flex-direction: column;
 		gap: var(--sp-1);
 	}
-	:global(.sections > *) {
+	.section {
 		border-bottom: 1px solid var(--border);
 		padding-bottom: var(--sp-2);
 	}
-	:global(.sections > *:last-child) {
+	.section:last-child {
 		border-bottom: 0;
 	}
-	:global(.sections button[aria-expanded]) {
-		padding: var(--sp-2) 0;
+	.sec-title {
 		font-size: var(--fs-xs);
 		font-weight: var(--fw-semibold);
 		text-transform: uppercase;
 		letter-spacing: 0.04em;
 		color: var(--text-muted);
 		user-select: none;
+	}
+	.section-body {
+		padding-top: var(--sp-1);
 	}
 	/* Version strip pinned under the scrolling body, mirroring .dock-head. */
 	.dock-ver {
