@@ -127,8 +127,7 @@ impl RingViewManager {
         Fut: Future<Output = Option<TrafficSnapshot>> + Send + 'static,
     {
         let key = local_id.clone();
-        self.watches
-            .watch(key, shutdown, move |cancel| stream(local_id, events, cancel, poll));
+        self.watches.watch(key, shutdown, move |cancel| stream(local_id, events, cancel, poll));
     }
 
     pub fn unwatch(&self, local_id: &str) {

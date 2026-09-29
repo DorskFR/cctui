@@ -45,13 +45,30 @@ pub struct LiveSession {
 
 #[derive(Debug)]
 pub enum SessionCommand {
-    Prompt { session_id: String, text: String, command_id: Option<Uuid> },
-    Kill { session_id: String },
-    Fork { parent: String, prompt: Option<String>, name: Option<String>, command_id: Option<Uuid> },
-    Permission { session_id: String, request_id: String, allow: bool },
+    Prompt {
+        session_id: String,
+        text: String,
+        command_id: Option<Uuid>,
+    },
+    Kill {
+        session_id: String,
+    },
+    Fork {
+        parent: String,
+        prompt: Option<String>,
+        name: Option<String>,
+        command_id: Option<Uuid>,
+    },
+    Permission {
+        session_id: String,
+        request_id: String,
+        allow: bool,
+    },
     /// Gather a point-in-time snapshot of the live driver's internal state for
     /// the adapter-neutral diagnose report and return it on `reply`.
-    Diagnose { reply: mpsc::Sender<OpenCodeLiveSnapshot> },
+    Diagnose {
+        reply: mpsc::Sender<OpenCodeLiveSnapshot>,
+    },
 }
 
 impl SessionCommand {
@@ -400,7 +417,12 @@ impl OpenCodeSession {
         }
 
         let (evt_tx, mut evt_rx) = mpsc::channel(256);
-        let mut stream = tokio::spawn(pump_sse(client.clone(), evt_tx, self.shutdown.clone(), Arc::clone(&self.sse)));
+        let mut stream = tokio::spawn(pump_sse(
+            client.clone(),
+            evt_tx,
+            self.shutdown.clone(),
+            Arc::clone(&self.sse),
+        ));
 
         if let Some(preflight) = &self.params.preflight {
             preflight.run_bound(&session.id).await;

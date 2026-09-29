@@ -314,10 +314,7 @@ impl OpenCodeClient {
                 if let Some(rings) = &self.rings {
                     rings.note_frame(TRANSPORT_HTTP, "in", &label, &status.to_string());
                     if !status.is_success() {
-                        rings.note_protocol_error_on(
-                            TRANSPORT_HTTP,
-                            &format!("{label}: {status}"),
-                        );
+                        rings.note_protocol_error_on(TRANSPORT_HTTP, &format!("{label}: {status}"));
                     }
                 }
                 Ok(resp.error_for_status().with_context(|| label)?)
@@ -384,9 +381,8 @@ impl OpenCodeClient {
 
     pub async fn fork(&self, session_id: &str) -> Result<SessionInfo> {
         let path = format!("/session/{session_id}/fork");
-        let resp = self
-            .send(self.post(&path).json(&serde_json::json!({})), "POST", &path, None)
-            .await?;
+        let resp =
+            self.send(self.post(&path).json(&serde_json::json!({})), "POST", &path, None).await?;
         Ok(resp.json().await?)
     }
 

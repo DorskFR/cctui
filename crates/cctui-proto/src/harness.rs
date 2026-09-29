@@ -134,8 +134,7 @@ impl CodexSandbox {
 /// The message a user needs when a spawn is refused or a badge is shown. Kept
 /// here rather than in the webui because the daemon puts it on the failed
 /// `CommandResult` too.
-pub const CODEX_SANDBOX_FIX: &str =
-    "codex's sandbox (bubblewrap) cannot start on this host: AppArmor blocks unprivileged user \
+pub const CODEX_SANDBOX_FIX: &str = "codex's sandbox (bubblewrap) cannot start on this host: AppArmor blocks unprivileged user \
      namespaces for bwrap. Install an AppArmor profile for bwrap, or set \
      kernel.apparmor_restrict_unprivileged_userns=0. See docs/codex-sandbox.md";
 

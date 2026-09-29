@@ -171,8 +171,7 @@ impl TrafficRings {
     /// A frame whose label the caller supplies, on an explicit transport: one
     /// adapter can own several paths (opencode's HTTP calls and SSE stream).
     pub fn note_frame(&self, transport: &str, direction: &str, label: &str, body: &str) {
-        let json =
-            truncate_chars(&redact_text(&truncate_chars(body, RPC_SCAN_MAX)), RPC_FRAME_MAX);
+        let json = truncate_chars(&redact_text(&truncate_chars(body, RPC_SCAN_MAX)), RPC_FRAME_MAX);
         Self::push(
             &self.rpc,
             RPC_RING,

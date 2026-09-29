@@ -1020,8 +1020,7 @@ mod tests {
         let neighbour = format!("nb-{}", uuid::Uuid::new_v4());
         note_neighbour(&neighbour, dir.path());
 
-        let mut session =
-            session_with_tier(fresh_launch(), None);
+        let mut session = session_with_tier(fresh_launch(), None);
         session.cwd = dir.path().to_string_lossy().into_owned();
         session.skills = skills_of("launch-key-9", "<cctui_skills>yubisashi</cctui_skills>");
         let (req, method) = session.stdio_thread_request();
@@ -1060,8 +1059,7 @@ mod tests {
     #[test]
     fn a_thread_alone_in_its_tree_carries_no_preamble() {
         let dir = tempfile::tempdir().unwrap();
-        let mut session =
-            session_with_tier(fresh_launch(), None);
+        let mut session = session_with_tier(fresh_launch(), None);
         session.cwd = dir.path().to_string_lossy().into_owned();
         let (req, _) = session.stdio_thread_request();
         assert!(req["params"]["developerInstructions"].is_null());

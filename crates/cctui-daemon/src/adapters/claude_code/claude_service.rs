@@ -291,9 +291,9 @@ mod linux {
         }
 
         fn adopt_supervisor(&self) -> Result<()> {
-            let cgroup = show("ControlGroup").filter(|c| c.starts_with('/')).with_context(|| {
-                format!("{UNIT_NAME} is active but reports no control group")
-            })?;
+            let cgroup = show("ControlGroup")
+                .filter(|c| c.starts_with('/'))
+                .with_context(|| format!("{UNIT_NAME} is active but reports no control group"))?;
             let procs = std::path::Path::new("/sys/fs/cgroup")
                 .join(cgroup.trim_start_matches('/'))
                 .join("cgroup.procs");

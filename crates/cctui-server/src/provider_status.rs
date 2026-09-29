@@ -482,7 +482,8 @@ mod tests {
     fn a_304_keeps_the_reading_and_only_moves_its_freshness() {
         let cache = ProviderStatusCache::default();
         let mut first = normalize("openai", &parse(MAJOR));
-        first.checked_at = Some(DateTime::parse_from_rfc3339("2020-01-01T00:00:00Z").unwrap().into());
+        first.checked_at =
+            Some(DateTime::parse_from_rfc3339("2020-01-01T00:00:00Z").unwrap().into());
         cache.record("openai", first.clone(), Some("\"abc\"".to_owned()));
         cache.touch("openai");
         let after = cache.get("openai");

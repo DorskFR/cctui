@@ -437,8 +437,12 @@ mod tests {
         assert_eq!(err.status(), StatusCode::BAD_REQUEST);
         assert!(err.message().contains(crate::config::UPLOAD_BODY_LIMIT_ENV), "{}", err.message());
         assert!(err.message().contains("1000"), "{}", err.message());
-        assert!(validate_upload_caps(UploadCaps { max_total_bytes: limit + 1, ..at }, limit).is_err());
-        assert!(validate_upload_caps(UploadCaps { max_total_bytes: limit - 1, ..at }, limit).is_ok());
+        assert!(
+            validate_upload_caps(UploadCaps { max_total_bytes: limit + 1, ..at }, limit).is_err()
+        );
+        assert!(
+            validate_upload_caps(UploadCaps { max_total_bytes: limit - 1, ..at }, limit).is_ok()
+        );
     }
 
     #[test]

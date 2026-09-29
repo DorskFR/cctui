@@ -180,7 +180,9 @@ async fn main() -> Result<()> {
         Command::Enroll { hostname, user_token } => {
             enroll_cmd(&client, &cli.server, user_token, hostname).await
         }
-        Command::Usage { json } => usage_cmd(&client, &cli.server, cli.token.as_deref(), json).await,
+        Command::Usage { json } => {
+            usage_cmd(&client, &cli.server, cli.token.as_deref(), json).await
+        }
         Command::Skills { cmd } => {
             skills_cmd(&client, &cli.server, cli.token.as_deref(), cmd).await
         }
@@ -361,7 +363,12 @@ struct UsageEntryRow {
 
 /// `cctui-admin usage` — the same numbers `/metrics` exposes, in the shape a
 /// status bar wants. The JSON field names are a contract: add, never rename.
-async fn usage_cmd(client: &Client, server: &str, token: Option<&str>, as_json: bool) -> Result<()> {
+async fn usage_cmd(
+    client: &Client,
+    server: &str,
+    token: Option<&str>,
+    as_json: bool,
+) -> Result<()> {
     let (server, token) = resolve_read_auth(server, token)?;
     let url = format!("{server}/api/v1/accounts/usage");
     let rows: Vec<UsageEntryRow> = get_json(client, &url, &token).await?;
@@ -376,9 +383,9 @@ async fn usage_cmd(client: &Client, server: &str, token: Option<&str>, as_json: 
             let value = w
                 .amount_usd
                 .map_or_else(|| format!("{:.1}%", w.utilization), |usd| format!("${usd:.2}"));
-            let reset = w
-                .resets_at
-                .map_or_else(String::new, |at| format!("  resets in {}", human_secs(secs_until(at, now))));
+            let reset = w.resets_at.map_or_else(String::new, |at| {
+                format!("  resets in {}", human_secs(secs_until(at, now)))
+            });
             println!("  {:<24} {value}{reset}", w.label);
         }
         if r.windows.is_empty() {
@@ -710,7 +717,8 @@ mod tests {
 
     #[test]
     fn a_window_past_its_reset_reports_zero_not_a_negative_countdown() {
-        let past = DateTime::parse_from_rfc3339("2026-09-30T11:00:00Z").unwrap().with_timezone(&Utc);
+        let past =
+            DateTime::parse_from_rfc3339("2026-09-30T11:00:00Z").unwrap().with_timezone(&Utc);
         assert_eq!(secs_until(past, now()), 0);
         assert_eq!(human_secs(0), "0m");
         assert_eq!(human_secs(7200), "2h 0m");

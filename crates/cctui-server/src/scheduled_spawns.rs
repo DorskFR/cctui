@@ -5,8 +5,8 @@
 //! The horizon, the RFC3339 validation and the retry schedule are the
 //! scheduled-message ones — the two outboxes must not drift apart.
 
-use chrono::{DateTime, Utc};
 use cctui_proto::ws::{ScheduledLaunchState, ServerEvent};
+use chrono::{DateTime, Utc};
 
 use crate::auth::{AuthContext, Scope};
 use crate::bus::Bus;
@@ -145,7 +145,8 @@ pub async fn sweep(state: &AppState) {
 
 pub async fn launch(state: &AppState, row: ClaimedDraft) -> Result<(), String> {
     if let Some(reason) = unlaunchable_reason(row.draft_status.as_deref()) {
-        mark_dead(&state.pool, &state.bus, &row.draft_id, row.owner, row.attempts + 1, reason).await;
+        mark_dead(&state.pool, &state.bus, &row.draft_id, row.owner, row.attempts + 1, reason)
+            .await;
         return Err(reason.to_owned());
     }
     let Some(owner) = row.owner else {
@@ -271,8 +272,13 @@ mod tests {
     ) -> Option<(ScheduledLaunchState, Option<uuid::Uuid>, Option<DateTime<Utc>>, Option<String>)>
     {
         while let Ok(frame) = rx.try_recv() {
-            if let ServerEvent::ScheduledLaunch { draft_id: id, user_id, state, launch_at, last_error } =
-                &*frame.event
+            if let ServerEvent::ScheduledLaunch {
+                draft_id: id,
+                user_id,
+                state,
+                launch_at,
+                last_error,
+            } = &*frame.event
                 && id == draft_id
             {
                 return Some((*state, *user_id, *launch_at, last_error.clone()));

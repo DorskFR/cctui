@@ -719,9 +719,10 @@ fn user_text_is_meta(text: &str) -> bool {
 
 /// A turn whose body opens on a peer envelope, matching `PEER_TAG_RE`.
 fn is_peer_text(body: &str) -> bool {
-    body.lines().map(str::trim).find(|l| !l.is_empty()).is_some_and(|l| {
-        l.starts_with("<cross-session-message") || l.starts_with("<agent-message")
-    })
+    body.lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .is_some_and(|l| l.starts_with("<cross-session-message") || l.starts_with("<agent-message"))
 }
 
 /// The `MsgCategory` the webui would file a canonical client payload under,
@@ -866,8 +867,9 @@ mod tests {
         let n = for_client("claude-code", "message", p).unwrap();
         assert_eq!(client_category(&n).0, "thinking");
 
-        let n = for_client("claude-code", "session_ended", json!({ "reason": { "kind": "killed" } }))
-            .unwrap();
+        let n =
+            for_client("claude-code", "session_ended", json!({ "reason": { "kind": "killed" } }))
+                .unwrap();
         assert_eq!(client_category(&n).0, "marker");
     }
 

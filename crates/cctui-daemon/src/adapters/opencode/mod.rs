@@ -722,9 +722,8 @@ mod reconnect_tests {
         let (events, mut rx) = mpsc::channel(8);
         let (watch_tx, watch_rx) = mpsc::channel(4);
         let shutdown = tokio_util::sync::CancellationToken::new();
-        let pump = tokio::spawn(
-            pty_view::PtyWatchPump::new(live, events, shutdown.clone()).run(watch_rx),
-        );
+        let pump =
+            tokio::spawn(pty_view::PtyWatchPump::new(live, events, shutdown.clone()).run(watch_rx));
 
         watch_tx.send(("ses_live".to_owned(), true)).await.expect("pump accepts watches");
         let event = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())

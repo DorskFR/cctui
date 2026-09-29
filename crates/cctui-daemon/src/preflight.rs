@@ -80,10 +80,8 @@ impl Preflight {
         machine_key: Option<&str>,
     ) -> Self {
         if let (Some(server), Some(machine_key)) = (server, machine_key) {
-            self.limits = Some(Limits {
-                server: server.clone(),
-                machine_key: machine_key.to_owned(),
-            });
+            self.limits =
+                Some(Limits { server: server.clone(), machine_key: machine_key.to_owned() });
         }
         self
     }
@@ -334,9 +332,7 @@ mod tests {
         // SAFETY: single-threaded test scope; the knob is read inside `run`.
         unsafe { std::env::set_var("CCTUI_MCP_READY_WAIT_SECS", "1") };
         let pf = Preflight::new(tx, None).with_relay(Some(key.to_owned()));
-        tokio::time::timeout(Duration::from_secs(10), pf.run())
-            .await
-            .expect("the wait is bounded");
+        tokio::time::timeout(Duration::from_secs(10), pf.run()).await.expect("the wait is bounded");
         unsafe { std::env::remove_var("CCTUI_MCP_READY_WAIT_SECS") };
         crate::mcpready::forget(key);
     }

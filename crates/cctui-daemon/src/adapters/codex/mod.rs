@@ -1165,7 +1165,8 @@ mod tests {
         use cctui_proto::adapter::PermissionMode;
         use cctui_proto::harness::CodexSandbox;
 
-        use super::super::{app_server::SandboxFallback, sandbox_refusal};
+        use super::super::app_server::SandboxFallback;
+        use super::super::sandbox_refusal;
 
         fn denied() -> CodexSandbox {
             CodexSandbox::UsernsDenied {
@@ -1175,9 +1176,12 @@ mod tests {
 
         #[test]
         fn an_auto_spawn_is_refused_with_the_fix_and_the_detail() {
-            let refusal =
-                sandbox_refusal(Some(PermissionMode::Auto), Some(&denied()), SandboxFallback::Error)
-                    .expect("auto must be refused");
+            let refusal = sandbox_refusal(
+                Some(PermissionMode::Auto),
+                Some(&denied()),
+                SandboxFallback::Error,
+            )
+            .expect("auto must be refused");
             assert!(refusal.contains("AppArmor"), "{refusal}");
             assert!(refusal.contains("RTM_NEWADDR"), "{refusal}");
         }
@@ -1217,12 +1221,8 @@ mod tests {
         fn an_unknown_probe_failure_also_refuses() {
             let unknown = CodexSandbox::Unknown { detail: "bwrap: something else".to_owned() };
             assert!(
-                sandbox_refusal(
-                    Some(PermissionMode::Auto),
-                    Some(&unknown),
-                    SandboxFallback::Error
-                )
-                .is_some()
+                sandbox_refusal(Some(PermissionMode::Auto), Some(&unknown), SandboxFallback::Error)
+                    .is_some()
             );
         }
 

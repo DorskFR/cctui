@@ -222,7 +222,8 @@ mod tests {
     #[tokio::test]
     async fn crossing_the_configured_total_cap_is_413() {
         let caps = UploadCaps { max_files: 10, max_file_bytes: 1024, max_total_bytes: 15 };
-        let (status, msg) = parse(&[("a.txt", 10), ("b.txt", 10)], caps).await.expect_err("over cap");
+        let (status, msg) =
+            parse(&[("a.txt", 10), ("b.txt", 10)], caps).await.expect_err("over cap");
         assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
         assert!(msg.contains("15-byte total cap"), "{msg}");
     }

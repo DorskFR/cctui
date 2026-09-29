@@ -14,10 +14,7 @@ use std::time::SystemTime;
 /// about itself; `None` before the harness has minted one.
 #[must_use]
 pub fn shared_checkout(cwd: &str, local_id: Option<&str>) -> Option<String> {
-    crate::neighbours::notice(
-        &crate::neighbours::cwd_neighbours(cwd, local_id),
-        SystemTime::now(),
-    )
+    crate::neighbours::notice(&crate::neighbours::cwd_neighbours(cwd, local_id), SystemTime::now())
 }
 
 /// The preamble as a standalone block, for a harness that has no session

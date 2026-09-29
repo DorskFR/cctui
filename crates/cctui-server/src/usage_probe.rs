@@ -321,12 +321,12 @@ mod tests {
         assert_eq!(openrouter_api_base(None), OPENROUTER_BASE);
         assert_eq!(openrouter_api_base(Some("https://openrouter.ai/api/v1")), OPENROUTER_BASE);
         assert_eq!(openrouter_api_base(Some("https://openrouter.ai/api/v1/")), OPENROUTER_BASE);
-        assert_eq!(openrouter_api_base(Some("https://proxy.internal")), "https://proxy.internal/api/v1");
-        assert_eq!(openrouter_api_base(Some("  ")), OPENROUTER_BASE);
         assert_eq!(
-            OPENROUTER.request(None, "sk-or-x").url,
-            "https://openrouter.ai/api/v1/key"
+            openrouter_api_base(Some("https://proxy.internal")),
+            "https://proxy.internal/api/v1"
         );
+        assert_eq!(openrouter_api_base(Some("  ")), OPENROUTER_BASE);
+        assert_eq!(OPENROUTER.request(None, "sk-or-x").url, "https://openrouter.ai/api/v1/key");
         assert_eq!(
             OPENROUTER.request(None, "sk-or-x").headers,
             vec![("authorization".to_owned(), "Bearer sk-or-x".to_owned())]

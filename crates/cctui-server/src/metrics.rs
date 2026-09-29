@@ -73,8 +73,7 @@ impl ProviderRow {
     /// pay-per-token credential's real per-model spend lives on the accounts
     /// API, which prices it from the account's own catalog.
     fn est_cost_usd(&self) -> f64 {
-        let (i, o, cr, cc) =
-            if self.family == "openai" { OPENAI_RATES } else { ANTHROPIC_RATES };
+        let (i, o, cr, cc) = if self.family == "openai" { OPENAI_RATES } else { ANTHROPIC_RATES };
         (self.input_tokens as f64 * i
             + self.output_tokens as f64 * o
             + self.cache_read_tokens as f64 * cr
@@ -129,9 +128,9 @@ pub async fn snapshot(state: &AppState) -> Snapshot {
         .map(|row| {
             let cached = state.account_usage_cache.get(&row.id);
             let age_secs = cached.as_ref().map(|c| c.fetched_at.elapsed().as_secs());
-            let windows = cached.as_ref().and_then(|c| {
-                c.usage.as_ref().map(crate::soft_limit::normalize_usage_windows)
-            });
+            let windows = cached
+                .as_ref()
+                .and_then(|c| c.usage.as_ref().map(crate::soft_limit::normalize_usage_windows));
             drop(cached);
             let paces = windows
                 .as_ref()
@@ -224,7 +223,11 @@ pub fn render(snap: &Snapshot) -> String {
     let _ = writeln!(out, "# TYPE cctui_account_usage_age_seconds gauge");
     for p in &snap.providers {
         if let Some(age) = p.age_secs {
-            let _ = writeln!(out, "cctui_account_usage_age_seconds{{{}}} {age}", account_labels(&p.row));
+            let _ = writeln!(
+                out,
+                "cctui_account_usage_age_seconds{{{}}} {age}",
+                account_labels(&p.row)
+            );
         }
     }
 
@@ -249,8 +252,11 @@ pub fn render(snap: &Snapshot) -> String {
     let _ = writeln!(out, "# TYPE cctui_account_window_spend_usd gauge");
     for_each_window(snap, &mut out, |out, p, w, _| {
         if let Some(usd) = w.amount_usd {
-            let _ =
-                writeln!(out, "cctui_account_window_spend_usd{{{}}} {usd}", window_labels(&p.row, w));
+            let _ = writeln!(
+                out,
+                "cctui_account_window_spend_usd{{{}}} {usd}",
+                window_labels(&p.row, w)
+            );
         }
     });
 
@@ -309,8 +315,11 @@ pub fn render(snap: &Snapshot) -> String {
     let _ = writeln!(out, "# TYPE cctui_account_window_cap_percent gauge");
     for_each_window(snap, &mut out, |out, p, w, _| {
         if let Some(cap) = p.caps.limits.get(&w.key).and_then(|l| l.cap_pct) {
-            let _ =
-                writeln!(out, "cctui_account_window_cap_percent{{{}}} {cap}", window_labels(&p.row, w));
+            let _ = writeln!(
+                out,
+                "cctui_account_window_cap_percent{{{}}} {cap}",
+                window_labels(&p.row, w)
+            );
         }
     });
 
@@ -321,7 +330,8 @@ pub fn render(snap: &Snapshot) -> String {
     let _ = writeln!(out, "# TYPE cctui_account_window_cap_usd gauge");
     for_each_window(snap, &mut out, |out, p, w, _| {
         if let Some(cap) = p.caps.limits.get(&w.key).and_then(|l| l.cap_usd) {
-            let _ = writeln!(out, "cctui_account_window_cap_usd{{{}}} {cap}", window_labels(&p.row, w));
+            let _ =
+                writeln!(out, "cctui_account_window_cap_usd{{{}}} {cap}", window_labels(&p.row, w));
         }
     });
 
@@ -503,7 +513,9 @@ mod tests {
         let snap = Snapshot {
             providers: vec![ProviderSnapshot {
                 row: r,
-                caps: SoftLimits::from_json(Some(&serde_json::json!({ "session": { "cap_pct": 70 } }))),
+                caps: SoftLimits::from_json(Some(
+                    &serde_json::json!({ "session": { "cap_pct": 70 } }),
+                )),
                 windows: Some(vec![UsageWindow {
                     key: KEY_SESSION.to_owned(),
                     kind: "session".to_owned(),
@@ -529,8 +541,16 @@ mod tests {
     fn a_hostile_account_name_cannot_break_the_exposition_format() {
         let mut r = row("prod\"; evil\nmore\\x");
         r.provider = "anthropic".to_owned();
-        let snap =
-            Snapshot { providers: vec![ProviderSnapshot { row: r, caps: SoftLimits::default(), windows: None, age_secs: None, paces: Vec::new() }], ..empty() };
+        let snap = Snapshot {
+            providers: vec![ProviderSnapshot {
+                row: r,
+                caps: SoftLimits::default(),
+                windows: None,
+                age_secs: None,
+                paces: Vec::new(),
+            }],
+            ..empty()
+        };
         let text = render(&snap);
         // The name's quote, newline and backslash must not split or terminate a
         // line: one sample line per emitted series, no more.

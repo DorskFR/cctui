@@ -3820,21 +3820,20 @@ mod tests {
             .unwrap();
         }
 
-        let run = |patterns: Vec<String>,
-                   after: Option<DateTime<Utc>>,
-                   before: Option<DateTime<Utc>>| {
-            let (pool, sid) = (pool.clone(), sid.clone());
-            async move {
-                let mut q = sqlx::query_as::<_, super::ConvSearchRow>(sqlx::AssertSqlSafe(
-                    super::conv_search_sql(patterns.len()),
-                ))
-                .bind(&sid);
-                for p in &patterns {
-                    q = q.bind(p);
+        let run =
+            |patterns: Vec<String>, after: Option<DateTime<Utc>>, before: Option<DateTime<Utc>>| {
+                let (pool, sid) = (pool.clone(), sid.clone());
+                async move {
+                    let mut q = sqlx::query_as::<_, super::ConvSearchRow>(sqlx::AssertSqlSafe(
+                        super::conv_search_sql(patterns.len()),
+                    ))
+                    .bind(&sid);
+                    for p in &patterns {
+                        q = q.bind(p);
+                    }
+                    q.bind(after).bind(before).bind(100_i64).fetch_all(&pool).await.unwrap()
                 }
-                q.bind(after).bind(before).bind(100_i64).fetch_all(&pool).await.unwrap()
-            }
-        };
+            };
         let texts = |rows: Vec<super::ConvSearchRow>| {
             rows.into_iter().map(|r| r.4.unwrap_or_default()).collect::<Vec<_>>()
         };

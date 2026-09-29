@@ -844,9 +844,6 @@ mod tests {
         }"#;
         let resp: DaemonAuthResponse = serde_json::from_str(legacy).expect("legacy auth response");
         assert!(resp.capabilities.is_empty());
-        assert!(!crate::capability::has(
-            resp.capabilities.as_slice(),
-            crate::capability::TURN_END
-        ));
+        assert!(!crate::capability::has(resp.capabilities.as_slice(), crate::capability::TURN_END));
     }
 }

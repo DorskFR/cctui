@@ -520,7 +520,10 @@ mod tests {
 
     #[test]
     fn a_bwrap_userns_failure_in_a_command_output_is_detected() {
-        assert_eq!(sandbox_failure_marker(&command_item(LOOPBACK)), Some("loopback: Failed RTM_NEWADDR"));
+        assert_eq!(
+            sandbox_failure_marker(&command_item(LOOPBACK)),
+            Some("loopback: Failed RTM_NEWADDR")
+        );
     }
 
     /// Only a real bwrap failure raises the alarm: an ordinary command, a

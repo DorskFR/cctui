@@ -1222,10 +1222,7 @@ async fn prepare_provider_write(spec: &ProviderSpec) -> Result<ProviderWrite, Ap
 /// compatible-endpoint credential can carry one — a native subscription has a
 /// real usage API and a probe there would silently shadow it. An empty string
 /// clears the column.
-fn validate_usage_probe(
-    raw: Option<&str>,
-    compatible: bool,
-) -> Result<Option<String>, AppError> {
+fn validate_usage_probe(raw: Option<&str>, compatible: bool) -> Result<Option<String>, AppError> {
     let Some(id) = raw.map(str::trim) else { return Ok(None) };
     if id.is_empty() {
         return Ok(None);

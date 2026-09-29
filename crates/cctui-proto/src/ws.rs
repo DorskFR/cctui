@@ -1412,10 +1412,8 @@ mod tests {
         let json = serde_json::to_string(&denied).unwrap();
         assert!(json.contains(r#""allowed_folders":["/tmp","/srv/app"]"#), "{json}");
         let back: DaemonFrameUp = serde_json::from_str(&json).unwrap();
-        assert!(
-            matches!(back, DaemonFrameUp::ReadFileResult { allowed_folders, .. }
-                if allowed_folders == ["/tmp", "/srv/app"])
-        );
+        assert!(matches!(back, DaemonFrameUp::ReadFileResult { allowed_folders, .. }
+                if allowed_folders == ["/tmp", "/srv/app"]));
 
         let legacy_result = r#"{"type":"read_file_result","request_id":"00000000-0000-0000-0000-000000000000","ok":false,"error_kind":"denied","error":"nope"}"#;
         let back: DaemonFrameUp = serde_json::from_str(legacy_result).unwrap();
