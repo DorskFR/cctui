@@ -220,10 +220,6 @@
 		display: inline-flex;
 		align-items: center;
 	}
-	.fork-check :global(.box) {
-		width: 0.9rem;
-		height: 0.9rem;
-	}
 	.who {
 		text-transform: uppercase;
 		letter-spacing: 0.04em;
