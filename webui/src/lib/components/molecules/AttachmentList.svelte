@@ -2,6 +2,7 @@
 	// Pending attachments for the spawn modal and the composer: the kit list
 	// (tiles once `compact` and narrow) plus the upload cap error.
 	import { fileCapError } from '$lib/attachments';
+	import { uploadCaps } from '$lib/uploadCaps.svelte';
 	import { AttachmentList } from '@dorsk/tsumikit';
 	import Error from '$lib/components/atoms/Error.svelte';
 	import { m } from '$lib/paraglide/messages';
@@ -12,7 +13,7 @@
 		compact = false
 	}: { files: File[]; onremove: (name: string) => void; compact?: boolean } = $props();
 
-	const error = $derived(fileCapError(files));
+	const error = $derived(fileCapError(files, uploadCaps));
 </script>
 
 {#if files.length}

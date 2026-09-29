@@ -46,7 +46,8 @@
 		{ page: 'monitoring', icon: '▥', label: m.settings_nav_monitoring() },
 		{ page: 'security', icon: '⚿', label: m.settings_nav_security() },
 		{ page: 'guides', icon: '◇', label: m.settings_nav_guides() },
-		{ page: 'instance', icon: '⚙', label: m.settings_nav_instance(), admin: true }
+		{ page: 'instance', icon: '⚙', label: m.settings_nav_instance(), admin: true },
+		{ page: 'uploads', icon: '⇪', label: m.settings_nav_uploads(), admin: true }
 	]);
 
 	// The filter reads the rendered rows back instead of keeping a parallel

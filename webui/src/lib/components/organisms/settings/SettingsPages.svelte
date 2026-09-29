@@ -14,6 +14,7 @@
 	import SecuritySection from './SecuritySection.svelte';
 	import GuidesSection from './GuidesSection.svelte';
 	import InstanceSection from './InstanceSection.svelte';
+	import UploadsSection from './UploadsSection.svelte';
 	import type { SettingsPage } from './settings.logic';
 
 	let { current, isAdmin }: { current: SettingsPage; isAdmin: boolean } = $props();
@@ -51,6 +52,9 @@
 </div>
 <div class="pg" class:on={current === 'instance'} data-settings-page="instance" data-journey="page" data-journey-key="instance">
 	<InstanceSection {isAdmin} />
+</div>
+<div class="pg" class:on={current === 'uploads'} data-settings-page="uploads" data-journey="page" data-journey-key="uploads">
+	<UploadsSection {isAdmin} />
 </div>
 
 <style>

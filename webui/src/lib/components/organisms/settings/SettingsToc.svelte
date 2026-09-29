@@ -107,15 +107,6 @@
 	.scope:first-of-type {
 		padding-top: 0;
 	}
-	.search-icon {
-		position: absolute;
-		left: var(--sp-3);
-		top: 50%;
-		transform: translateY(-50%);
-		color: var(--text-faint);
-		display: inline-flex;
-		pointer-events: none;
-	}
 	.toc-item {
 		display: flex;
 		align-items: center;

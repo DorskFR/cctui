@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
 	appendFileTokens,
 	attachFiles,
+	DEFAULT_UPLOAD_CAPS,
 	extForType,
+	fileCapError,
 	makeClipboardFiles,
 	mergeFiles,
 	mergeFilesRenamed,
@@ -160,5 +162,44 @@ describe('makeClipboardFiles', () => {
 		const fromClipboard = makeClipboardFiles();
 		const f = new File(['x'], 'a.txt', { type: 'text/plain' });
 		expect(fromClipboard(dt([item(null, 'string')], [f]))).toEqual([f]);
+	});
+});
+
+describe('fileCapError', () => {
+	const sized = (name: string, size: number) =>
+		new File([new Uint8Array(size)], name, { type: 'application/octet-stream' });
+	const caps = { max_files: 2, max_file_bytes: 1024, max_total_bytes: 1536 };
+
+	it('accepts a list inside the injected caps', () => {
+		expect(fileCapError([sized('a', 1024), sized('b', 512)], caps)).toBe('');
+	});
+
+	it('reports the injected per-file cap, not the built-in one', () => {
+		const msg = fileCapError([sized('a', 1025)], caps);
+		expect(msg).toContain('per-file cap');
+		expect(msg).toContain('1 KB');
+		expect(fileCapError([sized('a', 1025)])).toBe('');
+	});
+
+	it('reports the injected count cap', () => {
+		expect(fileCapError([sized('a', 1), sized('b', 1), sized('c', 1)], caps)).toBe(
+			'Too many files (max 2)'
+		);
+	});
+
+	it('reports the injected total cap', () => {
+		expect(fileCapError([sized('a', 1024), sized('b', 1024)], caps)).toContain('total cap');
+	});
+
+	it('falls back to the built-in caps when none are injected', () => {
+		expect(DEFAULT_UPLOAD_CAPS).toEqual({
+			max_files: 10,
+			max_file_bytes: 5 * 1024 * 1024,
+			max_total_bytes: 20 * 1024 * 1024
+		});
+		expect(fileCapError([sized('a', 5 * 1024 * 1024 + 1)])).toContain('5.0 MB per-file cap');
+		expect(fileCapError(Array.from({ length: 11 }, (_, i) => sized(String(i), 1)))).toBe(
+			'Too many files (max 10)'
+		);
 	});
 });

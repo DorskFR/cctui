@@ -104,7 +104,8 @@ export const SETTINGS_PAGES = [
 	'monitoring',
 	'security',
 	'guides',
-	'instance'
+	'instance',
+	'uploads'
 ] as const;
 
 export type SettingsPage = (typeof SETTINGS_PAGES)[number];
@@ -114,7 +115,7 @@ export const DEFAULT_SETTINGS_PAGE: SettingsPage = 'appearance';
 export const SETTINGS_SCOPES = ['you', 'instance'] as const;
 export type SettingsScope = (typeof SETTINGS_SCOPES)[number];
 
-const INSTANCE_PAGES: readonly SettingsPage[] = ['instance'];
+const INSTANCE_PAGES: readonly SettingsPage[] = ['instance', 'uploads'];
 
 export function settingsScope(page: SettingsPage): SettingsScope {
 	return INSTANCE_PAGES.includes(page) ? 'instance' : 'you';
@@ -129,6 +130,7 @@ const HASH_ALIASES: Record<string, SettingsPage> = {
 	storage: 'sessions',
 	version: 'instance',
 	'passkey-sign-in': 'instance',
+	'upload-caps': 'uploads',
 	'self-update': 'instance',
 	'net-stats': 'instance',
 	upstreams: 'instance',

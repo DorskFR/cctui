@@ -33,6 +33,7 @@ use crate::error::{AppError, DB_ERROR};
 use crate::registry::MachineCommand;
 use crate::state::AppState;
 use crate::store::sessions::SessionRowStatus;
+use crate::routes::server_settings::cached_upload_caps;
 use crate::uploads::parse_upload_multipart;
 
 pub fn bad_request(msg: impl Into<String>) -> (StatusCode, Json<ApiError>) {
@@ -54,7 +55,7 @@ pub async fn spawn_session(
     Extension(ctx): Extension<AuthContext>,
     multipart: Multipart,
 ) -> Result<(StatusCode, Json<SpawnResponse>), AppError> {
-    let parsed = parse_upload_multipart(multipart)
+    let parsed = parse_upload_multipart(multipart, cached_upload_caps(&state))
         .await
         .map_err(|(code, Json(e))| AppError::new(code, e.error))?;
     let uploads = parsed.files;
@@ -955,7 +956,7 @@ pub async fn stage_session_files(
     Path(session_id): Path<String>,
     multipart: Multipart,
 ) -> Result<Json<cctui_proto::api::StageFilesResponse>, AppError> {
-    let parsed = parse_upload_multipart(multipart)
+    let parsed = parse_upload_multipart(multipart, cached_upload_caps(&state))
         .await
         .map_err(|(code, Json(e))| AppError::new(code, e.error))?;
     if parsed.files.is_empty() {

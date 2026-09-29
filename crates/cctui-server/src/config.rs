@@ -10,6 +10,33 @@ pub struct HttpDispatcherConfig {
     pub token: Option<String>,
 }
 
+pub const DEFAULT_UPLOAD_BODY_LIMIT: u64 = 24 * 1024 * 1024;
+pub const UPLOAD_BODY_LIMIT_ENV: &str = "CCTUI_UPLOAD_BODY_LIMIT";
+
+/// The router's ceiling for the two multipart upload routes, baked in when the
+/// router is built: changing it needs a restart. Resolved once so the value the
+/// routes enforce is the same one the settings page reports.
+pub fn upload_body_limit() -> u64 {
+    static LIMIT: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *LIMIT.get_or_init(|| parse_upload_body_limit(env::var(UPLOAD_BODY_LIMIT_ENV).ok().as_deref()))
+}
+
+fn parse_upload_body_limit(raw: Option<&str>) -> u64 {
+    let Some(raw) = raw.map(str::trim).filter(|s| !s.is_empty()) else {
+        return DEFAULT_UPLOAD_BODY_LIMIT;
+    };
+    match raw.parse::<u64>() {
+        Ok(v) if v > 0 => v,
+        _ => {
+            tracing::warn!(
+                "{UPLOAD_BODY_LIMIT_ENV} must be a positive byte count, got `{raw}`; \
+                 using {DEFAULT_UPLOAD_BODY_LIMIT}"
+            );
+            DEFAULT_UPLOAD_BODY_LIMIT
+        }
+    }
+}
+
 /// Parse `CCTUI_DISPATCHERS` (a JSON array of `{ "kind":..,.. }`)
 /// into the http registrations the server still honors. Only `kind:"http"`
 /// entries are kept; any other kind (the retired in-process `kube`/`docker`
@@ -379,6 +406,14 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn upload_body_limit_falls_back_on_anything_unusable() {
+        assert_eq!(parse_upload_body_limit(Some(" 33554432 ")), 33_554_432);
+        for raw in [None, Some(""), Some("  "), Some("0"), Some("-1"), Some("lots")] {
+            assert_eq!(parse_upload_body_limit(raw), DEFAULT_UPLOAD_BODY_LIMIT, "{raw:?}");
+        }
+    }
 
     #[test]
     fn allowed_origins_default_to_same_origin_plus_dev() {

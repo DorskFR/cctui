@@ -1,11 +1,20 @@
+import type { UploadCaps } from '@bindings/UploadCaps';
+
 // Shared file-attachment helpers for the spawn modal and the mid-chat
 // composer: one source of truth for caps, unique-name merging, error
-// derivation, and size formatting. Mirrors the server caps in
-// `cctui-server/src/uploads.rs` so we reject before uploading.
+// derivation, and size formatting. The caps are the server's own, served on
+// `GET /version`; rejecting here only fails fast, the server is the gate.
 
 export const MAX_FILE_BYTES = 5 * 1024 * 1024;
 export const MAX_TOTAL_BYTES = 20 * 1024 * 1024;
 export const MAX_FILES = 10;
+
+/** What the server falls back to when the instance has stored no caps. */
+export const DEFAULT_UPLOAD_CAPS: UploadCaps = {
+	max_files: MAX_FILES,
+	max_file_bytes: MAX_FILE_BYTES,
+	max_total_bytes: MAX_TOTAL_BYTES
+};
 
 /** Split `name` into stem and extension (`a.tar.gz` → `a.tar` + `.gz`). */
 function splitExt(name: string): [string, string] {
@@ -109,13 +118,13 @@ export function removeFileByName(files: File[], name: string): File[] {
 }
 
 /** Validate a file list against the caps; returns a human error or '' if ok. */
-export function fileCapError(files: File[]): string {
+export function fileCapError(files: File[], caps: UploadCaps = DEFAULT_UPLOAD_CAPS): string {
 	const total = files.reduce((n, f) => n + f.size, 0);
-	if (files.some((f) => f.size > MAX_FILE_BYTES))
-		return `A file exceeds the ${MAX_FILE_BYTES / 1024 / 1024} MB per-file cap`;
-	if (files.length > MAX_FILES) return `Too many files (max ${MAX_FILES})`;
-	if (total > MAX_TOTAL_BYTES)
-		return `Attachments exceed the ${MAX_TOTAL_BYTES / 1024 / 1024} MB total cap`;
+	if (files.some((f) => f.size > caps.max_file_bytes))
+		return `A file exceeds the ${fmtSize(caps.max_file_bytes)} per-file cap`;
+	if (files.length > caps.max_files) return `Too many files (max ${caps.max_files})`;
+	if (total > caps.max_total_bytes)
+		return `Attachments exceed the ${fmtSize(caps.max_total_bytes)} total cap`;
 	return '';
 }
 

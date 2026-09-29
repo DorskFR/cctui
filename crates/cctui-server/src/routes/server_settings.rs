@@ -12,9 +12,11 @@ use ts_rs::TS;
 use crate::auth::{AuthContext, Scope};
 use crate::error::AppError;
 use crate::state::AppState;
+use crate::uploads::UploadCaps;
 
 const SPAWN_KEY: &str = "spawn_defaults";
 const UPSTREAM_KEY: &str = "upstream_allowed_hosts";
+const UPLOAD_CAPS_KEY: &str = "upload_caps";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[cfg_attr(feature = "ts", derive(TS))]
@@ -293,6 +295,111 @@ pub async fn update_upstream_hosts(
     Ok(Json(info))
 }
 
+#[derive(Debug, Serialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct UploadCapsInfo {
+    pub effective: UploadCaps,
+    pub defaults: UploadCaps,
+    /// `settings` once an admin saved a value, else `default`.
+    pub source: SettingSource,
+    /// The router's boot-time ceiling; a saved total cap must stay under it.
+    #[cfg_attr(feature = "ts", ts(type = "number"))]
+    pub body_limit_bytes: u64,
+    /// Env var that sets `body_limit_bytes` (restart required).
+    pub body_limit_env: &'static str,
+}
+
+#[derive(Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+pub struct UploadCapsRequest {
+    /// `null` clears the saved caps, restoring the built-in defaults.
+    pub caps: Option<UploadCaps>,
+}
+
+fn upload_caps_info(stored: Option<UploadCaps>) -> UploadCapsInfo {
+    let source = if stored.is_some() { SettingSource::Settings } else { SettingSource::Default };
+    UploadCapsInfo {
+        effective: stored.unwrap_or_default(),
+        defaults: UploadCaps::default(),
+        source,
+        body_limit_bytes: crate::config::upload_body_limit(),
+        body_limit_env: crate::config::UPLOAD_BODY_LIMIT_ENV,
+    }
+}
+
+/// Reject caps the enforcement path could not honour. A total cap at or above
+/// the router's body limit would surface as a generic body-limit error instead
+/// of the 413 `parse_upload_multipart` raises, so it needs the env var and a
+/// restart first.
+pub fn validate_upload_caps(caps: UploadCaps, body_limit: u64) -> Result<UploadCaps, AppError> {
+    let bad = |msg: String| AppError::new(StatusCode::BAD_REQUEST, msg);
+    if caps.max_files == 0 {
+        return Err(bad("max_files must be a positive integer".into()));
+    }
+    if caps.max_file_bytes == 0 || caps.max_total_bytes == 0 {
+        return Err(bad("size caps must be positive byte counts".into()));
+    }
+    if caps.max_file_bytes > caps.max_total_bytes {
+        return Err(bad("max_file_bytes cannot exceed max_total_bytes".into()));
+    }
+    if caps.max_total_bytes >= body_limit {
+        return Err(bad(format!(
+            "max_total_bytes must stay below the {body_limit}-byte request ceiling; raise {} and restart the server to go higher",
+            crate::config::UPLOAD_BODY_LIMIT_ENV
+        )));
+    }
+    Ok(caps)
+}
+
+async fn read_upload_caps(pool: &sqlx::PgPool) -> UploadCapsInfo {
+    upload_caps_info(stored(pool, UPLOAD_CAPS_KEY).await)
+}
+
+/// The cached caps every upload is checked against, with no database round
+/// trip on the upload path.
+pub fn cached_upload_caps(state: &AppState) -> UploadCaps {
+    *state.upload_caps.read().expect("upload caps lock")
+}
+
+/// Reloads the cache from the table; a failed read keeps the current value.
+pub async fn refresh_upload_caps(state: &AppState) {
+    let caps = read_upload_caps(&state.pool).await.effective;
+    *state.upload_caps.write().expect("upload caps lock") = caps;
+}
+
+/// Other replicas pick an edit up on this tick.
+pub async fn upload_caps_task(state: AppState) {
+    let mut tick = tokio::time::interval(std::time::Duration::from_secs(30));
+    loop {
+        tick.tick().await;
+        refresh_upload_caps(&state).await;
+    }
+}
+
+pub async fn get_upload_caps(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+) -> Result<Json<UploadCapsInfo>, AppError> {
+    admin(&ctx)?;
+    Ok(Json(read_upload_caps(&state.pool).await))
+}
+
+pub async fn update_upload_caps(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<AuthContext>,
+    Json(req): Json<UploadCapsRequest>,
+) -> Result<Json<UploadCapsInfo>, AppError> {
+    admin(&ctx)?;
+    let value = req
+        .caps
+        .map(|c| validate_upload_caps(c, crate::config::upload_body_limit()))
+        .transpose()?
+        .map(|c| serde_json::to_value(c).expect("serializable"));
+    store(&state.pool, UPLOAD_CAPS_KEY, value).await?;
+    refresh_upload_caps(&state).await;
+    Ok(Json(read_upload_caps(&state.pool).await))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -305,6 +412,51 @@ mod tests {
             key_id: Uuid::new_v4(),
             machine_id: None,
             scopes: scopes.iter().copied().collect::<BTreeSet<_>>(),
+        }
+    }
+
+    #[test]
+    fn upload_caps_fall_back_to_the_built_ins() {
+        let info = upload_caps_info(None);
+        assert_eq!(info.source, SettingSource::Default);
+        assert_eq!(info.effective, UploadCaps::default());
+        assert_eq!(info.body_limit_env, crate::config::UPLOAD_BODY_LIMIT_ENV);
+
+        let saved = UploadCaps { max_files: 3, max_file_bytes: 1024, max_total_bytes: 4096 };
+        let info = upload_caps_info(Some(saved));
+        assert_eq!(info.source, SettingSource::Settings);
+        assert_eq!(info.effective, saved);
+        assert_eq!(info.defaults, UploadCaps::default());
+    }
+
+    #[test]
+    fn upload_caps_at_or_above_the_body_ceiling_are_refused_by_name() {
+        let limit = 1000;
+        let at = UploadCaps { max_files: 1, max_file_bytes: 10, max_total_bytes: limit };
+        let err = validate_upload_caps(at, limit).unwrap_err();
+        assert_eq!(err.status(), StatusCode::BAD_REQUEST);
+        assert!(err.message().contains(crate::config::UPLOAD_BODY_LIMIT_ENV), "{}", err.message());
+        assert!(err.message().contains("1000"), "{}", err.message());
+        assert!(validate_upload_caps(UploadCaps { max_total_bytes: limit + 1, ..at }, limit).is_err());
+        assert!(validate_upload_caps(UploadCaps { max_total_bytes: limit - 1, ..at }, limit).is_ok());
+    }
+
+    #[test]
+    fn upload_caps_reject_zeroes_and_an_inverted_pair() {
+        let limit = 1000;
+        let ok = UploadCaps { max_files: 2, max_file_bytes: 100, max_total_bytes: 200 };
+        assert!(validate_upload_caps(ok, limit).is_ok());
+        for bad in [
+            UploadCaps { max_files: 0, ..ok },
+            UploadCaps { max_file_bytes: 0, ..ok },
+            UploadCaps { max_total_bytes: 0, ..ok },
+            UploadCaps { max_file_bytes: 300, ..ok },
+        ] {
+            assert_eq!(
+                validate_upload_caps(bad, limit).unwrap_err().status(),
+                StatusCode::BAD_REQUEST,
+                "{bad:?}"
+            );
         }
     }
 
