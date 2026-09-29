@@ -61,11 +61,10 @@
   .detail-bar {
     display: flex;
     align-items: stretch;
-    border-bottom: 1px solid var(--gh-border);
   }
   .detail-bar :global(.tabbar) {
     flex: 1;
-    border-bottom: none;
+    min-width: 0;
   }
   .detail-body {
     flex: 1;
