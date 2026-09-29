@@ -22,6 +22,7 @@ vi.mock('$lib/queries', () => ({
 	useSessions: () => ({ data: sessionsData }),
 	useAccounts: () => ({ data: [] }),
 	useAllAccountsUsage: () => ({ data: [] }),
+	useProviderStatus: () => ({ data: [] }),
 	useRedirectChips: () => ({ data: [] }),
 	useMachineResources: () => ({ data: [] })
 }));
