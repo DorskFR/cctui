@@ -2,7 +2,7 @@
 	// List vs cards, as the kit's icon toggle. `cardView` is bindable so the
 	// parent keeps owning persistence. In the overflow ⋯ menu it is a plain
 	// full-width row like the dimension pickers; tapping it flips the view.
-	import { Icon, SegmentedControl } from '@dorsk/tsumikit';
+	import { Button, Icon, SegmentedControl } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 
 	let {
@@ -25,10 +25,18 @@
 </script>
 
 {#if menu}
-	<button type="button" class="menu-row" data-journey="view" title={target} onclick={() => (cardView = !cardView)}>
+	<Button
+		variant="ghost"
+		size="sm"
+		block
+		style="justify-content:flex-start"
+		data-journey="view"
+		title={target}
+		onclick={() => (cardView = !cardView)}
+	>
 		<Icon name={cardView ? 'list' : 'grid'} size={18} />
 		<span>{target}</span>
-	</button>
+	</Button>
 {:else}
 	<span class="vp" data-journey="view">
 		<SegmentedControl
@@ -44,26 +52,5 @@
 <style>
 	.vp {
 		display: inline-flex;
-	}
-	.menu-row {
-		display: flex;
-		align-items: center;
-		width: 100%;
-		justify-content: flex-start;
-		gap: var(--sp-2);
-		min-height: 2.25rem;
-		padding: var(--sp-1) var(--sp-2);
-		border: 0;
-		border-radius: var(--r-sm);
-		background: none;
-		color: inherit;
-		font: inherit;
-		font-size: var(--fs-sm);
-		font-weight: var(--fw-medium);
-		white-space: nowrap;
-		cursor: pointer;
-	}
-	.menu-row:hover {
-		background: var(--bg-elevated-3, var(--bg-elevated-2));
 	}
 </style>

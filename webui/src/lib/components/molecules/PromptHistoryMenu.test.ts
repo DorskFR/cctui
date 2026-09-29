@@ -93,3 +93,26 @@ it('clears the stored history', async () => {
 	expect(promptHistory.get()).toEqual([]);
 	expect(menu.items()).toHaveLength(0);
 });
+
+it('leaves the panel open while clearing, unlike picking an entry', async () => {
+	promptHistory.push('doomed');
+	const menu = setup();
+	await menu.open();
+
+	const clear = [...document.querySelectorAll<HTMLButtonElement>('[role="menu"] button')].at(-1);
+	clear?.click();
+	flushSync();
+	expect(menu.hidePopover).not.toHaveBeenCalled();
+});
+
+it('renders every row as a kit Button so the rows share one hover/focus style', async () => {
+	promptHistory.push('one');
+	promptHistory.push('two');
+	const menu = setup();
+	await menu.open();
+
+	const rows = [...document.querySelectorAll<HTMLButtonElement>('[role="menu"] button')];
+	expect(rows).toHaveLength(3);
+	for (const row of rows) expect(row.className).toContain('btn');
+	expect(menu.items()).toHaveLength(2);
+});
