@@ -107,12 +107,13 @@ emit it into `web/` and list it in the manifest:
 { "web": "web/index.js", "styles": ["web/app.css"] }
 ```
 
-The host serves each entry from `/plugins/<id>/…` and links it **once per
-document**, before it imports the module, inheriting the bundle's `?v=` so an
-upgrade is a fresh URL. This was chosen over injecting `?inline` imports: a
+Entries are plugin-folder-relative and validated at install exactly like `web`
+(inside the folder, and the file must exist). The server resolves each one to
+`/plugins/<id>/<path>?v=<sha8>`, reusing the bundle's content hash so an upgrade
+busts the CSS cache with the module, and the host links it **once per document**
+before it imports the module. This was chosen over injecting `?inline` imports: a
 `<link>` is cacheable, is not duplicated when two surfaces of the same plugin
-mount, and survives a plugin whose module fails to load. Entries are
-plugin-relative and may not escape the folder.
+mount, and survives a plugin whose module fails to load.
 
 ### Code-split chunks
 

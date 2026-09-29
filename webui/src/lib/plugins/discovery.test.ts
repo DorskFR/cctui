@@ -52,9 +52,9 @@ describe('enabledWebPlugins', () => {
 describe('enabledPagePlugins', () => {
 	it('keeps only switched-on plugins declaring a page surface', () => {
 		const list = [
-			info({ id: 'paged', page: { title: 'Paged', icon: null } }),
+			info({ id: 'paged', page: { title: 'Paged' } }),
 			info({ id: 'pane-only' }),
-			info({ id: 'off', page: { title: 'Off', icon: null } })
+			info({ id: 'off', page: { title: 'Off' } })
 		];
 		expect(enabledPagePlugins(list, { paged: true, 'pane-only': true }).map((p) => p.id)).toEqual(['paged']);
 	});

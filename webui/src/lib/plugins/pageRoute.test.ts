@@ -98,7 +98,7 @@ describe('pageNavItems', () => {
 			info(),
 			info({ id: 'pane-only', page: null }),
 			info({ id: 'off' }),
-			info({ id: 'no-title', page: { title: '', icon: null }, icon: 'upload' })
+			info({ id: 'no-title', page: { title: '' }, icon: 'upload' })
 		];
 		expect(pageNavItems(list, { demo: true, 'pane-only': true, 'no-title': true })).toEqual([
 			{ href: '/apps/demo', label: 'Demo app', iconName: 'eye' },

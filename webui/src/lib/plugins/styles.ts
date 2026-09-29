@@ -1,9 +1,9 @@
 import type { PluginInfo } from './types';
 
-/** Where a manifest `styles[]` entry is served from. The server may already hand
- *  out absolute `/plugins/<id>/…` paths; a manifest-relative entry is resolved
- *  against the plugin's own `web/` base and inherits its `?v=` cache-buster, so
- *  an upgrade is a new URL. */
+/** Where a `styles[]` entry is served from. This server resolves them already
+ *  (`/plugins/<id>/<path>?v=<sha8>`), which passes through untouched; a relative
+ *  entry from an older or third-party server is resolved against the plugin's
+ *  own `web/` base and inherits its cache-buster. */
 export function styleUrls(info: PluginInfo): string[] {
 	const styles = info.styles ?? [];
 	if (styles.length === 0) return [];
