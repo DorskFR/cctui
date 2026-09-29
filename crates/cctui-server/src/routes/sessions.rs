@@ -2078,8 +2078,9 @@ impl ConvSearchFilters {
 /// `(id, event_type, payload, created_at, capped search_text)`.
 type ConvSearchRow = (i64, String, serde_json::Value, DateTime<Utc>, Option<String>);
 
-/// `$1` the session id, `$2…$n+1` the ILIKE patterns (ANDed per event, so one
-/// event must carry every term), then `after`, `before` and the scan cap.
+/// `$1` the session id, `$2…$n+1` the ILIKE patterns — all of them required of
+/// one and the same event, so a hit carries every term rather than any of them
+/// — then `after`, `before` and the scan cap.
 ///
 /// The `left(search_text, …)` must match the migration-108 index expression
 /// exactly or the ILIKE stops using it.
@@ -2105,10 +2106,11 @@ fn conv_search_sql(n_patterns: usize) -> String {
 }
 
 /// `GET /sessions/{id}/search?q=…&limit=…`: the hit list for a find-in-
-/// conversation bar, oldest → newest. Free text is ANDed per event over the
-/// capped `search_text` (served by the `(session_id, left(search_text, 8192))`
-/// GIN of migration 108); `role`/`type`/`tool`/`pinned` are decided on the
-/// normalised client payload so the roles match the webui's `MsgCategory`.
+/// conversation bar, oldest → newest. Every free-text term must match the same
+/// event, over the capped `search_text` (served by the
+/// `(session_id, left(search_text, 8192))` GIN of migration 108);
+/// `role`/`type`/`tool`/`pinned` are decided on the normalised client payload
+/// so the roles match the webui's `MsgCategory`.
 #[allow(clippy::too_many_lines)]
 pub async fn search_conversation(
     State(state): State<AppState>,
@@ -3775,7 +3777,7 @@ mod tests {
 
     #[test]
     fn conversation_search_filters_accept_only_matching_events() {
-        let pins: std::collections::HashSet<i64> = [7].into_iter().collect();
+        let pins: std::collections::HashSet<i64> = std::iter::once(7).collect();
 
         let f = conv_filters_of("role:user");
         assert!(f.accepts("user", None, 1, &pins));
