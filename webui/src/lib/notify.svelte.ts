@@ -22,8 +22,11 @@ class Notifier {
   enabled = $state(false);
   sound = $state(true);
 
-  /** Session whose drawer is currently open — used to suppress self-noise. */
-  openSessionId: string | null = null;
+  /** Sessions the user currently has open — the drawer and any tiles. Reads
+   *  as a ref count so the same session held twice survives one close. */
+  #open = new Map<string, number>();
+  /** Reactive mirror of the held set, for views that zero unread badges. */
+  openSessionIds = $state<ReadonlySet<string>>(new Set());
   /** Set by a notification click; the sessions page opens this drawer. */
   pendingOpen = $state<string | null>(null);
 
@@ -105,10 +108,23 @@ class Notifier {
       if (this.notified.has(s.id)) continue;
       this.notified.add(s.id);
       // Don't notify for a session you're already staring at.
-      if (document.visibilityState === "visible" && this.openSessionId === s.id)
-        continue;
+      if (document.visibilityState === "visible" && this.#open.has(s.id)) continue;
       this.fire(s);
     }
+  }
+
+  /** Register a session as on screen; call the returned teardown when its pane
+   *  closes. */
+  holdOpen(id: string): () => void {
+    const n = this.#open.get(id) ?? 0;
+    this.#open.set(id, n + 1);
+    this.openSessionIds = new Set(this.#open.keys());
+    return () => {
+      const left = (this.#open.get(id) ?? 0) - 1;
+      if (left > 0) this.#open.set(id, left);
+      else this.#open.delete(id);
+      this.openSessionIds = new Set(this.#open.keys());
+    };
   }
 
   /** Base tab title: `cctui`, or `cctui (NAME)` when the admin labelled the instance. */

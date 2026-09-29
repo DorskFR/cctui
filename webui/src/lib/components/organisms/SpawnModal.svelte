@@ -33,7 +33,7 @@
 		// as draft, or cleared) — the parent remounts it so it reseeds exactly the
 		// way a reopened modal would.
 		onclose: () => void;
-		onspawned: () => void;
+		onspawned: (sessionId: string | null) => void;
 		// Docked panel (Settings › New session): the same form pinned to one edge
 		// of the Sessions screen instead of inside a Modal.
 		docked?: SpawnDockSide | null;

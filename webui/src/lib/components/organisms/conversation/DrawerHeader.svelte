@@ -15,6 +15,7 @@
 	import KeepaliveModal from '$lib/components/molecules/KeepaliveModal.svelte';
 	import { Icon, IconButton, Input, Menu, Text, Toolbar, FontScalePicker, type MenuItem } from '@dorsk/tsumikit';
 	import HeaderMeta from './HeaderMeta.svelte';
+	import type { ConversationChrome } from './chrome';
 	import { m } from '$lib/paraglide/messages';
 
 	let {
@@ -23,6 +24,9 @@
 		isCodexSession,
 		livenessClass,
 		showStatusBadge,
+		chrome = 'drawer',
+		maximized = false,
+		onmaximize,
 		onclose,
 		onrename,
 		onsetmodel,
@@ -30,6 +34,7 @@
 		oncopymarkdown,
 		onexport,
 		onsearch,
+		onopenintiles,
 		onescape,
 		onfork,
 		onfollowup,
@@ -56,6 +61,11 @@
 		isCodexSession: boolean;
 		livenessClass: string;
 		showStatusBadge: boolean;
+		/** In a tile the back chevron becomes a close ×; the maximize toggle
+		 *  appears only when the shell supplies `onmaximize`. */
+		chrome?: ConversationChrome;
+		maximized?: boolean;
+		onmaximize?: () => void;
 		onclose: () => void;
 		onrename: (name: string) => void;
 		onsetmodel: (model: string, effort: string) => void;
@@ -64,6 +74,8 @@
 		onexport: () => void;
 		/** Open the find-in-conversation bar; omitted → no entry and no ⌘F. */
 		onsearch?: () => void;
+		/** Move this session into the tiles grid; omitted → no entry. */
+		onopenintiles?: () => void;
 		/** First refusal on Escape: true when it was consumed (the find bar
 		 *  clears or closes) and the drawer must stay open. */
 		onescape?: () => boolean;
@@ -170,6 +182,15 @@
 			attrs: { title: onforkselect ? m.drawer_fork_select_title() : m.drawer_fork_title() },
 			onselect: onforkselect ?? onfork
 		},
+		...(onopenintiles
+			? [
+					{
+						label: m.tiles_open_here(),
+						icon: 'grid' as const,
+						onselect: onopenintiles
+					}
+				]
+			: []),
 		{
 			label: m.drawer_keepalive_label(),
 			icon: 'recycle' as const,
@@ -211,7 +232,12 @@
 <div class="dhead" data-journey="header">
 	<div class="dbar" bind:clientWidth={barWidth}>
 	<Toolbar collapseBelow="{COLLAPSE_BELOW}px" density={collapsed ? 'compact' : 'default'}>
-		<IconButton icon="chevron-left" label={m.drawer_back()} {box} onclick={onclose} />
+		<IconButton
+			icon={chrome === 'tile' ? 'x' : 'chevron-left'}
+			label={chrome === 'tile' ? m.tiles_close_tile() : m.drawer_back()}
+			{box}
+			onclick={onclose}
+		/>
 		<SessionGlyphs
 			{session}
 			{livenessClass}
@@ -261,6 +287,16 @@
 				icon="edit"
 				label={m.drawer_rename()}
 				onclick={startRename}
+			/>
+		{/if}
+		{#if onmaximize}
+			<IconButton
+				chip
+				{box}
+				variant="default"
+				icon={maximized ? 'grid' : 'external'}
+				label={maximized ? m.tiles_restore() : m.tiles_maximize()}
+				onclick={onmaximize}
 			/>
 		{/if}
 		{#if onsearch}

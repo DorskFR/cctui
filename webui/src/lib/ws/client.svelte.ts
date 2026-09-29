@@ -50,7 +50,7 @@ export class WsClient {
 	private link = new LiveSocket({
 		onOpen: () => {
 			// re-subscribe everything after a reconnect
-			for (const id of this.subscribed) this.send({ type: 'subscribe', session_id: id });
+			for (const id of this.subscribed.keys()) this.send({ type: 'subscribe', session_id: id });
 			// re-arm live-terminal watches so the daemon PTY stream resumes
 			for (const id of this.ptyWatched)
 				this.send({ type: 'watch_terminal', session_id: id, watch: true });
@@ -85,7 +85,10 @@ export class WsClient {
 	private commands = new CommandWaiters();
 	private delivery = new DeliveryTracker(this);
 
-	private subscribed = new Set<string>();
+	/** Subscribers per session, not a flat set: the drawer and any number of
+	 *  tiles can hold the same session open, and the last one out is the only
+	 *  one allowed to unsubscribe. */
+	private subscribed = new Map<string, number>();
 	private listDirtyTimer: ReturnType<typeof setTimeout> | null = null;
 	private queryClient: QueryClient | null = null;
 
@@ -245,17 +248,64 @@ export class WsClient {
 	}
 
 	subscribe(id: string) {
-		if (!this.subscribed.has(id)) {
-			this.subscribed.add(id);
+		const n = this.subscribed.get(id) ?? 0;
+		this.subscribed.set(id, n + 1);
+		if (n === 0) {
 			this.streams.bufFor(id);
 			this.send({ type: 'subscribe', session_id: id });
 		}
 	}
 
 	unsubscribe(id: string) {
-		if (this.subscribed.delete(id)) {
-			this.send({ type: 'unsubscribe', session_id: id });
+		const n = this.subscribed.get(id);
+		if (n === undefined) return;
+		if (n > 1) {
+			this.subscribed.set(id, n - 1);
+			return;
 		}
+		this.subscribed.delete(id);
+		this.send({ type: 'unsubscribe', session_id: id });
+	}
+
+	/** How many holders a session has — 0 once nobody does. */
+	subscriberCount(id: string): number {
+		return this.subscribed.get(id) ?? 0;
+	}
+
+	private refocusCbs = new Set<() => void>();
+	private refocusOff: (() => void) | null = null;
+
+	/**
+	 * Fires once per regained-focus / became-visible event, and reconnects the
+	 * socket once before fanning out. One listener pair for the whole app: with
+	 * a tile per session, per-instance listeners meant N `connect()` calls and N
+	 * teardowns for a single focus event.
+	 */
+	onRefocus(cb: () => void): () => void {
+		this.refocusCbs.add(cb);
+		if (!this.refocusOff && typeof document !== 'undefined') {
+			const fire = () => {
+				if (document.visibilityState === 'hidden') return;
+				this.connect();
+				for (const f of [...this.refocusCbs]) f();
+			};
+			const onVis = () => {
+				if (document.visibilityState === 'visible') fire();
+			};
+			document.addEventListener('visibilitychange', onVis);
+			window.addEventListener('focus', fire);
+			this.refocusOff = () => {
+				document.removeEventListener('visibilitychange', onVis);
+				window.removeEventListener('focus', fire);
+			};
+		}
+		return () => {
+			this.refocusCbs.delete(cb);
+			if (this.refocusCbs.size === 0) {
+				this.refocusOff?.();
+				this.refocusOff = null;
+			}
+		};
 	}
 
 	clearStream(id: string) {

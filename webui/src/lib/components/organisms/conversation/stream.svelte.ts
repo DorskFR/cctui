@@ -215,7 +215,9 @@ export class ConversationStream {
 			offToolBlock();
 			offDelivery();
 			ws.unsubscribe(sid);
-			ws.clearStream(sid);
+			// The same session can be open in the drawer and in a tile; dropping
+			// the buffer while another pane still holds it would blank that pane.
+			if (ws.subscriberCount(sid) === 0) ws.clearStream(sid);
 		};
 	}
 
@@ -223,21 +225,10 @@ export class ConversationStream {
 	// return force a fresh history refetch + re-subscribe (via resubTick) so the
 	// chat catches up. Call from a component $effect; returns the listener teardown.
 	installVisibilityRefresh(): () => void {
-		const refresh = () => {
-			if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
-			ws.connect();
+		return ws.onRefocus(() => {
 			this.#opts.invalidateConversation();
 			this.resubTick++;
-		};
-		const onVis = () => {
-			if (document.visibilityState === 'visible') refresh();
-		};
-		document.addEventListener('visibilitychange', onVis);
-		window.addEventListener('focus', refresh);
-		return () => {
-			document.removeEventListener('visibilitychange', onVis);
-			window.removeEventListener('focus', refresh);
-		};
+		});
 	}
 
 	#resetActivity() {

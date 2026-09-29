@@ -159,24 +159,22 @@
 
 	// Tell the notifier which drawer is open so it won't notify for it.
 	$effect(() => {
-		notify.openSessionId = sp.openSession?.id ?? null;
-		return () => {
-			notify.openSessionId = null;
-		};
+		const id = sp.openSession?.id;
+		if (!id) return;
+		return notify.holdOpen(id);
 	});
 
-	// Unread tracking: mark the open session's messages seen server-side,
+	// Unread tracking: mark every on-screen session's messages seen server-side,
 	// then refetch so its badge drops to zero. `changeTick` re-runs it as new
-	// messages stream in while the drawer stays open, keeping the open session at
-	// zero instead of re-accumulating unread.
+	// messages stream in while a pane stays open, keeping those sessions at zero
+	// instead of re-accumulating unread.
 	$effect(() => {
 		void ws.changeTick;
-		const id = sp.openSession?.id ?? null;
-		if (!id) return;
-		void actions
-			.markSeen(id)
-			.then(() => invalidateSessions())
-			.catch(() => {});
+		const ids = [...notify.openSessionIds];
+		if (ids.length === 0) return;
+		void Promise.allSettled(ids.map((id) => actions.markSeen(id))).then(() =>
+			invalidateSessions()
+		);
 	});
 
 	// A clicked notification asks us to open its session's drawer; `openById`

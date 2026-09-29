@@ -52,7 +52,9 @@ const ENV_KEY_RE = /^[A-Z_][A-Z0-9_]*$/;
 
 export interface SpawnFormOptions {
 	onclose: () => void;
-	onspawned: () => void;
+	/** The pre-minted session id when the spawn returned one, else null: a
+	 *  caller that wants to show the session immediately needs it. */
+	onspawned: (sessionId: string | null) => void;
 	prefill?: SpawnPrefill | null;
 	autosaveDelay?: () => number;
 	docked?: () => boolean;
@@ -66,7 +68,7 @@ export interface SpawnFormOptions {
 export class SpawnForm {
 	readonly images = imageAttachments();
 	readonly onclose: () => void;
-	readonly onspawned: () => void;
+	readonly onspawned: (sessionId: string | null) => void;
 	private readonly autosaveDelay: () => number;
 	private readonly docked: () => boolean;
 
@@ -370,9 +372,9 @@ export class SpawnForm {
 		this.actions.discardDraft(id).catch(() => {});
 	}
 	/** The form is done with: reset it and hand back to the host. */
-	finish() {
+	finish(sessionId: string | null = null) {
 		this.resetForm();
-		this.onspawned();
+		this.onspawned(sessionId);
 		this.onclose();
 	}
 
