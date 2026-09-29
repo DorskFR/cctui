@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { Disclosure } from '@dorsk/tsumikit';
 	import type { TodoProgress, TodoStatus } from './types';
 	import { taskPanelOpen, setTaskPanelOpen } from './taskPanel';
 	import { m } from '$lib/paraglide/messages';
@@ -9,11 +10,6 @@
 	// that session's own persisted state instead of carrying the previous one's.
 	let open = $derived(taskPanelOpen(sessionId));
 
-	function toggle() {
-		open = !open;
-		setTaskPanelOpen(sessionId, open);
-	}
-
 	const GLYPH: Record<TodoStatus, string> = { completed: '✔', in_progress: '▸', pending: '·' };
 	const label: Record<TodoStatus, () => string> = {
 		completed: m.tasks_status_completed,
@@ -23,69 +19,66 @@
 </script>
 
 {#if progress}
-	<div class="tasks" class:open>
-		<button type="button" class="strip" onclick={toggle} aria-expanded={open}>
-			<span class="chev" aria-hidden="true">{open ? '▾' : '▸'}</span>
-			<span class="title">{m.tasks_heading()}</span>
-			<span class="count">{progress.done}/{progress.total}</span>
-			{#if progress.inProgress}
-				<span class="now" title={progress.inProgress.activeForm ?? progress.inProgress.content}>
-					{progress.inProgress.activeForm ?? progress.inProgress.content}
-				</span>
-			{/if}
-		</button>
-		{#if open}
-			<ul class="list">
-				{#each progress.items as t, i (i)}
-					<li class="task" class:done={t.status === 'completed'} class:active={t.status === 'in_progress'}>
-						<span class="glyph" aria-hidden="true">{GLYPH[t.status]}</span>
-						<span class="subject" title={t.content}>{t.content}</span>
-						<span class="status">{label[t.status]()}</span>
-						{#if t.blockedBy?.length}
-							<span class="blocked" title={t.blockedBy.join(', ')}>
-								{m.tasks_blocked_by({ tasks: t.blockedBy.join(', ') })}
-							</span>
-						{/if}
-					</li>
-				{/each}
-			</ul>
-		{/if}
-	</div>
+	<Disclosure
+		class="tasks"
+		buttonClass="strip"
+		chevron="start"
+		{open}
+		onchange={(v) => {
+			open = v;
+			setTaskPanelOpen(sessionId, v);
+		}}
+	>
+		{#snippet header()}
+			<span class="strip-text">
+				<span class="title">{m.tasks_heading()}</span>
+				<span class="count">{progress.done}/{progress.total}</span>
+				{#if progress.inProgress}
+					<span class="now" title={progress.inProgress.activeForm ?? progress.inProgress.content}>
+						{progress.inProgress.activeForm ?? progress.inProgress.content}
+					</span>
+				{/if}
+			</span>
+		{/snippet}
+		<ul class="list">
+			{#each progress.items as t, i (i)}
+				<li class="task" class:done={t.status === 'completed'} class:active={t.status === 'in_progress'}>
+					<span class="glyph" aria-hidden="true">{GLYPH[t.status]}</span>
+					<span class="subject" title={t.content}>{t.content}</span>
+					<span class="status">{label[t.status]()}</span>
+					{#if t.blockedBy?.length}
+						<span class="blocked" title={t.blockedBy.join(', ')}>
+							{m.tasks_blocked_by({ tasks: t.blockedBy.join(', ') })}
+						</span>
+					{/if}
+				</li>
+			{/each}
+		</ul>
+	</Disclosure>
 {/if}
 
 <style>
 	/* `flex: none` plus the per-span truncation keeps a long subject or a long
 	   activeForm from widening the drawer or wrapping the strip onto a 2nd line. */
-	.tasks {
+	:global(.tasks) {
 		flex: none;
-		display: flex;
-		flex-direction: column;
 		min-width: 0;
 		max-width: 100%;
 		border-bottom: 1px solid var(--border-subtle, var(--border));
 		font-size: var(--fs-xs);
 		overflow: hidden;
 	}
-	.strip {
+	:global(.tasks .strip) {
+		min-width: 0;
+		padding: var(--sp-1) var(--sp-2);
+		color: var(--text-muted);
+		font-size: inherit;
+	}
+	.strip-text {
 		display: flex;
 		align-items: baseline;
 		gap: var(--sp-2);
-		width: 100%;
 		min-width: 0;
-		padding: var(--sp-1) var(--sp-2);
-		background: none;
-		border: none;
-		color: var(--text-muted);
-		font-size: inherit;
-		text-align: left;
-		cursor: pointer;
-	}
-	.strip:hover {
-		background: var(--bg-elevated-2);
-	}
-	.chev {
-		flex: none;
-		width: 1em;
 	}
 	.title {
 		flex: none;

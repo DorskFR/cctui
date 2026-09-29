@@ -13,7 +13,7 @@
 	import { isStaticCredential, PROVIDER_KINDS, type ProviderKind } from '$lib/providers';
 	import AccountAvatar from '$lib/components/molecules/AccountAvatar.svelte';
 	import { isValidAccountEmoji } from '$lib/components/molecules/avatar';
-	import { Button, EmojiPicker, Field, Input, Link, Modal, Select, Text } from '@dorsk/tsumikit';
+	import { Button, Disclosure, EmojiPicker, Field, Input, Link, Modal, Select, Text } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 	import { availableKinds } from './account-editor.logic';
 
@@ -383,20 +383,18 @@
 						</Text>
 					{/if}
 					{#if editor?.mode !== 'reauth'}
-						<details bind:open={showAdvanced} class="adv">
-							<summary>
+						<Disclosure bind:open={showAdvanced} class="adv" panelClass="adv-fld">
+							{#snippet header()}
 								<Text tone="muted" size="sm">{m.accounts_adv_refresh_summary()}</Text>
-							</summary>
-							<div class="adv-fld">
-								<Field label={m.accounts_refresh_token_label()}>
-									<Input
-										type="password"
-										bind:value={refreshToken}
-										placeholder={m.accounts_refresh_token_placeholder()}
-									/>
-								</Field>
-							</div>
-						</details>
+							{/snippet}
+							<Field label={m.accounts_refresh_token_label()}>
+								<Input
+									type="password"
+									bind:value={refreshToken}
+									placeholder={m.accounts_refresh_token_placeholder()}
+								/>
+							</Field>
+						</Disclosure>
 					{/if}
 				{/if}
 
@@ -430,10 +428,7 @@
 		align-items: center;
 		gap: var(--sp-2);
 	}
-	.adv summary {
-		cursor: pointer;
-	}
-	.adv-fld {
+	:global(.adv .adv-fld) {
 		margin-top: var(--sp-2);
 	}
 	.spacer {

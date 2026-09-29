@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Badge, Input, SectionHeader, Text } from '@dorsk/tsumikit';
+	import { Badge, Disclosure, Input, SectionHeader, Text } from '@dorsk/tsumikit';
 	import { BUILTIN_SCRUB_DETECTORS, type ScrubFamily } from '$lib/scrubDetectors.generated';
 	import { normalizeForFilter } from '$lib/components/organisms/settings/settings.logic';
 	import { m } from '$lib/paraglide/messages';
@@ -29,43 +29,40 @@
 	});
 </script>
 
-<details class="detectors" data-setting-row>
-	<summary>
+<Disclosure class="detectors" data-setting-row buttonClass="detectors-summary" panelClass="body">
+	{#snippet header()}
 		<Text size="sm" tone="muted">
 			{m.settings_redaction_builtins_count({ count: BUILTIN_SCRUB_DETECTORS.length })}
 		</Text>
-	</summary>
-	<div class="body">
-		<Input
-			type="search"
-			size="sm"
-			style="width:100%"
-			bind:value={filter}
-			aria-label={m.settings_redaction_detector_filter_label()}
-			placeholder={m.settings_redaction_detector_filter_label()}
-		/>
-		{#each groups as group (group.family)}
-			<SectionHeader title={familyLabel[group.family]()} size="sm" />
-			<div class="chips">
-				{#each group.items as d (d.category)}
-					<Badge mono size="sm" border>{d.category}</Badge>
-				{/each}
-			</div>
-		{:else}
-			<Text size="sm" tone="muted">{m.settings_redaction_detector_filter_empty()}</Text>
-		{/each}
-	</div>
-</details>
+	{/snippet}
+	<Input
+		type="search"
+		size="sm"
+		style="width:100%"
+		bind:value={filter}
+		aria-label={m.settings_redaction_detector_filter_label()}
+		placeholder={m.settings_redaction_detector_filter_label()}
+	/>
+	{#each groups as group (group.family)}
+		<SectionHeader title={familyLabel[group.family]()} size="sm" />
+		<div class="chips">
+			{#each group.items as d (d.category)}
+				<Badge mono size="sm" border>{d.category}</Badge>
+			{/each}
+		</div>
+	{:else}
+		<Text size="sm" tone="muted">{m.settings_redaction_detector_filter_empty()}</Text>
+	{/each}
+</Disclosure>
 
 <style>
-	.detectors {
+	:global(.detectors) {
 		border-top: 1px solid var(--border);
 	}
-	.detectors summary {
+	:global(.detectors-summary) {
 		padding: var(--sp-2) var(--sp-4);
-		cursor: pointer;
 	}
-	.body {
+	:global(.detectors .body) {
 		display: flex;
 		flex-direction: column;
 		gap: var(--sp-2);

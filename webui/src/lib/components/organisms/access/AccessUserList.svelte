@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { UserRow } from '@bindings/UserRow';
-	import { Avatar, Input, Button, Dot, Spinner, Text } from '@dorsk/tsumikit';
+	import { Avatar, Input, Button, Disclosure, Dot, Spinner, Text } from '@dorsk/tsumikit';
 	import PageHead from '$lib/components/molecules/PageHead.svelte';
 	import EnrollMachineCard from '$lib/components/organisms/EnrollMachineCard.svelte';
 	import { hashHue } from '$lib/format';
@@ -33,25 +33,26 @@
 </script>
 
 {#snippet entry(u: UserRow, revoked: boolean)}
-	<button
-		type="button"
-		class="row"
-		data-journey="user"
-		data-journey-key={u.name}
-		class:on={u.id === selectedId}
-		class:dim={revoked}
-		aria-current={u.id === selectedId ? 'true' : undefined}
-		onclick={() => onselect(u.id)}
-	>
-		<Avatar name={u.name} hue={hashHue(u.name)} size={26} decorative />
-		<span class="id">
-			<span class="nm">{u.name}</span>
-			<span class="mt">{meta(u)}</span>
-		</span>
-		{#if !revoked}
-			<Dot status={online(u) ? 'active' : 'dead'} />
-		{/if}
-	</button>
+	<div class="row" class:on={u.id === selectedId} class:dim={revoked}>
+		<Button
+			variant="ghost"
+			block
+			style="justify-content:flex-start; gap:var(--sp-2); padding:10px var(--sp-3); border-radius:0"
+			data-journey="user"
+			data-journey-key={u.name}
+			aria-current={u.id === selectedId ? 'true' : undefined}
+			onclick={() => onselect(u.id)}
+		>
+			<Avatar name={u.name} hue={hashHue(u.name)} size={26} decorative />
+			<span class="id">
+				<span class="nm">{u.name}</span>
+				<span class="mt">{meta(u)}</span>
+			</span>
+			{#if !revoked}
+				<Dot status={online(u) ? 'active' : 'dead'} />
+			{/if}
+		</Button>
+	</div>
 {/snippet}
 
 <div class="master">
@@ -77,14 +78,14 @@
 		{:else}
 			{#each groups.active as u (u.id)}{@render entry(u, false)}{/each}
 			{#if groups.revoked.length}
-				<details class="revoked">
-					<summary>
+				<Disclosure class="revoked" buttonClass="revoked-summary">
+					{#snippet header()}
 						<Text size="xs" tone="faint"
 							>{m.access_revoked_group({ count: groups.revoked.length })}</Text
 						>
-					</summary>
+					{/snippet}
 					{#each groups.revoked as u (u.id)}{@render entry(u, true)}{/each}
-				</details>
+				</Disclosure>
 			{/if}
 		{/if}
 	</div>
@@ -118,25 +119,11 @@
 		padding: var(--sp-4);
 	}
 	.row {
-		display: flex;
-		align-items: center;
-		gap: var(--sp-2);
-		width: 100%;
-		padding: 10px var(--sp-3);
-		border: 0;
 		border-left: 2px solid transparent;
 		border-bottom: 1px solid var(--border);
-		background: transparent;
-		color: inherit;
-		font: inherit;
-		text-align: start;
-		cursor: pointer;
 	}
 	.row:last-child {
 		border-bottom: 0;
-	}
-	.row:hover {
-		background: var(--bg-elevated-2);
 	}
 	.row.on {
 		background: var(--bg-elevated-2);
@@ -145,15 +132,12 @@
 	.row.dim {
 		opacity: 0.55;
 	}
-	.row:focus-visible {
-		outline: 2px solid var(--accent);
-		outline-offset: -2px;
-	}
 	.id {
 		flex: 1;
 		min-width: 0;
 		display: flex;
 		flex-direction: column;
+		text-align: start;
 	}
 	.nm {
 		font-size: var(--fs-sm);
@@ -169,11 +153,10 @@
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
-	.revoked {
+	:global(.revoked) {
 		border-top: 1px solid var(--border);
 	}
-	.revoked summary {
+	:global(.revoked-summary) {
 		padding: var(--sp-2) var(--sp-3);
-		cursor: pointer;
 	}
 </style>
