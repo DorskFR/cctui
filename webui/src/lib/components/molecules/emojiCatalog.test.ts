@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { isValidAccountEmoji } from "./avatar";
-import { EMOJI_GROUPS, searchEmoji } from "./emojiCatalog";
+import { EMOJI_GROUPS, searchEmoji } from "@dorsk/tsumikit";
 
 describe("emoji catalogue", () => {
   it("every entry is a valid single account emoji", () => {

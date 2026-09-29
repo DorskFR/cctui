@@ -4,9 +4,8 @@
 	import { useAccountActions, type OAuthAccount, type UpdateAccount } from '$lib/queries';
 	import { toasts } from '$lib/toast.svelte';
 	import AccountAvatar from '$lib/components/molecules/AccountAvatar.svelte';
-	import EmojiPicker from '$lib/components/molecules/EmojiPicker.svelte';
 	import { isValidAccountEmoji } from '$lib/components/molecules/avatar';
-	import { Button, Card, Field, Input, Text } from '@dorsk/tsumikit';
+	import { Button, Card, EmojiPicker, Field, Input, Text } from '@dorsk/tsumikit';
 	import { m } from '$lib/paraglide/messages';
 
 	let { account, owner = null }: { account: OAuthAccount; owner?: string | null } = $props();
@@ -67,7 +66,13 @@
 		<Field label={m.account_emoji_label()}>
 			<div class="emoji">
 				<AccountAvatar {emoji} {name} id={account.id} size={24} />
-				<EmojiPicker value={emoji} onselect={(v) => (emoji = v)} />
+				<EmojiPicker
+					value={emoji}
+					onselect={(v) => (emoji = v)}
+					label={m.emoji_picker_open()}
+					searchLabel={m.emoji_picker_search()}
+					emptyLabel={m.emoji_picker_empty()}
+				/>
 				<Input
 					bind:value={emoji}
 					placeholder={m.account_emoji_placeholder()}

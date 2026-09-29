@@ -2,7 +2,7 @@
 	// Settings › Execution: the Claude harness mode (three radio cards) and the
 	// whip-mode stall phrases. Both live on the server: the mode reaches a
 	// connected daemon within ~1 s, the phrases apply at the next spawn.
-	import { Badge, OptionButton, SegmentedControl, Text, Textarea } from '@dorsk/tsumikit';
+	import { Badge, Disclosure, OptionButton, SegmentedControl, Text, Textarea } from '@dorsk/tsumikit';
 	import type { SegmentOption } from '@dorsk/tsumikit';
 	import SettingGroup from '$lib/components/molecules/SettingGroup.svelte';
 	import SettingRow from '$lib/components/molecules/SettingRow.svelte';
@@ -108,18 +108,16 @@
 					})}
 			/>
 		</SettingRow>
-		<details class="defaults" data-setting-row>
-			<summary>
+		<Disclosure class="defaults" data-setting-row buttonClass="defaults-summary" panelClass="chips">
+			{#snippet header()}
 				<Text size="sm" tone="muted">
 					{m.settings_whip_defaults_count({ count: BUILTIN_STALL_PHRASES.length })}
 				</Text>
-			</summary>
-			<div class="chips">
-				{#each BUILTIN_STALL_PHRASES as p (p)}
-					<Badge mono size="sm" border>{p}</Badge>
-				{/each}
-			</div>
-		</details>
+			{/snippet}
+			{#each BUILTIN_STALL_PHRASES as p (p)}
+				<Badge mono size="sm" border>{p}</Badge>
+			{/each}
+		</Disclosure>
 	</SettingGroup>
 </SettingSection>
 
@@ -135,14 +133,13 @@
 		gap: var(--sp-1);
 		text-align: left;
 	}
-	.defaults {
+	:global(.defaults) {
 		border-top: 1px solid var(--border);
 	}
-	.defaults summary {
+	:global(.defaults-summary) {
 		padding: var(--sp-2) var(--sp-4);
-		cursor: pointer;
 	}
-	.chips {
+	:global(.defaults .chips) {
 		display: flex;
 		flex-wrap: wrap;
 		gap: var(--sp-1);

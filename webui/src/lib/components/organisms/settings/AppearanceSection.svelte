@@ -11,7 +11,6 @@
 	import { settings, type NavPosition, type ToastPosition } from '$lib/settings.svelte';
 	import { LOCALE_LABELS, LOCALES, type Locale } from '$lib/locale.svelte';
 	import { theme } from '$lib/theme.svelte';
-	import { themeMode } from '$lib/themeMode.svelte';
 	import { themePickerGroups } from '$lib/components/molecules/themePicker.logic';
 	import { fontScale, SCALE_LEVELS } from '$lib/fontscale.svelte';
 	import { m } from '$lib/paraglide/messages';
@@ -23,7 +22,7 @@
 	// Auto first (its label recalls the remembered light and dark themes), then
 	// the light and dark sections. Same groups as the header picker.
 	const themeGroups = $derived(
-		themePickerGroups(theme.all, themeMode.pref, {
+		themePickerGroups(theme.all, theme.pref, {
 			auto: m.theme_auto_label(),
 			light: m.theme_group_light(),
 			dark: m.theme_group_dark()
@@ -45,7 +44,7 @@
 		<SettingRow label={m.settings_theme_label()} help={m.settings_theme_help()}>
 			<Select
 				data-journey="theme"
-				value={themeMode.value}
+				value={theme.choice}
 				style="width:100%"
 				onchange={(e) => settings.setTheme((e.currentTarget as HTMLSelectElement).value)}
 			>
