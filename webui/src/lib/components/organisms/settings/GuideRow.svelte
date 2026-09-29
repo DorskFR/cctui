@@ -48,7 +48,14 @@
 	);
 </script>
 
-<SettingRow label={guide.title} {help} disabled={guide.locked} selfLabelled>
+<SettingRow
+	label={guide.title}
+	{help}
+	disabled={guide.locked}
+	selfLabelled
+	journey="guide"
+	journeyKey={guide.id}
+>
 	<span class="cell">
 		<span class="chips">
 			{#if guide.locked}
@@ -64,6 +71,8 @@
 				loading={busy}
 				disabled={guide.locked}
 				onclick={() => onlaunch(guide)}
+				data-journey="launch"
+				data-journey-key={guide.id}
 			>
 				{actionLabel}
 			</Button>
