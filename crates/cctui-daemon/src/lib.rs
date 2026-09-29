@@ -37,6 +37,8 @@ pub mod mcpready;
 pub mod neighbours;
 pub mod offsets;
 pub mod plugins;
+pub mod preamble;
+pub mod preflight;
 pub mod preview;
 pub mod readfile;
 pub mod resources;

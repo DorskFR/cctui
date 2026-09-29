@@ -1,6 +1,6 @@
 use super::{
     AdapterEvent, Context, DeferredDispatch, DispatchDoneTracker, Driver, Duration, EndReason,
-    JobIds, LaunchArgs, LaunchEnv, LaunchGate, Path, PathBuf, StateJson, agent_relay_config,
+    JobIds, LaunchArgs, LaunchEnv, Path, PathBuf, StateJson, agent_relay_config,
     build_session_context, detect_whip_from_settings, dispatch_done, ensure_hook_settings, json,
     launch, mpsc, resolve_launch_env_for, socket, stage_uploads, transcript,
 };
@@ -458,16 +458,14 @@ impl Driver {
         session_id: &str,
         short: &str,
         model: Option<&str>,
-    ) -> Option<LaunchGate> {
+    ) -> Option<crate::preflight::Preflight> {
         let (server, machine_key) = (self.server.as_ref()?, self.machine_key.as_ref()?);
-        Some(LaunchGate {
-            server: server.clone(),
-            machine_key: machine_key.clone(),
-            session_id: session_id.to_owned(),
-            short: short.to_owned(),
-            model: model.map(str::to_owned),
-            events: self.events.clone(),
-        })
+        Some(
+            crate::preflight::Preflight::new(self.events.clone(), model.map(str::to_owned))
+                .with_limits(Some(server), Some(machine_key.as_str()))
+                .with_session(session_id)
+                .with_card(short),
+        )
     }
 
     /// Fork an existing conversation into a brand-new claude session.
@@ -611,7 +609,7 @@ impl Driver {
             short: ids.short.clone(),
             what: format!("fork of {parent_local_id} in {cwd}"),
             session_id: ids.session_id.clone(),
-            gate: None,
+            gate: self.launch_gate(&ids.session_id, &ids.short, spec.model.as_deref()),
         })
     }
 }
@@ -622,7 +620,7 @@ impl DeferredDispatch {
     /// worker's managed config files are swept so nothing dangles.
     pub async fn send(self) -> anyhow::Result<()> {
         if let Some(gate) = &self.gate {
-            gate.hold().await;
+            gate.run().await;
         }
         let resp: serde_json::Value = socket::call(&self.sock, &self.req)
             .await
