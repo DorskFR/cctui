@@ -80,7 +80,7 @@ impl Driver {
         self.roster = plan.now_shorts;
     }
 
-    async fn adopt_started(&mut self, job: &LiveSnapshot) {
+    async fn adopt_started(&self, job: &LiveSnapshot) {
         let session_id = job.session_id().map_or_else(|| job.short.clone(), str::to_owned);
         self.short_by_session.insert(session_id.clone(), job.short.clone());
         // If this short was just forked or spawned as a subagent,

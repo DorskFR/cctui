@@ -104,10 +104,10 @@ impl PtyViewManager {
     /// Idempotent — a watch for a short already streaming is a no-op.
     /// `requested_at` is when the `WatchPty` arrived, so the paint latency the
     /// user actually sees is what gets logged.
-    pub(super) fn watch(&self, local_id: String, short: String, requested_at: Instant) {
+    pub(super) fn watch(&self, local_id: String, short: &str, requested_at: Instant) {
         let (events, discovery) = (self.events.clone(), self.discovery.clone());
-        let task_short = short.clone();
-        let started = self.watches.watch(short.clone(), &self.shutdown, move |cancel| {
+        let task_short = short.to_owned();
+        let started = self.watches.watch(short.to_owned(), &self.shutdown, move |cancel| {
             PtyViewTask { events, discovery, short: task_short, local_id, cancel, requested_at }
                 .run()
         });
@@ -199,7 +199,7 @@ impl PtyWatchPump {
     ) -> bool {
         let Some(short) = self.roster.get(&local_id) else { return false };
         started.insert(local_id.clone(), short.clone());
-        self.views.watch(local_id, short, requested_at);
+        self.views.watch(local_id, &short, requested_at);
         true
     }
 }
@@ -339,7 +339,6 @@ impl PtyViewTask {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use base64::Engine as _;
 
     /// A byte run larger than `max` splits into full frames on `push`, and the
     /// sub-`max` remainder is only surfaced by `take` (the flush-tick path).
@@ -384,8 +383,8 @@ mod tests {
             CancellationToken::new(),
         );
 
-        mgr.watch("sess-1".to_owned(), "aaaaaaaa".to_owned(), Instant::now());
-        mgr.watch("sess-1".to_owned(), "aaaaaaaa".to_owned(), Instant::now());
+        mgr.watch("sess-1".to_owned(), "aaaaaaaa", Instant::now());
+        mgr.watch("sess-1".to_owned(), "aaaaaaaa", Instant::now());
         assert_eq!(mgr.watches.watching(), 1, "same short must not stack tasks");
 
         let token = mgr.watches.token("aaaaaaaa").unwrap();
