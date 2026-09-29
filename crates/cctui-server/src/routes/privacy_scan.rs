@@ -210,7 +210,7 @@ async fn load(pool: &PgPool, id: Uuid) -> Result<Option<PrivacyScanJob>, sqlx::E
     Ok(row.map(to_job))
 }
 
-fn db_error(e: sqlx::Error) -> StatusCode {
+fn db_error(e: &sqlx::Error) -> StatusCode {
     tracing::error!("privacy scan db error: {e}");
     StatusCode::INTERNAL_SERVER_ERROR
 }
@@ -222,7 +222,7 @@ pub async fn start(
     Extension(ctx): Extension<AuthContext>,
     Json(req): Json<RescrubRequest>,
 ) -> Result<Json<PrivacyScanJob>, StatusCode> {
-    reap_stale(&state.pool, ctx.user_id).await.map_err(db_error)?;
+    reap_stale(&state.pool, ctx.user_id).await.map_err(|e| db_error(&e))?;
 
     let id = Uuid::new_v4();
     let inserted = sqlx::query(
@@ -236,7 +236,7 @@ pub async fn start(
     .bind(req.since)
     .execute(&state.pool)
     .await
-    .map_err(db_error)?;
+    .map_err(|e| db_error(&e))?;
     if inserted.rows_affected() == 0 {
         return Err(StatusCode::CONFLICT);
     }
@@ -251,7 +251,7 @@ pub async fn start(
     let worker_state = state.clone();
     tokio::spawn(async move { run(worker_state, spec).await });
 
-    load(&state.pool, id).await.map_err(db_error)?.map(Json).ok_or(StatusCode::NOT_FOUND)
+    load(&state.pool, id).await.map_err(|e| db_error(&e))?.map(Json).ok_or(StatusCode::NOT_FOUND)
 }
 
 /// `GET /api/v1/settings/rescrub`: the caller's most recent scan, so a browser
@@ -260,13 +260,13 @@ pub async fn latest(
     State(state): State<AppState>,
     Extension(ctx): Extension<AuthContext>,
 ) -> Result<Json<Option<PrivacyScanJob>>, StatusCode> {
-    reap_stale(&state.pool, ctx.user_id).await.map_err(db_error)?;
+    reap_stale(&state.pool, ctx.user_id).await.map_err(|e| db_error(&e))?;
     let row: Option<JobRow> =
         sqlx::query_as(job_query!("WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1"))
             .bind(ctx.user_id)
             .fetch_optional(&state.pool)
             .await
-            .map_err(db_error)?;
+            .map_err(|e| db_error(&e))?;
     Ok(Json(row.map(to_job)))
 }
 
@@ -283,9 +283,9 @@ pub async fn cancel(
     .bind(ctx.user_id)
     .fetch_optional(&state.pool)
     .await
-    .map_err(db_error)?;
+    .map_err(|e| db_error(&e))?;
     let Some(id) = id else { return Ok(Json(None)) };
-    load(&state.pool, id).await.map(Json).map_err(db_error)
+    load(&state.pool, id).await.map(Json).map_err(|e| db_error(&e))
 }
 
 async fn reap_stale(pool: &PgPool, user_id: Uuid) -> Result<(), sqlx::Error> {
@@ -353,6 +353,10 @@ fn scan_batch(
     out
 }
 
+const SET_SQL: &str = "UPDATE stream_events SET payload = u.payload \
+                       FROM UNNEST($1::bigint[], $2::jsonb[]) AS u (id, payload) \
+                       WHERE stream_events.id = u.id";
+
 /// Write one batch of redacted payloads. A single statement is its own
 /// transaction, so a cancel between batches leaves whole rows behind, never a
 /// partially rewritten one. Returns how many rows were written.
@@ -360,9 +364,6 @@ async fn apply_batch(pool: &PgPool, updates: &[(i64, Value)]) -> usize {
     if updates.is_empty() {
         return 0;
     }
-    const SET_SQL: &str = "UPDATE stream_events SET payload = u.payload \
-                           FROM UNNEST($1::bigint[], $2::jsonb[]) AS u (id, payload) \
-                           WHERE stream_events.id = u.id";
     let ids: Vec<i64> = updates.iter().map(|(id, _)| *id).collect();
     let payloads: Vec<Value> = updates.iter().map(|(_, p)| p.clone()).collect();
 
@@ -502,7 +503,7 @@ async fn sweep(state: &AppState, spec: &JobSpec) -> Result<&'static str, SweepEr
         .bind(BATCH)
         .fetch_all(&state.pool)
         .await?;
-        let fetched = rows.len() as i64;
+        let fetched = i64::try_from(rows.len()).unwrap_or(i64::MAX);
         if fetched == 0 {
             break;
         }
@@ -517,15 +518,16 @@ async fn sweep(state: &AppState, spec: &JobSpec) -> Result<&'static str, SweepEr
         let changed = if spec.dry_run {
             outcome.changed
         } else {
-            apply_batch(&state.pool, &outcome.updates).await as i64
+            i64::try_from(apply_batch(&state.pool, &outcome.updates).await).unwrap_or(i64::MAX)
         };
 
         progress.rows_scanned += outcome.scanned;
         progress.rows_changed += changed;
         if changed > 0 || spec.dry_run {
             for (cat, c) in &outcome.stats {
-                *progress.by_category.entry(cat.clone()).or_insert(0) += *c as i64;
-                progress.substitutions += *c as i64;
+                let c = i64::try_from(*c).unwrap_or(i64::MAX);
+                *progress.by_category.entry(cat.clone()).or_insert(0) += c;
+                progress.substitutions += c;
             }
         }
         for (cat, s) in &outcome.samples {
@@ -763,7 +765,8 @@ mod tests {
                 );
                 t.contains("[REDACTED:github_token")
             })
-            .count() as i64;
+            .count();
+        let redacted = i64::try_from(redacted).unwrap_or(i64::MAX);
         assert_eq!(redacted, j.rows_changed, "progress counted rows that were not committed");
         cleanup(&pool, uid, machine).await;
     }
