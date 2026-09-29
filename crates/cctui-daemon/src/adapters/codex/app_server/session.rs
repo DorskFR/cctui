@@ -733,6 +733,7 @@ mod tests {
             name: Some("worker".to_owned()),
             env: std::iter::once(("OPENAI_API_KEY".to_owned(), "sk-live".to_owned())).collect(),
             spawn_relay,
+            started_at_ms: None,
         }
     }
 

@@ -61,10 +61,10 @@ failed `CommandResult`. That much of the shape is genuinely shared.
 | Plugin skills | yes | yes | yes | **neutral** | `plugins::resolve_session_skills`; claude consumes it as `plugin_dirs`, codex as `developerInstructions` + `shell_environment_policy`, opencode as `skills.paths`. A good example of the intended shape. |
 | Child env scrub (secrets never reach the agent) | yes | yes | yes | **neutral** | `childenv::ScrubChildEnv` is applied at every process spawn. |
 | MCP relay (`CctuiAgent`) declaration | yes | yes | yes | **neutral** | `adapters/agent_mcp.rs::AgentMcp` renders per-harness config (claude `mcp_config`, codex config overrides, opencode config block) from one capability. |
-| MCP-readiness launch gate | yes | no | no | claude-only | `mcpready.rs` is neutral, but only claude arms it: `note_launch` in `control/settings.rs`, and the wait happens inside claude's `SessionStart` hook via `agenttool.rs`. codex and opencode send turn 1 the moment the session exists, so a prompt calling `CctuiAgent` can race the relay. |
-| Usage-limit launch hold | yes | no | no | partial-neutral | Decision logic is neutral (`launchgate.rs`: `hold_from_limits`, `backoff`, `expired`, `Hold::card_detail`), but the loop that *uses* it — `LaunchGate` — lives in `claude_code/control/mod.rs`. |
-| Shared-checkout (cwd neighbours) notice | yes | no | no | claude-only delivery | The roster and the rendered notice are neutral (`neighbours.rs`, fed from the one point in `supervisor.rs` every adapter's events pass through), but only claude delivers it, folded into `<session-context>` by `build_session_context`. |
-| Spawn preamble / `<session-context>` | yes | no | no | claude-only | Name, model·effort, permission mode, cwd, env var *names*, attached files and the `CctuiAgent` paragraph. codex and opencode agents are told none of it. |
+| MCP-readiness launch gate | yes | yes | yes | **neutral** | `preflight.rs` holds the first turn until the session's relay has answered `initialize`, with `mcpready.rs` behind it. claude-code arms the same wait through its `SessionStart` hook instead, because it holds turn 1 in-band; `CCTUI_MCP_READY_WAIT_SECS` is one knob for all three. |
+| Usage-limit launch hold | yes | yes | yes | **neutral** | `launchgate.rs` decides, `preflight.rs` waits and reports the hold on the session card. claude-code holds before its control-socket dispatch; codex and opencode hold after the session registers and before turn 1 — the turn is what would eat the 429, and before `SessionStarted` they have no card for the wait to land on. |
+| Shared-checkout (cwd neighbours) notice | yes | yes | yes | **neutral** | `neighbours.rs` renders it, `preamble.rs` packages it, and each adapter delivers it: claude folds it into `<session-context>`, codex into `developerInstructions` beside its skill catalog, opencode into the spawn prompt. |
+| Spawn preamble / `<session-context>` | yes | partial | partial | neutral block, per-harness delivery | `preamble.rs` is the neutral carrier and every harness has a delivery primitive, but only the shared-checkout notice travels through it today. Name, model·effort, permission mode, env var *names*, attached files and the `CctuiAgent` paragraph are still assembled by claude's `build_session_context` alone. |
 | Version gate (harness binary vs running daemon) | yes | yes | n.a. | per-harness | `version_gate.rs` and `codex_version_gate.rs` are separate implementations; opencode only warns on a pinned-version mismatch. |
 
 ## Observation and lifecycle
@@ -86,47 +86,40 @@ failed `CommandResult`. That much of the shape is genuinely shared.
 
 ## Gaps and duplications worth fixing, ranked
 
-1. **There is no launch preflight seam.** The two things that must happen
-   between "the session exists" and "turn 1 is sent" — the usage-limit hold and
-   the MCP-readiness wait — are both implemented inside the claude-code
-   adapter. Every harness needs both, and holding turn 1 is what actually saves
-   the 429, not holding the process launch. One neutral `preflight` type that
-   each adapter awaits before its first prompt removes a claude-only gate and
-   two missing ones at the same time.
-
-2. **The spawn preamble is claude-only.** `build_session_context` produces a
-   block every harness could use, but it lives in
-   `claude_code/control/settings.rs` and is delivered only through claude's
-   prompt. The shared-checkout notice rides on it, which is why codex and
-   opencode agents get no warning that another session is editing their
-   checkout. The primitive per harness is one line — claude prepends it to the
-   prompt, codex has `developerInstructions`, opencode has its spawn prompt —
-   so the block itself belongs in neutral code.
-
-3. **opencode has no durable session registry.** It is the only adapter whose
+1. **opencode has no durable session registry.** It is the only adapter whose
    sessions cannot survive a daemon self-update; `opencode serve` is killed on
    re-exec and the `LiveRegistry` is dropped. Everything downstream of that
    (resume, resume marks, start time across a restart, `Rename` on a cold
-   session) is missing for one reason, not four.
+   session) is missing for one reason, not four. This is now the largest
+   single gap.
 
-4. **Upload staging is written twice.** `adapters/uploads.rs::stage_bootstrap`
+2. **The spawn preamble carries only the shared-checkout notice.** The neutral
+   seam exists — `preamble.rs` plus a delivery primitive per harness — but the
+   rest of what claude's `build_session_context` assembles (name,
+   model·effort, permission posture, env var names, staged attachments, the
+   `CctuiAgent` paragraph) is still built inside the claude-code adapter.
+   Moving that assembly onto the neutral block would let codex and opencode
+   agents see what a claude agent already sees, for roughly the cost of moving
+   one function.
+
+3. **Upload staging is written twice.** `adapters/uploads.rs::stage_bootstrap`
    and `claude_code/control/settings.rs::stage_uploads` do the same job with
    the same contract. Claude should call the neutral one.
 
-5. **Turn-end is a claude-only signal.** `childwatch` has a precise
+4. **Turn-end is a claude-only signal.** `childwatch` has a precise
    `note_turn_end` for claude and heuristics for everyone else, so subagent
    follow is measurably better for one harness than the other two.
 
-6. **Two version gates, one idea.** `claude_code/version_gate.rs` and
+5. **Two version gates, one idea.** `claude_code/version_gate.rs` and
    `codex/codex_version_gate.rs` are independent implementations of "the
    harness binary moved under a running session"; opencode has neither.
 
-7. **Permission modes are not equally expressible.** opencode collapses the
+6. **Permission modes are not equally expressible.** opencode collapses the
    neutral `PermissionMode` onto an agent profile, so a mode the user picked
    can silently mean something coarser. Worth documenting on the session card
    rather than pretending the mapping is total.
 
-8. **Diagnose is a shared report shape filled three ways.** The proto type is
+7. **Diagnose is a shared report shape filled three ways.** The proto type is
    neutral; almost every field is per-harness, and opencode answers `n.a.` for
    most of them. The ring buffer + redaction that makes codex's report useful
    is not reachable from the other adapters.
