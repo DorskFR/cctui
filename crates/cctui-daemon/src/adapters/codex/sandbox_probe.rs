@@ -77,6 +77,7 @@ pub fn userns_marker(text: &str) -> Option<&'static str> {
 }
 
 /// Whether a command's output is a bwrap failure this host's policy explains.
+///
 /// Requires the `bwrap:` prefix as well as a marker: a command whose own output
 /// merely quotes one of these strings must not raise the alarm.
 #[must_use]
@@ -248,7 +249,9 @@ mod tests {
             stderr: "\n  bwrap: Can't find source path /nope\nsecond line\n".to_owned(),
         };
         match classify(&out) {
-            CodexSandbox::Unknown { detail } => assert_eq!(detail, "bwrap: Can't find source path /nope"),
+            CodexSandbox::Unknown { detail } => {
+                assert_eq!(detail, "bwrap: Can't find source path /nope");
+            }
             other => panic!("expected Unknown, got {other:?}"),
         }
     }
