@@ -6,8 +6,10 @@
 //! scheduled-message ones — the two outboxes must not drift apart.
 
 use chrono::{DateTime, Utc};
+use cctui_proto::ws::{ScheduledLaunchState, ServerEvent};
 
 use crate::auth::{AuthContext, Scope};
+use crate::bus::Bus;
 use crate::scheduled_messages::{Retry, retry_after_failure};
 use crate::state::AppState;
 use crate::store::sessions::SessionRowStatus;
@@ -22,6 +24,25 @@ pub fn unlaunchable_reason(draft_status: Option<&str>) -> Option<&'static str> {
         Some(status) if SessionRowStatus::parse(status) == Some(SessionRowStatus::Draft) => None,
         Some(_) => Some("session is no longer a draft"),
     }
+}
+
+/// Push the drafts list's view of one transition. `user_id` scopes delivery;
+/// without it the event only reaches admins.
+fn announce(
+    bus: &Bus,
+    draft_id: &str,
+    user_id: Option<uuid::Uuid>,
+    state: ScheduledLaunchState,
+    launch_at: Option<DateTime<Utc>>,
+    last_error: Option<&str>,
+) {
+    bus.publish_server(ServerEvent::ScheduledLaunch {
+        draft_id: draft_id.to_owned(),
+        user_id,
+        state,
+        launch_at,
+        last_error: last_error.map(ToOwned::to_owned),
+    });
 }
 
 #[derive(sqlx::FromRow)]
@@ -61,6 +82,7 @@ pub async fn claim_due(pool: &sqlx::PgPool) -> sqlx::Result<Vec<ClaimedDraft>> {
 /// Queue a draft to launch at `launch_at`, replacing any existing schedule.
 pub async fn schedule(
     pool: &sqlx::PgPool,
+    bus: &Bus,
     draft_id: &str,
     user_id: Option<uuid::Uuid>,
     launch_at: DateTime<Utc>,
@@ -76,17 +98,21 @@ pub async fn schedule(
     .bind(user_id)
     .bind(launch_at)
     .execute(pool)
-    .await
-    .map(|_| ())
+    .await?;
+    announce(bus, draft_id, user_id, ScheduledLaunchState::Scheduled, Some(launch_at), None);
+    Ok(())
 }
 
 /// Drop a draft's schedule, leaving the draft itself in place.
-pub async fn cancel(pool: &sqlx::PgPool, draft_id: &str) -> sqlx::Result<bool> {
-    let res = sqlx::query("DELETE FROM draft_launch_queue WHERE draft_id = $1")
-        .bind(draft_id)
-        .execute(pool)
-        .await?;
-    Ok(res.rows_affected() > 0)
+pub async fn cancel(pool: &sqlx::PgPool, bus: &Bus, draft_id: &str) -> sqlx::Result<bool> {
+    let deleted: Option<(Option<uuid::Uuid>,)> =
+        sqlx::query_as("DELETE FROM draft_launch_queue WHERE draft_id = $1 RETURNING user_id")
+            .bind(draft_id)
+            .fetch_optional(pool)
+            .await?;
+    let Some((user_id,)) = deleted else { return Ok(false) };
+    announce(bus, draft_id, user_id, ScheduledLaunchState::Cancelled, None, None);
+    Ok(true)
 }
 
 /// `(launch_at, last_error)` per scheduled draft, for the drafts list.
@@ -119,12 +145,12 @@ pub async fn sweep(state: &AppState) {
 
 pub async fn launch(state: &AppState, row: ClaimedDraft) -> Result<(), String> {
     if let Some(reason) = unlaunchable_reason(row.draft_status.as_deref()) {
-        mark_dead(&state.pool, &row.draft_id, row.attempts + 1, reason).await;
+        mark_dead(&state.pool, &state.bus, &row.draft_id, row.owner, row.attempts + 1, reason).await;
         return Err(reason.to_owned());
     }
     let Some(owner) = row.owner else {
         let reason = "draft's machine no longer exists";
-        mark_dead(&state.pool, &row.draft_id, row.attempts + 1, reason).await;
+        mark_dead(&state.pool, &state.bus, &row.draft_id, None, row.attempts + 1, reason).await;
         return Err(reason.to_owned());
     };
     // No env: a draft never stores secrets, and nobody is at the keyboard to
@@ -144,29 +170,47 @@ pub async fn launch(state: &AppState, row: ClaimedDraft) -> Result<(), String> {
     .await
     {
         Ok(_) => {
-            let _ = sqlx::query(
-                "UPDATE draft_launch_queue \
-                 SET state = 'launched', launched_at = now(), last_error = NULL \
-                 WHERE draft_id = $1",
-            )
-            .bind(&row.draft_id)
-            .execute(&state.pool)
-            .await;
+            mark_launched(&state.pool, &state.bus, &row.draft_id, Some(owner)).await;
             tracing::info!(draft = %row.draft_id, "scheduled draft launched");
             Ok(())
         }
         Err(e) => {
             let err = e.to_string();
-            record_failure(&state.pool, &row.draft_id, row.attempts, &err).await;
+            record_failure(&state.pool, &state.bus, &row.draft_id, Some(owner), row.attempts, &err)
+                .await;
             Err(err)
         }
     }
 }
 
-pub async fn record_failure(pool: &sqlx::PgPool, draft_id: &str, attempts: i32, err: &str) {
+async fn mark_launched(
+    pool: &sqlx::PgPool,
+    bus: &Bus,
+    draft_id: &str,
+    user_id: Option<uuid::Uuid>,
+) {
+    let _ = sqlx::query(
+        "UPDATE draft_launch_queue \
+         SET state = 'launched', launched_at = now(), last_error = NULL \
+         WHERE draft_id = $1",
+    )
+    .bind(draft_id)
+    .execute(pool)
+    .await;
+    announce(bus, draft_id, user_id, ScheduledLaunchState::Launched, None, None);
+}
+
+pub async fn record_failure(
+    pool: &sqlx::PgPool,
+    bus: &Bus,
+    draft_id: &str,
+    user_id: Option<uuid::Uuid>,
+    attempts: i32,
+    err: &str,
+) {
     match retry_after_failure(attempts) {
         Retry::Dead { attempts } => {
-            mark_dead(pool, draft_id, attempts, err).await;
+            mark_dead(pool, bus, draft_id, user_id, attempts, err).await;
             tracing::error!(draft = %draft_id, attempts, "scheduled spawn dead-lettered: {err}");
         }
         Retry::After { attempts, secs } => {
@@ -182,12 +226,20 @@ pub async fn record_failure(pool: &sqlx::PgPool, draft_id: &str, attempts: i32, 
             .bind(secs.to_string())
             .execute(pool)
             .await;
+            announce(bus, draft_id, user_id, ScheduledLaunchState::Failed, None, Some(err));
             tracing::warn!(draft = %draft_id, attempt = attempts, retry_in_secs = secs, "scheduled spawn launch failed: {err}");
         }
     }
 }
 
-async fn mark_dead(pool: &sqlx::PgPool, draft_id: &str, attempts: i32, reason: &str) {
+async fn mark_dead(
+    pool: &sqlx::PgPool,
+    bus: &Bus,
+    draft_id: &str,
+    user_id: Option<uuid::Uuid>,
+    attempts: i32,
+    reason: &str,
+) {
     let _ = sqlx::query(
         "UPDATE draft_launch_queue SET state = 'dead', attempts = $2, last_error = $3 \
          WHERE draft_id = $1",
@@ -197,12 +249,37 @@ async fn mark_dead(pool: &sqlx::PgPool, draft_id: &str, attempts: i32, reason: &
     .bind(reason)
     .execute(pool)
     .await;
+    announce(bus, draft_id, user_id, ScheduledLaunchState::Dead, None, Some(reason));
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bus::NoopTransport;
     use crate::scheduled_messages::{DeliverAtError, MAX_HORIZON_DAYS, parse_deliver_at};
+
+    fn test_bus() -> Bus {
+        Bus::new(Box::new(NoopTransport))
+    }
+
+    /// The `(state, user_id, launch_at, last_error)` of the next scheduled-launch
+    /// event for `draft_id`, or `None` if the stream holds none.
+    #[allow(clippy::type_complexity)]
+    fn next_launch_event(
+        rx: &mut tokio::sync::broadcast::Receiver<crate::bus::ServerFrame>,
+        draft_id: &str,
+    ) -> Option<(ScheduledLaunchState, Option<uuid::Uuid>, Option<DateTime<Utc>>, Option<String>)>
+    {
+        while let Ok(frame) = rx.try_recv() {
+            if let ServerEvent::ScheduledLaunch { draft_id: id, user_id, state, launch_at, last_error } =
+                &*frame.event
+                && id == draft_id
+            {
+                return Some((*state, *user_id, *launch_at, last_error.clone()));
+            }
+        }
+        None
+    }
 
     fn now() -> DateTime<Utc> {
         DateTime::parse_from_rfc3339("2026-09-24T10:00:00Z").unwrap().with_timezone(&Utc)
@@ -228,6 +305,10 @@ mod tests {
     }
 
     async fn seed_draft(pool: &sqlx::PgPool, name: &str) -> String {
+        seed_owned_draft(pool, name).await.0
+    }
+
+    async fn seed_owned_draft(pool: &sqlx::PgPool, name: &str) -> (String, uuid::Uuid) {
         let uid = uuid::Uuid::new_v4();
         let machine = uuid::Uuid::new_v4();
         sqlx::query("INSERT INTO users (id, name, key_hash) VALUES ($1, $2, $3)")
@@ -255,7 +336,7 @@ mod tests {
         .execute(pool)
         .await
         .unwrap();
-        sid
+        (sid, uid)
     }
 
     #[tokio::test]
@@ -269,8 +350,9 @@ mod tests {
             .expect("connect test db");
         let due = seed_draft(&pool, name).await;
         let later = seed_draft(&pool, name).await;
-        schedule(&pool, &due, None, now()).await.unwrap();
-        schedule(&pool, &later, None, Utc::now() + chrono::Duration::hours(1)).await.unwrap();
+        let bus = test_bus();
+        schedule(&pool, &bus, &due, None, now()).await.unwrap();
+        schedule(&pool, &bus, &later, None, Utc::now() + chrono::Duration::hours(1)).await.unwrap();
 
         let (a, b) = tokio::join!(claim_due(&pool), claim_due(&pool));
         let mine: Vec<String> = a
@@ -283,7 +365,7 @@ mod tests {
         assert_eq!(mine, vec![due.clone()], "the due draft is claimed once, the future one not");
         assert!(claim_due(&pool).await.unwrap().iter().all(|r| r.draft_id != due), "leased");
 
-        record_failure(&pool, &due, 0, "machine offline").await;
+        record_failure(&pool, &bus, &due, None, 0, "machine offline").await;
         let (state, attempts, err): (String, i32, Option<String>) = sqlx::query_as(
             "SELECT state, attempts, last_error FROM draft_launch_queue WHERE draft_id = $1",
         )
@@ -297,7 +379,7 @@ mod tests {
         );
         assert!(claim_due(&pool).await.unwrap().iter().all(|r| r.draft_id != due), "backing off");
 
-        record_failure(&pool, &due, 10, "still offline").await;
+        record_failure(&pool, &bus, &due, None, 10, "still offline").await;
         let state: String =
             sqlx::query_scalar("SELECT state FROM draft_launch_queue WHERE draft_id = $1")
                 .bind(&due)
@@ -317,8 +399,8 @@ mod tests {
         assert_eq!(pending.len(), 2);
         assert_eq!(pending[&due].1.as_deref(), Some("still offline"));
 
-        assert!(cancel(&pool, &later).await.unwrap());
-        assert!(!cancel(&pool, &later).await.unwrap());
+        assert!(cancel(&pool, &bus, &later).await.unwrap());
+        assert!(!cancel(&pool, &bus, &later).await.unwrap());
         assert!(pending_for(&pool, &[later]).await.unwrap().is_empty());
     }
 
@@ -332,12 +414,72 @@ mod tests {
             .await
             .expect("connect test db");
         let draft = seed_draft(&pool, name).await;
-        schedule(&pool, &draft, None, Utc::now() + chrono::Duration::hours(2)).await.unwrap();
+        schedule(&pool, &test_bus(), &draft, None, Utc::now() + chrono::Duration::hours(2))
+            .await
+            .unwrap();
         sqlx::query("DELETE FROM sessions WHERE id = $1")
             .bind(&draft)
             .execute(&pool)
             .await
             .unwrap();
         assert!(pending_for(&pool, &[draft]).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn every_transition_pushes_a_scheduled_launch_event() {
+        let name = "scheduled_spawn_events";
+        let Some(url) = crate::routes::gateway::test_db_url(name) else { return };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .expect("connect test db");
+        let bus = test_bus();
+        let mut rx = bus.subscribe_server();
+        let (draft, owner) = seed_owned_draft(&pool, name).await;
+        let at = Utc::now() + chrono::Duration::hours(3);
+
+        schedule(&pool, &bus, &draft, Some(owner), at).await.unwrap();
+        let (state, user, launch_at, err) = next_launch_event(&mut rx, &draft).expect("scheduled");
+        assert_eq!((state, user, err), (ScheduledLaunchState::Scheduled, Some(owner), None));
+        assert_eq!(launch_at, Some(at), "the schedule rides along so no refetch is needed");
+
+        assert!(cancel(&pool, &bus, &draft).await.unwrap());
+        let (state, user, ..) = next_launch_event(&mut rx, &draft).expect("cancelled");
+        assert_eq!((state, user), (ScheduledLaunchState::Cancelled, Some(owner)));
+        assert!(
+            next_launch_event(&mut rx, &draft).is_none(),
+            "cancelling an unscheduled draft is silent"
+        );
+        assert!(!cancel(&pool, &bus, &draft).await.unwrap());
+        assert!(next_launch_event(&mut rx, &draft).is_none());
+
+        schedule(&pool, &bus, &draft, Some(owner), at).await.unwrap();
+        next_launch_event(&mut rx, &draft).expect("rescheduled");
+
+        record_failure(&pool, &bus, &draft, Some(owner), 0, "machine offline").await;
+        let (state, user, _, err) = next_launch_event(&mut rx, &draft).expect("failed");
+        assert_eq!(
+            (state, user, err.as_deref()),
+            (ScheduledLaunchState::Failed, Some(owner), Some("machine offline"))
+        );
+
+        record_failure(&pool, &bus, &draft, Some(owner), 10, "still offline").await;
+        let (state, user, _, err) = next_launch_event(&mut rx, &draft).expect("dead");
+        assert_eq!(
+            (state, user, err.as_deref()),
+            (ScheduledLaunchState::Dead, Some(owner), Some("still offline"))
+        );
+
+        mark_launched(&pool, &bus, &draft, Some(owner)).await;
+        let (state, user, _, err) = next_launch_event(&mut rx, &draft).expect("launched");
+        assert_eq!((state, user, err), (ScheduledLaunchState::Launched, Some(owner), None));
+        let row: String =
+            sqlx::query_scalar("SELECT state FROM draft_launch_queue WHERE draft_id = $1")
+                .bind(&draft)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(row, "launched");
     }
 }

@@ -173,6 +173,7 @@ export type * from './RotateResponse';
 export type * from './ScanCategory';
 export type * from './ScanSample';
 export type * from './ScheduleLaunchRequest';
+export type * from './ScheduledLaunchState';
 export type * from './SelfUpdateResponse';
 export type * from './SelfUpdateRun';
 export type * from './SelfUpdateTarget';

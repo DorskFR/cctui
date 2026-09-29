@@ -908,7 +908,8 @@ pub async fn schedule_draft_launch(
     if SessionRowStatus::parse(&status) != Some(SessionRowStatus::Draft) {
         return Err(AppError::new(StatusCode::BAD_REQUEST, "session is not a draft"));
     }
-    crate::scheduled_spawns::schedule(&state.pool, &session_id, Some(ctx.user_id), at).await?;
+    crate::scheduled_spawns::schedule(&state.pool, &state.bus, &session_id, Some(ctx.user_id), at)
+        .await?;
     tracing::info!(draft = %session_id, launch_at = %at, "draft launch scheduled");
     Ok(StatusCode::ACCEPTED)
 }
@@ -919,7 +920,7 @@ pub async fn cancel_draft_launch(
     State(state): State<AppState>,
     Path(session_id): Path<String>,
 ) -> Result<StatusCode, AppError> {
-    if !crate::scheduled_spawns::cancel(&state.pool, &session_id).await? {
+    if !crate::scheduled_spawns::cancel(&state.pool, &state.bus, &session_id).await? {
         return Err(AppError::new(StatusCode::NOT_FOUND, "draft is not scheduled"));
     }
     tracing::info!(draft = %session_id, "draft launch schedule cancelled");

@@ -578,6 +578,20 @@ pub enum TuiCommand {
 
 // --- Server → TUI ---
 
+/// Transition a scheduled draft launch just made.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts", derive(TS), ts(export))]
+#[serde(rename_all = "snake_case")]
+pub enum ScheduledLaunchState {
+    Scheduled,
+    Cancelled,
+    Launched,
+    /// Failed with a retry still to come.
+    Failed,
+    /// Failed for good; the draft keeps its row.
+    Dead,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -711,6 +725,19 @@ pub enum ServerEvent {
     PtyChunk {
         session_id: String,
         data: String,
+    },
+    /// A scheduled draft launch changed state. `launch_at` is the schedule the
+    /// draft now carries, absent once it is gone.
+    ScheduledLaunch {
+        draft_id: String,
+        /// Whose drafts list this belongs to; the draft row may already be gone.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        user_id: Option<uuid::Uuid>,
+        state: ScheduledLaunchState,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        launch_at: Option<chrono::DateTime<chrono::Utc>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        last_error: Option<String>,
     },
     /// Application-level liveness tick; browsers cannot observe WS pings.
     Heartbeat {},

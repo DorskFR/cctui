@@ -491,6 +491,7 @@ async fn set_daemon_pty_watch(state: &AppState, session_id: &str, watch: bool) {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum Owned {
     Session(String),
+    User(uuid::Uuid),
     Machine(uuid::Uuid),
     Account(uuid::Uuid),
     Dispatcher(uuid::Uuid),
@@ -499,7 +500,7 @@ enum Owned {
 impl Owned {
     const fn share_type(&self) -> Option<&'static str> {
         match self {
-            Self::Session(_) => None,
+            Self::Session(_) | Self::User(_) => None,
             Self::Machine(_) => Some("machine"),
             Self::Account(_) => Some("account"),
             Self::Dispatcher(_) => Some("dispatcher"),
@@ -508,7 +509,7 @@ impl Owned {
 
     const fn uuid(&self) -> Option<uuid::Uuid> {
         match self {
-            Self::Session(_) => None,
+            Self::Session(_) | Self::User(_) => None,
             Self::Machine(id) | Self::Account(id) | Self::Dispatcher(id) => Some(*id),
         }
     }
@@ -559,6 +560,9 @@ fn audience(event: &ServerEvent) -> Audience {
             SharedWith(Owned::Dispatcher(*dispatcher_id))
         }
         ServerEvent::GithubEvent { .. } => AdminsOnly,
+        ServerEvent::ScheduledLaunch { user_id, .. } => {
+            user_id.map_or(AdminsOnly, |u| OwnerOf(Owned::User(u)))
+        }
         ServerEvent::Heartbeat {} | ServerEvent::Resync { .. } => Everyone,
     }
 }
@@ -573,6 +577,7 @@ impl OwnerLookup for sqlx::PgPool {
     async fn owner(&self, owned: &Owned) -> Option<uuid::Uuid> {
         let found = match owned {
             Owned::Session(id) => crate::authz::session_owner(id, self).await,
+            Owned::User(id) => Ok(Some(*id)),
             Owned::Machine(id) => {
                 sqlx::query_scalar("SELECT user_id FROM machines WHERE id = $1")
                     .bind(id)
@@ -854,6 +859,7 @@ mod tests {
             match owned {
                 Owned::Session(id) if id.contains("ghost") => None,
                 Owned::Session(id) if id.contains("bob") => Some(BOB),
+                Owned::User(id) => Some(*id),
                 Owned::Machine(id) if *id == BOB_MACHINE => Some(BOB),
                 _ => Some(ALICE),
             }
@@ -899,7 +905,29 @@ mod tests {
                 machine_id: BOB_MACHINE,
                 liveness: cctui_proto::models::MachineLiveness::Online,
             },
+            ServerEvent::ScheduledLaunch {
+                draft_id: "draft-bob".into(),
+                user_id: Some(BOB),
+                state: cctui_proto::ws::ScheduledLaunchState::Scheduled,
+                launch_at: None,
+                last_error: None,
+            },
         ]
+    }
+
+    #[tokio::test]
+    async fn a_scheduled_launch_reaches_only_the_owner_it_names() {
+        let event = |user_id| ServerEvent::ScheduledLaunch {
+            draft_id: "draft-1".into(),
+            user_id,
+            state: cctui_proto::ws::ScheduledLaunchState::Launched,
+            launch_at: None,
+            last_error: None,
+        };
+        assert_eq!(audience(&event(Some(BOB))), Audience::OwnerOf(Owned::User(BOB)));
+        assert_eq!(audience(&event(None)), Audience::AdminsOnly);
+        assert!(filter_for(BOB, FakeOwners::default()).allows(&event(Some(BOB))).await);
+        assert!(!filter_for(ALICE, FakeOwners::default()).allows(&event(None)).await);
     }
 
     #[tokio::test]

@@ -7,6 +7,7 @@ import {
 	KeyedListeners,
 	decodeBase64,
 	lastMessageExcerpt,
+	scheduledLaunchPatch,
 	spawnOutcomeFromEnd,
 	userMsgKey,
 	type AccountUsageEvent,
@@ -177,6 +178,13 @@ export class WsClient {
 			case 'session_deregistered':
 				this.markListDirty();
 				break;
+			case 'scheduled_launch': {
+				const { type: _, ...ev } = msg;
+				const patch = scheduledLaunchPatch(ev);
+				if (patch) this.emitListPatch(patch);
+				else this.markListDirty();
+				break;
+			}
 			case 'machine_resources': {
 				const { type: _, ...p } = msg;
 				for (const cb of this.machineResourcesCbs) cb(p);
