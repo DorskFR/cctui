@@ -140,10 +140,6 @@ pub(super) fn hook_settings_path(file: &str) -> Option<PathBuf> {
 /// Write the per-session whip phrase override file the `whip-stop-hook`
 /// reads via `--phrases`, returning its path. `None` (unwritable) → the caller
 /// launches the hook without the arg, so it uses its compiled defaults.
-pub(super) fn write_whip_phrases(short: &str, block: &serde_json::Value) -> Option<PathBuf> {
-    write_whip_phrases_in(&config_root()?, short, block)
-}
-
 fn write_whip_phrases_in(
     root: &std::path::Path,
     short: &str,
@@ -165,12 +161,6 @@ fn write_whip_phrases_in(
 
 /// Delete a stale whip phrase file for `short` so a spawn after the user cleared
 /// the override falls back to the compiled defaults. Best-effort.
-pub(super) fn remove_whip_phrases(short: &str) {
-    if let Some(root) = config_root() {
-        remove_whip_phrases_in(&root, short);
-    }
-}
-
 fn remove_whip_phrases_in(root: &std::path::Path, short: &str) {
     let _ = std::fs::remove_file(root.join(format!("whip-phrases-{short}.json")));
 }
