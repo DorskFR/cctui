@@ -8,6 +8,9 @@
 //! worker. The database is the rendez-vous point — the worker heartbeats
 //! progress into the row and reads `cancel_requested` back out once per batch.
 //!
+//! Samples are stored and returned, so they never carry a credential: the
+//! redactor masks the value side of every match before it leaves memory.
+//!
 //! Regex work runs on `spawn_blocking`; apply-mode writes go out one
 //! transaction per batch, and the progress counters only advance after that
 //! transaction commits, so a cancel can never leave a row half-written or
@@ -51,8 +54,8 @@ pub struct RescrubRequest {
 #[derive(Serialize, Deserialize, Clone)]
 #[cfg_attr(feature = "ts", derive(TS), ts(export))]
 pub struct ScanSample {
-    /// Abbreviated for high-entropy detectors; a user pattern's match is shown
-    /// whole, which is the point of the preview.
+    /// Any value the match carries is masked; a bare match is kept whole only
+    /// when it cannot itself be a secret.
     pub text: String,
     pub context: String,
     pub value_follows: bool,
@@ -665,6 +668,56 @@ mod tests {
         .await
         .unwrap();
         assert!(stored.unwrap().contains(TOKEN), "a dry run must not write");
+        cleanup(&pool, uid, machine).await;
+    }
+
+    #[tokio::test]
+    async fn samples_never_persist_the_matched_secret() {
+        const SECRET: &str = "s3cretvalue123XY";
+        let Some((pool, uid, machine)) = setup("privacy_scan_samples").await else { return };
+        let sid = seed_session(&pool, uid, machine).await;
+        seed_event(&pool, &sid, &format!("MY_token={SECRET}")).await;
+        sqlx::query("INSERT INTO user_settings (user_id, version, data) VALUES ($1, 1, $2)")
+            .bind(uid)
+            .bind(json!({
+                "secretScrubPatterns": [
+                    { "name": "mytoken", "regex": r"\w+_token", "enabled": true }
+                ]
+            }))
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let state = AppState::for_test(pool.clone());
+        let id = insert_job(&pool, uid, true).await;
+        run(state, spec(id, uid, true)).await;
+
+        let stored: String =
+            sqlx::query_scalar("SELECT samples::text FROM privacy_scan_jobs WHERE id = $1")
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(!stored.contains(SECRET), "the scan stored the secret it matched: {stored}");
+        assert!(stored.contains("MY_token"), "{stored}");
+
+        let j = job(&pool, id).await;
+        let body = serde_json::to_string(&j.categories).unwrap();
+        assert!(!body.contains(SECRET), "the API returned the secret it matched: {body}");
+        let cat = j.categories.iter().find(|c| c.category == "mytoken").expect("category");
+        assert_eq!(cat.samples[0].text, "MY_token");
+        assert!(!cat.identifier_warning, "one match is too few to warn");
+
+        sqlx::query("DELETE FROM user_settings WHERE user_id = $1")
+            .bind(uid)
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM privacy_scan_jobs WHERE user_id = $1")
+            .bind(uid)
+            .execute(&pool)
+            .await
+            .unwrap();
         cleanup(&pool, uid, machine).await;
     }
 

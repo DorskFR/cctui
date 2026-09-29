@@ -805,9 +805,9 @@ const SAMPLE_CONTEXT: usize = 40;
 /// One example match, as shown in the scan preview.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Sample {
-    /// The matched text — full for low-entropy detectors (so a user can see
-    /// their pattern hit `access_token` rather than a secret), abbreviated for
-    /// high-entropy ones.
+    /// The matched text with any value it carries masked. A bare match is kept
+    /// whole only when it cannot itself be a secret, so a user can see their
+    /// pattern hit `access_token` without the sample becoming a credential.
     pub text: String,
     /// Surrounding text, itself redacted so a neighbouring secret cannot ride
     /// along into the preview.
@@ -911,24 +911,53 @@ fn sample_string(
     }
 }
 
-/// A high-entropy match is a real credential: show only enough to recognise the
-/// shape. A low-entropy or user-defined one is the case the preview exists for,
-/// so it is shown whole.
+/// A sample is stored and returned over the API, so it must never carry a
+/// credential: whatever part of a match is a *value* is masked, whatever part
+/// names it is kept. A match shaped `name=value` keeps `name=` and masks the
+/// rest; a bare match is kept whole only when it cannot itself be a secret —
+/// which is what makes an `input_token` identifier hit legible in the preview.
 fn sample_text(c: &Compiled, matched: &str) -> String {
-    if !c.high_entropy {
-        return matched.to_owned();
+    if let Some((start, end)) = inner_value_span(matched) {
+        let (name, value, rest) = (&matched[..start], &matched[start..end], &matched[end..]);
+        return format!("{name}{}{rest}", mask_value(value));
     }
-    let head: String = matched.chars().take(4).collect();
-    format!("{head}… ({} chars)", matched.chars().count())
+    if c.high_entropy || looks_like_secret_value(matched) {
+        return mask_token(matched);
+    }
+    matched.to_owned()
+}
+
+fn mask_token(v: &str) -> String {
+    let head: String = v.chars().take(4).collect();
+    format!("{head}… ({} chars)", v.chars().count())
+}
+
+fn mask_value(v: &str) -> String {
+    let n = v.chars().count();
+    if n <= 6 {
+        return format!("… ({n} chars)");
+    }
+    let head: String = v.chars().take(2).collect();
+    format!("{head}… ({n} chars)")
 }
 
 fn sample_context(input: &str, start: usize, end: usize, patterns: &CompiledPatterns) -> String {
     let before = &input[floor_boundary(input, start.saturating_sub(SAMPLE_CONTEXT))..start];
-    let after = &input[end..ceil_boundary(input, (end + SAMPLE_CONTEXT).min(input.len()))];
+    let tail = &input[end..];
+    let after = &tail[..ceil_boundary(tail, SAMPLE_CONTEXT.min(tail.len()))];
+    // A detector that matched only the key (`\w+_token`) leaves the credential
+    // itself sitting in the context window; mask it there too.
+    let after = match value_span(tail) {
+        Some((s, e)) if s < after.len() => {
+            let rest = if e < after.len() { &after[e..] } else { "" };
+            format!("{}{}{}", &after[..s], mask_value(&tail[s..e]), rest)
+        }
+        _ => after.to_owned(),
+    };
     let mut ctx = String::with_capacity(before.len() + after.len() + 3);
     ctx.push_str(before);
     ctx.push('…');
-    ctx.push_str(after);
+    ctx.push_str(&after);
     let mut sink = BTreeMap::new();
     let ctx = redact_string(&ctx, patterns, &mut sink).unwrap_or(ctx);
     ctx.split_whitespace().collect::<Vec<_>>().join(" ")
@@ -948,13 +977,34 @@ fn ceil_boundary(s: &str, mut i: usize) -> usize {
     i
 }
 
-/// Does the text right after a match assign a value to it (`token: "x"`,
-/// `TOKEN=x`)? A bare identifier in prose or in a key position with nothing
-/// after it does not.
+const SEP_PADDING: [char; 5] = [' ', '\t', '"', '\'', '\\'];
+const VALUE_END: [char; 9] = [' ', '\t', '\n', '\r', '"', '\'', ',', '}', ']'];
+
+fn padding_len(s: &str) -> usize {
+    s.len() - s.trim_start_matches(&SEP_PADDING[..]).len()
+}
+
+/// The span of the value `after` assigns, if it assigns one (`token: "x"`,
+/// `TOKEN=x`). A bare identifier in prose, or a key with nothing after it, has
+/// no such span.
+fn value_span(after: &str) -> Option<(usize, usize)> {
+    let lead = padding_len(after);
+    let rest = after.get(lead..)?.strip_prefix(['=', ':'])?;
+    let start = lead + 1 + padding_len(rest);
+    let tail = after.get(start..).filter(|t| !t.is_empty())?;
+    let end = start + tail.find(&VALUE_END[..]).unwrap_or(tail.len());
+    (end > start).then_some((start, end))
+}
+
+/// The same span, found inside a match that carries its own `name=value`.
+fn inner_value_span(matched: &str) -> Option<(usize, usize)> {
+    let sep = matched.find(['=', ':']).filter(|&i| i > 0)?;
+    let (start, end) = value_span(matched.get(sep..)?)?;
+    Some((sep + start, sep + end))
+}
+
 fn value_follows(after: &str) -> bool {
-    let rest = after.trim_start_matches([' ', '\t', '"', '\'', '\\']);
-    let Some(rest) = rest.strip_prefix(['=', ':']) else { return false };
-    !rest.trim_start_matches([' ', '\t', '"', '\'', '\\']).is_empty()
+    value_span(after).is_some()
 }
 
 #[cfg(test)]
@@ -1398,6 +1448,47 @@ mod tests {
         let c = out.get("mytoken").unwrap();
         assert_eq!((c.examined, c.with_value), (1, 0));
         assert!(!c.looks_like_identifiers());
+    }
+
+    const SAMPLE_SECRET: &str = "s3cretvalue123XY";
+
+    #[test]
+    fn a_user_pattern_never_keeps_the_value_it_matched() {
+        let doc = json!({ "a": format!("MY_token={SAMPLE_SECRET}") });
+
+        let mut key_only = BTreeMap::new();
+        collect_samples(&doc, &custom(r"\w+_token"), &mut key_only);
+        let c = key_only.get("mytoken").expect("sampled");
+        assert_eq!(c.samples[0].text, "MY_token");
+        assert!(c.samples[0].value_follows);
+        assert!(!format!("{key_only:?}").contains(SAMPLE_SECRET), "{key_only:?}");
+
+        let mut with_value = BTreeMap::new();
+        collect_samples(&doc, &custom(r"\w+_token=\S+"), &mut with_value);
+        let c = with_value.get("mytoken").expect("sampled");
+        assert_eq!(c.samples[0].text, "MY_token=s3… (16 chars)");
+        assert!(!format!("{with_value:?}").contains(SAMPLE_SECRET), "{with_value:?}");
+    }
+
+    #[test]
+    fn a_bare_match_is_kept_whole_only_when_it_cannot_be_a_secret() {
+        let mut high = BTreeMap::new();
+        collect_samples(&json!("token ghp_ABCDEFGHIJKLMNOPQRSTUVWX0123 sent"), &p(), &mut high);
+        assert_eq!(high["github_token"].samples[0].text, "ghp_… (32 chars)");
+
+        let mut opaque = BTreeMap::new();
+        let opaque_doc = json!("value Ax9Kd7Rb5Nv8Hc3Ju6Ye here");
+        collect_samples(&opaque_doc, &custom("[A-Za-z0-9]{20}"), &mut opaque);
+        assert_eq!(opaque["mytoken"].samples[0].text, "Ax9K… (20 chars)");
+
+        let mut names = BTreeMap::new();
+        collect_samples(
+            &json!("the input_token count and the access_token list"),
+            &custom(r"\w+_token"),
+            &mut names,
+        );
+        let texts: Vec<&str> = names["mytoken"].samples.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(texts, ["input_token", "access_token"]);
     }
 
     #[test]

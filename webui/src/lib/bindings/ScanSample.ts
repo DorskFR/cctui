@@ -2,7 +2,7 @@
 
 export type ScanSample = { 
 /**
- * Abbreviated for high-entropy detectors; a user pattern's match is shown
- * whole, which is the point of the preview.
+ * Any value the match carries is masked; a bare match is kept whole only
+ * when it cannot itself be a secret.
  */
 text: string, context: string, value_follows: boolean, };
