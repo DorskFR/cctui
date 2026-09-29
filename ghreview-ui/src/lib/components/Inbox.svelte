@@ -282,9 +282,9 @@
             <PrStateIcon state={icon.state} muted={icon.muted} size={16} />
           {/if}
           {#if isPull(n) && !selectMode}
-            <button type="button" class="body open" onclick={() => openPull(n)}>
-              {@render rowBody(n)}
-            </button>
+            <Button variant="ghost" grow onclick={() => openPull(n)}>
+              <span class="body">{@render rowBody(n)}</span>
+            </Button>
           {:else}
             <div class="body">{@render rowBody(n)}</div>
           {/if}
@@ -349,20 +349,10 @@
     flex: 1;
     display: flex;
     flex-direction: column;
+    align-items: flex-start;
     gap: 4px;
     min-width: 0;
-  }
-  button.body {
-    background: none;
-    border: none;
-    padding: 0;
-    color: var(--gh-fg);
-    align-items: flex-start;
     text-align: left;
-    cursor: pointer;
-  }
-  button.body:hover .subject {
-    text-decoration: underline;
   }
   .subject {
     overflow: hidden;
