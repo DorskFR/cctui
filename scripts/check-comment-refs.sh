@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Rejects ticket ids and wave/lane notes in comments and test names on ADDED
-# lines. Checks the staged diff, or `<base-ref>...HEAD` when a ref is given.
+# Rejects ticket ids and wave/lane notes in comments, test names and docs prose
+# on ADDED lines. Under docs/ every line counts: the whole file is prose.
+# Checks the staged diff, or `<base-ref>...HEAD` when a ref is given.
 set -euo pipefail
 
 if [ $# -gt 0 ]; then
@@ -11,7 +12,7 @@ fi
 
 hits=$(git diff -U0 --no-color --diff-filter=AMR "${diff_args[@]}" -- \
   '*.rs' '*.ts' '*.svelte' '*.sh' '*.yml' '*.yaml' '*.service' 'Makefile' '**/Makefile' \
-  '*Dockerfile' |
+  '*Dockerfile' 'docs/*.md' 'docs/**/*.md' |
   awk '
     /^\+\+\+ / { file = substr($0, 7); next }
     /^@@/ {
@@ -20,7 +21,9 @@ hits=$(git diff -U0 --no-color --diff-filter=AMR "${diff_args[@]}" -- \
     /^\+/ {
       text = substr($0, 2)
       trimmed = text; sub(/^[ \t]+/, "", trimmed)
-      if (file ~ /\.(sh|ya?ml|service)$/ || file ~ /(^|\/)(Makefile|[^\/]*Dockerfile)$/) {
+      if (file ~ /^docs\/.*\.md$/) {
+        comment = 1
+      } else if (file ~ /\.(sh|ya?ml|service)$/ || file ~ /(^|\/)(Makefile|[^\/]*Dockerfile)$/) {
         comment = (trimmed ~ /^#/)
       } else {
         comment = (trimmed ~ /^(\/\/|\/\*|\*|<!--)/)
@@ -34,7 +37,7 @@ hits=$(git diff -U0 --no-color --diff-filter=AMR "${diff_args[@]}" -- \
   ')
 
 if [ -n "$hits" ]; then
-  echo "✖ ticket ids or wave/lane notes in comments or test names:"
+  echo "✖ ticket ids or wave/lane notes in comments, test names or docs:"
   echo "$hits" | sed 's/^/  /'
   echo "  Say what the code does; the ticket belongs in the commit or PR."
   exit 1

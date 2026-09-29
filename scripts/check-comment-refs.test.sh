@@ -26,6 +26,7 @@ git commit -qm base
 stage() {
   git reset -q --hard
   git clean -qfd
+  mkdir -p "$(dirname "$1")"
   printf '%s\n' "$2" > "$1"
   git add "$1"
 }
@@ -51,6 +52,11 @@ check "ticket in a test.each name fails" fails f.test.ts "test.each([1])('$T %s'
 check "ticket in a fixture string passes" passes f.test.ts "const id = '$T';"
 check "ticket in a rust string passes" passes a.rs "let s = \"$T\";"
 check "unlisted file types are ignored" passes notes.md "// $T"
+check "ticket in docs prose fails" fails docs/thing.md "Shipped as part of $T."
+check "ticket in nested docs prose fails" fails docs/adr/0001-thing.md "- supersedes $T"
+check "wave note in docs prose fails" fails docs/thing.md "Written during wave 12."
+check "clean docs prose passes" passes docs/thing.md 'The daemon holds one connection.'
+check "ticket in markdown outside docs passes" passes CHANGELOG.md "- fix ($T)"
 check "a pre-existing comment is not re-flagged" passes a.rs 'fn other() {}'
 
 stage g.rs "// $T"
