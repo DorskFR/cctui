@@ -158,12 +158,17 @@
 		</SettingRow>
 		<SettingRow label={m.settings_tiles_max_label()} help={m.settings_tiles_max_help()}>
 			<Select
-				options={maxTileOptions}
-				label={m.settings_tiles_max_label()}
-				bind:value={
-					() => String(tiles.maxTiles), (v) => settings.setTiles({ maxTiles: Number(v) })
-				}
-			/>
+				value={String(tiles.maxTiles)}
+				style="width:100%"
+				onchange={(e) =>
+					settings.setTiles({
+						maxTiles: Number((e.currentTarget as HTMLSelectElement).value)
+					})}
+			>
+				{#each maxTileOptions as o (o.value)}
+					<option value={o.value}>{o.label}</option>
+				{/each}
+			</Select>
 		</SettingRow>
 	</SettingGroup>
 

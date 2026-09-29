@@ -3,10 +3,10 @@ import type { ConversationHit } from '@bindings/ConversationHit';
 import type { ConversationSearchResponse } from '@bindings/ConversationSearchResponse';
 import { filters, freeText, parse, type Schema } from '@dorsk/tsumikit';
 import { tokenizeQuery } from '$lib/search';
+import { buildConversationSearchSchema } from './searchSchema';
 
 export interface ConversationSearchDeps {
 	id: () => string;
-	schema: Schema;
 	/** `GET /sessions/{id}/search`. */
 	fetchHits: (id: string, q: string) => Promise<ConversationSearchResponse>;
 	/** Pages older history in until `seq` is mounted, then centres it. */
@@ -39,14 +39,19 @@ export class ConversationSearch {
 	/** Tool ids seen in this session's hits, feeding the `tool:` autocomplete. */
 	tools = $state<string[]>([]);
 
+	/** Owned here, not injected: a field initializer cannot read the deps the
+	 *  constructor has yet to assign, and the bar wants the same instance. */
+	readonly schema: Schema = buildConversationSearchSchema(() => this.tools);
+
+	#ast = $derived(parse(this.rawQuery, this.schema));
 	/** Only the free-text part is highlighted; field clauses are not text. */
-	terms = $derived(tokenizeQuery(freeText(parse(this.rawQuery, this.#d.schema))));
+	terms = $derived(tokenizeQuery(freeText(this.#ast)));
 	count = $derived(this.hits.length);
 	/** The cursor's `seq`, or null before the first step. */
 	currentSeq = $derived(this.hits[this.index]?.seq ?? null);
 	/** True once a clause the client cannot evaluate locally is in play, so a
 	 *  live event can only be counted by re-asking the server. */
-	#fielded = $derived(filters(parse(this.rawQuery, this.#d.schema)).length > 0);
+	#fielded = $derived(filters(this.#ast).length > 0);
 
 	constructor(d: ConversationSearchDeps) {
 		this.#d = d;

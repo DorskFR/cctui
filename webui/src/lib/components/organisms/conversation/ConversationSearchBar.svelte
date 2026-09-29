@@ -4,12 +4,11 @@
 	// server's list, so it is right even for matches older than the loaded page.
 	import { Field, FilterSearchBar, IconButton, Toggle } from '@dorsk/tsumikit';
 	import type { ConversationSearch } from './convSearch.svelte';
-	import { buildConversationSearchSchema, conversationSearchPlaceholder } from './searchSchema';
+	import { conversationSearchPlaceholder } from './searchSchema';
 	import { m } from '$lib/paraglide/messages';
 
 	let { search }: { search: ConversationSearch } = $props();
 
-	const schema = buildConversationSearchSchema(() => search.tools);
 	const searchId = $props.id();
 
 	let inputHost = $state<HTMLElement | null>(null);
@@ -45,7 +44,7 @@
 		<label for={searchId} class="sr-only">{m.conversation_search_label()}</label>
 		<Field for={searchId}>
 			<FilterSearchBar
-				{schema}
+				schema={search.schema}
 				size="sm"
 				showChips
 				grow
