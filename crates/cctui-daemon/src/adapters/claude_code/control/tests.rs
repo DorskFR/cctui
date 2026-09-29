@@ -12,6 +12,20 @@ fn supervise_daemon_defaults_on_and_is_disablable_by_config() {
 }
 
 #[test]
+fn a_machine_local_env_override_wins_over_the_server_side_config() {
+    assert_eq!(supervise_env_override(None), None);
+    assert_eq!(supervise_env_override(Some("")), None);
+    assert_eq!(supervise_env_override(Some("  ")), None);
+    assert_eq!(supervise_env_override(Some("maybe")), None);
+    for off in ["0", "false", "no", "OFF", " false "] {
+        assert_eq!(supervise_env_override(Some(off)), Some(false), "{off}");
+    }
+    for on in ["1", "true", "YES", "on"] {
+        assert_eq!(supervise_env_override(Some(on)), Some(true), "{on}");
+    }
+}
+
+#[test]
 fn reseed_interval_defaults_and_honors_override() {
     assert_eq!(reseed_interval_from(None), Duration::from_hours(1));
     assert_eq!(reseed_interval_from(Some("120".into())), Duration::from_mins(2));
